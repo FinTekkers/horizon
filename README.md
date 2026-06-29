@@ -27,3 +27,20 @@ After: A well-defined software development lifecycle with explicit gates that ca
 * Review
   * [HUMAN GATE] Review the work before closing the task 
 
+# The Non-Negotiable Checkpoints
+
+* Deterministic Guardrails: A set of tasks to run that must pass in order to proceed
+  * Unit tests
+  * Integration tests
+  * Data Quality tests
+  * Performance tests
+  * Code linters
+  * End-to-end tests inc. UI
+* Non-deterministic Guardrails: Run by agents
+  * Code duplication
+  * Code Encapsulation
+  * Code cleanliness
+ 
+# Customizatable Checkpoints
+
+Ability to add additional human steps where necessary
