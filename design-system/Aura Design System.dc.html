@@ -1,0 +1,297 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=DM+Sans:opsz,wght@9..40,400;9..40,500;9..40,700;9..40,800&family=DM+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+*{box-sizing:border-box;}
+body{margin:0;-webkit-font-smoothing:antialiased;}
+</style>
+</helmet>
+
+<div style="min-height:100vh;background:#F3F1F8;font-family:'DM Sans',sans-serif;color:#38294F;padding:48px 24px 80px;">
+  <div style="max-width:1120px;margin:0 auto;">
+
+    <!-- PAGE HEADER -->
+    <div style="display:flex;align-items:flex-end;justify-content:space-between;gap:24px;flex-wrap:wrap;margin-bottom:36px;">
+      <div>
+        <div style="display:flex;align-items:center;gap:12px;margin-bottom:14px;">
+          <div style="width:44px;height:44px;border-radius:13px;background:linear-gradient(135deg,#2E6CB2,#38294F);"></div>
+          <div style="font:800 22px 'DM Sans';letter-spacing:-.4px;">HORIZON <span style="font-weight:400;color:#8C8C8E;">AURA</span></div>
+        </div>
+        <div style="font:800 40px 'DM Sans';letter-spacing:-1px;line-height:1.05;">Design System</div>
+        <div style="font:400 15px 'DM Sans';color:#6E6A7E;margin-top:8px;max-width:560px;line-height:1.5;">A Horizon UI foundation themed with the Pantone <strong style="color:#38294F;font-weight:700;">Aura</strong> palette — tokens, type and components, decoupled from any single screen.</div>
+      </div>
+      <div style="display:flex;gap:8px;">
+        <div style="font:500 12px 'DM Mono';color:#8C8C8E;background:#fff;border:1px solid #ECE7F3;border-radius:8px;padding:7px 11px;">DM Sans</div>
+        <div style="font:500 12px 'DM Mono';color:#8C8C8E;background:#fff;border:1px solid #ECE7F3;border-radius:8px;padding:7px 11px;">8 tokens</div>
+      </div>
+    </div>
+
+    <!-- COLOR TOKENS -->
+    <section style="background:#fff;border-radius:24px;box-shadow:0 18px 40px 0 rgba(56,41,79,.08);padding:34px;margin-bottom:26px;">
+      <div style="font:700 12px 'DM Sans';letter-spacing:1.5px;color:#2E6CB2;text-transform:uppercase;margin-bottom:4px;">01 — Foundation</div>
+      <div style="font:700 24px 'DM Sans';letter-spacing:-.4px;margin-bottom:22px;">Color Tokens</div>
+      <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:16px;">
+
+        <div style="border:1px solid #ECE7F3;border-radius:16px;overflow:hidden;">
+          <div style="height:92px;background:#2E6CB2;"></div>
+          <div style="padding:13px 14px;">
+            <div style="font:700 14px 'DM Sans';">Super Sonic</div>
+            <div style="display:flex;justify-content:space-between;margin-top:4px;"><span style="font:500 11px 'DM Sans';color:#8C8C8E;">Primary · 18-4143</span><span style="font:500 11px 'DM Mono';color:#8C8C8E;">#2E6CB2</span></div>
+          </div>
+        </div>
+        <div style="border:1px solid #ECE7F3;border-radius:16px;overflow:hidden;">
+          <div style="height:92px;background:#38294F;"></div>
+          <div style="padding:13px 14px;">
+            <div style="font:700 14px 'DM Sans';">Açaí</div>
+            <div style="display:flex;justify-content:space-between;margin-top:4px;"><span style="font:500 11px 'DM Sans';color:#8C8C8E;">Deep · 19-3628</span><span style="font:500 11px 'DM Mono';color:#8C8C8E;">#38294F</span></div>
+          </div>
+        </div>
+        <div style="border:1px solid #ECE7F3;border-radius:16px;overflow:hidden;">
+          <div style="height:92px;background:#0E6E74;"></div>
+          <div style="padding:13px 14px;">
+            <div style="font:700 14px 'DM Sans';">Deep Lake</div>
+            <div style="display:flex;justify-content:space-between;margin-top:4px;"><span style="font:500 11px 'DM Sans';color:#8C8C8E;">Success · 18-4834</span><span style="font:500 11px 'DM Mono';color:#8C8C8E;">#0E6E74</span></div>
+          </div>
+        </div>
+        <div style="border:1px solid #ECE7F3;border-radius:16px;overflow:hidden;">
+          <div style="height:92px;background:#DFA200;"></div>
+          <div style="padding:13px 14px;">
+            <div style="font:700 14px 'DM Sans';">Symphonic Sunset</div>
+            <div style="display:flex;justify-content:space-between;margin-top:4px;"><span style="font:500 11px 'DM Sans';color:#8C8C8E;">Warning · 15-0954</span><span style="font:500 11px 'DM Mono';color:#8C8C8E;">#DFA200</span></div>
+          </div>
+        </div>
+        <div style="border:1px solid #ECE7F3;border-radius:16px;overflow:hidden;">
+          <div style="height:92px;background:#9C333E;"></div>
+          <div style="padding:13px 14px;">
+            <div style="font:700 14px 'DM Sans';">Garnet</div>
+            <div style="display:flex;justify-content:space-between;margin-top:4px;"><span style="font:500 11px 'DM Sans';color:#8C8C8E;">Danger · 19-1655</span><span style="font:500 11px 'DM Mono';color:#8C8C8E;">#9C333E</span></div>
+          </div>
+        </div>
+        <div style="border:1px solid #ECE7F3;border-radius:16px;overflow:hidden;">
+          <div style="height:92px;background:#C9B4D9;"></div>
+          <div style="padding:13px 14px;">
+            <div style="font:700 14px 'DM Sans';">Orchid Bloom</div>
+            <div style="display:flex;justify-content:space-between;margin-top:4px;"><span style="font:500 11px 'DM Sans';color:#8C8C8E;">Accent · 14-3612</span><span style="font:500 11px 'DM Mono';color:#8C8C8E;">#C9B4D9</span></div>
+          </div>
+        </div>
+        <div style="border:1px solid #ECE7F3;border-radius:16px;overflow:hidden;">
+          <div style="height:92px;background:#2A2A2E;"></div>
+          <div style="padding:13px 14px;">
+            <div style="font:700 14px 'DM Sans';">Anthracite</div>
+            <div style="display:flex;justify-content:space-between;margin-top:4px;"><span style="font:500 11px 'DM Sans';color:#8C8C8E;">Ink · 19-4007</span><span style="font:500 11px 'DM Mono';color:#8C8C8E;">#2A2A2E</span></div>
+          </div>
+        </div>
+        <div style="border:1px solid #ECE7F3;border-radius:16px;overflow:hidden;">
+          <div style="height:92px;background:#8C8C8E;"></div>
+          <div style="padding:13px 14px;">
+            <div style="font:700 14px 'DM Sans';">Liquid Luster</div>
+            <div style="display:flex;justify-content:space-between;margin-top:4px;"><span style="font:500 11px 'DM Sans';color:#8C8C8E;">Muted · 20-0006</span><span style="font:500 11px 'DM Mono';color:#8C8C8E;">#8C8C8E</span></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- surface tokens -->
+      <div style="display:flex;gap:16px;flex-wrap:wrap;margin-top:18px;">
+        <div style="display:flex;align-items:center;gap:10px;border:1px solid #ECE7F3;border-radius:12px;padding:10px 14px;">
+          <span style="width:26px;height:26px;border-radius:7px;background:#F3F1F8;border:1px solid #E4DEEE;"></span>
+          <div><div style="font:700 12px 'DM Sans';">Canvas</div><div style="font:500 11px 'DM Mono';color:#8C8C8E;">#F3F1F8</div></div>
+        </div>
+        <div style="display:flex;align-items:center;gap:10px;border:1px solid #ECE7F3;border-radius:12px;padding:10px 14px;">
+          <span style="width:26px;height:26px;border-radius:7px;background:#fff;border:1px solid #E4DEEE;"></span>
+          <div><div style="font:700 12px 'DM Sans';">Surface</div><div style="font:500 11px 'DM Mono';color:#8C8C8E;">#FFFFFF</div></div>
+        </div>
+        <div style="display:flex;align-items:center;gap:10px;border:1px solid #ECE7F3;border-radius:12px;padding:10px 14px;">
+          <span style="width:26px;height:26px;border-radius:7px;background:#F0ECF6;border:1px solid #E4DEEE;"></span>
+          <div><div style="font:700 12px 'DM Sans';">Subtle</div><div style="font:500 11px 'DM Mono';color:#8C8C8E;">#F0ECF6</div></div>
+        </div>
+        <div style="display:flex;align-items:center;gap:10px;border:1px solid #ECE7F3;border-radius:12px;padding:10px 14px;">
+          <span style="width:26px;height:26px;border-radius:7px;background:#fff;border:1px solid #ECE7F3;"></span>
+          <div><div style="font:700 12px 'DM Sans';">Border</div><div style="font:500 11px 'DM Mono';color:#8C8C8E;">#ECE7F3</div></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- TYPOGRAPHY -->
+    <section style="background:#fff;border-radius:24px;box-shadow:0 18px 40px 0 rgba(56,41,79,.08);padding:34px;margin-bottom:26px;">
+      <div style="font:700 12px 'DM Sans';letter-spacing:1.5px;color:#2E6CB2;text-transform:uppercase;margin-bottom:4px;">02 — Foundation</div>
+      <div style="font:700 24px 'DM Sans';letter-spacing:-.4px;margin-bottom:22px;">Typography — DM Sans</div>
+      <div style="display:flex;flex-direction:column;">
+        <div style="display:flex;align-items:baseline;justify-content:space-between;gap:20px;padding:16px 0;border-bottom:1px solid #F3F1F8;">
+          <span style="font:800 40px 'DM Sans';letter-spacing:-1px;">Display</span>
+          <span style="font:500 12px 'DM Mono';color:#8C8C8E;white-space:nowrap;">40 / 800 / -1px</span>
+        </div>
+        <div style="display:flex;align-items:baseline;justify-content:space-between;gap:20px;padding:16px 0;border-bottom:1px solid #F3F1F8;">
+          <span style="font:700 28px 'DM Sans';letter-spacing:-.5px;">Heading</span>
+          <span style="font:500 12px 'DM Mono';color:#8C8C8E;white-space:nowrap;">28 / 700 / -.5px</span>
+        </div>
+        <div style="display:flex;align-items:baseline;justify-content:space-between;gap:20px;padding:16px 0;border-bottom:1px solid #F3F1F8;">
+          <span style="font:700 20px 'DM Sans';">Subtitle</span>
+          <span style="font:500 12px 'DM Mono';color:#8C8C8E;white-space:nowrap;">20 / 700</span>
+        </div>
+        <div style="display:flex;align-items:baseline;justify-content:space-between;gap:20px;padding:16px 0;border-bottom:1px solid #F3F1F8;">
+          <span style="font:500 15px 'DM Sans';">Body — the quick brown fox jumps over the lazy dog</span>
+          <span style="font:500 12px 'DM Mono';color:#8C8C8E;white-space:nowrap;">15 / 500</span>
+        </div>
+        <div style="display:flex;align-items:baseline;justify-content:space-between;gap:20px;padding:16px 0;border-bottom:1px solid #F3F1F8;">
+          <span style="font:500 13px 'DM Sans';color:#8C8C8E;">Label / secondary text</span>
+          <span style="font:500 12px 'DM Mono';color:#8C8C8E;white-space:nowrap;">13 / 500 / muted</span>
+        </div>
+        <div style="display:flex;align-items:baseline;justify-content:space-between;gap:20px;padding:16px 0;">
+          <span style="font:700 11px 'DM Sans';letter-spacing:1.5px;text-transform:uppercase;color:#8C8C8E;">Caption · Overline</span>
+          <span style="font:500 12px 'DM Mono';color:#8C8C8E;white-space:nowrap;">11 / 700 / +1.5px</span>
+        </div>
+      </div>
+    </section>
+
+    <!-- COMPONENTS -->
+    <section style="background:#fff;border-radius:24px;box-shadow:0 18px 40px 0 rgba(56,41,79,.08);padding:34px;margin-bottom:26px;">
+      <div style="font:700 12px 'DM Sans';letter-spacing:1.5px;color:#2E6CB2;text-transform:uppercase;margin-bottom:4px;">03 — Components</div>
+      <div style="font:700 24px 'DM Sans';letter-spacing:-.4px;margin-bottom:24px;">Buttons &amp; Controls</div>
+
+      <div style="font:700 12px 'DM Sans';letter-spacing:1px;color:#8C8C8E;text-transform:uppercase;margin-bottom:12px;">Buttons</div>
+      <div style="display:flex;flex-wrap:wrap;gap:12px;margin-bottom:26px;">
+        <button style="border:none;cursor:pointer;border-radius:12px;padding:12px 22px;font:700 14px 'DM Sans';color:#fff;background:#2E6CB2;" style-hover="background:#27598F;">Primary</button>
+        <button style="border:none;cursor:pointer;border-radius:12px;padding:12px 22px;font:700 14px 'DM Sans';color:#fff;background:#38294F;" style-hover="background:#2C2040;">Deep</button>
+        <button style="border:none;cursor:pointer;border-radius:12px;padding:12px 22px;font:700 14px 'DM Sans';color:#fff;background:linear-gradient(135deg,#2E6CB2,#38294F);">Gradient</button>
+        <button style="border:none;cursor:pointer;border-radius:12px;padding:12px 22px;font:700 14px 'DM Sans';color:#2E6CB2;background:#F0ECF6;" style-hover="background:#E7DEF1;">Soft</button>
+        <button style="cursor:pointer;border-radius:12px;padding:11px 21px;font:700 14px 'DM Sans';color:#2E6CB2;background:transparent;border:1.5px solid #2E6CB2;" style-hover="background:#F0ECF6;">Outline</button>
+        <button style="border:none;cursor:pointer;border-radius:12px;padding:12px 22px;font:700 14px 'DM Sans';color:#8C8C8E;background:#F0ECF6;">Ghost</button>
+      </div>
+
+      <div style="font:700 12px 'DM Sans';letter-spacing:1px;color:#8C8C8E;text-transform:uppercase;margin-bottom:12px;">Semantic buttons</div>
+      <div style="display:flex;flex-wrap:wrap;gap:12px;margin-bottom:26px;">
+        <button style="border:none;cursor:pointer;border-radius:12px;padding:12px 22px;font:700 14px 'DM Sans';color:#fff;background:#0E6E74;">Success</button>
+        <button style="border:none;cursor:pointer;border-radius:12px;padding:12px 22px;font:700 14px 'DM Sans';color:#3A2B00;background:#DFA200;">Warning</button>
+        <button style="border:none;cursor:pointer;border-radius:12px;padding:12px 22px;font:700 14px 'DM Sans';color:#fff;background:#9C333E;">Danger</button>
+      </div>
+
+      <div style="font:700 12px 'DM Sans';letter-spacing:1px;color:#8C8C8E;text-transform:uppercase;margin-bottom:12px;">Status badges</div>
+      <div style="display:flex;flex-wrap:wrap;gap:12px;margin-bottom:26px;">
+        <span style="display:inline-flex;align-items:center;gap:7px;border-radius:999px;padding:7px 14px;font:700 12px 'DM Sans';color:#0E6E74;background:#E2F0F0;"><span style="width:7px;height:7px;border-radius:50%;background:#0E6E74;"></span>Approved</span>
+        <span style="display:inline-flex;align-items:center;gap:7px;border-radius:999px;padding:7px 14px;font:700 12px 'DM Sans';color:#9A6E00;background:#FAF0D6;"><span style="width:7px;height:7px;border-radius:50%;background:#DFA200;"></span>Pending</span>
+        <span style="display:inline-flex;align-items:center;gap:7px;border-radius:999px;padding:7px 14px;font:700 12px 'DM Sans';color:#9C333E;background:#F6E2E4;"><span style="width:7px;height:7px;border-radius:50%;background:#9C333E;"></span>Error</span>
+        <span style="display:inline-flex;align-items:center;gap:7px;border-radius:999px;padding:7px 14px;font:700 12px 'DM Sans';color:#5E4380;background:#F0E8F5;"><span style="width:7px;height:7px;border-radius:50%;background:#C9B4D9;"></span>Draft</span>
+      </div>
+
+      <div style="font:700 12px 'DM Sans';letter-spacing:1px;color:#8C8C8E;text-transform:uppercase;margin-bottom:12px;">Inputs</div>
+      <div style="display:flex;flex-wrap:wrap;gap:12px;align-items:center;margin-bottom:8px;">
+        <div style="display:flex;align-items:center;gap:8px;background:#F0ECF6;border-radius:30px;padding:11px 16px;min-width:240px;">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#38294F" stroke-width="2.4" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>
+          <span style="font:400 13px 'DM Sans';color:#9A95A6;">Search…</span>
+        </div>
+        <div style="display:inline-flex;align-items:center;gap:6px;background:#F0ECF6;border-radius:8px;padding:9px 13px;font:500 13px 'DM Sans';color:#8C8C8E;">This month
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg></div>
+        <span style="display:inline-flex;align-items:center;justify-content:center;width:20px;height:20px;border-radius:6px;background:#2E6CB2;color:#fff;"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg></span>
+        <span style="display:inline-flex;width:20px;height:20px;border-radius:6px;border:2px solid #8C8C8E;"></span>
+      </div>
+    </section>
+
+    <!-- PATTERNS -->
+    <section style="background:#fff;border-radius:24px;box-shadow:0 18px 40px 0 rgba(56,41,79,.08);padding:34px;">
+      <div style="font:700 12px 'DM Sans';letter-spacing:1.5px;color:#2E6CB2;text-transform:uppercase;margin-bottom:4px;">04 — Components</div>
+      <div style="font:700 24px 'DM Sans';letter-spacing:-.4px;margin-bottom:24px;">Cards, Data &amp; Charts</div>
+
+      <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:20px;align-items:start;">
+
+        <!-- KPI stat card -->
+        <div>
+          <div style="font:700 12px 'DM Sans';letter-spacing:1px;color:#8C8C8E;text-transform:uppercase;margin-bottom:12px;">Stat card</div>
+          <div style="background:#F3F1F8;border-radius:20px;padding:18px;display:flex;align-items:center;gap:14px;">
+            <div style="width:56px;height:56px;border-radius:50%;background:#fff;flex-shrink:0;display:flex;align-items:center;justify-content:center;color:#2E6CB2;"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 1v22M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg></div>
+            <div><div style="font:500 13px 'DM Sans';color:#8C8C8E;">Earnings</div><div style="font:700 22px 'DM Sans';">$350.4</div></div>
+          </div>
+        </div>
+
+        <!-- progress -->
+        <div>
+          <div style="font:700 12px 'DM Sans';letter-spacing:1px;color:#8C8C8E;text-transform:uppercase;margin-bottom:12px;">Progress</div>
+          <div style="display:flex;flex-direction:column;gap:14px;padding-top:6px;">
+            <div style="height:8px;border-radius:8px;background:#ECE7F3;overflow:hidden;"><div style="height:100%;width:75%;border-radius:8px;background:#2E6CB2;"></div></div>
+            <div style="height:8px;border-radius:8px;background:#ECE7F3;overflow:hidden;"><div style="height:100%;width:52%;border-radius:8px;background:#0E6E74;"></div></div>
+            <div style="height:8px;border-radius:8px;background:#ECE7F3;overflow:hidden;"><div style="height:100%;width:33%;border-radius:8px;background:#DFA200;"></div></div>
+          </div>
+        </div>
+
+        <!-- donut -->
+        <div>
+          <div style="font:700 12px 'DM Sans';letter-spacing:1px;color:#8C8C8E;text-transform:uppercase;margin-bottom:12px;">Chart palette</div>
+          <div style="display:flex;align-items:center;gap:16px;">
+            <div style="position:relative;width:84px;height:84px;border-radius:50%;background:conic-gradient(#2E6CB2 0 58%,#C9B4D9 58% 82%,#0E6E74 82% 100%);flex-shrink:0;">
+              <div style="position:absolute;inset:20px;border-radius:50%;background:#fff;"></div>
+            </div>
+            <div style="display:flex;flex-direction:column;gap:7px;">
+              <span style="display:flex;align-items:center;gap:7px;font:500 12px 'DM Sans';color:#8C8C8E;"><span style="width:9px;height:9px;border-radius:3px;background:#2E6CB2;"></span>Super Sonic</span>
+              <span style="display:flex;align-items:center;gap:7px;font:500 12px 'DM Sans';color:#8C8C8E;"><span style="width:9px;height:9px;border-radius:3px;background:#C9B4D9;"></span>Orchid Bloom</span>
+              <span style="display:flex;align-items:center;gap:7px;font:500 12px 'DM Sans';color:#8C8C8E;"><span style="width:9px;height:9px;border-radius:3px;background:#0E6E74;"></span>Deep Lake</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- nav + promo + table -->
+      <div style="display:grid;grid-template-columns:260px 1fr;gap:24px;margin-top:30px;align-items:start;">
+
+        <!-- nav items + promo -->
+        <div style="display:flex;flex-direction:column;gap:22px;">
+          <div>
+            <div style="font:700 12px 'DM Sans';letter-spacing:1px;color:#8C8C8E;text-transform:uppercase;margin-bottom:12px;">Nav item</div>
+            <div style="position:relative;display:flex;align-items:center;gap:14px;padding:11px 12px;">
+              <span style="color:#2E6CB2;display:flex;"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 10.5 12 3l9 7.5"/><path d="M5 9.5V20a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V9.5"/></svg></span>
+              <span style="font:700 16px 'DM Sans';">Dashboard</span>
+              <span style="position:absolute;right:0;top:0;bottom:0;width:4px;border-radius:6px;background:#2E6CB2;"></span>
+            </div>
+            <div style="display:flex;align-items:center;gap:14px;padding:11px 12px;">
+              <span style="color:#8C8C8E;display:flex;"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="8" r="4"/><path d="M4 21a8 8 0 0 1 16 0"/></svg></span>
+              <span style="font:500 16px 'DM Sans';color:#8C8C8E;">Profile</span>
+            </div>
+          </div>
+          <div>
+            <div style="font:700 12px 'DM Sans';letter-spacing:1px;color:#8C8C8E;text-transform:uppercase;margin-bottom:12px;">Promo card</div>
+            <div style="position:relative;border-radius:18px;padding:40px 20px 20px;background:linear-gradient(135deg,#2E6CB2 0%,#38294F 100%);overflow:hidden;">
+              <div style="position:absolute;top:-22px;left:50%;transform:translateX(-50%);width:54px;height:54px;border-radius:50%;background:rgba(255,255,255,.16);display:flex;align-items:center;justify-content:center;">
+                <div style="width:36px;height:36px;border-radius:50%;background:#fff;display:flex;align-items:center;justify-content:center;color:#2E6CB2;"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3 4 9v12h16V9z"/><path d="M9 21v-7h6v7"/></svg></div>
+              </div>
+              <div style="font:700 15px 'DM Sans';color:#fff;text-align:center;">Upgrade to PRO</div>
+              <div style="font:400 12px 'DM Sans';color:rgba(255,255,255,.8);text-align:center;margin-top:5px;line-height:1.5;">Unlock every component.</div>
+            </div>
+          </div>
+        </div>
+
+        <!-- table -->
+        <div>
+          <div style="font:700 12px 'DM Sans';letter-spacing:1px;color:#8C8C8E;text-transform:uppercase;margin-bottom:12px;">Data table</div>
+          <div style="border:1px solid #ECE7F3;border-radius:18px;padding:6px 20px 14px;">
+            <div style="display:grid;grid-template-columns:1.6fr 1fr 1fr;font:700 12px 'DM Sans';color:#8C8C8E;padding:14px 0 10px;border-bottom:1px solid #ECE7F3;letter-spacing:.5px;">
+              <span>NAME</span><span>STATUS</span><span>PROGRESS</span>
+            </div>
+            <div style="display:grid;grid-template-columns:1.6fr 1fr 1fr;align-items:center;padding:14px 0;border-bottom:1px solid #F3F1F8;">
+              <div style="display:flex;align-items:center;gap:10px;"><span style="width:20px;height:20px;border-radius:6px;background:#2E6CB2;display:flex;align-items:center;justify-content:center;color:#fff;"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg></span><span style="font:700 14px 'DM Sans';">Horizon PRO</span></div>
+              <div style="display:flex;align-items:center;gap:7px;"><span style="width:18px;height:18px;border-radius:50%;background:#0E6E74;display:flex;align-items:center;justify-content:center;color:#fff;font:700 10px 'DM Sans';">✓</span><span style="font:700 13px 'DM Sans';">Approved</span></div>
+              <div style="height:8px;max-width:90px;border-radius:8px;background:#ECE7F3;overflow:hidden;"><div style="height:100%;width:75%;background:#2E6CB2;border-radius:8px;"></div></div>
+            </div>
+            <div style="display:grid;grid-template-columns:1.6fr 1fr 1fr;align-items:center;padding:14px 0;">
+              <div style="display:flex;align-items:center;gap:10px;"><span style="width:20px;height:20px;border-radius:6px;background:#8C8C8E;display:flex;align-items:center;justify-content:center;color:#fff;"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg></span><span style="font:700 14px 'DM Sans';">Marketplace</span></div>
+              <div style="display:flex;align-items:center;gap:7px;"><span style="width:18px;height:18px;border-radius:50%;background:#DFA200;display:flex;align-items:center;justify-content:center;color:#fff;font:700 10px 'DM Sans';">!</span><span style="font:700 13px 'DM Sans';">Pending</span></div>
+              <div style="height:8px;max-width:90px;border-radius:8px;background:#ECE7F3;overflow:hidden;"><div style="height:100%;width:42%;background:#0E6E74;border-radius:8px;"></div></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+  </div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{&quot;$preview&quot;:{&quot;width&quot;:1200,&quot;height&quot;:1500}}"></script>
+</body>
+</html>
