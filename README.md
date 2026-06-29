@@ -27,7 +27,7 @@ After: A well-defined software development lifecycle with explicit gates that ca
 * Review
   * [HUMAN GATE] Review the work before closing the task 
 
-# The Non-Negotiable Checkpoints
+## The Non-Negotiable Checkpoints
 
 * Deterministic Guardrails: A set of tasks to run that must pass in order to proceed
   * Unit tests
@@ -41,6 +41,27 @@ After: A well-defined software development lifecycle with explicit gates that ca
   * Code Encapsulation
   * Code cleanliness
  
-# Customizatable Checkpoints
+## Customizatable Checkpoints
 
 Ability to add additional human steps where necessary
+
+# The Bot Farm Model
+
+[Protoype]
+
+* Work is modeled as GitHub issues (source of truth)
+* Work lifecycle is modeled in a database (sqlite for now?)
+* Users interact mostly by GH comments
+* WhatsApp MCP server allows user to talk to the orchestrator bot directly
+* Bot updates are written to a local database
+* For now, bots run local to the UI presentation layer (web)
+
+Example flow:
+
+1. User creates a new GH issue (e.g. create a hello world)
+2. A server-side process (within the UI project) queries GH periodically to look for new updates
+3. Issues are reflected in teh database and show the current state
+4. A server-side process controls when development lifecycle steps can process
+5. The server-side process kicks of work to agents (via tmux)
+6. After human gates are completed the agent is killed and restarted (i.e. keep context relevant to the current task)
+7. Useful knowledge per agent is modeled as skills/context/etc that is loaded upon startup
