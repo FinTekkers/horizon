@@ -65,3 +65,12 @@ Example flow:
 5. The server-side process kicks of work to agents (via tmux)
 6. After human gates are completed the agent is killed and restarted (i.e. keep context relevant to the current task)
 7. Useful knowledge per agent is modeled as skills/context/etc that is loaded upon startup
+
+## Workflow
+
+We can't guarantee that progress is ever-forward so we need the following abilities at each step:
+
+* Feedback: at any point feedback should be possible to give to agent. The backend will forward it to the agent
+* Pause/Stop: Ability to pause agents' work on an item
+* Reject: Ability to reject an agent step, or human gate with feedback.
+* Startover: Ability to re-start a phase of a task (e.g. restart Plan phase, with feedback)
