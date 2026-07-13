@@ -1,0 +1,15 @@
+name: Horizon Deploy
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Simulate deploy
+        run: |
+          echo "Horizon dummy deploy pipeline"
+          echo "Release: ${GITHUB_REF_NAME}"
+          echo "Replace this job with the real deployment."
