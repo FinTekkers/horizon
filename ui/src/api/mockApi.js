@@ -147,10 +147,14 @@ function runAgents(id) {
 
 // ---- actions ----
 
-export function approveGate(id) {
+export function approveGate(id, notes) {
   const it = items.find((x) => x.id === id)
   if (!it || isClosed(it) || STEPS[it.cursor].kind !== 'gate') return
+  const label = STEPS[it.cursor].label.toLowerCase()
   update(id, (x) => ({ ...x, cursor: x.cursor + 1, rejected: false }))
+  if (notes) {
+    pushEvent(id, { who: 'You', text: `approved: ${label} — ${notes}`, color: '#5E4380', initials: '✓' })
+  }
   runAgents(id)
 }
 

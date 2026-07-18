@@ -64,5 +64,7 @@ This is a **front-end simulation only**: after a gate approval it advances throu
 - `POST /items/:id/reject` `{ stepIndex, feedback }`
 - `POST /items/:id/pause` `{ paused }`
 - `POST /items/:id/phases/:phase/restart` `{ reason }`
-- `POST /items/:id/feedback` `{ target, message }` → forwarded to agent
+- ~~`POST /items/:id/feedback`~~ — **dropped by product decision (2026-07-18)**:
+  standalone feedback had no delivery moment; feedback reaches agents only via
+  gate approve-with-comments or send-back/rework, which re-runs the step.
 - Stream/poll item updates so `runAgents` can be dropped.

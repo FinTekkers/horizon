@@ -49,7 +49,8 @@ export default function App() {
   const submitComposer = (text) => {
     const { mode, itemId, phase, target } = composer
     if (itemId) {
-      if (mode === 'reject') api.requestChanges(itemId, target, text)
+      if (mode === 'approve') api.approveGate(itemId, text)
+      else if (mode === 'reject') api.requestChanges(itemId, target, text)
       else if (mode === 'restart') api.restartPhase(itemId, phase, text)
     }
     setComposer(CLOSED_COMPOSER)
@@ -98,6 +99,7 @@ export default function App() {
           item={selected}
           onBack={toBoard}
           onApprove={api.approveGate}
+          onApproveWithComments={(id, target) => openComposer('approve', id, { target })}
           onReject={(id, target) => openComposer('reject', id, { target })}
           onTogglePause={api.togglePause}
           onRestartPhase={(id, phase) => openComposer('restart', id, { phase })}

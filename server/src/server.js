@@ -137,10 +137,15 @@ fastify.post(
         required: ['id', 'stepIndex'],
         properties: { id: { type: 'string' }, stepIndex: { type: 'integer', minimum: 0 } },
       },
+      body: {
+        type: 'object',
+        properties: { notes: { type: 'string', maxLength: 2000 } },
+      },
     },
   },
   async (request, reply) => {
     const { id, stepIndex } = request.params
+    const notes = (request.body?.notes || '').trim()
     // Accepting the code means merging its PR — the gate does not advance if
     // the merge fails, and the reason is logged to the item's activity.
     const item = store.getItem(id)
@@ -198,7 +203,14 @@ fastify.post(
         return reply.code(502).send({ error: `issue close failed: ${err.message}` })
       }
     }
-    return send(reply, store.approveGate(id, stepIndex))
+    const result = store.approveGate(id, stepIndex, notes)
+    // Approval notes are decisions — mirror them onto the issue thread.
+    if (!result.error && notes && item?.repo && item.issue != null) {
+      github
+        .postIssueComment(item, `### ✅ Gate approved — ${STEPS[stepIndex].label}\n\n> ${notes}\n\n_Human reviewer · posted by Horizon_`)
+        .catch(() => {})
+    }
+    return send(reply, result)
   },
 )
 

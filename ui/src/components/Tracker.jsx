@@ -27,7 +27,7 @@ const STEP_META = {
 
 const STEP_META_COLOR = { awaiting: '#9A6E00', blocked: '#9C333E', active: '#2E6CB2' }
 
-function Step({ item, index, onApprove, onReject }) {
+function Step({ item, index, onApprove, onApproveWithComments, onReject }) {
   const st = STEPS[index]
   const status = stepStatus(item, index)
   const isGate = st.kind === 'gate'
@@ -74,6 +74,9 @@ function Step({ item, index, onApprove, onReject }) {
               )}
               <button className="btn-gate-approve" onClick={() => onApprove(item.id)}>
                 Approve
+              </button>
+              <button className="btn-gate-feedback" onClick={() => onApproveWithComments(item.id, st.label)}>
+                Approve with comments
               </button>
               <button className="btn-gate-reject" onClick={() => onReject(item.id, st.label)}>
                 Send back with feedback
@@ -137,7 +140,7 @@ function buildActivity(item) {
     })
 }
 
-export default function Tracker({ item, onBack, onApprove, onReject, onTogglePause, onRestartPhase }) {
+export default function Tracker({ item, onBack, onApprove, onApproveWithComments, onReject, onTogglePause, onRestartPhase }) {
   const status = itemStatus(item, true)
   const activity = buildActivity(item)
 
@@ -228,7 +231,14 @@ export default function Tracker({ item, onBack, onApprove, onReject, onTogglePau
                   )}
                 </div>
                 {idxs.map((i) => (
-                  <Step key={i} item={item} index={i} onApprove={onApprove} onReject={onReject} />
+                  <Step
+                    key={i}
+                    item={item}
+                    index={i}
+                    onApprove={onApprove}
+                    onApproveWithComments={onApproveWithComments}
+                    onReject={onReject}
+                  />
                 ))}
               </div>
             )

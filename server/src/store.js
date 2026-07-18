@@ -156,16 +156,36 @@ export function addEvent(id, { who, text, color, initials }) {
   db.prepare('INSERT INTO event (item_id, who, text, color, initials) VALUES (?, ?, ?, ?, ?)').run(id, who, text, color, initials)
 }
 
-export function approveGate(id, stepIndex) {
+export function approveGate(id, stepIndex, notes) {
   const it = getItem(id)
   if (!it) return { error: 'not_found' }
   if (inactiveProject(it)) return { error: 'project_not_active' }
   if (isClosed(it) || STEPS[it.cursor].kind !== 'gate') return { error: 'not_at_gate' }
   if (stepIndex !== it.cursor) return { error: 'stale_step' }
 
+  const trimmed = (notes || '').trim()
   db.prepare(`UPDATE work_item SET cursor = cursor + 1, rejected = 0, ${touch} WHERE id = ?`).run(id)
-  db.prepare('INSERT INTO gate_decision (item_id, step_index, decision) VALUES (?, ?, ?)').run(id, stepIndex, 'approved')
-  addEvent(id, { who: 'You', text: `approved: ${STEPS[stepIndex].label.toLowerCase()}`, color: '#5E4380', initials: '✓' })
+  db.prepare('INSERT INTO gate_decision (item_id, step_index, decision, notes) VALUES (?, ?, ?, ?)').run(
+    id,
+    stepIndex,
+    'approved',
+    trimmed,
+  )
+  if (trimmed) {
+    // Approval notes are direction for whoever runs next — queue as feedback
+    // so the next dispatched agent step receives and must address them.
+    db.prepare('INSERT INTO feedback (item_id, target, message) VALUES (?, ?, ?)').run(
+      id,
+      STEPS[stepIndex + 1]?.agent || '',
+      trimmed,
+    )
+  }
+  addEvent(id, {
+    who: 'You',
+    text: `approved: ${STEPS[stepIndex].label.toLowerCase()}${trimmed ? ' — ' + trimmed : ''}`,
+    color: '#5E4380',
+    initials: '✓',
+  })
   notify()
   agentRunner.kick(id)
   return { ok: true }
@@ -233,6 +253,14 @@ export function restartPhase(id, phase, reason) {
   if (firstIdx < 0) return { error: 'bad_phase' }
 
   agentRunner.cancel(id, 'superseded')
+  if (reason) {
+    // The restart reason is feedback: the first re-run agent must address it.
+    db.prepare('INSERT INTO feedback (item_id, target, message) VALUES (?, ?, ?)').run(
+      id,
+      STEPS[firstIdx].agent || '',
+      reason,
+    )
+  }
   db.prepare(`UPDATE work_item SET cursor = ?, rejected = 0, paused = 0, ${touch} WHERE id = ?`).run(firstIdx, id)
   addEvent(id, {
     who: 'You',

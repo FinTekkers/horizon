@@ -42,9 +42,9 @@ Endpoints:
 - `POST /steps/run {run_id, item, step, feedback[], artifacts[]}` — execute one
   step; async; results delivered via callback to the Node server.
 - `POST /steps/cancel {run_id}` — kill the ephemeral session for a run.
-- `POST /feedback {item_id, message}` — inject human feedback into the PM
-  session immediately (mid-step feedback for ephemeral agents rides in on the
-  next step's input instead).
+- ~~`POST /feedback`~~ — **dropped by product decision (2026-07-18)**: feedback
+  reaches agents only through gate approve-with-comments or send-back/rework
+  (notes ride the re-dispatched step's input). No standalone feedback channel.
 
 Tmux layout (observable by attaching at any time):
 - `farm-daemon` — farmd itself

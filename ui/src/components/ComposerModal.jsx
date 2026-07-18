@@ -2,6 +2,12 @@ import { useRef } from 'react'
 import { PHASES } from '../domain/lifecycle'
 
 const COPY = {
+  approve: {
+    title: 'Approve with comments',
+    submitLabel: 'Approve',
+    submitColor: '#0E6E74',
+    placeholder: 'Decision notes — e.g. which option to adopt, or conditions for the next step…',
+  },
   reject: {
     title: 'Send back with feedback',
     submitLabel: 'Send back',
@@ -17,6 +23,9 @@ const COPY = {
 }
 
 function subtitle(composer) {
+  if (composer.mode === 'approve') {
+    return 'Approves the gate; your notes are delivered to the next agent and recorded on the issue'
+  }
   if (composer.mode === 'reject') {
     return `The responsible agent re-runs the step and must address your notes${composer.target ? ' · ' + composer.target : ''}`
   }

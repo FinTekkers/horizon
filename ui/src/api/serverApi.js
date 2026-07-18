@@ -157,7 +157,7 @@ function post(path, body) {
   }).catch((err) => console.error(`POST ${path} failed`, err))
 }
 
-export async function approveGate(id) {
+export async function approveGate(id, notes) {
   const item = items.find((it) => it.id === id)
   if (!item) return
   // Approving "Accept the code" merges the PR server-side. If GitHub refuses
@@ -166,7 +166,7 @@ export async function approveGate(id) {
   const res = await fetch(`/api/items/${id}/gates/${item.cursor}/approve`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: '{}',
+    body: JSON.stringify(notes ? { notes } : {}),
   }).catch(() => null)
   if (res && !res.ok && item.pr_url) {
     window.open(item.pr_url, '_blank', 'noopener')
