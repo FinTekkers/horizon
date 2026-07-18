@@ -1,0 +1,36 @@
+#!/usr/bin/env python3
+"""Stand-in for the claude CLI in farm tests: instant, deterministic, free.
+
+Mimics `claude -p <prompt> --output-format json [...]`, emitting the same
+JSON envelope. The "agent" fills empty fields it can see in the prompt.
+"""
+import json
+import sys
+
+args = sys.argv[1:]
+prompt = args[args.index("-p") + 1] if "-p" in args else ""
+
+patch = {}
+if "guardrails: (empty)" in prompt and "Set guardrails" in prompt:
+    patch["guardrails"] = "[fake] defaults apply; no destructive data changes"
+if "success metric: (empty)" in prompt and "measure success" in prompt:
+    patch["metric"] = "[fake] drafted measurable target"
+
+step = "step"
+for line in prompt.splitlines():
+    if line.startswith("Step to perform now:"):
+        step = line.split('"')[1] if '"' in line else "step"
+
+inner = {"summary": f"[fake-claude] completed {step.lower()}", **({"patch": patch} if patch else {})}
+
+# Ephemeral planner roles ask for an artifact; implement role edits files.
+sys_prompt = ""
+if "--append-system-prompt" in args:
+    sys_prompt = args[args.index("--append-system-prompt") + 1]
+if "artifact_md" in sys_prompt:
+    inner["artifact_md"] = f"# Fake artifact — {step}\n\n- point one\n- point two\n\n_Produced by fake_claude for testing._"
+if "implementing an approved work item" in sys_prompt:
+    import pathlib
+    pathlib.Path("fake_implementation.txt").write_text(f"fake implementation for: {step}\n")
+
+print(json.dumps({"type": "result", "result": json.dumps(inner), "session_id": "fake-session-001"}))

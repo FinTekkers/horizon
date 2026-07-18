@@ -1,0 +1,661 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script>
+(function(){try{var t=new URLSearchParams(location.search).get("t");var s=document.createElement("script");s.src="./support.js"+(t?("?t="+encodeURIComponent(t)):"");document.head.appendChild(s);}catch(e){var f=document.createElement("script");f.src="./support.js";document.head.appendChild(f);}})();
+</script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=DM+Sans:opsz,wght@9..40,400;9..40,500;9..40,700;9..40,800&family=DM+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+*{box-sizing:border-box;}
+body{margin:0;-webkit-font-smoothing:antialiased;}
+::-webkit-scrollbar{height:10px;width:10px;}
+::-webkit-scrollbar-thumb{background:#D8D2E4;border-radius:8px;}
+@keyframes auraPulse{0%,100%{box-shadow:0 0 0 0 rgba(46,108,178,.45);}50%{box-shadow:0 0 0 6px rgba(46,108,178,0);}}
+@keyframes auraIn{from{transform:translateX(100%);}to{transform:translateX(0);}}
+@keyframes auraFade{from{opacity:0;}to{opacity:1;}}
+</style>
+</helmet>
+
+<div style="min-height:100vh;background:#F3F1F8;font-family:'DM Sans',sans-serif;color:#38294F;">
+
+  <!-- ===== TOP BAR ===== -->
+  <div style="position:sticky;top:0;z-index:20;background:rgba(243,241,248,.85);backdrop-filter:blur(10px);border-bottom:1px solid #E7E2F0;padding:14px 28px;display:flex;align-items:center;gap:22px;">
+    <div style="display:flex;align-items:center;gap:12px;">
+      <div style="width:38px;height:38px;border-radius:11px;background:linear-gradient(135deg,#2E6CB2,#38294F);display:flex;align-items:center;justify-content:center;">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg>
+      </div>
+      <div>
+        <div style="font:800 17px 'DM Sans';letter-spacing:-.3px;line-height:1;">BOT FARM</div>
+        <div style="font:500 11px 'DM Sans';color:#8C8C8E;margin-top:2px;">Delivery Lifecycle</div>
+      </div>
+    </div>
+
+    <div style="display:flex;background:#EAE6F1;border-radius:12px;padding:4px;gap:2px;">
+      <button onClick="{{ toBoard }}" style="{{ boardTabStyle }}">Board</button>
+      <button onClick="{{ toTracker }}" style="{{ trackerTabStyle }}">Tracker</button>
+    </div>
+
+    <div style="flex:1;"></div>
+
+    <button onClick="{{ openApprovals }}" style="{{ pendingBtnStyle }}">
+      <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="11" width="16" height="10" rx="2.5"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg>
+      Pending approvals
+      <span style="{{ pendingBadgeStyle }}">{{ pendingCount }}</span>
+    </button>
+    <div style="width:38px;height:38px;border-radius:50%;background:linear-gradient(135deg,#2E6CB2,#38294F);display:flex;align-items:center;justify-content:center;font:700 13px 'DM Sans';color:#fff;">AP</div>
+  </div>
+
+  <!-- ===== BOARD VIEW ===== -->
+  <sc-if value="{{ isBoard }}" hint-placeholder-val="{{ true }}">
+  <div style="padding:24px 28px 40px;">
+    <div style="display:flex;align-items:baseline;gap:12px;margin-bottom:18px;">
+      <div style="font:700 22px 'DM Sans';letter-spacing:-.4px;">Work in flight</div>
+      <div style="font:500 13px 'DM Sans';color:#8C8C8E;">{{ itemCount }} items across the lifecycle</div>
+    </div>
+    <div style="display:flex;gap:16px;align-items:flex-start;overflow-x:auto;padding-bottom:8px;">
+      <sc-for list="{{ columns }}" as="col" hint-placeholder-count="5">
+        <div style="flex:1;min-width:266px;">
+          <div style="display:flex;align-items:center;gap:9px;padding:2px 4px 12px;">
+            <span style="width:24px;height:24px;border-radius:7px;background:{{ col.accentBg }};color:{{ col.accent }};display:flex;align-items:center;justify-content:center;font:700 12px 'DM Mono';">{{ col.num }}</span>
+            <span style="font:700 14px 'DM Sans';">{{ col.name }}</span>
+            <span style="font:700 12px 'DM Sans';color:#8C8C8E;background:#EAE6F1;border-radius:20px;padding:2px 8px;">{{ col.count }}</span>
+          </div>
+          <div style="display:flex;flex-direction:column;gap:14px;">
+            <sc-for list="{{ col.items }}" as="it" hint-placeholder-count="2">
+              <div onClick="{{ it.open }}" style="background:#fff;border-radius:16px;border:{{ it.cardBorder }};box-shadow:0 10px 26px 0 rgba(56,41,79,.08);padding:15px 16px;cursor:pointer;transition:transform .12s,box-shadow .12s;" style-hover="transform:translateY(-2px);box-shadow:0 16px 32px 0 rgba(56,41,79,.13);">
+                <div style="display:flex;align-items:center;gap:8px;margin-bottom:9px;">
+                  <span style="width:8px;height:8px;border-radius:50%;background:{{ it.priorityColor }};"></span>
+                  <span style="font:500 12px 'DM Mono';color:#8C8C8E;">{{ it.id }}</span>
+                  <a href="{{ it.issueUrl }}" target="_blank" rel="noopener" onClick="{{ it.issueStop }}" style="display:inline-flex;align-items:center;gap:4px;font:500 11px 'DM Mono';color:#8C8C8E;text-decoration:none;" style-hover="color:#2E6CB2;"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.5.5l3-3a5 5 0 0 0-7-7l-1.7 1.7"/><path d="M14 11a5 5 0 0 0-7.5-.5l-3 3a5 5 0 0 0 7 7l1.7-1.7"/></svg>{{ it.issueLabel }}</a>
+                  <span style="flex:1;"></span>
+                  <span style="font:500 11px 'DM Sans';color:#8C8C8E;">{{ it.priorityLabel }}</span>
+                </div>
+                <div style="font:700 15px 'DM Sans';color:#38294F;line-height:1.3;margin-bottom:13px;">{{ it.title }}</div>
+                <div style="display:flex;gap:3px;margin-bottom:8px;">
+                  <sc-for list="{{ it.segs }}" as="seg" hint-placeholder-count="5">
+                    <div style="flex:1;height:5px;border-radius:3px;background:{{ seg }};"></div>
+                  </sc-for>
+                </div>
+                <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:2px;">
+                  <span style="font:500 12px 'DM Sans';color:#8C8C8E;">{{ it.phaseName }}</span>
+                  <span style="display:inline-flex;align-items:center;gap:6px;font:700 11px 'DM Sans';color:{{ it.statusColor }};background:{{ it.statusBg }};border-radius:20px;padding:4px 10px;"><span style="width:6px;height:6px;border-radius:50%;background:{{ it.statusColor }};"></span>{{ it.statusLabel }}</span>
+                </div>
+                <sc-if value="{{ it.awaiting }}" hint-placeholder-val="{{ false }}">
+                  <div style="margin-top:12px;padding-top:12px;border-top:1px dashed #ECE2D2;">
+                    <div style="display:flex;align-items:center;gap:7px;font:500 12px 'DM Sans';color:#9A6E00;margin-bottom:10px;">
+                      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="11" width="16" height="10" rx="2.5"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg>
+                      {{ it.gateLabel }}
+                    </div>
+                    <div style="display:flex;gap:8px;">
+                      <button onClick="{{ it.approve }}" style="flex:1;border:none;cursor:pointer;border-radius:9px;padding:9px;font:700 12px 'DM Sans';color:#fff;background:#0E6E74;">Approve</button>
+                      <button onClick="{{ it.reject }}" style="flex:1;cursor:pointer;border-radius:9px;padding:9px;font:700 12px 'DM Sans';color:#9C333E;background:#fff;border:1.5px solid #E6C9CD;">Reject</button>
+                    </div>
+                  </div>
+                </sc-if>
+                <sc-if value="{{ it.isActiveAgent }}" hint-placeholder-val="{{ false }}">
+                  <button onClick="{{ it.pauseToggle }}" style="margin-top:11px;width:100%;cursor:pointer;border:1px solid #E4DEEE;background:#fff;color:#6E6A7E;border-radius:9px;padding:8px;font:700 12px 'DM Sans';" style-hover="border-color:#C9C2D8;color:#38294F;">{{ it.pauseLabel }}</button>
+                </sc-if>
+                <sc-if value="{{ it.isPaused }}" hint-placeholder-val="{{ false }}">
+                  <button onClick="{{ it.pauseToggle }}" style="margin-top:11px;width:100%;cursor:pointer;border:none;background:#2E6CB2;color:#fff;border-radius:9px;padding:8px;font:700 12px 'DM Sans';">Resume work</button>
+                </sc-if>
+              </div>
+            </sc-for>
+          </div>
+        </div>
+      </sc-for>
+    </div>
+  </div>
+  </sc-if>
+
+  <!-- ===== TRACKER VIEW ===== -->
+  <sc-if value="{{ isTracker }}" hint-placeholder-val="{{ false }}">
+  <div style="padding:22px 28px 48px;max-width:1180px;">
+    <button onClick="{{ toBoard }}" style="display:inline-flex;align-items:center;gap:7px;border:none;background:none;cursor:pointer;font:600 13px 'DM Sans';color:#8C8C8E;padding:0;margin-bottom:16px;" style-hover="color:#38294F;">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="m15 18-6-6 6-6"/></svg>Back to board
+    </button>
+
+    <!-- item header -->
+    <div style="background:#fff;border-radius:22px;box-shadow:0 18px 40px 0 rgba(56,41,79,.08);padding:28px 30px;margin-bottom:22px;">
+      <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:24px;flex-wrap:wrap;">
+        <div style="flex:1;min-width:280px;">
+          <div style="display:flex;align-items:center;gap:10px;margin-bottom:8px;">
+            <span style="font:500 13px 'DM Mono';color:#8C8C8E;">{{ tk.id }}</span>
+            <span style="display:inline-flex;align-items:center;gap:6px;font:700 11px 'DM Sans';color:{{ tk.priorityColor }};"><span style="width:7px;height:7px;border-radius:50%;background:{{ tk.priorityColor }};"></span>{{ tk.priorityLabel }} priority</span>
+            <a href="{{ tk.issueUrl }}" target="_blank" rel="noopener" style="display:inline-flex;align-items:center;gap:5px;font:600 12px 'DM Sans';color:#2E6CB2;text-decoration:none;background:#EAF1F9;border-radius:7px;padding:4px 10px;" style-hover="background:#DDEAF7;"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.5.5l3-3a5 5 0 0 0-7-7l-1.7 1.7"/><path d="M14 11a5 5 0 0 0-7.5-.5l-3 3a5 5 0 0 0 7 7l1.7-1.7"/></svg>Issue {{ tk.issueLabel }}</a>
+          </div>
+          <div style="font:800 27px 'DM Sans';letter-spacing:-.6px;line-height:1.15;margin-bottom:10px;">{{ tk.title }}</div>
+          <div style="font:400 14px 'DM Sans';color:#5A5568;line-height:1.55;max-width:620px;">{{ tk.desc }}</div>
+        </div>
+        <div style="display:inline-flex;align-items:center;gap:8px;font:700 13px 'DM Sans';color:{{ tk.statusColor }};background:{{ tk.statusBg }};border-radius:24px;padding:9px 16px;"><span style="width:8px;height:8px;border-radius:50%;background:{{ tk.statusColor }};"></span>{{ tk.statusLabel }}</div>
+      </div>
+      <div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:18px;">
+        <button onClick="{{ tk.pauseToggle }}" style="cursor:pointer;border:1.5px solid #E4DEEE;background:#fff;color:#38294F;border-radius:10px;padding:9px 16px;font:700 13px 'DM Sans';" style-hover="border-color:#C9C2D8;">{{ tk.pauseLabel }}</button>
+        <button onClick="{{ tk.feedback }}" style="display:inline-flex;align-items:center;gap:7px;cursor:pointer;border:1.5px solid #E4DEEE;background:#fff;color:#38294F;border-radius:10px;padding:9px 16px;font:700 13px 'DM Sans';" style-hover="border-color:#C9C2D8;"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>Leave feedback</button>
+      </div>
+      <div style="display:flex;gap:14px;flex-wrap:wrap;margin-top:14px;">
+        <div style="flex:1;min-width:200px;background:#F3F1F8;border-radius:14px;padding:14px 16px;">
+          <div style="font:700 11px 'DM Sans';letter-spacing:1px;text-transform:uppercase;color:#8C8C8E;margin-bottom:6px;">Success metric</div>
+          <div style="font:500 13px 'DM Sans';color:#38294F;line-height:1.45;">{{ tk.metric }}</div>
+        </div>
+        <div style="flex:1;min-width:200px;background:#F3F1F8;border-radius:14px;padding:14px 16px;">
+          <div style="font:700 11px 'DM Sans';letter-spacing:1px;text-transform:uppercase;color:#8C8C8E;margin-bottom:6px;">Guardrails</div>
+          <div style="font:500 13px 'DM Sans';color:#38294F;line-height:1.45;">{{ tk.guardrails }}</div>
+        </div>
+      </div>
+    </div>
+
+    <div style="display:flex;gap:22px;align-items:flex-start;flex-wrap:wrap;">
+      <!-- lifecycle stepper -->
+      <div style="flex:1.7;min-width:380px;background:#fff;border-radius:22px;box-shadow:0 18px 40px 0 rgba(56,41,79,.08);padding:26px 30px;">
+        <div style="font:700 18px 'DM Sans';letter-spacing:-.3px;margin-bottom:6px;">Lifecycle</div>
+        <div style="font:500 13px 'DM Sans';color:#8C8C8E;margin-bottom:20px;">Five phases · agent-driven steps with human gates</div>
+        <sc-for list="{{ tk.phases }}" as="ph" hint-placeholder-count="5">
+          <div style="margin-bottom:18px;">
+            <div style="display:flex;align-items:center;gap:9px;margin-bottom:6px;">
+              <span style="width:22px;height:22px;border-radius:7px;background:{{ ph.accentBg }};color:{{ ph.accent }};display:flex;align-items:center;justify-content:center;font:700 11px 'DM Mono';">{{ ph.num }}</span>
+              <span style="font:700 13px 'DM Sans';letter-spacing:.3px;text-transform:uppercase;color:#38294F;">{{ ph.name }}</span>
+              <span style="font:600 11px 'DM Sans';color:{{ ph.statusColor }};">{{ ph.statusLabel }}</span>
+              <span style="flex:1;"></span>
+              <sc-if value="{{ ph.restartable }}" hint-placeholder-val="{{ false }}">
+                <button onClick="{{ ph.restart }}" style="cursor:pointer;border:none;background:none;color:#8C8C8E;font:600 12px 'DM Sans';display:inline-flex;align-items:center;gap:5px;padding:4px 8px;border-radius:7px;" style-hover="color:#9A6E00;background:#FAF0D6;"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 2.6-6.4L3 8"/><path d="M3 3v5h5"/></svg>Restart phase</button>
+              </sc-if>
+            </div>
+            <sc-for list="{{ ph.steps }}" as="st" hint-placeholder-count="2">
+              <div style="display:flex;gap:14px;">
+                <div style="display:flex;flex-direction:column;align-items:center;width:30px;flex-shrink:0;">
+                  <div style="{{ st.iconStyle }}">{{ st.iconGlyph }}</div>
+                  <div style="width:2px;flex:1;min-height:14px;background:{{ st.lineColor }};margin:2px 0;"></div>
+                </div>
+                <div style="flex:1;padding-bottom:14px;">
+                  <div style="{{ st.cardStyle }}">
+                    <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;">
+                      <div style="font:700 14px 'DM Sans';color:#38294F;">{{ st.label }}</div>
+                      <span style="display:inline-flex;align-items:center;gap:6px;font:600 11px 'DM Sans';color:{{ st.agentColor }};background:#fff;border:1px solid #ECE7F3;border-radius:20px;padding:3px 9px;"><span style="width:7px;height:7px;border-radius:2px;background:{{ st.agentColor }};"></span>{{ st.agentLabel }}</span>
+                    </div>
+                    <div style="font:500 12px 'DM Sans';color:{{ st.metaColor }};margin-top:5px;">{{ st.meta }}</div>
+                    <sc-if value="{{ st.showGateActions }}" hint-placeholder-val="{{ false }}">
+                      <div style="display:flex;gap:8px;margin-top:12px;flex-wrap:wrap;">
+                        <button onClick="{{ st.approve }}" style="border:none;cursor:pointer;border-radius:9px;padding:9px 18px;font:700 12px 'DM Sans';color:#fff;background:#0E6E74;">Approve</button>
+                        <button onClick="{{ st.reject }}" style="cursor:pointer;border-radius:9px;padding:9px 18px;font:700 12px 'DM Sans';color:#9C333E;background:#fff;border:1.5px solid #E6C9CD;">Reject with notes</button>
+                        <button onClick="{{ st.feedback }}" style="border:none;cursor:pointer;border-radius:9px;padding:9px 16px;font:700 12px 'DM Sans';color:#38294F;background:#F0ECF6;">Feedback</button>
+                      </div>
+                    </sc-if>
+                    <sc-if value="{{ st.showStepActions }}" hint-placeholder-val="{{ false }}">
+                      <div style="display:flex;gap:8px;margin-top:12px;flex-wrap:wrap;">
+                        <button onClick="{{ st.feedback }}" style="border:none;cursor:pointer;border-radius:9px;padding:8px 15px;font:700 12px 'DM Sans';color:#2E6CB2;background:#EAF1F9;">Send feedback</button>
+                        <button onClick="{{ st.reject }}" style="cursor:pointer;border-radius:9px;padding:8px 15px;font:700 12px 'DM Sans';color:#9C333E;background:#fff;border:1.5px solid #E6C9CD;">Request changes</button>
+                      </div>
+                    </sc-if>
+                  </div>
+                </div>
+              </div>
+            </sc-for>
+          </div>
+        </sc-for>
+      </div>
+
+      <!-- activity feed -->
+      <div style="flex:1;min-width:280px;background:#fff;border-radius:22px;box-shadow:0 18px 40px 0 rgba(56,41,79,.08);padding:26px 28px;">
+        <div style="font:700 18px 'DM Sans';letter-spacing:-.3px;margin-bottom:20px;">Activity</div>
+        <sc-for list="{{ tk.activity }}" as="ac" hint-placeholder-count="5">
+          <div style="display:flex;gap:12px;margin-bottom:18px;">
+            <div style="display:flex;flex-direction:column;align-items:center;">
+              <span style="width:30px;height:30px;border-radius:9px;background:{{ ac.color }};display:flex;align-items:center;justify-content:center;font:700 10px 'DM Sans';color:#fff;flex-shrink:0;">{{ ac.initials }}</span>
+            </div>
+            <div style="flex:1;">
+              <div style="font:500 13px 'DM Sans';color:#38294F;line-height:1.4;"><strong style="font-weight:700;">{{ ac.who }}</strong> {{ ac.text }}</div>
+              <div style="font:500 11px 'DM Sans';color:#8C8C8E;margin-top:2px;">{{ ac.time }}</div>
+            </div>
+          </div>
+        </sc-for>
+        <sc-if value="{{ tk.noActivity }}" hint-placeholder-val="{{ false }}">
+          <div style="font:500 13px 'DM Sans';color:#8C8C8E;">No activity yet — this work is still being planned.</div>
+        </sc-if>
+      </div>
+    </div>
+  </div>
+  </sc-if>
+
+  <!-- ===== APPROVALS DRAWER ===== -->
+  <sc-if value="{{ approvalsOpen }}" hint-placeholder-val="{{ false }}">
+  <div style="position:fixed;inset:0;z-index:40;">
+    <div onClick="{{ closeApprovals }}" style="position:absolute;inset:0;background:rgba(40,40,46,.32);animation:auraFade .18s ease;"></div>
+    <div style="position:absolute;top:0;right:0;bottom:0;width:430px;max-width:92vw;background:#F3F1F8;box-shadow:-20px 0 50px rgba(40,40,46,.2);animation:auraIn .22s cubic-bezier(.2,.8,.2,1);display:flex;flex-direction:column;">
+      <div style="padding:24px 26px 18px;border-bottom:1px solid #E7E2F0;display:flex;align-items:center;justify-content:space-between;">
+        <div>
+          <div style="font:700 20px 'DM Sans';letter-spacing:-.3px;">Pending approvals</div>
+          <div style="font:500 12px 'DM Sans';color:#8C8C8E;margin-top:3px;">{{ pendingHeadline }}</div>
+        </div>
+        <button onClick="{{ closeApprovals }}" style="width:34px;height:34px;border:none;border-radius:9px;background:#EAE6F1;color:#38294F;cursor:pointer;font:700 16px 'DM Sans';">✕</button>
+      </div>
+      <div style="flex:1;overflow-y:auto;padding:18px 20px 28px;display:flex;flex-direction:column;gap:14px;">
+        <sc-for list="{{ pendingItems }}" as="pa" hint-placeholder-count="3">
+          <div style="background:#fff;border-radius:16px;box-shadow:0 10px 24px 0 rgba(56,41,79,.07);padding:18px;border-left:4px solid {{ pa.gateColor }};">
+            <div style="display:flex;align-items:center;gap:8px;margin-bottom:7px;">
+              <span style="font:500 12px 'DM Mono';color:#8C8C8E;">{{ pa.id }}</span>
+              <span style="font:600 10px 'DM Sans';letter-spacing:.5px;text-transform:uppercase;color:{{ pa.gateColor }};background:{{ pa.gateBg }};border-radius:6px;padding:2px 7px;">{{ pa.gateType }}</span>
+              <span style="flex:1;"></span>
+              <span style="font:500 11px 'DM Sans';color:#8C8C8E;">{{ pa.phaseName }}</span>
+            </div>
+            <div onClick="{{ pa.open }}" style="font:700 15px 'DM Sans';color:#38294F;line-height:1.3;margin-bottom:4px;cursor:pointer;">{{ pa.title }}</div>
+            <div style="display:flex;align-items:center;gap:7px;font:500 13px 'DM Sans';color:#9A6E00;margin-bottom:14px;">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="11" width="16" height="10" rx="2.5"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg>
+              {{ pa.gateLabel }}
+            </div>
+            <div style="display:flex;gap:9px;">
+              <button onClick="{{ pa.approve }}" style="flex:1;border:none;cursor:pointer;border-radius:10px;padding:11px;font:700 13px 'DM Sans';color:#fff;background:#0E6E74;">Approve</button>
+              <button onClick="{{ pa.reject }}" style="flex:1;cursor:pointer;border-radius:10px;padding:11px;font:700 13px 'DM Sans';color:#9C333E;background:#fff;border:1.5px solid #E6C9CD;">Reject</button>
+            </div>
+          </div>
+        </sc-for>
+        <sc-if value="{{ noPending }}" hint-placeholder-val="{{ false }}">
+          <div style="text-align:center;padding:50px 20px;color:#8C8C8E;">
+            <div style="width:54px;height:54px;border-radius:50%;background:#E2F0F0;color:#0E6E74;display:flex;align-items:center;justify-content:center;margin:0 auto 14px;font:700 22px 'DM Sans';">✓</div>
+            <div style="font:700 15px 'DM Sans';color:#38294F;">All clear</div>
+            <div style="font:500 13px 'DM Sans';margin-top:4px;">No gates waiting on you right now.</div>
+          </div>
+        </sc-if>
+      </div>
+    </div>
+  </div>
+  </sc-if>
+
+  <sc-if value="{{ composer.open }}" hint-placeholder-val="{{ false }}">
+  <div style="position:fixed;inset:0;z-index:60;display:flex;align-items:center;justify-content:center;padding:24px;">
+    <div onClick="{{ composer.cancel }}" style="position:absolute;inset:0;background:rgba(40,40,46,.4);animation:auraFade .15s ease;"></div>
+    <div style="position:relative;width:460px;max-width:94vw;background:#fff;border-radius:20px;box-shadow:0 30px 70px rgba(40,40,46,.3);padding:24px 26px;animation:auraFade .18s ease;">
+      <div style="font:700 19px 'DM Sans';letter-spacing:-.3px;">{{ composer.title }}</div>
+      <div style="font:500 13px 'DM Sans';color:#8C8C8E;margin-top:4px;">{{ composer.sub }}</div>
+      <textarea ref="{{ composer.fbRef }}" placeholder="{{ composer.placeholder }}" style="width:100%;margin-top:16px;min-height:104px;resize:vertical;border:1.5px solid #E4DEEE;border-radius:12px;padding:12px 14px;font:500 14px 'DM Sans';color:#38294F;outline:none;background:#FAFAFB;font-family:'DM Sans',sans-serif;" style-focus="border-color:#2E6CB2;background:#fff;"></textarea>
+      <div style="display:flex;justify-content:flex-end;gap:10px;margin-top:16px;">
+        <button onClick="{{ composer.cancel }}" style="cursor:pointer;border:none;background:#EAE6F1;color:#38294F;border-radius:10px;padding:11px 18px;font:700 13px 'DM Sans';">Cancel</button>
+        <button onClick="{{ composer.submit }}" style="cursor:pointer;border:none;color:#fff;border-radius:10px;padding:11px 20px;font:700 13px 'DM Sans';background:{{ composer.submitColor }};">{{ composer.submitLabel }}</button>
+      </div>
+    </div>
+  </div>
+  </sc-if>
+
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{&quot;$preview&quot;:{&quot;width&quot;:1280,&quot;height&quot;:1000}}">
+class Component extends DCLogic {
+  AGENTS = {
+    PM: { label: "PM agent", initials: "PM", color: "#2E6CB2" },
+    QA: { label: "QA agent", initials: "QA", color: "#DFA200" },
+    Architect: { label: "Architect agent", initials: "AR", color: "#38294F" },
+    Eng: { label: "Eng agent", initials: "EN", color: "#0E6E74" },
+    DevOps: { label: "DevOps agent", initials: "DO", color: "#9C333E" },
+    Ensemble: { label: "PM · QA · Architect", initials: "EN", color: "#2E6CB2" },
+    Human: { label: "Human gate", initials: "YOU", color: "#5E4380" },
+  };
+
+  PHASES = ["Plan", "Technical Plan", "Execute", "Deploy", "Review"];
+  PHASE_ACCENT = ["#2E6CB2", "#38294F", "#0E6E74", "#9C333E", "#DFA200"];
+  PHASE_ACCENT_BG = ["#EAF1F9", "#EFEAF5", "#E2F0F0", "#F6E2E4", "#FAF0D6"];
+
+  REPO = "https://github.com/FinTekkers/bot-farm";
+  ISSUE = { "BF-145": 412, "BF-128": 398, "BF-131": 401, "BF-119": 377, "BF-140": 405, "BF-102": 366, "BF-097": 352, "BF-090": 331 };
+  issueUrl(it) { return this.REPO + "/issues/" + this.ISSUE[it.id]; }
+  issueLabel(it) { return "#" + this.ISSUE[it.id]; }
+
+  STEPS = [
+    { phase: 0, kind: "agent", agent: "PM", label: "Define the outcome" },
+    { phase: 0, kind: "agent", agent: "PM", label: "Define how we measure success" },
+    { phase: 0, kind: "agent", agent: "Architect", label: "Set guardrails" },
+    { phase: 0, kind: "gate", gate: "required", label: "Approve & prioritize this work" },
+    { phase: 1, kind: "agent", agent: "Ensemble", label: "Plan options & trade-offs (pros / cons)" },
+    { phase: 1, kind: "gate", gate: "required", label: "Approve the high-level design" },
+    { phase: 1, kind: "agent", agent: "Eng", label: "Draft implementation plan" },
+    { phase: 1, kind: "agent", agent: "Architect", label: "Architecture review" },
+    { phase: 1, kind: "agent", agent: "QA", label: "QA reviews the test plan" },
+    { phase: 1, kind: "gate", gate: "optional", label: "Review before execution" },
+    { phase: 2, kind: "agent", agent: "Eng", label: "Specialist agent implements" },
+    { phase: 2, kind: "gate", gate: "required", label: "Accept the code" },
+    { phase: 3, kind: "agent", agent: "DevOps", label: "Deploy the changes" },
+    { phase: 4, kind: "gate", gate: "required", label: "Review the work & close" },
+  ];
+
+  fbRef = React.createRef();
+
+  state = {
+    view: "board",
+    selectedId: "BF-128",
+    approvalsOpen: false,
+    composer: { open: false, mode: null, itemId: null, phase: null, target: "" },
+    items: [
+      { id: "BF-145", title: "Risk-limit breach dashboard", priority: "Low", cursor: 1, desc: "Give risk managers a live view of limit utilization across every desk.", metric: "Limit breaches acknowledged in < 2 min (from 14 min).", guardrails: "Read-only — no position mutation. No PII in telemetry." },
+      { id: "BF-128", title: "Real-time P&L attribution service", priority: "High", cursor: 3, desc: "Attribute intraday P&L to factors, trades and fees in real time.", metric: "Attribution available < 5s after fill; 99.9% coverage.", guardrails: "No client identifiers in logs. Must reconcile to EOD books." },
+      { id: "BF-131", title: "Margin-call alerting v2", priority: "High", cursor: 5, desc: "Replace batch margin alerts with streaming, tiered escalation.", metric: "False-positive rate < 3%; median alert latency < 10s.", guardrails: "Cannot auto-liquidate. Human in the loop for every call." },
+      { id: "BF-119", title: "Order-router latency fix", priority: "Critical", cursor: 7, desc: "Cut tail latency in the smart order router under burst load.", metric: "p99 routing latency < 800µs at 5× peak volume.", guardrails: "No change to fill-priority logic. Zero-downtime rollout." },
+      { id: "BF-140", title: "Backtesting data-lake migration", priority: "Medium", cursor: 9, desc: "Move backtest datasets onto the new lakehouse with full lineage.", metric: "Backtest run cost −40%; lineage on every dataset.", guardrails: "Dual-write during cutover. No silent schema drift." },
+      { id: "BF-102", title: "FIX gateway refactor", priority: "High", cursor: 11, desc: "Modularize the FIX gateway and isolate venue adapters.", metric: "New-venue onboarding < 2 days (from 3 weeks).", guardrails: "Wire-compatible. Conformance suite stays green." },
+      { id: "BF-097", title: "Compliance audit export", priority: "Medium", cursor: 12, desc: "One-click immutable export of the full audit trail for regulators.", metric: "Export any quarter in < 60s; tamper-evident hashes.", guardrails: "Immutable store only. Every access is logged." },
+      { id: "BF-090", title: "Trader-console dark mode", priority: "Low", cursor: 14, desc: "Ship an accessible dark theme for the trader console.", metric: "WCAG AA on all surfaces; opt-in persistence.", guardrails: "No layout regressions in light mode." },
+    ],
+  };
+
+  _timers = {};
+
+  // ---- derived helpers ----
+  isClosed(it) { return it.cursor >= this.STEPS.length; }
+  curStep(it) { return this.isClosed(it) ? null : this.STEPS[it.cursor]; }
+  phaseIdx(it) { return this.isClosed(it) ? 4 : this.STEPS[it.cursor].phase; }
+  awaitingGate(it) { const c = this.curStep(it); return !!c && c.kind === "gate" && !it.rejected; }
+  prColor(p) { return { Critical: "#9C333E", High: "#DFA200", Medium: "#2E6CB2", Low: "#8C8C8E" }[p] || "#8C8C8E"; }
+
+  stepStatus(it, i) {
+    if (this.isClosed(it)) return "done";
+    if (it.rejected && i === it.cursor) return "blocked";
+    if (i < it.cursor) return "done";
+    if (i === it.cursor) return this.STEPS[i].kind === "gate" ? "awaiting" : "active";
+    return "pending";
+  }
+
+  // ---- actions ----
+  toBoard = () => this.setState({ view: "board", approvalsOpen: false });
+  toTracker = () => this.setState({ view: "tracker", approvalsOpen: false });
+  openItem = (id) => this.setState({ view: "tracker", selectedId: id, approvalsOpen: false });
+  openApprovals = () => this.setState({ approvalsOpen: true });
+  closeApprovals = () => this.setState({ approvalsOpen: false });
+
+  approve = (id) => {
+    this.setState((s) => ({
+      items: s.items.map((it) => {
+        if (it.id !== id || this.isClosed(it)) return it;
+        if (this.STEPS[it.cursor].kind !== "gate") return it;
+        return { ...it, cursor: it.cursor + 1, rejected: false };
+      }),
+    }), () => this.runAgents(id));
+  };
+
+  pushEvent(items, id, ev) {
+    return items.map((it) => (it.id === id ? { ...it, events: [ev, ...(it.events || [])] } : it));
+  }
+
+  reject = (id, target) => this.openComposer("reject", id, { target });
+
+  togglePause = (id) => {
+    this.setState((s) => {
+      const it = s.items.find((x) => x.id === id);
+      const paused = !it.paused;
+      let items = s.items.map((x) => (x.id === id ? { ...x, paused } : x));
+      items = this.pushEvent(items, id, { who: "You", text: paused ? "paused agent work on this item" : "resumed work", color: "#5E4380", initials: "YOU" });
+      return { items };
+    }, () => {
+      const it = this.state.items.find((x) => x.id === id);
+      if (it && !it.paused) this.runAgents(id);
+      else if (this._timers[id]) clearTimeout(this._timers[id]);
+    });
+  };
+
+  openComposer = (mode, itemId, opts) => this.setState({ composer: { open: true, mode, itemId, phase: opts && opts.phase != null ? opts.phase : null, target: (opts && opts.target) || "" } });
+  closeComposer = () => this.setState({ composer: { open: false, mode: null, itemId: null, phase: null, target: "" } });
+
+  restartPhase = (id, phase) => this.openComposer("restart", id, { phase });
+
+  submitComposer = () => {
+    const c = this.state.composer;
+    const text = ((this.fbRef.current && this.fbRef.current.value) || "").trim();
+    if (!c.itemId) return this.closeComposer();
+    const id = c.itemId;
+    if (c.mode === "feedback") {
+      this.setState((s) => ({ items: this.pushEvent(s.items, id, { who: "You", text: "to " + (c.target || "the agent") + ": " + (text || "(feedback sent)"), color: "#2E6CB2", initials: "YOU" }) }));
+    } else if (c.mode === "reject") {
+      this.setState((s) => {
+        let items = s.items.map((x) => (x.id === id ? { ...x, rejected: true, paused: false } : x));
+        items = this.pushEvent(items, id, { who: "You", text: "requested changes on " + (c.target || "this step") + (text ? ": " + text : ""), color: "#9C333E", initials: "YOU" });
+        return { items };
+      });
+      if (this._timers[id]) clearTimeout(this._timers[id]);
+    } else if (c.mode === "restart") {
+      const phase = c.phase;
+      const firstIdx = this.STEPS.findIndex((st) => st.phase === phase);
+      this.setState((s) => {
+        let items = s.items.map((x) => (x.id === id ? { ...x, cursor: firstIdx, rejected: false, paused: false } : x));
+        items = this.pushEvent(items, id, { who: "You", text: "restarted the " + this.PHASES[phase] + " phase" + (text ? ": " + text : ""), color: "#DFA200", initials: "YOU" });
+        return { items };
+      }, () => this.runAgents(id));
+    }
+    this.closeComposer();
+  };
+
+  // simulate agent steps progressing until the next gate
+  runAgents(id) {
+    const it = this.state.items.find((x) => x.id === id);
+    if (!it || this.isClosed(it) || it.paused || it.rejected) return;
+    if (this.STEPS[it.cursor].kind !== "agent") return;
+    if (this._timers[id]) clearTimeout(this._timers[id]);
+    this._timers[id] = setTimeout(() => {
+      this.setState((s) => ({
+        items: s.items.map((x) =>
+          x.id === id && !this.isClosed(x) && !x.paused && !x.rejected && this.STEPS[x.cursor].kind === "agent"
+            ? { ...x, cursor: x.cursor + 1 }
+            : x
+        ),
+      }), () => this.runAgents(id));
+    }, 1150);
+  }
+
+  componentWillUnmount() {
+    Object.values(this._timers).forEach(clearTimeout);
+  }
+
+  // ---- view models ----
+  buildCard(it) {
+    const closed = this.isClosed(it);
+    const p = this.phaseIdx(it);
+    const awaiting = this.awaitingGate(it);
+    const rejected = it.rejected && !closed;
+    const cur = this.curStep(it);
+    const segs = [0, 1, 2, 3, 4].map((i) =>
+      closed ? "#2E6CB2"
+        : i < p ? "#2E6CB2"
+        : i === p ? (awaiting ? "#DFA200" : rejected ? "#9C333E" : "#2E6CB2")
+        : "#E4DEEE"
+    );
+    const paused = !!it.paused && !closed && !rejected;
+    let statusLabel, statusColor, statusBg;
+    if (closed) { statusLabel = "Closed"; statusColor = "#0E6E74"; statusBg = "#E2F0F0"; }
+    else if (rejected) { statusLabel = "Changes requested"; statusColor = "#9C333E"; statusBg = "#F6E2E4"; }
+    else if (paused) { statusLabel = "Paused"; statusColor = "#6E6A7E"; statusBg = "#EAE6F1"; }
+    else if (awaiting) { statusLabel = "Awaiting you"; statusColor = "#9A6E00"; statusBg = "#FAF0D6"; }
+    else { statusLabel = this.AGENTS[cur.agent].label; statusColor = "#2E6CB2"; statusBg = "#EAF1F9"; }
+    const isActiveAgent = !closed && !awaiting && !rejected && !paused && cur && cur.kind === "agent";
+    return {
+      id: it.id, title: it.title,
+      priorityLabel: it.priority, priorityColor: this.prColor(it.priority),
+      phaseName: this.PHASES[p], segs,
+      statusLabel, statusColor, statusBg,
+      awaiting, gateLabel: awaiting ? cur.label : "",
+      cardBorder: awaiting ? "1.5px solid #F0D58A" : "1px solid #F0ECF6",
+      issueUrl: this.issueUrl(it), issueLabel: this.issueLabel(it),
+      issueStop: (e) => { if (e && e.stopPropagation) e.stopPropagation(); },
+      isPaused: paused, isActiveAgent, pauseLabel: "Pause work",
+      open: () => this.openItem(it.id),
+      pauseToggle: (e) => { if (e && e.stopPropagation) e.stopPropagation(); this.togglePause(it.id); },
+      approve: (e) => { if (e && e.stopPropagation) e.stopPropagation(); this.approve(it.id); },
+      reject: (e) => { if (e && e.stopPropagation) e.stopPropagation(); this.reject(it.id, awaiting && cur ? cur.label : (cur ? this.AGENTS[cur.agent].label : "this step")); },
+    };
+  }
+
+  buildStep(it, i) {
+    const st = this.STEPS[i];
+    const status = this.stepStatus(it, i);
+    const isGate = st.kind === "gate";
+    const agent = isGate ? this.AGENTS.Human : this.AGENTS[st.agent];
+    const palette = {
+      done: { bg: "#0E6E74", glyph: "✓", col: "#fff" },
+      active: { bg: "#2E6CB2", glyph: "•", col: "#fff" },
+      awaiting: { bg: "#DFA200", glyph: "!", col: "#fff" },
+      pending: { bg: "#fff", glyph: "", col: "#fff" },
+      blocked: { bg: "#9C333E", glyph: "✕", col: "#fff" },
+    }[status];
+    let iconStyle = "width:30px;height:30px;border-radius:50%;display:flex;align-items:center;justify-content:center;font:700 13px 'DM Sans';flex-shrink:0;";
+    if (status === "pending") iconStyle += "background:#fff;border:2px solid #E0D9EC;color:transparent;";
+    else iconStyle += "background:" + palette.bg + ";color:" + palette.col + ";";
+    if (status === "active") iconStyle += "animation:auraPulse 1.5s infinite;";
+    const meta = {
+      done: isGate ? "Approved by you" : "Completed",
+      active: "In progress…",
+      awaiting: isGate && st.gate === "optional" ? "Optional gate · awaiting you" : "Awaiting your approval",
+      pending: "Queued",
+      blocked: "Changes requested",
+    }[status];
+    const metaColor = status === "awaiting" ? "#9A6E00" : status === "blocked" ? "#9C333E" : status === "active" ? "#2E6CB2" : "#8C8C8E";
+    let cardStyle = "border-radius:14px;padding:13px 16px;";
+    if (status === "awaiting") cardStyle += "background:#FCF6E6;border:1.5px solid #F0D58A;";
+    else if (status === "active") cardStyle += "background:#F4F8FC;border:1px solid #DCE8F4;";
+    else if (status === "blocked") cardStyle += "background:#FBEEEF;border:1px solid #EECfd2;";
+    else cardStyle += "background:#FAFAFB;border:1px solid #F0ECF6;";
+    return {
+      label: st.label,
+      agentLabel: isGate ? (st.gate === "optional" ? "Human gate · optional" : "Human gate") : agent.label,
+      agentColor: agent.color,
+      iconStyle, iconGlyph: palette.glyph,
+      lineColor: status === "done" ? "#2E6CB2" : "#E4DEEE",
+      meta, metaColor, cardStyle,
+      showGateActions: status === "awaiting",
+      showStepActions: status === "active",
+      approve: () => this.approve(it.id),
+      reject: () => this.reject(it.id, st.label),
+      feedback: () => this.openComposer("feedback", it.id, { target: isGate ? "the reviewers" : agent.label }),
+    };
+  }
+
+  buildTracker(it) {
+    const phases = this.PHASES.map((name, p) => {
+      const idxs = this.STEPS.map((s, i) => (s.phase === p ? i : -1)).filter((i) => i >= 0);
+      const steps = idxs.map((i) => this.buildStep(it, i));
+      const allDone = idxs.every((i) => this.stepStatus(it, i) === "done");
+      const anyActive = idxs.some((i) => ["active", "awaiting"].includes(this.stepStatus(it, i)));
+      const statusLabel = allDone ? "Complete" : anyActive ? "In progress" : "Upcoming";
+      const statusColor = allDone ? "#0E6E74" : anyActive ? "#2E6CB2" : "#8C8C8E";
+      return { name, num: p + 1, accent: this.PHASE_ACCENT[p], accentBg: this.PHASE_ACCENT_BG[p], steps, statusLabel, statusColor, restartable: !this.isClosed(it) && this.phaseIdx(it) >= p, restart: () => this.restartPhase(it.id, p) };
+    });
+    // activity feed from completed steps, most recent first
+    const times = ["just now", "8 min ago", "40 min ago", "2 hours ago", "5 hours ago", "yesterday", "2 days ago"];
+    const done = this.STEPS.map((s, i) => ({ s, i })).filter(({ i }) => this.stepStatus(it, i) === "done");
+    const derived = done.reverse().slice(0, 6).map(({ s }, k) => {
+      const a = s.kind === "gate" ? this.AGENTS.Human : this.AGENTS[s.agent];
+      return {
+        who: s.kind === "gate" ? "You" : a.label,
+        text: s.kind === "gate" ? "approved: " + s.label.toLowerCase() : "completed " + s.label.toLowerCase(),
+        time: times[Math.min(k, times.length - 1)],
+        color: a.color,
+        initials: s.kind === "gate" ? "✓" : a.initials,
+      };
+    });
+    const evs = (it.events || []).map((e) => ({ who: e.who, text: e.text, color: e.color, initials: e.initials, time: "just now" }));
+    const activity = [...evs, ...derived].slice(0, 9);
+    const closed = this.isClosed(it);
+    const awaiting = this.awaitingGate(it);
+    const rejected = it.rejected && !closed;
+    const cur = this.curStep(it);
+    let statusLabel, statusColor, statusBg;
+    if (closed) { statusLabel = "Closed"; statusColor = "#0E6E74"; statusBg = "#E2F0F0"; }
+    else if (rejected) { statusLabel = "Changes requested"; statusColor = "#9C333E"; statusBg = "#F6E2E4"; }
+    else if (it.paused) { statusLabel = "Paused"; statusColor = "#6E6A7E"; statusBg = "#EAE6F1"; }
+    else if (awaiting) { statusLabel = "Awaiting your approval"; statusColor = "#9A6E00"; statusBg = "#FAF0D6"; }
+    else { statusLabel = this.AGENTS[cur.agent].label + " working"; statusColor = "#2E6CB2"; statusBg = "#EAF1F9"; }
+    return {
+      id: it.id, title: it.title, desc: it.desc, metric: it.metric, guardrails: it.guardrails,
+      priorityLabel: it.priority, priorityColor: this.prColor(it.priority),
+      statusLabel, statusColor, statusBg,
+      issueUrl: this.issueUrl(it), issueLabel: this.issueLabel(it),
+      paused: !!it.paused, pauseLabel: it.paused ? "Resume work" : "Pause work",
+      pauseToggle: () => this.togglePause(it.id),
+      feedback: () => this.openComposer("feedback", it.id, { target: "the active agent" }),
+      phases, activity, noActivity: activity.length === 0,
+    };
+  }
+
+  renderVals() {
+    const s = this.state;
+    const isBoard = s.view === "board";
+    const tabBase = "border:none;cursor:pointer;border-radius:9px;padding:8px 18px;font:700 13px 'DM Sans';transition:all .15s;";
+    const tabOn = tabBase + "background:#fff;color:#38294F;box-shadow:0 2px 6px rgba(56,41,79,.12);";
+    const tabOff = tabBase + "background:transparent;color:#8C8C8E;";
+
+    const columns = this.PHASES.map((name, p) => {
+      const items = s.items.filter((it) => this.phaseIdx(it) === p).map((it) => this.buildCard(it));
+      return { name, num: p + 1, accent: this.PHASE_ACCENT[p], accentBg: this.PHASE_ACCENT_BG[p], count: items.length, items };
+    });
+
+    const pendingRaw = s.items.filter((it) => this.awaitingGate(it));
+    const pendingItems = pendingRaw.map((it) => {
+      const cur = this.curStep(it);
+      const optional = cur.gate === "optional";
+      return {
+        id: it.id, title: it.title, gateLabel: cur.label, phaseName: this.PHASES[this.phaseIdx(it)],
+        gateType: optional ? "optional" : "required",
+        gateColor: optional ? "#5E4380" : "#9A6E00",
+        gateBg: optional ? "#F0E8F5" : "#FAF0D6",
+        open: () => this.openItem(it.id),
+        approve: () => this.approve(it.id),
+        reject: () => this.reject(it.id),
+      };
+    });
+    const pendingCount = pendingItems.length;
+
+    const sel = s.items.find((it) => it.id === s.selectedId) || s.items[0];
+
+    const pendingBtnStyle =
+      "display:inline-flex;align-items:center;gap:8px;border:none;cursor:pointer;border-radius:11px;padding:9px 14px;font:700 13px 'DM Sans';" +
+      (pendingCount > 0 ? "background:#FAF0D6;color:#9A6E00;" : "background:#EAE6F1;color:#8C8C8E;");
+    const pendingBadgeStyle =
+      "min-width:20px;height:20px;border-radius:20px;padding:0 6px;display:inline-flex;align-items:center;justify-content:center;font:700 11px 'DM Sans';color:#fff;" +
+      (pendingCount > 0 ? "background:#DFA200;" : "background:#B9B4C4;");
+
+    return {
+      isBoard, isTracker: !isBoard,
+      boardTabStyle: isBoard ? tabOn : tabOff,
+      trackerTabStyle: !isBoard ? tabOn : tabOff,
+      toBoard: this.toBoard, toTracker: this.toTracker,
+      openApprovals: this.openApprovals, closeApprovals: this.closeApprovals,
+      approvalsOpen: s.approvalsOpen,
+      itemCount: s.items.length,
+      columns,
+      pendingItems, pendingCount,
+      noPending: pendingCount === 0,
+      pendingBtnStyle, pendingBadgeStyle,
+      pendingHeadline: pendingCount > 0 ? pendingCount + " gate" + (pendingCount > 1 ? "s" : "") + " waiting on a human decision" : "Nothing waiting on you",
+      tk: this.buildTracker(sel),
+      composer: this.buildComposer(),
+    };
+  }
+
+  buildComposer() {
+    const c = this.state.composer;
+    if (!c.open) return { open: false };
+    const titles = { feedback: "Send feedback", reject: "Request changes", restart: "Restart phase" };
+    const subs = {
+      feedback: c.target ? "Forwarded to " + c.target : "Forwarded to the agent",
+      reject: "Sent back with your notes" + (c.target ? " · " + c.target : ""),
+      restart: c.phase != null ? this.PHASES[c.phase] + " phase will re-run from the start" : "",
+    };
+    const submitColors = { feedback: "#2E6CB2", reject: "#9C333E", restart: "#DFA200" };
+    const submitLabels = { feedback: "Send feedback", reject: "Request changes", restart: "Restart phase" };
+    return {
+      open: true,
+      title: titles[c.mode] || "Feedback",
+      sub: subs[c.mode] || "",
+      placeholder: c.mode === "restart" ? "Why are you restarting? (optional)" : c.mode === "reject" ? "What needs to change?" : "Your message to the agent…",
+      submitLabel: submitLabels[c.mode] || "Send",
+      submitColor: submitColors[c.mode] || "#2E6CB2",
+      fbRef: this.fbRef,
+      submit: this.submitComposer,
+      cancel: this.closeComposer,
+    };
+  }
+}
+</script>
+</body>
+</html>
