@@ -8,7 +8,7 @@
 import crypto from 'node:crypto'
 import { db } from './db.js'
 import * as store from './store.js'
-import { getToken } from './settings.js'
+import { getToken, getSetting, setSetting } from './settings.js'
 import { POLL_INTERVAL_MS } from './config.js'
 
 const getCursor = db.prepare('SELECT etag FROM sync_cursor WHERE key = ?')
@@ -391,6 +391,8 @@ export async function closeIssueWithSummary(item) {
     `- Code: ${item.pr != null ? `PR #${item.pr}` : '—'}`,
     `- Deploy: ${item.release_tag ? `release \`${item.release_tag}\`` : '—'}`,
     `- Success metric: ${item.metric || '—'}`,
+    '',
+    '_posted by Horizon_',
   ].join('\n')
   await gh(`/repos/${repo}/issues/${item.issue}/comments`, {
     method: 'POST',
@@ -403,6 +405,97 @@ export async function closeIssueWithSummary(item) {
   if (!res.ok) {
     throw new Error(`could not close issue #${item.issue} (${res.status} — check the token has Issues read/write)`)
   }
+}
+
+// ---- issue-comment ingestion (GitHub → feedback) ----
+// Humans steer agents by commenting on the issue. Conflict policy: SQLite is
+// authoritative for lifecycle position (ingestion never touches cursor —
+// only addFeedback's supersede-and-rerun path does, through the runner);
+// GitHub is authoritative for item existence and human text.
+
+// Every comment Horizon posts carries this marker in its footer.
+const HORIZON_FOOTER = 'posted by Horizon_'
+
+// Echo-loop guard, three layers: bot accounts, our own token identity, and
+// the footer marker every Horizon-authored comment carries. Without these,
+// mirrored step results would be re-ingested as feedback on the next poll —
+// an infinite loop that also burns agent sessions.
+export function isOwnComment(comment) {
+  if (comment?.user?.type === 'Bot') return true
+  const ourLogin = getSetting('github_login')
+  if (ourLogin && comment?.user?.login === ourLogin) return true
+  if ((comment?.body || '').includes(HORIZON_FOOTER)) return true
+  return false
+}
+
+// Returns true when the comment produced a new feedback row.
+export function ingestComment(repoFullName, issueNumber, comment, log) {
+  if (!comment?.body || issueNumber == null) return false
+  if (isOwnComment(comment)) return false
+  const row = db.prepare('SELECT id FROM work_item WHERE repo = ? AND issue = ?').get(repoFullName, issueNumber)
+  if (!row) return false // not an item we track
+  const result = store.addFeedback(row.id, {
+    message: comment.body.slice(0, 2000),
+    source: 'github',
+    ghCommentId: comment.id ?? null,
+  })
+  if (result.error) {
+    if (result.error !== 'closed') log?.warn(`comment on ${repoFullName}#${issueNumber} not ingested: ${result.error}`)
+    return false
+  }
+  return !result.duplicate
+}
+
+// Installs that saved their token before the login was recorded need it
+// backfilled — otherwise the own-login guard layer is silently inert.
+export async function ensureGithubLogin() {
+  const existing = getSetting('github_login')
+  if (existing) return existing
+  const token = getToken()
+  if (!token) return null
+  const check = await validateToken(token)
+  if (!check.ok) return null
+  setSetting('github_login', check.login)
+  return check.login
+}
+
+const getCommentCursor = db.prepare('SELECT last_synced_at FROM sync_cursor WHERE key = ?')
+const setCommentCursor = db.prepare(`
+  INSERT INTO sync_cursor (key, etag, last_synced_at) VALUES (?, NULL, ?)
+  ON CONFLICT(key) DO UPDATE SET last_synced_at = excluded.last_synced_at
+`)
+
+// Poll fallback for setups without a webhook tunnel. `since` matches
+// GitHub's updated_at, so *edited* old comments re-arrive — they are then
+// dropped by the gh_comment_id dedup (edits are deliberately not re-ingested).
+// The cursor advances only after the page ingested successfully.
+export async function pollComments(repo, log) {
+  const key = `comments:${repo}`
+  const since = getCommentCursor.get(key)?.last_synced_at
+  if (!since) {
+    // First run on an existing install: baseline to now instead of replaying
+    // the issue history as fresh feedback.
+    setCommentCursor.run(key, new Date().toISOString())
+    return { changed: 0, baselined: true }
+  }
+  const url =
+    `https://api.github.com/repos/${repo}/issues/comments` +
+    `?sort=updated&direction=asc&per_page=100&since=${encodeURIComponent(since)}`
+  const res = await fetch(url, { headers: ghHeaders(getToken()) })
+  if (!res.ok) {
+    log?.warn(`GitHub comment poll failed for ${repo}: ${res.status}`)
+    return { changed: 0, error: `GitHub returned ${res.status}` }
+  }
+  const comments = await res.json()
+  let changed = 0
+  let latest = since
+  for (const comment of comments) {
+    const issueNumber = Number((comment.issue_url || '').split('/').pop())
+    if (ingestComment(repo, Number.isInteger(issueNumber) ? issueNumber : null, comment, log)) changed++
+    if (comment.updated_at && comment.updated_at > latest) latest = comment.updated_at
+  }
+  if (latest !== since) setCommentCursor.run(key, latest)
+  return { changed }
 }
 
 export async function pollRepo(repo, log) {
@@ -439,6 +532,8 @@ export async function pollOnce(log) {
     try {
       const result = await pollRepo(repo, log)
       changed += result.changed
+      const comments = await pollComments(repo, log)
+      changed += comments.changed
     } catch (err) {
       log?.warn(`GitHub poll error for ${repo}: ${err.message}`)
       lastByRepo[repo] = { at: new Date().toISOString(), status: 'network_error', changed: 0, error: err.message }
@@ -449,6 +544,8 @@ export async function pollOnce(log) {
 
 export function startPolling(log) {
   if (store.listRepos().length === 0) log.info('GitHub sync not configured — connect repos from the Admin page')
+  // Backfill the token identity for the comment echo guard on older installs.
+  ensureGithubLogin().catch((err) => log.warn(`could not resolve the GitHub login: ${err.message}`))
   let inFlight = false
   const tick = async () => {
     if (inFlight || store.listRepos().length === 0) return

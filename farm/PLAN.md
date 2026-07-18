@@ -42,9 +42,12 @@ Endpoints:
 - `POST /steps/run {run_id, item, step, feedback[], artifacts[]}` — execute one
   step; async; results delivered via callback to the Node server.
 - `POST /steps/cancel {run_id}` — kill the ephemeral session for a run.
-- ~~`POST /feedback`~~ — **dropped by product decision (2026-07-18)**: feedback
-  reaches agents only through gate approve-with-comments or send-back/rework
-  (notes ride the re-dispatched step's input). No standalone feedback channel.
+- ~~`POST /feedback`~~ — **dropped by product decision (2026-07-18)**: farmd
+  never injects feedback into a live session. All feedback (gate notes,
+  send-back/rework, the Node server's `POST /api/items/:id/feedback`, ingested
+  GitHub issue comments) is stored Node-side and rides the re-dispatched
+  step's input; a live attempt is superseded (cancelled, session killed) and
+  re-run as attempt N+1.
 
 Tmux layout (observable by attaching at any time):
 - `farm-daemon` — farmd itself

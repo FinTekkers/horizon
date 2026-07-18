@@ -273,9 +273,50 @@ export function restartPhase(id, phase, reason) {
   return { ok: true }
 }
 
-// Feedback reaches agents exclusively through the send-back/rework flow
-// (requestChanges): notes are queued in the feedback table and delivered with
-// the re-dispatched step.
+// Standalone feedback (UI form or an ingested GitHub comment). If the item is
+// sitting on an agent step and not paused, the in-flight run is superseded and
+// the step re-runs (attempt N+1) with this feedback injected; otherwise the
+// row waits (delivered_at NULL) for the next dispatch — dispatchToFarm picks
+// up all undelivered rows. Rejection feedback still flows via requestChanges.
+export function addFeedback(id, { message, target = '', source = 'ui', ghCommentId = null }) {
+  const it = getItem(id)
+  if (!it) return { error: 'not_found' }
+  if (inactiveProject(it)) return { error: 'project_not_active' }
+  if (isClosed(it)) return { error: 'closed' }
+
+  if (ghCommentId != null) {
+    const seen = db.prepare('SELECT id FROM feedback WHERE gh_comment_id = ?').get(ghCommentId)
+    if (seen) return { ok: true, duplicate: true }
+  }
+
+  const text = String(message || '').trim().slice(0, 2000)
+  if (!text) return { error: 'empty_message' }
+  const step = STEPS[it.cursor]
+  db.prepare('INSERT INTO feedback (item_id, target, message, source, gh_comment_id) VALUES (?, ?, ?, ?, ?)').run(
+    id,
+    target || (step?.kind === 'agent' ? step.agent : ''),
+    text,
+    source,
+    ghCommentId,
+  )
+  const fromGithub = source === 'github'
+  addEvent(id, {
+    who: fromGithub ? 'GitHub' : 'You',
+    text: `left feedback: ${text.slice(0, 200)}`,
+    color: fromGithub ? '#2A2A2E' : '#5E4380',
+    initials: fromGithub ? 'GH' : 'YOU',
+  })
+
+  if (step?.kind === 'agent' && !it.paused) {
+    // Supersede the current attempt so the agent re-runs with the feedback.
+    agentRunner.cancel(id, 'superseded')
+    notify()
+    agentRunner.kick(id)
+    return { ok: true, rerun: true }
+  }
+  notify()
+  return { ok: true, queued: true }
+}
 
 // Remove the BF-* demo items (called when real GitHub sync is connected).
 export function purgeDemoItems() {
