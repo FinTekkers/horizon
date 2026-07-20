@@ -143,7 +143,13 @@ def execute(task: dict) -> dict:
             timeout_s=timeout_s,
             allowed_tools=tools,
         )
-        summary = str(extract_json(reply["result"]).get("summary", "implementation finished")).strip()[:600]
+        # The summary is reporting, not the deliverable — the code in the
+        # workspace is. Never torch a completed implement run over a
+        # malformed final message; fall back and let checks judge the work.
+        try:
+            summary = str(extract_json(reply["result"]).get("summary", "implementation finished")).strip()[:600]
+        except Exception:
+            summary = "implementation finished (agent's final message was not valid JSON — see session log)"
         # Guardrail enforcement: the repo's own tests/linters run here, by the
         # script, before anything is committed or pushed. A failure fails the
         # run (Node pauses the item with the reason) — no green, no push.
