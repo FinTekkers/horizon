@@ -151,7 +151,7 @@ export default function App() {
             api.requestChanges(
               id,
               'Accept the code',
-              `PR #${pr} has merge conflicts — rebase onto current main and resolve them, keeping main's changes intact`,
+              `PR #${pr} has merge conflicts — merge current main into the branch and resolve the conflicts, keeping main's changes intact`,
             )
           }
           onTogglePause={api.togglePause}

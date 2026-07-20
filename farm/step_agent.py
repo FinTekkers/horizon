@@ -107,7 +107,10 @@ def finalize_branch(ws: Path, item: dict, branch: str) -> dict:
     ahead = git(ws, "rev-list", "--count", f"origin/{default}..HEAD", check=False).stdout.strip()
     if ahead == "0":
         raise RuntimeError("the agent made no code changes — nothing to push")
-    git(ws, "push", "-u", "origin", branch)
+    # Agent work branches are single-writer (the implement mutex): a rebase
+    # rewriting earlier attempts is legitimate, so push with lease protection
+    # rather than failing on non-fast-forward.
+    git(ws, "push", "--force-with-lease", "-u", "origin", branch)
     stat = git(ws, "diff", "--stat", f"origin/{default}...HEAD", check=False).stdout.strip().splitlines()
     return {"branch": branch, "files_changed": stat[-1] if stat else ""}
 
