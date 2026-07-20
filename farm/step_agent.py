@@ -20,6 +20,7 @@ from .checks import run_checks
 from .claude_runner import ClaudeError, extract_json, run_claude
 from .config import FARM_PORT
 from .personas import compose_role, resolve
+from .rules import render_rules_section
 from .workspaces import workspace_path
 
 FARMD = f"http://127.0.0.1:{FARM_PORT}"
@@ -73,6 +74,10 @@ def build_prompt(task: dict) -> str:
         lines.append("Human feedback to address:")
         for fb in feedback:
             lines.append(f"- {fb.get('message', '')}")
+    rules_section = render_rules_section(task.get("rules"))
+    if rules_section:
+        lines.append("")
+        lines.append(rules_section)
     return "\n".join(lines)
 
 

@@ -28,4 +28,8 @@ export const {
   togglePause,
   restartPhase,
   setPersona,
+  listDefinitions,
+  getDefinition,
+  saveDefinition,
+  effectivePrompt,
 } = impl

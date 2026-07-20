@@ -186,6 +186,35 @@ def test_step_config_persona_flags_match_the_design():
     assert wants == {4: False, 6: False, 7: False, 8: True, 11: True}
 
 
+# ---- project rules injection (HZ-9) ----
+# farmd stamps `rules` into the task; the prompt (and therefore the tmux
+# session log) must carry them verbatim under a "## Project rules" header.
+
+
+def test_build_prompt_renders_the_project_rules_section():
+    task = make_task(11, "Specialist agent implements", repo="acme/demo")
+    task["rules"] = "- JAVA_HOME must point at JDK 17 for Gradle"
+    prompt = build_prompt(task)
+    assert "## Project rules\n- JAVA_HOME must point at JDK 17 for Gradle" in prompt
+
+
+def test_build_prompt_without_rules_renders_no_header():
+    assert "## Project rules" not in build_prompt(make_task(11, "Specialist agent implements"))
+    task = make_task(11, "Specialist agent implements")
+    task["rules"] = "   \n"
+    assert "## Project rules" not in build_prompt(task)
+
+
+def test_build_prompt_truncates_runaway_rules_at_24k_chars():
+    from farm.rules import MAX_PROMPT_RULES_CHARS
+
+    task = make_task(11, "Specialist agent implements")
+    task["rules"] = "r" * (MAX_PROMPT_RULES_CHARS + 9000)
+    prompt = build_prompt(task)
+    assert "r" * MAX_PROMPT_RULES_CHARS in prompt
+    assert "r" * (MAX_PROMPT_RULES_CHARS + 1) not in prompt
+
+
 def test_build_prompt_renders_the_resolved_persona():
     task = make_task(6, "Draft implementation plan")
     task["item"]["persona"] = "python_backend"
