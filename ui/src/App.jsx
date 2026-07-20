@@ -7,16 +7,18 @@ import Tracker from './components/Tracker'
 import ApprovalsDrawer from './components/ApprovalsDrawer'
 import ComposerModal from './components/ComposerModal'
 import AdminPage from './components/AdminPage'
+import AgentDefinitionsPage from './components/AgentDefinitionsPage'
 import NewItemModal from './components/NewItemModal'
 
 const CLOSED_COMPOSER = { open: false, mode: null, itemId: null, phase: null, target: '' }
 
-// Deep links: /  → board, /admin → admin, /<item-id> → that item's tracker
-// (case-insensitive, e.g. localhost:5173/hz-102).
+// Deep links: /  → board, /admin → admin, /definitions → agent definitions,
+// /<item-id> → that item's tracker (case-insensitive, e.g. localhost:5173/hz-102).
 function parsePath(pathname) {
   const seg = decodeURIComponent(pathname.replace(/^\/+|\/+$/g, ''))
   if (!seg) return { view: 'board', id: null }
   if (seg.toLowerCase() === 'admin') return { view: 'admin', id: null }
+  if (seg.toLowerCase() === 'definitions') return { view: 'definitions', id: null }
   return { view: 'tracker', id: seg.toUpperCase() }
 }
 
@@ -107,6 +109,11 @@ export default function App() {
           setView('admin')
           setApprovalsOpen(false)
         }}
+        onOpenDefinitions={() => {
+          navigate('/definitions')
+          setView('definitions')
+          setApprovalsOpen(false)
+        }}
       />
 
       {farm?.status === 'restarting' && (
@@ -130,6 +137,8 @@ export default function App() {
       {view === 'admin' && (
         <AdminPage sync={sync} security={api.getSecurity()} projects={projects} onBack={toBoard} />
       )}
+
+      {view === 'definitions' && <AgentDefinitionsPage onBack={toBoard} />}
 
       {view === 'tracker' && selected && (
         <Tracker

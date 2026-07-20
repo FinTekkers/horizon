@@ -569,3 +569,39 @@ button { font-family: var(--font-sans); }
   cursor: pointer; border: none; color: #fff;
   border-radius: 10px; padding: 11px 20px; font: 700 13px var(--font-sans);
 }
+
+/* ===== Agent definitions (HZ-9) ===== */
+.defs { max-width: 1080px; }
+.defs__layout { display: grid; grid-template-columns: 280px 1fr; gap: 22px; align-items: start; margin-top: 14px; }
+.defs__tree { display: flex; flex-direction: column; gap: 18px; }
+.defs__group-title { font: 700 12px var(--font-sans); text-transform: uppercase; letter-spacing: 0.6px; color: var(--muted); margin-bottom: 6px; }
+.defs__item {
+  display: flex; align-items: center; gap: 8px; width: 100%; text-align: left;
+  cursor: pointer; border: none; background: none; border-radius: 10px;
+  padding: 8px 10px; font: 600 13px var(--font-sans); color: var(--deep);
+}
+.defs__item:hover { background: var(--chip); }
+.defs__item--on { background: var(--chip); outline: 1.5px solid var(--primary); }
+.defs__item-kind { font: 700 10px var(--font-sans); text-transform: uppercase; color: var(--muted); }
+.defs__item-bytes { margin-left: auto; font: 500 11px var(--font-sans); color: var(--muted); }
+.defs__empty { font: 500 12px var(--font-sans); color: var(--muted); padding: 4px 10px; }
+.defs__editor { min-width: 0; }
+.defs__editor-head { display: flex; align-items: baseline; gap: 12px; font: 700 15px var(--font-sans); margin-bottom: 8px; }
+.defs__path { font: 500 12px var(--font-mono, monospace); color: var(--muted); }
+.defs__global-warning {
+  font: 600 12.5px var(--font-sans); color: #7A5A00; background: #FFF6DD;
+  border-radius: 10px; padding: 8px 12px; margin-bottom: 8px;
+}
+.defs__textarea {
+  width: 100%; resize: vertical; border: 1.5px solid #E4DEEE; border-radius: 12px;
+  padding: 12px 14px; font: 500 13px/1.5 var(--font-mono, ui-monospace, monospace);
+  color: var(--deep); outline: none; background: #FAFAFB;
+}
+.defs__textarea:focus { border-color: var(--primary); background: #fff; }
+.defs__preview { margin-top: 16px; }
+.defs__preview-title { font: 700 13px var(--font-sans); margin-bottom: 6px; }
+.defs__preview-body {
+  background: #2A2A2E; color: #F3F1F8; border-radius: 12px; padding: 14px 16px;
+  overflow-x: auto; max-height: 420px; font: 500 12px/1.55 var(--font-mono, ui-monospace, monospace);
+  white-space: pre-wrap;
+}

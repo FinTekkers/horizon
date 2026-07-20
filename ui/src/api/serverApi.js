@@ -105,14 +105,14 @@ function promptForKey(message) {
   return key || ''
 }
 
-async function gatePost(path, body) {
+async function gatePost(path, body, method = 'POST') {
   let key = humanKey()
   if (security.gateKeyConfigured && !key) {
     key = promptForKey('Enter the human gate key (set in Admin → Security):')
   }
   const doFetch = (k) =>
     fetch(`/api${path}`, {
-      method: 'POST',
+      method,
       headers: { 'Content-Type': 'application/json', 'x-human-key': k },
       body: JSON.stringify(body ?? {}),
     })
@@ -233,4 +233,48 @@ export function restartPhase(id, phase, reason) {
 
 export function setPersona(id, persona) {
   return post(`/items/${id}/persona`, { persona })
+}
+
+// ---- agent definitions (HZ-9) ----
+
+async function getJson(path) {
+  const res = await fetch(`/api${path}`)
+  const data = await res.json().catch(() => ({}))
+  if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`)
+  return data
+}
+
+export function listDefinitions() {
+  return getJson('/definitions')
+}
+
+export function getDefinition(kind, name) {
+  return getJson(`/definitions/${encodeURIComponent(kind)}/${encodeURIComponent(name)}`)
+}
+
+export function effectivePrompt(params) {
+  const qs = new URLSearchParams(Object.entries(params).filter(([, v]) => v))
+  return getJson(`/definitions/effective?${qs}`)
+}
+
+// Saving is a gate action (same human key as approvals) — every save becomes
+// a git commit server-side; errors carry the lint/size rejection detail.
+export async function saveDefinition(kind, name, content) {
+  const res = await gatePost(
+    `/definitions/${encodeURIComponent(kind)}/${encodeURIComponent(name)}`,
+    { content, actor: 'AP' },
+    'PUT',
+  )
+  if (!res) throw new Error('Could not reach the server')
+  const data = await res.json().catch(() => ({}))
+  if (!res.ok) {
+    if (data.error === 'credential_pattern') {
+      throw new Error(`Looks like a credential — move it to an $ENV_VAR reference (${data.matches.join(', ')})`)
+    }
+    if (data.error === 'rules_too_large') throw new Error(`Too large — the per-file cap is ${data.limit} bytes`)
+    if (data.error === 'git_dirty') throw new Error('The server checkout has unrelated staged changes — resolve them first')
+    if (data.error === 'push_failed') throw new Error(`Committed locally but the push failed — the edit is not on origin yet (${data.commit})`)
+    throw new Error(data.error || `HTTP ${res.status}`)
+  }
+  return data
 }

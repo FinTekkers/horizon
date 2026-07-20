@@ -18,6 +18,7 @@ import httpx
 
 from .claude_runner import ClaudeError, extract_json, run_claude
 from .config import FARM_PORT, PM_MODEL, QUEUE_DIR, STATE_DIR, ensure_dirs, slugify
+from .rules import render_rules_section
 
 ROLE_PROMPT = (Path(__file__).parent / "roles" / "pm.md").read_text()
 # persona: specialist routing tag (HZ-4) — the server registry-validates it
@@ -59,6 +60,10 @@ def build_prompt(task: dict) -> str:
         lines.append("Human feedback to address:")
         for fb in feedback:
             lines.append(f"- {fb.get('message', '')}")
+    rules_section = render_rules_section(task.get("rules"))
+    if rules_section:
+        lines.append("")
+        lines.append(rules_section)
     lines.append("")
     lines.append("Respond with ONLY the JSON object described in your role instructions.")
     return "\n".join(lines)
