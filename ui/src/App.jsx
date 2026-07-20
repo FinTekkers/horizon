@@ -147,6 +147,13 @@ export default function App() {
           onApprove={api.approveGate}
           onApproveWithComments={(id, target) => openComposer('approve', id, { target })}
           onReject={(id, target) => openComposer('reject', id, { target })}
+          onResolveConflicts={(id, pr) =>
+            api.requestChanges(
+              id,
+              'Accept the code',
+              `PR #${pr} has merge conflicts — rebase onto current main and resolve them, keeping main's changes intact`,
+            )
+          }
           onTogglePause={api.togglePause}
           onRestartPhase={(id, phase) => openComposer('restart', id, { phase })}
           onSetPersona={api.setPersona}

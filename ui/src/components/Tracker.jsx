@@ -35,7 +35,7 @@ const STEP_META = {
 
 const STEP_META_COLOR = { awaiting: '#9A6E00', blocked: '#9C333E', active: '#2E6CB2' }
 
-function Step({ item, index, onApprove, onApproveWithComments, onReject, onSetPersona }) {
+function Step({ item, index, onApprove, onApproveWithComments, onReject, onResolveConflicts, onSetPersona }) {
   const st = STEPS[index]
   const status = stepStatus(item, index)
   const isGate = st.kind === 'gate'
@@ -186,7 +186,7 @@ function buildActivity(item) {
     })
 }
 
-export default function Tracker({ item, onBack, onApprove, onApproveWithComments, onReject, onTogglePause, onRestartPhase, onSetPersona }) {
+export default function Tracker({ item, onBack, onApprove, onApproveWithComments, onReject, onResolveConflicts, onTogglePause, onRestartPhase, onSetPersona }) {
   const status = itemStatus(item, true)
   const activity = buildActivity(item)
 
@@ -288,6 +288,7 @@ export default function Tracker({ item, onBack, onApprove, onApproveWithComments
                     onApprove={onApprove}
                     onApproveWithComments={onApproveWithComments}
                     onReject={onReject}
+                    onResolveConflicts={onResolveConflicts}
                     onSetPersona={onSetPersona}
                   />
                 ))}

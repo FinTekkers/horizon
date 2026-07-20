@@ -111,7 +111,7 @@ db.exec(`
 
 // Additive migrations for databases created before these columns existed.
 // persona: specialist persona id (see personas.js); NULL = fullstack default.
-for (const column of ['pr INTEGER', 'pr_url TEXT', 'release_tag TEXT', 'release_url TEXT', 'repo TEXT', 'project_id INTEGER', 'persona TEXT']) {
+for (const column of ['pr INTEGER', 'pr_url TEXT', 'pr_mergeable INTEGER', 'release_tag TEXT', 'release_url TEXT', 'repo TEXT', 'project_id INTEGER', 'persona TEXT']) {
   try {
     db.exec(`ALTER TABLE work_item ADD COLUMN ${column}`)
   } catch {
