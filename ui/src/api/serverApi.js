@@ -230,3 +230,7 @@ export function togglePause(id) {
 export function restartPhase(id, phase, reason) {
   gatePost(`/items/${id}/phases/${phase}/restart`, { reason: reason || '' })
 }
+
+export function setPersona(id, persona) {
+  return post(`/items/${id}/persona`, { persona })
+}

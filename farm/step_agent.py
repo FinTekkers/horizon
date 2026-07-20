@@ -19,20 +19,24 @@ import httpx
 from .checks import run_checks
 from .claude_runner import ClaudeError, extract_json, run_claude
 from .config import FARM_PORT
+from .personas import compose_role, resolve
 from .workspaces import workspace_path
 
 FARMD = f"http://127.0.0.1:{FARM_PORT}"
 ROLES = Path(__file__).parent / "roles"
 
-# step index -> (role file, needs JSON artifact, tool access)
+# step index -> (role file, needs JSON artifact, tool access, max turns,
+#                timeout seconds, wants persona)
+# Personas specialize only the steps that act on the item's stack — QA (8) and
+# implement (11); the planning steps stay generalist.
 PLANNER_TOOLS = "Read,Glob,Grep"
 IMPLEMENT_TOOLS = "Read,Glob,Grep,Edit,Write,Bash"
 STEP_CONFIG = {
-    4: ("ensemble.md", True, PLANNER_TOOLS, 16, 900),
-    6: ("eng_plan.md", True, PLANNER_TOOLS, 16, 900),
-    7: ("architect_review.md", True, PLANNER_TOOLS, 16, 900),
-    8: ("qa.md", True, PLANNER_TOOLS, 16, 900),
-    11: ("eng_implement.md", False, IMPLEMENT_TOOLS, 80, 2400),
+    4: ("ensemble.md", True, PLANNER_TOOLS, 16, 900, False),
+    6: ("eng_plan.md", True, PLANNER_TOOLS, 16, 900, False),
+    7: ("architect_review.md", True, PLANNER_TOOLS, 16, 900, False),
+    8: ("qa.md", True, PLANNER_TOOLS, 16, 900, True),
+    11: ("eng_implement.md", False, IMPLEMENT_TOOLS, 80, 2400, True),
 }
 
 
@@ -55,6 +59,7 @@ def build_prompt(task: dict) -> str:
         f"  outcome: {item.get('desc') or '(empty)'}",
         f"  success metric: {item.get('metric') or '(empty)'}",
         f"  guardrails: {item.get('guardrails') or '(defaults only)'}",
+        f"  persona: {resolve(item.get('persona'))}",
         "",
         f"Step to perform now: \"{step['label']}\" (attempt {task.get('attempt', 1)})",
     ]
@@ -104,9 +109,11 @@ def finalize_branch(ws: Path, item: dict, branch: str) -> dict:
 
 def execute(task: dict) -> dict:
     step_index = task["step"]["index"]
-    role_file, wants_artifact, tools, max_turns, timeout_s = STEP_CONFIG[step_index]
+    role_file, wants_artifact, tools, max_turns, timeout_s, wants_persona = STEP_CONFIG[step_index]
     role = (ROLES / role_file).read_text()
     item = task["item"]
+    if wants_persona:
+        role = compose_role(role, item.get("persona"))
 
     ws = workspace_path(item["repo"]) if item.get("repo") else None
     if ws is not None and not (ws / ".git").exists():

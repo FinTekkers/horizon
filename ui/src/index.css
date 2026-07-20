@@ -264,6 +264,7 @@ button { font-family: var(--font-sans); }
 .card__seg { flex: 1; height: 5px; border-radius: 3px; }
 .card__status-row { display: flex; align-items: center; justify-content: space-between; margin-bottom: 2px; }
 .card__phase { font: 500 12px var(--font-sans); color: var(--muted); }
+.card__persona { font: 700 11px var(--font-sans); margin-left: auto; margin-right: 8px; }
 
 .status-pill {
   display: inline-flex; align-items: center; gap: 6px;
@@ -429,6 +430,13 @@ button { font-family: var(--font-sans); }
   white-space: pre-wrap;
 }
 .step-card__actions { display: flex; gap: 8px; margin-top: 12px; flex-wrap: wrap; }
+
+.step-card__persona { display: flex; align-items: center; gap: 10px; margin-top: 12px; }
+.step-card__persona-label { font: 700 11px var(--font-sans); color: var(--muted); text-transform: uppercase; letter-spacing: 0.4px; }
+.step-card__persona-select {
+  border: 1px solid var(--border); border-radius: 9px; padding: 7px 10px;
+  font: 500 12.5px var(--font-sans); color: var(--deep); background: #fff;
+}
 
 .btn-pr-review {
   display: inline-flex; align-items: center; gap: 6px;

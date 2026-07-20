@@ -27,4 +27,5 @@ export const {
   requestChanges,
   togglePause,
   restartPhase,
+  setPersona,
 } = impl

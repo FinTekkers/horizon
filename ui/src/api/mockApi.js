@@ -14,6 +14,7 @@
 //   POST /items/:id/feedback                   → sendFeedback(id, target, message)
 
 import { STEPS, PHASES, isClosed } from '../domain/lifecycle'
+import { PERSONAS } from '../domain/personas'
 
 const SEED_ITEMS = [
   { id: 'BF-145', title: 'Risk-limit breach dashboard', priority: 'Low', cursor: 1, issue: 412, desc: 'Give risk managers a live view of limit utilization across every desk.', metric: 'Limit breaches acknowledged in < 2 min (from 14 min).', guardrails: 'Read-only — no position mutation. No PII in telemetry.' },
@@ -200,6 +201,17 @@ export function togglePause(id) {
   })
   if (paused) clearTimeout(timers[id])
   else runAgents(id)
+}
+
+export function setPersona(id, persona) {
+  if (!PERSONAS[persona]) return
+  update(id, (it) => ({ ...it, persona }))
+  pushEvent(id, {
+    who: 'You',
+    text: `set the specialist persona to ${PERSONAS[persona].label}`,
+    color: '#5E4380',
+    initials: 'YOU',
+  })
 }
 
 export function restartPhase(id, phase, reason) {

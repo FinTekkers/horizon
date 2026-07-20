@@ -10,6 +10,7 @@ import { marked } from 'marked'
 import { db } from './db.js'
 import { getActiveProjectId, getRepoUrl, setSetting, getToken, humanKeyConfigured, setHumanKey, verifyHumanKey } from './settings.js'
 import { STEPS } from './lifecycle.js'
+import { PERSONAS } from './personas.js'
 
 // ---- SSE ----
 
@@ -342,6 +343,23 @@ export function buildApp({ logger = true } = {}) {
       },
     },
     (request, reply) => send(reply, store.setPaused(request.params.id, request.body.paused)),
+  )
+
+  // Confirm/override the specialist persona (proposed by the PM at intake).
+  // Unknown ids 400 at the schema layer; the next dispatch reads the item.
+  fastify.post(
+    '/api/items/:id/persona',
+    {
+      schema: {
+        params: idParam,
+        body: {
+          type: 'object',
+          required: ['persona'],
+          properties: { persona: { type: 'string', enum: Object.keys(PERSONAS) } },
+        },
+      },
+    },
+    (request, reply) => send(reply, store.setPersona(request.params.id, request.body.persona)),
   )
 
   fastify.post(

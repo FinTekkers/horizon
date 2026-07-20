@@ -78,6 +78,52 @@ test('the same GitHub comment id is ingested exactly once', () => {
   assert.equal(feedbackRows('T-GATE').filter((r) => r.gh_comment_id === 777).length, 1)
 })
 
+// ---- specialist persona (HZ-4) ----
+
+test('the persona migration is idempotent and NULL rows read back as null', () => {
+  // Re-running the ALTER is what db.js's migration loop does on every boot.
+  assert.throws(() => db.exec('ALTER TABLE work_item ADD COLUMN persona TEXT'), /duplicate column/)
+  const gate = store.listItems().find((it) => it.id === 'T-GATE')
+  assert.equal(gate.persona, null) // farm/UI resolve NULL to fullstack
+})
+
+test('setPersona validates, persists, logs an event and notifies', () => {
+  let notified = 0
+  const off = store.onChange(() => notified++)
+  assert.deepEqual(store.setPersona('NOPE-1', 'python_backend'), { error: 'not_found' })
+  assert.deepEqual(store.setPersona('T-CLOSED', 'python_backend'), { error: 'closed' })
+  assert.deepEqual(store.setPersona('T-GATE', 'rustacean'), { error: 'bad_persona' })
+  assert.equal(notified, 0)
+
+  assert.deepEqual(store.setPersona('T-GATE', 'python_backend'), { ok: true })
+  assert.equal(notified, 1)
+  assert.equal(store.getItem('T-GATE').persona, 'python_backend')
+  const event = db.prepare("SELECT text FROM event WHERE item_id = 'T-GATE' ORDER BY id DESC").get()
+  assert.equal(event.text, 'set the specialist persona to Python backend')
+  off()
+})
+
+test('setPersona rejects items in an inactive project', () => {
+  const projectA = db.prepare("INSERT INTO project (name) VALUES ('proj-a')").run().lastInsertRowid
+  const projectB = db.prepare("INSERT INTO project (name) VALUES ('proj-b')").run().lastInsertRowid
+  db.prepare("INSERT INTO work_item (id, title, priority, cursor, project_id) VALUES ('T-OTHER', 'Other project', 'Medium', 3, ?)").run(projectB)
+  db.prepare("INSERT OR REPLACE INTO setting (key, value) VALUES ('active_project_id', ?)").run(String(projectA))
+  assert.deepEqual(store.setPersona('T-OTHER', 'fullstack'), { error: 'project_not_active' })
+  db.prepare("DELETE FROM setting WHERE key = 'active_project_id'").run()
+})
+
+test('upsertFromGithub never clobbers the persona', () => {
+  const projectId = db.prepare("INSERT INTO project (name) VALUES ('gh-sync')").run().lastInsertRowid
+  db.prepare("INSERT INTO project_repo (project_id, repo, prefix) VALUES (?, 'acme/demo', 'AC')").run(projectId)
+  store.upsertFromGithub({ number: 9, title: 'Synced item', body: 'do the thing', state: 'open', labels: [] }, 'acme/demo')
+  assert.deepEqual(store.setPersona('AC-9', 'frontend_ui'), { ok: true })
+  // A later sync (edited title/body) must leave the human's persona alone.
+  store.upsertFromGithub({ number: 9, title: 'Synced item (edited)', body: 'do it better', state: 'open', labels: [] }, 'acme/demo')
+  const item = store.getItem('AC-9')
+  assert.equal(item.title, 'Synced item (edited)')
+  assert.equal(item.persona, 'frontend_ui')
+})
+
 test('parseIssueBody lifts Outcome / Success metric / Guardrails sections', () => {
   const parsed = store.parseIssueBody(
     '## Outcome\nShip the thing\n\n## Success metric\nIt works\n\n## Guardrails\nTests pass',
