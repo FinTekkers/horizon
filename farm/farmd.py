@@ -123,6 +123,11 @@ def _ephemeral_dispatcher() -> None:
                 continue
             for task_path in sorted(runs_dir.glob("*.json"), key=lambda p: p.stat().st_mtime)[:slots]:
                 task = json.loads(task_path.read_text())
+                # Implement steps share one workspace clone per repo: never run
+                # two at once (they'd fight over the working tree). Planning
+                # steps read-only and parallelize freely.
+                if task["step"].get("index") == 11 and any("-s11-" in s for s in _ephemeral_sessions()):
+                    continue
                 active = runs_dir / "active"
                 active.mkdir(exist_ok=True)
                 claimed = active / task_path.name
