@@ -10,6 +10,8 @@ export const {
   subscribe,
   getItems,
   getSync,
+  getSecurity,
+  saveHumanKey,
   getProjects,
   getActiveProjectId,
   getFarm,

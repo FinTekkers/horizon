@@ -8,7 +8,7 @@ import * as orchestrator from './orchestrator.js'
 import { WEBHOOK_SECRET, FARM_SHARED_SECRET, UI_URL } from './config.js'
 import { marked } from 'marked'
 import { db } from './db.js'
-import { getActiveProjectId, getRepoUrl, setSetting, getToken } from './settings.js'
+import { getActiveProjectId, getRepoUrl, setSetting, getToken, humanKeyConfigured, setHumanKey, verifyHumanKey } from './settings.js'
 import { STEPS } from './lifecycle.js'
 
 // ---- SSE ----
@@ -22,8 +22,18 @@ function snapshot() {
     activeProjectId: getActiveProjectId(),
     farm: orchestrator.getFarmState(),
     sync: github.getSyncState(),
+    security: { gateKeyConfigured: humanKeyConfigured() },
     items: store.listItems(), // scoped to the active project
   }
+}
+
+// Human gates are human-only: once a gate key is set, gate-mutating routes
+// demand it. The plaintext lives only in the human's browser — agents (and
+// anything else on this machine) can at best read the hash.
+function humanAuthorized(request, reply) {
+  if (verifyHumanKey(request.headers['x-human-key'] || '')) return true
+  reply.code(401).send({ error: 'human_gate_key_required' })
+  return false
 }
 
 export function broadcast() {
@@ -197,6 +207,7 @@ export function buildApp({ logger = true } = {}) {
       },
     },
     async (request, reply) => {
+      if (!humanAuthorized(request, reply)) return
       const { id, stepIndex } = request.params
       const notes = (request.body?.notes || '').trim()
       // Accepting the code means merging its PR — the gate does not advance if
@@ -278,7 +289,10 @@ export function buildApp({ logger = true } = {}) {
         },
       },
     },
-    (request, reply) => send(reply, store.requestChanges(request.params.id, request.body?.target, request.body?.feedback)),
+    (request, reply) => {
+      if (!humanAuthorized(request, reply)) return
+      return send(reply, store.requestChanges(request.params.id, request.body?.target, request.body?.feedback))
+    },
   )
 
   // Standalone feedback — the UI leg of "agents respond to feedback". If the
@@ -345,7 +359,35 @@ export function buildApp({ logger = true } = {}) {
         },
       },
     },
-    (request, reply) => send(reply, store.restartPhase(request.params.id, request.params.phase, request.body?.reason)),
+    (request, reply) => {
+      if (!humanAuthorized(request, reply)) return
+      return send(reply, store.restartPhase(request.params.id, request.params.phase, request.body?.reason))
+    },
+  )
+
+  // Set/rotate the human gate key (rotating requires the current one).
+  fastify.post(
+    '/api/security/key',
+    {
+      schema: {
+        body: {
+          type: 'object',
+          required: ['key'],
+          properties: {
+            key: { type: 'string', minLength: 4, maxLength: 200 },
+            currentKey: { type: 'string', maxLength: 200 },
+          },
+        },
+      },
+    },
+    (request, reply) => {
+      if (humanKeyConfigured() && !verifyHumanKey(request.body.currentKey || '')) {
+        return reply.code(401).send({ error: 'current gate key required to change it' })
+      }
+      setHumanKey(request.body.key.trim())
+      broadcast()
+      return { ok: true }
+    },
   )
 
   // ---- GitHub sync configuration (from the UI) ----

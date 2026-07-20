@@ -9,6 +9,7 @@ let projects = []
 let activeProjectId = null
 let farm = { status: 'running' }
 let sync = { tokenConfigured: false, repos: [] }
+let security = { gateKeyConfigured: false }
 let started = false
 const listeners = new Set()
 
@@ -19,6 +20,7 @@ function emit() {
 function applySnapshot(data) {
   repoUrl = data.repoUrl || repoUrl
   sync = data.sync || sync
+  security = data.security || security
   projects = data.projects || projects
   activeProjectId = data.activeProjectId ?? activeProjectId
   farm = data.farm || farm
@@ -81,6 +83,52 @@ export function getItems() {
 
 export function getSync() {
   return sync
+}
+
+export function getSecurity() {
+  return security
+}
+
+// ---- human gate key ----
+// The plaintext key lives ONLY here (browser localStorage); the server keeps
+// a hash. Gate actions send it as a header; agents have no way to obtain it.
+
+const KEY_STORAGE = 'horizon_human_key'
+
+function humanKey() {
+  return localStorage.getItem(KEY_STORAGE) || ''
+}
+
+function promptForKey(message) {
+  const key = window.prompt(message)
+  if (key) localStorage.setItem(KEY_STORAGE, key)
+  return key || ''
+}
+
+async function gatePost(path, body) {
+  let key = humanKey()
+  if (security.gateKeyConfigured && !key) {
+    key = promptForKey('Enter the human gate key (set in Admin → Security):')
+  }
+  const doFetch = (k) =>
+    fetch(`/api${path}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'x-human-key': k },
+      body: JSON.stringify(body ?? {}),
+    })
+  let res = await doFetch(key).catch(() => null)
+  if (res && res.status === 401) {
+    localStorage.removeItem(KEY_STORAGE)
+    const retryKey = promptForKey('Gate key incorrect — enter the human gate key:')
+    if (retryKey) res = await doFetch(retryKey).catch(() => null)
+  }
+  return res
+}
+
+export async function saveHumanKey(key, currentKey) {
+  const result = await postJson('/security/key', { key, currentKey: currentKey || '' })
+  localStorage.setItem(KEY_STORAGE, key) // this browser is the key holder
+  return result
 }
 
 export function getProjects() {
@@ -163,18 +211,14 @@ export async function approveGate(id, notes) {
   // Approving "Accept the code" merges the PR server-side. If GitHub refuses
   // (conflicts, required checks), open the PR so the human resolves it there,
   // then approves the gate again.
-  const res = await fetch(`/api/items/${id}/gates/${item.cursor}/approve`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(notes ? { notes } : {}),
-  }).catch(() => null)
-  if (res && !res.ok && item.pr_url) {
+  const res = await gatePost(`/items/${id}/gates/${item.cursor}/approve`, notes ? { notes } : {})
+  if (res && !res.ok && res.status !== 401 && item.pr_url) {
     window.open(item.pr_url, '_blank', 'noopener')
   }
 }
 
 export function requestChanges(id, target, feedback) {
-  post(`/items/${id}/reject`, { target: target || '', feedback: feedback || '' })
+  gatePost(`/items/${id}/reject`, { target: target || '', feedback: feedback || '' })
 }
 
 export function togglePause(id) {
@@ -184,5 +228,5 @@ export function togglePause(id) {
 }
 
 export function restartPhase(id, phase, reason) {
-  post(`/items/${id}/phases/${phase}/restart`, { reason: reason || '' })
+  gatePost(`/items/${id}/phases/${phase}/restart`, { reason: reason || '' })
 }

@@ -127,7 +127,9 @@ export default function App() {
         />
       )}
 
-      {view === 'admin' && <AdminPage sync={sync} projects={projects} onBack={toBoard} />}
+      {view === 'admin' && (
+        <AdminPage sync={sync} security={api.getSecurity()} projects={projects} onBack={toBoard} />
+      )}
 
       {view === 'tracker' && selected && (
         <Tracker

@@ -70,6 +70,14 @@ export function getSync() {
   return null
 }
 
+export function getSecurity() {
+  return { gateKeyConfigured: false }
+}
+
+export async function saveHumanKey() {
+  throw new Error('The gate key is not available in mock mode')
+}
+
 export function getProjects() {
   return []
 }

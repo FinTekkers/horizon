@@ -1,6 +1,80 @@
 import { useState } from 'react'
-import { saveToken, createProject, addRepoToProject, disconnectRepo } from '../api'
-import { BackIcon, GithubIcon } from './icons'
+import { saveToken, createProject, addRepoToProject, disconnectRepo, saveHumanKey } from '../api'
+import { BackIcon, GithubIcon, LockIcon } from './icons'
+
+function SecurityPanel({ security }) {
+  const [key, setKey] = useState('')
+  const [currentKey, setCurrentKey] = useState('')
+  const [error, setError] = useState(null)
+  const [success, setSuccess] = useState(null)
+  const [busy, setBusy] = useState(false)
+  const configured = security?.gateKeyConfigured
+
+  const submit = async () => {
+    if (key.trim().length < 4) {
+      setError('Use at least 4 characters')
+      return
+    }
+    setBusy(true)
+    setError(null)
+    setSuccess(null)
+    try {
+      await saveHumanKey(key.trim(), currentKey.trim())
+      setKey('')
+      setCurrentKey('')
+      setSuccess('Gate key saved — approvals, send-backs and phase restarts now require it.')
+    } catch (err) {
+      setError(err.message)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <div className="panel admin__panel">
+      <div className="panel__title admin__panel-title">
+        <LockIcon size={18} />
+        Security · human gate key
+      </div>
+      <div className="panel__subtitle">
+        Human gates are human-only: gate actions (approve, send back, restart phase) require this key. The
+        server stores only a hash — the key itself lives in your browser, where agents can't reach it.
+      </div>
+
+      <div className="admin-status">
+        <span className="admin-status__dot" style={{ background: configured ? '#0E6E74' : '#DFA200' }} />
+        {configured ? 'Gate key set — gates are locked to key holders' : 'No gate key — gates are open to anything that can reach the API'}
+      </div>
+
+      {configured && (
+        <div className="field">
+          <div className="field__label">Current key (required to change it)</div>
+          <input className="field__input" type="password" value={currentKey} onChange={(e) => setCurrentKey(e.target.value)} />
+        </div>
+      )}
+      <div className="field">
+        <div className="field__label">{configured ? 'New key' : 'Gate key'}</div>
+        <input
+          className="field__input"
+          type="password"
+          placeholder="A PIN or passphrase only you know"
+          value={key}
+          onChange={(e) => setKey(e.target.value)}
+          onKeyDown={(e) => e.key === 'Enter' && submit()}
+        />
+      </div>
+
+      {error && <div className="gh-error">{error}</div>}
+      {success && <div className="gh-success">{success}</div>}
+
+      <div className="composer__actions">
+        <button className="composer__submit" style={{ background: '#0E6E74' }} onClick={submit} disabled={busy}>
+          {busy ? 'Saving…' : configured ? 'Rotate key' : 'Set gate key'}
+        </button>
+      </div>
+    </div>
+  )
+}
 
 function TokenPanel({ sync }) {
   const [token, setToken] = useState('')
@@ -254,7 +328,7 @@ function ProjectsPanel({ projects, sync }) {
   )
 }
 
-export default function AdminPage({ sync, projects, onBack }) {
+export default function AdminPage({ sync, security, projects, onBack }) {
   return (
     <div className="admin">
       <button className="tracker__back" onClick={onBack}>
@@ -262,6 +336,8 @@ export default function AdminPage({ sync, projects, onBack }) {
         Back to board
       </button>
       <div className="admin__title">Admin</div>
+      <SecurityPanel security={security} />
+      <div style={{ height: 22 }} />
       <TokenPanel sync={sync} />
       <div style={{ height: 22 }} />
       <ProjectsPanel projects={projects} sync={sync} />
