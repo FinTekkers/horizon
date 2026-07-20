@@ -8,6 +8,7 @@ import {
   awaitingGate,
   priorityColor,
 } from '../domain/lifecycle'
+import { personaFor } from '../domain/personas'
 import { itemStatus } from '../domain/status'
 import { issueUrl, issueLabel } from '../api'
 import StatusPill from './StatusPill'
@@ -75,6 +76,9 @@ function BoardCard({ item, onOpen, onApprove, onReject, onTogglePause }) {
       </div>
       <div className="card__status-row">
         <span className="card__phase">{PHASES[phaseIdx(item)]}</span>
+        <span className="card__persona" style={{ color: personaFor(item).color }} title="Specialist persona">
+          {personaFor(item).label}
+        </span>
         <StatusPill status={itemStatus(item)} />
       </div>
 

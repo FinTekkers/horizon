@@ -74,6 +74,31 @@ test('feedback on a live agent step returns {ok:true,rerun:true} and re-runs it 
   orchestrator.cancel('T-AGENT', 'cancelled') // don't leave the mock timer running
 })
 
+// ---- specialist persona endpoint (HZ-4) ----
+
+const personaPost = (id, payload) => app.inject({ method: 'POST', url: `/api/items/${id}/persona`, payload })
+
+test('setting a persona returns 200, persists, and the snapshot carries it', async () => {
+  const res = await personaPost('T-GATE', { persona: 'python_backend' })
+  assert.equal(res.statusCode, 200)
+  assert.deepEqual(res.json(), { ok: true })
+  assert.equal(db.prepare("SELECT persona FROM work_item WHERE id = 'T-GATE'").get().persona, 'python_backend')
+  const snapshot = (await app.inject({ method: 'GET', url: '/api/items' })).json()
+  assert.equal(snapshot.items.find((it) => it.id === 'T-GATE').persona, 'python_backend')
+})
+
+test('an unknown persona id is rejected at the schema layer (400)', async () => {
+  assert.equal((await personaPost('T-GATE', { persona: 'rustacean' })).statusCode, 400)
+  assert.equal((await personaPost('T-GATE', {})).statusCode, 400)
+})
+
+test('persona on an unknown item is 404, on a closed item 409', async () => {
+  assert.equal((await personaPost('NOPE-9', { persona: 'fullstack' })).statusCode, 404)
+  const closed = await personaPost('T-CLOSED', { persona: 'fullstack' })
+  assert.equal(closed.statusCode, 409)
+  assert.deepEqual(closed.json(), { error: 'closed' })
+})
+
 test('webhook endpoint reports 503 when no secret is configured', async () => {
   const res = await app.inject({
     method: 'POST',

@@ -4,8 +4,11 @@ side needs to advance the item ("agents push tasks forward")."""
 
 import subprocess
 
+import pytest
+
 from farm import step_agent
-from farm.step_agent import build_prompt, execute
+from farm.personas import PERSONA_DIR, PERSONAS
+from farm.step_agent import STEP_CONFIG, build_prompt, execute
 
 
 def make_task(step_index, label, repo=None, feedback=None, artifacts=None):
@@ -59,8 +62,8 @@ def git(cwd, *args):
     subprocess.run(["git", "-C", str(cwd), *args], check=True, capture_output=True, text=True)
 
 
-def test_implement_step_pushes_a_branch(tmp_path, monkeypatch):
-    # A local origin stands in for GitHub: seed repo -> bare origin -> workspace clone.
+def make_git_workspace(tmp_path):
+    """A local origin stands in for GitHub: seed repo -> bare origin -> clone."""
     seed = tmp_path / "seed"
     seed.mkdir()
     git(tmp_path, "init", "-b", "main", "seed")
@@ -75,7 +78,11 @@ def test_implement_step_pushes_a_branch(tmp_path, monkeypatch):
     subprocess.run(["git", "clone", "--quiet", str(origin), str(ws)], check=True, capture_output=True)
     git(ws, "config", "user.email", "farm@example.com")
     git(ws, "config", "user.name", "Horizon Farm")
+    return ws, origin
 
+
+def test_implement_step_pushes_a_branch(tmp_path, monkeypatch):
+    ws, origin = make_git_workspace(tmp_path)
     monkeypatch.setattr(step_agent, "workspace_path", lambda repo: ws)
 
     result = execute(make_task(11, "Specialist agent implements", repo="acme/demo"))
@@ -98,21 +105,7 @@ def test_implement_step_pushes_a_branch(tmp_path, monkeypatch):
 
 
 def test_implement_step_fails_when_checks_fail(tmp_path, monkeypatch):
-    seed = tmp_path / "seed"
-    seed.mkdir()
-    git(tmp_path, "init", "-b", "main", "seed")
-    git(seed, "config", "user.email", "test@example.com")
-    git(seed, "config", "user.name", "Test")
-    (seed / "README.md").write_text("# demo\n")
-    git(seed, "add", "-A")
-    git(seed, "commit", "-m", "initial")
-    origin = tmp_path / "origin.git"
-    subprocess.run(["git", "clone", "--bare", "--quiet", str(seed), str(origin)], check=True, capture_output=True)
-    ws = tmp_path / "ws"
-    subprocess.run(["git", "clone", "--quiet", str(origin), str(ws)], check=True, capture_output=True)
-    git(ws, "config", "user.email", "farm@example.com")
-    git(ws, "config", "user.name", "Horizon Farm")
-
+    ws, origin = make_git_workspace(tmp_path)
     monkeypatch.setattr(step_agent, "workspace_path", lambda repo: ws)
     monkeypatch.setenv("FARM_CHECK_CMD", "exit 1")
 
@@ -129,3 +122,77 @@ def test_implement_step_fails_when_checks_fail(tmp_path, monkeypatch):
         ["git", "--git-dir", str(origin), "branch", "--list"], capture_output=True, text=True, check=True
     ).stdout
     assert "horizon/t-1" not in branches
+
+
+# ---- persona injection (HZ-4) ----
+# The farm-side link of the success metric: an item tagged python_backend runs
+# its specialist steps with the Python persona composed into the role prompt,
+# a frontend_ui item with the UI persona — and planning steps stay generalist.
+
+
+def capture_run_claude(captured):
+    def _fake(prompt, **kwargs):
+        captured.update(kwargs, prompt=prompt)
+        return {"result": '{"summary": "did the step", "artifact_md": "# out"}'}
+
+    return _fake
+
+
+def persona_md(persona_id):
+    return (PERSONA_DIR / PERSONAS[persona_id]).read_text()
+
+
+def test_qa_step_composes_the_items_persona_into_the_role(monkeypatch):
+    captured = {}
+    monkeypatch.setattr(step_agent, "run_claude", capture_run_claude(captured))
+    task = make_task(8, "QA reviews the test plan")
+    task["item"]["persona"] = "python_backend"
+    execute(task)
+    assert "## Your specialization" in captured["append_system"]
+    assert persona_md("python_backend") in captured["append_system"]
+    assert persona_md("frontend_ui") not in captured["append_system"]
+
+
+def test_implement_step_composes_the_items_persona(tmp_path, monkeypatch):
+    ws, _origin = make_git_workspace(tmp_path)
+    monkeypatch.setattr(step_agent, "workspace_path", lambda repo: ws)
+    captured = {}
+    monkeypatch.setattr(step_agent, "run_claude", capture_run_claude(captured))
+    task = make_task(11, "Specialist agent implements", repo="acme/demo")
+    task["item"]["persona"] = "frontend_ui"
+    # The captured stub edits no files, so the push step correctly balks —
+    # the role had already been composed and passed to the model by then.
+    with pytest.raises(RuntimeError, match="no code changes"):
+        execute(task)
+    assert persona_md("frontend_ui") in captured["append_system"]
+
+
+def test_planning_steps_do_not_get_a_persona(monkeypatch):
+    for index, label in [
+        (4, "Plan options & trade-offs (pros / cons)"),
+        (6, "Draft implementation plan"),
+        (7, "Architecture review"),
+    ]:
+        captured = {}
+        monkeypatch.setattr(step_agent, "run_claude", capture_run_claude(captured))
+        task = make_task(index, label)
+        task["item"]["persona"] = "python_backend"
+        execute(task)
+        assert "## Your specialization" not in captured["append_system"], f"step {index} leaked a persona"
+
+
+def test_step_config_persona_flags_match_the_design():
+    wants = {index: config[5] for index, config in STEP_CONFIG.items()}
+    assert wants == {4: False, 6: False, 7: False, 8: True, 11: True}
+
+
+def test_build_prompt_renders_the_resolved_persona():
+    task = make_task(6, "Draft implementation plan")
+    task["item"]["persona"] = "python_backend"
+    assert "persona: python_backend" in build_prompt(task)
+
+
+def test_build_prompt_renders_default_persona_never_none():
+    prompt = build_prompt(make_task(6, "Draft implementation plan"))
+    assert "persona: fullstack" in prompt
+    assert "persona: None" not in prompt

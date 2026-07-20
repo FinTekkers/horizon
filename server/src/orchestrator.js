@@ -16,10 +16,12 @@ import { createMockPr, createDeployRelease, postIssueComment, createPrFromBranch
 import { PHASES } from './lifecycle.js'
 import { getActiveProjectId, getSetting, setSetting, getToken } from './settings.js'
 import { FARM_URL, FARM_STEP_INDEXES, FARM_STEP_TIMEOUT_MS, FARM_START_TIMEOUT_MS, UI_URL } from './config.js'
+import { isPersona, personaLabel, proposePersona } from './personas.js'
 
 const timers = {}
 
-const latency = () => 2000 + Math.floor(Math.random() * 3000)
+// MOCK_STEP_LATENCY_MS lets tests drive the mock pipeline without waiting.
+const latency = () => Number(process.env.MOCK_STEP_LATENCY_MS) || 2000 + Math.floor(Math.random() * 3000)
 
 // ---- bot farm lifecycle ----
 // The farm runs with ONE project's context at a time. Switching projects
@@ -142,11 +144,20 @@ function resumeActiveItems() {
 // Mock behavior per step index (the pipeline is fixed — see lifecycle.js).
 // Returns { summary, patch? } where patch updates work_item fields, mimicking
 // the artifacts each agent is supposed to produce.
-const MOCK_STEP_BEHAVIOR = {
-  0: (it) =>
-    it.desc
-      ? { summary: 'refined the outcome statement from the issue description' }
-      : { summary: 'drafted an outcome statement for gate review', patch: { desc: `Deliver: ${it.title}` } },
+export const MOCK_STEP_BEHAVIOR = {
+  0: (it) => {
+    const result = it.desc
+      ? { summary: 'refined the outcome statement from the issue description', patch: {} }
+      : { summary: 'drafted an outcome statement for gate review', patch: { desc: `Deliver: ${it.title}` } }
+    // Propose a specialist persona once; never re-propose over a set value —
+    // it may be a human's choice (the server-side no-clobber is the real guard).
+    if (!it.persona) {
+      result.patch.persona = proposePersona(it)
+      result.summary += ` — proposed the ${personaLabel(result.patch.persona)} persona (confirm at the gate)`
+    }
+    if (Object.keys(result.patch).length === 0) delete result.patch
+    return result
+  },
   1: (it) =>
     it.metric
       ? { summary: 'validated the success metric is measurable' }
@@ -165,7 +176,9 @@ const MOCK_STEP_BEHAVIOR = {
   6: () => ({ summary: 'drafted the implementation plan: components touched, sequencing, test impact' }),
   7: () => ({ summary: 'architecture review passed — no encapsulation or duplication concerns' }),
   8: () => ({ summary: 'test plan covers the success metric; added two edge cases' }),
-  9: () => ({ summary: 'digested the plan reviews: no blocking concerns; recommends proceeding to execution' }),
+  // The digest must never imply a decision — in demo mode there is no real PM
+  // review, and only the human decides at the gate that follows.
+  9: () => ({ summary: 'review digest unavailable in demo mode — a human must decide at the next gate' }),
   // Execute: the code change takes the form of a GitHub PR. The mock commits
   // a placeholder file; the PR/branch mechanics are the real integration.
   11: async (it) => {
@@ -278,6 +291,7 @@ function dispatchToFarm(id, stepIndex, runId, attempt) {
       priority: item.priority,
       repo: item.repo,
       issue: item.issue,
+      persona: item.persona,
     },
     step: { index: stepIndex, label: step.label, agent: step.agent },
     feedback,
@@ -286,20 +300,22 @@ function dispatchToFarm(id, stepIndex, runId, attempt) {
   })
 }
 
-const FARM_PATCH_FIELDS = ['desc', 'metric', 'guardrails']
-const PATCH_FIELD_LABELS = { desc: 'Outcome', metric: 'Success metric', guardrails: 'Guardrails' }
+const FARM_PATCH_FIELDS = ['desc', 'metric', 'guardrails', 'persona']
+const PATCH_FIELD_LABELS = { desc: 'Outcome', metric: 'Success metric', guardrails: 'Guardrails', persona: 'Specialist persona' }
 
-// Every completed agent step is mirrored onto the GitHub issue — the issue
-// thread is the human-readable record of what the bots did.
-function postStepComment(item, stepIndex, attempt, summary, patch, isMock, artifactMd) {
-  if (!item.repo || item.issue == null) return
+// Exported for tests: the comment body is the human-readable record, so its
+// rendering (e.g. persona labels, never raw ids) is pinned directly.
+export function stepCommentBody(item, stepIndex, attempt, summary, patch, isMock, artifactMd) {
   const step = STEPS[stepIndex]
   const agent = AGENTS[step.agent]
   const lines = [`### 🤖 ${agent.label} — ${step.label}`, '', summary]
   const changed = Object.keys(patch || {}).filter((k) => PATCH_FIELD_LABELS[k])
   if (changed.length > 0) {
     lines.push('', '**Updated fields:**')
-    for (const key of changed) lines.push(`- **${PATCH_FIELD_LABELS[key]}:** ${patch[key]}`)
+    for (const key of changed) {
+      const shown = key === 'persona' ? personaLabel(patch[key]) : patch[key]
+      lines.push(`- **${PATCH_FIELD_LABELS[key]}:** ${shown}`)
+    }
   }
   if (artifactMd) {
     lines.push('', '---', '', artifactMd.slice(0, 60000)) // GitHub's comment cap is 65536
@@ -308,7 +324,14 @@ function postStepComment(item, stepIndex, attempt, summary, patch, isMock, artif
     '',
     `_${PHASES[step.phase]} phase · attempt ${attempt}${isMock ? ' · mock agent' : ''} · [open in Horizon](${UI_URL}/${item.id.toLowerCase()}) · posted by Horizon_`,
   )
-  postIssueComment(item, lines.join('\n')).catch((err) => {
+  return lines.join('\n')
+}
+
+// Every completed agent step is mirrored onto the GitHub issue — the issue
+// thread is the human-readable record of what the bots did.
+function postStepComment(item, stepIndex, attempt, summary, patch, isMock, artifactMd) {
+  if (!item.repo || item.issue == null) return
+  postIssueComment(item, stepCommentBody(item, stepIndex, attempt, summary, patch, isMock, artifactMd)).catch((err) => {
     addEvent(item.id, {
       who: 'Horizon',
       text: `could not post the step result to issue #${item.issue}: ${err.message}`,
@@ -337,6 +360,10 @@ export async function completeFarmRun(runId, { summary, patch, artifacts }) {
   for (const field of FARM_PATCH_FIELDS) {
     if (typeof patch?.[field] === 'string' && patch[field].trim()) cleanPatch[field] = patch[field].trim()
   }
+  // Persona patches are dropped (not failed) when invalid, and when the item
+  // already carries one — a set value may be a human's gate-time choice, and
+  // the farm must never clobber it. The run itself still completes.
+  if ('persona' in cleanPatch && (!isPersona(cleanPatch.persona) || item.persona)) delete cleanPatch.persona
   if (Object.keys(cleanPatch).length > 0) {
     const fields = Object.keys(cleanPatch)
     db.prepare(

@@ -10,6 +10,7 @@ import {
   phaseStepIndexes,
   priorityColor,
 } from '../domain/lifecycle'
+import { PERSONAS, personaFor, personaId } from '../domain/personas'
 import { itemStatus } from '../domain/status'
 import { issueUrl, issueLabel } from '../api'
 import StatusPill from './StatusPill'
@@ -34,10 +35,13 @@ const STEP_META = {
 
 const STEP_META_COLOR = { awaiting: '#9A6E00', blocked: '#9C333E', active: '#2E6CB2' }
 
-function Step({ item, index, onApprove, onApproveWithComments, onReject }) {
+function Step({ item, index, onApprove, onApproveWithComments, onReject, onSetPersona }) {
   const st = STEPS[index]
   const status = stepStatus(item, index)
   const isGate = st.kind === 'gate'
+  // The intake gate doubles as the human confirmation of the PM-proposed
+  // specialist persona: approving with the select's value confirms it.
+  const showsPersonaPicker = status === 'awaiting' && st.label === 'Approve & prioritize this work'
   const agent = isGate ? AGENTS.Human : AGENTS[st.agent]
   const agentLabel = isGate ? (st.gate === 'optional' ? 'Human gate · optional' : 'Human gate') : agent.label
 
@@ -86,6 +90,25 @@ function Step({ item, index, onApprove, onApproveWithComments, onReject }) {
             >
               View full artifact ↗
             </a>
+          )}
+          {showsPersonaPicker && (
+            <div className="step-card__persona">
+              <label className="step-card__persona-label" htmlFor={`persona-${item.id}`}>
+                Specialist persona
+              </label>
+              <select
+                id={`persona-${item.id}`}
+                className="step-card__persona-select"
+                value={personaId(item)}
+                onChange={(e) => onSetPersona(item.id, e.target.value)}
+              >
+                {Object.entries(PERSONAS).map(([id, p]) => (
+                  <option key={id} value={id}>
+                    {p.label}
+                  </option>
+                ))}
+              </select>
+            </div>
           )}
           {status === 'awaiting' && (
             <div className="step-card__actions">
@@ -163,7 +186,7 @@ function buildActivity(item) {
     })
 }
 
-export default function Tracker({ item, onBack, onApprove, onApproveWithComments, onReject, onTogglePause, onRestartPhase }) {
+export default function Tracker({ item, onBack, onApprove, onApproveWithComments, onReject, onTogglePause, onRestartPhase, onSetPersona }) {
   const status = itemStatus(item, true)
   const activity = buildActivity(item)
 
@@ -182,6 +205,10 @@ export default function Tracker({ item, onBack, onApprove, onApproveWithComments
               <span className="tracker__priority" style={{ color: priorityColor(item.priority) }}>
                 <span className="tracker__priority-dot" style={{ background: priorityColor(item.priority) }} />
                 {item.priority} priority
+              </span>
+              <span className="tracker__priority" style={{ color: personaFor(item).color }}>
+                <span className="tracker__priority-dot" style={{ background: personaFor(item).color }} />
+                {personaFor(item).label}
               </span>
               {item.issue != null && (
                 <a className="tracker__issue" href={issueUrl(item)} target="_blank" rel="noopener noreferrer">
@@ -261,6 +288,7 @@ export default function Tracker({ item, onBack, onApprove, onApproveWithComments
                     onApprove={onApprove}
                     onApproveWithComments={onApproveWithComments}
                     onReject={onReject}
+                    onSetPersona={onSetPersona}
                   />
                 ))}
               </div>

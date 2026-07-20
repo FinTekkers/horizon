@@ -140,6 +140,7 @@ export default function App() {
           onReject={(id, target) => openComposer('reject', id, { target })}
           onTogglePause={api.togglePause}
           onRestartPhase={(id, phase) => openComposer('restart', id, { phase })}
+          onSetPersona={api.setPersona}
         />
       )}
 

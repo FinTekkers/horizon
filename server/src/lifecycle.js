@@ -24,7 +24,7 @@ export const STEPS = [
   { phase: 1, kind: 'agent', agent: 'Architect', label: 'Architecture review' },
   { phase: 1, kind: 'agent', agent: 'QA', label: 'QA reviews the test plan' },
   { phase: 1, kind: 'agent', agent: 'PM', label: 'Summarize reviews & recommend' },
-  { phase: 1, kind: 'gate', gate: 'optional', label: 'Review before execution' },
+  { phase: 1, kind: 'gate', gate: 'required', label: 'Review before execution' },
   { phase: 2, kind: 'agent', agent: 'Eng', label: 'Specialist agent implements' },
   { phase: 2, kind: 'gate', gate: 'required', label: 'Accept the code' },
   { phase: 3, kind: 'agent', agent: 'DevOps', label: 'Deploy the changes' },

@@ -3,6 +3,7 @@
 
 import { db } from './db.js'
 import { STEPS, PHASES, isClosed, curStep } from './lifecycle.js'
+import { isPersona, personaLabel } from './personas.js'
 import { getActiveProjectId, setSetting } from './settings.js'
 
 const listeners = new Set()
@@ -132,6 +133,7 @@ export function listItems() {
     pr_url: row.pr_url,
     release_tag: row.release_tag,
     release_url: row.release_url,
+    persona: row.persona,
     cursor: row.cursor,
     paused: !!row.paused,
     rejected: !!row.rejected,
@@ -247,6 +249,26 @@ export function setPaused(id, paused) {
   notify()
   if (paused) agentRunner.cancel(id, 'cancelled')
   else agentRunner.kick(id)
+  return { ok: true }
+}
+
+// The human leg of specialist routing: confirm or override the persona the PM
+// proposed (usually at the intake gate; the next dispatch reads the item).
+export function setPersona(id, persona) {
+  const it = getItem(id)
+  if (!it) return { error: 'not_found' }
+  if (inactiveProject(it)) return { error: 'project_not_active' }
+  if (isClosed(it)) return { error: 'closed' }
+  if (!isPersona(persona)) return { error: 'bad_persona' }
+
+  db.prepare(`UPDATE work_item SET persona = ?, ${touch} WHERE id = ?`).run(persona, id)
+  addEvent(id, {
+    who: 'You',
+    text: `set the specialist persona to ${personaLabel(persona)}`,
+    color: '#5E4380',
+    initials: 'YOU',
+  })
+  notify()
   return { ok: true }
 }
 

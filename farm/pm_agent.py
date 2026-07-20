@@ -20,7 +20,9 @@ from .claude_runner import ClaudeError, extract_json, run_claude
 from .config import FARM_PORT, PM_MODEL, QUEUE_DIR, STATE_DIR, ensure_dirs, slugify
 
 ROLE_PROMPT = (Path(__file__).parent / "roles" / "pm.md").read_text()
-PATCH_FIELDS = {"desc": 500, "metric": 400, "guardrails": 400}
+# persona: specialist routing tag (HZ-4) — the server registry-validates it
+# and drops re-proposals over a set value, so the limit is just a size cap.
+PATCH_FIELDS = {"desc": 500, "metric": 400, "guardrails": 400, "persona": 40}
 FARMD = f"http://127.0.0.1:{FARM_PORT}"
 
 
@@ -43,6 +45,7 @@ def build_prompt(task: dict) -> str:
         f"  outcome/description: {item.get('desc') or '(empty)'}",
         f"  success metric: {item.get('metric') or '(empty)'}",
         f"  guardrails: {item.get('guardrails') or '(empty)'}",
+        f"  persona: {item.get('persona') or '(not set)'}",
         "",
         f"Step to perform now: \"{step['label']}\" (attempt {task.get('attempt', 1)})",
     ]
