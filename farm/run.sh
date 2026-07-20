@@ -15,7 +15,13 @@ if [ ! -x "$VENV/bin/python" ]; then
 fi
 "$VENV/bin/pip" install --quiet -r "$FARM_DIR/requirements.txt"
 
-CMD="cd '$ROOT_DIR' && '$VENV/bin/python' -m farm.farmd"
+# tmux sessions inherit the tmux *server's* env, not this shell's — embed the
+# farm-relevant vars into the command so `FARM_WA_ENABLED=1 ./run.sh` works.
+ENV_VARS=""
+while IFS= read -r kv; do
+  ENV_VARS+=" $(printf '%q' "$kv")"
+done < <(env | grep -E '^(FARM_|WA_|HORIZON_URL=)')
+CMD="cd '$ROOT_DIR' && env$ENV_VARS '$VENV/bin/python' -m farm.farmd"
 
 if [ "${1:-}" = "fg" ]; then
   eval "$CMD"
