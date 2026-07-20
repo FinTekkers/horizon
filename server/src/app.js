@@ -5,7 +5,7 @@ import Fastify from 'fastify'
 import * as store from './store.js'
 import * as github from './github.js'
 import * as orchestrator from './orchestrator.js'
-import { WEBHOOK_SECRET, FARM_SHARED_SECRET } from './config.js'
+import { WEBHOOK_SECRET, FARM_SHARED_SECRET, UI_URL } from './config.js'
 import { getActiveProjectId, getRepoUrl, setSetting, getToken } from './settings.js'
 import { STEPS } from './lifecycle.js'
 
@@ -211,7 +211,7 @@ export function buildApp({ logger = true } = {}) {
       // Approval notes are decisions — mirror them onto the issue thread.
       if (!result.error && notes && item?.repo && item.issue != null) {
         github
-          .postIssueComment(item, `### ✅ Gate approved — ${STEPS[stepIndex].label}\n\n> ${notes}\n\n_Human reviewer · posted by Horizon_`)
+          .postIssueComment(item, `### ✅ Gate approved — ${STEPS[stepIndex].label}\n\n> ${notes}\n\n_Human reviewer · [open in Horizon](${UI_URL}/${id.toLowerCase()}) · posted by Horizon_`)
           .catch(() => {})
       }
       return send(reply, result)
@@ -259,7 +259,7 @@ export function buildApp({ logger = true } = {}) {
       // Mirror onto the issue thread (footer marks it ours so ingestion skips it).
       if (!result.error && item?.repo && item.issue != null) {
         github
-          .postIssueComment(item, `### 💬 Feedback\n\n> ${message}\n\n_Human · posted by Horizon_`)
+          .postIssueComment(item, `### 💬 Feedback\n\n> ${message}\n\n_Human · [open in Horizon](${UI_URL}/${id.toLowerCase()}) · posted by Horizon_`)
           .catch(() => {})
       }
       return send(reply, result)

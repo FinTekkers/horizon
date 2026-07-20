@@ -9,7 +9,9 @@ import crypto from 'node:crypto'
 import { db } from './db.js'
 import * as store from './store.js'
 import { getToken, getSetting, setSetting } from './settings.js'
-import { POLL_INTERVAL_MS } from './config.js'
+import { POLL_INTERVAL_MS, UI_URL } from './config.js'
+
+const itemLink = (item) => `[open in Horizon](${UI_URL}/${item.id.toLowerCase()})`
 
 const getCursor = db.prepare('SELECT etag FROM sync_cursor WHERE key = ?')
 const setCursor = db.prepare(`
@@ -216,7 +218,7 @@ export async function createMockPr(item) {
         '## Guardrails',
         item.guardrails || '_(defaults apply)_',
         '',
-        '_Mock implementation opened by the Horizon Eng agent for the “Accept the code” gate._',
+        `_Mock implementation opened by the Horizon Eng agent for the “Accept the code” gate · ${itemLink(item)}._`,
       ].join('\n'),
     }),
   })
@@ -254,7 +256,7 @@ export async function createPrFromBranch(item, branch) {
         '## Guardrails',
         item.guardrails || '_(defaults apply)_',
         '',
-        '_Implemented by the Horizon Eng agent; opened for the “Accept the code” gate._',
+        `_Implemented by the Horizon Eng agent; opened for the “Accept the code” gate · ${itemLink(item)}._`,
       ].join('\n'),
     }),
   })
@@ -392,7 +394,7 @@ export async function closeIssueWithSummary(item) {
     `- Deploy: ${item.release_tag ? `release \`${item.release_tag}\`` : '—'}`,
     `- Success metric: ${item.metric || '—'}`,
     '',
-    '_posted by Horizon_',
+    `_${itemLink(item)} · posted by Horizon_`,
   ].join('\n')
   await gh(`/repos/${repo}/issues/${item.issue}/comments`, {
     method: 'POST',

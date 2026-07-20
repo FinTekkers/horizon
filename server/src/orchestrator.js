@@ -15,7 +15,7 @@ import { getItem, addEvent, notifyChange, registerAgentRunner, recoverRejectedIt
 import { createMockPr, createDeployRelease, postIssueComment, createPrFromBranch } from './github.js'
 import { PHASES } from './lifecycle.js'
 import { getActiveProjectId, getSetting, setSetting, getToken } from './settings.js'
-import { FARM_URL, FARM_STEP_INDEXES, FARM_STEP_TIMEOUT_MS, FARM_START_TIMEOUT_MS } from './config.js'
+import { FARM_URL, FARM_STEP_INDEXES, FARM_STEP_TIMEOUT_MS, FARM_START_TIMEOUT_MS, UI_URL } from './config.js'
 
 const timers = {}
 
@@ -305,7 +305,7 @@ function postStepComment(item, stepIndex, attempt, summary, patch, isMock, artif
   }
   lines.push(
     '',
-    `_${PHASES[step.phase]} phase · attempt ${attempt}${isMock ? ' · mock agent' : ''} · posted by Horizon_`,
+    `_${PHASES[step.phase]} phase · attempt ${attempt}${isMock ? ' · mock agent' : ''} · [open in Horizon](${UI_URL}/${item.id.toLowerCase()}) · posted by Horizon_`,
   )
   postIssueComment(item, lines.join('\n')).catch((err) => {
     addEvent(item.id, {

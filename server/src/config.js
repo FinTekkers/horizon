@@ -10,6 +10,9 @@
 
 export const WEBHOOK_SECRET = process.env.GITHUB_WEBHOOK_SECRET || null
 
+// Where the Horizon UI lives — used for deep links in GitHub comments/PRs.
+export const UI_URL = (process.env.HORIZON_UI_URL || 'http://localhost:5173').replace(/\/+$/, '')
+
 // Agent farm (farm/ Python daemon). FARM_URL unset -> mock agents run in-process.
 export const FARM_URL = process.env.FARM_URL || null
 export const FARM_SHARED_SECRET = process.env.FARM_SHARED_SECRET || 'dev-secret'
