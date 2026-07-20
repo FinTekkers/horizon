@@ -110,6 +110,14 @@ function Step({ item, index, onApprove, onApproveWithComments, onReject, onResol
               </select>
             </div>
           )}
+          {status === 'awaiting' && st.label === 'Accept the code' && item.pr != null && item.pr_mergeable === false && (
+            <div className="step-card__conflict">
+              PR #{item.pr} has merge conflicts with main — approving would fail.
+              <button className="btn-gate-reject" onClick={() => onResolveConflicts(item.id, item.pr)}>
+                Send back to resolve conflicts
+              </button>
+            </div>
+          )}
           {status === 'awaiting' && (
             <div className="step-card__actions">
               {item.pr != null && st.label === 'Accept the code' && (
