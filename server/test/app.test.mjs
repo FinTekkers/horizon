@@ -99,6 +99,56 @@ test('persona on an unknown item is 404, on a closed item 409', async () => {
   assert.deepEqual(closed.json(), { error: 'closed' })
 })
 
+// ---- priority endpoint (HZ-7, driven by the WhatsApp concierge) ----
+
+const priorityPost = (id, payload) => app.inject({ method: 'POST', url: `/api/items/${id}/priority`, payload })
+
+test('setting a priority returns 200, persists, and the snapshot carries it', async () => {
+  const res = await priorityPost('T-GATE', { priority: 'Critical' })
+  assert.equal(res.statusCode, 200)
+  assert.deepEqual(res.json(), { ok: true })
+  assert.equal(db.prepare("SELECT priority FROM work_item WHERE id = 'T-GATE'").get().priority, 'Critical')
+  const snapshot = (await app.inject({ method: 'GET', url: '/api/items' })).json()
+  assert.equal(snapshot.items.find((it) => it.id === 'T-GATE').priority, 'Critical')
+})
+
+test('a bad or lowercase priority is rejected at the schema layer (400)', async () => {
+  assert.equal((await priorityPost('T-GATE', { priority: 'high' })).statusCode, 400)
+  assert.equal((await priorityPost('T-GATE', { priority: 'urgent' })).statusCode, 400)
+  assert.equal((await priorityPost('T-GATE', {})).statusCode, 400)
+})
+
+test('priority on an unknown item is 404, on a closed item 409', async () => {
+  assert.equal((await priorityPost('NOPE-9', { priority: 'High' })).statusCode, 404)
+  const closed = await priorityPost('T-CLOSED', { priority: 'High' })
+  assert.equal(closed.statusCode, 409)
+  assert.deepEqual(closed.json(), { error: 'closed' })
+})
+
+test('a failing GitHub label mirror still returns 200 and persists', async () => {
+  db.prepare(
+    "INSERT INTO work_item (id, title, priority, cursor, repo, issue) VALUES ('T-GH', 'Synced', 'Medium', 3, 'acme/demo', 7)",
+  ).run()
+  const realFetch = globalThis.fetch
+  const calls = []
+  globalThis.fetch = async (url, opts) => {
+    calls.push(String(url))
+    return { ok: false, status: 500, json: async () => ({}), text: async () => '' }
+  }
+  try {
+    const res = await priorityPost('T-GH', { priority: 'Low' })
+    assert.equal(res.statusCode, 200)
+    assert.deepEqual(res.json(), { ok: true })
+    assert.equal(db.prepare("SELECT priority FROM work_item WHERE id = 'T-GH'").get().priority, 'Low')
+    // The mirror was attempted (label ensure hits the labels API) but its
+    // failure never surfaced to the client.
+    await new Promise((resolve) => setImmediate(resolve))
+    assert.ok(calls.some((u) => u.includes('/repos/acme/demo/labels')))
+  } finally {
+    globalThis.fetch = realFetch
+  }
+})
+
 test('webhook endpoint reports 503 when no secret is configured', async () => {
   const res = await app.inject({
     method: 'POST',

@@ -20,6 +20,20 @@ STEP_TIMEOUT_S = int(os.environ.get("FARM_STEP_TIMEOUT_S", "900"))
 MAX_TURNS = int(os.environ.get("FARM_MAX_TURNS", "8"))
 
 
+# ---- WhatsApp concierge (HZ-7) ----
+# Off by default: the concierge only launches with FARM_WA_ENABLED=1 AND a
+# non-empty sender allowlist. An empty allowlist means deny-all, never
+# allow-all.
+FARM_WA_ENABLED = os.environ.get("FARM_WA_ENABLED", "0").strip().lower() in ("1", "true", "yes")
+FARM_WA_TRANSPORT = os.environ.get("FARM_WA_TRANSPORT", "mcp_bridge")
+FARM_WA_POLL_S = int(os.environ.get("FARM_WA_POLL_S", "5"))
+FARM_WA_ALLOWED_JIDS = [j.strip() for j in os.environ.get("FARM_WA_ALLOWED_JIDS", "").split(",") if j.strip()]
+# mcp_bridge transport: the whatsapp-mcp bridge's REST endpoint and SQLite store.
+WA_BRIDGE_URL = os.environ.get("WA_BRIDGE_URL", "http://localhost:8080")
+WA_DB_PATH = os.environ.get("WA_DB_PATH", "")
+CONCIERGE_MODEL = os.environ.get("FARM_CONCIERGE_MODEL")  # None -> CLI default
+
+
 def ensure_dirs() -> None:
     for d in (QUEUE_DIR / "pm", STATE_DIR, LOGS_DIR, WORKSPACES_DIR):
         d.mkdir(parents=True, exist_ok=True)

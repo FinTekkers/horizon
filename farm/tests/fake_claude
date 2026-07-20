@@ -10,6 +10,33 @@ import sys
 args = sys.argv[1:]
 prompt = args[args.index("-p") + 1] if "-p" in args else ""
 
+sys_prompt = ""
+if "--append-system-prompt" in args:
+    sys_prompt = args[args.index("--append-system-prompt") + 1]
+
+# WhatsApp concierge role: map trigger phrases in the message to the
+# concierge JSON contract (including a disallowed action, for the
+# gate-bypass drop test).
+if "WhatsApp concierge" in sys_prompt:
+    import re
+
+    m = re.search(r'WhatsApp message from [^:]*: "(.*?)"', prompt, re.S)
+    text = m.group(1) if m else ""
+    low = text.lower()
+    item_match = re.search(r"\b([A-Z]{2,4}-\d+)\b", text)
+    item = item_match.group(1) if item_match else None
+    actions = []
+    if item and "priority" in low:
+        priority = next((p for p in ("Critical", "High", "Medium", "Low") if p.lower() in low), "High")
+        actions.append({"type": "set_priority", "item_id": item, "priority": priority})
+    elif item and low.startswith("feedback"):
+        actions.append({"type": "feedback", "item_id": item, "message": text.split(":", 1)[-1].strip()})
+    elif item and "approve" in low:
+        actions.append({"type": "approve_gate", "item_id": item})
+    inner = {"reply": f"[fake-concierge] handled: {text[:60]}", "actions": actions}
+    print(json.dumps({"type": "result", "result": json.dumps(inner), "session_id": "fake-session-001"}))
+    sys.exit(0)
+
 patch = {}
 if "guardrails: (empty)" in prompt and "Set guardrails" in prompt:
     patch["guardrails"] = "[fake] defaults apply; no destructive data changes"
@@ -24,9 +51,6 @@ for line in prompt.splitlines():
 inner = {"summary": f"[fake-claude] completed {step.lower()}", **({"patch": patch} if patch else {})}
 
 # Ephemeral planner roles ask for an artifact; implement role edits files.
-sys_prompt = ""
-if "--append-system-prompt" in args:
-    sys_prompt = args[args.index("--append-system-prompt") + 1]
 if "artifact_md" in sys_prompt:
     inner["artifact_md"] = f"# Fake artifact — {step}\n\n- point one\n- point two\n\n_Produced by fake_claude for testing._"
 if "implementing an approved work item" in sys_prompt:

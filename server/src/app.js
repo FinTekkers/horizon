@@ -362,6 +362,31 @@ export function buildApp({ logger = true } = {}) {
     (request, reply) => send(reply, store.setPersona(request.params.id, request.body.persona)),
   )
 
+  // Reprioritize (UI or the WhatsApp concierge). Bad enum values 400 at the
+  // schema layer; the GitHub label mirror is best-effort and never blocks.
+  fastify.post(
+    '/api/items/:id/priority',
+    {
+      schema: {
+        params: idParam,
+        body: {
+          type: 'object',
+          required: ['priority'],
+          properties: { priority: { type: 'string', enum: store.PRIORITIES } },
+        },
+      },
+    },
+    (request, reply) => {
+      const { id } = request.params
+      const item = store.getItem(id)
+      const result = store.setPriority(id, request.body.priority)
+      if (!result.error && !result.unchanged && item?.repo && item.issue != null) {
+        github.setPriorityLabel(item, request.body.priority).catch(() => {})
+      }
+      return send(reply, result)
+    },
+  )
+
   fastify.post(
     '/api/items/:id/phases/:phase/restart',
     {

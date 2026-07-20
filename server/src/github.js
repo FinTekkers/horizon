@@ -107,6 +107,34 @@ async function ensurePriorityLabel(repo, token, priority) {
   return name
 }
 
+// Mirror a Horizon-side priority change onto the issue's `priority: *` label
+// so the next sync reads the same value back. Best-effort by design: the
+// caller never blocks on it, but a swallowed failure here means a later issue
+// edit can sync the stale label's priority back over the database.
+const PRIORITY_LABEL_RE = /^(?:priority\s*[:/-]?\s*)?(critical|high|medium|low)$/i
+
+export async function setPriorityLabel(item, priority) {
+  const token = getToken()
+  const name = await ensurePriorityLabel(item.repo, token, priority)
+  if (!name) throw new Error('could not ensure the priority label exists')
+  const current = await gh(`/repos/${item.repo}/issues/${item.issue}/labels`)
+  if (current.ok) {
+    for (const label of await current.json()) {
+      if (PRIORITY_LABEL_RE.test(label?.name || '') && label.name !== name) {
+        await gh(
+          `/repos/${item.repo}/issues/${item.issue}/labels/${encodeURIComponent(label.name)}`,
+          { method: 'DELETE' },
+        ).catch(() => {})
+      }
+    }
+  }
+  const add = await gh(`/repos/${item.repo}/issues/${item.issue}/labels`, {
+    method: 'POST',
+    body: JSON.stringify({ labels: [name] }),
+  })
+  if (!add.ok) throw new Error(`GitHub returned ${add.status} adding the priority label`)
+}
+
 export async function createIssue(repo, { title, outcome, metric, guardrails, priority }) {
   const token = getToken()
   const label = await ensurePriorityLabel(repo, token, priority)

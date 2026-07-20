@@ -124,6 +124,46 @@ test('upsertFromGithub never clobbers the persona', () => {
   assert.equal(item.persona, 'frontend_ui')
 })
 
+// ---- priority (HZ-7, the WhatsApp concierge's set_priority action) ----
+
+test('setPriority validates, persists, logs an event and notifies', () => {
+  let notified = 0
+  const off = store.onChange(() => notified++)
+  assert.deepEqual(store.setPriority('NOPE-1', 'High'), { error: 'not_found' })
+  assert.deepEqual(store.setPriority('T-CLOSED', 'High'), { error: 'closed' })
+  assert.deepEqual(store.setPriority('T-GATE', 'urgent'), { error: 'bad_priority' })
+  assert.deepEqual(store.setPriority('T-GATE', 'high'), { error: 'bad_priority' }) // enum is case-sensitive
+  assert.equal(notified, 0)
+
+  assert.deepEqual(store.setPriority('T-GATE', 'High'), { ok: true })
+  assert.equal(notified, 1)
+  assert.equal(store.getItem('T-GATE').priority, 'High')
+  const event = db.prepare("SELECT text FROM event WHERE item_id = 'T-GATE' ORDER BY id DESC").get()
+  assert.equal(event.text, 'set the priority to High (was Medium)')
+  off()
+})
+
+test('setPriority to the current value is a no-op: ok, no extra event, no notify', () => {
+  let notified = 0
+  const off = store.onChange(() => notified++)
+  const before = db.prepare("SELECT COUNT(*) AS n FROM event WHERE item_id = 'T-GATE'").get().n
+  assert.deepEqual(store.setPriority('T-GATE', 'High'), { ok: true, unchanged: true })
+  assert.equal(notified, 0)
+  assert.equal(db.prepare("SELECT COUNT(*) AS n FROM event WHERE item_id = 'T-GATE'").get().n, before)
+  off()
+})
+
+test('setPriority rejects items in an inactive project', () => {
+  const projectC = db.prepare("INSERT INTO project (name) VALUES ('proj-c')").run().lastInsertRowid
+  const projectD = db.prepare("INSERT INTO project (name) VALUES ('proj-d')").run().lastInsertRowid
+  db.prepare(
+    "INSERT INTO work_item (id, title, priority, cursor, project_id) VALUES ('T-PRIO', 'Other project', 'Medium', 3, ?)",
+  ).run(projectD)
+  db.prepare("INSERT OR REPLACE INTO setting (key, value) VALUES ('active_project_id', ?)").run(String(projectC))
+  assert.deepEqual(store.setPriority('T-PRIO', 'High'), { error: 'project_not_active' })
+  db.prepare("DELETE FROM setting WHERE key = 'active_project_id'").run()
+})
+
 test('parseIssueBody lifts Outcome / Success metric / Guardrails sections', () => {
   const parsed = store.parseIssueBody(
     '## Outcome\nShip the thing\n\n## Success metric\nIt works\n\n## Guardrails\nTests pass',

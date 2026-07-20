@@ -43,6 +43,24 @@ def test_cancel_of_unknown_run_is_a_noop():
     assert res.json()["removed"] is False
 
 
+def test_concierge_does_not_launch_when_the_flag_is_off(monkeypatch):
+    launched = []
+    monkeypatch.setattr(farmd.tmux_mgr, "new_session", lambda name, *a, **k: launched.append(name))
+    monkeypatch.setattr(farmd.farm_config, "FARM_WA_ENABLED", False)
+    monkeypatch.setitem(farmd.state, "project", {"id": 1, "name": "My Proj"})
+    assert farmd._maybe_launch_concierge() is False
+    assert launched == []
+
+
+def test_concierge_launches_when_the_flag_is_on(monkeypatch):
+    launched = []
+    monkeypatch.setattr(farmd.tmux_mgr, "new_session", lambda name, *a, **k: launched.append(name))
+    monkeypatch.setattr(farmd.farm_config, "FARM_WA_ENABLED", True)
+    monkeypatch.setitem(farmd.state, "project", {"id": 1, "name": "My Proj"})
+    assert farmd._maybe_launch_concierge() is True
+    assert launched == ["farm-concierge-my-proj"]
+
+
 def test_cancel_of_active_run_removes_task_and_reports_kill_state():
     active = QUEUE_DIR / "runs" / "active"
     active.mkdir(parents=True, exist_ok=True)
