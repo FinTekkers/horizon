@@ -51,10 +51,48 @@ def _pm_session_name() -> str:
 
 MAX_EPHEMERAL = int(__import__("os").environ.get("FARM_MAX_EPHEMERAL", "2"))
 
+# run_id -> tmux session name for launched ephemeral runs (so cancel can kill).
+RUN_SESSIONS: dict = {}
+
+# Farm state survives farmd restarts: on boot we ADOPT live agent sessions
+# instead of requiring a /farm/start (whose teardown would kill them).
+STATE_FILE = STATE_DIR / "farmd-state.json"
+
+
+def _persist_state() -> None:
+    STATE_FILE.write_text(json.dumps({"project": state["project"], "repos": state["repos"]}))
+
+
+def _adopt_existing() -> None:
+    if not STATE_FILE.exists():
+        return
+    try:
+        saved = json.loads(STATE_FILE.read_text())
+    except json.JSONDecodeError:
+        return
+    if not saved.get("project"):
+        return
+    state.update(status="running", project=saved["project"], repos=saved.get("repos", []), since=_now())
+    # Rebuild the run->session map from claimed task files so cancel still works.
+    for task_path in (QUEUE_DIR / "runs" / "active").glob("*.json"):
+        try:
+            task = json.loads(task_path.read_text())
+            name = f"farm-run-{task['item']['id'].lower()}-s{task['step']['index']}-a{task.get('attempt', 1)}"
+            if tmux_mgr.session_exists(name):
+                RUN_SESSIONS[str(task["run_id"])] = name
+        except (json.JSONDecodeError, KeyError):
+            continue
+    print(
+        f"farmd: adopted running farm for '{saved['project'].get('name')}' "
+        f"({len(RUN_SESSIONS)} in-flight run(s); the watchdog revives the PM if needed)",
+        flush=True,
+    )
+
 
 def _teardown() -> None:
     killed = tmux_mgr.kill_all_farm_sessions()
-    for sub in ("pm", "runs"):
+    RUN_SESSIONS.clear()
+    for sub in ("pm", "runs", "runs/active"):
         for f in (QUEUE_DIR / sub).glob("*.json"):
             f.unlink(missing_ok=True)
     if killed:
@@ -96,6 +134,7 @@ def _ephemeral_dispatcher() -> None:
                     cwd=str(repo_root),
                     log_file=str(LOGS_DIR / f"{name}.log"),
                 )
+                RUN_SESSIONS[str(task["run_id"])] = name
                 print(f"farmd: launched {name}", flush=True)
         except Exception as exc:
             print(f"farmd: dispatcher error: {exc}", flush=True)
@@ -141,6 +180,7 @@ def _start_async(project: dict, repos: list, token: str | None) -> None:
         _launch_pm_session()
         with _lock:
             state.update(status="running", error=None, since=_now())
+            _persist_state()
         print(f"farmd: farm running for project '{project['name']}'", flush=True)
     except Exception as exc:
         with _lock:
@@ -182,6 +222,7 @@ async def farm_start(request: Request):
 def farm_stop():
     with _lock:
         _teardown()
+        STATE_FILE.unlink(missing_ok=True)
         state.update(status="stopped", project=None, repos=[], error=None, since=_now())
     return {"ok": True}
 
@@ -210,7 +251,7 @@ async def steps_cancel(request: Request):
     already in flight (kill its tmux session so it can't keep pushing to the
     item's branch while a superseding attempt starts)."""
     body = await request.json()
-    run_id = body.get("run_id")
+    run_id = str(body.get("run_id"))
     removed = False
     killed = None
     for sub in ("pm", "runs", "runs/active"):
@@ -228,6 +269,13 @@ async def steps_cancel(request: Request):
                 print(f"farmd: cancel of run {run_id} could not kill its session: {exc}", flush=True)
         task_path.unlink(missing_ok=True)
         removed = True
+    # Fallback: the in-memory map (covers an active task file already consumed).
+    session = RUN_SESSIONS.pop(run_id, None)
+    if killed is None and session and tmux_mgr.session_exists(session):
+        tmux_mgr.kill_session(session)
+        killed = session
+        removed = True
+        print(f"farmd: cancelled run {run_id}, killed {session}", flush=True)
     return {"ok": True, "removed": removed, "killed": killed}
 
 
@@ -256,6 +304,7 @@ async def steps_result(request: Request):
 
 ensure_dirs()
 (QUEUE_DIR / "runs" / "active").mkdir(parents=True, exist_ok=True)
+_adopt_existing()
 threading.Thread(target=_watchdog, daemon=True).start()
 threading.Thread(target=_ephemeral_dispatcher, daemon=True).start()
 

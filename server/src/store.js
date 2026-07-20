@@ -106,6 +106,10 @@ function stepOutputs(itemId) {
   return map
 }
 
+const selectActiveRun = db.prepare(
+  "SELECT step_index, attempt, started_at FROM step_run WHERE item_id = ? AND status = 'active' ORDER BY id DESC LIMIT 1",
+)
+
 // Board/tracker only ever see the active project's items (plus local demo
 // items, which have no project). Other projects keep syncing in the
 // background but are invisible until activated.
@@ -133,6 +137,7 @@ export function listItems() {
     rejected: !!row.rejected,
     events: selectEvents.all(row.id),
     stepOutputs: stepOutputs(row.id),
+    activeRun: selectActiveRun.get(row.id) || null,
   }))
 }
 
@@ -372,6 +377,29 @@ export function createLocalItem({ title, outcome, metric, guardrails, priority }
   notify()
   agentRunner.kick(id)
   return id
+}
+
+// GitHub is allowed to decide the "Accept the code" gate: merging the item's
+// PR there is the same human approval, just expressed on the other surface.
+export function approveGateFromGithub(id) {
+  const it = getItem(id)
+  if (!it) return { error: 'not_found' }
+  const stepIndex = it.cursor
+  if (isClosed(it) || STEPS[stepIndex]?.label !== 'Accept the code') return { error: 'not_at_accept_gate' }
+
+  db.prepare(`UPDATE work_item SET cursor = cursor + 1, rejected = 0, ${touch} WHERE id = ?`).run(id)
+  db.prepare(
+    "INSERT INTO gate_decision (item_id, step_index, decision, decided_by) VALUES (?, ?, 'approved', 'GitHub')",
+  ).run(id, stepIndex)
+  addEvent(id, {
+    who: 'GitHub',
+    text: `PR #${it.pr} was merged on GitHub — code accepted`,
+    color: '#2A2A2E',
+    initials: 'GH',
+  })
+  notify()
+  agentRunner.kick(id)
+  return { ok: true }
 }
 
 // ---- GitHub sync ----

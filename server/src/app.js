@@ -505,6 +505,12 @@ export function buildApp({ logger = true } = {}) {
     if (event === 'issue_comment' && request.body?.action === 'created' && request.body?.comment && repoFullName) {
       github.ingestComment(repoFullName, request.body.issue?.number, request.body.comment, request.log)
     }
+    // PRs decided directly on GitHub flow back into the lifecycle: merged →
+    // "Accept the code" approved; closed unmerged → sent back for rework.
+    if (event === 'pull_request' && request.body?.action === 'closed' && request.body?.pull_request && repoFullName) {
+      const pr = request.body.pull_request
+      github.handlePrStateChange(repoFullName, pr.number, { merged: !!pr.merged, state: pr.state }, request.log)
+    }
     return reply.code(204).send()
   })
 

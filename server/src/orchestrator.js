@@ -250,7 +250,10 @@ function dispatchToFarm(id, stepIndex, runId, attempt) {
   }
 
   // Watchdog: if the farm never reports back, fail the run rather than hang.
-  timers[id] = setTimeout(() => failFarmRun(runId, 'step timed out waiting for the farm'), FARM_STEP_TIMEOUT_MS)
+  // The implement step legitimately runs long (real coding + tests) — its
+  // watchdog must outlast the farm's own 40-minute step timeout.
+  const watchdogMs = stepIndex === 10 ? Math.max(FARM_STEP_TIMEOUT_MS, 50 * 60 * 1000) : FARM_STEP_TIMEOUT_MS
+  timers[id] = setTimeout(() => failFarmRun(runId, 'step timed out waiting for the farm'), watchdogMs)
 
   // Prior artifacts (options analysis, impl plan, reviews) give later agents
   // their working context — the implement step reads the approved plan.
@@ -472,18 +475,18 @@ function closeActiveRuns(id, status) {
 }
 
 // Called by the store when a human halts work mid-step. The farm is told to
-// kill the run's session too — otherwise a superseded attempt keeps running
-// and races the replacement on the shared horizon/<item-id> branch.
+// kill the run's session too — a superseded attempt must not keep burning
+// tokens or race its replacement on the shared horizon/<item-id> branch.
 export function cancel(id, status = 'cancelled') {
+  const activeRuns = db.prepare("SELECT id FROM step_run WHERE item_id = ? AND status = 'active'").all(id)
   clearTimeout(timers[id])
   delete timers[id]
+  closeActiveRuns(id, status)
   if (FARM_URL) {
-    const active = db.prepare("SELECT id FROM step_run WHERE item_id = ? AND status = 'active'").all(id)
-    for (const run of active) {
+    for (const run of activeRuns) {
       farmFetch('/steps/cancel', { run_id: run.id }).catch(() => {})
     }
   }
-  closeActiveRuns(id, status)
 }
 
 export function init(log) {
@@ -493,8 +496,15 @@ export function init(log) {
     const first = db.prepare('SELECT id FROM project ORDER BY id LIMIT 1').get()
     if (first) setSetting('active_project_id', String(first.id))
   }
-  // Recover after a restart: anything mid-agent-step resumes.
-  closeAllOrphanedRuns()
+  if (FARM_URL) {
+    // Farm runs SURVIVE a server restart — the agents live in tmux, not in
+    // this process. Re-arm their watchdogs instead of superseding them.
+    const rearmed = rearmFarmRuns()
+    if (rearmed > 0) log.info(`Re-armed watchdogs for ${rearmed} in-flight farm run(s)`)
+  } else {
+    // Mock runs die with this process: close them; resume will re-kick.
+    closeAllOrphanedRuns()
+  }
   const recovered = recoverRejectedItems()
   if (recovered > 0) log.info(`Requeued ${recovered} rejected item(s) for rework`)
   if (FARM_URL) {
@@ -504,6 +514,15 @@ export function init(log) {
     const resumed = resumeActiveItems()
     if (resumed > 0) log.info(`Orchestrator resumed ${resumed} item(s) mid-agent-step`)
   }
+}
+
+function rearmFarmRuns() {
+  const active = db.prepare("SELECT id, item_id, step_index FROM step_run WHERE status = 'active'").all()
+  for (const run of active) {
+    const watchdogMs = run.step_index === 10 ? Math.max(FARM_STEP_TIMEOUT_MS, 50 * 60 * 1000) : FARM_STEP_TIMEOUT_MS
+    timers[run.item_id] = setTimeout(() => failFarmRun(run.id, 'step timed out waiting for the farm'), watchdogMs)
+  }
+  return active.length
 }
 
 function closeAllOrphanedRuns() {

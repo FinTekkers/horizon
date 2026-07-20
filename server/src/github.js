@@ -526,6 +526,46 @@ export async function pollRepo(repo, log) {
   return lastByRepo[repo]
 }
 
+// ---- PR-state sync (UI approve merges; GitHub merges must flow back) ----
+// A PR merged directly on GitHub approves the "Accept the code" gate; a PR
+// closed without merging sends the item back to the implement step.
+
+const ACCEPT_GATE_INDEX = 11 // "Accept the code" in the fixed pipeline
+
+export function handlePrStateChange(repoFullName, prNumber, { merged, state }, log) {
+  const item = db
+    .prepare('SELECT id, cursor FROM work_item WHERE repo = ? AND pr = ?')
+    .get(repoFullName, prNumber)
+  if (!item || item.cursor !== ACCEPT_GATE_INDEX) return false
+  if (merged) {
+    log?.info(`PR #${prNumber} merged on GitHub — accepting the code for ${item.id}`)
+    return !store.approveGateFromGithub(item.id).error
+  }
+  if (state === 'closed') {
+    log?.info(`PR #${prNumber} closed unmerged on GitHub — sending ${item.id} back`)
+    return !store.requestChanges(item.id, 'Accept the code', `PR #${prNumber} was closed on GitHub without merging`).error
+  }
+  return false
+}
+
+async function pollPrStates(log) {
+  let changed = 0
+  const waiting = db
+    .prepare('SELECT id, repo, pr FROM work_item WHERE pr IS NOT NULL AND repo IS NOT NULL AND cursor = ?')
+    .all(ACCEPT_GATE_INDEX)
+  for (const item of waiting) {
+    try {
+      const res = await gh(`/repos/${item.repo}/pulls/${item.pr}`)
+      if (!res.ok) continue
+      const pr = await res.json()
+      if (handlePrStateChange(item.repo, item.pr, { merged: !!pr.merged, state: pr.state }, log)) changed++
+    } catch {
+      // transient; next poll retries
+    }
+  }
+  return changed
+}
+
 export async function pollOnce(log) {
   let changed = 0
   for (const { repo } of store.listRepos()) {
@@ -539,6 +579,7 @@ export async function pollOnce(log) {
       lastByRepo[repo] = { at: new Date().toISOString(), status: 'network_error', changed: 0, error: err.message }
     }
   }
+  changed += await pollPrStates(log) // PRs merged/closed directly on GitHub
   return { changed }
 }
 

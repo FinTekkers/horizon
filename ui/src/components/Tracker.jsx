@@ -17,6 +17,13 @@ import { BackIcon, LinkIcon, RestartIcon, PrIcon } from './icons'
 
 const STEP_GLYPHS = { done: '✓', active: '•', awaiting: '!', pending: '', blocked: '✕' }
 
+function elapsedMinutes(startedAt) {
+  if (!startedAt) return null
+  const t = Date.parse(startedAt.includes('T') ? startedAt : startedAt.replace(' ', 'T') + 'Z')
+  if (Number.isNaN(t)) return null
+  return Math.max(0, Math.floor((Date.now() - t) / 60_000))
+}
+
 const STEP_META = {
   done: (isGate) => (isGate ? 'Approved by you' : 'Completed'),
   active: () => 'In progress…',
@@ -51,6 +58,15 @@ function Step({ item, index, onApprove, onApproveWithComments, onReject }) {
           </div>
           <div className="step-card__meta" style={{ color: STEP_META_COLOR[status] || '#8C8C8E' }}>
             {STEP_META[status](isGate, st.gate)}
+            {status === 'active' && item.activeRun?.step_index === index && (
+              <span>
+                {' · '}
+                {elapsedMinutes(item.activeRun.started_at) < 1
+                  ? 'just started'
+                  : `${elapsedMinutes(item.activeRun.started_at)} min`}
+                {item.activeRun.attempt > 1 && ` · attempt ${item.activeRun.attempt}`}
+              </span>
+            )}
             {status === 'done' && item.stepOutputs?.[index]?.attempt > 1 && (
               <span className="step-card__attempt"> · attempt {item.stepOutputs[index].attempt}</span>
             )}
