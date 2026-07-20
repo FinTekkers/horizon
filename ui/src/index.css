@@ -224,6 +224,15 @@ button { font-family: var(--font-sans); }
 .board__meta { font: 500 13px var(--font-sans); color: var(--muted); }
 .board__cols { display: flex; gap: 16px; align-items: flex-start; overflow-x: auto; padding-bottom: 8px; }
 .col { flex: 1; min-width: 266px; }
+
+/* Laptop widths: tighten the board so all five columns fit without a
+   sideways scroll (the 266px minimum only holds on wide displays). */
+@media (max-width: 1520px) {
+  .board { padding: 20px 16px 32px; }
+  .board__cols { gap: 10px; }
+  .col { min-width: 224px; }
+  .card { padding: 13px 13px; }
+}
 .col__head { display: flex; align-items: center; gap: 9px; padding: 2px 4px 12px; }
 .col__num {
   width: 24px; height: 24px; border-radius: 7px;
