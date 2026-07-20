@@ -70,6 +70,9 @@ function Step({ item, index, onApprove, onApproveWithComments, onReject }) {
             {status === 'done' && item.stepOutputs?.[index]?.attempt > 1 && (
               <span className="step-card__attempt"> · attempt {item.stepOutputs[index].attempt}</span>
             )}
+            {status === 'done' && !isGate && !item.stepOutputs?.[index] && (
+              <span> · no output recorded (step predates this item's run or was skipped)</span>
+            )}
           </div>
           {status === 'done' && !isGate && item.stepOutputs?.[index]?.output && (
             <div className="step-card__output">{item.stepOutputs[index].output}</div>
