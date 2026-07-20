@@ -29,7 +29,10 @@ def run_claude(
     allowed_tools: str | None = None,
 ) -> dict:
     """Returns {"result": <final text>, "session_id": <id>}."""
-    cmd = [CLAUDE_BIN, "-p", prompt, "--output-format", "json", "--max-turns", str(max_turns)]
+    # --strict-mcp-config: farm agents must NOT inherit the human's personal
+    # MCP servers (WhatsApp etc.) from the global Claude config — least
+    # privilege, faster startup, no personal tools in agent context.
+    cmd = [CLAUDE_BIN, "-p", prompt, "--output-format", "json", "--max-turns", str(max_turns), "--strict-mcp-config"]
     if session_id:
         cmd += ["--resume", session_id]
     if append_system:
