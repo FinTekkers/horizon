@@ -272,6 +272,30 @@ export function setPersona(id, persona) {
   return { ok: true }
 }
 
+// Priority changes arrive from the UI or the WhatsApp concierge; either way
+// it is the human speaking. GitHub label mirroring lives in the route (best
+// effort) — this only owns the database and the activity trail.
+export const PRIORITIES = ['Critical', 'High', 'Medium', 'Low']
+
+export function setPriority(id, priority) {
+  const it = getItem(id)
+  if (!it) return { error: 'not_found' }
+  if (inactiveProject(it)) return { error: 'project_not_active' }
+  if (isClosed(it)) return { error: 'closed' }
+  if (!PRIORITIES.includes(priority)) return { error: 'bad_priority' }
+  if (it.priority === priority) return { ok: true, unchanged: true }
+
+  db.prepare(`UPDATE work_item SET priority = ?, ${touch} WHERE id = ?`).run(priority, id)
+  addEvent(id, {
+    who: 'You',
+    text: `set the priority to ${priority} (was ${it.priority})`,
+    color: '#5E4380',
+    initials: 'YOU',
+  })
+  notify()
+  return { ok: true }
+}
+
 export function restartPhase(id, phase, reason) {
   const it = getItem(id)
   if (!it) return { error: 'not_found' }

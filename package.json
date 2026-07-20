@@ -1,0 +1,8 @@
+{
+  "name": "horizon",
+  "private": true,
+  "description": "Root test aggregator: farm/checks.py detects checks at the repo root only, so this script is what makes the server and ui suites run at the guardrail gate. The Python suite is wired via pytest.ini.",
+  "scripts": {
+    "test": "npm --prefix server install --no-audit --no-fund && npm --prefix server test && npm --prefix ui install --no-audit --no-fund && npm --prefix ui run test"
+  }
+}

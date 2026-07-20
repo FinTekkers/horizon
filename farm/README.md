@@ -19,6 +19,8 @@ With `FARM_URL` unset the server uses the built-in mock agents (demo mode).
 - `farm-daemon` tmux session — farmd (FastAPI, port 4100)
 - `farm-pm-<project>` tmux session — the long-running PM agent
   (`tmux attach -t farm-pm-<project>` to watch it work)
+- `farm-concierge-<project>` tmux session — the WhatsApp concierge
+  (only with `FARM_WA_ENABLED=1`; see below)
 - `~/.horizon-farm/` — task queue, PM session/inbox state, logs, workspaces
 
 ## Current scope (phases 1–3)
@@ -56,6 +58,59 @@ sessions; queued work survives on disk.
 Node side: `FARM_URL`, `FARM_SHARED_SECRET`, `FARM_STEP_INDEXES` (default
 `0,1,2`), `FARM_STEP_TIMEOUT_MS` (watchdog, default 20 min).
 
+## WhatsApp concierge (HZ-7)
+
+Chat with the farm from WhatsApp: reprioritize items, leave feedback (also
+mirrored as a GitHub issue comment), and ask questions about items and their
+plan/review artifacts. Gates are deliberately out of reach — approving,
+rejecting, merging and deploying still require the human gate key in the UI,
+and the concierge script drops any action outside its two-entry whitelist
+(`set_priority`, `feedback`) before it can touch the farm.
+
+Setup (Option A — the local [whatsapp-mcp](https://github.com/lharries/whatsapp-mcp)
+bridge; **pin the bridge commit you paired with** — its SQLite schema is
+unversioned, and `BridgeTransport` fails loudly with `SchemaMismatch` if it
+drifts):
+
+1. Run the bridge's `whatsapp-bridge` Go process and pair via QR.
+2. Set the env (all read by farmd/the concierge at launch):
+
+| Var | Default | |
+|---|---|---|
+| `FARM_WA_ENABLED` | 0 | master switch; concierge launches only when `1` |
+| `FARM_WA_ALLOWED_JIDS` | (empty = **deny all**) | comma-separated allowed sender numbers, e.g. `15550001111` |
+| `WA_DB_PATH` | (required) | the bridge's `store/messages.db` |
+| `WA_BRIDGE_URL` | http://localhost:8080 | the bridge's REST endpoint |
+| `FARM_WA_POLL_S` | 5 | poll interval |
+| `FARM_WA_TRANSPORT` | mcp_bridge | `cloud_api` arrives with the Option B cutover |
+| `FARM_CONCIERGE_MODEL` | (CLI default) | model for the concierge agent |
+
+3. Restart farmd (`./farm/run.sh`); the concierge appears as
+   `farm-concierge-<project>` and its log lands in `~/.horizon-farm/logs/`.
+
+Messages from senders not on the allowlist are consumed silently (no reply
+that would confirm the bot exists). Side effects are at-most-once: each
+message id is claimed (persisted) before its actions execute, so crashes or
+failed sends never duplicate a GitHub comment. Note that feedback on an item
+whose step is running supersedes and re-runs that step — the concierge warns
+you in its reply when that happens.
+
+End-to-end check against the real bridge (CI runs the FakeTransport round
+trip instead; this one needs your phone):
+
+```
+FARM_WA_E2E=1 FARM_WA_ALLOWED_JIDS=<your number> \
+WA_DB_PATH=~/Dev/whatsapp-mcp/whatsapp-bridge/store/messages.db \
+FARM_CLAUDE_BIN=$(which claude) \
+farm/.venv/bin/python -m pytest farm/tests/test_e2e_whatsapp.py -s
+```
+
+**Cutover to the official Cloud API (Option B):** implement
+`farm/whatsapp/cloud_api.py` against the `Transport` protocol, make it pass
+the contract suite in `tests/test_whatsapp_transport.py`, and set
+`FARM_WA_TRANSPORT=cloud_api`. The concierge loop, role prompt, action
+executor and every test above the transport carry over unchanged.
+
 ## Guardrail checks (implement step)
 
 After the Eng agent finishes editing and **before** anything is committed or
@@ -64,6 +119,12 @@ set, otherwise auto-detected (`npm test`/`npm run lint` from a root
 package.json, pytest from pytest.ini/pyproject/tests). A failing check fails
 the run (item pauses with the output tail); agent claims of green tests
 don't count.
+
+Detection is root-level only, so this repo carries a root `pytest.ini`
+(→ `farm/tests`) and a root `package.json` whose `test` script fans out to
+the `server` and `ui` suites — that wiring is what makes the guardrail gate
+actually run all three. No linters are configured anywhere in the repo yet,
+so the "linters must pass" guardrail is currently vacuous.
 
 ## Tests
 
