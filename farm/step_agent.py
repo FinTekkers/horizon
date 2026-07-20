@@ -73,6 +73,11 @@ def build_prompt(task: dict) -> str:
 
 def prepare_branch(ws: Path, item: dict) -> str:
     branch = f"horizon/{item['id'].lower()}"
+    # A superseded/killed attempt leaves uncommitted edits behind; every new
+    # attempt starts from a scrubbed tree (pushed branches are the only state
+    # that survives an attempt).
+    git(ws, "reset", "--hard")
+    git(ws, "clean", "-fd")
     git(ws, "fetch", "origin", "--prune")
     head = git(ws, "symbolic-ref", "refs/remotes/origin/HEAD", check=False).stdout.strip()
     default = head.rsplit("/", 1)[-1] if head else "main"
