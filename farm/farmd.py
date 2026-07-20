@@ -15,6 +15,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
 from . import rules, tmux_mgr, workspaces
+from . import config as farm_config
 from .config import (
     FARM_PORT,
     HORIZON_URL,
@@ -156,6 +157,25 @@ def _launch_pm_session() -> None:
     )
 
 
+def _concierge_session_name() -> str:
+    return f"farm-concierge-{slugify(state['project']['name'])}" if state["project"] else ""
+
+
+def _maybe_launch_concierge() -> bool:
+    """WhatsApp concierge (HZ-7) — launches only with FARM_WA_ENABLED=1."""
+    if not farm_config.FARM_WA_ENABLED or not state["project"]:
+        return False
+    slug = slugify(state["project"]["name"])
+    repo_root = Path(__file__).resolve().parent.parent
+    tmux_mgr.new_session(
+        f"farm-concierge-{slug}",
+        f"{sys.executable} -m farm.concierge_agent --project '{state['project']['name']}'",
+        cwd=str(repo_root),
+        log_file=str(LOGS_DIR / f"concierge-{slug}.log"),
+    )
+    return True
+
+
 def _watchdog() -> None:
     """Agents die (a stray Ctrl-C in an attached pane, a crash) — revive them.
     Queued tasks survive because the queue lives on disk, not in the agent."""
@@ -165,10 +185,17 @@ def _watchdog() -> None:
             if state["status"] != "running" or not state["project"]:
                 continue
             name = _pm_session_name()
+            concierge = _concierge_session_name() if farm_config.FARM_WA_ENABLED else ""
         if name and not tmux_mgr.session_exists(name):
             print(f"farmd: watchdog reviving dead session {name}", flush=True)
             try:
                 _launch_pm_session()
+            except Exception as exc:
+                print(f"farmd: watchdog revive failed: {exc}", flush=True)
+        if concierge and not tmux_mgr.session_exists(concierge):
+            print(f"farmd: watchdog reviving dead session {concierge}", flush=True)
+            try:
+                _maybe_launch_concierge()
             except Exception as exc:
                 print(f"farmd: watchdog revive failed: {exc}", flush=True)
 
@@ -183,6 +210,8 @@ def _start_async(project: dict, repos: list, token: str | None) -> None:
                 print(f"farmd: WARNING workspace for {entry['repo']} failed: {exc}", flush=True)
 
         _launch_pm_session()
+        if _maybe_launch_concierge():
+            print("farmd: WhatsApp concierge launched", flush=True)
         with _lock:
             state.update(status="running", error=None, since=_now())
             _persist_state()
