@@ -1,4 +1,4 @@
-import { useState, useSyncExternalStore } from 'react'
+import { useEffect, useState, useSyncExternalStore } from 'react'
 import * as api from './api'
 import { awaitingGate } from './domain/lifecycle'
 import TopBar from './components/TopBar'
@@ -11,11 +11,25 @@ import NewItemModal from './components/NewItemModal'
 
 const CLOSED_COMPOSER = { open: false, mode: null, itemId: null, phase: null, target: '' }
 
+// Deep links: /  → board, /admin → admin, /<item-id> → that item's tracker
+// (case-insensitive, e.g. localhost:5173/hz-102).
+function parsePath(pathname) {
+  const seg = decodeURIComponent(pathname.replace(/^\/+|\/+$/g, ''))
+  if (!seg) return { view: 'board', id: null }
+  if (seg.toLowerCase() === 'admin') return { view: 'admin', id: null }
+  return { view: 'tracker', id: seg.toUpperCase() }
+}
+
+function navigate(path) {
+  if (window.location.pathname !== path) window.history.pushState({}, '', path)
+}
+
 export default function App() {
   const items = useSyncExternalStore(api.subscribe, api.getItems)
 
-  const [view, setView] = useState('board')
-  const [selectedId, setSelectedId] = useState('BF-128')
+  const initial = parsePath(window.location.pathname)
+  const [view, setView] = useState(initial.view)
+  const [selectedId, setSelectedId] = useState(initial.id)
   const [approvalsOpen, setApprovalsOpen] = useState(false)
   const [composer, setComposer] = useState(CLOSED_COMPOSER)
   const [newItemOpen, setNewItemOpen] = useState(false)
@@ -30,18 +44,38 @@ export default function App() {
   const pendingCount = items.filter(awaitingGate).length
 
   const toBoard = () => {
+    navigate('/')
     setView('board')
     setApprovalsOpen(false)
   }
   const toTracker = () => {
+    if (selected) navigate(`/${selected.id.toLowerCase()}`)
     setView('tracker')
     setApprovalsOpen(false)
   }
   const openItem = (id) => {
+    navigate(`/${id.toLowerCase()}`)
     setSelectedId(id)
     setView('tracker')
     setApprovalsOpen(false)
   }
+
+  // Browser back/forward re-drives the view from the URL.
+  useEffect(() => {
+    const onPop = () => {
+      const parsed = parsePath(window.location.pathname)
+      setView(parsed.view)
+      if (parsed.id) setSelectedId(parsed.id)
+      setApprovalsOpen(false)
+    }
+    window.addEventListener('popstate', onPop)
+    return () => window.removeEventListener('popstate', onPop)
+  }, [])
+
+  useEffect(() => {
+    document.title =
+      view === 'tracker' && selected ? `${selected.id} · Horizon` : 'Horizon · Delivery Lifecycle'
+  }, [view, selected])
 
   const openComposer = (mode, itemId, opts = {}) =>
     setComposer({ open: true, mode, itemId, phase: opts.phase ?? null, target: opts.target || '' })
@@ -69,6 +103,7 @@ export default function App() {
         onTracker={toTracker}
         onOpenApprovals={() => setApprovalsOpen(true)}
         onOpenAdmin={() => {
+          navigate('/admin')
           setView('admin')
           setApprovalsOpen(false)
         }}
