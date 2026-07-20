@@ -235,10 +235,11 @@ async def steps_run(request: Request):
     for key in ("run_id", "item", "step"):
         if key not in body:
             return JSONResponse({"error": f"missing {key}"}, status_code=400)
-    # Plan steps (0-2) go to the long-running PM; everything else runs as an
-    # ephemeral agent via the dispatcher (bounded by FARM_MAX_EPHEMERAL).
+    # Plan steps (0-2) and the review-summary step (9) go to the long-running
+    # PM (it has the project context to synthesize); everything else runs as
+    # an ephemeral agent via the dispatcher (bounded by FARM_MAX_EPHEMERAL).
     body["project"] = state["project"]
-    queue = "pm" if body["step"].get("index", 99) <= 2 else "runs"
+    queue = "pm" if body["step"].get("index", 99) in (0, 1, 2, 9) else "runs"
     (QUEUE_DIR / queue).mkdir(parents=True, exist_ok=True)
     task_path = QUEUE_DIR / queue / f"{body['run_id']}.json"
     task_path.write_text(json.dumps(body, indent=2))

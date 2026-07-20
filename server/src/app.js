@@ -6,6 +6,8 @@ import * as store from './store.js'
 import * as github from './github.js'
 import * as orchestrator from './orchestrator.js'
 import { WEBHOOK_SECRET, FARM_SHARED_SECRET, UI_URL } from './config.js'
+import { marked } from 'marked'
+import { db } from './db.js'
 import { getActiveProjectId, getRepoUrl, setSetting, getToken } from './settings.js'
 import { STEPS } from './lifecycle.js'
 
@@ -78,6 +80,53 @@ export function buildApp({ logger = true } = {}) {
   }
 
   fastify.get('/api/items', () => snapshot())
+
+  // Full-page, formatted view of a step's artifact ("View full artifact"
+  // opens this in a new tab — the inline viewport is too cramped for plans).
+  fastify.get(
+    '/api/items/:id/artifacts/:stepIndex',
+    {
+      schema: {
+        params: {
+          type: 'object',
+          required: ['id', 'stepIndex'],
+          properties: { id: { type: 'string' }, stepIndex: { type: 'integer', minimum: 0 } },
+        },
+      },
+    },
+    (request, reply) => {
+      const { id, stepIndex } = request.params
+      const run = db
+        .prepare(
+          "SELECT artifact, attempt, ended_at FROM step_run WHERE item_id = ? AND step_index = ? AND status = 'done' AND artifact IS NOT NULL ORDER BY id DESC LIMIT 1",
+        )
+        .get(id, stepIndex)
+      if (!run) return reply.code(404).send({ error: 'no artifact for that step' })
+      const step = STEPS[stepIndex]
+      const esc = (s) => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+      const title = `${esc(id)} · ${esc(step?.label || `step ${stepIndex}`)}`
+      const html = `<!doctype html><html><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>${title}</title>
+<style>
+  body { margin: 0; background: #F3F1F8; color: #38294F; font: 16px/1.65 -apple-system, 'DM Sans', 'Segoe UI', sans-serif; }
+  .page { max-width: 860px; margin: 0 auto; padding: 40px 28px 80px; }
+  .meta { font-size: 13px; color: #8C8C8E; margin-bottom: 18px; }
+  .meta a { color: #2E6CB2; text-decoration: none; }
+  article { background: #fff; border-radius: 18px; box-shadow: 0 18px 40px rgba(56,41,79,.08); padding: 36px 42px; }
+  h1, h2, h3 { line-height: 1.25; } h2 { margin-top: 2em; border-bottom: 1px solid #ECE7F3; padding-bottom: 6px; }
+  code { background: #F0ECF6; border-radius: 5px; padding: 1px 6px; font: 13.5px/1.5 'DM Mono', ui-monospace, monospace; }
+  pre { background: #2A2A2E; color: #F3F1F8; border-radius: 12px; padding: 16px 18px; overflow-x: auto; }
+  pre code { background: none; color: inherit; padding: 0; }
+  blockquote { margin: 0; padding: 2px 16px; border-left: 4px solid #C9B4D9; color: #5A5568; background: #FAF8FC; border-radius: 0 8px 8px 0; }
+  table { border-collapse: collapse; } td, th { border: 1px solid #ECE7F3; padding: 6px 12px; }
+</style></head><body><div class="page">
+<div class="meta"><a href="${UI_URL}/${esc(id.toLowerCase())}">← ${esc(id)} in Horizon</a> · ${title} · attempt ${run.attempt} · ${esc(run.ended_at)} UTC</div>
+<article>${marked.parse(run.artifact)}</article>
+</div></body></html>`
+      return reply.type('text/html').send(html)
+    },
+  )
 
   // Create a work item. With GitHub connected this creates the issue there
   // (GitHub stays the source of truth) and ingests it; in demo mode it creates

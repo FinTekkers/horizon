@@ -14,15 +14,15 @@ const { db } = await import('../src/db.js')
 const store = await import('../src/store.js')
 const { STEPS } = await import('../src/lifecycle.js')
 
-// Deterministic fixtures; cursor 10 is an agent step (implement), 3 is a gate.
+// Deterministic fixtures; cursor 11 is an agent step (implement), 3 is a gate.
 const insertItem = db.prepare(
   "INSERT INTO work_item (id, title, priority, cursor, repo, issue) VALUES (?, ?, 'Medium', ?, ?, ?)",
 )
-insertItem.run('T-AGENT', 'On an agent step', 10, null, null)
+insertItem.run('T-AGENT', 'On an agent step', 11, null, null)
 insertItem.run('T-GATE', 'Parked at a gate', 3, null, null)
 insertItem.run('T-CLOSED', 'Closed item', STEPS.length, null, null)
 
-assert.equal(STEPS[10].kind, 'agent')
+assert.equal(STEPS[11].kind, 'agent')
 assert.equal(STEPS[3].kind, 'gate')
 
 const feedbackRows = (id) => db.prepare('SELECT * FROM feedback WHERE item_id = ? ORDER BY id').all(id)
@@ -60,7 +60,7 @@ test('feedback on a live agent step supersedes the run and re-kicks (rerun:true)
   const rows = feedbackRows('T-AGENT')
   assert.equal(rows.length, 1)
   // Defaults the target to the step's owning agent so dispatch prompts name it.
-  assert.equal(rows[0].target, STEPS[10].agent)
+  assert.equal(rows[0].target, STEPS[11].agent)
   store.registerAgentRunner({ kick: () => {}, cancel: () => {} })
 })
 

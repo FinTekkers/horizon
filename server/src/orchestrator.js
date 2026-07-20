@@ -165,9 +165,10 @@ const MOCK_STEP_BEHAVIOR = {
   6: () => ({ summary: 'drafted the implementation plan: components touched, sequencing, test impact' }),
   7: () => ({ summary: 'architecture review passed — no encapsulation or duplication concerns' }),
   8: () => ({ summary: 'test plan covers the success metric; added two edge cases' }),
+  9: () => ({ summary: 'digested the plan reviews: no blocking concerns; recommends proceeding to execution' }),
   // Execute: the code change takes the form of a GitHub PR. The mock commits
   // a placeholder file; the PR/branch mechanics are the real integration.
-  10: async (it) => {
+  11: async (it) => {
     if (!it.repo || it.issue == null) {
       return { summary: 'implementation complete on a feature branch; all checks green (no GitHub — PR skipped)' }
     }
@@ -186,7 +187,7 @@ const MOCK_STEP_BEHAVIOR = {
   },
   // Deploy: publish a GitHub Release, which triggers the (self-provisioned)
   // Horizon Deploy workflow. The mock is the deploy content, not the plumbing.
-  12: async (it) => {
+  13: async (it) => {
     if (!it.repo || it.issue == null) {
       return { summary: 'deployed to the target environment; smoke checks passed (no GitHub — release skipped)' }
     }
@@ -252,7 +253,7 @@ function dispatchToFarm(id, stepIndex, runId, attempt) {
   // Watchdog: if the farm never reports back, fail the run rather than hang.
   // The implement step legitimately runs long (real coding + tests) — its
   // watchdog must outlast the farm's own 40-minute step timeout.
-  const watchdogMs = stepIndex === 10 ? Math.max(FARM_STEP_TIMEOUT_MS, 50 * 60 * 1000) : FARM_STEP_TIMEOUT_MS
+  const watchdogMs = stepIndex === 11 ? Math.max(FARM_STEP_TIMEOUT_MS, 50 * 60 * 1000) : FARM_STEP_TIMEOUT_MS
   timers[id] = setTimeout(() => failFarmRun(runId, 'step timed out waiting for the farm'), watchdogMs)
 
   // Prior artifacts (options analysis, impl plan, reviews) give later agents
@@ -262,7 +263,7 @@ function dispatchToFarm(id, stepIndex, runId, attempt) {
       "SELECT step_index, artifact FROM step_run WHERE item_id = ? AND status = 'done' AND artifact IS NOT NULL ORDER BY id",
     )
     .all(id)
-    .map((row) => ({ label: STEPS[row.step_index]?.label || `step ${row.step_index}`, content: row.artifact.slice(0, 4000) }))
+    .map((row) => ({ label: STEPS[row.step_index]?.label || `step ${row.step_index}`, content: row.artifact.slice(0, 12000) }))
 
   farmFetch('/steps/run', {
     run_id: runId,
@@ -519,7 +520,7 @@ export function init(log) {
 function rearmFarmRuns() {
   const active = db.prepare("SELECT id, item_id, step_index FROM step_run WHERE status = 'active'").all()
   for (const run of active) {
-    const watchdogMs = run.step_index === 10 ? Math.max(FARM_STEP_TIMEOUT_MS, 50 * 60 * 1000) : FARM_STEP_TIMEOUT_MS
+    const watchdogMs = run.step_index === 11 ? Math.max(FARM_STEP_TIMEOUT_MS, 50 * 60 * 1000) : FARM_STEP_TIMEOUT_MS
     timers[run.item_id] = setTimeout(() => failFarmRun(run.id, 'step timed out waiting for the farm'), watchdogMs)
   }
   return active.length

@@ -413,6 +413,11 @@ button { font-family: var(--font-sans); }
   font: 500 12.5px var(--font-sans); color: #5A5568; line-height: 1.5;
   white-space: pre-wrap;
 }
+.step-card__artifact-link {
+  display: inline-block; margin-top: 8px;
+  font: 600 12px var(--font-sans); color: var(--primary); text-decoration: none;
+}
+.step-card__artifact-link:hover { text-decoration: underline; }
 .step-card__artifact { margin-top: 8px; }
 .step-card__artifact summary {
   cursor: pointer; font: 600 12px var(--font-sans); color: var(--primary);

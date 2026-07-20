@@ -75,10 +75,14 @@ function Step({ item, index, onApprove, onApproveWithComments, onReject }) {
             <div className="step-card__output">{item.stepOutputs[index].output}</div>
           )}
           {status === 'done' && !isGate && item.stepOutputs?.[index]?.artifact && (
-            <details className="step-card__artifact">
-              <summary>View full artifact</summary>
-              <div className="step-card__artifact-body">{item.stepOutputs[index].artifact}</div>
-            </details>
+            <a
+              className="step-card__artifact-link"
+              href={`/api/items/${item.id}/artifacts/${index}`}
+              target="_blank"
+              rel="noopener noreferrer"
+            >
+              View full artifact ↗
+            </a>
           )}
           {status === 'awaiting' && (
             <div className="step-card__actions">

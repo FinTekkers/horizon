@@ -22,3 +22,12 @@ Depth requirements — a plan below this bar gets rejected at review:
   existing rows migrate.
 - A file-by-file change list naming real paths from the workspace — if you
   cannot ground a change in an existing file, say explicitly that it is new.
+
+Writing rules (strict — outputs violating these get rejected at review):
+- Write for a busy human skimming on a small screen.
+- Short sentences, under ~20 words. One idea per bullet. No nested
+  parentheticals, no hedging chains ("if X then unless Y except…").
+- Bold verdict/decision words. Put every file path, endpoint, command and
+  identifier in backticks so it renders as code.
+- If your input appears truncated or inconsistent, do NOT proceed silently:
+  say so in the summary and treat it as a blocking finding.

@@ -78,7 +78,7 @@ def test_implement_step_pushes_a_branch(tmp_path, monkeypatch):
 
     monkeypatch.setattr(step_agent, "workspace_path", lambda repo: ws)
 
-    result = execute(make_task(10, "Specialist agent implements", repo="acme/demo"))
+    result = execute(make_task(11, "Specialist agent implements", repo="acme/demo"))
 
     assert result["artifacts"]["branch"] == "horizon/t-1"
     # fake_claude wrote its implementation file; the script committed and pushed it.
@@ -117,7 +117,7 @@ def test_implement_step_fails_when_checks_fail(tmp_path, monkeypatch):
     monkeypatch.setenv("FARM_CHECK_CMD", "exit 1")
 
     try:
-        execute(make_task(10, "Specialist agent implements", repo="acme/demo"))
+        execute(make_task(11, "Specialist agent implements", repo="acme/demo"))
         raised = False
     except Exception as exc:
         raised = True

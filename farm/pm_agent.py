@@ -46,6 +46,10 @@ def build_prompt(task: dict) -> str:
         "",
         f"Step to perform now: \"{step['label']}\" (attempt {task.get('attempt', 1)})",
     ]
+    for artifact in task.get("artifacts") or []:
+        lines.append("")
+        lines.append(f"Prior artifact — {artifact.get('label', 'earlier step')}:")
+        lines.append(artifact.get("content", "")[:12000])
     feedback = task.get("feedback") or []
     if feedback:
         lines.append("")
@@ -57,7 +61,7 @@ def build_prompt(task: dict) -> str:
     return "\n".join(lines)
 
 
-def validate(parsed: dict) -> tuple[str, dict]:
+def validate(parsed: dict) -> tuple[str, dict, str | None]:
     summary = str(parsed.get("summary", "")).strip()
     if not summary:
         raise ClaudeError("agent reply missing 'summary'")
@@ -66,7 +70,9 @@ def validate(parsed: dict) -> tuple[str, dict]:
         value = parsed.get("patch", {}).get(key) if isinstance(parsed.get("patch"), dict) else None
         if isinstance(value, str) and value.strip():
             patch[key] = value.strip()[:limit]
-    return summary[:300], patch
+    artifact = parsed.get("artifact_md")
+    artifact = artifact.strip()[:12000] if isinstance(artifact, str) and artifact.strip() else None
+    return summary[:300], patch, artifact
 
 
 def process(task: dict, project_slug: str) -> None:
@@ -82,7 +88,7 @@ def process(task: dict, project_slug: str) -> None:
             sid_path.write_text(reply["session_id"])
 
         try:
-            summary, patch = validate(extract_json(reply["result"]))
+            summary, patch, artifact = validate(extract_json(reply["result"]))
         except (ClaudeError, json.JSONDecodeError) as exc:
             # One retry, telling the model exactly what was wrong with its reply.
             log(f"run {run_id}: invalid reply ({exc}); retrying once")
@@ -93,9 +99,19 @@ def process(task: dict, project_slug: str) -> None:
                 append_system=ROLE_PROMPT,
                 model=PM_MODEL,
             )
-            summary, patch = validate(extract_json(retry["result"]))
+            summary, patch, artifact = validate(extract_json(retry["result"]))
+
+        # Script-stamped feedback trail, same as the ephemeral agents.
+        feedback = task.get("feedback") or []
+        if feedback:
+            summary = f"addressed feedback (“{feedback[0].get('message', '')[:80]}”) — {summary}"[:300]
+            if artifact:
+                header = "\n".join(f"> {fb.get('message', '')}" for fb in feedback)
+                artifact = f"## Human feedback addressed in this revision\n{header}\n\n{artifact}"[:12000]
 
         result = {"run_id": run_id, "ok": True, "summary": summary, "patch": patch}
+        if artifact:
+            result["artifacts"] = {"artifact_md": artifact}
     except Exception as exc:  # report every failure; farmd forwards to the server
         log(f"run {run_id}: FAILED — {exc}")
         result = {"run_id": run_id, "ok": False, "error": str(exc)[:300]}

@@ -32,7 +32,7 @@ STEP_CONFIG = {
     6: ("eng_plan.md", True, PLANNER_TOOLS, 16, 900),
     7: ("architect_review.md", True, PLANNER_TOOLS, 16, 900),
     8: ("qa.md", True, PLANNER_TOOLS, 16, 900),
-    10: ("eng_implement.md", False, IMPLEMENT_TOOLS, 80, 2400),
+    11: ("eng_implement.md", False, IMPLEMENT_TOOLS, 80, 2400),
 }
 
 
@@ -61,7 +61,7 @@ def build_prompt(task: dict) -> str:
     for artifact in task.get("artifacts") or []:
         lines.append("")
         lines.append(f"Prior artifact — {artifact.get('label', 'earlier step')}:")
-        lines.append(artifact.get("content", "")[:4000])
+        lines.append(artifact.get("content", "")[:12000])
     feedback = task.get("feedback") or []
     if feedback:
         lines.append("")
@@ -108,7 +108,7 @@ def execute(task: dict) -> dict:
         ws = None
 
     # Implement step without a repo/workspace: nothing real to build.
-    if step_index == 10:
+    if step_index == 11:
         if ws is None:
             if item.get("repo"):
                 raise RuntimeError("workspace not provisioned for this repo — restart the farm")

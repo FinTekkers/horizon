@@ -23,7 +23,7 @@ store.purgeDemoItems()
 const app = buildApp({ logger: false })
 
 db.prepare("INSERT INTO work_item (id, title, priority, cursor) VALUES ('T-GATE', 'At a gate', 'Medium', 3)").run()
-db.prepare("INSERT INTO work_item (id, title, priority, cursor) VALUES ('T-AGENT', 'On agent step', 'Medium', 10)").run()
+db.prepare("INSERT INTO work_item (id, title, priority, cursor) VALUES ('T-AGENT', 'On agent step', 'Medium', 11)").run()
 db.prepare(
   "INSERT INTO work_item (id, title, priority, cursor) VALUES ('T-CLOSED', 'Closed', 'Medium', ?)",
 ).run(STEPS.length)
