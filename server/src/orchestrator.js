@@ -471,10 +471,18 @@ function closeActiveRuns(id, status) {
   )
 }
 
-// Called by the store when a human halts work mid-step.
+// Called by the store when a human halts work mid-step. The farm is told to
+// kill the run's session too — otherwise a superseded attempt keeps running
+// and races the replacement on the shared horizon/<item-id> branch.
 export function cancel(id, status = 'cancelled') {
   clearTimeout(timers[id])
   delete timers[id]
+  if (FARM_URL) {
+    const active = db.prepare("SELECT id FROM step_run WHERE item_id = ? AND status = 'active'").all(id)
+    for (const run of active) {
+      farmFetch('/steps/cancel', { run_id: run.id }).catch(() => {})
+    }
+  }
   closeActiveRuns(id, status)
 }
 

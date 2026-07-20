@@ -50,9 +50,32 @@ sessions; queued work survives on disk.
 | `FARM_CLAUDE_BIN` | claude | override with tests/fake_claude in tests |
 | `FARM_PM_MODEL` | (CLI default) | model for the PM agent |
 | `FARM_STEP_TIMEOUT_S` | 900 | per-claude-invocation timeout |
+| `FARM_CHECK_CMD` | (auto-detect) | guardrail check command run before push (via `sh -c`) |
+| `FARM_CHECK_TIMEOUT_S` | 600 | guardrail check timeout |
 
 Node side: `FARM_URL`, `FARM_SHARED_SECRET`, `FARM_STEP_INDEXES` (default
 `0,1,2`), `FARM_STEP_TIMEOUT_MS` (watchdog, default 20 min).
+
+## Guardrail checks (implement step)
+
+After the Eng agent finishes editing and **before** anything is committed or
+pushed, the script runs the target repo's own checks — `FARM_CHECK_CMD` if
+set, otherwise auto-detected (`npm test`/`npm run lint` from a root
+package.json, pytest from pytest.ini/pyproject/tests). A failing check fails
+the run (item pauses with the output tail); agent claims of green tests
+don't count.
+
+## Tests
+
+```
+pip install -r farm/requirements-dev.txt
+python -m pytest farm/tests        # from the repo root
+```
+
+The suite drives the real step-agent code against `tests/fake_claude` (an
+instant, deterministic stand-in for the CLI) — including a full implement-step
+run that pushes a branch to a local bare "origin". Server-side tests:
+`npm test` in `server/`.
 
 ## Failure semantics
 

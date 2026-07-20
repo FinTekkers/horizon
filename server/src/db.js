@@ -122,6 +122,17 @@ try {
 } catch {
   // column already exists
 }
+try {
+  // GitHub-sourced feedback keeps the comment id so the same comment arriving
+  // twice (webhook + poll, or an edit re-surfacing it) is ingested once.
+  db.exec('ALTER TABLE feedback ADD COLUMN gh_comment_id INTEGER')
+} catch {
+  // column already exists
+}
+db.exec(`
+  CREATE UNIQUE INDEX IF NOT EXISTS idx_feedback_gh_comment
+    ON feedback(gh_comment_id) WHERE gh_comment_id IS NOT NULL;
+`)
 
 // Migrate a pre-projects single-repo setup: the old github_repo setting
 // becomes the first project (keeping the legacy HZ item-id prefix).

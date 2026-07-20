@@ -65,6 +65,12 @@ def _ephemeral_sessions() -> list[str]:
     return [s for s in tmux_mgr.list_farm_sessions() if s.startswith("farm-run-")]
 
 
+def _run_session_name(task: dict) -> str:
+    """One place derives the tmux session name for an ephemeral run — the
+    dispatcher creates it, /steps/cancel kills it."""
+    return f"farm-run-{task['item']['id'].lower()}-s{task['step']['index']}-a{task.get('attempt', 1)}"
+
+
 def _ephemeral_dispatcher() -> None:
     """Launches queued ephemeral steps, at most MAX_EPHEMERAL at once."""
     runs_dir = QUEUE_DIR / "runs"
@@ -83,7 +89,7 @@ def _ephemeral_dispatcher() -> None:
                 active.mkdir(exist_ok=True)
                 claimed = active / task_path.name
                 task_path.rename(claimed)
-                name = f"farm-run-{task['item']['id'].lower()}-s{task['step']['index']}-a{task.get('attempt', 1)}"
+                name = _run_session_name(task)
                 tmux_mgr.new_session(
                     name,
                     f"{sys.executable} -m farm.step_agent --task {claimed}",
@@ -200,14 +206,29 @@ async def steps_run(request: Request):
 
 @app.post("/steps/cancel")
 async def steps_cancel(request: Request):
+    """Cancel a run wherever it is: still queued (drop the task file) or
+    already in flight (kill its tmux session so it can't keep pushing to the
+    item's branch while a superseding attempt starts)."""
     body = await request.json()
+    run_id = body.get("run_id")
     removed = False
+    killed = None
     for sub in ("pm", "runs", "runs/active"):
-        task_path = QUEUE_DIR / sub / f"{body.get('run_id')}.json"
-        if task_path.exists():
-            task_path.unlink(missing_ok=True)
-            removed = True
-    return {"ok": True, "removed": removed}  # in-flight runs are handled by Node staleness checks
+        task_path = QUEUE_DIR / sub / f"{run_id}.json"
+        if not task_path.exists():
+            continue
+        if sub == "runs/active":
+            try:
+                name = _run_session_name(json.loads(task_path.read_text()))
+                if tmux_mgr.session_exists(name):
+                    tmux_mgr.kill_session(name)
+                    killed = name
+                    print(f"farmd: cancelled in-flight run {run_id} (killed {name})", flush=True)
+            except Exception as exc:
+                print(f"farmd: cancel of run {run_id} could not kill its session: {exc}", flush=True)
+        task_path.unlink(missing_ok=True)
+        removed = True
+    return {"ok": True, "removed": removed, "killed": killed}
 
 
 @app.post("/internal/steps/result")

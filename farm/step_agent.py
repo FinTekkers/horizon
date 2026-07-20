@@ -16,6 +16,7 @@ from pathlib import Path
 
 import httpx
 
+from .checks import run_checks
 from .claude_runner import ClaudeError, extract_json, run_claude
 from .config import FARM_PORT
 from .workspaces import workspace_path
@@ -123,8 +124,12 @@ def execute(task: dict) -> dict:
             allowed_tools=tools,
         )
         summary = str(extract_json(reply["result"]).get("summary", "implementation finished")).strip()[:600]
+        # Guardrail enforcement: the repo's own tests/linters run here, by the
+        # script, before anything is committed or pushed. A failure fails the
+        # run (Node pauses the item with the reason) — no green, no push.
+        check_note = run_checks(ws, log)
         artifacts = finalize_branch(ws, item, branch)
-        return {"summary": summary, "artifacts": artifacts}
+        return {"summary": f"{summary} · {check_note}"[:600], "artifacts": artifacts}
 
     reply = run_claude(
         build_prompt(task) + "\n\nRespond with ONLY the JSON object described in your role instructions.",
