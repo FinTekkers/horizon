@@ -16,6 +16,7 @@ from fastapi.responses import JSONResponse
 
 from . import tmux_mgr, workspaces
 from . import config as farm_config
+from .claude_runner import ClaudeError, assert_subscription_auth
 from .config import (
     FARM_PORT,
     HORIZON_URL,
@@ -238,6 +239,11 @@ async def farm_start(request: Request):
     project, repos = body.get("project"), body.get("repos", [])
     if not project or not project.get("name"):
         return JSONResponse({"error": "project required"}, status_code=400)
+    # HZ-5 cost guardrail: refuse to bring agents up on metered API billing.
+    try:
+        assert_subscription_auth()
+    except ClaudeError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=500)
     with _lock:
         if state["status"] == "running" and state["project"] and state["project"].get("id") == project.get("id"):
             # Same project: recover a dead PM session in place — queue untouched.
@@ -278,6 +284,48 @@ async def steps_run(request: Request):
     task_path = QUEUE_DIR / queue / f"{body['run_id']}.json"
     task_path.write_text(json.dumps(body, indent=2))
     return {"ok": True, "queued": queue}
+
+
+# Each pipe-pane read is capped; the UI pages with `offset`.
+LOG_READ_CAP = 64 * 1024
+
+
+def _session_for_run(run_id: str) -> str | None:
+    """Resolve a run to its ephemeral tmux session: the in-memory map first,
+    then the claimed task files (covers a farmd restarted mid-run). PM-queue
+    runs (steps 0/1/2/9) share the PM session's log and resolve to nothing."""
+    name = RUN_SESSIONS.get(run_id)
+    if name:
+        return name
+    for task_path in (QUEUE_DIR / "runs" / "active").glob("*.json"):
+        try:
+            task = json.loads(task_path.read_text())
+            if str(task.get("run_id")) == run_id:
+                return _run_session_name(task)
+        except (json.JSONDecodeError, KeyError):
+            continue
+    return None
+
+
+@app.get("/runs/{run_id}/log")
+def run_log(run_id: str, offset: int = 0):
+    """Tail the run's pipe-pane log (HZ-5): the same stream shown in the tmux
+    pane, paged by byte offset for the UI's Live activity panel."""
+    name = _session_for_run(str(run_id))
+    if not name:
+        return JSONResponse({"error": "unknown run"}, status_code=404)
+    log_path = LOGS_DIR / f"{name}.log"
+    offset = max(0, offset)
+    content = b""
+    if log_path.exists():
+        with log_path.open("rb") as f:
+            f.seek(offset)
+            content = f.read(LOG_READ_CAP)
+    return {
+        "content": content.decode("utf-8", "replace"),
+        "next_offset": offset + len(content),
+        "active": tmux_mgr.session_exists(name),
+    }
 
 
 @app.post("/steps/cancel")
@@ -339,6 +387,9 @@ async def steps_result(request: Request):
 
 ensure_dirs()
 (QUEUE_DIR / "runs" / "active").mkdir(parents=True, exist_ok=True)
+# HZ-5 cost guardrail at boot: covers the adopt path too, which never goes
+# through /farm/start — a farm on API billing must not come up at all.
+assert_subscription_auth()
 _adopt_existing()
 threading.Thread(target=_watchdog, daemon=True).start()
 threading.Thread(target=_ephemeral_dispatcher, daemon=True).start()

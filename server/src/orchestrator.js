@@ -49,6 +49,16 @@ async function farmFetch(path, body) {
   return data
 }
 
+// Live log tail for a farm run (HZ-5): farmd serves the tmux pipe-pane
+// mirror, paged by byte offset. Returns { status, data } so the route can
+// pass the farm's own status (200/404) through; throws when the farm itself
+// is unreachable.
+export async function fetchRunLog(runId, offset = 0) {
+  const res = await fetch(`${FARM_URL}/runs/${runId}/log?offset=${encodeURIComponent(offset)}`)
+  const data = await res.json().catch(() => ({}))
+  return { status: res.status, data }
+}
+
 function projectPayload(projectId) {
   const project = db.prepare('SELECT * FROM project WHERE id = ?').get(projectId)
   const repos = db.prepare('SELECT repo, prefix FROM project_repo WHERE project_id = ?').all(projectId)

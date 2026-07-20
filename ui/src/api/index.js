@@ -28,4 +28,5 @@ export const {
   togglePause,
   restartPhase,
   setPersona,
+  getRunLog,
 } = impl

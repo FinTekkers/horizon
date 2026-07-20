@@ -5,7 +5,7 @@ import Fastify from 'fastify'
 import * as store from './store.js'
 import * as github from './github.js'
 import * as orchestrator from './orchestrator.js'
-import { WEBHOOK_SECRET, FARM_SHARED_SECRET, UI_URL } from './config.js'
+import { WEBHOOK_SECRET, FARM_SHARED_SECRET, FARM_URL, UI_URL } from './config.js'
 import { marked } from 'marked'
 import { db } from './db.js'
 import { getActiveProjectId, getRepoUrl, setSetting, getToken, humanKeyConfigured, setHumanKey, verifyHumanKey } from './settings.js'
@@ -136,6 +136,28 @@ export function buildApp({ logger = true } = {}) {
 <article>${marked.parse(run.artifact)}</article>
 </div></body></html>`
       return reply.type('text/html').send(html)
+    },
+  )
+
+  // Live per-run log tail (HZ-5): proxies farmd's pipe-pane mirror so the UI
+  // can show an active run's tmux output. PM-session steps (0/1/2/9) share
+  // one log file and 404 here — the Live activity panel skips them.
+  fastify.get(
+    '/api/runs/:runId/log',
+    {
+      schema: {
+        params: { type: 'object', required: ['runId'], properties: { runId: { type: 'integer' } } },
+        querystring: { type: 'object', properties: { offset: { type: 'integer', minimum: 0, default: 0 } } },
+      },
+    },
+    async (request, reply) => {
+      if (!FARM_URL) return reply.code(503).send({ error: 'farm unavailable' })
+      try {
+        const { status, data } = await orchestrator.fetchRunLog(request.params.runId, request.query.offset)
+        return reply.code(status).send(data)
+      } catch {
+        return reply.code(503).send({ error: 'farm unavailable' })
+      }
     },
   )
 

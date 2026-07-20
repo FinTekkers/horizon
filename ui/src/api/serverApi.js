@@ -195,6 +195,20 @@ export async function createItem(fields) {
   return data
 }
 
+// Tail an active farm run's log (HZ-5 Live activity) — the same stream shown
+// in the run's tmux pane. Throws with .status set so callers can stop polling
+// on 404 (PM-session steps share a log and have no per-run tail).
+export async function getRunLog(runId, offset = 0) {
+  const res = await fetch(`/api/runs/${runId}/log?offset=${encodeURIComponent(offset)}`)
+  const data = await res.json().catch(() => ({}))
+  if (!res.ok) {
+    const err = new Error(data.error || `HTTP ${res.status}`)
+    err.status = res.status
+    throw err
+  }
+  return data
+}
+
 // ---- actions ----
 
 function post(path, body) {

@@ -164,6 +164,19 @@ test('setPriority rejects items in an inactive project', () => {
   db.prepare("DELETE FROM setting WHERE key = 'active_project_id'").run()
 })
 
+test('activeRun in the snapshot carries the run id for the live log tail (HZ-5)', () => {
+  const runId = db
+    .prepare("INSERT INTO step_run (item_id, step_index, attempt, agent) VALUES ('T-AGENT', 11, 2, 'Eng')")
+    .run().lastInsertRowid
+  const item = store.listItems().find((it) => it.id === 'T-AGENT')
+  // id folded into the existing activeRun object — no sibling field.
+  assert.equal(item.activeRun.id, runId)
+  assert.equal(item.activeRun.step_index, 11)
+  assert.equal(item.activeRun.attempt, 2)
+  assert.ok(item.activeRun.started_at)
+  db.prepare('DELETE FROM step_run WHERE id = ?').run(runId)
+})
+
 test('parseIssueBody lifts Outcome / Success metric / Guardrails sections', () => {
   const parsed = store.parseIssueBody(
     '## Outcome\nShip the thing\n\n## Success metric\nIt works\n\n## Guardrails\nTests pass',

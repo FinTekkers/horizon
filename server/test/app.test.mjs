@@ -149,6 +149,12 @@ test('a failing GitHub label mirror still returns 200 and persists', async () =>
   }
 })
 
+test('run-log tail reports 503 when no farm is configured', async () => {
+  const res = await app.inject({ method: 'GET', url: '/api/runs/7/log' })
+  assert.equal(res.statusCode, 503)
+  assert.deepEqual(res.json(), { error: 'farm unavailable' })
+})
+
 test('webhook endpoint reports 503 when no secret is configured', async () => {
   const res = await app.inject({
     method: 'POST',
