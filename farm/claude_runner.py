@@ -70,7 +70,14 @@ def run_claude(
     # This runs inside the agent process (tmux pane), whose environment is
     # not farmd's — the guardrail must hold here, not just at daemon boot.
     assert_subscription_auth()
-    from claude_agent_sdk import ClaudeSDKError
+    try:
+        from claude_agent_sdk import ClaudeSDKError
+    except ImportError as exc:
+        raise ClaudeError(
+            "claude-agent-sdk is not installed in this environment — "
+            "run `pip install -r farm/requirements.txt` in the farm venv, "
+            "or set FARM_RUNNER=subprocess to fall back to the old runner"
+        ) from exc
 
     try:
         return asyncio.run(
