@@ -15,7 +15,7 @@ from http.server import BaseHTTPRequestHandler
 
 import pytest
 
-from farm.whatsapp.mcp_bridge import BridgeTransport
+from farm.whatsapp.mcp_bridge import BOT_MARKER, BridgeTransport
 from farm.whatsapp.transport import SchemaMismatch, TransportError
 from wa_fakes import FakeTransport, QuietHTTPServer
 
@@ -89,7 +89,9 @@ class BridgeHarness:
         con.close()
 
     def sent(self):
-        return [(s["recipient"], s["message"]) for s in self.stub.sends]
+        # The bot marker is bridge plumbing (self-chat echo suppression), not
+        # part of the transport contract — strip it for the shared assertions.
+        return [(s["recipient"], s["message"].removeprefix(BOT_MARKER)) for s in self.stub.sends]
 
     def make_send_fail(self):
         self.stub.fail = True
@@ -175,12 +177,72 @@ def test_send_failure_raises_transport_error(harness):
 # ---- bridge-specific behavior ----
 
 
+def pair_device(tmp_path, phone="16464276473", lid="275096967086230"):
+    """Create the sibling whatsmeow store the bridge reads its own JIDs from."""
+    con = sqlite3.connect(tmp_path / "whatsapp.db")
+    con.execute("CREATE TABLE whatsmeow_device (jid TEXT, lid TEXT)")
+    con.execute(
+        "INSERT INTO whatsmeow_device (jid, lid) VALUES (?, ?)",
+        (f"{phone}:32@s.whatsapp.net", f"{lid}:32@lid"),
+    )
+    con.commit()
+    con.close()
+
+
 def test_bridge_excludes_our_own_messages(tmp_path):
     h = BridgeHarness(tmp_path)
+    pair_device(tmp_path)
     try:
         h.seed("from them", is_from_me=0)
-        h.seed("from us", is_from_me=1)
+        h.seed("from us", is_from_me=1)  # owner talking in someone else's chat
         assert [m.text for m in h.transport.fetch_new(0)] == ["from them"]
+    finally:
+        h.close()
+
+
+def test_bridge_outbound_messages_carry_the_bot_marker(tmp_path):
+    h = BridgeHarness(tmp_path)
+    try:
+        h.transport.send("15550001111@s.whatsapp.net", "status update")
+        assert h.stub.sends[0]["message"] == BOT_MARKER + "status update"
+    finally:
+        h.close()
+
+
+def test_bridge_self_chat_command_is_inbound_with_phone_sender(tmp_path):
+    h = BridgeHarness(tmp_path)
+    pair_device(tmp_path)
+    try:
+        # WhatsApp stores self-chat rows as is_from_me=1 with the LID as both
+        # chat and sender; the transport must surface them as commands from
+        # the owner's canonical phone jid so the allowlist matches.
+        h.seed(
+            "What's the status of HZ-5?",
+            chat="275096967086230@lid", sender="275096967086230@lid", is_from_me=1,
+        )
+        msgs = h.transport.fetch_new(0)
+        assert [m.text for m in msgs] == ["What's the status of HZ-5?"]
+        assert msgs[0].sender_jid == "16464276473@s.whatsapp.net"
+    finally:
+        h.close()
+
+
+def test_bridge_self_chat_skips_bot_marked_replies(tmp_path):
+    h = BridgeHarness(tmp_path)
+    pair_device(tmp_path)
+    try:
+        h.seed(BOT_MARKER + "HZ-5 is at the Accept gate", chat="275096967086230@lid",
+               sender="275096967086230@lid", is_from_me=1)
+        assert h.transport.fetch_new(0) == []
+    finally:
+        h.close()
+
+
+def test_bridge_self_chat_ignored_when_device_store_missing(tmp_path):
+    h = BridgeHarness(tmp_path)  # no whatsapp.db — unpaired
+    try:
+        h.seed("command?", chat="275096967086230@lid", sender="275096967086230@lid", is_from_me=1)
+        assert h.transport.fetch_new(0) == []
     finally:
         h.close()
 
