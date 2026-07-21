@@ -204,3 +204,13 @@ test('listItems resolves currentStep so non-UI clients can see gate state', () =
     index: STEPS.length, label: 'Closed', kind: 'done', phase: 'Done', gate: false,
   })
 })
+
+test('stepOutputs carry the step label for non-UI clients', () => {
+  db.prepare(
+    "INSERT INTO step_run (item_id, step_index, attempt, agent, status, output, artifact) VALUES ('T-GATE', 8, 1, 'QA', 'done', 'verdict: pass', '# QA review')",
+  ).run()
+  const gate = store.listItems().find((it) => it.id === 'T-GATE')
+  assert.deepEqual(gate.stepOutputs['8'], {
+    output: 'verdict: pass', attempt: 1, artifact: '# QA review', label: 'QA reviews the test plan',
+  })
+})

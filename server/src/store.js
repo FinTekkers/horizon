@@ -101,8 +101,14 @@ const selectOutputs = db.prepare(
 function stepOutputs(itemId) {
   const map = {}
   for (const row of selectOutputs.all(itemId)) {
-    // last write wins = latest attempt
-    map[row.step_index] = { output: row.output, attempt: row.attempt, artifact: row.artifact || null }
+    // last write wins = latest attempt; label so non-UI clients (the
+    // WhatsApp concierge) can name the step without a STEPS copy
+    map[row.step_index] = {
+      output: row.output,
+      attempt: row.attempt,
+      artifact: row.artifact || null,
+      label: STEPS[row.step_index]?.label ?? null,
+    }
   }
   return map
 }

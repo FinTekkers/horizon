@@ -131,8 +131,8 @@ def build_prompt(msg: Inbound, snapshot: dict) -> str:
         "Current work items:",
     ]
     lines += [_item_line(it) for it in items] or ["(none)"]
-    # Detail (outcome + latest artifacts) only for items the message names —
-    # the full snapshot would drown the model.
+    # Detail (outcome, progress, artifacts) only for items the message
+    # names — the full snapshot would drown the model.
     named = [it for it in items if it["id"].lower() in msg.text.lower()]
     for it in named[:3]:
         lines += [
@@ -141,9 +141,21 @@ def build_prompt(msg: Inbound, snapshot: dict) -> str:
             f"  outcome: {it.get('desc') or '(empty)'}",
             f"  success metric: {it.get('metric') or '(empty)'}",
         ]
-        for step_index, out in sorted((it.get("stepOutputs") or {}).items(), key=lambda kv: int(kv[0])):
+        if it.get("pr"):
+            lines.append(f"  PR: #{it['pr']} {it.get('pr_url') or ''}".rstrip())
+        if it.get("release_tag"):
+            lines.append(f"  release: {it['release_tag']} {it.get('release_url') or ''}".rstrip())
+        outputs = sorted((it.get("stepOutputs") or {}).items(), key=lambda kv: int(kv[0]))
+        if outputs:
+            lines.append("  completed steps:")
+            for step_index, out in outputs:
+                name = out.get("label") or f"step {step_index}"
+                summary = (out.get("output") or "").replace("\n", " ")[:300]
+                lines.append(f'    {step_index}. "{name}" (attempt {out.get("attempt")}): {summary}')
+        for step_index, out in outputs:
             if out.get("artifact"):
-                lines.append(f"  artifact from step {step_index}:")
+                name = out.get("label") or f"step {step_index}"
+                lines.append(f'  artifact from step {step_index} "{name}":')
                 lines.append("    " + out["artifact"][:4000].replace("\n", "\n    "))
     lines += ["", "Respond with ONLY the JSON object described in your role instructions."]
     return "\n".join(lines)

@@ -259,3 +259,50 @@ def test_item_line_survives_a_snapshot_without_current_step():
     # An older server (or a test stub) that doesn't send currentStep must not crash the concierge.
     assert _line().endswith("— waiting")
     assert _line(activeRun={"id": 1}).endswith("— step running now")
+
+
+# ---- named-item detail (status / artifact questions) ----
+
+
+def _msg(text):
+    from farm.whatsapp.transport import Inbound
+    return Inbound(msg_id="M-1", chat_jid="c@s.whatsapp.net", sender_jid="15550001111@s.whatsapp.net",
+                   text=text, ts="2026-07-20 10:00:00", cursor=1)
+
+
+def _snapshot_item(**overrides):
+    item = {
+        "id": "HZ-9", "title": "Project-scoped persona rules", "priority": "High",
+        "paused": False, "activeRun": None, "desc": "rules per project", "metric": "parity tests pass",
+        "pr": 5, "pr_url": "https://github.com/FinTekkers/horizon/pull/5",
+        "release_tag": "deploy-hz-9", "release_url": "https://github.com/FinTekkers/horizon/releases/deploy-hz-9",
+        "stepOutputs": {
+            "8": {"label": "QA reviews the test plan", "attempt": 2,
+                  "output": "verdict: pass-with-conditions", "artifact": "# QA review\nAdd a parity test."},
+        },
+    }
+    item.update(overrides)
+    return item
+
+
+def test_build_prompt_details_a_named_item_with_labeled_steps_and_artifacts():
+    prompt = ca.build_prompt(_msg("what did QA say about HZ-9?"), {"items": [_snapshot_item()]})
+    assert "PR: #5 https://github.com/FinTekkers/horizon/pull/5" in prompt
+    assert "release: deploy-hz-9" in prompt
+    assert '8. "QA reviews the test plan" (attempt 2): verdict: pass-with-conditions' in prompt
+    assert 'artifact from step 8 "QA reviews the test plan":' in prompt
+    assert "Add a parity test." in prompt
+
+
+def test_build_prompt_keeps_detail_out_of_unnamed_items():
+    prompt = ca.build_prompt(_msg("what's in the backlog?"), {"items": [_snapshot_item()]})
+    assert "HZ-9" in prompt  # the one-line summary is always there
+    assert "artifact from step" not in prompt
+    assert "completed steps:" not in prompt
+
+
+def test_build_prompt_falls_back_to_step_numbers_without_labels():
+    item = _snapshot_item(stepOutputs={"6": {"attempt": 1, "output": "plan drafted", "artifact": "# Plan"}})
+    prompt = ca.build_prompt(_msg("status of HZ-9"), {"items": [item]})
+    assert '6. "step 6" (attempt 1): plan drafted' in prompt
+    assert 'artifact from step 6 "step 6":' in prompt
