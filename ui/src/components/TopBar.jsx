@@ -50,7 +50,7 @@ function ProjectSwitcher({ projects, activeProjectId, farm, onRequestSwitch }) {
   )
 }
 
-function UserMenu({ onOpenAdmin }) {
+function UserMenu({ onOpenAdmin, onOpenDefinitions }) {
   const [open, setOpen] = useState(false)
   const close = () => setOpen(false)
   return (
@@ -65,6 +65,16 @@ function UserMenu({ onOpenAdmin }) {
             <div className="usermenu__header">
               Signed in as <strong>AP</strong> (demo)
             </div>
+            <button
+              className="usermenu__item"
+              onClick={() => {
+                close()
+                onOpenDefinitions()
+              }}
+            >
+              <GridIcon />
+              Agent definitions
+            </button>
             <button
               className="usermenu__item"
               onClick={() => {
@@ -96,6 +106,7 @@ export default function TopBar({
   onTracker,
   onOpenApprovals,
   onOpenAdmin,
+  onOpenDefinitions,
 }) {
   const hot = pendingCount > 0
   return (
@@ -133,7 +144,7 @@ export default function TopBar({
         Pending approvals
         <span className={`pending-btn__badge${hot ? ' pending-btn__badge--hot' : ''}`}>{pendingCount}</span>
       </button>
-      <UserMenu onOpenAdmin={onOpenAdmin} />
+      <UserMenu onOpenAdmin={onOpenAdmin} onOpenDefinitions={onOpenDefinitions} />
     </div>
   )
 }

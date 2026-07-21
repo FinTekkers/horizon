@@ -29,4 +29,8 @@ export const {
   restartPhase,
   setPersona,
   getRunLog,
+  listDefinitions,
+  getDefinition,
+  saveDefinition,
+  effectivePrompt,
 } = impl

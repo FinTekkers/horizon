@@ -132,6 +132,7 @@ export function listItems() {
     project_id: row.project_id,
     pr: row.pr,
     pr_url: row.pr_url,
+    pr_mergeable: row.pr_mergeable == null ? null : !!row.pr_mergeable,
     release_tag: row.release_tag,
     release_url: row.release_url,
     persona: row.persona,

@@ -14,7 +14,7 @@ import httpx
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
-from . import tmux_mgr, workspaces
+from . import rules, tmux_mgr, workspaces
 from . import config as farm_config
 from .claude_runner import ClaudeError, assert_subscription_auth
 from .config import (
@@ -279,6 +279,10 @@ async def steps_run(request: Request):
     # PM (it has the project context to synthesize); everything else runs as
     # an ephemeral agent via the dispatcher (bounded by FARM_MAX_EPHEMERAL).
     body["project"] = state["project"]
+    # Project/repo rules are stamped into the task at enqueue (HZ-9): the
+    # queued payload and the session log show verbatim what the agent gets.
+    item_repo = body["item"].get("repo") if isinstance(body["item"], dict) else None
+    body["rules"] = rules.resolve_rules(state["project"]["name"] if state["project"] else None, item_repo)
     queue = "pm" if body["step"].get("index", 99) in (0, 1, 2, 9) else "runs"
     (QUEUE_DIR / queue).mkdir(parents=True, exist_ok=True)
     task_path = QUEUE_DIR / queue / f"{body['run_id']}.json"

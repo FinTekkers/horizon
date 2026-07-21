@@ -99,7 +99,7 @@ function LiveActivity({ runId }) {
   )
 }
 
-function Step({ item, index, onApprove, onApproveWithComments, onReject, onSetPersona }) {
+function Step({ item, index, onApprove, onApproveWithComments, onReject, onResolveConflicts, onSetPersona }) {
   const st = STEPS[index]
   const status = stepStatus(item, index)
   const isGate = st.kind === 'gate'
@@ -172,6 +172,14 @@ function Step({ item, index, onApprove, onApproveWithComments, onReject, onSetPe
                   </option>
                 ))}
               </select>
+            </div>
+          )}
+          {status === 'awaiting' && st.label === 'Accept the code' && item.pr != null && item.pr_mergeable === false && (
+            <div className="step-card__conflict">
+              PR #{item.pr} has merge conflicts with main — approving would fail.
+              <button className="btn-gate-reject" onClick={() => onResolveConflicts(item.id, item.pr)}>
+                Send back to resolve conflicts
+              </button>
             </div>
           )}
           {status === 'awaiting' && (
@@ -253,7 +261,7 @@ function buildActivity(item) {
     })
 }
 
-export default function Tracker({ item, onBack, onApprove, onApproveWithComments, onReject, onTogglePause, onRestartPhase, onSetPersona }) {
+export default function Tracker({ item, onBack, onApprove, onApproveWithComments, onReject, onResolveConflicts, onTogglePause, onRestartPhase, onSetPersona }) {
   const status = itemStatus(item, true)
   const activity = buildActivity(item)
 
@@ -355,6 +363,7 @@ export default function Tracker({ item, onBack, onApprove, onApproveWithComments
                     onApprove={onApprove}
                     onApproveWithComments={onApproveWithComments}
                     onReject={onReject}
+                    onResolveConflicts={onResolveConflicts}
                     onSetPersona={onSetPersona}
                   />
                 ))}

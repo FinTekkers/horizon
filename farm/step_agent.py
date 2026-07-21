@@ -20,6 +20,7 @@ from .checks import run_checks
 from .claude_runner import ClaudeError, extract_json, run_claude
 from .config import FARM_PORT
 from .personas import compose_role, resolve
+from .rules import render_rules_section
 from .workspaces import workspace_path
 
 FARMD = f"http://127.0.0.1:{FARM_PORT}"
@@ -73,6 +74,10 @@ def build_prompt(task: dict) -> str:
         lines.append("Human feedback to address:")
         for fb in feedback:
             lines.append(f"- {fb.get('message', '')}")
+    rules_section = render_rules_section(task.get("rules"))
+    if rules_section:
+        lines.append("")
+        lines.append(rules_section)
     return "\n".join(lines)
 
 
@@ -102,7 +107,10 @@ def finalize_branch(ws: Path, item: dict, branch: str) -> dict:
     ahead = git(ws, "rev-list", "--count", f"origin/{default}..HEAD", check=False).stdout.strip()
     if ahead == "0":
         raise RuntimeError("the agent made no code changes — nothing to push")
-    git(ws, "push", "-u", "origin", branch)
+    # Agent work branches are single-writer (the implement mutex): a rebase
+    # rewriting earlier attempts is legitimate, so push with lease protection
+    # rather than failing on non-fast-forward.
+    git(ws, "push", "--force-with-lease", "-u", "origin", branch)
     stat = git(ws, "diff", "--stat", f"origin/{default}...HEAD", check=False).stdout.strip().splitlines()
     return {"branch": branch, "files_changed": stat[-1] if stat else ""}
 
@@ -135,7 +143,13 @@ def execute(task: dict) -> dict:
             timeout_s=timeout_s,
             allowed_tools=tools,
         )
-        summary = str(extract_json(reply["result"]).get("summary", "implementation finished")).strip()[:600]
+        # The summary is reporting, not the deliverable — the code in the
+        # workspace is. Never torch a completed implement run over a
+        # malformed final message; fall back and let checks judge the work.
+        try:
+            summary = str(extract_json(reply["result"]).get("summary", "implementation finished")).strip()[:600]
+        except Exception:
+            summary = "implementation finished (agent's final message was not valid JSON — see session log)"
         # Guardrail enforcement: the repo's own tests/linters run here, by the
         # script, before anything is committed or pushed. A failure fails the
         # run (Node pauses the item with the reason) — no green, no push.

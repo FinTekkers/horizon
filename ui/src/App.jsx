@@ -7,16 +7,18 @@ import Tracker from './components/Tracker'
 import ApprovalsDrawer from './components/ApprovalsDrawer'
 import ComposerModal from './components/ComposerModal'
 import AdminPage from './components/AdminPage'
+import AgentDefinitionsPage from './components/AgentDefinitionsPage'
 import NewItemModal from './components/NewItemModal'
 
 const CLOSED_COMPOSER = { open: false, mode: null, itemId: null, phase: null, target: '' }
 
-// Deep links: /  → board, /admin → admin, /<item-id> → that item's tracker
-// (case-insensitive, e.g. localhost:5173/hz-102).
+// Deep links: /  → board, /admin → admin, /definitions → agent definitions,
+// /<item-id> → that item's tracker (case-insensitive, e.g. localhost:5173/hz-102).
 function parsePath(pathname) {
   const seg = decodeURIComponent(pathname.replace(/^\/+|\/+$/g, ''))
   if (!seg) return { view: 'board', id: null }
   if (seg.toLowerCase() === 'admin') return { view: 'admin', id: null }
+  if (seg.toLowerCase() === 'definitions') return { view: 'definitions', id: null }
   return { view: 'tracker', id: seg.toUpperCase() }
 }
 
@@ -107,6 +109,11 @@ export default function App() {
           setView('admin')
           setApprovalsOpen(false)
         }}
+        onOpenDefinitions={() => {
+          navigate('/definitions')
+          setView('definitions')
+          setApprovalsOpen(false)
+        }}
       />
 
       {farm?.status === 'restarting' && (
@@ -131,6 +138,8 @@ export default function App() {
         <AdminPage sync={sync} security={api.getSecurity()} projects={projects} onBack={toBoard} />
       )}
 
+      {view === 'definitions' && <AgentDefinitionsPage onBack={toBoard} />}
+
       {view === 'tracker' && selected && (
         <Tracker
           item={selected}
@@ -138,6 +147,13 @@ export default function App() {
           onApprove={api.approveGate}
           onApproveWithComments={(id, target) => openComposer('approve', id, { target })}
           onReject={(id, target) => openComposer('reject', id, { target })}
+          onResolveConflicts={(id, pr) =>
+            api.requestChanges(
+              id,
+              'Accept the code',
+              `PR #${pr} has merge conflicts — merge current main into the branch and resolve the conflicts, keeping main's changes intact`,
+            )
+          }
           onTogglePause={api.togglePause}
           onRestartPhase={(id, phase) => openComposer('restart', id, { phase })}
           onSetPersona={api.setPersona}

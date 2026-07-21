@@ -23,7 +23,7 @@ def session_exists(name: str) -> bool:
 def _farm_env_prefix() -> str:
     """tmux sessions inherit the tmux *server's* environment, not ours — so
     every FARM_* / HORIZON_URL var must ride along in the command itself."""
-    pairs = {k: v for k, v in os.environ.items() if k.startswith("FARM_") or k == "HORIZON_URL"}
+    pairs = {k: v for k, v in os.environ.items() if k.startswith(("FARM_", "WA_")) or k == "HORIZON_URL"}
     if not pairs:
         return ""
     return "env " + " ".join(f"{k}={shlex.quote(v)}" for k, v in pairs.items()) + " "

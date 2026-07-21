@@ -11,6 +11,7 @@ import { db } from './db.js'
 import { getActiveProjectId, getRepoUrl, setSetting, getToken, humanKeyConfigured, setHumanKey, verifyHumanKey } from './settings.js'
 import { STEPS } from './lifecycle.js'
 import { PERSONAS } from './personas.js'
+import * as definitions from './definitions.js'
 
 // ---- SSE ----
 
@@ -452,6 +453,79 @@ export function buildApp({ logger = true } = {}) {
       setHumanKey(request.body.key.trim())
       broadcast()
       return { ok: true }
+    },
+  )
+
+  // ---- agent definitions (HZ-9: hierarchical, git-versioned, UI-editable) ----
+
+  fastify.get('/api/definitions', () => definitions.listDefinitions())
+
+  // Static segment registered alongside /:kind/:name — Fastify prefers it.
+  fastify.get(
+    '/api/definitions/effective',
+    {
+      schema: {
+        querystring: {
+          type: 'object',
+          properties: {
+            role: { type: 'string', maxLength: 100 },
+            persona: { type: 'string', maxLength: 100 },
+            project: { type: 'string', maxLength: 200 },
+            repo: { type: 'string', maxLength: 300 },
+          },
+        },
+      },
+    },
+    (request) => ({ prompt: definitions.effectivePrompt(request.query) }),
+  )
+
+  const definitionParams = {
+    type: 'object',
+    required: ['kind', 'name'],
+    properties: { kind: { type: 'string' }, name: { type: 'string', maxLength: 200 } },
+  }
+
+  fastify.get('/api/definitions/:kind/:name', { schema: { params: definitionParams } }, (request, reply) => {
+    const def = definitions.readDefinition(request.params.kind, request.params.name)
+    if (!def) return reply.code(404).send({ error: 'unknown_definition' })
+    return def
+  })
+
+  // Edits are human-gated (same key as approvals) and become git commits with
+  // the actor in the message — git history is the audit trail. Global kinds
+  // (role/persona) affect every project; the UI labels them as such.
+  fastify.put(
+    '/api/definitions/:kind/:name',
+    {
+      schema: {
+        params: definitionParams,
+        body: {
+          type: 'object',
+          required: ['content'],
+          properties: {
+            content: { type: 'string', minLength: 1, maxLength: 20000 },
+            actor: { type: 'string', maxLength: 120 },
+          },
+        },
+      },
+    },
+    (request, reply) => {
+      if (!humanAuthorized(request, reply)) return
+      const { kind, name } = request.params
+      const actor = (request.body.actor || 'human via UI').trim()
+      try {
+        return definitions.writeDefinition(kind, name, request.body.content, actor)
+      } catch (err) {
+        if (err.code === 'unknown_definition') return reply.code(404).send({ error: err.code })
+        if (err.code === 'rules_too_large') return reply.code(400).send({ error: err.code, limit: err.limit })
+        if (err.code === 'credential_pattern') return reply.code(400).send({ error: err.code, matches: err.matches })
+        if (err.code === 'empty_content') return reply.code(400).send({ error: err.code })
+        if (err.code === 'git_dirty') return reply.code(409).send({ error: err.code })
+        if (err.code === 'push_failed') {
+          return reply.code(502).send({ error: err.code, commit: err.commit, detail: err.detail })
+        }
+        throw err
+      }
     },
   )
 

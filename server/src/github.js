@@ -589,6 +589,14 @@ async function pollPrStates(log) {
       if (!res.ok) continue
       const pr = await res.json()
       if (handlePrStateChange(item.repo, item.pr, { merged: !!pr.merged, state: pr.state }, log)) changed++
+      // Surface mergeability so the accept gate can offer a one-click
+      // conflict-resolution rework (GitHub computes it async; null = unknown).
+      const flag = pr.merged || pr.state === 'closed' || pr.mergeable == null ? null : pr.mergeable ? 1 : 0
+      const row = db.prepare('SELECT pr_mergeable FROM work_item WHERE id = ?').get(item.id)
+      if (row && (row.pr_mergeable ?? null) !== flag) {
+        db.prepare("UPDATE work_item SET pr_mergeable = ?, updated_at = datetime('now') WHERE id = ?").run(flag, item.id)
+        store.notifyChange()
+      }
     } catch {
       // transient; next poll retries
     }

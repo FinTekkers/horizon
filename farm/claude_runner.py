@@ -135,6 +135,10 @@ async def _stream_query(
         # Public signature keeps the CLI's comma-joined string; the SDK wants a list.
         allowed_tools=[t.strip() for t in allowed_tools.split(",") if t.strip()] if allowed_tools else [],
         resume=session_id,
+        # Same isolation as the subprocess path's --strict-mcp-config: farm
+        # agents must NOT inherit the human's personal MCP servers (WhatsApp
+        # etc.) from the global Claude config.
+        strict_mcp_config=True,
         cli_path=CLAUDE_BIN if CLAUDE_BIN != "claude" else None,
     )
 
@@ -195,7 +199,10 @@ def _run_claude_subprocess(
     allowed_tools: str | None = None,
 ) -> dict:
     """The pre-HZ-5 path: silent `claude -p --output-format json` subprocess."""
-    cmd = [CLAUDE_BIN, "-p", prompt, "--output-format", "json", "--max-turns", str(max_turns)]
+    # --strict-mcp-config: farm agents must NOT inherit the human's personal
+    # MCP servers (WhatsApp etc.) from the global Claude config — least
+    # privilege, faster startup, no personal tools in agent context.
+    cmd = [CLAUDE_BIN, "-p", prompt, "--output-format", "json", "--max-turns", str(max_turns), "--strict-mcp-config"]
     if session_id:
         cmd += ["--resume", session_id]
     if append_system:

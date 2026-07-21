@@ -230,6 +230,43 @@ export async function getRunLog(runId, offset = 0) {
   }
 }
 
+
+// ---- agent definitions (HZ-9) ----
+// Demo mode shows the hierarchy read-only; edits need the server (each save
+// is a git commit there).
+
+const MOCK_DEFINITIONS = {
+  global: [
+    { kind: 'role', name: 'eng_implement', bytes: 1420 },
+    { kind: 'role', name: 'qa', bytes: 980 },
+    { kind: 'persona', name: 'fullstack', bytes: 812 },
+    { kind: 'persona', name: 'python_backend', bytes: 764 },
+    { kind: 'persona', name: 'frontend_ui', bytes: 790 },
+  ],
+  projects: [{ kind: 'project', name: 'fintekkers', bytes: 1500 }],
+  repos: [
+    { kind: 'repo', name: 'FinTekkers__ui-service', bytes: 2100 },
+    { kind: 'repo', name: 'FinTekkers__ledger-models', bytes: 1800 },
+  ],
+}
+
+export async function listDefinitions() {
+  return MOCK_DEFINITIONS
+}
+
+export async function getDefinition(kind, name) {
+  const content = `# ${name}\n\nDemo content — connect the Horizon server to view and edit the real ${kind} definition.`
+  return { kind, name, content, path: `farm/…/${name}.md`, bytes: content.length }
+}
+
+export async function saveDefinition() {
+  throw new Error('Definitions are read-only in mock mode — run the server to edit them')
+}
+
+export async function effectivePrompt() {
+  return { prompt: '(the effective-prompt preview requires the server)' }
+}
+
 export function restartPhase(id, phase, reason) {
   const firstIdx = STEPS.findIndex((st) => st.phase === phase)
   update(id, (x) => ({ ...x, cursor: firstIdx, rejected: false, paused: false }))
