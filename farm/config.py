@@ -15,6 +15,9 @@ WORKSPACES_DIR = FARM_HOME / "workspaces"
 
 # Override with a fake binary in tests (farm/tests/fake_claude).
 CLAUDE_BIN = os.environ.get("FARM_CLAUDE_BIN", "claude")
+# HZ-5: "sdk" streams agent activity live via claude-agent-sdk; "subprocess"
+# is the rollback lever restoring the silent `claude -p` path.
+FARM_RUNNER = os.environ.get("FARM_RUNNER", "sdk")
 PM_MODEL = os.environ.get("FARM_PM_MODEL")  # None -> CLI default
 STEP_TIMEOUT_S = int(os.environ.get("FARM_STEP_TIMEOUT_S", "900"))
 MAX_TURNS = int(os.environ.get("FARM_MAX_TURNS", "8"))

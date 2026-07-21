@@ -28,6 +28,7 @@ export const {
   togglePause,
   restartPhase,
   setPersona,
+  getRunLog,
   listDefinitions,
   getDefinition,
   saveDefinition,

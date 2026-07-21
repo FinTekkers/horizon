@@ -1,20 +1,46 @@
-"""Runs one Claude Code invocation as a controlled subprocess.
+"""Runs one Claude Code invocation and streams its activity to stdout.
 
-We deliberately drive the CLI (`claude -p --output-format json`) rather than
-an interactive session: scripts stay in control of the flow, and session
-continuity comes from `--resume <session_id>` — the PM agent persists its
-session id per project, giving a "long-running" agent whose every step is
-still a bounded, observable subprocess.
+Default path (HZ-5): the Python Agent SDK (`claude-agent-sdk`) drives the
+local `claude` binary and yields typed events as the model works — each one
+is printed to stdout, which IS the tmux pane (and, via farmd's pipe-pane,
+the run's log file that the UI tails). Session continuity still comes from
+`resume=<session_id>`; scripts stay in control of the flow.
+
+Rollback lever: FARM_RUNNER=subprocess restores the old silent
+`claude -p --output-format json` subprocess path unchanged.
+
+Cost guardrail (HZ-5 success metric): the SDK path refuses to run when
+ANTHROPIC_API_KEY is set, so every call rides the logged-in `claude`
+subscription — never API billing.
 """
 
+import asyncio
 import json
+import os
 import subprocess
+from datetime import datetime
 
-from .config import CLAUDE_BIN, MAX_TURNS, STEP_TIMEOUT_S
+from .config import CLAUDE_BIN, FARM_RUNNER, MAX_TURNS, STEP_TIMEOUT_S
 
 
 class ClaudeError(RuntimeError):
     pass
+
+
+def assert_subscription_auth() -> None:
+    """Refuse to run with ANTHROPIC_API_KEY present — the farm must use the
+    logged-in `claude` subscription, never metered API billing (HZ-5)."""
+    if os.environ.get("ANTHROPIC_API_KEY", "").strip():
+        raise ClaudeError(
+            "ANTHROPIC_API_KEY is set — the farm runs on the logged-in claude "
+            "subscription only (HZ-5 cost guardrail). Unset it and restart the farm."
+        )
+
+
+def _selected_runner() -> str:
+    # Read at call time so a restarted agent (or a test) can flip runners
+    # without re-importing config.
+    return os.environ.get("FARM_RUNNER", FARM_RUNNER)
 
 
 def run_claude(
@@ -29,6 +55,150 @@ def run_claude(
     allowed_tools: str | None = None,
 ) -> dict:
     """Returns {"result": <final text>, "session_id": <id>}."""
+    if _selected_runner() == "subprocess":
+        return _run_claude_subprocess(
+            prompt,
+            session_id=session_id,
+            append_system=append_system,
+            cwd=cwd,
+            model=model,
+            max_turns=max_turns,
+            timeout_s=timeout_s,
+            allowed_tools=allowed_tools,
+        )
+
+    # This runs inside the agent process (tmux pane), whose environment is
+    # not farmd's — the guardrail must hold here, not just at daemon boot.
+    assert_subscription_auth()
+    try:
+        from claude_agent_sdk import ClaudeSDKError
+    except ImportError as exc:
+        raise ClaudeError(
+            "claude-agent-sdk is not installed in this environment — "
+            "run `pip install -r farm/requirements.txt` in the farm venv, "
+            "or set FARM_RUNNER=subprocess to fall back to the old runner"
+        ) from exc
+
+    try:
+        return asyncio.run(
+            asyncio.wait_for(
+                _stream_query(
+                    prompt,
+                    session_id=session_id,
+                    append_system=append_system,
+                    cwd=cwd,
+                    model=model,
+                    max_turns=max_turns,
+                    allowed_tools=allowed_tools,
+                ),
+                timeout_s,
+            )
+        )
+    except TimeoutError as exc:
+        raise ClaudeError(f"claude timed out after {timeout_s}s") from exc
+    except ClaudeSDKError as exc:
+        # A stale `resume` session is the common recoverable failure: retry fresh.
+        if session_id:
+            return run_claude(
+                prompt,
+                session_id=None,
+                append_system=append_system,
+                cwd=cwd,
+                model=model,
+                max_turns=max_turns,
+                timeout_s=timeout_s,
+                allowed_tools=allowed_tools,
+            )
+        raise ClaudeError(f"claude (sdk) failed: {str(exc)[:300]}") from exc
+
+
+async def _stream_query(
+    prompt: str,
+    *,
+    session_id: str | None,
+    append_system: str | None,
+    cwd: str | None,
+    model: str | None,
+    max_turns: int,
+    allowed_tools: str | None,
+) -> dict:
+    import claude_agent_sdk as sdk
+
+    options = sdk.ClaudeAgentOptions(
+        # The preset+append form mirrors the CLI's --append-system-prompt.
+        system_prompt=(
+            {"type": "preset", "preset": "claude_code", "append": append_system} if append_system else None
+        ),
+        cwd=cwd,
+        model=model,
+        max_turns=max_turns,
+        # Public signature keeps the CLI's comma-joined string; the SDK wants a list.
+        allowed_tools=[t.strip() for t in allowed_tools.split(",") if t.strip()] if allowed_tools else [],
+        resume=session_id,
+        # Same isolation as the subprocess path's --strict-mcp-config: farm
+        # agents must NOT inherit the human's personal MCP servers (WhatsApp
+        # etc.) from the global Claude config.
+        strict_mcp_config=True,
+        cli_path=CLAUDE_BIN if CLAUDE_BIN != "claude" else None,
+    )
+
+    result_text, new_session_id = "", None
+    stream = sdk.query(prompt=prompt, options=options)
+    try:
+        async for message in stream:
+            _print_event(message)
+            if isinstance(message, sdk.ResultMessage):
+                result_text = message.result or ""
+                new_session_id = message.session_id
+                if message.is_error:
+                    raise ClaudeError(f"claude reported an error result: {result_text[:300]}")
+    finally:
+        # Cancellation (asyncio.wait_for timeout) lands here too: closing the
+        # generator tears down the SDK's transport, killing the spawned
+        # `claude` process rather than orphaning it in the tmux session.
+        await stream.aclose()
+    return {"result": result_text, "session_id": new_session_id}
+
+
+def _print_event(message) -> None:
+    """One flushed stdout line per visible event — stdout is the tmux pane,
+    and pipe-pane mirrors it into the run's log file for the UI tail."""
+    import claude_agent_sdk as sdk
+
+    stamp = datetime.now().strftime("%H:%M:%S")
+    if isinstance(message, sdk.AssistantMessage):
+        for block in message.content:
+            if isinstance(block, sdk.TextBlock) and block.text.strip():
+                print(f"[{stamp}] {block.text.strip()}", flush=True)
+            elif isinstance(block, sdk.ToolUseBlock):
+                print(f"[{stamp}] ⏺ {block.name}({_brief(block.input)})", flush=True)
+    elif isinstance(message, sdk.ResultMessage):
+        print(
+            f"[{stamp}] ── result: {message.num_turns} turn(s) in {message.duration_ms / 1000:.0f}s ──",
+            flush=True,
+        )
+
+
+def _brief(tool_input) -> str:
+    try:
+        text = json.dumps(tool_input, ensure_ascii=False)
+    except (TypeError, ValueError):
+        text = str(tool_input)
+    return text if len(text) <= 160 else text[:157] + "…"
+
+
+def _run_claude_subprocess(
+    prompt: str,
+    *,
+    session_id: str | None = None,
+    append_system: str | None = None,
+    cwd: str | None = None,
+    model: str | None = None,
+    max_turns: int = MAX_TURNS,
+    timeout_s: int = STEP_TIMEOUT_S,
+    allowed_tools: str | None = None,
+) -> dict:
+    """The pre-HZ-5 path: silent `claude -p --output-format json` subprocess."""
     # --strict-mcp-config: farm agents must NOT inherit the human's personal
     # MCP servers (WhatsApp etc.) from the global Claude config — least
     # privilege, faster startup, no personal tools in agent context.
@@ -52,7 +222,7 @@ def run_claude(
     if proc.returncode != 0:
         # A stale --resume session is the common recoverable failure: retry fresh.
         if session_id:
-            return run_claude(
+            return _run_claude_subprocess(
                 prompt,
                 session_id=None,
                 append_system=append_system,

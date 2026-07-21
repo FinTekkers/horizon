@@ -438,6 +438,17 @@ button { font-family: var(--font-sans); }
   font: 400 12.5px var(--font-mono); color: var(--deep); line-height: 1.55;
   white-space: pre-wrap;
 }
+.step-card__live { margin-top: 8px; }
+.step-card__live summary {
+  cursor: pointer; font: 600 12px var(--font-sans); color: var(--primary);
+}
+.step-card__live-log {
+  margin: 8px 0 0; padding: 10px 13px; max-height: 260px; overflow-y: auto;
+  border-radius: 10px; background: #2A2A2E; color: #E8E4F0;
+  font: 400 12px var(--font-mono); line-height: 1.55;
+  white-space: pre-wrap; word-break: break-word;
+}
+
 .step-card__actions { display: flex; gap: 8px; margin-top: 12px; flex-wrap: wrap; }
 
 .step-card__persona { display: flex; align-items: center; gap: 10px; margin-top: 12px; }

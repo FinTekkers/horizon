@@ -107,8 +107,9 @@ function stepOutputs(itemId) {
   return map
 }
 
+// `id` rides along so the UI can tail the run's live log (HZ-5).
 const selectActiveRun = db.prepare(
-  "SELECT step_index, attempt, started_at FROM step_run WHERE item_id = ? AND status = 'active' ORDER BY id DESC LIMIT 1",
+  "SELECT id, step_index, attempt, started_at FROM step_run WHERE item_id = ? AND status = 'active' ORDER BY id DESC LIMIT 1",
 )
 
 // Board/tracker only ever see the active project's items (plus local demo
