@@ -105,8 +105,21 @@ def fetch_snapshot(base_url: str) -> dict:
 
 
 def _item_line(item: dict) -> str:
-    run = item.get("activeRun")
-    status = "step running now" if run else ("paused" if item.get("paused") else "waiting")
+    step = item.get("currentStep") or {}
+    label = step.get("label")
+    if item.get("activeRun"):
+        status = f'agent working on "{label}"' if label else "step running now"
+    elif item.get("paused"):
+        status = f'paused at "{label}"' if label else "paused"
+    elif step.get("kind") == "done":
+        status = "closed"
+    elif step.get("gate"):
+        status = f'AWAITING HUMAN APPROVAL at gate "{label}"'
+        if item.get("pr"):
+            conflicts = ", has merge conflicts" if item.get("pr_mergeable") is False else ""
+            status += f" (PR #{item['pr']}{conflicts})"
+    else:
+        status = f'queued at "{label}"' if label else "waiting"
     return f"- {item['id']} [{item.get('priority')}] {item.get('title')} — {status}"
 
 

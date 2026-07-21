@@ -220,3 +220,42 @@ def test_persistently_invalid_reply_sends_an_error_and_claims(stub, monkeypatch)
     assert stub.posts() == []
     assert "hit an error" in t.sent[0][1]
     assert state.is_processed(msg.msg_id)  # never retried forever
+
+
+# ---- snapshot status lines (what the model gets to answer "what's pending?") ----
+
+
+def _line(**overrides):
+    item = {"id": "HZ-5", "title": "Agent output in tmux", "priority": "High",
+            "paused": False, "activeRun": None}
+    item.update(overrides)
+    return ca._item_line(item)
+
+
+def test_item_line_flags_a_gate_as_awaiting_human_approval():
+    line = _line(currentStep={"index": 12, "label": "Accept the code", "kind": "gate", "gate": True}, pr=12)
+    assert 'AWAITING HUMAN APPROVAL at gate "Accept the code" (PR #12)' in line
+
+
+def test_item_line_flags_merge_conflicts_on_the_accept_gate():
+    line = _line(currentStep={"label": "Accept the code", "kind": "gate", "gate": True},
+                 pr=12, pr_mergeable=False)
+    assert "(PR #12, has merge conflicts)" in line
+
+
+def test_item_line_names_the_running_step():
+    line = _line(currentStep={"label": "Specialist agent implements", "kind": "agent", "gate": False},
+                 activeRun={"id": 1, "step_index": 11})
+    assert 'agent working on "Specialist agent implements"' in line
+
+
+def test_item_line_reports_paused_and_closed_states():
+    assert 'paused at "Deploy the changes"' in _line(
+        paused=True, currentStep={"label": "Deploy the changes", "kind": "agent", "gate": False})
+    assert _line(currentStep={"label": "Closed", "kind": "done", "gate": False}).endswith("— closed")
+
+
+def test_item_line_survives_a_snapshot_without_current_step():
+    # An older server (or a test stub) that doesn't send currentStep must not crash the concierge.
+    assert _line().endswith("— waiting")
+    assert _line(activeRun={"id": 1}).endswith("— step running now")

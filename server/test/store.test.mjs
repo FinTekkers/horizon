@@ -189,3 +189,18 @@ test('parseIssueBody without headings lands the body in desc', () => {
   assert.equal(parsed.desc, 'just a plain description')
   assert.equal(parsed.metric, '')
 })
+
+// ---- currentStep (WhatsApp concierge status lines) ----
+
+test('listItems resolves currentStep so non-UI clients can see gate state', () => {
+  const byId = Object.fromEntries(store.listItems().map((it) => [it.id, it]))
+  assert.deepEqual(byId['T-GATE'].currentStep, {
+    index: 3, label: 'Approve & prioritize this work', kind: 'gate', phase: 'Plan', gate: true,
+  })
+  assert.deepEqual(byId['T-AGENT'].currentStep, {
+    index: 11, label: 'Specialist agent implements', kind: 'agent', phase: 'Execute', gate: false,
+  })
+  assert.deepEqual(byId['T-CLOSED'].currentStep, {
+    index: STEPS.length, label: 'Closed', kind: 'done', phase: 'Done', gate: false,
+  })
+})

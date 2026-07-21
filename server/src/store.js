@@ -112,6 +112,14 @@ const selectActiveRun = db.prepare(
   "SELECT id, step_index, attempt, started_at FROM step_run WHERE item_id = ? AND status = 'active' ORDER BY id DESC LIMIT 1",
 )
 
+// Where an item stands, resolved server-side so non-UI clients (the WhatsApp
+// concierge) don't need their own copy of the STEPS table.
+function currentStepOf(row) {
+  if (isClosed(row)) return { index: row.cursor, label: 'Closed', kind: 'done', phase: 'Done', gate: false }
+  const step = STEPS[row.cursor]
+  return { index: row.cursor, label: step.label, kind: step.kind, phase: PHASES[step.phase], gate: step.kind === 'gate' }
+}
+
 // Board/tracker only ever see the active project's items (plus local demo
 // items, which have no project). Other projects keep syncing in the
 // background but are invisible until activated.
@@ -137,6 +145,7 @@ export function listItems() {
     release_url: row.release_url,
     persona: row.persona,
     cursor: row.cursor,
+    currentStep: currentStepOf(row),
     paused: !!row.paused,
     rejected: !!row.rejected,
     events: selectEvents.all(row.id),
