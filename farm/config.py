@@ -31,6 +31,11 @@ FARM_WA_ENABLED = os.environ.get("FARM_WA_ENABLED", "0").strip().lower() in ("1"
 FARM_WA_TRANSPORT = os.environ.get("FARM_WA_TRANSPORT", "mcp_bridge")
 FARM_WA_POLL_S = int(os.environ.get("FARM_WA_POLL_S", "5"))
 FARM_WA_ALLOWED_JIDS = [j.strip() for j in os.environ.get("FARM_WA_ALLOWED_JIDS", "").split(",") if j.strip()]
+# Group chats the concierge serves (comma-separated jids like
+# 1203...@g.us). Group messages are only processed when the group is
+# listed here AND the sender is allowlisted; the owner's own messages in
+# a listed group count as commands too.
+FARM_WA_GROUP_JIDS = [j.strip() for j in os.environ.get("FARM_WA_GROUP_JIDS", "").split(",") if j.strip()]
 # mcp_bridge transport: the whatsapp-mcp bridge's REST endpoint and SQLite store.
 WA_BRIDGE_URL = os.environ.get("WA_BRIDGE_URL", "http://localhost:8080")
 WA_DB_PATH = os.environ.get("WA_DB_PATH", "")

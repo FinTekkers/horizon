@@ -79,6 +79,7 @@ drifts):
 |---|---|---|
 | `FARM_WA_ENABLED` | 0 | master switch; concierge launches only when `1` |
 | `FARM_WA_ALLOWED_JIDS` | (empty = **deny all**) | comma-separated allowed sender numbers, e.g. `15550001111` |
+| `FARM_WA_GROUP_JIDS` | (empty = no groups) | comma-separated group jids (`...@g.us`) the concierge serves; group messages need the group listed here AND an allowlisted sender |
 | `WA_DB_PATH` | (required) | the bridge's `store/messages.db` |
 | `WA_BRIDGE_URL` | http://localhost:8080 | the bridge's REST endpoint |
 | `FARM_WA_POLL_S` | 5 | poll interval |

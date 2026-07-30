@@ -264,3 +264,41 @@ def test_bridge_missing_db_fails_loudly(tmp_path):
     transport = BridgeTransport(tmp_path / "nope.db", "http://127.0.0.1:9")
     with pytest.raises(TransportError):
         transport.fetch_new(0)
+
+
+GROUP = "120363000000000001@g.us"
+
+
+def test_bridge_group_owner_message_is_inbound_when_group_is_a_command_chat(tmp_path):
+    h = BridgeHarness(tmp_path)
+    pair_device(tmp_path)
+    h.transport.command_chats = {GROUP.split("@")[0]}
+    try:
+        h.seed("status of HZ-5?", chat=GROUP, sender="275096967086230@lid", is_from_me=1)
+        msgs = h.transport.fetch_new(0)
+        assert [m.text for m in msgs] == ["status of HZ-5?"]
+        assert msgs[0].sender_jid == "16464276473@s.whatsapp.net"
+        assert msgs[0].chat_jid == GROUP  # replies go back to the group
+    finally:
+        h.close()
+
+
+def test_bridge_group_owner_message_dropped_when_group_not_configured(tmp_path):
+    h = BridgeHarness(tmp_path)
+    pair_device(tmp_path)
+    try:
+        h.seed("random chatter", chat=GROUP, sender="275096967086230@lid", is_from_me=1)
+        assert h.transport.fetch_new(0) == []
+    finally:
+        h.close()
+
+
+def test_bridge_group_member_message_passes_with_real_sender(tmp_path):
+    h = BridgeHarness(tmp_path)
+    pair_device(tmp_path)
+    try:
+        h.seed("set HZ-7 to High", chat=GROUP, sender="15551230000@s.whatsapp.net", is_from_me=0)
+        msgs = h.transport.fetch_new(0)
+        assert [m.sender_jid for m in msgs] == ["15551230000@s.whatsapp.net"]
+    finally:
+        h.close()

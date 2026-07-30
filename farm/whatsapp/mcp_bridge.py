@@ -33,9 +33,13 @@ def _normalize(jid: str) -> str:
 
 
 class BridgeTransport:
-    def __init__(self, db_path: str | Path, bridge_url: str):
+    def __init__(self, db_path: str | Path, bridge_url: str, command_chats: set[str] | None = None):
         self.db_path = Path(db_path)
         self.bridge_url = bridge_url.rstrip("/")
+        # Extra chats (normalized jids, e.g. a WhatsApp group) where the
+        # owner's OWN messages count as inbound commands — the self-chat
+        # gets this treatment automatically.
+        self.command_chats = {_normalize(c) for c in (command_chats or set())}
 
     def _connect(self) -> sqlite3.Connection:
         if not self.db_path.exists():
@@ -90,9 +94,9 @@ class BridgeTransport:
         out = []
         for r in rows:
             text = r[4] or ""
-            if r[6]:  # is_from_me: only the owner's SELF-chat counts as inbound
-                if _normalize(r[2]) not in own_ids:
-                    continue  # owner's message in someone else's chat — never a command
+            if r[6]:  # is_from_me: only the self-chat and configured command chats count as inbound
+                if _normalize(r[2]) not in own_ids and _normalize(r[2]) not in self.command_chats:
+                    continue  # owner's message in an unrelated chat — never a command
                 if text.startswith(BOT_MARKER):
                     continue  # our own reply echoing back
                 # WhatsApp records self-chat senders as the LID; present the

@@ -306,3 +306,25 @@ def test_build_prompt_falls_back_to_step_numbers_without_labels():
     prompt = ca.build_prompt(_msg("status of HZ-9"), {"items": [item]})
     assert '6. "step 6" (attempt 1): plan drafted' in prompt
     assert 'artifact from step 6 "step 6":' in prompt
+
+
+# ---- group-chat policy ----
+
+
+def test_unlisted_group_messages_are_claimed_silently(stub, monkeypatch):
+    monkeypatch.setattr(config, "FARM_WA_GROUP_JIDS", [])
+    t = FakeTransport()
+    state = make_state(t, "group-unlisted")
+    t.seed("status of HZ-7?", chat="12036300000@g.us")
+    ca.poll_once(t, state, stub.url)
+    assert t.sent == []  # never replies into a group it wasn't invited to
+
+
+def test_listed_group_message_from_allowlisted_sender_is_served(stub, monkeypatch):
+    monkeypatch.setattr(config, "FARM_WA_GROUP_JIDS", ["12036300000@g.us"])
+    t = FakeTransport()
+    state = make_state(t, "group-listed")
+    t.seed("status of HZ-7?", chat="12036300000@g.us")
+    ca.poll_once(t, state, stub.url)
+    assert len(t.sent) == 1
+    assert t.sent[0][0] == "12036300000@g.us"  # reply lands in the group

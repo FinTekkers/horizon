@@ -53,6 +53,14 @@ def sender_allowed(sender_jid: str) -> bool:
     return bool(allowed) and normalize_jid(sender_jid) in allowed
 
 
+def chat_allowed(chat_jid: str) -> bool:
+    """Group chats are opt-in: only groups in FARM_WA_GROUP_JIDS are served.
+    Direct/self chats pass through (the sender allowlist governs those)."""
+    if not (chat_jid or "").endswith("@g.us"):
+        return True
+    return normalize_jid(chat_jid) in {normalize_jid(g) for g in config.FARM_WA_GROUP_JIDS}
+
+
 class ConciergeState:
     """Cursor + processed-msg_id persistence (survives restarts).
 
@@ -305,6 +313,9 @@ def poll_once(transport: Transport, state: ConciergeState, base_url: str = HORIZ
         if not msg.text.strip():
             state.claim(msg)  # media/empty — nothing to interpret
             continue
+        if not chat_allowed(msg.chat_jid):
+            state.claim(msg)  # unlisted group — not our channel, stay silent
+            continue
         if not sender_allowed(msg.sender_jid):
             log(f"dropping message {msg.msg_id} from non-allowlisted sender {normalize_jid(msg.sender_jid)}")
             state.claim(msg)
@@ -321,7 +332,7 @@ def make_transport() -> Transport:
             raise SystemExit("WA_DB_PATH must point at the whatsapp-mcp bridge's messages.db (see farm/README.md)")
         from .whatsapp.mcp_bridge import BridgeTransport
 
-        return BridgeTransport(config.WA_DB_PATH, config.WA_BRIDGE_URL)
+        return BridgeTransport(config.WA_DB_PATH, config.WA_BRIDGE_URL, command_chats=set(config.FARM_WA_GROUP_JIDS))
     raise SystemExit(
         f"unknown FARM_WA_TRANSPORT '{config.FARM_WA_TRANSPORT}' (cloud_api arrives with the Option B cutover)"
     )
