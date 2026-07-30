@@ -12,6 +12,26 @@ import { getActiveProjectId, getRepoUrl, setSetting, getToken, humanKeyConfigure
 import { STEPS } from './lifecycle.js'
 import { PERSONAS } from './personas.js'
 import * as definitions from './definitions.js'
+import * as runLogView from './runLogView.js'
+
+function esc(s) {
+  return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+}
+
+// Shared look for the small standalone pages below (step output, live log) —
+// same tokens as the artifact page's inline style.
+const PAGE_STYLE = `
+  body { margin: 0; background: #F3F1F8; color: #38294F; font: 16px/1.65 -apple-system, 'DM Sans', 'Segoe UI', sans-serif; }
+  .page { max-width: 860px; margin: 0 auto; padding: 40px 28px 80px; }
+  .meta { font-size: 13px; color: #8C8C8E; margin-bottom: 18px; }
+  .meta a { color: #2E6CB2; text-decoration: none; }
+  pre { background: #2A2A2E; color: #F3F1F8; border-radius: 12px; padding: 16px 18px; overflow-x: auto;
+        white-space: pre-wrap; word-break: break-word; font: 13px/1.6 'DM Mono', ui-monospace, monospace; }
+  #status { font: 600 13px -apple-system, 'DM Sans', sans-serif; color: #5A5568; min-height: 1.2em; }
+  #reconnect { border: none; cursor: pointer; border-radius: 9px; padding: 9px 18px;
+               font: 700 13px -apple-system, 'DM Sans', sans-serif; color: #fff; background: #2E6CB2; }
+  #reconnect:hover { background: #26588F; }
+`
 
 // ---- SSE ----
 
@@ -115,7 +135,6 @@ export function buildApp({ logger = true } = {}) {
         .get(id, stepIndex)
       if (!run) return reply.code(404).send({ error: 'no artifact for that step' })
       const step = STEPS[stepIndex]
-      const esc = (s) => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
       const title = `${esc(id)} · ${esc(step?.label || `step ${stepIndex}`)}`
       const html = `<!doctype html><html><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -159,6 +178,78 @@ export function buildApp({ logger = true } = {}) {
       } catch {
         return reply.code(503).send({ error: 'farm unavailable' })
       }
+    },
+  )
+
+  // Full-page view of a completed step's raw agent output ("See agent
+  // output" opens this in a new tab instead of showing the text inline,
+  // HZ-14). No auth — same unauthenticated-link pattern as the artifact page
+  // above, so opening it never asks for a second login.
+  fastify.get(
+    '/api/items/:id/steps/:stepIndex/output',
+    {
+      schema: {
+        params: {
+          type: 'object',
+          required: ['id', 'stepIndex'],
+          properties: { id: { type: 'string' }, stepIndex: { type: 'integer', minimum: 0 } },
+        },
+      },
+    },
+    (request, reply) => {
+      const { id, stepIndex } = request.params
+      const run = db
+        .prepare(
+          "SELECT output, attempt, ended_at FROM step_run WHERE item_id = ? AND step_index = ? AND status = 'done' AND output IS NOT NULL ORDER BY id DESC LIMIT 1",
+        )
+        .get(id, stepIndex)
+      if (!run) return reply.code(404).send({ error: 'no output for that step' })
+      const step = STEPS[stepIndex]
+      const title = `${esc(id)} · ${esc(step?.label || `step ${stepIndex}`)}`
+      const html = `<!doctype html><html><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>${title}</title>
+<style>${PAGE_STYLE}</style></head><body><div class="page">
+<div class="meta"><a href="${UI_URL}/${esc(id.toLowerCase())}">← ${esc(id)} in Horizon</a> · ${title} · attempt ${run.attempt} · ${esc(run.ended_at)} UTC</div>
+<pre>${esc(run.output)}</pre>
+</div></body></html>`
+      return reply.type('text/html').send(html)
+    },
+  )
+
+  // Standalone page that live-tails an active run ("See agent output" for the
+  // step currently running, HZ-14). Client-side script polls the JSON log
+  // route above every 2s and stops after a 3-minute wall clock so an
+  // abandoned tab can't poll forever; a Reconnect button resumes it. This
+  // route itself does no polling of its own — no new server-side memory/CPU
+  // per viewer, same as the artifact/output pages.
+  fastify.get(
+    '/api/runs/:runId/log/view',
+    {
+      schema: {
+        params: { type: 'object', required: ['runId'], properties: { runId: { type: 'integer' } } },
+      },
+    },
+    (request, reply) => {
+      const { runId } = request.params
+      const run = db.prepare('SELECT item_id, step_index FROM step_run WHERE id = ?').get(runId)
+      const step = run ? STEPS[run.step_index] : null
+      const heading = run ? `${esc(run.item_id)} · ${esc(step?.label || `step ${run.step_index}`)}` : `Run ${runId}`
+      const backLink = run
+        ? `<a href="${UI_URL}/${esc(run.item_id.toLowerCase())}">← ${esc(run.item_id)} in Horizon</a> · `
+        : ''
+      const html = `<!doctype html><html><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>${heading} · agent output</title>
+<style>${PAGE_STYLE}</style></head><body><div class="page">
+<div class="meta">${backLink}${heading} · agent output</div>
+<pre id="log">Waiting for output…</pre>
+<p id="status" aria-live="polite"></p>
+<button id="reconnect" type="button" hidden>Reconnect</button>
+</div>
+<script>${runLogView.clientScript()}</script>
+</body></html>`
+      return reply.type('text/html').send(html)
     },
   )
 
