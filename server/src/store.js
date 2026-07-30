@@ -180,7 +180,7 @@ export function addEvent(id, { who, text, color, initials }) {
   db.prepare('INSERT INTO event (item_id, who, text, color, initials) VALUES (?, ?, ?, ?, ?)').run(id, who, text, color, initials)
 }
 
-export function approveGate(id, stepIndex, notes) {
+export function approveGate(id, stepIndex, notes, actor = 'You') {
   const it = getItem(id)
   if (!it) return { error: 'not_found' }
   if (inactiveProject(it)) return { error: 'project_not_active' }
@@ -189,11 +189,12 @@ export function approveGate(id, stepIndex, notes) {
 
   const trimmed = (notes || '').trim()
   db.prepare(`UPDATE work_item SET cursor = cursor + 1, rejected = 0, ${touch} WHERE id = ?`).run(id)
-  db.prepare('INSERT INTO gate_decision (item_id, step_index, decision, notes) VALUES (?, ?, ?, ?)').run(
+  db.prepare('INSERT INTO gate_decision (item_id, step_index, decision, notes, decided_by) VALUES (?, ?, ?, ?, ?)').run(
     id,
     stepIndex,
     'approved',
     trimmed,
+    actor,
   )
   if (trimmed) {
     // Approval notes are direction for whoever runs next — queue as feedback
@@ -205,7 +206,7 @@ export function approveGate(id, stepIndex, notes) {
     )
   }
   addEvent(id, {
-    who: 'You',
+    who: actor,
     text: `approved: ${STEPS[stepIndex].label.toLowerCase()}${trimmed ? ' — ' + trimmed : ''}`,
     color: '#5E4380',
     initials: '✓',

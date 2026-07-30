@@ -313,6 +313,83 @@ export function buildApp({ logger = true } = {}) {
     },
   )
 
+  // Shared by the human-key browser route and the WhatsApp-concierge route
+  // below — same merge/close/approve sequence, only the actor label and the
+  // auth check at the call site differ. Returns either a store.js-shaped
+  // result ({ok:true} / {error:'not_found'|'not_at_gate'|'stale_step'}) or
+  // {error, status:502} for a merge/close failure, which the caller maps to
+  // a 502 instead of send()'s default 404/409.
+  async function performGateApproval(id, stepIndex, notes, actor = 'You') {
+    // Accepting the code means merging its PR — the gate does not advance if
+    // the merge fails, and the reason is logged to the item's activity.
+    const item = store.getItem(id)
+    if (
+      item &&
+      item.cursor === stepIndex &&
+      STEPS[stepIndex]?.label === 'Accept the code' &&
+      item.pr != null &&
+      item.repo
+    ) {
+      try {
+        await github.mergePr(item)
+        store.addEvent(id, {
+          who: 'Horizon',
+          text: `merged PR #${item.pr} (squash) and deleted the work branch`,
+          color: '#0E6E74',
+          initials: 'HZ',
+        })
+      } catch (err) {
+        store.addEvent(id, {
+          who: 'Horizon',
+          text: `could not merge PR #${item.pr}: ${err.message} — the gate stays open`,
+          color: '#9C333E',
+          initials: 'HZ',
+        })
+        store.notifyChange()
+        return { error: `merge failed: ${err.message}`, status: 502 }
+      }
+    }
+    // The final gate closes the GitHub issue (with a summary comment) so the
+    // issue state and the board state can't drift. No close, no gate.
+    if (
+      item &&
+      item.cursor === stepIndex &&
+      STEPS[stepIndex]?.label === 'Review the work & close' &&
+      item.issue != null &&
+      item.repo
+    ) {
+      try {
+        await github.closeIssueWithSummary(item)
+        store.addEvent(id, {
+          who: 'Horizon',
+          text: `closed issue #${item.issue} on GitHub with a summary`,
+          color: '#0E6E74',
+          initials: 'HZ',
+        })
+      } catch (err) {
+        store.addEvent(id, {
+          who: 'Horizon',
+          text: `could not close issue #${item.issue}: ${err.message} — the gate stays open`,
+          color: '#9C333E',
+          initials: 'HZ',
+        })
+        store.notifyChange()
+        return { error: `issue close failed: ${err.message}`, status: 502 }
+      }
+    }
+    const result = store.approveGate(id, stepIndex, notes, actor)
+    // Approval notes are decisions — mirror them onto the issue thread.
+    if (!result.error && notes && item?.repo && item.issue != null) {
+      github
+        .postIssueComment(
+          item,
+          `### ✅ Gate approved — ${STEPS[stepIndex].label}\n\n> ${notes}\n\n_${actor} · [open in Horizon](${UI_URL}/${id.toLowerCase()}) · posted by Horizon_`,
+        )
+        .catch(() => {})
+    }
+    return result
+  }
+
   fastify.post(
     '/api/items/:id/gates/:stepIndex/approve',
     {
@@ -332,70 +409,45 @@ export function buildApp({ logger = true } = {}) {
       if (!humanAuthorized(request, reply)) return
       const { id, stepIndex } = request.params
       const notes = (request.body?.notes || '').trim()
-      // Accepting the code means merging its PR — the gate does not advance if
-      // the merge fails, and the reason is logged to the item's activity.
-      const item = store.getItem(id)
-      if (
-        item &&
-        item.cursor === stepIndex &&
-        STEPS[stepIndex]?.label === 'Accept the code' &&
-        item.pr != null &&
-        item.repo
-      ) {
-        try {
-          await github.mergePr(item)
-          store.addEvent(id, {
-            who: 'Horizon',
-            text: `merged PR #${item.pr} (squash) and deleted the work branch`,
-            color: '#0E6E74',
-            initials: 'HZ',
-          })
-        } catch (err) {
-          store.addEvent(id, {
-            who: 'Horizon',
-            text: `could not merge PR #${item.pr}: ${err.message} — the gate stays open`,
-            color: '#9C333E',
-            initials: 'HZ',
-          })
-          store.notifyChange()
-          return reply.code(502).send({ error: `merge failed: ${err.message}` })
-        }
-      }
-      // The final gate closes the GitHub issue (with a summary comment) so the
-      // issue state and the board state can't drift. No close, no gate.
-      if (
-        item &&
-        item.cursor === stepIndex &&
-        STEPS[stepIndex]?.label === 'Review the work & close' &&
-        item.issue != null &&
-        item.repo
-      ) {
-        try {
-          await github.closeIssueWithSummary(item)
-          store.addEvent(id, {
-            who: 'Horizon',
-            text: `closed issue #${item.issue} on GitHub with a summary`,
-            color: '#0E6E74',
-            initials: 'HZ',
-          })
-        } catch (err) {
-          store.addEvent(id, {
-            who: 'Horizon',
-            text: `could not close issue #${item.issue}: ${err.message} — the gate stays open`,
-            color: '#9C333E',
-            initials: 'HZ',
-          })
-          store.notifyChange()
-          return reply.code(502).send({ error: `issue close failed: ${err.message}` })
-        }
-      }
-      const result = store.approveGate(id, stepIndex, notes)
-      // Approval notes are decisions — mirror them onto the issue thread.
-      if (!result.error && notes && item?.repo && item.issue != null) {
-        github
-          .postIssueComment(item, `### ✅ Gate approved — ${STEPS[stepIndex].label}\n\n> ${notes}\n\n_Human reviewer · [open in Horizon](${UI_URL}/${id.toLowerCase()}) · posted by Horizon_`)
-          .catch(() => {})
-      }
+      const result = await performGateApproval(id, stepIndex, notes)
+      if (result.status === 502) return reply.code(502).send({ error: result.error })
+      return send(reply, result)
+    },
+  )
+
+  // WhatsApp-concierge leg of gate approval (HZ-15): authorized by the farm's
+  // shared secret + the concierge's own WhatsApp sender allowlist, not the
+  // browser-only human gate key — a deliberate, narrower trust boundary. The
+  // sender's name is always folded into the actor label so every WhatsApp
+  // approval is attributable in the event log, gate_decision row, and the
+  // mirrored GitHub comment, the same way GitHub- and browser-driven
+  // approvals already are.
+  fastify.post(
+    '/api/items/:id/gates/:stepIndex/approve-via-whatsapp',
+    {
+      schema: {
+        params: {
+          type: 'object',
+          required: ['id', 'stepIndex'],
+          properties: { id: { type: 'string' }, stepIndex: { type: 'integer', minimum: 0 } },
+        },
+        body: {
+          type: 'object',
+          required: ['sender'],
+          properties: {
+            sender: { type: 'string', minLength: 1, maxLength: 120 },
+            notes: { type: 'string', maxLength: 2000 },
+          },
+        },
+      },
+    },
+    async (request, reply) => {
+      if (!farmAuthorized(request, reply)) return
+      const { id, stepIndex } = request.params
+      const notes = (request.body?.notes || '').trim()
+      const actor = `${request.body.sender.trim()} via WhatsApp`
+      const result = await performGateApproval(id, stepIndex, notes, actor)
+      if (result.status === 502) return reply.code(502).send({ error: result.error })
       return send(reply, result)
     },
   )

@@ -64,13 +64,24 @@ class StubHorizon:
     items: the /api/items snapshot item list.
     feedback_rerun: whether POST feedback answers {"rerun": true}.
     known_ids: item ids that exist (others 404).
+    create_item_result: None -> auto-assign "HZ-<n>" and 200; or a fixed
+      (status, body) tuple; or a callable(payload) -> (status, body), for
+      tests that need a specific id, an error, or per-call behavior.
+    approve_result: None -> auto (404 for unknown ids, else 200 {"ok": true});
+      or a fixed (status, body) tuple; or a callable(item_id, step_index,
+      payload) -> (status, body).
     """
 
-    def __init__(self, items=None, feedback_rerun=False):
+    def __init__(self, items=None, feedback_rerun=False, create_item_result=None, approve_result=None):
         self.items = items or []
         self.feedback_rerun = feedback_rerun
         self.known_ids = {it["id"] for it in self.items}
         self.requests: list[tuple[str, str, dict]] = []
+        self.created_items: list[dict] = []  # payloads POSTed to /api/items
+        self.approvals: list[tuple[str, int, dict]] = []  # (item_id, step_index, payload) via approve-via-whatsapp
+        self.create_item_result = create_item_result
+        self.approve_result = approve_result
+        self._create_seq = 0
         stub = self
 
         class Handler(BaseHTTPRequestHandler):
@@ -95,6 +106,9 @@ class StubHorizon:
                 length = int(self.headers.get("Content-Length", 0))
                 payload = json.loads(self.rfile.read(length) or b"{}")
                 stub.requests.append(("POST", self.path, payload))
+                if self.path == "/api/items":
+                    status, body = stub._handle_create_item(payload)
+                    return self._reply(status, body)
                 parts = self.path.strip("/").split("/")
                 # /api/items/<id>/priority | /api/items/<id>/feedback
                 if len(parts) == 4 and parts[:2] == ["api", "items"]:
@@ -106,6 +120,11 @@ class StubHorizon:
                     if action == "feedback":
                         key = "rerun" if stub.feedback_rerun else "queued"
                         return self._reply(200, {"ok": True, key: True})
+                # /api/items/<id>/gates/<stepIndex>/approve-via-whatsapp
+                if len(parts) == 6 and parts[:2] == ["api", "items"] and parts[3] == "gates" and parts[5] == "approve-via-whatsapp":
+                    item_id, step_index = parts[2], int(parts[4])
+                    status, body = stub._handle_approve(item_id, step_index, payload)
+                    return self._reply(status, body)
                 return self._reply(404, {"error": "not_found"})
 
         self._server = QuietHTTPServer(("127.0.0.1", 0), Handler)
@@ -116,6 +135,27 @@ class StubHorizon:
     def posts(self, suffix=None):
         posts = [(p, body) for (m, p, body) in self.requests if m == "POST"]
         return [x for x in posts if suffix is None or x[0].endswith(suffix)]
+
+    def _handle_create_item(self, payload):
+        self.created_items.append(payload)
+        if callable(self.create_item_result):
+            return self.create_item_result(payload)
+        if self.create_item_result is not None:
+            return self.create_item_result
+        self._create_seq += 1
+        item_id = f"HZ-{100 + self._create_seq}"
+        self.known_ids.add(item_id)
+        return 200, {"ok": True, "id": item_id}
+
+    def _handle_approve(self, item_id, step_index, payload):
+        self.approvals.append((item_id, step_index, payload))
+        if callable(self.approve_result):
+            return self.approve_result(item_id, step_index, payload)
+        if self.approve_result is not None:
+            return self.approve_result
+        if item_id not in self.known_ids:
+            return 404, {"error": "not_found"}
+        return 200, {"ok": True}
 
     def close(self):
         self._server.shutdown()

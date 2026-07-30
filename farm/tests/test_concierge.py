@@ -130,6 +130,134 @@ def test_media_only_messages_are_skipped_without_crashing(stub):
     assert state.cursor == msg.cursor
 
 
+# ---- HZ-15: item wizard + gate choice are wired ahead of the Claude call ----
+
+
+def test_new_item_trigger_is_intercepted_by_the_wizard_and_never_reaches_claude(stub, monkeypatch):
+    def boom(*a, **kw):
+        raise AssertionError("Claude must not be called for a [New Item] trigger")
+
+    monkeypatch.setattr(ca, "run_claude", boom)
+    t = FakeTransport()
+    state = make_state(t, "wizard-no-claude")
+    t.seed("[New Item] Something new")
+    assert ca.poll_once(t, state, stub.url) == 1
+    assert "outcome" in t.sent[-1][1].lower()
+
+
+def test_bare_numeric_reply_with_a_pending_gate_choice_never_reaches_claude(monkeypatch):
+    def boom(*a, **kw):
+        raise AssertionError("Claude must not be called to resolve a numbered gate choice")
+
+    monkeypatch.setattr(ca, "run_claude", boom)
+    stub = StubHorizon(items=[{"id": "HZ-7"}])
+    try:
+        t = FakeTransport()
+        state = make_state(t, "choice-no-claude")
+        from farm import wizard
+
+        wizard.offer_gate_choices(
+            "15550001111@s.whatsapp.net",
+            "15550001111@s.whatsapp.net",
+            [{"item_id": "HZ-7", "step_index": 12, "label": "Accept the code"}],
+            state.choice_store,
+        )
+        t.seed("1")
+        assert ca.poll_once(t, state, stub.url) == 1
+        assert "Approved HZ-7" in t.sent[-1][1]
+        assert stub.approvals == [("HZ-7", 12, {"sender": "...1111"})]
+    finally:
+        stub.close()
+
+
+def test_full_create_then_approve_loop_entirely_via_whatsapp(monkeypatch):
+    """The literal success metric: create a work item and work it through
+    (here, to gate approval) entirely over WhatsApp — no other interface."""
+    created_id = "HZ-90"
+    stub = StubHorizon(create_item_result=(200, {"ok": True, "id": created_id}))
+    stub.known_ids.add(created_id)
+    try:
+        t = FakeTransport()
+        state = make_state(t, "e2e")
+
+        # 1) create the item via the wizard — deterministic, no Claude involved.
+        t.seed("[New Item] Ship the thing")
+        assert ca.poll_once(t, state, stub.url) == 1
+        t.seed("users can do X")
+        ca.poll_once(t, state, stub.url)
+        t.seed("X happens 95% of the time")
+        ca.poll_once(t, state, stub.url)
+        t.seed("skip")
+        ca.poll_once(t, state, stub.url)
+        t.seed("2")  # High
+        ca.poll_once(t, state, stub.url)
+        t.seed("1")  # create
+        ca.poll_once(t, state, stub.url)
+        assert stub.created_items == [
+            {"title": "Ship the thing", "outcome": "users can do X", "metric": "X happens 95% of the time",
+             "guardrails": "", "priority": "High"}
+        ]
+        assert f"Created {created_id}!" in t.sent[-1][1]
+
+        # 2) ask what's pending approval — Claude lists it and offers a numbered choice.
+        def fake_run(prompt, **kw):
+            inner = {
+                "reply": f"{created_id} is awaiting approval at 'Accept the code'. Reply 1 to approve.",
+                "actions": [],
+                "gate_options": [{"item_id": created_id, "step_index": 12, "label": "Accept the code"}],
+            }
+            return {"result": json.dumps(inner), "session_id": "s1"}
+
+        monkeypatch.setattr(ca, "run_claude", fake_run)
+        t.seed("what's pending my approval?")
+        ca.poll_once(t, state, stub.url)
+        assert "awaiting approval" in t.sent[-1][1]
+
+        # 3) approve it with a bare number — resolved deterministically, not by Claude.
+        t.seed("1")
+        ca.poll_once(t, state, stub.url)
+        assert stub.approvals == [(created_id, 12, {"sender": "...1111"})]
+        assert f"Approved {created_id}" in t.sent[-1][1]
+    finally:
+        stub.close()
+
+
+# ---- gate_options validation (the WhatsApp radio-button proxy) ----
+
+
+def test_validate_reply_accepts_well_formed_gate_options():
+    _, _, notes, gate_options = ca.validate_reply(
+        {"reply": "ok", "actions": [], "gate_options": [{"item_id": "HZ-7", "step_index": 12, "label": "Accept the code"}]}
+    )
+    assert gate_options == [{"item_id": "HZ-7", "step_index": 12, "label": "Accept the code"}]
+    assert notes == []
+
+
+def test_validate_reply_drops_malformed_gate_options():
+    _, _, notes, gate_options = ca.validate_reply(
+        {
+            "reply": "ok",
+            "actions": [],
+            "gate_options": [
+                {"item_id": "", "step_index": 1, "label": "x"},  # empty item_id
+                {"item_id": "HZ-7", "step_index": "12", "label": "x"},  # step_index not an int
+                {"item_id": "HZ-7", "step_index": -1, "label": "x"},  # negative
+                {"item_id": "HZ-7", "step_index": 1, "label": ""},  # empty label
+                "not even a dict",
+            ],
+        }
+    )
+    assert gate_options == []
+    assert len(notes) == 5
+    assert all("malformed gate_options" in n for n in notes)
+
+
+def test_validate_reply_caps_gate_options_at_nine():
+    many = [{"item_id": f"HZ-{i}", "step_index": 1, "label": "x"} for i in range(12)]
+    _, _, _, gate_options = ca.validate_reply({"reply": "ok", "actions": [], "gate_options": many})
+    assert len(gate_options) == 9
+
+
 # ---- delivery semantics ----
 
 

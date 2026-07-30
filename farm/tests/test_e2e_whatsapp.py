@@ -17,6 +17,11 @@ then, when prompted, text "horizon e2e ping" (plus anything else, e.g. an
 item id) to the farm's WhatsApp account from an allowlisted phone. The test
 processes it through the real concierge pipeline and asserts the reply came
 back out through the bridge.
+
+HZ-15 (the item wizard and gate-choice approval) is a single-phone check
+here — its cross-sender guardrail (two allowlisted phones mid-conversation
+in one group chat never read or advance each other's wizard/approval state)
+is covered automatically instead, in test_wizard.py.
 """
 
 import os
