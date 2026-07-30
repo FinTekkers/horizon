@@ -1,0 +1,470 @@
+{"saved":"2026-07-30","note":"fintekkers-lb config snapshot before deletion (cost cleanup)",
+"loadBalancer":
+{
+    "LoadBalancerArn": "arn:aws:elasticloadbalancing:us-east-1:754996918532:loadbalancer/app/fintekkers-lb/a957e88c59732dce",
+    "DNSName": "fintekkers-lb-2050451336.us-east-1.elb.amazonaws.com",
+    "CanonicalHostedZoneId": "Z35SXDOTRQ7X7K",
+    "CreatedTime": "2023-07-10T20:55:29.620000+00:00",
+    "LoadBalancerName": "fintekkers-lb",
+    "Scheme": "internet-facing",
+    "VpcId": "vpc-0ef340e7b25a10629",
+    "State": {
+        "Code": "active"
+    },
+    "Type": "application",
+    "AvailabilityZones": [
+        {
+            "ZoneName": "us-east-1b",
+            "SubnetId": "subnet-03c0d96f5b6ad7c08",
+            "LoadBalancerAddresses": []
+        },
+        {
+            "ZoneName": "us-east-1a",
+            "SubnetId": "subnet-0d847b8f954f8631d",
+            "LoadBalancerAddresses": []
+        }
+    ],
+    "SecurityGroups": [
+        "sg-0f638fedffe74f6e2"
+    ],
+    "IpAddressType": "ipv4",
+    "EnablePrefixForIpv6SourceNat": "off"
+}
+,"listeners":
+[
+    {
+        "ListenerArn": "arn:aws:elasticloadbalancing:us-east-1:754996918532:listener/app/fintekkers-lb/a957e88c59732dce/05bb61999810fed9",
+        "LoadBalancerArn": "arn:aws:elasticloadbalancing:us-east-1:754996918532:loadbalancer/app/fintekkers-lb/a957e88c59732dce",
+        "Port": 8082,
+        "Protocol": "HTTPS",
+        "Certificates": [
+            {
+                "CertificateArn": "arn:aws:acm:us-east-1:754996918532:certificate/84b03056-20eb-41ac-8a6a-d3857ac23245"
+            }
+        ],
+        "SslPolicy": "ELBSecurityPolicy-2016-08",
+        "DefaultActions": [
+            {
+                "Type": "forward",
+                "TargetGroupArn": "arn:aws:elasticloadbalancing:us-east-1:754996918532:targetgroup/fintekkers-ledger-service-targ/b0ddefd2e6d74330",
+                "Order": 1,
+                "ForwardConfig": {
+                    "TargetGroups": [
+                        {
+                            "TargetGroupArn": "arn:aws:elasticloadbalancing:us-east-1:754996918532:targetgroup/fintekkers-ledger-service-targ/b0ddefd2e6d74330",
+                            "Weight": 1
+                        }
+                    ],
+                    "TargetGroupStickinessConfig": {
+                        "Enabled": false,
+                        "DurationSeconds": 3600
+                    }
+                }
+            }
+        ],
+        "MutualAuthentication": {
+            "Mode": "off"
+        }
+    },
+    {
+        "ListenerArn": "arn:aws:elasticloadbalancing:us-east-1:754996918532:listener/app/fintekkers-lb/a957e88c59732dce/18f0c456d4ee6691",
+        "LoadBalancerArn": "arn:aws:elasticloadbalancing:us-east-1:754996918532:loadbalancer/app/fintekkers-lb/a957e88c59732dce",
+        "Port": 443,
+        "Protocol": "HTTPS",
+        "Certificates": [
+            {
+                "CertificateArn": "arn:aws:acm:us-east-1:754996918532:certificate/84b03056-20eb-41ac-8a6a-d3857ac23245"
+            }
+        ],
+        "SslPolicy": "ELBSecurityPolicy-TLS13-1-2-2021-06",
+        "DefaultActions": [
+            {
+                "Type": "forward",
+                "TargetGroupArn": "arn:aws:elasticloadbalancing:us-east-1:754996918532:targetgroup/fintekkers-http-web-target-group/264991f1192a6d65",
+                "Order": 1,
+                "ForwardConfig": {
+                    "TargetGroups": [
+                        {
+                            "TargetGroupArn": "arn:aws:elasticloadbalancing:us-east-1:754996918532:targetgroup/fintekkers-http-web-target-group/264991f1192a6d65",
+                            "Weight": 1
+                        }
+                    ],
+                    "TargetGroupStickinessConfig": {
+                        "Enabled": false,
+                        "DurationSeconds": 3600
+                    }
+                }
+            }
+        ],
+        "MutualAuthentication": {
+            "Mode": "off"
+        }
+    },
+    {
+        "ListenerArn": "arn:aws:elasticloadbalancing:us-east-1:754996918532:listener/app/fintekkers-lb/a957e88c59732dce/7c0ff802c20f3666",
+        "LoadBalancerArn": "arn:aws:elasticloadbalancing:us-east-1:754996918532:loadbalancer/app/fintekkers-lb/a957e88c59732dce",
+        "Port": 80,
+        "Protocol": "HTTPS",
+        "Certificates": [
+            {
+                "CertificateArn": "arn:aws:acm:us-east-1:754996918532:certificate/84b03056-20eb-41ac-8a6a-d3857ac23245"
+            }
+        ],
+        "SslPolicy": "ELBSecurityPolicy-2016-08",
+        "DefaultActions": [
+            {
+                "Type": "forward",
+                "TargetGroupArn": "arn:aws:elasticloadbalancing:us-east-1:754996918532:targetgroup/fintekkers-broker-target-group/16cdcaee15bf1948",
+                "Order": 1,
+                "ForwardConfig": {
+                    "TargetGroups": [
+                        {
+                            "TargetGroupArn": "arn:aws:elasticloadbalancing:us-east-1:754996918532:targetgroup/fintekkers-broker-target-group/16cdcaee15bf1948",
+                            "Weight": 1
+                        }
+                    ],
+                    "TargetGroupStickinessConfig": {
+                        "Enabled": false,
+                        "DurationSeconds": 3600
+                    }
+                }
+            }
+        ],
+        "MutualAuthentication": {
+            "Mode": "off"
+        }
+    },
+    {
+        "ListenerArn": "arn:aws:elasticloadbalancing:us-east-1:754996918532:listener/app/fintekkers-lb/a957e88c59732dce/846c16d2c85dbd1c",
+        "LoadBalancerArn": "arn:aws:elasticloadbalancing:us-east-1:754996918532:loadbalancer/app/fintekkers-lb/a957e88c59732dce",
+        "Port": 8083,
+        "Protocol": "HTTPS",
+        "Certificates": [
+            {
+                "CertificateArn": "arn:aws:acm:us-east-1:754996918532:certificate/84b03056-20eb-41ac-8a6a-d3857ac23245"
+            }
+        ],
+        "SslPolicy": "ELBSecurityPolicy-2016-08",
+        "DefaultActions": [
+            {
+                "Type": "forward",
+                "TargetGroupArn": "arn:aws:elasticloadbalancing:us-east-1:754996918532:targetgroup/fintekkers-price-service-targ/1fba9c8c14573006",
+                "ForwardConfig": {
+                    "TargetGroups": [
+                        {
+                            "TargetGroupArn": "arn:aws:elasticloadbalancing:us-east-1:754996918532:targetgroup/fintekkers-price-service-targ/1fba9c8c14573006",
+                            "Weight": 1
+                        }
+                    ],
+                    "TargetGroupStickinessConfig": {
+                        "Enabled": false
+                    }
+                }
+            }
+        ],
+        "MutualAuthentication": {
+            "Mode": "off"
+        }
+    },
+    {
+        "ListenerArn": "arn:aws:elasticloadbalancing:us-east-1:754996918532:listener/app/fintekkers-lb/a957e88c59732dce/84baff50b5c7b1c6",
+        "LoadBalancerArn": "arn:aws:elasticloadbalancing:us-east-1:754996918532:loadbalancer/app/fintekkers-lb/a957e88c59732dce",
+        "Port": 8080,
+        "Protocol": "HTTPS",
+        "Certificates": [
+            {
+                "CertificateArn": "arn:aws:acm:us-east-1:754996918532:certificate/84b03056-20eb-41ac-8a6a-d3857ac23245"
+            }
+        ],
+        "SslPolicy": "ELBSecurityPolicy-2016-08",
+        "DefaultActions": [
+            {
+                "Type": "forward",
+                "TargetGroupArn": "arn:aws:elasticloadbalancing:us-east-1:754996918532:targetgroup/fintekkers-target-group/7ac0fdd944435c31",
+                "Order": 1,
+                "ForwardConfig": {
+                    "TargetGroups": [
+                        {
+                            "TargetGroupArn": "arn:aws:elasticloadbalancing:us-east-1:754996918532:targetgroup/fintekkers-target-group/7ac0fdd944435c31",
+                            "Weight": 1
+                        }
+                    ],
+                    "TargetGroupStickinessConfig": {
+                        "Enabled": false,
+                        "DurationSeconds": 3600
+                    }
+                }
+            }
+        ],
+        "MutualAuthentication": {
+            "Mode": "off"
+        }
+    }
+]
+,"targetGroups":
+[
+    {
+        "TargetGroupArn": "arn:aws:elasticloadbalancing:us-east-1:754996918532:targetgroup/fintekkers-broker-target-group/16cdcaee15bf1948",
+        "TargetGroupName": "fintekkers-broker-target-group",
+        "Protocol": "HTTP",
+        "Port": 80,
+        "VpcId": "vpc-0ef340e7b25a10629",
+        "HealthCheckProtocol": "HTTP",
+        "HealthCheckPort": "80",
+        "HealthCheckEnabled": true,
+        "HealthCheckIntervalSeconds": 20,
+        "HealthCheckTimeoutSeconds": 4,
+        "HealthyThresholdCount": 5,
+        "UnhealthyThresholdCount": 10,
+        "HealthCheckPath": "/Health/Check",
+        "Matcher": {
+            "GrpcCode": "0-99"
+        },
+        "LoadBalancerArns": [
+            "arn:aws:elasticloadbalancing:us-east-1:754996918532:loadbalancer/app/fintekkers-lb/a957e88c59732dce"
+        ],
+        "TargetType": "ip",
+        "ProtocolVersion": "GRPC",
+        "IpAddressType": "ipv4"
+    },
+    {
+        "TargetGroupArn": "arn:aws:elasticloadbalancing:us-east-1:754996918532:targetgroup/fintekkers-http-web-target-group/264991f1192a6d65",
+        "TargetGroupName": "fintekkers-http-web-target-group",
+        "Protocol": "HTTP",
+        "Port": 443,
+        "VpcId": "vpc-0ef340e7b25a10629",
+        "HealthCheckProtocol": "HTTP",
+        "HealthCheckPort": "443",
+        "HealthCheckEnabled": true,
+        "HealthCheckIntervalSeconds": 30,
+        "HealthCheckTimeoutSeconds": 5,
+        "HealthyThresholdCount": 5,
+        "UnhealthyThresholdCount": 2,
+        "HealthCheckPath": "/",
+        "Matcher": {
+            "HttpCode": "200"
+        },
+        "LoadBalancerArns": [
+            "arn:aws:elasticloadbalancing:us-east-1:754996918532:loadbalancer/app/fintekkers-lb/a957e88c59732dce"
+        ],
+        "TargetType": "instance",
+        "ProtocolVersion": "HTTP1",
+        "IpAddressType": "ipv4"
+    },
+    {
+        "TargetGroupArn": "arn:aws:elasticloadbalancing:us-east-1:754996918532:targetgroup/fintekkers-ledger-service-targ/b0ddefd2e6d74330",
+        "TargetGroupName": "fintekkers-ledger-service-targ",
+        "Protocol": "HTTP",
+        "Port": 8082,
+        "VpcId": "vpc-0ef340e7b25a10629",
+        "HealthCheckProtocol": "HTTP",
+        "HealthCheckPort": "8082",
+        "HealthCheckEnabled": true,
+        "HealthCheckIntervalSeconds": 20,
+        "HealthCheckTimeoutSeconds": 4,
+        "HealthyThresholdCount": 5,
+        "UnhealthyThresholdCount": 10,
+        "HealthCheckPath": "/Health/Check",
+        "Matcher": {
+            "GrpcCode": "0-99"
+        },
+        "LoadBalancerArns": [
+            "arn:aws:elasticloadbalancing:us-east-1:754996918532:loadbalancer/app/fintekkers-lb/a957e88c59732dce"
+        ],
+        "TargetType": "ip",
+        "ProtocolVersion": "GRPC",
+        "IpAddressType": "ipv4"
+    },
+    {
+        "TargetGroupArn": "arn:aws:elasticloadbalancing:us-east-1:754996918532:targetgroup/fintekkers-price-service-targ/1fba9c8c14573006",
+        "TargetGroupName": "fintekkers-price-service-targ",
+        "Protocol": "HTTP",
+        "Port": 8083,
+        "VpcId": "vpc-0ef340e7b25a10629",
+        "HealthCheckProtocol": "HTTP",
+        "HealthCheckPort": "8083",
+        "HealthCheckEnabled": true,
+        "HealthCheckIntervalSeconds": 20,
+        "HealthCheckTimeoutSeconds": 4,
+        "HealthyThresholdCount": 5,
+        "UnhealthyThresholdCount": 10,
+        "HealthCheckPath": "/grpc.health.v1.Health/Check",
+        "Matcher": {
+            "GrpcCode": "0-99"
+        },
+        "LoadBalancerArns": [
+            "arn:aws:elasticloadbalancing:us-east-1:754996918532:loadbalancer/app/fintekkers-lb/a957e88c59732dce"
+        ],
+        "TargetType": "ip",
+        "ProtocolVersion": "GRPC",
+        "IpAddressType": "ipv4"
+    },
+    {
+        "TargetGroupArn": "arn:aws:elasticloadbalancing:us-east-1:754996918532:targetgroup/fintekkers-target-group/7ac0fdd944435c31",
+        "TargetGroupName": "fintekkers-target-group",
+        "Protocol": "HTTP",
+        "Port": 8080,
+        "VpcId": "vpc-0ef340e7b25a10629",
+        "HealthCheckProtocol": "HTTP",
+        "HealthCheckPort": "8080",
+        "HealthCheckEnabled": true,
+        "HealthCheckIntervalSeconds": 20,
+        "HealthCheckTimeoutSeconds": 4,
+        "HealthyThresholdCount": 5,
+        "UnhealthyThresholdCount": 10,
+        "HealthCheckPath": "/Health/Check",
+        "Matcher": {
+            "GrpcCode": "0-99"
+        },
+        "LoadBalancerArns": [
+            "arn:aws:elasticloadbalancing:us-east-1:754996918532:loadbalancer/app/fintekkers-lb/a957e88c59732dce"
+        ],
+        "TargetType": "ip",
+        "ProtocolVersion": "GRPC",
+        "IpAddressType": "ipv4"
+    }
+]
+,"rules":[
+[
+    {
+        "RuleArn": "arn:aws:elasticloadbalancing:us-east-1:754996918532:listener-rule/app/fintekkers-lb/a957e88c59732dce/05bb61999810fed9/62c3feb35923a273",
+        "Priority": "default",
+        "Conditions": [],
+        "Actions": [
+            {
+                "Type": "forward",
+                "TargetGroupArn": "arn:aws:elasticloadbalancing:us-east-1:754996918532:targetgroup/fintekkers-ledger-service-targ/b0ddefd2e6d74330",
+                "Order": 1,
+                "ForwardConfig": {
+                    "TargetGroups": [
+                        {
+                            "TargetGroupArn": "arn:aws:elasticloadbalancing:us-east-1:754996918532:targetgroup/fintekkers-ledger-service-targ/b0ddefd2e6d74330",
+                            "Weight": 1
+                        }
+                    ],
+                    "TargetGroupStickinessConfig": {
+                        "Enabled": false,
+                        "DurationSeconds": 3600
+                    }
+                }
+            }
+        ],
+        "IsDefault": true,
+        "Transforms": []
+    }
+]
+,
+[
+    {
+        "RuleArn": "arn:aws:elasticloadbalancing:us-east-1:754996918532:listener-rule/app/fintekkers-lb/a957e88c59732dce/18f0c456d4ee6691/da215b7fcab0e907",
+        "Priority": "default",
+        "Conditions": [],
+        "Actions": [
+            {
+                "Type": "forward",
+                "TargetGroupArn": "arn:aws:elasticloadbalancing:us-east-1:754996918532:targetgroup/fintekkers-http-web-target-group/264991f1192a6d65",
+                "Order": 1,
+                "ForwardConfig": {
+                    "TargetGroups": [
+                        {
+                            "TargetGroupArn": "arn:aws:elasticloadbalancing:us-east-1:754996918532:targetgroup/fintekkers-http-web-target-group/264991f1192a6d65",
+                            "Weight": 1
+                        }
+                    ],
+                    "TargetGroupStickinessConfig": {
+                        "Enabled": false,
+                        "DurationSeconds": 3600
+                    }
+                }
+            }
+        ],
+        "IsDefault": true,
+        "Transforms": []
+    }
+]
+,
+[
+    {
+        "RuleArn": "arn:aws:elasticloadbalancing:us-east-1:754996918532:listener-rule/app/fintekkers-lb/a957e88c59732dce/7c0ff802c20f3666/819d73ad6d4ba279",
+        "Priority": "default",
+        "Conditions": [],
+        "Actions": [
+            {
+                "Type": "forward",
+                "TargetGroupArn": "arn:aws:elasticloadbalancing:us-east-1:754996918532:targetgroup/fintekkers-broker-target-group/16cdcaee15bf1948",
+                "Order": 1,
+                "ForwardConfig": {
+                    "TargetGroups": [
+                        {
+                            "TargetGroupArn": "arn:aws:elasticloadbalancing:us-east-1:754996918532:targetgroup/fintekkers-broker-target-group/16cdcaee15bf1948",
+                            "Weight": 1
+                        }
+                    ],
+                    "TargetGroupStickinessConfig": {
+                        "Enabled": false,
+                        "DurationSeconds": 3600
+                    }
+                }
+            }
+        ],
+        "IsDefault": true,
+        "Transforms": []
+    }
+]
+,
+[
+    {
+        "RuleArn": "arn:aws:elasticloadbalancing:us-east-1:754996918532:listener-rule/app/fintekkers-lb/a957e88c59732dce/846c16d2c85dbd1c/b5101c816f488ae0",
+        "Priority": "default",
+        "Conditions": [],
+        "Actions": [
+            {
+                "Type": "forward",
+                "TargetGroupArn": "arn:aws:elasticloadbalancing:us-east-1:754996918532:targetgroup/fintekkers-price-service-targ/1fba9c8c14573006",
+                "ForwardConfig": {
+                    "TargetGroups": [
+                        {
+                            "TargetGroupArn": "arn:aws:elasticloadbalancing:us-east-1:754996918532:targetgroup/fintekkers-price-service-targ/1fba9c8c14573006",
+                            "Weight": 1
+                        }
+                    ],
+                    "TargetGroupStickinessConfig": {
+                        "Enabled": false
+                    }
+                }
+            }
+        ],
+        "IsDefault": true,
+        "Transforms": []
+    }
+]
+,
+[
+    {
+        "RuleArn": "arn:aws:elasticloadbalancing:us-east-1:754996918532:listener-rule/app/fintekkers-lb/a957e88c59732dce/84baff50b5c7b1c6/36c6b6f2e472484e",
+        "Priority": "default",
+        "Conditions": [],
+        "Actions": [
+            {
+                "Type": "forward",
+                "TargetGroupArn": "arn:aws:elasticloadbalancing:us-east-1:754996918532:targetgroup/fintekkers-target-group/7ac0fdd944435c31",
+                "Order": 1,
+                "ForwardConfig": {
+                    "TargetGroups": [
+                        {
+                            "TargetGroupArn": "arn:aws:elasticloadbalancing:us-east-1:754996918532:targetgroup/fintekkers-target-group/7ac0fdd944435c31",
+                            "Weight": 1
+                        }
+                    ],
+                    "TargetGroupStickinessConfig": {
+                        "Enabled": false,
+                        "DurationSeconds": 3600
+                    }
+                }
+            }
+        ],
+        "IsDefault": true,
+        "Transforms": []
+    }
+]
+]}
