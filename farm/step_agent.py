@@ -33,11 +33,11 @@ ROLES = Path(__file__).parent / "roles"
 PLANNER_TOOLS = "Read,Glob,Grep"
 IMPLEMENT_TOOLS = "Read,Glob,Grep,Edit,Write,Bash"
 STEP_CONFIG = {
-    4: ("ensemble.md", True, PLANNER_TOOLS, 16, 900, False),
-    6: ("eng_plan.md", True, PLANNER_TOOLS, 16, 900, False),
-    7: ("architect_review.md", True, PLANNER_TOOLS, 16, 900, False),
-    8: ("qa.md", True, PLANNER_TOOLS, 16, 900, True),
-    11: ("eng_implement.md", False, IMPLEMENT_TOOLS, 80, 2400, True),
+    4: ("ensemble.md", True, PLANNER_TOOLS, 40, 1140, False),
+    6: ("eng_plan.md", True, PLANNER_TOOLS, 40, 1140, False),
+    7: ("architect_review.md", True, PLANNER_TOOLS, 40, 1140, False),
+    8: ("qa.md", True, PLANNER_TOOLS, 40, 1140, True),
+    11: ("eng_implement.md", False, IMPLEMENT_TOOLS, 160, 2700, True),
 }
 
 

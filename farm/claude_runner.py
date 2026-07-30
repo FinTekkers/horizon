@@ -151,7 +151,12 @@ async def _stream_query(
                 result_text = message.result or ""
                 new_session_id = message.session_id
                 if message.is_error:
-                    raise ClaudeError(f"claude reported an error result: {result_text[:300]}")
+                    # subtype names the cause (e.g. error_max_turns) — the
+                    # result text is often empty on these, so without it the
+                    # failure reads as a mystery in the UI.
+                    subtype = getattr(message, "subtype", None) or "unknown"
+                    detail = result_text[:300] or f"no result text (subtype: {subtype}, {message.num_turns} turns)"
+                    raise ClaudeError(f"claude reported an error result [{subtype}]: {detail}")
     finally:
         # Cancellation (asyncio.wait_for timeout) lands here too: closing the
         # generator tears down the SDK's transport, killing the spawned
