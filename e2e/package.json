@@ -1,0 +1,14 @@
+{
+  "name": "horizon-e2e",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Playwright suite driving the real Horizon server + built UI in demo mode (no GitHub, mock agents, temp DB). Run via `npm run test:e2e` at the repo root.",
+  "scripts": {
+    "test": "playwright test"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.62.1",
+    "better-sqlite3": "^12.11.1"
+  }
+}

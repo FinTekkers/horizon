@@ -45,3 +45,48 @@ def test_failing_checks_raise_with_output_tail(tmp_path, monkeypatch):
     with pytest.raises(CheckFailure) as err:
         run_checks(tmp_path, log=lambda *_: None)
     assert "the-broken-test-name" in str(err.value)
+
+
+def _write_e2e_repo(tmp_path):
+    (tmp_path / "package.json").write_text(json.dumps({"scripts": {"test:e2e": "playwright test"}}))
+    (tmp_path / "e2e").mkdir()
+    (tmp_path / "e2e" / "package.json").write_text(json.dumps({"name": "e2e"}))
+
+
+def test_e2e_detected_when_chromium_is_installed(tmp_path, monkeypatch):
+    _write_e2e_repo(tmp_path)
+    browsers = tmp_path / "browsers"
+    (browsers / "chromium-1234").mkdir(parents=True)
+    monkeypatch.setenv("PLAYWRIGHT_BROWSERS_PATH", str(browsers))
+
+    cmds = detect_check_commands(tmp_path)
+    assert ["npm", "run", "test:e2e", "--silent"] in cmds
+
+
+def test_e2e_skipped_with_warning_when_chromium_not_downloaded(tmp_path, monkeypatch):
+    _write_e2e_repo(tmp_path)
+    browsers = tmp_path / "browsers"  # exists but has no chromium-* build
+    browsers.mkdir()
+    monkeypatch.setenv("PLAYWRIGHT_BROWSERS_PATH", str(browsers))
+
+    warnings = []
+    cmds = detect_check_commands(tmp_path, log=warnings.append)
+    assert not any("test:e2e" in c for c in cmds)
+    assert any("Chromium build isn't downloaded" in w for w in warnings)
+
+
+def test_e2e_skipped_with_warning_when_e2e_package_missing(tmp_path):
+    (tmp_path / "package.json").write_text(json.dumps({"scripts": {"test:e2e": "playwright test"}}))
+    # No e2e/ directory at all — distinct failure mode from "chromium not downloaded".
+
+    warnings = []
+    cmds = detect_check_commands(tmp_path, log=warnings.append)
+    assert not any("test:e2e" in c for c in cmds)
+    assert any("e2e/package.json is missing" in w for w in warnings)
+
+
+def test_e2e_absent_leaves_other_detection_unchanged(tmp_path):
+    (tmp_path / "package.json").write_text(json.dumps({"scripts": {"test": "node --test"}}))
+    cmds = detect_check_commands(tmp_path)
+    assert not any("test:e2e" in c for c in cmds)
+    assert ["npm", "test", "--silent"] in cmds
