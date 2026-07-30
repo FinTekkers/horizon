@@ -1,23 +1,24 @@
 // Smoke test for the persona confirm control at the intake gate — the human
 // leg of HZ-4's specialist routing (QA condition 1: this replaces any
-// "manually verified" claim) — plus the HZ-5 Live activity tail.
+// "manually verified" claim) — plus the HZ-14 "See agent output" links that
+// replaced inline step output and the HZ-5 Live activity panel.
 
 import { expect, test, vi } from 'vitest'
-import { render, fireEvent, cleanup, waitFor } from '@testing-library/react'
+import { render, fireEvent, cleanup } from '@testing-library/react'
 import { afterEach } from 'vitest'
 
-const { getRunLogMock } = vi.hoisted(() => ({ getRunLogMock: vi.fn() }))
 vi.mock('../api', () => ({
   issueUrl: () => 'https://example.test/issue',
   issueLabel: (item) => `#${item.issue}`,
-  getRunLog: getRunLogMock,
+  artifactUrl: () => 'https://example.test/artifact',
+  outputUrl: (itemId, stepIndex) => `https://example.test/api/items/${itemId}/steps/${stepIndex}/output`,
+  runLogViewUrl: (runId) => `https://example.test/api/runs/${runId}/log/view`,
 }))
 
 import Tracker from './Tracker'
 
 afterEach(() => {
   cleanup()
-  getRunLogMock.mockReset()
 })
 
 const baseItem = {
@@ -74,45 +75,53 @@ test('the select is absent when the item is past the intake gate', () => {
   expect(queryByLabelText('Specialist persona')).toBeNull()
 })
 
-// ---- HZ-5: Live activity tail on the running step ----
+// ---- HZ-14: "See agent output" links (replaces inline output + HZ-5's Live activity panel) ----
 
-const runningItem = {
-  ...baseItem,
-  cursor: 11, // "Specialist agent implements" — an agent step
-  activeRun: { id: 7, step_index: 11, attempt: 1, started_at: new Date().toISOString() },
-}
-
-test('the running step tails the run log and drains once after active goes false', async () => {
-  getRunLogMock
-    .mockResolvedValueOnce({ content: '[12:00:01] ⏺ Read(src/app.js)\n', next_offset: 30, active: false })
-    .mockResolvedValueOnce({ content: '[12:00:02] final tail line\n', next_offset: 57, active: false })
-
-  const { getByText } = renderTracker(runningItem)
-
-  // The drain read's content must render — the run's last lines are not lost.
-  await waitFor(() => getByText(/final tail line/))
-  expect(getByText(/⏺ Read/)).toBeTruthy()
-
-  // active:false stops polling after exactly one drain read at the new offset.
-  expect(getRunLogMock.mock.calls).toEqual([
-    [7, 0],
-    [7, 30],
-  ])
-  await new Promise((resolve) => setTimeout(resolve, 20))
-  expect(getRunLogMock).toHaveBeenCalledTimes(2)
+test('a completed agent step with output renders a "See agent output" link, not the text inline', () => {
+  const item = {
+    ...baseItem,
+    cursor: 12, // past step 11, "Specialist agent implements"
+    stepOutputs: { 11: { output: 'did the thing', attempt: 1 } },
+  }
+  const { getByRole, queryByText } = renderTracker(item)
+  const link = getByRole('link', { name: 'See agent output ↗' })
+  expect(link.getAttribute('href')).toBe('https://example.test/api/items/T-1/steps/11/output')
+  expect(link.getAttribute('target')).toBe('_blank')
+  expect(link.getAttribute('rel')).toBe('noopener noreferrer')
+  expect(queryByText('did the thing')).toBeNull()
 })
 
-test('no Live activity panel without an active run', () => {
-  const { queryByText } = renderTracker({ ...baseItem, cursor: 11, activeRun: null })
-  expect(queryByText('Live activity')).toBeNull()
+test('a running agent step renders a "See agent output" link to the live-tail page', () => {
+  const item = {
+    ...baseItem,
+    cursor: 11, // "Specialist agent implements" — an agent step, currently active
+    activeRun: { id: 7, step_index: 11, attempt: 1, started_at: new Date().toISOString() },
+  }
+  const { getByRole } = renderTracker(item)
+  const link = getByRole('link', { name: 'See agent output ↗' })
+  expect(link.getAttribute('href')).toBe('https://example.test/api/runs/7/log/view')
+  expect(link.getAttribute('target')).toBe('_blank')
+  expect(link.getAttribute('rel')).toBe('noopener noreferrer')
 })
 
-test('the panel goes away when the run has no per-run log (PM-session 404)', async () => {
-  const err = new Error('unknown run')
-  err.status = 404
-  getRunLogMock.mockRejectedValue(err)
+test('no output link on an active step without a run id yet', () => {
+  const item = { ...baseItem, cursor: 11, activeRun: null }
+  const { queryByRole } = renderTracker(item)
+  expect(queryByRole('link', { name: 'See agent output ↗' })).toBeNull()
+})
 
-  const { queryByText } = renderTracker(runningItem)
-  await waitFor(() => expect(queryByText('Live activity')).toBeNull())
-  expect(getRunLogMock).toHaveBeenCalledTimes(1)
+test('no output link on a gate step, even if stepOutputs has data at that index', () => {
+  const item = {
+    ...baseItem,
+    cursor: 4, // past gate index 3
+    stepOutputs: { 3: { output: 'should never show', attempt: 1 } },
+  }
+  const { queryByRole } = renderTracker(item)
+  expect(queryByRole('link', { name: 'See agent output ↗' })).toBeNull()
+})
+
+test('no output link on a done step with no recorded output', () => {
+  const item = { ...baseItem, cursor: 12, stepOutputs: {} }
+  const { queryByRole } = renderTracker(item)
+  expect(queryByRole('link', { name: 'See agent output ↗' })).toBeNull()
 })

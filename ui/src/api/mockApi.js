@@ -33,6 +33,14 @@ export function artifactUrl() {
   return '#'
 }
 
+export function outputUrl() {
+  return '#'
+}
+
+export function runLogViewUrl() {
+  return '#'
+}
+
 export function issueUrl(item) {
   return `${REPO_URL}/issues/${item.issue}`
 }
@@ -217,23 +225,6 @@ export function setPersona(id, persona) {
     initials: 'YOU',
   })
 }
-
-// Canned live-log tail (HZ-5): mock mode has no farm, so one static page of
-// plausible pane output keeps the Live activity panel working standalone.
-const MOCK_RUN_LOG =
-  '[12:00:01] Reading the implementation plan first.\n' +
-  '[12:00:02] ⏺ Read({"file_path": "src/app.js"})\n' +
-  '[12:00:09] ⏺ Edit({"file_path": "src/app.js"})\n' +
-  '[12:00:20] ── result: 3 turn(s) in 19s ──\n'
-
-export async function getRunLog(runId, offset = 0) {
-  return {
-    content: offset >= MOCK_RUN_LOG.length ? '' : MOCK_RUN_LOG.slice(offset),
-    next_offset: MOCK_RUN_LOG.length,
-    active: false,
-  }
-}
-
 
 // ---- agent definitions (HZ-9) ----
 // Demo mode shows the hierarchy read-only; edits need the server (each save

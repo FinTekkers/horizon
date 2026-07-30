@@ -12,6 +12,36 @@ import { getActiveProjectId, getRepoUrl, setSetting, getToken, humanKeyConfigure
 import { STEPS } from './lifecycle.js'
 import { PERSONAS } from './personas.js'
 import * as definitions from './definitions.js'
+import * as runLogView from './runLogView.js'
+import { readFileSync } from 'node:fs'
+
+// These routes render plain HTML server-side (no React, no bundler) and
+// interpolate values we don't fully control — item ids and step labels come
+// from GitHub issues, and `output`/`artifact` are raw agent/tmux text. All of
+// it lands on unauthenticated, link-shareable pages, so every interpolated
+// value below must go through esc() (or already be trusted HTML, like
+// marked.parse() output) — otherwise a crafted issue title or agent output
+// could run as script in any visitor's browser.
+function esc(s) {
+  return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+}
+
+// Shared look for the small standalone pages below (artifact viewer, step
+// output, live log tail), authored as plain CSS in pages.css and served at
+// /api/agent-pages.css rather than duplicated inline per page.
+const PAGES_CSS = readFileSync(new URL('./pages.css', import.meta.url), 'utf8')
+
+// Each page below links the stylesheet with a relative href, not an absolute
+// one: this app is reverse-proxied under a subpath in production (see
+// infra/host/nginx-site.conf) that it has no env var for, so an absolute
+// "/api/agent-pages.css" would 404 there. A relative href resolves correctly
+// in both places because the browser computes it against its own address
+// bar. `routePath` is the exact string passed to `fastify.get` for that page,
+// so the "../" count always matches the route's real nesting depth.
+function cssHrefFor(routePath) {
+  const depth = routePath.replace(/^\/api\//, '').split('/').length - 1
+  return `${'../'.repeat(depth)}agent-pages.css`
+}
 
 // ---- SSE ----
 
@@ -93,10 +123,17 @@ export function buildApp({ logger = true } = {}) {
 
   fastify.get('/api/items', () => snapshot())
 
+  // Stylesheet shared by the standalone pages below. Cacheable by the
+  // browser across all three instead of re-sent inline with every page.
+  fastify.get('/api/agent-pages.css', (request, reply) => {
+    reply.type('text/css').send(PAGES_CSS)
+  })
+
   // Full-page, formatted view of a step's artifact ("View full artifact"
   // opens this in a new tab — the inline viewport is too cramped for plans).
+  const ARTIFACT_ROUTE = '/api/items/:id/artifacts/:stepIndex'
   fastify.get(
-    '/api/items/:id/artifacts/:stepIndex',
+    ARTIFACT_ROUTE,
     {
       schema: {
         params: {
@@ -115,24 +152,11 @@ export function buildApp({ logger = true } = {}) {
         .get(id, stepIndex)
       if (!run) return reply.code(404).send({ error: 'no artifact for that step' })
       const step = STEPS[stepIndex]
-      const esc = (s) => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
       const title = `${esc(id)} · ${esc(step?.label || `step ${stepIndex}`)}`
       const html = `<!doctype html><html><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>${title}</title>
-<style>
-  body { margin: 0; background: #F3F1F8; color: #38294F; font: 16px/1.65 -apple-system, 'DM Sans', 'Segoe UI', sans-serif; }
-  .page { max-width: 860px; margin: 0 auto; padding: 40px 28px 80px; }
-  .meta { font-size: 13px; color: #8C8C8E; margin-bottom: 18px; }
-  .meta a { color: #2E6CB2; text-decoration: none; }
-  article { background: #fff; border-radius: 18px; box-shadow: 0 18px 40px rgba(56,41,79,.08); padding: 36px 42px; }
-  h1, h2, h3 { line-height: 1.25; } h2 { margin-top: 2em; border-bottom: 1px solid #ECE7F3; padding-bottom: 6px; }
-  code { background: #F0ECF6; border-radius: 5px; padding: 1px 6px; font: 13.5px/1.5 'DM Mono', ui-monospace, monospace; }
-  pre { background: #2A2A2E; color: #F3F1F8; border-radius: 12px; padding: 16px 18px; overflow-x: auto; }
-  pre code { background: none; color: inherit; padding: 0; }
-  blockquote { margin: 0; padding: 2px 16px; border-left: 4px solid #C9B4D9; color: #5A5568; background: #FAF8FC; border-radius: 0 8px 8px 0; }
-  table { border-collapse: collapse; } td, th { border: 1px solid #ECE7F3; padding: 6px 12px; }
-</style></head><body><div class="page">
+<link rel="stylesheet" href="${cssHrefFor(ARTIFACT_ROUTE)}"></head><body><div class="page">
 <div class="meta"><a href="${UI_URL}/${esc(id.toLowerCase())}">← ${esc(id)} in Horizon</a> · ${title} · attempt ${run.attempt} · ${esc(run.ended_at)} UTC</div>
 <article>${marked.parse(run.artifact)}</article>
 </div></body></html>`
@@ -159,6 +183,80 @@ export function buildApp({ logger = true } = {}) {
       } catch {
         return reply.code(503).send({ error: 'farm unavailable' })
       }
+    },
+  )
+
+  // Full-page view of a completed step's raw agent output ("See agent
+  // output" opens this in a new tab instead of showing the text inline,
+  // HZ-14). No auth — same unauthenticated-link pattern as the artifact page
+  // above, so opening it never asks for a second login.
+  const OUTPUT_ROUTE = '/api/items/:id/steps/:stepIndex/output'
+  fastify.get(
+    OUTPUT_ROUTE,
+    {
+      schema: {
+        params: {
+          type: 'object',
+          required: ['id', 'stepIndex'],
+          properties: { id: { type: 'string' }, stepIndex: { type: 'integer', minimum: 0 } },
+        },
+      },
+    },
+    (request, reply) => {
+      const { id, stepIndex } = request.params
+      const run = db
+        .prepare(
+          "SELECT output, attempt, ended_at FROM step_run WHERE item_id = ? AND step_index = ? AND status = 'done' AND output IS NOT NULL ORDER BY id DESC LIMIT 1",
+        )
+        .get(id, stepIndex)
+      if (!run) return reply.code(404).send({ error: 'no output for that step' })
+      const step = STEPS[stepIndex]
+      const title = `${esc(id)} · ${esc(step?.label || `step ${stepIndex}`)}`
+      const html = `<!doctype html><html><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>${title}</title>
+<link rel="stylesheet" href="${cssHrefFor(OUTPUT_ROUTE)}"></head><body><div class="page">
+<div class="meta"><a href="${UI_URL}/${esc(id.toLowerCase())}">← ${esc(id)} in Horizon</a> · ${title} · attempt ${run.attempt} · ${esc(run.ended_at)} UTC</div>
+<pre>${esc(run.output)}</pre>
+</div></body></html>`
+      return reply.type('text/html').send(html)
+    },
+  )
+
+  // Standalone page that live-tails an active run ("See agent output" for the
+  // step currently running, HZ-14). Client-side script polls the JSON log
+  // route above every 2s and stops after a 3-minute wall clock so an
+  // abandoned tab can't poll forever; a Reconnect button resumes it. This
+  // route itself does no polling of its own — no new server-side memory/CPU
+  // per viewer, same as the artifact/output pages.
+  const LOG_VIEW_ROUTE = '/api/runs/:runId/log/view'
+  fastify.get(
+    LOG_VIEW_ROUTE,
+    {
+      schema: {
+        params: { type: 'object', required: ['runId'], properties: { runId: { type: 'integer' } } },
+      },
+    },
+    (request, reply) => {
+      const { runId } = request.params
+      const run = db.prepare('SELECT item_id, step_index FROM step_run WHERE id = ?').get(runId)
+      const step = run ? STEPS[run.step_index] : null
+      const heading = run ? `${esc(run.item_id)} · ${esc(step?.label || `step ${run.step_index}`)}` : `Run ${runId}`
+      const backLink = run
+        ? `<a href="${UI_URL}/${esc(run.item_id.toLowerCase())}">← ${esc(run.item_id)} in Horizon</a> · `
+        : ''
+      const html = `<!doctype html><html><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>${heading} · agent output</title>
+<link rel="stylesheet" href="${cssHrefFor(LOG_VIEW_ROUTE)}"></head><body><div class="page">
+<div class="meta">${backLink}${heading} · agent output</div>
+<pre id="log">Waiting for output…</pre>
+<p id="status" aria-live="polite"></p>
+<button id="reconnect" type="button" hidden>Reconnect</button>
+</div>
+<script>${runLogView.clientScript()}</script>
+</body></html>`
+      return reply.type('text/html').send(html)
     },
   )
 

@@ -1,4 +1,3 @@
-import { useEffect, useRef, useState } from 'react'
 import {
   AGENTS,
   PHASES,
@@ -13,7 +12,7 @@ import {
 } from '../domain/lifecycle'
 import { PERSONAS, personaFor, personaId } from '../domain/personas'
 import { itemStatus } from '../domain/status'
-import { issueUrl, issueLabel, getRunLog, artifactUrl } from '../api'
+import { issueUrl, issueLabel, artifactUrl, outputUrl, runLogViewUrl } from '../api'
 import StatusPill from './StatusPill'
 import { BackIcon, LinkIcon, RestartIcon, PrIcon } from './icons'
 
@@ -35,69 +34,6 @@ const STEP_META = {
 }
 
 const STEP_META_COLOR = { awaiting: '#9A6E00', blocked: '#9C333E', active: '#2E6CB2' }
-
-const LOG_POLL_MS = 2000
-const LOG_KEEP_CHARS = 20_000
-
-// Live tail of an active run's tmux pane (HZ-5), polled from the pipe-pane
-// log via /api/runs/:id/log. Stops after one final drain read when the run
-// ends; a 404 means a PM-session step with no per-run log — panel goes away.
-function LiveActivity({ runId }) {
-  const [log, setLog] = useState('')
-  const [unavailable, setUnavailable] = useState(false)
-  const preRef = useRef(null)
-
-  useEffect(() => {
-    let offset = 0
-    let stopped = false
-    let timer = null
-
-    async function read() {
-      const { content, next_offset, active } = await getRunLog(runId, offset)
-      offset = next_offset
-      if (content && !stopped) setLog((prev) => (prev + content).slice(-LOG_KEEP_CHARS))
-      return active
-    }
-
-    async function poll() {
-      try {
-        const active = await read()
-        if (active === false) {
-          // The run just ended: one final drain so its last lines render.
-          await read()
-          return
-        }
-      } catch (err) {
-        if (err.status === 404) {
-          if (!stopped) setUnavailable(true)
-          return
-        }
-        // Transient (farm restarting, network blip): keep polling.
-      }
-      if (!stopped) timer = setTimeout(poll, LOG_POLL_MS)
-    }
-
-    poll()
-    return () => {
-      stopped = true
-      clearTimeout(timer)
-    }
-  }, [runId])
-
-  useEffect(() => {
-    if (preRef.current) preRef.current.scrollTop = preRef.current.scrollHeight
-  }, [log])
-
-  if (unavailable) return null
-  return (
-    <details className="step-card__live" open>
-      <summary>Live activity</summary>
-      <pre ref={preRef} className="step-card__live-log">
-        {log || 'Waiting for output…'}
-      </pre>
-    </details>
-  )
-}
 
 function Step({ item, index, onApprove, onApproveWithComments, onReject, onResolveConflicts, onSetPersona }) {
   const st = STEPS[index]
@@ -143,7 +79,14 @@ function Step({ item, index, onApprove, onApproveWithComments, onReject, onResol
             )}
           </div>
           {status === 'done' && !isGate && item.stepOutputs?.[index]?.output && (
-            <div className="step-card__output">{item.stepOutputs[index].output}</div>
+            <a
+              className="step-card__output-link"
+              href={outputUrl(item.id, index)}
+              target="_blank"
+              rel="noopener noreferrer"
+            >
+              See agent output ↗
+            </a>
           )}
           {status === 'done' && !isGate && item.stepOutputs?.[index]?.artifact && (
             <a
@@ -202,7 +145,14 @@ function Step({ item, index, onApprove, onApproveWithComments, onReject, onResol
             </div>
           )}
           {status === 'active' && item.activeRun?.step_index === index && item.activeRun.id != null && (
-            <LiveActivity runId={item.activeRun.id} />
+            <a
+              className="step-card__output-link"
+              href={runLogViewUrl(item.activeRun.id)}
+              target="_blank"
+              rel="noopener noreferrer"
+            >
+              See agent output ↗
+            </a>
           )}
           {status === 'active' && (
             <div className="step-card__actions">
