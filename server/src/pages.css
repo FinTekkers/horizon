@@ -1,0 +1,95 @@
+/* Shared look for the small standalone pages the server renders directly —
+   artifact viewer, step output, live log tail (see app.js). These pages have
+   no bundler, so this file is served as-is via GET /api/agent-pages.css and
+   linked with <link rel="stylesheet">, same as any other static CSS. */
+
+body {
+  margin: 0;
+  background: #F3F1F8;
+  color: #38294F;
+  font: 16px/1.65 -apple-system, 'DM Sans', 'Segoe UI', sans-serif;
+}
+
+.page {
+  max-width: 860px;
+  margin: 0 auto;
+  padding: 40px 28px 80px;
+}
+
+.meta {
+  font-size: 13px;
+  color: #8C8C8E;
+  margin-bottom: 18px;
+}
+
+.meta a {
+  color: #2E6CB2;
+  text-decoration: none;
+}
+
+pre {
+  background: #2A2A2E;
+  color: #F3F1F8;
+  border-radius: 12px;
+  padding: 16px 18px;
+  overflow-x: auto;
+}
+
+/* Raw text dropped straight into a top-level <pre> (step output, live log) —
+   wraps instead of scrolling, since it's plain text with no code structure. */
+.page > pre {
+  white-space: pre-wrap;
+  word-break: break-word;
+  font: 13px/1.6 'DM Mono', ui-monospace, monospace;
+}
+
+/* Markdown-rendered artifact */
+article {
+  background: #fff;
+  border-radius: 18px;
+  box-shadow: 0 18px 40px rgba(56, 41, 79, .08);
+  padding: 36px 42px;
+}
+
+h1, h2, h3 { line-height: 1.25; }
+h2 { margin-top: 2em; border-bottom: 1px solid #ECE7F3; padding-bottom: 6px; }
+
+code {
+  background: #F0ECF6;
+  border-radius: 5px;
+  padding: 1px 6px;
+  font: 13.5px/1.5 'DM Mono', ui-monospace, monospace;
+}
+
+pre code { background: none; color: inherit; padding: 0; }
+
+blockquote {
+  margin: 0;
+  padding: 2px 16px;
+  border-left: 4px solid #C9B4D9;
+  color: #5A5568;
+  background: #FAF8FC;
+  border-radius: 0 8px 8px 0;
+}
+
+table { border-collapse: collapse; }
+td, th { border: 1px solid #ECE7F3; padding: 6px 12px; }
+
+/* Live log tail page only */
+#status {
+  font: 600 13px -apple-system, 'DM Sans', sans-serif;
+  color: #5A5568;
+  min-height: 1.2em;
+}
+
+#reconnect {
+  border: none;
+  cursor: pointer;
+  border-radius: 9px;
+  padding: 9px 18px;
+  font: 700 13px -apple-system, 'DM Sans', sans-serif;
+  color: #fff;
+  background: #2E6CB2;
+}
+
+#reconnect:hover { background: #26588F; }

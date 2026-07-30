@@ -91,3 +91,41 @@ test('the page fetches the run log relative to itself, starting at offset 0 on f
   assert.match(res.body, /var offset = 0/)
   assert.match(res.body, /'\.\.\/log\?offset='/)
 })
+
+// ---- shared stylesheet ----
+// These pages link a stylesheet with a relative href (not an absolute one)
+// because the app is reverse-proxied under a subpath in production
+// (infra/host/nginx-site.conf) with no env var telling this server about it.
+// If the relative "../" count in app.js's cssHrefFor() ever drifts from a
+// route's real path depth, the link silently 404s in the browser instead of
+// failing a request — so the resolution itself is asserted here, not just
+// that a <link> tag exists.
+
+test('GET /api/agent-pages.css serves the shared stylesheet with no auth header required', async () => {
+  const res = await app.inject({ method: 'GET', url: '/api/agent-pages.css' })
+  assert.equal(res.statusCode, 200)
+  assert.match(res.headers['content-type'], /text\/css/)
+  assert.match(res.body, /\.page/)
+})
+
+function stylesheetHref(html) {
+  const match = html.match(/<link rel="stylesheet" href="([^"]+)">/)
+  assert.ok(match, 'expected a <link rel="stylesheet"> tag')
+  return match[1]
+}
+
+for (const origin of ['http://x', 'http://x/horizon']) {
+  test(`the step output page's stylesheet link resolves to the css route (origin ${origin})`, async () => {
+    const res = await app.inject({ method: 'GET', url: '/api/items/T-OUT/steps/11/output' })
+    const href = stylesheetHref(res.body)
+    const resolved = new URL(href, `${origin}/api/items/T-OUT/steps/11/output`)
+    assert.equal(resolved.href, `${origin}/api/agent-pages.css`)
+  })
+
+  test(`the live-tail page's stylesheet link resolves to the css route (origin ${origin})`, async () => {
+    const res = await app.inject({ method: 'GET', url: `/api/runs/${runId}/log/view` })
+    const href = stylesheetHref(res.body)
+    const resolved = new URL(href, `${origin}/api/runs/${runId}/log/view`)
+    assert.equal(resolved.href, `${origin}/api/agent-pages.css`)
+  })
+}
