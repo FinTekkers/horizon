@@ -20,7 +20,7 @@ fi
 ENV_VARS=""
 while IFS= read -r kv; do
   ENV_VARS+=" $(printf '%q' "$kv")"
-done < <(env | grep -E '^(FARM_|WA_|HORIZON_URL=)')
+done < <(env | grep -E '^(FARM_|WA_|CLAUDE_|HORIZON_URL=)')
 CMD="cd '$ROOT_DIR' && env$ENV_VARS '$VENV/bin/python' -m farm.farmd"
 
 if [ "${1:-}" = "fg" ]; then
