@@ -65,7 +65,12 @@ function connect() {
 function start() {
   if (started) return
   started = true
-  refetch()
+  // connect() alone is enough for first paint: the server writes a full
+  // snapshot synchronously as the SSE connection's first message (see
+  // /api/stream). A separate parallel refetch() here raced it — whichever
+  // response landed last won, so an older snapshot arriving after a newer
+  // one could silently revert the UI, with nothing to notice until the
+  // stream's next reconnect.
   connect()
   // Coming back to the tab: resync immediately and revive a dead stream.
   document.addEventListener('visibilitychange', () => {
