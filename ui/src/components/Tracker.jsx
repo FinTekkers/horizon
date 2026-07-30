@@ -13,7 +13,7 @@ import {
 } from '../domain/lifecycle'
 import { PERSONAS, personaFor, personaId } from '../domain/personas'
 import { itemStatus } from '../domain/status'
-import { issueUrl, issueLabel, getRunLog } from '../api'
+import { issueUrl, issueLabel, getRunLog, artifactUrl } from '../api'
 import StatusPill from './StatusPill'
 import { BackIcon, LinkIcon, RestartIcon, PrIcon } from './icons'
 
@@ -148,7 +148,7 @@ function Step({ item, index, onApprove, onApproveWithComments, onReject, onResol
           {status === 'done' && !isGate && item.stepOutputs?.[index]?.artifact && (
             <a
               className="step-card__artifact-link"
-              href={`/api/items/${item.id}/artifacts/${index}`}
+              href={artifactUrl(item.id, index)}
               target="_blank"
               rel="noopener noreferrer"
             >

@@ -11,7 +11,10 @@ const proxy = {
   },
 }
 
+// HORIZON_BASE lets the production build mount under a subpath (e.g.
+// HORIZON_BASE=/horizon/ for shoreward.ai/horizon). Dev stays at /.
 export default defineConfig({
+  base: process.env.HORIZON_BASE || '/',
   plugins: [react()],
   server: { proxy },
   preview: { proxy },

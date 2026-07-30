@@ -21,6 +21,7 @@ export const {
   addRepoToProject,
   disconnectRepo,
   createItem,
+  artifactUrl,
   issueUrl,
   issueLabel,
   approveGate,

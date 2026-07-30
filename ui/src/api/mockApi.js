@@ -29,6 +29,10 @@ const SEED_ITEMS = [
 
 export const REPO_URL = 'https://github.com/FinTekkers/horizon'
 
+export function artifactUrl() {
+  return '#'
+}
+
 export function issueUrl(item) {
   return `${REPO_URL}/issues/${item.issue}`
 }

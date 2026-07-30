@@ -3,6 +3,11 @@
 // State arrives over SSE (/api/stream), so all actions are fire-and-forget
 // POSTs; the server broadcasts the updated item list after every mutation.
 
+// Every server request goes through this base so the app works both at the
+// dev root (/) and mounted under a subpath in production (vite `base`, e.g.
+// '/horizon/' → '/horizon/api'). BASE_URL always ends with a slash.
+export const API_BASE = `${import.meta.env.BASE_URL}api`
+
 let repoUrl = 'https://github.com/FinTekkers/horizon'
 let items = []
 let projects = []
@@ -29,7 +34,7 @@ function applySnapshot(data) {
 }
 
 function refetch() {
-  fetch('/api/items')
+  fetch(`${API_BASE}/items`)
     .then((r) => r.json())
     .then(applySnapshot)
     .catch((err) => console.error('Failed to load items', err))
@@ -43,7 +48,7 @@ let source = null
 let retryMs = 1000
 
 function connect() {
-  source = new EventSource('/api/stream')
+  source = new EventSource(`${API_BASE}/stream`)
   source.onopen = () => {
     retryMs = 1000
   }
@@ -111,7 +116,7 @@ async function gatePost(path, body, method = 'POST') {
     key = promptForKey('Enter the human gate key (set in Admin → Security):')
   }
   const doFetch = (k) =>
-    fetch(`/api${path}`, {
+    fetch(`${API_BASE}${path}`, {
       method,
       headers: { 'Content-Type': 'application/json', 'x-human-key': k },
       body: JSON.stringify(body ?? {}),
@@ -148,7 +153,7 @@ export function activateProject(projectId) {
 }
 
 async function postJson(path, body) {
-  const res = await fetch(`/api${path}`, {
+  const res = await fetch(`${API_BASE}${path}`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
@@ -174,6 +179,10 @@ export function disconnectRepo(projectId, repo) {
   return postJson(`/projects/${projectId}/repos/disconnect`, { repo })
 }
 
+export function artifactUrl(itemId, stepIndex) {
+  return `${API_BASE}/items/${itemId}/artifacts/${stepIndex}`
+}
+
 export function issueUrl(item) {
   return item.repo ? `https://github.com/${item.repo}/issues/${item.issue}` : `${repoUrl}/issues/${item.issue}`
 }
@@ -185,7 +194,7 @@ export function issueLabel(item) {
 // Creates a work item (a GitHub issue when sync is connected). Resolves with
 // { id, issue?, url? }; throws with the server/GitHub rejection reason.
 export async function createItem(fields) {
-  const res = await fetch('/api/items', {
+  const res = await fetch(`${API_BASE}/items`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(fields),
@@ -199,7 +208,7 @@ export async function createItem(fields) {
 // in the run's tmux pane. Throws with .status set so callers can stop polling
 // on 404 (PM-session steps share a log and have no per-run tail).
 export async function getRunLog(runId, offset = 0) {
-  const res = await fetch(`/api/runs/${runId}/log?offset=${encodeURIComponent(offset)}`)
+  const res = await fetch(`${API_BASE}/runs/${runId}/log?offset=${encodeURIComponent(offset)}`)
   const data = await res.json().catch(() => ({}))
   if (!res.ok) {
     const err = new Error(data.error || `HTTP ${res.status}`)
@@ -212,7 +221,7 @@ export async function getRunLog(runId, offset = 0) {
 // ---- actions ----
 
 function post(path, body) {
-  return fetch(`/api${path}`, {
+  return fetch(`${API_BASE}${path}`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body ?? {}),
@@ -252,7 +261,7 @@ export function setPersona(id, persona) {
 // ---- agent definitions (HZ-9) ----
 
 async function getJson(path) {
-  const res = await fetch(`/api${path}`)
+  const res = await fetch(`${API_BASE}${path}`)
   const data = await res.json().catch(() => ({}))
   if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`)
   return data

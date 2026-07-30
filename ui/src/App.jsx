@@ -14,8 +14,14 @@ const CLOSED_COMPOSER = { open: false, mode: null, itemId: null, phase: null, ta
 
 // Deep links: /  → board, /admin → admin, /definitions → agent definitions,
 // /<item-id> → that item's tracker (case-insensitive, e.g. localhost:5173/hz-102).
+// All relative to the vite base — '' at the dev root, '/horizon' when the
+// production build is mounted under a subpath.
+const PREFIX = import.meta.env.BASE_URL.replace(/\/$/, '')
+
 function parsePath(pathname) {
-  const seg = decodeURIComponent(pathname.replace(/^\/+|\/+$/g, ''))
+  let path = pathname
+  if (PREFIX && path.toLowerCase().startsWith(PREFIX.toLowerCase())) path = path.slice(PREFIX.length)
+  const seg = decodeURIComponent(path.replace(/^\/+|\/+$/g, ''))
   if (!seg) return { view: 'board', id: null }
   if (seg.toLowerCase() === 'admin') return { view: 'admin', id: null }
   if (seg.toLowerCase() === 'definitions') return { view: 'definitions', id: null }
@@ -23,7 +29,8 @@ function parsePath(pathname) {
 }
 
 function navigate(path) {
-  if (window.location.pathname !== path) window.history.pushState({}, '', path)
+  const full = PREFIX + path
+  if (window.location.pathname !== full) window.history.pushState({}, '', full)
 }
 
 export default function App() {
