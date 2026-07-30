@@ -1,0 +1,17 @@
+[Unit]
+Description=Horizon agent farm (farmd in tmux via run.sh)
+After=network.target horizon-server.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+User=ubuntu
+WorkingDirectory=/opt/horizon
+EnvironmentFile=/etc/horizon/farm.env
+ExecStart=/opt/horizon/farm/run.sh
+# run.sh replaces any existing farm-daemon tmux session; agent sessions
+# (farm-pm-*, farm-run-*, farm-concierge-*) are managed by farmd itself.
+ExecStop=/usr/bin/tmux kill-session -t farm-daemon
+
+[Install]
+WantedBy=multi-user.target

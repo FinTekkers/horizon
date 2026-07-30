@@ -1,0 +1,14 @@
+[Unit]
+Description=Horizon server (Fastify + SQLite)
+After=network.target
+
+[Service]
+User=ubuntu
+WorkingDirectory=/opt/horizon/server
+EnvironmentFile=/etc/horizon/server.env
+ExecStart=/usr/bin/node src/server.js
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

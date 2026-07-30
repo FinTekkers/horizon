@@ -1,0 +1,14 @@
+[Unit]
+Description=Shoreward contact-form endpoint (nodemailer shim)
+After=network.target
+
+[Service]
+User=ubuntu
+WorkingDirectory=/opt/shoreward
+EnvironmentFile=/etc/horizon/contact.env
+ExecStart=/usr/bin/node /opt/horizon/infra/host/shoreward-contact.mjs
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
