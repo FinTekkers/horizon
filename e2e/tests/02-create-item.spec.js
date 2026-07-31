@@ -1,4 +1,4 @@
-import { test, expect } from '../fixtures/test-base.js'
+import { test, expect, captureScreenshot } from '../fixtures/test-base.js'
 
 test('creating a work item via the modal adds it to the board', async ({ page }) => {
   await page.goto('/')
@@ -13,4 +13,6 @@ test('creating a work item via the modal adds it to the board', async ({ page })
   await page.getByRole('button', { name: 'Create work item' }).click()
 
   await expect(page.getByText(title)).toBeVisible()
+
+  await captureScreenshot(page, 'create-item')
 })

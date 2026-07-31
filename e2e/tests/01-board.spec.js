@@ -1,4 +1,4 @@
-import { test, expect } from '../fixtures/test-base.js'
+import { test, expect, captureScreenshot } from '../fixtures/test-base.js'
 
 test('board renders phase columns and seeded work items', async ({ page }) => {
   await page.goto('/')
@@ -10,4 +10,6 @@ test('board renders phase columns and seeded work items', async ({ page }) => {
   await expect(page.getByText('E2E fixture — awaiting intake gate')).toBeVisible()
   await expect(page.getByText('E2E fixture — mid technical plan')).toBeVisible()
   await expect(page.getByText('E2E fixture — already closed')).toBeVisible()
+
+  await captureScreenshot(page, 'board')
 })

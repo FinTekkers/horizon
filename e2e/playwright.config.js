@@ -42,7 +42,11 @@ export default defineConfig({
     trace: 'retain-on-failure',
     screenshot: 'only-on-failure',
   },
-  projects: [{ name: 'chromium', use: { ...devices['Desktop Chrome'] } }],
+  // Fixed small viewport keeps HZ-18's per-journey screenshots tiny — this
+  // must live inside the project's `use` (not the top-level `use` above),
+  // since devices['Desktop Chrome'] sets its own 1280x720 viewport and
+  // project-level `use` wins per-key over the top-level block.
+  projects: [{ name: 'chromium', use: { ...devices['Desktop Chrome'], viewport: { width: 1024, height: 640 } } }],
   webServer: [
     {
       // `fuser -k` guarantees the port is actually free before binding: if a
