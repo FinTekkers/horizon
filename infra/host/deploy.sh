@@ -62,30 +62,53 @@ STAGE="server-deps"
 (cd server && npm ci)
 
 STAGE="ui-build"
-(cd ui && HORIZON_BASE=/horizon/ npm ci && npm run build)
+(cd ui && npm ci && HORIZON_BASE=/horizon/ npm run build)
+
+STAGE="ui-build-verify"
+if ! grep -q '/horizon/assets/' ui/dist/index.html; then
+  log "DEPLOY FAILED: ${STAGE} (tag=${REF} commit=${COMMIT}) — ui/dist/index.html does not reference /horizon/assets/, HORIZON_BASE likely didn't reach the build"
+  exit 1
+fi
 
 STAGE="restart"
 sudo systemctl restart "$SERVICE_NAME"
 
 STAGE="health-check"
 healthy=""
+health_error=""
 deadline=$((SECONDS + HEALTH_TIMEOUT_S))
 while [ "$SECONDS" -lt "$deadline" ]; do
-  if body="$(curl -fsS "$HEALTH_URL" 2>/dev/null)" && node -e '
-      try {
-        const parsed = JSON.parse(process.argv[1])
-        process.exit(Array.isArray(parsed.items) ? 0 : 1)
-      } catch {
-        process.exit(1)
-      }
-    ' "$body" 2>/dev/null; then
-    healthy=1
-    break
+  if body="$(curl -fsS "$HEALTH_URL" 2>&1)"; then
+    # Piped via stdin, not argv: real snapshots run well past Linux's ~128KB
+    # single-argument limit and a large body here used to fail curl's own
+    # invocation with "Argument list too long" (rc 126), which then got
+    # misreported as "never returned a valid items array".
+    if health_error="$(printf '%s' "$body" | node -e '
+        let input = ""
+        process.stdin.on("data", (chunk) => { input += chunk })
+        process.stdin.on("end", () => {
+          let parsed
+          try {
+            parsed = JSON.parse(input)
+          } catch (err) {
+            console.error(`response is not valid JSON: ${err.message}`)
+            process.exit(1)
+          }
+          if (Array.isArray(parsed.items)) process.exit(0)
+          console.error("response JSON has no items array")
+          process.exit(1)
+        })
+      ' 2>&1)"; then
+      healthy=1
+      break
+    fi
+  else
+    health_error="$body"
   fi
   sleep "$HEALTH_POLL_S"
 done
 if [ -z "$healthy" ]; then
-  log "DEPLOY FAILED: health-check (tag=${REF} commit=${COMMIT}) — ${HEALTH_URL} never returned a valid items array"
+  log "DEPLOY FAILED: health-check (tag=${REF} commit=${COMMIT}) — ${HEALTH_URL}: ${health_error}"
   exit 1
 fi
 

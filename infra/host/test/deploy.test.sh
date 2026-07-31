@@ -53,6 +53,18 @@ if [ -n "$marker" ]; then
 fi
 printf '%s %s\n' "$(pwd)" "$*" >>"${NPM_LOG:-/dev/null}"
 sleep "${NPM_SLEEP:-0}"
+# Mimics vite's `base` behavior: `npm run build` writes assets referencing
+# $HORIZON_BASE. UI_BUILD_IGNORE_BASE lets a test simulate the HZ-19
+# production bug where the build ran without HORIZON_BASE reaching it.
+if [ "$1" = "run" ] && [ "$2" = "build" ]; then
+  mkdir -p dist
+  if [ -n "${UI_BUILD_IGNORE_BASE:-}" ]; then
+    base="/"
+  else
+    base="${HORIZON_BASE:-/}"
+  fi
+  printf '<script type="module" src="%sassets/index.js"></script>\n' "$base" >dist/index.html
+fi
 [ -n "$marker" ] && rm -f "$marker"
 exit 0
 EOF
@@ -273,7 +285,98 @@ run_deploy() {
   rm -rf "$base"
 }
 
-# ---- 7. farm isolation, by construction: deploy.sh never references the farm ----
+# ---- 7. ui-build-verify: a build that didn't get HORIZON_BASE is caught
+# before restart, instead of shipping root-path assets that 404 under /horizon
+# (this is the HZ-19 production bug: HORIZON_BASE was scoped to `npm ci`
+# instead of `npm run build`) ----
+{
+  base="$(mktemp -d)"
+  repo="$(setup_repo "$base")"
+  state="$base/state"
+  curl_q="$base/curl.queue"
+  success_queue "$curl_q"
+  systemctl_log="$base/systemctl.log"
+
+  run_deploy "$repo" "$state" v1 \
+    CURL_QUEUE_FILE="$curl_q" CURL_STATE_FILE="$base/curl1.state" \
+    SYSTEMCTL_LOG="$systemctl_log" UI_BUILD_IGNORE_BASE=1
+  code=$?
+
+  [ "$code" -ne 0 ] && ok "ui-build-verify: deploy.sh exits non-zero when the build lacks /horizon/assets/" \
+    || not_ok "ui-build-verify: deploy.sh exits non-zero when the build lacks /horizon/assets/"
+  grep -q "DEPLOY FAILED: ui-build-verify" "$state/self-deploy.log" 2>/dev/null && \
+    ok "ui-build-verify: DEPLOY FAILED is logged" || not_ok "ui-build-verify: DEPLOY FAILED is logged"
+  [ ! -s "$systemctl_log" ] && ok "ui-build-verify: service is never restarted on a bad build" \
+    || not_ok "ui-build-verify: service is never restarted on a bad build ($(cat "$systemctl_log" 2>/dev/null))"
+  rm -rf "$base"
+}
+
+# ---- 8. ui-build-verify passes and the service restarts when the build
+# correctly references /horizon/assets/ ----
+{
+  base="$(mktemp -d)"
+  repo="$(setup_repo "$base")"
+  state="$base/state"
+  curl_q="$base/curl.queue"
+  success_queue "$curl_q"
+  systemctl_log="$base/systemctl.log"
+
+  run_deploy "$repo" "$state" v1 \
+    CURL_QUEUE_FILE="$curl_q" CURL_STATE_FILE="$base/curl1.state" \
+    SYSTEMCTL_LOG="$systemctl_log"
+  code=$?
+
+  [ "$code" -eq 0 ] && ok "ui-build-verify: deploy succeeds when the build references /horizon/assets/" \
+    || not_ok "ui-build-verify: deploy succeeds when the build references /horizon/assets/"
+  grep -q "restart horizon-server-test" "$systemctl_log" 2>/dev/null && \
+    ok "ui-build-verify: service is restarted after a correct build" \
+    || not_ok "ui-build-verify: service is restarted after a correct build"
+  rm -rf "$base"
+}
+
+# ---- 9. health check handles a response body well past the ~128KB argv
+# limit (this is the other HZ-19 production bug: the body used to be passed
+# to node as argv, which dies with "Argument list too long" on any real
+# database; it must be piped via stdin instead) ----
+{
+  base="$(mktemp -d)"
+  repo="$(setup_repo "$base")"
+  state="$base/state"
+  curl_q="$base/curl.queue"
+  padding="$(head -c 250000 /dev/zero | tr '\0' 'x')"
+  printf '200|{"items":[],"padding":"%s"}\n' "$padding" >"$curl_q"
+
+  run_deploy "$repo" "$state" v1 \
+    CURL_QUEUE_FILE="$curl_q" CURL_STATE_FILE="$base/curl1.state"
+  code=$?
+
+  [ "$code" -eq 0 ] && ok "large body: health check succeeds on a >200KB response body" \
+    || not_ok "large body: health check succeeds on a >200KB response body"
+  grep -q "DEPLOY OK" "$state/self-deploy.log" 2>/dev/null && ok "large body: DEPLOY OK logged" \
+    || not_ok "large body: DEPLOY OK logged"
+  rm -rf "$base"
+}
+
+# ---- 10. health-check failure log carries the actual underlying error, not
+# just a generic message ----
+{
+  base="$(mktemp -d)"
+  repo="$(setup_repo "$base")"
+  state="$base/state"
+  curl_q="$base/curl.queue"
+  printf '200|not valid json\n' >"$curl_q"
+
+  run_deploy "$repo" "$state" v1 \
+    CURL_QUEUE_FILE="$curl_q" CURL_STATE_FILE="$base/curl1.state"
+
+  grep -q "DEPLOY FAILED: health-check" "$state/self-deploy.log" 2>/dev/null && \
+    grep -Eq "not valid JSON|Unexpected token" "$state/self-deploy.log" 2>/dev/null && \
+    ok "health-check failure log: carries the underlying parse error" \
+    || not_ok "health-check failure log: carries the underlying parse error ($(cat "$state/self-deploy.log" 2>/dev/null | tail -1))"
+  rm -rf "$base"
+}
+
+# ---- 11. farm isolation, by construction: deploy.sh never references the farm ----
 if ! grep -Eiq 'horizon-farm|\.horizon-farm|(^|[^a-z])farm/' "$DEPLOY_SH"; then
   ok "farm isolation: deploy.sh contains no horizon-farm/farm references"
 else
