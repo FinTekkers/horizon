@@ -4,6 +4,7 @@
 import Fastify from 'fastify'
 import * as store from './store.js'
 import * as github from './github.js'
+import * as deploy from './deploy.js'
 import * as orchestrator from './orchestrator.js'
 import { WEBHOOK_SECRET, FARM_SHARED_SECRET, FARM_URL, UI_URL } from './config.js'
 import { marked } from 'marked'
@@ -890,6 +891,15 @@ export function buildApp({ logger = true } = {}) {
     if (event === 'pull_request' && request.body?.action === 'closed' && request.body?.pull_request && repoFullName) {
       const pr = request.body.pull_request
       github.handlePrStateChange(repoFullName, pr.number, { merged: !!pr.merged, state: pr.state }, request.log)
+    }
+    // A published release on this instance's own repo self-deploys: pull the
+    // tag to the host and restart, no SSH/push access needed (infra/host/deploy.sh).
+    if (event === 'release' && repoFullName) {
+      if (deploy.isDeployableRelease(repoFullName, request.body)) {
+        deploy.runDeploy(request.body.release.tag_name, request.log)
+      } else {
+        request.log.warn(`self-deploy: ignored release event from ${repoFullName}`)
+      }
     }
     return reply.code(204).send()
   })

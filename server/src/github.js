@@ -362,10 +362,13 @@ export async function mergePr(item) {
   throw new Error(message)
 }
 
-// ---- deploy: release + dummy workflow ----
-// The DevOps step publishes a GitHub Release, which triggers the deploy
-// workflow. The workflow itself is self-provisioned: created on the default
-// branch the first time a deploy runs (requires the Workflows permission).
+// ---- deploy: release ----
+// The DevOps step publishes a GitHub Release. A "release published" webhook
+// (server/src/deploy.js) is what actually ships it — it pulls the tag to the
+// shoreward.ai host and restarts the service, no SSH needed. The workflow
+// file below is a legacy stub kept for repos that still reference it; it is
+// self-provisioned on the default branch the first time a deploy runs
+// (requires the Workflows permission) but no longer drives the real deploy.
 
 const DEPLOY_WORKFLOW_PATH = '.github/workflows/horizon-deploy.yml'
 const DEPLOY_WORKFLOW_YML = [
@@ -425,7 +428,7 @@ export async function createDeployRelease(item) {
         `Automated deploy release for ${item.id} (issue #${item.issue}).`,
         item.pr != null ? `Code merged via PR #${item.pr}.` : '',
         '',
-        '_Published by the Horizon DevOps agent — triggers the Horizon Deploy workflow._',
+        '_Published by the Horizon DevOps agent — the self-deploy webhook will pull this to shoreward.ai._',
       ].join('\n'),
     }),
   })

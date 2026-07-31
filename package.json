@@ -1,9 +1,9 @@
 {
   "name": "horizon",
   "private": true,
-  "description": "Root test aggregator: farm/checks.py detects checks at the repo root only, so this script is what makes the server and ui suites run at the guardrail gate. The Python suite is wired via pytest.ini. test:e2e runs the Playwright suite (e2e/) end to end in demo mode — farm/checks.py detects and runs it separately, skipping with a warning on hosts without Chromium installed (npx --prefix e2e playwright install chromium, once).",
+  "description": "Root test aggregator: farm/checks.py detects checks at the repo root only, so this script is what makes the server and ui suites (plus the infra/host/deploy.sh stubbed-PATH shell harness) run at the guardrail gate. The Python suite is wired via pytest.ini. test:e2e runs the Playwright suite (e2e/) end to end in demo mode — farm/checks.py detects and runs it separately, skipping with a warning on hosts without Chromium installed (npx --prefix e2e playwright install chromium, once).",
   "scripts": {
-    "test": "npm --prefix server install --no-audit --no-fund && npm --prefix server test && npm --prefix ui install --no-audit --no-fund && npm --prefix ui run test",
+    "test": "npm --prefix server install --no-audit --no-fund && npm --prefix server test && npm --prefix ui install --no-audit --no-fund && npm --prefix ui run test && bash infra/host/test/deploy.test.sh",
     "test:e2e": "npm --prefix server install --no-audit --no-fund && npm --prefix ui install --no-audit --no-fund && npm --prefix e2e install --no-audit --no-fund && npx --prefix e2e playwright install chromium && npm --prefix e2e test"
   }
 }

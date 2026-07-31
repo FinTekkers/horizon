@@ -1,0 +1,4 @@
+# Template for /etc/sudoers.d/horizon-deploy (validate with `visudo -c` after
+# copying). Grants exactly the one command infra/host/deploy.sh needs to
+# restart the service it just rebuilt — nothing broader.
+ubuntu ALL=(root) NOPASSWD: /bin/systemctl restart horizon-server

@@ -208,8 +208,9 @@ export const MOCK_STEP_BEHAVIOR = {
       return { summary: `implementation complete, but opening the PR failed: ${err.message}` }
     }
   },
-  // Deploy: publish a GitHub Release, which triggers the (self-provisioned)
-  // Horizon Deploy workflow. The mock is the deploy content, not the plumbing.
+  // Deploy: publish a GitHub Release, which the self-deploy webhook
+  // (server/src/deploy.js) picks up to pull the tag onto shoreward.ai. The
+  // mock is the deploy content, not the plumbing.
   13: async (it) => {
     if (!it.repo || it.issue == null) {
       return { summary: 'deployed to the target environment; smoke checks passed (no GitHub — release skipped)' }
@@ -217,7 +218,7 @@ export const MOCK_STEP_BEHAVIOR = {
     try {
       const release = await createDeployRelease(it)
       return {
-        summary: `published release ${release.tag_name}${release.addedWorkflow ? ' (and added the Horizon Deploy workflow to the repo)' : ''} — the deploy workflow is running`,
+        summary: `published release ${release.tag_name}${release.addedWorkflow ? ' (and added the Horizon Deploy workflow to the repo)' : ''} — the self-deploy webhook will pull it to shoreward.ai`,
         patch: { release_tag: release.tag_name, release_url: release.html_url },
       }
     } catch (err) {

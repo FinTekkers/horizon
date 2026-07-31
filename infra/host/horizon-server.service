@@ -9,6 +9,12 @@ EnvironmentFile=/etc/horizon/server.env
 ExecStart=/usr/bin/node src/server.js
 Restart=always
 RestartSec=3
+# deploy.sh forks from this process to handle the webhook that triggers
+# `systemctl restart horizon-server`; default KillMode=control-group would
+# SIGTERM deploy.sh (and its git/npm children) along with the main process,
+# killing the deploy before it reaches its own health check. KillMode=process
+# limits the restart signal to the tracked main PID only.
+KillMode=process
 
 [Install]
 WantedBy=multi-user.target
