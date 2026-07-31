@@ -1,5 +1,6 @@
 """Farm configuration — all via environment, safe defaults for local dev."""
 
+import json
 import os
 from pathlib import Path
 
@@ -40,6 +41,20 @@ FARM_WA_GROUP_JIDS = [j.strip() for j in os.environ.get("FARM_WA_GROUP_JIDS", ""
 WA_BRIDGE_URL = os.environ.get("WA_BRIDGE_URL", "http://localhost:8080")
 WA_DB_PATH = os.environ.get("WA_DB_PATH", "")
 CONCIERGE_MODEL = os.environ.get("FARM_CONCIERGE_MODEL")  # None -> CLI default
+
+# HZ-15: create work items and approve gates from WhatsApp.
+# Where the web UI lives — texted back as a deep link (e.g. "HZ-7" ->
+# f"{FARM_UI_URL}/hz-7"). Separate from the server's own UI_URL: this is the
+# farm's Python process, a different env than the Node server.
+FARM_UI_URL = os.environ.get("FARM_UI_URL", "http://localhost:5173").rstrip("/")
+# jid -> display name (e.g. {"15551112222": "David"}), so every wizard/gate
+# reply can say whose turn it is and never let one sender's answers or
+# approvals bleed into another's.
+FARM_WA_SENDER_NAMES = json.loads(os.environ.get("FARM_WA_SENDER_NAMES", "{}"))
+# Stale conversation state expires instead of hijacking an unrelated later
+# message from the same sender.
+FARM_WA_WIZARD_TTL_S = int(os.environ.get("FARM_WA_WIZARD_TTL_S", "1800"))
+FARM_WA_CHOICE_TTL_S = int(os.environ.get("FARM_WA_CHOICE_TTL_S", "600"))
 
 
 def ensure_dirs() -> None:

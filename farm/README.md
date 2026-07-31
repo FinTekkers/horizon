@@ -58,14 +58,29 @@ sessions; queued work survives on disk.
 Node side: `FARM_URL`, `FARM_SHARED_SECRET`, `FARM_STEP_INDEXES` (default
 `0,1,2`), `FARM_STEP_TIMEOUT_MS` (watchdog, default 20 min).
 
-## WhatsApp concierge (HZ-7)
+## WhatsApp concierge (HZ-7, item creation & gate approval in HZ-15)
 
-Chat with the farm from WhatsApp: reprioritize items, leave feedback (also
-mirrored as a GitHub issue comment), and ask questions about items and their
-plan/review artifacts. Gates are deliberately out of reach — approving,
-rejecting, merging and deploying still require the human gate key in the UI,
-and the concierge script drops any action outside its two-entry whitelist
-(`set_priority`, `feedback`) before it can touch the farm.
+Chat with the farm from WhatsApp: create work items, reprioritize them,
+leave feedback (also mirrored as a GitHub issue comment), approve gates, and
+ask questions about items and their plan/review artifacts.
+
+- `[New Item] <title>` starts a short wizard (outcome, success metric,
+  guardrails, priority, then create/edit/cancel) that ends with a link to
+  the item in the web UI and, once GitHub is connected, its issue link.
+- Gate approval is WhatsApp's numbered-reply proxy for a radio button: when
+  the concierge lists items AWAITING HUMAN APPROVAL it also offers a
+  numbered choice, and a bare `1`-`9` reply approves that gate — resolved
+  deterministically by the script, never by the model. Rejecting, merging,
+  and deploying directly still require the human gate key in the UI.
+- Both flows are deterministic state machines (`farm/wizard.py`), not model
+  turns — a message is claimed (persisted) before its item is created or its
+  gate approved, the same at-most-once discipline as the plain
+  feedback/priority actions below, and state is keyed per `(chat, sender)`
+  pair so two people in one group chat can never read or advance each
+  other's wizard or approval choice.
+- Everything else the model can do is capped by a two-entry action
+  whitelist (`set_priority`, `feedback`) the concierge script enforces
+  before anything touches the farm.
 
 Setup (Option A — the local [whatsapp-mcp](https://github.com/lharries/whatsapp-mcp)
 bridge; **pin the bridge commit you paired with** — its SQLite schema is
@@ -85,6 +100,10 @@ drifts):
 | `FARM_WA_POLL_S` | 5 | poll interval |
 | `FARM_WA_TRANSPORT` | mcp_bridge | `cloud_api` arrives with the Option B cutover |
 | `FARM_CONCIERGE_MODEL` | (CLI default) | model for the concierge agent |
+| `FARM_UI_URL` | http://localhost:5173 | web UI base, for deep links texted back on item creation |
+| `FARM_WA_SENDER_NAMES` | `{}` | JSON jid->name map, e.g. `{"15551112222":"David"}` — every wizard/approval reply names whose turn it is |
+| `FARM_WA_WIZARD_TTL_S` | 1800 | item-wizard conversation expiry (seconds) |
+| `FARM_WA_CHOICE_TTL_S` | 600 | offered gate-approval choice expiry (seconds) |
 
 3. Restart farmd (`./farm/run.sh`); the concierge appears as
    `farm-concierge-<project>` and its log lands in `~/.horizon-farm/logs/`.

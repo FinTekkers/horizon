@@ -14,6 +14,7 @@ delete process.env.FARM_URL
 const { db } = await import('../src/db.js')
 const { buildApp } = await import('../src/app.js')
 const { STEPS } = await import('../src/lifecycle.js')
+const { FARM_SHARED_SECRET } = await import('../src/config.js')
 const store = await import('../src/store.js')
 
 // The seeded BF-* demo items would get kicked onto mock timers by
@@ -144,6 +145,114 @@ test('a failing GitHub label mirror still returns 200 and persists', async () =>
     // failure never surfaced to the client.
     await new Promise((resolve) => setImmediate(resolve))
     assert.ok(calls.some((u) => u.includes('/repos/acme/demo/labels')))
+  } finally {
+    globalThis.fetch = realFetch
+  }
+})
+
+// ---- gate approval (HZ-15: WhatsApp-driven approval + actor attribution) ----
+
+db.prepare(
+  "INSERT INTO work_item (id, title, priority, cursor) VALUES ('T-GATE-HK', 'Human-key approval', 'Medium', 3)",
+).run()
+db.prepare(
+  "INSERT INTO work_item (id, title, priority, cursor) VALUES ('T-GATE-WA', 'WhatsApp approval', 'Medium', 3)",
+).run()
+db.prepare(
+  "INSERT INTO work_item (id, title, priority, cursor) VALUES ('T-GATE-STALE', 'Stale step', 'Medium', 3)",
+).run()
+db.prepare(
+  "INSERT INTO work_item (id, title, priority, cursor) VALUES ('T-GATE-NOTGATE', 'On an agent step', 'Medium', 11)",
+).run()
+db.prepare(
+  "INSERT INTO work_item (id, title, priority, cursor, repo, issue, pr) VALUES ('T-GATE-MERGE', 'Accept gate', 'Medium', 12, 'acme/demo', 9, 41)",
+).run()
+
+const approvePost = (id, stepIndex, payload = {}) =>
+  app.inject({ method: 'POST', url: `/api/items/${id}/gates/${stepIndex}/approve`, payload })
+
+const approveViaWhatsappPost = (id, stepIndex, payload, headers = {}) =>
+  app.inject({ method: 'POST', url: `/api/items/${id}/gates/${stepIndex}/approve-via-whatsapp`, payload, headers })
+
+test('human-key route: approving a gate advances the cursor and attributes "You"', async () => {
+  const res = await approvePost('T-GATE-HK', 3)
+  assert.equal(res.statusCode, 200)
+  assert.deepEqual(res.json(), { ok: true })
+  assert.equal(db.prepare("SELECT cursor FROM work_item WHERE id = 'T-GATE-HK'").get().cursor, 4)
+  assert.equal(db.prepare("SELECT decided_by FROM gate_decision WHERE item_id = 'T-GATE-HK'").get().decided_by, 'You')
+  assert.equal(
+    db.prepare("SELECT who FROM event WHERE item_id = 'T-GATE-HK' ORDER BY id DESC LIMIT 1").get().who,
+    'You',
+  )
+})
+
+test('approve-via-whatsapp: 401 without the farm secret, and the gate is untouched', async () => {
+  const res = await approveViaWhatsappPost('T-GATE-WA', 3, { sender: 'David' })
+  assert.equal(res.statusCode, 401)
+  assert.equal(db.prepare("SELECT cursor FROM work_item WHERE id = 'T-GATE-WA'").get().cursor, 3)
+})
+
+test('approve-via-whatsapp: 200, advances the cursor, and attributes the named sender', async () => {
+  const res = await approveViaWhatsappPost(
+    'T-GATE-WA',
+    3,
+    { sender: 'David', notes: 'looks good' },
+    { 'x-farm-secret': FARM_SHARED_SECRET },
+  )
+  assert.equal(res.statusCode, 200)
+  assert.deepEqual(res.json(), { ok: true })
+  assert.equal(db.prepare("SELECT cursor FROM work_item WHERE id = 'T-GATE-WA'").get().cursor, 4)
+  assert.equal(
+    db.prepare("SELECT decided_by FROM gate_decision WHERE item_id = 'T-GATE-WA'").get().decided_by,
+    'David via WhatsApp',
+  )
+  assert.equal(
+    db.prepare("SELECT who FROM event WHERE item_id = 'T-GATE-WA' ORDER BY id DESC LIMIT 1").get().who,
+    'David via WhatsApp',
+  )
+})
+
+test('approve-via-whatsapp: 404 for an unknown item', async () => {
+  const res = await approveViaWhatsappPost('NOPE-9', 0, { sender: 'David' }, { 'x-farm-secret': FARM_SHARED_SECRET })
+  assert.equal(res.statusCode, 404)
+  assert.deepEqual(res.json(), { error: 'not_found' })
+})
+
+test('approve-via-whatsapp: 409 not_at_gate when the item is not currently on a gate step', async () => {
+  const res = await approveViaWhatsappPost(
+    'T-GATE-NOTGATE',
+    11,
+    { sender: 'David' },
+    { 'x-farm-secret': FARM_SHARED_SECRET },
+  )
+  assert.equal(res.statusCode, 409)
+  assert.deepEqual(res.json(), { error: 'not_at_gate' })
+})
+
+test('approve-via-whatsapp: 409 stale_step when the step index no longer matches the cursor', async () => {
+  const res = await approveViaWhatsappPost('T-GATE-STALE', 1, { sender: 'David' }, { 'x-farm-secret': FARM_SHARED_SECRET })
+  assert.equal(res.statusCode, 409)
+  assert.deepEqual(res.json(), { error: 'stale_step' })
+})
+
+test('approve-via-whatsapp: 502 when the PR merge fails, and the gate stays open', async () => {
+  const realFetch = globalThis.fetch
+  globalThis.fetch = async () => ({
+    ok: false,
+    status: 405,
+    json: async () => ({ message: 'required checks pending' }),
+    text: async () => '',
+  })
+  try {
+    const res = await approveViaWhatsappPost(
+      'T-GATE-MERGE',
+      12,
+      { sender: 'Evan' },
+      { 'x-farm-secret': FARM_SHARED_SECRET },
+    )
+    assert.equal(res.statusCode, 502)
+    assert.match(res.json().error, /merge failed/)
+    assert.equal(db.prepare("SELECT cursor FROM work_item WHERE id = 'T-GATE-MERGE'").get().cursor, 12)
   } finally {
     globalThis.fetch = realFetch
   }

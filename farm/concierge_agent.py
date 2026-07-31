@@ -5,15 +5,27 @@ the WhatsApp transport, maps each allowed inbound message to one resumed
 Claude call, validates the reply against a two-action whitelist
 (set_priority, feedback), executes the survivors against the Node server's
 HTTP API, and texts the reply back. It can never approve gates, merge or
-deploy — those routes demand the human gate key, which this process does not
-have.
+deploy through a model-emitted action — those routes demand either the
+human gate key or, via the deterministic wizard.py state machines below, a
+bare numeric reply the *script* resolves against a list the model can only
+offer, never act on directly.
+
+Two turns bypass the model entirely, handled by wizard.py before any Claude
+call: `[New Item] <title>` starts the item-creation wizard, and a bare 1-9
+reply resolves a previously offered gate-approval choice (WhatsApp's
+numbered-reply proxy for a radio button). Both are deterministic on purpose
+— a shared Claude session across two humans in one group chat is exactly the
+kind of cross-talk that could confuse David and Evan, or make the bot
+appear to reply to itself.
 
 Delivery semantics: at-most-once side effects. A message is *claimed*
 (msg_id persisted, cursor advanced) after the model call but before any
 action executes, so a crash mid-execution or a failed send never replays
 actions — duplicate GitHub comments were the architecture review's headline
 risk. The cursor is the transport's rowid-style position, not a timestamp,
-so equal-timestamp messages can't be skipped or double-read.
+so equal-timestamp messages can't be skipped or double-read. wizard.py's
+state machines follow the identical claim-before-side-effect ordering so a
+crash can never create a duplicate work item or gate approval either.
 """
 
 import argparse
@@ -26,6 +38,7 @@ from pathlib import Path
 import httpx
 
 from . import config
+from . import wizard
 from .claude_runner import ClaudeError, extract_json, run_claude
 from .config import CONCIERGE_MODEL, HORIZON_URL, STATE_DIR, ensure_dirs, slugify
 from .whatsapp.transport import Inbound, Transport, TransportError
@@ -35,6 +48,7 @@ PRIORITIES = ("Critical", "High", "Medium", "Low")
 ALLOWED_ACTIONS = ("set_priority", "feedback")
 PROCESSED_KEEP = 500  # msg_id dedupe window persisted across restarts
 MAX_ACTIONS = 3
+MAX_GATE_OPTIONS = 9
 
 
 def log(msg: str) -> None:
@@ -72,6 +86,10 @@ class ConciergeState:
         self.cursor_path = STATE_DIR / f"concierge-cursor-{slug}.txt"
         self.processed_path = STATE_DIR / f"concierge-processed-{slug}.json"
         self.session_path = STATE_DIR / f"concierge-session-{slug}.txt"
+        # Per-(chat,sender) state for the item wizard and gate-choice
+        # resolver (HZ-15) — same slug-scoped file family as the state above.
+        self.wizard_store = wizard.WizardStore(slug)
+        self.choice_store = wizard.PendingChoiceStore(slug)
         if self.cursor_path.exists():
             self.cursor = int(self.cursor_path.read_text().strip() or 0)
         else:
@@ -126,6 +144,9 @@ def _item_line(item: dict) -> str:
         if item.get("pr"):
             conflicts = ", has merge conflicts" if item.get("pr_mergeable") is False else ""
             status += f" (PR #{item['pr']}{conflicts})"
+        # step_index feeds gate_options — the only way the model can tell the
+        # script *which* step a later numbered approval reply resolves to.
+        status += f" (step_index {step.get('index')})"
     else:
         status = f'queued at "{label}"' if label else "waiting"
     return f"- {item['id']} [{item.get('priority')}] {item.get('title')} — {status}"
@@ -133,8 +154,9 @@ def _item_line(item: dict) -> str:
 
 def build_prompt(msg: Inbound, snapshot: dict) -> str:
     items = snapshot.get("items") or []
+    sender = f"{wizard.sender_label(msg.sender_jid)} ({msg.sender_jid})"
     lines = [
-        f'WhatsApp message from {msg.sender_jid}: "{msg.text}"',
+        f'WhatsApp message from {sender}: "{msg.text}"',
         "",
         "Current work items:",
     ]
@@ -172,8 +194,14 @@ def build_prompt(msg: Inbound, snapshot: dict) -> str:
 # ---- reply validation & action execution ----
 
 
-def validate_reply(parsed: dict) -> tuple[str, list[dict], list[str]]:
-    """Returns (reply, executable actions, notes about dropped ones)."""
+def validate_reply(parsed: dict) -> tuple[str, list[dict], list[str], list[dict]]:
+    """Returns (reply, executable actions, notes about dropped ones, gate_options).
+
+    gate_options is a sibling field to actions, not part of it: the model can
+    only *offer* a numbered list of gates awaiting approval when it lists
+    them (see roles/concierge.md); it never emits an approve_gate action
+    itself. wizard.try_handle_gate_choice is what turns a later bare number
+    into an actual approval, deterministically, outside the model."""
     reply = str(parsed.get("reply", "")).strip()
     if not reply:
         raise ClaudeError("concierge reply missing 'reply'")
@@ -205,7 +233,19 @@ def validate_reply(parsed: dict) -> tuple[str, list[dict], list[str]]:
                 notes.append(f"(dropped an empty feedback action for {item_id})")
                 continue
             actions.append({"type": a_type, "item_id": item_id, "message": message})
-    return reply[:1500], actions, notes
+
+    gate_options: list[dict] = []
+    raw_gates = parsed.get("gate_options")
+    for opt in (raw_gates if isinstance(raw_gates, list) else [])[:MAX_GATE_OPTIONS]:
+        item_id = str(opt.get("item_id", "")).strip() if isinstance(opt, dict) else ""
+        label = str(opt.get("label", "")).strip() if isinstance(opt, dict) else ""
+        step_index = opt.get("step_index") if isinstance(opt, dict) else None
+        if not item_id or not label or not isinstance(step_index, int) or isinstance(step_index, bool) or step_index < 0:
+            notes.append("(dropped a malformed gate_options entry)")
+            continue
+        gate_options.append({"item_id": item_id, "step_index": step_index, "label": label[:200]})
+
+    return reply[:1500], actions, notes, gate_options
 
 
 def execute_actions(actions: list[dict], base_url: str = HORIZON_URL) -> list[str]:
@@ -270,7 +310,7 @@ def process_message(msg: Inbound, transport: Transport, state: ConciergeState, b
         )
         state.save_session(reply_raw.get("session_id"))
         try:
-            reply, actions, notes = validate_reply(extract_json(reply_raw["result"]))
+            reply, actions, notes, gate_options = validate_reply(extract_json(reply_raw["result"]))
         except (ClaudeError, json.JSONDecodeError) as exc:
             log(f"invalid concierge reply ({exc}); retrying once")
             retry = run_claude(
@@ -280,7 +320,7 @@ def process_message(msg: Inbound, transport: Transport, state: ConciergeState, b
                 model=CONCIERGE_MODEL,
             )
             state.save_session(retry.get("session_id"))
-            reply, actions, notes = validate_reply(extract_json(retry["result"]))
+            reply, actions, notes, gate_options = validate_reply(extract_json(retry["result"]))
     except Exception as exc:
         log(f"message {msg.msg_id}: agent failed — {exc}")
         state.claim(msg)
@@ -290,6 +330,9 @@ def process_message(msg: Inbound, transport: Transport, state: ConciergeState, b
     # Claim before executing: a crash from here on can not replay actions.
     state.claim(msg)
     notes = execute_actions(actions, base_url) + notes
+    # Remembers this sender's numbered choices (or clears stale ones) so a
+    # later bare-number reply from them resolves deterministically.
+    wizard.offer_gate_choices(msg.chat_jid, msg.sender_jid, gate_options, state.choice_store)
     text = reply if not notes else reply + "\n" + "\n".join(notes)
     _send_safely(transport, msg.chat_jid, text)
 
@@ -319,6 +362,14 @@ def poll_once(transport: Transport, state: ConciergeState, base_url: str = HORIZ
         if not sender_allowed(msg.sender_jid):
             log(f"dropping message {msg.msg_id} from non-allowlisted sender {normalize_jid(msg.sender_jid)}")
             state.claim(msg)
+            continue
+        # Deterministic, non-LLM turns first: an item wizard step or a bare
+        # numeric gate-approval reply never reaches Claude.
+        if wizard.try_handle_item_wizard(msg, transport, state.wizard_store, state, base_url):
+            handled += 1
+            continue
+        if wizard.try_handle_gate_choice(msg, transport, state.choice_store, state, base_url):
+            handled += 1
             continue
         log(f"processing {msg.msg_id} from {normalize_jid(msg.sender_jid)}: {msg.text[:80]!r}")
         process_message(msg, transport, state, base_url)
