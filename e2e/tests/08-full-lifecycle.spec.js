@@ -1,4 +1,4 @@
-import { test, expect } from '../fixtures/test-base.js'
+import { test, expect, captureScreenshot } from '../fixtures/test-base.js'
 
 const GATES = [
   'Approve & prioritize this work',
@@ -26,4 +26,6 @@ test('one item travels the full lifecycle from creation to closed', async ({ req
   }
 
   await expect(page.locator('.tracker__status')).toContainText('Closed', { timeout: 10_000 })
+
+  await captureScreenshot(page, 'full-lifecycle')
 })

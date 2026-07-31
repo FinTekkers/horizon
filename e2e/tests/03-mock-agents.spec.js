@@ -1,4 +1,4 @@
-import { test, expect } from '../fixtures/test-base.js'
+import { test, expect, captureScreenshot } from '../fixtures/test-base.js'
 
 test('mock agents auto-advance a freshly created item to its first gate', async ({ request, page }) => {
   const res = await request.post('/api/items', {
@@ -20,4 +20,6 @@ test('mock agents auto-advance a freshly created item to its first gate', async 
     timeout: 10_000,
   })
   await expect(page.locator('.step__icon--done')).toHaveCount(3)
+
+  await captureScreenshot(page, 'mock-agents')
 })

@@ -261,6 +261,40 @@ export async function createMockPr(item) {
   throw new Error(`could not open the pull request (${prRes.status} — check the token has Pull requests read/write)`)
 }
 
+// ---- screenshots (HZ-18) ----
+// e2e/fixtures/test-base.js's captureScreenshot() commits fixed-name PNGs to
+// e2e/__screenshots__/ on the work branch during the implement step's e2e
+// run. Rendered here as a "Screenshots" section so a reviewer sees the
+// resulting UI inline on GitHub without checking out the branch.
+
+// Exported for direct unit testing; pure formatting, no network.
+export function screenshotsMarkdown(files) {
+  const list = Array.isArray(files) ? files : []
+  const pngs = list.filter((f) => f?.type === 'file' && f.name?.endsWith('.png'))
+  if (pngs.length === 0) return ''
+  return [
+    '',
+    '## Screenshots',
+    ...pngs
+      .sort((a, b) => a.name.localeCompare(b.name))
+      .map((f) => `![${f.name.replace(/\.png$/, '')}](${f.download_url})`),
+  ].join('\n')
+}
+
+// download_url is branch-relative, so the images re-render the branch's
+// current pixels on every push with no PR-body edit needed. Never throws:
+// a repo with no e2e/__screenshots__ (404) or a GitHub hiccup (network
+// error, 5xx) both just omit the section rather than blocking PR creation.
+export async function fetchScreenshotsMarkdown(repo, branch) {
+  try {
+    const res = await gh(`/repos/${repo}/contents/e2e/__screenshots__?ref=${encodeURIComponent(branch)}`)
+    if (!res.ok) return ''
+    return screenshotsMarkdown(await res.json())
+  } catch {
+    return ''
+  }
+}
+
 // Open the PR for a branch a real agent already pushed (the farm's Eng agent
 // owns the code; this side owns the PR mechanics).
 export async function createPrFromBranch(item, branch) {
@@ -268,6 +302,8 @@ export async function createPrFromBranch(item, branch) {
   const repoRes = await gh(`/repos/${repo}`)
   if (!repoRes.ok) throw new Error(`could not read the repository (${repoRes.status})`)
   const base = (await repoRes.json()).default_branch
+
+  const screenshots = await fetchScreenshotsMarkdown(repo, branch)
 
   const prRes = await gh(`/repos/${repo}/pulls`, {
     method: 'POST',
@@ -283,6 +319,7 @@ export async function createPrFromBranch(item, branch) {
         '',
         '## Guardrails',
         item.guardrails || '_(defaults apply)_',
+        ...(screenshots ? [screenshots] : []),
         '',
         `_Implemented by the Horizon Eng agent; opened for the “Accept the code” gate · ${itemLink(item)}._`,
       ].join('\n'),

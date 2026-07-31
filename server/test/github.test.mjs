@@ -92,3 +92,77 @@ test('comments on untracked repos or issues are ignored', () => {
   assert.equal(github.ingestComment(REPO, null, human('no issue number')), false)
   assert.equal(feedbackCount(), before)
 })
+
+// screenshotsMarkdown / fetchScreenshotsMarkdown (HZ-18): the PR body's
+// "Screenshots" section, built from the GitHub Contents API listing of
+// e2e/__screenshots__ on the work branch.
+
+test('screenshotsMarkdown formats a sorted list of png files as image markdown', () => {
+  const files = [
+    { type: 'file', name: 'gate-key.png', download_url: 'https://raw.githubusercontent.com/x/y/main/e2e/__screenshots__/gate-key.png' },
+    { type: 'file', name: 'board.png', download_url: 'https://raw.githubusercontent.com/x/y/main/e2e/__screenshots__/board.png' },
+  ]
+  const md = github.screenshotsMarkdown(files)
+  const lines = md.split('\n').filter(Boolean)
+  assert.deepEqual(lines, [
+    '## Screenshots',
+    '![board](https://raw.githubusercontent.com/x/y/main/e2e/__screenshots__/board.png)',
+    '![gate-key](https://raw.githubusercontent.com/x/y/main/e2e/__screenshots__/gate-key.png)',
+  ])
+})
+
+test('screenshotsMarkdown returns "" for undefined or an empty list', () => {
+  assert.equal(github.screenshotsMarkdown(undefined), '')
+  assert.equal(github.screenshotsMarkdown([]), '')
+})
+
+test('screenshotsMarkdown excludes directory entries and non-png files', () => {
+  const files = [
+    { type: 'dir', name: 'nested' },
+    { type: 'file', name: 'notes.txt', download_url: 'https://example.com/notes.txt' },
+    { type: 'file', name: 'board.png', download_url: 'https://example.com/board.png' },
+  ]
+  const md = github.screenshotsMarkdown(files)
+  assert.match(md, /!\[board\]/)
+  assert.doesNotMatch(md, /nested/)
+  assert.doesNotMatch(md, /notes\.txt/)
+})
+
+test('screenshotsMarkdown sorts by filename, stable across mixed-case names', () => {
+  const names = ['zebra.png', 'apple.png', 'Banana.png']
+  const files = names.map((name) => ({ type: 'file', name, download_url: `https://example.com/${name}` }))
+  const md = github.screenshotsMarkdown(files)
+  const rendered = md
+    .split('\n')
+    .filter((l) => l.startsWith('!['))
+    .map((l) => l.match(/!\[(.+)\]/)[1] + '.png')
+  assert.deepEqual(rendered, [...names].sort((a, b) => a.localeCompare(b)))
+})
+
+test('fetchScreenshotsMarkdown returns "" when the contents API 404s (no screenshots dir)', async (t) => {
+  t.mock.method(globalThis, 'fetch', async () => ({ ok: false, status: 404 }))
+  assert.equal(await github.fetchScreenshotsMarkdown(REPO, 'horizon/hz-18'), '')
+})
+
+test('fetchScreenshotsMarkdown returns "" and does not throw on a network error or 5xx', async (t) => {
+  t.mock.method(globalThis, 'fetch', async () => {
+    throw new Error('ECONNRESET')
+  })
+  assert.equal(await github.fetchScreenshotsMarkdown(REPO, 'horizon/hz-18'), '')
+})
+
+test('fetchScreenshotsMarkdown filters directories out of a mixed contents listing', async (t) => {
+  const listing = [
+    { type: 'dir', name: 'nested' },
+    {
+      type: 'file',
+      name: 'board.png',
+      download_url: 'https://raw.githubusercontent.com/FinTekkers/horizon/horizon/hz-18/e2e/__screenshots__/board.png',
+    },
+  ]
+  t.mock.method(globalThis, 'fetch', async () => ({ ok: true, status: 200, json: async () => listing }))
+  const md = await github.fetchScreenshotsMarkdown(REPO, 'horizon/hz-18')
+  assert.match(md, /## Screenshots/)
+  assert.match(md, /!\[board\]\(https:\/\/raw\.githubusercontent\.com/)
+  assert.doesNotMatch(md, /nested/)
+})

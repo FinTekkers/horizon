@@ -3,7 +3,7 @@
 // suite's life, since there's no unset-key endpoint. Nothing after this file
 // may assume an open gate again.
 
-import { test, expect } from '../fixtures/test-base.js'
+import { test, expect, captureScreenshot } from '../fixtures/test-base.js'
 import { openDb, insertItem, setGateKeyDirect } from '../fixtures/seed.js'
 
 const DB_PATH = process.env.HORIZON_E2E_DB
@@ -33,6 +33,8 @@ test('the correct gate key approves the gate via the window.prompt() flow', asyn
   await expect(page.locator('.step-card--awaiting')).toContainText('Approve the high-level design', {
     timeout: 10_000,
   })
+
+  await captureScreenshot(page, 'gate-key')
 })
 
 test('a wrong then cancelled gate key blocks the gate action', async ({ page }) => {
