@@ -6,6 +6,7 @@ import assert from 'node:assert/strict'
 import { mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { loginFixtureUser } from './helpers/session.mjs'
 
 process.env.HORIZON_DB = join(mkdtempSync(join(tmpdir(), 'horizon-app-')), 'test.db')
 delete process.env.GITHUB_WEBHOOK_SECRET
@@ -14,14 +15,24 @@ delete process.env.FARM_URL
 const { db } = await import('../src/db.js')
 const { buildApp } = await import('../src/app.js')
 const { STEPS } = await import('../src/lifecycle.js')
-const { FARM_SHARED_SECRET } = await import('../src/config.js')
+const config = await import('../src/config.js')
+const { FARM_SHARED_SECRET } = config
 const store = await import('../src/store.js')
+const auth = await import('../src/auth.js')
 
 // The seeded BF-* demo items would get kicked onto mock timers by
 // orchestrator.init below — remove them so only the fixtures run.
 store.purgeDemoItems()
 
 const app = buildApp({ logger: false })
+
+// Every /api/* route now requires a logged-in session (HZ-21); this fixture
+// user's own gate PIN also stands in for the old shared human-key header.
+const { user: fixtureUser, pin: fixturePin, cookie } = loginFixtureUser(auth, config)
+// Every call below carries both the session cookie AND the gate PIN header —
+// harmless on routes that don't check the PIN, required on the ones that do.
+const inject = (opts) =>
+  app.inject({ ...opts, headers: { 'x-human-key': fixturePin, ...opts.headers, cookie } })
 
 db.prepare("INSERT INTO work_item (id, title, priority, cursor) VALUES ('T-GATE', 'At a gate', 'Medium', 3)").run()
 db.prepare("INSERT INTO work_item (id, title, priority, cursor) VALUES ('T-AGENT', 'On agent step', 'Medium', 11)").run()
@@ -30,7 +41,7 @@ db.prepare(
 ).run(STEPS.length)
 
 const feedbackPost = (id, payload) =>
-  app.inject({ method: 'POST', url: `/api/items/${id}/feedback`, payload })
+  inject({ method: 'POST', url: `/api/items/${id}/feedback`, payload })
 
 test('unknown item returns 404 {error:not_found}', async () => {
   const res = await feedbackPost('NOPE-9', { message: 'hi' })
@@ -77,14 +88,14 @@ test('feedback on a live agent step returns {ok:true,rerun:true} and re-runs it 
 
 // ---- specialist persona endpoint (HZ-4) ----
 
-const personaPost = (id, payload) => app.inject({ method: 'POST', url: `/api/items/${id}/persona`, payload })
+const personaPost = (id, payload) => inject({ method: 'POST', url: `/api/items/${id}/persona`, payload })
 
 test('setting a persona returns 200, persists, and the snapshot carries it', async () => {
   const res = await personaPost('T-GATE', { persona: 'python_backend' })
   assert.equal(res.statusCode, 200)
   assert.deepEqual(res.json(), { ok: true })
   assert.equal(db.prepare("SELECT persona FROM work_item WHERE id = 'T-GATE'").get().persona, 'python_backend')
-  const snapshot = (await app.inject({ method: 'GET', url: '/api/items' })).json()
+  const snapshot = (await inject({ method: 'GET', url: '/api/items' })).json()
   assert.equal(snapshot.items.find((it) => it.id === 'T-GATE').persona, 'python_backend')
 })
 
@@ -102,14 +113,14 @@ test('persona on an unknown item is 404, on a closed item 409', async () => {
 
 // ---- priority endpoint (HZ-7, driven by the WhatsApp concierge) ----
 
-const priorityPost = (id, payload) => app.inject({ method: 'POST', url: `/api/items/${id}/priority`, payload })
+const priorityPost = (id, payload) => inject({ method: 'POST', url: `/api/items/${id}/priority`, payload })
 
 test('setting a priority returns 200, persists, and the snapshot carries it', async () => {
   const res = await priorityPost('T-GATE', { priority: 'Critical' })
   assert.equal(res.statusCode, 200)
   assert.deepEqual(res.json(), { ok: true })
   assert.equal(db.prepare("SELECT priority FROM work_item WHERE id = 'T-GATE'").get().priority, 'Critical')
-  const snapshot = (await app.inject({ method: 'GET', url: '/api/items' })).json()
+  const snapshot = (await inject({ method: 'GET', url: '/api/items' })).json()
   assert.equal(snapshot.items.find((it) => it.id === 'T-GATE').priority, 'Critical')
 })
 
@@ -169,21 +180,41 @@ db.prepare(
 ).run()
 
 const approvePost = (id, stepIndex, payload = {}) =>
-  app.inject({ method: 'POST', url: `/api/items/${id}/gates/${stepIndex}/approve`, payload })
+  inject({ method: 'POST', url: `/api/items/${id}/gates/${stepIndex}/approve`, payload })
 
 const approveViaWhatsappPost = (id, stepIndex, payload, headers = {}) =>
   app.inject({ method: 'POST', url: `/api/items/${id}/gates/${stepIndex}/approve-via-whatsapp`, payload, headers })
 
-test('human-key route: approving a gate advances the cursor and attributes "You"', async () => {
+test('session route: approving a gate advances the cursor and attributes the logged-in user\'s name', async () => {
   const res = await approvePost('T-GATE-HK', 3)
   assert.equal(res.statusCode, 200)
   assert.deepEqual(res.json(), { ok: true })
   assert.equal(db.prepare("SELECT cursor FROM work_item WHERE id = 'T-GATE-HK'").get().cursor, 4)
-  assert.equal(db.prepare("SELECT decided_by FROM gate_decision WHERE item_id = 'T-GATE-HK'").get().decided_by, 'You')
+  assert.equal(
+    db.prepare("SELECT decided_by FROM gate_decision WHERE item_id = 'T-GATE-HK'").get().decided_by,
+    fixtureUser.name,
+  )
   assert.equal(
     db.prepare("SELECT who FROM event WHERE item_id = 'T-GATE-HK' ORDER BY id DESC LIMIT 1").get().who,
-    'You',
+    fixtureUser.name,
   )
+})
+
+test('approving without a session cookie is 401 (HZ-21)', async () => {
+  const res = await app.inject({ method: 'POST', url: '/api/items/T-GATE-HK/gates/4/approve', payload: {} })
+  assert.equal(res.statusCode, 401)
+  assert.deepEqual(res.json(), { error: 'login_required' })
+})
+
+test('approving with a session but the wrong gate PIN is 401 human_gate_key_required', async () => {
+  const res = await app.inject({
+    method: 'POST',
+    url: '/api/items/T-GATE-HK/gates/4/approve',
+    payload: {},
+    headers: { cookie, 'x-human-key': 'wrong-pin' },
+  })
+  assert.equal(res.statusCode, 401)
+  assert.deepEqual(res.json(), { error: 'human_gate_key_required' })
 })
 
 test('approve-via-whatsapp: 401 without the farm secret, and the gate is untouched', async () => {
@@ -259,7 +290,7 @@ test('approve-via-whatsapp: 502 when the PR merge fails, and the gate stays open
 })
 
 test('run-log tail reports 503 when no farm is configured', async () => {
-  const res = await app.inject({ method: 'GET', url: '/api/runs/7/log' })
+  const res = await inject({ method: 'GET', url: '/api/runs/7/log' })
   assert.equal(res.statusCode, 503)
   assert.deepEqual(res.json(), { error: 'farm unavailable' })
 })

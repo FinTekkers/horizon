@@ -1,8 +1,15 @@
-import { existsSync } from 'node:fs'
+import { existsSync, writeFileSync } from 'node:fs'
+import { request } from '@playwright/test'
 import { openDb, insertItem } from './fixtures/seed.js'
 
 const PORT = process.env.HORIZON_E2E_PORT
 const DB_PATH = process.env.HORIZON_E2E_DB
+const STORAGE_STATE_PATH = process.env.HORIZON_E2E_STORAGE_STATE
+const BASE_URL = process.env.HORIZON_E2E_BASE_URL
+// Matches config.js's dev-mode fallback (ADMIN_EMAIL/PASSWORD are left unset
+// for this suite, same as HORIZON_REPO/GITHUB_TOKEN/FARM_URL below).
+const ADMIN_EMAIL = 'admin@example.com'
+const ADMIN_PASSWORD = 'admin'
 
 async function waitFor(predicate, { timeoutMs = 30_000, intervalMs = 150, description = 'condition' } = {}) {
   const deadline = Date.now() + timeoutMs
@@ -45,22 +52,65 @@ const FIXTURES = [
 ]
 
 export default async function globalSetup() {
-  if (!DB_PATH || !PORT) {
-    throw new Error('HORIZON_E2E_DB / HORIZON_E2E_PORT must be set before global setup runs — see playwright.config.js')
+  if (!DB_PATH || !PORT || !STORAGE_STATE_PATH) {
+    throw new Error(
+      'HORIZON_E2E_DB / HORIZON_E2E_PORT / HORIZON_E2E_STORAGE_STATE must be set before global setup runs — see playwright.config.js',
+    )
   }
 
   await waitFor(() => existsSync(DB_PATH), { description: 'the e2e sqlite file to be created by the server' })
+
+  // Every /api/* route now requires a login session (HZ-21) — /api/items
+  // itself 401s until logged in, so readiness must be checked pre-login.
   await waitFor(
     async () => {
       try {
-        const res = await fetch(`http://localhost:${PORT}/api/items`)
-        return res.ok
+        const res = await fetch(`http://localhost:${PORT}/api/auth/me`)
+        return res.status === 401 || res.ok
       } catch {
         return false
       }
     },
     { description: 'the e2e server to accept requests' },
   )
+
+  // Log in once via the hardcoded dev credential and save the resulting
+  // session cookie to disk — playwright.config.js's `use.storageState` loads
+  // it into every spec's browser context, so no spec needs its own login
+  // step. This also creates the admin account row (first successful login
+  // does), which 09-gate-key.spec.js needs a stable row for.
+  const api = await request.newContext({ baseURL: `http://localhost:${PORT}` })
+  try {
+    const loginRes = await api.post('/api/auth/login', {
+      data: { email: ADMIN_EMAIL, password: ADMIN_PASSWORD },
+    })
+    if (!loginRes.ok()) {
+      throw new Error(`e2e login failed: ${loginRes.status()} ${await loginRes.text()}`)
+    }
+    // Every account gets its own auto-generated gate PIN (HZ-21), separate
+    // from login, and every gate-mutating route requires it — there's no
+    // "not configured yet, gates stay open" fallback any more. Regenerating
+    // it here and preloading it into the saved browser storage (as
+    // localStorage, matching serverApi.js's PIN_STORAGE key) means every
+    // spec's gate actions succeed without a single window.prompt(), the same
+    // as this suite's pre-HZ-21 "no gate key configured" demo-mode behavior —
+    // except now it's a real per-account PIN, not an open gate.
+    // 09-gate-key.spec.js overwrites this PIN directly in the DB afterwards
+    // (it runs last) specifically to exercise the window.prompt() flow.
+    const pinRes = await api.post('/api/auth/gate-pin/regenerate')
+    if (!pinRes.ok()) throw new Error(`e2e gate-pin regenerate failed: ${pinRes.status()}`)
+    const { pin } = await pinRes.json()
+
+    const state = await api.storageState()
+    state.origins = state.origins || []
+    state.origins.push({
+      origin: BASE_URL,
+      localStorage: [{ name: 'horizon_gate_pin', value: pin }],
+    })
+    writeFileSync(STORAGE_STATE_PATH, JSON.stringify(state))
+  } finally {
+    await api.dispose()
+  }
 
   const db = openDb(DB_PATH)
   try {

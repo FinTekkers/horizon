@@ -83,12 +83,31 @@ export function getSync() {
   return null
 }
 
-export function getSecurity() {
-  return { gateKeyConfigured: false }
+// ---- auth (HZ-21) ----
+// Mock mode (VITE_MOCK=1) skips the login screen entirely — a fixed demo
+// user is "already logged in", same as before this ticket's TopBar showed a
+// literal "AP".
+
+const MOCK_USER = { id: 'mock-user', email: 'demo@example.com', name: 'Alex Porter', initials: 'AP', authMethod: 'password' }
+
+export async function getCurrentUser() {
+  return MOCK_USER
 }
 
-export async function saveHumanKey() {
-  throw new Error('The gate key is not available in mock mode')
+export async function login() {
+  return { ok: true, user: MOCK_USER }
+}
+
+export async function logout() {
+  return { ok: true }
+}
+
+export function googleLoginUrl() {
+  return '#'
+}
+
+export async function regenerateGatePin() {
+  return { ok: true, pin: '000000' }
 }
 
 export function getProjects() {

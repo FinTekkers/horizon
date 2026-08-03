@@ -2,14 +2,18 @@
 //   GET /api/items/:id/steps/:stepIndex/output   (completed steps)
 //   GET /api/runs/:runId/log/view                (the active run's live tail)
 // Both replace showing agent text inline in the tracker with a link that
-// opens a standalone page — success metric 1 requires no extra auth hop, so
-// every case here is asserted with no auth header sent at all.
+// opens a standalone page — opened in a new tab, so the browser sends the
+// session cookie automatically and no extra login prompt appears. These used
+// to be unauthenticated, link-shareable pages; HZ-21 puts them behind the
+// same session gate as the rest of the app, so most cases here log in a
+// fixture user once up front, with an explicit 401-without-cookie case each.
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { loginFixtureUser } from './helpers/session.mjs'
 
 process.env.HORIZON_DB = join(mkdtempSync(join(tmpdir(), 'horizon-output-view-')), 'test.db')
 delete process.env.GITHUB_WEBHOOK_SECRET
@@ -18,10 +22,14 @@ delete process.env.FARM_URL
 const { db } = await import('../src/db.js')
 const { buildApp } = await import('../src/app.js')
 const store = await import('../src/store.js')
+const auth = await import('../src/auth.js')
+const config = await import('../src/config.js')
 
 store.purgeDemoItems()
 
 const app = buildApp({ logger: false })
+const { cookie } = loginFixtureUser(auth, config)
+const inject = (opts) => app.inject({ ...opts, headers: { ...opts.headers, cookie } })
 
 db.prepare("INSERT INTO work_item (id, title, priority, cursor) VALUES ('T-OUT', 'Has output', 'Medium', 12)").run()
 db.prepare(
@@ -30,28 +38,34 @@ db.prepare(
 
 // ---- /api/items/:id/steps/:stepIndex/output ----
 
-test('a completed step with output renders a 200 HTML page with no auth header required', async () => {
-  const res = await app.inject({ method: 'GET', url: '/api/items/T-OUT/steps/11/output' })
+test('a completed step with output renders a 200 HTML page for a logged-in session', async () => {
+  const res = await inject({ method: 'GET', url: '/api/items/T-OUT/steps/11/output' })
   assert.equal(res.statusCode, 200)
   assert.match(res.headers['content-type'], /text\/html/)
   assert.match(res.body, /T-OUT/)
 })
 
-test('the step output page escapes the stored output instead of rendering it as HTML', async () => {
+test('the step output page 401s without a session cookie (HZ-21)', async () => {
   const res = await app.inject({ method: 'GET', url: '/api/items/T-OUT/steps/11/output' })
+  assert.equal(res.statusCode, 401)
+  assert.deepEqual(res.json(), { error: 'login_required' })
+})
+
+test('the step output page escapes the stored output instead of rendering it as HTML', async () => {
+  const res = await inject({ method: 'GET', url: '/api/items/T-OUT/steps/11/output' })
   assert.ok(!res.body.includes('<script>alert(1)</script>'), 'raw script tag must not appear unescaped')
   assert.match(res.body, /&lt;script&gt;alert\(1\)&lt;\/script&gt;/)
   assert.match(res.body, /plain output text/)
 })
 
 test('a step with no completed+output row 404s', async () => {
-  const res = await app.inject({ method: 'GET', url: '/api/items/T-OUT/steps/0/output' })
+  const res = await inject({ method: 'GET', url: '/api/items/T-OUT/steps/0/output' })
   assert.equal(res.statusCode, 404)
   assert.deepEqual(res.json(), { error: 'no output for that step' })
 })
 
 test('an unknown item 404s', async () => {
-  const res = await app.inject({ method: 'GET', url: '/api/items/NOPE-1/steps/11/output' })
+  const res = await inject({ method: 'GET', url: '/api/items/NOPE-1/steps/11/output' })
   assert.equal(res.statusCode, 404)
 })
 
@@ -59,33 +73,39 @@ test('an unknown item 404s', async () => {
 
 const runId = db.prepare("SELECT id FROM step_run WHERE item_id = 'T-OUT' AND step_index = 11").get().id
 
-test('the live-tail page renders 200 HTML with no auth header required, for a known run', async () => {
-  const res = await app.inject({ method: 'GET', url: `/api/runs/${runId}/log/view` })
+test('the live-tail page renders 200 HTML for a logged-in session, for a known run', async () => {
+  const res = await inject({ method: 'GET', url: `/api/runs/${runId}/log/view` })
   assert.equal(res.statusCode, 200)
   assert.match(res.headers['content-type'], /text\/html/)
   assert.match(res.body, /T-OUT/)
 })
 
+test('the live-tail page 401s without a session cookie (HZ-21)', async () => {
+  const res = await app.inject({ method: 'GET', url: `/api/runs/${runId}/log/view` })
+  assert.equal(res.statusCode, 401)
+  assert.deepEqual(res.json(), { error: 'login_required' })
+})
+
 test('the live-tail page still renders 200 for an unknown run id (client script handles the 404 itself)', async () => {
-  const res = await app.inject({ method: 'GET', url: '/api/runs/999999/log/view' })
+  const res = await inject({ method: 'GET', url: '/api/runs/999999/log/view' })
   assert.equal(res.statusCode, 200)
   assert.match(res.headers['content-type'], /text\/html/)
 })
 
 test('a non-integer run id is rejected at the schema layer', async () => {
-  const res = await app.inject({ method: 'GET', url: '/api/runs/not-a-number/log/view' })
+  const res = await inject({ method: 'GET', url: '/api/runs/not-a-number/log/view' })
   assert.equal(res.statusCode, 400)
 })
 
 test('the page embeds a Reconnect control and a status region for the 3-minute timeout', async () => {
-  const res = await app.inject({ method: 'GET', url: `/api/runs/${runId}/log/view` })
+  const res = await inject({ method: 'GET', url: `/api/runs/${runId}/log/view` })
   assert.match(res.body, /id="reconnect"/)
   assert.match(res.body, /id="status"/)
   assert.match(res.body, /id="log"/)
 })
 
 test('the page fetches the run log relative to itself, starting at offset 0 on first read', async () => {
-  const res = await app.inject({ method: 'GET', url: `/api/runs/${runId}/log/view` })
+  const res = await inject({ method: 'GET', url: `/api/runs/${runId}/log/view` })
   // offset starts at 0 and is only ever appended to the query string once the
   // client script runs — the served markup itself carries no stale offset.
   assert.match(res.body, /var offset = 0/)
@@ -101,7 +121,7 @@ test('the page fetches the run log relative to itself, starting at offset 0 on f
 // failing a request — so the resolution itself is asserted here, not just
 // that a <link> tag exists.
 
-test('GET /api/agent-pages.css serves the shared stylesheet with no auth header required', async () => {
+test('GET /api/agent-pages.css serves the shared stylesheet with no session required', async () => {
   const res = await app.inject({ method: 'GET', url: '/api/agent-pages.css' })
   assert.equal(res.statusCode, 200)
   assert.match(res.headers['content-type'], /text\/css/)
@@ -116,14 +136,14 @@ function stylesheetHref(html) {
 
 for (const origin of ['http://x', 'http://x/horizon']) {
   test(`the step output page's stylesheet link resolves to the css route (origin ${origin})`, async () => {
-    const res = await app.inject({ method: 'GET', url: '/api/items/T-OUT/steps/11/output' })
+    const res = await inject({ method: 'GET', url: '/api/items/T-OUT/steps/11/output' })
     const href = stylesheetHref(res.body)
     const resolved = new URL(href, `${origin}/api/items/T-OUT/steps/11/output`)
     assert.equal(resolved.href, `${origin}/api/agent-pages.css`)
   })
 
   test(`the live-tail page's stylesheet link resolves to the css route (origin ${origin})`, async () => {
-    const res = await app.inject({ method: 'GET', url: `/api/runs/${runId}/log/view` })
+    const res = await inject({ method: 'GET', url: `/api/runs/${runId}/log/view` })
     const href = stylesheetHref(res.body)
     const resolved = new URL(href, `${origin}/api/runs/${runId}/log/view`)
     assert.equal(resolved.href, `${origin}/api/agent-pages.css`)

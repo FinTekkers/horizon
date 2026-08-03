@@ -7,6 +7,11 @@
 //                          so unchanged polls don't count against rate limits)
 //   HORIZON_DB             path to the SQLite file (default server/data/horizon.db)
 //   PORT                   HTTP port (default 3001)
+//   GOOGLE_CLIENT_ID       OAuth client id (console.cloud.google.com, project fintekkers-422317)
+//   GOOGLE_CLIENT_SECRET   OAuth client secret
+//   GOOGLE_REDIRECT_URI    OAuth callback URL (default derived from HORIZON_UI_URL)
+//   ADMIN_EMAIL/PASSWORD   hardcoded login credential (dev fallback: admin@example.com/admin)
+//   SESSION_SECRET         unused placeholder — session tokens are random, not signed
 
 export const WEBHOOK_SECRET = process.env.GITHUB_WEBHOOK_SECRET || null
 
@@ -28,3 +33,14 @@ export const FARM_STEP_TIMEOUT_MS = Number(process.env.FARM_STEP_TIMEOUT_MS || 2
 export const FARM_START_TIMEOUT_MS = Number(process.env.FARM_START_TIMEOUT_MS || 5 * 60 * 1000)
 export const POLL_INTERVAL_MS = Number(process.env.POLL_INTERVAL_MS || 60_000)
 export const PORT = Number(process.env.PORT || 3001)
+
+// ---- auth (HZ-21) ----
+export const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID || null
+export const GOOGLE_CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET || null
+export const GOOGLE_REDIRECT_URI =
+  process.env.GOOGLE_REDIRECT_URI || `${UI_URL}/api/auth/google/callback`
+// Dev-mode fallback credential — always overridden in production via env vars.
+export const ADMIN_EMAIL = process.env.ADMIN_EMAIL || 'admin@example.com'
+export const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || 'admin'
+export const SESSION_COOKIE_NAME = 'horizon_session'
+export const SESSION_TTL_DAYS = 30

@@ -50,20 +50,20 @@ function ProjectSwitcher({ projects, activeProjectId, farm, onRequestSwitch }) {
   )
 }
 
-function UserMenu({ onOpenAdmin, onOpenDefinitions }) {
+function UserMenu({ user, onLogout, onOpenAdmin, onOpenDefinitions }) {
   const [open, setOpen] = useState(false)
   const close = () => setOpen(false)
   return (
     <div className="usermenu">
       <button className="topbar__avatar" onClick={() => setOpen((o) => !o)}>
-        AP
+        {user.initials}
       </button>
       {open && (
         <>
           <div className="usermenu__scrim" onClick={close} />
           <div className="usermenu__menu">
             <div className="usermenu__header">
-              Signed in as <strong>AP</strong> (demo)
+              Signed in as <strong>{user.name}</strong>
             </div>
             <button
               className="usermenu__item"
@@ -85,7 +85,13 @@ function UserMenu({ onOpenAdmin, onOpenDefinitions }) {
               <SlidersIcon />
               Admin
             </button>
-            <button className="usermenu__item" disabled title="Not implemented yet">
+            <button
+              className="usermenu__item"
+              onClick={() => {
+                close()
+                onLogout()
+              }}
+            >
               Sign out
             </button>
           </div>
@@ -101,6 +107,8 @@ export default function TopBar({
   projects,
   activeProjectId,
   farm,
+  user,
+  onLogout,
   onRequestSwitch,
   onBoard,
   onTracker,
@@ -144,7 +152,7 @@ export default function TopBar({
         Pending approvals
         <span className={`pending-btn__badge${hot ? ' pending-btn__badge--hot' : ''}`}>{pendingCount}</span>
       </button>
-      <UserMenu onOpenAdmin={onOpenAdmin} onOpenDefinitions={onOpenDefinitions} />
+      <UserMenu user={user} onLogout={onLogout} onOpenAdmin={onOpenAdmin} onOpenDefinitions={onOpenDefinitions} />
     </div>
   )
 }

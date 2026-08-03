@@ -26,16 +26,16 @@ export function insertItem(
   ).run({ id, title, priority, desc, metric, guardrails, cursor, pr, pr_url, pr_mergeable })
 }
 
-// Same salted-scrypt scheme as server/src/settings.js#setHumanKey. Writing
-// the hash directly (instead of through the Admin UI) keeps the plaintext
-// out of the browser's localStorage, so the next gate action genuinely
-// exercises the window.prompt() flow instead of silently reusing a cached key.
-export function setGateKeyDirect(db, plaintext) {
+// Same salted-scrypt scheme as server/src/auth.js's per-account gate PIN.
+// Writing the hash directly (instead of through Admin's "Regenerate my PIN")
+// keeps the plaintext out of the browser's localStorage, so the next gate
+// action genuinely exercises the window.prompt() flow instead of silently
+// reusing a cached PIN. Targets the account global-setup.js already logged
+// in as (its row is created on that first successful login), by email.
+export function setGatePinDirect(db, email, plaintext) {
   const salt = crypto.randomBytes(16)
   const hash = crypto.scryptSync(plaintext, salt, 32)
   const value = `${salt.toString('hex')}:${hash.toString('hex')}`
-  db.prepare(
-    `INSERT INTO setting (key, value) VALUES ('human_key_hash', ?)
-     ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
-  ).run(value)
+  const result = db.prepare('UPDATE user SET gate_pin_hash = ? WHERE email = ?').run(value, email)
+  if (result.changes === 0) throw new Error(`setGatePinDirect: no user row for ${email} — did global setup log in first?`)
 }

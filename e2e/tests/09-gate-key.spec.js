@@ -1,33 +1,37 @@
-// Runs LAST (file order — see fixtures/seed.js and global-setup.js): setting
-// the gate key here locks every gate in the shared DB for the rest of the
-// suite's life, since there's no unset-key endpoint. Nothing after this file
-// may assume an open gate again.
+// Runs LAST (file order — see fixtures/seed.js and global-setup.js): every
+// account gets its own auto-generated gate PIN (HZ-21), separate from login —
+// a cryptographic blocker so an AI agent can't self-approve a gate. This sets
+// the PIN on the account global-setup.js already logged in as (its row
+// exists after that first successful login) directly in the DB, standing in
+// for "Regenerate my PIN" in Admin so the plaintext never touches this
+// browser's localStorage before the window.prompt() flow below runs.
 
 import { test, expect, captureScreenshot } from '../fixtures/test-base.js'
-import { openDb, insertItem, setGateKeyDirect } from '../fixtures/seed.js'
+import { openDb, insertItem, setGatePinDirect } from '../fixtures/seed.js'
 
 const DB_PATH = process.env.HORIZON_E2E_DB
-const GATE_KEY = 'e2e-secret-key'
+const ADMIN_EMAIL = 'admin@example.com'
+const GATE_PIN = '482913'
 
 test.beforeAll(() => {
   const db = openDb(DB_PATH)
   try {
     insertItem(db, { id: 'KEY-1', title: 'E2E fixture — correct gate key', cursor: 3 })
     insertItem(db, { id: 'KEY-2', title: 'E2E fixture — wrong gate key', cursor: 3 })
-    setGateKeyDirect(db, GATE_KEY)
+    setGatePinDirect(db, ADMIN_EMAIL, GATE_PIN)
   } finally {
     db.close()
   }
 })
 
-test('the correct gate key approves the gate via the window.prompt() flow', async ({ page }) => {
+test('the correct gate PIN approves the gate via the window.prompt() flow', async ({ page }) => {
   await page.goto('/key-1')
-  // Wait for the gate's own render before acting — by the time it's visible
-  // the initial snapshot fetch (which also carries security.gateKeyConfigured)
-  // has already landed, so the very first prompt is guaranteed to fire.
+  // Wait for the gate's own render before acting — every account already has
+  // a PIN (there's no "configured" state to wait on), so the very first
+  // approve click is guaranteed to prompt.
   await expect(page.locator('.btn-gate-approve')).toBeVisible({ timeout: 10_000 })
 
-  page.once('dialog', (dialog) => dialog.accept(GATE_KEY))
+  page.once('dialog', (dialog) => dialog.accept(GATE_PIN))
   await page.locator('.btn-gate-approve').click()
 
   await expect(page.locator('.step-card--awaiting')).toContainText('Approve the high-level design', {

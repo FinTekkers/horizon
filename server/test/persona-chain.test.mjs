@@ -8,6 +8,7 @@ import assert from 'node:assert/strict'
 import { mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { loginFixtureUser } from './helpers/session.mjs'
 
 process.env.HORIZON_DB = join(mkdtempSync(join(tmpdir(), 'horizon-chain-')), 'test.db')
 process.env.MOCK_STEP_LATENCY_MS = '10'
@@ -18,9 +19,13 @@ const { db } = await import('../src/db.js')
 const { buildApp } = await import('../src/app.js')
 const store = await import('../src/store.js')
 const orchestrator = await import('../src/orchestrator.js')
+const auth = await import('../src/auth.js')
+const config = await import('../src/config.js')
 
 store.purgeDemoItems()
 const app = buildApp({ logger: false })
+const { cookie, pin } = loginFixtureUser(auth, config)
+const inject = (opts) => app.inject({ ...opts, headers: { 'x-human-key': pin, ...opts.headers, cookie } })
 
 db.prepare(
   "INSERT INTO work_item (id, title, priority, cursor) VALUES ('PY-1', 'Fix flaky pytest fixture in the payments API', 'Medium', 0)",
@@ -49,13 +54,13 @@ test('a Python item reaches the gate as python_backend, a UI item as frontend_ui
 
 test('gate approval confirms the proposal; a pre-approval override sticks', async () => {
   // PY-1: approve as proposed.
-  let res = await app.inject({ method: 'POST', url: '/api/items/PY-1/gates/3/approve', payload: {} })
+  let res = await inject({ method: 'POST', url: '/api/items/PY-1/gates/3/approve', payload: {} })
   assert.equal(res.statusCode, 200)
   // UI-1: the human overrides to fullstack, then approves with comments —
   // the approve-with-comments path must not reset the override.
-  res = await app.inject({ method: 'POST', url: '/api/items/UI-1/persona', payload: { persona: 'fullstack' } })
+  res = await inject({ method: 'POST', url: '/api/items/UI-1/persona', payload: { persona: 'fullstack' } })
   assert.equal(res.statusCode, 200)
-  res = await app.inject({
+  res = await inject({
     method: 'POST',
     url: '/api/items/UI-1/gates/3/approve',
     payload: { notes: 'go with the generalist' },
