@@ -1,11 +1,12 @@
-// HTTP-contract tests for the two HZ-14 "See agent output" pages:
-//   GET /api/items/:id/steps/:stepIndex/output   (completed steps)
-//   GET /api/runs/:runId/log/view                (the active run's live tail)
-// Both replace showing agent text inline in the tracker with a link that
-// opens a standalone page — opened in a new tab, so the browser sends the
-// session cookie automatically and no extra login prompt appears. These used
-// to be unauthenticated, link-shareable pages; HZ-21 puts them behind the
-// same session gate as the rest of the app, so most cases here log in a
+// HTTP-contract tests for the standalone agent-output pages:
+//   GET /api/items/:id/artifacts/:stepIndex       ("View full artifact")
+//   GET /api/items/:id/steps/:stepIndex/output    (HZ-14, completed steps)
+//   GET /api/runs/:runId/log/view                 (HZ-14, the active run's live tail)
+// All three replace showing agent text inline in the tracker with a link
+// that opens a standalone page — opened in a new tab, so the browser sends
+// the session cookie automatically and no extra login prompt appears. These
+// used to be unauthenticated, link-shareable pages; HZ-21 puts them behind
+// the same session gate as the rest of the app, so most cases here log in a
 // fixture user once up front, with an explicit 401-without-cookie case each.
 
 import { test } from 'node:test'
@@ -35,6 +36,36 @@ db.prepare("INSERT INTO work_item (id, title, priority, cursor) VALUES ('T-OUT',
 db.prepare(
   "INSERT INTO step_run (item_id, step_index, attempt, agent, status, output, ended_at) VALUES ('T-OUT', 11, 1, 'Eng', 'done', '<script>alert(1)</script> plain output text', '2026-01-01 12:00:00')",
 ).run()
+db.prepare(
+  "INSERT INTO step_run (item_id, step_index, attempt, agent, status, artifact, ended_at) VALUES ('T-OUT', 10, 1, 'Eng', 'done', '# A plan\\n\\nSome **markdown**.', '2026-01-01 12:00:00')",
+).run()
+
+// ---- /api/items/:id/artifacts/:stepIndex ----
+
+test('a completed step with an artifact renders a 200 HTML page for a logged-in session', async () => {
+  const res = await inject({ method: 'GET', url: '/api/items/T-OUT/artifacts/10' })
+  assert.equal(res.statusCode, 200)
+  assert.match(res.headers['content-type'], /text\/html/)
+  assert.match(res.body, /T-OUT/)
+  assert.match(res.body, /<strong>markdown<\/strong>/)
+})
+
+test('the artifact page 401s without a session cookie (HZ-21)', async () => {
+  const res = await app.inject({ method: 'GET', url: '/api/items/T-OUT/artifacts/10' })
+  assert.equal(res.statusCode, 401)
+  assert.deepEqual(res.json(), { error: 'login_required' })
+})
+
+test('a step with no completed+artifact row 404s', async () => {
+  const res = await inject({ method: 'GET', url: '/api/items/T-OUT/artifacts/0' })
+  assert.equal(res.statusCode, 404)
+  assert.deepEqual(res.json(), { error: 'no artifact for that step' })
+})
+
+test('an unknown item 404s for the artifact page too', async () => {
+  const res = await inject({ method: 'GET', url: '/api/items/NOPE-1/artifacts/10' })
+  assert.equal(res.statusCode, 404)
+})
 
 // ---- /api/items/:id/steps/:stepIndex/output ----
 
@@ -135,6 +166,13 @@ function stylesheetHref(html) {
 }
 
 for (const origin of ['http://x', 'http://x/horizon']) {
+  test(`the artifact page's stylesheet link resolves to the css route (origin ${origin})`, async () => {
+    const res = await inject({ method: 'GET', url: '/api/items/T-OUT/artifacts/10' })
+    const href = stylesheetHref(res.body)
+    const resolved = new URL(href, `${origin}/api/items/T-OUT/artifacts/10`)
+    assert.equal(resolved.href, `${origin}/api/agent-pages.css`)
+  })
+
   test(`the step output page's stylesheet link resolves to the css route (origin ${origin})`, async () => {
     const res = await inject({ method: 'GET', url: '/api/items/T-OUT/steps/11/output' })
     const href = stylesheetHref(res.body)

@@ -213,7 +213,8 @@ export function artifactUrl(itemId, stepIndex) {
 }
 
 // Full-page views opened via "See agent output" (HZ-14) — plain links, same
-// unauthenticated new-tab pattern as artifactUrl above.
+// new-tab pattern as artifactUrl above; the browser sends the session cookie
+// automatically so opening either in a new tab never asks for a second login.
 export function outputUrl(itemId, stepIndex) {
   return `${API_BASE}/items/${itemId}/steps/${stepIndex}/output`
 }

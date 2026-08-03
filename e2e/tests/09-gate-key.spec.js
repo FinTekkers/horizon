@@ -45,6 +45,14 @@ test('a wrong then cancelled gate key blocks the gate action', async ({ page }) 
   await page.goto('/key-2')
   await expect(page.locator('.btn-gate-approve')).toBeVisible({ timeout: 10_000 })
 
+  // The saved storageState (see playwright.config.js) still carries the PIN
+  // global-setup.js cached before this file's beforeAll overwrote the DB's
+  // gate_pin_hash directly — without clearing it here, serverApi.js's
+  // gatePost() would silently spend its one retry on that stale cached
+  // value instead of prompting fresh, and only one dialog (not two) would
+  // ever fire.
+  await page.evaluate(() => localStorage.removeItem('horizon_gate_pin'))
+
   let dialogCount = 0
   page.on('dialog', (dialog) => {
     dialogCount += 1
