@@ -255,10 +255,13 @@ def extract_json(text: str) -> dict:
         if cleaned.startswith("json"):
             cleaned = cleaned[4:]
     try:
-        return json.loads(cleaned)
+        # strict=False: models occasionally emit raw control characters
+        # (literal newlines/tabs) inside JSON strings — meaningful content
+        # that the strict parser rejects, failing an otherwise-good step.
+        return json.loads(cleaned, strict=False)
     except json.JSONDecodeError:
         pass
     start, end = cleaned.find("{"), cleaned.rfind("}")
     if start == -1 or end <= start:
         raise ClaudeError(f"no JSON object in agent reply: {text[:200]}")
-    return json.loads(cleaned[start : end + 1])
+    return json.loads(cleaned[start : end + 1], strict=False)

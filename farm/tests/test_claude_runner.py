@@ -82,3 +82,11 @@ def test_sdk_path_refuses_to_run_with_api_key(monkeypatch):
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
     with pytest.raises(ClaudeError, match="ANTHROPIC_API_KEY"):
         run_claude("prompt")
+
+
+def test_extract_json_tolerates_raw_control_characters_in_strings():
+    # Real failure (HZ-21, 2026-07-31): an agent reply carried a literal
+    # newline inside a JSON string; strict parsing failed the whole step.
+    reply = '{"summary": "line one\nline two\ttabbed", "artifact_md": "# Plan\nbody"}'
+    parsed = extract_json(reply)
+    assert parsed["summary"] == "line one\nline two\ttabbed"
