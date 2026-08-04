@@ -2,14 +2,18 @@
 // tests can build the app and drive it with fastify.inject().
 
 import Fastify from 'fastify'
+import fastifyCookie from '@fastify/cookie'
+import crypto from 'node:crypto'
 import * as store from './store.js'
 import * as github from './github.js'
 import * as deploy from './deploy.js'
 import * as orchestrator from './orchestrator.js'
-import { WEBHOOK_SECRET, FARM_SHARED_SECRET, FARM_URL, UI_URL } from './config.js'
+import { WEBHOOK_SECRET, FARM_SHARED_SECRET, FARM_URL, UI_URL, SESSION_COOKIE_NAME, SESSION_TTL_DAYS } from './config.js'
 import { marked } from 'marked'
 import { db } from './db.js'
-import { getActiveProjectId, getRepoUrl, setSetting, getToken, humanKeyConfigured, setHumanKey, verifyHumanKey } from './settings.js'
+import { getActiveProjectId, getRepoUrl, setSetting, getToken } from './settings.js'
+import * as auth from './auth.js'
+import { googleAuth } from './googleAuth.js'
 import { STEPS } from './lifecycle.js'
 import { PERSONAS } from './personas.js'
 import * as definitions from './definitions.js'
@@ -18,11 +22,11 @@ import { readFileSync } from 'node:fs'
 
 // These routes render plain HTML server-side (no React, no bundler) and
 // interpolate values we don't fully control — item ids and step labels come
-// from GitHub issues, and `output`/`artifact` are raw agent/tmux text. All of
-// it lands on unauthenticated, link-shareable pages, so every interpolated
-// value below must go through esc() (or already be trusted HTML, like
-// marked.parse() output) — otherwise a crafted issue title or agent output
-// could run as script in any visitor's browser.
+// from GitHub issues, and `output`/`artifact` are raw agent/tmux text. They
+// sit behind the same session-cookie gate as every other /api/* route (HZ-21)
+// but every interpolated value below still goes through esc() (or is already
+// trusted HTML, like marked.parse() output) — otherwise a crafted issue title
+// or agent output could run as script in a logged-in visitor's browser.
 function esc(s) {
   return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
 }
@@ -55,18 +59,50 @@ function snapshot() {
     activeProjectId: getActiveProjectId(),
     farm: orchestrator.getFarmState(),
     sync: github.getSyncState(),
-    security: { gateKeyConfigured: humanKeyConfigured() },
     items: store.listItems(), // scoped to the active project
   }
 }
 
-// Human gates are human-only: once a gate key is set, gate-mutating routes
-// demand it. The plaintext lives only in the human's browser — agents (and
-// anything else on this machine) can at best read the hash.
+// Human gates are human-only: every account gets its own auto-generated gate
+// PIN, a cryptographic blocker kept separate from login so an AI agent (which
+// can read this database) still can't self-approve its own gate. By the time
+// this runs the auth hook below has already confirmed request.user.
 function humanAuthorized(request, reply) {
-  if (verifyHumanKey(request.headers['x-human-key'] || '')) return true
+  if (auth.verifyGatePin(request.user.id, request.headers['x-human-key'] || '')) return true
   reply.code(401).send({ error: 'human_gate_key_required' })
   return false
+}
+
+// Routes reachable without a login session: the auth routes themselves, the
+// GitHub webhook (HMAC-verified, GitHub can't send a cookie), the farm
+// callbacks and the WhatsApp-approval leg (both authorized by the farm's
+// shared secret instead), and the shared stylesheet.
+const SESSION_EXEMPT = [
+  /^\/api\/auth\//,
+  /^\/api\/webhooks\/github$/,
+  /^\/api\/farm\//,
+  /^\/api\/agent-pages\.css$/,
+  /^\/api\/items\/[^/]+\/gates\/\d+\/approve-via-whatsapp$/,
+]
+
+function sessionExempt(url) {
+  const path = url.split('?')[0]
+  return SESSION_EXEMPT.some((re) => re.test(path))
+}
+
+function cookieIsSecure() {
+  return UI_URL.startsWith('https')
+}
+
+function startSession(reply, userId) {
+  const token = auth.createSession(userId)
+  reply.setCookie(SESSION_COOKIE_NAME, token, {
+    httpOnly: true,
+    secure: cookieIsSecure(),
+    sameSite: 'lax',
+    path: '/',
+    maxAge: SESSION_TTL_DAYS * 24 * 60 * 60,
+  })
 }
 
 export function broadcast() {
@@ -85,6 +121,8 @@ setInterval(() => {
 export function buildApp({ logger = true } = {}) {
   const fastify = Fastify({ logger })
 
+  fastify.register(fastifyCookie)
+
   // Keep the raw request body so webhook signatures can be verified.
   fastify.addContentTypeParser('application/json', { parseAs: 'string' }, (request, body, done) => {
     request.rawBody = body
@@ -94,6 +132,20 @@ export function buildApp({ logger = true } = {}) {
       err.statusCode = 400
       done(err)
     }
+  })
+
+  // Every /api/* route requires a logged-in session except SESSION_EXEMPT
+  // (auth routes, the GitHub webhook, farm callbacks, the WhatsApp approval
+  // leg, and the shared stylesheet) — this is the app-level login gate that
+  // replaces nginx's HTTP Basic Auth (HZ-21).
+  fastify.addHook('onRequest', async (request, reply) => {
+    if (!request.url.startsWith('/api/') || sessionExempt(request.url)) return
+    const user = auth.getSessionUser(request.cookies[SESSION_COOKIE_NAME])
+    if (!user) {
+      reply.code(401).send({ error: 'login_required' })
+      return
+    }
+    request.user = user
   })
 
   fastify.get('/api/stream', (request, reply) => {
@@ -189,8 +241,8 @@ export function buildApp({ logger = true } = {}) {
 
   // Full-page view of a completed step's raw agent output ("See agent
   // output" opens this in a new tab instead of showing the text inline,
-  // HZ-14). No auth — same unauthenticated-link pattern as the artifact page
-  // above, so opening it never asks for a second login.
+  // HZ-14). Same session-cookie gate as the artifact page above, so opening
+  // it in a new tab never asks for a second login.
   const OUTPUT_ROUTE = '/api/items/:id/steps/:stepIndex/output'
   fastify.get(
     OUTPUT_ROUTE,
@@ -314,9 +366,9 @@ export function buildApp({ logger = true } = {}) {
     },
   )
 
-  // Shared by the human-key browser route and the WhatsApp-concierge route
-  // below — same merge/close/approve sequence, only the actor label and the
-  // auth check at the call site differ. Returns either a store.js-shaped
+  // Shared by the session/gate-PIN browser route and the WhatsApp-concierge
+  // route below — same merge/close/approve sequence, only the actor label and
+  // the auth check at the call site differ. Returns either a store.js-shaped
   // result ({ok:true} / {error:'not_found'|'not_at_gate'|'stale_step'}) or
   // {error, status:502} for a merge/close failure, which the caller maps to
   // a 502 instead of send()'s default 404/409.
@@ -410,7 +462,7 @@ export function buildApp({ logger = true } = {}) {
       if (!humanAuthorized(request, reply)) return
       const { id, stepIndex } = request.params
       const notes = (request.body?.notes || '').trim()
-      const result = await performGateApproval(id, stepIndex, notes)
+      const result = await performGateApproval(id, stepIndex, notes, request.user.name)
       if (result.status === 502) return reply.code(502).send({ error: result.error })
       return send(reply, result)
     },
@@ -466,7 +518,10 @@ export function buildApp({ logger = true } = {}) {
     },
     (request, reply) => {
       if (!humanAuthorized(request, reply)) return
-      return send(reply, store.requestChanges(request.params.id, request.body?.target, request.body?.feedback))
+      return send(
+        reply,
+        store.requestChanges(request.params.id, request.body?.target, request.body?.feedback, request.user.name),
+      )
     },
   )
 
@@ -578,34 +633,102 @@ export function buildApp({ logger = true } = {}) {
     },
     (request, reply) => {
       if (!humanAuthorized(request, reply)) return
-      return send(reply, store.restartPhase(request.params.id, request.params.phase, request.body?.reason))
+      return send(
+        reply,
+        store.restartPhase(request.params.id, request.params.phase, request.body?.reason, request.user.name),
+      )
     },
   )
 
-  // Set/rotate the human gate key (rotating requires the current one).
+  // ---- auth (HZ-21: hardcoded credential OR Google SSO, per-account gate PIN) ----
+
   fastify.post(
-    '/api/security/key',
+    '/api/auth/login',
     {
       schema: {
         body: {
           type: 'object',
-          required: ['key'],
+          required: ['email', 'password'],
           properties: {
-            key: { type: 'string', minLength: 4, maxLength: 200 },
-            currentKey: { type: 'string', maxLength: 200 },
+            email: { type: 'string', minLength: 3, maxLength: 200 },
+            password: { type: 'string', minLength: 1, maxLength: 200 },
           },
         },
       },
     },
     (request, reply) => {
-      if (humanKeyConfigured() && !verifyHumanKey(request.body.currentKey || '')) {
-        return reply.code(401).send({ error: 'current gate key required to change it' })
-      }
-      setHumanKey(request.body.key.trim())
-      broadcast()
-      return { ok: true }
+      const user = auth.verifyPassword(request.body.email.trim(), request.body.password)
+      if (!user) return reply.code(401).send({ error: 'invalid_credentials' })
+      startSession(reply, user.id)
+      return { ok: true, user }
     },
   )
+
+  // Server-driven redirect to Google's consent screen — no Google JS SDK in
+  // the UI bundle. `oauth_state` is a short-lived CSRF nonce checked at the
+  // callback.
+  fastify.get('/api/auth/google/start', (request, reply) => {
+    if (!googleAuth.configured()) return reply.code(503).send({ error: 'google_sso_not_configured' })
+    const state = crypto.randomBytes(16).toString('hex')
+    reply.setCookie('oauth_state', state, {
+      httpOnly: true,
+      secure: cookieIsSecure(),
+      sameSite: 'lax',
+      path: '/',
+      maxAge: 300,
+    })
+    reply.redirect(googleAuth.buildAuthUrl(state))
+  })
+
+  fastify.get(
+    '/api/auth/google/callback',
+    {
+      schema: {
+        querystring: {
+          type: 'object',
+          properties: { code: { type: 'string' }, state: { type: 'string' } },
+        },
+      },
+    },
+    async (request, reply) => {
+      const { code, state } = request.query
+      const expected = request.cookies.oauth_state
+      reply.clearCookie('oauth_state', { path: '/' })
+      if (!code || !state || !expected || state !== expected) {
+        return reply.code(400).send({ error: 'bad_state' })
+      }
+      let profile
+      try {
+        profile = await googleAuth.exchangeCodeForProfile(code)
+      } catch (err) {
+        request.log.warn(`google oauth exchange failed: ${err.message}`)
+        return reply.code(400).send({ error: 'google_auth_failed' })
+      }
+      const user = auth.findOrCreateGoogleUser(profile)
+      startSession(reply, user.id)
+      return reply.redirect(UI_URL)
+    },
+  )
+
+  fastify.post('/api/auth/logout', (request, reply) => {
+    auth.deleteSession(request.cookies[SESSION_COOKIE_NAME])
+    reply.clearCookie(SESSION_COOKIE_NAME, { path: '/' })
+    return { ok: true }
+  })
+
+  fastify.get('/api/auth/me', (request, reply) => {
+    const user = auth.getSessionUser(request.cookies[SESSION_COOKIE_NAME])
+    if (!user) return reply.code(401).send({ error: 'login_required' })
+    return { user }
+  })
+
+  // Requires only a login session (not the PIN itself) — regenerating your
+  // own PIN can't be gated behind the PIN it's replacing.
+  fastify.post('/api/auth/gate-pin/regenerate', (request, reply) => {
+    const user = auth.getSessionUser(request.cookies[SESSION_COOKIE_NAME])
+    if (!user) return reply.code(401).send({ error: 'login_required' })
+    return { ok: true, pin: auth.regenerateGatePin(user.id) }
+  })
 
   // ---- agent definitions (HZ-9: hierarchical, git-versioned, UI-editable) ----
 
@@ -642,9 +765,10 @@ export function buildApp({ logger = true } = {}) {
     return def
   })
 
-  // Edits are human-gated (same key as approvals) and become git commits with
-  // the actor in the message — git history is the audit trail. Global kinds
-  // (role/persona) affect every project; the UI labels them as such.
+  // Edits are human-gated (same PIN as approvals) and become git commits with
+  // the actor in the message — git history is the audit trail. The actor is
+  // always the authenticated session's own name, never client-supplied.
+  // Global kinds (role/persona) affect every project; the UI labels them as such.
   fastify.put(
     '/api/definitions/:kind/:name',
     {
@@ -655,7 +779,6 @@ export function buildApp({ logger = true } = {}) {
           required: ['content'],
           properties: {
             content: { type: 'string', minLength: 1, maxLength: 20000 },
-            actor: { type: 'string', maxLength: 120 },
           },
         },
       },
@@ -663,7 +786,7 @@ export function buildApp({ logger = true } = {}) {
     (request, reply) => {
       if (!humanAuthorized(request, reply)) return
       const { kind, name } = request.params
-      const actor = (request.body.actor || 'human via UI').trim()
+      const actor = request.user.name
       try {
         return definitions.writeDefinition(kind, name, request.body.content, actor)
       } catch (err) {

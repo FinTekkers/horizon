@@ -107,6 +107,33 @@ db.exec(`
 
   CREATE INDEX IF NOT EXISTS idx_event_item ON event(item_id, id DESC);
   CREATE UNIQUE INDEX IF NOT EXISTS idx_work_item_issue ON work_item(issue);
+
+  -- Accounts (HZ-21): password or Google SSO, first login creates the row.
+  -- gate_pin_hash is a SEPARATE cryptographic blocker from login — it exists
+  -- so an AI agent (which can read this DB) still can't self-approve a gate;
+  -- it is generated per-account, never chosen, and unrelated to auth_method.
+  CREATE TABLE IF NOT EXISTS user (
+    id            TEXT PRIMARY KEY,
+    email         TEXT NOT NULL UNIQUE,
+    name          TEXT NOT NULL,
+    initials      TEXT NOT NULL,
+    auth_method   TEXT NOT NULL CHECK (auth_method IN ('password','google')),
+    google_sub    TEXT,
+    gate_pin_hash TEXT NOT NULL,
+    created_at    TEXT NOT NULL DEFAULT (datetime('now')),
+    last_login_at TEXT
+  );
+  CREATE UNIQUE INDEX IF NOT EXISTS idx_user_google_sub ON user(google_sub) WHERE google_sub IS NOT NULL;
+
+  -- Login sessions: id is sha256(raw token) hex — the raw token only ever
+  -- lives in the httpOnly cookie, never at rest.
+  CREATE TABLE IF NOT EXISTS session (
+    id         TEXT PRIMARY KEY,
+    user_id    TEXT NOT NULL REFERENCES user(id),
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    expires_at TEXT NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS idx_session_user ON session(user_id);
 `)
 
 // Additive migrations for databases created before these columns existed.

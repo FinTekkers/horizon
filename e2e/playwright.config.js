@@ -16,11 +16,20 @@ const DB_PATH = join(tmpdir(), 'horizon-e2e.db')
 const SERVER_PORT = 3057
 const UI_PORT = 4351
 const BASE_URL = `http://localhost:${UI_PORT}`
+// Every /api/* route requires a login session (HZ-21). global-setup.js logs
+// in once via the hardcoded dev-mode credential (ADMIN_EMAIL/PASSWORD are
+// unset here, so config.js's admin@example.com/admin fallback applies) and
+// saves the resulting session cookie here; every spec's browser context
+// starts from this file (see `use.storageState` below), so no spec needs its
+// own login step.
+const STORAGE_STATE_PATH = join(tmpdir(), 'horizon-e2e-storage-state.json')
 
 // Read by global-setup.js, which seeds fixtures directly into the DB and
 // waits for the server to come up before any test runs.
 process.env.HORIZON_E2E_DB = DB_PATH
 process.env.HORIZON_E2E_PORT = String(SERVER_PORT)
+process.env.HORIZON_E2E_STORAGE_STATE = STORAGE_STATE_PATH
+process.env.HORIZON_E2E_BASE_URL = BASE_URL
 
 export default defineConfig({
   testDir: './tests',
@@ -39,6 +48,7 @@ export default defineConfig({
   reporter: [['list']],
   use: {
     baseURL: BASE_URL,
+    storageState: STORAGE_STATE_PATH,
     trace: 'retain-on-failure',
     screenshot: 'only-on-failure',
   },

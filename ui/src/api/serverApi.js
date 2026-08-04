@@ -14,7 +14,6 @@ let projects = []
 let activeProjectId = null
 let farm = { status: 'running' }
 let sync = { tokenConfigured: false, repos: [] }
-let security = { gateKeyConfigured: false }
 let started = false
 const listeners = new Set()
 
@@ -25,7 +24,6 @@ function emit() {
 function applySnapshot(data) {
   repoUrl = data.repoUrl || repoUrl
   sync = data.sync || sync
-  security = data.security || security
   projects = data.projects || projects
   activeProjectId = data.activeProjectId ?? activeProjectId
   farm = data.farm || farm
@@ -95,49 +93,75 @@ export function getSync() {
   return sync
 }
 
-export function getSecurity() {
-  return security
+// ---- auth (HZ-21): hardcoded credential OR Google SSO ----
+// Every request already carries the session cookie (fetch's default
+// credentials: 'same-origin'), so no token plumbing is needed here beyond
+// login/logout/me.
+
+export function login(email, password) {
+  return postJson('/auth/login', { email, password })
 }
 
-// ---- human gate key ----
-// The plaintext key lives ONLY here (browser localStorage); the server keeps
-// a hash. Gate actions send it as a header; agents have no way to obtain it.
-
-const KEY_STORAGE = 'horizon_human_key'
-
-function humanKey() {
-  return localStorage.getItem(KEY_STORAGE) || ''
+export function logout() {
+  return postJson('/auth/logout', {})
 }
 
-function promptForKey(message) {
-  const key = window.prompt(message)
-  if (key) localStorage.setItem(KEY_STORAGE, key)
-  return key || ''
+// Resolves to the logged-in user, or null if there is no session.
+export async function getCurrentUser() {
+  const res = await fetch(`${API_BASE}/auth/me`).catch(() => null)
+  if (!res || res.status === 401) return null
+  const data = await res.json().catch(() => ({}))
+  return data.user || null
+}
+
+// Plain server-driven redirect — no Google JS SDK in this bundle.
+export function googleLoginUrl() {
+  return `${API_BASE}/auth/google/start`
+}
+
+// ---- gate PIN ----
+// A cryptographic blocker kept separate from login: every account gets its
+// own PIN, auto-generated (never chosen) so an AI agent can't self-approve a
+// gate. The plaintext lives ONLY here (browser localStorage); the server
+// keeps a hash. Gate actions send it as a header; agents have no way to get it.
+
+const PIN_STORAGE = 'horizon_gate_pin'
+
+function gatePin() {
+  return localStorage.getItem(PIN_STORAGE) || ''
+}
+
+function promptForPin(message) {
+  const pin = window.prompt(message)
+  if (pin) localStorage.setItem(PIN_STORAGE, pin)
+  return pin || ''
 }
 
 async function gatePost(path, body, method = 'POST') {
-  let key = humanKey()
-  if (security.gateKeyConfigured && !key) {
-    key = promptForKey('Enter the human gate key (set in Admin → Security):')
+  let pin = gatePin()
+  if (!pin) {
+    pin = promptForPin('Enter your gate PIN (shown when it was last generated — regenerate it in Admin if lost):')
   }
-  const doFetch = (k) =>
+  const doFetch = (p) =>
     fetch(`${API_BASE}${path}`, {
       method,
-      headers: { 'Content-Type': 'application/json', 'x-human-key': k },
+      headers: { 'Content-Type': 'application/json', 'x-human-key': p },
       body: JSON.stringify(body ?? {}),
     })
-  let res = await doFetch(key).catch(() => null)
+  let res = await doFetch(pin).catch(() => null)
   if (res && res.status === 401) {
-    localStorage.removeItem(KEY_STORAGE)
-    const retryKey = promptForKey('Gate key incorrect — enter the human gate key:')
-    if (retryKey) res = await doFetch(retryKey).catch(() => null)
+    localStorage.removeItem(PIN_STORAGE)
+    const retryPin = promptForPin('Gate PIN incorrect — enter your gate PIN:')
+    if (retryPin) res = await doFetch(retryPin).catch(() => null)
   }
   return res
 }
 
-export async function saveHumanKey(key, currentKey) {
-  const result = await postJson('/security/key', { key, currentKey: currentKey || '' })
-  localStorage.setItem(KEY_STORAGE, key) // this browser is the key holder
+// Regenerating replaces the old PIN outright — returns the new plaintext,
+// shown once, same as account creation.
+export async function regenerateGatePin() {
+  const result = await postJson('/auth/gate-pin/regenerate', {})
+  localStorage.setItem(PIN_STORAGE, result.pin) // this browser is the PIN holder
   return result
 }
 
@@ -189,7 +213,8 @@ export function artifactUrl(itemId, stepIndex) {
 }
 
 // Full-page views opened via "See agent output" (HZ-14) — plain links, same
-// unauthenticated new-tab pattern as artifactUrl above.
+// new-tab pattern as artifactUrl above; the browser sends the session cookie
+// automatically so opening either in a new tab never asks for a second login.
 export function outputUrl(itemId, stepIndex) {
   return `${API_BASE}/items/${itemId}/steps/${stepIndex}/output`
 }
@@ -281,12 +306,13 @@ export function effectivePrompt(params) {
   return getJson(`/definitions/effective?${qs}`)
 }
 
-// Saving is a gate action (same human key as approvals) — every save becomes
-// a git commit server-side; errors carry the lint/size rejection detail.
+// Saving is a gate action (same gate PIN as approvals) — every save becomes
+// a git commit server-side, attributed to the logged-in session's own name;
+// errors carry the lint/size rejection detail.
 export async function saveDefinition(kind, name, content) {
   const res = await gatePost(
     `/definitions/${encodeURIComponent(kind)}/${encodeURIComponent(name)}`,
-    { content, actor: 'AP' },
+    { content },
     'PUT',
   )
   if (!res) throw new Error('Could not reach the server')

@@ -219,7 +219,7 @@ export function approveGate(id, stepIndex, notes, actor = 'You') {
 // Rejection is not a dead end: the item rolls back to the agent step whose
 // work was judged, the feedback is queued for that agent, and the orchestrator
 // re-runs it (attempt N+1) before returning to the gate.
-export function requestChanges(id, target, feedbackText) {
+export function requestChanges(id, target, feedbackText, actor = 'You') {
   const it = getItem(id)
   if (!it) return { error: 'not_found' }
   if (inactiveProject(it)) return { error: 'project_not_active' }
@@ -229,7 +229,13 @@ export function requestChanges(id, target, feedbackText) {
 
   let reworkIdx = it.cursor
   if (STEPS[it.cursor]?.kind === 'gate') {
-    db.prepare('INSERT INTO gate_decision (item_id, step_index, decision, notes) VALUES (?, ?, ?, ?)').run(id, it.cursor, 'rejected', feedbackText || '')
+    db.prepare('INSERT INTO gate_decision (item_id, step_index, decision, notes, decided_by) VALUES (?, ?, ?, ?, ?)').run(
+      id,
+      it.cursor,
+      'rejected',
+      feedbackText || '',
+      actor,
+    )
     while (reworkIdx > 0 && STEPS[reworkIdx].kind !== 'agent') reworkIdx--
   }
   const reworkAgent = STEPS[reworkIdx].kind === 'agent' ? STEPS[reworkIdx].agent : null
@@ -241,7 +247,7 @@ export function requestChanges(id, target, feedbackText) {
   )
   db.prepare(`UPDATE work_item SET cursor = ?, rejected = 0, paused = 0, ${touch} WHERE id = ?`).run(reworkIdx, id)
   addEvent(id, {
-    who: 'You',
+    who: actor,
     text: `requested changes on ${target || 'this step'}${feedbackText ? ': ' + feedbackText : ''} — sent back to the ${STEPS[reworkIdx].label.toLowerCase()} step`,
     color: '#9C333E',
     initials: 'YOU',
@@ -314,7 +320,7 @@ export function setPriority(id, priority) {
   return { ok: true }
 }
 
-export function restartPhase(id, phase, reason) {
+export function restartPhase(id, phase, reason, actor = 'You') {
   const it = getItem(id)
   if (!it) return { error: 'not_found' }
   if (inactiveProject(it)) return { error: 'project_not_active' }
@@ -332,7 +338,7 @@ export function restartPhase(id, phase, reason) {
   }
   db.prepare(`UPDATE work_item SET cursor = ?, rejected = 0, paused = 0, ${touch} WHERE id = ?`).run(firstIdx, id)
   addEvent(id, {
-    who: 'You',
+    who: actor,
     text: `restarted the ${PHASES[phase]} phase${reason ? ': ' + reason : ''}`,
     color: '#DFA200',
     initials: 'YOU',

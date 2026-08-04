@@ -9,6 +9,7 @@ import ComposerModal from './components/ComposerModal'
 import AdminPage from './components/AdminPage'
 import AgentDefinitionsPage from './components/AgentDefinitionsPage'
 import NewItemModal from './components/NewItemModal'
+import LoginPage from './components/LoginPage'
 
 const CLOSED_COMPOSER = { open: false, mode: null, itemId: null, phase: null, target: '' }
 
@@ -33,7 +34,33 @@ function navigate(path) {
   if (window.location.pathname !== full) window.history.pushState({}, '', full)
 }
 
+// Every page requires a login (HZ-21) — this is the app-level gate that
+// replaces nginx's HTTP Basic Auth. `user` is undefined while the initial
+// /api/auth/me check is in flight, null once it comes back unauthenticated.
 export default function App() {
+  const [user, setUser] = useState(undefined)
+
+  useEffect(() => {
+    api.getCurrentUser().then(setUser)
+  }, [])
+
+  if (user === undefined) return null
+  if (user === null) return <LoginPage onLoggedIn={setUser} />
+
+  return (
+    <AuthenticatedApp
+      user={user}
+      onLogout={() => {
+        api.logout()
+        setUser(null)
+      }}
+    />
+  )
+}
+
+// The real app shell — only mounted once a session is confirmed, so its data
+// layer (SSE subscribe, etc.) never fires against an unauthenticated session.
+function AuthenticatedApp({ user, onLogout }) {
   const items = useSyncExternalStore(api.subscribe, api.getItems)
 
   const initial = parsePath(window.location.pathname)
@@ -107,6 +134,8 @@ export default function App() {
         projects={projects}
         activeProjectId={activeProjectId}
         farm={farm}
+        user={user}
+        onLogout={onLogout}
         onRequestSwitch={setSwitchTarget}
         onBoard={toBoard}
         onTracker={toTracker}
@@ -142,7 +171,7 @@ export default function App() {
       )}
 
       {view === 'admin' && (
-        <AdminPage sync={sync} security={api.getSecurity()} projects={projects} onBack={toBoard} />
+        <AdminPage sync={sync} projects={projects} onBack={toBoard} />
       )}
 
       {view === 'definitions' && <AgentDefinitionsPage onBack={toBoard} />}

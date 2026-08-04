@@ -10,6 +10,7 @@ import fs from 'node:fs'
 import { mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { loginFixtureUser } from './helpers/session.mjs'
 
 const root = mkdtempSync(join(tmpdir(), 'horizon-defs-'))
 const farmDir = join(root, 'checkout', 'farm')
@@ -40,24 +41,27 @@ delete process.env.GITHUB_WEBHOOK_SECRET
 delete process.env.FARM_URL
 
 const { buildApp } = await import('../src/app.js')
-const settings = await import('../src/settings.js')
+const auth = await import('../src/auth.js')
+const config = await import('../src/config.js')
 const app = buildApp({ logger: false })
 
-const GATE_KEY = 'test-gate-key'
-settings.setHumanKey(GATE_KEY)
+// Every /api/* route requires a login session (HZ-21); the PUT route also
+// needs the fixture user's own gate PIN — the actor in the commit message
+// always comes from the session now, never a client-supplied field.
+const { user: fixtureUser, pin: fixturePin, cookie } = loginFixtureUser(auth, config, { name: 'AP' })
 
-const put = (kind, name, payload, key = GATE_KEY) =>
+const put = (kind, name, payload, key = fixturePin) =>
   app.inject({
     method: 'PUT',
     url: `/api/definitions/${kind}/${name}`,
-    headers: { 'x-human-key': key },
+    headers: { 'x-human-key': key, cookie },
     payload,
   })
 
 const originLog = () => git(checkout, 'ls-remote', 'origin', 'refs/heads/main')
 
 test('GET /api/definitions lists the hierarchy with global, project and repo layers', async () => {
-  const res = await app.inject({ method: 'GET', url: '/api/definitions' })
+  const res = await app.inject({ method: 'GET', url: '/api/definitions', headers: { cookie } })
   assert.equal(res.statusCode, 200)
   const body = res.json()
   assert.deepEqual(
@@ -68,8 +72,18 @@ test('GET /api/definitions lists the hierarchy with global, project and repo lay
   assert.deepEqual(body.repos.map((d) => d.name), ['FinTekkers__ui-service'])
 })
 
+test('GET /api/definitions 401s without a session cookie (HZ-21)', async () => {
+  const res = await app.inject({ method: 'GET', url: '/api/definitions' })
+  assert.equal(res.statusCode, 401)
+  assert.deepEqual(res.json(), { error: 'login_required' })
+})
+
 test('GET a definition returns content, repo-relative path and byte size', async () => {
-  const res = await app.inject({ method: 'GET', url: '/api/definitions/repo/FinTekkers__ui-service' })
+  const res = await app.inject({
+    method: 'GET',
+    url: '/api/definitions/repo/FinTekkers__ui-service',
+    headers: { cookie },
+  })
   assert.equal(res.statusCode, 200)
   const body = res.json()
   assert.equal(body.content, 'UI-SERVICE RULES\n')
@@ -78,30 +92,46 @@ test('GET a definition returns content, repo-relative path and byte size', async
 })
 
 test('unknown kind and unknown name are 404; traversal names never reach the filesystem', async () => {
-  assert.equal((await app.inject({ url: '/api/definitions/spell/fireball' })).statusCode, 404)
-  assert.equal((await app.inject({ url: '/api/definitions/repo/nope' })).statusCode, 404)
-  const traversal = await app.inject({ url: `/api/definitions/repo/${encodeURIComponent('../../etc/passwd')}` })
+  assert.equal(
+    (await app.inject({ url: '/api/definitions/spell/fireball', headers: { cookie } })).statusCode,
+    404,
+  )
+  assert.equal((await app.inject({ url: '/api/definitions/repo/nope', headers: { cookie } })).statusCode, 404)
+  const traversal = await app.inject({
+    url: `/api/definitions/repo/${encodeURIComponent('../../etc/passwd')}`,
+    headers: { cookie },
+  })
   assert.equal(traversal.statusCode, 404)
   assert.deepEqual(traversal.json(), { error: 'unknown_definition' })
   const dotfile = await put('repo', encodeURIComponent('..%2Fx'), { content: 'x' })
   assert.equal(dotfile.statusCode, 404)
 })
 
-test('PUT without the human gate key is 401 — agent edits are locked out', async () => {
+test('PUT without a session cookie is 401 login_required (HZ-21)', async () => {
   const res = await app.inject({
     method: 'PUT',
     url: '/api/definitions/repo/FinTekkers__ui-service',
     payload: { content: 'sneaky' },
   })
   assert.equal(res.statusCode, 401)
+  assert.deepEqual(res.json(), { error: 'login_required' })
+})
+
+test('PUT with a session but without the gate PIN is 401 — agent edits are locked out', async () => {
+  const res = await app.inject({
+    method: 'PUT',
+    url: '/api/definitions/repo/FinTekkers__ui-service',
+    payload: { content: 'sneaky' },
+    headers: { cookie },
+  })
+  assert.equal(res.statusCode, 401)
   assert.deepEqual(res.json(), { error: 'human_gate_key_required' })
 })
 
-test('a valid save commits with the actor in the message AND pushes to origin', async () => {
+test('a valid save commits with the session user as the actor AND pushes to origin', async () => {
   const before = originLog()
   const res = await put('repo', 'FinTekkers__ui-service', {
     content: '# updated rules\nbuild with make\n',
-    actor: 'AP',
   })
   assert.equal(res.statusCode, 200)
   const body = res.json()
@@ -111,7 +141,11 @@ test('a valid save commits with the actor in the message AND pushes to origin', 
     fs.readFileSync(join(farmDir, 'rules', 'repos', 'FinTekkers__ui-service.md'), 'utf8'),
     '# updated rules\nbuild with make\n',
   )
-  assert.match(git(checkout, 'log', '-1', '--format=%s'), /definitions: repo\/FinTekkers__ui-service edited via UI by AP/)
+  // The actor is the authenticated session's own name — never client-supplied.
+  assert.match(
+    git(checkout, 'log', '-1', '--format=%s'),
+    new RegExp(`definitions: repo/FinTekkers__ui-service edited via UI by ${fixtureUser.name}`),
+  )
   assert.notEqual(originLog(), before, 'origin/main must have advanced — the save policy is commit + push')
 })
 
@@ -196,6 +230,7 @@ test('the effective-prompt preview composes role → persona → project → rep
   const res = await app.inject({
     method: 'GET',
     url: '/api/definitions/effective?role=eng_implement&persona=fullstack&project=FinTekkers&repo=FinTekkers/ui-service',
+    headers: { cookie },
   })
   assert.equal(res.statusCode, 200)
   const { prompt } = res.json()
