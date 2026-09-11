@@ -106,7 +106,6 @@ db.exec(`
   );
 
   CREATE INDEX IF NOT EXISTS idx_event_item ON event(item_id, id DESC);
-  CREATE UNIQUE INDEX IF NOT EXISTS idx_work_item_issue ON work_item(issue);
 
   -- Accounts (HZ-21): password or Google SSO, first login creates the row.
   -- gate_pin_hash is a SEPARATE cryptographic blocker from login — it exists
@@ -160,6 +159,14 @@ try {
 db.exec(`
   CREATE UNIQUE INDEX IF NOT EXISTS idx_feedback_gh_comment
     ON feedback(gh_comment_id) WHERE gh_comment_id IS NOT NULL;
+`)
+
+// Issue numbers are only unique per repo: two connected repos both have an
+// issue #25. The pre-projects index was on issue alone, so replace it. Runs
+// after the additive migrations above because `repo` is one of them.
+db.exec(`
+  DROP INDEX IF EXISTS idx_work_item_issue;
+  CREATE UNIQUE INDEX IF NOT EXISTS idx_work_item_repo_issue ON work_item(repo, issue);
 `)
 
 // Migrate a pre-projects single-repo setup: the old github_repo setting
