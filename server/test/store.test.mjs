@@ -124,6 +124,22 @@ test('upsertFromGithub never clobbers the persona', () => {
   assert.equal(item.persona, 'frontend_ui')
 })
 
+test('upsertFromGithub keeps same-numbered issues from two repos apart', () => {
+  // Issue numbers are per-repo; two connected repos both having a #25 must not
+  // trip a unique constraint (this is what broke connecting a fourth repo).
+  const projectId = db.prepare("INSERT INTO project (name) VALUES ('multi-repo')").run().lastInsertRowid
+  db.prepare("INSERT INTO project_repo (project_id, repo, prefix) VALUES (?, 'acme/one', 'ON')").run(projectId)
+  db.prepare("INSERT INTO project_repo (project_id, repo, prefix) VALUES (?, 'acme/two', 'TW')").run(projectId)
+  const issue = { number: 25, title: 'Same number', body: '', state: 'open', labels: [] }
+  assert.equal(store.upsertFromGithub(issue, 'acme/one'), true)
+  assert.equal(store.upsertFromGithub(issue, 'acme/two'), true)
+  assert.equal(store.getItem('ON-25').repo, 'acme/one')
+  assert.equal(store.getItem('TW-25').repo, 'acme/two')
+  // The same issue in the same repo is still one row.
+  assert.equal(store.upsertFromGithub({ ...issue, title: 'Edited' }, 'acme/one'), true)
+  assert.equal(db.prepare("SELECT COUNT(*) AS n FROM work_item WHERE issue = 25 AND repo LIKE 'acme/%'").get().n, 2)
+})
+
 // ---- priority (HZ-7, the WhatsApp concierge's set_priority action) ----
 
 test('setPriority validates, persists, logs an event and notifies', () => {
