@@ -26,6 +26,15 @@ from .workspaces import workspace_path
 FARMD = f"http://127.0.0.1:{FARM_PORT}"
 ROLES = Path(__file__).parent / "roles"
 
+# Write-side: a pathological-payload guard, not a working limit — the agent's
+# own artifact must reach the server intact (HZ-29). The server budgets the
+# *dispatched* total across artifacts; this only stops a runaway agent output.
+WRITE_ARTIFACT_SANITY_CEILING_CHARS = 200_000
+# Read-side: defense-in-depth for rendering prior artifacts into a prompt.
+# The server already budgets the total it sends (~60k), so this should never
+# fire in practice — mirrors farm/rules.py's MAX_PROMPT_RULES_CHARS backstop.
+MAX_PROMPT_ARTIFACT_CHARS = 100_000
+
 # step index -> (role file, needs JSON artifact, tool access, max turns,
 #                timeout seconds, wants persona)
 # Personas specialize only the steps that act on the item's stack — QA (8) and
@@ -67,7 +76,7 @@ def build_prompt(task: dict) -> str:
     for artifact in task.get("artifacts") or []:
         lines.append("")
         lines.append(f"Prior artifact — {artifact.get('label', 'earlier step')}:")
-        lines.append(artifact.get("content", "")[:12000])
+        lines.append(artifact.get("content", "")[:MAX_PROMPT_ARTIFACT_CHARS])
     feedback = task.get("feedback") or []
     if feedback:
         lines.append("")
@@ -183,7 +192,7 @@ def execute(task: dict) -> dict:
         if feedback:
             header = "\n".join(f"> {fb.get('message', '')}" for fb in feedback)
             artifact = f"## Human feedback addressed in this revision\n{header}\n\n{artifact}"
-        result["artifacts"] = {"artifact_md": artifact[:12000]}
+        result["artifacts"] = {"artifact_md": artifact[:WRITE_ARTIFACT_SANITY_CEILING_CHARS]}
     return result
 
 

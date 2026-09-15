@@ -30,6 +30,42 @@ const latency = () => Number(process.env.MOCK_STEP_LATENCY_MS) || 2000 + Math.fl
 
 const RESTART_MS = Number(process.env.FARM_RESTART_MS || 8000)
 
+// ---- artifact prompt budget (HZ-29) ----
+// Prior artifacts (options analysis, impl plan, reviews) ride along in every
+// dispatch to give the next agent its working context. Two failure modes:
+// superseded attempts of a re-run step riding along next to the current one,
+// and a flat per-artifact slice silently cutting a large document off
+// mid-sentence. The budget below bounds the dispatched total (agents have
+// context limits) while giving the *latest* artifact — almost always the one
+// the next step actually needs in full — the dominant share.
+const TOTAL_ARTIFACT_BUDGET_CHARS = 60000
+const MIN_OLDER_ARTIFACT_CHARS = 3000
+// Write-side: a pathological-payload guard, not a working limit — mirrors the
+// farm-side WRITE_ARTIFACT_SANITY_CEILING_CHARS. The dispatch-time budget
+// above is what actually bounds the prompt.
+const WRITE_TIME_SANITY_CEILING_CHARS = 200000
+
+// Exported for tests: splits a total budget across prior artifacts, latest
+// last (dispatch order is oldest-first). The latest gets whatever isn't
+// reserved for older ones; older ones split a capped reserve evenly. Any
+// artifact that doesn't fit its cap is hard-truncated with a visible marker.
+export function budgetArtifacts(rows) {
+  if (rows.length === 0) return []
+  const olderCount = rows.length - 1
+  const reservedForOlder = Math.min(olderCount * MIN_OLDER_ARTIFACT_CHARS, Math.floor(TOTAL_ARTIFACT_BUDGET_CHARS * 0.4))
+  const latestCap = TOTAL_ARTIFACT_BUDGET_CHARS - reservedForOlder
+  const olderCap = olderCount ? Math.floor(reservedForOlder / olderCount) : 0
+  return rows.map((row, i) => {
+    const cap = i === rows.length - 1 ? latestCap : olderCap
+    const full = row.artifact
+    const truncated = full.length > cap
+    const content = truncated
+      ? `${full.slice(0, cap)}\n\n[...truncated ${full.length - cap} of ${full.length} chars...]`
+      : full
+    return { label: STEPS[row.step_index]?.label || `step ${row.step_index}`, content, truncated, stepIndex: row.step_index }
+  })
+}
+
 let farm = { status: 'running', since: new Date().toISOString() }
 
 export function getFarmState() {
@@ -281,13 +317,32 @@ function dispatchToFarm(id, stepIndex, runId, attempt) {
   timers[id] = setTimeout(() => failFarmRun(runId, 'step timed out waiting for the farm'), watchdogMs)
 
   // Prior artifacts (options analysis, impl plan, reviews) give later agents
-  // their working context — the implement step reads the approved plan.
-  const artifacts = db
+  // their working context — the implement step reads the approved plan. Keep
+  // only the most-recently-completed row per step_index: a re-run step's
+  // superseded attempt must not ride along next to the current one.
+  const rows = db
     .prepare(
-      "SELECT step_index, artifact FROM step_run WHERE item_id = ? AND status = 'done' AND artifact IS NOT NULL ORDER BY id",
+      `SELECT step_index, artifact FROM step_run
+       WHERE item_id = ? AND status = 'done' AND artifact IS NOT NULL
+         AND id IN (
+           SELECT MAX(id) FROM step_run
+           WHERE item_id = ? AND status = 'done' AND artifact IS NOT NULL
+           GROUP BY step_index
+         )
+       ORDER BY id`,
     )
-    .all(id)
-    .map((row) => ({ label: STEPS[row.step_index]?.label || `step ${row.step_index}`, content: row.artifact.slice(0, 12000) }))
+    .all(id, id)
+  const budgeted = budgetArtifacts(rows)
+  const artifacts = budgeted.map(({ label, content }) => ({ label, content }))
+  const truncatedLabels = budgeted.filter((a) => a.truncated).map((a) => a.label)
+  if (truncatedLabels.length > 0) {
+    addEvent(id, {
+      who: 'Horizon',
+      text: `artifact truncated for context budget: ${truncatedLabels.join(', ')}`,
+      color: '#9C333E',
+      initials: 'HZ',
+    })
+  }
 
   farmFetch('/steps/run', {
     run_id: runId,
@@ -402,7 +457,8 @@ export async function completeFarmRun(runId, { summary, patch, artifacts }) {
     }
   }
 
-  const artifactMd = typeof artifacts?.artifact_md === 'string' ? artifacts.artifact_md.slice(0, 12000) : null
+  const artifactMd =
+    typeof artifacts?.artifact_md === 'string' ? artifacts.artifact_md.slice(0, WRITE_TIME_SANITY_CEILING_CHARS) : null
   db.prepare("UPDATE step_run SET status = 'done', output = ?, artifact = ?, ended_at = datetime('now') WHERE id = ?").run(
     text,
     artifactMd,
