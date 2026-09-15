@@ -1,5 +1,5 @@
-import { useState } from 'react'
-import { saveToken, createProject, addRepoToProject, disconnectRepo, regenerateGatePin } from '../api'
+import { useEffect, useState } from 'react'
+import { saveToken, createProject, addRepoToProject, disconnectRepo, regenerateGatePin, getDeployTargets } from '../api'
 import { BackIcon, GithubIcon, LockIcon } from './icons'
 
 function SecurityPanel() {
@@ -170,6 +170,51 @@ function TokenPanel({ sync }) {
   )
 }
 
+const RESULT_COLOR = { ok: '#0E6E74', failed: '#9C333E', never: '#B9B4C4' }
+
+function DeployTargetRow({ target }) {
+  const lastAt = target.lastAt ? new Date(target.lastAt).toLocaleString() : 'never deployed'
+  return (
+    <div className="deploy-target-row">
+      <span className="admin-status__dot" style={{ background: RESULT_COLOR[target.lastResult] || RESULT_COLOR.never }} />
+      <span className="deploy-target-row__repo">{target.repo}</span>
+      <span className="deploy-target-row__service">{target.service}</span>
+      <span className="deploy-target-row__tag">{target.lastTag || 'no deploy yet'}</span>
+      <span className="deploy-target-row__result">{target.lastResult} · {lastAt}</span>
+    </div>
+  )
+}
+
+// Read-only by design (HZ-41 guardrail): a deploy target names a script and a
+// service to restart, so an editable target would be arbitrary code
+// execution. This panel only ever renders infra/host/deploy-targets.json's
+// contents plus each target's on-disk deploy state — there is no create,
+// edit, or delete path here, and never should be.
+function DeployTargetsPanel() {
+  const [targets, setTargets] = useState(null)
+  const [error, setError] = useState(null)
+
+  useEffect(() => {
+    getDeployTargets()
+      .then((result) => setTargets(result.targets || []))
+      .catch((err) => setError(err.message))
+  }, [])
+
+  return (
+    <div className="panel admin__panel">
+      <div className="panel__title">Deploy targets</div>
+      <div className="panel__subtitle">
+        Read-only — defined in infra/host/deploy-targets.json. Changing a target requires a reviewed PR, not this
+        page.
+      </div>
+
+      {error && <div className="gh-error">{error}</div>}
+      {targets && targets.length === 0 && <div className="gh-note">No deploy targets registered.</div>}
+      {targets && targets.map((target) => <DeployTargetRow key={target.key} target={target} />)}
+    </div>
+  )
+}
+
 function RepoRow({ projectId, repoConn, syncRepos }) {
   const [busy, setBusy] = useState(false)
   const state = syncRepos?.find((r) => r.repo === repoConn.repo)
@@ -314,6 +359,8 @@ export default function AdminPage({ sync, projects, onBack }) {
       <SecurityPanel />
       <div style={{ height: 22 }} />
       <TokenPanel sync={sync} />
+      <div style={{ height: 22 }} />
+      <DeployTargetsPanel />
       <div style={{ height: 22 }} />
       <ProjectsPanel projects={projects} sync={sync} />
     </div>

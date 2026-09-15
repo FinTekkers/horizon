@@ -38,4 +38,5 @@ export const {
   getDefinition,
   saveDefinition,
   effectivePrompt,
+  getDeployTargets,
 } = impl
