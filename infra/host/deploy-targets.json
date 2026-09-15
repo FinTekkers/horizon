@@ -1,0 +1,22 @@
+[
+  {
+    "key": "horizon",
+    "repo": "FinTekkers/horizon",
+    "script": "deploy-horizon.sh",
+    "service": "horizon-server",
+    "repoDir": "/opt/horizon",
+    "stateKey": "horizon",
+    "healthUrl": "http://127.0.0.1:3001/api/items",
+    "healthCheckType": "json-items"
+  },
+  {
+    "key": "ui-service",
+    "repo": "FinTekkers/ui-service",
+    "script": "deploy-ui-service.sh",
+    "service": "fintekkers-ui",
+    "repoDir": "/opt/fintekkers/ui-service",
+    "stateKey": "ui-service",
+    "healthUrl": "https://www.fintekkers.org/",
+    "healthCheckType": "ssr-asset-check"
+  }
+]

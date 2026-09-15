@@ -297,6 +297,12 @@ export function listDefinitions() {
   return getJson('/definitions')
 }
 
+// ---- deploy targets (HZ-41, read-only) ----
+
+export function getDeployTargets() {
+  return getJson('/admin/deploy-targets')
+}
+
 export function getDefinition(kind, name) {
   return getJson(`/definitions/${encodeURIComponent(kind)}/${encodeURIComponent(name)}`)
 }

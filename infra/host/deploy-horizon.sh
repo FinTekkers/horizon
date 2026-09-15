@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
-# Pull-based self-deploy for shoreward.ai. Invoked by the "release published"
-# webhook (server/src/deploy.js) with the release tag as $1; falls back to
+# Pull-based self-deploy for the Horizon target (infra/host/deploy-targets.json,
+# key "horizon"). Invoked by the "release published" webhook
+# (server/src/deploy.js) with the release tag as $1; falls back to
 # origin/main if no tag is given or it doesn't resolve. Also usable by hand
-# for rollback: deploy.sh $(cat ~/.horizon/last-good-tag | cut -d: -f1).
+# for rollback: deploy-horizon.sh $(cat ~/.horizon/horizon/last-good-tag | cut -d: -f1).
 #
 # Serialized by an flock around the whole run so overlapping webhook
 # deliveries never race each other. Every attempt — success or failure — is

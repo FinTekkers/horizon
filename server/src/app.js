@@ -818,6 +818,13 @@ export function buildApp({ logger = true } = {}) {
     },
   )
 
+  // ---- Deploy targets (HZ-41, read-only) ----
+  // The registry itself (infra/host/deploy-targets.json) is a versioned file
+  // with no write path from this app — this endpoint only surfaces each
+  // target's on-disk deploy state for the Admin page.
+
+  fastify.get('/api/admin/deploy-targets', () => ({ targets: deploy.listTargetStatuses() }))
+
   // ---- GitHub sync configuration (from the UI) ----
 
   fastify.get('/api/sync/status', () => github.getSyncState())
@@ -1030,11 +1037,14 @@ export function buildApp({ logger = true } = {}) {
       const pr = request.body.pull_request
       github.handlePrStateChange(repoFullName, pr.number, { merged: !!pr.merged, state: pr.state }, request.log)
     }
-    // A published release on this instance's own repo self-deploys: pull the
-    // tag to the host and restart, no SSH/push access needed (infra/host/deploy.sh).
+    // A published release on a registered repo self-deploys: pull the tag to
+    // the host and restart, no SSH/push access needed. Which repos are
+    // deployable — and to where — is decided entirely by the versioned
+    // registry (infra/host/deploy-targets.json), not by anything in this
+    // payload beyond repoFullName itself.
     if (event === 'release' && repoFullName) {
       if (deploy.isDeployableRelease(repoFullName, request.body)) {
-        deploy.runDeploy(request.body.release.tag_name, request.log)
+        deploy.runDeploy(repoFullName, request.body.release.tag_name, request.log)
       } else {
         request.log.warn(`self-deploy: ignored release event from ${repoFullName}`)
       }

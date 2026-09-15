@@ -268,6 +268,33 @@ export async function listDefinitions() {
   return MOCK_DEFINITIONS
 }
 
+// ---- deploy targets (HZ-41, read-only) ----
+
+export async function getDeployTargets() {
+  return {
+    targets: [
+      {
+        key: 'horizon',
+        repo: 'FinTekkers/horizon',
+        service: 'horizon-server',
+        lastTag: 'refs/tags/v42',
+        lastCommit: 'abc1234',
+        lastResult: 'ok',
+        lastAt: '2026-09-14T03:22:10Z',
+      },
+      {
+        key: 'ui-service',
+        repo: 'FinTekkers/ui-service',
+        service: 'fintekkers-ui',
+        lastTag: null,
+        lastCommit: null,
+        lastResult: 'never',
+        lastAt: null,
+      },
+    ],
+  }
+}
+
 export async function getDefinition(kind, name) {
   const content = `# ${name}\n\nDemo content — connect the Horizon server to view and edit the real ${kind} definition.`
   return { kind, name, content, path: `farm/…/${name}.md`, bytes: content.length }

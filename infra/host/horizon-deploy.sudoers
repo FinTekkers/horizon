@@ -1,4 +1,7 @@
 # Template for /etc/sudoers.d/horizon-deploy (validate with `visudo -c` after
-# copying). Grants exactly the one command infra/host/deploy.sh needs to
-# restart the service it just rebuilt — nothing broader.
+# copying). One explicit line per deploy target in
+# infra/host/deploy-targets.json — never a wildcard. A target must appear in
+# BOTH the registry and here to be deployable, so a bad registry entry alone
+# can never restart an arbitrary service.
 ubuntu ALL=(root) NOPASSWD: /bin/systemctl restart horizon-server
+ubuntu ALL=(root) NOPASSWD: /bin/systemctl restart fintekkers-ui
