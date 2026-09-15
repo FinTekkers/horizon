@@ -91,6 +91,44 @@ test('findOrCreateGoogleUser logs the SAME user back in on a returning sign-in �
   assert.equal(db.prepare('SELECT COUNT(*) AS n FROM user WHERE google_sub = ?').get('google-sub-2').n, 1)
 })
 
+// The regression this file exists to pin: `email` is UNIQUE, so signing in
+// with Google using an address that already logged in by password used to hit
+// `UNIQUE constraint failed: user.email` — permanently locking SSO out of the
+// one account most likely to try it (the admin's).
+test('findOrCreateGoogleUser adopts an existing password account with the same email', () => {
+  const byPassword = auth.verifyPassword('admin@example.com', 'super-secret')
+  assert.ok(byPassword, 'password login should seed the account first')
+
+  const viaGoogle = auth.findOrCreateGoogleUser({
+    sub: 'google-sub-admin',
+    email: 'admin@example.com',
+    name: 'Admin',
+  })
+
+  assert.equal(viaGoogle.id, byPassword.id, 'should reuse the row, not create a second one')
+  assert.equal(db.prepare('SELECT COUNT(*) AS n FROM user WHERE email = ?').get('admin@example.com').n, 1)
+  assert.equal(db.prepare('SELECT google_sub FROM user WHERE id = ?').get(byPassword.id).google_sub, 'google-sub-admin')
+})
+
+test('adopting an account preserves its gate PIN — linking must not re-issue it', () => {
+  const user = auth.verifyPassword('admin@example.com', 'super-secret')
+  const pinHashBefore = db.prepare('SELECT gate_pin_hash FROM user WHERE id = ?').get(user.id).gate_pin_hash
+
+  auth.findOrCreateGoogleUser({ sub: 'google-sub-admin', email: 'admin@example.com', name: 'Admin' })
+
+  const pinHashAfter = db.prepare('SELECT gate_pin_hash FROM user WHERE id = ?').get(user.id).gate_pin_hash
+  assert.equal(pinHashAfter, pinHashBefore, 'a PIN the human already wrote down must stay valid')
+})
+
+test('a subsequent Google sign-in finds the adopted account by sub', () => {
+  const user = auth.verifyPassword('admin@example.com', 'super-secret')
+  auth.findOrCreateGoogleUser({ sub: 'google-sub-admin', email: 'admin@example.com', name: 'Admin' })
+
+  const returning = auth.findOrCreateGoogleUser({ sub: 'google-sub-admin', email: 'admin@example.com', name: 'Admin' })
+  assert.equal(returning.id, user.id)
+  assert.equal(db.prepare('SELECT COUNT(*) AS n FROM user WHERE email = ?').get('admin@example.com').n, 1)
+})
+
 // ---- hardcoded password login ----
 
 test('verifyPassword rejects a wrong email or password', () => {

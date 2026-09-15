@@ -254,6 +254,100 @@ test('google/callback with a RETURNING google account logs into the SAME user, n
   }
 })
 
+// The production failure this pins: davidjdoherty@gmail.com had logged in by
+// password (google_sub NULL), so the Google callback 500'd on
+// `UNIQUE constraint failed: user.email` every time.
+test('google/callback adopts an account that already exists from password login', async () => {
+  const login = await app.inject({
+    method: 'POST',
+    url: '/api/auth/login',
+    payload: { email: config.ADMIN_EMAIL, password: config.ADMIN_PASSWORD },
+  })
+  assert.equal(login.statusCode, 200)
+  const passwordUser = login.json().user
+
+  const start = await app.inject({ method: 'GET', url: '/api/auth/google/start' })
+  const stateCookie = start.cookies.find((c) => c.name === 'oauth_state')
+  const realExchange = googleAuth.exchangeCodeForProfile
+  googleAuth.exchangeCodeForProfile = async () => ({
+    sub: 'google-adopts-admin',
+    email: config.ADMIN_EMAIL,
+    name: 'Admin',
+  })
+  try {
+    const res = await app.inject({
+      method: 'GET',
+      url: `/api/auth/google/callback?code=good-code&state=${stateCookie.value}`,
+      headers: { cookie: `oauth_state=${stateCookie.value}` },
+    })
+    assert.equal(res.statusCode, 302, 'must redirect, not 500 on the email constraint')
+
+    const cookie = res.cookies.find((c) => c.name === config.SESSION_COOKIE_NAME)
+    assert.ok(cookie, 'expected a session cookie')
+    const me = await app.inject({
+      method: 'GET',
+      url: '/api/auth/me',
+      headers: { cookie: `${cookie.name}=${cookie.value}` },
+    })
+    assert.equal(me.json().user.id, passwordUser.id, 'should be the same account, linked')
+  } finally {
+    googleAuth.exchangeCodeForProfile = realExchange
+  }
+})
+
+// A failed callback used to clear oauth_state before validating it, so the
+// natural retry (back, pick another account, same state replayed) reported
+// `bad_state` and masked the original error.
+test('a failed callback leaves oauth_state intact so the retry still validates', async () => {
+  const start = await app.inject({ method: 'GET', url: '/api/auth/google/start' })
+  const stateCookie = start.cookies.find((c) => c.name === 'oauth_state')
+  const realExchange = googleAuth.exchangeCodeForProfile
+  googleAuth.exchangeCodeForProfile = async () => {
+    throw new Error('invalid_grant')
+  }
+  try {
+    const failed = await app.inject({
+      method: 'GET',
+      url: `/api/auth/google/callback?code=bad-code&state=${stateCookie.value}`,
+      headers: { cookie: `oauth_state=${stateCookie.value}` },
+    })
+    assert.equal(failed.json().error, 'google_auth_failed')
+
+    // Assert on the RESPONSE, not on a follow-up inject: inject re-sends
+    // whatever cookie header we hand it, so replaying the state here would
+    // pass whether or not the server cleared it. A real browser obeys the
+    // clearing Set-Cookie, so that is what has to be absent.
+    const cleared = failed.cookies.find((c) => c.name === 'oauth_state')
+    assert.equal(cleared, undefined, 'a failed exchange must not clear the nonce the retry needs')
+  } finally {
+    googleAuth.exchangeCodeForProfile = realExchange
+  }
+})
+
+test('a SUCCESSFUL callback does clear oauth_state — the nonce is single-use', async () => {
+  const start = await app.inject({ method: 'GET', url: '/api/auth/google/start' })
+  const stateCookie = start.cookies.find((c) => c.name === 'oauth_state')
+  const realExchange = googleAuth.exchangeCodeForProfile
+  googleAuth.exchangeCodeForProfile = async () => ({
+    sub: 'google-single-use',
+    email: 'single-use@example.com',
+    name: 'Single Use',
+  })
+  try {
+    const res = await app.inject({
+      method: 'GET',
+      url: `/api/auth/google/callback?code=good-code&state=${stateCookie.value}`,
+      headers: { cookie: `oauth_state=${stateCookie.value}` },
+    })
+    assert.equal(res.statusCode, 302)
+    const cleared = res.cookies.find((c) => c.name === 'oauth_state')
+    assert.ok(cleared, 'expected the nonce to be cleared once consumed')
+    assert.equal(cleared.value, '')
+  } finally {
+    googleAuth.exchangeCodeForProfile = realExchange
+  }
+})
+
 test('google/start is 503 when Google is not configured', async () => {
   const { GOOGLE_CLIENT_ID } = config
   process.env.GOOGLE_CLIENT_ID = ''
