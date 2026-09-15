@@ -693,7 +693,6 @@ export function buildApp({ logger = true } = {}) {
     async (request, reply) => {
       const { code, state } = request.query
       const expected = request.cookies.oauth_state
-      reply.clearCookie('oauth_state', { path: '/' })
       if (!code || !state || !expected || state !== expected) {
         return reply.code(400).send({ error: 'bad_state' })
       }
@@ -704,7 +703,23 @@ export function buildApp({ logger = true } = {}) {
         request.log.warn(`google oauth exchange failed: ${err.message}`)
         return reply.code(400).send({ error: 'google_auth_failed' })
       }
-      const user = auth.findOrCreateGoogleUser(profile)
+      let user
+      try {
+        user = auth.findOrCreateGoogleUser(profile)
+      } catch (err) {
+        // Reachable only if two callbacks for a brand-new email race into the
+        // INSERT; the linking path above handles the ordinary collision. Still
+        // worth a 4xx over a raw 500 — the user can simply retry.
+        request.log.warn(`google account linking failed: ${err.message}`)
+        return reply.code(409).send({ error: 'account_link_failed' })
+      }
+      // Consumed only now that the login has actually succeeded. Clearing it
+      // any earlier burns the nonce on a failed callback, and the natural
+      // retry — go back, pick another account from Google's chooser, which
+      // replays the same state — then arrives with no cookie and reports
+      // `bad_state`, masking the real first error. Still single-use, and it
+      // expires on its own after 5 minutes (maxAge in /google/start).
+      reply.clearCookie('oauth_state', { path: '/' })
       startSession(reply, user.id)
       return reply.redirect(UI_URL)
     },

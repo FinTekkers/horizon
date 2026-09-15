@@ -73,11 +73,26 @@ function touchLastLogin(id) {
 
 // Finds-or-creates the Google user for this profile and returns it, ready to
 // start a session.
+//
+// Three cases, in order. The middle one is why this isn't a plain find-or-
+// create: `email` is UNIQUE, so an account that already signed in with the
+// ADMIN_EMAIL/ADMIN_PASSWORD credential owns that address with google_sub
+// NULL. Looking up by sub alone misses it and the INSERT then dies on the
+// email constraint — meaning Google SSO could never work for the one address
+// most likely to try it. So adopt that row instead: attach the sub and keep
+// everything else, deliberately including auth_method and the existing gate
+// PIN. The account is linked, not replaced, and the PIN a human already wrote
+// down stays valid.
 export function findOrCreateGoogleUser({ sub, email, name }) {
   const existing = findUserByGoogleSub(sub)
   if (existing) {
     touchLastLogin(existing.id)
     return existing
+  }
+  const sameEmail = findUserByEmail(email)
+  if (sameEmail) {
+    db.prepare("UPDATE user SET google_sub = ?, last_login_at = datetime('now') WHERE id = ?").run(sub, sameEmail.id)
+    return findUserById(sameEmail.id)
   }
   return createUser({ email, name, authMethod: 'google', googleSub: sub }).user
 }
