@@ -2,7 +2,7 @@
 exists, so the rules stamped into the task (HZ-9) are their only source of
 project context."""
 
-from farm.pm_agent import build_prompt
+from farm.pm_agent import MAX_PROMPT_ARTIFACT_CHARS, build_prompt, validate
 
 
 def make_task(rules=None, feedback=None):
@@ -46,3 +46,24 @@ def test_rules_render_after_feedback_and_do_not_displace_it():
     prompt = build_prompt(make_task(rules="RULES HERE", feedback=[{"message": "tighten scope"}]))
     assert "Human feedback to address:" in prompt
     assert prompt.index("- tighten scope") < prompt.index("## Project rules")
+
+
+# ---- artifact truncation (HZ-29) ----
+# Mirrors step_agent.py's fix: build_prompt (read side) and validate() (write
+# side) both used to flat-slice at 12,000 chars. The server now owns the
+# total prompt budget, so both sites here are only defensive sanity ceilings.
+
+
+def test_build_prompt_does_not_re_truncate_a_large_prior_artifact_at_12k():
+    task = make_task()
+    big = "a" * (MAX_PROMPT_ARTIFACT_CHARS - 1)
+    task["artifacts"] = [{"label": "Draft plan", "content": big}]
+    prompt = build_prompt(task)
+    assert big in prompt
+    assert "a" * 12001 in prompt  # beyond the old flat 12,000-char slice
+
+
+def test_validate_keeps_a_large_artifact_in_full():
+    big = "z" * 50000  # far past the old 12,000-char write-time slice
+    _summary, _patch, artifact = validate({"summary": "did the step", "artifact_md": big})
+    assert artifact == big
