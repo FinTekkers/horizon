@@ -441,6 +441,23 @@ def test_hz43_unescaped_quotes_in_artifact_md_recover_on_retry(monkeypatch):
     assert result["artifacts"]["artifact_md"] == "# Architecture review\npass-with-notes"
 
 
+def test_hz44_real_subprocess_recovers_from_the_hz43_quote_bug():
+    """The tests above monkeypatch run_claude, so they never actually drive a
+    `claude` invocation. This one doesn't monkeypatch anything: it runs the
+    real subprocess path (fake_claude stands in for the `claude` binary, the
+    same substitution every other unmocked test in this file relies on — see
+    module docstring), through the real extract_json and the real retry in
+    step_agent._run_and_parse. fake_claude reproduces the exact HZ-43 shape
+    on its first reply, then a clean one once resumed."""
+    task = make_task(7, "Architecture review")
+    task["item"]["desc"] = "HZ44_QUOTE_BUG " + task["item"]["desc"]
+
+    result = execute(task)
+
+    assert result["summary"] == "reviewed, ok"
+    assert result["artifacts"]["artifact_md"] == "# Architecture review\npass-with-notes"
+
+
 def test_retry_is_bounded_at_one_and_a_second_failure_still_raises(monkeypatch):
     calls = []
     bad = '{"summary": "oops"'  # truncated — unparseable both times
