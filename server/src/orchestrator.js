@@ -10,7 +10,7 @@
 // step_run/event bookkeeping and gate semantics stay exactly as they are.
 
 import { db } from './db.js'
-import { STEPS, AGENTS, isClosed } from './lifecycle.js'
+import { STEPS, AGENTS, isClosed, IMPLEMENT_STEP_INDEX, REVIEW_STEP_INDEX } from './lifecycle.js'
 import { getItem, addEvent, notifyChange, registerAgentRunner, recoverRejectedItems } from './store.js'
 import { createMockPr, createDeployRelease, postIssueComment, createPrFromBranch } from './github.js'
 import { PHASES } from './lifecycle.js'
@@ -19,6 +19,11 @@ import { FARM_URL, FARM_STEP_INDEXES, FARM_STEP_TIMEOUT_MS, FARM_START_TIMEOUT_M
 import { isPersona, personaLabel, proposePersona } from './personas.js'
 
 const timers = {}
+
+// Hard cap enforced HERE, by the orchestrator, never by an agent prompt — a
+// reviewer that keeps failing forwards the item to the human gate with the
+// failing verdict attached rather than looping forever (HZ-30).
+const REVIEW_CYCLE_CAP = 3
 
 // MOCK_STEP_LATENCY_MS lets tests drive the mock pipeline without waiting.
 const latency = () => Number(process.env.MOCK_STEP_LATENCY_MS) || 2000 + Math.floor(Math.random() * 3000)
@@ -151,6 +156,14 @@ function resumeActiveItems() {
   return resumed
 }
 
+// Lets tests/e2e specs drive the mock review through the fail-then-retry-
+// then-pass loop deterministically: fails the first N cycles (counted from
+// work_item.review_cycle_count, the same counter the real cap enforcement
+// reads), then passes. 0 (default) never fails.
+const MOCK_REVIEW_FAIL_COUNT = Number(process.env.MOCK_REVIEW_FAIL_COUNT) || 0
+
+const MOCK_QA_PASS = { verdict: 'pass', regression_tests_run: true, new_code_unit_coverage: true, e2e_test_present: true, findings: [] }
+
 // Mock behavior per step index (the pipeline is fixed — see lifecycle.js).
 // Returns { summary, patch? } where patch updates work_item fields, mimicking
 // the artifacts each agent is supposed to produce.
@@ -208,10 +221,33 @@ export const MOCK_STEP_BEHAVIOR = {
       return { summary: `implementation complete, but opening the PR failed: ${err.message}` }
     }
   },
+  // Automated review (HZ-30): read-only code + QA review of the diff the
+  // implement step just produced. MOCK_REVIEW_FAIL_COUNT makes this
+  // deterministically fail its first N cycles (driven by the same
+  // review_cycle_count column the real cap enforcement reads), so the
+  // fail -> re-implement -> pass loop is exercisable without a real farm.
+  12: (it) => {
+    if ((it.review_cycle_count || 0) < MOCK_REVIEW_FAIL_COUNT) {
+      return {
+        summary: 'automated review found a guardrail violation — sent back to implement (mock)',
+        verdict: {
+          code_review: {
+            verdict: 'fail',
+            findings: [{ file: '(mock)', line: 1, severity: 'block', detail: 'mock guardrail violation for loop testing' }],
+          },
+          qa_review: MOCK_QA_PASS,
+        },
+      }
+    }
+    return {
+      summary: 'automated review passed — code and QA both clear (mock)',
+      verdict: { code_review: { verdict: 'pass', findings: [] }, qa_review: MOCK_QA_PASS },
+    }
+  },
   // Deploy: publish a GitHub Release, which the self-deploy webhook
   // (server/src/deploy.js) picks up to pull the tag onto shoreward.ai. The
   // mock is the deploy content, not the plumbing.
-  13: async (it) => {
+  14: async (it) => {
     if (!it.repo || it.issue == null) {
       return { summary: 'deployed to the target environment; smoke checks passed (no GitHub — release skipped)' }
     }
@@ -277,17 +313,24 @@ function dispatchToFarm(id, stepIndex, runId, attempt) {
   // Watchdog: if the farm never reports back, fail the run rather than hang.
   // The implement step legitimately runs long (real coding + tests) — its
   // watchdog must outlast the farm's own 40-minute step timeout.
-  const watchdogMs = stepIndex === 11 ? Math.max(FARM_STEP_TIMEOUT_MS, 50 * 60 * 1000) : FARM_STEP_TIMEOUT_MS
+  const watchdogMs = stepIndex === IMPLEMENT_STEP_INDEX ? Math.max(FARM_STEP_TIMEOUT_MS, 50 * 60 * 1000) : FARM_STEP_TIMEOUT_MS
   timers[id] = setTimeout(() => failFarmRun(runId, 'step timed out waiting for the farm'), watchdogMs)
 
   // Prior artifacts (options analysis, impl plan, reviews) give later agents
-  // their working context — the implement step reads the approved plan.
+  // their working context — the implement step reads the approved plan, and
+  // the review step reads the implement step's check-runner evidence (its
+  // pass/fail note lives in step_run.output, not artifact, since implement
+  // never sets artifact — without the OR clause the QA reviewer would never
+  // see proof that regression tests actually ran).
   const artifacts = db
     .prepare(
-      "SELECT step_index, artifact FROM step_run WHERE item_id = ? AND status = 'done' AND artifact IS NOT NULL ORDER BY id",
+      "SELECT step_index, artifact, output FROM step_run WHERE item_id = ? AND status = 'done' AND (artifact IS NOT NULL OR step_index = ?) ORDER BY id",
     )
-    .all(id)
-    .map((row) => ({ label: STEPS[row.step_index]?.label || `step ${row.step_index}`, content: row.artifact.slice(0, 12000) }))
+    .all(id, IMPLEMENT_STEP_INDEX)
+    .map((row) => ({
+      label: STEPS[row.step_index]?.label || `step ${row.step_index}`,
+      content: (row.artifact ?? row.output ?? '').slice(0, 12000),
+    }))
 
   farmFetch('/steps/run', {
     run_id: runId,
@@ -353,6 +396,118 @@ function postStepComment(item, stepIndex, attempt, summary, patch, isMock, artif
   })
 }
 
+// ---- automated review verdict (HZ-30) ----
+// The reviewer is read-only (its farm tool allowlist has no Edit/Write/Bash)
+// and structured JSON, validated HERE by the script — never trusted from the
+// agent's prose, and never able to approve the human gate itself.
+
+const VERDICT_VALUES = new Set(['pass', 'fail'])
+const QA_BOOLEAN_FLAGS = ['regression_tests_run', 'new_code_unit_coverage', 'e2e_test_present']
+
+// Exported for tests. A malformed/missing verdict is an infra/format
+// problem, not a guardrail violation — the caller routes it to failFarmRun
+// (pause for a human), which does NOT consume a review cycle.
+export function validateVerdict(v) {
+  if (!v || typeof v !== 'object') return false
+  for (const key of ['code_review', 'qa_review']) {
+    const section = v[key]
+    if (!section || typeof section !== 'object' || !VERDICT_VALUES.has(section.verdict)) return false
+  }
+  return QA_BOOLEAN_FLAGS.every((flag) => typeof v.qa_review[flag] === 'boolean')
+}
+
+// Exported for tests. Compact, file/line-referenced feedback for whichever
+// sub-pass(es) failed — this is what the implement step's next attempt reads
+// as "Human feedback to address" (build_prompt in farm/step_agent.py).
+export function formatReviewFeedback(verdict, cycle) {
+  const lines = [`Automated review cycle ${cycle}/${REVIEW_CYCLE_CAP} failed — fix and re-implement.`]
+  for (const [key, label] of [['code_review', 'Code review'], ['qa_review', 'QA review']]) {
+    const section = verdict[key]
+    if (section.verdict !== 'fail') continue
+    lines.push('', `${label} findings:`)
+    const findings = Array.isArray(section.findings) ? section.findings : []
+    if (findings.length === 0) lines.push('- (no specific findings provided)')
+    for (const f of findings.slice(0, 10)) {
+      const loc = f?.file ? `${f.file}${f.line ? `:${f.line}` : ''}` : 'general'
+      lines.push(`- **${loc}** — ${f?.detail || f?.severity || 'issue flagged'}`)
+    }
+    if (key === 'qa_review') {
+      const missing = QA_BOOLEAN_FLAGS.filter((flag) => section[flag] === false)
+      if (missing.length > 0) lines.push(`- missing: ${missing.join(', ')}`)
+    }
+  }
+  return lines.join('\n').slice(0, 2000)
+}
+
+// A markdown rendering so the mock path (no real agent artifact_md) still
+// gives the human gate and the GitHub issue something to read.
+function mockReviewArtifactMd(verdict) {
+  const section = (label, s) =>
+    `## ${label}\n**${s.verdict}**` + (s.verdict === 'fail' ? `\n- ${s.findings?.[0]?.detail || 'guardrail violation'}` : '')
+  return [section('Code review', verdict.code_review), '', section('QA review', verdict.qa_review)].join('\n')
+}
+
+// Shared by completeFarmRun (real farm) and runMockStep (demo mode) so the
+// pass/fail/cap routing is identical either way — verdict already validated
+// by the caller. Closes the step_run row itself, then either advances the
+// cursor (pass), rolls back to implement with feedback queued (fail, under
+// cap), or force-advances to the human gate with the failing verdict still
+// attached (fail, cap reached) — the loop counter that proves the cap is
+// enforced lives in work_item.review_cycle_count, read back by tests.
+function finalizeReviewStep(id, runId, text, artifactMd, verdict, patch, isMock) {
+  const step = STEPS[REVIEW_STEP_INDEX]
+  const agent = AGENTS[step.agent]
+  const attempt = db.prepare('SELECT attempt FROM step_run WHERE id = ?').get(runId)?.attempt || 1
+  db.prepare("UPDATE step_run SET status = 'done', output = ?, artifact = ?, ended_at = datetime('now') WHERE id = ?").run(
+    text,
+    artifactMd,
+    runId,
+  )
+
+  const passed = verdict.code_review.verdict === 'pass' && verdict.qa_review.verdict === 'pass'
+  if (passed) {
+    db.prepare("UPDATE work_item SET cursor = cursor + 1, updated_at = datetime('now') WHERE id = ?").run(id)
+    addEvent(id, { who: agent.label, text: `completed “${step.label}” — ${text.slice(0, 300)}`, color: agent.color, initials: agent.initials })
+    postStepComment(getItem(id), REVIEW_STEP_INDEX, attempt, text, patch, isMock, artifactMd)
+    notifyChange()
+    kick(id)
+    return
+  }
+
+  db.prepare("UPDATE work_item SET review_cycle_count = review_cycle_count + 1, updated_at = datetime('now') WHERE id = ?").run(id)
+  const cycle = db.prepare('SELECT review_cycle_count FROM work_item WHERE id = ?').get(id).review_cycle_count
+
+  if (cycle >= REVIEW_CYCLE_CAP) {
+    db.prepare("UPDATE work_item SET cursor = cursor + 1, updated_at = datetime('now') WHERE id = ?").run(id)
+    addEvent(id, {
+      who: 'Horizon',
+      text: `automated review cap (${REVIEW_CYCLE_CAP}) reached — forwarded to the human gate with the failing verdict attached`,
+      color: '#9C333E',
+      initials: 'HZ',
+    })
+    postStepComment(getItem(id), REVIEW_STEP_INDEX, attempt, text, patch, isMock, artifactMd)
+    notifyChange()
+    kick(id)
+    return
+  }
+
+  db.prepare('INSERT INTO feedback (item_id, target, message) VALUES (?, ?, ?)').run(
+    id,
+    STEPS[IMPLEMENT_STEP_INDEX].agent,
+    formatReviewFeedback(verdict, cycle),
+  )
+  db.prepare("UPDATE work_item SET cursor = ?, updated_at = datetime('now') WHERE id = ?").run(IMPLEMENT_STEP_INDEX, id)
+  addEvent(id, {
+    who: agent.label,
+    text: `automated review failed (cycle ${cycle}/${REVIEW_CYCLE_CAP}) — sent back to “${STEPS[IMPLEMENT_STEP_INDEX].label}”`,
+    color: '#9C333E',
+    initials: agent.initials,
+  })
+  postStepComment(getItem(id), REVIEW_STEP_INDEX, attempt, text, patch, isMock, artifactMd)
+  notifyChange()
+  kick(id)
+}
+
 export async function completeFarmRun(runId, { summary, patch, artifacts }) {
   const run = db.prepare('SELECT * FROM step_run WHERE id = ?').get(runId)
   if (!run || run.status !== 'active') return { ok: true, stale: true }
@@ -403,6 +558,13 @@ export async function completeFarmRun(runId, { summary, patch, artifacts }) {
   }
 
   const artifactMd = typeof artifacts?.artifact_md === 'string' ? artifacts.artifact_md.slice(0, 12000) : null
+
+  if (run.step_index === REVIEW_STEP_INDEX) {
+    if (!validateVerdict(artifacts?.verdict)) return failFarmRun(runId, 'malformed review verdict JSON')
+    finalizeReviewStep(id, runId, text, artifactMd, artifacts.verdict, cleanPatch, false)
+    return { ok: true }
+  }
+
   db.prepare("UPDATE step_run SET status = 'done', output = ?, artifact = ?, ended_at = datetime('now') WHERE id = ?").run(
     text,
     artifactMd,
@@ -461,7 +623,7 @@ async function runMockStep(id, stepIndex, runId) {
   const step = STEPS[stepIndex]
   const agent = AGENTS[step.agent]
   const behavior = MOCK_STEP_BEHAVIOR[stepIndex] || (() => ({ summary: `completed ${step.label.toLowerCase()}` }))
-  let { summary, patch } = await behavior(item)
+  let { summary, patch, verdict } = await behavior(item)
 
   // Deliver any queued human feedback to this "agent" — the mock acknowledges
   // it in its output; a real agent gets it injected into its session.
@@ -488,6 +650,15 @@ async function runMockStep(id, stepIndex, runId) {
       id,
     )
   }
+
+  if (stepIndex === REVIEW_STEP_INDEX) {
+    // delete BEFORE finalizeReviewStep: it calls kick() internally, and
+    // kick() no-ops while timers[id] (the busy marker for this run) is set.
+    delete timers[id]
+    finalizeReviewStep(id, runId, summary, mockReviewArtifactMd(verdict), verdict, patch, true)
+    return
+  }
+
   db.prepare("UPDATE step_run SET status = 'done', output = ?, ended_at = datetime('now') WHERE id = ?").run(
     summary,
     runId,
@@ -558,7 +729,7 @@ export function init(log) {
 function rearmFarmRuns() {
   const active = db.prepare("SELECT id, item_id, step_index FROM step_run WHERE status = 'active'").all()
   for (const run of active) {
-    const watchdogMs = run.step_index === 11 ? Math.max(FARM_STEP_TIMEOUT_MS, 50 * 60 * 1000) : FARM_STEP_TIMEOUT_MS
+    const watchdogMs = run.step_index === IMPLEMENT_STEP_INDEX ? Math.max(FARM_STEP_TIMEOUT_MS, 50 * 60 * 1000) : FARM_STEP_TIMEOUT_MS
     timers[run.item_id] = setTimeout(() => failFarmRun(run.id, 'step timed out waiting for the farm'), watchdogMs)
   }
   return active.length

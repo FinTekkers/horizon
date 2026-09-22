@@ -9,6 +9,7 @@ export const AGENTS = {
   Eng: { label: 'Eng agent', initials: 'EN', color: '#0E6E74' },
   DevOps: { label: 'DevOps agent', initials: 'DO', color: '#9C333E' },
   Ensemble: { label: 'PM · QA · Architect', initials: 'EN', color: '#2E6CB2' },
+  Review: { label: 'Code · QA review (automated)', initials: 'RV', color: '#5E4380' },
   Human: { label: 'Human gate', initials: 'YOU', color: '#5E4380' },
 }
 
@@ -29,10 +30,17 @@ export const STEPS = [
   { phase: 1, kind: 'agent', agent: 'PM', label: 'Summarize reviews & recommend' },
   { phase: 1, kind: 'gate', gate: 'required', label: 'Review before execution' },
   { phase: 2, kind: 'agent', agent: 'Eng', label: 'Specialist agent implements' },
+  { phase: 2, kind: 'agent', agent: 'Review', label: 'Automated review (code + QA)' },
   { phase: 2, kind: 'gate', gate: 'required', label: 'Accept the code' },
   { phase: 3, kind: 'agent', agent: 'DevOps', label: 'Deploy the changes' },
   { phase: 4, kind: 'gate', gate: 'required', label: 'Review the work & close' },
 ]
+
+// Derived, never hardcoded elsewhere — a future step insertion only has to
+// change STEPS above; every index-dependent call site re-resolves itself.
+export const IMPLEMENT_STEP_INDEX = STEPS.findIndex((s) => s.label === 'Specialist agent implements')
+export const REVIEW_STEP_INDEX = STEPS.findIndex((s) => s.label === 'Automated review (code + QA)')
+export const ACCEPT_GATE_INDEX = STEPS.findIndex((s) => s.label === 'Accept the code')
 
 export const PRIORITY_COLORS = {
   Critical: '#9C333E',

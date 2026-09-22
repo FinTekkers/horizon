@@ -12,7 +12,7 @@ process.env.HORIZON_DB = join(mkdtempSync(join(tmpdir(), 'horizon-store-')), 'te
 
 const { db } = await import('../src/db.js')
 const store = await import('../src/store.js')
-const { STEPS } = await import('../src/lifecycle.js')
+const { STEPS, IMPLEMENT_STEP_INDEX, REVIEW_STEP_INDEX, ACCEPT_GATE_INDEX } = await import('../src/lifecycle.js')
 
 // Deterministic fixtures; cursor 11 is an agent step (implement), 3 is a gate.
 const insertItem = db.prepare(
@@ -85,6 +85,52 @@ test('the persona migration is idempotent and NULL rows read back as null', () =
   assert.throws(() => db.exec('ALTER TABLE work_item ADD COLUMN persona TEXT'), /duplicate column/)
   const gate = store.listItems().find((it) => it.id === 'T-GATE')
   assert.equal(gate.persona, null) // farm/UI resolve NULL to fullstack
+})
+
+// ---- automated review (HZ-30) ----
+
+test('the review_cycle_count column and pipeline_v3_review_shift migration are idempotent', () => {
+  assert.throws(
+    () => db.exec('ALTER TABLE work_item ADD COLUMN review_cycle_count INTEGER NOT NULL DEFAULT 0'),
+    /duplicate column/,
+  )
+  // Re-running the shift transaction must not double-shift a second time —
+  // it's guarded by the same setting-row-as-atomic-lock trick as
+  // pipeline_v2_shift: the INSERT is the LAST statement, so a second run
+  // fails on the primary-key collision and its UPDATEs never apply.
+  assert.throws(
+    () => db.prepare("INSERT INTO setting (key, value) VALUES ('pipeline_v3_review_shift', 'done')").run(),
+    /UNIQUE constraint failed/,
+  )
+  assert.equal(STEPS[REVIEW_STEP_INDEX].label, 'Automated review (code + QA)')
+  assert.equal(STEPS[ACCEPT_GATE_INDEX].label, 'Accept the code')
+  assert.equal(store.getItem('T-AGENT').review_cycle_count, 0)
+})
+
+test('requestChanges rejecting the Accept-the-code gate sends the item back to Eng implement, not the Review step', () => {
+  db.prepare(
+    'INSERT INTO work_item (id, title, priority, cursor, review_cycle_count) VALUES (?, ?, ?, ?, ?)',
+  ).run('T-ACCEPT-GATE', 'Awaiting accept', 'Medium', ACCEPT_GATE_INDEX, 2)
+  const result = store.requestChanges('T-ACCEPT-GATE', 'Accept the code', 'this has a bug')
+  assert.deepEqual(result, { ok: true })
+  const item = store.getItem('T-ACCEPT-GATE')
+  // Not REVIEW_STEP_INDEX — re-running Review alone would just re-judge the
+  // same unchanged diff and produce the identical verdict.
+  assert.equal(item.cursor, IMPLEMENT_STEP_INDEX)
+  // A human-directed rework gets a fresh set of automated review cycles.
+  assert.equal(item.review_cycle_count, 0)
+  const feedback = db.prepare("SELECT target, message FROM feedback WHERE item_id = 'T-ACCEPT-GATE'").get()
+  assert.equal(feedback.target, STEPS[IMPLEMENT_STEP_INDEX].agent)
+  assert.equal(feedback.message, 'this has a bug')
+})
+
+test('requestChanges rejecting a non-accept gate still walks back to the nearest agent step', () => {
+  db.prepare(
+    'INSERT INTO work_item (id, title, priority, cursor, review_cycle_count) VALUES (?, ?, ?, ?, ?)',
+  ).run('T-OTHER-GATE', 'Awaiting a different gate', 'Medium', 5, 0)
+  const result = store.requestChanges('T-OTHER-GATE', 'Approve the high-level design', 'needs another pass')
+  assert.deepEqual(result, { ok: true })
+  assert.equal(store.getItem('T-OTHER-GATE').cursor, 4) // nearest preceding agent step (Ensemble), unaffected by HZ-30
 })
 
 test('setPersona validates, persists, logs an event and notifies', () => {

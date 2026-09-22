@@ -10,6 +10,7 @@ import { db } from './db.js'
 import * as store from './store.js'
 import { getToken, getSetting, setSetting } from './settings.js'
 import { POLL_INTERVAL_MS, UI_URL } from './config.js'
+import { ACCEPT_GATE_INDEX } from './lifecycle.js'
 
 const itemLink = (item) => `[open in Horizon](${UI_URL}/${item.id.toLowerCase()})`
 
@@ -599,8 +600,6 @@ export async function pollRepo(repo, log) {
 // ---- PR-state sync (UI approve merges; GitHub merges must flow back) ----
 // A PR merged directly on GitHub approves the "Accept the code" gate; a PR
 // closed without merging sends the item back to the implement step.
-
-const ACCEPT_GATE_INDEX = 12 // "Accept the code" in the fixed pipeline
 
 export function handlePrStateChange(repoFullName, prNumber, { merged, state }, log) {
   const item = db

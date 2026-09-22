@@ -1,6 +1,9 @@
 import { existsSync, writeFileSync } from 'node:fs'
 import { request } from '@playwright/test'
 import { openDb, insertItem } from './fixtures/seed.js'
+// Derived, not hardcoded: a future pipeline step insertion (like HZ-30's own
+// Review step) must not silently break these fixtures' intended positions.
+import { STEPS, ACCEPT_GATE_INDEX } from '../server/src/lifecycle.js'
 
 const PORT = process.env.HORIZON_E2E_PORT
 const DB_PATH = process.env.HORIZON_E2E_DB
@@ -28,14 +31,14 @@ async function waitFor(predicate, { timeoutMs = 30_000, intervalMs = 150, descri
 const FIXTURES = [
   { id: 'E2E-1', title: 'E2E fixture — awaiting intake gate', priority: 'Medium', cursor: 3 },
   { id: 'E2E-2', title: 'E2E fixture — mid technical plan', priority: 'Low', cursor: 8 },
-  { id: 'E2E-3', title: 'E2E fixture — already closed', priority: 'Critical', cursor: 15 },
-  { id: 'E2E-4', title: 'E2E fixture — final review gate', priority: 'Medium', cursor: 14 },
+  { id: 'E2E-3', title: 'E2E fixture — already closed', priority: 'Critical', cursor: STEPS.length },
+  { id: 'E2E-4', title: 'E2E fixture — final review gate', priority: 'Medium', cursor: STEPS.length - 1 },
   { id: 'HZ-102', title: 'E2E fixture — deep link target', priority: 'Medium', cursor: 3 },
   {
     id: 'CFL-1',
     title: 'E2E fixture — merge conflict',
     priority: 'High',
-    cursor: 12,
+    cursor: ACCEPT_GATE_INDEX,
     pr: 501,
     pr_url: 'https://github.com/FinTekkers/horizon/pull/501',
     pr_mergeable: 0,
@@ -44,7 +47,7 @@ const FIXTURES = [
     id: 'CLN-1',
     title: 'E2E fixture — clean PR',
     priority: 'High',
-    cursor: 12,
+    cursor: ACCEPT_GATE_INDEX,
     pr: 502,
     pr_url: 'https://github.com/FinTekkers/horizon/pull/502',
     pr_mergeable: 1,

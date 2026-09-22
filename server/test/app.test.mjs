@@ -14,7 +14,7 @@ delete process.env.FARM_URL
 
 const { db } = await import('../src/db.js')
 const { buildApp } = await import('../src/app.js')
-const { STEPS } = await import('../src/lifecycle.js')
+const { STEPS, ACCEPT_GATE_INDEX } = await import('../src/lifecycle.js')
 const config = await import('../src/config.js')
 const { FARM_SHARED_SECRET } = config
 const store = await import('../src/store.js')
@@ -176,8 +176,8 @@ db.prepare(
   "INSERT INTO work_item (id, title, priority, cursor) VALUES ('T-GATE-NOTGATE', 'On an agent step', 'Medium', 11)",
 ).run()
 db.prepare(
-  "INSERT INTO work_item (id, title, priority, cursor, repo, issue, pr) VALUES ('T-GATE-MERGE', 'Accept gate', 'Medium', 12, 'acme/demo', 9, 41)",
-).run()
+  'INSERT INTO work_item (id, title, priority, cursor, repo, issue, pr) VALUES (?, ?, ?, ?, ?, ?, ?)',
+).run('T-GATE-MERGE', 'Accept gate', 'Medium', ACCEPT_GATE_INDEX, 'acme/demo', 9, 41)
 
 const approvePost = (id, stepIndex, payload = {}) =>
   inject({ method: 'POST', url: `/api/items/${id}/gates/${stepIndex}/approve`, payload })
@@ -277,13 +277,13 @@ test('approve-via-whatsapp: 502 when the PR merge fails, and the gate stays open
   try {
     const res = await approveViaWhatsappPost(
       'T-GATE-MERGE',
-      12,
+      ACCEPT_GATE_INDEX,
       { sender: 'Evan' },
       { 'x-farm-secret': FARM_SHARED_SECRET },
     )
     assert.equal(res.statusCode, 502)
     assert.match(res.json().error, /merge failed/)
-    assert.equal(db.prepare("SELECT cursor FROM work_item WHERE id = 'T-GATE-MERGE'").get().cursor, 12)
+    assert.equal(db.prepare("SELECT cursor FROM work_item WHERE id = 'T-GATE-MERGE'").get().cursor, ACCEPT_GATE_INDEX)
   } finally {
     globalThis.fetch = realFetch
   }

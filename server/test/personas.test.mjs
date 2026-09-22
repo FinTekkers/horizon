@@ -91,6 +91,31 @@ test('the "Review before execution" gate is required in both lifecycle copies', 
   }
 })
 
+// ---- lifecycle parity (HZ-30) ----
+// server/src/lifecycle.js and ui/src/domain/lifecycle.js must stay in
+// lockstep — this is the concrete regression test for that requirement,
+// modeled on the registry-parity checks above.
+
+test('server and UI lifecycle STEPS arrays are byte-identical', () => {
+  assert.deepEqual(serverLifecycle.STEPS, uiLifecycle.STEPS)
+})
+
+test('every server AGENTS entry matches its UI counterpart (the UI copy only adds Human on top)', () => {
+  for (const [key, value] of Object.entries(serverLifecycle.AGENTS)) {
+    assert.deepEqual(uiLifecycle.AGENTS[key], value, `AGENTS.${key} drifted between the server and UI copies`)
+  }
+})
+
+test('the automated Review step sits between implement and the accept gate, in both copies', () => {
+  for (const lifecycle of [serverLifecycle, uiLifecycle]) {
+    assert.equal(lifecycle.STEPS[lifecycle.IMPLEMENT_STEP_INDEX].label, 'Specialist agent implements')
+    assert.equal(lifecycle.STEPS[lifecycle.REVIEW_STEP_INDEX].label, 'Automated review (code + QA)')
+    assert.equal(lifecycle.STEPS[lifecycle.ACCEPT_GATE_INDEX].label, 'Accept the code')
+    assert.equal(lifecycle.REVIEW_STEP_INDEX, lifecycle.IMPLEMENT_STEP_INDEX + 1)
+    assert.equal(lifecycle.ACCEPT_GATE_INDEX, lifecycle.REVIEW_STEP_INDEX + 1)
+  }
+})
+
 test('the mock review digest contains no approval language (deny-list)', () => {
   const { summary } = MOCK_STEP_BEHAVIOR[9]()
   assert.ok(!/recommend|proceed|approve/i.test(summary), `digest implies a decision: "${summary}"`)

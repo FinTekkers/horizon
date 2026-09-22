@@ -38,7 +38,16 @@ STEP_CONFIG = {
     7: ("architect_review.md", True, PLANNER_TOOLS, 40, 1140, False),
     8: ("qa.md", True, PLANNER_TOOLS, 40, 1140, True),
     11: ("eng_implement.md", False, IMPLEMENT_TOOLS, 160, 2700, True),
+    # code_review.md is loaded here for the first (code) pass; qa_review.md
+    # is loaded separately inside execute()'s step_index == 12 branch for the
+    # second pass. Read-only tools: the reviewer can never edit, push, merge
+    # or approve the human gate (HZ-30) — enforced here, not by prompt alone.
+    12: ("code_review.md", True, PLANNER_TOOLS, 60, 1800, True),
 }
+
+# Diff shown to both review passes is capped — a defensive bound on prompt
+# size, not a claim that larger diffs can't happen.
+REVIEW_DIFF_CHARS = 20000
 
 
 def log(msg: str) -> None:
@@ -115,6 +124,60 @@ def finalize_branch(ws: Path, item: dict, branch: str) -> dict:
     return {"branch": branch, "files_changed": stat[-1] if stat else ""}
 
 
+# ---- automated review verdict shaping (HZ-30) ----
+# Defensive normalization of the two review passes' raw JSON into the shape
+# server/src/orchestrator.js's validateVerdict() requires. Malformed fields
+# default FAIL-CLOSED (never silently pass) — an agent returning garbage must
+# not be read as approval; server-side validateVerdict is still the real gate.
+
+_QA_AUTO_PASS = {
+    "verdict": "pass",
+    "regression_tests_run": True,
+    "new_code_unit_coverage": True,
+    "e2e_test_present": True,
+    "findings": [],
+}
+
+
+def _findings(parsed: dict) -> list:
+    findings = parsed.get("findings")
+    return findings if isinstance(findings, list) else []
+
+
+def _code_review_section(parsed: dict) -> dict:
+    verdict = parsed.get("verdict")
+    return {"verdict": verdict if verdict in ("pass", "fail") else "fail", "findings": _findings(parsed)}
+
+
+def _qa_review_section(parsed: dict) -> dict:
+    verdict = parsed.get("verdict")
+    return {
+        "verdict": verdict if verdict in ("pass", "fail") else "fail",
+        "regression_tests_run": parsed.get("regression_tests_run") is True,
+        "new_code_unit_coverage": parsed.get("new_code_unit_coverage") is True,
+        "e2e_test_present": parsed.get("e2e_test_present") is True,
+        "findings": _findings(parsed),
+    }
+
+
+def _review_summary(verdict: dict) -> str:
+    parts = [
+        f"code review {'passed' if verdict['code_review']['verdict'] == 'pass' else 'failed'}",
+        f"QA review {'passed' if verdict['qa_review']['verdict'] == 'pass' else 'failed'}",
+    ]
+    summary = "; ".join(parts)
+    for key in ("code_review", "qa_review"):
+        section = verdict[key]
+        if section["verdict"] != "fail" or not section["findings"]:
+            continue
+        first = section["findings"][0]
+        detail = first.get("detail") if isinstance(first, dict) else None
+        if detail:
+            summary = f"{summary} — {detail}"
+            break
+    return summary[:600]
+
+
 def execute(task: dict) -> dict:
     step_index = task["step"]["index"]
     role_file, wants_artifact, tools, max_turns, timeout_s, wants_persona = STEP_CONFIG[step_index]
@@ -156,6 +219,68 @@ def execute(task: dict) -> dict:
         check_note = run_checks(ws, log)
         artifacts = finalize_branch(ws, item, branch)
         return {"summary": f"{summary} · {check_note}"[:600], "artifacts": artifacts}
+
+    # Automated review (HZ-30): two independent read-only passes over the
+    # actual diff — code correctness against guardrails/the approved plan,
+    # then test coverage against the implement step's own check-runner
+    # evidence (delivered via task["artifacts"], widened server-side to
+    # include the implement step's output). The merged, structured verdict
+    # below is what the orchestrator's loop-cap logic reads — never prose.
+    if step_index == 12:
+        if ws is None:
+            verdict = {"code_review": {"verdict": "pass", "findings": []}, "qa_review": dict(_QA_AUTO_PASS)}
+            return {
+                "summary": "no repository attached — automated review skipped (demo item)",
+                "artifacts": {
+                    "artifact_md": "## Code review\n**pass** — no repository attached.\n\n"
+                    "## QA review\n**pass** — no repository attached.",
+                    "verdict": verdict,
+                },
+            }
+
+        # Reuse the implement step's own branch resolution to close the same
+        # shared-workspace race it defends against: workspace_path() is keyed
+        # per-repo, not per-item, so a sibling item's run on this repo between
+        # implement finishing and review starting would otherwise repoint the
+        # checkout out from under this review.
+        branch = prepare_branch(ws, item)
+        log(f"workspace {ws} on branch {branch} — reviewing diff")
+        head = git(ws, "symbolic-ref", "refs/remotes/origin/HEAD", check=False).stdout.strip()
+        default = head.rsplit("/", 1)[-1] if head else "main"
+        diff_stat = git(ws, "diff", "--stat", f"origin/{default}...HEAD", check=False).stdout.strip()
+        diff_text = git(ws, "diff", f"origin/{default}...HEAD", check=False).stdout[:REVIEW_DIFF_CHARS]
+        diff_section = f"## Code diff under review\n\n```\n{diff_stat}\n```\n\n```diff\n{diff_text}\n```"
+        prompt = (
+            build_prompt(task)
+            + "\n\n"
+            + diff_section
+            + "\n\nRespond with ONLY the JSON object described in your role instructions."
+        )
+
+        code_reply = run_claude(
+            prompt, append_system=role, cwd=str(ws), max_turns=max_turns, timeout_s=timeout_s, allowed_tools=tools
+        )
+        code_parsed = extract_json(code_reply["result"])
+
+        qa_role = (ROLES / "qa_review.md").read_text()
+        if wants_persona:
+            qa_role = compose_role(qa_role, item.get("persona"))
+        qa_reply = run_claude(
+            prompt, append_system=qa_role, cwd=str(ws), max_turns=max_turns, timeout_s=timeout_s, allowed_tools=tools
+        )
+        qa_parsed = extract_json(qa_reply["result"])
+
+        verdict = {"code_review": _code_review_section(code_parsed), "qa_review": _qa_review_section(qa_parsed)}
+        artifact_md = "\n\n".join(
+            part.strip()
+            for part in (code_parsed.get("artifact_md"), qa_parsed.get("artifact_md"))
+            if isinstance(part, str) and part.strip()
+        )
+        summary = _review_summary(verdict)
+        feedback = task.get("feedback") or []
+        if feedback:
+            summary = f"addressed feedback (“{feedback[0].get('message', '')[:80]}”) — {summary}"[:600]
+        return {"summary": summary, "artifacts": {"artifact_md": artifact_md[:12000], "verdict": verdict}}
 
     reply = run_claude(
         build_prompt(task) + "\n\nRespond with ONLY the JSON object described in your role instructions.",
