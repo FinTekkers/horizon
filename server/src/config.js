@@ -22,9 +22,9 @@ export const UI_URL = (process.env.HORIZON_UI_URL || 'http://localhost:5173').re
 export const FARM_URL = process.env.FARM_URL || null
 export const FARM_SHARED_SECRET = process.env.FARM_SHARED_SECRET || 'dev-secret'
 // Which step indexes the farm handles. Default: all agent steps except
-// Deploy (12), which stays deterministic/script-driven on this side.
+// Deploy (14), which stays deterministic/script-driven on this side.
 export const FARM_STEP_INDEXES = new Set(
-  (process.env.FARM_STEP_INDEXES || '0,1,2,4,6,7,8,9,11')
+  (process.env.FARM_STEP_INDEXES || '0,1,2,4,6,7,8,9,11,12')
     .split(',')
     .map((s) => Number(s.trim()))
     .filter((n) => Number.isInteger(n)),

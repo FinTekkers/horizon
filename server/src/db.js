@@ -137,7 +137,7 @@ db.exec(`
 
 // Additive migrations for databases created before these columns existed.
 // persona: specialist persona id (see personas.js); NULL = fullstack default.
-for (const column of ['pr INTEGER', 'pr_url TEXT', 'pr_mergeable INTEGER', 'release_tag TEXT', 'release_url TEXT', 'repo TEXT', 'project_id INTEGER', 'persona TEXT']) {
+for (const column of ['pr INTEGER', 'pr_url TEXT', 'pr_mergeable INTEGER', 'release_tag TEXT', 'release_url TEXT', 'repo TEXT', 'project_id INTEGER', 'persona TEXT', 'review_cycle_count INTEGER NOT NULL DEFAULT 0']) {
   try {
     db.exec(`ALTER TABLE work_item ADD COLUMN ${column}`)
   } catch {
@@ -205,6 +205,23 @@ if (!shifted) {
     db.prepare('UPDATE step_run SET step_index = step_index + 1 WHERE step_index >= 9').run()
     db.prepare('UPDATE gate_decision SET step_index = step_index + 1 WHERE step_index >= 9').run()
     db.prepare("INSERT INTO setting (key, value) VALUES ('pipeline_v2_shift', 'done')").run()
+  })()
+}
+
+// One-time migration for the pipeline-v3 insertion of the automated "Review"
+// step at index 12 (HZ-30): everything at/after the old index 12 shifts by
+// one. Same shape as pipeline_v2_shift above, including the atomicity trick:
+// the 'setting' INSERT is the LAST statement in the transaction, so a second
+// boot racing this block fails on the primary-key collision and the whole
+// transaction (including the UPDATEs) rolls back — that's what actually
+// prevents a double-shift if two server instances start at once.
+const shiftedReview = db.prepare("SELECT value FROM setting WHERE key = 'pipeline_v3_review_shift'").get()
+if (!shiftedReview) {
+  db.transaction(() => {
+    db.prepare('UPDATE work_item SET cursor = cursor + 1 WHERE cursor >= 12').run()
+    db.prepare('UPDATE step_run SET step_index = step_index + 1 WHERE step_index >= 12').run()
+    db.prepare('UPDATE gate_decision SET step_index = step_index + 1 WHERE step_index >= 12').run()
+    db.prepare("INSERT INTO setting (key, value) VALUES ('pipeline_v3_review_shift', 'done')").run()
   })()
 }
 

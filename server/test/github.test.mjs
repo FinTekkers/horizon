@@ -12,6 +12,7 @@ process.env.HORIZON_DB = join(mkdtempSync(join(tmpdir(), 'horizon-github-')), 't
 const { db } = await import('../src/db.js')
 const github = await import('../src/github.js')
 const { setSetting } = await import('../src/settings.js')
+const { ACCEPT_GATE_INDEX } = await import('../src/lifecycle.js')
 
 const REPO = 'FinTekkers/horizon'
 db.prepare(
@@ -165,4 +166,27 @@ test('fetchScreenshotsMarkdown filters directories out of a mixed contents listi
   assert.match(md, /## Screenshots/)
   assert.match(md, /!\[board\]\(https:\/\/raw\.githubusercontent\.com/)
   assert.doesNotMatch(md, /nested/)
+})
+
+// ---- PR-state sync fires at the CURRENT accept-gate index (HZ-30) ----
+// github.js used to hardcode `const ACCEPT_GATE_INDEX = 12` — inserting the
+// automated Review step ahead of "Accept the code" silently shifted the real
+// gate to 13, and a stale literal here would have made handlePrStateChange
+// and pollPrStates stop firing without any test catching it.
+
+test('handlePrStateChange approves the gate when the item sits at the live ACCEPT_GATE_INDEX', () => {
+  db.prepare(
+    'INSERT INTO work_item (id, title, priority, cursor, repo, issue, pr) VALUES (?, ?, ?, ?, ?, ?, ?)',
+  ).run('HZ-30-A', 'PR merged on GitHub', 'Medium', ACCEPT_GATE_INDEX, REPO, 30, 55)
+  const changed = github.handlePrStateChange(REPO, 55, { merged: true, state: 'closed' })
+  assert.equal(changed, true)
+  assert.equal(db.prepare("SELECT cursor FROM work_item WHERE id = 'HZ-30-A'").get().cursor, ACCEPT_GATE_INDEX + 1)
+})
+
+test('handlePrStateChange no-ops for an item not at the accept gate', () => {
+  db.prepare(
+    'INSERT INTO work_item (id, title, priority, cursor, repo, issue, pr) VALUES (?, ?, ?, ?, ?, ?, ?)',
+  ).run('HZ-30-B', 'Not at the gate yet', 'Medium', ACCEPT_GATE_INDEX - 1, REPO, 31, 56)
+  assert.equal(github.handlePrStateChange(REPO, 56, { merged: true, state: 'closed' }), false)
+  assert.equal(db.prepare("SELECT cursor FROM work_item WHERE id = 'HZ-30-B'").get().cursor, ACCEPT_GATE_INDEX - 1)
 })

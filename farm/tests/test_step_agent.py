@@ -184,7 +184,7 @@ def test_planning_steps_do_not_get_a_persona(monkeypatch):
 
 def test_step_config_persona_flags_match_the_design():
     wants = {index: config[5] for index, config in STEP_CONFIG.items()}
-    assert wants == {4: False, 6: False, 7: False, 8: True, 11: True}
+    assert wants == {4: False, 6: False, 7: False, 8: True, 11: True, 12: True}
 
 
 # ---- project rules injection (HZ-9) ----
@@ -226,6 +226,155 @@ def test_build_prompt_renders_default_persona_never_none():
     prompt = build_prompt(make_task(6, "Draft implementation plan"))
     assert "persona: fullstack" in prompt
     assert "persona: None" not in prompt
+
+
+# ---- automated review (HZ-30) ----
+# The reviewer is READ-ONLY (STEP_CONFIG[12] grants only PLANNER_TOOLS — no
+# Edit/Write/Bash) and runs two independent passes — code_review.md then
+# qa_review.md — merging into one structured verdict the orchestrator's
+# loop-cap logic reads. These tests drive execute() directly with a fake
+# run_claude so each pass's JSON is controlled independently.
+
+
+def two_pass_run_claude(code_json, qa_json, captured_calls):
+    def _fake(prompt, **kwargs):
+        captured_calls.append({"prompt": prompt, **kwargs})
+        is_qa = "QA Reviewer agent" in kwargs.get("append_system", "")
+        return {"result": json.dumps(qa_json if is_qa else code_json)}
+
+    return _fake
+
+
+def test_review_step_is_read_only():
+    assert STEP_CONFIG[12][2] == "Read,Glob,Grep"  # PLANNER_TOOLS — no Edit/Write/Bash
+
+
+def test_review_step_merges_two_passes_into_one_structured_verdict(tmp_path, monkeypatch):
+    ws, _origin = make_git_workspace(tmp_path)
+    (ws / "app.py").write_text("print('hi')\n")
+    git(ws, "add", "-A")
+    git(ws, "commit", "-m", "add app.py")
+    git(ws, "push", "-u", "origin", "HEAD:horizon/t-1")
+    monkeypatch.setattr(step_agent, "workspace_path", lambda repo: ws)
+
+    calls = []
+    code_json = {
+        "summary": "code review done",
+        "verdict": "fail",
+        "findings": [{"file": "app.py", "line": 1, "severity": "block", "detail": "no guardrail check"}],
+        "artifact_md": "## Code review\n**fail**",
+    }
+    qa_json = {
+        "summary": "qa review done",
+        "verdict": "pass",
+        "regression_tests_run": True,
+        "new_code_unit_coverage": True,
+        "e2e_test_present": True,
+        "findings": [],
+        "artifact_md": "## QA review\n**pass**",
+    }
+    monkeypatch.setattr(step_agent, "run_claude", two_pass_run_claude(code_json, qa_json, calls))
+
+    result = execute(make_task(12, "Automated review (code + QA)", repo="acme/demo"))
+
+    assert len(calls) == 2  # exactly one code-review pass, one QA pass
+    verdict = result["artifacts"]["verdict"]
+    assert verdict["code_review"] == {"verdict": "fail", "findings": code_json["findings"]}
+    assert verdict["qa_review"]["verdict"] == "pass"
+    assert verdict["qa_review"]["e2e_test_present"] is True
+    assert "code review failed" in result["summary"]
+    assert "QA review passed" in result["summary"]
+    assert "no guardrail check" in result["summary"]
+    assert "## Code review" in result["artifacts"]["artifact_md"]
+    assert "## QA review" in result["artifacts"]["artifact_md"]
+
+
+def test_review_step_defaults_a_malformed_pass_to_fail_closed(tmp_path, monkeypatch):
+    ws, _origin = make_git_workspace(tmp_path)
+    git(ws, "push", "-u", "origin", "HEAD:horizon/t-1")
+    monkeypatch.setattr(step_agent, "workspace_path", lambda repo: ws)
+
+    # Neither pass returns a "verdict" field at all (e.g. a model that ignored
+    # the schema) — must default to "fail", never silently "pass".
+    junk = {"summary": "not the right shape"}
+    monkeypatch.setattr(step_agent, "run_claude", two_pass_run_claude(junk, junk, []))
+
+    result = execute(make_task(12, "Automated review (code + QA)", repo="acme/demo"))
+    verdict = result["artifacts"]["verdict"]
+    assert verdict["code_review"]["verdict"] == "fail"
+    assert verdict["qa_review"]["verdict"] == "fail"
+    assert verdict["qa_review"]["regression_tests_run"] is False
+
+
+def test_review_step_without_a_repo_auto_passes_without_calling_claude(monkeypatch):
+    called = []
+    monkeypatch.setattr(step_agent, "run_claude", lambda *a, **k: called.append(1))
+    result = execute(make_task(12, "Automated review (code + QA)"))
+    assert called == []
+    verdict = result["artifacts"]["verdict"]
+    assert verdict["code_review"]["verdict"] == "pass"
+    assert verdict["qa_review"]["verdict"] == "pass"
+    assert "no repository attached" in result["summary"]
+
+
+def test_review_step_composes_the_items_persona_into_both_passes(tmp_path, monkeypatch):
+    ws, _origin = make_git_workspace(tmp_path)
+    git(ws, "push", "-u", "origin", "HEAD:horizon/t-1")
+    monkeypatch.setattr(step_agent, "workspace_path", lambda repo: ws)
+    calls = []
+    ok = {
+        "summary": "ok",
+        "verdict": "pass",
+        "regression_tests_run": True,
+        "new_code_unit_coverage": True,
+        "e2e_test_present": True,
+        "findings": [],
+    }
+    monkeypatch.setattr(step_agent, "run_claude", two_pass_run_claude(ok, ok, calls))
+
+    task = make_task(12, "Automated review (code + QA)", repo="acme/demo")
+    task["item"]["persona"] = "python_backend"
+    execute(task)
+
+    assert len(calls) == 2
+    for call in calls:
+        assert persona_md("python_backend") in call["append_system"]
+
+
+def test_review_step_reuses_prepare_branch_against_a_repointed_shared_workspace(tmp_path, monkeypatch):
+    """workspace_path() is keyed per-repo, not per-item: a sibling item's run
+    on the same repo between implement finishing and review starting would
+    otherwise leave the checkout on the wrong branch. Reusing prepare_branch
+    (the same call the implement step makes) closes that race."""
+    ws, origin = make_git_workspace(tmp_path)
+    (ws / "app.py").write_text("print('hi')\n")
+    git(ws, "add", "-A")
+    git(ws, "commit", "-m", "add app.py")
+    git(ws, "push", "-u", "origin", "HEAD:horizon/t-1")
+
+    # Simulate a sibling item's run repointing the shared checkout, with
+    # uncommitted leftovers from a superseded attempt.
+    git(ws, "checkout", "-B", "horizon/other-item", "origin/main")
+    (ws / "leftover.txt").write_text("uncommitted junk from another item\n")
+
+    monkeypatch.setattr(step_agent, "workspace_path", lambda repo: ws)
+    ok = {
+        "summary": "ok",
+        "verdict": "pass",
+        "regression_tests_run": True,
+        "new_code_unit_coverage": True,
+        "e2e_test_present": True,
+        "findings": [],
+    }
+    monkeypatch.setattr(step_agent, "run_claude", two_pass_run_claude(ok, ok, []))
+
+    execute(make_task(12, "Automated review (code + QA)", repo="acme/demo"))
+
+    branch = subprocess.run(
+        ["git", "-C", str(ws), "branch", "--show-current"], capture_output=True, text=True, check=True
+    ).stdout.strip()
+    assert branch == "horizon/t-1"
+    assert not (ws / "leftover.txt").exists()  # the other item's junk was scrubbed
 
 
 # ---- artifact truncation (HZ-29) ----

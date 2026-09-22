@@ -2,7 +2,7 @@
 // HTTP layer can push fresh state to SSE clients.
 
 import { db } from './db.js'
-import { STEPS, PHASES, isClosed, curStep } from './lifecycle.js'
+import { STEPS, PHASES, isClosed, curStep, IMPLEMENT_STEP_INDEX, ACCEPT_GATE_INDEX } from './lifecycle.js'
 import { isPersona, personaLabel } from './personas.js'
 import { getActiveProjectId, setSetting } from './settings.js'
 
@@ -236,7 +236,15 @@ export function requestChanges(id, target, feedbackText, actor = 'You') {
       feedbackText || '',
       actor,
     )
-    while (reworkIdx > 0 && STEPS[reworkIdx].kind !== 'agent') reworkIdx--
+    if (it.cursor === ACCEPT_GATE_INDEX) {
+      // The automated Review step immediately precedes this gate, but
+      // rejecting the code means the CODE is wrong — walking back to the
+      // nearest agent step would land on Review, which would just re-judge
+      // the same unchanged diff. Send the human's rejection to Eng instead.
+      reworkIdx = IMPLEMENT_STEP_INDEX
+    } else {
+      while (reworkIdx > 0 && STEPS[reworkIdx].kind !== 'agent') reworkIdx--
+    }
   }
   const reworkAgent = STEPS[reworkIdx].kind === 'agent' ? STEPS[reworkIdx].agent : null
 
@@ -245,7 +253,10 @@ export function requestChanges(id, target, feedbackText, actor = 'You') {
     reworkAgent || target || '',
     feedbackText || '(no notes)',
   )
-  db.prepare(`UPDATE work_item SET cursor = ?, rejected = 0, paused = 0, ${touch} WHERE id = ?`).run(reworkIdx, id)
+  // A human-directed rework gets a fresh set of automated review cycles —
+  // otherwise a prior automated cap-out could falsely cap this new attempt.
+  const resetReview = reworkIdx <= IMPLEMENT_STEP_INDEX ? ', review_cycle_count = 0' : ''
+  db.prepare(`UPDATE work_item SET cursor = ?, rejected = 0, paused = 0${resetReview}, ${touch} WHERE id = ?`).run(reworkIdx, id)
   addEvent(id, {
     who: actor,
     text: `requested changes on ${target || 'this step'}${feedbackText ? ': ' + feedbackText : ''} — sent back to the ${STEPS[reworkIdx].label.toLowerCase()} step`,
@@ -336,7 +347,8 @@ export function restartPhase(id, phase, reason, actor = 'You') {
       reason,
     )
   }
-  db.prepare(`UPDATE work_item SET cursor = ?, rejected = 0, paused = 0, ${touch} WHERE id = ?`).run(firstIdx, id)
+  const resetReview = firstIdx <= IMPLEMENT_STEP_INDEX ? ', review_cycle_count = 0' : ''
+  db.prepare(`UPDATE work_item SET cursor = ?, rejected = 0, paused = 0${resetReview}, ${touch} WHERE id = ?`).run(firstIdx, id)
   addEvent(id, {
     who: actor,
     text: `restarted the ${PHASES[phase]} phase${reason ? ': ' + reason : ''}`,
@@ -545,7 +557,13 @@ export function recoverRejectedItems() {
   for (const row of rows) {
     let reworkIdx = Math.min(row.cursor, STEPS.length - 1)
     if (STEPS[reworkIdx].kind === 'gate') {
-      while (reworkIdx > 0 && STEPS[reworkIdx].kind !== 'agent') reworkIdx--
+      // Same Accept-gate special case as requestChanges: don't land on the
+      // automated Review step, which would just re-judge unchanged code.
+      if (reworkIdx === ACCEPT_GATE_INDEX) {
+        reworkIdx = IMPLEMENT_STEP_INDEX
+      } else {
+        while (reworkIdx > 0 && STEPS[reworkIdx].kind !== 'agent') reworkIdx--
+      }
     }
     const notes = db
       .prepare("SELECT notes FROM gate_decision WHERE item_id = ? AND decision = 'rejected' ORDER BY id DESC LIMIT 1")
@@ -555,7 +573,8 @@ export function recoverRejectedItems() {
       STEPS[reworkIdx].agent || '',
       notes || 'changes requested',
     )
-    db.prepare(`UPDATE work_item SET cursor = ?, rejected = 0, ${touch} WHERE id = ?`).run(reworkIdx, row.id)
+    const resetReview = reworkIdx <= IMPLEMENT_STEP_INDEX ? ', review_cycle_count = 0' : ''
+    db.prepare(`UPDATE work_item SET cursor = ?, rejected = 0${resetReview}, ${touch} WHERE id = ?`).run(reworkIdx, row.id)
     addEvent(row.id, {
       who: 'Horizon',
       text: `requeued for rework at “${STEPS[reworkIdx].label}”`,
