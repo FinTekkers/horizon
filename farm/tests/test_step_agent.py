@@ -375,3 +375,33 @@ def test_review_step_reuses_prepare_branch_against_a_repointed_shared_workspace(
     ).stdout.strip()
     assert branch == "horizon/t-1"
     assert not (ws / "leftover.txt").exists()  # the other item's junk was scrubbed
+
+
+# ---- artifact truncation (HZ-29) ----
+# The root-cause bug was two independent 12,000-char slices in this file: one
+# rendering a *prior* artifact into a new prompt (build_prompt), one capping
+# the artifact *this* agent just produced before reporting it back (execute).
+# The server now owns the total prompt budget (orchestrator.js's
+# budgetArtifacts) — both sites here must only be defensive sanity ceilings,
+# never the working limit, or a large plan silently loses its tail again.
+
+
+def test_build_prompt_does_not_re_truncate_a_large_prior_artifact_at_12k():
+    from farm.step_agent import MAX_PROMPT_ARTIFACT_CHARS
+
+    big = "a" * (MAX_PROMPT_ARTIFACT_CHARS - 1)
+    task = make_task(11, "Specialist agent implements", artifacts=[{"label": "Draft plan", "content": big}])
+    prompt = build_prompt(task)
+    assert big in prompt
+    assert "a" * 12001 in prompt  # beyond the old flat 12,000-char slice
+
+
+def test_planner_step_reports_back_a_large_artifact_in_full(monkeypatch):
+    big = "z" * 50000  # far past the old 12,000-char write-time slice
+    monkeypatch.setattr(
+        step_agent,
+        "run_claude",
+        lambda *a, **k: {"result": json.dumps({"summary": "did the step", "artifact_md": big})},
+    )
+    result = execute(make_task(6, "Draft implementation plan"))
+    assert result["artifacts"]["artifact_md"] == big

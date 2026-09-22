@@ -89,6 +89,33 @@ def test_steps_run_without_matching_rules_stamps_an_empty_string(running_farm):
     assert json.loads((QUEUE_DIR / "pm" / "102.json").read_text())["rules"] == ""
 
 
+# ---- /internal/steps/result forwarding (HZ-29) ----
+# farmd is a dumb relay here: it must forward the agent's reported artifacts
+# to the Node server byte-for-byte, with no re-slicing of its own — any cap
+# on artifact size belongs to the agent (write side) and the server
+# (dispatch-time budget), not this hop.
+
+
+def test_steps_result_forwards_a_large_artifact_verbatim(monkeypatch):
+    captured = {}
+
+    class FakeResponse:
+        status_code = 200
+
+    def fake_post(url, json=None, headers=None, timeout=None):
+        captured["url"], captured["json"] = url, json
+        return FakeResponse()
+
+    monkeypatch.setattr(farmd.httpx, "post", fake_post)
+    big = "z" * 50000
+    res = client.post(
+        "/internal/steps/result",
+        json={"run_id": 55, "ok": True, "summary": "done", "artifacts": {"artifact_md": big}},
+    )
+    assert res.status_code == 200
+    assert captured["json"]["artifacts"]["artifact_md"] == big
+
+
 def test_concierge_does_not_launch_when_the_flag_is_off(monkeypatch):
     launched = []
     monkeypatch.setattr(farmd.tmux_mgr, "new_session", lambda name, *a, **k: launched.append(name))

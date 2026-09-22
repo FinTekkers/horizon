@@ -26,6 +26,15 @@ ROLE_PROMPT = (Path(__file__).parent / "roles" / "pm.md").read_text()
 PATCH_FIELDS = {"desc": 500, "metric": 400, "guardrails": 400, "persona": 40}
 FARMD = f"http://127.0.0.1:{FARM_PORT}"
 
+# Write-side: a pathological-payload guard, not a working limit — the agent's
+# own artifact must reach the server intact (HZ-29). The server budgets the
+# *dispatched* total across artifacts; this only stops a runaway agent output.
+WRITE_ARTIFACT_SANITY_CEILING_CHARS = 200_000
+# Read-side: defense-in-depth for rendering prior artifacts into a prompt.
+# The server already budgets the total it sends (~60k), so this should never
+# fire in practice — mirrors farm/rules.py's MAX_PROMPT_RULES_CHARS backstop.
+MAX_PROMPT_ARTIFACT_CHARS = 100_000
+
 
 def log(msg: str) -> None:
     print(f"[{datetime.now().strftime('%H:%M:%S')}] {msg}", flush=True)
@@ -53,7 +62,7 @@ def build_prompt(task: dict) -> str:
     for artifact in task.get("artifacts") or []:
         lines.append("")
         lines.append(f"Prior artifact — {artifact.get('label', 'earlier step')}:")
-        lines.append(artifact.get("content", "")[:12000])
+        lines.append(artifact.get("content", "")[:MAX_PROMPT_ARTIFACT_CHARS])
     feedback = task.get("feedback") or []
     if feedback:
         lines.append("")
@@ -79,7 +88,7 @@ def validate(parsed: dict) -> tuple[str, dict, str | None]:
         if isinstance(value, str) and value.strip():
             patch[key] = value.strip()[:limit]
     artifact = parsed.get("artifact_md")
-    artifact = artifact.strip()[:12000] if isinstance(artifact, str) and artifact.strip() else None
+    artifact = artifact.strip()[:WRITE_ARTIFACT_SANITY_CEILING_CHARS] if isinstance(artifact, str) and artifact.strip() else None
     return summary[:300], patch, artifact
 
 
@@ -115,7 +124,7 @@ def process(task: dict, project_slug: str) -> None:
             summary = f"addressed feedback (“{feedback[0].get('message', '')[:80]}”) — {summary}"[:300]
             if artifact:
                 header = "\n".join(f"> {fb.get('message', '')}" for fb in feedback)
-                artifact = f"## Human feedback addressed in this revision\n{header}\n\n{artifact}"[:12000]
+                artifact = f"## Human feedback addressed in this revision\n{header}\n\n{artifact}"[:WRITE_ARTIFACT_SANITY_CEILING_CHARS]
 
         result = {"run_id": run_id, "ok": True, "summary": summary, "patch": patch}
         if artifact:
