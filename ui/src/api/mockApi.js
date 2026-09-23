@@ -320,3 +320,14 @@ export function restartPhase(id, phase, reason) {
   runAgents(id)
 }
 
+// Soft delete (HZ-59) — mock mirror of store.abandonItem: stops dispatch by
+// clearing the mock agent timer and setting abandoned_at.
+export function abandonItem(id, reason) {
+  const it = items.find((x) => x.id === id)
+  if (!it || isClosed(it) || it.abandoned_at) return
+  clearTimeout(timers[id])
+  const trimmed = (reason || '').trim()
+  update(id, (x) => ({ ...x, abandoned_at: new Date().toISOString(), abandoned_reason: trimmed, abandoned_by: 'You' }))
+  pushEvent(id, { who: 'You', text: `abandoned this item: ${trimmed}`, color: '#9C333E', initials: 'YOU' })
+}
+

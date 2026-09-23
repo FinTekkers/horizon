@@ -2,7 +2,7 @@
 // HTTP layer can push fresh state to SSE clients.
 
 import { db } from './db.js'
-import { STEPS, PHASES, isClosed, curStep, IMPLEMENT_STEP_INDEX, ACCEPT_GATE_INDEX } from './lifecycle.js'
+import { STEPS, PHASES, isClosed, isAbandoned, curStep, IMPLEMENT_STEP_INDEX, ACCEPT_GATE_INDEX } from './lifecycle.js'
 import { isPersona, personaLabel } from './personas.js'
 import { getActiveProjectId, setSetting } from './settings.js'
 
@@ -154,6 +154,9 @@ export function listItems() {
     currentStep: currentStepOf(row),
     paused: !!row.paused,
     rejected: !!row.rejected,
+    abandoned_at: row.abandoned_at,
+    abandoned_reason: row.abandoned_reason,
+    abandoned_by: row.abandoned_by,
     events: selectEvents.all(row.id),
     stepOutputs: stepOutputs(row.id),
     activeRun: selectActiveRun.get(row.id) || null,
@@ -184,7 +187,7 @@ export function approveGate(id, stepIndex, notes, actor = 'You') {
   const it = getItem(id)
   if (!it) return { error: 'not_found' }
   if (inactiveProject(it)) return { error: 'project_not_active' }
-  if (isClosed(it) || STEPS[it.cursor].kind !== 'gate') return { error: 'not_at_gate' }
+  if (isClosed(it) || isAbandoned(it) || STEPS[it.cursor].kind !== 'gate') return { error: 'not_at_gate' }
   if (stepIndex !== it.cursor) return { error: 'stale_step' }
 
   const trimmed = (notes || '').trim()
@@ -224,6 +227,7 @@ export function requestChanges(id, target, feedbackText, actor = 'You') {
   if (!it) return { error: 'not_found' }
   if (inactiveProject(it)) return { error: 'project_not_active' }
   if (isClosed(it)) return { error: 'closed' }
+  if (isAbandoned(it)) return { error: 'abandoned' }
 
   agentRunner.cancel(id, 'rejected')
 
@@ -273,6 +277,7 @@ export function setPaused(id, paused) {
   if (!it) return { error: 'not_found' }
   if (inactiveProject(it)) return { error: 'project_not_active' }
   if (isClosed(it)) return { error: 'closed' }
+  if (isAbandoned(it)) return { error: 'abandoned' }
 
   db.prepare(`UPDATE work_item SET paused = ?, ${touch} WHERE id = ?`).run(paused ? 1 : 0, id)
   addEvent(id, {
@@ -294,6 +299,7 @@ export function setPersona(id, persona) {
   if (!it) return { error: 'not_found' }
   if (inactiveProject(it)) return { error: 'project_not_active' }
   if (isClosed(it)) return { error: 'closed' }
+  if (isAbandoned(it)) return { error: 'abandoned' }
   if (!isPersona(persona)) return { error: 'bad_persona' }
 
   db.prepare(`UPDATE work_item SET persona = ?, ${touch} WHERE id = ?`).run(persona, id)
@@ -317,6 +323,7 @@ export function setPriority(id, priority) {
   if (!it) return { error: 'not_found' }
   if (inactiveProject(it)) return { error: 'project_not_active' }
   if (isClosed(it)) return { error: 'closed' }
+  if (isAbandoned(it)) return { error: 'abandoned' }
   if (!PRIORITIES.includes(priority)) return { error: 'bad_priority' }
   if (it.priority === priority) return { ok: true, unchanged: true }
 
@@ -335,6 +342,9 @@ export function restartPhase(id, phase, reason, actor = 'You') {
   const it = getItem(id)
   if (!it) return { error: 'not_found' }
   if (inactiveProject(it)) return { error: 'project_not_active' }
+  // Abandonment must not be silently undone by a lever that predates it —
+  // reopening an abandoned item is a deliberate act this function doesn't own.
+  if (isAbandoned(it)) return { error: 'abandoned' }
   const firstIdx = STEPS.findIndex((st) => st.phase === phase)
   if (firstIdx < 0) return { error: 'bad_phase' }
 
@@ -360,6 +370,33 @@ export function restartPhase(id, phase, reason, actor = 'You') {
   return { ok: true }
 }
 
+// Soft delete (HZ-59): a human stops a work item that should not proceed.
+// Dropping work is at least as consequential as approving it, so the route
+// gates this behind the same human gate PIN as gate approval — see app.js.
+// DB write + run cancellation happen here, BEFORE the route's best-effort
+// GitHub close: closing the issue fires Horizon's own issues.closed webhook
+// back at itself, and upsertFromGithub must see abandoned_at already set or
+// it would race to reclassify this item as completed instead.
+export function abandonItem(id, reason, actor = 'You') {
+  const it = getItem(id)
+  if (!it) return { error: 'not_found' }
+  if (inactiveProject(it)) return { error: 'project_not_active' }
+  if (isClosed(it)) return { error: 'closed' }
+  if (isAbandoned(it)) return { error: 'already_abandoned' }
+  const trimmed = (reason || '').trim()
+  if (!trimmed) return { error: 'reason_required' }
+
+  // Stop dispatch first: a superseded/cancelled run must not keep burning a
+  // farm concurrency slot on work that's about to be marked abandoned.
+  agentRunner.cancel(id, 'cancelled')
+  db.prepare(
+    `UPDATE work_item SET abandoned_at = datetime('now'), abandoned_reason = ?, abandoned_by = ?, ${touch} WHERE id = ?`,
+  ).run(trimmed, actor, id)
+  addEvent(id, { who: actor, text: `abandoned this item: ${trimmed}`, color: '#9C333E', initials: 'YOU' })
+  notify()
+  return { ok: true }
+}
+
 // Standalone feedback (UI form or an ingested GitHub comment). If the item is
 // sitting on an agent step and not paused, the in-flight run is superseded and
 // the step re-runs (attempt N+1) with this feedback injected; otherwise the
@@ -370,6 +407,7 @@ export function addFeedback(id, { message, target = '', source = 'ui', ghComment
   if (!it) return { error: 'not_found' }
   if (inactiveProject(it)) return { error: 'project_not_active' }
   if (isClosed(it)) return { error: 'closed' }
+  if (isAbandoned(it)) return { error: 'abandoned' }
 
   if (ghCommentId != null) {
     const seen = db.prepare('SELECT id FROM feedback WHERE gh_comment_id = ?').get(ghCommentId)
@@ -467,7 +505,7 @@ export function approveGateFromGithub(id) {
   const it = getItem(id)
   if (!it) return { error: 'not_found' }
   const stepIndex = it.cursor
-  if (isClosed(it) || STEPS[stepIndex]?.label !== 'Accept the code') return { error: 'not_at_accept_gate' }
+  if (isClosed(it) || isAbandoned(it) || STEPS[stepIndex]?.label !== 'Accept the code') return { error: 'not_at_accept_gate' }
 
   db.prepare(`UPDATE work_item SET cursor = cursor + 1, rejected = 0, ${touch} WHERE id = ?`).run(id)
   db.prepare(
@@ -532,12 +570,16 @@ export function upsertFromGithub(ghIssue, repoFullName) {
       changed = true
     }
     const wasClosed = row.cursor >= STEPS.length
-    if (closedOnGithub && !wasClosed) {
+    // Both branches skip an already-abandoned item: closing the issue is
+    // abandonItem's own best-effort side effect (would otherwise race to
+    // reclassify the item as completed — see abandonItem above), and a
+    // GitHub reopen must never silently resurrect an abandoned item mid-flight.
+    if (closedOnGithub && !wasClosed && !row.abandoned_at) {
       agentRunner.cancel(row.id, 'cancelled')
       db.prepare(`UPDATE work_item SET cursor = ?, ${touch} WHERE id = ?`).run(STEPS.length, row.id)
       addEvent(row.id, { who: 'GitHub', text: `closed issue #${number}`, color: '#2A2A2E', initials: 'GH' })
       changed = true
-    } else if (!closedOnGithub && wasClosed) {
+    } else if (!closedOnGithub && wasClosed && !row.abandoned_at) {
       db.prepare(`UPDATE work_item SET cursor = 0, rejected = 0, paused = 0, ${touch} WHERE id = ?`).run(row.id)
       addEvent(row.id, { who: 'GitHub', text: `reopened issue #${number}`, color: '#2A2A2E', initials: 'GH' })
       changed = true

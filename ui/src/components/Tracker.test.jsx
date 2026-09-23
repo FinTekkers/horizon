@@ -38,7 +38,7 @@ const baseItem = {
 
 const noop = () => {}
 
-function renderTracker(item, onSetPersona = noop) {
+function renderTracker(item, onSetPersona = noop, onAbandon = noop) {
   return render(
     <Tracker
       item={item}
@@ -49,6 +49,7 @@ function renderTracker(item, onSetPersona = noop) {
       onTogglePause={noop}
       onRestartPhase={noop}
       onSetPersona={onSetPersona}
+      onAbandon={onAbandon}
     />,
   )
 }
@@ -124,4 +125,28 @@ test('no output link on a done step with no recorded output', () => {
   const item = { ...baseItem, cursor: 12, stepOutputs: {} }
   const { queryByRole } = renderTracker(item)
   expect(queryByRole('link', { name: 'See agent output ↗' })).toBeNull()
+})
+
+// ---- abandon (HZ-59) ----
+
+test('a live item shows an Abandon button, and clicking it fires onAbandon with the item id', () => {
+  const spy = vi.fn()
+  const { getByText } = renderTracker(baseItem, noop, spy)
+  fireEvent.click(getByText('Abandon'))
+  expect(spy).toHaveBeenCalledWith('T-1')
+})
+
+test('an abandoned item hides Pause/Resume and Abandon, and shows the reason instead', () => {
+  const item = { ...baseItem, cursor: 11, abandoned_at: '2026-01-01 00:00:00', abandoned_reason: 'no longer needed', abandoned_by: 'Dana' }
+  const { queryByText, getByText } = renderTracker(item)
+  expect(queryByText('Abandon')).toBeNull()
+  expect(queryByText('Pause work')).toBeNull()
+  expect(queryByText('Resume work')).toBeNull()
+  expect(getByText(/Abandoned by Dana: no longer needed/)).toBeTruthy()
+})
+
+test('an abandoned item offers no "Restart phase" button — reopening must be a deliberate act, not a leftover lever', () => {
+  const item = { ...baseItem, cursor: 11, abandoned_at: '2026-01-01 00:00:00', abandoned_reason: 'stopping this' }
+  const { queryByText } = renderTracker(item)
+  expect(queryByText('Restart phase')).toBeNull()
 })

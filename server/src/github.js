@@ -478,6 +478,33 @@ export async function closeIssueWithSummary(item) {
   }
 }
 
+// Abandoning (HZ-59) closes the issue as "not planned", distinct from the
+// final-gate "completed" close above — GitHub's own state_reason enum makes
+// that distinction directly. Called AFTER the DB is already marked abandoned
+// (see store.abandonItem) so the webhook this PATCH triggers lands on an item
+// upsertFromGithub already knows to leave alone.
+export async function closeIssueAsAbandoned(item, reason) {
+  const repo = item.repo
+  const comment = [
+    '🚫 Abandoned via Horizon — this work will not proceed.',
+    '',
+    `- Reason: ${reason}`,
+    '',
+    `_${itemLink(item)} · posted by Horizon_`,
+  ].join('\n')
+  await gh(`/repos/${repo}/issues/${item.issue}/comments`, {
+    method: 'POST',
+    body: JSON.stringify({ body: comment }),
+  }) // comment is best-effort; the state change below is what matters
+  const res = await gh(`/repos/${repo}/issues/${item.issue}`, {
+    method: 'PATCH',
+    body: JSON.stringify({ state: 'closed', state_reason: 'not_planned' }),
+  })
+  if (!res.ok) {
+    throw new Error(`could not close issue #${item.issue} (${res.status} — check the token has Issues read/write)`)
+  }
+}
+
 // ---- issue-comment ingestion (GitHub → feedback) ----
 // Humans steer agents by commenting on the issue. Conflict policy: SQLite is
 // authoritative for lifecycle position (ingestion never touches cursor —

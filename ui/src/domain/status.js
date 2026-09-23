@@ -1,15 +1,20 @@
 // Shared status presentation for a work item (board card + tracker header).
 
-import { AGENTS, isClosed, curStep, awaitingGate } from './lifecycle'
+import { AGENTS, isClosed, isAbandoned, curStep, awaitingGate } from './lifecycle'
 
 // verbose=true gives the tracker-header phrasing; false gives the compact card one.
 export function itemStatus(item, verbose = false) {
   const closed = isClosed(item)
-  const rejected = item.rejected && !closed
-  const paused = !!item.paused && !closed && !rejected
+  const abandoned = isAbandoned(item)
+  const rejected = item.rejected && !closed && !abandoned
+  const paused = !!item.paused && !closed && !abandoned && !rejected
   const awaiting = awaitingGate(item)
   const cur = curStep(item)
 
+  // Abandoned is its own terminal state, distinct from Closed — reusing
+  // cursor >= STEPS.length would make it indistinguishable from delivered
+  // work in every count and view (the exact flaw HZ-59 exists to fix).
+  if (abandoned) return { label: 'Abandoned', color: '#5C1F2B', bg: '#F1DFE2' }
   if (closed) return { label: 'Closed', color: '#0E6E74', bg: '#E2F0F0' }
   if (rejected) return { label: 'Changes requested', color: '#9C333E', bg: '#F6E2E4' }
   if (paused) return { label: 'Paused', color: '#6E6A7E', bg: '#EAE6F1' }

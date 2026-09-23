@@ -664,6 +664,57 @@ export function buildApp({ logger = true } = {}) {
     },
   )
 
+  // Soft delete (HZ-59): stop a work item that should not proceed. Gated by
+  // the same human gate PIN as gate approval — dropping work is at least as
+  // consequential as approving it, and the PIN is what keeps an agent with
+  // DB/API access from abandoning its own inconvenient work. The DB write
+  // (store.abandonItem) happens BEFORE the GitHub close below: closing the
+  // issue fires Horizon's own issues.closed webhook back at itself, and
+  // upsertFromGithub must see abandoned_at already set or it could race to
+  // reclassify this item as completed instead of abandoned. The GitHub close
+  // is best-effort and never fails the request — a human can close the issue
+  // by hand; the item is already correctly abandoned in Horizon either way.
+  fastify.post(
+    '/api/items/:id/abandon',
+    {
+      schema: {
+        params: idParam,
+        body: {
+          type: 'object',
+          required: ['reason'],
+          properties: { reason: { type: 'string', minLength: 1, maxLength: 2000 } },
+        },
+      },
+    },
+    async (request, reply) => {
+      if (!humanAuthorized(request, reply)) return
+      const { id } = request.params
+      const item = store.getItem(id)
+      const result = store.abandonItem(id, request.body.reason, request.user.name)
+      if (result.error) return send(reply, result)
+      if (item?.repo && item.issue != null) {
+        try {
+          await github.closeIssueAsAbandoned(item, request.body.reason.trim())
+          store.addEvent(id, {
+            who: 'Horizon',
+            text: `closed issue #${item.issue} on GitHub as not planned`,
+            color: '#0E6E74',
+            initials: 'HZ',
+          })
+        } catch (err) {
+          store.addEvent(id, {
+            who: 'Horizon',
+            text: `could not close issue #${item.issue}: ${err.message} — close it manually`,
+            color: '#9C333E',
+            initials: 'HZ',
+          })
+        }
+        store.notifyChange()
+      }
+      return send(reply, result)
+    },
+  )
+
   // ---- auth (HZ-21: hardcoded credential OR Google SSO, per-account gate PIN) ----
 
   fastify.post(

@@ -276,3 +276,154 @@ test('stepOutputs carry the step label for non-UI clients', () => {
     output: 'verdict: pass', attempt: 1, artifact: '# QA review', label: 'QA reviews the test plan',
   })
 })
+
+// ---- abandon (HZ-59): soft delete with a reason and an audit trail ----
+
+const { isAbandoned, isClosed } = await import('../src/lifecycle.js')
+
+test('abandonItem on an unknown item is not_found', () => {
+  assert.deepEqual(store.abandonItem('NOPE-1', 'no longer needed'), { error: 'not_found' })
+})
+
+test('abandonItem on a closed item is rejected — abandoned is not a way to re-close a delivered item', () => {
+  assert.deepEqual(store.abandonItem('T-CLOSED', 'too late'), { error: 'closed' })
+})
+
+test('abandonItem requires a non-empty, trimmed reason', () => {
+  assert.deepEqual(store.abandonItem('T-GATE', ''), { error: 'reason_required' })
+  assert.deepEqual(store.abandonItem('T-GATE', '   '), { error: 'reason_required' })
+})
+
+test('abandonItem cancels the in-flight run, marks the item abandoned (distinct from closed), and logs an event with the reason and actor', () => {
+  insertItem.run('T-ABANDON', 'Abandon me', 11, null, null)
+  const calls = []
+  store.registerAgentRunner({
+    kick: (id) => calls.push(['kick', id]),
+    cancel: (id, status) => calls.push(['cancel', id, status]),
+  })
+  const result = store.abandonItem('T-ABANDON', 'no longer a priority', 'Dana')
+  assert.deepEqual(result, { ok: true })
+  // Cancellation happens so the in-flight run stops burning a concurrency
+  // slot — the same /steps/cancel path pause/reject already use.
+  assert.deepEqual(calls, [['cancel', 'T-ABANDON', 'cancelled']])
+  store.registerAgentRunner({ kick: () => {}, cancel: () => {} })
+
+  const item = store.getItem('T-ABANDON')
+  assert.equal(isAbandoned(item), true)
+  assert.equal(isClosed(item), false, 'abandoned must not also read as closed')
+  assert.equal(item.cursor, 11, 'abandonment does not touch cursor — it is not modeled as completed')
+  assert.equal(item.abandoned_reason, 'no longer a priority')
+  assert.equal(item.abandoned_by, 'Dana')
+  assert.ok(item.abandoned_at)
+
+  const event = db.prepare("SELECT who, text FROM event WHERE item_id = 'T-ABANDON' ORDER BY id DESC LIMIT 1").get()
+  assert.equal(event.who, 'Dana')
+  assert.equal(event.text, 'abandoned this item: no longer a priority')
+
+  const snapshot = store.listItems().find((it) => it.id === 'T-ABANDON')
+  assert.equal(snapshot.abandoned_reason, 'no longer a priority')
+  assert.equal(snapshot.abandoned_by, 'Dana')
+})
+
+test('abandonItem is not re-entrant — abandoning twice is rejected, not a double event', () => {
+  insertItem.run('T-ABANDON-TWICE', 'Abandon twice', 4, null, null)
+  assert.deepEqual(store.abandonItem('T-ABANDON-TWICE', 'first reason'), { ok: true })
+  assert.deepEqual(store.abandonItem('T-ABANDON-TWICE', 'second reason'), { error: 'already_abandoned' })
+  const item = store.getItem('T-ABANDON-TWICE')
+  assert.equal(item.abandoned_reason, 'first reason', 'the second call must not overwrite the first')
+})
+
+test('soft delete: step_run, artifact and gate_decision history survive abandonment unchanged, and the active run is handed to agentRunner.cancel (not deleted here)', () => {
+  insertItem.run('T-ABANDON-HISTORY', 'Has history', 6, null, null)
+  db.prepare(
+    "INSERT INTO step_run (item_id, step_index, attempt, agent, status, output, artifact) VALUES ('T-ABANDON-HISTORY', 4, 1, 'Ensemble', 'done', 'planned options', '# plan')",
+  ).run()
+  db.prepare(
+    "INSERT INTO gate_decision (item_id, step_index, decision, notes, decided_by) VALUES ('T-ABANDON-HISTORY', 5, 'approved', 'looks good', 'Dana')",
+  ).run()
+  const runId = db.prepare(
+    "INSERT INTO step_run (item_id, step_index, attempt, agent, status) VALUES ('T-ABANDON-HISTORY', 6, 1, 'Eng', 'active')",
+  ).run().lastInsertRowid
+  const eventCountBefore = db.prepare("SELECT COUNT(*) AS n FROM event WHERE item_id = 'T-ABANDON-HISTORY'").get().n
+
+  // Stand in for the real orchestrator.cancel (registered at boot; see
+  // orchestrator.test.mjs for its own coverage) — closes the active row the
+  // same way, so this test can assert abandonItem delegates rather than
+  // deleting or racing it directly.
+  const calls = []
+  store.registerAgentRunner({
+    kick: () => {},
+    cancel: (id, status) => {
+      calls.push([id, status])
+      db.prepare("UPDATE step_run SET status = ?, ended_at = datetime('now') WHERE item_id = ? AND status = 'active'").run(
+        status,
+        id,
+      )
+    },
+  })
+
+  const result = store.abandonItem('T-ABANDON-HISTORY', 'evidence must survive')
+  assert.deepEqual(result, { ok: true })
+  assert.deepEqual(calls, [['T-ABANDON-HISTORY', 'cancelled']])
+  store.registerAgentRunner({ kick: () => {}, cancel: () => {} })
+
+  // Nothing was deleted — soft delete only.
+  const doneRun = db.prepare("SELECT * FROM step_run WHERE item_id = 'T-ABANDON-HISTORY' AND step_index = 4").get()
+  assert.equal(doneRun.status, 'done')
+  assert.equal(doneRun.artifact, '# plan')
+  const gate = db.prepare("SELECT * FROM gate_decision WHERE item_id = 'T-ABANDON-HISTORY'").get()
+  assert.equal(gate.notes, 'looks good')
+  // The active run is closed (cancelled), not deleted — its row still reads back.
+  const closedRun = db.prepare('SELECT status FROM step_run WHERE id = ?').get(runId)
+  assert.equal(closedRun.status, 'cancelled')
+  const eventCountAfter = db.prepare("SELECT COUNT(*) AS n FROM event WHERE item_id = 'T-ABANDON-HISTORY'").get().n
+  assert.equal(eventCountAfter, eventCountBefore + 1, 'abandonment adds an event, never removes one')
+})
+
+test('abandoned items are rejected by every other mutation — the item is frozen, not just undispatched', () => {
+  insertItem.run('T-ABANDON-FROZEN', 'Frozen after abandon', 3, null, null)
+  assert.equal(STEPS[3].kind, 'gate')
+  assert.deepEqual(store.abandonItem('T-ABANDON-FROZEN', 'stopping this'), { ok: true })
+
+  // Would otherwise be legal (parked exactly at a gate) if not for the
+  // isAbandoned guard — proves abandonment, not step kind, is what blocks it.
+  assert.deepEqual(store.approveGate('T-ABANDON-FROZEN', 3, ''), { error: 'not_at_gate' })
+  assert.deepEqual(store.requestChanges('T-ABANDON-FROZEN', 'target', 'feedback'), { error: 'abandoned' })
+  assert.deepEqual(store.setPaused('T-ABANDON-FROZEN', true), { error: 'abandoned' })
+  assert.deepEqual(store.setPersona('T-ABANDON-FROZEN', 'fullstack'), { error: 'abandoned' })
+  assert.deepEqual(store.setPriority('T-ABANDON-FROZEN', 'High'), { error: 'abandoned' })
+  assert.deepEqual(store.addFeedback('T-ABANDON-FROZEN', { message: 'late note' }), { error: 'abandoned' })
+  assert.deepEqual(store.restartPhase('T-ABANDON-FROZEN', 0, 'reopen attempt'), { error: 'abandoned' })
+})
+
+test('upsertFromGithub: closing the issue on an already-abandoned item does not silently complete it (self-webhook race, HZ-59)', () => {
+  const projectId = db.prepare("INSERT INTO project (name) VALUES ('abandon-sync')").run().lastInsertRowid
+  db.prepare("INSERT INTO project_repo (project_id, repo, prefix) VALUES (?, 'acme/abandon', 'AB')").run(projectId)
+  store.upsertFromGithub({ number: 41, title: 'Will be abandoned', body: 'do the thing', state: 'open', labels: [] }, 'acme/abandon')
+  assert.deepEqual(store.abandonItem('AB-41', 'stopping this work'), { ok: true })
+  const beforeCursor = store.getItem('AB-41').cursor
+
+  // Simulates the webhook that abandonItem's own GitHub close triggers,
+  // landing on the DB after abandoned_at is already set (see app.js's ordering).
+  store.upsertFromGithub({ number: 41, title: 'Will be abandoned', body: 'do the thing', state: 'closed', labels: [] }, 'acme/abandon')
+
+  const item = store.getItem('AB-41')
+  assert.equal(item.cursor, beforeCursor, 'cursor must not advance to STEPS.length — that would read as completed')
+  assert.equal(isAbandoned(item), true)
+  assert.notEqual(item.cursor, STEPS.length)
+})
+
+test('upsertFromGithub: reopening the issue on an abandoned item does not resurrect it into the pipeline', () => {
+  const projectId = db.prepare("INSERT INTO project (name) VALUES ('abandon-reopen')").run().lastInsertRowid
+  db.prepare("INSERT INTO project_repo (project_id, repo, prefix) VALUES (?, 'acme/reopen', 'RO')").run(projectId)
+  store.upsertFromGithub({ number: 55, title: 'Reopen target', body: 'do the thing', state: 'open', labels: [] }, 'acme/reopen')
+  assert.deepEqual(store.abandonItem('RO-55', 'stopping this work'), { ok: true })
+  const calls = []
+  store.registerAgentRunner({ kick: (id) => calls.push(id), cancel: () => {} })
+
+  store.upsertFromGithub({ number: 55, title: 'Reopen target', body: 'do the thing', state: 'open', labels: [] }, 'acme/reopen')
+
+  assert.ok(isAbandoned(store.getItem('RO-55')))
+  assert.ok(!calls.includes('RO-55'), 'a reopen on GitHub must not silently re-enter the pipeline for an abandoned item')
+  store.registerAgentRunner({ kick: () => {}, cancel: () => {} })
+})

@@ -20,6 +20,13 @@ const COPY = {
     submitColor: '#DFA200',
     placeholder: 'Why are you restarting? (optional)',
   },
+  abandon: {
+    title: 'Abandon this item',
+    submitLabel: 'Abandon',
+    submitColor: '#5C1F2B',
+    placeholder: 'Why is this being abandoned? (required)',
+    required: true,
+  },
 }
 
 function subtitle(composer) {
@@ -32,13 +39,23 @@ function subtitle(composer) {
   if (composer.mode === 'restart' && composer.phase != null) {
     return `${PHASES[composer.phase]} phase will re-run from the start`
   }
+  if (composer.mode === 'abandon') {
+    return 'Stops dispatch, cancels any in-flight run, and closes the GitHub issue as not planned — this is recorded on the activity feed and cannot be undone from here'
+  }
   return ''
 }
 
 export default function ComposerModal({ composer, onSubmit, onCancel }) {
   const inputRef = useRef(null)
   const copy = COPY[composer.mode] || COPY.reject
-  const submit = () => onSubmit((inputRef.current?.value || '').trim())
+  const submit = () => {
+    const text = (inputRef.current?.value || '').trim()
+    if (copy.required && !text) {
+      inputRef.current?.focus()
+      return
+    }
+    onSubmit(text)
+  }
 
   // The textarea needs plain Enter for newlines, so this decision's explicit
   // "confirm" keystroke is Ctrl/Cmd+Enter instead — same convention as

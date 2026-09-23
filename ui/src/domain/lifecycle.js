@@ -59,6 +59,12 @@ export function isClosed(item) {
   return item.cursor >= STEPS.length
 }
 
+// A human-initiated soft delete (HZ-59) — deliberately independent of cursor
+// so an abandoned item is never mistaken for one that reached the final gate.
+export function isAbandoned(item) {
+  return !!item.abandoned_at
+}
+
 export function curStep(item) {
   return isClosed(item) ? null : STEPS[item.cursor]
 }
@@ -68,6 +74,7 @@ export function phaseIdx(item) {
 }
 
 export function awaitingGate(item) {
+  if (isAbandoned(item)) return false
   const c = curStep(item)
   return !!c && c.kind === 'gate' && !item.rejected
 }

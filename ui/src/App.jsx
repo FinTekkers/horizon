@@ -129,6 +129,7 @@ function AuthenticatedApp({ user, onLogout }) {
       if (mode === 'approve') api.approveGate(itemId, text)
       else if (mode === 'reject') api.requestChanges(itemId, target, text)
       else if (mode === 'restart') api.restartPhase(itemId, phase, text)
+      else if (mode === 'abandon') api.abandonItem(itemId, text)
     }
     setComposer(CLOSED_COMPOSER)
   }
@@ -200,6 +201,7 @@ function AuthenticatedApp({ user, onLogout }) {
           onTogglePause={api.togglePause}
           onRestartPhase={(id, phase) => openComposer('restart', id, { phase })}
           onSetPersona={api.setPersona}
+          onAbandon={(id) => openComposer('abandon', id)}
         />
       )}
 
