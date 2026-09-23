@@ -6,6 +6,8 @@
 // can be enabled at runtime without a restart.
 
 import crypto from 'node:crypto'
+import { PNG } from 'pngjs'
+import pixelmatch from 'pixelmatch'
 import { db } from './db.js'
 import * as store from './store.js'
 import { getToken, getSetting, setSetting } from './settings.js'
@@ -262,11 +264,19 @@ export async function createMockPr(item) {
   throw new Error(`could not open the pull request (${prRes.status} — check the token has Pull requests read/write)`)
 }
 
-// ---- screenshots (HZ-18) ----
-// e2e/fixtures/test-base.js's captureScreenshot() commits fixed-name PNGs to
-// e2e/__screenshots__/ on the work branch during the implement step's e2e
-// run. Rendered here as a "Screenshots" section so a reviewer sees the
-// resulting UI inline on GitHub without checking out the branch.
+// ---- screenshots (HZ-18, HZ-63) ----
+// e2e/fixtures/test-base.js's captureScreenshot() writes fixed-name PNGs to
+// e2e/__screenshots__/ during the implement step's e2e run. They are
+// gitignored (HZ-63) — a binary file has no merge strategy, so committing
+// them made any two branches touching the same journey conflict. Instead
+// farm/step_agent.py's publish_screenshots() force-pushes them as an orphan
+// commit to a per-item ref ("e2e-artifacts/<item-id>"), and mergePr() below
+// promotes a merged item's ref onto "e2e-baseline". Rendered here as a
+// "Screenshots" section plus a diff-vs-baseline table so a reviewer sees the
+// resulting UI, and what changed, without checking out the branch.
+
+const BASELINE_REF = 'e2e-baseline'
+const artifactsRef = (item) => `e2e-artifacts/${item.id.toLowerCase()}`
 
 // Exported for direct unit testing; pure formatting, no network.
 export function screenshotsMarkdown(files) {
@@ -282,13 +292,13 @@ export function screenshotsMarkdown(files) {
   ].join('\n')
 }
 
-// download_url is branch-relative, so the images re-render the branch's
-// current pixels on every push with no PR-body edit needed. Never throws:
-// a repo with no e2e/__screenshots__ (404) or a GitHub hiccup (network
-// error, 5xx) both just omit the section rather than blocking PR creation.
-export async function fetchScreenshotsMarkdown(repo, branch) {
+// download_url is ref-relative, so the images re-render that ref's current
+// pixels on every push with no PR-body edit needed. Never throws: a repo
+// with no e2e/__screenshots__ (404) or a GitHub hiccup (network error, 5xx)
+// both just omit the section rather than blocking PR creation.
+export async function fetchScreenshotsMarkdown(repo, ref) {
   try {
-    const res = await gh(`/repos/${repo}/contents/e2e/__screenshots__?ref=${encodeURIComponent(branch)}`)
+    const res = await gh(`/repos/${repo}/contents/e2e/__screenshots__?ref=${encodeURIComponent(ref)}`)
     if (!res.ok) return ''
     return screenshotsMarkdown(await res.json())
   } catch {
@@ -296,15 +306,121 @@ export async function fetchScreenshotsMarkdown(repo, branch) {
   }
 }
 
+// null = the ref/dir doesn't exist (missing baseline, or an item that hasn't
+// published yet) — distinct from [] (the dir exists but is empty), and never
+// throws: a 404 or network error both read as "nothing to compare against".
+async function fetchScreenshotListing(repo, ref) {
+  try {
+    const res = await gh(`/repos/${repo}/contents/e2e/__screenshots__?ref=${encodeURIComponent(ref)}`)
+    if (!res.ok) return null
+    const list = await res.json()
+    return Array.isArray(list) ? list.filter((f) => f?.type === 'file' && f.name?.endsWith('.png')) : []
+  } catch {
+    return null
+  }
+}
+
+async function fetchFileBase64(repo, path, ref) {
+  const res = await gh(`/repos/${repo}/contents/${path}?ref=${encodeURIComponent(ref)}`)
+  if (!res.ok) return null
+  const data = await res.json().catch(() => null)
+  return typeof data?.content === 'string' ? Buffer.from(data.content, 'base64') : null
+}
+
+// Pixel-exact comparison across font rendering/antialiasing is noise a
+// reviewer learns to ignore, so two tolerances apply: pixelmatch's own
+// per-pixel `threshold` absorbs antialiasing at the pixel level, and
+// DIFF_RATIO_TOLERANCE absorbs the handful of stray pixels that still differ
+// across an otherwise-identical image. Pure/sync/no network — unit-testable
+// directly with small PNG buffers.
+const DIFF_RATIO_TOLERANCE = 0.01
+
+export function diffPngBuffers(bufferA, bufferB) {
+  const a = PNG.sync.read(bufferA)
+  const b = PNG.sync.read(bufferB)
+  if (a.width !== b.width || a.height !== b.height) return { changed: true, diffRatio: 1 }
+  const { width, height } = a
+  const diffPixels = pixelmatch(a.data, b.data, null, width, height, { threshold: 0.1 })
+  const diffRatio = diffPixels / (width * height)
+  return { changed: diffRatio > DIFF_RATIO_TOLERANCE, diffRatio }
+}
+
+// Renders a per-journey table comparing this item's just-published
+// screenshots against the last approved baseline. A missing baseline (first
+// run, a newly added journey, or a renamed file) reads as "new, please
+// review" — never a failure, since failing closed here would block every PR
+// that adds a journey. The baseline itself only ever moves in mergePr(),
+// never here, so a PR can't invalidate the thing it's compared against.
+// Never throws: any failure (network, malformed PNG, etc.) just omits the
+// section, same contract as fetchScreenshotsMarkdown.
+export async function compareScreenshotsMarkdown(repo, item) {
+  try {
+    const [current, baseline] = await Promise.all([
+      fetchScreenshotListing(repo, artifactsRef(item)),
+      fetchScreenshotListing(repo, BASELINE_REF),
+    ])
+    if (!current || current.length === 0) return ''
+    const baselineByName = new Map((baseline || []).map((f) => [f.name, f]))
+    const rows = []
+    for (const file of [...current].sort((a, b) => a.name.localeCompare(b.name))) {
+      const name = file.name.replace(/\.png$/, '')
+      const base = baselineByName.get(file.name)
+      if (!base) {
+        rows.push(`| ${name} | 🆕 new — please review |`)
+        continue
+      }
+      if (base.sha === file.sha) {
+        rows.push(`| ${name} | ✅ unchanged |`)
+        continue
+      }
+      let diff
+      try {
+        const [curBuf, baseBuf] = await Promise.all([
+          fetchFileBase64(repo, file.path, artifactsRef(item)),
+          fetchFileBase64(repo, base.path, BASELINE_REF),
+        ])
+        diff = curBuf && baseBuf ? diffPngBuffers(curBuf, baseBuf) : null
+      } catch {
+        diff = null
+      }
+      rows.push(
+        !diff
+          ? `| ${name} | ⚠️ changed (could not compute a diff) |`
+          : diff.changed
+            ? `| ${name} | ⚠️ changed (${(diff.diffRatio * 100).toFixed(1)}% of pixels differ) |`
+            : `| ${name} | ✅ unchanged (within tolerance) |`,
+      )
+    }
+    if (rows.length === 0) return ''
+    return ['', '## Screenshot comparison vs. baseline', '', '| Journey | Result |', '| --- | --- |', ...rows].join('\n')
+  } catch {
+    return ''
+  }
+}
+
+// Best-effort: deletes an item's artifact ref once it's no longer needed
+// (merged into the baseline, or the PR closed unmerged) — bounds storage to
+// one ref per currently-open PR plus the one baseline ref.
+async function deleteArtifactRef(repo, item) {
+  await gh(`/repos/${repo}/git/refs/${encodeURIComponent(`heads/${artifactsRef(item)}`)}`, { method: 'DELETE' }).catch(
+    () => {},
+  )
+}
+
 // Open the PR for a branch a real agent already pushed (the farm's Eng agent
-// owns the code; this side owns the PR mechanics).
+// owns the code; this side owns the PR mechanics). Screenshots and the
+// baseline comparison are read from the item's artifact ref, never the code
+// branch — that's what lets two PRs touch the same journey without conflict.
 export async function createPrFromBranch(item, branch) {
   const repo = item.repo
   const repoRes = await gh(`/repos/${repo}`)
   if (!repoRes.ok) throw new Error(`could not read the repository (${repoRes.status})`)
   const base = (await repoRes.json()).default_branch
 
-  const screenshots = await fetchScreenshotsMarkdown(repo, branch)
+  const [screenshots, comparison] = await Promise.all([
+    fetchScreenshotsMarkdown(repo, artifactsRef(item)),
+    compareScreenshotsMarkdown(repo, item),
+  ])
 
   const prRes = await gh(`/repos/${repo}/pulls`, {
     method: 'POST',
@@ -321,6 +437,7 @@ export async function createPrFromBranch(item, branch) {
         '## Guardrails',
         item.guardrails || '_(defaults apply)_',
         ...(screenshots ? [screenshots] : []),
+        ...(comparison ? [comparison] : []),
         '',
         `_Implemented by the Horizon Eng agent; opened for the “Accept the code” gate · ${itemLink(item)}._`,
       ].join('\n'),
@@ -337,7 +454,37 @@ export async function createPrFromBranch(item, branch) {
   throw new Error(`could not open the pull request (${prRes.status})`)
 }
 
-// Accepting the code merges its PR (squash) and removes the work branch.
+// Promotes a merged item's artifact ref to be the new baseline. This is a
+// plain overwrite of e2e-baseline with a value that's a pure function of the
+// item being merged — not a read-modify-write of the baseline's prior
+// contents — so two merges landing close together are still safe: each sets
+// the baseline to *its own* screenshots, and last-writer-wins is an
+// acceptable outcome for "what does the baseline show right now" (unlike a
+// counter or list, there's no lost-update to corrupt). Best-effort: a
+// promotion failure never fails the merge, since the merge itself is what
+// matters — the baseline just stays one revision stale until the next merge.
+async function promoteBaseline(item) {
+  const repo = item.repo
+  const refRes = await gh(`/repos/${repo}/git/ref/${encodeURIComponent(`heads/${artifactsRef(item)}`)}`)
+  if (!refRes.ok) return // this item never published screenshots — nothing to promote
+  const sha = (await refRes.json()).object.sha
+  const update = await gh(`/repos/${repo}/git/refs/${encodeURIComponent(`heads/${BASELINE_REF}`)}`, {
+    method: 'PATCH',
+    body: JSON.stringify({ sha, force: true }),
+  })
+  if (!update.ok) {
+    // Baseline ref doesn't exist yet (first-ever merge on this repo) — create it.
+    await gh(`/repos/${repo}/git/refs`, {
+      method: 'POST',
+      body: JSON.stringify({ ref: `refs/heads/${BASELINE_REF}`, sha }),
+    }).catch(() => {})
+  }
+  await deleteArtifactRef(repo, item)
+}
+
+// Accepting the code merges its PR (squash), removes the work branch, and —
+// only here, never from a PR branch — promotes this item's screenshots to be
+// the new baseline that future PRs compare against.
 export async function mergePr(item) {
   const repo = item.repo
   const res = await gh(`/repos/${repo}/pulls/${item.pr}/merge`, {
@@ -349,6 +496,7 @@ export async function mergePr(item) {
     await gh(`/repos/${repo}/git/refs/${encodeURIComponent(`heads/horizon/${item.id.toLowerCase()}`)}`, {
       method: 'DELETE',
     }).catch(() => {})
+    await promoteBaseline(item).catch(() => {})
     return res.json()
   }
   const data = await res.json().catch(() => ({}))
@@ -612,6 +760,11 @@ export function handlePrStateChange(repoFullName, prNumber, { merged, state }, l
   }
   if (state === 'closed') {
     log?.info(`PR #${prNumber} closed unmerged on GitHub — sending ${item.id} back`)
+    // Fire-and-forget (this function stays sync, matching its existing
+    // callers/tests): the abandoned PR's screenshots have nothing left to be
+    // compared against, so free the ref rather than let it linger forever —
+    // the next implement attempt just republishes it under the same name.
+    deleteArtifactRef(repoFullName, item).catch(() => {})
     return !store.requestChanges(item.id, 'Accept the code', `PR #${prNumber} was closed on GitHub without merging`).error
   }
   return false
