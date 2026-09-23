@@ -2,6 +2,7 @@ import Database from 'better-sqlite3'
 import { mkdirSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { reconcileGoogleUsers } from './loginAllowlist.js'
 
 const DB_PATH =
   process.env.HORIZON_DB || join(dirname(fileURLToPath(import.meta.url)), '..', 'data', 'horizon.db')
@@ -224,6 +225,13 @@ if (!shiftedReview) {
     db.prepare("INSERT INTO setting (key, value) VALUES ('pipeline_v3_review_shift', 'done')").run()
   })()
 }
+
+// Enforce the login allowlist immediately, every boot (HZ-36) — unlike the
+// one-time-gated shifts above, this must re-run every time the process
+// starts: ops can edit ALLOWED_LOGIN_EMAILS while the server is down and
+// expect it applied the instant it comes back up, not just on the next
+// Google login attempt.
+reconcileGoogleUsers(db)
 
 // Demo seed data — only when GitHub sync is not configured.
 const count = db.prepare('SELECT COUNT(*) AS n FROM work_item').get().n

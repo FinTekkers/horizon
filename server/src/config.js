@@ -11,6 +11,8 @@
 //   GOOGLE_CLIENT_SECRET   OAuth client secret
 //   GOOGLE_REDIRECT_URI    OAuth callback URL (default derived from HORIZON_UI_URL)
 //   ADMIN_EMAIL/PASSWORD   hardcoded login credential (dev fallback: admin@example.com/admin)
+//   ALLOWED_LOGIN_EMAILS   comma-separated Google-login allowlist (deny-by-default: empty/
+//                          unset means NO Google logins succeed; the password path is unaffected)
 //   SESSION_SECRET         unused placeholder — session tokens are random, not signed
 
 export const WEBHOOK_SECRET = process.env.GITHUB_WEBHOOK_SECRET || null
@@ -47,3 +49,16 @@ export const ADMIN_EMAIL = process.env.ADMIN_EMAIL || 'admin@example.com'
 export const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || 'admin'
 export const SESSION_COOKIE_NAME = 'horizon_session'
 export const SESSION_TTL_DAYS = 30
+
+// Google-login allowlist (HZ-36): a published OAuth consent screen lets ANY
+// Google account complete the flow, so this is the only thing standing
+// between "authenticated with Google" and "actually allowed into Horizon".
+// Deny-by-default — empty/unset means the Set is empty, so no email ever
+// matches and no Google login can succeed. The password login path (above)
+// is a completely separate check and is never affected by this.
+export const ALLOWED_LOGIN_EMAILS = new Set(
+  (process.env.ALLOWED_LOGIN_EMAILS || '')
+    .split(',')
+    .map((s) => s.trim().toLowerCase())
+    .filter(Boolean),
+)

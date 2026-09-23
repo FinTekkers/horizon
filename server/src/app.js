@@ -14,6 +14,7 @@ import { db } from './db.js'
 import { getActiveProjectId, getRepoUrl, setSetting, getToken } from './settings.js'
 import * as auth from './auth.js'
 import { googleAuth } from './googleAuth.js'
+import { isAllowedEmail } from './loginAllowlist.js'
 import { STEPS } from './lifecycle.js'
 import { PERSONAS } from './personas.js'
 import * as definitions from './definitions.js'
@@ -739,6 +740,15 @@ export function buildApp({ logger = true } = {}) {
         request.log.warn(`google oauth exchange failed: ${err.message}`)
         return reply.redirect(`${UI_URL}/?error=google_auth_failed`)
       }
+      // Allowlist gate (HZ-36): checked against the VERIFIED email claim
+      // only, and before any user lookup or write — a rejected login never
+      // creates or touches a row. One error code for every rejection reason
+      // (unverified claim or a verified-but-not-allowlisted address) so the
+      // response can't be used to enumerate which emails are allowed.
+      if (!profile.emailVerified || !isAllowedEmail(profile.email)) {
+        request.log.warn('google login rejected: not allowlisted')
+        return reply.redirect(`${UI_URL}/?error=google_login_not_allowed`)
+      }
       let user
       try {
         user = auth.findOrCreateGoogleUser(profile)
@@ -1010,6 +1020,18 @@ export function buildApp({ logger = true } = {}) {
     }
     return true
   }
+
+  // The snapshot the WhatsApp concierge renders into its replies. It is a
+  // daemon with no browser session, so it cannot use /api/items — HZ-21 gated
+  // that route and the concierge has 401'd on every message since. Served
+  // here rather than by exempting /api/items, because nginx proxies
+  // /horizon/api/ wholesale: anything in SESSION_EXEMPT is reachable from the
+  // internet with no login, and /api/items carries every work item's full
+  // contents. This sits behind the farm's own shared-secret boundary instead.
+  fastify.get('/api/farm/snapshot', (request, reply) => {
+    if (!farmAuthorized(request, reply)) return
+    return snapshot()
+  })
 
   fastify.post(
     '/api/farm/steps/:runId/complete',

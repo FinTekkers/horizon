@@ -12,6 +12,7 @@ const GOOGLE_ERROR_MESSAGES = {
   google_link_blocked:
     "That Google account's email isn't verified, so it can't be linked. Sign in with your password instead, or retry with a verified Google account.",
   account_link_failed: 'Something went wrong signing you in with Google. Please try again.',
+  google_login_not_allowed: "That Google account isn't authorized to sign in here. Sign in with your password instead, or contact an administrator.",
 }
 
 function googleErrorFromLocation() {
