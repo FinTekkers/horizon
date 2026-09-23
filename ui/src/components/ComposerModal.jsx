@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { PHASES } from '../domain/lifecycle'
 
 const COPY = {
@@ -38,7 +38,18 @@ function subtitle(composer) {
 export default function ComposerModal({ composer, onSubmit, onCancel }) {
   const inputRef = useRef(null)
   const copy = COPY[composer.mode] || COPY.reject
-  const submit = () => onSubmit((inputRef.current?.value || '').trim())
+  // Only a reject from a gate offers a destination — everywhere else this
+  // stays empty and the picker doesn't render.
+  const stepOptions = composer.mode === 'reject' ? composer.stepOptions || [] : []
+  const [targetStepIndex, setTargetStepIndex] = useState('')
+  const submit = () => {
+    const text = (inputRef.current?.value || '').trim()
+    if (composer.mode === 'reject') {
+      onSubmit(text, stepOptions.length && targetStepIndex !== '' ? Number(targetStepIndex) : null)
+    } else {
+      onSubmit(text)
+    }
+  }
 
   // The textarea needs plain Enter for newlines, so this decision's explicit
   // "confirm" keystroke is Ctrl/Cmd+Enter instead — same convention as
@@ -65,6 +76,26 @@ export default function ComposerModal({ composer, onSubmit, onCancel }) {
           {copy.title} · {composer.itemId}
         </div>
         <div className="composer__sub">{subtitle(composer)}</div>
+        {stepOptions.length > 0 && (
+          <div className="composer__field">
+            <label htmlFor="composer-target-step" className="composer__field-label">
+              Send back to
+            </label>
+            <select
+              id="composer-target-step"
+              className="composer__select"
+              value={targetStepIndex}
+              onChange={(e) => setTargetStepIndex(e.target.value)}
+            >
+              <option value="">Default — {composer.defaultTargetLabel}</option>
+              {stepOptions.map((opt) => (
+                <option key={opt.index} value={opt.index}>
+                  {opt.label}
+                </option>
+              ))}
+            </select>
+          </div>
+        )}
         <textarea ref={inputRef} className="composer__input" placeholder={copy.placeholder} autoFocus />
         <div className="composer__hint">⌘/Ctrl + Enter to submit · Esc to cancel</div>
         <div className="composer__actions">

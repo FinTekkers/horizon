@@ -535,7 +535,11 @@ export function buildApp({ logger = true } = {}) {
         params: idParam,
         body: {
           type: 'object',
-          properties: { target: { type: 'string' }, feedback: { type: 'string' } },
+          properties: {
+            target: { type: 'string' },
+            feedback: { type: 'string' },
+            targetStepIndex: { type: 'integer' },
+          },
         },
       },
     },
@@ -543,7 +547,13 @@ export function buildApp({ logger = true } = {}) {
       if (!humanAuthorized(request, reply)) return
       return send(
         reply,
-        store.requestChanges(request.params.id, request.body?.target, request.body?.feedback, request.user.name),
+        store.requestChanges(
+          request.params.id,
+          request.body?.target,
+          request.body?.feedback,
+          request.user.name,
+          request.body?.targetStepIndex ?? null,
+        ),
       )
     },
   )

@@ -266,8 +266,10 @@ export async function approveGate(id, notes) {
   }
 }
 
-export function requestChanges(id, target, feedback) {
-  gatePost(`/items/${id}/reject`, { target: target || '', feedback: feedback || '' })
+export function requestChanges(id, target, feedback, targetStepIndex) {
+  const body = { target: target || '', feedback: feedback || '' }
+  if (targetStepIndex != null) body.targetStepIndex = targetStepIndex
+  gatePost(`/items/${id}/reject`, body)
 }
 
 export function togglePause(id) {

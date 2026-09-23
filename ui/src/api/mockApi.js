@@ -13,7 +13,7 @@
 //   POST /items/:id/phases/:phase/restart      → restartPhase(id, phase, reason)
 //   POST /items/:id/feedback                   → sendFeedback(id, target, message)
 
-import { STEPS, PHASES, isClosed } from '../domain/lifecycle'
+import { STEPS, PHASES, isClosed, ACCEPT_GATE_INDEX, IMPLEMENT_STEP_INDEX } from '../domain/lifecycle'
 import { PERSONAS } from '../domain/personas'
 
 const SEED_ITEMS = [
@@ -199,14 +199,32 @@ export function approveGate(id, notes) {
 }
 
 // Mirrors the server's rework loop: rejection rolls back to the responsible
-// agent step and re-runs it instead of freezing the item.
-export function requestChanges(id, target, feedback) {
+// agent step and re-runs it instead of freezing the item. targetStepIndex
+// (HZ-51) lets a human pick an earlier agent step explicitly, same
+// validation and Accept-gate exception as store.js's requestChanges.
+export function requestChanges(id, target, feedback, targetStepIndex) {
   const it = items.find((x) => x.id === id)
   if (!it || isClosed(it)) return
+  const atGate = STEPS[it.cursor]?.kind === 'gate'
+  if (targetStepIndex != null) {
+    const validTarget =
+      atGate &&
+      Number.isInteger(targetStepIndex) &&
+      targetStepIndex >= 0 &&
+      targetStepIndex < it.cursor &&
+      STEPS[targetStepIndex]?.kind === 'agent'
+    if (!validTarget) return
+  }
   clearTimeout(timers[id])
   let reworkIdx = it.cursor
-  if (STEPS[reworkIdx]?.kind === 'gate') {
-    while (reworkIdx > 0 && STEPS[reworkIdx].kind !== 'agent') reworkIdx--
+  if (atGate) {
+    if (targetStepIndex != null) {
+      reworkIdx = targetStepIndex
+    } else if (reworkIdx === ACCEPT_GATE_INDEX) {
+      reworkIdx = IMPLEMENT_STEP_INDEX
+    } else {
+      while (reworkIdx > 0 && STEPS[reworkIdx].kind !== 'agent') reworkIdx--
+    }
   }
   const reworkLabel = STEPS[reworkIdx].label.toLowerCase()
   update(id, (x) => ({ ...x, cursor: reworkIdx, rejected: false, paused: false }))

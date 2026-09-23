@@ -555,6 +555,12 @@ button { font-family: var(--font-sans); }
 }
 .composer__title { font: 700 19px var(--font-sans); letter-spacing: -0.3px; }
 .composer__sub { font: 500 13px var(--font-sans); color: var(--muted); margin-top: 4px; }
+.composer__field { display: flex; flex-direction: column; gap: 6px; margin-top: 14px; }
+.composer__field-label { font: 700 11px var(--font-sans); color: var(--muted); text-transform: uppercase; letter-spacing: 0.4px; }
+.composer__select {
+  border: 1.5px solid #E4DEEE; border-radius: 10px; padding: 9px 12px;
+  font: 500 13px var(--font-sans); color: var(--deep); background: #FAFAFB;
+}
 .composer__input {
   width: 100%; margin-top: 16px; min-height: 104px; resize: vertical;
   border: 1.5px solid #E4DEEE; border-radius: 12px; padding: 12px 14px;
