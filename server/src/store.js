@@ -247,7 +247,7 @@ export function approveGate(id, stepIndex, notes, actor = 'You') {
   })
   notify()
   agentRunner.kick(id)
-  return { ok: true }
+  return { ok: true, closed: isClosed(getItem(id)) }
 }
 
 // Rejection is not a dead end: the item rolls back to the agent step whose

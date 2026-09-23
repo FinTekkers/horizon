@@ -9,6 +9,7 @@ item's branch in the workspace; the *script* owns git (branch, commit, push)
 
 import argparse
 import json
+import os
 import subprocess
 import sys
 from datetime import datetime
@@ -73,8 +74,9 @@ def log(msg: str) -> None:
     print(f"[{datetime.now().strftime('%H:%M:%S')}] {msg}", flush=True)
 
 
-def git(ws: Path, *args: str, check: bool = True) -> subprocess.CompletedProcess:
-    result = subprocess.run(["git", "-C", str(ws), *args], capture_output=True, text=True, timeout=300)
+def git(ws: Path, *args: str, check: bool = True, env: dict | None = None) -> subprocess.CompletedProcess:
+    run_env = {**os.environ, **env} if env else None
+    result = subprocess.run(["git", "-C", str(ws), *args], capture_output=True, text=True, timeout=300, env=run_env)
     if check and result.returncode != 0:
         raise RuntimeError(f"git {' '.join(args)} failed: {result.stderr.strip()[:200]}")
     return result
@@ -111,6 +113,42 @@ def build_prompt(task: dict) -> str:
         lines.append("")
         lines.append(rules_section)
     return "\n".join(lines)
+
+
+# ---- screenshot publishing (HZ-63) ----
+# e2e/__screenshots__/*.png are gitignored, not committed — two branches that
+# both touch the same journey no longer collide on a binary file. Instead
+# they're force-pushed as an orphan commit to a per-item ref that
+# server/src/github.js reads via the same contents-API path it already used
+# for the PR-branch screenshots (naming here — "e2e-artifacts/<item-id>" —
+# must match artifactsRef() there). Best-effort: a publish failure never fails
+# the implement step, mirroring captureScreenshot's own warn-and-continue
+# philosophy in e2e/fixtures/test-base.js.
+
+
+def publish_screenshots(ws: Path, item: dict, log=log) -> None:
+    shots_dir = ws / "e2e" / "__screenshots__"
+    pngs = sorted(shots_dir.glob("*.png")) if shots_dir.is_dir() else []
+    if not pngs:
+        log("publish_screenshots: no screenshots to publish — skipped")
+        return
+    index_file = ws / ".git" / "horizon-artifacts-index"
+    env = {"GIT_INDEX_FILE": str(index_file)}
+    try:
+        index_file.unlink(missing_ok=True)
+        for png in pngs:
+            sha = git(ws, "hash-object", "-w", str(png), env=env).stdout.strip()
+            git(ws, "update-index", "--add", "--cacheinfo", f"100644,{sha},e2e/__screenshots__/{png.name}", env=env)
+        tree = git(ws, "write-tree", env=env).stdout.strip()
+        commit = git(ws, "commit-tree", tree, "-m", f"{item['id']}: e2e screenshots").stdout.strip()
+        ref = f"e2e-artifacts/{item['id'].lower()}"
+        with hub_lock(item["repo"]):
+            git(ws, "push", "origin", "--force", f"{commit}:refs/heads/{ref}")
+        log(f"publish_screenshots: pushed {len(pngs)} screenshot(s) to {ref}")
+    except Exception as exc:  # best-effort — never blocks the implement step
+        log(f"publish_screenshots: skipped after a failure — {exc}")
+    finally:
+        index_file.unlink(missing_ok=True)
 
 
 def prepare_branch(ws: Path, item: dict) -> str:
@@ -314,6 +352,7 @@ def execute(task: dict) -> dict:
         # script, before anything is committed or pushed. A failure fails the
         # run (Node pauses the item with the reason) — no green, no push.
         check_note = run_checks(ws, log)
+        publish_screenshots(ws, item)
         artifacts = finalize_branch(ws, item, branch)
         return {"summary": f"{summary} · {check_note}"[:600], "artifacts": artifacts}
 
