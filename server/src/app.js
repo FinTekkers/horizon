@@ -1011,6 +1011,18 @@ export function buildApp({ logger = true } = {}) {
     return true
   }
 
+  // The snapshot the WhatsApp concierge renders into its replies. It is a
+  // daemon with no browser session, so it cannot use /api/items — HZ-21 gated
+  // that route and the concierge has 401'd on every message since. Served
+  // here rather than by exempting /api/items, because nginx proxies
+  // /horizon/api/ wholesale: anything in SESSION_EXEMPT is reachable from the
+  // internet with no login, and /api/items carries every work item's full
+  // contents. This sits behind the farm's own shared-secret boundary instead.
+  fastify.get('/api/farm/snapshot', (request, reply) => {
+    if (!farmAuthorized(request, reply)) return
+    return snapshot()
+  })
+
   fastify.post(
     '/api/farm/steps/:runId/complete',
     {
