@@ -89,6 +89,12 @@ function AuthenticatedApp({ user, onLogout }) {
     setView('board')
     setApprovalsOpen(false)
   }
+  // Approving a gate only navigates away when it closed the item — earlier
+  // gates leave the user in place since the next agent step starts immediately.
+  const approveAndMaybeClose = async (itemId, notes) => {
+    const result = await api.approveGate(itemId, notes)
+    if (result?.closed) toBoard()
+  }
   const toTracker = () => {
     if (selected) navigate(`/${selected.id.toLowerCase()}`)
     setView('tracker')
@@ -126,7 +132,7 @@ function AuthenticatedApp({ user, onLogout }) {
   const submitComposer = (text) => {
     const { mode, itemId, phase, target } = composer
     if (itemId) {
-      if (mode === 'approve') api.approveGate(itemId, text)
+      if (mode === 'approve') approveAndMaybeClose(itemId, text)
       else if (mode === 'reject') api.requestChanges(itemId, target, text)
       else if (mode === 'restart') api.restartPhase(itemId, phase, text)
       else if (mode === 'abandon') api.abandonItem(itemId, text)
@@ -224,7 +230,7 @@ function AuthenticatedApp({ user, onLogout }) {
           itemId={confirmApprove.itemId}
           gateLabel={confirmApprove.gateLabel}
           onConfirm={() => {
-            api.approveGate(confirmApprove.itemId)
+            approveAndMaybeClose(confirmApprove.itemId)
             setConfirmApprove(null)
           }}
           onCancel={() => setConfirmApprove(null)}

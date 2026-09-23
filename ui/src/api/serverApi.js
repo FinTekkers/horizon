@@ -256,7 +256,7 @@ function post(path, body) {
 
 export async function approveGate(id, notes) {
   const item = items.find((it) => it.id === id)
-  if (!item) return
+  if (!item) return { ok: false }
   // Approving "Accept the code" merges the PR server-side. If GitHub refuses
   // (conflicts, required checks), open the PR so the human resolves it there,
   // then approves the gate again.
@@ -264,6 +264,7 @@ export async function approveGate(id, notes) {
   if (res && !res.ok && res.status !== 401 && item.pr_url) {
     window.open(item.pr_url, '_blank', 'noopener')
   }
+  return res ? await res.json().catch(() => ({ ok: false })) : { ok: false }
 }
 
 export function requestChanges(id, target, feedback) {

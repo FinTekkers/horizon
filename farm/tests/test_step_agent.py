@@ -12,7 +12,7 @@ import pytest
 
 from farm import step_agent
 from farm.personas import PERSONA_DIR, PERSONAS
-from farm.step_agent import STEP_CONFIG, build_prompt, execute
+from farm.step_agent import STEP_CONFIG, build_prompt, execute, publish_screenshots
 
 
 def make_task(step_index, label, repo=None, feedback=None, artifacts=None):
@@ -126,6 +126,112 @@ def test_implement_step_fails_when_checks_fail(tmp_path, monkeypatch):
         ["git", "--git-dir", str(origin), "branch", "--list"], capture_output=True, text=True, check=True
     ).stdout
     assert "horizon/t-1" not in branches
+
+
+# ---- screenshot publishing (HZ-63) ----
+# Screenshots are gitignored now (no more committed PNGs), published instead
+# to a per-item git ref so two branches touching the same journey never
+# conflict on a binary file.
+
+
+def write_fake_screenshot(ws, name):
+    shots = ws / "e2e" / "__screenshots__"
+    shots.mkdir(parents=True, exist_ok=True)
+    (shots / f"{name}.png").write_bytes(b"\x89PNG\r\n\x1a\n" + name.encode())
+
+
+def origin_refs(origin):
+    return subprocess.run(
+        ["git", "--git-dir", str(origin), "for-each-ref", "--format=%(refname)"], capture_output=True, text=True, check=True
+    ).stdout
+
+
+def test_publish_screenshots_pushes_an_orphan_commit_to_a_per_item_ref(tmp_path):
+    ws, origin = make_git_workspace(tmp_path)
+    write_fake_screenshot(ws, "board")
+    write_fake_screenshot(ws, "gates")
+
+    publish_screenshots(ws, {"id": "T-1", "repo": "acme/demo"})
+
+    refs = origin_refs(origin)
+    assert "refs/heads/e2e-artifacts/t-1" in refs
+    shown = subprocess.run(
+        ["git", "--git-dir", str(origin), "ls-tree", "-r", "--name-only", "e2e-artifacts/t-1"],
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout
+    assert "e2e/__screenshots__/board.png" in shown
+    assert "e2e/__screenshots__/gates.png" in shown
+    # It's an orphan commit — no parent, so it never carries the code branch's history.
+    parents = subprocess.run(
+        ["git", "--git-dir", str(origin), "log", "--format=%P", "-1", "e2e-artifacts/t-1"],
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.strip()
+    assert parents == ""
+
+
+def test_publish_screenshots_does_not_touch_the_working_tree_or_index(tmp_path):
+    ws, _origin = make_git_workspace(tmp_path)
+    write_fake_screenshot(ws, "board")
+
+    publish_screenshots(ws, {"id": "T-1", "repo": "acme/demo"})
+
+    status = subprocess.run(["git", "-C", str(ws), "status", "--porcelain"], capture_output=True, text=True, check=True).stdout
+    # The screenshot file itself is untracked (it's gitignored elsewhere), but
+    # nothing was staged into the branch's own index/HEAD.
+    assert subprocess.run(["git", "-C", str(ws), "symbolic-ref", "--short", "HEAD"], capture_output=True, text=True, check=True).stdout.strip() == "main"
+    head_files = subprocess.run(["git", "-C", str(ws), "ls-tree", "-r", "--name-only", "HEAD"], capture_output=True, text=True, check=True).stdout
+    assert "e2e/__screenshots__" not in head_files
+    assert "?? e2e/" in status
+
+
+def test_publish_screenshots_is_a_noop_with_no_screenshots(tmp_path):
+    ws, origin = make_git_workspace(tmp_path)
+    publish_screenshots(ws, {"id": "T-1", "repo": "acme/demo"})
+    assert "e2e-artifacts" not in origin_refs(origin)
+
+
+def test_publish_screenshots_never_raises_on_push_failure(tmp_path):
+    ws, _origin = make_git_workspace(tmp_path)
+    write_fake_screenshot(ws, "board")
+    subprocess.run(["git", "-C", str(ws), "remote", "set-url", "origin", "/no/such/path"], check=True)
+    publish_screenshots(ws, {"id": "T-1", "repo": "acme/demo"})  # must not raise
+
+
+def test_implement_step_publishes_screenshots_without_polluting_the_code_branch(tmp_path, monkeypatch):
+    ws, origin = make_git_workspace(tmp_path)
+    # A repo that has adopted HZ-63 already ignores the screenshots dir —
+    # seed that onto main so the branch under test inherits it, same as a
+    # real target repo would.
+    (ws / ".gitignore").write_text("e2e/__screenshots__/\n")
+    subprocess.run(["git", "-C", str(ws), "add", "-A"], check=True, capture_output=True)
+    subprocess.run(["git", "-C", str(ws), "commit", "-m", "add gitignore"], check=True, capture_output=True)
+    subprocess.run(["git", "-C", str(ws), "push", "origin", "main"], check=True, capture_output=True)
+    monkeypatch.setattr(step_agent, "ensure_item_worktree", lambda repo, item_id: ws)
+
+    # prepare_branch() resets/cleans the worktree before the agent runs, so the
+    # screenshot must appear as a side effect of the (fake) e2e run, same as a
+    # real Playwright run would produce it after the branch is already checked out.
+    def fake_run_claude(prompt, **kwargs):
+        (ws / "note.txt").write_text("real code change\n")
+        write_fake_screenshot(ws, "board")
+        return {"result": '{"summary": "did the step"}'}
+
+    monkeypatch.setattr(step_agent, "run_claude", fake_run_claude)
+
+    execute(make_task(11, "Specialist agent implements", repo="acme/demo"))
+
+    assert "refs/heads/e2e-artifacts/t-1" in origin_refs(origin)
+    code_files = subprocess.run(
+        ["git", "--git-dir", str(origin), "ls-tree", "-r", "--name-only", "horizon/t-1"],
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout
+    assert "e2e/__screenshots__" not in code_files
 
 
 # ---- persona injection (HZ-4) ----
