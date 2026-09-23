@@ -81,7 +81,7 @@ export default async function globalSetup() {
   // session cookie to disk — playwright.config.js's `use.storageState` loads
   // it into every spec's browser context, so no spec needs its own login
   // step. This also creates the admin account row (first successful login
-  // does), which 09-gate-key.spec.js needs a stable row for.
+  // does), which 10-gate-key.spec.js needs a stable row for.
   const api = await request.newContext({ baseURL: `http://localhost:${PORT}` })
   try {
     const loginRes = await api.post('/api/auth/login', {
@@ -98,7 +98,7 @@ export default async function globalSetup() {
     // spec's gate actions succeed without a single window.prompt(), the same
     // as this suite's pre-HZ-21 "no gate key configured" demo-mode behavior —
     // except now it's a real per-account PIN, not an open gate.
-    // 09-gate-key.spec.js overwrites this PIN directly in the DB afterwards
+    // 10-gate-key.spec.js overwrites this PIN directly in the DB afterwards
     // (it runs last) specifically to exercise the window.prompt() flow.
     const pinRes = await api.post('/api/auth/gate-pin/regenerate')
     if (!pinRes.ok()) throw new Error(`e2e gate-pin regenerate failed: ${pinRes.status()}`)

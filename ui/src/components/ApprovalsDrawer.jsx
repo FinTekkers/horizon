@@ -45,7 +45,7 @@ export default function ApprovalsDrawer({ items, onClose, onOpenItem, onApprove,
                   {cur.label}
                 </div>
                 <div className="approval__actions">
-                  <button className="btn-approve" onClick={() => onApprove(item.id)}>
+                  <button className="btn-approve" onClick={() => onApprove(item.id, cur.label)}>
                     Approve
                   </button>
                   <button className="btn-reject" onClick={() => onReject(item.id, cur.label)}>

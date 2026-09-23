@@ -1,4 +1,4 @@
-import { useRef } from 'react'
+import { useEffect, useRef } from 'react'
 import { PHASES } from '../domain/lifecycle'
 
 const COPY = {
@@ -24,7 +24,7 @@ const COPY = {
 
 function subtitle(composer) {
   if (composer.mode === 'approve') {
-    return 'Approves the gate; your notes are delivered to the next agent and recorded on the issue'
+    return `Approves ${composer.target || 'the gate'}; your notes are delivered to the next agent and recorded on the issue`
   }
   if (composer.mode === 'reject') {
     return `The responsible agent re-runs the step and must address your notes${composer.target ? ' · ' + composer.target : ''}`
@@ -38,23 +38,40 @@ function subtitle(composer) {
 export default function ComposerModal({ composer, onSubmit, onCancel }) {
   const inputRef = useRef(null)
   const copy = COPY[composer.mode] || COPY.reject
+  const submit = () => onSubmit((inputRef.current?.value || '').trim())
+
+  // The textarea needs plain Enter for newlines, so this decision's explicit
+  // "confirm" keystroke is Ctrl/Cmd+Enter instead — same convention as
+  // Slack/GitHub comment boxes. Esc still cancels outright.
+  useEffect(() => {
+    const onKeyDown = (e) => {
+      if (e.key === 'Escape') {
+        e.preventDefault()
+        onCancel()
+      } else if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
+        e.preventDefault()
+        submit()
+      }
+    }
+    window.addEventListener('keydown', onKeyDown)
+    return () => window.removeEventListener('keydown', onKeyDown)
+  })
 
   return (
     <div className="composer">
       <div className="composer__scrim" onClick={onCancel} />
-      <div className="composer__panel">
-        <div className="composer__title">{copy.title}</div>
+      <div className="composer__panel" role="dialog" aria-modal="true" aria-labelledby="composer-title">
+        <div className="composer__title" id="composer-title">
+          {copy.title} · {composer.itemId}
+        </div>
         <div className="composer__sub">{subtitle(composer)}</div>
         <textarea ref={inputRef} className="composer__input" placeholder={copy.placeholder} autoFocus />
+        <div className="composer__hint">⌘/Ctrl + Enter to submit · Esc to cancel</div>
         <div className="composer__actions">
           <button className="composer__cancel" onClick={onCancel}>
             Cancel
           </button>
-          <button
-            className="composer__submit"
-            style={{ background: copy.submitColor }}
-            onClick={() => onSubmit((inputRef.current?.value || '').trim())}
-          >
+          <button className="composer__submit" style={{ background: copy.submitColor }} onClick={submit}>
             {copy.submitLabel}
           </button>
         </div>

@@ -133,7 +133,7 @@ function Step({ item, index, onApprove, onApproveWithComments, onReject, onResol
                   Review PR #{item.pr} ↗
                 </a>
               )}
-              <button className="btn-gate-approve" onClick={() => onApprove(item.id)}>
+              <button className="btn-gate-approve" onClick={() => onApprove(item.id, st.label)}>
                 Approve
               </button>
               <button className="btn-gate-feedback" onClick={() => onApproveWithComments(item.id, st.label)}>
