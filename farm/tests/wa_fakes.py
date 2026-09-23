@@ -100,6 +100,10 @@ class StubHorizon:
                 stub.requests.append(("GET", self.path, {}))
                 if self.path == "/api/items":
                     return self._reply(200, {"items": stub.items})
+                # The concierge reads its snapshot here (farm secret, no
+                # browser session) — see fetch_snapshot().
+                if self.path == "/api/farm/snapshot":
+                    return self._reply(200, {"items": stub.items})
                 return self._reply(404, {"error": "not_found"})
 
             def do_POST(self):
