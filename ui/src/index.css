@@ -562,6 +562,7 @@ button { font-family: var(--font-sans); }
   color: var(--deep); outline: none; background: #FAFAFB;
 }
 .composer__input:focus { border-color: var(--primary); background: #fff; }
+.composer__hint { font: 600 11px var(--font-sans); color: var(--muted); margin-top: 8px; }
 .composer__actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 16px; }
 .composer__cancel {
   cursor: pointer; border: none; background: var(--chip); color: var(--deep);

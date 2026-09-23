@@ -13,6 +13,11 @@ test('pending approvals drawer lists and approves a gated item', async ({ page }
 
   // E2E-4 sits at the final gate — approving it closes the item for good,
   // so it can only ever leave the pending list once, no gate-to-gate races.
+  // Approve now pauses on the explicit confirm dialog first (HZ-38).
   await approval.locator('.btn-approve').click()
+  await expect(page.locator('.composer__title')).toHaveText('Approve this gate?')
+  await expect(page.locator('.composer__sub')).toContainText('E2E-4')
+  await expect(page.locator('.composer__sub')).toContainText('Review the work & close')
+  await page.locator('.composer__submit').click()
   await expect(approval).toHaveCount(0, { timeout: 10_000 })
 })

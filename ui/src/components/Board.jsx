@@ -93,7 +93,7 @@ function BoardCard({ item, onOpen, onApprove, onReject, onTogglePause }) {
               className="btn-approve"
               onClick={(e) => {
                 e.stopPropagation()
-                onApprove(item.id)
+                onApprove(item.id, cur.label)
               }}
             >
               Approve

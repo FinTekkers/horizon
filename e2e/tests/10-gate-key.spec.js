@@ -31,8 +31,12 @@ test('the correct gate PIN approves the gate via the window.prompt() flow', asyn
   // approve click is guaranteed to prompt.
   await expect(page.locator('.btn-gate-approve')).toBeVisible({ timeout: 10_000 })
 
-  page.once('dialog', (dialog) => dialog.accept(GATE_PIN))
+  // Approve now pauses on the explicit confirm dialog (HZ-38) before the
+  // gate request (and its window.prompt() PIN flow) ever fires.
   await page.locator('.btn-gate-approve').click()
+  await expect(page.locator('.composer__title')).toHaveText('Approve this gate?')
+  page.once('dialog', (dialog) => dialog.accept(GATE_PIN))
+  await page.locator('.composer__submit').click()
 
   await expect(page.locator('.step-card--awaiting')).toContainText('Approve the high-level design', {
     timeout: 10_000,
@@ -60,7 +64,11 @@ test('a wrong then cancelled gate key blocks the gate action', async ({ page }) 
     else dialog.dismiss()
   })
 
+  // Approve now pauses on the explicit confirm dialog (HZ-38) first — the
+  // PIN prompt only fires once that's explicitly confirmed.
   await page.locator('.btn-gate-approve').click()
+  await expect(page.locator('.composer__title')).toHaveText('Approve this gate?')
+  await page.locator('.composer__submit').click()
 
   // Poll for the round trip (wrong key -> 401 -> retry prompt -> cancel) to
   // finish before asserting nothing changed — otherwise this check could
