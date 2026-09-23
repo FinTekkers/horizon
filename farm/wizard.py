@@ -35,6 +35,11 @@ if TYPE_CHECKING:
 PRIORITIES = ("Critical", "High", "Medium", "Low")
 NEW_ITEM_RE = re.compile(r"^\[new item\]\s*(.*)$", re.IGNORECASE | re.DOTALL)
 NUMERIC_RE = re.compile(r"^[1-9]$")
+# A message that is nothing but a thumbs-up, tolerating skin-tone modifiers
+# (U+1F3FB-U+1F3FF) and the VS16 selector some clients append. Deliberately
+# anchored: "ok \U0001F44D" is a sentence, not an approval, and must reach the
+# model like any other message.
+THUMBS_RE = re.compile("^\U0001F44D[\U0001F3FB-\U0001F3FF]?\uFE0F?$")
 
 STEP_PROMPTS = {
     "title": "What's the title?",
@@ -318,7 +323,8 @@ def try_handle_gate_choice(
     approve-via-whatsapp POST for the same at-most-once guarantee as the
     item wizard."""
     text = msg.text.strip()
-    if not NUMERIC_RE.match(text):
+    is_thumbs = bool(THUMBS_RE.match(text))
+    if not NUMERIC_RE.match(text) and not is_thumbs:
         return False
     key = _key(msg)
     pending = cstore.get(key)
@@ -329,7 +335,20 @@ def try_handle_gate_choice(
         return False
 
     options = pending["options"]
-    idx = int(text) - 1
+    # A thumbs-up carries no index, so it is only unambiguous when exactly one
+    # approval is outstanding. With several pending it must NOT be guessed at —
+    # approving the wrong gate is not recoverable by replying again — so ask
+    # for the number and leave the offered choices standing.
+    if is_thumbs and len(options) != 1:
+        state.claim(msg)
+        _reply(
+            transport,
+            msg,
+            f"there are {len(options)} approvals pending — reply with a number "
+            f"(1-{len(options)}) so I approve the right one.",
+        )
+        return True
+    idx = 0 if is_thumbs else int(text) - 1
     state.claim(msg)
     if idx < 0 or idx >= len(options):
         cstore.clear(key)
