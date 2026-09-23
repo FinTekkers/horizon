@@ -151,7 +151,7 @@ setup_repo() {
   echo "$base/repo"
 }
 
-success_queue() { printf '200|{"items":[]}\n' >"$1"; }
+success_queue() { printf '200|{"ok":true,"itemCount":0}\n' >"$1"; }
 
 # One page-fetch success line, followed by an asset-fetch success line — the
 # two curl calls deploy-ui-service.sh's health-check makes per attempt.
@@ -166,7 +166,7 @@ run_deploy() {
     HORIZON_REPO_DIR="$repo" \
     HORIZON_STATE_DIR="$state" \
     HORIZON_SERVICE_NAME="horizon-server-test" \
-    HORIZON_HEALTH_URL="http://stub.invalid/api/items" \
+    HORIZON_HEALTH_URL="http://stub.invalid/api/health" \
     HORIZON_HEALTH_TIMEOUT_S="5" \
     HORIZON_HEALTH_POLL_S="0.05" \
     HORIZON_DEPLOY_LOCK_TIMEOUT_S="10" \
@@ -224,6 +224,8 @@ run_deploy_ui() {
   sha="$(git -C "$repo" rev-parse HEAD)"
   grep -q "$sha" "$state/last-good-tag" && ok "idempotency: last-good-tag has the resolved commit" \
     || not_ok "idempotency: last-good-tag has the resolved commit"
+  grep -q "$sha" "$state/last-attempted-tag" && ok "idempotency: last-attempted-tag has the resolved commit" \
+    || not_ok "idempotency: last-attempted-tag has the resolved commit"
   rm -rf "$base"
 }
 
@@ -283,6 +285,10 @@ run_deploy_ui() {
     ok "health-check failure: DEPLOY FAILED is logged" || not_ok "health-check failure: DEPLOY FAILED is logged"
   [ ! -e "$state/last-good-tag" ] && ok "health-check failure: last-good-tag is not written" \
     || not_ok "health-check failure: last-good-tag is not written"
+  sha="$(git -C "$repo" rev-parse HEAD)"
+  grep -q "$sha" "$state/last-attempted-tag" 2>/dev/null && \
+    ok "health-check failure: last-attempted-tag still records the attempted commit" \
+    || not_ok "health-check failure: last-attempted-tag still records the attempted commit"
   rm -rf "$base"
 }
 
@@ -292,7 +298,7 @@ run_deploy_ui() {
   repo="$(setup_repo "$base")"
   state="$base/state"
   curl_q="$base/curl.queue"
-  printf '500|\n500|\n200|{"items":[]}\n' >"$curl_q"
+  printf '500|\n500|\n200|{"ok":true,"itemCount":0}\n' >"$curl_q"
 
   run_deploy "$repo" "$state" v1 \
     CURL_QUEUE_FILE="$curl_q" CURL_STATE_FILE="$base/curl1.state"
@@ -405,7 +411,7 @@ run_deploy_ui() {
   state="$base/state"
   curl_q="$base/curl.queue"
   padding="$(head -c 250000 /dev/zero | tr '\0' 'x')"
-  printf '200|{"items":[],"padding":"%s"}\n' "$padding" >"$curl_q"
+  printf '200|{"ok":true,"itemCount":0,"padding":"%s"}\n' "$padding" >"$curl_q"
 
   run_deploy "$repo" "$state" v1 \
     CURL_QUEUE_FILE="$curl_q" CURL_STATE_FILE="$base/curl1.state"
@@ -453,7 +459,7 @@ run_deploy_ui() {
   env PATH="$NOSUDO_STUBS:$PATH" \
     HORIZON_REPO_DIR="$repo" HORIZON_STATE_DIR="$state" \
     HORIZON_SERVICE_NAME="horizon-server-test" \
-    HORIZON_HEALTH_URL="http://stub.invalid/api/items" \
+    HORIZON_HEALTH_URL="http://stub.invalid/api/health" \
     HORIZON_HEALTH_TIMEOUT_S="5" HORIZON_HEALTH_POLL_S="0.05" \
     HORIZON_DEPLOY_LOCK_TIMEOUT_S="10" \
     CURL_QUEUE_FILE="$curl_q" CURL_STATE_FILE="$base/curl1.state" \

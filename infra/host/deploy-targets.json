@@ -6,8 +6,8 @@
     "service": "horizon-server",
     "repoDir": "/opt/horizon",
     "stateKey": "horizon",
-    "healthUrl": "http://127.0.0.1:3001/api/items",
-    "healthCheckType": "json-items"
+    "healthUrl": "http://127.0.0.1:3001/api/health",
+    "healthCheckType": "json-health"
   },
   {
     "key": "ui-service",
