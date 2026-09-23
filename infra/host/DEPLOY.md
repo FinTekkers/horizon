@@ -108,20 +108,19 @@ node e2e/smoke/check.mjs https://shoreward.ai/horizon/ "Horizon" [screenshot.png
 ```
 
 Exits `0` with `SMOKE_RESULT=pass` only if the text renders; `1` with
-`SMOKE_RESULT=fail: <reason>` otherwise. This is what the DevOps role
-(`farm/roles/devops.md`) is instructed to run after a deploy. It is not
-(yet) wired into the Deploy step itself (`STEPS[14]` in `lifecycle.js` stays
-off the farm-dispatch list by default, see `server/src/config.js`) — running
-it today is a manual or DevOps-agent action, not an automatic pipeline gate.
-Wiring it into an automatic post-deploy gate is a reasonable next step, but
-it needs its own design pass: today the Deploy step's real side effect
-(publishing the GitHub release) is owned by the JS orchestrator, which has
-the GitHub token the farm does not, so gating on this check would mean
-either giving the farm that capability or having the orchestrator call the
-farm after the fact and still enforce the result deterministically — not
-just trust the agent's self-reported verdict, the same way `run_checks()`
-gates the implement step on the tests' actual exit code rather than the
-agent's claim.
+`SMOKE_RESULT=fail: <reason>` otherwise.
+
+This is now a real pipeline gate, not just a manual tool. The Deploy step
+(`STEPS[14]` in `lifecycle.js`) is farm-dispatched by default: the JS
+orchestrator still owns publishing the GitHub release itself (it holds the
+GitHub token the farm doesn't), and only hands the step to the farm's
+DevOps agent (`farm/roles/devops.md`) afterwards, for verification. The
+agent picks the `url`/`expected_text` to check from the project rules, but
+`farm/step_agent.py` — not the agent's own self-reported verdict — is what
+actually runs `check.mjs` and reads its real exit code; that's the value
+this script sends back as the deploy verdict. A failing verdict pauses the
+item for a human rather than silently advancing (`server/src/orchestrator.js`
+`finalizeDeployStep`), the same way a failing review verdict does.
 
 ## Adding a new target
 

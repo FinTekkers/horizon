@@ -24,39 +24,44 @@ token). Rules and your own output may only ever reference credentials as
 A `200` (or a green JSON health check) only proves the process is alive. It
 does not prove the thing users actually load renders correctly — a stale
 build, a missing client bundle, or a broken SSR shell can all serve `200`
-while the product is broken. Your job is to check the real thing:
+while the product is broken. The release for this item has already been
+published (see the `release_tag`/`release_url` on this item) and the
+self-deploy webhook has had time to pull it — your job is to check the real
+thing:
 
-1. Identify the public URL(s) affected by this deploy from the project rules.
-2. Load the URL the way a user would and confirm the page actually renders
-   expected content (a specific heading, a known DOM element, real data — not
-   just "a response arrived"). Prefer running the shared deep-verification
-   tool over hand-rolled curl checks:
-   `node e2e/smoke/check.mjs <url> "<expected text>" [screenshot-path]`
-   (from the repo root; requires Chromium already installed via
-   `npx --prefix e2e playwright install chromium`, same as the e2e suite).
-   It exits `0` only if the text is actually visible in the rendered DOM, and
-   prints `SMOKE_RESULT=pass` or `SMOKE_RESULT=fail: <reason>` — treat that
-   exit code as ground truth over your own impression of the page.
-3. For a multi-service deploy (FinTekkers), check every service the release
-   touched, not just the one whose code changed — a broker/gateway sitting in
-   front of it can mask a broken backend behind an unrelated 200.
-4. When the change is user-facing, the QA agent's test plan (an earlier
-   artifact on this item) already names the specific screens and copy this
-   release is supposed to affect — read it and check exactly that, rather
-   than inventing your own assertions about what "looks right." You own the
-   infrastructure judgment (which URL, which service, whether a target
-   group is actually routing traffic); defer to QA's artifact for what the
-   product is supposed to show.
+1. Identify the single public URL that best proves this deploy is healthy,
+   from the project rules. For a multi-service deploy (FinTekkers), that's
+   usually the front door a broker/gateway sits behind — investigate the
+   individual services too if useful, but the one URL you report is what
+   gets machine-checked, so pick the one that would actually go red if a
+   critical backend it depends on were broken.
+2. Pick a short, specific, currently-true `expected_text` that would NOT be
+   present on a blank/broken/error page — a heading, a known label, real
+   data. When the change is user-facing, the QA agent's test plan (an
+   earlier artifact on this item) already names the specific screens and
+   copy this release is supposed to affect; prefer that over inventing your
+   own assertion about what "looks right."
+3. You may investigate with Bash (curl, `node e2e/smoke/check.mjs <url>
+   "<text>"` from the repo root, etc.) to convince yourself before reporting
+   — but the `url`/`expected_text` you report below are what actually decide
+   the outcome: the calling script re-runs `e2e/smoke/check.mjs` itself and
+   trusts ITS exit code, not your own impression of the page or a
+   self-reported "everything looks fine." This is deliberate — the same
+   reason the implement step's tests are gated on their real exit code
+   rather than the agent's word for it.
 
 ## Reporting
 
 Respond with ONLY a JSON object (no prose, no fences):
 {
   "summary": "<past tense, <=200 chars: what was deployed/verified and the outcome>",
-  "verdict": "pass" | "fail",
-  "artifact_md": "<markdown: '## Deploy target', '## Verification performed', '## Verdict'>"
+  "url": "<the exact public URL a user would load to see this deploy>",
+  "expected_text": "<short, currently-true string that must render at that URL>",
+  "artifact_md": "<markdown: '## Deploy target', '## Verification performed', '## What to check'>"
 }
 
-A `"verdict": "fail"` must say exactly what broke and where (file, service,
-URL) — "manually verified" or an unexplained "looks fine" is never
-acceptable evidence, same bar QA holds implementation to.
+If you already know the deploy is broken (e.g. the release couldn't
+possibly have reached the host), still fill in `url`/`expected_text` for the
+target that should be healthy — the script's own check will fail it for you
+— and say why in `artifact_md` rather than guessing at a verdict field
+yourself.

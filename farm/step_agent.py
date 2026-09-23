@@ -25,6 +25,9 @@ from .workspaces import workspace_path
 
 FARMD = f"http://127.0.0.1:{FARM_PORT}"
 ROLES = Path(__file__).parent / "roles"
+REPO_ROOT = Path(__file__).resolve().parent.parent
+SMOKE_CHECK_SCRIPT = REPO_ROOT / "e2e" / "smoke" / "check.mjs"
+SMOKE_CHECK_TIMEOUT_S = 60
 
 # Write-side: a pathological-payload guard, not a working limit — the agent's
 # own artifact must reach the server intact (HZ-29). The server budgets the
@@ -41,6 +44,9 @@ MAX_PROMPT_ARTIFACT_CHARS = 100_000
 # implement (11); the planning steps stay generalist.
 PLANNER_TOOLS = "Read,Glob,Grep"
 IMPLEMENT_TOOLS = "Read,Glob,Grep,Edit,Write,Bash"
+# DevOps investigates and can hit live URLs (curl, gh cli, etc.) but never
+# edits code — same read-only rationale as the reviewer, one step below.
+DEVOPS_TOOLS = "Read,Glob,Grep,Bash"
 STEP_CONFIG = {
     4: ("ensemble.md", True, PLANNER_TOOLS, 40, 1140, False),
     6: ("eng_plan.md", True, PLANNER_TOOLS, 40, 1140, False),
@@ -52,6 +58,10 @@ STEP_CONFIG = {
     # second pass. Read-only tools: the reviewer can never edit, push, merge
     # or approve the human gate (HZ-30) — enforced here, not by prompt alone.
     12: ("code_review.md", True, PLANNER_TOOLS, 60, 1800, True),
+    # DevOps is a role, not a persona (HZ-22 architecture review) — it is
+    # project-scoped via farm/rules/projects/*.md, not stack-scoped, so it
+    # never gets a persona composed in.
+    14: ("devops.md", True, DEVOPS_TOOLS, 40, 900, False),
 }
 
 # Diff shown to both review passes is capped — a defensive bound on prompt
@@ -79,6 +89,10 @@ def build_prompt(task: dict) -> str:
         f"  success metric: {item.get('metric') or '(empty)'}",
         f"  guardrails: {item.get('guardrails') or '(defaults only)'}",
         f"  persona: {resolve(item.get('persona'))}",
+    ]
+    if item.get("release_tag"):
+        lines.append(f"  release: {item['release_tag']}  ({item.get('release_url') or 'no url'}) — already published")
+    lines += [
         "",
         f"Step to perform now: \"{step['label']}\" (attempt {task.get('attempt', 1)})",
     ]
@@ -219,6 +233,37 @@ def _run_and_parse(
         return extract_json(retry["result"])
 
 
+# ---- deploy deep-verification (HZ-22) ----
+# The DevOps agent picks the url/expected_text from the project rules — it
+# knows the topology, this script doesn't — but the pass/fail GATE itself is
+# decided HERE, by actually running e2e/smoke/check.mjs and reading its real
+# exit code. Mirrors run_checks() at the implement step: a real subprocess
+# result, never the model's own self-reported verdict, is what a production
+# deploy gate trusts.
+
+
+def run_smoke_check(url: str, expected_text: str) -> tuple[str, str]:
+    try:
+        result = subprocess.run(
+            ["node", str(SMOKE_CHECK_SCRIPT), url, expected_text],
+            capture_output=True,
+            text=True,
+            timeout=SMOKE_CHECK_TIMEOUT_S,
+            cwd=str(REPO_ROOT),
+        )
+    except subprocess.TimeoutExpired:
+        return "fail", f"SMOKE_RESULT=fail: check.mjs timed out after {SMOKE_CHECK_TIMEOUT_S}s ({url})"
+    except OSError as exc:
+        return "fail", f"SMOKE_RESULT=fail: could not run check.mjs: {exc}"
+
+    line = next((l for l in result.stdout.splitlines() if l.startswith("SMOKE_RESULT=")), None)
+    if result.returncode == 0 and line and line.startswith("SMOKE_RESULT=pass"):
+        return "pass", line
+    if line:
+        return "fail", line
+    return "fail", f"SMOKE_RESULT=fail: check.mjs exited {result.returncode} with no result line ({result.stderr.strip()[:200]})"
+
+
 def execute(task: dict) -> dict:
     step_index = task["step"]["index"]
     role_file, wants_artifact, tools, max_turns, timeout_s, wants_persona = STEP_CONFIG[step_index]
@@ -321,6 +366,44 @@ def execute(task: dict) -> dict:
             summary = f"addressed feedback (“{feedback[0].get('message', '')[:80]}”) — {summary}"[:600]
         return {
             "summary": summary,
+            "artifacts": {"artifact_md": artifact_md[:WRITE_ARTIFACT_SANITY_CEILING_CHARS], "verdict": verdict},
+        }
+
+    # Deploy (HZ-22): the release is already published by the time this runs
+    # (the JS orchestrator holds the GitHub token, not the farm — see
+    # dispatchToFarm in server/src/orchestrator.js). This step is purely the
+    # DevOps agent's deep post-deploy verification.
+    if step_index == 14:
+        if not item.get("repo") or item.get("issue") is None:
+            return {
+                "summary": "no repository attached — deploy verification skipped (demo item)",
+                "artifacts": {
+                    "artifact_md": "## Verdict\n**pass** — no repository attached; nothing to verify.",
+                    "verdict": "pass",
+                },
+            }
+
+        prompt = (
+            build_prompt(task)
+            + "\n\nRespond with ONLY the JSON object described in your role instructions. Your "
+            '"url" and "expected_text" fields are what this script independently re-verifies '
+            "with e2e/smoke/check.mjs — pick an expected_text that is actually visible on that "
+            "page right now."
+        )
+        parsed = _run_and_parse(
+            prompt, append_system=role, cwd=None, max_turns=max_turns, timeout_s=timeout_s, allowed_tools=tools
+        )
+        summary = str(parsed.get("summary", "")).strip()[:600] or "deploy verification finished"
+        artifact_md = str(parsed.get("artifact_md", "")).strip()
+
+        url, expected_text = parsed.get("url"), parsed.get("expected_text")
+        if not isinstance(url, str) or not url.strip() or not isinstance(expected_text, str) or not expected_text.strip():
+            raise ClaudeError("devops reply missing 'url'/'expected_text' needed for deep verification")
+
+        verdict, smoke_line = run_smoke_check(url.strip(), expected_text.strip())
+        artifact_md = f"{artifact_md}\n\n## Machine-checked result\n`{smoke_line}`".strip()
+        return {
+            "summary": f"{summary} · {smoke_line}"[:600],
             "artifacts": {"artifact_md": artifact_md[:WRITE_ARTIFACT_SANITY_CEILING_CHARS], "verdict": verdict},
         }
 

@@ -21,10 +21,13 @@ export const UI_URL = (process.env.HORIZON_UI_URL || 'http://localhost:5173').re
 // Agent farm (farm/ Python daemon). FARM_URL unset -> mock agents run in-process.
 export const FARM_URL = process.env.FARM_URL || null
 export const FARM_SHARED_SECRET = process.env.FARM_SHARED_SECRET || 'dev-secret'
-// Which step indexes the farm handles. Default: all agent steps except
-// Deploy (14), which stays deterministic/script-driven on this side.
+// Which step indexes the farm handles. Default: every agent step, including
+// Deploy (14) — HZ-22 wires the DevOps role in for deep post-deploy
+// verification. The release publish itself (needs the GitHub token the farm
+// doesn't have) still happens here in Node, in dispatchToFarm(), before the
+// step is handed to the farm for verification.
 export const FARM_STEP_INDEXES = new Set(
-  (process.env.FARM_STEP_INDEXES || '0,1,2,4,6,7,8,9,11,12')
+  (process.env.FARM_STEP_INDEXES || '0,1,2,4,6,7,8,9,11,12,14')
     .split(',')
     .map((s) => Number(s.trim()))
     .filter((n) => Number.isInteger(n)),
