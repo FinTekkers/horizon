@@ -112,7 +112,7 @@ a missing file into an invisible gap for a new user: creating a project via
 `POST /api/projects` (`server/src/app.js:881-899`,
 `store.createProject`) never creates, prompts for, or even mentions a
 matching rules file. `farm/rules/projects/fintekkers.md` is the **only**
-project rules file in the repo, and every line of it (`fintekkers.md:6-44`)
+project rules file in the repo, and every line of it (`fintekkers.md:6-43`)
 is FinTekkers-specific: a Rust/Java/Postgres service topology, Homebrew
 paths, specific ports. There is no template, no `projects/_example.md`, and
 no UI affordance for authoring one. A second project's agents run with zero
