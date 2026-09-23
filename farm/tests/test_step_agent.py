@@ -84,7 +84,7 @@ def make_git_workspace(tmp_path):
 
 def test_implement_step_pushes_a_branch(tmp_path, monkeypatch):
     ws, origin = make_git_workspace(tmp_path)
-    monkeypatch.setattr(step_agent, "workspace_path", lambda repo: ws)
+    monkeypatch.setattr(step_agent, "ensure_item_worktree", lambda repo, item_id: ws)
 
     result = execute(make_task(11, "Specialist agent implements", repo="acme/demo"))
 
@@ -107,7 +107,7 @@ def test_implement_step_pushes_a_branch(tmp_path, monkeypatch):
 
 def test_implement_step_fails_when_checks_fail(tmp_path, monkeypatch):
     ws, origin = make_git_workspace(tmp_path)
-    monkeypatch.setattr(step_agent, "workspace_path", lambda repo: ws)
+    monkeypatch.setattr(step_agent, "ensure_item_worktree", lambda repo, item_id: ws)
     monkeypatch.setenv("FARM_CHECK_CMD", "exit 1")
 
     try:
@@ -156,7 +156,7 @@ def test_qa_step_composes_the_items_persona_into_the_role(monkeypatch):
 
 def test_implement_step_composes_the_items_persona(tmp_path, monkeypatch):
     ws, _origin = make_git_workspace(tmp_path)
-    monkeypatch.setattr(step_agent, "workspace_path", lambda repo: ws)
+    monkeypatch.setattr(step_agent, "ensure_item_worktree", lambda repo, item_id: ws)
     captured = {}
     monkeypatch.setattr(step_agent, "run_claude", capture_run_claude(captured))
     task = make_task(11, "Specialist agent implements", repo="acme/demo")
@@ -258,7 +258,7 @@ def test_review_step_merges_two_passes_into_one_structured_verdict(tmp_path, mon
     git(ws, "add", "-A")
     git(ws, "commit", "-m", "add app.py")
     git(ws, "push", "-u", "origin", "HEAD:horizon/t-1")
-    monkeypatch.setattr(step_agent, "workspace_path", lambda repo: ws)
+    monkeypatch.setattr(step_agent, "ensure_item_worktree", lambda repo, item_id: ws)
 
     calls = []
     code_json = {
@@ -295,7 +295,7 @@ def test_review_step_merges_two_passes_into_one_structured_verdict(tmp_path, mon
 def test_review_step_defaults_a_malformed_pass_to_fail_closed(tmp_path, monkeypatch):
     ws, _origin = make_git_workspace(tmp_path)
     git(ws, "push", "-u", "origin", "HEAD:horizon/t-1")
-    monkeypatch.setattr(step_agent, "workspace_path", lambda repo: ws)
+    monkeypatch.setattr(step_agent, "ensure_item_worktree", lambda repo, item_id: ws)
 
     # Neither pass returns a "verdict" field at all (e.g. a model that ignored
     # the schema) — must default to "fail", never silently "pass".
@@ -423,7 +423,7 @@ def test_deploy_step_fails_closed_when_the_agent_omits_url_or_expected_text(monk
 def test_review_step_composes_the_items_persona_into_both_passes(tmp_path, monkeypatch):
     ws, _origin = make_git_workspace(tmp_path)
     git(ws, "push", "-u", "origin", "HEAD:horizon/t-1")
-    monkeypatch.setattr(step_agent, "workspace_path", lambda repo: ws)
+    monkeypatch.setattr(step_agent, "ensure_item_worktree", lambda repo, item_id: ws)
     calls = []
     ok = {
         "summary": "ok",
@@ -444,23 +444,24 @@ def test_review_step_composes_the_items_persona_into_both_passes(tmp_path, monke
         assert persona_md("python_backend") in call["append_system"]
 
 
-def test_review_step_reuses_prepare_branch_against_a_repointed_shared_workspace(tmp_path, monkeypatch):
-    """workspace_path() is keyed per-repo, not per-item: a sibling item's run
-    on the same repo between implement finishing and review starting would
-    otherwise leave the checkout on the wrong branch. Reusing prepare_branch
-    (the same call the implement step makes) closes that race."""
+def test_review_step_reuses_prepare_branch_to_scrub_a_superseded_attempts_leftovers(tmp_path, monkeypatch):
+    """HZ-50: every item gets its own git worktree, so a sibling item's run
+    can no longer repoint this item's checkout at all (see
+    test_concurrent_runs_on_different_items_do_not_clobber_each_other in
+    test_workspaces.py for that guarantee). Within THIS item's own worktree,
+    a superseded/killed implement attempt can still leave uncommitted
+    leftovers — reusing prepare_branch (the same call the implement step
+    makes) still needs to scrub those before review reads the diff."""
     ws, origin = make_git_workspace(tmp_path)
     (ws / "app.py").write_text("print('hi')\n")
     git(ws, "add", "-A")
     git(ws, "commit", "-m", "add app.py")
     git(ws, "push", "-u", "origin", "HEAD:horizon/t-1")
 
-    # Simulate a sibling item's run repointing the shared checkout, with
-    # uncommitted leftovers from a superseded attempt.
-    git(ws, "checkout", "-B", "horizon/other-item", "origin/main")
-    (ws / "leftover.txt").write_text("uncommitted junk from another item\n")
+    # Simulate a superseded attempt on this same item leaving junk behind.
+    (ws / "leftover.txt").write_text("uncommitted junk from a superseded attempt\n")
 
-    monkeypatch.setattr(step_agent, "workspace_path", lambda repo: ws)
+    monkeypatch.setattr(step_agent, "ensure_item_worktree", lambda repo, item_id: ws)
     ok = {
         "summary": "ok",
         "verdict": "pass",
@@ -613,7 +614,7 @@ def test_implement_step_does_not_retry_on_a_malformed_final_reply(tmp_path, monk
     the step (HZ-29) — the code in the workspace is the deliverable, not the
     summary. The HZ-44 retry machinery must not apply here."""
     ws, _origin = make_git_workspace(tmp_path)
-    monkeypatch.setattr(step_agent, "workspace_path", lambda repo: ws)
+    monkeypatch.setattr(step_agent, "ensure_item_worktree", lambda repo, item_id: ws)
     calls = []
 
     def _fake(prompt, **kwargs):
@@ -647,7 +648,7 @@ def two_pass_run_claude_with_retries(code_results, qa_results, captured_calls):
 def test_review_step_code_pass_recovers_independently_of_a_healthy_qa_pass(tmp_path, monkeypatch):
     ws, _origin = make_git_workspace(tmp_path)
     git(ws, "push", "-u", "origin", "HEAD:horizon/t-1")
-    monkeypatch.setattr(step_agent, "workspace_path", lambda repo: ws)
+    monkeypatch.setattr(step_agent, "ensure_item_worktree", lambda repo, item_id: ws)
 
     calls = []
     bad_code = '{"summary": "code review done", "verdict": "fail"'  # unparseable
@@ -685,7 +686,7 @@ def test_review_step_code_pass_recovers_independently_of_a_healthy_qa_pass(tmp_p
 def test_review_step_qa_pass_recovers_independently_of_a_healthy_code_pass(tmp_path, monkeypatch):
     ws, _origin = make_git_workspace(tmp_path)
     git(ws, "push", "-u", "origin", "HEAD:horizon/t-1")
-    monkeypatch.setattr(step_agent, "workspace_path", lambda repo: ws)
+    monkeypatch.setattr(step_agent, "ensure_item_worktree", lambda repo, item_id: ws)
 
     calls = []
     code_json = json.dumps({"summary": "code review done", "verdict": "pass", "findings": []})
@@ -715,7 +716,7 @@ def test_review_step_qa_pass_recovers_independently_of_a_healthy_code_pass(tmp_p
 def test_review_step_code_pass_exhausting_its_retry_still_cancels_the_run(tmp_path, monkeypatch):
     ws, _origin = make_git_workspace(tmp_path)
     git(ws, "push", "-u", "origin", "HEAD:horizon/t-1")
-    monkeypatch.setattr(step_agent, "workspace_path", lambda repo: ws)
+    monkeypatch.setattr(step_agent, "ensure_item_worktree", lambda repo, item_id: ws)
 
     calls = []
     bad_code = '{"summary": "code review done", "verdict": "fail"'  # unparseable, both attempts

@@ -25,6 +25,7 @@ const EXPECTED_JOURNEYS = [
   'merge-conflict',
   'full-lifecycle',
   'gate-key',
+  'login-error',
 ]
 
 const missing = EXPECTED_JOURNEYS.filter((name) => !existsSync(join(SCREENSHOTS_DIR, `${name}.png`)))

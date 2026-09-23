@@ -261,3 +261,111 @@ def test_cancel_of_active_run_removes_task_and_reports_kill_state():
     # No such tmux session exists in tests; the endpoint reports killed=None
     # rather than failing — the kill is best-effort by design.
     assert body["killed"] is None
+
+
+# ---- HZ-50: concurrency cap + per-item workspace-mutating mutex ----
+# workspace_path(repo) used to be shared by every item in a repo, so ANY
+# second implement (11) session was blocked globally — the only thing
+# stopping two runs from fighting over one working tree. Per-item git
+# worktrees (workspaces.py) remove that shared tree, so the dispatcher only
+# needs to serialize step 11/12 runs against the SAME item; different items
+# must be free to run fully concurrently, which is the entire point of
+# raising FARM_MAX_EPHEMERAL.
+
+
+def _write_task(path, run_id, item_id, step_index):
+    path.write_text(json.dumps(make_task(run_id, item_id=item_id, step_index=step_index)))
+    return path
+
+
+def test_max_ephemeral_default_is_four():
+    """The cap-raise itself (farmd.py:54): 2 -> 4, still env-overridable."""
+    assert farmd.MAX_EPHEMERAL == 4
+
+
+def test_max_ephemeral_stays_env_overridable(monkeypatch):
+    """Guardrail: the target must remain a variable, not a hardcoded
+    constant — a smaller host must be able to lower it without a code
+    change."""
+    env = {**os.environ, "FARM_MAX_EPHEMERAL": "1"}
+    proc = subprocess.run(
+        [sys.executable, "-c", "from farm import farmd; print(farmd.MAX_EPHEMERAL)"],
+        capture_output=True,
+        text=True,
+        env=env,
+        cwd=str(REPO_ROOT),
+        timeout=60,
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert proc.stdout.strip() == "1"
+
+
+def test_item_worktree_busy_matches_only_s11_and_s12_sessions_for_that_item():
+    sessions = ["farm-run-hz-3-s11-a1", "farm-run-hz-9-s4-a1", "farm-run-hz-3-s12-a2"]
+    assert farmd._item_worktree_busy("hz-3", sessions) is True
+    assert farmd._item_worktree_busy("hz-9", sessions) is False  # s4 isn't workspace-mutating
+    assert farmd._item_worktree_busy("hz-1", sessions) is False  # no sessions for this item at all
+
+
+def test_select_dispatchable_respects_the_free_slot_count(tmp_path):
+    paths = [_write_task(tmp_path / f"{i}.json", i, item_id=f"hz-{i}", step_index=4) for i in range(3)]
+    selected = farmd._select_dispatchable(paths, sessions=[], slots=2)
+    assert selected == paths[:2]
+
+
+def test_select_dispatchable_serializes_step11_and_step12_for_the_same_item(tmp_path):
+    a = _write_task(tmp_path / "a.json", 1, item_id="hz-3", step_index=11)
+    b = _write_task(tmp_path / "b.json", 2, item_id="hz-3", step_index=12)
+
+    selected = farmd._select_dispatchable([a, b], sessions=[], slots=4)
+
+    # Only the first is launched this tick — the second would prepare_branch
+    # against the SAME item's worktree while the first is still using it.
+    assert selected == [a]
+
+
+def test_select_dispatchable_runs_different_items_step11_fully_concurrently(tmp_path):
+    """This is the raised-concurrency case the old global s11-vs-s11 lock
+    would have blocked: two different items' implement steps, same repo,
+    same tick — both must be dispatchable since HZ-50 gives them separate
+    worktrees."""
+    a = _write_task(tmp_path / "a.json", 1, item_id="hz-3", step_index=11)
+    b = _write_task(tmp_path / "b.json", 2, item_id="hz-9", step_index=11)
+
+    selected = farmd._select_dispatchable([a, b], sessions=[], slots=4)
+
+    assert selected == [a, b]
+
+
+def test_select_dispatchable_treats_an_existing_live_session_as_busy(tmp_path):
+    task = _write_task(tmp_path / "a.json", 1, item_id="hz-3", step_index=12)
+    live_sessions = ["farm-run-hz-3-s11-a1"]  # e.g. this item's implement step is mid-run
+
+    selected = farmd._select_dispatchable([task], sessions=live_sessions, slots=4)
+
+    assert selected == []
+
+
+def test_select_dispatchable_backfills_past_a_busy_item_within_the_slot_budget(tmp_path):
+    """Item hz-3 is mid-run and gets deferred; a later-queued task for a
+    different item still fills the free slot instead of the tick going idle."""
+    busy = _write_task(tmp_path / "busy.json", 1, item_id="hz-3", step_index=12)
+    free = _write_task(tmp_path / "free.json", 2, item_id="hz-9", step_index=11)
+    live_sessions = ["farm-run-hz-3-s11-a1"]
+
+    selected = farmd._select_dispatchable([busy, free], sessions=live_sessions, slots=1)
+
+    assert selected == [free]
+
+
+def test_a_crashed_sessions_slot_is_freed_by_recounting_live_tmux_sessions(monkeypatch):
+    """The cap is enforced by counting live farm-run-* tmux sessions
+    (_ephemeral_sessions -> tmux_mgr.list_farm_sessions), never an in-memory
+    counter — so a session that dies without reporting still frees its slot
+    on the very next dispatcher tick."""
+    live = ["farm-run-hz-3-s11-a1", "farm-run-hz-9-s11-a1"]
+    monkeypatch.setattr(farmd.tmux_mgr, "list_farm_sessions", lambda: live)
+    assert farmd.MAX_EPHEMERAL - len(farmd._ephemeral_sessions()) == farmd.MAX_EPHEMERAL - 2
+
+    live.pop()  # simulate one session crashing out from under farmd
+    assert farmd.MAX_EPHEMERAL - len(farmd._ephemeral_sessions()) == farmd.MAX_EPHEMERAL - 1

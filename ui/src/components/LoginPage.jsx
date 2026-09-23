@@ -1,6 +1,25 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import * as api from '../api'
 import { GridIcon } from './icons'
+
+// A failed /api/auth/google/* callback (HZ-37) redirects back here with
+// ?error=<code> instead of rendering raw JSON in the tab — this maps each
+// code to copy a human can act on.
+const GOOGLE_ERROR_MESSAGES = {
+  google_sso_not_configured: 'Google sign-in is not available right now.',
+  bad_state: 'Your sign-in attempt expired. Please try again.',
+  google_auth_failed: 'Google sign-in failed. Please try again.',
+  google_link_blocked:
+    "That Google account's email isn't verified, so it can't be linked. Sign in with your password instead, or retry with a verified Google account.",
+  account_link_failed: 'Something went wrong signing you in with Google. Please try again.',
+}
+
+function googleErrorFromLocation() {
+  const params = new URLSearchParams(window.location.search)
+  const code = params.get('error')
+  if (!code) return null
+  return GOOGLE_ERROR_MESSAGES[code] || 'Could not sign in with Google.'
+}
 
 // Every page under /horizon requires a login (HZ-21): a hardcoded email/
 // password, or Google SSO — a first-time Google sign-in creates the account.
@@ -8,8 +27,18 @@ import { GridIcon } from './icons'
 export default function LoginPage({ onLoggedIn }) {
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
-  const [error, setError] = useState(null)
+  const [error, setError] = useState(() => googleErrorFromLocation())
   const [busy, setBusy] = useState(false)
+
+  // Strip ?error= after reading it so a page refresh doesn't keep re-showing
+  // a stale message, and so it never leaks into a later, unrelated URL.
+  useEffect(() => {
+    if (!window.location.search.includes('error=')) return
+    const params = new URLSearchParams(window.location.search)
+    params.delete('error')
+    const query = params.toString()
+    window.history.replaceState({}, '', window.location.pathname + (query ? `?${query}` : ''))
+  }, [])
 
   const submit = async (e) => {
     e.preventDefault()

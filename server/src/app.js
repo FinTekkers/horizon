@@ -691,7 +691,10 @@ export function buildApp({ logger = true } = {}) {
   // the UI bundle. `oauth_state` is a short-lived CSRF nonce checked at the
   // callback.
   fastify.get('/api/auth/google/start', (request, reply) => {
-    if (!googleAuth.configured()) return reply.code(503).send({ error: 'google_sso_not_configured' })
+    // Browser-facing (reached via a plain <a href>, not fetch()) — every
+    // error on this route family redirects to the login page instead of
+    // rendering raw JSON in the tab (HZ-37).
+    if (!googleAuth.configured()) return reply.redirect(`${UI_URL}/?error=google_sso_not_configured`)
     const state = crypto.randomBytes(16).toString('hex')
     reply.setCookie('oauth_state', state, {
       httpOnly: true,
@@ -717,24 +720,30 @@ export function buildApp({ logger = true } = {}) {
       const { code, state } = request.query
       const expected = request.cookies.oauth_state
       if (!code || !state || !expected || state !== expected) {
-        return reply.code(400).send({ error: 'bad_state' })
+        return reply.redirect(`${UI_URL}/?error=bad_state`)
       }
       let profile
       try {
         profile = await googleAuth.exchangeCodeForProfile(code)
       } catch (err) {
         request.log.warn(`google oauth exchange failed: ${err.message}`)
-        return reply.code(400).send({ error: 'google_auth_failed' })
+        return reply.redirect(`${UI_URL}/?error=google_auth_failed`)
       }
       let user
       try {
         user = auth.findOrCreateGoogleUser(profile)
       } catch (err) {
+        if (err instanceof auth.GoogleLinkBlockedError) {
+          // Unverified email, or already linked to a different Google
+          // identity — never surfaces as a raw JSON crash (HZ-37).
+          request.log.warn(`google link blocked: ${err.message}`)
+          return reply.redirect(`${UI_URL}/?error=google_link_blocked`)
+        }
         // Reachable only if two callbacks for a brand-new email race into the
         // INSERT; the linking path above handles the ordinary collision. Still
-        // worth a 4xx over a raw 500 — the user can simply retry.
+        // worth a redirect over a raw 500 — the user can simply retry.
         request.log.warn(`google account linking failed: ${err.message}`)
-        return reply.code(409).send({ error: 'account_link_failed' })
+        return reply.redirect(`${UI_URL}/?error=account_link_failed`)
       }
       // Consumed only now that the login has actually succeeded. Clearing it
       // any earlier burns the nonce on a failed callback, and the natural

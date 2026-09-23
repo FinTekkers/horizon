@@ -21,7 +21,7 @@ from .claude_runner import ClaudeError, extract_json, run_claude
 from .config import FARM_PORT
 from .personas import compose_role, resolve
 from .rules import render_rules_section
-from .workspaces import workspace_path
+from .workspaces import ensure_item_worktree, hub_lock
 
 FARMD = f"http://127.0.0.1:{FARM_PORT}"
 ROLES = Path(__file__).parent / "roles"
@@ -117,10 +117,14 @@ def prepare_branch(ws: Path, item: dict) -> str:
     branch = f"horizon/{item['id'].lower()}"
     # A superseded/killed attempt leaves uncommitted edits behind; every new
     # attempt starts from a scrubbed tree (pushed branches are the only state
-    # that survives an attempt).
+    # that survives an attempt). reset/clean only ever touch this item's own
+    # worktree — no lock needed. fetch mutates the hub's shared
+    # refs/remotes/origin/* (every item's worktree reads those), so it's
+    # serialized against every other item's fetch/push on this repo.
     git(ws, "reset", "--hard")
     git(ws, "clean", "-fd")
-    git(ws, "fetch", "origin", "--prune")
+    with hub_lock(item["repo"]):
+        git(ws, "fetch", "origin", "--prune")
     head = git(ws, "symbolic-ref", "refs/remotes/origin/HEAD", check=False).stdout.strip()
     default = head.rsplit("/", 1)[-1] if head else "main"
     remote_branch = git(ws, "rev-parse", "--verify", f"origin/{branch}", check=False)
@@ -141,8 +145,10 @@ def finalize_branch(ws: Path, item: dict, branch: str) -> dict:
         raise RuntimeError("the agent made no code changes — nothing to push")
     # Agent work branches are single-writer (the implement mutex): a rebase
     # rewriting earlier attempts is legitimate, so push with lease protection
-    # rather than failing on non-fast-forward.
-    git(ws, "push", "--force-with-lease", "-u", "origin", branch)
+    # rather than failing on non-fast-forward. Same hub-shared-refs lock as
+    # the fetch in prepare_branch.
+    with hub_lock(item["repo"]):
+        git(ws, "push", "--force-with-lease", "-u", "origin", branch)
     stat = git(ws, "diff", "--stat", f"origin/{default}...HEAD", check=False).stdout.strip().splitlines()
     return {"branch": branch, "files_changed": stat[-1] if stat else ""}
 
@@ -272,9 +278,14 @@ def execute(task: dict) -> dict:
     if wants_persona:
         role = compose_role(role, item.get("persona"))
 
-    ws = workspace_path(item["repo"]) if item.get("repo") else None
-    if ws is not None and not (ws / ".git").exists():
-        ws = None
+    ws = None
+    if item.get("repo"):
+        try:
+            ws = ensure_item_worktree(item["repo"], item["id"])
+        except RuntimeError:
+            # Hub not provisioned for this repo (e.g. farm never started
+            # cleanly against it) — same "no workspace" fallback as before.
+            ws = None
 
     # Implement step without a repo/workspace: nothing real to build.
     if step_index == 11:
@@ -324,11 +335,10 @@ def execute(task: dict) -> dict:
                 },
             }
 
-        # Reuse the implement step's own branch resolution to close the same
-        # shared-workspace race it defends against: workspace_path() is keyed
-        # per-repo, not per-item, so a sibling item's run on this repo between
-        # implement finishing and review starting would otherwise repoint the
-        # checkout out from under this review.
+        # Reuse the implement step's own branch resolution: this item's
+        # worktree is isolated from every other item's (HZ-50), but a
+        # superseded/killed implement attempt on THIS item can still leave
+        # uncommitted leftovers in it — scrub before reading the diff.
         branch = prepare_branch(ws, item)
         log(f"workspace {ws} on branch {branch} — reviewing diff")
         head = git(ws, "symbolic-ref", "refs/remotes/origin/HEAD", check=False).stdout.strip()

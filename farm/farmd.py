@@ -51,7 +51,15 @@ def _pm_session_name() -> str:
     return f"farm-pm-{slugify(state['project']['name'])}" if state["project"] else ""
 
 
-MAX_EPHEMERAL = int(__import__("os").environ.get("FARM_MAX_EPHEMERAL", "2"))
+# HZ-50: raised from 2 to 4 now that per-item git worktrees (workspaces.py)
+# mean concurrent steps on different items no longer share a working tree to
+# reset/clean/checkout over each other. Steps mostly wait on the Claude API
+# and git network calls rather than burning CPU, so 4-way concurrency is
+# reasonable even on this host's 2 vCPUs — the exception is run_checks()
+# (the repo's own tests/linters), which is genuinely CPU-bound; if that
+# starts timing out under real four-way load, lower this via the env var
+# rather than editing code — it stays a variable, not a constant.
+MAX_EPHEMERAL = int(__import__("os").environ.get("FARM_MAX_EPHEMERAL", "4"))
 
 # run_id -> tmux session name for launched ephemeral runs (so cancel can kill).
 RUN_SESSIONS: dict = {}
@@ -111,6 +119,48 @@ def _run_session_name(task: dict) -> str:
     return f"farm-run-{task['item']['id'].lower()}-s{task['step']['index']}-a{task.get('attempt', 1)}"
 
 
+# Workspace-mutating steps: implement (11) and the automated review (12),
+# both of which call prepare_branch() (reset --hard / clean -fd) on the
+# item's own worktree. Since HZ-50 gave every item its own git worktree,
+# different items no longer share a tree and can run these fully in
+# parallel — only two runs against the SAME item still need to be
+# serialized, or one's scrub could clobber the other's in-flight edits.
+WORKSPACE_MUTATING_STEPS = (11, 12)
+
+
+def _item_worktree_busy(item_id: str, sessions: list[str]) -> bool:
+    prefix = f"farm-run-{item_id.lower()}-s"
+    for s in sessions:
+        rest = s[len(prefix):] if s.startswith(prefix) else None
+        if rest is not None and rest.split("-", 1)[0] in ("11", "12"):
+            return True
+    return False
+
+
+def _select_dispatchable(task_paths: list, sessions: list[str], slots: int) -> list:
+    """Pure selection logic, factored out of the dispatcher loop so it's
+    testable without tmux/threads: given queued task files (oldest first),
+    the currently live ephemeral session names, and free slots, returns
+    which task files to launch this tick."""
+    selected = []
+    busy = list(sessions)
+    for task_path in task_paths:
+        if len(selected) >= slots:
+            break
+        try:
+            task = json.loads(task_path.read_text())
+        except (json.JSONDecodeError, OSError):
+            continue
+        step_idx = task.get("step", {}).get("index")
+        item_id = task.get("item", {}).get("id") or ""
+        if step_idx in WORKSPACE_MUTATING_STEPS and _item_worktree_busy(item_id, busy):
+            continue
+        selected.append(task_path)
+        if step_idx in WORKSPACE_MUTATING_STEPS:
+            busy.append(_run_session_name(task))
+    return selected
+
+
 def _ephemeral_dispatcher() -> None:
     """Launches queued ephemeral steps, at most MAX_EPHEMERAL at once."""
     runs_dir = QUEUE_DIR / "runs"
@@ -123,13 +173,9 @@ def _ephemeral_dispatcher() -> None:
             slots = MAX_EPHEMERAL - len(_ephemeral_sessions())
             if slots <= 0:
                 continue
-            for task_path in sorted(runs_dir.glob("*.json"), key=lambda p: p.stat().st_mtime)[:slots]:
+            candidates = sorted(runs_dir.glob("*.json"), key=lambda p: p.stat().st_mtime)
+            for task_path in _select_dispatchable(candidates, _ephemeral_sessions(), slots):
                 task = json.loads(task_path.read_text())
-                # Implement steps share one workspace clone per repo: never run
-                # two at once (they'd fight over the working tree). Planning
-                # steps read-only and parallelize freely.
-                if task["step"].get("index") == 11 and any("-s11-" in s for s in _ephemeral_sessions()):
-                    continue
                 active = runs_dir / "active"
                 active.mkdir(exist_ok=True)
                 claimed = active / task_path.name
@@ -206,6 +252,10 @@ def _start_async(project: dict, repos: list, token: str | None) -> None:
         for entry in repos:
             try:
                 workspaces.ensure(entry["repo"], token)
+                # Drops worktree metadata for item worktrees whose directory
+                # a prior farmd's teardown removed but the hub still thinks
+                # are registered — a farm crashed mid-run leaves this behind.
+                workspaces.prune_worktrees(entry["repo"])
                 print(f"farmd: workspace ready for {entry['repo']}", flush=True)
             except Exception as exc:  # workspaces are not needed until phase 3
                 print(f"farmd: WARNING workspace for {entry['repo']} failed: {exc}", flush=True)
