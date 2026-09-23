@@ -178,6 +178,9 @@ db.prepare(
 db.prepare(
   'INSERT INTO work_item (id, title, priority, cursor, repo, issue, pr) VALUES (?, ?, ?, ?, ?, ?, ?)',
 ).run('T-GATE-MERGE', 'Accept gate', 'Medium', ACCEPT_GATE_INDEX, 'acme/demo', 9, 41)
+db.prepare(
+  "INSERT INTO work_item (id, title, priority, cursor) VALUES ('T-GATE-FINAL', 'One approval from closed', 'Medium', ?)",
+).run(STEPS.length - 1)
 
 const approvePost = (id, stepIndex, payload = {}) =>
   inject({ method: 'POST', url: `/api/items/${id}/gates/${stepIndex}/approve`, payload })
@@ -188,7 +191,7 @@ const approveViaWhatsappPost = (id, stepIndex, payload, headers = {}) =>
 test('session route: approving a gate advances the cursor and attributes the logged-in user\'s name', async () => {
   const res = await approvePost('T-GATE-HK', 3)
   assert.equal(res.statusCode, 200)
-  assert.deepEqual(res.json(), { ok: true })
+  assert.deepEqual(res.json(), { ok: true, closed: false })
   assert.equal(db.prepare("SELECT cursor FROM work_item WHERE id = 'T-GATE-HK'").get().cursor, 4)
   assert.equal(
     db.prepare("SELECT decided_by FROM gate_decision WHERE item_id = 'T-GATE-HK'").get().decided_by,
@@ -198,6 +201,13 @@ test('session route: approving a gate advances the cursor and attributes the log
     db.prepare("SELECT who FROM event WHERE item_id = 'T-GATE-HK' ORDER BY id DESC LIMIT 1").get().who,
     fixtureUser.name,
   )
+})
+
+test('approving the closing gate reports closed: true and advances the cursor past the last step', async () => {
+  const res = await approvePost('T-GATE-FINAL', STEPS.length - 1)
+  assert.equal(res.statusCode, 200)
+  assert.deepEqual(res.json(), { ok: true, closed: true })
+  assert.equal(db.prepare("SELECT cursor FROM work_item WHERE id = 'T-GATE-FINAL'").get().cursor, STEPS.length)
 })
 
 test('approving without a session cookie is 401 (HZ-21)', async () => {
@@ -231,7 +241,7 @@ test('approve-via-whatsapp: 200, advances the cursor, and attributes the named s
     { 'x-farm-secret': FARM_SHARED_SECRET },
   )
   assert.equal(res.statusCode, 200)
-  assert.deepEqual(res.json(), { ok: true })
+  assert.deepEqual(res.json(), { ok: true, closed: false })
   assert.equal(db.prepare("SELECT cursor FROM work_item WHERE id = 'T-GATE-WA'").get().cursor, 4)
   assert.equal(
     db.prepare("SELECT decided_by FROM gate_decision WHERE item_id = 'T-GATE-WA'").get().decided_by,
