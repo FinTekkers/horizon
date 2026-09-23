@@ -6,6 +6,7 @@ import Board from './components/Board'
 import Tracker from './components/Tracker'
 import ApprovalsDrawer from './components/ApprovalsDrawer'
 import ComposerModal from './components/ComposerModal'
+import ConfirmGateDialog from './components/ConfirmGateDialog'
 import AdminPage from './components/AdminPage'
 import AgentDefinitionsPage from './components/AgentDefinitionsPage'
 import NewItemModal from './components/NewItemModal'
@@ -70,6 +71,10 @@ function AuthenticatedApp({ user, onLogout }) {
   const [composer, setComposer] = useState(CLOSED_COMPOSER)
   const [newItemOpen, setNewItemOpen] = useState(false)
   const [switchTarget, setSwitchTarget] = useState(null)
+  // Plain Approve never used to pause for anything — with a cached gate PIN
+  // it went straight to the server on click (HZ-38). This is the one gate it
+  // must clear first: nothing here calls api.approveGate directly.
+  const [confirmApprove, setConfirmApprove] = useState(null)
 
   const sync = api.getSync()
   const projects = api.getProjects()
@@ -115,6 +120,8 @@ function AuthenticatedApp({ user, onLogout }) {
 
   const openComposer = (mode, itemId, opts = {}) =>
     setComposer({ open: true, mode, itemId, phase: opts.phase ?? null, target: opts.target || '' })
+
+  const requestApprove = (itemId, gateLabel) => setConfirmApprove({ itemId, gateLabel })
 
   const submitComposer = (text) => {
     const { mode, itemId, phase, target } = composer
@@ -163,7 +170,7 @@ function AuthenticatedApp({ user, onLogout }) {
         <Board
           items={items}
           onOpen={openItem}
-          onApprove={api.approveGate}
+          onApprove={requestApprove}
           onReject={(id, target) => openComposer('reject', id, { target })}
           onTogglePause={api.togglePause}
           onNewItem={() => setNewItemOpen(true)}
@@ -180,7 +187,7 @@ function AuthenticatedApp({ user, onLogout }) {
         <Tracker
           item={selected}
           onBack={toBoard}
-          onApprove={api.approveGate}
+          onApprove={requestApprove}
           onApproveWithComments={(id, target) => openComposer('approve', id, { target })}
           onReject={(id, target) => openComposer('reject', id, { target })}
           onResolveConflicts={(id, pr) =>
@@ -201,13 +208,25 @@ function AuthenticatedApp({ user, onLogout }) {
           items={items}
           onClose={() => setApprovalsOpen(false)}
           onOpenItem={openItem}
-          onApprove={api.approveGate}
+          onApprove={requestApprove}
           onReject={(id, target) => openComposer('reject', id, { target })}
         />
       )}
 
       {composer.open && (
         <ComposerModal composer={composer} onSubmit={submitComposer} onCancel={() => setComposer(CLOSED_COMPOSER)} />
+      )}
+
+      {confirmApprove && (
+        <ConfirmGateDialog
+          itemId={confirmApprove.itemId}
+          gateLabel={confirmApprove.gateLabel}
+          onConfirm={() => {
+            api.approveGate(confirmApprove.itemId)
+            setConfirmApprove(null)
+          }}
+          onCancel={() => setConfirmApprove(null)}
+        />
       )}
 
       {newItemOpen && <NewItemModal activeProject={activeProject} onClose={() => setNewItemOpen(false)} />}

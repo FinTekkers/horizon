@@ -10,7 +10,7 @@
 // step_run/event bookkeeping and gate semantics stay exactly as they are.
 
 import { db } from './db.js'
-import { STEPS, AGENTS, isClosed, IMPLEMENT_STEP_INDEX, REVIEW_STEP_INDEX } from './lifecycle.js'
+import { STEPS, AGENTS, isClosed, IMPLEMENT_STEP_INDEX, REVIEW_STEP_INDEX, DEPLOY_STEP_INDEX } from './lifecycle.js'
 import { getItem, addEvent, notifyChange, registerAgentRunner, recoverRejectedItems } from './store.js'
 import { createMockPr, createDeployRelease, postIssueComment, createPrFromBranch } from './github.js'
 import { PHASES } from './lifecycle.js'
@@ -335,9 +335,41 @@ export function kick(id) {
 
 // ---- farm-dispatched steps ----
 
-function dispatchToFarm(id, stepIndex, runId, attempt) {
+async function dispatchToFarm(id, stepIndex, runId, attempt) {
   const step = STEPS[stepIndex]
-  const item = getItem(id)
+  let item = getItem(id)
+
+  // Watchdog: if the farm never reports back, fail the run rather than hang.
+  // The implement step legitimately runs long (real coding + tests) — its
+  // watchdog must outlast the farm's own 40-minute step timeout.
+  const watchdogMs = stepIndex === IMPLEMENT_STEP_INDEX ? Math.max(FARM_STEP_TIMEOUT_MS, 50 * 60 * 1000) : FARM_STEP_TIMEOUT_MS
+  timers[id] = setTimeout(() => failFarmRun(runId, 'step timed out waiting for the farm'), watchdogMs)
+
+  // Deploy's real side effect — publishing the GitHub release that the
+  // self-deploy webhook picks up — needs the GitHub token, which only this
+  // Node process holds; the farm never gets it. So this side publishes the
+  // release itself, BEFORE handing the step to the farm, and the farm's
+  // DevOps agent only does what it actually has the credentials and tools
+  // for: deep post-deploy verification of the already-published release.
+  let releaseFields = {}
+  if (stepIndex === DEPLOY_STEP_INDEX && item.repo && item.issue != null) {
+    try {
+      const release = await createDeployRelease(item)
+      releaseFields = { release_tag: release.tag_name, release_url: release.html_url }
+      db.prepare("UPDATE work_item SET release_tag = ?, release_url = ?, updated_at = datetime('now') WHERE id = ?").run(
+        release.tag_name,
+        release.html_url,
+        id,
+      )
+    } catch (err) {
+      return failFarmRun(runId, `publishing the release failed: ${err.message}`)
+    }
+    // The world may have changed while awaiting the GitHub call (a human
+    // could have cancelled/rejected the item) — re-check before dispatching.
+    if (!runStillActive(runId)) return
+    item = getItem(id)
+  }
+
   // Undelivered human feedback rides along and is considered delivered.
   const feedback = db
     .prepare('SELECT message, target, created_at FROM feedback WHERE item_id = ? AND delivered_at IS NULL')
@@ -345,12 +377,6 @@ function dispatchToFarm(id, stepIndex, runId, attempt) {
   if (feedback.length > 0) {
     db.prepare("UPDATE feedback SET delivered_at = datetime('now') WHERE item_id = ? AND delivered_at IS NULL").run(id)
   }
-
-  // Watchdog: if the farm never reports back, fail the run rather than hang.
-  // The implement step legitimately runs long (real coding + tests) — its
-  // watchdog must outlast the farm's own 40-minute step timeout.
-  const watchdogMs = stepIndex === IMPLEMENT_STEP_INDEX ? Math.max(FARM_STEP_TIMEOUT_MS, 50 * 60 * 1000) : FARM_STEP_TIMEOUT_MS
-  timers[id] = setTimeout(() => failFarmRun(runId, 'step timed out waiting for the farm'), watchdogMs)
 
   // Prior artifacts (options analysis, impl plan, reviews) give later agents
   // their working context — the implement step reads the approved plan, and
@@ -399,6 +425,7 @@ function dispatchToFarm(id, stepIndex, runId, attempt) {
       repo: item.repo,
       issue: item.issue,
       persona: item.persona,
+      ...releaseFields,
     },
     step: { index: stepIndex, label: step.label, agent: step.agent },
     feedback,
@@ -561,6 +588,54 @@ function finalizeReviewStep(id, runId, text, artifactMd, verdict, patch, isMock)
   kick(id)
 }
 
+// ---- deploy verdict (HZ-22) ----
+// The release itself is already published by the time this runs (JS side,
+// dispatchToFarm) — this is the DevOps agent's deep-verification gate: did
+// the deployed site actually render, not just answer 200. Reuses the same
+// pass/fail enum as the automated review verdict.
+
+// Exported for tests, same shape/rationale as validateVerdict: a malformed
+// reply is an infra/format problem, not a real deploy failure, so the caller
+// routes it to failFarmRun (pause for a human) rather than treating it as a
+// failed deploy.
+export function validateDeployVerdict(v) {
+  return !!v && typeof v === 'object' && VERDICT_VALUES.has(v.verdict)
+}
+
+// A failing deploy verdict has no analogous "retry loop" the way code review
+// does (redeploying isn't re-implementing) — it just pauses the item for a
+// human to decide (rollback, redeploy, investigate), same as failFarmRun,
+// but keeps the step_run's artifact/summary evidence instead of discarding it.
+function finalizeDeployStep(id, runId, text, artifactMd, verdict, patch) {
+  const step = STEPS[DEPLOY_STEP_INDEX]
+  const agent = AGENTS[step.agent]
+  const attempt = db.prepare('SELECT attempt FROM step_run WHERE id = ?').get(runId)?.attempt || 1
+  db.prepare("UPDATE step_run SET status = 'done', output = ?, artifact = ?, ended_at = datetime('now') WHERE id = ?").run(
+    text,
+    artifactMd,
+    runId,
+  )
+
+  if (verdict.verdict !== 'pass') {
+    db.prepare("UPDATE work_item SET paused = 1, updated_at = datetime('now') WHERE id = ?").run(id)
+    addEvent(id, {
+      who: agent.label,
+      text: `deploy verification failed — ${text.slice(0, 300)} — item paused; resume to redeploy`,
+      color: '#9C333E',
+      initials: agent.initials,
+    })
+    postStepComment(getItem(id), DEPLOY_STEP_INDEX, attempt, text, patch, false, artifactMd)
+    notifyChange()
+    return
+  }
+
+  db.prepare("UPDATE work_item SET cursor = cursor + 1, updated_at = datetime('now') WHERE id = ?").run(id)
+  addEvent(id, { who: agent.label, text: `completed “${step.label}” — ${text.slice(0, 300)}`, color: agent.color, initials: agent.initials })
+  postStepComment(getItem(id), DEPLOY_STEP_INDEX, attempt, text, patch, false, artifactMd)
+  notifyChange()
+  kick(id)
+}
+
 export async function completeFarmRun(runId, { summary, patch, artifacts }) {
   const run = db.prepare('SELECT * FROM step_run WHERE id = ?').get(runId)
   if (!run || run.status !== 'active') return { ok: true, stale: true }
@@ -616,6 +691,12 @@ export async function completeFarmRun(runId, { summary, patch, artifacts }) {
   if (run.step_index === REVIEW_STEP_INDEX) {
     if (!validateVerdict(artifacts?.verdict)) return failFarmRun(runId, 'malformed review verdict JSON')
     finalizeReviewStep(id, runId, text, artifactMd, artifacts.verdict, cleanPatch, false)
+    return { ok: true }
+  }
+
+  if (run.step_index === DEPLOY_STEP_INDEX) {
+    if (!validateDeployVerdict(artifacts?.verdict)) return failFarmRun(runId, 'malformed deploy verdict JSON')
+    finalizeDeployStep(id, runId, text, artifactMd, artifacts.verdict, cleanPatch)
     return { ok: true }
   }
 

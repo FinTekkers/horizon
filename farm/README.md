@@ -27,7 +27,7 @@ With `FARM_URL` unset the server uses the built-in mock agents (demo mode).
 
 - **PM agent** (long-running, tmux, session-resumed Claude): the three Plan
   steps.
-- **Ephemeral agents** (one tmux session per step, max `FARM_MAX_EPHEMERAL`=2
+- **Ephemeral agents** (one tmux session per step, max `FARM_MAX_EPHEMERAL`=4
   concurrent): Ensemble options (4), impl plan (6), architecture review (7),
   QA test plan (8) — planners read the repo workspace and produce markdown
   artifacts (stored on the step_run, posted to the issue) — and the

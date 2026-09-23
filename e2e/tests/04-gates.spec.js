@@ -13,11 +13,14 @@ test('approve, approve-with-comments and send-back drive an item through consecu
   })
   const { id } = await res.json()
 
-  // Plain approve, exercised from the board card.
+  // Plain approve, exercised from the board card — now pauses on the
+  // explicit confirm dialog (HZ-38) before anything reaches the server.
   await page.goto('/')
   const card = page.locator('.card').filter({ has: page.locator('.card__id', { hasText: id }) })
   await expect(card.locator('.btn-approve')).toBeVisible({ timeout: 10_000 })
   await card.locator('.btn-approve').click()
+  await expect(page.locator('.composer__title')).toHaveText('Approve this gate?')
+  await page.locator('.composer__submit').click()
 
   // Approve with comments, exercised from the tracker.
   await page.goto(`/${id.toLowerCase()}`)

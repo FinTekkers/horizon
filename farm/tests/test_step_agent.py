@@ -4,6 +4,9 @@ side needs to advance the item ("agents push tasks forward")."""
 
 import json
 import subprocess
+import threading
+import time
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import pytest
 
@@ -84,7 +87,7 @@ def make_git_workspace(tmp_path):
 
 def test_implement_step_pushes_a_branch(tmp_path, monkeypatch):
     ws, origin = make_git_workspace(tmp_path)
-    monkeypatch.setattr(step_agent, "workspace_path", lambda repo: ws)
+    monkeypatch.setattr(step_agent, "ensure_item_worktree", lambda repo, item_id: ws)
 
     result = execute(make_task(11, "Specialist agent implements", repo="acme/demo"))
 
@@ -107,7 +110,7 @@ def test_implement_step_pushes_a_branch(tmp_path, monkeypatch):
 
 def test_implement_step_fails_when_checks_fail(tmp_path, monkeypatch):
     ws, origin = make_git_workspace(tmp_path)
-    monkeypatch.setattr(step_agent, "workspace_path", lambda repo: ws)
+    monkeypatch.setattr(step_agent, "ensure_item_worktree", lambda repo, item_id: ws)
     monkeypatch.setenv("FARM_CHECK_CMD", "exit 1")
 
     try:
@@ -156,7 +159,7 @@ def test_qa_step_composes_the_items_persona_into_the_role(monkeypatch):
 
 def test_implement_step_composes_the_items_persona(tmp_path, monkeypatch):
     ws, _origin = make_git_workspace(tmp_path)
-    monkeypatch.setattr(step_agent, "workspace_path", lambda repo: ws)
+    monkeypatch.setattr(step_agent, "ensure_item_worktree", lambda repo, item_id: ws)
     captured = {}
     monkeypatch.setattr(step_agent, "run_claude", capture_run_claude(captured))
     task = make_task(11, "Specialist agent implements", repo="acme/demo")
@@ -184,7 +187,10 @@ def test_planning_steps_do_not_get_a_persona(monkeypatch):
 
 def test_step_config_persona_flags_match_the_design():
     wants = {index: config[5] for index, config in STEP_CONFIG.items()}
-    assert wants == {4: False, 6: False, 7: False, 8: True, 11: True, 12: True}
+    # DevOps (14) is a role, not a persona (HZ-22 architecture review): it is
+    # project-scoped via farm/rules/projects/*.md, not stack-scoped, so it
+    # never gets a persona composed in — same as the other planning steps.
+    assert wants == {4: False, 6: False, 7: False, 8: True, 11: True, 12: True, 14: False}
 
 
 # ---- project rules injection (HZ-9) ----
@@ -255,7 +261,7 @@ def test_review_step_merges_two_passes_into_one_structured_verdict(tmp_path, mon
     git(ws, "add", "-A")
     git(ws, "commit", "-m", "add app.py")
     git(ws, "push", "-u", "origin", "HEAD:horizon/t-1")
-    monkeypatch.setattr(step_agent, "workspace_path", lambda repo: ws)
+    monkeypatch.setattr(step_agent, "ensure_item_worktree", lambda repo, item_id: ws)
 
     calls = []
     code_json = {
@@ -292,7 +298,7 @@ def test_review_step_merges_two_passes_into_one_structured_verdict(tmp_path, mon
 def test_review_step_defaults_a_malformed_pass_to_fail_closed(tmp_path, monkeypatch):
     ws, _origin = make_git_workspace(tmp_path)
     git(ws, "push", "-u", "origin", "HEAD:horizon/t-1")
-    monkeypatch.setattr(step_agent, "workspace_path", lambda repo: ws)
+    monkeypatch.setattr(step_agent, "ensure_item_worktree", lambda repo, item_id: ws)
 
     # Neither pass returns a "verdict" field at all (e.g. a model that ignored
     # the schema) — must default to "fail", never silently "pass".
@@ -317,10 +323,196 @@ def test_review_step_without_a_repo_auto_passes_without_calling_claude(monkeypat
     assert "no repository attached" in result["summary"]
 
 
+# ---- deploy deep-verification (HZ-22) ----
+# The DevOps agent only PICKS the url/expected_text to check (it knows the
+# project's topology, the script doesn't) — the pass/fail gate itself is
+# decided by run_smoke_check's real exit code, never the agent's own claim.
+# The execute()-level tests below stub run_smoke_check directly to prove
+# execute() trusts THAT result, not anything the fake agent reply might also
+# say. run_smoke_check itself — the subprocess invocation, timeout, and
+# SMOKE_RESULT= parsing — is exercised for real (no monkeypatch) further
+# down, against the actual e2e/smoke/check.mjs, in
+# test_run_smoke_check_against_the_real_check_script below.
+
+
+def devops_run_claude(reply_json):
+    def _fake(prompt, **kwargs):
+        return {"result": json.dumps(reply_json)}
+
+    return _fake
+
+
+# Mirrors validateDeployVerdict in server/src/orchestrator.js exactly (down to
+# the pass/fail enum). Node's process reads execute()'s "verdict" field over
+# the wire as JSON with no shape translation in between, so a Python-side
+# assertion of equality to a literal dict is not enough on its own — a
+# previous revision shipped `"verdict": "pass"` here while the JS side
+# required `{"verdict": "pass"}`, and every test on both sides still passed
+# because each side only checked its own (different) assumed shape. Asserting
+# against this mirrored predicate, not just literal equality, is what would
+# have caught that class of bug.
+def assert_valid_deploy_verdict(v):
+    assert isinstance(v, dict) and v.get("verdict") in ("pass", "fail"), v
+
+
+def test_deploy_step_without_a_repo_passes_without_calling_claude(monkeypatch):
+    called = []
+    monkeypatch.setattr(step_agent, "run_claude", lambda *a, **k: called.append(1))
+    result = execute(make_task(14, "Deploy the changes"))
+    assert called == []
+    # Wrapped object, not a bare string — validateDeployVerdict in
+    # server/src/orchestrator.js requires typeof v === 'object' with a
+    # .verdict field. See server/test/deploy-gate.test.mjs.
+    assert result["artifacts"]["verdict"] == {"verdict": "pass"}
+    assert_valid_deploy_verdict(result["artifacts"]["verdict"])
+    assert "no repository attached" in result["summary"]
+
+
+def test_deploy_step_trusts_the_real_smoke_check_not_the_agents_own_verdict(monkeypatch):
+    monkeypatch.setattr(
+        step_agent,
+        "run_claude",
+        devops_run_claude(
+            {
+                "summary": "verified the deploy",
+                "url": "https://shoreward.ai/horizon/",
+                "expected_text": "Horizon",
+                "artifact_md": "## Deploy target\nHorizon",
+            }
+        ),
+    )
+    monkeypatch.setattr(step_agent, "run_smoke_check", lambda url, text: ("fail", "SMOKE_RESULT=fail: text never appeared"))
+
+    result = execute(make_task(14, "Deploy the changes", repo="acme/demo"))
+
+    # The script's own check said fail — that's the verdict, full stop, even
+    # though the fake agent reply above never claimed anything was broken.
+    # Wrapped object shape — see the comment on test_deploy_step_without_a_repo above.
+    assert result["artifacts"]["verdict"] == {"verdict": "fail"}
+    assert_valid_deploy_verdict(result["artifacts"]["verdict"])
+    assert "SMOKE_RESULT=fail" in result["summary"]
+    assert "SMOKE_RESULT=fail" in result["artifacts"]["artifact_md"]
+
+
+def test_deploy_step_passes_when_the_real_smoke_check_passes(monkeypatch):
+    monkeypatch.setattr(
+        step_agent,
+        "run_claude",
+        devops_run_claude(
+            {
+                "summary": "verified the deploy",
+                "url": "https://shoreward.ai/horizon/",
+                "expected_text": "Horizon",
+                "artifact_md": "## Deploy target\nHorizon",
+            }
+        ),
+    )
+    monkeypatch.setattr(
+        step_agent, "run_smoke_check", lambda url, text: ("pass", 'SMOKE_RESULT=pass — "Horizon" rendered')
+    )
+
+    result = execute(make_task(14, "Deploy the changes", repo="acme/demo"))
+    assert result["artifacts"]["verdict"] == {"verdict": "pass"}
+    assert_valid_deploy_verdict(result["artifacts"]["verdict"])
+
+
+def test_deploy_step_fails_closed_when_the_agent_omits_url_or_expected_text(monkeypatch):
+    monkeypatch.setattr(step_agent, "run_claude", devops_run_claude({"summary": "did stuff", "artifact_md": "n/a"}))
+    called = []
+    monkeypatch.setattr(step_agent, "run_smoke_check", lambda *a: called.append(1))
+
+    with pytest.raises(Exception, match="url.*expected_text"):
+        execute(make_task(14, "Deploy the changes", repo="acme/demo"))
+    assert called == []  # never reaches the real check without both fields
+
+
+# ---- run_smoke_check against the real check.mjs (HZ-22) ----
+# Every test above monkeypatches run_smoke_check itself, so none of them ever
+# exercises its actual subprocess call, timeout, or SMOKE_RESULT= parsing —
+# exactly the "trust a real exit code, not the model's self-report" mechanism
+# the whole ticket is built around. These drive the unmodified function
+# against the real e2e/smoke/check.mjs and two throwaway local HTTP servers,
+# mirroring e2e/smoke/check.test.mjs's pass/fail/unreachable cases plus a
+# timeout case that script alone can't prove.
+
+
+class _StallableHandler(BaseHTTPRequestHandler):
+    html = b"<html><body><h1>Item Board</h1></body></html>"
+    delay_s = 0
+
+    def do_GET(self):
+        if self.delay_s:
+            time.sleep(self.delay_s)
+        self.send_response(200)
+        self.send_header("Content-Type", "text/html")
+        self.end_headers()
+        self.wfile.write(self.html)
+
+    def log_message(self, *args):
+        pass  # keep test output quiet
+
+
+def serve_html(html: bytes, delay_s: float = 0):
+    # Threading, not the plain single-request-at-a-time HTTPServer: the
+    # timeout test's handler sleeps past run_smoke_check's own timeout, and a
+    # single-threaded server's shutdown() would block on that same handler —
+    # threading + daemon_threads lets the test tear down immediately instead
+    # of waiting out the full delay.
+    handler = type("Handler", (_StallableHandler,), {"html": html, "delay_s": delay_s})
+    server = ThreadingHTTPServer(("127.0.0.1", 0), handler)
+    server.daemon_threads = True
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    return server, f"http://127.0.0.1:{server.server_port}/"
+
+
+def test_run_smoke_check_passes_against_a_real_rendering_page():
+    server, url = serve_html(b"<html><body><h1>Item Board</h1><p>3 items in flight</p></body></html>")
+    try:
+        verdict, line = step_agent.run_smoke_check(url, "Item Board")
+    finally:
+        server.shutdown()
+    assert verdict == "pass"
+    assert line.startswith("SMOKE_RESULT=pass")
+
+
+def test_run_smoke_check_fails_against_a_page_missing_the_expected_text():
+    server, url = serve_html(b"<html><body><h1>Something went wrong</h1></body></html>")
+    try:
+        verdict, line = step_agent.run_smoke_check(url, "Item Board")
+    finally:
+        server.shutdown()
+    assert verdict == "fail"
+    assert line.startswith("SMOKE_RESULT=fail:")
+
+
+def test_run_smoke_check_fails_when_the_url_is_unreachable():
+    # Port 1 is reserved and nothing answers on it — same case
+    # check.test.mjs's "url never responds" test covers for check.mjs alone.
+    verdict, line = step_agent.run_smoke_check("http://127.0.0.1:1/", "Item Board")
+    assert verdict == "fail"
+    assert line.startswith("SMOKE_RESULT=fail:")
+
+
+def test_run_smoke_check_fails_when_the_subprocess_itself_times_out(monkeypatch):
+    # A page that never finishes responding — check.mjs's own NAV_TIMEOUT_MS
+    # (15s) would eventually catch this too, but shrinking
+    # SMOKE_CHECK_TIMEOUT_S proves run_smoke_check's *own* TimeoutExpired
+    # handling fires, not just that check.mjs eventually gives up.
+    monkeypatch.setattr(step_agent, "SMOKE_CHECK_TIMEOUT_S", 2)
+    server, url = serve_html(b"<html><body><h1>Item Board</h1></body></html>", delay_s=30)
+    try:
+        verdict, line = step_agent.run_smoke_check(url, "Item Board")
+    finally:
+        server.shutdown()
+    assert verdict == "fail"
+    assert "timed out" in line
+
+
 def test_review_step_composes_the_items_persona_into_both_passes(tmp_path, monkeypatch):
     ws, _origin = make_git_workspace(tmp_path)
     git(ws, "push", "-u", "origin", "HEAD:horizon/t-1")
-    monkeypatch.setattr(step_agent, "workspace_path", lambda repo: ws)
+    monkeypatch.setattr(step_agent, "ensure_item_worktree", lambda repo, item_id: ws)
     calls = []
     ok = {
         "summary": "ok",
@@ -341,23 +533,24 @@ def test_review_step_composes_the_items_persona_into_both_passes(tmp_path, monke
         assert persona_md("python_backend") in call["append_system"]
 
 
-def test_review_step_reuses_prepare_branch_against_a_repointed_shared_workspace(tmp_path, monkeypatch):
-    """workspace_path() is keyed per-repo, not per-item: a sibling item's run
-    on the same repo between implement finishing and review starting would
-    otherwise leave the checkout on the wrong branch. Reusing prepare_branch
-    (the same call the implement step makes) closes that race."""
+def test_review_step_reuses_prepare_branch_to_scrub_a_superseded_attempts_leftovers(tmp_path, monkeypatch):
+    """HZ-50: every item gets its own git worktree, so a sibling item's run
+    can no longer repoint this item's checkout at all (see
+    test_concurrent_runs_on_different_items_do_not_clobber_each_other in
+    test_workspaces.py for that guarantee). Within THIS item's own worktree,
+    a superseded/killed implement attempt can still leave uncommitted
+    leftovers — reusing prepare_branch (the same call the implement step
+    makes) still needs to scrub those before review reads the diff."""
     ws, origin = make_git_workspace(tmp_path)
     (ws / "app.py").write_text("print('hi')\n")
     git(ws, "add", "-A")
     git(ws, "commit", "-m", "add app.py")
     git(ws, "push", "-u", "origin", "HEAD:horizon/t-1")
 
-    # Simulate a sibling item's run repointing the shared checkout, with
-    # uncommitted leftovers from a superseded attempt.
-    git(ws, "checkout", "-B", "horizon/other-item", "origin/main")
-    (ws / "leftover.txt").write_text("uncommitted junk from another item\n")
+    # Simulate a superseded attempt on this same item leaving junk behind.
+    (ws / "leftover.txt").write_text("uncommitted junk from a superseded attempt\n")
 
-    monkeypatch.setattr(step_agent, "workspace_path", lambda repo: ws)
+    monkeypatch.setattr(step_agent, "ensure_item_worktree", lambda repo, item_id: ws)
     ok = {
         "summary": "ok",
         "verdict": "pass",
@@ -510,7 +703,7 @@ def test_implement_step_does_not_retry_on_a_malformed_final_reply(tmp_path, monk
     the step (HZ-29) — the code in the workspace is the deliverable, not the
     summary. The HZ-44 retry machinery must not apply here."""
     ws, _origin = make_git_workspace(tmp_path)
-    monkeypatch.setattr(step_agent, "workspace_path", lambda repo: ws)
+    monkeypatch.setattr(step_agent, "ensure_item_worktree", lambda repo, item_id: ws)
     calls = []
 
     def _fake(prompt, **kwargs):
@@ -544,7 +737,7 @@ def two_pass_run_claude_with_retries(code_results, qa_results, captured_calls):
 def test_review_step_code_pass_recovers_independently_of_a_healthy_qa_pass(tmp_path, monkeypatch):
     ws, _origin = make_git_workspace(tmp_path)
     git(ws, "push", "-u", "origin", "HEAD:horizon/t-1")
-    monkeypatch.setattr(step_agent, "workspace_path", lambda repo: ws)
+    monkeypatch.setattr(step_agent, "ensure_item_worktree", lambda repo, item_id: ws)
 
     calls = []
     bad_code = '{"summary": "code review done", "verdict": "fail"'  # unparseable
@@ -582,7 +775,7 @@ def test_review_step_code_pass_recovers_independently_of_a_healthy_qa_pass(tmp_p
 def test_review_step_qa_pass_recovers_independently_of_a_healthy_code_pass(tmp_path, monkeypatch):
     ws, _origin = make_git_workspace(tmp_path)
     git(ws, "push", "-u", "origin", "HEAD:horizon/t-1")
-    monkeypatch.setattr(step_agent, "workspace_path", lambda repo: ws)
+    monkeypatch.setattr(step_agent, "ensure_item_worktree", lambda repo, item_id: ws)
 
     calls = []
     code_json = json.dumps({"summary": "code review done", "verdict": "pass", "findings": []})
@@ -612,7 +805,7 @@ def test_review_step_qa_pass_recovers_independently_of_a_healthy_code_pass(tmp_p
 def test_review_step_code_pass_exhausting_its_retry_still_cancels_the_run(tmp_path, monkeypatch):
     ws, _origin = make_git_workspace(tmp_path)
     git(ws, "push", "-u", "origin", "HEAD:horizon/t-1")
-    monkeypatch.setattr(step_agent, "workspace_path", lambda repo: ws)
+    monkeypatch.setattr(step_agent, "ensure_item_worktree", lambda repo, item_id: ws)
 
     calls = []
     bad_code = '{"summary": "code review done", "verdict": "fail"'  # unparseable, both attempts
