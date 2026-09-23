@@ -71,7 +71,7 @@ function Step({ item, index, onApprove, onApproveWithComments, onReject, onResol
                 {item.activeRun.attempt > 1 && ` · attempt ${item.activeRun.attempt}`}
               </span>
             )}
-            {status === 'done' && item.stepOutputs?.[index]?.attempt > 1 && (
+            {status === 'done' && item.stepOutputs?.[index]?.attempt > 1 && !item.stepOutputs?.[index]?.artifact && (
               <span className="step-card__attempt"> · attempt {item.stepOutputs[index].attempt}</span>
             )}
             {status === 'done' && !isGate && !item.stepOutputs?.[index] && (
@@ -95,7 +95,9 @@ function Step({ item, index, onApprove, onApproveWithComments, onReject, onResol
               target="_blank"
               rel="noopener noreferrer"
             >
-              View full artifact ↗
+              {item.stepOutputs[index].attemptCount > 1
+                ? `attempt ${item.stepOutputs[index].attempt} of ${item.stepOutputs[index].attemptCount} ↗`
+                : 'View full artifact ↗'}
             </a>
           )}
           {showsPersonaPicker && (
