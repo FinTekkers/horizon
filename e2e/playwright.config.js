@@ -89,6 +89,10 @@ export default defineConfig({
         GITHUB_TOKEN: '',
         GITHUB_WEBHOOK_SECRET: '',
         FARM_URL: '',
+        // Registers the e2e-only /api/test/run-state route (HZ-54) — lets
+        // 09-queued-work.spec.js simulate the farm reporting a run as queued
+        // without a live farm process, which this suite otherwise has none of.
+        HORIZON_TEST_HOOKS: '1',
       },
     },
     {

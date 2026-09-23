@@ -8,7 +8,15 @@ import * as store from './store.js'
 import * as github from './github.js'
 import * as deploy from './deploy.js'
 import * as orchestrator from './orchestrator.js'
-import { WEBHOOK_SECRET, FARM_SHARED_SECRET, FARM_URL, UI_URL, SESSION_COOKIE_NAME, SESSION_TTL_DAYS } from './config.js'
+import {
+  WEBHOOK_SECRET,
+  FARM_SHARED_SECRET,
+  FARM_URL,
+  UI_URL,
+  SESSION_COOKIE_NAME,
+  SESSION_TTL_DAYS,
+  TEST_HOOKS_ENABLED,
+} from './config.js'
 import { marked } from 'marked'
 import { db } from './db.js'
 import { getActiveProjectId, getRepoUrl, setSetting, getToken } from './settings.js'
@@ -1105,6 +1113,21 @@ export function buildApp({ logger = true } = {}) {
     }
     return reply.code(204).send()
   })
+
+  // e2e only (HZ-54): the e2e suite has no live farm daemon (FARM_URL is
+  // unset for it), so nothing ever calls pollRunStates() with real data. This
+  // route — registered only when HORIZON_TEST_HOOKS=1, which is never set in
+  // production — lets a spec seed the orchestrator's run-state cache
+  // directly, so the board's queued/running rendering gets real end-to-end
+  // coverage. Still sits behind the normal session-cookie gate (it's not in
+  // SESSION_EXEMPT), same as every other /api/* route.
+  if (TEST_HOOKS_ENABLED) {
+    fastify.post('/api/test/run-state', async (request, reply) => {
+      const { run_id, state, reason } = request.body || {}
+      orchestrator.setRunStateForTest(run_id, state, reason ?? null)
+      return { ok: true }
+    })
+  }
 
   return fastify
 }

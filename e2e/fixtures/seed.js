@@ -26,6 +26,21 @@ export function insertItem(
   ).run({ id, title, priority, desc, metric, guardrails, cursor, pr, pr_url, pr_mergeable })
 }
 
+// Inserts a step_run row exactly as the orchestrator's kick() would (HZ-54's
+// queued-work spec needs a real, currently-active run to attach farm state
+// to) — status defaults to 'active', matching the row orchestrator.kick()
+// writes the instant a step is dispatched. Bypasses store.js/the orchestrator
+// same as insertItem above, so nothing races it into a different step_run.
+export function insertStepRun(db, { item_id, step_index, agent, attempt = 1, status = 'active' }) {
+  const result = db
+    .prepare(
+      `INSERT INTO step_run (item_id, step_index, attempt, agent, status)
+       VALUES (@item_id, @step_index, @attempt, @agent, @status)`,
+    )
+    .run({ item_id, step_index, attempt, agent, status })
+  return result.lastInsertRowid
+}
+
 // Same salted-scrypt scheme as server/src/auth.js's per-account gate PIN.
 // Writing the hash directly (instead of through Admin's "Regenerate my PIN")
 // keeps the plaintext out of the browser's localStorage, so the next gate

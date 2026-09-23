@@ -110,6 +110,16 @@ export function pollRunStates() {
     })
 }
 
+// e2e only, wired behind TEST_HOOKS_ENABLED in app.js: the e2e suite runs
+// with no real farm daemon, so pollRunStates() never has anything to poll.
+// This lets a spec seed farm.runStates directly, exactly the shape a real
+// /runs/status reply would populate, so the board's queued/running rendering
+// gets real end-to-end coverage without standing up a fake farm process.
+export function setRunStateForTest(runId, state, reason = null) {
+  farm.runStates = { ...farm.runStates, [String(runId)]: { state, reason } }
+  notifyChange()
+}
+
 // ---- real farm (farm/ Python daemon) plumbing ----
 
 async function farmFetch(path, body) {
