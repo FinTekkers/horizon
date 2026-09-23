@@ -23,6 +23,7 @@ const { googleAuth } = await import('../src/googleAuth.js')
 const auth = await import('../src/auth.js')
 const config = await import('../src/config.js')
 const store = await import('../src/store.js')
+const { db } = await import('../src/db.js')
 
 store.purgeDemoItems()
 
@@ -177,23 +178,26 @@ test('google/start redirects to the built auth URL and sets a short-lived state 
   assert.ok(state, 'expected an oauth_state cookie')
 })
 
-test('google/callback with a missing/mismatched state is 400 bad_state', async () => {
+// HZ-37: every browser-facing error on this route family redirects to the
+// login page (with a readable ?error= code) instead of rendering raw JSON.
+test('google/callback with a missing/mismatched state redirects to the login page with ?error=bad_state, not raw JSON', async () => {
   const start = await app.inject({ method: 'GET', url: '/api/auth/google/start' })
   const stateCookie = start.cookies.find((c) => c.name === 'oauth_state')
 
   const noState = await app.inject({ method: 'GET', url: '/api/auth/google/callback?code=abc' })
-  assert.equal(noState.statusCode, 400)
-  assert.deepEqual(noState.json(), { error: 'bad_state' })
+  assert.equal(noState.statusCode, 302)
+  assert.equal(noState.headers.location, `${config.UI_URL}/?error=bad_state`)
 
   const wrongState = await app.inject({
     method: 'GET',
     url: `/api/auth/google/callback?code=abc&state=not-the-right-one`,
     headers: { cookie: `oauth_state=${stateCookie.value}` },
   })
-  assert.equal(wrongState.statusCode, 400)
+  assert.equal(wrongState.statusCode, 302)
+  assert.equal(wrongState.headers.location, `${config.UI_URL}/?error=bad_state`)
 })
 
-test('google/callback with a valid state but a failed code exchange is 400 google_auth_failed, not a 500', async () => {
+test('google/callback with a valid state but a failed code exchange redirects with ?error=google_auth_failed, not a 500 or raw JSON', async () => {
   const start = await app.inject({ method: 'GET', url: '/api/auth/google/start' })
   const stateCookie = start.cookies.find((c) => c.name === 'oauth_state')
   const realExchange = googleAuth.exchangeCodeForProfile
@@ -206,11 +210,115 @@ test('google/callback with a valid state but a failed code exchange is 400 googl
       url: `/api/auth/google/callback?code=bad-code&state=${stateCookie.value}`,
       headers: { cookie: `oauth_state=${stateCookie.value}` },
     })
-    assert.equal(res.statusCode, 400)
-    assert.deepEqual(res.json(), { error: 'google_auth_failed' })
+    assert.equal(res.statusCode, 302)
+    assert.equal(res.headers.location, `${config.UI_URL}/?error=google_auth_failed`)
   } finally {
     googleAuth.exchangeCodeForProfile = realExchange
   }
+})
+
+// Uses a dedicated account (not ADMIN_EMAIL) so this and the retry test below
+// don't fight over google_sub state with the "adopts an account" test further
+// down, which needs ADMIN_EMAIL to still be unlinked when it runs.
+test('google/callback with an unverified email match redirects with ?error=google_link_blocked and does not link', async () => {
+  const { user: passwordUser } = auth.createUser({
+    email: 'unverified-target@example.com',
+    name: 'Unverified Target',
+    authMethod: 'password',
+  })
+
+  const start = await app.inject({ method: 'GET', url: '/api/auth/google/start' })
+  const stateCookie = start.cookies.find((c) => c.name === 'oauth_state')
+  const realExchange = googleAuth.exchangeCodeForProfile
+  googleAuth.exchangeCodeForProfile = async () => ({
+    sub: 'google-unverified-target',
+    email: 'unverified-target@example.com',
+    name: 'Someone Else',
+    emailVerified: false,
+  })
+  try {
+    const res = await app.inject({
+      method: 'GET',
+      url: `/api/auth/google/callback?code=good-code&state=${stateCookie.value}`,
+      headers: { cookie: `oauth_state=${stateCookie.value}` },
+    })
+    assert.equal(res.statusCode, 302)
+    assert.equal(res.headers.location, `${config.UI_URL}/?error=google_link_blocked`)
+    assert.equal(res.cookies.find((c) => c.name === config.SESSION_COOKIE_NAME), undefined, 'no session must start')
+  } finally {
+    googleAuth.exchangeCodeForProfile = realExchange
+  }
+  assert.equal(auth.findUserByGoogleSub('google-unverified-target'), null)
+  assert.equal(auth.findUserById(passwordUser.id).authMethod, 'password', 'the existing account must be untouched')
+})
+
+// The burned unverified attempt above must not permanently block the real
+// owner — a fresh, VERIFIED sign-in for the same address succeeds right after.
+test('a fresh verified Google sign-in succeeds right after an unverified attempt was blocked', async () => {
+  const passwordUser = auth.findUserByEmail('unverified-target@example.com')
+  assert.ok(passwordUser, 'the previous test must have seeded this account')
+
+  const start = await app.inject({ method: 'GET', url: '/api/auth/google/start' })
+  const stateCookie = start.cookies.find((c) => c.name === 'oauth_state')
+  const realExchange = googleAuth.exchangeCodeForProfile
+  googleAuth.exchangeCodeForProfile = async () => ({
+    sub: 'google-verified-target',
+    email: 'unverified-target@example.com',
+    name: 'Unverified Target',
+    emailVerified: true,
+  })
+  try {
+    const res = await app.inject({
+      method: 'GET',
+      url: `/api/auth/google/callback?code=good-code&state=${stateCookie.value}`,
+      headers: { cookie: `oauth_state=${stateCookie.value}` },
+    })
+    assert.equal(res.statusCode, 302)
+    assert.equal(res.headers.location, config.UI_URL)
+    const cookie = res.cookies.find((c) => c.name === config.SESSION_COOKIE_NAME)
+    assert.ok(cookie, 'expected a session cookie on the successful retry')
+    const me = await app.inject({ method: 'GET', url: '/api/auth/me', headers: { cookie: `${cookie.name}=${cookie.value}` } })
+    assert.equal(me.json().user.id, passwordUser.id, 'must link the same row, not create a new one')
+  } finally {
+    googleAuth.exchangeCodeForProfile = realExchange
+  }
+})
+
+// HZ-37 guardrail: never re-link or merge rows — a row already linked to a
+// DIFFERENT Google identity must reject a second one, even when verified.
+test('google/callback with a verified email match already linked to a different google_sub is blocked, not relinked', async () => {
+  auth.createUser({
+    email: 'already-linked-http@example.com',
+    name: 'Already Linked',
+    authMethod: 'google',
+    googleSub: 'google-sub-original-http',
+  })
+
+  const start = await app.inject({ method: 'GET', url: '/api/auth/google/start' })
+  const stateCookie = start.cookies.find((c) => c.name === 'oauth_state')
+  const realExchange = googleAuth.exchangeCodeForProfile
+  googleAuth.exchangeCodeForProfile = async () => ({
+    sub: 'google-sub-different-http',
+    email: 'already-linked-http@example.com',
+    name: 'Already Linked',
+    emailVerified: true,
+  })
+  try {
+    const res = await app.inject({
+      method: 'GET',
+      url: `/api/auth/google/callback?code=good-code&state=${stateCookie.value}`,
+      headers: { cookie: `oauth_state=${stateCookie.value}` },
+    })
+    assert.equal(res.statusCode, 302)
+    assert.equal(res.headers.location, `${config.UI_URL}/?error=google_link_blocked`)
+  } finally {
+    googleAuth.exchangeCodeForProfile = realExchange
+  }
+  assert.equal(
+    db.prepare('SELECT google_sub FROM user WHERE email = ?').get('already-linked-http@example.com').google_sub,
+    'google-sub-original-http',
+    'the original link must not be overwritten',
+  )
 })
 
 test('google/callback with a NEW google account creates a user and starts a session', async () => {
@@ -221,6 +329,7 @@ test('google/callback with a NEW google account creates a user and starts a sess
     sub: 'google-new-1',
     email: 'nova@example.com',
     name: 'Nova Newuser',
+    emailVerified: true,
   })
   try {
     const res = await app.inject({
@@ -270,6 +379,7 @@ test('google/callback with a RETURNING google account logs into the SAME user, n
     sub: 'google-returning-1',
     email: 'returning-http@example.com',
     name: 'Returning Http',
+    emailVerified: true,
   })
   try {
     const first = await googleLogin()
@@ -282,8 +392,10 @@ test('google/callback with a RETURNING google account logs into the SAME user, n
 
 // The production failure this pins: davidjdoherty@gmail.com had logged in by
 // password (google_sub NULL), so the Google callback 500'd on
-// `UNIQUE constraint failed: user.email` every time.
-test('google/callback adopts an account that already exists from password login', async () => {
+// `UNIQUE constraint failed: user.email` every time. This exercises the full
+// success metric through the real HTTP endpoints, not DB reads: password
+// login, Google link, same id, and BOTH login paths still work afterwards.
+test('google/callback adopts an account that already exists from password login, and both login paths work afterwards', async () => {
   const login = await app.inject({
     method: 'POST',
     url: '/api/auth/login',
@@ -299,7 +411,9 @@ test('google/callback adopts an account that already exists from password login'
     sub: 'google-adopts-admin',
     email: config.ADMIN_EMAIL,
     name: 'Admin',
+    emailVerified: true,
   })
+  let googleCookie
   try {
     const res = await app.inject({
       method: 'GET',
@@ -308,17 +422,39 @@ test('google/callback adopts an account that already exists from password login'
     })
     assert.equal(res.statusCode, 302, 'must redirect, not 500 on the email constraint')
 
-    const cookie = res.cookies.find((c) => c.name === config.SESSION_COOKIE_NAME)
-    assert.ok(cookie, 'expected a session cookie')
+    googleCookie = res.cookies.find((c) => c.name === config.SESSION_COOKIE_NAME)
+    assert.ok(googleCookie, 'expected a session cookie')
     const me = await app.inject({
       method: 'GET',
       url: '/api/auth/me',
-      headers: { cookie: `${cookie.name}=${cookie.value}` },
+      headers: { cookie: `${googleCookie.name}=${googleCookie.value}` },
     })
     assert.equal(me.json().user.id, passwordUser.id, 'should be the same account, linked')
+    assert.equal(
+      db.prepare('SELECT google_sub FROM user WHERE id = ?').get(passwordUser.id).google_sub,
+      'google-adopts-admin',
+    )
   } finally {
     googleAuth.exchangeCodeForProfile = realExchange
   }
+
+  // The Google-issued session still works.
+  const meAfterGoogle = await app.inject({
+    method: 'GET',
+    url: '/api/auth/me',
+    headers: { cookie: `${googleCookie.name}=${googleCookie.value}` },
+  })
+  assert.equal(meAfterGoogle.statusCode, 200)
+  assert.equal(meAfterGoogle.json().user.id, passwordUser.id)
+
+  // And password login into the SAME now-linked account still works too.
+  const secondPasswordLogin = await app.inject({
+    method: 'POST',
+    url: '/api/auth/login',
+    payload: { email: config.ADMIN_EMAIL, password: config.ADMIN_PASSWORD },
+  })
+  assert.equal(secondPasswordLogin.statusCode, 200)
+  assert.equal(secondPasswordLogin.json().user.id, passwordUser.id, 'password login after linking must still resolve the same account')
 })
 
 // A failed callback used to clear oauth_state before validating it, so the
@@ -337,7 +473,8 @@ test('a failed callback leaves oauth_state intact so the retry still validates',
       url: `/api/auth/google/callback?code=bad-code&state=${stateCookie.value}`,
       headers: { cookie: `oauth_state=${stateCookie.value}` },
     })
-    assert.equal(failed.json().error, 'google_auth_failed')
+    assert.equal(failed.statusCode, 302)
+    assert.equal(failed.headers.location, `${config.UI_URL}/?error=google_auth_failed`)
 
     // Assert on the RESPONSE, not on a follow-up inject: inject re-sends
     // whatever cookie header we hand it, so replaying the state here would
@@ -358,6 +495,7 @@ test('a SUCCESSFUL callback does clear oauth_state — the nonce is single-use',
     sub: 'google-single-use',
     email: 'single-use@example.com',
     name: 'Single Use',
+    emailVerified: true,
   })
   try {
     const res = await app.inject({
@@ -374,7 +512,7 @@ test('a SUCCESSFUL callback does clear oauth_state — the nonce is single-use',
   }
 })
 
-test('google/start is 503 when Google is not configured', async () => {
+test('google/start redirects to the login page with ?error=google_sso_not_configured when Google is not configured, not raw JSON', async () => {
   const { GOOGLE_CLIENT_ID } = config
   process.env.GOOGLE_CLIENT_ID = ''
   // googleAuth.configured() reads the live env-derived constants, which are
@@ -384,8 +522,8 @@ test('google/start is 503 when Google is not configured', async () => {
   googleAuth.configured = () => false
   try {
     const res = await app.inject({ method: 'GET', url: '/api/auth/google/start' })
-    assert.equal(res.statusCode, 503)
-    assert.deepEqual(res.json(), { error: 'google_sso_not_configured' })
+    assert.equal(res.statusCode, 302)
+    assert.equal(res.headers.location, `${config.UI_URL}/?error=google_sso_not_configured`)
   } finally {
     googleAuth.configured = realConfigured
     process.env.GOOGLE_CLIENT_ID = GOOGLE_CLIENT_ID

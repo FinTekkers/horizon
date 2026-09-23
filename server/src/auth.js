@@ -63,6 +63,15 @@ export function findUserByEmail(email) {
   return toPublicUser(db.prepare('SELECT * FROM user WHERE email = ?').get(email))
 }
 
+// Case-insensitive, for the Google linking check only (HZ-37): Google's own
+// email claim can differ in case from whatever was typed at password
+// signup, and they must still resolve to the same account. `findUserByEmail`
+// above stays exact-match — its one caller (`verifyPassword`) compares
+// against the literal ADMIN_EMAIL env var, where that's correct.
+export function findUserByEmailCI(email) {
+  return toPublicUser(db.prepare('SELECT * FROM user WHERE lower(email) = lower(?)').get(email))
+}
+
 export function findUserById(id) {
   return toPublicUser(db.prepare('SELECT * FROM user WHERE id = ?').get(id))
 }
@@ -71,10 +80,15 @@ function touchLastLogin(id) {
   db.prepare("UPDATE user SET last_login_at = datetime('now') WHERE id = ?").run(id)
 }
 
+// Thrown (never returned) when a Google identity must NOT be attached to an
+// existing account — the route maps this to a redirect with a readable
+// error, distinct from the plain-500 case an unexpected DB failure would be.
+export class GoogleLinkBlockedError extends Error {}
+
 // Finds-or-creates the Google user for this profile and returns it, ready to
 // start a session.
 //
-// Three cases, in order. The middle one is why this isn't a plain find-or-
+// Cases, in order. The email-match branch is why this isn't a plain find-or-
 // create: `email` is UNIQUE, so an account that already signed in with the
 // ADMIN_EMAIL/ADMIN_PASSWORD credential owns that address with google_sub
 // NULL. Looking up by sub alone misses it and the INSERT then dies on the
@@ -83,14 +97,26 @@ function touchLastLogin(id) {
 // everything else, deliberately including auth_method and the existing gate
 // PIN. The account is linked, not replaced, and the PIN a human already wrote
 // down stays valid.
-export function findOrCreateGoogleUser({ sub, email, name }) {
+//
+// Linking is gated on `emailVerified` (HZ-37): Google lets a user register an
+// address without proving they control it, so an unverified claim must never
+// attach to somebody else's existing account — that's a straight account
+// takeover. A row whose `google_sub` is already set to something else is
+// left alone too; this fix links one existing row per email, it never
+// re-links or merges rows. (HZ-36's allowlist, once it exists, must run
+// before this function is called — a non-allowlisted email should never
+// reach the point of linking.)
+export function findOrCreateGoogleUser({ sub, email, name, emailVerified }) {
   const existing = findUserByGoogleSub(sub)
   if (existing) {
     touchLastLogin(existing.id)
     return existing
   }
-  const sameEmail = findUserByEmail(email)
+  const sameEmail = findUserByEmailCI(email)
   if (sameEmail) {
+    if (!emailVerified) throw new GoogleLinkBlockedError('unverified_email')
+    const { google_sub: existingSub } = db.prepare('SELECT google_sub FROM user WHERE id = ?').get(sameEmail.id)
+    if (existingSub) throw new GoogleLinkBlockedError('already_linked')
     db.prepare("UPDATE user SET google_sub = ?, last_login_at = datetime('now') WHERE id = ?").run(sub, sameEmail.id)
     return findUserById(sameEmail.id)
   }

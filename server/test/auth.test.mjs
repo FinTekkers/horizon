@@ -95,7 +95,7 @@ test('findOrCreateGoogleUser logs the SAME user back in on a returning sign-in �
 // with Google using an address that already logged in by password used to hit
 // `UNIQUE constraint failed: user.email` — permanently locking SSO out of the
 // one account most likely to try it (the admin's).
-test('findOrCreateGoogleUser adopts an existing password account with the same email', () => {
+test('findOrCreateGoogleUser adopts an existing password account with the same VERIFIED email', () => {
   const byPassword = auth.verifyPassword('admin@example.com', 'super-secret')
   assert.ok(byPassword, 'password login should seed the account first')
 
@@ -103,6 +103,7 @@ test('findOrCreateGoogleUser adopts an existing password account with the same e
     sub: 'google-sub-admin',
     email: 'admin@example.com',
     name: 'Admin',
+    emailVerified: true,
   })
 
   assert.equal(viaGoogle.id, byPassword.id, 'should reuse the row, not create a second one')
@@ -110,11 +111,95 @@ test('findOrCreateGoogleUser adopts an existing password account with the same e
   assert.equal(db.prepare('SELECT google_sub FROM user WHERE id = ?').get(byPassword.id).google_sub, 'google-sub-admin')
 })
 
+test('findOrCreateGoogleUser matches the existing email case-insensitively', () => {
+  const { user: existing } = auth.createUser({ email: 'ci-match@example.com', name: 'CI Match', authMethod: 'password' })
+
+  const viaGoogle = auth.findOrCreateGoogleUser({
+    sub: 'google-sub-ci-match',
+    email: 'CI-Match@Example.com',
+    name: 'CI Match',
+    emailVerified: true,
+  })
+
+  assert.equal(viaGoogle.id, existing.id, 'should link the same row regardless of email casing')
+  assert.equal(db.prepare('SELECT COUNT(*) AS n FROM user WHERE lower(email) = lower(?)').get('ci-match@example.com').n, 1)
+})
+
+// HZ-37 guardrail: an unverified Google email must never attach to an
+// existing account — this is an account-takeover vector, not a UX nicety.
+test('findOrCreateGoogleUser BLOCKS linking when Google has not verified the email', () => {
+  const { user: existing } = auth.createUser({ email: 'unverified@example.com', name: 'Unverified Target', authMethod: 'password' })
+
+  assert.throws(
+    () =>
+      auth.findOrCreateGoogleUser({
+        sub: 'google-sub-unverified',
+        email: 'unverified@example.com',
+        name: 'Attacker Claim',
+        emailVerified: false,
+      }),
+    auth.GoogleLinkBlockedError,
+  )
+
+  const row = db.prepare('SELECT google_sub FROM user WHERE id = ?').get(existing.id)
+  assert.equal(row.google_sub, null, 'the existing row must be untouched')
+  assert.equal(auth.findUserByGoogleSub('google-sub-unverified'), null, 'no row should be created or linked for the unverified sub')
+})
+
+// After a blocked attempt, a genuine verified sign-in from the real owner
+// must still succeed — the burned state isn't permanent.
+test('a fresh VERIFIED sign-in succeeds after an earlier unverified attempt was blocked', () => {
+  const { user: existing } = auth.createUser({ email: 'retry-after-block@example.com', name: 'Retry Target', authMethod: 'password' })
+
+  assert.throws(() =>
+    auth.findOrCreateGoogleUser({
+      sub: 'google-sub-retry',
+      email: 'retry-after-block@example.com',
+      name: 'Retry Target',
+      emailVerified: false,
+    }),
+  )
+
+  const linked = auth.findOrCreateGoogleUser({
+    sub: 'google-sub-retry',
+    email: 'retry-after-block@example.com',
+    name: 'Retry Target',
+    emailVerified: true,
+  })
+  assert.equal(linked.id, existing.id)
+  assert.equal(db.prepare('SELECT google_sub FROM user WHERE id = ?').get(existing.id).google_sub, 'google-sub-retry')
+})
+
+// HZ-37 guardrail: never re-link or merge — a row already linked to a
+// DIFFERENT Google identity must reject a second one, even if verified.
+test('findOrCreateGoogleUser BLOCKS relinking a row that already has a different google_sub', () => {
+  const { user: existing } = auth.createUser({
+    email: 'already-linked@example.com',
+    name: 'Already Linked',
+    authMethod: 'google',
+    googleSub: 'google-sub-original',
+  })
+
+  assert.throws(
+    () =>
+      auth.findOrCreateGoogleUser({
+        sub: 'google-sub-different',
+        email: 'already-linked@example.com',
+        name: 'Already Linked',
+        emailVerified: true,
+      }),
+    auth.GoogleLinkBlockedError,
+  )
+
+  const row = db.prepare('SELECT google_sub FROM user WHERE id = ?').get(existing.id)
+  assert.equal(row.google_sub, 'google-sub-original', 'the original link must not be overwritten')
+})
+
 test('adopting an account preserves its gate PIN — linking must not re-issue it', () => {
   const user = auth.verifyPassword('admin@example.com', 'super-secret')
   const pinHashBefore = db.prepare('SELECT gate_pin_hash FROM user WHERE id = ?').get(user.id).gate_pin_hash
 
-  auth.findOrCreateGoogleUser({ sub: 'google-sub-admin', email: 'admin@example.com', name: 'Admin' })
+  auth.findOrCreateGoogleUser({ sub: 'google-sub-admin', email: 'admin@example.com', name: 'Admin', emailVerified: true })
 
   const pinHashAfter = db.prepare('SELECT gate_pin_hash FROM user WHERE id = ?').get(user.id).gate_pin_hash
   assert.equal(pinHashAfter, pinHashBefore, 'a PIN the human already wrote down must stay valid')
@@ -122,9 +207,9 @@ test('adopting an account preserves its gate PIN — linking must not re-issue i
 
 test('a subsequent Google sign-in finds the adopted account by sub', () => {
   const user = auth.verifyPassword('admin@example.com', 'super-secret')
-  auth.findOrCreateGoogleUser({ sub: 'google-sub-admin', email: 'admin@example.com', name: 'Admin' })
+  auth.findOrCreateGoogleUser({ sub: 'google-sub-admin', email: 'admin@example.com', name: 'Admin', emailVerified: true })
 
-  const returning = auth.findOrCreateGoogleUser({ sub: 'google-sub-admin', email: 'admin@example.com', name: 'Admin' })
+  const returning = auth.findOrCreateGoogleUser({ sub: 'google-sub-admin', email: 'admin@example.com', name: 'Admin', emailVerified: true })
   assert.equal(returning.id, user.id)
   assert.equal(db.prepare('SELECT COUNT(*) AS n FROM user WHERE email = ?').get('admin@example.com').n, 1)
 })

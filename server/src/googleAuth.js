@@ -27,14 +27,22 @@ export const googleAuth = {
   },
 
   // Exchanges the authorization code for tokens, verifies the ID token, and
-  // returns the caller's { sub, email, name }. Throws on any failure (bad
-  // code, network error, signature mismatch) — the route maps that to a
-  // clean error response.
+  // returns the caller's { sub, email, name, emailVerified }. Throws on any
+  // failure (bad code, network error, signature mismatch) — the route maps
+  // that to a clean error response. `emailVerified` comes straight from
+  // Google's own `email_verified` claim (HZ-37): linking this identity to an
+  // existing account must never trust an address Google itself hasn't
+  // confirmed the user controls.
   async exchangeCodeForProfile(code) {
     const oauth2Client = client()
     const { tokens } = await oauth2Client.getToken(code)
     const ticket = await oauth2Client.verifyIdToken({ idToken: tokens.id_token, audience: GOOGLE_CLIENT_ID })
     const payload = ticket.getPayload()
-    return { sub: payload.sub, email: payload.email, name: payload.name || payload.email }
+    return {
+      sub: payload.sub,
+      email: payload.email,
+      name: payload.name || payload.email,
+      emailVerified: payload.email_verified === true,
+    }
   },
 }
