@@ -336,12 +336,29 @@ def devops_run_claude(reply_json):
     return _fake
 
 
+# Mirrors validateDeployVerdict in server/src/orchestrator.js exactly (down to
+# the pass/fail enum). Node's process reads execute()'s "verdict" field over
+# the wire as JSON with no shape translation in between, so a Python-side
+# assertion of equality to a literal dict is not enough on its own — a
+# previous revision shipped `"verdict": "pass"` here while the JS side
+# required `{"verdict": "pass"}`, and every test on both sides still passed
+# because each side only checked its own (different) assumed shape. Asserting
+# against this mirrored predicate, not just literal equality, is what would
+# have caught that class of bug.
+def assert_valid_deploy_verdict(v):
+    assert isinstance(v, dict) and v.get("verdict") in ("pass", "fail"), v
+
+
 def test_deploy_step_without_a_repo_passes_without_calling_claude(monkeypatch):
     called = []
     monkeypatch.setattr(step_agent, "run_claude", lambda *a, **k: called.append(1))
     result = execute(make_task(14, "Deploy the changes"))
     assert called == []
-    assert result["artifacts"]["verdict"] == "pass"
+    # Wrapped object, not a bare string — validateDeployVerdict in
+    # server/src/orchestrator.js requires typeof v === 'object' with a
+    # .verdict field. See server/test/deploy-gate.test.mjs.
+    assert result["artifacts"]["verdict"] == {"verdict": "pass"}
+    assert_valid_deploy_verdict(result["artifacts"]["verdict"])
     assert "no repository attached" in result["summary"]
 
 
@@ -364,7 +381,9 @@ def test_deploy_step_trusts_the_real_smoke_check_not_the_agents_own_verdict(monk
 
     # The script's own check said fail — that's the verdict, full stop, even
     # though the fake agent reply above never claimed anything was broken.
-    assert result["artifacts"]["verdict"] == "fail"
+    # Wrapped object shape — see the comment on test_deploy_step_without_a_repo above.
+    assert result["artifacts"]["verdict"] == {"verdict": "fail"}
+    assert_valid_deploy_verdict(result["artifacts"]["verdict"])
     assert "SMOKE_RESULT=fail" in result["summary"]
     assert "SMOKE_RESULT=fail" in result["artifacts"]["artifact_md"]
 
@@ -387,7 +406,8 @@ def test_deploy_step_passes_when_the_real_smoke_check_passes(monkeypatch):
     )
 
     result = execute(make_task(14, "Deploy the changes", repo="acme/demo"))
-    assert result["artifacts"]["verdict"] == "pass"
+    assert result["artifacts"]["verdict"] == {"verdict": "pass"}
+    assert_valid_deploy_verdict(result["artifacts"]["verdict"])
 
 
 def test_deploy_step_fails_closed_when_the_agent_omits_url_or_expected_text(monkeypatch):

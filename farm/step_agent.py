@@ -379,7 +379,7 @@ def execute(task: dict) -> dict:
                 "summary": "no repository attached — deploy verification skipped (demo item)",
                 "artifacts": {
                     "artifact_md": "## Verdict\n**pass** — no repository attached; nothing to verify.",
-                    "verdict": "pass",
+                    "verdict": {"verdict": "pass"},
                 },
             }
 
@@ -404,7 +404,14 @@ def execute(task: dict) -> dict:
         artifact_md = f"{artifact_md}\n\n## Machine-checked result\n`{smoke_line}`".strip()
         return {
             "summary": f"{summary} · {smoke_line}"[:600],
-            "artifacts": {"artifact_md": artifact_md[:WRITE_ARTIFACT_SANITY_CEILING_CHARS], "verdict": verdict},
+            "artifacts": {
+                "artifact_md": artifact_md[:WRITE_ARTIFACT_SANITY_CEILING_CHARS],
+                # Wrapped in an object, not a bare string: validateDeployVerdict in
+                # server/src/orchestrator.js requires `typeof v === 'object'` with a
+                # `.verdict` field — same wire contract the review step's verdict
+                # already uses. See server/test/deploy-gate.test.mjs.
+                "verdict": {"verdict": verdict},
+            },
         }
 
     parsed = _run_and_parse(
