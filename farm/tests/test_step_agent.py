@@ -405,3 +405,225 @@ def test_planner_step_reports_back_a_large_artifact_in_full(monkeypatch):
     )
     result = execute(make_task(6, "Draft implementation plan"))
     assert result["artifacts"]["artifact_md"] == big
+
+
+# ---- retry-on-parse-failure (HZ-44) ----
+# A step agent's JSON reply can fail to parse for reasons unrelated to the
+# quality of its work — e.g. an artifact_md that quotes a JSON example
+# verbatim, leaving raw double quotes inside a JSON string value (the exact
+# shape that discarded a passing Architecture review on HZ-43). One
+# retry-with-feedback, mirroring pm_agent.process()'s recovery, turns that
+# into a completed step instead of a cancelled run.
+
+
+def sequenced_run_claude(replies, captured_calls):
+    def _fake(prompt, **kwargs):
+        captured_calls.append({"prompt": prompt, **kwargs})
+        return replies[len(captured_calls) - 1]
+
+    return _fake
+
+
+def test_hz43_unescaped_quotes_in_artifact_md_recover_on_retry(monkeypatch):
+    calls = []
+    bad = (
+        '{"summary": "reviewed", "artifact_md": "swap `{"items":[]}` for '
+        '`{"ok":true,"itemCount":0}`..."}'
+    )
+    good = '{"summary": "reviewed, ok", "artifact_md": "# Architecture review\\npass-with-notes"}'
+    replies = [{"result": bad, "session_id": "sess-1"}, {"result": good, "session_id": "sess-1"}]
+    monkeypatch.setattr(step_agent, "run_claude", sequenced_run_claude(replies, calls))
+
+    result = execute(make_task(7, "Architecture review"))
+
+    assert len(calls) == 2
+    assert result["summary"] == "reviewed, ok"
+    assert result["artifacts"]["artifact_md"] == "# Architecture review\npass-with-notes"
+
+
+def test_hz44_real_subprocess_recovers_from_the_hz43_quote_bug():
+    """The tests above monkeypatch run_claude, so they never actually drive a
+    `claude` invocation. This one doesn't monkeypatch anything: it runs the
+    real subprocess path (fake_claude stands in for the `claude` binary, the
+    same substitution every other unmocked test in this file relies on — see
+    module docstring), through the real extract_json and the real retry in
+    step_agent._run_and_parse. fake_claude reproduces the exact HZ-43 shape
+    on its first reply, then a clean one once resumed."""
+    task = make_task(7, "Architecture review")
+    task["item"]["desc"] = "HZ44_QUOTE_BUG " + task["item"]["desc"]
+
+    result = execute(task)
+
+    assert result["summary"] == "reviewed, ok"
+    assert result["artifacts"]["artifact_md"] == "# Architecture review\npass-with-notes"
+
+
+def test_retry_is_bounded_at_one_and_a_second_failure_still_raises(monkeypatch):
+    calls = []
+    bad = '{"summary": "oops"'  # truncated — unparseable both times
+    monkeypatch.setattr(
+        step_agent, "run_claude", sequenced_run_claude([{"result": bad}, {"result": bad}], calls)
+    )
+
+    with pytest.raises(Exception):
+        execute(make_task(7, "Architecture review"))
+
+    assert len(calls) == 2  # exactly one retry — no retry loop, run still cancels
+
+
+def test_retry_reuses_session_id_and_the_original_call_budget(monkeypatch):
+    calls = []
+    bad = '{"summary": "oops"'
+    good = '{"summary": "ok"}'
+    monkeypatch.setattr(
+        step_agent,
+        "run_claude",
+        sequenced_run_claude([{"result": bad, "session_id": "sess-abc"}, {"result": good}], calls),
+    )
+
+    execute(make_task(4, "Plan options & trade-offs (pros / cons)"))
+
+    assert len(calls) == 2
+    first, retry = calls
+    assert retry["session_id"] == "sess-abc"  # HZ-44: reuse the session, don't resend the prompt
+    for key in ("max_turns", "timeout_s", "allowed_tools", "append_system"):
+        assert retry[key] == first[key]  # no budget growth on retry
+
+
+def test_retry_feedback_message_matches_pm_agent_wording(monkeypatch):
+    calls = []
+    bad = '{"summary": "oops"'
+    good = '{"summary": "ok"}'
+    monkeypatch.setattr(
+        step_agent, "run_claude", sequenced_run_claude([{"result": bad}, {"result": good}], calls)
+    )
+
+    execute(make_task(4, "Plan options & trade-offs (pros / cons)"))
+
+    retry_prompt = calls[1]["prompt"]
+    assert retry_prompt.startswith("Your previous reply was invalid:")
+    assert retry_prompt.endswith("Respond again with ONLY the JSON object, no other text.")
+
+
+def test_implement_step_does_not_retry_on_a_malformed_final_reply(tmp_path, monkeypatch):
+    """Step 11 already tolerates a malformed final message without failing
+    the step (HZ-29) — the code in the workspace is the deliverable, not the
+    summary. The HZ-44 retry machinery must not apply here."""
+    ws, _origin = make_git_workspace(tmp_path)
+    monkeypatch.setattr(step_agent, "workspace_path", lambda repo: ws)
+    calls = []
+
+    def _fake(prompt, **kwargs):
+        calls.append(kwargs)
+        (ws / "fake_implementation.txt").write_text("fake implementation\n")
+        return {"result": "not json at all"}
+
+    monkeypatch.setattr(step_agent, "run_claude", _fake)
+
+    result = execute(make_task(11, "Specialist agent implements", repo="acme/demo"))
+
+    assert len(calls) == 1  # no retry for the implement step
+    assert "not valid JSON" in result["summary"]
+
+
+def two_pass_run_claude_with_retries(code_results, qa_results, captured_calls):
+    counters = {"code": 0, "qa": 0}
+
+    def _fake(prompt, **kwargs):
+        captured_calls.append({"prompt": prompt, **kwargs})
+        is_qa = "QA Reviewer agent" in kwargs.get("append_system", "")
+        key = "qa" if is_qa else "code"
+        results = qa_results if is_qa else code_results
+        idx = min(counters[key], len(results) - 1)
+        counters[key] += 1
+        return {"result": results[idx]}
+
+    return _fake
+
+
+def test_review_step_code_pass_recovers_independently_of_a_healthy_qa_pass(tmp_path, monkeypatch):
+    ws, _origin = make_git_workspace(tmp_path)
+    git(ws, "push", "-u", "origin", "HEAD:horizon/t-1")
+    monkeypatch.setattr(step_agent, "workspace_path", lambda repo: ws)
+
+    calls = []
+    bad_code = '{"summary": "code review done", "verdict": "fail"'  # unparseable
+    good_code = json.dumps(
+        {
+            "summary": "code review done",
+            "verdict": "fail",
+            "findings": [{"file": "app.py", "line": 1, "severity": "block", "detail": "x"}],
+            "artifact_md": "## Code review\n**fail**",
+        }
+    )
+    qa_json = json.dumps(
+        {
+            "summary": "qa review done",
+            "verdict": "pass",
+            "regression_tests_run": True,
+            "new_code_unit_coverage": True,
+            "e2e_test_present": True,
+            "findings": [],
+            "artifact_md": "## QA review\n**pass**",
+        }
+    )
+    monkeypatch.setattr(
+        step_agent, "run_claude", two_pass_run_claude_with_retries([bad_code, good_code], [qa_json], calls)
+    )
+
+    result = execute(make_task(12, "Automated review (code + QA)", repo="acme/demo"))
+
+    assert len(calls) == 3  # code pass retried once, QA pass succeeded first try
+    verdict = result["artifacts"]["verdict"]
+    assert verdict["code_review"]["verdict"] == "fail"
+    assert verdict["qa_review"]["verdict"] == "pass"
+
+
+def test_review_step_qa_pass_recovers_independently_of_a_healthy_code_pass(tmp_path, monkeypatch):
+    ws, _origin = make_git_workspace(tmp_path)
+    git(ws, "push", "-u", "origin", "HEAD:horizon/t-1")
+    monkeypatch.setattr(step_agent, "workspace_path", lambda repo: ws)
+
+    calls = []
+    code_json = json.dumps({"summary": "code review done", "verdict": "pass", "findings": []})
+    bad_qa = '{"summary": "qa review done", "verdict": "pass"'  # unparseable
+    good_qa = json.dumps(
+        {
+            "summary": "qa review done",
+            "verdict": "pass",
+            "regression_tests_run": True,
+            "new_code_unit_coverage": True,
+            "e2e_test_present": True,
+            "findings": [],
+        }
+    )
+    monkeypatch.setattr(
+        step_agent, "run_claude", two_pass_run_claude_with_retries([code_json], [bad_qa, good_qa], calls)
+    )
+
+    result = execute(make_task(12, "Automated review (code + QA)", repo="acme/demo"))
+
+    assert len(calls) == 3  # QA pass retried once, code pass succeeded first try
+    verdict = result["artifacts"]["verdict"]
+    assert verdict["code_review"]["verdict"] == "pass"
+    assert verdict["qa_review"]["verdict"] == "pass"
+
+
+def test_review_step_code_pass_exhausting_its_retry_still_cancels_the_run(tmp_path, monkeypatch):
+    ws, _origin = make_git_workspace(tmp_path)
+    git(ws, "push", "-u", "origin", "HEAD:horizon/t-1")
+    monkeypatch.setattr(step_agent, "workspace_path", lambda repo: ws)
+
+    calls = []
+    bad_code = '{"summary": "code review done", "verdict": "fail"'  # unparseable, both attempts
+    qa_json = json.dumps({"summary": "qa review done", "verdict": "pass"})
+    monkeypatch.setattr(
+        step_agent, "run_claude", two_pass_run_claude_with_retries([bad_code, bad_code], [qa_json], calls)
+    )
+
+    with pytest.raises(Exception):
+        execute(make_task(12, "Automated review (code + QA)", repo="acme/demo"))
+
+    # the code pass fails before the QA pass is ever attempted
+    assert len(calls) == 2
+    assert all("QA Reviewer agent" not in c.get("append_system", "") for c in calls)

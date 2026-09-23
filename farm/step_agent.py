@@ -187,6 +187,38 @@ def _review_summary(verdict: dict) -> str:
     return summary[:600]
 
 
+def _run_and_parse(
+    prompt: str,
+    *,
+    append_system: str | None,
+    cwd: str | None,
+    max_turns: int,
+    timeout_s: int,
+    allowed_tools: str | None,
+) -> dict:
+    """run_claude + extract_json with one retry-with-feedback on a parse
+    failure (HZ-44) — mirrors pm_agent.process()'s recovery. Asking the model
+    to re-emit valid JSON is lossless; a genuine second failure still
+    propagates so the run cancels and the item pauses, unchanged."""
+    reply = run_claude(
+        prompt, append_system=append_system, cwd=cwd, max_turns=max_turns, timeout_s=timeout_s, allowed_tools=allowed_tools
+    )
+    try:
+        return extract_json(reply["result"])
+    except (ClaudeError, json.JSONDecodeError) as exc:
+        log(f"invalid reply ({exc}); retrying once")
+        retry = run_claude(
+            f"Your previous reply was invalid: {exc}. Respond again with ONLY the JSON object, no other text.",
+            session_id=reply.get("session_id"),
+            append_system=append_system,
+            cwd=cwd,
+            max_turns=max_turns,
+            timeout_s=timeout_s,
+            allowed_tools=allowed_tools,
+        )
+        return extract_json(retry["result"])
+
+
 def execute(task: dict) -> dict:
     step_index = task["step"]["index"]
     role_file, wants_artifact, tools, max_turns, timeout_s, wants_persona = STEP_CONFIG[step_index]
@@ -266,18 +298,16 @@ def execute(task: dict) -> dict:
             + "\n\nRespond with ONLY the JSON object described in your role instructions."
         )
 
-        code_reply = run_claude(
+        code_parsed = _run_and_parse(
             prompt, append_system=role, cwd=str(ws), max_turns=max_turns, timeout_s=timeout_s, allowed_tools=tools
         )
-        code_parsed = extract_json(code_reply["result"])
 
         qa_role = (ROLES / "qa_review.md").read_text()
         if wants_persona:
             qa_role = compose_role(qa_role, item.get("persona"))
-        qa_reply = run_claude(
+        qa_parsed = _run_and_parse(
             prompt, append_system=qa_role, cwd=str(ws), max_turns=max_turns, timeout_s=timeout_s, allowed_tools=tools
         )
-        qa_parsed = extract_json(qa_reply["result"])
 
         verdict = {"code_review": _code_review_section(code_parsed), "qa_review": _qa_review_section(qa_parsed)}
         artifact_md = "\n\n".join(
@@ -294,7 +324,7 @@ def execute(task: dict) -> dict:
             "artifacts": {"artifact_md": artifact_md[:WRITE_ARTIFACT_SANITY_CEILING_CHARS], "verdict": verdict},
         }
 
-    reply = run_claude(
+    parsed = _run_and_parse(
         build_prompt(task) + "\n\nRespond with ONLY the JSON object described in your role instructions.",
         append_system=role,
         cwd=str(ws) if ws else None,
@@ -302,7 +332,6 @@ def execute(task: dict) -> dict:
         timeout_s=timeout_s,
         allowed_tools=tools if ws else None,
     )
-    parsed = extract_json(reply["result"])
     summary = str(parsed.get("summary", "")).strip()[:600]
     if not summary:
         raise ClaudeError("agent reply missing 'summary'")

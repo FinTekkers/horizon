@@ -37,6 +37,25 @@ if "WhatsApp concierge" in sys_prompt:
     print(json.dumps({"type": "result", "result": json.dumps(inner), "session_id": "fake-session-001"}))
     sys.exit(0)
 
+# HZ-44 real-subprocess regression: opt-in via a marker in the outcome text
+# (never fires for an ordinary task) so this fake reproduces the exact HZ-43
+# shape — an artifact_md that quotes raw JSON, breaking the reply's own JSON
+# envelope — on the first call, then a clean reply once resumed. Exercises
+# the real subprocess path (_run_claude_subprocess + extract_json + the
+# retry in step_agent._run_and_parse), not a monkeypatched run_claude.
+HZ44_QUOTE_BUG_SESSION = "fake-session-hz44-quote-bug"
+if "--resume" in args and args[args.index("--resume") + 1] == HZ44_QUOTE_BUG_SESSION:
+    good = '{"summary": "reviewed, ok", "artifact_md": "# Architecture review\\npass-with-notes"}'
+    print(json.dumps({"type": "result", "result": good, "session_id": HZ44_QUOTE_BUG_SESSION}))
+    sys.exit(0)
+if "HZ44_QUOTE_BUG" in prompt:
+    bad = (
+        '{"summary": "reviewed", "artifact_md": "swap `{"items":[]}` for '
+        '`{"ok":true,"itemCount":0}`..."}'
+    )
+    print(json.dumps({"type": "result", "result": bad, "session_id": HZ44_QUOTE_BUG_SESSION}))
+    sys.exit(0)
+
 patch = {}
 if "guardrails: (empty)" in prompt and "Set guardrails" in prompt:
     patch["guardrails"] = "[fake] defaults apply; no destructive data changes"
