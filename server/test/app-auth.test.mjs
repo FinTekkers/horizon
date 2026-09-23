@@ -51,6 +51,32 @@ test('the GitHub webhook route stays reachable with no session (separate trust b
   assert.equal(res.statusCode, 503) // no secret configured, but NOT 401
 })
 
+// HZ-43: deploy.sh has no session cookie to send, so this is the one route
+// besides the above that must stay reachable — pinned here so a future
+// SESSION_EXEMPT edit can't silently regress it back to 401.
+test('/api/health is 200 with no session cookie (deploy.sh liveness probe)', async () => {
+  const res = await app.inject({ method: 'GET', url: '/api/health' })
+  assert.equal(res.statusCode, 200)
+  const body = res.json()
+  assert.equal(body.ok, true)
+  assert.equal(typeof body.itemCount, 'number')
+})
+
+test('/api/health is 503 with no leaked detail when the DB read fails', async () => {
+  const { db } = await import('../src/db.js')
+  const realPrepare = db.prepare
+  db.prepare = () => {
+    throw new Error('disk I/O error: /some/sensitive/path')
+  }
+  try {
+    const res = await app.inject({ method: 'GET', url: '/api/health' })
+    assert.equal(res.statusCode, 503)
+    assert.deepEqual(res.json(), { ok: false })
+  } finally {
+    db.prepare = realPrepare
+  }
+})
+
 // ---- hardcoded password login ----
 
 test('logging in with the wrong password is 401 invalid_credentials, no cookie set', async () => {

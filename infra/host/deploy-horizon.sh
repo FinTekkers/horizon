@@ -20,7 +20,7 @@ TAG="${1:-}"
 REPO_DIR="${HORIZON_REPO_DIR:-/opt/horizon}"
 STATE_DIR="${HORIZON_STATE_DIR:-$HOME/.horizon}"
 SERVICE_NAME="${HORIZON_SERVICE_NAME:-horizon-server}"
-HEALTH_URL="${HORIZON_HEALTH_URL:-http://127.0.0.1:3001/api/items}"
+HEALTH_URL="${HORIZON_HEALTH_URL:-http://127.0.0.1:3001/api/health}"
 HEALTH_TIMEOUT_S="${HORIZON_HEALTH_TIMEOUT_S:-30}"
 HEALTH_POLL_S="${HORIZON_HEALTH_POLL_S:-2}"
 LOCK_TIMEOUT_S="${HORIZON_DEPLOY_LOCK_TIMEOUT_S:-300}"
@@ -29,6 +29,7 @@ mkdir -p "$STATE_DIR"
 LOCK_FILE="$STATE_DIR/deploy.lock"
 LOG_FILE="$STATE_DIR/self-deploy.log"
 LAST_GOOD_FILE="$STATE_DIR/last-good-tag"
+LAST_ATTEMPTED_FILE="$STATE_DIR/last-attempted-tag"
 
 log() {
   printf '%s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$1" >>"$LOG_FILE"
@@ -58,6 +59,12 @@ else
 fi
 git checkout --detach "$REF"
 COMMIT="$(git rev-parse HEAD)"
+
+# Recorded unconditionally, before anything that can fail below, so a failed
+# deploy still leaves a diagnosable trail of what it was attempting — separate
+# from LAST_GOOD_FILE, which stays the rollback target and is only written
+# once the health check actually passes.
+printf '%s:%s\n' "$REF" "$COMMIT" >"$LAST_ATTEMPTED_FILE"
 
 STAGE="server-deps"
 (cd server && npm ci)
@@ -95,8 +102,8 @@ while [ "$SECONDS" -lt "$deadline" ]; do
             console.error(`response is not valid JSON: ${err.message}`)
             process.exit(1)
           }
-          if (Array.isArray(parsed.items)) process.exit(0)
-          console.error("response JSON has no items array")
+          if (parsed.ok === true && Number.isInteger(parsed.itemCount)) process.exit(0)
+          console.error("response JSON missing ok:true/itemCount")
           process.exit(1)
         })
       ' 2>&1)"; then

@@ -76,13 +76,16 @@ function humanAuthorized(request, reply) {
 // Routes reachable without a login session: the auth routes themselves, the
 // GitHub webhook (HMAC-verified, GitHub can't send a cookie), the farm
 // callbacks and the WhatsApp-approval leg (both authorized by the farm's
-// shared secret instead), and the shared stylesheet.
+// shared secret instead), the shared stylesheet, and the deploy liveness
+// probe (HZ-43 — nginx proxies /horizon/api/ wholesale, so deploy.sh has no
+// session to send; see /api/health below for what stays out of its payload).
 const SESSION_EXEMPT = [
   /^\/api\/auth\//,
   /^\/api\/webhooks\/github$/,
   /^\/api\/farm\//,
   /^\/api\/agent-pages\.css$/,
   /^\/api\/items\/[^/]+\/gates\/\d+\/approve-via-whatsapp$/,
+  /^\/api\/health$/,
 ]
 
 function sessionExempt(url) {
@@ -175,6 +178,26 @@ export function buildApp({ logger = true } = {}) {
   }
 
   fastify.get('/api/items', () => snapshot())
+
+  // Public liveness probe for deploy.sh (HZ-43): every /api/* route sits
+  // behind the session gate above except this one, because nginx proxies
+  // /horizon/api/ wholesale and deploy.sh has no session cookie to send. The
+  // payload stays coarse on purpose — an ok flag and a row count, nothing
+  // from a work item's contents — since anything exempted here is reachable
+  // by anyone on the internet with no login. The count comes from a raw DB
+  // query rather than store.listItems() so it can't silently start failing
+  // again the way the old /api/items probe did (HZ-21 gated /api/items;
+  // store.listItems() is also scoped to the active project, a second way an
+  // unrelated app change could break this probe).
+  fastify.get('/api/health', (request, reply) => {
+    let itemCount
+    try {
+      itemCount = db.prepare('SELECT COUNT(*) AS n FROM work_item').get().n
+    } catch {
+      return reply.code(503).send({ ok: false })
+    }
+    return { ok: true, itemCount }
+  })
 
   // Stylesheet shared by the standalone pages below. Cacheable by the
   // browser across all three instead of re-sent inline with every page.
