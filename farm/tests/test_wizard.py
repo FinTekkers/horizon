@@ -323,6 +323,63 @@ def test_gate_choice_resolves_a_numbered_reply_and_approves(monkeypatch):
         stub.close()
 
 
+def test_thumbs_up_approves_when_exactly_one_approval_is_pending(monkeypatch):
+    """A thumbs-up carries no index, so it only resolves when there is nothing
+    to be ambiguous about."""
+    monkeypatch.setattr(config, "FARM_WA_SENDER_NAMES", {"15550001111": "David"})
+    t = FakeTransport()
+    state = make_state(t, "choice-thumbs-one")
+    stub = StubHorizon(items=[{"id": "HZ-7"}])
+    try:
+        offer(state, [("HZ-7", 12, "Accept the code")])
+        msg = t.seed("\U0001F44D", sender=DAVID, chat=DAVID)
+        handled = wizard.try_handle_gate_choice(msg, t, state.choice_store, state, stub.url)
+        assert handled
+        assert stub.approvals == [("HZ-7", 12, {"sender": "David"})]
+        assert "Approved HZ-7" in t.sent[-1][1]
+        assert state.choice_store.get(f"{DAVID}:{DAVID}") is None
+    finally:
+        stub.close()
+
+
+def test_thumbs_up_with_several_pending_asks_for_a_number_and_approves_nothing(monkeypatch):
+    """Approving the wrong gate is not recoverable by replying again, so an
+    ambiguous thumbs-up must never be guessed at — and the offer must survive
+    so the follow-up number still resolves."""
+    monkeypatch.setattr(config, "FARM_WA_SENDER_NAMES", {"15550001111": "David"})
+    t = FakeTransport()
+    state = make_state(t, "choice-thumbs-many")
+    stub = StubHorizon(items=[{"id": "HZ-7"}, {"id": "HZ-9"}])
+    try:
+        offer(state, [("HZ-7", 12, "Accept the code"), ("HZ-9", 3, "Approve & prioritize this work")])
+        msg = t.seed("\U0001F44D", sender=DAVID, chat=DAVID)
+        handled = wizard.try_handle_gate_choice(msg, t, state.choice_store, state, stub.url)
+        assert handled
+        assert stub.approvals == []
+        assert "2 approvals pending" in t.sent[-1][1]
+        # the offer stands, so a number sent next still works
+        assert state.choice_store.get(f"{DAVID}:{DAVID}") is not None
+        follow = t.seed("1", sender=DAVID, chat=DAVID)
+        assert wizard.try_handle_gate_choice(follow, t, state.choice_store, state, stub.url)
+        assert stub.approvals == [("HZ-7", 12, {"sender": "David"})]
+    finally:
+        stub.close()
+
+
+def test_a_thumbs_up_inside_a_sentence_is_not_an_approval():
+    """"ok \U0001F44D" is a sentence; it must reach the model like any other message."""
+    t = FakeTransport()
+    state = make_state(t, "choice-thumbs-prose")
+    stub = StubHorizon(items=[{"id": "HZ-7"}])
+    try:
+        offer(state, [("HZ-7", 12, "Accept the code")])
+        msg = t.seed("ok \U0001F44D", sender=DAVID, chat=DAVID)
+        assert not wizard.try_handle_gate_choice(msg, t, state.choice_store, state, stub.url)
+        assert stub.approvals == []
+    finally:
+        stub.close()
+
+
 def test_gate_choice_out_of_range_number_is_rejected_without_approving():
     t = FakeTransport()
     state = make_state(t, "choice-oor")

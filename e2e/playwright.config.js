@@ -1,6 +1,7 @@
 import { defineConfig, devices } from '@playwright/test'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { createHash } from 'node:crypto'
 
 // A private temp DB and non-default ports, isolated from anything a
 // developer might have running locally (~/.horizon-farm state, a real dev
@@ -12,9 +13,28 @@ import { join } from 'node:path'
 // diverge between the process that seeds fixtures and the process that
 // reads them. Freshness across runs comes from the `rm -f` in the server's
 // webServer command below, not from a unique-per-run path.
-const DB_PATH = join(tmpdir(), 'horizon-e2e.db')
-const SERVER_PORT = 3057
-const UI_PORT = 4351
+// Every shared resource below is namespaced by RUN_KEY. The farm runs up to
+// FARM_MAX_EPHEMERAL agents concurrently (HZ-50 raised that to 4 and dropped
+// the implement-step serialisation), each executing this suite in its own
+// worktree. With fixed ports and a fixed DB path they collided: the loser saw
+// "http://localhost:3057 is already used", and because each webServer command
+// starts with `fuser -k` on its port, concurrent runs actively killed each
+// other's servers mid-suite. Observed failing HZ-25, HZ-46 and HZ-57.
+//
+// RUN_KEY must be stable across Playwright's per-worker re-evaluation of this
+// module (see the DB_PATH note above — a pid would diverge between the worker
+// that seeds fixtures and the one that reads them) while differing between
+// concurrent runs. The worktree path is exactly that: identical for every
+// worker of one run, distinct per item worktree.
+const RUN_KEY = process.env.HORIZON_E2E_RUN_KEY || process.cwd()
+const RUN_HASH = createHash('sha256').update(RUN_KEY).digest()
+const RUN_SUFFIX = RUN_HASH.toString('hex').slice(0, 8)
+// Two disjoint 1000-port windows, so a server port can never land on a UI one.
+const PORT_OFFSET = RUN_HASH.readUInt16BE(0) % 1000
+
+const DB_PATH = join(tmpdir(), `horizon-e2e-${RUN_SUFFIX}.db`)
+const SERVER_PORT = Number(process.env.HORIZON_E2E_SERVER_PORT) || 3057 + PORT_OFFSET
+const UI_PORT = Number(process.env.HORIZON_E2E_UI_PORT) || 4351 + PORT_OFFSET
 const BASE_URL = `http://localhost:${UI_PORT}`
 // Every /api/* route requires a login session (HZ-21). global-setup.js logs
 // in once via the hardcoded dev-mode credential (ADMIN_EMAIL/PASSWORD are
@@ -22,7 +42,7 @@ const BASE_URL = `http://localhost:${UI_PORT}`
 // saves the resulting session cookie here; every spec's browser context
 // starts from this file (see `use.storageState` below), so no spec needs its
 // own login step.
-const STORAGE_STATE_PATH = join(tmpdir(), 'horizon-e2e-storage-state.json')
+const STORAGE_STATE_PATH = join(tmpdir(), `horizon-e2e-storage-state-${RUN_SUFFIX}.json`)
 
 // Read by global-setup.js, which seeds fixtures directly into the DB and
 // waits for the server to come up before any test runs.

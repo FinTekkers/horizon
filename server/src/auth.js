@@ -11,6 +11,7 @@
 import crypto from 'node:crypto'
 import { db } from './db.js'
 import { ADMIN_EMAIL, ADMIN_PASSWORD, SESSION_TTL_DAYS } from './config.js'
+import { isAllowedEmail } from './loginAllowlist.js'
 
 function hashSecret(plain) {
   const salt = crypto.randomBytes(16)
@@ -103,10 +104,17 @@ export class GoogleLinkBlockedError extends Error {}
 // attach to somebody else's existing account — that's a straight account
 // takeover. A row whose `google_sub` is already set to something else is
 // left alone too; this fix links one existing row per email, it never
-// re-links or merges rows. (HZ-36's allowlist, once it exists, must run
-// before this function is called — a non-allowlisted email should never
-// reach the point of linking.)
+// re-links or merges rows.
+//
+// Gated on the login allowlist first (HZ-36): the HTTP route already checks
+// this before calling us, but this is a second, independent gate so any
+// other caller (a script, an admin tool, a future route) can't reach a
+// Google identity — new, linked, or returning — without going through it
+// too. Re-checked even for a RETURNING sub, so removing an address from the
+// allowlist blocks a previously-linked account's very next login, not just
+// new ones.
 export function findOrCreateGoogleUser({ sub, email, name, emailVerified }) {
+  if (!emailVerified || !isAllowedEmail(email)) throw new GoogleLinkBlockedError('not_allowed')
   const existing = findUserByGoogleSub(sub)
   if (existing) {
     touchLastLogin(existing.id)
