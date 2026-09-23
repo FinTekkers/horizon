@@ -12,6 +12,19 @@ import crypto from 'node:crypto'
 process.env.HORIZON_DB = join(mkdtempSync(join(tmpdir(), 'horizon-auth-')), 'test.db')
 process.env.ADMIN_EMAIL = 'admin@example.com'
 process.env.ADMIN_PASSWORD = 'super-secret'
+// HZ-36: every findOrCreateGoogleUser call below now needs its email
+// allowlisted (deny-by-default) in addition to emailVerified — this file's
+// own concern is the linking/session logic beneath that gate, not the
+// allowlist itself (see loginAllowlist.test.mjs for that).
+process.env.ALLOWED_LOGIN_EMAILS = [
+  'admin@example.com',
+  'newbie@example.com',
+  'returning@example.com',
+  'ci-match@example.com',
+  'unverified@example.com',
+  'retry-after-block@example.com',
+  'already-linked@example.com',
+].join(',')
 
 const { db } = await import('../src/db.js')
 const auth = await import('../src/auth.js')
@@ -75,17 +88,51 @@ test('findUserByEmail / findUserById find the same row; unknown lookups are null
 
 // ---- Google SSO account creation ----
 
+// HZ-36 guardrail: deny-by-default. A verified email that simply isn't on
+// ALLOWED_LOGIN_EMAILS must be rejected and must create no row at all — not
+// even the "unverified email" GoogleLinkBlockedError path, a brand-new one.
+test('findOrCreateGoogleUser BLOCKS a verified email that is not on the allowlist, creating no row', () => {
+  assert.throws(
+    () =>
+      auth.findOrCreateGoogleUser({
+        sub: 'google-sub-not-allowlisted',
+        email: 'stranger@example.com',
+        name: 'A Stranger',
+        emailVerified: true,
+      }),
+    auth.GoogleLinkBlockedError,
+  )
+  assert.equal(auth.findUserByGoogleSub('google-sub-not-allowlisted'), null)
+  assert.equal(auth.findUserByEmail('stranger@example.com'), null)
+})
+
+// HZ-36 guardrail: the allowlist comparison must use the VERIFIED claim
+// only — an allowlisted address with an unverified claim must still reject.
+test('findOrCreateGoogleUser BLOCKS an allowlisted email whose claim is not verified', () => {
+  assert.throws(
+    () =>
+      auth.findOrCreateGoogleUser({
+        sub: 'google-sub-allowlisted-unverified',
+        email: 'newbie@example.com',
+        name: 'New Bie',
+        emailVerified: false,
+      }),
+    auth.GoogleLinkBlockedError,
+  )
+  assert.equal(auth.findUserByGoogleSub('google-sub-allowlisted-unverified'), null)
+})
+
 test('findOrCreateGoogleUser creates a new account on first sign-in, with the right auth_method', () => {
-  const user = auth.findOrCreateGoogleUser({ sub: 'google-sub-1', email: 'newbie@example.com', name: 'New Bie' })
+  const user = auth.findOrCreateGoogleUser({ sub: 'google-sub-1', email: 'newbie@example.com', name: 'New Bie', emailVerified: true })
   assert.equal(user.authMethod, 'google')
   assert.equal(user.initials, 'NB')
   assert.equal(auth.findUserByGoogleSub('google-sub-1').id, user.id)
 })
 
 test('findOrCreateGoogleUser logs the SAME user back in on a returning sign-in — no duplicate row', () => {
-  const first = auth.findOrCreateGoogleUser({ sub: 'google-sub-2', email: 'returning@example.com', name: 'Returning User' })
+  const first = auth.findOrCreateGoogleUser({ sub: 'google-sub-2', email: 'returning@example.com', name: 'Returning User', emailVerified: true })
   const countAfterFirst = db.prepare('SELECT COUNT(*) AS n FROM user WHERE google_sub = ?').get('google-sub-2').n
-  const second = auth.findOrCreateGoogleUser({ sub: 'google-sub-2', email: 'returning@example.com', name: 'Returning User' })
+  const second = auth.findOrCreateGoogleUser({ sub: 'google-sub-2', email: 'returning@example.com', name: 'Returning User', emailVerified: true })
   assert.equal(second.id, first.id)
   assert.equal(countAfterFirst, 1)
   assert.equal(db.prepare('SELECT COUNT(*) AS n FROM user WHERE google_sub = ?').get('google-sub-2').n, 1)

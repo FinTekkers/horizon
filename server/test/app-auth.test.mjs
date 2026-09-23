@@ -15,6 +15,18 @@ process.env.ADMIN_EMAIL = 'admin@example.com'
 process.env.ADMIN_PASSWORD = 'super-secret'
 process.env.GOOGLE_CLIENT_ID = 'test-client-id'
 process.env.GOOGLE_CLIENT_SECRET = 'test-client-secret'
+// HZ-36: deny-by-default means every Google login below needs its email on
+// this list — the tests that specifically exercise the allowlist gate
+// itself (deny-by-default, no-enumeration parity) manage the env var
+// directly, closer to where they run.
+process.env.ALLOWED_LOGIN_EMAILS = [
+  'admin@example.com',
+  'unverified-target@example.com',
+  'already-linked-http@example.com',
+  'nova@example.com',
+  'returning-http@example.com',
+  'single-use@example.com',
+].join(',')
 delete process.env.GITHUB_WEBHOOK_SECRET
 delete process.env.FARM_URL
 
@@ -220,7 +232,13 @@ test('google/callback with a valid state but a failed code exchange redirects wi
 // Uses a dedicated account (not ADMIN_EMAIL) so this and the retry test below
 // don't fight over google_sub state with the "adopts an account" test further
 // down, which needs ADMIN_EMAIL to still be unlinked when it runs.
-test('google/callback with an unverified email match redirects with ?error=google_link_blocked and does not link', async () => {
+//
+// HZ-36: the allowlist gate at the route now checks emailVerified BEFORE
+// findOrCreateGoogleUser is ever called, so an unverified claim is rejected
+// with the coarser, non-enumerating ?error=google_login_not_allowed rather
+// than reaching auth.js's own unverified-linking check (still exercised
+// directly, at the unit level, in auth.test.mjs).
+test('google/callback with an unverified email match redirects with ?error=google_login_not_allowed and does not link', async () => {
   const { user: passwordUser } = auth.createUser({
     email: 'unverified-target@example.com',
     name: 'Unverified Target',
@@ -243,7 +261,7 @@ test('google/callback with an unverified email match redirects with ?error=googl
       headers: { cookie: `oauth_state=${stateCookie.value}` },
     })
     assert.equal(res.statusCode, 302)
-    assert.equal(res.headers.location, `${config.UI_URL}/?error=google_link_blocked`)
+    assert.equal(res.headers.location, `${config.UI_URL}/?error=google_login_not_allowed`)
     assert.equal(res.cookies.find((c) => c.name === config.SESSION_COOKIE_NAME), undefined, 'no session must start')
   } finally {
     googleAuth.exchangeCodeForProfile = realExchange
@@ -528,4 +546,110 @@ test('google/start redirects to the login page with ?error=google_sso_not_config
     googleAuth.configured = realConfigured
     process.env.GOOGLE_CLIENT_ID = GOOGLE_CLIENT_ID
   }
+})
+
+// ---- Login allowlist (HZ-36) ----
+// ALLOWED_LOGIN_EMAILS is a plain Set, mutated in place per test (not
+// reassigned) since config.js's own module-load parse is the only place the
+// underlying env var is read — this is the same trick used throughout this
+// suite to flip module-captured config for one test.
+
+async function googleAttempt(profile) {
+  const start = await app.inject({ method: 'GET', url: '/api/auth/google/start' })
+  const stateCookie = start.cookies.find((c) => c.name === 'oauth_state')
+  const realExchange = googleAuth.exchangeCodeForProfile
+  googleAuth.exchangeCodeForProfile = async () => profile
+  try {
+    return await app.inject({
+      method: 'GET',
+      url: `/api/auth/google/callback?code=good-code&state=${stateCookie.value}`,
+      headers: { cookie: `oauth_state=${stateCookie.value}` },
+    })
+  } finally {
+    googleAuth.exchangeCodeForProfile = realExchange
+  }
+}
+
+test('google/callback: an unverified-but-allowlisted claim and a verified-but-non-allowlisted address get IDENTICAL rejections (no enumeration)', async () => {
+  const unverifiedAllowlisted = await googleAttempt({
+    sub: 'google-parity-unverified',
+    email: 'admin@example.com', // on the allowlist, but the claim itself is unverified
+    name: 'Parity One',
+    emailVerified: false,
+  })
+  const verifiedNotAllowlisted = await googleAttempt({
+    sub: 'google-parity-not-allowlisted',
+    email: 'outsider@example.com', // verified, but never added to the allowlist
+    name: 'Parity Two',
+    emailVerified: true,
+  })
+
+  assert.equal(unverifiedAllowlisted.statusCode, verifiedNotAllowlisted.statusCode)
+  assert.equal(unverifiedAllowlisted.headers.location, verifiedNotAllowlisted.headers.location)
+  assert.equal(unverifiedAllowlisted.headers.location, `${config.UI_URL}/?error=google_login_not_allowed`)
+  assert.equal(auth.findUserByGoogleSub('google-parity-unverified'), null)
+  assert.equal(auth.findUserByGoogleSub('google-parity-not-allowlisted'), null)
+})
+
+test('deny-by-default: with ALLOWED_LOGIN_EMAILS empty, every Google login is rejected, but password login still works', async () => {
+  const saved = new Set(config.ALLOWED_LOGIN_EMAILS)
+  config.ALLOWED_LOGIN_EMAILS.clear()
+  try {
+    const res = await googleAttempt({
+      sub: 'google-deny-default',
+      email: config.ADMIN_EMAIL,
+      name: 'Admin',
+      emailVerified: true,
+    })
+    assert.equal(res.statusCode, 302)
+    assert.equal(res.headers.location, `${config.UI_URL}/?error=google_login_not_allowed`)
+    assert.equal(auth.findUserByGoogleSub('google-deny-default'), null)
+
+    const passwordLogin = await app.inject({
+      method: 'POST',
+      url: '/api/auth/login',
+      payload: { email: config.ADMIN_EMAIL, password: config.ADMIN_PASSWORD },
+    })
+    assert.equal(passwordLogin.statusCode, 200, 'the password path must be unaffected by an empty Google allowlist')
+  } finally {
+    config.ALLOWED_LOGIN_EMAILS.clear()
+    for (const email of saved) config.ALLOWED_LOGIN_EMAILS.add(email)
+  }
+})
+
+// A password-auth row that previously linked a google_sub (the "adopt" path)
+// must still be blocked at the route the moment its email leaves the
+// allowlist — the route check runs before any DB lookup, so it can't matter
+// that the row itself still remembers the link.
+test('a password account previously linked to a google_sub is blocked at the route once its email leaves the allowlist', async () => {
+  const email = 'formerly-allowed@example.com'
+  config.ALLOWED_LOGIN_EMAILS.add(email)
+  const { user: passwordUser } = auth.createUser({ email, name: 'Formerly Allowed', authMethod: 'password' })
+  const linked = auth.findOrCreateGoogleUser({
+    sub: 'google-formerly-allowed',
+    email,
+    name: 'Formerly Allowed',
+    emailVerified: true,
+  })
+  assert.equal(linked.id, passwordUser.id)
+  assert.equal(
+    db.prepare('SELECT google_sub FROM user WHERE id = ?').get(passwordUser.id).google_sub,
+    'google-formerly-allowed',
+  )
+
+  config.ALLOWED_LOGIN_EMAILS.delete(email)
+  const res = await googleAttempt({
+    sub: 'google-formerly-allowed',
+    email,
+    name: 'Formerly Allowed',
+    emailVerified: true,
+  })
+  assert.equal(res.statusCode, 302)
+  assert.equal(res.headers.location, `${config.UI_URL}/?error=google_login_not_allowed`)
+  // The route rejection doesn't touch existing rows — that's reconcileGoogleUsers's
+  // job at boot (see loginAllowlist.test.mjs), a separate concern from login-time gating.
+  assert.equal(
+    db.prepare('SELECT google_sub FROM user WHERE id = ?').get(passwordUser.id).google_sub,
+    'google-formerly-allowed',
+  )
 })
