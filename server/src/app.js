@@ -14,6 +14,7 @@ import { db } from './db.js'
 import { getActiveProjectId, getRepoUrl, setSetting, getToken } from './settings.js'
 import * as auth from './auth.js'
 import { googleAuth } from './googleAuth.js'
+import { isAllowedEmail } from './loginAllowlist.js'
 import { STEPS } from './lifecycle.js'
 import { PERSONAS } from './personas.js'
 import * as definitions from './definitions.js'
@@ -728,6 +729,15 @@ export function buildApp({ logger = true } = {}) {
       } catch (err) {
         request.log.warn(`google oauth exchange failed: ${err.message}`)
         return reply.redirect(`${UI_URL}/?error=google_auth_failed`)
+      }
+      // Allowlist gate (HZ-36): checked against the VERIFIED email claim
+      // only, and before any user lookup or write — a rejected login never
+      // creates or touches a row. One error code for every rejection reason
+      // (unverified claim or a verified-but-not-allowlisted address) so the
+      // response can't be used to enumerate which emails are allowed.
+      if (!profile.emailVerified || !isAllowedEmail(profile.email)) {
+        request.log.warn('google login rejected: not allowlisted')
+        return reply.redirect(`${UI_URL}/?error=google_login_not_allowed`)
       }
       let user
       try {

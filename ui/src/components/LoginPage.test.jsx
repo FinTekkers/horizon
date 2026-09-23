@@ -39,6 +39,7 @@ test.each([
   ['bad_state'],
   ['google_auth_failed'],
   ['account_link_failed'],
+  ['google_login_not_allowed'],
 ])('?error=%s renders some readable message', (code) => {
   window.history.replaceState({}, '', `/?error=${code}`)
   render(<LoginPage onLoggedIn={noop} />)
