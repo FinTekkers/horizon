@@ -1,5 +1,29 @@
-import { useState } from 'react'
+import { useState, useSyncExternalStore } from 'react'
 import { GridIcon, LockIcon, SlidersIcon } from './icons'
+import * as theme from '../theme'
+
+// A switch, not a menu item: toggling it shouldn't dismiss the menu the way
+// every other usermenu__item does, since a user very plausibly wants to
+// flip it back and forth once or twice to compare themes before moving on.
+function ThemeToggle() {
+  const current = useSyncExternalStore(theme.subscribe, theme.getTheme)
+  const isDark = current === 'dark'
+  return (
+    <div className="usermenu__item usermenu__item--toggle">
+      <span className="usermenu__item-label">Dark mode</span>
+      <button
+        type="button"
+        role="switch"
+        aria-checked={isDark}
+        aria-label="Dark mode"
+        className="theme-switch"
+        onClick={() => theme.toggleTheme()}
+      >
+        <span className="theme-switch__thumb" />
+      </button>
+    </div>
+  )
+}
 
 // The bot farm holds one project's context at a time — this is a switcher,
 // not a filter. Selecting a different project restarts the farm.
@@ -40,7 +64,7 @@ function ProjectSwitcher({ projects, activeProjectId, farm, onRequestSwitch }) {
                 }}
               >
                 {p.name}
-                {p.id === active.id && <span style={{ marginLeft: 'auto', color: '#0E6E74' }}>✓ active</span>}
+                {p.id === active.id && <span style={{ marginLeft: 'auto', color: 'var(--success-ink)' }}>✓ active</span>}
               </button>
             ))}
           </div>
@@ -85,6 +109,7 @@ function UserMenu({ user, onLogout, onOpenAdmin, onOpenDefinitions }) {
               <SlidersIcon />
               Admin
             </button>
+            <ThemeToggle />
             <button
               className="usermenu__item"
               onClick={() => {

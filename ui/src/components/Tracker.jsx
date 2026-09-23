@@ -12,6 +12,7 @@ import {
 } from '../domain/lifecycle'
 import { PERSONAS, personaFor, personaId } from '../domain/personas'
 import { itemStatus } from '../domain/status'
+import { resolveEventColor } from '../domain/eventColors'
 import { issueUrl, issueLabel, artifactUrl, outputUrl, runLogViewUrl } from '../api'
 import StatusPill from './StatusPill'
 import { BackIcon, LinkIcon, RestartIcon, PrIcon } from './icons'
@@ -33,7 +34,7 @@ const STEP_META = {
   blocked: () => 'Changes requested',
 }
 
-const STEP_META_COLOR = { awaiting: '#9A6E00', blocked: '#9C333E', active: '#2E6CB2' }
+const STEP_META_COLOR = { awaiting: 'var(--warning-ink)', blocked: 'var(--danger-ink)', active: 'var(--primary-ink)' }
 
 function Step({ item, index, onApprove, onApproveWithComments, onReject, onResolveConflicts, onSetPersona }) {
   const st = STEPS[index]
@@ -60,7 +61,7 @@ function Step({ item, index, onApprove, onApproveWithComments, onReject, onResol
               {agentLabel}
             </span>
           </div>
-          <div className="step-card__meta" style={{ color: STEP_META_COLOR[status] || '#8C8C8E' }}>
+          <div className="step-card__meta" style={{ color: STEP_META_COLOR[status] || 'var(--muted)' }}>
             {STEP_META[status](isGate, st.gate)}
             {status === 'active' && item.activeRun?.step_index === index && (
               <span>
@@ -190,7 +191,11 @@ function relTime(createdAt) {
 
 function buildActivity(item) {
   // Real events (orchestrator + human actions + GitHub) when we have them…
-  const events = (item.events || []).map((e) => ({ ...e, time: relTime(e.created_at) }))
+  const events = (item.events || []).map((e) => ({
+    ...e,
+    time: relTime(e.created_at),
+    color: resolveEventColor(e.color),
+  }))
   if (events.length > 0) return events.slice(0, 12)
 
   // …otherwise derive placeholders from completed steps (demo/mock items).
@@ -205,7 +210,7 @@ function buildActivity(item) {
         who: s.kind === 'gate' ? 'You' : a.label,
         text: s.kind === 'gate' ? `approved: ${s.label.toLowerCase()}` : `completed ${s.label.toLowerCase()}`,
         time: times[Math.min(k, times.length - 1)],
-        color: a.color,
+        color: a.avatarBg,
         initials: s.kind === 'gate' ? '✓' : a.initials,
       }
     })
@@ -285,7 +290,7 @@ export default function Tracker({ item, onBack, onApprove, onApproveWithComments
             const allDone = idxs.every((i) => stepStatus(item, i) === 'done')
             const anyActive = idxs.some((i) => ['active', 'awaiting'].includes(stepStatus(item, i)))
             const phaseStatusLabel = allDone ? 'Complete' : anyActive ? 'In progress' : 'Upcoming'
-            const phaseStatusColor = allDone ? '#0E6E74' : anyActive ? '#2E6CB2' : '#8C8C8E'
+            const phaseStatusColor = allDone ? 'var(--success-ink)' : anyActive ? 'var(--primary-ink)' : 'var(--muted)'
             const restartable = !isClosed(item) && phaseIdx(item) >= p
             return (
               <div key={name} className="phase">

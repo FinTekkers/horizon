@@ -248,7 +248,7 @@ function AuthenticatedApp({ user, onLogout }) {
               </button>
               <button
                 className="composer__submit"
-                style={{ background: '#2E6CB2' }}
+                style={{ background: 'var(--primary)' }}
                 onClick={() => {
                   api.activateProject(switchTarget.id).catch((err) => console.error(err))
                   setSwitchTarget(null)
