@@ -404,6 +404,8 @@ button { font-family: var(--font-sans); }
 .step__icon--awaiting { background: var(--warning); color: #fff; }
 .step__icon--pending { background: #fff; border: 2px solid #E0D9EC; color: transparent; }
 .step__icon--blocked { background: var(--danger); color: #fff; }
+/* Queued (HZ-54): dispatched but not yet claimed by an agent — muted, no pulse. */
+.step__icon--queued { background: #fff; border: 2px solid var(--muted); color: var(--muted); animation: none; }
 .step__line { width: 2px; flex: 1; min-height: 14px; background: #E4DEEE; margin: 2px 0; }
 .step__line--done { background: var(--primary); }
 .step__body { flex: 1; padding-bottom: 14px; }
@@ -412,6 +414,7 @@ button { font-family: var(--font-sans); }
 .step-card--awaiting { background: #FCF6E6; border: 1.5px solid #F0D58A; }
 .step-card--active { background: #F4F8FC; border: 1px solid #DCE8F4; }
 .step-card--blocked { background: #FBEEEF; border: 1px solid #EECFD2; }
+.step-card--queued { background: #FAFAFB; border: 1px solid var(--subtle); }
 .step-card__head { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
 .step-card__label { font: 700 14px var(--font-sans); color: var(--deep); }
 .step-card__agent {

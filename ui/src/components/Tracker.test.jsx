@@ -125,3 +125,54 @@ test('no output link on a done step with no recorded output', () => {
   const { queryByRole } = renderTracker(item)
   expect(queryByRole('link', { name: 'See agent output ↗' })).toBeNull()
 })
+
+// ---- HZ-54: queued vs running ----
+// A dispatched step the farm reports as still queued must read "Queued", not
+// "In progress…" — the exact confusion the ticket was filed against.
+
+// Steps not yet reached also render a "Queued" meta label (a different,
+// pre-existing concept — see STEP_META.pending), so these assertions scope
+// to the active step's own card rather than searching the whole document.
+function activeStepCard(getByText) {
+  return getByText('Specialist agent implements').closest('.step-card')
+}
+
+test('a dispatched-but-queued step reads "Queued", not "In progress…", with the farm-reported reason', () => {
+  const item = {
+    ...baseItem,
+    cursor: 11,
+    activeRun: {
+      id: 7,
+      step_index: 11,
+      attempt: 1,
+      started_at: new Date().toISOString(),
+      state: 'queued',
+      reason: 'waiting for a free agent slot (4/4 in use)',
+    },
+  }
+  const { getByText } = renderTracker(item)
+  const card = activeStepCard(getByText)
+  expect(card.textContent).toContain('Queued')
+  expect(card.textContent).toContain('waiting for a free agent slot (4/4 in use)')
+  expect(card.textContent).not.toContain('In progress…')
+})
+
+test('a dispatched step the farm reports as running still reads "In progress…"', () => {
+  const item = {
+    ...baseItem,
+    cursor: 11,
+    activeRun: { id: 7, step_index: 11, attempt: 1, started_at: new Date().toISOString(), state: 'running', reason: null },
+  }
+  const { getByText } = renderTracker(item)
+  const card = activeStepCard(getByText)
+  expect(card.textContent).toContain('In progress…')
+  expect(card.textContent).not.toContain('Queued')
+})
+
+test('an active step with no farm state at all (mock mode / farm silent) defaults to "In progress…" — fail soft', () => {
+  const item = { ...baseItem, cursor: 11, activeRun: { id: 7, step_index: 11, attempt: 1, started_at: new Date().toISOString() } }
+  const { getByText } = renderTracker(item)
+  const card = activeStepCard(getByText)
+  expect(card.textContent).toContain('In progress…')
+  expect(card.textContent).not.toContain('Queued')
+})

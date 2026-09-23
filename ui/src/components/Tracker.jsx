@@ -39,6 +39,10 @@ function Step({ item, index, onApprove, onApproveWithComments, onReject, onResol
   const st = STEPS[index]
   const status = stepStatus(item, index)
   const isGate = st.kind === 'gate'
+  // Dispatched but still sitting in the farm's queue, not yet claimed by an
+  // agent (HZ-54) — distinct from "In progress…", which now means the farm
+  // itself reports the step as running.
+  const queued = status === 'active' && item.activeRun?.step_index === index && item.activeRun?.state === 'queued'
   // The intake gate doubles as the human confirmation of the PM-proposed
   // specialist persona: approving with the select's value confirms it.
   const showsPersonaPicker = status === 'awaiting' && st.label === 'Approve & prioritize this work'
@@ -48,11 +52,15 @@ function Step({ item, index, onApprove, onApproveWithComments, onReject, onResol
   return (
     <div className="step">
       <div className="step__rail">
-        <div className={`step__icon step__icon--${status}`}>{STEP_GLYPHS[status]}</div>
+        <div className={`step__icon step__icon--${status}${queued ? ' step__icon--queued' : ''}`}>
+          {queued ? '⋯' : STEP_GLYPHS[status]}
+        </div>
         <div className={`step__line${status === 'done' ? ' step__line--done' : ''}`} />
       </div>
       <div className="step__body">
-        <div className={`step-card${['awaiting', 'active', 'blocked'].includes(status) ? ` step-card--${status}` : ''}`}>
+        <div
+          className={`step-card${['awaiting', 'active', 'blocked'].includes(status) ? ` step-card--${status}` : ''}${queued ? ' step-card--queued' : ''}`}
+        >
           <div className="step-card__head">
             <div className="step-card__label">{st.label}</div>
             <span className="step-card__agent" style={{ color: agent.color }}>
@@ -60,8 +68,8 @@ function Step({ item, index, onApprove, onApproveWithComments, onReject, onResol
               {agentLabel}
             </span>
           </div>
-          <div className="step-card__meta" style={{ color: STEP_META_COLOR[status] || '#8C8C8E' }}>
-            {STEP_META[status](isGate, st.gate)}
+          <div className="step-card__meta" style={{ color: queued ? '#8C8C8E' : STEP_META_COLOR[status] || '#8C8C8E' }}>
+            {queued ? 'Queued' : STEP_META[status](isGate, st.gate)}
             {status === 'active' && item.activeRun?.step_index === index && (
               <span>
                 {' · '}
@@ -69,6 +77,7 @@ function Step({ item, index, onApprove, onApproveWithComments, onReject, onResol
                   ? 'just started'
                   : `${elapsedMinutes(item.activeRun.started_at)} min`}
                 {item.activeRun.attempt > 1 && ` · attempt ${item.activeRun.attempt}`}
+                {queued && item.activeRun.reason && ` · ${item.activeRun.reason}`}
               </span>
             )}
             {status === 'done' && item.stepOutputs?.[index]?.attempt > 1 && (

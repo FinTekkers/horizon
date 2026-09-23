@@ -28,6 +28,17 @@ export function registerAgentRunner(runner) {
   agentRunner = runner
 }
 
+// The orchestrator polls the farm for {state, reason} per active run_id and
+// registers a cache lookup here (HZ-54) — a plain synchronous read, never a
+// network call, so listItems()/the SSE snapshot never await the farm. Absent
+// a real farm (mock mode) or any entry for a run, this defaults to {} below,
+// which reads as "running" — today's presentation.
+let runStateProvider = () => ({})
+
+export function registerRunStateProvider(provider) {
+  runStateProvider = provider
+}
+
 // ---- projects & repos ----
 
 export function listProjects() {
@@ -118,6 +129,15 @@ const selectActiveRun = db.prepare(
   "SELECT id, step_index, attempt, started_at FROM step_run WHERE item_id = ? AND status = 'active' ORDER BY id DESC LIMIT 1",
 )
 
+// Folds the farm's cached {state, reason} onto an active run (HZ-54). No
+// entry for this run — mock mode, an old/unreachable farm, or a poll that
+// simply hasn't landed yet — defaults to 'running', i.e. today's behavior.
+function withRunState(activeRun) {
+  if (!activeRun) return null
+  const cached = runStateProvider()[String(activeRun.id)]
+  return { ...activeRun, state: cached?.state || 'running', reason: cached?.reason || null }
+}
+
 // Where an item stands, resolved server-side so non-UI clients (the WhatsApp
 // concierge) don't need their own copy of the STEPS table.
 function currentStepOf(row) {
@@ -156,7 +176,7 @@ export function listItems() {
     rejected: !!row.rejected,
     events: selectEvents.all(row.id),
     stepOutputs: stepOutputs(row.id),
-    activeRun: selectActiveRun.get(row.id) || null,
+    activeRun: withRunState(selectActiveRun.get(row.id) || null),
   }))
 }
 

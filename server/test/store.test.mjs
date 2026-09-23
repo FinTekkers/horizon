@@ -239,6 +239,55 @@ test('activeRun in the snapshot carries the run id for the live log tail (HZ-5)'
   db.prepare('DELETE FROM step_run WHERE id = ?').run(runId)
 })
 
+// ---- queued vs running (HZ-54) ----
+// The orchestrator registers a synchronous lookup here — store.js must never
+// itself await the farm (listItems() is on the SSE broadcast path).
+
+test('activeRun defaults to state "running" with no registered run-state provider — mock mode / before orchestrator.init', () => {
+  const runId = db
+    .prepare("INSERT INTO step_run (item_id, step_index, attempt, agent) VALUES ('T-AGENT', 11, 3, 'Eng')")
+    .run().lastInsertRowid
+  const item = store.listItems().find((it) => it.id === 'T-AGENT')
+  assert.equal(item.activeRun.state, 'running')
+  assert.equal(item.activeRun.reason, null)
+  db.prepare('DELETE FROM step_run WHERE id = ?').run(runId)
+})
+
+test('activeRun reflects the registered provider\'s {state, reason} for this run id, keyed by string', () => {
+  const runId = db
+    .prepare("INSERT INTO step_run (item_id, step_index, attempt, agent) VALUES ('T-AGENT', 11, 4, 'Eng')")
+    .run().lastInsertRowid
+  store.registerRunStateProvider(() => ({
+    [String(runId)]: { state: 'queued', reason: 'waiting for a free agent slot (4/4 in use)' },
+  }))
+  const item = store.listItems().find((it) => it.id === 'T-AGENT')
+  assert.equal(item.activeRun.state, 'queued')
+  assert.equal(item.activeRun.reason, 'waiting for a free agent slot (4/4 in use)')
+  store.registerRunStateProvider(() => ({})) // reset for later tests
+  db.prepare('DELETE FROM step_run WHERE id = ?').run(runId)
+})
+
+test('activeRun falls back to "running" when the provider has no entry for this run id — fail soft', () => {
+  const runId = db
+    .prepare("INSERT INTO step_run (item_id, step_index, attempt, agent) VALUES ('T-AGENT', 11, 5, 'Eng')")
+    .run().lastInsertRowid
+  store.registerRunStateProvider(() => ({ '999999999': { state: 'queued', reason: 'someone else' } }))
+  const item = store.listItems().find((it) => it.id === 'T-AGENT')
+  assert.equal(item.activeRun.state, 'running')
+  assert.equal(item.activeRun.reason, null)
+  store.registerRunStateProvider(() => ({})) // reset for later tests
+  db.prepare('DELETE FROM step_run WHERE id = ?').run(runId)
+})
+
+test('an item with no active run at all still has activeRun: null (unaffected by the run-state provider)', () => {
+  store.registerRunStateProvider(() => {
+    throw new Error('must not be called when there is no active run to look up')
+  })
+  const item = store.listItems().find((it) => it.id === 'T-GATE')
+  assert.equal(item.activeRun, null)
+  store.registerRunStateProvider(() => ({})) // reset for later tests
+})
+
 test('parseIssueBody lifts Outcome / Success metric / Guardrails sections', () => {
   const parsed = store.parseIssueBody(
     '## Outcome\nShip the thing\n\n## Success metric\nIt works\n\n## Guardrails\nTests pass',
