@@ -93,6 +93,36 @@ the target's own script and state directory:
 infra/host/deploy-horizon.sh "$(cat ~/.horizon/horizon/last-good-tag | cut -d: -f1 | sed 's#refs/tags/##')"
 ```
 
+## Deep verification beyond the health check (HZ-22)
+
+Each deploy script's health check proves the process restarted and answered
+— it does not always prove the page a user loads actually renders (see
+`deploy-horizon.sh`'s health check, which only confirms the API is up, vs.
+`deploy-ui-service.sh`'s, which also confirms the SSR shell and its client
+bundle really serve). `e2e/smoke/check.mjs` closes that gap for any target:
+it loads a URL in a real headless browser and confirms expected content is
+actually visible, not just that a response arrived.
+
+```
+node e2e/smoke/check.mjs https://shoreward.ai/horizon/ "Horizon" [screenshot.png]
+```
+
+Exits `0` with `SMOKE_RESULT=pass` only if the text renders; `1` with
+`SMOKE_RESULT=fail: <reason>` otherwise. This is what the DevOps role
+(`farm/roles/devops.md`) is instructed to run after a deploy. It is not
+(yet) wired into the Deploy step itself (`STEPS[14]` in `lifecycle.js` stays
+off the farm-dispatch list by default, see `server/src/config.js`) — running
+it today is a manual or DevOps-agent action, not an automatic pipeline gate.
+Wiring it into an automatic post-deploy gate is a reasonable next step, but
+it needs its own design pass: today the Deploy step's real side effect
+(publishing the GitHub release) is owned by the JS orchestrator, which has
+the GitHub token the farm does not, so gating on this check would mean
+either giving the farm that capability or having the orchestrator call the
+farm after the fact and still enforce the result deterministically — not
+just trust the agent's self-reported verdict, the same way `run_checks()`
+gates the implement step on the tests' actual exit code rather than the
+agent's claim.
+
 ## Adding a new target
 
 1. Add a deploy script under `infra/host/` (copy the closest existing one —

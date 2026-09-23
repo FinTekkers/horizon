@@ -5,7 +5,7 @@
   "type": "module",
   "description": "Playwright suite driving the real Horizon server + built UI in demo mode (no GitHub, mock agents, temp DB). Run via `npm run test:e2e` at the repo root.",
   "scripts": {
-    "test": "node --test fixtures/test-base.test.mjs && playwright test && node verify-screenshots.mjs"
+    "test": "node --test fixtures/test-base.test.mjs && node --test smoke/check.test.mjs && playwright test && node verify-screenshots.mjs"
   },
   "devDependencies": {
     "@playwright/test": "^1.62.1",
