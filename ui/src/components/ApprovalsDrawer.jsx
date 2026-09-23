@@ -25,8 +25,8 @@ export default function ApprovalsDrawer({ items, onClose, onOpenItem, onApprove,
           {pending.map((item) => {
             const cur = curStep(item)
             const optional = cur.gate === 'optional'
-            const gateColor = optional ? '#5E4380' : '#9A6E00'
-            const gateBg = optional ? '#F0E8F5' : '#FAF0D6'
+            const gateColor = optional ? 'var(--agent-human-ink)' : 'var(--warning-ink)'
+            const gateBg = optional ? 'var(--agent-human-bg)' : 'var(--warning-bg)'
             return (
               <div key={item.id} className="approval" style={{ borderLeft: `4px solid ${gateColor}` }}>
                 <div className="approval__meta">

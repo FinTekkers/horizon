@@ -5,19 +5,19 @@ const COPY = {
   approve: {
     title: 'Approve with comments',
     submitLabel: 'Approve',
-    submitColor: '#0E6E74',
+    submitColor: 'var(--success)',
     placeholder: 'Decision notes — e.g. which option to adopt, or conditions for the next step…',
   },
   reject: {
     title: 'Send back with feedback',
     submitLabel: 'Send back',
-    submitColor: '#9C333E',
+    submitColor: 'var(--danger)',
     placeholder: 'What should change, or what question needs answering?',
   },
   restart: {
     title: 'Restart phase',
     submitLabel: 'Restart phase',
-    submitColor: '#DFA200',
+    submitColor: 'var(--warning)',
     placeholder: 'Why are you restarting? (optional)',
   },
 }
