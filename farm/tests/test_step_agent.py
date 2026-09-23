@@ -4,6 +4,9 @@ side needs to advance the item ("agents push tasks forward")."""
 
 import json
 import subprocess
+import threading
+import time
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import pytest
 
@@ -184,7 +187,10 @@ def test_planning_steps_do_not_get_a_persona(monkeypatch):
 
 def test_step_config_persona_flags_match_the_design():
     wants = {index: config[5] for index, config in STEP_CONFIG.items()}
-    assert wants == {4: False, 6: False, 7: False, 8: True, 11: True, 12: True}
+    # DevOps (14) is a role, not a persona (HZ-22 architecture review): it is
+    # project-scoped via farm/rules/projects/*.md, not stack-scoped, so it
+    # never gets a persona composed in — same as the other planning steps.
+    assert wants == {4: False, 6: False, 7: False, 8: True, 11: True, 12: True, 14: False}
 
 
 # ---- project rules injection (HZ-9) ----
@@ -315,6 +321,192 @@ def test_review_step_without_a_repo_auto_passes_without_calling_claude(monkeypat
     assert verdict["code_review"]["verdict"] == "pass"
     assert verdict["qa_review"]["verdict"] == "pass"
     assert "no repository attached" in result["summary"]
+
+
+# ---- deploy deep-verification (HZ-22) ----
+# The DevOps agent only PICKS the url/expected_text to check (it knows the
+# project's topology, the script doesn't) — the pass/fail gate itself is
+# decided by run_smoke_check's real exit code, never the agent's own claim.
+# The execute()-level tests below stub run_smoke_check directly to prove
+# execute() trusts THAT result, not anything the fake agent reply might also
+# say. run_smoke_check itself — the subprocess invocation, timeout, and
+# SMOKE_RESULT= parsing — is exercised for real (no monkeypatch) further
+# down, against the actual e2e/smoke/check.mjs, in
+# test_run_smoke_check_against_the_real_check_script below.
+
+
+def devops_run_claude(reply_json):
+    def _fake(prompt, **kwargs):
+        return {"result": json.dumps(reply_json)}
+
+    return _fake
+
+
+# Mirrors validateDeployVerdict in server/src/orchestrator.js exactly (down to
+# the pass/fail enum). Node's process reads execute()'s "verdict" field over
+# the wire as JSON with no shape translation in between, so a Python-side
+# assertion of equality to a literal dict is not enough on its own — a
+# previous revision shipped `"verdict": "pass"` here while the JS side
+# required `{"verdict": "pass"}`, and every test on both sides still passed
+# because each side only checked its own (different) assumed shape. Asserting
+# against this mirrored predicate, not just literal equality, is what would
+# have caught that class of bug.
+def assert_valid_deploy_verdict(v):
+    assert isinstance(v, dict) and v.get("verdict") in ("pass", "fail"), v
+
+
+def test_deploy_step_without_a_repo_passes_without_calling_claude(monkeypatch):
+    called = []
+    monkeypatch.setattr(step_agent, "run_claude", lambda *a, **k: called.append(1))
+    result = execute(make_task(14, "Deploy the changes"))
+    assert called == []
+    # Wrapped object, not a bare string — validateDeployVerdict in
+    # server/src/orchestrator.js requires typeof v === 'object' with a
+    # .verdict field. See server/test/deploy-gate.test.mjs.
+    assert result["artifacts"]["verdict"] == {"verdict": "pass"}
+    assert_valid_deploy_verdict(result["artifacts"]["verdict"])
+    assert "no repository attached" in result["summary"]
+
+
+def test_deploy_step_trusts_the_real_smoke_check_not_the_agents_own_verdict(monkeypatch):
+    monkeypatch.setattr(
+        step_agent,
+        "run_claude",
+        devops_run_claude(
+            {
+                "summary": "verified the deploy",
+                "url": "https://shoreward.ai/horizon/",
+                "expected_text": "Horizon",
+                "artifact_md": "## Deploy target\nHorizon",
+            }
+        ),
+    )
+    monkeypatch.setattr(step_agent, "run_smoke_check", lambda url, text: ("fail", "SMOKE_RESULT=fail: text never appeared"))
+
+    result = execute(make_task(14, "Deploy the changes", repo="acme/demo"))
+
+    # The script's own check said fail — that's the verdict, full stop, even
+    # though the fake agent reply above never claimed anything was broken.
+    # Wrapped object shape — see the comment on test_deploy_step_without_a_repo above.
+    assert result["artifacts"]["verdict"] == {"verdict": "fail"}
+    assert_valid_deploy_verdict(result["artifacts"]["verdict"])
+    assert "SMOKE_RESULT=fail" in result["summary"]
+    assert "SMOKE_RESULT=fail" in result["artifacts"]["artifact_md"]
+
+
+def test_deploy_step_passes_when_the_real_smoke_check_passes(monkeypatch):
+    monkeypatch.setattr(
+        step_agent,
+        "run_claude",
+        devops_run_claude(
+            {
+                "summary": "verified the deploy",
+                "url": "https://shoreward.ai/horizon/",
+                "expected_text": "Horizon",
+                "artifact_md": "## Deploy target\nHorizon",
+            }
+        ),
+    )
+    monkeypatch.setattr(
+        step_agent, "run_smoke_check", lambda url, text: ("pass", 'SMOKE_RESULT=pass — "Horizon" rendered')
+    )
+
+    result = execute(make_task(14, "Deploy the changes", repo="acme/demo"))
+    assert result["artifacts"]["verdict"] == {"verdict": "pass"}
+    assert_valid_deploy_verdict(result["artifacts"]["verdict"])
+
+
+def test_deploy_step_fails_closed_when_the_agent_omits_url_or_expected_text(monkeypatch):
+    monkeypatch.setattr(step_agent, "run_claude", devops_run_claude({"summary": "did stuff", "artifact_md": "n/a"}))
+    called = []
+    monkeypatch.setattr(step_agent, "run_smoke_check", lambda *a: called.append(1))
+
+    with pytest.raises(Exception, match="url.*expected_text"):
+        execute(make_task(14, "Deploy the changes", repo="acme/demo"))
+    assert called == []  # never reaches the real check without both fields
+
+
+# ---- run_smoke_check against the real check.mjs (HZ-22) ----
+# Every test above monkeypatches run_smoke_check itself, so none of them ever
+# exercises its actual subprocess call, timeout, or SMOKE_RESULT= parsing —
+# exactly the "trust a real exit code, not the model's self-report" mechanism
+# the whole ticket is built around. These drive the unmodified function
+# against the real e2e/smoke/check.mjs and two throwaway local HTTP servers,
+# mirroring e2e/smoke/check.test.mjs's pass/fail/unreachable cases plus a
+# timeout case that script alone can't prove.
+
+
+class _StallableHandler(BaseHTTPRequestHandler):
+    html = b"<html><body><h1>Item Board</h1></body></html>"
+    delay_s = 0
+
+    def do_GET(self):
+        if self.delay_s:
+            time.sleep(self.delay_s)
+        self.send_response(200)
+        self.send_header("Content-Type", "text/html")
+        self.end_headers()
+        self.wfile.write(self.html)
+
+    def log_message(self, *args):
+        pass  # keep test output quiet
+
+
+def serve_html(html: bytes, delay_s: float = 0):
+    # Threading, not the plain single-request-at-a-time HTTPServer: the
+    # timeout test's handler sleeps past run_smoke_check's own timeout, and a
+    # single-threaded server's shutdown() would block on that same handler —
+    # threading + daemon_threads lets the test tear down immediately instead
+    # of waiting out the full delay.
+    handler = type("Handler", (_StallableHandler,), {"html": html, "delay_s": delay_s})
+    server = ThreadingHTTPServer(("127.0.0.1", 0), handler)
+    server.daemon_threads = True
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    return server, f"http://127.0.0.1:{server.server_port}/"
+
+
+def test_run_smoke_check_passes_against_a_real_rendering_page():
+    server, url = serve_html(b"<html><body><h1>Item Board</h1><p>3 items in flight</p></body></html>")
+    try:
+        verdict, line = step_agent.run_smoke_check(url, "Item Board")
+    finally:
+        server.shutdown()
+    assert verdict == "pass"
+    assert line.startswith("SMOKE_RESULT=pass")
+
+
+def test_run_smoke_check_fails_against_a_page_missing_the_expected_text():
+    server, url = serve_html(b"<html><body><h1>Something went wrong</h1></body></html>")
+    try:
+        verdict, line = step_agent.run_smoke_check(url, "Item Board")
+    finally:
+        server.shutdown()
+    assert verdict == "fail"
+    assert line.startswith("SMOKE_RESULT=fail:")
+
+
+def test_run_smoke_check_fails_when_the_url_is_unreachable():
+    # Port 1 is reserved and nothing answers on it — same case
+    # check.test.mjs's "url never responds" test covers for check.mjs alone.
+    verdict, line = step_agent.run_smoke_check("http://127.0.0.1:1/", "Item Board")
+    assert verdict == "fail"
+    assert line.startswith("SMOKE_RESULT=fail:")
+
+
+def test_run_smoke_check_fails_when_the_subprocess_itself_times_out(monkeypatch):
+    # A page that never finishes responding — check.mjs's own NAV_TIMEOUT_MS
+    # (15s) would eventually catch this too, but shrinking
+    # SMOKE_CHECK_TIMEOUT_S proves run_smoke_check's *own* TimeoutExpired
+    # handling fires, not just that check.mjs eventually gives up.
+    monkeypatch.setattr(step_agent, "SMOKE_CHECK_TIMEOUT_S", 2)
+    server, url = serve_html(b"<html><body><h1>Item Board</h1></body></html>", delay_s=30)
+    try:
+        verdict, line = step_agent.run_smoke_check(url, "Item Board")
+    finally:
+        server.shutdown()
+    assert verdict == "fail"
+    assert "timed out" in line
 
 
 def test_review_step_composes_the_items_persona_into_both_passes(tmp_path, monkeypatch):

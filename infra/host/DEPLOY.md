@@ -93,6 +93,35 @@ the target's own script and state directory:
 infra/host/deploy-horizon.sh "$(cat ~/.horizon/horizon/last-good-tag | cut -d: -f1 | sed 's#refs/tags/##')"
 ```
 
+## Deep verification beyond the health check (HZ-22)
+
+Each deploy script's health check proves the process restarted and answered
+— it does not always prove the page a user loads actually renders (see
+`deploy-horizon.sh`'s health check, which only confirms the API is up, vs.
+`deploy-ui-service.sh`'s, which also confirms the SSR shell and its client
+bundle really serve). `e2e/smoke/check.mjs` closes that gap for any target:
+it loads a URL in a real headless browser and confirms expected content is
+actually visible, not just that a response arrived.
+
+```
+node e2e/smoke/check.mjs https://shoreward.ai/horizon/ "Horizon" [screenshot.png]
+```
+
+Exits `0` with `SMOKE_RESULT=pass` only if the text renders; `1` with
+`SMOKE_RESULT=fail: <reason>` otherwise.
+
+This is now a real pipeline gate, not just a manual tool. The Deploy step
+(`STEPS[14]` in `lifecycle.js`) is farm-dispatched by default: the JS
+orchestrator still owns publishing the GitHub release itself (it holds the
+GitHub token the farm doesn't), and only hands the step to the farm's
+DevOps agent (`farm/roles/devops.md`) afterwards, for verification. The
+agent picks the `url`/`expected_text` to check from the project rules, but
+`farm/step_agent.py` — not the agent's own self-reported verdict — is what
+actually runs `check.mjs` and reads its real exit code; that's the value
+this script sends back as the deploy verdict. A failing verdict pauses the
+item for a human rather than silently advancing (`server/src/orchestrator.js`
+`finalizeDeployStep`), the same way a failing review verdict does.
+
 ## Adding a new target
 
 1. Add a deploy script under `infra/host/` (copy the closest existing one —

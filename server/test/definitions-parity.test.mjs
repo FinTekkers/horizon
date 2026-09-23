@@ -27,6 +27,8 @@ const FIXTURES = [
   { role: 'qa', persona: 'python_backend', project: 'FinTekkers', repo: 'FinTekkers/ledger-models' },
   { role: 'eng_implement', persona: 'frontend_ui', project: 'FinTekkers', repo: null }, // planning: no repo yet
   { role: 'eng_implement', persona: 'nonsense-id', project: 'No Such Project', repo: 'acme/none' }, // all fallbacks
+  { role: 'devops', persona: null, project: 'Horizon', repo: 'FinTekkers/horizon' }, // HZ-22: direct-to-EC2 topology
+  { role: 'devops', persona: null, project: 'FinTekkers', repo: 'FinTekkers/ui-service' }, // HZ-22: LB + RDS topology
 ]
 
 function pythonEffectivePrompt({ role, persona, project, repo }) {

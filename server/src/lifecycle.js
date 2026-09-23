@@ -38,6 +38,7 @@ export const STEPS = [
 export const IMPLEMENT_STEP_INDEX = STEPS.findIndex((s) => s.label === 'Specialist agent implements')
 export const REVIEW_STEP_INDEX = STEPS.findIndex((s) => s.label === 'Automated review (code + QA)')
 export const ACCEPT_GATE_INDEX = STEPS.findIndex((s) => s.label === 'Accept the code')
+export const DEPLOY_STEP_INDEX = STEPS.findIndex((s) => s.label === 'Deploy the changes')
 
 export function isClosed(item) {
   return item.cursor >= STEPS.length
