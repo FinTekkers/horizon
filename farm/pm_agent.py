@@ -40,6 +40,22 @@ def log(msg: str) -> None:
     print(f"[{datetime.now().strftime('%H:%M:%S')}] {msg}", flush=True)
 
 
+def notify_started(run_id) -> bool:
+    """Tells the server this run's agent actually started (HZ-57) — same
+    queue-watchdog-to-execution-timer handoff the ephemeral dispatcher does
+    via farmd's own _notify_started, routed through farmd (this process only
+    talks to FARMD, never HORIZON_URL directly). Fails open: a farmd/network
+    hiccup here must not strand a legitimate task — the server's own timers
+    are the real backstop."""
+    try:
+        res = httpx.post(f"{FARMD}/internal/steps/started", json={"run_id": run_id}, timeout=15)
+        if res.status_code == 200:
+            return bool(res.json().get("active", True))
+    except Exception as exc:
+        log(f"run {run_id}: started notify failed: {exc}")
+    return True
+
+
 def session_file(project_slug: str) -> Path:
     return STATE_DIR / f"pm-session-{project_slug}.txt"
 
@@ -164,6 +180,11 @@ def main() -> None:
             task_path.unlink(missing_ok=True)
             continue
         task_path.unlink(missing_ok=True)  # claim before work: no double-processing
+        if not notify_started(task["run_id"]):
+            log(f"run {task['run_id']}: no longer active server-side — skipping")
+            if args.once:
+                return
+            continue
         process(task, project_slug)
         if args.once:
             return

@@ -151,6 +151,15 @@ try {
   // column already exists
 }
 try {
+  // HZ-57: distinct from started_at (row-insert/dispatch time, set NOT NULL
+  // by the CREATE TABLE default). NULL until the farm confirms an agent
+  // actually launched — that's when the execution timeout clock starts,
+  // separate from the queue-wait watchdog armed at dispatch.
+  db.exec('ALTER TABLE step_run ADD COLUMN agent_started_at TEXT')
+} catch {
+  // column already exists
+}
+try {
   // GitHub-sourced feedback keeps the comment id so the same comment arriving
   // twice (webhook + poll, or an edit re-surfacing it) is ingested once.
   db.exec('ALTER TABLE feedback ADD COLUMN gh_comment_id INTEGER')

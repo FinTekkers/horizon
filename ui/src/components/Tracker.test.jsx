@@ -176,3 +176,68 @@ test('an active step with no farm state at all (mock mode / farm silent) default
   expect(card.textContent).toContain('In progress…')
   expect(card.textContent).not.toContain('Queued')
 })
+
+// ---- HZ-46: version history — the artifact link doubles as the board's entry point to it ----
+
+test('a step with a single retained artifact attempt links out as "View full artifact"', () => {
+  const item = {
+    ...baseItem,
+    cursor: 12,
+    stepOutputs: { 11: { output: 'did the thing', artifact: '# plan', attempt: 1, attemptCount: 1 } },
+  }
+  const { getByRole } = renderTracker(item)
+  const link = getByRole('link', { name: 'View full artifact ↗' })
+  expect(link.getAttribute('href')).toBe('https://example.test/artifact')
+})
+
+test('a step with multiple retained artifact attempts links out labelled "attempt N of Y", not "View full artifact"', () => {
+  const item = {
+    ...baseItem,
+    cursor: 12,
+    stepOutputs: { 11: { output: 'did the thing', artifact: '# plan v2', attempt: 2, attemptCount: 2 } },
+  }
+  const { getByRole, queryByRole } = renderTracker(item)
+  const link = getByRole('link', { name: 'attempt 2 of 2 ↗' })
+  expect(link.getAttribute('href')).toBe('https://example.test/artifact')
+  expect(queryByRole('link', { name: 'View full artifact ↗' })).toBeNull()
+})
+
+test('the plain "· attempt N" badge is suppressed once the artifact link already carries the attempt count', () => {
+  const item = {
+    ...baseItem,
+    cursor: 12,
+    stepOutputs: { 11: { output: 'did the thing', artifact: '# plan v2', attempt: 2, attemptCount: 2 } },
+  }
+  const { queryByText } = renderTracker(item)
+  expect(queryByText('· attempt 2')).toBeNull()
+})
+
+test('a done step with repeated attempts but no artifact still shows the plain "· attempt N" badge', () => {
+  const item = {
+    ...baseItem,
+    cursor: 12,
+    stepOutputs: { 11: { output: 'did the thing', attempt: 2, attemptCount: 0 } },
+  }
+  const { getByText } = renderTracker(item)
+  expect(getByText('· attempt 2')).toBeTruthy()
+})
+
+// ---- HZ-25: real event colors (server-persisted hex) resolve through the theme ----
+
+test('a real event with a legacy server hex color renders the themed token, not the raw hex, under dark mode', () => {
+  document.documentElement.dataset.theme = 'dark'
+  try {
+    const item = {
+      ...baseItem,
+      events: [
+        { created_at: '2026-01-01 00:00:00', who: 'PM Agent', text: 'proposed a plan', color: '#2E6CB2', initials: 'PM' },
+      ],
+    }
+    const { container } = renderTracker(item)
+    const avatar = container.querySelector('.activity-row__avatar')
+    expect(avatar.getAttribute('style')).toContain('var(--primary)')
+    expect(avatar.getAttribute('style')).not.toContain('#2E6CB2')
+  } finally {
+    delete document.documentElement.dataset.theme
+  }
+})

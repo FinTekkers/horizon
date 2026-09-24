@@ -41,5 +41,24 @@ test('approve, approve-with-comments and send-back drive an item through consecu
 
   await expect(page.locator('.step-card--awaiting')).toContainText('Review before execution', { timeout: 10_000 })
 
+  // HZ-51: a human can name a specific earlier agent step instead of the
+  // nearest-preceding one — here, an explicit target that sits behind
+  // another gate (Approve the high-level design). Every gate between the
+  // chosen step and here must be crossed again on the way back, so picking
+  // it must re-present that gate before Review before execution reappears.
+  await page.locator('.btn-gate-reject').click()
+  await expect(page.locator('#composer-target-step')).toBeVisible()
+  await page.locator('#composer-target-step').selectOption({ label: 'Plan options & trade-offs (pros / cons)' })
+  await page.locator('.composer__input').fill('Reconsider the design options entirely.')
+  await page.locator('.composer__submit').click()
+
+  await expect(page.locator('.step-card--awaiting')).toContainText('Approve the high-level design', {
+    timeout: 10_000,
+  })
+  await page.locator('.btn-gate-approve').click()
+  await page.locator('.composer__submit').click()
+
+  await expect(page.locator('.step-card--awaiting')).toContainText('Review before execution', { timeout: 10_000 })
+
   await captureScreenshot(page, 'gates')
 })

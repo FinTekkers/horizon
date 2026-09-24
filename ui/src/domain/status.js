@@ -19,15 +19,15 @@ export function itemStatus(item, verbose = false) {
   const awaiting = awaitingGate(item)
   const cur = curStep(item)
 
-  if (closed) return { label: 'Closed', color: '#0E6E74', bg: '#E2F0F0' }
-  if (rejected) return { label: 'Changes requested', color: '#9C333E', bg: '#F6E2E4' }
-  if (paused) return { label: 'Paused', color: '#6E6A7E', bg: '#EAE6F1' }
+  if (closed) return { label: 'Closed', color: 'var(--success-ink)', bg: 'var(--success-bg)' }
+  if (rejected) return { label: 'Changes requested', color: 'var(--danger-ink)', bg: 'var(--danger-bg)' }
+  if (paused) return { label: 'Paused', color: 'var(--muted-strong)', bg: 'var(--chip)' }
   if (awaiting) {
-    return { label: verbose ? 'Awaiting your approval' : 'Awaiting you', color: '#9A6E00', bg: '#FAF0D6' }
+    return { label: verbose ? 'Awaiting your approval' : 'Awaiting you', color: 'var(--warning-ink)', bg: 'var(--warning-bg)' }
   }
   if (isQueued(item)) {
     return { label: 'Queued', color: '#8C8C8E', bg: '#EDEDEF', reason: item.activeRun.reason || undefined }
   }
   const agent = AGENTS[cur.agent]
-  return { label: verbose ? `${agent.label} working` : agent.label, color: '#2E6CB2', bg: '#EAF1F9' }
+  return { label: verbose ? `${agent.label} working` : agent.label, color: 'var(--primary-ink)', bg: 'var(--primary-bg)' }
 }

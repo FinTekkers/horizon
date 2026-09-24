@@ -37,7 +37,14 @@ test('one running and five queued dispatched steps render as one working card an
   try {
     for (const row of SIX_ROWS) {
       insertItem(db, { id: row.id, title: `E2E fixture — ${row.id} dispatched step`, priority: 'Medium', cursor: IMPLEMENT_STEP_INDEX })
-      runIds[row.id] = insertStepRun(db, { item_id: row.id, step_index: IMPLEMENT_STEP_INDEX, agent: 'Eng' })
+      runIds[row.id] = insertStepRun(db, {
+        itemId: row.id,
+        stepIndex: IMPLEMENT_STEP_INDEX,
+        attempt: 1,
+        agent: 'Eng',
+        status: 'active',
+        startedAt: '2026-01-01 00:00:00',
+      })
     }
   } finally {
     db.close()

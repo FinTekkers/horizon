@@ -2,20 +2,26 @@
 // Mirrors the domain model in ui/design-system/HANDOFF.md — a real backend can
 // keep this fixed or serve it per-item.
 
+// `color` is a theme-aware token — legible as text/dot fill against a
+// neutral surface in both themes (see the "-ink" tokens in index.css).
+// `avatarBg` is the same hue's solid form, used only for the activity-feed
+// avatar (white initials on top) — that pairing's contrast doesn't depend on
+// page theme, so it stays close to its light-mode value; only --warning gets
+// darkened for dark mode since white-on-#DFA200 needs it either way.
 export const AGENTS = {
-  PM: { label: 'PM agent', initials: 'PM', color: '#2E6CB2' },
-  QA: { label: 'QA agent', initials: 'QA', color: '#DFA200' },
-  Architect: { label: 'Architect agent', initials: 'AR', color: '#38294F' },
-  Eng: { label: 'Eng agent', initials: 'EN', color: '#0E6E74' },
-  DevOps: { label: 'DevOps agent', initials: 'DO', color: '#9C333E' },
-  Ensemble: { label: 'PM · QA · Architect', initials: 'EN', color: '#2E6CB2' },
-  Review: { label: 'Code · QA review (automated)', initials: 'RV', color: '#5E4380' },
-  Human: { label: 'Human gate', initials: 'YOU', color: '#5E4380' },
+  PM: { label: 'PM agent', initials: 'PM', color: 'var(--primary-ink)', avatarBg: 'var(--primary)' },
+  QA: { label: 'QA agent', initials: 'QA', color: 'var(--warning-ink)', avatarBg: 'var(--warning)' },
+  Architect: { label: 'Architect agent', initials: 'AR', color: 'var(--architect-ink)', avatarBg: 'var(--brand-deep)' },
+  Eng: { label: 'Eng agent', initials: 'EN', color: 'var(--success-ink)', avatarBg: 'var(--success)' },
+  DevOps: { label: 'DevOps agent', initials: 'DO', color: 'var(--danger-ink)', avatarBg: 'var(--danger)' },
+  Ensemble: { label: 'PM · QA · Architect', initials: 'EN', color: 'var(--primary-ink)', avatarBg: 'var(--primary)' },
+  Review: { label: 'Code · QA review (automated)', initials: 'RV', color: 'var(--agent-human-ink)', avatarBg: 'var(--agent-human)' },
+  Human: { label: 'Human gate', initials: 'YOU', color: 'var(--agent-human-ink)', avatarBg: 'var(--agent-human)' },
 }
 
 export const PHASES = ['Plan', 'Technical Plan', 'Execute', 'Deploy', 'Review']
-export const PHASE_ACCENT = ['#2E6CB2', '#38294F', '#0E6E74', '#9C333E', '#DFA200']
-export const PHASE_ACCENT_BG = ['#EAF1F9', '#EFEAF5', '#E2F0F0', '#F6E2E4', '#FAF0D6']
+export const PHASE_ACCENT = ['var(--primary-ink)', 'var(--architect-ink)', 'var(--success-ink)', 'var(--danger-ink)', 'var(--warning-ink)']
+export const PHASE_ACCENT_BG = ['var(--primary-bg)', 'var(--accent-bg)', 'var(--success-bg)', 'var(--danger-bg)', 'var(--warning-bg)']
 
 export const STEPS = [
   { phase: 0, kind: 'agent', agent: 'PM', label: 'Define the outcome' },
@@ -43,14 +49,14 @@ export const REVIEW_STEP_INDEX = STEPS.findIndex((s) => s.label === 'Automated r
 export const ACCEPT_GATE_INDEX = STEPS.findIndex((s) => s.label === 'Accept the code')
 
 export const PRIORITY_COLORS = {
-  Critical: '#9C333E',
-  High: '#DFA200',
-  Medium: '#2E6CB2',
-  Low: '#8C8C8E',
+  Critical: 'var(--danger-ink)',
+  High: 'var(--warning-ink)',
+  Medium: 'var(--primary-ink)',
+  Low: 'var(--muted)',
 }
 
 export function priorityColor(priority) {
-  return PRIORITY_COLORS[priority] || '#8C8C8E'
+  return PRIORITY_COLORS[priority] || 'var(--muted)'
 }
 
 // ---- derived state ----
@@ -82,4 +88,26 @@ export function stepStatus(item, i) {
 
 export function phaseStepIndexes(phase) {
   return STEPS.map((s, i) => (s.phase === phase ? i : -1)).filter((i) => i >= 0)
+}
+
+// ---- send-back-to-a-chosen-step (HZ-51) ----
+// Eligible destinations for a send-back from the gate at gateIndex: every
+// agent step strictly earlier than it, derived from STEPS so a pipeline
+// change (insertion/reorder) never needs a hardcoded index here. The server
+// re-derives and enforces the same rule independently — this is for
+// populating the picker, not the source of truth.
+export function reworkTargets(gateIndex) {
+  return STEPS.map((s, i) => ({ index: i, label: s.label })).filter(
+    ({ index }) => index < gateIndex && STEPS[index].kind === 'agent',
+  )
+}
+
+// Mirrors the server's default (no-target) destination, purely so the picker
+// can show what "default" means — the actual default routing happens
+// server-side when no target is sent.
+export function defaultReworkTarget(gateIndex) {
+  if (gateIndex === ACCEPT_GATE_INDEX) return IMPLEMENT_STEP_INDEX
+  let idx = gateIndex
+  while (idx > 0 && STEPS[idx].kind !== 'agent') idx--
+  return idx
 }

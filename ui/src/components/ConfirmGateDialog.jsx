@@ -48,7 +48,7 @@ export default function ConfirmGateDialog({ itemId, gateLabel, onConfirm, onCanc
           <button className="composer__cancel" onClick={onCancel}>
             Cancel
           </button>
-          <button className="composer__submit" style={{ background: '#0E6E74' }} onClick={onConfirm}>
+          <button className="composer__submit" style={{ background: 'var(--success)' }} onClick={onConfirm}>
             Approve
           </button>
         </div>

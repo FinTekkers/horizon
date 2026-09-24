@@ -108,9 +108,18 @@ const selectEvents = db.prepare('SELECT who, text, color, initials, created_at F
 const selectOutputs = db.prepare(
   "SELECT step_index, attempt, output, artifact FROM step_run WHERE item_id = ? AND status = 'done' ORDER BY id",
 )
+// Counts done+artifact rows only (a strict subset of the done rows above —
+// some steps mark done without ever setting an artifact), so the board can
+// show "attempt N of Y" without claiming a version exists that isn't
+// actually reachable via listStepAttempts/the artifact route (HZ-46).
+const selectAttemptCounts = db.prepare(
+  "SELECT step_index, COUNT(*) AS n FROM step_run WHERE item_id = ? AND status = 'done' AND artifact IS NOT NULL GROUP BY step_index",
+)
 
 function stepOutputs(itemId) {
   const map = {}
+  const attemptCounts = {}
+  for (const row of selectAttemptCounts.all(itemId)) attemptCounts[row.step_index] = row.n
   for (const row of selectOutputs.all(itemId)) {
     // last write wins = latest attempt; label so non-UI clients (the
     // WhatsApp concierge) can name the step without a STEPS copy
@@ -118,10 +127,35 @@ function stepOutputs(itemId) {
       output: row.output,
       attempt: row.attempt,
       artifact: row.artifact || null,
+      attemptCount: attemptCounts[row.step_index] || 0,
       label: STEPS[row.step_index]?.label ?? null,
     }
   }
   return map
+}
+
+// ---- artifact version history (HZ-46) ----
+// Every retained done+artifact attempt for a step, oldest first, each
+// labelled (where one exists) with the feedback that drove it: the newest
+// feedback row targeting this step's agent whose created_at falls between
+// the previous attempt's end and this attempt's start. A heuristic, not a
+// guarantee — feedback.target records an agent name, not a step_index, so
+// two steps run by the same agent could in rare cases cross-attribute.
+const selectDoneAttempts = db.prepare(
+  "SELECT attempt, started_at, ended_at FROM step_run WHERE item_id = ? AND step_index = ? AND status = 'done' AND artifact IS NOT NULL ORDER BY attempt ASC",
+)
+const selectDrivingFeedback = db.prepare(
+  'SELECT message FROM feedback WHERE item_id = ? AND target = ? AND created_at > ? AND created_at <= ? ORDER BY created_at DESC LIMIT 1',
+)
+
+export function listStepAttempts(itemId, stepIndex) {
+  const agent = STEPS[stepIndex]?.agent || ''
+  const rows = selectDoneAttempts.all(itemId, stepIndex)
+  return rows.map((row, i) => {
+    const since = i > 0 ? rows[i - 1].ended_at : '0000-01-01 00:00:00'
+    const feedback = agent ? (selectDrivingFeedback.get(itemId, agent, since, row.started_at)?.message ?? null) : null
+    return { attempt: row.attempt, startedAt: row.started_at, endedAt: row.ended_at, feedback }
+  })
 }
 
 // `id` rides along so the UI can tail the run's live log (HZ-5).
@@ -239,11 +273,30 @@ export function approveGate(id, stepIndex, notes, actor = 'You') {
 // Rejection is not a dead end: the item rolls back to the agent step whose
 // work was judged, the feedback is queued for that agent, and the orchestrator
 // re-runs it (attempt N+1) before returning to the gate.
-export function requestChanges(id, target, feedbackText, actor = 'You') {
+//
+// targetStepIndex lets a human pick a specific earlier agent step instead of
+// the nearest-preceding one (HZ-51). It is validated here, server-side,
+// before any side effect: only legal from a gate, and only to an agent step
+// strictly earlier than that gate — an attacker or a bug can't move an item
+// forward or onto another gate. Walking back to an earlier index still means
+// every gate between it and here is crossed again on the way forward, so no
+// checkpoint is skipped. Omitting it reproduces today's exact behavior,
+// including the Accept-gate exception.
+export function requestChanges(id, target, feedbackText, actor = 'You', targetStepIndex = null) {
   const it = getItem(id)
   if (!it) return { error: 'not_found' }
   if (inactiveProject(it)) return { error: 'project_not_active' }
   if (isClosed(it)) return { error: 'closed' }
+
+  if (targetStepIndex != null) {
+    const atGate = STEPS[it.cursor]?.kind === 'gate'
+    const validTarget =
+      Number.isInteger(targetStepIndex) &&
+      targetStepIndex >= 0 &&
+      targetStepIndex < it.cursor &&
+      STEPS[targetStepIndex]?.kind === 'agent'
+    if (!atGate || !validTarget) return { error: 'invalid_target' }
+  }
 
   agentRunner.cancel(id, 'rejected')
 
@@ -256,7 +309,9 @@ export function requestChanges(id, target, feedbackText, actor = 'You') {
       feedbackText || '',
       actor,
     )
-    if (it.cursor === ACCEPT_GATE_INDEX) {
+    if (targetStepIndex != null) {
+      reworkIdx = targetStepIndex
+    } else if (it.cursor === ACCEPT_GATE_INDEX) {
       // The automated Review step immediately precedes this gate, but
       // rejecting the code means the CODE is wrong — walking back to the
       // nearest agent step would land on Review, which would just re-judge
