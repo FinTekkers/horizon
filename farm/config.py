@@ -35,7 +35,6 @@ FARM_PROVIDER = os.environ.get("FARM_PROVIDER", "claude")
 # fake_claude's simple `-p` envelope.
 FARM_MUSE_BIN = os.environ.get("FARM_MUSE_BIN", "muse")
 
-
 # ---- WhatsApp concierge (HZ-7) ----
 # Off by default: the concierge only launches with FARM_WA_ENABLED=1 AND a
 # non-empty sender allowlist. An empty allowlist means deny-all, never

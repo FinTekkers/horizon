@@ -8,6 +8,7 @@ through agent_runner.
 """
 
 import os
+import threading
 from typing import Protocol
 
 
@@ -58,19 +59,24 @@ class _SpendTracker:
     result and Muse's JSONL events carry no cost field), so this charges a
     flat, deliberately pessimistic estimate per call rather than ever
     under-counting spend. Resets with the process — same lifetime as one
-    agent_runner invocation."""
+    agent_runner invocation. step_agent runs items concurrently in threads,
+    so charge() takes a lock around the check-then-add — otherwise two
+    concurrent metered calls could both read spent_usd before either
+    updates it, letting total spend exceed the cap."""
 
     def __init__(self) -> None:
         self.spent_usd = 0.0
+        self._lock = threading.Lock()
 
     def charge(self, estimate_usd: float, cap_usd: float) -> None:
-        if self.spent_usd + estimate_usd > cap_usd:
-            raise AgentError(
-                f"metered billing spend cap would be exceeded: "
-                f"{self.spent_usd:.2f} + {estimate_usd:.2f} > cap {cap_usd:.2f} USD "
-                "(FARM_METERED_SPEND_CAP_USD) — refusing this call"
-            )
-        self.spent_usd += estimate_usd
+        with self._lock:
+            if self.spent_usd + estimate_usd > cap_usd:
+                raise AgentError(
+                    f"metered billing spend cap would be exceeded: "
+                    f"{self.spent_usd:.2f} + {estimate_usd:.2f} > cap {cap_usd:.2f} USD "
+                    "(FARM_METERED_SPEND_CAP_USD) — refusing this call"
+                )
+            self.spent_usd += estimate_usd
 
 
 _METERED_SPEND_TRACKER = _SpendTracker()

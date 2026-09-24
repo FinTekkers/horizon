@@ -139,3 +139,36 @@ def test_metered_billing_tracker_refuses_once_cap_would_be_exceeded(monkeypatch)
     base.assert_metered_billing_authorized("fake-provider")  # 1.00 <= 1.50, ok
     with pytest.raises(AgentError, match="spend cap"):
         base.assert_metered_billing_authorized("fake-provider")  # 2.00 > 1.50, refused
+
+
+def test_spend_tracker_charge_is_thread_safe_under_concurrent_calls():
+    """step_agent runs work items concurrently (see test_workspaces.py), so
+    two threads racing to charge the same tracker must not both read
+    spent_usd before either writes it — that would let total spend exceed
+    the cap. 50 threads each charge 1.00 against a 20.00 cap: exactly 20
+    must succeed and the rest must be refused, never more than 20."""
+    import threading
+
+    from farm.providers.base import AgentError, _SpendTracker
+
+    tracker = _SpendTracker()
+    cap_usd = 20.00
+    successes = []
+    lock = threading.Lock()
+
+    def worker():
+        try:
+            tracker.charge(1.00, cap_usd)
+        except AgentError:
+            return
+        with lock:
+            successes.append(1)
+
+    threads = [threading.Thread(target=worker) for _ in range(50)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=5)
+
+    assert len(successes) == 20
+    assert tracker.spent_usd == 20.00
