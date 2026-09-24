@@ -15,10 +15,26 @@ import { getItem, addEvent, notifyChange, registerAgentRunner, recoverRejectedIt
 import { createMockPr, createDeployRelease, postIssueComment, createPrFromBranch } from './github.js'
 import { PHASES } from './lifecycle.js'
 import { getActiveProjectId, getSetting, setSetting, getToken } from './settings.js'
-import { FARM_URL, FARM_STEP_INDEXES, FARM_STEP_TIMEOUT_MS, FARM_START_TIMEOUT_MS, UI_URL } from './config.js'
+import {
+  FARM_URL,
+  FARM_STEP_INDEXES,
+  FARM_STEP_TIMEOUT_MS,
+  FARM_QUEUE_TIMEOUT_MS,
+  FARM_START_TIMEOUT_MS,
+  UI_URL,
+} from './config.js'
 import { isPersona, personaLabel, proposePersona } from './personas.js'
 
 const timers = {}
+
+// Execution budget once an agent has actually started (HZ-57): the implement
+// step legitimately runs long (real coding + tests), so its budget must
+// outlast the farm's own 40-minute step timeout. Shared by dispatch-time
+// arming, the /started callback, and restart re-arming so the three can't
+// drift apart.
+function executionBudgetFor(stepIndex) {
+  return stepIndex === IMPLEMENT_STEP_INDEX ? Math.max(FARM_STEP_TIMEOUT_MS, 50 * 60 * 1000) : FARM_STEP_TIMEOUT_MS
+}
 
 // Hard cap enforced HERE, by the orchestrator, never by an agent prompt — a
 // reviewer that keeps failing forwards the item to the human gate with the
@@ -339,11 +355,14 @@ async function dispatchToFarm(id, stepIndex, runId, attempt) {
   const step = STEPS[stepIndex]
   let item = getItem(id)
 
-  // Watchdog: if the farm never reports back, fail the run rather than hang.
-  // The implement step legitimately runs long (real coding + tests) — its
-  // watchdog must outlast the farm's own 40-minute step timeout.
-  const watchdogMs = stepIndex === IMPLEMENT_STEP_INDEX ? Math.max(FARM_STEP_TIMEOUT_MS, 50 * 60 * 1000) : FARM_STEP_TIMEOUT_MS
-  timers[id] = setTimeout(() => failFarmRun(runId, 'step timed out waiting for the farm'), watchdogMs)
+  // Queue watchdog: bounds how long a step may sit queued behind other work
+  // before the farm actually launches an agent on it. Deliberately NOT
+  // step-type-dependent (queue delay is about farm contention, not what the
+  // step does) and deliberately much shorter than the execution budget below
+  // — if the farm never calls back to confirm a launch (POST .../started),
+  // this is what catches a step that's stuck in the queue (or a farm that's
+  // down, or a lost task file) within a bounded window (HZ-57).
+  timers[id] = setTimeout(() => failFarmRun(runId, 'step was never picked up by the farm'), FARM_QUEUE_TIMEOUT_MS)
 
   // Deploy's real side effect — publishing the GitHub release that the
   // self-deploy webhook picks up — needs the GitHub token, which only this
@@ -432,6 +451,28 @@ async function dispatchToFarm(id, stepIndex, runId, attempt) {
   }).catch((err) => {
     failFarmRun(runId, `could not hand the step to the farm: ${err.message}`)
   })
+}
+
+// Called from POST /api/farm/steps/:runId/started, pushed by farmd the
+// moment it actually claims a queued task (ephemeral dispatch or the PM
+// queue) — see farm/farmd.py's _notify_started. Flips the watchdog from the
+// queue-wait timer to the real execution budget, timed from now rather than
+// from dispatch. A cancelled/completed/stale run reports back `active:
+// false` so the farm knows NOT to launch it (HZ-57) — runStillActive's same
+// status check, reused here, is what keeps a cancelled run cancelled.
+//
+// Idempotent: a duplicate started POST (farmd retrying after a lost reply)
+// must not reset an already-running execution timer back to full duration.
+export function markFarmRunStarted(runId) {
+  const run = db.prepare('SELECT * FROM step_run WHERE id = ?').get(runId)
+  if (!run || run.status !== 'active') return { ok: true, active: false }
+  if (run.agent_started_at) return { ok: true, active: true }
+
+  clearTimeout(timers[run.item_id])
+  db.prepare("UPDATE step_run SET agent_started_at = datetime('now') WHERE id = ?").run(runId)
+  const executionMs = executionBudgetFor(run.step_index)
+  timers[run.item_id] = setTimeout(() => failFarmRun(runId, 'step timed out'), executionMs)
+  return { ok: true, active: true }
 }
 
 const FARM_PATCH_FIELDS = ['desc', 'metric', 'guardrails', 'persona']
@@ -733,6 +774,13 @@ export function failFarmRun(runId, error) {
     color: '#9C333E',
     initials: 'HZ',
   })
+  // Tell the farm too (same call cancel() makes): a step failed here by
+  // either watchdog firing (queue or execution) may still be sitting queued
+  // or running on the farm side. Without this, farmd can claim and launch a
+  // task file whose run the server has already given up on (HZ-57) — the
+  // /started callback double-checks this too, but a run failed before it
+  // ever reaches that checkpoint needs the task file removed directly.
+  if (FARM_URL) farmFetch('/steps/cancel', { run_id: runId }).catch(() => {})
   notifyChange()
   return { ok: true }
 }
@@ -861,11 +909,33 @@ export function init(log) {
   }
 }
 
-function rearmFarmRuns() {
-  const active = db.prepare("SELECT id, item_id, step_index FROM step_run WHERE status = 'active'").all()
+// Exported for tests: server-restart re-arming is the other half of HZ-57's
+// fix (dispatch-time bookkeeping is easy to get right once; surviving a
+// redeploy without resetting or dropping the ceiling is the part that's easy
+// to get subtly wrong — see the two cases commented inline below).
+export function rearmFarmRuns() {
+  const active = db
+    .prepare("SELECT id, item_id, step_index, agent_started_at, started_at FROM step_run WHERE status = 'active'")
+    .all()
   for (const run of active) {
-    const watchdogMs = run.step_index === IMPLEMENT_STEP_INDEX ? Math.max(FARM_STEP_TIMEOUT_MS, 50 * 60 * 1000) : FARM_STEP_TIMEOUT_MS
-    timers[run.item_id] = setTimeout(() => failFarmRun(run.id, 'step timed out waiting for the farm'), watchdogMs)
+    // agent_started_at set: the execution clock was already running — arm
+    // the REMAINING budget, not a fresh grant. A server restart (redeploy
+    // restarts horizon-server directly) must not reset a long implement
+    // step's ceiling back to full duration every time it happens (HZ-57).
+    //
+    // agent_started_at NULL: either genuinely still queued, or an active row
+    // from before this column existed — a step already executing when this
+    // fix deploys never gets a (now unreachable) late /started call, so it
+    // would look indistinguishable from "never picked up". Fall back to
+    // started_at (dispatch time) with the full execution budget rather than
+    // the shorter queue budget: the pre-migration case must not be killed
+    // right after the very deploy meant to stop premature cancellation. The
+    // cost is a genuinely-still-queued step gets a more generous — but still
+    // bounded — window than usual on a restart.
+    const anchor = run.agent_started_at || run.started_at
+    const elapsedMs = Date.now() - new Date(anchor).getTime()
+    const remainingMs = Math.max(0, executionBudgetFor(run.step_index) - elapsedMs)
+    timers[run.item_id] = setTimeout(() => failFarmRun(run.id, 'step timed out'), remainingMs)
   }
   return active.length
 }

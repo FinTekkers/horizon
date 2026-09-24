@@ -1089,6 +1089,25 @@ export function buildApp({ logger = true } = {}) {
     return snapshot()
   })
 
+  // Pushed by farmd the instant it claims a queued task (ephemeral dispatch
+  // or the PM queue) — flips the run's watchdog from the queue-wait timer to
+  // the real execution budget, timed from now instead of from dispatch
+  // (HZ-57: queue time was burning the whole deadline before a step ever
+  // ran). `active: false` in the reply tells farmd NOT to launch the task —
+  // the run was already cancelled server-side.
+  fastify.post(
+    '/api/farm/steps/:runId/started',
+    {
+      schema: {
+        params: { type: 'object', required: ['runId'], properties: { runId: { type: 'integer' } } },
+      },
+    },
+    (request, reply) => {
+      if (!farmAuthorized(request, reply)) return
+      return orchestrator.markFarmRunStarted(request.params.runId)
+    },
+  )
+
   fastify.post(
     '/api/farm/steps/:runId/complete',
     {

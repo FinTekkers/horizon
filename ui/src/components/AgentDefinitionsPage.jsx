@@ -175,7 +175,7 @@ export default function AgentDefinitionsPage({ onBack }) {
                 </button>
                 <button
                   className="composer__submit"
-                  style={{ background: '#2E6CB2' }}
+                  style={{ background: 'var(--primary)' }}
                   onClick={save}
                   disabled={busy || !dirty}
                 >

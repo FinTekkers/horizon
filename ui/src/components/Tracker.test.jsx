@@ -170,3 +170,23 @@ test('a done step with repeated attempts but no artifact still shows the plain "
   const { getByText } = renderTracker(item)
   expect(getByText('· attempt 2')).toBeTruthy()
 })
+
+// ---- HZ-25: real event colors (server-persisted hex) resolve through the theme ----
+
+test('a real event with a legacy server hex color renders the themed token, not the raw hex, under dark mode', () => {
+  document.documentElement.dataset.theme = 'dark'
+  try {
+    const item = {
+      ...baseItem,
+      events: [
+        { created_at: '2026-01-01 00:00:00', who: 'PM Agent', text: 'proposed a plan', color: '#2E6CB2', initials: 'PM' },
+      ],
+    }
+    const { container } = renderTracker(item)
+    const avatar = container.querySelector('.activity-row__avatar')
+    expect(avatar.getAttribute('style')).toContain('var(--primary)')
+    expect(avatar.getAttribute('style')).not.toContain('#2E6CB2')
+  } finally {
+    delete document.documentElement.dataset.theme
+  }
+})

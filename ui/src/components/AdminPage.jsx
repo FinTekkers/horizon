@@ -34,7 +34,7 @@ function SecurityPanel() {
 
       {pin && (
         <div className="admin-status">
-          <span className="admin-status__dot" style={{ background: '#0E6E74' }} />
+          <span className="admin-status__dot" style={{ background: 'var(--success)' }} />
           Your new PIN: <strong style={{ fontFamily: 'var(--font-mono)', marginLeft: 4 }}>{pin}</strong> — shown
           once, saved in this browser.
         </div>
@@ -43,7 +43,7 @@ function SecurityPanel() {
       {error && <div className="gh-error">{error}</div>}
 
       <div className="composer__actions">
-        <button className="composer__submit" style={{ background: '#0E6E74' }} onClick={submit} disabled={busy}>
+        <button className="composer__submit" style={{ background: 'var(--success)' }} onClick={submit} disabled={busy}>
           {busy ? 'Generating…' : 'Regenerate my PIN'}
         </button>
       </div>
@@ -87,7 +87,7 @@ function TokenPanel({ sync }) {
       </div>
 
       <div className="admin-status">
-        <span className="admin-status__dot" style={{ background: sync?.tokenConfigured ? '#0E6E74' : '#B9B4C4' }} />
+        <span className="admin-status__dot" style={{ background: sync?.tokenConfigured ? 'var(--success)' : 'var(--neutral-badge)' }} />
         {sync?.tokenConfigured ? 'Token configured' : 'No token yet'}
       </div>
 
@@ -162,7 +162,7 @@ function TokenPanel({ sync }) {
       </div>
 
       <div className="composer__actions">
-        <button className="composer__submit" style={{ background: '#2E6CB2' }} onClick={submit} disabled={busy}>
+        <button className="composer__submit" style={{ background: 'var(--primary)' }} onClick={submit} disabled={busy}>
           {busy ? 'Validating…' : 'Save token'}
         </button>
       </div>
@@ -170,7 +170,7 @@ function TokenPanel({ sync }) {
   )
 }
 
-const RESULT_COLOR = { ok: '#0E6E74', failed: '#9C333E', never: '#B9B4C4' }
+const RESULT_COLOR = { ok: 'var(--success)', failed: 'var(--danger)', never: 'var(--neutral-badge)' }
 
 function DeployTargetRow({ target }) {
   const lastAt = target.lastAt ? new Date(target.lastAt).toLocaleString() : 'never deployed'
@@ -234,7 +234,7 @@ function RepoRow({ projectId, repoConn, syncRepos }) {
     <div className="repo-row">
       <span
         className="admin-status__dot"
-        style={{ background: failing ? '#9C333E' : state?.last ? '#0E6E74' : '#B9B4C4' }}
+        style={{ background: failing ? 'var(--danger)' : state?.last ? 'var(--success)' : 'var(--neutral-badge)' }}
       />
       <a className="repo-row__name" href={`https://github.com/${repoConn.repo}`} target="_blank" rel="noopener noreferrer">
         {repoConn.repo}
@@ -339,7 +339,7 @@ function ProjectsPanel({ projects, sync }) {
           onChange={(e) => setName(e.target.value)}
           onKeyDown={(e) => e.key === 'Enter' && submit()}
         />
-        <button className="composer__submit" style={{ background: '#2E6CB2' }} onClick={submit} disabled={busy}>
+        <button className="composer__submit" style={{ background: 'var(--primary)' }} onClick={submit} disabled={busy}>
           {busy ? 'Creating…' : 'Create project'}
         </button>
       </div>
