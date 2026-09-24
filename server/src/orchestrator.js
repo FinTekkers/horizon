@@ -10,8 +10,16 @@
 // step_run/event bookkeeping and gate semantics stay exactly as they are.
 
 import { db } from './db.js'
-import { STEPS, AGENTS, isClosed, isAbandoned, IMPLEMENT_STEP_INDEX, REVIEW_STEP_INDEX, DEPLOY_STEP_INDEX } from './lifecycle.js'
-import { getItem, addEvent, notifyChange, registerAgentRunner, registerRunStateProvider, recoverRejectedItems } from './store.js'
+import { STEPS, AGENTS, isClosed, isAbandoned, isBlocked, IMPLEMENT_STEP_INDEX, REVIEW_STEP_INDEX, DEPLOY_STEP_INDEX } from './lifecycle.js'
+import {
+  getItem,
+  addEvent,
+  notifyChange,
+  registerAgentRunner,
+  registerRunStateProvider,
+  recoverRejectedItems,
+  blockersOf,
+} from './store.js'
 import { createMockPr, createDeployRelease, postIssueComment, createPrFromBranch } from './github.js'
 import { PHASES } from './lifecycle.js'
 import { getActiveProjectId, getSetting, setSetting, getToken } from './settings.js'
@@ -367,7 +375,8 @@ function runnable(item) {
     !isAbandoned(item) &&
     !item.paused &&
     !item.rejected &&
-    STEPS[item.cursor].kind === 'agent'
+    STEPS[item.cursor].kind === 'agent' &&
+    !isBlocked(blockersOf(item.id))
   )
 }
 

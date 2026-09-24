@@ -53,3 +53,18 @@ export function isAbandoned(item) {
 export function curStep(item) {
   return isClosed(item) ? null : STEPS[item.cursor]
 }
+
+// Dependencies (HZ-78). `blockers` is the array of work_item rows this item
+// depends on (already fetched by the caller — this stays a pure function
+// over rows, same as isClosed/isAbandoned above). A dependency is satisfied
+// only by the blocker CLOSING — paused, mid-flight, rejected, or abandoned
+// all still count as blocking. Abandoned blockers do not unblock silently:
+// isBlockedByAbandoned lets the caller surface that case distinctly instead
+// of letting it read as an ordinary in-progress blocker.
+export function isBlocked(blockers) {
+  return blockers.some((b) => !isClosed(b))
+}
+
+export function isBlockedByAbandoned(blockers) {
+  return blockers.some((b) => isAbandoned(b))
+}
