@@ -159,7 +159,7 @@ export default function NewItemModal({ activeProject, onClose, onCreated }) {
           <button className="composer__cancel" onClick={onClose}>
             Cancel
           </button>
-          <button className="composer__submit" style={{ background: '#2E6CB2' }} onClick={submit} disabled={busy}>
+          <button className="composer__submit" style={{ background: 'var(--primary)' }} onClick={submit} disabled={busy}>
             {busy ? 'Creating…' : 'Create work item'}
           </button>
         </div>

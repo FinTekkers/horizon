@@ -56,7 +56,11 @@ sessions; queued work survives on disk.
 | `FARM_CHECK_TIMEOUT_S` | 600 | guardrail check timeout |
 
 Node side: `FARM_URL`, `FARM_SHARED_SECRET`, `FARM_STEP_INDEXES` (default
-`0,1,2`), `FARM_STEP_TIMEOUT_MS` (watchdog, default 20 min).
+`0,1,2`). Two independent watchdogs (HZ-57): `FARM_QUEUE_TIMEOUT_MS` (default
+10 min) bounds how long a step may sit queued before the farm claims it;
+`FARM_STEP_TIMEOUT_MS` (default 20 min, floored at 50 min for the implement
+step) only starts once farmd confirms a launch via `POST
+.../steps/:runId/started`.
 
 ## WhatsApp concierge (HZ-7, item creation & gate approval in HZ-15)
 

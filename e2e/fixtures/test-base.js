@@ -20,11 +20,14 @@ export const test = base.extend({
 
 export { expect }
 
-// One named screenshot per journey (HZ-18), committed to the PR so a
-// reviewer sees the resulting UI without checking out the branch. The path
-// is relative to `playwright test`'s cwd, which is `e2e/` (see
-// e2e/package.json's "test" script) — NOT the repo root, so it must NOT be
-// prefixed with `e2e/` or it lands in a wrongly-nested `e2e/e2e/__screenshots__`.
+// One named screenshot per journey (HZ-18). These are gitignored (HZ-63) —
+// the farm publishes them to a per-item git ref after the e2e run, and the
+// server renders them (plus a diff against the last approved baseline) into
+// the PR body, so a reviewer sees the resulting UI without checking out the
+// branch or the files ever being committed. The path is relative to
+// `playwright test`'s cwd, which is `e2e/` (see e2e/package.json's "test"
+// script) — NOT the repo root, so it must NOT be prefixed with `e2e/` or it
+// lands in a wrongly-nested `e2e/e2e/__screenshots__`.
 // Mirrors farm/checks.py's `_playwright_chromium_installed()` skip style: a
 // capture failure (missing browser, closed page, full disk) only warns, it
 // never fails the test or blocks a push.

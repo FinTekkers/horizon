@@ -187,15 +187,17 @@ function runAgents(id) {
 
 // ---- actions ----
 
-export function approveGate(id, notes) {
+export async function approveGate(id, notes) {
   const it = items.find((x) => x.id === id)
-  if (!it || isClosed(it) || STEPS[it.cursor].kind !== 'gate') return
+  if (!it || isClosed(it) || STEPS[it.cursor].kind !== 'gate') return { ok: false }
   const label = STEPS[it.cursor].label.toLowerCase()
   update(id, (x) => ({ ...x, cursor: x.cursor + 1, rejected: false }))
   if (notes) {
     pushEvent(id, { who: 'You', text: `approved: ${label} — ${notes}`, color: '#5E4380', initials: '✓' })
   }
   runAgents(id)
+  const updated = items.find((x) => x.id === id)
+  return { ok: true, closed: isClosed(updated) }
 }
 
 // Mirrors the server's rework loop: rejection rolls back to the responsible

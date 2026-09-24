@@ -9,6 +9,7 @@ item's branch in the workspace; the *script* owns git (branch, commit, push)
 
 import argparse
 import json
+import os
 import subprocess
 import sys
 from datetime import datetime
@@ -68,13 +69,19 @@ STEP_CONFIG = {
 # size, not a claim that larger diffs can't happen.
 REVIEW_DIFF_CHARS = 20000
 
+# Subject-line marker for a salvage commit (HZ-31) — written by
+# _salvage_checkpoint() and detected by _checkpoint_resume_note() so the next
+# attempt's prompt can name it instead of silently continuing from it.
+CHECKPOINT_MARKER = "WIP checkpoint — attempt exhausted"
+
 
 def log(msg: str) -> None:
     print(f"[{datetime.now().strftime('%H:%M:%S')}] {msg}", flush=True)
 
 
-def git(ws: Path, *args: str, check: bool = True) -> subprocess.CompletedProcess:
-    result = subprocess.run(["git", "-C", str(ws), *args], capture_output=True, text=True, timeout=300)
+def git(ws: Path, *args: str, check: bool = True, env: dict | None = None) -> subprocess.CompletedProcess:
+    run_env = {**os.environ, **env} if env else None
+    result = subprocess.run(["git", "-C", str(ws), *args], capture_output=True, text=True, timeout=300, env=run_env)
     if check and result.returncode != 0:
         raise RuntimeError(f"git {' '.join(args)} failed: {result.stderr.strip()[:200]}")
     return result
@@ -113,6 +120,42 @@ def build_prompt(task: dict) -> str:
     return "\n".join(lines)
 
 
+# ---- screenshot publishing (HZ-63) ----
+# e2e/__screenshots__/*.png are gitignored, not committed — two branches that
+# both touch the same journey no longer collide on a binary file. Instead
+# they're force-pushed as an orphan commit to a per-item ref that
+# server/src/github.js reads via the same contents-API path it already used
+# for the PR-branch screenshots (naming here — "e2e-artifacts/<item-id>" —
+# must match artifactsRef() there). Best-effort: a publish failure never fails
+# the implement step, mirroring captureScreenshot's own warn-and-continue
+# philosophy in e2e/fixtures/test-base.js.
+
+
+def publish_screenshots(ws: Path, item: dict, log=log) -> None:
+    shots_dir = ws / "e2e" / "__screenshots__"
+    pngs = sorted(shots_dir.glob("*.png")) if shots_dir.is_dir() else []
+    if not pngs:
+        log("publish_screenshots: no screenshots to publish — skipped")
+        return
+    index_file = ws / ".git" / "horizon-artifacts-index"
+    env = {"GIT_INDEX_FILE": str(index_file)}
+    try:
+        index_file.unlink(missing_ok=True)
+        for png in pngs:
+            sha = git(ws, "hash-object", "-w", str(png), env=env).stdout.strip()
+            git(ws, "update-index", "--add", "--cacheinfo", f"100644,{sha},e2e/__screenshots__/{png.name}", env=env)
+        tree = git(ws, "write-tree", env=env).stdout.strip()
+        commit = git(ws, "commit-tree", tree, "-m", f"{item['id']}: e2e screenshots").stdout.strip()
+        ref = f"e2e-artifacts/{item['id'].lower()}"
+        with hub_lock(item["repo"]):
+            git(ws, "push", "origin", "--force", f"{commit}:refs/heads/{ref}")
+        log(f"publish_screenshots: pushed {len(pngs)} screenshot(s) to {ref}")
+    except Exception as exc:  # best-effort — never blocks the implement step
+        log(f"publish_screenshots: skipped after a failure — {exc}")
+    finally:
+        index_file.unlink(missing_ok=True)
+
+
 def prepare_branch(ws: Path, item: dict) -> str:
     branch = f"horizon/{item['id'].lower()}"
     # A superseded/killed attempt leaves uncommitted edits behind; every new
@@ -133,6 +176,25 @@ def prepare_branch(ws: Path, item: dict) -> str:
     return branch
 
 
+def _checkpoint_resume_note(ws: Path) -> str | None:
+    """If HEAD is a salvage checkpoint left by a prior exhausted attempt
+    (prepare_branch() already based this branch off origin/<branch>, so a
+    pushed checkpoint is HEAD by construction), returns prompt text pointing
+    the next attempt at it. Returns None for a normal, non-checkpoint HEAD."""
+    subject = git(ws, "log", "-1", "--format=%s", check=False).stdout.strip()
+    if CHECKPOINT_MARKER not in subject:
+        return None
+    head = git(ws, "symbolic-ref", "refs/remotes/origin/HEAD", check=False).stdout.strip()
+    default = head.rsplit("/", 1)[-1] if head else "main"
+    stat = git(ws, "diff", "--stat", f"origin/{default}...HEAD", check=False).stdout.strip()
+    return (
+        "\n\nNOTE: this branch already has a WIP checkpoint commit from a prior "
+        f'attempt that ran out of turns/time ("{subject}"). Continue that work — '
+        "read the diff below and pick up where it left off. Do not discard it or "
+        f"restart from scratch.\n\n```\n{stat}\n```"
+    )
+
+
 def finalize_branch(ws: Path, item: dict, branch: str) -> dict:
     git(ws, "add", "-A")
     staged = git(ws, "diff", "--cached", "--quiet", check=False)
@@ -151,6 +213,35 @@ def finalize_branch(ws: Path, item: dict, branch: str) -> dict:
         git(ws, "push", "--force-with-lease", "-u", "origin", branch)
     stat = git(ws, "diff", "--stat", f"origin/{default}...HEAD", check=False).stdout.strip().splitlines()
     return {"branch": branch, "files_changed": stat[-1] if stat else ""}
+
+
+# ---- checkpoint salvage on turn/time exhaustion (HZ-31) ----
+# run_claude raises ClaudeError when the implement step hits its max-turns or
+# timeout cap (farm/claude_runner.py). Left alone, that exception propagates
+# straight to main()'s catch-all and the workspace's uncommitted edits are
+# destroyed by the *next* attempt's prepare_branch() (reset --hard + clean
+# -fd) — a Sisyphus loop that can never converge on a job bigger than one
+# budget. Salvage checkpoints whatever was on disk so the next attempt
+# continues instead of restarting from zero.
+
+
+def _salvage_checkpoint(ws: Path, item: dict, branch: str) -> None:
+    """Best-effort: never raises. A salvage failure (e.g. a concurrent push
+    winning the --force-with-lease race) just means this attempt's partial
+    work is lost — the caller's original exception is what must still
+    propagate and fail the run, unchanged from pre-HZ-31 behavior."""
+    try:
+        git(ws, "add", "-A")
+        staged = git(ws, "diff", "--cached", "--quiet", check=False)
+        if staged.returncode == 0:
+            log("salvage: no uncommitted changes to checkpoint")
+            return
+        git(ws, "commit", "-m", f"{item['id']}: {CHECKPOINT_MARKER} (Horizon Eng agent)")
+        with hub_lock(item["repo"]):
+            git(ws, "push", "--force-with-lease", "-u", "origin", branch)
+        log(f"salvage: pushed WIP checkpoint to {branch}")
+    except Exception as exc:
+        log(f"salvage: failed to checkpoint ({exc}) — work is lost, next attempt starts clean")
 
 
 # ---- automated review verdict shaping (HZ-30) ----
@@ -295,14 +386,26 @@ def execute(task: dict) -> dict:
             return {"summary": "no repository attached — implementation skipped (demo item)"}
         branch = prepare_branch(ws, item)
         log(f"workspace {ws} on branch {branch}")
-        reply = run_claude(
-            build_prompt(task),
-            append_system=role,
-            cwd=str(ws),
-            max_turns=max_turns,
-            timeout_s=timeout_s,
-            allowed_tools=tools,
-        )
+        resume_note = _checkpoint_resume_note(ws)
+        if resume_note:
+            log("resuming a prior attempt's WIP checkpoint")
+        try:
+            reply = run_claude(
+                build_prompt(task) + (resume_note or ""),
+                append_system=role,
+                cwd=str(ws),
+                max_turns=max_turns,
+                timeout_s=timeout_s,
+                allowed_tools=tools,
+            )
+        except Exception:
+            # SALVAGE (HZ-31): the run hit its turn/time cap (or any other
+            # run_claude failure) — checkpoint whatever's on disk instead of
+            # letting the next attempt's prepare_branch scrub it away. Still
+            # re-raises unchanged: a failed attempt still fails and pauses,
+            # no checks run, no PR opens, nothing advances.
+            _salvage_checkpoint(ws, item, branch)
+            raise
         # The summary is reporting, not the deliverable — the code in the
         # workspace is. Never torch a completed implement run over a
         # malformed final message; fall back and let checks judge the work.
@@ -314,6 +417,7 @@ def execute(task: dict) -> dict:
         # script, before anything is committed or pushed. A failure fails the
         # run (Node pauses the item with the reason) — no green, no push.
         check_note = run_checks(ws, log)
+        publish_screenshots(ws, item)
         artifacts = finalize_branch(ws, item, branch)
         return {"summary": f"{summary} · {check_note}"[:600], "artifacts": artifacts}
 

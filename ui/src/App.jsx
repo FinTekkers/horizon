@@ -89,6 +89,12 @@ function AuthenticatedApp({ user, onLogout }) {
     setView('board')
     setApprovalsOpen(false)
   }
+  // Approving a gate only navigates away when it closed the item — earlier
+  // gates leave the user in place since the next agent step starts immediately.
+  const approveAndMaybeClose = async (itemId, notes) => {
+    const result = await api.approveGate(itemId, notes)
+    if (result?.closed) toBoard()
+  }
   const toTracker = () => {
     if (selected) navigate(`/${selected.id.toLowerCase()}`)
     setView('tracker')
@@ -135,7 +141,11 @@ function AuthenticatedApp({ user, onLogout }) {
   const submitComposer = (text, targetStepIndex) => {
     const { mode, itemId, phase, target } = composer
     if (itemId) {
-      if (mode === 'approve') api.approveGate(itemId, text)
+      // Both sides changed this line for unrelated reasons: main routes approve
+      // through approveAndMaybeClose (HZ-62, return to the board once the
+      // closing gate is approved) and this branch adds the chosen send-back
+      // step to reject (HZ-51). They compose.
+      if (mode === 'approve') approveAndMaybeClose(itemId, text)
       else if (mode === 'reject') api.requestChanges(itemId, target, text, targetStepIndex ?? null)
       else if (mode === 'restart') api.restartPhase(itemId, phase, text)
     }
@@ -231,7 +241,7 @@ function AuthenticatedApp({ user, onLogout }) {
           itemId={confirmApprove.itemId}
           gateLabel={confirmApprove.gateLabel}
           onConfirm={() => {
-            api.approveGate(confirmApprove.itemId)
+            approveAndMaybeClose(confirmApprove.itemId)
             setConfirmApprove(null)
           }}
           onCancel={() => setConfirmApprove(null)}
@@ -257,7 +267,7 @@ function AuthenticatedApp({ user, onLogout }) {
               </button>
               <button
                 className="composer__submit"
-                style={{ background: '#2E6CB2' }}
+                style={{ background: 'var(--primary)' }}
                 onClick={() => {
                   api.activateProject(switchTarget.id).catch((err) => console.error(err))
                   setSwitchTarget(null)

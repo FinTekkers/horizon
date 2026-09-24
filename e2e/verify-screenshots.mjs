@@ -25,6 +25,7 @@ const EXPECTED_JOURNEYS = [
   'merge-conflict',
   'full-lifecycle',
   'gate-key',
+  'artifact-history',
   'login-error',
 ]
 

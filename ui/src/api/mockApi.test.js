@@ -1,12 +1,19 @@
-// Parity tests for mockApi's requestChanges against the server's
-// store.js requestChanges (HZ-51): explicit-target routing, the Accept-gate
-// exception, and server-side-style validation must not diverge, or mock mode
-// stops being a faithful stand-in for the real backend.
+// Tests for mockApi, covering two independent concerns that landed together:
+//
+//   HZ-51 — parity between mockApi's requestChanges and the server's
+//   store.js requestChanges: explicit-target routing, the Accept-gate
+//   exception, and server-side-style validation must not diverge, or mock
+//   mode stops being a faithful stand-in for the real backend.
+//
+//   HZ-62 — mock mode's approveGate must report the same { ok, closed }
+//   shape the server does, so App.jsx's post-approval navigation behaves
+//   identically whether VITE_MOCK is on or off.
 //
 // Each test claims one seeded fixture item and never revisits it, since
 // `items` is module-level state shared across tests in this file.
 
-import { expect, test } from 'vitest'
+import { expect, test, vi, afterEach } from 'vitest'
+import * as mockApi from './mockApi'
 import { requestChanges, getItems } from './mockApi'
 import { STEPS, ACCEPT_GATE_INDEX, IMPLEMENT_STEP_INDEX } from '../domain/lifecycle'
 
@@ -59,4 +66,35 @@ test('invalid target: supplied while the item is mid agent-step (not parked at a
   expect(STEPS[before.cursor].kind).toBe('agent')
   requestChanges('BF-119', 'x', 'y', 0)
   expect(findItem('BF-119').cursor).toBe(before.cursor)
+})
+
+afterEach(() => {
+  vi.useRealTimers()
+})
+
+test('approving an intermediate gate reports closed: false', async () => {
+  vi.useFakeTimers()
+  // BF-131 seeds at cursor 5 — "Approve the high-level design", not the last gate.
+  const before = mockApi.getItems().find((it) => it.id === 'BF-131')
+  expect(STEPS[before.cursor].label).toBe('Approve the high-level design')
+
+  const result = await mockApi.approveGate('BF-131', '')
+
+  expect(result).toEqual({ ok: true, closed: false })
+  expect(mockApi.getItems().find((it) => it.id === 'BF-131').cursor).toBe(before.cursor + 1)
+  vi.clearAllTimers()
+})
+
+test('approving the closing gate reports closed: true', async () => {
+  vi.useFakeTimers()
+  // BF-090 seeds at cursor 15 — "Review the work & close", the last gate.
+  const before = mockApi.getItems().find((it) => it.id === 'BF-090')
+  expect(before.cursor).toBe(STEPS.length - 1)
+  expect(STEPS[before.cursor].label).toBe('Review the work & close')
+
+  const result = await mockApi.approveGate('BF-090', '')
+
+  expect(result).toEqual({ ok: true, closed: true })
+  expect(mockApi.getItems().find((it) => it.id === 'BF-090').cursor).toBe(STEPS.length)
+  vi.clearAllTimers()
 })

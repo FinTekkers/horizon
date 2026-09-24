@@ -11,8 +11,9 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import pytest
 
 from farm import step_agent
+from farm.claude_runner import ClaudeError
 from farm.personas import PERSONA_DIR, PERSONAS
-from farm.step_agent import STEP_CONFIG, build_prompt, execute
+from farm.step_agent import STEP_CONFIG, build_prompt, execute, publish_screenshots
 
 
 def make_task(step_index, label, repo=None, feedback=None, artifacts=None):
@@ -126,6 +127,112 @@ def test_implement_step_fails_when_checks_fail(tmp_path, monkeypatch):
         ["git", "--git-dir", str(origin), "branch", "--list"], capture_output=True, text=True, check=True
     ).stdout
     assert "horizon/t-1" not in branches
+
+
+# ---- screenshot publishing (HZ-63) ----
+# Screenshots are gitignored now (no more committed PNGs), published instead
+# to a per-item git ref so two branches touching the same journey never
+# conflict on a binary file.
+
+
+def write_fake_screenshot(ws, name):
+    shots = ws / "e2e" / "__screenshots__"
+    shots.mkdir(parents=True, exist_ok=True)
+    (shots / f"{name}.png").write_bytes(b"\x89PNG\r\n\x1a\n" + name.encode())
+
+
+def origin_refs(origin):
+    return subprocess.run(
+        ["git", "--git-dir", str(origin), "for-each-ref", "--format=%(refname)"], capture_output=True, text=True, check=True
+    ).stdout
+
+
+def test_publish_screenshots_pushes_an_orphan_commit_to_a_per_item_ref(tmp_path):
+    ws, origin = make_git_workspace(tmp_path)
+    write_fake_screenshot(ws, "board")
+    write_fake_screenshot(ws, "gates")
+
+    publish_screenshots(ws, {"id": "T-1", "repo": "acme/demo"})
+
+    refs = origin_refs(origin)
+    assert "refs/heads/e2e-artifacts/t-1" in refs
+    shown = subprocess.run(
+        ["git", "--git-dir", str(origin), "ls-tree", "-r", "--name-only", "e2e-artifacts/t-1"],
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout
+    assert "e2e/__screenshots__/board.png" in shown
+    assert "e2e/__screenshots__/gates.png" in shown
+    # It's an orphan commit — no parent, so it never carries the code branch's history.
+    parents = subprocess.run(
+        ["git", "--git-dir", str(origin), "log", "--format=%P", "-1", "e2e-artifacts/t-1"],
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.strip()
+    assert parents == ""
+
+
+def test_publish_screenshots_does_not_touch_the_working_tree_or_index(tmp_path):
+    ws, _origin = make_git_workspace(tmp_path)
+    write_fake_screenshot(ws, "board")
+
+    publish_screenshots(ws, {"id": "T-1", "repo": "acme/demo"})
+
+    status = subprocess.run(["git", "-C", str(ws), "status", "--porcelain"], capture_output=True, text=True, check=True).stdout
+    # The screenshot file itself is untracked (it's gitignored elsewhere), but
+    # nothing was staged into the branch's own index/HEAD.
+    assert subprocess.run(["git", "-C", str(ws), "symbolic-ref", "--short", "HEAD"], capture_output=True, text=True, check=True).stdout.strip() == "main"
+    head_files = subprocess.run(["git", "-C", str(ws), "ls-tree", "-r", "--name-only", "HEAD"], capture_output=True, text=True, check=True).stdout
+    assert "e2e/__screenshots__" not in head_files
+    assert "?? e2e/" in status
+
+
+def test_publish_screenshots_is_a_noop_with_no_screenshots(tmp_path):
+    ws, origin = make_git_workspace(tmp_path)
+    publish_screenshots(ws, {"id": "T-1", "repo": "acme/demo"})
+    assert "e2e-artifacts" not in origin_refs(origin)
+
+
+def test_publish_screenshots_never_raises_on_push_failure(tmp_path):
+    ws, _origin = make_git_workspace(tmp_path)
+    write_fake_screenshot(ws, "board")
+    subprocess.run(["git", "-C", str(ws), "remote", "set-url", "origin", "/no/such/path"], check=True)
+    publish_screenshots(ws, {"id": "T-1", "repo": "acme/demo"})  # must not raise
+
+
+def test_implement_step_publishes_screenshots_without_polluting_the_code_branch(tmp_path, monkeypatch):
+    ws, origin = make_git_workspace(tmp_path)
+    # A repo that has adopted HZ-63 already ignores the screenshots dir —
+    # seed that onto main so the branch under test inherits it, same as a
+    # real target repo would.
+    (ws / ".gitignore").write_text("e2e/__screenshots__/\n")
+    subprocess.run(["git", "-C", str(ws), "add", "-A"], check=True, capture_output=True)
+    subprocess.run(["git", "-C", str(ws), "commit", "-m", "add gitignore"], check=True, capture_output=True)
+    subprocess.run(["git", "-C", str(ws), "push", "origin", "main"], check=True, capture_output=True)
+    monkeypatch.setattr(step_agent, "ensure_item_worktree", lambda repo, item_id: ws)
+
+    # prepare_branch() resets/cleans the worktree before the agent runs, so the
+    # screenshot must appear as a side effect of the (fake) e2e run, same as a
+    # real Playwright run would produce it after the branch is already checked out.
+    def fake_run_claude(prompt, **kwargs):
+        (ws / "note.txt").write_text("real code change\n")
+        write_fake_screenshot(ws, "board")
+        return {"result": '{"summary": "did the step"}'}
+
+    monkeypatch.setattr(step_agent, "run_claude", fake_run_claude)
+
+    execute(make_task(11, "Specialist agent implements", repo="acme/demo"))
+
+    assert "refs/heads/e2e-artifacts/t-1" in origin_refs(origin)
+    code_files = subprocess.run(
+        ["git", "--git-dir", str(origin), "ls-tree", "-r", "--name-only", "horizon/t-1"],
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout
+    assert "e2e/__screenshots__" not in code_files
 
 
 # ---- persona injection (HZ-4) ----
@@ -820,3 +927,207 @@ def test_review_step_code_pass_exhausting_its_retry_still_cancels_the_run(tmp_pa
     # the code pass fails before the QA pass is ever attempted
     assert len(calls) == 2
     assert all("QA Reviewer agent" not in c.get("append_system", "") for c in calls)
+
+
+def test_implement_step_fails_when_checks_fail(tmp_path, monkeypatch):
+    ws, origin = make_git_workspace(tmp_path)
+    monkeypatch.setattr(step_agent, "ensure_item_worktree", lambda repo, item_id: ws)
+    monkeypatch.setenv("FARM_CHECK_CMD", "exit 1")
+
+    try:
+        execute(make_task(11, "Specialist agent implements", repo="acme/demo"))
+        raised = False
+    except Exception as exc:
+        raised = True
+        assert "repo checks failed" in str(exc)
+    assert raised, "failing checks must fail the step"
+
+    # Nothing was pushed: guardrails are enforced before the push, not after.
+    branches = subprocess.run(
+        ["git", "--git-dir", str(origin), "branch", "--list"], capture_output=True, text=True, check=True
+    ).stdout
+    assert "horizon/t-1" not in branches
+
+
+# ---- checkpoint salvage on turn/time exhaustion (HZ-31) ----
+# A run that hits its max-turns/timeout cap must not lose its uncommitted
+# work: the next attempt's prepare_branch() would otherwise scrub the
+# worktree (reset --hard + clean -fd) before starting from zero with the
+# same budget — a Sisyphus loop that can never converge on an oversized item.
+
+
+def origin_log(origin):
+    return subprocess.run(
+        ["git", "--git-dir", str(origin), "log", "--format=%s", "horizon/t-1"],
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout
+
+
+def test_implement_step_pushes_a_checkpoint_when_run_claude_raises(tmp_path, monkeypatch):
+    ws, origin = make_git_workspace(tmp_path)
+    monkeypatch.setattr(step_agent, "ensure_item_worktree", lambda repo, item_id: ws)
+
+    def _fake(prompt, **kwargs):
+        (ws / "fake_implementation.txt").write_text("partial work\n")
+        raise ClaudeError("claude timed out after 2700s")
+
+    monkeypatch.setattr(step_agent, "run_claude", _fake)
+
+    with pytest.raises(ClaudeError, match="timed out"):
+        execute(make_task(11, "Specialist agent implements", repo="acme/demo"))
+
+    log_text = origin_log(origin)
+    assert step_agent.CHECKPOINT_MARKER in log_text
+    shown = subprocess.run(
+        ["git", "--git-dir", str(origin), "show", "horizon/t-1:fake_implementation.txt"],
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout
+    assert "partial work" in shown
+
+
+def test_implement_step_does_not_checkpoint_a_kill_before_any_edit(tmp_path, monkeypatch):
+    ws, origin = make_git_workspace(tmp_path)
+    monkeypatch.setattr(step_agent, "ensure_item_worktree", lambda repo, item_id: ws)
+
+    def _fake(prompt, **kwargs):
+        raise ClaudeError("claude timed out after 2700s")
+
+    monkeypatch.setattr(step_agent, "run_claude", _fake)
+
+    with pytest.raises(ClaudeError):
+        execute(make_task(11, "Specialist agent implements", repo="acme/demo"))
+
+    branches = subprocess.run(
+        ["git", "--git-dir", str(origin), "branch", "--list"], capture_output=True, text=True, check=True
+    ).stdout
+    assert "horizon/t-1" not in branches
+
+
+def test_implement_step_does_not_salvage_after_checks_fail(tmp_path, monkeypatch):
+    """run_claude succeeding and run_checks failing is a different failure
+    mode than run_claude raising — the checks-failed path must not push
+    anything, checkpoint or otherwise (guardrail: checks still gate finalize
+    exactly as before salvage existed)."""
+    ws, origin = make_git_workspace(tmp_path)
+    monkeypatch.setattr(step_agent, "ensure_item_worktree", lambda repo, item_id: ws)
+    monkeypatch.setenv("FARM_CHECK_CMD", "exit 1")
+    spy = []
+    monkeypatch.setattr(step_agent, "_salvage_checkpoint", lambda *a, **k: spy.append(1))
+
+    with pytest.raises(RuntimeError, match="repo checks failed"):
+        execute(make_task(11, "Specialist agent implements", repo="acme/demo"))
+
+    assert spy == []
+    branches = subprocess.run(
+        ["git", "--git-dir", str(origin), "branch", "--list"], capture_output=True, text=True, check=True
+    ).stdout
+    assert "horizon/t-1" not in branches
+
+
+def test_salvage_never_fires_for_planner_steps(monkeypatch):
+    """No call site for _salvage_checkpoint exists outside the step-11
+    branch, but pin that down with a regression test rather than leaving it
+    implied by "no call site exists"."""
+    spy = []
+    monkeypatch.setattr(step_agent, "_salvage_checkpoint", lambda *a, **k: spy.append(1))
+
+    def _fake(prompt, **kwargs):
+        raise ClaudeError("claude timed out after 1140s")
+
+    monkeypatch.setattr(step_agent, "run_claude", _fake)
+
+    with pytest.raises(ClaudeError):
+        execute(make_task(4, "Plan options & trade-offs (pros / cons)"))
+
+    assert spy == []
+
+
+def test_salvage_swallows_a_lease_conflict_and_the_original_error_still_wins(tmp_path, monkeypatch):
+    ws, origin = make_git_workspace(tmp_path)
+    monkeypatch.setattr(step_agent, "ensure_item_worktree", lambda repo, item_id: ws)
+    # Establish the branch on origin first so ws's prepare_branch() fetch
+    # records a remote-tracking ref for it — the lease race below needs that
+    # ref to be stale, not absent.
+    git(ws, "push", "-u", "origin", "HEAD:horizon/t-1")
+
+    race = tmp_path / "race"
+    subprocess.run(["git", "clone", "--quiet", str(origin), str(race)], check=True, capture_output=True)
+    git(race, "config", "user.email", "race@example.com")
+    git(race, "config", "user.name", "Racer")
+
+    def _fake(prompt, **kwargs):
+        (ws / "fake_implementation.txt").write_text("partial work\n")
+        # A concurrent writer moves origin's branch tip after ws's own
+        # prepare_branch() fetch, so ws's remote-tracking ref is stale by the
+        # time salvage tries to push — --force-with-lease must reject it.
+        git(race, "checkout", "horizon/t-1")
+        (race / "race.txt").write_text("someone else's push\n")
+        git(race, "add", "-A")
+        git(race, "commit", "-m", "concurrent push")
+        git(race, "push", "origin", "horizon/t-1")
+        raise ClaudeError("claude timed out after 2700s")
+
+    monkeypatch.setattr(step_agent, "run_claude", _fake)
+
+    with pytest.raises(ClaudeError, match="timed out"):
+        execute(make_task(11, "Specialist agent implements", repo="acme/demo"))
+
+    # Salvage's own push lost the lease race and was swallowed — the
+    # original ClaudeError above is what propagated, and origin shows only
+    # the concurrent writer's commit, never the checkpoint.
+    log_text = origin_log(origin)
+    assert step_agent.CHECKPOINT_MARKER not in log_text
+    assert "concurrent push" in log_text
+
+
+def test_checkpoint_resume_note_reaches_the_next_attempts_prompt(tmp_path, monkeypatch):
+    ws, origin = make_git_workspace(tmp_path)
+    monkeypatch.setattr(step_agent, "ensure_item_worktree", lambda repo, item_id: ws)
+
+    def _exhausted(prompt, **kwargs):
+        (ws / "fake_implementation.txt").write_text("partial work\n")
+        raise ClaudeError("claude timed out after 2700s")
+
+    monkeypatch.setattr(step_agent, "run_claude", _exhausted)
+    with pytest.raises(ClaudeError):
+        execute(make_task(11, "Specialist agent implements", repo="acme/demo"))
+
+    captured = {}
+    monkeypatch.setattr(step_agent, "run_claude", capture_run_claude(captured))
+    execute(make_task(11, "Specialist agent implements", repo="acme/demo"))
+
+    assert step_agent.CHECKPOINT_MARKER in captured["prompt"]
+    assert "fake_implementation.txt" in captured["prompt"]
+
+
+def test_two_exhausted_attempts_then_a_successful_run_converges_with_continuation_history(tmp_path, monkeypatch):
+    ws, origin = make_git_workspace(tmp_path)
+    monkeypatch.setattr(step_agent, "ensure_item_worktree", lambda repo, item_id: ws)
+
+    def attempt_1(prompt, **kwargs):
+        (ws / "part_a.txt").write_text("part a\n")
+        raise ClaudeError("claude timed out after 2700s")
+
+    monkeypatch.setattr(step_agent, "run_claude", attempt_1)
+    with pytest.raises(ClaudeError):
+        execute(make_task(11, "Specialist agent implements", repo="acme/demo"))
+
+    def attempt_2(prompt, **kwargs):
+        assert step_agent.CHECKPOINT_MARKER in prompt  # attempt 2 was told to continue
+        (ws / "part_b.txt").write_text("part b\n")
+        raise ClaudeError("claude timed out after 2700s")
+
+    monkeypatch.setattr(step_agent, "run_claude", attempt_2)
+    with pytest.raises(ClaudeError):
+        execute(make_task(11, "Specialist agent implements", repo="acme/demo"))
+
+    def attempt_3(prompt, **kwargs):
+        assert step_agent.CHECKPOINT_MARKER in prompt  # attempt 3 also sees the checkpoint note
+        (ws / "part_c.txt").write_text("part c\n")
+        return {"result": '{"summary": "finished the item"}'}
+
+    monkeypatch.setattr(step_agent, "run_claude", attempt_3)
