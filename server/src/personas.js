@@ -20,21 +20,3 @@ export function isPersona(id) {
 export function personaLabel(id) {
   return (PERSONAS[id] || PERSONAS[DEFAULT_PERSONA]).label
 }
-
-// The ONLY keyword heuristic, used by the mock PM step in demo/no-farm mode
-// (in farm mode the real PM agent classifies; farm-side resolve() just
-// validates/defaults). Any cross-stack signal falls back to fullstack —
-// misrouting to a specialist is worse than defaulting to the generalist.
-const PYTHON_HINTS =
-  /\b(python|pytest|django|flask|fastapi|sqlalchemy|celery|pip|backend|api|endpoint|server-side|cron|daemon)\b/i
-const UI_HINTS =
-  /\b(ui|frontend|front-end|react|css|component|dashboard|chart|button|styling|restyle|layout|jsx|vite|accessibility|dark mode|theme)\b/i
-
-export function proposePersona(item) {
-  const text = `${item?.title || ''} ${item?.desc || ''}`
-  const python = PYTHON_HINTS.test(text)
-  const ui = UI_HINTS.test(text)
-  if (python && !ui) return 'python_backend'
-  if (ui && !python) return 'frontend_ui'
-  return DEFAULT_PERSONA
-}

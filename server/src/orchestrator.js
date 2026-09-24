@@ -3,27 +3,21 @@
 // with the agent's output, then advances the cursor and stops at the next
 // human gate.
 //
-// Agents are MOCKED for now — each step behavior below fakes latency and
-// produces a plausible output (and sometimes patches draft fields the Plan
-// phase is meant to produce). The target state replaces runMockStep() with a
-// dispatch to a real agent in a tmux session reporting progress back; the
-// step_run/event bookkeeping and gate semantics stay exactly as they are.
+// Every agent step is dispatched to the real farm (farm/ Python daemon).
+// With no farm configured (no FARM_URL, from env or the setup screen — see
+// settings.js's getFarmUrl()), the farm sits in the 'unconfigured' state
+// forever: runnable() then always returns false, so items on an agent step
+// just sit blocked rather than faking progress. See ui/src/domain/status.js
+// for the "Blocked on setup" label this drives on the board.
 
 import { db } from './db.js'
 import { STEPS, AGENTS, isClosed, isAbandoned, IMPLEMENT_STEP_INDEX, REVIEW_STEP_INDEX, DEPLOY_STEP_INDEX } from './lifecycle.js'
 import { getItem, addEvent, notifyChange, registerAgentRunner, registerRunStateProvider, recoverRejectedItems } from './store.js'
-import { createMockPr, createDeployRelease, postIssueComment, createPrFromBranch } from './github.js'
+import { createDeployRelease, postIssueComment, createPrFromBranch } from './github.js'
 import { PHASES } from './lifecycle.js'
-import { getActiveProjectId, getSetting, setSetting, getToken } from './settings.js'
-import {
-  FARM_URL,
-  FARM_STEP_INDEXES,
-  FARM_STEP_TIMEOUT_MS,
-  FARM_QUEUE_TIMEOUT_MS,
-  FARM_START_TIMEOUT_MS,
-  UI_URL,
-} from './config.js'
-import { isPersona, personaLabel, proposePersona } from './personas.js'
+import { getActiveProjectId, getSetting, setSetting, getToken, getFarmUrl } from './settings.js'
+import { FARM_STEP_INDEXES, FARM_STEP_TIMEOUT_MS, FARM_QUEUE_TIMEOUT_MS, FARM_START_TIMEOUT_MS, UI_URL } from './config.js'
+import { isPersona, personaLabel } from './personas.js'
 
 const timers = {}
 
@@ -41,15 +35,9 @@ function executionBudgetFor(stepIndex) {
 // failing verdict attached rather than looping forever (HZ-30).
 const REVIEW_CYCLE_CAP = 3
 
-// MOCK_STEP_LATENCY_MS lets tests drive the mock pipeline without waiting.
-const latency = () => Number(process.env.MOCK_STEP_LATENCY_MS) || 2000 + Math.floor(Math.random() * 3000)
-
 // ---- bot farm lifecycle ----
 // The farm runs with ONE project's context at a time. Switching projects
-// tears the agents down and restarts them with the new context — mocked here
-// with a delay (the real farm spin-up will take minutes).
-
-const RESTART_MS = Number(process.env.FARM_RESTART_MS || 8000)
+// tears the agents down and restarts them with the new context.
 
 // ---- artifact prompt budget (HZ-29) ----
 // Prior artifacts (options analysis, impl plan, reviews) ride along in every
@@ -87,7 +75,12 @@ export function budgetArtifacts(rows) {
   })
 }
 
-let farm = { status: 'running', since: new Date().toISOString(), runStates: {} }
+// 'unconfigured' until getFarmUrl() resolves to something (env var, or the
+// setup screen) AND a project actually brings a farm up for it — see
+// ensureFarm() below. runnable() gates every agent step on farm.status ===
+// 'running', so this is what keeps a fresh, unconfigured clone from faking
+// progress on any item (HZ-28).
+let farm = { status: 'unconfigured', since: new Date().toISOString(), runStates: {} }
 
 export function getFarmState() {
   // runStates is an internal cache for store.js (via registerRunStateProvider),
@@ -139,7 +132,7 @@ export function setRunStateForTest(runId, state, reason = null) {
 // ---- real farm (farm/ Python daemon) plumbing ----
 
 async function farmFetch(path, body) {
-  const res = await fetch(`${FARM_URL}${path}`, {
+  const res = await fetch(`${getFarmUrl()}${path}`, {
     method: body === undefined ? 'GET' : 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: body === undefined ? undefined : JSON.stringify(body),
@@ -154,7 +147,7 @@ async function farmFetch(path, body) {
 // pass the farm's own status (200/404) through; throws when the farm itself
 // is unreachable.
 export async function fetchRunLog(runId, offset = 0) {
-  const res = await fetch(`${FARM_URL}/runs/${runId}/log?offset=${encodeURIComponent(offset)}`)
+  const res = await fetch(`${getFarmUrl()}/runs/${runId}/log?offset=${encodeURIComponent(offset)}`)
   const data = await res.json().catch(() => ({}))
   return { status: res.status, data }
 }
@@ -192,9 +185,11 @@ async function startRealFarm(projectId, log) {
   notifyChange()
 }
 
-// Called at boot and when the active project's farm should exist but doesn't.
+// Called at boot, after /api/setup saves a farm URL, and whenever the active
+// project's farm should exist but doesn't. A no-op with no farm configured —
+// farm just stays 'unconfigured' (set at module init above) until this is.
 export function ensureFarm(log) {
-  if (!FARM_URL) return
+  if (!getFarmUrl()) return
   const activeId = getActiveProjectId()
   if (!activeId || farm.status === 'restarting') return
   if (farm.status === 'running' && farm.projectId === activeId) return
@@ -209,29 +204,17 @@ export function switchProject(projectId, log) {
   for (const id of Object.keys(timers)) cancel(id, 'superseded')
   setSetting('active_project_id', String(projectId))
 
-  if (FARM_URL) {
-    farm.projectId = projectId
-    ;(async () => {
-      try {
-        await farmFetch('/farm/stop', {})
-      } catch {
-        // farm may already be down; start will surface real problems
-      }
-      await startRealFarm(projectId, log)
-    })()
-    return
-  }
+  if (!getFarmUrl()) return // nothing to restart — items stay blocked on setup
 
-  // No real farm configured: simulate the restart as before.
-  farm = { status: 'restarting', since: new Date().toISOString() }
-  notifyChange()
-  log?.info(`Bot farm restarting with project ${projectId} context (${RESTART_MS}ms simulated)`)
-  setTimeout(() => {
-    farm = { status: 'running', since: new Date().toISOString() }
-    const resumed = resumeActiveItems()
-    log?.info(`Bot farm up for project ${projectId}; resumed ${resumed} item(s)`)
-    notifyChange()
-  }, RESTART_MS).unref()
+  farm.projectId = projectId
+  ;(async () => {
+    try {
+      await farmFetch('/farm/stop', {})
+    } catch {
+      // farm may already be down; start will surface real problems
+    }
+    await startRealFarm(projectId, log)
+  })()
 }
 
 function projectActive(item) {
@@ -249,113 +232,6 @@ function resumeActiveItems() {
     }
   }
   return resumed
-}
-
-// Lets tests/e2e specs drive the mock review through the fail-then-retry-
-// then-pass loop deterministically: fails the first N cycles (counted from
-// work_item.review_cycle_count, the same counter the real cap enforcement
-// reads), then passes. 0 (default) never fails.
-const MOCK_REVIEW_FAIL_COUNT = Number(process.env.MOCK_REVIEW_FAIL_COUNT) || 0
-
-const MOCK_QA_PASS = { verdict: 'pass', regression_tests_run: true, new_code_unit_coverage: true, e2e_test_present: true, findings: [] }
-
-// Mock behavior per step index (the pipeline is fixed — see lifecycle.js).
-// Returns { summary, patch? } where patch updates work_item fields, mimicking
-// the artifacts each agent is supposed to produce.
-export const MOCK_STEP_BEHAVIOR = {
-  0: (it) => {
-    const result = it.desc
-      ? { summary: 'refined the outcome statement from the issue description', patch: {} }
-      : { summary: 'drafted an outcome statement for gate review', patch: { desc: `Deliver: ${it.title}` } }
-    // Propose a specialist persona once; never re-propose over a set value —
-    // it may be a human's choice (the server-side no-clobber is the real guard).
-    if (!it.persona) {
-      result.patch.persona = proposePersona(it)
-      result.summary += ` — proposed the ${personaLabel(result.patch.persona)} persona (confirm at the gate)`
-    }
-    if (Object.keys(result.patch).length === 0) delete result.patch
-    return result
-  },
-  1: (it) =>
-    it.metric
-      ? { summary: 'validated the success metric is measurable' }
-      : {
-          summary: 'drafted a success metric for gate review',
-          patch: { metric: `Draft — define a measurable target for “${it.title}” (confirm at the gate)` },
-        },
-  2: (it) =>
-    it.guardrails
-      ? { summary: 'confirmed guardrails; defaults also apply' }
-      : {
-          summary: 'set draft guardrails',
-          patch: { guardrails: 'Draft — defaults apply: tests, linters and e2e must pass; no destructive data changes.' },
-        },
-  4: () => ({ summary: 'prepared options A/B/C with trade-offs; recommends B (robust, medium effort)' }),
-  6: () => ({ summary: 'drafted the implementation plan: components touched, sequencing, test impact' }),
-  7: () => ({ summary: 'architecture review passed — no encapsulation or duplication concerns' }),
-  8: () => ({ summary: 'test plan covers the success metric; added two edge cases' }),
-  // The digest must never imply a decision — in demo mode there is no real PM
-  // review, and only the human decides at the gate that follows.
-  9: () => ({ summary: 'review digest unavailable in demo mode — a human must decide at the next gate' }),
-  // Execute: the code change takes the form of a GitHub PR. The mock commits
-  // a placeholder file; the PR/branch mechanics are the real integration.
-  11: async (it) => {
-    if (!it.repo || it.issue == null) {
-      return { summary: 'implementation complete on a feature branch; all checks green (no GitHub — PR skipped)' }
-    }
-    if (it.pr != null) {
-      return { summary: `implementation updated — PR #${it.pr} still open for review` }
-    }
-    try {
-      const pr = await createMockPr(it)
-      return {
-        summary: `implementation complete — opened PR #${pr.number} for the “Accept the code” gate`,
-        patch: { pr: pr.number, pr_url: pr.html_url },
-      }
-    } catch (err) {
-      return { summary: `implementation complete, but opening the PR failed: ${err.message}` }
-    }
-  },
-  // Automated review (HZ-30): read-only code + QA review of the diff the
-  // implement step just produced. MOCK_REVIEW_FAIL_COUNT makes this
-  // deterministically fail its first N cycles (driven by the same
-  // review_cycle_count column the real cap enforcement reads), so the
-  // fail -> re-implement -> pass loop is exercisable without a real farm.
-  12: (it) => {
-    if ((it.review_cycle_count || 0) < MOCK_REVIEW_FAIL_COUNT) {
-      return {
-        summary: 'automated review found a guardrail violation — sent back to implement (mock)',
-        verdict: {
-          code_review: {
-            verdict: 'fail',
-            findings: [{ file: '(mock)', line: 1, severity: 'block', detail: 'mock guardrail violation for loop testing' }],
-          },
-          qa_review: MOCK_QA_PASS,
-        },
-      }
-    }
-    return {
-      summary: 'automated review passed — code and QA both clear (mock)',
-      verdict: { code_review: { verdict: 'pass', findings: [] }, qa_review: MOCK_QA_PASS },
-    }
-  },
-  // Deploy: publish a GitHub Release, which the self-deploy webhook
-  // (server/src/deploy.js) picks up to pull the tag onto shoreward.ai. The
-  // mock is the deploy content, not the plumbing.
-  14: async (it) => {
-    if (!it.repo || it.issue == null) {
-      return { summary: 'deployed to the target environment; smoke checks passed (no GitHub — release skipped)' }
-    }
-    try {
-      const release = await createDeployRelease(it)
-      return {
-        summary: `published release ${release.tag_name}${release.addedWorkflow ? ' (and added the Horizon Deploy workflow to the repo)' : ''} — the self-deploy webhook will pull it to shoreward.ai`,
-        patch: { release_tag: release.tag_name, release_url: release.html_url },
-      }
-    } catch (err) {
-      return { summary: `deploy simulated, but publishing the release failed: ${err.message}` }
-    }
-  },
 }
 
 function runnable(item) {
@@ -386,11 +262,12 @@ export function kick(id) {
     .prepare('INSERT INTO step_run (item_id, step_index, attempt, agent) VALUES (?, ?, ?, ?)')
     .run(id, stepIndex, attempt, step.agent).lastInsertRowid
 
-  if (FARM_URL && FARM_STEP_INDEXES.has(stepIndex)) {
+  if (FARM_STEP_INDEXES.has(stepIndex)) {
     dispatchToFarm(id, stepIndex, runId, attempt)
-  } else {
-    timers[id] = setTimeout(() => runMockStep(id, stepIndex, runId), latency())
   }
+  // else: not a farm-dispatched step index — nothing currently runs it. This
+  // never happens today (FARM_STEP_INDEXES covers every 'agent' step), kept
+  // as an explicit no-op rather than a silent fall-through.
 }
 
 // ---- farm-dispatched steps ----
@@ -524,7 +401,7 @@ const PATCH_FIELD_LABELS = { desc: 'Outcome', metric: 'Success metric', guardrai
 
 // Exported for tests: the comment body is the human-readable record, so its
 // rendering (e.g. persona labels, never raw ids) is pinned directly.
-export function stepCommentBody(item, stepIndex, attempt, summary, patch, isMock, artifactMd) {
+export function stepCommentBody(item, stepIndex, attempt, summary, patch, artifactMd) {
   const step = STEPS[stepIndex]
   const agent = AGENTS[step.agent]
   const lines = [`### 🤖 ${agent.label} — ${step.label}`, '', summary]
@@ -541,16 +418,16 @@ export function stepCommentBody(item, stepIndex, attempt, summary, patch, isMock
   }
   lines.push(
     '',
-    `_${PHASES[step.phase]} phase · attempt ${attempt}${isMock ? ' · mock agent' : ''} · [open in Horizon](${UI_URL}/${item.id.toLowerCase()}) · posted by Horizon_`,
+    `_${PHASES[step.phase]} phase · attempt ${attempt} · [open in Horizon](${UI_URL}/${item.id.toLowerCase()}) · posted by Horizon_`,
   )
   return lines.join('\n')
 }
 
 // Every completed agent step is mirrored onto the GitHub issue — the issue
 // thread is the human-readable record of what the bots did.
-function postStepComment(item, stepIndex, attempt, summary, patch, isMock, artifactMd) {
+function postStepComment(item, stepIndex, attempt, summary, patch, artifactMd) {
   if (!item.repo || item.issue == null) return
-  postIssueComment(item, stepCommentBody(item, stepIndex, attempt, summary, patch, isMock, artifactMd)).catch((err) => {
+  postIssueComment(item, stepCommentBody(item, stepIndex, attempt, summary, patch, artifactMd)).catch((err) => {
     addEvent(item.id, {
       who: 'Horizon',
       text: `could not post the step result to issue #${item.issue}: ${err.message}`,
@@ -604,22 +481,12 @@ export function formatReviewFeedback(verdict, cycle) {
   return lines.join('\n').slice(0, 2000)
 }
 
-// A markdown rendering so the mock path (no real agent artifact_md) still
-// gives the human gate and the GitHub issue something to read.
-function mockReviewArtifactMd(verdict) {
-  const section = (label, s) =>
-    `## ${label}\n**${s.verdict}**` + (s.verdict === 'fail' ? `\n- ${s.findings?.[0]?.detail || 'guardrail violation'}` : '')
-  return [section('Code review', verdict.code_review), '', section('QA review', verdict.qa_review)].join('\n')
-}
-
-// Shared by completeFarmRun (real farm) and runMockStep (demo mode) so the
-// pass/fail/cap routing is identical either way — verdict already validated
-// by the caller. Closes the step_run row itself, then either advances the
-// cursor (pass), rolls back to implement with feedback queued (fail, under
-// cap), or force-advances to the human gate with the failing verdict still
-// attached (fail, cap reached) — the loop counter that proves the cap is
-// enforced lives in work_item.review_cycle_count, read back by tests.
-function finalizeReviewStep(id, runId, text, artifactMd, verdict, patch, isMock) {
+// Closes the step_run row itself, then either advances the cursor (pass),
+// rolls back to implement with feedback queued (fail, under cap), or
+// force-advances to the human gate with the failing verdict still attached
+// (fail, cap reached) — the loop counter that proves the cap is enforced
+// lives in work_item.review_cycle_count, read back by tests.
+function finalizeReviewStep(id, runId, text, artifactMd, verdict, patch) {
   const step = STEPS[REVIEW_STEP_INDEX]
   const agent = AGENTS[step.agent]
   const attempt = db.prepare('SELECT attempt FROM step_run WHERE id = ?').get(runId)?.attempt || 1
@@ -633,7 +500,7 @@ function finalizeReviewStep(id, runId, text, artifactMd, verdict, patch, isMock)
   if (passed) {
     db.prepare("UPDATE work_item SET cursor = cursor + 1, updated_at = datetime('now') WHERE id = ?").run(id)
     addEvent(id, { who: agent.label, text: `completed “${step.label}” — ${text.slice(0, 300)}`, color: agent.color, initials: agent.initials })
-    postStepComment(getItem(id), REVIEW_STEP_INDEX, attempt, text, patch, isMock, artifactMd)
+    postStepComment(getItem(id), REVIEW_STEP_INDEX, attempt, text, patch, artifactMd)
     notifyChange()
     kick(id)
     return
@@ -650,7 +517,7 @@ function finalizeReviewStep(id, runId, text, artifactMd, verdict, patch, isMock)
       color: '#9C333E',
       initials: 'HZ',
     })
-    postStepComment(getItem(id), REVIEW_STEP_INDEX, attempt, text, patch, isMock, artifactMd)
+    postStepComment(getItem(id), REVIEW_STEP_INDEX, attempt, text, patch, artifactMd)
     notifyChange()
     kick(id)
     return
@@ -668,7 +535,7 @@ function finalizeReviewStep(id, runId, text, artifactMd, verdict, patch, isMock)
     color: '#9C333E',
     initials: agent.initials,
   })
-  postStepComment(getItem(id), REVIEW_STEP_INDEX, attempt, text, patch, isMock, artifactMd)
+  postStepComment(getItem(id), REVIEW_STEP_INDEX, attempt, text, patch, artifactMd)
   notifyChange()
   kick(id)
 }
@@ -709,14 +576,14 @@ function finalizeDeployStep(id, runId, text, artifactMd, verdict, patch) {
       color: '#9C333E',
       initials: agent.initials,
     })
-    postStepComment(getItem(id), DEPLOY_STEP_INDEX, attempt, text, patch, false, artifactMd)
+    postStepComment(getItem(id), DEPLOY_STEP_INDEX, attempt, text, patch, artifactMd)
     notifyChange()
     return
   }
 
   db.prepare("UPDATE work_item SET cursor = cursor + 1, updated_at = datetime('now') WHERE id = ?").run(id)
   addEvent(id, { who: agent.label, text: `completed “${step.label}” — ${text.slice(0, 300)}`, color: agent.color, initials: agent.initials })
-  postStepComment(getItem(id), DEPLOY_STEP_INDEX, attempt, text, patch, false, artifactMd)
+  postStepComment(getItem(id), DEPLOY_STEP_INDEX, attempt, text, patch, artifactMd)
   notifyChange()
   kick(id)
 }
@@ -775,7 +642,7 @@ export async function completeFarmRun(runId, { summary, patch, artifacts }) {
 
   if (run.step_index === REVIEW_STEP_INDEX) {
     if (!validateVerdict(artifacts?.verdict)) return failFarmRun(runId, 'malformed review verdict JSON')
-    finalizeReviewStep(id, runId, text, artifactMd, artifacts.verdict, cleanPatch, false)
+    finalizeReviewStep(id, runId, text, artifactMd, artifacts.verdict, cleanPatch)
     return { ok: true }
   }
 
@@ -792,7 +659,7 @@ export async function completeFarmRun(runId, { summary, patch, artifacts }) {
   )
   db.prepare("UPDATE work_item SET cursor = cursor + 1, updated_at = datetime('now') WHERE id = ?").run(id)
   addEvent(id, { who: agent.label, text: `completed “${step.label}” — ${text.slice(0, 300)}`, color: agent.color, initials: agent.initials })
-  postStepComment(getItem(id), run.step_index, run.attempt, text, cleanPatch, false, artifactMd)
+  postStepComment(getItem(id), run.step_index, run.attempt, text, cleanPatch, artifactMd)
   notifyChange()
   kick(id)
   return { ok: true }
@@ -824,7 +691,7 @@ export function failFarmRun(runId, error) {
   // task file whose run the server has already given up on (HZ-57) — the
   // /started callback double-checks this too, but a run failed before it
   // ever reaches that checkpoint needs the task file removed directly.
-  if (FARM_URL) farmFetch('/steps/cancel', { run_id: runId }).catch(() => {})
+  if (getFarmUrl()) farmFetch('/steps/cancel', { run_id: runId }).catch(() => {})
   notifyChange()
   return { ok: true }
 }
@@ -834,74 +701,6 @@ export function failFarmRun(runId, error) {
 // even if it was mid-await (e.g. creating a PR) when the human acted.
 function runStillActive(runId) {
   return db.prepare('SELECT status FROM step_run WHERE id = ?').get(runId)?.status === 'active'
-}
-
-async function runMockStep(id, stepIndex, runId) {
-  // timers[id] stays set (as a "busy" marker) until this run fully exits, so
-  // a concurrent kick() can't start a duplicate run across the awaits below.
-  const item = getItem(id)
-  // Re-validate: the world may have changed while the "agent" was working.
-  if (!runnable(item) || item.cursor !== stepIndex || !runStillActive(runId)) {
-    delete timers[id]
-    closeActiveRuns(id, 'superseded')
-    return
-  }
-
-  const step = STEPS[stepIndex]
-  const agent = AGENTS[step.agent]
-  const behavior = MOCK_STEP_BEHAVIOR[stepIndex] || (() => ({ summary: `completed ${step.label.toLowerCase()}` }))
-  let { summary, patch, verdict } = await behavior(item)
-
-  // Deliver any queued human feedback to this "agent" — the mock acknowledges
-  // it in its output; a real agent gets it injected into its session.
-  const pendingFeedback = db
-    .prepare('SELECT id, message FROM feedback WHERE item_id = ? AND delivered_at IS NULL ORDER BY id DESC LIMIT 1')
-    .get(id)
-  if (pendingFeedback) {
-    db.prepare("UPDATE feedback SET delivered_at = datetime('now') WHERE item_id = ? AND delivered_at IS NULL").run(id)
-    summary = `addressed your feedback (“${pendingFeedback.message.slice(0, 80)}”) — ${summary}`
-  }
-
-  // Re-check after any await (e.g. PR creation): a pause/reject may have landed.
-  const after = getItem(id)
-  if (!runnable(after) || after.cursor !== stepIndex || !runStillActive(runId)) {
-    delete timers[id]
-    if (runStillActive(runId)) closeActiveRuns(id, 'superseded')
-    return
-  }
-
-  if (patch) {
-    const fields = Object.keys(patch)
-    db.prepare(`UPDATE work_item SET ${fields.map((f) => `${f} = ?`).join(', ')}, updated_at = datetime('now') WHERE id = ?`).run(
-      ...fields.map((f) => patch[f]),
-      id,
-    )
-  }
-
-  if (stepIndex === REVIEW_STEP_INDEX) {
-    // delete BEFORE finalizeReviewStep: it calls kick() internally, and
-    // kick() no-ops while timers[id] (the busy marker for this run) is set.
-    delete timers[id]
-    finalizeReviewStep(id, runId, summary, mockReviewArtifactMd(verdict), verdict, patch, true)
-    return
-  }
-
-  db.prepare("UPDATE step_run SET status = 'done', output = ?, ended_at = datetime('now') WHERE id = ?").run(
-    summary,
-    runId,
-  )
-  db.prepare("UPDATE work_item SET cursor = cursor + 1, updated_at = datetime('now') WHERE id = ?").run(id)
-  addEvent(id, {
-    who: agent.label,
-    text: `completed “${step.label}” — ${summary}`,
-    color: agent.color,
-    initials: agent.initials,
-  })
-  const attempt = db.prepare('SELECT attempt FROM step_run WHERE id = ?').get(runId)?.attempt || 1
-  postStepComment(getItem(id), stepIndex, attempt, summary, patch, true)
-  notifyChange()
-  delete timers[id]
-  kick(id) // next step, until a gate/closure
 }
 
 function closeActiveRuns(id, status) {
@@ -919,7 +718,7 @@ export function cancel(id, status = 'cancelled') {
   clearTimeout(timers[id])
   delete timers[id]
   closeActiveRuns(id, status)
-  if (FARM_URL) {
+  if (getFarmUrl()) {
     for (const run of activeRuns) {
       farmFetch('/steps/cancel', { run_id: run.id }).catch(() => {})
     }
@@ -937,25 +736,27 @@ export function init(log) {
     const first = db.prepare('SELECT id FROM project ORDER BY id LIMIT 1').get()
     if (first) setSetting('active_project_id', String(first.id))
   }
-  if (FARM_URL) {
+  if (getFarmUrl()) {
     // Farm runs SURVIVE a server restart — the agents live in tmux, not in
     // this process. Re-arm their watchdogs instead of superseding them.
     const rearmed = rearmFarmRuns()
     if (rearmed > 0) log.info(`Re-armed watchdogs for ${rearmed} in-flight farm run(s)`)
     setInterval(pollRunStates, RUN_STATE_POLL_MS).unref()
   } else {
-    // Mock runs die with this process: close them; resume will re-kick.
+    // No farm configured: any 'active' row is orphaned — nothing can ever
+    // complete it. Close it out; the setup screen (or an env var) is what
+    // unblocks the item, not a resume.
     closeAllOrphanedRuns()
   }
   const recovered = recoverRejectedItems()
   if (recovered > 0) log.info(`Requeued ${recovered} rejected item(s) for rework`)
-  if (FARM_URL) {
+  if (getFarmUrl()) {
     // Real farm: don't resume items until the farm reports ready.
     ensureFarm(log)
-  } else {
-    const resumed = resumeActiveItems()
-    if (resumed > 0) log.info(`Orchestrator resumed ${resumed} item(s) mid-agent-step`)
   }
+  // No farm: items on an agent step just stay 'unconfigured'-blocked —
+  // resumeActiveItems() would no-op anyway (runnable() requires farm.status
+  // === 'running'), so it's skipped rather than called for nothing.
 }
 
 // Exported for tests: server-restart re-arming is the other half of HZ-57's

@@ -10,16 +10,22 @@ import * as deploy from './deploy.js'
 import * as orchestrator from './orchestrator.js'
 import {
   WEBHOOK_SECRET,
-  FARM_SHARED_SECRET,
-  FARM_URL,
   UI_URL,
   SESSION_COOKIE_NAME,
   SESSION_TTL_DAYS,
   TEST_HOOKS_ENABLED,
 } from './config.js'
 import { marked } from 'marked'
-import { db } from './db.js'
-import { getActiveProjectId, getRepoUrl, setSetting, getToken } from './settings.js'
+import { db, getDbPath } from './db.js'
+import {
+  getActiveProjectId,
+  getRepoUrl,
+  setSetting,
+  getToken,
+  getFarmUrl,
+  getFarmSharedSecret,
+} from './settings.js'
+import { setBootstrapDbPath } from './bootstrap-config.js'
 import * as auth from './auth.js'
 import { googleAuth } from './googleAuth.js'
 import { isAllowedEmail } from './loginAllowlist.js'
@@ -327,7 +333,7 @@ export function buildApp({ logger = true } = {}) {
       },
     },
     async (request, reply) => {
-      if (!FARM_URL) return reply.code(503).send({ error: 'farm unavailable' })
+      if (!getFarmUrl()) return reply.code(503).send({ error: 'farm unavailable' })
       try {
         const { status, data } = await orchestrator.fetchRunLog(request.params.runId, request.query.offset)
         return reply.code(status).send(data)
@@ -412,9 +418,9 @@ export function buildApp({ logger = true } = {}) {
   )
 
   // Create a work item. With GitHub connected this creates the issue there
-  // (GitHub stays the source of truth) and ingests it; in demo mode it creates
-  // a local item. Title, outcome and success metric are the bot farm's minimum
-  // intake requirements — enforced here, not just in the UI.
+  // (GitHub stays the source of truth) and ingests it; with no repo connected
+  // it creates a local item. Title, outcome and success metric are the bot
+  // farm's minimum intake requirements — enforced here, not just in the UI.
   fastify.post(
     '/api/items',
     {
@@ -1002,6 +1008,92 @@ export function buildApp({ logger = true } = {}) {
 
   fastify.get('/api/admin/deploy-targets', () => ({ targets: deploy.listTargetStatuses() }))
 
+  // ---- first-run setup (HZ-28) ----
+  // Killing the in-process mock agents means an unconfigured farm no longer
+  // fakes step progress — it just sits 'unconfigured' (orchestrator.js) and
+  // every agent step blocks. needsSetup is keyed on the farm alone: that's
+  // the one thing standing between "the server boots" and "an item actually
+  // runs an agent step". Env vars (FARM_URL, etc. — see settings.js) always
+  // take precedence over anything saved here, so an existing install (e.g.
+  // shoreward.ai) upgrades with zero config changes and never sees this
+  // screen — see getSetupStatus below.
+  fastify.get('/api/setup/status', () => {
+    const farmUrl = getFarmUrl()
+    return {
+      needsSetup: !farmUrl,
+      dbPath: getDbPath(),
+      dbPathEditable: !process.env.HORIZON_DB,
+      farmUrl: farmUrl || '',
+      farmUrlEditable: !process.env.FARM_URL,
+      hasFarmSecret: getFarmSharedSecret() !== 'dev-secret',
+      farmSecretEditable: !process.env.FARM_SHARED_SECRET,
+      hasToken: !!getToken(),
+      tokenEditable: !process.env.GITHUB_TOKEN,
+    }
+  })
+
+  fastify.post(
+    '/api/setup',
+    {
+      schema: {
+        body: {
+          type: 'object',
+          properties: {
+            dbPath: { type: 'string', minLength: 1, maxLength: 500 },
+            farmUrl: { type: 'string', maxLength: 500 },
+            farmSharedSecret: { type: 'string', maxLength: 200 },
+          },
+        },
+      },
+    },
+    (request, reply) => {
+      const { dbPath, farmUrl, farmSharedSecret } = request.body || {}
+      let restartRequired = false
+
+      if (typeof dbPath === 'string' && dbPath.trim()) {
+        if (process.env.HORIZON_DB) {
+          return reply.code(409).send({ error: 'HORIZON_DB is set in the environment and takes precedence — unset it to change the storage path here' })
+        }
+        if (dbPath.trim() !== getDbPath()) {
+          setBootstrapDbPath(dbPath.trim())
+          restartRequired = true
+        }
+      }
+      if (typeof farmUrl === 'string' && farmUrl.trim()) {
+        if (process.env.FARM_URL) {
+          return reply.code(409).send({ error: 'FARM_URL is set in the environment and takes precedence' })
+        }
+        setSetting('farm_url', farmUrl.trim().replace(/\/+$/, ''))
+      }
+      if (typeof farmSharedSecret === 'string' && farmSharedSecret.trim()) {
+        if (process.env.FARM_SHARED_SECRET) {
+          return reply.code(409).send({ error: 'FARM_SHARED_SECRET is set in the environment and takes precedence' })
+        }
+        setSetting('farm_shared_secret', farmSharedSecret.trim())
+      }
+
+      if (!restartRequired) orchestrator.ensureFarm(request.log) // no-op with no active project yet
+      broadcast()
+      return { ok: true, restartRequired }
+    },
+  )
+
+  // Reachability check for the setup screen's farm-connectivity signal. The
+  // agent credential itself (does the farm host have `claude` logged in?) is
+  // a doc link, not a text box — see farm/claude_runner.py's
+  // assert_subscription_auth — this is the one piece this server can verify.
+  fastify.get('/api/setup/farm-check', async (request, reply) => {
+    const url = String(request.query?.url || getFarmUrl() || '').replace(/\/+$/, '')
+    if (!url) return { reachable: false, error: 'no farm URL configured' }
+    try {
+      const res = await fetch(`${url}/farm/status`, { signal: AbortSignal.timeout(5000) })
+      const data = await res.json().catch(() => ({}))
+      return { reachable: res.ok, status: data.status ?? null }
+    } catch (err) {
+      return { reachable: false, error: err.message }
+    }
+  })
+
   // ---- GitHub sync configuration (from the UI) ----
 
   fastify.get('/api/sync/status', () => github.getSyncState())
@@ -1139,7 +1231,7 @@ export function buildApp({ logger = true } = {}) {
   // ---- farm callbacks (farm/ Python daemon reporting step results) ----
 
   function farmAuthorized(request, reply) {
-    if ((request.headers['x-farm-secret'] || '') !== FARM_SHARED_SECRET) {
+    if ((request.headers['x-farm-secret'] || '') !== getFarmSharedSecret()) {
       reply.code(401).send({ error: 'bad farm secret' })
       return false
     }

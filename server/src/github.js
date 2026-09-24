@@ -168,100 +168,12 @@ export async function createIssue(repo, { title, outcome, metric, guardrails, pr
   return res.json()
 }
 
-// ---- mock PR creation (the Execute step's output) ----
-// The PR mechanics are real — branch, commit, pull request — only the code
-// change is a placeholder work file. Real agents will push their actual
-// changes to the same branch naming scheme; everything downstream (the
-// "Accept the code" gate reviewing a PR) stays identical.
-
 async function gh(path, options = {}) {
   const res = await fetch(`https://api.github.com${path}`, {
     ...options,
     headers: { ...ghHeaders(getToken()), ...(options.headers || {}) },
   })
   return res
-}
-
-export async function createMockPr(item) {
-  const repo = item.repo
-  const branch = `horizon/${item.id.toLowerCase()}`
-
-  const repoRes = await gh(`/repos/${repo}`)
-  if (!repoRes.ok) throw new Error(`could not read the repository (${repoRes.status})`)
-  const base = (await repoRes.json()).default_branch
-
-  const refRes = await gh(`/repos/${repo}/git/ref/${encodeURIComponent(`heads/${base}`)}`)
-  if (!refRes.ok) throw new Error(`could not read the ${base} branch (${refRes.status})`)
-  const baseSha = (await refRes.json()).object.sha
-
-  // Create the work branch; 422 means it already exists from a prior attempt.
-  const createRef = await gh(`/repos/${repo}/git/refs`, {
-    method: 'POST',
-    body: JSON.stringify({ ref: `refs/heads/${branch}`, sha: baseSha }),
-  })
-  if (!createRef.ok && createRef.status !== 422) {
-    throw new Error(`could not create branch ${branch} (${createRef.status} — check the token has Contents read/write)`)
-  }
-
-  // Commit the placeholder work file (include the existing file's sha on retries).
-  const path = `.horizon/work/${item.id}.md`
-  const existing = await gh(`/repos/${repo}/contents/${path}?ref=${encodeURIComponent(branch)}`)
-  const existingSha = existing.ok ? (await existing.json()).sha : undefined
-  const fileBody = [
-    `# ${item.id}: ${item.title}`,
-    '',
-    '## Outcome',
-    item.desc || '_(none)_',
-    '',
-    '## Success metric',
-    item.metric || '_(none)_',
-    '',
-    '## Guardrails',
-    item.guardrails || '_(defaults apply)_',
-    '',
-    '---',
-    '_Placeholder change committed by the Horizon mock Eng agent. A real agent will replace this with the actual implementation._',
-  ].join('\n')
-  const put = await gh(`/repos/${repo}/contents/${path}`, {
-    method: 'PUT',
-    body: JSON.stringify({
-      message: `${item.id}: mock implementation (Horizon)`,
-      content: Buffer.from(fileBody, 'utf8').toString('base64'),
-      branch,
-      ...(existingSha ? { sha: existingSha } : {}),
-    }),
-  })
-  if (!put.ok) throw new Error(`could not commit to ${branch} (${put.status} — check the token has Contents read/write)`)
-
-  // Open the PR; on "already exists" reuse the open one.
-  const prRes = await gh(`/repos/${repo}/pulls`, {
-    method: 'POST',
-    body: JSON.stringify({
-      title: `${item.id}: ${item.title}`,
-      head: branch,
-      base,
-      body: [
-        item.issue != null ? `Relates to #${item.issue}.` : '',
-        '',
-        '## Success metric',
-        item.metric || '_(none)_',
-        '',
-        '## Guardrails',
-        item.guardrails || '_(defaults apply)_',
-        '',
-        `_Mock implementation opened by the Horizon Eng agent for the “Accept the code” gate · ${itemLink(item)}._`,
-      ].join('\n'),
-    }),
-  })
-  if (prRes.ok) return prRes.json()
-  if (prRes.status === 422) {
-    const open = await gh(`/repos/${repo}/pulls?state=open&head=${encodeURIComponent(`${repo.split('/')[0]}:${branch}`)}`)
-    if (open.ok) {
-      const prs = await open.json()
-      if (prs.length > 0) return prs[0]
-    }
-  }
-  throw new Error(`could not open the pull request (${prRes.status} — check the token has Pull requests read/write)`)
 }
 
 // ---- screenshots (HZ-18, HZ-63) ----

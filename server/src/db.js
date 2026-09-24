@@ -3,10 +3,19 @@ import { mkdirSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { reconcileGoogleUsers } from './loginAllowlist.js'
+import { getBootstrapDbPath } from './bootstrap-config.js'
 
+// HORIZON_DB always wins (existing installs are unaffected by first-run
+// setup). Otherwise a path chosen at setup, persisted in
+// bootstrap-config.js's fs-only file so it's known before this module — the
+// setting.js DB-backed settings table doesn't exist yet at this point.
 const DB_PATH =
-  process.env.HORIZON_DB || join(dirname(fileURLToPath(import.meta.url)), '..', 'data', 'horizon.db')
+  process.env.HORIZON_DB || getBootstrapDbPath() || join(dirname(fileURLToPath(import.meta.url)), '..', 'data', 'horizon.db')
 mkdirSync(dirname(DB_PATH), { recursive: true })
+
+export function getDbPath() {
+  return DB_PATH
+}
 
 export const db = new Database(DB_PATH)
 db.pragma('journal_mode = WAL')
@@ -194,17 +203,6 @@ if (projectCount === 0 && legacyRepo) {
   )
 }
 
-const SEED_ITEMS = [
-  { id: 'BF-145', title: 'Risk-limit breach dashboard', priority: 'Low', cursor: 1, issue: 412, desc: 'Give risk managers a live view of limit utilization across every desk.', metric: 'Limit breaches acknowledged in < 2 min (from 14 min).', guardrails: 'Read-only — no position mutation. No PII in telemetry.' },
-  { id: 'BF-128', title: 'Real-time P&L attribution service', priority: 'High', cursor: 3, issue: 398, desc: 'Attribute intraday P&L to factors, trades and fees in real time.', metric: 'Attribution available < 5s after fill; 99.9% coverage.', guardrails: 'No client identifiers in logs. Must reconcile to EOD books.' },
-  { id: 'BF-131', title: 'Margin-call alerting v2', priority: 'High', cursor: 5, issue: 401, desc: 'Replace batch margin alerts with streaming, tiered escalation.', metric: 'False-positive rate < 3%; median alert latency < 10s.', guardrails: 'Cannot auto-liquidate. Human in the loop for every call.' },
-  { id: 'BF-119', title: 'Order-router latency fix', priority: 'Critical', cursor: 7, issue: 377, desc: 'Cut tail latency in the smart order router under burst load.', metric: 'p99 routing latency < 800µs at 5× peak volume.', guardrails: 'No change to fill-priority logic. Zero-downtime rollout.' },
-  { id: 'BF-140', title: 'Backtesting data-lake migration', priority: 'Medium', cursor: 10, issue: 405, desc: 'Move backtest datasets onto the new lakehouse with full lineage.', metric: 'Backtest run cost −40%; lineage on every dataset.', guardrails: 'Dual-write during cutover. No silent schema drift.' },
-  { id: 'BF-102', title: 'FIX gateway refactor', priority: 'High', cursor: 12, issue: 366, desc: 'Modularize the FIX gateway and isolate venue adapters.', metric: 'New-venue onboarding < 2 days (from 3 weeks).', guardrails: 'Wire-compatible. Conformance suite stays green.' },
-  { id: 'BF-097', title: 'Compliance audit export', priority: 'Medium', cursor: 13, issue: 352, desc: 'One-click immutable export of the full audit trail for regulators.', metric: 'Export any quarter in < 60s; tamper-evident hashes.', guardrails: 'Immutable store only. Every access is logged.' },
-  { id: 'BF-090', title: 'Trader-console dark mode', priority: 'Low', cursor: 15, issue: 331, desc: 'Ship an accessible dark theme for the trader console.', metric: 'WCAG AA on all surfaces; opt-in persistence.', guardrails: 'No layout regressions in light mode.' },
-]
-
 // One-time migration for the pipeline-v2 insertion of the PM "Summarize
 // reviews & recommend" step at index 9: everything at/after the old index 9
 // shifts by one.
@@ -241,15 +239,3 @@ if (!shiftedReview) {
 // expect it applied the instant it comes back up, not just on the next
 // Google login attempt.
 reconcileGoogleUsers(db)
-
-// Demo seed data — only when GitHub sync is not configured.
-const count = db.prepare('SELECT COUNT(*) AS n FROM work_item').get().n
-const syncConfigured = db.prepare('SELECT COUNT(*) AS n FROM project_repo').get().n > 0
-if (count === 0 && !syncConfigured) {
-  const insert = db.prepare(`
-    INSERT INTO work_item (id, title, priority, desc, metric, guardrails, issue, cursor)
-    VALUES (@id, @title, @priority, @desc, @metric, @guardrails, @issue, @cursor)
-  `)
-  const seedAll = db.transaction((items) => items.forEach((it) => insert.run(it)))
-  seedAll(SEED_ITEMS)
-}

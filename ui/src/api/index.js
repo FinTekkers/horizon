@@ -1,12 +1,6 @@
-// Data-layer switch: the server API is the default; set VITE_MOCK=1 to run
-// the UI standalone on the in-browser mock (no server needed).
+// Talks to the Horizon server (server/) via /api (Vite proxy).
 
-import * as mock from './mockApi'
-import * as server from './serverApi'
-
-const impl = import.meta.env.VITE_MOCK === '1' ? mock : server
-
-export const {
+export {
   subscribe,
   getItems,
   getSync,
@@ -40,4 +34,7 @@ export const {
   saveDefinition,
   effectivePrompt,
   getDeployTargets,
-} = impl
+  getSetupStatus,
+  submitSetup,
+  checkFarm,
+} from './serverApi'

@@ -1,4 +1,9 @@
-// Server configuration (all optional — defaults give the offline demo mode).
+// Server configuration. All optional — an unconfigured install boots fine,
+// but items sit blocked on setup until FARM_URL (or the setup screen) points
+// it at a real agent farm. See server/src/settings.js for the DB-backed
+// settings (repo, token, farm URL/secret) that the setup screen writes —
+// their env vars below still take precedence, so existing installs upgrade
+// seamlessly with zero config changes.
 //
 //   HORIZON_REPO           "owner/name" — enables GitHub issue sync
 //   GITHUB_TOKEN           token for private repos / higher rate limits
@@ -6,6 +11,9 @@
 //   POLL_INTERVAL_MS       poll fallback cadence (default 60s; ETag-conditional,
 //                          so unchanged polls don't count against rate limits)
 //   HORIZON_DB             path to the SQLite file (default server/data/horizon.db)
+//   FARM_URL               agent farm (farm/ Python daemon) base URL — unset means
+//                          no farm, so agent steps sit blocked until setup
+//   FARM_SHARED_SECRET     shared secret the farm uses to call back into this server
 //   PORT                   HTTP port (default 3001)
 //   GOOGLE_CLIENT_ID       OAuth client id (console.cloud.google.com, project fintekkers-422317)
 //   GOOGLE_CLIENT_SECRET   OAuth client secret
@@ -21,9 +29,6 @@ export const WEBHOOK_SECRET = process.env.GITHUB_WEBHOOK_SECRET || null
 // Where the Horizon UI lives — used for deep links in GitHub comments/PRs.
 export const UI_URL = (process.env.HORIZON_UI_URL || 'http://localhost:5173').replace(/\/+$/, '')
 
-// Agent farm (farm/ Python daemon). FARM_URL unset -> mock agents run in-process.
-export const FARM_URL = process.env.FARM_URL || null
-export const FARM_SHARED_SECRET = process.env.FARM_SHARED_SECRET || 'dev-secret'
 // Which step indexes the farm handles. Default: every agent step, including
 // Deploy (14) — HZ-22 wires the DevOps role in for deep post-deploy
 // verification. The release publish itself (needs the GitHub token the farm

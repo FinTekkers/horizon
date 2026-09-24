@@ -30,9 +30,9 @@ export function registerAgentRunner(runner) {
 
 // The orchestrator polls the farm for {state, reason} per active run_id and
 // registers a cache lookup here (HZ-54) — a plain synchronous read, never a
-// network call, so listItems()/the SSE snapshot never await the farm. Absent
-// a real farm (mock mode) or any entry for a run, this defaults to {} below,
-// which reads as "running" — today's presentation.
+// network call, so listItems()/the SSE snapshot never await the farm. No
+// entry for a run (an unreachable/slow farm, or a poll that hasn't landed
+// yet) defaults to {} below, which reads as "running" — today's presentation.
 let runStateProvider = () => ({})
 
 export function registerRunStateProvider(provider) {
@@ -164,8 +164,8 @@ const selectActiveRun = db.prepare(
 )
 
 // Folds the farm's cached {state, reason} onto an active run (HZ-54). No
-// entry for this run — mock mode, an old/unreachable farm, or a poll that
-// simply hasn't landed yet — defaults to 'running', i.e. today's behavior.
+// entry for this run — an old/unreachable farm, or a poll that simply
+// hasn't landed yet — defaults to 'running', i.e. today's behavior.
 function withRunState(activeRun) {
   if (!activeRun) return null
   const cached = runStateProvider()[String(activeRun.id)]
@@ -180,9 +180,9 @@ function currentStepOf(row) {
   return { index: row.cursor, label: step.label, kind: step.kind, phase: PHASES[step.phase], gate: step.kind === 'gate' }
 }
 
-// Board/tracker only ever see the active project's items (plus local demo
-// items, which have no project). Other projects keep syncing in the
-// background but are invisible until activated.
+// Board/tracker only ever see the active project's items (plus local items
+// with no repo connected, which have no project). Other projects keep
+// syncing in the background but are invisible until activated.
 export function listItems() {
   const activeId = getActiveProjectId()
   return selectItems
@@ -557,7 +557,7 @@ export function parseIssueBody(body) {
   return result
 }
 
-// ---- local (demo-mode) item creation ----
+// ---- local (no repo connected) item creation ----
 
 export function createLocalItem({ title, outcome, metric, guardrails, priority }) {
   const next =

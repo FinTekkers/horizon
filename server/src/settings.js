@@ -30,6 +30,19 @@ export function getRepoUrl() {
   return repo ? `https://github.com/${repo}` : 'https://github.com/FinTekkers/horizon'
 }
 
+// Agent farm (farm/ Python daemon). Unset -> no farm: items sit blocked on
+// setup instead of faking progress (see orchestrator.js's 'unconfigured'
+// farm state). Same DB-override/env-fallback shape as getRepo()/getToken()
+// above, so existing env-var installs (e.g. shoreward.ai) keep working
+// unchanged and take precedence over anything saved from the setup screen.
+export function getFarmUrl() {
+  return getSetting('farm_url') || process.env.FARM_URL || null
+}
+
+export function getFarmSharedSecret() {
+  return getSetting('farm_shared_secret') || process.env.FARM_SHARED_SECRET || 'dev-secret'
+}
+
 // The bot farm carries one project's context at a time; everything item-facing
 // (board, tracker, agents, item APIs) is scoped to this project.
 export function getActiveProjectId() {

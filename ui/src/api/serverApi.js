@@ -1,7 +1,6 @@
-// Real data layer: talks to the Horizon server (server/) via /api (Vite proxy).
-// Same interface as mockApi.js — components never know which one they're on.
-// State arrives over SSE (/api/stream), so all actions are fire-and-forget
-// POSTs; the server broadcasts the updated item list after every mutation.
+// Talks to the Horizon server (server/) via /api (Vite proxy). State arrives
+// over SSE (/api/stream), so all actions are fire-and-forget POSTs; the
+// server broadcasts the updated item list after every mutation.
 
 // Every server request goes through this base so the app works both at the
 // dev root (/) and mounted under a subpath in production (vite `base`, e.g.
@@ -175,6 +174,21 @@ export function getActiveProjectId() {
 
 export function getFarm() {
   return farm
+}
+
+// ---- first-run setup (HZ-28) ----
+
+export function getSetupStatus() {
+  return getJson('/setup/status')
+}
+
+export function submitSetup(fields) {
+  return postJson('/setup', fields)
+}
+
+export function checkFarm(url) {
+  const qs = url ? `?url=${encodeURIComponent(url)}` : ''
+  return getJson(`/setup/farm-check${qs}`)
 }
 
 export function activateProject(projectId) {
