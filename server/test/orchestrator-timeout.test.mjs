@@ -56,7 +56,7 @@ function stepRun(runId) {
   return db.prepare('SELECT * FROM step_run WHERE id = ?').get(runId)
 }
 
-test('a step never picked up by the farm fails within the queue watchdog, distinctly worded from an execution timeout', async () => {
+test('a step never picked up by the farm fails within the queue watchdog, distinctly worded from an execution timeout — and auto-retries (HZ-76) rather than pausing on the first miss', async () => {
   insertItem.run('T-1', 'Never picked up', 'Medium', 4)
   orchestrator.kick('T-1')
   await wait(10)
@@ -66,10 +66,18 @@ test('a step never picked up by the farm fails within the queue watchdog, distin
   const run = stepRun(runId)
   assert.equal(run.status, 'cancelled')
   assert.match(run.output, /^FAILED: step was never picked up by the farm/)
-  assert.equal(store.getItem('T-1').paused, true)
+  // never_picked_up is one of HZ-76's auto-retry reasons — a first miss
+  // recovers with no human action; only exhausting the retry budget pauses
+  // (see server/test/orchestrator-auto-retry.test.mjs for the cap itself).
+  assert.equal(store.getItem('T-1').paused, false)
+  const retriedRunId = activeRunId('T-1')
+  assert.notEqual(retriedRunId, runId, 'a fresh run must have been auto-dispatched')
+  assert.equal(stepRun(retriedRunId).auto_retry_count, 1)
   // farmd must not still launch this task file after the server gave up on it.
   const cancelCall = dispatches.find((d) => d.url.includes('/steps/cancel') && d.body?.run_id === runId)
   assert.ok(cancelCall, 'failFarmRun must tell the farm to drop the task, not just update its own DB')
+
+  orchestrator.cancel('T-1') // clear the retried run's own queue watchdog so the process can exit
 })
 
 test('a step that starts late — after the old combined deadline would have killed it — still completes', async () => {
@@ -184,6 +192,8 @@ test('the queue watchdog does not grant the implement-step floor while a step is
   const run = stepRun(runId)
   assert.equal(run.status, 'cancelled')
   assert.match(run.output, /^FAILED: step was never picked up by the farm/)
+
+  orchestrator.cancel('T-7') // never_picked_up auto-retries (HZ-76); clear the retried run's timer to exit cleanly
 })
 
 test('the implement-step execution floor still applies once the step has started', async () => {

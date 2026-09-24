@@ -27,6 +27,14 @@ class ClaudeError(RuntimeError):
     pass
 
 
+class TurnCapExceeded(ClaudeError):
+    """Raised specifically when the SDK reports error_max_turns — distinct
+    from ClaudeError's other causes (timeout, malformed reply, crashed
+    process) so callers can tell "ran out of turn budget" apart from those
+    without parsing the message string (HZ-76: the orchestrator auto-retries
+    this cause, up to its own hard cap, unlike a generic ClaudeError)."""
+
+
 def assert_subscription_auth() -> None:
     """Refuse to run with ANTHROPIC_API_KEY present — the farm must use the
     logged-in `claude` subscription, never metered API billing (HZ-5)."""
@@ -156,7 +164,8 @@ async def _stream_query(
                     # failure reads as a mystery in the UI.
                     subtype = getattr(message, "subtype", None) or "unknown"
                     detail = result_text[:300] or f"no result text (subtype: {subtype}, {message.num_turns} turns)"
-                    raise ClaudeError(f"claude reported an error result [{subtype}]: {detail}")
+                    error_cls = TurnCapExceeded if subtype == "error_max_turns" else ClaudeError
+                    raise error_cls(f"claude reported an error result [{subtype}]: {detail}")
     finally:
         # Cancellation (asyncio.wait_for timeout) lands here too: closing the
         # generator tears down the SDK's transport, killing the spawned

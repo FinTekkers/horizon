@@ -19,7 +19,7 @@ from pathlib import Path
 import httpx
 
 from .checks import run_checks
-from .claude_runner import ClaudeError, extract_json, run_claude
+from .claude_runner import ClaudeError, TurnCapExceeded, extract_json, run_claude
 from .config import FARM_PORT
 from .personas import compose_role, resolve
 from .rules import render_rules_section
@@ -618,6 +618,12 @@ def main() -> int:
     except Exception as exc:
         log(f"run {run_id}: FAILED — {exc}")
         result = {"run_id": run_id, "ok": False, "error": str(exc)[:300]}
+        # HZ-76: tag the one failure cause the orchestrator is willing to
+        # auto-retry from this side (running out of turn budget) — anything
+        # else (a checks failure, a malformed reply, ...) reports no reason
+        # and the server pauses for a human exactly as before.
+        if isinstance(exc, TurnCapExceeded):
+            result["reason"] = "turn_cap"
 
     httpx.post(f"{FARMD}/internal/steps/result", json=result, timeout=30)
     log(f"run {run_id}: reported {'ok' if result['ok'] else 'failure'}")

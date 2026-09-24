@@ -1243,13 +1243,13 @@ export function buildApp({ logger = true } = {}) {
         body: {
           type: 'object',
           required: ['error'],
-          properties: { error: { type: 'string', maxLength: 2000 } },
+          properties: { error: { type: 'string', maxLength: 2000 }, reason: { type: 'string', maxLength: 100 } },
         },
       },
     },
     (request, reply) => {
       if (!farmAuthorized(request, reply)) return
-      return orchestrator.failFarmRun(request.params.runId, request.body.error)
+      return orchestrator.failFarmRun(request.params.runId, request.body.error, request.body.reason || null)
     },
   )
 
