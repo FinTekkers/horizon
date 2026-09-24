@@ -135,6 +135,30 @@ def test_implement_step_fails_when_checks_fail(tmp_path, monkeypatch):
 # conflict on a binary file.
 
 
+def test_publish_screenshots_works_inside_a_git_WORKTREE_not_just_a_clone(tmp_path):
+    """Regression: per-item worktrees (HZ-50) have a .git FILE, not a directory.
+
+    publish_screenshots used to write its temporary git index at
+    ws/.git/horizon-artifacts-index, which is ENOTDIR in a worktree. Worse, the
+    unlink in its `finally` raised the same error OUTSIDE the except that makes
+    this function best-effort, so a screenshot publish failure killed the whole
+    implement step. Observed on real runs before the fix.
+
+    make_git_workspace() produces a plain clone, where .git IS a directory —
+    which is why no existing test caught this. This one uses a real worktree.
+    """
+    ws, origin = make_git_workspace(tmp_path)
+    worktree = tmp_path / "item-worktree"
+    git(ws, "worktree", "add", "--detach", str(worktree))
+    assert (worktree / ".git").is_file(), "a worktree's .git must be a file for this test to mean anything"
+
+    write_fake_screenshot(worktree, "board")
+    publish_screenshots(worktree, {"id": "T-9", "repo": "acme/demo"})
+
+    refs = origin_refs(origin)
+    assert "refs/heads/e2e-artifacts/t-9" in refs
+
+
 def write_fake_screenshot(ws, name):
     shots = ws / "e2e" / "__screenshots__"
     shots.mkdir(parents=True, exist_ok=True)
