@@ -10,6 +10,8 @@ assert_provider_auth()/run_agent() below exercise the claude provider,
 same as the pre-HZ-83 claude_runner module did.
 """
 
+import json
+import subprocess
 import sys
 
 import pytest
@@ -102,6 +104,45 @@ def test_assert_provider_auth_allows_metered_billing_when_explicitly_capped(monk
     monkeypatch.setattr(base, "_METERED_SPEND_TRACKER", base._SpendTracker())
 
     assert_provider_auth()  # must not raise
+
+
+# ---- config-driven provider selection, end to end (HZ-83 success metric) ----
+
+
+def test_run_agent_selects_muse_provider_via_config_end_to_end(monkeypatch):
+    """The success metric's central claim — 'a step runs on Muse Code
+    selected by configuration' — needs a test that actually crosses the
+    seam. Sets FARM_PROVIDER=muse and drives a real call through
+    agent_runner.run_agent() into the real farm.providers.muse module, down
+    to muse.subprocess.run — the same boundary test_providers_muse.py mocks
+    in isolation — rather than a fake in-process provider standing in for
+    it (as test_agent_runner_dispatch.py does for the dispatcher contract)."""
+    from farm.providers import muse
+
+    captured = {}
+
+    def fake_subprocess_run(cmd, **kwargs):
+        captured["cmd"] = cmd
+        payload = json.dumps(
+            {
+                "payload_type": "run.terminal.completed",
+                "payload": {"terminal": "completed", "text": "muse says hi", "command_id": "cmd-1"},
+            }
+        )
+        return subprocess.CompletedProcess(args=cmd, returncode=0, stdout=payload, stderr="")
+
+    monkeypatch.setattr(muse.subprocess, "run", fake_subprocess_run)
+    monkeypatch.setenv("FARM_PROVIDER", "muse")
+
+    reply = run_agent("say hi", session_id="fixed-session", max_turns=5, timeout_s=30)
+
+    assert reply == {"result": "muse says hi", "session_id": "fixed-session"}
+    # Proves the real muse.run() actually built the command (headless-safety
+    # flags and all) rather than the dispatcher short-circuiting somewhere.
+    assert captured["cmd"][0] == muse.FARM_MUSE_BIN
+    assert "--approval-mode" in captured["cmd"]
+    assert "--session-id" in captured["cmd"]
+    assert captured["cmd"][captured["cmd"].index("--session-id") + 1] == "fixed-session"
 
 
 def test_extract_json_tolerates_raw_control_characters_in_strings():
