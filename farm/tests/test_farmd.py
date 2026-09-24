@@ -172,6 +172,54 @@ def test_steps_result_forwards_a_large_artifact_verbatim(monkeypatch):
     assert captured["json"]["artifacts"]["artifact_md"] == big
 
 
+# ---- HZ-76: reason forwarding on failure ----
+# The server only auto-retries a small, explicit set of failure reasons
+# (never_picked_up/timeout/unreachable/turn_cap) — farmd's job here is just
+# to relay whatever step_agent.py reported, not decide retryability itself.
+
+
+def test_steps_result_forwards_a_reason_on_failure(monkeypatch):
+    captured = {}
+
+    class FakeResponse:
+        status_code = 200
+
+    def fake_post(url, json=None, headers=None, timeout=None):
+        captured["url"], captured["json"] = url, json
+        return FakeResponse()
+
+    monkeypatch.setattr(farmd.httpx, "post", fake_post)
+    res = client.post(
+        "/internal/steps/result",
+        json={"run_id": 56, "ok": False, "error": "ran out of turns", "reason": "turn_cap"},
+    )
+    assert res.status_code == 200
+    assert captured["url"].endswith("/api/farm/steps/56/fail")
+    assert captured["json"] == {"error": "ran out of turns", "reason": "turn_cap"}
+
+
+def test_steps_result_omits_reason_when_the_agent_did_not_report_one(monkeypatch):
+    """A checks-failed (or any other unclassified) failure must not carry a
+    reason field at all — that's what keeps the server pausing for a human
+    instead of auto-retrying a real defect."""
+    captured = {}
+
+    class FakeResponse:
+        status_code = 200
+
+    def fake_post(url, json=None, headers=None, timeout=None):
+        captured["json"] = json
+        return FakeResponse()
+
+    monkeypatch.setattr(farmd.httpx, "post", fake_post)
+    res = client.post(
+        "/internal/steps/result",
+        json={"run_id": 57, "ok": False, "error": "repo checks failed: eslint exited 1"},
+    )
+    assert res.status_code == 200
+    assert "reason" not in captured["json"]
+
+
 # ---- HZ-57: /started notify + claim-time launch gate ----
 # The server's timeout used to start counting at dispatch, so time a step
 # spent sitting in the farm's queue burned the same clock as its actual

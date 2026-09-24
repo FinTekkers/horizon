@@ -4,6 +4,7 @@ side needs to advance the item ("agents push tasks forward")."""
 
 import json
 import subprocess
+import sys
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -11,7 +12,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import pytest
 
 from farm import step_agent
-from farm.claude_runner import ClaudeError
+from farm.claude_runner import ClaudeError, TurnCapExceeded
 from farm.personas import PERSONA_DIR, PERSONAS
 from farm.step_agent import STEP_CONFIG, build_prompt, execute, publish_screenshots
 
@@ -1155,3 +1156,66 @@ def test_two_exhausted_attempts_then_a_successful_run_converges_with_continuatio
         return {"result": '{"summary": "finished the item"}'}
 
     monkeypatch.setattr(step_agent, "run_claude", attempt_3)
+
+
+# ---- main(): the reason tag that crosses into the Node payload (HZ-76) ----
+# The orchestrator only auto-retries a small, explicit set of reasons — this
+# is the one Python originates. A Node-side test can fake the string, but
+# only this proves the callback payload actually carries it end-to-end from
+# a real TurnCapExceeded.
+
+
+def test_main_tags_a_turn_cap_exhaustion_with_reason_turn_cap(tmp_path, monkeypatch):
+    task = {"run_id": 42, "step": {"index": 4, "label": "Plan options & trade-offs (pros / cons)"}, "item": {"id": "T-1"}}
+    task_file = tmp_path / "task.json"
+    task_file.write_text(json.dumps(task))
+
+    def _exhausted(t):
+        raise TurnCapExceeded("claude reported an error result [error_max_turns]: ran out of turns")
+
+    monkeypatch.setattr(step_agent, "execute", _exhausted)
+    monkeypatch.setattr(sys, "argv", ["step_agent", "--task", str(task_file)])
+    posted = {}
+
+    def fake_post(url, json=None, timeout=None):
+        posted["url"], posted["json"] = url, json
+
+        class _Resp:
+            pass
+
+        return _Resp()
+
+    monkeypatch.setattr(step_agent.httpx, "post", fake_post)
+
+    step_agent.main()
+
+    assert posted["json"]["ok"] is False
+    assert posted["json"]["reason"] == "turn_cap"
+    assert not task_file.exists()
+
+
+def test_main_does_not_tag_a_reason_for_an_ordinary_failure(tmp_path, monkeypatch):
+    """A non-turn-cap failure (e.g. a checks-failed RuntimeError) must not
+    carry any reason — that is what keeps it un-retryable server-side."""
+    task = {"run_id": 43, "step": {"index": 4, "label": "Plan options & trade-offs (pros / cons)"}, "item": {"id": "T-1"}}
+    task_file = tmp_path / "task.json"
+    task_file.write_text(json.dumps(task))
+
+    monkeypatch.setattr(step_agent, "execute", lambda t: (_ for _ in ()).throw(RuntimeError("repo checks failed")))
+    monkeypatch.setattr(sys, "argv", ["step_agent", "--task", str(task_file)])
+    posted = {}
+
+    def fake_post(url, json=None, timeout=None):
+        posted["json"] = json
+
+        class _Resp:
+            pass
+
+        return _Resp()
+
+    monkeypatch.setattr(step_agent.httpx, "post", fake_post)
+
+    step_agent.main()
+
+    assert posted["json"]["ok"] is False
+    assert "reason" not in posted["json"]

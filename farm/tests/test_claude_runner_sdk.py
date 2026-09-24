@@ -14,7 +14,7 @@ import pytest
 
 sdk = pytest.importorskip("claude_agent_sdk", reason="claude-agent-sdk not installed — SDK-path tests need its message types")
 
-from farm.claude_runner import ClaudeError, run_claude
+from farm.claude_runner import ClaudeError, TurnCapExceeded, run_claude
 
 # conftest defaults tests to the subprocess runner (fake_claude can't speak
 # the SDK stream protocol); these opt in and mock claude_agent_sdk.query.
@@ -25,9 +25,9 @@ def sdk_runner(monkeypatch):
     monkeypatch.setenv("FARM_RUNNER", "sdk")
 
 
-def _result_message(session_id="sdk-session-1", result='{"summary": "done"}', is_error=False):
+def _result_message(session_id="sdk-session-1", result='{"summary": "done"}', is_error=False, subtype="success"):
     return sdk.ResultMessage(
-        subtype="success",
+        subtype=subtype,
         duration_ms=1500,
         duration_api_ms=1200,
         is_error=is_error,
@@ -150,3 +150,35 @@ def test_sdk_error_result_raises(sdk_runner, monkeypatch):
     monkeypatch.setattr(sdk, "query", fake_query)
     with pytest.raises(ClaudeError, match="error result"):
         run_claude("hello", timeout_s=10)
+
+
+def test_sdk_error_max_turns_raises_the_retryable_subclass(sdk_runner, monkeypatch):
+    """HZ-76: only error_max_turns is auto-retryable server-side — it must
+    raise the distinct TurnCapExceeded subclass, not a plain ClaudeError, so
+    step_agent.main() can tag the failure with reason=turn_cap."""
+
+    def fake_query(*, prompt, options=None, **kwargs):
+        async def gen():
+            yield _result_message(result="", is_error=True, subtype="error_max_turns")
+
+        return gen()
+
+    monkeypatch.setattr(sdk, "query", fake_query)
+    with pytest.raises(TurnCapExceeded, match=r"\[error_max_turns\]"):
+        run_claude("hello", timeout_s=10)
+
+
+def test_sdk_other_error_subtypes_stay_plain_claude_error(sdk_runner, monkeypatch):
+    """A non-turn-cap error result (e.g. error_during_execution) must NOT be
+    classified as TurnCapExceeded — only error_max_turns is retryable."""
+
+    def fake_query(*, prompt, options=None, **kwargs):
+        async def gen():
+            yield _result_message(result="boom", is_error=True, subtype="error_during_execution")
+
+        return gen()
+
+    monkeypatch.setattr(sdk, "query", fake_query)
+    with pytest.raises(ClaudeError) as excinfo:
+        run_claude("hello", timeout_s=10)
+    assert not isinstance(excinfo.value, TurnCapExceeded)

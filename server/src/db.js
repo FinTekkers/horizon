@@ -166,6 +166,17 @@ try {
 } catch {
   // column already exists
 }
+try {
+  // HZ-76: consecutive AUTOMATIC retries that produced this row, carried
+  // forward from the run being retried. Reset to 0 by any non-automatic
+  // dispatch (resume, review send-back, normal advance) since kick()'s
+  // opts.autoRetryCount defaults to 0 everywhere except the retry path
+  // itself. The hard cap check in failFarmRun reads this column — never a
+  // prompt or agent decision.
+  db.exec('ALTER TABLE step_run ADD COLUMN auto_retry_count INTEGER NOT NULL DEFAULT 0')
+} catch {
+  // column already exists
+}
 db.exec(`
   CREATE UNIQUE INDEX IF NOT EXISTS idx_feedback_gh_comment
     ON feedback(gh_comment_id) WHERE gh_comment_id IS NOT NULL;

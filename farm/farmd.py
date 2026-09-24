@@ -500,11 +500,15 @@ async def steps_result(request: Request):
     body = await request.json()
     run_id = body.get("run_id")
     path = "complete" if body.get("ok") else "fail"
-    payload = (
-        {"summary": body.get("summary", ""), "patch": body.get("patch") or {}, "artifacts": body.get("artifacts") or {}}
-        if body.get("ok")
-        else {"error": body.get("error", "unknown agent failure")}
-    )
+    if body.get("ok"):
+        payload = {"summary": body.get("summary", ""), "patch": body.get("patch") or {}, "artifacts": body.get("artifacts") or {}}
+    else:
+        payload = {"error": body.get("error", "unknown agent failure")}
+        # HZ-76: only a small, explicit set of reasons (e.g. "turn_cap") is
+        # ever auto-retried server-side — anything absent here just pauses
+        # for a human, same as before this existed.
+        if body.get("reason"):
+            payload["reason"] = body["reason"]
     url = f"{HORIZON_URL}/api/farm/steps/{run_id}/{path}"
     for attempt in (1, 2):
         try:

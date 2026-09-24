@@ -41,6 +41,15 @@ function executionBudgetFor(stepIndex) {
 // failing verdict attached rather than looping forever (HZ-30).
 const REVIEW_CYCLE_CAP = 3
 
+// Hard cap on consecutive AUTOMATIC retries of a step failure (HZ-76),
+// enforced HERE and persisted on step_run.auto_retry_count — never decided
+// by an agent or a prompt. Only the reasons below are ever retried; anything
+// else (malformed verdict, PR/release failure, checks-failed, an unrecognized
+// or missing reason) pauses for a human exactly as before this existed —
+// that default-safe behavior is what keeps a real defect from being masked.
+export const AUTO_RETRY_CAP = 3
+const AUTO_RETRY_REASONS = new Set(['never_picked_up', 'timeout', 'unreachable', 'turn_cap'])
+
 // MOCK_STEP_LATENCY_MS lets tests drive the mock pipeline without waiting.
 const latency = () => Number(process.env.MOCK_STEP_LATENCY_MS) || 2000 + Math.floor(Math.random() * 3000)
 
@@ -371,7 +380,7 @@ function runnable(item) {
   )
 }
 
-export function kick(id) {
+export function kick(id, opts = {}) {
   const item = getItem(id)
   if (!runnable(item) || timers[id]) return
 
@@ -382,9 +391,10 @@ export function kick(id) {
       id,
       stepIndex,
     ).n
+  const autoRetryCount = opts.autoRetryCount || 0
   const runId = db
-    .prepare('INSERT INTO step_run (item_id, step_index, attempt, agent) VALUES (?, ?, ?, ?)')
-    .run(id, stepIndex, attempt, step.agent).lastInsertRowid
+    .prepare('INSERT INTO step_run (item_id, step_index, attempt, agent, auto_retry_count) VALUES (?, ?, ?, ?, ?)')
+    .run(id, stepIndex, attempt, step.agent, autoRetryCount).lastInsertRowid
 
   if (FARM_URL && FARM_STEP_INDEXES.has(stepIndex)) {
     dispatchToFarm(id, stepIndex, runId, attempt)
@@ -406,7 +416,10 @@ async function dispatchToFarm(id, stepIndex, runId, attempt) {
   // — if the farm never calls back to confirm a launch (POST .../started),
   // this is what catches a step that's stuck in the queue (or a farm that's
   // down, or a lost task file) within a bounded window (HZ-57).
-  timers[id] = setTimeout(() => failFarmRun(runId, 'step was never picked up by the farm'), FARM_QUEUE_TIMEOUT_MS)
+  timers[id] = setTimeout(
+    () => failFarmRun(runId, 'step was never picked up by the farm', 'never_picked_up'),
+    FARM_QUEUE_TIMEOUT_MS,
+  )
 
   // Deploy's real side effect — publishing the GitHub release that the
   // self-deploy webhook picks up — needs the GitHub token, which only this
@@ -493,7 +506,7 @@ async function dispatchToFarm(id, stepIndex, runId, attempt) {
     step: { index: stepIndex, label: step.label, agent: step.agent },
     feedback,
   }).catch((err) => {
-    failFarmRun(runId, `could not hand the step to the farm: ${err.message}`)
+    failFarmRun(runId, `could not hand the step to the farm: ${err.message}`, 'unreachable')
   })
 }
 
@@ -515,7 +528,7 @@ export function markFarmRunStarted(runId) {
   clearTimeout(timers[run.item_id])
   db.prepare("UPDATE step_run SET agent_started_at = datetime('now') WHERE id = ?").run(runId)
   const executionMs = executionBudgetFor(run.step_index)
-  timers[run.item_id] = setTimeout(() => failFarmRun(runId, 'step timed out'), executionMs)
+  timers[run.item_id] = setTimeout(() => failFarmRun(runId, 'step timed out', 'timeout'), executionMs)
   return { ok: true, active: true }
 }
 
@@ -798,7 +811,11 @@ export async function completeFarmRun(runId, { summary, patch, artifacts }) {
   return { ok: true }
 }
 
-export function failFarmRun(runId, error) {
+// reason is one of AUTO_RETRY_REASONS's tags (assigned by the call site that
+// detected the failure) or null/unrecognized — only a tagged reason, under
+// the cap, on a still-runnable item is ever auto-retried. Everything else
+// pauses for a human exactly as it always has (HZ-76's default-safe rule).
+export function failFarmRun(runId, error, reason = null) {
   const run = db.prepare('SELECT * FROM step_run WHERE id = ?').get(runId)
   if (!run || run.status !== 'active') return { ok: true, stale: true }
   const id = run.item_id
@@ -807,17 +824,10 @@ export function failFarmRun(runId, error) {
   delete timers[id]
 
   // No 'failed' status in older DBs' CHECK constraint — record as cancelled
-  // with a FAILED-prefixed output, pause the item for a human, and say why.
+  // with a FAILED-prefixed output, and say why.
   db.prepare(
     "UPDATE step_run SET status = 'cancelled', output = ?, ended_at = datetime('now') WHERE id = ?",
   ).run(`FAILED: ${String(error).slice(0, 300)}`, runId)
-  db.prepare("UPDATE work_item SET paused = 1, updated_at = datetime('now') WHERE id = ?").run(id)
-  addEvent(id, {
-    who: 'Horizon',
-    text: `agent step failed: ${String(error).slice(0, 200)} — item paused; resume to retry`,
-    color: '#9C333E',
-    initials: 'HZ',
-  })
   // Tell the farm too (same call cancel() makes): a step failed here by
   // either watchdog firing (queue or execution) may still be sitting queued
   // or running on the farm side. Without this, farmd can claim and launch a
@@ -825,6 +835,31 @@ export function failFarmRun(runId, error) {
   // /started callback double-checks this too, but a run failed before it
   // ever reaches that checkpoint needs the task file removed directly.
   if (FARM_URL) farmFetch('/steps/cancel', { run_id: runId }).catch(() => {})
+
+  const retryable = reason != null && AUTO_RETRY_REASONS.has(reason) && runnable(getItem(id))
+
+  if (retryable && run.auto_retry_count < AUTO_RETRY_CAP) {
+    const nextCount = run.auto_retry_count + 1
+    addEvent(id, {
+      who: 'Horizon',
+      text: `transient failure (${reason}): ${String(error).slice(0, 200)} — auto-retrying (${nextCount}/${AUTO_RETRY_CAP})`,
+      color: '#DFA200',
+      initials: 'HZ',
+    })
+    notifyChange()
+    kick(id, { autoRetryCount: nextCount })
+    return { ok: true, retried: true }
+  }
+
+  db.prepare("UPDATE work_item SET paused = 1, updated_at = datetime('now') WHERE id = ?").run(id)
+  addEvent(id, {
+    who: 'Horizon',
+    text: retryable
+      ? `agent step failed: ${String(error).slice(0, 200)} — auto-retry budget (${AUTO_RETRY_CAP}) exhausted; item paused, resume to retry`
+      : `agent step failed: ${String(error).slice(0, 200)} — item paused; resume to retry`,
+    color: '#9C333E',
+    initials: 'HZ',
+  })
   notifyChange()
   return { ok: true }
 }
@@ -984,7 +1019,7 @@ export function rearmFarmRuns() {
     const anchor = run.agent_started_at || run.started_at
     const elapsedMs = Date.now() - new Date(anchor).getTime()
     const remainingMs = Math.max(0, executionBudgetFor(run.step_index) - elapsedMs)
-    timers[run.item_id] = setTimeout(() => failFarmRun(run.id, 'step timed out'), remainingMs)
+    timers[run.item_id] = setTimeout(() => failFarmRun(run.id, 'step timed out', 'timeout'), remainingMs)
   }
   return active.length
 }
