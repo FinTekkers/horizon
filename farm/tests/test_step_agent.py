@@ -13,7 +13,7 @@ import pytest
 from farm import step_agent
 from farm.claude_runner import ClaudeError
 from farm.personas import PERSONA_DIR, PERSONAS
-from farm.step_agent import STEP_CONFIG, build_prompt, execute, publish_screenshots
+from farm.step_agent import truncate_diff, STEP_CONFIG, build_prompt, execute, publish_screenshots
 
 
 def make_task(step_index, label, repo=None, feedback=None, artifacts=None):
@@ -157,6 +157,37 @@ def test_publish_screenshots_works_inside_a_git_WORKTREE_not_just_a_clone(tmp_pa
 
     refs = origin_refs(origin)
     assert "refs/heads/e2e-artifacts/t-9" in refs
+
+
+def test_a_diff_within_the_cap_is_passed_through_untouched_and_unannotated():
+    diff = "diff --git a/x b/x\n+one line\n"
+    text, note = truncate_diff(diff)
+    assert text == diff
+    assert note == ""
+
+
+def test_an_oversized_diff_is_announced_as_truncated_not_silently_cut():
+    """Regression: a silently cut diff ends mid-statement, so a reviewer reads
+    it as broken code and fails the item. HZ-76 looped three times that way —
+    its 14-file, 35k diff was cut at 20k and every verdict described the prompt
+    ("Diff cuts off at `if (FARM_URL)`") rather than the change."""
+    diff = "x" * (step_agent.REVIEW_DIFF_CHARS + 5000)
+    text, note = truncate_diff(diff)
+
+    assert len(text) == step_agent.REVIEW_DIFF_CHARS, "the cap must still bound prompt size"
+    assert note, "a truncated diff MUST carry a note — silence is what caused the loop"
+    assert "TRUNCATED" in note
+    assert "5,000" in note, "say how much was omitted"
+    assert "do not fail the change for it" in note.lower(), \
+        "the reviewer must be told not to fail the item over the cut"
+
+
+def test_the_truncation_note_sits_outside_the_diff_fence():
+    """The note must not be mistakable for part of the patch."""
+    diff = "y" * (step_agent.REVIEW_DIFF_CHARS + 10)
+    text, note = truncate_diff(diff)
+    assert "TRUNCATED" not in text, "the note belongs beside the diff, never inside it"
+    assert note.startswith("\n\n")
 
 
 def write_fake_screenshot(ws, name):
