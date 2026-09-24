@@ -20,6 +20,11 @@ TAG="${1:-}"
 REPO_DIR="${HORIZON_REPO_DIR:-/opt/horizon}"
 STATE_DIR="${HORIZON_STATE_DIR:-$HOME/.horizon}"
 SERVICE_NAME="${HORIZON_SERVICE_NAME:-horizon-server}"
+# Space-separated extra systemd units this target must also restart, supplied
+# by the deploy-targets registry. Kept as opaque data on purpose: this script
+# names no specific companion service, so the isolation the deploy tests
+# assert by construction still holds.
+EXTRA_SERVICES="${HORIZON_EXTRA_SERVICES:-}"
 HEALTH_URL="${HORIZON_HEALTH_URL:-http://127.0.0.1:3001/api/health}"
 HEALTH_TIMEOUT_S="${HORIZON_HEALTH_TIMEOUT_S:-30}"
 HEALTH_POLL_S="${HORIZON_HEALTH_POLL_S:-2}"
@@ -80,6 +85,23 @@ fi
 
 STAGE="restart"
 sudo systemctl restart "$SERVICE_NAME"
+
+# A deploy updates every process this checkout serves, not just the main one.
+# A long-running Python daemon loads its modules once at start, so one that
+# outlives a deploy keeps executing the OLD code while the new code sits on
+# disk — and nothing surfaces the mismatch. That silently caused two
+# regressions: a concurrency cap that stayed at its previous value, and a
+# callback that never loaded, so the server armed a timer nothing cancelled
+# and every long step failed at exactly the timeout (14 consecutive failures,
+# while every shorter step passed).
+#
+# Restarted AFTER the main service so both are on new code before the health
+# check. Companion daemons are expected to re-adopt their in-flight work on
+# boot rather than kill it.
+for extra_service in $EXTRA_SERVICES; do
+  STAGE="restart-extra:$extra_service"
+  sudo systemctl restart "$extra_service"
+done
 
 STAGE="health-check"
 healthy=""

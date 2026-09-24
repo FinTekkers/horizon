@@ -69,6 +69,11 @@ export const runner = {
         HORIZON_STATE_DIR: stateDirFor(target),
         HORIZON_SERVICE_NAME: target.service,
         HORIZON_HEALTH_URL: target.healthUrl,
+        // Companion daemons this target must also restart. A long-running
+        // process that outlives a deploy keeps running the old code (see
+        // the restart stage in the deploy script); the registry names them
+        // so the scripts stay service-agnostic.
+        HORIZON_EXTRA_SERVICES: (target.extraServices || []).join(' '),
       },
     })
     child.unref()

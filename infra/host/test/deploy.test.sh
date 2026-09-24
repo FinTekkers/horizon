@@ -637,6 +637,56 @@ run_deploy_ui() {
   rm -rf "$base"
 }
 
+# ---- 17b. extra services: a companion daemon is restarted too ----
+# A long-running daemon that outlives a deploy keeps executing the OLD code
+# while the new code sits on disk. The registry names such daemons; the script
+# restarts whatever it is handed, without knowing what they are.
+extra_services_test() {
+  local base repo state curl_q systemctl_log code
+  base="$(mktemp -d)"
+  repo="$(setup_repo "$base")"
+  state="$base/state"
+  curl_q="$base/curl.queue"
+  success_queue "$curl_q"
+  systemctl_log="$base/systemctl.log"
+
+  run_deploy "$repo" "$state" v1 \
+    CURL_QUEUE_FILE="$curl_q" CURL_STATE_FILE="$base/curl1.state" \
+    SYSTEMCTL_LOG="$systemctl_log" \
+    HORIZON_EXTRA_SERVICES="companion-one companion-two"
+  code=$?
+
+  [ "$code" -eq 0 ] && ok "extra-services: deploy still succeeds" \
+    || not_ok "extra-services: deploy still succeeds (exit $code)"
+  grep -q "restart companion-one" "$systemctl_log" 2>/dev/null && \
+    grep -q "restart companion-two" "$systemctl_log" 2>/dev/null && \
+    ok "extra-services: every listed companion daemon is restarted" \
+    || not_ok "extra-services: every listed companion daemon is restarted ($(cat "$systemctl_log" 2>/dev/null | tr '\n' '; '))"
+  rm -rf "$base"
+}
+extra_services_test
+
+# ---- 17c. no extra services configured: nothing beyond the main service ----
+no_extra_services_test() {
+  local base repo state curl_q systemctl_log
+  base="$(mktemp -d)"
+  repo="$(setup_repo "$base")"
+  state="$base/state"
+  curl_q="$base/curl.queue"
+  success_queue "$curl_q"
+  systemctl_log="$base/systemctl.log"
+
+  run_deploy "$repo" "$state" v1 \
+    CURL_QUEUE_FILE="$curl_q" CURL_STATE_FILE="$base/curl1.state" \
+    SYSTEMCTL_LOG="$systemctl_log"
+
+  [ "$(grep -c restart "$systemctl_log" 2>/dev/null || echo 0)" -eq 1 ] && \
+    ok "extra-services: with none configured, only the main service restarts" \
+    || not_ok "extra-services: with none configured, only the main service restarts"
+  rm -rf "$base"
+}
+no_extra_services_test
+
 # ---- 18. farm isolation, by construction: neither deploy script references the farm ----
 if ! grep -Eiq 'horizon-farm|\.horizon-farm|(^|[^a-z])farm/' "$HORIZON_DEPLOY_SH" "$UI_DEPLOY_SH"; then
   ok "farm isolation: deploy scripts contain no horizon-farm/farm references"
