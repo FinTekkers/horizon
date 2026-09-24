@@ -12,6 +12,7 @@ import json
 import os
 import subprocess
 import sys
+import tempfile
 from datetime import datetime
 from pathlib import Path
 
@@ -137,7 +138,13 @@ def publish_screenshots(ws: Path, item: dict, log=log) -> None:
     if not pngs:
         log("publish_screenshots: no screenshots to publish — skipped")
         return
-    index_file = ws / ".git" / "horizon-artifacts-index"
+    # NOT ws/".git": per-item worktrees (HZ-50) have a .git FILE containing
+    # "gitdir: ...", not a directory, so writing an index inside it raises
+    # ENOTDIR. GIT_INDEX_FILE may live anywhere, so use a temp path that is
+    # correct for a worktree and a plain clone alike.
+    index_fd, index_path = tempfile.mkstemp(prefix="horizon-artifacts-index-")
+    os.close(index_fd)
+    index_file = Path(index_path)
     env = {"GIT_INDEX_FILE": str(index_file)}
     try:
         index_file.unlink(missing_ok=True)
@@ -153,7 +160,14 @@ def publish_screenshots(ws: Path, item: dict, log=log) -> None:
     except Exception as exc:  # best-effort — never blocks the implement step
         log(f"publish_screenshots: skipped after a failure — {exc}")
     finally:
-        index_file.unlink(missing_ok=True)
+        # The cleanup must not raise either. A finally that throws escapes the
+        # except above and fails the whole implement step — which is exactly
+        # how the ENOTDIR above killed real runs despite this function being
+        # documented as never blocking the step.
+        try:
+            index_file.unlink(missing_ok=True)
+        except OSError as exc:
+            log(f"publish_screenshots: could not remove temp index — {exc}")
 
 
 def prepare_branch(ws: Path, item: dict) -> str:
