@@ -2,7 +2,17 @@
 // HTTP layer can push fresh state to SSE clients.
 
 import { db } from './db.js'
-import { STEPS, PHASES, isClosed, isAbandoned, curStep, IMPLEMENT_STEP_INDEX, ACCEPT_GATE_INDEX } from './lifecycle.js'
+import {
+  STEPS,
+  PHASES,
+  isClosed,
+  isAbandoned,
+  isBlocked,
+  isBlockedByAbandoned,
+  curStep,
+  IMPLEMENT_STEP_INDEX,
+  ACCEPT_GATE_INDEX,
+} from './lifecycle.js'
 import { isPersona, personaLabel } from './personas.js'
 import { getActiveProjectId, setSetting } from './settings.js'
 
@@ -172,6 +182,138 @@ function withRunState(activeRun) {
   return { ...activeRun, state: cached?.state || 'running', reason: cached?.reason || null }
 }
 
+// ---- dependencies (HZ-78) ----
+// item_id is blocked until every depends_on_id row it names has closed (see
+// lifecycle.js isBlocked). Enforced at dispatch time in orchestrator.js's
+// runnable() — the same gate that already decides dispatch — via blockersOf
+// below; the API-facing blocked/blockedBy fields here are read-only
+// reporting of that same derived state, not a second source of truth.
+
+const selectBlockers = db.prepare(
+  `SELECT w.* FROM work_item_dependency d JOIN work_item w ON w.id = d.depends_on_id WHERE d.item_id = ? ORDER BY d.depends_on_id`,
+)
+const selectDependentIds = db.prepare('SELECT item_id FROM work_item_dependency WHERE depends_on_id = ?')
+const selectDependsOnIds = db.prepare('SELECT depends_on_id FROM work_item_dependency WHERE item_id = ?')
+
+// Exported so the orchestrator can gate dispatch on the same derived state
+// this module reports through listItems() — never two separate checks.
+export function blockersOf(id) {
+  return selectBlockers.all(id)
+}
+
+// DFS over the dependency graph starting at dependsOnId, following its own
+// "depends on" edges. Reaching `id` means dependsOnId already (directly or
+// transitively) depends on id, so adding id -> dependsOnId would close a
+// cycle. Called BEFORE any write in addDependency — fail closed, no graph
+// that can deadlock dispatch is ever persisted.
+function wouldCycle(id, dependsOnId) {
+  const seen = new Set()
+  const stack = [dependsOnId]
+  while (stack.length > 0) {
+    const cur = stack.pop()
+    if (cur === id) return true
+    if (seen.has(cur)) continue
+    seen.add(cur)
+    for (const row of selectDependsOnIds.all(cur)) stack.push(row.depends_on_id)
+  }
+  return false
+}
+
+function dependencyFields(id) {
+  const blockers = blockersOf(id)
+  return {
+    blocked: isBlocked(blockers),
+    blockedByAbandoned: isBlockedByAbandoned(blockers),
+    blockedBy: blockers
+      .filter((b) => !isClosed(b))
+      .map((b) => ({ id: b.id, title: b.title, abandoned: isAbandoned(b) })),
+  }
+}
+
+// Wakes every item that names `id` as a blocker — called once `id` has
+// actually closed, from every place isClosed can flip false -> true
+// (approveGate, approveGateFromGithub, and upsertFromGithub's GitHub-close
+// sync). kick() itself re-checks runnable() (which re-checks blockersOf), so
+// a dependent with a second still-open blocker safely no-ops here.
+function wakeDependents(id) {
+  for (const row of selectDependentIds.all(id)) agentRunner.kick(row.item_id)
+}
+
+// Called from abandonItem: an abandoned blocker can never close, so its
+// dependents can never satisfy that dependency by waiting. They are NOT
+// auto-unblocked (removing someone else's dependency edge without asking is
+// its own surprise) and NOT paused (paused is a human action with a Resume
+// button — see lifecycle.js and the guardrails this item shipped under).
+// Instead each live dependent gets an event naming the abandoned blocker and
+// keeps reading blocked: true / blockedByAbandoned: true in the API until a
+// human calls removeDependency (or replaces the dependency) — visible and
+// actionable, never silently stuck.
+function escalateDependents(blockerId, actor) {
+  const blocker = getItem(blockerId)
+  for (const row of selectDependentIds.all(blockerId)) {
+    const dependent = getItem(row.item_id)
+    if (!dependent || isClosed(dependent) || isAbandoned(dependent)) continue
+    addEvent(row.item_id, {
+      who: 'Horizon',
+      text: `blocker ${blockerId} (${blocker?.title || blockerId}) was abandoned by ${actor} — this item stays blocked until the dependency is removed or replaced`,
+      color: '#9C333E',
+      initials: 'HZ',
+    })
+  }
+}
+
+// Declares that `id` cannot proceed until `dependsOnId` closes. Validated,
+// in order, before any write: both items exist, no self-dependency, the
+// dependent isn't already closed/abandoned, the blocker isn't abandoned
+// (an abandoned blocker can never satisfy a dependency, so declaring one is
+// rejected up front rather than immediately needing escalation), and finally
+// the cycle check — fail closed, matching the guardrail that no graph able
+// to deadlock dispatch is ever persisted.
+export function addDependency(id, dependsOnId, actor = 'You') {
+  const it = getItem(id)
+  if (!it) return { error: 'not_found' }
+  if (inactiveProject(it)) return { error: 'project_not_active' }
+  if (isClosed(it)) return { error: 'closed' }
+  if (isAbandoned(it)) return { error: 'abandoned' }
+  if (id === dependsOnId) return { error: 'self_dependency', message: `${id} cannot depend on itself` }
+  const blocker = getItem(dependsOnId)
+  if (!blocker) return { error: 'blocker_not_found' }
+  if (isAbandoned(blocker)) {
+    return { error: 'blocker_abandoned', message: `${dependsOnId} is abandoned and can never satisfy a dependency` }
+  }
+
+  const existing = db.prepare('SELECT 1 FROM work_item_dependency WHERE item_id = ? AND depends_on_id = ?').get(id, dependsOnId)
+  if (existing) return { ok: true, unchanged: true, ...dependencyFields(id) }
+
+  if (wouldCycle(id, dependsOnId)) {
+    return {
+      error: 'cycle',
+      message: `${dependsOnId} already depends on ${id}, directly or transitively — adding this dependency would create a cycle`,
+    }
+  }
+
+  db.prepare('INSERT INTO work_item_dependency (item_id, depends_on_id, created_by) VALUES (?, ?, ?)').run(id, dependsOnId, actor)
+  addEvent(id, { who: actor, text: `added a dependency on ${dependsOnId} (${blocker.title})`, color: '#5E4380', initials: 'YOU' })
+  notify()
+  return { ok: true, ...dependencyFields(id) }
+}
+
+// Removes a dependency edge — the human remedy for a stale/abandoned blocker
+// (see escalateDependents), or simply undoing a mistaken declaration. Always
+// re-kicks: if this was the last open blocker, the item is runnable again
+// and must start automatically, not wait for an unrelated dispatch trigger.
+export function removeDependency(id, dependsOnId, actor = 'You') {
+  const it = getItem(id)
+  if (!it) return { error: 'not_found' }
+  if (inactiveProject(it)) return { error: 'project_not_active' }
+  const result = db.prepare('DELETE FROM work_item_dependency WHERE item_id = ? AND depends_on_id = ?').run(id, dependsOnId)
+  if (result.changes === 0) return { error: 'not_found' }
+  addEvent(id, { who: actor, text: `removed the dependency on ${dependsOnId}`, color: '#5E4380', initials: 'YOU' })
+  notify()
+  agentRunner.kick(id)
+  return { ok: true, ...dependencyFields(id) }
+}
+
 // Where an item stands, resolved server-side so non-UI clients (the WhatsApp
 // concierge) don't need their own copy of the STEPS table.
 function currentStepOf(row) {
@@ -217,6 +359,7 @@ export function listItems() {
     events: selectEvents.all(row.id),
     stepOutputs: stepOutputs(row.id),
     activeRun: withRunState(selectActiveRun.get(row.id) || null),
+    ...dependencyFields(row.id),
   }))
 }
 
@@ -273,7 +416,9 @@ export function approveGate(id, stepIndex, notes, actor = 'You') {
   })
   notify()
   agentRunner.kick(id)
-  return { ok: true, closed: isClosed(getItem(id)) }
+  const closed = isClosed(getItem(id))
+  if (closed) wakeDependents(id)
+  return { ok: true, closed }
 }
 
 // Rejection is not a dead end: the item rolls back to the agent step whose
@@ -471,6 +616,9 @@ export function abandonItem(id, reason, actor = 'You') {
     `UPDATE work_item SET abandoned_at = datetime('now'), abandoned_reason = ?, abandoned_by = ?, ${touch} WHERE id = ?`,
   ).run(trimmed, actor, id)
   addEvent(id, { who: actor, text: `abandoned this item: ${trimmed}`, color: '#9C333E', initials: 'YOU' })
+  // HZ-78: a dependent can never wait this blocker out — surface it on every
+  // live dependent instead of leaving it silently stuck (see escalateDependents).
+  escalateDependents(id, actor)
   notify()
   return { ok: true }
 }
@@ -597,6 +745,7 @@ export function approveGateFromGithub(id) {
   })
   notify()
   agentRunner.kick(id)
+  if (isClosed(getItem(id))) wakeDependents(id)
   return { ok: true }
 }
 
@@ -657,6 +806,7 @@ export function upsertFromGithub(ghIssue, repoFullName) {
       db.prepare(`UPDATE work_item SET cursor = ?, ${touch} WHERE id = ?`).run(STEPS.length, row.id)
       addEvent(row.id, { who: 'GitHub', text: `closed issue #${number}`, color: '#2A2A2E', initials: 'GH' })
       changed = true
+      wakeDependents(row.id)
     } else if (!closedOnGithub && wasClosed && !row.abandoned_at) {
       db.prepare(`UPDATE work_item SET cursor = 0, rejected = 0, paused = 0, ${touch} WHERE id = ?`).run(row.id)
       addEvent(row.id, { who: 'GitHub', text: `reopened issue #${number}`, color: '#2A2A2E', initials: 'GH' })

@@ -10,8 +10,16 @@
 // step_run/event bookkeeping and gate semantics stay exactly as they are.
 
 import { db } from './db.js'
-import { STEPS, AGENTS, isClosed, isAbandoned, IMPLEMENT_STEP_INDEX, REVIEW_STEP_INDEX, DEPLOY_STEP_INDEX } from './lifecycle.js'
-import { getItem, addEvent, notifyChange, registerAgentRunner, registerRunStateProvider, recoverRejectedItems } from './store.js'
+import { STEPS, AGENTS, isClosed, isAbandoned, isBlocked, IMPLEMENT_STEP_INDEX, REVIEW_STEP_INDEX, DEPLOY_STEP_INDEX } from './lifecycle.js'
+import {
+  getItem,
+  addEvent,
+  notifyChange,
+  registerAgentRunner,
+  registerRunStateProvider,
+  recoverRejectedItems,
+  blockersOf,
+} from './store.js'
 import { createMockPr, createDeployRelease, postIssueComment, createPrFromBranch } from './github.js'
 import { PHASES } from './lifecycle.js'
 import { getActiveProjectId, getSetting, setSetting, getToken } from './settings.js'
@@ -103,6 +111,8 @@ export function getFarmState() {
 // tmux session name) per run_id via POST /runs/status, polled here on an
 // interval independent of the request path so snapshot()/listItems() stay
 // synchronous. Cached on `farm.runStates`, keyed by step_run.id (string).
+// How often to retry reaching a farm we have lost contact with.
+const FARM_RECOVERY_POLL_MS = Number(process.env.FARM_RECOVERY_POLL_MS || 15_000)
 const RUN_STATE_POLL_MS = Number(process.env.FARM_RUN_STATE_POLL_MS || 4000)
 let runStatePollInFlight = false
 
@@ -367,7 +377,8 @@ function runnable(item) {
     !isAbandoned(item) &&
     !item.paused &&
     !item.rejected &&
-    STEPS[item.cursor].kind === 'agent'
+    STEPS[item.cursor].kind === 'agent' &&
+    !isBlocked(blockersOf(item.id))
   )
 }
 
@@ -943,6 +954,15 @@ export function init(log) {
     const rearmed = rearmFarmRuns()
     if (rearmed > 0) log.info(`Re-armed watchdogs for ${rearmed} in-flight farm run(s)`)
     setInterval(pollRunStates, RUN_STATE_POLL_MS).unref()
+    // Re-probe a farm we've lost contact with. startRealFarm() pins
+    // status:'error' when it can't reach farmd, and runnable() refuses to
+    // dispatch anything while that holds — so a transient outage stops ALL
+    // work until someone restarts this process, with nothing in the UI saying
+    // why. That is not hypothetical: a deploy restarts the farm, the server
+    // reaches for it mid-restart, gets 'fetch failed', and latches.
+    // ensureFarm() already returns immediately when the farm is healthy, so
+    // this only does work while something is actually wrong.
+    setInterval(() => ensureFarm(log), FARM_RECOVERY_POLL_MS).unref()
   } else {
     // Mock runs die with this process: close them; resume will re-kick.
     closeAllOrphanedRuns()
