@@ -67,8 +67,12 @@ STEP_CONFIG = {
 }
 
 # Diff shown to both review passes is capped — a defensive bound on prompt
-# size, not a claim that larger diffs can't happen.
-REVIEW_DIFF_CHARS = 20000
+# size, not a claim that larger diffs can't happen. 20k was below the size of
+# an ordinary change: HZ-76's 14-file diff was 35k, so the reviewer saw 57% of
+# it, cut mid-statement, and failed the item for looking incomplete. The code
+# was fine; the input wasn't. When this DOES bite, truncate_diff below says so
+# in the prompt — a reviewer must distrust the cut, never the code.
+REVIEW_DIFF_CHARS = 200_000
 
 # Subject-line marker for a salvage commit (HZ-31) — written by
 # _salvage_checkpoint() and detected by _checkpoint_resume_note() so the next
@@ -168,6 +172,34 @@ def publish_screenshots(ws: Path, item: dict, log=log) -> None:
             index_file.unlink(missing_ok=True)
         except OSError as exc:
             log(f"publish_screenshots: could not remove temp index — {exc}")
+
+
+def truncate_diff(diff_full: str) -> tuple[str, str]:
+    """Cap the diff shown to a reviewer, and SAY SO when it is cut.
+
+    A silently truncated diff ends mid-statement, so a competent reviewer reads
+    it as broken code and fails the item — which sends it back to Eng, which
+    finds nothing wrong, which re-runs review against the same truncated diff.
+    Observed looping HZ-76 three times at ~15 minutes a cycle, each one ending
+    in a verdict ("Diff cuts off at `if (FARM_URL)`") that described the prompt
+    rather than the change.
+
+    Returning the note separately keeps it OUTSIDE the ```diff fence, so it
+    cannot be mistaken for part of the patch.
+    """
+    if len(diff_full) <= REVIEW_DIFF_CHARS:
+        return diff_full, ""
+    shown = diff_full[:REVIEW_DIFF_CHARS]
+    omitted = len(diff_full) - len(shown)
+    note = (
+        f"\n\n**DIFF TRUNCATED — {omitted:,} of {len(diff_full):,} characters were omitted.**\n"
+        "The patch above ends where the cap fell, NOT where the change ends, so it "
+        "will look unfinished. Do not treat the cut as a defect: judge only what is "
+        "shown, and if the truncation prevents a confident verdict, say the diff was "
+        "truncated and that review is incomplete — do not fail the change for it. "
+        "The file list above this diff shows the change's true extent."
+    )
+    return shown, note
 
 
 def prepare_branch(ws: Path, item: dict) -> str:
@@ -462,8 +494,9 @@ def execute(task: dict) -> dict:
         head = git(ws, "symbolic-ref", "refs/remotes/origin/HEAD", check=False).stdout.strip()
         default = head.rsplit("/", 1)[-1] if head else "main"
         diff_stat = git(ws, "diff", "--stat", f"origin/{default}...HEAD", check=False).stdout.strip()
-        diff_text = git(ws, "diff", f"origin/{default}...HEAD", check=False).stdout[:REVIEW_DIFF_CHARS]
-        diff_section = f"## Code diff under review\n\n```\n{diff_stat}\n```\n\n```diff\n{diff_text}\n```"
+        diff_full = git(ws, "diff", f"origin/{default}...HEAD", check=False).stdout
+        diff_text, diff_note = truncate_diff(diff_full)
+        diff_section = f"## Code diff under review\n\n```\n{diff_stat}\n```\n\n```diff\n{diff_text}\n```{diff_note}"
         prompt = (
             build_prompt(task)
             + "\n\n"
