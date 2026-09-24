@@ -120,3 +120,57 @@ We can't guarantee that progress is ever-forward so we need the following abilit
 * Pause/Stop: Ability to pause agents' work on an item
 * Reject: Ability to reject an agent step, or human gate with feedback.
 * Startover: Ability to re-start a phase of a task (e.g. restart Plan phase, with feedback)
+
+## Dependencies (HZ-78)
+
+A work item can declare that it depends on one or more other work items —
+e.g. HZ-77 (the pause banner) depends on HZ-76 (failure classification),
+because HZ-77 has nothing to render until HZ-76's categories exist.
+
+* **What satisfies a dependency.** Only the blocker *closing* — its cursor
+  reaching the final "Review the work & close" gate, via a human approving
+  that gate or the underlying GitHub issue closing. Nothing short of that
+  counts: a blocker that is paused, mid-flight on any step, sitting at an
+  earlier gate, or even abandoned still blocks. This is a deliberate,
+  narrow definition — "the work is fully accepted and done," not "someone
+  stopped touching it."
+* **What scope it blocks.** The whole item, at the same point that decides
+  every dispatch: `runnable()` in `server/src/orchestrator.js`. A blocked
+  item's agent steps never get picked up — not "queued behind" the blocker,
+  simply never dispatched — until every blocker it names has closed. This
+  is enforced server-side regardless of which client (UI, WhatsApp
+  concierge, GitHub) is looking at the item; there is no code path that
+  honours a dependency only in one place.
+* **Blocked is not paused.** Paused is a human action with a Resume button.
+  Blocked is a derived fact computed from the dependency graph (`isBlocked`
+  in `server/src/lifecycle.js`) — it is never written to a "paused" column,
+  and clearing it is never "hit Resume." The two are fully independent: an
+  item can be paused and unblocked, blocked and not paused, or any other
+  combination, and the API reports both flags separately
+  (`paused`, `blocked`, `blockedBy`, `blockedByAbandoned` in each item's
+  `GET /api/items` payload).
+* **Cycles are rejected at write time.** Declaring a dependency that would
+  create a cycle (directly, or through a longer chain) fails closed with a
+  clear error — the graph a dependency is added to is walked before the
+  write, and no dependency that could deadlock dispatch is ever persisted.
+  Self-dependencies are rejected the same way.
+* **An abandoned blocker never leaves a dependent silently stuck.** An
+  abandoned item can never close, so a dependency on it can never be
+  satisfied by waiting. Declaring a *new* dependency on an already-abandoned
+  item is rejected outright, same policy as a cycle. For an *existing*
+  dependency whose blocker gets abandoned later, the dependent stays
+  blocked (it is never auto-unblocked onto a dependency nobody chose to
+  drop) but is flagged distinctly — `blockedByAbandoned: true` in the API,
+  plus an activity-log event naming the abandoned blocker — so it surfaces
+  for a human instead of reading as an ordinary in-progress blocker. The
+  remedy is explicit: remove the dependency, or add a replacement one.
+* **Multiple blockers are supported.** An item can depend on more than one
+  other item; it stays blocked until every one of them has closed.
+
+Implementation: `work_item_dependency` (server/src/db.js) is an additive
+table, not a column — no `CHECK` constraint on `work_item` or `step_run` is
+touched, so older databases keep opening unmodified. Query/mutation surface
+lives in `server/src/store.js` (`addDependency`, `removeDependency`,
+`blockersOf`); enforcement lives in `server/src/orchestrator.js`'s
+`runnable()`. Showing dependencies in the UI is a separate, not-yet-built
+item — this section describes backend behavior only.

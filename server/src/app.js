@@ -682,6 +682,42 @@ export function buildApp({ logger = true } = {}) {
     (request, reply) => send(reply, store.setPaused(request.params.id, request.body.paused)),
   )
 
+  // Dependencies (HZ-78): id is blocked until dependsOnId closes. Cycles and
+  // self-dependencies are rejected here (store.addDependency, fail-closed —
+  // see lifecycle.js/store.js), so a malformed graph never reaches the
+  // orchestrator's dispatch gate at all.
+  fastify.post(
+    '/api/items/:id/dependencies',
+    {
+      schema: {
+        params: idParam,
+        body: {
+          type: 'object',
+          required: ['dependsOnId'],
+          properties: { dependsOnId: { type: 'string', minLength: 1 } },
+        },
+      },
+    },
+    (request, reply) => send(reply, store.addDependency(request.params.id, request.body.dependsOnId, request.user.name)),
+  )
+
+  // Same shape as /projects/:id/repos/disconnect — a removal is a POST to a
+  // named sub-route rather than DELETE, matching this API's existing style.
+  fastify.post(
+    '/api/items/:id/dependencies/remove',
+    {
+      schema: {
+        params: idParam,
+        body: {
+          type: 'object',
+          required: ['dependsOnId'],
+          properties: { dependsOnId: { type: 'string', minLength: 1 } },
+        },
+      },
+    },
+    (request, reply) => send(reply, store.removeDependency(request.params.id, request.body.dependsOnId, request.user.name)),
+  )
+
   // Confirm/override the specialist persona (proposed by the PM at intake).
   // Unknown ids 400 at the schema layer; the next dispatch reads the item.
   fastify.post(

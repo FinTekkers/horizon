@@ -78,6 +78,21 @@ db.exec(`
   );
   CREATE INDEX IF NOT EXISTS idx_step_run_item ON step_run(item_id, id DESC);
 
+  -- Work-item dependencies (HZ-78): item_id is blocked until depends_on_id
+  -- closes (see lifecycle.js isBlocked). Many-to-many so an item can have
+  -- more than one blocker. A brand-new table, not a column on work_item, so
+  -- this is purely additive — no CHECK constraint on work_item/step_run is
+  -- touched and older databases keep opening unchanged.
+  CREATE TABLE IF NOT EXISTS work_item_dependency (
+    item_id       TEXT NOT NULL REFERENCES work_item(id),
+    depends_on_id TEXT NOT NULL REFERENCES work_item(id),
+    created_at    TEXT NOT NULL DEFAULT (datetime('now')),
+    created_by    TEXT NOT NULL DEFAULT 'You',
+    PRIMARY KEY (item_id, depends_on_id),
+    CHECK (item_id <> depends_on_id)
+  );
+  CREATE INDEX IF NOT EXISTS idx_work_item_dependency_depends_on ON work_item_dependency(depends_on_id);
+
   -- Runtime settings (github repo/token set from the UI; env vars as fallback).
   CREATE TABLE IF NOT EXISTS setting (
     key   TEXT PRIMARY KEY,
