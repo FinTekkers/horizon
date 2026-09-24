@@ -4,6 +4,7 @@ side needs to advance the item ("agents push tasks forward")."""
 
 import json
 import subprocess
+import sys
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -11,7 +12,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import pytest
 
 from farm import step_agent
-from farm.claude_runner import ClaudeError
+from farm.checks import CheckFailure
+from farm.claude_runner import ClaudeError, ClaudeExhaustedError
 from farm.personas import PERSONA_DIR, PERSONAS
 from farm.step_agent import STEP_CONFIG, build_prompt, execute, publish_screenshots
 
@@ -1131,3 +1133,85 @@ def test_two_exhausted_attempts_then_a_successful_run_converges_with_continuatio
         return {"result": '{"summary": "finished the item"}'}
 
     monkeypatch.setattr(step_agent, "run_claude", attempt_3)
+
+
+# ---- failure classification (HZ-33) ----
+# _failure_category() is the deterministic, code-only decision that feeds
+# main()'s reported result — never a model's own judgment. CheckFailure is
+# always 'checks_failed' (never auto-retried — a real guardrail violation);
+# ClaudeExhaustedError is 'turn_cap' (budget exhaustion — HZ-31's checkpoint
+# salvage makes the retry productive); everything else is 'infra' (plumbing).
+
+
+def test_failure_category_classifies_check_failure():
+    assert step_agent._failure_category(CheckFailure("repo checks failed")) == "checks_failed"
+
+
+def test_failure_category_classifies_claude_exhausted_error():
+    assert step_agent._failure_category(ClaudeExhaustedError("claude timed out after 2700s")) == "turn_cap"
+
+
+def test_failure_category_classifies_generic_claude_error_as_infra():
+    assert step_agent._failure_category(ClaudeError("claude binary not found")) == "infra"
+
+
+def test_failure_category_classifies_anything_else_as_infra():
+    assert step_agent._failure_category(RuntimeError("git fetch failed: connection reset")) == "infra"
+
+
+def test_main_reports_checks_failed_category_for_a_real_check_failure(tmp_path, monkeypatch):
+    ws, _origin = make_git_workspace(tmp_path)
+    monkeypatch.setattr(step_agent, "ensure_item_worktree", lambda repo, item_id: ws)
+    monkeypatch.setenv("FARM_CHECK_CMD", "exit 1")
+
+    task = make_task(11, "Specialist agent implements", repo="acme/demo")
+    task_file = tmp_path / "task.json"
+    task_file.write_text(json.dumps(task))
+
+    posted = {}
+
+    class _FakeResponse:
+        status_code = 200
+
+    def fake_post(url, json, timeout):  # noqa: A002 - matches httpx.post's kwarg name
+        posted["url"] = url
+        posted["body"] = json
+        return _FakeResponse()
+
+    monkeypatch.setattr(step_agent.httpx, "post", fake_post)
+    monkeypatch.setattr(sys, "argv", ["step_agent.py", "--task", str(task_file)])
+
+    exit_code = step_agent.main()
+
+    assert exit_code == 0
+    assert posted["body"]["ok"] is False
+    assert posted["body"]["category"] == "checks_failed"
+    assert "repo checks failed" in posted["body"]["error"]
+
+
+def test_main_reports_turn_cap_category_for_a_claude_exhaustion(tmp_path, monkeypatch):
+    ws, _origin = make_git_workspace(tmp_path)
+    monkeypatch.setattr(step_agent, "ensure_item_worktree", lambda repo, item_id: ws)
+
+    def _fake(prompt, **kwargs):
+        raise ClaudeExhaustedError("claude timed out after 2700s")
+
+    monkeypatch.setattr(step_agent, "run_claude", _fake)
+
+    task = make_task(11, "Specialist agent implements", repo="acme/demo")
+    task_file = tmp_path / "task.json"
+    task_file.write_text(json.dumps(task))
+
+    posted = {}
+    monkeypatch.setattr(
+        step_agent.httpx,
+        "post",
+        lambda url, json, timeout: posted.update({"url": url, "body": json}) or type("R", (), {"status_code": 200})(),
+    )
+    monkeypatch.setattr(sys, "argv", ["step_agent.py", "--task", str(task_file)])
+
+    exit_code = step_agent.main()
+
+    assert exit_code == 0
+    assert posted["body"]["ok"] is False
+    assert posted["body"]["category"] == "turn_cap"

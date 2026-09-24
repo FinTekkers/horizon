@@ -27,6 +27,13 @@ class ClaudeError(RuntimeError):
     pass
 
 
+class ClaudeExhaustedError(ClaudeError):
+    """The run hit its own turn-cap or wall-clock budget, not a real infra or
+    tool problem — the ONLY ClaudeError subtype step_agent.py classifies as
+    the auto-retryable 'turn_cap' category (HZ-33). Raised here, by code that
+    knows exactly why the run stopped, never inferred from a string later."""
+
+
 def assert_subscription_auth() -> None:
     """Refuse to run with ANTHROPIC_API_KEY present — the farm must use the
     logged-in `claude` subscription, never metered API billing (HZ-5)."""
@@ -95,7 +102,7 @@ def run_claude(
             )
         )
     except TimeoutError as exc:
-        raise ClaudeError(f"claude timed out after {timeout_s}s") from exc
+        raise ClaudeExhaustedError(f"claude timed out after {timeout_s}s") from exc
     except ClaudeSDKError as exc:
         # A stale `resume` session is the common recoverable failure: retry fresh.
         if session_id:
@@ -153,10 +160,14 @@ async def _stream_query(
                 if message.is_error:
                     # subtype names the cause (e.g. error_max_turns) — the
                     # result text is often empty on these, so without it the
-                    # failure reads as a mystery in the UI.
+                    # failure reads as a mystery in the UI. error_max_turns is
+                    # budget exhaustion, not an infra/tool problem — raise the
+                    # subtype step_agent.py auto-retries via checkpoint salvage
+                    # (HZ-33/HZ-31); every other subtype is a generic failure.
                     subtype = getattr(message, "subtype", None) or "unknown"
                     detail = result_text[:300] or f"no result text (subtype: {subtype}, {message.num_turns} turns)"
-                    raise ClaudeError(f"claude reported an error result [{subtype}]: {detail}")
+                    error_cls = ClaudeExhaustedError if subtype == "error_max_turns" else ClaudeError
+                    raise error_cls(f"claude reported an error result [{subtype}]: {detail}")
     finally:
         # Cancellation (asyncio.wait_for timeout) lands here too: closing the
         # generator tears down the SDK's transport, killing the spawned
@@ -220,7 +231,7 @@ def _run_claude_subprocess(
     try:
         proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout_s, cwd=cwd)
     except subprocess.TimeoutExpired as exc:
-        raise ClaudeError(f"claude timed out after {timeout_s}s") from exc
+        raise ClaudeExhaustedError(f"claude timed out after {timeout_s}s") from exc
     except FileNotFoundError as exc:
         raise ClaudeError(f"claude binary not found: {CLAUDE_BIN}") from exc
 

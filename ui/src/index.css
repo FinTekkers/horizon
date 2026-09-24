@@ -747,6 +747,21 @@ button { font-family: var(--font-sans); }
   font: 600 12.5px var(--font-sans); color: var(--danger-ink);
 }
 
+/* ---- failure classification banners (HZ-33) ---- */
+.tracker__failure-banner {
+  display: flex; flex-direction: column; gap: 4px; margin-top: 12px; padding: 12px 15px;
+  background: var(--danger-bg-soft); border: 1px solid var(--danger-border-soft); border-radius: 12px;
+  font: 500 12.5px/1.5 var(--font-sans); color: var(--danger-ink);
+}
+.tracker__failure-banner-title { font: 700 13px var(--font-sans); margin-bottom: 2px; }
+.tracker__failure-banner-row strong { font-weight: 700; }
+
+.tracker__retry-banner {
+  margin-top: 12px; padding: 10px 15px;
+  background: var(--warning-bg-soft); border: 1px solid var(--warning-border-soft); border-radius: 12px;
+  font: 500 12.5px/1.5 var(--font-sans); color: var(--warning-ink);
+}
+
 /* ---- login (HZ-21) ---- */
 .login { min-height: 100vh; display: flex; align-items: center; justify-content: center; padding: 24px; }
 .login__card {

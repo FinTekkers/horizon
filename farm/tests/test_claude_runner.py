@@ -6,11 +6,12 @@ exact gap failed the HZ-5 guardrail gate twice). The SDK streaming path
 lives in test_claude_runner_sdk.py behind importorskip.
 """
 
+import subprocess
 import sys
 
 import pytest
 
-from farm.claude_runner import ClaudeError, assert_subscription_auth, extract_json, run_claude
+from farm.claude_runner import ClaudeError, ClaudeExhaustedError, assert_subscription_auth, extract_json, run_claude
 
 
 def test_extract_json_plain():
@@ -49,6 +50,20 @@ def test_subprocess_path_never_touches_the_sdk(monkeypatch):
     monkeypatch.setitem(sys.modules, "claude_agent_sdk", None)
     reply = run_claude("anything", max_turns=4, timeout_s=30, allowed_tools="Read,Grep")
     assert reply["session_id"] == "fake-session-001"
+
+
+def test_subprocess_timeout_raises_the_exhausted_subclass(monkeypatch):
+    """HZ-33: a subprocess-path timeout is budget exhaustion, same as the SDK
+    path's asyncio.wait_for timeout — step_agent.py classifies this as
+    'turn_cap' (auto-retryable), never a generic 'infra' failure."""
+    monkeypatch.setenv("FARM_RUNNER", "subprocess")
+
+    def fake_run(*a, **k):
+        raise subprocess.TimeoutExpired(cmd="claude", timeout=5)
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    with pytest.raises(ClaudeExhaustedError, match="timed out after"):
+        run_claude("hello", timeout_s=5)
 
 
 def test_sdk_path_without_sdk_names_the_rollback_lever(monkeypatch):

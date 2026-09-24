@@ -17,8 +17,8 @@ from pathlib import Path
 
 import httpx
 
-from .checks import run_checks
-from .claude_runner import ClaudeError, extract_json, run_claude
+from .checks import CheckFailure, run_checks
+from .claude_runner import ClaudeError, ClaudeExhaustedError, extract_json, run_claude
 from .config import FARM_PORT
 from .personas import compose_role, resolve
 from .rules import render_rules_section
@@ -557,6 +557,22 @@ def execute(task: dict) -> dict:
     return result
 
 
+# Exception type -> HZ-33 failure category, decided here by the script from
+# the exception's own type — never guessed from message text, and never left
+# to the model. CheckFailure (farm/checks.py) is a real defect: never
+# auto-retried. ClaudeExhaustedError (farm/claude_runner.py) is a turn/time
+# budget hit — for the implement step, HZ-31's checkpoint salvage already
+# made the next attempt productive. Everything else (git failures, a dead
+# workspace, a malformed reply after the one retry-with-feedback) is
+# plumbing — 'infra'.
+def _failure_category(exc: Exception) -> str:
+    if isinstance(exc, CheckFailure):
+        return "checks_failed"
+    if isinstance(exc, ClaudeExhaustedError):
+        return "turn_cap"
+    return "infra"
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--task", required=True)
@@ -569,8 +585,9 @@ def main() -> int:
         outcome = execute(task)
         result = {"run_id": run_id, "ok": True, **outcome}
     except Exception as exc:
-        log(f"run {run_id}: FAILED — {exc}")
-        result = {"run_id": run_id, "ok": False, "error": str(exc)[:300]}
+        category = _failure_category(exc)
+        log(f"run {run_id}: FAILED [{category}] — {exc}")
+        result = {"run_id": run_id, "ok": False, "error": str(exc)[:300], "category": category}
 
     httpx.post(f"{FARMD}/internal/steps/result", json=result, timeout=30)
     log(f"run {run_id}: reported {'ok' if result['ok'] else 'failure'}")

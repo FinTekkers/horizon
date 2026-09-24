@@ -116,6 +116,49 @@ def test_steps_result_forwards_a_large_artifact_verbatim(monkeypatch):
     assert captured["json"]["artifacts"]["artifact_md"] == big
 
 
+# ---- failure category forwarding (HZ-33) ----
+# step_agent.py's own exception classification (never the model) decides
+# 'infra' | 'turn_cap' | 'checks_failed' — farmd is still a dumb relay for it,
+# same as the artifact test above, but a MISSING category (an older/other
+# reporter, e.g. a farm daemon mid-upgrade) must default to 'infra' rather
+# than forwarding None and breaking the server's classification.
+
+
+def test_steps_result_forwards_the_failure_category_verbatim(monkeypatch):
+    captured = {}
+
+    class FakeResponse:
+        status_code = 200
+
+    def fake_post(url, json=None, headers=None, timeout=None):
+        captured["url"], captured["json"] = url, json
+        return FakeResponse()
+
+    monkeypatch.setattr(farmd.httpx, "post", fake_post)
+    res = client.post(
+        "/internal/steps/result",
+        json={"run_id": 56, "ok": False, "error": "repo checks failed", "category": "checks_failed"},
+    )
+    assert res.status_code == 200
+    assert captured["json"] == {"error": "repo checks failed", "category": "checks_failed"}
+
+
+def test_steps_result_defaults_a_missing_category_to_infra(monkeypatch):
+    captured = {}
+
+    class FakeResponse:
+        status_code = 200
+
+    def fake_post(url, json=None, headers=None, timeout=None):
+        captured["url"], captured["json"] = url, json
+        return FakeResponse()
+
+    monkeypatch.setattr(farmd.httpx, "post", fake_post)
+    res = client.post("/internal/steps/result", json={"run_id": 57, "ok": False, "error": "unexpected exit"})
+    assert res.status_code == 200
+    assert captured["json"]["category"] == "infra"
+
+
 # ---- HZ-57: /started notify + claim-time launch gate ----
 # The server's timeout used to start counting at dispatch, so time a step
 # spent sitting in the farm's queue burned the same clock as its actual

@@ -14,7 +14,7 @@ import pytest
 
 sdk = pytest.importorskip("claude_agent_sdk", reason="claude-agent-sdk not installed — SDK-path tests need its message types")
 
-from farm.claude_runner import ClaudeError, run_claude
+from farm.claude_runner import ClaudeError, ClaudeExhaustedError, run_claude
 
 # conftest defaults tests to the subprocess runner (fake_claude can't speak
 # the SDK stream protocol); these opt in and mock claude_agent_sdk.query.
@@ -25,9 +25,9 @@ def sdk_runner(monkeypatch):
     monkeypatch.setenv("FARM_RUNNER", "sdk")
 
 
-def _result_message(session_id="sdk-session-1", result='{"summary": "done"}', is_error=False):
+def _result_message(session_id="sdk-session-1", result='{"summary": "done"}', is_error=False, subtype="success"):
     return sdk.ResultMessage(
-        subtype="success",
+        subtype=subtype,
         duration_ms=1500,
         duration_api_ms=1200,
         is_error=is_error,
@@ -129,7 +129,10 @@ def test_sdk_timeout_closes_the_stream_and_kills_the_child(sdk_runner, monkeypat
 
     monkeypatch.setattr(sdk, "query", fake_query)
     try:
-        with pytest.raises(ClaudeError, match="timed out after 1s"):
+        # HZ-33: a wall-clock timeout is budget exhaustion, not a generic
+        # failure — step_agent.py's _failure_category() only auto-retries
+        # (category 'turn_cap') for this specific subtype.
+        with pytest.raises(ClaudeExhaustedError, match="timed out after 1s"):
             run_claude("hang forever", timeout_s=1)
         deadline = time.time() + 10
         while child.poll() is None and time.time() < deadline:
@@ -143,10 +146,43 @@ def test_sdk_timeout_closes_the_stream_and_kills_the_child(sdk_runner, monkeypat
 def test_sdk_error_result_raises(sdk_runner, monkeypatch):
     def fake_query(*, prompt, options=None, **kwargs):
         async def gen():
-            yield _result_message(result="max turns exceeded", is_error=True)
+            yield _result_message(result="some other error", is_error=True, subtype="error_during_execution")
 
         return gen()
 
     monkeypatch.setattr(sdk, "query", fake_query)
     with pytest.raises(ClaudeError, match="error result"):
         run_claude("hello", timeout_s=10)
+
+
+def test_sdk_max_turns_error_raises_the_exhausted_subclass(sdk_runner, monkeypatch):
+    """HZ-33: error_max_turns is budget exhaustion — for the implement step
+    this is what HZ-31's checkpoint salvage makes a productive auto-retry
+    (category 'turn_cap'), unlike any other error subtype ('infra')."""
+
+    def fake_query(*, prompt, options=None, **kwargs):
+        async def gen():
+            yield _result_message(result="max turns exceeded", is_error=True, subtype="error_max_turns")
+
+        return gen()
+
+    monkeypatch.setattr(sdk, "query", fake_query)
+    with pytest.raises(ClaudeExhaustedError, match="error_max_turns"):
+        run_claude("hello", timeout_s=10)
+
+
+def test_sdk_non_max_turns_error_result_is_not_the_exhausted_subclass(sdk_runner, monkeypatch):
+    def fake_query(*, prompt, options=None, **kwargs):
+        async def gen():
+            yield _result_message(result="tool crashed", is_error=True, subtype="error_during_execution")
+
+        return gen()
+
+    monkeypatch.setattr(sdk, "query", fake_query)
+    try:
+        run_claude("hello", timeout_s=10)
+        assert False, "expected a ClaudeError"
+    except ClaudeExhaustedError:
+        assert False, "a non-exhaustion error subtype must not classify as turn_cap"
+    except ClaudeError:
+        pass

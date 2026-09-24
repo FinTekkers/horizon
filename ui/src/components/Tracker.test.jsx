@@ -75,6 +75,68 @@ test('the select is absent when the item is past the intake gate', () => {
   expect(queryByLabelText('Specialist persona')).toBeNull()
 })
 
+// ---- HZ-33: failure banner never leaves "Paused" as the sole explanation ----
+
+test('a checks_failed pause renders a full banner: category, cause, attempts, checkpoint, next action', () => {
+  const item = {
+    ...baseItem,
+    cursor: 11,
+    paused: true,
+    failureCategory: 'checks_failed',
+    failureCause: 'npm test: 2 failing',
+    retryCount: 1,
+    retryBudget: null,
+  }
+  const { getByRole, queryByText } = renderTracker(item)
+  const banner = getByRole('alert')
+  expect(banner.textContent).toMatch(/checks failed/i)
+  expect(banner.textContent).toMatch(/npm test: 2 failing/)
+  expect(banner.textContent).toMatch(/1.*never auto-retried/i)
+  expect(banner.textContent.toLowerCase()).not.toBe('paused')
+  // The bare word "Paused" must never be the ONLY text explaining the state —
+  // the status pill next to it must also name the category.
+  expect(queryByText('Paused')).toBeNull()
+})
+
+test('an infra retry-budget-exhausted pause renders the retryable banner copy', () => {
+  const item = {
+    ...baseItem,
+    cursor: 4,
+    paused: true,
+    failureCategory: 'infra',
+    failureCause: 'farm unreachable',
+    retryCount: 4,
+    retryBudget: 3,
+  }
+  const { getByRole } = renderTracker(item)
+  const banner = getByRole('alert')
+  expect(banner.textContent).toMatch(/infrastructure/i)
+  expect(banner.textContent).toMatch(/4 of 3 auto-retries/)
+  expect(banner.textContent).toMatch(/resume manually/i)
+})
+
+test('no failure banner renders for a plain human pause or a normal working item', () => {
+  const { queryByRole: queryPaused } = renderTracker({ ...baseItem, paused: true })
+  expect(queryPaused('alert')).toBeNull()
+  const { queryByRole: queryWorking } = renderTracker({ ...baseItem, cursor: 4 })
+  expect(queryWorking('alert')).toBeNull()
+})
+
+test('a pending auto-retry (not yet paused) shows the retry-pending note, not a failure banner', () => {
+  const item = {
+    ...baseItem,
+    cursor: 4,
+    failureCategory: 'turn_cap',
+    failureCause: 'claude timed out',
+    retryCount: 1,
+    retryBudget: 3,
+    nextRetryAt: new Date(Date.now() + 60_000).toISOString(),
+  }
+  const { getByText, queryByRole } = renderTracker(item)
+  expect(getByText(/auto-retrying around/i)).toBeTruthy()
+  expect(queryByRole('alert')).toBeNull()
+})
+
 // ---- HZ-14: "See agent output" links (replaces inline output + HZ-5's Live activity panel) ----
 
 test('a completed agent step with output renders a "See agent output" link, not the text inline', () => {

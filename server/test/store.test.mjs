@@ -421,3 +421,66 @@ test('stepOutputs carry the step label for non-UI clients', () => {
     output: 'verdict: pass', attempt: 1, artifact: '# QA review', attemptCount: 1, label: 'QA reviews the test plan',
   })
 })
+
+// ---- clearFailureState on every human-action path (HZ-33) ----
+// A pending auto-retry looks like "not paused, next_retry_at in the future".
+// If a human action (feedback, resume, send-back, restart) doesn't clear
+// that field, a stale future timestamp survives and a follow-up kick()
+// compares against it and silently no-ops — the item then shows as "active"
+// while nothing is actually running (the architecture review's finding).
+// These tests don't need the real orchestrator wired in (agentRunner stays
+// the default no-op stub in this file) — they only assert the DB fields a
+// human action must clear, independent of what kick()/cancel() then do.
+
+function stubMidRetry(id, stepIndex = 11) {
+  db.prepare(`UPDATE work_item SET cursor = ?, paused = 0 WHERE id = ?`).run(stepIndex, id)
+  db.prepare(
+    `UPDATE work_item SET failure_category = 'infra', failure_cause = 'farm unreachable', retry_count = 1,
+     retry_budget = 3, next_retry_at = ? WHERE id = ?`,
+  ).run(new Date(Date.now() + 60_000).toISOString(), id)
+}
+
+function failureFields(id) {
+  const row = db.prepare('SELECT failure_category, failure_cause, retry_count, retry_budget, next_retry_at FROM work_item WHERE id = ?').get(id)
+  return row
+}
+
+test('addFeedback mid-retry-backoff clears the stale failure/retry fields before re-kicking', () => {
+  insertItem.run('T-RETRY-FB', 'Mid-backoff feedback', 11, null, null)
+  stubMidRetry('T-RETRY-FB')
+  assert.deepEqual(store.addFeedback('T-RETRY-FB', { message: 'try again' }), { ok: true, rerun: true })
+  assert.deepEqual(failureFields('T-RETRY-FB'), {
+    failure_category: null, failure_cause: null, retry_count: 0, retry_budget: null, next_retry_at: null,
+  })
+})
+
+test('setPaused(true) mid-retry-backoff clears the stale failure/retry fields', () => {
+  insertItem.run('T-RETRY-PAUSE', 'Mid-backoff manual pause', 11, null, null)
+  stubMidRetry('T-RETRY-PAUSE')
+  assert.deepEqual(store.setPaused('T-RETRY-PAUSE', true), { ok: true })
+  assert.deepEqual(failureFields('T-RETRY-PAUSE'), {
+    failure_category: null, failure_cause: null, retry_count: 0, retry_budget: null, next_retry_at: null,
+  })
+})
+
+test('setPaused(false) (resume) clears stale failure/retry fields from a prior pause', () => {
+  insertItem.run('T-RESUME', 'Resuming after a checks_failed pause', 11, null, null)
+  db.prepare(`UPDATE work_item SET paused = 1 WHERE id = ?`).run('T-RESUME')
+  db.prepare(
+    `UPDATE work_item SET failure_category = 'checks_failed', failure_cause = 'tests failed', retry_count = 1 WHERE id = ?`,
+  ).run('T-RESUME')
+  assert.deepEqual(store.setPaused('T-RESUME', false), { ok: true })
+  assert.deepEqual(failureFields('T-RESUME'), {
+    failure_category: null, failure_cause: null, retry_count: 0, retry_budget: null, next_retry_at: null,
+  })
+})
+
+test('requestChanges from a gate clears stale failure/retry fields', () => {
+  insertItem.run('T-RETRY-REQCH', 'Mid-backoff request changes', ACCEPT_GATE_INDEX, null, null)
+  stubMidRetry('T-RETRY-REQCH', ACCEPT_GATE_INDEX)
+  const result = store.requestChanges('T-RETRY-REQCH', 'Eng', 'fix it')
+  assert.equal(result.ok, true)
+  assert.deepEqual(failureFields('T-RETRY-REQCH'), {
+    failure_category: null, failure_cause: null, retry_count: 0, retry_budget: null, next_retry_at: null,
+  })
+})

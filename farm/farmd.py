@@ -479,7 +479,10 @@ async def steps_result(request: Request):
     payload = (
         {"summary": body.get("summary", ""), "patch": body.get("patch") or {}, "artifacts": body.get("artifacts") or {}}
         if body.get("ok")
-        else {"error": body.get("error", "unknown agent failure")}
+        # category: set by step_agent.py's own exception classification
+        # (HZ-33) — passed through verbatim; server/src/app.js validates it
+        # against the categories it understands before trusting it.
+        else {"error": body.get("error", "unknown agent failure"), "category": body.get("category") or "infra"}
     )
     url = f"{HORIZON_URL}/api/farm/steps/{run_id}/{path}"
     for attempt in (1, 2):

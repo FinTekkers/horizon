@@ -16,7 +16,7 @@ from pathlib import Path
 
 import httpx
 
-from .claude_runner import ClaudeError, extract_json, run_claude
+from .claude_runner import ClaudeError, ClaudeExhaustedError, extract_json, run_claude
 from .config import FARM_PORT, PM_MODEL, QUEUE_DIR, STATE_DIR, ensure_dirs, slugify
 from .rules import render_rules_section
 
@@ -146,8 +146,12 @@ def process(task: dict, project_slug: str) -> None:
         if artifact:
             result["artifacts"] = {"artifact_md": artifact}
     except Exception as exc:  # report every failure; farmd forwards to the server
-        log(f"run {run_id}: FAILED — {exc}")
-        result = {"run_id": run_id, "ok": False, "error": str(exc)[:300]}
+        # HZ-33: PM-queue steps never run repo checks, so the only distinct
+        # category possible here is turn_cap (budget exhaustion) vs. infra —
+        # decided from the exception type, same as step_agent.py's own agents.
+        category = "turn_cap" if isinstance(exc, ClaudeExhaustedError) else "infra"
+        log(f"run {run_id}: FAILED [{category}] — {exc}")
+        result = {"run_id": run_id, "ok": False, "error": str(exc)[:300], "category": category}
 
     httpx.post(f"{FARMD}/internal/steps/result", json=result, timeout=30)
     log(f"run {run_id}: reported {'ok' if result['ok'] else 'failure'}")

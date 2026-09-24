@@ -138,7 +138,28 @@ db.exec(`
 
 // Additive migrations for databases created before these columns existed.
 // persona: specialist persona id (see personas.js); NULL = fullstack default.
-for (const column of ['pr INTEGER', 'pr_url TEXT', 'pr_mergeable INTEGER', 'release_tag TEXT', 'release_url TEXT', 'repo TEXT', 'project_id INTEGER', 'persona TEXT', 'review_cycle_count INTEGER NOT NULL DEFAULT 0']) {
+// failure_category/failure_cause/retry_count/retry_budget/next_retry_at
+// (HZ-33): classify why a step failed and, for the retryable categories,
+// track the auto-retry streak so the orchestrator (never an agent/model) can
+// prove the budget in RETRY_BUDGET (orchestrator.js) is enforced from the
+// DB, not just in-memory. All nullable/zero-defaulted, so existing rows are
+// exactly "no failure in progress" with no backfill needed.
+for (const column of [
+  'pr INTEGER',
+  'pr_url TEXT',
+  'pr_mergeable INTEGER',
+  'release_tag TEXT',
+  'release_url TEXT',
+  'repo TEXT',
+  'project_id INTEGER',
+  'persona TEXT',
+  'review_cycle_count INTEGER NOT NULL DEFAULT 0',
+  'failure_category TEXT',
+  'failure_cause TEXT',
+  'retry_count INTEGER NOT NULL DEFAULT 0',
+  'retry_budget INTEGER',
+  'next_retry_at TEXT',
+]) {
   try {
     db.exec(`ALTER TABLE work_item ADD COLUMN ${column}`)
   } catch {
@@ -147,6 +168,13 @@ for (const column of ['pr INTEGER', 'pr_url TEXT', 'pr_mergeable INTEGER', 'rele
 }
 try {
   db.exec('ALTER TABLE step_run ADD COLUMN artifact TEXT') // full agent artifact (markdown), separate from the summary
+} catch {
+  // column already exists
+}
+try {
+  // Per-attempt audit trail (HZ-33): which category THIS attempt failed
+  // with, distinct from work_item's streak-level failure_category.
+  db.exec('ALTER TABLE step_run ADD COLUMN category TEXT')
 } catch {
   // column already exists
 }

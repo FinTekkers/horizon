@@ -188,6 +188,11 @@ export function listItems() {
     currentStep: currentStepOf(row),
     paused: !!row.paused,
     rejected: !!row.rejected,
+    failureCategory: row.failure_category,
+    failureCause: row.failure_cause,
+    retryCount: row.retry_count || 0,
+    retryBudget: row.retry_budget,
+    nextRetryAt: row.next_retry_at,
     events: selectEvents.all(row.id),
     stepOutputs: stepOutputs(row.id),
     activeRun: selectActiveRun.get(row.id) || null,
@@ -209,6 +214,24 @@ function inactiveProject(item) {
 // ---- mutations ----
 
 const touch = "updated_at = datetime('now')"
+
+// ---- failure/retry state (HZ-33) ----
+// A human action always ends whatever failure/retry streak was in progress —
+// resuming, leaving feedback, sending back, restarting a phase, or GitHub
+// closing/reopening the issue are each the start of something new, not a
+// continuation of an old auto-retry budget. Without this, a human action
+// mid-backoff (paused = 0, next_retry_at in the future, the retry timer
+// cancelled by agentRunner.cancel()) leaves next_retry_at stale in the DB —
+// a follow-up kick() would then compare against a stale future timestamp and
+// silently no-op, showing the item as "working" while nothing runs at all
+// (HZ-33 architecture review finding). Exported so orchestrator.js can also
+// clear it the moment a retried attempt finally succeeds.
+export function clearFailureState(id) {
+  db.prepare(
+    `UPDATE work_item SET failure_category = NULL, failure_cause = NULL, retry_count = 0,
+     retry_budget = NULL, next_retry_at = NULL WHERE id = ?`,
+  ).run(id)
+}
 
 export function addEvent(id, { who, text, color, initials }) {
   db.prepare('INSERT INTO event (item_id, who, text, color, initials) VALUES (?, ?, ?, ?, ?)').run(id, who, text, color, initials)
@@ -279,6 +302,7 @@ export function requestChanges(id, target, feedbackText, actor = 'You', targetSt
   }
 
   agentRunner.cancel(id, 'rejected')
+  clearFailureState(id)
 
   let reworkIdx = it.cursor
   if (STEPS[it.cursor]?.kind === 'gate') {
@@ -330,6 +354,7 @@ export function setPaused(id, paused) {
   if (isClosed(it)) return { error: 'closed' }
 
   db.prepare(`UPDATE work_item SET paused = ?, ${touch} WHERE id = ?`).run(paused ? 1 : 0, id)
+  clearFailureState(id)
   addEvent(id, {
     who: 'You',
     text: paused ? 'paused agent work on this item' : 'resumed work',
@@ -404,6 +429,7 @@ export function restartPhase(id, phase, reason, actor = 'You') {
   }
   const resetReview = firstIdx <= IMPLEMENT_STEP_INDEX ? ', review_cycle_count = 0' : ''
   db.prepare(`UPDATE work_item SET cursor = ?, rejected = 0, paused = 0${resetReview}, ${touch} WHERE id = ?`).run(firstIdx, id)
+  clearFailureState(id)
   addEvent(id, {
     who: actor,
     text: `restarted the ${PHASES[phase]} phase${reason ? ': ' + reason : ''}`,
@@ -451,7 +477,13 @@ export function addFeedback(id, { message, target = '', source = 'ui', ghComment
 
   if (step?.kind === 'agent' && !it.paused) {
     // Supersede the current attempt so the agent re-runs with the feedback.
+    // Also true when feedback lands mid-auto-retry-backoff (paused stays 0
+    // while a retry is pending) — cancel() clears the in-memory timer, but
+    // without clearFailureState the stale next_retry_at would make the
+    // immediate kick() below silently no-op (HZ-33 architecture review
+    // finding): the item would look "active" while nothing runs.
     agentRunner.cancel(id, 'superseded')
+    clearFailureState(id)
     notify()
     agentRunner.kick(id)
     return { ok: true, rerun: true }
@@ -590,10 +622,12 @@ export function upsertFromGithub(ghIssue, repoFullName) {
     if (closedOnGithub && !wasClosed) {
       agentRunner.cancel(row.id, 'cancelled')
       db.prepare(`UPDATE work_item SET cursor = ?, ${touch} WHERE id = ?`).run(STEPS.length, row.id)
+      clearFailureState(row.id)
       addEvent(row.id, { who: 'GitHub', text: `closed issue #${number}`, color: '#2A2A2E', initials: 'GH' })
       changed = true
     } else if (!closedOnGithub && wasClosed) {
       db.prepare(`UPDATE work_item SET cursor = 0, rejected = 0, paused = 0, ${touch} WHERE id = ?`).run(row.id)
+      clearFailureState(row.id)
       addEvent(row.id, { who: 'GitHub', text: `reopened issue #${number}`, color: '#2A2A2E', initials: 'GH' })
       changed = true
       agentRunner.kick(row.id)
@@ -630,6 +664,7 @@ export function recoverRejectedItems() {
     )
     const resetReview = reworkIdx <= IMPLEMENT_STEP_INDEX ? ', review_cycle_count = 0' : ''
     db.prepare(`UPDATE work_item SET cursor = ?, rejected = 0${resetReview}, ${touch} WHERE id = ?`).run(reworkIdx, row.id)
+    clearFailureState(row.id)
     addEvent(row.id, {
       who: 'Horizon',
       text: `requeued for rework at “${STEPS[reworkIdx].label}”`,

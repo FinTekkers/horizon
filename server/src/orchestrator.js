@@ -11,7 +11,7 @@
 
 import { db } from './db.js'
 import { STEPS, AGENTS, isClosed, IMPLEMENT_STEP_INDEX, REVIEW_STEP_INDEX, DEPLOY_STEP_INDEX } from './lifecycle.js'
-import { getItem, addEvent, notifyChange, registerAgentRunner, recoverRejectedItems } from './store.js'
+import { getItem, addEvent, notifyChange, registerAgentRunner, recoverRejectedItems, clearFailureState } from './store.js'
 import { createMockPr, createDeployRelease, postIssueComment, createPrFromBranch } from './github.js'
 import { PHASES } from './lifecycle.js'
 import { getActiveProjectId, getSetting, setSetting, getToken } from './settings.js'
@@ -40,6 +40,47 @@ function executionBudgetFor(stepIndex) {
 // reviewer that keeps failing forwards the item to the human gate with the
 // failing verdict attached rather than looping forever (HZ-30).
 const REVIEW_CYCLE_CAP = 3
+
+// ---- step-failure classification & auto-retry (HZ-33) ----
+// Every step failure is classified into exactly one category, decided by
+// deterministic code (the farm script or this orchestrator), NEVER by an
+// agent/model:
+//   - 'infra'         farm unreachable, a step never picked up, a callback
+//                      timeout, a malformed reply — nothing wrong with the
+//                      work itself, just the plumbing. Auto-retries.
+//   - 'turn_cap'       the agent hit its turn/time budget mid-work. For the
+//                      implement step this is productive: HZ-31's checkpoint
+//                      salvage already committed the partial work, so the
+//                      retried attempt resumes it instead of starting over.
+//                      Auto-retries.
+//   - 'checks_failed'  the repo's own tests/linters failed, or an automated
+//                      review/deploy verdict failed — a real defect. NEVER
+//                      auto-retried: retrying would just mask it. Pauses
+//                      immediately.
+//
+// RETRY_BUDGET is ONE counter shared across infra+turn_cap for a step's
+// failure streak (work_item.retry_count), not a separate budget per
+// category. That is deliberate: a per-category budget that resets whenever
+// the category changes from the prior failure can never actually cap
+// anything — a farm that oscillates infra/turn_cap forever would retry
+// forever, which is exactly the guardrail ("total automatic attempts per
+// step hard-capped") this ticket exists to enforce. One counter, incremented
+// on every automatic retry regardless of category and never reset except by
+// a human action or the step finally succeeding, makes the cap trivially
+// provable straight from the DB: retry_count must never exceed RETRY_BUDGET
+// while paused = 0.
+export const RETRY_BUDGET = 3
+export const RETRYABLE_CATEGORIES = new Set(['infra', 'turn_cap'])
+// Every category failFarmRun understands — checks_failed included even
+// though it never retries, so the HTTP layer can validate an inbound
+// category against one shared list instead of duplicating it.
+export const FAILURE_CATEGORIES = new Set([...RETRYABLE_CATEGORIES, 'checks_failed'])
+// Indexed by retry_count - 1, clamped to the last entry for any further attempt.
+export const RETRY_BACKOFF_MS = [30_000, 120_000, 600_000]
+
+function retryBackoffMs(retryCount) {
+  return RETRY_BACKOFF_MS[Math.min(retryCount - 1, RETRY_BACKOFF_MS.length - 1)]
+}
 
 // MOCK_STEP_LATENCY_MS lets tests drive the mock pipeline without waiting.
 const latency = () => Number(process.env.MOCK_STEP_LATENCY_MS) || 2000 + Math.floor(Math.random() * 3000)
@@ -196,14 +237,26 @@ function projectActive(item) {
   return item.project_id == null || activeId == null || item.project_id === activeId
 }
 
+// A pending auto-retry (paused = 0, next_retry_at in the future) is armed by
+// an in-memory setTimeout — it does not survive a server restart. Without
+// re-arming it here, the item would sit exactly as broken as the bug HZ-33
+// fixes: not paused, no active run, nothing scheduled, silently stalled
+// until a human notices (HZ-33 architecture review finding).
 function resumeActiveItems() {
   let resumed = 0
   for (const { id } of db.prepare('SELECT id FROM work_item').all()) {
     const item = getItem(id)
-    if (runnable(item)) {
+    if (!runnable(item) || timers[id]) continue
+    const pendingRetryMs = item.next_retry_at ? Date.parse(item.next_retry_at) - Date.now() : 0
+    if (pendingRetryMs > 0) {
+      timers[id] = setTimeout(() => {
+        delete timers[id]
+        kick(id)
+      }, pendingRetryMs)
+    } else {
       kick(id)
-      resumed++
     }
+    resumed++
   }
   return resumed
 }
@@ -587,6 +640,7 @@ function finalizeReviewStep(id, runId, text, artifactMd, verdict, patch, isMock)
 
   const passed = verdict.code_review.verdict === 'pass' && verdict.qa_review.verdict === 'pass'
   if (passed) {
+    clearFailureState(id)
     db.prepare("UPDATE work_item SET cursor = cursor + 1, updated_at = datetime('now') WHERE id = ?").run(id)
     addEvent(id, { who: agent.label, text: `completed “${step.label}” — ${text.slice(0, 300)}`, color: agent.color, initials: agent.initials })
     postStepComment(getItem(id), REVIEW_STEP_INDEX, attempt, text, patch, isMock, artifactMd)
@@ -658,10 +712,17 @@ function finalizeDeployStep(id, runId, text, artifactMd, verdict, patch) {
   )
 
   if (verdict.verdict !== 'pass') {
-    db.prepare("UPDATE work_item SET paused = 1, updated_at = datetime('now') WHERE id = ?").run(id)
+    // Same shape as failFarmRun's terminal (never-retryable) branch: a failed
+    // deploy verification is a real defect, not plumbing — 'checks_failed',
+    // no auto-retry, full banner fields so the UI never shows a bare "Paused".
+    const cause = text.slice(0, 300)
+    db.prepare(
+      `UPDATE work_item SET paused = 1, failure_category = 'checks_failed', failure_cause = ?, retry_count = retry_count + 1,
+       retry_budget = NULL, next_retry_at = NULL, updated_at = datetime('now') WHERE id = ?`,
+    ).run(cause, id)
     addEvent(id, {
       who: agent.label,
-      text: `deploy verification failed — ${text.slice(0, 300)} — item paused; resume to redeploy`,
+      text: `deploy verification failed: ${cause} — item paused; resume to redeploy`,
       color: '#9C333E',
       initials: agent.initials,
     })
@@ -670,6 +731,7 @@ function finalizeDeployStep(id, runId, text, artifactMd, verdict, patch) {
     return
   }
 
+  clearFailureState(id)
   db.prepare("UPDATE work_item SET cursor = cursor + 1, updated_at = datetime('now') WHERE id = ?").run(id)
   addEvent(id, { who: agent.label, text: `completed “${step.label}” — ${text.slice(0, 300)}`, color: agent.color, initials: agent.initials })
   postStepComment(getItem(id), DEPLOY_STEP_INDEX, attempt, text, patch, false, artifactMd)
@@ -746,6 +808,7 @@ export async function completeFarmRun(runId, { summary, patch, artifacts }) {
     artifactMd,
     runId,
   )
+  clearFailureState(id)
   db.prepare("UPDATE work_item SET cursor = cursor + 1, updated_at = datetime('now') WHERE id = ?").run(id)
   addEvent(id, { who: agent.label, text: `completed “${step.label}” — ${text.slice(0, 300)}`, color: agent.color, initials: agent.initials })
   postStepComment(getItem(id), run.step_index, run.attempt, text, cleanPatch, false, artifactMd)
@@ -754,7 +817,15 @@ export async function completeFarmRun(runId, { summary, patch, artifacts }) {
   return { ok: true }
 }
 
-export function failFarmRun(runId, error) {
+const CATEGORY_LABELS = { infra: 'infrastructure', turn_cap: 'turn/time budget', checks_failed: 'checks' }
+
+// category defaults to 'infra': every pre-HZ-33 call site (queue watchdog,
+// execution watchdog, farmFetch failures, malformed-verdict guards, PR/
+// release publish failures) is exactly that kind of plumbing failure and
+// keeps working unchanged. Only the farm's own callback (routed through
+// app.js) and the two malformed-verdict guards below pass an explicit
+// category sourced from code — never from agent/model output.
+export function failFarmRun(runId, error, category = 'infra') {
   const run = db.prepare('SELECT * FROM step_run WHERE id = ?').get(runId)
   if (!run || run.status !== 'active') return { ok: true, stale: true }
   const id = run.item_id
@@ -762,18 +833,13 @@ export function failFarmRun(runId, error) {
   clearTimeout(timers[id])
   delete timers[id]
 
+  const cause = String(error).slice(0, 300)
   // No 'failed' status in older DBs' CHECK constraint — record as cancelled
-  // with a FAILED-prefixed output, pause the item for a human, and say why.
+  // with a FAILED-prefixed output; category is this attempt's own audit trail.
   db.prepare(
-    "UPDATE step_run SET status = 'cancelled', output = ?, ended_at = datetime('now') WHERE id = ?",
-  ).run(`FAILED: ${String(error).slice(0, 300)}`, runId)
-  db.prepare("UPDATE work_item SET paused = 1, updated_at = datetime('now') WHERE id = ?").run(id)
-  addEvent(id, {
-    who: 'Horizon',
-    text: `agent step failed: ${String(error).slice(0, 200)} — item paused; resume to retry`,
-    color: '#9C333E',
-    initials: 'HZ',
-  })
+    "UPDATE step_run SET status = 'cancelled', output = ?, category = ?, ended_at = datetime('now') WHERE id = ?",
+  ).run(`FAILED: ${cause}`, category, runId)
+
   // Tell the farm too (same call cancel() makes): a step failed here by
   // either watchdog firing (queue or execution) may still be sitting queued
   // or running on the farm side. Without this, farmd can claim and launch a
@@ -781,6 +847,52 @@ export function failFarmRun(runId, error) {
   // /started callback double-checks this too, but a run failed before it
   // ever reaches that checkpoint needs the task file removed directly.
   if (FARM_URL) farmFetch('/steps/cancel', { run_id: runId }).catch(() => {})
+
+  const item = getItem(id)
+  const retryCount = (item?.retry_count || 0) + 1
+  const label = CATEGORY_LABELS[category] || category
+  const retryable = item && RETRYABLE_CATEGORIES.has(category) && retryCount <= RETRY_BUDGET
+
+  if (retryable) {
+    const backoffMs = retryBackoffMs(retryCount)
+    const nextRetryAt = new Date(Date.now() + backoffMs).toISOString()
+    db.prepare(
+      `UPDATE work_item SET failure_category = ?, failure_cause = ?, retry_count = ?, retry_budget = ?,
+       next_retry_at = ?, updated_at = datetime('now') WHERE id = ?`,
+    ).run(category, cause, retryCount, RETRY_BUDGET, nextRetryAt, id)
+    addEvent(id, {
+      who: 'Horizon',
+      text: `${label} failure (attempt ${retryCount}/${RETRY_BUDGET}): ${cause} — auto-retrying in ${Math.round(backoffMs / 1000)}s`,
+      color: '#DFA200',
+      initials: 'HZ',
+    })
+    // Reuses the timers[id] slot: it is both the retry clock AND, exactly
+    // like every other in-flight watchdog, the "busy" marker kick() checks —
+    // a human action (pause/feedback/reject) cancels it via the same
+    // clearTimeout(timers[id]) path those already use.
+    timers[id] = setTimeout(() => {
+      delete timers[id]
+      kick(id)
+    }, backoffMs)
+    notifyChange()
+    return { ok: true, retrying: true }
+  }
+
+  // checks_failed always lands here (never retryable); infra/turn_cap land
+  // here once RETRY_BUDGET is exhausted. Never a bare "paused" — category,
+  // cause, and attempts-used all persist for the UI banner to read back.
+  const budgetNote =
+    RETRYABLE_CATEGORIES.has(category) && retryCount > RETRY_BUDGET ? ` — retry budget (${RETRY_BUDGET}) exhausted` : ''
+  db.prepare(
+    `UPDATE work_item SET paused = 1, failure_category = ?, failure_cause = ?, retry_count = ?, retry_budget = ?,
+     next_retry_at = NULL, updated_at = datetime('now') WHERE id = ?`,
+  ).run(category, cause, retryCount, RETRY_BUDGET, id)
+  addEvent(id, {
+    who: 'Horizon',
+    text: `${label} failure${budgetNote}: ${cause} — item paused (attempt ${retryCount})`,
+    color: '#9C333E',
+    initials: 'HZ',
+  })
   notifyChange()
   return { ok: true }
 }
@@ -846,6 +958,7 @@ async function runMockStep(id, stepIndex, runId) {
     summary,
     runId,
   )
+  clearFailureState(id)
   db.prepare("UPDATE work_item SET cursor = cursor + 1, updated_at = datetime('now') WHERE id = ?").run(id)
   addEvent(id, {
     who: agent.label,

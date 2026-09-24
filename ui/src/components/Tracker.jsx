@@ -11,7 +11,7 @@ import {
   priorityColor,
 } from '../domain/lifecycle'
 import { PERSONAS, personaFor, personaId } from '../domain/personas'
-import { itemStatus } from '../domain/status'
+import { itemStatus, failureBanner, retryPendingInfo } from '../domain/status'
 import { resolveEventColor } from '../domain/eventColors'
 import { issueUrl, issueLabel, artifactUrl, outputUrl, runLogViewUrl } from '../api'
 import StatusPill from './StatusPill'
@@ -221,6 +221,8 @@ function buildActivity(item) {
 export default function Tracker({ item, onBack, onApprove, onApproveWithComments, onReject, onResolveConflicts, onTogglePause, onRestartPhase, onSetPersona }) {
   const status = itemStatus(item, true)
   const activity = buildActivity(item)
+  const banner = failureBanner(item)
+  const retrying = retryPendingInfo(item)
 
   return (
     <div className="tracker">
@@ -271,6 +273,26 @@ export default function Tracker({ item, onBack, onApprove, onApproveWithComments
             {item.paused ? 'Resume work' : 'Pause work'}
           </button>
         </div>
+        {banner && (
+          <div className="tracker__failure-banner" role="alert">
+            <div className="tracker__failure-banner-title">{banner.categoryLabel}</div>
+            <div className="tracker__failure-banner-row">
+              <strong>Cause:</strong> {banner.cause}
+            </div>
+            <div className="tracker__failure-banner-row">
+              <strong>Attempts used:</strong> {banner.attempts}
+              {banner.retryable ? ` of ${banner.budget} auto-retries` : ' (never auto-retried)'}
+            </div>
+            <div className="tracker__failure-banner-row">{banner.checkpoint}</div>
+            <div className="tracker__failure-banner-row">{banner.nextAction}</div>
+          </div>
+        )}
+        {retrying && (
+          <div className="tracker__retry-banner">
+            {retrying.categoryLabel} (attempt {retrying.attempts} of {retrying.budget}): {retrying.cause} — auto-retrying
+            around {new Date(retrying.nextRetryAt).toLocaleTimeString()}.
+          </div>
+        )}
         <div className="tracker__tiles">
           <div className="tile">
             <div className="tile__label">Success metric</div>

@@ -3,7 +3,8 @@ exists, so the rules stamped into the task (HZ-9) are their only source of
 project context."""
 
 from farm import pm_agent
-from farm.pm_agent import MAX_PROMPT_ARTIFACT_CHARS, build_prompt, notify_started, validate
+from farm.claude_runner import ClaudeExhaustedError
+from farm.pm_agent import MAX_PROMPT_ARTIFACT_CHARS, build_prompt, notify_started, process, validate
 
 
 def make_task(rules=None, feedback=None):
@@ -68,6 +69,41 @@ def test_validate_keeps_a_large_artifact_in_full():
     big = "z" * 50000  # far past the old 12,000-char write-time slice
     _summary, _patch, artifact = validate({"summary": "did the step", "artifact_md": big})
     assert artifact == big
+
+
+# ---- failure classification (HZ-33) ----
+# PM-queue steps (0/1/2/9) never run repo checks, so 'checks_failed' can't
+# happen here — only 'turn_cap' (budget exhaustion, from the exception type,
+# never guessed from message text) vs. 'infra' (everything else) matter.
+
+
+def test_process_reports_turn_cap_for_a_claude_exhaustion(monkeypatch):
+    monkeypatch.setattr(pm_agent, "run_claude", lambda *a, **k: (_ for _ in ()).throw(ClaudeExhaustedError("claude timed out after 900s")))
+    posted = {}
+    monkeypatch.setattr(
+        pm_agent.httpx,
+        "post",
+        lambda url, json, timeout: posted.update({"url": url, "body": json}) or type("R", (), {"status_code": 200})(),
+    )
+    process(make_task(), "test-project-turn-cap")
+    assert posted["body"]["ok"] is False
+    assert posted["body"]["category"] == "turn_cap"
+
+
+def test_process_reports_infra_for_a_generic_failure(monkeypatch):
+    def _boom(*a, **k):
+        raise RuntimeError("something else broke")
+
+    monkeypatch.setattr(pm_agent, "run_claude", _boom)
+    posted = {}
+    monkeypatch.setattr(
+        pm_agent.httpx,
+        "post",
+        lambda url, json, timeout: posted.update({"url": url, "body": json}) or type("R", (), {"status_code": 200})(),
+    )
+    process(make_task(), "test-project-infra")
+    assert posted["body"]["ok"] is False
+    assert posted["body"]["category"] == "infra"
 
 
 # ---- HZ-57: /started notify before processing a claimed PM-queue task ----

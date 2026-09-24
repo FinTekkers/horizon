@@ -1148,13 +1148,23 @@ export function buildApp({ logger = true } = {}) {
         body: {
           type: 'object',
           required: ['error'],
-          properties: { error: { type: 'string', maxLength: 2000 } },
+          properties: {
+            error: { type: 'string', maxLength: 2000 },
+            // Set by farm/step_agent.py's own exception handling (deterministic
+            // code, never the model) — see farm/farmd.py's steps_result forward.
+            // An unrecognized/missing value still falls back to failFarmRun's
+            // own 'infra' default (HZ-33) rather than failing the request.
+            category: { type: 'string' },
+          },
         },
       },
     },
     (request, reply) => {
       if (!farmAuthorized(request, reply)) return
-      return orchestrator.failFarmRun(request.params.runId, request.body.error)
+      const { error, category } = request.body
+      return orchestrator.FAILURE_CATEGORIES.has(category)
+        ? orchestrator.failFarmRun(request.params.runId, error, category)
+        : orchestrator.failFarmRun(request.params.runId, error)
     },
   )
 
