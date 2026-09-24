@@ -51,7 +51,10 @@ export function issueLabel(item) {
 
 // ---- store ----
 
-let items = SEED_ITEMS.map((it) => ({ ...it, paused: false, rejected: false, events: [] }))
+// last_activity_at mirrors the server's store.js: every SEED_ITEMS row starts
+// "just touched" so mock mode's stale filter (HZ-80) doesn't diverge from a
+// fresh server-backed board.
+let items = SEED_ITEMS.map((it) => ({ ...it, paused: false, rejected: false, events: [], last_activity_at: new Date().toISOString() }))
 const listeners = new Set()
 const timers = {}
 
@@ -59,8 +62,10 @@ function emit() {
   listeners.forEach((fn) => fn())
 }
 
+// Every mutation re-stamps last_activity_at — the mock mirror of the
+// server's `touch` const in store.js, which every UPDATE statement includes.
 function update(id, fn) {
-  items = items.map((it) => (it.id === id ? fn(it) : it))
+  items = items.map((it) => (it.id === id ? { ...fn(it), last_activity_at: new Date().toISOString() } : it))
   emit()
 }
 
@@ -159,6 +164,7 @@ export async function createItem({ title, outcome, metric, guardrails, priority 
       paused: false,
       rejected: false,
       events: [{ who: 'You', text: 'created this work item', color: '#5E4380', initials: 'YOU' }],
+      last_activity_at: new Date().toISOString(),
     },
     ...items,
   ]

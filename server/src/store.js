@@ -350,6 +350,9 @@ export function listItems() {
     currentStep: currentStepOf(row),
     paused: !!row.paused,
     rejected: !!row.rejected,
+    // Last progress on this item, for the board's staleness filter (HZ-80) —
+    // `updated_at` is already maintained by `touch` on every mutation below.
+    last_activity_at: row.updated_at,
     abandoned_at: row.abandoned_at,
     abandoned_reason: row.abandoned_reason,
     abandoned_by: row.abandoned_by,
