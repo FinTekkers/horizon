@@ -253,11 +253,30 @@ export function approveGate(id, stepIndex, notes, actor = 'You') {
 // Rejection is not a dead end: the item rolls back to the agent step whose
 // work was judged, the feedback is queued for that agent, and the orchestrator
 // re-runs it (attempt N+1) before returning to the gate.
-export function requestChanges(id, target, feedbackText, actor = 'You') {
+//
+// targetStepIndex lets a human pick a specific earlier agent step instead of
+// the nearest-preceding one (HZ-51). It is validated here, server-side,
+// before any side effect: only legal from a gate, and only to an agent step
+// strictly earlier than that gate — an attacker or a bug can't move an item
+// forward or onto another gate. Walking back to an earlier index still means
+// every gate between it and here is crossed again on the way forward, so no
+// checkpoint is skipped. Omitting it reproduces today's exact behavior,
+// including the Accept-gate exception.
+export function requestChanges(id, target, feedbackText, actor = 'You', targetStepIndex = null) {
   const it = getItem(id)
   if (!it) return { error: 'not_found' }
   if (inactiveProject(it)) return { error: 'project_not_active' }
   if (isClosed(it)) return { error: 'closed' }
+
+  if (targetStepIndex != null) {
+    const atGate = STEPS[it.cursor]?.kind === 'gate'
+    const validTarget =
+      Number.isInteger(targetStepIndex) &&
+      targetStepIndex >= 0 &&
+      targetStepIndex < it.cursor &&
+      STEPS[targetStepIndex]?.kind === 'agent'
+    if (!atGate || !validTarget) return { error: 'invalid_target' }
+  }
 
   agentRunner.cancel(id, 'rejected')
 
@@ -270,7 +289,9 @@ export function requestChanges(id, target, feedbackText, actor = 'You') {
       feedbackText || '',
       actor,
     )
-    if (it.cursor === ACCEPT_GATE_INDEX) {
+    if (targetStepIndex != null) {
+      reworkIdx = targetStepIndex
+    } else if (it.cursor === ACCEPT_GATE_INDEX) {
       // The automated Review step immediately precedes this gate, but
       // rejecting the code means the CODE is wrong — walking back to the
       // nearest agent step would land on Review, which would just re-judge

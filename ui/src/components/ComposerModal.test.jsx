@@ -67,3 +67,66 @@ test('clicking the submit button fires onSubmit exactly once', () => {
   fireEvent.click(getByText('Approve'))
   expect(onSubmit).toHaveBeenCalledTimes(1)
 })
+
+// ---- send-back-to-a-chosen-step picker (HZ-51) ----
+
+const rejectWithOptions = {
+  open: true,
+  mode: 'reject',
+  itemId: 'HZ-51',
+  target: 'Review before execution',
+  stepOptions: [
+    { index: 6, label: 'Draft implementation plan' },
+    { index: 7, label: 'Architecture review' },
+    { index: 9, label: 'Summarize reviews & recommend' },
+  ],
+  defaultTargetLabel: 'Summarize reviews & recommend',
+}
+
+test('a reject from a gate with eligible earlier steps shows the destination picker', () => {
+  const { getByText, getByLabelText } = render(
+    <ComposerModal composer={rejectWithOptions} onSubmit={() => {}} onCancel={() => {}} />,
+  )
+  expect(getByLabelText('Send back to')).toBeTruthy()
+  expect(getByText('Draft implementation plan')).toBeTruthy()
+  expect(getByText(/Default — Summarize reviews & recommend/)).toBeTruthy()
+})
+
+test('a reject with no eligible earlier steps (or a non-reject mode) renders no picker', () => {
+  const { queryByLabelText } = render(
+    <ComposerModal
+      composer={{ open: true, mode: 'reject', itemId: 'HZ-51', target: 'x', stepOptions: [] }}
+      onSubmit={() => {}}
+      onCancel={() => {}}
+    />,
+  )
+  expect(queryByLabelText('Send back to')).toBeNull()
+})
+
+test('submitting without touching the picker sends null — the default (no-target) path', () => {
+  const onSubmit = vi.fn()
+  const { container, getByText } = render(
+    <ComposerModal composer={rejectWithOptions} onSubmit={onSubmit} onCancel={() => {}} />,
+  )
+  fireEvent.change(container.querySelector('.composer__input'), { target: { value: 'redo this' } })
+  fireEvent.click(getByText('Send back'))
+  expect(onSubmit).toHaveBeenCalledWith('redo this', null)
+})
+
+test('picking a step in the dropdown sends its index as the explicit target', () => {
+  const onSubmit = vi.fn()
+  const { container, getByLabelText, getByText } = render(
+    <ComposerModal composer={rejectWithOptions} onSubmit={onSubmit} onCancel={() => {}} />,
+  )
+  fireEvent.change(getByLabelText('Send back to'), { target: { value: '6' } })
+  fireEvent.change(container.querySelector('.composer__input'), { target: { value: 'missed the migration step' } })
+  fireEvent.click(getByText('Send back'))
+  expect(onSubmit).toHaveBeenCalledWith('missed the migration step', 6)
+})
+
+test('approve mode calls onSubmit with a single argument, unaffected by the reject-only picker', () => {
+  const onSubmit = vi.fn()
+  const { getByText } = render(<ComposerModal composer={composer} onSubmit={onSubmit} onCancel={() => {}} />)
+  fireEvent.click(getByText('Approve'))
+  expect(onSubmit).toHaveBeenCalledWith('')
+})

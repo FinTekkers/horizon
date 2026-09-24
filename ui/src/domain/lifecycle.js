@@ -89,3 +89,25 @@ export function stepStatus(item, i) {
 export function phaseStepIndexes(phase) {
   return STEPS.map((s, i) => (s.phase === phase ? i : -1)).filter((i) => i >= 0)
 }
+
+// ---- send-back-to-a-chosen-step (HZ-51) ----
+// Eligible destinations for a send-back from the gate at gateIndex: every
+// agent step strictly earlier than it, derived from STEPS so a pipeline
+// change (insertion/reorder) never needs a hardcoded index here. The server
+// re-derives and enforces the same rule independently — this is for
+// populating the picker, not the source of truth.
+export function reworkTargets(gateIndex) {
+  return STEPS.map((s, i) => ({ index: i, label: s.label })).filter(
+    ({ index }) => index < gateIndex && STEPS[index].kind === 'agent',
+  )
+}
+
+// Mirrors the server's default (no-target) destination, purely so the picker
+// can show what "default" means — the actual default routing happens
+// server-side when no target is sent.
+export function defaultReworkTarget(gateIndex) {
+  if (gateIndex === ACCEPT_GATE_INDEX) return IMPLEMENT_STEP_INDEX
+  let idx = gateIndex
+  while (idx > 0 && STEPS[idx].kind !== 'agent') idx--
+  return idx
+}
