@@ -49,6 +49,45 @@ function cssHrefFor(routePath) {
   return `${'../'.repeat(depth)}agent-pages.css`
 }
 
+// Full-page artifact viewer shell shared by the latest-attempt route and the
+// specific-attempt route below (HZ-46) — same markup either way, only the
+// route (for the stylesheet's relative "../" depth) and which `run` row is
+// rendered differ. Also renders the "attempt X of Y" nav line, replacing the
+// old bare "· attempt N" text so the page prints one attempt indicator, not
+// two. The feedback label per attempt is a best-effort heuristic: `target` on
+// the `feedback` row only records an agent name, not a step_index, so two
+// steps run by the same agent (e.g. both "Eng") could in rare cases show a
+// revision as driven by feedback meant for the other step. No schema change
+// to fix this — see the HZ-46 options doc's Option B trade-offs.
+function renderArtifactPage(id, stepIndex, run, routePath) {
+  const step = STEPS[stepIndex]
+  const title = `${esc(id)} · ${esc(step?.label || `step ${stepIndex}`)}`
+  const attempts = store.listStepAttempts(id, stepIndex)
+  const current = attempts.find((a) => a.attempt === run.attempt)
+  // The feedback shown next to "attempt X of Y" is what drove *this* attempt
+  // — the thing a reviewer opening this page wants to check was addressed.
+  // Other attempts get a link (to compare against) labelled with whatever
+  // drove *that* revision instead, so the "X of Y" line never repeats its
+  // own attempt number a second time.
+  const currentFeedback = current?.feedback ? ` — “${esc(current.feedback)}”` : ''
+  const otherLinks = attempts
+    .filter((a) => a.attempt !== run.attempt)
+    .map((a) => {
+      const url = `/api/items/${encodeURIComponent(id)}/artifacts/${stepIndex}/${a.attempt}`
+      const feedbackLabel = a.feedback ? ` — “${esc(a.feedback)}”` : ''
+      return `<a href="${url}">attempt ${a.attempt}</a>${feedbackLabel}`
+    })
+  const nav = `<div class="attempts">attempt ${run.attempt} of ${attempts.length}${currentFeedback}${otherLinks.length ? ' · other versions: ' + otherLinks.join(' · ') : ''}</div>`
+  return `<!doctype html><html><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>${title}</title>
+<link rel="stylesheet" href="${cssHrefFor(routePath)}"></head><body><div class="page">
+<div class="meta"><a href="${UI_URL}/${esc(id.toLowerCase())}">← ${esc(id)} in Horizon</a> · ${title} · ${esc(run.ended_at)} UTC</div>
+${nav}
+<article>${marked.parse(run.artifact)}</article>
+</div></body></html>`
+}
+
 // ---- SSE ----
 
 const sseClients = new Set()
@@ -228,16 +267,43 @@ export function buildApp({ logger = true } = {}) {
         )
         .get(id, stepIndex)
       if (!run) return reply.code(404).send({ error: 'no artifact for that step' })
-      const step = STEPS[stepIndex]
-      const title = `${esc(id)} · ${esc(step?.label || `step ${stepIndex}`)}`
-      const html = `<!doctype html><html><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>${title}</title>
-<link rel="stylesheet" href="${cssHrefFor(ARTIFACT_ROUTE)}"></head><body><div class="page">
-<div class="meta"><a href="${UI_URL}/${esc(id.toLowerCase())}">← ${esc(id)} in Horizon</a> · ${title} · attempt ${run.attempt} · ${esc(run.ended_at)} UTC</div>
-<article>${marked.parse(run.artifact)}</article>
-</div></body></html>`
-      return reply.type('text/html').send(html)
+      return reply.type('text/html').send(renderArtifactPage(id, stepIndex, run, ARTIFACT_ROUTE))
+    },
+  )
+
+  // A specific earlier attempt's artifact (HZ-46) — previous versions are
+  // retained in step_run indefinitely but were unreachable by any URL before
+  // this route. Scoped by item_id AND step_index AND attempt together so an
+  // attempt number from the URL can never read another item's or another
+  // step's row, and filtered the same way as the route above (`status='done'
+  // AND artifact IS NOT NULL`) so a failed/cancelled/superseded attempt (its
+  // output starts with "FAILED:" and it never gets an artifact — see HZ-44)
+  // can't be addressed as though it were a real prior version.
+  const ARTIFACT_ATTEMPT_ROUTE = '/api/items/:id/artifacts/:stepIndex/:attempt'
+  fastify.get(
+    ARTIFACT_ATTEMPT_ROUTE,
+    {
+      schema: {
+        params: {
+          type: 'object',
+          required: ['id', 'stepIndex', 'attempt'],
+          properties: {
+            id: { type: 'string' },
+            stepIndex: { type: 'integer', minimum: 0 },
+            attempt: { type: 'integer', minimum: 1 },
+          },
+        },
+      },
+    },
+    (request, reply) => {
+      const { id, stepIndex, attempt } = request.params
+      const run = db
+        .prepare(
+          "SELECT artifact, attempt, ended_at FROM step_run WHERE item_id = ? AND step_index = ? AND attempt = ? AND status = 'done' AND artifact IS NOT NULL",
+        )
+        .get(id, stepIndex, attempt)
+      if (!run) return reply.code(404).send({ error: 'no artifact for that attempt' })
+      return reply.type('text/html').send(renderArtifactPage(id, stepIndex, run, ARTIFACT_ATTEMPT_ROUTE))
     },
   )
 
