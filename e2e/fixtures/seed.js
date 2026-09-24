@@ -16,14 +16,32 @@ export function openDb(path) {
   return new Database(path)
 }
 
+// `updatedAt` lets a fixture backdate last_activity_at (HZ-80) — the column
+// otherwise defaults to datetime('now'), which is useless for exercising the
+// 30-day staleness filter without a real 30-day wait.
 export function insertItem(
   db,
-  { id, title, priority = 'Medium', cursor = 0, desc = '', metric = '', guardrails = '', pr = null, pr_url = null, pr_mergeable = null },
+  {
+    id,
+    title,
+    priority = 'Medium',
+    cursor = 0,
+    desc = '',
+    metric = '',
+    guardrails = '',
+    pr = null,
+    pr_url = null,
+    pr_mergeable = null,
+    updatedAt = null,
+  },
 ) {
   db.prepare(
     `INSERT INTO work_item (id, title, priority, desc, metric, guardrails, cursor, pr, pr_url, pr_mergeable)
      VALUES (@id, @title, @priority, @desc, @metric, @guardrails, @cursor, @pr, @pr_url, @pr_mergeable)`,
   ).run({ id, title, priority, desc, metric, guardrails, cursor, pr, pr_url, pr_mergeable })
+  if (updatedAt) {
+    db.prepare('UPDATE work_item SET updated_at = ? WHERE id = ?').run(updatedAt, id)
+  }
 }
 
 // A retained-but-superseded artifact version (HZ-46): a done step_run row

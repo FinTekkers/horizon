@@ -433,6 +433,27 @@ test('an item with no active run at all still has activeRun: null (unaffected by
   store.registerRunStateProvider(() => ({})) // reset for later tests
 })
 
+// ---- last_activity_at (HZ-80): the board's staleness filter needs a
+// per-item last-progress timestamp; this reuses updated_at rather than
+// adding a column.
+
+test('listItems exposes last_activity_at, sourced from updated_at', () => {
+  const before = store.listItems().find((it) => it.id === 'T-GATE')
+  assert.ok(before.last_activity_at)
+  assert.equal(before.last_activity_at, db.prepare("SELECT updated_at FROM work_item WHERE id = 'T-GATE'").get().updated_at)
+})
+
+test('last_activity_at advances when a mutation touches the item', () => {
+  db.prepare("UPDATE work_item SET updated_at = '2000-01-01 00:00:00' WHERE id = 'T-GATE'").run()
+  const stale = store.listItems().find((it) => it.id === 'T-GATE')
+  assert.equal(stale.last_activity_at, '2000-01-01 00:00:00')
+
+  assert.deepEqual(store.setPriority('T-GATE', 'Low'), { ok: true })
+  const touched = store.listItems().find((it) => it.id === 'T-GATE')
+  assert.notEqual(touched.last_activity_at, '2000-01-01 00:00:00')
+  store.setPriority('T-GATE', 'High') // restore for later tests
+})
+
 test('parseIssueBody lifts Outcome / Success metric / Guardrails sections', () => {
   const parsed = store.parseIssueBody(
     '## Outcome\nShip the thing\n\n## Success metric\nIt works\n\n## Guardrails\nTests pass',
