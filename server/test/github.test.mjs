@@ -404,6 +404,40 @@ test('handlePrStateChange no-ops for an item not at the accept gate', () => {
   assert.equal(db.prepare("SELECT cursor FROM work_item WHERE id = 'HZ-30-B'").get().cursor, ACCEPT_GATE_INDEX - 1)
 })
 
+// ---- closeIssueAsAbandoned (HZ-59) ----
+// Distinct from closeIssueWithSummary's final-gate close: state_reason is
+// 'not_planned', not 'completed', so GitHub itself carries the distinction
+// between abandoned and delivered work.
+
+test('closeIssueAsAbandoned posts a comment with the reason and PATCHes the issue closed as not_planned', async (t) => {
+  const calls = []
+  t.mock.method(globalThis, 'fetch', async (url, opts) => {
+    calls.push({ url: String(url), method: opts?.method, body: opts?.body ? JSON.parse(opts.body) : null })
+    return { ok: true, status: 200, json: async () => ({}) }
+  })
+  const item = { id: 'HZ-59', repo: REPO, issue: 59 }
+  await github.closeIssueAsAbandoned(item, 'duplicate of another item')
+
+  const comment = calls.find((c) => c.url.endsWith('/repos/FinTekkers/horizon/issues/59/comments'))
+  assert.ok(comment, 'expected a comment posting the reason')
+  assert.match(comment.body.body, /duplicate of another item/)
+  assert.match(comment.body.body, /Abandoned via Horizon/)
+
+  const patch = calls.find((c) => c.url.endsWith('/repos/FinTekkers/horizon/issues/59') && c.method === 'PATCH')
+  assert.ok(patch, 'expected a PATCH closing the issue')
+  assert.deepEqual(patch.body, { state: 'closed', state_reason: 'not_planned' })
+})
+
+test('closeIssueAsAbandoned throws when the PATCH fails, so the caller can fall back to a manual close', async (t) => {
+  t.mock.method(globalThis, 'fetch', async (url, opts) => ({
+    ok: opts?.method !== 'PATCH',
+    status: 500,
+    json: async () => ({}),
+  }))
+  const item = { id: 'HZ-59-FAIL', repo: REPO, issue: 60 }
+  await assert.rejects(() => github.closeIssueAsAbandoned(item, 'stopping this'), /could not close issue #60/)
+})
+
 // HZ-51: this is the concrete "caller that passes no target" the guardrails
 // name — requestChanges gets called with no 5th (targetStepIndex) argument
 // at all, so it must keep landing on IMPLEMENT_STEP_INDEX exactly as before

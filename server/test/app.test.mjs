@@ -19,6 +19,7 @@ const config = await import('../src/config.js')
 const { FARM_SHARED_SECRET } = config
 const store = await import('../src/store.js')
 const auth = await import('../src/auth.js')
+const orchestrator = await import('../src/orchestrator.js')
 
 // The seeded BF-* demo items would get kicked onto mock timers by
 // orchestrator.init below — remove them so only the fixtures run.
@@ -313,4 +314,156 @@ test('webhook endpoint reports 503 when no secret is configured', async () => {
   })
   assert.equal(res.statusCode, 503)
   assert.equal(res.json().error, 'webhooks_not_configured')
+})
+
+// ---- abandon (HZ-59): soft delete, gated by the human gate PIN exactly like gate approval ----
+
+db.prepare("INSERT INTO work_item (id, title, priority, cursor) VALUES ('T-ABANDON-AUTH', 'PIN-gated abandon', 'Medium', 4)").run()
+db.prepare("INSERT INTO work_item (id, title, priority, cursor) VALUES ('T-ABANDON-HAPPY', 'Abandon happy path', 'Medium', 11)").run()
+db.prepare("INSERT INTO work_item (id, title, priority, cursor) VALUES ('T-ABANDON-CLOSED', 'Already closed', 'Medium', ?)").run(STEPS.length)
+db.prepare(
+  "INSERT INTO work_item (id, title, priority, cursor, repo, issue) VALUES ('T-ABANDON-GH', 'Synced with GitHub', 'Medium', 4, 'acme/demo', 12)",
+).run()
+
+const abandonPost = (id, payload = {}) => inject({ method: 'POST', url: `/api/items/${id}/abandon`, payload })
+
+test('abandon without a session cookie is 401 login_required', async () => {
+  const res = await app.inject({
+    method: 'POST',
+    url: '/api/items/T-ABANDON-AUTH/abandon',
+    payload: { reason: 'nope' },
+  })
+  assert.equal(res.statusCode, 401)
+  assert.deepEqual(res.json(), { error: 'login_required' })
+})
+
+test('abandon with a session but no gate PIN header is 401 human_gate_key_required, and nothing is written', async () => {
+  const res = await app.inject({
+    method: 'POST',
+    url: '/api/items/T-ABANDON-AUTH/abandon',
+    payload: { reason: 'nope' },
+    headers: { cookie },
+  })
+  assert.equal(res.statusCode, 401)
+  assert.deepEqual(res.json(), { error: 'human_gate_key_required' })
+  assert.equal(db.prepare("SELECT abandoned_at FROM work_item WHERE id = 'T-ABANDON-AUTH'").get().abandoned_at, null)
+})
+
+test('abandon with a session but the wrong gate PIN is 401 human_gate_key_required — a farm/agent with DB+API access still cannot self-approve', async () => {
+  const res = await app.inject({
+    method: 'POST',
+    url: '/api/items/T-ABANDON-AUTH/abandon',
+    payload: { reason: 'nope' },
+    headers: { cookie, 'x-human-key': 'wrong-pin' },
+  })
+  assert.equal(res.statusCode, 401)
+  assert.deepEqual(res.json(), { error: 'human_gate_key_required' })
+})
+
+test('abandon with a missing or blank reason is rejected at the schema layer (400)', async () => {
+  assert.equal((await abandonPost('T-ABANDON-AUTH', {})).statusCode, 400)
+  assert.equal((await abandonPost('T-ABANDON-AUTH', { reason: '' })).statusCode, 400)
+})
+
+test('abandon on an unknown item is 404', async () => {
+  const res = await abandonPost('NOPE-9', { reason: 'gone' })
+  assert.equal(res.statusCode, 404)
+  assert.deepEqual(res.json(), { error: 'not_found' })
+})
+
+test('abandon on an already-closed item is 409 {error:closed} — abandoned is not a way to re-close delivered work', async () => {
+  const res = await abandonPost('T-ABANDON-CLOSED', { reason: 'too late' })
+  assert.equal(res.statusCode, 409)
+  assert.deepEqual(res.json(), { error: 'closed' })
+})
+
+test('abandon: 200, marks the item abandoned with the reason and the logged-in user as actor, cancels the active run, and logs an event', async () => {
+  // Put T-ABANDON-HAPPY (an agent step) onto an active mock run first, so
+  // this proves the run is really cancelled via /steps/cancel semantics —
+  // not just that the cursor freezes.
+  orchestrator.kick('T-ABANDON-HAPPY')
+  assert.equal(
+    db.prepare("SELECT COUNT(*) AS n FROM step_run WHERE item_id = 'T-ABANDON-HAPPY' AND status = 'active'").get().n,
+    1,
+  )
+
+  const res = await abandonPost('T-ABANDON-HAPPY', { reason: 'priorities changed' })
+  assert.equal(res.statusCode, 200)
+  assert.deepEqual(res.json(), { ok: true })
+
+  const row = db.prepare("SELECT * FROM work_item WHERE id = 'T-ABANDON-HAPPY'").get()
+  assert.ok(row.abandoned_at)
+  assert.equal(row.abandoned_reason, 'priorities changed')
+  assert.equal(row.abandoned_by, fixtureUser.name)
+  assert.equal(row.cursor, 11, 'abandonment does not advance or reset cursor — it is not modeled as completed')
+
+  assert.equal(
+    db.prepare("SELECT COUNT(*) AS n FROM step_run WHERE item_id = 'T-ABANDON-HAPPY' AND status = 'active'").get().n,
+    0,
+    'the in-flight run must be cancelled, not left to finish',
+  )
+  const event = db.prepare("SELECT who, text FROM event WHERE item_id = 'T-ABANDON-HAPPY' ORDER BY id DESC LIMIT 1").get()
+  assert.equal(event.who, fixtureUser.name)
+  assert.equal(event.text, 'abandoned this item: priorities changed')
+})
+
+test('abandoning an already-abandoned item is 409 already_abandoned', async () => {
+  const res = await abandonPost('T-ABANDON-HAPPY', { reason: 'again' })
+  assert.equal(res.statusCode, 409)
+  assert.deepEqual(res.json(), { error: 'already_abandoned' })
+})
+
+test('a fully abandoned item is never dispatched again even if kicked or resumed', async () => {
+  orchestrator.kick('T-ABANDON-HAPPY')
+  assert.equal(
+    db.prepare("SELECT COUNT(*) AS n FROM step_run WHERE item_id = 'T-ABANDON-HAPPY' AND status = 'active'").get().n,
+    0,
+  )
+})
+
+test('abandon closes the linked GitHub issue as not planned — and the DB write happens BEFORE the GitHub call, so the self-triggered issues.closed webhook is always safe', async () => {
+  const realFetch = globalThis.fetch
+  const calls = []
+  globalThis.fetch = async (url, opts) => {
+    const body = opts?.body ? JSON.parse(opts.body) : null
+    calls.push({ url: String(url), body })
+    if (String(url).endsWith('/repos/acme/demo/issues/12') && opts?.method === 'PATCH') {
+      // At the instant this PATCH fires, the DB must already read abandoned —
+      // proving store.abandonItem ran first, not after the GitHub call.
+      assert.ok(
+        db.prepare("SELECT abandoned_at FROM work_item WHERE id = 'T-ABANDON-GH'").get().abandoned_at,
+        'GitHub close must not race ahead of the DB write (HZ-59 self-webhook race)',
+      )
+    }
+    return { ok: true, status: 200, json: async () => ({}), text: async () => '' }
+  }
+  try {
+    const res = await abandonPost('T-ABANDON-GH', { reason: 'duplicate of another item' })
+    assert.equal(res.statusCode, 200)
+    const patchCall = calls.find((c) => c.url.endsWith('/repos/acme/demo/issues/12'))
+    assert.ok(patchCall, 'expected a PATCH to close the issue')
+    assert.deepEqual(patchCall.body, { state: 'closed', state_reason: 'not_planned' })
+    const event = db.prepare("SELECT text FROM event WHERE item_id = 'T-ABANDON-GH' ORDER BY id DESC LIMIT 1").get()
+    assert.match(event.text, /closed issue #12 on GitHub as not planned/)
+  } finally {
+    globalThis.fetch = realFetch
+  }
+})
+
+test('abandon still returns 200 {ok:true} when the GitHub close fails — best-effort, never blocks the abandonment', async () => {
+  db.prepare(
+    "INSERT INTO work_item (id, title, priority, cursor, repo, issue) VALUES ('T-ABANDON-GH-FAIL', 'GitHub close fails', 'Medium', 4, 'acme/demo', 13)",
+  ).run()
+  const realFetch = globalThis.fetch
+  globalThis.fetch = async () => ({ ok: false, status: 500, json: async () => ({}), text: async () => '' })
+  try {
+    const res = await abandonPost('T-ABANDON-GH-FAIL', { reason: 'stopping this' })
+    assert.equal(res.statusCode, 200)
+    assert.deepEqual(res.json(), { ok: true })
+    assert.ok(db.prepare("SELECT abandoned_at FROM work_item WHERE id = 'T-ABANDON-GH-FAIL'").get().abandoned_at)
+    const event = db.prepare("SELECT text FROM event WHERE item_id = 'T-ABANDON-GH-FAIL' ORDER BY id DESC LIMIT 1").get()
+    assert.match(event.text, /could not close issue #13/)
+  } finally {
+    globalThis.fetch = realFetch
+  }
 })

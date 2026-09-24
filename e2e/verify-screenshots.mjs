@@ -24,6 +24,7 @@ const EXPECTED_JOURNEYS = [
   'approvals-drawer',
   'merge-conflict',
   'full-lifecycle',
+  'abandon',
   'gate-key',
   'artifact-history',
   'login-error',

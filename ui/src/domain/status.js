@@ -1,6 +1,6 @@
 // Shared status presentation for a work item (board card + tracker header).
 
-import { AGENTS, isClosed, curStep, awaitingGate } from './lifecycle'
+import { AGENTS, isClosed, isAbandoned, curStep, awaitingGate } from './lifecycle'
 
 // A dispatched step whose run the farm currently reports as queued rather
 // than running (HZ-54) — distinct from a step merely "not yet reached"
@@ -14,11 +14,18 @@ export function isQueued(item) {
 // verbose=true gives the tracker-header phrasing; false gives the compact card one.
 export function itemStatus(item, verbose = false) {
   const closed = isClosed(item)
-  const rejected = item.rejected && !closed
-  const paused = !!item.paused && !closed && !rejected
+  const abandoned = isAbandoned(item)
+  const rejected = item.rejected && !closed && !abandoned
+  const paused = !!item.paused && !closed && !abandoned && !rejected
   const awaiting = awaitingGate(item)
   const cur = curStep(item)
 
+  // Abandoned is its own terminal state, distinct from Closed — reusing
+  // cursor >= STEPS.length would make it indistinguishable from delivered
+  // work in every count and view (the exact flaw HZ-59 exists to fix).
+  // Uses --deep/--accent-bg: the only free token pair that stays distinct
+  // from rejected (danger), paused (muted) and closed (success) in both themes.
+  if (abandoned) return { label: 'Abandoned', color: 'var(--deep)', bg: 'var(--accent-bg)' }
   if (closed) return { label: 'Closed', color: 'var(--success-ink)', bg: 'var(--success-bg)' }
   if (rejected) return { label: 'Changes requested', color: 'var(--danger-ink)', bg: 'var(--danger-bg)' }
   if (paused) return { label: 'Paused', color: 'var(--muted-strong)', bg: 'var(--chip)' }

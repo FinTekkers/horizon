@@ -20,6 +20,13 @@ const COPY = {
     submitColor: 'var(--warning)',
     placeholder: 'Why are you restarting? (optional)',
   },
+  abandon: {
+    title: 'Abandon this item',
+    submitLabel: 'Abandon',
+    submitColor: '#5C1F2B',
+    placeholder: 'Why is this being abandoned? (required)',
+    required: true,
+  },
 }
 
 function subtitle(composer) {
@@ -31,6 +38,9 @@ function subtitle(composer) {
   }
   if (composer.mode === 'restart' && composer.phase != null) {
     return `${PHASES[composer.phase]} phase will re-run from the start`
+  }
+  if (composer.mode === 'abandon') {
+    return 'Stops dispatch, cancels any in-flight run, and closes the GitHub issue as not planned — this is recorded on the activity feed and cannot be undone from here'
   }
   return ''
 }
@@ -44,6 +54,13 @@ export default function ComposerModal({ composer, onSubmit, onCancel }) {
   const [targetStepIndex, setTargetStepIndex] = useState('')
   const submit = () => {
     const text = (inputRef.current?.value || '').trim()
+    // Abandon (HZ-59) demands a reason — the modes that require text must not
+    // submit empty. This guard came from this branch; the reject/step-target
+    // routing below came from main (HZ-51). Both are needed.
+    if (copy.required && !text) {
+      inputRef.current?.focus()
+      return
+    }
     if (composer.mode === 'reject') {
       onSubmit(text, stepOptions.length && targetStepIndex !== '' ? Number(targetStepIndex) : null)
     } else {

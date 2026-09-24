@@ -68,6 +68,37 @@ test('clicking the submit button fires onSubmit exactly once', () => {
   expect(onSubmit).toHaveBeenCalledTimes(1)
 })
 
+// ---- abandon (HZ-59): the one mode where a reason is not optional ----
+
+const abandonComposer = { open: true, mode: 'abandon', itemId: 'HZ-59' }
+
+test('abandon mode blocks submission with a blank reason', () => {
+  const onSubmit = vi.fn()
+  const { getByText } = render(<ComposerModal composer={abandonComposer} onSubmit={onSubmit} onCancel={() => {}} />)
+  fireEvent.click(getByText('Abandon'))
+  expect(onSubmit).not.toHaveBeenCalled()
+})
+
+test('abandon mode blocks submission when the reason is only whitespace', () => {
+  const onSubmit = vi.fn()
+  const { container, getByText } = render(
+    <ComposerModal composer={abandonComposer} onSubmit={onSubmit} onCancel={() => {}} />,
+  )
+  fireEvent.change(container.querySelector('.composer__input'), { target: { value: '   ' } })
+  fireEvent.click(getByText('Abandon'))
+  expect(onSubmit).not.toHaveBeenCalled()
+})
+
+test('abandon mode submits the trimmed reason once one is entered', () => {
+  const onSubmit = vi.fn()
+  const { container, getByText } = render(
+    <ComposerModal composer={abandonComposer} onSubmit={onSubmit} onCancel={() => {}} />,
+  )
+  fireEvent.change(container.querySelector('.composer__input'), { target: { value: '  duplicate of HZ-12  ' } })
+  fireEvent.click(getByText('Abandon'))
+  expect(onSubmit).toHaveBeenCalledWith('duplicate of HZ-12')
+})
+
 // ---- send-back-to-a-chosen-step picker (HZ-51) ----
 
 const rejectWithOptions = {

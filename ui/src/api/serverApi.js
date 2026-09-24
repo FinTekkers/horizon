@@ -283,6 +283,11 @@ export function restartPhase(id, phase, reason) {
   gatePost(`/items/${id}/phases/${phase}/restart`, { reason: reason || '' })
 }
 
+// Soft delete (HZ-59) — same gate PIN as approve/reject, reused via gatePost.
+export function abandonItem(id, reason) {
+  gatePost(`/items/${id}/abandon`, { reason: reason || '' })
+}
+
 export function setPersona(id, persona) {
   return post(`/items/${id}/persona`, { persona })
 }

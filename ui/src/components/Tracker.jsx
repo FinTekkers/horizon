@@ -5,6 +5,7 @@ import {
   PHASE_ACCENT_BG,
   STEPS,
   isClosed,
+  isAbandoned,
   phaseIdx,
   stepStatus,
   phaseStepIndexes,
@@ -230,9 +231,11 @@ function buildActivity(item) {
     })
 }
 
-export default function Tracker({ item, onBack, onApprove, onApproveWithComments, onReject, onResolveConflicts, onTogglePause, onRestartPhase, onSetPersona }) {
+export default function Tracker({ item, onBack, onApprove, onApproveWithComments, onReject, onResolveConflicts, onTogglePause, onRestartPhase, onSetPersona, onAbandon }) {
   const status = itemStatus(item, true)
   const activity = buildActivity(item)
+  const closed = isClosed(item)
+  const abandoned = isAbandoned(item)
 
   return (
     <div className="tracker">
@@ -278,11 +281,25 @@ export default function Tracker({ item, onBack, onApprove, onApproveWithComments
           </div>
           <StatusPill status={status} className="tracker__status" />
         </div>
-        <div className="tracker__actions">
-          <button className="btn-outline" onClick={() => onTogglePause(item.id)}>
-            {item.paused ? 'Resume work' : 'Pause work'}
-          </button>
-        </div>
+        {!abandoned && (
+          <div className="tracker__actions">
+            <button className="btn-outline" onClick={() => onTogglePause(item.id)}>
+              {item.paused ? 'Resume work' : 'Pause work'}
+            </button>
+            {!closed && (
+              <button className="btn-outline" style={{ color: '#5C1F2B' }} onClick={() => onAbandon(item.id)}>
+                Abandon
+              </button>
+            )}
+          </div>
+        )}
+        {abandoned && item.abandoned_reason && (
+          <div className="tracker__actions">
+            <div className="tile__value" style={{ color: '#5C1F2B' }}>
+              Abandoned by {item.abandoned_by || 'a human'}: {item.abandoned_reason}
+            </div>
+          </div>
+        )}
         <div className="tracker__tiles">
           <div className="tile">
             <div className="tile__label">Success metric</div>
@@ -305,7 +322,8 @@ export default function Tracker({ item, onBack, onApprove, onApproveWithComments
             const anyActive = idxs.some((i) => ['active', 'awaiting'].includes(stepStatus(item, i)))
             const phaseStatusLabel = allDone ? 'Complete' : anyActive ? 'In progress' : 'Upcoming'
             const phaseStatusColor = allDone ? 'var(--success-ink)' : anyActive ? 'var(--primary-ink)' : 'var(--muted)'
-            const restartable = !isClosed(item) && phaseIdx(item) >= p
+            // An abandoned item is terminal too — it must not offer a restart.
+            const restartable = !isClosed(item) && !abandoned && phaseIdx(item) >= p
             return (
               <div key={name} className="phase">
                 <div className="phase__head">

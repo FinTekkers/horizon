@@ -3,6 +3,7 @@ import {
   PHASE_ACCENT,
   PHASE_ACCENT_BG,
   isClosed,
+  isAbandoned,
   curStep,
   phaseIdx,
   awaitingGate,
@@ -16,10 +17,14 @@ import { LinkIcon, LockIcon, PrIcon } from './icons'
 
 function progressSegs(item) {
   const closed = isClosed(item)
+  const abandoned = isAbandoned(item)
   const p = phaseIdx(item)
   const awaiting = awaitingGate(item)
-  const rejected = item.rejected && !closed
+  const rejected = item.rejected && !closed && !abandoned
   return [0, 1, 2, 3, 4].map((i) => {
+    // Abandoned kept from this branch, but through main's theme tokens —
+    // dark mode (HZ-25) moved every colour here behind a CSS variable.
+    if (abandoned) return i <= p ? 'var(--deep)' : 'var(--border-strong)'
     if (closed || i < p) return 'var(--primary)'
     if (i === p) return awaiting ? 'var(--warning)' : rejected ? 'var(--danger)' : 'var(--primary)'
     return 'var(--border-strong)'
@@ -28,11 +33,12 @@ function progressSegs(item) {
 
 function BoardCard({ item, onOpen, onApprove, onReject, onTogglePause }) {
   const closed = isClosed(item)
-  const rejected = item.rejected && !closed
-  const paused = !!item.paused && !closed && !rejected
+  const abandoned = isAbandoned(item)
+  const rejected = item.rejected && !closed && !abandoned
+  const paused = !!item.paused && !closed && !abandoned && !rejected
   const awaiting = awaitingGate(item)
   const cur = curStep(item)
-  const isActiveAgent = !closed && !awaiting && !rejected && !paused && cur && cur.kind === 'agent'
+  const isActiveAgent = !closed && !abandoned && !awaiting && !rejected && !paused && cur && cur.kind === 'agent'
   const rejectTarget = awaiting && cur ? cur.label : cur ? cur.label : 'this step'
 
   return (
@@ -139,11 +145,14 @@ function BoardCard({ item, onOpen, onApprove, onReject, onTogglePause }) {
 }
 
 export default function Board({ items, onOpen, onApprove, onReject, onTogglePause, onNewItem }) {
+  // Abandoned items stay on the board — findable, still rendered in their
+  // column — but don't count as active work: they've stopped being dispatched.
+  const activeCount = items.filter((it) => !isAbandoned(it)).length
   return (
     <div className="board">
       <div className="board__head">
         <div className="board__title">Work in flight</div>
-        <div className="board__meta">{items.length} items across the lifecycle</div>
+        <div className="board__meta">{activeCount} items across the lifecycle</div>
         <span style={{ flex: 1 }} />
         <button className="btn-new" onClick={onNewItem}>
           + New work item
@@ -152,6 +161,7 @@ export default function Board({ items, onOpen, onApprove, onReject, onTogglePaus
       <div className="board__cols">
         {PHASES.map((name, p) => {
           const colItems = items.filter((it) => phaseIdx(it) === p)
+          const colActiveCount = colItems.filter((it) => !isAbandoned(it)).length
           return (
             <div key={name} className="col">
               <div className="col__head">
@@ -162,7 +172,7 @@ export default function Board({ items, onOpen, onApprove, onReject, onTogglePaus
                   {p + 1}
                 </span>
                 <span className="col__name">{name}</span>
-                <span className="col__count">{colItems.length}</span>
+                <span className="col__count">{colActiveCount}</span>
               </div>
               <div className="col__cards">
                 {colItems.map((item) => (
