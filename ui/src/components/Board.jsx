@@ -20,9 +20,9 @@ function progressSegs(item) {
   const awaiting = awaitingGate(item)
   const rejected = item.rejected && !closed
   return [0, 1, 2, 3, 4].map((i) => {
-    if (closed || i < p) return '#2E6CB2'
-    if (i === p) return awaiting ? '#DFA200' : rejected ? '#9C333E' : '#2E6CB2'
-    return '#E4DEEE'
+    if (closed || i < p) return 'var(--primary)'
+    if (i === p) return awaiting ? 'var(--warning)' : rejected ? 'var(--danger)' : 'var(--primary)'
+    return 'var(--border-strong)'
   })
 }
 

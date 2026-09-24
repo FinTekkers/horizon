@@ -34,7 +34,17 @@ export const FARM_STEP_INDEXES = new Set(
     .map((s) => Number(s.trim()))
     .filter((n) => Number.isInteger(n)),
 )
+// Execution budget: starts when the farm confirms an agent actually launched
+// (POST .../started), not at dispatch — see FARM_QUEUE_TIMEOUT_MS below for
+// the queue-wait half of that split (HZ-57).
 export const FARM_STEP_TIMEOUT_MS = Number(process.env.FARM_STEP_TIMEOUT_MS || 20 * 60 * 1000)
+// Queue-wait budget: armed the moment a step is handed to the farm. A step
+// that sits queued behind other work longer than this is failed as "never
+// picked up" — this must stay well short of FARM_STEP_TIMEOUT_MS so a step
+// that's genuinely stuck in queue (farm down, task file lost, queue wedged)
+// still fails in a bounded window instead of silently burning its full
+// execution budget before ever running.
+export const FARM_QUEUE_TIMEOUT_MS = Number(process.env.FARM_QUEUE_TIMEOUT_MS || 10 * 60 * 1000)
 export const FARM_START_TIMEOUT_MS = Number(process.env.FARM_START_TIMEOUT_MS || 5 * 60 * 1000)
 export const POLL_INTERVAL_MS = Number(process.env.POLL_INTERVAL_MS || 60_000)
 export const PORT = Number(process.env.PORT || 3001)

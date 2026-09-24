@@ -40,7 +40,7 @@ import httpx
 from . import config
 from . import wizard
 from .claude_runner import ClaudeError, extract_json, run_claude
-from .config import CONCIERGE_MODEL, HORIZON_URL, STATE_DIR, ensure_dirs, slugify
+from .config import CONCIERGE_MODEL, HORIZON_URL, SHARED_SECRET, STATE_DIR, ensure_dirs, slugify
 from .whatsapp.transport import Inbound, Transport, TransportError
 
 ROLE_PROMPT = (Path(__file__).parent / "roles" / "concierge.md").read_text()
@@ -125,7 +125,16 @@ class ConciergeState:
 
 
 def fetch_snapshot(base_url: str) -> dict:
-    res = httpx.get(f"{base_url}/api/items", timeout=15)
+    # /api/farm/snapshot, not /api/items: the concierge is a daemon with no
+    # browser session, and HZ-21 put /api/items behind the login gate — this
+    # call 401'd on every message from 2026-08-04 onwards, which the catch-all
+    # in process_message() reported as a generic agent error. The farm's
+    # shared secret is the boundary that applies to a daemon.
+    res = httpx.get(
+        f"{base_url}/api/farm/snapshot",
+        headers={"x-farm-secret": SHARED_SECRET},
+        timeout=15,
+    )
     res.raise_for_status()
     return res.json()
 

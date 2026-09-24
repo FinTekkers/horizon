@@ -161,6 +161,63 @@ def _select_dispatchable(task_paths: list, sessions: list[str], slots: int) -> l
     return selected
 
 
+def _notify_started(run_id) -> bool:
+    """Tells the Node server this run's agent actually launched — flips its
+    watchdog from the queue-wait timer to the execution timer (HZ-57).
+    Returns whether the run is still active server-side; a run cancelled
+    while queued (its own queue watchdog fired, or a human acted) reports
+    back False and must NOT be launched.
+
+    Fails OPEN on any farmd/network problem (unreachable server, non-2xx):
+    this call is an optimization, not the safety backstop — the server's own
+    queue and execution timers are what actually bound a run that goes
+    silent, so a failed notify here must not strand a legitimate task in the
+    queue forever.
+    """
+    url = f"{HORIZON_URL}/api/farm/steps/{run_id}/started"
+    for attempt in (1, 2):
+        try:
+            res = httpx.post(url, headers={"x-farm-secret": SHARED_SECRET}, timeout=15)
+            if res.status_code == 200:
+                return bool(res.json().get("active", True))
+            print(f"farmd: started notify for run {run_id} -> {res.status_code}", flush=True)
+            return True
+        except Exception as exc:
+            print(f"farmd: started notify attempt {attempt} for run {run_id} failed: {exc}", flush=True)
+            time.sleep(2)
+    return True
+
+
+def _claim_and_launch(task_path, runs_dir: Path, repo_root: Path) -> str | None:
+    """Claims one queued task file (rename into runs/active) and launches its
+    ephemeral tmux session — unless the server reports the run is no longer
+    active, in which case the claimed file is dropped and nothing launches
+    (HZ-57: a task must not run after the server has already given up on
+    it, e.g. its queue watchdog already fired). Factored out of the
+    dispatcher loop so it's testable without tmux/threads, same as
+    _select_dispatchable above. Returns the launched session name, or None
+    if the run was stale."""
+    task = json.loads(task_path.read_text())
+    active = runs_dir / "active"
+    active.mkdir(exist_ok=True)
+    claimed = active / task_path.name
+    task_path.rename(claimed)
+    if not _notify_started(task["run_id"]):
+        print(f"farmd: run {task['run_id']} no longer active server-side — not launching", flush=True)
+        claimed.unlink(missing_ok=True)
+        return None
+    name = _run_session_name(task)
+    tmux_mgr.new_session(
+        name,
+        f"{sys.executable} -m farm.step_agent --task {claimed}",
+        cwd=str(repo_root),
+        log_file=str(LOGS_DIR / f"{name}.log"),
+    )
+    RUN_SESSIONS[str(task["run_id"])] = name
+    print(f"farmd: launched {name}", flush=True)
+    return name
+
+
 def _ephemeral_dispatcher() -> None:
     """Launches queued ephemeral steps, at most MAX_EPHEMERAL at once."""
     runs_dir = QUEUE_DIR / "runs"
@@ -175,20 +232,7 @@ def _ephemeral_dispatcher() -> None:
                 continue
             candidates = sorted(runs_dir.glob("*.json"), key=lambda p: p.stat().st_mtime)
             for task_path in _select_dispatchable(candidates, _ephemeral_sessions(), slots):
-                task = json.loads(task_path.read_text())
-                active = runs_dir / "active"
-                active.mkdir(exist_ok=True)
-                claimed = active / task_path.name
-                task_path.rename(claimed)
-                name = _run_session_name(task)
-                tmux_mgr.new_session(
-                    name,
-                    f"{sys.executable} -m farm.step_agent --task {claimed}",
-                    cwd=str(repo_root),
-                    log_file=str(LOGS_DIR / f"{name}.log"),
-                )
-                RUN_SESSIONS[str(task["run_id"])] = name
-                print(f"farmd: launched {name}", flush=True)
+                _claim_and_launch(task_path, runs_dir, repo_root)
         except Exception as exc:
             print(f"farmd: dispatcher error: {exc}", flush=True)
 
@@ -414,6 +458,16 @@ async def steps_cancel(request: Request):
         removed = True
         print(f"farmd: cancelled run {run_id}, killed {session}", flush=True)
     return {"ok": True, "removed": removed, "killed": killed}
+
+
+@app.post("/internal/steps/started")
+async def internal_steps_started(request: Request):
+    """The PM agent's equivalent of the ephemeral dispatcher's own
+    _notify_started call above — the PM queue (steps 0/1/2/9) can sit behind
+    other PM work just as long as the ephemeral queue can (HZ-57)."""
+    body = await request.json()
+    active = _notify_started(str(body.get("run_id")))
+    return {"ok": True, "active": active}
 
 
 @app.post("/internal/steps/result")
