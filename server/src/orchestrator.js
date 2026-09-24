@@ -11,7 +11,7 @@
 
 import { db } from './db.js'
 import { STEPS, AGENTS, isClosed, IMPLEMENT_STEP_INDEX, REVIEW_STEP_INDEX, DEPLOY_STEP_INDEX } from './lifecycle.js'
-import { getItem, addEvent, notifyChange, registerAgentRunner, recoverRejectedItems } from './store.js'
+import { getItem, addEvent, notifyChange, registerAgentRunner, registerRunStateProvider, recoverRejectedItems } from './store.js'
 import { createMockPr, createDeployRelease, postIssueComment, createPrFromBranch } from './github.js'
 import { PHASES } from './lifecycle.js'
 import { getActiveProjectId, getSetting, setSetting, getToken } from './settings.js'
@@ -87,10 +87,53 @@ export function budgetArtifacts(rows) {
   })
 }
 
-let farm = { status: 'running', since: new Date().toISOString() }
+let farm = { status: 'running', since: new Date().toISOString(), runStates: {} }
 
 export function getFarmState() {
-  return { ...farm, activeProjectId: getActiveProjectId() }
+  // runStates is an internal cache for store.js (via registerRunStateProvider),
+  // not part of the farm's own status — keep it out of this public snapshot.
+  const { runStates, ...publicState } = farm
+  return { ...publicState, activeProjectId: getActiveProjectId() }
+}
+
+// ---- queued vs running (HZ-54) ----
+// The board showed every dispatched step as "in progress" whether an agent
+// was actually working on it or it was just sitting in the farm's queue.
+// The farm now reports a small state vocabulary ({state, reason} — never a
+// tmux session name) per run_id via POST /runs/status, polled here on an
+// interval independent of the request path so snapshot()/listItems() stay
+// synchronous. Cached on `farm.runStates`, keyed by step_run.id (string).
+const RUN_STATE_POLL_MS = Number(process.env.FARM_RUN_STATE_POLL_MS || 4000)
+let runStatePollInFlight = false
+
+// Exported for tests: normally driven by the setInterval in init(), below.
+export function pollRunStates() {
+  if (runStatePollInFlight) return Promise.resolve() // don't let a slow farm response overlap the next tick
+  const active = db.prepare("SELECT id FROM step_run WHERE status = 'active'").all()
+  if (active.length === 0) {
+    farm.runStates = {}
+    return Promise.resolve()
+  }
+  runStatePollInFlight = true
+  return farmFetch('/runs/status', { run_ids: active.map((r) => String(r.id)) })
+    .then((data) => {
+      farm.runStates = data.states || {}
+      notifyChange()
+    })
+    .catch(() => {}) // fail soft: an unreachable/old/slow farm just leaves the last-known cache in place
+    .finally(() => {
+      runStatePollInFlight = false
+    })
+}
+
+// e2e only, wired behind TEST_HOOKS_ENABLED in app.js: the e2e suite runs
+// with no real farm daemon, so pollRunStates() never has anything to poll.
+// This lets a spec seed farm.runStates directly, exactly the shape a real
+// /runs/status reply would populate, so the board's queued/running rendering
+// gets real end-to-end coverage without standing up a fake farm process.
+export function setRunStateForTest(runId, state, reason = null) {
+  farm.runStates = { ...farm.runStates, [String(runId)]: { state, reason } }
+  notifyChange()
 }
 
 // ---- real farm (farm/ Python daemon) plumbing ----
@@ -884,6 +927,10 @@ export function cancel(id, status = 'cancelled') {
 
 export function init(log) {
   registerAgentRunner({ kick, cancel })
+  // store.js reads this to attach {state, reason} onto activeRun in
+  // listItems() — a plain object lookup, never a network call, so
+  // snapshot()/listItems() stay synchronous (HZ-54).
+  registerRunStateProvider(() => farm.runStates || {})
   // Default the active project to the first one if never chosen.
   if (!getSetting('active_project_id')) {
     const first = db.prepare('SELECT id FROM project ORDER BY id LIMIT 1').get()
@@ -894,6 +941,7 @@ export function init(log) {
     // this process. Re-arm their watchdogs instead of superseding them.
     const rearmed = rearmFarmRuns()
     if (rearmed > 0) log.info(`Re-armed watchdogs for ${rearmed} in-flight farm run(s)`)
+    setInterval(pollRunStates, RUN_STATE_POLL_MS).unref()
   } else {
     // Mock runs die with this process: close them; resume will re-kick.
     closeAllOrphanedRuns()

@@ -537,6 +537,11 @@ button { font-family: var(--font-sans); }
 .step-card--awaiting { background: var(--warning-bg-soft); border: 1.5px solid var(--warning-border-soft); }
 .step-card--active { background: var(--active-bg); border: 1px solid var(--active-border); }
 .step-card--blocked { background: var(--danger-bg-soft); border: 1px solid var(--danger-border-soft); }
+
+/* Queued (HZ-54): dispatched but not yet claimed by an agent — muted, no
+   pulse. Uses theme tokens, not the hardcoded hex it originally shipped. */
+.step__icon--queued { background: var(--surface); border: 2px solid var(--muted); color: var(--muted); animation: none; }
+.step-card--queued { background: var(--surface-alt); border: 1px solid var(--subtle); }
 .step-card__head { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
 .step-card__label { font: 700 14px var(--font-sans); color: var(--deep); }
 .step-card__agent {

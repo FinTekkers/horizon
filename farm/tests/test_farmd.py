@@ -89,6 +89,62 @@ def test_steps_run_without_matching_rules_stamps_an_empty_string(running_farm):
     assert json.loads((QUEUE_DIR / "pm" / "102.json").read_text())["rules"] == ""
 
 
+# ---- /runs/status (HZ-54) ----
+# Board/tracker guardrail: the farm reports a small {state, reason} vocabulary
+# only — never a tmux session name — so a queued run can't be told apart from
+# an executing one by string-matching a naming convention.
+
+
+@pytest.fixture
+def queue_dirs():
+    for sub in ("pm", "runs", "runs/active"):
+        (QUEUE_DIR / sub).mkdir(parents=True, exist_ok=True)
+    yield
+    for sub in ("pm", "runs", "runs/active"):
+        for f in (QUEUE_DIR / sub).glob("*.json"):
+            f.unlink(missing_ok=True)
+
+
+def test_runs_status_reports_queued_for_a_pm_queued_task(queue_dirs):
+    (QUEUE_DIR / "pm" / "201.json").write_text(json.dumps(make_task(201, step_index=9)))
+    res = client.post("/runs/status", json={"run_ids": [201]})
+    assert res.status_code == 200
+    assert res.json() == {"states": {"201": {"state": "queued", "reason": "waiting for the PM agent"}}}
+
+
+def test_runs_status_reports_queued_for_an_ephemeral_queued_task_with_the_busy_count(queue_dirs, monkeypatch):
+    monkeypatch.setattr(farmd, "_ephemeral_sessions", lambda: ["farm-run-a-s11-a1", "farm-run-b-s11-a1"])
+    (QUEUE_DIR / "runs" / "202.json").write_text(json.dumps(make_task(202)))
+    res = client.post("/runs/status", json={"run_ids": ["202"]})
+    assert res.json() == {
+        "states": {"202": {"state": "queued", "reason": f"waiting for a free agent slot (2/{farmd.MAX_EPHEMERAL} in use)"}}
+    }
+
+
+def test_runs_status_reports_running_for_a_claimed_task_not_in_either_queue(queue_dirs):
+    # Claimed tasks live in runs/active/, which /runs/status never globs —
+    # they fall through to "running" without needing to know about tmux.
+    (QUEUE_DIR / "runs" / "active" / "203.json").write_text(json.dumps(make_task(203)))
+    res = client.post("/runs/status", json={"run_ids": [203]})
+    assert res.json() == {"states": {"203": {"state": "running"}}}
+
+
+def test_runs_status_reports_running_for_an_unknown_run_id(queue_dirs):
+    # Defaults to "running" (today's behavior) rather than inventing a new
+    # value — this is the fail-soft shape the Node poller relies on.
+    res = client.post("/runs/status", json={"run_ids": [999999]})
+    assert res.json() == {"states": {"999999": {"state": "running"}}}
+
+
+def test_runs_status_never_leaks_a_tmux_session_name(queue_dirs):
+    (QUEUE_DIR / "pm" / "204.json").write_text(json.dumps(make_task(204, item_id="HZ-54", step_index=9)))
+    (QUEUE_DIR / "runs" / "205.json").write_text(json.dumps(make_task(205, item_id="HZ-54", step_index=11)))
+    res = client.post("/runs/status", json={"run_ids": [204, 205]})
+    body = json.dumps(res.json())
+    assert "farm-run-" not in body
+    assert "farm-pm-" not in body
+
+
 # ---- /internal/steps/result forwarding (HZ-29) ----
 # farmd is a dumb relay here: it must forward the agent's reported artifacts
 # to the Node server byte-for-byte, with no re-slicing of its own — any cap

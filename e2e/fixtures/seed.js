@@ -35,10 +35,14 @@ export function insertStepRun(
   db,
   { itemId, stepIndex, attempt, agent, status = 'done', output = null, artifact = null, startedAt, endedAt = null },
 ) {
-  db.prepare(
-    `INSERT INTO step_run (item_id, step_index, attempt, agent, status, output, artifact, started_at, ended_at)
-     VALUES (@itemId, @stepIndex, @attempt, @agent, @status, @output, @artifact, @startedAt, @endedAt)`,
-  ).run({ itemId, stepIndex, attempt, agent, status, output, artifact, startedAt, endedAt })
+  // Returns lastInsertRowid: HZ-54's queued-work spec needs the run id to
+  // attach farm state to a specific run. main's own callers ignore it.
+  return db
+    .prepare(
+      `INSERT INTO step_run (item_id, step_index, attempt, agent, status, output, artifact, started_at, ended_at)
+       VALUES (@itemId, @stepIndex, @attempt, @agent, @status, @output, @artifact, @startedAt, @endedAt)`,
+    )
+    .run({ itemId, stepIndex, attempt, agent, status, output, artifact, startedAt, endedAt }).lastInsertRowid
 }
 
 // A feedback row with an explicit created_at, so it can be placed inside the

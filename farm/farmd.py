@@ -361,6 +361,30 @@ def farm_stop():
     return {"ok": True}
 
 
+def _run_state(run_id: str, pm_queue: list, runs_queue: list, busy: int) -> dict:
+    """A run's semantic state, never its tmux session name (HZ-54): queued
+    while its task file sits in the PM or ephemeral-runs queue, running once
+    the dispatcher has claimed it (moved it into runs/active — matched by
+    neither glob here, so it falls through to "running")."""
+    if any(p.stem == run_id for p in pm_queue):
+        return {"state": "queued", "reason": "waiting for the PM agent"}
+    if any(p.stem == run_id for p in runs_queue):
+        return {"state": "queued", "reason": f"waiting for a free agent slot ({busy}/{MAX_EPHEMERAL} in use)"}
+    return {"state": "running"}
+
+
+@app.post("/runs/status")
+async def runs_status(request: Request):
+    """Batched queued/running lookup for the Node poller (HZ-54): the UI must
+    never see a tmux session name, only this small state vocabulary."""
+    body = await request.json()
+    run_ids = [str(r) for r in body.get("run_ids", [])]
+    pm_queue = list((QUEUE_DIR / "pm").glob("*.json"))
+    runs_queue = list((QUEUE_DIR / "runs").glob("*.json"))
+    busy = len(_ephemeral_sessions())
+    return {"states": {rid: _run_state(rid, pm_queue, runs_queue, busy) for rid in run_ids}}
+
+
 @app.post("/steps/run")
 async def steps_run(request: Request):
     body = await request.json()

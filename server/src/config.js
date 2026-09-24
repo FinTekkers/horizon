@@ -14,6 +14,7 @@
 //   ALLOWED_LOGIN_EMAILS   comma-separated Google-login allowlist (deny-by-default: empty/
 //                          unset means NO Google logins succeed; the password path is unaffected)
 //   SESSION_SECRET         unused placeholder — session tokens are random, not signed
+//   HORIZON_TEST_HOOKS     "1" registers e2e-only routes (see app.js) — never set in production
 
 export const WEBHOOK_SECRET = process.env.GITHUB_WEBHOOK_SECRET || null
 
@@ -72,3 +73,12 @@ export const ALLOWED_LOGIN_EMAILS = new Set(
     .map((s) => s.trim().toLowerCase())
     .filter(Boolean),
 )
+
+// e2e only (HZ-54): the e2e suite runs with no real farm daemon (FARM_URL
+// unset — see e2e/playwright.config.js), so it has no way to make the board
+// actually observe a "queued" run through the real polling path. This flag
+// gates registration of a tiny test-only route (app.js) that lets a spec set
+// the orchestrator's run-state cache directly, mirroring exactly what
+// pollRunStates() would have cached from a real farm reply. Unset (the
+// default) means the route is never even registered.
+export const TEST_HOOKS_ENABLED = process.env.HORIZON_TEST_HOOKS === '1'
