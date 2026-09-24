@@ -137,7 +137,7 @@ def test_new_item_trigger_is_intercepted_by_the_wizard_and_never_reaches_claude(
     def boom(*a, **kw):
         raise AssertionError("Claude must not be called for a [New Item] trigger")
 
-    monkeypatch.setattr(ca, "run_claude", boom)
+    monkeypatch.setattr(ca, "run_agent", boom)
     t = FakeTransport()
     state = make_state(t, "wizard-no-claude")
     t.seed("[New Item] Something new")
@@ -149,7 +149,7 @@ def test_bare_numeric_reply_with_a_pending_gate_choice_never_reaches_claude(monk
     def boom(*a, **kw):
         raise AssertionError("Claude must not be called to resolve a numbered gate choice")
 
-    monkeypatch.setattr(ca, "run_claude", boom)
+    monkeypatch.setattr(ca, "run_agent", boom)
     stub = StubHorizon(items=[{"id": "HZ-7"}])
     try:
         t = FakeTransport()
@@ -208,7 +208,7 @@ def test_full_create_then_approve_loop_entirely_via_whatsapp(monkeypatch):
             }
             return {"result": json.dumps(inner), "session_id": "s1"}
 
-        monkeypatch.setattr(ca, "run_claude", fake_run)
+        monkeypatch.setattr(ca, "run_agent", fake_run)
         t.seed("what's pending my approval?")
         ca.poll_once(t, state, stub.url)
         assert "awaiting approval" in t.sent[-1][1]
@@ -329,7 +329,7 @@ def test_invalid_json_reply_is_retried_once(stub, monkeypatch):
             return {"result": "sorry, plain prose with no json", "session_id": "s1"}
         return {"result": json.dumps({"reply": "ok after retry", "actions": []}), "session_id": "s1"}
 
-    monkeypatch.setattr(ca, "run_claude", fake_run)
+    monkeypatch.setattr(ca, "run_agent", fake_run)
     t = FakeTransport()
     state = make_state(t, "retry")
     t.seed("hello there")
@@ -340,7 +340,7 @@ def test_invalid_json_reply_is_retried_once(stub, monkeypatch):
 
 
 def test_persistently_invalid_reply_sends_an_error_and_claims(stub, monkeypatch):
-    monkeypatch.setattr(ca, "run_claude", lambda prompt, **kw: {"result": "still not json", "session_id": "s1"})
+    monkeypatch.setattr(ca, "run_agent", lambda prompt, **kw: {"result": "still not json", "session_id": "s1"})
     t = FakeTransport()
     state = make_state(t, "broken")
     msg = t.seed("hello?")

@@ -18,8 +18,8 @@ from pathlib import Path
 
 import httpx
 
+from .agent_runner import AgentError, extract_json, run_agent
 from .checks import run_checks
-from .claude_runner import ClaudeError, extract_json, run_claude
 from .config import FARM_PORT
 from .personas import compose_role, resolve
 from .rules import render_rules_section
@@ -230,13 +230,14 @@ def finalize_branch(ws: Path, item: dict, branch: str) -> dict:
 
 
 # ---- checkpoint salvage on turn/time exhaustion (HZ-31) ----
-# run_claude raises ClaudeError when the implement step hits its max-turns or
-# timeout cap (farm/claude_runner.py). Left alone, that exception propagates
-# straight to main()'s catch-all and the workspace's uncommitted edits are
-# destroyed by the *next* attempt's prepare_branch() (reset --hard + clean
-# -fd) — a Sisyphus loop that can never converge on a job bigger than one
-# budget. Salvage checkpoints whatever was on disk so the next attempt
-# continues instead of restarting from zero.
+# run_agent raises AgentError (AgentExhaustedError on exhaustion) when the
+# implement step hits its max-turns or timeout cap (farm/agent_runner.py).
+# Left alone, that exception propagates straight to main()'s catch-all and
+# the workspace's uncommitted edits are destroyed by the *next* attempt's
+# prepare_branch() (reset --hard + clean -fd) — a Sisyphus loop that can
+# never converge on a job bigger than one budget. Salvage checkpoints
+# whatever was on disk so the next attempt continues instead of restarting
+# from zero.
 
 
 def _salvage_checkpoint(ws: Path, item: dict, branch: str) -> None:
@@ -321,18 +322,18 @@ def _run_and_parse(
     timeout_s: int,
     allowed_tools: str | None,
 ) -> dict:
-    """run_claude + extract_json with one retry-with-feedback on a parse
+    """run_agent + extract_json with one retry-with-feedback on a parse
     failure (HZ-44) — mirrors pm_agent.process()'s recovery. Asking the model
     to re-emit valid JSON is lossless; a genuine second failure still
     propagates so the run cancels and the item pauses, unchanged."""
-    reply = run_claude(
+    reply = run_agent(
         prompt, append_system=append_system, cwd=cwd, max_turns=max_turns, timeout_s=timeout_s, allowed_tools=allowed_tools
     )
     try:
         return extract_json(reply["result"])
-    except (ClaudeError, json.JSONDecodeError) as exc:
+    except (AgentError, json.JSONDecodeError) as exc:
         log(f"invalid reply ({exc}); retrying once")
-        retry = run_claude(
+        retry = run_agent(
             f"Your previous reply was invalid: {exc}. Respond again with ONLY the JSON object, no other text.",
             session_id=reply.get("session_id"),
             append_system=append_system,
@@ -404,7 +405,7 @@ def execute(task: dict) -> dict:
         if resume_note:
             log("resuming a prior attempt's WIP checkpoint")
         try:
-            reply = run_claude(
+            reply = run_agent(
                 build_prompt(task) + (resume_note or ""),
                 append_system=role,
                 cwd=str(ws),
@@ -414,7 +415,7 @@ def execute(task: dict) -> dict:
             )
         except Exception:
             # SALVAGE (HZ-31): the run hit its turn/time cap (or any other
-            # run_claude failure) — checkpoint whatever's on disk instead of
+            # run_agent failure) — checkpoint whatever's on disk instead of
             # letting the next attempt's prepare_branch scrub it away. Still
             # re-raises unchanged: a failed attempt still fails and pauses,
             # no checks run, no PR opens, nothing advances.
@@ -526,7 +527,7 @@ def execute(task: dict) -> dict:
 
         url, expected_text = parsed.get("url"), parsed.get("expected_text")
         if not isinstance(url, str) or not url.strip() or not isinstance(expected_text, str) or not expected_text.strip():
-            raise ClaudeError("devops reply missing 'url'/'expected_text' needed for deep verification")
+            raise AgentError("devops reply missing 'url'/'expected_text' needed for deep verification")
 
         verdict, smoke_line = run_smoke_check(url.strip(), expected_text.strip())
         artifact_md = f"{artifact_md}\n\n## Machine-checked result\n`{smoke_line}`".strip()
@@ -552,7 +553,7 @@ def execute(task: dict) -> dict:
     )
     summary = str(parsed.get("summary", "")).strip()[:600]
     if not summary:
-        raise ClaudeError("agent reply missing 'summary'")
+        raise AgentError("agent reply missing 'summary'")
 
     # The feedback that drove a rework is stamped into the record by the
     # script — visible in the activity feed and at the top of the artifact —

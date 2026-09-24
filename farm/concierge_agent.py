@@ -39,7 +39,7 @@ import httpx
 
 from . import config
 from . import wizard
-from .claude_runner import ClaudeError, extract_json, run_claude
+from .agent_runner import AgentError, extract_json, run_agent
 from .config import CONCIERGE_MODEL, HORIZON_URL, SHARED_SECRET, STATE_DIR, ensure_dirs, slugify
 from .whatsapp.transport import Inbound, Transport, TransportError
 
@@ -213,7 +213,7 @@ def validate_reply(parsed: dict) -> tuple[str, list[dict], list[str], list[dict]
     into an actual approval, deterministically, outside the model."""
     reply = str(parsed.get("reply", "")).strip()
     if not reply:
-        raise ClaudeError("concierge reply missing 'reply'")
+        raise AgentError("concierge reply missing 'reply'")
     actions: list[dict] = []
     notes: list[str] = []
     raw = parsed.get("actions")
@@ -314,15 +314,15 @@ def process_message(msg: Inbound, transport: Transport, state: ConciergeState, b
     try:
         snapshot = fetch_snapshot(base_url)
         prompt = build_prompt(msg, snapshot)
-        reply_raw = run_claude(
+        reply_raw = run_agent(
             prompt, session_id=state.session_id(), append_system=ROLE_PROMPT, model=CONCIERGE_MODEL
         )
         state.save_session(reply_raw.get("session_id"))
         try:
             reply, actions, notes, gate_options = validate_reply(extract_json(reply_raw["result"]))
-        except (ClaudeError, json.JSONDecodeError) as exc:
+        except (AgentError, json.JSONDecodeError) as exc:
             log(f"invalid concierge reply ({exc}); retrying once")
-            retry = run_claude(
+            retry = run_agent(
                 f"Your previous reply was invalid: {exc}. Respond again with ONLY the JSON object, no other text.",
                 session_id=state.session_id(),
                 append_system=ROLE_PROMPT,

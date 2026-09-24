@@ -102,7 +102,7 @@ def test_concurrent_implement_runs_on_different_items_do_not_clobber_each_other(
     a_uncommitted_written = threading.Event()
     b_prepare_branch_done = threading.Event()
 
-    def fake_run_claude(prompt, **kwargs):
+    def fake_run_agent(prompt, **kwargs):
         cwd = Path(kwargs["cwd"])
         if "ITEM-A" in prompt:
             (cwd / "a_work.txt").write_text("item A in-progress edit\n")
@@ -110,12 +110,12 @@ def test_concurrent_implement_runs_on_different_items_do_not_clobber_each_other(
             assert b_prepare_branch_done.wait(timeout=10), "item B never reached prepare_branch"
             return {"result": '{"summary": "a done"}'}
         # item B's own prepare_branch (its scrub of its own worktree) already
-        # ran as part of execute() before run_claude was ever invoked.
+        # ran as part of execute() before run_agent was ever invoked.
         b_prepare_branch_done.set()
         (cwd / "b_work.txt").write_text("item B edit\n")
         return {"result": '{"summary": "b done"}'}
 
-    monkeypatch.setattr(step_agent, "run_claude", fake_run_claude)
+    monkeypatch.setattr(step_agent, "run_agent", fake_run_agent)
 
     def make_task(item_id):
         return {
@@ -148,7 +148,7 @@ def test_concurrent_implement_runs_on_different_items_do_not_clobber_each_other(
     t_b = threading.Thread(target=run, args=("b", make_task("ITEM-B")))
 
     t_a.start()
-    assert a_uncommitted_written.wait(timeout=10), "item A never reached run_claude"
+    assert a_uncommitted_written.wait(timeout=10), "item A never reached run_agent"
     t_b.start()
     t_a.join(timeout=20)
     t_b.join(timeout=20)
