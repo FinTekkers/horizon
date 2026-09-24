@@ -11,6 +11,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import pytest
 
 from farm import step_agent
+from farm.claude_runner import ClaudeError
 from farm.personas import PERSONA_DIR, PERSONAS
 from farm.step_agent import STEP_CONFIG, build_prompt, execute, publish_screenshots
 
@@ -926,3 +927,207 @@ def test_review_step_code_pass_exhausting_its_retry_still_cancels_the_run(tmp_pa
     # the code pass fails before the QA pass is ever attempted
     assert len(calls) == 2
     assert all("QA Reviewer agent" not in c.get("append_system", "") for c in calls)
+
+
+def test_implement_step_fails_when_checks_fail(tmp_path, monkeypatch):
+    ws, origin = make_git_workspace(tmp_path)
+    monkeypatch.setattr(step_agent, "ensure_item_worktree", lambda repo, item_id: ws)
+    monkeypatch.setenv("FARM_CHECK_CMD", "exit 1")
+
+    try:
+        execute(make_task(11, "Specialist agent implements", repo="acme/demo"))
+        raised = False
+    except Exception as exc:
+        raised = True
+        assert "repo checks failed" in str(exc)
+    assert raised, "failing checks must fail the step"
+
+    # Nothing was pushed: guardrails are enforced before the push, not after.
+    branches = subprocess.run(
+        ["git", "--git-dir", str(origin), "branch", "--list"], capture_output=True, text=True, check=True
+    ).stdout
+    assert "horizon/t-1" not in branches
+
+
+# ---- checkpoint salvage on turn/time exhaustion (HZ-31) ----
+# A run that hits its max-turns/timeout cap must not lose its uncommitted
+# work: the next attempt's prepare_branch() would otherwise scrub the
+# worktree (reset --hard + clean -fd) before starting from zero with the
+# same budget — a Sisyphus loop that can never converge on an oversized item.
+
+
+def origin_log(origin):
+    return subprocess.run(
+        ["git", "--git-dir", str(origin), "log", "--format=%s", "horizon/t-1"],
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout
+
+
+def test_implement_step_pushes_a_checkpoint_when_run_claude_raises(tmp_path, monkeypatch):
+    ws, origin = make_git_workspace(tmp_path)
+    monkeypatch.setattr(step_agent, "ensure_item_worktree", lambda repo, item_id: ws)
+
+    def _fake(prompt, **kwargs):
+        (ws / "fake_implementation.txt").write_text("partial work\n")
+        raise ClaudeError("claude timed out after 2700s")
+
+    monkeypatch.setattr(step_agent, "run_claude", _fake)
+
+    with pytest.raises(ClaudeError, match="timed out"):
+        execute(make_task(11, "Specialist agent implements", repo="acme/demo"))
+
+    log_text = origin_log(origin)
+    assert step_agent.CHECKPOINT_MARKER in log_text
+    shown = subprocess.run(
+        ["git", "--git-dir", str(origin), "show", "horizon/t-1:fake_implementation.txt"],
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout
+    assert "partial work" in shown
+
+
+def test_implement_step_does_not_checkpoint_a_kill_before_any_edit(tmp_path, monkeypatch):
+    ws, origin = make_git_workspace(tmp_path)
+    monkeypatch.setattr(step_agent, "ensure_item_worktree", lambda repo, item_id: ws)
+
+    def _fake(prompt, **kwargs):
+        raise ClaudeError("claude timed out after 2700s")
+
+    monkeypatch.setattr(step_agent, "run_claude", _fake)
+
+    with pytest.raises(ClaudeError):
+        execute(make_task(11, "Specialist agent implements", repo="acme/demo"))
+
+    branches = subprocess.run(
+        ["git", "--git-dir", str(origin), "branch", "--list"], capture_output=True, text=True, check=True
+    ).stdout
+    assert "horizon/t-1" not in branches
+
+
+def test_implement_step_does_not_salvage_after_checks_fail(tmp_path, monkeypatch):
+    """run_claude succeeding and run_checks failing is a different failure
+    mode than run_claude raising — the checks-failed path must not push
+    anything, checkpoint or otherwise (guardrail: checks still gate finalize
+    exactly as before salvage existed)."""
+    ws, origin = make_git_workspace(tmp_path)
+    monkeypatch.setattr(step_agent, "ensure_item_worktree", lambda repo, item_id: ws)
+    monkeypatch.setenv("FARM_CHECK_CMD", "exit 1")
+    spy = []
+    monkeypatch.setattr(step_agent, "_salvage_checkpoint", lambda *a, **k: spy.append(1))
+
+    with pytest.raises(RuntimeError, match="repo checks failed"):
+        execute(make_task(11, "Specialist agent implements", repo="acme/demo"))
+
+    assert spy == []
+    branches = subprocess.run(
+        ["git", "--git-dir", str(origin), "branch", "--list"], capture_output=True, text=True, check=True
+    ).stdout
+    assert "horizon/t-1" not in branches
+
+
+def test_salvage_never_fires_for_planner_steps(monkeypatch):
+    """No call site for _salvage_checkpoint exists outside the step-11
+    branch, but pin that down with a regression test rather than leaving it
+    implied by "no call site exists"."""
+    spy = []
+    monkeypatch.setattr(step_agent, "_salvage_checkpoint", lambda *a, **k: spy.append(1))
+
+    def _fake(prompt, **kwargs):
+        raise ClaudeError("claude timed out after 1140s")
+
+    monkeypatch.setattr(step_agent, "run_claude", _fake)
+
+    with pytest.raises(ClaudeError):
+        execute(make_task(4, "Plan options & trade-offs (pros / cons)"))
+
+    assert spy == []
+
+
+def test_salvage_swallows_a_lease_conflict_and_the_original_error_still_wins(tmp_path, monkeypatch):
+    ws, origin = make_git_workspace(tmp_path)
+    monkeypatch.setattr(step_agent, "ensure_item_worktree", lambda repo, item_id: ws)
+    # Establish the branch on origin first so ws's prepare_branch() fetch
+    # records a remote-tracking ref for it — the lease race below needs that
+    # ref to be stale, not absent.
+    git(ws, "push", "-u", "origin", "HEAD:horizon/t-1")
+
+    race = tmp_path / "race"
+    subprocess.run(["git", "clone", "--quiet", str(origin), str(race)], check=True, capture_output=True)
+    git(race, "config", "user.email", "race@example.com")
+    git(race, "config", "user.name", "Racer")
+
+    def _fake(prompt, **kwargs):
+        (ws / "fake_implementation.txt").write_text("partial work\n")
+        # A concurrent writer moves origin's branch tip after ws's own
+        # prepare_branch() fetch, so ws's remote-tracking ref is stale by the
+        # time salvage tries to push — --force-with-lease must reject it.
+        git(race, "checkout", "horizon/t-1")
+        (race / "race.txt").write_text("someone else's push\n")
+        git(race, "add", "-A")
+        git(race, "commit", "-m", "concurrent push")
+        git(race, "push", "origin", "horizon/t-1")
+        raise ClaudeError("claude timed out after 2700s")
+
+    monkeypatch.setattr(step_agent, "run_claude", _fake)
+
+    with pytest.raises(ClaudeError, match="timed out"):
+        execute(make_task(11, "Specialist agent implements", repo="acme/demo"))
+
+    # Salvage's own push lost the lease race and was swallowed — the
+    # original ClaudeError above is what propagated, and origin shows only
+    # the concurrent writer's commit, never the checkpoint.
+    log_text = origin_log(origin)
+    assert step_agent.CHECKPOINT_MARKER not in log_text
+    assert "concurrent push" in log_text
+
+
+def test_checkpoint_resume_note_reaches_the_next_attempts_prompt(tmp_path, monkeypatch):
+    ws, origin = make_git_workspace(tmp_path)
+    monkeypatch.setattr(step_agent, "ensure_item_worktree", lambda repo, item_id: ws)
+
+    def _exhausted(prompt, **kwargs):
+        (ws / "fake_implementation.txt").write_text("partial work\n")
+        raise ClaudeError("claude timed out after 2700s")
+
+    monkeypatch.setattr(step_agent, "run_claude", _exhausted)
+    with pytest.raises(ClaudeError):
+        execute(make_task(11, "Specialist agent implements", repo="acme/demo"))
+
+    captured = {}
+    monkeypatch.setattr(step_agent, "run_claude", capture_run_claude(captured))
+    execute(make_task(11, "Specialist agent implements", repo="acme/demo"))
+
+    assert step_agent.CHECKPOINT_MARKER in captured["prompt"]
+    assert "fake_implementation.txt" in captured["prompt"]
+
+
+def test_two_exhausted_attempts_then_a_successful_run_converges_with_continuation_history(tmp_path, monkeypatch):
+    ws, origin = make_git_workspace(tmp_path)
+    monkeypatch.setattr(step_agent, "ensure_item_worktree", lambda repo, item_id: ws)
+
+    def attempt_1(prompt, **kwargs):
+        (ws / "part_a.txt").write_text("part a\n")
+        raise ClaudeError("claude timed out after 2700s")
+
+    monkeypatch.setattr(step_agent, "run_claude", attempt_1)
+    with pytest.raises(ClaudeError):
+        execute(make_task(11, "Specialist agent implements", repo="acme/demo"))
+
+    def attempt_2(prompt, **kwargs):
+        assert step_agent.CHECKPOINT_MARKER in prompt  # attempt 2 was told to continue
+        (ws / "part_b.txt").write_text("part b\n")
+        raise ClaudeError("claude timed out after 2700s")
+
+    monkeypatch.setattr(step_agent, "run_claude", attempt_2)
+    with pytest.raises(ClaudeError):
+        execute(make_task(11, "Specialist agent implements", repo="acme/demo"))
+
+    def attempt_3(prompt, **kwargs):
+        assert step_agent.CHECKPOINT_MARKER in prompt  # attempt 3 also sees the checkpoint note
+        (ws / "part_c.txt").write_text("part c\n")
+        return {"result": '{"summary": "finished the item"}'}
+
+    monkeypatch.setattr(step_agent, "run_claude", attempt_3)

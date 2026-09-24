@@ -16,6 +16,7 @@ const { PERSONAS, DEFAULT_PERSONA, isPersona, personaLabel, proposePersona } = a
 const serverLifecycle = await import('../src/lifecycle.js')
 const uiPersonas = await import('../../ui/src/domain/personas.js')
 const uiLifecycle = await import('../../ui/src/domain/lifecycle.js')
+const uiEventColors = await import('../../ui/src/domain/eventColors.js')
 const { MOCK_STEP_BEHAVIOR } = await import('../src/orchestrator.js')
 
 // ---- registry ----
@@ -100,9 +101,29 @@ test('server and UI lifecycle STEPS arrays are byte-identical', () => {
   assert.deepEqual(serverLifecycle.STEPS, uiLifecycle.STEPS)
 })
 
-test('every server AGENTS entry matches its UI counterpart (the UI copy only adds Human on top)', () => {
+test('every server AGENTS entry matches its UI counterpart on label and initials (the UI copy only adds Human on top)', () => {
   for (const [key, value] of Object.entries(serverLifecycle.AGENTS)) {
-    assert.deepEqual(uiLifecycle.AGENTS[key], value, `AGENTS.${key} drifted between the server and UI copies`)
+    const uiEntry = uiLifecycle.AGENTS[key]
+    assert.ok(uiEntry, `AGENTS.${key} missing from the UI copy`)
+    assert.equal(uiEntry.label, value.label, `AGENTS.${key}.label drifted between the server and UI copies`)
+    assert.equal(uiEntry.initials, value.initials, `AGENTS.${key}.initials drifted between the server and UI copies`)
+  }
+})
+
+// HZ-25: since dark mode, the UI's AGENTS.color is a theme-aware CSS token
+// (e.g. 'var(--primary-ink)'), not the literal hex server events carry — so
+// it can no longer be deep-equal'd against the server's AGENTS.color. What
+// must still hold: every literal hex color/status.js/orchestrator.js/store.js
+// ever persists to a real event's `color` column resolves to a themed token,
+// via ui/src/domain/eventColors.js — see Tracker.jsx's buildActivity, which
+// is exactly what regressed if this fails (agent color chips rendering the
+// stored light-mode hex directly under a dark background).
+test('every server AGENTS color has a themed resolution in ui/src/domain/eventColors.js', () => {
+  for (const [key, value] of Object.entries(serverLifecycle.AGENTS)) {
+    assert.ok(
+      Object.prototype.hasOwnProperty.call(uiEventColors.SERVER_EVENT_COLOR_TOKENS, value.color),
+      `AGENTS.${key}'s color ${value.color} has no entry in eventColors.js — real activity-feed events for this agent will render unthemed`,
+    )
   }
 })
 

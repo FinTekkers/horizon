@@ -1,6 +1,6 @@
 import { useEffect, useState, useSyncExternalStore } from 'react'
 import * as api from './api'
-import { awaitingGate } from './domain/lifecycle'
+import { STEPS, awaitingGate, reworkTargets, defaultReworkTarget } from './domain/lifecycle'
 import TopBar from './components/TopBar'
 import Board from './components/Board'
 import Tracker from './components/Tracker'
@@ -12,7 +12,7 @@ import AgentDefinitionsPage from './components/AgentDefinitionsPage'
 import NewItemModal from './components/NewItemModal'
 import LoginPage from './components/LoginPage'
 
-const CLOSED_COMPOSER = { open: false, mode: null, itemId: null, phase: null, target: '' }
+const CLOSED_COMPOSER = { open: false, mode: null, itemId: null, phase: null, target: '', stepOptions: [], defaultTargetLabel: null }
 
 // Deep links: /  → board, /admin → admin, /definitions → agent definitions,
 // /<item-id> → that item's tracker (case-insensitive, e.g. localhost:5173/hz-102).
@@ -124,16 +124,29 @@ function AuthenticatedApp({ user, onLogout }) {
       view === 'tracker' && selected ? `${selected.id} · Horizon` : 'Horizon · Delivery Lifecycle'
   }, [view, selected])
 
-  const openComposer = (mode, itemId, opts = {}) =>
-    setComposer({ open: true, mode, itemId, phase: opts.phase ?? null, target: opts.target || '' })
+  // Rejecting from a gate lets the human pick which earlier agent step the
+  // item goes back to (HZ-51) — offered only when the item is actually
+  // parked at a gate; picking one is optional, and submitting without a
+  // choice reproduces today's nearest-preceding-step behavior exactly.
+  const openComposer = (mode, itemId, opts = {}) => {
+    const item = items.find((it) => it.id === itemId)
+    const atGate = mode === 'reject' && item && STEPS[item.cursor]?.kind === 'gate'
+    const stepOptions = atGate ? reworkTargets(item.cursor) : []
+    const defaultTargetLabel = stepOptions.length ? STEPS[defaultReworkTarget(item.cursor)].label : null
+    setComposer({ open: true, mode, itemId, phase: opts.phase ?? null, target: opts.target || '', stepOptions, defaultTargetLabel })
+  }
 
   const requestApprove = (itemId, gateLabel) => setConfirmApprove({ itemId, gateLabel })
 
-  const submitComposer = (text) => {
+  const submitComposer = (text, targetStepIndex) => {
     const { mode, itemId, phase, target } = composer
     if (itemId) {
+      // Both sides changed this line for unrelated reasons: main routes approve
+      // through approveAndMaybeClose (HZ-62, return to the board once the
+      // closing gate is approved) and this branch adds the chosen send-back
+      // step to reject (HZ-51). They compose.
       if (mode === 'approve') approveAndMaybeClose(itemId, text)
-      else if (mode === 'reject') api.requestChanges(itemId, target, text)
+      else if (mode === 'reject') api.requestChanges(itemId, target, text, targetStepIndex ?? null)
       else if (mode === 'restart') api.restartPhase(itemId, phase, text)
       else if (mode === 'abandon') api.abandonItem(itemId, text)
     }
@@ -256,7 +269,7 @@ function AuthenticatedApp({ user, onLogout }) {
               </button>
               <button
                 className="composer__submit"
-                style={{ background: '#2E6CB2' }}
+                style={{ background: 'var(--primary)' }}
                 onClick={() => {
                   api.activateProject(switchTarget.id).catch((err) => console.error(err))
                   setSwitchTarget(null)

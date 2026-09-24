@@ -89,6 +89,62 @@ def test_steps_run_without_matching_rules_stamps_an_empty_string(running_farm):
     assert json.loads((QUEUE_DIR / "pm" / "102.json").read_text())["rules"] == ""
 
 
+# ---- /runs/status (HZ-54) ----
+# Board/tracker guardrail: the farm reports a small {state, reason} vocabulary
+# only — never a tmux session name — so a queued run can't be told apart from
+# an executing one by string-matching a naming convention.
+
+
+@pytest.fixture
+def queue_dirs():
+    for sub in ("pm", "runs", "runs/active"):
+        (QUEUE_DIR / sub).mkdir(parents=True, exist_ok=True)
+    yield
+    for sub in ("pm", "runs", "runs/active"):
+        for f in (QUEUE_DIR / sub).glob("*.json"):
+            f.unlink(missing_ok=True)
+
+
+def test_runs_status_reports_queued_for_a_pm_queued_task(queue_dirs):
+    (QUEUE_DIR / "pm" / "201.json").write_text(json.dumps(make_task(201, step_index=9)))
+    res = client.post("/runs/status", json={"run_ids": [201]})
+    assert res.status_code == 200
+    assert res.json() == {"states": {"201": {"state": "queued", "reason": "waiting for the PM agent"}}}
+
+
+def test_runs_status_reports_queued_for_an_ephemeral_queued_task_with_the_busy_count(queue_dirs, monkeypatch):
+    monkeypatch.setattr(farmd, "_ephemeral_sessions", lambda: ["farm-run-a-s11-a1", "farm-run-b-s11-a1"])
+    (QUEUE_DIR / "runs" / "202.json").write_text(json.dumps(make_task(202)))
+    res = client.post("/runs/status", json={"run_ids": ["202"]})
+    assert res.json() == {
+        "states": {"202": {"state": "queued", "reason": f"waiting for a free agent slot (2/{farmd.MAX_EPHEMERAL} in use)"}}
+    }
+
+
+def test_runs_status_reports_running_for_a_claimed_task_not_in_either_queue(queue_dirs):
+    # Claimed tasks live in runs/active/, which /runs/status never globs —
+    # they fall through to "running" without needing to know about tmux.
+    (QUEUE_DIR / "runs" / "active" / "203.json").write_text(json.dumps(make_task(203)))
+    res = client.post("/runs/status", json={"run_ids": [203]})
+    assert res.json() == {"states": {"203": {"state": "running"}}}
+
+
+def test_runs_status_reports_running_for_an_unknown_run_id(queue_dirs):
+    # Defaults to "running" (today's behavior) rather than inventing a new
+    # value — this is the fail-soft shape the Node poller relies on.
+    res = client.post("/runs/status", json={"run_ids": [999999]})
+    assert res.json() == {"states": {"999999": {"state": "running"}}}
+
+
+def test_runs_status_never_leaks_a_tmux_session_name(queue_dirs):
+    (QUEUE_DIR / "pm" / "204.json").write_text(json.dumps(make_task(204, item_id="HZ-54", step_index=9)))
+    (QUEUE_DIR / "runs" / "205.json").write_text(json.dumps(make_task(205, item_id="HZ-54", step_index=11)))
+    res = client.post("/runs/status", json={"run_ids": [204, 205]})
+    body = json.dumps(res.json())
+    assert "farm-run-" not in body
+    assert "farm-pm-" not in body
+
+
 # ---- /internal/steps/result forwarding (HZ-29) ----
 # farmd is a dumb relay here: it must forward the agent's reported artifacts
 # to the Node server byte-for-byte, with no re-slicing of its own — any cap
@@ -114,6 +170,127 @@ def test_steps_result_forwards_a_large_artifact_verbatim(monkeypatch):
     )
     assert res.status_code == 200
     assert captured["json"]["artifacts"]["artifact_md"] == big
+
+
+# ---- HZ-57: /started notify + claim-time launch gate ----
+# The server's timeout used to start counting at dispatch, so time a step
+# spent sitting in the farm's queue burned the same clock as its actual
+# execution. The fix's farm-side half: tell the server the instant a task is
+# actually claimed (flips its watchdog from queue-wait to execution), and
+# refuse to launch a task the server has already given up on.
+
+
+def test_notify_started_posts_to_the_server_and_returns_its_active_flag(monkeypatch):
+    captured = {}
+
+    class FakeResponse:
+        status_code = 200
+
+        def json(self):
+            return {"active": False}
+
+    def fake_post(url, headers=None, timeout=None):
+        captured["url"], captured["headers"] = url, headers
+        return FakeResponse()
+
+    monkeypatch.setattr(farmd.httpx, "post", fake_post)
+    assert farmd._notify_started(77) is False
+    assert captured["url"] == f"{farmd.HORIZON_URL}/api/farm/steps/77/started"
+    assert captured["headers"]["x-farm-secret"] == farmd.SHARED_SECRET
+
+
+def test_notify_started_defaults_active_true_when_the_server_omits_the_flag(monkeypatch):
+    class FakeResponse:
+        status_code = 200
+
+        def json(self):
+            return {}
+
+    monkeypatch.setattr(farmd.httpx, "post", lambda *a, **k: FakeResponse())
+    assert farmd._notify_started(78) is True
+
+
+def test_notify_started_fails_open_when_the_server_is_unreachable(monkeypatch):
+    """A network hiccup here must not strand a legitimate task in the queue
+    forever — the server's own queue/execution timers are the real backstop,
+    this call is only an optimization."""
+    attempts = []
+    monkeypatch.setattr(farmd.time, "sleep", lambda s: None)
+
+    def raising_post(*a, **k):
+        attempts.append(1)
+        raise ConnectionError("farm can't reach horizon-server")
+
+    monkeypatch.setattr(farmd.httpx, "post", raising_post)
+    assert farmd._notify_started(79) is True
+    assert len(attempts) == 2  # both retries used, matching /internal/steps/result's pattern
+
+
+def test_notify_started_fails_open_on_a_non_2xx_reply(monkeypatch):
+    class FakeResponse:
+        status_code = 500
+
+        def json(self):
+            return {"active": False}  # must be ignored — status_code wasn't 200
+
+    monkeypatch.setattr(farmd.httpx, "post", lambda *a, **k: FakeResponse())
+    assert farmd._notify_started(80) is True
+
+
+def test_internal_steps_started_forwards_and_returns_the_active_flag(monkeypatch):
+    captured = {}
+
+    class FakeResponse:
+        status_code = 200
+
+        def json(self):
+            return {"active": True}
+
+    def fake_post(url, headers=None, timeout=None):
+        captured["url"] = url
+        return FakeResponse()
+
+    monkeypatch.setattr(farmd.httpx, "post", fake_post)
+    res = client.post("/internal/steps/started", json={"run_id": 81})
+    assert res.status_code == 200
+    assert res.json() == {"ok": True, "active": True}
+    assert captured["url"] == f"{farmd.HORIZON_URL}/api/farm/steps/81/started"
+
+
+def test_claim_and_launch_launches_when_the_run_is_still_active(tmp_path, monkeypatch):
+    launched = []
+    monkeypatch.setattr(farmd, "_notify_started", lambda run_id: True)
+    monkeypatch.setattr(farmd.tmux_mgr, "new_session", lambda name, *a, **k: launched.append(name))
+    farmd.RUN_SESSIONS.pop("201", None)
+
+    runs_dir = tmp_path / "runs"
+    runs_dir.mkdir()
+    task_path = _write_task(runs_dir / "201.json", 201, item_id="hz-20", step_index=4)
+
+    name = farmd._claim_and_launch(task_path, runs_dir, tmp_path)
+    assert name == "farm-run-hz-20-s4-a2"
+    assert launched == [name]
+    assert not task_path.exists()  # claimed: moved out of the plain queue dir
+    assert (runs_dir / "active" / "201.json").exists()
+    assert farmd.RUN_SESSIONS["201"] == name
+
+
+def test_claim_and_launch_does_not_launch_a_run_the_server_already_gave_up_on(tmp_path, monkeypatch):
+    launched = []
+    monkeypatch.setattr(farmd, "_notify_started", lambda run_id: False)
+    monkeypatch.setattr(farmd.tmux_mgr, "new_session", lambda name, *a, **k: launched.append(name))
+    farmd.RUN_SESSIONS.pop("202", None)
+
+    runs_dir = tmp_path / "runs"
+    runs_dir.mkdir()
+    task_path = _write_task(runs_dir / "202.json", 202, item_id="hz-20", step_index=4)
+
+    name = farmd._claim_and_launch(task_path, runs_dir, tmp_path)
+    assert name is None
+    assert launched == []  # must not launch — the server already cancelled this run
+    assert not task_path.exists()
+    assert not (runs_dir / "active" / "202.json").exists()  # claimed copy dropped, not left behind
+    assert "202" not in farmd.RUN_SESSIONS
 
 
 def test_concierge_does_not_launch_when_the_flag_is_off(monkeypatch):

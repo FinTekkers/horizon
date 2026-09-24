@@ -133,6 +133,151 @@ test('requestChanges rejecting a non-accept gate still walks back to the nearest
   assert.equal(store.getItem('T-OTHER-GATE').cursor, 4) // nearest preceding agent step (Ensemble), unaffected by HZ-30
 })
 
+// ---- send back to a chosen step (HZ-51) ----
+
+const DRAFT_PLAN_INDEX = STEPS.findIndex((s) => s.label === 'Draft implementation plan')
+const PRE_EXECUTION_GATE_INDEX = STEPS.findIndex((s) => s.label === 'Review before execution')
+
+test('a send-back from the pre-execution gate can target the draft-plan step directly, not just the nearest agent step', () => {
+  db.prepare(
+    'INSERT INTO work_item (id, title, priority, cursor, review_cycle_count) VALUES (?, ?, ?, ?, ?)',
+  ).run('T-CHOOSE-DRAFT', 'Awaiting pre-execution review', 'Medium', PRE_EXECUTION_GATE_INDEX, 3)
+  const result = store.requestChanges(
+    'T-CHOOSE-DRAFT',
+    'Review before execution',
+    'the plan skips the migration step',
+    'You',
+    DRAFT_PLAN_INDEX,
+  )
+  assert.deepEqual(result, { ok: true })
+  const item = store.getItem('T-CHOOSE-DRAFT')
+  // Not the walk-back destination (Summarize reviews & recommend, index 9) —
+  // the human's explicit choice wins.
+  assert.equal(item.cursor, DRAFT_PLAN_INDEX)
+  assert.equal(item.review_cycle_count, 0)
+  const feedback = db.prepare("SELECT target, message FROM feedback WHERE item_id = 'T-CHOOSE-DRAFT'").get()
+  assert.equal(feedback.target, STEPS[DRAFT_PLAN_INDEX].agent)
+  assert.equal(feedback.message, 'the plan skips the migration step')
+  const event = db.prepare("SELECT text FROM event WHERE item_id = 'T-CHOOSE-DRAFT' ORDER BY id DESC").get()
+  assert.match(event.text, /sent back to the draft implementation plan step/)
+})
+
+test('an explicit target sweeps to any earlier agent step offered, not just one pair', () => {
+  for (const label of ['Define the outcome', 'Set guardrails', 'Plan options & trade-offs (pros / cons)', 'Architecture review']) {
+    const targetIdx = STEPS.findIndex((s) => s.label === label)
+    const id = `T-SWEEP-${targetIdx}`
+    db.prepare('INSERT INTO work_item (id, title, priority, cursor) VALUES (?, ?, ?, ?)').run(
+      id,
+      'Sweep fixture',
+      'Medium',
+      PRE_EXECUTION_GATE_INDEX,
+    )
+    const result = store.requestChanges(id, 'Review before execution', 'redo this', 'You', targetIdx)
+    assert.deepEqual(result, { ok: true })
+    assert.equal(store.getItem(id).cursor, targetIdx)
+  }
+})
+
+test('requestChanges rejects a targetStepIndex that points at a gate, not an agent step', () => {
+  const calls = []
+  store.registerAgentRunner({ kick: (id) => calls.push(['kick', id]), cancel: (id, s) => calls.push(['cancel', id, s]) })
+  db.prepare('INSERT INTO work_item (id, title, priority, cursor) VALUES (?, ?, ?, ?)').run(
+    'T-TARGET-GATE',
+    'Bad target: a gate',
+    'Medium',
+    PRE_EXECUTION_GATE_INDEX,
+  )
+  const gateIdx = STEPS.findIndex((s) => s.label === 'Approve the high-level design')
+  const result = store.requestChanges('T-TARGET-GATE', 'x', 'y', 'You', gateIdx)
+  assert.deepEqual(result, { error: 'invalid_target' })
+  assert.equal(store.getItem('T-TARGET-GATE').cursor, PRE_EXECUTION_GATE_INDEX)
+  assert.deepEqual(calls, []) // no cancel, so no side effects from an invalid target
+  assert.equal(db.prepare("SELECT COUNT(*) c FROM gate_decision WHERE item_id = 'T-TARGET-GATE'").get().c, 0)
+  store.registerAgentRunner({ kick: () => {}, cancel: () => {} })
+})
+
+test('requestChanges rejects a targetStepIndex at or after the current gate (no forward moves, no same-gate loops)', () => {
+  db.prepare('INSERT INTO work_item (id, title, priority, cursor) VALUES (?, ?, ?, ?)').run(
+    'T-TARGET-FORWARD',
+    'Bad target: forward/same',
+    'Medium',
+    PRE_EXECUTION_GATE_INDEX,
+  )
+  assert.deepEqual(
+    store.requestChanges('T-TARGET-FORWARD', 'x', 'y', 'You', PRE_EXECUTION_GATE_INDEX),
+    { error: 'invalid_target' },
+  )
+  assert.deepEqual(
+    store.requestChanges('T-TARGET-FORWARD', 'x', 'y', 'You', PRE_EXECUTION_GATE_INDEX + 1),
+    { error: 'invalid_target' },
+  )
+  assert.equal(store.getItem('T-TARGET-FORWARD').cursor, PRE_EXECUTION_GATE_INDEX)
+})
+
+test('requestChanges rejects negative, non-integer, and out-of-range targetStepIndex', () => {
+  db.prepare('INSERT INTO work_item (id, title, priority, cursor) VALUES (?, ?, ?, ?)').run(
+    'T-TARGET-INVALID',
+    'Bad target: malformed',
+    'Medium',
+    PRE_EXECUTION_GATE_INDEX,
+  )
+  for (const bad of [-1, 1.5, 999]) {
+    assert.deepEqual(store.requestChanges('T-TARGET-INVALID', 'x', 'y', 'You', bad), { error: 'invalid_target' })
+  }
+  assert.equal(store.getItem('T-TARGET-INVALID').cursor, PRE_EXECUTION_GATE_INDEX)
+})
+
+test('requestChanges rejects a targetStepIndex supplied while the item is not parked at a gate', () => {
+  db.prepare('INSERT INTO work_item (id, title, priority, cursor) VALUES (?, ?, ?, ?)').run(
+    'T-TARGET-NOT-GATE',
+    'Mid agent step',
+    'Medium',
+    IMPLEMENT_STEP_INDEX,
+  )
+  const result = store.requestChanges('T-TARGET-NOT-GATE', 'x', 'y', 'You', 0)
+  assert.deepEqual(result, { error: 'invalid_target' })
+  assert.equal(store.getItem('T-TARGET-NOT-GATE').cursor, IMPLEMENT_STEP_INDEX)
+})
+
+test('targetStepIndex = 0 is a legal, falsy-but-valid target', () => {
+  const gateIdx = STEPS.findIndex((s) => s.label === 'Approve & prioritize this work')
+  db.prepare('INSERT INTO work_item (id, title, priority, cursor) VALUES (?, ?, ?, ?)').run(
+    'T-TARGET-ZERO',
+    'Awaiting the intake gate',
+    'Medium',
+    gateIdx,
+  )
+  const result = store.requestChanges('T-TARGET-ZERO', 'x', 'y', 'You', 0)
+  assert.deepEqual(result, { ok: true })
+  assert.equal(store.getItem('T-TARGET-ZERO').cursor, 0)
+})
+
+test('an explicit target at or before the implement step resets review_cycle_count; a later agent step (Review) preserves it', () => {
+  db.prepare(
+    'INSERT INTO work_item (id, title, priority, cursor, review_cycle_count) VALUES (?, ?, ?, ?, ?)',
+  ).run('T-ACCEPT-EXPLICIT-IMPLEMENT', 'Awaiting accept', 'Medium', ACCEPT_GATE_INDEX, 4)
+  store.requestChanges('T-ACCEPT-EXPLICIT-IMPLEMENT', 'Accept the code', 'bug', 'You', IMPLEMENT_STEP_INDEX)
+  assert.equal(store.getItem('T-ACCEPT-EXPLICIT-IMPLEMENT').review_cycle_count, 0)
+
+  db.prepare(
+    'INSERT INTO work_item (id, title, priority, cursor, review_cycle_count) VALUES (?, ?, ?, ?, ?)',
+  ).run('T-ACCEPT-EXPLICIT-REVIEW', 'Awaiting accept', 'Medium', ACCEPT_GATE_INDEX, 4)
+  store.requestChanges('T-ACCEPT-EXPLICIT-REVIEW', 'Accept the code', 'nitpick', 'You', REVIEW_STEP_INDEX)
+  const reviewedItem = store.getItem('T-ACCEPT-EXPLICIT-REVIEW')
+  assert.equal(reviewedItem.cursor, REVIEW_STEP_INDEX)
+  assert.equal(reviewedItem.review_cycle_count, 4) // untouched — sending back to Review itself isn't a fresh Eng attempt
+})
+
+test('requestChanges with no targetStepIndex is unaffected — the default (no-target) path is unchanged', () => {
+  db.prepare(
+    'INSERT INTO work_item (id, title, priority, cursor, review_cycle_count) VALUES (?, ?, ?, ?, ?)',
+  ).run('T-NO-TARGET', 'Awaiting pre-execution review', 'Medium', PRE_EXECUTION_GATE_INDEX, 0)
+  const result = store.requestChanges('T-NO-TARGET', 'Review before execution', 'as before')
+  assert.deepEqual(result, { ok: true })
+  // Same nearest-preceding-agent-step walk-back as today (Summarize reviews & recommend).
+  assert.equal(store.getItem('T-NO-TARGET').cursor, PRE_EXECUTION_GATE_INDEX - 1)
+})
+
 test('setPersona validates, persists, logs an event and notifies', () => {
   let notified = 0
   const off = store.onChange(() => notified++)
@@ -239,6 +384,55 @@ test('activeRun in the snapshot carries the run id for the live log tail (HZ-5)'
   db.prepare('DELETE FROM step_run WHERE id = ?').run(runId)
 })
 
+// ---- queued vs running (HZ-54) ----
+// The orchestrator registers a synchronous lookup here — store.js must never
+// itself await the farm (listItems() is on the SSE broadcast path).
+
+test('activeRun defaults to state "running" with no registered run-state provider — mock mode / before orchestrator.init', () => {
+  const runId = db
+    .prepare("INSERT INTO step_run (item_id, step_index, attempt, agent) VALUES ('T-AGENT', 11, 3, 'Eng')")
+    .run().lastInsertRowid
+  const item = store.listItems().find((it) => it.id === 'T-AGENT')
+  assert.equal(item.activeRun.state, 'running')
+  assert.equal(item.activeRun.reason, null)
+  db.prepare('DELETE FROM step_run WHERE id = ?').run(runId)
+})
+
+test('activeRun reflects the registered provider\'s {state, reason} for this run id, keyed by string', () => {
+  const runId = db
+    .prepare("INSERT INTO step_run (item_id, step_index, attempt, agent) VALUES ('T-AGENT', 11, 4, 'Eng')")
+    .run().lastInsertRowid
+  store.registerRunStateProvider(() => ({
+    [String(runId)]: { state: 'queued', reason: 'waiting for a free agent slot (4/4 in use)' },
+  }))
+  const item = store.listItems().find((it) => it.id === 'T-AGENT')
+  assert.equal(item.activeRun.state, 'queued')
+  assert.equal(item.activeRun.reason, 'waiting for a free agent slot (4/4 in use)')
+  store.registerRunStateProvider(() => ({})) // reset for later tests
+  db.prepare('DELETE FROM step_run WHERE id = ?').run(runId)
+})
+
+test('activeRun falls back to "running" when the provider has no entry for this run id — fail soft', () => {
+  const runId = db
+    .prepare("INSERT INTO step_run (item_id, step_index, attempt, agent) VALUES ('T-AGENT', 11, 5, 'Eng')")
+    .run().lastInsertRowid
+  store.registerRunStateProvider(() => ({ '999999999': { state: 'queued', reason: 'someone else' } }))
+  const item = store.listItems().find((it) => it.id === 'T-AGENT')
+  assert.equal(item.activeRun.state, 'running')
+  assert.equal(item.activeRun.reason, null)
+  store.registerRunStateProvider(() => ({})) // reset for later tests
+  db.prepare('DELETE FROM step_run WHERE id = ?').run(runId)
+})
+
+test('an item with no active run at all still has activeRun: null (unaffected by the run-state provider)', () => {
+  store.registerRunStateProvider(() => {
+    throw new Error('must not be called when there is no active run to look up')
+  })
+  const item = store.listItems().find((it) => it.id === 'T-GATE')
+  assert.equal(item.activeRun, null)
+  store.registerRunStateProvider(() => ({})) // reset for later tests
+})
+
 test('parseIssueBody lifts Outcome / Success metric / Guardrails sections', () => {
   const parsed = store.parseIssueBody(
     '## Outcome\nShip the thing\n\n## Success metric\nIt works\n\n## Guardrails\nTests pass',
@@ -273,7 +467,7 @@ test('stepOutputs carry the step label for non-UI clients', () => {
   ).run()
   const gate = store.listItems().find((it) => it.id === 'T-GATE')
   assert.deepEqual(gate.stepOutputs['8'], {
-    output: 'verdict: pass', attempt: 1, artifact: '# QA review', label: 'QA reviews the test plan',
+    output: 'verdict: pass', attempt: 1, artifact: '# QA review', attemptCount: 1, label: 'QA reviews the test plan',
   })
 })
 

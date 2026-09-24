@@ -13,7 +13,7 @@ process.env.HORIZON_DB = join(mkdtempSync(join(tmpdir(), 'horizon-github-')), 't
 const { db } = await import('../src/db.js')
 const github = await import('../src/github.js')
 const { setSetting } = await import('../src/settings.js')
-const { ACCEPT_GATE_INDEX } = await import('../src/lifecycle.js')
+const { ACCEPT_GATE_INDEX, IMPLEMENT_STEP_INDEX } = await import('../src/lifecycle.js')
 
 const REPO = 'FinTekkers/horizon'
 db.prepare(
@@ -436,4 +436,17 @@ test('closeIssueAsAbandoned throws when the PATCH fails, so the caller can fall 
   }))
   const item = { id: 'HZ-59-FAIL', repo: REPO, issue: 60 }
   await assert.rejects(() => github.closeIssueAsAbandoned(item, 'stopping this'), /could not close issue #60/)
+})
+
+// HZ-51: this is the concrete "caller that passes no target" the guardrails
+// name — requestChanges gets called with no 5th (targetStepIndex) argument
+// at all, so it must keep landing on IMPLEMENT_STEP_INDEX exactly as before
+// the human-directed-target feature existed.
+test('handlePrStateChange on a PR closed without merging sends the item back to implement, unaffected by explicit-target routing', () => {
+  db.prepare(
+    'INSERT INTO work_item (id, title, priority, cursor, repo, issue, pr) VALUES (?, ?, ?, ?, ?, ?, ?)',
+  ).run('HZ-30-C', 'PR closed unmerged on GitHub', 'Medium', ACCEPT_GATE_INDEX, REPO, 32, 57)
+  const changed = github.handlePrStateChange(REPO, 57, { merged: false, state: 'closed' })
+  assert.equal(changed, true)
+  assert.equal(db.prepare("SELECT cursor FROM work_item WHERE id = 'HZ-30-C'").get().cursor, IMPLEMENT_STEP_INDEX)
 })

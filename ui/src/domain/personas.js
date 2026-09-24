@@ -9,9 +9,9 @@
 // three copies together.
 
 export const PERSONAS = {
-  fullstack: { label: 'Full-stack', initials: 'FS', color: '#0E6E74' },
-  python_backend: { label: 'Python backend', initials: 'PY', color: '#2E6CB2' },
-  frontend_ui: { label: 'Frontend UI', initials: 'UI', color: '#DFA200' },
+  fullstack: { label: 'Full-stack', initials: 'FS', color: 'var(--success-ink)' },
+  python_backend: { label: 'Python backend', initials: 'PY', color: 'var(--primary-ink)' },
+  frontend_ui: { label: 'Frontend UI', initials: 'UI', color: 'var(--warning-ink)' },
 }
 
 export const DEFAULT_PERSONA = 'fullstack'

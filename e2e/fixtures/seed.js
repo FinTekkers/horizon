@@ -26,6 +26,35 @@ export function insertItem(
   ).run({ id, title, priority, desc, metric, guardrails, cursor, pr, pr_url, pr_mergeable })
 }
 
+// A retained-but-superseded artifact version (HZ-46): a done step_run row
+// with its own attempt number, started_at and ended_at so
+// store.listStepAttempts() can order it against sibling attempts and
+// time-correlate it with a feedback row. Written directly like insertItem
+// above, so it never goes through store.js and never gets kicked.
+export function insertStepRun(
+  db,
+  { itemId, stepIndex, attempt, agent, status = 'done', output = null, artifact = null, startedAt, endedAt = null },
+) {
+  // Returns lastInsertRowid: HZ-54's queued-work spec needs the run id to
+  // attach farm state to a specific run. main's own callers ignore it.
+  return db
+    .prepare(
+      `INSERT INTO step_run (item_id, step_index, attempt, agent, status, output, artifact, started_at, ended_at)
+       VALUES (@itemId, @stepIndex, @attempt, @agent, @status, @output, @artifact, @startedAt, @endedAt)`,
+    )
+    .run({ itemId, stepIndex, attempt, agent, status, output, artifact, startedAt, endedAt }).lastInsertRowid
+}
+
+// A feedback row with an explicit created_at, so it can be placed inside the
+// time window store.js's selectDrivingFeedback uses to attribute it to one
+// specific attempt (between the previous attempt's ended_at and this
+// attempt's started_at).
+export function insertFeedback(db, { itemId, target, message, createdAt }) {
+  db.prepare(
+    'INSERT INTO feedback (item_id, target, message, created_at) VALUES (@itemId, @target, @message, @createdAt)',
+  ).run({ itemId, target, message, createdAt })
+}
+
 // Same salted-scrypt scheme as server/src/auth.js's per-account gate PIN.
 // Writing the hash directly (instead of through Admin's "Regenerate my PIN")
 // keeps the plaintext out of the browser's localStorage, so the next gate

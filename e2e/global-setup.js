@@ -1,6 +1,6 @@
 import { existsSync, writeFileSync } from 'node:fs'
 import { request } from '@playwright/test'
-import { openDb, insertItem } from './fixtures/seed.js'
+import { openDb, insertItem, insertStepRun, insertFeedback } from './fixtures/seed.js'
 // Derived, not hardcoded: a future pipeline step insertion (like HZ-30's own
 // Review step) must not silently break these fixtures' intended positions.
 import { STEPS, ACCEPT_GATE_INDEX } from '../server/src/lifecycle.js'
@@ -34,6 +34,10 @@ const FIXTURES = [
   { id: 'E2E-3', title: 'E2E fixture — already closed', priority: 'Critical', cursor: STEPS.length },
   { id: 'E2E-4', title: 'E2E fixture — final review gate', priority: 'Medium', cursor: STEPS.length - 1 },
   { id: 'HZ-102', title: 'E2E fixture — deep link target', priority: 'Medium', cursor: 3 },
+  // Past step 4 ("Plan options & trade-offs") with two retained done+artifact
+  // attempts seeded below (HZ-46) — exercises the board's "attempt N of Y ↗"
+  // link and the artifact page's version history.
+  { id: 'E2E-5', title: 'E2E fixture — artifact version history', priority: 'Medium', cursor: 6 },
   {
     id: 'CFL-1',
     title: 'E2E fixture — merge conflict',
@@ -118,6 +122,36 @@ export default async function globalSetup() {
   const db = openDb(DB_PATH)
   try {
     for (const fixture of FIXTURES) insertItem(db, fixture)
+
+    // Two retained attempts at E2E-5's step 4 ("Plan options & trade-offs",
+    // agent Ensemble), with a feedback row timed between them so
+    // store.listStepAttempts() attributes it to attempt 2 — 10-artifact-history
+    // spec asserts the board link, the version nav and the feedback label
+    // all point at the right attempt.
+    insertStepRun(db, {
+      itemId: 'E2E-5',
+      stepIndex: 4,
+      attempt: 1,
+      agent: 'Ensemble',
+      artifact: 'This is the **first** attempt — marker-attempt-one-alpha.',
+      startedAt: '2024-01-01 00:00:00',
+      endedAt: '2024-01-01 00:10:00',
+    })
+    insertFeedback(db, {
+      itemId: 'E2E-5',
+      target: 'Ensemble',
+      message: 'Add a third option with a cost comparison.',
+      createdAt: '2024-01-01 00:15:00',
+    })
+    insertStepRun(db, {
+      itemId: 'E2E-5',
+      stepIndex: 4,
+      attempt: 2,
+      agent: 'Ensemble',
+      artifact: 'This is the **second** attempt — marker-attempt-two-beta.',
+      startedAt: '2024-01-01 00:20:00',
+      endedAt: '2024-01-01 00:30:00',
+    })
   } finally {
     db.close()
   }

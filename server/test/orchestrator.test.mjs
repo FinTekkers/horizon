@@ -13,6 +13,9 @@ process.env.HORIZON_DB = join(mkdtempSync(join(tmpdir(), 'horizon-orch-')), 'tes
 // FARM_URL set => kick() dispatches to the farm (via the stubbed fetch below)
 // instead of running mock timers.
 process.env.FARM_URL = 'http://farm.test'
+// Tests drive pollRunStates() directly; keep the real setInterval init() sets
+// up from ever firing during the run and racing test assertions on `dispatches`.
+process.env.FARM_RUN_STATE_POLL_MS = String(60 * 60 * 1000)
 
 const { db } = await import('../src/db.js')
 const store = await import('../src/store.js')
@@ -23,10 +26,18 @@ store.purgeDemoItems()
 
 // Capture farm dispatches instead of hitting the network.
 const dispatches = []
+let runsStatusResponse = { states: {} }
 globalThis.fetch = async (url, opts) => {
-  dispatches.push({ url: String(url), body: opts?.body ? JSON.parse(opts.body) : null })
+  const body = opts?.body ? JSON.parse(opts.body) : null
+  dispatches.push({ url: String(url), body })
+  if (String(url).includes('/runs/status')) return { ok: true, json: async () => runsStatusResponse }
   return { ok: true, json: async () => ({}) }
 }
+
+// Wires store.registerRunStateProvider onto the orchestrator's poll cache —
+// the same boot step server.js runs. No active project exists yet, so this
+// has no other side effect (ensureFarm/rearmFarmRuns both no-op on an empty db).
+orchestrator.init({ info: () => {}, warn: () => {} })
 
 const insertItem = db.prepare(
   'INSERT INTO work_item (id, title, priority, cursor, persona) VALUES (?, ?, ?, ?, ?)',
@@ -201,6 +212,104 @@ test('completeFarmRun stores the full artifact — the write side no longer cuts
   assert.equal(stored.length, 15000)
   assert.equal(stored, bigPlan)
   orchestrator.cancel('D-9') // completing step 6 auto-kicks step 7 (agent); clear its watchdog
+})
+
+// ---- run-state polling & store integration (HZ-54) ----
+// A queued step_run must read as queued, not "in progress", and a farm
+// that's unreachable/slow/silent must never block the snapshot or make the
+// board look wrong — it just falls back to today's presentation.
+
+test('pollRunStates batches every active run into one /runs/status call and store merges {state, reason} onto activeRun', async () => {
+  insertItem.run('P-1', 'Queued step', 'Medium', 11, null)
+  insertItem.run('P-2', 'Running step', 'Medium', 11, null)
+  const runIdQueued = activeRunFor('P-1', 11)
+  const runIdRunning = activeRunFor('P-2', 11)
+  runsStatusResponse = {
+    states: {
+      [runIdQueued]: { state: 'queued', reason: 'waiting for a free agent slot (4/4 in use)' },
+      [runIdRunning]: { state: 'running' },
+    },
+  }
+  const before = dispatches.length
+  await orchestrator.pollRunStates()
+  const call = dispatches.slice(before).find((d) => d.url.includes('/runs/status'))
+  assert.ok(call, 'no /runs/status call captured')
+  assert.deepEqual(new Set(call.body.run_ids), new Set([String(runIdQueued), String(runIdRunning)]))
+
+  const items = store.listItems()
+  const queuedItem = items.find((it) => it.id === 'P-1')
+  const runningItem = items.find((it) => it.id === 'P-2')
+  assert.equal(queuedItem.activeRun.state, 'queued')
+  assert.equal(queuedItem.activeRun.reason, 'waiting for a free agent slot (4/4 in use)')
+  assert.equal(runningItem.activeRun.state, 'running')
+  assert.equal(runningItem.activeRun.reason, null)
+
+  orchestrator.cancel('P-1')
+  orchestrator.cancel('P-2')
+})
+
+test('pollRunStates makes no farm call and clears the cache when nothing is active', async () => {
+  const before = dispatches.length
+  await orchestrator.pollRunStates()
+  assert.ok(
+    !dispatches.slice(before).some((d) => d.url.includes('/runs/status')),
+    'an idle farm should not be polled for run states',
+  )
+})
+
+test('an activeRun with no cached farm state at all defaults to running — fail soft for mock mode / a farm that never replied', async () => {
+  insertItem.run('P-5', 'Never polled', 'Medium', 11, null)
+  activeRunFor('P-5', 11)
+  const item = store.listItems().find((it) => it.id === 'P-5')
+  assert.equal(item.activeRun.state, 'running')
+  assert.equal(item.activeRun.reason, null)
+  orchestrator.cancel('P-5')
+})
+
+test('pollRunStates fails soft on a farm error: it neither throws nor clears the last-known cache', async () => {
+  insertItem.run('P-3', 'Farm goes down mid-flight', 'Medium', 11, null)
+  const runId = activeRunFor('P-3', 11)
+  runsStatusResponse = { states: { [runId]: { state: 'queued', reason: 'waiting for the PM agent' } } }
+  await orchestrator.pollRunStates()
+  assert.equal(store.listItems().find((it) => it.id === 'P-3').activeRun.state, 'queued')
+
+  const realFetch = globalThis.fetch
+  globalThis.fetch = async () => ({ ok: false, status: 503, json: async () => ({ error: 'farm down' }) })
+  await assert.doesNotReject(orchestrator.pollRunStates())
+  globalThis.fetch = realFetch
+
+  assert.equal(
+    store.listItems().find((it) => it.id === 'P-3').activeRun.state,
+    'queued',
+    'a failed poll must leave the last-known cache in place, not blank it out',
+  )
+  orchestrator.cancel('P-3')
+})
+
+test('pollRunStates never overlaps: a tick that fires while one is still in flight is a no-op', async () => {
+  insertItem.run('P-4', 'Overlap guard', 'Medium', 11, null)
+  const runId = activeRunFor('P-4', 11)
+  let resolveFetch
+  let statusCalls = 0
+  const realFetch = globalThis.fetch
+  globalThis.fetch = async (url) => {
+    if (String(url).includes('/runs/status')) {
+      statusCalls++
+      return new Promise((resolve) => {
+        resolveFetch = () => resolve({ ok: true, json: async () => ({ states: { [runId]: { state: 'running' } } }) })
+      })
+    }
+    return { ok: true, json: async () => ({}) }
+  }
+
+  const first = orchestrator.pollRunStates()
+  const second = orchestrator.pollRunStates() // fires while the first request is still pending
+  assert.equal(statusCalls, 1, 'an in-flight poll must block a second tick from also calling the farm')
+  resolveFetch()
+  await Promise.all([first, second])
+
+  globalThis.fetch = realFetch
+  orchestrator.cancel('P-4')
 })
 
 test('the GitHub step comment renders the persona label, not the raw id', () => {

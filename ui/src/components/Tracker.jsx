@@ -13,6 +13,7 @@ import {
 } from '../domain/lifecycle'
 import { PERSONAS, personaFor, personaId } from '../domain/personas'
 import { itemStatus } from '../domain/status'
+import { resolveEventColor } from '../domain/eventColors'
 import { issueUrl, issueLabel, artifactUrl, outputUrl, runLogViewUrl } from '../api'
 import StatusPill from './StatusPill'
 import { BackIcon, LinkIcon, RestartIcon, PrIcon } from './icons'
@@ -34,12 +35,16 @@ const STEP_META = {
   blocked: () => 'Changes requested',
 }
 
-const STEP_META_COLOR = { awaiting: '#9A6E00', blocked: '#9C333E', active: '#2E6CB2' }
+const STEP_META_COLOR = { awaiting: 'var(--warning-ink)', blocked: 'var(--danger-ink)', active: 'var(--primary-ink)' }
 
 function Step({ item, index, onApprove, onApproveWithComments, onReject, onResolveConflicts, onSetPersona }) {
   const st = STEPS[index]
   const status = stepStatus(item, index)
   const isGate = st.kind === 'gate'
+  // Dispatched but still sitting in the farm's queue, not yet claimed by an
+  // agent (HZ-54) — distinct from "In progress…", which now means the farm
+  // itself reports the step as running.
+  const queued = status === 'active' && item.activeRun?.step_index === index && item.activeRun?.state === 'queued'
   // The intake gate doubles as the human confirmation of the PM-proposed
   // specialist persona: approving with the select's value confirms it.
   const showsPersonaPicker = status === 'awaiting' && st.label === 'Approve & prioritize this work'
@@ -49,11 +54,15 @@ function Step({ item, index, onApprove, onApproveWithComments, onReject, onResol
   return (
     <div className="step">
       <div className="step__rail">
-        <div className={`step__icon step__icon--${status}`}>{STEP_GLYPHS[status]}</div>
+        <div className={`step__icon step__icon--${status}${queued ? ' step__icon--queued' : ''}`}>
+          {queued ? '⋯' : STEP_GLYPHS[status]}
+        </div>
         <div className={`step__line${status === 'done' ? ' step__line--done' : ''}`} />
       </div>
       <div className="step__body">
-        <div className={`step-card${['awaiting', 'active', 'blocked'].includes(status) ? ` step-card--${status}` : ''}`}>
+        <div
+          className={`step-card${['awaiting', 'active', 'blocked'].includes(status) ? ` step-card--${status}` : ''}${queued ? ' step-card--queued' : ''}`}
+        >
           <div className="step-card__head">
             <div className="step-card__label">{st.label}</div>
             <span className="step-card__agent" style={{ color: agent.color }}>
@@ -61,8 +70,11 @@ function Step({ item, index, onApprove, onApproveWithComments, onReject, onResol
               {agentLabel}
             </span>
           </div>
-          <div className="step-card__meta" style={{ color: STEP_META_COLOR[status] || '#8C8C8E' }}>
-            {STEP_META[status](isGate, st.gate)}
+          {/* HZ-54's queued state kept, but using main's theme token rather
+              than the hardcoded hex it originally shipped — dark mode (HZ-25)
+              moved every colour in this file behind a CSS variable. */}
+          <div className="step-card__meta" style={{ color: queued ? 'var(--muted)' : STEP_META_COLOR[status] || 'var(--muted)' }}>
+            {queued ? 'Queued' : STEP_META[status](isGate, st.gate)}
             {status === 'active' && item.activeRun?.step_index === index && (
               <span>
                 {' · '}
@@ -70,9 +82,10 @@ function Step({ item, index, onApprove, onApproveWithComments, onReject, onResol
                   ? 'just started'
                   : `${elapsedMinutes(item.activeRun.started_at)} min`}
                 {item.activeRun.attempt > 1 && ` · attempt ${item.activeRun.attempt}`}
+                {queued && item.activeRun.reason && ` · ${item.activeRun.reason}`}
               </span>
             )}
-            {status === 'done' && item.stepOutputs?.[index]?.attempt > 1 && (
+            {status === 'done' && item.stepOutputs?.[index]?.attempt > 1 && !item.stepOutputs?.[index]?.artifact && (
               <span className="step-card__attempt"> · attempt {item.stepOutputs[index].attempt}</span>
             )}
             {status === 'done' && !isGate && !item.stepOutputs?.[index] && (
@@ -96,7 +109,9 @@ function Step({ item, index, onApprove, onApproveWithComments, onReject, onResol
               target="_blank"
               rel="noopener noreferrer"
             >
-              View full artifact ↗
+              {item.stepOutputs[index].attemptCount > 1
+                ? `attempt ${item.stepOutputs[index].attempt} of ${item.stepOutputs[index].attemptCount} ↗`
+                : 'View full artifact ↗'}
             </a>
           )}
           {showsPersonaPicker && (
@@ -191,7 +206,11 @@ function relTime(createdAt) {
 
 function buildActivity(item) {
   // Real events (orchestrator + human actions + GitHub) when we have them…
-  const events = (item.events || []).map((e) => ({ ...e, time: relTime(e.created_at) }))
+  const events = (item.events || []).map((e) => ({
+    ...e,
+    time: relTime(e.created_at),
+    color: resolveEventColor(e.color),
+  }))
   if (events.length > 0) return events.slice(0, 12)
 
   // …otherwise derive placeholders from completed steps (demo/mock items).
@@ -206,7 +225,7 @@ function buildActivity(item) {
         who: s.kind === 'gate' ? 'You' : a.label,
         text: s.kind === 'gate' ? `approved: ${s.label.toLowerCase()}` : `completed ${s.label.toLowerCase()}`,
         time: times[Math.min(k, times.length - 1)],
-        color: a.color,
+        color: a.avatarBg,
         initials: s.kind === 'gate' ? '✓' : a.initials,
       }
     })
@@ -302,8 +321,9 @@ export default function Tracker({ item, onBack, onApprove, onApproveWithComments
             const allDone = idxs.every((i) => stepStatus(item, i) === 'done')
             const anyActive = idxs.some((i) => ['active', 'awaiting'].includes(stepStatus(item, i)))
             const phaseStatusLabel = allDone ? 'Complete' : anyActive ? 'In progress' : 'Upcoming'
-            const phaseStatusColor = allDone ? '#0E6E74' : anyActive ? '#2E6CB2' : '#8C8C8E'
-            const restartable = !closed && !abandoned && phaseIdx(item) >= p
+            const phaseStatusColor = allDone ? 'var(--success-ink)' : anyActive ? 'var(--primary-ink)' : 'var(--muted)'
+            // An abandoned item is terminal too — it must not offer a restart.
+            const restartable = !isClosed(item) && !abandoned && phaseIdx(item) >= p
             return (
               <div key={name} className="phase">
                 <div className="phase__head">

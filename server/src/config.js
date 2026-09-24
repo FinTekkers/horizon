@@ -14,6 +14,7 @@
 //   ALLOWED_LOGIN_EMAILS   comma-separated Google-login allowlist (deny-by-default: empty/
 //                          unset means NO Google logins succeed; the password path is unaffected)
 //   SESSION_SECRET         unused placeholder — session tokens are random, not signed
+//   HORIZON_TEST_HOOKS     "1" registers e2e-only routes (see app.js) — never set in production
 
 export const WEBHOOK_SECRET = process.env.GITHUB_WEBHOOK_SECRET || null
 
@@ -34,7 +35,17 @@ export const FARM_STEP_INDEXES = new Set(
     .map((s) => Number(s.trim()))
     .filter((n) => Number.isInteger(n)),
 )
+// Execution budget: starts when the farm confirms an agent actually launched
+// (POST .../started), not at dispatch — see FARM_QUEUE_TIMEOUT_MS below for
+// the queue-wait half of that split (HZ-57).
 export const FARM_STEP_TIMEOUT_MS = Number(process.env.FARM_STEP_TIMEOUT_MS || 20 * 60 * 1000)
+// Queue-wait budget: armed the moment a step is handed to the farm. A step
+// that sits queued behind other work longer than this is failed as "never
+// picked up" — this must stay well short of FARM_STEP_TIMEOUT_MS so a step
+// that's genuinely stuck in queue (farm down, task file lost, queue wedged)
+// still fails in a bounded window instead of silently burning its full
+// execution budget before ever running.
+export const FARM_QUEUE_TIMEOUT_MS = Number(process.env.FARM_QUEUE_TIMEOUT_MS || 10 * 60 * 1000)
 export const FARM_START_TIMEOUT_MS = Number(process.env.FARM_START_TIMEOUT_MS || 5 * 60 * 1000)
 export const POLL_INTERVAL_MS = Number(process.env.POLL_INTERVAL_MS || 60_000)
 export const PORT = Number(process.env.PORT || 3001)
@@ -62,3 +73,12 @@ export const ALLOWED_LOGIN_EMAILS = new Set(
     .map((s) => s.trim().toLowerCase())
     .filter(Boolean),
 )
+
+// e2e only (HZ-54): the e2e suite runs with no real farm daemon (FARM_URL
+// unset — see e2e/playwright.config.js), so it has no way to make the board
+// actually observe a "queued" run through the real polling path. This flag
+// gates registration of a tiny test-only route (app.js) that lets a spec set
+// the orchestrator's run-state cache directly, mirroring exactly what
+// pollRunStates() would have cached from a real farm reply. Unset (the
+// default) means the route is never even registered.
+export const TEST_HOOKS_ENABLED = process.env.HORIZON_TEST_HOOKS === '1'

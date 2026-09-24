@@ -40,6 +40,31 @@ db.prepare(
   "INSERT INTO step_run (item_id, step_index, attempt, agent, status, artifact, ended_at) VALUES ('T-OUT', 10, 1, 'Eng', 'done', '# A plan\\n\\nSome **markdown**.', '2026-01-01 12:00:00')",
 ).run()
 
+// HZ-46 fixtures: a step with a full attempt history (two real revisions plus
+// a failed one in between that must never surface as a version), and a
+// second item that shares the same step_index/attempt numbers so scoping can
+// be asserted.
+db.prepare("INSERT INTO work_item (id, title, priority, cursor) VALUES ('T-VER', 'Has attempt history', 'Medium', 12)").run()
+db.prepare(
+  "INSERT INTO step_run (item_id, step_index, attempt, agent, status, artifact, started_at, ended_at) VALUES ('T-VER', 11, 1, 'Eng', 'done', 'Attempt one content', '2026-01-01 10:00:00', '2026-01-01 10:05:00')",
+).run()
+db.prepare(
+  "INSERT INTO feedback (item_id, target, message, created_at) VALUES ('T-VER', 'Eng', 'please add tests', '2026-01-01 10:06:00')",
+).run()
+db.prepare(
+  "INSERT INTO step_run (item_id, step_index, attempt, agent, status, artifact, started_at, ended_at) VALUES ('T-VER', 11, 2, 'Eng', 'done', 'Attempt two content', '2026-01-01 10:07:00', '2026-01-01 10:10:00')",
+).run()
+// A cancelled attempt (HZ-44: dies mid-flight) between the two real ones —
+// carries FAILED-prefixed output and no artifact, must be invisible here.
+db.prepare(
+  "INSERT INTO step_run (item_id, step_index, attempt, agent, status, output, started_at, ended_at) VALUES ('T-VER', 11, 3, 'Eng', 'cancelled', 'FAILED: agent crashed', '2026-01-01 10:11:00', '2026-01-01 10:12:00')",
+).run()
+
+db.prepare("INSERT INTO work_item (id, title, priority, cursor) VALUES ('T-VER2', 'Different item, same shape', 'Medium', 12)").run()
+db.prepare(
+  "INSERT INTO step_run (item_id, step_index, attempt, agent, status, artifact, started_at, ended_at) VALUES ('T-VER2', 11, 1, 'Eng', 'done', 'Item two attempt one content', '2026-01-01 10:00:00', '2026-01-01 10:05:00')",
+).run()
+
 // ---- /api/items/:id/artifacts/:stepIndex ----
 
 test('a completed step with an artifact renders a 200 HTML page for a logged-in session', async () => {
@@ -65,6 +90,68 @@ test('a step with no completed+artifact row 404s', async () => {
 test('an unknown item 404s for the artifact page too', async () => {
   const res = await inject({ method: 'GET', url: '/api/items/NOPE-1/artifacts/10' })
   assert.equal(res.statusCode, 404)
+})
+
+// ---- /api/items/:id/artifacts/:stepIndex/:attempt (HZ-46: earlier attempts stay reachable) ----
+
+test("requesting an earlier attempt returns that attempt's content, not the newest", async () => {
+  const res = await inject({ method: 'GET', url: '/api/items/T-VER/artifacts/11/1' })
+  assert.equal(res.statusCode, 200)
+  assert.match(res.body, /Attempt one content/)
+  assert.ok(!res.body.includes('Attempt two content'), "must not include the newer attempt's content")
+})
+
+test('the bare (no-attempt) artifact URL still resolves to the latest attempt, unchanged', async () => {
+  const res = await inject({ method: 'GET', url: '/api/items/T-VER/artifacts/11' })
+  assert.equal(res.statusCode, 200)
+  assert.match(res.body, /Attempt two content/)
+  assert.ok(!res.body.includes('Attempt one content'))
+})
+
+test("cross-item scoping: an attempt number from the URL never returns another item's artifact", async () => {
+  const res = await inject({ method: 'GET', url: '/api/items/T-VER2/artifacts/11/1' })
+  assert.equal(res.statusCode, 200)
+  assert.match(res.body, /Item two attempt one content/)
+  assert.ok(!res.body.includes('Attempt one content'), "must not fall through to another item's attempt 1")
+})
+
+test('a cancelled/FAILED attempt (HZ-44) is excluded: 404s directly and is absent from the version nav', async () => {
+  const res = await inject({ method: 'GET', url: '/api/items/T-VER/artifacts/11/3' })
+  assert.equal(res.statusCode, 404)
+  assert.deepEqual(res.json(), { error: 'no artifact for that attempt' })
+
+  const page = await inject({ method: 'GET', url: '/api/items/T-VER/artifacts/11/1' })
+  assert.ok(!page.body.includes('attempt 3'), 'the cancelled attempt must not be listed as a version')
+})
+
+test('an out-of-range attempt number 404s with the same error shape', async () => {
+  const res = await inject({ method: 'GET', url: '/api/items/T-VER/artifacts/11/99' })
+  assert.equal(res.statusCode, 404)
+  assert.deepEqual(res.json(), { error: 'no artifact for that attempt' })
+})
+
+test('a non-integer attempt is rejected at the schema layer', async () => {
+  const res = await inject({ method: 'GET', url: '/api/items/T-VER/artifacts/11/not-a-number' })
+  assert.equal(res.statusCode, 400)
+})
+
+test('the specific-attempt page 401s without a session cookie (HZ-21)', async () => {
+  const res = await app.inject({ method: 'GET', url: '/api/items/T-VER/artifacts/11/1' })
+  assert.equal(res.statusCode, 401)
+  assert.deepEqual(res.json(), { error: 'login_required' })
+})
+
+test('the page shows "attempt X of Y" labelled with the feedback that drove this revision, with a link back to the other version', async () => {
+  const res = await inject({ method: 'GET', url: '/api/items/T-VER/artifacts/11/2' })
+  assert.match(res.body, /attempt 2 of 2/)
+  assert.match(res.body, /please add tests/)
+  assert.match(res.body, /href="\/api\/items\/T-VER\/artifacts\/11\/1"/)
+})
+
+test('the artifact page prints exactly one "attempt N" mention for its own attempt number, not a duplicate', async () => {
+  const res = await inject({ method: 'GET', url: '/api/items/T-VER/artifacts/11/1' })
+  const matches = res.body.match(/attempt 1\b/g) || []
+  assert.equal(matches.length, 1, `expected exactly one "attempt 1" mention, saw ${matches.length}`)
 })
 
 // ---- /api/items/:id/steps/:stepIndex/output ----

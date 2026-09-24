@@ -1,23 +1,23 @@
-import { useEffect, useRef } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { PHASES } from '../domain/lifecycle'
 
 const COPY = {
   approve: {
     title: 'Approve with comments',
     submitLabel: 'Approve',
-    submitColor: '#0E6E74',
+    submitColor: 'var(--success)',
     placeholder: 'Decision notes — e.g. which option to adopt, or conditions for the next step…',
   },
   reject: {
     title: 'Send back with feedback',
     submitLabel: 'Send back',
-    submitColor: '#9C333E',
+    submitColor: 'var(--danger)',
     placeholder: 'What should change, or what question needs answering?',
   },
   restart: {
     title: 'Restart phase',
     submitLabel: 'Restart phase',
-    submitColor: '#DFA200',
+    submitColor: 'var(--warning)',
     placeholder: 'Why are you restarting? (optional)',
   },
   abandon: {
@@ -48,13 +48,24 @@ function subtitle(composer) {
 export default function ComposerModal({ composer, onSubmit, onCancel }) {
   const inputRef = useRef(null)
   const copy = COPY[composer.mode] || COPY.reject
+  // Only a reject from a gate offers a destination — everywhere else this
+  // stays empty and the picker doesn't render.
+  const stepOptions = composer.mode === 'reject' ? composer.stepOptions || [] : []
+  const [targetStepIndex, setTargetStepIndex] = useState('')
   const submit = () => {
     const text = (inputRef.current?.value || '').trim()
+    // Abandon (HZ-59) demands a reason — the modes that require text must not
+    // submit empty. This guard came from this branch; the reject/step-target
+    // routing below came from main (HZ-51). Both are needed.
     if (copy.required && !text) {
       inputRef.current?.focus()
       return
     }
-    onSubmit(text)
+    if (composer.mode === 'reject') {
+      onSubmit(text, stepOptions.length && targetStepIndex !== '' ? Number(targetStepIndex) : null)
+    } else {
+      onSubmit(text)
+    }
   }
 
   // The textarea needs plain Enter for newlines, so this decision's explicit
@@ -82,6 +93,26 @@ export default function ComposerModal({ composer, onSubmit, onCancel }) {
           {copy.title} · {composer.itemId}
         </div>
         <div className="composer__sub">{subtitle(composer)}</div>
+        {stepOptions.length > 0 && (
+          <div className="composer__field">
+            <label htmlFor="composer-target-step" className="composer__field-label">
+              Send back to
+            </label>
+            <select
+              id="composer-target-step"
+              className="composer__select"
+              value={targetStepIndex}
+              onChange={(e) => setTargetStepIndex(e.target.value)}
+            >
+              <option value="">Default — {composer.defaultTargetLabel}</option>
+              {stepOptions.map((opt) => (
+                <option key={opt.index} value={opt.index}>
+                  {opt.label}
+                </option>
+              ))}
+            </select>
+          </div>
+        )}
         <textarea ref={inputRef} className="composer__input" placeholder={copy.placeholder} autoFocus />
         <div className="composer__hint">⌘/Ctrl + Enter to submit · Esc to cancel</div>
         <div className="composer__actions">
