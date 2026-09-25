@@ -13,6 +13,7 @@ import {
 } from '../domain/lifecycle'
 import { PERSONAS, personaFor, personaId } from '../domain/personas'
 import { itemStatus } from '../domain/status'
+import { pauseReason } from '../domain/pauseReason'
 import { resolveEventColor } from '../domain/eventColors'
 import { issueUrl, issueLabel, artifactUrl, outputUrl, runLogViewUrl } from '../api'
 import StatusPill from './StatusPill'
@@ -190,6 +191,32 @@ function Step({ item, index, onApprove, onApproveWithComments, onReject, onResol
   )
 }
 
+// HZ-94: explains a paused item beyond the generic "Paused" flag — reads the
+// classified failure reason back out of the pause event the orchestrator
+// already writes (server/src/orchestrator.js's failFarmRun), never inventing
+// one of its own. A manual human pause has nothing to explain and renders
+// nothing here — the existing Resume control already covers it.
+function PauseBanner({ item }) {
+  const reason = pauseReason(item)
+  if (!reason || reason.category === 'manual') return null
+
+  const attemptsText =
+    reason.attemptsUsed > 0
+      ? `Auto-retried ${reason.attemptsUsed} time${reason.attemptsUsed === 1 ? '' : 's'}${reason.exhausted ? ' — retry budget exhausted' : ''}`
+      : 'Not auto-retried'
+
+  return (
+    <div className="pause-banner">
+      <div className="pause-banner__title">{reason.label || 'Paused'}</div>
+      <div className="pause-banner__detail">
+        {reason.detail && <span>{reason.detail} </span>}
+        {reason.cause || 'No failure details were recorded for this pause — check the activity feed below.'}
+      </div>
+      <div className="pause-banner__meta">{attemptsText} · Resume to retry</div>
+    </div>
+  )
+}
+
 // Server timestamps are sqlite UTC "YYYY-MM-DD HH:MM:SS".
 function relTime(createdAt) {
   if (!createdAt) return 'just now'
@@ -293,6 +320,7 @@ export default function Tracker({ item, onBack, onApprove, onApproveWithComments
             )}
           </div>
         )}
+        {!abandoned && item.paused && <PauseBanner item={item} />}
         {abandoned && item.abandoned_reason && (
           <div className="tracker__actions">
             <div className="tile__value" style={{ color: '#5C1F2B' }}>

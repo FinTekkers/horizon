@@ -863,11 +863,15 @@ export function failFarmRun(runId, error, reason = null) {
   }
 
   db.prepare("UPDATE work_item SET paused = 1, updated_at = datetime('now') WHERE id = ?").run(id)
+  // Mirrors the `(${reason})` tag already used for the auto-retrying event
+  // above — empty when reason is null, so the untagged wording below stays
+  // byte-identical to what existing consumers already parse (HZ-94).
+  const reasonTag = reason != null ? ` (${reason})` : ''
   addEvent(id, {
     who: 'Horizon',
     text: retryable
-      ? `agent step failed: ${String(error).slice(0, 200)} — auto-retry budget (${AUTO_RETRY_CAP}) exhausted; item paused, resume to retry`
-      : `agent step failed: ${String(error).slice(0, 200)} — item paused; resume to retry`,
+      ? `agent step failed${reasonTag}: ${String(error).slice(0, 200)} — auto-retry budget (${AUTO_RETRY_CAP}) exhausted; item paused, resume to retry`
+      : `agent step failed${reasonTag}: ${String(error).slice(0, 200)} — item paused; resume to retry`,
     color: '#9C333E',
     initials: 'HZ',
   })
