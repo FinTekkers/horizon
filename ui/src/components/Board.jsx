@@ -1,3 +1,4 @@
+import { useSyncExternalStore } from 'react'
 import {
   PHASES,
   PHASE_ACCENT,
@@ -9,9 +10,11 @@ import {
   awaitingGate,
   priorityColor,
 } from '../domain/lifecycle'
+import { FILTERS, visibleItems, hiddenCounts, matchCounts } from '../domain/filters'
 import { personaFor } from '../domain/personas'
 import { itemStatus } from '../domain/status'
 import { issueUrl, issueLabel } from '../api'
+import * as boardFilters from '../boardFilters'
 import StatusPill from './StatusPill'
 import { LinkIcon, LockIcon, PrIcon } from './icons'
 
@@ -145,51 +148,100 @@ function BoardCard({ item, onOpen, onApprove, onReject, onTogglePause }) {
 }
 
 export default function Board({ items, onOpen, onApprove, onReject, onTogglePause, onNewItem }) {
-  // Abandoned items stay on the board — findable, still rendered in their
-  // column — but don't count as active work: they've stopped being dispatched.
-  const activeCount = items.filter((it) => !isAbandoned(it)).length
+  const activeFilterKeys = useSyncExternalStore(boardFilters.subscribe, boardFilters.getActiveFilters)
+  const now = new Date()
+  // Filtering is a view concern only — it narrows what's rendered here, and
+  // never touches an item or what the farm dispatches (HZ-80).
+  const shown = visibleItems(items, activeFilterKeys, now)
+  const hidden = hiddenCounts(items, activeFilterKeys, now)
+  const matches = matchCounts(items, now)
+  const totalHidden = Object.values(hidden).reduce((sum, n) => sum + n, 0)
+  const hiddenSummary = FILTERS.filter((f) => hidden[f.key] > 0)
+    .map((f) => `${hidden[f.key]} ${f.noun}`)
+    .join(', ')
+  // Abandoned items that are still shown (their filter toggled off) don't
+  // count as active work: they've stopped being dispatched.
+  const activeCount = shown.filter((it) => !isAbandoned(it)).length
+
   return (
     <div className="board">
       <div className="board__head">
         <div className="board__title">Work in flight</div>
         <div className="board__meta">{activeCount} items across the lifecycle</div>
+        {totalHidden > 0 && shown.length > 0 && (
+          <div className="board__hidden-note">
+            Hiding {hiddenSummary}
+            <button className="board__show-all" onClick={() => boardFilters.setActiveFilters([])}>
+              Show all
+            </button>
+          </div>
+        )}
         <span style={{ flex: 1 }} />
+        <div className="board__filters">
+          {FILTERS.map((f) => {
+            const on = activeFilterKeys.includes(f.key)
+            return (
+              <button
+                key={f.key}
+                className={`board__filter-chip${on ? ' board__filter-chip--active' : ''}`}
+                onClick={() => boardFilters.toggleFilter(f.key)}
+                title={on ? `Hiding ${matches[f.key]} ${f.noun} item(s) — click to show` : `Showing ${matches[f.key]} ${f.noun} item(s) — click to hide`}
+              >
+                {f.label} ({matches[f.key]})
+              </button>
+            )
+          })}
+        </div>
         <button className="btn-new" onClick={onNewItem}>
           + New work item
         </button>
       </div>
-      <div className="board__cols">
-        {PHASES.map((name, p) => {
-          const colItems = items.filter((it) => phaseIdx(it) === p)
-          const colActiveCount = colItems.filter((it) => !isAbandoned(it)).length
-          return (
-            <div key={name} className="col">
-              <div className="col__head">
-                <span
-                  className="col__num"
-                  style={{ background: PHASE_ACCENT_BG[p], color: PHASE_ACCENT[p] }}
-                >
-                  {p + 1}
-                </span>
-                <span className="col__name">{name}</span>
-                <span className="col__count">{colActiveCount}</span>
+
+      {items.length === 0 && <div className="board__empty">No work items yet.</div>}
+
+      {items.length > 0 && shown.length === 0 && (
+        <div className="board__empty">
+          All {items.length} items are hidden by the active filters.{' '}
+          <button className="board__show-all" onClick={() => boardFilters.setActiveFilters([])}>
+            Show all
+          </button>
+        </div>
+      )}
+
+      {shown.length > 0 && (
+        <div className="board__cols">
+          {PHASES.map((name, p) => {
+            const colItems = shown.filter((it) => phaseIdx(it) === p)
+            const colActiveCount = colItems.filter((it) => !isAbandoned(it)).length
+            return (
+              <div key={name} className="col">
+                <div className="col__head">
+                  <span
+                    className="col__num"
+                    style={{ background: PHASE_ACCENT_BG[p], color: PHASE_ACCENT[p] }}
+                  >
+                    {p + 1}
+                  </span>
+                  <span className="col__name">{name}</span>
+                  <span className="col__count">{colActiveCount}</span>
+                </div>
+                <div className="col__cards">
+                  {colItems.map((item) => (
+                    <BoardCard
+                      key={item.id}
+                      item={item}
+                      onOpen={onOpen}
+                      onApprove={onApprove}
+                      onReject={onReject}
+                      onTogglePause={onTogglePause}
+                    />
+                  ))}
+                </div>
               </div>
-              <div className="col__cards">
-                {colItems.map((item) => (
-                  <BoardCard
-                    key={item.id}
-                    item={item}
-                    onOpen={onOpen}
-                    onApprove={onApprove}
-                    onReject={onReject}
-                    onTogglePause={onTogglePause}
-                  />
-                ))}
-              </div>
-            </div>
-          )
-        })}
-      </div>
+            )
+          })}
+        </div>
+      )}
     </div>
   )
 }

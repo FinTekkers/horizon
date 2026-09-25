@@ -21,7 +21,11 @@ class AgentExhaustedError(AgentError):
     a subprocess/asyncio timeout, Muse's --max-model-steps analogue). The one
     typed signal every provider raises for exhaustion, so callers like
     step_agent's checkpoint salvage (HZ-31) can tell it apart from any other
-    failure without knowing which provider ran."""
+    failure without knowing which provider ran.
+
+    Why the distinction earns a type: the orchestrator auto-retries THIS
+    cause, up to its own hard cap, and no other (HZ-76). Callers must be able
+    to ask "ran out of budget?" without parsing a message string."""
 
 
 class AgentProvider(Protocol):

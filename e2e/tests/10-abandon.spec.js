@@ -64,11 +64,18 @@ test('abandoning an item requires a reason, closes it out distinctly from comple
 
   await captureScreenshot(page, 'abandon')
 
-  // Still findable on the board, but no longer counted as active work.
+  // Abandoned items are hidden from the board by default (HZ-80) — not
+  // deleted, not silently dropped: the board states the hidden count and
+  // offers a one-click reveal.
   await page.goto('/')
   const card = page.locator('.card').filter({ has: page.locator('.card__id', { hasText: 'ABANDON-1' }) })
-  await expect(card).toBeVisible({ timeout: 10_000 })
+  await expect(card).toHaveCount(0, { timeout: 10_000 })
   await expect.poll(async () => parseInt(await boardMeta.textContent(), 10), { timeout: 10_000 }).toBe(before - 1)
+  await expect(page.locator('.board__hidden-note')).toContainText('abandoned')
+
+  // One click reveals it again — still findable, nothing lost.
+  await page.locator('.board__show-all').click()
+  await expect(card).toBeVisible()
 })
 
 test('a wrong then cancelled gate PIN blocks abandonment, leaving the item untouched', async ({ page }) => {
