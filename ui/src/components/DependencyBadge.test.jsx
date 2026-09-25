@@ -37,7 +37,7 @@ test('an item with neither direction renders nothing at all, full form', () => {
 
 test('a blocker renders "Blocked by" with the blocker named, compact form — never bare "Blocked"', () => {
   const { getByText, queryByText } = render(<DependencyBadge item={blockedOnly} compact />)
-  expect(getByText(/Blocked by The blocker item/)).toBeTruthy()
+  expect(getByText(/Blocked by X-B/)).toBeTruthy()
   expect(queryByText('Blocks 1')).toBeNull()
 })
 
@@ -49,7 +49,7 @@ test('dependents render "Blocks N" with no blocked text at all, compact form', (
 
 test('an item with both directions renders both pills, compact form', () => {
   const { getByText } = render(<DependencyBadge item={both} compact />)
-  expect(getByText(/Blocked by The blocker item/)).toBeTruthy()
+  expect(getByText(/Blocked by X-B/)).toBeTruthy()
   expect(getByText('Blocks 1')).toBeTruthy()
 })
 
@@ -72,13 +72,13 @@ test('a second blocker is summarized as "+N more", full title list still availab
     dependents: [],
   }
   const { getByText } = render(<DependencyBadge item={item} compact />)
-  expect(getByText(/Blocked by First blocker \+1 more/)).toBeTruthy()
+  expect(getByText(/Blocked by X-B1 \+1 more/)).toBeTruthy()
 })
 
 test('an abandoned blocker is flagged, not dropped, compact form', () => {
   const item = { id: 'X-6', blockedBy: [{ id: 'X-B', title: 'Dead end', abandoned: true }], dependents: [] }
   const { getByText } = render(<DependencyBadge item={item} compact />)
-  expect(getByText(/Blocked by Dead end \(abandoned\)/)).toBeTruthy()
+  expect(getByText(/Blocked by X-B \(abandoned\)/)).toBeTruthy()
 })
 
 test('full form: a blocker section names the blocker under a "Blocked by" label', () => {
@@ -108,4 +108,45 @@ test('full form: an abandoned dependent is flagged inline, not dropped from the 
   const { getByText } = render(<DependencyBadge item={item} />)
   expect(getByText(/Stalled dependent/)).toBeTruthy()
   expect(getByText(/abandoned/)).toBeTruthy()
+})
+
+// HZ-95 follow-up: the id is what makes a dependency actionable. It was in the
+// payload all along but rendered only as a React key, so the UI named blockers
+// by prose title alone — unusable for navigating to the blocker.
+
+test('the detail view names the blocker by id, not title alone', () => {
+  const { getByText } = render(<DependencyBadge item={blockedOnly} />)
+  expect(getByText('X-B')).toBeTruthy()
+  expect(getByText('The blocker item')).toBeTruthy()
+})
+
+test('the blocker id links to that item', () => {
+  const { getByText } = render(<DependencyBadge item={blockedOnly} />)
+  const link = getByText('X-B').closest('a')
+  expect(link).toBeTruthy()
+  expect(link.getAttribute('href').endsWith('/x-b')).toBe(true)
+})
+
+test('the dependent id links to that item too, so both directions navigate', () => {
+  const { getByText } = render(<DependencyBadge item={dependentsOnly} />)
+  const link = getByText('X-D').closest('a')
+  expect(link).toBeTruthy()
+  expect(link.getAttribute('href').endsWith('/x-d')).toBe(true)
+})
+
+test('the compact pill leads with the id and keeps every id in its tooltip', () => {
+  const item = {
+    id: 'X-8',
+    blockedBy: [
+      { id: 'X-B1', title: 'First blocker', abandoned: false },
+      { id: 'X-B2', title: 'Second blocker', abandoned: true },
+    ],
+    dependents: [],
+  }
+  const { container } = render(<DependencyBadge item={item} compact />)
+  const pill = container.querySelector('.dep-pill--blocked')
+  expect(pill.textContent).toContain('X-B1')
+  expect(pill.title).toContain('X-B1')
+  expect(pill.title).toContain('X-B2')
+  expect(pill.title).toContain('(abandoned)')
 })

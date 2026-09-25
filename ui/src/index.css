@@ -461,6 +461,10 @@ button { font-family: var(--font-sans); }
 .dep-detail__label--dependents { color: var(--agent-human-ink); }
 .dep-detail__list { margin: 0; padding-left: 18px; font: 500 13px var(--font-sans); color: var(--deep); line-height: 1.5; }
 .dep-detail__abandoned { color: var(--danger-ink); font-weight: 700; }
+/* The id carries the navigation; theme tokens only, so it stays legible in both themes. */
+.dep-detail__id { font-family: var(--font-mono, ui-monospace, monospace); font-weight: 700; color: var(--accent, var(--deep)); text-decoration: none; }
+.dep-detail__id:hover { text-decoration: underline; }
+.dep-detail__title { color: var(--deep); }
 
 .card__gate { margin-top: 12px; padding-top: 12px; border-top: 1px dashed var(--gate-divider); }
 .card__gate-label {
