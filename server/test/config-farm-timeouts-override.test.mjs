@@ -9,9 +9,11 @@ import assert from 'node:assert/strict'
 
 process.env.FARM_QUEUE_TIMEOUT_MS = '45000'
 process.env.FARM_STEP_TIMEOUT_MS = '99000'
-const { FARM_QUEUE_TIMEOUT_MS, FARM_STEP_TIMEOUT_MS } = await import('../src/config.js')
+process.env.FARM_CONFLICT_RESOLVE_TIMEOUT_MS = '123000'
+const { FARM_QUEUE_TIMEOUT_MS, FARM_STEP_TIMEOUT_MS, FARM_CONFLICT_RESOLVE_TIMEOUT_MS } = await import('../src/config.js')
 
-test('FARM_QUEUE_TIMEOUT_MS and FARM_STEP_TIMEOUT_MS are independently env-overridable', () => {
+test('FARM_QUEUE_TIMEOUT_MS, FARM_STEP_TIMEOUT_MS, and FARM_CONFLICT_RESOLVE_TIMEOUT_MS are independently env-overridable', () => {
   assert.equal(FARM_QUEUE_TIMEOUT_MS, 45000)
   assert.equal(FARM_STEP_TIMEOUT_MS, 99000)
+  assert.equal(FARM_CONFLICT_RESOLVE_TIMEOUT_MS, 123000)
 })

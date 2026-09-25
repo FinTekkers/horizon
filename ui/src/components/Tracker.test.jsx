@@ -16,6 +16,7 @@ vi.mock('../api', () => ({
 }))
 
 import Tracker from './Tracker'
+import { ACCEPT_GATE_INDEX } from '../domain/lifecycle'
 
 afterEach(() => {
   cleanup()
@@ -38,7 +39,7 @@ const baseItem = {
 
 const noop = () => {}
 
-function renderTracker(item, onSetPersona = noop, onAbandon = noop) {
+function renderTracker(item, onSetPersona = noop, onAbandon = noop, onResolveConflicts = noop) {
   return render(
     <Tracker
       item={item}
@@ -46,6 +47,7 @@ function renderTracker(item, onSetPersona = noop, onAbandon = noop) {
       onApprove={noop}
       onApproveWithComments={noop}
       onReject={noop}
+      onResolveConflicts={onResolveConflicts}
       onTogglePause={noop}
       onRestartPhase={noop}
       onSetPersona={onSetPersona}
@@ -125,6 +127,22 @@ test('no output link on a done step with no recorded output', () => {
   const item = { ...baseItem, cursor: 12, stepOutputs: {} }
   const { queryByRole } = renderTracker(item)
   expect(queryByRole('link', { name: 'See agent output ↗' })).toBeNull()
+})
+
+// ---- resolve conflicts (HZ-92) ----
+
+test('a PR with merge conflicts at the Accept gate offers "Send back to resolve conflicts", and clicking it fires onResolveConflicts', () => {
+  const item = { ...baseItem, cursor: ACCEPT_GATE_INDEX, pr: 42, pr_mergeable: false }
+  const spy = vi.fn()
+  const { getByText } = renderTracker(item, noop, noop, spy)
+  fireEvent.click(getByText('Send back to resolve conflicts'))
+  expect(spy).toHaveBeenCalledWith('T-1', 42)
+})
+
+test('a mergeable PR at the Accept gate shows no conflict-resolution button', () => {
+  const item = { ...baseItem, cursor: ACCEPT_GATE_INDEX, pr: 42, pr_mergeable: true }
+  const { queryByText } = renderTracker(item)
+  expect(queryByText('Send back to resolve conflicts')).toBeNull()
 })
 
 // ---- abandon (HZ-59) ----

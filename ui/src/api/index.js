@@ -31,6 +31,7 @@ export const {
   issueLabel,
   approveGate,
   requestChanges,
+  resolveConflicts,
   togglePause,
   restartPhase,
   setPersona,

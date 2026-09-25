@@ -633,6 +633,20 @@ export function buildApp({ logger = true } = {}) {
     },
   )
 
+  // HZ-92: mechanical merge-conflict resolution — same gate PIN requirement
+  // as /reject above (this is the fast path that replaces sending the item
+  // straight back to the implement step), the Accept gate itself is
+  // untouched either way.
+  fastify.post(
+    '/api/items/:id/resolve-conflicts',
+    { schema: { params: idParam } },
+    async (request, reply) => {
+      if (!humanAuthorized(request, reply)) return
+      const result = await orchestrator.resolveConflicts(request.params.id, request.user.name)
+      return send(reply, result)
+    },
+  )
+
   // Standalone feedback — the UI leg of "agents respond to feedback". If the
   // item is mid-agent-step the attempt is superseded and re-run with the
   // feedback ({rerun:true}); parked at a gate it queues for the next dispatch

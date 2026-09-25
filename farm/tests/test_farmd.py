@@ -11,8 +11,9 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
-from farm import farmd
+from farm import farmd, workspaces
 from farm.config import LOGS_DIR, QUEUE_DIR
+from farm.tests.conflict_fixtures import clone_and_read, make_repo_hub, push_new_branch
 
 client = TestClient(farmd.app)
 
@@ -87,6 +88,81 @@ def test_steps_run_without_matching_rules_stamps_an_empty_string(running_farm):
     res = client.post("/steps/run", json=task)
     assert res.status_code == 200
     assert json.loads((QUEUE_DIR / "pm" / "102.json").read_text())["rules"] == ""
+
+
+# ---- /conflicts/resolve (HZ-92) ----
+# No tmux session, no queue file, no agent — a direct call into
+# conflict_resolver.resolve(), run off-thread. These tests only exercise the
+# route's contract (status codes, request wiring, error handling); the real
+# git merge/conflict/test-gate behavior is covered end-to-end in
+# test_conflict_resolver.py.
+
+
+def test_conflicts_resolve_requires_a_running_farm():
+    res = client.post("/conflicts/resolve", json={"item": {"id": "HZ-1", "repo": "acme/demo"}})
+    assert res.status_code == 409
+
+
+def test_conflicts_resolve_requires_item_id_and_repo(running_farm):
+    res = client.post("/conflicts/resolve", json={"item": {"id": "HZ-1"}})
+    assert res.status_code == 400
+
+
+def test_conflicts_resolve_returns_the_resolver_result(running_farm, monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        farmd.conflict_resolver,
+        "resolve",
+        lambda repo, item_id, branch, base_branch: calls.append((repo, item_id, branch, base_branch))
+        or {"resolved": True, "files": "1 file changed", "summary": "merged"},
+    )
+
+    res = client.post(
+        "/conflicts/resolve",
+        json={"item": {"id": "HZ-1", "repo": "acme/demo"}, "branch": "horizon/hz-1", "base_branch": "main"},
+    )
+
+    assert res.status_code == 200
+    assert res.json() == {"ok": True, "resolved": True, "files": "1 file changed", "summary": "merged"}
+    assert calls == [("acme/demo", "HZ-1", "horizon/hz-1", "main")]
+
+
+def test_conflicts_resolve_surfaces_an_infrastructure_failure_as_500(running_farm, monkeypatch):
+    def boom(*_a, **_k):
+        raise RuntimeError("hub workspace not provisioned for acme/demo — restart the farm")
+
+    monkeypatch.setattr(farmd.conflict_resolver, "resolve", boom)
+
+    res = client.post("/conflicts/resolve", json={"item": {"id": "HZ-1", "repo": "acme/demo"}})
+
+    assert res.status_code == 500
+    assert "not provisioned" in res.json()["error"]
+
+
+def test_conflicts_resolve_end_to_end_over_http_does_a_real_merge_and_push(running_farm, tmp_path, monkeypatch):
+    """Unlike the contract tests above, nothing here is mocked: a real local
+    git remote stands in for GitHub, and the request goes all the way through
+    FastAPI routing into conflict_resolver.resolve()'s real git merge +
+    checks + push, off the event-loop thread exactly as production does it.
+    Proves the wiring itself works, not just each layer in isolation."""
+    monkeypatch.setattr(workspaces, "WORKSPACES_DIR", tmp_path / "workspaces")
+    monkeypatch.delenv("FARM_CHECK_CMD", raising=False)
+    _hub, origin = make_repo_hub(tmp_path)
+    push_new_branch(
+        tmp_path, origin, "horizon/hz-5", lambda w: (w / "shared.txt").write_text("line1 (branch edit)\nline2\nline3\n"), "branch"
+    )
+    push_new_branch(tmp_path, origin, "main", lambda w: (w / "other.txt").write_text("new on main\n"), "main-advance")
+
+    res = client.post("/conflicts/resolve", json={"item": {"id": "HZ-5", "repo": "acme/demo"}})
+
+    assert res.status_code == 200
+    body = res.json()
+    assert body["ok"] is True
+    assert body["resolved"] is True
+
+    merged = clone_and_read(tmp_path, origin, "horizon/hz-5", "shared.txt", "after")
+    assert "branch edit" in merged
+    assert (tmp_path / "read-after" / "other.txt").exists()  # main's independent change made it in too
 
 
 # ---- /runs/status (HZ-54) ----
