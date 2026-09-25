@@ -3,11 +3,17 @@
 // sweep interval". RECONCILE_SWEEP_MS defaults to 15 minutes (clamped above
 // FARM_QUEUE_TIMEOUT_MS) — this proves a stranded row left over from before
 // a restart is resolved almost immediately at startup, not after waiting for
-// that first interval tick. In practice this converges via rearmFarmRuns'
-// own near-zero remaining-budget timer for a row this stale (HZ-57 already
-// re-arms every active row at boot) — reconcileActiveRuns is the same-boot
-// backstop for whatever that path doesn't catch; either way, the row must
-// not still be sitting untouched anywhere near the 15-minute interval.
+// that first interval tick.
+//
+// init() awaits reconcileActiveRuns() BEFORE rearmFarmRuns() runs — the
+// other order was tried first and found to make the boot-time sweep dead
+// code: rearmFarmRuns() arms a timer for every active row unconditionally
+// (even one the farm never picked up gets HZ-57's generous fallback timer),
+// so a reconcile call placed after it always finds `!timers[run.id]` filters
+// out everything. Running reconcile first means THIS test's row — no timer,
+// no farm claim, no session — is actually resolved via the never_picked_up
+// path proven below, not via rearm's fallback timer happening to also fire
+// fast for a row this stale.
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
@@ -64,6 +70,12 @@ test('a step_run left active before a restart is resolved almost immediately at 
   assert.equal(store.getItem('BOOT-1').paused, false, 'timeout/never_picked_up are both auto-retryable — recovers with no human action')
   const retried = db.prepare("SELECT COUNT(*) AS n FROM step_run WHERE item_id = 'BOOT-1' AND status = 'active'").get().n
   assert.equal(retried, 1, 'a fresh run must have been auto-dispatched')
+
+  const events = db.prepare("SELECT text FROM event WHERE item_id = 'BOOT-1' ORDER BY id").all().map((r) => r.text)
+  assert.ok(
+    events.some((t) => /never_picked_up/.test(t)),
+    'must resolve via reconcileActiveRuns\' never_picked_up path, proving the boot-time sweep call actually ran and did the work — not via rearmFarmRuns\' unrelated timeout fallback',
+  )
 
   orchestrator.cancel('BOOT-1')
 })

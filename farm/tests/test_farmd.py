@@ -1101,6 +1101,45 @@ def test_runs_alive_never_leaks_a_tmux_session_name(queue_dirs):
     assert "farm-run-" not in json.dumps(res.json())
 
 
+# ---- /runs/alive end to end: a real tmux session, real `tmux has-session` ----
+# Every test above monkeypatches tmux_mgr.session_exists, so none of them
+# exercises the real subprocess call this endpoint's whole guardrail rests
+# on. These mirror the HZ-101 real-tmux tests above but for /runs/alive
+# specifically — the Node reconciliation sweep's own proof-of-life check.
+
+
+def test_runs_alive_end_to_end_over_real_tmux_reports_false_for_a_claimed_run_with_no_session(queue_dirs):
+    """No monkeypatch on tmux_mgr: a claimed task file names a tmux session
+    that was genuinely never created — a real `tmux has-session` lookup, not
+    a stubbed one, is what proves it's gone. This is the exact HZ-93 shape at
+    the farmd layer, driven through the real endpoint the Node sweep calls."""
+    task = make_task(501, item_id="hz-e2e-alive", step_index=11, attempt=1)
+    name = farmd._run_session_name(task)
+    assert not tmux_mgr.session_exists(name)
+    (QUEUE_DIR / "runs" / "active" / "501.json").write_text(json.dumps(task))
+
+    res = client.post("/runs/alive", json={"run_ids": [501]})
+
+    assert res.json() == {"alive": {"501": False}}
+
+
+def test_runs_alive_end_to_end_over_real_tmux_reports_true_for_a_claimed_run_with_a_live_session(queue_dirs):
+    """The other half of the same wiring: a genuinely live tmux session this
+    time, proving the real `tmux has-session` call — not a stub — is what
+    shields a live run from being reported dead."""
+    task = make_task(502, item_id="hz-e2e-alive2", step_index=11, attempt=1)
+    name = farmd._run_session_name(task)
+    tmux_mgr.new_session(name, "sleep 30", cwd="/tmp")
+    (QUEUE_DIR / "runs" / "active" / "502.json").write_text(json.dumps(task))
+    try:
+        assert tmux_mgr.session_exists(name)
+        res = client.post("/runs/alive", json={"run_ids": [502]})
+    finally:
+        tmux_mgr.kill_session(name)
+
+    assert res.json() == {"alive": {"502": True}}
+
+
 def test_internal_steps_started_tracks_pm_active_runs_until_the_result_lands():
     """The lifecycle that backs the PM-alive check above: started adds to
     PM_ACTIVE_RUNS, the result callback (ok or not) always removes it."""

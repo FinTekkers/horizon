@@ -1173,7 +1173,7 @@ export async function reconcileActiveRuns() {
   }
 }
 
-export function init(log) {
+export async function init(log) {
   registerAgentRunner({ kick, cancel })
   // store.js reads this to attach {state, reason} onto activeRun in
   // listItems() — a plain object lookup, never a network call, so
@@ -1185,8 +1185,24 @@ export function init(log) {
     if (first) setSetting('active_project_id', String(first.id))
   }
   if (FARM_URL) {
+    // Ask the farm about every currently-active row BEFORE rearmFarmRuns()
+    // below gives each one a local timer. rearmFarmRuns() arms one
+    // unconditionally for every active row — even one the farm never picked
+    // up gets a generous fallback timer, HZ-57's deliberate pre-migration
+    // safety valve — so once it has run, reconcileActiveRuns()'s own
+    // `!timers[run.id]` filter finds nothing and a boot-time call after it
+    // is theatre: dead for exactly the row shape (agent_started_at unset,
+    // i.e. never confirmed started) this sweep exists to catch. Awaiting it
+    // here first lets a genuinely abandoned row fail fast via never_picked_up
+    // instead of sitting under rearm's fallback until that timer expires.
+    const swept = await reconcileActiveRuns()
+    if (swept.failed > 0) log.info(`Reconcile sweep failed ${swept.failed} stranded run(s) at boot`)
     // Farm runs SURVIVE a server restart — the agents live in tmux, not in
     // this process. Re-arm their watchdogs instead of superseding them.
+    // Skips any row the sweep above already re-dispatched (that retry's own
+    // kick() already armed its own, correctly-scoped timer) — otherwise this
+    // would clobber it with an execution-budget timer instead of the shorter
+    // queue watchdog a freshly-dispatched run actually needs.
     const rearmed = rearmFarmRuns()
     if (rearmed > 0) log.info(`Re-armed watchdogs for ${rearmed} in-flight farm run(s)`)
     setInterval(pollRunStates, RUN_STATE_POLL_MS).unref()
@@ -1199,11 +1215,8 @@ export function init(log) {
     // ensureFarm() already returns immediately when the farm is healthy, so
     // this only does work while something is actually wrong.
     setInterval(() => ensureFarm(log), FARM_RECOVERY_POLL_MS).unref()
-    // Boot-time sweep runs immediately (not just on the interval below) —
-    // rearmFarmRuns() above already re-armed every currently-active row's
-    // timer, so in practice this finds nothing at boot; it's the interval
-    // that catches a timer lost later, while the process keeps running.
-    reconcileActiveRuns()
+    // The interval that catches a timer lost later, while the process keeps
+    // running — the boot-time case is now handled by the awaited call above.
     setInterval(reconcileActiveRuns, RECONCILE_SWEEP_MS).unref()
   } else {
     // Mock runs die with this process: close them; resume will re-kick.
@@ -1228,6 +1241,13 @@ export function rearmFarmRuns() {
   const active = db
     .prepare("SELECT id, item_id, step_index, agent_started_at, started_at FROM step_run WHERE status = 'active'")
     .all()
+    // A row that already has a timer was just (re-)dispatched by something
+    // else already running in this process — most notably, init()'s reconcile
+    // sweep retrying a row it just failed. That dispatch already armed its
+    // own correctly-scoped timer; overwriting it here with an execution-budget
+    // timer would both leak the original setTimeout and give a freshly-queued
+    // run the wrong watchdog.
+    .filter((run) => !timers[run.id])
   for (const run of active) {
     // agent_started_at set: the execution clock was already running — arm
     // the REMAINING budget, not a fresh grant. A server restart (redeploy
