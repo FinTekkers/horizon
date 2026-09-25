@@ -90,7 +90,7 @@ test('a card blocked by another item names the blocker, never bare "Blocked"', (
   const { getByText } = render(
     <Board items={items} onOpen={noop} onApprove={noop} onReject={noop} onTogglePause={noop} onNewItem={noop} />,
   )
-  expect(getByText(/Blocked by The prerequisite/)).toBeTruthy()
+  expect(getByText(/Blocked by HZ-89/)).toBeTruthy()
 })
 
 test('a card with dependents shows what is waiting behind it', () => {
@@ -111,7 +111,7 @@ test('a card with both a blocker and dependents shows both, each visually distin
   const { getByText, container } = render(
     <Board items={items} onOpen={noop} onApprove={noop} onReject={noop} onTogglePause={noop} onNewItem={noop} />,
   )
-  expect(getByText(/Blocked by The prerequisite/)).toBeTruthy()
+  expect(getByText(/Blocked by HZ-89/)).toBeTruthy()
   expect(getByText('Blocks 1')).toBeTruthy()
   const blocked = container.querySelector('.dep-pill--blocked')
   const blocks = container.querySelector('.dep-pill--dependents')
@@ -137,7 +137,7 @@ test('a blocked card and a paused card render distinct badges/pills, not one col
     <Board items={items} onOpen={noop} onApprove={noop} onReject={noop} onTogglePause={noop} onNewItem={noop} />,
   )
   expect(getByText('Paused')).toBeTruthy()
-  expect(getByText(/Blocked by The prerequisite/)).toBeTruthy()
+  expect(getByText(/Blocked by HZ-89/)).toBeTruthy()
   const pausedPill = getByText('Paused').closest('.status-pill')
   const blockedPill = container.querySelector('.dep-pill--blocked')
   expect(pausedPill.className).not.toBe(blockedPill.className)
