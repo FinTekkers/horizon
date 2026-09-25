@@ -210,12 +210,14 @@ until HZ-102. What HZ-102 adds:
   treated as a failure here even though it would return normally.
 - **Verified live**, not just mocked: with `muse` installed and authenticated
   on this host, `FARM_MUSE_E2E=1 python3 -m pytest farm/tests/test_e2e_muse.py
-  -v -s` passed all 3 tests (76s total) — session continuity across two
+  -v -s` passed all 3 tests (73.20s total) — session continuity across two
   separate `muse exec` processes, the terminal-event parse against a live
   reply, and one real planning step dispatched through
   `step_agent.execute()` that recorded `provider=muse` and a real
-  `command_id` (`a88786b7-9467-4554-aae0-77e72cd14714`) well inside its
-  1140s budget.
+  `command_id` (`372480e2-073c-42c4-8ad0-dc9eec05a836`) well inside its
+  1140s budget. Raw terminal output is attached at
+  [`muse-e2e-evidence.log`](./muse-e2e-evidence.log) — not a number typed
+  into this doc.
 
 ## Reproducing these checks
 
