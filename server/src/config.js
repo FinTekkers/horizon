@@ -47,6 +47,16 @@ export const FARM_STEP_TIMEOUT_MS = Number(process.env.FARM_STEP_TIMEOUT_MS || 2
 // execution budget before ever running.
 export const FARM_QUEUE_TIMEOUT_MS = Number(process.env.FARM_QUEUE_TIMEOUT_MS || 10 * 60 * 1000)
 export const FARM_START_TIMEOUT_MS = Number(process.env.FARM_START_TIMEOUT_MS || 5 * 60 * 1000)
+// HZ-100: how often the durable reconciliation sweep re-checks `step_run`
+// rows left `active` with no local watchdog timer (see orchestrator.js's
+// reconcileActiveRuns). Must stay ABOVE FARM_QUEUE_TIMEOUT_MS so an armed
+// server timer always wins the race against the sweep for a step that is
+// genuinely still just queued — the clamp below enforces that regardless of
+// how RECONCILE_SWEEP_MS itself is configured.
+export const RECONCILE_SWEEP_MS = Math.max(
+  Number(process.env.RECONCILE_SWEEP_MS) || 15 * 60 * 1000,
+  FARM_QUEUE_TIMEOUT_MS + 60_000,
+)
 // HZ-92: bounds the one farm call that runs synchronously and genuinely long
 // (a real git merge, then the target repo's own test suite) — sized like the
 // implement step's own execution budget, since conflict resolution runs the

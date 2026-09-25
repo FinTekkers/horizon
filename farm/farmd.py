@@ -65,6 +65,14 @@ MAX_EPHEMERAL = int(__import__("os").environ.get("FARM_MAX_EPHEMERAL", "4"))
 # run_id -> tmux session name for launched ephemeral runs (so cancel can kill).
 RUN_SESSIONS: dict = {}
 
+# run_ids currently claimed by the PM agent (HZ-100). Steps 0/1/2/9 have no
+# per-run tmux session of their own — the PM's session persists across the
+# farm's lifetime — so this is what /runs/alive checks to prove a claimed PM
+# run is still in flight, without which a lost server-side watchdog for a
+# genuinely-in-flight PM step could be misread as dead. Populated by
+# /internal/steps/started, cleared by /internal/steps/result.
+PM_ACTIVE_RUNS: set = set()
+
 # Farm state survives farmd restarts: on boot we ADOPT live agent sessions
 # instead of requiring a /farm/start (whose teardown would kill them).
 STATE_FILE = STATE_DIR / "farmd-state.json"
@@ -489,6 +497,42 @@ async def runs_status(request: Request):
     return {"states": {rid: _run_state(rid, pm_queue, runs_queue, busy) for rid in run_ids}}
 
 
+def _run_alive(run_id: str) -> bool:
+    """HZ-100: proof-of-life for the Node reconciliation sweep — deliberately
+    stricter than /runs/status above (which defaults an unknown run_id to
+    "running" for the UI's fail-soft display, HZ-54). Here an unknown run_id
+    must resolve to False: the sweep only ever calls this for a run whose own
+    server-side watchdog has already gone missing, so a false positive here
+    (reporting alive when the farm has genuinely lost the run) would let a
+    truly stranded run sit forever."""
+    active_path = QUEUE_DIR / "runs" / "active" / f"{run_id}.json"
+    if active_path.exists():
+        try:
+            task = json.loads(active_path.read_text())
+        except (json.JSONDecodeError, OSError):
+            return False
+        return tmux_mgr.session_exists(_run_session_name(task))
+    if (QUEUE_DIR / "runs" / f"{run_id}.json").exists():
+        return True  # still queued for a free ephemeral slot
+    if (QUEUE_DIR / "pm" / f"{run_id}.json").exists():
+        return True  # still queued for the PM agent
+    if run_id in PM_ACTIVE_RUNS:
+        return tmux_mgr.session_exists(_pm_session_name())
+    session = RUN_SESSIONS.get(run_id)
+    return bool(session and tmux_mgr.session_exists(session))
+
+
+@app.post("/runs/alive")
+async def runs_alive(request: Request):
+    """HZ-100: the one place the server asks whether a run is alive — never
+    inspects tmux sessions itself, so orchestrator.js stays free of farm
+    implementation details. Alive means the farm still holds a queued/claimed
+    task file for the run, or has a live tmux session tracking it."""
+    body = await request.json()
+    run_ids = [str(r) for r in body.get("run_ids", [])]
+    return {"alive": {rid: _run_alive(rid) for rid in run_ids}}
+
+
 @app.post("/steps/run")
 async def steps_run(request: Request):
     body = await request.json()
@@ -618,7 +662,14 @@ async def internal_steps_started(request: Request):
     _notify_started call above — the PM queue (steps 0/1/2/9) can sit behind
     other PM work just as long as the ephemeral queue can (HZ-57)."""
     body = await request.json()
-    active = _notify_started(str(body.get("run_id")))
+    run_id = str(body.get("run_id"))
+    active = _notify_started(run_id)
+    if active:
+        # HZ-100: marks this run alive for /runs/alive until steps_result
+        # reports it done/failed — the PM has already unlinked its task file
+        # by this point (claim-before-work), so this is the only record left
+        # that this specific run is the one the PM session is working on.
+        PM_ACTIVE_RUNS.add(run_id)
     return {"ok": True, "active": active}
 
 
@@ -627,6 +678,7 @@ async def steps_result(request: Request):
     """PM agent reports here; we forward to the Node server with the secret."""
     body = await request.json()
     run_id = body.get("run_id")
+    PM_ACTIVE_RUNS.discard(str(run_id))
     path = "complete" if body.get("ok") else "fail"
     if body.get("ok"):
         payload = {"summary": body.get("summary", ""), "patch": body.get("patch") or {}, "artifacts": body.get("artifacts") or {}}
