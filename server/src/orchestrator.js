@@ -80,38 +80,178 @@ const latency = () => Number(process.env.MOCK_STEP_LATENCY_MS) || 2000 + Math.fl
 
 const RESTART_MS = Number(process.env.FARM_RESTART_MS || 8000)
 
-// ---- artifact prompt budget (HZ-29) ----
+// ---- artifact prompt budget (HZ-29, reallocated by HZ-104) ----
 // Prior artifacts (options analysis, impl plan, reviews) ride along in every
-// dispatch to give the next agent its working context. Two failure modes:
-// superseded attempts of a re-run step riding along next to the current one,
-// and a flat per-artifact slice silently cutting a large document off
-// mid-sentence. The budget below bounds the dispatched total (agents have
-// context limits) while giving the *latest* artifact — almost always the one
-// the next step actually needs in full — the dominant share.
+// dispatch to give the next agent its working context. Three failure modes
+// this guards against: superseded attempts of a re-run step riding along
+// next to the current one (dedup, unrelated to the budget below), an
+// artifact silently cut off mid-sentence, and — HZ-102's actual bug — a
+// fixed per-artifact reservation that truncated older artifacts even when
+// the whole set was nowhere near the budget. The rule is now: never truncate
+// while the budget is unspent; only when the total genuinely exceeds it does
+// anything get reduced, and reduction always lands on a section or sentence
+// boundary with the cut named and sized.
 const TOTAL_ARTIFACT_BUDGET_CHARS = 60000
-const MIN_OLDER_ARTIFACT_CHARS = 3000
+// Tie-break only: when trimming is unavoidable, the latest artifact — almost
+// always the one the next step needs in full — gets a bigger share of
+// whatever's left. It is not a fixed reservation and never fires when
+// everything already fits.
+const LATEST_ARTIFACT_WEIGHT = 3
 // Write-side: a pathological-payload guard, not a working limit — mirrors the
 // farm-side WRITE_ARTIFACT_SANITY_CEILING_CHARS. The dispatch-time budget
 // above is what actually bounds the prompt.
 const WRITE_TIME_SANITY_CEILING_CHARS = 200000
 
-// Exported for tests: splits a total budget across prior artifacts, latest
-// last (dispatch order is oldest-first). The latest gets whatever isn't
-// reserved for older ones; older ones split a capped reserve evenly. Any
-// artifact that doesn't fit its cap is hard-truncated with a visible marker.
+// Max-min water-filling: every artifact gets its full length if it fits,
+// otherwise a share of the budget proportional to its weight. Artifacts
+// smaller than their share are "peeled off" whole each pass; only the
+// artifacts still too big to fit split what's left, recomputed each pass so
+// no capacity a small artifact didn't need goes unused.
+function allocateCaps(lengths, weights, budget) {
+  const caps = new Array(lengths.length).fill(0)
+  const active = new Set(lengths.map((_, i) => i))
+  let remaining = budget
+  let changed = true
+  while (changed && active.size > 0) {
+    changed = false
+    const weightSum = [...active].reduce((sum, i) => sum + weights[i], 0)
+    const level = weightSum > 0 ? remaining / weightSum : 0
+    for (const i of [...active]) {
+      if (lengths[i] <= weights[i] * level) {
+        caps[i] = lengths[i]
+        remaining -= lengths[i]
+        active.delete(i)
+        changed = true
+      }
+    }
+  }
+  const weightSum = [...active].reduce((sum, i) => sum + weights[i], 0)
+  const level = weightSum > 0 ? remaining / weightSum : 0
+  for (const i of active) caps[i] = Math.floor(weights[i] * level)
+  return caps
+}
+
+// Splits markdown into ordered {heading, text} sections so a digest can drop
+// or shrink whole sections instead of cutting raw characters. `text` for
+// each section includes its own heading line. No headings found → a single
+// section with heading: null, so plain (non-markdown) artifacts still digest
+// sanely instead of crashing.
+function splitSections(content) {
+  const HEADING_RE = /^#{1,6}[ \t]+.*$/gm
+  const matches = [...content.matchAll(HEADING_RE)]
+  if (matches.length === 0) return [{ heading: null, text: content }]
+  const sections = []
+  if (matches[0].index > 0) sections.push({ heading: null, text: content.slice(0, matches[0].index) })
+  for (let i = 0; i < matches.length; i++) {
+    const start = matches[i].index
+    const end = i + 1 < matches.length ? matches[i + 1].index : content.length
+    const heading = matches[i][0].replace(/^#{1,6}[ \t]+/, '').trim()
+    sections.push({ heading, text: content.slice(start, end) })
+  }
+  return sections
+}
+
+// Finds the rightmost sentence/line boundary at or before `limit` so a cut
+// never lands mid-sentence. Falls back to a hard cut at `limit` only for
+// pathological text with no boundary at all (e.g. a single unbroken line of
+// minified code) — visible in the marker as an omission either way.
+function findCutPoint(text, limit) {
+  if (limit >= text.length) return text.length
+  if (limit <= 0) return 0
+  const BOUNDARY_RE = /[.!?](?=\s|$)|\n/g
+  let best = -1
+  let m
+  while ((m = BOUNDARY_RE.exec(text))) {
+    const end = m.index + 1
+    if (end > limit) break
+    best = end
+  }
+  return best > 0 ? best : limit
+}
+
+function describeOmission(o) {
+  return o.heading ? `"${o.heading}" (${o.chars} chars)` : `${o.chars} chars`
+}
+
+// Digests `content` down to (approximately) `cap` chars: keeps whole
+// sections top-down until the cap is reached, cuts the first section that
+// doesn't fit at a sentence/heading boundary, and drops the rest — never a
+// raw mid-sentence slice. The marker names every omitted or shrunk section
+// with its size so reduction stays visible (HZ-29's requirement), just
+// better-shaped than a flat truncation count.
+export function digestToFit(content, cap) {
+  if (cap >= content.length) return content
+  const boundedCap = Math.max(cap, 0)
+  const sections = splitSections(content)
+  let kept = ''
+  const omitted = []
+  for (const section of sections) {
+    const remaining = boundedCap - kept.length
+    if (remaining <= 0) {
+      omitted.push({ heading: section.heading, chars: section.text.length })
+      continue
+    }
+    if (section.text.length <= remaining) {
+      kept += section.text
+      continue
+    }
+    const cutAt = findCutPoint(section.text, remaining)
+    kept += section.text.slice(0, cutAt)
+    const omittedChars = section.text.length - cutAt
+    if (omittedChars > 0) omitted.push({ heading: section.heading, chars: omittedChars })
+  }
+  const marker =
+    omitted.length > 0
+      ? `[...reduced: kept ${kept.length} of ${content.length} chars; omitted ${omitted.map(describeOmission).join(', ')}...]`
+      : `[...reduced: kept ${kept.length} of ${content.length} chars...]`
+  return `${kept}\n\n${marker}`
+}
+
+// How often the 60,000 budget actually binds is an open question this item
+// is meant to answer with real data (see HZ-29's mistake: shipping a policy
+// without measuring the case it governs) rather than assume. Logged once per
+// real dispatch, not per artifact — deliberately not console.log-and-forget:
+// the shape is fixed and small so a test can assert on it directly instead
+// of only being verifiable by grepping a log later.
+function logArtifactBudgetUsage(totalChars, truncated) {
+  console.log(
+    JSON.stringify({
+      event: 'artifact_budget_usage',
+      totalChars,
+      budgetChars: TOTAL_ARTIFACT_BUDGET_CHARS,
+      bound: truncated,
+    }),
+  )
+}
+
+// Exported for tests. Never truncates while the total fits the budget — that
+// alone fixes HZ-102's shape (a 12,037-char plan behind a later artifact,
+// both well under 60,000, no longer loses 75% of itself to a flat
+// per-artifact reservation). Only when the total genuinely exceeds the
+// budget does anything get reduced, via water-filling (latest artifact
+// weighted to win ties) plus a heading/sentence-aware digest instead of a
+// raw slice.
 export function budgetArtifacts(rows) {
   if (rows.length === 0) return []
-  const olderCount = rows.length - 1
-  const reservedForOlder = Math.min(olderCount * MIN_OLDER_ARTIFACT_CHARS, Math.floor(TOTAL_ARTIFACT_BUDGET_CHARS * 0.4))
-  const latestCap = TOTAL_ARTIFACT_BUDGET_CHARS - reservedForOlder
-  const olderCap = olderCount ? Math.floor(reservedForOlder / olderCount) : 0
+  const lengths = rows.map((r) => r.artifact.length)
+  const totalChars = lengths.reduce((sum, len) => sum + len, 0)
+  const fits = totalChars <= TOTAL_ARTIFACT_BUDGET_CHARS
+  logArtifactBudgetUsage(totalChars, !fits)
+  if (fits) {
+    return rows.map((row) => ({
+      label: STEPS[row.step_index]?.label || `step ${row.step_index}`,
+      content: row.artifact,
+      truncated: false,
+      stepIndex: row.step_index,
+    }))
+  }
+  const weights = rows.map((_, i) => (i === rows.length - 1 ? LATEST_ARTIFACT_WEIGHT : 1))
+  const caps = allocateCaps(lengths, weights, TOTAL_ARTIFACT_BUDGET_CHARS)
   return rows.map((row, i) => {
-    const cap = i === rows.length - 1 ? latestCap : olderCap
     const full = row.artifact
+    const cap = caps[i]
     const truncated = full.length > cap
-    const content = truncated
-      ? `${full.slice(0, cap)}\n\n[...truncated ${full.length - cap} of ${full.length} chars...]`
-      : full
+    const content = truncated ? digestToFit(full, cap) : full
     return { label: STEPS[row.step_index]?.label || `step ${row.step_index}`, content, truncated, stepIndex: row.step_index }
   })
 }

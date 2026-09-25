@@ -111,10 +111,13 @@ test('a persona patch never clobbers a value already set (human choice wins)', a
   assert.equal(item.metric, 'faster')
 })
 
-// ---- artifact prompt budget (HZ-29) ----
+// ---- artifact prompt budget (HZ-29, reallocated by HZ-104) ----
 // A superseded attempt of a re-run step must not ride along with its current
-// version, a long artifact must not silently lose its tail, and the total
-// dispatched size must stay bounded. See orchestrator.js's budgetArtifacts.
+// version (dedupe, untouched by HZ-104), a long artifact must not silently
+// lose its tail, the budget must not truncate anything while it's unspent
+// (HZ-102's bug), and any reduction that does happen must land on a section
+// or sentence boundary with what got cut named and sized. See
+// orchestrator.js's budgetArtifacts/digestToFit.
 
 function doneStepRun(itemId, stepIndex, attempt, artifact) {
   return db
@@ -134,37 +137,115 @@ test('budgetArtifacts: a single (latest-only) artifact passes through untouched'
   assert.equal(result.truncated, false)
 })
 
-test('budgetArtifacts: the latest artifact gets the dominant share and stays whole for realistic sizes', () => {
+test('budgetArtifacts: the latest artifact stays whole for realistic sizes when the total fits', () => {
   const latest = 'p'.repeat(15000) // bigger than the old flat 12,000-char slice
   const rows = [{ step_index: 4, artifact: 'small older plan' }, { step_index: 6, artifact: latest }]
   const result = orchestrator.budgetArtifacts(rows)
   const latestEntry = result[result.length - 1]
   assert.equal(latestEntry.truncated, false)
   assert.equal(latestEntry.content, latest)
+  assert.equal(result[0].truncated, false, 'the older artifact must not be truncated either — the total fits')
 })
 
-test('budgetArtifacts: an older artifact that does not fit its share is truncated with a visible marker', () => {
-  const older = 'o'.repeat(50000)
+test('budgetArtifacts: HZ-102 regression — a 12,037-char plan behind a 2,423-char review, both well under the 60,000 budget, arrives complete', () => {
+  const plan = 'p'.repeat(12037)
+  const review = 'r'.repeat(2423)
+  const rows = [
+    { step_index: 6, artifact: plan },
+    { step_index: 8, artifact: review },
+  ]
+  const [planEntry, reviewEntry] = orchestrator.budgetArtifacts(rows)
+  assert.equal(planEntry.truncated, false, 'the plan must not be truncated when the total is far under budget')
+  assert.equal(planEntry.content, plan)
+  assert.equal(planEntry.content.length, 12037)
+  assert.equal(reviewEntry.truncated, false)
+  assert.equal(reviewEntry.content.length, 2423)
+})
+
+test('budgetArtifacts: invariant — any set of artifacts whose total fits the budget is never truncated', () => {
+  const cases = [
+    [100],
+    [1, 2, 3],
+    [59999],
+    [30000, 29999],
+    [10000, 10000, 10000, 10000, 10000],
+    [1, 1, 1, 1, 1, 1, 1, 1],
+    [59000, 500, 499],
+  ]
+  for (const sizes of cases) {
+    const rows = sizes.map((size, i) => ({ step_index: i, artifact: 'a'.repeat(size) }))
+    const total = sizes.reduce((s, n) => s + n, 0)
+    assert.ok(total <= 60000, `test case total ${total} must actually fit the budget`)
+    const result = orchestrator.budgetArtifacts(rows)
+    result.forEach((entry, i) => {
+      assert.equal(entry.truncated, false, `size ${sizes[i]} in case [${sizes}] should not be truncated`)
+      assert.equal(entry.content.length, sizes[i])
+    })
+  }
+})
+
+test('budgetArtifacts: an older artifact that does not fit its share is reduced with a visible, sized marker', () => {
+  const older = 'o'.repeat(70000)
   const rows = [{ step_index: 4, artifact: older }, { step_index: 6, artifact: 'latest plan' }]
   const [olderEntry] = orchestrator.budgetArtifacts(rows)
   assert.equal(olderEntry.truncated, true)
-  assert.match(olderEntry.content, /\[\.\.\.truncated \d+ of 50000 chars\.\.\.\]$/)
+  assert.match(olderEntry.content, /\[\.\.\.reduced: kept \d+ of 70000 chars/)
   assert.ok(olderEntry.content.length < older.length)
 })
 
-test('budgetArtifacts: many older artifacts hit the 40% reserve ceiling and each still gets a positive cap', () => {
+test('budgetArtifacts: over budget, water-filling gives the latest artifact priority and every older artifact a positive share', () => {
   const rows = Array.from({ length: 10 }, (_, i) => ({ step_index: i, artifact: 'x'.repeat(50000) }))
   const result = orchestrator.budgetArtifacts(rows)
-  const older = result.slice(0, -1)
-  for (const entry of older) {
+  const latestEntry = result[result.length - 1]
+  const olderEntries = result.slice(0, -1)
+  assert.equal(latestEntry.truncated, true, 'even the latest artifact cannot fit fully when everything is huge')
+  for (const entry of olderEntries) {
     assert.equal(entry.truncated, true)
     assert.ok(entry.content.length > 0)
   }
-  // reserve is capped at 40% of the total budget, split evenly across 9 older artifacts
-  const expectedOlderCap = Math.floor(Math.min(9 * 3000, 60000 * 0.4) / 9)
-  assert.ok(expectedOlderCap > 0)
-  const marker = `\n\n[...truncated ${50000 - expectedOlderCap} of 50000 chars...]`
-  assert.equal(older[0].content.length, expectedOlderCap + marker.length)
+  assert.ok(
+    latestEntry.content.length > olderEntries[0].content.length,
+    'the latest artifact is weighted to win the tie-break and gets a bigger share',
+  )
+})
+
+test('budgetArtifacts is synchronous — no model call sits on the dispatch path, so latency is unchanged', () => {
+  assert.notEqual(orchestrator.budgetArtifacts.constructor.name, 'AsyncFunction')
+})
+
+test('digestToFit: a cut never lands mid-sentence', () => {
+  const sentences = Array.from({ length: 200 }, (_, i) => `This is sentence number ${i}, it has a few words in it.`)
+  const content = sentences.join(' ')
+  const cap = 500
+  const digested = orchestrator.digestToFit(content, cap)
+  const kept = digested.split('\n\n[...reduced')[0]
+  assert.ok(kept.length <= cap)
+  assert.match(kept, /\.$/, 'the kept text must end exactly at a sentence boundary, not mid-word')
+})
+
+test('digestToFit: over-budget content with headings omits whole sections and names them with sizes', () => {
+  const content = ['# Intro', 'x'.repeat(50), '', '## Test plan', 'y'.repeat(2000), '', '## Rollout', 'z'.repeat(900)].join(
+    '\n',
+  )
+  const digested = orchestrator.digestToFit(content, 120)
+  assert.ok(digested.includes('[...reduced:'))
+  assert.match(digested, /"Test plan" \(\d+ chars\)/)
+  assert.match(digested, /"Rollout" \(\d+ chars\)/)
+})
+
+test('digestToFit: an artifact with no markdown headings still produces a valid sized marker instead of crashing', () => {
+  const content = 'First sentence here. Second sentence follows. ' + 'z'.repeat(5000) + ' end.'
+  const digested = orchestrator.digestToFit(content, 40)
+  assert.match(digested, /\[\.\.\.reduced: kept \d+ of \d+ chars/)
+  assert.ok(!digested.includes('"'), 'there is no heading name to quote when the artifact has none')
+})
+
+test('digestToFit: a pathological line with no sentence boundary at all falls back to a hard cut at the cap', () => {
+  const content = 'x'.repeat(10000) // one unbroken token: no headings, no periods, no newlines
+  const digested = orchestrator.digestToFit(content, 100)
+  const kept = digested.split('\n\n[...reduced')[0]
+  assert.equal(kept.length, 100, 'no boundary exists anywhere — falls back to a hard cut exactly at the cap')
+  assert.match(digested, /\[\.\.\.reduced: kept 100 of 10000 chars; omitted 9900 chars\.\.\.\]/)
 })
 
 test('dispatchToFarm keeps only the latest attempt per step_index (dedupe)', async () => {
@@ -193,13 +274,41 @@ test('dispatchToFarm budgets a large plan complete and marks truncated older art
   assert.ok(dispatch, 'no /steps/run dispatch captured')
   const byLabel = Object.fromEntries(dispatch.body.artifacts.map((a) => [a.label, a.content]))
   assert.equal(byLabel[STEPS[7].label], latestPlan, 'the latest artifact must arrive complete')
-  assert.ok(byLabel[STEPS[4].label].includes('[...truncated'), 'older artifact should be marked truncated')
-  assert.ok(byLabel[STEPS[6].label].includes('[...truncated'), 'older artifact should be marked truncated')
+  assert.ok(byLabel[STEPS[4].label].includes('[...reduced:'), 'older artifact should be marked reduced')
+  assert.ok(byLabel[STEPS[6].label].includes('[...reduced:'), 'older artifact should be marked reduced')
   const event = db.prepare("SELECT text FROM event WHERE item_id = 'D-8' ORDER BY id DESC LIMIT 1").get()
   assert.match(event.text, /artifact truncated for context budget/)
   assert.ok(event.text.includes(STEPS[4].label), 'event should name the truncated step')
   assert.ok(event.text.includes(STEPS[6].label), 'event should name the truncated step')
   orchestrator.cancel('D-8')
+})
+
+test('dispatchToFarm logs artifact-budget usage on every dispatch, so how often 60,000 binds can be measured for real', async () => {
+  insertItem.run('D-10', 'Budget usage instrumentation', 'Medium', 11, null)
+  doneStepRun('D-10', 6, 1, 'a small plan, nowhere near the budget')
+  const logs = []
+  const realLog = console.log
+  console.log = (msg) => logs.push(msg)
+  try {
+    orchestrator.kick('D-10')
+    await new Promise((r) => setTimeout(r, 20))
+  } finally {
+    console.log = realLog
+  }
+  const usage = logs
+    .map((line) => {
+      try {
+        return JSON.parse(line)
+      } catch {
+        return null
+      }
+    })
+    .find((parsed) => parsed?.event === 'artifact_budget_usage')
+  assert.ok(usage, 'expected a logged artifact_budget_usage record')
+  assert.equal(usage.budgetChars, 60000)
+  assert.equal(usage.bound, false, 'a small plan is nowhere near the budget')
+  assert.equal(typeof usage.totalChars, 'number')
+  orchestrator.cancel('D-10')
 })
 
 test('completeFarmRun stores the full artifact — the write side no longer cuts a plan off at 12,000 chars', async () => {
