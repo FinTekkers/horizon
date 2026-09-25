@@ -55,7 +55,7 @@ test('addDependency rejects self-dependency', () => {
 test('addDependency rejects a direct two-node cycle with a clear error', () => {
   insertItem.run('D-CYCLE-A', 'A', 11, null, null)
   insertItem.run('D-CYCLE-B', 'B', 11, null, null)
-  assert.deepEqual(store.addDependency('D-CYCLE-A', 'D-CYCLE-B'), { ok: true, blocked: true, blockedByAbandoned: false, blockedBy: [{ id: 'D-CYCLE-B', title: 'B', abandoned: false }] })
+  assert.deepEqual(store.addDependency('D-CYCLE-A', 'D-CYCLE-B'), { ok: true, blocked: true, blockedByAbandoned: false, blockedBy: [{ id: 'D-CYCLE-B', title: 'B', abandoned: false }], dependents: [] })
   const result = store.addDependency('D-CYCLE-B', 'D-CYCLE-A')
   assert.equal(result.error, 'cycle')
   assert.match(result.message, /D-CYCLE-A/)
@@ -75,7 +75,7 @@ test('addDependency on an already-closed blocker leaves the dependent unblocked 
   insertItem.run('D-CLOSED-BLOCKER', 'Already done', CLOSED, null, null)
   insertItem.run('D-DEP-ON-CLOSED', 'Dependent', 11, null, null)
   const result = store.addDependency('D-DEP-ON-CLOSED', 'D-CLOSED-BLOCKER')
-  assert.deepEqual(result, { ok: true, blocked: false, blockedByAbandoned: false, blockedBy: [] })
+  assert.deepEqual(result, { ok: true, blocked: false, blockedByAbandoned: false, blockedBy: [], dependents: [] })
   assert.equal(itemView('D-DEP-ON-CLOSED').blocked, false)
 })
 
@@ -113,7 +113,7 @@ test('removeDependency clears the edge, is visible in the API payload, and re-ki
 
   const kicked = spyRunner()
   const result = store.removeDependency('D-REMOVE-DEP', 'D-REMOVE-BLOCKER')
-  assert.deepEqual(result, { ok: true, blocked: false, blockedByAbandoned: false, blockedBy: [] })
+  assert.deepEqual(result, { ok: true, blocked: false, blockedByAbandoned: false, blockedBy: [], dependents: [] })
   assert.ok(kicked.includes('D-REMOVE-DEP'), 'removing the last blocker must re-kick the dependent, not wait for an unrelated dispatch')
 })
 
@@ -231,4 +231,37 @@ test('API payload shape: blocked/blockedBy/blockedByAbandoned are present for bo
     assert.equal(item.blockedByAbandoned, false)
     assert.deepEqual(item.blockedBy, [{ id: 'D-SHAPE-BLOCKER', title: 'Blocker', abandoned: false }])
   }
+})
+
+// HZ-95: `dependents` is the mirror-image read of `blockedBy` — the same
+// edge reported from the blocker's side. One fixture proves both directions
+// from a single dependency so they cannot drift apart.
+test('one dependency edge (A depends on B) is reported as a dependent on B and a blocker on A', () => {
+  insertItem.run('D-MIRROR-A', 'A depends on B', 11, null, null)
+  insertItem.run('D-MIRROR-B', 'B blocks A', 11, null, null)
+  store.addDependency('D-MIRROR-A', 'D-MIRROR-B')
+
+  const a = itemView('D-MIRROR-A')
+  const b = itemView('D-MIRROR-B')
+  assert.deepEqual(a.blockedBy, [{ id: 'D-MIRROR-B', title: 'B blocks A', abandoned: false }])
+  assert.deepEqual(b.dependents, [{ id: 'D-MIRROR-A', title: 'A depends on B', abandoned: false }])
+})
+
+test('a closed dependent is filtered out of dependents, same rule as a closed blocker', () => {
+  insertItem.run('D-DEPCLOSED-BLOCKER', 'Blocker', 11, null, null)
+  insertItem.run('D-DEPCLOSED-DEP', 'Will close', 11, null, null)
+  store.addDependency('D-DEPCLOSED-DEP', 'D-DEPCLOSED-BLOCKER')
+  assert.deepEqual(itemView('D-DEPCLOSED-BLOCKER').dependents, [{ id: 'D-DEPCLOSED-DEP', title: 'Will close', abandoned: false }])
+
+  db.prepare('UPDATE work_item SET cursor = ? WHERE id = ?').run(CLOSED, 'D-DEPCLOSED-DEP')
+  assert.deepEqual(itemView('D-DEPCLOSED-BLOCKER').dependents, [])
+})
+
+test('an abandoned dependent is flagged abandoned in dependents, not dropped', () => {
+  insertItem.run('D-DEPABANDON-BLOCKER', 'Blocker', 11, null, null)
+  insertItem.run('D-DEPABANDON-DEP', 'Will be abandoned', 11, null, null)
+  store.addDependency('D-DEPABANDON-DEP', 'D-DEPABANDON-BLOCKER')
+
+  store.abandonItem('D-DEPABANDON-DEP', 'no longer needed')
+  assert.deepEqual(itemView('D-DEPABANDON-BLOCKER').dependents, [{ id: 'D-DEPABANDON-DEP', title: 'Will be abandoned', abandoned: true }])
 })

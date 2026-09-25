@@ -98,3 +98,30 @@ test('approving the closing gate reports closed: true', async () => {
   expect(mockApi.getItems().find((it) => it.id === 'BF-090').cursor).toBe(STEPS.length)
   vi.clearAllTimers()
 })
+
+// ---- HZ-95: dependents/blockedBy shape parity with the server payload ----
+// (server/src/store.js's dependencyFields: { id, title, abandoned } entries)
+
+test('every item exposes blockedBy and dependents arrays, even when empty, matching the server shape', () => {
+  for (const it of mockApi.getItems()) {
+    expect(Array.isArray(it.blockedBy)).toBe(true)
+    expect(Array.isArray(it.dependents)).toBe(true)
+    for (const entry of [...it.blockedBy, ...it.dependents]) {
+      expect(entry).toEqual(expect.objectContaining({ id: expect.any(String), title: expect.any(String), abandoned: expect.any(Boolean) }))
+    }
+  }
+})
+
+test('the mock seeds one item with a blocker, one with dependents, and one with both, so the UI has real fixtures to render', () => {
+  const withBlocker = findItem('BF-131')
+  expect(withBlocker.blockedBy.length).toBeGreaterThan(0)
+  expect(withBlocker.dependents.length).toBeGreaterThan(0)
+
+  const withDependentsOnly = findItem('BF-128')
+  expect(withDependentsOnly.blockedBy.length).toBe(0)
+  expect(withDependentsOnly.dependents.length).toBeGreaterThan(0)
+
+  const withNeither = findItem('BF-145')
+  expect(withNeither.blockedBy.length).toBe(0)
+  expect(withNeither.dependents.length).toBe(0)
+})

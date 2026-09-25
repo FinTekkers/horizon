@@ -16,6 +16,7 @@ import { itemStatus } from '../domain/status'
 import { issueUrl, issueLabel } from '../api'
 import * as boardFilters from '../boardFilters'
 import StatusPill from './StatusPill'
+import DependencyBadge from './DependencyBadge'
 import { LinkIcon, LockIcon, PrIcon } from './icons'
 
 function progressSegs(item) {
@@ -90,6 +91,7 @@ function BoardCard({ item, onOpen, onApprove, onReject, onTogglePause }) {
         </span>
         <StatusPill status={itemStatus(item)} />
       </div>
+      <DependencyBadge item={item} compact />
 
       {awaiting && (
         <div className="card__gate">

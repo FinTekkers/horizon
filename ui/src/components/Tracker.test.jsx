@@ -266,3 +266,49 @@ test('a real event with a legacy server hex color renders the themed token, not 
     delete document.documentElement.dataset.theme
   }
 })
+
+// ---- HZ-95: both dependency directions in the tracker detail view ----
+
+test('an item blocked by another names the blocker and shows nothing under Blocks', () => {
+  const item = { ...baseItem, blockedBy: [{ id: 'T-0', title: 'The prerequisite', abandoned: false }], dependents: [] }
+  const { getByText, queryByText } = renderTracker(item)
+  expect(getByText('Blocked by')).toBeTruthy()
+  expect(getByText('The prerequisite')).toBeTruthy()
+  expect(queryByText('Blocks')).toBeNull()
+})
+
+test('an item with dependents shows what is waiting behind it, with nothing under Blocked by', () => {
+  const item = { ...baseItem, blockedBy: [], dependents: [{ id: 'T-2', title: 'The waiting item', abandoned: false }] }
+  const { getByText, queryByText } = renderTracker(item)
+  expect(getByText('Blocks')).toBeTruthy()
+  expect(getByText('The waiting item')).toBeTruthy()
+  expect(queryByText('Blocked by')).toBeNull()
+})
+
+test('an item with both a blocker and dependents shows both sections', () => {
+  const item = {
+    ...baseItem,
+    blockedBy: [{ id: 'T-0', title: 'The prerequisite', abandoned: false }],
+    dependents: [{ id: 'T-2', title: 'The waiting item', abandoned: false }],
+  }
+  const { getByText } = renderTracker(item)
+  expect(getByText('Blocked by')).toBeTruthy()
+  expect(getByText('The prerequisite')).toBeTruthy()
+  expect(getByText('Blocks')).toBeTruthy()
+  expect(getByText('The waiting item')).toBeTruthy()
+})
+
+test('an item with neither direction renders no dependency section at all', () => {
+  const item = { ...baseItem, blockedBy: [], dependents: [] }
+  const { container, queryByText } = renderTracker(item)
+  expect(container.querySelector('.dep-detail')).toBeNull()
+  expect(queryByText('Blocked by')).toBeNull()
+  expect(queryByText('Blocks')).toBeNull()
+})
+
+test('an abandoned blocker is flagged in the detail view rather than silently dropped', () => {
+  const item = { ...baseItem, blockedBy: [{ id: 'T-0', title: 'Dead end', abandoned: true }], dependents: [] }
+  const { getByText } = renderTracker(item)
+  expect(getByText(/Dead end/)).toBeTruthy()
+  expect(getByText(/abandoned/)).toBeTruthy()
+})

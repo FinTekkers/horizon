@@ -1,6 +1,6 @@
 import { existsSync, writeFileSync } from 'node:fs'
 import { request } from '@playwright/test'
-import { openDb, insertItem, insertStepRun, insertFeedback } from './fixtures/seed.js'
+import { openDb, insertItem, insertStepRun, insertFeedback, insertDependency } from './fixtures/seed.js'
 // Derived, not hardcoded: a future pipeline step insertion (like HZ-30's own
 // Review step) must not silently break these fixtures' intended positions.
 import { STEPS, ACCEPT_GATE_INDEX } from '../server/src/lifecycle.js'
@@ -56,6 +56,10 @@ const FIXTURES = [
     pr_url: 'https://github.com/FinTekkers/horizon/pull/502',
     pr_mergeable: 1,
   },
+  // HZ-95: DEP-2 depends on DEP-1, so the board must show DEP-2 as "Blocked
+  // by DEP-1" and DEP-1 as "Blocks 1" — the two directions of one edge.
+  { id: 'DEP-1', title: 'E2E fixture — dependency blocker', priority: 'Medium', cursor: 6 },
+  { id: 'DEP-2', title: 'E2E fixture — dependency dependent', priority: 'Medium', cursor: 6 },
 ]
 
 export default async function globalSetup() {
@@ -122,6 +126,7 @@ export default async function globalSetup() {
   const db = openDb(DB_PATH)
   try {
     for (const fixture of FIXTURES) insertItem(db, fixture)
+    insertDependency(db, { itemId: 'DEP-2', dependsOnId: 'DEP-1' })
 
     // Two retained attempts at E2E-5's step 4 ("Plan options & trade-offs",
     // agent Ensemble), with a feedback row timed between them so

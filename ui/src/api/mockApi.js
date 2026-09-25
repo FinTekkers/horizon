@@ -18,10 +18,10 @@ import { PERSONAS } from '../domain/personas'
 
 const SEED_ITEMS = [
   { id: 'BF-145', title: 'Risk-limit breach dashboard', priority: 'Low', cursor: 1, issue: 412, desc: 'Give risk managers a live view of limit utilization across every desk.', metric: 'Limit breaches acknowledged in < 2 min (from 14 min).', guardrails: 'Read-only — no position mutation. No PII in telemetry.' },
-  { id: 'BF-128', title: 'Real-time P&L attribution service', priority: 'High', cursor: 3, issue: 398, desc: 'Attribute intraday P&L to factors, trades and fees in real time.', metric: 'Attribution available < 5s after fill; 99.9% coverage.', guardrails: 'No client identifiers in logs. Must reconcile to EOD books.' },
-  { id: 'BF-131', title: 'Margin-call alerting v2', priority: 'High', cursor: 5, issue: 401, desc: 'Replace batch margin alerts with streaming, tiered escalation.', metric: 'False-positive rate < 3%; median alert latency < 10s.', guardrails: 'Cannot auto-liquidate. Human in the loop for every call.' },
+  { id: 'BF-128', title: 'Real-time P&L attribution service', priority: 'High', cursor: 3, issue: 398, desc: 'Attribute intraday P&L to factors, trades and fees in real time.', metric: 'Attribution available < 5s after fill; 99.9% coverage.', guardrails: 'No client identifiers in logs. Must reconcile to EOD books.', dependents: [{ id: 'BF-131', title: 'Margin-call alerting v2', abandoned: false }] },
+  { id: 'BF-131', title: 'Margin-call alerting v2', priority: 'High', cursor: 5, issue: 401, desc: 'Replace batch margin alerts with streaming, tiered escalation.', metric: 'False-positive rate < 3%; median alert latency < 10s.', guardrails: 'Cannot auto-liquidate. Human in the loop for every call.', blocked: true, blockedBy: [{ id: 'BF-128', title: 'Real-time P&L attribution service', abandoned: false }], dependents: [{ id: 'BF-140', title: 'Backtesting data-lake migration', abandoned: false }] },
   { id: 'BF-119', title: 'Order-router latency fix', priority: 'Critical', cursor: 7, issue: 377, desc: 'Cut tail latency in the smart order router under burst load.', metric: 'p99 routing latency < 800µs at 5× peak volume.', guardrails: 'No change to fill-priority logic. Zero-downtime rollout.' },
-  { id: 'BF-140', title: 'Backtesting data-lake migration', priority: 'Medium', cursor: 10, issue: 405, desc: 'Move backtest datasets onto the new lakehouse with full lineage.', metric: 'Backtest run cost −40%; lineage on every dataset.', guardrails: 'Dual-write during cutover. No silent schema drift.' },
+  { id: 'BF-140', title: 'Backtesting data-lake migration', priority: 'Medium', cursor: 10, issue: 405, desc: 'Move backtest datasets onto the new lakehouse with full lineage.', metric: 'Backtest run cost −40%; lineage on every dataset.', guardrails: 'Dual-write during cutover. No silent schema drift.', blocked: true, blockedBy: [{ id: 'BF-131', title: 'Margin-call alerting v2', abandoned: false }] },
   { id: 'BF-102', title: 'FIX gateway refactor', priority: 'High', cursor: 12, issue: 366, desc: 'Modularize the FIX gateway and isolate venue adapters.', metric: 'New-venue onboarding < 2 days (from 3 weeks).', guardrails: 'Wire-compatible. Conformance suite stays green.' },
   { id: 'BF-097', title: 'Compliance audit export', priority: 'Medium', cursor: 13, issue: 352, desc: 'One-click immutable export of the full audit trail for regulators.', metric: 'Export any quarter in < 60s; tamper-evident hashes.', guardrails: 'Immutable store only. Every access is logged.' },
   { id: 'BF-090', title: 'Trader-console dark mode', priority: 'Low', cursor: 15, issue: 331, desc: 'Ship an accessible dark theme for the trader console.', metric: 'WCAG AA on all surfaces; opt-in persistence.', guardrails: 'No layout regressions in light mode.' },
@@ -54,7 +54,17 @@ export function issueLabel(item) {
 // last_activity_at mirrors the server's store.js: every SEED_ITEMS row starts
 // "just touched" so mock mode's stale filter (HZ-80) doesn't diverge from a
 // fresh server-backed board.
-let items = SEED_ITEMS.map((it) => ({ ...it, paused: false, rejected: false, events: [], last_activity_at: new Date().toISOString() }))
+let items = SEED_ITEMS.map((it) => ({
+  blocked: false,
+  blockedByAbandoned: false,
+  blockedBy: [],
+  dependents: [],
+  ...it,
+  paused: false,
+  rejected: false,
+  events: [],
+  last_activity_at: new Date().toISOString(),
+}))
 const listeners = new Set()
 const timers = {}
 
@@ -161,6 +171,10 @@ export async function createItem({ title, outcome, metric, guardrails, priority 
       desc: outcome,
       metric,
       guardrails: guardrails || '',
+      blocked: false,
+      blockedByAbandoned: false,
+      blockedBy: [],
+      dependents: [],
       paused: false,
       rejected: false,
       events: [{ who: 'You', text: 'created this work item', color: '#5E4380', initials: 'YOU' }],

@@ -192,6 +192,9 @@ function withRunState(activeRun) {
 const selectBlockers = db.prepare(
   `SELECT w.* FROM work_item_dependency d JOIN work_item w ON w.id = d.depends_on_id WHERE d.item_id = ? ORDER BY d.depends_on_id`,
 )
+const selectDependents = db.prepare(
+  `SELECT w.* FROM work_item_dependency d JOIN work_item w ON w.id = d.item_id WHERE d.depends_on_id = ? ORDER BY d.item_id`,
+)
 const selectDependentIds = db.prepare('SELECT item_id FROM work_item_dependency WHERE depends_on_id = ?')
 const selectDependsOnIds = db.prepare('SELECT depends_on_id FROM work_item_dependency WHERE item_id = ?')
 
@@ -221,12 +224,16 @@ function wouldCycle(id, dependsOnId) {
 
 function dependencyFields(id) {
   const blockers = blockersOf(id)
+  const dependents = selectDependents.all(id)
   return {
     blocked: isBlocked(blockers),
     blockedByAbandoned: isBlockedByAbandoned(blockers),
     blockedBy: blockers
       .filter((b) => !isClosed(b))
       .map((b) => ({ id: b.id, title: b.title, abandoned: isAbandoned(b) })),
+    dependents: dependents
+      .filter((d) => !isClosed(d))
+      .map((d) => ({ id: d.id, title: d.title, abandoned: isAbandoned(d) })),
   }
 }
 
