@@ -189,6 +189,102 @@ def _notify_started(run_id) -> bool:
     return True
 
 
+def _report_run_dead(run_id, name: str) -> bool:
+    """HZ-101: reports a claimed run whose session is gone — the farm side of
+    reconciliation. No retry loop here (unlike _notify_started/steps_result):
+    a failed attempt must NOT remove the task file, so the next reconcile
+    pass (RECONCILE_INTERVAL_S later) is the retry, not an inline sleep."""
+    url = f"{HORIZON_URL}/api/farm/steps/{run_id}/fail"
+    payload = {
+        "error": f"farmd: session '{name}' is gone for run {run_id} (reconciliation)",
+        # Already in AUTO_RETRY_REASONS (server/src/orchestrator.js) — HZ-76's
+        # default-safe rule stands, no new reason is introduced.
+        "reason": "unreachable",
+    }
+    try:
+        res = httpx.post(url, json=payload, headers={"x-farm-secret": SHARED_SECRET}, timeout=15)
+        print(f"farmd: reconcile reported run {run_id} dead -> {res.status_code}", flush=True)
+        return res.status_code == 200
+    except Exception as exc:
+        print(f"farmd: reconcile could not report run {run_id} dead: {exc}", flush=True)
+        return False
+
+
+def _reconcile_one_claimed_run(task_path: Path) -> None:
+    try:
+        task = json.loads(task_path.read_text())
+        run_id = str(task["run_id"])
+        name = _run_session_name(task)
+        claimed_at = task.get("claimed_at")
+    except (json.JSONDecodeError, KeyError, OSError):
+        return
+    if claimed_at is None:
+        # Claimed by a farmd build that predates HZ-101's stamp (or a
+        # corrupt/edited file) — we cannot prove how long it's been claimed,
+        # so we cannot tell "still launching" from "dead". Guardrail: when
+        # the check can't be performed, do nothing.
+        return
+    if time.time() - claimed_at < farm_config.RECONCILE_GRACE_S:
+        return  # _claim_and_launch has renamed the file but may not have
+        # finished creating the tmux session yet.
+    if tmux_mgr.session_exists(name):
+        return  # alive — never touch it, never report it, never remove it
+    if not _notify_started(run_id):
+        # The server no longer considers this run active (a cancel whose
+        # /steps/cancel callback to farmd was dropped, or a prior reconcile
+        # pass's /fail already landed and this is a retry of the
+        # not-yet-removed file). Release our own bookkeeping only — no kill
+        # (nothing to kill, the session is already gone) and no /fail
+        # report, which would double-report an already-resolved run.
+        print(f"farmd: reconcile releasing run {run_id} — server no longer active", flush=True)
+        task_path.unlink(missing_ok=True)
+        RUN_SESSIONS.pop(run_id, None)
+        return
+    if _report_run_dead(run_id, name):
+        task_path.unlink(missing_ok=True)
+        RUN_SESSIONS.pop(run_id, None)
+    # else: server unreachable or non-2xx — leave the file in place, the next
+    # reconcile pass retries; an unreachable server is not evidence the run
+    # is dead.
+
+
+def _reconcile_claimed_runs() -> None:
+    """HZ-101: farmd holds the truth about whether a claimed run's agent is
+    alive — this closes the gap where a dead session was only discovered when
+    the server's own execution timer expired (up to STEP_TIMEOUT_S later).
+    Runs once at boot (after _adopt_existing) and on a loop while farmd is up
+    (see _reconcile_loop).
+
+    Proof of death is the absence of a session, nothing weaker: a live
+    session is never touched, killed, or reported, and its task file is
+    never removed — checked first, unconditionally, in
+    _reconcile_one_claimed_run. Only once a session is confirmed gone do we
+    ask the server whether it still considers the run active, to choose
+    between reporting it dead and quietly releasing a run the server (e.g. a
+    cancel) already gave up on.
+
+    Each claimed run is isolated in its own try/except: one corrupt task
+    file, or a crash unlinking one run's file (report already sent, disk
+    error before removal), must not abort reconciliation of the rest of the
+    batch — and must not crash the daemon, since this also runs inline at
+    module import (farmd boot).
+    """
+    for task_path in sorted((QUEUE_DIR / "runs" / "active").glob("*.json")):
+        try:
+            _reconcile_one_claimed_run(task_path)
+        except Exception as exc:
+            print(f"farmd: reconcile error for {task_path.name}: {exc}", flush=True)
+
+
+def _reconcile_loop() -> None:
+    while True:
+        time.sleep(farm_config.RECONCILE_INTERVAL_S)
+        try:
+            _reconcile_claimed_runs()
+        except Exception as exc:
+            print(f"farmd: reconcile error: {exc}", flush=True)
+
+
 def _claim_and_launch(task_path, runs_dir: Path, repo_root: Path) -> str | None:
     """Claims one queued task file (rename into runs/active) and launches its
     ephemeral tmux session — unless the server reports the run is no longer
@@ -203,6 +299,13 @@ def _claim_and_launch(task_path, runs_dir: Path, repo_root: Path) -> str | None:
     active.mkdir(exist_ok=True)
     claimed = active / task_path.name
     task_path.rename(claimed)
+    # HZ-101: stamped as its own write because rename() does not update
+    # mtime — the reconciler needs a true "time since claimed" to tell a run
+    # still mid-launch (session not created yet) from one whose session is
+    # actually gone, and stat().st_mtime here would still read the original
+    # enqueue time, not this claim.
+    task["claimed_at"] = time.time()
+    claimed.write_text(json.dumps(task, indent=2))
     if not _notify_started(task["run_id"]):
         print(f"farmd: run {task['run_id']} no longer active server-side — not launching", flush=True)
         claimed.unlink(missing_ok=True)
@@ -552,8 +655,10 @@ ensure_dirs()
 # through /farm/start — a farm on API billing must not come up at all.
 assert_provider_auth()
 _adopt_existing()
+_reconcile_claimed_runs()
 threading.Thread(target=_watchdog, daemon=True).start()
 threading.Thread(target=_ephemeral_dispatcher, daemon=True).start()
+threading.Thread(target=_reconcile_loop, daemon=True).start()
 
 if __name__ == "__main__":
     import uvicorn
