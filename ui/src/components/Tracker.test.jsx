@@ -247,6 +247,116 @@ test('a done step with repeated attempts but no artifact still shows the plain "
   expect(getByText('· attempt 2')).toBeTruthy()
 })
 
+// ---- HZ-94: a paused item explains itself, not just "Paused" ----
+
+test('a turn_cap pause renders its own distinct message naming the category, cause and next action', () => {
+  const item = {
+    ...baseItem,
+    paused: true,
+    events: [
+      {
+        created_at: '2026-01-01 00:00:00',
+        text: 'agent step failed (turn_cap): ran out of turns — auto-retry budget (3) exhausted; item paused, resume to retry',
+      },
+      { created_at: '2026-01-01 00:00:00', text: 'transient failure (turn_cap): ran out of turns — auto-retrying (3/3)' },
+      { created_at: '2026-01-01 00:00:00', text: 'transient failure (turn_cap): ran out of turns — auto-retrying (2/3)' },
+      { created_at: '2026-01-01 00:00:00', text: 'transient failure (turn_cap): ran out of turns — auto-retrying (1/3)' },
+    ],
+  }
+  const { container } = renderTracker(item)
+  const banner = container.querySelector('.pause-banner')
+  expect(banner.querySelector('.pause-banner__title').textContent).toBe('Ran out of turns')
+  expect(banner.querySelector('.pause-banner__detail').textContent).toContain('ran out of turns')
+  expect(banner.querySelector('.pause-banner__meta').textContent).toContain('retry budget exhausted')
+  expect(banner.querySelector('.pause-banner__meta').textContent).toContain('Resume to retry')
+})
+
+test('each named pause category renders a distinct banner title from the others', () => {
+  const titles = ['never_picked_up', 'timeout', 'unreachable', 'turn_cap'].map((reason) => {
+    const item = {
+      ...baseItem,
+      paused: true,
+      events: [{ created_at: '2026-01-01 00:00:00', text: `agent step failed (${reason}): x — item paused; resume to retry` }],
+    }
+    const { container } = renderTracker(item)
+    const title = container.querySelector('.pause-banner__title').textContent
+    cleanup()
+    return title
+  })
+  expect(new Set(titles).size).toBe(4)
+})
+
+test('an unrecognized pause reason degrades to the raw cause rather than a blank banner', () => {
+  const item = {
+    ...baseItem,
+    paused: true,
+    events: [
+      { created_at: '2026-01-01 00:00:00', text: 'agent step failed (not_a_real_reason): something odd happened — item paused; resume to retry' },
+    ],
+  }
+  const { container } = renderTracker(item)
+  expect(container.querySelector('.pause-banner__detail').textContent).toContain('something odd happened')
+})
+
+test('a pause with no classified reason still shows the real failure cause, never a blank banner', () => {
+  const item = {
+    ...baseItem,
+    paused: true,
+    events: [{ created_at: '2026-01-01 00:00:00', text: 'agent step failed: repo checks failed: eslint exited 1 — item paused; resume to retry' }],
+  }
+  const { container } = renderTracker(item)
+  expect(container.querySelector('.pause-banner__detail').textContent).toContain('repo checks failed: eslint exited 1')
+})
+
+test('the banner never reads as just "Paused" with nothing else — a title alone is always paired with real detail text', () => {
+  const item = {
+    ...baseItem,
+    paused: true,
+    events: [{ created_at: '2026-01-01 00:00:00', text: 'agent step failed: repo checks failed — item paused; resume to retry' }],
+  }
+  const { container } = renderTracker(item)
+  const banner = container.querySelector('.pause-banner')
+  expect(banner.textContent).not.toBe('Paused')
+  expect(banner.querySelector('.pause-banner__detail').textContent.length).toBeGreaterThan(0)
+})
+
+test('a human-initiated manual pause (not a failure) shows no pause banner', () => {
+  const item = {
+    ...baseItem,
+    paused: true,
+    events: [{ created_at: '2026-01-01 00:00:00', text: 'paused agent work on this item' }],
+  }
+  const { container } = renderTracker(item)
+  expect(container.querySelector('.pause-banner')).toBeNull()
+})
+
+test('the pause banner coexists with the Resume control and the activity feed, replacing neither', () => {
+  const item = {
+    ...baseItem,
+    paused: true,
+    events: [
+      { created_at: '2026-01-01 00:00:00', text: 'agent step failed (timeout): step timed out — item paused; resume to retry' },
+    ],
+  }
+  const { getByText, container } = renderTracker(item)
+  expect(getByText('Resume work')).toBeTruthy()
+  expect(container.querySelector('.pause-banner')).toBeTruthy()
+  expect(container.querySelector('.activity-row__text').textContent).toContain('agent step failed')
+})
+
+test('a paused item whose newest event matches no known shape still renders a non-empty banner, not blank', () => {
+  const item = { ...baseItem, paused: true, events: [{ created_at: '2026-01-01 00:00:00', text: 'some unrelated event text' }] }
+  const { container } = renderTracker(item)
+  const banner = container.querySelector('.pause-banner')
+  expect(banner).toBeTruthy()
+  expect(banner.querySelector('.pause-banner__detail').textContent.length).toBeGreaterThan(0)
+})
+
+test('an unpaused item shows no pause banner', () => {
+  const { container } = renderTracker({ ...baseItem, paused: false })
+  expect(container.querySelector('.pause-banner')).toBeNull()
+})
+
 // ---- HZ-25: real event colors (server-persisted hex) resolve through the theme ----
 
 test('a real event with a legacy server hex color renders the themed token, not the raw hex, under dark mode', () => {

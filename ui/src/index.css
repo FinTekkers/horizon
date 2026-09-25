@@ -532,6 +532,14 @@ button { font-family: var(--font-sans); }
 }
 .btn-outline:hover { border-color: var(--hover-border); }
 
+.pause-banner {
+  margin-top: 14px; padding: 12px 15px;
+  background: var(--danger-bg-soft); border: 1px solid var(--danger-border-soft); border-radius: 12px;
+}
+.pause-banner__title { font: 700 13px var(--font-sans); color: var(--danger-ink); margin-bottom: 3px; }
+.pause-banner__detail { font: 500 12.5px var(--font-sans); color: var(--deep); line-height: 1.5; }
+.pause-banner__meta { font: 600 12px var(--font-sans); color: var(--muted-strong); margin-top: 6px; }
+
 .tracker__tiles { display: flex; gap: 14px; flex-wrap: wrap; margin-top: 14px; }
 .tile { flex: 1; min-width: 200px; background: var(--canvas); border-radius: 14px; padding: 14px 16px; }
 .tile__label {

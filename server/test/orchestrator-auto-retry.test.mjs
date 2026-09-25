@@ -221,3 +221,51 @@ test('a real dispatch failure (farm unreachable) auto-recovers through dispatchT
 
   orchestrator.cancel('AR-8')
 })
+
+// ---- HZ-94: the pause event must name the classified reason, not discard it ----
+
+test('a turn_cap failure whose retry budget is exhausted produces a pause event containing "turn_cap"', async () => {
+  insertItem.run('AR-9', 'Turn cap exhausted', 'Medium', IMPLEMENT_STEP_INDEX)
+  let runId = activeStepRunRow('AR-9', IMPLEMENT_STEP_INDEX)
+
+  for (let attempt = 1; attempt <= orchestrator.AUTO_RETRY_CAP; attempt++) {
+    orchestrator.failFarmRun(runId, 'ran out of turns', 'turn_cap')
+    const retried = activeRun('AR-9')
+    runId = retried.id
+  }
+
+  // One more failure at the cap must pause and name the reason.
+  const result = orchestrator.failFarmRun(runId, 'ran out of turns', 'turn_cap')
+  assert.deepEqual(result, { ok: true })
+  assert.equal(store.getItem('AR-9').paused, true)
+
+  const pauseEvent = eventTexts('AR-9').find((t) => /budget \(3\) exhausted/.test(t))
+  assert.ok(pauseEvent, 'expected an exhaustion pause event')
+  assert.ok(pauseEvent.includes('turn_cap'), 'the pause event must name the exhausted reason, not discard it')
+})
+
+test('the pause event wording is byte-identical to before when no reason was classified — existing consumers must not break', () => {
+  insertItem.run('AR-10', 'Untagged failure', 'Medium', IMPLEMENT_STEP_INDEX)
+  const runId = activeStepRunRow('AR-10', IMPLEMENT_STEP_INDEX)
+
+  orchestrator.failFarmRun(runId, 'repo checks failed: eslint exited 1')
+
+  assert.ok(
+    eventTexts('AR-10').includes('agent step failed: repo checks failed: eslint exited 1 — item paused; resume to retry'),
+    'an untagged failure must keep the exact pre-HZ-94 wording, with no reason tag inserted',
+  )
+})
+
+test('a classified-but-unrecognized reason still tags the pause event, even though it never retries', () => {
+  insertItem.run('AR-11', 'Unrecognized reason tag', 'Medium', IMPLEMENT_STEP_INDEX)
+  const runId = activeStepRunRow('AR-11', IMPLEMENT_STEP_INDEX)
+
+  orchestrator.failFarmRun(runId, 'something odd happened', 'not_a_real_reason')
+
+  assert.ok(
+    eventTexts('AR-11').includes(
+      'agent step failed (not_a_real_reason): something odd happened — item paused; resume to retry',
+    ),
+    'a reason outside AUTO_RETRY_REASONS is still classified — it must still be named in the pause event',
+  )
+})

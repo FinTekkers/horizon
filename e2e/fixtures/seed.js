@@ -33,15 +33,26 @@ export function insertItem(
     pr_url = null,
     pr_mergeable = null,
     updatedAt = null,
+    paused = 0,
   },
 ) {
   db.prepare(
-    `INSERT INTO work_item (id, title, priority, desc, metric, guardrails, cursor, pr, pr_url, pr_mergeable)
-     VALUES (@id, @title, @priority, @desc, @metric, @guardrails, @cursor, @pr, @pr_url, @pr_mergeable)`,
-  ).run({ id, title, priority, desc, metric, guardrails, cursor, pr, pr_url, pr_mergeable })
+    `INSERT INTO work_item (id, title, priority, desc, metric, guardrails, cursor, pr, pr_url, pr_mergeable, paused)
+     VALUES (@id, @title, @priority, @desc, @metric, @guardrails, @cursor, @pr, @pr_url, @pr_mergeable, @paused)`,
+  ).run({ id, title, priority, desc, metric, guardrails, cursor, pr, pr_url, pr_mergeable, paused: paused ? 1 : 0 })
   if (updatedAt) {
     db.prepare('UPDATE work_item SET updated_at = ? WHERE id = ?').run(updatedAt, id)
   }
+}
+
+// A Horizon activity-log row, written directly like insertItem above so it
+// never goes through addEvent()/store.js. HZ-94's pause-reason.spec uses this
+// to reproduce the exact pause-event text failFarmRun() writes (see
+// server/src/orchestrator.js), without needing a real farm failure to occur.
+export function insertEvent(db, { itemId, who = 'Horizon', text, color = '#9C333E', initials = 'HZ' }) {
+  db.prepare(
+    'INSERT INTO event (item_id, who, text, color, initials) VALUES (@itemId, @who, @text, @color, @initials)',
+  ).run({ itemId, who, text, color, initials })
 }
 
 // A retained-but-superseded artifact version (HZ-46): a done step_run row
