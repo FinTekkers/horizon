@@ -356,6 +356,155 @@ def test_step_config_persona_flags_match_the_design():
     assert wants == {4: False, 6: False, 7: False, 8: True, 11: True, 12: True, 14: False}
 
 
+# ---- persona -> provider override (HZ-102) ----
+# muse_smoke_test is the one persona that forces a non-default provider
+# (farm/personas.py's provider_for()), and only on the pure-planning steps —
+# proven here the same way persona-into-role composition is proven above: by
+# asserting the kwarg run_agent() actually received. That's the farm's
+# normal dispatch path (execute() -> run_agent()), never a direct call into
+# farm.providers.muse — that boundary is covered separately in
+# test_providers_muse.py.
+
+
+def test_muse_smoke_test_persona_dispatches_with_provider_muse_on_eligible_steps(monkeypatch):
+    for index, label in [
+        (4, "Plan options & trade-offs (pros / cons)"),
+        (6, "Draft implementation plan"),
+        (7, "Architecture review"),
+    ]:
+        captured = {}
+        monkeypatch.setattr(step_agent, "run_agent", capture_run_agent(captured))
+        task = make_task(index, label)
+        task["item"]["persona"] = "muse_smoke_test"
+        execute(task)
+        assert captured.get("provider") == "muse", f"step {index} did not dispatch with provider=muse"
+
+
+def test_real_personas_never_force_a_provider_override(monkeypatch):
+    for persona in ("fullstack", "python_backend", "frontend_ui"):
+        captured = {}
+        monkeypatch.setattr(step_agent, "run_agent", capture_run_agent(captured))
+        task = make_task(4, "Plan options & trade-offs (pros / cons)")
+        task["item"]["persona"] = persona
+        execute(task)
+        assert captured.get("provider") is None, f"persona {persona} must never force a provider"
+
+
+def test_muse_smoke_test_persona_never_forces_a_provider_on_qa(monkeypatch):
+    """HZ-102 guardrail, code-enforced: QA (8) is a real specialist step, not
+    a pure-planning one, so the override must never apply even if an item
+    somehow carries the test persona."""
+    captured = {}
+    monkeypatch.setattr(step_agent, "run_agent", capture_run_agent(captured))
+    task = make_task(8, "QA reviews the test plan")
+    task["item"]["persona"] = "muse_smoke_test"
+    execute(task)
+    assert captured.get("provider") is None
+
+
+def test_muse_smoke_test_persona_never_forces_a_provider_on_deploy(monkeypatch):
+    """HZ-102 guardrail, code-enforced: never route deploy to Muse, even if
+    an item somehow carries the test persona."""
+    captured = {}
+
+    def fake_run_agent(prompt, **kwargs):
+        captured.update(kwargs, prompt=prompt)
+        return devops_run_agent(
+            {
+                "summary": "verified the deploy",
+                "url": "https://shoreward.ai/horizon/",
+                "expected_text": "Horizon",
+                "artifact_md": "## Deploy target\nHorizon",
+            }
+        )(prompt, **kwargs)
+
+    monkeypatch.setattr(step_agent, "run_agent", fake_run_agent)
+    monkeypatch.setattr(step_agent, "run_smoke_check", lambda url, text: ("pass", 'SMOKE_RESULT=pass — "Horizon" rendered'))
+    task = make_task(14, "Deploy the changes", repo="acme/demo")
+    task["item"]["persona"] = "muse_smoke_test"
+    execute(task)
+    assert captured.get("provider") is None
+
+
+def test_muse_smoke_test_persona_never_forces_a_provider_on_implement(tmp_path, monkeypatch):
+    ws, _origin = make_git_workspace(tmp_path)
+    monkeypatch.setattr(step_agent, "ensure_item_worktree", lambda repo, item_id: ws)
+    captured = {}
+    monkeypatch.setattr(step_agent, "run_agent", capture_run_agent(captured))
+    task = make_task(11, "Specialist agent implements", repo="acme/demo")
+    task["item"]["persona"] = "muse_smoke_test"
+    with pytest.raises(RuntimeError, match="no code changes"):
+        execute(task)
+    assert captured.get("provider") is None
+
+
+def test_muse_smoke_test_provenance_is_stamped_into_summary_and_artifacts(monkeypatch):
+    """The success metric's human-readability bar: a human reading the run
+    log (this summary) or the artifact can tell Muse ran without inspecting
+    config."""
+
+    def fake_run_agent(prompt, **kwargs):
+        return {
+            "result": '{"summary": "did the step", "artifact_md": "# out"}',
+            "session_id": "sess-1",
+            "provider": "muse",
+            "command_id": "the-real-command-id",
+        }
+
+    monkeypatch.setattr(step_agent, "run_agent", fake_run_agent)
+    task = make_task(4, "Plan options & trade-offs (pros / cons)")
+    task["item"]["persona"] = "muse_smoke_test"
+
+    result = execute(task)
+
+    assert "provider=muse" in result["summary"]
+    assert "command_id=the-real-command-id" in result["summary"]
+    assert result["artifacts"]["provider"] == "muse"
+    assert result["artifacts"]["command_id"] == "the-real-command-id"
+
+
+def test_muse_smoke_test_dispatch_goes_through_the_real_muse_provider_module(monkeypatch):
+    """End-to-end through the actual provider seam, not a stand-in: only the
+    OS-level `muse` subprocess is faked (the same boundary
+    test_providers_muse.py mocks at) — execute() -> run_agent() ->
+    agent_runner._PROVIDERS['muse'] -> farm.providers.muse.run() -> a real
+    (mocked) subprocess.run call with the real headless-safety argv."""
+    from farm.providers import muse as muse_provider
+
+    captured_cmd = {}
+
+    def fake_subprocess_run(cmd, **kwargs):
+        captured_cmd["cmd"] = cmd
+        line = json.dumps(
+            {
+                "payload_type": "run.terminal.completed",
+                "payload": {
+                    "terminal": "completed",
+                    "text": json.dumps({"summary": "muse smoke test ran", "artifact_md": "# Muse ran this"}),
+                    "command_id": "muse-smoke-command-id",
+                },
+            }
+        )
+        return subprocess.CompletedProcess(args=cmd, returncode=0, stdout=line, stderr="")
+
+    monkeypatch.setattr(muse_provider.subprocess, "run", fake_subprocess_run)
+
+    task = make_task(4, "Plan options & trade-offs (pros / cons)")
+    task["item"]["persona"] = "muse_smoke_test"
+
+    result = execute(task)
+
+    # Real headless-safety flags, not a stub — the same argv
+    # test_providers_muse.py's own tests assert.
+    cmd = captured_cmd["cmd"]
+    assert "--approval-mode" in cmd and cmd[cmd.index("--approval-mode") + 1] == "never"
+    assert "--user-input-auto-resolve" in cmd
+    assert result["summary"].startswith("muse smoke test ran")
+    assert result["artifacts"]["artifact_md"] == "# Muse ran this"
+    assert result["artifacts"]["provider"] == "muse"
+    assert result["artifacts"]["command_id"] == "muse-smoke-command-id"
+
+
 # ---- project rules injection (HZ-9) ----
 # farmd stamps `rules` into the task; the prompt (and therefore the tmux
 # session log) must carry them verbatim under a "## Project rules" header.

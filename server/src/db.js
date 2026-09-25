@@ -192,6 +192,22 @@ try {
 } catch {
   // column already exists
 }
+try {
+  // HZ-102: which agent_runner provider actually executed this step
+  // (e.g. 'claude', 'muse') and, when the provider exposes one, its
+  // run-level id (Muse's command_id from run.terminal.completed — never a
+  // session handle, see farm/providers/muse.py). Both NULL for every row
+  // written before this landed and for any step whose provider never
+  // reported provenance — no backfill, no fabricated history.
+  db.exec('ALTER TABLE step_run ADD COLUMN provider TEXT')
+} catch {
+  // column already exists
+}
+try {
+  db.exec('ALTER TABLE step_run ADD COLUMN command_id TEXT')
+} catch {
+  // column already exists
+}
 db.exec(`
   CREATE UNIQUE INDEX IF NOT EXISTS idx_feedback_gh_comment
     ON feedback(gh_comment_id) WHERE gh_comment_id IS NOT NULL;

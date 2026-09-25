@@ -127,11 +127,13 @@ function Step({ item, index, onApprove, onApproveWithComments, onReject, onResol
                 value={personaId(item)}
                 onChange={(e) => onSetPersona(item.id, e.target.value)}
               >
-                {Object.entries(PERSONAS).map(([id, p]) => (
-                  <option key={id} value={id}>
-                    {p.label}
-                  </option>
-                ))}
+                {Object.entries(PERSONAS)
+                  .filter(([, p]) => !p.testOnly)
+                  .map(([id, p]) => (
+                    <option key={id} value={id}>
+                      {p.label}
+                    </option>
+                  ))}
               </select>
             </div>
           )}

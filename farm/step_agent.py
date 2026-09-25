@@ -25,7 +25,7 @@ import httpx
 from .agent_runner import AgentError, AgentExhaustedError, extract_json, run_agent
 from .checks import run_checks
 from .config import FARM_PORT
-from .personas import compose_role, resolve
+from .personas import compose_role, provider_for, resolve
 from .rules import render_rules_section
 from .workspaces import ensure_item_worktree, hub_lock
 
@@ -69,6 +69,13 @@ STEP_CONFIG = {
     # never gets a persona composed in.
     14: ("devops.md", True, DEVOPS_TOOLS, 40, 900, False),
 }
+
+# HZ-102: a persona-forced provider override (farm/personas.py's
+# provider_for()) is only ever honored on these pure-planning steps — never
+# implement (11) or deploy (14), no matter what a persona maps to. This is
+# the code-level guarantee behind the guardrail "never route implement,
+# ship, or deploy to Muse", not just a naming convention on the persona.
+PROVIDER_OVERRIDE_ELIGIBLE_STEPS = {4, 6, 7}
 
 # Diff shown to both review passes is capped — a defensive bound on prompt
 # size, not a claim that larger diffs can't happen. 20k was below the size of
@@ -349,6 +356,10 @@ def _review_summary(verdict: dict) -> str:
     return summary[:600]
 
 
+def _provenance(reply: dict) -> dict:
+    return {"provider": reply.get("provider"), "command_id": reply.get("command_id")}
+
+
 def _run_and_parse(
     prompt: str,
     *,
@@ -357,16 +368,28 @@ def _run_and_parse(
     max_turns: int,
     timeout_s: int,
     allowed_tools: str | None,
-) -> dict:
+    provider: str | None = None,
+) -> tuple[dict, dict]:
     """run_agent + extract_json with one retry-with-feedback on a parse
     failure (HZ-44) — mirrors pm_agent.process()'s recovery. Asking the model
     to re-emit valid JSON is lossless; a genuine second failure still
-    propagates so the run cancels and the item pauses, unchanged."""
+    propagates so the run cancels and the item pauses, unchanged.
+
+    Returns (parsed_json, provenance) — provenance is {"provider",
+    "command_id"} from whichever run_agent() call actually produced the JSON
+    that parsed (HZ-102), so a caller can record which provider really ran.
+    """
     reply = run_agent(
-        prompt, append_system=append_system, cwd=cwd, max_turns=max_turns, timeout_s=timeout_s, allowed_tools=allowed_tools
+        prompt,
+        append_system=append_system,
+        cwd=cwd,
+        max_turns=max_turns,
+        timeout_s=timeout_s,
+        allowed_tools=allowed_tools,
+        provider=provider,
     )
     try:
-        return extract_json(reply["result"])
+        return extract_json(reply["result"]), _provenance(reply)
     except (AgentError, json.JSONDecodeError) as exc:
         log(f"invalid reply ({exc}); retrying once")
         retry = run_agent(
@@ -377,8 +400,9 @@ def _run_and_parse(
             max_turns=max_turns,
             timeout_s=timeout_s,
             allowed_tools=allowed_tools,
+            provider=provider,
         )
-        return extract_json(retry["result"])
+        return extract_json(retry["result"]), _provenance(retry)
 
 
 # ---- deploy deep-verification (HZ-22) ----
@@ -419,6 +443,7 @@ def execute(task: dict) -> dict:
     item = task["item"]
     if wants_persona:
         role = compose_role(role, item.get("persona"))
+    provider_override = provider_for(item.get("persona")) if step_index in PROVIDER_OVERRIDE_ELIGIBLE_STEPS else None
 
     ws = None
     if item.get("repo"):
@@ -509,14 +534,14 @@ def execute(task: dict) -> dict:
             + "\n\nRespond with ONLY the JSON object described in your role instructions."
         )
 
-        code_parsed = _run_and_parse(
+        code_parsed, _code_provenance = _run_and_parse(
             prompt, append_system=role, cwd=str(ws), max_turns=max_turns, timeout_s=timeout_s, allowed_tools=tools
         )
 
         qa_role = (ROLES / "qa_review.md").read_text()
         if wants_persona:
             qa_role = compose_role(qa_role, item.get("persona"))
-        qa_parsed = _run_and_parse(
+        qa_parsed, _qa_provenance = _run_and_parse(
             prompt, append_system=qa_role, cwd=str(ws), max_turns=max_turns, timeout_s=timeout_s, allowed_tools=tools
         )
 
@@ -556,7 +581,7 @@ def execute(task: dict) -> dict:
             "with e2e/smoke/check.mjs — pick an expected_text that is actually visible on that "
             "page right now."
         )
-        parsed = _run_and_parse(
+        parsed, _deploy_provenance = _run_and_parse(
             prompt, append_system=role, cwd=None, max_turns=max_turns, timeout_s=timeout_s, allowed_tools=tools
         )
         summary = str(parsed.get("summary", "")).strip()[:600] or "deploy verification finished"
@@ -580,13 +605,14 @@ def execute(task: dict) -> dict:
             },
         }
 
-    parsed = _run_and_parse(
+    parsed, reply_provenance = _run_and_parse(
         build_prompt(task) + "\n\nRespond with ONLY the JSON object described in your role instructions.",
         append_system=role,
         cwd=str(ws) if ws else None,
         max_turns=max_turns,
         timeout_s=timeout_s,
         allowed_tools=tools if ws else None,
+        provider=provider_override,
     )
     summary = str(parsed.get("summary", "")).strip()[:600]
     if not summary:
@@ -599,6 +625,16 @@ def execute(task: dict) -> dict:
     if feedback:
         summary = f"addressed feedback (“{feedback[0].get('message', '')[:80]}”) — {summary}"[:600]
 
+    # HZ-102: when a persona forced a non-default provider for this step
+    # (today, only muse_smoke_test -> muse), stamp what actually ran into the
+    # run log — visible to a human without inspecting config — and into the
+    # artifact sent to the server, which persists it on
+    # step_run.provider/command_id (server/src/orchestrator.js).
+    if provider_override:
+        note = f"provider={reply_provenance.get('provider')} command_id={reply_provenance.get('command_id')}"
+        log(f"HZ-102 provenance: {note}")
+        summary = f"{summary} [{note}]"[:600]
+
     result = {"summary": summary}
     if wants_artifact and isinstance(parsed.get("artifact_md"), str) and parsed["artifact_md"].strip():
         artifact = parsed["artifact_md"].strip()
@@ -606,6 +642,10 @@ def execute(task: dict) -> dict:
             header = "\n".join(f"> {fb.get('message', '')}" for fb in feedback)
             artifact = f"## Human feedback addressed in this revision\n{header}\n\n{artifact}"
         result["artifacts"] = {"artifact_md": artifact[:WRITE_ARTIFACT_SANITY_CEILING_CHARS]}
+    if provider_override:
+        artifacts = result.setdefault("artifacts", {})
+        artifacts["provider"] = reply_provenance.get("provider")
+        artifacts["command_id"] = reply_provenance.get("command_id")
     return result
 
 

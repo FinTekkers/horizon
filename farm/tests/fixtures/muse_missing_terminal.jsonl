@@ -1,0 +1,4 @@
+{"sequence": 1, "payload_type": "runtime.command.accepted", "schema_version": "1.0", "recorded_at": "2026-01-01T00:00:00Z", "payload": {}}
+{"sequence": 2, "payload_type": "session.run.linked", "schema_version": "1.0", "recorded_at": "2026-01-01T00:00:00Z", "payload": {"session_id": "fixed-session"}}
+{"sequence": 3, "payload_type": "run.lifecycle.started", "schema_version": "1.0", "recorded_at": "2026-01-01T00:00:00Z", "payload": {}}
+{"sequence": 4, "payload_type": "run.output.delta", "schema_version": "1.0", "recorded_at": "2026-01-01T00:00:00Z", "payload": {"text": "hori"}}

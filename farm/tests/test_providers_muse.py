@@ -7,11 +7,14 @@ as confirmed behaviour.
 
 import json
 import subprocess
+from pathlib import Path
 
 import pytest
 
 from farm.providers import muse
 from farm.providers.base import AgentError, AgentExhaustedError
+
+FIXTURES_DIR = Path(__file__).parent / "fixtures"
 
 
 def _completed(stdout: str, returncode: int = 0, stderr: str = "") -> subprocess.CompletedProcess:
@@ -37,7 +40,7 @@ def test_run_returns_result_from_terminal_completed_event(monkeypatch):
     monkeypatch.setattr(muse.subprocess, "run", fake_run)
     reply = muse.run("reply with exactly the word: horizon", session_id="fixed-session")
 
-    assert reply == {"result": "horizon", "session_id": "fixed-session"}
+    assert reply == {"result": "horizon", "session_id": "fixed-session", "command_id": "cmd-1"}
 
 
 def test_run_mints_a_session_id_when_caller_supplies_none(monkeypatch):
@@ -163,4 +166,97 @@ def test_binary_not_found_raises_agent_error(monkeypatch):
 
     monkeypatch.setattr(muse.subprocess, "run", fake_run)
     with pytest.raises(AgentError, match="muse binary not found"):
+        muse.run("hello")
+
+
+def test_run_no_terminal_event_and_zero_exit_raises_agent_error(monkeypatch):
+    """The other half of the 'fails loudly, never an empty artifact'
+    requirement: a clean exit (0) with no run.terminal.completed event must
+    still raise, not silently return an empty result."""
+
+    def fake_run(cmd, **kwargs):
+        return _completed(stdout="", returncode=0)
+
+    monkeypatch.setattr(muse.subprocess, "run", fake_run)
+    with pytest.raises(AgentError, match="no terminal.completed event"):
+        muse.run("hello")
+
+
+# ---- provenance: command_id (HZ-102 success metric) ----
+
+
+def test_run_returns_command_id_from_terminal_completed_event(monkeypatch):
+    def fake_run(cmd, **kwargs):
+        return _completed(_terminal_completed_jsonl("ok", command_id="a-real-run-id"))
+
+    monkeypatch.setattr(muse.subprocess, "run", fake_run)
+    reply = muse.run("hello")
+
+    assert reply["command_id"] == "a-real-run-id"
+
+
+@pytest.mark.parametrize("bad_command_id", [None, "", "   "])
+def test_run_raises_when_terminal_completed_is_missing_command_id(monkeypatch, bad_command_id):
+    """Provenance is a hard requirement, not best-effort: a terminal event
+    without a usable command_id must fail loudly rather than silently
+    recording a run nobody can trace back to Muse."""
+
+    def fake_run(cmd, **kwargs):
+        line = json.dumps(
+            {
+                "payload_type": "run.terminal.completed",
+                "payload": {"terminal": "completed", "text": "ok", "command_id": bad_command_id},
+            }
+        )
+        return _completed(stdout=line)
+
+    monkeypatch.setattr(muse.subprocess, "run", fake_run)
+    with pytest.raises(AgentError, match="command_id"):
+        muse.run("hello")
+
+
+def test_run_raises_when_terminal_completed_has_no_command_id_field_at_all(monkeypatch):
+    def fake_run(cmd, **kwargs):
+        line = json.dumps({"payload_type": "run.terminal.completed", "payload": {"text": "ok"}})
+        return _completed(stdout=line)
+
+    monkeypatch.setattr(muse.subprocess, "run", fake_run)
+    with pytest.raises(AgentError, match="command_id"):
+        muse.run("hello")
+
+
+# ---- recorded fixtures (QA requirement: a real event stream, not an
+# inline-built one, proves the terminal-event parse) ----
+
+
+def test_parses_a_recorded_terminal_completed_fixture(monkeypatch):
+    """docs/providers/muse-code.md's own worked example, captured as a full
+    JSONL event stream (farm/tests/fixtures/muse_terminal_completed.jsonl) —
+    the observed sequence (runtime.command.accepted -> ... ->
+    run.terminal.completed), not just the last line."""
+    stdout = (FIXTURES_DIR / "muse_terminal_completed.jsonl").read_text()
+
+    def fake_run(cmd, **kwargs):
+        return _completed(stdout=stdout)
+
+    monkeypatch.setattr(muse.subprocess, "run", fake_run)
+    reply = muse.run("Reply with exactly the word: horizon", session_id="fixed-session")
+
+    assert reply == {
+        "result": "horizon",
+        "session_id": "fixed-session",
+        "command_id": "e93cb8d2-f310-48f0-b698-539a49af55d5",
+    }
+
+
+def test_recorded_fixture_missing_terminal_completed_fails_loudly(monkeypatch):
+    """A stream cut off before run.terminal.completed (killed run, truncated
+    capture) must raise — never produce an empty or partial artifact."""
+    stdout = (FIXTURES_DIR / "muse_missing_terminal.jsonl").read_text()
+
+    def fake_run(cmd, **kwargs):
+        return _completed(stdout=stdout)
+
+    monkeypatch.setattr(muse.subprocess, "run", fake_run)
+    with pytest.raises(AgentError, match="no terminal.completed event"):
         muse.run("hello")

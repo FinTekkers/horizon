@@ -81,6 +81,16 @@ def run(
             # worktree; Muse otherwise treats a fresh directory as untrusted
             # and disables agent delegation for it (observed on stderr).
             "--trust-workspace",
+            # HZ-102 sandbox guardrail, decided deliberately: --disable-sandbox
+            # and --sandbox-network are never passed. Muse's sandbox network
+            # defaults to proxy-only (docs/providers/muse-code.md), but that
+            # only governs network calls made from *inside* Muse's own
+            # sandbox; nothing this provider runs needs that. The call to the
+            # Horizon server happens outside the sandbox entirely — farm/
+            # step_agent.py's own process posts the result via httpx after
+            # this subprocess has already exited. So the minimum needed for a
+            # headless run to reach the Horizon server is nothing: no
+            # sandbox flag is relaxed here.
         ]
         if model:
             cmd += ["--model", model]
@@ -110,7 +120,20 @@ def _parse_events(proc: subprocess.CompletedProcess, session_id: str) -> dict:
 
     terminal = next((e for e in events if e.get("payload_type") == "run.terminal.completed"), None)
     if terminal is not None:
-        return {"result": terminal.get("payload", {}).get("text", ""), "session_id": session_id}
+        payload = terminal.get("payload", {})
+        command_id = payload.get("command_id")
+        # HZ-102 success metric: provenance requires a non-empty command_id
+        # from this exact event. Do not use it as a session handle (that's
+        # --session-id) — this only identifies the one run, which is exactly
+        # what provenance needs. A terminal event without one means the
+        # event shape docs/providers/muse-code.md verified no longer holds —
+        # fail loudly rather than silently recording provenance-less output.
+        if not isinstance(command_id, str) or not command_id.strip():
+            raise AgentError(
+                "muse run.terminal.completed event is missing command_id — cannot record "
+                "provenance for this run"
+            )
+        return {"result": payload.get("text", ""), "session_id": session_id, "command_id": command_id}
 
     # ASSUMPTION — unverified per docs/providers/muse-code.md ("how
     # exhaustion is reported... unverified... no exhausting run was

@@ -918,11 +918,18 @@ export async function completeFarmRun(runId, { summary, patch, artifacts }) {
     return { ok: true }
   }
 
-  db.prepare("UPDATE step_run SET status = 'done', output = ?, artifact = ?, ended_at = datetime('now') WHERE id = ?").run(
-    text,
-    artifactMd,
-    runId,
-  )
+  // HZ-102 provenance: farm/step_agent.py only sets these two fields when a
+  // persona forced a non-default provider for this step (today, only
+  // muse_smoke_test -> muse) — every other step keeps writing NULL here,
+  // unchanged from before this column existed.
+  const provider =
+    typeof artifacts?.provider === 'string' && artifacts.provider.trim() ? artifacts.provider.trim() : null
+  const commandId =
+    typeof artifacts?.command_id === 'string' && artifacts.command_id.trim() ? artifacts.command_id.trim() : null
+
+  db.prepare(
+    "UPDATE step_run SET status = 'done', output = ?, artifact = ?, provider = ?, command_id = ?, ended_at = datetime('now') WHERE id = ?",
+  ).run(text, artifactMd, provider, commandId, runId)
   db.prepare("UPDATE work_item SET cursor = cursor + 1, updated_at = datetime('now') WHERE id = ?").run(id)
   addEvent(id, { who: agent.label, text: `completed “${step.label}” — ${text.slice(0, 300)}`, color: agent.color, initials: agent.initials })
   postStepComment(getItem(id), run.step_index, run.attempt, text, cleanPatch, false, artifactMd)
