@@ -6,12 +6,15 @@ import json
 import os
 import subprocess
 import sys
+import threading
+import time
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
 
-from farm import farmd, workspaces
+from farm import farmd, tmux_mgr, workspaces
 from farm.config import LOGS_DIR, QUEUE_DIR
 from farm.tests.conflict_fixtures import clone_and_read, make_repo_hub, push_new_branch
 
@@ -670,3 +673,356 @@ def test_a_crashed_sessions_slot_is_freed_by_recounting_live_tmux_sessions(monke
 
     live.pop()  # simulate one session crashing out from under farmd
     assert farmd.MAX_EPHEMERAL - len(farmd._ephemeral_sessions()) == farmd.MAX_EPHEMERAL - 1
+
+
+# ---- HZ-101: reconcile claimed runs against live tmux sessions ----
+# farmd is the side that holds the truth about whether an agent is alive; it
+# must report a dead claimed run itself (POST /steps/{run_id}/fail) instead
+# of waiting for the server's execution timer (up to STEP_TIMEOUT_S) to
+# expire. Proof of death is the absence of a session, nothing weaker — a live
+# session must never be touched, reported, or have its task file removed.
+
+
+class _FakeFailResponse:
+    def __init__(self, status_code=200):
+        self.status_code = status_code
+
+
+def _write_claimed_task(run_id, claimed_at, item_id="hz-3", step_index=11, attempt=1):
+    active = QUEUE_DIR / "runs" / "active"
+    active.mkdir(parents=True, exist_ok=True)
+    task = make_task(run_id, item_id=item_id, step_index=step_index, attempt=attempt)
+    task["claimed_at"] = claimed_at
+    path = active / f"{run_id}.json"
+    path.write_text(json.dumps(task))
+    return path
+
+
+def _old_enough(seconds_past_grace=1):
+    return farmd.time.time() - farmd.farm_config.RECONCILE_GRACE_S - seconds_past_grace
+
+
+def test_reconcile_reports_and_removes_a_dead_claimed_run(queue_dirs, monkeypatch):
+    task_path = _write_claimed_task(301, claimed_at=_old_enough())
+    farmd.RUN_SESSIONS["301"] = "farm-run-hz-3-s11-a1"
+    monkeypatch.setattr(farmd.tmux_mgr, "session_exists", lambda name: False)
+    monkeypatch.setattr(farmd, "_notify_started", lambda run_id: True)
+    captured = {}
+
+    def fake_post(url, json=None, headers=None, timeout=None):
+        captured["url"], captured["json"], captured["headers"] = url, json, headers
+        return _FakeFailResponse(200)
+
+    monkeypatch.setattr(farmd.httpx, "post", fake_post)
+
+    farmd._reconcile_claimed_runs()
+
+    assert not task_path.exists()
+    assert "301" not in farmd.RUN_SESSIONS
+    assert captured["url"] == f"{farmd.HORIZON_URL}/api/farm/steps/301/fail"
+    assert captured["headers"]["x-farm-secret"] == farmd.SHARED_SECRET
+    assert captured["json"]["reason"] == "unreachable"  # already in AUTO_RETRY_REASONS
+    assert "301" in captured["json"]["error"]
+
+
+def test_reconcile_never_touches_or_reports_a_run_whose_session_is_alive(queue_dirs, monkeypatch):
+    task_path = _write_claimed_task(302, claimed_at=_old_enough())
+    monkeypatch.setattr(farmd.tmux_mgr, "session_exists", lambda name: True)
+
+    def must_not_be_called(*_a, **_k):
+        raise AssertionError("a live session must never be checked with the server or reported")
+
+    monkeypatch.setattr(farmd, "_notify_started", must_not_be_called)
+    monkeypatch.setattr(farmd.httpx, "post", must_not_be_called)
+
+    farmd._reconcile_claimed_runs()
+
+    assert task_path.exists()  # untouched: a false positive here kills live work
+
+
+def test_reconcile_skips_a_run_still_inside_the_grace_period(queue_dirs, tmp_path, monkeypatch):
+    """Drives the real claim path (_claim_and_launch) instead of hand-patching
+    a timestamp: proves the grace period is measured from an honest
+    claimed_at stamp, not stat().st_mtime (which rename() never updates)."""
+    monkeypatch.setattr(farmd, "_notify_started", lambda run_id: True)
+    monkeypatch.setattr(farmd.tmux_mgr, "new_session", lambda *a, **k: None)
+    farmd.RUN_SESSIONS.pop("303", None)
+
+    runs_dir = QUEUE_DIR / "runs"
+    task_path = _write_task(runs_dir / "303.json", 303, item_id="hz-3", step_index=11)
+    name = farmd._claim_and_launch(task_path, runs_dir, tmp_path)
+    claimed_path = runs_dir / "active" / "303.json"
+    assert claimed_path.exists()  # genuinely claimed just now
+
+    monkeypatch.setattr(farmd.tmux_mgr, "session_exists", lambda n: False)  # session not up yet
+
+    def must_not_be_called(*_a, **_k):
+        raise AssertionError("a run still inside the grace period must not be judged dead")
+
+    monkeypatch.setattr(farmd, "_notify_started", must_not_be_called)
+    monkeypatch.setattr(farmd.httpx, "post", must_not_be_called)
+
+    farmd._reconcile_claimed_runs()
+
+    assert claimed_path.exists()
+    claimed_path.unlink()
+    farmd.RUN_SESSIONS.pop("303", None)
+
+
+def test_reconcile_releases_without_reporting_when_the_server_no_longer_considers_the_run_active(queue_dirs, monkeypatch):
+    """The dropped-cancel case: the server already gave up on this run (its
+    own /steps/cancel callback to farmd was lost). Once the session is
+    confirmed dead, farmd must release its own bookkeeping without sending a
+    redundant /fail — that would double-report a run the server already
+    resolved."""
+    task_path = _write_claimed_task(304, claimed_at=_old_enough())
+    farmd.RUN_SESSIONS["304"] = "farm-run-hz-3-s11-a1"
+    monkeypatch.setattr(farmd.tmux_mgr, "session_exists", lambda name: False)
+    monkeypatch.setattr(farmd, "_notify_started", lambda run_id: False)
+
+    def must_not_be_called(*_a, **_k):
+        raise AssertionError("must not /fail a run the server no longer considers active")
+
+    monkeypatch.setattr(farmd.httpx, "post", must_not_be_called)
+
+    farmd._reconcile_claimed_runs()
+
+    assert not task_path.exists()
+    assert "304" not in farmd.RUN_SESSIONS
+
+
+def test_reconcile_makes_no_destructive_change_when_the_server_is_unreachable(queue_dirs, monkeypatch):
+    task_path = _write_claimed_task(305, claimed_at=_old_enough())
+    farmd.RUN_SESSIONS["305"] = "farm-run-hz-3-s11-a1"
+    monkeypatch.setattr(farmd.tmux_mgr, "session_exists", lambda name: False)
+    monkeypatch.setattr(farmd, "_notify_started", lambda run_id: True)
+
+    def raising_post(*a, **k):
+        raise ConnectionError("farm can't reach horizon-server")
+
+    monkeypatch.setattr(farmd.httpx, "post", raising_post)
+
+    farmd._reconcile_claimed_runs()
+
+    assert task_path.exists()  # unreachable server is not evidence the run is dead
+    assert "305" in farmd.RUN_SESSIONS
+
+
+def test_reconcile_does_not_report_the_same_run_twice_on_a_second_pass(queue_dirs, monkeypatch):
+    _write_claimed_task(306, claimed_at=_old_enough())
+    monkeypatch.setattr(farmd.tmux_mgr, "session_exists", lambda name: False)
+    monkeypatch.setattr(farmd, "_notify_started", lambda run_id: True)
+    posts = []
+
+    def fake_post(url, json=None, headers=None, timeout=None):
+        posts.append(url)
+        return _FakeFailResponse(200)
+
+    monkeypatch.setattr(farmd.httpx, "post", fake_post)
+
+    farmd._reconcile_claimed_runs()
+    farmd._reconcile_claimed_runs()
+
+    assert len(posts) == 1  # the task file was gone by the second pass
+
+
+def test_reconcile_survives_a_crash_between_reporting_and_removing_the_task_file(queue_dirs, monkeypatch):
+    """Report first, then remove — but if the process dies (or the unlink
+    itself errors) in between, the next pass must not double-report: by then
+    the server already resolved the run, so _notify_started returns False and
+    the second pass only releases."""
+    task_path = _write_claimed_task(307, claimed_at=_old_enough())
+    monkeypatch.setattr(farmd.tmux_mgr, "session_exists", lambda name: False)
+    posts = []
+
+    def fake_post(url, json=None, headers=None, timeout=None):
+        posts.append(url)
+        return _FakeFailResponse(200)
+
+    monkeypatch.setattr(farmd.httpx, "post", fake_post)
+    monkeypatch.setattr(farmd, "_notify_started", lambda run_id: True)
+
+    real_unlink = Path.unlink
+
+    def flaky_unlink(self, missing_ok=False):
+        if self == task_path:
+            raise OSError("disk full")
+        return real_unlink(self, missing_ok=missing_ok)
+
+    monkeypatch.setattr(Path, "unlink", flaky_unlink)
+    farmd._reconcile_claimed_runs()  # reports successfully, then "crashes" removing the file
+    assert len(posts) == 1
+    assert task_path.exists()
+
+    monkeypatch.setattr(Path, "unlink", real_unlink)
+    monkeypatch.setattr(farmd, "_notify_started", lambda run_id: False)  # server already resolved it
+    farmd._reconcile_claimed_runs()
+
+    assert len(posts) == 1  # no second /fail call
+    assert not task_path.exists()
+
+
+def test_reconcile_isolates_a_corrupt_task_file_from_the_rest_of_the_batch(queue_dirs, monkeypatch):
+    (QUEUE_DIR / "runs" / "active").mkdir(parents=True, exist_ok=True)
+    (QUEUE_DIR / "runs" / "active" / "not-json.json").write_text("{not valid json")
+    good_path = _write_claimed_task(308, claimed_at=_old_enough())
+    monkeypatch.setattr(farmd.tmux_mgr, "session_exists", lambda name: False)
+    monkeypatch.setattr(farmd, "_notify_started", lambda run_id: True)
+    monkeypatch.setattr(farmd.httpx, "post", lambda *a, **k: _FakeFailResponse(200))
+
+    farmd._reconcile_claimed_runs()
+
+    assert not good_path.exists()  # the corrupt sibling didn't abort the batch
+
+
+def test_reconcile_at_boot_reports_a_dead_run_left_over_from_a_prior_farmd_crash(queue_dirs, monkeypatch):
+    """The success metric's boot scenario, driven the same way _adopt_existing
+    is exercised elsewhere in this file — no live process, no tmux session,
+    just a claimed task file left behind."""
+    task_path = _write_claimed_task(309, claimed_at=_old_enough())
+    monkeypatch.setattr(farmd.tmux_mgr, "session_exists", lambda name: False)
+    monkeypatch.setattr(farmd, "_notify_started", lambda run_id: True)
+    monkeypatch.setattr(farmd.httpx, "post", lambda *a, **k: _FakeFailResponse(200))
+
+    farmd._reconcile_claimed_runs()  # what farmd calls once at boot, right after _adopt_existing()
+
+    assert not task_path.exists()
+
+
+def test_reconcile_guardrail_skips_a_claimed_task_with_no_claimed_at_stamp(queue_dirs, monkeypatch):
+    """The item's own guardrail: 'proof of death is the absence of a session
+    for a claimed run, nothing weaker; when the check itself cannot be
+    performed, do nothing.' A task file claimed by a pre-HZ-101 farmd (or one
+    edited/corrupted after claim) has no claimed_at, so reconcile cannot tell
+    'still launching' from 'dead' and must leave it untouched rather than
+    guess via mtime or any other proxy."""
+    active = QUEUE_DIR / "runs" / "active"
+    active.mkdir(parents=True, exist_ok=True)
+    task_path = active / "310.json"
+    task_path.write_text(json.dumps(make_task(310, item_id="hz-3", step_index=11)))  # no claimed_at
+
+    def must_not_be_called(*_a, **_k):
+        raise AssertionError("without claimed_at the check cannot be performed — must do nothing")
+
+    monkeypatch.setattr(farmd.tmux_mgr, "session_exists", must_not_be_called)
+    monkeypatch.setattr(farmd, "_notify_started", must_not_be_called)
+    monkeypatch.setattr(farmd.httpx, "post", must_not_be_called)
+
+    farmd._reconcile_claimed_runs()
+
+    assert task_path.exists()
+
+
+def test_report_run_dead_returns_false_on_a_non_2xx_response(monkeypatch):
+    monkeypatch.setattr(farmd.httpx, "post", lambda *a, **k: _FakeFailResponse(500))
+    assert farmd._report_run_dead(999, "farm-run-hz-3-s11-a1") is False
+
+
+def test_reconcile_leaves_the_file_in_place_on_a_non_2xx_fail_response(queue_dirs, monkeypatch):
+    """A non-2xx reply (server up but rejected/errored the report) must be
+    treated the same as unreachable: not confirmation the server actually
+    recorded the failure, so the file stays for the next pass to retry."""
+    task_path = _write_claimed_task(311, claimed_at=_old_enough())
+    farmd.RUN_SESSIONS["311"] = "farm-run-hz-3-s11-a1"
+    monkeypatch.setattr(farmd.tmux_mgr, "session_exists", lambda name: False)
+    monkeypatch.setattr(farmd, "_notify_started", lambda run_id: True)
+    monkeypatch.setattr(farmd.httpx, "post", lambda *a, **k: _FakeFailResponse(500))
+
+    farmd._reconcile_claimed_runs()
+
+    assert task_path.exists()
+    assert "311" in farmd.RUN_SESSIONS
+
+
+# ---- HZ-101 end-to-end: real tmux sessions, real HTTP round trip ----
+# Every test above monkeypatches tmux_mgr.session_exists and httpx.post, so
+# none of them exercises the real `tmux has-session` subprocess call or an
+# actual HTTP request/response over a socket — exactly the two boundaries
+# this item is about (farmd's own proof of liveness, and the wire format the
+# server actually receives). These drive _reconcile_claimed_runs() unmodified
+# against a real tmux session (or the deliberate absence of one) and a
+# throwaway local HTTP server standing in for the horizon server, mirroring
+# test_step_agent.py's run_smoke_check e2e tests.
+
+
+class _FakeHorizonHandler(BaseHTTPRequestHandler):
+    requests: list = []
+    fail_status = 200
+
+    def do_POST(self):
+        length = int(self.headers.get("Content-Length", 0))
+        body = self.rfile.read(length) if length else b""
+        self.__class__.requests.append(
+            {
+                "path": self.path,
+                "headers": dict(self.headers),
+                "body": json.loads(body) if body else None,
+            }
+        )
+        if self.path.endswith("/started"):
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(json.dumps({"active": True}).encode())
+        else:
+            self.send_response(self.__class__.fail_status)
+            self.end_headers()
+
+    def log_message(self, *args):
+        pass  # keep test output quiet
+
+
+def _serve_fake_horizon(fail_status: int = 200):
+    requests: list = []
+    handler = type("Handler", (_FakeHorizonHandler,), {"requests": requests, "fail_status": fail_status})
+    server = ThreadingHTTPServer(("127.0.0.1", 0), handler)
+    server.daemon_threads = True
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    return server, f"http://127.0.0.1:{server.server_port}", requests
+
+
+def test_reconcile_end_to_end_over_real_tmux_and_http_reports_a_dead_run(queue_dirs, monkeypatch):
+    """No mocks on tmux_mgr or httpx: the tmux session named by the task file
+    is genuinely never created (a real `tmux has-session` lookup proves it's
+    gone), and a real local HTTP server stands in for the horizon server —
+    this proves the whole reconcile path wires together end to end, not just
+    each layer in isolation under a monkeypatch."""
+    server, url, requests = _serve_fake_horizon(fail_status=200)
+    monkeypatch.setattr(farmd, "HORIZON_URL", url)
+    name = "farm-run-hz-e2e-s11-a1"
+    assert not tmux_mgr.session_exists(name)  # real tmux lookup: genuinely dead
+    task_path = _write_claimed_task(9001, claimed_at=_old_enough(), item_id="hz-e2e", step_index=11)
+    try:
+        farmd._reconcile_claimed_runs()
+    finally:
+        server.shutdown()
+
+    assert not task_path.exists()
+    started_reqs = [r for r in requests if r["path"].endswith("/api/farm/steps/9001/started")]
+    assert len(started_reqs) == 1
+    fail_reqs = [r for r in requests if r["path"].endswith("/api/farm/steps/9001/fail")]
+    assert len(fail_reqs) == 1
+    assert fail_reqs[0]["headers"]["x-farm-secret"] == farmd.SHARED_SECRET
+    assert fail_reqs[0]["body"]["reason"] == "unreachable"  # already in AUTO_RETRY_REASONS
+
+
+def test_reconcile_end_to_end_over_real_tmux_never_touches_a_real_live_session(queue_dirs, monkeypatch):
+    """The other half of the same wiring, with a genuinely live tmux session
+    this time — proves the real `tmux has-session` short-circuits before any
+    HTTP call is ever made, matching the guardrail that a live session must
+    never be reported or removed."""
+    server, url, requests = _serve_fake_horizon(fail_status=200)
+    monkeypatch.setattr(farmd, "HORIZON_URL", url)
+    name = "farm-run-hz-e2e2-s11-a1"
+    tmux_mgr.new_session(name, "sleep 30", cwd="/tmp")
+    task_path = _write_claimed_task(9002, claimed_at=_old_enough(), item_id="hz-e2e2", step_index=11)
+    try:
+        assert tmux_mgr.session_exists(name)  # real tmux lookup: genuinely alive
+        farmd._reconcile_claimed_runs()
+    finally:
+        tmux_mgr.kill_session(name)
+        server.shutdown()
+
+    assert task_path.exists()  # a false positive here would kill live work
+    assert requests == []  # never even asked the server about a live session

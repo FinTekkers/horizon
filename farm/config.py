@@ -24,6 +24,13 @@ PM_MODEL = os.environ.get("FARM_PM_MODEL")  # None -> CLI default
 STEP_TIMEOUT_S = int(os.environ.get("FARM_STEP_TIMEOUT_S", "900"))
 MAX_TURNS = int(os.environ.get("FARM_MAX_TURNS", "8"))
 
+# HZ-101: how often farmd reconciles claimed runs against live tmux sessions
+# (session gone -> report the run failed instead of waiting for the server's
+# execution timer), and how long a just-claimed run is given before its
+# missing session is treated as proof of death rather than "still launching".
+RECONCILE_INTERVAL_S = int(os.environ.get("FARM_RECONCILE_INTERVAL_S", "60"))
+RECONCILE_GRACE_S = int(os.environ.get("FARM_RECONCILE_GRACE_S", "90"))
+
 # HZ-83: which provider farm/agent_runner.py's run_agent() dispatches to.
 # "claude" is the default, keeping today's behaviour completely unchanged
 # when nothing is configured. See docs/providers/muse-code.md for "muse".
