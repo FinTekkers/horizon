@@ -41,11 +41,29 @@ import {
   FARM_QUEUE_TIMEOUT_MS,
   FARM_START_TIMEOUT_MS,
   FARM_CONFLICT_RESOLVE_TIMEOUT_MS,
+  RECONCILE_SWEEP_MS,
   UI_URL,
 } from './config.js'
 import { isPersona, personaLabel, proposePersona } from './personas.js'
 
+// Keyed by step_run.id (HZ-100) — NOT item id. Keying by item used to let a
+// stale callback for a superseded run clear/overwrite the CURRENT run's
+// watchdog (clearTimeout(timers[item_id]) has no way to know which run
+// currently owns that slot). Every site below now always has the specific
+// runId in scope, so each run's watchdog is independent of every other run
+// ever dispatched for the same item.
 const timers = {}
+
+// The busy mutex kick() used to get for free from timers[item_id] truthiness
+// — re-keying timers by run id removes that side effect, so this is now
+// explicit: an item is "dispatching" from the moment kick() commits to a run
+// until that run reaches a terminal state (done/cancelled/superseded),
+// released by the same code paths that used to release the old timer slot
+// (failFarmRun, finalizeReviewStep, finalizeDeployStep, the plain-completion
+// tails of completeFarmRun/runMockStep, and cancel). Held across awaits
+// (e.g. PR creation in completeFarmRun) so a second run can never be
+// dispatched for an item whose first run is still mid-finalization.
+const dispatching = new Set()
 
 // Execution budget once an agent has actually started (HZ-57): the implement
 // step legitimately runs long (real coding + tests), so its budget must
@@ -333,8 +351,9 @@ export function ensureFarm(log) {
 }
 
 export function switchProject(projectId, log) {
-  // Agents down: cancel every in-flight step across all items.
-  for (const id of Object.keys(timers)) cancel(id, 'superseded')
+  // Agents down: cancel every in-flight step across all items. Snapshot
+  // dispatching first — cancel() mutates it as each item is cancelled.
+  for (const id of [...dispatching]) cancel(id, 'superseded')
   setSetting('active_project_id', String(projectId))
 
   if (FARM_URL) {
@@ -502,7 +521,8 @@ function runnable(item) {
 
 export function kick(id, opts = {}) {
   const item = getItem(id)
-  if (!runnable(item) || timers[id]) return
+  if (!runnable(item) || dispatching.has(id)) return
+  dispatching.add(id)
 
   const stepIndex = item.cursor
   const step = STEPS[stepIndex]
@@ -519,7 +539,7 @@ export function kick(id, opts = {}) {
   if (FARM_URL && FARM_STEP_INDEXES.has(stepIndex)) {
     dispatchToFarm(id, stepIndex, runId, attempt)
   } else {
-    timers[id] = setTimeout(() => runMockStep(id, stepIndex, runId), latency())
+    timers[runId] = setTimeout(() => runMockStep(id, stepIndex, runId), latency())
   }
 }
 
@@ -536,7 +556,7 @@ async function dispatchToFarm(id, stepIndex, runId, attempt) {
   // — if the farm never calls back to confirm a launch (POST .../started),
   // this is what catches a step that's stuck in the queue (or a farm that's
   // down, or a lost task file) within a bounded window (HZ-57).
-  timers[id] = setTimeout(
+  timers[runId] = setTimeout(
     () => failFarmRun(runId, 'step was never picked up by the farm', 'never_picked_up'),
     FARM_QUEUE_TIMEOUT_MS,
   )
@@ -645,10 +665,10 @@ export function markFarmRunStarted(runId) {
   if (!run || run.status !== 'active') return { ok: true, active: false }
   if (run.agent_started_at) return { ok: true, active: true }
 
-  clearTimeout(timers[run.item_id])
+  clearTimeout(timers[runId])
   db.prepare("UPDATE step_run SET agent_started_at = datetime('now') WHERE id = ?").run(runId)
   const executionMs = executionBudgetFor(run.step_index)
-  timers[run.item_id] = setTimeout(() => failFarmRun(runId, 'step timed out', 'timeout'), executionMs)
+  timers[runId] = setTimeout(() => failFarmRun(runId, 'step timed out', 'timeout'), executionMs)
   return { ok: true, active: true }
 }
 
@@ -753,6 +773,10 @@ function mockReviewArtifactMd(verdict) {
 // attached (fail, cap reached) — the loop counter that proves the cap is
 // enforced lives in work_item.review_cycle_count, read back by tests.
 function finalizeReviewStep(id, runId, text, artifactMd, verdict, patch, isMock) {
+  // This run has fully completed by the time we're called (no more awaits
+  // pending on it) — safe to release the busy mutex before any of the three
+  // branches below calls kick() for the item's next step.
+  dispatching.delete(id)
   const step = STEPS[REVIEW_STEP_INDEX]
   const agent = AGENTS[step.agent]
   const attempt = db.prepare('SELECT attempt FROM step_run WHERE id = ?').get(runId)?.attempt || 1
@@ -825,6 +849,7 @@ export function validateDeployVerdict(v) {
 // human to decide (rollback, redeploy, investigate), same as failFarmRun,
 // but keeps the step_run's artifact/summary evidence instead of discarding it.
 function finalizeDeployStep(id, runId, text, artifactMd, verdict, patch) {
+  dispatching.delete(id) // this run is fully complete — no more awaits pending on it
   const step = STEPS[DEPLOY_STEP_INDEX]
   const agent = AGENTS[step.agent]
   const attempt = db.prepare('SELECT attempt FROM step_run WHERE id = ?').get(runId)?.attempt || 1
@@ -860,10 +885,11 @@ export async function completeFarmRun(runId, { summary, patch, artifacts }) {
   const id = run.item_id
   const item = getItem(id)
 
-  clearTimeout(timers[id])
-  delete timers[id]
+  clearTimeout(timers[runId])
+  delete timers[runId]
 
   if (!item || item.cursor !== run.step_index || !runnable(item)) {
+    dispatching.delete(id)
     closeActiveRuns(id, 'superseded')
     return { ok: true, stale: true }
   }
@@ -927,6 +953,7 @@ export async function completeFarmRun(runId, { summary, patch, artifacts }) {
   addEvent(id, { who: agent.label, text: `completed “${step.label}” — ${text.slice(0, 300)}`, color: agent.color, initials: agent.initials })
   postStepComment(getItem(id), run.step_index, run.attempt, text, cleanPatch, false, artifactMd)
   notifyChange()
+  dispatching.delete(id)
   kick(id)
   return { ok: true }
 }
@@ -940,8 +967,9 @@ export function failFarmRun(runId, error, reason = null) {
   if (!run || run.status !== 'active') return { ok: true, stale: true }
   const id = run.item_id
 
-  clearTimeout(timers[id])
-  delete timers[id]
+  clearTimeout(timers[runId])
+  delete timers[runId]
+  dispatching.delete(id) // this run is now terminal — release before any retry kick() below re-acquires it
 
   // No 'failed' status in older DBs' CHECK constraint — record as cancelled
   // with a FAILED-prefixed output, and say why.
@@ -996,12 +1024,14 @@ function runStillActive(runId) {
 }
 
 async function runMockStep(id, stepIndex, runId) {
-  // timers[id] stays set (as a "busy" marker) until this run fully exits, so
-  // a concurrent kick() can't start a duplicate run across the awaits below.
+  // The dispatch timer already fired to get us here — nothing left to watch.
+  // dispatching (the busy mutex) stays held until this run fully exits, so a
+  // concurrent kick() can't start a duplicate run across the awaits below.
+  delete timers[runId]
   const item = getItem(id)
   // Re-validate: the world may have changed while the "agent" was working.
   if (!runnable(item) || item.cursor !== stepIndex || !runStillActive(runId)) {
-    delete timers[id]
+    dispatching.delete(id)
     closeActiveRuns(id, 'superseded')
     return
   }
@@ -1024,7 +1054,7 @@ async function runMockStep(id, stepIndex, runId) {
   // Re-check after any await (e.g. PR creation): a pause/reject may have landed.
   const after = getItem(id)
   if (!runnable(after) || after.cursor !== stepIndex || !runStillActive(runId)) {
-    delete timers[id]
+    dispatching.delete(id)
     if (runStillActive(runId)) closeActiveRuns(id, 'superseded')
     return
   }
@@ -1038,9 +1068,7 @@ async function runMockStep(id, stepIndex, runId) {
   }
 
   if (stepIndex === REVIEW_STEP_INDEX) {
-    // delete BEFORE finalizeReviewStep: it calls kick() internally, and
-    // kick() no-ops while timers[id] (the busy marker for this run) is set.
-    delete timers[id]
+    // finalizeReviewStep releases the busy mutex itself before it calls kick().
     finalizeReviewStep(id, runId, summary, mockReviewArtifactMd(verdict), verdict, patch, true)
     return
   }
@@ -1059,7 +1087,7 @@ async function runMockStep(id, stepIndex, runId) {
   const attempt = db.prepare('SELECT attempt FROM step_run WHERE id = ?').get(runId)?.attempt || 1
   postStepComment(getItem(id), stepIndex, attempt, summary, patch, true)
   notifyChange()
-  delete timers[id]
+  dispatching.delete(id)
   kick(id) // next step, until a gate/closure
 }
 
@@ -1075,13 +1103,73 @@ function closeActiveRuns(id, status) {
 // tokens or race its replacement on the shared horizon/<item-id> branch.
 export function cancel(id, status = 'cancelled') {
   const activeRuns = db.prepare("SELECT id FROM step_run WHERE item_id = ? AND status = 'active'").all(id)
-  clearTimeout(timers[id])
-  delete timers[id]
+  for (const run of activeRuns) {
+    clearTimeout(timers[run.id])
+    delete timers[run.id]
+  }
+  dispatching.delete(id)
   closeActiveRuns(id, status)
   if (FARM_URL) {
     for (const run of activeRuns) {
       farmFetch('/steps/cancel', { run_id: run.id }).catch(() => {})
     }
+  }
+}
+
+// ---- durable reconciliation (HZ-100) ----
+// timers[] lives only in this process's memory — a run whose watchdog was
+// somehow lost (the item-keyed clobbering bug fixed above, a future bug, a
+// process crash and a rearm that itself throws for one row) can sit `active`
+// forever with nothing watching it. HZ-93's run 640 sat active for 16
+// minutes next to an idle, healthy farm; it moved only when a human failed
+// it by hand.
+//
+// This sweep is the DB-backed backstop, independent of any in-memory timer:
+// any `active` step_run with no local timer (rearmFarmRuns/dispatchToFarm/
+// markFarmRunStarted already cover the rows that DO have one — those are
+// left strictly alone, timer or no farm check) is checked against the farm
+// directly. The farm's own claim (still queued, or a live session) is proof
+// of life; only a run the farm explicitly cannot vouch for is failed —
+// through the exact same failFarmRun path (and the same already-tagged
+// 'never_picked_up' reason) the queue watchdog above already uses, so
+// HZ-76's default-safe auto-retry rule is never widened.
+let reconcileInFlight = false
+
+export async function reconcileActiveRuns() {
+  if (!FARM_URL || reconcileInFlight) return { checked: 0, failed: 0 }
+  reconcileInFlight = true
+  try {
+    const candidates = db
+      .prepare("SELECT id FROM step_run WHERE status = 'active'")
+      .all()
+      .filter((run) => !timers[run.id])
+    if (candidates.length === 0) return { checked: 0, failed: 0 }
+
+    let alive
+    try {
+      const data = await farmFetch('/runs/alive', { run_ids: candidates.map((r) => String(r.id)) })
+      alive = data.alive || {}
+    } catch {
+      // An unreachable farm is not evidence of death — leave every candidate
+      // alone; the next sweep tries again.
+      return { checked: candidates.length, failed: 0 }
+    }
+
+    let failed = 0
+    for (const { id: runId } of candidates) {
+      // Proof of life from the farm, or a timer that got armed while this
+      // sweep was awaiting the farm call — either way, leave it alone.
+      if (alive[String(runId)] || timers[runId]) continue
+      failFarmRun(
+        runId,
+        'step_run left active with no local timer, no farm claim, and no live agent session',
+        'never_picked_up',
+      )
+      failed++
+    }
+    return { checked: candidates.length, failed }
+  } finally {
+    reconcileInFlight = false
   }
 }
 
@@ -1111,6 +1199,12 @@ export function init(log) {
     // ensureFarm() already returns immediately when the farm is healthy, so
     // this only does work while something is actually wrong.
     setInterval(() => ensureFarm(log), FARM_RECOVERY_POLL_MS).unref()
+    // Boot-time sweep runs immediately (not just on the interval below) —
+    // rearmFarmRuns() above already re-armed every currently-active row's
+    // timer, so in practice this finds nothing at boot; it's the interval
+    // that catches a timer lost later, while the process keeps running.
+    reconcileActiveRuns()
+    setInterval(reconcileActiveRuns, RECONCILE_SWEEP_MS).unref()
   } else {
     // Mock runs die with this process: close them; resume will re-kick.
     closeAllOrphanedRuns()
@@ -1152,7 +1246,12 @@ export function rearmFarmRuns() {
     const anchor = run.agent_started_at || run.started_at
     const elapsedMs = Date.now() - new Date(anchor).getTime()
     const remainingMs = Math.max(0, executionBudgetFor(run.step_index) - elapsedMs)
-    timers[run.item_id] = setTimeout(() => failFarmRun(run.id, 'step timed out', 'timeout'), remainingMs)
+    timers[run.id] = setTimeout(() => failFarmRun(run.id, 'step timed out', 'timeout'), remainingMs)
+    // Re-key removed the free busy-mutex side effect timers[item_id] used to
+    // give kick() — without this, a restart would leave every one of these
+    // items looking idle and resumeActiveItems()/a human resume could
+    // dispatch a second run right on top of the one just re-armed above.
+    dispatching.add(run.item_id)
   }
   return active.length
 }

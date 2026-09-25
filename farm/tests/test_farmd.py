@@ -1026,3 +1026,107 @@ def test_reconcile_end_to_end_over_real_tmux_never_touches_a_real_live_session(q
 
     assert task_path.exists()  # a false positive here would kill live work
     assert requests == []  # never even asked the server about a live session
+
+
+# ---- /runs/alive (HZ-100) ----
+# The Node reconciliation sweep's proof-of-life check — deliberately NOT
+# /runs/status: that endpoint defaults an unrecognized run_id to "running"
+# (a fail-soft default for the UI, pinned by test_runs_status_reports_running
+# _for_an_unknown_run_id above), which would make it useless for deciding
+# whether to fail a stranded run. /runs/alive defaults to False instead.
+
+
+def test_runs_alive_true_for_a_claimed_run_with_a_live_session(queue_dirs, monkeypatch):
+    (QUEUE_DIR / "runs" / "active" / "401.json").write_text(
+        json.dumps(make_task(401, item_id="hz-1", step_index=11, attempt=1))
+    )
+    monkeypatch.setattr(farmd.tmux_mgr, "session_exists", lambda name: name == "farm-run-hz-1-s11-a1")
+    res = client.post("/runs/alive", json={"run_ids": [401]})
+    assert res.json() == {"alive": {"401": True}}
+
+
+def test_runs_alive_false_for_a_claimed_run_whose_session_is_gone(queue_dirs, monkeypatch):
+    # This is exactly the HZ-93 shape at the farmd layer: a claimed task file
+    # with nothing left running it.
+    (QUEUE_DIR / "runs" / "active" / "402.json").write_text(json.dumps(make_task(402, item_id="hz-1", step_index=11)))
+    monkeypatch.setattr(farmd.tmux_mgr, "session_exists", lambda name: False)
+    res = client.post("/runs/alive", json={"run_ids": [402]})
+    assert res.json() == {"alive": {"402": False}}
+
+
+def test_runs_alive_true_for_a_task_still_queued_in_pm_or_runs(queue_dirs):
+    (QUEUE_DIR / "pm" / "403.json").write_text(json.dumps(make_task(403, step_index=9)))
+    (QUEUE_DIR / "runs" / "404.json").write_text(json.dumps(make_task(404, step_index=11)))
+    res = client.post("/runs/alive", json={"run_ids": [403, 404]})
+    assert res.json() == {"alive": {"403": True, "404": True}}
+
+
+def test_runs_alive_false_for_a_run_the_farm_has_no_record_of(queue_dirs):
+    # No task file anywhere, no session, no PM/ephemeral tracking — the farm
+    # genuinely does not know about this run.
+    res = client.post("/runs/alive", json={"run_ids": [999999]})
+    assert res.json() == {"alive": {"999999": False}}
+
+
+def test_runs_alive_true_for_an_in_flight_pm_claimed_run(queue_dirs, monkeypatch):
+    """A PM-claimed run has no per-run task file (claim-before-work unlinks
+    it) and no per-run tmux session — its only proof of life is
+    PM_ACTIVE_RUNS plus the shared PM session still being up."""
+    farmd.state["project"] = {"id": 1, "name": "Test Project"}
+    farmd.PM_ACTIVE_RUNS.add("405")
+    try:
+        monkeypatch.setattr(farmd.tmux_mgr, "session_exists", lambda name: name == farmd._pm_session_name())
+        res = client.post("/runs/alive", json={"run_ids": [405]})
+        assert res.json() == {"alive": {"405": True}}
+    finally:
+        farmd.PM_ACTIVE_RUNS.discard("405")
+        farmd.state["project"] = None
+
+
+def test_runs_alive_false_for_a_pm_claimed_run_whose_pm_session_died(queue_dirs, monkeypatch):
+    farmd.state["project"] = {"id": 1, "name": "Test Project"}
+    farmd.PM_ACTIVE_RUNS.add("406")
+    try:
+        monkeypatch.setattr(farmd.tmux_mgr, "session_exists", lambda name: False)
+        res = client.post("/runs/alive", json={"run_ids": [406]})
+        assert res.json() == {"alive": {"406": False}}
+    finally:
+        farmd.PM_ACTIVE_RUNS.discard("406")
+        farmd.state["project"] = None
+
+
+def test_runs_alive_never_leaks_a_tmux_session_name(queue_dirs):
+    (QUEUE_DIR / "runs" / "active" / "407.json").write_text(json.dumps(make_task(407, item_id="HZ-100", step_index=11)))
+    res = client.post("/runs/alive", json={"run_ids": [407]})
+    assert "farm-run-" not in json.dumps(res.json())
+
+
+def test_internal_steps_started_tracks_pm_active_runs_until_the_result_lands():
+    """The lifecycle that backs the PM-alive check above: started adds to
+    PM_ACTIVE_RUNS, the result callback (ok or not) always removes it."""
+    farmd.PM_ACTIVE_RUNS.discard("408")
+    try:
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr(farmd, "_notify_started", lambda run_id: True)
+            res = client.post("/internal/steps/started", json={"run_id": 408})
+            assert res.json()["active"] is True
+        assert "408" in farmd.PM_ACTIVE_RUNS
+
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr(farmd.httpx, "post", lambda *a, **k: _FakeFailResponse(200))
+            client.post("/internal/steps/result", json={"run_id": 408, "ok": False, "error": "boom"})
+        assert "408" not in farmd.PM_ACTIVE_RUNS
+    finally:
+        farmd.PM_ACTIVE_RUNS.discard("408")
+
+
+def test_internal_steps_started_does_not_track_a_run_the_server_no_longer_considers_active():
+    farmd.PM_ACTIVE_RUNS.discard("409")
+    try:
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr(farmd, "_notify_started", lambda run_id: False)
+            res = client.post("/internal/steps/started", json={"run_id": 409})
+            assert res.json()["active"] is False
+        assert "409" not in farmd.PM_ACTIVE_RUNS
+    finally:
+        farmd.PM_ACTIVE_RUNS.discard("409")
