@@ -1,0 +1,25 @@
+Captured output of the real Muse CLI e2e suite for HZ-102, attached as a
+build artifact per QA's cycle-2 send-back (self-reported prose numbers in
+muse-code.md were not acceptable evidence).
+
+Command run (from repo root, `muse` v1.4.0 installed and `muse login`
+authenticated on this host — no ANTHROPIC_API_KEY, no metered billing path):
+
+    FARM_MUSE_E2E=1 python3 -m pytest farm/tests/test_e2e_muse.py -v -s
+
+Raw terminal output follows, unedited:
+
+============================= test session starts ==============================
+platform linux -- Python 3.12.3, pytest-9.1.1, pluggy-1.6.0 -- /usr/bin/python3
+cachedir: .pytest_cache
+rootdir: /home/ubuntu/.horizon-farm/workspaces/FinTekkers__horizon__items/hz-102
+configfile: pytest.ini
+plugins: anyio-4.15.1
+collecting ... collected 3 items
+
+farm/tests/test_e2e_muse.py::test_session_continuity_across_two_separate_muse_invocations PASSED
+farm/tests/test_e2e_muse.py::test_terminal_completed_parse_holds_against_a_real_run PASSED
+farm/tests/test_e2e_muse.py::test_one_real_planning_step_completes_with_muse_and_records_provenance [23:05:49] HZ-102 provenance: provider=muse command_id=372480e2-073c-42c4-8ad0-dc9eec05a836
+PASSED
+
+========================= 3 passed in 73.20s (0:01:13) =========================

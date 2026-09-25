@@ -166,6 +166,59 @@ persistent trust — before the implement step depends on subagents.
 - whether `--output-schema` failures are recoverable or terminal
 - non-zero exit codes and their meanings; only `exit=0` was observed
 
+## HZ-102: proving the wiring, end to end
+
+HZ-83 built this provider and the seam; nothing routed a real step to it
+until HZ-102. What HZ-102 adds:
+
+- **Routing.** A single test-only persona, `muse_smoke_test`
+  (`farm/personas.py`), maps to the Muse provider via `PERSONA_PROVIDERS`.
+  `farm/step_agent.py` only honors that mapping on the pure-planning steps
+  ("Plan options & trade-offs", "Draft implementation plan", "Architecture
+  review") — never implement or deploy, enforced in code via
+  `PROVIDER_OVERRIDE_ELIGIBLE_STEPS`, not just by convention on the persona.
+  Every real persona (`fullstack`, `python_backend`, `frontend_ui`) is absent
+  from `PERSONA_PROVIDERS`, so Claude stays the default for all real work.
+  The override reaches `run_agent()` as an explicit `provider=` argument, not
+  an env var — it can't leak into a later call in the same process.
+- **Provenance.** `_parse_events` now returns `command_id` alongside
+  `result`/`session_id`, and raises loudly if a `run.terminal.completed`
+  event is missing it — provenance a caller can't record is treated as a
+  failure, not an empty artifact. `run_agent()` stamps `provider` onto every
+  reply. For the muse-routed planning step, `step_agent.py` writes both into
+  the step's `artifacts`, which `server/src/orchestrator.js` persists on the
+  new `step_run.provider` / `step_run.command_id` columns and folds into the
+  step's summary line, so a human reads it in the activity feed without
+  inspecting config.
+- **Sandbox — nothing was relaxed.** Muse's sandbox network defaults to
+  proxy-only (see the flags table above), but that only governs network
+  calls made from *inside* Muse's own sandbox. The call to the Horizon
+  server happens outside it: `farm/step_agent.py`'s process posts the result
+  over HTTP after the `muse` subprocess has already exited. `--disable-sandbox`
+  and `--sandbox-network` are never passed by this provider — the minimum
+  needed for a headless run to reach the Horizon server was nothing.
+- **Tests.** `farm/tests/test_providers_muse.py` covers command_id
+  extraction/failure and a recorded-fixture JSONL parse (mocked subprocess —
+  runs in CI). `farm/tests/test_step_agent.py` covers persona-based dispatch
+  through `run_agent()` (never a direct call into this module) and the
+  implement/deploy exclusion. `farm/tests/test_e2e_muse.py` is the opt-in
+  counterpart that needs a real, authenticated `muse` CLI — see its
+  docstring for the exact command; it is not part of the CI-gating suite. Its
+  provenance test also asserts wall-clock duration against the step's
+  configured timeout budget (half of it, as a healthy-run margin, not just
+  "didn't hit the OS-level timeout") — a run that only barely finishes is
+  treated as a failure here even though it would return normally.
+- **Verified live**, not just mocked: with `muse` installed and authenticated
+  on this host, `FARM_MUSE_E2E=1 python3 -m pytest farm/tests/test_e2e_muse.py
+  -v -s` passed all 3 tests (73.20s total) — session continuity across two
+  separate `muse exec` processes, the terminal-event parse against a live
+  reply, and one real planning step dispatched through
+  `step_agent.execute()` that recorded `provider=muse` and a real
+  `command_id` (`372480e2-073c-42c4-8ad0-dc9eec05a836`) well inside its
+  1140s budget. Raw terminal output is attached at
+  [`muse-e2e-evidence.log`](./muse-e2e-evidence.log) — not a number typed
+  into this doc.
+
 ## Reproducing these checks
 
 ```bash

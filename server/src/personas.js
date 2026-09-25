@@ -8,6 +8,12 @@ export const PERSONAS = {
   fullstack: { label: 'Full-stack', initials: 'FS', color: '#0E6E74' },
   python_backend: { label: 'Python backend', initials: 'PY', color: '#2E6CB2' },
   frontend_ui: { label: 'Frontend UI', initials: 'UI', color: '#DFA200' },
+  // HZ-102: test-only — proves the Muse provider seam (HZ-83) actually runs
+  // a real step, never a real specialization. testOnly hides it from the
+  // UI's persona picker (ui/src/components/Tracker.jsx); proposePersona()
+  // below never returns it either. An item only carries it if someone sets
+  // it by hand on a throwaway test item.
+  muse_smoke_test: { label: 'Muse smoke test (test-only)', initials: 'MS', color: '#8A2BE2', testOnly: true },
 }
 
 export const DEFAULT_PERSONA = 'fullstack'

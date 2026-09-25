@@ -78,6 +78,14 @@ test('the select is absent when the item is past the intake gate', () => {
   expect(queryByLabelText('Specialist persona')).toBeNull()
 })
 
+// HZ-102: muse_smoke_test exists only to prove the Muse provider seam runs a
+// real step — it must never be offered as a real choice here.
+test('the persona picker never offers the muse_smoke_test test-only persona', () => {
+  const { getByLabelText } = renderTracker({ ...baseItem, persona: 'python_backend' })
+  const options = Array.from(getByLabelText('Specialist persona').options).map((o) => o.value)
+  expect(options).not.toContain('muse_smoke_test')
+})
+
 // ---- HZ-14: "See agent output" links (replaces inline output + HZ-5's Live activity panel) ----
 
 test('a completed agent step with output renders a "See agent output" link, not the text inline', () => {
