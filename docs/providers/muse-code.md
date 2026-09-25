@@ -203,7 +203,19 @@ until HZ-102. What HZ-102 adds:
   through `run_agent()` (never a direct call into this module) and the
   implement/deploy exclusion. `farm/tests/test_e2e_muse.py` is the opt-in
   counterpart that needs a real, authenticated `muse` CLI — see its
-  docstring for the exact command; it is not part of the CI-gating suite.
+  docstring for the exact command; it is not part of the CI-gating suite. Its
+  provenance test also asserts wall-clock duration against the step's
+  configured timeout budget (half of it, as a healthy-run margin, not just
+  "didn't hit the OS-level timeout") — a run that only barely finishes is
+  treated as a failure here even though it would return normally.
+- **Verified live**, not just mocked: with `muse` installed and authenticated
+  on this host, `FARM_MUSE_E2E=1 python3 -m pytest farm/tests/test_e2e_muse.py
+  -v -s` passed all 3 tests (76s total) — session continuity across two
+  separate `muse exec` processes, the terminal-event parse against a live
+  reply, and one real planning step dispatched through
+  `step_agent.execute()` that recorded `provider=muse` and a real
+  `command_id` (`a88786b7-9467-4554-aae0-77e72cd14714`) well inside its
+  1140s budget.
 
 ## Reproducing these checks
 

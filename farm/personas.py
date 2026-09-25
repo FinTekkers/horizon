@@ -35,6 +35,13 @@ DEFAULT_PERSONA = "fullstack"
 # run_agent() falls back to its normal FARM_PROVIDER-selected default
 # (Claude) unchanged (HZ-102 guardrail: this adds one mapped test persona,
 # it does not make Muse the default for anything real).
+#
+# Kept separate from PERSONAS rather than an extra field on each entry:
+# PERSONAS's id set is mirrored append-only into server/src/personas.js and
+# ui/src/domain/personas.js (parity-tested), and neither of those has any
+# notion of a farm provider — folding "provider" onto PERSONAS would either
+# leak a farm-only routing concept into that three-way mirror or force the
+# server/UI copies to carry a field they can't act on.
 PERSONA_PROVIDERS = {"muse_smoke_test": "muse"}
 
 

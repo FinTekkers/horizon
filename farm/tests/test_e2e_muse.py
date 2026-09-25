@@ -19,6 +19,7 @@ implement, ship, or deploy.
 
 import os
 import shutil
+import time
 import uuid
 
 import pytest
@@ -26,6 +27,7 @@ import pytest
 from farm import step_agent
 from farm.config import FARM_MUSE_BIN
 from farm.providers import muse
+from farm.step_agent import STEP_CONFIG
 
 pytestmark = pytest.mark.skipif(
     os.environ.get("FARM_MUSE_E2E") != "1",
@@ -90,9 +92,24 @@ def test_one_real_planning_step_completes_with_muse_and_records_provenance():
         "artifacts": [],
         "feedback": [],
     }
+    step_timeout_s = STEP_CONFIG[task["step"]["index"]][4]
 
+    started = time.monotonic()
     result = step_agent.execute(task)
+    elapsed_s = time.monotonic() - started
 
     assert result["artifacts"]["provider"] == "muse"
     assert result["artifacts"]["command_id"]
     assert "provider=muse" in result["summary"]
+    # QA send-back on cycle 1: prove the run finished comfortably inside its
+    # normal budget, not just that it returned at all. subprocess.run's own
+    # timeout=timeout_s (farm/providers/muse.py) would turn a real hang into
+    # an AgentExhaustedError and fail this test with an exception — but a run
+    # that limps in at, say, 95% of budget is still a hang in every practical
+    # sense for a "cheap, side-effect-free planning step" and that case
+    # raises nothing. Half the configured budget is a generous ceiling for a
+    # one-line smoke prompt; this is verification, not a perf benchmark.
+    assert elapsed_s < step_timeout_s * 0.5, (
+        f"planning step took {elapsed_s:.1f}s against a {step_timeout_s}s budget for step "
+        f"{task['step']['index']} — too close to the timeout to call this a healthy run"
+    )
