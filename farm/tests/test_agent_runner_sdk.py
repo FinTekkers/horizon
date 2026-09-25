@@ -1,9 +1,10 @@
-"""claude_runner: the SDK streaming path (HZ-5).
+"""agent_runner: the SDK streaming path (HZ-5), driven through the claude
+provider (the default when FARM_PROVIDER is unset, unchanged by HZ-83).
 
 These tests need the real claude-agent-sdk for its message types, so the
 whole module skips when it is absent (e.g. a farm-host venv that predates
 HZ-5). The cost guardrail and the subprocess fallback stay enforced
-regardless — they live SDK-free in test_claude_runner.py.
+regardless — they live SDK-free in test_agent_runner.py.
 """
 
 import subprocess
@@ -14,7 +15,8 @@ import pytest
 
 sdk = pytest.importorskip("claude_agent_sdk", reason="claude-agent-sdk not installed — SDK-path tests need its message types")
 
-from farm.claude_runner import ClaudeError, TurnCapExceeded, run_claude
+from farm.agent_runner import AgentError, run_agent
+from farm.providers.base import AgentExhaustedError
 
 # conftest defaults tests to the subprocess runner (fake_claude can't speak
 # the SDK stream protocol); these opt in and mock claude_agent_sdk.query.
@@ -47,7 +49,7 @@ def test_sdk_path_streams_events_and_returns_result(sdk_runner, monkeypatch, cap
             yield sdk.AssistantMessage(
                 content=[
                     sdk.TextBlock(text="Reading the runner first."),
-                    sdk.ToolUseBlock(id="t1", name="Read", input={"file_path": "farm/claude_runner.py"}),
+                    sdk.ToolUseBlock(id="t1", name="Read", input={"file_path": "farm/agent_runner.py"}),
                 ],
                 model="m",
             )
@@ -56,7 +58,7 @@ def test_sdk_path_streams_events_and_returns_result(sdk_runner, monkeypatch, cap
         return gen()
 
     monkeypatch.setattr(sdk, "query", fake_query)
-    reply = run_claude(
+    reply = run_agent(
         "do it",
         append_system="be terse",
         max_turns=5,
@@ -71,7 +73,7 @@ def test_sdk_path_streams_events_and_returns_result(sdk_runner, monkeypatch, cap
     # One flushed line per event lands on stdout (= the tmux pane).
     out = capsys.readouterr().out
     assert "Reading the runner first." in out
-    assert '⏺ Read({"file_path": "farm/claude_runner.py"})' in out
+    assert '⏺ Read({"file_path": "farm/agent_runner.py"})' in out
     assert "── result: 2 turn(s)" in out
 
 
@@ -89,7 +91,7 @@ def test_sdk_stale_resume_retries_exactly_once_fresh(sdk_runner, monkeypatch):
         return gen()
 
     monkeypatch.setattr(sdk, "query", fake_query)
-    reply = run_claude("hello", session_id="dead-session", timeout_s=10)
+    reply = run_agent("hello", session_id="dead-session", timeout_s=10)
     assert reply["session_id"] == "fresh-1"
     assert calls == ["dead-session", None]
 
@@ -103,8 +105,8 @@ def test_sdk_failure_without_resume_raises(sdk_runner, monkeypatch):
         return gen()
 
     monkeypatch.setattr(sdk, "query", fake_query)
-    with pytest.raises(ClaudeError, match="cli exploded"):
-        run_claude("hello", timeout_s=10)
+    with pytest.raises(AgentError, match="cli exploded"):
+        run_agent("hello", timeout_s=10)
 
 
 def test_sdk_timeout_closes_the_stream_and_kills_the_child(sdk_runner, monkeypatch):
@@ -129,8 +131,8 @@ def test_sdk_timeout_closes_the_stream_and_kills_the_child(sdk_runner, monkeypat
 
     monkeypatch.setattr(sdk, "query", fake_query)
     try:
-        with pytest.raises(ClaudeError, match="timed out after 1s"):
-            run_claude("hang forever", timeout_s=1)
+        with pytest.raises(AgentExhaustedError, match="timed out after 1s"):
+            run_agent("hang forever", timeout_s=1)
         deadline = time.time() + 10
         while child.poll() is None and time.time() < deadline:
             time.sleep(0.05)
@@ -140,22 +142,27 @@ def test_sdk_timeout_closes_the_stream_and_kills_the_child(sdk_runner, monkeypat
             child.kill()
 
 
-def test_sdk_error_result_raises(sdk_runner, monkeypatch):
+def test_sdk_error_result_raises_plain_agent_error(sdk_runner, monkeypatch):
+    """A generic SDK error result (not a max-turns exhaustion) is a plain
+    AgentError — the negative case proving exhaustion typing doesn't
+    over-fire on every error subtype (architecture review finding)."""
+
     def fake_query(*, prompt, options=None, **kwargs):
         async def gen():
-            yield _result_message(result="max turns exceeded", is_error=True)
+            yield _result_message(result="max turns exceeded", is_error=True, subtype="success")
 
         return gen()
 
     monkeypatch.setattr(sdk, "query", fake_query)
-    with pytest.raises(ClaudeError, match="error result"):
-        run_claude("hello", timeout_s=10)
+    with pytest.raises(AgentError, match="error result") as exc_info:
+        run_agent("hello", timeout_s=10)
+    assert not isinstance(exc_info.value, AgentExhaustedError)
 
 
-def test_sdk_error_max_turns_raises_the_retryable_subclass(sdk_runner, monkeypatch):
-    """HZ-76: only error_max_turns is auto-retryable server-side — it must
-    raise the distinct TurnCapExceeded subclass, not a plain ClaudeError, so
-    step_agent.main() can tag the failure with reason=turn_cap."""
+def test_sdk_error_max_turns_raises_agent_exhausted_error(sdk_runner, monkeypatch):
+    """The positive exhaustion case: subtype=error_max_turns is Claude's
+    real max-turns signal and must raise the typed AgentExhaustedError so
+    step_agent's checkpoint salvage (HZ-31) can tell it apart uniformly."""
 
     def fake_query(*, prompt, options=None, **kwargs):
         async def gen():
@@ -164,21 +171,5 @@ def test_sdk_error_max_turns_raises_the_retryable_subclass(sdk_runner, monkeypat
         return gen()
 
     monkeypatch.setattr(sdk, "query", fake_query)
-    with pytest.raises(TurnCapExceeded, match=r"\[error_max_turns\]"):
-        run_claude("hello", timeout_s=10)
-
-
-def test_sdk_other_error_subtypes_stay_plain_claude_error(sdk_runner, monkeypatch):
-    """A non-turn-cap error result (e.g. error_during_execution) must NOT be
-    classified as TurnCapExceeded — only error_max_turns is retryable."""
-
-    def fake_query(*, prompt, options=None, **kwargs):
-        async def gen():
-            yield _result_message(result="boom", is_error=True, subtype="error_during_execution")
-
-        return gen()
-
-    monkeypatch.setattr(sdk, "query", fake_query)
-    with pytest.raises(ClaudeError) as excinfo:
-        run_claude("hello", timeout_s=10)
-    assert not isinstance(excinfo.value, TurnCapExceeded)
+    with pytest.raises(AgentExhaustedError, match="error_max_turns"):
+        run_agent("hello", timeout_s=10)

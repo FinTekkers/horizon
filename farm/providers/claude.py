@@ -1,17 +1,20 @@
-"""Runs one Claude Code invocation and streams its activity to stdout.
+"""The Claude provider (HZ-5, moved verbatim under the provider seam by HZ-83).
 
-Default path (HZ-5): the Python Agent SDK (`claude-agent-sdk`) drives the
-local `claude` binary and yields typed events as the model works — each one
-is printed to stdout, which IS the tmux pane (and, via farmd's pipe-pane,
-the run's log file that the UI tails). Session continuity still comes from
+Default path: the Python Agent SDK (`claude-agent-sdk`) drives the local
+`claude` binary and yields typed events as the model works — each one is
+printed to stdout, which IS the tmux pane (and, via farmd's pipe-pane, the
+run's log file that the UI tails). Session continuity still comes from
 `resume=<session_id>`; scripts stay in control of the flow.
 
 Rollback lever: FARM_RUNNER=subprocess restores the old silent
-`claude -p --output-format json` subprocess path unchanged.
+`claude -p --output-format json` subprocess path unchanged. This is
+independent of FARM_PROVIDER (farm/agent_runner.py) — it only chooses how
+*this* provider talks to `claude`, not which provider runs.
 
-Cost guardrail (HZ-5 success metric): the SDK path refuses to run when
-ANTHROPIC_API_KEY is set, so every call rides the logged-in `claude`
-subscription — never API billing.
+Cost guardrail (HZ-5 success metric): refuses to run when ANTHROPIC_API_KEY
+is set, unless metered billing is explicitly opted in with an enforced cap
+(HZ-83 — see farm/providers/base.py) — every call otherwise rides the
+logged-in `claude` subscription, never API billing.
 """
 
 import asyncio
@@ -20,29 +23,27 @@ import os
 import subprocess
 from datetime import datetime
 
-from .config import CLAUDE_BIN, FARM_RUNNER, MAX_TURNS, STEP_TIMEOUT_S
+from ..config import CLAUDE_BIN, FARM_RUNNER, MAX_TURNS, STEP_TIMEOUT_S
+from .base import AgentError, AgentExhaustedError, assert_metered_billing_authorized, metered_billing_opted_in
 
-
-class ClaudeError(RuntimeError):
-    pass
-
-
-class TurnCapExceeded(ClaudeError):
-    """Raised specifically when the SDK reports error_max_turns — distinct
-    from ClaudeError's other causes (timeout, malformed reply, crashed
-    process) so callers can tell "ran out of turn budget" apart from those
-    without parsing the message string (HZ-76: the orchestrator auto-retries
-    this cause, up to its own hard cap, unlike a generic ClaudeError)."""
+SUPPORTS_RESUME = True
 
 
 def assert_subscription_auth() -> None:
     """Refuse to run with ANTHROPIC_API_KEY present — the farm must use the
-    logged-in `claude` subscription, never metered API billing (HZ-5)."""
-    if os.environ.get("ANTHROPIC_API_KEY", "").strip():
-        raise ClaudeError(
+    logged-in `claude` subscription, never metered API billing (HZ-5) —
+    unless FARM_ALLOW_METERED_BILLING opts in with an enforced spend cap
+    (HZ-83)."""
+    if not os.environ.get("ANTHROPIC_API_KEY", "").strip():
+        return
+    if not metered_billing_opted_in():
+        raise AgentError(
             "ANTHROPIC_API_KEY is set — the farm runs on the logged-in claude "
-            "subscription only (HZ-5 cost guardrail). Unset it and restart the farm."
+            "subscription only (HZ-5 cost guardrail). Unset it and restart the farm, or opt "
+            "in explicitly with FARM_ALLOW_METERED_BILLING=1 plus an enforced "
+            "FARM_METERED_SPEND_CAP_USD (HZ-83)."
         )
+    assert_metered_billing_authorized("claude")
 
 
 def _selected_runner() -> str:
@@ -51,7 +52,7 @@ def _selected_runner() -> str:
     return os.environ.get("FARM_RUNNER", FARM_RUNNER)
 
 
-def run_claude(
+def run(
     prompt: str,
     *,
     session_id: str | None = None,
@@ -64,7 +65,7 @@ def run_claude(
 ) -> dict:
     """Returns {"result": <final text>, "session_id": <id>}."""
     if _selected_runner() == "subprocess":
-        return _run_claude_subprocess(
+        return _run_subprocess(
             prompt,
             session_id=session_id,
             append_system=append_system,
@@ -81,7 +82,7 @@ def run_claude(
     try:
         from claude_agent_sdk import ClaudeSDKError
     except ImportError as exc:
-        raise ClaudeError(
+        raise AgentError(
             "claude-agent-sdk is not installed in this environment — "
             "run `pip install -r farm/requirements.txt` in the farm venv, "
             "or set FARM_RUNNER=subprocess to fall back to the old runner"
@@ -103,11 +104,11 @@ def run_claude(
             )
         )
     except TimeoutError as exc:
-        raise ClaudeError(f"claude timed out after {timeout_s}s") from exc
+        raise AgentExhaustedError(f"claude timed out after {timeout_s}s") from exc
     except ClaudeSDKError as exc:
         # A stale `resume` session is the common recoverable failure: retry fresh.
         if session_id:
-            return run_claude(
+            return run(
                 prompt,
                 session_id=None,
                 append_system=append_system,
@@ -117,7 +118,7 @@ def run_claude(
                 timeout_s=timeout_s,
                 allowed_tools=allowed_tools,
             )
-        raise ClaudeError(f"claude (sdk) failed: {str(exc)[:300]}") from exc
+        raise AgentError(f"claude (sdk) failed: {str(exc)[:300]}") from exc
 
 
 async def _stream_query(
@@ -164,8 +165,9 @@ async def _stream_query(
                     # failure reads as a mystery in the UI.
                     subtype = getattr(message, "subtype", None) or "unknown"
                     detail = result_text[:300] or f"no result text (subtype: {subtype}, {message.num_turns} turns)"
-                    error_cls = TurnCapExceeded if subtype == "error_max_turns" else ClaudeError
-                    raise error_cls(f"claude reported an error result [{subtype}]: {detail}")
+                    if subtype == "error_max_turns":
+                        raise AgentExhaustedError(f"claude reported an error result [{subtype}]: {detail}")
+                    raise AgentError(f"claude reported an error result [{subtype}]: {detail}")
     finally:
         # Cancellation (asyncio.wait_for timeout) lands here too: closing the
         # generator tears down the SDK's transport, killing the spawned
@@ -201,7 +203,7 @@ def _brief(tool_input) -> str:
     return text if len(text) <= 160 else text[:157] + "…"
 
 
-def _run_claude_subprocess(
+def _run_subprocess(
     prompt: str,
     *,
     session_id: str | None = None,
@@ -229,14 +231,14 @@ def _run_claude_subprocess(
     try:
         proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout_s, cwd=cwd)
     except subprocess.TimeoutExpired as exc:
-        raise ClaudeError(f"claude timed out after {timeout_s}s") from exc
+        raise AgentExhaustedError(f"claude timed out after {timeout_s}s") from exc
     except FileNotFoundError as exc:
-        raise ClaudeError(f"claude binary not found: {CLAUDE_BIN}") from exc
+        raise AgentError(f"claude binary not found: {CLAUDE_BIN}") from exc
 
     if proc.returncode != 0:
         # A stale --resume session is the common recoverable failure: retry fresh.
         if session_id:
-            return _run_claude_subprocess(
+            return _run_subprocess(
                 prompt,
                 session_id=None,
                 append_system=append_system,
@@ -246,31 +248,11 @@ def _run_claude_subprocess(
                 timeout_s=timeout_s,
                 allowed_tools=allowed_tools,
             )
-        raise ClaudeError(f"claude exited {proc.returncode}: {proc.stderr.strip()[:300]}")
+        raise AgentError(f"claude exited {proc.returncode}: {proc.stderr.strip()[:300]}")
 
     try:
         data = json.loads(proc.stdout)
     except json.JSONDecodeError as exc:
-        raise ClaudeError(f"claude produced non-JSON output: {proc.stdout[:200]}") from exc
+        raise AgentError(f"claude produced non-JSON output: {proc.stdout[:200]}") from exc
 
     return {"result": data.get("result", ""), "session_id": data.get("session_id")}
-
-
-def extract_json(text: str) -> dict:
-    """Lift a JSON object out of a model reply (tolerates fences/prose)."""
-    cleaned = text.strip()
-    if cleaned.startswith("```"):
-        cleaned = cleaned.strip("`")
-        if cleaned.startswith("json"):
-            cleaned = cleaned[4:]
-    try:
-        # strict=False: models occasionally emit raw control characters
-        # (literal newlines/tabs) inside JSON strings — meaningful content
-        # that the strict parser rejects, failing an otherwise-good step.
-        return json.loads(cleaned, strict=False)
-    except json.JSONDecodeError:
-        pass
-    start, end = cleaned.find("{"), cleaned.rfind("}")
-    if start == -1 or end <= start:
-        raise ClaudeError(f"no JSON object in agent reply: {text[:200]}")
-    return json.loads(cleaned[start : end + 1], strict=False)

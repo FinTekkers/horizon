@@ -12,7 +12,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import pytest
 
 from farm import step_agent
-from farm.claude_runner import ClaudeError, TurnCapExceeded
+from farm.agent_runner import AgentError, AgentExhaustedError
 from farm.personas import PERSONA_DIR, PERSONAS
 from farm.step_agent import truncate_diff, STEP_CONFIG, build_prompt, execute, publish_screenshots
 
@@ -272,12 +272,12 @@ def test_implement_step_publishes_screenshots_without_polluting_the_code_branch(
     # prepare_branch() resets/cleans the worktree before the agent runs, so the
     # screenshot must appear as a side effect of the (fake) e2e run, same as a
     # real Playwright run would produce it after the branch is already checked out.
-    def fake_run_claude(prompt, **kwargs):
+    def fake_run_agent(prompt, **kwargs):
         (ws / "note.txt").write_text("real code change\n")
         write_fake_screenshot(ws, "board")
         return {"result": '{"summary": "did the step"}'}
 
-    monkeypatch.setattr(step_agent, "run_claude", fake_run_claude)
+    monkeypatch.setattr(step_agent, "run_agent", fake_run_agent)
 
     execute(make_task(11, "Specialist agent implements", repo="acme/demo"))
 
@@ -297,7 +297,7 @@ def test_implement_step_publishes_screenshots_without_polluting_the_code_branch(
 # a frontend_ui item with the UI persona — and planning steps stay generalist.
 
 
-def capture_run_claude(captured):
+def capture_run_agent(captured):
     def _fake(prompt, **kwargs):
         captured.update(kwargs, prompt=prompt)
         return {"result": '{"summary": "did the step", "artifact_md": "# out"}'}
@@ -311,7 +311,7 @@ def persona_md(persona_id):
 
 def test_qa_step_composes_the_items_persona_into_the_role(monkeypatch):
     captured = {}
-    monkeypatch.setattr(step_agent, "run_claude", capture_run_claude(captured))
+    monkeypatch.setattr(step_agent, "run_agent", capture_run_agent(captured))
     task = make_task(8, "QA reviews the test plan")
     task["item"]["persona"] = "python_backend"
     execute(task)
@@ -324,7 +324,7 @@ def test_implement_step_composes_the_items_persona(tmp_path, monkeypatch):
     ws, _origin = make_git_workspace(tmp_path)
     monkeypatch.setattr(step_agent, "ensure_item_worktree", lambda repo, item_id: ws)
     captured = {}
-    monkeypatch.setattr(step_agent, "run_claude", capture_run_claude(captured))
+    monkeypatch.setattr(step_agent, "run_agent", capture_run_agent(captured))
     task = make_task(11, "Specialist agent implements", repo="acme/demo")
     task["item"]["persona"] = "frontend_ui"
     # The captured stub edits no files, so the push step correctly balks —
@@ -341,7 +341,7 @@ def test_planning_steps_do_not_get_a_persona(monkeypatch):
         (7, "Architecture review"),
     ]:
         captured = {}
-        monkeypatch.setattr(step_agent, "run_claude", capture_run_claude(captured))
+        monkeypatch.setattr(step_agent, "run_agent", capture_run_agent(captured))
         task = make_task(index, label)
         task["item"]["persona"] = "python_backend"
         execute(task)
@@ -402,10 +402,10 @@ def test_build_prompt_renders_default_persona_never_none():
 # Edit/Write/Bash) and runs two independent passes — code_review.md then
 # qa_review.md — merging into one structured verdict the orchestrator's
 # loop-cap logic reads. These tests drive execute() directly with a fake
-# run_claude so each pass's JSON is controlled independently.
+# run_agent so each pass's JSON is controlled independently.
 
 
-def two_pass_run_claude(code_json, qa_json, captured_calls):
+def two_pass_run_agent(code_json, qa_json, captured_calls):
     def _fake(prompt, **kwargs):
         captured_calls.append({"prompt": prompt, **kwargs})
         is_qa = "QA Reviewer agent" in kwargs.get("append_system", "")
@@ -442,7 +442,7 @@ def test_review_step_merges_two_passes_into_one_structured_verdict(tmp_path, mon
         "findings": [],
         "artifact_md": "## QA review\n**pass**",
     }
-    monkeypatch.setattr(step_agent, "run_claude", two_pass_run_claude(code_json, qa_json, calls))
+    monkeypatch.setattr(step_agent, "run_agent", two_pass_run_agent(code_json, qa_json, calls))
 
     result = execute(make_task(12, "Automated review (code + QA)", repo="acme/demo"))
 
@@ -466,7 +466,7 @@ def test_review_step_defaults_a_malformed_pass_to_fail_closed(tmp_path, monkeypa
     # Neither pass returns a "verdict" field at all (e.g. a model that ignored
     # the schema) — must default to "fail", never silently "pass".
     junk = {"summary": "not the right shape"}
-    monkeypatch.setattr(step_agent, "run_claude", two_pass_run_claude(junk, junk, []))
+    monkeypatch.setattr(step_agent, "run_agent", two_pass_run_agent(junk, junk, []))
 
     result = execute(make_task(12, "Automated review (code + QA)", repo="acme/demo"))
     verdict = result["artifacts"]["verdict"]
@@ -477,7 +477,7 @@ def test_review_step_defaults_a_malformed_pass_to_fail_closed(tmp_path, monkeypa
 
 def test_review_step_without_a_repo_auto_passes_without_calling_claude(monkeypatch):
     called = []
-    monkeypatch.setattr(step_agent, "run_claude", lambda *a, **k: called.append(1))
+    monkeypatch.setattr(step_agent, "run_agent", lambda *a, **k: called.append(1))
     result = execute(make_task(12, "Automated review (code + QA)"))
     assert called == []
     verdict = result["artifacts"]["verdict"]
@@ -498,7 +498,7 @@ def test_review_step_without_a_repo_auto_passes_without_calling_claude(monkeypat
 # test_run_smoke_check_against_the_real_check_script below.
 
 
-def devops_run_claude(reply_json):
+def devops_run_agent(reply_json):
     def _fake(prompt, **kwargs):
         return {"result": json.dumps(reply_json)}
 
@@ -520,7 +520,7 @@ def assert_valid_deploy_verdict(v):
 
 def test_deploy_step_without_a_repo_passes_without_calling_claude(monkeypatch):
     called = []
-    monkeypatch.setattr(step_agent, "run_claude", lambda *a, **k: called.append(1))
+    monkeypatch.setattr(step_agent, "run_agent", lambda *a, **k: called.append(1))
     result = execute(make_task(14, "Deploy the changes"))
     assert called == []
     # Wrapped object, not a bare string — validateDeployVerdict in
@@ -534,8 +534,8 @@ def test_deploy_step_without_a_repo_passes_without_calling_claude(monkeypatch):
 def test_deploy_step_trusts_the_real_smoke_check_not_the_agents_own_verdict(monkeypatch):
     monkeypatch.setattr(
         step_agent,
-        "run_claude",
-        devops_run_claude(
+        "run_agent",
+        devops_run_agent(
             {
                 "summary": "verified the deploy",
                 "url": "https://shoreward.ai/horizon/",
@@ -560,8 +560,8 @@ def test_deploy_step_trusts_the_real_smoke_check_not_the_agents_own_verdict(monk
 def test_deploy_step_passes_when_the_real_smoke_check_passes(monkeypatch):
     monkeypatch.setattr(
         step_agent,
-        "run_claude",
-        devops_run_claude(
+        "run_agent",
+        devops_run_agent(
             {
                 "summary": "verified the deploy",
                 "url": "https://shoreward.ai/horizon/",
@@ -580,7 +580,7 @@ def test_deploy_step_passes_when_the_real_smoke_check_passes(monkeypatch):
 
 
 def test_deploy_step_fails_closed_when_the_agent_omits_url_or_expected_text(monkeypatch):
-    monkeypatch.setattr(step_agent, "run_claude", devops_run_claude({"summary": "did stuff", "artifact_md": "n/a"}))
+    monkeypatch.setattr(step_agent, "run_agent", devops_run_agent({"summary": "did stuff", "artifact_md": "n/a"}))
     called = []
     monkeypatch.setattr(step_agent, "run_smoke_check", lambda *a: called.append(1))
 
@@ -685,7 +685,7 @@ def test_review_step_composes_the_items_persona_into_both_passes(tmp_path, monke
         "e2e_test_present": True,
         "findings": [],
     }
-    monkeypatch.setattr(step_agent, "run_claude", two_pass_run_claude(ok, ok, calls))
+    monkeypatch.setattr(step_agent, "run_agent", two_pass_run_agent(ok, ok, calls))
 
     task = make_task(12, "Automated review (code + QA)", repo="acme/demo")
     task["item"]["persona"] = "python_backend"
@@ -722,7 +722,7 @@ def test_review_step_reuses_prepare_branch_to_scrub_a_superseded_attempts_leftov
         "e2e_test_present": True,
         "findings": [],
     }
-    monkeypatch.setattr(step_agent, "run_claude", two_pass_run_claude(ok, ok, []))
+    monkeypatch.setattr(step_agent, "run_agent", two_pass_run_agent(ok, ok, []))
 
     execute(make_task(12, "Automated review (code + QA)", repo="acme/demo"))
 
@@ -756,7 +756,7 @@ def test_planner_step_reports_back_a_large_artifact_in_full(monkeypatch):
     big = "z" * 50000  # far past the old 12,000-char write-time slice
     monkeypatch.setattr(
         step_agent,
-        "run_claude",
+        "run_agent",
         lambda *a, **k: {"result": json.dumps({"summary": "did the step", "artifact_md": big})},
     )
     result = execute(make_task(6, "Draft implementation plan"))
@@ -772,7 +772,7 @@ def test_planner_step_reports_back_a_large_artifact_in_full(monkeypatch):
 # into a completed step instead of a cancelled run.
 
 
-def sequenced_run_claude(replies, captured_calls):
+def sequenced_run_agent(replies, captured_calls):
     def _fake(prompt, **kwargs):
         captured_calls.append({"prompt": prompt, **kwargs})
         return replies[len(captured_calls) - 1]
@@ -788,7 +788,7 @@ def test_hz43_unescaped_quotes_in_artifact_md_recover_on_retry(monkeypatch):
     )
     good = '{"summary": "reviewed, ok", "artifact_md": "# Architecture review\\npass-with-notes"}'
     replies = [{"result": bad, "session_id": "sess-1"}, {"result": good, "session_id": "sess-1"}]
-    monkeypatch.setattr(step_agent, "run_claude", sequenced_run_claude(replies, calls))
+    monkeypatch.setattr(step_agent, "run_agent", sequenced_run_agent(replies, calls))
 
     result = execute(make_task(7, "Architecture review"))
 
@@ -798,7 +798,7 @@ def test_hz43_unescaped_quotes_in_artifact_md_recover_on_retry(monkeypatch):
 
 
 def test_hz44_real_subprocess_recovers_from_the_hz43_quote_bug():
-    """The tests above monkeypatch run_claude, so they never actually drive a
+    """The tests above monkeypatch run_agent, so they never actually drive a
     `claude` invocation. This one doesn't monkeypatch anything: it runs the
     real subprocess path (fake_claude stands in for the `claude` binary, the
     same substitution every other unmocked test in this file relies on — see
@@ -818,7 +818,7 @@ def test_retry_is_bounded_at_one_and_a_second_failure_still_raises(monkeypatch):
     calls = []
     bad = '{"summary": "oops"'  # truncated — unparseable both times
     monkeypatch.setattr(
-        step_agent, "run_claude", sequenced_run_claude([{"result": bad}, {"result": bad}], calls)
+        step_agent, "run_agent", sequenced_run_agent([{"result": bad}, {"result": bad}], calls)
     )
 
     with pytest.raises(Exception):
@@ -833,8 +833,8 @@ def test_retry_reuses_session_id_and_the_original_call_budget(monkeypatch):
     good = '{"summary": "ok"}'
     monkeypatch.setattr(
         step_agent,
-        "run_claude",
-        sequenced_run_claude([{"result": bad, "session_id": "sess-abc"}, {"result": good}], calls),
+        "run_agent",
+        sequenced_run_agent([{"result": bad, "session_id": "sess-abc"}, {"result": good}], calls),
     )
 
     execute(make_task(4, "Plan options & trade-offs (pros / cons)"))
@@ -851,7 +851,7 @@ def test_retry_feedback_message_matches_pm_agent_wording(monkeypatch):
     bad = '{"summary": "oops"'
     good = '{"summary": "ok"}'
     monkeypatch.setattr(
-        step_agent, "run_claude", sequenced_run_claude([{"result": bad}, {"result": good}], calls)
+        step_agent, "run_agent", sequenced_run_agent([{"result": bad}, {"result": good}], calls)
     )
 
     execute(make_task(4, "Plan options & trade-offs (pros / cons)"))
@@ -874,7 +874,7 @@ def test_implement_step_does_not_retry_on_a_malformed_final_reply(tmp_path, monk
         (ws / "fake_implementation.txt").write_text("fake implementation\n")
         return {"result": "not json at all"}
 
-    monkeypatch.setattr(step_agent, "run_claude", _fake)
+    monkeypatch.setattr(step_agent, "run_agent", _fake)
 
     result = execute(make_task(11, "Specialist agent implements", repo="acme/demo"))
 
@@ -882,7 +882,7 @@ def test_implement_step_does_not_retry_on_a_malformed_final_reply(tmp_path, monk
     assert "not valid JSON" in result["summary"]
 
 
-def two_pass_run_claude_with_retries(code_results, qa_results, captured_calls):
+def two_pass_run_agent_with_retries(code_results, qa_results, captured_calls):
     counters = {"code": 0, "qa": 0}
 
     def _fake(prompt, **kwargs):
@@ -924,7 +924,7 @@ def test_review_step_code_pass_recovers_independently_of_a_healthy_qa_pass(tmp_p
         }
     )
     monkeypatch.setattr(
-        step_agent, "run_claude", two_pass_run_claude_with_retries([bad_code, good_code], [qa_json], calls)
+        step_agent, "run_agent", two_pass_run_agent_with_retries([bad_code, good_code], [qa_json], calls)
     )
 
     result = execute(make_task(12, "Automated review (code + QA)", repo="acme/demo"))
@@ -954,7 +954,7 @@ def test_review_step_qa_pass_recovers_independently_of_a_healthy_code_pass(tmp_p
         }
     )
     monkeypatch.setattr(
-        step_agent, "run_claude", two_pass_run_claude_with_retries([code_json], [bad_qa, good_qa], calls)
+        step_agent, "run_agent", two_pass_run_agent_with_retries([code_json], [bad_qa, good_qa], calls)
     )
 
     result = execute(make_task(12, "Automated review (code + QA)", repo="acme/demo"))
@@ -974,7 +974,7 @@ def test_review_step_code_pass_exhausting_its_retry_still_cancels_the_run(tmp_pa
     bad_code = '{"summary": "code review done", "verdict": "fail"'  # unparseable, both attempts
     qa_json = json.dumps({"summary": "qa review done", "verdict": "pass"})
     monkeypatch.setattr(
-        step_agent, "run_claude", two_pass_run_claude_with_retries([bad_code, bad_code], [qa_json], calls)
+        step_agent, "run_agent", two_pass_run_agent_with_retries([bad_code, bad_code], [qa_json], calls)
     )
 
     with pytest.raises(Exception):
@@ -1021,17 +1021,17 @@ def origin_log(origin):
     ).stdout
 
 
-def test_implement_step_pushes_a_checkpoint_when_run_claude_raises(tmp_path, monkeypatch):
+def test_implement_step_pushes_a_checkpoint_when_run_agent_raises(tmp_path, monkeypatch):
     ws, origin = make_git_workspace(tmp_path)
     monkeypatch.setattr(step_agent, "ensure_item_worktree", lambda repo, item_id: ws)
 
     def _fake(prompt, **kwargs):
         (ws / "fake_implementation.txt").write_text("partial work\n")
-        raise ClaudeError("claude timed out after 2700s")
+        raise AgentError("claude timed out after 2700s")
 
-    monkeypatch.setattr(step_agent, "run_claude", _fake)
+    monkeypatch.setattr(step_agent, "run_agent", _fake)
 
-    with pytest.raises(ClaudeError, match="timed out"):
+    with pytest.raises(AgentError, match="timed out"):
         execute(make_task(11, "Specialist agent implements", repo="acme/demo"))
 
     log_text = origin_log(origin)
@@ -1050,11 +1050,11 @@ def test_implement_step_does_not_checkpoint_a_kill_before_any_edit(tmp_path, mon
     monkeypatch.setattr(step_agent, "ensure_item_worktree", lambda repo, item_id: ws)
 
     def _fake(prompt, **kwargs):
-        raise ClaudeError("claude timed out after 2700s")
+        raise AgentError("claude timed out after 2700s")
 
-    monkeypatch.setattr(step_agent, "run_claude", _fake)
+    monkeypatch.setattr(step_agent, "run_agent", _fake)
 
-    with pytest.raises(ClaudeError):
+    with pytest.raises(AgentError):
         execute(make_task(11, "Specialist agent implements", repo="acme/demo"))
 
     branches = subprocess.run(
@@ -1064,8 +1064,8 @@ def test_implement_step_does_not_checkpoint_a_kill_before_any_edit(tmp_path, mon
 
 
 def test_implement_step_does_not_salvage_after_checks_fail(tmp_path, monkeypatch):
-    """run_claude succeeding and run_checks failing is a different failure
-    mode than run_claude raising — the checks-failed path must not push
+    """run_agent succeeding and run_checks failing is a different failure
+    mode than run_agent raising — the checks-failed path must not push
     anything, checkpoint or otherwise (guardrail: checks still gate finalize
     exactly as before salvage existed)."""
     ws, origin = make_git_workspace(tmp_path)
@@ -1092,11 +1092,11 @@ def test_salvage_never_fires_for_planner_steps(monkeypatch):
     monkeypatch.setattr(step_agent, "_salvage_checkpoint", lambda *a, **k: spy.append(1))
 
     def _fake(prompt, **kwargs):
-        raise ClaudeError("claude timed out after 1140s")
+        raise AgentError("claude timed out after 1140s")
 
-    monkeypatch.setattr(step_agent, "run_claude", _fake)
+    monkeypatch.setattr(step_agent, "run_agent", _fake)
 
-    with pytest.raises(ClaudeError):
+    with pytest.raises(AgentError):
         execute(make_task(4, "Plan options & trade-offs (pros / cons)"))
 
     assert spy == []
@@ -1125,15 +1125,15 @@ def test_salvage_swallows_a_lease_conflict_and_the_original_error_still_wins(tmp
         git(race, "add", "-A")
         git(race, "commit", "-m", "concurrent push")
         git(race, "push", "origin", "horizon/t-1")
-        raise ClaudeError("claude timed out after 2700s")
+        raise AgentError("claude timed out after 2700s")
 
-    monkeypatch.setattr(step_agent, "run_claude", _fake)
+    monkeypatch.setattr(step_agent, "run_agent", _fake)
 
-    with pytest.raises(ClaudeError, match="timed out"):
+    with pytest.raises(AgentError, match="timed out"):
         execute(make_task(11, "Specialist agent implements", repo="acme/demo"))
 
     # Salvage's own push lost the lease race and was swallowed — the
-    # original ClaudeError above is what propagated, and origin shows only
+    # original AgentError above is what propagated, and origin shows only
     # the concurrent writer's commit, never the checkpoint.
     log_text = origin_log(origin)
     assert step_agent.CHECKPOINT_MARKER not in log_text
@@ -1146,14 +1146,14 @@ def test_checkpoint_resume_note_reaches_the_next_attempts_prompt(tmp_path, monke
 
     def _exhausted(prompt, **kwargs):
         (ws / "fake_implementation.txt").write_text("partial work\n")
-        raise ClaudeError("claude timed out after 2700s")
+        raise AgentError("claude timed out after 2700s")
 
-    monkeypatch.setattr(step_agent, "run_claude", _exhausted)
-    with pytest.raises(ClaudeError):
+    monkeypatch.setattr(step_agent, "run_agent", _exhausted)
+    with pytest.raises(AgentError):
         execute(make_task(11, "Specialist agent implements", repo="acme/demo"))
 
     captured = {}
-    monkeypatch.setattr(step_agent, "run_claude", capture_run_claude(captured))
+    monkeypatch.setattr(step_agent, "run_agent", capture_run_agent(captured))
     execute(make_task(11, "Specialist agent implements", repo="acme/demo"))
 
     assert step_agent.CHECKPOINT_MARKER in captured["prompt"]
@@ -1166,19 +1166,19 @@ def test_two_exhausted_attempts_then_a_successful_run_converges_with_continuatio
 
     def attempt_1(prompt, **kwargs):
         (ws / "part_a.txt").write_text("part a\n")
-        raise ClaudeError("claude timed out after 2700s")
+        raise AgentError("claude timed out after 2700s")
 
-    monkeypatch.setattr(step_agent, "run_claude", attempt_1)
-    with pytest.raises(ClaudeError):
+    monkeypatch.setattr(step_agent, "run_agent", attempt_1)
+    with pytest.raises(AgentError):
         execute(make_task(11, "Specialist agent implements", repo="acme/demo"))
 
     def attempt_2(prompt, **kwargs):
         assert step_agent.CHECKPOINT_MARKER in prompt  # attempt 2 was told to continue
         (ws / "part_b.txt").write_text("part b\n")
-        raise ClaudeError("claude timed out after 2700s")
+        raise AgentError("claude timed out after 2700s")
 
-    monkeypatch.setattr(step_agent, "run_claude", attempt_2)
-    with pytest.raises(ClaudeError):
+    monkeypatch.setattr(step_agent, "run_agent", attempt_2)
+    with pytest.raises(AgentError):
         execute(make_task(11, "Specialist agent implements", repo="acme/demo"))
 
     def attempt_3(prompt, **kwargs):
@@ -1186,14 +1186,14 @@ def test_two_exhausted_attempts_then_a_successful_run_converges_with_continuatio
         (ws / "part_c.txt").write_text("part c\n")
         return {"result": '{"summary": "finished the item"}'}
 
-    monkeypatch.setattr(step_agent, "run_claude", attempt_3)
+    monkeypatch.setattr(step_agent, "run_agent", attempt_3)
 
 
 # ---- main(): the reason tag that crosses into the Node payload (HZ-76) ----
 # The orchestrator only auto-retries a small, explicit set of reasons — this
 # is the one Python originates. A Node-side test can fake the string, but
 # only this proves the callback payload actually carries it end-to-end from
-# a real TurnCapExceeded.
+# a real AgentExhaustedError.
 
 
 def test_main_tags_a_turn_cap_exhaustion_with_reason_turn_cap(tmp_path, monkeypatch):
@@ -1202,7 +1202,7 @@ def test_main_tags_a_turn_cap_exhaustion_with_reason_turn_cap(tmp_path, monkeypa
     task_file.write_text(json.dumps(task))
 
     def _exhausted(t):
-        raise TurnCapExceeded("claude reported an error result [error_max_turns]: ran out of turns")
+        raise AgentExhaustedError("claude reported an error result [error_max_turns]: ran out of turns")
 
     monkeypatch.setattr(step_agent, "execute", _exhausted)
     monkeypatch.setattr(sys, "argv", ["step_agent", "--task", str(task_file)])

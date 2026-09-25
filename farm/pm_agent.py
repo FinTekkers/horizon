@@ -16,7 +16,7 @@ from pathlib import Path
 
 import httpx
 
-from .claude_runner import ClaudeError, extract_json, run_claude
+from .agent_runner import AgentError, extract_json, run_agent
 from .config import FARM_PORT, PM_MODEL, QUEUE_DIR, STATE_DIR, ensure_dirs, slugify
 from .rules import render_rules_section
 
@@ -97,7 +97,7 @@ def build_prompt(task: dict) -> str:
 def validate(parsed: dict) -> tuple[str, dict, str | None]:
     summary = str(parsed.get("summary", "")).strip()
     if not summary:
-        raise ClaudeError("agent reply missing 'summary'")
+        raise AgentError("agent reply missing 'summary'")
     patch = {}
     for key, limit in PATCH_FIELDS.items():
         value = parsed.get("patch", {}).get(key) if isinstance(parsed.get("patch"), dict) else None
@@ -116,16 +116,16 @@ def process(task: dict, project_slug: str) -> None:
     try:
         prompt = build_prompt(task)
         log(f"run {run_id}: {task['step']['label']} for {task['item']['id']}")
-        reply = run_claude(prompt, session_id=session_id, append_system=ROLE_PROMPT, model=PM_MODEL)
+        reply = run_agent(prompt, session_id=session_id, append_system=ROLE_PROMPT, model=PM_MODEL)
         if reply.get("session_id"):
             sid_path.write_text(reply["session_id"])
 
         try:
             summary, patch, artifact = validate(extract_json(reply["result"]))
-        except (ClaudeError, json.JSONDecodeError) as exc:
+        except (AgentError, json.JSONDecodeError) as exc:
             # One retry, telling the model exactly what was wrong with its reply.
             log(f"run {run_id}: invalid reply ({exc}); retrying once")
-            retry = run_claude(
+            retry = run_agent(
                 f"Your previous reply was invalid: {exc}. "
                 "Respond again with ONLY the JSON object, no other text.",
                 session_id=sid_path.read_text().strip() if sid_path.exists() else None,

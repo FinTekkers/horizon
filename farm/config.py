@@ -17,12 +17,23 @@ WORKSPACES_DIR = FARM_HOME / "workspaces"
 # Override with a fake binary in tests (farm/tests/fake_claude).
 CLAUDE_BIN = os.environ.get("FARM_CLAUDE_BIN", "claude")
 # HZ-5: "sdk" streams agent activity live via claude-agent-sdk; "subprocess"
-# is the rollback lever restoring the silent `claude -p` path.
+# is the rollback lever restoring the silent `claude -p` path. Only affects
+# the claude provider's own internals — unrelated to FARM_PROVIDER below.
 FARM_RUNNER = os.environ.get("FARM_RUNNER", "sdk")
 PM_MODEL = os.environ.get("FARM_PM_MODEL")  # None -> CLI default
 STEP_TIMEOUT_S = int(os.environ.get("FARM_STEP_TIMEOUT_S", "900"))
 MAX_TURNS = int(os.environ.get("FARM_MAX_TURNS", "8"))
 
+# HZ-83: which provider farm/agent_runner.py's run_agent() dispatches to.
+# "claude" is the default, keeping today's behaviour completely unchanged
+# when nothing is configured. See docs/providers/muse-code.md for "muse".
+FARM_PROVIDER = os.environ.get("FARM_PROVIDER", "claude")
+# The real binary resolves as a bare "muse" under the farm's PATH via the
+# /usr/local/bin/muse symlink — see docs/providers/muse-code.md. Tests mock
+# subprocess.run directly (farm/tests/test_providers_muse.py) rather than
+# using a fake binary, since the CLI's output is a JSONL event stream, not
+# fake_claude's simple `-p` envelope.
+FARM_MUSE_BIN = os.environ.get("FARM_MUSE_BIN", "muse")
 
 # ---- WhatsApp concierge (HZ-7) ----
 # Off by default: the concierge only launches with FARM_WA_ENABLED=1 AND a

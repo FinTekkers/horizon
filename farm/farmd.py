@@ -16,7 +16,7 @@ from fastapi.responses import JSONResponse
 
 from . import rules, tmux_mgr, workspaces
 from . import config as farm_config
-from .claude_runner import ClaudeError, assert_subscription_auth
+from .agent_runner import AgentError, assert_provider_auth
 from .config import (
     FARM_PORT,
     HORIZON_URL,
@@ -335,8 +335,8 @@ async def farm_start(request: Request):
         return JSONResponse({"error": "project required"}, status_code=400)
     # HZ-5 cost guardrail: refuse to bring agents up on metered API billing.
     try:
-        assert_subscription_auth()
-    except ClaudeError as exc:
+        assert_provider_auth()
+    except AgentError as exc:
         return JSONResponse({"error": str(exc)}, status_code=500)
     with _lock:
         if state["status"] == "running" and state["project"] and state["project"].get("id") == project.get("id"):
@@ -525,7 +525,7 @@ ensure_dirs()
 (QUEUE_DIR / "runs" / "active").mkdir(parents=True, exist_ok=True)
 # HZ-5 cost guardrail at boot: covers the adopt path too, which never goes
 # through /farm/start — a farm on API billing must not come up at all.
-assert_subscription_auth()
+assert_provider_auth()
 _adopt_existing()
 threading.Thread(target=_watchdog, daemon=True).start()
 threading.Thread(target=_ephemeral_dispatcher, daemon=True).start()
