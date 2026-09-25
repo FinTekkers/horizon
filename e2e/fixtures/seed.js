@@ -73,6 +73,14 @@ export function insertFeedback(db, { itemId, target, message, createdAt }) {
   ).run({ itemId, target, message, createdAt })
 }
 
+// A dependency edge (HZ-78/HZ-95): itemId depends on dependsOnId, i.e.
+// dependsOnId blocks itemId. Written directly like insertItem above — bypasses
+// store.js's cycle check entirely, so fixtures are responsible for only ever
+// wiring acyclic edges.
+export function insertDependency(db, { itemId, dependsOnId }) {
+  db.prepare('INSERT INTO work_item_dependency (item_id, depends_on_id) VALUES (?, ?)').run(itemId, dependsOnId)
+}
+
 // Same salted-scrypt scheme as server/src/auth.js's per-account gate PIN.
 // Writing the hash directly (instead of through Admin's "Regenerate my PIN")
 // keeps the plaintext out of the browser's localStorage, so the next gate

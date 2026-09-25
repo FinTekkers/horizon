@@ -433,6 +433,35 @@ button { font-family: var(--font-sans); }
 }
 .status-pill__dot { width: 6px; height: 6px; border-radius: 50%; }
 
+/* Dependency badges (HZ-95) — independent of StatusPill so Blocked/Paused/
+   Queued never collapse into one indicator. --danger reads as "blocked" the
+   same way it already does for a rejected step; --agent-human is otherwise
+   unused on the board, so "Blocks" reads as its own signal, not a variant
+   of any workflow-status color. */
+.dep-badges { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 6px; }
+.dep-pill {
+  display: inline-flex; align-items: center;
+  font: 700 11px var(--font-sans); border-radius: 20px; padding: 3px 9px;
+  max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.dep-pill--blocked { color: var(--danger-ink); background: var(--danger-bg); }
+.dep-pill--dependents { color: var(--agent-human-ink); background: var(--agent-human-bg); }
+
+.dep-detail { display: flex; gap: 14px; flex-wrap: wrap; margin-top: 14px; }
+.dep-detail__section {
+  flex: 1; min-width: 200px; border-radius: 14px; padding: 12px 16px;
+}
+.dep-detail__section--blocked { background: var(--danger-bg); }
+.dep-detail__section--dependents { background: var(--agent-human-bg); }
+.dep-detail__label {
+  font: 700 11px var(--font-sans); letter-spacing: 1px; text-transform: uppercase;
+  margin-bottom: 6px;
+}
+.dep-detail__label--blocked { color: var(--danger-ink); }
+.dep-detail__label--dependents { color: var(--agent-human-ink); }
+.dep-detail__list { margin: 0; padding-left: 18px; font: 500 13px var(--font-sans); color: var(--deep); line-height: 1.5; }
+.dep-detail__abandoned { color: var(--danger-ink); font-weight: 700; }
+
 .card__gate { margin-top: 12px; padding-top: 12px; border-top: 1px dashed var(--gate-divider); }
 .card__gate-label {
   display: flex; align-items: center; gap: 7px;

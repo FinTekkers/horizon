@@ -78,3 +78,67 @@ test('a dispatched step with no farm state at all still reads "working" — fail
   expect(getByText('Eng agent')).toBeTruthy()
   expect(queryByText('Queued')).toBeNull()
 })
+
+// ---- HZ-95: dependency badges on the board card ----
+
+function depItem(id, deps) {
+  return { ...makeItem(id, 'running'), activeRun: null, blockedBy: [], dependents: [], ...deps }
+}
+
+test('a card blocked by another item names the blocker, never bare "Blocked"', () => {
+  const items = [depItem('HZ-90', { blockedBy: [{ id: 'HZ-89', title: 'The prerequisite', abandoned: false }] })]
+  const { getByText } = render(
+    <Board items={items} onOpen={noop} onApprove={noop} onReject={noop} onTogglePause={noop} onNewItem={noop} />,
+  )
+  expect(getByText(/Blocked by The prerequisite/)).toBeTruthy()
+})
+
+test('a card with dependents shows what is waiting behind it', () => {
+  const items = [depItem('HZ-91', { dependents: [{ id: 'HZ-92', title: 'Waiting item', abandoned: false }] })]
+  const { getByText } = render(
+    <Board items={items} onOpen={noop} onApprove={noop} onReject={noop} onTogglePause={noop} onNewItem={noop} />,
+  )
+  expect(getByText('Blocks 1')).toBeTruthy()
+})
+
+test('a card with both a blocker and dependents shows both, each visually distinct', () => {
+  const items = [
+    depItem('HZ-93', {
+      blockedBy: [{ id: 'HZ-89', title: 'The prerequisite', abandoned: false }],
+      dependents: [{ id: 'HZ-92', title: 'Waiting item', abandoned: false }],
+    }),
+  ]
+  const { getByText, container } = render(
+    <Board items={items} onOpen={noop} onApprove={noop} onReject={noop} onTogglePause={noop} onNewItem={noop} />,
+  )
+  expect(getByText(/Blocked by The prerequisite/)).toBeTruthy()
+  expect(getByText('Blocks 1')).toBeTruthy()
+  const blocked = container.querySelector('.dep-pill--blocked')
+  const blocks = container.querySelector('.dep-pill--dependents')
+  expect(blocked.className).not.toBe(blocks.className)
+})
+
+test('an item with neither direction renders no dependency badge at all, unchanged from before HZ-95', () => {
+  const items = [depItem('HZ-94', {})]
+  const { container, queryByText } = render(
+    <Board items={items} onOpen={noop} onApprove={noop} onReject={noop} onTogglePause={noop} onNewItem={noop} />,
+  )
+  expect(container.querySelector('.dep-badges')).toBeNull()
+  expect(queryByText(/Blocked/)).toBeNull()
+  expect(queryByText(/Blocks/)).toBeNull()
+})
+
+test('a blocked card and a paused card render distinct badges/pills, not one collapsed indicator', () => {
+  const items = [
+    depItem('HZ-95', { blockedBy: [{ id: 'HZ-89', title: 'The prerequisite', abandoned: false }] }),
+    { ...makeItem('HZ-96', 'running'), activeRun: null, paused: true, blockedBy: [], dependents: [] },
+  ]
+  const { getByText, container } = render(
+    <Board items={items} onOpen={noop} onApprove={noop} onReject={noop} onTogglePause={noop} onNewItem={noop} />,
+  )
+  expect(getByText('Paused')).toBeTruthy()
+  expect(getByText(/Blocked by The prerequisite/)).toBeTruthy()
+  const pausedPill = getByText('Paused').closest('.status-pill')
+  const blockedPill = container.querySelector('.dep-pill--blocked')
+  expect(pausedPill.className).not.toBe(blockedPill.className)
+})

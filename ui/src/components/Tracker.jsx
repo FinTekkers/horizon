@@ -16,6 +16,7 @@ import { itemStatus } from '../domain/status'
 import { resolveEventColor } from '../domain/eventColors'
 import { issueUrl, issueLabel, artifactUrl, outputUrl, runLogViewUrl } from '../api'
 import StatusPill from './StatusPill'
+import DependencyBadge from './DependencyBadge'
 import { BackIcon, LinkIcon, RestartIcon, PrIcon } from './icons'
 
 const STEP_GLYPHS = { done: '✓', active: '•', awaiting: '!', pending: '', blocked: '✕' }
@@ -310,6 +311,7 @@ export default function Tracker({ item, onBack, onApprove, onApproveWithComments
             <div className="tile__value">{item.guardrails}</div>
           </div>
         </div>
+        <DependencyBadge item={item} />
       </div>
 
       <div className="tracker__body">
