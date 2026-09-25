@@ -5,61 +5,18 @@ GitHub) so conflict_resolver.resolve() runs against real git merge/conflict
 mechanics rather than mocks.
 """
 
-import subprocess
 from pathlib import Path
 
 import pytest
 
-from farm import conflict_resolver, workspaces
-
-
-def git(cwd, *args):
-    return subprocess.run(["git", "-C", str(cwd), *args], check=True, capture_output=True, text=True)
-
-
-def make_repo_hub(tmp_path, repo_full="acme/demo"):
-    seed = tmp_path / "seed"
-    seed.mkdir()
-    git(tmp_path, "init", "-b", "main", "seed")
-    git(seed, "config", "user.email", "test@example.com")
-    git(seed, "config", "user.name", "Test")
-    (seed / "shared.txt").write_text("line1\nline2\nline3\n")
-    git(seed, "add", "-A")
-    git(seed, "commit", "-m", "initial")
-    origin = tmp_path / "origin.git"
-    subprocess.run(["git", "clone", "--bare", "--quiet", str(seed), str(origin)], check=True, capture_output=True)
-    hub = workspaces.hub_path(repo_full)
-    hub.parent.mkdir(parents=True, exist_ok=True)
-    subprocess.run(["git", "clone", "--quiet", str(origin), str(hub)], check=True, capture_output=True)
-    git(hub, "config", "user.email", "farm@example.com")
-    git(hub, "config", "user.name", "Horizon Farm")
-    return hub, origin
-
-
-def push_new_branch(tmp_path, origin, branch, mutate, label):
-    """Stands in for the implement step already having pushed the item's PR
-    branch, or main having moved independently — a throwaway clone, never the
-    hub or item worktree conflict_resolver itself manages."""
-    work = tmp_path / f"push-{label}"
-    subprocess.run(["git", "clone", "--quiet", str(origin), str(work)], check=True, capture_output=True)
-    git(work, "config", "user.email", "test@example.com")
-    git(work, "config", "user.name", "Test")
-    git(work, "checkout", "-b", branch, "main") if branch != "main" else git(work, "checkout", "main")
-    mutate(work)
-    git(work, "add", "-A")
-    git(work, "commit", "-m", f"{label} commit")
-    git(work, "push", "origin", f"HEAD:refs/heads/{branch}")
-    return git(work, "rev-parse", "HEAD").stdout.strip()
-
-
-def origin_branch_sha(origin, branch):
-    return git(origin, "rev-parse", branch).stdout.strip()
-
-
-def clone_and_read(tmp_path, origin, branch, filename, label):
-    work = tmp_path / f"read-{label}"
-    subprocess.run(["git", "clone", "--quiet", "-b", branch, str(origin), str(work)], check=True, capture_output=True)
-    return (work / filename).read_text()
+from farm import agent_runner, conflict_resolver, workspaces
+from farm.tests.conflict_fixtures import (
+    clone_and_read,
+    git,
+    make_repo_hub,
+    origin_branch_sha,
+    push_new_branch,
+)
 
 
 @pytest.fixture
@@ -90,12 +47,26 @@ def test_clean_non_overlapping_merge_resolves_and_pushes(isolated_workspaces_dir
     assert (tmp_path / "read-after" / "other.txt").exists()  # main's independent change is present too
 
 
-def test_never_dispatches_an_agent_for_the_mechanical_path():
-    """Structural proxy for the wall-clock success metric: the fast path
-    must never go through an LLM/agent dispatch at all."""
-    source = Path(conflict_resolver.__file__).read_text()
-    assert "run_agent" not in source
-    assert "dispatch" not in source.lower()
+def test_never_dispatches_an_agent_for_the_mechanical_path(isolated_workspaces_dir, monkeypatch):
+    """Behavioral proxy for the wall-clock success metric (not a source-text
+    grep, which a rename or indirection would defeat silently): patch the
+    one function any agent dispatch must go through to raise if called, then
+    run a real mechanical resolution end to end and confirm it never fires."""
+
+    def boom(*_a, **_k):
+        raise AssertionError("conflict_resolver must never dispatch an agent")
+
+    monkeypatch.setattr(agent_runner, "run_agent", boom)
+    tmp_path = isolated_workspaces_dir
+    _hub, origin = make_repo_hub(tmp_path)
+    monkeypatch.delenv("FARM_CHECK_CMD", raising=False)
+
+    push_new_branch(tmp_path, origin, "horizon/hz-1", lambda w: (w / "shared.txt").write_text("line1 (branch edit)\nline2\nline3\n"), "branch")
+    push_new_branch(tmp_path, origin, "main", lambda w: (w / "other.txt").write_text("new on main\n"), "main-advance")
+
+    result = conflict_resolver.resolve("acme/demo", "HZ-1", log=lambda *_: None)
+
+    assert result["resolved"] is True
 
 
 def test_never_uses_ours_theirs_or_force_push():

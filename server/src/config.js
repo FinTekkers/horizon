@@ -47,6 +47,12 @@ export const FARM_STEP_TIMEOUT_MS = Number(process.env.FARM_STEP_TIMEOUT_MS || 2
 // execution budget before ever running.
 export const FARM_QUEUE_TIMEOUT_MS = Number(process.env.FARM_QUEUE_TIMEOUT_MS || 10 * 60 * 1000)
 export const FARM_START_TIMEOUT_MS = Number(process.env.FARM_START_TIMEOUT_MS || 5 * 60 * 1000)
+// HZ-92: bounds the one farm call that runs synchronously and genuinely long
+// (a real git merge, then the target repo's own test suite) — sized like the
+// implement step's own execution budget, since conflict resolution runs the
+// same repo checks. A hung farmd (or a test/lint command that never returns)
+// must not hang the Accept-gate request forever.
+export const FARM_CONFLICT_RESOLVE_TIMEOUT_MS = Number(process.env.FARM_CONFLICT_RESOLVE_TIMEOUT_MS || 50 * 60 * 1000)
 export const POLL_INTERVAL_MS = Number(process.env.POLL_INTERVAL_MS || 60_000)
 export const PORT = Number(process.env.PORT || 3001)
 

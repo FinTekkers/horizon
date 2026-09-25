@@ -40,6 +40,7 @@ import {
   FARM_STEP_TIMEOUT_MS,
   FARM_QUEUE_TIMEOUT_MS,
   FARM_START_TIMEOUT_MS,
+  FARM_CONFLICT_RESOLVE_TIMEOUT_MS,
   UI_URL,
 } from './config.js'
 import { isPersona, personaLabel, proposePersona } from './personas.js'
@@ -168,12 +169,32 @@ export function setRunStateForTest(runId, state, reason = null) {
 
 // ---- real farm (farm/ Python daemon) plumbing ----
 
-async function farmFetch(path, body) {
-  const res = await fetch(`${FARM_URL}${path}`, {
-    method: body === undefined ? 'GET' : 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: body === undefined ? undefined : JSON.stringify(body),
-  })
+// Every farm call is bounded — a hung farmd (network partition, a deadlocked
+// git/test subprocess it never gets to) must not hang the caller forever.
+// Most routes here just write a queue file or read in-memory state, so the
+// default is generous only in the "should never realistically be hit" sense;
+// /conflicts/resolve is the one call that legitimately runs long (a real git
+// merge plus the target repo's own test suite) and passes its own timeout,
+// sized the same as the implement step's own execution budget below.
+const DEFAULT_FARM_FETCH_TIMEOUT_MS = 30_000
+
+async function farmFetch(path, body, { timeoutMs = DEFAULT_FARM_FETCH_TIMEOUT_MS } = {}) {
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), timeoutMs)
+  let res
+  try {
+    res = await fetch(`${FARM_URL}${path}`, {
+      method: body === undefined ? 'GET' : 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: body === undefined ? undefined : JSON.stringify(body),
+      signal: controller.signal,
+    })
+  } catch (err) {
+    if (err.name === 'AbortError') throw new Error(`farm request to ${path} timed out after ${timeoutMs}ms`)
+    throw err
+  } finally {
+    clearTimeout(timer)
+  }
   const data = await res.json().catch(() => ({}))
   if (!res.ok) throw new Error(data.error || `farm returned ${res.status} for ${path}`)
   return data
@@ -203,6 +224,21 @@ export async function fetchRunLog(runId, offset = 0) {
 // button already used before this existed: requestChanges to the implement
 // step — so semantic conflicts are never auto-resolved and the Accept gate/
 // PIN path is untouched either way.
+//
+// Deliberate pivot from the reviewed plan's auto-trigger design (a
+// pollPrStates hook + registerConflictResolver + a conflict_resolution_run
+// table, dispatching as soon as GitHub reports mergeable=false): the
+// architecture review found that design's own required safety net — stale
+// `active` row recovery after a farmd crash, which the unique
+// (item_id, pr_head_sha) index would otherwise let permanently block retries
+// on that commit — was never actually scheduled as work, plus an
+// unresolved dedup race between poll ticks. This human-button trigger avoids
+// both by construction: there is no row to go stale and no poll loop to race,
+// because a run only ever starts in response to one explicit click, gated by
+// the same Accept-gate PIN as every other gate action. The trade this makes
+// is a bounded-but-long synchronous farmd call (real git merge + the repo's
+// own test suite) instead of an async dispatch — FARM_CONFLICT_RESOLVE_TIMEOUT_MS
+// (config.js) is what bounds that trade.
 const CONFLICT_ESCALATION_REASONS = {
   merge_conflict: 'both branches changed the same lines — needs a human or a full implement cycle to resolve',
   tests_failed: "the merge applied cleanly but the repo's own tests failed afterward",
@@ -225,7 +261,11 @@ export async function resolveConflicts(id, actor = 'You') {
   const branch = `horizon/${id.toLowerCase()}`
   let result
   try {
-    result = await farmFetch('/conflicts/resolve', { item: { id, repo: item.repo }, branch })
+    result = await farmFetch(
+      '/conflicts/resolve',
+      { item: { id, repo: item.repo }, branch },
+      { timeoutMs: FARM_CONFLICT_RESOLVE_TIMEOUT_MS },
+    )
   } catch (err) {
     requestChanges(id, 'Accept the code', `PR #${item.pr}: automatic conflict resolution could not run (${err.message})`, actor)
     return { ok: true, resolved: false, escalated: true }

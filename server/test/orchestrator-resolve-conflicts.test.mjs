@@ -22,7 +22,7 @@ process.env.FARM_URL = 'http://farm.test'
 
 const { db } = await import('../src/db.js')
 const store = await import('../src/store.js')
-const { STEPS, IMPLEMENT_STEP_INDEX, ACCEPT_GATE_INDEX } = await import('../src/lifecycle.js')
+const { STEPS, IMPLEMENT_STEP_INDEX, REVIEW_STEP_INDEX, ACCEPT_GATE_INDEX } = await import('../src/lifecycle.js')
 const orchestrator = await import('../src/orchestrator.js')
 
 store.purgeDemoItems()
@@ -54,6 +54,17 @@ function implementRuns(itemId) {
 
 function eventTexts(itemId) {
   return db.prepare('SELECT text FROM event WHERE item_id = ? ORDER BY id').all(itemId).map((r) => r.text)
+}
+
+function allStepRuns(itemId) {
+  return db.prepare('SELECT step_index, attempt, status FROM step_run WHERE item_id = ? ORDER BY id').all(itemId)
+}
+
+function insertDoneRun(itemId, stepIndex, attempt, artifact) {
+  db.prepare(
+    `INSERT INTO step_run (item_id, step_index, attempt, agent, status, artifact, started_at, ended_at)
+     VALUES (?, ?, ?, ?, 'done', ?, datetime('now'), datetime('now'))`,
+  ).run(itemId, stepIndex, attempt, STEPS[stepIndex].agent, artifact)
 }
 
 test('a mechanical fix leaves the implement step untouched: no new step_run row, no cursor change (metric 1)', async () => {
@@ -128,4 +139,45 @@ test('guard clauses reject before ever calling farmd', async () => {
 
   assert.deepEqual(result, { error: 'not_conflicted' })
   assert.equal(lastRequest, null, 'farmd must never be called when there is nothing to resolve')
+})
+
+// ---- guardrail: "must leave the item's existing review/QA artifacts intact" ----
+
+test('a mechanical fix leaves every already-passed step_run row — including review/QA — byte-for-byte untouched', async () => {
+  insertItem.run('RC-6', 'Has prior review/QA artifacts', ACCEPT_GATE_INDEX, 'acme/demo', 95, 0)
+  insertDoneRun('RC-6', IMPLEMENT_STEP_INDEX, 1, null)
+  insertDoneRun('RC-6', REVIEW_STEP_INDEX, 1, 'code review: pass\nQA review: pass')
+  farmdReply = { ok: true, json: async () => ({ ok: true, resolved: true, summary: 'merged and pushed' }) }
+
+  const before = allStepRuns('RC-6')
+  const beforeReviewArtifact = db
+    .prepare('SELECT artifact FROM step_run WHERE item_id = ? AND step_index = ?')
+    .get('RC-6', REVIEW_STEP_INDEX).artifact
+
+  const result = await orchestrator.resolveConflicts('RC-6', 'Alice')
+
+  assert.deepEqual(result, { ok: true, resolved: true })
+  assert.deepEqual(allStepRuns('RC-6'), before, 'no step_run row — for any step — may be added, removed, or changed')
+  assert.equal(
+    db.prepare('SELECT artifact FROM step_run WHERE item_id = ? AND step_index = ?').get('RC-6', REVIEW_STEP_INDEX)
+      .artifact,
+    beforeReviewArtifact,
+    'the review/QA artifact content itself must survive untouched',
+  )
+})
+
+test('an escalated conflict still leaves every prior step_run row — including review/QA — untouched (only feedback/cursor move)', async () => {
+  insertItem.run('RC-7', 'Escalates, has prior review/QA artifacts', ACCEPT_GATE_INDEX, 'acme/demo', 96, 0)
+  insertDoneRun('RC-7', IMPLEMENT_STEP_INDEX, 1, null)
+  insertDoneRun('RC-7', REVIEW_STEP_INDEX, 1, 'code review: pass\nQA review: pass')
+  farmdReply = {
+    ok: true,
+    json: async () => ({ ok: true, resolved: false, reason: 'merge_conflict', detail: 'conflicts in: shared.txt' }),
+  }
+
+  const before = allStepRuns('RC-7')
+  const result = await orchestrator.resolveConflicts('RC-7', 'Alice')
+
+  assert.deepEqual(result, { ok: true, resolved: false, escalated: true })
+  assert.deepEqual(allStepRuns('RC-7'), before, 'escalation must not touch any existing step_run row either')
 })
