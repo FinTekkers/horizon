@@ -89,6 +89,55 @@ def test_steps_run_without_matching_rules_stamps_an_empty_string(running_farm):
     assert json.loads((QUEUE_DIR / "pm" / "102.json").read_text())["rules"] == ""
 
 
+# ---- /conflicts/resolve (HZ-92) ----
+# No tmux session, no queue file, no agent — a direct call into
+# conflict_resolver.resolve(), run off-thread. These tests only exercise the
+# route's contract (status codes, request wiring, error handling); the real
+# git merge/conflict/test-gate behavior is covered end-to-end in
+# test_conflict_resolver.py.
+
+
+def test_conflicts_resolve_requires_a_running_farm():
+    res = client.post("/conflicts/resolve", json={"item": {"id": "HZ-1", "repo": "acme/demo"}})
+    assert res.status_code == 409
+
+
+def test_conflicts_resolve_requires_item_id_and_repo(running_farm):
+    res = client.post("/conflicts/resolve", json={"item": {"id": "HZ-1"}})
+    assert res.status_code == 400
+
+
+def test_conflicts_resolve_returns_the_resolver_result(running_farm, monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        farmd.conflict_resolver,
+        "resolve",
+        lambda repo, item_id, branch, base_branch: calls.append((repo, item_id, branch, base_branch))
+        or {"resolved": True, "files": "1 file changed", "summary": "merged"},
+    )
+
+    res = client.post(
+        "/conflicts/resolve",
+        json={"item": {"id": "HZ-1", "repo": "acme/demo"}, "branch": "horizon/hz-1", "base_branch": "main"},
+    )
+
+    assert res.status_code == 200
+    assert res.json() == {"ok": True, "resolved": True, "files": "1 file changed", "summary": "merged"}
+    assert calls == [("acme/demo", "HZ-1", "horizon/hz-1", "main")]
+
+
+def test_conflicts_resolve_surfaces_an_infrastructure_failure_as_500(running_farm, monkeypatch):
+    def boom(*_a, **_k):
+        raise RuntimeError("hub workspace not provisioned for acme/demo — restart the farm")
+
+    monkeypatch.setattr(farmd.conflict_resolver, "resolve", boom)
+
+    res = client.post("/conflicts/resolve", json={"item": {"id": "HZ-1", "repo": "acme/demo"}})
+
+    assert res.status_code == 500
+    assert "not provisioned" in res.json()["error"]
+
+
 # ---- /runs/status (HZ-54) ----
 # Board/tracker guardrail: the farm reports a small {state, reason} vocabulary
 # only — never a tmux session name — so a queued run can't be told apart from

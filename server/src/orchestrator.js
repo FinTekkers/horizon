@@ -10,7 +10,17 @@
 // step_run/event bookkeeping and gate semantics stay exactly as they are.
 
 import { db } from './db.js'
-import { STEPS, AGENTS, isClosed, isAbandoned, isBlocked, IMPLEMENT_STEP_INDEX, REVIEW_STEP_INDEX, DEPLOY_STEP_INDEX } from './lifecycle.js'
+import {
+  STEPS,
+  AGENTS,
+  isClosed,
+  isAbandoned,
+  isBlocked,
+  IMPLEMENT_STEP_INDEX,
+  REVIEW_STEP_INDEX,
+  ACCEPT_GATE_INDEX,
+  DEPLOY_STEP_INDEX,
+} from './lifecycle.js'
 import {
   getItem,
   addEvent,
@@ -19,6 +29,7 @@ import {
   registerRunStateProvider,
   recoverRejectedItems,
   blockersOf,
+  requestChanges,
 } from './store.js'
 import { createMockPr, createDeployRelease, postIssueComment, createPrFromBranch } from './github.js'
 import { PHASES } from './lifecycle.js'
@@ -176,6 +187,64 @@ export async function fetchRunLog(runId, offset = 0) {
   const res = await fetch(`${FARM_URL}/runs/${runId}/log?offset=${encodeURIComponent(offset)}`)
   const data = await res.json().catch(() => ({}))
   return { status: res.status, data }
+}
+
+// ---- HZ-92: mechanical merge-conflict resolution ----
+// A PR whose only problem is a mechanical merge conflict (renames, a
+// deletion, non-overlapping edits — HZ-83's PR #90 was exactly this) does
+// not need a full implement cycle. farmd's /conflicts/resolve is a plain
+// `git merge` gated on the repo's own tests, no agent involved. On success
+// this function deliberately touches NOTHING but the activity log — no
+// step_run row, no cursor change — so the implement step's attempt count and
+// every already-passed downstream step (review, the gate itself) are left
+// exactly as they were. Any conflict this script can't be sure is correct
+// (real overlapping edits, or a clean merge whose tests then fail) escalates
+// through the exact same fallback the "send back to resolve conflicts"
+// button already used before this existed: requestChanges to the implement
+// step — so semantic conflicts are never auto-resolved and the Accept gate/
+// PIN path is untouched either way.
+const CONFLICT_ESCALATION_REASONS = {
+  merge_conflict: 'both branches changed the same lines — needs a human or a full implement cycle to resolve',
+  tests_failed: "the merge applied cleanly but the repo's own tests failed afterward",
+  branch_missing: 'the PR branch could not be found on the remote',
+  push_rejected: 'the branch changed on GitHub while resolving — try again',
+}
+
+export async function resolveConflicts(id, actor = 'You') {
+  const item = getItem(id)
+  if (!item) return { error: 'not_found' }
+  if (isClosed(item) || isAbandoned(item)) return { error: 'closed' }
+  if (item.cursor !== ACCEPT_GATE_INDEX) return { error: 'not_at_accept_gate' }
+  if (!item.repo || item.pr == null) return { error: 'no_pr' }
+  // getItem() returns the raw work_item row (unlike store.listItems(), which
+  // booleanizes this column for the UI) — 0 is "GitHub reports conflicts",
+  // 1 is mergeable, NULL is unknown/not yet computed.
+  if (item.pr_mergeable !== 0) return { error: 'not_conflicted' }
+  if (!FARM_URL) return { error: 'farm_unavailable' }
+
+  const branch = `horizon/${id.toLowerCase()}`
+  let result
+  try {
+    result = await farmFetch('/conflicts/resolve', { item: { id, repo: item.repo }, branch })
+  } catch (err) {
+    requestChanges(id, 'Accept the code', `PR #${item.pr}: automatic conflict resolution could not run (${err.message})`, actor)
+    return { ok: true, resolved: false, escalated: true }
+  }
+
+  if (result.resolved) {
+    addEvent(id, {
+      who: 'Horizon',
+      text: `resolved merge conflicts on PR #${item.pr} mechanically — no re-implementation needed (${result.summary || 'merged and pushed'})`,
+      color: '#0E6E74',
+      initials: 'RS',
+    })
+    notifyChange()
+    return { ok: true, resolved: true }
+  }
+
+  const reason = CONFLICT_ESCALATION_REASONS[result.reason] || result.detail || 'conflict resolution could not complete automatically'
+  requestChanges(id, 'Accept the code', `PR #${item.pr}: ${reason}`, actor)
+  return { ok: true, resolved: false, escalated: true }
 }
 
 function projectPayload(projectId) {

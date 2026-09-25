@@ -273,6 +273,15 @@ export function requestChanges(id, target, feedback, targetStepIndex) {
   gatePost(`/items/${id}/reject`, body)
 }
 
+// HZ-92: the fast path — a plain git merge + the repo's own tests, run by
+// the farm, gated by the same PIN as every other Accept-gate action. Resolves
+// with the server's {ok, resolved, escalated?} so the caller can surface
+// what actually happened (mechanically fixed vs. sent back to implement).
+export async function resolveConflicts(id) {
+  const res = await gatePost(`/items/${id}/resolve-conflicts`, {})
+  return res ? await res.json().catch(() => ({ ok: false })) : { ok: false }
+}
+
 export function togglePause(id) {
   const item = items.find((it) => it.id === id)
   if (!item) return

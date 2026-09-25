@@ -245,6 +245,15 @@ export function requestChanges(id, target, feedback, targetStepIndex) {
   runAgents(id)
 }
 
+// HZ-92: mock mode never sets pr_mergeable === false (no real GitHub PR to
+// check), so the "resolve conflicts" button never renders here — this stub
+// exists only for interface parity with serverApi.js.
+export async function resolveConflicts(id) {
+  const it = items.find((x) => x.id === id)
+  if (!it) return { ok: false, error: 'not_found' }
+  return { ok: true, resolved: true }
+}
+
 export function togglePause(id) {
   const it = items.find((x) => x.id === id)
   if (!it) return

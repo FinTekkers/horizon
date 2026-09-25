@@ -467,3 +467,55 @@ test('abandon still returns 200 {ok:true} when the GitHub close fails — best-e
     globalThis.fetch = realFetch
   }
 })
+
+// ---- HZ-92: /api/items/:id/resolve-conflicts — HTTP contract ----
+// The fast path is still an Accept-gate action: same session + gate-PIN
+// requirement as /reject, verified here without a real farm (FARM_URL is
+// deleted at the top of this file) so a missing farm reports cleanly instead
+// of hanging. The resolved/escalated behavior itself (a real farmd reply)
+// is covered by server/test/orchestrator-resolve-conflicts.test.mjs.
+
+db.prepare(
+  "INSERT INTO work_item (id, title, priority, cursor, repo, pr, pr_mergeable) VALUES ('T-CONFLICT', 'Conflicted PR', 'Medium', ?, 'acme/demo', 55, 0)",
+).run(ACCEPT_GATE_INDEX)
+db.prepare(
+  "INSERT INTO work_item (id, title, priority, cursor) VALUES ('T-CONFLICT-NOTGATE', 'On an agent step', 'Medium', 11)",
+).run()
+
+const resolveConflictsPost = (id) => inject({ method: 'POST', url: `/api/items/${id}/resolve-conflicts`, payload: {} })
+
+test('resolve-conflicts without a session cookie is 401 (HZ-21)', async () => {
+  const res = await app.inject({ method: 'POST', url: '/api/items/T-CONFLICT/resolve-conflicts', payload: {} })
+  assert.equal(res.statusCode, 401)
+  assert.deepEqual(res.json(), { error: 'login_required' })
+})
+
+test('resolve-conflicts with a session but the wrong gate PIN is 401 human_gate_key_required', async () => {
+  const res = await app.inject({
+    method: 'POST',
+    url: '/api/items/T-CONFLICT/resolve-conflicts',
+    payload: {},
+    headers: { cookie, 'x-human-key': 'wrong-pin' },
+  })
+  assert.equal(res.statusCode, 401)
+  assert.deepEqual(res.json(), { error: 'human_gate_key_required' })
+})
+
+test('resolve-conflicts on an unknown item is 404 {error:not_found}', async () => {
+  const res = await resolveConflictsPost('NOPE-9')
+  assert.equal(res.statusCode, 404)
+  assert.deepEqual(res.json(), { error: 'not_found' })
+})
+
+test('resolve-conflicts on an item not at the Accept gate is 409 {error:not_at_accept_gate}', async () => {
+  const res = await resolveConflictsPost('T-CONFLICT-NOTGATE')
+  assert.equal(res.statusCode, 409)
+  assert.deepEqual(res.json(), { error: 'not_at_accept_gate' })
+})
+
+test('resolve-conflicts with no farm configured is 409 {error:farm_unavailable}, and the gate is untouched', async () => {
+  const res = await resolveConflictsPost('T-CONFLICT')
+  assert.equal(res.statusCode, 409)
+  assert.deepEqual(res.json(), { error: 'farm_unavailable' })
+  assert.equal(db.prepare("SELECT cursor FROM work_item WHERE id = 'T-CONFLICT'").get().cursor, ACCEPT_GATE_INDEX)
+})

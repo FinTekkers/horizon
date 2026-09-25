@@ -5,6 +5,7 @@ when the Node orchestrator asks; never sequences anything itself. Runs under
 tmux session `farm-daemon` (see run.sh) on port 4100.
 """
 
+import asyncio
 import json
 import threading
 import time
@@ -14,7 +15,7 @@ import httpx
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
-from . import rules, tmux_mgr, workspaces
+from . import conflict_resolver, rules, tmux_mgr, workspaces
 from . import config as farm_config
 from .agent_runner import AgentError, assert_provider_auth
 from .config import (
@@ -406,6 +407,30 @@ async def steps_run(request: Request):
     task_path = QUEUE_DIR / queue / f"{body['run_id']}.json"
     task_path.write_text(json.dumps(body, indent=2))
     return {"ok": True, "queued": queue}
+
+
+@app.post("/conflicts/resolve")
+async def conflicts_resolve(request: Request):
+    """HZ-92: deterministic, LLM-free merge-conflict resolution — no tmux
+    session, no agent dispatch, no queue file. Runs inline (off the event
+    loop thread so a slow git/test run doesn't stall other requests) and
+    returns the outcome directly; the Node orchestrator decides what an
+    escalation means (send back to the full implement step)."""
+    body = await request.json()
+    if state["status"] != "running":
+        return JSONResponse({"error": f"farm_not_running (status={state['status']})"}, status_code=409)
+    item = body.get("item") or {}
+    item_id, repo = item.get("id"), item.get("repo")
+    if not item_id or not repo:
+        return JSONResponse({"error": "item.id and item.repo are required"}, status_code=400)
+    try:
+        result = await asyncio.to_thread(
+            conflict_resolver.resolve, repo, item_id, body.get("branch"), body.get("base_branch")
+        )
+    except Exception as exc:
+        print(f"farmd: conflict resolution for {item_id} failed: {exc}", flush=True)
+        return JSONResponse({"error": str(exc)[:300]}, status_code=500)
+    return {"ok": True, **result}
 
 
 # Each pipe-pane read is capped; the UI pages with `offset`.
