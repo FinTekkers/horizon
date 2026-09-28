@@ -136,7 +136,12 @@ def test_run_agent_selects_muse_provider_via_config_end_to_end(monkeypatch):
 
     reply = run_agent("say hi", session_id="fixed-session", max_turns=5, timeout_s=30)
 
-    assert reply == {"result": "muse says hi", "session_id": "fixed-session"}
+    assert reply == {
+        "result": "muse says hi",
+        "session_id": "fixed-session",
+        "provider": "muse",
+        "command_id": "cmd-1",
+    }
     # Proves the real muse.run() actually built the command (headless-safety
     # flags and all) rather than the dispatcher short-circuiting somewhere.
     assert captured["cmd"][0] == muse.FARM_MUSE_BIN

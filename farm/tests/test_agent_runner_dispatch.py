@@ -71,7 +71,7 @@ def test_resume_incapable_provider_runs_normally_without_a_session_id(register_f
 
     reply = agent_runner.run_agent("prompt")
 
-    assert reply == {"result": "ok", "session_id": "new-session"}
+    assert reply == {"result": "ok", "session_id": "new-session", "provider": "fake", "command_id": None}
     assert len(run_calls) == 1
 
 
@@ -93,6 +93,59 @@ def test_run_agent_calls_provider_auth_before_run(register_fake_provider):
 
     assert auth_calls == [1]
     assert len(run_calls) == 1
+
+
+def test_run_agent_stamps_provider_and_defaults_missing_command_id(register_fake_provider):
+    """HZ-102: every reply carries provenance — which provider ran, and a
+    command_id key even for a provider (like the fake here, or Claude) that
+    never reports one."""
+    provider, run_calls, _ = _fake_provider(supports_resume=True)
+    register_fake_provider(provider)
+
+    reply = agent_runner.run_agent("prompt")
+
+    assert reply["provider"] == "fake"
+    assert reply["command_id"] is None
+
+
+# ---- explicit provider override (HZ-102: persona-forced dispatch) ----
+# A persona mapped to a non-default provider (farm/personas.py's
+# provider_for()) must reach it as a plain argument to run_agent(), never
+# through FARM_PROVIDER — an env var would leak into every other call in the
+# same process, which is exactly the global-state bleed the ticket's options
+# review flagged against a simpler approach.
+
+
+def test_explicit_provider_overrides_the_env_selected_default(monkeypatch):
+    monkeypatch.setenv("FARM_PROVIDER", "fake-default")
+    default_provider, default_calls, _ = _fake_provider(supports_resume=True)
+    override_provider, override_calls, _ = _fake_provider(supports_resume=True)
+    monkeypatch.setitem(agent_runner._PROVIDERS, "fake-default", default_provider)
+    monkeypatch.setitem(agent_runner._PROVIDERS, "fake-override", override_provider)
+
+    reply = agent_runner.run_agent("prompt", provider="fake-override")
+
+    assert reply["provider"] == "fake-override"
+    assert len(override_calls) == 1
+    assert default_calls == [], "the env-selected default must never run when an explicit provider is given"
+
+
+def test_omitting_provider_keeps_dispatching_to_the_env_selected_default(register_fake_provider):
+    """Regression guard: every caller that never passes provider= (i.e.
+    every real persona today) keeps today's FARM_PROVIDER-selected
+    behaviour unchanged."""
+    provider, run_calls, _ = _fake_provider(supports_resume=True)
+    register_fake_provider(provider)
+
+    reply = agent_runner.run_agent("prompt")
+
+    assert reply["provider"] == "fake"
+    assert len(run_calls) == 1
+
+
+def test_explicit_provider_unknown_name_raises_agent_error():
+    with pytest.raises(AgentError, match="bogus-provider"):
+        agent_runner.run_agent("prompt", provider="bogus-provider")
 
 
 # ---- metered billing gate (HZ-5 guarantee; HZ-83 code-enforced cap) ----

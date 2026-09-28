@@ -25,11 +25,14 @@ def _selected_provider_name() -> str:
     return os.environ.get("FARM_PROVIDER", FARM_PROVIDER)
 
 
-def _selected_provider():
-    name = _selected_provider_name()
+def _selected_provider(name: str | None = None):
+    # An explicit name (HZ-102: a persona-forced provider override) always
+    # wins over FARM_PROVIDER for this one call; omitting it keeps the
+    # env-selected default unchanged for every other caller.
+    name = name or _selected_provider_name()
     provider = _PROVIDERS.get(name)
     if provider is None:
-        raise AgentError(f"unknown FARM_PROVIDER '{name}' — expected one of {sorted(_PROVIDERS)}")
+        raise AgentError(f"unknown provider '{name}' — expected one of {sorted(_PROVIDERS)}")
     return name, provider
 
 
@@ -51,11 +54,22 @@ def run_agent(
     max_turns: int = MAX_TURNS,
     timeout_s: int = STEP_TIMEOUT_S,
     allowed_tools: str | None = None,
+    provider: str | None = None,
 ) -> dict:
-    """Returns {"result": <final text>, "session_id": <id>}."""
-    name, provider = _selected_provider()
-    provider.assert_subscription_auth()
-    if session_id and not provider.SUPPORTS_RESUME:
+    """Returns {"result": <final text>, "session_id": <id>, "provider": <name>,
+    "command_id": <id or None>}.
+
+    provider names which entry in _PROVIDERS to dispatch to for this one
+    call, overriding FARM_PROVIDER (HZ-102 — e.g. a persona mapped to Muse
+    via farm/personas.py's PERSONA_PROVIDERS). It's a plain parameter rather
+    than an env var so the override can never leak into a later call in the
+    same process, and so a test can assert it as a call argument. Omit it
+    (the default) for the unchanged, env-selected behaviour every other
+    caller keeps.
+    """
+    name, provider_module = _selected_provider(provider)
+    provider_module.assert_subscription_auth()
+    if session_id and not provider_module.SUPPORTS_RESUME:
         # Refuse rather than silently starting fresh — a resume-incapable
         # provider handed a session_id must not quietly restart from zero,
         # which would break HZ-31's checkpoint continuation. The dispatch
@@ -64,7 +78,7 @@ def run_agent(
             f"provider '{name}' does not support resuming a session (SUPPORTS_RESUME=False) — "
             "refusing this call rather than silently starting fresh"
         )
-    return provider.run(
+    result = provider_module.run(
         prompt,
         session_id=session_id,
         append_system=append_system,
@@ -74,6 +88,11 @@ def run_agent(
         timeout_s=timeout_s,
         allowed_tools=allowed_tools,
     )
+    # Provenance (HZ-102): which provider actually ran, plus its run-level
+    # id where one exists (Muse's command_id; Claude has no equivalent).
+    result["provider"] = name
+    result.setdefault("command_id", None)
+    return result
 
 
 def extract_json(text: str) -> dict:

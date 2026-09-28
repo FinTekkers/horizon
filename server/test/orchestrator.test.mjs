@@ -98,6 +98,34 @@ test('an invalid persona patch is dropped; the run completes and siblings surviv
   assert.equal(item.cursor, 5)
 })
 
+// ---- HZ-102: provider/command_id provenance ----
+// farm/step_agent.py only sets artifacts.provider/command_id when a persona
+// forced a non-default provider (today, only muse_smoke_test -> muse) — this
+// proves the server side of that contract: the columns get written when
+// present, and stay NULL for every ordinary (Claude-routed) step, unchanged.
+
+test('completeFarmRun persists provider and command_id onto step_run when the farm reports them', async () => {
+  insertItem.run('D-20', 'Muse smoke test step', 'Medium', 4, 'muse_smoke_test')
+  const runId = activeRunFor('D-20', 4)
+  const result = await orchestrator.completeFarmRun(runId, {
+    summary: 'planned via muse',
+    artifacts: { artifact_md: '# plan', provider: 'muse', command_id: 'e93cb8d2-f310-48f0-b698-539a49af55d5' },
+  })
+  assert.deepEqual(result, { ok: true })
+  const row = db.prepare('SELECT provider, command_id FROM step_run WHERE id = ?').get(runId)
+  assert.equal(row.provider, 'muse')
+  assert.equal(row.command_id, 'e93cb8d2-f310-48f0-b698-539a49af55d5')
+})
+
+test('completeFarmRun leaves provider and command_id NULL for an ordinary step (no provenance reported)', async () => {
+  insertItem.run('D-21', 'Ordinary claude-routed step', 'Medium', 4, null)
+  const runId = activeRunFor('D-21', 4)
+  await orchestrator.completeFarmRun(runId, { summary: 'planned', artifacts: { artifact_md: '# plan' } })
+  const row = db.prepare('SELECT provider, command_id FROM step_run WHERE id = ?').get(runId)
+  assert.equal(row.provider, null)
+  assert.equal(row.command_id, null)
+})
+
 test('a persona patch never clobbers a value already set (human choice wins)', async () => {
   insertItem.run('D-5', 'No clobber', 'Medium', 4, 'fullstack')
   const runId = activeRunFor('D-5', 4)

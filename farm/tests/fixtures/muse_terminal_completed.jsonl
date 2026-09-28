@@ -1,0 +1,9 @@
+{"sequence": 1, "payload_type": "runtime.command.accepted", "schema_version": "1.0", "recorded_at": "2026-01-01T00:00:00Z", "payload": {}}
+{"sequence": 2, "payload_type": "session.run.linked", "schema_version": "1.0", "recorded_at": "2026-01-01T00:00:00Z", "payload": {"session_id": "fixed-session"}}
+{"sequence": 3, "payload_type": "run.model.configured", "schema_version": "1.0", "recorded_at": "2026-01-01T00:00:00Z", "payload": {"model": "muse-default"}}
+{"sequence": 4, "payload_type": "turn.input.user", "schema_version": "1.0", "recorded_at": "2026-01-01T00:00:00Z", "payload": {"text": "Reply with exactly the word: horizon"}}
+{"sequence": 5, "payload_type": "run.lifecycle.started", "schema_version": "1.0", "recorded_at": "2026-01-01T00:00:00Z", "payload": {}}
+{"sequence": 6, "payload_type": "task.lifecycle.started", "schema_version": "1.0", "recorded_at": "2026-01-01T00:00:00Z", "payload": {}}
+{"sequence": 7, "payload_type": "run.output.delta", "schema_version": "1.0", "recorded_at": "2026-01-01T00:00:00Z", "payload": {"text": "horizon"}}
+{"sequence": 8, "payload_type": "task.lifecycle.completed", "schema_version": "1.0", "recorded_at": "2026-01-01T00:00:00Z", "payload": {}}
+{"sequence": 9, "payload_type": "run.terminal.completed", "schema_version": "1.0", "recorded_at": "2026-01-01T00:00:00Z", "payload": {"terminal": "completed", "text": "horizon", "command_id": "e93cb8d2-f310-48f0-b698-539a49af55d5"}}

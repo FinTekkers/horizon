@@ -11,7 +11,7 @@ from pathlib import Path
 import pytest
 
 from farm import personas
-from farm.personas import DEFAULT_PERSONA, PERSONAS, compose_role, resolve
+from farm.personas import DEFAULT_PERSONA, PERSONA_PROVIDERS, PERSONAS, compose_role, provider_for, resolve
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 
@@ -74,3 +74,37 @@ def test_registry_parity_across_farm_server_and_ui():
     server_ids = _js_persona_ids(REPO_ROOT / "server" / "src" / "personas.js")
     ui_ids = _js_persona_ids(REPO_ROOT / "ui" / "src" / "domain" / "personas.js")
     assert set(PERSONAS) == server_ids == ui_ids
+
+
+# ---- persona -> provider override (HZ-102) ----
+# muse_smoke_test is the one persona that forces a non-default provider, so
+# a real step can be proven to route to Muse through normal persona
+# dispatch. Every real persona must return None here — Claude stays the
+# default for all real work, unchanged by this ticket.
+
+
+def test_muse_smoke_test_persona_is_registered_and_mapped_to_muse():
+    assert "muse_smoke_test" in PERSONAS
+    assert PERSONA_PROVIDERS["muse_smoke_test"] == "muse"
+
+
+@pytest.mark.parametrize("real_persona", ["fullstack", "python_backend", "frontend_ui"])
+def test_provider_for_returns_none_for_every_real_persona(real_persona):
+    assert provider_for(real_persona) is None
+
+
+def test_provider_for_muse_smoke_test_returns_muse():
+    assert provider_for("muse_smoke_test") == "muse"
+
+
+@pytest.mark.parametrize("bogus", [None, "", "unknown_persona", 42])
+def test_provider_for_falls_back_to_none_on_junk(bogus):
+    """Junk resolves to DEFAULT_PERSONA (fullstack) first, which is never in
+    PERSONA_PROVIDERS — an unrecognized persona must never accidentally force
+    a provider."""
+    assert provider_for(bogus) is None
+
+
+def test_provider_for_is_case_insensitive_and_strips_whitespace():
+    assert provider_for("Muse_Smoke_Test") == "muse"
+    assert provider_for("  muse_smoke_test \n") == "muse"

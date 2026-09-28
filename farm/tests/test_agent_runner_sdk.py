@@ -66,7 +66,12 @@ def test_sdk_path_streams_events_and_returns_result(sdk_runner, monkeypatch, cap
         allowed_tools="Read, Glob,Grep",
     )
 
-    assert reply == {"result": '{"summary": "done"}', "session_id": "sdk-session-1"}
+    assert reply == {
+        "result": '{"summary": "done"}',
+        "session_id": "sdk-session-1",
+        "provider": "claude",
+        "command_id": None,
+    }
     # The comma-joined public param must reach the SDK as a list.
     assert seen_options["options"].allowed_tools == ["Read", "Glob", "Grep"]
     assert seen_options["options"].system_prompt["append"] == "be terse"
