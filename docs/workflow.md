@@ -84,6 +84,32 @@ Every agent step names an agent from `AGENTS` in `server/src/lifecycle.js:5`:
 | **Review** | Automated code + QA review after implementation |
 | **DevOps** | Deploys the change |
 
+The table above names the *label* a step shows in the UI; it does not say
+which *process* actually executes it. Two steps that look like separate
+agent roles (0/1/9 as PM, 2 as Architect) share one long-lived PM process,
+while every other agent step gets a fresh, short-lived process per run:
+
+| Step index | Label | Executes as |
+| --- | --- | --- |
+| 0 | Define the outcome | PM session |
+| 1 | Define how we measure success | PM session |
+| 2 | Set guardrails | PM session |
+| 4 | Plan options & trade-offs (pros / cons) | fresh agent |
+| 6 | Draft implementation plan | fresh agent |
+| 7 | Architecture review | fresh agent |
+| 8 | QA reviews the test plan | fresh agent |
+| 9 | Summarize reviews & recommend | PM session |
+| 11 | Specialist agent implements | fresh agent |
+| 12 | Automated review (code + QA) | fresh agent |
+| 14 | Deploy the changes | fresh agent |
+
+(Gates — 3, 5, 10, 13, 15 — are covered above; they get no agent at all.)
+Sourced from `server/src/lifecycle.js:17-34`, `farm/farmd.py:552` and
+`farm/step_agent.py:56-71`. See
+[`docs/agent-architecture.md`](agent-architecture.md) for why that PM/fresh
+split exists, why the PM's long-lived session makes steps 0/1/2/9
+non-reproducible, and how a step's AI provider is actually chosen.
+
 ## What "current step" and "done" mean
 
 Each work item stores a single number, `cursor` — its index into the 16-step
