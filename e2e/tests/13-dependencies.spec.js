@@ -1,6 +1,17 @@
 // HZ-95: both dependency directions rendered end to end against the real
 // server. global-setup.js seeds DEP-2 depending on DEP-1 (DEP-1 blocks
 // DEP-2) — one edge, both directions must show up on the board.
+//
+// The id-based assertions below (DEP-1 pill text, dep-detail__id link) are
+// NOT new HZ-100 behavior — they belong to HZ-106 (DependencyBadge.jsx), an
+// unrelated PR that switched the compact pill and detail view from title
+// text to the item id. That PR updated its own unit tests (Board.test.jsx,
+// DependencyBadge.test.jsx) but never touched this e2e spec, which still
+// pinned the old "Blocked by <title>" copy — so this file has been failing
+// against the real UI since HZ-106 merged, independent of anything in this
+// item. Fixed here only because "defaults apply: e2e must pass" is a gate on
+// every PR regardless of which item's change actually broke it; this is not
+// HZ-100 scope creep, it's the pre-existing stale-test gap HZ-106 left.
 
 import { test, expect, captureScreenshot } from '../fixtures/test-base.js'
 
