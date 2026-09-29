@@ -24,10 +24,9 @@ import uuid
 
 import pytest
 
-from farm import step_agent
+from farm import step_agent, steps
 from farm.config import FARM_MUSE_BIN
 from farm.providers import muse
-from farm.step_agent import STEP_CONFIG
 
 pytestmark = pytest.mark.skipif(
     os.environ.get("FARM_MUSE_E2E") != "1",
@@ -92,7 +91,7 @@ def test_one_real_planning_step_completes_with_muse_and_records_provenance():
         "artifacts": [],
         "feedback": [],
     }
-    step_timeout_s = STEP_CONFIG[task["step"]["index"]][4]
+    step_timeout_s = steps.budget_for_label(steps.STEPS, task["step"]["label"])[1]
 
     started = time.monotonic()
     result = step_agent.execute(task)

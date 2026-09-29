@@ -1,0 +1,130 @@
+[
+  {
+    "index": 0,
+    "phase": 0,
+    "kind": "agent",
+    "agent": "PM",
+    "gate": null,
+    "label": "Define the outcome"
+  },
+  {
+    "index": 1,
+    "phase": 0,
+    "kind": "agent",
+    "agent": "PM",
+    "gate": null,
+    "label": "Define how we measure success"
+  },
+  {
+    "index": 2,
+    "phase": 0,
+    "kind": "agent",
+    "agent": "Architect",
+    "gate": null,
+    "label": "Set guardrails"
+  },
+  {
+    "index": 3,
+    "phase": 0,
+    "kind": "gate",
+    "agent": null,
+    "gate": "required",
+    "label": "Approve & prioritize this work"
+  },
+  {
+    "index": 4,
+    "phase": 1,
+    "kind": "agent",
+    "agent": "Ensemble",
+    "gate": null,
+    "label": "Plan options & trade-offs (pros / cons)"
+  },
+  {
+    "index": 5,
+    "phase": 1,
+    "kind": "gate",
+    "agent": null,
+    "gate": "required",
+    "label": "Approve the high-level design"
+  },
+  {
+    "index": 6,
+    "phase": 1,
+    "kind": "agent",
+    "agent": "Eng",
+    "gate": null,
+    "label": "Draft implementation plan"
+  },
+  {
+    "index": 7,
+    "phase": 1,
+    "kind": "agent",
+    "agent": "Architect",
+    "gate": null,
+    "label": "Architecture review"
+  },
+  {
+    "index": 8,
+    "phase": 1,
+    "kind": "agent",
+    "agent": "QA",
+    "gate": null,
+    "label": "QA reviews the test plan"
+  },
+  {
+    "index": 9,
+    "phase": 1,
+    "kind": "agent",
+    "agent": "PM",
+    "gate": null,
+    "label": "Summarize reviews & recommend"
+  },
+  {
+    "index": 10,
+    "phase": 1,
+    "kind": "gate",
+    "agent": null,
+    "gate": "required",
+    "label": "Review before execution"
+  },
+  {
+    "index": 11,
+    "phase": 2,
+    "kind": "agent",
+    "agent": "Eng",
+    "gate": null,
+    "label": "Specialist agent implements"
+  },
+  {
+    "index": 12,
+    "phase": 2,
+    "kind": "agent",
+    "agent": "Review",
+    "gate": null,
+    "label": "Automated review (code + QA)"
+  },
+  {
+    "index": 13,
+    "phase": 2,
+    "kind": "gate",
+    "agent": null,
+    "gate": "required",
+    "label": "Accept the code"
+  },
+  {
+    "index": 14,
+    "phase": 3,
+    "kind": "agent",
+    "agent": "DevOps",
+    "gate": null,
+    "label": "Deploy the changes"
+  },
+  {
+    "index": 15,
+    "phase": 4,
+    "kind": "gate",
+    "agent": null,
+    "gate": "required",
+    "label": "Review the work & close"
+  }
+]

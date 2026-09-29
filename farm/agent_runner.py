@@ -18,6 +18,15 @@ __all__ = ["AgentError", "AgentExhaustedError", "assert_provider_auth", "run_age
 
 _PROVIDERS = {"claude": claude, "muse": muse}
 
+# HZ-117: the one non-Claude provider is Muse, reachable either via an
+# explicit provider= override (a persona forcing it) or a bare FARM_PROVIDER
+# env var. provider_locked steps (implement, deploy) must refuse BOTH paths
+# — see run_agent()'s check below, which is the actual enforcement point
+# (this used to be enforced only on the persona-override path, in
+# step_agent.py's PROVIDER_OVERRIDE_ELIGIBLE_STEPS allowlist, which left the
+# bare-env path completely unguarded).
+DEFAULT_PROVIDER = "claude"
+
 
 def _selected_provider_name() -> str:
     # Read at call time so a restarted agent (or a test) can flip providers
@@ -25,7 +34,7 @@ def _selected_provider_name() -> str:
     return os.environ.get("FARM_PROVIDER", FARM_PROVIDER)
 
 
-def _selected_provider(name: str | None = None):
+def _selected_provider(name: str | None = None, *, provider_locked: bool = False):
     # An explicit name (HZ-102: a persona-forced provider override) always
     # wins over FARM_PROVIDER for this one call; omitting it keeps the
     # env-selected default unchanged for every other caller.
@@ -33,6 +42,11 @@ def _selected_provider(name: str | None = None):
     provider = _PROVIDERS.get(name)
     if provider is None:
         raise AgentError(f"unknown provider '{name}' — expected one of {sorted(_PROVIDERS)}")
+    if provider_locked and name != DEFAULT_PROVIDER:
+        raise AgentError(
+            f"step is provider-locked — refusing to dispatch to '{name}' (only '{DEFAULT_PROVIDER}' is allowed), "
+            "whether requested explicitly or via a bare FARM_PROVIDER override"
+        )
     return name, provider
 
 
@@ -55,6 +69,7 @@ def run_agent(
     timeout_s: int = STEP_TIMEOUT_S,
     allowed_tools: str | None = None,
     provider: str | None = None,
+    provider_locked: bool = False,
 ) -> dict:
     """Returns {"result": <final text>, "session_id": <id>, "provider": <name>,
     "command_id": <id or None>}.
@@ -66,8 +81,15 @@ def run_agent(
     same process, and so a test can assert it as a call argument. Omit it
     (the default) for the unchanged, env-selected behaviour every other
     caller keeps.
+
+    provider_locked (HZ-117) is the caller's declaration that this step
+    (from farm/steps.py's providerLocked field — today, implement and
+    deploy) must run on DEFAULT_PROVIDER no matter what, refusing BOTH an
+    explicit provider= override and a bare FARM_PROVIDER env var. Checked
+    once, at this single dispatch chokepoint, before any provider call is
+    made — every caller that omits it (the default) is unaffected.
     """
-    name, provider_module = _selected_provider(provider)
+    name, provider_module = _selected_provider(provider, provider_locked=provider_locked)
     provider_module.assert_subscription_auth()
     if session_id and not provider_module.SUPPORTS_RESUME:
         # Refuse rather than silently starting fresh — a resume-incapable

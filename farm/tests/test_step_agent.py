@@ -14,7 +14,14 @@ import pytest
 from farm import step_agent
 from farm.agent_runner import AgentError, AgentExhaustedError
 from farm.personas import PERSONA_DIR, PERSONAS
-from farm.step_agent import truncate_diff, STEP_CONFIG, build_prompt, execute, publish_screenshots
+from farm.step_agent import (
+    STEP_CONFIG,
+    _assert_step_config_matches_table,
+    build_prompt,
+    execute,
+    publish_screenshots,
+    truncate_diff,
+)
 
 
 def make_task(step_index, label, repo=None, feedback=None, artifacts=None):
@@ -349,11 +356,53 @@ def test_planning_steps_do_not_get_a_persona(monkeypatch):
 
 
 def test_step_config_persona_flags_match_the_design():
-    wants = {index: config[5] for index, config in STEP_CONFIG.items()}
-    # DevOps (14) is a role, not a persona (HZ-22 architecture review): it is
-    # project-scoped via farm/rules/projects/*.md, not stack-scoped, so it
-    # never gets a persona composed in — same as the other planning steps.
-    assert wants == {4: False, 6: False, 7: False, 8: True, 11: True, 12: True, 14: False}
+    wants = {label: config[3] for label, config in STEP_CONFIG.items()}
+    # DevOps ("Deploy the changes") is a role, not a persona (HZ-22
+    # architecture review): it is project-scoped via
+    # farm/rules/projects/*.md, not stack-scoped, so it never gets a persona
+    # composed in — same as the other planning steps.
+    assert wants == {
+        "Plan options & trade-offs (pros / cons)": False,
+        "Draft implementation plan": False,
+        "Architecture review": False,
+        "QA reviews the test plan": True,
+        "Specialist agent implements": True,
+        "Automated review (code + QA)": True,
+        "Deploy the changes": False,
+    }
+
+
+# ---- STEP_CONFIG / generated-table drift detection (HZ-117) ----
+# _assert_step_config_matches_table is the actual Python-side enforcement of
+# "an inserted or renamed step must fail loudly, not silently repoint an
+# index" — it's called once at step_agent import time against the real
+# STEP_CONFIG and steps.STEPS, but it's a pure function over two plain sets,
+# so the raise path itself is exercised directly here with a fabricated
+# mismatch, no importlib.reload needed.
+
+
+def test_assert_step_config_matches_table_passes_when_the_label_sets_agree():
+    _assert_step_config_matches_table({"A", "B"}, {"B", "A"})  # must not raise
+
+
+def test_assert_step_config_matches_table_raises_naming_the_mismatched_label_in_both_directions():
+    with pytest.raises(RuntimeError) as exc_info:
+        _assert_step_config_matches_table(
+            {"Only In STEP_CONFIG", "Shared Step"},
+            {"Only In Generated Table", "Shared Step"},
+        )
+    message = str(exc_info.value)
+    assert "Only In STEP_CONFIG" in message
+    assert "Only In Generated Table" in message
+    assert "Shared Step" not in message  # the agreeing label is never flagged as a mismatch
+
+
+def test_assert_step_config_matches_table_raises_for_a_renamed_label():
+    """A label rename looks exactly like a one-sided mismatch: the old name
+    disappears from the generated table, the new name never made it into
+    STEP_CONFIG."""
+    with pytest.raises(RuntimeError, match="Old Name"):
+        _assert_step_config_matches_table({"Old Name"}, {"New Name"})
 
 
 # ---- persona -> provider override (HZ-102) ----
@@ -436,6 +485,31 @@ def test_muse_smoke_test_persona_never_forces_a_provider_on_implement(tmp_path, 
     with pytest.raises(RuntimeError, match="no code changes"):
         execute(task)
     assert captured.get("provider") is None
+
+
+# ---- provider lock (HZ-117): closes the bare-FARM_PROVIDER hole ----
+# Before HZ-117, the provider guardrail only ever ran on the persona-forced
+# override path (the old PROVIDER_OVERRIDE_ELIGIBLE_STEPS allowlist above) —
+# a bare `FARM_PROVIDER=muse` env var, with no persona involved at all,
+# reached implement/deploy completely unguarded. These go through the real
+# run_agent() (never mocked) so the guardrail's actual dispatch chokepoint
+# (farm/agent_runner.py) is what's under test, not a stub standing in for it.
+
+
+def test_implement_refuses_a_bare_farm_provider_env_override(tmp_path, monkeypatch):
+    monkeypatch.setenv("FARM_PROVIDER", "muse")
+    ws, _origin = make_git_workspace(tmp_path)
+    monkeypatch.setattr(step_agent, "ensure_item_worktree", lambda repo, item_id: ws)
+
+    with pytest.raises(AgentError, match="provider-locked"):
+        execute(make_task(11, "Specialist agent implements", repo="acme/demo"))
+
+
+def test_deploy_refuses_a_bare_farm_provider_env_override(monkeypatch):
+    monkeypatch.setenv("FARM_PROVIDER", "muse")
+
+    with pytest.raises(AgentError, match="provider-locked"):
+        execute(make_task(14, "Deploy the changes", repo="acme/demo"))
 
 
 def test_muse_smoke_test_provenance_is_stamped_into_summary_and_artifacts(monkeypatch):
@@ -564,7 +638,7 @@ def two_pass_run_agent(code_json, qa_json, captured_calls):
 
 
 def test_review_step_is_read_only():
-    assert STEP_CONFIG[12][2] == "Read,Glob,Grep"  # PLANNER_TOOLS — no Edit/Write/Bash
+    assert STEP_CONFIG["Automated review (code + QA)"][2] == "Read,Glob,Grep"  # PLANNER_TOOLS — no Edit/Write/Bash
 
 
 def test_review_step_merges_two_passes_into_one_structured_verdict(tmp_path, monkeypatch):
