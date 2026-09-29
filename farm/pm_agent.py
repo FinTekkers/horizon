@@ -110,13 +110,27 @@ def _mark_truncated(value: str, limit: int) -> str:
     on), the same shape truncate_diff() uses for reviewers
     (farm/step_agent.py): content first, marker after, never interleaved.
     role/pm.md already instructs the agent to stay within budget; this is
-    the enforcement for when it doesn't."""
+    the enforcement for when it doesn't.
+
+    If no word boundary falls at-or-before `limit` (one run-on token longer
+    than the budget — a URL or a hash, say), a mid-word cut would violate
+    the same "never split a unit in half" principle this item applies to
+    rules.py's whole-file drop. Extend to the next space instead — the
+    field runs over budget by a bounded amount rather than being corrupted
+    mid-token. If there is no next space either (the whole value is one
+    token), there is no boundary to cut at anywhere, so the value is
+    returned whole and unmarked."""
     if len(value) <= limit:
         return value
     cut = value[:limit]
     last_space = cut.rfind(" ")
     if last_space > 0:
         cut = cut[:last_space]
+    else:
+        next_space = value.find(" ", limit)
+        if next_space == -1:
+            return value
+        cut = value[:next_space]
     omitted = len(value) - len(cut)
     note = f" […{omitted} chars omitted — agent reply exceeded the {limit}-char budget for this field; do not infer the field is complete.]"
     return f"{cut}{note}"

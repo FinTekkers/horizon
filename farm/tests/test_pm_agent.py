@@ -130,6 +130,29 @@ def test_mark_truncated_never_cuts_mid_word():
         assert word == "wordword" or word == ""
 
 
+def test_mark_truncated_run_on_word_with_no_space_at_all_is_returned_whole_and_unmarked():
+    # A single token longer than the budget (a URL, a hash) has no word
+    # boundary to cut at at-or-before the limit. Cutting mid-word would
+    # violate the same "never split a unit in half" principle this item
+    # applies elsewhere (rules.py's whole-block drop) — so this is left
+    # whole rather than corrupted, even though it stays over budget.
+    value = "x" * 500
+    marked = _mark_truncated(value, 400)
+    assert marked == value
+    assert "chars omitted" not in marked
+
+
+def test_mark_truncated_run_on_word_extends_to_the_next_boundary_past_the_limit():
+    # The over-limit run continues past `limit` but a space does eventually
+    # show up — the cut extends forward to that boundary instead of landing
+    # mid-word inside the run.
+    value = ("y" * 450) + " and then more words after that"
+    marked = _mark_truncated(value, 400)
+    content = marked.split(" […")[0]
+    assert content == "y" * 450
+    assert "chars omitted" in marked
+
+
 def test_validate_persona_stays_hard_capped_with_no_marker():
     # persona is a registry-validated routing enum, not prose a human/agent
     # reads — the server drops anything that isn't an exact match anyway, so
