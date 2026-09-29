@@ -41,6 +41,7 @@ delete process.env.GITHUB_WEBHOOK_SECRET
 delete process.env.FARM_URL
 
 const { buildApp } = await import('../src/app.js')
+const { resolveRules, renderRulesSection, MAX_PROMPT_RULES_CHARS } = await import('../src/definitions.js')
 const auth = await import('../src/auth.js')
 const config = await import('../src/config.js')
 const app = buildApp({ logger: false })
@@ -242,4 +243,44 @@ test('the effective-prompt preview composes role → persona → project → rep
   assert.ok(rulesAt > 0)
   assert.ok(prompt.indexOf('push me') > rulesAt, 'project rules render under the header')
   assert.ok(prompt.indexOf('version ') > prompt.indexOf('push me'), 'repo rules follow project rules')
+})
+
+// ---- resolveRules / renderRulesSection whole-part drop (HZ-114) ----
+// JS mirror of farm/rules.py's fix: an oversized rules block must be dropped
+// whole, with a marked note, never sliced mid-block.
+
+test('resolveRules returns parts in order, not pre-joined', () => {
+  // A dedicated fixture name untouched by the mutating PUT tests above —
+  // those overwrite the shared 'fintekkers'/'ui-service' fixtures in place.
+  fs.mkdirSync(join(farmDir, 'rules', 'projects'), { recursive: true })
+  fs.mkdirSync(join(farmDir, 'rules', 'repos'), { recursive: true })
+  fs.writeFileSync(join(farmDir, 'rules', 'projects', 'freshco.md'), 'PROJECT RULES')
+  fs.writeFileSync(join(farmDir, 'rules', 'repos', 'FreshCo__widgets.md'), 'REPO RULES')
+  assert.deepEqual(resolveRules('FreshCo', 'FreshCo/widgets'), ['PROJECT RULES', 'REPO RULES'])
+})
+
+test('renderRulesSection drops a single oversized block whole with a note', () => {
+  const oversized = 'r'.repeat(MAX_PROMPT_RULES_CHARS + 5000)
+  const rendered = renderRulesSection([oversized])
+  assert.ok(!rendered.includes(oversized))
+  assert.ok(!rendered.includes('r'.repeat(MAX_PROMPT_RULES_CHARS)))
+  assert.ok(rendered.includes('1 rules block(s) omitted'))
+  assert.ok(rendered.toLowerCase().includes('do not infer'))
+})
+
+test('renderRulesSection keeps a small part and drops an oversized sibling whole', () => {
+  const small = '- keep this rule'
+  const oversized = 'z'.repeat(MAX_PROMPT_RULES_CHARS + 100)
+  const rendered = renderRulesSection([small, oversized])
+  assert.ok(rendered.includes(small))
+  assert.ok(!rendered.includes(oversized))
+  assert.ok(rendered.includes('1 rules block(s) omitted'))
+})
+
+test('renderRulesSection returns header + note, never an empty string, when every part is dropped', () => {
+  const a = 'a'.repeat(MAX_PROMPT_RULES_CHARS + 10)
+  const b = 'b'.repeat(MAX_PROMPT_RULES_CHARS + 10)
+  const rendered = renderRulesSection([a, b])
+  assert.ok(rendered.startsWith('## Project rules\n'))
+  assert.ok(rendered.includes('2 rules block(s) omitted'))
 })

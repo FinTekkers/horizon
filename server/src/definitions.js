@@ -186,8 +186,10 @@ function composeRole(roleText, personaId) {
   return roleText
 }
 
-// Mirror of farm/rules.py resolve_rules (byte cap included).
-function resolveRules(projectName, repo) {
+// Mirror of farm/rules.py resolve_rules (byte cap included). Returns parts
+// in order, not pre-joined, so renderRulesSection can drop an oversized part
+// whole instead of slicing across a part boundary.
+export function resolveRules(projectName, repo) {
   const parts = []
   const readCapped = (relpath) => {
     const full = path.join(FARM_DIR, relpath)
@@ -206,16 +208,52 @@ function resolveRules(projectName, repo) {
   if (typeof repo === 'string' && repo.trim()) {
     parts.push(readCapped(path.join('rules/repos', `${repo.trim().replaceAll('/', '__')}.md`)))
   }
-  return parts.filter(Boolean).join('\n\n')
+  return parts.filter(Boolean)
 }
 
 // Mirror of farm/rules.py render_rules_section.
-const MAX_PROMPT_RULES_CHARS = 24000
+export const MAX_PROMPT_RULES_CHARS = 24000
 
-function renderRulesSection(rulesText) {
-  const text = typeof rulesText === 'string' ? rulesText.trim() : ''
-  if (!text) return ''
-  return `## Project rules\n${text.slice(0, MAX_PROMPT_RULES_CHARS)}`
+// Accepts an array of parts (the normal case) or a bare string (back-compat
+// for hand-built callers/tests, treated as one part). Whole parts are
+// dropped from the end until what remains fits — never sliced mid-part — and
+// a dropped part is always named in a trailing note, mirroring
+// farm/rules.py render_rules_section byte-for-byte.
+export function renderRulesSection(rulesParts) {
+  let parts
+  if (typeof rulesParts === 'string') {
+    parts = rulesParts.trim() ? [rulesParts.trim()] : []
+  } else if (Array.isArray(rulesParts)) {
+    parts = rulesParts.filter((p) => typeof p === 'string' && p.trim()).map((p) => p.trim())
+  } else {
+    parts = []
+  }
+  if (parts.length === 0) return ''
+
+  const kept = []
+  let keptChars = 0
+  let dropped = 0
+  let droppedChars = 0
+  for (const part of parts) {
+    const added = part.length + (kept.length > 0 ? 2 : 0) // '\n\n' joiner
+    if (keptChars + added <= MAX_PROMPT_RULES_CHARS) {
+      kept.push(part)
+      keptChars += added
+    } else {
+      dropped += 1
+      droppedChars += part.length
+    }
+  }
+
+  let body = kept.join('\n\n')
+  if (dropped > 0) {
+    const note =
+      `\n\n**${dropped} rules block(s) omitted (${droppedChars.toLocaleString('en-US')} chars) — over the ` +
+      `${MAX_PROMPT_RULES_CHARS.toLocaleString('en-US')}-char prompt cap.** These constraints exist but did ` +
+      "not fit this prompt; do not infer they're absent."
+    body = body ? `${body}${note}` : note.trim()
+  }
+  return `## Project rules\n${body}`
 }
 
 // Mirror of farm/rules.py effective_prompt — the exact string an agent for

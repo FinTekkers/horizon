@@ -598,14 +598,20 @@ def test_build_prompt_without_rules_renders_no_header():
     assert "## Project rules" not in build_prompt(task)
 
 
-def test_build_prompt_truncates_runaway_rules_at_24k_chars():
+def test_build_prompt_drops_a_runaway_rules_block_whole_instead_of_slicing_it():
+    # HZ-114: this used to assert "r" * MAX_PROMPT_RULES_CHARS survived in
+    # the prompt — i.e. it locked in the raw-slice bug. An oversized block
+    # must now be absent entirely, with a marked, non-inference note in its
+    # place, not half the block silently cut mid-word.
     from farm.rules import MAX_PROMPT_RULES_CHARS
 
     task = make_task(11, "Specialist agent implements")
-    task["rules"] = "r" * (MAX_PROMPT_RULES_CHARS + 9000)
+    task["rules"] = ["r" * (MAX_PROMPT_RULES_CHARS + 9000)]
     prompt = build_prompt(task)
-    assert "r" * MAX_PROMPT_RULES_CHARS in prompt
-    assert "r" * (MAX_PROMPT_RULES_CHARS + 1) not in prompt
+    assert "r" * 1000 not in prompt
+    assert "## Project rules" in prompt
+    assert "1 rules block(s) omitted" in prompt
+    assert "do not infer" in prompt.lower()
 
 
 def test_build_prompt_renders_the_resolved_persona():
