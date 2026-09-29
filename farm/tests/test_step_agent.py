@@ -198,6 +198,22 @@ def test_the_truncation_note_sits_outside_the_diff_fence():
     assert note.startswith("\n\n")
 
 
+def test_reviewer_roles_stop_instead_of_judging_truncated_input():
+    """HZ-105/HZ-102: architect_review.md already had this instruction; qa.md
+    lacked it — the actual gap that let QA report a required test plan as
+    absent (it had only seen a quarter of it) and still return a verdict on
+    the partial content. This pins the instruction so it can't regress in
+    either reviewer role. The server-side gate (orchestrator.js's
+    missingRequiredInputs) already stops a REQUIRED truncated artifact from
+    ever reaching the farm — this instruction covers the remaining case: a
+    non-required prior artifact riding along truncated."""
+    phrase = "do not review the partial content as if it were complete"
+    for role_file in ("architect_review.md", "qa.md"):
+        text = (step_agent.ROLES / role_file).read_text()
+        normalized = " ".join(text.split())  # role files wrap prose across lines
+        assert phrase in normalized, f"{role_file} is missing the stop-on-truncation instruction"
+
+
 def write_fake_screenshot(ws, name):
     shots = ws / "e2e" / "__screenshots__"
     shots.mkdir(parents=True, exist_ok=True)

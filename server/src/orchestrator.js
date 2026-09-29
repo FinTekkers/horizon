@@ -20,6 +20,7 @@ import {
   REVIEW_STEP_INDEX,
   ACCEPT_GATE_INDEX,
   DEPLOY_STEP_INDEX,
+  requiredStepIndex,
 } from './lifecycle.js'
 import {
   getItem,
@@ -272,6 +273,23 @@ export function budgetArtifacts(rows) {
     const content = truncated ? digestToFit(full, cap) : full
     return { label: STEPS[row.step_index]?.label || `step ${row.step_index}`, content, truncated, stepIndex: row.step_index }
   })
+}
+
+// Exported for tests. `step.requires` (server/src/lifecycle.js) names prior
+// steps this step cannot review without in full. Returns one entry per
+// required label whose budgeted artifact was truncated — empty when every
+// required input is suppliable whole (including when the step has no
+// `requires` at all, which is most steps).
+export function missingRequiredInputs(step, rows, budgeted) {
+  return (step.requires || [])
+    .map((label) => {
+      const reqIndex = requiredStepIndex(label)
+      const entry = budgeted.find((b) => b.stepIndex === reqIndex)
+      if (!entry?.truncated) return null
+      const row = rows.find((r) => r.step_index === reqIndex)
+      return { label, fullLen: row.artifact.length, gotLen: entry.content.length }
+    })
+    .filter(Boolean)
 }
 
 let farm = { status: 'running', since: new Date().toISOString(), runStates: {} }
@@ -762,6 +780,22 @@ async function dispatchToFarm(id, stepIndex, runId, attempt) {
     .all(id, IMPLEMENT_STEP_INDEX, id, IMPLEMENT_STEP_INDEX)
     .map((row) => ({ step_index: row.step_index, artifact: row.artifact ?? row.output ?? '' }))
   const budgeted = budgetArtifacts(rows)
+
+  // HZ-105: a step whose `requires` names a prior artifact must never review
+  // it half-shown — the exact HZ-102 failure shape was a reviewer judging a
+  // quarter of an implementation plan and reporting the rest as absent. If
+  // the budget allocator had to truncate a required artifact, stop here:
+  // no dispatch, no verdict, no artifact. failFarmRun pauses the item and
+  // names the artifact, its full size, and the shortfall — a capacity
+  // decision for a human, never auto-retried (see AUTO_RETRY_REASONS).
+  const missingRequired = missingRequiredInputs(step, rows, budgeted)
+  if (missingRequired.length > 0) {
+    const detail = missingRequired
+      .map((m) => `"${m.label}" needs ${m.fullLen} chars, only ${m.gotLen} could be supplied (${m.fullLen - m.gotLen} short)`)
+      .join('; ')
+    return failFarmRun(runId, `required input incomplete: ${detail}`, 'required_input_incomplete')
+  }
+
   const artifacts = budgeted.map(({ label, content }) => ({ label, content }))
   const truncatedLabels = budgeted.filter((a) => a.truncated).map((a) => a.label)
   if (truncatedLabels.length > 0) {
