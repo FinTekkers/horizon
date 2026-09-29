@@ -148,6 +148,50 @@ def test_explicit_provider_unknown_name_raises_agent_error():
         agent_runner.run_agent("prompt", provider="bogus-provider")
 
 
+# ---- provider lock (HZ-117): closes the bare-FARM_PROVIDER hole ----
+# Before this, a step's provider guardrail only ever ran on the
+# persona-forced override path (step_agent.py's old
+# PROVIDER_OVERRIDE_ELIGIBLE_STEPS check) — a bare `FARM_PROVIDER=muse` env
+# var reached implement/deploy completely unguarded. provider_locked is
+# enforced at run_agent()'s one dispatch chokepoint, so it catches that path
+# too, with no persona involved at all.
+
+
+def test_provider_locked_step_refuses_non_default_provider_even_from_bare_env(monkeypatch):
+    monkeypatch.setenv("FARM_PROVIDER", "muse")
+
+    with pytest.raises(AgentError, match="provider-locked"):
+        agent_runner.run_agent("prompt", provider_locked=True)
+
+
+def test_provider_locked_step_refuses_an_explicit_override_too(register_fake_provider):
+    provider, run_calls, _ = _fake_provider(supports_resume=True)
+    register_fake_provider(provider)
+
+    with pytest.raises(AgentError, match="provider-locked"):
+        agent_runner.run_agent("prompt", provider="fake", provider_locked=True)
+    assert run_calls == [], "a provider-locked step must never dispatch to the refused provider"
+
+
+def test_provider_locked_step_still_runs_on_the_default_provider(monkeypatch):
+    monkeypatch.delenv("FARM_PROVIDER", raising=False)
+    monkeypatch.setattr(agent_runner, "FARM_PROVIDER", agent_runner.DEFAULT_PROVIDER)
+
+    reply = agent_runner.run_agent("prompt", provider_locked=True)
+
+    assert reply["provider"] == agent_runner.DEFAULT_PROVIDER
+
+
+def test_omitting_provider_locked_keeps_every_existing_caller_unaffected(register_fake_provider):
+    provider, run_calls, _ = _fake_provider(supports_resume=True)
+    register_fake_provider(provider)
+
+    reply = agent_runner.run_agent("prompt")
+
+    assert reply["provider"] == "fake"
+    assert len(run_calls) == 1
+
+
 # ---- metered billing gate (HZ-5 guarantee; HZ-83 code-enforced cap) ----
 
 

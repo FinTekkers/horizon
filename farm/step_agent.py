@@ -27,6 +27,7 @@ from .checks import run_checks
 from .config import FARM_PORT
 from .personas import compose_role, provider_for, resolve
 from .rules import render_rules_section
+from . import steps
 from .workspaces import ensure_item_worktree, hub_lock
 
 FARMD = f"http://127.0.0.1:{FARM_PORT}"
@@ -44,38 +45,63 @@ WRITE_ARTIFACT_SANITY_CEILING_CHARS = 200_000
 # fire in practice — mirrors farm/rules.py's MAX_PROMPT_RULES_CHARS backstop.
 MAX_PROMPT_ARTIFACT_CHARS = 100_000
 
-# step index -> (role file, needs JSON artifact, tool access, max turns,
-#                timeout seconds, wants persona)
-# Personas specialize only the steps that act on the item's stack — QA (8) and
-# implement (11); the planning steps stay generalist.
+# step label -> (role file, needs JSON artifact, tool access, wants persona).
+# HZ-117: keyed by label (the table's own primary key, see farm/steps.py),
+# never index — an insertion elsewhere in the table can't repoint one of
+# these at the wrong step. Turn budgets and timeouts moved to
+# steps.budget_for_label(); provider eligibility to
+# steps.provider_override_eligible()/provider_locked_for() — all three read
+# the generated table instead of a second hand-maintained mapping here.
+# Personas specialize only the steps that act on the item's stack — QA and
+# implement; the planning steps stay generalist.
 PLANNER_TOOLS = "Read,Glob,Grep"
 IMPLEMENT_TOOLS = "Read,Glob,Grep,Edit,Write,Bash"
 # DevOps investigates and can hit live URLs (curl, gh cli, etc.) but never
 # edits code — same read-only rationale as the reviewer, one step below.
 DEVOPS_TOOLS = "Read,Glob,Grep,Bash"
+
+IMPLEMENT_LABEL = "Specialist agent implements"
+REVIEW_LABEL = "Automated review (code + QA)"
+DEPLOY_LABEL = "Deploy the changes"
+
 STEP_CONFIG = {
-    4: ("ensemble.md", True, PLANNER_TOOLS, 40, 1140, False),
-    6: ("eng_plan.md", True, PLANNER_TOOLS, 40, 1140, False),
-    7: ("architect_review.md", True, PLANNER_TOOLS, 40, 1140, False),
-    8: ("qa.md", True, PLANNER_TOOLS, 40, 1140, True),
-    11: ("eng_implement.md", False, IMPLEMENT_TOOLS, 160, 2700, True),
+    "Plan options & trade-offs (pros / cons)": ("ensemble.md", True, PLANNER_TOOLS, False),
+    "Draft implementation plan": ("eng_plan.md", True, PLANNER_TOOLS, False),
+    "Architecture review": ("architect_review.md", True, PLANNER_TOOLS, False),
+    "QA reviews the test plan": ("qa.md", True, PLANNER_TOOLS, True),
+    IMPLEMENT_LABEL: ("eng_implement.md", False, IMPLEMENT_TOOLS, True),
     # code_review.md is loaded here for the first (code) pass; qa_review.md
-    # is loaded separately inside execute()'s step_index == 12 branch for the
-    # second pass. Read-only tools: the reviewer can never edit, push, merge
-    # or approve the human gate (HZ-30) — enforced here, not by prompt alone.
-    12: ("code_review.md", True, PLANNER_TOOLS, 60, 1800, True),
+    # is loaded separately inside execute()'s review branch for the second
+    # pass. Read-only tools: the reviewer can never edit, push, merge or
+    # approve the human gate (HZ-30) — enforced here, not by prompt alone.
+    REVIEW_LABEL: ("code_review.md", True, PLANNER_TOOLS, True),
     # DevOps is a role, not a persona (HZ-22 architecture review) — it is
     # project-scoped via farm/rules/projects/*.md, not stack-scoped, so it
     # never gets a persona composed in.
-    14: ("devops.md", True, DEVOPS_TOOLS, 40, 900, False),
+    DEPLOY_LABEL: ("devops.md", True, DEVOPS_TOOLS, False),
 }
 
-# HZ-102: a persona-forced provider override (farm/personas.py's
-# provider_for()) is only ever honored on these pure-planning steps — never
-# implement (11) or deploy (14), no matter what a persona maps to. This is
-# the code-level guarantee behind the guardrail "never route implement,
-# ship, or deploy to Muse", not just a naming convention on the persona.
-PROVIDER_OVERRIDE_ELIGIBLE_STEPS = {4, 6, 7}
+
+def _assert_step_config_matches_table(config_labels: set[str], table_labels: set[str]) -> None:
+    """The actual Python-side enforcement of "an inserted/renamed step must
+    fail loudly, not silently repoint an index" (HZ-117). Raises naming every
+    mismatched label in both directions — pure-set, no import-time state, so
+    a test can call this directly with a fabricated mismatch."""
+    missing_from_config = table_labels - config_labels
+    missing_from_table = config_labels - table_labels
+    if not missing_from_config and not missing_from_table:
+        return
+    problems = []
+    if missing_from_config:
+        problems.append(f"in the generated steps table but missing from STEP_CONFIG: {sorted(missing_from_config)}")
+    if missing_from_table:
+        problems.append(f"in STEP_CONFIG but missing from the generated steps table: {sorted(missing_from_table)}")
+    raise RuntimeError("step_agent.STEP_CONFIG has drifted from farm/steps_generated.json — " + "; ".join(problems))
+
+
+_assert_step_config_matches_table(
+    set(STEP_CONFIG), {s["label"] for s in steps.STEPS if s["runsIn"] == "farm"}
+)
 
 # Diff shown to both review passes is capped — a defensive bound on prompt
 # size, not a claim that larger diffs can't happen. 20k was below the size of
@@ -369,6 +395,7 @@ def _run_and_parse(
     timeout_s: int,
     allowed_tools: str | None,
     provider: str | None = None,
+    provider_locked: bool = False,
 ) -> tuple[dict, dict]:
     """run_agent + extract_json with one retry-with-feedback on a parse
     failure (HZ-44) — mirrors pm_agent.process()'s recovery. Asking the model
@@ -387,6 +414,7 @@ def _run_and_parse(
         timeout_s=timeout_s,
         allowed_tools=allowed_tools,
         provider=provider,
+        provider_locked=provider_locked,
     )
     try:
         return extract_json(reply["result"]), _provenance(reply)
@@ -401,6 +429,7 @@ def _run_and_parse(
             timeout_s=timeout_s,
             allowed_tools=allowed_tools,
             provider=provider,
+            provider_locked=provider_locked,
         )
         return extract_json(retry["result"]), _provenance(retry)
 
@@ -437,13 +466,17 @@ def run_smoke_check(url: str, expected_text: str) -> tuple[str, str]:
 
 
 def execute(task: dict) -> dict:
-    step_index = task["step"]["index"]
-    role_file, wants_artifact, tools, max_turns, timeout_s, wants_persona = STEP_CONFIG[step_index]
+    label = task["step"]["label"]
+    role_file, wants_artifact, tools, wants_persona = STEP_CONFIG[label]
+    max_turns, timeout_s = steps.budget_for_label(steps.STEPS, label)
+    provider_locked = steps.provider_locked_for(steps.STEPS, label)
     role = (ROLES / role_file).read_text()
     item = task["item"]
     if wants_persona:
         role = compose_role(role, item.get("persona"))
-    provider_override = provider_for(item.get("persona")) if step_index in PROVIDER_OVERRIDE_ELIGIBLE_STEPS else None
+    provider_override = (
+        provider_for(item.get("persona")) if steps.provider_override_eligible(steps.STEPS, label) else None
+    )
 
     ws = None
     if item.get("repo"):
@@ -455,7 +488,7 @@ def execute(task: dict) -> dict:
             ws = None
 
     # Implement step without a repo/workspace: nothing real to build.
-    if step_index == 11:
+    if label == IMPLEMENT_LABEL:
         if ws is None:
             if item.get("repo"):
                 raise RuntimeError("workspace not provisioned for this repo — restart the farm")
@@ -473,6 +506,7 @@ def execute(task: dict) -> dict:
                 max_turns=max_turns,
                 timeout_s=timeout_s,
                 allowed_tools=tools,
+                provider_locked=provider_locked,
             )
         except Exception:
             # SALVAGE (HZ-31): the run hit its turn/time cap (or any other
@@ -503,7 +537,7 @@ def execute(task: dict) -> dict:
     # evidence (delivered via task["artifacts"], widened server-side to
     # include the implement step's output). The merged, structured verdict
     # below is what the orchestrator's loop-cap logic reads — never prose.
-    if step_index == 12:
+    if label == REVIEW_LABEL:
         if ws is None:
             verdict = {"code_review": {"verdict": "pass", "findings": []}, "qa_review": dict(_QA_AUTO_PASS)}
             return {
@@ -535,14 +569,26 @@ def execute(task: dict) -> dict:
         )
 
         code_parsed, _code_provenance = _run_and_parse(
-            prompt, append_system=role, cwd=str(ws), max_turns=max_turns, timeout_s=timeout_s, allowed_tools=tools
+            prompt,
+            append_system=role,
+            cwd=str(ws),
+            max_turns=max_turns,
+            timeout_s=timeout_s,
+            allowed_tools=tools,
+            provider_locked=provider_locked,
         )
 
         qa_role = (ROLES / "qa_review.md").read_text()
         if wants_persona:
             qa_role = compose_role(qa_role, item.get("persona"))
         qa_parsed, _qa_provenance = _run_and_parse(
-            prompt, append_system=qa_role, cwd=str(ws), max_turns=max_turns, timeout_s=timeout_s, allowed_tools=tools
+            prompt,
+            append_system=qa_role,
+            cwd=str(ws),
+            max_turns=max_turns,
+            timeout_s=timeout_s,
+            allowed_tools=tools,
+            provider_locked=provider_locked,
         )
 
         verdict = {"code_review": _code_review_section(code_parsed), "qa_review": _qa_review_section(qa_parsed)}
@@ -564,7 +610,7 @@ def execute(task: dict) -> dict:
     # (the JS orchestrator holds the GitHub token, not the farm — see
     # dispatchToFarm in server/src/orchestrator.js). This step is purely the
     # DevOps agent's deep post-deploy verification.
-    if step_index == 14:
+    if label == DEPLOY_LABEL:
         if not item.get("repo") or item.get("issue") is None:
             return {
                 "summary": "no repository attached — deploy verification skipped (demo item)",
@@ -582,7 +628,13 @@ def execute(task: dict) -> dict:
             "page right now."
         )
         parsed, _deploy_provenance = _run_and_parse(
-            prompt, append_system=role, cwd=None, max_turns=max_turns, timeout_s=timeout_s, allowed_tools=tools
+            prompt,
+            append_system=role,
+            cwd=None,
+            max_turns=max_turns,
+            timeout_s=timeout_s,
+            allowed_tools=tools,
+            provider_locked=provider_locked,
         )
         summary = str(parsed.get("summary", "")).strip()[:600] or "deploy verification finished"
         artifact_md = str(parsed.get("artifact_md", "")).strip()
@@ -613,6 +665,7 @@ def execute(task: dict) -> dict:
         timeout_s=timeout_s,
         allowed_tools=tools if ws else None,
         provider=provider_override,
+        provider_locked=provider_locked,
     )
     summary = str(parsed.get("summary", "")).strip()[:600]
     if not summary:

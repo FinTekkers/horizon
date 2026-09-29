@@ -1,0 +1,123 @@
+[
+  {
+    "index": 0,
+    "label": "Define the outcome",
+    "agent": "PM",
+    "runsIn": "pm",
+    "workspaceMutating": null,
+    "providerOverrideEligible": null,
+    "providerLocked": null,
+    "maxTurns": null,
+    "timeoutS": null
+  },
+  {
+    "index": 1,
+    "label": "Define how we measure success",
+    "agent": "PM",
+    "runsIn": "pm",
+    "workspaceMutating": null,
+    "providerOverrideEligible": null,
+    "providerLocked": null,
+    "maxTurns": null,
+    "timeoutS": null
+  },
+  {
+    "index": 2,
+    "label": "Set guardrails",
+    "agent": "Architect",
+    "runsIn": "pm",
+    "workspaceMutating": null,
+    "providerOverrideEligible": null,
+    "providerLocked": null,
+    "maxTurns": null,
+    "timeoutS": null
+  },
+  {
+    "index": 4,
+    "label": "Plan options & trade-offs (pros / cons)",
+    "agent": "Ensemble",
+    "runsIn": "farm",
+    "workspaceMutating": false,
+    "providerOverrideEligible": true,
+    "providerLocked": false,
+    "maxTurns": 40,
+    "timeoutS": 1140
+  },
+  {
+    "index": 6,
+    "label": "Draft implementation plan",
+    "agent": "Eng",
+    "runsIn": "farm",
+    "workspaceMutating": false,
+    "providerOverrideEligible": true,
+    "providerLocked": false,
+    "maxTurns": 40,
+    "timeoutS": 1140
+  },
+  {
+    "index": 7,
+    "label": "Architecture review",
+    "agent": "Architect",
+    "runsIn": "farm",
+    "workspaceMutating": false,
+    "providerOverrideEligible": true,
+    "providerLocked": false,
+    "maxTurns": 40,
+    "timeoutS": 1140
+  },
+  {
+    "index": 8,
+    "label": "QA reviews the test plan",
+    "agent": "QA",
+    "runsIn": "farm",
+    "workspaceMutating": false,
+    "providerOverrideEligible": false,
+    "providerLocked": false,
+    "maxTurns": 40,
+    "timeoutS": 1140
+  },
+  {
+    "index": 9,
+    "label": "Summarize reviews & recommend",
+    "agent": "PM",
+    "runsIn": "pm",
+    "workspaceMutating": null,
+    "providerOverrideEligible": null,
+    "providerLocked": null,
+    "maxTurns": null,
+    "timeoutS": null
+  },
+  {
+    "index": 11,
+    "label": "Specialist agent implements",
+    "agent": "Eng",
+    "runsIn": "farm",
+    "workspaceMutating": true,
+    "providerOverrideEligible": false,
+    "providerLocked": true,
+    "maxTurns": 160,
+    "timeoutS": 2700
+  },
+  {
+    "index": 12,
+    "label": "Automated review (code + QA)",
+    "agent": "Review",
+    "runsIn": "farm",
+    "workspaceMutating": true,
+    "providerOverrideEligible": false,
+    "providerLocked": false,
+    "maxTurns": 60,
+    "timeoutS": 1800
+  },
+  {
+    "index": 14,
+    "label": "Deploy the changes",
+    "agent": "DevOps",
+    "runsIn": "farm",
+    "workspaceMutating": false,
+    "providerOverrideEligible": false,
+    "providerLocked": true,
+    "maxTurns": 40,
+    "timeoutS": 900
+  }
+]

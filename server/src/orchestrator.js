@@ -546,11 +546,13 @@ const MOCK_REVIEW_FAIL_COUNT = Number(process.env.MOCK_REVIEW_FAIL_COUNT) || 0
 
 const MOCK_QA_PASS = { verdict: 'pass', regression_tests_run: true, new_code_unit_coverage: true, e2e_test_present: true, findings: [] }
 
-// Mock behavior per step index (the pipeline is fixed — see lifecycle.js).
+// Mock behavior per step label (HZ-117: keyed by label, not index — the
+// pipeline's step identities are fixed, see lifecycle.js; an insertion
+// elsewhere in STEPS must never repoint one of these at the wrong step).
 // Returns { summary, patch? } where patch updates work_item fields, mimicking
 // the artifacts each agent is supposed to produce.
 export const MOCK_STEP_BEHAVIOR = {
-  0: (it) => {
+  'Define the outcome': (it) => {
     const result = it.desc
       ? { summary: 'refined the outcome statement from the issue description', patch: {} }
       : { summary: 'drafted an outcome statement for gate review', patch: { desc: `Deliver: ${it.title}` } }
@@ -563,30 +565,34 @@ export const MOCK_STEP_BEHAVIOR = {
     if (Object.keys(result.patch).length === 0) delete result.patch
     return result
   },
-  1: (it) =>
+  'Define how we measure success': (it) =>
     it.metric
       ? { summary: 'validated the success metric is measurable' }
       : {
           summary: 'drafted a success metric for gate review',
           patch: { metric: `Draft — define a measurable target for “${it.title}” (confirm at the gate)` },
         },
-  2: (it) =>
+  'Set guardrails': (it) =>
     it.guardrails
       ? { summary: 'confirmed guardrails; defaults also apply' }
       : {
           summary: 'set draft guardrails',
           patch: { guardrails: 'Draft — defaults apply: tests, linters and e2e must pass; no destructive data changes.' },
         },
-  4: () => ({ summary: 'prepared options A/B/C with trade-offs; recommends B (robust, medium effort)' }),
-  6: () => ({ summary: 'drafted the implementation plan: components touched, sequencing, test impact' }),
-  7: () => ({ summary: 'architecture review passed — no encapsulation or duplication concerns' }),
-  8: () => ({ summary: 'test plan covers the success metric; added two edge cases' }),
+  'Plan options & trade-offs (pros / cons)': () => ({
+    summary: 'prepared options A/B/C with trade-offs; recommends B (robust, medium effort)',
+  }),
+  'Draft implementation plan': () => ({ summary: 'drafted the implementation plan: components touched, sequencing, test impact' }),
+  'Architecture review': () => ({ summary: 'architecture review passed — no encapsulation or duplication concerns' }),
+  'QA reviews the test plan': () => ({ summary: 'test plan covers the success metric; added two edge cases' }),
   // The digest must never imply a decision — in demo mode there is no real PM
   // review, and only the human decides at the gate that follows.
-  9: () => ({ summary: 'review digest unavailable in demo mode — a human must decide at the next gate' }),
+  'Summarize reviews & recommend': () => ({
+    summary: 'review digest unavailable in demo mode — a human must decide at the next gate',
+  }),
   // Execute: the code change takes the form of a GitHub PR. The mock commits
   // a placeholder file; the PR/branch mechanics are the real integration.
-  11: async (it) => {
+  'Specialist agent implements': async (it) => {
     if (!it.repo || it.issue == null) {
       return { summary: 'implementation complete on a feature branch; all checks green (no GitHub — PR skipped)' }
     }
@@ -608,7 +614,7 @@ export const MOCK_STEP_BEHAVIOR = {
   // deterministically fail its first N cycles (driven by the same
   // review_cycle_count column the real cap enforcement reads), so the
   // fail -> re-implement -> pass loop is exercisable without a real farm.
-  12: (it) => {
+  'Automated review (code + QA)': (it) => {
     if ((it.review_cycle_count || 0) < MOCK_REVIEW_FAIL_COUNT) {
       return {
         summary: 'automated review found a guardrail violation — sent back to implement (mock)',
@@ -629,7 +635,7 @@ export const MOCK_STEP_BEHAVIOR = {
   // Deploy: publish a GitHub Release, which the self-deploy webhook
   // (server/src/deploy.js) picks up to pull the tag onto shoreward.ai. The
   // mock is the deploy content, not the plumbing.
-  14: async (it) => {
+  'Deploy the changes': async (it) => {
     if (!it.repo || it.issue == null) {
       return { summary: 'deployed to the target environment; smoke checks passed (no GitHub — release skipped)' }
     }
@@ -1185,7 +1191,7 @@ async function runMockStep(id, stepIndex, runId) {
 
   const step = STEPS[stepIndex]
   const agent = AGENTS[step.agent]
-  const behavior = MOCK_STEP_BEHAVIOR[stepIndex] || (() => ({ summary: `completed ${step.label.toLowerCase()}` }))
+  const behavior = MOCK_STEP_BEHAVIOR[step.label] || (() => ({ summary: `completed ${step.label.toLowerCase()}` }))
   let { summary, patch, verdict } = await behavior(item)
 
   // Deliver any queued human feedback to this "agent" — the mock acknowledges

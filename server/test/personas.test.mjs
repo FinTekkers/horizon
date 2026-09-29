@@ -97,8 +97,14 @@ test('the "Review before execution" gate is required in both lifecycle copies', 
 // lockstep — this is the concrete regression test for that requirement,
 // modeled on the registry-parity checks above.
 
-test('server and UI lifecycle STEPS arrays are byte-identical', () => {
-  assert.deepEqual(serverLifecycle.STEPS, uiLifecycle.STEPS)
+// HZ-117: the UI no longer hand-copies STEPS — its file is generated from
+// the server's table (toUiSteps()), structure-only (no farm-only budget/lane
+// fields, no UI presentation tokens). The full three-way parity test (server,
+// farm, UI) lives in lifecycle-three-way-parity.test.mjs; this is the
+// narrower two-way check that the UI's committed JSON hasn't gone stale
+// against a live re-derivation.
+test('the UI STEPS copy matches a fresh toUiSteps() derivation from the server table', () => {
+  assert.deepEqual(uiLifecycle.STEPS, serverLifecycle.toUiSteps())
 })
 
 test('every server AGENTS entry matches its UI counterpart on label and initials (the UI copy only adds Human on top)', () => {
@@ -138,18 +144,18 @@ test('the automated Review step sits between implement and the accept gate, in b
 })
 
 test('the mock review digest contains no approval language (deny-list)', () => {
-  const { summary } = MOCK_STEP_BEHAVIOR[9]()
+  const { summary } = MOCK_STEP_BEHAVIOR['Summarize reviews & recommend']()
   assert.ok(!/recommend|proceed|approve/i.test(summary), `digest implies a decision: "${summary}"`)
 })
 
 test('mock step 0 proposes a persona once and says so', () => {
-  const result = MOCK_STEP_BEHAVIOR[0]({ title: 'Fix flaky pytest fixture in the payments API', desc: 'x' })
+  const result = MOCK_STEP_BEHAVIOR['Define the outcome']({ title: 'Fix flaky pytest fixture in the payments API', desc: 'x' })
   assert.equal(result.patch?.persona, 'python_backend')
   assert.match(result.summary, /proposed/)
 })
 
 test('mock step 0 never re-proposes over a set persona, and does not claim it did', () => {
-  const result = MOCK_STEP_BEHAVIOR[0]({ title: 'Fix flaky pytest fixture', desc: 'x', persona: 'frontend_ui' })
+  const result = MOCK_STEP_BEHAVIOR['Define the outcome']({ title: 'Fix flaky pytest fixture', desc: 'x', persona: 'frontend_ui' })
   assert.equal(result.patch?.persona, undefined)
   assert.ok(!/proposed/i.test(result.summary), `skip summary still claims a proposal: "${result.summary}"`)
 })

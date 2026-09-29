@@ -2,6 +2,8 @@
 // Mirrors the domain model in ui/design-system/HANDOFF.md — a real backend can
 // keep this fixed or serve it per-item.
 
+import STEPS from './steps_generated.json' with { type: 'json' }
+
 // `color` is a theme-aware token — legible as text/dot fill against a
 // neutral surface in both themes (see the "-ink" tokens in index.css).
 // `avatarBg` is the same hue's solid form, used only for the activity-feed
@@ -23,30 +25,26 @@ export const PHASES = ['Plan', 'Technical Plan', 'Execute', 'Deploy', 'Review']
 export const PHASE_ACCENT = ['var(--primary-ink)', 'var(--architect-ink)', 'var(--success-ink)', 'var(--danger-ink)', 'var(--warning-ink)']
 export const PHASE_ACCENT_BG = ['var(--primary-bg)', 'var(--accent-bg)', 'var(--success-bg)', 'var(--danger-bg)', 'var(--warning-bg)']
 
-export const STEPS = [
-  { phase: 0, kind: 'agent', agent: 'PM', label: 'Define the outcome' },
-  { phase: 0, kind: 'agent', agent: 'PM', label: 'Define how we measure success' },
-  { phase: 0, kind: 'agent', agent: 'Architect', label: 'Set guardrails' },
-  { phase: 0, kind: 'gate', gate: 'required', label: 'Approve & prioritize this work' },
-  { phase: 1, kind: 'agent', agent: 'Ensemble', label: 'Plan options & trade-offs (pros / cons)' },
-  { phase: 1, kind: 'gate', gate: 'required', label: 'Approve the high-level design' },
-  { phase: 1, kind: 'agent', agent: 'Eng', label: 'Draft implementation plan' },
-  { phase: 1, kind: 'agent', agent: 'Architect', label: 'Architecture review' },
-  { phase: 1, kind: 'agent', agent: 'QA', label: 'QA reviews the test plan' },
-  { phase: 1, kind: 'agent', agent: 'PM', label: 'Summarize reviews & recommend' },
-  { phase: 1, kind: 'gate', gate: 'required', label: 'Review before execution' },
-  { phase: 2, kind: 'agent', agent: 'Eng', label: 'Specialist agent implements' },
-  { phase: 2, kind: 'agent', agent: 'Review', label: 'Automated review (code + QA)' },
-  { phase: 2, kind: 'gate', gate: 'required', label: 'Accept the code' },
-  { phase: 3, kind: 'agent', agent: 'DevOps', label: 'Deploy the changes' },
-  { phase: 4, kind: 'gate', gate: 'required', label: 'Review the work & close' },
-]
+// HZ-117: generated from server/src/lifecycle.js's STEPS (the single source
+// of truth) via `npm run gen:steps` in server/ — never hand-edit this file.
+// Regenerating is what keeps reworkTargets/defaultReworkTarget below from
+// ever offering a send-back target the server's own STEPS would reject.
+export { STEPS }
 
 // Derived, never hardcoded elsewhere — a future step insertion only has to
 // change STEPS above; every index-dependent call site re-resolves itself.
-export const IMPLEMENT_STEP_INDEX = STEPS.findIndex((s) => s.label === 'Specialist agent implements')
-export const REVIEW_STEP_INDEX = STEPS.findIndex((s) => s.label === 'Automated review (code + QA)')
-export const ACCEPT_GATE_INDEX = STEPS.findIndex((s) => s.label === 'Accept the code')
+// Throws rather than yielding -1 (silently pointing at the wrong step) if a
+// label is renamed without updating its call site. Generic lookup helper,
+// not shared with the server — the step DATA is shared, this is just code.
+function requiredIndex(steps, label) {
+  const index = steps.findIndex((s) => s.label === label)
+  if (index === -1) throw new Error(`lifecycle: no step labeled "${label}" — was it renamed?`)
+  return index
+}
+
+export const IMPLEMENT_STEP_INDEX = requiredIndex(STEPS, 'Specialist agent implements')
+export const REVIEW_STEP_INDEX = requiredIndex(STEPS, 'Automated review (code + QA)')
+export const ACCEPT_GATE_INDEX = requiredIndex(STEPS, 'Accept the code')
 
 export const PRIORITY_COLORS = {
   Critical: 'var(--danger-ink)',

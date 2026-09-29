@@ -15,7 +15,7 @@ import httpx
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
-from . import conflict_resolver, rules, tmux_mgr, workspaces
+from . import conflict_resolver, rules, steps, tmux_mgr, workspaces
 from . import config as farm_config
 from .agent_runner import AgentError, assert_provider_auth
 from .config import (
@@ -128,20 +128,42 @@ def _run_session_name(task: dict) -> str:
     return f"farm-run-{task['item']['id'].lower()}-s{task['step']['index']}-a{task.get('attempt', 1)}"
 
 
-# Workspace-mutating steps: implement (11) and the automated review (12),
-# both of which call prepare_branch() (reset --hard / clean -fd) on the
-# item's own worktree. Since HZ-50 gave every item its own git worktree,
-# different items no longer share a tree and can run these fully in
-# parallel — only two runs against the SAME item still need to be
-# serialized, or one's scrub could clobber the other's in-flight edits.
-WORKSPACE_MUTATING_STEPS = (11, 12)
+# Workspace-mutating steps: implement and the automated review, both of
+# which call prepare_branch() (reset --hard / clean -fd) on the item's own
+# worktree. Since HZ-50 gave every item its own git worktree, different
+# items no longer share a tree and can run these fully in parallel — only
+# two runs against the SAME item still need to be serialized, or one's scrub
+# could clobber the other's in-flight edits.
+#
+# HZ-117: derived from steps.STEPS's workspaceMutating field, not a
+# hand-maintained tuple of indices — an inserted or reordered step carries
+# its own flag with it.
+def workspace_mutating_indexes(step_table: list[dict]) -> set[int]:
+    return {entry["index"] for entry in step_table if entry.get("workspaceMutating")}
+
+
+# Lane routing: which long-running process handles a dispatched step — the
+# persistent PM session ("pm") or an ephemeral farm-dispatched agent
+# ("runs"). HZ-117: derived from steps.STEPS's runsIn field. An index absent
+# from the table (e.g. a gate, which is never dispatched here at all) falls
+# back to `default` — preserves the pre-HZ-117 behavior for an unrecognized
+# index.
+def lane_for_index(step_table: list[dict], index, default: str = "runs") -> str:
+    entry = next((e for e in step_table if e["index"] == index), None)
+    if entry is None:
+        return default
+    return "pm" if entry["runsIn"] == "pm" else default
+
+
+WORKSPACE_MUTATING_STEPS = frozenset(workspace_mutating_indexes(steps.STEPS))
+_WORKSPACE_MUTATING_STEP_STRS = frozenset(str(i) for i in WORKSPACE_MUTATING_STEPS)
 
 
 def _item_worktree_busy(item_id: str, sessions: list[str]) -> bool:
     prefix = f"farm-run-{item_id.lower()}-s"
     for s in sessions:
         rest = s[len(prefix):] if s.startswith(prefix) else None
-        if rest is not None and rest.split("-", 1)[0] in ("11", "12"):
+        if rest is not None and rest.split("-", 1)[0] in _WORKSPACE_MUTATING_STEP_STRS:
             return True
     return False
 
@@ -541,15 +563,16 @@ async def steps_run(request: Request):
     for key in ("run_id", "item", "step"):
         if key not in body:
             return JSONResponse({"error": f"missing {key}"}, status_code=400)
-    # Plan steps (0-2) and the review-summary step (9) go to the long-running
-    # PM (it has the project context to synthesize); everything else runs as
-    # an ephemeral agent via the dispatcher (bounded by FARM_MAX_EPHEMERAL).
+    # Plan/review-summary steps go to the long-running PM (it has the project
+    # context to synthesize); everything else runs as an ephemeral agent via
+    # the dispatcher (bounded by FARM_MAX_EPHEMERAL). HZ-117: which is which
+    # comes from steps.STEPS's runsIn field, not a hardcoded index tuple.
     body["project"] = state["project"]
     # Project/repo rules are stamped into the task at enqueue (HZ-9): the
     # queued payload and the session log show verbatim what the agent gets.
     item_repo = body["item"].get("repo") if isinstance(body["item"], dict) else None
     body["rules"] = rules.resolve_rules(state["project"]["name"] if state["project"] else None, item_repo)
-    queue = "pm" if body["step"].get("index", 99) in (0, 1, 2, 9) else "runs"
+    queue = lane_for_index(steps.STEPS, body["step"].get("index", 99))
     (QUEUE_DIR / queue).mkdir(parents=True, exist_ok=True)
     task_path = QUEUE_DIR / queue / f"{body['run_id']}.json"
     task_path.write_text(json.dumps(body, indent=2))
