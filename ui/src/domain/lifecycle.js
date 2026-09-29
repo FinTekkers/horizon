@@ -36,7 +36,9 @@ export { STEPS }
 // Throws rather than yielding -1 (silently pointing at the wrong step) if a
 // label is renamed without updating its call site. Generic lookup helper,
 // not shared with the server — the step DATA is shared, this is just code.
-function requiredIndex(steps, label) {
+// Exported so a renamed-label fixture can exercise the throw path directly
+// (see lifecycle.test.js), same contract as the server's requiredStepIndex.
+export function requiredIndex(steps, label) {
   const index = steps.findIndex((s) => s.label === label)
   if (index === -1) throw new Error(`lifecycle: no step labeled "${label}" — was it renamed?`)
   return index

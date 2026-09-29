@@ -40,10 +40,12 @@ test('the real server module-level accessors were built with requiredStepIndex a
 
 test('the UI copy throws the same way on a renamed label — its local requiredIndex helper is not shared code, but the same contract', async () => {
   const uiLifecycle = await import('../../ui/src/domain/lifecycle.js')
-  // No renamed-label fixture is exposed from the UI module (requiredIndex is
-  // file-private by design — a generic lookup, not shared step data), so
-  // this proves the CONTRACT survives on real data: every accessor built
-  // from it still resolves against the live, generated STEPS.
+  // The UI's own renamed-label throw path (fabricated-array assert.throws,
+  // mirroring requiredStepIndex's tests above) lives in
+  // ui/src/domain/lifecycle.test.js next to the module it tests — requiredIndex
+  // is exported from there for exactly that purpose. This test instead proves
+  // the CONTRACT survives on real data: every accessor built from it still
+  // resolves against the live, generated STEPS.
   assert.equal(uiLifecycle.STEPS[uiLifecycle.IMPLEMENT_STEP_INDEX].label, 'Specialist agent implements')
   assert.equal(uiLifecycle.STEPS[uiLifecycle.REVIEW_STEP_INDEX].label, 'Automated review (code + QA)')
   assert.equal(uiLifecycle.STEPS[uiLifecycle.ACCEPT_GATE_INDEX].label, 'Accept the code')

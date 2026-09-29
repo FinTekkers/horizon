@@ -4,9 +4,33 @@
 // (STEPS[i].kind === 'agent' && i < gateIndex, no hardcoded positions).
 
 import { expect, test } from 'vitest'
-import { STEPS, ACCEPT_GATE_INDEX, IMPLEMENT_STEP_INDEX, reworkTargets, defaultReworkTarget } from './lifecycle'
+import {
+  STEPS,
+  ACCEPT_GATE_INDEX,
+  IMPLEMENT_STEP_INDEX,
+  reworkTargets,
+  defaultReworkTarget,
+  requiredIndex,
+} from './lifecycle'
 
 const PRE_EXECUTION_GATE_INDEX = STEPS.findIndex((s) => s.label === 'Review before execution')
+
+const FABRICATED_STEPS = [
+  { phase: 0, kind: 'agent', agent: 'PM', label: 'Define the outcome', runsIn: 'pm' },
+  { phase: 2, kind: 'gate', gate: 'required', label: 'Accept the code' },
+]
+
+test('requiredIndex resolves a label that is actually present', () => {
+  expect(requiredIndex(FABRICATED_STEPS, 'Accept the code')).toBe(1)
+})
+
+test('requiredIndex throws — never returns -1 — for a label that was renamed out from under it', () => {
+  expect(() => requiredIndex([FABRICATED_STEPS[0]], 'Accept the code')).toThrow(/no step labeled/)
+})
+
+test('requiredIndex names the missing label in its error, so the failure is actionable', () => {
+  expect(() => requiredIndex(FABRICATED_STEPS, 'This Label Does Not Exist')).toThrow(/This Label Does Not Exist/)
+})
 
 test('reworkTargets offers every agent step strictly earlier than the gate, and nothing else', () => {
   const options = reworkTargets(PRE_EXECUTION_GATE_INDEX)
