@@ -189,6 +189,41 @@ def queue_dirs():
             f.unlink(missing_ok=True)
 
 
+def test_farm_status_reports_both_capacity_limits(tmp_path, monkeypatch):
+    """HZ-144: the check limiter is otherwise invisible — a run blocked on a
+    check slot looks exactly like a run that is merely slow, and "who is
+    waiting" was the one thing the file-lock design gave up next to a
+    farmd-brokered lease.
+
+    Both keys are ADDITIVE. server/src/orchestrator.js's waitForFarmRunning
+    (the only consumer of this route in server/ or ui/) reads `status` and
+    `error` only, so the two are asserted to still be exactly where they were.
+    """
+    monkeypatch.setattr(farmd, "MAX_EPHEMERAL", 6)
+    monkeypatch.setattr(farmd, "_ephemeral_sessions", lambda: ["farm-run-a-s10-a1", "farm-run-b-s10-a1"])
+    monkeypatch.setenv("FARM_MAX_CONCURRENT_CHECKS", "2")
+    # `busy` is read off the real lock directory, so FARM_HOME must be a
+    # throwaway. Under the farm's own check run this suite inherits the HOST's
+    # FARM_HOME (conftest.py uses setdefault), where a live run is holding
+    # slot 0 — without this the assertion below reads the host's state.
+    monkeypatch.setenv("FARM_HOME", str(tmp_path / "farm-home"))
+
+    body = client.get("/farm/status").json()
+
+    assert body["status"] == farmd.state["status"]
+    assert "error" in body
+    assert body["agents"] == {"limit": 6, "busy": 2}
+    assert body["checks"]["limit"] == 2
+    assert body["checks"]["busy"] == 0
+    assert body["checks"]["waiting"] == []
+
+
+def test_farm_status_reports_the_check_limiter_as_disabled_when_switched_off(monkeypatch):
+    monkeypatch.setenv("FARM_MAX_CONCURRENT_CHECKS", "0")
+    checks_block = client.get("/farm/status").json()["checks"]
+    assert checks_block == {"limit": 0, "busy": 0, "waiting": []}
+
+
 def test_runs_status_reports_queued_for_a_pm_queued_task(queue_dirs):
     (QUEUE_DIR / "pm" / "201.json").write_text(json.dumps(make_task(201, step_index=9)))
     res = client.post("/runs/status", json={"run_ids": [201]})
@@ -587,9 +622,22 @@ def _write_task(path, run_id, item_id, step_index):
     return path
 
 
-def test_max_ephemeral_default_is_four():
-    """The cap-raise itself (farmd.py:54): 2 -> 4, still env-overridable."""
+def test_max_ephemeral_default_is_four(monkeypatch):
+    """The cap-raise itself (farmd.py:54): 2 -> 4, still env-overridable.
+
+    The delenv is belt as well as braces for HZ-144. This exact assertion is
+    what failed on every implement run on 30 Sept 2026 when
+    FARM_MAX_EPHEMERAL=6 leaked from /etc/horizon/farm.env into the checked
+    repo's pytest. The real fix is the two scrub seams
+    (farm/tests/test_check_env_scrub.py); this line additionally protects a
+    developer who has exported the variable in their own shell. MAX_EPHEMERAL
+    is import-bound, so re-reading it here (rather than reloading farmd, which
+    would rebind the module this suite's TestClient is holding) is what keeps
+    the two facts — the default, and where it comes from — in one place.
+    """
+    monkeypatch.delenv("FARM_MAX_EPHEMERAL", raising=False)
     assert farmd.MAX_EPHEMERAL == 4
+    assert int(os.environ.get("FARM_MAX_EPHEMERAL", "4")) == 4
 
 
 def test_max_ephemeral_stays_env_overridable(monkeypatch):
@@ -620,6 +668,31 @@ def test_select_dispatchable_respects_the_free_slot_count(tmp_path):
     paths = [_write_task(tmp_path / f"{i}.json", i, item_id=f"hz-{i}", step_index=4) for i in range(3)]
     selected = farmd._select_dispatchable(paths, sessions=[], slots=2)
     assert selected == paths[:2]
+
+
+def test_the_dispatcher_launches_up_to_the_configured_cap_and_no_further(tmp_path, monkeypatch):
+    """HZ-144 metric 1, automated half: at a cap of 6, six queued steps on
+    six different items launch on one tick and the seventh stays queued.
+
+    A runner cannot start six real agents on this 2-vCPU host, so the
+    cap-honouring logic is proven here and the "6 simultaneous farm-run-*
+    sessions" observation is a committed `tmux list-sessions` capture in
+    docs/hz-144-check-concurrency-measurement.md. Neither alone is enough.
+    """
+    monkeypatch.setattr(farmd, "MAX_EPHEMERAL", 6)
+    paths = [_write_task(tmp_path / f"{i}.json", i, item_id=f"hz-{i}", step_index=10) for i in range(7)]
+
+    # Nothing ephemeral in flight, so the dispatcher's own arithmetic
+    # (MAX_EPHEMERAL - live farm-run-* sessions) gives every slot away.
+    selected = farmd._select_dispatchable(paths, sessions=[], slots=farmd.MAX_EPHEMERAL)
+
+    assert selected == paths[:6]
+    assert paths[6] not in selected
+
+    # ...and with five already in flight, exactly one more goes out.
+    in_flight = [f"farm-run-hz-9{i}-s10-a1" for i in range(5)]
+    slots = farmd.MAX_EPHEMERAL - len(in_flight)
+    assert farmd._select_dispatchable(paths, sessions=in_flight, slots=slots) == paths[:1]
 
 
 def test_select_dispatchable_serializes_step11_and_step12_for_the_same_item(tmp_path):

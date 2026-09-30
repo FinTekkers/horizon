@@ -15,6 +15,12 @@ A repo with none of these yields no commands: nothing to enforce, the push
 proceeds (the guardrail is "tests must pass", not "tests must exist").
 A check *runner* that isn't installed on the farm host is skipped with a
 warning; a check that runs and fails raises CheckFailure and fails the step.
+
+HZ-144 added two things around that, both because this is the one genuinely
+CPU-bound part of a step: a cross-process cap on how many check suites run at
+once (farm/check_slots.py), and a JSONL record per run (farm/check_metrics.py)
+so the cap can be measured. It also gave the subprocess an explicit `env=` —
+see _check_env() for the failure that made that necessary.
 """
 
 import json
@@ -22,7 +28,10 @@ import os
 import shutil
 import subprocess
 import sys
+import time
 from pathlib import Path
+
+from . import check_metrics, check_slots, config
 
 
 class CheckFailure(RuntimeError):
@@ -85,28 +94,94 @@ def detect_check_commands(ws: Path, log=lambda *_: None) -> list[list[str]]:
     return commands
 
 
-def run_checks(ws: Path, log=print) -> str:
-    """Returns a short human-readable note; raises CheckFailure on failure."""
-    timeout_s = int(os.environ.get("FARM_CHECK_TIMEOUT_S", "600"))
+def _check_env() -> dict[str, str]:
+    """The environment the check commands run under.
+
+    Until HZ-144 the subprocess had no `env=` at all, so the checked repo's
+    own test process inherited everything farmd or the step agent held. The
+    checked repo is Horizon itself, and Horizon's suite asserts the farm's
+    capacity defaults — so setting FARM_MAX_EPHEMERAL=6 in
+    /etc/horizon/farm.env on 30 Sept 2026 failed every implement run's pytest
+    on `assert farmd.MAX_EPHEMERAL == 4`. Operational tuning of the farm must
+    not reach the tests the farm runs. This is the seam that enforces that,
+    and the only one that can: FARM_MAX_CONCURRENT_CHECKS has to survive as
+    far as run_checks() itself, which executes inside the agent session.
+
+    FARM_IN_CHECKS is added rather than removed — it marks the child as
+    already being inside a check slot, which is what makes nested acquisition
+    a structural no-op instead of a deadlock (see farm/check_slots.py).
+    Everything else is passed through: the inner suite needs FARM_HOME,
+    FARM_CLAUDE_BIN and PATH, so this is an explicit denylist, never a
+    "drop every FARM_*".
+    """
+    env = {k: v for k, v in os.environ.items() if k not in config.CHECK_SUBPROCESS_SCRUB}
+    env[check_slots.IN_CHECKS_ENV] = "1"
+    return env
+
+
+def run_checks(ws: Path, log=print, *, run_id=None, item_id=None, caller: str = "step_agent") -> str:
+    """Returns a short human-readable note; raises CheckFailure on failure.
+
+    run_id/item_id/caller only label the metrics record (and the waiting
+    marker on /farm/status) — they never change what runs.
+    """
     commands = detect_check_commands(ws, log=log)
     if not commands:
         log("checks: no test/lint commands detected in the repo — nothing to enforce")
         return "no repo checks detected"
 
-    ran = 0
-    for cmd in commands:
-        shown = " ".join(cmd)
-        log(f"checks: running {shown}")
+    # The slot is taken OUTSIDE the timeout read below, which is the whole
+    # point: FARM_CHECK_TIMEOUT_S is the budget for *running* the checks, and
+    # queueing for a slot must not eat it (HZ-144 guardrail 2). That holds by
+    # construction here, not by arithmetic — every clock this function starts
+    # begins after the `with`.
+    with check_slots.check_slot(log=log, run_id=run_id, item_id=item_id, caller=caller) as slot:
+        timeout_s = int(os.environ.get("FARM_CHECK_TIMEOUT_S", "600"))
+        record = check_metrics.new_record(run_id=run_id, item_id=item_id, caller=caller, slot=slot)
+        env = _check_env()
+        # Host-wide free memory at each command boundary; the minimum is what
+        # the record keeps. See farm/check_metrics.py on why this and not
+        # ru_maxrss, and on the resolution this sampling rate gives up.
+        mem_samples = [check_metrics.mem_available_kb()]
+        ran = 0
         try:
-            proc = subprocess.run(cmd, cwd=str(ws), capture_output=True, text=True, timeout=timeout_s)
-        except FileNotFoundError:
-            log(f"checks: {cmd[0]} is not installed on the farm host — skipped")
-            continue
-        except subprocess.TimeoutExpired as exc:
-            raise CheckFailure(f"repo checks timed out after {timeout_s}s: {shown}") from exc
-        if proc.returncode != 0:
-            tail = ((proc.stdout or "") + "\n" + (proc.stderr or "")).strip()[-400:]
-            raise CheckFailure(f"repo checks failed ({shown}): {tail}")
-        ran += 1
+            for cmd in commands:
+                shown = " ".join(cmd)
+                log(f"checks: running {shown}")
+                started = time.monotonic()
+                try:
+                    proc = subprocess.run(
+                        cmd, cwd=str(ws), capture_output=True, text=True, timeout=timeout_s, env=env
+                    )
+                except FileNotFoundError:
+                    record["commands"].append({"cmd": shown, "skipped": "runner not installed"})
+                    log(f"checks: {cmd[0]} is not installed on the farm host — skipped")
+                    continue
+                except subprocess.TimeoutExpired as exc:
+                    record["commands"].append(
+                        {"cmd": shown, "duration_s": round(time.monotonic() - started, 1), "timed_out": True}
+                    )
+                    record["outcome"] = "timeout"
+                    raise CheckFailure(f"repo checks timed out after {timeout_s}s: {shown}") from exc
+                finally:
+                    mem_samples.append(check_metrics.mem_available_kb())
+                record["commands"].append(
+                    {
+                        "cmd": shown,
+                        "duration_s": round(time.monotonic() - started, 1),
+                        "returncode": proc.returncode,
+                    }
+                )
+                if proc.returncode != 0:
+                    tail = ((proc.stdout or "") + "\n" + (proc.stderr or "")).strip()[-400:]
+                    record["outcome"] = check_metrics.classify_failure(tail, proc.returncode)
+                    raise CheckFailure(f"repo checks failed ({shown}): {tail}")
+                ran += 1
+            record["outcome"] = "pass"
+        finally:
+            measured = [x for x in mem_samples if x is not None]
+            record["mem_available_low_kb"] = min(measured) if measured else None
+            record["load_end"] = check_metrics.load_average()
+            check_metrics.append_record(record, log=log)
 
     return f"{ran} repo check(s) passed" if ran else "check runners unavailable — skipped"

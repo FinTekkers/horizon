@@ -107,8 +107,9 @@ check, established differently.
 budget, or the concurrent-subagent limit. The claim that
 `muse-code account status` prints those does not hold for this CLI. The
 concurrent-subagent limit therefore cannot be read at runtime and cannot be
-reconciled with `FARM_MAX_EPHEMERAL` (currently 4) without vendor docs or
-empirical testing.
+reconciled with `FARM_MAX_EPHEMERAL` (code default 4; the deployed value on
+this host is in `/etc/horizon/farm.env` — see `infra/host/DEPLOY.md`) without
+vendor docs or empirical testing.
 
 ## Flags that matter for the farm
 

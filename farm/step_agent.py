@@ -530,7 +530,7 @@ def execute(task: dict) -> dict:
         # Guardrail enforcement: the repo's own tests/linters run here, by the
         # script, before anything is committed or pushed. A failure fails the
         # run (Node pauses the item with the reason) — no green, no push.
-        check_note = run_checks(ws, log)
+        check_note = run_checks(ws, log, run_id=task.get("run_id"), item_id=item["id"])
         publish_screenshots(ws, item)
         artifacts = finalize_branch(ws, item, branch)
         return {"summary": f"{summary} · {check_note}"[:600], "artifacts": artifacts}

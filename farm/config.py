@@ -15,7 +15,22 @@ SHARED_SECRET = os.environ.get("FARM_SHARED_SECRET", "dev-secret")
 # refuse (the server answers 503), never silently succeed.
 WA_APPROVAL_SECRET = os.environ.get("WA_APPROVAL_SECRET", "")
 
-FARM_HOME = Path(os.environ.get("FARM_HOME", str(Path.home() / ".horizon-farm")))
+
+def farm_home() -> Path:
+    """FARM_HOME read at CALL time, unlike the constant below.
+
+    Everything else in this file is import-bound, which is fine for a
+    long-lived process that is configured before it starts. The check-slot
+    directory (farm/check_slots.py) is the exception: it is a shared path that
+    tests must be able to redirect per-test with monkeypatch.setenv, and an
+    import-bound value cannot be redirected after the first `farm.*` import.
+    The constant is kept so existing callers are untouched; both read the same
+    default, so they cannot drift.
+    """
+    return Path(os.environ.get("FARM_HOME", str(Path.home() / ".horizon-farm")))
+
+
+FARM_HOME = farm_home()
 QUEUE_DIR = FARM_HOME / "queue"
 STATE_DIR = FARM_HOME / "state"
 LOGS_DIR = FARM_HOME / "logs"
@@ -30,6 +45,34 @@ FARM_RUNNER = os.environ.get("FARM_RUNNER", "sdk")
 PM_MODEL = os.environ.get("FARM_PM_MODEL")  # None -> CLI default
 STEP_TIMEOUT_S = int(os.environ.get("FARM_STEP_TIMEOUT_S", "900"))
 MAX_TURNS = int(os.environ.get("FARM_MAX_TURNS", "8"))
+
+# ---- HZ-144: farm capacity settings, and the two seams that scrub them ----
+#
+# Names only here. The VALUES are read at call time in farm/check_slots.py
+# (slot_limit(), wait_ceiling_s()) and farm/farmd.py (MAX_EPHEMERAL), so there
+# is exactly one reader per setting — a second import-bound copy in this file
+# would be the one that drifts.
+#
+# Why they are scrubbed at all: the repo whose checks the farm runs is Horizon
+# itself, and Horizon's own suite asserts these defaults
+# (farm/tests/test_farmd.py). On 30 Sept 2026, FARM_MAX_EPHEMERAL=6 in
+# /etc/horizon/farm.env was forwarded into every agent session and inherited by
+# the pytest that ran inside it, so every implement run's checks failed on
+# `assert farmd.MAX_EPHEMERAL == 4`. Operational tuning must not reach a test
+# process. An explicit denylist, not "drop every FARM_*": blanket stripping
+# would break unrelated things (FARM_HOME, FARM_CLAUDE_BIN) that the inner
+# suite genuinely needs.
+
+# Stripped at the tmux seam (farm/tmux_mgr.py). An agent has no use for the
+# farm's own agent-concurrency cap.
+AGENT_NEVER_NEEDS = frozenset({"FARM_MAX_EPHEMERAL"})
+
+# Stripped one layer deeper, at the subprocess that runs the checked repo's
+# tests (farm/checks.py). FARM_MAX_CONCURRENT_CHECKS deliberately is NOT in
+# AGENT_NEVER_NEEDS: run_checks() executes *inside* the agent session and has
+# to read the limit, so stripping it at tmux would silently disable the
+# limiter. It is stripped here instead — past the reader, before the tests.
+CHECK_SUBPROCESS_SCRUB = frozenset({"FARM_MAX_EPHEMERAL", "FARM_MAX_CONCURRENT_CHECKS"})
 
 # HZ-101: how often farmd reconciles claimed runs against live tmux sessions
 # (session gone -> report the run failed instead of waiting for the server's

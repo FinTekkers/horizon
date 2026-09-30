@@ -121,7 +121,17 @@ def resolve(repo_full: str, item_id: str, branch: str | None = None, base_branch
     diffstat = git(ws, "diff", "--stat", f"{pre_merge_sha}..HEAD", check=False).stdout.strip()
 
     try:
-        check_note = run_checks(ws, log)
+        # HZ-144: post-merge checks take a check slot like any other, and are
+        # labelled `conflict_resolver` so the measurement can separate them
+        # from agent runs. Deliberately NOT exempt: this runs the same repo
+        # suite on the same 2 vCPUs as an agent's checks, so exempting it
+        # would mean the real concurrent-check population is the configured
+        # limit plus one, which is the oversubscription the limit exists to
+        # prevent. It runs in farmd's own process, inside a synchronous
+        # request from the Node server, so the slot wait is bounded twice:
+        # by FARM_CHECK_SLOT_WAIT_MAX_S here, and by
+        # FARM_CONFLICT_RESOLVE_TIMEOUT_MS (50 min) on the caller's side.
+        check_note = run_checks(ws, log, item_id=item_id, caller="conflict_resolver")
     except CheckFailure as exc:
         log(f"conflict_resolver: post-merge checks failed — escalating, discarding the merge ({exc})")
         git(ws, "reset", "--hard", pre_merge_sha)

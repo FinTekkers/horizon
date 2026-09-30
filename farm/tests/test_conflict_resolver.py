@@ -172,3 +172,44 @@ def test_a_file_containing_marker_shaped_text_is_not_mistaken_for_a_conflict(iso
     result = conflict_resolver.resolve("acme/demo", "HZ-4", log=lambda *_: None)
 
     assert result["resolved"] is True
+
+
+# ---- HZ-144: post-merge checks take a check slot, labelled as their own ----
+
+
+def test_post_merge_checks_take_a_labelled_check_slot(isolated_workspaces_dir, monkeypatch):
+    """conflict_resolver is a SECOND run_checks() caller, and it runs in
+    farmd's own process rather than an agent session — so the real concurrent
+    check population is agents plus farmd.
+
+    Decided explicitly rather than left silent: it takes a slot, because it
+    runs the same repo suite on the same 2 vCPUs as an agent's checks and
+    exempting it would make the effective limit "the configured number plus
+    one". It is labelled `conflict_resolver` so the measurement can keep it
+    out of the 20-agent-run count (see
+    farm/tools/report_check_metrics.py::summarise).
+    """
+    from farm import check_metrics, check_slots
+
+    tmp_path = isolated_workspaces_dir
+    _hub, origin = make_repo_hub(tmp_path)
+    monkeypatch.setenv("FARM_HOME", str(tmp_path / "farm-home"))
+    monkeypatch.delenv(check_slots.IN_CHECKS_ENV, raising=False)
+    monkeypatch.setenv("FARM_MAX_CONCURRENT_CHECKS", "2")
+    monkeypatch.setenv("FARM_CHECK_CMD", "true")
+
+    push_new_branch(
+        tmp_path, origin, "horizon/hz-7", lambda w: (w / "a.txt").write_text("branch\n"), "branch"
+    )
+    push_new_branch(tmp_path, origin, "main", lambda w: (w / "b.txt").write_text("main\n"), "main-advance")
+
+    assert conflict_resolver.resolve("acme/demo", "HZ-7", log=lambda *_: None)["resolved"] is True
+
+    records, skipped = check_metrics.read_records(check_metrics.metrics_path())
+    assert skipped == 0 and len(records) == 1
+    assert records[0]["caller"] == "conflict_resolver"
+    assert records[0]["item_id"] == "HZ-7"
+    assert records[0]["slot_mode"] == "held"
+    assert records[0]["outcome"] == "pass"
+    # Released on the way out: the next resolve (or agent run) is not blocked.
+    assert check_slots.busy_slots() == 0

@@ -2,6 +2,7 @@
 
 Newest first. Add one line per new doc — no other changes needed.
 
+- [`hz-144-check-concurrency-measurement.md`](hz-144-check-concurrency-measurement.md) — farm parallelism vs check concurrency: the host baseline, the three measurement windows, and the numbers.
 - [`e2e-screenshots.md`](e2e-screenshots.md) — where e2e screenshots go: the per-item artifacts ref, the PR comparison, and baseline promotion, with diagrams.
 - [`workflow.md`](workflow.md) — how a work item moves from definition through each lifecycle step, with diagrams.
 - [`architecture.md`](architecture.md) — the codebase's layers (UI, server, farm, infra) and where each lives, with diagrams.

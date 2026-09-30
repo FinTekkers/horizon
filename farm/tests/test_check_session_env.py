@@ -174,3 +174,41 @@ def test_the_live_check_would_catch_a_session_launched_the_old_way(monkeypatch):
         assert any("FARM_SHARED_SECRET" in names for names in report[name].values())
     finally:
         tmux_mgr.kill_session(name)
+
+
+# ---- HZ-144: capacity settings are reported, never part of the exit status ----
+
+
+def test_the_capacity_report_is_separate_from_the_leak_report(monkeypatch):
+    """Decided in writing rather than left ambiguous: the exit status stays
+    secrets-only, because "a running agent can approve its own gate" and "a
+    tuning variable is going to break this run's pytest" are not the same
+    severity. The capacity check gets its own INFO line."""
+    monkeypatch.setattr(cse, "env_names", lambda pid: {"FARM_MAX_EPHEMERAL", "FARM_HOME"})
+    monkeypatch.setattr(cse, "session_pids", lambda session: [4242])
+
+    assert cse.capacity_vars_held(["farm-run-x"]) == {"farm-run-x": {4242: ["FARM_MAX_EPHEMERAL"]}}
+    # ...and the same session is clean by the standard the exit status uses.
+    assert cse.scan(["farm-run-x"]) == {}
+    assert cse.forbidden_names("farm-run-x") == frozenset(tmux_mgr.NEVER_FORWARD)
+
+
+def test_a_capacity_variable_does_not_set_a_nonzero_exit_status(monkeypatch, capsys):
+    monkeypatch.setattr(cse, "scan", lambda: {})
+    monkeypatch.setattr(cse, "grants_held", lambda: {})
+    monkeypatch.setattr(cse, "capacity_vars_held", lambda: {"farm-run-x": {4242: ["FARM_MAX_EPHEMERAL"]}})
+
+    assert cse.main() == 0
+
+    out = capsys.readouterr().out
+    assert "INFO farm-run-x pid 4242: FARM_MAX_EPHEMERAL" in out
+    assert "LEAK" not in out
+    assert "does not set the exit status" in out
+
+
+def test_a_clean_host_prints_no_capacity_line(monkeypatch, capsys):
+    monkeypatch.setattr(cse, "scan", lambda: {})
+    monkeypatch.setattr(cse, "grants_held", lambda: {})
+    monkeypatch.setattr(cse, "capacity_vars_held", lambda: {})
+    assert cse.main() == 0
+    assert "INFO" not in capsys.readouterr().out
