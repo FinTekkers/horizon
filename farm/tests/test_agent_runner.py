@@ -17,7 +17,16 @@ from pathlib import Path
 
 import pytest
 
-from farm.agent_runner import AgentError, _extract_json_with_notes, assert_provider_auth, extract_json, run_agent
+from farm.agent_runner import (
+    AgentError,
+    _extract_json_with_notes,
+    _record_repair,
+    _salvage_truncated_json,
+    assert_provider_auth,
+    extract_json,
+    repair_stats_path,
+    run_agent,
+)
 
 
 def test_extract_json_plain():
@@ -88,6 +97,15 @@ def test_extract_json_notes_name_the_repair_actually_applied():
     assert quote_notes == ["converted single quotes to double quotes"]
 
 
+def test_extract_json_combines_trailing_comma_and_single_quote_repairs():
+    """Neither fix alone parses `{'a':1,}` — trailing-comma-only still has
+    single quotes, quote-only still has the trailing comma — only the
+    combined `both_fixed` branch in the ladder recovers it."""
+    parsed, notes = _extract_json_with_notes("{'a':1,}")
+    assert parsed == {"a": 1}
+    assert notes == ["stripped a trailing comma", "converted single quotes to double quotes"]
+
+
 def test_pm_agent_and_step_agent_never_parse_a_reply_without_the_shared_helper():
     """Metric 14: farm/agent_runner.py's parse_agent_reply() must be the ONE
     place a reply is turned into JSON — a caller importing/calling
@@ -108,6 +126,44 @@ def test_requirements_txt_gains_no_third_party_json_repair_dependency():
     requirements = (Path(__file__).resolve().parent.parent / "requirements.txt").read_text().lower()
     for banned in ("json-repair", "json_repair", "demjson", "dirtyjson"):
         assert banned not in requirements
+
+
+# ---- _salvage_truncated_json: the two "never fabricate" give-up branches ----
+
+
+def test_salvage_truncated_json_gives_up_on_a_mid_literal_cut():
+    """`'{"b": tru'` has an open brace (recoverable-looking) but the patched
+    text still doesn't parse, because the cut is mid-literal, not mid-string
+    or mid-object — salvage must return None here rather than guess a value
+    for `b`."""
+    assert _salvage_truncated_json('{"b": tru') is None
+
+
+def test_salvage_truncated_json_gives_up_when_nothing_is_open_at_eof():
+    """Braces/strings are already balanced at EOF, so whatever is wrong with
+    this text isn't exhaustion truncation — salvage must not touch it."""
+    assert _salvage_truncated_json('{"a": 1} trailing garbage after') is None
+
+
+# ---- metric 15 / QA: repair counter must honor a patched STATE_DIR ----
+
+
+def test_record_repair_writes_to_the_current_state_dir_not_a_frozen_import_time_one(monkeypatch, tmp_path):
+    """repair_stats_path() (and therefore _record_repair()) must read
+    STATE_DIR at call time — a module-level constant bound at import would
+    silently ignore monkeypatch.setattr(agent_runner, "STATE_DIR", tmp_path)
+    and every repair-triggering test would instead pollute the real,
+    process-wide STATE_DIR."""
+    from farm import agent_runner
+
+    monkeypatch.setattr(agent_runner, "STATE_DIR", tmp_path)
+    assert repair_stats_path() == tmp_path / "repair-stats.ndjson"
+
+    _record_repair("stripped a trailing comma")
+
+    stats_file = tmp_path / "repair-stats.ndjson"
+    assert stats_file.exists()
+    assert json.loads(stats_file.read_text().strip()) == {"path": "stripped a trailing comma"}
 
 
 # ---- HZ-124 metric 8, subprocess-rollback half: partial_text/session_id on

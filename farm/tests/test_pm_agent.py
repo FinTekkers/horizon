@@ -186,6 +186,30 @@ def test_process_sets_reason_turn_cap_when_the_agent_exhausts_its_budget(monkeyp
     assert posted["json"]["reason"] == "turn_cap"
 
 
+def test_process_exhaustion_failure_payload_is_byte_identical_to_pre_hz124_shape(monkeypatch):
+    """Guardrail 7: adding partial_text/session_id to AgentExhaustedError must
+    not change the /steps/complete (here, /internal/steps/result) payload —
+    the posted result for a non-salvageable, non-handoff-worthy exhaustion is
+    exactly {run_id, ok, error, reason}, with no new field leaking through."""
+    posted = capture_posted_result(monkeypatch)
+
+    def raising_run_agent(*a, **k):
+        raise AgentExhaustedError(
+            "pm run timed out", partial_text="not salvageable json, not truncated either", session_id="sess-1"
+        )
+
+    monkeypatch.setattr(pm_agent, "run_agent", raising_run_agent)
+
+    process(make_task(), "acme")
+
+    assert posted["json"] == {
+        "run_id": 7,
+        "ok": False,
+        "error": "pm run timed out",
+        "reason": "turn_cap",
+    }
+
+
 def test_process_salvages_a_truncated_exhaustion_reply_instead_of_discarding_the_run(monkeypatch):
     """Metric 9 (pm-side): a truncated-but-otherwise-valid JSON reply on
     exhaustion is salvaged, not thrown away with the run."""

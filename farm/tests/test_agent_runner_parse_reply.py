@@ -9,6 +9,26 @@ import pytest
 from farm.agent_runner import AgentError, AgentExhaustedError, parse_agent_reply, read_and_clear_handoff_note
 
 
+# ---- real-provider e2e: the pipeline over an actual dispatch, not a mock ----
+# Every other test in this file passes run_agent_fn=<a hand-rolled closure>,
+# which proves parse_agent_reply()'s own control flow but never exercises the
+# real seam (agent_runner.run_agent -> providers.claude -> the subprocess
+# boundary). This one leaves run_agent_fn at its default and drives
+# fake_claude — the same subprocess stand-in test_agent_runner.py's
+# test_run_agent_with_fake_binary and test_hz44_real_subprocess_... rely on
+# — through the real repair ladder.
+
+
+def test_parse_agent_reply_drives_a_real_subprocess_dispatch_through_the_repair_ladder(monkeypatch):
+    monkeypatch.setenv("FARM_RUNNER", "subprocess")
+
+    parsed, reply_meta, notes = parse_agent_reply("HZ124_REPAIR_LADDER do the thing", max_turns=4, timeout_s=30)
+
+    assert parsed == {"summary": "trailing comma bug"}
+    assert notes == ["stripped a trailing comma"]
+    assert reply_meta["session_id"] == "fake-session-hz124"
+
+
 def sequenced_run_agent(replies, calls):
     def _fake(prompt, **kwargs):
         calls.append({"prompt": prompt, **kwargs})

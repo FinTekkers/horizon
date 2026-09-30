@@ -24,6 +24,7 @@ __all__ = [
     "extract_json",
     "parse_agent_reply",
     "read_and_clear_handoff_note",
+    "repair_stats_path",
 ]
 
 _PROVIDERS = {"claude": claude, "muse": muse}
@@ -209,13 +210,21 @@ def _single_to_double_quotes(s: str) -> str:
 # firing, keyed by a short path name. Append-only — single-line appends are
 # POSIX-atomic under PIPE_BUF, so concurrent step-agent processes never need
 # a lock, mirroring this codebase's existing pm-session-*.txt convention.
-REPAIR_STATS_PATH = STATE_DIR / "repair-stats.ndjson"
+
+
+def repair_stats_path() -> Path:
+    """Read STATE_DIR at call time, not import time — a module-level
+    constant here would be frozen at import and ignore a later
+    monkeypatch.setattr(agent_runner, "STATE_DIR", ...) (or a runtime
+    FARM_HOME change), same reasoning as _handoff_note_path()."""
+    return STATE_DIR / "repair-stats.ndjson"
 
 
 def _record_repair(path: str) -> None:
     try:
-        REPAIR_STATS_PATH.parent.mkdir(parents=True, exist_ok=True)
-        with open(REPAIR_STATS_PATH, "a") as f:
+        stats_path = repair_stats_path()
+        stats_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(stats_path, "a") as f:
             f.write(json.dumps({"path": path}) + "\n")
     except OSError:
         pass  # telemetry is best-effort; never fail a run over a stats write

@@ -10,7 +10,7 @@ import json
 from collections import Counter
 from pathlib import Path
 
-from ..agent_runner import REPAIR_STATS_PATH
+from ..agent_runner import repair_stats_path
 
 
 def count_repairs(path: Path) -> Counter:
@@ -32,7 +32,7 @@ def count_repairs(path: Path) -> Counter:
 
 
 def main(path: Path | None = None) -> None:
-    counts = count_repairs(path or REPAIR_STATS_PATH)
+    counts = count_repairs(path or repair_stats_path())
     if not counts:
         print("no repairs recorded yet")
         return
