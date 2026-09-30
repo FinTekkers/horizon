@@ -400,20 +400,32 @@ def _review_summary(verdict: dict) -> str:
 # definition an incomplete one — a reply cut off a byte after `"verdict":
 # "pass"` would salvage into a findings-free PASS and clear the review gate,
 # where before HZ-124 it failed as turn_cap and auto-retried. So each
-# gate-bearing call site names every field its gate actually reads; salvage
-# missing any of them is refused in agent_runner._handle_exhaustion() and the
-# run stays a retryable exhaustion. Non-gating steps pass nothing and keep the
-# permissive behaviour — losing a planning artifact to a missing brace is the
-# loss this item exists to stop.
-CODE_REVIEW_SALVAGE_REQUIRED_KEYS = ("verdict", "findings")
-QA_REVIEW_SALVAGE_REQUIRED_KEYS = (
+# gate-bearing call site names every field its gate actually reads; a salvage
+# missing any of them — or one whose value is the fragment the truncation landed
+# in, which parses but is not what the model meant to assert — is refused in
+# agent_runner._handle_exhaustion() and the run stays a retryable exhaustion.
+#
+# "intact", not just "required": an expected_text cut from "Horizon board — 12
+# items" down to "Horizon" is present, non-blank, and would make run_smoke_check
+# pass on a prefix of the assertion the DevOps agent intended.
+#
+# Steps whose output gates nothing name only what their OWN validation raises on
+# (SUMMARY_SALVAGE_REQUIRED_KEYS) and keep the permissive behaviour otherwise —
+# losing a planning artifact to a missing brace is the loss this item exists to
+# stop.
+CODE_REVIEW_SALVAGE_INTACT_KEYS = ("verdict", "findings")
+QA_REVIEW_SALVAGE_INTACT_KEYS = (
     "verdict",
     "findings",
     "regression_tests_run",
     "new_code_unit_coverage",
     "e2e_test_present",
 )
-DEPLOY_SALVAGE_REQUIRED_KEYS = ("url", "expected_text")
+DEPLOY_SALVAGE_INTACT_KEYS = ("url", "expected_text")
+# Not a gate — just the one field execute() itself raises AgentError on below.
+# Naming it keeps that raise from firing on a salvage and converting a
+# retryable turn_cap exhaustion into a pause-for-a-human failure.
+SUMMARY_SALVAGE_REQUIRED_KEYS = ("summary",)
 
 
 def _run_and_parse(
@@ -429,6 +441,7 @@ def _run_and_parse(
     handoff_item_id: str | None = None,
     handoff_step_index=None,
     salvage_required_keys: tuple[str, ...] = (),
+    salvage_intact_keys: tuple[str, ...] = (),
 ) -> tuple[dict, dict, list[str]]:
     """Thin wrapper over agent_runner.parse_agent_reply() — the ONE shared
     run_agent + extract_json + retry/repair/salvage/handoff helper (HZ-124
@@ -443,10 +456,11 @@ def _run_and_parse(
     (guardrail), which is why this also logs them here rather than leaving
     that to each of the five call sites individually.
 
-    salvage_required_keys is forwarded for the two GATE-bearing call sites
-    (review, deploy): an exhaustion salvage missing a field their gate reads
-    must fail as a retryable exhaustion, not be shaped into a verdict — see
-    parse_agent_reply's docstring and GATE_SALVAGE_REQUIRED_KEYS below.
+    salvage_required_keys / salvage_intact_keys are forwarded so an exhaustion
+    salvage can never hand a caller something its own validation then rejects
+    with a plain AgentError (which would lose the reason="turn_cap" retry), and
+    can never hand a GATE a truncated value — see parse_agent_reply's docstring
+    and the *_SALVAGE_*_KEYS constants above.
     """
     parsed, reply_meta, notes = parse_agent_reply(
         prompt,
@@ -461,6 +475,7 @@ def _run_and_parse(
         handoff_item_id=handoff_item_id,
         handoff_step_index=handoff_step_index,
         salvage_required_keys=salvage_required_keys,
+        salvage_intact_keys=salvage_intact_keys,
     )
     for note in notes:
         log(f"repair — {note}")
@@ -671,7 +686,7 @@ def execute(task: dict) -> dict:
             provider_locked=provider_locked,
             handoff_item_id=item["id"],
             handoff_step_index=task["step"]["index"],
-            salvage_required_keys=CODE_REVIEW_SALVAGE_REQUIRED_KEYS,
+            salvage_intact_keys=CODE_REVIEW_SALVAGE_INTACT_KEYS,
         )
 
         qa_role = (ROLES / "qa_review.md").read_text()
@@ -687,7 +702,7 @@ def execute(task: dict) -> dict:
             provider_locked=provider_locked,
             handoff_item_id=item["id"],
             handoff_step_index=task["step"]["index"],
-            salvage_required_keys=QA_REVIEW_SALVAGE_REQUIRED_KEYS,
+            salvage_intact_keys=QA_REVIEW_SALVAGE_INTACT_KEYS,
         )
 
         verdict = {"code_review": _code_review_section(code_parsed), "qa_review": _qa_review_section(qa_parsed)}
@@ -737,7 +752,7 @@ def execute(task: dict) -> dict:
             provider_locked=provider_locked,
             handoff_item_id=item["id"],
             handoff_step_index=task["step"]["index"],
-            salvage_required_keys=DEPLOY_SALVAGE_REQUIRED_KEYS,
+            salvage_intact_keys=DEPLOY_SALVAGE_INTACT_KEYS,
         )
         summary = str(parsed.get("summary", "")).strip()[:600] or "deploy verification finished"
         artifact_md = str(parsed.get("artifact_md", "")).strip()
@@ -772,6 +787,7 @@ def execute(task: dict) -> dict:
         provider_locked=provider_locked,
         handoff_item_id=item["id"],
         handoff_step_index=task["step"]["index"],
+        salvage_required_keys=SUMMARY_SALVAGE_REQUIRED_KEYS,
     )
     summary = str(parsed.get("summary", "")).strip()[:600]
     if not summary:

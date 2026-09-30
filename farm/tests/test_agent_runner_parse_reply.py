@@ -272,6 +272,143 @@ def test_a_salvage_carrying_every_required_key_is_accepted():
     assert notes
 
 
+# ---- a salvage must never hand a caller something its own validation rejects ----
+# A plain AgentError raised by the caller's validation carries no
+# reason="turn_cap": farmd forwards no reason and the orchestrator pauses the
+# item for a human, where the same run auto-retried before HZ-124. So a
+# "successful" salvage that is unusable downstream is strictly worse than no
+# salvage at all, and must be refused here instead.
+
+
+@pytest.mark.parametrize(
+    "partial,description",
+    [
+        ('{"summary": "', "an empty string value is as unusable as a missing key"),
+        ('{"summary": "   ', "...and so is a whitespace-only one"),
+        ('{"summary": null, "note": "x"', "an explicit null is not a usable summary either"),
+    ],
+)
+def test_a_salvage_that_cannot_satisfy_the_callers_own_validation_is_refused(
+    monkeypatch, tmp_path, capsys, partial, description
+):
+    from farm import agent_runner
+
+    monkeypatch.setattr(agent_runner, "STATE_DIR", tmp_path)
+    calls = []
+    exc = AgentExhaustedError("out of turns", partial_text=partial, session_id="s")
+
+    with pytest.raises(AgentExhaustedError):
+        parse_agent_reply(
+            "plan it",
+            run_agent_fn=sequenced_run_agent([exc, {"result": "note"}], calls),
+            salvage_required_keys=("summary",),
+        )
+
+    assert "salvage: refused" in capsys.readouterr().out, description
+
+
+def test_a_bare_open_brace_is_refused_even_by_a_caller_that_names_no_keys(monkeypatch, tmp_path, capsys):
+    """Defense in depth for the shape above: `{` is the likeliest mid-JSON
+    exhaustion capture, and NO caller can do anything with `{}` — so the
+    refusal does not depend on the caller having named its fields. Counted, so
+    the give-up that looked most like a success is visible in the totals."""
+    from farm import agent_runner
+
+    monkeypatch.setattr(agent_runner, "STATE_DIR", tmp_path)
+    calls = []
+    exc = AgentExhaustedError("out of turns", partial_text="{", session_id="s")
+
+    with pytest.raises(AgentExhaustedError):
+        parse_agent_reply("plan it", run_agent_fn=sequenced_run_agent([exc], calls))
+
+    assert "no fields at all" in capsys.readouterr().out
+    assert '"path": "salvage_refused_memberless"' in (tmp_path / "repair-stats.ndjson").read_text()
+
+
+def test_a_truncated_summary_is_still_salvaged_because_prose_gates_nothing():
+    """The other side of the line: a summary cut mid-sentence is a fragment, and
+    that is FINE — it gates nothing, and salvaging it is the 26-minutes-of-work
+    save this item exists for. It just may not be silent about being a fragment."""
+    calls = []
+    exc = AgentExhaustedError("out of turns", partial_text='{"summary": "did the first half of', session_id="s")
+
+    parsed, _meta, notes = parse_agent_reply(
+        "plan it",
+        run_agent_fn=sequenced_run_agent([exc], calls),
+        salvage_required_keys=("summary",),
+    )
+
+    assert parsed == {"summary": "did the first half of"}
+    assert any("cut off part-way through the 'summary' field" in note for note in notes)
+
+
+# ---- gate safety, second half: PRESENT is not the same as INTACT ----
+
+
+def test_a_salvage_whose_gated_value_the_patch_terminated_is_refused(monkeypatch, tmp_path, capsys):
+    """The deploy shape. `expected_text` cut from "Horizon board — 12 items" to
+    "Horizon" is present and non-blank, so a presence-only check accepts it —
+    and then run_smoke_check passes on a PREFIX of the assertion the DevOps
+    agent meant to make, weakening the deploy gate. A gated field must be the
+    model's own finished value or the run stays a retryable exhaustion."""
+    from farm import agent_runner
+
+    monkeypatch.setattr(agent_runner, "STATE_DIR", tmp_path)
+    calls = []
+    truncated = '{"summary": "deployed", "url": "https://shoreward.ai/horizon/", "expected_text": "Horizon'
+    exc = AgentExhaustedError("out of turns", partial_text=truncated, session_id="s")
+
+    with pytest.raises(AgentExhaustedError):
+        parse_agent_reply(
+            "deploy it",
+            run_agent_fn=sequenced_run_agent([exc, {"result": "note"}], calls),
+            salvage_intact_keys=("url", "expected_text"),
+        )
+
+    assert "salvage: refused" in capsys.readouterr().out
+    assert '"path": "salvage_refused_truncated_value"' in (tmp_path / "repair-stats.ndjson").read_text()
+
+
+def test_a_salvage_whose_gated_array_was_cut_mid_write_is_refused(monkeypatch, tmp_path, capsys):
+    """The review shape: a findings array the budget cut mid-write closes to a
+    list of whatever findings happened to fit. Reading that as the complete set
+    of findings is exactly the gate loosening salvage must never do."""
+    from farm import agent_runner
+
+    monkeypatch.setattr(agent_runner, "STATE_DIR", tmp_path)
+    calls = []
+    truncated = '{"verdict": "fail", "findings": [{"detail": "first finding"}'
+    exc = AgentExhaustedError("out of turns", partial_text=truncated, session_id="s")
+
+    with pytest.raises(AgentExhaustedError):
+        parse_agent_reply(
+            "review it",
+            run_agent_fn=sequenced_run_agent([exc, {"result": "note"}], calls),
+            salvage_intact_keys=("verdict", "findings"),
+        )
+
+    assert "cut off inside findings" in capsys.readouterr().out
+
+
+def test_a_gated_salvage_is_accepted_when_the_truncation_missed_every_gated_field():
+    """The refusals above are scoped, not blanket: the same reply cut inside a
+    field the gate does NOT read still salvages, so a review whose verdict and
+    findings both landed whole keeps its work."""
+    calls = []
+    truncated = '{"verdict": "fail", "findings": [{"detail": "a real bug"}], "artifact_md": "## Code review\\nstill writ'
+    exc = AgentExhaustedError("out of turns", partial_text=truncated, session_id="s")
+
+    parsed, _meta, notes = parse_agent_reply(
+        "review it",
+        run_agent_fn=sequenced_run_agent([exc], calls),
+        salvage_intact_keys=("verdict", "findings"),
+    )
+
+    assert parsed["verdict"] == "fail"
+    assert parsed["findings"] == [{"detail": "a real bug"}]
+    assert any("cut off part-way through the 'artifact_md' field" in note for note in notes)
+
+
 # ---- HZ-102 provenance survives an exhaustion salvage ----
 
 

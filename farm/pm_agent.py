@@ -143,6 +143,11 @@ def _mark_truncated(value: str, limit: int) -> str:
     return f"{cut}{note}"
 
 
+# The one field validate() below refuses to do without (HZ-124) — see the
+# salvage_required_keys note at its use site in process().
+SALVAGE_REQUIRED_KEYS = ("summary",)
+
+
 def validate(parsed: dict) -> tuple[str, dict, str | None]:
     summary = str(parsed.get("summary", "")).strip()
     if not summary:
@@ -174,6 +179,13 @@ def process(task: dict, project_slug: str) -> None:
             model=PM_MODEL,
             handoff_item_id=task["item"]["id"],
             handoff_step_index=task["step"]["index"],
+            # validate() below raises a plain AgentError on a missing/blank
+            # summary, and a plain AgentError carries no reason="turn_cap" — so
+            # a salvage that produced one would turn an auto-retryable
+            # exhaustion into a pause-for-a-human. Naming the field keeps the
+            # salvage itself refused instead, leaving the original
+            # AgentExhaustedError (and its retry) intact.
+            salvage_required_keys=SALVAGE_REQUIRED_KEYS,
         )
         if reply_meta.get("session_id"):
             sid_path.write_text(reply_meta["session_id"])

@@ -398,8 +398,20 @@ def _extract_json_with_notes(text: str) -> tuple[dict, list[str]]:
 
 _SALVAGE_NOTE = "salvaged a reply truncated mid-string/object at the point of turn-budget exhaustion"
 
+# A trailing bare token that JSON can only read one way, so seeing it whole
+# means it IS whole. A number is the opposite: `12` is indistinguishable from a
+# `123` the budget cut in half, which is why numbers are not on this list.
+_COMPLETE_TRAILING_LITERALS = ("true", "false", "null")
 
-def _salvage_truncated_json(text: str) -> tuple[dict, list[str]] | None:
+
+def _cut_field_note(key: str) -> str:
+    return (
+        f"the reply was cut off part-way through the '{key}' field — that value is the fragment "
+        "the model had written when its budget ran out, not a finished value"
+    )
+
+
+def _salvage_truncated_json(text: str) -> tuple[dict, list[str], frozenset[str]] | None:
     """Exhaustion-only (metric 9): if `text` is valid JSON except cut off
     mid-string or mid-object (an open brace/bracket or an unterminated quote
     still pending at EOF), close the minimum needed and re-parse. Returns
@@ -421,6 +433,12 @@ def _salvage_truncated_json(text: str) -> tuple[dict, list[str]] | None:
     Rung 3 loses a field the model had started writing, which is exactly why
     every caller that feeds a GATE passes require_keys to parse_agent_reply():
     a verdict salvaged without its findings must not be read as approval.
+
+    Returns (parsed, notes, damaged_keys). damaged_keys names the top-level
+    field, if any, whose value was terminated by the patch above rather than by
+    the model — it PARSES, but it is a fragment. The caller decides what that
+    costs: prose can be salvaged as a fragment (with a note saying so), a field
+    a gate reads cannot (see parse_agent_reply's salvage_intact_keys).
     """
     cleaned = _strip_fences(text.strip())
     start = cleaned.find("{")
@@ -458,22 +476,39 @@ def _salvage_truncated_json(text: str) -> tuple[dict, list[str]] | None:
     patch = ('"' if in_string else "") + "".join(closers[c] for c in reversed(stack))
     closed = body + patch
 
-    candidates: list[tuple[str, list[str]]] = [
-        (closed, [_SALVAGE_NOTE]),
-        (_strip_trailing_commas(closed), [_SALVAGE_NOTE, "stripped a trailing comma"]),
+    # Did the budget land in the MIDDLE of a member's value, so that the patch
+    # above — not the model — is what terminated it? An unterminated string or
+    # an unclosed nested container says so outright; otherwise the last
+    # significant byte does. A value the model itself closed (`"`, `}`, `]`), a
+    # clean boundary (`,`, `{`, `[`, `:`) and a whole bare literal are all
+    # intact; a trailing number is not verifiable and counts as cut.
+    tail = body.rstrip()
+    if in_string or len(stack) > 1:
+        cut_mid_value = True
+    elif tail.endswith(('"', "}", "]", ",", "{", "[", ":")) or tail.endswith(_COMPLETE_TRAILING_LITERALS):
+        cut_mid_value = False
+    else:
+        cut_mid_value = True
+
+    candidates: list[tuple[str, list[str], bool]] = [
+        (closed, [_SALVAGE_NOTE], cut_mid_value),
+        (_strip_trailing_commas(closed), [_SALVAGE_NOTE, "stripped a trailing comma"], cut_mid_value),
     ]
     if root_member_commas:
         # Everything before the last top-level `,` is whole; the fragment
         # after it is what the budget cut off mid-write. Re-close from there.
+        # Nothing this candidate KEEPS was patched, so no field is a fragment.
         candidates.append(
             (
                 body[: root_member_commas[-1]] + "}",
                 [_SALVAGE_NOTE, "dropped an incomplete trailing field the reply was cut off mid-way through"],
+                False,
             )
         )
 
     seen: set[str] = set()
-    for candidate, notes in candidates:
+    memberless = False
+    for candidate, notes, damages_last_member in candidates:
         if candidate in seen:
             continue
         seen.add(candidate)
@@ -481,11 +516,33 @@ def _salvage_truncated_json(text: str) -> tuple[dict, list[str]] | None:
             parsed = json.loads(candidate, strict=False)
         except json.JSONDecodeError:
             continue
-        if not isinstance(parsed, dict):
+        if not isinstance(parsed, dict) or not parsed:
+            # A memberless object carries nothing any caller can use: a partial
+            # reply of `{` — the likeliest capture when a budget runs out
+            # mid-JSON — closes to `{}`, which PARSES. Accepting it turns a
+            # retryable AgentExhaustedError into the caller's own plain
+            # AgentError ("reply missing 'summary'"), which carries no
+            # reason="turn_cap", so farmd forwards no reason and the item pauses
+            # for a human where before HZ-124 it auto-retried. Refusing keeps
+            # the original exception, which is strictly better than both.
+            memberless = memberless or isinstance(parsed, dict)
             continue
+        # json.loads preserves insertion order, so the last key is the member
+        # that was being written when the budget ran out.
+        damaged = frozenset([list(parsed)[-1]]) if damages_last_member else frozenset()
         _record_repair("salvaged_truncated_json")
-        return parsed, notes
+        return parsed, [*notes, *(_cut_field_note(key) for key in damaged)], damaged
 
+    if memberless:
+        # Counted and said out loud rather than dropped on the floor: this is the
+        # one give-up branch that looked like a success, and its rate is how an
+        # operator sees "budgets are running out before the reply even starts".
+        print(
+            "salvage: refused — the partial reply closes to an object with no fields at all, "
+            "which no caller can use; failing as a retryable exhaustion instead",
+            flush=True,
+        )
+        _record_repair("salvage_refused_memberless")
     return None
 
 
@@ -612,6 +669,23 @@ def _fire_handoff(exc: AgentExhaustedError, *, run_agent_fn, run_kwargs: dict, i
     _record_repair("handoff_fired")
 
 
+def _salvaged_value_is_usable(parsed: dict, key: str) -> bool:
+    """Presence alone is not enough for a required key. `{"summary":"` closes
+    to `{"summary": ""}` — the key is there and the object parses, but every
+    caller's own validation then rejects the blank value with a plain
+    AgentError, which carries no reason="turn_cap" and so pauses the item for a
+    human instead of auto-retrying. A key whose salvaged value is unusable is
+    treated exactly like a missing one."""
+    if key not in parsed:
+        return False
+    value = parsed[key]
+    if value is None:
+        return False
+    if isinstance(value, str) and not value.strip():
+        return False
+    return True
+
+
 def _handle_exhaustion(
     exc: AgentExhaustedError,
     *,
@@ -621,6 +695,7 @@ def _handle_exhaustion(
     handoff_item_id: str | None,
     handoff_step_index,
     salvage_required_keys: tuple[str, ...] = (),
+    salvage_intact_keys: tuple[str, ...] = (),
 ) -> tuple[dict, dict, list[str]]:
     if on_exhaustion == "reraise":
         raise exc
@@ -642,7 +717,7 @@ def _handle_exhaustion(
         salvaged = None
 
     if salvaged is not None:
-        parsed, notes = salvaged
+        parsed, notes, damaged = salvaged
         # Gate safety (guardrail: do not change any gate). A salvaged reply is
         # by definition an incomplete one, and the caller's downstream shaping
         # is fail-CLOSED only for fields it can see — step_agent's
@@ -653,14 +728,35 @@ def _handle_exhaustion(
         # A gate-bearing caller names the keys that must be present for the
         # salvage to mean anything; missing any of them, the salvage is
         # refused and the run goes back to being a retryable exhaustion.
-        missing = [key for key in salvage_required_keys if key not in parsed]
-        if missing:
+        #
+        # Two rungs, because "the key is there" and "the value is trustworthy"
+        # are different questions:
+        #   salvage_required_keys — present with a usable (non-blank) value.
+        #     Every caller names the keys its OWN downstream validation raises
+        #     on, so that validation never fires: a plain AgentError there loses
+        #     the reason="turn_cap" that would have auto-retried the run.
+        #   salvage_intact_keys — required, AND not the field the truncation
+        #     landed in. A fragment is fine for prose and never fine for a gate:
+        #     an expected_text cut from "Horizon board — 12 items" to "Horizon"
+        #     still parses and still matches, so run_smoke_check would pass on a
+        #     prefix of what the model meant to assert.
+        needed = (*salvage_required_keys, *salvage_intact_keys)
+        unusable = [key for key in needed if not _salvaged_value_is_usable(parsed, key)]
+        cut = [key for key in salvage_intact_keys if key in damaged]
+        if unusable:
             print(
-                f"salvage: refused — the partial reply parses but is missing "
-                f"{', '.join(missing)}, which this step gates on; failing as a retryable exhaustion instead",
+                "salvage: refused — the partial reply parses but is missing or blank at "
+                f"{', '.join(unusable)}, which this step needs; failing as a retryable exhaustion instead",
                 flush=True,
             )
             _record_repair("salvage_refused_incomplete")
+        elif cut:
+            print(
+                f"salvage: refused — the reply was cut off inside {', '.join(cut)}, so that value is a "
+                "fragment this step's gate must not read as complete; failing as a retryable exhaustion instead",
+                flush=True,
+            )
+            _record_repair("salvage_refused_truncated_value")
         else:
             reply_meta = {
                 # HZ-102 provenance survives salvage: which provider actually
@@ -699,6 +795,7 @@ def parse_agent_reply(
     handoff_item_id: str | None = None,
     handoff_step_index=None,
     salvage_required_keys: tuple[str, ...] = (),
+    salvage_intact_keys: tuple[str, ...] = (),
 ) -> tuple[dict | None, dict, list[str]]:
     """The one shared run_agent + extract_json + retry/repair/salvage/handoff
     helper (metric 14) — farm/pm_agent.py and farm/step_agent.py must both
@@ -719,12 +816,22 @@ def parse_agent_reply(
     entirely and re-raises AgentExhaustedError unchanged, so HZ-31's
     checkpoint-salvage scope is untouched (guardrail).
 
-    salvage_required_keys is how a GATE-bearing caller (review, deploy) keeps
-    an exhaustion salvage from weakening its gate: a salvaged reply missing
-    any named key is refused outright and the run stays a retryable
-    exhaustion, rather than being shaped downstream into a verdict with an
-    empty findings list. Omit it and salvage accepts any parseable object,
-    which is correct for the steps whose output gates nothing.
+    salvage_required_keys names the fields THIS caller's own validation raises
+    on (e.g. "summary"). A salvage missing one, or carrying a blank one, is
+    refused so the run stays a retryable exhaustion — a plain AgentError from
+    the caller's validation instead would strip the reason="turn_cap" the
+    orchestrator auto-retries on, pausing the item for a human where before
+    HZ-124 it retried itself.
+
+    salvage_intact_keys is the stricter form, for a GATE-bearing caller (review,
+    deploy): required as above, and additionally refused if the truncation
+    landed inside that field's value. A fragment that parses is still a
+    fragment — a truncated expected_text would let run_smoke_check pass on a
+    prefix, and a truncated findings array would clear the review gate with
+    findings the model never finished writing.
+
+    Omit both and salvage accepts any non-empty parseable object, which is
+    correct only for a caller that reads every field defensively.
 
     Returns (parsed_or_None, reply_meta, notes) where reply_meta is
     {"provider", "command_id", "session_id"} and notes lists every repair
@@ -754,6 +861,7 @@ def parse_agent_reply(
             handoff_item_id=handoff_item_id,
             handoff_step_index=handoff_step_index,
             salvage_required_keys=salvage_required_keys,
+            salvage_intact_keys=salvage_intact_keys,
         )
 
     reply_meta = {
@@ -800,6 +908,7 @@ def parse_agent_reply(
                 handoff_item_id=handoff_item_id,
                 handoff_step_index=handoff_step_index,
                 salvage_required_keys=salvage_required_keys,
+                salvage_intact_keys=salvage_intact_keys,
             )
 
         retry_meta = {

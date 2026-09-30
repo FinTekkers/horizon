@@ -46,6 +46,47 @@ rather than made as expensive as the step it reports on. That skip is counted
 (`handoff_skipped_no_budget`) for the same reason every other giving-up path
 is.
 
+## The same invariant, on the salvage path
+
+`reason="turn_cap"` is only ever set from an `AgentExhaustedError` — so
+**anything** that replaces that exception with a different one silently
+converts an auto-retried run into one that pauses for a human. The handoff call
+(below) is one way to lose it; an over-eager *salvage* is the other, and it is
+less obvious because the salvage looks like a success:
+
+- A partial reply of `{` closes to `{}`, which parses. Accepting it means
+  `pm_agent.validate()` / `step_agent.execute()` raise their own plain
+  `AgentError("agent reply missing 'summary'")` a moment later — no
+  `turn_cap`, no auto-retry. `{` is the *likeliest* capture when a budget runs
+  out mid-JSON, so this is the common case, not the corner case.
+- `{"summary": "` closes to `{"summary": ""}`: the key is present, the value
+  is useless, same outcome.
+
+So every caller names the fields its own validation refuses to do without
+(`salvage_required_keys`), a salvage missing or blanking one of them is refused
+outright, and a memberless object is refused regardless of what any caller
+asked for. Refusing leaves the original `AgentExhaustedError` in place, which
+is strictly better than both alternatives.
+
+A gate-bearing caller (review, deploy) names its fields in the stricter
+`salvage_intact_keys` instead. Those must additionally be *untouched by the
+truncation*: salvage reports which field the cut landed in, because a value the
+closing patch terminated still parses while not being what the model meant to
+write. An `expected_text` cut from `Horizon board — 12 items` down to `Horizon`
+is present, non-blank, and would make `run_smoke_check` pass on a prefix of the
+assertion the DevOps agent intended; a `findings` array cut mid-write closes to
+whichever findings happened to fit. Both are the deploy/review gate getting
+quietly weaker, which no salvage is allowed to do. A truncated **summary**, by
+contrast, is salvaged — it gates nothing, saving it is the whole point of the
+item, and the note says it is a fragment.
+
+Each refusal is counted (`salvage_refused_incomplete`,
+`salvage_refused_truncated_value`, `salvage_refused_memberless`) alongside the
+firings, so `python -m farm.scripts.repair_stats` shows how often the ladder
+declines to help as well as how often it does.
+
+## Containment on the handoff call
+
 Because this call is the least-verified thing in the exhaustion path, its
 failure is contained rather than typed: `_fire_handoff()` catches
 `Exception`, not just `AgentError`. If a resume-after-exhaustion turns out to

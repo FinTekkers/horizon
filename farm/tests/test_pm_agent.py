@@ -2,6 +2,8 @@
 exists, so the rules stamped into the task (HZ-9) are their only source of
 project context."""
 
+import pytest
+
 from farm import agent_runner, pm_agent
 from farm.agent_runner import AgentExhaustedError
 from farm.pm_agent import (
@@ -372,6 +374,35 @@ def test_process_salvages_a_truncated_exhaustion_reply_instead_of_discarding_the
 
     assert posted["json"]["ok"] is True
     assert posted["json"]["summary"] == "nearly finished the plan"
+
+
+@pytest.mark.parametrize(
+    "partial",
+    [
+        "{",  # closes to {} — parses, but validate() then raises on the missing summary
+        '{"summary": "',  # closes to {"summary": ""} — present but blank
+        '{"patch": {"desc": "x"',  # parses, carries no summary at all
+    ],
+)
+def test_a_salvage_validate_would_reject_never_costs_the_turn_cap_retry(monkeypatch, tmp_path, partial):
+    """The regression this pairs with: validate() raises a plain AgentError on a
+    missing/blank summary, and a plain AgentError carries no reason="turn_cap".
+    So a salvage that "succeeds" into something validate() rejects makes the
+    item pause for a human, where the identical run auto-retried before HZ-124 —
+    strictly worse than not salvaging at all. The salvage must be refused so the
+    original AgentExhaustedError (and its retry) survives."""
+    monkeypatch.setattr(agent_runner, "STATE_DIR", tmp_path)
+    posted = capture_posted_result(monkeypatch)
+
+    def raising_run_agent(*a, **k):
+        raise AgentExhaustedError("pm run timed out", partial_text=partial, session_id="sess-1")
+
+    monkeypatch.setattr(pm_agent, "run_agent", raising_run_agent)
+
+    process(make_task(), "acme")
+
+    assert posted["json"]["ok"] is False
+    assert posted["json"]["reason"] == "turn_cap", "the salvage swallowed the retryable exhaustion"
 
 
 def test_process_handoff_note_reaches_the_next_attempts_prompt_marked_unverified(monkeypatch, tmp_path):

@@ -299,6 +299,68 @@ def test_salvage_truncated_json_gives_up_when_nothing_is_open_at_eof():
     assert _salvage_truncated_json('{"a": 1} trailing garbage after') is None
 
 
+@pytest.mark.parametrize("partial", ["{", "  {  ", '```json\n{', "{\n"])
+def test_salvage_refuses_an_object_with_no_members_at_all(partial):
+    """`{` is the likeliest capture when a budget runs out mid-JSON (it is
+    exactly what test_run_agent_stamps_the_dispatched_provider_onto_an_exhaustion
+    uses). Closing it yields `{}`, which PARSES — and accepting that turns a
+    retryable AgentExhaustedError into the caller's own plain AgentError
+    ("reply missing 'summary'"), which carries no reason="turn_cap", so the item
+    pauses for a human where before HZ-124 it auto-retried. A memberless object
+    carries nothing any caller can use, so salvage must refuse it."""
+    assert _salvage_truncated_json(partial) is None
+
+
+# ---- which field the truncation landed in (HZ-124) ----
+# A salvaged value that the PATCH terminated rather than the model is a
+# fragment: it parses, but it is not what the model meant to write. Salvage
+# reports it so a gate-bearing caller can refuse it (see
+# test_agent_runner_parse_reply.py) and so the note never claims more than it
+# should.
+
+
+def test_salvage_names_the_field_the_truncation_landed_in():
+    parsed, notes, damaged = _salvage_truncated_json('{"url": "https://x/", "expected_text": "Horizon')
+    assert parsed == {"url": "https://x/", "expected_text": "Horizon"}
+    assert damaged == frozenset({"expected_text"})
+    assert "cut off part-way through the 'expected_text' field" in notes[-1]
+
+
+def test_salvage_reports_an_unclosed_nested_container_as_a_cut_field():
+    parsed, _notes, damaged = _salvage_truncated_json('{"verdict": "fail", "findings": [{"detail": "one"}')
+    assert parsed == {"verdict": "fail", "findings": [{"detail": "one"}]}
+    assert damaged == frozenset({"findings"})
+
+
+@pytest.mark.parametrize(
+    "partial,expected",
+    [
+        ('{"a": 1, "b": "done"', {"a": 1, "b": "done"}),  # the model closed the string itself
+        ('{"a": 1, "b": {"c": 2}', {"a": 1, "b": {"c": 2}}),  # ...and the nested object
+        ('{"a": 1, "b": true', {"a": 1, "b": True}),  # a bare literal can only be read one way
+    ],
+)
+def test_salvage_reports_no_cut_field_when_the_model_finished_the_value(partial, expected):
+    parsed, _notes, damaged = _salvage_truncated_json(partial)
+    assert parsed == expected
+    assert damaged == frozenset()
+
+
+def test_salvage_treats_a_trailing_bare_number_as_cut_because_12_may_have_been_123():
+    """The one shape that cannot be verified: `12` is indistinguishable from a
+    `123` the budget halved, so it counts as cut rather than intact."""
+    _parsed, _notes, damaged = _salvage_truncated_json('{"a": "x", "count": 12')
+    assert damaged == frozenset({"count"})
+
+
+def test_a_field_dropped_by_rung_three_leaves_no_cut_field_behind():
+    """Rung 3 keeps only whole members — everything it retains sits before the
+    last top-level comma, so nothing it returns is a fragment."""
+    parsed, _notes, damaged = _salvage_truncated_json('{"summary": "did a thing", "verdict":')
+    assert parsed == {"summary": "did a thing"}
+    assert damaged == frozenset()
+
+
 # ---- metric 15 / QA: repair counter must honor a patched STATE_DIR ----
 
 
