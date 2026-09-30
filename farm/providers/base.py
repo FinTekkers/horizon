@@ -25,7 +25,50 @@ class AgentExhaustedError(AgentError):
 
     Why the distinction earns a type: the orchestrator auto-retries THIS
     cause, up to its own hard cap, and no other (HZ-76). Callers must be able
-    to ask "ran out of budget?" without parsing a message string."""
+    to ask "ran out of budget?" without parsing a message string.
+
+    HZ-124: carries whatever partial_text/session_id the provider managed to
+    capture before it ran out of budget, so a caller can attempt to salvage a
+    truncated-but-otherwise-valid JSON reply, or hand a resumed session off to
+    the next attempt, instead of discarding both. It also carries the HZ-102
+    provenance pair (provider/command_id) for the same reason: a run whose
+    reply is salvaged out of this exception still has to record WHICH provider
+    actually produced those bytes, or a salvaged muse_smoke_test writes NULL
+    provenance and HZ-102's guarantee quietly disappears on exactly the runs
+    that needed it most. All four default to "empty" — every existing
+    single-arg `raise AgentExhaustedError("...")` call site keeps working
+    unchanged, and orchestrator classification (turn_cap) is untouched since it
+    only ever inspects the exception's type."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        partial_text: str = "",
+        session_id: str | None = None,
+        provider: str | None = None,
+        command_id: str | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.partial_text = partial_text
+        self.session_id = session_id
+        self.provider = provider
+        self.command_id = command_id
+
+
+def decode_partial_output(captured) -> str:
+    """Normalize a partial-output capture to str for AgentExhaustedError.
+
+    subprocess.TimeoutExpired.stdout carries RAW BYTES even when the provider
+    ran the child with text=True: on POSIX, Popen._communicate raises the
+    timeout from inside its read loop, before the decode step. Every
+    consumer of partial_text (agent_runner's repair ladder,
+    _salvage_truncated_json, the run log) is written for str, so decode at the
+    provider boundary rather than letting the type of partial_text depend on
+    which branch raised."""
+    if isinstance(captured, bytes):
+        return captured.decode("utf-8", "replace")
+    return captured or ""
 
 
 class AgentProvider(Protocol):

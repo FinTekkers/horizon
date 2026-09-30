@@ -16,7 +16,7 @@ from pathlib import Path
 
 import httpx
 
-from .agent_runner import AgentError, extract_json, run_agent
+from .agent_runner import AgentError, AgentExhaustedError, parse_agent_reply, read_and_clear_handoff_note, run_agent
 from .config import FARM_PORT, PM_MODEL, QUEUE_DIR, STATE_DIR, ensure_dirs, slugify
 from .rules import render_rules_section
 
@@ -78,6 +78,13 @@ def build_prompt(task: dict) -> str:
         "",
         f"Step to perform now: \"{step['label']}\" (attempt {task.get('attempt', 1)})",
     ]
+    handoff_note = read_and_clear_handoff_note(item["id"], step["index"])
+    if handoff_note:
+        lines.append("")
+        lines.append(
+            "NOTE (unverified): the previous attempt ran out of turn/time budget "
+            f"partway through. It reported: {handoff_note}"
+        )
     for artifact in task.get("artifacts") or []:
         lines.append("")
         lines.append(f"Prior artifact — {artifact.get('label', 'earlier step')}:")
@@ -136,6 +143,11 @@ def _mark_truncated(value: str, limit: int) -> str:
     return f"{cut}{note}"
 
 
+# The one field validate() below refuses to do without (HZ-124) — see the
+# salvage_required_keys note at its use site in process().
+SALVAGE_REQUIRED_KEYS = ("summary",)
+
+
 def validate(parsed: dict) -> tuple[str, dict, str | None]:
     summary = str(parsed.get("summary", "")).strip()
     if not summary:
@@ -159,23 +171,34 @@ def process(task: dict, project_slug: str) -> None:
     try:
         prompt = build_prompt(task)
         log(f"run {run_id}: {task['step']['label']} for {task['item']['id']}")
-        reply = run_agent(prompt, session_id=session_id, append_system=ROLE_PROMPT, model=PM_MODEL)
-        if reply.get("session_id"):
-            sid_path.write_text(reply["session_id"])
+        parsed, reply_meta, notes = parse_agent_reply(
+            prompt,
+            run_agent_fn=run_agent,
+            session_id=session_id,
+            append_system=ROLE_PROMPT,
+            model=PM_MODEL,
+            handoff_item_id=task["item"]["id"],
+            handoff_step_index=task["step"]["index"],
+            # validate() below raises a plain AgentError on a missing/blank
+            # summary, and a plain AgentError carries no reason="turn_cap" — so
+            # a salvage that produced one would turn an auto-retryable
+            # exhaustion into a pause-for-a-human. Naming the field keeps the
+            # salvage itself refused instead, leaving the original
+            # AgentExhaustedError (and its retry) intact.
+            salvage_required_keys=SALVAGE_REQUIRED_KEYS,
+        )
+        if reply_meta.get("session_id"):
+            sid_path.write_text(reply_meta["session_id"])
 
-        try:
-            summary, patch, artifact = validate(extract_json(reply["result"]))
-        except (AgentError, json.JSONDecodeError) as exc:
-            # One retry, telling the model exactly what was wrong with its reply.
-            log(f"run {run_id}: invalid reply ({exc}); retrying once")
-            retry = run_agent(
-                f"Your previous reply was invalid: {exc}. "
-                "Respond again with ONLY the JSON object, no other text.",
-                session_id=sid_path.read_text().strip() if sid_path.exists() else None,
-                append_system=ROLE_PROMPT,
-                model=PM_MODEL,
-            )
-            summary, patch, artifact = validate(extract_json(retry["result"]))
+        # Guardrail: any repair that altered bytes gets a note in BOTH the
+        # run's output line and the artifact — never a silent rewrite.
+        for note in notes:
+            log(f"run {run_id}: repair — {note}")
+
+        summary, patch, artifact = validate(parsed)
+        if notes:
+            note_line = f"Repairs applied: {'; '.join(notes)}"
+            artifact = f"{artifact}\n\n---\n{note_line}" if artifact else note_line
 
         # Script-stamped feedback trail, same as the ephemeral agents.
         feedback = task.get("feedback") or []
@@ -191,6 +214,11 @@ def process(task: dict, project_slug: str) -> None:
     except Exception as exc:  # report every failure; farmd forwards to the server
         log(f"run {run_id}: FAILED — {exc}")
         result = {"run_id": run_id, "ok": False, "error": str(exc)[:300]}
+        # HZ-76/HZ-124: tag the one failure cause the orchestrator auto-retries
+        # from this side (running out of turn/time budget) — mirrors
+        # step_agent.main()'s identical tagging.
+        if isinstance(exc, AgentExhaustedError):
+            result["reason"] = "turn_cap"
 
     httpx.post(f"{FARMD}/internal/steps/result", json=result, timeout=30)
     log(f"run {run_id}: reported {'ok' if result['ok'] else 'failure'}")

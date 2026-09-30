@@ -178,3 +178,49 @@ def test_sdk_error_max_turns_raises_agent_exhausted_error(sdk_runner, monkeypatc
     monkeypatch.setattr(sdk, "query", fake_query)
     with pytest.raises(AgentExhaustedError, match="error_max_turns"):
         run_agent("hello", timeout_s=10)
+
+
+def test_sdk_error_max_turns_carries_partial_text_and_session_id(sdk_runner, monkeypatch):
+    """HZ-124 metric 8, Claude/SDK half: an error_max_turns result carries
+    whatever text/session_id the SDK reported, never discarded."""
+
+    def fake_query(*, prompt, options=None, **kwargs):
+        async def gen():
+            yield _result_message(
+                session_id="sdk-session-exhausted",
+                result="partial JSON before the cap hit",
+                is_error=True,
+                subtype="error_max_turns",
+            )
+
+        return gen()
+
+    monkeypatch.setattr(sdk, "query", fake_query)
+    with pytest.raises(AgentExhaustedError) as exc_info:
+        run_agent("hello", timeout_s=10)
+    assert exc_info.value.partial_text == "partial JSON before the cap hit"
+    assert exc_info.value.session_id == "sdk-session-exhausted"
+
+
+def test_sdk_timeout_carries_the_last_assistant_text_seen_before_the_hang(sdk_runner, monkeypatch):
+    """HZ-124 metric 8, Claude/SDK timeout half: asyncio.wait_for's
+    cancellation must not erase whatever partial text/session id the stream
+    already produced before it hung — that's the whole point of creating
+    `partial` before asyncio.run() in claude.py's run()."""
+    import asyncio
+
+    def fake_query(*, prompt, options=None, **kwargs):
+        async def gen():
+            yield sdk.AssistantMessage(content=[sdk.TextBlock(text="working on it, almost done")], model="m")
+            await asyncio.sleep(3600)
+            yield _result_message()  # pragma: no cover — never reached
+
+        return gen()
+
+    monkeypatch.setattr(sdk, "query", fake_query)
+    with pytest.raises(AgentExhaustedError) as exc_info:
+        run_agent("hello", timeout_s=1)
+    assert exc_info.value.partial_text == "working on it, almost done"
+    # No ResultMessage ever arrived, so no server-issued session id exists —
+    # best-effort here means "whatever we had," not a fabricated id.
+    assert exc_info.value.session_id is None

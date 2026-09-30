@@ -16,7 +16,7 @@ from pathlib import Path
 
 from ..config import FARM_MUSE_BIN, MAX_TURNS, STEP_TIMEOUT_S
 from ..credentials import without_gate_credentials
-from .base import AgentError, AgentExhaustedError
+from .base import AgentError, AgentExhaustedError, decode_partial_output
 
 # `muse exec --session-id <UUID>` genuinely carries context across calls
 # (verified: two separate processes sharing one id, see the vendor doc) —
@@ -108,7 +108,15 @@ def run(
                 env=without_gate_credentials(),
             )
         except subprocess.TimeoutExpired as exc:
-            raise AgentExhaustedError(f"muse timed out after {timeout_s}s") from exc
+            # HZ-124: session_id is always known here (sid is caller-minted
+            # up front, unlike Claude's server-issued id); exc.stdout is
+            # whatever partial JSONL got captured before the kill, best-effort
+            # — and raw bytes despite text=True, hence decode_partial_output().
+            raise AgentExhaustedError(
+                f"muse timed out after {timeout_s}s",
+                partial_text=decode_partial_output(exc.stdout),
+                session_id=sid,
+            ) from exc
         except FileNotFoundError as exc:
             raise AgentError(f"muse binary not found: {FARM_MUSE_BIN}") from exc
     finally:
@@ -153,7 +161,29 @@ def _parse_events(proc: subprocess.CompletedProcess, session_id: str) -> dict:
     # proves wrong.
     exhausted = next((e for e in events if "exhaust" in e.get("payload_type", "")), None)
     if exhausted is not None:
-        raise AgentExhaustedError(f"muse reported exhaustion: {exhausted.get('payload_type')}")
+        # HZ-124: best-effort partial text — the last event carrying a
+        # payload.text string before exhaustion was reported. session_id is
+        # always known (see above) even though the text is a guess.
+        partial_text = ""
+        for event in reversed(events):
+            text = event.get("payload", {}).get("text")
+            if isinstance(text, str) and text:
+                partial_text = text
+                break
+        # HZ-124/HZ-102: if the exhaustion event carries a command_id, keep it
+        # — a reply salvaged out of this exception is still a real Muse run and
+        # must record which one. Unlike the run.terminal.completed path above
+        # this is NOT a hard requirement: exhaustion reporting is the
+        # unverified branch, so a missing command_id degrades provenance to
+        # None rather than replacing a turn_cap retry with a hard AgentError.
+        command_id = exhausted.get("payload", {}).get("command_id")
+        raise AgentExhaustedError(
+            f"muse reported exhaustion: {exhausted.get('payload_type')}",
+            partial_text=partial_text,
+            session_id=session_id,
+            provider="muse",
+            command_id=command_id.strip() if isinstance(command_id, str) and command_id.strip() else None,
+        )
 
     if proc.returncode != 0:
         raise AgentError(f"muse exited {proc.returncode}: {proc.stderr.strip()[:300]}")

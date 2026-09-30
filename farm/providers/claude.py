@@ -25,7 +25,13 @@ from datetime import datetime
 
 from ..config import CLAUDE_BIN, FARM_RUNNER, MAX_TURNS, STEP_TIMEOUT_S
 from ..credentials import without_gate_credentials
-from .base import AgentError, AgentExhaustedError, assert_metered_billing_authorized, metered_billing_opted_in
+from .base import (
+    AgentError,
+    AgentExhaustedError,
+    assert_metered_billing_authorized,
+    decode_partial_output,
+    metered_billing_opted_in,
+)
 
 SUPPORTS_RESUME = True
 
@@ -89,6 +95,11 @@ def run(
             "or set FARM_RUNNER=subprocess to fall back to the old runner"
         ) from exc
 
+    # HZ-124: created before asyncio.run() so it survives asyncio.wait_for's
+    # cancellation tearing down _stream_query's own frame/locals on timeout —
+    # _stream_query mutates this in place as messages arrive, so whatever it
+    # last wrote is still readable here even after the coroutine is gone.
+    partial = {"text": "", "session_id": session_id}
     try:
         return asyncio.run(
             asyncio.wait_for(
@@ -100,12 +111,15 @@ def run(
                     model=model,
                     max_turns=max_turns,
                     allowed_tools=allowed_tools,
+                    partial=partial,
                 ),
                 timeout_s,
             )
         )
     except TimeoutError as exc:
-        raise AgentExhaustedError(f"claude timed out after {timeout_s}s") from exc
+        raise AgentExhaustedError(
+            f"claude timed out after {timeout_s}s", partial_text=partial["text"], session_id=partial["session_id"]
+        ) from exc
     except ClaudeSDKError as exc:
         # A stale `resume` session is the common recoverable failure: retry fresh.
         if session_id:
@@ -131,8 +145,15 @@ async def _stream_query(
     model: str | None,
     max_turns: int,
     allowed_tools: str | None,
+    partial: dict | None = None,
 ) -> dict:
     import claude_agent_sdk as sdk
+
+    # HZ-124: the caller's mutable capture of "best text/session_id seen so
+    # far" — updated as events stream in below, read by run()'s timeout
+    # handler if this coroutine gets cancelled before finishing normally.
+    if partial is None:
+        partial = {"text": "", "session_id": session_id}
 
     options = sdk.ClaudeAgentOptions(
         # The preset+append form mirrors the CLI's --append-system-prompt.
@@ -157,9 +178,19 @@ async def _stream_query(
     try:
         async for message in stream:
             _print_event(message)
+            if isinstance(message, sdk.AssistantMessage):
+                for block in message.content:
+                    if isinstance(block, sdk.TextBlock) and block.text.strip():
+                        # HZ-124: last non-empty text block wins — closest
+                        # thing to "the final reply" a mid-run cancellation
+                        # (timeout) ever gets to see.
+                        partial["text"] = block.text.strip()
             if isinstance(message, sdk.ResultMessage):
                 result_text = message.result or ""
                 new_session_id = message.session_id
+                partial["session_id"] = new_session_id
+                if result_text:
+                    partial["text"] = result_text
                 if message.is_error:
                     # subtype names the cause (e.g. error_max_turns) — the
                     # result text is often empty on these, so without it the
@@ -167,7 +198,11 @@ async def _stream_query(
                     subtype = getattr(message, "subtype", None) or "unknown"
                     detail = result_text[:300] or f"no result text (subtype: {subtype}, {message.num_turns} turns)"
                     if subtype == "error_max_turns":
-                        raise AgentExhaustedError(f"claude reported an error result [{subtype}]: {detail}")
+                        raise AgentExhaustedError(
+                            f"claude reported an error result [{subtype}]: {detail}",
+                            partial_text=partial["text"],
+                            session_id=partial["session_id"],
+                        )
                     raise AgentError(f"claude reported an error result [{subtype}]: {detail}")
     finally:
         # Cancellation (asyncio.wait_for timeout) lands here too: closing the
@@ -242,7 +277,14 @@ def _run_subprocess(
             env=without_gate_credentials(),
         )
     except subprocess.TimeoutExpired as exc:
-        raise AgentExhaustedError(f"claude timed out after {timeout_s}s") from exc
+        # HZ-124: best-effort only — this is the FARM_RUNNER=subprocess
+        # rollback lever, not the default path. exc.stdout is whatever was
+        # captured before the kill (rarely the full JSON envelope, since the
+        # CLI only emits it on clean exit); session_id is never known here (the
+        # old CLI JSON path never had one before the timeout).
+        raise AgentExhaustedError(
+            f"claude timed out after {timeout_s}s", partial_text=decode_partial_output(exc.stdout), session_id=None
+        ) from exc
     except FileNotFoundError as exc:
         raise AgentError(f"claude binary not found: {CLAUDE_BIN}") from exc
 

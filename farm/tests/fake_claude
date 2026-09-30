@@ -56,6 +56,26 @@ if "HZ44_QUOTE_BUG" in prompt:
     print(json.dumps({"type": "result", "result": bad, "session_id": HZ44_QUOTE_BUG_SESSION}))
     sys.exit(0)
 
+# HZ-124: opt-in marker proving the repair ladder engages over a REAL
+# provider dispatch (agent_runner.run_agent -> providers.claude ->
+# subprocess -> this binary), not just against a hand-rolled run_agent_fn
+# closure — see test_parse_agent_reply_drives_a_real_subprocess_dispatch...
+if "HZ124_REPAIR_LADDER" in prompt:
+    bad = '{"summary": "trailing comma bug",}'
+    print(json.dumps({"type": "result", "result": bad, "session_id": "fake-session-hz124"}))
+    sys.exit(0)
+
+# HZ-124: exhaustion e2e. Emits a reply truncated mid-string and then hangs
+# past the caller's timeout, so the REAL provider path (subprocess.run ->
+# TimeoutExpired -> AgentExhaustedError.partial_text) is what feeds the
+# salvage, rather than a hand-constructed exception in a test closure.
+if "HZ124_EXHAUST_TRUNCATED" in prompt:
+    import time
+
+    print('{"summary": "wrote the parser, still needed to add tests when the budget ran out', flush=True)
+    time.sleep(30)
+    sys.exit(0)
+
 patch = {}
 if "guardrails: (empty)" in prompt and "Set guardrails" in prompt:
     patch["guardrails"] = "[fake] defaults apply; no destructive data changes"

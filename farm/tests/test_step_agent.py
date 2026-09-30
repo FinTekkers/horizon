@@ -11,8 +11,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import pytest
 
-from farm import step_agent
-from farm.agent_runner import AgentError, AgentExhaustedError
+from farm import agent_runner, step_agent
+from farm.agent_runner import AgentError, AgentExhaustedError, read_and_clear_handoff_note
 from farm.personas import PERSONA_DIR, PERSONAS
 from farm.step_agent import (
     STEP_CONFIG,
@@ -1520,3 +1520,459 @@ def test_main_does_not_tag_a_reason_for_an_ordinary_failure(tmp_path, monkeypatc
 
     assert posted["json"]["ok"] is False
     assert "reason" not in posted["json"]
+
+
+# ---- HZ-124: shared parse_agent_reply, repair-note propagation, handoff ----
+# Architecture/QA review flagged that guardrail 2 ("note in BOTH the run log
+# and the artifact") was only proven for pm_agent.py — these cover the five
+# step_agent.py call sites (planner/generic, review code+QA, deploy) plus the
+# implement step's own exhaustion-only regression.
+
+
+def test_planner_step_repair_note_appears_in_run_log_and_artifact(monkeypatch, capsys):
+    reply = '{"summary": "did the step", "artifact_md": "# Plan",}'  # trailing comma
+    monkeypatch.setattr(step_agent, "run_agent", lambda *a, **k: {"result": reply})
+
+    result = execute(make_task(4, "Plan options & trade-offs (pros / cons)"))
+
+    assert "repair — stripped a trailing comma" in capsys.readouterr().out
+    assert "Repairs applied: stripped a trailing comma" in result["artifacts"]["artifact_md"]
+
+
+def test_planner_step_produces_no_repair_note_on_a_clean_reply(monkeypatch):
+    monkeypatch.setattr(
+        step_agent, "run_agent", lambda *a, **k: {"result": '{"summary": "did it", "artifact_md": "# Plan"}'}
+    )
+    result = execute(make_task(4, "Plan options & trade-offs (pros / cons)"))
+    assert result["artifacts"]["artifact_md"] == "# Plan"
+
+
+def test_review_step_repair_notes_from_both_passes_appear_in_run_log_and_artifact(tmp_path, monkeypatch, capsys):
+    ws, _origin = make_git_workspace(tmp_path)
+    git(ws, "push", "-u", "origin", "HEAD:horizon/t-1")
+    monkeypatch.setattr(step_agent, "ensure_item_worktree", lambda repo, item_id: ws)
+
+    code_reply = '{"summary": "code review done", "verdict": "pass", "findings": [],}'  # trailing comma
+    qa_reply = json.dumps(
+        {
+            "summary": "qa review done",
+            "verdict": "pass",
+            "regression_tests_run": True,
+            "new_code_unit_coverage": True,
+            "e2e_test_present": True,
+            "findings": [],
+        }
+    )
+
+    def _fake(prompt, **kwargs):
+        is_qa = "QA Reviewer agent" in kwargs.get("append_system", "")
+        return {"result": qa_reply if is_qa else code_reply}
+
+    monkeypatch.setattr(step_agent, "run_agent", _fake)
+
+    result = execute(make_task(12, "Automated review (code + QA)", repo="acme/demo"))
+
+    assert "repair — stripped a trailing comma" in capsys.readouterr().out
+    assert "Repairs applied: stripped a trailing comma" in result["artifacts"]["artifact_md"]
+
+
+def test_deploy_step_repair_note_appears_in_run_log_and_artifact(monkeypatch, capsys):
+    reply = (
+        '{"summary": "verified", "url": "https://shoreward.ai/horizon/", '
+        '"expected_text": "Horizon", "artifact_md": "## Deploy target",}'
+    )  # trailing comma
+    monkeypatch.setattr(step_agent, "run_agent", lambda *a, **k: {"result": reply})
+    monkeypatch.setattr(step_agent, "run_smoke_check", lambda url, text: ("pass", 'SMOKE_RESULT=pass — "Horizon"'))
+
+    result = execute(make_task(14, "Deploy the changes", repo="acme/demo"))
+
+    assert "repair — stripped a trailing comma" in capsys.readouterr().out
+    assert "Repairs applied: stripped a trailing comma" in result["artifacts"]["artifact_md"]
+
+
+def test_implement_step_repair_note_appears_in_run_log_and_the_persisted_summary(tmp_path, monkeypatch, capsys):
+    """The implement step's repair disclosure must land somewhere the SERVER
+    keeps. completeFarmRun (server/src/orchestrator.js) reads only branch /
+    files_changed / artifact_md / verdict / provider / command_id off an
+    implement step's artifacts — an extra artifacts["repairs"] key would be
+    dropped on the floor, leaving the repair visible only in a farm-local tmux
+    log. The summary is persisted verbatim as step_run.output, so that's where
+    the note goes."""
+    ws, _origin = make_git_workspace(tmp_path)
+    monkeypatch.setattr(step_agent, "ensure_item_worktree", lambda repo, item_id: ws)
+
+    def _fake(prompt, **kwargs):
+        (ws / "fake_implementation.txt").write_text("real work\n")
+        return {"result": '{"summary": "done",}'}  # trailing comma
+
+    monkeypatch.setattr(step_agent, "run_agent", _fake)
+
+    result = execute(make_task(11, "Specialist agent implements", repo="acme/demo"))
+
+    assert "repair — stripped a trailing comma" in capsys.readouterr().out
+    assert "[repairs: stripped a trailing comma]" in result["summary"]
+    # ...and not parked on a key the server throws away.
+    assert "repairs" not in result["artifacts"]
+
+
+def test_implement_step_repair_note_survives_summary_truncation(tmp_path, monkeypatch):
+    """A 600-char cap that ate the disclosure would be the silent repair this
+    item exists to prevent, so the note is reserved out of the budget first."""
+    ws, _origin = make_git_workspace(tmp_path)
+    monkeypatch.setattr(step_agent, "ensure_item_worktree", lambda repo, item_id: ws)
+
+    def _fake(prompt, **kwargs):
+        (ws / "fake_implementation.txt").write_text("real work\n")
+        return {"result": json.dumps({"summary": "x" * 4000})[:-1] + ",}"}  # long + trailing comma
+
+    monkeypatch.setattr(step_agent, "run_agent", _fake)
+
+    result = execute(make_task(11, "Specialist agent implements", repo="acme/demo"))
+
+    assert len(result["summary"]) <= 600
+    assert result["summary"].endswith("[repairs: stripped a trailing comma]")
+
+
+def test_summary_with_repair_note_is_a_no_op_without_notes():
+    assert step_agent._summary_with_repair_note("all good", []) == "all good"
+
+
+# ---- HZ-124 metric 11: the handoff note reaches the NEXT attempt's prompt,
+# marked unverified — for a non-implement step (implement never writes one,
+# see the regression test below, guardrail 10). ----
+
+
+def test_handoff_note_reaches_the_next_non_implement_attempts_prompt(monkeypatch, tmp_path):
+    monkeypatch.setattr(agent_runner, "STATE_DIR", tmp_path)
+
+    calls = []
+
+    def _fake(prompt, **kwargs):
+        calls.append(kwargs)
+        if len(calls) == 1:
+            raise AgentExhaustedError(
+                "claude timed out", partial_text="garbage, not json, not truncated json either", session_id="sess-1"
+            )
+        return {"result": "drafted two of three options; still need the risk section"}
+
+    monkeypatch.setattr(step_agent, "run_agent", _fake)
+
+    task = make_task(4, "Plan options & trade-offs (pros / cons)")
+    with pytest.raises(AgentExhaustedError):
+        execute(task)
+
+    assert len(calls) == 2  # the exhausting call, plus exactly one handoff call
+
+    next_prompt = build_prompt(task)
+    assert "NOTE (unverified)" in next_prompt
+    assert "drafted two of three options" in next_prompt
+    assert "NOTE (unverified)" not in build_prompt(task)  # read-once
+
+
+# ---- HZ-124: the exhaustion chain over a REAL provider call ----
+# Every test above raises AgentExhaustedError from a monkeypatched run_agent
+# closure, which proves the orchestration but never that providers/claude.py
+# actually populates partial_text/session_id on a real exhaustion. These two
+# drive the whole chain — provider timeout/turn-cap -> partial_text/session_id
+# -> salvage or handoff -> the next attempt's prompt — with nothing above the
+# provider boundary mocked, the same way test_hz44_real_subprocess_... does for
+# the retry path.
+
+
+def test_hz124_a_real_subprocess_timeout_is_salvaged_with_a_note(monkeypatch, capsys):
+    """fake_claude prints a reply truncated mid-string and then hangs past the
+    step's 1s budget. The real subprocess path (subprocess.run ->
+    TimeoutExpired -> AgentExhaustedError.partial_text, raw bytes decoded at
+    the provider boundary) must feed the salvage, so a run that today dies with
+    nothing instead completes — with the repair disclosed in both places."""
+    monkeypatch.setenv("FARM_RUNNER", "subprocess")
+    monkeypatch.setattr(step_agent.steps, "budget_for_label", lambda table, label: (4, 1))
+
+    task = make_task(7, "Architecture review")
+    task["item"]["desc"] = "HZ124_EXHAUST_TRUNCATED " + task["item"]["desc"]
+
+    result = execute(task)
+
+    assert result["summary"].startswith("wrote the parser, still needed to add tests")
+    out = capsys.readouterr().out
+    assert "repair — salvaged a reply truncated mid-string/object" in out
+    assert "Repairs applied: salvaged a reply truncated mid-string/object" in result["artifacts"]["artifact_md"]
+
+
+def test_hz124_a_real_error_max_turns_hands_a_note_to_the_next_attempt(monkeypatch, tmp_path, capsys):
+    """The turn-cap half, over the default (SDK) provider path: only
+    claude_agent_sdk.query is faked — the provider boundary itself — so
+    claude.py's real error_max_turns branch produces the AgentExhaustedError,
+    agent_runner fires exactly one real handoff call through run_agent, and the
+    next attempt's build_prompt() carries the note marked unverified."""
+    sdk = pytest.importorskip("claude_agent_sdk", reason="SDK-path e2e needs the SDK's message types")
+    monkeypatch.setenv("FARM_RUNNER", "sdk")
+    monkeypatch.setattr(agent_runner, "STATE_DIR", tmp_path)
+    monkeypatch.setattr(step_agent.steps, "budget_for_label", lambda table, label: (6, 30))
+
+    prompts = []
+
+    def _result(session_id, result, is_error, subtype, turns):
+        return sdk.ResultMessage(
+            subtype=subtype,
+            duration_ms=10,
+            duration_api_ms=8,
+            is_error=is_error,
+            num_turns=turns,
+            session_id=session_id,
+            result=result,
+        )
+
+    def fake_query(*, prompt, options=None, **kwargs):
+        prompts.append({"prompt": prompt, "max_turns": options.max_turns, "resume": options.resume})
+
+        async def gen():
+            if len(prompts) == 1:
+                yield sdk.AssistantMessage(
+                    content=[sdk.TextBlock(text="Read three files so far.")], model="m"
+                )
+                # Claude's real exhaustion shape: is_error with an empty result.
+                yield _result("sdk-exhausted-1", "", True, "error_max_turns", 6)
+            else:
+                yield _result(
+                    "sdk-exhausted-1",
+                    "Mapped the two call sites; still need to write the verdict section.",
+                    False,
+                    "success",
+                    1,
+                )
+
+        return gen()
+
+    monkeypatch.setattr(sdk, "query", fake_query)
+
+    task = make_task(7, "Architecture review")
+    with pytest.raises(AgentExhaustedError, match="error_max_turns"):
+        execute(task)
+
+    assert len(prompts) == 2, "exactly one handoff call on top of the exhausting step call"
+    handoff = prompts[1]
+    assert handoff["resume"] == "sdk-exhausted-1"  # the session id survived the raise
+    assert handoff["max_turns"] < 6  # strictly below the step's own budget
+    assert '"path": "handoff_fired"' in (tmp_path / "repair-stats.ndjson").read_text()
+
+    next_prompt = build_prompt(make_task(7, "Architecture review"))
+    assert "NOTE (unverified)" in next_prompt
+    assert "Mapped the two call sites" in next_prompt
+
+
+# ---- HZ-124: an exhaustion salvage must never loosen a GATE ----
+
+
+def test_review_exhaustion_truncated_after_the_verdict_is_not_salvaged_into_a_pass(tmp_path, monkeypatch, capsys):
+    """The reply is cut off one byte after `"verdict": "pass"`. That salvages
+    cleanly, and _code_review_section reads the absent "findings" as [] — so
+    without the gate guard this run would complete as a findings-free PASS.
+    Before HZ-124 it failed as turn_cap and auto-retried; it still must."""
+    monkeypatch.setattr(agent_runner, "STATE_DIR", tmp_path)
+    ws, _origin = make_git_workspace(tmp_path)
+    git(ws, "push", "-u", "origin", "HEAD:horizon/t-1")
+    monkeypatch.setattr(step_agent, "ensure_item_worktree", lambda repo, item_id: ws)
+
+    def _fake(prompt, **kwargs):
+        raise AgentExhaustedError(
+            "claude reported an error result [error_max_turns]",
+            partial_text='{"summary": "looked at the diff", "verdict": "pass"',
+            session_id="sess-1",
+        )
+
+    monkeypatch.setattr(step_agent, "run_agent", _fake)
+
+    with pytest.raises(AgentExhaustedError):
+        execute(make_task(12, "Automated review (code + QA)", repo="acme/demo"))
+
+    assert "salvage: refused" in capsys.readouterr().out
+
+
+def test_review_exhaustion_carrying_a_complete_verdict_is_still_salvaged(tmp_path, monkeypatch):
+    """The guard is scoped to INCOMPLETE salvage, not to salvage as such: a
+    partial reply that does carry every field the gate reads still saves the
+    run, which is the whole point of the item."""
+    monkeypatch.setattr(agent_runner, "STATE_DIR", tmp_path)
+    ws, _origin = make_git_workspace(tmp_path)
+    git(ws, "push", "-u", "origin", "HEAD:horizon/t-1")
+    monkeypatch.setattr(step_agent, "ensure_item_worktree", lambda repo, item_id: ws)
+
+    code_partial = '{"verdict": "fail", "findings": [{"detail": "a real bug"}], "summary": "cut off mid'
+    qa_partial = json.dumps(
+        {
+            "verdict": "pass",
+            "findings": [],
+            "regression_tests_run": True,
+            "new_code_unit_coverage": True,
+            "e2e_test_present": True,
+            "summary": "ok",
+        }
+    )[:-1]  # drop the closing brace — truncated, but every gated field is present
+
+    def _fake(prompt, **kwargs):
+        is_qa = "QA Reviewer agent" in (kwargs.get("append_system") or "")
+        raise AgentExhaustedError("error_max_turns", partial_text=qa_partial if is_qa else code_partial, session_id="s")
+
+    monkeypatch.setattr(step_agent, "run_agent", _fake)
+
+    result = execute(make_task(12, "Automated review (code + QA)", repo="acme/demo"))
+
+    assert result["artifacts"]["verdict"]["code_review"] == {
+        "verdict": "fail",
+        "findings": [{"detail": "a real bug"}],
+    }
+    assert result["artifacts"]["verdict"]["qa_review"]["verdict"] == "pass"
+    assert "Repairs applied: salvaged a reply truncated" in result["artifacts"]["artifact_md"]
+
+
+def test_deploy_exhaustion_missing_the_verification_target_is_not_salvaged(tmp_path, monkeypatch):
+    """Deploy gates on a smoke check driven by the model's url/expected_text.
+    A salvage that lost either one would turn a retryable turn_cap into a hard
+    AgentError ("devops reply missing 'url'"), which pauses for a human
+    instead of auto-retrying."""
+    monkeypatch.setattr(agent_runner, "STATE_DIR", tmp_path)
+
+    def _fake(prompt, **kwargs):
+        raise AgentExhaustedError(
+            "error_max_turns",
+            partial_text='{"summary": "deployed and started checking", "url": "https://shoreward.ai/horizon/"',
+            session_id="s",
+        )
+
+    monkeypatch.setattr(step_agent, "run_agent", _fake)
+
+    with pytest.raises(AgentExhaustedError):
+        execute(make_task(14, "Deploy the changes", repo="acme/demo"))
+
+
+def test_deploy_exhaustion_cut_inside_expected_text_never_smoke_checks_a_prefix(tmp_path, monkeypatch, capsys):
+    """Presence is not integrity. `expected_text` cut from "Horizon board — 12
+    items" down to "Horizon" is present AND non-blank, so a presence-only check
+    accepts the salvage — and then run_smoke_check passes on a PREFIX of the
+    assertion the DevOps agent meant to make, which is the deploy gate quietly
+    getting weaker. It must stay a retryable exhaustion, and the smoke check
+    must never run at all."""
+    monkeypatch.setattr(agent_runner, "STATE_DIR", tmp_path)
+    smoke_calls = []
+    monkeypatch.setattr(
+        step_agent,
+        "run_smoke_check",
+        lambda url, expected: smoke_calls.append((url, expected)) or ("pass", "SMOKE_RESULT=pass"),
+    )
+
+    def _fake(prompt, **kwargs):
+        raise AgentExhaustedError(
+            "error_max_turns",
+            partial_text=(
+                '{"summary": "deployed", "url": "https://shoreward.ai/horizon/", "expected_text": "Horizon'
+            ),
+            session_id="s",
+        )
+
+    monkeypatch.setattr(step_agent, "run_agent", _fake)
+
+    with pytest.raises(AgentExhaustedError):
+        execute(make_task(14, "Deploy the changes", repo="acme/demo"))
+
+    assert smoke_calls == [], "the deploy gate ran against a truncated expected_text"
+    assert "cut off inside expected_text" in capsys.readouterr().out
+    assert '"path": "salvage_refused_truncated_value"' in (tmp_path / "repair-stats.ndjson").read_text()
+
+
+def test_review_exhaustion_cut_inside_the_findings_array_is_not_salvaged(tmp_path, monkeypatch, capsys):
+    """Same shape on the review gate: a findings array the budget cut mid-write
+    closes to whichever findings happened to fit. Reading that as the complete
+    set is the gate loosening the guard exists to prevent."""
+    monkeypatch.setattr(agent_runner, "STATE_DIR", tmp_path)
+    ws, _origin = make_git_workspace(tmp_path)
+    git(ws, "push", "-u", "origin", "HEAD:horizon/t-1")
+    monkeypatch.setattr(step_agent, "ensure_item_worktree", lambda repo, item_id: ws)
+
+    def _fake(prompt, **kwargs):
+        raise AgentExhaustedError(
+            "error_max_turns",
+            partial_text='{"verdict": "fail", "findings": [{"detail": "the first of several"}',
+            session_id="s",
+        )
+
+    monkeypatch.setattr(step_agent, "run_agent", _fake)
+
+    with pytest.raises(AgentExhaustedError):
+        execute(make_task(12, "Automated review (code + QA)", repo="acme/demo"))
+
+    assert "cut off inside findings" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize(
+    "partial",
+    [
+        "{",  # closes to {} — parses, but execute() then raises on the missing summary
+        '{"summary": "',  # closes to {"summary": ""} — present but blank
+        '{"artifact_md": "## Plan\\nstill writing',  # parses, carries no summary at all
+    ],
+)
+def test_a_planner_salvage_execute_would_reject_never_costs_the_turn_cap_retry(tmp_path, monkeypatch, partial):
+    """A planning step gates nothing, but execute() still raises a plain
+    AgentError on a missing/blank summary — and a plain AgentError carries no
+    reason="turn_cap", so main() reports no reason and the orchestrator pauses
+    for a human. Accepting a salvage the caller's own validation then rejects is
+    therefore strictly worse than not salvaging: the original
+    AgentExhaustedError must survive."""
+    monkeypatch.setattr(agent_runner, "STATE_DIR", tmp_path)
+
+    def _fake(prompt, **kwargs):
+        raise AgentExhaustedError("error_max_turns", partial_text=partial, session_id="s")
+
+    monkeypatch.setattr(step_agent, "run_agent", _fake)
+
+    with pytest.raises(AgentExhaustedError):
+        execute(make_task(7, "Architecture review"))
+
+
+def test_a_planner_summary_cut_mid_sentence_is_still_salvaged(tmp_path, monkeypatch):
+    """The line the refusals above must not cross: a summary cut mid-sentence is
+    a fragment, and salvaging it is exactly the 26-minutes-of-work save this
+    item exists for. It gates nothing — it just may not be silent."""
+    monkeypatch.setattr(agent_runner, "STATE_DIR", tmp_path)
+
+    def _fake(prompt, **kwargs):
+        raise AgentExhaustedError(
+            "error_max_turns",
+            partial_text='{"summary": "mapped both call sites and started on the', session_id="s",
+        )
+
+    monkeypatch.setattr(step_agent, "run_agent", _fake)
+
+    result = execute(make_task(7, "Architecture review"))
+
+    assert result["summary"].startswith("mapped both call sites")
+    assert "cut off part-way through the 'summary' field" in result["artifacts"]["artifact_md"]
+
+
+def test_implement_exhaustion_never_writes_a_handoff_note(tmp_path, monkeypatch):
+    """Guardrail 10: implement's on_exhaustion="reraise" skips salvage AND
+    handoff entirely — HZ-31's checkpoint commit is its only recovery path."""
+    monkeypatch.setattr(agent_runner, "STATE_DIR", tmp_path)
+    ws, _origin = make_git_workspace(tmp_path)
+    monkeypatch.setattr(step_agent, "ensure_item_worktree", lambda repo, item_id: ws)
+
+    calls = []
+
+    def _fake(prompt, **kwargs):
+        calls.append(kwargs)
+        (ws / "fake_implementation.txt").write_text("partial work\n")
+        raise AgentExhaustedError(
+            'claude reported an error result [error_max_turns]: {"summary": "cut off mid',
+            partial_text='{"summary": "cut off mid',  # would otherwise salvage cleanly
+            session_id="sess-1",
+        )
+
+    monkeypatch.setattr(step_agent, "run_agent", _fake)
+
+    task = make_task(11, "Specialist agent implements", repo="acme/demo")
+    with pytest.raises(AgentExhaustedError):
+        execute(task)
+
+    assert len(calls) == 1  # no handoff call — reraise skips it entirely
+    assert read_and_clear_handoff_note("T-1", 11) is None

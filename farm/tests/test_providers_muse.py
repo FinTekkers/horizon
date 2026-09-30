@@ -134,6 +134,38 @@ def test_run_times_out_raises_agent_exhausted_error(monkeypatch):
         muse.run("hang forever", timeout_s=5)
 
 
+def test_run_timeout_carries_partial_text_and_the_caller_supplied_session_id(monkeypatch):
+    """HZ-124 metric 8, Muse timeout half: session_id is always known here
+    (caller-minted up front, unlike Claude's server-issued id) even though
+    the text is only best-effort."""
+
+    def fake_run(cmd, **kwargs):
+        raise subprocess.TimeoutExpired(cmd=cmd, timeout=kwargs.get("timeout"), output="partial jsonl before kill")
+
+    monkeypatch.setattr(muse.subprocess, "run", fake_run)
+    with pytest.raises(AgentExhaustedError) as exc_info:
+        muse.run("hang forever", session_id="fixed-session", timeout_s=5)
+    assert exc_info.value.partial_text == "partial jsonl before kill"
+    assert exc_info.value.session_id == "fixed-session"
+
+
+def test_run_timeout_decodes_the_raw_bytes_posix_hands_back(monkeypatch):
+    """subprocess.TimeoutExpired.stdout is raw BYTES even though muse.run()
+    passes text=True — on POSIX the timeout is raised from inside
+    Popen._communicate's read loop, before the decode. partial_text must still
+    reach callers as str: the repair ladder and _salvage_truncated_json are
+    str-only, and a bytes value there turns an auto-retryable exhaustion into
+    an unclassified TypeError."""
+
+    def fake_run(cmd, **kwargs):
+        raise subprocess.TimeoutExpired(cmd=cmd, timeout=kwargs.get("timeout"), output=b'{"text": "half a repl')
+
+    monkeypatch.setattr(muse.subprocess, "run", fake_run)
+    with pytest.raises(AgentExhaustedError) as exc_info:
+        muse.run("hang forever", session_id="fixed-session", timeout_s=5)
+    assert exc_info.value.partial_text == '{"text": "half a repl'
+
+
 def test_run_no_terminal_event_and_nonzero_exit_raises_agent_error(monkeypatch):
     def fake_run(cmd, **kwargs):
         return _completed(stdout="", returncode=1, stderr="boom")
@@ -158,6 +190,27 @@ def test_run_exhaustion_event_raises_agent_exhausted_error(monkeypatch):
     monkeypatch.setattr(muse.subprocess, "run", fake_run)
     with pytest.raises(AgentExhaustedError, match="exhaust"):
         muse.run("hello")
+
+
+def test_run_exhaustion_event_carries_partial_text_from_the_last_event_with_text(monkeypatch):
+    """HZ-124 metric 8, Muse exhaustion half: best-effort partial text is
+    the LAST event carrying a payload.text string before exhaustion was
+    reported, not just the exhaustion event itself (which typically has
+    none)."""
+
+    def fake_run(cmd, **kwargs):
+        lines = [
+            json.dumps({"payload_type": "runtime.command.accepted", "payload": {"text": "starting up"}}),
+            json.dumps({"payload_type": "runtime.step.progress", "payload": {"text": "getting close..."}}),
+            json.dumps({"payload_type": "run.terminal.exhausted", "payload": {}}),
+        ]
+        return _completed(stdout="\n".join(lines))
+
+    monkeypatch.setattr(muse.subprocess, "run", fake_run)
+    with pytest.raises(AgentExhaustedError) as exc_info:
+        muse.run("hello", session_id="fixed-session")
+    assert exc_info.value.partial_text == "getting close..."
+    assert exc_info.value.session_id == "fixed-session"
 
 
 def test_binary_not_found_raises_agent_error(monkeypatch):

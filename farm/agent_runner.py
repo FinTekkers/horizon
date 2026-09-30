@@ -9,12 +9,22 @@ only to run_agent(); none of them know or care which provider actually ran.
 
 import json
 import os
+from pathlib import Path
 
-from .config import FARM_PROVIDER, MAX_TURNS, STEP_TIMEOUT_S
+from .config import FARM_PROVIDER, MAX_TURNS, STATE_DIR, STEP_TIMEOUT_S
 from .providers import claude, muse
 from .providers.base import AgentError, AgentExhaustedError
 
-__all__ = ["AgentError", "AgentExhaustedError", "assert_provider_auth", "run_agent", "extract_json"]
+__all__ = [
+    "AgentError",
+    "AgentExhaustedError",
+    "assert_provider_auth",
+    "run_agent",
+    "extract_json",
+    "parse_agent_reply",
+    "read_and_clear_handoff_note",
+    "repair_stats_path",
+]
 
 _PROVIDERS = {"claude": claude, "muse": muse}
 
@@ -100,16 +110,27 @@ def run_agent(
             f"provider '{name}' does not support resuming a session (SUPPORTS_RESUME=False) — "
             "refusing this call rather than silently starting fresh"
         )
-    result = provider_module.run(
-        prompt,
-        session_id=session_id,
-        append_system=append_system,
-        cwd=cwd,
-        model=model,
-        max_turns=max_turns,
-        timeout_s=timeout_s,
-        allowed_tools=allowed_tools,
-    )
+    try:
+        result = provider_module.run(
+            prompt,
+            session_id=session_id,
+            append_system=append_system,
+            cwd=cwd,
+            model=model,
+            max_turns=max_turns,
+            timeout_s=timeout_s,
+            allowed_tools=allowed_tools,
+        )
+    except AgentExhaustedError as exc:
+        # HZ-124: an exhausted run can still be salvaged into a completed step
+        # (parse_agent_reply -> _salvage_truncated_json), and that step must
+        # record the same HZ-102 provenance a non-exhausted one would. Stamped
+        # at the same single chokepoint that stamps it on success, so no
+        # provider has to remember to do it; a provider that already knows its
+        # own name wins over the dispatch name, never the reverse.
+        if exc.provider is None:
+            exc.provider = name
+        raise
     # Provenance (HZ-102): which provider actually ran, plus its run-level
     # id where one exists (Muse's command_id; Claude has no equivalent).
     result["provider"] = name
@@ -118,20 +139,784 @@ def run_agent(
 
 
 def extract_json(text: str) -> dict:
-    """Lift a JSON object out of a model reply (tolerates fences/prose)."""
-    cleaned = text.strip()
+    """Lift a JSON object out of a model reply (tolerates fences/prose).
+
+    HZ-124: the public contract (text in, dict out, raises AgentError) is
+    unchanged — this is now a thin wrapper over _extract_json_with_notes(),
+    which is where the repair ladder actually lives, so extending the ladder
+    never means rewriting this function.
+    """
+    parsed, _notes = _extract_json_with_notes(text)
+    return parsed
+
+
+def _strip_fences(cleaned: str) -> str:
     if cleaned.startswith("```"):
         cleaned = cleaned.strip("`")
         if cleaned.startswith("json"):
             cleaned = cleaned[4:]
+        cleaned = cleaned.strip()
+    return cleaned
+
+
+def _first_balanced_object(s: str) -> str | None:
+    """Returns the FIRST complete top-level `{...}` object in s (metric 3:
+    `{"s":"first"} prose {"s":"second"}` must return the first one), or None
+    if the first `{` never reaches a matching `}` (a genuinely truncated or
+    absent object — extract_json must still raise for that, never fabricate).
+
+    Quote/escape-aware so a `}`/`{` inside a string literal never miscounts
+    depth — but it only recognizes double-quoted strings, which is why this
+    runs BEFORE the single-quote repair, not after: it has to see the raw
+    reply exactly as the model wrote it.
+    """
+    start = s.find("{")
+    if start == -1:
+        return None
+    depth = 0
+    in_string = False
+    escape = False
+    for i in range(start, len(s)):
+        ch = s[i]
+        if in_string:
+            if escape:
+                escape = False
+            elif ch == "\\":
+                escape = True
+            elif ch == '"':
+                in_string = False
+            continue
+        if ch == '"':
+            in_string = True
+        elif ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                return s[start : i + 1]
+    return None
+
+
+_MAX_DISCARD_SCAN = 20
+
+
+def _discarded_objects_after_the_first(cleaned: str, candidate: str) -> int:
+    """How many FURTHER parseable JSON objects sit after the one
+    _first_balanced_object() took.
+
+    Taking the first of several objects (metric 3) is the one rung of the
+    ladder that throws away a whole object the model wrote — more of its
+    output than any trailing-comma or quote fix alters — and before this it
+    did so with no note at all. Guardrail: nothing that discards the model's
+    bytes may be silent, so the count is turned into a note by the caller.
+
+    Deliberately conservative about what counts as "an object": prose can
+    contain balanced braces (`use {braces} carefully`) that are not JSON, and
+    reporting those as discarded replies would be a false alarm on exactly the
+    prose-tolerant input this ladder exists to accept. Scanning stops at the
+    first balanced chunk that does not parse, and is capped at
+    _MAX_DISCARD_SCAN so a pathological reply can't spin here.
+    """
+    start = cleaned.find("{")
+    if start == -1:
+        return 0
+    remainder = cleaned[start + len(candidate) :]
+    count = 0
+    while count < _MAX_DISCARD_SCAN:
+        nxt = _first_balanced_object(remainder)
+        if nxt is None:
+            break
+        try:
+            json.loads(nxt, strict=False)
+        except json.JSONDecodeError:
+            break
+        count += 1
+        remainder = remainder[remainder.find("{") + len(nxt) :]
+    return count
+
+
+def _discard_note(count: int) -> list[str]:
+    if count <= 0:
+        return []
+    plural = "object" if count == 1 else "objects"
+    return [f"used only the first JSON object in the reply — discarded {count} further {plural} after it"]
+
+
+def _strip_trailing_commas(s: str) -> str:
+    """`{"a":1,}` -> `{"a":1}` (metric 1). A deterministic byte-level fix —
+    never chooses between two readings, so it needs no lossless-retry gate.
+
+    String-aware, and it has to be: a plain `,(\\s*[}\\]])` regex also matches
+    INSIDE a string value, so a reply like
+    `{"summary": "fixed the list, ] typo", "ok": true,}` would parse after the
+    substitution while silently having lost a comma from the model's own
+    prose — with a note claiming only a trailing comma was stripped. Content
+    inside a string literal is copied through byte-for-byte here; only
+    structural commas (ones whose next non-space character closes an object or
+    array) are dropped.
+    """
+    out: list[str] = []
+    in_string = False
+    escape = False
+    i, n = 0, len(s)
+    while i < n:
+        ch = s[i]
+        if in_string:
+            out.append(ch)
+            if escape:
+                escape = False
+            elif ch == "\\":
+                escape = True
+            elif ch == '"':
+                in_string = False
+        elif ch == '"':
+            in_string = True
+            out.append(ch)
+        elif ch == ",":
+            j = i + 1
+            while j < n and s[j].isspace():
+                j += 1
+            if j < n and s[j] in "}]":
+                i += 1
+                continue  # structural trailing comma — drop it
+            out.append(ch)
+        else:
+            out.append(ch)
+        i += 1
+    return "".join(out)
+
+
+def _single_to_double_quotes(s: str) -> str:
+    """`{'a':1}` -> `{"a":1}` (metric 2). Deliberately naive: a global
+    replace scoped to exactly the metric's shape, with no attempt at
+    disambiguating a double-quoted JSON string that happens to contain a
+    literal apostrophe — only a result that actually parses is ever
+    returned by the caller, so a bad naive rewrite is just discarded, never
+    surfaced."""
+    return s.replace("'", '"')
+
+
+# ndjson counter (metric 15): one line per repair/retry/salvage/handoff
+# firing, keyed by a short path name. Append-only — single-line appends are
+# POSIX-atomic under PIPE_BUF, so concurrent step-agent processes never need
+# a lock, mirroring this codebase's existing pm-session-*.txt convention.
+
+
+def repair_stats_path() -> Path:
+    """Read STATE_DIR at call time, not import time — a module-level
+    constant here would be frozen at import and ignore a later
+    monkeypatch.setattr(agent_runner, "STATE_DIR", ...) (or a runtime
+    FARM_HOME change), same reasoning as _handoff_note_path()."""
+    return STATE_DIR / "repair-stats.ndjson"
+
+
+def _record_repair(path: str) -> None:
     try:
-        # strict=False: models occasionally emit raw control characters
-        # (literal newlines/tabs) inside JSON strings — meaningful content
-        # that the strict parser rejects, failing an otherwise-good step.
-        return json.loads(cleaned, strict=False)
+        stats_path = repair_stats_path()
+        stats_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(stats_path, "a") as f:
+            f.write(json.dumps({"path": path}) + "\n")
+    except OSError:
+        pass  # telemetry is best-effort; never fail a run over a stats write
+
+
+def _extract_json_with_notes(text: str) -> tuple[dict, list[str]]:
+    """The private helper extract_json() delegates to (HZ-124) — this is
+    where the repair ladder actually lives, so extending it never means
+    touching extract_json()'s own signature or contract (guardrail: extend,
+    don't rewrite).
+
+    Returns (parsed, notes) — notes is empty unless bytes were actually
+    altered to make the reply parse (guardrail: no repair note for reads
+    that pass through unmodified).
+    """
+    cleaned = _strip_fences(text.strip())
+
+    # Fast path: strict=False parse of the WHOLE cleaned string, unchanged
+    # from pre-HZ-124 behaviour — covers a fence-stripped reply, a reply with
+    # a literal control character inside a JSON string, and (trivially) a
+    # reply that's already valid, all with zero repair notes.
+    try:
+        return json.loads(cleaned, strict=False), []
     except json.JSONDecodeError:
         pass
-    start, end = cleaned.find("{"), cleaned.rfind("}")
-    if start == -1 or end <= start:
+
+    candidate = _first_balanced_object(cleaned)
+    if candidate is None:
         raise AgentError(f"no JSON object in agent reply: {text[:200]}")
-    return json.loads(cleaned[start : end + 1], strict=False)
+
+    # Disclosure for the one rung that drops a whole object rather than
+    # altering one (metric 3 takes the FIRST of several). Computed once here so
+    # it rides along whichever rung below ends up succeeding — but only
+    # COUNTED on a rung that actually returns. A reply whose first object
+    # never parses is a raise, not a repair, and counting a discard there
+    # would inflate the totals with drops that never took effect.
+    discarded = _discard_note(_discarded_objects_after_the_first(cleaned, candidate))
+
+    # As-is (handles prose-wrapped-and-otherwise-valid, and first-of-two).
+    try:
+        parsed = json.loads(candidate, strict=False)
+    except json.JSONDecodeError:
+        pass
+    else:
+        for note in discarded:
+            _record_repair(note)
+        return parsed, discarded
+
+    comma_fixed = _strip_trailing_commas(candidate)
+    quote_fixed = _single_to_double_quotes(candidate)
+    both_fixed = _single_to_double_quotes(comma_fixed)
+
+    variants = []
+    if comma_fixed != candidate:
+        variants.append((comma_fixed, ["stripped a trailing comma"]))
+    if quote_fixed != candidate:
+        variants.append((quote_fixed, ["converted single quotes to double quotes"]))
+    if both_fixed != candidate and both_fixed not in (comma_fixed, quote_fixed):
+        notes = []
+        if comma_fixed != candidate:
+            notes.append("stripped a trailing comma")
+        if both_fixed != comma_fixed:
+            notes.append("converted single quotes to double quotes")
+        variants.append((both_fixed, notes))
+
+    for variant_text, notes in variants:
+        try:
+            parsed = json.loads(variant_text, strict=False)
+        except json.JSONDecodeError:
+            continue
+        for note in discarded + notes:
+            _record_repair(note)
+        return parsed, discarded + notes
+
+    # Nothing repaired it — raising here (never fabricating plausible
+    # content) is the correct outcome for e.g. an unescaped inner quote,
+    # which is genuinely ambiguous and must go through the lossless retry in
+    # parse_agent_reply() instead, never a heuristic guess.
+    raise AgentError(f"no JSON object in agent reply: {text[:200]}")
+
+
+_SALVAGE_NOTE = "salvaged a reply truncated mid-string/object at the point of turn-budget exhaustion"
+
+# A trailing bare token that JSON can only read one way, so seeing it whole
+# means it IS whole. A number is the opposite: `12` is indistinguishable from a
+# `123` the budget cut in half, which is why numbers are not on this list.
+_COMPLETE_TRAILING_LITERALS = ("true", "false", "null")
+
+
+def _cut_field_note(key: str) -> str:
+    return (
+        f"the reply was cut off part-way through the '{key}' field — that value is the fragment "
+        "the model had written when its budget ran out, not a finished value"
+    )
+
+
+def _salvage_truncated_json(text: str) -> tuple[dict, list[str], frozenset[str]] | None:
+    """Exhaustion-only (metric 9): if `text` is valid JSON except cut off
+    mid-string or mid-object (an open brace/bracket or an unterminated quote
+    still pending at EOF), close the minimum needed and re-parse. Returns
+    None — never a fabricated guess — if nothing was actually open at EOF (a
+    genuinely different failure, not exhaustion truncation) or if none of the
+    ladder rungs below produce something that parses.
+
+    Three rungs, each strictly a subset of the bytes the model actually wrote
+    — nothing here invents a field or a value:
+
+      1. close what's open:            `{"a":1`        -> `{"a":1}`
+      2. + drop a structural trailing comma, because closing a reply cut off
+         right after one leaves `{"a":1,}`, which is the single most common
+         truncation shape and does not parse on rung 1.
+      3. + drop the incomplete trailing member, for a cut mid-key or after a
+         colon (`{"a":1,"b":` / `{"a":1,"b`), where no amount of closing
+         punctuation makes the fragment legal.
+
+    Rung 3 loses a field the model had started writing, which is exactly why
+    every caller that feeds a GATE passes require_keys to parse_agent_reply():
+    a verdict salvaged without its findings must not be read as approval.
+
+    Returns (parsed, notes, damaged_keys). damaged_keys names the top-level
+    field, if any, whose value was terminated by the patch above rather than by
+    the model — it PARSES, but it is a fragment. The caller decides what that
+    costs: prose can be salvaged as a fragment (with a note saying so), a field
+    a gate reads cannot (see parse_agent_reply's salvage_intact_keys).
+    """
+    cleaned = _strip_fences(text.strip())
+    start = cleaned.find("{")
+    if start == -1:
+        return None
+    body = cleaned[start:]
+
+    stack: list[str] = []
+    in_string = False
+    escape = False
+    root_member_commas: list[int] = []
+    for i, ch in enumerate(body):
+        if in_string:
+            if escape:
+                escape = False
+            elif ch == "\\":
+                escape = True
+            elif ch == '"':
+                in_string = False
+            continue
+        if ch == '"':
+            in_string = True
+        elif ch in "{[":
+            stack.append(ch)
+        elif ch in "}]":
+            if stack:
+                stack.pop()
+        elif ch == "," and stack == ["{"]:
+            root_member_commas.append(i)
+
+    if not in_string and not stack:
+        return None  # nothing left open — not a truncation this can fix
+
+    closers = {"{": "}", "[": "]"}
+    patch = ('"' if in_string else "") + "".join(closers[c] for c in reversed(stack))
+    closed = body + patch
+
+    # Did the budget land in the MIDDLE of a member's value, so that the patch
+    # above — not the model — is what terminated it? An unterminated string or
+    # an unclosed nested container says so outright; otherwise the last
+    # significant byte does. A value the model itself closed (`"`, `}`, `]`), a
+    # clean boundary (`,`, `{`, `[`, `:`) and a whole bare literal are all
+    # intact; a trailing number is not verifiable and counts as cut.
+    tail = body.rstrip()
+    if in_string or len(stack) > 1:
+        cut_mid_value = True
+    elif tail.endswith(('"', "}", "]", ",", "{", "[", ":")) or tail.endswith(_COMPLETE_TRAILING_LITERALS):
+        cut_mid_value = False
+    else:
+        cut_mid_value = True
+
+    candidates: list[tuple[str, list[str], bool]] = [
+        (closed, [_SALVAGE_NOTE], cut_mid_value),
+        (_strip_trailing_commas(closed), [_SALVAGE_NOTE, "stripped a trailing comma"], cut_mid_value),
+    ]
+    if root_member_commas:
+        # Everything before the last top-level `,` is whole; the fragment
+        # after it is what the budget cut off mid-write. Re-close from there.
+        # Nothing this candidate KEEPS was patched, so no field is a fragment.
+        candidates.append(
+            (
+                body[: root_member_commas[-1]] + "}",
+                [_SALVAGE_NOTE, "dropped an incomplete trailing field the reply was cut off mid-way through"],
+                False,
+            )
+        )
+
+    seen: set[str] = set()
+    memberless = False
+    for candidate, notes, damages_last_member in candidates:
+        if candidate in seen:
+            continue
+        seen.add(candidate)
+        try:
+            parsed = json.loads(candidate, strict=False)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(parsed, dict) or not parsed:
+            # A memberless object carries nothing any caller can use: a partial
+            # reply of `{` — the likeliest capture when a budget runs out
+            # mid-JSON — closes to `{}`, which PARSES. Accepting it turns a
+            # retryable AgentExhaustedError into the caller's own plain
+            # AgentError ("reply missing 'summary'"), which carries no
+            # reason="turn_cap", so farmd forwards no reason and the item pauses
+            # for a human where before HZ-124 it auto-retried. Refusing keeps
+            # the original exception, which is strictly better than both.
+            memberless = memberless or isinstance(parsed, dict)
+            continue
+        # json.loads preserves insertion order, so the last key is the member
+        # that was being written when the budget ran out.
+        damaged = frozenset([list(parsed)[-1]]) if damages_last_member else frozenset()
+        _record_repair("salvaged_truncated_json")
+        return parsed, [*notes, *(_cut_field_note(key) for key in damaged)], damaged
+
+    if memberless:
+        # Counted and said out loud rather than dropped on the floor: this is the
+        # one give-up branch that looked like a success, and its rate is how an
+        # operator sees "budgets are running out before the reply even starts".
+        print(
+            "salvage: refused — the partial reply closes to an object with no fields at all, "
+            "which no caller can use; failing as a retryable exhaustion instead",
+            flush=True,
+        )
+        _record_repair("salvage_refused_memberless")
+    return None
+
+
+# ---- cross-attempt handoff note (metric 11) ----
+# A plain-text file under STATE_DIR, read once by the next attempt's
+# build_prompt() and deleted — mirrors pm_agent's existing pm-session-*.txt
+# convention. Deliberately a file, never a resumed session: see
+# docs/providers/claude-resume-after-exhaustion.md (metric 12) for why.
+
+
+def _handoff_note_path(item_id: str, step_index) -> Path:
+    return STATE_DIR / f"handoff-{item_id}-s{step_index}.txt"
+
+
+MAX_HANDOFF_NOTE_CHARS = 2000
+
+
+def _mark_truncated_note(text: str, limit: int = MAX_HANDOFF_NOTE_CHARS) -> str:
+    """A sanity ceiling on the handoff note, cut at a word boundary and said
+    so. The prompt already labels the note "unverified"; a note silently cut
+    mid-sentence would still read as a *complete* report of what the last
+    attempt finished, which is the one thing this item exists to prevent. Same
+    content-then-marker shape as pm_agent._mark_truncated (HZ-114)."""
+    if len(text) <= limit:
+        return text
+    cut = text[:limit]
+    last_space = cut.rfind(" ")
+    if last_space > 0:
+        cut = cut[:last_space]
+    omitted = len(text) - len(cut)
+    return f"{cut} […{omitted} chars omitted — the handoff note exceeded its {limit}-char ceiling; it is not a complete account of the attempt.]"
+
+
+def _write_handoff_note(item_id: str, step_index, text: str) -> None:
+    path = _handoff_note_path(item_id, step_index)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(_mark_truncated_note(text))
+
+
+def read_and_clear_handoff_note(item_id: str, step_index) -> str | None:
+    """Read-once: a stale note from a superseded/rejected attempt must never
+    leak into an unrelated later one, so this deletes what it reads."""
+    path = _handoff_note_path(item_id, step_index)
+    if not path.exists():
+        return None
+    text = path.read_text().strip()
+    path.unlink(missing_ok=True)
+    return text or None
+
+
+_HANDOFF_PROMPT = (
+    "You ran out of turn/time budget before finishing this step. In 3-5 sentences, "
+    "summarize what you had completed and what was still left to do, so the next "
+    "attempt can pick up where you left off. Do not use any tools and do not make "
+    "further edits — just answer with the summary, in plain text."
+)
+
+
+def _fire_handoff(exc: AgentExhaustedError, *, run_agent_fn, run_kwargs: dict, item_id: str, step_index) -> None:
+    """Exactly one extra model call, resuming the exhausted session, asking
+    for an unverified progress summary — never retried itself (guardrail: no
+    loop, no retry of the handoff call). A failure here (including the
+    handoff call exhausting too) is contained: worst case is no note this
+    time, identical to pre-HZ-124 total-loss behaviour, never worse.
+
+    The except clause is deliberately broad. Anything this best-effort extra
+    call raises that isn't an AgentError — a TypeError from a provider shim, an
+    httpx/OSError from the transport — would otherwise escape
+    _handle_exhaustion() BEFORE its `raise exc`, destroying the original
+    AgentExhaustedError. That loses the reason="turn_cap" tagging in
+    pm_agent.process()/step_agent.main(), so the item pauses for a human
+    instead of auto-retrying — the exact failure this item exists to remove.
+    Contained, not silent: the giving-up reason is printed and counted.
+    """
+    step_max_turns = run_kwargs.get("max_turns", MAX_TURNS)
+    # STRICTLY below the step's own budget — no max(1, ...) floor. A step
+    # running on a budget of 1 has no room underneath it, and clamping up to 1
+    # would make the handoff call as expensive as the step it is reporting on.
+    # Skipping is the correct outcome there: the worst case is no note, which
+    # is exactly pre-HZ-124 behaviour, never worse.
+    handoff_max_turns = min(3, step_max_turns - 1)
+    if handoff_max_turns < 1:
+        print(
+            f"handoff note: skipped — the step's own budget is {step_max_turns} turn(s), "
+            "leaving no room for a handoff call strictly below it",
+            flush=True,
+        )
+        _record_repair("handoff_skipped_no_budget")
+        return
+    handoff_timeout_s = min(120, run_kwargs.get("timeout_s", STEP_TIMEOUT_S))
+    try:
+        reply = run_agent_fn(
+            _HANDOFF_PROMPT,
+            session_id=exc.session_id,
+            append_system=run_kwargs.get("append_system"),
+            cwd=run_kwargs.get("cwd"),
+            model=run_kwargs.get("model"),
+            max_turns=handoff_max_turns,
+            timeout_s=handoff_timeout_s,
+            allowed_tools=None,
+            provider=run_kwargs.get("provider"),
+            provider_locked=run_kwargs.get("provider_locked", False),
+        )
+    except Exception as handoff_exc:  # noqa: BLE001 — see docstring: the original exhaustion must survive
+        print(
+            f"handoff note: giving up, the handoff call failed "
+            f"({type(handoff_exc).__name__}: {str(handoff_exc)[:200]})",
+            flush=True,
+        )
+        _record_repair("handoff_failed")
+        return
+
+    try:
+        text = str(reply.get("result", "")).strip() if isinstance(reply, dict) else ""
+        if not text:
+            return
+        _write_handoff_note(item_id, step_index, text)
+    except OSError as write_exc:
+        # Same containment rule as above: an unwritable STATE_DIR must cost the
+        # note, never the original AgentExhaustedError's turn_cap retry.
+        print(f"handoff note: could not be written ({write_exc})", flush=True)
+        _record_repair("handoff_failed")
+        return
+    _record_repair("handoff_fired")
+
+
+def _salvaged_value_is_usable(parsed: dict, key: str) -> bool:
+    """Presence alone is not enough for a required key. `{"summary":"` closes
+    to `{"summary": ""}` — the key is there and the object parses, but every
+    caller's own validation then rejects the blank value with a plain
+    AgentError, which carries no reason="turn_cap" and so pauses the item for a
+    human instead of auto-retrying. A key whose salvaged value is unusable is
+    treated exactly like a missing one."""
+    if key not in parsed:
+        return False
+    value = parsed[key]
+    if value is None:
+        return False
+    if isinstance(value, str) and not value.strip():
+        return False
+    return True
+
+
+def _handle_exhaustion(
+    exc: AgentExhaustedError,
+    *,
+    run_agent_fn,
+    run_kwargs: dict,
+    on_exhaustion: str,
+    handoff_item_id: str | None,
+    handoff_step_index,
+    salvage_required_keys: tuple[str, ...] = (),
+    salvage_intact_keys: tuple[str, ...] = (),
+) -> tuple[dict, dict, list[str]]:
+    if on_exhaustion == "reraise":
+        raise exc
+
+    # Same containment rule as _fire_handoff(): nothing on the best-effort
+    # salvage path may replace the original AgentExhaustedError with an
+    # exception of its own — that would strip the reason="turn_cap" tagging the
+    # orchestrator needs to auto-retry. A provider handing us a partial_text
+    # that isn't a str (bytes, None-ish shim) fails here, not upstream.
+    try:
+        salvaged = _salvage_truncated_json(exc.partial_text or "")
+    except Exception as salvage_exc:  # noqa: BLE001 — see comment above
+        print(
+            f"salvage: giving up on the partial reply "
+            f"({type(salvage_exc).__name__}: {str(salvage_exc)[:200]})",
+            flush=True,
+        )
+        _record_repair("salvage_failed")
+        salvaged = None
+
+    if salvaged is not None:
+        parsed, notes, damaged = salvaged
+        # Gate safety (guardrail: do not change any gate). A salvaged reply is
+        # by definition an incomplete one, and the caller's downstream shaping
+        # is fail-CLOSED only for fields it can see — step_agent's
+        # _code_review_section reads a missing "findings" as [], so a reply
+        # truncated one byte after `"verdict": "pass"` would salvage into a
+        # clean PASS with no findings and walk straight through the review
+        # gate, where before this item it failed as turn_cap and auto-retried.
+        # A gate-bearing caller names the keys that must be present for the
+        # salvage to mean anything; missing any of them, the salvage is
+        # refused and the run goes back to being a retryable exhaustion.
+        #
+        # Two rungs, because "the key is there" and "the value is trustworthy"
+        # are different questions:
+        #   salvage_required_keys — present with a usable (non-blank) value.
+        #     Every caller names the keys its OWN downstream validation raises
+        #     on, so that validation never fires: a plain AgentError there loses
+        #     the reason="turn_cap" that would have auto-retried the run.
+        #   salvage_intact_keys — required, AND not the field the truncation
+        #     landed in. A fragment is fine for prose and never fine for a gate:
+        #     an expected_text cut from "Horizon board — 12 items" to "Horizon"
+        #     still parses and still matches, so run_smoke_check would pass on a
+        #     prefix of what the model meant to assert.
+        needed = (*salvage_required_keys, *salvage_intact_keys)
+        unusable = [key for key in needed if not _salvaged_value_is_usable(parsed, key)]
+        cut = [key for key in salvage_intact_keys if key in damaged]
+        if unusable:
+            print(
+                "salvage: refused — the partial reply parses but is missing or blank at "
+                f"{', '.join(unusable)}, which this step needs; failing as a retryable exhaustion instead",
+                flush=True,
+            )
+            _record_repair("salvage_refused_incomplete")
+        elif cut:
+            print(
+                f"salvage: refused — the reply was cut off inside {', '.join(cut)}, so that value is a "
+                "fragment this step's gate must not read as complete; failing as a retryable exhaustion instead",
+                flush=True,
+            )
+            _record_repair("salvage_refused_truncated_value")
+        else:
+            reply_meta = {
+                # HZ-102 provenance survives salvage: which provider actually
+                # produced these bytes is recorded the same as on the success
+                # path, rather than being written away as NULL.
+                "provider": exc.provider,
+                "command_id": exc.command_id,
+                "session_id": exc.session_id,
+            }
+            return parsed, reply_meta, notes
+
+    if handoff_item_id is not None and handoff_step_index is not None and exc.session_id:
+        _fire_handoff(exc, run_agent_fn=run_agent_fn, run_kwargs=run_kwargs, item_id=handoff_item_id, step_index=handoff_step_index)
+
+    # Salvage failed (or wasn't attempted): this attempt still fails and is
+    # still retryable as turn_cap — the handoff (if any) only enriches the
+    # NEXT attempt's prompt, it never turns this one into a success.
+    raise exc
+
+
+def parse_agent_reply(
+    prompt: str,
+    *,
+    run_agent_fn=None,
+    session_id: str | None = None,
+    append_system: str | None = None,
+    cwd: str | None = None,
+    model: str | None = None,
+    max_turns: int = MAX_TURNS,
+    timeout_s: int = STEP_TIMEOUT_S,
+    allowed_tools: str | None = None,
+    provider: str | None = None,
+    provider_locked: bool = False,
+    retry_on_failure: bool = True,
+    on_exhaustion: str = "salvage_or_handoff",
+    handoff_item_id: str | None = None,
+    handoff_step_index=None,
+    salvage_required_keys: tuple[str, ...] = (),
+    salvage_intact_keys: tuple[str, ...] = (),
+) -> tuple[dict | None, dict, list[str]]:
+    """The one shared run_agent + extract_json + retry/repair/salvage/handoff
+    helper (metric 14) — farm/pm_agent.py and farm/step_agent.py must both
+    call this rather than parsing a reply themselves.
+
+    run_agent_fn defaults to this module's own run_agent, but callers should
+    pass their OWN module-level `run_agent` reference (the one their test
+    suite monkeypatches) so existing `monkeypatch.setattr(step_agent,
+    "run_agent", ...)`-style tests keep faking calls made through this
+    helper, without this module reaching back into the caller's namespace.
+
+    retry_on_failure=False (the implement step only) returns (None,
+    reply_meta, []) instead of raising on a parse failure — implement
+    tolerates a malformed final summary (HZ-29): the code in the workspace is
+    the deliverable, not the message.
+
+    on_exhaustion="reraise" (the implement step only) skips salvage/handoff
+    entirely and re-raises AgentExhaustedError unchanged, so HZ-31's
+    checkpoint-salvage scope is untouched (guardrail).
+
+    salvage_required_keys names the fields THIS caller's own validation raises
+    on (e.g. "summary"). A salvage missing one, or carrying a blank one, is
+    refused so the run stays a retryable exhaustion — a plain AgentError from
+    the caller's validation instead would strip the reason="turn_cap" the
+    orchestrator auto-retries on, pausing the item for a human where before
+    HZ-124 it retried itself.
+
+    salvage_intact_keys is the stricter form, for a GATE-bearing caller (review,
+    deploy): required as above, and additionally refused if the truncation
+    landed inside that field's value. A fragment that parses is still a
+    fragment — a truncated expected_text would let run_smoke_check pass on a
+    prefix, and a truncated findings array would clear the review gate with
+    findings the model never finished writing.
+
+    Omit both and salvage accepts any non-empty parseable object, which is
+    correct only for a caller that reads every field defensively.
+
+    Returns (parsed_or_None, reply_meta, notes) where reply_meta is
+    {"provider", "command_id", "session_id"} and notes lists every repair
+    that altered bytes to produce `parsed` (guardrail: callers must surface
+    these in both the run log and the artifact).
+    """
+    run_agent_fn = run_agent_fn or run_agent
+    run_kwargs = dict(
+        append_system=append_system,
+        cwd=cwd,
+        model=model,
+        max_turns=max_turns,
+        timeout_s=timeout_s,
+        allowed_tools=allowed_tools,
+        provider=provider,
+        provider_locked=provider_locked,
+    )
+
+    try:
+        reply = run_agent_fn(prompt, session_id=session_id, **run_kwargs)
+    except AgentExhaustedError as exc:
+        return _handle_exhaustion(
+            exc,
+            run_agent_fn=run_agent_fn,
+            run_kwargs=run_kwargs,
+            on_exhaustion=on_exhaustion,
+            handoff_item_id=handoff_item_id,
+            handoff_step_index=handoff_step_index,
+            salvage_required_keys=salvage_required_keys,
+            salvage_intact_keys=salvage_intact_keys,
+        )
+
+    reply_meta = {
+        "provider": reply.get("provider"),
+        "command_id": reply.get("command_id"),
+        "session_id": reply.get("session_id"),
+    }
+
+    try:
+        parsed, notes = _extract_json_with_notes(reply["result"])
+        return parsed, reply_meta, notes
+    except (AgentError, json.JSONDecodeError) as exc:
+        if not retry_on_failure:
+            return None, reply_meta, []
+
+        # The lossless retry (metric 5/guardrail 1): re-ask the model for
+        # valid JSON before any repair that could pick between readings —
+        # by construction, since no such heuristic repair exists above, this
+        # is the ONLY recovery path for a genuinely ambiguous reply (e.g. an
+        # unescaped inner quote).
+        #
+        # Counted like every other rung of the ladder (metric 15). It is the
+        # only rung that costs a whole extra model call, which makes its rate
+        # the most useful number the counter carries: a rising lossless_retry
+        # against a flat repair count is the signal that a deterministic fix
+        # is missing from _extract_json_with_notes() and replies are being
+        # re-asked for instead. Recorded where the retry FIRES, not where it
+        # succeeds, so a retry that itself exhausts or fails to parse is
+        # counted too — otherwise the expensive failures are the ones the
+        # totals hide.
+        _record_repair("lossless_retry")
+        try:
+            retry_reply = run_agent_fn(
+                f"Your previous reply was invalid: {exc}. Respond again with ONLY the JSON object, no other text.",
+                session_id=reply.get("session_id"),
+                **run_kwargs,
+            )
+        except AgentExhaustedError as retry_exc:
+            return _handle_exhaustion(
+                retry_exc,
+                run_agent_fn=run_agent_fn,
+                run_kwargs=run_kwargs,
+                on_exhaustion=on_exhaustion,
+                handoff_item_id=handoff_item_id,
+                handoff_step_index=handoff_step_index,
+                salvage_required_keys=salvage_required_keys,
+                salvage_intact_keys=salvage_intact_keys,
+            )
+
+        retry_meta = {
+            "provider": retry_reply.get("provider"),
+            "command_id": retry_reply.get("command_id"),
+            "session_id": retry_reply.get("session_id"),
+        }
+        # A second failure propagates uncaught (metric 6: unrepairable input
+        # still raises, no fabricated content) — no second retry, no loop.
+        parsed, notes = _extract_json_with_notes(retry_reply["result"])
+        return parsed, retry_meta, notes
