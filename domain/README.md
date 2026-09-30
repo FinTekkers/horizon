@@ -216,6 +216,28 @@ the budget, note outside it. That is intended: squeezing the marker inside the
 budget would eat real content to make room for a message about eating real
 content. Pinned by `farm/tests/test_field_limits.py`.
 
+**Two over-limit values are deliberately not marked.** Both predate HZ-134 and
+are unchanged by it, but "every over-limit value is marked" is the obvious wrong
+reading of the rule above, so they are stated here rather than left to a reader
+who trusts it:
+
+- **`persona`** is not in `MARKED_PATCH_FIELDS`. It is a registry-validated
+  routing id, not prose, and a value that overruns its declared cap matches no
+  known persona and is discarded either way — so it is hard-sliced, silently.
+  `test_validate_persona_stays_hard_capped_with_no_marker` pins that, deriving
+  the cap from the declaration so it cannot go vacuous.
+- **A single run-on token with no space anywhere** (a URL or a hash longer than
+  the whole budget) is returned whole and unmarked. `_mark_truncated` has no
+  boundary to cut at, and cutting mid-token would corrupt the value rather than
+  shorten it.
+
+One more caveat, on the field taking the biggest jump: a long `outcome` revision
+is **reverted by the next GitHub webhook sync**. `store.js`'s `upsertFromGithub`
+rewrites `desc` from the parsed issue body unconditionally, where `metric` and
+`guardrails` have an `|| row.metric` fallback. Pre-existing at any cap length and
+out of scope here — which is why `guardrails`, not `desc`, is the field
+`server/test/pm-revision-full-length.test.mjs` proves the full-length write on.
+
 ## Consumers
 
 Imported by relative path. No npm workspace, no published package, no new

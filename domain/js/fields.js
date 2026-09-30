@@ -104,6 +104,20 @@ const source = assertFieldsShape(data)
 // limit, with the one number that limit is.
 export const FIELDS = source.fields
 
+// The one field entry with this name. Throws naming the field — rather than
+// returning undefined, which a caller would read as "no cap" and then apply no
+// limit at all — if it isn't in the table, e.g. it was renamed on one side of
+// the JS/Python boundary but not the other. domain/py/fields.py's
+// field_by_name() is the same lookup with the same message; the two are diffed
+// in server/test/domain-fields-parity.test.mjs.
+export function fieldByName(name, fields = FIELDS) {
+  const field = fields.find((f) => f.name === name)
+  if (field === undefined) {
+    throw new Error(`no work-item field named '${name}' in the field table`)
+  }
+  return field
+}
+
 // The fields a human may set when the item is created — what POST /api/items
 // builds its body schema from. `persona` is deliberately absent: it is assigned
 // by an agent or at a gate, never at intake.
