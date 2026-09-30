@@ -85,12 +85,21 @@ def detect_check_commands(ws: Path, log=lambda *_: None) -> list[list[str]]:
     return commands
 
 
-def run_checks(ws: Path, log=print) -> str:
-    """Returns a short human-readable note; raises CheckFailure on failure."""
+def run_checks(ws: Path, log=print, *, require_ran: bool = False) -> str:
+    """Returns a short human-readable note; raises CheckFailure on failure.
+
+    require_ran (HZ-154) turns "nothing to enforce" into a failure. The scoped
+    conflict path pushes a merge no human has looked at, so "no green, no
+    push" has to mean an actual green: a repo where zero check runners are
+    detected or installed gives that path no evidence at all, and it escalates
+    instead. Every other caller keeps today's behaviour — the guardrail there
+    is "tests must pass", not "tests must exist"."""
     timeout_s = int(os.environ.get("FARM_CHECK_TIMEOUT_S", "600"))
     commands = detect_check_commands(ws, log=log)
     if not commands:
         log("checks: no test/lint commands detected in the repo — nothing to enforce")
+        if require_ran:
+            raise CheckFailure("no repo checks detected — nothing proves this change is safe to push")
         return "no repo checks detected"
 
     ran = 0
@@ -109,4 +118,6 @@ def run_checks(ws: Path, log=print) -> str:
             raise CheckFailure(f"repo checks failed ({shown}): {tail}")
         ran += 1
 
+    if not ran and require_ran:
+        raise CheckFailure("every detected check runner is missing on this host — no green to push behind")
     return f"{ran} repo check(s) passed" if ran else "check runners unavailable — skipped"

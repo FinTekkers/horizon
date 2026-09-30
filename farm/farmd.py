@@ -641,11 +641,19 @@ async def steps_run(request: Request):
 
 @app.post("/conflicts/resolve")
 async def conflicts_resolve(request: Request):
-    """HZ-92: deterministic, LLM-free merge-conflict resolution — no tmux
-    session, no agent dispatch, no queue file. Runs inline (off the event
-    loop thread so a slow git/test run doesn't stall other requests) and
-    returns the outcome directly; the Node orchestrator decides what an
-    escalation means (send back to the full implement step)."""
+    """HZ-92: merge-conflict resolution with no tmux session, no queue file
+    and no run row. Runs inline (off the event loop thread so a slow git/test
+    run doesn't stall other requests) and returns the outcome directly; the
+    Node orchestrator decides what an escalation means (send back to the full
+    implement step).
+
+    HZ-154: a plain `git merge` is still the first thing tried and still the
+    only thing most calls do. When it conflicts, the resolver may now dispatch
+    up to two bounded agent calls inline — one to resolve the conflicted hunks,
+    one to review only what that resolution changed — so this handler is no
+    longer LLM-free. The request and response contracts are unchanged; a
+    scoped success just carries three extra keys (mode/resolution/review) that
+    this route already passes straight through."""
     body = await request.json()
     if state["status"] != "running":
         return JSONResponse({"error": f"farm_not_running (status={state['status']})"}, status_code=409)

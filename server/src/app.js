@@ -758,10 +758,13 @@ export function buildApp({ logger = true } = {}) {
     },
   )
 
-  // HZ-92: mechanical merge-conflict resolution — same gate PIN requirement
-  // as /reject above (this is the fast path that replaces sending the item
-  // straight back to the implement step), the Accept gate itself is
-  // untouched either way.
+  // HZ-92/HZ-154: merge-conflict resolution — same gate PIN requirement as
+  // /reject above (this is the fast path that replaces sending the item
+  // straight back to the implement step), the Accept gate itself is untouched
+  // either way. HZ-154 let the farm side resolve the conflicted hunks and
+  // review just that resolution, so this can now involve an agent; what it
+  // can do here did not change — it resolves or it escalates, and the gate and
+  // its PIN are never approved or bypassed by either outcome.
   fastify.post(
     '/api/items/:id/resolve-conflicts',
     { schema: { params: idParam } },
@@ -1446,6 +1449,16 @@ export function buildApp({ logger = true } = {}) {
     fastify.post('/api/test/run-state', async (request, reply) => {
       const { run_id, state, reason } = request.body || {}
       orchestrator.setRunStateForTest(run_id, state, reason ?? null)
+      return { ok: true }
+    })
+
+    // e2e only (HZ-154), same reasoning: with no farm daemon, the scoped
+    // conflict path has nothing to answer the /conflicts/resolve call the
+    // Accept gate's "send back to resolve conflicts" button makes. This queues
+    // one canned farmd reply so the spec can drive the real button, through
+    // the real PIN, and assert what the human actually ends up looking at.
+    fastify.post('/api/test/conflict-reply', async (request) => {
+      orchestrator.setConflictReplyForTest(request.body?.reply ?? null)
       return { ok: true }
     })
   }

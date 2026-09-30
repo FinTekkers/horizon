@@ -49,6 +49,25 @@ RECONCILE_GRACE_S = int(os.environ.get("FARM_RECONCILE_GRACE_S", "90"))
 # deploy; the file is kept either way.
 PM_MALFORMED_GRACE_S = int(os.environ.get("FARM_PM_MALFORMED_GRACE_S", "30"))
 
+# ---- HZ-154: the scoped merge-conflict path ----
+# Caps on what the narrow path will even attempt. Above either, the conflict
+# escalates straight to the full implement cycle — a 30-file conflict is not a
+# "small merge conflict" and pretending otherwise would put a whole
+# re-implementation behind a scoped review that only reads the resolution.
+CONFLICT_MAX_FILES = int(os.environ.get("FARM_CONFLICT_MAX_FILES", "5"))
+# Counted as every line inside a conflict region, each side separately
+# (farm/conflict_hunks.py's Hunk.size) — what a human actually reads.
+CONFLICT_MAX_LINES = int(os.environ.get("FARM_CONFLICT_MAX_LINES", "60"))
+# Both agent calls happen inside ONE synchronous /conflicts/resolve request,
+# so these two plus the repo's own check suite must stay well under the
+# server's FARM_CONFLICT_RESOLVE_TIMEOUT_MS (50 min, server/src/config.js):
+# 10 + 8 + 10 = 28 min of budget against a 50 min ceiling.
+CONFLICT_AGENT_TIMEOUT_S = int(os.environ.get("FARM_CONFLICT_AGENT_TIMEOUT_S", "600"))
+CONFLICT_REVIEW_TIMEOUT_S = int(os.environ.get("FARM_CONFLICT_REVIEW_TIMEOUT_S", "480"))
+# Rollback lever: 0 restores HZ-92's mechanical-only behaviour exactly, with
+# no code change and nothing to unwind (there is no new table or row).
+CONFLICT_SCOPED_ENABLED = os.environ.get("FARM_CONFLICT_SCOPED_ENABLED", "1").strip().lower() in ("1", "true", "yes")
+
 # HZ-83: which provider farm/agent_runner.py's run_agent() dispatches to.
 # "claude" is the default, keeping today's behaviour completely unchanged
 # when nothing is configured. See docs/providers/muse-code.md for "muse".
