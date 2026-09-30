@@ -66,14 +66,18 @@ def test_terminal_completed_parse_holds_against_a_real_run():
     assert reply["command_id"]
 
 
-def test_one_real_planning_step_completes_with_muse_and_records_provenance():
+def test_one_real_planning_step_completes_with_muse_and_records_provenance(muse_smoke_test_persona):
     """The HZ-102 success metric itself: one real lifecycle step, dispatched
     through the farm's normal path (step_agent.execute() -> run_agent() ->
     the muse provider — never a direct call into farm.providers.muse),
     completes with Muse as the executing provider and its artifact records
     provider provenance including a non-empty command_id. No repo is
     attached, so this is guaranteed side-effect-free — no branch, no PR, no
-    release."""
+    release.
+
+    HZ-121: the persona is a test-registered fixture
+    (conftest.py's muse_smoke_test_persona), not a shipped one — the
+    PERSONA_PROVIDERS mapping it needs no longer ships in farm/personas.py."""
     task = {
         "run_id": 1,
         "attempt": 1,
@@ -86,7 +90,7 @@ def test_one_real_planning_step_completes_with_muse_and_records_provenance():
             "priority": "Low",
             "repo": None,
             "issue": None,
-            "persona": "muse_smoke_test",
+            "persona": muse_smoke_test_persona,
         },
         "step": {"index": 4, "label": "Plan options & trade-offs (pros / cons)", "agent": "Ensemble"},
         "artifacts": [],

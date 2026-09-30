@@ -19,22 +19,20 @@ PERSONAS = {
     "fullstack": "fullstack.md",
     "python_backend": "python_backend.md",
     "frontend_ui": "frontend_ui.md",
-    # HZ-102: test-only — proves the Muse provider seam (HZ-83) actually runs
-    # a real step, never a real persona. Filtered out of the UI's persona
-    # picker (ui/src/components/Tracker.jsx) and never proposed automatically
-    # (server/src/personas.js's proposePersona heuristic never returns it) —
-    # an item only carries it if someone sets it by hand on a throwaway item.
-    "muse_smoke_test": "muse_smoke_test.md",
 }
 
 DEFAULT_PERSONA = "fullstack"
 
-# persona id -> provider name (farm/agent_runner.py's _PROVIDERS), for the
-# one persona that must force a non-default provider. Every real persona is
-# absent from this map on purpose: provider_for() returns None for them, so
-# run_agent() falls back to its normal FARM_PROVIDER-selected default
-# (Claude) unchanged (HZ-102 guardrail: this adds one mapped test persona,
-# it does not make Muse the default for anything real).
+# persona id -> provider name (farm/agent_runner.py's _PROVIDERS), for a
+# persona that must force a non-default provider. Ships empty: every real
+# persona is absent from this map on purpose, so provider_for() returns None
+# for all of them and run_agent() falls back to its normal
+# FARM_PROVIDER-selected default (Claude), unchanged. The override mechanism
+# itself (HZ-102) is proven by a test-registered fixture persona
+# (farm/tests/conftest.py's muse_smoke_test_persona), not a shipped one — see
+# HZ-121. Which real personas, if any, should route to a non-default provider
+# is a decision that needs evidence about provider capability that doesn't
+# exist yet; don't populate this map to "use" the mechanism.
 #
 # Kept separate from PERSONAS rather than an extra field on each entry:
 # PERSONAS's id set is mirrored append-only into server/src/personas.js and
@@ -42,7 +40,7 @@ DEFAULT_PERSONA = "fullstack"
 # notion of a farm provider — folding "provider" onto PERSONAS would either
 # leak a farm-only routing concept into that three-way mirror or force the
 # server/UI copies to carry a field they can't act on.
-PERSONA_PROVIDERS = {"muse_smoke_test": "muse"}
+PERSONA_PROVIDERS = {}
 
 
 def resolve(persona_id) -> str:

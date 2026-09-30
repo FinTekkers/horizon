@@ -17,6 +17,7 @@ vi.mock('../api', () => ({
 
 import Tracker from './Tracker'
 import { ACCEPT_GATE_INDEX } from '../../../domain/js/lifecycle.js'
+import { PERSONAS } from '../domain/personas'
 
 afterEach(() => {
   cleanup()
@@ -78,12 +79,18 @@ test('the select is absent when the item is past the intake gate', () => {
   expect(queryByLabelText('Specialist persona')).toBeNull()
 })
 
-// HZ-102: muse_smoke_test exists only to prove the Muse provider seam runs a
-// real step — it must never be offered as a real choice here.
-test('the persona picker never offers the muse_smoke_test test-only persona', () => {
-  const { getByLabelText } = renderTracker({ ...baseItem, persona: 'python_backend' })
-  const options = Array.from(getByLabelText('Specialist persona').options).map((o) => o.value)
-  expect(options).not.toContain('muse_smoke_test')
+// HZ-121: no shipped persona is testOnly anymore, so this test proves the
+// filter itself (Tracker.jsx's `.filter(([, p]) => !p.testOnly)`) against a
+// synthetic entry rather than relying on a real one to exist.
+test('the persona picker never offers a testOnly persona', () => {
+  PERSONAS.__fixture_test_only__ = { label: 'Fixture (test-only)', initials: 'FX', color: '#000', testOnly: true }
+  try {
+    const { getByLabelText } = renderTracker({ ...baseItem, persona: 'python_backend' })
+    const options = Array.from(getByLabelText('Specialist persona').options).map((o) => o.value)
+    expect(options).not.toContain('__fixture_test_only__')
+  } finally {
+    delete PERSONAS.__fixture_test_only__
+  }
 })
 
 // ---- HZ-14: "See agent output" links (replaces inline output + HZ-5's Live activity panel) ----
