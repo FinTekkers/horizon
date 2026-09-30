@@ -97,7 +97,16 @@ No credential is on this path. `POST /api/send` takes no auth and is
 localhost-only, so neither `FARM_SHARED_SECRET` nor `WA_APPROVAL_SECRET` is
 read by the notifier.
 
-### Verifying it, without reading code
+### That the feature works is a test, not an ops step
+
+`server/test/gate-notifier-e2e.test.mjs` boots the real `node src/server.js`
+with `WA_NOTIFY_ENABLED=1` against a stub bridge on a real socket, lets the
+pipeline walk items onto gates on its own, and asserts what the bridge
+received and the exact row state below. It runs in `npm test`. Nothing on
+this page needs a human to confirm the code sends messages — the steps that
+follow confirm only that *this host's* configuration is right.
+
+### Verifying this host's configuration
 
 Restarting and waiting for a text is not a check — it has no observable if
 nothing arrives. The outbox records every attempt, so read it back instead.
@@ -113,7 +122,9 @@ sqlite3 -header -column /opt/horizon/server/data/horizon.db \
 ```
 
 Expected on success: one row per approver for that arrival, `status = sent`,
-`attempts = 0`, `last_error` empty, `sent_at` set.
+`attempts = 0`, `last_error` empty, `sent_at` set — the same four values
+`gate-notifier-e2e.test.mjs` asserts, so a row that looks different here is a
+configuration problem on this host, not a code problem.
 
 - **No rows at all** — `WA_NOTIFY_ENABLED` is not `1`, or
   `WA_APPROVER_JIDS` is empty. Check the boot log for the notifier's own
