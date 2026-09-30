@@ -509,3 +509,80 @@ def test_no_farm_module_but_config_and_farmd_still_reads_the_shared_secret():
         if re.search(r"\bSHARED_SECRET\b", code):
             offenders.append(path.name)
     assert offenders == []
+
+
+# ---- HZ-156: the shared reply parser ----
+# The concierge is not a step: it has no run output line and no artifact, so
+# its WhatsApp reply is where parser notes surface.
+
+
+def test_a_parsed_but_invalid_reply_still_takes_the_lossless_retry(stub, monkeypatch):
+    """test_invalid_json_reply_is_retried_once above covers a reply that does
+    not parse. This one PARSES and fails validate_reply for a missing 'reply'
+    field — which took the retry before the parse path moved into
+    agent_runner, because validation was inside the retry block. Handing the
+    validator to parse_agent_reply is what keeps that true."""
+    calls = []
+
+    def fake_run(prompt, **kw):
+        calls.append(prompt)
+        if len(calls) == 1:
+            return {"result": json.dumps({"actions": []}), "session_id": "s1"}
+        return {"result": json.dumps({"reply": "ok after retry", "actions": []}), "session_id": "s1"}
+
+    monkeypatch.setattr(ca, "run_agent", fake_run)
+    t = FakeTransport()
+    state = make_state(t, "validretry")
+    t.seed("hello there")
+    ca.poll_once(t, state, stub.url, farmd_url=stub.url)
+
+    assert len(calls) == 2
+    assert "missing 'reply'" in calls[1]  # the retry names what was actually wrong
+    assert t.sent[0][1] == "ok after retry"
+
+
+def test_the_retry_still_saves_the_session_it_was_given(stub, monkeypatch):
+    """Session continuity across the retry lives in the closure, not in the
+    shared helper — it must not have been lost in the move."""
+    calls = []
+
+    def fake_run(prompt, **kw):
+        calls.append(kw.get("session_id"))
+        if len(calls) == 1:
+            return {"result": "not json", "session_id": "s-first"}
+        return {"result": json.dumps({"reply": "ok", "actions": []}), "session_id": "s-second"}
+
+    monkeypatch.setattr(ca, "run_agent", fake_run)
+    t = FakeTransport()
+    state = make_state(t, "sess")
+    t.seed("hello there")
+    ca.poll_once(t, state, stub.url, farmd_url=stub.url)
+
+    assert calls[1] == "s-first"  # the retry resumed the first call's session
+    assert state.session_id() == "s-second"  # and the retry's own id was saved
+
+
+def test_an_empty_parse_note_list_leaves_the_whatsapp_text_unchanged(stub, monkeypatch):
+    """_notes_for returns [] in this item, so the reply is byte-identical."""
+    monkeypatch.setattr(
+        ca, "run_agent", lambda prompt, **kw: {"result": json.dumps({"reply": "hello", "actions": []}), "session_id": "s1"}
+    )
+    t = FakeTransport()
+    state = make_state(t, "nonotes")
+    t.seed("hi")
+    ca.poll_once(t, state, stub.url, farmd_url=stub.url)
+    assert t.sent[0][1] == "hello"
+
+
+def test_a_parse_note_is_appended_after_the_action_notes(stub, monkeypatch):
+    from farm import agent_runner
+
+    monkeypatch.setattr(agent_runner, "_notes_for", lambda text, parsed: ["fake parse note"])
+    t = FakeTransport()
+    state = make_state(t, "notes")
+    t.seed("set HZ-7 priority to Critical")
+    ca.poll_once(t, state, stub.url, farmd_url=stub.url)
+
+    lines = t.sent[0][1].splitlines()
+    assert "fake parse note" == lines[-1], "the parse note must come last, after the action results"
+    assert any("priority set to Critical" in line for line in lines)

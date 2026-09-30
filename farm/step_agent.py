@@ -29,7 +29,14 @@ from domain.py import reasons, steps
 # same "ran out of turn budget" signal, renamed by the provider refactor. The
 # import conflicted while its USE below merged cleanly, so the rename has to be
 # applied there too or the merged file references a symbol that no longer exists.
-from .agent_runner import AgentError, AgentExhaustedError, extract_json, run_agent
+from .agent_runner import (
+    AgentError,
+    AgentExhaustedError,
+    parse_agent_reply,
+    run_agent,
+    stamp_notes,
+    stamp_notes_artifact,
+)
 from .checks import run_checks
 from .config import FARM_PORT
 from .personas import compose_role, provider_for, resolve
@@ -50,6 +57,11 @@ WRITE_ARTIFACT_SANITY_CEILING_CHARS = 200_000
 # The server already budgets the total it sends (~60k), so this should never
 # fire in practice — mirrors farm/rules.py's MAX_PROMPT_RULES_CHARS backstop.
 MAX_PROMPT_ARTIFACT_CHARS = 100_000
+# The cap on this script's own `summary` — step_run.output on the server side.
+# Named once (HZ-156) rather than restated as a literal at each shaping site:
+# stamp_notes() reserves room inside exactly this budget, so a cap raised in
+# one place and not the other would silently truncate the notes back off.
+SUMMARY_MAX_CHARS = 600
 
 # step label -> (role file, needs JSON artifact, tool access, wants persona).
 # HZ-117: keyed by label (the table's own primary key, see domain/steps.json),
@@ -385,7 +397,7 @@ def _review_summary(verdict: dict) -> str:
         if detail:
             summary = f"{summary} — {detail}"
             break
-    return summary[:600]
+    return summary[:SUMMARY_MAX_CHARS]
 
 
 def _provenance(reply: dict) -> dict:
@@ -402,15 +414,24 @@ def _run_and_parse(
     allowed_tools: str | None,
     provider: str | None = None,
     provider_locked: bool = False,
-) -> tuple[dict, dict]:
-    """run_agent + extract_json with one retry-with-feedback on a parse
-    failure (HZ-44) — mirrors pm_agent.process()'s recovery. Asking the model
-    to re-emit valid JSON is lossless; a genuine second failure still
+) -> tuple[dict, dict, list[str]]:
+    """run_agent + the shared reply parser, with one retry-with-feedback on a
+    parse failure (HZ-44) — mirrors pm_agent.process()'s recovery. Asking the
+    model to re-emit valid JSON is lossless; a genuine second failure still
     propagates so the run cancels and the item pauses, unchanged.
 
-    Returns (parsed_json, provenance) — provenance is {"provider",
+    Returns (parsed_json, provenance, notes). Provenance is {"provider",
     "command_id"} from whichever run_agent() call actually produced the JSON
-    that parsed (HZ-102), so a caller can record which provider really ran.
+    that parsed (HZ-102), so a caller can record which provider really ran —
+    hence the `produced` rebind in the closure rather than reading `reply`
+    after the fact. Notes are the shared parser's reporting channel (HZ-156).
+
+    No validate= is handed to the parser, deliberately. Every required-field
+    check on this side (a missing 'summary', a deploy reply with no 'url', a
+    review reply with no verdict) stays exactly where it has always been —
+    after this call returns. Moving one inside the retry envelope would buy a
+    second full agent run for a reply that costs nothing to reject today, and
+    on the review path a retry could flip a deliberately fail-closed gate.
     """
     reply = run_agent(
         prompt,
@@ -422,12 +443,13 @@ def _run_and_parse(
         provider=provider,
         provider_locked=provider_locked,
     )
-    try:
-        return extract_json(reply["result"]), _provenance(reply)
-    except (AgentError, json.JSONDecodeError) as exc:
-        log(f"invalid reply ({exc}); retrying once")
-        retry = run_agent(
-            f"Your previous reply was invalid: {exc}. Respond again with ONLY the JSON object, no other text.",
+    produced = reply
+
+    def retry_once(retry_prompt: str) -> str:
+        nonlocal produced
+        log("invalid reply; retrying once")
+        produced = run_agent(
+            retry_prompt,
             session_id=reply.get("session_id"),
             append_system=append_system,
             cwd=cwd,
@@ -437,7 +459,10 @@ def _run_and_parse(
             provider=provider,
             provider_locked=provider_locked,
         )
-        return extract_json(retry["result"]), _provenance(retry)
+        return produced["result"]
+
+    parsed, notes = parse_agent_reply(reply["result"], retry_once)
+    return parsed, _provenance(produced), notes
 
 
 # ---- deploy deep-verification (HZ-22) ----
@@ -525,8 +550,21 @@ def execute(task: dict) -> dict:
         # The summary is reporting, not the deliverable — the code in the
         # workspace is. Never torch a completed implement run over a
         # malformed final message; fall back and let checks judge the work.
+        # No retry= here on purpose: this step must not gain one. Its fallback
+        # below is what a malformed final message costs, and that is cheaper
+        # than a second full implement run.
+        notes: list[str] = []
         try:
-            summary = str(extract_json(reply["result"]).get("summary", "implementation finished")).strip()[:600]
+            parsed, notes = parse_agent_reply(reply["result"])
+            summary = str(parsed.get("summary", "")).strip()[:SUMMARY_MAX_CHARS]
+            if not summary:
+                # Parsed, but carried nothing usable. Without a note the run
+                # would report a bare "implementation finished" — indistinguishable
+                # from a clean run, with the only evidence that the reply was junk
+                # thrown away. The except branch below says so for an unparseable
+                # reply; this says so for a parseable but empty one.
+                summary = "implementation finished"
+                notes = [*notes, "agent's final message carried no 'summary' — see session log"]
         except Exception:
             summary = "implementation finished (agent's final message was not valid JSON — see session log)"
         # Guardrail enforcement: the repo's own tests/linters run here, by the
@@ -535,7 +573,10 @@ def execute(task: dict) -> dict:
         check_note = run_checks(ws, log)
         publish_screenshots(ws, item)
         artifacts = finalize_branch(ws, item, branch)
-        return {"summary": f"{summary} · {check_note}"[:600], "artifacts": artifacts}
+        # finalize_branch returns branch/files_changed, not an artifact_md, so
+        # the summary is this path's only note surface.
+        summary = stamp_notes(f"{summary} · {check_note}"[:SUMMARY_MAX_CHARS], notes, SUMMARY_MAX_CHARS)
+        return {"summary": summary, "artifacts": artifacts}
 
     # Automated review (HZ-30): two independent read-only passes over the
     # actual diff — code correctness against guardrails/the approved plan,
@@ -574,7 +615,7 @@ def execute(task: dict) -> dict:
             + "\n\nRespond with ONLY the JSON object described in your role instructions."
         )
 
-        code_parsed, _code_provenance = _run_and_parse(
+        code_parsed, _code_provenance, code_notes = _run_and_parse(
             prompt,
             append_system=role,
             cwd=str(ws),
@@ -587,7 +628,7 @@ def execute(task: dict) -> dict:
         qa_role = (ROLES / "qa_review.md").read_text()
         if wants_persona:
             qa_role = compose_role(qa_role, item.get("persona"))
-        qa_parsed, _qa_provenance = _run_and_parse(
+        qa_parsed, _qa_provenance, qa_notes = _run_and_parse(
             prompt,
             append_system=qa_role,
             cwd=str(ws),
@@ -606,10 +647,17 @@ def execute(task: dict) -> dict:
         summary = _review_summary(verdict)
         feedback = task.get("feedback") or []
         if feedback:
-            summary = f"addressed feedback (“{feedback[0].get('message', '')[:80]}”) — {summary}"[:600]
+            summary = f"addressed feedback (“{feedback[0].get('message', '')[:80]}”) — {summary}"[:SUMMARY_MAX_CHARS]
+        # Both passes' notes, in the order they ran.
+        notes = code_notes + qa_notes
         return {
-            "summary": summary,
-            "artifacts": {"artifact_md": artifact_md[:WRITE_ARTIFACT_SANITY_CEILING_CHARS], "verdict": verdict},
+            "summary": stamp_notes(summary, notes, SUMMARY_MAX_CHARS),
+            "artifacts": {
+                "artifact_md": stamp_notes_artifact(
+                    artifact_md[:WRITE_ARTIFACT_SANITY_CEILING_CHARS], notes, WRITE_ARTIFACT_SANITY_CEILING_CHARS
+                ),
+                "verdict": verdict,
+            },
         }
 
     # Deploy (HZ-22): the release is already published by the time this runs
@@ -633,7 +681,7 @@ def execute(task: dict) -> dict:
             "with e2e/smoke/check.mjs — pick an expected_text that is actually visible on that "
             "page right now."
         )
-        parsed, _deploy_provenance = _run_and_parse(
+        parsed, _deploy_provenance, notes = _run_and_parse(
             prompt,
             append_system=role,
             cwd=None,
@@ -642,7 +690,7 @@ def execute(task: dict) -> dict:
             allowed_tools=tools,
             provider_locked=provider_locked,
         )
-        summary = str(parsed.get("summary", "")).strip()[:600] or "deploy verification finished"
+        summary = str(parsed.get("summary", "")).strip()[:SUMMARY_MAX_CHARS] or "deploy verification finished"
         artifact_md = str(parsed.get("artifact_md", "")).strip()
 
         url, expected_text = parsed.get("url"), parsed.get("expected_text")
@@ -652,9 +700,11 @@ def execute(task: dict) -> dict:
         verdict, smoke_line = run_smoke_check(url.strip(), expected_text.strip())
         artifact_md = f"{artifact_md}\n\n## Machine-checked result\n`{smoke_line}`".strip()
         return {
-            "summary": f"{summary} · {smoke_line}"[:600],
+            "summary": stamp_notes(f"{summary} · {smoke_line}"[:SUMMARY_MAX_CHARS], notes, SUMMARY_MAX_CHARS),
             "artifacts": {
-                "artifact_md": artifact_md[:WRITE_ARTIFACT_SANITY_CEILING_CHARS],
+                "artifact_md": stamp_notes_artifact(
+                    artifact_md[:WRITE_ARTIFACT_SANITY_CEILING_CHARS], notes, WRITE_ARTIFACT_SANITY_CEILING_CHARS
+                ),
                 # Wrapped in an object, not a bare string: validateDeployVerdict in
                 # server/src/orchestrator.js requires `typeof v === 'object'` with a
                 # `.verdict` field — same wire contract the review step's verdict
@@ -663,7 +713,7 @@ def execute(task: dict) -> dict:
             },
         }
 
-    parsed, reply_provenance = _run_and_parse(
+    parsed, reply_provenance, notes = _run_and_parse(
         build_prompt(task) + "\n\nRespond with ONLY the JSON object described in your role instructions.",
         append_system=role,
         cwd=str(ws) if ws else None,
@@ -673,7 +723,7 @@ def execute(task: dict) -> dict:
         provider=provider_override,
         provider_locked=provider_locked,
     )
-    summary = str(parsed.get("summary", "")).strip()[:600]
+    summary = str(parsed.get("summary", "")).strip()[:SUMMARY_MAX_CHARS]
     if not summary:
         raise AgentError("agent reply missing 'summary'")
 
@@ -682,7 +732,7 @@ def execute(task: dict) -> dict:
     # so nobody has to guess what a revision was responding to.
     feedback = task.get("feedback") or []
     if feedback:
-        summary = f"addressed feedback (“{feedback[0].get('message', '')[:80]}”) — {summary}"[:600]
+        summary = f"addressed feedback (“{feedback[0].get('message', '')[:80]}”) — {summary}"[:SUMMARY_MAX_CHARS]
 
     # HZ-102: when a persona forced a non-default provider for this step
     # (PERSONA_PROVIDERS ships empty — HZ-121 — so today this only happens
@@ -693,15 +743,19 @@ def execute(task: dict) -> dict:
     if provider_override:
         note = f"provider={reply_provenance.get('provider')} command_id={reply_provenance.get('command_id')}"
         log(f"HZ-102 provenance: {note}")
-        summary = f"{summary} [{note}]"[:600]
+        summary = f"{summary} [{note}]"[:SUMMARY_MAX_CHARS]
 
-    result = {"summary": summary}
+    result = {"summary": stamp_notes(summary, notes, SUMMARY_MAX_CHARS)}
     if wants_artifact and isinstance(parsed.get("artifact_md"), str) and parsed["artifact_md"].strip():
         artifact = parsed["artifact_md"].strip()
         if feedback:
             header = "\n".join(f"> {fb.get('message', '')}" for fb in feedback)
             artifact = f"## Human feedback addressed in this revision\n{header}\n\n{artifact}"
-        result["artifacts"] = {"artifact_md": artifact[:WRITE_ARTIFACT_SANITY_CEILING_CHARS]}
+        result["artifacts"] = {
+            "artifact_md": stamp_notes_artifact(
+                artifact[:WRITE_ARTIFACT_SANITY_CEILING_CHARS], notes, WRITE_ARTIFACT_SANITY_CEILING_CHARS
+            )
+        }
     if provider_override:
         artifacts = result.setdefault("artifacts", {})
         artifacts["provider"] = reply_provenance.get("provider")

@@ -18,7 +18,14 @@ import httpx
 
 from domain.py import fields, reasons
 
-from .agent_runner import AgentError, extract_json, run_agent
+from .agent_runner import (
+    AgentError,
+    AgentExhaustedError,
+    parse_agent_reply,
+    run_agent,
+    stamp_notes,
+    stamp_notes_artifact,
+)
 from .config import (
     FARM_PORT,
     PM_MALFORMED_GRACE_S,
@@ -78,6 +85,11 @@ WRITE_ARTIFACT_SANITY_CEILING_CHARS = 200_000
 # rules blocks with a note instead (HZ-114), so this is no longer a real
 # mirror — flagging the drift rather than leaving a stale claim in place.
 MAX_PROMPT_ARTIFACT_CHARS = 100_000
+# The cap on this agent's own `summary` — step_run.output on the server side.
+# Named once (HZ-156) rather than restated as a literal at each shaping site:
+# stamp_notes() reserves room inside exactly this budget, so a cap raised in
+# validate() and not in the stamp would silently truncate the notes back off.
+SUMMARY_MAX_CHARS = 300
 
 
 def log(msg: str) -> None:
@@ -241,7 +253,7 @@ def validate(parsed: dict) -> tuple[str, dict, str | None]:
             patch[key] = _mark_truncated(value, limit) if key in MARKED_PATCH_FIELDS else value[:limit]
     artifact = parsed.get("artifact_md")
     artifact = artifact.strip()[:WRITE_ARTIFACT_SANITY_CEILING_CHARS] if isinstance(artifact, str) and artifact.strip() else None
-    return summary[:300], patch, artifact
+    return summary[:SUMMARY_MAX_CHARS], patch, artifact
 
 
 def process(task: dict, project_slug: str) -> None:
@@ -256,27 +268,40 @@ def process(task: dict, project_slug: str) -> None:
         if reply.get("session_id"):
             sid_path.write_text(reply["session_id"])
 
-        try:
-            summary, patch, artifact = validate(extract_json(reply["result"]))
-        except (AgentError, json.JSONDecodeError) as exc:
-            # One retry, telling the model exactly what was wrong with its reply.
-            log(f"run {run_id}: invalid reply ({exc}); retrying once")
+        # One retry, telling the model exactly what was wrong with its reply.
+        # The session is re-read inside the closure, as it was before the
+        # parse path moved into agent_runner — the helper parses, this module
+        # still owns the run and the session file. validate= keeps validation
+        # inside the retry envelope, so a reply that parses but is missing
+        # 'summary' takes the retry exactly as it always did.
+        def retry_once(prompt: str) -> str:
+            log(f"run {run_id}: invalid reply; retrying once")
             retry = run_agent(
-                f"Your previous reply was invalid: {exc}. "
-                "Respond again with ONLY the JSON object, no other text.",
+                prompt,
                 session_id=sid_path.read_text().strip() if sid_path.exists() else None,
                 append_system=ROLE_PROMPT,
                 model=PM_MODEL,
             )
-            summary, patch, artifact = validate(extract_json(retry["result"]))
+            return retry["result"]
+
+        (summary, patch, artifact), notes = parse_agent_reply(
+            reply["result"], retry_once, validate=validate
+        )
 
         # Script-stamped feedback trail, same as the ephemeral agents.
         feedback = task.get("feedback") or []
         if feedback:
-            summary = f"addressed feedback (“{feedback[0].get('message', '')[:80]}”) — {summary}"[:300]
+            summary = f"addressed feedback (“{feedback[0].get('message', '')[:80]}”) — {summary}"[:SUMMARY_MAX_CHARS]
             if artifact:
                 header = "\n".join(f"> {fb.get('message', '')}" for fb in feedback)
                 artifact = f"## Human feedback addressed in this revision\n{header}\n\n{artifact}"[:WRITE_ARTIFACT_SANITY_CEILING_CHARS]
+
+        # Parser notes reach the human on both surfaces this step owns: the
+        # run's output line (server/src/orchestrator.js persists `summary` as
+        # step_run.output) and the step's artifact. No-ops when empty.
+        summary = stamp_notes(summary, notes, SUMMARY_MAX_CHARS)
+        if artifact:
+            artifact = stamp_notes_artifact(artifact, notes, WRITE_ARTIFACT_SANITY_CEILING_CHARS)
 
         result = {"run_id": run_id, "ok": True, "summary": summary, "patch": patch}
         if artifact:
@@ -284,6 +309,13 @@ def process(task: dict, project_slug: str) -> None:
     except Exception as exc:  # report every failure; farmd forwards to the server
         log(f"run {run_id}: FAILED — {exc}")
         result = {"run_id": run_id, "ok": False, "error": str(exc)[:300]}
+        # HZ-156: tag the one failure cause the orchestrator auto-retries from
+        # this side, exactly as the ephemeral step agent already does in
+        # step_agent.main() — a PM step that ran out of turn budget was
+        # pausing for a human where the identical failure on a step agent
+        # retried itself. Anything else still reports no reason and pauses.
+        if isinstance(exc, AgentExhaustedError):
+            result["reason"] = reasons.REASON["TURN_CAP"]
 
     httpx.post(f"{FARMD}/internal/steps/result", json=result, timeout=30)
     log(f"run {run_id}: reported {'ok' if result['ok'] else 'failure'}")
