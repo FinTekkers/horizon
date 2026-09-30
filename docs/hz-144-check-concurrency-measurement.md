@@ -73,12 +73,54 @@ current 23" is measured against a confirmed number, not a quoted one.
 
 This repo's own gate (`npm test` → the `server`/`ui` suites, the deploy shell
 harness, the production-base UI build; `npm run test:e2e`; `pytest -q`) run
-once via `run_checks()` on this host, at the load above, with the limiter
-enabled and one free slot. It is a **single run**, so it is a sanity check on
+once via `run_checks()` on this host, with the limiter enabled and one free
+slot. It is a **single run**, so it is a sanity check on
 the instrumentation and a rough scale for one uncontended suite — not a
 baseline, and explicitly not one of the 20.
 
-<!-- MEASURED-SINGLE-RUN -->
+Recorded at load 3.70 (1-min, at the start of the run), one free check slot,
+`FARM_MAX_CONCURRENT_CHECKS=2`, throwaway `FARM_HOME` so the record did not
+dilute the live file:
+
+| Command | Duration | Result |
+| --- | --- | --- |
+| `npm install --no-audit --no-fund` | 0.5s | 0 |
+| `npm test --silent` | 113.6s | 0 |
+| `npm run test:e2e --silent` | **82.2s** | 0 |
+| `python3 -m pytest -q` | 83.6s | 0 |
+| **Total check duration** | **280.0s** | `outcome: pass` |
+
+| Record field | Value |
+| --- | --- |
+| `slot_mode` / `slot_index` | `held` / 0 |
+| `slot_wait_s` | 0.0 (no contention — nothing else was checking) |
+| `load_start` / `load_end` | 3.70 / 3.37 |
+| `mem_available_low_kb` | 5,739,332 kB (≈5.5 GiB still free) |
+
+This confirms the instrumentation end to end: the slot was taken, the record
+was written with one line, the classifier reported `pass`, and the nested
+`run_checks()` calls inside the inner `pytest` were no-ops rather than a
+deadlock — that inner suite is the 603-test run, and it completed inside the
+outer gate without ever waiting for a second slot.
+
+**Reading the e2e number correctly.** The 82.2s above is the whole
+`npm run test:e2e` command — the Vite build, the `webServer` boot and
+Playwright's own startup, then the suite. `globalTimeout: 85_000` does **not**
+cover that window; it bounds the test run, which reported **30 passed
+(50.9s)** on a standalone re-run of the same gate at comparable load. So the
+margin against the 85s ceiling is roughly **50.9s of 85s — about 40% headroom**,
+not the 2.8s a naive comparison of 82.2s to 85s would suggest. The two
+durations answer different questions and should not be compared: use the
+command duration for capacity (what a check slot occupies) and the suite
+duration for the contention ceiling.
+
+40% headroom is the useful framing for this item: it means the suite tolerates
+roughly a 1.65x slowdown before `globalTimeout` fires, and on 30 Sept at load
+~8 it did fire — so the slowdown under six unthrottled agents exceeded that.
+That is consistent with the limiter being a precondition for the cap raise
+rather than an accompaniment to it, and it is the quantity `cap6-limit2` has to
+confirm. Memory is not the binding constraint at this concurrency (≈5.5 GiB
+free at the trough); CPU is.
 
 ## Results
 
@@ -159,3 +201,27 @@ No Python linter is configured anywhere in this repo (`farm/README.md` records
 this), so the "linters must pass" guardrail is vacuous for the new Python
 files — stated plainly rather than implied covered. The gates that do run are
 `npm test`, `npm run test:e2e` and `python -m pytest -q`.
+
+Counts on this branch, 2026-09-30:
+
+| Gate | Result |
+| --- | --- |
+| `npm test` | **50 pass, 0 fail** (plus the production-base UI build check) |
+| `npm run test:e2e` | **30 passed** (suite 50.9s; 82.2s for the whole command) |
+| `python -m pytest -q` | **603 passed, 4 skipped** |
+| Python linter | none configured in this repo — no coverage claimed |
+
+Guardrail 7 ("every test passing before passes after") checked by running the
+suite at this branch's parent (`161d267`) as well:
+
+| Commit | pytest |
+| --- | --- |
+| `161d267` (before) | 519 passed, 4 skipped |
+| this branch (after) | **603 passed, 4 skipped** |
+
+84 tests added, none removed, none newly skipped. The parent run also showed 2
+failures in `test_step_agent.py`'s smoke-check cases, which are an artifact of
+measuring in a bare `git worktree` with no `node_modules`
+(`ERR_MODULE_NOT_FOUND: Cannot find package '@playwright/test'`) — both pass
+in a provisioned workspace, on this branch and on the parent, so they are not
+a pre-existing failure this branch inherited or masked.

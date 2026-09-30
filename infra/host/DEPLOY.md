@@ -83,7 +83,14 @@ The farm's two concurrency limits live in `/etc/horizon/farm.env`, loaded by
 explicitly in the deployed farm config" is a host edit, not a reviewable
 diff — this section is the reviewable record of it.
 
-| File | Var | Value on this host | Notes |
+It is a **prescription, not a log**: the values below are what this host is to
+run, applied by whoever deploys the change. Nothing in the repo can assert
+they were applied, so confirm them with the commands at the end of this
+section rather than trusting this table. As of the HZ-144 PR the mechanism is
+in the code and the host edit has **not** been made — `FARM_MAX_EPHEMERAL` is
+unset on this host, so the code default of 4 is in force.
+
+| File | Var | Value to set | Notes |
 |---|---|---|---|
 | `/etc/horizon/farm.env` | `FARM_MAX_EPHEMERAL` | `6` | how many agent steps run at once. The code default in `farm/farmd.py` stays **4** on purpose: raising the default would silently re-raise the cap on every other host |
 | `/etc/horizon/farm.env` | `FARM_MAX_CONCURRENT_CHECKS` | `2` | how many check suites run at once. **Set this before raising the line above** |
