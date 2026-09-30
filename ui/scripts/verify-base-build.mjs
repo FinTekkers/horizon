@@ -16,9 +16,19 @@
 // then removes ui/dist so no /horizon/-based bundle is left behind for a local
 // `vite preview`. Measured wall clock is recorded in domain/README.md.
 
+// HZ-139 added a second assertion: the emitted JS bundle must CONTAIN a step
+// label. domain/js/lifecycle.js now reads its data via a static JSON import
+// attribute, and a successful `vite build` does not prove Rollup inlined it —
+// it can emit the JSON as a separate asset instead, which then 404s under the
+// /horizon/ base. The build stays green, every suite stays green, and the board
+// renders empty in production. Grepping the bundle is the cheapest proof the
+// data actually shipped.
+
 import { spawnSync } from 'node:child_process'
-import { readFileSync, existsSync, rmSync } from 'node:fs'
+import { readFileSync, existsSync, readdirSync, rmSync } from 'node:fs'
 import path from 'node:path'
+
+import { STEPS } from '../../domain/js/lifecycle.js'
 
 const REPO_ROOT = path.resolve(import.meta.dirname, '../..')
 const DIST = path.join(REPO_ROOT, 'ui/dist')
@@ -52,7 +62,32 @@ if (!html.includes(EXPECTED)) {
   )
 }
 
-console.log(`verify-base-build: ui/dist/index.html references ${EXPECTED} (${seconds.toFixed(1)}s)`)
+// The step data must be IN the bundle, not fetched beside it.
+const assetsDir = path.join(DIST, 'assets')
+if (!existsSync(assetsDir)) fail('the build produced no ui/dist/assets/')
+
+const jsBundles = readdirSync(assetsDir).filter((f) => f.endsWith('.js'))
+if (jsBundles.length === 0) fail('the build emitted no JS bundle')
+
+const bundled = jsBundles.map((f) => readFileSync(path.join(assetsDir, f), 'utf8')).join('\n')
+const probeLabel = STEPS[0].label
+if (!bundled.includes(probeLabel)) {
+  fail(
+    `no emitted JS bundle contains the step label "${probeLabel}" — domain/steps.json was not inlined. ` +
+      'Rollup emitted it as a separate asset, which 404s under the production base: the board would render empty.',
+  )
+}
+
+// A stray steps.json beside the bundle means it was emitted as a fetchable
+// asset. Harmless only if it is ALSO inlined, which is not a state to ship.
+const strayJson = readdirSync(assetsDir).filter((f) => f.endsWith('.json'))
+if (strayJson.length > 0) {
+  fail(`the build emitted JSON asset(s) ${strayJson.join(', ')} — the step data must be inlined, not fetched`)
+}
+
+console.log(
+  `verify-base-build: ui/dist/index.html references ${EXPECTED}, and the bundle inlines the step table (${seconds.toFixed(1)}s)`,
+)
 
 // A /horizon/-based bundle must not linger: `npm --prefix ui run preview`
 // serves dist/ at / locally and would 404 on every asset.

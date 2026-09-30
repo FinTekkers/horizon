@@ -58,13 +58,16 @@ test('POSITIVE CONTROL: the same patterns DO fire on the name that was kept', ()
 })
 
 test('the discarded name is not an export of any surviving module', async () => {
-  for (const spec of [
+  // The generator was on this list until HZ-139 deleted it.
+  const SPECS = [
     '../../domain/js/lifecycle.js',
     '../../ui/src/domain/lifecycle.js',
     '../../ui/src/domain/agentTokens.js',
     '../src/agentTokens.js',
-    '../../domain/generate.mjs',
-  ]) {
+    '../../domain/validate.mjs',
+  ]
+  assert.ok(SPECS.length > 0, 'the scanned module list is empty — this test would pass vacuously')
+  for (const spec of SPECS) {
     const mod = await import(spec)
     assert.equal(mod[DISCARDED], undefined, `${spec} still exports ${DISCARDED}`)
   }

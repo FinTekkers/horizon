@@ -2,9 +2,9 @@
 // nothing needs a literal index changed anywhere — lane routing, workspace
 // mutation, turn budgets and provider eligibility all follow the new step
 // automatically." This is the JS half (domain/js/lifecycle.js's derived
-// lookups plus domain/generate.mjs's farm-shaped projection); the farm half
-// (lane routing, workspace mutation, turn budgets, provider eligibility) is
-// proven the same way in farm/tests/test_steps_insertion.py.
+// lookups); the farm half (the farm-shaped projection, lane routing, workspace
+// mutation, turn budgets, provider eligibility) is proven the same way in
+// farm/tests/test_steps_insertion.py.
 //
 // Every assertion below reads an inserted/shifted step back off the
 // fabricated table by its own label — no production step index (11, 12,
@@ -14,7 +14,6 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 
 import { agentStepIndexes, requiredStepIndex } from '../../domain/js/lifecycle.js'
-import { toGeneratedSteps } from '../../domain/generate.mjs'
 
 const EXISTING_FARM_STEP = {
   phase: 0,
@@ -66,27 +65,17 @@ test('agentStepIndexes includes the inserted step the moment it is added, with n
   assert.ok(agentStepIndexes(AFTER_INSERT).includes(insertedIndex))
 })
 
-test('toGeneratedSteps carries the inserted step at its own computed index with its own fields, untouched by neighbors', () => {
-  const generated = toGeneratedSteps(AFTER_INSERT)
-  const insertedIndex = AFTER_INSERT.findIndex((s) => s.label === INSERTED_STEP.label)
-  const entry = generated.find((g) => g.label === INSERTED_STEP.label)
-
-  assert.ok(entry, 'the inserted farm step must appear in the generated view')
-  assert.equal(entry.index, insertedIndex)
-  assert.equal(entry.workspaceMutating, INSERTED_STEP.workspaceMutating)
-  assert.equal(entry.providerOverrideEligible, INSERTED_STEP.providerOverrideEligible)
-  assert.equal(entry.providerLocked, INSERTED_STEP.providerLocked)
-  assert.equal(entry.maxTurns, INSERTED_STEP.maxTurns)
-  assert.equal(entry.timeoutS, INSERTED_STEP.timeoutS)
-
-  // The pre-existing step's own fields must be unaffected by the insertion.
-  const existingEntry = generated.find((g) => g.label === EXISTING_FARM_STEP.label)
-  assert.equal(existingEntry.maxTurns, EXISTING_FARM_STEP.maxTurns)
-})
-
 // HZ-128 deleted toUiSteps along with the UI's separate generated JSON: the
 // one JS binding now carries domain/steps.json's authored entries verbatim, so
 // there is no second JS projection left to derive or test. Which shape shipped
 // is pinned instead by domain-binding-hygiene.test.mjs — including the fact
 // that the JS view now DOES carry the farm-only fields the old toUiSteps
 // dropped.
+//
+// HZ-139 deleted the generator, and with it the farm-shaped projection this
+// file used to assert here (toGeneratedSteps). That projection is now Python —
+// domain/py/steps.py's _project_farm_view — and the same scenario, on the same
+// fabricated 3-entry table, is asserted against the implementation that owns it
+// in farm/tests/test_steps_insertion.py's
+// test_project_farm_view_carries_the_inserted_step_at_its_own_index. Coverage
+// moved languages; it was not dropped.

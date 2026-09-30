@@ -1,0 +1,377 @@
+{
+  "$comment": "HZ-139. Input/expected pairs for the lifecycle bindings, asserted by BOTH server/test/domain-fixture-cases.test.mjs and farm/tests/test_lifecycle_fixtures.py. The `shared` section is the point of the file: before this, domain/js/lifecycle.js and domain/py/steps.py were two independent hand-written implementations and NOTHING ever proved a label lookup, a farm projection or a validation rule meant the same thing in both languages. Every case in `shared` runs in both suites, and each suite asserts it executed the exact ids listed in shared.manifest — so a suite cannot quietly skip a section and still pass. The `js` and `py` sections cover the helpers that exist in only one binding; a coverage guard in each suite asserts SET EQUALITY between that section's keys and the binding's real exports, so a new export with no case fails, and a stale case naming a removed export fails too.",
+
+  "shared": {
+    "manifest": {
+      "labelLookup": ["resolves a real farm-dispatched step", "raises, naming the missing label"],
+      "farmProjection": [
+        "gates are dropped and agent steps keep their own index",
+        "farm-only fields are null on the PM lane, never absent",
+        "requires is dropped — it gates a server dispatch, never a farm one"
+      ],
+      "validation": [
+        "a valid table is accepted",
+        "duplicate labels rejected",
+        "a phase past the end of phases rejected",
+        "a root that is not an object rejected",
+        "a root that is an array rejected",
+        "an empty object rejected",
+        "an empty steps array rejected",
+        "an empty phases array rejected",
+        "steps that are not objects rejected",
+        "a negative phase rejected",
+        "a non-integer phase rejected",
+        "an unknown kind rejected",
+        "an empty label rejected"
+      ]
+    },
+
+    "labelLookup": [
+      {
+        "case": "resolves a real farm-dispatched step",
+        "label": "Specialist agent implements",
+        "expect": { "found": true, "agent": "Eng", "runsIn": "farm", "providerLocked": true }
+      },
+      {
+        "case": "raises, naming the missing label",
+        "label": "No Such Step",
+        "expect": { "found": false, "messageContains": "No Such Step" }
+      }
+    ],
+
+    "farmProjection": [
+      {
+        "case": "gates are dropped and agent steps keep their own index",
+        "input": {
+          "phases": ["P"],
+          "steps": [
+            {
+              "phase": 0,
+              "kind": "agent",
+              "agent": "Eng",
+              "label": "First Farm Step",
+              "runsIn": "farm",
+              "workspaceMutating": false,
+              "providerOverrideEligible": true,
+              "providerLocked": false,
+              "maxTurns": 10,
+              "timeoutS": 100
+            },
+            { "phase": 0, "kind": "gate", "gate": "required", "label": "A Gate" },
+            {
+              "phase": 0,
+              "kind": "agent",
+              "agent": "Eng",
+              "label": "Second Farm Step",
+              "runsIn": "farm",
+              "workspaceMutating": true,
+              "providerOverrideEligible": false,
+              "providerLocked": true,
+              "maxTurns": 77,
+              "timeoutS": 777
+            }
+          ]
+        },
+        "expect": [
+          {
+            "index": 0,
+            "label": "First Farm Step",
+            "agent": "Eng",
+            "runsIn": "farm",
+            "workspaceMutating": false,
+            "providerOverrideEligible": true,
+            "providerLocked": false,
+            "maxTurns": 10,
+            "timeoutS": 100
+          },
+          {
+            "index": 2,
+            "label": "Second Farm Step",
+            "agent": "Eng",
+            "runsIn": "farm",
+            "workspaceMutating": true,
+            "providerOverrideEligible": false,
+            "providerLocked": true,
+            "maxTurns": 77,
+            "timeoutS": 777
+          }
+        ]
+      },
+      {
+        "case": "farm-only fields are null on the PM lane, never absent",
+        "input": {
+          "phases": ["P"],
+          "steps": [{ "phase": 0, "kind": "agent", "agent": "PM", "label": "A PM Step", "runsIn": "pm" }]
+        },
+        "expect": [
+          {
+            "index": 0,
+            "label": "A PM Step",
+            "agent": "PM",
+            "runsIn": "pm",
+            "workspaceMutating": null,
+            "providerOverrideEligible": null,
+            "providerLocked": null,
+            "maxTurns": null,
+            "timeoutS": null
+          }
+        ]
+      },
+      {
+        "case": "requires is dropped — it gates a server dispatch, never a farm one",
+        "input": {
+          "phases": ["P"],
+          "steps": [
+            {
+              "phase": 0,
+              "kind": "agent",
+              "agent": "QA",
+              "label": "A Reviewer",
+              "runsIn": "farm",
+              "workspaceMutating": false,
+              "providerOverrideEligible": false,
+              "providerLocked": false,
+              "maxTurns": 40,
+              "timeoutS": 1140,
+              "requires": ["Something Earlier"]
+            }
+          ]
+        },
+        "expect": [
+          {
+            "index": 0,
+            "label": "A Reviewer",
+            "agent": "QA",
+            "runsIn": "farm",
+            "workspaceMutating": false,
+            "providerOverrideEligible": false,
+            "providerLocked": false,
+            "maxTurns": 40,
+            "timeoutS": 1140
+          }
+        ]
+      }
+    ],
+
+    "validation": [
+      {
+        "case": "a valid table is accepted",
+        "input": {
+          "phases": ["Plan", "Execute"],
+          "steps": [
+            { "phase": 0, "kind": "gate", "gate": "required", "label": "A Gate" },
+            { "phase": 1, "kind": "agent", "agent": "PM", "label": "A PM Step", "runsIn": "pm" }
+          ]
+        },
+        "expect": { "throws": false }
+      },
+      {
+        "case": "duplicate labels rejected",
+        "input": {
+          "phases": ["P"],
+          "steps": [
+            { "phase": 0, "kind": "gate", "gate": "required", "label": "Same Label" },
+            { "phase": 0, "kind": "gate", "gate": "required", "label": "Same Label" }
+          ]
+        },
+        "expect": { "throws": true, "messageContains": "has duplicate step label(s)" }
+      },
+      {
+        "case": "a phase past the end of phases rejected",
+        "input": {
+          "phases": ["P"],
+          "steps": [{ "phase": 3, "kind": "gate", "gate": "required", "label": "A Gate" }]
+        },
+        "expect": { "throws": true, "messageContains": "declares phase 3, but only 1 phase(s) exist" }
+      },
+      {
+        "case": "a root that is not an object rejected",
+        "input": "not a table",
+        "expect": { "throws": true, "messageContains": "must be a JSON object with phases and steps" }
+      },
+      {
+        "case": "a root that is an array rejected",
+        "input": [],
+        "expect": { "throws": true, "messageContains": "must be a JSON object with phases and steps" }
+      },
+      {
+        "case": "an empty object rejected",
+        "input": {},
+        "expect": { "throws": true, "messageContains": "phases must be a non-empty array of non-empty strings" }
+      },
+      {
+        "case": "an empty steps array rejected",
+        "input": { "phases": ["P"], "steps": [] },
+        "expect": { "throws": true, "messageContains": "steps must be a non-empty JSON array of step objects" }
+      },
+      {
+        "case": "an empty phases array rejected",
+        "input": {
+          "phases": [],
+          "steps": [{ "phase": 0, "kind": "gate", "gate": "required", "label": "A Gate" }]
+        },
+        "expect": { "throws": true, "messageContains": "phases must be a non-empty array of non-empty strings" }
+      },
+      {
+        "case": "steps that are not objects rejected",
+        "input": { "phases": ["P"], "steps": ["not a step"] },
+        "expect": { "throws": true, "messageContains": "step object" }
+      },
+      {
+        "case": "a negative phase rejected",
+        "input": {
+          "phases": ["P"],
+          "steps": [{ "phase": -1, "kind": "gate", "gate": "required", "label": "A Gate" }]
+        },
+        "expect": { "throws": true, "messageContains": "declares a non-integer or negative phase" }
+      },
+      {
+        "case": "a non-integer phase rejected",
+        "input": {
+          "phases": ["P"],
+          "steps": [{ "phase": 1.5, "kind": "gate", "gate": "required", "label": "A Gate" }]
+        },
+        "expect": { "throws": true, "messageContains": "declares a non-integer or negative phase" }
+      },
+      {
+        "case": "an unknown kind rejected",
+        "input": {
+          "phases": ["P"],
+          "steps": [{ "phase": 0, "kind": "banana", "gate": "required", "label": "A Gate" }]
+        },
+        "expect": { "throws": true, "messageContains": "expected \"agent\" or \"gate\"" }
+      },
+      {
+        "case": "an empty label rejected",
+        "input": {
+          "phases": ["P"],
+          "steps": [{ "phase": 0, "kind": "gate", "gate": "required", "label": "" }]
+        },
+        "expect": { "throws": true, "messageContains": "has no label" }
+      }
+    ]
+  },
+
+  "js": {
+    "$comment": "Helpers that exist only in domain/js/lifecycle.js. `cursor` indexes the AUTHORED table (16 entries), so a case must never hardcode a real step position — the constants below assert a DERIVED LABEL rather than an integer, so inserting a step does not turn this file into a second copy of domain-step-pins.test.mjs.",
+
+    "PHASES": [{ "case": "the live phase list is non-empty", "expectNonEmpty": true }],
+    "STEPS": [{ "case": "the live step table is non-empty", "expectNonEmpty": true }],
+
+    "IMPLEMENT_STEP_INDEX": [{ "case": "points at the implement step", "expectLabel": "Specialist agent implements" }],
+    "REVIEW_STEP_INDEX": [{ "case": "points at the automated review step", "expectLabel": "Automated review (code + QA)" }],
+    "ACCEPT_GATE_INDEX": [{ "case": "points at the accept gate", "expectLabel": "Accept the code" }],
+    "DEPLOY_STEP_INDEX": [{ "case": "points at the deploy step", "expectLabel": "Deploy the changes" }],
+
+    "assertLifecycleShape": [{ "case": "driven by shared.validation", "drivenBy": "shared.validation" }],
+
+    "requiredStepIndex": [
+      { "case": "resolves a fabricated label by position", "label": "Second", "expect": 1 },
+      { "case": "throws on an unknown label", "label": "Nope", "expect": { "throws": true, "messageContains": "was it renamed?" } }
+    ],
+
+    "agentStepIndexes": [
+      { "case": "agent entries only, in order", "expect": [0, 2] }
+    ],
+
+    "isClosed": [
+      { "case": "a cursor past the end is closed", "item": { "cursor": 16 }, "expect": true },
+      { "case": "a cursor at the last step is not closed", "item": { "cursor": 15 }, "expect": false },
+      { "case": "a fresh item is not closed", "item": { "cursor": 0 }, "expect": false }
+    ],
+
+    "isAbandoned": [
+      { "case": "an abandoned_at timestamp marks it abandoned", "item": { "cursor": 0, "abandoned_at": "2026-01-01T00:00:00Z" }, "expect": true },
+      { "case": "no timestamp means not abandoned", "item": { "cursor": 0 }, "expect": false },
+      { "case": "a closed item is not abandoned by that alone", "item": { "cursor": 16 }, "expect": false }
+    ],
+
+    "curStep": [
+      { "case": "a closed item has no current step", "item": { "cursor": 16 }, "expectNull": true },
+      { "case": "an open item sits on the step at its cursor", "item": { "cursor": 0 }, "expectLabelAtCursor": true }
+    ],
+
+    "phaseIdx": [
+      { "case": "a closed item reports the final phase", "item": { "cursor": 16 }, "expect": 4 },
+      { "case": "an open item reports its own step's phase", "item": { "cursor": 0 }, "expect": 0 }
+    ],
+
+    "awaitingGate": [
+      { "case": "an abandoned item never awaits a gate", "item": { "cursor": 3, "abandoned_at": "2026-01-01T00:00:00Z" }, "expect": false },
+      { "case": "a rejected item is blocked, not awaiting", "item": { "cursor": 3, "rejected": 1 }, "expect": false },
+      { "case": "a closed item awaits nothing", "item": { "cursor": 16 }, "expect": false },
+      { "case": "an item parked on an agent step is not awaiting a gate", "item": { "cursor": 0 }, "expect": false }
+    ],
+
+    "stepStatus": [
+      { "case": "every step of a closed item is done", "item": { "cursor": 16 }, "i": 0, "expect": "done" },
+      { "case": "a rejected item is blocked at its cursor", "item": { "cursor": 4, "rejected": 1 }, "i": 4, "expect": "blocked" },
+      { "case": "steps before the cursor are done", "item": { "cursor": 4 }, "i": 0, "expect": "done" },
+      { "case": "steps after the cursor are pending", "item": { "cursor": 4 }, "i": 5, "expect": "pending" },
+      { "case": "an agent step at the cursor is active", "item": { "cursor": 0 }, "i": 0, "expect": "active" },
+      { "case": "a gate at the cursor is awaiting", "item": { "cursor": 3 }, "i": 3, "expect": "awaiting" }
+    ],
+
+    "phaseStepIndexes": [
+      { "case": "phase 0 holds the opening steps", "phase": 0, "expect": [0, 1, 2, 3] },
+      { "case": "a phase past the end holds nothing", "phase": 99, "expect": [] }
+    ],
+
+    "isBlocked": [
+      { "case": "no blockers means unblocked", "blockers": [], "expect": false },
+      { "case": "an open blocker blocks", "blockers": [{ "cursor": 0 }], "expect": true },
+      { "case": "a closed blocker does not block", "blockers": [{ "cursor": 16 }], "expect": false },
+      { "case": "an abandoned but open blocker still blocks", "blockers": [{ "cursor": 0, "abandoned_at": "2026-01-01T00:00:00Z" }], "expect": true }
+    ],
+
+    "isBlockedByAbandoned": [
+      { "case": "no blockers", "blockers": [], "expect": false },
+      { "case": "an abandoned blocker is surfaced distinctly", "blockers": [{ "cursor": 0, "abandoned_at": "2026-01-01T00:00:00Z" }], "expect": true },
+      { "case": "an ordinary open blocker is not abandoned", "blockers": [{ "cursor": 0 }], "expect": false }
+    ],
+
+    "reworkTargets": [
+      { "case": "only agent steps strictly earlier than the gate", "gateLabel": "Accept the code", "expectAllAgentKindBeforeGate": true },
+      { "case": "the first gate has no earlier agent step beyond the opening ones", "gateLabel": "Approve & prioritize this work", "expectAllAgentKindBeforeGate": true }
+    ],
+
+    "defaultReworkTarget": [
+      { "case": "the accept gate sends back to the implement step", "gateLabel": "Accept the code", "expectLabel": "Specialist agent implements" },
+      { "case": "any other gate walks back to the nearest earlier agent step", "gateLabel": "Review before execution", "expectLabel": "Summarize reviews & recommend" }
+    ]
+  },
+
+  "py": {
+    "$comment": "Public names of domain/py/steps.py, plus the two underscore-private functions that `shared` exists to compare across languages (_validate_source and _project_farm_view). `steps` arguments are FARM-SHAPED entries here, not authored ones — that is the whole point of the two-shape split.",
+
+    "PHASES": [{ "case": "the live phase list is non-empty", "expectNonEmpty": true }],
+    "STEPS": [{ "case": "the live farm view is non-empty", "expectNonEmpty": true }],
+    "STEP_BY_INDEX": [
+      { "case": "keyed by each entry's own index", "expectKeyedByIndex": true },
+      { "case": "an unknown index misses rather than raising", "index": 9999, "expectMissing": true }
+    ],
+
+    "_validate_source": [{ "case": "driven by shared.validation", "drivenBy": "shared.validation" }],
+    "_project_farm_view": [{ "case": "driven by shared.farmProjection", "drivenBy": "shared.farmProjection" }],
+    "_find_by_label": [{ "case": "driven by shared.labelLookup", "drivenBy": "shared.labelLookup" }],
+    "by_label": [{ "case": "driven by shared.labelLookup", "drivenBy": "shared.labelLookup" }],
+
+    "budget_for_label": [
+      { "case": "reads the fabricated step's own budget", "label": "Inserted Farm Step", "expect": [77, 777] },
+      { "case": "leaves a neighbour's budget alone", "label": "Existing Farm Step", "expect": [10, 100] },
+      { "case": "raises on an unknown label", "label": "Nope", "expect": { "throws": true, "messageContains": "Nope" } }
+    ],
+
+    "provider_override_eligible": [
+      { "case": "false when the entry declares false", "label": "Inserted Farm Step", "expect": false },
+      { "case": "true when the entry declares true", "label": "Existing Farm Step", "expect": true },
+      { "case": "None on the PM lane coerces to false", "label": "Existing PM Step", "expect": false }
+    ],
+
+    "provider_locked_for": [
+      { "case": "true when the entry declares true", "label": "Inserted Farm Step", "expect": true },
+      { "case": "false when the entry declares false", "label": "Existing Farm Step", "expect": false },
+      { "case": "None on the PM lane coerces to false", "label": "Existing PM Step", "expect": false }
+    ]
+  }
+}

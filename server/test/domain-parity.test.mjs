@@ -4,15 +4,17 @@
 // budgets — and fails if either drifts. This test must fail if a step is
 // inserted into STEPS without the Python side updating."
 //
-// LOAD-BEARING LEG, read this before touching the file. HZ-128 collapsed the
-// two committed step-table mirrors into one generated binding per language, so
-// the two JS legs below are now generator-output vs generator-output — close
-// to tautological, and honestly so. The ONE genuinely cross-language,
-// cross-artifact comparison left is spawnedPythonSteps(): it boots a real
-// python3, imports the COMMITTED domain/py/steps.py off disk, and diffs what
-// that module actually produced against what the generator would render from
-// domain/steps.json right now. That is what still fails if the Python binding
-// is stale, hand-edited, or unimportable. Do not weaken or skip it.
+// LOAD-BEARING LEG, read this before touching the file. spawnedPythonSteps()
+// boots a real python3, imports the COMMITTED domain/py/steps.py off disk, and
+// diffs what that module actually produced against what the JS binding — a
+// separate hand-written implementation in a separate language — implies. Do not
+// weaken or skip it.
+//
+// HZ-139 made this stronger. Under HZ-128 both sides of the comparison came out
+// of the same generator, so it was close to tautological and said so. Now the
+// two bindings are independent hand-written source, and the farm projection is
+// reimplemented below rather than imported from either of them, so a drift in
+// _project_farm_view is caught by a third opinion instead of by its own author.
 //
 // The Python side backs this up from its own end:
 // farm/tests/test_domain_import.py (the module resolves and loads),
@@ -30,10 +32,34 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { execFileSync } from 'node:child_process'
+import { readFileSync } from 'node:fs'
 import path from 'node:path'
 
-import { loadSource, toGeneratedSteps, REPO_ROOT } from '../../domain/generate.mjs'
 import { STEPS as jsSteps, PHASES as jsPhases } from '../../domain/js/lifecycle.js'
+import { REPO_ROOT } from './helpers/repoFiles.mjs'
+
+// The farm-shaped projection, reimplemented here on purpose (HZ-139). It used
+// to be imported from the generator that also PRODUCED the Python table, which
+// made the comparison below generator-output vs generator-output. The rule now
+// lives once in production code (domain/py/steps.py's _project_farm_view) and
+// once here, in a test whose whole job is to disagree with it. That is what
+// turns this file into a real cross-language check rather than a tautology.
+function expectedFarmViewOf(steps) {
+  return steps
+    .map((s, index) => ({ ...s, index }))
+    .filter((s) => s.kind === 'agent')
+    .map((s) => ({
+      index: s.index,
+      label: s.label,
+      agent: s.agent,
+      runsIn: s.runsIn,
+      workspaceMutating: s.workspaceMutating ?? null,
+      providerOverrideEligible: s.providerOverrideEligible ?? null,
+      providerLocked: s.providerLocked ?? null,
+      maxTurns: s.maxTurns ?? null,
+      timeoutS: s.timeoutS ?? null,
+    }))
+}
 
 function spawnedPythonSteps() {
   const script = 'import json; from domain.py import steps; print(json.dumps(steps.STEPS))'
@@ -47,22 +73,22 @@ function spawnedPythonPhases() {
   return JSON.parse(out)
 }
 
-const source = loadSource()
-const expectedFarmView = toGeneratedSteps(source.steps)
+const source = JSON.parse(readFileSync(path.join(REPO_ROOT, 'domain/steps.json'), 'utf8'))
+const expectedFarmView = expectedFarmViewOf(jsSteps)
 const pythonFarm = spawnedPythonSteps()
 
-test('the committed Python binding, imported by a real python3, matches what the generator renders from domain/steps.json today', () => {
+test('the Python binding, imported by a real python3, projects the same farm view the JS binding implies', () => {
   assert.ok(pythonFarm.length > 0, 'sanity: the spawned Python import produced an empty table')
   assert.deepEqual(
     pythonFarm,
     expectedFarmView,
-    'domain/py/steps.py is stale or hand-edited — run `npm run gen:domain`',
+    'domain/py/steps.py disagrees with domain/js/lifecycle.js about the farm projection',
   )
 })
 
-test('the committed JS binding matches the authored table in domain/steps.json, entry for entry', () => {
+test('the JS binding exposes domain/steps.json verbatim, entry for entry', () => {
   assert.ok(jsSteps.length > 0, 'sanity: the JS binding exports an empty table')
-  assert.deepEqual(jsSteps, source.steps, 'domain/js/lifecycle.js is stale or hand-edited — run `npm run gen:domain`')
+  assert.deepEqual(jsSteps, source.steps, 'domain/js/lifecycle.js does not expose domain/steps.json as authored')
   assert.deepEqual(jsPhases, source.phases)
 })
 

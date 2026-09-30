@@ -8,8 +8,9 @@
 // positive controls are what rule that out.
 //
 // Cross-field rules the Draft-07 subset cannot express — a step's `phase` being
-// in range of `phases`, unique labels — are enforced by domain/generate.mjs's
-// loadSource() and covered at the bottom of this file.
+// in range of `phases`, unique labels — are enforced at LOAD time by
+// domain/js/lifecycle.js's assertLifecycleShape (HZ-139), and covered at the
+// bottom of this file both directly and through a real subprocess import.
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
@@ -19,7 +20,8 @@ import { spawnSync } from 'node:child_process'
 import path from 'node:path'
 
 import { validate } from '../../domain/validate.mjs'
-import { loadSource, REPO_ROOT } from '../../domain/generate.mjs'
+import { assertLifecycleShape } from '../../domain/js/lifecycle.js'
+import { REPO_ROOT } from './helpers/repoFiles.mjs'
 
 const schema = JSON.parse(readFileSync(path.join(REPO_ROOT, 'domain/steps.schema.json'), 'utf8'))
 const source = JSON.parse(readFileSync(path.join(REPO_ROOT, 'domain/steps.json'), 'utf8'))
@@ -100,46 +102,78 @@ test('a schema using a keyword the validator does not implement throws rather th
   )
 })
 
-// ---- cross-field rules, enforced by the generator ----
-// These call the REAL loadSource(), pointed at a tampered copy of domain/ in a
-// temp dir. Re-implementing the checks in the test would only prove the copy
-// works.
+// ---- cross-field rules, enforced at LOAD time by the binding itself ----
+// HZ-139 moved these out of the deleted generator's loadSource() and into
+// domain/js/lifecycle.js's assertLifecycleShape, which the binding calls on its
+// own imported data. Same rules, same messages, one call site earlier: a broken
+// domain/steps.json now fails at import rather than rendering a broken binding.
 
-function tamperedDomain(newSource) {
-  const dir = path.join(mkdtempSync(path.join(tmpdir(), 'horizon-domain-')), 'domain')
-  cpSync(path.join(REPO_ROOT, 'domain'), dir, { recursive: true })
-  writeFileSync(path.join(dir, 'steps.json'), `${JSON.stringify(newSource, null, 2)}\n`)
-  return dir
-}
-
-test('SANITY: loadSource accepts an untampered copy of domain/, so the temp-dir harness itself works', () => {
-  assert.deepEqual(loadSource(tamperedDomain(source)), source)
+test('SANITY: assertLifecycleShape accepts the real domain/steps.json unchanged', () => {
+  assert.equal(assertLifecycleShape(source), source)
 })
 
-test('loadSource rejects duplicate step labels, naming them', () => {
+test('assertLifecycleShape rejects duplicate step labels, naming them', () => {
   const dupLabel = source.steps[0].label
   const broken = { ...source, steps: [source.steps[0], { ...source.steps[3], label: dupLabel }] }
-  assert.throws(() => loadSource(tamperedDomain(broken)), (err) => {
+  assert.throws(() => assertLifecycleShape(broken), (err) => {
     assert.match(err.message, /duplicate step label/)
     assert.ok(err.message.includes(dupLabel), `error does not name the duplicated label: ${err.message}`)
     return true
   })
 })
 
-test('loadSource rejects a phase past the end of the phases array', () => {
+test('assertLifecycleShape rejects a phase past the end of the phases array', () => {
   const broken = { phases: ['Plan'], steps: [{ ...GATE_STEP, phase: 3 }] }
-  assert.throws(() => loadSource(tamperedDomain(broken)), /declares phase 3, but only 1 phase\(s\) exist/)
+  assert.throws(() => assertLifecycleShape(broken), /declares phase 3, but only 1 phase\(s\) exist/)
 })
 
-test('loadSource rejects a table that fails the schema, quoting the offending path', () => {
-  assert.throws(() => loadSource(tamperedDomain(table({ ...FARM_STEP, timeoutS: 'soon' }))), /steps\[0\]\.timeoutS/)
+// ---- the IMPORT itself rejects a broken table (HZ-139 metric 5) ----
+// Calling assertLifecycleShape directly only proves the validator works. This
+// proves the BINDING calls it: a future edit that drops the call site leaves
+// every test above green and this one red. Runs a real `node` against a
+// tampered copy of domain/ in a temp dir and asserts both a non-zero exit AND
+// the specific message — a syntax error also exits non-zero.
+
+function tamperedDomain(newSource) {
+  const dir = path.join(mkdtempSync(path.join(tmpdir(), 'horizon-domain-')), 'domain')
+  cpSync(path.join(REPO_ROOT, 'domain'), dir, { recursive: true })
+  writeFileSync(
+    path.join(dir, 'steps.json'),
+    typeof newSource === 'string' ? newSource : `${JSON.stringify(newSource, null, 2)}\n`,
+  )
+  return dir
+}
+
+function importBinding(domainDir) {
+  return spawnSync(process.execPath, ['-e', `import(${JSON.stringify(path.join(domainDir, 'js/lifecycle.js'))})`], {
+    encoding: 'utf8',
+  })
+}
+
+test('SANITY: importing an UNtampered copy of domain/ succeeds — the temp-dir harness itself works', () => {
+  const result = importBinding(tamperedDomain(source))
+  assert.equal(result.status, 0, `importing an untouched copy failed: ${result.stderr}`)
 })
 
-test('the generator CLI refuses to render an invalid table — it exits non-zero instead of writing one', () => {
-  const dir = tamperedDomain({ ...source, steps: [{ ...GATE_STEP, kind: 'banana' }] })
-  const result = spawnSync(process.execPath, [path.join(dir, 'generate.mjs'), '--write'], { encoding: 'utf8' })
-  assert.notEqual(result.status, 0, 'the generator wrote bindings from an invalid table')
-  assert.match(result.stderr, /banana/)
+test('importing the JS binding over a steps.json with duplicate labels fails, naming them', () => {
+  const dupLabel = source.steps[0].label
+  const broken = { ...source, steps: [source.steps[0], { ...source.steps[3], label: dupLabel }] }
+  const result = importBinding(tamperedDomain(broken))
+  assert.notEqual(result.status, 0, 'the JS binding imported a table with duplicate labels')
+  assert.match(result.stderr, /duplicate step label/)
+  assert.ok(result.stderr.includes(dupLabel), `the import error does not name the duplicated label: ${result.stderr}`)
+})
+
+test('importing the JS binding over a steps.json with an out-of-range phase fails', () => {
+  const broken = { phases: ['Plan'], steps: [{ ...GATE_STEP, phase: 3 }] }
+  const result = importBinding(tamperedDomain(broken))
+  assert.notEqual(result.status, 0, 'the JS binding imported a table with an out-of-range phase')
+  assert.match(result.stderr, /declares phase 3, but only 1 phase\(s\) exist/)
+})
+
+test('importing the JS binding over malformed JSON fails — the one case a .json fixture cannot express', () => {
+  const result = importBinding(tamperedDomain('{ "phases": ["Plan"], "steps": [], }'))
+  assert.notEqual(result.status, 0, 'the JS binding imported malformed JSON')
 })
 
 function omit(obj, key) {
