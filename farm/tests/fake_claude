@@ -65,6 +65,17 @@ if "HZ124_REPAIR_LADDER" in prompt:
     print(json.dumps({"type": "result", "result": bad, "session_id": "fake-session-hz124"}))
     sys.exit(0)
 
+# HZ-124: exhaustion e2e. Emits a reply truncated mid-string and then hangs
+# past the caller's timeout, so the REAL provider path (subprocess.run ->
+# TimeoutExpired -> AgentExhaustedError.partial_text) is what feeds the
+# salvage, rather than a hand-constructed exception in a test closure.
+if "HZ124_EXHAUST_TRUNCATED" in prompt:
+    import time
+
+    print('{"summary": "wrote the parser, still needed to add tests when the budget ran out', flush=True)
+    time.sleep(30)
+    sys.exit(0)
+
 patch = {}
 if "guardrails: (empty)" in prompt and "Set guardrails" in prompt:
     patch["guardrails"] = "[fake] defaults apply; no destructive data changes"

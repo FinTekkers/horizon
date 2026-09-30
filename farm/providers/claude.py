@@ -24,7 +24,13 @@ import subprocess
 from datetime import datetime
 
 from ..config import CLAUDE_BIN, FARM_RUNNER, MAX_TURNS, STEP_TIMEOUT_S
-from .base import AgentError, AgentExhaustedError, assert_metered_billing_authorized, metered_billing_opted_in
+from .base import (
+    AgentError,
+    AgentExhaustedError,
+    assert_metered_billing_authorized,
+    decode_partial_output,
+    metered_billing_opted_in,
+)
 
 SUPPORTS_RESUME = True
 
@@ -261,12 +267,12 @@ def _run_subprocess(
         proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout_s, cwd=cwd)
     except subprocess.TimeoutExpired as exc:
         # HZ-124: best-effort only — this is the FARM_RUNNER=subprocess
-        # rollback lever, not the default path. exc.stdout is whatever bytes
-        # were captured before the kill (rarely the full JSON envelope, since
-        # the CLI only emits it on clean exit); session_id is never known
-        # here (the old CLI JSON path never had one before the timeout).
+        # rollback lever, not the default path. exc.stdout is whatever was
+        # captured before the kill (rarely the full JSON envelope, since the
+        # CLI only emits it on clean exit); session_id is never known here (the
+        # old CLI JSON path never had one before the timeout).
         raise AgentExhaustedError(
-            f"claude timed out after {timeout_s}s", partial_text=exc.stdout or "", session_id=None
+            f"claude timed out after {timeout_s}s", partial_text=decode_partial_output(exc.stdout), session_id=None
         ) from exc
     except FileNotFoundError as exc:
         raise AgentError(f"claude binary not found: {CLAUDE_BIN}") from exc

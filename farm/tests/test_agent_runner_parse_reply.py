@@ -179,6 +179,77 @@ def test_handoff_never_fires_twice_across_two_consecutive_exhaustions(monkeypatc
     assert read_and_clear_handoff_note("HZ-2", 4) is None  # the failed handoff wrote nothing
 
 
+@pytest.mark.parametrize(
+    "handoff_failure",
+    [
+        TypeError("provider shim called with an unexpected kwarg"),
+        OSError("connection reset by peer"),
+        RuntimeError("something nobody anticipated"),
+    ],
+    ids=["TypeError", "OSError", "RuntimeError"],
+)
+def test_a_non_agent_error_handoff_failure_never_costs_the_turn_cap_classification(
+    monkeypatch, tmp_path, handoff_failure
+):
+    """QA finding: _fire_handoff() catching only AgentError let anything else
+    the best-effort handoff call raised escape _handle_exhaustion() BEFORE its
+    `raise exc` — so pm_agent/step_agent never saw an AgentExhaustedError,
+    never tagged reason="turn_cap", and the item paused for a human instead of
+    auto-retrying. The ORIGINAL exhaustion must always be what propagates."""
+    from farm import agent_runner
+
+    monkeypatch.setattr(agent_runner, "STATE_DIR", tmp_path)
+
+    calls = []
+    main_exc = AgentExhaustedError("main run timed out", partial_text="garbage, not json", session_id="sess-1")
+    fake = sequenced_run_agent([main_exc, handoff_failure], calls)
+
+    with pytest.raises(AgentExhaustedError, match="main run timed out") as exc_info:
+        parse_agent_reply("do it", run_agent_fn=fake, handoff_item_id="HZ-5", handoff_step_index=7)
+
+    assert exc_info.value is main_exc  # not the handoff's failure, not a new exception
+    assert len(calls) == 2  # one handoff attempt, never retried
+    assert read_and_clear_handoff_note("HZ-5", 7) is None
+
+
+def test_a_failed_handoff_is_contained_but_not_silent(monkeypatch, tmp_path, capsys):
+    """Contained is not the same as silent (guardrail: failures stay
+    observable) — the giving-up reason prints, and the counter records it so
+    farm/scripts/repair_stats.py shows handoff failures alongside firings."""
+    from farm import agent_runner
+
+    monkeypatch.setattr(agent_runner, "STATE_DIR", tmp_path)
+
+    calls = []
+    main_exc = AgentExhaustedError("main run timed out", partial_text="not json", session_id="sess-1")
+    fake = sequenced_run_agent([main_exc, TypeError("boom")], calls)
+
+    with pytest.raises(AgentExhaustedError):
+        parse_agent_reply("do it", run_agent_fn=fake, handoff_item_id="HZ-6", handoff_step_index=7)
+
+    out = capsys.readouterr().out
+    assert "handoff note: giving up" in out
+    assert "TypeError" in out
+    assert '"path": "handoff_failed"' in (tmp_path / "repair-stats.ndjson").read_text()
+
+
+def test_a_non_str_partial_text_cannot_cost_the_turn_cap_classification(monkeypatch, tmp_path):
+    """Defence in depth on the salvage half of the same failure mode: a
+    provider that hands back bytes (subprocess.TimeoutExpired.stdout is raw
+    bytes even in text mode — see providers/base.decode_partial_output) must
+    not turn an auto-retryable exhaustion into an unclassified TypeError."""
+    from farm import agent_runner
+
+    monkeypatch.setattr(agent_runner, "STATE_DIR", tmp_path)
+
+    calls = []
+    exc = AgentExhaustedError("timed out", partial_text=b'{"summary": "cut off mid', session_id=None)
+    fake = sequenced_run_agent([exc], calls)
+
+    with pytest.raises(AgentExhaustedError, match="timed out"):
+        parse_agent_reply("do it", run_agent_fn=fake)
+
+
 def test_on_exhaustion_reraise_skips_salvage_and_handoff_entirely(monkeypatch, tmp_path):
     """The implement step's on_exhaustion="reraise": HZ-31's own checkpoint
     salvage is the only recovery for this step — guardrail 10."""

@@ -15,7 +15,7 @@ import uuid
 from pathlib import Path
 
 from ..config import FARM_MUSE_BIN, MAX_TURNS, STEP_TIMEOUT_S
-from .base import AgentError, AgentExhaustedError
+from .base import AgentError, AgentExhaustedError, decode_partial_output
 
 # `muse exec --session-id <UUID>` genuinely carries context across calls
 # (verified: two separate processes sharing one id, see the vendor doc) —
@@ -100,9 +100,12 @@ def run(
         except subprocess.TimeoutExpired as exc:
             # HZ-124: session_id is always known here (sid is caller-minted
             # up front, unlike Claude's server-issued id); exc.stdout is
-            # whatever partial JSONL got captured before the kill, best-effort.
+            # whatever partial JSONL got captured before the kill, best-effort
+            # — and raw bytes despite text=True, hence decode_partial_output().
             raise AgentExhaustedError(
-                f"muse timed out after {timeout_s}s", partial_text=exc.stdout or "", session_id=sid
+                f"muse timed out after {timeout_s}s",
+                partial_text=decode_partial_output(exc.stdout),
+                session_id=sid,
             ) from exc
         except FileNotFoundError as exc:
             raise AgentError(f"muse binary not found: {FARM_MUSE_BIN}") from exc

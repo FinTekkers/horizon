@@ -149,6 +149,23 @@ def test_run_timeout_carries_partial_text_and_the_caller_supplied_session_id(mon
     assert exc_info.value.session_id == "fixed-session"
 
 
+def test_run_timeout_decodes_the_raw_bytes_posix_hands_back(monkeypatch):
+    """subprocess.TimeoutExpired.stdout is raw BYTES even though muse.run()
+    passes text=True — on POSIX the timeout is raised from inside
+    Popen._communicate's read loop, before the decode. partial_text must still
+    reach callers as str: the repair ladder and _salvage_truncated_json are
+    str-only, and a bytes value there turns an auto-retryable exhaustion into
+    an unclassified TypeError."""
+
+    def fake_run(cmd, **kwargs):
+        raise subprocess.TimeoutExpired(cmd=cmd, timeout=kwargs.get("timeout"), output=b'{"text": "half a repl')
+
+    monkeypatch.setattr(muse.subprocess, "run", fake_run)
+    with pytest.raises(AgentExhaustedError) as exc_info:
+        muse.run("hang forever", session_id="fixed-session", timeout_s=5)
+    assert exc_info.value.partial_text == '{"text": "half a repl'
+
+
 def test_run_no_terminal_event_and_nonzero_exit_raises_agent_error(monkeypatch):
     def fake_run(cmd, **kwargs):
         return _completed(stdout="", returncode=1, stderr="boom")

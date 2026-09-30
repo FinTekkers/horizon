@@ -10,6 +10,7 @@ assert_provider_auth()/run_agent() below exercise the claude provider,
 same as the pre-HZ-83 claude_runner module did.
 """
 
+import ast
 import json
 import subprocess
 import sys
@@ -106,18 +107,74 @@ def test_extract_json_combines_trailing_comma_and_single_quote_repairs():
     assert notes == ["stripped a trailing comma", "converted single quotes to double quotes"]
 
 
+def _dotted_name(node) -> str:
+    """"json.loads" / "run_agent" / "" for anything else callable."""
+    if isinstance(node, ast.Name):
+        return node.id
+    if isinstance(node, ast.Attribute):
+        prefix = _dotted_name(node.value)
+        return f"{prefix}.{node.attr}" if prefix else node.attr
+    return ""
+
+
+def _is_file_read(node) -> bool:
+    """`<something>.read_text()` — a task file off disk, not a model reply."""
+    return isinstance(node, ast.Call) and _dotted_name(node.func).endswith("read_text")
+
+
+def reply_parsing_offenders(source: str) -> list[str]:
+    """Every call in `source` that could turn a model reply into JSON outside
+    agent_runner.parse_agent_reply().
+
+    An AST walk, not a substring scan: it can tell a genuine `run_agent(...)`
+    call from the bare `run_agent` reference these modules legitimately pass as
+    `run_agent_fn=`, and it can tell `json.loads(path.read_text())` (a task
+    file) from `json.loads(reply["result"])` (a hand-rolled reply parse) —
+    neither of which a grep can do without false positives or blind spots.
+    """
+    offenders = []
+    for node in ast.walk(ast.parse(source)):
+        if isinstance(node, ast.ImportFrom):
+            offenders += [f"from-import of {a.name}" for a in node.names if a.name == "extract_json"]
+            continue
+        if not isinstance(node, ast.Call):
+            continue
+        name = _dotted_name(node.func)
+        if name in ("extract_json", "run_agent"):
+            # run_agent() directly returns UNPARSED reply text — whatever the
+            # caller does with it next is by definition outside the shared
+            # retry/repair/salvage/handoff ladder.
+            offenders.append(f"{name}() call on line {node.lineno}")
+        elif name.endswith("json.loads") or name == "loads":
+            if not _is_file_read(node.args[0] if node.args else None):
+                offenders.append(f"{name}() on line {node.lineno} parses something that isn't a file read")
+    return offenders
+
+
 def test_pm_agent_and_step_agent_never_parse_a_reply_without_the_shared_helper():
     """Metric 14: farm/agent_runner.py's parse_agent_reply() must be the ONE
-    place a reply is turned into JSON — a caller importing/calling
-    extract_json() directly would bypass its retry/repair/salvage/handoff
-    machinery silently. Source-text scan, not an import-time check, so it
-    also catches a stray `from .agent_runner import extract_json`."""
+    place a reply is turned into JSON. Three ways to bypass it, all caught
+    here: calling extract_json() directly, importing it, or calling run_agent()
+    and hand-parsing the raw text with json.loads()."""
     repo_root = Path(__file__).resolve().parent.parent.parent
     for relative in ("farm/pm_agent.py", "farm/step_agent.py"):
         source = (repo_root / relative).read_text()
-        assert "extract_json(" not in source, f"{relative} must parse replies via parse_agent_reply(), not extract_json()"
-        assert "import extract_json" not in source, f"{relative} must not import extract_json at all"
+        offenders = reply_parsing_offenders(source)
+        assert offenders == [], f"{relative} must parse replies via parse_agent_reply() only — found: {offenders}"
         assert "parse_agent_reply(" in source, f"{relative} must call the shared parse_agent_reply() helper"
+
+
+def test_the_metric_14_guard_actually_catches_each_bypass():
+    """The guard above only proves something if it can fail. Each of these
+    three shapes is a real bypass a caller could write, and the scan must name
+    every one of them."""
+    assert reply_parsing_offenders("from .agent_runner import extract_json\n")
+    assert reply_parsing_offenders('parsed = extract_json(reply["result"])\n')
+    assert reply_parsing_offenders('reply = run_agent("do it")\n')
+    assert reply_parsing_offenders('parsed = json.loads(reply["result"])\n')
+    # ...and must NOT fire on what these modules legitimately do.
+    assert reply_parsing_offenders("parse_agent_reply(prompt, run_agent_fn=run_agent)\n") == []
+    assert reply_parsing_offenders("task = json.loads(task_path.read_text())\n") == []
 
 
 def test_requirements_txt_gains_no_third_party_json_repair_dependency():
@@ -126,6 +183,38 @@ def test_requirements_txt_gains_no_third_party_json_repair_dependency():
     requirements = (Path(__file__).resolve().parent.parent / "requirements.txt").read_text().lower()
     for banned in ("json-repair", "json_repair", "demjson", "dirtyjson"):
         assert banned not in requirements
+
+
+# ---- a repair must never alter the model's own words ----
+
+
+def test_trailing_comma_repair_leaves_string_contents_untouched():
+    """QA finding: a `,(\\s*[}\\]])` regex also matches INSIDE a string value.
+    This reply's only real defect is the trailing comma before `}` — the
+    `, ]` sequence in the summary is the model's prose and must survive
+    byte-for-byte. Before the string-aware rewrite this parsed as
+    "fixed the list ] typo" (a comma silently deleted from the content) while
+    the note claimed only a trailing comma had been stripped."""
+    reply = '{"summary": "fixed the list, ] typo", "ok": true,}'
+    parsed, notes = _extract_json_with_notes(reply)
+    assert parsed == {"summary": "fixed the list, ] typo", "ok": True}
+    assert notes == ["stripped a trailing comma"]
+
+
+def test_trailing_comma_repair_preserves_a_comma_before_a_brace_inside_a_string():
+    """Same defect class, object-closing variant, plus an escaped quote right
+    before it — the string scanner must not end the literal on `\\"`."""
+    reply = '{"summary": "see \\"note, }\\" below", "n": 1,}'
+    parsed, notes = _extract_json_with_notes(reply)
+    assert parsed == {"summary": 'see "note, }" below', "n": 1}
+    assert notes == ["stripped a trailing comma"]
+
+
+def test_trailing_comma_repair_handles_nested_arrays_and_whitespace():
+    reply = '{\n  "items": [1, 2, 3,\n  ],\n  "ok": true,\n}'
+    parsed, notes = _extract_json_with_notes(reply)
+    assert parsed == {"items": [1, 2, 3], "ok": True}
+    assert notes == ["stripped a trailing comma"]
 
 
 # ---- _salvage_truncated_json: the two "never fabricate" give-up branches ----
@@ -183,6 +272,38 @@ def test_subprocess_runner_timeout_carries_partial_text_and_no_session_id(monkey
         run_agent("prompt", timeout_s=5)
     assert exc_info.value.partial_text == "partial output before kill"
     assert exc_info.value.session_id is None
+
+
+def test_subprocess_runner_timeout_decodes_the_raw_bytes_posix_hands_back(monkeypatch):
+    """What a REAL timeout looks like: subprocess.TimeoutExpired.stdout is raw
+    BYTES even under text=True, because on POSIX the timeout is raised from
+    inside Popen._communicate's read loop, before the decode step. partial_text
+    must still reach callers as str — the repair ladder and
+    _salvage_truncated_json are str-only, so bytes there turned an
+    auto-retryable exhaustion into an unclassified TypeError."""
+    from farm.providers import base, claude
+
+    monkeypatch.setenv("FARM_RUNNER", "subprocess")
+
+    def fake_run(cmd, **kwargs):
+        raise subprocess.TimeoutExpired(cmd=cmd, timeout=kwargs.get("timeout"), output=b'{"summary": "cut off mid')
+
+    monkeypatch.setattr(claude.subprocess, "run", fake_run)
+    with pytest.raises(base.AgentExhaustedError) as exc_info:
+        run_agent("prompt", timeout_s=5)
+    assert exc_info.value.partial_text == '{"summary": "cut off mid'
+    # ...and that str is what makes the salvage possible at all.
+    assert _salvage_truncated_json(exc_info.value.partial_text)[0] == {"summary": "cut off mid"}
+
+
+def test_decode_partial_output_handles_the_three_shapes_a_provider_can_hand_it():
+    from farm.providers.base import decode_partial_output
+
+    assert decode_partial_output(b"bytes") == "bytes"
+    assert decode_partial_output("str") == "str"
+    assert decode_partial_output(None) == ""
+    # Undecodable bytes must degrade, never raise mid-exhaustion-handling.
+    assert decode_partial_output(b"ok \xff\xfe") == "ok ��"
 
 
 # ---- rollback lever: FARM_RUNNER=subprocess keeps the old silent path ----

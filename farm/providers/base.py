@@ -41,6 +41,21 @@ class AgentExhaustedError(AgentError):
         self.session_id = session_id
 
 
+def decode_partial_output(captured) -> str:
+    """Normalize a partial-output capture to str for AgentExhaustedError.
+
+    subprocess.TimeoutExpired.stdout carries RAW BYTES even when
+    subprocess.run() was called with text=True: on POSIX, Popen._communicate
+    raises the timeout from inside its read loop, before the decode step. Every
+    consumer of partial_text (agent_runner's repair ladder,
+    _salvage_truncated_json, the run log) is written for str, so decode at the
+    provider boundary rather than letting the type of partial_text depend on
+    which branch raised."""
+    if isinstance(captured, bytes):
+        return captured.decode("utf-8", "replace")
+    return captured or ""
+
+
 class AgentProvider(Protocol):
     """Typing-only shape check — no abc, matches this package's plain-module
     style. A provider is a module, not a class instance."""

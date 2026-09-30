@@ -32,9 +32,23 @@ is **always a plain-text file** under `STATE_DIR`
 `read_and_clear_handoff_note()`), never a resumed session standing in for
 persistence. `agent_runner._fire_handoff()` does optimistically pass
 `session_id=exc.session_id` to its one summarization call — if resume turns
-out not to work, that call fails (or exhausts again) like any other
-`AgentError`, is never retried (guardrail: no retry of the handoff itself),
-and the run still fails as `turn_cap`-retryable, exactly as if no handoff had
-been attempted at all. So the mechanical fallback (the file) is not
-conditional on this doc's answer — it is the only mechanism, with the
-optimistic resume as a best-effort bonus on top of it.
+out not to work, that call fails (or exhausts again), is never retried
+(guardrail: no retry of the handoff itself), and the run still fails as
+`turn_cap`-retryable, exactly as if no handoff had been attempted at all. So
+the mechanical fallback (the file) is not conditional on this doc's answer —
+it is the only mechanism, with the optimistic resume as a best-effort bonus on
+top of it.
+
+Because this call is the least-verified thing in the exhaustion path, its
+failure is contained rather than typed: `_fire_handoff()` catches
+`Exception`, not just `AgentError`. If a resume-after-exhaustion turns out to
+fail in some shape nobody predicted — a `TypeError` from an SDK signature
+change, an `httpx`/`OSError` from the transport — that exception must not
+escape and replace the original `AgentExhaustedError`, because losing the
+exception loses the `reason="turn_cap"` tagging in `pm_agent.process()` /
+`step_agent.main()` and the item pauses for a human instead of auto-retrying.
+Contained is not silent: the giving-up reason prints to the run log and a
+`handoff_failed` line is appended to the repair counter, so
+`python -m farm.scripts.repair_stats` shows failures next to firings — which
+is also how this doc's "provisionally yes" gets confirmed or refuted from real
+runs.

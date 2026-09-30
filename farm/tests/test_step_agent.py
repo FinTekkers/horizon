@@ -1591,6 +1591,98 @@ def test_handoff_note_reaches_the_next_non_implement_attempts_prompt(monkeypatch
     assert "NOTE (unverified)" not in build_prompt(task)  # read-once
 
 
+# ---- HZ-124: the exhaustion chain over a REAL provider call ----
+# Every test above raises AgentExhaustedError from a monkeypatched run_agent
+# closure, which proves the orchestration but never that providers/claude.py
+# actually populates partial_text/session_id on a real exhaustion. These two
+# drive the whole chain — provider timeout/turn-cap -> partial_text/session_id
+# -> salvage or handoff -> the next attempt's prompt — with nothing above the
+# provider boundary mocked, the same way test_hz44_real_subprocess_... does for
+# the retry path.
+
+
+def test_hz124_a_real_subprocess_timeout_is_salvaged_with_a_note(monkeypatch, capsys):
+    """fake_claude prints a reply truncated mid-string and then hangs past the
+    step's 1s budget. The real subprocess path (subprocess.run ->
+    TimeoutExpired -> AgentExhaustedError.partial_text, raw bytes decoded at
+    the provider boundary) must feed the salvage, so a run that today dies with
+    nothing instead completes — with the repair disclosed in both places."""
+    monkeypatch.setenv("FARM_RUNNER", "subprocess")
+    monkeypatch.setattr(step_agent.steps, "budget_for_label", lambda table, label: (4, 1))
+
+    task = make_task(7, "Architecture review")
+    task["item"]["desc"] = "HZ124_EXHAUST_TRUNCATED " + task["item"]["desc"]
+
+    result = execute(task)
+
+    assert result["summary"].startswith("wrote the parser, still needed to add tests")
+    out = capsys.readouterr().out
+    assert "repair — salvaged a reply truncated mid-string/object" in out
+    assert "Repairs applied: salvaged a reply truncated mid-string/object" in result["artifacts"]["artifact_md"]
+
+
+def test_hz124_a_real_error_max_turns_hands_a_note_to_the_next_attempt(monkeypatch, tmp_path, capsys):
+    """The turn-cap half, over the default (SDK) provider path: only
+    claude_agent_sdk.query is faked — the provider boundary itself — so
+    claude.py's real error_max_turns branch produces the AgentExhaustedError,
+    agent_runner fires exactly one real handoff call through run_agent, and the
+    next attempt's build_prompt() carries the note marked unverified."""
+    sdk = pytest.importorskip("claude_agent_sdk", reason="SDK-path e2e needs the SDK's message types")
+    monkeypatch.setenv("FARM_RUNNER", "sdk")
+    monkeypatch.setattr(agent_runner, "STATE_DIR", tmp_path)
+    monkeypatch.setattr(step_agent.steps, "budget_for_label", lambda table, label: (6, 30))
+
+    prompts = []
+
+    def _result(session_id, result, is_error, subtype, turns):
+        return sdk.ResultMessage(
+            subtype=subtype,
+            duration_ms=10,
+            duration_api_ms=8,
+            is_error=is_error,
+            num_turns=turns,
+            session_id=session_id,
+            result=result,
+        )
+
+    def fake_query(*, prompt, options=None, **kwargs):
+        prompts.append({"prompt": prompt, "max_turns": options.max_turns, "resume": options.resume})
+
+        async def gen():
+            if len(prompts) == 1:
+                yield sdk.AssistantMessage(
+                    content=[sdk.TextBlock(text="Read three files so far.")], model="m"
+                )
+                # Claude's real exhaustion shape: is_error with an empty result.
+                yield _result("sdk-exhausted-1", "", True, "error_max_turns", 6)
+            else:
+                yield _result(
+                    "sdk-exhausted-1",
+                    "Mapped the two call sites; still need to write the verdict section.",
+                    False,
+                    "success",
+                    1,
+                )
+
+        return gen()
+
+    monkeypatch.setattr(sdk, "query", fake_query)
+
+    task = make_task(7, "Architecture review")
+    with pytest.raises(AgentExhaustedError, match="error_max_turns"):
+        execute(task)
+
+    assert len(prompts) == 2, "exactly one handoff call on top of the exhausting step call"
+    handoff = prompts[1]
+    assert handoff["resume"] == "sdk-exhausted-1"  # the session id survived the raise
+    assert handoff["max_turns"] < 6  # strictly below the step's own budget
+    assert '"path": "handoff_fired"' in (tmp_path / "repair-stats.ndjson").read_text()
+
+    next_prompt = build_prompt(make_task(7, "Architecture review"))
+    assert "NOTE (unverified)" in next_prompt
+    assert "Mapped the two call sites" in next_prompt
+
+
 def test_implement_exhaustion_never_writes_a_handoff_note(tmp_path, monkeypatch):
     """Guardrail 10: implement's on_exhaustion="reraise" skips salvage AND
     handoff entirely — HZ-31's checkpoint commit is its only recovery path."""

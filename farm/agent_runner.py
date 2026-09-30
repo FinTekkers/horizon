@@ -9,7 +9,6 @@ only to run_agent(); none of them know or care which provider actually ran.
 
 import json
 import os
-import re
 from pathlib import Path
 
 from .config import FARM_PROVIDER, MAX_TURNS, STATE_DIR, STEP_TIMEOUT_S
@@ -187,13 +186,48 @@ def _first_balanced_object(s: str) -> str | None:
     return None
 
 
-_TRAILING_COMMA_RE = re.compile(r",(\s*[}\]])")
-
-
 def _strip_trailing_commas(s: str) -> str:
     """`{"a":1,}` -> `{"a":1}` (metric 1). A deterministic byte-level fix —
-    never chooses between two readings, so it needs no lossless-retry gate."""
-    return _TRAILING_COMMA_RE.sub(r"\1", s)
+    never chooses between two readings, so it needs no lossless-retry gate.
+
+    String-aware, and it has to be: a plain `,(\\s*[}\\]])` regex also matches
+    INSIDE a string value, so a reply like
+    `{"summary": "fixed the list, ] typo", "ok": true,}` would parse after the
+    substitution while silently having lost a comma from the model's own
+    prose — with a note claiming only a trailing comma was stripped. Content
+    inside a string literal is copied through byte-for-byte here; only
+    structural commas (ones whose next non-space character closes an object or
+    array) are dropped.
+    """
+    out: list[str] = []
+    in_string = False
+    escape = False
+    i, n = 0, len(s)
+    while i < n:
+        ch = s[i]
+        if in_string:
+            out.append(ch)
+            if escape:
+                escape = False
+            elif ch == "\\":
+                escape = True
+            elif ch == '"':
+                in_string = False
+        elif ch == '"':
+            in_string = True
+            out.append(ch)
+        elif ch == ",":
+            j = i + 1
+            while j < n and s[j].isspace():
+                j += 1
+            if j < n and s[j] in "}]":
+                i += 1
+                continue  # structural trailing comma — drop it
+            out.append(ch)
+        else:
+            out.append(ch)
+        i += 1
+    return "".join(out)
 
 
 def _single_to_double_quotes(s: str) -> str:
@@ -383,8 +417,18 @@ def _fire_handoff(exc: AgentExhaustedError, *, run_agent_fn, run_kwargs: dict, i
     """Exactly one extra model call, resuming the exhausted session, asking
     for an unverified progress summary — never retried itself (guardrail: no
     loop, no retry of the handoff call). A failure here (including the
-    handoff call exhausting too) is swallowed: worst case is no note this
-    time, identical to pre-HZ-124 total-loss behaviour, never worse."""
+    handoff call exhausting too) is contained: worst case is no note this
+    time, identical to pre-HZ-124 total-loss behaviour, never worse.
+
+    The except clause is deliberately broad. Anything this best-effort extra
+    call raises that isn't an AgentError — a TypeError from a provider shim, an
+    httpx/OSError from the transport — would otherwise escape
+    _handle_exhaustion() BEFORE its `raise exc`, destroying the original
+    AgentExhaustedError. That loses the reason="turn_cap" tagging in
+    pm_agent.process()/step_agent.main(), so the item pauses for a human
+    instead of auto-retrying — the exact failure this item exists to remove.
+    Contained, not silent: the giving-up reason is printed and counted.
+    """
     handoff_max_turns = max(1, min(3, run_kwargs.get("max_turns", MAX_TURNS) - 1))
     handoff_timeout_s = min(120, run_kwargs.get("timeout_s", STEP_TIMEOUT_S))
     try:
@@ -400,13 +444,26 @@ def _fire_handoff(exc: AgentExhaustedError, *, run_agent_fn, run_kwargs: dict, i
             provider=run_kwargs.get("provider"),
             provider_locked=run_kwargs.get("provider_locked", False),
         )
-    except AgentError:
+    except Exception as handoff_exc:  # noqa: BLE001 — see docstring: the original exhaustion must survive
+        print(
+            f"handoff note: giving up, the handoff call failed "
+            f"({type(handoff_exc).__name__}: {str(handoff_exc)[:200]})",
+            flush=True,
+        )
+        _record_repair("handoff_failed")
         return
 
-    text = str(reply.get("result", "")).strip()
-    if not text:
+    try:
+        text = str(reply.get("result", "")).strip() if isinstance(reply, dict) else ""
+        if not text:
+            return
+        _write_handoff_note(item_id, step_index, text)
+    except OSError as write_exc:
+        # Same containment rule as above: an unwritable STATE_DIR must cost the
+        # note, never the original AgentExhaustedError's turn_cap retry.
+        print(f"handoff note: could not be written ({write_exc})", flush=True)
+        _record_repair("handoff_failed")
         return
-    _write_handoff_note(item_id, step_index, text)
     _record_repair("handoff_fired")
 
 
@@ -422,7 +479,21 @@ def _handle_exhaustion(
     if on_exhaustion == "reraise":
         raise exc
 
-    salvaged = _salvage_truncated_json(exc.partial_text or "")
+    # Same containment rule as _fire_handoff(): nothing on the best-effort
+    # salvage path may replace the original AgentExhaustedError with an
+    # exception of its own — that would strip the reason="turn_cap" tagging the
+    # orchestrator needs to auto-retry. A provider handing us a partial_text
+    # that isn't a str (bytes, None-ish shim) fails here, not upstream.
+    try:
+        salvaged = _salvage_truncated_json(exc.partial_text or "")
+    except Exception as salvage_exc:  # noqa: BLE001 — see comment above
+        print(
+            f"salvage: giving up on the partial reply "
+            f"({type(salvage_exc).__name__}: {str(salvage_exc)[:200]})",
+            flush=True,
+        )
+        _record_repair("salvage_failed")
+        salvaged = None
     if salvaged is not None:
         parsed, note = salvaged
         reply_meta = {"provider": None, "command_id": None, "session_id": exc.session_id}
