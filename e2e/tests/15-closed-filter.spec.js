@@ -7,6 +7,14 @@
 // One test, not four — the suite runs under an 85s globalTimeout
 // (playwright.config.js) and every extra test pays for a fresh browser
 // context plus a board load.
+//
+// Measured on the HZ-143 branch rather than estimated, since the budget is a
+// hard suite-wide ceiling: 29 tests / 43.2s before this item, 30 tests /
+// 47.2-49.6s after (two runs, so ~2.4s of that spread is run-to-run noise).
+// This file is ~1.5s of the delta; the rest is the three chip clicks added to
+// 01-board and 08-full-lifecycle. That leaves ~35s of headroom — a host would
+// have to be ~1.7x slower than this one to breach the ceiling, down from
+// ~2.0x before. Re-measure before adding a fourth board-filter spec.
 
 import { test, expect } from '../fixtures/test-base.js'
 
