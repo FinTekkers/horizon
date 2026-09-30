@@ -17,7 +17,15 @@ from pathlib import Path
 import httpx
 
 from .agent_runner import AgentError, extract_json, run_agent
-from .config import FARM_PORT, PM_MODEL, QUEUE_DIR, STATE_DIR, ensure_dirs, slugify
+from .config import (
+    FARM_PORT,
+    PM_MALFORMED_GRACE_S,
+    PM_MODEL,
+    QUEUE_DIR,
+    STATE_DIR,
+    ensure_dirs,
+    slugify,
+)
 from .rules import render_rules_section
 
 ROLE_PROMPT = (Path(__file__).parent / "roles" / "pm.md").read_text()
@@ -57,6 +65,52 @@ def notify_started(run_id) -> bool:
     except Exception as exc:
         log(f"run {run_id}: started notify failed: {exc}")
     return True
+
+
+# HZ-130: the reason an unusable task file is reported under. Already in the
+# server's AUTO_RETRY_REASONS (server/src/orchestrator.js), so the step is
+# auto-retried rather than paused for a human, and no server change is needed
+# to report one — see the test that reads that set back out of the server.
+UNUSABLE_TASK_REASON = "unreachable"
+
+
+def report_failed_task(run_id: str, error: str) -> bool:
+    """HZ-130: reports a task file the PM could never use, over the same farmd
+    channel process() reports every other failure through.
+
+    Returns whether the report was ACCEPTED — i.e. whether the run is now the
+    server's problem and our copy of the file can be released. Anything that
+    leaves us unsure (farmd down, the Node server unreachable, a 5xx) returns
+    False so the file stays on disk and the next poll retries: an unreachable
+    server is not evidence the run was handled, and the same rule
+    _report_run_dead follows on the farmd side (farm/farmd.py).
+
+    notify_started() is deliberately NOT called on this path. The server's own
+    /fail handler owns the transition out of `active`; telling it the agent
+    started, only to immediately fail, would just arm the execution timer.
+    """
+    payload = {"run_id": run_id, "ok": False, "error": error[:300], "reason": UNUSABLE_TASK_REASON}
+    try:
+        res = httpx.post(f"{FARMD}/internal/steps/result", json=payload, timeout=30)
+    except Exception as exc:
+        log(f"run {run_id}: could not report unusable task file: {exc} — keeping it to retry")
+        return False
+    if res.status_code != 200:
+        log(f"run {run_id}: farmd rejected the failure report ({res.status_code}) — keeping it to retry")
+        return False
+    try:
+        forwarded = int(res.json().get("forwarded", 0))
+    except Exception:
+        forwarded = 0
+    if 200 <= forwarded < 300:
+        return True
+    if forwarded == 404:
+        # The run no longer exists server-side; there is nothing left to
+        # report it to, so holding the file would strand it on disk forever.
+        log(f"run {run_id}: unknown server-side (404) — releasing the unusable task file")
+        return True
+    log(f"run {run_id}: failure report not accepted (forwarded {forwarded}) — keeping it to retry")
+    return False
 
 
 def session_file(project_slug: str) -> Path:
@@ -196,6 +250,150 @@ def process(task: dict, project_slug: str) -> None:
     log(f"run {run_id}: reported {'ok' if result['ok'] else 'failure'}")
 
 
+def read_task(path: Path) -> tuple[dict | None, str]:
+    """HZ-130: reads one queued task file WITHOUT ever deleting it.
+
+    Returns `(task, "")` when the file is usable, or `(None, reason)` when it
+    is not: a truncated or corrupt payload, a file we could not read at all,
+    or valid JSON missing the one field the PM cannot proceed without.
+
+    OSError is caught alongside JSONDecodeError on purpose, and that does not
+    turn this into "catch wider and continue" — the caller retries a bounded
+    number of times and then *reports*, so a file we cannot read still ends in
+    a report rather than in silence.
+
+    `run_id` is validated here, at the boundary, rather than being trusted
+    deeper in: process() reads it before its own try block, so a task file
+    that parses but carries no run_id used to kill the loop with a KeyError
+    *after* the file had already been unlinked — the same silent-loss shape as
+    the malformed case, on a neighbouring input. Nothing else is validated
+    here: any other missing field surfaces inside process(), which reports it.
+    """
+    try:
+        task = json.loads(path.read_text())
+    except json.JSONDecodeError as exc:
+        return None, f"unparseable JSON ({exc})"
+    except OSError as exc:
+        return None, f"unreadable ({exc})"
+    if not isinstance(task, dict):
+        return None, f"not a JSON object (got {type(task).__name__})"
+    if task.get("run_id") in (None, ""):
+        return None, "no run_id field"
+    return task, ""
+
+
+def _queued_tasks(queue: Path) -> list[Path]:
+    """Queued task files, oldest first.
+
+    A file can be unlinked between the glob and the stat — /steps/cancel drops
+    PM-queue files (farm/farmd.py) — and an unhandled FileNotFoundError here
+    would take the whole PM session down mid-poll. A vanished file simply
+    sorts out of this batch instead.
+    """
+    dated = []
+    for path in queue.glob("*.json"):
+        try:
+            dated.append((path.stat().st_mtime, path))
+        except OSError:
+            continue
+    return [path for _mtime, path in sorted(dated, key=lambda pair: pair[0])]
+
+
+def _past_report_bound(path: Path, attempts: int) -> bool:
+    """Whether an unusable file has earned a report instead of another retry.
+
+    BOTH conditions must hold. At least one failed read in *this* process, so
+    a file caught mid-write is never reported on sight. And an age past
+    PM_MALFORMED_GRACE_S, which — unlike an in-memory counter that the
+    watchdog's PM revival resets — a restart cannot rewind.
+    """
+    if attempts < 1:
+        return False
+    try:
+        return time.time() - path.stat().st_mtime >= PM_MALFORMED_GRACE_S
+    except OSError:
+        return False  # vanished under us (a cancel): nothing to report
+
+
+def _report_unusable(path: Path, why: str, attempts: int, failures: dict) -> bool:
+    """Reports an unusable task file and releases it only if the report was
+    accepted. The run_id comes from the filename stem — the contents are, by
+    definition, not something we can read one out of.
+
+    This unlink is the ONE case where a file that never parsed is removed, and
+    it happens strictly after the server has acknowledged the failure. Keeping
+    it instead would hold the run alive forever in farmd's /runs/alive, which
+    is the stall this item exists to close.
+    """
+    run_id = path.stem
+    error = f"pm_agent: task file {path.name} was unusable after {attempts} poll(s): {why}"
+    log(f"run {run_id}: {error}")
+    if not report_failed_task(run_id, error):
+        return False
+    path.unlink(missing_ok=True)
+    failures.pop(path.name, None)
+    log(f"run {run_id}: reported the unusable task file and released it")
+    return True
+
+
+def poll_once(queue: Path, project_slug: str, failures: dict) -> str:
+    """One pass over the PM queue. Never sleeps — main() owns the pacing, so
+    tests can drive polls back to back without patching time.
+
+    Returns exactly one of:
+      "processed" — a task parsed, was claimed, and ran
+      "reported"  — an unusable task file was reported to the server
+      "stale"     — a claimed task the server no longer considers active
+      "skipped"   — only unusable files are queued; they stay on disk
+      "idle"      — the queue is empty
+
+    `failures` maps filename -> consecutive failed reads and is owned by the
+    caller so the bound spans polls. Keys for files that are gone (processed,
+    reported, or cancelled out from under us) are pruned every poll — this
+    dict lives as long as the farm does.
+
+    An unusable file is walked PAST, not stopped on: it is no longer deleted,
+    so stopping at the head of the queue would let one corrupt file block
+    every newer task for the whole grace window. Its own bound is checked as
+    we walk past, so a busy queue can never starve the report either.
+
+    A report that is not accepted returns "skipped", so the next poll retries
+    it at main()'s pacing — the file is held, and the attempt is logged, until
+    either the server takes it or a human does.
+    """
+    tasks = _queued_tasks(queue)
+    present = {p.name for p in tasks}
+    for name in [n for n in failures if n not in present]:
+        failures.pop(name, None)
+    if not tasks:
+        return "idle"
+
+    task = None
+    task_path = None
+    for candidate in tasks:
+        parsed, why = read_task(candidate)
+        if parsed is not None:
+            task, task_path = parsed, candidate
+            break
+        attempts = failures.get(candidate.name, 0) + 1
+        failures[candidate.name] = attempts
+        if attempts == 1:  # log once per file, not once per poll
+            log(f"keeping unusable task file {candidate.name} for the next poll: {why}")
+        if _past_report_bound(candidate, attempts) and _report_unusable(candidate, why, attempts, failures):
+            return "reported"
+    if task is None:
+        return "skipped"
+
+    failures.pop(task_path.name, None)
+    task_path.unlink(missing_ok=True)  # claim before work: no double-processing
+    run_id = task["run_id"]
+    if not notify_started(run_id):
+        log(f"run {run_id}: no longer active server-side — skipping")
+        return "stale"
+    process(task, project_slug)
+    return "processed"
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--project", required=True)
@@ -207,30 +405,18 @@ def main() -> None:
     queue = QUEUE_DIR / "pm"
     log(f"PM agent up for project '{args.project}' (queue: {queue})")
 
+    failures: dict = {}
     while True:
-        tasks = sorted(queue.glob("*.json"), key=lambda p: p.stat().st_mtime)
-        if not tasks:
-            if args.once:
-                time.sleep(1)
-                continue
-            time.sleep(2)
-            continue
-        task_path = tasks[0]
-        try:
-            task = json.loads(task_path.read_text())
-        except json.JSONDecodeError:
-            log(f"dropping unreadable task file {task_path.name}")
-            task_path.unlink(missing_ok=True)
-            continue
-        task_path.unlink(missing_ok=True)  # claim before work: no double-processing
-        if not notify_started(task["run_id"]):
-            log(f"run {task['run_id']}: no longer active server-side — skipping")
-            if args.once:
-                return
-            continue
-        process(task, project_slug)
-        if args.once:
+        outcome = poll_once(queue, project_slug, failures)
+        if args.once and outcome in ("processed", "reported", "stale"):
             return
+        if outcome == "idle":
+            time.sleep(1 if args.once else 2)
+        elif outcome == "skipped":
+            # Only unusable files are queued and none has earned a report yet.
+            # Without this the loop would spin at 100% CPU now that the file
+            # survives the poll instead of being deleted.
+            time.sleep(2)
 
 
 if __name__ == "__main__":

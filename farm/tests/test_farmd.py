@@ -14,7 +14,7 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
-from farm import farmd, tmux_mgr, workspaces
+from farm import farmd, pm_agent, tmux_mgr, workspaces
 from farm.config import LOGS_DIR, QUEUE_DIR
 from farm.tests.conflict_fixtures import clone_and_read, make_repo_hub, push_new_branch
 
@@ -1243,3 +1243,254 @@ def test_internal_snapshot_reports_502_when_the_server_is_unreachable(monkeypatc
     res = client.get("/internal/snapshot")
     assert res.status_code == 502
     assert res.json() == {"error": "could not reach horizon server"}
+
+
+# ---- HZ-130: queue files are written atomically ----
+# The race underneath the PM lane's silent data loss: a plain write_text let a
+# poller read a task file mid-write and get truncated JSON. The final path must
+# only ever hold a complete payload.
+
+TRUNCATED_TASK = '{\n  "run_id": 881,\n  "item": {\n    "id": "HZ-128"'
+
+
+def _big_task(run_id, filler="x"):
+    """A payload large enough that a single write() is genuinely interruptible —
+    a real task carries rules and prior artifacts, not four short keys."""
+    return dict(make_task(run_id), blob=filler * 200_000)
+
+
+def test_write_task_atomic_writes_a_complete_parseable_file(tmp_path):
+    path = tmp_path / "881.json"
+    farmd._write_task_atomic(path, make_task(881))
+    assert json.loads(path.read_text())["run_id"] == 881
+
+
+def test_write_task_atomic_leaves_no_temp_file_behind(tmp_path):
+    path = tmp_path / "881.json"
+    farmd._write_task_atomic(path, make_task(881))
+    assert [p.name for p in tmp_path.iterdir()] == ["881.json"]
+
+
+def test_a_temp_file_is_invisible_to_every_readers_glob(tmp_path, monkeypatch):
+    """The temp name must not end `.json`: every reader in farmd and the PM
+    agent globs `*.json`, and matching a partial file is the whole bug."""
+    seen = {}
+    real_replace = farmd.os.replace
+
+    def spy_replace(src, dst):
+        if str(dst) == str(tmp_path / "881.json"):
+            seen["during"] = sorted(p.name for p in tmp_path.glob("*.json"))
+            seen["temps"] = sorted(p.name for p in tmp_path.iterdir())
+        return real_replace(src, dst)
+
+    monkeypatch.setattr(farmd.os, "replace", spy_replace)
+    farmd._write_task_atomic(tmp_path / "881.json", make_task(881))
+
+    assert seen["during"] == [], "no *.json file may exist at the final path until the rename"
+    assert len(seen["temps"]) == 1 and seen["temps"][0].endswith(".json.tmp")
+
+
+def test_a_failed_write_leaves_nothing_at_the_final_path(tmp_path, monkeypatch):
+    """The rename fails (disk full, EXDEV): the caller must see the failure and
+    the final path must not exist at all, half-written or otherwise."""
+    path = tmp_path / "881.json"
+    real_replace = farmd.os.replace
+
+    def failing_replace(src, dst):
+        if str(dst) == str(path):  # scoped: os.replace is process-global
+            raise OSError("no space left on device")
+        return real_replace(src, dst)
+
+    monkeypatch.setattr(farmd.os, "replace", failing_replace)
+    with pytest.raises(OSError):
+        farmd._write_task_atomic(path, make_task(881))
+
+    assert not path.exists()
+    assert list(tmp_path.iterdir()) == [], "the temp file must be cleaned up too"
+
+
+def test_a_concurrent_reader_never_observes_a_partial_queue_file(tmp_path):
+    """Success metric 1, asserted the way the metric is stated: a poller
+    globbing the queue while the writer runs must only ever see complete,
+    parseable task files. The reader is deadline-bounded and joined — a stuck
+    reader has to fail the suite, not hang it."""
+    path = tmp_path / "881.json"
+    body = _big_task(881)
+    errors = []
+    reads = []
+    done = threading.Event()
+
+    def read_loop():
+        deadline = time.time() + 30
+        while not done.is_set() and time.time() < deadline:
+            for p in tmp_path.glob("*.json"):  # exactly what the pollers do
+                try:
+                    reads.append(json.loads(p.read_text())["run_id"])
+                except (json.JSONDecodeError, OSError, KeyError) as exc:
+                    errors.append(f"{p.name}: {exc}")
+                    return
+
+    reader = threading.Thread(target=read_loop, daemon=True)
+    reader.start()
+    try:
+        for _ in range(200):
+            farmd._write_task_atomic(path, body)
+    finally:
+        done.set()
+    reader.join(timeout=10)
+
+    assert not reader.is_alive()
+    assert errors == []
+    assert reads, "the reader never observed the file at all — the test proved nothing"
+    assert set(reads) == {881}
+    assert list(tmp_path.glob("*.tmp")) == []
+
+
+def test_two_concurrent_writers_of_the_same_run_never_splice_their_payloads(tmp_path):
+    """A fixed `<run_id>.json.tmp` would let two writes for one run_id
+    interleave into the same temp file — a fresh instance of the exact race
+    this change closes. Unique temp names mean each payload lands whole."""
+    path = tmp_path / "881.json"
+    bodies = [_big_task(881, filler=c) for c in ("a", "b")]
+    blobs = {b["blob"] for b in bodies}
+    errors = []
+
+    def writer(body):
+        try:
+            for _ in range(40):
+                farmd._write_task_atomic(path, body)
+                observed = json.loads(path.read_text())  # whoever's write is current
+                if observed["blob"] not in blobs:
+                    errors.append("spliced payload at the final path")
+                    return
+        except Exception as exc:
+            errors.append(f"{type(exc).__name__}: {exc}")
+
+    threads = [threading.Thread(target=writer, args=(b,), daemon=True) for b in bodies]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=60)
+
+    assert not any(t.is_alive() for t in threads)
+    assert errors == []
+    assert json.loads(path.read_text())["blob"] in blobs
+    assert list(tmp_path.glob("*.tmp")) == []
+
+
+def test_steps_run_enqueues_atomically(running_farm, monkeypatch):
+    """The enqueue write named in HZ-130 — asserted through the HTTP route, not
+    just on the helper, so the call site can't regress to write_text."""
+    calls = []
+    real = farmd._write_task_atomic
+    monkeypatch.setattr(farmd, "_write_task_atomic", lambda path, body: (calls.append(path), real(path, body))[1])
+
+    res = client.post("/steps/run", json=make_task(881, item_id="HZ-130", step_index=9))
+    assert res.status_code == 200
+
+    queued = QUEUE_DIR / "pm" / "881.json"
+    assert calls == [queued]
+    assert json.loads(queued.read_text())["run_id"] == 881
+
+
+def test_teardown_removes_a_leaked_temp_queue_file(monkeypatch):
+    """A farmd killed between the temp write and the rename leaks a
+    `.json.tmp`; `*.json` would never reach it and nothing else cleans it."""
+    monkeypatch.setattr(farmd.tmux_mgr, "kill_all_farm_sessions", lambda: [])
+    for sub in ("pm", "runs", "runs/active"):
+        (QUEUE_DIR / sub).mkdir(parents=True, exist_ok=True)
+    leaked = QUEUE_DIR / "pm" / "881.abcdef.json.tmp"
+    leaked.write_text(TRUNCATED_TASK)
+    queued = QUEUE_DIR / "pm" / "882.json"
+    queued.write_text(json.dumps(make_task(882)))
+
+    farmd._teardown()
+
+    assert not leaked.exists()
+    assert not queued.exists()
+
+
+def test_a_leaked_temp_file_never_makes_a_run_look_queued_or_alive(queue_dirs):
+    """Proof the `.json.tmp` suffix is load-bearing on the read side too: a
+    leftover temp file must not hold a run alive with no worker."""
+    leaked_pm = QUEUE_DIR / "pm" / "881.abcdef.json.tmp"
+    leaked_runs = QUEUE_DIR / "runs" / "882.abcdef.json.tmp"
+    try:
+        leaked_pm.write_text(TRUNCATED_TASK)
+        leaked_runs.write_text(TRUNCATED_TASK)
+
+        assert farmd._run_alive("881") is False
+        assert farmd._run_alive("882") is False
+        states = client.post("/runs/status", json={"run_ids": [881, 882]}).json()["states"]
+        assert states["881"]["state"] != "queued"
+        assert states["882"]["state"] != "queued"
+    finally:
+        leaked_pm.unlink(missing_ok=True)
+        leaked_runs.unlink(missing_ok=True)
+
+
+# ---- HZ-130: the contract the PM and ephemeral lanes share ----
+# Success metric 6, stated precisely. The lanes are NOT identical: the PM lane
+# eventually reports an unusable file, the ephemeral lane never does (guardrail
+# 4 forbids changing it — it is the reference implementation). What they share,
+# and what this asserts, is the three-part read contract: SKIP the file, NEVER
+# delete it, and RETRY it on the next poll.
+#
+# Known residual gap, stated rather than implied: because the ephemeral lane
+# does not report, farmd's _run_alive still answers True while an unparseable
+# `queue/runs/<id>.json` exists, so such a run can sit active with no worker
+# and no report. Atomic writes remove the *cause* on both lanes, leaving only
+# corrupt-on-disk; closing the ephemeral report path needs its own item, since
+# guardrail 4 puts it out of scope here.
+
+
+@pytest.mark.parametrize("payload", [TRUNCATED_TASK, "", "not json at all"])
+def test_both_lanes_skip_an_unparseable_task_file_without_deleting_it(tmp_path, monkeypatch, payload):
+    """The shared input class is a file that does not parse. (Valid JSON that
+    is merely unusable is PM-specific — the ephemeral lane's own field
+    handling is out of scope under guardrail 4 and is unchanged here.)"""
+    monkeypatch.setattr(pm_agent, "process", lambda *a: pytest.fail("an unusable task must not be processed"))
+
+    ephemeral = tmp_path / "runs"
+    ephemeral.mkdir()
+    eph_path = ephemeral / "881.json"
+    eph_path.write_text(payload)
+    pm_dir = tmp_path / "pm"
+    pm_dir.mkdir()
+    pm_path = pm_dir / "881.json"
+    pm_path.write_text(payload)
+
+    # Ephemeral lane: the reference. Skips, keeps.
+    assert farmd._select_dispatchable([eph_path], [], 4) == []
+    assert eph_path.exists()
+    # PM lane: same skip, same keep.
+    assert pm_agent.poll_once(pm_dir, "fintekkers", {}) == "skipped"
+    assert pm_path.exists()
+
+
+def test_both_lanes_retry_the_file_once_it_becomes_valid(tmp_path, monkeypatch):
+    ephemeral = tmp_path / "runs"
+    ephemeral.mkdir()
+    eph_path = ephemeral / "881.json"
+    eph_path.write_text(TRUNCATED_TASK)
+    pm_dir = tmp_path / "pm"
+    pm_dir.mkdir()
+    pm_path = pm_dir / "881.json"
+    pm_path.write_text(TRUNCATED_TASK)
+
+    pm_failures = {}
+    assert farmd._select_dispatchable([eph_path], [], 4) == []
+    assert pm_agent.poll_once(pm_dir, "fintekkers", pm_failures) == "skipped"
+
+    valid = json.dumps(make_task(881, item_id="hz-130", step_index=9))
+    eph_path.write_text(valid)
+    pm_path.write_text(valid)
+
+    processed = []
+    monkeypatch.setattr(pm_agent, "notify_started", lambda run_id: True)
+    monkeypatch.setattr(pm_agent, "process", lambda task, slug: processed.append(task))
+
+    assert farmd._select_dispatchable([eph_path], [], 4) == [eph_path]  # dispatchable now
+    assert pm_agent.poll_once(pm_dir, "fintekkers", pm_failures) == "processed"
+    assert [t["run_id"] for t in processed] == [881]
+    assert pm_failures == {}  # the retry cleared the file's failure count

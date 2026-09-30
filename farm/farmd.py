@@ -7,6 +7,8 @@ tmux session `farm-daemon` (see run.sh) on port 4100.
 
 import asyncio
 import json
+import os
+import tempfile
 import threading
 import time
 from datetime import datetime, timezone
@@ -115,7 +117,11 @@ def _teardown() -> None:
     killed = tmux_mgr.kill_all_farm_sessions()
     RUN_SESSIONS.clear()
     for sub in ("pm", "runs", "runs/active"):
-        for f in (QUEUE_DIR / sub).glob("*.json"):
+        # HZ-130: `*.json*`, not `*.json` — a farmd killed between
+        # _write_task_atomic's temp write and its rename() leaves a
+        # `<run_id>.<suffix>.json.tmp` behind, which a `*.json` glob would
+        # never reach and nothing else ever cleans.
+        for f in (QUEUE_DIR / sub).glob("*.json*"):
             f.unlink(missing_ok=True)
     if killed:
         print(f"farmd: tore down sessions {killed}", flush=True)
@@ -169,6 +175,45 @@ def _item_worktree_busy(item_id: str, sessions: list[str]) -> bool:
         if rest is not None and rest.split("-", 1)[0] in _WORKSPACE_MUTATING_STEP_STRS:
             return True
     return False
+
+
+def _write_task_atomic(path: Path, body: dict) -> None:
+    """HZ-130: no poller may ever observe a half-written task file.
+
+    The plain `write_text` this replaces let a poller read a truncated payload
+    mid-write; on the PM lane that turned into silent data loss (an
+    unparseable file was deleted and nobody was told). Writing to a temp file
+    and rename()-ing it means the final path only ever holds a complete
+    payload — the file appears whole or not at all.
+
+    Three properties the temp name has to carry, each load-bearing:
+
+    * same directory as the target — rename() cannot cross filesystems;
+    * a `.json.tmp` suffix — every reader here globs `*.json`, which must
+      never match a partial file (_adopt_existing, _select_dispatchable,
+      _session_for_run, _reconcile_claimed_runs, _run_state, and the PM
+      agent's own poll);
+    * unique per call, via mkstemp — a fixed `<run_id>.json.tmp` would let two
+      writes for the same run interleave into one temp file, which is the very
+      race this function exists to close.
+
+    On any failure the temp file is removed and the exception propagates: the
+    caller must see a failed enqueue, and the final path is never left holding
+    a partial payload (it is not written at all until the rename).
+    """
+    fd, tmp_name = tempfile.mkstemp(dir=str(path.parent), prefix=f"{path.stem}.", suffix=".json.tmp")
+    tmp = Path(tmp_name)
+    try:
+        with os.fdopen(fd, "w") as f:
+            f.write(json.dumps(body, indent=2))
+        # mkstemp is 0600; these files are only ever read by this user's own
+        # agents, but keep the permissions the write_text this replaces
+        # produced rather than quietly tightening them.
+        os.chmod(tmp, 0o644)
+        os.replace(tmp, path)
+    except BaseException:
+        tmp.unlink(missing_ok=True)
+        raise
 
 
 def _select_dispatchable(task_paths: list, sessions: list[str], slots: int) -> list:
@@ -338,7 +383,11 @@ def _claim_and_launch(task_path, runs_dir: Path, repo_root: Path) -> str | None:
     # actually gone, and stat().st_mtime here would still read the original
     # enqueue time, not this claim.
     task["claimed_at"] = time.time()
-    claimed.write_text(json.dumps(task, indent=2))
+    # HZ-130: atomic, same as the enqueue in steps_run —
+    # _reconcile_one_claimed_run and _session_for_run both read this file
+    # live, concurrently with this write. Behaviour is unchanged; only the
+    # partial-read window is gone.
+    _write_task_atomic(claimed, task)
     if not _notify_started(task["run_id"]):
         print(f"farmd: run {task['run_id']} no longer active server-side — not launching", flush=True)
         claimed.unlink(missing_ok=True)
@@ -581,7 +630,9 @@ async def steps_run(request: Request):
     queue = lane_for_index(steps.STEPS, body["step"].get("index", 99))
     (QUEUE_DIR / queue).mkdir(parents=True, exist_ok=True)
     task_path = QUEUE_DIR / queue / f"{body['run_id']}.json"
-    task_path.write_text(json.dumps(body, indent=2))
+    # HZ-130: the enqueue write. A poller globbing this directory used to be
+    # able to read this file mid-write and get truncated JSON.
+    _write_task_atomic(task_path, body)
     return {"ok": True, "queued": queue}
 
 
