@@ -679,9 +679,10 @@ def execute(task: dict) -> dict:
         summary = f"addressed feedback (“{feedback[0].get('message', '')[:80]}”) — {summary}"[:600]
 
     # HZ-102: when a persona forced a non-default provider for this step
-    # (today, only muse_smoke_test -> muse), stamp what actually ran into the
-    # run log — visible to a human without inspecting config — and into the
-    # artifact sent to the server, which persists it on
+    # (PERSONA_PROVIDERS ships empty — HZ-121 — so today this only happens
+    # via a test-registered fixture persona), stamp what actually ran into
+    # the run log — visible to a human without inspecting config — and into
+    # the artifact sent to the server, which persists it on
     # step_run.provider/command_id (server/src/orchestrator.js).
     if provider_override:
         note = f"provider={reply_provenance.get('provider')} command_id={reply_provenance.get('command_id')}"

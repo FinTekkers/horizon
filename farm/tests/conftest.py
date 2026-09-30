@@ -9,6 +9,8 @@ import sys
 import tempfile
 from pathlib import Path
 
+import pytest
+
 TESTS_DIR = Path(__file__).resolve().parent
 REPO_ROOT = TESTS_DIR.parent.parent
 
@@ -25,3 +27,22 @@ os.environ.setdefault("FARM_RUNNER", "subprocess")
 os.environ.pop("ANTHROPIC_API_KEY", None)
 
 sys.path.insert(0, str(REPO_ROOT))
+
+
+@pytest.fixture
+def muse_smoke_test_persona(monkeypatch):
+    """Registers a test-only persona mapped to the Muse provider.
+
+    HZ-121: PERSONA_PROVIDERS ships empty — no shipped persona forces a
+    non-default provider. The override mechanism (HZ-102) still needs proof
+    it works, so tests that need a persona mapped to a non-default provider
+    opt into this fixture instead of relying on a shipped fake persona.
+    Not autouse: registration is deliberate per test.
+    """
+    from farm import personas
+
+    monkeypatch.setitem(
+        personas.PERSONAS, "muse_smoke_test", str(TESTS_DIR / "fixtures" / "muse_smoke_test_persona.md")
+    )
+    monkeypatch.setitem(personas.PERSONA_PROVIDERS, "muse_smoke_test", "muse")
+    return "muse_smoke_test"

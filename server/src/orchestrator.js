@@ -1125,9 +1125,10 @@ export async function completeFarmRun(runId, { summary, patch, artifacts }) {
   }
 
   // HZ-102 provenance: farm/step_agent.py only sets these two fields when a
-  // persona forced a non-default provider for this step (today, only
-  // muse_smoke_test -> muse) — every other step keeps writing NULL here,
-  // unchanged from before this column existed.
+  // persona forced a non-default provider for this step (PERSONA_PROVIDERS
+  // ships empty per HZ-121, so today this only happens via a test-registered
+  // fixture persona) — every other step keeps writing NULL here, unchanged
+  // from before this column existed.
   const provider =
     typeof artifacts?.provider === 'string' && artifacts.provider.trim() ? artifacts.provider.trim() : null
   const commandId =

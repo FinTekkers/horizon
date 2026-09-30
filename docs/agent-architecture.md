@@ -138,9 +138,12 @@ provider module it dispatches to is resolved in this order:
    running for a while still picks up an env change on its *next* call.
 3. **The `config.py:37` default, `"claude"`.**
 
-**Persona override.** `farm/personas.py:45`'s `PERSONA_PROVIDERS` maps only
-`muse_smoke_test` → `"muse"` today. Every real persona — `fullstack`,
-`python_backend`, `frontend_ui` — is absent from that map, so
+**Persona override.** `farm/personas.py:45`'s `PERSONA_PROVIDERS` ships
+**empty** (HZ-121) — no shipped persona forces a non-default provider yet.
+The mechanism is proven by a test-registered fixture persona
+(`farm/tests/conftest.py`'s `muse_smoke_test_persona`), not a shipped one.
+Every real persona — `fullstack`, `python_backend`, `frontend_ui` — is
+absent from that map, so
 `provider_for()` (`personas.py:61-68`) returns `None` for them, and their
 steps fall through to (2)/(3) above unchanged. The override is only ever
 *honored*, even when a persona does map to one, on steps 4, 6 and 7:
