@@ -107,6 +107,38 @@ def test_find_phrase_reuse_ignores_same_item_reuse():
     assert matches == []
 
 
+def test_find_phrase_reuse_tags_a_file_path_list_as_path_like_not_specific():
+    # Mirrors the real HZ-22/HZ-125 false positive: a list of source file
+    # paths, once `/`/`.` are stripped as word-separators, reads as an
+    # ordinary word sequence indistinguishable from prose. Two items
+    # independently listing the same three persona files need no cross-item
+    # recall to produce this.
+    shared = "see farm/personas.py, server/src/personas.js, and ui/src/domain/personas.js for the full list"
+    log_text = build_log(
+        (1, "Set guardrails", "HZ-1", {"summary": "s", "patch": {"guardrails": shared}}),
+        (2, "Set guardrails", "HZ-2", {"summary": "s", "patch": {"guardrails": shared}}),
+    )
+    runs = parse_runs(log_text)
+    matches = find_phrase_reuse(runs, role_shingles=set())
+    assert matches
+    assert all(m["path_like"] for m in matches)
+    md = render_markdown(runs, matches, find_cross_item_mentions(runs), "2026-09-30", "test.log")
+    assert "excluded as file-path-shaped text" in md
+    assert "Load-bearing: not evidenced." in md
+
+
+def test_find_phrase_reuse_does_not_flag_ordinary_prose_with_a_sentence_period_as_path_like():
+    shared = "an item blocked by another shows what blocks it. And what would unblock it next"
+    log_text = build_log(
+        (1, "Define the outcome", "HZ-1", {"summary": "s", "patch": {"desc": shared}}),
+        (2, "Define the outcome", "HZ-2", {"summary": "s", "patch": {"desc": shared}}),
+    )
+    runs = parse_runs(log_text)
+    matches = find_phrase_reuse(runs, role_shingles=set())
+    assert matches
+    assert all(not m["path_like"] for m in matches)
+
+
 def test_find_phrase_reuse_tags_a_shingle_seen_across_three_plus_items_as_boilerplate():
     shared = "defaults apply tests linters and e2e must pass now"
     log_text = build_log(

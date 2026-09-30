@@ -148,11 +148,54 @@ def extract_patch_values(run: dict) -> dict:
     return values
 
 
+_WORD_RE = re.compile(r"[a-z0-9']+")
+
+
+def _tokenize_with_path_flags(text: str) -> list[tuple[str, bool]]:
+    """[(word, path_adjacent), ...]. `path_adjacent` is True when the word sits
+    on a `/` or `.` that is itself glued to an alphanumeric on its OTHER side
+    too — i.e. it was (part of) a file-path- or dotted-identifier-shaped token
+    like `farm/personas.py`, where the separator has no whitespace on either
+    side. A sentence-ending period is followed by whitespace (". And"), so
+    checking only "is this word glued to a separator" is not enough — a word
+    like "it" in "blocks it. And" is glued to the period on its left but the
+    period itself is followed by a space, not another word. Requiring the
+    separator to be glued on both sides is what distinguishes the two."""
+    lowered = text.lower()
+    tokens = []
+    for m in _WORD_RE.finditer(lowered):
+        before = lowered[m.start() - 1] if m.start() > 0 else ""
+        after = lowered[m.end()] if m.end() < len(lowered) else ""
+        prev_glued = before in "./" and m.start() - 2 >= 0 and lowered[m.start() - 2].isalnum()
+        next_glued = after in "./" and m.end() + 1 < len(lowered) and lowered[m.end() + 1].isalnum()
+        tokens.append((m.group(0), prev_glued or next_glued))
+    return tokens
+
+
 def _shingles(text: str) -> set:
-    words = re.findall(r"[a-z0-9']+", text.lower())
-    if len(words) < SHINGLE_SIZE:
-        return set()
-    return {" ".join(words[i : i + SHINGLE_SIZE]) for i in range(len(words) - SHINGLE_SIZE + 1)}
+    return set(_shingle_path_flags(text).keys())
+
+
+def _shingle_path_flags(text: str) -> dict:
+    """{shingle: path_like} for every SHINGLE_SIZE-word window in `text`.
+    `path_like` is True if any word in that window was path-adjacent (see
+    `_tokenize_with_path_flags`) — e.g. the shingle drawn from a list of file
+    paths like `farm/personas.py, server/src/personas.js`. Two different
+    items independently listing "the persona files" produce this identical
+    word sequence with zero cross-item recall involved: it's determined by
+    the repo's directory layout, not by anything the model remembered. Such
+    shingles are excluded from evidence the same way boilerplate/role-prompt
+    shingles already are."""
+    tokens = _tokenize_with_path_flags(text)
+    if len(tokens) < SHINGLE_SIZE:
+        return {}
+    result = {}
+    for i in range(len(tokens) - SHINGLE_SIZE + 1):
+        window = tokens[i : i + SHINGLE_SIZE]
+        shingle = " ".join(word for word, _ in window)
+        path_like = any(flag for _, flag in window)
+        result[shingle] = result.get(shingle, False) or path_like
+    return result
 
 
 def role_prompt_shingles(role_prompt_path: Path = ROLE_PROMPT_PATH) -> set:
@@ -178,17 +221,23 @@ def find_phrase_reuse(runs: list[dict], role_shingles: set | None = None) -> lis
       more distinct items — reused *everywhere* is more consistent with a
       stock phrase the model drafts the same way regardless of memory than
       with recall of one specific earlier item.
-    Neither tag proves the match isn't memory; both are principled reasons
-    a match should NOT be counted as evidence that it is."""
+    - `path_like`: the shingle was drawn from a file-path-shaped token (e.g.
+      a list of source files) — see `_tokenize_with_path_flags`. Two items
+      independently listing the same repo files need no cross-item recall to
+      produce this; it's structurally determined by the directory layout.
+    None of these tags prove a match isn't memory; each is a principled
+    reason a match should NOT be counted as evidence that it is."""
     if role_shingles is None:
         role_shingles = role_prompt_shingles()
     first_seen: dict = {}  # shingle -> (item, field, run_id)
     shingle_items: dict = {}  # shingle -> set of distinct items that wrote it
+    shingle_path_like: dict = {}  # shingle -> True if any occurrence was path-adjacent
     matches = []
     for run in runs:
         patch_values = extract_patch_values(run)
         for field, value in patch_values.items():
-            for shingle in _shingles(value):
+            for shingle, path_like in _shingle_path_flags(value).items():
+                shingle_path_like[shingle] = shingle_path_like.get(shingle, False) or path_like
                 prior = first_seen.get(shingle)
                 if prior and prior[0] != run["item"]:
                     matches.append(
@@ -208,6 +257,7 @@ def find_phrase_reuse(runs: list[dict], role_shingles: set | None = None) -> lis
     for match in matches:
         match["role_prompt"] = match["shingle"] in role_shingles
         match["boilerplate"] = len(shingle_items[match["shingle"]]) >= BOILERPLATE_ITEM_THRESHOLD
+        match["path_like"] = shingle_path_like.get(match["shingle"], False)
     return matches
 
 
@@ -261,9 +311,14 @@ def render_markdown(runs: list[dict], phrase_matches: list[dict], mentions: list
         "through anything explicitly given to the model this call.",
         "",
     ]
-    specific_matches = [m for m in phrase_matches if not m["boilerplate"] and not m["role_prompt"]]
+    specific_matches = [
+        m for m in phrase_matches if not m["boilerplate"] and not m["role_prompt"] and not m["path_like"]
+    ]
     role_prompt_matches = [m for m in phrase_matches if m["role_prompt"]]
-    boilerplate_matches = [m for m in phrase_matches if m["boilerplate"] and not m["role_prompt"]]
+    path_like_matches = [m for m in phrase_matches if m["path_like"] and not m["role_prompt"]]
+    boilerplate_matches = [
+        m for m in phrase_matches if m["boilerplate"] and not m["role_prompt"] and not m["path_like"]
+    ]
     if specific_matches:
         lines.append(
             f"**{len(specific_matches)} shared-phrase occurrence(s) found, on wording specific "
@@ -301,6 +356,19 @@ def render_markdown(runs: list[dict], phrase_matches: list[dict], mentions: list
         )
         lines.append("")
         for shingle in role_prompt_shingles_found:
+            lines.append(f"- \"{shingle}\"")
+    if path_like_matches:
+        path_like_shingles = sorted({m["shingle"] for m in path_like_matches})
+        lines.append("")
+        lines.append(
+            f"**{len(path_like_matches)} additional occurrence(s) excluded as file-path-shaped text** — "
+            "the shared shingle was built from a token that sat directly against a `/` or `.` in the "
+            "source text (e.g. a list of source file paths). Two items independently listing the same "
+            "repo files produce this identical word sequence with zero cross-item recall involved — it "
+            "is determined by the directory layout, not by anything carried from a resumed session:"
+        )
+        lines.append("")
+        for shingle in path_like_shingles:
             lines.append(f"- \"{shingle}\"")
     if boilerplate_matches:
         boilerplate_shingles = sorted({m["shingle"] for m in boilerplate_matches})

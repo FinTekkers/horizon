@@ -1,6 +1,6 @@
 # PM cross-item context reliance — a point-in-time analysis
 
-Generated 2026-09-30 against `/home/ubuntu/.horizon-farm/logs/pm-horizon.log`, for HZ-115's evidence gate: "Is the accumulated cross-item context actually load-bearing?" (245 PM runs, 60 distinct work items in this log.)
+Generated 2026-09-30 against `/home/ubuntu/.horizon-farm/logs/pm-horizon.log`, for HZ-115's evidence gate: "Is the accumulated cross-item context actually load-bearing?" (247 PM runs, 61 distinct work items in this log.)
 
 **This is a snapshot, not an ongoing metric.** It reflects one production `pm-<slug>.log` file at generation time; re-run `python -m farm.tools.analyze_pm_context_reliance` and recommit this file against a fresher log for an updated answer.
 
@@ -8,37 +8,40 @@ Generated 2026-09-30 against `/home/ubuntu/.horizon-farm/logs/pm-horizon.log`, f
 
 `farm/pm_agent.py`'s `build_prompt()` never renders one item's `desc`/`metric`/`guardrails` into another item's prompt — each item's prompt carries only its own fields. So a word-for-word phrase shared between two different items' `patch` output can only have reached the second item's reply through the resumed session's own memory of writing the first, not through anything explicitly given to the model this call.
 
-**27 shared-phrase occurrence(s) found, on wording specific enough it is not plausibly independent convergence — cross-item memory reuse is present in this log:**
+**22 shared-phrase occurrence(s) found, on wording specific enough it is not plausibly independent convergence — cross-item memory reuse is present in this log:**
 
 | Earlier item (run) | Later item (run) | Shared phrase |
 | --- | --- | --- |
 | HZ-33 (run 211, `metric`) | HZ-76 (run 536, `desc`) | "retry visible in the activity feed a checks" |
-| HZ-33 (run 211, `metric`) | HZ-76 (run 536, `desc`) | "in the activity feed a checks failed failure" |
 | HZ-33 (run 211, `metric`) | HZ-76 (run 536, `desc`) | "visible in the activity feed a checks failed" |
-| HZ-77 (run 538, `desc`) | HZ-94 (run 641, `desc`) | "and next action instead of just 'paused '" |
+| HZ-33 (run 211, `metric`) | HZ-76 (run 536, `desc`) | "in the activity feed a checks failed failure" |
 | HZ-77 (run 538, `desc`) | HZ-94 (run 641, `desc`) | "category cause attempts used and next action instead" |
-| HZ-77 (run 538, `desc`) | HZ-94 (run 641, `desc`) | "used and next action instead of just 'paused" |
-| HZ-77 (run 538, `desc`) | HZ-94 (run 641, `desc`) | "attempts used and next action instead of just" |
 | HZ-77 (run 538, `desc`) | HZ-94 (run 641, `desc`) | "cause attempts used and next action instead of" |
-| HZ-79 (run 546, `desc`) | HZ-95 (run 642, `desc`) | "an item with dependents shows what's waiting behind" |
-| HZ-79 (run 546, `desc`) | HZ-95 (run 642, `desc`) | "is visually distinct from idle paused and queued" |
-| HZ-79 (run 546, `desc`) | HZ-95 (run 642, `desc`) | "by another shows what blocks it and what" |
-| HZ-79 (run 546, `desc`) | HZ-95 (run 642, `desc`) | "board blocked is visually distinct from idle paused" |
-| HZ-79 (run 546, `desc`) | HZ-95 (run 642, `desc`) | "shows what blocks it and what would unblock" |
-| HZ-79 (run 546, `desc`) | HZ-95 (run 642, `desc`) | "blocked by another shows what blocks it and" |
+| HZ-77 (run 538, `desc`) | HZ-94 (run 641, `desc`) | "attempts used and next action instead of just" |
+| HZ-77 (run 538, `desc`) | HZ-94 (run 641, `desc`) | "used and next action instead of just 'paused" |
+| HZ-77 (run 538, `desc`) | HZ-94 (run 641, `desc`) | "and next action instead of just 'paused '" |
 | HZ-79 (run 546, `desc`) | HZ-95 (run 642, `desc`) | "an item blocked by another shows what blocks" |
-| HZ-79 (run 546, `desc`) | HZ-95 (run 642, `desc`) | "blocked is visually distinct from idle paused and" |
-| HZ-79 (run 546, `desc`) | HZ-95 (run 642, `desc`) | "the board blocked is visually distinct from idle" |
-| HZ-79 (run 546, `desc`) | HZ-95 (run 642, `desc`) | "on the board blocked is visually distinct from" |
-| HZ-79 (run 546, `desc`) | HZ-95 (run 642, `desc`) | "another shows what blocks it and what would" |
 | HZ-79 (run 546, `desc`) | HZ-95 (run 642, `desc`) | "item blocked by another shows what blocks it" |
-| HZ-79 (run 546, `desc`) | HZ-95 (run 642, `desc`) | "item with dependents shows what's waiting behind it" |
+| HZ-79 (run 546, `desc`) | HZ-95 (run 642, `desc`) | "blocked by another shows what blocks it and" |
+| HZ-79 (run 546, `desc`) | HZ-95 (run 642, `desc`) | "by another shows what blocks it and what" |
+| HZ-79 (run 546, `desc`) | HZ-95 (run 642, `desc`) | "another shows what blocks it and what would" |
+| HZ-79 (run 546, `desc`) | HZ-95 (run 642, `desc`) | "shows what blocks it and what would unblock" |
 | HZ-79 (run 546, `desc`) | HZ-95 (run 642, `desc`) | "what blocks it and what would unblock it" |
-| HZ-22 (run 149, `guardrails`) | HZ-125 (run 865, `desc`) | "personas py server src personas js ui src" |
-| HZ-22 (run 149, `guardrails`) | HZ-125 (run 865, `desc`) | "py server src personas js ui src domain" |
-| HZ-22 (run 149, `guardrails`) | HZ-125 (run 865, `desc`) | "farm personas py server src personas js ui" |
-| HZ-22 (run 149, `guardrails`) | HZ-125 (run 865, `desc`) | "server src personas js ui src domain personas" |
-| HZ-22 (run 149, `guardrails`) | HZ-125 (run 865, `desc`) | "src personas js ui src domain personas js" |
+| HZ-79 (run 546, `desc`) | HZ-95 (run 642, `desc`) | "an item with dependents shows what's waiting behind" |
+| HZ-79 (run 546, `desc`) | HZ-95 (run 642, `desc`) | "item with dependents shows what's waiting behind it" |
+| HZ-79 (run 546, `desc`) | HZ-95 (run 642, `desc`) | "on the board blocked is visually distinct from" |
+| HZ-79 (run 546, `desc`) | HZ-95 (run 642, `desc`) | "the board blocked is visually distinct from idle" |
+| HZ-79 (run 546, `desc`) | HZ-95 (run 642, `desc`) | "board blocked is visually distinct from idle paused" |
+| HZ-79 (run 546, `desc`) | HZ-95 (run 642, `desc`) | "blocked is visually distinct from idle paused and" |
+| HZ-79 (run 546, `desc`) | HZ-95 (run 642, `desc`) | "is visually distinct from idle paused and queued" |
+
+**5 additional occurrence(s) excluded as file-path-shaped text** — the shared shingle was built from a token that sat directly against a `/` or `.` in the source text (e.g. a list of source file paths). Two items independently listing the same repo files produce this identical word sequence with zero cross-item recall involved — it is determined by the directory layout, not by anything carried from a resumed session:
+
+- "farm personas py server src personas js ui"
+- "personas py server src personas js ui src"
+- "py server src personas js ui src domain"
+- "server src personas js ui src domain personas"
+- "src personas js ui src domain personas js"
 
 **2 additional occurrence(s) excluded as likely convergent boilerplate** — the shared shingle recurs across 3+ distinct items independently, more consistent with a stock phrase the model drafts the same way regardless of memory than with recall of one specific earlier item:
 
@@ -48,7 +51,7 @@ Generated 2026-09-30 against `/home/ubuntu/.horizon-farm/logs/pm-horizon.log`, f
 
 A run's reply mentioning a *different* item's ID. This does **not** distinguish cross-item memory from a legitimate reference already present in the current item's own `desc`/`guardrails` text (which the current item's own prompt does carry) — reported as raw counts for a human to read the excerpts and judge, not as a standalone verdict.
 
-**86 mention(s) found:**
+**87 mention(s) found:**
 
 | Run | Item | Step | Mentions | Excerpt |
 | --- | --- | --- | --- | --- |
@@ -103,7 +106,7 @@ A run's reply mentioning a *different* item's ID. This does **not** distinguish 
 | 561 | HZ-81 | Set guardrails | HZ-76 | ...he orchestrator's retry classification (HZ-76) depends on distinguishing exhaustion f... |
 | 571 | HZ-78 | Summarize reviews & recommend | HZ-33 | ...ill silently won't dispatch — the exact HZ-33 failure mode the guardrail names — **op... |
 
-...and 36 more occurrence(s), truncated for table length — full count above.
+...and 37 more occurrence(s), truncated for table length — full count above.
 
 ## Verdict
 
