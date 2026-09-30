@@ -36,6 +36,12 @@ TRANSPORT_ENVELOPE_CALLS = {
     FARM / "providers" / "muse.py": 1,
 }
 
+# Both spellings of the raw extractor. `_extract_json` is agent_runner's own
+# private variant — it returns which attempt produced the value, so it is even
+# more tempting to reach for and even less suitable outside the parser. Banning
+# only the public name would leave the underscore as an open door.
+RAW_EXTRACTORS = {"extract_json", "_extract_json"}
+
 
 def farm_modules() -> list[Path]:
     """Every module under farm/ that the rule applies to.
@@ -78,7 +84,7 @@ def _offenders(paths: list[Path]) -> list[str]:
             continue
         exempt_budget = TRANSPORT_ENVELOPE_CALLS.get(path, 0)
         for node in ast.walk(tree):
-            # Any reference to extract_json at all, however it is spelled:
+            # Any reference to the raw extractor at all, however it is spelled:
             # a bare call, an attribute access, or an aliased import.
             name = None
             if isinstance(node, ast.Name):
@@ -87,9 +93,9 @@ def _offenders(paths: list[Path]) -> list[str]:
                 name = node.attr
             elif isinstance(node, ast.alias):
                 name = node.name.rsplit(".", 1)[-1]
-            if name == "extract_json":
+            if name in RAW_EXTRACTORS:
                 found.append(
-                    f"{path}:{getattr(node, 'lineno', '?')}: references extract_json() — "
+                    f"{path}:{getattr(node, 'lineno', '?')}: references {name}() — "
                     "call agent_runner.parse_agent_reply() instead"
                 )
                 continue
@@ -148,6 +154,20 @@ def test_an_aliased_import_is_flagged(tmp_path):
         "    return _ej(reply['result'])\n"
     )
     assert _offenders([planted]), "an aliased extract_json import slipped through"
+
+
+def test_the_private_extractor_is_banned_too(tmp_path):
+    """agent_runner._extract_json() is the same parse with attempt provenance
+    attached — reaching for it outside the parser is the same defect."""
+    planted = tmp_path / "private_agent.py"
+    planted.write_text(
+        "from farm.agent_runner import _extract_json\n"
+        "def go(reply):\n"
+        "    return _extract_json(reply['result'])[0]\n"
+    )
+    offenders = _offenders([planted])
+    assert offenders, "a caller reaching for the private extractor slipped through"
+    assert "parse_agent_reply" in offenders[0]
 
 
 def test_a_bare_json_loads_on_a_reply_is_flagged(tmp_path):

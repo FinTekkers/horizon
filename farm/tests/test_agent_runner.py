@@ -221,14 +221,10 @@ def test_a_leading_object_shadows_a_later_payload_and_the_retry_is_the_answer():
     No attempt order can return the first object in one and raise on the
     other, so the metric decides it.
 
-    What keeps this lossless is the caller: pm_agent and concierge_agent hand
-    their validator to parse_agent_reply(), so `{}` fails validation INSIDE
-    the retry envelope and the retry still runs (see the two
-    `..._still_takes_the_lossless_retry` tests below). step_agent's generic
-    path validates after the call, by deliberate design (its summary check
-    predates this item and stays where it is), so on this input shape it now
-    fails on the first pass instead of retrying — a bounded regression on
-    input that failed either way, never on input that succeeded.
+    What keeps it lossless is parse_agent_reply(), not the caller: a value the
+    scanner produced still spends the lossless retry, and the retried reply
+    still wins — see test_a_scanner_only_parse_still_takes_the_lossless_retry.
+    No caller has to validate inside the retry envelope to earn that back.
     """
     assert extract_json('Example: {} \n {"summary": "done"}') == {}
 
@@ -448,54 +444,118 @@ def test_a_validation_failure_with_no_retry_propagates():
         parse_agent_reply('{"a": 1}', validate=validate)
 
 
-# ---- validate_after_retry=False: earn the retry without rejecting ----
-# step_agent's review step defaults a verdict-less reply to "fail" — a defined
-# outcome, not an error. It validates only to buy the retry back that
-# extract_json()'s attempt 3 would otherwise take away, and must never turn
-# that fail-closed default into a cancelled run.
+def test_a_retried_reply_that_still_fails_validation_raises():
+    """The retry is one attempt, not a loop: a second reply that parses but is
+    still the wrong shape cancels the run, as it did before this item."""
 
+    def _reject_all(parsed):
+        raise AgentError("not the shape I wanted")
 
-def _reject_all(parsed):
-    raise AgentError("not the shape I wanted")
-
-
-def test_validate_after_retry_false_accepts_the_retried_reply_unvalidated():
-    calls = []
-
-    def retry(prompt):
-        calls.append(prompt)
-        return '{"still": "wrong shape"}'
-
-    parsed, notes = parse_agent_reply(
-        '{"wrong": "shape"}', retry, validate=_reject_all, validate_after_retry=False
-    )
-    assert parsed == {"still": "wrong shape"}  # returned, not raised
-    assert notes == []
-    assert len(calls) == 1  # the retry was still spent
-
-
-def test_validate_after_retry_defaults_to_rejecting_the_retried_reply():
-    """The opposite default, for pm_agent/concierge_agent and step_agent's
-    generic and deploy paths, where a missing field really is an error."""
     with pytest.raises(AgentError, match="not the shape I wanted"):
         parse_agent_reply('{"wrong": "shape"}', lambda prompt: '{"still": "wrong"}', validate=_reject_all)
 
 
-def test_validate_after_retry_false_still_raises_when_the_retry_will_not_parse():
-    """The flag relaxes validation, never parsing."""
+# ---- a scanner-only parse still spends the lossless retry ----
+# extract_json()'s attempt 3 lifts the FIRST balanced object out of a reply,
+# so `Example: {} \n {"summary": "done"}` now parses — to the stray leading
+# `{}`. Before attempt 3 existed that reply raised here and the caller retried.
+# Letting the scanned object short-circuit the retry would have silently swapped
+# a recovered run for a cancelled one, so the retry is spent exactly as before
+# and the scanned object is kept only as a fallback. This is the one place the
+# retry decision lives — no caller needs a validator to earn it back.
+
+_SHADOWED = 'Example: {} \n {"summary": "done"}'
+
+
+def test_a_scanner_only_parse_still_takes_the_lossless_retry():
+    calls = []
+
+    def retry(prompt):
+        calls.append(prompt)
+        return '{"summary": "the real payload"}'
+
+    parsed, notes = parse_agent_reply(_SHADOWED, retry)
+    assert parsed == {"summary": "the real payload"}  # the retry wins, not the `{}`
+    assert len(calls) == 1
+    assert notes == []  # nothing was salvaged, so nothing to report
+
+
+def test_the_retry_prompt_for_a_scanner_only_parse_is_the_pre_scanner_error():
+    """The model must be told what it was told before attempt 3 existed —
+    attempt 2's decode error, not a message about the scan."""
+    calls = []
+    parse_agent_reply(_SHADOWED, lambda prompt: calls.append(prompt) or '{"summary": "ok"}')
+    span = _SHADOWED[_SHADOWED.find("{") : _SHADOWED.rfind("}") + 1]
+    with pytest.raises(json.JSONDecodeError) as before:
+        json.loads(span, strict=False)
+    assert calls[0] == agent_runner.RETRY_PROMPT.format(exc=before.value)
+
+
+def test_a_validator_rejecting_a_scanned_object_still_sends_the_pre_scanner_prompt():
+    """pm_agent and concierge_agent validate inside the envelope, so on this input
+    it is the validator that rejects the `{}`. The model must still be asked to
+    try again with the parse error it was given before attempt 3 existed."""
+    calls = []
+
+    def retry(prompt):
+        calls.append(prompt)
+        return '{"summary": "the real payload"}'
+
+    def validate(parsed):
+        if not parsed.get("summary"):
+            raise AgentError("agent reply missing 'summary'")
+        return parsed
+
+    parsed, notes = parse_agent_reply(_SHADOWED, retry, validate=validate)
+    assert parsed == {"summary": "the real payload"}
+    assert len(calls) == 1
+    assert "missing 'summary'" not in calls[0]  # not the validator's complaint
+    assert "Extra data" in calls[0]  # attempt 2's decode error, as before HZ-156
+    assert notes == []
+
+
+def test_the_scanned_object_is_the_fallback_when_the_retry_will_not_parse_either():
+    """Only reached on a run that cancelled outright before this item: both the
+    original reply and its retry are unparseable as a whole. The leading object
+    is used and the note says so, rather than reporting a clean run."""
+    parsed, notes = parse_agent_reply(_SHADOWED, lambda prompt: "still just prose")
+    assert parsed == {}
+    assert notes == [agent_runner.FIRST_OBJECT_NOTE]
+
+
+def test_the_fallback_is_validated_before_it_is_used():
+    """validate()'s return value is what the caller consumes, so an unvalidated
+    fallback would hand pm_agent the wrong shape entirely. A fallback that
+    cannot pass the validator is no fallback: the retry's failure stands."""
     with pytest.raises(AgentError, match="no JSON object"):
         parse_agent_reply(
-            '{"wrong": "shape"}', lambda prompt: "prose", validate=_reject_all, validate_after_retry=False
+            _SHADOWED,
+            lambda prompt: "prose",
+            validate=lambda parsed: parsed["summary"] if parsed.get("summary") else _raise_missing(),
         )
 
 
-def test_validate_after_retry_false_still_validates_the_first_reply():
-    """A good first reply is validated normally — the flag only ever loosens
-    the second attempt, so a validator that transforms still transforms."""
-    parsed, _notes = parse_agent_reply(
-        '{"a": 1}', validate=lambda p: ("validated", p["a"]), validate_after_retry=False
-    )
-    assert parsed == ("validated", 1)
+def _raise_missing():
+    raise AgentError("reply missing 'summary'")
+
+
+def test_a_scanner_only_parse_with_no_retry_reports_the_note():
+    """step_agent's implement step has no retry to spend, so the scanned object
+    is all there is — and the note is the only evidence the reply was malformed."""
+    parsed, notes = parse_agent_reply(_SHADOWED)
+    assert parsed == {}
+    assert notes == [agent_runner.FIRST_OBJECT_NOTE]
+
+
+def test_a_reply_that_parses_whole_never_spends_the_retry():
+    """The other side of the gate: attempts 1 and 2 are the common case and must
+    cost exactly one agent run, whatever shape the parsed object turns out to be.
+    A missing required field is the caller's business, checked after this call."""
+    calls = []
+    for reply in ('{"a": 1}', 'prose {"a": 1} prose', '```json\n{"a": 1}\n```', "{}"):
+        parsed, notes = parse_agent_reply(reply, lambda prompt: calls.append(prompt) or "{}")
+        assert notes == []
+    assert calls == []
 
 
 # ---- the notes channel ----
@@ -516,10 +576,12 @@ def test_notes_are_returned_when_the_retry_produced_the_parse(monkeypatch):
     assert notes == ['note for {"sum']  # the reply that actually parsed, not the first
 
 
-def test_no_note_is_produced_in_this_item():
-    """HZ-156 lands the channel empty: no byte-altering repair exists yet, so
-    every real reply reports no notes and every caller's output is unchanged."""
-    for reply in ('{"a": 1}', '```json\n{"a": 1}\n```', 'prose {"a":1} prose', '{"s":"1"} p {"s":"2"}'):
+def test_no_note_is_produced_for_a_reply_that_parses_as_a_whole():
+    """HZ-156 lands the channel effectively empty: no byte-altering repair
+    exists yet, so every reply that parses the way replies parsed before this
+    item reports no notes, and every caller's output is unchanged. The one
+    exception is the scanner fallback, which is a run that cancelled before."""
+    for reply in ('{"a": 1}', '```json\n{"a": 1}\n```', 'prose {"a":1} prose', "[1, 2]"):
         _parsed, notes = parse_agent_reply(reply)
         assert notes == []
 

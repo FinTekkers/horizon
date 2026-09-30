@@ -18,6 +18,7 @@ from .providers.base import AgentError, AgentExhaustedError
 __all__ = [
     "AgentError",
     "AgentExhaustedError",
+    "FIRST_OBJECT_NOTE",
     "assert_provider_auth",
     "run_agent",
     "extract_json",
@@ -164,7 +165,59 @@ def _first_balanced_object(text: str) -> str | None:
     return None
 
 
-def extract_json(text: str) -> dict:
+def _extract_json(text: str) -> tuple[Any, Exception | None]:
+    """extract_json()'s work, plus which attempt produced the value.
+
+    The second element is None when attempt 1 or 2 parsed the reply — i.e.
+    whenever this is a reply that already parsed before HZ-156. When the
+    last-resort scanner (attempt 3) produced the value it is instead the
+    exception attempts 1 and 2 raised, which is exactly what a caller saw on
+    this input before attempt 3 existed.
+
+    parse_agent_reply() needs both halves: the fact that the scanner ran tells
+    it the lossless retry is still owed, and the exception lets it build a
+    byte-identical retry prompt. extract_json() itself is unchanged — it is the
+    public entry point and returns only the value, so the success metric's
+    behaviour and every existing test read the same as before.
+    """
+    cleaned = text.strip()
+    if cleaned.startswith("```"):
+        cleaned = cleaned.strip("`")
+        if cleaned.startswith("json"):
+            cleaned = cleaned[4:]
+    try:
+        # strict=False: models occasionally emit raw control characters
+        # (literal newlines/tabs) inside JSON strings — meaningful content
+        # that the strict parser rejects, failing an otherwise-good step.
+        return json.loads(cleaned, strict=False), None
+    except json.JSONDecodeError:
+        pass
+    start, end = cleaned.find("{"), cleaned.rfind("}")
+    if start == -1 or end <= start:
+        raise AgentError(f"no JSON object in agent reply: {text[:200]}")
+    try:
+        return json.loads(cleaned[start : end + 1], strict=False), None
+    except json.JSONDecodeError as widest_failure:
+        first = _first_balanced_object(cleaned)
+        if first is None or first == cleaned[start : end + 1]:
+            raise
+        try:
+            # strict=False here too, or a literal newline inside a string would
+            # make this path stricter than the two above it.
+            return json.loads(first, strict=False), widest_failure
+        except json.JSONDecodeError:
+            # Attempt 3 is purely additive: when it fails too, the caller must
+            # see the exception it saw before attempt 3 existed. Today the two
+            # messages coincide anyway (the first balanced object is a PREFIX of
+            # the widest span, and the decoder scans left to right, so both stop
+            # at the same character) — re-raising attempt 2's error makes that a
+            # guarantee rather than a coincidence, and keeps the retry prompt,
+            # which embeds this text, byte-identical. `from None` drops the
+            # chained context so the log shows one failure, not two.
+            raise widest_failure from None
+
+
+def extract_json(text: str) -> Any:
     """Lift a JSON object out of a model reply (tolerates fences/prose).
 
     Three attempts, in this order — the order is load-bearing (HZ-156):
@@ -180,49 +233,16 @@ def extract_json(text: str) -> dict:
     ("given `{"s":"first"} prose {"s":"second"}`, return the first object")
     and the guardrail ("input that fails to parse today still fails"). A
     reply carrying a small valid object BEFORE the real payload keeps failing
-    attempts 1 and 2 and, on attempt 3, returns that leading object — which
-    is why callers must keep the lossless retry: the retry, not the scanner,
-    is what recovers a reply whose real payload came second.
+    attempts 1 and 2 and, on attempt 3, returns that leading object — which is
+    why parse_agent_reply() still spends the lossless retry on such a reply and
+    keeps the scanned object only as a fallback: the retry, not the scanner, is
+    what recovers a reply whose real payload came second.
 
     When attempt 3 also fails, attempt 2's error is re-raised, so the
     exception a caller sees for an unparseable reply is unchanged in type and
     message.
     """
-    cleaned = text.strip()
-    if cleaned.startswith("```"):
-        cleaned = cleaned.strip("`")
-        if cleaned.startswith("json"):
-            cleaned = cleaned[4:]
-    try:
-        # strict=False: models occasionally emit raw control characters
-        # (literal newlines/tabs) inside JSON strings — meaningful content
-        # that the strict parser rejects, failing an otherwise-good step.
-        return json.loads(cleaned, strict=False)
-    except json.JSONDecodeError:
-        pass
-    start, end = cleaned.find("{"), cleaned.rfind("}")
-    if start == -1 or end <= start:
-        raise AgentError(f"no JSON object in agent reply: {text[:200]}")
-    try:
-        return json.loads(cleaned[start : end + 1], strict=False)
-    except json.JSONDecodeError as widest_failure:
-        first = _first_balanced_object(cleaned)
-        if first is None or first == cleaned[start : end + 1]:
-            raise
-        try:
-            # strict=False here too, or a literal newline inside a string would
-            # make this path stricter than the two above it.
-            return json.loads(first, strict=False)
-        except json.JSONDecodeError:
-            # Attempt 3 is purely additive: when it fails too, the caller must
-            # see the exception it saw before attempt 3 existed. Today the two
-            # messages coincide anyway (the first balanced object is a PREFIX of
-            # the widest span, and the decoder scans left to right, so both stop
-            # at the same character) — re-raising attempt 2's error makes that a
-            # guarantee rather than a coincidence, and keeps the retry prompt,
-            # which embeds this text, byte-identical. `from None` drops the
-            # chained context so the log shows one failure, not two.
-            raise widest_failure from None
+    return _extract_json(text)[0]
 
 
 # The retry prompt all three callers used before this one existed — byte for
@@ -231,16 +251,28 @@ RETRY_PROMPT = (
     "Your previous reply was invalid: {exc}. Respond again with ONLY the JSON object, no other text."
 )
 
+# The one note this item can actually produce. Reported when a reply only
+# parsed because attempt 3 lifted its leading object out — the caller's output
+# would otherwise look like a clean run, with the only evidence that the reply
+# was malformed thrown away.
+FIRST_OBJECT_NOTE = (
+    "reply would not parse as a whole; used its first complete JSON object — see session log"
+)
+
 
 def _notes_for(reply_text: str, parsed: Any) -> list[str]:
-    """Parser notes for one reply. Always empty in HZ-156, by design.
+    """Per-repair parser notes for one reply. Always empty in HZ-156, by design.
 
     NOT dead code: this is the reporting channel the two follow-up items
-    (byte-altering repair, then truncation salvage) report through, and the
-    seam their plumbing is already proven against — a test monkeypatches this
-    function to inject a note and asserts it reaches the run's output line and
-    the step's artifact. Landing the channel empty is what keeps this item's
-    output byte-identical to before it.
+    (byte-altering repair, then truncation salvage) report through, and the seam
+    their plumbing is already proven against — a test monkeypatches this function
+    to inject a note and asserts it reaches the run's output line and the step's
+    artifact. No repair exists yet, so it reports nothing yet, and every reply
+    that parses the way replies parsed before this item produces no note at all.
+
+    The one note HZ-156 itself can emit is FIRST_OBJECT_NOTE, added by
+    parse_agent_reply() rather than here: it describes which attempt parsed the
+    reply, not a repair applied to it.
     """
     return []
 
@@ -250,7 +282,6 @@ def parse_agent_reply(
     retry: Callable[[str], str] | None = None,
     *,
     validate: Callable[[Any], Any] | None = None,
-    validate_after_retry: bool = True,
 ) -> tuple[Any, list[str]]:
     """THE parser for a model's final JSON reply. Every caller above this
     module uses it; nothing else calls extract_json() (enforced by
@@ -264,18 +295,25 @@ def parse_agent_reply(
     failure propagates immediately with no retry.
 
     `validate` is applied INSIDE the retry envelope, so a reply that parses
-    but is missing a required field takes the lossless retry. pm_agent and
-    concierge_agent both validated inside their retry try-block already;
-    step_agent's checks moved in so that extract_json()'s attempt 3 — which
-    can lift a stray leading object out of prose — cannot turn a reply the
-    retry used to recover into a cancelled run.
+    but is missing a required field takes the lossless retry. That is where
+    pm_agent and concierge_agent have always run their validator — both wrapped
+    validate(extract_json(...)) in one try — so they hand it in here. step_agent
+    checks its required fields AFTER this call, as it always has, and hands in
+    no validator: moving its checks in would buy a second full agent run for a
+    reply that costs nothing to reject today.
 
-    `validate_after_retry=False` applies `validate` to the FIRST reply only:
-    a retried reply that still fails it is returned anyway, unvalidated. That
-    is for a caller whose own handling of a missing field is already a defined
-    outcome rather than an error — step_agent's review step, where a reply
-    with no verdict must fail the gate closed, never cancel the run. Such a
-    caller uses `validate` purely to earn the retry, not to reject.
+    Retries are spent on exactly the replies that spent one before this item:
+
+    * a reply that will not parse at all — unchanged;
+    * a reply only attempt 3 could parse. Before attempt 3 existed the parse
+      raised here and the caller retried, so the retry still runs and the
+      retried reply still wins. The scanned object is kept only as a fallback
+      for a retry that cannot parse either — a run that cancelled outright
+      before this item — and that fallback is reported through `notes`.
+
+    A reply that parses by attempt 1 or 2 never reaches the retry unless
+    `validate` rejects it, which is the pre-HZ-156 behaviour for all three
+    callers that pass one.
 
     Returns `(validate(parsed) if validate else parsed, notes)`.
 
@@ -286,24 +324,47 @@ def parse_agent_reply(
     orchestrator auto-retries a run only if it still carries that tag.
     """
 
-    def _attempt(text: str, *, apply_validate: bool) -> tuple[Any, list[str]]:
-        parsed = extract_json(text)
-        notes = _notes_for(text, parsed)
-        return (validate(parsed) if (validate and apply_validate) else parsed), notes
+    def notes_for(text: str, parsed: Any, *, scanned: bool) -> list[str]:
+        notes = [*_notes_for(text, parsed)]
+        if scanned:
+            notes.append(FIRST_OBJECT_NOTE)
+        return notes
 
+    fallback: tuple[Any, list[str]] | None = None
+    pre_scan_failure: Exception | None = None
     try:
-        return _attempt(reply_text, apply_validate=True)
+        parsed, pre_scan_failure = _extract_json(reply_text)
+        notes = notes_for(reply_text, parsed, scanned=pre_scan_failure is not None)
+        value = validate(parsed) if validate else parsed
     except AgentExhaustedError:
         raise
     except (AgentError, json.JSONDecodeError) as exc:
         if retry is None:
             raise
-        prompt = RETRY_PROMPT.format(exc=exc)
-    # Deliberately OUTSIDE the except clause: nothing the retry raises may be
-    # caught by the handler above. A retried reply that still will not PARSE
-    # always raises, whatever validate_after_retry says — that flag relaxes
-    # validation, never parsing.
-    return _attempt(retry(prompt), apply_validate=validate_after_retry)
+        # `pre_scan_failure or exc`: a reply only attempt 3 could parse is asked
+        # to try again with the error attempts 1 and 2 raised, so the prompt is
+        # byte-for-byte the one that reply produced before attempt 3 existed —
+        # even when it was `validate` that then rejected the scanned object.
+        failure: Exception = pre_scan_failure or exc
+    else:
+        if pre_scan_failure is None or retry is None:
+            return value, notes
+        fallback, failure = (value, notes), pre_scan_failure
+
+    # Deliberately OUTSIDE every handler above: nothing retry() itself raises
+    # may be caught here. An AgentExhaustedError from run_agent inside the
+    # closure has to reach the caller with its turn-cap tag intact.
+    fresh = retry(RETRY_PROMPT.format(exc=failure))
+    try:
+        parsed, retried_pre_scan_failure = _extract_json(fresh)
+        notes = notes_for(fresh, parsed, scanned=retried_pre_scan_failure is not None)
+        return (validate(parsed) if validate else parsed), notes
+    except AgentExhaustedError:
+        raise
+    except (AgentError, json.JSONDecodeError):
+        if fallback is None:
+            raise
+        return fallback
 
 
 def stamp_notes(summary: str, notes: list[str], limit: int) -> str:

@@ -15,7 +15,6 @@ import sys
 import tempfile
 from datetime import datetime
 from pathlib import Path
-from typing import Callable
 
 import httpx
 
@@ -405,56 +404,6 @@ def _provenance(reply: dict) -> dict:
     return {"provider": reply.get("provider"), "command_id": reply.get("command_id")}
 
 
-# ---- required-field checks (HZ-156) ----
-# Each of these is handed to _run_and_parse(validate=...), so it runs INSIDE
-# the lossless retry envelope rather than after it — the same place pm_agent
-# and concierge_agent have always run theirs.
-#
-# Why that matters here: extract_json()'s attempt 3 lifts the FIRST balanced
-# object out of a reply, so `Example: {} \n {"summary": "done"}` — which used
-# to fail both parse attempts and be recovered by the retry — now parses to
-# the stray leading `{}`. Checking required fields after the fact would turn
-# that recoverable reply into a cancelled run. Checking them inside means the
-# reply is retried exactly as it was before attempt 3 existed.
-#
-# No outcome that passes today is affected: a reply reaching one of these
-# raises is one that already failed its step (a raise, or a "fail" verdict) on
-# the old path. These only add the retry that the shape of the failure has
-# always earned.
-
-
-def _require_summary(parsed: dict) -> dict:
-    if not str(parsed.get("summary", "")).strip():
-        raise AgentError("agent reply missing 'summary'")
-    return parsed
-
-
-def _require_review_verdict(parsed: dict) -> dict:
-    """Earns the review path its retry — it never rejects the retried reply.
-
-    Passed with validate_after_retry=False, because a review reply carrying no
-    verdict already has a defined outcome: _code_review_section() and
-    _qa_review_section() default it to "fail", and failing that gate closed
-    rather than cancelling the run is deliberate (HZ-30). So this raise only
-    ever buys one more attempt at a reply that looks like it isn't the
-    agent's at all — which, since attempt 3 can lift a stray leading object
-    out of prose, is exactly the case the retry used to recover for free.
-
-    Only `verdict` is checked. Every other field those two readers touch stays
-    tolerant, defaulting to the safe value; tightening the gate is not the job.
-    """
-    if parsed.get("verdict") not in ("pass", "fail"):
-        raise AgentError("review reply missing a 'pass'/'fail' verdict")
-    return parsed
-
-
-def _require_deploy_targets(parsed: dict) -> dict:
-    url, expected_text = parsed.get("url"), parsed.get("expected_text")
-    if not isinstance(url, str) or not url.strip() or not isinstance(expected_text, str) or not expected_text.strip():
-        raise AgentError("devops reply missing 'url'/'expected_text' needed for deep verification")
-    return parsed
-
-
 def _run_and_parse(
     prompt: str,
     *,
@@ -465,8 +414,6 @@ def _run_and_parse(
     allowed_tools: str | None,
     provider: str | None = None,
     provider_locked: bool = False,
-    validate: Callable[[dict], dict] | None = None,
-    validate_after_retry: bool = True,
 ) -> tuple[dict, dict, list[str]]:
     """run_agent + the shared reply parser, with one retry-with-feedback on a
     parse failure (HZ-44) — mirrors pm_agent.process()'s recovery. Asking the
@@ -479,10 +426,12 @@ def _run_and_parse(
     hence the `produced` rebind in the closure rather than reading `reply`
     after the fact. Notes are the shared parser's reporting channel (HZ-156).
 
-    `validate` is this path's required-field check, run inside the retry — see
-    the block above _require_summary() for why it belongs there and not after.
-    `validate_after_retry=False` makes it gate the retry without rejecting:
-    the review path's fail-closed default is an outcome, not an error.
+    No validate= is handed to the parser, deliberately. Every required-field
+    check on this side (a missing 'summary', a deploy reply with no 'url', a
+    review reply with no verdict) stays exactly where it has always been —
+    after this call returns. Moving one inside the retry envelope would buy a
+    second full agent run for a reply that costs nothing to reject today, and
+    on the review path a retry could flip a deliberately fail-closed gate.
     """
     reply = run_agent(
         prompt,
@@ -512,9 +461,7 @@ def _run_and_parse(
         )
         return produced["result"]
 
-    parsed, notes = parse_agent_reply(
-        reply["result"], retry_once, validate=validate, validate_after_retry=validate_after_retry
-    )
+    parsed, notes = parse_agent_reply(reply["result"], retry_once)
     return parsed, _provenance(produced), notes
 
 
@@ -611,14 +558,11 @@ def execute(task: dict) -> dict:
             parsed, notes = parse_agent_reply(reply["result"])
             summary = str(parsed.get("summary", "")).strip()[:SUMMARY_MAX_CHARS]
             if not summary:
-                # Parsed, but carried nothing usable. That is also what a stray
-                # leading object looks like on this path: extract_json()'s
-                # attempt 3 can lift `{}` out of prose, and with no retry here
-                # to recover from it the run would otherwise report a bare
-                # "implementation finished" — indistinguishable from a clean
-                # run, with the only hint that the reply was junk thrown away.
-                # The except branch below says so for an unparseable reply; a
-                # note says so for a parseable but empty one.
+                # Parsed, but carried nothing usable. Without a note the run
+                # would report a bare "implementation finished" — indistinguishable
+                # from a clean run, with the only evidence that the reply was junk
+                # thrown away. The except branch below says so for an unparseable
+                # reply; this says so for a parseable but empty one.
                 summary = "implementation finished"
                 notes = [*notes, "agent's final message carried no 'summary' — see session log"]
         except Exception:
@@ -679,8 +623,6 @@ def execute(task: dict) -> dict:
             timeout_s=timeout_s,
             allowed_tools=tools,
             provider_locked=provider_locked,
-            validate=_require_review_verdict,
-            validate_after_retry=False,
         )
 
         qa_role = (ROLES / "qa_review.md").read_text()
@@ -694,8 +636,6 @@ def execute(task: dict) -> dict:
             timeout_s=timeout_s,
             allowed_tools=tools,
             provider_locked=provider_locked,
-            validate=_require_review_verdict,
-            validate_after_retry=False,
         )
 
         verdict = {"code_review": _code_review_section(code_parsed), "qa_review": _qa_review_section(qa_parsed)}
@@ -749,15 +689,15 @@ def execute(task: dict) -> dict:
             timeout_s=timeout_s,
             allowed_tools=tools,
             provider_locked=provider_locked,
-            validate=_require_deploy_targets,
         )
         summary = str(parsed.get("summary", "")).strip()[:SUMMARY_MAX_CHARS] or "deploy verification finished"
         artifact_md = str(parsed.get("artifact_md", "")).strip()
 
-        # _require_deploy_targets already ran, inside the retry — both fields
-        # are present, non-empty strings by the time execution reaches here.
-        url, expected_text = parsed["url"].strip(), parsed["expected_text"].strip()
-        verdict, smoke_line = run_smoke_check(url, expected_text)
+        url, expected_text = parsed.get("url"), parsed.get("expected_text")
+        if not isinstance(url, str) or not url.strip() or not isinstance(expected_text, str) or not expected_text.strip():
+            raise AgentError("devops reply missing 'url'/'expected_text' needed for deep verification")
+
+        verdict, smoke_line = run_smoke_check(url.strip(), expected_text.strip())
         artifact_md = f"{artifact_md}\n\n## Machine-checked result\n`{smoke_line}`".strip()
         return {
             "summary": stamp_notes(f"{summary} · {smoke_line}"[:SUMMARY_MAX_CHARS], notes, SUMMARY_MAX_CHARS),
@@ -782,10 +722,10 @@ def execute(task: dict) -> dict:
         allowed_tools=tools if ws else None,
         provider=provider_override,
         provider_locked=provider_locked,
-        validate=_require_summary,
     )
-    # _require_summary already ran, inside the retry.
-    summary = str(parsed["summary"]).strip()[:SUMMARY_MAX_CHARS]
+    summary = str(parsed.get("summary", "")).strip()[:SUMMARY_MAX_CHARS]
+    if not summary:
+        raise AgentError("agent reply missing 'summary'")
 
     # The feedback that drove a rework is stamped into the record by the
     # script — visible in the activity feed and at the top of the artifact —

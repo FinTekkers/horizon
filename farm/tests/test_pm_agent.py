@@ -18,7 +18,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from farm import pm_agent
+from farm import agent_runner, pm_agent
 from farm.config import PM_MALFORMED_GRACE_S
 from farm.pm_agent import MAX_PROMPT_ARTIFACT_CHARS, _mark_truncated, build_prompt, notify_started, validate
 
@@ -829,6 +829,24 @@ def test_an_injected_note_reaches_the_summary_and_the_artifact(pm_process, monke
     assert "fake note" in posted["summary"]
     assert "## Parser notes" in posted["artifacts"]["artifact_md"]
     assert "- fake note" in posted["artifacts"]["artifact_md"]
+
+
+def test_a_scanner_fallback_note_reaches_both_surfaces_without_a_monkeypatch(pm_process):
+    """The one note this item really produces, end to end and unfaked.
+
+    Both replies are the success metric's own shape — object, prose, object — so
+    neither parses whole. The retry is spent first, as it was before the
+    first-object scan existed, and only when the second reply is no better does
+    the leading object get used, with the note as the record. A run that
+    cancelled outright before this item.
+    """
+    shadowed = json.dumps({"summary": "done", "artifact_md": "# A"}) + ' prose {"summary": "second"}'
+    posted = pm_process.run(shadowed, shadowed)
+
+    assert len(pm_process.prompts) == 2  # the retry was still spent first
+    assert posted["ok"] is True
+    assert agent_runner.FIRST_OBJECT_NOTE in posted["summary"]
+    assert f"- {agent_runner.FIRST_OBJECT_NOTE}" in posted["artifacts"]["artifact_md"]
 
 
 def test_a_note_survives_a_max_length_summary_and_artifact(pm_process, monkeypatch):

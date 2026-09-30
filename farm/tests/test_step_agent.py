@@ -1635,10 +1635,12 @@ def test_with_no_notes_the_result_is_byte_identical(monkeypatch):
 # ---- HZ-156: a stray leading object must still take the lossless retry ----
 # extract_json()'s attempt 3 lifts the FIRST balanced object out of a reply, so
 # `Example: {} \n {...}` — which used to fail both parse attempts and be
-# recovered by the retry — now parses, to the stray `{}`. Every path that
-# requires a field therefore checks for it INSIDE the retry envelope, via
-# _run_and_parse(validate=...). Checked after the fact, a reply the retry used
-# to recover for free would instead cancel the run and pause the item.
+# recovered by the retry — now parses, to the stray `{}`. parse_agent_reply()
+# spends the retry on exactly that reply anyway, so every path below keeps the
+# recovery it had before this item WITHOUT any step-side validator: this module's
+# required-field checks all still run after _run_and_parse() returns, where they
+# have always run. The pair of tests further down pins the other half — a reply
+# that parses whole and is missing a field costs no extra agent run.
 
 STRAY_LEADING_OBJECT = 'Example: {} \n {"summary": "did the step", "artifact_md": "# out"}'
 
@@ -1676,7 +1678,10 @@ def test_a_stray_leading_object_still_takes_the_retry_on_the_generic_path(monkey
 
     assert result["summary"] == "recovered"
     assert len(calls) == 2
-    assert "missing 'summary'" in calls[1]  # the retry names what was wrong
+    # The retry names the parse failure the reply produced before attempt 3
+    # existed — the same prompt this path has always sent.
+    assert "Your previous reply was invalid" in calls[1]
+    assert "Extra data" in calls[1]  # the widest-span decode error, verbatim
 
 
 def test_a_stray_leading_object_still_takes_the_retry_on_the_deploy_path(monkeypatch):
@@ -1696,7 +1701,7 @@ def test_a_stray_leading_object_still_takes_the_retry_on_the_deploy_path(monkeyp
 
     assert result["artifacts"]["verdict"] == {"verdict": "pass"}
     assert len(calls) == 2
-    assert "missing 'url'" in calls[1]
+    assert "Your previous reply was invalid" in calls[1]
 
 
 def test_a_stray_leading_object_still_takes_the_retry_on_both_review_passes(tmp_path, monkeypatch):
@@ -1731,11 +1736,18 @@ def test_a_stray_leading_object_still_takes_the_retry_on_both_review_passes(tmp_
     assert len(calls) == 4  # each pass retried exactly once, and recovered
 
 
-def test_a_review_reply_with_no_verdict_still_fails_closed_after_its_retry(tmp_path, monkeypatch):
-    """The retry is ALL _require_review_verdict buys. When the second reply is
-    just as shapeless the gate must still default to "fail" — never cancel the
-    run, which would pause the item for a human instead of bouncing the work
-    back. Same outcome as before HZ-156; only the extra attempt is new."""
+# ---- HZ-156: a reply that parses whole buys no extra agent run ----
+# The other half of the boundary. A missing required field is checked after
+# _run_and_parse() returns, so a well-formed reply that simply lacks the field
+# costs exactly one run, exactly as before this item. Moving those checks inside
+# the retry envelope would have spent a second full agent run on each of these —
+# and on the review path a retried reply could come back "pass", flipping a gate
+# that _code_review_section() deliberately fails closed.
+
+
+def test_a_review_reply_with_no_verdict_fails_closed_with_no_extra_run(tmp_path, monkeypatch):
+    """A verdict-less review reply already has a defined outcome: fail closed,
+    never cancel the run, never a second attempt that might come back "pass"."""
     ws, _origin = make_git_workspace(tmp_path)
     git(ws, "push", "-u", "origin", "HEAD:horizon/t-1")
     monkeypatch.setattr(step_agent, "ensure_item_worktree", lambda repo, item_id: ws)
@@ -1748,7 +1760,27 @@ def test_a_review_reply_with_no_verdict_still_fails_closed_after_its_retry(tmp_p
     verdict = result["artifacts"]["verdict"]
     assert verdict["code_review"]["verdict"] == "fail"
     assert verdict["qa_review"]["verdict"] == "fail"
-    assert len(calls) == 4  # each pass asked once more before defaulting
+    assert len(calls) == 2  # one run per pass — the fail-closed default is free
+
+
+def test_a_deploy_reply_with_no_url_cancels_with_no_extra_run(monkeypatch):
+    """Valid JSON, no 'url': cancels the run on the first pass, as it always has.
+    A second devops run is the most expensive retry in the farm."""
+    fake, calls = _replies(json.dumps({"summary": "done"}))
+    monkeypatch.setattr(step_agent, "run_agent", fake)
+
+    with pytest.raises(AgentError, match="missing 'url'"):
+        execute(make_task(14, "Deploy the changes", repo="acme/demo"))
+    assert len(calls) == 1
+
+
+def test_a_generic_reply_with_no_summary_cancels_with_no_extra_run(monkeypatch):
+    fake, calls = _replies(json.dumps({"artifact_md": "# out"}))
+    monkeypatch.setattr(step_agent, "run_agent", fake)
+
+    with pytest.raises(AgentError, match="missing 'summary'"):
+        execute(make_task(4, "Plan options & trade-offs (pros / cons)"))
+    assert len(calls) == 1
 
 
 # ---- HZ-156: the implement path has no retry, so it reports instead ----
