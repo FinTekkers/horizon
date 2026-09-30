@@ -26,7 +26,7 @@ import { ACCEPT_GATE_INDEX } from '../../../domain/js/lifecycle.js'
 // here — a second hand-copy of the vocabulary inside ui/src is exactly the
 // drift this repo now forbids.
 import { REASON, REASON_IDS } from '../../../domain/js/reasons.js'
-import { PERSONAS, PERSONA_AGENT_ROLES } from '../domain/personas'
+import { DEFAULT_PERSONAS, PERSONAS, PERSONA_AGENT_ROLES, PRIMARY_PERSONA_AGENT } from '../domain/personas'
 import { AGENTS } from '../domain/agentTokens'
 
 afterEach(() => {
@@ -109,6 +109,27 @@ test('the selects are absent when the item is past the intake gate', () => {
   for (const agent of Object.keys(PERSONAS)) {
     expect(queryByLabelText(pickerLabel(agent))).toBeNull()
   }
+})
+
+// The header badge is a separate render of the persona from the picker: it
+// shows the item's primary (Eng) specialization whatever the gate is doing. An
+// item carrying a different persona per agent is the case that tells a
+// regression to another agent's slot apart from a correct render.
+test('the tracker header badge shows the Eng persona, not another agent’s', () => {
+  const { container } = renderTracker({
+    ...baseItem,
+    personas: { eng: 'ui', qa: 'data_integrity', architect: 'distributed_systems', pm: 'feature_development' },
+  })
+  const header = container.querySelector('.tracker__header')
+  expect(header.textContent).toContain(PERSONAS[PRIMARY_PERSONA_AGENT].ui.label)
+  expect(header.textContent).not.toContain(PERSONAS.qa.data_integrity.label)
+  expect(header.textContent).not.toContain(PERSONAS.architect.distributed_systems.label)
+})
+
+test('the header badge falls back to the Eng default when the item carries no Eng persona', () => {
+  const { container } = renderTracker({ ...baseItem, personas: { qa: 'data_integrity' } })
+  const header = container.querySelector('.tracker__header')
+  expect(header.textContent).toContain(PERSONAS[PRIMARY_PERSONA_AGENT][DEFAULT_PERSONAS[PRIMARY_PERSONA_AGENT]].label)
 })
 
 // HZ-121: no shipped persona is testOnly anymore, so this test proves the

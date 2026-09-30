@@ -77,6 +77,26 @@ test('personaLabel translates ids and falls back to the agent default label', ()
   assert.equal(personaLabel('qa', 'nope'), PERSONAS.qa[DEFAULT_PERSONAS.qa].label)
 })
 
+test('personaLabel on an agent that has no personas degrades to a string instead of throwing', () => {
+  // DevOps composes no persona by design (HZ-22), so it has no bucket and no
+  // default to fall back to. This is the one branch that can put a raw id in an
+  // event or GitHub comment — it is deliberately a last resort, not a lookup
+  // path any caller should reach, but it must never throw mid-comment or
+  // render "undefined" into the activity trail.
+  assert.equal(personaLabel('devops', 'python'), 'python')
+  assert.equal(personaLabel(null, 'python'), 'python')
+  assert.equal(personaLabel(undefined, 'python'), 'python')
+  assert.equal(personaLabel('devops', null), '')
+  assert.equal(personaLabel('devops', undefined), '')
+  assert.equal(personaLabel(null, null), '')
+  // Every real caller goes through isPersona first, so the branch above is
+  // unreachable for a registered agent — pinned so a future refactor can't
+  // quietly widen it into the normal path.
+  for (const agent of Object.keys(PERSONAS)) {
+    assert.notEqual(personaLabel(agent, 'not_a_persona_id'), 'not_a_persona_id')
+  }
+})
+
 // ---- row -> personas map, including pre-HZ-125 rows ----
 
 test('personasFromRow reads personas_json and drops ids that are no longer registered', () => {

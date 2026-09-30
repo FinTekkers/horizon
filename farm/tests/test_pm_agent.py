@@ -215,6 +215,43 @@ def test_validate_drops_a_malformed_personas_field_without_failing_the_step(bogu
     assert "personas" not in patch
 
 
+def test_validate_caps_how_many_persona_slots_a_reply_can_claim():
+    """MAX_PERSONA_SLOTS is the break in _clean_personas. Four agents compose a
+    persona; a reply naming dozens is either confused or hostile, and the patch
+    it produces is forwarded to the server as JSON — so the map is bounded here
+    rather than trusted to be small."""
+    from farm.pm_agent import MAX_PERSONA_SLOTS
+
+    proposed = {f"agent{i}": f"persona{i}" for i in range(MAX_PERSONA_SLOTS + 5)}
+    _summary, patch, _artifact = validate({"summary": "did it", "patch": {"personas": proposed}})
+    assert len(patch["personas"]) == MAX_PERSONA_SLOTS
+    # The cap keeps the first slots seen, it doesn't shuffle or empty the map.
+    assert list(patch["personas"]) == [f"agent{i}" for i in range(MAX_PERSONA_SLOTS)]
+
+
+def test_validate_keeps_a_reply_that_sits_exactly_on_the_slot_cap():
+    """The boundary itself: `>=` breaks *after* inserting, so a reply with
+    exactly MAX_PERSONA_SLOTS entries keeps all of them — the cap must not cost
+    the last slot."""
+    from farm.pm_agent import MAX_PERSONA_SLOTS
+
+    proposed = {f"agent{i}": f"persona{i}" for i in range(MAX_PERSONA_SLOTS)}
+    _summary, patch, _artifact = validate({"summary": "did it", "patch": {"personas": proposed}})
+    assert patch["personas"] == proposed
+
+
+def test_validate_truncates_an_over_long_agent_key_like_the_persona_id():
+    """Both halves of the map are size-capped, not just the value: an agent key
+    is a routing enum the server matches exactly, so an unbounded one would be
+    carried into a patch (and a log line) for nothing."""
+    from farm.pm_agent import PERSONA_AGENT_MAX_CHARS
+
+    over = "e" * 100
+    _summary, patch, _artifact = validate({"summary": "did it", "patch": {"personas": {over: "python"}}})
+    assert list(patch["personas"]) == [over[:PERSONA_AGENT_MAX_CHARS]]
+    assert patch["personas"][over[:PERSONA_AGENT_MAX_CHARS]] == "python"
+
+
 def test_validate_drops_a_pre_hz125_flat_persona_field():
     """A prompt (or a cached session) still emitting the old flat field must not
     smuggle a bare string through under a key the server no longer reads — it
