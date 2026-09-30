@@ -76,6 +76,86 @@ session still holds the old credential until farmd's teardown kills it.
 Confirm with `python -m farm.tools.check_session_env` (names only, exits
 non-zero on a find).
 
+## 2c. Gate-arrival notification env (HZ-141)
+
+Turns on the server-side notifier that messages the approver when an item
+lands on a gate. **Off by default** — it messages a real human, so it is
+never on by accident, and configuring HZ-140's approval path above does not
+enable it.
+
+| File | Var | Notes |
+|---|---|---|
+| `/etc/horizon/server.env` | `WA_NOTIFY_ENABLED` | `1` turns it on. Anything else ⇒ the sweep never runs |
+| `/etc/horizon/server.env` | `WA_BRIDGE_URL` | whatsapp-mcp bridge base URL. Unset ⇒ `http://localhost:8080`. Same var `farm.env` already sets |
+
+**Who gets notified is `WA_APPROVER_JIDS` from 2b — there is no separate
+recipient setting.** Whoever can approve a gate is exactly who is told one is
+waiting. `WA_NOTIFY_ENABLED=1` with an empty `WA_APPROVER_JIDS` logs a warning
+at boot and delivers nothing.
+
+Accepted entry formats, all equivalent — the server canonicalizes each one to
+`<number>@s.whatsapp.net` before it reaches the bridge, so a bare number is a
+valid setting for both approving and being notified:
+
+| You write | Sent to | Note |
+|---|---|---|
+| `15551112222` | `15551112222@s.whatsapp.net` | the documented short form |
+| `15551112222@s.whatsapp.net` | `15551112222@s.whatsapp.net` | already canonical |
+| `15551112222:7@s.whatsapp.net` | `15551112222@s.whatsapp.net` | device suffix dropped — it addresses one phone, not the person |
+
+Two entries that canonicalize to the same jid are one recipient, so a person
+listed twice still gets one message per gate arrival. An explicit non-default
+server part (`…@g.us`) is kept as written rather than rewritten.
+
+No credential is on this path. `POST /api/send` takes no auth and is
+localhost-only, so neither `FARM_SHARED_SECRET` nor `WA_APPROVAL_SECRET` is
+read by the notifier.
+
+### That the feature works is a test, not an ops step
+
+`server/test/gate-notifier-e2e.test.mjs` boots the real `node src/server.js`
+with `WA_NOTIFY_ENABLED=1` against a stub bridge on a real socket, lets the
+pipeline walk items onto gates on its own, and asserts what the bridge
+received and the exact row state below. It runs in `npm test`. Nothing on
+this page needs a human to confirm the code sends messages — the steps that
+follow confirm only that *this host's* configuration is right.
+
+### Verifying this host's configuration
+
+Restarting and waiting for a text is not a check — it has no observable if
+nothing arrives. The outbox records every attempt, so read it back instead.
+After `systemctl restart horizon-server`, drive one item to a gate (or wait
+for one), then:
+
+```
+# HORIZON_DB is unset on this host, so the server uses its default path,
+# relative to horizon-server.service's WorkingDirectory=/opt/horizon/server.
+sqlite3 -header -column /opt/horizon/server/data/horizon.db \
+  "SELECT item_id, step_index, status, attempts, last_error, sent_at
+     FROM gate_notice ORDER BY id DESC LIMIT 5;"
+```
+
+Expected on success: one row per approver for that arrival, `status = sent`,
+`attempts = 0`, `last_error` empty, `sent_at` set — the same four values
+`gate-notifier-e2e.test.mjs` asserts, so a row that looks different here is a
+configuration problem on this host, not a code problem.
+
+- **No rows at all** — `WA_NOTIFY_ENABLED` is not `1`, or
+  `WA_APPROVER_JIDS` is empty. Check the boot log for the notifier's own
+  warning.
+- **`status = pending`, `attempts ≥ 1`** — the bridge rejected or was
+  unreachable; `last_error` says which. It retries with 60s doubling backoff
+  and nothing about the item is affected.
+- **`status = failed`, `last_error` set** — gave up after
+  `WA_NOTIFY_MAX_ATTEMPTS` (default 8, ≈2h). Fix the bridge; this arrival is
+  not resent.
+- **`status = failed`, `last_error = interrupted…`** — the process exited
+  mid-send. Deliberately not resent: one logged miss beats two pings about the
+  same arrival.
+
+To turn it off with no deploy: set `WA_NOTIFY_ENABLED=0` and restart
+`horizon-server`. Nothing else changes.
+
 ## 3. Confirm the repo is pull-only
 
 `/opt/horizon` must be able to `git fetch`/`checkout` from `origin`, but must

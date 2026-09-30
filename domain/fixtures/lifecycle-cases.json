@@ -274,6 +274,10 @@
       { "case": "agent entries only, in order", "expect": [0, 2] }
     ],
 
+    "gateStepIndexes": [
+      { "case": "gate entries only, in order", "expect": [1] }
+    ],
+
     "isClosed": [
       { "case": "a cursor past the end is closed", "item": { "cursor": 16 }, "expect": true },
       { "case": "a cursor at the last step is not closed", "item": { "cursor": 15 }, "expect": false },

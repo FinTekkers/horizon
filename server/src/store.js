@@ -144,6 +144,20 @@ function stepOutputs(itemId) {
   return map
 }
 
+// The newest done attempt's artifact for one step, or null. Exported (HZ-141)
+// so gateNotifier.js can quote the PM's recommendation into a gate
+// notification through the same latest-attempt-wins rule stepOutputs() applies
+// above, rather than opening a second raw query onto step_run. `artifact`
+// falls back to `output` because some steps mark done with only a summary.
+export function latestArtifact(itemId, stepIndex) {
+  const row = db
+    .prepare(
+      "SELECT output, artifact FROM step_run WHERE item_id = ? AND step_index = ? AND status = 'done' ORDER BY id DESC LIMIT 1",
+    )
+    .get(itemId, stepIndex)
+  return row ? (row.artifact || row.output || null) : null
+}
+
 // ---- artifact version history (HZ-46) ----
 // Every retained done+artifact attempt for a step, oldest first, each
 // labelled (where one exists) with the feedback that drove it: the newest
@@ -682,6 +696,9 @@ export function purgeDemoItems() {
   if (ids.length === 0) return
   ids.forEach((id) => agentRunner.cancel(id, 'cancelled'))
   db.transaction(() => {
+    // gate_notice is deliberately absent: it declares ON DELETE CASCADE (see
+    // db.js), so it clears with the work_item row below. Every table named here
+    // does not, and foreign_keys = ON makes a forgotten one an FK error.
     for (const table of ['event', 'gate_decision', 'feedback', 'step_run']) {
       db.prepare(`DELETE FROM ${table} WHERE item_id LIKE 'BF-%'`).run()
     }

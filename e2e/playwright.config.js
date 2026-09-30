@@ -109,6 +109,21 @@ export default defineConfig({
         GITHUB_TOKEN: '',
         GITHUB_WEBHOOK_SECRET: '',
         FARM_URL: '',
+        // …and must never message a real human (HZ-141). This suite drives demo
+        // items onto gates by design, which is exactly what the gate notifier
+        // reacts to, so an ambient WA_NOTIFY_ENABLED=1 on the host — which the
+        // deploy runbook tells ops to set — would text the approver on every
+        // run. The flag is what stops the sweep: init() returns before it
+        // subscribes to anything.
+        //
+        // WA_BRIDGE_URL is the second line of defence and must point at a dead
+        // port to be one. Blanking it would NOT work: '' is falsy, so config.js
+        // falls back to http://localhost:8080 — which is exactly where this
+        // host's real paired bridge listens (infra/host/DEPLOY.md). Port 9 is
+        // discard; nothing is listening, so a send that somehow got past the
+        // flag is refused locally rather than delivered.
+        WA_NOTIFY_ENABLED: '0',
+        WA_BRIDGE_URL: 'http://127.0.0.1:9',
         // Registers the e2e-only /api/test/run-state route (HZ-54) — lets
         // 09-queued-work.spec.js simulate the farm reporting a run as queued
         // without a live farm process, which this suite otherwise has none of.

@@ -112,6 +112,15 @@ export function agentStepIndexes(steps = STEPS) {
   return steps.map((s, i) => (s.kind === 'agent' ? i : -1)).filter((i) => i >= 0)
 }
 
+// The mirror of agentStepIndexes: every gate-kind step index, in order. Added
+// by HZ-141, whose gate-arrival notifier needs "is this cursor a gate" in two
+// places that must not disagree — server/src/gateNotifier.js's sweep and
+// server/src/db.js's one-time notified_step baseline. Deriving it twice there
+// would be the kind of second copy domain/ exists to prevent.
+export function gateStepIndexes(steps = STEPS) {
+  return steps.map((s, i) => (s.kind === 'gate' ? i : -1)).filter((i) => i >= 0)
+}
+
 // ---- derived state ----
 
 export function isClosed(item) {
