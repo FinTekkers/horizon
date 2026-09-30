@@ -19,7 +19,7 @@ process.env.FARM_RUN_STATE_POLL_MS = String(60 * 60 * 1000)
 
 const { db } = await import('../src/db.js')
 const store = await import('../src/store.js')
-const { STEPS } = await import('../src/lifecycle.js')
+const { STEPS } = await import('../../domain/js/lifecycle.js')
 const orchestrator = await import('../src/orchestrator.js')
 
 store.purgeDemoItems()
@@ -352,7 +352,7 @@ test('dispatchToFarm budgets a large plan complete and marks truncated older art
 
 // ---- required-input gate (HZ-105) ----
 // STEPS[8] ('QA reviews the test plan') requires STEPS[6] ('Draft
-// implementation plan') in full (server/src/lifecycle.js). This is the real
+// implementation plan') in full (domain/steps.json). This is the real
 // HZ-102 exposure: dispatching into step 8, step 6's artifact is no longer
 // the latest row (step 7's is) and can lose the recency-weighting fight in
 // budgetArtifacts. A required artifact that comes out of that fight

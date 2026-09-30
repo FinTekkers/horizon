@@ -12,7 +12,7 @@ import { db } from './db.js'
 import * as store from './store.js'
 import { getToken, getSetting, setSetting } from './settings.js'
 import { POLL_INTERVAL_MS, UI_URL } from './config.js'
-import { ACCEPT_GATE_INDEX } from './lifecycle.js'
+import { ACCEPT_GATE_INDEX } from '../../domain/js/lifecycle.js'
 
 const itemLink = (item) => `[open in Horizon](${UI_URL}/${item.id.toLowerCase()})`
 

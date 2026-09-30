@@ -24,7 +24,8 @@ import uuid
 
 import pytest
 
-from farm import step_agent, steps
+from domain.py import steps
+from farm import step_agent
 from farm.config import FARM_MUSE_BIN
 from farm.providers import muse
 

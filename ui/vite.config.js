@@ -11,12 +11,18 @@ const proxy = {
   },
 }
 
+// HZ-128: the step model lives in domain/ at the repo root, which is OUTSIDE
+// this Vite root. `vite build` and `vitest` resolve it by relative path on
+// their own; the dev server serves files through a filesystem allowlist and
+// would 403 on it, so the parent directory has to be allowed explicitly.
+const fs = { allow: ['..'] }
+
 // HORIZON_BASE lets the production build mount under a subpath (e.g.
 // HORIZON_BASE=/horizon/ for shoreward.ai/horizon). Dev stays at /.
 export default defineConfig({
   base: process.env.HORIZON_BASE || '/',
   plugins: [react()],
-  server: { proxy },
+  server: { proxy, fs },
   preview: { proxy },
   test: { environment: 'jsdom' },
 })

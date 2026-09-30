@@ -4,7 +4,7 @@
 
 import { expect, test } from 'vitest'
 import { itemStatus } from './status'
-import { STEPS } from './lifecycle'
+import { STEPS } from '../../../domain/js/lifecycle.js'
 
 const base = { cursor: 0, paused: false, rejected: false, abandoned_at: null }
 

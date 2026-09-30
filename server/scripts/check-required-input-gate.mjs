@@ -25,7 +25,7 @@
 //   HORIZON_DB=/tmp/horizon-check.db node scripts/check-required-input-gate.mjs
 
 import { db } from '../src/db.js'
-import { STEPS, IMPLEMENT_STEP_INDEX } from '../src/lifecycle.js'
+import { STEPS, IMPLEMENT_STEP_INDEX } from '../../domain/js/lifecycle.js'
 import { budgetArtifacts, missingRequiredInputs } from '../src/orchestrator.js'
 
 const gatedSteps = STEPS.map((step, index) => ({ ...step, index })).filter((step) => step.requires?.length)

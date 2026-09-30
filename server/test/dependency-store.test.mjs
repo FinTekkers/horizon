@@ -14,7 +14,7 @@ process.env.HORIZON_DB = join(mkdtempSync(join(tmpdir(), 'horizon-dep-store-')),
 
 const { db } = await import('../src/db.js')
 const store = await import('../src/store.js')
-const { STEPS } = await import('../src/lifecycle.js')
+const { STEPS } = await import('../../domain/js/lifecycle.js')
 
 const insertItem = db.prepare(
   "INSERT INTO work_item (id, title, priority, cursor, repo, issue) VALUES (?, ?, 'Medium', ?, ?, ?)",

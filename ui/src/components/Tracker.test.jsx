@@ -16,7 +16,7 @@ vi.mock('../api', () => ({
 }))
 
 import Tracker from './Tracker'
-import { ACCEPT_GATE_INDEX } from '../domain/lifecycle'
+import { ACCEPT_GATE_INDEX } from '../../../domain/js/lifecycle.js'
 
 afterEach(() => {
   cleanup()

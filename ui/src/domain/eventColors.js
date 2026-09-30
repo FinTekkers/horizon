@@ -1,5 +1,5 @@
 // Real work-item events are persisted server-side with a literal hex
-// `color` (server/src/lifecycle.js's AGENTS map, server/src/store.js's
+// `color` (server/src/agentTokens.js's AGENTS map, server/src/store.js's
 // addEvent calls) — that hex predates theming (HZ-25) and would stay
 // light-colored under a dark background if rendered directly. It's drawn
 // from a small closed set that lines up with this file's own domain

@@ -11,7 +11,8 @@ dict — no literal step index or budget number is re-typed anywhere in this
 file, so the test can't pass by coincidence.
 """
 
-from farm import farmd, steps
+from domain.py import steps
+from farm import farmd
 
 
 def _existing_farm_step():

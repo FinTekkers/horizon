@@ -13,7 +13,7 @@
 // an item that is both stale and abandoned matches both, and a reader can
 // ask "what did we abandon?" separately from "what went stale?".
 
-import { isAbandoned } from './lifecycle'
+import { isAbandoned } from '../../../domain/js/lifecycle.js'
 
 export const STALE_DAYS = 30
 
