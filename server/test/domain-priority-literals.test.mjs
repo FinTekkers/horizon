@@ -26,14 +26,18 @@
 //    ADJACENT on both sides, which is why `'Critical priority label'` in
 //    ui/src/theme.contrast.test.jsx is correctly not a hit.
 //
-//    EXCLUDED: object-property VALUE position, i.e. anything preceded by `:` and
+//    EXCLUDED: ASSIGNED-VALUE position, i.e. anything preceded by `:` or `=` and
 //    optional whitespace. This is what makes the tier usable at all, and it is
 //    STRUCTURAL rather than an allowlist: `{ priority: 'Low' }` is one row of
 //    data assigning one value, and four such rows on consecutive lines (which is
 //    exactly what server/src/db.js's demo seeds, ui/src/api/mockApi.js's,
 //    e2e/global-setup.js's and the Design Compiler export's all are) is still
-//    data, not a vocabulary. An ARRAY element is preceded by `[` or `,`, so a
-//    real list still fires — including inside `"priorities": [...]`.
+//    data, not a vocabulary. `=` covers the same shape in the two spellings that
+//    do not use a colon: a Python keyword argument (`set_priority(priority="High")`)
+//    and a plain assignment. An ARRAY element is preceded by `[` or `,`, and a
+//    tuple element by `(` or `,`, so a real list still fires even when the list
+//    ITSELF sits in assigned position — `PRIORITIES = ("Critical", …)` and
+//    `"priorities": [...]` both still hit, because the bracket intervenes.
 //
 // 2. BARE KEY — `Critical:` with no quotes. This tier is not optional: it is the
 //    shape the two colour maps used BEFORE this change
@@ -77,8 +81,8 @@ import { repoFiles, relative, filesMatching, stripComments, MIN_EXPECTED_FILES, 
 const VALUES = PRIORITIES.join('|')
 const FOLDED = PRIORITIES.map((value) => value.toLowerCase()).join('|')
 
-// Tier 1: quoted value, NOT in object-property value position.
-const QUOTED = new RegExp(`(?<!:\\s*)['"\`](${VALUES})['"\`]`, 'g')
+// Tier 1: quoted value, NOT in assigned-value position (`: 'X'` or `= 'X'`).
+const QUOTED = new RegExp(`(?<![:=]\\s*)['"\`](${VALUES})['"\`]`, 'g')
 // Tier 2: bare, unquoted object key.
 const BARE_KEY = new RegExp(`\\b(${VALUES})\\s*:`, 'g')
 // Tier 3: the folded value as one branch of a regex alternation.
@@ -183,9 +187,24 @@ test('POSITIVE CONTROL: the value-position exclusion separates data rows from a 
     !declaresACollection(`{ id: 'A', priority: '${a}' },\n{ id: 'B', priority: '${b}' },\n{ id: 'C', priority: '${c}' },\n`),
     'seed rows fired — the exclusion is broken and four production files would need allowlisting',
   )
-  // Python and double-quoted JSON forms of the same thing.
-  assert.ok(!declaresACollection(`"priority": "${a}",\n"priority": "${b}",\n"priority": "${c}",\n`))
-  assert.ok(!declaresACollection(`priority="${a}"\npriority="${b}"\npriority="${c}"\n`) === false || true)
+  // The double-quoted JSON form of the same thing — e2e/global-setup.js's fixture
+  // rows and the Design Compiler export.
+  assert.ok(
+    !declaresACollection(`"priority": "${a}",\n"priority": "${b}",\n"priority": "${c}",\n`),
+    'JSON-style data rows fired',
+  )
+  // And the two spellings that assign without a colon: a Python keyword argument
+  // and a plain assignment. Three `set_priority(priority="High")` calls in a row
+  // is a farm test driving three cases, not a vocabulary — which is why `=` is in
+  // the exclusion alongside `:`.
+  assert.ok(
+    !declaresACollection(`set_priority(priority="${a}")\nset_priority(priority="${b}")\nset_priority(priority="${c}")\n`),
+    'Python keyword-argument rows fired — three call sites are usages, not a declaration',
+  )
+  assert.ok(
+    !declaresACollection(`p = "${a}"\np = "${b}"\np = "${c}"\n`),
+    'plain assignments fired',
+  )
   // But an ARRAY still fires even when it sits in value position itself — the
   // elements are preceded by `[` and `,`, not by `:`.
   assert.ok(declaresACollection(`{ "priorities": ["${a}", "${b}", "${c}"] }\n`), 'an array under a key must still fire')
