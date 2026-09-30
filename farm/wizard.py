@@ -292,18 +292,33 @@ def offer_gate_choices(chat_jid: str, sender_jid: str, options: list[dict], csto
     cstore.set(key, _touch({"options": options}))
 
 
-def _approve_gate(base_url: str, option: dict, sender: str) -> tuple[bool, str]:
+def _approve_gate(base_url: str, option: dict, sender: str, sender_jid: str) -> tuple[bool, str]:
+    """HZ-140: this is the one place in the farm that can approve a gate, and
+    it uses WA_APPROVAL_SECRET — not FARM_SHARED_SECRET, which the server no
+    longer accepts here and which no agent session holds any more. The jid
+    rides along because the server, not this process, is now the authority on
+    who may approve; sender_allowed() upstream stays as defence in depth."""
+    if not config.WA_APPROVAL_SECRET:
+        # Refuse locally rather than send an unauthenticated request the
+        # server would answer 401 to — the reason is a misconfigured host.
+        return False, "the approval credential isn't configured on this host"
     try:
         res = httpx.post(
             f"{base_url}/api/items/{option['item_id']}/gates/{option['step_index']}/approve-via-whatsapp",
-            json={"sender": sender},
-            headers={"x-farm-secret": config.SHARED_SECRET},
+            json={"sender": sender, "senderJid": sender_jid},
+            headers={"x-wa-approval-secret": config.WA_APPROVAL_SECRET},
             timeout=15,
         )
     except httpx.HTTPError as exc:
         return False, f"Horizon unreachable ({exc})"
     if res.status_code == 200:
         return True, ""
+    # The two HZ-140 rejections get plain replies instead of a raw error code.
+    # Neither text ever contains the jid or any credential.
+    if res.status_code == 403:
+        return False, "this WhatsApp number isn't on Horizon's approver list"
+    if res.status_code == 503:
+        return False, "WhatsApp approvals aren't configured on the Horizon server"
     try:
         return False, str(res.json().get("error", res.status_code))
     except ValueError:
@@ -356,7 +371,7 @@ def try_handle_gate_choice(
         return True
     option = options[idx]
     cstore.clear(key)
-    ok, err = _approve_gate(base_url, option, sender_label(msg.sender_jid))
+    ok, err = _approve_gate(base_url, option, sender_label(msg.sender_jid), msg.sender_jid)
     if ok:
         _reply(transport, msg, f"Approved {option['item_id']} — {option['label']}.")
     else:

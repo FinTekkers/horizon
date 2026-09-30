@@ -290,7 +290,7 @@ def test_item_wizard_crash_replay_of_the_confirm_message_never_duplicates_the_it
         replay_state = ca.ConciergeState("wiz-crash", t)
         assert replay_state.cursor == 0
         assert replay_state.is_processed(confirm_msg.msg_id)
-        assert ca.poll_once(t, replay_state, stub.url) == 0
+        assert ca.poll_once(t, replay_state, stub.url, farmd_url=stub.url) == 0
         assert len(stub.created_items) == 1  # still exactly one item
     finally:
         stub.close()
@@ -315,7 +315,7 @@ def test_gate_choice_resolves_a_numbered_reply_and_approves(monkeypatch):
         msg = t.seed("2", sender=DAVID, chat=DAVID)
         handled = wizard.try_handle_gate_choice(msg, t, state.choice_store, state, stub.url)
         assert handled
-        assert stub.approvals == [("HZ-9", 3, {"sender": "David"})]
+        assert stub.approvals == [("HZ-9", 3, {"sender": "David", "senderJid": DAVID})]
         assert "Approved HZ-9" in t.sent[-1][1]
         assert state.is_processed(msg.msg_id)
         assert state.choice_store.get(f"{DAVID}:{DAVID}") is None
@@ -335,7 +335,7 @@ def test_thumbs_up_approves_when_exactly_one_approval_is_pending(monkeypatch):
         msg = t.seed("\U0001F44D", sender=DAVID, chat=DAVID)
         handled = wizard.try_handle_gate_choice(msg, t, state.choice_store, state, stub.url)
         assert handled
-        assert stub.approvals == [("HZ-7", 12, {"sender": "David"})]
+        assert stub.approvals == [("HZ-7", 12, {"sender": "David", "senderJid": DAVID})]
         assert "Approved HZ-7" in t.sent[-1][1]
         assert state.choice_store.get(f"{DAVID}:{DAVID}") is None
     finally:
@@ -361,7 +361,7 @@ def test_thumbs_up_with_several_pending_asks_for_a_number_and_approves_nothing(m
         assert state.choice_store.get(f"{DAVID}:{DAVID}") is not None
         follow = t.seed("1", sender=DAVID, chat=DAVID)
         assert wizard.try_handle_gate_choice(follow, t, state.choice_store, state, stub.url)
-        assert stub.approvals == [("HZ-7", 12, {"sender": "David"})]
+        assert stub.approvals == [("HZ-7", 12, {"sender": "David", "senderJid": DAVID})]
     finally:
         stub.close()
 
@@ -461,3 +461,93 @@ def test_offering_an_empty_list_clears_a_previous_offer_so_a_stale_number_cannot
         assert stub.approvals == []
     finally:
         stub.close()
+
+
+# ---- HZ-140: the approval credential and the proven sender ----
+
+
+def test_approval_sends_the_dedicated_credential_and_the_sender_jid(monkeypatch):
+    monkeypatch.setattr(config, "FARM_WA_SENDER_NAMES", {"15550001111": "David"})
+    t = FakeTransport()
+    state = make_state(t, "approve-credential")
+    stub = StubHorizon(items=[{"id": "HZ-7"}])
+    try:
+        offer(state, [("HZ-7", 12, "Accept the code")])
+        msg = t.seed("1", sender=DAVID, chat=DAVID)
+        assert wizard.try_handle_gate_choice(msg, t, state.choice_store, state, stub.url)
+
+        # The new credential rides along; the farm secret is gone from this
+        # path entirely — the server refuses it here now.
+        assert stub.credential_headers_for("approve-via-whatsapp") == [["x-wa-approval-secret"]]
+        item_id, step_index, payload = stub.approvals[0]
+        assert (item_id, step_index) == ("HZ-7", 12)
+        # Identity is the jid; the display name is only a label.
+        assert payload["senderJid"] == DAVID
+        assert payload["sender"] == "David"
+    finally:
+        stub.close()
+
+
+def test_an_unconfigured_approval_credential_sends_nothing_at_all(monkeypatch):
+    """Fail closed and locally: no unauthenticated request the server would
+    only answer 401 to, and no credential name in the reply text."""
+    monkeypatch.setattr(config, "WA_APPROVAL_SECRET", "")
+    t = FakeTransport()
+    state = make_state(t, "approve-unconfigured")
+    stub = StubHorizon(items=[{"id": "HZ-7"}])
+    try:
+        offer(state, [("HZ-7", 12, "Accept the code")])
+        msg = t.seed("1", sender=DAVID, chat=DAVID)
+        assert wizard.try_handle_gate_choice(msg, t, state.choice_store, state, stub.url)
+
+        assert stub.requests == []  # not one HTTP call
+        assert stub.approvals == []
+        reply = t.sent[-1][1]
+        assert "Couldn't approve HZ-7" in reply
+        assert "isn't configured" in reply
+        assert "WA_APPROVAL_SECRET" not in reply
+    finally:
+        stub.close()
+
+
+def test_a_server_side_403_becomes_a_plain_reply_with_no_jid_or_credential(monkeypatch):
+    monkeypatch.setattr(config, "FARM_WA_SENDER_NAMES", {"15550001111": "David"})
+    t = FakeTransport()
+    state = make_state(t, "approve-403")
+    stub = StubHorizon(items=[{"id": "HZ-7"}], approve_result=(403, {"error": "sender_not_allowed"}))
+    try:
+        offer(state, [("HZ-7", 12, "Accept the code")])
+        msg = t.seed("1", sender=DAVID, chat=DAVID)
+        assert wizard.try_handle_gate_choice(msg, t, state.choice_store, state, stub.url)
+
+        reply = t.sent[-1][1]
+        assert "approver list" in reply
+        assert DAVID not in reply and "15550001111" not in reply
+        assert config.WA_APPROVAL_SECRET not in reply
+    finally:
+        stub.close()
+
+
+def test_a_server_side_503_has_its_own_reply(monkeypatch):
+    t = FakeTransport()
+    state = make_state(t, "approve-503")
+    stub = StubHorizon(items=[{"id": "HZ-7"}], approve_result=(503, {"error": "wa_approval_not_configured"}))
+    try:
+        offer(state, [("HZ-7", 12, "Accept the code")])
+        msg = t.seed("1", sender=DAVID, chat=DAVID)
+        assert wizard.try_handle_gate_choice(msg, t, state.choice_store, state, stub.url)
+        assert "aren't configured on the Horizon server" in t.sent[-1][1]
+    finally:
+        stub.close()
+
+
+def test_normalize_jid_matches_the_shared_cross_language_vectors():
+    """The same vector file server/test/waApprovers.test.mjs loads — the only
+    thing keeping the Python and JavaScript copies of this rule in step."""
+    import json
+    from pathlib import Path
+
+    vectors = json.loads((Path(__file__).parent / "fixtures" / "wa_jid_vectors.json").read_text())["vectors"]
+    assert len(vectors) >= 8, "the vector file must not have been emptied"
+    for case in vectors:
+        assert ca.normalize_jid(case["input"]) == case["expected"], case["input"]

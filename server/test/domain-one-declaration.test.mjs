@@ -46,9 +46,11 @@ const FABRICATED_FIXTURES = new Set([
 // the reason it is there. Set equality, so a new copy fails and a stale entry
 // fails too.
 const LABEL_MENTIONS_ALLOWED = {
+  // HZ-139 removed domain/js/lifecycle.js and domain/py/steps.py from this
+  // list: both used to carry the table as an inlined literal and now read
+  // domain/steps.json, so neither mentions a label at all. Set equality below
+  // means leaving them here would fail as a stale entry.
   'domain/steps.json': 'the authored source — the only declaration',
-  'domain/js/lifecycle.js': 'generated binding',
-  'domain/py/steps.py': 'generated binding',
   'server/src/orchestrator.js': "MOCK_STEP_BEHAVIOR key — guarded by mock-step-behavior-drift.test.mjs",
   'server/test/domain-step-pins.test.mjs': 'the permanent hand-written label pin (guardrail 9)',
   'server/test/lifecycle-renamed-label.test.mjs': 'fabricated 2-step fixture',
@@ -77,10 +79,22 @@ test('only domain/ declares a step table: no file outside it holds four or more 
   const outsideDomain = declarations.filter((p) => !p.startsWith('domain/') && !FABRICATED_FIXTURES.has(p))
   assert.deepEqual(outsideDomain, [], `a step table is declared outside domain/: ${outsideDomain.join(', ')}`)
 
-  // Positive controls: the predicate DOES fire, on exactly the files that are
-  // supposed to declare the table. Without these, a broken regex passes.
+  // Positive control: the predicate DOES fire, on the one file that declares
+  // the table. Without this, a broken regex passes.
   assert.ok(declarations.includes('domain/steps.json'))
-  assert.ok(declarations.includes('domain/js/lifecycle.js'))
+
+  // HZ-139: domain/js/lifecycle.js used to be a second positive control here,
+  // because the generator inlined the table into it. It now imports
+  // domain/steps.json instead, so it must NOT match — which makes this line
+  // metric 3 ("neither binding embeds step data") in structural form.
+  assert.ok(
+    !declarations.includes('domain/js/lifecycle.js'),
+    'domain/js/lifecycle.js holds step-object literals again — it must read domain/steps.json',
+  )
+  assert.ok(
+    !declarations.includes('domain/py/steps.py'),
+    'domain/py/steps.py holds step-object literals again — it must read domain/steps.json',
+  )
 })
 
 test('every file mentioning a step label is on the allowlist, with no stale entries', () => {

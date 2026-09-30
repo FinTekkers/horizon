@@ -171,16 +171,30 @@ persistent trust — before the implement step depends on subagents.
 HZ-83 built this provider and the seam; nothing routed a real step to it
 until HZ-102. What HZ-102 adds:
 
-- **Routing.** A single test-only persona, `muse_smoke_test`
-  (`farm/personas.py`), maps to the Muse provider via `PERSONA_PROVIDERS`.
-  `farm/step_agent.py` only honors that mapping on the pure-planning steps
-  ("Plan options & trade-offs", "Draft implementation plan", "Architecture
-  review") — never implement or deploy, enforced in code via
-  `PROVIDER_OVERRIDE_ELIGIBLE_STEPS`, not just by convention on the persona.
-  Every real persona (`fullstack`, `python_backend`, `frontend_ui`) is absent
-  from `PERSONA_PROVIDERS`, so Claude stays the default for all real work.
-  The override reaches `run_agent()` as an explicit `provider=` argument, not
-  an env var — it can't leak into a later call in the same process.
+- **Routing.** A persona can map to the Muse provider via
+  `farm/personas.py`'s `PERSONA_PROVIDERS`. `farm/step_agent.py` only honors
+  that mapping on the pure-planning steps ("Plan options & trade-offs",
+  "Draft implementation plan", "Architecture review") — never implement or
+  deploy, enforced in code via `domain/py/steps.py`'s
+  `provider_override_eligible()` — which reads each step's
+  `providerOverrideEligible` flag in `domain/steps.json`, the single place a
+  step is declared (HZ-128) — not just by convention on the persona.
+  `PERSONA_PROVIDERS` ships **empty** (HZ-121): every real persona
+  (`fullstack`, `python_backend`, `frontend_ui`) is absent from it, so Claude
+  stays the default for all real work. The mechanism itself is proven by a
+  test-registered fixture persona (`farm/tests/conftest.py`'s
+  `muse_smoke_test_persona`), not a shipped one — deciding which real
+  persona, if any, should route to Muse needs evidence about provider
+  capability that doesn't exist yet, and is deliberately left for a future
+  item rather than invented here. The override reaches `run_agent()` as an
+  explicit `provider=` argument, not an env var — it can't leak into a later
+  call in the same process. That the never-on-implement/deploy/QA guardrails
+  actually bite was proven by mutation: each was deliberately broken and the
+  resulting test failure captured in
+  [`hz-121-verification-evidence.log`](./hz-121-verification-evidence.log),
+  which also records that implement and deploy are guarded by three
+  independent layers (the eligibility flag, a dispatch path that never
+  threads `provider=`, and `providerLocked` inside `run_agent()`).
 - **Provenance.** `_parse_events` now returns `command_id` alongside
   `result`/`session_id`, and raises loudly if a `run.terminal.completed`
   event is missing it — provenance a caller can't record is treated as a

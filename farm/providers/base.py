@@ -59,9 +59,9 @@ class AgentExhaustedError(AgentError):
 def decode_partial_output(captured) -> str:
     """Normalize a partial-output capture to str for AgentExhaustedError.
 
-    subprocess.TimeoutExpired.stdout carries RAW BYTES even when
-    subprocess.run() was called with text=True: on POSIX, Popen._communicate
-    raises the timeout from inside its read loop, before the decode step. Every
+    subprocess.TimeoutExpired.stdout carries RAW BYTES even when the provider
+    ran the child with text=True: on POSIX, Popen._communicate raises the
+    timeout from inside its read loop, before the decode step. Every
     consumer of partial_text (agent_runner's repair ladder,
     _salvage_truncated_json, the run log) is written for str, so decode at the
     provider boundary rather than letting the type of partial_text depend on

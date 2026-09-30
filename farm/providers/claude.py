@@ -24,6 +24,7 @@ import subprocess
 from datetime import datetime
 
 from ..config import CLAUDE_BIN, FARM_RUNNER, MAX_TURNS, STEP_TIMEOUT_S
+from ..credentials import without_gate_credentials
 from .base import (
     AgentError,
     AgentExhaustedError,
@@ -264,7 +265,17 @@ def _run_subprocess(
         cmd += ["--allowedTools", allowed_tools]
 
     try:
-        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout_s, cwd=cwd)
+        # HZ-140: the model never gets a gate-approving credential, whichever
+        # process is running it. env= replaces the child's environment outright,
+        # so this holds even in the concierge, the one session granted one.
+        proc = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=timeout_s,
+            cwd=cwd,
+            env=without_gate_credentials(),
+        )
     except subprocess.TimeoutExpired as exc:
         # HZ-124: best-effort only — this is the FARM_RUNNER=subprocess
         # rollback lever, not the default path. exc.stdout is whatever was

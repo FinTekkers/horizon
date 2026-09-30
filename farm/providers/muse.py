@@ -15,6 +15,7 @@ import uuid
 from pathlib import Path
 
 from ..config import FARM_MUSE_BIN, MAX_TURNS, STEP_TIMEOUT_S
+from ..credentials import without_gate_credentials
 from .base import AgentError, AgentExhaustedError, decode_partial_output
 
 # `muse exec --session-id <UUID>` genuinely carries context across calls
@@ -96,7 +97,16 @@ def run(
             cmd += ["--model", model]
 
         try:
-            proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout_s, cwd=cwd)
+            # HZ-140: same scrub as the claude provider — no model subprocess
+            # is ever handed a credential that could approve a gate.
+            proc = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=timeout_s,
+                cwd=cwd,
+                env=without_gate_credentials(),
+            )
         except subprocess.TimeoutExpired as exc:
             # HZ-124: session_id is always known here (sid is caller-minted
             # up front, unlike Claude's server-issued id); exc.stdout is

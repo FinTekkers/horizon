@@ -76,16 +76,42 @@ def test_registry_parity_across_farm_server_and_ui():
     assert set(PERSONAS) == server_ids == ui_ids
 
 
-# ---- persona -> provider override (HZ-102) ----
-# muse_smoke_test is the one persona that forces a non-default provider, so
-# a real step can be proven to route to Muse through normal persona
-# dispatch. Every real persona must return None here — Claude stays the
-# default for all real work, unchanged by this ticket.
+# ---- persona -> provider override (HZ-102 / HZ-121) ----
+# PERSONA_PROVIDERS ships empty — no shipped persona forces a non-default
+# provider. The override mechanism itself still needs proof it works, so
+# these tests register a test-only fixture persona (conftest.py's
+# muse_smoke_test_persona) mapped to a non-default provider rather than
+# relying on a shipped fake persona. Every real persona must return None
+# here — Claude stays the default for all real work.
 
 
-def test_muse_smoke_test_persona_is_registered_and_mapped_to_muse():
-    assert "muse_smoke_test" in PERSONAS
-    assert PERSONA_PROVIDERS["muse_smoke_test"] == "muse"
+def test_persona_providers_ships_empty():
+    assert PERSONA_PROVIDERS == {}
+
+
+def test_muse_smoke_test_persona_is_not_shipped():
+    """HZ-121: the fake persona used to prove provider routing must not ship
+    in the production registry or on disk — only a test fixture may register
+    it (see muse_smoke_test_persona below)."""
+    assert "muse_smoke_test" not in PERSONAS
+    assert "muse_smoke_test" not in PERSONA_PROVIDERS
+    assert not (REPO_ROOT / "farm" / "roles" / "personas" / "muse_smoke_test.md").exists()
+
+
+def test_muse_smoke_test_persona_fixture_is_registered_and_mapped_to_muse(muse_smoke_test_persona):
+    assert muse_smoke_test_persona in PERSONAS
+    assert PERSONA_PROVIDERS[muse_smoke_test_persona] == "muse"
+
+
+def test_muse_smoke_test_persona_fixture_composes_into_a_role(muse_smoke_test_persona):
+    """The fixture's absolute-path plumbing (PERSONA_DIR / PERSONAS[id],
+    where PERSONAS[id] is an absolute path outside PERSONA_DIR) is otherwise
+    never exercised — no shipped code calls compose_role() with this id."""
+    composed = compose_role("BASE ROLE", muse_smoke_test_persona)
+    assert composed.startswith("BASE ROLE")
+    fixture_path = Path(PERSONAS[muse_smoke_test_persona])
+    assert fixture_path.is_absolute()
+    assert fixture_path.read_text() in composed
 
 
 @pytest.mark.parametrize("real_persona", ["fullstack", "python_backend", "frontend_ui"])
@@ -93,8 +119,8 @@ def test_provider_for_returns_none_for_every_real_persona(real_persona):
     assert provider_for(real_persona) is None
 
 
-def test_provider_for_muse_smoke_test_returns_muse():
-    assert provider_for("muse_smoke_test") == "muse"
+def test_provider_for_muse_smoke_test_returns_muse(muse_smoke_test_persona):
+    assert provider_for(muse_smoke_test_persona) == "muse"
 
 
 @pytest.mark.parametrize("bogus", [None, "", "unknown_persona", 42])
@@ -105,6 +131,6 @@ def test_provider_for_falls_back_to_none_on_junk(bogus):
     assert provider_for(bogus) is None
 
 
-def test_provider_for_is_case_insensitive_and_strips_whitespace():
+def test_provider_for_is_case_insensitive_and_strips_whitespace(muse_smoke_test_persona):
     assert provider_for("Muse_Smoke_Test") == "muse"
     assert provider_for("  muse_smoke_test \n") == "muse"

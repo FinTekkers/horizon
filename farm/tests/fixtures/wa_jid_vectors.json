@@ -1,0 +1,23 @@
+{
+  "_comment": [
+    "HZ-140: shared test vectors for WhatsApp jid normalization, which is",
+    "implemented twice — farm/concierge_agent.py's normalize_jid (Python) and",
+    "server/src/waApprovers.js's normalizeJid (JavaScript). domain/ is the",
+    "lifecycle-step model and nothing else, so a jid parser does not live",
+    "there; this file is what stops the two hand-written copies drifting.",
+    "Loaded by farm/tests/test_wizard.py and server/test/waApprovers.test.mjs.",
+    "Numbers are fictitious 555 test numbers, matching the suite's fixtures."
+  ],
+  "vectors": [
+    { "input": "15550001111@s.whatsapp.net", "expected": "15550001111" },
+    { "input": "15550002222@s.whatsapp.net", "expected": "15550002222" },
+    { "input": "15550001111:12@s.whatsapp.net", "expected": "15550001111" },
+    { "input": "15550001111:3", "expected": "15550001111" },
+    { "input": "  15550002222@s.whatsapp.net  ", "expected": "15550002222" },
+    { "input": "15550001111", "expected": "15550001111" },
+    { "input": "12036300000@g.us", "expected": "12036300000" },
+    { "input": "AbCdEf@s.whatsapp.net", "expected": "abcdef" },
+    { "input": "", "expected": "" },
+    { "input": "@s.whatsapp.net", "expected": "" }
+  ]
+}

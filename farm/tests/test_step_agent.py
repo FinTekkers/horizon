@@ -445,17 +445,18 @@ def test_the_drift_message_names_the_models_new_home():
     assert "steps_generated" not in message
 
 
-# ---- persona -> provider override (HZ-102) ----
-# muse_smoke_test is the one persona that forces a non-default provider
-# (farm/personas.py's provider_for()), and only on the pure-planning steps —
-# proven here the same way persona-into-role composition is proven above: by
-# asserting the kwarg run_agent() actually received. That's the farm's
-# normal dispatch path (execute() -> run_agent()), never a direct call into
-# farm.providers.muse — that boundary is covered separately in
-# test_providers_muse.py.
+# ---- persona -> provider override (HZ-102 / HZ-121) ----
+# PERSONA_PROVIDERS ships empty; these tests register a test-only fixture
+# persona (conftest.py's muse_smoke_test_persona) mapped to a non-default
+# provider to prove the override mechanism itself, and only on the
+# pure-planning steps — proven here the same way persona-into-role
+# composition is proven above: by asserting the kwarg run_agent() actually
+# received. That's the farm's normal dispatch path (execute() ->
+# run_agent()), never a direct call into farm.providers.muse — that boundary
+# is covered separately in test_providers_muse.py.
 
 
-def test_muse_smoke_test_persona_dispatches_with_provider_muse_on_eligible_steps(monkeypatch):
+def test_muse_smoke_test_persona_dispatches_with_provider_muse_on_eligible_steps(monkeypatch, muse_smoke_test_persona):
     for index, label in [
         (4, "Plan options & trade-offs (pros / cons)"),
         (6, "Draft implementation plan"),
@@ -464,7 +465,7 @@ def test_muse_smoke_test_persona_dispatches_with_provider_muse_on_eligible_steps
         captured = {}
         monkeypatch.setattr(step_agent, "run_agent", capture_run_agent(captured))
         task = make_task(index, label)
-        task["item"]["persona"] = "muse_smoke_test"
+        task["item"]["persona"] = muse_smoke_test_persona
         execute(task)
         assert captured.get("provider") == "muse", f"step {index} did not dispatch with provider=muse"
 
@@ -479,19 +480,19 @@ def test_real_personas_never_force_a_provider_override(monkeypatch):
         assert captured.get("provider") is None, f"persona {persona} must never force a provider"
 
 
-def test_muse_smoke_test_persona_never_forces_a_provider_on_qa(monkeypatch):
+def test_muse_smoke_test_persona_never_forces_a_provider_on_qa(monkeypatch, muse_smoke_test_persona):
     """HZ-102 guardrail, code-enforced: QA (8) is a real specialist step, not
     a pure-planning one, so the override must never apply even if an item
     somehow carries the test persona."""
     captured = {}
     monkeypatch.setattr(step_agent, "run_agent", capture_run_agent(captured))
     task = make_task(8, "QA reviews the test plan")
-    task["item"]["persona"] = "muse_smoke_test"
+    task["item"]["persona"] = muse_smoke_test_persona
     execute(task)
     assert captured.get("provider") is None
 
 
-def test_muse_smoke_test_persona_never_forces_a_provider_on_deploy(monkeypatch):
+def test_muse_smoke_test_persona_never_forces_a_provider_on_deploy(monkeypatch, muse_smoke_test_persona):
     """HZ-102 guardrail, code-enforced: never route deploy to Muse, even if
     an item somehow carries the test persona."""
     captured = {}
@@ -510,18 +511,18 @@ def test_muse_smoke_test_persona_never_forces_a_provider_on_deploy(monkeypatch):
     monkeypatch.setattr(step_agent, "run_agent", fake_run_agent)
     monkeypatch.setattr(step_agent, "run_smoke_check", lambda url, text: ("pass", 'SMOKE_RESULT=pass — "Horizon" rendered'))
     task = make_task(14, "Deploy the changes", repo="acme/demo")
-    task["item"]["persona"] = "muse_smoke_test"
+    task["item"]["persona"] = muse_smoke_test_persona
     execute(task)
     assert captured.get("provider") is None
 
 
-def test_muse_smoke_test_persona_never_forces_a_provider_on_implement(tmp_path, monkeypatch):
+def test_muse_smoke_test_persona_never_forces_a_provider_on_implement(tmp_path, monkeypatch, muse_smoke_test_persona):
     ws, _origin = make_git_workspace(tmp_path)
     monkeypatch.setattr(step_agent, "ensure_item_worktree", lambda repo, item_id: ws)
     captured = {}
     monkeypatch.setattr(step_agent, "run_agent", capture_run_agent(captured))
     task = make_task(11, "Specialist agent implements", repo="acme/demo")
-    task["item"]["persona"] = "muse_smoke_test"
+    task["item"]["persona"] = muse_smoke_test_persona
     with pytest.raises(RuntimeError, match="no code changes"):
         execute(task)
     assert captured.get("provider") is None
@@ -552,7 +553,7 @@ def test_deploy_refuses_a_bare_farm_provider_env_override(monkeypatch):
         execute(make_task(14, "Deploy the changes", repo="acme/demo"))
 
 
-def test_muse_smoke_test_provenance_is_stamped_into_summary_and_artifacts(monkeypatch):
+def test_muse_smoke_test_provenance_is_stamped_into_summary_and_artifacts(monkeypatch, muse_smoke_test_persona):
     """The success metric's human-readability bar: a human reading the run
     log (this summary) or the artifact can tell Muse ran without inspecting
     config."""
@@ -567,7 +568,7 @@ def test_muse_smoke_test_provenance_is_stamped_into_summary_and_artifacts(monkey
 
     monkeypatch.setattr(step_agent, "run_agent", fake_run_agent)
     task = make_task(4, "Plan options & trade-offs (pros / cons)")
-    task["item"]["persona"] = "muse_smoke_test"
+    task["item"]["persona"] = muse_smoke_test_persona
 
     result = execute(task)
 
@@ -577,7 +578,7 @@ def test_muse_smoke_test_provenance_is_stamped_into_summary_and_artifacts(monkey
     assert result["artifacts"]["command_id"] == "the-real-command-id"
 
 
-def test_muse_smoke_test_dispatch_goes_through_the_real_muse_provider_module(monkeypatch):
+def test_muse_smoke_test_dispatch_goes_through_the_real_muse_provider_module(monkeypatch, muse_smoke_test_persona):
     """End-to-end through the actual provider seam, not a stand-in: only the
     OS-level `muse` subprocess is faked (the same boundary
     test_providers_muse.py mocks at) — execute() -> run_agent() ->
@@ -604,7 +605,7 @@ def test_muse_smoke_test_dispatch_goes_through_the_real_muse_provider_module(mon
     monkeypatch.setattr(muse_provider.subprocess, "run", fake_subprocess_run)
 
     task = make_task(4, "Plan options & trade-offs (pros / cons)")
-    task["item"]["persona"] = "muse_smoke_test"
+    task["item"]["persona"] = muse_smoke_test_persona
 
     result = execute(task)
 

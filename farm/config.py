@@ -6,7 +6,14 @@ from pathlib import Path
 
 FARM_PORT = int(os.environ.get("FARM_PORT", "4100"))
 HORIZON_URL = os.environ.get("HORIZON_URL", "http://localhost:3001")
+# farmd's credential for /api/farm/* on the Node server. HZ-140: farmd is the
+# only farm process that holds it — tmux_mgr.py refuses to forward it into any
+# agent session, so a step agent can no longer read it out of its own env.
 SHARED_SECRET = os.environ.get("FARM_SHARED_SECRET", "dev-secret")
+# HZ-140: the ONLY credential that can approve a gate, and the only one the
+# concierge holds. No dev default on purpose — unset means WhatsApp approvals
+# refuse (the server answers 503), never silently succeed.
+WA_APPROVAL_SECRET = os.environ.get("WA_APPROVAL_SECRET", "")
 
 FARM_HOME = Path(os.environ.get("FARM_HOME", str(Path.home() / ".horizon-farm")))
 QUEUE_DIR = FARM_HOME / "queue"

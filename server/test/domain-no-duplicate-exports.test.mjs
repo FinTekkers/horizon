@@ -27,7 +27,7 @@ import assert from 'node:assert/strict'
 import { existsSync } from 'node:fs'
 import path from 'node:path'
 
-import { REPO_ROOT } from '../../domain/generate.mjs'
+import { REPO_ROOT } from './helpers/repoFiles.mjs'
 
 const serverAgentTokens = await import('../src/agentTokens.js')
 const uiAgentTokens = await import('../../ui/src/domain/agentTokens.js')
