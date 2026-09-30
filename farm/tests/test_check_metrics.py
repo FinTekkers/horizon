@@ -235,6 +235,39 @@ def test_conflict_resolver_records_are_separable_from_agent_runs(tmp_path):
     assert summary["resolver_runs"] == 1
 
 
+def test_a_run_that_gave_up_waiting_is_counted_as_unthrottled(tmp_path):
+    """Past FARM_CHECK_SLOT_WAIT_MAX_S a run proceeds with NO slot, so the cap
+    was exceeded in practice — guardrail 1 breached, in the one place a
+    reviewer would otherwise never look. The column exists so that shows up as
+    a number rather than as a line buried in a session log."""
+    summary = reporter.summarise([_record(), _record(slot_mode="fail-open", slot_wait_timed_out=True)])
+    assert summary["unthrottled_runs"] == 1
+
+
+def test_an_unthrottled_conflict_resolver_run_counts_too(tmp_path):
+    """It oversubscribes the host exactly as hard as an agent run does, even
+    though it is excluded from the 20-run duration sample."""
+    summary = reporter.summarise([_record(caller="conflict_resolver", slot_mode="fail-open")])
+    assert summary["runs"] == 0
+    assert summary["unthrottled_runs"] == 1
+
+
+def test_the_reporter_says_what_an_unthrottled_run_means_and_what_not_to_do(tmp_path):
+    path = tmp_path / "m.jsonl"
+    path.write_text(json.dumps(_record(slot_wait_timed_out=True)) + "\n")
+    records, _ = check_metrics.read_records(path)
+    text = reporter.render(reporter.by_phase(records), 0, path, markdown=False)
+    assert "NO check slot" in text
+    assert "raising the ceiling would only hide it" in text
+
+
+def test_a_clean_window_reports_no_unthrottled_warning(tmp_path):
+    path = tmp_path / "m.jsonl"
+    path.write_text(json.dumps(_record()) + "\n")
+    records, _ = check_metrics.read_records(path)
+    assert "NO check slot" not in reporter.render(reporter.by_phase(records), 0, path, markdown=False)
+
+
 def test_check_duration_excludes_the_slot_wait(tmp_path):
     """Mixing the two would hide the regression this measurement looks for,
     and would make the limiter look like it slowed the checks down when it

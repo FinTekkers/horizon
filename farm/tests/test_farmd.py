@@ -202,10 +202,11 @@ def test_farm_status_reports_both_capacity_limits(tmp_path, monkeypatch):
     monkeypatch.setattr(farmd, "MAX_EPHEMERAL", 6)
     monkeypatch.setattr(farmd, "_ephemeral_sessions", lambda: ["farm-run-a-s10-a1", "farm-run-b-s10-a1"])
     monkeypatch.setenv("FARM_MAX_CONCURRENT_CHECKS", "2")
-    # `busy` is read off the real lock directory, so FARM_HOME must be a
-    # throwaway. Under the farm's own check run this suite inherits the HOST's
-    # FARM_HOME (conftest.py uses setdefault), where a live run is holding
-    # slot 0 — without this the assertion below reads the host's state.
+    # Both `busy` and `waiting` are read off the real lock directory, so
+    # FARM_HOME must be a throwaway. conftest.py now makes the whole suite
+    # hermetic, but this stays explicit: it is what the assertions below
+    # actually depend on, and a per-test redirect is cheaper to reason about
+    # than a module-level one when this test is read on its own.
     monkeypatch.setenv("FARM_HOME", str(tmp_path / "farm-home"))
 
     body = client.get("/farm/status").json()
@@ -218,8 +219,15 @@ def test_farm_status_reports_both_capacity_limits(tmp_path, monkeypatch):
     assert body["checks"]["waiting"] == []
 
 
-def test_farm_status_reports_the_check_limiter_as_disabled_when_switched_off(monkeypatch):
+def test_farm_status_reports_the_check_limiter_as_disabled_when_switched_off(tmp_path, monkeypatch):
+    """`waiting` is read unconditionally, including at limit 0 — a marker left
+    by a run that was queued when the limiter was switched off is still a fact
+    worth reporting. So this needs the same FARM_HOME redirect as the test
+    above: without it, one neighbouring run queued for a slot makes the
+    `"waiting": []` assertion fail against LIVE farm state, which under the
+    farm's own check gate discards the whole implement attempt."""
     monkeypatch.setenv("FARM_MAX_CONCURRENT_CHECKS", "0")
+    monkeypatch.setenv("FARM_HOME", str(tmp_path / "farm-home"))
     checks_block = client.get("/farm/status").json()["checks"]
     assert checks_block == {"limit": 0, "busy": 0, "waiting": []}
 

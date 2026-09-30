@@ -68,9 +68,16 @@ def summarise(records: list[dict]) -> dict:
     outcomes = {name: 0 for name in check_metrics.OUTCOMES}
     for record in records:
         outcomes[record.get("outcome", "other")] = outcomes.get(record.get("outcome", "other"), 0) + 1
+    # Runs that gave up waiting and ran with no slot at all (check_slots'
+    # fail-open ceiling). Counted over EVERY caller, because an unthrottled
+    # conflict-resolver run oversubscribes the host just as hard as an agent
+    # one. Non-zero here means the limiter stopped limiting under load — HZ-144
+    # guardrail 1 — and the answer is to report it, never to raise the ceiling.
+    unthrottled = [r for r in records if r.get("slot_wait_timed_out") or r.get("slot_mode") == "fail-open"]
     return {
         "runs": len(agent_runs),
         "resolver_runs": len(records) - len(agent_runs),
+        "unthrottled_runs": len(unthrottled),
         "enough_runs": len(agent_runs) >= MIN_RUNS,
         "median_check_s": _percentile(durations, 0.5),
         "p95_check_s": _percentile(durations, 0.95),
@@ -148,7 +155,7 @@ def _verdict_lines(report: dict[str, dict]) -> list[str]:
 
 def render(report: dict[str, dict], skipped: int, source: Path, markdown: bool) -> str:
     rows = [
-        ("Phase", "Agent runs", "Median check", "p95 check", "Median wait", "p95 wait", "Timeouts", "OOM", "Min MemAvail", "Peak load"),
+        ("Phase", "Agent runs", "Median check", "p95 check", "Median wait", "p95 wait", "Timeouts", "OOM", "Unthrottled", "Min MemAvail", "Peak load"),
     ]
     for phase, s in report.items():
         flag = "" if s["enough_runs"] else f" ⚠ <{MIN_RUNS}"
@@ -162,6 +169,7 @@ def render(report: dict[str, dict], skipped: int, source: Path, markdown: bool) 
                 _fmt(s["p95_wait_s"], "s"),
                 str(s["timeouts"]),
                 str(s["oom_kills"]),
+                str(s["unthrottled_runs"]) + ("" if not s["unthrottled_runs"] else " ⚠"),
                 _fmt_mb(s["mem_available_low_kb"]),
                 _fmt(s["peak_load"]),
             )
@@ -192,6 +200,12 @@ def render(report: dict[str, dict], skipped: int, source: Path, markdown: bool) 
             lines.append(
                 f"  ⚠ {phase} has {s['runs']} agent run(s), fewer than the {MIN_RUNS} the success metric "
                 "requires — these numbers are indicative, not a result"
+            )
+        if s["unthrottled_runs"]:
+            lines.append(
+                f"  ⚠ {phase}: {s['unthrottled_runs']} run(s) gave up waiting and ran with NO check slot "
+                f"(FARM_CHECK_SLOT_WAIT_MAX_S). The cap was exceeded in practice — report this as over-capacity; "
+                "raising the ceiling would only hide it"
             )
     lines += _verdict_lines(report)
     if skipped:

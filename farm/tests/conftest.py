@@ -15,7 +15,16 @@ TESTS_DIR = Path(__file__).resolve().parent
 REPO_ROOT = TESTS_DIR.parent.parent
 
 os.environ.setdefault("FARM_CLAUDE_BIN", str(TESTS_DIR / "fake_claude"))
-os.environ.setdefault("FARM_HOME", tempfile.mkdtemp(prefix="horizon-farm-test-"))
+# Overridden, NOT setdefault. The repo whose checks the farm runs is Horizon
+# itself, so this suite executes inside a live farm check run with the HOST's
+# FARM_HOME exported (farm/checks.py passes it through on purpose — the inner
+# suite needs it). With setdefault, every call-time reader of FARM_HOME
+# (check_slots.slot_dir(), check_metrics.metrics_path()) then pointed at the
+# real farm's shared state: a test asserting "no runs are waiting for a check
+# slot" would read a *neighbouring* run's marker and fail, discarding a whole
+# implement attempt over someone else's traffic. Hermetic is the only safe
+# default here; a test that wants the real thing must opt in explicitly.
+os.environ["FARM_HOME"] = tempfile.mkdtemp(prefix="horizon-farm-test-")
 # fake_claude speaks only the `-p` envelope, not the SDK's stream protocol —
 # tests that go through run_agent for real (concierge, step agent) must use
 # the subprocess path. SDK-path tests opt in with FARM_RUNNER=sdk and mock

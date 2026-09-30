@@ -59,7 +59,7 @@ sessions; queued work survives on disk.
 | `FARM_CHECK_TIMEOUT_S` | 600 | how long the checks may **run**. Never includes time spent queueing for a check slot — see below |
 | `FARM_MAX_EPHEMERAL` | 4 | how many ephemeral agent steps run at once. The code default is deliberately conservative; the value this host runs is set in `/etc/horizon/farm.env` (`infra/host/DEPLOY.md`). Never forwarded into an agent session |
 | `FARM_MAX_CONCURRENT_CHECKS` | 2 | how many check suites may run at once, independently of the agent cap. `<=0` disables the limiter entirely (the rollback lever) |
-| `FARM_CHECK_SLOT_WAIT_MAX_S` | 600 | how long a run waits for a check slot before proceeding **without** one, loudly. `<=0` waits forever |
+| `FARM_CHECK_SLOT_WAIT_MAX_S` | 1200 | how long a run waits for a check slot before proceeding **without** one, loudly. `<=0` waits forever |
 | `FARM_CHECK_METRICS_PHASE` | (unlabelled) | tags check-metric records with a measurement-window name, e.g. `cap6-limit2` |
 
 Node side: `FARM_URL`, `FARM_SHARED_SECRET`, `FARM_STEP_INDEXES` (default
@@ -246,6 +246,15 @@ server's step watchdog and resurface as a mystery `never_picked_up`. A
 repeated warning there means the farm is over its check capacity — a number
 to report, not a timeout to raise.
 
+That escape hatch is only safe while it stays rare, since past it the cap
+genuinely stops applying. So the 1200s default is derived, not round: above
+the worst *legitimate* queue (the 6th arrival at cap 6 / limit 2 waits two
+waves of a measured p95 suite ≈ 906s) and below the implement step's 50-minute
+watchdog once the agent's own budget and the check budget are subtracted. The
+derivation lives next to `DEFAULT_WAIT_CEILING_S` in `farm/check_slots.py` and
+is enforced by two tests. The reporter has an `Unthrottled` column so a run
+that took that path shows up as a number rather than a line in a session log.
+
 `GET /farm/status` reports both limits (`agents`, `checks`) including who is
 currently queued for a slot.
 
@@ -259,6 +268,16 @@ at both ends, and a classified outcome (`pass`, `timeout`, `oom`,
 
 ```
 farm/.venv/bin/python -m farm.tools.report_check_metrics [--markdown]
+```
+
+The pre-limiter baseline is recoverable without waiting for it: every run
+before this existed still timestamped its check commands into its session log,
+so `farm/tools/backfill_check_metrics.py` reconstructs those records and feeds
+them to the same reporter.
+
+```
+farm/.venv/bin/python -m farm.tools.backfill_check_metrics --last 40 -o /tmp/base.jsonl
+farm/.venv/bin/python -m farm.tools.report_check_metrics --path /tmp/base.jsonl
 ```
 
 See `docs/hz-144-check-concurrency-measurement.md` for the measurement

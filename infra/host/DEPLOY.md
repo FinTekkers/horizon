@@ -94,7 +94,7 @@ unset on this host, so the code default of 4 is in force.
 |---|---|---|---|
 | `/etc/horizon/farm.env` | `FARM_MAX_EPHEMERAL` | `6` | how many agent steps run at once. The code default in `farm/farmd.py` stays **4** on purpose: raising the default would silently re-raise the cap on every other host |
 | `/etc/horizon/farm.env` | `FARM_MAX_CONCURRENT_CHECKS` | `2` | how many check suites run at once. **Set this before raising the line above** |
-| `/etc/horizon/farm.env` | `FARM_CHECK_SLOT_WAIT_MAX_S` | (unset ⇒ 600) | how long a run waits for a check slot before proceeding without one |
+| `/etc/horizon/farm.env` | `FARM_CHECK_SLOT_WAIT_MAX_S` | (unset ⇒ 1200) | how long a run waits for a check slot before proceeding **without** one. Sized above the worst legitimate queue (2 waves × the measured p95 suite) and below the step watchdog — do not lower it to "fail faster", that disables the cap under load |
 | `/etc/horizon/farm.env` | `FARM_CHECK_METRICS_PHASE` | measurement only | tags records during a measurement window; remove it afterwards |
 
 The exact lines:

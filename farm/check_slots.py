@@ -38,6 +38,11 @@ expensive outcome is failing, not waiting. Past FARM_CHECK_SLOT_WAIT_MAX_S
 the run proceeds *without* a slot, loudly, and the record says so — one run
 over the ceiling is a number to report, not a reason to throw away an
 attempt's work.
+
+That escape hatch is only safe while it stays rare: a ceiling that ordinary
+queueing can reach would disable the limiter exactly when the host is most
+loaded. It is therefore sized against the measured cost of a real check suite
+rather than picked round — see the derivation above DEFAULT_WAIT_CEILING_S.
 """
 
 import contextlib
@@ -57,7 +62,36 @@ from . import config
 IN_CHECKS_ENV = "FARM_IN_CHECKS"
 
 DEFAULT_LIMIT = 2
-DEFAULT_WAIT_CEILING_S = 600.0
+
+# ---- How the wait ceiling below is derived, and why it is not 600s ----
+#
+# The ceiling is a LAST RESORT, not a queueing policy. Past it a run proceeds
+# with no slot at all, so if ordinary queueing can reach it, the limiter stops
+# limiting exactly when the host is busiest — three or more check suites on 2
+# vCPUs, which is the oversubscription HZ-144 guardrail 1 exists to prevent.
+# So the ceiling has to sit ABOVE the worst *legitimate* queue and BELOW the
+# step watchdog that would kill the run anyway.
+#
+# Lower bound — the worst wait that is normal rather than pathological.
+# MEASURED_SUITE_S is the p95 check duration over the 40 most recent real farm
+# runs at cap 4 with no limiter (farm/tools/backfill_check_metrics.py; numbers
+# in docs/hz-144-check-concurrency-measurement.md). p95 not median, because the
+# run this ceiling has to survive is the slow one in front of it.
+MEASURED_SUITE_S = 302.0
+CONTENTION_FACTOR = 1.5  # what a suite costs while sharing 2 vCPUs with one other
+WORST_QUEUE_DEPTH = 2  # at cap 6 / limit 2 the 6th arrival has two waves ahead of it
+# => 2 x 302 x 1.5 = 906s of queueing that is the limiter working as designed.
+#
+# Upper bound — the run must still finish inside the server's watchdog:
+#   server/src/orchestrator.js floors the implement step at 50 min (3000s),
+#   the agent itself may take FARM_STEP_TIMEOUT_S (900s) before checks start,
+#   and the checks then need their own ~600s budget. 900 + 1200 + 600 = 2700s.
+#
+# 1200s satisfies both, with ~32% margin over the 906s floor. If fail-open
+# events show up in a measurement window anyway, that is NOT a reason to raise
+# this — it means the farm is over its check capacity, and the reporter counts
+# them (`Unthrottled` column) precisely so the finding is visible.
+DEFAULT_WAIT_CEILING_S = 1200.0
 POLL_S = 1.0
 # A polling flock is not FIFO, so a run can in principle be starved by luckier
 # neighbours. Jitter spreads the retries instead of locking several waiters

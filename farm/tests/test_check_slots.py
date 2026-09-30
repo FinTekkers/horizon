@@ -22,7 +22,7 @@ import time
 
 import pytest
 
-from farm import check_slots
+from farm import check_slots, config
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -68,9 +68,48 @@ def test_a_negative_limit_is_the_documented_kill_switch(monkeypatch):
 
 
 def test_the_wait_ceiling_is_env_configurable(monkeypatch):
-    assert check_slots.wait_ceiling_s() == 600.0
+    assert check_slots.wait_ceiling_s() == check_slots.DEFAULT_WAIT_CEILING_S
     monkeypatch.setenv("FARM_CHECK_SLOT_WAIT_MAX_S", "5")
     assert check_slots.wait_ceiling_s() == 5.0
+
+
+def test_the_default_wait_ceiling_is_above_the_worst_legitimate_queue():
+    """Guardrail 1, enforced by a runner rather than by review.
+
+    Past the ceiling a run proceeds with NO slot. So a ceiling that ordinary
+    queueing can reach hands the host three-plus concurrent check suites on 2
+    vCPUs — the limiter switching itself off exactly when the host is busiest,
+    which is the oversubscription this item exists to prevent.
+
+    The worst wait that is the limiter working *as designed* is the 6th
+    arrival at cap 6 / limit 2: two waves of a real suite ahead of it, each
+    slowed by sharing the box. Anything at or below that is a queue, not a
+    pathology, and must not trip the escape hatch.
+    """
+    worst_legitimate_wait_s = (
+        check_slots.WORST_QUEUE_DEPTH * check_slots.MEASURED_SUITE_S * check_slots.CONTENTION_FACTOR
+    )
+    assert worst_legitimate_wait_s == 906.0
+    assert check_slots.DEFAULT_WAIT_CEILING_S > worst_legitimate_wait_s, (
+        f"a {check_slots.DEFAULT_WAIT_CEILING_S:.0f}s ceiling is reachable by normal queueing "
+        f"({worst_legitimate_wait_s:.0f}s at cap 6 / limit 2), so the limiter would fail open under load"
+    )
+
+
+def test_the_default_wait_ceiling_still_fits_inside_the_step_watchdog():
+    """The other side of the same bound. A run that waits, then runs its
+    checks, must still report before server/src/orchestrator.js's watchdog
+    gives up — otherwise the ceiling trades an oversubscribed host for a
+    `never_picked_up`, which is the failure this item is trying to REDUCE.
+
+    Floors, not guesses: the implement step is floored at 50 min there, the
+    agent itself may burn FARM_STEP_TIMEOUT_S first, and the checks then need
+    their own FARM_CHECK_TIMEOUT_S budget.
+    """
+    implement_step_watchdog_s = 50 * 60
+    agent_budget_s = config.STEP_TIMEOUT_S
+    check_budget_s = 600
+    assert agent_budget_s + check_slots.DEFAULT_WAIT_CEILING_S + check_budget_s < implement_step_watchdog_s
 
 
 def test_slot_dir_is_read_at_call_time_not_import_time(tmp_path, monkeypatch):

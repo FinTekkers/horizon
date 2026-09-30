@@ -5,13 +5,15 @@ change, it is a capacity change, so it gets measured rather than asserted.
 This file is where the numbers live. It is a point-in-time record, re-run and
 re-committed — nothing here is a live metric.
 
-**Status: the mechanism has shipped; the three measurement windows have
-not been collected.** What is recorded below is the host baseline, the
-protocol, and a single-run timing of this repo's own check gate through the
-new code path. The 20-run windows are an operational step (they need real
-farm traffic over real calendar time), and the numbers get filled in here by
-re-running the reporter. Where a number is not yet measured this file says so
-rather than estimating.
+**Status.** The `cap4-nolimit` baseline is **collected and below**, over 147
+real farm runs (40 in the like-for-like window) — comfortably past the 20-run
+minimum. It did not need to be collected forward in calendar time, because it
+was already on disk: see "Where the baseline came from". The two remaining
+windows (`cap4-limit2`, `cap6-limit2`) **cannot** be collected before this
+merges — they need the code deployed and real traffic through it — so this
+branch lands with the "after" half unmeasured. What that means, and what is
+being asked of the approver, is in "What lands unmeasured, and the ask" below.
+Where a number is not yet measured this file says so rather than estimating.
 
 ## Why three windows, not two
 
@@ -32,18 +34,59 @@ result. At the observed rate of farm traffic that is roughly a few days of
 normal work per window; if a window is still short after a week, say so in
 this file rather than shipping a thin number.
 
-## Collecting a window
+## Where the baseline came from
+
+The `cap4-nolimit` window did not need collecting forward. The farm has run at
+`FARM_MAX_EPHEMERAL=4` with no check limiter for its entire life, and every
+one of those runs timestamped its check commands into
+`$FARM_HOME/logs/farm-run-*.log`:
+
+```
+[17:54:01] checks: running npm install --no-audit --no-fund
+[17:54:02] checks: running npm test --silent
+[17:55:57] checks: running npm run test:e2e --silent
+[17:57:08] checks: running /opt/.../python -m pytest -q
+[17:58:13] publish_screenshots: pushed 21 screenshot(s) ...
+```
+
+Consecutive `checks: running` lines bound each other and the first line after
+the block bounds the last command, so per-command duration, total check
+duration and the pass/fail outcome are all recoverable — from real traffic, at
+the real cap, with no limiter. That *is* the baseline. Waiting several days to
+re-collect prospectively what is already on disk would have been measurement
+theatre. `farm/tools/backfill_check_metrics.py` does the extraction and feeds
+the **same** reporter the live windows will use, so the two halves of metric 4
+are computed by one code path:
+
+```
+farm/.venv/bin/python -m farm.tools.backfill_check_metrics --last 40 -o /tmp/base.jsonl
+farm/.venv/bin/python -m farm.tools.report_check_metrics --path /tmp/base.jsonl --markdown
+```
+
+**What it cannot recover, stated rather than defaulted.** The logs predate the
+instrumentation, so `mem_available_low_kb` and load average were never sampled
+and are written as `None` — the reporter prints "—" rather than a zero that
+would read as a measurement. `slot_wait_s` is `0.0`, which is not an
+approximation: no limiter existed, so there was nothing to queue for. Memory
+and load for the two live windows come from the real records; metric 6's bound
+is on check **duration**, which is recovered exactly.
+
+Timestamps are `HH:MM:SS` with no date, so the date comes from the file mtime
+and a block crossing midnight is corrected by a wrap. One-second resolution
+means a sub-second command reads as 0s.
+
+## Collecting the two remaining windows
 
 Add to `/etc/horizon/farm.env` (see `infra/host/DEPLOY.md` §2c), then
 `sudo systemctl restart horizon-farm`:
 
 ```
-FARM_CHECK_METRICS_PHASE=cap4-nolimit
-FARM_MAX_CONCURRENT_CHECKS=0
+FARM_CHECK_METRICS_PHASE=cap4-limit2
+FARM_MAX_CONCURRENT_CHECKS=2
 ```
 
 Leave it until the reporter shows ≥20 agent runs for that phase, then move to
-the next window. Read it back with:
+`cap6-limit2` (`FARM_MAX_EPHEMERAL=6`). Read it back with:
 
 ```
 farm/.venv/bin/python -m farm.tools.report_check_metrics --markdown
@@ -97,6 +140,12 @@ dilute the live file:
 | `load_start` / `load_end` | 3.70 / 3.37 |
 | `mem_available_low_kb` | 5,739,332 kB (≈5.5 GiB still free) |
 
+(The 280.0s here is one run through the *new* code path and is what it says on
+the tin — an instrumentation check. The number the rest of this document
+reasons from is the 40-run baseline above: median 248.0s, p95 302.0s. This
+single run sits between the two, which is the only agreement worth claiming
+from a sample of one.)
+
 This confirms the instrumentation end to end: the slot was taken, the record
 was written with one line, the classifier reported `pass`, and the nested
 `run_checks()` calls inside the inner `pytest` were no-ops rather than a
@@ -124,17 +173,111 @@ free at the trough); CPU is.
 
 ## Results
 
-### `cap4-nolimit` (baseline)
+### `cap4-nolimit` (baseline) — collected
 
-Not yet collected.
+Reconstructed from the farm's own session logs on 2026-09-30, spanning
+2026-07-30 to 2026-09-30.
+
+| Window | Agent runs | Median check | p95 check | Timeouts | OOM | Unthrottled |
+| --- | --- | --- | --- | --- | --- | --- |
+| all history | 147 | 186.0s | 284.0s | 1 | 0 | 0 |
+| **last 40 (the comparison window)** | **40** | **248.0s** | **302.0s** | **0** | **0** | **0** |
+| last 20 | 20 | 266.0s | 302.0s | 0 | 0 | 0 |
+
+Queue wait is 0.0s throughout by definition — there was no limiter to queue
+for. Memory and load are "—": never sampled at the time.
+
+**Use the 40-run window, not all 147.** The check gate itself has grown over
+the farm's life (more suites, more e2e specs), so the all-history median of
+186s is the median of a *smaller gate*. Comparing a future `cap6-limit2`
+window against it would read the gate's own growth as a contention regression,
+which is the opposite of what metric 6 asks. The like-for-like figure is
+**median 248.0s**; metric 6's 50% bound is therefore **372.0s**.
+
+#### The finding that was not expected
+
+| Outcome | all 147 | last 40 |
+| --- | --- | --- |
+| `pass` | 130 | 37 |
+| `contention` | **7** | **2** |
+| `leakage` | 1 | 1 |
+| `timeout` | 1 | 0 |
+| `other` (real test failures) | 8 | 0 |
+
+**Contention already fails checks at cap 4, today, without the limiter.** Five
+of those seven predate the 30 Sept trial entirely and are all the same shape —
+a Playwright `webServer` port collision between concurrent runs:
+
+```
+Error: http://localhost:3057 is already used, make sure that nothing is
+running on the port/url or set reuseExistingServer:true in config
+```
+
+All five on port 3057. `PORT_OFFSET` in `e2e/playwright.config.js` is a hash of
+the worktree path modulo 1000, so two concurrent runs whose worktrees collide
+kill each other's dev server (`fuser -k`). The other two are the 30 Sept trial
+(the Playwright `globalTimeout` firing at load ~8), and the single `leakage` is
+the documented `assert 6 == 4`.
+
+Checks run before commit/push, so each of those seven discarded a whole
+attempt's work. That is a **4.8% attempt-loss rate from contention at the
+current cap of 4** — this item's premise is not merely that contention *would*
+appear at 6, but that it is already happening at 4. It also means the limiter
+is not purely a cost: capping concurrent check suites at 2 halves the number of
+e2e suites that can collide, so `cap4-limit2` is expected to *reduce* this
+class, and the contention tally is the number to watch for it.
+
+This is also a live check on the classifier: it recognised failure shapes from
+the real history that it was not written against, rather than filing them under
+`other`.
 
 ### `cap4-limit2`
 
-Not yet collected.
+Not yet collected — needs this branch deployed. See the ask below.
 
 ### `cap6-limit2`
 
-Not yet collected.
+Not yet collected — needs this branch deployed and the host cap raised. See
+the ask below.
+
+## What lands unmeasured, and the ask
+
+Stated plainly rather than implied, because guardrail 6 says not to ship
+without the before/after measurements.
+
+**What is measured:** the entire "before" half — metric 4's baseline, over 147
+real runs (40 like-for-like), plus a classified outcome tally that already
+shows contention failing checks at the current cap.
+
+**What is not, and cannot be, before merge:** both "after" windows. They
+require this code running on the host and ≥20 real runs through it, which is
+days of calendar time. No arrangement of this branch can produce them first.
+
+**The behaviour this branch changes on deploy, with no "after" number yet:**
+`FARM_MAX_CONCURRENT_CHECKS` defaults to `2`, so deploying the code alone
+throttles checks even though the cap stays at 4. The bound on that is
+arithmetic, not a guess: at cap 4 with limit 2 at most two runs ever queue, one
+wave deep, so the worst added wait is one p95 suite — **≈302s**, against a
+1200s fail-open ceiling and a 3000s implement-step watchdog. It is also
+strictly more conservative than today's behaviour (at most 2 concurrent check
+suites where today there can be 4).
+
+**The ask at the human gate:** accept that this merges with the "after" half
+outstanding, on these conditions —
+
+1. `cap4-limit2` is collected first, at the unchanged cap of 4. If its median
+   check duration is outside 372.0s, or any run shows as `Unthrottled`, the cap
+   does **not** move to 6.
+2. `FARM_MAX_EPHEMERAL=6` is a separate host edit made only after (1) passes,
+   and `cap6-limit2` is collected and recorded here before the item closes.
+3. Rollback is one env var and a restart, in either direction, with no code
+   revert — see "If the measurement says no".
+
+If that is not acceptable, the alternative is to merge with
+`FARM_MAX_CONCURRENT_CHECKS=0` set in `/etc/horizon/farm.env`, which makes the
+deploy behaviour-identical to today and defers the limiter to the same host
+edit that collects `cap4-limit2`. That is a one-line change to `farm.env`, not
+to this branch.
 
 ### Against the success metric
 
@@ -143,9 +286,9 @@ Not yet collected.
 | 1 | 6 concurrent agent steps observed | **pending** — dispatcher logic covered by `test_the_dispatcher_launches_up_to_the_configured_cap_and_no_further`; the `tmux list-sessions` capture goes below once the host cap is raised |
 | 2 | No more than the configured check suites at once | **pass** — `test_only_the_configured_number_of_slots_are_held_at_once` starts three runs against two slots and asserts the third waits |
 | 3 | Queue wait does not count toward `FARM_CHECK_TIMEOUT_S` | **pass** — `test_queue_wait_does_not_eat_the_check_timeout` |
-| 4 | Before/after numbers over ≥20 runs | **pending** — instrumentation and reporter shipped; windows not collected |
-| 5 | Zero OOM kills, zero contention timeouts | **pending** — `oom`/`contention` classes and a host-wide `MemAvailable` low-water mark are recorded per run |
-| 6 | Median check duration ≤50% above baseline | **pending** — needs `cap4-nolimit` and `cap6-limit2` |
+| 4 | Before/after numbers over ≥20 runs | **before: pass** — 147 real runs (40 like-for-like), above. **After: pending** — both windows need the code deployed |
+| 5 | Zero OOM kills, zero contention timeouts | **pending** — `oom`/`contention` classes and a host-wide `MemAvailable` low-water mark are recorded per run. The baseline shows 0 OOM and 7 contention failures **at cap 4 today**, which is the number the after-windows have to beat |
+| 6 | Median check duration ≤50% above baseline | **baseline recorded: 248.0s, so the bound is 372.0s.** Verdict pending `cap6-limit2`; the reporter computes the ratio rather than leaving it to be eyeballed |
 | 7 | `never_picked_up` over 7 days below 23 | **pending** — baseline 23 confirmed; see the follow-up below |
 | 8 | Both limits env-configurable and documented | **pass** — `FARM_MAX_EPHEMERAL`, `FARM_MAX_CONCURRENT_CHECKS` (plus `FARM_CHECK_SLOT_WAIT_MAX_S`) in `farm/README.md` and `infra/host/DEPLOY.md` §2c |
 | — | Zero failures from configuration leakage or contention (human feedback) | **pending** for the window; the `leakage` class exists and both scrub seams have tripwire tests |
@@ -206,9 +349,9 @@ Counts on this branch, 2026-09-30:
 
 | Gate | Result |
 | --- | --- |
-| `npm test` | **50 pass, 0 fail** (plus the production-base UI build check) |
-| `npm run test:e2e` | **30 passed** (suite 50.9s; 82.2s for the whole command) |
-| `python -m pytest -q` | **603 passed, 4 skipped** |
+| `npm test` | **651 pass, 0 fail** across the server/UI suites, plus **50 pass, 0 fail** in the deploy shell harness and the production-base UI build check |
+| `npm run test:e2e` | **30 passed** (suite 44.2s) |
+| `python -m pytest -q` | **631 passed, 4 skipped** |
 | Python linter | none configured in this repo — no coverage claimed |
 
 Guardrail 7 ("every test passing before passes after") checked by running the
@@ -217,9 +360,9 @@ suite at this branch's parent (`161d267`) as well:
 | Commit | pytest |
 | --- | --- |
 | `161d267` (before) | 519 passed, 4 skipped |
-| this branch (after) | **603 passed, 4 skipped** |
+| this branch (after) | **631 passed, 4 skipped** |
 
-84 tests added, none removed, none newly skipped. The parent run also showed 2
+112 tests added, none removed, none newly skipped. The parent run also showed 2
 failures in `test_step_agent.py`'s smoke-check cases, which are an artifact of
 measuring in a bare `git worktree` with no `node_modules`
 (`ERR_MODULE_NOT_FOUND: Cannot find package '@playwright/test'`) — both pass
