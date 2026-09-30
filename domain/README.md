@@ -297,7 +297,7 @@ asserts that, including that `domain/package.json` does not exist).
 | --- | --- |
 | `server/src`, `server/test` | `import … from '../../domain/js/lifecycle.js'` |
 | `ui/src` | `import … from '../../../domain/js/lifecycle.js'` |
-| `e2e/` | `import … from '../domain/js/lifecycle.js'` |
+| `e2e/` | `import … from '../domain/js/lifecycle.js'`, `'../../domain/js/priorities.js'` |
 | `farm/` | `from domain.py import fields, priorities, reasons, steps` |
 
 The reason vocabulary has two consumers, by the same relative paths:
@@ -435,6 +435,8 @@ here as a known limit, not hidden.
 | GitHub label behaviour | `priority-labels.test.mjs` | Metric 4, which had **zero** coverage before HZ-135. The `priorityFromLabels` matrix through the real `upsertFromGithub`, and `setPriorityLabel`'s exact POST bodies, stale-label `DELETE` and colour fallback against a stubbed `fetch` |
 | The API enums are derived | `api-priority-enum-derived.test.mjs` | A stale priority literal in `POST /api/items`. Posts every declared value through the real route and reads the stored value back, plus a structural diff of the exported fragment against `priorities.json` |
 | The UI picker is derived | `ui/src/components/NewItemModal.test.jsx` | Metric 2's UI leg, which had no test at any level. Renders the real modal and asserts the options equal the vocabulary **in order**, one per value, with the declared default selected |
+| The picker is derived in the SHIPPED BUNDLE | `e2e/tests/02-create-item.spec.js` | The same claim one level down, in a real browser against `vite build`'s output rather than Vite's dev resolution. This journey already opened the intake modal but never touched the priority control, so a picker rendering **zero options** — the exact failure a dropped `priorities.json` produces, since the UI inlines it at build time — left all 31 e2e tests green. Now it selects a NON-default value, asserts the rendered options and their order, and reads the value back off the board card: picker → `POST /api/items` → the `CHECK` constraint the same list builds → render |
+| The offline mock answers like the route | `ui/src/api/mockApi.test.js` | `createItem`'s `priority = DEFAULT_PRIORITY` drifting from `POST /api/items`' default. mock mode is the UI's stand-in backend with no server, and that default was the one priority-carrying branch of this change with no assertion at all — a drift only offline users would have seen |
 | The wizard's text has not moved | `farm/tests/test_wizard.py` | A renumbered or reworded WhatsApp prompt. Both emitted strings pinned byte-for-byte, because for a bot the emitted string IS the behaviour |
 
 One honest limit remains: `domain-no-drift-scaffolding.test.mjs`'s

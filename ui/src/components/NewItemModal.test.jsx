@@ -2,7 +2,7 @@
 //
 // Before this change the intake modal had no test file at all, and the whole e2e
 // suite contained exactly one priority reference — a fixture value in
-// 09-queued-work.spec.js, which never renders the picker. So "the picker derives
+// 09-queued-work.spec.js, which never rendered the picker. So "the picker derives
 // from the vocabulary" was verifiable only by grepping for an import path, which
 // is not a behavioural gate: an import can be present while the rendered control
 // shows a stale hand-typed list beside it.
@@ -15,6 +15,13 @@
 // ORDER is asserted as a sequence, not a set. The order is the visible half of
 // this item: the segmented control renders the array left to right, severity
 // first, and a reversed vocabulary would put Low where a human expects Critical.
+//
+// This is the UNIT level, and it resolves the import through Vite's dev
+// resolution rather than the bundle a deploy ships. The browser-level half is
+// e2e/tests/02-create-item.spec.js, which drives the same control against
+// `vite build`'s output and reads the chosen value back off the board card.
+// Neither one subsumes the other: this file covers every value and the default,
+// the e2e spec covers one value through the real inlined JSON.
 
 import { expect, test, afterEach, vi } from 'vitest'
 import { render, cleanup, fireEvent } from '@testing-library/react'
