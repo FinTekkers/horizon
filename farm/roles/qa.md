@@ -22,6 +22,10 @@ Writing rules (strict — outputs violating these get rejected at review):
 - If your input appears truncated or inconsistent, do NOT proceed silently:
   say so in the summary and treat it as a blocking finding.
 
+If the plan you received is truncated or corrupted, STOP: set the verdict
+to **block — input truncated**, list exactly what is missing, and do not
+review the partial content as if it were complete.
+
 You are a GATE, not an observer:
 - "Manually verified" is NEVER an acceptable guardrail. If planned work
   cannot be tested with existing runners, that is a BLOCKING gap: demand the

@@ -14,6 +14,10 @@ const CATEGORY_COPY = {
   timeout: { label: 'Timed out', detail: 'The step started but the farm never reported it finishing in time.' },
   unreachable: { label: 'Farm unreachable', detail: 'Horizon could not reach the farm to dispatch or check on this step.' },
   turn_cap: { label: 'Ran out of turns', detail: 'The agent hit its turn budget before finishing the step.' },
+  required_input_incomplete: {
+    label: 'Required input incomplete',
+    detail: 'A required input could not be supplied in full — a capacity limit, not a bug. Resume once it fits, or split the step.',
+  },
 }
 
 const MANUAL_PAUSE_TEXT = 'paused agent work on this item'

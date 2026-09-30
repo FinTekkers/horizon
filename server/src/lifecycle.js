@@ -28,6 +28,11 @@ export const PHASES = ['Plan', 'Technical Plan', 'Execute', 'Deploy', 'Review']
 // workspaceMutating/providerOverrideEligible/providerLocked/maxTurns/
 // timeoutS are farm-only fields, set only on runsIn: 'farm' entries — the PM
 // agent uses its own budget mechanism (farm/pm_agent.py), out of scope here.
+// requires (HZ-105): labels of prior steps whose artifact this step cannot
+// review without in full. Checked by orchestrator.js's dispatchToFarm gate
+// (missingRequiredInputs) before a farm dispatch — if the artifact budget
+// had to truncate a required artifact, the step never runs. Omit for steps
+// that tolerate a truncated/absent prior artifact.
 export const STEPS = [
   { phase: 0, kind: 'agent', agent: 'PM', label: 'Define the outcome', runsIn: 'pm' },
   { phase: 0, kind: 'agent', agent: 'PM', label: 'Define how we measure success', runsIn: 'pm' },
@@ -69,6 +74,7 @@ export const STEPS = [
     providerLocked: false,
     maxTurns: 40,
     timeoutS: 1140,
+    requires: ['Draft implementation plan'],
   },
   {
     phase: 1,
@@ -81,6 +87,7 @@ export const STEPS = [
     providerLocked: false,
     maxTurns: 40,
     timeoutS: 1140,
+    requires: ['Draft implementation plan'],
   },
   { phase: 1, kind: 'agent', agent: 'PM', label: 'Summarize reviews & recommend', runsIn: 'pm' },
   { phase: 1, kind: 'gate', gate: 'required', label: 'Review before execution' },
