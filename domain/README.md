@@ -1,10 +1,11 @@
-# `domain/` — the lifecycle model and the failure-reason vocabulary
+# `domain/` — the lifecycle model, the failure-reason vocabulary and the work-item field limits
 
 **One JSON is the source of truth. Bindings read it. Consumers import from
 here.**
 
 Ask "what is a lifecycle step?" — or, since HZ-132, "what can make a step
-fail, and will Horizon retry it?" — and the answer is this directory, by
+fail, and will Horizon retry it?", or, since HZ-134, "how long may a work-item
+field be?" — and the answer is this directory, by
 definition. Before HZ-128 the answer was spread across `server/src/lifecycle.js`,
 `ui/src/domain/lifecycle.js`, `farm/steps.py`, two committed
 `steps_generated.json` files and a build script living inside one consumer —
@@ -27,13 +28,21 @@ navigate them like any other file.
   outside `domain/`: its banner copy in `ui/src/domain/pauseReason.js`. That is
   deliberate — copy is presentation — and
   `ui/src/domain/pauseReason.test.js` fails if you forget it.
+- **Changing a work-item field's length limit** — or adding a field that carries
+  one — means editing **`domain/fields.json` only**. The API's `POST /api/items`
+  body schema, the PM agent's `PATCH_FIELDS`, the PM role prompt's field-limit
+  line and `measure_text_caps.py`'s report all derive from it. Before HZ-134 those
+  were four independent copies of the same three numbers, and they had already
+  drifted: the API accepted a `guardrails` value five times longer than a PM
+  revision could write.
 - **Adding or changing a *helper*** means editing `js/lifecycle.js` or
   `py/steps.py` **directly**. Edit the binding you mean; there is no indirection
   between you and it.
 
 If a helper is meant to behave the same in both languages, add a case to
-`fixtures/lifecycle-cases.json` in the same change. The suites on both sides
-fail if an export has no case, so this is enforced rather than remembered.
+`fixtures/lifecycle-cases.json` (or `fixtures/fields-cases.json`) in the same
+change. The suites on both sides fail if an export has no case, so this is
+enforced rather than remembered.
 
 ## Layout
 
@@ -48,13 +57,19 @@ fail if an export has no case, so this is enforced rather than remembered.
 | `py/steps.py` | The Python binding: loads `steps.json`, exposes the farm-shaped table + accessors |
 | `js/reasons.js` | The JS binding: imports `reasons.json`, exposes the vocabulary + the derived `AUTO_RETRY_REASONS` |
 | `py/reasons.py` | The Python binding: loads `reasons.json`, exposes the same vocabulary to the farm |
+| `fields.json` | The only place a work-item field's length limit is declared |
+| `fields.schema.json` | The contract `fields.json` must satisfy |
+| `js/fields.js` | The JS binding: imports `fields.json`, exposes the table + the derived `intakeFields` / `patchLimits` |
+| `py/fields.py` | The Python binding: loads `fields.json`, exposes the same table and `patch_limits` to the farm |
 | `fixtures/lifecycle-cases.json` | Input/expected pairs asserted by **both** language suites |
+| `fixtures/fields-cases.json` | The same, for the field bindings |
 
 Every file here is authored. Nothing is output.
 
-The two sources are **siblings, not one document**. `steps.json` answers "what
+The three sources are **siblings, not one document**. `steps.json` answers "what
 is a lifecycle step" and nothing else; a retry policy living inside a file
-titled *step table* is the kind of thing nobody finds by grepping. They share
+titled *step table* is the kind of thing nobody finds by grepping, and so is a
+field limit. They share
 the validator, the load-time-validation pattern and every guard, and share no
 data.
 
@@ -76,8 +91,8 @@ carry a step label, which is the difference between "the build succeeded" and
 _SOURCE_PATH = Path(__file__).resolve().parent.parent / "steps.json"
 ```
 
-`js/reasons.js` and `py/reasons.py` read `reasons.json` exactly the same two
-ways. `ui/scripts/verify-base-build.mjs` probes the built bundle for **both** a
+`js/reasons.js`/`py/reasons.py` and `js/fields.js`/`py/fields.py` read their own
+source exactly the same two ways. `ui/scripts/verify-base-build.mjs` probes the built bundle for **both** a
 step label and a reason id, because a tree-shake that drops one says nothing
 about the other.
 
@@ -150,6 +165,57 @@ a `frozenset` in Python so the farm cannot widen the server's retry policy.
 Both types are pinned: a derived Array would answer `undefined` to `.has()` and
 quietly pause every transient failure.
 
+### The field bindings ship ONE shape too, for the same reason
+
+There is no projection here either. The length the API enforces at intake and the
+length a PM revision is held to are the **same number** — that is the entire
+point of `fields.json`, and the bug HZ-134 closed was precisely that they were
+not. Both bindings expose the authored table verbatim.
+
+Each field carries **two names**, and the difference is the file's other job:
+
+- **`name`** — the field's name on the API, i.e. the `POST /api/items` body key.
+- **`column`** — its `work_item` column, which is also the key a PM patch and the
+  `UPDATE work_item` statement use.
+
+They differ for exactly one field: `outcome` is stored in `desc`. That mapping
+used to be implicit in two unrelated files, with each side re-deriving it. It
+lives here now and nowhere else.
+
+The two flags say who may write the field, in domain language rather than layer
+language:
+
+- **`settableAtIntake`** — a human may set it when the item is created.
+  `intakeFields()` is what `POST /api/items` builds its body properties from.
+  `persona` is deliberately false: it is assigned by an agent or at a gate.
+- **`agentRevisable`** — an agent may patch it later. `patchLimits()` keys by
+  `column` and is what `farm/pm_agent.py`'s `PATCH_FIELDS` and
+  `server/src/orchestrator.js`'s `FARM_PATCH_FIELDS` both are, so the two sides
+  of the wire cannot disagree about which fields exist.
+
+Three things adjacent to a field limit are deliberately **not** here:
+
+- **`required: ['title', 'outcome', 'metric']`** stays a literal in
+  `server/src/app.js`, and so does the `priority` enum. Neither is a length, so
+  neither belongs in a file about lengths — but it does mean the same route reads
+  from two homes. `api-field-limits-derived.test.mjs` asserts every `required`
+  name is a property the derived fragment defines, so the split cannot silently
+  break.
+- **`PATCH_FIELD_LABELS`** (`server/src/orchestrator.js`) — "Outcome", "Success
+  metric". Display copy, which guardrail 5 keeps out of `domain/`.
+  `domain-fields-consumers.test.mjs` drives `stepCommentBody` with every patchable
+  column set, so a field written to the database but missing from the comment
+  fails.
+- **`MARKED_PATCH_FIELDS`** (`farm/pm_agent.py`) — which over-long fields get a
+  truncation marker. A marking policy, not a limit.
+
+**`maxLength` is an INTAKE cap, not a database invariant.** HZ-114's truncation
+marker is appended *after* the cut, so a PM revision that ran over lands in
+`work_item` **longer** than the declared maximum for that column — content inside
+the budget, note outside it. That is intended: squeezing the marker inside the
+budget would eat real content to make room for a message about eating real
+content. Pinned by `farm/tests/test_field_limits.py`.
+
 ## Consumers
 
 Imported by relative path. No npm workspace, no published package, no new
@@ -162,12 +228,20 @@ asserts that, including that `domain/package.json` does not exist).
 | `server/src`, `server/test` | `import … from '../../domain/js/lifecycle.js'` |
 | `ui/src` | `import … from '../../../domain/js/lifecycle.js'` |
 | `e2e/` | `import … from '../domain/js/lifecycle.js'` |
-| `farm/` | `from domain.py import reasons, steps` |
+| `farm/` | `from domain.py import fields, reasons, steps` |
 
 The reason vocabulary has two consumers, by the same relative paths:
 `server/src/orchestrator.js` (which classifies a failure) and
 `ui/src/domain/pauseReason.js` (which renders the pause banner). The farm reaches
-it through `reasons.REASON[…]` in `farm/step_agent.py` and `farm/farmd.py`.
+it through `reasons.REASON[…]` in `farm/step_agent.py`, `farm/farmd.py` and
+`farm/pm_agent.py`.
+
+The field limits have **no UI consumer**, and that is a real gap rather than a
+design choice: `ui/src/components/NewItemModal.jsx` sets no `maxLength`, so a long
+paste reaches the API and comes back 400. Pre-existing, unchanged by HZ-134, and
+recorded here rather than left to be rediscovered.
+`domain-consumer-imports.test.mjs` would fail on a stale `ui/src` entry, so adding
+one later is a deliberate act.
 
 The Python side is a PEP 420 namespace package: no `__init__.py` at either
 level, resolved off the repo root — which is on `sys.path` because `farmd` runs
@@ -241,6 +315,14 @@ here as a known limit, not hidden.
 | No mistyped `REASON` key | `domain-reason-member-access.test.mjs` | `REASON.TYPO` in JS, which reads as `undefined` instead of throwing the way Python's dict does |
 | Cross-language reason parity | `domain-reasons-parity.test.mjs` + `farm/tests/test_reasons.py` | The two reason bindings drifting. Compares the **paired** `(id, retryable)` table, not two independent lists |
 | Every reason has banner copy | `ui/src/domain/pauseReason.test.js`, `ui/src/components/Tracker.test.jsx` | A reason declared in `reasons.json` that renders a blank pause banner — driven through the real `pauseReason()`, so it also proves the event-text regex extracts the id |
+| Field schema + load-time rules | `domain-fields-schema.test.mjs` | An invalid field table: a missing column, a zero `maxLength`, a duplicate name or column, a `minLength` at-or-above its own `maxLength`, nothing settable at intake, nothing agent-revisable — including real subprocess imports, in **both** languages, over a tampered `fields.json` |
+| Cross-language field fixtures | `fixtures/fields-cases.json` + `domain-fields-cases.test.mjs` + `farm/tests/test_fields_fixtures.py` | The two field validators disagreeing about what a rule *means*, or their messages drifting. Same set-equality / non-empty / pinned-manifest guards as the lifecycle fixture |
+| Cross-language field parity | `domain-fields-parity.test.mjs` | The two field bindings drifting. Compares the authored table AND the derived `patch_limits` **including key order**, which `validate()` and `FARM_PATCH_FIELDS` both depend on |
+| API limits are derived | `api-field-limits-derived.test.mjs` | A stale `maxLength` literal in `POST /api/items`. Posts each field at exactly its limit and one over, **through the real route** — plus a structural diff of the fragment against `fields.json` |
+| PM limits are derived | `farm/tests/test_field_limits.py` | `PATCH_FIELDS` drifting from the declaration (order included), a superseded cap reappearing in `pm_agent.py`, a `pm.md` that lost its `{{FIELD_LIMITS}}` placeholder, and the marker-overshoot behaviour above |
+| One field declaration | `domain-one-field-declaration.test.mjs` | A second copy of a field limit anywhere in the tree — structurally (three or more field/limit pairs in one file) and per-pair (set-equality allowlist) |
+| Every column is real | `domain-fields-consumers.test.mjs` | A typo'd `column` in `fields.json`, which `completeFarmRun`'s `UPDATE work_item SET <column> = ?` would otherwise turn into a runtime SQL error mid-run. Checked against a real database via `PRAGMA table_info` |
+| A PM revision can fill the field | `pm-revision-full-length.test.mjs`, `farm/tests/test_pm_agent.py` | A cap reappearing anywhere on the write path. Drives a 1,999-char `guardrails` revision through the real `POST /api/farm/steps/:runId/complete` and asserts the stored value byte-for-byte |
 
 One honest limit remains: `domain-no-drift-scaffolding.test.mjs`'s
 `server.fs.allow` assertion is a **config-shape proxy**, not a dev-server boot

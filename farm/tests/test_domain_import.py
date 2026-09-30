@@ -1,5 +1,5 @@
 """HZ-128: `from domain.py import steps` must actually resolve — and, since
-HZ-132, `from domain.py import reasons` alongside it.
+HZ-132, `from domain.py import reasons`, and since HZ-134 `fields`, alongside it.
 
 domain/ and domain/py/ carry no __init__.py — they are PEP 420 namespace
 packages, resolved off the repo root. The repo root is on sys.path because
@@ -13,9 +13,10 @@ runs at the guardrail gate.
 """
 
 import importlib
+import re
 from pathlib import Path
 
-from domain.py import reasons, steps
+from domain.py import fields, reasons, steps
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 
@@ -26,6 +27,10 @@ def test_the_relocated_module_resolves_under_domain_py():
 
 def test_the_reason_binding_resolves_under_domain_py_too():
     assert Path(reasons.__file__).resolve() == (REPO_ROOT / "domain" / "py" / "reasons.py").resolve()
+
+
+def test_the_field_binding_resolves_under_domain_py_too():
+    assert Path(fields.__file__).resolve() == (REPO_ROOT / "domain" / "py" / "fields.py").resolve()
 
 
 def test_the_relocated_module_carries_the_farm_shaped_table():
@@ -74,17 +79,38 @@ def test_the_binding_reads_domain_steps_json_rather_than_embedding_it():
         assert entry["label"] not in source, f'label {entry["label"]!r} is inlined in the binding'
 
 
+def test_the_field_binding_reads_domain_fields_json_rather_than_embedding_it():
+    """HZ-134. Same rule as the step table above: the numbers live in
+    domain/fields.json and nowhere else, so not one declared limit and not one
+    field name may appear in the module's CODE. Docstrings are excluded — they
+    describe the drift the file removed, which is provenance, not a declaration
+    (server/test/domain-binding-hygiene.test.mjs strips them the same way)."""
+    source = (REPO_ROOT / "domain" / "py" / "fields.py").read_text()
+    assert "fields.json" in source
+    assert fields._SOURCE_PATH == (REPO_ROOT / "domain" / "fields.json").resolve()
+    code = re.sub(r'"""[\s\S]*?"""', "", source)
+    code = "\n".join(line.split("#", 1)[0] for line in code.splitlines())
+    assert "def patch_limits" in code  # positive control: the stripping left real code
+    for field in fields.FIELDS:
+        assert str(field["maxLength"]) not in code, f'limit {field["maxLength"]} is inlined in the binding'
+        assert field["name"] not in code, f'field name {field["name"]!r} is inlined in the binding'
+
+
 def test_the_binding_imports_from_any_working_directory(tmp_path, monkeypatch):
     # _SOURCE_PATH derives from __file__, never from cwd — farm agents run
     # inside workspace clones, not from the repo root. This is the one new
     # RUNTIME failure mode HZ-139 introduces (the module now does file I/O at
     # import), so it gets an assertion rather than a paragraph of reasoning.
-    # HZ-132's reason binding loads the same way and carries the same risk, so
-    # both modules are reloaded under the chdir, not just the step table.
+    # HZ-132's reason binding and HZ-134's field binding load the same way and
+    # carry the same risk, so every module is reloaded under the chdir, not just
+    # the step table.
     monkeypatch.chdir(tmp_path)
     importlib.reload(steps)
     importlib.reload(reasons)
+    importlib.reload(fields)
     assert len(steps.STEPS) == 11
     assert steps.PHASES == ["Plan", "Technical Plan", "Execute", "Deploy", "Review"]
     assert reasons.REASON_IDS
     assert reasons._SOURCE_PATH == (REPO_ROOT / "domain" / "reasons.json").resolve()
+    assert fields.FIELDS
+    assert fields._SOURCE_PATH == (REPO_ROOT / "domain" / "fields.json").resolve()

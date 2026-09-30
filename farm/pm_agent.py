@@ -16,6 +16,8 @@ from pathlib import Path
 
 import httpx
 
+from domain.py import fields, reasons
+
 from .agent_runner import AgentError, extract_json, run_agent
 from .config import (
     FARM_PORT,
@@ -28,10 +30,41 @@ from .config import (
 )
 from .rules import render_rules_section
 
-ROLE_PROMPT = (Path(__file__).parent / "roles" / "pm.md").read_text()
-# persona: specialist routing tag (HZ-4) — the server registry-validates it
-# and drops re-proposals over a set value, so the limit is just a size cap.
-PATCH_FIELDS = {"desc": 500, "metric": 400, "guardrails": 400, "persona": 40}
+# The fields a PM revision may patch, and how long each may be — DERIVED from
+# domain/fields.json (HZ-134), which is also where server/src/app.js's POST
+# /api/items body schema gets the same numbers. Until HZ-134 these were four
+# hand-typed integers (desc 500, metric 400, guardrails 400) that had drifted
+# below what the API accepted, so a PM revision could not write a guardrails
+# value a human could type into the create form. Keyed by work_item column,
+# which is what a patch payload uses; persona is a specialist routing tag (HZ-4)
+# the server registry-validates and drops over a set value, so its limit is just
+# a size cap.
+PATCH_FIELDS = fields.patch_limits(fields.FIELDS)
+
+# The placeholder farm/roles/pm.md carries in place of the numbers. Substituted
+# below so the prompt cannot state a budget validate() no longer enforces.
+FIELD_LIMITS_PLACEHOLDER = "{{FIELD_LIMITS}}"
+
+
+def render_role_prompt(source: str, limits: dict) -> str:
+    """The PM role prompt with its field-limit line filled in from PATCH_FIELDS.
+
+    Raises if the placeholder is absent rather than returning the text
+    unchanged. `str.replace` no-ops silently on a missing needle, so an edit to
+    pm.md that dropped the placeholder would leave the agent told nothing at all
+    about field limits — and a test asserting only "no {{ survives in the
+    output" would still pass. Both halves are checked: this raise, and the
+    rendered-output assertion in farm/tests/test_field_limits.py."""
+    if FIELD_LIMITS_PLACEHOLDER not in source:
+        raise RuntimeError(
+            f"farm/roles/pm.md no longer carries {FIELD_LIMITS_PLACEHOLDER} — "
+            "the PM agent would be given no field limits at all"
+        )
+    rendered = ", ".join(f"{column} <={limit} chars" for column, limit in limits.items())
+    return source.replace(FIELD_LIMITS_PLACEHOLDER, rendered)
+
+
+ROLE_PROMPT = render_role_prompt((Path(__file__).parent / "roles" / "pm.md").read_text(), PATCH_FIELDS)
 FARMD = f"http://127.0.0.1:{FARM_PORT}"
 
 # Write-side: a pathological-payload guard, not a working limit — the agent's
@@ -67,11 +100,17 @@ def notify_started(run_id) -> bool:
     return True
 
 
-# HZ-130: the reason an unusable task file is reported under. Already in the
-# server's AUTO_RETRY_REASONS (server/src/orchestrator.js), so the step is
-# auto-retried rather than paused for a human, and no server change is needed
-# to report one — see the test that reads that set back out of the server.
-UNUSABLE_TASK_REASON = "unreachable"
+# HZ-130: the reason an unusable task file is reported under. Declared retryable
+# in domain/reasons.json, so the step is auto-retried rather than paused for a
+# human, and no server change is needed to report one — see the test that reads
+# that flag back out of the declaration.
+#
+# Reached through the binding's constant rather than typed as a string. HZ-130
+# added this as a literal, which left farm/pm_agent.py holding the one reason
+# literal HZ-132 had just finished removing from the farm — and
+# server/test/domain-reason-literals.test.mjs failing. Same value, one
+# declaration: reasons.REASON raises KeyError on a typo, a literal does not.
+UNUSABLE_TASK_REASON = reasons.REASON["UNREACHABLE"]
 
 
 def report_failed_task(run_id: str, error: str) -> bool:

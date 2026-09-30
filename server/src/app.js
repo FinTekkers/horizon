@@ -25,6 +25,7 @@ import { googleAuth } from './googleAuth.js'
 import { isAllowedEmail } from './loginAllowlist.js'
 import { approvalSecretConfigured, approvalSecretOk, isAllowedApprover, normalizeJid } from './waApprovers.js'
 import { STEPS } from '../../domain/js/lifecycle.js'
+import { intakeFields } from '../../domain/js/fields.js'
 import { PERSONAS } from './personas.js'
 import * as definitions from './definitions.js'
 import * as runLogView from './runLogView.js'
@@ -171,6 +172,29 @@ store.onChange(broadcast)
 setInterval(() => {
   sseClients.forEach((res) => res.write(':ping\n\n'))
 }, 25_000).unref()
+
+// POST /api/items's body properties, DERIVED from domain/fields.json (HZ-134).
+// Before this, every length here was a literal that had drifted from the PM
+// agent's own cap for the same field — the API accepted a 2,000-char guardrails
+// a PM revision could only write 400 of. The JSON-Schema *shape* stays here on
+// purpose: a Fastify body schema is a transport artifact, and guardrail 5 keeps
+// transport out of domain/. Only the numbers cross the boundary.
+//
+// Exported so server/test/api-field-limits-derived.test.mjs can diff this
+// fragment against domain/fields.json read independently (success metric 2).
+// That test's other leg is behavioural — it posts at maxLength and maxLength+1
+// through the real route — because a structural diff alone could not tell you
+// whether the route is actually using this object.
+//
+// `required` and the `priority` enum stay literals below: neither is a length,
+// so neither belongs in a file about field limits. Recorded in domain/README.md
+// so the split is findable rather than rediscovered.
+export const ITEM_BODY_PROPERTIES = Object.fromEntries(
+  intakeFields().map((f) => [
+    f.name,
+    { type: 'string', ...(f.minLength === undefined ? {} : { minLength: f.minLength }), maxLength: f.maxLength },
+  ]),
+)
 
 export function buildApp({ logger = true } = {}) {
   const fastify = Fastify({ logger })
@@ -426,12 +450,8 @@ export function buildApp({ logger = true } = {}) {
           type: 'object',
           required: ['title', 'outcome', 'metric'],
           properties: {
-            title: { type: 'string', minLength: 3, maxLength: 200 },
-            outcome: { type: 'string', minLength: 10, maxLength: 4000 },
-            metric: { type: 'string', minLength: 5, maxLength: 2000 },
-            guardrails: { type: 'string', maxLength: 2000 },
+            ...ITEM_BODY_PROPERTIES,
             priority: { type: 'string', enum: ['Critical', 'High', 'Medium', 'Low'], default: 'Medium' },
-            repo: { type: 'string', maxLength: 300 },
           },
         },
       },
