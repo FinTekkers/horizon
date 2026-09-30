@@ -71,6 +71,12 @@ ask questions about items and their plan/review artifacts.
 - `[New Item] <title>` starts a short wizard (outcome, success metric,
   guardrails, priority, then create/edit/cancel) that ends with a link to
   the item in the web UI and, once GitHub is connected, its issue link.
+- Gate approval is also a **native poll** (HZ-142): every gate notification
+  carries ✅ Approve / ↩️ Send back, and a tap is resolved by the Node server
+  with no model anywhere on the path — the concierge process is not involved
+  at all. The numbered-reply flow below is unchanged and still works; whichever
+  decides the gate first wins, and the other is refused because the cursor has
+  moved. See `infra/host/DEPLOY.md` §2d.
 - Gate approval is WhatsApp's numbered-reply proxy for a radio button: when
   the concierge lists items AWAITING HUMAN APPROVAL it also offers a
   numbered choice, and a bare `1`-`9` reply approves that gate — resolved
@@ -90,6 +96,20 @@ Setup (Option A — the local [whatsapp-mcp](https://github.com/lharries/whatsap
 bridge; **pin the bridge commit you paired with** — its SQLite schema is
 unversioned, and `BridgeTransport` fails loudly with `SchemaMismatch` if it
 drifts):
+
+**Since HZ-142 the bridge is a FORK.** Gate approval from a WhatsApp poll
+needs `POST /api/send-poll` and a vote forwarder, neither of which upstream
+has. The patch lives in this repo at `infra/whatsapp-bridge/` — stdlib-only
+Go, tested by `npm test`, with the four additions to the fork's `main.go`
+written out in its README. Record **two** commits when you re-pin: the
+upstream one you forked from, and the fork's own. Upstream pin verified
+against: `lharries/whatsapp-mcp@7d6a06d`, `whatsmeow
+v0.0.0-20260730092514-662ad1dc6900` (see `infra/whatsapp-bridge/PROBE.md`).
+
+Running the unforked bridge is a supported, degraded state: every poll fails
+with a 404 and is retried, every text notification still arrives, and the
+free-text approval below still works. Set `WA_POLL_ENABLED=0` on the server
+to stop attaching polls entirely.
 
 1. Run the bridge's `whatsapp-bridge` Go process and pair via QR.
 2. Set the env (all read by farmd/the concierge at launch):
