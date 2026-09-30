@@ -286,6 +286,52 @@ def test_process_sets_reason_turn_cap_when_the_agent_exhausts_its_budget(monkeyp
     assert posted["json"]["reason"] == "turn_cap"
 
 
+def _orchestrator_auto_retry_reasons() -> set[str]:
+    """The reasons server/src/orchestrator.js actually auto-retries, read out
+    of its source. Read rather than duplicated: a copy here would agree with
+    itself forever while the real set drifted."""
+    import re
+    from pathlib import Path
+
+    source = (Path(__file__).resolve().parent.parent.parent / "server" / "src" / "orchestrator.js").read_text()
+    match = re.search(r"AUTO_RETRY_REASONS\s*=\s*new Set\(\[(.*?)\]\)", source, re.S)
+    assert match, "could not find AUTO_RETRY_REASONS in server/src/orchestrator.js"
+    return set(re.findall(r"['\"]([^'\"]+)['\"]", match.group(1)))
+
+
+def test_the_reason_an_exhausted_pm_step_emits_is_one_the_orchestrator_retries(monkeypatch):
+    """Metric 13, second half: 'the orchestrator treats it as retryable'.
+
+    Asserting reason == "turn_cap" (the test above) only proves pm_agent emits
+    a string it agrees with itself about. What makes an exhausted PM step
+    actually retry is that the emitted value is a member of orchestrator.js's
+    AUTO_RETRY_REASONS — a rename on either side of that seam would leave
+    every other test in this file green while PM steps silently went back to
+    pausing for a human, which is the exact failure this item exists to fix.
+    Guardrail 8 keeps this a farm-side test: it READS server source, and
+    changes nothing outside farm/."""
+    posted = capture_posted_result(monkeypatch)
+
+    def raising_run_agent(*a, **k):
+        raise AgentExhaustedError("pm run timed out", partial_text="not salvageable", session_id="sess-1")
+
+    monkeypatch.setattr(pm_agent, "run_agent", raising_run_agent)
+    process(make_task(), "acme")
+
+    retryable = _orchestrator_auto_retry_reasons()
+    assert "turn_cap" in retryable, f"orchestrator no longer auto-retries turn_cap — it retries {sorted(retryable)}"
+    assert posted["json"]["reason"] in retryable
+
+
+def test_the_orchestrator_retry_reason_probe_can_actually_fail():
+    """The cross-seam assertion above is only worth anything if its reader
+    can come back wrong — a regex that silently matched nothing would make it
+    vacuously true."""
+    reasons = _orchestrator_auto_retry_reasons()
+    assert reasons, "the AUTO_RETRY_REASONS probe returned an empty set — it is not reading the real source"
+    assert "definitely_not_a_real_reason" not in reasons
+
+
 def test_process_exhaustion_failure_payload_is_byte_identical_to_pre_hz124_shape(monkeypatch):
     """Guardrail 7: adding partial_text/session_id to AgentExhaustedError must
     not change the /steps/complete (here, /internal/steps/result) payload —

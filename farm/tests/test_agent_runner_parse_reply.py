@@ -61,6 +61,57 @@ def test_parse_agent_reply_retries_once_before_giving_up():
     assert calls[1]["prompt"].startswith("Your previous reply was invalid:")
 
 
+def test_the_lossless_retry_is_counted_like_every_other_rung_of_the_ladder(monkeypatch, tmp_path):
+    """Metric 15: the counter must record how many times EACH repair path
+    fires, and the lossless retry is the rung that costs a whole extra model
+    call — the one whose rate matters most. It was the only path
+    _record_repair() never counted, while both its own comment and
+    farm/scripts/repair_stats.py's docstring advertised "repair/retry/salvage/
+    handoff", so the totals silently under-reported the ladder's real cost."""
+    from farm import agent_runner
+
+    monkeypatch.setattr(agent_runner, "STATE_DIR", tmp_path)
+    calls = []
+    fake = sequenced_run_agent(
+        [{"result": '{"s":"he said "hi" to me"}'}, {"result": '{"s":"he said hi to me"}'}], calls
+    )
+
+    parse_agent_reply("do it", run_agent_fn=fake)
+
+    assert len(calls) == 2
+    assert '"path": "lossless_retry"' in (tmp_path / "repair-stats.ndjson").read_text()
+
+
+def test_the_lossless_retry_is_counted_even_when_the_retry_itself_fails(monkeypatch, tmp_path):
+    """Counted where it FIRES, not where it succeeds: a retry that comes back
+    just as unparseable is exactly the expensive case the totals must not
+    hide."""
+    from farm import agent_runner
+
+    monkeypatch.setattr(agent_runner, "STATE_DIR", tmp_path)
+    calls = []
+    fake = sequenced_run_agent([{"result": '{"s":"oops"'}, {"result": '{"s":"oops"'}], calls)
+
+    with pytest.raises(AgentError):
+        parse_agent_reply("do it", run_agent_fn=fake)
+
+    assert '"path": "lossless_retry"' in (tmp_path / "repair-stats.ndjson").read_text()
+
+
+def test_a_clean_reply_records_nothing_at_all(monkeypatch, tmp_path):
+    """The counter's negative case, mirroring the zero-note rule (guardrail
+    2): a reply that needed no repair must leave the ndjson untouched, or
+    every total the script prints is inflated by ordinary successful runs."""
+    from farm import agent_runner
+
+    monkeypatch.setattr(agent_runner, "STATE_DIR", tmp_path)
+    fake = sequenced_run_agent([{"result": '{"summary": "done"}'}], [])
+
+    parse_agent_reply("do it", run_agent_fn=fake)
+
+    assert not (tmp_path / "repair-stats.ndjson").exists()
+
+
 def test_parse_agent_reply_a_second_failure_still_raises_without_fabricating():
     """Metric 6: unrepairable input still raises — no fabricated content."""
     calls = []

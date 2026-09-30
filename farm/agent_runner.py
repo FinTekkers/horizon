@@ -197,6 +197,51 @@ def _first_balanced_object(s: str) -> str | None:
     return None
 
 
+_MAX_DISCARD_SCAN = 20
+
+
+def _discarded_objects_after_the_first(cleaned: str, candidate: str) -> int:
+    """How many FURTHER parseable JSON objects sit after the one
+    _first_balanced_object() took.
+
+    Taking the first of several objects (metric 3) is the one rung of the
+    ladder that throws away a whole object the model wrote — more of its
+    output than any trailing-comma or quote fix alters — and before this it
+    did so with no note at all. Guardrail: nothing that discards the model's
+    bytes may be silent, so the count is turned into a note by the caller.
+
+    Deliberately conservative about what counts as "an object": prose can
+    contain balanced braces (`use {braces} carefully`) that are not JSON, and
+    reporting those as discarded replies would be a false alarm on exactly the
+    prose-tolerant input this ladder exists to accept. Scanning stops at the
+    first balanced chunk that does not parse, and is capped at
+    _MAX_DISCARD_SCAN so a pathological reply can't spin here.
+    """
+    start = cleaned.find("{")
+    if start == -1:
+        return 0
+    remainder = cleaned[start + len(candidate) :]
+    count = 0
+    while count < _MAX_DISCARD_SCAN:
+        nxt = _first_balanced_object(remainder)
+        if nxt is None:
+            break
+        try:
+            json.loads(nxt, strict=False)
+        except json.JSONDecodeError:
+            break
+        count += 1
+        remainder = remainder[remainder.find("{") + len(nxt) :]
+    return count
+
+
+def _discard_note(count: int) -> list[str]:
+    if count <= 0:
+        return []
+    plural = "object" if count == 1 else "objects"
+    return [f"used only the first JSON object in the reply — discarded {count} further {plural} after it"]
+
+
 def _strip_trailing_commas(s: str) -> str:
     """`{"a":1,}` -> `{"a":1}` (metric 1). A deterministic byte-level fix —
     never chooses between two readings, so it needs no lossless-retry gate.
@@ -300,11 +345,23 @@ def _extract_json_with_notes(text: str) -> tuple[dict, list[str]]:
     if candidate is None:
         raise AgentError(f"no JSON object in agent reply: {text[:200]}")
 
+    # Disclosure for the one rung that drops a whole object rather than
+    # altering one (metric 3 takes the FIRST of several). Computed once here so
+    # it rides along whichever rung below ends up succeeding — but only
+    # COUNTED on a rung that actually returns. A reply whose first object
+    # never parses is a raise, not a repair, and counting a discard there
+    # would inflate the totals with drops that never took effect.
+    discarded = _discard_note(_discarded_objects_after_the_first(cleaned, candidate))
+
     # As-is (handles prose-wrapped-and-otherwise-valid, and first-of-two).
     try:
-        return json.loads(candidate, strict=False), []
+        parsed = json.loads(candidate, strict=False)
     except json.JSONDecodeError:
         pass
+    else:
+        for note in discarded:
+            _record_repair(note)
+        return parsed, discarded
 
     comma_fixed = _strip_trailing_commas(candidate)
     quote_fixed = _single_to_double_quotes(candidate)
@@ -328,9 +385,9 @@ def _extract_json_with_notes(text: str) -> tuple[dict, list[str]]:
             parsed = json.loads(variant_text, strict=False)
         except json.JSONDecodeError:
             continue
-        for note in notes:
+        for note in discarded + notes:
             _record_repair(note)
-        return parsed, notes
+        return parsed, discarded + notes
 
     # Nothing repaired it — raising here (never fabricating plausible
     # content) is the correct outcome for e.g. an unescaped inner quote,
@@ -717,6 +774,17 @@ def parse_agent_reply(
         # by construction, since no such heuristic repair exists above, this
         # is the ONLY recovery path for a genuinely ambiguous reply (e.g. an
         # unescaped inner quote).
+        #
+        # Counted like every other rung of the ladder (metric 15). It is the
+        # only rung that costs a whole extra model call, which makes its rate
+        # the most useful number the counter carries: a rising lossless_retry
+        # against a flat repair count is the signal that a deterministic fix
+        # is missing from _extract_json_with_notes() and replies are being
+        # re-asked for instead. Recorded where the retry FIRES, not where it
+        # succeeds, so a retry that itself exhausts or fails to parse is
+        # counted too — otherwise the expensive failures are the ones the
+        # totals hide.
+        _record_repair("lossless_retry")
         try:
             retry_reply = run_agent_fn(
                 f"Your previous reply was invalid: {exc}. Respond again with ONLY the JSON object, no other text.",

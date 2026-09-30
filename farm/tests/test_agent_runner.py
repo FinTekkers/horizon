@@ -64,6 +64,71 @@ def test_extract_json_returns_the_first_of_two_objects():
     assert extract_json(text) == {"s": "first"}
 
 
+def test_taking_the_first_of_two_objects_is_disclosed_not_silent():
+    """Guardrail 2 applied to the rung that discards the MOST of the model's
+    output: metric 3 requires returning the first object, and doing that
+    throws away a whole second object the model wrote. Returning it silently
+    is precisely the 'repair silently' failure this item is named after, so
+    the drop rides out as a note like every byte-altering fix."""
+    parsed, notes = _extract_json_with_notes('{"s":"first"} prose {"s":"second"}')
+    assert parsed == {"s": "first"}
+    assert len(notes) == 1
+    assert "discarded 1 further object" in notes[0]
+
+
+def test_the_discard_note_counts_every_object_it_dropped():
+    _parsed, notes = _extract_json_with_notes('{"a":1} {"b":2} {"c":3}')
+    assert "discarded 2 further objects" in notes[0]
+
+
+def test_prose_containing_balanced_braces_is_not_reported_as_a_discarded_object():
+    """False-alarm guard: prose can carry balanced braces that are not JSON.
+    Reporting `{braces}` as a discarded reply would put a scary, wrong note in
+    the artifact on exactly the prose-tolerant input the ladder must accept."""
+    parsed, notes = _extract_json_with_notes('{"s":"done"} then: use {braces} carefully')
+    assert parsed == {"s": "done"}
+    assert notes == []
+
+
+def test_a_single_prose_wrapped_object_still_reports_no_repair_at_all():
+    """The pre-HZ-124 regression (metric 4, prose half) must stay silent —
+    prose tolerance is not a repair and must not start producing notes."""
+    parsed, notes = _extract_json_with_notes('Here you go:\n{"summary": "done"}\nHope that helps!')
+    assert parsed == {"summary": "done"}
+    assert notes == []
+
+
+def test_a_discard_is_only_counted_when_the_parse_it_belongs_to_succeeds(monkeypatch, tmp_path):
+    """The counter must not log a drop that never took effect: if the first
+    object is unparseable, this is a raise, not a repair, and a
+    `discarded ...` line here would inflate the totals the script prints with
+    repairs that never happened."""
+    from farm import agent_runner
+
+    monkeypatch.setattr(agent_runner, "STATE_DIR", tmp_path)
+    with pytest.raises(AgentError):
+        _extract_json_with_notes('{"s":"he said "hi" to me"} {"b":2}')
+
+    assert not (tmp_path / "repair-stats.ndjson").exists()
+
+
+def test_a_discard_that_did_take_effect_is_counted(monkeypatch, tmp_path):
+    from farm import agent_runner
+
+    monkeypatch.setattr(agent_runner, "STATE_DIR", tmp_path)
+    _extract_json_with_notes('{"a":1} {"b":2}')
+
+    assert "discarded 1 further object" in (tmp_path / "repair-stats.ndjson").read_text()
+
+
+def test_the_discard_note_rides_along_with_a_byte_altering_repair():
+    """Both disclosures must survive together — the drop is reported even
+    when a later rung is what finally made the first object parse."""
+    _parsed, notes = _extract_json_with_notes('{"a":1,} prose {"b":2}')
+    assert "discarded 1 further object" in notes[0]
+    assert "stripped a trailing comma" in notes[1]
+
+
 def test_extract_json_unescaped_inner_quote_raises_on_first_attempt():
     """Metric 5, first half: this shape is genuinely ambiguous (there is no
     deterministic byte-level fix), so extract_json() alone must raise — the
