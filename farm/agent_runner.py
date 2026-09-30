@@ -9,12 +9,22 @@ only to run_agent(); none of them know or care which provider actually ran.
 
 import json
 import os
+from typing import Any, Callable
 
 from .config import FARM_PROVIDER, MAX_TURNS, STEP_TIMEOUT_S
 from .providers import claude, muse
 from .providers.base import AgentError, AgentExhaustedError
 
-__all__ = ["AgentError", "AgentExhaustedError", "assert_provider_auth", "run_agent", "extract_json"]
+__all__ = [
+    "AgentError",
+    "AgentExhaustedError",
+    "assert_provider_auth",
+    "run_agent",
+    "extract_json",
+    "parse_agent_reply",
+    "stamp_notes",
+    "stamp_notes_artifact",
+]
 
 _PROVIDERS = {"claude": claude, "muse": muse}
 
@@ -117,8 +127,67 @@ def run_agent(
     return result
 
 
+def _first_balanced_object(text: str) -> str | None:
+    """The first brace-balanced span starting at the first `{`, or None.
+
+    String-aware: a `{`/`}` inside a JSON string literal is content, not
+    structure, so `{"a": "}"}` must come back whole. Backslash escapes are
+    honoured, so a trailing `\\\\` before a quote does not swallow the quote.
+
+    One forward pass, no backtracking — a reply of ten thousand unclosed
+    braces returns None in linear time rather than exploring spans.
+    """
+    start = text.find("{")
+    if start == -1:
+        return None
+    depth = 0
+    in_string = False
+    escaped = False
+    for i in range(start, len(text)):
+        ch = text[i]
+        if in_string:
+            if escaped:
+                escaped = False
+            elif ch == "\\":
+                escaped = True
+            elif ch == '"':
+                in_string = False
+            continue
+        if ch == '"':
+            in_string = True
+        elif ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                return text[start : i + 1]
+    return None
+
+
 def extract_json(text: str) -> dict:
-    """Lift a JSON object out of a model reply (tolerates fences/prose)."""
+    """Lift a JSON object out of a model reply (tolerates fences/prose).
+
+    Three attempts, in this order — the order is load-bearing (HZ-156):
+
+    1. the whole cleaned text;
+    2. the widest `{`…`}` span, i.e. first brace to LAST brace;
+    3. the FIRST brace-balanced object.
+
+    Attempts 1 and 2 are exactly what this function did before attempt 3
+    existed, so every reply that parses today still parses by the same route
+    to the same value. Attempt 3 only ever sees input on which both of those
+    already failed — that is the precise boundary between the success metric
+    ("given `{"s":"first"} prose {"s":"second"}`, return the first object")
+    and the guardrail ("input that fails to parse today still fails"). A
+    reply carrying a small valid object BEFORE the real payload keeps failing
+    attempts 1 and 2 and, on attempt 3, returns that leading object — which
+    is why callers must keep the lossless retry: the retry, not the scanner,
+    is what recovers a reply whose real payload came second.
+
+    When attempt 3 also fails, attempt 2's error is re-raised, so the
+    exception a caller sees for an unparseable reply is unchanged in type and
+    message.
+    """
     cleaned = text.strip()
     if cleaned.startswith("```"):
         cleaned = cleaned.strip("`")
@@ -134,4 +203,116 @@ def extract_json(text: str) -> dict:
     start, end = cleaned.find("{"), cleaned.rfind("}")
     if start == -1 or end <= start:
         raise AgentError(f"no JSON object in agent reply: {text[:200]}")
-    return json.loads(cleaned[start : end + 1], strict=False)
+    try:
+        return json.loads(cleaned[start : end + 1], strict=False)
+    except json.JSONDecodeError:
+        first = _first_balanced_object(cleaned)
+        if first is None or first == cleaned[start : end + 1]:
+            raise
+    # strict=False here too, or a literal newline inside a string would make
+    # this path stricter than the two above it.
+    return json.loads(first, strict=False)
+
+
+# The retry prompt all three callers used before this one existed — byte for
+# byte, so converting them changed no prompt the model sees.
+RETRY_PROMPT = (
+    "Your previous reply was invalid: {exc}. Respond again with ONLY the JSON object, no other text."
+)
+
+
+def _notes_for(reply_text: str, parsed: Any) -> list[str]:
+    """Parser notes for one reply. Always empty in HZ-156, by design.
+
+    NOT dead code: this is the reporting channel the two follow-up items
+    (byte-altering repair, then truncation salvage) report through, and the
+    seam their plumbing is already proven against — a test monkeypatches this
+    function to inject a note and asserts it reaches the run's output line and
+    the step's artifact. Landing the channel empty is what keeps this item's
+    output byte-identical to before it.
+    """
+    return []
+
+
+def parse_agent_reply(
+    reply_text: str,
+    retry: Callable[[str], str] | None = None,
+    *,
+    validate: Callable[[Any], Any] | None = None,
+) -> tuple[Any, list[str]]:
+    """THE parser for a model's final JSON reply. Every caller above this
+    module uses it; nothing else calls extract_json() (enforced by
+    farm/tests/test_one_reply_parser.py).
+
+    Before HZ-156 pm_agent, step_agent and concierge_agent each kept their own
+    copy of this parse-then-retry-once path, and they had already drifted.
+
+    `retry` receives the fully formatted retry prompt and returns the model's
+    fresh reply text. Omit it (step_agent's implement step) and a first
+    failure propagates immediately with no retry.
+
+    `validate` is applied INSIDE the retry envelope. pm_agent and
+    concierge_agent both validated inside their retry try-block, so a reply
+    that parses but is missing a required field takes the lossless retry
+    today — passing the validator here is what preserves that. step_agent
+    passes none: its own summary check sits outside the retry and stays there.
+
+    Returns `(validate(parsed) if validate else parsed, notes)`.
+
+    A failure from the retry itself — a second parse failure, or an
+    AgentExhaustedError raised by run_agent inside the closure — propagates
+    untouched. AgentExhaustedError is a subclass of AgentError, so it must
+    never be mistaken for a parse failure and retried (or swallowed): the
+    orchestrator auto-retries a run only if it still carries that tag.
+    """
+
+    def _attempt(text: str) -> tuple[Any, list[str]]:
+        parsed = extract_json(text)
+        notes = _notes_for(text, parsed)
+        return (validate(parsed) if validate else parsed), notes
+
+    try:
+        return _attempt(reply_text)
+    except AgentExhaustedError:
+        raise
+    except (AgentError, json.JSONDecodeError) as exc:
+        if retry is None:
+            raise
+        prompt = RETRY_PROMPT.format(exc=exc)
+    # Deliberately OUTSIDE the except clause: nothing the retry raises may be
+    # caught by the handler above.
+    return _attempt(retry(prompt))
+
+
+def stamp_notes(summary: str, notes: list[str], limit: int) -> str:
+    """Append parser notes to a summary, keeping the result within `limit`.
+
+    Room is reserved for the notes rather than appending and re-slicing: both
+    callers hand in a summary they have already cut to exactly `limit`, so a
+    suffix followed by `[:limit]` would drop the note in the common case
+    instead of the rare one. The existing human-feedback stamp survives that
+    treatment only because it is a prefix.
+
+    An empty `notes` returns `summary` unchanged and untouched — with no notes
+    the payload is byte-identical to before this channel existed.
+    """
+    if not notes:
+        return summary
+    suffix = f" [{'; '.join(notes)}]"
+    if len(suffix) >= limit:
+        return suffix[:limit]  # pathological notes: the note wins, not the summary
+    return summary[: limit - len(suffix)] + suffix
+
+
+def stamp_notes_artifact(artifact: str, notes: list[str], limit: int) -> str:
+    """Same reserve-room rule as stamp_notes(), for a markdown artifact.
+
+    The artifact ceiling has the identical defect: an artifact already at
+    WRITE_ARTIFACT_SANITY_CEILING_CHARS would lose the section entirely.
+    """
+    if not notes:
+        return artifact
+    section = "\n\n## Parser notes\n" + "\n".join(f"- {note}" for note in notes)
+    if len(section) >= limit:
+        return section[:limit]
+    return artifact[: limit - len(section)] + section

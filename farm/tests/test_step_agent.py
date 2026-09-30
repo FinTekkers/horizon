@@ -1520,3 +1520,170 @@ def test_main_does_not_tag_a_reason_for_an_ordinary_failure(tmp_path, monkeypatc
 
     assert posted["json"]["ok"] is False
     assert "reason" not in posted["json"]
+
+
+# ---- HZ-156: the shared parser's notes channel, on every path ----
+# step_agent has five places a reply is parsed (implement, the code-review and
+# QA-review passes, deploy, and the generic planner tail). Surfacing notes on
+# only one of them would reintroduce exactly the per-caller drift the shared
+# parser exists to remove, so each path gets its own test.
+
+
+@pytest.fixture
+def injected_note(monkeypatch):
+    """Injects a parser note through the seam the later repair items report
+    through. The note names the parsed summary, so a test covering two passes
+    can tell which one produced it."""
+    from farm import agent_runner
+
+    def _notes_for(text, parsed):
+        label = parsed.get("summary") or parsed.get("verdict") or "?"
+        return [f"note<{label}>"]
+
+    monkeypatch.setattr(agent_runner, "_notes_for", _notes_for)
+    return _notes_for
+
+
+def test_a_note_reaches_the_generic_planner_path(injected_note):
+    result = execute(make_task(4, "Plan options & trade-offs (pros / cons)"))
+    assert "note<" in result["summary"]
+    assert "## Parser notes" in result["artifacts"]["artifact_md"]
+
+
+def test_a_note_reaches_the_implement_path(tmp_path, monkeypatch, injected_note):
+    ws, _origin = make_git_workspace(tmp_path)
+    monkeypatch.setattr(step_agent, "ensure_item_worktree", lambda repo, item_id: ws)
+
+    result = execute(make_task(11, "Specialist agent implements", repo="acme/demo"))
+
+    # The check note is still there — the parser note is appended after it, and
+    # finalize_branch's artifacts carry no artifact_md to stamp.
+    assert "no repo checks detected" in result["summary"]
+    assert "note<" in result["summary"]
+
+
+def test_a_note_reaches_both_review_passes(tmp_path, monkeypatch, injected_note):
+    ws, _origin = make_git_workspace(tmp_path)
+    git(ws, "push", "-u", "origin", "HEAD:horizon/t-1")
+    monkeypatch.setattr(step_agent, "ensure_item_worktree", lambda repo, item_id: ws)
+    code_json = {"summary": "code-pass", "verdict": "pass", "findings": [], "artifact_md": "## Code review"}
+    qa_json = {
+        "summary": "qa-pass",
+        "verdict": "pass",
+        "regression_tests_run": True,
+        "new_code_unit_coverage": True,
+        "e2e_test_present": True,
+        "findings": [],
+        "artifact_md": "## QA review",
+    }
+    monkeypatch.setattr(step_agent, "run_agent", two_pass_run_agent(code_json, qa_json, []))
+
+    result = execute(make_task(12, "Automated review (code + QA)", repo="acme/demo"))
+
+    # Neither pass is silently dropped: both notes reach both surfaces.
+    assert "note<code-pass>" in result["summary"] and "note<qa-pass>" in result["summary"]
+    artifact = result["artifacts"]["artifact_md"]
+    assert "- note<code-pass>" in artifact and "- note<qa-pass>" in artifact
+    assert result["artifacts"]["verdict"]["code_review"]["verdict"] == "pass"
+
+
+def test_a_note_reaches_the_deploy_path(monkeypatch, injected_note):
+    monkeypatch.setattr(
+        step_agent,
+        "run_agent",
+        devops_run_agent(
+            {
+                "summary": "verified the deploy",
+                "url": "https://shoreward.ai/horizon/",
+                "expected_text": "Horizon",
+                "artifact_md": "## Deploy target\nHorizon",
+            }
+        ),
+    )
+    monkeypatch.setattr(step_agent, "run_smoke_check", lambda url, text: ("pass", "SMOKE_RESULT=pass"))
+
+    result = execute(make_task(14, "Deploy the changes", repo="acme/demo"))
+
+    assert "SMOKE_RESULT=pass" in result["summary"]  # the machine verdict still leads
+    assert "note<verified the deploy>" in result["summary"]
+    assert "- note<verified the deploy>" in result["artifacts"]["artifact_md"]
+
+
+def test_a_note_survives_a_max_length_summary_and_artifact(monkeypatch, injected_note):
+    """Appending a suffix and re-slicing to 600 would drop the note whenever the
+    summary is already at its cap — which is the common case, not an edge one."""
+    long_reply = json.dumps({"summary": "s" * 900, "artifact_md": "a" * 50})
+    monkeypatch.setattr(step_agent, "run_agent", lambda prompt, **kw: {"result": long_reply})
+
+    result = execute(make_task(4, "Plan options & trade-offs (pros / cons)"))
+
+    assert len(result["summary"]) == 600
+    assert "note<" in result["summary"]
+
+
+def test_with_no_notes_the_result_is_byte_identical(monkeypatch):
+    """The 'behaviour otherwise unchanged' proof: _notes_for returns [] in this
+    item, so the whole result dict is what it was before the channel existed."""
+    reply = json.dumps({"summary": "did the step", "artifact_md": "# out"})
+    monkeypatch.setattr(step_agent, "run_agent", lambda prompt, **kw: {"result": reply})
+
+    result = execute(make_task(4, "Plan options & trade-offs (pros / cons)"))
+
+    assert result == {"summary": "did the step", "artifacts": {"artifact_md": "# out"}}
+
+
+# ---- an exhaustion raised BY the retry keeps its turn_cap tag ----
+# AgentExhaustedError subclasses AgentError, so a handler broad enough to catch
+# a parse failure around the retry call would swallow it — and the orchestrator
+# only auto-retries a run that still carries the tag.
+
+
+def test_an_exhaustion_inside_the_retry_propagates_out_of_execute(monkeypatch):
+    calls = []
+
+    def _fake(prompt, **kwargs):
+        calls.append(prompt)
+        if len(calls) == 1:
+            return {"result": "plain prose, not json", "session_id": "sess-1"}
+        raise AgentExhaustedError("claude reported an error result [error_max_turns]")
+
+    monkeypatch.setattr(step_agent, "run_agent", _fake)
+
+    with pytest.raises(AgentExhaustedError):
+        execute(make_task(7, "Architecture review"))
+    assert len(calls) == 2  # the retry really was attempted
+
+
+def test_an_exhaustion_inside_the_retry_is_reported_with_reason_turn_cap(tmp_path, monkeypatch):
+    """The same case through main(), which is where the tag actually reaches the
+    wire — the mirror of pm_agent's new test."""
+    task = make_task(7, "Architecture review")
+    task["run_id"] = 99
+    task_file = tmp_path / "task.json"
+    task_file.write_text(json.dumps(task))
+    calls = []
+
+    def _fake(prompt, **kwargs):
+        calls.append(prompt)
+        if len(calls) == 1:
+            return {"result": "plain prose, not json", "session_id": "sess-1"}
+        raise AgentExhaustedError("ran out of turns")
+
+    monkeypatch.setattr(step_agent, "run_agent", _fake)
+    monkeypatch.setattr(sys, "argv", ["step_agent", "--task", str(task_file)])
+    posted = {}
+
+    def fake_post(url, json=None, timeout=None):
+        posted["json"] = json
+
+        class _Resp:
+            pass
+
+        return _Resp()
+
+    monkeypatch.setattr(step_agent.httpx, "post", fake_post)
+
+    step_agent.main()
+
+    assert posted["json"]["ok"] is False
+    assert posted["json"]["reason"] == "turn_cap"
