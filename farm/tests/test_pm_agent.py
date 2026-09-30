@@ -20,9 +20,30 @@ import pytest
 
 from farm import pm_agent
 from farm.config import PM_MALFORMED_GRACE_S
-from farm.pm_agent import MAX_PROMPT_ARTIFACT_CHARS, _mark_truncated, build_prompt, notify_started, validate
+from farm.pm_agent import (
+    MAX_PROMPT_ARTIFACT_CHARS,
+    PATCH_FIELDS,
+    _mark_truncated,
+    build_prompt,
+    notify_started,
+    validate,
+)
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
+
+# Derived, never typed (HZ-134): PATCH_FIELDS comes from domain/fields.json now,
+# so a test that built its oversized input from a literal 400 would go VACUOUS
+# the moment the declared limit rose past it — the input would simply fit, the
+# marked branch would never run, and the test would stay green while proving
+# nothing.
+GUARDRAILS_LIMIT = PATCH_FIELDS["guardrails"]
+PERSONA_LIMIT = PATCH_FIELDS["persona"]
+
+
+def _over_by_words(limit: int) -> str:
+    """A space-delimited value comfortably past `limit`, so _mark_truncated has a
+    word boundary to cut at whatever the declared limit is."""
+    return ("word " * (limit // 5 + 20)).strip()
 
 
 def make_task(rules=None, feedback=None):
@@ -103,27 +124,63 @@ def test_validate_keeps_a_large_artifact_in_full():
 
 
 # ---- marked fallback for over-budget patch fields (HZ-114) ----
-# role/pm.md instructs the PM agent to stay within desc<=500/metric<=400/
-# guardrails<=400, but an instruction is not enforcement (per this item's
-# guardrails) — validate() must mark, not silently shorten, a reply that
-# ignores the instruction.
+# farm/roles/pm.md instructs the PM agent to stay inside each field's limit, but
+# an instruction is not enforcement (per HZ-114's guardrails) — validate() must
+# mark, not silently shorten, a reply that ignores the instruction. Since HZ-134
+# the limit it states and the limit validate() applies are the same number,
+# rendered into the prompt from PATCH_FIELDS.
 
 
-def test_validate_marks_a_guardrails_patch_over_400_chars_instead_of_silently_shortening():
-    over = ("word " * 100).strip()  # far over 400 chars
-    assert len(over) > 400
+def test_validate_marks_a_guardrails_patch_over_the_limit_instead_of_silently_shortening():
+    over = _over_by_words(GUARDRAILS_LIMIT)
+    assert len(over) > GUARDRAILS_LIMIT
     _summary, patch, _artifact = validate({"summary": "did it", "patch": {"guardrails": over}})
-    assert len(patch["guardrails"]) > 400  # the marker is appended, not squeezed inside the budget
+    # The marker is appended AFTER the cut, so the result runs past the budget it
+    # reports on — deliberate, and pinned in test_field_limits.py.
+    assert len(patch["guardrails"]) > GUARDRAILS_LIMIT
     assert "chars omitted" in patch["guardrails"]
     assert "do not infer the field is complete" in patch["guardrails"]
 
 
 def test_validate_leaves_a_within_budget_guardrails_patch_untouched():
-    within = ("word " * 50).strip()
-    assert len(within) <= 400
+    within = ("word " * ((GUARDRAILS_LIMIT // 5) - 2)).strip()
+    assert len(within) <= GUARDRAILS_LIMIT
     _summary, patch, _artifact = validate({"summary": "did it", "patch": {"guardrails": within}})
     assert patch["guardrails"] == within
     assert "chars omitted" not in patch["guardrails"]
+
+
+# ---- HZ-134 metric 4: a PM revision can write what the API accepts ----
+# The metric names 1,999 chars, so that exact number is typed here on purpose.
+# The boundary either side of it is derived, because "1,999 fits" only proves the
+# cap is ABOVE 1,999 — the trio is what proves the cap IS the declared one.
+
+
+def test_validate_writes_a_1999_char_guardrails_revision_byte_for_byte():
+    revision = "x" * 1999
+    _summary, patch, _artifact = validate({"summary": "did it", "patch": {"guardrails": revision}})
+    assert patch["guardrails"] == revision
+    assert "chars omitted" not in patch["guardrails"]
+
+
+def test_validate_boundary_trio_around_the_declared_guardrails_limit():
+    # Space-delimited so _mark_truncated has a boundary to cut at; a single
+    # run-on token is a separate, deliberately unmarked case (see below).
+    def value(length):
+        text = ("word " * (length // 5 + 1))[:length]
+        return text[:-1] + "z" if text.endswith(" ") else text
+
+    for length in (GUARDRAILS_LIMIT - 1, GUARDRAILS_LIMIT):
+        under = value(length)
+        assert len(under) == length
+        _summary, patch, _artifact = validate({"summary": "did it", "patch": {"guardrails": under}})
+        assert patch["guardrails"] == under, f"a {length}-char revision was not written byte-for-byte"
+        assert "chars omitted" not in patch["guardrails"]
+
+    over = value(GUARDRAILS_LIMIT + 1)
+    _summary, patch, _artifact = validate({"summary": "did it", "patch": {"guardrails": over}})
+    assert patch["guardrails"] != over, "one char over the limit was let through unmarked"
+    assert "chars omitted" in patch["guardrails"]
 
 
 def test_mark_truncated_boundary_exactly_at_limit_is_untouched():
@@ -176,9 +233,11 @@ def test_validate_persona_stays_hard_capped_with_no_marker():
     # persona is a registry-validated routing enum, not prose a human/agent
     # reads — the server drops anything that isn't an exact match anyway, so
     # marking it would just decorate a value that's discarded either way.
-    over = "x" * 100
+    # The cap is DERIVED (HZ-134). A literal 40 here would let this documented
+    # exception go vacuous the moment the declared persona limit changed.
+    over = "x" * (PERSONA_LIMIT * 2)
     _summary, patch, _artifact = validate({"summary": "did it", "patch": {"persona": over}})
-    assert patch["persona"] == over[:40]
+    assert patch["persona"] == over[:PERSONA_LIMIT]
     assert "chars omitted" not in patch["persona"]
 
 
@@ -701,19 +760,20 @@ def test_once_mode_keeps_polling_on_a_non_terminal_outcome(monkeypatch, outcome,
 
 
 def test_the_reported_reason_is_still_auto_retryable_server_side():
-    """The report is only useful if the server auto-retries it; an edit to
-    the reason's retryability would otherwise silently turn a corrupt task
-    file into a human-pause. Since HZ-132 the server's AUTO_RETRY_REASONS is
-    derived from domain/reasons.json (server/src/orchestrator.js imports it
-    from domain/js/reasons.js), so the domain binding is the one place to
-    read it from."""
-    from domain.py import reasons
+    """The report is only useful if the server auto-retries it; flipping the
+    reason's `retryable` flag would otherwise silently turn a corrupt task file
+    into a human-pause.
 
-    assert reasons.is_retryable(pm_agent.UNUSABLE_TASK_REASON)
-    src = (REPO_ROOT / "server" / "src" / "orchestrator.js").read_text()
-    assert "import { AUTO_RETRY_REASONS" in src and "domain/js/reasons.js" in src, (
-        "the server no longer takes AUTO_RETRY_REASONS from domain/ — re-point this test"
-    )
+    Read out of the ONE declaration rather than assumed. This used to regex
+    `AUTO_RETRY_REASONS = new Set([...])` out of server/src/orchestrator.js; HZ-132
+    moved that set into domain/reasons.json and derived it, so the regex stopped
+    matching and the assertion stopped running — it was failing outright, not
+    passing vacuously. Repointed at the declaration, which is where a future edit
+    would actually be made."""
+    source = json.loads((REPO_ROOT / "domain" / "reasons.json").read_text())
+    retryable = {reason["id"] for reason in source["reasons"] if reason["retryable"]}
+    assert retryable, "the reason vocabulary declares nothing retryable — this check would be vacuous"
+    assert pm_agent.UNUSABLE_TASK_REASON in retryable
 
 
 def test_the_malformed_grace_stays_well_under_the_servers_queue_timeout():

@@ -1,0 +1,32 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$comment": "HZ-134: the contract for domain/fields.json. Validated by domain/validate.mjs — the same dependency-free Draft-07 subset validator steps.schema.json and reasons.schema.json use, so only the keywords listed in its KEYWORDS set are honoured. Rules the subset cannot express (unique names, unique columns, minLength strictly below maxLength, at least one intake field and at least one agent-revisable field) are asserted at LOAD time by the bindings themselves — see assertFieldsShape() in domain/js/fields.js and _validate_source() in domain/py/fields.py, which domain/fixtures/fields-cases.json drives from both sides so the two cannot drift.",
+  "title": "Horizon work-item field limits",
+  "type": "object",
+  "required": ["fields"],
+  "additionalProperties": false,
+  "properties": {
+    "fields": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": { "$ref": "#/definitions/field" }
+    }
+  },
+  "definitions": {
+    "field": {
+      "$comment": "`name` is the field's name on the API (POST /api/items body). `column` is its work_item column, which is also the key a PM patch uses — the two differ for exactly one field today (outcome/desc) and that mapping lives here and nowhere else.",
+      "type": "object",
+      "required": ["name", "column", "maxLength", "settableAtIntake", "agentRevisable"],
+      "additionalProperties": false,
+      "properties": {
+        "name": { "type": "string", "minLength": 1 },
+        "column": { "type": "string", "minLength": 1 },
+        "minLength": { "type": "integer", "minimum": 1 },
+        "maxLength": { "type": "integer", "minimum": 1 },
+        "settableAtIntake": { "type": "boolean" },
+        "agentRevisable": { "type": "boolean" }
+      }
+    }
+  }
+}

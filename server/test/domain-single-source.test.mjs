@@ -100,3 +100,23 @@ test('exactly one reasons.json exists, and it is domain/reasons.json', () => {
   const found = relPaths.filter((p) => path.basename(p) === 'reasons.json')
   assert.deepEqual(found, ['domain/reasons.json'])
 })
+
+// HZ-134: the work-item field limits are the THIRD thing domain/ owns, added
+// under the same rule — one JSON, one schema, one hand-written binding per
+// language, plus the cross-language fixture both suites run.
+test('domain/ also holds the work-item field limits: source, schema, both bindings and its fixture', () => {
+  for (const expected of [
+    'domain/fields.json',
+    'domain/fields.schema.json',
+    'domain/js/fields.js',
+    'domain/py/fields.py',
+    'domain/fixtures/fields-cases.json',
+  ]) {
+    assert.ok(relPaths.includes(expected), `${expected} is missing`)
+  }
+})
+
+test('exactly one fields.json exists, and it is domain/fields.json', () => {
+  const found = relPaths.filter((p) => path.basename(p) === 'fields.json')
+  assert.deepEqual(found, ['domain/fields.json'])
+})

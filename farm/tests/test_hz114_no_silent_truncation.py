@@ -15,7 +15,7 @@ The JS-side sites (server/src/store.js, server/src/definitions.js) have the
 equivalent checklist in server/test/hz114-no-silent-truncation.test.mjs.
 """
 
-from farm.pm_agent import validate
+from farm.pm_agent import PATCH_FIELDS, validate
 from farm.rules import MAX_PROMPT_RULES_CHARS, render_rules_section
 from farm.step_agent import build_prompt as step_agent_build_prompt
 
@@ -69,10 +69,20 @@ def _site_step_agent_build_prompt_oversized_rules():
 
 def _site_pm_agent_validate_guardrails_patch():
     """Site 3: farm/pm_agent.py validate() — the PM-revision guardrails
-    patch named directly in the outcome. No real boundary forces this to
-    500/400 chars; when the agent ignores the prompt-level budget, the field
-    must be marked, not silently shortened."""
-    over = ("word " * 200).strip()  # far over the 400-char guardrails budget
+    patch named directly in the outcome. No real boundary forces this to any
+    particular length; when the agent ignores the prompt-level budget, the
+    field must be marked, not silently shortened.
+
+    The oversized input is DERIVED from the declared limit (HZ-134). It used to
+    be a fixed 999 chars against a 400-char budget. HZ-134 raised that budget to
+    the API's own limit, so a fixed input would now simply FIT — this check would
+    return True down the `fits` branch and the site would stop exercising the
+    marked path at all, staying green while proving nothing. That silent-vacuum
+    risk is the one this whole file exists to prevent, so the input follows the
+    limit rather than a snapshot of it."""
+    limit = PATCH_FIELDS["guardrails"]
+    over = ("word " * (limit // 5 + 20)).strip()  # always past the declared budget
+    assert len(over) > limit, "the oversized input must actually exceed the limit"
     _summary, patch, _artifact = validate({"summary": "did it", "patch": {"guardrails": over}})
     result = patch.get("guardrails", "")
     fits = result == over

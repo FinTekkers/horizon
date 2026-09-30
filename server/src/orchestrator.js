@@ -23,6 +23,7 @@ import {
   requiredStepIndex,
 } from '../../domain/js/lifecycle.js'
 import { AUTO_RETRY_REASONS, REASON } from '../../domain/js/reasons.js'
+import { patchLimits } from '../../domain/js/fields.js'
 import {
   getItem,
   addEvent,
@@ -863,7 +864,17 @@ export function markFarmRunStarted(runId) {
   return { ok: true, active: true }
 }
 
-const FARM_PATCH_FIELDS = ['desc', 'metric', 'guardrails', 'persona']
+// Which work_item columns an agent may patch — DERIVED from domain/fields.json
+// (HZ-134), the same document farm/pm_agent.py builds its PATCH_FIELDS from, so
+// the two sides of the wire cannot disagree about which fields exist. Only the
+// key list is needed here: the limits themselves are enforced agent-side, at the
+// point the over-long value is produced, where a marker can still be attached.
+const FARM_PATCH_FIELDS = Object.keys(patchLimits())
+// Display copy, deliberately NOT in domain/ (guardrail 5): these are the names a
+// human reads in the GitHub step comment, not part of the field model. A
+// patchable field missing from this map is written to the database but silently
+// omitted from the comment, so domain-fields-consumers.test.mjs drives
+// stepCommentBody with every patchable column set and asserts each one renders.
 const PATCH_FIELD_LABELS = { desc: 'Outcome', metric: 'Success metric', guardrails: 'Guardrails', persona: 'Specialist persona' }
 
 // Exported for tests: the comment body is the human-readable record, so its

@@ -17,6 +17,8 @@ import argparse
 import sqlite3
 from pathlib import Path
 
+from domain.py import fields
+
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 DEFAULT_DB_PATH = REPO_ROOT / "server" / "data" / "horizon.db"
 
@@ -31,28 +33,38 @@ CAPS = [
         "server/src/store.js parseIssueBody (removed by this item)",
         "work_item",
         "desc",
+        # A HISTORICAL number, deliberately literal: this cap does not exist
+        # anywhere in the codebase any more, so it is a record of what was
+        # removed rather than a second declaration of a live limit. Every cap
+        # below that IS still enforced is read from domain/fields.json instead.
         500,
         "This item deleted this cap — it never defended a real boundary. "
-        "Counted here to show how often the deleted cap would have fired.",
+        "Counted here to show how often the deleted cap would have fired. The "
+        "500 is hardcoded because the cap no longer exists to derive from; the "
+        "live desc limit is domain/fields.json's `outcome` entry.",
     ),
     (
         "work_item.metric (PM patch-revision budget)",
-        "farm/pm_agent.py PATCH_FIELDS['metric']",
+        "domain/fields.json -> farm/pm_agent.py PATCH_FIELDS['metric']",
         "work_item",
         "metric",
-        400,
-        "Enforced only when a PM-agent revision patches this field, not at "
-        "original ingest — a current value at the cap suggests a PM "
-        "revision hit the marked-fallback path in farm/pm_agent.py validate().",
+        fields.BY_COLUMN["metric"]["maxLength"],
+        "Enforced when a PM-agent revision patches this field, and — since "
+        "HZ-134 declared each field's limit once in domain/fields.json — at the "
+        "same length POST /api/items accepts at ingest. So a value at the cap "
+        "no longer implies a PM revision: it could equally be a human who "
+        "typed exactly that much. A PM revision that ran over is still "
+        "distinguishable by the marker farm/pm_agent.py validate() appends.",
     ),
     (
         "work_item.guardrails (PM patch-revision budget)",
-        "farm/pm_agent.py PATCH_FIELDS['guardrails']",
+        "domain/fields.json -> farm/pm_agent.py PATCH_FIELDS['guardrails']",
         "work_item",
         "guardrails",
-        400,
+        fields.BY_COLUMN["guardrails"]["maxLength"],
         "Same mechanism as metric above — this is the exact field HZ-114's "
-        "outcome names for the PM-revision bug.",
+        "outcome names for the PM-revision bug, and the one HZ-134's metric 4 "
+        "proves a PM revision can now fill to the API's own limit.",
     ),
     (
         "step_run.output (agent summary)",

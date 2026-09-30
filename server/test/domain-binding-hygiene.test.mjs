@@ -26,6 +26,7 @@ import path from 'node:path'
 
 import * as binding from '../../domain/js/lifecycle.js'
 import * as reasonBinding from '../../domain/js/reasons.js'
+import * as fieldBinding from '../../domain/js/fields.js'
 import { REPO_ROOT, stripComments } from './helpers/repoFiles.mjs'
 
 const jsSource = readFileSync(path.join(REPO_ROOT, 'domain/js/lifecycle.js'), 'utf8')
@@ -43,6 +44,28 @@ const reasonsJsSource = readFileSync(path.join(REPO_ROOT, 'domain/js/reasons.js'
 const reasonsJsCode = stripComments(reasonsJsSource)
 const reasonsPySource = readFileSync(path.join(REPO_ROOT, 'domain/py/reasons.py'), 'utf8')
 const reasonsJson = readFileSync(path.join(REPO_ROOT, 'domain/reasons.json'), 'utf8')
+
+// HZ-134 added a THIRD source/binding pair, under the same rules again. The
+// no-runtime-I/O half is not strictly load-bearing for this one — no UI module
+// imports it — but holding it to the same bar is what stops the next binding
+// being the one that escapes the guardrail.
+const fieldsJsSource = readFileSync(path.join(REPO_ROOT, 'domain/js/fields.js'), 'utf8')
+const fieldsJsCode = stripComments(fieldsJsSource)
+const fieldsPySource = readFileSync(path.join(REPO_ROOT, 'domain/py/fields.py'), 'utf8')
+const fieldsJson = readFileSync(path.join(REPO_ROOT, 'domain/fields.json'), 'utf8')
+
+// stripComments() handles `#` but not Python's triple-quoted docstrings, and the
+// no-inlined-limit scan below runs over CODE. domain/py/fields.py's docstrings
+// name the fields they are about and describe the drift the file removed — that
+// is provenance, not a declaration, and it should not have to be reworded to
+// satisfy a scanner. (The JS binding's header is a `//` comment, so stripComments
+// already gives it the same treatment.) Newlines are kept so the replacement
+// cannot join two lines into a false match.
+function stripPythonDocstrings(text) {
+  return text.replace(/"""[\s\S]*?"""/g, (m) => m.replace(/[^\n]/g, ' '))
+}
+
+const fieldsPyCode = stripPythonDocstrings(stripComments(fieldsPySource))
 
 // ---- guardrail 4: no runtime fetch, no filesystem read ----
 
@@ -76,6 +99,45 @@ test('the JS binding reads its data from domain/steps.json with one static impor
 test('the JS reason binding reads its data from domain/reasons.json with one static import', () => {
   assert.match(reasonsJsCode, /^import data from '\.\.\/reasons\.json' with \{ type: 'json' \}$/m)
   assert.ok(reasonsJsCode.includes('export const REASONS'), 'the hygiene scan is not reading the reason binding at all')
+})
+
+test('the JS field binding does no runtime I/O either', () => {
+  for (const forbidden of [/\bfetch\s*\(/, /readFileSync/, /readFile\b/, /import\s*\(/, /require\s*\(/, /XMLHttpRequest/]) {
+    assert.ok(!forbidden.test(fieldsJsCode), `domain/js/fields.js matches ${forbidden}`)
+  }
+})
+
+test('the JS field binding reads its data from domain/fields.json with one static import', () => {
+  assert.match(fieldsJsCode, /^import data from '\.\.\/fields\.json' with \{ type: 'json' \}$/m)
+  assert.ok(fieldsJsCode.includes('export const FIELDS'), 'the hygiene scan is not reading the field binding at all')
+})
+
+// The whole point of HZ-134: the numbers live in ONE place. A limit typed into
+// either binding would be the second copy this item removed — and it is the one
+// regression a data-only parity test could not see, because both bindings would
+// simply agree on the wrong thing if the copy were made in both.
+test('neither field binding inlines a limit or a field name — every field, both files', () => {
+  assert.ok(fieldBinding.FIELDS.length > 0, 'sanity: the JS field binding exports an empty table')
+  // Positive controls for the two strippers: each really is still reading the
+  // binding's code, not an emptied string.
+  assert.ok(fieldsJsCode.includes('export function patchLimits'))
+  assert.ok(fieldsPyCode.includes('def patch_limits'))
+  for (const field of fieldBinding.FIELDS) {
+    for (const [rel, code] of [
+      ['domain/js/fields.js', fieldsJsCode],
+      ['domain/py/fields.py', fieldsPyCode],
+    ]) {
+      assert.ok(!new RegExp(`\\b${field.maxLength}\\b`).test(code), `limit ${field.maxLength} is inlined in ${rel}`)
+      assert.ok(!new RegExp(`\\b${field.name}\\b`).test(code), `field name "${field.name}" is inlined in ${rel}`)
+      if (field.column !== field.name) {
+        assert.ok(!new RegExp(`\\b${field.column}\\b`).test(code), `column "${field.column}" is inlined in ${rel}`)
+      }
+    }
+    // Positive controls: the names and the numbers DO exist, in fields.json — so
+    // this is not passing because FIELDS is empty or the values are blank.
+    assert.ok(fieldsJson.includes(field.name))
+    assert.ok(fieldsJson.includes(String(field.maxLength)))
+  }
 })
 
 // The ONE place a label may legitimately appear in the JS binding: as the
@@ -123,6 +185,8 @@ test('every binding is real hand-written source — no placeholder, no GENERATED
     ['domain/py/steps.py', pySource],
     ['domain/js/reasons.js', reasonsJsSource],
     ['domain/py/reasons.py', reasonsPySource],
+    ['domain/js/fields.js', fieldsJsSource],
+    ['domain/py/fields.py', fieldsPySource],
   ]) {
     assert.ok(!src.includes('@@'), `${rel} still carries an @@PLACEHOLDER@@`)
     assert.doesNotMatch(src, /GENERATED/, `${rel} still carries the "GENERATED — do not edit" banner`)
@@ -184,6 +248,57 @@ test('domain/reasons.json declares no copy, colour or theme token at any depth',
     presentationOffendersIn('{"reasons":[{"id":"x","retryable":true,"label":"a banner title"}]}', THEME_OR_COPY_KEY),
     ['.reasons[0].label'],
   )
+})
+
+// domain/fields.json is held to the WIDER bar, the one reasons.json gets. The
+// temptation here is the same shape: a `label` sitting beside `maxLength`
+// ("Success metric") reads as harmless data and would quietly move
+// orchestrator.js's PATCH_FIELD_LABELS into domain/. `name` and `column` are
+// identity — the keys every lookup and every UPDATE resolves by — not strings
+// shown to a human, and neither is in COPY_KEY.
+test('domain/fields.json declares no copy, colour or theme token at any depth', () => {
+  assert.deepEqual(presentationOffendersIn(fieldsJson, THEME_OR_COPY_KEY), [])
+  // Positive control: the walk reaches the field entries, and the detector really
+  // does fire on the key a well-meaning edit would add.
+  assert.ok(JSON.parse(fieldsJson).fields.length > 0)
+  assert.deepEqual(
+    presentationOffendersIn('{"fields":[{"name":"x","maxLength":9,"label":"Success metric"}]}', THEME_OR_COPY_KEY),
+    ['.fields[0].label'],
+  )
+})
+
+test('the JS field binding exports no presentation token and no display copy', () => {
+  for (const forbidden of ['PATCH_FIELD_LABELS', 'LABELS', 'FIELD_LABELS', 'AGENTS', 'PRIORITY_COLORS', 'priorityColor']) {
+    assert.equal(fieldBinding[forbidden], undefined, `domain/js/fields.js exports ${forbidden} — presentation stays out of domain/`)
+  }
+})
+
+// ---- shape pin: BOTH field bindings ship the AUTHORED table ----
+// Like the reason vocabulary and unlike the step table, there is no projection
+// here in either direction: the length the API enforces and the length a PM
+// revision is held to are the same number, which is the whole point.
+
+const pythonFields = JSON.parse(
+  execFileSync('python3', ['-c', 'import json; from domain.py import fields; print(json.dumps(fields.FIELDS))'], {
+    cwd: REPO_ROOT,
+    encoding: 'utf8',
+  }),
+)
+
+test('SHAPE PIN (fields): both bindings expose the authored entries, with exactly the authored keys', () => {
+  const authored = JSON.parse(fieldsJson).fields
+  assert.ok(authored.length > 0)
+  const REQUIRED_KEYS = ['agentRevisable', 'column', 'maxLength', 'name', 'settableAtIntake']
+  for (const table of [fieldBinding.FIELDS, pythonFields]) {
+    assert.deepEqual(table, authored, 'a field binding reshapes the authored table instead of exposing it')
+    for (const entry of table) {
+      // minLength is OPTIONAL and must stay ABSENT rather than null where a field
+      // declares none — a null would read as a limit of zero at a call site.
+      const expected = entry.minLength === undefined ? REQUIRED_KEYS : [...REQUIRED_KEYS, 'minLength'].sort()
+      assert.deepEqual(Object.keys(entry).sort(), expected, `field "${entry.name}" has the wrong key set`)
+    }
+  }
+  assert.ok(authored.some((f) => f.minLength === undefined), 'every field declares a minLength — the optional case is untested')
 })
 
 // ---- shape pin: the JS binding ships the AUTHORED shape ----
