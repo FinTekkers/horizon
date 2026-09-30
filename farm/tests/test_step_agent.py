@@ -11,8 +11,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import pytest
 
-from farm import step_agent
-from farm.agent_runner import AgentError, AgentExhaustedError
+from farm import agent_runner, step_agent
+from farm.agent_runner import AgentError, AgentExhaustedError, read_and_clear_handoff_note
 from farm.personas import PERSONA_DIR, PERSONAS
 from farm.step_agent import (
     STEP_CONFIG,
@@ -1473,3 +1473,147 @@ def test_main_does_not_tag_a_reason_for_an_ordinary_failure(tmp_path, monkeypatc
 
     assert posted["json"]["ok"] is False
     assert "reason" not in posted["json"]
+
+
+# ---- HZ-124: shared parse_agent_reply, repair-note propagation, handoff ----
+# Architecture/QA review flagged that guardrail 2 ("note in BOTH the run log
+# and the artifact") was only proven for pm_agent.py — these cover the five
+# step_agent.py call sites (planner/generic, review code+QA, deploy) plus the
+# implement step's own exhaustion-only regression.
+
+
+def test_planner_step_repair_note_appears_in_run_log_and_artifact(monkeypatch, capsys):
+    reply = '{"summary": "did the step", "artifact_md": "# Plan",}'  # trailing comma
+    monkeypatch.setattr(step_agent, "run_agent", lambda *a, **k: {"result": reply})
+
+    result = execute(make_task(4, "Plan options & trade-offs (pros / cons)"))
+
+    assert "repair — stripped a trailing comma" in capsys.readouterr().out
+    assert "Repairs applied: stripped a trailing comma" in result["artifacts"]["artifact_md"]
+
+
+def test_planner_step_produces_no_repair_note_on_a_clean_reply(monkeypatch):
+    monkeypatch.setattr(
+        step_agent, "run_agent", lambda *a, **k: {"result": '{"summary": "did it", "artifact_md": "# Plan"}'}
+    )
+    result = execute(make_task(4, "Plan options & trade-offs (pros / cons)"))
+    assert result["artifacts"]["artifact_md"] == "# Plan"
+
+
+def test_review_step_repair_notes_from_both_passes_appear_in_run_log_and_artifact(tmp_path, monkeypatch, capsys):
+    ws, _origin = make_git_workspace(tmp_path)
+    git(ws, "push", "-u", "origin", "HEAD:horizon/t-1")
+    monkeypatch.setattr(step_agent, "ensure_item_worktree", lambda repo, item_id: ws)
+
+    code_reply = '{"summary": "code review done", "verdict": "pass", "findings": [],}'  # trailing comma
+    qa_reply = json.dumps(
+        {
+            "summary": "qa review done",
+            "verdict": "pass",
+            "regression_tests_run": True,
+            "new_code_unit_coverage": True,
+            "e2e_test_present": True,
+            "findings": [],
+        }
+    )
+
+    def _fake(prompt, **kwargs):
+        is_qa = "QA Reviewer agent" in kwargs.get("append_system", "")
+        return {"result": qa_reply if is_qa else code_reply}
+
+    monkeypatch.setattr(step_agent, "run_agent", _fake)
+
+    result = execute(make_task(12, "Automated review (code + QA)", repo="acme/demo"))
+
+    assert "repair — stripped a trailing comma" in capsys.readouterr().out
+    assert "Repairs applied: stripped a trailing comma" in result["artifacts"]["artifact_md"]
+
+
+def test_deploy_step_repair_note_appears_in_run_log_and_artifact(monkeypatch, capsys):
+    reply = (
+        '{"summary": "verified", "url": "https://shoreward.ai/horizon/", '
+        '"expected_text": "Horizon", "artifact_md": "## Deploy target",}'
+    )  # trailing comma
+    monkeypatch.setattr(step_agent, "run_agent", lambda *a, **k: {"result": reply})
+    monkeypatch.setattr(step_agent, "run_smoke_check", lambda url, text: ("pass", 'SMOKE_RESULT=pass — "Horizon"'))
+
+    result = execute(make_task(14, "Deploy the changes", repo="acme/demo"))
+
+    assert "repair — stripped a trailing comma" in capsys.readouterr().out
+    assert "Repairs applied: stripped a trailing comma" in result["artifacts"]["artifact_md"]
+
+
+def test_implement_step_repair_note_appears_in_run_log_and_artifacts(tmp_path, monkeypatch, capsys):
+    ws, _origin = make_git_workspace(tmp_path)
+    monkeypatch.setattr(step_agent, "ensure_item_worktree", lambda repo, item_id: ws)
+
+    def _fake(prompt, **kwargs):
+        (ws / "fake_implementation.txt").write_text("real work\n")
+        return {"result": '{"summary": "done",}'}  # trailing comma
+
+    monkeypatch.setattr(step_agent, "run_agent", _fake)
+
+    result = execute(make_task(11, "Specialist agent implements", repo="acme/demo"))
+
+    assert "repair — stripped a trailing comma" in capsys.readouterr().out
+    assert result["artifacts"]["repairs"] == "stripped a trailing comma"
+
+
+# ---- HZ-124 metric 11: the handoff note reaches the NEXT attempt's prompt,
+# marked unverified — for a non-implement step (implement never writes one,
+# see the regression test below, guardrail 10). ----
+
+
+def test_handoff_note_reaches_the_next_non_implement_attempts_prompt(monkeypatch, tmp_path):
+    monkeypatch.setattr(agent_runner, "STATE_DIR", tmp_path)
+
+    calls = []
+
+    def _fake(prompt, **kwargs):
+        calls.append(kwargs)
+        if len(calls) == 1:
+            raise AgentExhaustedError(
+                "claude timed out", partial_text="garbage, not json, not truncated json either", session_id="sess-1"
+            )
+        return {"result": "drafted two of three options; still need the risk section"}
+
+    monkeypatch.setattr(step_agent, "run_agent", _fake)
+
+    task = make_task(4, "Plan options & trade-offs (pros / cons)")
+    with pytest.raises(AgentExhaustedError):
+        execute(task)
+
+    assert len(calls) == 2  # the exhausting call, plus exactly one handoff call
+
+    next_prompt = build_prompt(task)
+    assert "NOTE (unverified)" in next_prompt
+    assert "drafted two of three options" in next_prompt
+    assert "NOTE (unverified)" not in build_prompt(task)  # read-once
+
+
+def test_implement_exhaustion_never_writes_a_handoff_note(tmp_path, monkeypatch):
+    """Guardrail 10: implement's on_exhaustion="reraise" skips salvage AND
+    handoff entirely — HZ-31's checkpoint commit is its only recovery path."""
+    monkeypatch.setattr(agent_runner, "STATE_DIR", tmp_path)
+    ws, _origin = make_git_workspace(tmp_path)
+    monkeypatch.setattr(step_agent, "ensure_item_worktree", lambda repo, item_id: ws)
+
+    calls = []
+
+    def _fake(prompt, **kwargs):
+        calls.append(kwargs)
+        (ws / "fake_implementation.txt").write_text("partial work\n")
+        raise AgentExhaustedError(
+            'claude reported an error result [error_max_turns]: {"summary": "cut off mid',
+            partial_text='{"summary": "cut off mid',  # would otherwise salvage cleanly
+            session_id="sess-1",
+        )
+
+    monkeypatch.setattr(step_agent, "run_agent", _fake)
+
+    task = make_task(11, "Specialist agent implements", repo="acme/demo")
+    with pytest.raises(AgentExhaustedError):
+        execute(task)
+
+    assert len(calls) == 1  # no handoff call — reraise skips it entirely
+    assert read_and_clear_handoff_note("T-1", 11) is None

@@ -22,7 +22,7 @@ import httpx
 # same "ran out of turn budget" signal, renamed by the provider refactor. The
 # import conflicted while its USE below merged cleanly, so the rename has to be
 # applied there too or the merged file references a symbol that no longer exists.
-from .agent_runner import AgentError, AgentExhaustedError, extract_json, run_agent
+from .agent_runner import AgentError, AgentExhaustedError, parse_agent_reply, read_and_clear_handoff_note, run_agent
 from .checks import run_checks
 from .config import FARM_PORT
 from .personas import compose_role, provider_for, resolve
@@ -145,6 +145,13 @@ def build_prompt(task: dict) -> str:
         "",
         f"Step to perform now: \"{step['label']}\" (attempt {task.get('attempt', 1)})",
     ]
+    handoff_note = read_and_clear_handoff_note(item["id"], step["index"])
+    if handoff_note:
+        lines.append("")
+        lines.append(
+            "NOTE (unverified): the previous attempt ran out of turn/time budget "
+            f"partway through. It reported: {handoff_note}"
+        )
     for artifact in task.get("artifacts") or []:
         lines.append("")
         lines.append(f"Prior artifact — {artifact.get('label', 'earlier step')}:")
@@ -382,10 +389,6 @@ def _review_summary(verdict: dict) -> str:
     return summary[:600]
 
 
-def _provenance(reply: dict) -> dict:
-    return {"provider": reply.get("provider"), "command_id": reply.get("command_id")}
-
-
 def _run_and_parse(
     prompt: str,
     *,
@@ -396,18 +399,25 @@ def _run_and_parse(
     allowed_tools: str | None,
     provider: str | None = None,
     provider_locked: bool = False,
-) -> tuple[dict, dict]:
-    """run_agent + extract_json with one retry-with-feedback on a parse
-    failure (HZ-44) — mirrors pm_agent.process()'s recovery. Asking the model
-    to re-emit valid JSON is lossless; a genuine second failure still
-    propagates so the run cancels and the item pauses, unchanged.
+    handoff_item_id: str | None = None,
+    handoff_step_index=None,
+) -> tuple[dict, dict, list[str]]:
+    """Thin wrapper over agent_runner.parse_agent_reply() — the ONE shared
+    run_agent + extract_json + retry/repair/salvage/handoff helper (HZ-124
+    metric 14). Plugs in this module's own `run_agent` name (the one this
+    file's test suite monkeypatches) so parse_agent_reply never has to know
+    or care which caller's run_agent binding is under test.
 
-    Returns (parsed_json, provenance) — provenance is {"provider",
-    "command_id"} from whichever run_agent() call actually produced the JSON
-    that parsed (HZ-102), so a caller can record which provider really ran.
+    Returns (parsed_json, provenance, notes) — provenance is {"provider",
+    "command_id"} from whichever call actually produced the JSON that parsed
+    (HZ-102); notes lists every repair that altered bytes (HZ-124) — every
+    caller must surface these in both the run log and the artifact
+    (guardrail), which is why this also logs them here rather than leaving
+    that to each of the five call sites individually.
     """
-    reply = run_agent(
+    parsed, reply_meta, notes = parse_agent_reply(
         prompt,
+        run_agent_fn=run_agent,
         append_system=append_system,
         cwd=cwd,
         max_turns=max_turns,
@@ -415,23 +425,23 @@ def _run_and_parse(
         allowed_tools=allowed_tools,
         provider=provider,
         provider_locked=provider_locked,
+        handoff_item_id=handoff_item_id,
+        handoff_step_index=handoff_step_index,
     )
-    try:
-        return extract_json(reply["result"]), _provenance(reply)
-    except (AgentError, json.JSONDecodeError) as exc:
-        log(f"invalid reply ({exc}); retrying once")
-        retry = run_agent(
-            f"Your previous reply was invalid: {exc}. Respond again with ONLY the JSON object, no other text.",
-            session_id=reply.get("session_id"),
-            append_system=append_system,
-            cwd=cwd,
-            max_turns=max_turns,
-            timeout_s=timeout_s,
-            allowed_tools=allowed_tools,
-            provider=provider,
-            provider_locked=provider_locked,
-        )
-        return extract_json(retry["result"]), _provenance(retry)
+    for note in notes:
+        log(f"repair — {note}")
+    provenance = {"provider": reply_meta.get("provider"), "command_id": reply_meta.get("command_id")}
+    return parsed, provenance, notes
+
+
+def _with_repair_note(artifact_md: str, notes: list[str]) -> str:
+    """Guardrail: any repair that altered bytes must leave a note in the
+    artifact too, not just the run log. Appended outside any ```diff/```json
+    fence so it can never be mistaken for part of the agent's own output."""
+    if not notes:
+        return artifact_md
+    note_line = f"Repairs applied: {'; '.join(notes)}"
+    return f"{artifact_md}\n\n---\n{note_line}" if artifact_md else note_line
 
 
 # ---- deploy deep-verification (HZ-22) ----
@@ -499,36 +509,63 @@ def execute(task: dict) -> dict:
         if resume_note:
             log("resuming a prior attempt's WIP checkpoint")
         try:
-            reply = run_agent(
+            # HZ-124: retry_on_failure=False — implement tolerates a
+            # malformed final summary (the code in the workspace is the
+            # deliverable, not the message), so no lossless retry call is
+            # spent on it. on_exhaustion="reraise" — HZ-31's checkpoint
+            # salvage below is the ONLY exhaustion handling for this step;
+            # no salvage-from-partial-JSON, no handoff note, guardrail 10.
+            parsed, _reply_meta, notes = parse_agent_reply(
                 build_prompt(task) + (resume_note or ""),
+                run_agent_fn=run_agent,
                 append_system=role,
                 cwd=str(ws),
                 max_turns=max_turns,
                 timeout_s=timeout_s,
                 allowed_tools=tools,
                 provider_locked=provider_locked,
+                retry_on_failure=False,
+                on_exhaustion="reraise",
             )
-        except Exception:
+        except Exception as exc:
             # SALVAGE (HZ-31): the run hit its turn/time cap (or any other
             # run_agent failure) — checkpoint whatever's on disk instead of
             # letting the next attempt's prepare_branch scrub it away. Still
             # re-raises unchanged: a failed attempt still fails and pauses,
             # no checks run, no PR opens, nothing advances.
+            if isinstance(exc, AgentExhaustedError):
+                # HZ-124: never discard the session id / partial reply on
+                # exhaustion — logged here for debugging visibility even
+                # though this step's own recovery is still the checkpoint
+                # commit, not JSON salvage or a cross-attempt handoff.
+                log(
+                    f"implement exhausted its turn/time budget (session_id={exc.session_id!r}, "
+                    f"partial_text={len(exc.partial_text or '')} chars captured) — checkpointing"
+                )
             _salvage_checkpoint(ws, item, branch)
             raise
         # The summary is reporting, not the deliverable — the code in the
         # workspace is. Never torch a completed implement run over a
         # malformed final message; fall back and let checks judge the work.
-        try:
-            summary = str(extract_json(reply["result"]).get("summary", "implementation finished")).strip()[:600]
-        except Exception:
+        if parsed is not None:
+            summary = str(parsed.get("summary", "implementation finished")).strip()[:600]
+        else:
             summary = "implementation finished (agent's final message was not valid JSON — see session log)"
+        # Guardrail: a repair that altered bytes still needs a note here,
+        # even though implement has no artifact_md to attach one to — logged
+        # to the run output, and stamped into the artifacts dict this step
+        # DOES send to the server, mirroring how provider_override's
+        # provenance is stamped in below for the other steps.
+        for note in notes:
+            log(f"repair — {note}")
         # Guardrail enforcement: the repo's own tests/linters run here, by the
         # script, before anything is committed or pushed. A failure fails the
         # run (Node pauses the item with the reason) — no green, no push.
         check_note = run_checks(ws, log)
         publish_screenshots(ws, item)
         artifacts = finalize_branch(ws, item, branch)
+        if notes:
+            artifacts["repairs"] = "; ".join(notes)
         return {"summary": f"{summary} · {check_note}"[:600], "artifacts": artifacts}
 
     # Automated review (HZ-30): two independent read-only passes over the
@@ -568,7 +605,7 @@ def execute(task: dict) -> dict:
             + "\n\nRespond with ONLY the JSON object described in your role instructions."
         )
 
-        code_parsed, _code_provenance = _run_and_parse(
+        code_parsed, _code_provenance, code_notes = _run_and_parse(
             prompt,
             append_system=role,
             cwd=str(ws),
@@ -576,12 +613,14 @@ def execute(task: dict) -> dict:
             timeout_s=timeout_s,
             allowed_tools=tools,
             provider_locked=provider_locked,
+            handoff_item_id=item["id"],
+            handoff_step_index=task["step"]["index"],
         )
 
         qa_role = (ROLES / "qa_review.md").read_text()
         if wants_persona:
             qa_role = compose_role(qa_role, item.get("persona"))
-        qa_parsed, _qa_provenance = _run_and_parse(
+        qa_parsed, _qa_provenance, qa_notes = _run_and_parse(
             prompt,
             append_system=qa_role,
             cwd=str(ws),
@@ -589,6 +628,8 @@ def execute(task: dict) -> dict:
             timeout_s=timeout_s,
             allowed_tools=tools,
             provider_locked=provider_locked,
+            handoff_item_id=item["id"],
+            handoff_step_index=task["step"]["index"],
         )
 
         verdict = {"code_review": _code_review_section(code_parsed), "qa_review": _qa_review_section(qa_parsed)}
@@ -597,6 +638,7 @@ def execute(task: dict) -> dict:
             for part in (code_parsed.get("artifact_md"), qa_parsed.get("artifact_md"))
             if isinstance(part, str) and part.strip()
         )
+        artifact_md = _with_repair_note(artifact_md, code_notes + qa_notes)
         summary = _review_summary(verdict)
         feedback = task.get("feedback") or []
         if feedback:
@@ -627,7 +669,7 @@ def execute(task: dict) -> dict:
             "with e2e/smoke/check.mjs — pick an expected_text that is actually visible on that "
             "page right now."
         )
-        parsed, _deploy_provenance = _run_and_parse(
+        parsed, _deploy_provenance, deploy_notes = _run_and_parse(
             prompt,
             append_system=role,
             cwd=None,
@@ -635,6 +677,8 @@ def execute(task: dict) -> dict:
             timeout_s=timeout_s,
             allowed_tools=tools,
             provider_locked=provider_locked,
+            handoff_item_id=item["id"],
+            handoff_step_index=task["step"]["index"],
         )
         summary = str(parsed.get("summary", "")).strip()[:600] or "deploy verification finished"
         artifact_md = str(parsed.get("artifact_md", "")).strip()
@@ -645,6 +689,7 @@ def execute(task: dict) -> dict:
 
         verdict, smoke_line = run_smoke_check(url.strip(), expected_text.strip())
         artifact_md = f"{artifact_md}\n\n## Machine-checked result\n`{smoke_line}`".strip()
+        artifact_md = _with_repair_note(artifact_md, deploy_notes)
         return {
             "summary": f"{summary} · {smoke_line}"[:600],
             "artifacts": {
@@ -657,7 +702,7 @@ def execute(task: dict) -> dict:
             },
         }
 
-    parsed, reply_provenance = _run_and_parse(
+    parsed, reply_provenance, notes = _run_and_parse(
         build_prompt(task) + "\n\nRespond with ONLY the JSON object described in your role instructions.",
         append_system=role,
         cwd=str(ws) if ws else None,
@@ -666,6 +711,8 @@ def execute(task: dict) -> dict:
         allowed_tools=tools if ws else None,
         provider=provider_override,
         provider_locked=provider_locked,
+        handoff_item_id=item["id"],
+        handoff_step_index=task["step"]["index"],
     )
     summary = str(parsed.get("summary", "")).strip()[:600]
     if not summary:
@@ -694,7 +741,13 @@ def execute(task: dict) -> dict:
         if feedback:
             header = "\n".join(f"> {fb.get('message', '')}" for fb in feedback)
             artifact = f"## Human feedback addressed in this revision\n{header}\n\n{artifact}"
+        artifact = _with_repair_note(artifact, notes)
         result["artifacts"] = {"artifact_md": artifact[:WRITE_ARTIFACT_SANITY_CEILING_CHARS]}
+    elif notes:
+        # A repair fired but the model produced no artifact_md to attach the
+        # note to (guardrail: never silent) — a minimal artifact carrying
+        # only the note is still better than losing the disclosure entirely.
+        result["artifacts"] = {"artifact_md": _with_repair_note("", notes)}
     if provider_override:
         artifacts = result.setdefault("artifacts", {})
         artifacts["provider"] = reply_provenance.get("provider")

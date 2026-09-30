@@ -13,10 +13,11 @@ same as the pre-HZ-83 claude_runner module did.
 import json
 import subprocess
 import sys
+from pathlib import Path
 
 import pytest
 
-from farm.agent_runner import AgentError, assert_provider_auth, extract_json, run_agent
+from farm.agent_runner import AgentError, _extract_json_with_notes, assert_provider_auth, extract_json, run_agent
 
 
 def test_extract_json_plain():
@@ -35,6 +36,97 @@ def test_extract_json_wrapped_in_prose():
 def test_extract_json_missing_raises():
     with pytest.raises(AgentError):
         extract_json("no json here at all")
+
+
+# ---- HZ-124: extended repair ladder (success metrics 1-6) ----
+
+
+def test_extract_json_strips_a_trailing_comma():
+    assert extract_json('{"a":1,}') == {"a": 1}
+
+
+def test_extract_json_converts_single_quotes():
+    assert extract_json("{'a':1}") == {"a": 1}
+
+
+def test_extract_json_returns_the_first_of_two_objects():
+    text = '{"s":"first"} prose {"s":"second"}'
+    assert extract_json(text) == {"s": "first"}
+
+
+def test_extract_json_unescaped_inner_quote_raises_on_first_attempt():
+    """Metric 5, first half: this shape is genuinely ambiguous (there is no
+    deterministic byte-level fix), so extract_json() alone must raise — the
+    lossless retry in parse_agent_reply() is the ONLY recovery path, never a
+    heuristic guess here."""
+    with pytest.raises(AgentError):
+        extract_json('{"s":"he said "hi" to me"}')
+
+
+def test_extract_json_unrepairable_input_raises_without_fabricating_content():
+    """Metric 6: truncation mid-literal (not mid-string) is not something
+    _salvage_truncated_json or the repair ladder can fix without guessing —
+    it must raise, never return plausible-looking but invented content."""
+    with pytest.raises(AgentError):
+        extract_json('{"ok": tru')
+
+
+def test_extract_json_produces_no_notes_on_already_valid_input():
+    """Negative case for guardrail 2 ('a note only when bytes are altered'):
+    clean input must repair-report as silent — an empty notes list — not
+    just happen to parse."""
+    parsed, notes = _extract_json_with_notes('{"summary": "done"}')
+    assert parsed == {"summary": "done"}
+    assert notes == []
+
+
+def test_extract_json_notes_name_the_repair_actually_applied():
+    _parsed, comma_notes = _extract_json_with_notes('{"a":1,}')
+    assert comma_notes == ["stripped a trailing comma"]
+
+    _parsed, quote_notes = _extract_json_with_notes("{'a':1}")
+    assert quote_notes == ["converted single quotes to double quotes"]
+
+
+def test_pm_agent_and_step_agent_never_parse_a_reply_without_the_shared_helper():
+    """Metric 14: farm/agent_runner.py's parse_agent_reply() must be the ONE
+    place a reply is turned into JSON — a caller importing/calling
+    extract_json() directly would bypass its retry/repair/salvage/handoff
+    machinery silently. Source-text scan, not an import-time check, so it
+    also catches a stray `from .agent_runner import extract_json`."""
+    repo_root = Path(__file__).resolve().parent.parent.parent
+    for relative in ("farm/pm_agent.py", "farm/step_agent.py"):
+        source = (repo_root / relative).read_text()
+        assert "extract_json(" not in source, f"{relative} must parse replies via parse_agent_reply(), not extract_json()"
+        assert "import extract_json" not in source, f"{relative} must not import extract_json at all"
+        assert "parse_agent_reply(" in source, f"{relative} must call the shared parse_agent_reply() helper"
+
+
+def test_requirements_txt_gains_no_third_party_json_repair_dependency():
+    """Guardrail 4: no json-repair-style dependency may be added — the
+    repair ladder must be implemented in plain Python in agent_runner.py."""
+    requirements = (Path(__file__).resolve().parent.parent / "requirements.txt").read_text().lower()
+    for banned in ("json-repair", "json_repair", "demjson", "dirtyjson"):
+        assert banned not in requirements
+
+
+# ---- HZ-124 metric 8, subprocess-rollback half: partial_text/session_id on
+# the FARM_RUNNER=subprocess timeout path (claude.py's _run_subprocess) ----
+
+
+def test_subprocess_runner_timeout_carries_partial_text_and_no_session_id(monkeypatch):
+    from farm.providers import base, claude
+
+    monkeypatch.setenv("FARM_RUNNER", "subprocess")
+
+    def fake_run(cmd, **kwargs):
+        raise subprocess.TimeoutExpired(cmd=cmd, timeout=kwargs.get("timeout"), output="partial output before kill")
+
+    monkeypatch.setattr(claude.subprocess, "run", fake_run)
+    with pytest.raises(base.AgentExhaustedError) as exc_info:
+        run_agent("prompt", timeout_s=5)
+    assert exc_info.value.partial_text == "partial output before kill"
+    assert exc_info.value.session_id is None
 
 
 # ---- rollback lever: FARM_RUNNER=subprocess keeps the old silent path ----

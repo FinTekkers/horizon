@@ -98,7 +98,12 @@ def run(
         try:
             proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout_s, cwd=cwd)
         except subprocess.TimeoutExpired as exc:
-            raise AgentExhaustedError(f"muse timed out after {timeout_s}s") from exc
+            # HZ-124: session_id is always known here (sid is caller-minted
+            # up front, unlike Claude's server-issued id); exc.stdout is
+            # whatever partial JSONL got captured before the kill, best-effort.
+            raise AgentExhaustedError(
+                f"muse timed out after {timeout_s}s", partial_text=exc.stdout or "", session_id=sid
+            ) from exc
         except FileNotFoundError as exc:
             raise AgentError(f"muse binary not found: {FARM_MUSE_BIN}") from exc
     finally:
@@ -143,7 +148,20 @@ def _parse_events(proc: subprocess.CompletedProcess, session_id: str) -> dict:
     # proves wrong.
     exhausted = next((e for e in events if "exhaust" in e.get("payload_type", "")), None)
     if exhausted is not None:
-        raise AgentExhaustedError(f"muse reported exhaustion: {exhausted.get('payload_type')}")
+        # HZ-124: best-effort partial text — the last event carrying a
+        # payload.text string before exhaustion was reported. session_id is
+        # always known (see above) even though the text is a guess.
+        partial_text = ""
+        for event in reversed(events):
+            text = event.get("payload", {}).get("text")
+            if isinstance(text, str) and text:
+                partial_text = text
+                break
+        raise AgentExhaustedError(
+            f"muse reported exhaustion: {exhausted.get('payload_type')}",
+            partial_text=partial_text,
+            session_id=session_id,
+        )
 
     if proc.returncode != 0:
         raise AgentError(f"muse exited {proc.returncode}: {proc.stderr.strip()[:300]}")

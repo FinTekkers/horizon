@@ -25,7 +25,20 @@ class AgentExhaustedError(AgentError):
 
     Why the distinction earns a type: the orchestrator auto-retries THIS
     cause, up to its own hard cap, and no other (HZ-76). Callers must be able
-    to ask "ran out of budget?" without parsing a message string."""
+    to ask "ran out of budget?" without parsing a message string.
+
+    HZ-124: carries whatever partial_text/session_id the provider managed to
+    capture before it ran out of budget, so a caller can attempt to salvage a
+    truncated-but-otherwise-valid JSON reply, or hand a resumed session off to
+    the next attempt, instead of discarding both. Both default to "empty" —
+    every existing single-arg `raise AgentExhaustedError("...")` call site
+    keeps working unchanged, and orchestrator classification (turn_cap) is
+    untouched since it only ever inspects the exception's type."""
+
+    def __init__(self, message: str, *, partial_text: str = "", session_id: str | None = None) -> None:
+        super().__init__(message)
+        self.partial_text = partial_text
+        self.session_id = session_id
 
 
 class AgentProvider(Protocol):
