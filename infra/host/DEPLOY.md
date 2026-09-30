@@ -93,6 +93,20 @@ recipient setting.** Whoever can approve a gate is exactly who is told one is
 waiting. `WA_NOTIFY_ENABLED=1` with an empty `WA_APPROVER_JIDS` logs a warning
 at boot and delivers nothing.
 
+Accepted entry formats, all equivalent — the server canonicalizes each one to
+`<number>@s.whatsapp.net` before it reaches the bridge, so a bare number is a
+valid setting for both approving and being notified:
+
+| You write | Sent to | Note |
+|---|---|---|
+| `15551112222` | `15551112222@s.whatsapp.net` | the documented short form |
+| `15551112222@s.whatsapp.net` | `15551112222@s.whatsapp.net` | already canonical |
+| `15551112222:7@s.whatsapp.net` | `15551112222@s.whatsapp.net` | device suffix dropped — it addresses one phone, not the person |
+
+Two entries that canonicalize to the same jid are one recipient, so a person
+listed twice still gets one message per gate arrival. An explicit non-default
+server part (`…@g.us`) is kept as written rather than rewritten.
+
 No credential is on this path. `POST /api/send` takes no auth and is
 localhost-only, so neither `FARM_SHARED_SECRET` nor `WA_APPROVAL_SECRET` is
 read by the notifier.

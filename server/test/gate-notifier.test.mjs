@@ -23,6 +23,10 @@ import { join } from 'node:path'
 process.env.HORIZON_DB = join(mkdtempSync(join(tmpdir(), 'horizon-gatenotify-')), 'test.db')
 process.env.WA_APPROVER_JIDS = '15550001111@s.whatsapp.net'
 process.env.HORIZON_UI_URL = 'http://localhost:5173'
+// One test below calls tick(), which drains through the REAL waSend.js. Port 9
+// is discard: nothing listens, so that drain fails locally instead of finding
+// whatever happens to be on the default bridge port on the machine running this.
+process.env.WA_BRIDGE_URL = 'http://127.0.0.1:9'
 
 const { db } = await import('../src/db.js')
 const store = await import('../src/store.js')
@@ -120,8 +124,8 @@ test('a closed or mid-agent-step item is not even a sweep candidate', () => {
     'Low',
     STEPS.findIndex((s) => s.kind === 'agent'),
   )
-  assert.deepEqual(notifier.sweepGates(), { enqueued: 0, cleared: 0 })
-  assert.deepEqual(notifier.sweepGates(), { enqueued: 0, cleared: 0 })
+  assert.deepEqual(notifier.sweepGates(), { enqueued: 0, cleared: 0, failed: 0 })
+  assert.deepEqual(notifier.sweepGates(), { enqueued: 0, cleared: 0, failed: 0 })
   assert.equal(rows('T-CLOSED').length, 0)
   assert.equal(rows('T-MIDSTEP').length, 0)
 })
@@ -341,6 +345,60 @@ test('the body is capped at 1200 chars and the link always survives the cap', ()
   )
   assert.ok(body.length <= 1200, `body is ${body.length} chars`)
   assert.equal(body.split('\n').at(-1), 'http://localhost:5173/hz-1')
+})
+
+// ---- one item's failure is one item's failure ----
+//
+// renderNotice has no generic fallback by design, so a gate added to
+// steps.json without an ask line throws. Before the per-item catch that took
+// the whole loop down — and because the thrower stays stale, it was re-selected
+// first on every subsequent sweep, so NO item on the board would ever be
+// notified again. The blast radius has to stay at one item.
+
+test('an item that cannot be rendered does not stop its neighbours being notified', async () => {
+  const gate = GATES[4]
+  for (const id of ['T-POISON', 'T-NEIGHBOUR']) {
+    db.prepare('INSERT INTO work_item (id, title, priority, cursor) VALUES (?, ?, ?, ?)').run(id, 'Sweep blast radius', 'High', gate)
+  }
+  const logged = []
+  const log = { error: (m) => logged.push(m), warn: () => {}, info: () => {} }
+  const render = (item, rec) => {
+    if (item.id === 'T-POISON') throw new Error('no ask line for step 99')
+    return notifier.renderNotice(item, rec)
+  }
+
+  const swept = notifier.sweepGates({ log, render })
+  assert.equal(swept.failed, 1)
+  assert.equal(rows('T-POISON').length, 0)
+  assert.equal(rows('T-NEIGHBOUR').length, 1, 'the neighbour was collateral damage')
+  assert.ok(logged.some((m) => m.includes('T-POISON')), `the failure was not logged: ${logged.join('\n')}`)
+
+  const box = recorder()
+  await notifier.drainOutbox({ send: box.send })
+  assert.ok(box.sent.some((s) => s.body.includes('T-NEIGHBOUR')))
+
+  // The poison item stays stale — its arrival genuinely was not notified — so a
+  // later sweep retries it, and once it renders it notifies normally.
+  assert.equal(db.prepare("SELECT notified_step FROM work_item WHERE id = 'T-POISON'").get().notified_step, null)
+  assert.equal(notifier.sweepGates({ log, render }).failed, 1)
+  notifier.sweepGates()
+  assert.equal(rows('T-POISON').length, 1, 'the item never recovered once rendering worked')
+})
+
+test('a sweep failure never escapes tick() into the transition that triggered it', async () => {
+  const boom = () => {
+    throw new Error('renderer exploded')
+  }
+  db.prepare('INSERT INTO work_item (id, title, priority, cursor) VALUES (?, ?, ?, ?)').run(
+    'T-TICKSAFE',
+    'Throwing renderer',
+    'High',
+    GATES[0],
+  )
+  // Directly, and through tick() — which is what store.onChange calls, i.e.
+  // synchronously inside an approval that has already committed.
+  assert.doesNotThrow(() => notifier.sweepGates({ render: boom }))
+  await assert.doesNotReject(notifier.tick({ error: () => {}, warn: () => {}, info: () => {} }))
 })
 
 // ---- metric 6: no model call on this path ----

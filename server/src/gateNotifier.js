@@ -131,7 +131,10 @@ const selectStale = db.prepare(`
      AND (notified_step IS NOT NULL OR cursor IN (${GATE_INDEXES.map(() => '?').join(',')}))
 `)
 
-export function sweepGates() {
+// `render` is injectable for the same reason drainOutbox's `send` is: the
+// per-item failure path below is only testable if one item can be made to fail
+// while its neighbours do not.
+export function sweepGates({ log, render = renderNotice } = {}) {
   const candidates = selectStale.all(...GATE_INDEXES)
   const recipients = approverJids()
   const insert = db.prepare(
@@ -140,34 +143,52 @@ export function sweepGates() {
   const setNotified = db.prepare('UPDATE work_item SET notified_step = ? WHERE id = ?')
   let enqueued = 0
   let cleared = 0
+  let failed = 0
   for (const item of candidates) {
-    // Paused is NOT skipped: a paused item parked at a gate is still waiting on
-    // a human, which is the whole thing this notifies about. Closed and
-    // abandoned are, because neither is waiting on anyone.
-    const atGate = !isClosed(item) && !isAbandoned(item) && isGateIndex(item.cursor)
-    if (!atGate) {
-      if (item.notified_step !== null) {
-        setNotified.run(null, item.id)
-        cleared++
+    // ONE ITEM'S FAILURE IS ONE ITEM'S FAILURE. Without this catch a single
+    // unrenderable row aborts the whole loop, and because it stays stale it is
+    // re-selected — and throws again — on every sweep forever, so the board's
+    // other items would never be notified again either. renderNotice has no
+    // fallback by design (a sixth gate added to domain/steps.json with no ask
+    // line throws), which is exactly the shape of bug this contains.
+    //
+    // The item deliberately stays stale rather than being marked notified: its
+    // arrival genuinely was not notified. That means it logs on every sweep
+    // until someone fixes it, which is the right amount of noise for a gate
+    // nobody is being told about.
+    try {
+      // Paused is NOT skipped: a paused item parked at a gate is still waiting
+      // on a human, which is the whole thing this notifies about. Closed and
+      // abandoned are, because neither is waiting on anyone.
+      const atGate = !isClosed(item) && !isAbandoned(item) && isGateIndex(item.cursor)
+      if (!atGate) {
+        if (item.notified_step !== null) {
+          setNotified.run(null, item.id)
+          cleared++
+        }
+        continue
       }
-      continue
+      // Read through store.latestArtifact, not a second raw query onto step_run:
+      // "latest done attempt wins" is already decided there, once.
+      const recommendation =
+        item.cursor === RECOMMENDATION_GATE ? store.latestArtifact(item.id, RECOMMENDATION_SOURCE) : null
+      const body = render(item, recommendation)
+      // notified_step is set in the SAME transaction as the rows, so a crash
+      // between them cannot leave an arrival marked notified with nothing
+      // queued. With no approvers configured the row set is empty and
+      // notified_step still advances: HZ-140's deny-all means notify-nobody,
+      // not notify-later.
+      db.transaction(() => {
+        for (const recipient of recipients) insert.run(item.id, item.cursor, recipient, body)
+        setNotified.run(item.cursor, item.id)
+      })()
+      enqueued += recipients.length
+    } catch (err) {
+      failed++
+      log?.error?.(`gate notifier: ${item.id} at step ${item.cursor} could not be queued: ${err.message}`)
     }
-    // Read through store.latestArtifact, not a second raw query onto step_run:
-    // "latest done attempt wins" is already decided there, once.
-    const recommendation =
-      item.cursor === RECOMMENDATION_GATE ? store.latestArtifact(item.id, RECOMMENDATION_SOURCE) : null
-    const body = renderNotice(item, recommendation)
-    // notified_step is set in the SAME transaction as the rows, so a crash
-    // between them cannot leave an arrival marked notified with nothing queued.
-    // With no approvers configured the row set is empty and notified_step still
-    // advances: HZ-140's deny-all means notify-nobody, not notify-later.
-    db.transaction(() => {
-      for (const recipient of recipients) insert.run(item.id, item.cursor, recipient, body)
-      setNotified.run(item.cursor, item.id)
-    })()
-    enqueued += recipients.length
   }
-  return { enqueued, cleared }
+  return { enqueued, cleared, failed }
 }
 
 // Claims one row at a time with a CONDITIONAL update and requires it to have
@@ -238,11 +259,13 @@ export function failInterruptedSends() {
 // Exported for the tests; init() below is the only production caller.
 export async function tick(log) {
   try {
-    sweepGates()
+    // sweepGates already contains a per-item failure; this outer catch is for
+    // the whole-sweep kind (the SELECT itself, approverJids). Both are reached
+    // from store.onChange, i.e. inside an approval request that has already
+    // committed. Swallowing is the point: a broken notifier must not turn a
+    // successful approval into a 500.
+    sweepGates({ log })
   } catch (err) {
-    // Reached from store.onChange, i.e. inside an approval request that has
-    // already committed. Swallowing is the point: a broken notifier must not
-    // turn a successful approval into a 500.
     log?.error?.(`gate notifier sweep failed: ${err.message}`)
   }
   try {

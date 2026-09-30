@@ -116,8 +116,10 @@ export const ALLOWED_LOGIN_EMAILS = new Set(
 // Deliberately NO 'dev-secret' fallback (unlike FARM_SHARED_SECRET above):
 // an unset value must fail approvals closed, never silently accept them.
 export const WA_APPROVAL_SECRET = process.env.WA_APPROVAL_SECRET || null
-// Raw entries; waApprovers.js normalizes them (a jid carries a device suffix
-// and a server part that are routing detail, not identity).
+// Raw entries, in whatever form an operator wrote them (a bare number, or a
+// jid with a device suffix). waApprovers.js is what interprets them, in the two
+// directions they are needed: normalizeJid for "is this sender an approver",
+// canonicalJid for "what address does a notification go to".
 export const WA_APPROVER_JIDS = (process.env.WA_APPROVER_JIDS || '')
   .split(',')
   .map((s) => s.trim())

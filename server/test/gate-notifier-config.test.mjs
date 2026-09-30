@@ -121,7 +121,7 @@ test('an empty WA_APPROVER_JIDS enqueues nothing — HZ-140 deny-all means notif
   assert.deepEqual(out.recipients, [])
 })
 
-test('the configured jid is the recipient, verbatim — server part intact so the bridge can route it', () => {
+test('the configured jid is the recipient, with the server part the bridge routes on', () => {
   const out = sweepWithApprovers('15559990001@s.whatsapp.net')
   assert.equal(out.enqueued, 1)
   assert.deepEqual(out.recipients, ['15559990001@s.whatsapp.net'])
@@ -133,15 +133,46 @@ test('two configured approvers get one notification each, in configured order', 
   assert.deepEqual(out.recipients, ['15559990001@s.whatsapp.net', '15559990002@s.whatsapp.net'])
 })
 
+// DEPLOY.md 2b documents WA_APPROVER_JIDS as approver *numbers* and
+// farm/config.py's own example uses a bare one, so this is a documented-valid
+// config, not a typo. A bare number approves a gate fine — isAllowedApprover
+// normalizes both sides — but it is not a routable recipient, so before
+// canonicalJid it meant 8 failed attempts over ~2h and then silence.
+test('a bare approver number is canonicalized into a routable recipient', () => {
+  const out = sweepWithApprovers('15559990001')
+  assert.equal(out.enqueued, 1)
+  assert.deepEqual(out.recipients, ['15559990001@s.whatsapp.net'])
+})
+
+test('a device suffix is stripped from the recipient — it addresses one phone, not the person', () => {
+  const out = sweepWithApprovers('15559990002:7@s.whatsapp.net')
+  assert.deepEqual(out.recipients, ['15559990002@s.whatsapp.net'])
+})
+
+test('an explicit non-default server part is kept, not rewritten to s.whatsapp.net', () => {
+  const out = sweepWithApprovers('120363000000000001@g.us')
+  assert.deepEqual(out.recipients, ['120363000000000001@g.us'])
+})
+
+// Two spellings of one human must be one message per arrival, or guardrail 3
+// ("never more than one notification per arrival") breaks on a config typo.
+test('two entries for the same person collapse to one recipient', () => {
+  const out = sweepWithApprovers('15559990001, 15559990001:7@s.whatsapp.net')
+  assert.equal(out.enqueued, 1)
+  assert.deepEqual(out.recipients, ['15559990001@s.whatsapp.net'])
+})
+
 test('notification recipients and gate approvers are the SAME list — no parallel setting exists', async () => {
   const approvers = await import('../src/waApprovers.js')
   const jids = approvers.approverJids()
   assert.equal(jids.length, 2, 'the fixture must configure approvers or this loop asserts nothing')
-  // Including one carrying a device suffix, which approverJids() must NOT strip
-  // (the bridge needs the full jid to route) while isAllowedApprover still
-  // matches it via normalizeJid.
-  assert.ok(jids.some((j) => j.includes(':')))
+  // The fixture above configures one entry with a device suffix. Every
+  // recipient comes back canonical — full jid so the bridge can route it, no
+  // device suffix so it reaches the person rather than one of their phones —
+  // and each one still passes the allowlist it was derived from. That round
+  // trip is the invariant: notifiable ⇔ able to approve.
   for (const jid of jids) {
+    assert.match(jid, /^[0-9]+@[a-z.]+$/, `${jid} is not a routable jid`)
     assert.ok(approvers.isAllowedApprover(jid), `${jid} would be notified but could not approve`)
   }
   // Structural: config.js declares no second recipient list.
@@ -223,5 +254,12 @@ test('init() is a no-op when WA_NOTIFY_ENABLED is not "1" — and e2e pins it of
   // a real human (QA review, blocking).
   const e2eConfig = readFileSync(path.join(REPO_ROOT, 'e2e/playwright.config.js'), 'utf8')
   assert.match(e2eConfig, /WA_NOTIFY_ENABLED:\s*'0'/)
-  assert.match(e2eConfig, /WA_BRIDGE_URL:\s*''/)
+  // And the backstop must be a dead address, not a blank one: '' is falsy, so
+  // config.js would fall back to the localhost default — which on the deploy
+  // host is the real paired bridge, i.e. the opposite of a second line of
+  // defence.
+  const bridge = e2eConfig.match(/WA_BRIDGE_URL:\s*'([^']*)'/)
+  assert.ok(bridge, 'e2e does not pin WA_BRIDGE_URL at all')
+  assert.notEqual(bridge[1], '', 'a blank WA_BRIDGE_URL falls back to the real bridge default')
+  assert.doesNotMatch(bridge[1], /:8080(\/|$)/, 'e2e points at the default bridge port')
 })

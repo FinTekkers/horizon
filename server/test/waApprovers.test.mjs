@@ -16,9 +16,8 @@ process.env.WA_APPROVAL_SECRET = 'wa-approval-secret-for-tests'
 // must all normalize to the same identity the concierge sends.
 process.env.WA_APPROVER_JIDS = ' 15550001111@s.whatsapp.net , 15550002222:12@s.whatsapp.net '
 
-const { normalizeJid, isAllowedApprover, approvalSecretConfigured, approvalSecretOk } = await import(
-  '../src/waApprovers.js'
-)
+const { normalizeJid, canonicalJid, approverJids, isAllowedApprover, approvalSecretConfigured, approvalSecretOk } =
+  await import('../src/waApprovers.js')
 
 // One source of truth for the rule, shared with farm/tests/test_wizard.py's
 // Python-side copy — see the file's own comment.
@@ -53,6 +52,36 @@ test('a sender not on the allowlist is rejected', () => {
 test('empty, null and non-string senders are rejected, never crashed on', () => {
   for (const bad of ['', '   ', '@s.whatsapp.net', null, undefined, 42, {}, []]) {
     assert.equal(isAllowedApprover(bad), false)
+  }
+})
+
+// canonicalJid is the recipient half of the same setting (HZ-141): normalizeJid
+// answers "who is this" for the allowlist, canonicalJid answers "where does a
+// message go". The two must agree on every accepted form, or the list can hold
+// an entry that approves gates but can never be told one is waiting.
+
+test('canonicalJid turns every accepted entry form into one routable jid', () => {
+  for (const input of ['15550001111', '15550001111@s.whatsapp.net', '15550001111:12@s.whatsapp.net', ' 15550001111 ']) {
+    assert.equal(canonicalJid(input), '15550001111@s.whatsapp.net', `canonicalJid(${JSON.stringify(input)})`)
+  }
+})
+
+test('canonicalJid keeps an explicitly written non-default server part', () => {
+  assert.equal(canonicalJid('120363000000000001@g.us'), '120363000000000001@g.us')
+})
+
+test('canonicalJid returns "" for anything with no identity in it, never a bare "@server"', () => {
+  for (const bad of ['', '   ', '@s.whatsapp.net', ':12@s.whatsapp.net', null, undefined, 42, {}, []]) {
+    assert.equal(canonicalJid(bad), '')
+  }
+})
+
+test('every notifiable recipient is also an accepted approver', () => {
+  const jids = approverJids()
+  assert.equal(jids.length, 2, 'the fixture must configure approvers or this asserts nothing')
+  for (const jid of jids) {
+    assert.match(jid, /^[0-9]+@[a-z.]+$/, `${jid} is not routable`)
+    assert.ok(isAllowedApprover(jid), `${jid} would be messaged but could not approve`)
   }
 })
 
