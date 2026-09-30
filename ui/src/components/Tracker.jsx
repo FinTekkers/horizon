@@ -16,6 +16,7 @@ import { resolveEventColor } from '../domain/eventColors'
 import { issueUrl, issueLabel, artifactUrl, outputUrl, runLogViewUrl } from '../api'
 import StatusPill from './StatusPill'
 import DependencyBadge from './DependencyBadge'
+import Markdown from './Markdown'
 import { BackIcon, LinkIcon, RestartIcon, PrIcon } from './icons'
 
 const STEP_GLYPHS = { done: '✓', active: '•', awaiting: '!', pending: '', blocked: '✕' }
@@ -305,7 +306,9 @@ export default function Tracker({ item, onBack, onApprove, onApproveWithComments
               )}
             </div>
             <div className="tracker__title">{item.title}</div>
-            <div className="tracker__desc">{item.desc}</div>
+            {/* HZ-153: issue bodies are markdown — Markdown renders them as
+                React elements, never as HTML. Same for the two tiles below. */}
+            <Markdown className="tracker__desc" text={item.desc} />
           </div>
           <StatusPill status={status} className="tracker__status" />
         </div>
@@ -332,11 +335,11 @@ export default function Tracker({ item, onBack, onApprove, onApproveWithComments
         <div className="tracker__tiles">
           <div className="tile">
             <div className="tile__label">Success metric</div>
-            <div className="tile__value">{item.metric}</div>
+            <Markdown className="tile__value md-body--tile" text={item.metric} />
           </div>
           <div className="tile">
             <div className="tile__label">Guardrails</div>
-            <div className="tile__value">{item.guardrails}</div>
+            <Markdown className="tile__value md-body--tile" text={item.guardrails} />
           </div>
         </div>
         <DependencyBadge item={item} />

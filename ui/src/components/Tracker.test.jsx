@@ -464,3 +464,175 @@ test('an abandoned blocker is flagged in the detail view rather than silently dr
   expect(getByText(/Dead end/)).toBeTruthy()
   expect(getByText(/abandoned/)).toBeTruthy()
 })
+
+// ===== HZ-153: markdown in the description and the two tiles =====
+//
+// These render through components/Markdown.jsx, which maps marked's *lexer*
+// tokens onto React elements. The security cases below are the point of that
+// design: no HTML string exists at any stage, so raw markup can only ever
+// become visible text.
+
+test('a rich description renders real heading, list, emphasis, code, link and paragraph elements', () => {
+  const desc = [
+    '### A heading',
+    '',
+    'First paragraph with **bold**, `FARM_MAX_EPHEMERAL` and [a link](https://example.test).',
+    '',
+    '- first bullet',
+    '- second bullet',
+    '',
+    'Second paragraph.',
+  ].join('\n')
+  const { container } = renderTracker({ ...baseItem, desc })
+
+  // `###` is depth 3, clamped to h5 so it can never outrank the item title.
+  expect(container.querySelector('.tracker__desc h5').textContent).toBe('A heading')
+  expect(container.querySelector('.tracker__desc strong').textContent).toBe('bold')
+  expect(container.querySelector('.tracker__desc code').textContent).toBe('FARM_MAX_EPHEMERAL')
+  expect(container.querySelectorAll('.tracker__desc ul li')).toHaveLength(2)
+  expect(container.querySelectorAll('.tracker__desc p').length).toBeGreaterThanOrEqual(2)
+
+  const link = container.querySelector('.tracker__desc a')
+  expect(link.getAttribute('href')).toBe('https://example.test')
+  expect(link.getAttribute('target')).toBe('_blank')
+  expect(link.getAttribute('rel')).toBe('noopener noreferrer')
+
+  // No literal markup survives anywhere in the rendered description.
+  const text = container.querySelector('.tracker__desc').textContent
+  expect(text).not.toContain('###')
+  expect(text).not.toContain('**')
+  expect(text).not.toContain('`')
+  expect(text).not.toMatch(/(^|\n)- /)
+})
+
+test('raw HTML in a description is inert visible text, in block and inline position', () => {
+  const desc = 'Text with <img src=x onerror=alert(1)> inline.\n\n<script>alert(1)</script>'
+  const { container } = renderTracker({ ...baseItem, desc })
+
+  expect(container.querySelector('script')).toBeNull()
+  expect(container.querySelector('img')).toBeNull()
+  // textContent, not getByText: React may split these across sibling text
+  // nodes, and this is the one assertion that must not silently pass.
+  expect(container.textContent).toContain('<img src=x onerror=alert(1)>')
+  expect(container.textContent).toContain('<script>alert(1)</script>')
+})
+
+test('only http(s) and mailto links are clickable; everything else keeps its label as text', () => {
+  const desc = [
+    '[click me](javascript:alert(1))',
+    '[data one](data:text/html,hi)',
+    '[mixed case](JavaScript:alert(1))',
+    '[protocol relative](//evil.test)',
+  ].join('\n\n')
+  const { container } = renderTracker({ ...baseItem, desc })
+
+  expect(container.querySelectorAll('.tracker__desc a')).toHaveLength(0)
+  // Rejecting a link must not delete what it said.
+  for (const label of ['click me', 'data one', 'mixed case', 'protocol relative']) {
+    expect(container.textContent).toContain(label)
+  }
+})
+
+test('a mailto link and a bare autolinked URL both render as safe external links', () => {
+  const desc = 'Mail <a@b.test> or read https://example.test/docs'
+  const { container } = renderTracker({ ...baseItem, desc })
+
+  const links = Array.from(container.querySelectorAll('.tracker__desc a'))
+  expect(links.map((a) => a.getAttribute('href'))).toEqual(['mailto:a@b.test', 'https://example.test/docs'])
+  for (const a of links) {
+    expect(a.getAttribute('target')).toBe('_blank')
+    expect(a.getAttribute('rel')).toBe('noopener noreferrer')
+  }
+})
+
+test('inline formatting inside a list item is rendered, not flattened to its source text', () => {
+  const desc = '- **bold** and `code`\n- plain'
+  const { container } = renderTracker({ ...baseItem, desc })
+  expect(container.querySelector('.tracker__desc li strong').textContent).toBe('bold')
+  expect(container.querySelector('.tracker__desc li code').textContent).toBe('code')
+})
+
+test('nested and ordered lists keep their structure, with no literal bullet markers left', () => {
+  const desc = '- outer\n  - inner\n\n1. one\n2. two'
+  const { container } = renderTracker({ ...baseItem, desc })
+  expect(container.querySelector('.tracker__desc ul ul li').textContent).toBe('inner')
+  expect(container.querySelectorAll('.tracker__desc ol > li')).toHaveLength(2)
+  expect(container.querySelector('.tracker__desc').textContent).not.toMatch(/(^|\n)\s*- /)
+})
+
+test('ampersands and angle brackets are not double-escaped', () => {
+  const desc = 'A & B < C, and `a && b` in code.'
+  const { container } = renderTracker({ ...baseItem, desc })
+  const text = container.querySelector('.tracker__desc').textContent
+  expect(text).toContain('A & B < C')
+  expect(text).not.toContain('&amp;')
+  expect(text).not.toContain('&lt;')
+  expect(container.querySelector('.tracker__desc code').textContent).toBe('a && b')
+})
+
+test('an intra-word underscore is left alone rather than turned into emphasis', () => {
+  const { container } = renderTracker({ ...baseItem, desc: 'Set FARM_MAX_EPHEMERAL to 4.' })
+  expect(container.querySelector('.tracker__desc em')).toBeNull()
+  expect(container.querySelector('.tracker__desc').textContent).toContain('FARM_MAX_EPHEMERAL')
+})
+
+test('a fenced code block renders as a pre/code pair keeping both lines', () => {
+  const { container } = renderTracker({ ...baseItem, desc: '```\nline one\nline two\n```' })
+  const code = container.querySelector('.tracker__desc pre > code')
+  expect(code).not.toBeNull()
+  expect(code.textContent).toBe('line one\nline two')
+})
+
+test('a markdown table falls back to its source text instead of crashing or vanishing', () => {
+  const { container } = renderTracker({ ...baseItem, desc: '| a | b |\n| --- | --- |\n| 1 | 2 |' })
+  expect(container.querySelector('.tracker__desc table')).toBeNull()
+  expect(container.querySelector('.tracker__desc').textContent).toContain('| a | b |')
+})
+
+test('a top-level heading is demoted so it cannot outrank the item title', () => {
+  const { container } = renderTracker({ ...baseItem, desc: '# One' })
+  expect(container.querySelector('.tracker__desc h1, .tracker__desc h2')).toBeNull()
+  expect(container.querySelector('.tracker__desc h3').textContent).toBe('One')
+})
+
+test('a null or undefined description renders nothing instead of throwing', () => {
+  const { container } = renderTracker({ ...baseItem, desc: null, metric: undefined })
+  expect(container.querySelector('.tracker__desc')).toBeNull()
+  expect(container.querySelector('.tile__value')).toBeNull()
+})
+
+test('a plain-text description keeps both of its lines and gains no markup', () => {
+  const { container } = renderTracker({ ...baseItem, desc: 'First line.\nSecond line.' })
+  const desc = container.querySelector('.tracker__desc')
+  expect(desc.textContent).toContain('First line.')
+  expect(desc.textContent).toContain('Second line.')
+  expect(desc.querySelector('ul')).toBeNull()
+  expect(desc.querySelector('strong')).toBeNull()
+})
+
+test('the success metric and guardrails tiles each render their bullets as a real list', () => {
+  const { container } = renderTracker({
+    ...baseItem,
+    metric: '- metric one\n- metric two',
+    guardrails: '- only guardrail',
+  })
+  const tiles = container.querySelectorAll('.tile__value')
+  expect(tiles).toHaveLength(2)
+  expect(tiles[0].querySelectorAll('li')).toHaveLength(2)
+  expect(tiles[1].querySelectorAll('li')).toHaveLength(1)
+})
+
+// Scope pin: HZ-153 covers the description and the two tiles only. The
+// abandoned-reason line reuses .tile__value but is deliberately still plain
+// text — if that ever changes, this test should be the thing that says so.
+test('the abandoned reason stays plain text', () => {
+  const { container } = renderTracker({
+    ...baseItem,
+    cursor: 11,
+    abandoned_at: '2026-01-01 00:00:00',
+    abandoned_reason: 'went **nowhere**',
+    abandoned_by: 'a human',
+  })
+  expect(container.textContent).toContain('went **nowhere**')
+  expect(container.querySelector('.tile__value strong')).toBeNull()
+})
