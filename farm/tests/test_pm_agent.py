@@ -257,13 +257,23 @@ def _backdate(path, seconds):
 
 class _FarmdReply:
     """farmd's own /internal/steps/result envelope: its HTTP status, plus the
-    status it got when forwarding to the Node server."""
+    status it got when forwarding to the Node server.
 
-    def __init__(self, status_code=200, forwarded=200):
+    A stub, for driving the reply cases farmd can produce (5xx forward, 404,
+    unreachable) one at a time. The wiring itself is not taken on trust —
+    test_an_unusable_pm_task_file_is_reported_end_to_end_over_real_http in
+    test_farmd.py drives the same path through the real farmd app and a real
+    HTTP server with nothing stubbed.
+    """
+
+    def __init__(self, status_code=200, forwarded=200, raises=None):
         self.status_code = status_code
         self._forwarded = forwarded
+        self._raises = raises
 
     def json(self):
+        if self._raises:
+            raise self._raises
         return {"ok": True, "forwarded": self._forwarded}
 
 
@@ -455,6 +465,25 @@ def test_a_raising_post_keeps_the_file_and_does_not_escape_the_poll(pm):
     pm.reply = ConnectionError("farmd unreachable")
 
     assert pm.poll() == "skipped"  # the PM must not die on a failed report
+    assert path.exists()
+
+
+def test_an_unreadable_reply_body_keeps_the_file(pm):
+    """farmd answered 200 but the body is not the JSON envelope we read the
+    forwarded status out of (a proxy's HTML error page, a truncated response).
+    An unreadable acknowledgement is not an acknowledgement: the file must be
+    kept and retried, not released on a 200 we could not actually interpret."""
+    path = pm.queue / "881.json"
+    path.write_text(TRUNCATED)
+    _backdate(path, PM_MALFORMED_GRACE_S + 1)
+    pm.reply = _FarmdReply(status_code=200, raises=ValueError("not json"))
+
+    assert pm.poll() == "skipped"
+    assert path.exists()
+    assert len(pm.posts) == 1
+
+    assert pm.poll() == "skipped"  # and the next poll retries it
+    assert len(pm.posts) == 2
     assert path.exists()
 
 

@@ -299,16 +299,21 @@ def _queued_tasks(queue: Path) -> list[Path]:
     return [path for _mtime, path in sorted(dated, key=lambda pair: pair[0])]
 
 
-def _past_report_bound(path: Path, attempts: int) -> bool:
+def _past_report_bound(path: Path) -> bool:
     """Whether an unusable file has earned a report instead of another retry.
 
-    BOTH conditions must hold. At least one failed read in *this* process, so
-    a file caught mid-write is never reported on sight. And an age past
-    PM_MALFORMED_GRACE_S, which — unlike an in-memory counter that the
-    watchdog's PM revival resets — a restart cannot rewind.
+    Two conditions guard a report, and only the second is checked here.
+
+    At least one failed read in *this* process, so a file caught mid-write is
+    never reported on sight — enforced by the caller, by construction: this is
+    only ever called from poll_once immediately after a read of `path` failed,
+    and the failure counter is incremented before the call. There is
+    deliberately no `attempts` check here; it could never be false.
+
+    And an age past PM_MALFORMED_GRACE_S, checked here, which — unlike an
+    in-memory counter that the watchdog's PM revival resets — a restart cannot
+    rewind. That is the whole reason the bound is measured from mtime.
     """
-    if attempts < 1:
-        return False
     try:
         return time.time() - path.stat().st_mtime >= PM_MALFORMED_GRACE_S
     except OSError:
@@ -379,7 +384,9 @@ def poll_once(queue: Path, project_slug: str, failures: dict) -> str:
         failures[candidate.name] = attempts
         if attempts == 1:  # log once per file, not once per poll
             log(f"keeping unusable task file {candidate.name} for the next poll: {why}")
-        if _past_report_bound(candidate, attempts) and _report_unusable(candidate, why, attempts, failures):
+        # The "one failed read in this process" half of the bound is satisfied
+        # right here, by the read above; _past_report_bound only checks age.
+        if _past_report_bound(candidate) and _report_unusable(candidate, why, attempts, failures):
             return "reported"
     if task is None:
         return "skipped"
