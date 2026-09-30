@@ -181,7 +181,11 @@ mismatch on the bridge's copy is a 401 on every vote, and the poll itself is
 silent about it, so it is the first thing to check when a tap does nothing.
 **`FARM_SHARED_SECRET` is never used on this path**; it opens nothing here,
 which is the whole point of HZ-140 and is asserted in
-`server/test/wa-poll-vote-auth.test.mjs`.
+`server/test/wa-poll-vote-auth.test.mjs` — and again over a real socket, into
+a really-booted `server.js`, in `server/test/wa-poll-vote-e2e.test.mjs`. That
+second file is the one to read if a tap misbehaves in production: it drives an
+Approve and a Send back through the same route the bridge calls, using a poll
+id the bridge itself minted, so the whole join is exercised rather than mocked.
 
 ### Before turning it on for the first time
 
