@@ -69,27 +69,63 @@ def test_never_dispatches_an_agent_for_the_mechanical_path(isolated_workspaces_d
     assert result["resolved"] is True
 
 
-def test_never_uses_ours_theirs_or_force_push():
-    """Guardrail, enforced structurally: a clean merge is a fast-forward of
-    the branch's own previous tip, so a plain push is always correct — using
-    --ours/--theirs or a forced push would silently discard one side. Checks
-    only actual git argument literals, not the module's prose docstring
-    (which names them to explain why they're avoided)."""
+def test_never_uses_ours_theirs_or_a_bare_force_push():
+    """Guardrail, enforced structurally: resolving a conflict by taking
+    --ours/--theirs would silently discard one side, and a bare forced push
+    would overwrite a commit this run did not create. Checks only actual git
+    argument literals, not the module's prose docstring (which names them to
+    explain why they're avoided).
+
+    HZ-154 narrowed the force rule rather than dropping it: the scoped path
+    pushes a merge commit it built itself, so it uses --force-with-lease=<ref>:
+    <the exact head it resolved>. Every --force literal must be part of that
+    form — a bare --force added later fails here immediately, everywhere."""
     lines = [line for line in Path(conflict_resolver.__file__).read_text().splitlines() if "git(ws" in line]
     assert lines, "expected at least one git(ws, ...) call site to scan"
     joined = "\n".join(lines)
     assert "--ours" not in joined
     assert "--theirs" not in joined
-    assert "--force" not in joined
+    for line in lines:
+        for fragment in line.split("--force")[1:]:
+            assert fragment.startswith("-with-lease="), f"bare --force in a git call site: {line.strip()}"
+
+
+def test_the_mechanical_path_pushes_with_no_force_flag_at_all(isolated_workspaces_dir, monkeypatch):
+    """The behavioral half of the guardrail above: a text scan breaks silently
+    on a rename, so record the real argv and assert on the push itself."""
+    calls = []
+    real_git = conflict_resolver.git
+
+    def recording_git(ws, *args, **kwargs):
+        calls.append(args)
+        return real_git(ws, *args, **kwargs)
+
+    monkeypatch.setattr(conflict_resolver, "git", recording_git)
+    tmp_path = isolated_workspaces_dir
+    _hub, origin = make_repo_hub(tmp_path)
+    monkeypatch.delenv("FARM_CHECK_CMD", raising=False)
+
+    push_new_branch(tmp_path, origin, "horizon/hz-1", lambda w: (w / "shared.txt").write_text("line1 (branch edit)\nline2\nline3\n"), "branch")
+    push_new_branch(tmp_path, origin, "main", lambda w: (w / "other.txt").write_text("new on main\n"), "main-advance")
+
+    assert conflict_resolver.resolve("acme/demo", "HZ-1", log=lambda *_: None)["resolved"] is True
+
+    pushes = [args for args in calls if args and args[0] == "push"]
+    assert pushes == [("push", "origin", "horizon/hz-1")]
 
 
 # ---- escalation: real, incompatible conflicts ----
 
 
 def test_incompatible_same_line_edits_escalate_and_leave_worktree_clean(isolated_workspaces_dir, monkeypatch):
+    """HZ-92's behaviour, pinned with HZ-154's scoped path switched off — this
+    is also the rollback proof: FARM_CONFLICT_SCOPED_ENABLED=0 restores the
+    mechanical-only escalation exactly, with no code change. The same fixture
+    going down the scoped path lives in test_conflict_scoped.py."""
     tmp_path = isolated_workspaces_dir
     _hub, origin = make_repo_hub(tmp_path)
     monkeypatch.delenv("FARM_CHECK_CMD", raising=False)
+    monkeypatch.setenv("FARM_CONFLICT_SCOPED_ENABLED", "0")
 
     branch_sha = push_new_branch(
         tmp_path, origin, "horizon/hz-2", lambda w: (w / "shared.txt").write_text("line1\nline2 (branch)\nline3\n"), "branch"

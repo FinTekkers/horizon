@@ -663,10 +663,13 @@ export function buildApp({ logger = true } = {}) {
     },
   )
 
-  // HZ-92: mechanical merge-conflict resolution — same gate PIN requirement
-  // as /reject above (this is the fast path that replaces sending the item
-  // straight back to the implement step), the Accept gate itself is
-  // untouched either way.
+  // HZ-92/HZ-154: merge-conflict resolution — same gate PIN requirement as
+  // /reject above (this is the fast path that replaces sending the item
+  // straight back to the implement step), the Accept gate itself is untouched
+  // either way. HZ-154 let the farm side resolve the conflicted hunks and
+  // review just that resolution, so this can now involve an agent; what it
+  // can do here did not change — it resolves or it escalates, and the gate and
+  // its PIN are never approved or bypassed by either outcome.
   fastify.post(
     '/api/items/:id/resolve-conflicts',
     { schema: { params: idParam } },
