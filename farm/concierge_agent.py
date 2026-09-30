@@ -38,6 +38,7 @@ from pathlib import Path
 import httpx
 
 from . import config
+from . import credentials
 from . import wizard
 from .agent_runner import AgentError, extract_json, run_agent
 from .config import CONCIERGE_MODEL, FARM_PORT, HORIZON_URL, STATE_DIR, ensure_dirs, slugify
@@ -412,6 +413,17 @@ def main() -> None:
     parser.add_argument("--project", required=True)
     parser.add_argument("--once", action="store_true", help="one poll pass and exit (testing)")
     args = parser.parse_args()
+
+    # HZ-140: this process is the one agent session granted a gate-approving
+    # credential, and the next thing it does is run a model over WhatsApp text
+    # a stranger can write. config.py captured the value at import; drop the
+    # name here, before any model is spawned, so the child cannot inherit it.
+    # Names only — never the value. See farm/credentials.py for why the
+    # provider seam's env= can't cover this on its own (the SDK runner merges
+    # options.env over os.environ, so it can override a name but not remove it).
+    dropped = credentials.drop_from_process_environ()
+    if dropped:
+        log(f"dropped from this process's environment before running any model: {', '.join(dropped)}")
 
     ensure_dirs()
     if not config.FARM_WA_ALLOWED_JIDS:

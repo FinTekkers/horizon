@@ -69,6 +69,7 @@ def test_the_concierge_grant_is_subtracted_from_what_counts_as_a_leak():
 
 def test_the_report_prints_names_and_never_a_value(monkeypatch, capsys):
     monkeypatch.setattr(cse, "scan", lambda: {"farm-run-x": {4242: ["FARM_SHARED_SECRET"]}})
+    monkeypatch.setattr(cse, "grants_held", lambda: {})
     assert cse.main() == 1
     out = capsys.readouterr().out
     assert "FARM_SHARED_SECRET" in out and "farm-run-x" in out
@@ -78,8 +79,50 @@ def test_the_report_prints_names_and_never_a_value(monkeypatch, capsys):
 
 def test_a_clean_scan_exits_zero(monkeypatch, capsys):
     monkeypatch.setattr(cse, "scan", lambda: {})
+    monkeypatch.setattr(cse, "grants_held", lambda: {})
     assert cse.main() == 0
     assert "clean" in capsys.readouterr().out
+
+
+def test_the_concierge_grant_is_reported_rather_than_passed_over(monkeypatch, capsys):
+    """The tool judges by the launch policy, so the concierge holding
+    WA_APPROVAL_SECRET is not a leak. Reporting it anyway is the difference
+    between "clean" meaning "nothing unexpected" and being read as "nothing
+    running here can approve a gate" — which would be false."""
+    monkeypatch.setattr(cse, "scan", lambda: {})
+    monkeypatch.setattr(
+        cse, "grants_held", lambda: {"farm-concierge-horizon": {99: ["WA_APPROVAL_SECRET"]}}
+    )
+    assert cse.main() == 0
+    out = capsys.readouterr().out
+    assert "GRANT farm-concierge-horizon pid 99: WA_APPROVAL_SECRET" in out
+    assert "LEAK" not in out
+    # The residual is named where someone reading the output will see it.
+    assert "/proc" in out
+    assert SECRET_VALUE not in out
+
+
+def test_a_grant_and_a_leak_are_reported_separately(monkeypatch, capsys):
+    monkeypatch.setattr(cse, "scan", lambda: {"farm-run-x": {42: ["WA_APPROVAL_SECRET"]}})
+    monkeypatch.setattr(
+        cse, "grants_held", lambda: {"farm-concierge-horizon": {99: ["WA_APPROVAL_SECRET"]}}
+    )
+    assert cse.main() == 1
+    out = capsys.readouterr().out
+    assert "GRANT farm-concierge-horizon" in out
+    assert "LEAK farm-run-x pid 42: WA_APPROVAL_SECRET" in out
+    # Only the leak sets the exit status; "clean" must not appear alongside it.
+    assert "clean" not in out
+
+
+def test_grants_held_asks_for_the_granted_names_not_the_forbidden_ones(monkeypatch):
+    monkeypatch.setattr(cse, "session_pids", lambda session: [7])
+    monkeypatch.setattr(cse, "env_names", lambda pid: {"WA_APPROVAL_SECRET", "FARM_HOME"})
+    assert cse.grants_held(["farm-concierge-horizon"]) == {"farm-concierge-horizon": {7: ["WA_APPROVAL_SECRET"]}}
+    # A step session is granted nothing, so it can never appear on a GRANT line
+    # — the same holding is a leak there, and scan() is what reports it.
+    assert cse.grants_held(["farm-run-x"]) == {}
+    assert cse.scan(["farm-run-x"]) == {"farm-run-x": {7: ["WA_APPROVAL_SECRET"]}}
 
 
 # ---- the live check, over real tmux ----

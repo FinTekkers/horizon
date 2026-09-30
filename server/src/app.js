@@ -124,10 +124,12 @@ function humanAuthorized(request, reply) {
 
 // Routes reachable without a login session: the auth routes themselves, the
 // GitHub webhook (HMAC-verified, GitHub can't send a cookie), the farm
-// callbacks and the WhatsApp-approval leg (both authorized by the farm's
-// shared secret instead), the shared stylesheet, and the deploy liveness
-// probe (HZ-43 — nginx proxies /horizon/api/ wholesale, so deploy.sh has no
-// session to send; see /api/health below for what stays out of its payload).
+// callbacks (farmAuthorized, the farm's shared secret), the WhatsApp-approval
+// leg (HZ-140 — its own WA_APPROVAL_SECRET plus a server-held approver
+// allowlist; FARM_SHARED_SECRET gets a 401 there now), the shared stylesheet,
+// and the deploy liveness probe (HZ-43 — nginx proxies /horizon/api/
+// wholesale, so deploy.sh has no session to send; see /api/health below for
+// what stays out of its payload).
 const SESSION_EXEMPT = [
   /^\/api\/auth\//,
   /^\/api\/webhooks\/github$/,

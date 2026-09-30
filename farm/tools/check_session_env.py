@@ -7,13 +7,21 @@ that are actually running right now, which is the only thing that catches a
 session started before the upgrade (tmux sessions keep the environment they
 were launched with; farmd's teardown has to run for the new policy to apply).
 
+What it can and cannot tell you. It judges each session against the policy that
+launched it (tmux_mgr.SESSION_ENV_GRANTS), so the concierge holding
+WA_APPROVAL_SECRET is not a leak — that grant is the design. It is reported on
+its own GRANT line rather than passed over silently, because "clean" must not
+be read as "no process here can approve a gate": the concierge can, by design,
+and every farm session runs as the same OS user. Only an *unexpected* holder is
+a leak and only a leak sets the exit status.
+
 Prints NAMES only, never values — a leak report must not itself leak.
 
 Usage (from the repo root):
 
     farm/.venv/bin/python -m farm.tools.check_session_env
 
-Exit status: 0 clean, 1 if any session holds a credential it shouldn't.
+Exit status: 0 if no session holds a credential it was not granted, 1 otherwise.
 """
 
 import subprocess
@@ -93,26 +101,52 @@ def leaked_names(pid: int, forbidden: frozenset[str]) -> list[str]:
     return sorted(env_names(pid) & forbidden)
 
 
-def scan(sessions: list[str] | None = None) -> dict[str, dict[int, list[str]]]:
-    """{session: {pid: [leaked names]}} for every session with a leak."""
+def agent_sessions() -> list[str]:
+    return [s for s in tmux_mgr.list_farm_sessions() if s.startswith(tmux_mgr.AGENT_SESSION_PREFIXES)]
+
+
+def _hits(sessions: list[str] | None, wanted) -> dict[str, dict[int, list[str]]]:
+    """{session: {pid: [names held]}}, for whichever set `wanted(session)` names."""
     if sessions is None:
-        sessions = [s for s in tmux_mgr.list_farm_sessions() if s.startswith(tmux_mgr.AGENT_SESSION_PREFIXES)]
+        sessions = agent_sessions()
     report: dict[str, dict[int, list[str]]] = {}
     for session in sessions:
-        forbidden = forbidden_names(session)
-        if not forbidden:
+        names = wanted(session)
+        if not names:
             continue
-        hits = {pid: leaked_names(pid, forbidden) for pid in session_pids(session)}
-        hits = {pid: names for pid, names in hits.items() if names}
-        if hits:
-            report[session] = hits
+        found = {pid: leaked_names(pid, names) for pid in session_pids(session)}
+        found = {pid: held for pid, held in found.items() if held}
+        if found:
+            report[session] = found
     return report
+
+
+def scan(sessions: list[str] | None = None) -> dict[str, dict[int, list[str]]]:
+    """{session: {pid: [leaked names]}} for every session holding a credential
+    it was NOT granted. This is the only thing that sets the exit status."""
+    return _hits(sessions, forbidden_names)
+
+
+def grants_held(sessions: list[str] | None = None) -> dict[str, dict[int, list[str]]]:
+    """{session: {pid: [granted names]}} for every session holding a credential
+    it WAS granted. Not a leak, and reported anyway: the concierge really can
+    approve a gate, and a bare "clean" would read as though nothing here could."""
+    return _hits(sessions, tmux_mgr.granted_names)
 
 
 def main() -> int:
     report = scan()
+    grants = grants_held()
+    for session, hits in sorted(grants.items()):
+        for pid, names in sorted(hits.items()):
+            print(f"GRANT {session} pid {pid}: {', '.join(names)} (expected — this session is the approval path)")
     if not report:
-        print("check_session_env: clean — no agent session holds a gate-approving credential")
+        print("check_session_env: clean — no agent session holds a credential it was not granted")
+        if grants:
+            print(
+                "check_session_env: the GRANT lines above are by design; a same-uid agent can still read "
+                "those processes' /proc environ, which needs a separate uid to close (see farm/README.md)"
+            )
         return 0
     for session, hits in sorted(report.items()):
         for pid, names in sorted(hits.items()):
