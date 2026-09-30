@@ -77,7 +77,9 @@ graph TD
   [tmux](https://github.com/tmux/tmux/wiki) session (`tmux_mgr.py`) so its
   output can be tailed live and it survives independently of any one HTTP
   request. `step_agent.py` runs a single step and exits; `pm_agent.py` is a
-  longer-lived agent used for the Plan phase and the review-summary step.
+  longer-lived agent used for the Plan phase and the review-summary step. See
+  [`docs/agent-architecture.md`](agent-architecture.md) for which steps run
+  in which of those two processes and how a step's AI provider is chosen.
 
 - **Infra (`infra/host/`)** — not application code, but the scripts and
   config that get a merged change onto the running server. A published
@@ -124,4 +126,6 @@ the farm; every farm-bound HTTP call goes through it.
 | Infra | `infra/host/` | shell scripts + systemd units | the host itself |
 
 For the lifecycle those layers cooperate to run, see
-[`docs/workflow.md`](workflow.md).
+[`docs/workflow.md`](workflow.md); for which process actually executes each
+step and how provider selection works, see
+[`docs/agent-architecture.md`](agent-architecture.md).
