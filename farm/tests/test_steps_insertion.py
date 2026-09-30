@@ -112,6 +112,61 @@ def test_workspace_mutating_indexes_follows_the_inserted_step():
     assert existing_farm["index"] not in mutating
 
 
+# ---- the farm-shaped projection (steps.py's _project_farm_view) ----
+# HZ-139 moved this assertion here from server/test/lifecycle-step-insertion.test.mjs,
+# which asserted it against the deleted generator's toGeneratedSteps. Same
+# scenario, same fabricated table, now asserted against the implementation that
+# owns the rule. Note the input here is the AUTHORED shape (no `index`, gates
+# included) — the projection is what turns it into the farm shape above.
+
+
+def _authored_table():
+    existing = {
+        "phase": 0,
+        "kind": "agent",
+        "agent": "Eng",
+        "label": "Existing Farm Step",
+        "runsIn": "farm",
+        "workspaceMutating": False,
+        "providerOverrideEligible": True,
+        "providerLocked": False,
+        "maxTurns": 10,
+        "timeoutS": 100,
+    }
+    inserted = {
+        "phase": 0,
+        "kind": "agent",
+        "agent": "Eng",
+        "label": "Inserted Between Two Existing Steps",
+        "runsIn": "farm",
+        "workspaceMutating": True,
+        "providerOverrideEligible": False,
+        "providerLocked": True,
+        "maxTurns": 77,
+        "timeoutS": 777,
+    }
+    gate = {"phase": 0, "kind": "gate", "gate": "required", "label": "Existing Gate"}
+    return [existing, inserted, gate], existing, inserted
+
+
+def test_project_farm_view_carries_the_inserted_step_at_its_own_index():
+    table, existing, inserted = _authored_table()
+    projected = steps._project_farm_view(table)
+    entry = next(e for e in projected if e["label"] == inserted["label"])
+
+    assert entry["index"] == table.index(inserted)
+    for field in ("workspaceMutating", "providerOverrideEligible", "providerLocked", "maxTurns", "timeoutS"):
+        assert entry[field] == inserted[field]
+
+    # The pre-existing step's own fields must be unaffected by the insertion.
+    existing_entry = next(e for e in projected if e["label"] == existing["label"])
+    assert existing_entry["maxTurns"] == existing["maxTurns"]
+    assert existing_entry["index"] == table.index(existing)
+
+    # And the gate never reaches the farm view at all.
+    assert all(e["label"] != "Existing Gate" for e in projected)
+
+
 # ---- lane routing (farmd.py's lane_for_index) ----
 
 

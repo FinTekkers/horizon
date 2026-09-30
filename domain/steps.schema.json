@@ -1,6 +1,6 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
-  "$comment": "HZ-128: the contract for domain/steps.json. Validated by domain/validate.mjs — a dependency-free subset validator (no ajv; guardrail 3 forbids a new dependency), so only these keywords are honoured: type, required, properties, additionalProperties, items, enum, minimum, maximum, minLength, minItems, uniqueItems, allOf, if/then. Cross-field rules a Draft-07 subset cannot express (phase < phases.length, unique labels) are asserted by domain/generate.mjs instead — see its loadSource().",
+  "$comment": "HZ-128: the contract for domain/steps.json. Validated by domain/validate.mjs — a dependency-free subset validator (no ajv; guardrail 3 forbids a new dependency), so only these keywords are honoured: type, required, properties, additionalProperties, items, enum, minimum, maximum, minLength, minItems, uniqueItems, allOf, if/then. Cross-field rules a Draft-07 subset cannot express (phase < phases.length, unique labels) are asserted at LOAD time by the bindings themselves instead — see assertLifecycleShape() in domain/js/lifecycle.js and _validate_source() in domain/py/steps.py, which domain/fixtures/lifecycle-cases.json drives from both sides so the two cannot drift.",
   "title": "Horizon lifecycle step table",
   "type": "object",
   "required": ["phases", "steps"],

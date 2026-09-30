@@ -15,7 +15,7 @@ import { spawnSync } from 'node:child_process'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 
-import { REPO_ROOT } from '../../domain/generate.mjs'
+import { REPO_ROOT } from './helpers/repoFiles.mjs'
 import { STEPS, requiredStepIndex } from '../../domain/js/lifecycle.js'
 
 const SCRIPT = path.join(REPO_ROOT, 'server/scripts/check-required-input-gate.mjs')

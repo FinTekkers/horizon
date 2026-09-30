@@ -3,7 +3,7 @@
 // HZ-128: the step table and every derived helper (STEPS, PHASES,
 // requiredStepIndex, isClosed, curStep, phaseIdx, awaitingGate, stepStatus,
 // phaseStepIndexes, reworkTargets, defaultReworkTarget, …) live in
-// domain/js/lifecycle.js, generated from domain/steps.json. Before that, this
+// domain/js/lifecycle.js, which reads domain/steps.json. Before that, this
 // file and server/src/lifecycle.js each carried their own copy — isClosed and
 // curStep byte-for-byte identical, and the index lookup differing only in name
 // and argument order. Import the model from domain/, never from here.

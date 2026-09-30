@@ -15,7 +15,8 @@
 //     carrying its own `index`, farm-only fields present as None on the PM lane,
 //     and no `requires` (a server-side dispatch gate, never a farm one).
 //
-// Without these pins a future regen could widen or narrow either view silently.
+// Without these pins a hand edit to either binding could widen or narrow one
+// view silently.
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
@@ -23,29 +24,67 @@ import { readFileSync } from 'node:fs'
 import { execFileSync } from 'node:child_process'
 import path from 'node:path'
 
-import { REPO_ROOT } from '../../domain/generate.mjs'
 import * as binding from '../../domain/js/lifecycle.js'
-import { stripComments } from './helpers/repoFiles.mjs'
+import { REPO_ROOT, stripComments } from './helpers/repoFiles.mjs'
 
 const jsSource = readFileSync(path.join(REPO_ROOT, 'domain/js/lifecycle.js'), 'utf8')
 // The forbidden-pattern scan runs over the CODE, not the prose: the file's own
 // header comment says "no runtime fetch", which a naive /fetch\s*\(/ matches.
 const jsCode = stripComments(jsSource)
+const pySource = readFileSync(path.join(REPO_ROOT, 'domain/py/steps.py'), 'utf8')
 const stepsJson = readFileSync(path.join(REPO_ROOT, 'domain/steps.json'), 'utf8')
 
-// ---- guardrail 4: no runtime fetch, no filesystem read, no JSON import ----
+// ---- guardrail 4: no runtime fetch, no filesystem read ----
 
-test('the JS binding embeds its data — no fetch, no readFileSync, no JSON import', () => {
-  for (const forbidden of [/\bfetch\s*\(/, /readFileSync/, /readFile\b/, /import\s+[^\n]*steps\.json/, /require\s*\(/, /XMLHttpRequest/]) {
+test('the JS binding does no runtime I/O — no fetch, no readFileSync, no dynamic import', () => {
+  for (const forbidden of [/\bfetch\s*\(/, /readFileSync/, /readFile\b/, /import\s*\(/, /require\s*\(/, /XMLHttpRequest/]) {
     assert.ok(!forbidden.test(jsCode), `domain/js/lifecycle.js matches ${forbidden} — the UI must work with no server`)
   }
-  // Positive control for the same source text: the data IS in the file.
-  assert.match(jsSource, /export const STEPS = \[/)
-  assert.ok(jsSource.includes(binding.STEPS[0].label))
 })
 
-test('the JS binding imports nothing at all — it is a leaf module', () => {
-  assert.ok(!/^\s*import\s/m.test(jsCode), 'domain/js/lifecycle.js has an import statement')
+// HZ-139 flipped this pair. The binding used to carry the table as an inlined
+// literal; it now STATICALLY imports domain/steps.json, which Node and Rollup
+// both resolve at build time and inline into the bundle. The guarantee is
+// unchanged — still no server, still no network — so the assertions move from
+// "the data is in the file" to "the data is NOT in the file, and the one
+// static import is". Weaker-sounding, strictly stronger: it is metric 3 and
+// guardrail 4 ("steps.json stays the only place a step is declared") in test
+// form. ui/scripts/verify-base-build.mjs closes the loop from the other end by
+// asserting the BUILT bundle does carry a step label.
+test('the JS binding reads its data from domain/steps.json with one static import', () => {
+  assert.match(jsCode, /^import data from '\.\.\/steps\.json' with \{ type: 'json' \}$/m)
+  // Positive control: the scan is looking at real code, not an empty string.
+  assert.ok(jsCode.includes('export const STEPS'), 'the hygiene scan is not reading the binding at all')
+})
+
+// The ONE place a label may legitimately appear in the JS binding: as the
+// argument to a requiredStepIndex() lookup for a derived index constant
+// (IMPLEMENT_STEP_INDEX and friends). That is a lookup BY label, which is
+// exactly the pattern this repo wants — the opposite of an inlined table. The
+// Python binding has no such lookup and gets no exemption.
+const LOOKUP_CALL = /requiredStepIndex\((['"])(?:(?!\1)[^\\]|\\.)*\1\)/g
+
+test('neither binding inlines a second copy of the step table — every label, both files', () => {
+  assert.ok(binding.STEPS.length > 0, 'sanity: the JS binding exports an empty table')
+  const jsWithoutLookups = jsSource.replace(LOOKUP_CALL, 'requiredStepIndex()')
+  for (const step of binding.STEPS) {
+    assert.ok(!jsWithoutLookups.includes(step.label), `label "${step.label}" is inlined in domain/js/lifecycle.js`)
+    assert.ok(!pySource.includes(step.label), `label "${step.label}" is inlined in domain/py/steps.py`)
+  }
+  // Positive controls. First: the labels DO exist, in steps.json — so the scan
+  // is not passing because binding.STEPS is empty or the labels are blank.
+  for (const step of binding.STEPS) assert.ok(stepsJson.includes(step.label))
+  // Second: the exemption above is narrow. Stripping the lookups removed only
+  // the four derived constants' arguments, not a table.
+  const stripped = (jsSource.match(LOOKUP_CALL) || []).length
+  assert.equal(stripped, 4, `expected exactly 4 requiredStepIndex() label lookups in the binding, found ${stripped}`)
+})
+
+test('both bindings are real hand-written source — no placeholder, no GENERATED banner', () => {
+  for (const [rel, src] of [['domain/js/lifecycle.js', jsSource], ['domain/py/steps.py', pySource]]) {
+    assert.ok(!src.includes('@@'), `${rel} still carries an @@PLACEHOLDER@@`)
+    assert.doesNotMatch(src, /GENERATED/, `${rel} still carries the "GENERATED — do not edit" banner`)
+  }
 })
 
 // ---- guardrail 5: no presentation in domain/ ----

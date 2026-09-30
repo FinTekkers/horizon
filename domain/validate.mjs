@@ -10,8 +10,13 @@
 // open.
 //
 // Cross-field rules a Draft-07 subset cannot express (a step's `phase` being
-// in range of `phases`, unique step labels) live in domain/generate.mjs's
-// loadSource(), not here.
+// in range of `phases`, unique step labels) live in the bindings' own
+// load-time checks — assertLifecycleShape() in domain/js/lifecycle.js and
+// _validate_source() in domain/py/steps.py — not here.
+//
+// This file is deliberately NOT imported by either binding: it would ship the
+// whole Draft-07 engine plus steps.schema.json into the browser bundle for a
+// check CI already runs on the same commit (server/test/domain-schema.test.mjs).
 
 const KEYWORDS = new Set([
   // annotations — ignored, allowed anywhere
