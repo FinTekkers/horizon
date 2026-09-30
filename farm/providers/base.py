@@ -30,15 +30,30 @@ class AgentExhaustedError(AgentError):
     HZ-124: carries whatever partial_text/session_id the provider managed to
     capture before it ran out of budget, so a caller can attempt to salvage a
     truncated-but-otherwise-valid JSON reply, or hand a resumed session off to
-    the next attempt, instead of discarding both. Both default to "empty" —
-    every existing single-arg `raise AgentExhaustedError("...")` call site
-    keeps working unchanged, and orchestrator classification (turn_cap) is
-    untouched since it only ever inspects the exception's type."""
+    the next attempt, instead of discarding both. It also carries the HZ-102
+    provenance pair (provider/command_id) for the same reason: a run whose
+    reply is salvaged out of this exception still has to record WHICH provider
+    actually produced those bytes, or a salvaged muse_smoke_test writes NULL
+    provenance and HZ-102's guarantee quietly disappears on exactly the runs
+    that needed it most. All four default to "empty" — every existing
+    single-arg `raise AgentExhaustedError("...")` call site keeps working
+    unchanged, and orchestrator classification (turn_cap) is untouched since it
+    only ever inspects the exception's type."""
 
-    def __init__(self, message: str, *, partial_text: str = "", session_id: str | None = None) -> None:
+    def __init__(
+        self,
+        message: str,
+        *,
+        partial_text: str = "",
+        session_id: str | None = None,
+        provider: str | None = None,
+        command_id: str | None = None,
+    ) -> None:
         super().__init__(message)
         self.partial_text = partial_text
         self.session_id = session_id
+        self.provider = provider
+        self.command_id = command_id
 
 
 def decode_partial_output(captured) -> str:

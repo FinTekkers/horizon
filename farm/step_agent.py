@@ -393,6 +393,29 @@ def _review_summary(verdict: dict) -> str:
     return summary[:600]
 
 
+# ---- which fields a GATE-bearing step's exhaustion salvage must carry (HZ-124) ----
+# The shaping helpers above are fail-closed only for fields they can SEE: a
+# missing "findings" reads as [], a missing boolean reads as False. That is the
+# right default for a complete reply, but an exhaustion salvage is by
+# definition an incomplete one — a reply cut off a byte after `"verdict":
+# "pass"` would salvage into a findings-free PASS and clear the review gate,
+# where before HZ-124 it failed as turn_cap and auto-retried. So each
+# gate-bearing call site names every field its gate actually reads; salvage
+# missing any of them is refused in agent_runner._handle_exhaustion() and the
+# run stays a retryable exhaustion. Non-gating steps pass nothing and keep the
+# permissive behaviour — losing a planning artifact to a missing brace is the
+# loss this item exists to stop.
+CODE_REVIEW_SALVAGE_REQUIRED_KEYS = ("verdict", "findings")
+QA_REVIEW_SALVAGE_REQUIRED_KEYS = (
+    "verdict",
+    "findings",
+    "regression_tests_run",
+    "new_code_unit_coverage",
+    "e2e_test_present",
+)
+DEPLOY_SALVAGE_REQUIRED_KEYS = ("url", "expected_text")
+
+
 def _run_and_parse(
     prompt: str,
     *,
@@ -405,6 +428,7 @@ def _run_and_parse(
     provider_locked: bool = False,
     handoff_item_id: str | None = None,
     handoff_step_index=None,
+    salvage_required_keys: tuple[str, ...] = (),
 ) -> tuple[dict, dict, list[str]]:
     """Thin wrapper over agent_runner.parse_agent_reply() — the ONE shared
     run_agent + extract_json + retry/repair/salvage/handoff helper (HZ-124
@@ -418,6 +442,11 @@ def _run_and_parse(
     caller must surface these in both the run log and the artifact
     (guardrail), which is why this also logs them here rather than leaving
     that to each of the five call sites individually.
+
+    salvage_required_keys is forwarded for the two GATE-bearing call sites
+    (review, deploy): an exhaustion salvage missing a field their gate reads
+    must fail as a retryable exhaustion, not be shaped into a verdict — see
+    parse_agent_reply's docstring and GATE_SALVAGE_REQUIRED_KEYS below.
     """
     parsed, reply_meta, notes = parse_agent_reply(
         prompt,
@@ -431,6 +460,7 @@ def _run_and_parse(
         provider_locked=provider_locked,
         handoff_item_id=handoff_item_id,
         handoff_step_index=handoff_step_index,
+        salvage_required_keys=salvage_required_keys,
     )
     for note in notes:
         log(f"repair — {note}")
@@ -446,6 +476,31 @@ def _with_repair_note(artifact_md: str, notes: list[str]) -> str:
         return artifact_md
     note_line = f"Repairs applied: {'; '.join(notes)}"
     return f"{artifact_md}\n\n---\n{note_line}" if artifact_md else note_line
+
+
+def _summary_with_repair_note(summary: str, notes: list[str], limit: int = 600) -> str:
+    """The implement step's disclosure channel for a repair (guardrail: a
+    repair that altered bytes must be visible in the persisted record, not
+    just the tmux log).
+
+    It has to be the SUMMARY, not an extra artifacts key: completeFarmRun in
+    server/src/orchestrator.js reads exactly branch / files_changed /
+    artifact_md / verdict / provider / command_id off an implement step's
+    artifacts and drops everything else, so an artifacts["repairs"] key would
+    be silently discarded — a disclosure that exists only in a farm-local log
+    is the "repair silently" failure this item is about. The summary is
+    persisted verbatim as step_run.output.
+
+    The note is reserved out of the character budget BEFORE the summary is
+    trimmed, so the disclosure can never be the thing truncation eats.
+    """
+    if not notes:
+        return summary[:limit]
+    note = f" [repairs: {'; '.join(notes)}]"
+    if len(note) >= limit:
+        return note.strip()[:limit]
+    head = summary[: limit - len(note)].rstrip()
+    return f"{head}{note}" if head else note.strip()
 
 
 # ---- deploy deep-verification (HZ-22) ----
@@ -555,11 +610,10 @@ def execute(task: dict) -> dict:
             summary = str(parsed.get("summary", "implementation finished")).strip()[:600]
         else:
             summary = "implementation finished (agent's final message was not valid JSON — see session log)"
-        # Guardrail: a repair that altered bytes still needs a note here,
-        # even though implement has no artifact_md to attach one to — logged
-        # to the run output, and stamped into the artifacts dict this step
-        # DOES send to the server, mirroring how provider_override's
-        # provenance is stamped in below for the other steps.
+        # Guardrail: a repair that altered bytes still needs a note here, even
+        # though implement has no artifact_md to attach one to — logged to the
+        # run output, and folded into the summary below, which is the only
+        # field of this step's result the server actually persists as prose.
         for note in notes:
             log(f"repair — {note}")
         # Guardrail enforcement: the repo's own tests/linters run here, by the
@@ -568,9 +622,7 @@ def execute(task: dict) -> dict:
         check_note = run_checks(ws, log)
         publish_screenshots(ws, item)
         artifacts = finalize_branch(ws, item, branch)
-        if notes:
-            artifacts["repairs"] = "; ".join(notes)
-        return {"summary": f"{summary} · {check_note}"[:600], "artifacts": artifacts}
+        return {"summary": _summary_with_repair_note(f"{summary} · {check_note}", notes), "artifacts": artifacts}
 
     # Automated review (HZ-30): two independent read-only passes over the
     # actual diff — code correctness against guardrails/the approved plan,
@@ -619,6 +671,7 @@ def execute(task: dict) -> dict:
             provider_locked=provider_locked,
             handoff_item_id=item["id"],
             handoff_step_index=task["step"]["index"],
+            salvage_required_keys=CODE_REVIEW_SALVAGE_REQUIRED_KEYS,
         )
 
         qa_role = (ROLES / "qa_review.md").read_text()
@@ -634,6 +687,7 @@ def execute(task: dict) -> dict:
             provider_locked=provider_locked,
             handoff_item_id=item["id"],
             handoff_step_index=task["step"]["index"],
+            salvage_required_keys=QA_REVIEW_SALVAGE_REQUIRED_KEYS,
         )
 
         verdict = {"code_review": _code_review_section(code_parsed), "qa_review": _qa_review_section(qa_parsed)}
@@ -683,6 +737,7 @@ def execute(task: dict) -> dict:
             provider_locked=provider_locked,
             handoff_item_id=item["id"],
             handoff_step_index=task["step"]["index"],
+            salvage_required_keys=DEPLOY_SALVAGE_REQUIRED_KEYS,
         )
         summary = str(parsed.get("summary", "")).strip()[:600] or "deploy verification finished"
         artifact_md = str(parsed.get("artifact_md", "")).strip()

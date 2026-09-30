@@ -1589,7 +1589,14 @@ def test_deploy_step_repair_note_appears_in_run_log_and_artifact(monkeypatch, ca
     assert "Repairs applied: stripped a trailing comma" in result["artifacts"]["artifact_md"]
 
 
-def test_implement_step_repair_note_appears_in_run_log_and_artifacts(tmp_path, monkeypatch, capsys):
+def test_implement_step_repair_note_appears_in_run_log_and_the_persisted_summary(tmp_path, monkeypatch, capsys):
+    """The implement step's repair disclosure must land somewhere the SERVER
+    keeps. completeFarmRun (server/src/orchestrator.js) reads only branch /
+    files_changed / artifact_md / verdict / provider / command_id off an
+    implement step's artifacts — an extra artifacts["repairs"] key would be
+    dropped on the floor, leaving the repair visible only in a farm-local tmux
+    log. The summary is persisted verbatim as step_run.output, so that's where
+    the note goes."""
     ws, _origin = make_git_workspace(tmp_path)
     monkeypatch.setattr(step_agent, "ensure_item_worktree", lambda repo, item_id: ws)
 
@@ -1602,7 +1609,31 @@ def test_implement_step_repair_note_appears_in_run_log_and_artifacts(tmp_path, m
     result = execute(make_task(11, "Specialist agent implements", repo="acme/demo"))
 
     assert "repair — stripped a trailing comma" in capsys.readouterr().out
-    assert result["artifacts"]["repairs"] == "stripped a trailing comma"
+    assert "[repairs: stripped a trailing comma]" in result["summary"]
+    # ...and not parked on a key the server throws away.
+    assert "repairs" not in result["artifacts"]
+
+
+def test_implement_step_repair_note_survives_summary_truncation(tmp_path, monkeypatch):
+    """A 600-char cap that ate the disclosure would be the silent repair this
+    item exists to prevent, so the note is reserved out of the budget first."""
+    ws, _origin = make_git_workspace(tmp_path)
+    monkeypatch.setattr(step_agent, "ensure_item_worktree", lambda repo, item_id: ws)
+
+    def _fake(prompt, **kwargs):
+        (ws / "fake_implementation.txt").write_text("real work\n")
+        return {"result": json.dumps({"summary": "x" * 4000})[:-1] + ",}"}  # long + trailing comma
+
+    monkeypatch.setattr(step_agent, "run_agent", _fake)
+
+    result = execute(make_task(11, "Specialist agent implements", repo="acme/demo"))
+
+    assert len(result["summary"]) <= 600
+    assert result["summary"].endswith("[repairs: stripped a trailing comma]")
+
+
+def test_summary_with_repair_note_is_a_no_op_without_notes():
+    assert step_agent._summary_with_repair_note("all good", []) == "all good"
 
 
 # ---- HZ-124 metric 11: the handoff note reaches the NEXT attempt's prompt,
@@ -1727,6 +1758,91 @@ def test_hz124_a_real_error_max_turns_hands_a_note_to_the_next_attempt(monkeypat
     next_prompt = build_prompt(make_task(7, "Architecture review"))
     assert "NOTE (unverified)" in next_prompt
     assert "Mapped the two call sites" in next_prompt
+
+
+# ---- HZ-124: an exhaustion salvage must never loosen a GATE ----
+
+
+def test_review_exhaustion_truncated_after_the_verdict_is_not_salvaged_into_a_pass(tmp_path, monkeypatch, capsys):
+    """The reply is cut off one byte after `"verdict": "pass"`. That salvages
+    cleanly, and _code_review_section reads the absent "findings" as [] — so
+    without the gate guard this run would complete as a findings-free PASS.
+    Before HZ-124 it failed as turn_cap and auto-retried; it still must."""
+    monkeypatch.setattr(agent_runner, "STATE_DIR", tmp_path)
+    ws, _origin = make_git_workspace(tmp_path)
+    git(ws, "push", "-u", "origin", "HEAD:horizon/t-1")
+    monkeypatch.setattr(step_agent, "ensure_item_worktree", lambda repo, item_id: ws)
+
+    def _fake(prompt, **kwargs):
+        raise AgentExhaustedError(
+            "claude reported an error result [error_max_turns]",
+            partial_text='{"summary": "looked at the diff", "verdict": "pass"',
+            session_id="sess-1",
+        )
+
+    monkeypatch.setattr(step_agent, "run_agent", _fake)
+
+    with pytest.raises(AgentExhaustedError):
+        execute(make_task(12, "Automated review (code + QA)", repo="acme/demo"))
+
+    assert "salvage: refused" in capsys.readouterr().out
+
+
+def test_review_exhaustion_carrying_a_complete_verdict_is_still_salvaged(tmp_path, monkeypatch):
+    """The guard is scoped to INCOMPLETE salvage, not to salvage as such: a
+    partial reply that does carry every field the gate reads still saves the
+    run, which is the whole point of the item."""
+    monkeypatch.setattr(agent_runner, "STATE_DIR", tmp_path)
+    ws, _origin = make_git_workspace(tmp_path)
+    git(ws, "push", "-u", "origin", "HEAD:horizon/t-1")
+    monkeypatch.setattr(step_agent, "ensure_item_worktree", lambda repo, item_id: ws)
+
+    code_partial = '{"verdict": "fail", "findings": [{"detail": "a real bug"}], "summary": "cut off mid'
+    qa_partial = json.dumps(
+        {
+            "verdict": "pass",
+            "findings": [],
+            "regression_tests_run": True,
+            "new_code_unit_coverage": True,
+            "e2e_test_present": True,
+            "summary": "ok",
+        }
+    )[:-1]  # drop the closing brace — truncated, but every gated field is present
+
+    def _fake(prompt, **kwargs):
+        is_qa = "QA Reviewer agent" in (kwargs.get("append_system") or "")
+        raise AgentExhaustedError("error_max_turns", partial_text=qa_partial if is_qa else code_partial, session_id="s")
+
+    monkeypatch.setattr(step_agent, "run_agent", _fake)
+
+    result = execute(make_task(12, "Automated review (code + QA)", repo="acme/demo"))
+
+    assert result["artifacts"]["verdict"]["code_review"] == {
+        "verdict": "fail",
+        "findings": [{"detail": "a real bug"}],
+    }
+    assert result["artifacts"]["verdict"]["qa_review"]["verdict"] == "pass"
+    assert "Repairs applied: salvaged a reply truncated" in result["artifacts"]["artifact_md"]
+
+
+def test_deploy_exhaustion_missing_the_verification_target_is_not_salvaged(tmp_path, monkeypatch):
+    """Deploy gates on a smoke check driven by the model's url/expected_text.
+    A salvage that lost either one would turn a retryable turn_cap into a hard
+    AgentError ("devops reply missing 'url'"), which pauses for a human
+    instead of auto-retrying."""
+    monkeypatch.setattr(agent_runner, "STATE_DIR", tmp_path)
+
+    def _fake(prompt, **kwargs):
+        raise AgentExhaustedError(
+            "error_max_turns",
+            partial_text='{"summary": "deployed and started checking", "url": "https://shoreward.ai/horizon/"',
+            session_id="s",
+        )
+
+    monkeypatch.setattr(step_agent, "run_agent", _fake)
+
+    with pytest.raises(AgentExhaustedError):
+        execute(make_task(14, "Deploy the changes", repo="acme/demo"))
 
 
 def test_implement_exhaustion_never_writes_a_handoff_note(tmp_path, monkeypatch):

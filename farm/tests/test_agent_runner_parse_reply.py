@@ -120,6 +120,146 @@ def test_parse_agent_reply_salvages_a_reply_truncated_mid_string():
     assert notes and "salvaged" in notes[0]
 
 
+def test_salvage_closes_and_then_strips_the_trailing_comma_it_just_exposed():
+    """Closing a reply cut off right after a structural comma yields
+    `{"a":1,}` — the single most common truncation shape, and one that does
+    not parse until the trailing comma goes too."""
+    calls = []
+    exc = AgentExhaustedError("out of turns", partial_text='{"summary": "did a thing", ', session_id="s")
+    parsed, _meta, notes = parse_agent_reply("do it", run_agent_fn=sequenced_run_agent([exc], calls))
+
+    assert parsed == {"summary": "did a thing"}
+    assert notes == [
+        "salvaged a reply truncated mid-string/object at the point of turn-budget exhaustion",
+        "stripped a trailing comma",
+    ]
+
+
+@pytest.mark.parametrize(
+    "partial",
+    [
+        '{"summary": "did a thing", "verdic',  # cut mid-key
+        '{"summary": "did a thing", "verdict":',  # cut after the colon
+        '{"summary": "did a thing", "verdict": tru',  # cut mid-literal
+    ],
+)
+def test_salvage_drops_an_incomplete_trailing_field_no_closing_punctuation_can_rescue(partial):
+    """Rung 3 of the ladder. What survives is a strict subset of the bytes the
+    model actually wrote — the half-written field is dropped, never guessed at."""
+    calls = []
+    exc = AgentExhaustedError("out of turns", partial_text=partial, session_id="s")
+    parsed, _meta, notes = parse_agent_reply("do it", run_agent_fn=sequenced_run_agent([exc], calls))
+
+    assert parsed == {"summary": "did a thing"}
+    assert "dropped an incomplete trailing field" in notes[-1]
+
+
+def test_salvage_still_refuses_input_that_is_not_a_truncation(monkeypatch, tmp_path):
+    """Guardrail: unrepairable input must not be made to parse into plausible
+    content. No rung of the ladder may invent a field."""
+    from farm import agent_runner
+
+    monkeypatch.setattr(agent_runner, "STATE_DIR", tmp_path)
+    calls = []
+    exc = AgentExhaustedError("out of turns", partial_text="I was about to write some JSON", session_id="s")
+
+    with pytest.raises(AgentExhaustedError):
+        parse_agent_reply("do it", run_agent_fn=sequenced_run_agent([exc], calls))
+
+
+# ---- gate safety: a salvage missing a gated field is refused ----
+# A reply cut off one byte after `"verdict": "pass"` salvages cleanly, and
+# step_agent's _code_review_section then reads the absent "findings" as [] —
+# a findings-free PASS through the review gate, where before HZ-124 the run
+# failed as turn_cap and auto-retried. salvage_required_keys is what stops a
+# salvage from ever loosening a gate.
+
+
+def test_a_salvage_missing_a_required_key_is_refused_and_the_run_stays_retryable(monkeypatch, tmp_path, capsys):
+    from farm import agent_runner
+
+    monkeypatch.setattr(agent_runner, "STATE_DIR", tmp_path)
+    calls = []
+    truncated = '{"summary": "reviewed the diff", "verdict": "pass"'
+    exc = AgentExhaustedError("out of turns", partial_text=truncated, session_id="s")
+
+    with pytest.raises(AgentExhaustedError):
+        parse_agent_reply(
+            "review it",
+            run_agent_fn=sequenced_run_agent([exc, {"result": "note"}], calls),
+            salvage_required_keys=("verdict", "findings"),
+        )
+
+    assert "salvage: refused" in capsys.readouterr().out
+    assert '"path": "salvage_refused_incomplete"' in (tmp_path / "repair-stats.ndjson").read_text()
+
+
+def test_the_same_bytes_salvage_fine_for_a_step_whose_output_gates_nothing():
+    """The other half of the pair above: the refusal is scoped to callers that
+    NAME a gated key, so a planning step still keeps its 26 minutes of work."""
+    calls = []
+    truncated = '{"summary": "reviewed the diff", "verdict": "pass"'
+    exc = AgentExhaustedError("out of turns", partial_text=truncated, session_id="s")
+
+    parsed, _meta, _notes = parse_agent_reply("plan it", run_agent_fn=sequenced_run_agent([exc], calls))
+
+    assert parsed == {"summary": "reviewed the diff", "verdict": "pass"}
+
+
+def test_a_salvage_carrying_every_required_key_is_accepted():
+    calls = []
+    truncated = '{"verdict": "fail", "findings": [], "summary": "cut off mid'
+    exc = AgentExhaustedError("out of turns", partial_text=truncated, session_id="s")
+
+    parsed, _meta, notes = parse_agent_reply(
+        "review it",
+        run_agent_fn=sequenced_run_agent([exc], calls),
+        salvage_required_keys=("verdict", "findings"),
+    )
+
+    assert parsed == {"verdict": "fail", "findings": [], "summary": "cut off mid"}
+    assert notes
+
+
+# ---- HZ-102 provenance survives an exhaustion salvage ----
+
+
+def test_a_salvaged_reply_keeps_the_provider_and_command_id_off_the_exception():
+    """A salvaged muse_smoke_test run must still record WHICH provider ran —
+    writing NULL provenance would quietly delete HZ-102's guarantee on exactly
+    the runs that needed salvaging."""
+    calls = []
+    exc = AgentExhaustedError(
+        "muse reported exhaustion",
+        partial_text='{"summary": "cut off mid',
+        session_id="sess-muse",
+        provider="muse",
+        command_id="cmd-42",
+    )
+
+    _parsed, reply_meta, _notes = parse_agent_reply("do it", run_agent_fn=sequenced_run_agent([exc], calls))
+
+    assert reply_meta == {"provider": "muse", "command_id": "cmd-42", "session_id": "sess-muse"}
+
+
+def test_run_agent_stamps_the_dispatched_provider_onto_an_exhaustion(monkeypatch):
+    """The provenance above is stamped at the one dispatch chokepoint, so no
+    provider has to remember to do it."""
+    from farm import agent_runner
+    from farm.providers import claude
+
+    def _boom(*args, **kwargs):
+        raise AgentExhaustedError("error_max_turns", partial_text="{", session_id="s")
+
+    monkeypatch.setattr(claude, "run", _boom)
+    monkeypatch.setattr(claude, "assert_subscription_auth", lambda: None)
+
+    with pytest.raises(AgentExhaustedError) as exc_info:
+        agent_runner.run_agent("do it", provider="claude")
+
+    assert exc_info.value.provider == "claude"
+
+
 # ---- metric 10: handoff fires at most once per run, only on exhaustion ----
 
 
@@ -152,6 +292,37 @@ def test_parse_agent_reply_fires_a_handoff_when_salvage_fails(monkeypatch, tmp_p
     assert note == "Finished the schema migration; still need to wire up the API route."
     # Read-once: a second read (e.g. a re-queued attempt) must not see it again.
     assert read_and_clear_handoff_note("HZ-1", 11) is None
+
+
+@pytest.mark.parametrize("step_max_turns", [1, 2, 3, 8, 40])
+def test_the_handoff_budget_is_always_strictly_below_the_steps_own(monkeypatch, tmp_path, step_max_turns):
+    """Strictly below, with no max(1, ...) floor: on a 1-turn step, clamping up
+    to 1 would make the handoff call as expensive as the step it reports on, so
+    the correct outcome is to skip it — worst case is no note, which is exactly
+    pre-HZ-124 behaviour."""
+    from farm import agent_runner
+
+    monkeypatch.setattr(agent_runner, "STATE_DIR", tmp_path)
+
+    calls = []
+    exc = AgentExhaustedError("timed out", partial_text="garbage, not json", session_id="sess-1")
+    fake = sequenced_run_agent([exc, {"result": "got about halfway"}], calls)
+
+    with pytest.raises(AgentExhaustedError):
+        parse_agent_reply(
+            "do it",
+            run_agent_fn=fake,
+            max_turns=step_max_turns,
+            handoff_item_id="HZ-3",
+            handoff_step_index=4,
+        )
+
+    if step_max_turns == 1:
+        assert len(calls) == 1  # no room underneath a 1-turn budget — skipped, not clamped
+        assert '"path": "handoff_skipped_no_budget"' in (tmp_path / "repair-stats.ndjson").read_text()
+    else:
+        assert calls[1]["max_turns"] < step_max_turns
+        assert calls[1]["max_turns"] >= 1
 
 
 def test_handoff_never_fires_twice_across_two_consecutive_exhaustions(monkeypatch, tmp_path):

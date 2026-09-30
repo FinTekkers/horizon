@@ -39,6 +39,13 @@ the mechanical fallback (the file) is not conditional on this doc's answer —
 it is the only mechanism, with the optimistic resume as a best-effort bonus on
 top of it.
 
+The handoff call's turn budget is **strictly below** the exhausted step's own
+(`min(3, max_turns - 1)`), with no floor clamping it back up: a step running on
+a 1-turn budget leaves no room underneath it, so the handoff is **skipped**
+rather than made as expensive as the step it reports on. That skip is counted
+(`handoff_skipped_no_budget`) for the same reason every other giving-up path
+is.
+
 Because this call is the least-verified thing in the exhaustion path, its
 failure is contained rather than typed: `_fire_handoff()` catches
 `Exception`, not just `AgentError`. If a resume-after-exhaustion turns out to

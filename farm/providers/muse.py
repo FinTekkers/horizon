@@ -160,10 +160,19 @@ def _parse_events(proc: subprocess.CompletedProcess, session_id: str) -> dict:
             if isinstance(text, str) and text:
                 partial_text = text
                 break
+        # HZ-124/HZ-102: if the exhaustion event carries a command_id, keep it
+        # — a reply salvaged out of this exception is still a real Muse run and
+        # must record which one. Unlike the run.terminal.completed path above
+        # this is NOT a hard requirement: exhaustion reporting is the
+        # unverified branch, so a missing command_id degrades provenance to
+        # None rather than replacing a turn_cap retry with a hard AgentError.
+        command_id = exhausted.get("payload", {}).get("command_id")
         raise AgentExhaustedError(
             f"muse reported exhaustion: {exhausted.get('payload_type')}",
             partial_text=partial_text,
             session_id=session_id,
+            provider="muse",
+            command_id=command_id.strip() if isinstance(command_id, str) and command_id.strip() else None,
         )
 
     if proc.returncode != 0:

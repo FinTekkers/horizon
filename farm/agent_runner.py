@@ -110,16 +110,27 @@ def run_agent(
             f"provider '{name}' does not support resuming a session (SUPPORTS_RESUME=False) — "
             "refusing this call rather than silently starting fresh"
         )
-    result = provider_module.run(
-        prompt,
-        session_id=session_id,
-        append_system=append_system,
-        cwd=cwd,
-        model=model,
-        max_turns=max_turns,
-        timeout_s=timeout_s,
-        allowed_tools=allowed_tools,
-    )
+    try:
+        result = provider_module.run(
+            prompt,
+            session_id=session_id,
+            append_system=append_system,
+            cwd=cwd,
+            model=model,
+            max_turns=max_turns,
+            timeout_s=timeout_s,
+            allowed_tools=allowed_tools,
+        )
+    except AgentExhaustedError as exc:
+        # HZ-124: an exhausted run can still be salvaged into a completed step
+        # (parse_agent_reply -> _salvage_truncated_json), and that step must
+        # record the same HZ-102 provenance a non-exhausted one would. Stamped
+        # at the same single chokepoint that stamps it on success, so no
+        # provider has to remember to do it; a provider that already knows its
+        # own name wins over the dispatch name, never the reverse.
+        if exc.provider is None:
+            exc.provider = name
+        raise
     # Provenance (HZ-102): which provider actually ran, plus its run-level
     # id where one exists (Muse's command_id; Claude has no equivalent).
     result["provider"] = name
@@ -328,13 +339,31 @@ def _extract_json_with_notes(text: str) -> tuple[dict, list[str]]:
     raise AgentError(f"no JSON object in agent reply: {text[:200]}")
 
 
-def _salvage_truncated_json(text: str) -> tuple[dict, str] | None:
+_SALVAGE_NOTE = "salvaged a reply truncated mid-string/object at the point of turn-budget exhaustion"
+
+
+def _salvage_truncated_json(text: str) -> tuple[dict, list[str]] | None:
     """Exhaustion-only (metric 9): if `text` is valid JSON except cut off
     mid-string or mid-object (an open brace/bracket or an unterminated quote
     still pending at EOF), close the minimum needed and re-parse. Returns
-    None — never a fabricated guess — if the result still doesn't parse
-    (e.g. truncation mid-literal, `..."b": tru`) or if nothing was actually
-    open at EOF (a genuinely different failure, not exhaustion truncation).
+    None — never a fabricated guess — if nothing was actually open at EOF (a
+    genuinely different failure, not exhaustion truncation) or if none of the
+    ladder rungs below produce something that parses.
+
+    Three rungs, each strictly a subset of the bytes the model actually wrote
+    — nothing here invents a field or a value:
+
+      1. close what's open:            `{"a":1`        -> `{"a":1}`
+      2. + drop a structural trailing comma, because closing a reply cut off
+         right after one leaves `{"a":1,}`, which is the single most common
+         truncation shape and does not parse on rung 1.
+      3. + drop the incomplete trailing member, for a cut mid-key or after a
+         colon (`{"a":1,"b":` / `{"a":1,"b`), where no amount of closing
+         punctuation makes the fragment legal.
+
+    Rung 3 loses a field the model had started writing, which is exactly why
+    every caller that feeds a GATE passes require_keys to parse_agent_reply():
+    a verdict salvaged without its findings must not be read as approval.
     """
     cleaned = _strip_fences(text.strip())
     start = cleaned.find("{")
@@ -345,7 +374,8 @@ def _salvage_truncated_json(text: str) -> tuple[dict, str] | None:
     stack: list[str] = []
     in_string = False
     escape = False
-    for ch in body:
+    root_member_commas: list[int] = []
+    for i, ch in enumerate(body):
         if in_string:
             if escape:
                 escape = False
@@ -361,20 +391,45 @@ def _salvage_truncated_json(text: str) -> tuple[dict, str] | None:
         elif ch in "}]":
             if stack:
                 stack.pop()
+        elif ch == "," and stack == ["{"]:
+            root_member_commas.append(i)
 
     if not in_string and not stack:
         return None  # nothing left open — not a truncation this can fix
 
     closers = {"{": "}", "[": "]"}
     patch = ('"' if in_string else "") + "".join(closers[c] for c in reversed(stack))
+    closed = body + patch
 
-    try:
-        parsed = json.loads(body + patch, strict=False)
-    except json.JSONDecodeError:
-        return None
+    candidates: list[tuple[str, list[str]]] = [
+        (closed, [_SALVAGE_NOTE]),
+        (_strip_trailing_commas(closed), [_SALVAGE_NOTE, "stripped a trailing comma"]),
+    ]
+    if root_member_commas:
+        # Everything before the last top-level `,` is whole; the fragment
+        # after it is what the budget cut off mid-write. Re-close from there.
+        candidates.append(
+            (
+                body[: root_member_commas[-1]] + "}",
+                [_SALVAGE_NOTE, "dropped an incomplete trailing field the reply was cut off mid-way through"],
+            )
+        )
 
-    _record_repair("salvaged_truncated_json")
-    return parsed, "salvaged a reply truncated mid-string/object at the point of turn-budget exhaustion"
+    seen: set[str] = set()
+    for candidate, notes in candidates:
+        if candidate in seen:
+            continue
+        seen.add(candidate)
+        try:
+            parsed = json.loads(candidate, strict=False)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(parsed, dict):
+            continue
+        _record_repair("salvaged_truncated_json")
+        return parsed, notes
+
+    return None
 
 
 # ---- cross-attempt handoff note (metric 11) ----
@@ -448,7 +503,21 @@ def _fire_handoff(exc: AgentExhaustedError, *, run_agent_fn, run_kwargs: dict, i
     instead of auto-retrying — the exact failure this item exists to remove.
     Contained, not silent: the giving-up reason is printed and counted.
     """
-    handoff_max_turns = max(1, min(3, run_kwargs.get("max_turns", MAX_TURNS) - 1))
+    step_max_turns = run_kwargs.get("max_turns", MAX_TURNS)
+    # STRICTLY below the step's own budget — no max(1, ...) floor. A step
+    # running on a budget of 1 has no room underneath it, and clamping up to 1
+    # would make the handoff call as expensive as the step it is reporting on.
+    # Skipping is the correct outcome there: the worst case is no note, which
+    # is exactly pre-HZ-124 behaviour, never worse.
+    handoff_max_turns = min(3, step_max_turns - 1)
+    if handoff_max_turns < 1:
+        print(
+            f"handoff note: skipped — the step's own budget is {step_max_turns} turn(s), "
+            "leaving no room for a handoff call strictly below it",
+            flush=True,
+        )
+        _record_repair("handoff_skipped_no_budget")
+        return
     handoff_timeout_s = min(120, run_kwargs.get("timeout_s", STEP_TIMEOUT_S))
     try:
         reply = run_agent_fn(
@@ -494,6 +563,7 @@ def _handle_exhaustion(
     on_exhaustion: str,
     handoff_item_id: str | None,
     handoff_step_index,
+    salvage_required_keys: tuple[str, ...] = (),
 ) -> tuple[dict, dict, list[str]]:
     if on_exhaustion == "reraise":
         raise exc
@@ -513,10 +583,37 @@ def _handle_exhaustion(
         )
         _record_repair("salvage_failed")
         salvaged = None
+
     if salvaged is not None:
-        parsed, note = salvaged
-        reply_meta = {"provider": None, "command_id": None, "session_id": exc.session_id}
-        return parsed, reply_meta, [note]
+        parsed, notes = salvaged
+        # Gate safety (guardrail: do not change any gate). A salvaged reply is
+        # by definition an incomplete one, and the caller's downstream shaping
+        # is fail-CLOSED only for fields it can see — step_agent's
+        # _code_review_section reads a missing "findings" as [], so a reply
+        # truncated one byte after `"verdict": "pass"` would salvage into a
+        # clean PASS with no findings and walk straight through the review
+        # gate, where before this item it failed as turn_cap and auto-retried.
+        # A gate-bearing caller names the keys that must be present for the
+        # salvage to mean anything; missing any of them, the salvage is
+        # refused and the run goes back to being a retryable exhaustion.
+        missing = [key for key in salvage_required_keys if key not in parsed]
+        if missing:
+            print(
+                f"salvage: refused — the partial reply parses but is missing "
+                f"{', '.join(missing)}, which this step gates on; failing as a retryable exhaustion instead",
+                flush=True,
+            )
+            _record_repair("salvage_refused_incomplete")
+        else:
+            reply_meta = {
+                # HZ-102 provenance survives salvage: which provider actually
+                # produced these bytes is recorded the same as on the success
+                # path, rather than being written away as NULL.
+                "provider": exc.provider,
+                "command_id": exc.command_id,
+                "session_id": exc.session_id,
+            }
+            return parsed, reply_meta, notes
 
     if handoff_item_id is not None and handoff_step_index is not None and exc.session_id:
         _fire_handoff(exc, run_agent_fn=run_agent_fn, run_kwargs=run_kwargs, item_id=handoff_item_id, step_index=handoff_step_index)
@@ -544,6 +641,7 @@ def parse_agent_reply(
     on_exhaustion: str = "salvage_or_handoff",
     handoff_item_id: str | None = None,
     handoff_step_index=None,
+    salvage_required_keys: tuple[str, ...] = (),
 ) -> tuple[dict | None, dict, list[str]]:
     """The one shared run_agent + extract_json + retry/repair/salvage/handoff
     helper (metric 14) — farm/pm_agent.py and farm/step_agent.py must both
@@ -563,6 +661,13 @@ def parse_agent_reply(
     on_exhaustion="reraise" (the implement step only) skips salvage/handoff
     entirely and re-raises AgentExhaustedError unchanged, so HZ-31's
     checkpoint-salvage scope is untouched (guardrail).
+
+    salvage_required_keys is how a GATE-bearing caller (review, deploy) keeps
+    an exhaustion salvage from weakening its gate: a salvaged reply missing
+    any named key is refused outright and the run stays a retryable
+    exhaustion, rather than being shaped downstream into a verdict with an
+    empty findings list. Omit it and salvage accepts any parseable object,
+    which is correct for the steps whose output gates nothing.
 
     Returns (parsed_or_None, reply_meta, notes) where reply_meta is
     {"provider", "command_id", "session_id"} and notes lists every repair
@@ -591,6 +696,7 @@ def parse_agent_reply(
             on_exhaustion=on_exhaustion,
             handoff_item_id=handoff_item_id,
             handoff_step_index=handoff_step_index,
+            salvage_required_keys=salvage_required_keys,
         )
 
     reply_meta = {
@@ -625,6 +731,7 @@ def parse_agent_reply(
                 on_exhaustion=on_exhaustion,
                 handoff_item_id=handoff_item_id,
                 handoff_step_index=handoff_step_index,
+                salvage_required_keys=salvage_required_keys,
             )
 
         retry_meta = {
