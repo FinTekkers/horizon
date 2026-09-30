@@ -38,6 +38,19 @@ export function isAllowedApprover(jid) {
   return normalized !== '' && ALLOWED_APPROVERS.has(normalized)
 }
 
+// The same list, as recipients — HZ-141's gate-arrival notifier needs to send
+// TO the approvers, not just check a jid against them. Deliberately one export
+// away from isAllowedApprover rather than a second setting: whoever can approve
+// a gate is exactly whoever is told one is waiting, and a parallel notify list
+// would eventually mean messaging someone whose approval is then refused.
+//
+// Returns the RAW configured entries, not the normalized set: a normalized jid
+// has lost its server part ('@s.whatsapp.net'), which the bridge needs to route.
+// Empty stays empty — deny-all above means notify-nobody here, not notify-all.
+export function approverJids() {
+  return [...WA_APPROVER_JIDS]
+}
+
 export function approvalSecretConfigured() {
   return typeof WA_APPROVAL_SECRET === 'string' && WA_APPROVAL_SECRET.length > 0
 }

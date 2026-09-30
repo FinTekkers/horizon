@@ -18,6 +18,12 @@
 //                          unset means every WhatsApp approval is refused (503).
 //   WA_APPROVER_JIDS       comma-separated WhatsApp approver allowlist (deny-by-default:
 //                          empty/unset means NO sender can approve a gate)
+//   WA_NOTIFY_ENABLED      "1" turns on the gate-arrival WhatsApp notifier (HZ-141).
+//                          Unset/anything else means the sweep never runs at all.
+//   WA_BRIDGE_URL          whatsapp-mcp bridge base URL (default http://localhost:8080) —
+//                          same env name farm/config.py reads
+//   WA_NOTIFY_SWEEP_MS     backstop cadence for the gate-arrival sweep (default 60s, floor 10s)
+//   WA_NOTIFY_MAX_ATTEMPTS give-up count per queued notification (default 8)
 //   SESSION_SECRET         unused placeholder — session tokens are random, not signed
 //   HORIZON_TEST_HOOKS     "1" registers e2e-only routes (see app.js) — never set in production
 
@@ -116,6 +122,29 @@ export const WA_APPROVER_JIDS = (process.env.WA_APPROVER_JIDS || '')
   .split(',')
   .map((s) => s.trim())
   .filter(Boolean)
+
+// ---- gate-arrival notification (HZ-141) ----
+// Who gets notified is NOT configured here: it is WA_APPROVER_JIDS above, read
+// through waApprovers.js's approverJids(). One source of truth for who approves
+// a gate and who is told a gate is waiting — a second list would let the two
+// drift into "notified someone who cannot approve".
+//
+// OFF by default, and deliberately not defaulted on by the presence of an
+// approver list: this path messages a real human, so turning it on must be an
+// explicit ops act (/etc/horizon/server.env), never a side effect of
+// configuring HZ-140's approval path. e2e pins it to '0' — see
+// e2e/playwright.config.js's demo-mode env block.
+export const WA_NOTIFY_ENABLED = process.env.WA_NOTIFY_ENABLED === '1'
+// Same env name farm/config.py:59 reads, so one host setting serves both
+// processes. Node strips trailing slashes where Python's rstrip("/") happens
+// inside BridgeTransport instead — same effective URL either way.
+export const WA_BRIDGE_URL = (process.env.WA_BRIDGE_URL || 'http://localhost:8080').replace(/\/+$/, '')
+// Backstop only: the sweep also runs on every store.onChange, so this is what
+// catches a notification whose enqueue-time send failed, not the arrival itself.
+export const WA_NOTIFY_SWEEP_MS = Math.max(Number(process.env.WA_NOTIFY_SWEEP_MS) || 60_000, 10_000)
+// Caps a wedged bridge at ~2h of exponential backoff per row rather than
+// retrying a dead endpoint forever.
+export const WA_NOTIFY_MAX_ATTEMPTS = Math.max(Number(process.env.WA_NOTIFY_MAX_ATTEMPTS) || 8, 1)
 
 // e2e only (HZ-54): the e2e suite runs with no real farm daemon (FARM_URL
 // unset — see e2e/playwright.config.js), so it has no way to make the board

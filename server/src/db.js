@@ -3,6 +3,7 @@ import { mkdirSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { reconcileGoogleUsers } from './loginAllowlist.js'
+import { gateStepIndexes } from '../../domain/js/lifecycle.js'
 
 const DB_PATH =
   process.env.HORIZON_DB || join(dirname(fileURLToPath(import.meta.url)), '..', 'data', 'horizon.db')
@@ -149,11 +150,42 @@ db.exec(`
     expires_at TEXT NOT NULL
   );
   CREATE INDEX IF NOT EXISTS idx_session_user ON session(user_id);
+
+  -- Gate-arrival notification outbox (HZ-141). One row per (arrival at a gate,
+  -- approver). The body is rendered at ENQUEUE time and stored, so a retry hours
+  -- later sends the state the item was in when it reached the gate rather than
+  -- whatever has drifted since.
+  --
+  -- ON DELETE CASCADE, unlike every other child table here: purgeDemoItems()
+  -- in store.js deletes work_item rows directly with foreign_keys = ON, and it
+  -- hand-enumerates the children to clear first. A table missing from that list
+  -- turns demo-item cleanup into an FK constraint error, so this one does not
+  -- rely on being remembered there.
+  CREATE TABLE IF NOT EXISTS gate_notice (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    item_id         TEXT NOT NULL REFERENCES work_item(id) ON DELETE CASCADE,
+    step_index      INTEGER NOT NULL,
+    recipient       TEXT NOT NULL,
+    body            TEXT NOT NULL,
+    status          TEXT NOT NULL DEFAULT 'pending'
+                    CHECK (status IN ('pending','sending','sent','failed')),
+    attempts        INTEGER NOT NULL DEFAULT 0,
+    last_error      TEXT,
+    created_at      TEXT NOT NULL DEFAULT (datetime('now')),
+    next_attempt_at TEXT NOT NULL DEFAULT (datetime('now')),
+    sent_at         TEXT
+  );
+  CREATE INDEX IF NOT EXISTS idx_gate_notice_due ON gate_notice(status, next_attempt_at);
+  CREATE INDEX IF NOT EXISTS idx_gate_notice_item ON gate_notice(item_id, id DESC);
 `)
 
 // Additive migrations for databases created before these columns existed.
 // persona: specialist persona id (see personas.js); NULL = fullstack default.
-for (const column of ['pr INTEGER', 'pr_url TEXT', 'pr_mergeable INTEGER', 'release_tag TEXT', 'release_url TEXT', 'repo TEXT', 'project_id INTEGER', 'persona TEXT', 'review_cycle_count INTEGER NOT NULL DEFAULT 0', 'abandoned_at TEXT', 'abandoned_reason TEXT', 'abandoned_by TEXT']) {
+// notified_step (HZ-141): the gate index this item was last notified about, or
+// NULL when it is not parked at a notified gate. Derived state, not a log — the
+// sweep clears it the moment the cursor leaves a gate, which is what makes a
+// send-back-then-re-approve notify twice and a restart notify zero more times.
+for (const column of ['pr INTEGER', 'pr_url TEXT', 'pr_mergeable INTEGER', 'release_tag TEXT', 'release_url TEXT', 'repo TEXT', 'project_id INTEGER', 'persona TEXT', 'review_cycle_count INTEGER NOT NULL DEFAULT 0', 'abandoned_at TEXT', 'abandoned_reason TEXT', 'abandoned_by TEXT', 'notified_step INTEGER']) {
   try {
     db.exec(`ALTER TABLE work_item ADD COLUMN ${column}`)
   } catch {
@@ -294,4 +326,37 @@ if (count === 0 && !syncConfigured) {
   `)
   const seedAll = db.transaction((items) => items.forEach((it) => insert.run(it)))
   seedAll(SEED_ITEMS)
+}
+
+// HZ-141: re-baseline notified_step against the cursors as they stand right
+// now — every item currently parked at a gate is treated as ALREADY notified,
+// every item that is not is cleared.
+//
+// ANY FUTURE CURSOR-SHIFT MIGRATION MUST CALL THIS. The pipeline-v2 and -v3
+// shifts above are the precedent: shifting `cursor` without re-baselining
+// leaves notified_step pointing at a step index that has moved, so the sweep
+// reads the shift as five fresh arrivals and messages a human five times. This
+// is exported (and covered by gate-notifier-baseline.test.mjs) so the next
+// shift author gets a function to call and a red test, not a comment to notice.
+export function baselineNotifiedStep(database = db) {
+  const gates = gateStepIndexes()
+  const placeholders = gates.map(() => '?').join(',')
+  return database.transaction(() => {
+    database.prepare(`UPDATE work_item SET notified_step = cursor WHERE cursor IN (${placeholders})`).run(...gates)
+    database.prepare(`UPDATE work_item SET notified_step = NULL WHERE cursor NOT IN (${placeholders})`).run(...gates)
+  })
+}
+
+// One-time on first boot after HZ-141 ships, and placed LAST on purpose: it
+// reads final cursors, so it must run after both cursor-shift migrations AND
+// after the demo seed (whose SEED_ITEMS park items on all five gates — without
+// this, a fresh dev box with WA_NOTIFY_ENABLED=1 fires five demo notifications
+// on the first sweep). Same double-boot guard as the shifts above: the setting
+// INSERT is the last statement, so a racing second boot rolls the whole
+// transaction back on the primary-key collision.
+if (!db.prepare("SELECT value FROM setting WHERE key = 'gate_notice_baseline'").get()) {
+  db.transaction(() => {
+    baselineNotifiedStep(db)()
+    db.prepare("INSERT INTO setting (key, value) VALUES ('gate_notice_baseline', 'done')").run()
+  })()
 }

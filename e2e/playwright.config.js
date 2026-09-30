@@ -109,6 +109,16 @@ export default defineConfig({
         GITHUB_TOKEN: '',
         GITHUB_WEBHOOK_SECRET: '',
         FARM_URL: '',
+        // …and must never message a real human (HZ-141). This suite drives demo
+        // items onto gates by design, which is exactly what the gate notifier
+        // reacts to, so an ambient WA_NOTIFY_ENABLED=1 on the host — which the
+        // deploy runbook tells ops to set — would text the approver on every
+        // run. The flag is what actually stops it; WA_BRIDGE_URL is blanked as
+        // the second line of defence, so if the flag is ever forced on here the
+        // notifier falls back to config.js's localhost default instead of
+        // inheriting a host setting that points at the real paired bridge.
+        WA_NOTIFY_ENABLED: '0',
+        WA_BRIDGE_URL: '',
         // Registers the e2e-only /api/test/run-state route (HZ-54) — lets
         // 09-queued-work.spec.js simulate the farm reporting a run as queued
         // without a live farm process, which this suite otherwise has none of.
