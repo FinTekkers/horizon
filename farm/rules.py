@@ -127,10 +127,14 @@ def render_rules_section(rules_parts) -> str:
     return f"## Project rules\n{body}"
 
 
-def effective_prompt(role_text: str, persona_id, project_name, repo) -> str:
+def effective_prompt(role_text: str, agent: str, persona_id, project_name, repo) -> str:
     """Full composition an agent would receive: role -> persona -> project
     rules -> repo rules. Later layers add, never replace. This is the exact
-    string the server's preview must reproduce (parity-tested)."""
-    composed = compose_role(role_text, persona_id)
+    string the server's preview must reproduce (parity-tested).
+
+    `agent` is the lifecycle agent whose persona bucket to compose from
+    (HZ-125: persona ids are only unique within an agent), so a preview of the
+    QA role shows a QA persona rather than an Eng one."""
+    composed = compose_role(role_text, agent, persona_id)
     section = render_rules_section(resolve_rules(project_name, repo))
     return f"{composed}\n\n{section}" if section else composed

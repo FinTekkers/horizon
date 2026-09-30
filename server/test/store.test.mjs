@@ -78,13 +78,15 @@ test('the same GitHub comment id is ingested exactly once', () => {
   assert.equal(feedbackRows('T-GATE').filter((r) => r.gh_comment_id === 777).length, 1)
 })
 
-// ---- specialist persona (HZ-4) ----
+// ---- specialist personas (HZ-4, agent-scoped since HZ-125) ----
 
-test('the persona migration is idempotent and NULL rows read back as null', () => {
-  // Re-running the ALTER is what db.js's migration loop does on every boot.
+test('the persona migrations are idempotent and unset rows read back as an empty map', () => {
+  // Re-running the ALTERs is what db.js's migration loop does on every boot.
   assert.throws(() => db.exec('ALTER TABLE work_item ADD COLUMN persona TEXT'), /duplicate column/)
+  assert.throws(() => db.exec('ALTER TABLE work_item ADD COLUMN personas_json TEXT'), /duplicate column/)
   const gate = store.listItems().find((it) => it.id === 'T-GATE')
-  assert.equal(gate.persona, null) // farm/UI resolve NULL to fullstack
+  // An empty map, never null: the farm/UI resolve each agent's default from it.
+  assert.deepEqual(gate.personas, {})
 })
 
 // ---- automated review (HZ-30) ----
@@ -281,17 +283,64 @@ test('requestChanges with no targetStepIndex is unaffected — the default (no-t
 test('setPersona validates, persists, logs an event and notifies', () => {
   let notified = 0
   const off = store.onChange(() => notified++)
-  assert.deepEqual(store.setPersona('NOPE-1', 'python_backend'), { error: 'not_found' })
-  assert.deepEqual(store.setPersona('T-CLOSED', 'python_backend'), { error: 'closed' })
-  assert.deepEqual(store.setPersona('T-GATE', 'rustacean'), { error: 'bad_persona' })
+  assert.deepEqual(store.setPersona('NOPE-1', 'eng', 'python'), { error: 'not_found' })
+  assert.deepEqual(store.setPersona('T-CLOSED', 'eng', 'python'), { error: 'closed' })
+  assert.deepEqual(store.setPersona('T-GATE', 'eng', 'rustacean'), { error: 'bad_persona' })
+  // A real id, but from another agent's bucket — a persona is only valid
+  // within its own agent (HZ-125).
+  assert.deepEqual(store.setPersona('T-GATE', 'eng', 'api_contract'), { error: 'bad_persona' })
+  assert.deepEqual(store.setPersona('T-GATE', 'devops', 'python'), { error: 'bad_persona' })
   assert.equal(notified, 0)
 
-  assert.deepEqual(store.setPersona('T-GATE', 'python_backend'), { ok: true })
+  assert.deepEqual(store.setPersona('T-GATE', 'eng', 'python'), { ok: true })
   assert.equal(notified, 1)
-  assert.equal(store.getItem('T-GATE').persona, 'python_backend')
+  assert.deepEqual(store.getItem('T-GATE').personas, { eng: 'python' })
   const event = db.prepare("SELECT text FROM event WHERE item_id = 'T-GATE' ORDER BY id DESC").get()
-  assert.equal(event.text, 'set the specialist persona to Python backend')
+  assert.equal(event.text, 'set the eng specialist persona to Python backend')
   off()
+})
+
+test('one persona per composing agent round-trips on a single item', () => {
+  // HZ-125 success metric 7: two agents' personas, written separately, both
+  // readable back — what a single TEXT column could not express.
+  db.prepare("INSERT INTO work_item (id, title, priority, cursor) VALUES ('T-SLOTS', 'Two slots', 'Medium', 3)").run()
+  assert.deepEqual(store.setPersona('T-SLOTS', 'eng', 'performance'), { ok: true })
+  assert.deepEqual(store.setPersona('T-SLOTS', 'qa', 'data_integrity'), { ok: true })
+  assert.deepEqual(store.getItem('T-SLOTS').personas, { eng: 'performance', qa: 'data_integrity' })
+  // And through the list projection the UI actually reads.
+  const listed = store.listItems().find((it) => it.id === 'T-SLOTS')
+  assert.deepEqual(listed.personas, { eng: 'performance', qa: 'data_integrity' })
+  // Setting one slot again leaves the other alone.
+  assert.deepEqual(store.setPersona('T-SLOTS', 'eng', 'ui'), { ok: true })
+  assert.deepEqual(store.getItem('T-SLOTS').personas, { eng: 'ui', qa: 'data_integrity' })
+})
+
+test('a legacy flat persona value reads back as an eng persona and migrates on first write', () => {
+  // HZ-125 guardrail 3 / success metric 12, with the literal value the metric
+  // names. No migration script: the translation happens on read, and the first
+  // setPersona carries it into personas_json rather than losing it.
+  db.prepare(
+    "INSERT INTO work_item (id, title, priority, cursor, persona) VALUES ('T-LEGACY', 'Pre-HZ-125 item', 'Medium', 3, 'python_backend')",
+  ).run()
+  assert.deepEqual(store.getItem('T-LEGACY').personas, { eng: 'python' })
+
+  assert.deepEqual(store.setPersona('T-LEGACY', 'qa', 'e2e_journey'), { ok: true })
+  assert.deepEqual(store.getItem('T-LEGACY').personas, { eng: 'python', qa: 'e2e_journey' })
+  // The legacy column is left exactly as it was — read-only, never rewritten.
+  assert.equal(db.prepare("SELECT persona FROM work_item WHERE id = 'T-LEGACY'").get().persona, 'python_backend')
+})
+
+test('an unparseable or unregistered personas_json degrades safely, never throws', () => {
+  db.prepare(
+    "INSERT INTO work_item (id, title, priority, cursor, persona, personas_json) VALUES ('T-JUNK', 'Corrupt blob', 'Medium', 3, 'frontend_ui', 'not json{')",
+  ).run()
+  assert.deepEqual(store.getItem('T-JUNK').personas, { eng: 'ui' })
+
+  db.prepare(
+    'INSERT INTO work_item (id, title, priority, cursor, personas_json) VALUES (?, ?, ?, ?, ?)',
+  ).run('T-STALE', 'Retired id', 'Medium', 3, JSON.stringify({ eng: 'retired_id', qa: 'e2e_journey' }))
+  // The unknown id is dropped; the valid sibling survives.
+  assert.deepEqual(store.getItem('T-STALE').personas, { qa: 'e2e_journey' })
 })
 
 test('setPersona rejects items in an inactive project', () => {
@@ -299,20 +348,21 @@ test('setPersona rejects items in an inactive project', () => {
   const projectB = db.prepare("INSERT INTO project (name) VALUES ('proj-b')").run().lastInsertRowid
   db.prepare("INSERT INTO work_item (id, title, priority, cursor, project_id) VALUES ('T-OTHER', 'Other project', 'Medium', 3, ?)").run(projectB)
   db.prepare("INSERT OR REPLACE INTO setting (key, value) VALUES ('active_project_id', ?)").run(String(projectA))
-  assert.deepEqual(store.setPersona('T-OTHER', 'fullstack'), { error: 'project_not_active' })
+  assert.deepEqual(store.setPersona('T-OTHER', 'eng', 'fullstack'), { error: 'project_not_active' })
   db.prepare("DELETE FROM setting WHERE key = 'active_project_id'").run()
 })
 
-test('upsertFromGithub never clobbers the persona', () => {
+test('upsertFromGithub never clobbers the personas', () => {
   const projectId = db.prepare("INSERT INTO project (name) VALUES ('gh-sync')").run().lastInsertRowid
   db.prepare("INSERT INTO project_repo (project_id, repo, prefix) VALUES (?, 'acme/demo', 'AC')").run(projectId)
   store.upsertFromGithub({ number: 9, title: 'Synced item', body: 'do the thing', state: 'open', labels: [] }, 'acme/demo')
-  assert.deepEqual(store.setPersona('AC-9', 'frontend_ui'), { ok: true })
-  // A later sync (edited title/body) must leave the human's persona alone.
+  assert.deepEqual(store.setPersona('AC-9', 'eng', 'ui'), { ok: true })
+  assert.deepEqual(store.setPersona('AC-9', 'architect', 'distributed_systems'), { ok: true })
+  // A later sync (edited title/body) must leave the human's personas alone.
   store.upsertFromGithub({ number: 9, title: 'Synced item (edited)', body: 'do it better', state: 'open', labels: [] }, 'acme/demo')
   const item = store.getItem('AC-9')
   assert.equal(item.title, 'Synced item (edited)')
-  assert.equal(item.persona, 'frontend_ui')
+  assert.deepEqual(item.personas, { eng: 'ui', architect: 'distributed_systems' })
 })
 
 test('upsertFromGithub keeps same-numbered issues from two repos apart', () => {

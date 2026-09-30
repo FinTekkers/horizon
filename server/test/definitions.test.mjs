@@ -20,7 +20,8 @@ fs.mkdirSync(join(farmDir, 'roles', 'personas'), { recursive: true })
 fs.mkdirSync(join(farmDir, 'rules', 'projects'), { recursive: true })
 fs.mkdirSync(join(farmDir, 'rules', 'repos'), { recursive: true })
 fs.writeFileSync(join(farmDir, 'roles', 'eng_implement.md'), 'ROLE TEXT\n')
-fs.writeFileSync(join(farmDir, 'roles', 'personas', 'fullstack.md'), 'PERSONA TEXT\n')
+// Persona files are agent-prefixed (HZ-125) — the registry's own file name.
+fs.writeFileSync(join(farmDir, 'roles', 'personas', 'eng_fullstack.md'), 'PERSONA TEXT\n')
 fs.writeFileSync(join(farmDir, 'rules', 'projects', 'fintekkers.md'), 'PROJECT RULES\n')
 fs.writeFileSync(join(farmDir, 'rules', 'repos', 'FinTekkers__ui-service.md'), 'UI-SERVICE RULES\n')
 
@@ -67,7 +68,7 @@ test('GET /api/definitions lists the hierarchy with global, project and repo lay
   const body = res.json()
   assert.deepEqual(
     body.global.map((d) => `${d.kind}/${d.name}`),
-    ['role/eng_implement', 'persona/fullstack'],
+    ['role/eng_implement', 'persona/eng_fullstack'],
   )
   assert.deepEqual(body.projects, [{ kind: 'project', name: 'fintekkers', bytes: 14 }])
   assert.deepEqual(body.repos.map((d) => d.name), ['FinTekkers__ui-service'])
@@ -230,7 +231,7 @@ test('concurrent saves both land — serialized, last write wins, two commits', 
 test('the effective-prompt preview composes role → persona → project → repo', async () => {
   const res = await app.inject({
     method: 'GET',
-    url: '/api/definitions/effective?role=eng_implement&persona=fullstack&project=FinTekkers&repo=FinTekkers/ui-service',
+    url: '/api/definitions/effective?role=eng_implement&agent=eng&persona=fullstack&project=FinTekkers&repo=FinTekkers/ui-service',
     headers: { cookie },
   })
   assert.equal(res.statusCode, 200)

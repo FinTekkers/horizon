@@ -18,11 +18,17 @@ from types import SimpleNamespace
 
 import pytest
 
+from domain.py import steps as domain_steps
 from farm import pm_agent
 from farm.config import PM_MALFORMED_GRACE_S
 from farm.pm_agent import MAX_PROMPT_ARTIFACT_CHARS, _mark_truncated, build_prompt, notify_started, validate
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
+
+# Read off the one declaration (domain/steps.json) rather than typed here:
+# server/test/domain-one-declaration.test.mjs allowlists every file that spells
+# a step label out, and a test fixture has no business being on that list.
+FIRST_PM_STEP_LABEL = domain_steps.STEPS[0]["label"]
 
 
 def make_task(rules=None, feedback=None):
@@ -173,13 +179,100 @@ def test_mark_truncated_run_on_word_extends_to_the_next_boundary_past_the_limit(
 
 
 def test_validate_persona_stays_hard_capped_with_no_marker():
-    # persona is a registry-validated routing enum, not prose a human/agent
+    # persona ids are registry-validated routing enums, not prose a human/agent
     # reads — the server drops anything that isn't an exact match anyway, so
-    # marking it would just decorate a value that's discarded either way.
+    # marking one would just decorate a value that's discarded either way.
     over = "x" * 100
-    _summary, patch, _artifact = validate({"summary": "did it", "patch": {"persona": over}})
-    assert patch["persona"] == over[:40]
-    assert "chars omitted" not in patch["persona"]
+    _summary, patch, _artifact = validate({"summary": "did it", "patch": {"personas": {"eng": over}}})
+    assert patch["personas"]["eng"] == over[:40]
+    assert "chars omitted" not in patch["personas"]["eng"]
+
+
+# ---- agent-scoped persona proposal (HZ-125) ----
+# The real farm PM path, not the server's demo-mode heuristic: pm.md tells the
+# agent to emit `"personas": {"eng": ...}` and completeFarmRun only accepts an
+# object under `patch.personas`. A flat string here would be silently discarded
+# server-side, so the shape is pinned at this end too.
+
+
+def test_validate_forwards_an_agent_scoped_personas_map():
+    _summary, patch, _artifact = validate({"summary": "did it", "patch": {"personas": {"eng": "python"}}})
+    assert patch["personas"] == {"eng": "python"}
+
+
+def test_validate_keeps_one_slot_per_agent():
+    _summary, patch, _artifact = validate(
+        {"summary": "did it", "patch": {"personas": {"eng": "python", "qa": "data_integrity"}}}
+    )
+    assert patch["personas"] == {"eng": "python", "qa": "data_integrity"}
+
+
+@pytest.mark.parametrize(
+    "bogus", ["python", 42, [], {"eng": 7}, {7: "python"}, {"eng": "   "}, {"": "python"}, {}, None]
+)
+def test_validate_drops_a_malformed_personas_field_without_failing_the_step(bogus):
+    _summary, patch, _artifact = validate({"summary": "did it", "patch": {"personas": bogus}})
+    assert "personas" not in patch
+
+
+def test_validate_drops_a_pre_hz125_flat_persona_field():
+    """A prompt (or a cached session) still emitting the old flat field must not
+    smuggle a bare string through under a key the server no longer reads — it
+    would be silently dropped there. Dropping it here keeps the patch honest
+    about what it changed."""
+    _summary, patch, _artifact = validate({"summary": "did it", "patch": {"persona": "python_backend"}})
+    assert "persona" not in patch
+    assert "personas" not in patch
+
+
+def test_pm_role_prompt_asks_for_the_agent_scoped_shape():
+    """The prompt and the validator have to agree: an agent told to emit a flat
+    "persona" string would have its proposal dropped at every layer below."""
+    from farm.pm_agent import ROLE_PROMPT
+
+    assert '"personas"' in ROLE_PROMPT
+    assert '"persona"' not in ROLE_PROMPT
+    # The ids it offers must exist in the eng bucket it is told to fill.
+    from farm.personas import PERSONAS
+
+    for persona_id in ("fullstack", "python", "ui", "performance"):
+        assert persona_id in PERSONAS["eng"]
+        assert persona_id in ROLE_PROMPT
+    # The retired flat ids must not still be advertised.
+    assert "python_backend" not in ROLE_PROMPT
+    assert "frontend_ui" not in ROLE_PROMPT
+
+
+def test_build_prompt_renders_the_items_personas_per_agent():
+    from farm.pm_agent import build_prompt
+
+    task = {
+        "run_id": "r1",
+        "item": {"id": "T-1", "title": "t", "personas": {"eng": "python", "qa": "e2e_journey"}},
+        "step": {"label": FIRST_PM_STEP_LABEL},
+    }
+    prompt = build_prompt(task)
+    assert "personas: eng=python, qa=e2e_journey" in prompt
+
+
+def test_build_prompt_renders_a_legacy_flat_persona_value():
+    """Guardrail 3: a task file enqueued before HZ-125 still shows its routing
+    instead of reading as "(not set)"."""
+    from farm.pm_agent import build_prompt
+
+    task = {
+        "run_id": "r1",
+        "item": {"id": "T-1", "title": "t", "persona": "python_backend"},
+        "step": {"label": FIRST_PM_STEP_LABEL},
+    }
+    assert "personas: eng=python_backend" in build_prompt(task)
+
+
+def test_build_prompt_says_not_set_when_the_item_carries_no_persona():
+    from farm.pm_agent import build_prompt
+
+    task = {"run_id": "r1", "item": {"id": "T-1", "title": "t"}, "step": {"label": FIRST_PM_STEP_LABEL}}
+    assert "personas: (not set)" in build_prompt(task)
 
 
 # ---- HZ-57: /started notify before processing a claimed PM-queue task ----

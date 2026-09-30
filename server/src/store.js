@@ -13,7 +13,7 @@ import {
   IMPLEMENT_STEP_INDEX,
   ACCEPT_GATE_INDEX,
 } from '../../domain/js/lifecycle.js'
-import { isPersona, personaLabel } from './personas.js'
+import { isPersona, personaLabel, personasFromRow } from './personas.js'
 import { getActiveProjectId, setSetting } from './settings.js'
 
 const listeners = new Set()
@@ -366,7 +366,7 @@ export function listItems() {
     pr_mergeable: row.pr_mergeable == null ? null : !!row.pr_mergeable,
     release_tag: row.release_tag,
     release_url: row.release_url,
-    persona: row.persona,
+    personas: personasFromRow(row),
     cursor: row.cursor,
     currentStep: currentStepOf(row),
     paused: !!row.paused,
@@ -387,7 +387,10 @@ export function listItems() {
 export function getItem(id) {
   const row = db.prepare('SELECT * FROM work_item WHERE id = ?').get(id)
   if (!row) return null
-  return { ...row, paused: !!row.paused, rejected: !!row.rejected }
+  // `personas` is derived here, at the one seam every caller reads an item
+  // through, so nothing downstream has to know about personas_json or the
+  // legacy `persona` column (HZ-125). The raw columns stay on the object.
+  return { ...row, paused: !!row.paused, rejected: !!row.rejected, personas: personasFromRow(row) }
 }
 
 // Human actions are only valid against the active project's items.
@@ -538,18 +541,24 @@ export function setPaused(id, paused) {
 
 // The human leg of specialist routing: confirm or override the persona the PM
 // proposed (usually at the intake gate; the next dispatch reads the item).
-export function setPersona(id, persona) {
+//
+// One slot per agent (HZ-125): setting the QA persona leaves the Eng one alone,
+// so the write merges rather than replaces. Because `it.personas` already came
+// through personasFromRow, the first call on a pre-HZ-125 item carries its
+// translated legacy value into personas_json instead of dropping it.
+export function setPersona(id, agent, persona) {
   const it = getItem(id)
   if (!it) return { error: 'not_found' }
   if (inactiveProject(it)) return { error: 'project_not_active' }
   if (isClosed(it)) return { error: 'closed' }
   if (isAbandoned(it)) return { error: 'abandoned' }
-  if (!isPersona(persona)) return { error: 'bad_persona' }
+  if (!isPersona(agent, persona)) return { error: 'bad_persona' }
 
-  db.prepare(`UPDATE work_item SET persona = ?, ${touch} WHERE id = ?`).run(persona, id)
+  const merged = { ...it.personas, [agent]: persona }
+  db.prepare(`UPDATE work_item SET personas_json = ?, ${touch} WHERE id = ?`).run(JSON.stringify(merged), id)
   addEvent(id, {
     who: 'You',
-    text: `set the specialist persona to ${personaLabel(persona)}`,
+    text: `set the ${agent} specialist persona to ${personaLabel(agent, persona)}`,
     color: '#5E4380',
     initials: 'YOU',
   })

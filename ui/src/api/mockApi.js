@@ -283,12 +283,12 @@ export function togglePause(id) {
   else runAgents(id)
 }
 
-export function setPersona(id, persona) {
-  if (!PERSONAS[persona]) return
-  update(id, (it) => ({ ...it, persona }))
+export function setPersona(id, agent, persona) {
+  if (!PERSONAS[agent]?.[persona]) return
+  update(id, (it) => ({ ...it, personas: { ...it.personas, [agent]: persona } }))
   pushEvent(id, {
     who: 'You',
-    text: `set the specialist persona to ${PERSONAS[persona].label}`,
+    text: `set the ${agent} specialist persona to ${PERSONAS[agent][persona].label}`,
     color: '#5E4380',
     initials: 'YOU',
   })
@@ -302,9 +302,17 @@ const MOCK_DEFINITIONS = {
   global: [
     { kind: 'role', name: 'eng_implement', bytes: 1420 },
     { kind: 'role', name: 'qa', bytes: 980 },
-    { kind: 'persona', name: 'fullstack', bytes: 812 },
-    { kind: 'persona', name: 'python_backend', bytes: 764 },
-    { kind: 'persona', name: 'frontend_ui', bytes: 790 },
+    { kind: 'persona', name: 'eng_fullstack', bytes: 812 },
+    { kind: 'persona', name: 'eng_python', bytes: 764 },
+    { kind: 'persona', name: 'eng_ui', bytes: 790 },
+    { kind: 'persona', name: 'eng_performance', bytes: 800 },
+    { kind: 'persona', name: 'qa_api_contract', bytes: 1120 },
+    { kind: 'persona', name: 'qa_e2e_journey', bytes: 1080 },
+    { kind: 'persona', name: 'qa_data_integrity', bytes: 1060 },
+    { kind: 'persona', name: 'architect_data_modelling', bytes: 1140 },
+    { kind: 'persona', name: 'architect_distributed_systems', bytes: 1250 },
+    { kind: 'persona', name: 'pm_roadmap', bytes: 1000 },
+    { kind: 'persona', name: 'pm_feature_development', bytes: 1100 },
   ],
   projects: [{ kind: 'project', name: 'fintekkers', bytes: 1500 }],
   repos: [

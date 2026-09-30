@@ -2,6 +2,11 @@
 // leg of HZ-4's specialist routing (QA condition 1: this replaces any
 // "manually verified" claim) — plus the HZ-14 "See agent output" links that
 // replaced inline step output and the HZ-5 Live activity panel.
+//
+// HZ-125: personas are agent-scoped, so the gate shows ONE control per persona
+// agent, each labelled with that agent's own name and offering only its own
+// bucket. These render the real component, so they are the UI-layer proof of
+// success metric 11 — not just the domain module's filter logic.
 
 import { expect, test, vi } from 'vitest'
 import { render, fireEvent, cleanup } from '@testing-library/react'
@@ -21,7 +26,8 @@ import { ACCEPT_GATE_INDEX } from '../../../domain/js/lifecycle.js'
 // here — a second hand-copy of the vocabulary inside ui/src is exactly the
 // drift this repo now forbids.
 import { REASON, REASON_IDS } from '../../../domain/js/reasons.js'
-import { PERSONAS } from '../domain/personas'
+import { PERSONAS, PERSONA_AGENT_ROLES } from '../domain/personas'
+import { AGENTS } from '../domain/agentTokens'
 
 afterEach(() => {
   cleanup()
@@ -61,39 +67,64 @@ function renderTracker(item, onSetPersona = noop, onAbandon = noop, onResolveCon
   )
 }
 
-test('the intake gate shows the persona select, defaulting to the proposed persona', () => {
-  const { getByLabelText } = renderTracker({ ...baseItem, persona: 'python_backend' })
-  expect(getByLabelText('Specialist persona').value).toBe('python_backend')
+// The picker's label for one agent's control, built from that agent's own
+// lifecycle name rather than a second hand-typed copy of it.
+const pickerLabel = (agent) => `${AGENTS[PERSONA_AGENT_ROLES[agent]].label} persona`
+
+test('the intake gate shows one persona select per agent, defaulting to the proposed persona', () => {
+  const { getByLabelText } = renderTracker({ ...baseItem, personas: { eng: 'python' } })
+  for (const agent of Object.keys(PERSONAS)) {
+    expect(getByLabelText(pickerLabel(agent))).toBeTruthy()
+  }
+  expect(getByLabelText(pickerLabel('eng')).value).toBe('python')
 })
 
-test('an item with no persona defaults the select to fullstack', () => {
+test('each agent’s select offers only that agent’s own personas', () => {
+  const { getByLabelText } = renderTracker({ ...baseItem, personas: { eng: 'python' } })
+  for (const agent of Object.keys(PERSONAS)) {
+    const offered = Array.from(getByLabelText(pickerLabel(agent)).options).map((o) => o.value)
+    expect(offered.sort()).toEqual(Object.keys(PERSONAS[agent]).sort())
+  }
+})
+
+test('an item with no personas defaults every select to that agent’s default', () => {
   const { getByLabelText } = renderTracker(baseItem)
-  expect(getByLabelText('Specialist persona').value).toBe('fullstack')
+  expect(getByLabelText(pickerLabel('eng')).value).toBe('fullstack')
+  expect(getByLabelText(pickerLabel('qa')).value).toBe('api_contract')
+  expect(getByLabelText(pickerLabel('architect')).value).toBe('data_modelling')
+  expect(getByLabelText(pickerLabel('pm')).value).toBe('roadmap')
 })
 
-test('changing the select fires setPersona with the chosen id', () => {
+test('changing a select fires setPersona with that agent and the chosen id', () => {
   const spy = vi.fn()
-  const { getByLabelText } = renderTracker({ ...baseItem, persona: 'python_backend' }, spy)
-  fireEvent.change(getByLabelText('Specialist persona'), { target: { value: 'frontend_ui' } })
-  expect(spy).toHaveBeenCalledWith('T-1', 'frontend_ui')
+  const { getByLabelText } = renderTracker({ ...baseItem, personas: { eng: 'python' } }, spy)
+  fireEvent.change(getByLabelText(pickerLabel('eng')), { target: { value: 'ui' } })
+  expect(spy).toHaveBeenCalledWith('T-1', 'eng', 'ui')
+  fireEvent.change(getByLabelText(pickerLabel('qa')), { target: { value: 'data_integrity' } })
+  expect(spy).toHaveBeenCalledWith('T-1', 'qa', 'data_integrity')
 })
 
-test('the select is absent when the item is past the intake gate', () => {
-  const { queryByLabelText } = renderTracker({ ...baseItem, cursor: 4, persona: 'python_backend' })
-  expect(queryByLabelText('Specialist persona')).toBeNull()
+test('the selects are absent when the item is past the intake gate', () => {
+  const { queryByLabelText } = renderTracker({ ...baseItem, cursor: 4, personas: { eng: 'python' } })
+  for (const agent of Object.keys(PERSONAS)) {
+    expect(queryByLabelText(pickerLabel(agent))).toBeNull()
+  }
 })
 
 // HZ-121: no shipped persona is testOnly anymore, so this test proves the
 // filter itself (Tracker.jsx's `.filter(([, p]) => !p.testOnly)`) against a
-// synthetic entry rather than relying on a real one to exist.
+// synthetic entry rather than relying on a real one to exist. HZ-125 applies it
+// per agent bucket, so the fixture is registered inside one.
 test('the persona picker never offers a testOnly persona', () => {
-  PERSONAS.__fixture_test_only__ = { label: 'Fixture (test-only)', initials: 'FX', color: '#000', testOnly: true }
+  PERSONAS.eng.__fixture_test_only__ = { label: 'Fixture (test-only)', initials: 'FX', color: '#000', testOnly: true }
   try {
-    const { getByLabelText } = renderTracker({ ...baseItem, persona: 'python_backend' })
-    const options = Array.from(getByLabelText('Specialist persona').options).map((o) => o.value)
-    expect(options).not.toContain('__fixture_test_only__')
+    const { getByLabelText } = renderTracker({ ...baseItem, personas: { eng: 'python' } })
+    for (const agent of Object.keys(PERSONAS)) {
+      const offered = Array.from(getByLabelText(pickerLabel(agent)).options).map((o) => o.value)
+      expect(offered).not.toContain('__fixture_test_only__')
+    }
   } finally {
-    delete PERSONAS.__fixture_test_only__
+    delete PERSONAS.eng.__fixture_test_only__
   }
 })
 

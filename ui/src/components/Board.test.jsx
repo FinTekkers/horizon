@@ -29,7 +29,7 @@ function makeItem(id, state) {
     pr: null,
     paused: false,
     rejected: false,
-    persona: 'fullstack',
+    personas: { eng: 'fullstack' },
     activeRun: {
       id: Number(id.split('-')[1]) || 1,
       step_index: 11,
