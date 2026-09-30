@@ -118,6 +118,7 @@ const readback = () => {
   try {
     return {
       notices: db.prepare('SELECT * FROM gate_notice ORDER BY id').all(),
+      polls: db.prepare('SELECT * FROM gate_poll ORDER BY id').all(),
       items: db.prepare('SELECT id, cursor, notified_step FROM work_item ORDER BY id').all(),
     }
   } finally {
@@ -129,9 +130,12 @@ const readback = () => {
 // The server's own output is attached on failure — without it a timeout here
 // says nothing about whether the server even booted.
 try {
-  await waitUntil(() => bridge.sends().length >= EXPECTED.length, {
+  // Both legs, because HZ-142's poll drain runs after the text drain: waiting
+  // on the text alone would snapshot the database mid-way and make "exactly
+  // three polls" a race rather than an assertion.
+  await waitUntil(() => bridge.sends().length >= EXPECTED.length && bridge.pollSends().length >= EXPECTED.length, {
     timeoutMs: 45_000,
-    description: `${EXPECTED.length} gate notifications from the booted server`,
+    description: `${EXPECTED.length} gate notifications and ${EXPECTED.length} polls from the booted server`,
   })
 } catch (err) {
   throw new Error(`${err.message}\n--- server output ---\n${serverLog.join('')}`)
@@ -212,11 +216,23 @@ test('each message carries the id, title, gate label, ask line and deep link, ma
   }
 })
 
+// HZ-142 CHANGED THIS ASSERTION, and it is worth saying why out loud.
+//
+// It used to read `bridge.requests.length === bridge.sends().length`, i.e.
+// "exactly one bridge path exists". That is a contract this item changes by
+// design — the fork gained POST /api/send-poll — so the equality is restated
+// over both paths rather than dropped. The force is identical: a request to
+// any THIRD path still fails here.
+//
+// The credential assertions are kept and extended, not relaxed. Both bridge
+// endpoints are loopback-only and take no auth, so neither may carry one.
 test('the server talked to the bridge and to nothing else on it (guardrail 4)', () => {
   assert.equal(
     bridge.requests.length,
-    bridge.sends().length,
-    `the server hit a path other than POST /api/send: ${bridge.requests.map((r) => `${r.method} ${r.path}`).join(', ')}`,
+    bridge.sends().length + bridge.pollSends().length,
+    `the server hit a path other than POST /api/send and /api/send-poll: ${bridge.requests
+      .map((r) => `${r.method} ${r.path}`)
+      .join(', ')}`,
   )
   for (const send of bridge.sends()) {
     // /api/send takes no auth and this path holds no credential to offer it.
@@ -224,6 +240,53 @@ test('the server talked to the bridge and to nothing else on it (guardrail 4)', 
     assert.ok(!('authorization' in send.headers))
     assert.ok(!/secret|token/i.test(send.raw))
   }
+  for (const poll of bridge.pollSends()) {
+    assert.deepEqual(Object.keys(poll.body).sort(), ['name', 'options', 'recipient'])
+    assert.ok(!('authorization' in poll.headers))
+    assert.ok(!('x-wa-approval-secret' in poll.headers), 'the poll send carried the approval credential')
+    assert.ok(!/secret|token/i.test(poll.raw))
+  }
+})
+
+// HZ-142 metric 2, on the real booted server: every arrival that produced a
+// text notice also produced a poll, with the two options, to the same person.
+test('every gate arrival also carried a two-option poll to the same approver', () => {
+  assert.equal(
+    bridge.pollSends().length,
+    EXPECTED.length,
+    `expected ${EXPECTED.length} polls, got ${bridge.pollSends().length}`,
+  )
+  const byId = Object.fromEntries(state.items.map((i) => [i.id, i]))
+  for (const expected of EXPECTED) {
+    const poll = bridge.pollSends().find((p) => p.body.name.includes(expected.id))
+    assert.ok(poll, `no poll was sent about ${expected.id}`)
+    assert.equal(poll.body.recipient, APPROVER)
+    assert.deepEqual(poll.body.options, ['✅ Approve', '↩️ Send back'])
+    // Marker-prefixed exactly once, like the text notice — see PROBE.md for
+    // why the poll carries it even though probe 3 says it need not.
+    assert.ok(poll.body.name.startsWith(BOT_MARKER), `the poll name is not marker-prefixed: ${poll.body.name}`)
+    assert.equal(poll.body.name.split(BOT_MARKER).length - 1, 1)
+    assert.equal(poll.body.name.slice(BOT_MARKER.length), `${expected.id} — ${STEPS[byId[expected.id].cursor].label}`)
+  }
+})
+
+test('every poll row settles sent, with the message id the bridge returned', () => {
+  assert.equal(state.polls.length, EXPECTED.length, `${state.polls.length} poll row(s) for ${EXPECTED.length} arrivals`)
+  for (const row of state.polls) {
+    assert.equal(row.status, 'sent', `${row.item_id} is ${row.status}`)
+    assert.equal(row.attempts, 0, `${row.item_id} needed ${row.attempts} attempt(s) against a healthy bridge`)
+    assert.equal(row.last_error, null)
+    assert.ok(row.sent_at)
+    // Without this the poll is on a phone and a tap resolves to nothing.
+    assert.ok(row.poll_msg_id, `${row.item_id}'s poll has no message id — it is a tappable orphan`)
+    assert.equal(row.recipient, APPROVER)
+    assert.equal(row.decided_at, null)
+    assert.equal(row.superseded_at, null)
+  }
+  assert.deepEqual(
+    state.polls.map((r) => ({ id: r.item_id, gate: r.step_index })).sort((a, b) => a.id.localeCompare(b.id)),
+    EXPECTED.map((e) => ({ id: e.id, gate: e.gate })).sort((a, b) => a.id.localeCompare(b.id)),
+  )
 })
 
 test('this really was the whole server booting, with the notifier enabled', () => {

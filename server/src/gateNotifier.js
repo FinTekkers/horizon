@@ -34,8 +34,16 @@ import { db } from './db.js'
 import * as store from './store.js'
 import { STEPS, gateStepIndexes, requiredStepIndex, isAbandoned, isClosed } from '../../domain/js/lifecycle.js'
 import { approverJids } from './waApprovers.js'
-import { sendWhatsApp } from './waSend.js'
-import { UI_URL, WA_NOTIFY_ENABLED, WA_NOTIFY_SWEEP_MS, WA_NOTIFY_MAX_ATTEMPTS } from './config.js'
+import { sendWhatsApp, sendPoll } from './waSend.js'
+import { registerPoll, supersedeOpenPolls, attachPollMessageId, releaseInterruptedVotes } from './waPollVotes.js'
+import {
+  UI_URL,
+  WA_NOTIFY_ENABLED,
+  WA_NOTIFY_SWEEP_MS,
+  WA_NOTIFY_MAX_ATTEMPTS,
+  WA_POLL_ENABLED,
+  WA_POLL_MAX_ATTEMPTS,
+} from './config.js'
 
 const GATE_INDEXES = gateStepIndexes()
 
@@ -66,6 +74,9 @@ const RECOMMENDATION_SOURCE = requiredStepIndex('Summarize reviews & recommend')
 
 const RECOMMENDATION_MAX = 300
 const BODY_MAX = 1200
+// WhatsApp caps a poll name at 255 characters. Truncated here rather than
+// left to the bridge, which would fail the send outright.
+const POLL_QUESTION_MAX = 255
 
 export function isGateIndex(cursor) {
   return GATE_INDEXES.includes(cursor)
@@ -114,6 +125,20 @@ export function renderNotice(item, recommendation = null) {
   return `${body.length > room ? body.slice(0, room - 1) + '…' : body}\n${link}`
 }
 
+// The poll's own one-line question (HZ-142). The detail — the ask line, the
+// PM recommendation, the deep link — is in the text notice that goes out
+// alongside it; a poll name is a label on two buttons, not a second copy of
+// the message.
+//
+// Pure, no I/O, no marker: waSend.js's sendPoll prepends BOT_MARKER exactly
+// once, the same division of labour renderNotice has with sendWhatsApp.
+export function renderPollQuestion(item) {
+  const gateIndex = item.cursor
+  if (!GATE_ASKS[gateIndex]) throw new Error(`gateNotifier: step ${gateIndex} has no ask line — is it a gate?`)
+  const question = `${item.id} — ${STEPS[gateIndex].label}`
+  return question.length > POLL_QUESTION_MAX ? question.slice(0, POLL_QUESTION_MAX - 1) + '…' : question
+}
+
 // Reconciles notified_step against the cursor for every item where the two
 // disagree. That WHERE clause is the entire predicate — no scan of the board —
 // which matters because this runs on EVERY store.onChange, i.e. per step_run
@@ -134,7 +159,12 @@ const selectStale = db.prepare(`
 // `render` is injectable for the same reason drainOutbox's `send` is: the
 // per-item failure path below is only testable if one item can be made to fail
 // while its neighbours do not.
-export function sweepGates({ log, render = renderNotice } = {}) {
+//
+// The return shape is unchanged by HZ-142 and deliberately so: `enqueued`
+// still counts gate_notice rows, one per (arrival, approver). Polls live in
+// their own outbox and are not counted here, which is what keeps every
+// existing "exactly one notification per arrival" assertion literally true.
+export function sweepGates({ log, render = renderNotice, renderPoll = renderPollQuestion } = {}) {
   const candidates = selectStale.all(...GATE_INDEXES)
   const recipients = approverJids()
   const insert = db.prepare(
@@ -173,13 +203,30 @@ export function sweepGates({ log, render = renderNotice } = {}) {
       const recommendation =
         item.cursor === RECOMMENDATION_GATE ? store.latestArtifact(item.id, RECOMMENDATION_SOURCE) : null
       const body = render(item, recommendation)
+      // Rendered BEFORE the transaction, with the notice, so a poll that
+      // cannot be rendered fails this item the same way an unrenderable
+      // notice does — rather than committing a notice and then throwing.
+      const question = WA_POLL_ENABLED ? renderPoll(item) : null
       // notified_step is set in the SAME transaction as the rows, so a crash
       // between them cannot leave an arrival marked notified with nothing
       // queued. With no approvers configured the row set is empty and
       // notified_step still advances: HZ-140's deny-all means notify-nobody,
       // not notify-later.
+      //
+      // HZ-142: the poll row joins that same transaction. registerPoll also
+      // supersedes this item's earlier polls, so arrival #2 going out is
+      // atomically also arrival #1's poll ceasing to be able to decide
+      // anything.
       db.transaction(() => {
-        for (const recipient of recipients) insert.run(item.id, item.cursor, recipient, body)
+        // Once per arrival, and before the new batch — the several polls of
+        // ONE arrival (one per approver) must stay live for each other, and
+        // this runs even with polls disabled so a stale poll from a previous
+        // arrival can never decide this one.
+        supersedeOpenPolls(item.id)
+        for (const recipient of recipients) {
+          insert.run(item.id, item.cursor, recipient, body)
+          if (question !== null) registerPoll({ itemId: item.id, stepIndex: item.cursor, recipient, question })
+        }
         setNotified.run(item.cursor, item.id)
       })()
       enqueued += recipients.length
@@ -244,6 +291,68 @@ export async function drainOutbox({ send = sendWhatsApp } = {}) {
   return { sent, failed }
 }
 
+// The poll outbox's own drain (HZ-142). A near-copy of drainOutbox above
+// rather than a shared generic one: the two differ in the thing that matters
+// — this one has a result to record, the poll message id, and a poll with no
+// recorded id is a tappable orphan. Folding them together would have meant a
+// callback whose only job is to hide that difference.
+//
+// Deliberately a SEPARATE loop and a separate `draining` flag, so a bridge
+// that 404s /api/send-poll (an un-forked bridge, mid-rollout) still delivers
+// every text notice and the concierge's free-text approval still works.
+const claimPollRow = () =>
+  db
+    .prepare(
+      "SELECT id, recipient, question, attempts FROM gate_poll WHERE status = 'pending' AND next_attempt_at <= datetime('now') ORDER BY id LIMIT 1",
+    )
+    .get()
+
+let drainingPolls = false
+
+// Never throws. `send` resolves to the bridge's poll message id.
+export async function drainPolls({ send = sendPoll } = {}) {
+  if (drainingPolls) return { sent: 0, failed: 0, skipped: true }
+  drainingPolls = true
+  let sent = 0
+  let failed = 0
+  try {
+    for (;;) {
+      const row = claimPollRow()
+      if (!row) break
+      const won = db
+        .prepare("UPDATE gate_poll SET status = 'sending' WHERE id = ? AND status = 'pending'")
+        .run(row.id)
+      if (won.changes !== 1) continue // another drain got there first
+      try {
+        const pollMsgId = await send(row.recipient, row.question)
+        // The id and the status land together, before the loop continues, so
+        // the window in which a poll is tappable but unrecorded is as short as
+        // it can be made. It cannot be closed entirely — a crash between the
+        // bridge accepting the poll and this write leaves an orphan, which
+        // failInterruptedPolls() below fails and app.js logs as unknown_poll.
+        db.transaction(() => {
+          attachPollMessageId(row.id, pollMsgId)
+          db.prepare(
+            "UPDATE gate_poll SET status = 'sent', sent_at = datetime('now'), last_error = NULL WHERE id = ?",
+          ).run(row.id)
+        })()
+        sent++
+      } catch (err) {
+        failed++
+        const attempts = row.attempts + 1
+        const give_up = attempts >= WA_POLL_MAX_ATTEMPTS
+        const delay = Math.min(60 * 2 ** (attempts - 1), 3600)
+        db.prepare(
+          `UPDATE gate_poll SET status = ?, attempts = ?, last_error = ?, next_attempt_at = datetime('now', ?) WHERE id = ?`,
+        ).run(give_up ? 'failed' : 'pending', attempts, String(err?.message || err).slice(0, 500), `+${delay} seconds`, row.id)
+      }
+    }
+  } finally {
+    drainingPolls = false
+  }
+  return { sent, failed }
+}
+
 // A row left 'sending' when the process died is genuinely ambiguous: the POST
 // may have reached the bridge. DECISION: at-most-once for that one window. Two
 // pings about the same arrival is worse for the human than one logged miss, and
@@ -252,6 +361,20 @@ export function failInterruptedSends() {
   return db
     .prepare(
       "UPDATE gate_notice SET status = 'failed', last_error = 'interrupted — process exited mid-send, not resent' WHERE status = 'sending'",
+    )
+    .run().changes
+}
+
+// The poll equivalent, with the SAME at-most-once decision and one extra
+// consequence worth stating: such a poll may well be on the human's phone,
+// tappable, with no poll_msg_id recorded here. That tap resolves to nothing.
+// The window cannot be closed from this side — the bridge knows the id and we
+// do not — so it is failed, logged at boot, and app.js logs the resulting
+// unknown_poll rather than anyone pretending it cannot happen.
+export function failInterruptedPolls() {
+  return db
+    .prepare(
+      "UPDATE gate_poll SET status = 'failed', last_error = 'interrupted — process exited mid-send, not resent' WHERE status = 'sending'",
     )
     .run().changes
 }
@@ -274,6 +397,15 @@ export async function tick(log) {
   } catch (err) {
     log?.error?.(`gate notifier drain failed: ${err.message}`)
   }
+  // Its own try/catch, after the text drain and never inside it: a bridge with
+  // no /api/send-poll (an un-forked one, mid-rollout) must not stop a single
+  // text notification from going out.
+  try {
+    const { sent, failed } = await drainPolls()
+    if (failed > 0) log?.warn?.(`gate notifier: ${sent} poll(s) sent, ${failed} failed and will be retried`)
+  } catch (err) {
+    log?.error?.(`gate notifier poll drain failed: ${err.message}`)
+  }
 }
 
 export function init(log) {
@@ -289,6 +421,20 @@ export function init(log) {
   }
   const interrupted = failInterruptedSends()
   if (interrupted > 0) log?.warn?.(`Gate notifier: ${interrupted} notification(s) were mid-send at shutdown — not resent`)
+  // HZ-142's two boot-time recoveries, both for a process that died mid-act.
+  // A stranded poll may be tappable on a phone with no id recorded here; a
+  // stranded vote holds a claim on a gate nobody can now decide. Both are said
+  // out loud — a silent one looks exactly like nothing having happened.
+  const interruptedPolls = failInterruptedPolls()
+  if (interruptedPolls > 0) {
+    log?.warn?.(
+      `Gate notifier: ${interruptedPolls} poll(s) were mid-send at shutdown — not resent; a tap on one will be logged as unknown_poll`,
+    )
+  }
+  const released = releaseInterruptedVotes()
+  if (released > 0) {
+    log?.warn?.(`Gate notifier: ${released} poll vote(s) were mid-decision at shutdown — their gates are decidable again`)
+  }
   store.onChange(() => {
     void tick(log)
   })

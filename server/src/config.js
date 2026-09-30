@@ -24,6 +24,9 @@
 //                          same env name farm/config.py reads
 //   WA_NOTIFY_SWEEP_MS     backstop cadence for the gate-arrival sweep (default 60s, floor 10s)
 //   WA_NOTIFY_MAX_ATTEMPTS give-up count per queued notification (default 8)
+//   WA_POLL_ENABLED        "0" stops attaching the ✅/↩️ approval poll to gate
+//                          notifications (HZ-142). Otherwise on whenever
+//                          WA_NOTIFY_ENABLED is — rollback tier 1, no deploy.
 //   SESSION_SECRET         unused placeholder — session tokens are random, not signed
 //   HORIZON_TEST_HOOKS     "1" registers e2e-only routes (see app.js) — never set in production
 
@@ -147,6 +150,25 @@ export const WA_NOTIFY_SWEEP_MS = Math.max(Number(process.env.WA_NOTIFY_SWEEP_MS
 // Caps a wedged bridge at ~2h of exponential backoff per row rather than
 // retrying a dead endpoint forever.
 export const WA_NOTIFY_MAX_ATTEMPTS = Math.max(Number(process.env.WA_NOTIFY_MAX_ATTEMPTS) || 8, 1)
+
+// ---- gate-approval poll (HZ-142) ----
+// Whether each gate notification also carries a native two-option WhatsApp
+// poll (✅ Approve / ↩️ Send back).
+//
+// ON by default WHEN THE NOTIFIER IS ON, off otherwise. A poll is attached to
+// a gate notification, so "notify nobody" has to mean "poll nobody" — and the
+// coupling is also what keeps every pre-HZ-142 test that drives sweepGates()
+// with WA_NOTIFY_ENABLED unset seeing exactly the rows it saw before.
+//
+// WA_POLL_ENABLED=0 is rollback tier 1: polls stop being attached with no
+// deploy, text notices and the concierge's free-text approval carry on
+// untouched. POST /api/wa/poll-vote stays registered either way, so a poll
+// already on someone's phone still decides its gate after the flag goes off.
+export const WA_POLL_ENABLED = WA_NOTIFY_ENABLED && process.env.WA_POLL_ENABLED !== '0'
+// Same give-up rule as the text outbox, deliberately sharing the setting: a
+// wedged bridge wedges both paths, and two knobs would only ever be set to the
+// same value.
+export const WA_POLL_MAX_ATTEMPTS = WA_NOTIFY_MAX_ATTEMPTS
 
 // e2e only (HZ-54): the e2e suite runs with no real farm daemon (FARM_URL
 // unset — see e2e/playwright.config.js), so it has no way to make the board

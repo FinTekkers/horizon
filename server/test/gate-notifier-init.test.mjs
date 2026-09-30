@@ -123,6 +123,15 @@ async function runEnabledChild(body, { approvers = APPROVER, bridgeUrl = bridge.
       ...process.env,
       HORIZON_DB: dbPath,
       WA_NOTIFY_ENABLED: '1',
+      // HZ-142's poll is pinned OFF here, deliberately. This file is about
+      // init()'s wiring — the subscription, the backstop timer, the boot-time
+      // recovery — and every case below counts bridge requests to prove which
+      // of those two routes did the work. A poll riding along on each arrival
+      // would add a second request per arrival and make that count ambiguous,
+      // testing something this file is not about. What the poll does on a real
+      // boot is gate-notifier-e2e.test.mjs's job; that it does nothing when
+      // switched off is gate-notifier-poll-disabled.test.mjs's.
+      WA_POLL_ENABLED: '0',
       WA_APPROVER_JIDS: approvers,
       WA_BRIDGE_URL: bridgeUrl,
       WA_NOTIFY_SWEEP_MS: sweepMs,

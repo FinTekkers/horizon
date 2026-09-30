@@ -24,6 +24,7 @@ import * as auth from './auth.js'
 import { googleAuth } from './googleAuth.js'
 import { isAllowedEmail } from './loginAllowlist.js'
 import { approvalSecretConfigured, approvalSecretOk, isAllowedApprover, normalizeJid } from './waApprovers.js'
+import * as waPollVotes from './waPollVotes.js'
 import { STEPS } from '../../domain/js/lifecycle.js'
 import { intakeFields } from '../../domain/js/fields.js'
 import { PERSONAS } from './personas.js'
@@ -137,6 +138,9 @@ const SESSION_EXEMPT = [
   /^\/api\/farm\//,
   /^\/api\/agent-pages\.css$/,
   /^\/api\/items\/[^/]+\/gates\/\d+\/approve-via-whatsapp$/,
+  // HZ-142's poll-vote leg. Same credential and the same allowlist as the
+  // line above — the bridge is a daemon and has no session either.
+  /^\/api\/wa\/poll-vote$/,
   /^\/api\/health$/,
 ]
 
@@ -650,6 +654,77 @@ export function buildApp({ logger = true } = {}) {
       const result = await performGateApproval(id, stepIndex, notes, actor)
       if (result.status === 502) return reply.code(502).send({ error: result.error })
       return send(reply, result)
+    },
+  )
+
+  // WhatsApp gate-approval POLL vote (HZ-142).
+  //
+  // The route above is the concierge's free-text leg: a human types at a
+  // model, the model decides an approval happened, and the farm calls it.
+  // That produced false "processing that approval now" replies and wiped
+  // pending offers. This is the replacement — a tap on a native two-option
+  // poll, resolved deterministically. Both stay live through the rollout;
+  // whichever decides the gate first moves the cursor, and the cursor check
+  // in waPollVotes.js is what stops the other one deciding it twice.
+  //
+  // GUARDRAIL 1: no model is reachable from here. waPollVotes.js imports no
+  // orchestrator and no personas (pinned by wa-poll-no-model.test.mjs), and
+  // the two actions below are handed to it rather than imported by it, so
+  // this file importing the orchestrator does not widen its reach.
+  //
+  // The 503/401/403 ladder is the same three helpers, in the same order, as
+  // approve-via-whatsapp: all three run before any lookup or any write, so a
+  // rejected caller gets no oracle and an unauthorised flood writes no rows.
+  //
+  // EVERY 4xx IS FINAL. The bridge retries 5xx and network failures only — a
+  // 403 retried forever would hammer this route over one unauthorised tap.
+  fastify.post(
+    '/api/wa/poll-vote',
+    {
+      schema: {
+        body: {
+          type: 'object',
+          required: ['voteId', 'pollMessageId', 'voterJid', 'selectedOption'],
+          properties: {
+            voteId: { type: 'string', minLength: 1, maxLength: 120 },
+            pollMessageId: { type: 'string', minLength: 1, maxLength: 120 },
+            voterJid: { type: 'string', minLength: 1, maxLength: 120 },
+            selectedOption: { type: 'string', minLength: 1, maxLength: 200 },
+          },
+        },
+      },
+    },
+    async (request, reply) => {
+      if (!approvalSecretConfigured()) return reply.code(503).send({ error: 'wa_approval_not_configured' })
+      if (!approvalSecretOk(request.headers['x-wa-approval-secret'])) {
+        return reply.code(401).send({ error: 'bad_approval_secret' })
+      }
+      const { voteId, pollMessageId, voterJid, selectedOption } = request.body
+      if (!isAllowedApprover(voterJid)) return reply.code(403).send({ error: 'voter_not_allowed' })
+
+      const result = await waPollVotes.applyVote(
+        { voteId, pollMsgId: pollMessageId, voterJid, selectedOption },
+        {
+          approve: (id, stepIndex, notes, actor) => performGateApproval(id, stepIndex, notes, actor),
+          // targetStepIndex stays null: store.requestChanges derives the
+          // default rework target itself, Accept-gate exception included. A
+          // second derivation here could only ever drift from that one.
+          sendBack: (id, feedback, actor) =>
+            store.requestChanges(id, STEPS[store.getItem(id)?.cursor]?.label || null, feedback, actor, null),
+        },
+      )
+      if (result.status === 200) {
+        return reply.code(200).send({
+          ok: true,
+          outcome: result.outcome,
+          ...(result.itemId ? { itemId: result.itemId, stepIndex: result.stepIndex, choice: result.choice } : {}),
+        })
+      }
+      // Logged, not just answered. unknown_poll in particular is the tappable
+      // orphan a crash mid-send leaves behind: silent, it looks to the human
+      // exactly like the bug this item removes.
+      request.log?.warn?.(`wa poll vote ${voteId} ignored: ${result.outcome}${result.error ? ` (${result.error})` : ''}`)
+      return reply.code(result.status).send({ error: result.error || result.outcome })
     },
   )
 
