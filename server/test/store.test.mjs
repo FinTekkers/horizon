@@ -671,7 +671,7 @@ test('abandoned items are rejected by every other mutation — the item is froze
   assert.deepEqual(store.approveGate('T-ABANDON-FROZEN', 3, ''), { error: 'not_at_gate' })
   assert.deepEqual(store.requestChanges('T-ABANDON-FROZEN', 'target', 'feedback'), { error: 'abandoned' })
   assert.deepEqual(store.setPaused('T-ABANDON-FROZEN', true), { error: 'abandoned' })
-  assert.deepEqual(store.setPersona('T-ABANDON-FROZEN', 'fullstack'), { error: 'abandoned' })
+  assert.deepEqual(store.setPersona('T-ABANDON-FROZEN', 'eng', 'fullstack'), { error: 'abandoned' })
   assert.deepEqual(store.setPriority('T-ABANDON-FROZEN', 'High'), { error: 'abandoned' })
   assert.deepEqual(store.addFeedback('T-ABANDON-FROZEN', { message: 'late note' }), { error: 'abandoned' })
   assert.deepEqual(store.restartPhase('T-ABANDON-FROZEN', 0, 'reopen attempt'), { error: 'abandoned' })
