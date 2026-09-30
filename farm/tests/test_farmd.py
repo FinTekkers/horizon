@@ -953,6 +953,18 @@ def test_reconcile_leaves_the_file_in_place_on_a_non_2xx_fail_response(queue_dir
 class _FakeHorizonHandler(BaseHTTPRequestHandler):
     requests: list = []
     fail_status = 200
+    # HZ-140: what GET /api/farm/snapshot answers when farmd proxies it.
+    snapshot_status = 200
+
+    def do_GET(self):
+        self.__class__.requests.append({"path": self.path, "headers": dict(self.headers), "body": None})
+        status = self.__class__.snapshot_status
+        payload = json.dumps({"items": [{"id": "HZ-140"}]}).encode() if status == 200 else b'{"error":"nope"}'
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(payload)))
+        self.end_headers()
+        self.wfile.write(payload)
 
     def do_POST(self):
         length = int(self.headers.get("Content-Length", 0))
@@ -977,9 +989,13 @@ class _FakeHorizonHandler(BaseHTTPRequestHandler):
         pass  # keep test output quiet
 
 
-def _serve_fake_horizon(fail_status: int = 200):
+def _serve_fake_horizon(fail_status: int = 200, snapshot_status: int = 200):
     requests: list = []
-    handler = type("Handler", (_FakeHorizonHandler,), {"requests": requests, "fail_status": fail_status})
+    handler = type(
+        "Handler",
+        (_FakeHorizonHandler,),
+        {"requests": requests, "fail_status": fail_status, "snapshot_status": snapshot_status},
+    )
     server = ThreadingHTTPServer(("127.0.0.1", 0), handler)
     server.daemon_threads = True
     thread = threading.Thread(target=server.serve_forever, daemon=True)
@@ -1174,3 +1190,56 @@ def test_internal_steps_started_does_not_track_a_run_the_server_no_longer_consid
         assert "409" not in farmd.PM_ACTIVE_RUNS
     finally:
         farmd.PM_ACTIVE_RUNS.discard("409")
+
+
+# ---- HZ-140: /internal/snapshot, the concierge's credential-free read path ----
+# The concierge no longer holds FARM_SHARED_SECRET (no agent session does), so
+# its one authenticated read goes through farmd — the process that does hold it.
+
+
+def test_internal_snapshot_forwards_with_the_farm_secret_and_returns_the_body(monkeypatch):
+    server, url, requests = _serve_fake_horizon()
+    monkeypatch.setattr(farmd, "HORIZON_URL", url)
+    try:
+        res = client.get("/internal/snapshot")
+    finally:
+        server.shutdown()
+
+    assert res.status_code == 200
+    assert res.json() == {"items": [{"id": "HZ-140"}]}
+    gets = [r for r in requests if r["path"].endswith("/api/farm/snapshot")]
+    assert len(gets) == 1
+    assert gets[0]["headers"]["x-farm-secret"] == farmd.SHARED_SECRET
+
+
+def test_internal_snapshot_needs_no_credential_from_its_caller(monkeypatch):
+    """The concierge sends nothing: that is the point. farmd is the only farm
+    process holding a server credential."""
+    server, url, _ = _serve_fake_horizon()
+    monkeypatch.setattr(farmd, "HORIZON_URL", url)
+    try:
+        res = client.get("/internal/snapshot")
+    finally:
+        server.shutdown()
+    assert res.status_code == 200
+
+
+@pytest.mark.parametrize("upstream", [401, 500])
+def test_internal_snapshot_maps_an_upstream_error_to_502_without_passing_it_through(monkeypatch, upstream):
+    server, url, _ = _serve_fake_horizon(snapshot_status=upstream)
+    monkeypatch.setattr(farmd, "HORIZON_URL", url)
+    try:
+        res = client.get("/internal/snapshot")
+    finally:
+        server.shutdown()
+
+    assert res.status_code == 502
+    assert res.json() == {"error": "could not reach horizon server"}
+
+
+def test_internal_snapshot_reports_502_when_the_server_is_unreachable(monkeypatch):
+    # Port 1 on loopback: nothing listens, so the request fails at connect.
+    monkeypatch.setattr(farmd, "HORIZON_URL", "http://127.0.0.1:1")
+    res = client.get("/internal/snapshot")
+    assert res.status_code == 502
+    assert res.json() == {"error": "could not reach horizon server"}

@@ -23,6 +23,7 @@ import { getActiveProjectId, getRepoUrl, setSetting, getToken } from './settings
 import * as auth from './auth.js'
 import { googleAuth } from './googleAuth.js'
 import { isAllowedEmail } from './loginAllowlist.js'
+import { approvalSecretConfigured, approvalSecretOk, isAllowedApprover, normalizeJid } from './waApprovers.js'
 import { STEPS } from '../../domain/js/lifecycle.js'
 import { PERSONAS } from './personas.js'
 import * as definitions from './definitions.js'
@@ -123,10 +124,12 @@ function humanAuthorized(request, reply) {
 
 // Routes reachable without a login session: the auth routes themselves, the
 // GitHub webhook (HMAC-verified, GitHub can't send a cookie), the farm
-// callbacks and the WhatsApp-approval leg (both authorized by the farm's
-// shared secret instead), the shared stylesheet, and the deploy liveness
-// probe (HZ-43 — nginx proxies /horizon/api/ wholesale, so deploy.sh has no
-// session to send; see /api/health below for what stays out of its payload).
+// callbacks (farmAuthorized, the farm's shared secret), the WhatsApp-approval
+// leg (HZ-140 — its own WA_APPROVAL_SECRET plus a server-held approver
+// allowlist; FARM_SHARED_SECRET gets a 401 there now), the shared stylesheet,
+// and the deploy liveness probe (HZ-43 — nginx proxies /horizon/api/
+// wholesale, so deploy.sh has no session to send; see /api/health below for
+// what stays out of its payload).
 const SESSION_EXEMPT = [
   /^\/api\/auth\//,
   /^\/api\/webhooks\/github$/,
@@ -566,13 +569,29 @@ export function buildApp({ logger = true } = {}) {
     },
   )
 
-  // WhatsApp-concierge leg of gate approval (HZ-15): authorized by the farm's
-  // shared secret + the concierge's own WhatsApp sender allowlist, not the
-  // browser-only human gate key — a deliberate, narrower trust boundary. The
-  // sender's name is always folded into the actor label so every WhatsApp
-  // approval is attributable in the event log, gate_decision row, and the
-  // mirrored GitHub comment, the same way GitHub- and browser-driven
-  // approvals already are.
+  // WhatsApp-concierge leg of gate approval (HZ-15, re-secured by HZ-140).
+  //
+  // This route used to be guarded by farmAuthorized() — the same
+  // FARM_SHARED_SECRET that farm/tmux_mgr.py forwarded into every agent
+  // session — and it trusted the `sender` string the caller supplied, with
+  // the approver allowlist living farm-side where a forged call simply never
+  // ran it. Any agent with Bash could therefore approve its own gate.
+  //
+  // Now it proves its own origin, in three checks that all run BEFORE
+  // performGateApproval, so a rejected call leaves the cursor, the
+  // gate_decision rows and the event log untouched:
+  //
+  //   503  no WA_APPROVAL_SECRET on this host — fail closed, never open
+  //   401  wrong/missing credential (FARM_SHARED_SECRET included: it is not
+  //        accepted here any more, which is the whole point)
+  //   403  senderJid is not on the server-held WA_APPROVER_JIDS allowlist
+  //
+  // farmAuthorized() is unchanged and still guards /api/farm/*, which farmd
+  // — not an agent — calls. `sender` survives only as a display label: the
+  // sender's name is folded into the actor string so every WhatsApp approval
+  // stays attributable in the event log, gate_decision row and the mirrored
+  // GitHub comment, the same way GitHub- and browser-driven approvals are.
+  // Identity, though, comes from senderJid and nothing else.
   fastify.post(
     '/api/items/:id/gates/:stepIndex/approve-via-whatsapp',
     {
@@ -584,19 +603,30 @@ export function buildApp({ logger = true } = {}) {
         },
         body: {
           type: 'object',
-          required: ['sender'],
+          required: ['senderJid'],
           properties: {
-            sender: { type: 'string', minLength: 1, maxLength: 120 },
+            senderJid: { type: 'string', minLength: 1, maxLength: 120 },
+            sender: { type: 'string', maxLength: 120 },
             notes: { type: 'string', maxLength: 2000 },
           },
         },
       },
     },
     async (request, reply) => {
-      if (!farmAuthorized(request, reply)) return
+      if (!approvalSecretConfigured()) return reply.code(503).send({ error: 'wa_approval_not_configured' })
+      if (!approvalSecretOk(request.headers['x-wa-approval-secret'])) {
+        return reply.code(401).send({ error: 'bad_approval_secret' })
+      }
+      const senderJid = request.body.senderJid
+      // Checked before the item is even looked up, so a rejected sender gets
+      // no oracle for which item ids exist.
+      if (!isAllowedApprover(senderJid)) return reply.code(403).send({ error: 'sender_not_allowed' })
       const { id, stepIndex } = request.params
       const notes = (request.body?.notes || '').trim()
-      const actor = `${request.body.sender.trim()} via WhatsApp`
+      // Same shape the farm sends today; falls back to the last 4 digits of
+      // the (now proven) jid when no display name rides along.
+      const label = (request.body.sender || '').trim() || `...${normalizeJid(senderJid).slice(-4)}`
+      const actor = `${label} via WhatsApp`
       const result = await performGateApproval(id, stepIndex, notes, actor)
       if (result.status === 502) return reply.code(502).send({ error: result.error })
       return send(reply, result)

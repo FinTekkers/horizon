@@ -11,12 +11,20 @@ import { loginFixtureUser } from './helpers/session.mjs'
 process.env.HORIZON_DB = join(mkdtempSync(join(tmpdir(), 'horizon-app-')), 'test.db')
 delete process.env.GITHUB_WEBHOOK_SECRET
 delete process.env.FARM_URL
+// HZ-140: approve-via-whatsapp needs its own credential and a server-held
+// approver allowlist. The full auth matrix lives in wa-approval-auth.test.mjs;
+// these are just enough for the route's behavioural cases below.
+process.env.WA_APPROVAL_SECRET = 'wa-approval-secret-for-app-test'
+process.env.WA_APPROVER_JIDS = '15550001111@s.whatsapp.net'
 
 const { db } = await import('../src/db.js')
 const { buildApp } = await import('../src/app.js')
 const { STEPS, ACCEPT_GATE_INDEX } = await import('../../domain/js/lifecycle.js')
 const config = await import('../src/config.js')
-const { FARM_SHARED_SECRET } = config
+const { FARM_SHARED_SECRET, WA_APPROVAL_SECRET } = config
+// The one allowlisted approver for this file's WhatsApp cases (HZ-140).
+const DAVID_JID = '15550001111@s.whatsapp.net'
+const WA_HEADERS = { 'x-wa-approval-secret': WA_APPROVAL_SECRET }
 const store = await import('../src/store.js')
 const auth = await import('../src/auth.js')
 const orchestrator = await import('../src/orchestrator.js')
@@ -228,9 +236,21 @@ test('approving with a session but the wrong gate PIN is 401 human_gate_key_requ
   assert.deepEqual(res.json(), { error: 'human_gate_key_required' })
 })
 
-test('approve-via-whatsapp: 401 without the farm secret, and the gate is untouched', async () => {
-  const res = await approveViaWhatsappPost('T-GATE-WA', 3, { sender: 'David' })
+test('approve-via-whatsapp: 401 without the approval credential, and the gate is untouched', async () => {
+  const res = await approveViaWhatsappPost('T-GATE-WA', 3, { senderJid: DAVID_JID, sender: 'David' })
   assert.equal(res.statusCode, 401)
+  assert.equal(db.prepare("SELECT cursor FROM work_item WHERE id = 'T-GATE-WA'").get().cursor, 3)
+})
+
+test('approve-via-whatsapp: 401 when the farm secret is offered instead (HZ-140)', async () => {
+  const res = await approveViaWhatsappPost(
+    'T-GATE-WA',
+    3,
+    { senderJid: DAVID_JID, sender: 'David' },
+    { 'x-farm-secret': FARM_SHARED_SECRET },
+  )
+  assert.equal(res.statusCode, 401)
+  assert.deepEqual(res.json(), { error: 'bad_approval_secret' })
   assert.equal(db.prepare("SELECT cursor FROM work_item WHERE id = 'T-GATE-WA'").get().cursor, 3)
 })
 
@@ -238,8 +258,8 @@ test('approve-via-whatsapp: 200, advances the cursor, and attributes the named s
   const res = await approveViaWhatsappPost(
     'T-GATE-WA',
     3,
-    { sender: 'David', notes: 'looks good' },
-    { 'x-farm-secret': FARM_SHARED_SECRET },
+    { senderJid: DAVID_JID, sender: 'David', notes: 'looks good' },
+    WA_HEADERS,
   )
   assert.equal(res.statusCode, 200)
   assert.deepEqual(res.json(), { ok: true, closed: false })
@@ -255,7 +275,7 @@ test('approve-via-whatsapp: 200, advances the cursor, and attributes the named s
 })
 
 test('approve-via-whatsapp: 404 for an unknown item', async () => {
-  const res = await approveViaWhatsappPost('NOPE-9', 0, { sender: 'David' }, { 'x-farm-secret': FARM_SHARED_SECRET })
+  const res = await approveViaWhatsappPost('NOPE-9', 0, { senderJid: DAVID_JID, sender: 'David' }, WA_HEADERS)
   assert.equal(res.statusCode, 404)
   assert.deepEqual(res.json(), { error: 'not_found' })
 })
@@ -264,15 +284,15 @@ test('approve-via-whatsapp: 409 not_at_gate when the item is not currently on a 
   const res = await approveViaWhatsappPost(
     'T-GATE-NOTGATE',
     11,
-    { sender: 'David' },
-    { 'x-farm-secret': FARM_SHARED_SECRET },
+    { senderJid: DAVID_JID, sender: 'David' },
+    WA_HEADERS,
   )
   assert.equal(res.statusCode, 409)
   assert.deepEqual(res.json(), { error: 'not_at_gate' })
 })
 
 test('approve-via-whatsapp: 409 stale_step when the step index no longer matches the cursor', async () => {
-  const res = await approveViaWhatsappPost('T-GATE-STALE', 1, { sender: 'David' }, { 'x-farm-secret': FARM_SHARED_SECRET })
+  const res = await approveViaWhatsappPost('T-GATE-STALE', 1, { senderJid: DAVID_JID, sender: 'David' }, WA_HEADERS)
   assert.equal(res.statusCode, 409)
   assert.deepEqual(res.json(), { error: 'stale_step' })
 })
@@ -289,8 +309,8 @@ test('approve-via-whatsapp: 502 when the PR merge fails, and the gate stays open
     const res = await approveViaWhatsappPost(
       'T-GATE-MERGE',
       ACCEPT_GATE_INDEX,
-      { sender: 'Evan' },
-      { 'x-farm-secret': FARM_SHARED_SECRET },
+      { senderJid: DAVID_JID, sender: 'Evan' },
+      WA_HEADERS,
     )
     assert.equal(res.statusCode, 502)
     assert.match(res.json().error, /merge failed/)

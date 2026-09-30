@@ -45,6 +45,37 @@ sudo systemctl daemon-reload
 sudo systemctl restart horizon-server
 ```
 
+## 2b. WhatsApp gate-approval env (HZ-140)
+
+Set these **before** the release ships, or every WhatsApp approval fails
+closed. Names only below — values live on the host, never in this repo.
+
+| File | Var | Notes |
+|---|---|---|
+| `/etc/horizon/server.env` | `WA_APPROVAL_SECRET` | the only credential that can approve a gate. Unset ⇒ the route answers **503** |
+| `/etc/horizon/server.env` | `WA_APPROVER_JIDS` | comma-separated approver numbers. Unset/empty ⇒ **deny all**, every sender gets **403** |
+| `/etc/horizon/farm.env` | `WA_APPROVAL_SECRET` | same value as the server's |
+
+`FARM_SHARED_SECRET` stays where it is, in both files. It no longer opens the
+approval route — it is farmd's credential for `/api/farm/*` and nothing else.
+
+Diagnosing a failed approval without reading code:
+
+- **503, "aren't configured on the Horizon server"** — `WA_APPROVAL_SECRET`
+  missing from `server.env`.
+- **401** — the two `WA_APPROVAL_SECRET` values disagree between
+  `server.env` and `farm.env`.
+- **403, "isn't on Horizon's approver list"** — the sender's number is
+  missing from `WA_APPROVER_JIDS` on the server.
+- **Silence, no reply at all** — the sender is missing from the farm's own
+  `FARM_WA_ALLOWED_JIDS`, which drops the message before it is ever read.
+
+After deploying, restart `horizon-server`, then restart farmd. Existing tmux
+sessions keep the environment they were launched with, so a pre-upgrade
+session still holds the old credential until farmd's teardown kills it.
+Confirm with `python -m farm.tools.check_session_env` (names only, exits
+non-zero on a find).
+
 ## 3. Confirm the repo is pull-only
 
 `/opt/horizon` must be able to `git fetch`/`checkout` from `origin`, but must
