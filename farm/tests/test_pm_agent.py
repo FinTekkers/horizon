@@ -702,14 +702,18 @@ def test_once_mode_keeps_polling_on_a_non_terminal_outcome(monkeypatch, outcome,
 
 def test_the_reported_reason_is_still_auto_retryable_server_side():
     """The report is only useful if the server auto-retries it; an edit to
-    AUTO_RETRY_REASONS would otherwise silently turn a corrupt task file into
-    a human-pause. Read out of the server rather than assumed (same precedent
-    as test_domain_import.py reading repo files)."""
+    the reason's retryability would otherwise silently turn a corrupt task
+    file into a human-pause. Since HZ-132 the server's AUTO_RETRY_REASONS is
+    derived from domain/reasons.json (server/src/orchestrator.js imports it
+    from domain/js/reasons.js), so the domain binding is the one place to
+    read it from."""
+    from domain.py import reasons
+
+    assert reasons.is_retryable(pm_agent.UNUSABLE_TASK_REASON)
     src = (REPO_ROOT / "server" / "src" / "orchestrator.js").read_text()
-    match = re.search(r"AUTO_RETRY_REASONS = new Set\(\[(.*?)\]\)", src, re.S)
-    assert match, "could not find AUTO_RETRY_REASONS in server/src/orchestrator.js"
-    reasons = set(re.findall(r"'([^']+)'", match.group(1)))
-    assert pm_agent.UNUSABLE_TASK_REASON in reasons
+    assert "import { AUTO_RETRY_REASONS" in src and "domain/js/reasons.js" in src, (
+        "the server no longer takes AUTO_RETRY_REASONS from domain/ — re-point this test"
+    )
 
 
 def test_the_malformed_grace_stays_well_under_the_servers_queue_timeout():

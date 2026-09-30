@@ -16,6 +16,8 @@ from pathlib import Path
 
 import httpx
 
+from domain.py import reasons
+
 from .agent_runner import AgentError, extract_json, run_agent
 from .config import (
     FARM_PORT,
@@ -71,7 +73,7 @@ def notify_started(run_id) -> bool:
 # server's AUTO_RETRY_REASONS (server/src/orchestrator.js), so the step is
 # auto-retried rather than paused for a human, and no server change is needed
 # to report one — see the test that reads that set back out of the server.
-UNUSABLE_TASK_REASON = "unreachable"
+UNUSABLE_TASK_REASON = reasons.REASON["UNREACHABLE"]
 
 
 def report_failed_task(run_id: str, error: str) -> bool:

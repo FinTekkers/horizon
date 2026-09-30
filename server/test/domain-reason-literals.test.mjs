@@ -57,6 +57,7 @@ const AMBIGUOUS_IDS = new Set(['timeout', 'unreachable'])
 const LITERALS_ALLOWED = {
   'farm/tests/test_farmd.py': 'asserts the exact reason value farmd relays on the wire — the no-behaviour-change pin',
   'farm/tests/test_step_agent.py': 'asserts the exact reason value step_agent.py reports for an exhausted turn budget',
+  'farm/tests/test_pm_agent.py': 'a "timeout" key recording the httpx timeout= kwarg of a faked POST — an httpx option, not a reason',
   'farm/tests/test_providers_muse.py': 'kwargs.get("timeout") on a subprocess call — an httpx/subprocess option, not a reason',
 }
 
