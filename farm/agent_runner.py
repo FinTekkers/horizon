@@ -205,13 +205,24 @@ def extract_json(text: str) -> dict:
         raise AgentError(f"no JSON object in agent reply: {text[:200]}")
     try:
         return json.loads(cleaned[start : end + 1], strict=False)
-    except json.JSONDecodeError:
+    except json.JSONDecodeError as widest_failure:
         first = _first_balanced_object(cleaned)
         if first is None or first == cleaned[start : end + 1]:
             raise
-    # strict=False here too, or a literal newline inside a string would make
-    # this path stricter than the two above it.
-    return json.loads(first, strict=False)
+        try:
+            # strict=False here too, or a literal newline inside a string would
+            # make this path stricter than the two above it.
+            return json.loads(first, strict=False)
+        except json.JSONDecodeError:
+            # Attempt 3 is purely additive: when it fails too, the caller must
+            # see the exception it saw before attempt 3 existed. Today the two
+            # messages coincide anyway (the first balanced object is a PREFIX of
+            # the widest span, and the decoder scans left to right, so both stop
+            # at the same character) — re-raising attempt 2's error makes that a
+            # guarantee rather than a coincidence, and keeps the retry prompt,
+            # which embeds this text, byte-identical. `from None` drops the
+            # chained context so the log shows one failure, not two.
+            raise widest_failure from None
 
 
 # The retry prompt all three callers used before this one existed — byte for

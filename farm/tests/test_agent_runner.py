@@ -253,6 +253,35 @@ def test_a_reply_that_fails_today_raises_the_same_exception_type(reply, expected
         extract_json(reply)
 
 
+@pytest.mark.parametrize(
+    "reply",
+    [
+        '{"a" 1} tail {"b" 2}',
+        '{"a": "x} tail {"b": 2}',
+        '{"a": [1,} t {"b":2}',
+        '{"a": {"b" 2}} t {"c":3}',
+        '{nope} t {"b" 2}',
+    ],
+)
+def test_a_still_failing_reply_carries_the_pre_scanner_error_message(reply):
+    """Same type is not enough: this message is interpolated into RETRY_PROMPT,
+    so a reply that fails must produce the SAME retry prompt it produced before
+    the scanner existed. Compared against the widest-span parse done by hand —
+    i.e. exactly what extract_json did on its last attempt before HZ-156."""
+    span = reply[reply.find("{") : reply.rfind("}") + 1]
+    with pytest.raises(json.JSONDecodeError) as before:
+        json.loads(span, strict=False)
+    with pytest.raises(json.JSONDecodeError) as after:
+        extract_json(reply)
+    assert str(after.value) == str(before.value)
+    # One failure in the traceback, not a "during handling of the above
+    # exception" pair — the scanner's own failure is an implementation detail.
+    # Either it was never reached (bare re-raise, no context) or it was reached
+    # and suppressed; both spellings must reach the log as a single failure.
+    exc = after.value
+    assert exc.__context__ is None or exc.__suppress_context__
+
+
 def test_strict_false_still_applies_on_the_first_object_path():
     """The likeliest silent regression: a literal newline inside a string is
     meaningful content (HZ-21), and the scanner path must be no stricter than
