@@ -13,8 +13,21 @@ import { DEFAULT_ACTIVE_FILTERS } from './domain/filters'
 // HZ-143: bumped from 'horizon_board_filters'. `cached` below prefers a
 // stored array over DEFAULT_ACTIVE_FILTERS, so anyone who has ever clicked a
 // chip has ['stale','abandoned'] on disk out-voting the new 'closed' default
-// — their Review column would stay crowded. The bump costs each browser its
-// saved toggles exactly once.
+// — their Review column would stay crowded and the item's stated outcome
+// would never land for a returning browser.
+//
+// DELIBERATE SCOPE EXCEPTION, flagged for review. HZ-143's guardrail 5 scopes
+// the change to domain/filters.js, its tests and the Board; this file is not
+// on that list. Architecture review pre-approved the bump on the condition
+// that its cost is stated plainly rather than discovered, so:
+//   - every browser loses its saved chip toggles exactly once;
+//   - that includes Stale and Abandoned — someone who had turned Stale OFF
+//     gets it back ON. Guardrail 3 ("do not change how Stale or Abandoned
+//     behave") is not violated at the code level — neither predicate nor
+//     either default is touched — but this IS a one-time, user-visible reset
+//     of those two chips, and a reviewer should weigh it as such.
+// Reverting just this one line keeps the whole feature working; only
+// returning browsers lose the new default.
 //
 // Known limitation: because we store the ACTIVE set, every future filter
 // needs another bump. Storing the OFF set instead would make new filters
