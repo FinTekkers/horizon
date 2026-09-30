@@ -53,6 +53,19 @@ export const FARM_HOME_PREFIX = 'horizon-farmd-e2e-'
 export const PIDFILE_NAME = 'farmd.pid'
 export const ERRLOG_NAME = 'farmd.err'
 
+// Set on the fake "leaked daemon" processes the sweep's own negative tests
+// plant, so that scripts/check-no-leaked-farmd.mjs — which examines the WHOLE
+// host and therefore sees other test files' processes, since `node --test`
+// runs files in parallel — does not report a decoy a live test is still
+// holding on purpose.
+//
+// It cannot be used to hide a real leak: buildFarmdEnv() writes a fixed key
+// set and this name is on FARMD_ENV_WITHHELD, so no daemon this helper starts
+// can ever carry it (asserted in farmd-helper.test.mjs). The SWEEP deliberately
+// does not honour it — a decoy planted to prove the sweep kills orphans has to
+// be killable.
+export const DECOY_ENV_VAR = 'HORIZON_FARMD_TEST_DECOY'
+
 // A directory this old cannot belong to a run still in flight (the whole e2e
 // suite takes seconds), so it is safe to delete. Everything younger is left
 // alone even when its daemon is already gone, because its farmd.err is the
@@ -171,6 +184,7 @@ export const FARMD_ENV_WITHHELD = [
   'FARM_PROVIDER',
   'FARM_MUSE_BIN',
   'TMUX', // being inside a pane; `tmux has-session` does not need it
+  DECOY_ENV_VAR, // a real daemon must never be able to hide from the leak check
 ]
 
 export function buildFarmdEnv({
@@ -280,10 +294,11 @@ export async function waitForExit(pid, timeoutMs = 5000) {
 // the sweep — layer 2, for orphans an earlier run's kernel link never caught
 // ---------------------------------------------------------------------------
 
-// Selection is by RECORDED PID, read out of the pidfile in a FARM_HOME this
-// helper created. The three /proc reads below are ownership PROOF against pid
-// reuse, not a search: nothing here ever matches on a process name, so a
-// production farmd can never be a candidate (guardrail 4).
+// A directory is only ever removed once nothing is left holding it, and a pid
+// is only ever signalled once three /proc reads prove it owns that directory.
+// Nothing here matches on a process name, so a production farmd can never be
+// a candidate (guardrail 4): its FARM_HOME is ~/.horizon-farm, which is
+// neither under `root` nor named with our prefix.
 //
 // The ppid === 1 condition is load-bearing, not belt-and-braces:
 // `node --test` runs test FILES in parallel, so a sibling test's farmd is
@@ -302,64 +317,124 @@ export function sweepStaleTestFarmds({ root = tmpdir(), maxDirAgeMs = STALE_DIR_
     return { killed, removed, skipped }
   }
 
+  // Built at most once per sweep, and only when there is a candidate directory
+  // to resolve. See farmHomeOwners() for why the scan exists at all.
+  let ownersByHome = null
+  const ownersOf = (dir) => {
+    ownersByHome ??= farmHomeOwners()
+    return ownersByHome.get(dir) ?? []
+  }
+
   for (const entry of entries) {
     if (!entry.isDirectory() || !entry.name.startsWith(FARM_HOME_PREFIX)) continue
     const dir = path.join(root, entry.name)
-    const pid = readPidfile(dir)
+    const recorded = readPidfile(dir)
 
-    if (pid === null) {
-      // No pid recorded — either the launcher never got that far, or this dir
-      // belongs to a run that is mid-spawn right now. Age is the only safe
-      // discriminator.
-      if (olderThan(dir, now, maxDirAgeMs)) {
-        rmSync(dir, { recursive: true, force: true })
-        removed.push(dir)
-      } else {
-        skipped.push({ dir, reason: 'no pidfile yet' })
+    // The pidfile first, because it is the strongest claim — this helper wrote
+    // it — then anything in /proc that names this directory as its FARM_HOME.
+    const claimants = recorded === null ? [] : [recorded]
+    for (const pid of ownersOf(dir)) if (!claimants.includes(pid)) claimants.push(pid)
+
+    let holders = 0
+    let killedHere = 0
+    for (const pid of claimants) {
+      const cmdline = procCmdline(pid)
+      // Gone between the scan and now. Not a holder, and nothing to signal.
+      if (cmdline === null) continue
+      if (!isFarmdCmdline(cmdline)) {
+        skipped.push({ dir, pid, reason: 'pid has been reused by something that is not farmd' })
+        holders++
+        continue
       }
-      continue
-    }
-
-    const cmdline = procCmdline(pid)
-    if (cmdline === null) {
-      // The daemon is gone. Keep the directory while it is young: its
-      // farmd.err may be the error message a running test is about to print.
-      if (olderThan(dir, now, maxDirAgeMs)) {
-        rmSync(dir, { recursive: true, force: true })
-        removed.push(dir)
-      } else {
-        skipped.push({ dir, pid, reason: 'process already gone, directory still fresh' })
+      const environ = procEnviron(pid)
+      if (environ?.FARM_HOME !== dir) {
+        skipped.push({ dir, pid, reason: `pid's FARM_HOME is ${environ?.FARM_HOME ?? '<unset>'}, not this directory` })
+        holders++
+        continue
       }
-      continue
+      const stat = procStat(pid)
+      if (stat?.ppid !== 1) {
+        skipped.push({ dir, pid, reason: `still parented to ${stat?.ppid} — a live run owns it` })
+        holders++
+        continue
+      }
+      if (!killTestFarmd(pid)) {
+        // Another sweep beat us to it, or it is not ours to signal. Either way
+        // the directory stays: reporting a kill that did not happen is worse
+        // than leaving one directory behind.
+        skipped.push({ dir, pid, reason: 'could not be signalled' })
+        holders++
+        continue
+      }
+      killed.push(pid)
+      killedHere++
     }
-    if (!isFarmdCmdline(cmdline)) {
-      skipped.push({ dir, pid, reason: 'pid has been reused by something that is not farmd' })
-      continue
-    }
-    const environ = procEnviron(pid)
-    if (environ?.FARM_HOME !== dir) {
-      skipped.push({ dir, pid, reason: `pid's FARM_HOME is ${environ?.FARM_HOME ?? '<unset>'}, not this directory` })
-      continue
-    }
-    const stat = procStat(pid)
-    if (stat?.ppid !== 1) {
-      skipped.push({ dir, pid, reason: `still parented to ${stat?.ppid} — a live run owns it` })
+
+    // Removing a directory whose daemon is still running is strictly worse
+    // than leaving it: the daemon keeps a FARM_HOME that no longer exists, so
+    // check-no-leaked-farmd.mjs still reports it and no later sweep can find
+    // it again — `npm test` would then fail on that host forever.
+    if (holders > 0) continue
+
+    // We just freed it, so the directory goes with it whatever its age.
+    if (killedHere > 0) {
+      rmSync(dir, { recursive: true, force: true })
+      removed.push(dir)
       continue
     }
 
-    if (!killTestFarmd(pid)) {
-      // Another sweep beat us to it, or it is not ours to signal. Either way
-      // the directory stays: reporting a kill that did not happen is worse
-      // than leaving one directory behind.
-      skipped.push({ dir, pid, reason: 'could not be signalled' })
-      continue
+    // Nothing holds it and nothing needed killing: the launcher never got as
+    // far as its pidfile, or this dir belongs to a spawn happening right now,
+    // or its daemon exited on its own. Age is the only safe discriminator, and
+    // a young directory is KEPT because its farmd.err is the only diagnostic
+    // the test that owns it has — deleting it turns a nameable boot failure
+    // into "did not become ready".
+    const reason = recorded === null ? 'no pidfile yet' : 'process already gone, directory still fresh'
+    if (olderThan(dir, now, maxDirAgeMs)) {
+      rmSync(dir, { recursive: true, force: true })
+      removed.push(dir)
+    } else {
+      skipped.push(recorded === null ? { dir, reason } : { dir, pid: recorded, reason })
     }
-    killed.push(pid)
-    rmSync(dir, { recursive: true, force: true })
-    removed.push(dir)
   }
 
   return { killed, removed, skipped }
+}
+
+// Maps FARM_HOME -> pids that claim it, for every process whose environment we
+// are allowed to read.
+//
+// This exists for the orphans that predate HZ-138. Those carry the same
+// FARM_HOME_PREFIX but NO pidfile, because the pidfile is part of this change:
+// selecting by recorded pid alone can therefore never find them, and the
+// directory would be deleted out from under a daemon that is still running.
+//
+// Selection is still by DIRECTORY — one this helper's own naming scheme created
+// under the OS temp root — not by process name, and a claimant still has to
+// pass the cmdline, FARM_HOME and ppid checks above before it is signalled.
+// The production daemon's FARM_HOME is ~/.horizon-farm, so it cannot appear
+// under any `root` a sweep scans.
+function farmHomeOwners() {
+  const byHome = new Map()
+  let pids
+  try {
+    pids = readdirSync('/proc')
+  } catch {
+    return byHome // no procfs (macOS); pidfiles are all we have there
+  }
+  for (const name of pids) {
+    if (!/^\d+$/.test(name)) continue
+    const pid = Number(name)
+    if (pid === process.pid) continue
+    // Unreadable (another user's process) reads as null — and something we
+    // cannot read is something we could not signal either.
+    const home = procEnviron(pid)?.FARM_HOME
+    if (!home) continue
+    const existing = byHome.get(home)
+    if (existing) existing.push(pid)
+    else byHome.set(home, [pid])
+  }
+  return byHome
 }
 
 function readPidfile(dir) {

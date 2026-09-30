@@ -21,6 +21,7 @@ import { tmpdir } from 'node:os'
 import path from 'node:path'
 
 import {
+  DECOY_ENV_VAR,
   FARMD_ENV_KEYS,
   FARMD_ENV_WITHHELD,
   FARM_HOME_PREFIX,
@@ -106,6 +107,10 @@ const HOSTILE_INHERITED = {
   FARM_MUSE_BIN: '/usr/local/bin/muse',
   TMUX: '/tmp/tmux-1000/default,1,0',
   LANG: 'en_GB.UTF-8',
+  // Not a credential — the marker that makes check-no-leaked-farmd.mjs ignore
+  // a process. A real daemon inheriting it could hide a genuine leak, so it is
+  // withheld like everything else here.
+  [DECOY_ENV_VAR]: '1',
 }
 
 function envUnderTest(overrides = {}) {
@@ -158,6 +163,14 @@ test('the background reconcile loop is pushed out past the life of any test', ()
   assert.equal(envUnderTest().FARM_RECONCILE_INTERVAL_S, '3600')
 })
 
+test('the decoy marker can never reach a real daemon', () => {
+  // check-no-leaked-farmd.mjs ignores any process carrying this, so a daemon
+  // able to inherit it could hide a genuine leak from the gate.
+  assert.ok(FARMD_ENV_WITHHELD.includes(DECOY_ENV_VAR), `${DECOY_ENV_VAR} must stay on the withheld list`)
+  assert.equal(FARMD_ENV_KEYS.includes(DECOY_ENV_VAR), false, `${DECOY_ENV_VAR} must never be part of the allow-list`)
+  assert.equal(envUnderTest()[DECOY_ENV_VAR], undefined)
+})
+
 // ---------------------------------------------------------------------------
 // the sweep (guardrail 4: never kill by name pattern, never kill production)
 // ---------------------------------------------------------------------------
@@ -165,9 +178,17 @@ test('the background reconcile loop is pushed out past the life of any test', ()
 // argv carries `farm.farmd`, so it satisfies the sweep's cmdline check and
 // pgrep would find it — which is the point. Detached, so each decoy is its own
 // process group and can be reclaimed without touching anything else.
+//
+// DECOY_ENV_VAR is what keeps these out of check-no-leaked-farmd.mjs's verdict.
+// That script examines the whole host and `node --test` runs test files in
+// parallel, so the orphan decoy below — ppid 1, `farm.farmd` in argv, a
+// FARM_HOME under the temp root — is otherwise indistinguishable from the real
+// leak it is imitating, and would fail that file's first leg for the seconds it
+// is alive. The sweep under test does NOT honour the marker, so nothing here
+// becomes unkillable.
 function decoy(t, { farmHome, orphan = false }) {
   const script = 'setTimeout(() => {}, 120000)'
-  const env = { PATH: process.env.PATH, HOME: process.env.HOME }
+  const env = { PATH: process.env.PATH, HOME: process.env.HOME, [DECOY_ENV_VAR]: '1' }
   if (farmHome) env.FARM_HOME = farmHome
 
   let pid
@@ -317,6 +338,76 @@ test('the sweep keeps a fresh directory with no pidfile, and removes an old one'
   assert.match(result.skipped.find((s) => s.dir === fresh).reason, /no pidfile/)
   assert.equal(existsSync(old), false)
   assert.deepEqual(result.removed, [old])
+})
+
+test('the sweep keeps a fresh FARM_HOME whose daemon has already exited, so farmd.err survives', (t) => {
+  // This is what makes a boot failure debuggable. A farmd that could not bind
+  // its port is GONE by the time the helper reads its stderr, and a sibling
+  // test file's sweep runs in between — if that sweep deleted the directory on
+  // the grounds that nothing holds it any more, "exited before becoming ready"
+  // would lose the one line that says why.
+  const root = scratchRoot(t)
+  const dir = path.join(root, `${FARM_HOME_PREFIX}exited`)
+  mkdirSync(dir, { recursive: true })
+  const dead = spawnSync('sh', ['-c', 'exit 0'])
+  writeFileSync(path.join(dir, PIDFILE_NAME), String(dead.pid))
+  writeFileSync(path.join(dir, 'farmd.err'), 'ERROR: [Errno 98] address already in use\n')
+
+  const result = sweepStaleTestFarmds({ root })
+
+  assert.deepEqual(result.killed, [])
+  assert.ok(existsSync(path.join(dir, 'farmd.err')), 'the only diagnostic the owning test has was deleted')
+  assert.deepEqual(result.removed, [], 'a fresh directory must survive its daemon')
+  assert.ok(
+    result.skipped.some((s) => s.dir === dir),
+    'the directory was neither kept for a stated reason nor removed',
+  )
+})
+
+// The two cases below are about the orphans that ALREADY EXIST on the host.
+// Those predate the pidfile, so selection by recorded pid cannot see them: the
+// sweep has to find the claimant by reading /proc for a FARM_HOME naming the
+// directory. Removing such a directory without killing what lives in it is
+// worse than leaving it — the daemon survives with a FARM_HOME that no longer
+// exists, check-no-leaked-farmd.mjs keeps reporting it, and no later sweep can
+// ever find it again, so `npm test` fails on that host permanently.
+test('the sweep kills a pre-HZ-138 orphan that left no pidfile behind', async (t) => {
+  const root = scratchRoot(t)
+  const dir = path.join(root, `${FARM_HOME_PREFIX}legacy`)
+  mkdirSync(dir, { recursive: true })
+  const pid = decoy(t, { farmHome: dir, orphan: true })
+  // No pidfile: the whole point. Aged, like an orphan from a previous run.
+  const longAgo = Date.now() / 1000 - 60 * 60 * 24
+  utimesSync(dir, longAgo, longAgo)
+
+  assert.ok(await waitForPpid(pid, 1), `decoy ${pid} never reparented to pid 1`)
+
+  const result = sweepStaleTestFarmds({ root })
+
+  assert.deepEqual(result.killed, [pid], 'the orphan was not found without a pidfile to name it')
+  const deadline = Date.now() + 5000
+  while (Date.now() < deadline && procAlive(pid)) await new Promise((r) => setTimeout(r, 50))
+  assert.equal(procAlive(pid), false, `orphan ${pid} survived the sweep`)
+  // Only once it is dead, so nothing is left pointing at a path that is gone.
+  assert.equal(existsSync(dir), false)
+})
+
+test('the sweep keeps an old pidfile-less directory whose daemon is still owned by a live run', async (t) => {
+  const root = scratchRoot(t)
+  const dir = path.join(root, `${FARM_HOME_PREFIX}owned`)
+  mkdirSync(dir, { recursive: true })
+  const pid = decoy(t, { farmHome: dir })
+  const longAgo = Date.now() / 1000 - 60 * 60 * 24
+  utimesSync(dir, longAgo, longAgo)
+
+  assert.notEqual(procStat(pid).ppid, 1, 'this decoy is supposed to still have a live parent')
+
+  const result = sweepStaleTestFarmds({ root })
+
+  assert.deepEqual(result.killed, [])
+  assert.ok(procAlive(pid), 'age must not override a live claimant')
+  assert.ok(existsSync(dir), 'the directory a live daemon still points at must not be deleted')
+  assert.match(result.skipped.find((s) => s.dir === dir).reason, /still parented/)
 })
 
 // ---------------------------------------------------------------------------
