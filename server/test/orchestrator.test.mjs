@@ -100,12 +100,16 @@ test('an invalid persona patch is dropped; the run completes and siblings surviv
 
 // ---- HZ-102: provider/command_id provenance ----
 // farm/step_agent.py only sets artifacts.provider/command_id when a persona
-// forced a non-default provider (today, only muse_smoke_test -> muse) — this
-// proves the server side of that contract: the columns get written when
-// present, and stay NULL for every ordinary (Claude-routed) step, unchanged.
+// forced a non-default provider. PERSONA_PROVIDERS ships empty (HZ-121), so
+// no shipped persona does that today — the farm side is proven against a
+// test-registered fixture persona. The server side is provider-agnostic: it
+// persists whatever provenance the farm reports, so the persona string below
+// is just an arbitrary text-column value, not a registry id. This proves that
+// contract: the columns get written when present, and stay NULL for every
+// ordinary (Claude-routed) step, unchanged.
 
 test('completeFarmRun persists provider and command_id onto step_run when the farm reports them', async () => {
-  insertItem.run('D-20', 'Muse smoke test step', 'Medium', 4, 'muse_smoke_test')
+  insertItem.run('D-20', 'Muse-routed planning step', 'Medium', 4, 'some_persona')
   const runId = activeRunFor('D-20', 4)
   const result = await orchestrator.completeFarmRun(runId, {
     summary: 'planned via muse',

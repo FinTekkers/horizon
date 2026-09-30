@@ -186,7 +186,13 @@ until HZ-102. What HZ-102 adds:
   capability that doesn't exist yet, and is deliberately left for a future
   item rather than invented here. The override reaches `run_agent()` as an
   explicit `provider=` argument, not an env var — it can't leak into a later
-  call in the same process.
+  call in the same process. That the never-on-implement/deploy/QA guardrails
+  actually bite was proven by mutation: each was deliberately broken and the
+  resulting test failure captured in
+  [`hz-121-verification-evidence.log`](./hz-121-verification-evidence.log),
+  which also records that implement and deploy are guarded by three
+  independent layers (the eligibility flag, a dispatch path that never
+  threads `provider=`, and `providerLocked` inside `run_agent()`).
 - **Provenance.** `_parse_events` now returns `command_id` alongside
   `result`/`session_id`, and raises loudly if a `run.terminal.completed`
   event is missing it — provenance a caller can't record is treated as a

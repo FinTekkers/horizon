@@ -1,0 +1,416 @@
+Captured output of the HZ-121 verification runs, committed as evidence per
+QA's cycle-1 send-back (the prior attempt's self-reported counts -- "1122
+passing tests", "a live FARM_MUSE_E2E run", "4 deliberate guardrail-break
+cycles" -- were not acceptable evidence). Same convention as the HZ-102
+artifact alongside this file, muse-e2e-evidence.log.
+
+Host: `muse` v1.4.1 installed and authenticated, Python 3.12.3,
+pytest 9.1.1, node test runner + vitest 4.1.10. All runs from the repo root
+at /home/ubuntu/.horizon-farm/workspaces/FinTekkers__horizon__items/hz-121.
+
+All raw terminal output below is unedited. Where a run was too long to
+embed whole, the omission is marked in-line and the full line count given
+-- nothing is silently cut.
+
+
+================================================================================
+1. FULL TEST SUITES -- all green
+================================================================================
+
+The repo's four suites, run individually so each count is separately
+attributable rather than summed into one self-reported number.
+
+--------------------------------------------------------------------------------
+1a. Python -- `python3 -m pytest -q` (exit 0)
+--------------------------------------------------------------------------------
+
+    ........................................................................ [ 17%]
+    ...........ssss......................................................... [ 34%]
+    ........................................................................ [ 52%]
+    ........................................................................ [ 69%]
+    ........................................................................ [ 86%]
+    .......................................................                  [100%]
+    =============================== warnings summary ===============================
+    ../../../../.local/lib/python3.12/site-packages/starlette/testclient.py:53
+      /home/ubuntu/.local/lib/python3.12/site-packages/starlette/testclient.py:53: DeprecationWarning: The anyio.abc.BlockingPortal alias is deprecated, use anyio.from_thread.BlockingPortal instead.
+        _PortalFactoryType = Callable[[], AbstractContextManager[anyio.abc.BlockingPortal]]
+
+    -- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+    411 passed, 4 skipped, 1 warning in 58.97s
+
+--------------------------------------------------------------------------------
+1b. Server -- `npm --prefix server test` (exit 0)
+--------------------------------------------------------------------------------
+
+Full output is 2732 lines of TAP; the trailing summary block is reproduced
+here, the per-assertion `ok -` lines above it are omitted for length.
+
+      duration_ms: 153.489816
+      type: 'test'
+      ...
+    1..447
+    # tests 447
+    # suites 0
+    # pass 447
+    # fail 0
+    # cancelled 0
+    # skipped 0
+    # todo 0
+    # duration_ms 30595.445342
+
+--------------------------------------------------------------------------------
+1c. UI -- `npm --prefix ui run test` (exit 0)
+--------------------------------------------------------------------------------
+
+
+    > horizon-ui@0.1.0 test
+    > vitest run
+
+
+     RUN  v4.1.10 /home/ubuntu/.horizon-farm/workspaces/FinTekkers__horizon__items/hz-121/ui
+
+
+     Test Files  19 passed (19)
+          Tests  264 passed (264)
+       Start at  01:13:42
+       Duration  39.70s (transform 1.17s, setup 0ms, import 4.92s, tests 6.46s, environment 23.66s)
+
+--------------------------------------------------------------------------------
+1d. Deploy shell harness -- `bash infra/host/test/deploy.test.sh` (exit 0)
+--------------------------------------------------------------------------------
+
+Full output is 97 lines; the trailing summary is reproduced here.
+
+    ok - extra-services: with none configured, only the main service restarts
+    ok - farm isolation: deploy scripts contain no horizon-farm/farm references
+    1..50
+    # pass 50
+    # fail 0
+
+Totals: 411 + 447 + 264 = 1122 passing tests (4 skipped), plus 50 passing
+shell-harness assertions. This is the same 1122 the prior attempt claimed --
+now with the runs behind it.
+
+
+================================================================================
+2. LIVE FARM_MUSE_E2E DISPATCH -- ran, passed, against the real Muse CLI
+================================================================================
+
+The guardrail requires this test keep running against a fixture-registered
+persona rather than a shipped one. It does. Command:
+
+    FARM_MUSE_E2E=1 python3 -m pytest farm/tests/test_e2e_muse.py -v -s
+
+    ============================= test session starts ==============================
+    platform linux -- Python 3.12.3, pytest-9.1.1, pluggy-1.6.0 -- /usr/bin/python3
+    cachedir: .pytest_cache
+    rootdir: /home/ubuntu/.horizon-farm/workspaces/FinTekkers__horizon__items/hz-121
+    configfile: pytest.ini
+    plugins: anyio-4.15.1
+    collecting ... collected 3 items
+
+    farm/tests/test_e2e_muse.py::test_session_continuity_across_two_separate_muse_invocations PASSED
+    farm/tests/test_e2e_muse.py::test_terminal_completed_parse_holds_against_a_real_run PASSED
+    farm/tests/test_e2e_muse.py::test_one_real_planning_step_completes_with_muse_and_records_provenance [01:10:27] HZ-102 provenance: provider=muse command_id=57fa757c-6055-43c9-acea-404783cf9a8b
+    PASSED
+
+    ======================== 3 passed in 136.88s (0:02:16) =========================
+
+The provenance line is the proof that the *fixture* persona routed a real
+step to Muse: `provider=muse command_id=57fa757c-6055-43c9-acea-404783cf9a8b`
+is a command id returned by the live CLI, not a mock.
+
+
+================================================================================
+3. GUARDRAIL MUTATION TESTING -- each behaviour broken, a test failed
+================================================================================
+
+The success metric requires the four guardrail behaviours be proven by
+deliberately breaking each and confirming a test fails -- not by the suite
+passing. Every mutation below was reverted immediately after its run
+(`git checkout`); the tree carries none of them.
+
+An important finding while doing this: implement and deploy are guarded by
+THREE independent layers, not one --
+
+  (i)   `providerOverrideEligible: false` in farm/steps_generated.json
+  (ii)  their dispatch call sites in farm/step_agent.py never thread
+        `provider=provider_override` at all
+  (iii) `providerLocked: true`, enforced inside the real run_agent()
+
+so a single-point flip of (i) alone is absorbed by (ii) and no test fails
+(shown as 3c below, reported rather than hidden). That is defense in depth
+working, not a missing test. To show the tests genuinely have teeth, each
+layer is mutated in turn below and the failing test named.
+
+--------------------------------------------------------------------------------
+3a. Behaviour 1 -- a forced provider IS honoured on eligible planning steps
+--------------------------------------------------------------------------------
+
+Mutation (farm/step_agent.py): the override is computed but discarded.
+
+    -    provider_override = (
+    -        provider_for(item.get("persona")) if steps.provider_override_eligible(steps.STEPS, label) else None
+    -    )
+    +    provider_override = None  # MUTATION 1: override never applied
+
+Result: FAILED test_muse_smoke_test_persona_dispatches_with_provider_muse_on_eligible_steps
+
+    F...                                                                     [100%]
+    =================================== FAILURES ===================================
+    _ test_muse_smoke_test_persona_dispatches_with_provider_muse_on_eligible_steps _
+
+    monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0xed8828e495b0>
+    muse_smoke_test_persona = 'muse_smoke_test'
+
+        def test_muse_smoke_test_persona_dispatches_with_provider_muse_on_eligible_steps(monkeypatch, muse_smoke_test_persona):
+            for index, label in [
+                (4, "Plan options & trade-offs (pros / cons)"),
+                (6, "Draft implementation plan"),
+                (7, "Architecture review"),
+            ]:
+                captured = {}
+                monkeypatch.setattr(step_agent, "run_agent", capture_run_agent(captured))
+                task = make_task(index, label)
+                task["item"]["persona"] = muse_smoke_test_persona
+                execute(task)
+    >           assert captured.get("provider") == "muse", f"step {index} did not dispatch with provider=muse"
+    E           AssertionError: step 4 did not dispatch with provider=muse
+    E           assert None == 'muse'
+    E            +  where None = <built-in method get of dict object at 0xed8828e8d080>('provider')
+    E            +    where <built-in method get of dict object at 0xed8828e8d080> = {'append_system': 'You are the planning Ensemble (PM + QA + Architect perspectives combined) in\nHorizon, a delivery-l...\n  say so in the summary and treat it as a blocking finding.\n', 'cwd': None, 'max_turns': 40, 'timeout_s': 1140, ...}.get
+
+    farm/tests/test_step_agent.py:446: AssertionError
+    =========================== short test summary info ============================
+    FAILED farm/tests/test_step_agent.py::test_muse_smoke_test_persona_dispatches_with_provider_muse_on_eligible_steps
+    1 failed, 3 passed, 66 deselected in 0.49s
+
+--------------------------------------------------------------------------------
+3b. Behaviour 2 -- a forced provider is NEVER honoured on QA
+--------------------------------------------------------------------------------
+
+Mutation (farm/steps.py): QA becomes override-eligible.
+
+    -    return bool(_find_by_label(steps, label)["providerOverrideEligible"])
+    +    return bool(_find_by_label(steps, label)["providerOverrideEligible"]) or label == "QA reviews the test plan"
+
+Result: FAILED test_muse_smoke_test_persona_never_forces_a_provider_on_qa
+
+    .F..                                                                     [100%]
+    =================================== FAILURES ===================================
+    __________ test_muse_smoke_test_persona_never_forces_a_provider_on_qa __________
+
+    monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0xebc8d037a360>
+    muse_smoke_test_persona = 'muse_smoke_test'
+
+        def test_muse_smoke_test_persona_never_forces_a_provider_on_qa(monkeypatch, muse_smoke_test_persona):
+            """HZ-102 guardrail, code-enforced: QA (8) is a real specialist step, not
+            a pure-planning one, so the override must never apply even if an item
+            somehow carries the test persona."""
+            captured = {}
+            monkeypatch.setattr(step_agent, "run_agent", capture_run_agent(captured))
+            task = make_task(8, "QA reviews the test plan")
+            task["item"]["persona"] = muse_smoke_test_persona
+            execute(task)
+    >       assert captured.get("provider") is None
+    E       assert 'muse' is None
+    E        +  where 'muse' = <built-in method get of dict object at 0xebc8d03c0b00>('provider')
+    E        +    where <built-in method get of dict object at 0xebc8d03c0b00> = {'append_system': 'You are the QA agent in Horizon reviewing the test plan implied by an\nimplementation plan. The ite...registry\'s own invariant ("every registered id has a file").\n', 'cwd': None, 'max_turns': 40, 'timeout_s': 1140, ...}.get
+
+    farm/tests/test_step_agent.py:468: AssertionError
+    ----------------------------- Captured stdout call -----------------------------
+    [01:03:25] HZ-102 provenance: provider=None command_id=None
+    =========================== short test summary info ============================
+    FAILED farm/tests/test_step_agent.py::test_muse_smoke_test_persona_never_forces_a_provider_on_qa
+    1 failed, 3 passed, 66 deselected in 0.53s
+
+QA needs only the one mutation: unlike implement/deploy it runs through the
+generic dispatch path, which does thread `provider=provider_override`.
+
+--------------------------------------------------------------------------------
+3c. Behaviour 3 -- a forced provider is NEVER honoured on deploy
+--------------------------------------------------------------------------------
+
+First, the negative result, reported rather than omitted. Flipping ONLY the
+eligibility flag for deploy does NOT fail any test, because the deploy call
+site never passes `provider=` in the first place:
+
+    +    ... or label == "Deploy the changes"  # MUTATION 3
+
+    ....                                                                     [100%]
+    4 passed, 66 deselected in 0.26s
+
+Layer (iii) -- mutation 3a (farm/steps.py), deploy no longer provider-locked:
+
+    -    return bool(_find_by_label(steps, label)["providerLocked"])
+    +    return bool(_find_by_label(steps, label)["providerLocked"]) and label != "Deploy the changes"
+
+Result: FAILED test_deploy_refuses_a_bare_farm_provider_env_override
+
+    .F....                                                                   [100%]
+    =================================== FAILURES ===================================
+    ____________ test_deploy_refuses_a_bare_farm_provider_env_override _____________
+
+    monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0xe8597b071e20>
+
+        def test_deploy_refuses_a_bare_farm_provider_env_override(monkeypatch):
+            monkeypatch.setenv("FARM_PROVIDER", "muse")
+
+    >       with pytest.raises(AgentError, match="provider-locked"):
+    E       Failed: DID NOT RAISE AgentError
+
+    farm/tests/test_step_agent.py:528: Failed
+    =========================== short test summary info ============================
+    FAILED farm/tests/test_step_agent.py::test_deploy_refuses_a_bare_farm_provider_env_override
+    1 failed, 5 passed, 64 deselected in 113.87s (0:01:53)
+
+Layers (i)+(ii) -- mutation 3b, deploy made eligible AND the override threaded
+into the deploy dispatch, i.e. the exact regression the test guards against:
+
+    +    ... or label == "Deploy the changes"                    # farm/steps.py
+    +            provider=provider_override,  # MUTATION 3b      # farm/step_agent.py
+
+Result: FAILED test_muse_smoke_test_persona_never_forces_a_provider_on_deploy
+
+    ..F.                                                                     [100%]
+    =================================== FAILURES ===================================
+    ________ test_muse_smoke_test_persona_never_forces_a_provider_on_deploy ________
+
+    monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0xfc0b29ccdb80>
+    muse_smoke_test_persona = 'muse_smoke_test'
+
+        def test_muse_smoke_test_persona_never_forces_a_provider_on_deploy(monkeypatch, muse_smoke_test_persona):
+            """HZ-102 guardrail, code-enforced: never route deploy to Muse, even if
+            an item somehow carries the test persona."""
+            captured = {}
+
+            def fake_run_agent(prompt, **kwargs):
+                captured.update(kwargs, prompt=prompt)
+                return devops_run_agent(
+                    {
+                        "summary": "verified the deploy",
+                        "url": "https://shoreward.ai/horizon/",
+                        "expected_text": "Horizon",
+                        "artifact_md": "## Deploy target\nHorizon",
+                    }
+                )(prompt, **kwargs)
+
+            monkeypatch.setattr(step_agent, "run_agent", fake_run_agent)
+            monkeypatch.setattr(step_agent, "run_smoke_check", lambda url, text: ("pass", 'SMOKE_RESULT=pass — "Horizon" rendered'))
+            task = make_task(14, "Deploy the changes", repo="acme/demo")
+            task["item"]["persona"] = muse_smoke_test_persona
+            execute(task)
+    >       assert captured.get("provider") is None
+    E       AssertionError: assert 'muse' is None
+    E        +  where 'muse' = <built-in method get of dict object at 0xfc0b29d14f00>('provider')
+    E        +    where <built-in method get of dict object at 0xfc0b29d14f00> = {'append_system': 'You are the DevOps agent in Horizon, responsible for release and deploy work.\nYou are project-scop...rtifact_md` rather than guessing at a verdict field\nyourself.\n', 'cwd': None, 'max_turns': 40, 'timeout_s': 900, ...}.get
+
+    farm/tests/test_step_agent.py:492: AssertionError
+    =========================== short test summary info ============================
+    FAILED farm/tests/test_step_agent.py::test_muse_smoke_test_persona_never_forces_a_provider_on_deploy
+    1 failed, 3 passed, 66 deselected in 0.31s
+
+--------------------------------------------------------------------------------
+3d. Behaviour 4 -- a forced provider is NEVER honoured on implement
+--------------------------------------------------------------------------------
+
+Layer (iii) -- mutation 4a (farm/steps.py), implement no longer provider-locked:
+
+    -    return bool(_find_by_label(steps, label)["providerLocked"])
+    +    return bool(_find_by_label(steps, label)["providerLocked"]) and label != "Specialist agent implements"
+
+Result: FAILED test_implement_refuses_a_bare_farm_provider_env_override
+(it stops raising the expected "provider-locked" AgentError and runs on)
+
+            default = head.rsplit("/", 1)[-1] if head else "main"
+            ahead = git(ws, "rev-list", "--count", f"origin/{default}..HEAD", check=False).stdout.strip()
+            if ahead == "0":
+    >           raise RuntimeError("the agent made no code changes — nothing to push")
+    E           RuntimeError: the agent made no code changes — nothing to push
+
+    farm/step_agent.py:290: RuntimeError
+    ----------------------------- Captured stdout call -----------------------------
+    [01:06:20] workspace /tmp/pytest-of-ubuntu/pytest-370/test_implement_refuses_a_bare_0/ws on branch horizon/t-1
+    [01:07:47] checks: no test/lint commands detected in the repo — nothing to enforce
+    [01:07:47] publish_screenshots: no screenshots to publish — skipped
+    =========================== short test summary info ============================
+    FAILED farm/tests/test_step_agent.py::test_implement_refuses_a_bare_farm_provider_env_override
+    1 failed, 9 passed, 60 deselected in 87.44s (0:01:27)
+
+Layers (i)+(ii) -- mutation 4b, implement made eligible AND the override
+threaded into the implement dispatch:
+
+    +    ... or label == "Specialist agent implements"           # farm/steps.py
+    +                provider=provider_override,  # MUTATION 4b  # farm/step_agent.py
+
+Result: FAILED test_muse_smoke_test_persona_never_forces_a_provider_on_implement
+
+    ...F                                                                     [100%]
+    =================================== FAILURES ===================================
+    ______ test_muse_smoke_test_persona_never_forces_a_provider_on_implement _______
+
+    tmp_path = PosixPath('/tmp/pytest-of-ubuntu/pytest-373/test_muse_smoke_test_persona_n0')
+    monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0xe445a481f740>
+    muse_smoke_test_persona = 'muse_smoke_test'
+
+        def test_muse_smoke_test_persona_never_forces_a_provider_on_implement(tmp_path, monkeypatch, muse_smoke_test_persona):
+            ws, _origin = make_git_workspace(tmp_path)
+            monkeypatch.setattr(step_agent, "ensure_item_worktree", lambda repo, item_id: ws)
+            captured = {}
+            monkeypatch.setattr(step_agent, "run_agent", capture_run_agent(captured))
+            task = make_task(11, "Specialist agent implements", repo="acme/demo")
+            task["item"]["persona"] = muse_smoke_test_persona
+            with pytest.raises(RuntimeError, match="no code changes"):
+                execute(task)
+    >       assert captured.get("provider") is None
+    E       AssertionError: assert 'muse' is None
+    E        +  where 'muse' = <built-in method get of dict object at 0xe445a4868980>('provider')
+    E        +    where <built-in method get of dict object at 0xe445a4868980> = {'append_system': 'You are the Eng agent in Horizon implementing an approved work item. You are\nin a git workspace al...'cwd': '/tmp/pytest-of-ubuntu/pytest-373/test_muse_smoke_test_persona_n0/ws', 'max_turns': 160, 'timeout_s': 2700, ...}.get
+
+    farm/tests/test_step_agent.py:504: AssertionError
+    ----------------------------- Captured stdout call -----------------------------
+    [01:07:57] workspace /tmp/pytest-of-ubuntu/pytest-373/test_muse_smoke_test_persona_n0/ws on branch horizon/t-1
+    [01:07:58] checks: no test/lint commands detected in the repo — nothing to enforce
+    [01:07:58] publish_screenshots: no screenshots to publish — skipped
+    =========================== short test summary info ============================
+    FAILED farm/tests/test_step_agent.py::test_muse_smoke_test_persona_never_forces_a_provider_on_implement
+    1 failed, 3 passed, 66 deselected in 0.33s
+
+All six mutations reverted. Verified clean afterwards:
+
+    $ git status --short
+     M server/test/orchestrator.test.mjs
+
+
+================================================================================
+4. LINTERS -- gate is NOT APPLICABLE, none is configured
+================================================================================
+
+Stated plainly per QA's cycle-1 condition 4: this repo has no linter, so no
+lint check ran and none could have. Verified, not assumed:
+
+  - no `lint` script in package.json, server/package.json, ui/package.json
+    or e2e/package.json
+  - no eslint, prettier, ruff, flake8, setup.cfg or pyproject.toml config
+    anywhere in the tree (node_modules excluded)
+
+farm/checks.py only runs `npm run lint` if a `lint` script exists, so the
+guardrail gate correctly reports no lint command for this repo. Claiming a
+lint pass here would be claiming a check that does not exist.
+
+
+================================================================================
+5. CI -- pre-existing gap, named not papered over
+================================================================================
+
+QA's first blocking finding was that .github/workflows/horizon-deploy.yml
+runs no tests, so nothing above is produced by a GitHub check runner. That
+is accurate and unchanged by this item: the workflow still only simulates a
+deploy. Test enforcement in this repo happens in farm/checks.py, which runs
+pytest + `npm test` in the workspace before any commit or push -- that is a
+real gate, but it reports only a count ("N repo check(s) passed"), which is
+why this file exists.
+
+Adding a test-running CI workflow is deliberately NOT done here: it is
+unrelated to removing a fake persona, and this item's guardrails scope it to
+the persona removal. It belongs in its own item.
