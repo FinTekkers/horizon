@@ -1,9 +1,11 @@
 """Guardrail enforcement: check detection and pass/fail behavior."""
 
 import json
+import subprocess
 
 import pytest
 
+from farm import checks
 from farm.checks import CheckFailure, detect_check_commands, run_checks
 
 
@@ -45,6 +47,61 @@ def test_failing_checks_raise_with_output_tail(tmp_path, monkeypatch):
     with pytest.raises(CheckFailure) as err:
         run_checks(tmp_path, log=lambda *_: None)
     assert "the-broken-test-name" in str(err.value)
+
+
+# ---- HZ-154: require_ran — "no green, no push" for the scoped conflict path ----
+
+
+def missing_runner(monkeypatch):
+    """Every detected command's binary is absent from this host.
+
+    Patched as the checks module's own `subprocess` reference, not
+    subprocess.run globally: the caller's git plumbing runs through the same
+    stdlib function, and a global patch would break the merge instead of the
+    check it is aimed at."""
+
+    class NoRunners:
+        TimeoutExpired = subprocess.TimeoutExpired
+
+        @staticmethod
+        def run(cmd, **_kwargs):
+            raise FileNotFoundError(cmd[0])
+
+    monkeypatch.setattr(checks, "subprocess", NoRunners)
+
+
+def test_a_missing_runner_is_skipped_but_still_counts_as_nothing_run(tmp_path, monkeypatch):
+    monkeypatch.setenv("FARM_CHECK_CMD", "pytest -q")
+    missing_runner(monkeypatch)
+
+    warnings = []
+    assert run_checks(tmp_path, log=warnings.append) == "check runners unavailable — skipped"
+    assert any("not installed on the farm host" in w for w in warnings)
+
+
+def test_require_ran_turns_every_runner_missing_into_a_failure(tmp_path, monkeypatch):
+    """The commands WERE detected — they just could not execute here. Today's
+    callers accept that; the scoped conflict path cannot, because it is about
+    to push a merge nobody has read."""
+    monkeypatch.setenv("FARM_CHECK_CMD", "pytest -q")
+    missing_runner(monkeypatch)
+
+    with pytest.raises(CheckFailure, match="every detected check runner is missing"):
+        run_checks(tmp_path, log=lambda *_: None, require_ran=True)
+
+
+def test_require_ran_turns_no_detected_checks_into_a_failure(tmp_path):
+    """The other half: a repo with no runner to detect in the first place."""
+    assert run_checks(tmp_path, log=lambda *_: None) == "no repo checks detected"
+
+    with pytest.raises(CheckFailure, match="no repo checks detected"):
+        run_checks(tmp_path, log=lambda *_: None, require_ran=True)
+
+
+def test_require_ran_is_satisfied_by_one_real_green_run(tmp_path, monkeypatch):
+    monkeypatch.setenv("FARM_CHECK_CMD", "true")
+
+    assert run_checks(tmp_path, log=lambda *_: None, require_ran=True) == "1 repo check(s) passed"
 
 
 def _write_e2e_repo(tmp_path):

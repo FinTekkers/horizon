@@ -213,6 +213,48 @@ def test_an_edit_between_two_conflict_regions_is_a_scope_violation():
         conflict_hunks.assert_in_scope(cf, "a1\na2\nMIDDLE EDITED\nz1\nz2\n")
 
 
+ADJACENT_HUNK_REFERENCE = (
+    "<<<<<<< ours\na1\n||||||| base\na\n=======\na2\n>>>>>>> theirs\n"
+    "<<<<<<< ours\nz1\n||||||| base\nz\n=======\nz2\n>>>>>>> theirs\n"
+)
+
+
+def test_two_conflict_regions_with_no_context_between_them_are_unsupported():
+    """With no plain lines between two regions there is no anchor telling which
+    resolved line belongs to which hunk, so the delta could not be attributed.
+    Fail closed rather than guess — the caller escalates conflict_unsupported."""
+    cf = one_file(ADJACENT_HUNK_REFERENCE, path="a.txt")
+    assert cf.plains == ((), (), ())
+
+    with pytest.raises(UnsupportedConflict, match="no context between them"):
+        conflict_hunks.assert_in_scope(cf, "a1\na2\nz1\nz2\n")
+
+
+def test_a_section_that_is_not_a_contiguous_run_of_its_blob_is_unsupported():
+    """_verify_sections is the belt-and-braces check on the parse itself: a
+    conflict region IS a contiguous line range of each stage blob, so a split
+    that produces anything else means the parse is wrong and nothing built on
+    it may be trusted."""
+    cf = one_file()
+
+    # `ours` genuinely holds the line; base/theirs are honest. Nothing raises.
+    conflict_hunks._verify_sections(cf, base=BASE, ours=OURS, theirs=THEIRS)
+
+    with pytest.raises(UnsupportedConflict, match="not a contiguous run of the ours blob"):
+        conflict_hunks._verify_sections(cf, base=BASE, ours=BASE, theirs=THEIRS)
+
+
+def test_sections_found_out_of_order_are_unsupported():
+    """The cursor only ever moves forward: hunk 2's section appearing *before*
+    hunk 1's in the blob is a mis-split, not a conflict."""
+    cf = one_file(TWO_HUNK_REFERENCE, path="a.txt")
+
+    conflict_hunks._verify_sections(cf, base="a\nz\n", ours="a1\nz1\n", theirs="a2\nz2\n")
+
+    with pytest.raises(UnsupportedConflict, match="region 2 is not a contiguous run of the ours blob"):
+        conflict_hunks._verify_sections(cf, base="a\nz\n", ours="z1\na1\n", theirs="a2\nz2\n")
+
+
 def test_a_leftover_marker_is_reported_as_its_own_reason():
     cf = one_file()
     half_done = REFERENCE.replace("||||||| base\n=======\n", "")  # markers still there

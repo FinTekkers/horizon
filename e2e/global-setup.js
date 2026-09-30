@@ -47,6 +47,18 @@ const FIXTURES = [
     pr_url: 'https://github.com/FinTekkers/horizon/pull/501',
     pr_mergeable: 0,
   },
+  // HZ-154: the scoped path's own conflicted item. Separate from CFL-1, which
+  // the banner specs read and must leave untouched — this one gets clicked.
+  {
+    id: 'CFL-2',
+    title: 'E2E fixture — merge conflict, resolved in scope',
+    priority: 'High',
+    cursor: ACCEPT_GATE_INDEX,
+    repo: 'FinTekkers/horizon',
+    pr: 503,
+    pr_url: 'https://github.com/FinTekkers/horizon/pull/503',
+    pr_mergeable: 0,
+  },
   {
     id: 'CLN-1',
     title: 'E2E fixture — clean PR',

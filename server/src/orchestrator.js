@@ -348,6 +348,31 @@ export function setRunStateForTest(runId, state, reason = null) {
   notifyChange()
 }
 
+// e2e only (HZ-154), same wiring and same reasoning as the hook above: the
+// suite has no farm daemon, so the scoped conflict path's whole visible
+// outcome — the item coming back to the Accept gate resolved, with the
+// activity feed naming the files, the hunks and the scoped verdict, and the
+// implement step's attempt count sitting still — would otherwise be covered
+// only below the UI. This queues ONE canned /conflicts/resolve reply for the
+// next resolveConflicts() call, in place of the farmd round trip.
+//
+// It stubs farmd's ANSWER, never the trigger or the gate: the click, the
+// session, the PIN, the escalation path and every guard clause in
+// resolveConflicts() all still run exactly as they do in production. Left
+// null unless a spec sets it, and the route that sets it exists only when
+// HORIZON_TEST_HOOKS=1, which production never sets.
+let cannedConflictReply = null
+
+export function setConflictReplyForTest(reply) {
+  cannedConflictReply = reply
+}
+
+function takeCannedConflictReply() {
+  const reply = cannedConflictReply
+  cannedConflictReply = null
+  return reply
+}
+
 // ---- real farm (farm/ Python daemon) plumbing ----
 
 // Every farm call is bounded — a hung farmd (network partition, a deadlocked
@@ -473,16 +498,19 @@ export async function resolveConflicts(id, actor = 'You') {
   // booleanizes this column for the UI) — 0 is "GitHub reports conflicts",
   // 1 is mergeable, NULL is unknown/not yet computed.
   if (item.pr_mergeable !== 0) return { error: 'not_conflicted' }
-  if (!FARM_URL) return { error: 'farm_unavailable' }
+  if (!FARM_URL && cannedConflictReply === null) return { error: 'farm_unavailable' }
 
   const branch = `horizon/${id.toLowerCase()}`
   let result
   try {
-    result = await farmFetch(
-      '/conflicts/resolve',
-      { item: { id, repo: item.repo }, branch },
-      { timeoutMs: FARM_CONFLICT_RESOLVE_TIMEOUT_MS },
-    )
+    result =
+      cannedConflictReply !== null
+        ? takeCannedConflictReply()
+        : await farmFetch(
+            '/conflicts/resolve',
+            { item: { id, repo: item.repo }, branch },
+            { timeoutMs: FARM_CONFLICT_RESOLVE_TIMEOUT_MS },
+          )
   } catch (err) {
     requestChanges(id, 'Accept the code', `PR #${item.pr}: automatic conflict resolution could not run (${err.message})`, actor)
     return { ok: true, resolved: false, escalated: true }

@@ -21,7 +21,7 @@ from pathlib import Path
 
 import pytest
 
-from farm import agent_runner, conflict_resolver, workspaces
+from farm import agent_runner, checks, conflict_resolver, workspaces
 from farm.tests.conflict_fixtures import (
     clone_and_read,
     git,
@@ -31,6 +31,57 @@ from farm.tests.conflict_fixtures import (
 )
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
+
+# The commits HZ-154's success metric names, and the vendored copies of the
+# three sides of their conflict (farm/tests/fixtures/hz124/README.md explains
+# why they are vendored rather than read out of this checkout's history).
+HZ124_BASE_SHA = "4dc6aa0"
+HZ124_OURS_SHA = "ce379a3"
+HZ124_THEIRS_SHA = "85cf212"
+HZ124_DIR = Path(__file__).resolve().parent / "fixtures" / "hz124"
+HZ124_FILES = {"claude": "farm/providers/claude.py", "muse": "farm/providers/muse.py"}
+
+
+def hz124_blob(name: str, side: str) -> str:
+    return (HZ124_DIR / f"{name}.{side}.txt").read_text()
+
+
+def build_hz124_origin(tmp_path: Path) -> Path:
+    """A bare origin holding the real conflict: main at the merge base, then
+    advanced with 85cf212's version of both files, and horizon/hz-124 branched
+    off the same base with ce379a3's."""
+    origin = tmp_path / "hz124-origin.git"
+    subprocess.run(["git", "init", "--quiet", "--bare", "-b", "main", str(origin)], check=True)
+    seed = tmp_path / "hz124-seed"
+    subprocess.run(["git", "init", "--quiet", "-b", "main", str(seed)], check=True)
+    git(seed, "config", "user.email", "test@example.com")
+    git(seed, "config", "user.name", "Test")
+
+    def write(side):
+        for name, path in HZ124_FILES.items():
+            target = seed / path
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(hz124_blob(name, side))
+
+    for side, message in (("base", "merge base"), ("theirs", "main advances")):
+        if side == "theirs":
+            git(seed, "checkout", "-b", "horizon/hz-124")
+            write("ours")
+            git(seed, "add", "-A")
+            git(seed, "commit", "-m", "the PR branch")
+            git(seed, "checkout", "main")
+        write(side)
+        git(seed, "add", "-A")
+        git(seed, "commit", "-m", message)
+    git(seed, "push", "--quiet", str(origin), "main", "horizon/hz-124")
+    subprocess.run(["git", "-C", str(origin), "symbolic-ref", "HEAD", "refs/heads/main"], check=True)
+
+    hub = workspaces.hub_path("FinTekkers/horizon")
+    hub.parent.mkdir(parents=True, exist_ok=True)
+    subprocess.run(["git", "clone", "--quiet", str(origin), str(hub)], check=True, capture_output=True)
+    git(hub, "config", "user.email", "farm@example.com")
+    git(hub, "config", "user.name", "Horizon Farm")
+    return origin
 
 # The exact three sides of HZ-124's real conflict in farm/providers/muse.py and
 # farm/providers/claude.py (read off commits ce379a3 and 85cf212 with
@@ -250,61 +301,67 @@ def test_the_hz124_shape_keeps_both_imports_and_only_the_review_is_an_agent(isol
         assert "<<<<<<<" not in merged
 
 
-def test_the_real_hz124_commits_replay_through_the_scoped_path(isolated_workspaces_dir, monkeypatch):
-    """The named replay from the success metric: commit ce379a3 merged with
-    origin/main at 85cf212.
+def test_the_vendored_blobs_still_match_the_commits_the_metric_names():
+    """Freshness check on the fixture, not on the resolver.
 
-    ce379a3 is a PR-branch commit, so it is NOT reachable from main and a fresh
-    clone will not have it. Skipped rather than faked when it is absent; the
-    test above pins the identical conflict from embedded blobs so coverage
-    never depends on this one running.
+    The replay below runs off vendored copies so it works in a fresh or
+    shallow clone, where ce379a3 (a PR-branch commit, unreachable from main)
+    is simply absent. When the real commits ARE here, an edited fixture must
+    fail loudly rather than quietly replay something the metric never named.
     """
-    for sha in ("ce379a3", "85cf212"):
-        if subprocess.run(["git", "-C", str(REPO_ROOT), "cat-file", "-e", f"{sha}^{{commit}}"], capture_output=True).returncode:
-            pytest.skip(f"{sha} is not in this checkout (PR-branch commit, unreachable from main)")
-    shallow = subprocess.run(
-        ["git", "-C", str(REPO_ROOT), "rev-parse", "--is-shallow-repository"], capture_output=True, text=True
-    ).stdout.strip()
-    if shallow == "true":
-        pytest.skip("a shallow clone cannot push the history these two commits need")
+    for sha in (HZ124_BASE_SHA, HZ124_OURS_SHA, HZ124_THEIRS_SHA):
+        if subprocess.run(
+            ["git", "-C", str(REPO_ROOT), "cat-file", "-e", f"{sha}^{{commit}}"], capture_output=True
+        ).returncode:
+            pytest.skip(f"{sha} is not in this checkout — the vendored copies are what the replay uses")
 
+    for name, path in HZ124_FILES.items():
+        for side, sha in (("base", HZ124_BASE_SHA), ("ours", HZ124_OURS_SHA), ("theirs", HZ124_THEIRS_SHA)):
+            from_git = subprocess.run(
+                ["git", "-C", str(REPO_ROOT), "show", f"{sha}:{path}"], capture_output=True, text=True, check=True
+            ).stdout
+            assert hz124_blob(name, side) == from_git, f"{name}.{side}.txt no longer matches {sha}:{path}"
+
+
+def test_the_real_hz124_conflict_replays_through_the_scoped_path(isolated_workspaces_dir, monkeypatch):
+    """The named replay from the success metric: ce379a3 merged with
+    origin/main at 85cf212, whose two conflicting import hunks cost HZ-124 a
+    full implement cycle and a re-review of its whole 3,000-line diff.
+
+    Real files, real git, whole contents — not a miniature. The three sides
+    come from farm/tests/fixtures/hz124/, vendored off those commits (see the
+    freshness check above) so this runs in CI and in a fresh clone, where
+    ce379a3 is unreachable and the commits themselves are not present.
+    """
     tmp_path = isolated_workspaces_dir
-    origin = tmp_path / "origin.git"
-    subprocess.run(["git", "init", "--quiet", "--bare", str(origin)], check=True)
-    subprocess.run(
-        [
-            "git", "-C", str(REPO_ROOT), "push", "--quiet", str(origin),
-            "ce379a3:refs/heads/horizon/hz-124", "85cf212:refs/heads/main",
-        ],
-        check=True, capture_output=True,
-    )
-    subprocess.run(["git", "-C", str(origin), "symbolic-ref", "HEAD", "refs/heads/main"], check=True)
-    hub = workspaces.hub_path("FinTekkers/horizon")
-    hub.parent.mkdir(parents=True, exist_ok=True)
-    subprocess.run(["git", "clone", "--quiet", str(origin), str(hub)], check=True, capture_output=True)
-    git(hub, "config", "user.email", "farm@example.com")
-    git(hub, "config", "user.name", "Horizon Farm")
+    origin = build_hz124_origin(tmp_path)
     agents = install(monkeypatch, FakeAgents(review=PASSING_REVIEW))
 
     result = conflict_resolver.resolve("FinTekkers/horizon", "HZ-124", log=lambda *_: None)
 
     assert result["resolved"] is True, result
     assert result["mode"] == "scoped"
+    # Metric 1: deterministic, so no resolution agent and no attempt of the
+    # implement step — and the item is pushed, not sent back.
     assert result["resolution"]["strategy"] == "deterministic"
     assert result["resolution"]["paths"] == ["farm/providers/claude.py", "farm/providers/muse.py"]
+    assert result["resolution"]["hunks"] == 2
     assert agents.of("resolution") == []
 
-    for name in ("farm/providers/claude.py", "farm/providers/muse.py"):
-        merged = clone_and_read(tmp_path, origin, "horizon/hz-124", name, f"real-{Path(name).stem}")
+    for name, path in HZ124_FILES.items():
+        merged = clone_and_read(tmp_path, origin, "horizon/hz-124", path, f"real-{name}")
         assert "from ..credentials import without_gate_credentials\n" in merged  # main's added import
         assert "decode_partial_output" in merged  # the PR's own change
         assert "<<<<<<<" not in merged
+        # The conflict is confined to the import block, so everything below it
+        # is still the PR's own body, byte-for-byte.
+        assert merged.endswith(hz124_blob(name, "ours")[-500:])
 
     # Metric 2's integration half: the review saw the conflicted hunks and the
-    # delta — not the other 94 files this PR touched.
+    # delta — not the rest of either file, and not main's own changes.
     prompt = agents.of("review")[0]["prompt"]
-    assert "step_agent" not in prompt
-    assert "test_step_agent" not in prompt
+    assert "SUPPORTS_RESUME" not in prompt
+    assert "def run_agent" not in prompt
 
 
 # ---- the positive control for every "no agent was dispatched" claim ----
@@ -482,6 +539,71 @@ def test_a_review_with_no_verdict_field_counts_as_a_reject(isolated_workspaces_d
     assert_nothing_pushed_and_clean(origin, "HZ-13", branch_sha)
 
 
+def raises(exc):
+    """A handler that blows up the way a real dispatch does — a timeout, a
+    provider outage, an exhausted account."""
+
+    def handler(_ws):
+        raise exc
+
+    return handler
+
+
+def test_a_resolution_agent_that_errors_out_escalates_as_unsure(isolated_workspaces_dir, monkeypatch):
+    """A timed-out or crashed dispatch is not "resolved" — it is the same
+    "could not be sure" outcome as the agent saying so itself, and it must
+    escalate rather than propagate out of the farmd route as a 500."""
+    tmp_path = isolated_workspaces_dir
+    _hub, origin = make_repo_hub(tmp_path)
+    install(monkeypatch, FakeAgents(resolution=raises(agent_runner.AgentError("agent timed out after 600s"))))
+    branch_sha = same_line_conflict(tmp_path, origin, "HZ-30")
+
+    result = conflict_resolver.resolve("acme/demo", "HZ-30", log=lambda *_: None)
+
+    assert result["reason"] == "resolution_unsure"
+    assert "agent timed out after 600s" in result["detail"]
+    assert_nothing_pushed_and_clean(origin, "HZ-30", branch_sha)
+
+
+def test_an_unparseable_resolution_reply_escalates_as_unsure(isolated_workspaces_dir, monkeypatch):
+    """Prose where a verdict object belongs. The file on disk may even look
+    resolved — without a parseable "resolved": true this path still refuses."""
+    tmp_path = isolated_workspaces_dir
+    _hub, origin = make_repo_hub(tmp_path)
+    install(
+        monkeypatch,
+        FakeAgents(resolution=resolve_markers("line2 (both)\n", reply="I merged them, looks good to me!")),
+    )
+    branch_sha = same_line_conflict(tmp_path, origin, "HZ-31")
+
+    result = conflict_resolver.resolve("acme/demo", "HZ-31", log=lambda *_: None)
+
+    assert result["reason"] == "resolution_unsure"
+    assert_nothing_pushed_and_clean(origin, "HZ-31", branch_sha)
+
+
+def test_a_scoped_review_that_errors_out_counts_as_a_reject(isolated_workspaces_dir, monkeypatch):
+    """Fail closed on the review side too: no verdict is a reject, whether the
+    reply was prose or the dispatch never produced one at all."""
+    tmp_path = isolated_workspaces_dir
+    _hub, origin = make_repo_hub(tmp_path)
+    agents = install(
+        monkeypatch,
+        FakeAgents(
+            resolution=resolve_markers("line2 (both)\n"),
+            review=raises(agent_runner.AgentError("review agent timed out after 480s")),
+        ),
+    )
+    branch_sha = same_line_conflict(tmp_path, origin, "HZ-32")
+
+    result = conflict_resolver.resolve("acme/demo", "HZ-32", log=lambda *_: None)
+
+    assert [c["kind"] for c in agents.calls] == ["resolution", "review"]
+    assert result["reason"] == "scoped_review_rejected"
+    assert "review agent timed out after 480s" in result["detail"]
+    assert_nothing_pushed_and_clean(origin, "HZ-32", branch_sha)
+
+
 def test_an_edit_to_a_file_outside_the_conflict_is_rejected(isolated_workspaces_dir, monkeypatch):
     """Guardrail, in code: the agent may edit only the conflicted files."""
     tmp_path = isolated_workspaces_dir
@@ -644,6 +766,36 @@ def test_a_repo_with_no_check_runner_at_all_escalates(isolated_workspaces_dir, m
     assert_nothing_pushed_and_clean(origin, "HZ-22", branch_sha)
 
 
+def test_a_detected_check_runner_that_is_missing_on_this_host_escalates(isolated_workspaces_dir, monkeypatch):
+    """The subtler half of "no green, no push": commands ARE detected, but
+    every one of their binaries is absent, so nothing actually ran. Today's
+    callers accept that as "skipped"; this path must not, or a host with a
+    broken toolchain would silently push every resolution unverified."""
+    tmp_path = isolated_workspaces_dir
+    _hub, origin = make_repo_hub(tmp_path)
+    install(monkeypatch, FakeAgents())
+    branch_sha = additive_conflict(tmp_path, origin, "HZ-33")
+    monkeypatch.setenv("FARM_CHECK_CMD", "pytest -q")
+
+    class NoRunners:
+        TimeoutExpired = subprocess.TimeoutExpired
+
+        @staticmethod
+        def run(cmd, **_kwargs):
+            raise FileNotFoundError(cmd[0])
+
+    # The checks module's own reference only: conflict_resolver's git plumbing
+    # goes through the same stdlib function, and a global patch would break the
+    # merge instead of the check this test is aimed at.
+    monkeypatch.setattr(checks, "subprocess", NoRunners)
+
+    result = conflict_resolver.resolve("acme/demo", "HZ-33", log=lambda *_: None)
+
+    assert result["reason"] == "scoped_checks_failed"
+    assert "every detected check runner is missing" in result["detail"]
+    assert_nothing_pushed_and_clean(origin, "HZ-33", branch_sha)
+
+
 def test_a_branch_that_moved_while_resolving_is_never_overwritten(isolated_workspaces_dir, monkeypatch):
     """The lease, actually firing: a third party pushes to the PR branch after
     the head being resolved was captured. The only test that tells
@@ -731,6 +883,21 @@ def test_a_gitattributes_merge_driver_escalates_before_any_dispatch(isolated_wor
 
     assert result["reason"] == "conflict_unsupported"
     assert_nothing_pushed_and_clean(origin, "HZ-26", branch_sha)
+
+
+def test_an_undeclared_reason_is_reported_as_the_generic_one_and_still_cleans_up(monkeypatch):
+    """The other half of the parity guard. A reason with no message on the Node
+    side would surface to the human as a raw detail string; a typo must degrade
+    to the generic message and say so in the log — never crash the escalation,
+    and never skip the cleanup that hands the next cycle a clean worktree."""
+    calls, logged = [], []
+    monkeypatch.setattr(conflict_resolver, "git", lambda ws, *args, **kw: calls.append(args))
+
+    result = conflict_resolver._escalate(Path("/nowhere"), "abc1234", "reason_i_mistyped", "why", logged.append)
+
+    assert result == {"resolved": False, "reason": "merge_conflict", "detail": "reason_i_mistyped: why"}
+    assert any("BUG" in line for line in logged)
+    assert [a[0] for a in calls] == ["merge", "reset", "clean"]
 
 
 def test_every_reason_the_resolver_reports_is_declared(isolated_workspaces_dir, monkeypatch):

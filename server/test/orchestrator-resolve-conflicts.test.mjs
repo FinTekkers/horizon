@@ -13,7 +13,7 @@
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync } from 'node:fs'
+import { mkdtempSync, readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -208,6 +208,64 @@ test('a scoped resolution records the files, the hunk count and the review verdi
   assert.match(text, /no re-implementation and no re-review/)
 })
 
+test("the recorded payload farmd really returns renders the same way a hand-written one does", async () => {
+  // Not a literal: this is the exact body
+  // farm/tests/test_farmd.py's scoped end-to-end test asserts /conflicts/resolve
+  // returns over real FastAPI routing. Both halves of the seam are pinned to
+  // one real reply, so a shape change on the Python side fails here too
+  // instead of drifting silently past a stale mock.
+  const recorded = JSON.parse(
+    readFileSync(join(import.meta.dirname, '../../farm/tests/fixtures/scoped_resolve_response.json'), 'utf8'),
+  )
+  insertItem.run('RC-11', 'Scoped, from the recorded farmd reply', ACCEPT_GATE_INDEX, 'acme/demo', 127, 0)
+  insertDoneRun('RC-11', IMPLEMENT_STEP_INDEX, 7, null)
+  farmdReply = { ok: true, json: async () => recorded }
+
+  const before = allStepRuns('RC-11')
+  const result = await orchestrator.resolveConflicts('RC-11', 'Alice')
+
+  assert.equal(result.resolved, true)
+  assert.equal(result.mode, 'scoped')
+  assert.deepEqual(result.review, recorded.review)
+  assert.deepEqual(allStepRuns('RC-11'), before)
+
+  const text = eventTexts('RC-11').at(-1)
+  assert.match(text, /resolved 1 conflicted hunk\(s\) on PR #127 in shared\.txt \(both sides kept, no agent needed\)/)
+  assert.match(text, /no agent review — the resolution used only parent lines/)
+  assert.doesNotMatch(text, /scoped review passed/, 'no reviewer ran, so no verdict may be claimed')
+})
+
+test('an agent-resolved hunk says so, and carries the scoped reviewer verdict that cleared it', async () => {
+  insertItem.run('RC-12', 'Scoped, agent strategy', ACCEPT_GATE_INDEX, 'acme/demo', 128, 0)
+  insertDoneRun('RC-12', IMPLEMENT_STEP_INDEX, 7, null)
+  insertDoneRun('RC-12', REVIEW_STEP_INDEX, 1, 'code review: pass\nQA review: pass')
+  farmdReply = {
+    ok: true,
+    json: async () => ({
+      ok: true,
+      resolved: true,
+      mode: 'scoped',
+      summary: 'resolved 1 conflicted hunk(s) in 1 file(s) while merging origin/main (agent); 3 repo check(s) passed',
+      resolution: { strategy: 'agent', hunks: 1, paths: ['farm/step_agent.py'], hunk_labels: ['farm/step_agent.py hunk 1'] },
+      review: { verdict: 'pass', reviewed: true, summary: 'the combined guard keeps both conditions', findings: [] },
+    }),
+  }
+
+  const before = allStepRuns('RC-12')
+  const result = await orchestrator.resolveConflicts('RC-12', 'Alice')
+
+  assert.equal(result.resolved, true)
+  assert.deepEqual(allStepRuns('RC-12'), before, 'an agent resolution is still not an implement attempt')
+  assert.equal(db.prepare("SELECT cursor FROM work_item WHERE id = 'RC-12'").get().cursor, ACCEPT_GATE_INDEX)
+  assert.equal(db.prepare("SELECT COUNT(*) c FROM gate_decision WHERE item_id = 'RC-12'").get().c, 0)
+
+  const text = eventTexts('RC-12').at(-1)
+  assert.match(text, /resolved 1 conflicted hunk\(s\) on PR #128 in farm\/step_agent\.py/)
+  assert.match(text, /\(resolved by an agent\)/, 'the log must say a model wrote these lines, not git')
+  assert.match(text, /scoped review passed: the combined guard keeps both conditions/)
+  assert.doesNotMatch(text, /no agent review/)
+})
+
 test("the Accept gate is never decided by a scoped success — it comes back to the human, PIN and all", async () => {
   insertItem.run('RC-9', 'Scoped conflict fix, gate untouched', ACCEPT_GATE_INDEX, 'acme/demo', 125, 0)
   insertDoneImplementRun('RC-9', 1)
@@ -276,6 +334,28 @@ test('each scoped refusal escalates with its own message, and an unknown reason 
     const feedback = db.prepare('SELECT message FROM feedback WHERE item_id = ?').get(id)
     assert.match(feedback.message, expected, reason)
   }
+})
+
+test('the e2e conflict-reply hook is one-shot and never stubs a second resolve', async () => {
+  // Registered only when HORIZON_TEST_HOOKS=1 (app.js). The risk it carries is
+  // a canned reply outliving the one call it was queued for and silently
+  // standing in for a real farmd round trip — so it is consumed, not read.
+  insertItem.run('RC-13', 'Hook is one-shot', ACCEPT_GATE_INDEX, 'acme/demo', 129, 0)
+  insertItem.run('RC-14', 'Second resolve hits farmd', ACCEPT_GATE_INDEX, 'acme/demo', 130, 0)
+  orchestrator.setConflictReplyForTest({ ok: true, resolved: true, summary: 'canned' })
+  farmdReply = {
+    ok: true,
+    json: async () => ({ ok: true, resolved: false, reason: 'merge_conflict', detail: 'from the real farmd' }),
+  }
+  lastRequest = null
+
+  const first = await orchestrator.resolveConflicts('RC-13', 'Alice')
+  assert.deepEqual(first, { ok: true, resolved: true })
+  assert.equal(lastRequest, null, 'the canned reply must replace the farmd call, not race it')
+
+  const second = await orchestrator.resolveConflicts('RC-14', 'Alice')
+  assert.deepEqual(second, { ok: true, resolved: false, escalated: true })
+  assert.equal(lastRequest.url, 'http://farm.test/conflicts/resolve', 'the next call must go to the real farmd')
 })
 
 test('an escalated conflict still leaves every prior step_run row — including review/QA — untouched (only feedback/cursor move)', async () => {

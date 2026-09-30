@@ -1356,6 +1356,16 @@ export function buildApp({ logger = true } = {}) {
       orchestrator.setRunStateForTest(run_id, state, reason ?? null)
       return { ok: true }
     })
+
+    // e2e only (HZ-154), same reasoning: with no farm daemon, the scoped
+    // conflict path has nothing to answer the /conflicts/resolve call the
+    // Accept gate's "send back to resolve conflicts" button makes. This queues
+    // one canned farmd reply so the spec can drive the real button, through
+    // the real PIN, and assert what the human actually ends up looking at.
+    fastify.post('/api/test/conflict-reply', async (request) => {
+      orchestrator.setConflictReplyForTest(request.body?.reply ?? null)
+      return { ok: true }
+    })
   }
 
   return fastify
