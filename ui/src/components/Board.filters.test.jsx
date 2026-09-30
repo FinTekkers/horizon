@@ -1,4 +1,5 @@
-// HZ-80: the board's staleness/abandoned filters. Complements Board.test.jsx
+// HZ-80: the board's staleness/abandoned filters, plus HZ-143's closed
+// filter (see the "---- closed ----" heading). Complements Board.test.jsx
 // (HZ-54, queued-vs-running) with the success metric's own named cases —
 // default hide/reveal with a visible one-click "show all", filters
 // combining rather than overriding, and an empty result rendering an
@@ -8,6 +9,8 @@
 import { expect, test, afterEach } from 'vitest'
 import { render, cleanup, fireEvent } from '@testing-library/react'
 import * as boardFilters from '../boardFilters'
+// Derived, never hardcoded — see filters.test.js for the same note.
+import { STEPS } from '../../../domain/js/lifecycle.js'
 
 import Board from './Board'
 
@@ -118,4 +121,77 @@ test('board__meta counts visible, non-abandoned items only', () => {
   ]
   const { getByText } = renderBoard(items)
   expect(getByText('1 items across the lifecycle')).toBeTruthy()
+})
+
+// ---- closed (HZ-143) ----
+
+function closedItem(id, overrides = {}) {
+  return item(id, { cursor: STEPS.length, ...overrides })
+}
+
+test('a Closed chip renders beside Stale and Abandoned, in registry order', () => {
+  const { container } = renderBoard([item('A'), closedItem('C1')])
+  const labels = [...container.querySelectorAll('.board__filter-chip')].map((el) => el.textContent)
+  expect(labels).toEqual(['Stale (30+ days) (0)', 'Abandoned (0)', 'Closed (1)'])
+})
+
+test('the Closed chip is a button with an accessible name and a title explaining what it is doing', () => {
+  const { getByRole } = renderBoard([item('A'), closedItem('C1')])
+  const chip = getByRole('button', { name: 'Closed (1)' })
+  expect(chip.tagName).toBe('BUTTON')
+  expect(chip.title).toBe('Hiding 1 closed item(s) — click to show')
+})
+
+test('a closed item is hidden by default; its own chip reveals it and hides it again', () => {
+  const { queryByText, getByText, getByRole } = renderBoard([item('A'), closedItem('C1')])
+
+  expect(queryByText('Work item C1')).toBeNull()
+  expect(getByText(/Hiding 1 closed/)).toBeTruthy()
+
+  // Target the full chip label: once the card is revealed its StatusPill also
+  // reads "Closed", so a /^Closed/ match would find two elements and throw.
+  fireEvent.click(getByRole('button', { name: 'Closed (1)' }))
+  expect(queryByText('Work item C1')).toBeTruthy()
+
+  fireEvent.click(getByRole('button', { name: 'Closed (1)' }))
+  expect(queryByText('Work item C1')).toBeNull()
+})
+
+test('the hidden note names each filter in registry order', () => {
+  const items = [
+    item('FRESH-1'),
+    item('STALE-1', { last_activity_at: daysAgoIso(45) }),
+    item('ABANDONED-1', { abandoned_at: daysAgoIso(1) }),
+    closedItem('CLOSED-1'),
+  ]
+  const { getByText } = renderBoard(items)
+  expect(getByText('Hiding 1 stale, 1 abandoned, 1 closed')).toBeTruthy()
+})
+
+test('a board of only closed items explains itself instead of going blank', () => {
+  const { getByText, queryByText, container } = renderBoard([closedItem('C1')])
+  expect(getByText(/All 1 items are hidden by the active filters/)).toBeTruthy()
+  expect(queryByText('No work items yet.')).toBeNull()
+  // The "Hiding N …" note is suppressed when nothing is shown — the
+  // empty-state explanation above replaces it rather than stacking with it.
+  expect(container.querySelector('.board__hidden-note')).toBeNull()
+})
+
+// A closed item is delivered work, not work in flight. Today it inflates the
+// header count; hiding it by default makes that count more accurate, not
+// less. Pinned so nobody later reads the drop as a regression.
+test('board__meta drops a closed item once it is hidden by default', () => {
+  const { getByText } = renderBoard([item('A'), closedItem('C1')])
+  expect(getByText('1 items across the lifecycle')).toBeTruthy()
+})
+
+test('the Review column count includes a closed item only once it is revealed', () => {
+  const { container, getByRole } = renderBoard([item('A'), closedItem('C1')])
+  const review = [...container.querySelectorAll('.col')].find(
+    (col) => col.querySelector('.col__name').textContent === 'Review',
+  )
+  expect(review.querySelector('.col__count').textContent).toBe('0')
+
+  fireEvent.click(getByRole('button', { name: 'Closed (1)' }))
+  expect(review.querySelector('.col__count').textContent).toBe('1')
 })

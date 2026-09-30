@@ -350,13 +350,17 @@ button { font-family: var(--font-sans); }
 
 /* ===== Board ===== */
 .board { padding: 24px 28px 40px; }
-.board__head { display: flex; align-items: baseline; gap: 12px; margin-bottom: 18px; }
+/* HZ-143: a third filter chip plus the longer "Hiding 1 stale, 1 abandoned,
+   1 closed" note pushes this row past its container on a laptop width. Flex
+   items floor at min-content (min-width: auto), so without wrapping the
+   overflow clips "+ New work item" rather than shrinking anything. */
+.board__head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 12px; margin-bottom: 18px; }
 .board__title { font: 700 22px var(--font-sans); letter-spacing: -0.4px; }
 .board__meta { font: 500 13px var(--font-sans); color: var(--muted); }
 /* HZ-80: which filters are currently narrowing the board, always visible in
    the header — never behind a menu — so nothing looks silently lost. */
 .board__hidden-note {
-  display: flex; align-items: center; gap: 6px;
+  display: flex; align-items: center; flex-wrap: wrap; gap: 6px;
   font: 500 13px var(--font-sans); color: var(--muted);
 }
 .board__show-all {

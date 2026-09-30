@@ -10,7 +10,16 @@
 
 import { DEFAULT_ACTIVE_FILTERS } from './domain/filters'
 
-const STORAGE_KEY = 'horizon_board_filters'
+// HZ-143: bumped from 'horizon_board_filters'. `cached` below prefers a
+// stored array over DEFAULT_ACTIVE_FILTERS, so anyone who has ever clicked a
+// chip has ['stale','abandoned'] on disk out-voting the new 'closed' default
+// — their Review column would stay crowded. The bump costs each browser its
+// saved toggles exactly once.
+//
+// Known limitation: because we store the ACTIVE set, every future filter
+// needs another bump. Storing the OFF set instead would make new filters
+// default-on with no migration — worth doing if a fourth filter ever lands.
+const STORAGE_KEY = 'horizon_board_filters_v2'
 const listeners = new Set()
 
 function readStorage() {

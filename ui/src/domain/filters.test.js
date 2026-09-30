@@ -2,9 +2,14 @@
 // named cases — default hide/reveal, a boundary item, filters combining
 // rather than overriding, and (separately, in Board.test.jsx) an empty
 // result rendering an explanation — plus the extensibility claim itself.
+// HZ-143 appended the `closed` filter and added the cases below its own
+// "---- closed ----" heading; it needed no change to the three functions.
 
 import { expect, test } from 'vitest'
 import { FILTERS, DEFAULT_ACTIVE_FILTERS, STALE_DAYS, daysSince, visibleItems, hiddenCounts, matchCounts } from './filters'
+// Derived, never hardcoded — requiredStepIndex's own comment sets the
+// precedent: a future step insertion must not silently move this boundary.
+import { STEPS } from '../../../domain/js/lifecycle.js'
 
 const NOW = new Date('2026-09-24T00:00:00Z')
 
@@ -21,13 +26,21 @@ function daysAgo(n) {
 }
 
 function item(id, overrides = {}) {
-  return { id, last_activity_at: daysAgo(0), ...overrides }
+  return { id, cursor: 0, last_activity_at: daysAgo(0), ...overrides }
 }
 
 // ---- default active set ----
 
-test('both stale and abandoned are active by default', () => {
-  expect(DEFAULT_ACTIVE_FILTERS.sort()).toEqual(['abandoned', 'stale'])
+test('stale, abandoned and closed are all active by default', () => {
+  expect([...DEFAULT_ACTIVE_FILTERS].sort()).toEqual(['abandoned', 'closed', 'stale'])
+})
+
+// HZ-143 metric 6: the whole feature is one appended registry entry, so the
+// registry's shape — and its order, which Board.jsx renders chips in — is
+// what's worth pinning. See the extensibility test at the bottom for the
+// other half: visibleItems/hiddenCounts needed no edit to support it.
+test('FILTERS is exactly three entries, in chip order', () => {
+  expect(FILTERS.map((f) => f.key)).toEqual(['stale', 'abandoned', 'closed'])
 })
 
 // ---- staleness boundary ----
@@ -71,7 +84,7 @@ test('an abandoned item is hidden by default and reappears once the abandoned fi
 test('an item that is both stale and abandoned counts in both buckets, and toggling only one filter off leaves it hidden', () => {
   const both = item('BOTH', { last_activity_at: daysAgo(60), abandoned_at: daysAgo(60) })
   const counts = hiddenCounts([both], DEFAULT_ACTIVE_FILTERS, NOW)
-  expect(counts).toEqual({ stale: 1, abandoned: 1 })
+  expect(counts).toEqual({ stale: 1, abandoned: 1, closed: 0 })
 
   // Turning off just 'stale' — it's still caught by 'abandoned'.
   expect(visibleItems([both], ['abandoned'], NOW)).toEqual([])
@@ -83,8 +96,64 @@ test('an item that is both stale and abandoned counts in both buckets, and toggl
 
 test('hiddenCounts is 0 for a filter that is not active, even though items still match its predicate', () => {
   const stale = item('S', { last_activity_at: daysAgo(45) })
-  expect(hiddenCounts([stale], [], NOW)).toEqual({ stale: 0, abandoned: 0 })
-  expect(matchCounts([stale], NOW)).toEqual({ stale: 1, abandoned: 0 })
+  expect(hiddenCounts([stale], [], NOW)).toEqual({ stale: 0, abandoned: 0, closed: 0 })
+  expect(matchCounts([stale], NOW)).toEqual({ stale: 1, abandoned: 0, closed: 0 })
+})
+
+// ---- closed (HZ-143) ----
+
+test('a closed item is hidden by default and reappears once the closed filter is toggled off', () => {
+  const closed = item('C', { cursor: STEPS.length })
+  expect(visibleItems([closed], DEFAULT_ACTIVE_FILTERS, NOW)).toEqual([])
+  expect(visibleItems([closed], DEFAULT_ACTIVE_FILTERS.filter((k) => k !== 'closed'), NOW)).toEqual([closed])
+})
+
+test('the final gate is visible; exactly past the last step, and beyond, are hidden', () => {
+  const atFinalGate = item('GATE', { cursor: STEPS.length - 1 })
+  const justClosed = item('CLOSED', { cursor: STEPS.length })
+  const overrun = item('OVER', { cursor: STEPS.length + 3 })
+
+  expect(visibleItems([atFinalGate], ['closed'], NOW)).toEqual([atFinalGate])
+  expect(visibleItems([justClosed], ['closed'], NOW)).toEqual([])
+  expect(visibleItems([overrun], ['closed'], NOW)).toEqual([])
+})
+
+test('an in-progress item is not hidden by the closed filter', () => {
+  const inFlight = item('WIP', { cursor: 5 })
+  expect(visibleItems([inFlight], ['closed'], NOW)).toEqual([inFlight])
+  expect(matchCounts([inFlight], NOW).closed).toBe(0)
+})
+
+test('the closed filter counts what it hides, so the header can say "Hiding N closed"', () => {
+  const items = [item('C1', { cursor: STEPS.length }), item('C2', { cursor: STEPS.length }), item('WIP')]
+  expect(hiddenCounts(items, DEFAULT_ACTIVE_FILTERS, NOW)).toEqual({ stale: 0, abandoned: 0, closed: 2 })
+})
+
+// Closed and abandoned stay independent predicates: an item abandoned at the
+// final gate is abandoned, full stop — never counted in both buckets. Mirrors
+// the precedence in domain/status.js's itemStatus.
+test('an item abandoned at the final gate counts as abandoned only, never closed', () => {
+  const abandonedAtEnd = item('AF', { cursor: STEPS.length, abandoned_at: daysAgo(1) })
+  expect(matchCounts([abandonedAtEnd], NOW)).toEqual({ stale: 0, abandoned: 1, closed: 0 })
+  expect(hiddenCounts([abandonedAtEnd], ['closed'], NOW).closed).toBe(0)
+  expect(visibleItems([abandonedAtEnd], ['closed'], NOW)).toEqual([abandonedAtEnd])
+})
+
+test('an item both closed and stale counts in both buckets and needs both filters off to reappear', () => {
+  const both = item('CS', { cursor: STEPS.length, last_activity_at: daysAgo(45) })
+  expect(hiddenCounts([both], DEFAULT_ACTIVE_FILTERS, NOW)).toEqual({ stale: 1, abandoned: 0, closed: 1 })
+  expect(visibleItems([both], ['stale'], NOW)).toEqual([])
+  expect(visibleItems([both], ['closed'], NOW)).toEqual([])
+  expect(visibleItems([both], [], NOW)).toEqual([both])
+})
+
+// isClosed is `item.cursor >= STEPS.length`, so a cursor-less object leans on
+// `undefined >= N` being false. Load-bearing for every caller that hands this
+// module a partially-hydrated item — make it explicit, not incidental.
+test('an item with no cursor field is not treated as closed and does not throw', () => {
+  const noCursor = { id: 'NC', last_activity_at: daysAgo(0) }
+  expect(visibleItems([noCursor], ['closed'], NOW)).toEqual([noCursor])
+  expect(matchCounts([noCursor], NOW).closed).toBe(0)
 })
 
 // ---- extensibility: appending a predicate requires no change to
@@ -98,5 +167,10 @@ test('a persona-style predicate can be appended without touching visibleItems or
   ]
 
   expect(visibleItems(items, ['persona:eng'], NOW, extended).map((i) => i.id)).toEqual(['QA-1'])
-  expect(hiddenCounts(items, ['persona:eng'], NOW, extended)).toEqual({ stale: 0, abandoned: 0, 'persona:eng': 1 })
+  expect(hiddenCounts(items, ['persona:eng'], NOW, extended)).toEqual({
+    stale: 0,
+    abandoned: 0,
+    closed: 0,
+    'persona:eng': 1,
+  })
 })
