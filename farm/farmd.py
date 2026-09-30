@@ -702,6 +702,35 @@ async def internal_steps_started(request: Request):
     return {"ok": True, "active": active}
 
 
+@app.get("/internal/snapshot")
+def internal_snapshot():
+    """The concierge's read path (HZ-140).
+
+    farmd holds FARM_SHARED_SECRET; no agent session does any more, including
+    the concierge's own. So the concierge reads the work-item snapshot the
+    same way the PM agent reports results: over loopback, through farmd, with
+    no credential of its own.
+
+    Exposure, decided explicitly rather than left implicit: /internal/* is
+    unauthenticated on 127.0.0.1, so any local agent with Bash can now read
+    this snapshot. That is accepted — every step agent is already handed its
+    item's full contents in its prompt, farmd binds to loopback only, and this
+    route grants no write capability whatsoever. It cannot approve a gate,
+    which is the capability HZ-140 exists to take away.
+    """
+    try:
+        res = httpx.get(f"{HORIZON_URL}/api/farm/snapshot", headers={"x-farm-secret": SHARED_SECRET}, timeout=15)
+        if res.status_code != 200:
+            # Upstream status/body are not passed through: a 401 here is a
+            # farmd misconfiguration, not something the concierge can act on.
+            print(f"farmd: snapshot fetch -> {res.status_code}", flush=True)
+            return JSONResponse({"error": "could not reach horizon server"}, status_code=502)
+        return res.json()
+    except Exception as exc:
+        print(f"farmd: snapshot fetch failed: {exc}", flush=True)
+        return JSONResponse({"error": "could not reach horizon server"}, status_code=502)
+
+
 @app.post("/internal/steps/result")
 async def steps_result(request: Request):
     """PM agent reports here; we forward to the Node server with the secret."""

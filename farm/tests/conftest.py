@@ -21,6 +21,11 @@ os.environ.setdefault("FARM_HOME", tempfile.mkdtemp(prefix="horizon-farm-test-")
 # the subprocess path. SDK-path tests opt in with FARM_RUNNER=sdk and mock
 # claude_agent_sdk.query directly.
 os.environ.setdefault("FARM_RUNNER", "subprocess")
+# HZ-140: WA_APPROVAL_SECRET has no dev default in config.py on purpose (an
+# unset value must refuse approvals, never quietly send an unauthenticated
+# one), so the suite supplies its own. Tests for the unconfigured case
+# monkeypatch it back to "".
+os.environ.setdefault("WA_APPROVAL_SECRET", "wa-approval-secret-for-tests")
 # The host may carry an API key; the HZ-5 subscription guardrail would (by
 # design) refuse to import farmd with it set. Tests set it back explicitly
 # where the guardrail itself is under test.
