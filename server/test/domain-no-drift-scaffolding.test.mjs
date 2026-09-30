@@ -39,7 +39,14 @@ const PINNED_DEPS = {
     devDependencies: undefined,
   },
   'ui/package.json': {
-    dependencies: { react: '^18.3.1', 'react-dom': '^18.3.1' },
+    // HZ-153 added `marked` — deliberately, as guardrail 3 intends: the item
+    // allowed at most one new runtime dependency to render issue markdown on
+    // the item page, and this is it. Same pin as server/ above (one markdown
+    // dialect across the app), and marked has no transitive packages, so the
+    // UI is still a three-dependency bundle. components/Markdown.jsx uses
+    // marked.lexer() only — never marked.parse() — so no HTML sanitiser had
+    // to come with it.
+    dependencies: { marked: '^18.0.6', react: '^18.3.1', 'react-dom': '^18.3.1' },
     devDependencies: {
       '@testing-library/dom': '^10.4.1',
       '@testing-library/react': '^16.3.2',
