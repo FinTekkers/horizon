@@ -47,7 +47,7 @@ sessions; queued work survives on disk.
 |---|---|---|
 | `FARM_PORT` | 4100 | farmd port |
 | `HORIZON_URL` | http://localhost:3001 | Node server for result callbacks |
-| `FARM_SHARED_SECRET` | dev-secret | must match the Node server's value |
+| `FARM_SHARED_SECRET` | dev-secret | must match the Node server's value. **farmd only** (HZ-140): `tmux_mgr.py` refuses to forward it into any agent session, and unsets it in the session's own command, so a step/PM/concierge agent can't read it out of its environment |
 | `FARM_HOME` | ~/.horizon-farm | queue/state/logs/workspaces |
 | `FARM_CLAUDE_BIN` | claude | override with tests/fake_claude in tests |
 | `FARM_PM_MODEL` | (CLI default) | model for the PM agent |
@@ -108,6 +108,62 @@ drifts):
 | `FARM_WA_SENDER_NAMES` | `{}` | JSON jid->name map, e.g. `{"15551112222":"David"}` — every wizard/approval reply names whose turn it is |
 | `FARM_WA_WIZARD_TTL_S` | 1800 | item-wizard conversation expiry (seconds) |
 | `FARM_WA_CHOICE_TTL_S` | 600 | offered gate-approval choice expiry (seconds) |
+| `WA_APPROVAL_SECRET` | (empty = **approvals refuse**) | HZ-140: the only credential that can approve a gate. Must match the Node server's value. Reaches the `farm-concierge-*` session only — never a step or PM agent |
+
+Gate approval is also gated **server-side** by `WA_APPROVER_JIDS` (set in the
+Node server's env, not here): a sender the server doesn't recognise gets a
+403 and the gate is untouched, whatever the farm sent. `FARM_WA_ALLOWED_JIDS`
+above stays as the farm's own first pass — defence in depth, with the server
+list as the authority.
+
+Symptoms when the two are out of step: a sender missing from
+`FARM_WA_ALLOWED_JIDS` is dropped **silently** (log line only, no reply); a
+sender missing from `WA_APPROVER_JIDS` gets a visible "isn't on Horizon's
+approver list" reply.
+
+To check no live agent session is holding a credential it was **not granted**:
+
+```
+farm/.venv/bin/python -m farm.tools.check_session_env
+```
+
+It prints variable names only, never values, and exits non-zero on a find.
+A session started *before* this change keeps the environment it was launched
+with, so restart farmd (which tears its sessions down) after upgrading.
+
+Read its output precisely. `LEAK` is a finding and sets the exit status.
+`GRANT` is not: the concierge session legitimately holds `WA_APPROVAL_SECRET`,
+and the tool prints that on its own line rather than passing over it, so
+"clean" is never mistaken for "nothing running here can approve a gate."
+Something running here can — that is what the concierge *is*.
+
+**What HZ-140 closes, and what it doesn't.** A step or PM agent no longer
+holds any credential that can approve a gate: not in its own environment, not
+inherited from the tmux server, and `FARM_SHARED_SECRET` is no longer
+accepted by the approval route at all.
+
+The concierge is the one session granted `WA_APPROVAL_SECRET`, and it runs a
+model over WhatsApp text a stranger can write, so the model itself is kept
+away from the credential on both spawn paths:
+
+- `concierge_agent.main()` calls `credentials.drop_from_process_environ()`
+  before any model runs, so the `claude` process it spawns starts from an
+  environment that never held the name. This is the leg that matters, because
+  the default SDK runner builds its child env as `{**os.environ, **options.env}`
+  — `options.env` can override a name but cannot remove one.
+- Both providers pass an explicit `env=` (`credentials.without_gate_credentials()`)
+  to `subprocess.run`, covering the `FARM_RUNNER=subprocess` rollback lever and
+  every step and PM agent as well.
+
+What remains open, stated rather than implied closed: every farm session runs
+as the **same OS user**, so an agent with `Bash` can still read
+`/proc/<concierge_pid>/environ` or `ps` the concierge's argv, and the
+concierge's own model subprocess can read its parent's. Inheritance is closed;
+read-out is not. Closing read-out needs a separate uid for farmd + the
+concierge, which is host configuration rather than code here, and is
+deliberately out of this item's scope. The server-side `WA_APPROVER_JIDS`
+check is the part that holds regardless: a forged call still has to come from
+an allowlisted number.
 
 3. Restart farmd (`./farm/run.sh`); the concierge appears as
    `farm-concierge-<project>` and its log lands in `~/.horizon-farm/logs/`.

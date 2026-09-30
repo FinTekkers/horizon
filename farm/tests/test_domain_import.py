@@ -11,6 +11,7 @@ pytest.ini sets testpaths = farm/tests with the repo root as rootdir, so this
 runs at the guardrail gate.
 """
 
+import importlib
 from pathlib import Path
 
 from domain.py import steps
@@ -45,7 +46,35 @@ def test_the_superseded_farm_copy_is_gone():
     assert not (REPO_ROOT / "farm" / "steps_generated.json").exists()
 
 
-def test_the_binding_is_generated_and_says_so():
-    header = (REPO_ROOT / "domain" / "py" / "steps.py").read_text().splitlines()[0]
-    assert "GENERATED" in header
-    assert "do not edit" in header
+def test_the_binding_is_hand_written():
+    # HZ-139 inverted this. The module used to be required to OPEN with a
+    # "GENERATED ... do not edit" banner naming the generator; it is now real
+    # hand-written source, so the banner and the template's @@PLACEHOLDER@@
+    # markers must be absent anywhere in the file, not just on line one.
+    source = (REPO_ROOT / "domain" / "py" / "steps.py").read_text()
+    assert "GENERATED" not in source
+    assert "do not edit" not in source
+    assert "@@" not in source
+    # Positive control: the file was really read, and it is really the binding.
+    assert "def _project_farm_view" in source
+
+
+def test_the_binding_reads_domain_steps_json_rather_than_embedding_it():
+    source = (REPO_ROOT / "domain" / "py" / "steps.py").read_text()
+    assert "steps.json" in source
+    assert steps._SOURCE_PATH == (REPO_ROOT / "domain" / "steps.json").resolve()
+    # No second copy of the table: not one step label is written into the
+    # module (HZ-139 guardrail 4 — steps.json stays the only declaration site).
+    for entry in steps.STEPS:
+        assert entry["label"] not in source, f'label {entry["label"]!r} is inlined in the binding'
+
+
+def test_the_binding_imports_from_any_working_directory(tmp_path, monkeypatch):
+    # _SOURCE_PATH derives from __file__, never from cwd — farm agents run
+    # inside workspace clones, not from the repo root. This is the one new
+    # RUNTIME failure mode HZ-139 introduces (the module now does file I/O at
+    # import), so it gets an assertion rather than a paragraph of reasoning.
+    monkeypatch.chdir(tmp_path)
+    importlib.reload(steps)
+    assert len(steps.STEPS) == 11
+    assert steps.PHASES == ["Plan", "Technical Plan", "Execute", "Deploy", "Review"]

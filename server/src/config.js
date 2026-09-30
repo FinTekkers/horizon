@@ -13,6 +13,11 @@
 //   ADMIN_EMAIL/PASSWORD   hardcoded login credential (dev fallback: admin@example.com/admin)
 //   ALLOWED_LOGIN_EMAILS   comma-separated Google-login allowlist (deny-by-default: empty/
 //                          unset means NO Google logins succeed; the password path is unaffected)
+//   WA_APPROVAL_SECRET     credential for POST .../approve-via-whatsapp — held ONLY by the
+//                          WhatsApp concierge, never by step/PM agents. No dev fallback:
+//                          unset means every WhatsApp approval is refused (503).
+//   WA_APPROVER_JIDS       comma-separated WhatsApp approver allowlist (deny-by-default:
+//                          empty/unset means NO sender can approve a gate)
 //   SESSION_SECRET         unused placeholder — session tokens are random, not signed
 //   HORIZON_TEST_HOOKS     "1" registers e2e-only routes (see app.js) — never set in production
 
@@ -93,6 +98,24 @@ export const ALLOWED_LOGIN_EMAILS = new Set(
     .map((s) => s.trim().toLowerCase())
     .filter(Boolean),
 )
+
+// ---- WhatsApp gate approval (HZ-140) ----
+// Until HZ-140, POST .../approve-via-whatsapp was guarded by
+// FARM_SHARED_SECRET — which farm/tmux_mgr.py forwarded into every agent
+// session — so any agent with Bash could approve its own gate. These two are
+// the replacement: a credential that never enters a step/PM agent session,
+// and a server-held allowlist so the caller-supplied sender is proved here
+// rather than trusted.
+//
+// Deliberately NO 'dev-secret' fallback (unlike FARM_SHARED_SECRET above):
+// an unset value must fail approvals closed, never silently accept them.
+export const WA_APPROVAL_SECRET = process.env.WA_APPROVAL_SECRET || null
+// Raw entries; waApprovers.js normalizes them (a jid carries a device suffix
+// and a server part that are routing detail, not identity).
+export const WA_APPROVER_JIDS = (process.env.WA_APPROVER_JIDS || '')
+  .split(',')
+  .map((s) => s.trim())
+  .filter(Boolean)
 
 // e2e only (HZ-54): the e2e suite runs with no real farm daemon (FARM_URL
 // unset — see e2e/playwright.config.js), so it has no way to make the board

@@ -22,6 +22,13 @@ HZ-15 (the item wizard and gate-choice approval) is a single-phone check
 here — its cross-sender guardrail (two allowlisted phones mid-conversation
 in one group chat never read or advance each other's wizard/approval state)
 is covered automatically instead, in test_wizard.py.
+
+HZ-140 adds two host dependencies for the approval leg specifically: farmd
+must be up (the concierge reads its snapshot through it now, and the check
+below skips if it isn't), and approving a gate by reply needs
+WA_APPROVAL_SECRET set for this process with the sender's number in the
+server's own WA_APPROVER_JIDS. Without those the approval fails closed —
+503 or 403 — which is correct behaviour, not a regression.
 """
 
 import os
@@ -57,6 +64,14 @@ def test_whatsapp_round_trip_through_the_real_bridge():
         httpx.get(f"{config.HORIZON_URL}/api/items", timeout=5).raise_for_status()
     except httpx.HTTPError:
         pytest.skip(f"Horizon server not reachable at {config.HORIZON_URL} — start server/ first")
+    # HZ-140: the concierge holds no server credential any more, so its
+    # snapshot read goes through farmd. Without farmd up this fails as a
+    # generic agent error, which would read like a regression rather than a
+    # missing dependency.
+    try:
+        httpx.get(f"{ca.FARMD}/internal/snapshot", timeout=5).raise_for_status()
+    except httpx.HTTPError:
+        pytest.skip(f"farmd not reachable at {ca.FARMD} — start farm/run.sh first (HZ-140)")
 
     db_path = os.path.expanduser(config.WA_DB_PATH)
     transport = BridgeTransport(db_path, config.WA_BRIDGE_URL)

@@ -11,8 +11,8 @@ all of this — and one shared model directory all four layers read from.
 graph TD
     subgraph DOMAIN["Domain — domain/ (the lifecycle model, shared)"]
         DSrc["steps.json — the ONE step declaration"]
-        DJs["js/lifecycle.js — generated JS binding"]
-        DPy["py/steps.py — generated Python binding"]
+        DJs["js/lifecycle.js — hand-written JS binding"]
+        DPy["py/steps.py — hand-written Python binding"]
     end
 
     subgraph UI["UI — ui/src/ (React board, browser)"]
@@ -42,8 +42,8 @@ graph TD
         ISystemd["horizon-server.service — systemd unit for the API"]
     end
 
-    DSrc -->|"npm run gen:domain"| DJs
-    DSrc -->|"npm run gen:domain"| DPy
+    DSrc -->|"read at import"| DJs
+    DSrc -->|"read at import"| DPy
     UIApi -->|"HTTP: /api/items, /api/farm/*"| SApp
     SApp --> SOrch
     SOrch -->|"imports STEPS / PHASES"| DJs
@@ -66,9 +66,10 @@ graph TD
 
 - **Domain (`domain/`)** — not a layer so much as the model the layers share.
   `domain/steps.json` is the only place a lifecycle step is declared; the JS
-  and Python bindings beside it are generated from it by `npm run gen:domain`
-  and imported by relative path from `server/src`, `ui/src`, `e2e/` and
-  `farm/`. It holds no presentation and no behaviour beyond derived lookups.
+  and Python bindings beside it are hand-written source that read it at import
+  (a static JSON import in JS, `json.load` in Python), and are imported by
+  relative path from `server/src`, `ui/src`, `e2e/` and `farm/`. It holds no
+  presentation and no behaviour beyond derived lookups.
   Start at [`domain/README.md`](../domain/README.md).
 
 - **UI (`ui/`)** — a React app the browser loads. It shows the board of work

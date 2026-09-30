@@ -41,23 +41,40 @@ test('no steps_generated.json survives anywhere', () => {
 test('the step model is not declared under farm/ or ui/ any more', () => {
   assert.ok(!relPaths.includes('farm/steps.py'), 'farm/steps.py was relocated to domain/py/steps.py')
   assert.ok(!relPaths.includes('server/src/lifecycle.js'), 'server/src/lifecycle.js was relocated to domain/js/lifecycle.js')
-  assert.ok(!relPaths.includes('server/scripts/gen-steps.mjs'), 'gen-steps.mjs was replaced by domain/generate.mjs')
+  assert.ok(!relPaths.includes('server/scripts/gen-steps.mjs'), 'gen-steps.mjs was superseded and deleted')
   // Positive control for the same predicate: the relocated files DO exist.
   assert.ok(relPaths.includes('domain/py/steps.py'))
   assert.ok(relPaths.includes('domain/js/lifecycle.js'))
-  assert.ok(relPaths.includes('domain/generate.mjs'))
 })
 
-test('domain/ holds the whole model: source, schema, generator, templates, both bindings and its README', () => {
+// HZ-139 inverted this pair. The generator and its templates used to be
+// required to exist; both bindings are now hand-written source that read
+// domain/steps.json directly, so the generator must be GONE. Same assertion
+// count, same strictness, opposite polarity — and the positive control below
+// is what stops the must-not-exist half passing because the walk broke.
+test('the generator and its templates are gone — nothing in domain/ is generated any more', () => {
+  for (const removed of [
+    'domain/generate.mjs',
+    'domain/templates/lifecycle.js.tmpl',
+    'domain/templates/steps.py.tmpl',
+  ]) {
+    assert.ok(!relPaths.includes(removed), `${removed} still exists — HZ-139 deleted the generator`)
+  }
+  // The DIRECTORY, not just the two files it held: a stray
+  // domain/templates/README.md would satisfy the loop above and still leave a
+  // templates/ folder behind.
+  const strays = relPaths.filter((p) => p.startsWith('domain/templates/'))
+  assert.deepEqual(strays, [], 'domain/templates/ still holds files')
+})
+
+test('domain/ holds the whole model: source, schema, validator, both bindings, fixtures and its README', () => {
   for (const expected of [
     'domain/steps.json',
     'domain/steps.schema.json',
     'domain/validate.mjs',
-    'domain/generate.mjs',
-    'domain/templates/lifecycle.js.tmpl',
-    'domain/templates/steps.py.tmpl',
     'domain/js/lifecycle.js',
     'domain/py/steps.py',
+    'domain/fixtures/lifecycle-cases.json',
     'domain/README.md',
   ]) {
     assert.ok(relPaths.includes(expected), `${expected} is missing`)
