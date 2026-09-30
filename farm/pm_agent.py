@@ -32,7 +32,10 @@ FARMD = f"http://127.0.0.1:{FARM_PORT}"
 WRITE_ARTIFACT_SANITY_CEILING_CHARS = 200_000
 # Read-side: defense-in-depth for rendering prior artifacts into a prompt.
 # The server already budgets the total it sends (~60k), so this should never
-# fire in practice — mirrors farm/rules.py's MAX_PROMPT_RULES_CHARS backstop.
+# fire in practice. Once mirrored farm/rules.py's MAX_PROMPT_RULES_CHARS
+# backstop when both were flat character slices; rules.py now drops whole
+# rules blocks with a note instead (HZ-114), so this is no longer a real
+# mirror — flagging the drift rather than leaving a stale claim in place.
 MAX_PROMPT_ARTIFACT_CHARS = 100_000
 
 
@@ -94,6 +97,45 @@ def build_prompt(task: dict) -> str:
     return "\n".join(lines)
 
 
+# Fields that carry prose a human or agent reads, as opposed to `persona` — a
+# registry-validated routing enum the server drops outright unless it exactly
+# matches a known persona id, so a marker there would decorate a value that's
+# discarded either way.
+MARKED_PATCH_FIELDS = {"desc", "metric", "guardrails"}
+
+
+def _mark_truncated(value: str, limit: int) -> str:
+    """Cut `value` to fit `limit`, at a word boundary, and say so — the note
+    is appended *after* the cut content (outside the budget it's reporting
+    on), the same shape truncate_diff() uses for reviewers
+    (farm/step_agent.py): content first, marker after, never interleaved.
+    role/pm.md already instructs the agent to stay within budget; this is
+    the enforcement for when it doesn't.
+
+    If no word boundary falls at-or-before `limit` (one run-on token longer
+    than the budget — a URL or a hash, say), a mid-word cut would violate
+    the same "never split a unit in half" principle this item applies to
+    rules.py's whole-file drop. Extend to the next space instead — the
+    field runs over budget by a bounded amount rather than being corrupted
+    mid-token. If there is no next space either (the whole value is one
+    token), there is no boundary to cut at anywhere, so the value is
+    returned whole and unmarked."""
+    if len(value) <= limit:
+        return value
+    cut = value[:limit]
+    last_space = cut.rfind(" ")
+    if last_space > 0:
+        cut = cut[:last_space]
+    else:
+        next_space = value.find(" ", limit)
+        if next_space == -1:
+            return value
+        cut = value[:next_space]
+    omitted = len(value) - len(cut)
+    note = f" […{omitted} chars omitted — agent reply exceeded the {limit}-char budget for this field; do not infer the field is complete.]"
+    return f"{cut}{note}"
+
+
 def validate(parsed: dict) -> tuple[str, dict, str | None]:
     summary = str(parsed.get("summary", "")).strip()
     if not summary:
@@ -102,7 +144,8 @@ def validate(parsed: dict) -> tuple[str, dict, str | None]:
     for key, limit in PATCH_FIELDS.items():
         value = parsed.get("patch", {}).get(key) if isinstance(parsed.get("patch"), dict) else None
         if isinstance(value, str) and value.strip():
-            patch[key] = value.strip()[:limit]
+            value = value.strip()
+            patch[key] = _mark_truncated(value, limit) if key in MARKED_PATCH_FIELDS else value[:limit]
     artifact = parsed.get("artifact_md")
     artifact = artifact.strip()[:WRITE_ARTIFACT_SANITY_CEILING_CHARS] if isinstance(artifact, str) and artifact.strip() else None
     return summary[:300], patch, artifact

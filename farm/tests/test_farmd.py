@@ -79,18 +79,23 @@ def test_steps_run_stamps_the_repos_rules_into_the_task_payload(running_farm):
     queued = json.loads((QUEUE_DIR / "pm" / "101.json").read_text())
     # The success metric's payload check: the migrated ui-service rules are in
     # the queued task verbatim, alongside the project-level FinTekkers rules.
-    assert "FinTekkers/ui-service — repo rules" in queued["rules"]
-    assert "npm install --ignore-scripts" in queued["rules"]
-    assert "FinTekkers — project rules" in queued["rules"]
+    # HZ-114: `rules` is now a list of unrendered parts (project, then repo) —
+    # render_rules_section() decides the whole-part-drop-with-note later, at
+    # prompt-build time, not here.
+    assert isinstance(queued["rules"], list)
+    rules_blob = "\n\n".join(queued["rules"])
+    assert "FinTekkers/ui-service — repo rules" in rules_blob
+    assert "npm install --ignore-scripts" in rules_blob
+    assert "FinTekkers — project rules" in rules_blob
 
 
-def test_steps_run_without_matching_rules_stamps_an_empty_string(running_farm):
+def test_steps_run_without_matching_rules_stamps_an_empty_list(running_farm):
     farmd.state["project"] = {"id": 2, "name": "NoSuchProject"}
     task = make_task(102, item_id="X-1", step_index=9)
     task["item"]["repo"] = "acme/unmapped"
     res = client.post("/steps/run", json=task)
     assert res.status_code == 200
-    assert json.loads((QUEUE_DIR / "pm" / "102.json").read_text())["rules"] == ""
+    assert json.loads((QUEUE_DIR / "pm" / "102.json").read_text())["rules"] == []
 
 
 # ---- /conflicts/resolve (HZ-92) ----

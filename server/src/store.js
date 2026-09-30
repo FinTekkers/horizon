@@ -711,7 +711,6 @@ export function parseIssueBody(body) {
     if (key && content) result[key] = content
   }
   if (!result.desc) result.desc = preamble || text
-  result.desc = result.desc.slice(0, 500)
   return result
 }
 

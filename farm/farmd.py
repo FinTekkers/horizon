@@ -568,8 +568,11 @@ async def steps_run(request: Request):
     # the dispatcher (bounded by FARM_MAX_EPHEMERAL). HZ-117: which is which
     # comes from steps.STEPS's runsIn field, not a hardcoded index tuple.
     body["project"] = state["project"]
-    # Project/repo rules are stamped into the task at enqueue (HZ-9): the
-    # queued payload and the session log show verbatim what the agent gets.
+    # Project/repo rules are stamped into the task at enqueue (HZ-9) as a
+    # list of unrendered parts — render_rules_section() (farm/rules.py) does
+    # the actual whole-part-drop-with-note decision later, at prompt-build
+    # time, so this queued payload is the *inputs* to that render, not the
+    # rendered prompt text itself.
     item_repo = body["item"].get("repo") if isinstance(body["item"], dict) else None
     body["rules"] = rules.resolve_rules(state["project"]["name"] if state["project"] else None, item_repo)
     queue = lane_for_index(steps.STEPS, body["step"].get("index", 99))
