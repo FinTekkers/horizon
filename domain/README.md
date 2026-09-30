@@ -1,11 +1,12 @@
-# `domain/` — the lifecycle model, the failure-reason vocabulary and the work-item field limits
+# `domain/` — the lifecycle model, the failure-reason vocabulary, the work-item field limits and the priority vocabulary
 
 **One JSON is the source of truth. Bindings read it. Consumers import from
 here.**
 
 Ask "what is a lifecycle step?" — or, since HZ-132, "what can make a step
 fail, and will Horizon retry it?", or, since HZ-134, "how long may a work-item
-field be?" — and the answer is this directory, by
+field be?", or, since HZ-135, "what priority may a work item carry, and in what
+order?" — and the answer is this directory, by
 definition. Before HZ-128 the answer was spread across `server/src/lifecycle.js`,
 `ui/src/domain/lifecycle.js`, `farm/steps.py`, two committed
 `steps_generated.json` files and a build script living inside one consumer —
@@ -35,6 +36,26 @@ navigate them like any other file.
   were four independent copies of the same three numbers, and they had already
   drifted: the API accepted a `guardrails` value five times longer than a PM
   revision could write.
+- **Changing the priority vocabulary** — a new value, a different order, a
+  different default — means editing **`domain/priorities.json` only**. The API's
+  two enums, the `work_item` `CHECK` constraint, the GitHub label pattern, the
+  intake picker and the WhatsApp wizard's numbered prompt all derive from it.
+  Before HZ-135 those were ten independent copies across three layers, and two of
+  them (a label-matching regex in `server/src/store.js` and another in
+  `server/src/github.js`) were byte-for-byte identical.
+
+  **Order is part of the declaration.** The array order is severity, highest
+  first, and it is *display* order: the intake picker renders it left to right and
+  the wizard numbers it `1) … 2) …`. Nothing in the repo sorts work items by
+  priority, so there are deliberately no rank integers.
+
+  A new value does need **three** more edits outside `domain/`, all of them
+  presentation or integration, and all of them enforced rather than remembered:
+  its label colour in `server/src/github.js`, its theme token in
+  `ui/src/domain/lifecycle.js`, and the prose list in `farm/roles/concierge.md`
+  (an LLM prompt, so it is pinned rather than rewritten).
+  `domain-priority-pins.test.mjs` fails on all three if you forget.
+
 - **Adding or changing a *helper*** means editing `js/lifecycle.js` or
   `py/steps.py` **directly**. Edit the binding you mean; there is no indirection
   between you and it.
@@ -61,15 +82,20 @@ enforced rather than remembered.
 | `fields.schema.json` | The contract `fields.json` must satisfy |
 | `js/fields.js` | The JS binding: imports `fields.json`, exposes the table + the derived `intakeFields` / `patchLimits` |
 | `py/fields.py` | The Python binding: loads `fields.json`, exposes the same table and `patch_limits` to the farm |
+| `priorities.json` | The only place a work-item priority, and the order of them, is declared |
+| `priorities.schema.json` | The contract `priorities.json` must satisfy |
+| `js/priorities.js` | The JS binding: imports `priorities.json`, exposes `PRIORITIES`, `DEFAULT_PRIORITY` and the derived `PRIORITY` constants |
+| `py/priorities.py` | The Python binding: loads `priorities.json`, exposes the same vocabulary plus the wizard's derived numbering |
 | `fixtures/lifecycle-cases.json` | Input/expected pairs asserted by **both** language suites |
 | `fixtures/fields-cases.json` | The same, for the field bindings |
+| `fixtures/priorities-cases.json` | The same, for the priority bindings |
 
 Every file here is authored. Nothing is output.
 
-The three sources are **siblings, not one document**. `steps.json` answers "what
+The four sources are **siblings, not one document**. `steps.json` answers "what
 is a lifecycle step" and nothing else; a retry policy living inside a file
 titled *step table* is the kind of thing nobody finds by grepping, and so is a
-field limit. They share
+field limit, and so is a priority. They share
 the validator, the load-time-validation pattern and every guard, and share no
 data.
 
@@ -91,10 +117,19 @@ carry a step label, which is the difference between "the build succeeded" and
 _SOURCE_PATH = Path(__file__).resolve().parent.parent / "steps.json"
 ```
 
-`js/reasons.js`/`py/reasons.py` and `js/fields.js`/`py/fields.py` read their own
-source exactly the same two ways. `ui/scripts/verify-base-build.mjs` probes the built bundle for **both** a
-step label and a reason id, because a tree-shake that drops one says nothing
-about the other.
+`js/reasons.js`/`py/reasons.py`, `js/fields.js`/`py/fields.py` and
+`js/priorities.js`/`py/priorities.py` read their own
+source exactly the same two ways. `ui/scripts/verify-base-build.mjs` probes the built bundle for a
+step label, a reason id **and** the priority vocabulary, because a tree-shake that drops one says nothing
+about the others.
+
+The priority probe is shaped differently from the other two, and the difference is
+worth knowing before copying it. `PRIORITIES[0]` is `"Critical"`, which already
+ships in the bundle via `ui/src/api/mockApi.js`'s demo seed rows — so probing for
+a single value would pass even if `priorities.json` were deleted outright. The
+probe is the whole **ordered sequence**, joined, against a quote- and
+whitespace-stripped bundle: only the inlined array can produce those values
+contiguously and in that order.
 
 Derived from `__file__`, never from the process's working directory — farm
 agents run inside workspace clones, not from the repo root.
@@ -116,6 +151,19 @@ boolean `retryable`, and at least one retryable reason. The id-shape rule is
 **load-bearing, not cosmetic** — `REASON`'s keys are derived by upper-casing the
 id, so a hyphenated id would produce a key no caller can name and a mixed-case
 one would collide with its own lower-case form.
+
+`priorities.json` gets it too, with three rules its schema subset cannot express:
+each value matching `^[A-Z][A-Za-z]*$`, uniqueness **ignoring case**, and
+`default` being a member of `priorities`. None is cosmetic. The value shape is
+**load-bearing** because `server/src/db.js` interpolates these values into the
+`work_item` `CHECK` constraint — it is what makes that emitted SQL provably safe
+rather than safe-by-convention — and because `PRIORITY`'s keys are derived by
+upper-casing. The case-insensitive rule exists because the GitHub label match is
+case-insensitive, so two values differing only in case would make
+`priorityFromLabels` resolve to whichever came first.
+`server/test/domain-priorities-schema.test.mjs` asserts the split is real: it
+drives the schema over all three and shows it passes, then shows the binding
+rejects them — in **both** languages, over a tampered copy in a temp dir.
 
 Full schema validation stays in `validate.mjs`, exercised by
 `server/test/domain-schema.test.mjs` and
@@ -250,13 +298,28 @@ asserts that, including that `domain/package.json` does not exist).
 | `server/src`, `server/test` | `import … from '../../domain/js/lifecycle.js'` |
 | `ui/src` | `import … from '../../../domain/js/lifecycle.js'` |
 | `e2e/` | `import … from '../domain/js/lifecycle.js'` |
-| `farm/` | `from domain.py import fields, reasons, steps` |
+| `farm/` | `from domain.py import fields, priorities, reasons, steps` |
 
 The reason vocabulary has two consumers, by the same relative paths:
 `server/src/orchestrator.js` (which classifies a failure) and
 `ui/src/domain/pauseReason.js` (which renders the pause banner). The farm reaches
 it through `reasons.REASON[…]` in `farm/step_agent.py`, `farm/farmd.py` and
 `farm/pm_agent.py`.
+
+The priority vocabulary has the widest consumer list of the four, which is why it
+was the most duplicated: `server/src/db.js` (the `CHECK` constraint),
+`server/src/store.js`, `server/src/github.js`, `server/src/app.js` and
+`server/src/priorityLabels.js` on the server; `ui/src/components/NewItemModal.jsx`,
+`ui/src/domain/lifecycle.js` and `ui/src/api/mockApi.js` in the UI; and
+`farm/wizard.py` plus `farm/concierge_agent.py` in the farm.
+
+`server/src/priorityLabels.js` is new and is **not** part of `domain/`. It owns
+GitHub's *spelling* of a priority — the `priority: critical` label name, the
+pattern that reads one back, and `priorityFromLabels` — which is an integration
+detail, not domain data. Before HZ-135 the pattern existed twice byte-for-byte
+(`store.js` and `github.js`, under two different names) and the name format lived a
+file away from it, so we could have written a label the next sync could not read
+and silently reverted a human's change on the following webhook.
 
 The field limits have **no UI consumer**, and that is a real gap rather than a
 design choice: `ui/src/components/NewItemModal.jsx` sets no `maxLength`, so a long
@@ -282,7 +345,11 @@ would pass CI and fail at deploy time on an older runtime.
 
 **No presentation.** `AGENTS` colours, `PHASE_ACCENT`, `PHASE_ACCENT_BG`,
 `PRIORITY_COLORS` stay in the UI (`ui/src/domain/lifecycle.js`,
-`ui/src/domain/agentTokens.js`). `steps.json` contains no colour, accent or
+`ui/src/domain/agentTokens.js`), and `PRIORITY_LABEL_COLORS`' hex stays in
+`server/src/github.js` because it is persisted to GitHub, which has no idea what a
+CSS variable is. Both of those maps now **key off** `PRIORITY.*` rather than
+re-typing the vocabulary — keyed by named constant, not by array position, so a
+reordered `priorities.json` cannot silently recolour anything. `steps.json` contains no colour, accent or
 theme key at any depth, asserted.
 
 `reasons.json` is held to a **wider** bar than `steps.json` on this, because the
@@ -304,9 +371,12 @@ overlap is exactly `{AGENTS}` and `personas.test.mjs` asserts the shared fields
 still agree.
 
 **`ui/design-system/Lifecycle Tracker.dc.html`** holds a third hand-copy of
-the step labels and is **explicitly excluded** from the
+the step labels — and, at line 352, a hand-copy of the priority colour map — and is
+**explicitly excluded** from both the
 "no step declared outside `domain/`" check (see `EXCLUDED_DIRS` in
-`server/test/domain-one-declaration.test.mjs`). It is a Design Compiler export:
+`server/test/domain-one-declaration.test.mjs`) and the priority equivalent
+(`domain-priority-literals.test.mjs`). The priority detector *does* fire on that
+line; the file is excluded for what it is, not because the detector is wrong. It is a Design Compiler export:
 non-executing, in no build, in no bundle, imported by nothing, and re-emitted
 wholesale by the design tool. Nothing here can own it, and pinning its labels
 would turn a design re-export into a test failure.
@@ -345,10 +415,68 @@ here as a known limit, not hidden.
 | One field declaration | `domain-one-field-declaration.test.mjs` | A second copy of a field limit anywhere in the tree — structurally (three or more field/limit pairs in one file) and per-pair (set-equality allowlist) |
 | Every column is real | `domain-fields-consumers.test.mjs` | A typo'd `column` in `fields.json`, which `completeFarmRun`'s `UPDATE work_item SET <column> = ?` would otherwise turn into a runtime SQL error mid-run. Checked against a real database via `PRAGMA table_info` |
 | A PM revision can fill the field | `pm-revision-full-length.test.mjs`, `farm/tests/test_pm_agent.py` | A cap reappearing anywhere on the write path. Drives a 1,999-char `guardrails` revision through the real `POST /api/farm/steps/:runId/complete` and asserts the stored value byte-for-byte |
+| Priority schema + load-time rules | `domain-priorities-schema.test.mjs` | An invalid vocabulary: a value that could not be safely interpolated into SQL, a case-only duplicate, a default outside the vocabulary, an empty list — including real subprocess imports, in **both** languages, over a tampered `priorities.json`. Also asserts the schema/load-time split is real by showing the schema passes what only the binding rejects |
+| Cross-language priority fixtures | `fixtures/priorities-cases.json` + `domain-priorities-cases.test.mjs` + `farm/tests/test_priorities_fixtures.py` | The two priority validators disagreeing about what a rule *means*. Same set-equality / non-empty / pinned-manifest guards as the other two fixtures |
+| Cross-language priority parity | `domain-priorities-parity.test.mjs` | The two priority bindings drifting. Compares the vocabulary **as an ordered sequence**, the default, and every `isPriority`/`is_priority` answer — plus that the Python side is a `tuple`, so the farm cannot widen what the server enforces |
+| Message parity across languages | `farm/tests/test_priorities.py` | The two validators' error text drifting outside the fragment the fixture compares — e.g. Python's `json.dumps` spacing. Runs every rule through both implementations and diffs the FULL messages |
+| Hand-written priority pins | `domain-priority-pins.test.mjs` | Any change to the four values, their ORDER, the default, the emitted SQL `CHECK` clause, the GitHub label name format, every label hex, every theme token, or the prose list in `concierge.md`. **Permanent — never delete this file** |
+| No priority literal LIST anywhere | `domain-priority-literals.test.mjs` | A second declaration of the vocabulary, whole-tree, in any of the three shapes one takes: a quoted collection, an unquoted key set, or a regex alternation. Also names all ten repointed sites individually, so a gutted consumer fails |
+| GitHub label behaviour | `priority-labels.test.mjs` | Metric 4, which had **zero** coverage before HZ-135. The `priorityFromLabels` matrix through the real `upsertFromGithub`, and `setPriorityLabel`'s exact POST bodies, stale-label `DELETE` and colour fallback against a stubbed `fetch` |
+| The API enums are derived | `api-priority-enum-derived.test.mjs` | A stale priority literal in `POST /api/items`. Posts every declared value through the real route and reads the stored value back, plus a structural diff of the exported fragment against `priorities.json` |
+| The UI picker is derived | `ui/src/components/NewItemModal.test.jsx` | Metric 2's UI leg, which had no test at any level. Renders the real modal and asserts the options equal the vocabulary **in order**, one per value, with the declared default selected |
+| The wizard's text has not moved | `farm/tests/test_wizard.py` | A renumbered or reworded WhatsApp prompt. Both emitted strings pinned byte-for-byte, because for a bot the emitted string IS the behaviour |
 
 One honest limit remains: `domain-no-drift-scaffolding.test.mjs`'s
 `server.fs.allow` assertion is a **config-shape proxy**, not a dev-server boot
 test; it is labelled as such in the test.
+
+### How the priority no-literal scan differs, and why
+
+`domain-priority-literals.test.mjs` is metric 3's mechanism, and it is shaped
+differently from the reason scan below — deliberately, because the vocabularies are
+different in kind.
+
+**There is no single-literal tier.** Every priority value is an ordinary English
+word. `High`, `Medium` and `Low` appear as *one-value* fixture data in fourteen
+files that are all perfectly legitimate — a board test's `priority: 'Medium'`, an
+e2e fixture row, a demo seed. A scan for those would be a fourteen-entry allowlist
+protecting nothing. Metric 3's word is **list**, so the scan detects
+**collections** only: three or more distinct values inside a three-line window.
+
+**Three shapes count as a collection**, because the vocabulary was written in all
+three before this change:
+
+- a **quoted** collection — `['Critical', 'High', …]`, `("Critical", …)`;
+- an **unquoted key set** — `{ Critical: '9C333E', High: 'DFA200', … }`, which is
+  exactly what both colour maps were. Without this tier the scan would have passed
+  on the two files the change works hardest on, and the named-constant keying
+  would be unverified ceremony;
+- a **regex alternation** — `(critical|high|medium|low)`, the folded form, which is
+  how the label pattern spelled the list in two files at once.
+
+**One exclusion makes it usable**, and it is structural rather than an allowlist:
+a value in **object-property value position** (preceded by `:`) does not count.
+That is what clears `server/src/db.js`'s demo seeds, `ui/src/api/mockApi.js`'s,
+`e2e/global-setup.js`'s and the Design Compiler export's — four production and
+fixture files, none of which needed naming. An *array element* is preceded by `[`
+or `,`, so a real list still fires, including inside `"priorities": [...]`.
+
+**The accepted limit, stated rather than hidden:** a map keyed *by number* whose
+values are priorities — `{"1": "Critical", "2": "High", …}`, which is what
+`wizard.py`'s `_PRIORITY_NUMS` used to be — escapes the value-position exclusion
+and matches neither other tier. That specific shape is covered instead by
+`by_number`'s fixture cases and by `test_the_numbering_helpers_follow_their_argument_not_the_live_document`.
+
+Two files outside `domain/` may hold a collection, by set equality so a stale entry
+also fails: `domain-priority-pins.test.mjs` (typing the values out *is* what a pin
+is) and `farm/tests/fake_claude` (a stand-in for the `claude` CLI, exec'd by bare
+name from an arbitrary workspace clone with no package context, so it cannot reach
+`domain.py`).
+
+`farm/roles/concierge.md` is correctly **not** a hit: only one value is quoted
+there, and the other three are bare prose. It is pinned separately, anchored on
+content rather than a line number, because it is an LLM prompt and rewriting it
+would be the behaviour change guardrail 1 forbids.
 
 ### How the no-literal scan actually works
 
@@ -383,7 +511,8 @@ three or more ids rather than by counting mentions per file.
 `npm test` runs `ui/scripts/verify-base-build.mjs`, which executes the literal
 `HORIZON_BASE=/horizon/ npm --prefix ui run build`, asserts the emitted
 `ui/dist/index.html` references `/horizon/assets/` **and that the emitted JS
-bundle contains a step label and a reason id**, then deletes `ui/dist` so no `/horizon/`-based
+bundle contains a step label, a reason id and the whole ordered priority
+sequence**, then deletes `ui/dist` so no `/horizon/`-based
 bundle is left for a local `vite preview`. **Measured: ~2.7s** (2.1s of that is
 Vite). The bundle-contents assertion is the one that matters here: a build can
 succeed while emitting `steps.json` as a separate asset that then 404s under the

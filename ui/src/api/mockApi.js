@@ -14,6 +14,7 @@
 //   POST /items/:id/feedback                   → sendFeedback(id, target, message)
 
 import { STEPS, PHASES, isClosed, ACCEPT_GATE_INDEX, IMPLEMENT_STEP_INDEX } from '../../../domain/js/lifecycle.js'
+import { DEFAULT_PRIORITY } from '../../../domain/js/priorities.js'
 import { PERSONAS } from '../domain/personas'
 
 const SEED_ITEMS = [
@@ -159,7 +160,9 @@ export async function disconnectRepo() {
 
 let localSeq = 0
 
-export async function createItem({ title, outcome, metric, guardrails, priority = 'Medium' }) {
+// The default mirrors POST /api/items' (HZ-135) rather than restating it, so the
+// offline mock cannot start answering differently from the real route.
+export async function createItem({ title, outcome, metric, guardrails, priority = DEFAULT_PRIORITY }) {
   const id = `LOC-${++localSeq}`
   items = [
     {

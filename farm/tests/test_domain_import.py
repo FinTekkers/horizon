@@ -16,7 +16,7 @@ import importlib
 import re
 from pathlib import Path
 
-from domain.py import fields, reasons, steps
+from domain.py import fields, priorities, reasons, steps
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 
@@ -31,6 +31,10 @@ def test_the_reason_binding_resolves_under_domain_py_too():
 
 def test_the_field_binding_resolves_under_domain_py_too():
     assert Path(fields.__file__).resolve() == (REPO_ROOT / "domain" / "py" / "fields.py").resolve()
+
+
+def test_the_priority_binding_resolves_under_domain_py_too():
+    assert Path(priorities.__file__).resolve() == (REPO_ROOT / "domain" / "py" / "priorities.py").resolve()
 
 
 def test_the_relocated_module_carries_the_farm_shaped_table():
@@ -108,9 +112,12 @@ def test_the_binding_imports_from_any_working_directory(tmp_path, monkeypatch):
     importlib.reload(steps)
     importlib.reload(reasons)
     importlib.reload(fields)
+    importlib.reload(priorities)
     assert len(steps.STEPS) == 11
     assert steps.PHASES == ["Plan", "Technical Plan", "Execute", "Deploy", "Review"]
     assert reasons.REASON_IDS
     assert reasons._SOURCE_PATH == (REPO_ROOT / "domain" / "reasons.json").resolve()
     assert fields.FIELDS
     assert fields._SOURCE_PATH == (REPO_ROOT / "domain" / "fields.json").resolve()
+    assert priorities.PRIORITIES
+    assert priorities._SOURCE_PATH == (REPO_ROOT / "domain" / "priorities.json").resolve()

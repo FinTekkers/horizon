@@ -1,0 +1,4 @@
+{
+  "priorities": ["Critical", "High", "Medium", "Low"],
+  "default": "Medium"
+}

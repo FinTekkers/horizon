@@ -25,6 +25,8 @@ from typing import TYPE_CHECKING
 
 import httpx
 
+from domain.py import priorities
+
 from . import config
 from .config import STATE_DIR
 from .whatsapp.transport import Inbound, Transport, TransportError
@@ -32,7 +34,12 @@ from .whatsapp.transport import Inbound, Transport, TransportError
 if TYPE_CHECKING:
     from .concierge_agent import ConciergeState
 
-PRIORITIES = ("Critical", "High", "Medium", "Low")
+# HZ-135: the vocabulary, its order and the wizard's default all come from
+# domain/priorities.json. The numbered prompt below is DERIVED from that order —
+# it used to spell all four values out twice (the question and the retry line),
+# which is three copies counting the number->value parser, all of which had to
+# agree with the API's enum by hand.
+PRIORITIES = priorities.PRIORITIES
 NEW_ITEM_RE = re.compile(r"^\[new item\]\s*(.*)$", re.IGNORECASE | re.DOTALL)
 NUMERIC_RE = re.compile(r"^[1-9]$")
 # A message that is nothing but a thumbs-up, tolerating skin-tone modifiers
@@ -46,9 +53,9 @@ STEP_PROMPTS = {
     "outcome": "What's the outcome — what should be true when this is done?",
     "metric": "How will we measure success?",
     "guardrails": "Any guardrails or constraints? (reply 'skip' for none)",
-    "priority": "Priority — reply 1) Critical 2) High 3) Medium 4) Low",
+    "priority": f"Priority — reply {priorities.options_line(PRIORITIES)}",
 }
-_PRIORITY_NUMS = {"1": "Critical", "2": "High", "3": "Medium", "4": "Low"}
+_PRIORITY_NUMS = priorities.by_number(PRIORITIES)
 
 
 def _log(msg: str) -> None:
@@ -130,7 +137,7 @@ def _new_session(title: str) -> dict:
             "outcome": "",
             "metric": "",
             "guardrails": "",
-            "priority": "Medium",
+            "priority": priorities.DEFAULT_PRIORITY,
         }
     )
 
@@ -244,7 +251,11 @@ def try_handle_item_wizard(
         priority = _parse_priority(text)
         state.claim(msg)
         if priority is None:
-            _reply(transport, msg, "Sorry, I didn't catch that — reply 1) Critical 2) High 3) Medium 4) Low.")
+            _reply(
+                transport,
+                msg,
+                f"Sorry, I didn't catch that — reply {priorities.options_line(PRIORITIES)}.",
+            )
             return True
         session["priority"] = priority
         session["step"] = "confirm"

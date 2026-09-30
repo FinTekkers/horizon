@@ -120,3 +120,23 @@ test('exactly one fields.json exists, and it is domain/fields.json', () => {
   const found = relPaths.filter((p) => path.basename(p) === 'fields.json')
   assert.deepEqual(found, ['domain/fields.json'])
 })
+
+// HZ-135: the work-item priority vocabulary is the FOURTH thing domain/ owns,
+// added under the same rule — one JSON, one schema, one hand-written binding per
+// language, plus the cross-language fixture both suites run.
+test('domain/ also holds the priority vocabulary: source, schema, both bindings and its fixture', () => {
+  for (const expected of [
+    'domain/priorities.json',
+    'domain/priorities.schema.json',
+    'domain/js/priorities.js',
+    'domain/py/priorities.py',
+    'domain/fixtures/priorities-cases.json',
+  ]) {
+    assert.ok(relPaths.includes(expected), `${expected} is missing`)
+  }
+})
+
+test('exactly one priorities.json exists, and it is domain/priorities.json', () => {
+  const found = relPaths.filter((p) => path.basename(p) === 'priorities.json')
+  assert.deepEqual(found, ['domain/priorities.json'])
+})

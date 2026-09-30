@@ -37,6 +37,8 @@ from pathlib import Path
 
 import httpx
 
+from domain.py import priorities
+
 from . import config
 from . import credentials
 from . import wizard
@@ -49,7 +51,10 @@ from .whatsapp.transport import Inbound, Transport, TransportError
 FARMD = f"http://127.0.0.1:{FARM_PORT}"
 
 ROLE_PROMPT = (Path(__file__).parent / "roles" / "concierge.md").read_text()
-PRIORITIES = ("Critical", "High", "Medium", "Low")
+# HZ-135: one declaration, in domain/priorities.json. This tuple used to be a
+# hand-typed copy that had to agree with the API enum it POSTs into — and with
+# wizard.py's, one file over.
+PRIORITIES = priorities.PRIORITIES
 ALLOWED_ACTIONS = ("set_priority", "feedback")
 PROCESSED_KEEP = 500  # msg_id dedupe window persisted across restarts
 MAX_ACTIONS = 3

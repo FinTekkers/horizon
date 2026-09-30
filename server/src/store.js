@@ -13,7 +13,9 @@ import {
   IMPLEMENT_STEP_INDEX,
   ACCEPT_GATE_INDEX,
 } from '../../domain/js/lifecycle.js'
+import { isPriority } from '../../domain/js/priorities.js'
 import { isPersona, personaLabel } from './personas.js'
+import { priorityFromLabels } from './priorityLabels.js'
 import { getActiveProjectId, setSetting } from './settings.js'
 
 const listeners = new Set()
@@ -560,15 +562,18 @@ export function setPersona(id, persona) {
 // Priority changes arrive from the UI or the WhatsApp concierge; either way
 // it is the human speaking. GitHub label mirroring lives in the route (best
 // effort) — this only owns the database and the activity trail.
-export const PRIORITIES = ['Critical', 'High', 'Medium', 'Low']
-
+//
+// HZ-135 deleted the `export const PRIORITIES` that stood here. The vocabulary
+// is domain/priorities.json's; its one caller (the POST /api/items/:id/priority
+// body enum in app.js) now reads the binding directly, so there is no re-export
+// to keep in step.
 export function setPriority(id, priority) {
   const it = getItem(id)
   if (!it) return { error: 'not_found' }
   if (inactiveProject(it)) return { error: 'project_not_active' }
   if (isClosed(it)) return { error: 'closed' }
   if (isAbandoned(it)) return { error: 'abandoned' }
-  if (!PRIORITIES.includes(priority)) return { error: 'bad_priority' }
+  if (!isPriority(priority)) return { error: 'bad_priority' }
   if (it.priority === priority) return { ok: true, unchanged: true }
 
   db.prepare(`UPDATE work_item SET priority = ?, ${touch} WHERE id = ?`).run(priority, id)
@@ -777,16 +782,9 @@ export function approveGateFromGithub(id) {
 // title/description/priority/open-closed; the lifecycle state (cursor, flags,
 // metric, guardrails) stays ours and is never clobbered by a sync.
 
-const PRIORITY_LABEL = /^(?:priority\s*[:/-]?\s*)?(critical|high|medium|low)$/i
-
-function priorityFromLabels(labels) {
-  for (const label of labels || []) {
-    const match = PRIORITY_LABEL.exec(label?.name || '')
-    if (match) return match[1][0].toUpperCase() + match[1].slice(1).toLowerCase()
-  }
-  return 'Medium'
-}
-
+// priorityFromLabels moved to server/src/priorityLabels.js in HZ-135, alongside
+// the label NAME format that has to match it and the pattern github.js had
+// hand-typed a second, byte-identical copy of. Label syntax is not persistence.
 export function upsertFromGithub(ghIssue, repoFullName) {
   if (!ghIssue || ghIssue.pull_request) return false // /issues endpoints include PRs
   const repoRow = findRepo(repoFullName)
