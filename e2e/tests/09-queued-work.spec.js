@@ -1,6 +1,6 @@
 import { test, expect, captureScreenshot } from '../fixtures/test-base.js'
 import { openDb, insertItem, insertStepRun } from '../fixtures/seed.js'
-import { IMPLEMENT_STEP_INDEX } from '../../server/src/lifecycle.js'
+import { IMPLEMENT_STEP_INDEX } from '../../domain/js/lifecycle.js'
 
 // HZ-54: reproduces the scenario the ticket was filed against verbatim — six
 // step_run rows dispatched (status='active'), one agent actually running,

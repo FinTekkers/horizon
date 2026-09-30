@@ -69,26 +69,62 @@ def _read_capped(path: Path) -> str:
         return ""
 
 
-def resolve_rules(project_name, repo) -> str:
-    """Project rules then repo rules, concatenated. Never raises: anything
-    missing or malformed contributes nothing, mirroring personas.compose_role."""
+def resolve_rules(project_name, repo) -> list[str]:
+    """Project rules then repo rules, as separate parts in order. Never
+    raises: anything missing or malformed contributes nothing, mirroring
+    personas.compose_role. Kept as parts (not pre-joined) so
+    render_rules_section can drop an oversized part whole instead of slicing
+    across a part boundary."""
     parts = []
     if isinstance(project_name, str) and project_name.strip():
         parts.append(_read_capped(RULES_DIR / "projects" / f"{slugify(project_name)}.md"))
     if isinstance(repo, str) and repo.strip():
         parts.append(_read_capped(RULES_DIR / "repos" / f"{repo.strip().replace('/', '__')}.md"))
-    return "\n\n".join(p for p in parts if p)
+    return [p for p in parts if p]
 
 
-def render_rules_section(rules_text) -> str:
+def render_rules_section(rules_parts) -> str:
     """The '## Project rules' prompt block, or '' when there are no rules —
-    an absent layer renders nothing, never an empty header."""
-    if not isinstance(rules_text, str):
+    an absent layer renders nothing, never an empty header.
+
+    Accepts a list of parts (the normal case, from resolve_rules) or a bare
+    string (back-compat for hand-built callers/tests, treated as one part).
+    When the joined parts exceed MAX_PROMPT_RULES_CHARS, whole parts are
+    dropped from the end until what remains fits — never sliced mid-part,
+    per the same "a half-constraint is worse than a missing one" principle
+    _read_capped already applies per-file. A dropped part is always named in
+    a trailing note, so an agent can't mistake the cut for "no more rules"."""
+    if isinstance(rules_parts, str):
+        parts = [rules_parts.strip()] if rules_parts.strip() else []
+    elif isinstance(rules_parts, list):
+        parts = [p.strip() for p in rules_parts if isinstance(p, str) and p.strip()]
+    else:
+        parts = []
+    if not parts:
         return ""
-    text = rules_text.strip()
-    if not text:
-        return ""
-    return f"## Project rules\n{text[:MAX_PROMPT_RULES_CHARS]}"
+
+    kept = []
+    kept_chars = 0
+    dropped = 0
+    dropped_chars = 0
+    for part in parts:
+        added = len(part) + (2 if kept else 0)  # "\n\n" joiner
+        if kept_chars + added <= MAX_PROMPT_RULES_CHARS:
+            kept.append(part)
+            kept_chars += added
+        else:
+            dropped += 1
+            dropped_chars += len(part)
+
+    body = "\n\n".join(kept)
+    if dropped:
+        note = (
+            f"\n\n**{dropped} rules block(s) omitted ({dropped_chars:,} chars) — over the "
+            f"{MAX_PROMPT_RULES_CHARS:,}-char prompt cap.** These constraints exist but did "
+            "not fit this prompt; do not infer they're absent."
+        )
+        body = f"{body}{note}" if body else note.strip()
+    return f"## Project rules\n{body}"
 
 
 def effective_prompt(role_text: str, persona_id, project_name, repo) -> str:

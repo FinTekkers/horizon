@@ -25,53 +25,51 @@ def rules_tree(tmp_path, monkeypatch):
 def test_resolve_concatenates_project_then_repo(rules_tree):
     (rules_tree / "projects" / "acme.md").write_text("PROJECT RULES")
     (rules_tree / "repos" / "acme__demo.md").write_text("REPO RULES")
-    resolved = resolve_rules("Acme", "acme/demo")
-    assert resolved == "PROJECT RULES\n\nREPO RULES"
-    assert resolved.index("PROJECT RULES") < resolved.index("REPO RULES")
+    assert resolve_rules("Acme", "acme/demo") == ["PROJECT RULES", "REPO RULES"]
 
 
 def test_resolve_slugifies_the_project_name(rules_tree):
     (rules_tree / "projects" / "fin-tekkers-2.md").write_text("SLUGGED")
-    assert resolve_rules("Fin Tekkers 2", None) == "SLUGGED"
+    assert resolve_rules("Fin Tekkers 2", None) == ["SLUGGED"]
 
 
 def test_resolve_maps_owner_slash_repo_to_double_underscore(rules_tree):
     (rules_tree / "repos" / "FinTekkers__ui-service.md").write_text("UI RULES")
-    assert resolve_rules(None, "FinTekkers/ui-service") == "UI RULES"
+    assert resolve_rules(None, "FinTekkers/ui-service") == ["UI RULES"]
 
 
 def test_resolve_without_a_repo_returns_project_rules_only(rules_tree):
     # Planning steps run before any workspace/repo exists — must not raise.
     (rules_tree / "projects" / "acme.md").write_text("PROJECT ONLY")
-    assert resolve_rules("Acme", None) == "PROJECT ONLY"
+    assert resolve_rules("Acme", None) == ["PROJECT ONLY"]
 
 
 @pytest.mark.parametrize("project,repo", [(None, None), ("nope", "acme/none"), (42, ["x"]), ("", "")])
 def test_resolve_degrades_to_empty_never_raises(rules_tree, project, repo):
-    assert resolve_rules(project, repo) == ""
+    assert resolve_rules(project, repo) == []
 
 
 def test_byte_cap_boundary_exactly_at_cap_passes(rules_tree):
     (rules_tree / "repos" / "a__b.md").write_bytes(b"x" * MAX_RULES_BYTES)
-    assert resolve_rules(None, "a/b") == "x" * MAX_RULES_BYTES
+    assert resolve_rules(None, "a/b") == ["x" * MAX_RULES_BYTES]
 
 
 def test_byte_cap_boundary_one_over_drops_the_file(rules_tree):
     (rules_tree / "repos" / "a__b.md").write_bytes(b"x" * (MAX_RULES_BYTES + 1))
-    assert resolve_rules(None, "a/b") == ""
+    assert resolve_rules(None, "a/b") == []
 
 
 def test_byte_cap_is_measured_in_bytes_not_chars(rules_tree):
     # 3000 chars of a 3-byte glyph = 9000 bytes > 8192: dropped even though
     # the character count is far under the cap.
     (rules_tree / "repos" / "a__b.md").write_text("✓" * 3000, encoding="utf-8")
-    assert resolve_rules(None, "a/b") == ""
+    assert resolve_rules(None, "a/b") == []
 
 
 def test_an_oversized_project_file_does_not_take_down_repo_rules(rules_tree):
     (rules_tree / "projects" / "acme.md").write_bytes(b"x" * (MAX_RULES_BYTES + 1))
     (rules_tree / "repos" / "acme__demo.md").write_text("REPO SURVIVES")
-    assert resolve_rules("Acme", "acme/demo") == "REPO SURVIVES"
+    assert resolve_rules("Acme", "acme/demo") == ["REPO SURVIVES"]
 
 
 # ---- prompt rendering ----
@@ -81,14 +79,66 @@ def test_render_wraps_text_in_the_project_rules_header():
     assert render_rules_section("- build with make") == "## Project rules\n- build with make"
 
 
-@pytest.mark.parametrize("empty", [None, "", "   \n  ", 42])
+def test_render_accepts_a_list_of_parts_joined_in_order():
+    assert render_rules_section(["PROJECT RULES", "REPO RULES"]) == "## Project rules\nPROJECT RULES\n\nREPO RULES"
+
+
+@pytest.mark.parametrize("empty", [None, "", "   \n  ", 42, [], ["", "   "]])
 def test_render_of_nothing_is_empty_never_a_bare_header(empty):
     assert render_rules_section(empty) == ""
 
 
+def test_render_drops_a_single_oversized_block_whole_with_a_note():
+    # HZ-114: this used to be text[:MAX_PROMPT_RULES_CHARS] — a raw slice
+    # mid-block. The block must now vanish entirely, not appear cut in half.
+    oversized = "r" * (rules.MAX_PROMPT_RULES_CHARS + 5000)
+    rendered = render_rules_section([oversized])
+    assert oversized not in rendered
+    assert "r" * rules.MAX_PROMPT_RULES_CHARS not in rendered
+    assert "1 rules block(s) omitted" in rendered
+    assert "29,000 chars" in rendered  # the whole dropped block, not just the overage
+    assert "do not infer" in rendered.lower()
+
+
+def test_render_keeps_a_small_part_and_drops_an_oversized_sibling_whole():
+    small = "- keep this rule"
+    oversized = "z" * (rules.MAX_PROMPT_RULES_CHARS + 100)
+    rendered = render_rules_section([small, oversized])
+    assert small in rendered
+    assert oversized not in rendered
+    assert "z" * 1000 not in rendered
+    assert "1 rules block(s) omitted" in rendered
+
+
+def test_render_partial_fit_ordering_is_deterministic_first_in_first_kept(rules_tree):
+    # A alone fits; A + B together don't. A (earlier in resolution order)
+    # survives, B is the one dropped — order matters and must be stable.
+    a = "a" * (rules.MAX_PROMPT_RULES_CHARS - 100)
+    b = "b" * 500
+    rendered = render_rules_section([a, b])
+    assert a in rendered
+    assert b not in rendered
+    assert "1 rules block(s) omitted" in rendered
+
+
+def test_render_when_every_part_is_dropped_still_returns_header_and_note_never_empty():
+    # Never a silently empty string — that would be exactly the bug this item
+    # forbids: a cut so total it looks like "no rules" instead of "cut rules".
+    oversized_a = "a" * (rules.MAX_PROMPT_RULES_CHARS + 10)
+    oversized_b = "b" * (rules.MAX_PROMPT_RULES_CHARS + 10)
+    rendered = render_rules_section([oversized_a, oversized_b])
+    assert rendered.startswith("## Project rules\n")
+    assert "2 rules block(s) omitted" in rendered
+    assert oversized_a not in rendered
+    assert oversized_b not in rendered
+
+
 def test_render_truncates_runaway_input_at_the_defensive_cap():
+    # Legacy call shape (bare string) still routes through the same
+    # whole-part-drop path — a bare string is just a single part.
     rendered = render_rules_section("x" * (rules.MAX_PROMPT_RULES_CHARS + 5000))
-    assert len(rendered) == len("## Project rules\n") + rules.MAX_PROMPT_RULES_CHARS
+    assert "x" * rules.MAX_PROMPT_RULES_CHARS not in rendered
+    assert "1 rules block(s) omitted" in rendered
 
 
 # ---- credential lint ----

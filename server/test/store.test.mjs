@@ -12,7 +12,7 @@ process.env.HORIZON_DB = join(mkdtempSync(join(tmpdir(), 'horizon-store-')), 'te
 
 const { db } = await import('../src/db.js')
 const store = await import('../src/store.js')
-const { STEPS, IMPLEMENT_STEP_INDEX, REVIEW_STEP_INDEX, ACCEPT_GATE_INDEX } = await import('../src/lifecycle.js')
+const { STEPS, IMPLEMENT_STEP_INDEX, REVIEW_STEP_INDEX, ACCEPT_GATE_INDEX } = await import('../../domain/js/lifecycle.js')
 
 // Deterministic fixtures; cursor 11 is an agent step (implement), 3 is a gate.
 const insertItem = db.prepare(
@@ -467,6 +467,22 @@ test('parseIssueBody without headings lands the body in desc', () => {
   assert.equal(parsed.metric, '')
 })
 
+// HZ-113: parseIssueBody used to slice desc to 500 chars at ingest, with no
+// real boundary defending that number (work_item.desc is plain SQLite TEXT).
+// HZ-113 itself stalled because a required filename landed past char 500 and
+// was silently dropped before any agent ever saw it. This must fail against
+// the pre-fix code (the assertion below is exactly what the old slice broke).
+test('parseIssueBody keeps an outcome whose operative detail sits past char 500 (HZ-113)', () => {
+  const filler = 'x'.repeat(480)
+  const body = `## Outcome\n${filler} the required filename is REQUIRED-FILENAME-PAST-CHAR-500.txt`
+  const parsed = store.parseIssueBody(body)
+  assert.ok(
+    parsed.desc.includes('REQUIRED-FILENAME-PAST-CHAR-500.txt'),
+    'operative detail past char 500 must survive intact, not be silently dropped',
+  )
+  assert.equal(parsed.desc.length, body.length - '## Outcome\n'.length)
+})
+
 // ---- currentStep (WhatsApp concierge status lines) ----
 
 test('listItems resolves currentStep so non-UI clients can see gate state', () => {
@@ -494,7 +510,7 @@ test('stepOutputs carry the step label for non-UI clients', () => {
 
 // ---- abandon (HZ-59): soft delete with a reason and an audit trail ----
 
-const { isAbandoned, isClosed } = await import('../src/lifecycle.js')
+const { isAbandoned, isClosed } = await import('../../domain/js/lifecycle.js')
 
 test('abandonItem on an unknown item is not_found', () => {
   assert.deepEqual(store.abandonItem('NOPE-1', 'no longer needed'), { error: 'not_found' })

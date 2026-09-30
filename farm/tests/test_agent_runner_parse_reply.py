@@ -290,3 +290,31 @@ def test_read_and_clear_handoff_note_is_read_once(monkeypatch, tmp_path):
 def test_read_and_clear_handoff_note_returns_none_when_absent(tmp_path, monkeypatch):
     monkeypatch.setattr("farm.agent_runner.STATE_DIR", tmp_path)
     assert read_and_clear_handoff_note("HZ-404", 1) is None
+
+
+def test_an_oversized_handoff_note_is_cut_at_a_boundary_and_says_so(monkeypatch, tmp_path):
+    """The note is labelled "unverified" downstream, but a silent mid-sentence
+    cut would still present as a COMPLETE account of the attempt — the exact
+    failure this item exists to prevent. Marked, word-boundary cut instead."""
+    from farm.agent_runner import MAX_HANDOFF_NOTE_CHARS, _write_handoff_note
+
+    monkeypatch.setattr("farm.agent_runner.STATE_DIR", tmp_path)
+    oversized = "progress " * (MAX_HANDOFF_NOTE_CHARS // 4)
+    _write_handoff_note("HZ-9", 6, oversized)
+
+    note = read_and_clear_handoff_note("HZ-9", 6)
+    assert "chars omitted" in note
+    assert "not a complete account" in note
+    # cut landed on a word boundary — never mid-token
+    content = note[: note.index(" […")]
+    assert all(tok == "progress" for tok in content.split() if tok)
+
+
+def test_a_handoff_note_within_the_ceiling_is_written_verbatim_and_unmarked(monkeypatch, tmp_path):
+    from farm.agent_runner import _write_handoff_note
+
+    monkeypatch.setattr("farm.agent_runner.STATE_DIR", tmp_path)
+    _write_handoff_note("HZ-9", 7, "finished the parser, tests still to write")
+    note = read_and_clear_handoff_note("HZ-9", 7)
+    assert note == "finished the parser, tests still to write"
+    assert "omitted" not in note

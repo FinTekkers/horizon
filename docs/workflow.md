@@ -3,8 +3,9 @@
 Every unit of work in Horizon is a **work item** (usually backed by a GitHub
 issue). Every work item follows the exact same fixed sequence of steps —
 there is no per-item customization today. That sequence is defined once, in
-code, at `server/src/lifecycle.js`, as five **phases** containing sixteen
-**steps**. This doc explains that sequence for a reader who has never seen
+code, at `domain/steps.json`, as five **phases** containing sixteen
+**steps**. Every consumer — server, UI, farm and the e2e suite — reads a
+generated binding of that one file; see [`domain/README.md`](../domain/README.md). This doc explains that sequence for a reader who has never seen
 the codebase.
 
 ## The two kinds of step
@@ -66,13 +67,16 @@ flowchart TD
 ```
 
 Yellow boxes are gates (human required); the rest run automatically once
-their turn comes up. This mirrors `PHASES` and `STEPS` in
-`server/src/lifecycle.js:15-34` exactly — that file is the source of truth,
-and this diagram will drift if it changes without this doc being updated.
+their turn comes up. This mirrors `phases` and `steps` in
+`domain/steps.json` exactly — that file is the source of truth, and this
+diagram will drift if it changes without this doc being updated.
 
 ## Which agent does what
 
-Every agent step names an agent from `AGENTS` in `server/src/lifecycle.js:5`:
+Every agent step names an agent by its `agent` field in `domain/steps.json`.
+The role's presentation (label, initials, colour) is a separate, hand-owned
+concern: `server/src/agentTokens.js` server-side, `ui/src/domain/agentTokens.js`
+in the UI.
 
 | Agent | Role |
 | --- | --- |
@@ -84,12 +88,38 @@ Every agent step names an agent from `AGENTS` in `server/src/lifecycle.js:5`:
 | **Review** | Automated code + QA review after implementation |
 | **DevOps** | Deploys the change |
 
+The table above names the *label* a step shows in the UI; it does not say
+which *process* actually executes it. Two steps that look like separate
+agent roles (0/1/9 as PM, 2 as Architect) share one long-lived PM process,
+while every other agent step gets a fresh, short-lived process per run:
+
+| Step index | Label | Executes as |
+| --- | --- | --- |
+| 0 | Define the outcome | PM session |
+| 1 | Define how we measure success | PM session |
+| 2 | Set guardrails | PM session |
+| 4 | Plan options & trade-offs (pros / cons) | fresh agent |
+| 6 | Draft implementation plan | fresh agent |
+| 7 | Architecture review | fresh agent |
+| 8 | QA reviews the test plan | fresh agent |
+| 9 | Summarize reviews & recommend | PM session |
+| 11 | Specialist agent implements | fresh agent |
+| 12 | Automated review (code + QA) | fresh agent |
+| 14 | Deploy the changes | fresh agent |
+
+(Gates — 3, 5, 10, 13, 15 — are covered above; they get no agent at all.)
+Sourced from `domain/steps.json`, `farm/farmd.py`'s lane routing and
+`farm/step_agent.py`'s `STEP_CONFIG`. See
+[`docs/agent-architecture.md`](agent-architecture.md) for why that PM/fresh
+split exists, why the PM's long-lived session makes steps 0/1/2/9
+non-reproducible, and how a step's AI provider is actually chosen.
+
 ## What "current step" and "done" mean
 
 Each work item stores a single number, `cursor` — its index into the 16-step
-`STEPS` array. `curStep(item)` (`server/src/lifecycle.js:53`) looks up
+`STEPS` array. `curStep(item)` (`domain/js/lifecycle.js`) looks up
 `STEPS[item.cursor]` to find what's next; an item is closed
-(`isClosed`, `lifecycle.js:43`) once `cursor >= STEPS.length`, i.e. it has
+(`isClosed`, same file) once `cursor >= STEPS.length`, i.e. it has
 passed the final "Review the work & close" gate. There is no other "done"
 state — paused and blocked (below) are both independent of, and do not
 change, the cursor.
@@ -120,7 +150,8 @@ change, the cursor.
   separately from `cursor`). A paused item's steps simply don't get
   dispatched until resumed.
 - **Blocked (dependencies, see `README.md`'s Dependencies section).** A work
-  item can declare it depends on another. `isBlocked` (`lifecycle.js:64`)
+  item can declare it depends on another. `isBlocked`
+  (`domain/js/lifecycle.js`)
   checks whether *any* declared blocker has not yet closed; if so, the
   orchestrator's `runnable()` refuses to dispatch this item's steps at all,
   regardless of `cursor`. A blocker that is abandoned (soft-deleted, not

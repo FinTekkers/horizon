@@ -2,6 +2,12 @@
 // pin them directly so a future STEPS insertion/reorder can't silently widen
 // or narrow what a human is offered, or drift from the server's own rule
 // (STEPS[i].kind === 'agent' && i < gateIndex, no hardcoded positions).
+//
+// HZ-128: these helpers moved to domain/js/lifecycle.js — one copy, shared
+// with the server. The picker is a UI concern, so its rules stay pinned from
+// the UI suite; the lookup is now requiredStepIndex(label, steps), the
+// server's name and argument order (the UI's requiredIndex(steps, label) was
+// the discarded half of that split).
 
 import { expect, test } from 'vitest'
 import {
@@ -10,8 +16,8 @@ import {
   IMPLEMENT_STEP_INDEX,
   reworkTargets,
   defaultReworkTarget,
-  requiredIndex,
-} from './lifecycle'
+  requiredStepIndex,
+} from '../../../domain/js/lifecycle.js'
 
 const PRE_EXECUTION_GATE_INDEX = STEPS.findIndex((s) => s.label === 'Review before execution')
 
@@ -20,16 +26,16 @@ const FABRICATED_STEPS = [
   { phase: 2, kind: 'gate', gate: 'required', label: 'Accept the code' },
 ]
 
-test('requiredIndex resolves a label that is actually present', () => {
-  expect(requiredIndex(FABRICATED_STEPS, 'Accept the code')).toBe(1)
+test('requiredStepIndex resolves a label that is actually present', () => {
+  expect(requiredStepIndex('Accept the code', FABRICATED_STEPS)).toBe(1)
 })
 
-test('requiredIndex throws — never returns -1 — for a label that was renamed out from under it', () => {
-  expect(() => requiredIndex([FABRICATED_STEPS[0]], 'Accept the code')).toThrow(/no step labeled/)
+test('requiredStepIndex throws — never returns -1 — for a label that was renamed out from under it', () => {
+  expect(() => requiredStepIndex('Accept the code', [FABRICATED_STEPS[0]])).toThrow(/no step labeled/)
 })
 
-test('requiredIndex names the missing label in its error, so the failure is actionable', () => {
-  expect(() => requiredIndex(FABRICATED_STEPS, 'This Label Does Not Exist')).toThrow(/This Label Does Not Exist/)
+test('requiredStepIndex names the missing label in its error, so the failure is actionable', () => {
+  expect(() => requiredStepIndex('This Label Does Not Exist', FABRICATED_STEPS)).toThrow(/This Label Does Not Exist/)
 })
 
 test('reworkTargets offers every agent step strictly earlier than the gate, and nothing else', () => {

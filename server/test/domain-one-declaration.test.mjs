@@ -1,0 +1,98 @@
+// HZ-128 success criterion 1: "domain/ exists at the repo root. No step is
+// declared anywhere outside it."
+//
+// "Declared" is the load-bearing word, and it needs two different tests:
+//
+//   1. A STRUCTURAL check. A step table is recognisable by shape — four or more
+//      step-object literals in one file. This is what actually enforces
+//      criterion 1: it catches a new hand-rolled copy of the table regardless
+//      of which labels it happens to use.
+//   2. An ALLOWLIST check on one label literal. A mention is not a declaration,
+//      so this is the weaker of the two — but it is what stops a copy being
+//      added file by file, one label at a time, under the structural
+//      threshold.
+//
+// The label is read off STEPS rather than typed, so this file is not itself a
+// hit and does not have to allowlist itself.
+
+import { test } from 'node:test'
+import assert from 'node:assert/strict'
+
+import { STEPS } from '../../domain/js/lifecycle.js'
+import { repoFiles, relative, filesMatching, MIN_EXPECTED_FILES } from './helpers/repoFiles.mjs'
+
+// ui/design-system/ is EXCLUDED, deliberately and not silently. Its
+// "Lifecycle Tracker.dc.html" carries a 14-step hand-copy of the table, but it
+// is a Design Compiler export: a non-executing mock, in no build, in no
+// bundle, imported by nothing, and re-emitted wholesale by the design tool.
+// A generator cannot own it and pinning its labels would turn a design
+// re-export into a test failure. Recorded in domain/README.md.
+const EXCLUDED_DIRS = ['ui/design-system/']
+
+// Files that legitimately contain step-object literals without declaring the
+// table: fabricated fixtures a test feeds to a pure derivation function, and
+// single-step network payloads. Each is a FABRICATION — none is read as the
+// real pipeline by any production code path.
+const FABRICATED_FIXTURES = new Set([
+  'server/test/lifecycle-renamed-label.test.mjs', // 2-step throw-path fixture
+  'server/test/lifecycle-step-insertion.test.mjs', // 3-step insertion fixture
+  'server/test/store.test.mjs', // 2 step-shaped expectations
+  'ui/src/domain/lifecycle.test.js', // 2-step throw-path fixture
+  'farm/tests/test_concierge.py', // 4 single-step currentStep payloads, not a table
+  'server/test/domain-schema.test.mjs', // fabricated tables fed to the validator, valid and invalid
+])
+
+// The complete set of files allowed to contain a step LABEL literal, each with
+// the reason it is there. Set equality, so a new copy fails and a stale entry
+// fails too.
+const LABEL_MENTIONS_ALLOWED = {
+  'domain/steps.json': 'the authored source — the only declaration',
+  'domain/js/lifecycle.js': 'generated binding',
+  'domain/py/steps.py': 'generated binding',
+  'server/src/orchestrator.js': "MOCK_STEP_BEHAVIOR key — guarded by mock-step-behavior-drift.test.mjs",
+  'server/test/domain-step-pins.test.mjs': 'the permanent hand-written label pin (guardrail 9)',
+  'server/test/lifecycle-renamed-label.test.mjs': 'fabricated 2-step fixture',
+  'server/test/personas.test.mjs': 'MOCK_STEP_BEHAVIOR lookup key',
+  'server/test/store.test.mjs': 'expected label in an item payload assertion',
+  'ui/src/domain/lifecycle.test.js': 'fabricated 2-step fixture',
+  'e2e/tests/03-mock-agents.spec.js': 'comment naming the step the spec drives',
+  'farm/roles/pm.md': 'role prompt — guarded by role-prompt-labels.test.mjs',
+  'docs/workflow.md': 'prose',
+  'docs/agent-architecture.md': 'prose',
+}
+
+const STEP_OBJECT = /kind"?:\s*['"](agent|gate)['"]/g
+const DECLARATION_THRESHOLD = 4
+
+const files = repoFiles()
+const included = files.filter((f) => !EXCLUDED_DIRS.some((d) => relative(f).startsWith(d)))
+
+test('the walk is not vacuous and the exclusion actually matches something', () => {
+  assert.ok(files.length >= MIN_EXPECTED_FILES, `walk visited only ${files.length} file(s)`)
+  assert.ok(included.length < files.length, 'EXCLUDED_DIRS matched nothing — the path is probably wrong')
+})
+
+test('only domain/ declares a step table: no file outside it holds four or more step-object literals', () => {
+  const declarations = filesMatching((text) => (text.match(STEPS_RE()) || []).length >= DECLARATION_THRESHOLD, included)
+  const outsideDomain = declarations.filter((p) => !p.startsWith('domain/') && !FABRICATED_FIXTURES.has(p))
+  assert.deepEqual(outsideDomain, [], `a step table is declared outside domain/: ${outsideDomain.join(', ')}`)
+
+  // Positive controls: the predicate DOES fire, on exactly the files that are
+  // supposed to declare the table. Without these, a broken regex passes.
+  assert.ok(declarations.includes('domain/steps.json'))
+  assert.ok(declarations.includes('domain/js/lifecycle.js'))
+})
+
+test('every file mentioning a step label is on the allowlist, with no stale entries', () => {
+  const label = STEPS[0].label
+  assert.ok(label.length > 5, 'sanity: the label read off STEPS is implausibly short')
+
+  const found = filesMatching((text) => text.includes(label), included)
+  assert.ok(found.length > 0, 'the label search matched nothing — it cannot be working')
+  assert.deepEqual(found, Object.keys(LABEL_MENTIONS_ALLOWED).sort())
+})
+
+// A fresh RegExp per call: /g regexes carry lastIndex across .match() uses.
+function STEPS_RE() {
+  return new RegExp(STEP_OBJECT.source, 'g')
+}

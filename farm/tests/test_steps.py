@@ -1,4 +1,4 @@
-"""farm/steps.py: the loader over the generated step table and the pure
+"""domain/py/steps.py: the loader over the generated step table and the pure
 derivation functions built on it (HZ-117).
 
 The insertion test (does budget/provider/lane/workspace-mutation actually
@@ -11,7 +11,7 @@ import json
 
 import pytest
 
-from farm import steps
+from domain.py import steps
 
 _ENTRY_KEYS = {
     "index",
@@ -68,14 +68,14 @@ def test_loading_a_missing_file_raises_runtime_error(tmp_path):
 
 
 def test_loading_malformed_json_raises_runtime_error(tmp_path):
-    bad = tmp_path / "steps_generated.json"
+    bad = tmp_path / "steps.json"
     bad.write_text("{not valid json")
     with pytest.raises(RuntimeError, match="not valid JSON"):
         steps._load_steps(bad)
 
 
 def test_loading_a_non_array_json_document_raises_runtime_error(tmp_path):
-    bad = tmp_path / "steps_generated.json"
+    bad = tmp_path / "steps.json"
     bad.write_text(json.dumps({"not": "a list"}))
     with pytest.raises(RuntimeError, match="must be a JSON array"):
         steps._load_steps(bad)
@@ -96,7 +96,41 @@ def _entry(index, label):
 
 
 def test_loading_a_table_with_duplicate_labels_raises_runtime_error(tmp_path):
-    dup = tmp_path / "steps_generated.json"
+    dup = tmp_path / "steps.json"
     dup.write_text(json.dumps([_entry(0, "Same Label"), _entry(1, "Same Label")]))
     with pytest.raises(RuntimeError, match="duplicate step label"):
         steps._load_steps(dup)
+
+
+# ---- _validate_steps, the import-time guard (HZ-128) ----
+# The production table is EMBEDDED in the generated module, not loaded, so
+# _load_steps above no longer runs on it. _validate_steps does — it is applied
+# to the embedded literal at import. These test it directly, so the
+# import-time call cannot be dropped from the template unnoticed.
+
+
+def test_validate_steps_rejects_duplicate_labels_naming_them():
+    with pytest.raises(RuntimeError, match="duplicate step label"):
+        steps._validate_steps([_entry(0, "Same Label"), _entry(1, "Same Label")], "test")
+
+
+def test_validate_steps_rejects_a_non_list():
+    with pytest.raises(RuntimeError, match="must be a JSON array"):
+        steps._validate_steps({"not": "a list"}, "test")
+
+
+def test_validate_steps_rejects_a_list_of_non_dicts():
+    with pytest.raises(RuntimeError, match="must be a JSON array"):
+        steps._validate_steps(["not a dict"], "test")
+
+
+def test_validate_steps_returns_a_valid_table_unchanged():
+    table = [_entry(0, "One"), _entry(1, "Two")]
+    assert steps._validate_steps(table, "test") is table
+
+
+def test_the_embedded_production_table_passes_its_own_import_time_guard():
+    # Positive control for the guard that actually runs at import: if
+    # _validate_steps were broken open, this would still pass, but combined with
+    # the rejection tests above it pins both directions.
+    assert steps._validate_steps(steps.STEPS, "domain/steps.json") is steps.STEPS

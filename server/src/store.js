@@ -12,7 +12,7 @@ import {
   curStep,
   IMPLEMENT_STEP_INDEX,
   ACCEPT_GATE_INDEX,
-} from './lifecycle.js'
+} from '../../domain/js/lifecycle.js'
 import { isPersona, personaLabel } from './personas.js'
 import { getActiveProjectId, setSetting } from './settings.js'
 
@@ -184,7 +184,7 @@ function withRunState(activeRun) {
 
 // ---- dependencies (HZ-78) ----
 // item_id is blocked until every depends_on_id row it names has closed (see
-// lifecycle.js isBlocked). Enforced at dispatch time in orchestrator.js's
+// domain/js/lifecycle.js isBlocked). Enforced at dispatch time in orchestrator.js's
 // runnable() — the same gate that already decides dispatch — via blockersOf
 // below; the API-facing blocked/blockedBy fields here are read-only
 // reporting of that same derived state, not a second source of truth.
@@ -250,7 +250,7 @@ function wakeDependents(id) {
 // dependents can never satisfy that dependency by waiting. They are NOT
 // auto-unblocked (removing someone else's dependency edge without asking is
 // its own surprise) and NOT paused (paused is a human action with a Resume
-// button — see lifecycle.js and the guardrails this item shipped under).
+// button — see domain/js/lifecycle.js and the guardrails this item shipped under).
 // Instead each live dependent gets an event naming the abandoned blocker and
 // keeps reading blocked: true / blockedByAbandoned: true in the API until a
 // human calls removeDependency (or replaces the dependency) — visible and
@@ -711,7 +711,6 @@ export function parseIssueBody(body) {
     if (key && content) result[key] = content
   }
   if (!result.desc) result.desc = preamble || text
-  result.desc = result.desc.slice(0, 500)
   return result
 }
 

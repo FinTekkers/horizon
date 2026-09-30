@@ -93,7 +93,7 @@ def run_agent(
     caller keeps.
 
     provider_locked (HZ-117) is the caller's declaration that this step
-    (from farm/steps.py's providerLocked field — today, implement and
+    (from domain/steps.json's providerLocked field — today, implement and
     deploy) must run on DEFAULT_PROVIDER no matter what, refusing BOTH an
     explicit provider= override and a bare FARM_PROVIDER env var. Checked
     once, at this single dispatch chokepoint, before any provider call is
@@ -388,10 +388,29 @@ def _handoff_note_path(item_id: str, step_index) -> Path:
     return STATE_DIR / f"handoff-{item_id}-s{step_index}.txt"
 
 
+MAX_HANDOFF_NOTE_CHARS = 2000
+
+
+def _mark_truncated_note(text: str, limit: int = MAX_HANDOFF_NOTE_CHARS) -> str:
+    """A sanity ceiling on the handoff note, cut at a word boundary and said
+    so. The prompt already labels the note "unverified"; a note silently cut
+    mid-sentence would still read as a *complete* report of what the last
+    attempt finished, which is the one thing this item exists to prevent. Same
+    content-then-marker shape as pm_agent._mark_truncated (HZ-114)."""
+    if len(text) <= limit:
+        return text
+    cut = text[:limit]
+    last_space = cut.rfind(" ")
+    if last_space > 0:
+        cut = cut[:last_space]
+    omitted = len(text) - len(cut)
+    return f"{cut} […{omitted} chars omitted — the handoff note exceeded its {limit}-char ceiling; it is not a complete account of the attempt.]"
+
+
 def _write_handoff_note(item_id: str, step_index, text: str) -> None:
     path = _handoff_note_path(item_id, step_index)
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(text[:2000])
+    path.write_text(_mark_truncated_note(text))
 
 
 def read_and_clear_handoff_note(item_id: str, step_index) -> str | None:

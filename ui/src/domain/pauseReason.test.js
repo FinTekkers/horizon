@@ -46,6 +46,28 @@ test('the four named categories all render distinct labels from one another', ()
   expect(labels.size).toBe(4)
 })
 
+// HZ-105: a required artifact the budget allocator had to truncate stops
+// the step from ever dispatching — server/src/orchestrator.js's
+// missingRequiredInputs/failFarmRun tags this pause `required_input_incomplete`.
+// This is the only place a human actually sees the artifact name and
+// shortfall the gate names in its cause text.
+test('a required_input_incomplete pause names the artifact, its size, and the shortfall', () => {
+  const item = {
+    paused: true,
+    events: [
+      ev(
+        'agent step failed (required_input_incomplete): required input incomplete: "Draft implementation plan" needs 40000 chars, only 20034 could be supplied (19966 short) — item paused; resume to retry',
+      ),
+    ],
+  }
+  const result = pauseReason(item)
+  expect(result.category).toBe('required_input_incomplete')
+  expect(result.label).toBe('Required input incomplete')
+  expect(result.detail).toMatch(/capacity limit, not a bug/)
+  expect(result.cause).toMatch(/"Draft implementation plan" needs 40000 chars, only 20034 could be supplied \(19966 short\)/)
+  expect(result.exhausted).toBe(false)
+})
+
 test('a turn_cap failure whose retry budget is exhausted is flagged exhausted, with the cause preserved', () => {
   const item = {
     paused: true,

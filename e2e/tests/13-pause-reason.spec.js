@@ -37,6 +37,16 @@ test.beforeAll(() => {
       itemId: 'PAUSE-2',
       text: 'agent step failed (some_future_reason): repo checks failed: eslint exited 1 — item paused; resume to retry',
     })
+
+    // HZ-105: a required artifact the budget allocator had to truncate stops
+    // the step from ever dispatching — mirrors the exact cause text
+    // orchestrator.js's missingRequiredInputs/failFarmRun writes.
+    insertItem(db, { id: 'PAUSE-3', title: 'E2E fixture — paused on required input incomplete', cursor: 0, paused: 1 })
+    insertEvent(db, {
+      itemId: 'PAUSE-3',
+      text:
+        'agent step failed (required_input_incomplete): required input incomplete: "Draft implementation plan" needs 40000 chars, only 20034 could be supplied (19966 short) — item paused; resume to retry',
+    })
   } finally {
     db.close()
   }
@@ -74,4 +84,21 @@ test('a pause reason the UI does not recognize still shows the raw cause, never 
   await expect(banner).toBeVisible()
   await expect(banner).not.toHaveText('Paused')
   await expect(banner.locator('.pause-banner__detail')).toContainText('repo checks failed: eslint exited 1')
+})
+
+test('a required_input_incomplete pause names the artifact, its size, and the shortfall, and is never auto-retried', async ({
+  page,
+}) => {
+  await page.goto('/pause-3')
+  await expect(page.locator('.tracker__id')).toHaveText('PAUSE-3')
+
+  const banner = page.locator('.pause-banner')
+  await expect(banner.locator('.pause-banner__title')).toHaveText('Required input incomplete')
+  await expect(banner.locator('.pause-banner__detail')).toContainText('a capacity limit, not a bug')
+  await expect(banner.locator('.pause-banner__detail')).toContainText(
+    '"Draft implementation plan" needs 40000 chars, only 20034 could be supplied (19966 short)',
+  )
+  await expect(banner.locator('.pause-banner__meta')).toContainText('Not auto-retried')
+
+  await expect(page.getByRole('button', { name: 'Resume work' })).toBeVisible()
 })

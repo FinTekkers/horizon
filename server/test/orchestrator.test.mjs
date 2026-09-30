@@ -19,7 +19,7 @@ process.env.FARM_RUN_STATE_POLL_MS = String(60 * 60 * 1000)
 
 const { db } = await import('../src/db.js')
 const store = await import('../src/store.js')
-const { STEPS } = await import('../src/lifecycle.js')
+const { STEPS } = await import('../../domain/js/lifecycle.js')
 const orchestrator = await import('../src/orchestrator.js')
 
 store.purgeDemoItems()
@@ -290,6 +290,45 @@ test('dispatchToFarm keeps only the latest attempt per step_index (dedupe)', asy
   orchestrator.cancel('D-7')
 })
 
+test('dispatchToFarm sends only artifacts from steps BEFORE the dispatched step (no stale later-step artifacts after a send-back)', async () => {
+  // Shape after a send-back to step 6: the prior cycle left done artifacts at
+  // step 8 (QA's own old verdict) and step 9 (the PM summary of it). A
+  // re-dispatch of step 8 must see only 4, 6 and 7.
+  insertItem.run('D-7b', 'Re-review after send-back', 'Medium', 8, null)
+  doneStepRun('D-7b', 4, 1, 'options')
+  doneStepRun('D-7b', 8, 1, 'STALE old QA verdict')
+  doneStepRun('D-7b', 9, 1, 'STALE old PM summary')
+  doneStepRun('D-7b', 6, 2, 'reworked plan')
+  doneStepRun('D-7b', 7, 2, 'fresh architecture review')
+  orchestrator.kick('D-7b')
+  await new Promise((r) => setTimeout(r, 20))
+  const dispatch = dispatches.find((d) => d.url.includes('/steps/run') && d.body?.item?.id === 'D-7b')
+  assert.ok(dispatch, 'no /steps/run dispatch captured')
+  const labels = dispatch.body.artifacts.map((a) => a.label)
+  assert.deepEqual(labels.sort(), [STEPS[4].label, STEPS[6].label, STEPS[7].label].sort())
+  assert.ok(!dispatch.body.artifacts.some((a) => a.content.includes('STALE')), 'a stale later-step artifact rode along')
+  orchestrator.cancel('D-7b')
+})
+
+test('HZ-128 regression: stale later-step artifacts no longer push a required plan over budget', async () => {
+  // Exact HZ-128 sizes: 4600 + 32596 + 5969 = 43165 real inputs, plus a stale
+  // 12771 step-8 verdict and 4067 step-9 summary = 60003, 3 over budget, which
+  // truncated the required plan by 109 chars and made HZ-105 refuse forever.
+  insertItem.run('D-7c', 'HZ-128 shape', 'Medium', 8, null)
+  doneStepRun('D-7c', 4, 1, 'o'.repeat(4600))
+  doneStepRun('D-7c', 8, 1, 'q'.repeat(12771))
+  doneStepRun('D-7c', 9, 1, 's'.repeat(4067))
+  doneStepRun('D-7c', 6, 2, 'p'.repeat(32596))
+  doneStepRun('D-7c', 7, 2, 'r'.repeat(5969))
+  orchestrator.kick('D-7c')
+  await new Promise((r) => setTimeout(r, 20))
+  const dispatch = dispatches.find((d) => d.url.includes('/steps/run') && d.body?.item?.id === 'D-7c')
+  assert.ok(dispatch, 'step 8 was refused instead of dispatched — required input still truncated')
+  const plan = dispatch.body.artifacts.find((a) => a.label === STEPS[6].label)
+  assert.equal(plan.content.length, 32596, 'required plan was not supplied whole')
+  orchestrator.cancel('D-7c')
+})
+
 test('dispatchToFarm budgets a large plan complete and marks truncated older artifacts, with an item event', async () => {
   insertItem.run('D-8', 'Large plan with old context', 'Medium', 11, null)
   doneStepRun('D-8', 4, 1, 'a'.repeat(50000))
@@ -309,6 +348,97 @@ test('dispatchToFarm budgets a large plan complete and marks truncated older art
   assert.ok(event.text.includes(STEPS[4].label), 'event should name the truncated step')
   assert.ok(event.text.includes(STEPS[6].label), 'event should name the truncated step')
   orchestrator.cancel('D-8')
+})
+
+// ---- required-input gate (HZ-105) ----
+// STEPS[8] ('QA reviews the test plan') requires STEPS[6] ('Draft
+// implementation plan') in full (domain/steps.json). This is the real
+// HZ-102 exposure: dispatching into step 8, step 6's artifact is no longer
+// the latest row (step 7's is) and can lose the recency-weighting fight in
+// budgetArtifacts. A required artifact that comes out of that fight
+// truncated must never reach the farm — the step must not run at all.
+
+test('the required-input gate stops dispatch when the required prior artifact was truncated: no dispatch, item paused, no verdict, no artifact', async () => {
+  insertItem.run('D-11', 'Required plan truncated by the budget fight', 'Medium', 8, null)
+  doneStepRun('D-11', 6, 1, 'p'.repeat(40000)) // required by step 8 — older row, loses the weighting fight
+  doneStepRun('D-11', 7, 1, 'r'.repeat(40000)) // latest row — wins LATEST_ARTIFACT_WEIGHT priority
+  orchestrator.kick('D-11')
+  await new Promise((r) => setTimeout(r, 20))
+
+  assert.ok(
+    !dispatches.some((d) => d.body?.item?.id === 'D-11'),
+    'a step whose required input was truncated must never reach the farm',
+  )
+  assert.equal(store.getItem('D-11').paused, true, 'the item must pause for a human, not proceed or auto-retry')
+
+  const event = db.prepare("SELECT text FROM event WHERE item_id = 'D-11' ORDER BY id DESC LIMIT 1").get()
+  assert.match(event.text, /agent step failed \(required_input_incomplete\)/)
+  assert.match(
+    event.text,
+    new RegExp(`"${STEPS[6].label}" needs 40000 chars, only \\d+ could be supplied \\(\\d+ short\\)`),
+    'the pause reason must name the artifact, its full size, and the shortfall',
+  )
+
+  const run = db.prepare("SELECT status, artifact FROM step_run WHERE item_id = 'D-11' ORDER BY id DESC LIMIT 1").get()
+  assert.equal(run.status, 'cancelled')
+  assert.equal(run.artifact, null, 'a step that never ran must never produce an artifact')
+})
+
+test('the required-input gate does not fire when every required input is suppliable in full: the step runs exactly as before', async () => {
+  insertItem.run('D-12', 'Required plan stays whole', 'Medium', 8, null)
+  const requiredPlan = 'p'.repeat(20000)
+  doneStepRun('D-12', 6, 1, requiredPlan)
+  doneStepRun('D-12', 7, 1, 'r'.repeat(20000))
+  orchestrator.kick('D-12')
+  await new Promise((r) => setTimeout(r, 20))
+
+  const dispatch = dispatches.find((d) => d.url.includes('/steps/run') && d.body?.item?.id === 'D-12')
+  assert.ok(dispatch, 'nothing was truncated — dispatch must proceed exactly as before this gate existed')
+  const byLabel = Object.fromEntries(dispatch.body.artifacts.map((a) => [a.label, a.content]))
+  assert.equal(byLabel[STEPS[6].label], requiredPlan, 'the required artifact must arrive whole')
+  assert.equal(store.getItem('D-12').paused, false)
+  orchestrator.cancel('D-12')
+})
+
+test('the required-input gate does not fire on a merely optional artifact truncated, only on the required one', async () => {
+  insertItem.run('D-13', 'Optional context truncated, required plan whole', 'Medium', 8, null)
+  doneStepRun('D-13', 4, 1, 'a'.repeat(50000)) // optional (not in step 8's requires) — may be truncated
+  const requiredPlan = 'p'.repeat(15000)
+  doneStepRun('D-13', 6, 1, requiredPlan) // required by step 8 — must survive whole
+  doneStepRun('D-13', 7, 1, 'r'.repeat(2000)) // latest — small, wins the weighting fight easily
+  orchestrator.kick('D-13')
+  await new Promise((r) => setTimeout(r, 20))
+
+  const dispatch = dispatches.find((d) => d.url.includes('/steps/run') && d.body?.item?.id === 'D-13')
+  assert.ok(dispatch, 'the required artifact was whole — dispatch must proceed even though an optional one was cut')
+  const byLabel = Object.fromEntries(dispatch.body.artifacts.map((a) => [a.label, a.content]))
+  assert.equal(byLabel[STEPS[6].label], requiredPlan, 'the required artifact must arrive whole')
+  assert.ok(byLabel[STEPS[4].label].includes('[...reduced:'), 'the optional artifact was truncated, as staged')
+  assert.equal(store.getItem('D-13').paused, false, 'a truncated OPTIONAL artifact must never pause the item')
+  orchestrator.cancel('D-13')
+})
+
+test('missingRequiredInputs: empty for a step with no requires field at all (the common case)', () => {
+  const stepWithNoRequires = STEPS[11]
+  assert.equal(stepWithNoRequires.requires, undefined)
+  assert.deepEqual(orchestrator.missingRequiredInputs(stepWithNoRequires, [], []), [])
+})
+
+test('required_input_incomplete is excluded from auto-retry — a capacity decision for a human, never transient', async () => {
+  insertItem.run('D-14', 'Never auto-retries', 'Medium', 8, null)
+  const runId = db
+    .prepare('INSERT INTO step_run (item_id, step_index, attempt, agent, status) VALUES (?, ?, 1, ?, ?)')
+    .run('D-14', 8, STEPS[8].agent, 'active').lastInsertRowid
+
+  const result = orchestrator.failFarmRun(runId, 'required input incomplete: ...', 'required_input_incomplete')
+
+  assert.deepEqual(result, { ok: true }, 'must never retry — retried:true is only ever returned for a reason in AUTO_RETRY_REASONS')
+  assert.equal(store.getItem('D-14').paused, true)
+  assert.equal(
+    db.prepare("SELECT COUNT(*) AS n FROM step_run WHERE item_id = 'D-14' AND status = 'active'").get().n,
+    0,
+    'no fresh run may be dispatched automatically',
+  )
 })
 
 test('dispatchToFarm logs artifact-budget usage on every dispatch, so how often 60,000 binds can be measured for real', async () => {

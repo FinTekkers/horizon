@@ -18,6 +18,11 @@ from pathlib import Path
 
 import httpx
 
+# HZ-128: the step model lives in domain/, not in farm/ — an absolute import
+# off the repo root (already on sys.path, since farmd runs as
+# `python -m farm.farmd` from there and farm/tests/conftest.py inserts it).
+from domain.py import steps
+
 # AgentExhaustedError is this branch's name for main's TurnCapExceeded — the
 # same "ran out of turn budget" signal, renamed by the provider refactor. The
 # import conflicted while its USE below merged cleanly, so the rename has to be
@@ -27,7 +32,6 @@ from .checks import run_checks
 from .config import FARM_PORT
 from .personas import compose_role, provider_for, resolve
 from .rules import render_rules_section
-from . import steps
 from .workspaces import ensure_item_worktree, hub_lock
 
 FARMD = f"http://127.0.0.1:{FARM_PORT}"
@@ -46,7 +50,7 @@ WRITE_ARTIFACT_SANITY_CEILING_CHARS = 200_000
 MAX_PROMPT_ARTIFACT_CHARS = 100_000
 
 # step label -> (role file, needs JSON artifact, tool access, wants persona).
-# HZ-117: keyed by label (the table's own primary key, see farm/steps.py),
+# HZ-117: keyed by label (the table's own primary key, see domain/steps.json),
 # never index — an insertion elsewhere in the table can't repoint one of
 # these at the wrong step. Turn budgets and timeouts moved to
 # steps.budget_for_label(); provider eligibility to
@@ -96,7 +100,7 @@ def _assert_step_config_matches_table(config_labels: set[str], table_labels: set
         problems.append(f"in the generated steps table but missing from STEP_CONFIG: {sorted(missing_from_config)}")
     if missing_from_table:
         problems.append(f"in STEP_CONFIG but missing from the generated steps table: {sorted(missing_from_table)}")
-    raise RuntimeError("step_agent.STEP_CONFIG has drifted from farm/steps_generated.json — " + "; ".join(problems))
+    raise RuntimeError("step_agent.STEP_CONFIG has drifted from domain/steps.json — " + "; ".join(problems))
 
 
 _assert_step_config_matches_table(

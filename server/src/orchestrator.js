@@ -10,9 +10,9 @@
 // step_run/event bookkeeping and gate semantics stay exactly as they are.
 
 import { db } from './db.js'
+import { AGENTS } from './agentTokens.js'
 import {
   STEPS,
-  AGENTS,
   isClosed,
   isAbandoned,
   isBlocked,
@@ -20,7 +20,8 @@ import {
   REVIEW_STEP_INDEX,
   ACCEPT_GATE_INDEX,
   DEPLOY_STEP_INDEX,
-} from './lifecycle.js'
+  requiredStepIndex,
+} from '../../domain/js/lifecycle.js'
 import {
   getItem,
   addEvent,
@@ -32,7 +33,7 @@ import {
   requestChanges,
 } from './store.js'
 import { createMockPr, createDeployRelease, postIssueComment, createPrFromBranch } from './github.js'
-import { PHASES } from './lifecycle.js'
+import { PHASES } from '../../domain/js/lifecycle.js'
 import { getActiveProjectId, getSetting, setSetting, getToken } from './settings.js'
 import {
   FARM_URL,
@@ -272,6 +273,23 @@ export function budgetArtifacts(rows) {
     const content = truncated ? digestToFit(full, cap) : full
     return { label: STEPS[row.step_index]?.label || `step ${row.step_index}`, content, truncated, stepIndex: row.step_index }
   })
+}
+
+// Exported for tests. `step.requires` (domain/steps.json) names prior
+// steps this step cannot review without in full. Returns one entry per
+// required label whose budgeted artifact was truncated — empty when every
+// required input is suppliable whole (including when the step has no
+// `requires` at all, which is most steps).
+export function missingRequiredInputs(step, rows, budgeted) {
+  return (step.requires || [])
+    .map((label) => {
+      const reqIndex = requiredStepIndex(label)
+      const entry = budgeted.find((b) => b.stepIndex === reqIndex)
+      if (!entry?.truncated) return null
+      const row = rows.find((r) => r.step_index === reqIndex)
+      return { label, fullLen: row.artifact.length, gotLen: entry.content.length }
+    })
+    .filter(Boolean)
 }
 
 let farm = { status: 'running', since: new Date().toISOString(), runStates: {} }
@@ -547,7 +565,7 @@ const MOCK_REVIEW_FAIL_COUNT = Number(process.env.MOCK_REVIEW_FAIL_COUNT) || 0
 const MOCK_QA_PASS = { verdict: 'pass', regression_tests_run: true, new_code_unit_coverage: true, e2e_test_present: true, findings: [] }
 
 // Mock behavior per step label (HZ-117: keyed by label, not index — the
-// pipeline's step identities are fixed, see lifecycle.js; an insertion
+// pipeline's step identities are fixed, see domain/steps.json; an insertion
 // elsewhere in STEPS must never repoint one of these at the wrong step).
 // Returns { summary, patch? } where patch updates work_item fields, mimicking
 // the artifacts each agent is supposed to produce.
@@ -747,11 +765,17 @@ async function dispatchToFarm(id, stepIndex, runId, attempt) {
   // never sets artifact — without the OR clause the QA reviewer would never
   // see proof that regression tests actually ran). Keep only the
   // most-recently-completed row per step_index: a re-run step's superseded
-  // attempt must not ride along next to the current one.
+  // attempt must not ride along next to the current one. Only steps BEFORE
+  // this one count as prior: after a send-back, the item's earlier cycle
+  // left done artifacts at and after this step (e.g. step 8's own old QA
+  // verdict and step 9's summary of it). Feeding those back biases the
+  // re-review toward its own stale conclusion and, on HZ-128, pushed the
+  // total 3 chars over budget so HZ-105 refused the required plan forever.
   const rows = db
     .prepare(
       `SELECT step_index, artifact, output FROM step_run
        WHERE item_id = ? AND status = 'done' AND (artifact IS NOT NULL OR step_index = ?)
+         AND step_index < ?
          AND id IN (
            SELECT MAX(id) FROM step_run
            WHERE item_id = ? AND status = 'done' AND (artifact IS NOT NULL OR step_index = ?)
@@ -759,9 +783,25 @@ async function dispatchToFarm(id, stepIndex, runId, attempt) {
          )
        ORDER BY id`,
     )
-    .all(id, IMPLEMENT_STEP_INDEX, id, IMPLEMENT_STEP_INDEX)
+    .all(id, IMPLEMENT_STEP_INDEX, stepIndex, id, IMPLEMENT_STEP_INDEX)
     .map((row) => ({ step_index: row.step_index, artifact: row.artifact ?? row.output ?? '' }))
   const budgeted = budgetArtifacts(rows)
+
+  // HZ-105: a step whose `requires` names a prior artifact must never review
+  // it half-shown — the exact HZ-102 failure shape was a reviewer judging a
+  // quarter of an implementation plan and reporting the rest as absent. If
+  // the budget allocator had to truncate a required artifact, stop here:
+  // no dispatch, no verdict, no artifact. failFarmRun pauses the item and
+  // names the artifact, its full size, and the shortfall — a capacity
+  // decision for a human, never auto-retried (see AUTO_RETRY_REASONS).
+  const missingRequired = missingRequiredInputs(step, rows, budgeted)
+  if (missingRequired.length > 0) {
+    const detail = missingRequired
+      .map((m) => `"${m.label}" needs ${m.fullLen} chars, only ${m.gotLen} could be supplied (${m.fullLen - m.gotLen} short)`)
+      .join('; ')
+    return failFarmRun(runId, `required input incomplete: ${detail}`, 'required_input_incomplete')
+  }
+
   const artifacts = budgeted.map(({ label, content }) => ({ label, content }))
   const truncatedLabels = budgeted.filter((a) => a.truncated).map((a) => a.label)
   if (truncatedLabels.length > 0) {

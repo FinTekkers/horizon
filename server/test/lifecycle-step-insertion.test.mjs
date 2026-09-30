@@ -1,10 +1,10 @@
 // HZ-117 success metric: "a test inserts a step into the table and asserts
 // nothing needs a literal index changed anywhere — lane routing, workspace
 // mutation, turn budgets and provider eligibility all follow the new step
-// automatically." This is the JS half (server/src/lifecycle.js's own derived
-// views); the farm half (lane routing, workspace mutation, turn budgets,
-// provider eligibility) is proven the same way in
-// farm/tests/test_steps_insertion.py.
+// automatically." This is the JS half (domain/js/lifecycle.js's derived
+// lookups plus domain/generate.mjs's farm-shaped projection); the farm half
+// (lane routing, workspace mutation, turn budgets, provider eligibility) is
+// proven the same way in farm/tests/test_steps_insertion.py.
 //
 // Every assertion below reads an inserted/shifted step back off the
 // fabricated table by its own label — no production step index (11, 12,
@@ -13,7 +13,8 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 
-import { agentStepIndexes, requiredStepIndex, toGeneratedSteps, toUiSteps } from '../src/lifecycle.js'
+import { agentStepIndexes, requiredStepIndex } from '../../domain/js/lifecycle.js'
+import { toGeneratedSteps } from '../../domain/generate.mjs'
 
 const EXISTING_FARM_STEP = {
   phase: 0,
@@ -83,13 +84,9 @@ test('toGeneratedSteps carries the inserted step at its own computed index with 
   assert.equal(existingEntry.maxTurns, EXISTING_FARM_STEP.maxTurns)
 })
 
-test('toUiSteps places the inserted step at its own index, both kinds included, no presentation tokens', () => {
-  const ui = toUiSteps(AFTER_INSERT)
-  const insertedIndex = AFTER_INSERT.findIndex((s) => s.label === INSERTED_STEP.label)
-
-  assert.equal(ui.length, AFTER_INSERT.length)
-  assert.equal(ui[insertedIndex].label, INSERTED_STEP.label)
-  assert.equal(ui[insertedIndex].kind, 'agent')
-  assert.ok(!('color' in ui[insertedIndex]), 'toUiSteps must never carry presentation tokens')
-  assert.ok(!('maxTurns' in ui[insertedIndex]), 'toUiSteps must never carry farm-only budget fields')
-})
+// HZ-128 deleted toUiSteps along with the UI's separate generated JSON: the
+// one JS binding now carries domain/steps.json's authored entries verbatim, so
+// there is no second JS projection left to derive or test. Which shape shipped
+// is pinned instead by domain-binding-hygiene.test.mjs — including the fact
+// that the JS view now DOES carry the farm-only fields the old toUiSteps
+// dropped.
