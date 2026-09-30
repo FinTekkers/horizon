@@ -54,6 +54,11 @@ WRITE_ARTIFACT_SANITY_CEILING_CHARS = 200_000
 # rules blocks with a note instead (HZ-114), so this is no longer a real
 # mirror — flagging the drift rather than leaving a stale claim in place.
 MAX_PROMPT_ARTIFACT_CHARS = 100_000
+# The cap on this agent's own `summary` — step_run.output on the server side.
+# Named once (HZ-156) rather than restated as a literal at each shaping site:
+# stamp_notes() reserves room inside exactly this budget, so a cap raised in
+# validate() and not in the stamp would silently truncate the notes back off.
+SUMMARY_MAX_CHARS = 300
 
 
 def log(msg: str) -> None:
@@ -211,7 +216,7 @@ def validate(parsed: dict) -> tuple[str, dict, str | None]:
             patch[key] = _mark_truncated(value, limit) if key in MARKED_PATCH_FIELDS else value[:limit]
     artifact = parsed.get("artifact_md")
     artifact = artifact.strip()[:WRITE_ARTIFACT_SANITY_CEILING_CHARS] if isinstance(artifact, str) and artifact.strip() else None
-    return summary[:300], patch, artifact
+    return summary[:SUMMARY_MAX_CHARS], patch, artifact
 
 
 def process(task: dict, project_slug: str) -> None:
@@ -249,7 +254,7 @@ def process(task: dict, project_slug: str) -> None:
         # Script-stamped feedback trail, same as the ephemeral agents.
         feedback = task.get("feedback") or []
         if feedback:
-            summary = f"addressed feedback (“{feedback[0].get('message', '')[:80]}”) — {summary}"[:300]
+            summary = f"addressed feedback (“{feedback[0].get('message', '')[:80]}”) — {summary}"[:SUMMARY_MAX_CHARS]
             if artifact:
                 header = "\n".join(f"> {fb.get('message', '')}" for fb in feedback)
                 artifact = f"## Human feedback addressed in this revision\n{header}\n\n{artifact}"[:WRITE_ARTIFACT_SANITY_CEILING_CHARS]
@@ -257,7 +262,7 @@ def process(task: dict, project_slug: str) -> None:
         # Parser notes reach the human on both surfaces this step owns: the
         # run's output line (server/src/orchestrator.js persists `summary` as
         # step_run.output) and the step's artifact. No-ops when empty.
-        summary = stamp_notes(summary, notes, 300)
+        summary = stamp_notes(summary, notes, SUMMARY_MAX_CHARS)
         if artifact:
             artifact = stamp_notes_artifact(artifact, notes, WRITE_ARTIFACT_SANITY_CEILING_CHARS)
 

@@ -250,6 +250,7 @@ def parse_agent_reply(
     retry: Callable[[str], str] | None = None,
     *,
     validate: Callable[[Any], Any] | None = None,
+    validate_after_retry: bool = True,
 ) -> tuple[Any, list[str]]:
     """THE parser for a model's final JSON reply. Every caller above this
     module uses it; nothing else calls extract_json() (enforced by
@@ -262,11 +263,19 @@ def parse_agent_reply(
     fresh reply text. Omit it (step_agent's implement step) and a first
     failure propagates immediately with no retry.
 
-    `validate` is applied INSIDE the retry envelope. pm_agent and
-    concierge_agent both validated inside their retry try-block, so a reply
-    that parses but is missing a required field takes the lossless retry
-    today — passing the validator here is what preserves that. step_agent
-    passes none: its own summary check sits outside the retry and stays there.
+    `validate` is applied INSIDE the retry envelope, so a reply that parses
+    but is missing a required field takes the lossless retry. pm_agent and
+    concierge_agent both validated inside their retry try-block already;
+    step_agent's checks moved in so that extract_json()'s attempt 3 — which
+    can lift a stray leading object out of prose — cannot turn a reply the
+    retry used to recover into a cancelled run.
+
+    `validate_after_retry=False` applies `validate` to the FIRST reply only:
+    a retried reply that still fails it is returned anyway, unvalidated. That
+    is for a caller whose own handling of a missing field is already a defined
+    outcome rather than an error — step_agent's review step, where a reply
+    with no verdict must fail the gate closed, never cancel the run. Such a
+    caller uses `validate` purely to earn the retry, not to reject.
 
     Returns `(validate(parsed) if validate else parsed, notes)`.
 
@@ -277,13 +286,13 @@ def parse_agent_reply(
     orchestrator auto-retries a run only if it still carries that tag.
     """
 
-    def _attempt(text: str) -> tuple[Any, list[str]]:
+    def _attempt(text: str, *, apply_validate: bool) -> tuple[Any, list[str]]:
         parsed = extract_json(text)
         notes = _notes_for(text, parsed)
-        return (validate(parsed) if validate else parsed), notes
+        return (validate(parsed) if (validate and apply_validate) else parsed), notes
 
     try:
-        return _attempt(reply_text)
+        return _attempt(reply_text, apply_validate=True)
     except AgentExhaustedError:
         raise
     except (AgentError, json.JSONDecodeError) as exc:
@@ -291,8 +300,10 @@ def parse_agent_reply(
             raise
         prompt = RETRY_PROMPT.format(exc=exc)
     # Deliberately OUTSIDE the except clause: nothing the retry raises may be
-    # caught by the handler above.
-    return _attempt(retry(prompt))
+    # caught by the handler above. A retried reply that still will not PARSE
+    # always raises, whatever validate_after_retry says — that flag relaxes
+    # validation, never parsing.
+    return _attempt(retry(prompt), apply_validate=validate_after_retry)
 
 
 def stamp_notes(summary: str, notes: list[str], limit: int) -> str:

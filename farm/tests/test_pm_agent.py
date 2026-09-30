@@ -852,6 +852,22 @@ def test_a_note_survives_a_max_length_summary_and_artifact(pm_process, monkeypat
     assert "- fake note" in artifact
 
 
+def test_moving_the_summary_cap_moves_both_the_slice_and_the_notes_budget(pm_process, monkeypatch):
+    """Restating the cap as a literal at each shaping site is hidden coupling:
+    stamp_notes() reserves room inside exactly the budget validate() already
+    sliced the summary to, so a cap raised in one place and not the other would
+    silently truncate the notes back off."""
+    from farm import agent_runner
+
+    monkeypatch.setattr(agent_runner, "_notes_for", lambda text, parsed: ["n"])
+    monkeypatch.setattr(pm_agent, "SUMMARY_MAX_CHARS", 60)
+
+    posted = pm_process.run(json.dumps({"summary": "s" * 400}))
+
+    assert len(posted["summary"]) == 60
+    assert posted["summary"].endswith(" [n]")
+
+
 # -- turn_cap: the reason tag that makes a PM step auto-retry (HZ-156) --
 # step_agent.main() has always tagged this; pm_agent.process() did not, so the
 # identical exhaustion paused a PM step for a human while an ephemeral step

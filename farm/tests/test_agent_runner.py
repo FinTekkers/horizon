@@ -448,6 +448,56 @@ def test_a_validation_failure_with_no_retry_propagates():
         parse_agent_reply('{"a": 1}', validate=validate)
 
 
+# ---- validate_after_retry=False: earn the retry without rejecting ----
+# step_agent's review step defaults a verdict-less reply to "fail" — a defined
+# outcome, not an error. It validates only to buy the retry back that
+# extract_json()'s attempt 3 would otherwise take away, and must never turn
+# that fail-closed default into a cancelled run.
+
+
+def _reject_all(parsed):
+    raise AgentError("not the shape I wanted")
+
+
+def test_validate_after_retry_false_accepts_the_retried_reply_unvalidated():
+    calls = []
+
+    def retry(prompt):
+        calls.append(prompt)
+        return '{"still": "wrong shape"}'
+
+    parsed, notes = parse_agent_reply(
+        '{"wrong": "shape"}', retry, validate=_reject_all, validate_after_retry=False
+    )
+    assert parsed == {"still": "wrong shape"}  # returned, not raised
+    assert notes == []
+    assert len(calls) == 1  # the retry was still spent
+
+
+def test_validate_after_retry_defaults_to_rejecting_the_retried_reply():
+    """The opposite default, for pm_agent/concierge_agent and step_agent's
+    generic and deploy paths, where a missing field really is an error."""
+    with pytest.raises(AgentError, match="not the shape I wanted"):
+        parse_agent_reply('{"wrong": "shape"}', lambda prompt: '{"still": "wrong"}', validate=_reject_all)
+
+
+def test_validate_after_retry_false_still_raises_when_the_retry_will_not_parse():
+    """The flag relaxes validation, never parsing."""
+    with pytest.raises(AgentError, match="no JSON object"):
+        parse_agent_reply(
+            '{"wrong": "shape"}', lambda prompt: "prose", validate=_reject_all, validate_after_retry=False
+        )
+
+
+def test_validate_after_retry_false_still_validates_the_first_reply():
+    """A good first reply is validated normally — the flag only ever loosens
+    the second attempt, so a validator that transforms still transforms."""
+    parsed, _notes = parse_agent_reply(
+        '{"a": 1}', validate=lambda p: ("validated", p["a"]), validate_after_retry=False
+    )
+    assert parsed == ("validated", 1)
+
+
 # ---- the notes channel ----
 
 
