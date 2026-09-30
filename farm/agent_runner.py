@@ -83,7 +83,7 @@ def run_agent(
     caller keeps.
 
     provider_locked (HZ-117) is the caller's declaration that this step
-    (from farm/steps.py's providerLocked field — today, implement and
+    (from domain/steps.json's providerLocked field — today, implement and
     deploy) must run on DEFAULT_PROVIDER no matter what, refusing BOTH an
     explicit provider= override and a bare FARM_PROVIDER env var. Checked
     once, at this single dispatch chokepoint, before any provider call is

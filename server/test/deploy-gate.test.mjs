@@ -18,7 +18,7 @@ process.env.FARM_URL = 'http://farm.test'
 
 const { db } = await import('../src/db.js')
 const store = await import('../src/store.js')
-const { STEPS, DEPLOY_STEP_INDEX } = await import('../src/lifecycle.js')
+const { STEPS, DEPLOY_STEP_INDEX } = await import('../../domain/js/lifecycle.js')
 const orchestrator = await import('../src/orchestrator.js')
 
 store.purgeDemoItems()

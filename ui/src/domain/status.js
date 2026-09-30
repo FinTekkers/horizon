@@ -1,6 +1,7 @@
 // Shared status presentation for a work item (board card + tracker header).
 
-import { AGENTS, isClosed, isAbandoned, curStep, awaitingGate } from './lifecycle'
+import { isClosed, isAbandoned, curStep, awaitingGate } from '../../../domain/js/lifecycle.js'
+import { AGENTS } from './agentTokens'
 
 // A dispatched step whose run the farm currently reports as queued rather
 // than running (HZ-54) — distinct from a step merely "not yet reached"

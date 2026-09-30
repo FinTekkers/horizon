@@ -175,8 +175,10 @@ until HZ-102. What HZ-102 adds:
   `farm/personas.py`'s `PERSONA_PROVIDERS`. `farm/step_agent.py` only honors
   that mapping on the pure-planning steps ("Plan options & trade-offs",
   "Draft implementation plan", "Architecture review") — never implement or
-  deploy, enforced in code via `farm/steps.py`'s
-  `provider_override_eligible()`, not just by convention on the persona.
+  deploy, enforced in code via `domain/py/steps.py`'s
+  `provider_override_eligible()` — which reads each step's
+  `providerOverrideEligible` flag in `domain/steps.json`, the single place a
+  step is declared (HZ-128) — not just by convention on the persona.
   `PERSONA_PROVIDERS` ships **empty** (HZ-121): every real persona
   (`fullstack`, `python_backend`, `frontend_ui`) is absent from it, so Claude
   stays the default for all real work. The mechanism itself is proven by a

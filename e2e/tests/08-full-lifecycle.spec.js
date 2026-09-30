@@ -1,7 +1,7 @@
 import { test, expect, captureScreenshot } from '../fixtures/test-base.js'
 import { openDb, insertItem } from '../fixtures/seed.js'
 // Derived, not hardcoded — see global-setup.js's E2E-4 fixture for the same pattern.
-import { STEPS } from '../../server/src/lifecycle.js'
+import { STEPS } from '../../domain/js/lifecycle.js'
 
 const DB_PATH = process.env.HORIZON_E2E_DB
 

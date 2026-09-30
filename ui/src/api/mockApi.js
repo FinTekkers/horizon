@@ -13,7 +13,7 @@
 //   POST /items/:id/phases/:phase/restart      → restartPhase(id, phase, reason)
 //   POST /items/:id/feedback                   → sendFeedback(id, target, message)
 
-import { STEPS, PHASES, isClosed, ACCEPT_GATE_INDEX, IMPLEMENT_STEP_INDEX } from '../domain/lifecycle'
+import { STEPS, PHASES, isClosed, ACCEPT_GATE_INDEX, IMPLEMENT_STEP_INDEX } from '../../../domain/js/lifecycle.js'
 import { PERSONAS } from '../domain/personas'
 
 const SEED_ITEMS = [

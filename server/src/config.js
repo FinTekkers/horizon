@@ -16,7 +16,7 @@
 //   SESSION_SECRET         unused placeholder — session tokens are random, not signed
 //   HORIZON_TEST_HOOKS     "1" registers e2e-only routes (see app.js) — never set in production
 
-import { agentStepIndexes } from './lifecycle.js'
+import { agentStepIndexes } from '../../domain/js/lifecycle.js'
 
 export const WEBHOOK_SECRET = process.env.GITHUB_WEBHOOK_SECRET || null
 
@@ -27,7 +27,7 @@ export const UI_URL = (process.env.HORIZON_UI_URL || 'http://localhost:5173').re
 export const FARM_URL = process.env.FARM_URL || null
 export const FARM_SHARED_SECRET = process.env.FARM_SHARED_SECRET || 'dev-secret'
 // Which step indexes the farm handles. Default: every agent step (HZ-117:
-// derived from lifecycle.js's STEPS, never a hand-maintained literal),
+// derived from domain/js/lifecycle.js's STEPS, never a hand-maintained literal),
 // including Deploy — HZ-22 wires the DevOps role in for deep post-deploy
 // verification. The release publish itself (needs the GitHub token the farm
 // doesn't have) still happens here in Node, in dispatchToFarm(), before the

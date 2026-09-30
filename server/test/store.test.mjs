@@ -12,7 +12,7 @@ process.env.HORIZON_DB = join(mkdtempSync(join(tmpdir(), 'horizon-store-')), 'te
 
 const { db } = await import('../src/db.js')
 const store = await import('../src/store.js')
-const { STEPS, IMPLEMENT_STEP_INDEX, REVIEW_STEP_INDEX, ACCEPT_GATE_INDEX } = await import('../src/lifecycle.js')
+const { STEPS, IMPLEMENT_STEP_INDEX, REVIEW_STEP_INDEX, ACCEPT_GATE_INDEX } = await import('../../domain/js/lifecycle.js')
 
 // Deterministic fixtures; cursor 11 is an agent step (implement), 3 is a gate.
 const insertItem = db.prepare(
@@ -510,7 +510,7 @@ test('stepOutputs carry the step label for non-UI clients', () => {
 
 // ---- abandon (HZ-59): soft delete with a reason and an audit trail ----
 
-const { isAbandoned, isClosed } = await import('../src/lifecycle.js')
+const { isAbandoned, isClosed } = await import('../../domain/js/lifecycle.js')
 
 test('abandonItem on an unknown item is not_found', () => {
   assert.deepEqual(store.abandonItem('NOPE-1', 'no longer needed'), { error: 'not_found' })

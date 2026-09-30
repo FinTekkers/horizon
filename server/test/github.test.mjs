@@ -13,7 +13,7 @@ process.env.HORIZON_DB = join(mkdtempSync(join(tmpdir(), 'horizon-github-')), 't
 const { db } = await import('../src/db.js')
 const github = await import('../src/github.js')
 const { setSetting } = await import('../src/settings.js')
-const { ACCEPT_GATE_INDEX, IMPLEMENT_STEP_INDEX } = await import('../src/lifecycle.js')
+const { ACCEPT_GATE_INDEX, IMPLEMENT_STEP_INDEX } = await import('../../domain/js/lifecycle.js')
 
 const REPO = 'FinTekkers/horizon'
 db.prepare(

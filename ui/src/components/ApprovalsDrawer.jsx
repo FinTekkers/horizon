@@ -1,4 +1,4 @@
-import { PHASES, curStep, phaseIdx, awaitingGate } from '../domain/lifecycle'
+import { PHASES, curStep, phaseIdx, awaitingGate } from '../../../domain/js/lifecycle.js'
 import { LockIcon } from './icons'
 
 export default function ApprovalsDrawer({ items, onClose, onOpenItem, onApprove, onReject }) {

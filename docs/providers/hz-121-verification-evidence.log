@@ -414,3 +414,164 @@ why this file exists.
 Adding a test-running CI workflow is deliberately NOT done here: it is
 unrelated to removing a fake persona, and this item's guardrails scope it to
 the persona removal. It belongs in its own item.
+
+
+================================================================================
+6. POST-MERGE RE-VERIFICATION -- after merging main (HZ-128's domain move)
+================================================================================
+
+Cycle-2 send-back was not a code finding: "PR #131: both branches changed the
+same lines". Main had advanced by two commits -- b3e7e99 (artifact scoping)
+and 4dc6aa0 (HZ-128, which relocated the step table out of farm/steps.py and
+server/src/lifecycle.js into the generated domain/ folder). Everything in
+sections 1-5 above was measured BEFORE that merge, so all of it was re-run
+after resolving the conflicts. The two conflicts were both additive overlaps
+in files each branch appended to:
+
+  CONFLICT (content): farm/tests/test_step_agent.py
+      -- HZ-128 added two drift-wiring tests immediately above the block
+         where HZ-121 reworded the persona-override section header comment.
+         Resolved by keeping both: HZ-128's tests, then HZ-121's comment.
+  CONFLICT (content): ui/src/components/Tracker.test.jsx
+      -- HZ-128 repointed the lifecycle import at domain/js/lifecycle.js on
+         the line above HZ-121's new PERSONAS import. Resolved by keeping
+         HZ-128's new path and HZ-121's added import.
+
+Nothing about the persona removal itself conflicted: all three registries
+stayed at their original paths through HZ-128.
+
+--------------------------------------------------------------------------------
+6a. All four suites, re-run post-merge (each exit 0)
+--------------------------------------------------------------------------------
+
+    $ python3 -m pytest -q
+    424 passed, 4 skipped in 54.54s
+
+    $ npm --prefix server test
+    # tests 551
+    # pass 551
+    # fail 0
+
+    $ npm --prefix ui run test
+     Test Files  20 passed (20)
+          Tests  268 passed (268)
+
+    $ bash infra/host/test/deploy.test.sh
+    1..50
+    # pass 50
+    # fail 0
+
+    $ node ui/scripts/verify-base-build.mjs
+    verify-base-build: ui/dist/index.html references /horizon/assets/ (2.2s)
+
+Counts moved up from section 1 (411 -> 424 Python, 508 -> 551 server) because
+the merge brought in HZ-128's own tests, not because anything here changed.
+
+--------------------------------------------------------------------------------
+6b. Live FARM_MUSE_E2E, re-run post-merge against the real Muse CLI
+--------------------------------------------------------------------------------
+
+    $ FARM_MUSE_E2E=1 python3 -m pytest farm/tests/test_e2e_muse.py -q
+    ...                                                                      [100%]
+    3 passed in 99.12s (0:01:39)
+
+Still a real dispatch: `muse` is on PATH at /usr/local/bin/muse and
+authenticated, the test's setup_module() skip did not fire (3 passed, not 3
+skipped), and the persona it routes on is the test-registered fixture from
+farm/tests/conftest.py, not a shipped one.
+
+--------------------------------------------------------------------------------
+6c. Guardrail mutation testing, re-run post-merge
+--------------------------------------------------------------------------------
+
+Re-run because the merge rewrote the very lines section 3 mutated:
+step_agent.py's override now reads steps.provider_override_eligible() out of
+domain/py/steps.py. Each of the four behaviours was broken again and the
+matching test observed to fail. Raw failure output:
+
+  MUTATION A -- provider_override hardcoded to None
+                (breaks: a forced provider IS honoured on eligible steps)
+
+    E           AssertionError: step 4 did not dispatch with provider=muse
+    E           assert None == 'muse'
+    farm/tests/test_step_agent.py:470: AssertionError
+    FAILED ...::test_muse_smoke_test_persona_dispatches_with_provider_muse_on_eligible_steps
+    1 failed, 71 deselected in 0.19s
+
+  MUTATION B -- eligibility guard removed, i.e.
+                provider_override = provider_for(item.get("persona"))
+                (breaks: never honoured on QA)
+
+    E       AssertionError: assert 'muse' is None
+    farm/tests/test_step_agent.py:492: AssertionError
+    FAILED ...::test_muse_smoke_test_persona_never_forces_a_provider_on_qa
+    1 failed, 2 passed, 69 deselected in 0.40s
+
+  MUTATION C -- provider=provider_for(...) threaded into the implement
+                run_agent() call
+                (breaks: never honoured on implement)
+
+    E       AssertionError: assert 'muse' is None
+    farm/tests/test_step_agent.py:528: AssertionError
+    FAILED ...::test_muse_smoke_test_persona_never_forces_a_provider_on_implement
+    1 failed, 71 deselected in 0.50s
+
+  MUTATION D -- provider=provider_for(...) threaded into the deploy
+                _run_and_parse() call
+                (breaks: never honoured on deploy)
+
+    E       AssertionError: assert 'muse' is None
+    farm/tests/test_step_agent.py:516: AssertionError
+    FAILED ...::test_muse_smoke_test_persona_never_forces_a_provider_on_deploy
+    1 failed, 71 deselected in 0.15s
+
+Note on why B alone was not enough, which is worth recording rather than
+hiding: mutation B (removing the eligibility guard) failed ONLY the QA test
+-- deploy and implement still passed. That is not weak coverage, it is the
+three independent layers named in section 3c/3d: implement and deploy never
+thread a `provider=` argument into their dispatch calls at all, so removing
+the eligibility check cannot reach them. Proving their tests bite therefore
+required mutations C and D, which wire `provider=` in -- the actual shape a
+regression there would take. A single mutation reported as covering all four
+behaviours would have been the dishonest answer.
+
+step_agent.py was restored from a pristine copy after each mutation and
+`git diff farm/step_agent.py` confirmed empty before moving on.
+
+--------------------------------------------------------------------------------
+6d. Shipped surface, re-checked post-merge
+--------------------------------------------------------------------------------
+
+    $ grep -rn muse_smoke_test server/ ui/ domain/ --include=*.js --include=*.jsx \
+        --include=*.mjs --include=*.json | grep -v node_modules
+    (no output)
+
+    farm/personas.py:43:  PERSONA_PROVIDERS = {}
+    farm/roles/personas/:  frontend_ui.md  fullstack.md  python_backend.md
+    server/src/personas.js:  fullstack, python_backend, frontend_ui
+    ui/src/domain/personas.js:  fullstack, python_backend, frontend_ui
+
+HZ-128 did not move any persona file, so the removal landed exactly as
+committed pre-merge.
+
+--------------------------------------------------------------------------------
+6e. Two doc references that HZ-128 turned stale, fixed here
+--------------------------------------------------------------------------------
+
+The merge broke two file references inside paragraphs HZ-121 itself wrote --
+exactly the "left dangling" failure this item's own success metric forbids,
+so they are fixed rather than carried:
+
+  docs/providers/muse-code.md  -- named `farm/steps.py`'s
+      provider_override_eligible(); HZ-128 deleted that file (it became
+      domain/templates/steps.py.tmpl, generated into domain/py/steps.py).
+      Now names domain/py/steps.py and the providerOverrideEligible flag in
+      domain/steps.json.
+
+  docs/agent-architecture.md   -- named `PROVIDER_OVERRIDE_ELIGIBLE_STEPS =
+      {4, 6, 7}` at step_agent.py:78 and its application at
+      step_agent.py:446. The allowlist was replaced by HZ-117 and the table
+      relocated by HZ-128; the line numbers were stale too. Now describes
+      the domain/steps.json flag and points at step_agent.py:481-483. Also
+      corrected personas.py:45 -> :43 and 61-68 -> 59-66, which HZ-121's own
+      edit to PERSONA_PROVIDERS shifted.

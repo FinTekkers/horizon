@@ -79,7 +79,7 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_step_run_item ON step_run(item_id, id DESC);
 
   -- Work-item dependencies (HZ-78): item_id is blocked until depends_on_id
-  -- closes (see lifecycle.js isBlocked). Many-to-many so an item can have
+  -- closes (see domain/js/lifecycle.js isBlocked). Many-to-many so an item can have
   -- more than one blocker. A brand-new table, not a column on work_item, so
   -- this is purely additive — no CHECK constraint on work_item/step_run is
   -- touched and older databases keep opening unchanged.

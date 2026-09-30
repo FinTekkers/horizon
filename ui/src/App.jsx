@@ -1,6 +1,6 @@
 import { useEffect, useState, useSyncExternalStore } from 'react'
 import * as api from './api'
-import { STEPS, awaitingGate, reworkTargets, defaultReworkTarget } from './domain/lifecycle'
+import { STEPS, awaitingGate, reworkTargets, defaultReworkTarget } from '../../domain/js/lifecycle.js'
 import TopBar from './components/TopBar'
 import Board from './components/Board'
 import Tracker from './components/Tracker'

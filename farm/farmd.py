@@ -15,7 +15,10 @@ import httpx
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
-from . import conflict_resolver, rules, steps, tmux_mgr, workspaces
+# HZ-128: the step model lives in domain/, not in farm/ — an absolute import
+# off the repo root, which farmd already runs from (`python -m farm.farmd`).
+from domain.py import steps
+from . import conflict_resolver, rules, tmux_mgr, workspaces
 from . import config as farm_config
 from .agent_runner import AgentError, assert_provider_auth
 from .config import (

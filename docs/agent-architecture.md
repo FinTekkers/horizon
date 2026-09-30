@@ -19,7 +19,7 @@ queue = "pm" if body["step"].get("index", 99) in (0, 1, 2, 9) else "runs"
 
 (comment at `farmd.py:544-546`). That single line is the whole routing rule.
 
-| Step index | Label (`server/src/lifecycle.js:17-34`) | `agent` field | Executes as |
+| Step index | Label (`domain/steps.json`) | `agent` field | Executes as |
 | --- | --- | --- | --- |
 | 0 | Define the outcome | PM | PM session |
 | 1 | Define how we measure success | PM | PM session |
@@ -48,7 +48,7 @@ step, for every item, for as long as the farm has been up — see
 below. Gates (3, 5, 10, 13, 15) get no agent dispatch at all; a human must
 act in the UI.
 
-**Gotcha: step 2 is not what its label implies.** `server/src/lifecycle.js:20`
+**Gotcha: step 2 is not what its label implies.** `domain/steps.json`
 labels step 2 `Architect`, and the table above (and `docs/workflow.md`'s
 table) show that label. But step 2 does **not** run a separate Architect
 process. `farmd.py:552` routes it into the PM queue along with 0, 1 and 9,
@@ -138,19 +138,21 @@ provider module it dispatches to is resolved in this order:
    running for a while still picks up an env change on its *next* call.
 3. **The `config.py:37` default, `"claude"`.**
 
-**Persona override.** `farm/personas.py:45`'s `PERSONA_PROVIDERS` ships
+**Persona override.** `farm/personas.py:43`'s `PERSONA_PROVIDERS` ships
 **empty** (HZ-121) — no shipped persona forces a non-default provider yet.
 The mechanism is proven by a test-registered fixture persona
 (`farm/tests/conftest.py`'s `muse_smoke_test_persona`), not a shipped one.
 Every real persona — `fullstack`, `python_backend`, `frontend_ui` — is
 absent from that map, so
-`provider_for()` (`personas.py:61-68`) returns `None` for them, and their
+`provider_for()` (`personas.py:59-66`) returns `None` for them, and their
 steps fall through to (2)/(3) above unchanged. The override is only ever
-*honored*, even when a persona does map to one, on steps 4, 6 and 7:
-`PROVIDER_OVERRIDE_ELIGIBLE_STEPS = {4, 6, 7}` (`step_agent.py:78`), applied
-at `step_agent.py:446`. Implement (11) and deploy (14) can never receive a
-provider override, enforced in code — not just by naming convention on the
-persona. PM-queued steps (0, 1, 2, 9) never pass a `provider=` argument at
+*honored*, even when a persona does map to one, on steps 4, 6 and 7 — the
+steps whose `domain/steps.json` entry carries `providerOverrideEligible:
+true`, read via `domain/py/steps.py`'s `provider_override_eligible()`
+(HZ-117 replaced the old `PROVIDER_OVERRIDE_ELIGIBLE_STEPS` allowlist;
+HZ-128 relocated the table) and applied at `step_agent.py:481-483`.
+Implement (11) and deploy (14) can never receive a provider override,
+enforced in code — not just by naming convention on the persona. PM-queued steps (0, 1, 2, 9) never pass a `provider=` argument at
 all (`pm_agent.py:119` has no such parameter), so they are always
 `FARM_PROVIDER`/default-routed, never persona-routed.
 

@@ -15,7 +15,7 @@
 import { expect, test, vi, afterEach } from 'vitest'
 import * as mockApi from './mockApi'
 import { requestChanges, getItems } from './mockApi'
-import { STEPS, ACCEPT_GATE_INDEX, IMPLEMENT_STEP_INDEX } from '../domain/lifecycle'
+import { STEPS, ACCEPT_GATE_INDEX, IMPLEMENT_STEP_INDEX } from '../../../domain/js/lifecycle.js'
 
 const findItem = (id) => getItems().find((it) => it.id === id)
 

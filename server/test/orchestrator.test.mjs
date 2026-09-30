@@ -19,7 +19,7 @@ process.env.FARM_RUN_STATE_POLL_MS = String(60 * 60 * 1000)
 
 const { db } = await import('../src/db.js')
 const store = await import('../src/store.js')
-const { STEPS } = await import('../src/lifecycle.js')
+const { STEPS } = await import('../../domain/js/lifecycle.js')
 const orchestrator = await import('../src/orchestrator.js')
 
 store.purgeDemoItems()
@@ -294,6 +294,45 @@ test('dispatchToFarm keeps only the latest attempt per step_index (dedupe)', asy
   orchestrator.cancel('D-7')
 })
 
+test('dispatchToFarm sends only artifacts from steps BEFORE the dispatched step (no stale later-step artifacts after a send-back)', async () => {
+  // Shape after a send-back to step 6: the prior cycle left done artifacts at
+  // step 8 (QA's own old verdict) and step 9 (the PM summary of it). A
+  // re-dispatch of step 8 must see only 4, 6 and 7.
+  insertItem.run('D-7b', 'Re-review after send-back', 'Medium', 8, null)
+  doneStepRun('D-7b', 4, 1, 'options')
+  doneStepRun('D-7b', 8, 1, 'STALE old QA verdict')
+  doneStepRun('D-7b', 9, 1, 'STALE old PM summary')
+  doneStepRun('D-7b', 6, 2, 'reworked plan')
+  doneStepRun('D-7b', 7, 2, 'fresh architecture review')
+  orchestrator.kick('D-7b')
+  await new Promise((r) => setTimeout(r, 20))
+  const dispatch = dispatches.find((d) => d.url.includes('/steps/run') && d.body?.item?.id === 'D-7b')
+  assert.ok(dispatch, 'no /steps/run dispatch captured')
+  const labels = dispatch.body.artifacts.map((a) => a.label)
+  assert.deepEqual(labels.sort(), [STEPS[4].label, STEPS[6].label, STEPS[7].label].sort())
+  assert.ok(!dispatch.body.artifacts.some((a) => a.content.includes('STALE')), 'a stale later-step artifact rode along')
+  orchestrator.cancel('D-7b')
+})
+
+test('HZ-128 regression: stale later-step artifacts no longer push a required plan over budget', async () => {
+  // Exact HZ-128 sizes: 4600 + 32596 + 5969 = 43165 real inputs, plus a stale
+  // 12771 step-8 verdict and 4067 step-9 summary = 60003, 3 over budget, which
+  // truncated the required plan by 109 chars and made HZ-105 refuse forever.
+  insertItem.run('D-7c', 'HZ-128 shape', 'Medium', 8, null)
+  doneStepRun('D-7c', 4, 1, 'o'.repeat(4600))
+  doneStepRun('D-7c', 8, 1, 'q'.repeat(12771))
+  doneStepRun('D-7c', 9, 1, 's'.repeat(4067))
+  doneStepRun('D-7c', 6, 2, 'p'.repeat(32596))
+  doneStepRun('D-7c', 7, 2, 'r'.repeat(5969))
+  orchestrator.kick('D-7c')
+  await new Promise((r) => setTimeout(r, 20))
+  const dispatch = dispatches.find((d) => d.url.includes('/steps/run') && d.body?.item?.id === 'D-7c')
+  assert.ok(dispatch, 'step 8 was refused instead of dispatched — required input still truncated')
+  const plan = dispatch.body.artifacts.find((a) => a.label === STEPS[6].label)
+  assert.equal(plan.content.length, 32596, 'required plan was not supplied whole')
+  orchestrator.cancel('D-7c')
+})
+
 test('dispatchToFarm budgets a large plan complete and marks truncated older artifacts, with an item event', async () => {
   insertItem.run('D-8', 'Large plan with old context', 'Medium', 11, null)
   doneStepRun('D-8', 4, 1, 'a'.repeat(50000))
@@ -317,7 +356,7 @@ test('dispatchToFarm budgets a large plan complete and marks truncated older art
 
 // ---- required-input gate (HZ-105) ----
 // STEPS[8] ('QA reviews the test plan') requires STEPS[6] ('Draft
-// implementation plan') in full (server/src/lifecycle.js). This is the real
+// implementation plan') in full (domain/steps.json). This is the real
 // HZ-102 exposure: dispatching into step 8, step 6's artifact is no longer
 // the latest row (step 7's is) and can lose the recency-weighting fight in
 // budgetArtifacts. A required artifact that comes out of that fight

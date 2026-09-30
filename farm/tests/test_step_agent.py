@@ -421,6 +421,30 @@ def test_assert_step_config_matches_table_raises_for_a_renamed_label():
         _assert_step_config_matches_table({"Old Name"}, {"New Name"})
 
 
+def test_the_drift_check_is_actually_wired_to_the_real_relocated_table():
+    """HZ-128: the three tests above are pure-set, so they would keep passing if
+    the import-time call were pointed at the wrong table — or at nothing. This
+    asserts the WIRING: STEP_CONFIG's labels equal the farm-lane labels of the
+    real table in its new home, which is exactly what step_agent asserts at
+    import."""
+    from domain.py import steps as domain_steps
+
+    farm_lane = {entry["label"] for entry in domain_steps.STEPS if entry["runsIn"] == "farm"}
+    assert farm_lane, "the relocated table declares no farm-lane steps"
+    assert set(STEP_CONFIG) == farm_lane
+
+
+def test_the_drift_message_names_the_models_new_home():
+    """Criterion 12: the guarantee holds "from its new home". The old message
+    named farm/steps_generated.json, a file this item deletes — a drift error
+    pointing at a file that does not exist is not actionable."""
+    with pytest.raises(RuntimeError) as exc_info:
+        _assert_step_config_matches_table({"Only In STEP_CONFIG"}, set())
+    message = str(exc_info.value)
+    assert "domain/steps.json" in message
+    assert "steps_generated" not in message
+
+
 # ---- persona -> provider override (HZ-102 / HZ-121) ----
 # PERSONA_PROVIDERS ships empty; these tests register a test-only fixture
 # persona (conftest.py's muse_smoke_test_persona) mapped to a non-default

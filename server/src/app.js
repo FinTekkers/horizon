@@ -23,7 +23,7 @@ import { getActiveProjectId, getRepoUrl, setSetting, getToken } from './settings
 import * as auth from './auth.js'
 import { googleAuth } from './googleAuth.js'
 import { isAllowedEmail } from './loginAllowlist.js'
-import { STEPS } from './lifecycle.js'
+import { STEPS } from '../../domain/js/lifecycle.js'
 import { PERSONAS } from './personas.js'
 import * as definitions from './definitions.js'
 import * as runLogView from './runLogView.js'
