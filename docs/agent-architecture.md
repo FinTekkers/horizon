@@ -19,7 +19,7 @@ queue = "pm" if body["step"].get("index", 99) in (0, 1, 2, 9) else "runs"
 
 (comment at `farmd.py:544-546`). That single line is the whole routing rule.
 
-| Step index | Label (`server/src/lifecycle.js:17-34`) | `agent` field | Executes as |
+| Step index | Label (`domain/steps.json`) | `agent` field | Executes as |
 | --- | --- | --- | --- |
 | 0 | Define the outcome | PM | PM session |
 | 1 | Define how we measure success | PM | PM session |
@@ -48,7 +48,7 @@ step, for every item, for as long as the farm has been up — see
 below. Gates (3, 5, 10, 13, 15) get no agent dispatch at all; a human must
 act in the UI.
 
-**Gotcha: step 2 is not what its label implies.** `server/src/lifecycle.js:20`
+**Gotcha: step 2 is not what its label implies.** `domain/steps.json`
 labels step 2 `Architect`, and the table above (and `docs/workflow.md`'s
 table) show that label. But step 2 does **not** run a separate Architect
 process. `farmd.py:552` routes it into the PM queue along with 0, 1 and 9,

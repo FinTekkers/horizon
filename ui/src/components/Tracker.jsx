@@ -1,16 +1,14 @@
 import {
-  AGENTS,
   PHASES,
-  PHASE_ACCENT,
-  PHASE_ACCENT_BG,
   STEPS,
   isClosed,
   isAbandoned,
   phaseIdx,
   stepStatus,
   phaseStepIndexes,
-  priorityColor,
-} from '../domain/lifecycle'
+} from '../../../domain/js/lifecycle.js'
+import { AGENTS } from '../domain/agentTokens'
+import { PHASE_ACCENT, PHASE_ACCENT_BG, priorityColor } from '../domain/lifecycle'
 import { PERSONAS, personaFor, personaId } from '../domain/personas'
 import { itemStatus } from '../domain/status'
 import { pauseReason } from '../domain/pauseReason'

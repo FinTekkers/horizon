@@ -10,9 +10,9 @@
 // step_run/event bookkeeping and gate semantics stay exactly as they are.
 
 import { db } from './db.js'
+import { AGENTS } from './agentTokens.js'
 import {
   STEPS,
-  AGENTS,
   isClosed,
   isAbandoned,
   isBlocked,
@@ -21,7 +21,7 @@ import {
   ACCEPT_GATE_INDEX,
   DEPLOY_STEP_INDEX,
   requiredStepIndex,
-} from './lifecycle.js'
+} from '../../domain/js/lifecycle.js'
 import {
   getItem,
   addEvent,
@@ -33,7 +33,7 @@ import {
   requestChanges,
 } from './store.js'
 import { createMockPr, createDeployRelease, postIssueComment, createPrFromBranch } from './github.js'
-import { PHASES } from './lifecycle.js'
+import { PHASES } from '../../domain/js/lifecycle.js'
 import { getActiveProjectId, getSetting, setSetting, getToken } from './settings.js'
 import {
   FARM_URL,
@@ -275,7 +275,7 @@ export function budgetArtifacts(rows) {
   })
 }
 
-// Exported for tests. `step.requires` (server/src/lifecycle.js) names prior
+// Exported for tests. `step.requires` (domain/steps.json) names prior
 // steps this step cannot review without in full. Returns one entry per
 // required label whose budgeted artifact was truncated — empty when every
 // required input is suppliable whole (including when the step has no
@@ -565,7 +565,7 @@ const MOCK_REVIEW_FAIL_COUNT = Number(process.env.MOCK_REVIEW_FAIL_COUNT) || 0
 const MOCK_QA_PASS = { verdict: 'pass', regression_tests_run: true, new_code_unit_coverage: true, e2e_test_present: true, findings: [] }
 
 // Mock behavior per step label (HZ-117: keyed by label, not index — the
-// pipeline's step identities are fixed, see lifecycle.js; an insertion
+// pipeline's step identities are fixed, see domain/steps.json; an insertion
 // elsewhere in STEPS must never repoint one of these at the wrong step).
 // Returns { summary, patch? } where patch updates work_item fields, mimicking
 // the artifacts each agent is supposed to produce.

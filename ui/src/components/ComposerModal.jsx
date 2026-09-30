@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { PHASES } from '../domain/lifecycle'
+import { PHASES } from '../../../domain/js/lifecycle.js'
 
 const COPY = {
   approve: {

@@ -8,7 +8,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 
-import { STEPS, requiredStepIndex } from '../src/lifecycle.js'
+import { STEPS, requiredStepIndex } from '../../domain/js/lifecycle.js'
 
 const stepsWithRequires = STEPS.map((s, index) => ({ ...s, index })).filter((s) => s.requires?.length)
 
@@ -32,10 +32,10 @@ test('every requires label resolves to a real STEPS entry', () => {
 test('every required artifact necessarily exists before the requiring step runs', () => {
   for (const step of stepsWithRequires) {
     for (const label of step.requires) {
-      const requiredIndex = requiredStepIndex(label)
+      const dependencyIndex = requiredStepIndex(label)
       assert.ok(
-        requiredIndex < step.index,
-        `"${step.label}" (index ${step.index}) requires "${label}" (index ${requiredIndex}), which has not necessarily run yet`,
+        dependencyIndex < step.index,
+        `"${step.label}" (index ${step.index}) requires "${label}" (index ${dependencyIndex}), which has not necessarily run yet`,
       )
     }
   }
@@ -44,8 +44,8 @@ test('every required artifact necessarily exists before the requiring step runs'
 test('a required step is an agent step that actually produces an artifact, not a gate', () => {
   for (const step of stepsWithRequires) {
     for (const label of step.requires) {
-      const requiredIndex = requiredStepIndex(label)
-      assert.equal(STEPS[requiredIndex].kind, 'agent', `"${label}" is a gate — gates never produce an artifact`)
+      const dependencyIndex = requiredStepIndex(label)
+      assert.equal(STEPS[dependencyIndex].kind, 'agent', `"${label}" is a gate — gates never produce an artifact`)
     }
   }
 })

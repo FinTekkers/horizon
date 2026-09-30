@@ -19,7 +19,7 @@ process.env.FARM_CONFLICT_RESOLVE_TIMEOUT_MS = '200'
 
 const { db } = await import('../src/db.js')
 const store = await import('../src/store.js')
-const { IMPLEMENT_STEP_INDEX, ACCEPT_GATE_INDEX } = await import('../src/lifecycle.js')
+const { IMPLEMENT_STEP_INDEX, ACCEPT_GATE_INDEX } = await import('../../domain/js/lifecycle.js')
 const orchestrator = await import('../src/orchestrator.js')
 
 store.purgeDemoItems()

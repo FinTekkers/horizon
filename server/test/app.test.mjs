@@ -14,7 +14,7 @@ delete process.env.FARM_URL
 
 const { db } = await import('../src/db.js')
 const { buildApp } = await import('../src/app.js')
-const { STEPS, ACCEPT_GATE_INDEX } = await import('../src/lifecycle.js')
+const { STEPS, ACCEPT_GATE_INDEX } = await import('../../domain/js/lifecycle.js')
 const config = await import('../src/config.js')
 const { FARM_SHARED_SECRET } = config
 const store = await import('../src/store.js')

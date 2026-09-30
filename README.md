@@ -143,7 +143,7 @@ because HZ-77 has nothing to render until HZ-76's categories exist.
   honours a dependency only in one place.
 * **Blocked is not paused.** Paused is a human action with a Resume button.
   Blocked is a derived fact computed from the dependency graph (`isBlocked`
-  in `server/src/lifecycle.js`) — it is never written to a "paused" column,
+  in `domain/js/lifecycle.js`) — it is never written to a "paused" column,
   and clearing it is never "hit Resume." The two are fully independent: an
   item can be paused and unblocked, blocked and not paused, or any other
   combination, and the API reports both flags separately

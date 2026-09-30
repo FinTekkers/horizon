@@ -1,14 +1,18 @@
 // HZ-117: "renaming a step label no longer silently breaks index
 // resolution: the *_STEP_INDEX accessors fail loudly rather than yielding
-// -1." Covers both the server's requiredStepIndex (server/src/lifecycle.js)
-// and the UI's local requiredIndex helper (ui/src/domain/lifecycle.js) —
-// each hardens the same failure mode independently, on their own copy of the
-// lookup logic.
+// -1."
+//
+// HZ-128 collapsed the two lookup helpers into one. There used to be a second
+// test here pinning the UI copy's accessors against its own generated table;
+// with a single domain/js/lifecycle.js it became a byte-duplicate of the
+// real-accessors test below, so it is retired. The fabricated-table throw path
+// is still covered from the UI suite too (ui/src/domain/lifecycle.test.js),
+// against the same one helper.
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 
-import { requiredStepIndex } from '../src/lifecycle.js'
+import { requiredStepIndex } from '../../domain/js/lifecycle.js'
 
 const FABRICATED_STEPS = [
   { phase: 0, kind: 'agent', agent: 'PM', label: 'Define the outcome', runsIn: 'pm' },
@@ -30,23 +34,10 @@ test('requiredStepIndex names the missing label in its error, so the failure is 
   )
 })
 
-test('the real server module-level accessors were built with requiredStepIndex and stay resolvable today', async () => {
-  const lifecycle = await import('../src/lifecycle.js')
+test('the real module-level accessors were built with requiredStepIndex and stay resolvable today', async () => {
+  const lifecycle = await import('../../domain/js/lifecycle.js')
   assert.equal(lifecycle.STEPS[lifecycle.IMPLEMENT_STEP_INDEX].label, 'Specialist agent implements')
   assert.equal(lifecycle.STEPS[lifecycle.REVIEW_STEP_INDEX].label, 'Automated review (code + QA)')
   assert.equal(lifecycle.STEPS[lifecycle.ACCEPT_GATE_INDEX].label, 'Accept the code')
   assert.equal(lifecycle.STEPS[lifecycle.DEPLOY_STEP_INDEX].label, 'Deploy the changes')
-})
-
-test('the UI copy throws the same way on a renamed label — its local requiredIndex helper is not shared code, but the same contract', async () => {
-  const uiLifecycle = await import('../../ui/src/domain/lifecycle.js')
-  // The UI's own renamed-label throw path (fabricated-array assert.throws,
-  // mirroring requiredStepIndex's tests above) lives in
-  // ui/src/domain/lifecycle.test.js next to the module it tests — requiredIndex
-  // is exported from there for exactly that purpose. This test instead proves
-  // the CONTRACT survives on real data: every accessor built from it still
-  // resolves against the live, generated STEPS.
-  assert.equal(uiLifecycle.STEPS[uiLifecycle.IMPLEMENT_STEP_INDEX].label, 'Specialist agent implements')
-  assert.equal(uiLifecycle.STEPS[uiLifecycle.REVIEW_STEP_INDEX].label, 'Automated review (code + QA)')
-  assert.equal(uiLifecycle.STEPS[uiLifecycle.ACCEPT_GATE_INDEX].label, 'Accept the code')
 })

@@ -3,7 +3,7 @@ import { request } from '@playwright/test'
 import { openDb, insertItem, insertStepRun, insertFeedback, insertDependency } from './fixtures/seed.js'
 // Derived, not hardcoded: a future pipeline step insertion (like HZ-30's own
 // Review step) must not silently break these fixtures' intended positions.
-import { STEPS, ACCEPT_GATE_INDEX } from '../server/src/lifecycle.js'
+import { STEPS, ACCEPT_GATE_INDEX } from '../domain/js/lifecycle.js'
 
 const PORT = process.env.HORIZON_E2E_PORT
 const DB_PATH = process.env.HORIZON_E2E_DB
