@@ -22,6 +22,7 @@ import {
   DEPLOY_STEP_INDEX,
   requiredStepIndex,
 } from '../../domain/js/lifecycle.js'
+import { AUTO_RETRY_REASONS, REASON } from '../../domain/js/reasons.js'
 import {
   getItem,
   addEvent,
@@ -82,12 +83,16 @@ const REVIEW_CYCLE_CAP = 3
 
 // Hard cap on consecutive AUTOMATIC retries of a step failure (HZ-76),
 // enforced HERE and persisted on step_run.auto_retry_count — never decided
-// by an agent or a prompt. Only the reasons below are ever retried; anything
+// by an agent or a prompt. Only retryable reasons are ever retried; anything
 // else (malformed verdict, PR/release failure, checks-failed, an unrecognized
 // or missing reason) pauses for a human exactly as before this existed —
 // that default-safe behavior is what keeps a real defect from being masked.
+//
+// HZ-132: which reasons those are is no longer typed here. The vocabulary and
+// its retryable flag are declared once, in domain/reasons.json, and
+// AUTO_RETRY_REASONS is derived from it by domain/js/reasons.js — the farm
+// emits the same constants and the UI's pause banner reads the same document.
 export const AUTO_RETRY_CAP = 3
-const AUTO_RETRY_REASONS = new Set(['never_picked_up', 'timeout', 'unreachable', 'turn_cap'])
 
 // MOCK_STEP_LATENCY_MS lets tests drive the mock pipeline without waiting.
 const latency = () => Number(process.env.MOCK_STEP_LATENCY_MS) || 2000 + Math.floor(Math.random() * 3000)
@@ -721,7 +726,7 @@ async function dispatchToFarm(id, stepIndex, runId, attempt) {
   // this is what catches a step that's stuck in the queue (or a farm that's
   // down, or a lost task file) within a bounded window (HZ-57).
   timers[runId] = setTimeout(
-    () => failFarmRun(runId, 'step was never picked up by the farm', 'never_picked_up'),
+    () => failFarmRun(runId, 'step was never picked up by the farm', REASON.NEVER_PICKED_UP),
     FARM_QUEUE_TIMEOUT_MS,
   )
 
@@ -799,7 +804,7 @@ async function dispatchToFarm(id, stepIndex, runId, attempt) {
     const detail = missingRequired
       .map((m) => `"${m.label}" needs ${m.fullLen} chars, only ${m.gotLen} could be supplied (${m.fullLen - m.gotLen} short)`)
       .join('; ')
-    return failFarmRun(runId, `required input incomplete: ${detail}`, 'required_input_incomplete')
+    return failFarmRun(runId, `required input incomplete: ${detail}`, REASON.REQUIRED_INPUT_INCOMPLETE)
   }
 
   const artifacts = budgeted.map(({ label, content }) => ({ label, content }))
@@ -832,7 +837,7 @@ async function dispatchToFarm(id, stepIndex, runId, attempt) {
     step: { index: stepIndex, label: step.label, agent: step.agent },
     feedback,
   }).catch((err) => {
-    failFarmRun(runId, `could not hand the step to the farm: ${err.message}`, 'unreachable')
+    failFarmRun(runId, `could not hand the step to the farm: ${err.message}`, REASON.UNREACHABLE)
   })
 }
 
@@ -854,7 +859,7 @@ export function markFarmRunStarted(runId) {
   clearTimeout(timers[runId])
   db.prepare("UPDATE step_run SET agent_started_at = datetime('now') WHERE id = ?").run(runId)
   const executionMs = executionBudgetFor(run.step_index)
-  timers[runId] = setTimeout(() => failFarmRun(runId, 'step timed out', 'timeout'), executionMs)
+  timers[runId] = setTimeout(() => failFarmRun(runId, 'step timed out', REASON.TIMEOUT), executionMs)
   return { ok: true, active: true }
 }
 
@@ -1357,7 +1362,7 @@ export async function reconcileActiveRuns() {
       failFarmRun(
         runId,
         'step_run left active with no local timer, no farm claim, and no live agent session',
-        'never_picked_up',
+        REASON.NEVER_PICKED_UP,
       )
       failed++
     }
@@ -1460,7 +1465,7 @@ export function rearmFarmRuns() {
     const anchor = run.agent_started_at || run.started_at
     const elapsedMs = Date.now() - new Date(anchor).getTime()
     const remainingMs = Math.max(0, executionBudgetFor(run.step_index) - elapsedMs)
-    timers[run.id] = setTimeout(() => failFarmRun(run.id, 'step timed out', 'timeout'), remainingMs)
+    timers[run.id] = setTimeout(() => failFarmRun(run.id, 'step timed out', REASON.TIMEOUT), remainingMs)
     // Re-key removed the free busy-mutex side effect timers[item_id] used to
     // give kick() — without this, a restart would leave every one of these
     // items looking idle and resumeActiveItems()/a human resume could

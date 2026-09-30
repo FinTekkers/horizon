@@ -1,9 +1,10 @@
-# `domain/` — the lifecycle model
+# `domain/` — the lifecycle model and the failure-reason vocabulary
 
 **One JSON is the source of truth. Bindings read it. Consumers import from
 here.**
 
-Ask "what is a lifecycle step?" and the answer is this directory, by
+Ask "what is a lifecycle step?" — or, since HZ-132, "what can make a step
+fail, and will Horizon retry it?" — and the answer is this directory, by
 definition. Before HZ-128 the answer was spread across `server/src/lifecycle.js`,
 `ui/src/domain/lifecycle.js`, `farm/steps.py`, two committed
 `steps_generated.json` files and a build script living inside one consumer —
@@ -19,6 +20,13 @@ navigate them like any other file.
 - **Changing the model** — a step's budget, its lane, its required inputs, a new
   step — means editing **`domain/steps.json` only**. Both bindings pick it up at
   their next import. It stays the only place a step is declared.
+- **Changing the failure vocabulary** — a new reason, or flipping whether an
+  existing one is auto-retried — means editing **`domain/reasons.json` only**.
+  `AUTO_RETRY_REASONS` is derived from the `retryable` flag, in one line, so
+  there is no second list to keep in step. A new reason does need one more edit
+  outside `domain/`: its banner copy in `ui/src/domain/pauseReason.js`. That is
+  deliberate — copy is presentation — and
+  `ui/src/domain/pauseReason.test.js` fails if you forget it.
 - **Adding or changing a *helper*** means editing `js/lifecycle.js` or
   `py/steps.py` **directly**. Edit the binding you mean; there is no indirection
   between you and it.
@@ -33,12 +41,22 @@ fail if an export has no case, so this is enforced rather than remembered.
 | --- | --- |
 | `steps.json` | The only place a step is declared |
 | `steps.schema.json` | The contract `steps.json` must satisfy |
+| `reasons.json` | The only place a failure reason is declared |
+| `reasons.schema.json` | The contract `reasons.json` must satisfy |
 | `validate.mjs` | Dependency-free JSON Schema (Draft-07 subset) validator, used by the test suite |
 | `js/lifecycle.js` | The JS binding: imports `steps.json`, exposes the authored table + derived helpers |
 | `py/steps.py` | The Python binding: loads `steps.json`, exposes the farm-shaped table + accessors |
+| `js/reasons.js` | The JS binding: imports `reasons.json`, exposes the vocabulary + the derived `AUTO_RETRY_REASONS` |
+| `py/reasons.py` | The Python binding: loads `reasons.json`, exposes the same vocabulary to the farm |
 | `fixtures/lifecycle-cases.json` | Input/expected pairs asserted by **both** language suites |
 
 Every file here is authored. Nothing is output.
+
+The two sources are **siblings, not one document**. `steps.json` answers "what
+is a lifecycle step" and nothing else; a retry policy living inside a file
+titled *step table* is the kind of thing nobody finds by grepping. They share
+the validator, the load-time-validation pattern and every guard, and share no
+data.
 
 ### How each binding reads the source
 
@@ -58,6 +76,11 @@ carry a step label, which is the difference between "the build succeeded" and
 _SOURCE_PATH = Path(__file__).resolve().parent.parent / "steps.json"
 ```
 
+`js/reasons.js` and `py/reasons.py` read `reasons.json` exactly the same two
+ways. `ui/scripts/verify-base-build.mjs` probes the built bundle for **both** a
+step label and a reason id, because a tree-shake that drops one says nothing
+about the other.
+
 Derived from `__file__`, never from the process's working directory — farm
 agents run inside workspace clones, not from the repo root.
 `farm/tests/test_domain_import.py` asserts that with a `chdir`.
@@ -72,8 +95,16 @@ than reaching a caller. The two implementations
 `fixtures/lifecycle-cases.json`, which drives the same thirteen cases through
 both.
 
+`reasons.json` gets the same treatment, with four rules its schema subset
+cannot express: an id matching `^[a-z][a-z0-9_]*$`, unique ids, a strictly
+boolean `retryable`, and at least one retryable reason. The id-shape rule is
+**load-bearing, not cosmetic** — `REASON`'s keys are derived by upper-casing the
+id, so a hyphenated id would produce a key no caller can name and a mixed-case
+one would collide with its own lower-case form.
+
 Full schema validation stays in `validate.mjs`, exercised by
-`server/test/domain-schema.test.mjs` on the same CI run. It is deliberately
+`server/test/domain-schema.test.mjs` and
+`server/test/domain-reasons-schema.test.mjs` on the same CI run. It is deliberately
 **not** imported by either binding: doing so would ship the Draft-07 engine and
 the schema into the browser bundle for a check CI already performs. The honest
 limit of that trade is one line down in "What is deliberately NOT here."
@@ -99,6 +130,26 @@ The projection rule lives in Python and nowhere else in production code.
 is a genuine second opinion rather than an implementation checked against
 itself.
 
+### The reason bindings ship ONE shape, on purpose
+
+The failure vocabulary has **no** farm projection. The tag the farm emits, the
+tag the server classifies and the tag the UI renders are the same string — that
+is the entire point of the file — so both bindings expose `reasons.json`
+verbatim and `domain-binding-hygiene.test.mjs` pins that they do.
+
+They differ in exactly one way, and it is a language difference rather than a
+model one. `REASON` is a **dict** in Python, so `reasons.REASON["TYPO"]` raises
+`KeyError` at the call site. In JS it is a frozen object, so `REASON.TYPO` reads
+as `undefined` — silently unclassified, silently not retried. Nothing in JS can
+close that gap, so `server/test/domain-reason-member-access.test.mjs` scans
+every `REASON.<KEY>` access in `server/src` and `ui/src` instead.
+
+`AUTO_RETRY_REASONS` is **derived** from the `retryable` flag in both languages,
+never a second list — a `Set` in JS because `failFarmRun` calls `.has()` on it,
+a `frozenset` in Python so the farm cannot widen the server's retry policy.
+Both types are pinned: a derived Array would answer `undefined` to `.has()` and
+quietly pause every transient failure.
+
 ## Consumers
 
 Imported by relative path. No npm workspace, no published package, no new
@@ -111,7 +162,12 @@ asserts that, including that `domain/package.json` does not exist).
 | `server/src`, `server/test` | `import … from '../../domain/js/lifecycle.js'` |
 | `ui/src` | `import … from '../../../domain/js/lifecycle.js'` |
 | `e2e/` | `import … from '../domain/js/lifecycle.js'` |
-| `farm/` | `from domain.py import steps` |
+| `farm/` | `from domain.py import reasons, steps` |
+
+The reason vocabulary has two consumers, by the same relative paths:
+`server/src/orchestrator.js` (which classifies a failure) and
+`ui/src/domain/pauseReason.js` (which renders the pause banner). The farm reaches
+it through `reasons.REASON[…]` in `farm/step_agent.py` and `farm/farmd.py`.
 
 The Python side is a PEP 420 namespace package: no `__init__.py` at either
 level, resolved off the repo root — which is on `sys.path` because `farmd` runs
@@ -132,6 +188,14 @@ would pass CI and fail at deploy time on an older runtime.
 `PRIORITY_COLORS` stay in the UI (`ui/src/domain/lifecycle.js`,
 `ui/src/domain/agentTokens.js`). `steps.json` contains no colour, accent or
 theme key at any depth, asserted.
+
+`reasons.json` is held to a **wider** bar than `steps.json` on this, because the
+temptation is different. Sitting a `label` and a `detail` next to the `retryable`
+flag would read as harmless data and would move the pause banner's wording out
+of the UI. So `reasons.json` forbids `label`/`detail`/`copy`/`title`/`message`
+keys as well as colours, and `domain-binding-hygiene.test.mjs` asserts it.
+`steps.json` cannot join that half: a step's `label` **is** its identity, the
+thing every lookup resolves by, not a string shown to a human.
 
 **The one surviving duplicate.** `server/src/agentTokens.js` and
 `ui/src/domain/agentTokens.js` both export `AGENTS`, and their `label` /
@@ -171,17 +235,51 @@ here as a known limit, not hidden.
 | Role-prompt labels | `server/test/role-prompt-labels.test.mjs` | `farm/roles/*.md` instructing an agent about a step that no longer exists |
 | One declaration | `domain-single-source.test.mjs`, `domain-one-declaration.test.mjs` | A new hand-rolled copy of the table anywhere in the tree — including either binding growing one back |
 | One lookup name | `domain-one-lookup-name.test.mjs` | The discarded `requiredIndex` name resolving again |
+| Reason schema + load-time rules | `domain-reasons-schema.test.mjs` | An invalid vocabulary: a bad id shape, a duplicate id, a truthy-but-not-boolean flag, nothing retryable — including a real subprocess `import` over a tampered `reasons.json` |
+| Hand-written reason pins | `domain-reason-pins.test.mjs` | Any change to the five declared ids or the four retryable ones, plus the `Set`/`frozenset` types `.has()` depends on. **Permanent — never delete this file** |
+| No reason literal anywhere | `domain-reason-literals.test.mjs` | A reason string typed by hand in `server/src`, `ui/src` or `farm/`, and a second *collection* of reason ids anywhere outside `domain/` |
+| No mistyped `REASON` key | `domain-reason-member-access.test.mjs` | `REASON.TYPO` in JS, which reads as `undefined` instead of throwing the way Python's dict does |
+| Cross-language reason parity | `domain-reasons-parity.test.mjs` + `farm/tests/test_reasons.py` | The two reason bindings drifting. Compares the **paired** `(id, retryable)` table, not two independent lists |
+| Every reason has banner copy | `ui/src/domain/pauseReason.test.js`, `ui/src/components/Tracker.test.jsx` | A reason declared in `reasons.json` that renders a blank pause banner — driven through the real `pauseReason()`, so it also proves the event-text regex extracts the id |
 
 One honest limit remains: `domain-no-drift-scaffolding.test.mjs`'s
 `server.fs.allow` assertion is a **config-shape proxy**, not a dev-server boot
 test; it is labelled as such in the test.
+
+### How the no-literal scan actually works
+
+`domain-reason-literals.test.mjs` is the mechanism that closes the typo class
+HZ-132 exists to kill, so its pattern is part of the contract rather than an
+implementation detail. It is **two-tier**, over comment-stripped text, scoped to
+the three roots the criterion names (`server/src`, `ui/src`, `farm/`):
+
+- `never_picked_up`, `turn_cap` and `required_input_incomplete` are matched as
+  **bare words**. They appear nowhere else in this repo, and a bare-word rule is
+  strictly stronger — it catches an unquoted object key, which was exactly the
+  old shape of `CATEGORY_COPY`.
+- `timeout` and `unreachable` are ordinary words (`timeout` is a Playwright
+  option, an `httpx` kwarg and a config key). Matching them bare hits 70+ files.
+  They are matched only in **reason-shaped positions**: inside quotes, or inside
+  the parentheses of a `(reason)` event tag.
+
+Comments are stripped on both sides, `#` included, so provenance prose is left
+alone rather than reworded to satisfy a scanner. Three `farm/tests/` files are
+allowlisted by name, each with its reason — two pin the exact value on the wire,
+one is a genuine false positive (`kwargs.get("timeout")`).
+
+`server/test` and `e2e/` are **out of scope on purpose**:
+`domain-reason-pins.test.mjs` has to type the ids by hand — that is what a pin
+is — and `e2e/tests/13-pause-reason.spec.js` runs byte-identical as the
+behaviour-unchanged proof. The wider "no second definition outside `domain/`"
+guardrail is covered separately, whole-tree, by looking for a *collection* of
+three or more ids rather than by counting mentions per file.
 
 ## Gate cost
 
 `npm test` runs `ui/scripts/verify-base-build.mjs`, which executes the literal
 `HORIZON_BASE=/horizon/ npm --prefix ui run build`, asserts the emitted
 `ui/dist/index.html` references `/horizon/assets/` **and that the emitted JS
-bundle contains a step label**, then deletes `ui/dist` so no `/horizon/`-based
+bundle contains a step label and a reason id**, then deletes `ui/dist` so no `/horizon/`-based
 bundle is left for a local `vite preview`. **Measured: ~2.7s** (2.1s of that is
 Vite). The bundle-contents assertion is the one that matters here: a build can
 succeed while emitting `steps.json` as a separate asset that then 404s under the

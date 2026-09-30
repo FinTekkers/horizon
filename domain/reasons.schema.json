@@ -1,0 +1,24 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$comment": "HZ-132: the contract for domain/reasons.json. Validated by domain/validate.mjs — the same dependency-free Draft-07 subset validator steps.schema.json uses, so only the keywords listed in its KEYWORDS set are honoured. Rules the subset cannot express (an id's shape, unique ids, at least one retryable reason) are asserted at LOAD time by the bindings themselves — see assertReasonsShape() in domain/js/reasons.js and _validate_source() in domain/py/reasons.py.",
+  "title": "Horizon failure reason vocabulary",
+  "type": "object",
+  "required": ["reasons"],
+  "additionalProperties": false,
+  "properties": {
+    "reasons": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {
+        "type": "object",
+        "required": ["id", "retryable"],
+        "additionalProperties": false,
+        "properties": {
+          "id": { "type": "string", "minLength": 1 },
+          "retryable": { "type": "boolean" }
+        }
+      }
+    }
+  }
+}

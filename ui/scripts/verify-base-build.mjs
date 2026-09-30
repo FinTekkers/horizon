@@ -29,6 +29,7 @@ import { readFileSync, existsSync, readdirSync, rmSync } from 'node:fs'
 import path from 'node:path'
 
 import { STEPS } from '../../domain/js/lifecycle.js'
+import { REASON_IDS } from '../../domain/js/reasons.js'
 
 const REPO_ROOT = path.resolve(import.meta.dirname, '../..')
 const DIST = path.join(REPO_ROOT, 'ui/dist')
@@ -69,24 +70,35 @@ if (!existsSync(assetsDir)) fail('the build produced no ui/dist/assets/')
 const jsBundles = readdirSync(assetsDir).filter((f) => f.endsWith('.js'))
 if (jsBundles.length === 0) fail('the build emitted no JS bundle')
 
+// HZ-132 added a SECOND JSON under domain/, reached from ui/src/domain/
+// pauseReason.js. It needs its own probe for the same reason the step label
+// does: the stray-asset check below is generic, but only a positive grep proves
+// the data arrived. Without it, a tree-shake that drops reasons.json leaves
+// every pause banner blank in production with npm test still green.
 const bundled = jsBundles.map((f) => readFileSync(path.join(assetsDir, f), 'utf8')).join('\n')
-const probeLabel = STEPS[0].label
-if (!bundled.includes(probeLabel)) {
-  fail(
-    `no emitted JS bundle contains the step label "${probeLabel}" — domain/steps.json was not inlined. ` +
-      'Rollup emitted it as a separate asset, which 404s under the production base: the board would render empty.',
-  )
+const PROBES = [
+  { value: STEPS[0].label, what: 'the step label', source: 'domain/steps.json', effect: 'the board would render empty' },
+  { value: REASON_IDS[0], what: 'the reason id', source: 'domain/reasons.json', effect: 'every pause banner would render blank' },
+]
+for (const probe of PROBES) {
+  if (!bundled.includes(probe.value)) {
+    fail(
+      `no emitted JS bundle contains ${probe.what} "${probe.value}" — ${probe.source} was not inlined. ` +
+        `Rollup emitted it as a separate asset, which 404s under the production base: ${probe.effect}.`,
+    )
+  }
 }
 
-// A stray steps.json beside the bundle means it was emitted as a fetchable
-// asset. Harmless only if it is ALSO inlined, which is not a state to ship.
+// A stray steps.json or reasons.json beside the bundle means it was emitted as
+// a fetchable asset. Harmless only if it is ALSO inlined, which is not a state
+// to ship.
 const strayJson = readdirSync(assetsDir).filter((f) => f.endsWith('.json'))
 if (strayJson.length > 0) {
-  fail(`the build emitted JSON asset(s) ${strayJson.join(', ')} — the step data must be inlined, not fetched`)
+  fail(`the build emitted JSON asset(s) ${strayJson.join(', ')} — the domain data must be inlined, not fetched`)
 }
 
 console.log(
-  `verify-base-build: ui/dist/index.html references ${EXPECTED}, and the bundle inlines the step table (${seconds.toFixed(1)}s)`,
+  `verify-base-build: ui/dist/index.html references ${EXPECTED}, and the bundle inlines the step table and the reason vocabulary (${seconds.toFixed(1)}s)`,
 )
 
 // A /horizon/-based bundle must not linger: `npm --prefix ui run preview`

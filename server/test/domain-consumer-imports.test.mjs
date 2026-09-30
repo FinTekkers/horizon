@@ -25,6 +25,11 @@ const CONSUMERS = [
   { root: 'server/test', specifier: '../../domain/js/lifecycle.js', witness: 'server/test/store.test.mjs' },
   { root: 'ui/src', specifier: 'domain/js/lifecycle.js', witness: 'ui/src/App.jsx' },
   { root: 'e2e', specifier: 'domain/js/lifecycle.js', witness: 'e2e/global-setup.js' },
+  // HZ-132 moved the failure-reason vocabulary into domain/ under the same
+  // rule, so it gets the same check: the server classifies and the UI renders
+  // from one document, by relative path, with no npm workspace in between.
+  { root: 'server/src', specifier: '../../domain/js/reasons.js', witness: 'server/src/orchestrator.js' },
+  { root: 'ui/src', specifier: 'domain/js/reasons.js', witness: 'ui/src/domain/pauseReason.js' },
 ]
 
 const files = repoFiles()
@@ -59,7 +64,7 @@ test('nothing loads the deleted steps_generated.json or the relocated farm.steps
 })
 
 for (const consumer of CONSUMERS) {
-  test(`${consumer.root} imports the model from domain/ by relative path`, () => {
+  test(`${consumer.root} imports ${path.basename(consumer.specifier)} from domain/ by relative path`, () => {
     const inRoot = codeFiles.filter((f) => relative(f).startsWith(`${consumer.root}/`))
     assert.ok(inRoot.length > 0, `no code files found under ${consumer.root}`)
 
@@ -73,9 +78,15 @@ for (const consumer of CONSUMERS) {
 }
 
 test('the farm imports the model as domain.py, from the repo root, in both production modules', () => {
+  // HZ-132 added `reasons` alongside `steps` on the same import line, so the
+  // match is on the imported NAMES rather than the whole line — both modules
+  // must still come from domain.py and from nowhere else.
   for (const file of ['farm/farmd.py', 'farm/step_agent.py']) {
     const text = readFileSync(path.join(REPO_ROOT, file), 'utf8')
-    assert.match(text, /^from domain\.py import steps$/m, `${file} does not import the relocated model`)
+    const line = text.match(/^from domain\.py import (.+)$/m)
+    assert.ok(line, `${file} does not import the relocated model`)
+    const imported = line[1].split(',').map((name) => name.trim()).sort()
+    assert.deepEqual(imported, ['reasons', 'steps'], `${file} imports ${line[1]} from domain.py`)
   }
 })
 
@@ -98,5 +109,18 @@ test('every import of the model resolves to a real file, from every consumer', a
     assert.ok(match, `${file} has no domain/ import to resolve`)
     const resolved = path.resolve(path.dirname(path.join(REPO_ROOT, file)), match[1])
     assert.equal(resolved, path.join(REPO_ROOT, 'domain/js/lifecycle.js'), `${file}'s relative path does not land on the model`)
+  }
+})
+
+test('every import of the reason vocabulary resolves to a real file, from every consumer (HZ-132)', async () => {
+  const fromHere = await import('../../domain/js/reasons.js')
+  assert.ok(Array.isArray(fromHere.REASON_IDS) && fromHere.REASON_IDS.length > 0)
+
+  for (const file of ['server/src/orchestrator.js', 'ui/src/domain/pauseReason.js']) {
+    const text = readFileSync(path.join(REPO_ROOT, file), 'utf8')
+    const match = text.match(/from\s+'([^']*domain\/js\/reasons\.js)'/)
+    assert.ok(match, `${file} has no domain/ import to resolve`)
+    const resolved = path.resolve(path.dirname(path.join(REPO_ROOT, file)), match[1])
+    assert.equal(resolved, path.join(REPO_ROOT, 'domain/js/reasons.js'), `${file}'s relative path does not land on the vocabulary`)
   }
 })

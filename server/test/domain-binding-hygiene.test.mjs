@@ -25,6 +25,7 @@ import { execFileSync } from 'node:child_process'
 import path from 'node:path'
 
 import * as binding from '../../domain/js/lifecycle.js'
+import * as reasonBinding from '../../domain/js/reasons.js'
 import { REPO_ROOT, stripComments } from './helpers/repoFiles.mjs'
 
 const jsSource = readFileSync(path.join(REPO_ROOT, 'domain/js/lifecycle.js'), 'utf8')
@@ -34,11 +35,26 @@ const jsCode = stripComments(jsSource)
 const pySource = readFileSync(path.join(REPO_ROOT, 'domain/py/steps.py'), 'utf8')
 const stepsJson = readFileSync(path.join(REPO_ROOT, 'domain/steps.json'), 'utf8')
 
+// HZ-132 added a SECOND source/binding pair under the same rules. Everything
+// asserted about the step table below is asserted about the reason vocabulary
+// too — a new binding that escapes this file would be a guardrail with a hole
+// in it, not a guardrail.
+const reasonsJsSource = readFileSync(path.join(REPO_ROOT, 'domain/js/reasons.js'), 'utf8')
+const reasonsJsCode = stripComments(reasonsJsSource)
+const reasonsPySource = readFileSync(path.join(REPO_ROOT, 'domain/py/reasons.py'), 'utf8')
+const reasonsJson = readFileSync(path.join(REPO_ROOT, 'domain/reasons.json'), 'utf8')
+
 // ---- guardrail 4: no runtime fetch, no filesystem read ----
 
 test('the JS binding does no runtime I/O — no fetch, no readFileSync, no dynamic import', () => {
   for (const forbidden of [/\bfetch\s*\(/, /readFileSync/, /readFile\b/, /import\s*\(/, /require\s*\(/, /XMLHttpRequest/]) {
     assert.ok(!forbidden.test(jsCode), `domain/js/lifecycle.js matches ${forbidden} — the UI must work with no server`)
+  }
+})
+
+test('the JS reason binding does no runtime I/O either — the UI bundles it the same way', () => {
+  for (const forbidden of [/\bfetch\s*\(/, /readFileSync/, /readFile\b/, /import\s*\(/, /require\s*\(/, /XMLHttpRequest/]) {
+    assert.ok(!forbidden.test(reasonsJsCode), `domain/js/reasons.js matches ${forbidden} — the UI must work with no server`)
   }
 })
 
@@ -55,6 +71,11 @@ test('the JS binding reads its data from domain/steps.json with one static impor
   assert.match(jsCode, /^import data from '\.\.\/steps\.json' with \{ type: 'json' \}$/m)
   // Positive control: the scan is looking at real code, not an empty string.
   assert.ok(jsCode.includes('export const STEPS'), 'the hygiene scan is not reading the binding at all')
+})
+
+test('the JS reason binding reads its data from domain/reasons.json with one static import', () => {
+  assert.match(reasonsJsCode, /^import data from '\.\.\/reasons\.json' with \{ type: 'json' \}$/m)
+  assert.ok(reasonsJsCode.includes('export const REASONS'), 'the hygiene scan is not reading the reason binding at all')
 })
 
 // The ONE place a label may legitimately appear in the JS binding: as the
@@ -80,8 +101,29 @@ test('neither binding inlines a second copy of the step table — every label, b
   assert.equal(stripped, 4, `expected exactly 4 requiredStepIndex() label lookups in the binding, found ${stripped}`)
 })
 
-test('both bindings are real hand-written source — no placeholder, no GENERATED banner', () => {
-  for (const [rel, src] of [['domain/js/lifecycle.js', jsSource], ['domain/py/steps.py', pySource]]) {
+test('neither reason binding inlines a second copy of the vocabulary — every id, both files', () => {
+  assert.ok(reasonBinding.REASON_IDS.length > 0, 'sanity: the JS reason binding exports an empty vocabulary')
+  for (const id of reasonBinding.REASON_IDS) {
+    assert.ok(!reasonsJsSource.includes(id), `reason id "${id}" is inlined in domain/js/reasons.js`)
+    assert.ok(!reasonsPySource.includes(id), `reason id "${id}" is inlined in domain/py/reasons.py`)
+    // Positive control: the ids DO exist, in reasons.json — so this is not
+    // passing because REASON_IDS is empty or the ids are blank.
+    assert.ok(reasonsJson.includes(id))
+  }
+  // The REASON keys are derived too, not typed: no upper-case form appears
+  // either, which is the shape a "helpful" hand-written constant would take.
+  for (const key of Object.keys(reasonBinding.REASON)) {
+    assert.ok(!reasonsJsSource.includes(`${key}:`), `REASON key ${key} is hand-declared in domain/js/reasons.js`)
+  }
+})
+
+test('every binding is real hand-written source — no placeholder, no GENERATED banner', () => {
+  for (const [rel, src] of [
+    ['domain/js/lifecycle.js', jsSource],
+    ['domain/py/steps.py', pySource],
+    ['domain/js/reasons.js', reasonsJsSource],
+    ['domain/py/reasons.py', reasonsPySource],
+  ]) {
     assert.ok(!src.includes('@@'), `${rel} still carries an @@PLACEHOLDER@@`)
     assert.doesNotMatch(src, /GENERATED/, `${rel} still carries the "GENERATED — do not edit" banner`)
   }
@@ -95,21 +137,53 @@ test('the JS binding exports no presentation token', () => {
   }
 })
 
-test('domain/steps.json declares no colour, accent or theme token at any depth', () => {
+test('the JS reason binding exports no pause-banner copy — labels and details stay in the UI', () => {
+  for (const forbidden of ['CATEGORY_COPY', 'LABELS', 'REASON_LABELS', 'REASON_COPY', 'AGENTS', 'PRIORITY_COLORS']) {
+    assert.equal(reasonBinding[forbidden], undefined, `domain/js/reasons.js exports ${forbidden} — presentation stays in the UI`)
+  }
+})
+
+// One walk, two key sets. Both documents forbid colours and theme tokens.
+// reasons.json additionally forbids COPY: a `label` or `detail` beside the
+// retryable flag would read as harmless data and would quietly move
+// ui/src/domain/pauseReason.js's banner wording into domain/, which guardrail 5
+// forbids. steps.json cannot join that half — a step's `label` IS its identity,
+// the thing every lookup resolves by, not a string shown to a human.
+const THEME_KEY = /colou?r|accent|token|avatar|css|var\(--/i
+const COPY_KEY = /^(label|detail|copy|title|message|text|description)$/i
+
+function presentationOffendersIn(json, keyPattern = THEME_KEY) {
   const offenders = []
   const walk = (node, at) => {
     if (Array.isArray(node)) return node.forEach((v, i) => walk(v, `${at}[${i}]`))
     if (node && typeof node === 'object') {
       for (const [k, v] of Object.entries(node)) {
-        if (/colou?r|accent|token|avatar|css|var\(--/i.test(k)) offenders.push(`${at}.${k}`)
+        if (keyPattern.test(k)) offenders.push(`${at}.${k}`)
         walk(v, `${at}.${k}`)
       }
       return
     }
     if (typeof node === 'string' && /var\(--/.test(node)) offenders.push(`${at} (CSS var in a value)`)
   }
-  walk(JSON.parse(stepsJson), '')
-  assert.deepEqual(offenders, [])
+  walk(JSON.parse(json), '')
+  return offenders
+}
+
+test('domain/steps.json declares no colour, accent or theme token at any depth', () => {
+  assert.deepEqual(presentationOffendersIn(stepsJson), [])
+})
+
+const THEME_OR_COPY_KEY = new RegExp(`${THEME_KEY.source}|${COPY_KEY.source}`, 'i')
+
+test('domain/reasons.json declares no copy, colour or theme token at any depth', () => {
+  assert.deepEqual(presentationOffendersIn(reasonsJson, THEME_OR_COPY_KEY), [])
+  // Positive control: the walk reaches the reason entries, and the detector
+  // really does fire on the key a well-meaning edit would add.
+  assert.ok(JSON.parse(reasonsJson).reasons.length > 0)
+  assert.deepEqual(
+    presentationOffendersIn('{"reasons":[{"id":"x","retryable":true,"label":"a banner title"}]}', THEME_OR_COPY_KEY),
+    ['.reasons[0].label'],
+  )
 })
 
 // ---- shape pin: the JS binding ships the AUTHORED shape ----
@@ -194,4 +268,25 @@ test('SHAPE PIN (Python): `requires` is dropped — it gates a server dispatch, 
   // Positive control: the authored table DOES declare requires, so this is not
   // passing because nothing declares it anywhere.
   assert.ok(binding.STEPS.some((s) => s.requires?.length), 'the authored table declares no requires at all')
+})
+
+// ---- shape pin: BOTH reason bindings ship the AUTHORED vocabulary ----
+// Unlike the step table there is no projection here, in either direction: the
+// farm emits the same tags the server classifies and the UI renders, so a
+// binding that started reshaping one side would be the drift this item removed.
+
+const pythonReasons = JSON.parse(
+  execFileSync('python3', ['-c', 'import json; from domain.py import reasons; print(json.dumps(reasons.REASONS))'], {
+    cwd: REPO_ROOT,
+    encoding: 'utf8',
+  }),
+)
+
+test('SHAPE PIN (reasons): both bindings expose the authored entries, with exactly the two authored keys', () => {
+  const authored = JSON.parse(reasonsJson).reasons
+  assert.ok(authored.length > 0)
+  for (const table of [reasonBinding.REASONS, pythonReasons]) {
+    assert.deepEqual(table, authored, 'a reason binding reshapes the authored vocabulary instead of exposing it')
+    for (const entry of table) assert.deepEqual(Object.keys(entry).sort(), ['id', 'retryable'])
+  }
 })
