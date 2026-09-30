@@ -27,6 +27,7 @@ import { approvalSecretConfigured, approvalSecretOk, isAllowedApprover, normaliz
 import * as waPollVotes from './waPollVotes.js'
 import { STEPS } from '../../domain/js/lifecycle.js'
 import { intakeFields } from '../../domain/js/fields.js'
+import { PRIORITIES, DEFAULT_PRIORITY } from '../../domain/js/priorities.js'
 import { PERSONAS } from './personas.js'
 import * as definitions from './definitions.js'
 import * as runLogView from './runLogView.js'
@@ -190,15 +191,27 @@ setInterval(() => {
 // through the real route — because a structural diff alone could not tell you
 // whether the route is actually using this object.
 //
-// `required` and the `priority` enum stay literals below: neither is a length,
-// so neither belongs in a file about field limits. Recorded in domain/README.md
-// so the split is findable rather than rediscovered.
+// `required` stays a literal below: it is not a length, so it does not belong in
+// a file about field limits. Recorded in domain/README.md so the split is
+// findable rather than rediscovered. The `priority` enum used to be named here
+// as the other half of that split; HZ-135 moved it to domain/priorities.json, so
+// the route now reads from two domain documents and one literal.
 export const ITEM_BODY_PROPERTIES = Object.fromEntries(
   intakeFields().map((f) => [
     f.name,
     { type: 'string', ...(f.minLength === undefined ? {} : { minLength: f.minLength }), maxLength: f.maxLength },
   ]),
 )
+
+// The intake route's `priority` property, exported for the same reason
+// ITEM_BODY_PROPERTIES is: server/test/api-priority-enum-derived.test.mjs diffs it
+// against domain/priorities.json structurally, alongside a behavioural leg that
+// posts every declared value through the real route.
+//
+// POST /api/items/:id/priority deliberately reuses only the `enum` and declares
+// NO default — creating an item without naming a priority is normal, changing an
+// item's priority to nothing is not, and that asymmetry predates HZ-135.
+export const PRIORITY_PROPERTY = { type: 'string', enum: PRIORITIES, default: DEFAULT_PRIORITY }
 
 export function buildApp({ logger = true } = {}) {
   const fastify = Fastify({ logger })
@@ -455,13 +468,13 @@ export function buildApp({ logger = true } = {}) {
           required: ['title', 'outcome', 'metric'],
           properties: {
             ...ITEM_BODY_PROPERTIES,
-            priority: { type: 'string', enum: ['Critical', 'High', 'Medium', 'Low'], default: 'Medium' },
+            priority: PRIORITY_PROPERTY,
           },
         },
       },
     },
     async (request, reply) => {
-      const { title, outcome, metric, guardrails = '', priority = 'Medium', repo } = request.body
+      const { title, outcome, metric, guardrails = '', priority = DEFAULT_PRIORITY, repo } = request.body
       // New work goes into the active project only.
       const activeId = getActiveProjectId()
       const connected = store.listRepos().filter((r) => activeId == null || r.project_id === activeId)
@@ -887,7 +900,7 @@ export function buildApp({ logger = true } = {}) {
         body: {
           type: 'object',
           required: ['priority'],
-          properties: { priority: { type: 'string', enum: store.PRIORITIES } },
+          properties: { priority: { type: 'string', enum: PRIORITIES } },
         },
       },
     },

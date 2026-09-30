@@ -19,7 +19,7 @@ The file is a self-contained Design Component: markup in the `<x-dc>` template, 
 {
   id: "BF-128",            // display id
   title: "…",
-  priority: "Critical" | "High" | "Medium" | "Low",
+  priority: <one of PRIORITIES — see domain/priorities.json>,
   desc, metric, guardrails, // the Plan content (outcome / success metric / guardrails)
   cursor: <int>,           // index into STEPS — the current step
   paused: false,           // agents halted on this item

@@ -1,0 +1,184 @@
+{
+  "$comment": "HZ-135. Input/expected pairs for the work-item priority bindings, asserted by BOTH server/test/domain-priorities-cases.test.mjs and farm/tests/test_priorities_fixtures.py. The `shared` section is the point of the file: domain/js/priorities.js and domain/py/priorities.py are two independent hand-written implementations, and without this nothing would prove a validation rule or a membership check meant the same thing in both languages — the same gap domain/fixtures/lifecycle-cases.json and fields-cases.json were added to close. Every case in `shared` runs in both suites, and each suite asserts it executed the exact ids listed in shared.manifest, so a suite cannot quietly skip a section and still pass. The `js` and `py` sections cover the exports that exist in only one binding; a coverage guard in each suite asserts SET EQUALITY between that section's keys and the binding's real exports, so a new export with no case fails, and a stale case naming a removed export fails too. Every priority value in this file is FABRICATED on purpose — not one real value appears, so the fixture is not a second declaration of the vocabulary and does not have to be allowlisted by domain-priority-literals.test.mjs.",
+
+  "shared": {
+    "manifest": {
+      "validation": [
+        "a valid vocabulary is accepted",
+        "a root that is not an object rejected",
+        "a root that is an array rejected",
+        "an empty object rejected",
+        "an empty priorities array rejected",
+        "a non-array priorities key rejected",
+        "a non-string value rejected",
+        "an empty-string value rejected",
+        "a lower-case value rejected",
+        "a value with a space rejected",
+        "a hyphenated value rejected",
+        "a value with a digit rejected",
+        "a byte-identical duplicate rejected",
+        "a duplicate differing only in case rejected",
+        "a missing default rejected",
+        "a default outside the vocabulary rejected",
+        "a non-string default rejected"
+      ],
+      "membership": [
+        "a declared value is a priority",
+        "an undeclared value is not",
+        "a case-mismatched value is not — the enums are exact",
+        "an empty string is not",
+        "the answer follows the argument, not the live document"
+      ]
+    },
+
+    "validation": [
+      {
+        "case": "a valid vocabulary is accepted",
+        "input": { "priorities": ["Alpha", "Beta", "Gamma"], "default": "Beta" },
+        "expect": { "throws": false }
+      },
+      {
+        "case": "a root that is not an object rejected",
+        "input": "not a vocabulary",
+        "expect": { "throws": true, "messageContains": "must be a JSON object with a priorities array" }
+      },
+      {
+        "case": "a root that is an array rejected",
+        "input": ["Alpha", "Beta"],
+        "expect": { "throws": true, "messageContains": "must be a JSON object with a priorities array" }
+      },
+      {
+        "case": "an empty object rejected",
+        "input": {},
+        "expect": { "throws": true, "messageContains": "priorities must be a non-empty JSON array of strings" }
+      },
+      {
+        "case": "an empty priorities array rejected",
+        "input": { "priorities": [], "default": "Alpha" },
+        "expect": { "throws": true, "messageContains": "priorities must be a non-empty JSON array of strings" }
+      },
+      {
+        "case": "a non-array priorities key rejected",
+        "input": { "priorities": "Alpha", "default": "Alpha" },
+        "expect": { "throws": true, "messageContains": "priorities must be a non-empty JSON array of strings" }
+      },
+      {
+        "case": "a non-string value rejected",
+        "input": { "priorities": ["Alpha", 2], "default": "Alpha" },
+        "expect": { "throws": true, "messageContains": "priorities[1] declares 2 — expected a capitalised letters-only word" }
+      },
+      {
+        "case": "an empty-string value rejected",
+        "input": { "priorities": ["Alpha", ""], "default": "Alpha" },
+        "expect": { "throws": true, "messageContains": "priorities[1] declares \"\" — expected a capitalised letters-only word" }
+      },
+      {
+        "case": "a lower-case value rejected",
+        "$comment": "PRIORITY's keys are derived by upper-casing, and a lower-case value would collide with its own capitalised form under the case-insensitive label match.",
+        "input": { "priorities": ["Alpha", "beta"], "default": "Alpha" },
+        "expect": { "throws": true, "messageContains": "priorities[1] declares \"beta\" — expected a capitalised letters-only word" }
+      },
+      {
+        "case": "a value with a space rejected",
+        "$comment": "server/src/db.js interpolates these values into a SQL CHECK constraint; this rule is what makes the generated clause provably safe.",
+        "input": { "priorities": ["Alpha", "Very Beta"], "default": "Alpha" },
+        "expect": { "throws": true, "messageContains": "expected a capitalised letters-only word" }
+      },
+      {
+        "case": "a hyphenated value rejected",
+        "input": { "priorities": ["Alpha", "Beta-Minus"], "default": "Alpha" },
+        "expect": { "throws": true, "messageContains": "expected a capitalised letters-only word" }
+      },
+      {
+        "case": "a value with a digit rejected",
+        "input": { "priorities": ["Alpha", "Beta2"], "default": "Alpha" },
+        "expect": { "throws": true, "messageContains": "expected a capitalised letters-only word" }
+      },
+      {
+        "case": "a byte-identical duplicate rejected",
+        "input": { "priorities": ["Alpha", "Beta", "Alpha"], "default": "Alpha" },
+        "expect": { "throws": true, "messageContains": "has duplicate priority value(s), ignoring case: [\"alpha\"]" }
+      },
+      {
+        "case": "a duplicate differing only in case rejected",
+        "$comment": "Stricter than the schema's uniqueItems, and the reason is real: the GitHub label match in server/src/priorityLabels.js is case-insensitive, so these two would be indistinguishable on the way back in.",
+        "input": { "priorities": ["Alpha", "ALPHA"], "default": "Alpha" },
+        "expect": { "throws": true, "messageContains": "ignoring case" }
+      },
+      {
+        "case": "a missing default rejected",
+        "input": { "priorities": ["Alpha", "Beta"] },
+        "expect": { "throws": true, "messageContains": "default null is not one of the declared priorities" }
+      },
+      {
+        "case": "a default outside the vocabulary rejected",
+        "$comment": "It would be written straight into work_item and then rejected by the CHECK constraint this same list built.",
+        "input": { "priorities": ["Alpha", "Beta"], "default": "Gamma" },
+        "expect": { "throws": true, "messageContains": "default \"Gamma\" is not one of the declared priorities" }
+      },
+      {
+        "case": "a non-string default rejected",
+        "input": { "priorities": ["Alpha", "Beta"], "default": 1 },
+        "expect": { "throws": true, "messageContains": "is not one of the declared priorities" }
+      }
+    ],
+
+    "membership": [
+      {
+        "case": "a declared value is a priority",
+        "priorities": ["Alpha", "Beta", "Gamma"],
+        "value": "Gamma",
+        "expect": true
+      },
+      {
+        "case": "an undeclared value is not",
+        "priorities": ["Alpha", "Beta", "Gamma"],
+        "value": "Delta",
+        "expect": false
+      },
+      {
+        "case": "a case-mismatched value is not — the enums are exact",
+        "$comment": "POST /api/items and POST /api/items/:id/priority both reject a lower-case value at the schema layer today. is_priority/isPriority must agree, or store.setPriority would accept something the route already refused.",
+        "priorities": ["Alpha", "Beta", "Gamma"],
+        "value": "gamma",
+        "expect": false
+      },
+      {
+        "case": "an empty string is not",
+        "priorities": ["Alpha", "Beta", "Gamma"],
+        "value": "",
+        "expect": false
+      },
+      {
+        "case": "the answer follows the argument, not the live document",
+        "$comment": "A fabricated value that is NOT in the real vocabulary, answered true because the fabricated list carries it. This is what proves the parameter is actually used.",
+        "priorities": ["Zeta"],
+        "value": "Zeta",
+        "expect": true
+      }
+    ]
+  },
+
+  "js": {
+    "$comment": "Keys here must equal domain/js/priorities.js's exports exactly — set equality, asserted.",
+    "PRIORITIES": [{ "case": "the live vocabulary is non-empty", "expectNonEmpty": true }],
+    "DEFAULT_PRIORITY": [{ "case": "the live default is a member of the live vocabulary", "expectMember": true }],
+    "PRIORITY": [
+      {
+        "case": "keyed by the upper-case form of each value, in authored order",
+        "input": { "priorities": ["Alpha", "Beta"], "default": "Alpha" },
+        "expectKeys": ["ALPHA", "BETA"]
+      }
+    ],
+    "assertPrioritiesShape": [{ "case": "driven by shared.validation", "drivenBy": "shared.validation" }],
+    "isPriority": [{ "case": "driven by shared.membership", "drivenBy": "shared.membership" }]
+  },
+
+  "py": {
+    "$comment": "Keys here must equal domain/py/priorities.py's public names (plus the required private ones) exactly — set equality, asserted.",
+    "PRIORITIES": [{ "case": "the live vocabulary is a non-empty tuple", "expectNonEmpty": true }],
+    "DEFAULT_PRIORITY": [{ "case": "the live default is a member of the live vocabulary", "expectMember": true }],
+    "is_priority": [{ "case": "driven by shared.membership", "drivenBy": "shared.membership" }],
+    "_validate_source": [{ "case": "driven by shared.validation", "drivenBy": "shared.validation" }]
+  }
+}

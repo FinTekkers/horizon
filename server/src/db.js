@@ -4,6 +4,7 @@ import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { reconcileGoogleUsers } from './loginAllowlist.js'
 import { gateStepIndexes } from '../../domain/js/lifecycle.js'
+import { PRIORITIES } from '../../domain/js/priorities.js'
 
 const DB_PATH =
   process.env.HORIZON_DB || join(dirname(fileURLToPath(import.meta.url)), '..', 'data', 'horizon.db')
@@ -13,11 +14,28 @@ export const db = new Database(DB_PATH)
 db.pragma('journal_mode = WAL')
 db.pragma('foreign_keys = ON')
 
+// The work_item priority constraint, built from the one declaration rather than
+// hand-typed (HZ-135). The emitted clause is byte-identical to the literal it
+// replaced — server/test/domain-priority-pins.test.mjs asserts that, because
+// this string is the one thing in the change that a reader cannot diff by eye.
+// Module-local: that pin reads the constraint back out of the live database's
+// sqlite_master rather than importing this binding, so nothing here is exported
+// for a test's benefit and the pin covers what SQLite actually stored.
+//
+// It sits inside CREATE TABLE IF NOT EXISTS below, so on an existing database
+// the statement is a no-op and the stored constraint is untouched: no migration,
+// no backfill, and every stored value still passes because the vocabulary did not
+// move. Interpolating into SQL is safe here because the values are repo-owned AND
+// because domain/js/priorities.js rejects anything outside /^[A-Z][A-Za-z]*$/ at
+// load time — that rule is what makes this provably safe rather than
+// safe-by-convention.
+const PRIORITY_CHECK = `CHECK (priority IN (${PRIORITIES.map((value) => `'${value}'`).join(',')}))`
+
 db.exec(`
   CREATE TABLE IF NOT EXISTS work_item (
     id         TEXT PRIMARY KEY,
     title      TEXT NOT NULL,
-    priority   TEXT NOT NULL CHECK (priority IN ('Critical','High','Medium','Low')),
+    priority   TEXT NOT NULL ${PRIORITY_CHECK},
     desc       TEXT NOT NULL DEFAULT '',
     metric     TEXT NOT NULL DEFAULT '',
     guardrails TEXT NOT NULL DEFAULT '',

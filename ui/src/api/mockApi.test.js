@@ -9,6 +9,10 @@
 //   shape the server does, so App.jsx's post-approval navigation behaves
 //   identically whether VITE_MOCK is on or off.
 //
+//   HZ-135 — createItem's priority default must be domain/priorities.json's,
+//   the same one POST /api/items answers with. Same parity concern as HZ-51's,
+//   on the one field this item moved.
+//
 // Each test claims one seeded fixture item and never revisits it, since
 // `items` is module-level state shared across tests in this file.
 
@@ -16,6 +20,7 @@ import { expect, test, vi, afterEach } from 'vitest'
 import * as mockApi from './mockApi'
 import { requestChanges, getItems } from './mockApi'
 import { STEPS, ACCEPT_GATE_INDEX, IMPLEMENT_STEP_INDEX } from '../../../domain/js/lifecycle.js'
+import { PRIORITIES, DEFAULT_PRIORITY } from '../../../domain/js/priorities.js'
 
 const findItem = (id) => getItems().find((it) => it.id === id)
 
@@ -124,4 +129,45 @@ test('the mock seeds one item with a blocker, one with dependents, and one with 
   const withNeither = findItem('BF-145')
   expect(withNeither.blockedBy.length).toBe(0)
   expect(withNeither.dependents.length).toBe(0)
+})
+
+// ---- HZ-135: createItem's priority, the offline half of the API seam ----
+//
+// server/test/api-priority-enum-derived.test.mjs pins POST /api/items' enum AND
+// its default to domain/priorities.json. mockApi is that route's stand-in when
+// VITE_MOCK is on, and its `priority = DEFAULT_PRIORITY` default had no test at
+// all — so it could quietly drift back to a hand-typed value and only offline
+// users would ever see the difference.
+//
+// Fake timers because createItem kicks off the mock agent simulation
+// (runAgents → setTimeout), exactly as the approveGate cases above do. Both
+// expectations read the value off the binding rather than naming it, which is
+// what makes this a derivation check and not a second declaration.
+
+test('createItem with no priority stores the declared default, the same one POST /api/items uses', async () => {
+  vi.useFakeTimers()
+  const { id } = await mockApi.createItem({
+    title: 'Offline item, no priority chosen',
+    outcome: 'The mock has to answer like the real route.',
+    metric: 'The stored priority is the declared default.',
+  })
+  expect(findItem(id).priority).toBe(DEFAULT_PRIORITY)
+  vi.clearAllTimers()
+})
+
+test('createItem honours an explicitly chosen priority — the default must not overwrite the picker', async () => {
+  vi.useFakeTimers()
+  // Deliberately not the default: an item reading back as the default proves
+  // nothing, since that is what it would carry if the argument were dropped.
+  const chosen = PRIORITIES.find((value) => value !== DEFAULT_PRIORITY)
+  expect(chosen, 'the vocabulary offers no priority other than the default').toBeTruthy()
+
+  const { id } = await mockApi.createItem({
+    title: 'Offline item, priority chosen in the picker',
+    outcome: 'The chosen value must survive the mock write.',
+    metric: 'The stored priority is the chosen one.',
+    priority: chosen,
+  })
+  expect(findItem(id).priority).toBe(chosen)
+  vi.clearAllTimers()
 })
