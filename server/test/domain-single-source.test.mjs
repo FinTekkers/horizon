@@ -80,3 +80,23 @@ test('domain/ holds the whole model: source, schema, validator, both bindings, f
     assert.ok(relPaths.includes(expected), `${expected} is missing`)
   }
 })
+
+// HZ-132: the failure-reason vocabulary is the SECOND thing domain/ owns, added
+// under the same rule — one JSON, one schema, one hand-written binding per
+// language. Inclusion-only, like the check above: this is what makes a deletion
+// visible rather than silently leaving a consumer importing nothing.
+test('domain/ also holds the failure-reason vocabulary: source, schema and both bindings', () => {
+  for (const expected of [
+    'domain/reasons.json',
+    'domain/reasons.schema.json',
+    'domain/js/reasons.js',
+    'domain/py/reasons.py',
+  ]) {
+    assert.ok(relPaths.includes(expected), `${expected} is missing`)
+  }
+})
+
+test('exactly one reasons.json exists, and it is domain/reasons.json', () => {
+  const found = relPaths.filter((p) => path.basename(p) === 'reasons.json')
+  assert.deepEqual(found, ['domain/reasons.json'])
+})

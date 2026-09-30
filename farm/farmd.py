@@ -17,7 +17,9 @@ from fastapi.responses import JSONResponse
 
 # HZ-128: the step model lives in domain/, not in farm/ — an absolute import
 # off the repo root, which farmd already runs from (`python -m farm.farmd`).
-from domain.py import steps
+# HZ-132 put the failure-reason vocabulary there under the same rule, so the
+# tags this daemon relays are the ones the server classifies, by construction.
+from domain.py import reasons, steps
 from . import conflict_resolver, rules, tmux_mgr, workspaces
 from . import config as farm_config
 from .agent_runner import AgentError, assert_provider_auth
@@ -230,9 +232,10 @@ def _report_run_dead(run_id, name: str) -> bool:
     url = f"{HORIZON_URL}/api/farm/steps/{run_id}/fail"
     payload = {
         "error": f"farmd: session '{name}' is gone for run {run_id} (reconciliation)",
-        # Already in AUTO_RETRY_REASONS (server/src/orchestrator.js) — HZ-76's
-        # default-safe rule stands, no new reason is introduced.
-        "reason": "unreachable",
+        # Already declared retryable in domain/reasons.json, which is where
+        # the server's AUTO_RETRY_REASONS is derived from too (HZ-132) —
+        # HZ-76's default-safe rule stands, no new reason is introduced.
+        "reason": reasons.REASON["UNREACHABLE"],
     }
     try:
         res = httpx.post(url, json=payload, headers={"x-farm-secret": SHARED_SECRET}, timeout=15)

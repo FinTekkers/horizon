@@ -21,7 +21,9 @@ import httpx
 # HZ-128: the step model lives in domain/, not in farm/ — an absolute import
 # off the repo root (already on sys.path, since farmd runs as
 # `python -m farm.farmd` from there and farm/tests/conftest.py inserts it).
-from domain.py import steps
+# HZ-132 put the failure-reason vocabulary there too, so the reason this script
+# reports is a constant the server already knows, never a string typed here.
+from domain.py import reasons, steps
 
 # AgentExhaustedError is this branch's name for main's TurnCapExceeded — the
 # same "ran out of turn budget" signal, renamed by the provider refactor. The
@@ -726,7 +728,7 @@ def main() -> int:
         # else (a checks failure, a malformed reply, ...) reports no reason
         # and the server pauses for a human exactly as before.
         if isinstance(exc, AgentExhaustedError):
-            result["reason"] = "turn_cap"
+            result["reason"] = reasons.REASON["TURN_CAP"]
 
     httpx.post(f"{FARMD}/internal/steps/result", json=result, timeout=30)
     log(f"run {run_id}: reported {'ok' if result['ok'] else 'failure'}")

@@ -6,15 +6,24 @@
 // already writes into `item.events` (newest first). This module is the only
 // place that parses it.
 
-// Mirrors AUTO_RETRY_REASONS in server/src/orchestrator.js by hand — that
-// set can't be imported into the UI bundle. A 5th reason added there without
-// a matching entry here just degrades to raw-cause text below, not a crash.
+// HZ-132: the reason IDS are no longer typed here. They are declared once in
+// domain/reasons.json and reach this file through domain/js/reasons.js, which
+// Rollup inlines into the bundle the same way it inlines the step table — so
+// the keys below cannot drift from the tags server/src/orchestrator.js writes
+// and farm/ emits. Only the COPY is owned here: labels and details are
+// presentation, which domain/ deliberately does not hold.
+//
+// A reason declared in domain/reasons.json with no entry below is a bug, not a
+// graceful degradation — ui/src/domain/pauseReason.test.js walks REASON_IDS and
+// fails if any one of them resolves a null label.
+import { REASON } from '../../../domain/js/reasons.js'
+
 const CATEGORY_COPY = {
-  never_picked_up: { label: 'Never picked up', detail: 'The farm never claimed this step before its queue watchdog fired.' },
-  timeout: { label: 'Timed out', detail: 'The step started but the farm never reported it finishing in time.' },
-  unreachable: { label: 'Farm unreachable', detail: 'Horizon could not reach the farm to dispatch or check on this step.' },
-  turn_cap: { label: 'Ran out of turns', detail: 'The agent hit its turn budget before finishing the step.' },
-  required_input_incomplete: {
+  [REASON.NEVER_PICKED_UP]: { label: 'Never picked up', detail: 'The farm never claimed this step before its queue watchdog fired.' },
+  [REASON.TIMEOUT]: { label: 'Timed out', detail: 'The step started but the farm never reported it finishing in time.' },
+  [REASON.UNREACHABLE]: { label: 'Farm unreachable', detail: 'Horizon could not reach the farm to dispatch or check on this step.' },
+  [REASON.TURN_CAP]: { label: 'Ran out of turns', detail: 'The agent hit its turn budget before finishing the step.' },
+  [REASON.REQUIRED_INPUT_INCOMPLETE]: {
     label: 'Required input incomplete',
     detail: 'A required input could not be supplied in full — a capacity limit, not a bug. Resume once it fits, or split the step.',
   },
@@ -58,7 +67,11 @@ export function pauseReason(item) {
   }
 
   const [, reason, cause, cap] = match
-  const known = reason != null ? CATEGORY_COPY[reason] : null
+  // Object.hasOwn, not a bare lookup: CATEGORY_COPY is a plain object literal,
+  // so a pause tagged `constructor` or `toString` would resolve a truthy
+  // Object.prototype member and render `undefined` as its title instead of
+  // falling back to the raw cause. Pre-existing bug, fixed here (HZ-132).
+  const known = reason != null && Object.hasOwn(CATEGORY_COPY, reason) ? CATEGORY_COPY[reason] : null
 
   let attemptsUsed = 0
   for (let i = 1; i < events.length && RETRY_EVENT_RE.test(events[i]?.text || ''); i++) attemptsUsed++

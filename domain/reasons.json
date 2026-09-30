@@ -1,0 +1,9 @@
+{
+  "reasons": [
+    { "id": "never_picked_up", "retryable": true },
+    { "id": "timeout", "retryable": true },
+    { "id": "unreachable", "retryable": true },
+    { "id": "turn_cap", "retryable": true },
+    { "id": "required_input_incomplete", "retryable": false }
+  ]
+}

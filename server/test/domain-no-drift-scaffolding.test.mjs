@@ -166,9 +166,12 @@ test('the production-base build verifier runs the literal command criterion 10 n
   assert.match(verifier, /HORIZON_BASE: '\/horizon\/'/)
   assert.match(verifier, /\/horizon\/assets\//)
   // HZ-139: it must also prove the step data was INLINED into the bundle, not
-  // emitted as a separate asset that 404s under the production base.
+  // emitted as a separate asset that 404s under the production base. HZ-132
+  // added a second probe for domain/reasons.json, reached from the UI through
+  // ui/src/domain/pauseReason.js — same failure mode, different blank screen.
   assert.match(verifier, /STEPS\[0\]\.label/)
-  assert.match(verifier, /bundled\.includes\(probeLabel\)/)
+  assert.match(verifier, /REASON_IDS\[0\]/)
+  assert.match(verifier, /bundled\.includes\(probe\.value\)/)
 })
 
 // ---- the dev server can still serve a file from outside its root ----

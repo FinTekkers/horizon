@@ -17,6 +17,10 @@ vi.mock('../api', () => ({
 
 import Tracker from './Tracker'
 import { ACCEPT_GATE_INDEX } from '../../../domain/js/lifecycle.js'
+// HZ-132: reason ids come from domain/reasons.json via the binding, never typed
+// here — a second hand-copy of the vocabulary inside ui/src is exactly the
+// drift this repo now forbids.
+import { REASON, REASON_IDS } from '../../../domain/js/reasons.js'
 import { PERSONAS } from '../domain/personas'
 
 afterEach(() => {
@@ -282,18 +286,18 @@ test('a done step with repeated attempts but no artifact still shows the plain "
 
 // ---- HZ-94: a paused item explains itself, not just "Paused" ----
 
-test('a turn_cap pause renders its own distinct message naming the category, cause and next action', () => {
+test(`a ${REASON.TURN_CAP} pause renders its own distinct message naming the category, cause and next action`, () => {
   const item = {
     ...baseItem,
     paused: true,
     events: [
       {
         created_at: '2026-01-01 00:00:00',
-        text: 'agent step failed (turn_cap): ran out of turns — auto-retry budget (3) exhausted; item paused, resume to retry',
+        text: `agent step failed (${REASON.TURN_CAP}): ran out of turns — auto-retry budget (3) exhausted; item paused, resume to retry`,
       },
-      { created_at: '2026-01-01 00:00:00', text: 'transient failure (turn_cap): ran out of turns — auto-retrying (3/3)' },
-      { created_at: '2026-01-01 00:00:00', text: 'transient failure (turn_cap): ran out of turns — auto-retrying (2/3)' },
-      { created_at: '2026-01-01 00:00:00', text: 'transient failure (turn_cap): ran out of turns — auto-retrying (1/3)' },
+      { created_at: '2026-01-01 00:00:00', text: `transient failure (${REASON.TURN_CAP}): ran out of turns — auto-retrying (3/3)` },
+      { created_at: '2026-01-01 00:00:00', text: `transient failure (${REASON.TURN_CAP}): ran out of turns — auto-retrying (2/3)` },
+      { created_at: '2026-01-01 00:00:00', text: `transient failure (${REASON.TURN_CAP}): ran out of turns — auto-retrying (1/3)` },
     ],
   }
   const { container } = renderTracker(item)
@@ -304,8 +308,13 @@ test('a turn_cap pause renders its own distinct message naming the category, cau
   expect(banner.querySelector('.pause-banner__meta').textContent).toContain('Resume to retry')
 })
 
-test('each named pause category renders a distinct banner title from the others', () => {
-  const titles = ['never_picked_up', 'timeout', 'unreachable', 'turn_cap'].map((reason) => {
+// HZ-132: driven off REASON_IDS rather than a hand-typed four. That widens it
+// from the retryable set to EVERY declared reason — required_input_incomplete
+// renders a banner too — and makes it success criterion 5 at the render layer:
+// a reason added to domain/reasons.json with no pause-banner copy collapses two
+// titles into one and fails here.
+test('every declared pause category renders a distinct banner title from the others', () => {
+  const titles = REASON_IDS.map((reason) => {
     const item = {
       ...baseItem,
       paused: true,
@@ -316,7 +325,7 @@ test('each named pause category renders a distinct banner title from the others'
     cleanup()
     return title
   })
-  expect(new Set(titles).size).toBe(4)
+  expect(new Set(titles).size).toBe(REASON_IDS.length)
 })
 
 test('an unrecognized pause reason degrades to the raw cause rather than a blank banner', () => {
@@ -368,7 +377,7 @@ test('the pause banner coexists with the Resume control and the activity feed, r
     ...baseItem,
     paused: true,
     events: [
-      { created_at: '2026-01-01 00:00:00', text: 'agent step failed (timeout): step timed out — item paused; resume to retry' },
+      { created_at: '2026-01-01 00:00:00', text: `agent step failed (${REASON.TIMEOUT}): step timed out — item paused; resume to retry` },
     ],
   }
   const { getByText, container } = renderTracker(item)
