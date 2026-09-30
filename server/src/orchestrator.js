@@ -765,11 +765,17 @@ async function dispatchToFarm(id, stepIndex, runId, attempt) {
   // never sets artifact — without the OR clause the QA reviewer would never
   // see proof that regression tests actually ran). Keep only the
   // most-recently-completed row per step_index: a re-run step's superseded
-  // attempt must not ride along next to the current one.
+  // attempt must not ride along next to the current one. Only steps BEFORE
+  // this one count as prior: after a send-back, the item's earlier cycle
+  // left done artifacts at and after this step (e.g. step 8's own old QA
+  // verdict and step 9's summary of it). Feeding those back biases the
+  // re-review toward its own stale conclusion and, on HZ-128, pushed the
+  // total 3 chars over budget so HZ-105 refused the required plan forever.
   const rows = db
     .prepare(
       `SELECT step_index, artifact, output FROM step_run
        WHERE item_id = ? AND status = 'done' AND (artifact IS NOT NULL OR step_index = ?)
+         AND step_index < ?
          AND id IN (
            SELECT MAX(id) FROM step_run
            WHERE item_id = ? AND status = 'done' AND (artifact IS NOT NULL OR step_index = ?)
@@ -777,7 +783,7 @@ async function dispatchToFarm(id, stepIndex, runId, attempt) {
          )
        ORDER BY id`,
     )
-    .all(id, IMPLEMENT_STEP_INDEX, id, IMPLEMENT_STEP_INDEX)
+    .all(id, IMPLEMENT_STEP_INDEX, stepIndex, id, IMPLEMENT_STEP_INDEX)
     .map((row) => ({ step_index: row.step_index, artifact: row.artifact ?? row.output ?? '' }))
   const budgeted = budgetArtifacts(rows)
 
