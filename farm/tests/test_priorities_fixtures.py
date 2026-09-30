@@ -126,16 +126,6 @@ def test_py_default_priority_is_a_member_of_the_live_vocabulary():
         assert priorities.DEFAULT_PRIORITY in priorities.PRIORITIES, f'DEFAULT_PRIORITY: {case["case"]}'
 
 
-@pytest.mark.parametrize("case", PY["options_line"], ids=lambda c: c["case"])
-def test_py_options_line(case):
-    assert priorities.options_line(tuple(case["priorities"])) == case["expect"]
-
-
-@pytest.mark.parametrize("case", PY["by_number"], ids=lambda c: c["case"])
-def test_py_by_number(case):
-    assert priorities.by_number(tuple(case["priorities"])) == case["expect"]
-
-
 def test_py_helpers_are_driven_by_the_shared_section():
     for name in ("is_priority", *REQUIRED_PRIVATE):
         assert PY[name][0]["drivenBy"].startswith("shared."), f"py.{name} claims no shared driver"

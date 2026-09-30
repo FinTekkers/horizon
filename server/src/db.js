@@ -18,6 +18,9 @@ db.pragma('foreign_keys = ON')
 // hand-typed (HZ-135). The emitted clause is byte-identical to the literal it
 // replaced — server/test/domain-priority-pins.test.mjs asserts that, because
 // this string is the one thing in the change that a reader cannot diff by eye.
+// Module-local: that pin reads the constraint back out of the live database's
+// sqlite_master rather than importing this binding, so nothing here is exported
+// for a test's benefit and the pin covers what SQLite actually stored.
 //
 // It sits inside CREATE TABLE IF NOT EXISTS below, so on an existing database
 // the statement is a no-op and the stored constraint is untouched: no migration,
@@ -26,9 +29,7 @@ db.pragma('foreign_keys = ON')
 // because domain/js/priorities.js rejects anything outside /^[A-Z][A-Za-z]*$/ at
 // load time — that rule is what makes this provably safe rather than
 // safe-by-convention.
-// Exported only so the pin test can assert the emitted text without re-deriving
-// it; nothing in src/ reads it.
-export const PRIORITY_CHECK = `CHECK (priority IN (${PRIORITIES.map((value) => `'${value}'`).join(',')}))`
+const PRIORITY_CHECK = `CHECK (priority IN (${PRIORITIES.map((value) => `'${value}'`).join(',')}))`
 
 db.exec(`
   CREATE TABLE IF NOT EXISTS work_item (

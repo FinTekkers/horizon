@@ -179,31 +179,6 @@
     "PRIORITIES": [{ "case": "the live vocabulary is a non-empty tuple", "expectNonEmpty": true }],
     "DEFAULT_PRIORITY": [{ "case": "the live default is a member of the live vocabulary", "expectMember": true }],
     "is_priority": [{ "case": "driven by shared.membership", "drivenBy": "shared.membership" }],
-    "_validate_source": [{ "case": "driven by shared.validation", "drivenBy": "shared.validation" }],
-    "options_line": [
-      {
-        "case": "1-based numbering, in authored order, space separated",
-        "$comment": "farm/wizard.py's prompt IS this string. The real emitted text is pinned byte-for-byte by farm/tests/test_wizard.py; here the shape is proved against a fabricated vocabulary so the assertion is not a tautology against the live one.",
-        "priorities": ["Alpha", "Beta", "Gamma"],
-        "expect": "1) Alpha 2) Beta 3) Gamma"
-      },
-      {
-        "case": "a single-value vocabulary yields one option",
-        "priorities": ["Solo"],
-        "expect": "1) Solo"
-      }
-    ],
-    "by_number": [
-      {
-        "case": "string keys 1..n mapping to the authored order",
-        "priorities": ["Alpha", "Beta", "Gamma"],
-        "expect": { "1": "Alpha", "2": "Beta", "3": "Gamma" }
-      },
-      {
-        "case": "it is the exact inverse of options_line's numbering",
-        "priorities": ["Solo"],
-        "expect": { "1": "Solo" }
-      }
-    ]
+    "_validate_source": [{ "case": "driven by shared.validation", "drivenBy": "shared.validation" }]
   }
 }

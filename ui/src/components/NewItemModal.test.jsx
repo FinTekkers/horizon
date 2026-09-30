@@ -28,14 +28,34 @@ afterEach(cleanup)
 
 const noop = () => {}
 
+// TWO repos on purpose. The modal renders a repository picker when a project
+// carries more than one, and that picker reuses the same `.prio-seg__btn` class
+// as the priority control — so an unscoped selector would pass here only by the
+// accident of a single-repo fixture, and would silently start counting repository
+// buttons as priorities for any real multi-repo project.
+const PROJECT = { repos: [{ repo: 'FinTekkers/horizon' }, { repo: 'FinTekkers/ui-service' }] }
+
 function renderModal() {
-  return render(<NewItemModal activeProject={{ repos: [] }} onClose={noop} onCreated={noop} />)
+  return render(<NewItemModal activeProject={PROJECT} onClose={noop} onCreated={noop} />)
 }
 
-// The segmented control's buttons, in DOM order.
+// The PRIORITY segmented control's buttons, in DOM order — scoped by the visible
+// field label, which is what a human uses to tell the two controls apart.
 function priorityButtons(container) {
-  return [...container.querySelectorAll('.prio-seg__btn')]
+  const field = [...container.querySelectorAll('.field')].find(
+    (f) => f.querySelector('.field__label')?.textContent === 'Priority',
+  )
+  if (!field) throw new Error('the modal no longer renders a field labelled "Priority"')
+  return [...field.querySelectorAll('.prio-seg__btn')]
 }
+
+test('the fixture really does render a second segmented control, so the scoping is load-bearing', () => {
+  // Without this, priorityButtons() could go back to an unscoped query and every
+  // assertion below would still pass.
+  const { container } = renderModal()
+  const unscoped = container.querySelectorAll('.prio-seg__btn').length
+  expect(unscoped).toBe(priorityButtons(container).length + PROJECT.repos.length)
+})
 
 test('the picker offers exactly the declared vocabulary, IN ORDER', () => {
   const { container } = renderModal()

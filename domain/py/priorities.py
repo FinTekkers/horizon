@@ -15,9 +15,10 @@ the API's enum.
 
 ORDER IS PART OF THE DECLARATION, and it is DISPLAY order — severity, highest
 first. Nothing in this repo sorts work items by priority, so there are no rank
-integers; array position is the whole of it. options_line() below is what turns
-that order into the wizard's "1) ... 2) ..." prompt, so the numbering cannot
-drift from the vocabulary it numbers.
+integers; array position is the whole of it. The wizard's numbered "1) ... 2) ..."
+prompt is derived from that order by farm/wizard.py's own _priority_options() —
+the numbering and the `) ` separator are WhatsApp display copy, so they are built
+where they are shown, not here.
 
 Unlike domain/py/steps.py there is NO farm-shaped projection here: the value the
 API accepts, the value the database stores and the value the wizard offers are
@@ -25,19 +26,25 @@ the same string, which is the whole point of the file. Both bindings therefore
 expose the authored vocabulary verbatim, and
 server/test/domain-priorities-parity.test.mjs diffs them.
 
-Nothing presentational lives here. The two colour maps stay where they are
-(server/src/github.js, ui/src/domain/lifecycle.js), both keyed off the
-vocabulary rather than re-typing it.
+Nothing presentational lives here, and that line is drawn deliberately tightly.
+The two colour maps stay where they are (server/src/github.js,
+ui/src/domain/lifecycle.js), both keyed off the vocabulary rather than re-typing
+it; the GitHub label spelling stays in server/src/priorityLabels.js; and the
+wizard's numbered option line stays in farm/wizard.py, because "1) Critical 2)
+High" is a string shown to a human — display copy — even though the values in it
+are derived. Both halves of that split are enforced:
+server/test/domain-binding-hygiene.test.mjs asserts neither binding exposes a
+presentation or display-copy name, in JS and in Python.
 
 _SOURCE_PATH is derived from __file__, never from the process's cwd: farm agents
 run inside workspace clones, not from the repo root
 (farm/tests/test_domain_import.py asserts that).
 
-options_line() takes `priorities` as its first argument rather than reading the
-module-level PRIORITIES global internally — that's what lets a test fabricate a
-vocabulary and assert the numbering follows it, with zero literals in the test
-itself. The same convention domain/py/steps.py's budget_for_label and
-domain/py/fields.py's patch_limits use.
+is_priority() takes `priorities` as its second argument rather than reading the
+module-level PRIORITIES global internally — that's what lets a fixture drive it
+with a fabricated vocabulary, with zero real values in the test itself. The same
+convention domain/py/steps.py's budget_for_label and domain/py/fields.py's
+patch_limits use.
 """
 
 import json
@@ -144,21 +151,3 @@ def is_priority(value: str, priorities: tuple[str, ...] = PRIORITIES) -> bool:
     `priorities` is a parameter with a default so a fixture can drive it with a
     fabricated vocabulary — the same convention field_by_name uses."""
     return value in priorities
-
-
-def options_line(priorities: tuple[str, ...]) -> str:
-    """The numbered option list the WhatsApp wizard offers, e.g. "1) A 2) B".
-
-    DERIVED, never hand-typed — this is success metric 2 from the farm side.
-    farm/wizard.py spells this list out in two places (the question and the
-    retry line) and parses the numbers back in a third, so the numbering and the
-    vocabulary have to come from one expression or they drift. 1-based, because a
-    human is typing the reply."""
-    return " ".join(f"{i + 1}) {value}" for i, value in enumerate(priorities))
-
-
-def by_number(priorities: tuple[str, ...]) -> dict[str, str]:
-    """{"1": <first>, "2": <second>, ...} — the inverse of options_line(), for
-    parsing the wizard's numeric reply. Keys are strings because the reply
-    arrives as text."""
-    return {str(i + 1): value for i, value in enumerate(priorities)}

@@ -48,14 +48,39 @@ NUMERIC_RE = re.compile(r"^[1-9]$")
 # model like any other message.
 THUMBS_RE = re.compile("^\U0001F44D[\U0001F3FB-\U0001F3FF]?\uFE0F?$")
 
+
+def _priority_options(values: tuple[str, ...] = PRIORITIES) -> str:
+    """The numbered option list this wizard offers, e.g. "1) A 2) B".
+
+    DERIVED from the declared order, never hand-typed — that is success metric 2
+    from the farm side. The question below and the retry line further down both
+    spell this list out, and _priority_by_number parses the numbers back, so all
+    three have to come from one expression or they drift.
+
+    It lives HERE rather than in domain/py/priorities.py because the numbering and
+    the `) ` separator are WhatsApp display copy, and domain/ declares vocabulary,
+    not the strings a human reads. `values` is a parameter with a default so a
+    test can fabricate a vocabulary and assert the numbering follows it. 1-based,
+    because a human is typing the reply.
+    """
+    return " ".join(f"{i + 1}) {value}" for i, value in enumerate(values))
+
+
+def _priority_by_number(values: tuple[str, ...] = PRIORITIES) -> dict[str, str]:
+    """{"1": <first>, "2": <second>, ...} — the exact inverse of
+    _priority_options()'s numbering. Keys are strings because the reply arrives as
+    text."""
+    return {str(i + 1): value for i, value in enumerate(values)}
+
+
 STEP_PROMPTS = {
     "title": "What's the title?",
     "outcome": "What's the outcome — what should be true when this is done?",
     "metric": "How will we measure success?",
     "guardrails": "Any guardrails or constraints? (reply 'skip' for none)",
-    "priority": f"Priority — reply {priorities.options_line(PRIORITIES)}",
+    "priority": f"Priority — reply {_priority_options()}",
 }
-_PRIORITY_NUMS = priorities.by_number(PRIORITIES)
+_PRIORITY_NUMS = _priority_by_number()
 
 
 def _log(msg: str) -> None:
@@ -254,7 +279,7 @@ def try_handle_item_wizard(
             _reply(
                 transport,
                 msg,
-                f"Sorry, I didn't catch that — reply {priorities.options_line(PRIORITIES)}.",
+                f"Sorry, I didn't catch that — reply {_priority_options()}.",
             )
             return True
         session["priority"] = priority

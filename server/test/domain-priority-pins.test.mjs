@@ -74,11 +74,22 @@ test('PIN: isPriority accepts exactly these four and nothing else', () => {
 
 // ---- metric 5: the SQL constraint is byte-identical ----
 
-test('PIN: the emitted work_item CHECK clause is byte-identical to the hand-typed one', async () => {
+test('PIN: the constraint SQLite actually stored is byte-identical to the hand-typed one', async () => {
+  // Read back out of the REAL database rather than off an exported constant.
+  // SQLite keeps the CREATE TABLE text verbatim in sqlite_master, so this is the
+  // clause the engine is enforcing — not a string that merely resembles it. That
+  // is a stronger pin than importing the template would be, and it is why
+  // server/src/db.js keeps PRIORITY_CHECK module-local: nothing there is exported
+  // for a test's benefit.
+  //
   // Imported lazily: server/src/db.js opens a database at import time, and
   // HORIZON_DB has to be set first (done at the top of this file).
-  const { PRIORITY_CHECK } = await import('../src/db.js')
-  assert.equal(PRIORITY_CHECK, "CHECK (priority IN ('Critical','High','Medium','Low'))")
+  const { db } = await import('../src/db.js')
+  const { sql } = db.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'work_item'").get()
+  assert.ok(
+    sql.includes("priority   TEXT NOT NULL CHECK (priority IN ('Critical','High','Medium','Low'))"),
+    `the stored work_item priority constraint changed:\n${sql}`,
+  )
 })
 
 test('PIN: an existing database keeps its constraint — the statement is IF NOT EXISTS', () => {
@@ -205,6 +216,6 @@ test('PIN: the WhatsApp wizard offers the same numbered list it always did', () 
   // the derivation reproduces the hand-typed string exactly — including the
   // numbering, the `) ` separator and the single spaces.
   const wizard = readFileSync(path.join(REPO_ROOT, 'farm/wizard.py'), 'utf8')
-  assert.match(wizard, /"priority": f"Priority — reply \{priorities\.options_line\(PRIORITIES\)\}"/)
+  assert.match(wizard, /"priority": f"Priority — reply \{_priority_options\(\)\}"/)
   assert.ok(!wizard.includes('1) Critical'), 'the wizard still hand-types the numbered list')
 })

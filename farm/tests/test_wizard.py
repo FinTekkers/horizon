@@ -214,6 +214,28 @@ def test_the_priority_retry_line_is_byte_identical_to_the_pre_hz135_text():
         stub.close()
 
 
+def test_the_option_line_numbers_the_declared_order_one_based():
+    expected = " ".join(f"{i + 1}) {value}" for i, value in enumerate(priorities.PRIORITIES))
+    assert wizard._priority_options() == expected
+
+
+def test_the_number_map_is_the_exact_inverse_of_the_option_lines_numbering():
+    mapping = wizard._priority_by_number()
+    assert list(mapping) == [str(i + 1) for i in range(len(priorities.PRIORITIES))]
+    for number, value in mapping.items():
+        assert f"{number}) {value}" in wizard._priority_options()
+
+
+def test_the_numbering_helpers_follow_their_argument_not_the_live_document():
+    # Zero literals from the real vocabulary: this is what proves the helpers are
+    # derivations rather than dressed-up constants. They live in wizard.py rather
+    # than in domain/py/priorities.py because a numbered option line is display
+    # copy, and domain/ declares vocabulary — so their coverage lives here too.
+    assert wizard._priority_options(("Solo",)) == "1) Solo"
+    assert wizard._priority_options(("Solo", "Duo")) == "1) Solo 2) Duo"
+    assert wizard._priority_by_number(("Solo", "Duo")) == {"1": "Solo", "2": "Duo"}
+
+
 def test_every_declared_priority_is_reachable_by_its_number_and_by_its_word():
     # Derived, so a value added to domain/priorities.json is covered here without
     # an edit — and a value the wizard cannot reach fails loudly.

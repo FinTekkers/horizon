@@ -85,7 +85,7 @@ enforced rather than remembered.
 | `priorities.json` | The only place a work-item priority, and the order of them, is declared |
 | `priorities.schema.json` | The contract `priorities.json` must satisfy |
 | `js/priorities.js` | The JS binding: imports `priorities.json`, exposes `PRIORITIES`, `DEFAULT_PRIORITY` and the derived `PRIORITY` constants |
-| `py/priorities.py` | The Python binding: loads `priorities.json`, exposes the same vocabulary plus the wizard's derived numbering |
+| `py/priorities.py` | The Python binding: loads `priorities.json`, exposes the same vocabulary. The wizard's numbered option line is *not* here — `1) Critical 2) High …` is display copy, so `farm/wizard.py` derives it from this order where it is shown |
 | `fixtures/lifecycle-cases.json` | Input/expected pairs asserted by **both** language suites |
 | `fixtures/fields-cases.json` | The same, for the field bindings |
 | `fixtures/priorities-cases.json` | The same, for the priority bindings |
@@ -352,6 +352,17 @@ re-typing the vocabulary — keyed by named constant, not by array position, so 
 reordered `priorities.json` cannot silently recolour anything. `steps.json` contains no colour, accent or
 theme key at any depth, asserted.
 
+**No display copy either, and the priority vocabulary is where that line is
+easiest to blur.** The WhatsApp wizard's numbered option line — `1) Critical 2)
+High 3) Medium 4) Low` — is *derived* from the order declared here, which makes it
+tempting to build beside the order it numbers. It is still a string shown to a
+human, so it lives in `farm/wizard.py._priority_options`, and the GitHub label
+spelling lives in `server/src/priorityLabels.js` for the same reason.
+`domain-binding-hygiene.test.mjs` enforces the split on **both** bindings: the JS
+half by named export, the Python half by set equality over the names the module
+actually owns, so a new public name has to be argued for rather than appearing
+quietly.
+
 `reasons.json` is held to a **wider** bar than `steps.json` on this, because the
 temptation is different. Sitting a `label` and a `detail` next to the `retryable`
 flag would read as harmless data and would move the pause banner's wording out
@@ -451,8 +462,19 @@ three before this change:
   exactly what both colour maps were. Without this tier the scan would have passed
   on the two files the change works hardest on, and the named-constant keying
   would be unverified ceremony;
-- a **regex alternation** — `(critical|high|medium|low)`, the folded form, which is
-  how the label pattern spelled the list in two files at once.
+- an **alternation** — the folded form as a token of a pipe-separated *run*, which
+  is how the label pattern spelled the list in two files at once, and how prose
+  shorthands it.
+
+  That tier reads a **run**, not a value sitting between two delimiters. The
+  stricter reading required a delimiter before *and* after, which scored the first
+  and last branch zero — so a bare four-value alternation with no surrounding
+  parens yielded two hits and fell under the threshold. `README.md` described the
+  GitHub label vocabulary in exactly that shape and this scan walked past it, which
+  is the failure the run form fixes. It is also *narrower* where it counts: a
+  markdown table row (pipes separated by spaces) and parenthesised prose such as
+  `(high performance)` both score zero, so a docs table naming the vocabulary never
+  needs allowlisting.
 
 **One exclusion makes it usable**, and it is structural rather than an allowlist:
 a value in **object-property value position** (preceded by `:`) does not count.
@@ -465,7 +487,9 @@ or `,`, so a real list still fires, including inside `"priorities": [...]`.
 values are priorities — `{"1": "Critical", "2": "High", …}`, which is what
 `wizard.py`'s `_PRIORITY_NUMS` used to be — escapes the value-position exclusion
 and matches neither other tier. That specific shape is covered instead by
-`by_number`'s fixture cases and by `test_the_numbering_helpers_follow_their_argument_not_the_live_document`.
+`test_the_numbering_helpers_follow_their_argument_not_the_live_document` in
+`farm/tests/test_wizard.py`, which drives `wizard._priority_by_number` with a
+fabricated vocabulary.
 
 Two files outside `domain/` may hold a collection, by set equality so a stale entry
 also fails: `domain-priority-pins.test.mjs` (typing the values out *is* what a pin

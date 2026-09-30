@@ -47,11 +47,22 @@
 //    unverified ceremony. Same lesson domain-reason-literals.test.mjs records
 //    about CATEGORY_COPY.
 //
-// 3. ALTERNATION — the FOLDED value between `|` or `(` delimiters, which is how a
-//    regex spells a list. This is the pre-HZ-135 shape of the label pattern that
-//    existed twice, byte-for-byte: `(critical|high|medium|low)`. A quoted-only
-//    rule cannot see it, and it was a full four-value list in two production
-//    files.
+// 3. ALTERNATION — the FOLDED value as a token of a PIPE-SEPARATED RUN, which is
+//    how a regex (and a prose shorthand) spells a list. This is the pre-HZ-135
+//    shape of the label pattern that existed twice, byte-for-byte:
+//    `(critical|high|medium|low)`. A quoted-only rule cannot see it, and it was a
+//    full four-value list in two production files.
+//
+//    Matched as a RUN — a value adjacent to a `|` on either side — rather than as
+//    a value BETWEEN two delimiters. The stricter earlier reading required `[|(]`
+//    before AND `[|)]` after, which scored the first and last branch zero: a bare
+//    four-value alternation with no surrounding parens, `critical|high|medium|low`,
+//    yielded only two hits and fell UNDER the threshold. That is not theoretical —
+//    README.md spelled the label vocabulary exactly that way and this scan walked
+//    straight past it. Run-matching is also NARROWER where it counts: a markdown
+//    table row (`| Critical | High |`, pipes separated by spaces) and
+//    parenthesised prose (`(high performance)`) both fire zero, because neither is
+//    a run of pipe-joined tokens.
 //
 // All three run over COMMENT-STRIPPED text, so provenance prose is left alone
 // rather than reworded to satisfy a scanner.
@@ -85,8 +96,11 @@ const FOLDED = PRIORITIES.map((value) => value.toLowerCase()).join('|')
 const QUOTED = new RegExp(`(?<![:=]\\s*)['"\`](${VALUES})['"\`]`, 'g')
 // Tier 2: bare, unquoted object key.
 const BARE_KEY = new RegExp(`\\b(${VALUES})\\s*:`, 'g')
-// Tier 3: the folded value as one branch of a regex alternation.
-const ALTERNATION = new RegExp(`(?<=[|(])(${FOLDED})(?=[|)])`, 'gi')
+// Tier 3: the folded value as a token of a pipe-separated run. Two halves, so
+// every token of `a|b|c` is reached: the FIRST token is followed by a pipe, and
+// every later one is preceded by a pipe.
+const ALTERNATION_HEAD = new RegExp(`(?<![\\w|-])(${FOLDED})(?=\\|)`, 'gi')
+const ALTERNATION_TAIL = new RegExp(`(?<=\\|)(${FOLDED})(?![\\w-])`, 'gi')
 
 const COLLECTION_WINDOW = 3
 const COLLECTION_THRESHOLD = 3
@@ -98,7 +112,7 @@ const CANONICAL = new Map(PRIORITIES.map((value) => [value.toLowerCase(), value]
 
 function valuesDeclaredOn(line) {
   const found = new Set()
-  for (const re of [QUOTED, BARE_KEY, ALTERNATION]) {
+  for (const re of [QUOTED, BARE_KEY, ALTERNATION_HEAD, ALTERNATION_TAIL]) {
     for (const match of line.matchAll(re)) found.add(CANONICAL.get(match[1].toLowerCase()))
   }
   return found
@@ -176,6 +190,36 @@ test('POSITIVE CONTROL: the detector fires on every shape a declaration actually
   // A SQL IN list, which is what server/src/db.js would hold if it were still
   // hand-typed.
   assert.ok(declaresACollection(`CHECK (priority IN ('${a}','${b}','${c}','${d}'))\n`), 'a SQL IN list')
+  // A BARE alternation — no parens, no regex around it. This is prose shorthand,
+  // and it is the shape README.md used to describe the label vocabulary in. The
+  // between-two-delimiters reading of this tier scored it 2 and walked past it.
+  assert.ok(
+    declaresACollection(`GitHub owns the priority via a \`${FOLDED}\` label\n`),
+    'a bare pipe-separated alternation in prose',
+  )
+})
+
+test('POSITIVE CONTROL: the alternation tier reads a RUN, so prose and tables are not lists', () => {
+  const [a, b, c, d] = PRIORITIES
+  // A markdown table row. The pipes are separated by spaces, so these are cells,
+  // not alternation branches — and a docs table naming the vocabulary is prose.
+  assert.ok(
+    !declaresACollection(`| ${a} | ${b} | ${c} | ${d} |\n| --- | --- | --- | --- |\n`),
+    'a markdown table row fired — every docs table listing the vocabulary would need allowlisting',
+  )
+  // Parenthesised prose. `(` used to count as an opening delimiter on its own,
+  // which made any three bracketed English words a "list".
+  assert.ok(
+    !declaresACollection(
+      `(${a.toLowerCase()} severity) and (${b.toLowerCase()} latency) and (${c.toLowerCase()} effort)\n`,
+    ),
+    'parenthesised prose fired',
+  )
+  // But every token of a real run is still counted, wherever it sits in the run:
+  // the head is only ever followed by a pipe, the tail only ever preceded by one.
+  const run = [a, b, c].map((value) => value.toLowerCase()).join('|')
+  assert.ok(declaresACollection(`${run}\n`), 'a bare three-token run')
+  assert.ok(declaresACollection(`/^(?:x)?(${run})$/i\n`), 'a run inside a regex group')
 })
 
 test('POSITIVE CONTROL: the value-position exclusion separates data rows from a vocabulary', () => {

@@ -58,7 +58,7 @@ def test_it_reads_domain_priorities_json_rather_than_embedding_it():
     # (server/test/domain-binding-hygiene.test.mjs strips them the same way).
     code = re.sub(r'"""[\s\S]*?"""', "", source)
     code = "\n".join(line.split("#", 1)[0] for line in code.splitlines())
-    assert "def options_line" in code  # positive control: the stripping left real code
+    assert "def is_priority" in code  # positive control: the stripping left real code
     for value in priorities.PRIORITIES:
         assert value not in code, f"priority value {value!r} is inlined in the binding"
 
@@ -103,23 +103,16 @@ def test_is_priority_is_case_sensitive_because_the_api_enums_are():
         assert priorities.is_priority(value.upper()) is (value.upper() == value)
 
 
-def test_options_line_numbers_the_authored_order_one_based():
-    expected = " ".join(f"{i + 1}) {value}" for i, value in enumerate(priorities.PRIORITIES))
-    assert priorities.options_line(priorities.PRIORITIES) == expected
-
-
-def test_by_number_is_the_exact_inverse_of_options_lines_numbering():
-    mapping = priorities.by_number(priorities.PRIORITIES)
-    assert list(mapping) == [str(i + 1) for i in range(len(priorities.PRIORITIES))]
-    for number, value in mapping.items():
-        assert f"{number}) {value}" in priorities.options_line(priorities.PRIORITIES)
-
-
-def test_the_numbering_helpers_follow_their_argument_not_the_live_document():
-    # Zero literals from the real vocabulary: this is what proves the helpers are
-    # derivations rather than dressed-up constants.
-    assert priorities.options_line(("Solo",)) == "1) Solo"
-    assert priorities.by_number(("Solo", "Duo")) == {"1": "Solo", "2": "Duo"}
+def test_the_binding_declares_no_display_copy_of_its_own():
+    # The guardrail is "no presentation (colours, labels for display, theme
+    # tokens) in domain/", and the numbered WhatsApp option line — "1) Critical 2)
+    # High …" — is display copy even though every value in it is derived. It lives
+    # in farm/wizard.py._priority_options, which farm/tests/test_wizard.py covers.
+    # Asserted by NAME here and structurally in
+    # server/test/domain-binding-hygiene.test.mjs, which runs the same check
+    # against the JS half.
+    for name in ("options_line", "by_number", "OPTIONS_LINE", "PRIORITY_LABELS", "LABELS", "COLORS"):
+        assert not hasattr(priorities, name), f"domain/py/priorities.py exposes {name} — display copy stays out of domain/"
 
 
 def test_the_real_document_passes_its_own_load_time_validation():

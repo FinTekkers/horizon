@@ -62,11 +62,19 @@ test('both bindings answer isPriority/is_priority identically, for members and n
 // The wizard's numbering is Python-only (the server never renders it), but it is
 // DERIVED FROM THE SAME ORDER the JS binding exposes — so its agreement with that
 // order is exactly what belongs in a parity test.
-test("the Python numbering follows the JS binding's order, 1-based", () => {
-  const byNumber = spawnedPython('priorities.by_number(priorities.PRIORITIES)')
-  assert.deepEqual(byNumber, Object.fromEntries(PRIORITIES.map((value, i) => [String(i + 1), value])))
-  const optionsLine = spawnedPython('priorities.options_line(priorities.PRIORITIES)')
-  assert.equal(optionsLine, PRIORITIES.map((value, i) => `${i + 1}) ${value}`).join(' '))
+//
+// It is read out of farm/wizard.py rather than out of the binding on purpose: a
+// numbered option line is WhatsApp display copy, and domain/ declares the
+// vocabulary, not the strings a human reads (the guardrail, and
+// domain-binding-hygiene.test.mjs enforces it in both languages). Moving the
+// helper did not move the claim — the wizard still has to number the order this
+// binding publishes, and that is what this asserts.
+test("the wizard's numbering follows the JS binding's order, 1-based", () => {
+  const script =
+    'import json; from farm import wizard; print(json.dumps({"line": wizard._priority_options(), "byNumber": wizard._priority_by_number()}))'
+  const wizard = JSON.parse(execFileSync('python3', ['-c', script], { cwd: REPO_ROOT, encoding: 'utf8' }))
+  assert.deepEqual(wizard.byNumber, Object.fromEntries(PRIORITIES.map((value, i) => [String(i + 1), value])))
+  assert.equal(wizard.line, PRIORITIES.map((value, i) => `${i + 1}) ${value}`).join(' '))
 })
 
 // PRIORITY is JS-only: it exists because a JS object property lookup answers

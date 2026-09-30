@@ -170,7 +170,7 @@ test('neither priority binding inlines a value — every priority, both files, i
   assert.ok(priorityBinding.PRIORITIES.length > 0, 'sanity: the JS priority binding exports an empty vocabulary')
   // Positive controls for the two strippers: each really is still reading code.
   assert.ok(prioritiesJsCode.includes('export const PRIORITY'))
-  assert.ok(prioritiesPyCode.includes('def options_line'))
+  assert.ok(prioritiesPyCode.includes('def is_priority'))
   for (const value of priorityBinding.PRIORITIES) {
     for (const [rel, code] of [
       ['domain/js/priorities.js', prioritiesJsCode],
@@ -373,6 +373,48 @@ test('the JS priority binding exports no presentation token and no display copy'
       `domain/js/priorities.js exports ${forbidden} — presentation and GitHub label syntax stay out of domain/`,
     )
   }
+})
+
+// The same bar, applied to the PYTHON half. Without this the guardrail is only
+// half enforced, and the half that is unenforced is the one that already slipped:
+// the WhatsApp wizard's numbered option line — `1) Critical 2) High …` — is
+// display copy even though every value in it is derived, and it is a natural
+// thing to want to put beside the vocabulary it numbers. It belongs in
+// farm/wizard.py._priority_options, where the string is shown.
+//
+// Structural rather than a name list: it asks the module what it OWNS (names
+// whose __module__ is the binding itself, so an import cannot trip it) and
+// compares that against what the binding is allowed to own. Set equality, so a
+// new public name has to be argued for here rather than appearing quietly.
+const pythonPriorityNames = JSON.parse(
+  execFileSync(
+    'python3',
+    [
+      '-c',
+      'import inspect, json; from domain.py import priorities; print(json.dumps(sorted(n for n, v in vars(priorities).items() if not n.startswith("_") and not inspect.ismodule(v) and getattr(v, "__module__", priorities.__name__) == priorities.__name__)))',
+    ],
+    { cwd: REPO_ROOT, encoding: 'utf8' },
+  ),
+)
+
+test('the Python priority binding owns the vocabulary and nothing else — no display copy', () => {
+  assert.deepEqual(
+    pythonPriorityNames,
+    ['DEFAULT_PRIORITY', 'PRIORITIES', 'is_priority'],
+    'domain/py/priorities.py gained or lost a public name — presentation and display copy stay out of domain/',
+  )
+  // Named explicitly as well, because the set assertion above reads as a
+  // formality until you know which names it is keeping out.
+  for (const forbidden of ['options_line', 'by_number', 'PRIORITY_LABELS', 'LABELS', 'COLORS']) {
+    assert.ok(
+      !pythonPriorityNames.includes(forbidden),
+      `domain/py/priorities.py exposes ${forbidden} — display copy belongs where it is displayed`,
+    )
+  }
+  // And the display copy really does live in the consumer, so this is a split
+  // rather than a deletion.
+  const wizard = readFileSync(path.join(REPO_ROOT, 'farm/wizard.py'), 'utf8')
+  assert.match(wizard, /^def _priority_options\(/m, 'farm/wizard.py does not own its numbered option line')
 })
 
 // ---- shape pin: BOTH priority bindings ship the AUTHORED vocabulary ----
