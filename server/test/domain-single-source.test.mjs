@@ -140,3 +140,24 @@ test('exactly one priorities.json exists, and it is domain/priorities.json', () 
   const found = relPaths.filter((p) => path.basename(p) === 'priorities.json')
   assert.deepEqual(found, ['domain/priorities.json'])
 })
+
+// HZ-133: the persona registry — ids, agent membership, defaults, legacy aliases
+// and persona-to-provider — is the FIFTH thing domain/ owns, added under the
+// same rule — one JSON, one schema, one hand-written binding per language, plus
+// the cross-language fixture both suites run.
+test('domain/ also holds the persona registry: source, schema, both bindings and its fixture', () => {
+  for (const expected of [
+    'domain/personas.json',
+    'domain/personas.schema.json',
+    'domain/js/personas.js',
+    'domain/py/personas.py',
+    'domain/fixtures/personas-cases.json',
+  ]) {
+    assert.ok(relPaths.includes(expected), `${expected} is missing`)
+  }
+})
+
+test('exactly one personas.json exists, and it is domain/personas.json', () => {
+  const found = relPaths.filter((p) => path.basename(p) === 'personas.json')
+  assert.deepEqual(found, ['domain/personas.json'])
+})
