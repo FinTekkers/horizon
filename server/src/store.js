@@ -404,6 +404,10 @@ function inactiveProject(item) {
 // ---- mutations ----
 
 const touch = "updated_at = datetime('now')"
+// A human-directed rework at or before implement starts the automated review
+// loop over: fresh cycles, and no HZ-182 fix pass — a human send-back is an
+// unscoped change, so the next implement and review are both full.
+const RESET_REVIEW_STATE = ', review_cycle_count = 0, fix_pass = 0, fix_findings_json = NULL, last_reviewed_sha = NULL'
 
 export function addEvent(id, { who, text, color, initials }) {
   db.prepare('INSERT INTO event (item_id, who, text, color, initials) VALUES (?, ?, ?, ?, ?)').run(id, who, text, color, initials)
@@ -508,7 +512,7 @@ export function requestChanges(id, target, feedbackText, actor = 'You', targetSt
   )
   // A human-directed rework gets a fresh set of automated review cycles —
   // otherwise a prior automated cap-out could falsely cap this new attempt.
-  const resetReview = reworkIdx <= IMPLEMENT_STEP_INDEX ? ', review_cycle_count = 0' : ''
+  const resetReview = reworkIdx <= IMPLEMENT_STEP_INDEX ? RESET_REVIEW_STATE : ''
   db.prepare(`UPDATE work_item SET cursor = ?, rejected = 0, paused = 0${resetReview}, ${touch} WHERE id = ?`).run(reworkIdx, id)
   addEvent(id, {
     who: actor,
@@ -615,7 +619,7 @@ export function restartPhase(id, phase, reason, actor = 'You') {
       reason,
     )
   }
-  const resetReview = firstIdx <= IMPLEMENT_STEP_INDEX ? ', review_cycle_count = 0' : ''
+  const resetReview = firstIdx <= IMPLEMENT_STEP_INDEX ? RESET_REVIEW_STATE : ''
   db.prepare(`UPDATE work_item SET cursor = ?, rejected = 0, paused = 0${resetReview}, ${touch} WHERE id = ?`).run(firstIdx, id)
   addEvent(id, {
     who: actor,
@@ -873,7 +877,7 @@ export function recoverRejectedItems() {
       STEPS[reworkIdx].agent || '',
       notes || 'changes requested',
     )
-    const resetReview = reworkIdx <= IMPLEMENT_STEP_INDEX ? ', review_cycle_count = 0' : ''
+    const resetReview = reworkIdx <= IMPLEMENT_STEP_INDEX ? RESET_REVIEW_STATE : ''
     db.prepare(`UPDATE work_item SET cursor = ?, rejected = 0${resetReview}, ${touch} WHERE id = ?`).run(reworkIdx, row.id)
     addEvent(row.id, {
       who: 'Horizon',
