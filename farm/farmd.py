@@ -8,6 +8,7 @@ tmux session `farm-daemon` (see run.sh) on port 4100.
 import asyncio
 import json
 import os
+import signal
 import tempfile
 import threading
 import time
@@ -22,7 +23,7 @@ from fastapi.responses import JSONResponse
 # HZ-132 put the failure-reason vocabulary there under the same rule, so the
 # tags this daemon relays are the ones the server classifies, by construction.
 from domain.py import reasons, steps
-from . import check_slots, conflict_resolver, rules, tmux_mgr, workspaces
+from . import check_slots, conflict_resolver, pause, rules, tmux_mgr, workspaces
 from . import config as farm_config
 from .agent_runner import AgentError, assert_provider_auth
 from .config import (
@@ -130,6 +131,10 @@ def _teardown() -> None:
         # `<run_id>.<suffix>.json.tmp` behind, which a `*.json` glob would
         # never reach and nothing else ever cleans.
         for f in (QUEUE_DIR / sub).glob("*.json*"):
+            f.unlink(missing_ok=True)
+    # HZ-194: a step agent's pid and pause-outcome files (see _pause_in_flight).
+    for pattern in ("*.pid", "*.paused*"):
+        for f in (QUEUE_DIR / "runs" / "active").glob(pattern):
             f.unlink(missing_ok=True)
     if killed:
         print(f"farmd: tore down sessions {killed}", flush=True)
@@ -739,13 +744,82 @@ def run_log(run_id: str, offset: int = 0):
     }
 
 
+PAUSE_POLL_S = 0.2
+PAUSE_TIMEOUT_MAX_S = 300
+
+
+def _pause_timeout(raw) -> float:
+    """The pause's checkpoint bound from the request body. A pause must never
+    be refused, so a missing, non-numeric or non-positive value falls back to
+    the default and anything else is clamped to 1..PAUSE_TIMEOUT_MAX_S."""
+    try:
+        value = float(raw) if not isinstance(raw, bool) else None
+    except (TypeError, ValueError):
+        value = None
+    if value is None or value != value or value <= 0:  # value != value: NaN
+        value = farm_config.PAUSE_CHECKPOINT_TIMEOUT_S
+    return min(max(value, 1), PAUSE_TIMEOUT_MAX_S)
+
+
+def _pid_alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+async def _pause_in_flight(run_id: str, name: str, timeout_s: float) -> dict:
+    """HZ-194: asks a running step agent to save its work before its session
+    is killed. SIGTERM goes to the agent's pid (step_agent.main writes it);
+    the agent stops its children, pushes a WIP checkpoint and writes
+    `<run_id>.paused`. The session stays alive while it does, so the
+    dispatcher's per-item mutex (_item_worktree_busy) holds back a resumed
+    attempt until the save is over. Returns {outcome, detail}; the caller
+    kills the session afterwards whatever happened, so the pause itself is
+    never blocked for longer than timeout_s."""
+    active = QUEUE_DIR / "runs" / "active"
+    outcome_path = active / f"{run_id}.paused"
+    try:
+        pid = int((active / f"{run_id}.pid").read_text().strip())
+    except (OSError, ValueError):
+        return {"outcome": "failed", "detail": "the step agent's pid is unknown, so it could not be asked to save"}
+    try:
+        os.kill(pid, signal.SIGTERM)
+    except OSError as exc:
+        return {"outcome": "failed", "detail": f"could not signal the step agent: {exc}"}
+    print(f"farmd: pausing run {run_id} — asked {name} to checkpoint (up to {timeout_s:g}s)", flush=True)
+    deadline = time.monotonic() + timeout_s
+    while True:
+        found = pause.read_outcome(outcome_path)
+        if found is not None:
+            return {"outcome": found["outcome"], "detail": str(found.get("detail") or "")}
+        if not _pid_alive(pid):
+            found = pause.read_outcome(outcome_path)
+            if found is not None:
+                return {"outcome": found["outcome"], "detail": str(found.get("detail") or "")}
+            return {"outcome": "failed", "detail": "the step agent exited without saying whether it saved"}
+        if time.monotonic() >= deadline:
+            return {"outcome": "timed_out", "detail": f"the checkpoint did not finish within {timeout_s:g}s"}
+        await asyncio.sleep(PAUSE_POLL_S)
+
+
 @app.post("/steps/cancel")
 async def steps_cancel(request: Request):
     """Cancel a run wherever it is: still queued (drop the task file) or
     already in flight (kill its tmux session so it can't keep pushing to the
-    item's branch while a superseding attempt starts)."""
+    item's branch while a superseding attempt starts).
+
+    HZ-194: `reason: "pause"` (sent only when an operator pauses the item)
+    first lets an in-flight run checkpoint its work — see _pause_in_flight —
+    and the response then carries `checkpoint: {outcome, detail}`. Every
+    other cancel (reject, supersede, abandon) still kills at once."""
     body = await request.json()
     run_id = str(body.get("run_id"))
+    pausing = body.get("reason") == "pause"
+    checkpoint = None
     removed = False
     killed = None
     for sub in ("pm", "runs", "runs/active"):
@@ -755,12 +829,17 @@ async def steps_cancel(request: Request):
         if sub == "runs/active":
             try:
                 name = _run_session_name(json.loads(task_path.read_text()))
+                if pausing and tmux_mgr.session_exists(name):
+                    checkpoint = await _pause_in_flight(run_id, name, _pause_timeout(body.get("checkpoint_timeout_s")))
+                    print(f"farmd: pause of run {run_id}: checkpoint {checkpoint['outcome']}", flush=True)
                 if tmux_mgr.session_exists(name):
                     tmux_mgr.kill_session(name)
                     killed = name
                     print(f"farmd: cancelled in-flight run {run_id} (killed {name})", flush=True)
             except Exception as exc:
                 print(f"farmd: cancel of run {run_id} could not kill its session: {exc}", flush=True)
+            for leftover in (f"{run_id}.pid", f"{run_id}.paused"):
+                (QUEUE_DIR / sub / leftover).unlink(missing_ok=True)
         task_path.unlink(missing_ok=True)
         removed = True
     # Fallback: the in-memory map (covers an active task file already consumed).
@@ -770,7 +849,11 @@ async def steps_cancel(request: Request):
         killed = session
         removed = True
         print(f"farmd: cancelled run {run_id}, killed {session}", flush=True)
-    return {"ok": True, "removed": removed, "killed": killed}
+    response = {"ok": True, "removed": removed, "killed": killed}
+    if pausing:
+        # Queued (or already gone): no agent ran, so there is nothing to save.
+        response["checkpoint"] = checkpoint or {"outcome": "not_running", "detail": "no agent was running"}
+    return response
 
 
 @app.post("/internal/steps/started")

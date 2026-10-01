@@ -84,6 +84,12 @@ export const RECONCILE_SWEEP_MS = Math.max(
 // same repo checks. A hung farmd (or a test/lint command that never returns)
 // must not hang the Accept-gate request forever.
 export const FARM_CONFLICT_RESOLVE_TIMEOUT_MS = Number(process.env.FARM_CONFLICT_RESOLVE_TIMEOUT_MS || 50 * 60 * 1000)
+// HZ-194: how long a pause lets a running implement attempt checkpoint its
+// work before farmd kills it anyway. The single knob: it is sent with every
+// pause, so farmd needs no copy of its own. Anything but a positive number
+// falls back to 30.
+const pauseCheckpointTimeoutS = Number(process.env.HZ_PAUSE_CHECKPOINT_TIMEOUT_S)
+export const PAUSE_CHECKPOINT_TIMEOUT_S = pauseCheckpointTimeoutS > 0 ? pauseCheckpointTimeoutS : 30
 // HZ-183: bounds the pre-merge check at Accept the code — a test-merge of the
 // PR into the current base and the repo's own checks (server/src/premerge.js).
 // A run that has not finished by then blocks the merge, fail-closed.

@@ -37,10 +37,11 @@ export function notifyChange() {
 }
 
 // The orchestrator registers itself here at init (avoids a module cycle).
-let agentRunner = { kick: () => {}, cancel: () => {} }
+let agentRunner = { kick: () => {}, cancel: () => {}, pause: () => {} }
 
+// A runner without pause() (HZ-194 added it) pauses by cancelling, as before.
 export function registerAgentRunner(runner) {
-  agentRunner = runner
+  agentRunner = { pause: (id) => runner.cancel(id, 'cancelled'), ...runner }
 }
 
 // The orchestrator polls the farm for {state, reason} per active run_id and
@@ -737,7 +738,8 @@ export function setPaused(id, paused) {
     initials: 'YOU',
   })
   notify()
-  if (paused) agentRunner.cancel(id, 'cancelled')
+  // HZ-194: pause, not cancel — a running attempt checkpoints its work first.
+  if (paused) agentRunner.pause(id)
   else agentRunner.kick(id)
   return { ok: true }
 }

@@ -49,6 +49,7 @@ import {
   FARM_QUEUE_TIMEOUT_MS,
   FARM_START_TIMEOUT_MS,
   FARM_CONFLICT_RESOLVE_TIMEOUT_MS,
+  PAUSE_CHECKPOINT_TIMEOUT_S,
   GATE_ACTION_SWEEP_MS,
   RECONCILE_SWEEP_MS,
   UI_URL,
@@ -83,6 +84,13 @@ const dispatching = new Set()
 // a fresh implement run in the window between cancel and the cursor move.
 // Memory-only on purpose: a restart forgets it.
 const forwarding = new Set()
+
+// HZ-194: item id -> the promise of its pause's farm call, while a paused
+// run may still be pushing its WIP checkpoint. kick() and stopActiveRuns()
+// wait on it, so neither a resumed attempt nor a reject-forward's PR-head
+// read (HZ-185) can run before that push lands. Memory-only, like
+// forwarding: a restart forgets it, and farmd's own bound still ends the save.
+const pausing = new Map()
 
 // Execution budget once an agent has actually started (HZ-57): the implement
 // step legitimately runs long (real coding + tests), so its budget must
@@ -840,6 +848,13 @@ function runnable(item) {
 }
 
 export function kick(id, opts = {}) {
+  // HZ-194: a resume right after a pause waits for the paused run's
+  // checkpoint push, so the next attempt starts on it.
+  const saving = pausing.get(id)
+  if (saving) {
+    saving.then(() => kick(id, opts))
+    return
+  }
   const item = getItem(id)
   if (!runnable(item) || dispatching.has(id) || forwarding.has(id)) return
   dispatching.add(id)
@@ -1888,6 +1903,20 @@ export function cancel(id, status = 'cancelled') {
 // ignores it; forwardRejectedReview awaits it (HZ-185) before it reads the PR
 // head, so a session that was still running cannot push after that check.
 function stopActiveRuns(id, status) {
+  const activeRuns = takeActiveRuns(id, status)
+  if (!FARM_URL) return Promise.resolve(true)
+  // HZ-194: a pause still checkpointing is one more push in flight; HZ-185's
+  // forward must not read the PR head before it lands either.
+  const saving = pausing.get(id) || Promise.resolve()
+  return Promise.all([
+    saving.then(() => true),
+    ...activeRuns.map((run) => farmFetch('/steps/cancel', { run_id: run.id }).then(() => true, () => false)),
+  ]).then((acks) => acks.every(Boolean))
+}
+
+// Clears the watchdogs of the item's active runs, closes them with `status`
+// and returns them — the synchronous half every stop shares.
+function takeActiveRuns(id, status) {
   const activeRuns = db.prepare("SELECT id FROM step_run WHERE item_id = ? AND status = 'active'").all(id)
   for (const run of activeRuns) {
     clearTimeout(timers[run.id])
@@ -1895,10 +1924,64 @@ function stopActiveRuns(id, status) {
   }
   dispatching.delete(id)
   closeActiveRuns(id, status)
-  if (!FARM_URL) return Promise.resolve(true)
-  return Promise.all(
-    activeRuns.map((run) => farmFetch('/steps/cancel', { run_id: run.id }).then(() => true, () => false)),
-  ).then((acks) => acks.every(Boolean))
+  return activeRuns
+}
+
+// HZ-194: what each pause outcome farmd reports reads as in the activity log.
+// Anything else — no `checkpoint` key (an older farmd), an unknown outcome —
+// reads as not saved: claiming a save nobody confirmed would be worse.
+function pauseCheckpointText(id, checkpoint) {
+  const detail = typeof checkpoint?.detail === 'string' && checkpoint.detail ? `: ${checkpoint.detail}` : ''
+  switch (checkpoint?.outcome) {
+    case 'saved':
+      return `paused — saved work in progress as a WIP checkpoint on horizon/${id.toLowerCase()}`
+    case 'nothing':
+      return 'paused — no changes since the last commit, nothing to save'
+    case 'not_running':
+      return null // queued: no agent ever ran, so a pause is exactly what it was before
+    case 'failed':
+    case 'timed_out':
+    case 'skipped':
+      return `paused — progress could not be saved${detail}`
+    default:
+      return 'paused — progress could not be saved: the farm did not say whether the work was saved'
+  }
+}
+
+// Called by the store when a human pauses an item (HZ-194). Unlike cancel(),
+// a running implement attempt is first asked to checkpoint its work, so a
+// pause never discards it. The runs close at once — the pause is never held
+// up — and the farm call runs in the background, bounded by
+// PAUSE_CHECKPOINT_TIMEOUT_S on the farm and a little more here.
+export function pause(id) {
+  const activeRuns = takeActiveRuns(id, 'cancelled')
+  if (!FARM_URL || activeRuns.length === 0) return
+  const body = (run) => ({ run_id: run.id, reason: 'pause', checkpoint_timeout_s: PAUSE_CHECKPOINT_TIMEOUT_S })
+  const timeoutMs = (PAUSE_CHECKPOINT_TIMEOUT_S + 15) * 1000
+  const settled = Promise.all(
+    activeRuns.map((run) =>
+      farmFetch('/steps/cancel', body(run), { timeoutMs }).then(
+        (res) => pauseCheckpointText(id, res?.checkpoint),
+        () => 'paused — progress could not be saved: the farm did not answer',
+      ),
+    ),
+  )
+    .then((lines) => {
+      for (const text of lines) {
+        if (text) addEvent(id, { who: 'Horizon', text, color: '#5E4380', initials: 'HZ' })
+      }
+      if (lines.some(Boolean)) notifyChange()
+    })
+    .catch(() => {}) // never reject: kick() and stopActiveRuns() chain on this
+    .finally(() => {
+      if (pausing.get(id) === settled) pausing.delete(id)
+    })
+  pausing.set(id, settled)
+}
+
+// Test seam: the promise a pause of `id` is still settling, or undefined.
+export function pendingPause(id) {
+  return pausing.get(id)
 }
 
 // ---- durable reconciliation (HZ-100) ----
@@ -1959,7 +2042,7 @@ export async function reconcileActiveRuns() {
 }
 
 export async function init(log) {
-  registerAgentRunner({ kick, cancel })
+  registerAgentRunner({ kick, cancel, pause })
   // store.js reads this to attach {state, reason} onto activeRun in
   // listItems() — a plain object lookup, never a network call, so
   // snapshot()/listItems() stay synchronous (HZ-54).
