@@ -94,6 +94,17 @@ CHECK_SUBPROCESS_SCRUB = frozenset({"FARM_MAX_EPHEMERAL", "FARM_MAX_CONCURRENT_C
 RECONCILE_INTERVAL_S = int(os.environ.get("FARM_RECONCILE_INTERVAL_S", "60"))
 RECONCILE_GRACE_S = int(os.environ.get("FARM_RECONCILE_GRACE_S", "90"))
 
+# HZ-130: how long a PM task file must stay unusable before the PM reports it
+# to the server instead of retrying it. An unusable file is never deleted
+# unreported, and never retried forever — this is the bound between those two.
+# Measured from the file's mtime rather than an in-memory poll counter, so a
+# PM restart (the watchdog revives it every 15s) cannot reset it to zero.
+# Must stay well under the server's own FARM_QUEUE_TIMEOUT_MS (10 minutes,
+# server/src/config.js) so the PM's specific report wins the race against a
+# generic `never_picked_up`. Raise it to retry-effectively-forever without a
+# deploy; the file is kept either way.
+PM_MALFORMED_GRACE_S = int(os.environ.get("FARM_PM_MALFORMED_GRACE_S", "30"))
+
 # ---- HZ-154: the scoped merge-conflict path ----
 # Caps on what the narrow path will even attempt. Above either, the conflict
 # escalates straight to the full implement cycle — a 30-file conflict is not a

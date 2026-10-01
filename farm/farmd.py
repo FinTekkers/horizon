@@ -55,6 +55,10 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _pm_session_name() -> str:
+    return f"farm-pm-{slugify(state['project']['name'])}" if state["project"] else ""
+
+
 # HZ-50: raised from 2 to 4 now that per-item git worktrees (workspaces.py)
 # mean concurrent steps on different items no longer share a working tree to
 # reset/clean/checkout over each other. Steps mostly wait on the Claude API
@@ -73,6 +77,14 @@ MAX_EPHEMERAL = int(__import__("os").environ.get("FARM_MAX_EPHEMERAL", "4"))
 
 # run_id -> tmux session name for launched ephemeral runs (so cancel can kill).
 RUN_SESSIONS: dict = {}
+
+# run_ids currently claimed by the PM agent (HZ-100). Steps 0/1/2/9 have no
+# per-run tmux session of their own — the PM's session persists across the
+# farm's lifetime — so this is what /runs/alive checks to prove a claimed PM
+# run is still in flight, without which a lost server-side watchdog for a
+# genuinely-in-flight PM step could be misread as dead. Populated by
+# /internal/steps/started, cleared by /internal/steps/result.
+PM_ACTIVE_RUNS: set = set()
 
 # Farm state survives farmd restarts: on boot we ADOPT live agent sessions
 # instead of requiring a /farm/start (whose teardown would kill them).
@@ -102,41 +114,11 @@ def _adopt_existing() -> None:
                 RUN_SESSIONS[str(task["run_id"])] = name
         except (json.JSONDecodeError, KeyError):
             continue
-    _retire_pm_lane()
     print(
         f"farmd: adopted running farm for '{saved['project'].get('name')}' "
-        f"({len(RUN_SESSIONS)} in-flight run(s))",
+        f"({len(RUN_SESSIONS)} in-flight run(s); the watchdog revives the PM if needed)",
         flush=True,
     )
-
-
-def _retire_pm_lane() -> int:
-    """HZ-204 cutover: the PM lane is gone, so a farmd adopting a farm left by
-    the previous build hands its leftovers to the per-task dispatcher instead
-    of orphaning them. Each queued `queue/pm/*.json` moves into `queue/runs/`
-    under the same name (never overwriting a file already there), then any
-    leftover `farm-pm-*` session is killed — it would run stale code, which is
-    the bug HZ-204 fixes. Its one in-flight run, if any, is reported not alive
-    by /runs/alive and auto-retried by the server's never-picked-up sweep.
-    Returns how many task files moved; a second call is a no-op."""
-    moved = 0
-    runs = QUEUE_DIR / "runs"
-    runs.mkdir(parents=True, exist_ok=True)
-    for task_path in sorted((QUEUE_DIR / "pm").glob("*.json")):
-        target = runs / task_path.name
-        if target.exists() or (runs / "active" / task_path.name).exists():
-            print(f"farmd: {task_path.name} is already on the runs queue — dropping the PM-lane copy", flush=True)
-            task_path.unlink(missing_ok=True)
-            continue
-        task_path.rename(target)
-        moved += 1
-    for name in tmux_mgr.list_farm_sessions():
-        if name.startswith("farm-pm-"):
-            tmux_mgr.kill_session(name)
-            print(f"farmd: killed retired PM session {name}", flush=True)
-    if moved:
-        print(f"farmd: moved {moved} PM-lane task(s) onto the runs queue", flush=True)
-    return moved
 
 
 def _teardown() -> None:
@@ -177,10 +159,9 @@ def workspace_mutating_indexes(step_table: list[dict]) -> set[int]:
     return {entry["index"] for entry in step_table if entry.get("workspaceMutating")}
 
 
-# Lane routing: which agent module runs a dispatched step — farm.pm_agent
-# ("pm") or farm.step_agent ("runs"). Since HZ-204 both are launched per task
-# from queue/runs by the same dispatcher; the lane only picks the module (see
-# _module_for_task). HZ-117: derived from steps.STEPS's runsIn field. An index absent
+# Lane routing: which long-running process handles a dispatched step — the
+# persistent PM session ("pm") or an ephemeral farm-dispatched agent
+# ("runs"). HZ-117: derived from steps.STEPS's runsIn field. An index absent
 # from the table (e.g. a gate, which is never dispatched here at all) falls
 # back to `default` — preserves the pre-HZ-117 behavior for an unrecognized
 # index.
@@ -189,14 +170,6 @@ def lane_for_index(step_table: list[dict], index, default: str = "runs") -> str:
     if entry is None:
         return default
     return "pm" if entry["runsIn"] == "pm" else default
-
-
-def _module_for_task(task: dict) -> str:
-    """The agent module a claimed task runs under — the PM lane's steps keep
-    their own prompt/patch contract (farm.pm_agent), everything else is a
-    step agent."""
-    index = (task.get("step") or {}).get("index", 99)
-    return "farm.pm_agent" if lane_for_index(steps.STEPS, index) == "pm" else "farm.step_agent"
 
 
 WORKSPACE_MUTATING_STEPS = frozenset(workspace_mutating_indexes(steps.STEPS))
@@ -216,7 +189,7 @@ def _write_task_atomic(path: Path, body: dict) -> None:
     """HZ-130: no poller may ever observe a half-written task file.
 
     The plain `write_text` this replaces let a poller read a truncated payload
-    mid-write; on the old PM lane that turned into silent data loss (an
+    mid-write; on the PM lane that turned into silent data loss (an
     unparseable file was deleted and nobody was told). Writing to a temp file
     and rename()-ing it means the final path only ever holds a complete
     payload — the file appears whole or not at all.
@@ -226,7 +199,8 @@ def _write_task_atomic(path: Path, body: dict) -> None:
     * same directory as the target — rename() cannot cross filesystems;
     * a `.json.tmp` suffix — every reader here globs `*.json`, which must
       never match a partial file (_adopt_existing, _select_dispatchable,
-      _session_for_run, _reconcile_claimed_runs and _run_state);
+      _session_for_run, _reconcile_claimed_runs, _run_state, and the PM
+      agent's own poll);
     * unique per call, via mkstemp — a fixed `<run_id>.json.tmp` would let two
       writes for the same run interleave into one temp file, which is the very
       race this function exists to close.
@@ -430,7 +404,7 @@ def _claim_and_launch(task_path, runs_dir: Path, repo_root: Path) -> str | None:
     name = _run_session_name(task)
     tmux_mgr.new_session(
         name,
-        f"{sys.executable} -m {_module_for_task(task)} --task {claimed}",
+        f"{sys.executable} -m farm.step_agent --task {claimed}",
         cwd=str(repo_root),
         log_file=str(LOGS_DIR / f"{name}.log"),
     )
@@ -458,6 +432,17 @@ def _ephemeral_dispatcher() -> None:
             print(f"farmd: dispatcher error: {exc}", flush=True)
 
 
+def _launch_pm_session() -> None:
+    slug = slugify(state["project"]["name"])
+    repo_root = Path(__file__).resolve().parent.parent
+    tmux_mgr.new_session(
+        f"farm-pm-{slug}",
+        f"{sys.executable} -m farm.pm_agent --project '{state['project']['name']}'",
+        cwd=str(repo_root),
+        log_file=str(LOGS_DIR / f"pm-{slug}.log"),
+    )
+
+
 def _concierge_session_name() -> str:
     return f"farm-concierge-{slugify(state['project']['name'])}" if state["project"] else ""
 
@@ -478,16 +463,21 @@ def _maybe_launch_concierge() -> bool:
 
 
 def _watchdog() -> None:
-    """The concierge dies (a stray Ctrl-C in an attached pane, a crash) —
-    revive it. It is the only long-lived agent session: since HZ-204 PM steps
-    run per task like every other step, and a dead one is the reconciler's
-    job (_reconcile_claimed_runs), not a revive."""
+    """Agents die (a stray Ctrl-C in an attached pane, a crash) — revive them.
+    Queued tasks survive because the queue lives on disk, not in the agent."""
     while True:
         time.sleep(15)
         with _lock:
             if state["status"] != "running" or not state["project"]:
                 continue
+            name = _pm_session_name()
             concierge = _concierge_session_name() if farm_config.FARM_WA_ENABLED else ""
+        if name and not tmux_mgr.session_exists(name):
+            print(f"farmd: watchdog reviving dead session {name}", flush=True)
+            try:
+                _launch_pm_session()
+            except Exception as exc:
+                print(f"farmd: watchdog revive failed: {exc}", flush=True)
         if concierge and not tmux_mgr.session_exists(concierge):
             print(f"farmd: watchdog reviving dead session {concierge}", flush=True)
             try:
@@ -509,6 +499,7 @@ def _start_async(project: dict, repos: list, token: str | None) -> None:
             except Exception as exc:  # workspaces are not needed until phase 3
                 print(f"farmd: WARNING workspace for {entry['repo']} failed: {exc}", flush=True)
 
+        _launch_pm_session()
         if _maybe_launch_concierge():
             print("farmd: WhatsApp concierge launched", flush=True)
         with _lock:
@@ -555,6 +546,10 @@ async def farm_start(request: Request):
         return JSONResponse({"error": str(exc)}, status_code=500)
     with _lock:
         if state["status"] == "running" and state["project"] and state["project"].get("id") == project.get("id"):
+            # Same project: recover a dead PM session in place — queue untouched.
+            if not tmux_mgr.session_exists(_pm_session_name()):
+                _launch_pm_session()
+                return {"ok": True, "recovered": True}
             return {"ok": True, "already": True}
         _teardown()
         ensure_dirs()
@@ -572,11 +567,13 @@ def farm_stop():
     return {"ok": True}
 
 
-def _run_state(run_id: str, runs_queue: list, busy: int) -> dict:
+def _run_state(run_id: str, pm_queue: list, runs_queue: list, busy: int) -> dict:
     """A run's semantic state, never its tmux session name (HZ-54): queued
-    while its task file sits in the runs queue (PM steps included, HZ-204),
-    running once the dispatcher has claimed it (moved it into runs/active —
-    not matched by the glob here, so it falls through to "running")."""
+    while its task file sits in the PM or ephemeral-runs queue, running once
+    the dispatcher has claimed it (moved it into runs/active — matched by
+    neither glob here, so it falls through to "running")."""
+    if any(p.stem == run_id for p in pm_queue):
+        return {"state": "queued", "reason": "waiting for the PM agent"}
     if any(p.stem == run_id for p in runs_queue):
         return {"state": "queued", "reason": f"waiting for a free agent slot ({busy}/{MAX_EPHEMERAL} in use)"}
     return {"state": "running"}
@@ -588,9 +585,10 @@ async def runs_status(request: Request):
     never see a tmux session name, only this small state vocabulary."""
     body = await request.json()
     run_ids = [str(r) for r in body.get("run_ids", [])]
+    pm_queue = list((QUEUE_DIR / "pm").glob("*.json"))
     runs_queue = list((QUEUE_DIR / "runs").glob("*.json"))
     busy = len(_ephemeral_sessions())
-    return {"states": {rid: _run_state(rid, runs_queue, busy) for rid in run_ids}}
+    return {"states": {rid: _run_state(rid, pm_queue, runs_queue, busy) for rid in run_ids}}
 
 
 def _run_alive(run_id: str) -> bool:
@@ -610,6 +608,10 @@ def _run_alive(run_id: str) -> bool:
         return tmux_mgr.session_exists(_run_session_name(task))
     if (QUEUE_DIR / "runs" / f"{run_id}.json").exists():
         return True  # still queued for a free ephemeral slot
+    if (QUEUE_DIR / "pm" / f"{run_id}.json").exists():
+        return True  # still queued for the PM agent
+    if run_id in PM_ACTIVE_RUNS:
+        return tmux_mgr.session_exists(_pm_session_name())
     session = RUN_SESSIONS.get(run_id)
     return bool(session and tmux_mgr.session_exists(session))
 
@@ -633,9 +635,10 @@ async def steps_run(request: Request):
     for key in ("run_id", "item", "step"):
         if key not in body:
             return JSONResponse({"error": f"missing {key}"}, status_code=400)
-    # Every step, PM steps included (HZ-204), is queued for the dispatcher and
-    # runs as its own per-task agent (bounded by FARM_MAX_EPHEMERAL); the
-    # lane only decides which module _claim_and_launch starts.
+    # Plan/review-summary steps go to the long-running PM (it has the project
+    # context to synthesize); everything else runs as an ephemeral agent via
+    # the dispatcher (bounded by FARM_MAX_EPHEMERAL). HZ-117: which is which
+    # comes from steps.STEPS's runsIn field, not a hardcoded index tuple.
     body["project"] = state["project"]
     # Project/repo rules are stamped into the task at enqueue (HZ-9) as a
     # list of unrendered parts — render_rules_section() (farm/rules.py) does
@@ -644,7 +647,7 @@ async def steps_run(request: Request):
     # rendered prompt text itself.
     item_repo = body["item"].get("repo") if isinstance(body["item"], dict) else None
     body["rules"] = rules.resolve_rules(state["project"]["name"] if state["project"] else None, item_repo)
-    queue = "runs"
+    queue = lane_for_index(steps.STEPS, body["step"].get("index", 99))
     (QUEUE_DIR / queue).mkdir(parents=True, exist_ok=True)
     task_path = QUEUE_DIR / queue / f"{body['run_id']}.json"
     # HZ-130: the enqueue write. A poller globbing this directory used to be
@@ -700,7 +703,8 @@ LOG_READ_CAP = 64 * 1024
 
 def _session_for_run(run_id: str) -> str | None:
     """Resolve a run to its ephemeral tmux session: the in-memory map first,
-    then the claimed task files (covers a farmd restarted mid-run)."""
+    then the claimed task files (covers a farmd restarted mid-run). PM-queue
+    runs (steps 0/1/2/9) share the PM session's log and resolve to nothing."""
     name = RUN_SESSIONS.get(run_id)
     if name:
         return name
@@ -769,13 +773,30 @@ async def steps_cancel(request: Request):
     return {"ok": True, "removed": removed, "killed": killed}
 
 
+@app.post("/internal/steps/started")
+async def internal_steps_started(request: Request):
+    """The PM agent's equivalent of the ephemeral dispatcher's own
+    _notify_started call above — the PM queue (steps 0/1/2/9) can sit behind
+    other PM work just as long as the ephemeral queue can (HZ-57)."""
+    body = await request.json()
+    run_id = str(body.get("run_id"))
+    active = _notify_started(run_id)
+    if active:
+        # HZ-100: marks this run alive for /runs/alive until steps_result
+        # reports it done/failed — the PM has already unlinked its task file
+        # by this point (claim-before-work), so this is the only record left
+        # that this specific run is the one the PM session is working on.
+        PM_ACTIVE_RUNS.add(run_id)
+    return {"ok": True, "active": active}
+
+
 @app.get("/internal/snapshot")
 def internal_snapshot():
     """The concierge's read path (HZ-140).
 
     farmd holds FARM_SHARED_SECRET; no agent session does any more, including
     the concierge's own. So the concierge reads the work-item snapshot the
-    same way the step agents report results: over loopback, through farmd, with
+    same way the PM agent reports results: over loopback, through farmd, with
     no credential of its own.
 
     Exposure, decided explicitly rather than left implicit: /internal/* is
@@ -800,9 +821,10 @@ def internal_snapshot():
 
 @app.post("/internal/steps/result")
 async def steps_result(request: Request):
-    """Step and PM agents report here; we forward to the Node server with the secret."""
+    """PM agent reports here; we forward to the Node server with the secret."""
     body = await request.json()
     run_id = body.get("run_id")
+    PM_ACTIVE_RUNS.discard(str(run_id))
     path = "complete" if body.get("ok") else "fail"
     if body.get("ok"):
         payload = {"summary": body.get("summary", ""), "patch": body.get("patch") or {}, "artifacts": body.get("artifacts") or {}}

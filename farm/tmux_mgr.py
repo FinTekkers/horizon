@@ -2,8 +2,9 @@
 
 Session naming:
   farm-daemon              farmd itself (started by run.sh)
+  farm-pm-<project>        the long-running PM agent
   farm-concierge-<project> the WhatsApp concierge (FARM_WA_ENABLED=1)
-  farm-run-<...>           ephemeral per-step agents, PM steps included (HZ-204)
+  farm-run-<...>           ephemeral per-step agents (phase 2+)
 """
 
 import os
@@ -144,9 +145,7 @@ def list_farm_sessions() -> list[str]:
 
 
 # Only agent sessions are ever torn down — never daemons (positive match, so
-# a differently-named farmd session can't kill itself). `farm-pm-` stays for
-# one release after HZ-204 retired the long-lived PM session, so a straggler
-# from the previous build is still torn down.
+# a differently-named farmd session can't kill itself).
 AGENT_SESSION_PREFIXES = ("farm-pm-", "farm-run-", "farm-concierge-")
 
 
