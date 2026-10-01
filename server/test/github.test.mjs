@@ -365,6 +365,71 @@ test('mergePr never promotes the baseline when the merge itself fails', async (t
   assert.deepEqual(baselineTouched, [])
 })
 
+// ---- HZ-183: the merge is pinned to the head the pre-merge check tested ----
+
+function mergeBodyCapture(t, mergeResponse = { ok: true, status: 200, json: async () => ({ merged: true }) }) {
+  const bodies = []
+  const promoted = []
+  t.mock.method(globalThis, 'fetch', async (url, options) => {
+    const u = new URL(url)
+    if (u.pathname.endsWith('/merge')) {
+      bodies.push(JSON.parse(options.body))
+      return mergeResponse
+    }
+    if (u.pathname.includes('e2e-baseline') || u.pathname.includes('e2e-artifacts')) promoted.push(u.pathname)
+    return { ok: false, status: 404 }
+  })
+  return { bodies, promoted }
+}
+
+test('mergePr sends the tested head as sha when given one (HZ-183)', async (t) => {
+  const { bodies } = mergeBodyCapture(t)
+  await github.mergePr({ id: 'HZ-183-A', repo: REPO, pr: 90 }, { sha: 'a'.repeat(40) })
+  assert.deepEqual(bodies, [{ merge_method: 'squash', sha: 'a'.repeat(40) }])
+})
+
+test('mergePr called the old way sends no sha key (HZ-183 back-compat)', async (t) => {
+  const { bodies } = mergeBodyCapture(t)
+  await github.mergePr({ id: 'HZ-183-B', repo: REPO, pr: 91 })
+  assert.deepEqual(bodies, [{ merge_method: 'squash' }])
+})
+
+test('a 409 from the merge says the head moved, and never promotes the baseline (HZ-183)', async (t) => {
+  const { promoted } = mergeBodyCapture(t, { ok: false, status: 409, json: async () => ({ message: 'Head branch was modified' }) })
+  await assert.rejects(
+    github.mergePr({ id: 'HZ-183-C', repo: REPO, pr: 92 }, { sha: 'b'.repeat(40) }),
+    /the PR head moved while the checks ran — click Accept again/,
+  )
+  assert.deepEqual(promoted, [])
+})
+
+test('getPrHead returns the head sha and base branch, and rejects anything without them (HZ-183)', async (t) => {
+  const responses = {
+    91: { ok: true, status: 200, json: async () => ({ head: { sha: 'c'.repeat(40), ref: 'horizon/hz-183' }, base: { ref: 'main' } }) },
+    92: { ok: true, status: 200, json: async () => ({ head: {}, base: { ref: 'main' } }) },
+    93: { ok: false, status: 404, json: async () => ({}) },
+    94: { ok: false, status: 403, json: async () => ({}) },
+    95: { ok: false, status: 502, json: async () => ({}) },
+  }
+  t.mock.method(globalThis, 'fetch', async (url) => responses[new URL(url).pathname.split('/').pop()])
+  assert.deepEqual(await github.getPrHead({ repo: REPO, pr: 91 }), { sha: 'c'.repeat(40), ref: 'horizon/hz-183', baseRef: 'main' })
+  await assert.rejects(github.getPrHead({ repo: REPO, pr: 92 }), /without a head commit/)
+  await assert.rejects(github.getPrHead({ repo: REPO, pr: 93 }), /not found/)
+  await assert.rejects(github.getPrHead({ repo: REPO, pr: 94 }), /GitHub returned 403/)
+  await assert.rejects(github.getPrHead({ repo: REPO, pr: 95 }), /GitHub returned 502/)
+})
+
+test('getBranchSha reads the branch tip and rejects a response without one (HZ-183)', async (t) => {
+  let body = { object: { sha: 'd'.repeat(40) } }
+  t.mock.method(globalThis, 'fetch', async (url) => {
+    assert.match(new URL(url).pathname, /\/git\/ref\/heads%2Fmain$/)
+    return { ok: true, status: 200, json: async () => body }
+  })
+  assert.equal(await github.getBranchSha(REPO, 'main'), 'd'.repeat(40))
+  body = { object: {} }
+  await assert.rejects(github.getBranchSha(REPO, 'main'), /without a commit sha/)
+})
+
 test('handlePrStateChange frees the artifact ref when a PR closes unmerged', async (t) => {
   db.prepare(
     'INSERT INTO work_item (id, title, priority, cursor, repo, issue, pr) VALUES (?, ?, ?, ?, ?, ?, ?)',

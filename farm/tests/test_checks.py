@@ -69,6 +69,41 @@ def test_failing_checks_raise_with_output_tail(tmp_path, monkeypatch):
     assert "the-broken-test-name" in str(err.value)
 
 
+def test_a_long_failure_keeps_its_last_lines_not_its_first(tmp_path, monkeypatch):
+    """HZ-183: the failing test names are at the END of a run's output. The
+    tail is the last CHECK_TAIL_LINES lines, marked as trimmed — line 1 is
+    gone, the final summary line survives."""
+    monkeypatch.setenv(
+        "FARM_CHECK_CMD", "for i in $(seq 1 200); do echo line-$i; done; echo FAILED tests/test_x.py::test_last; exit 1"
+    )
+    with pytest.raises(CheckFailure) as err:
+        run_checks(tmp_path, log=lambda *_: None)
+    tail = err.value.tail.splitlines()
+    assert "FAILED tests/test_x.py::test_last" in tail
+    assert "line-1" not in tail
+    assert tail[0].startswith("[earlier output trimmed")
+    assert len(tail) == checks.CHECK_TAIL_LINES + 1
+
+
+def test_check_failure_message_still_names_the_command_for_existing_callers(tmp_path, monkeypatch):
+    """conflict_resolver and step_agent log str(exc); HZ-183's attributes are
+    additive, the message shape is unchanged."""
+    monkeypatch.setenv("FARM_CHECK_CMD", "echo boom && exit 1")
+    with pytest.raises(CheckFailure) as err:
+        run_checks(tmp_path, log=lambda *_: None)
+    assert str(err.value).startswith("repo checks failed (sh -c echo boom && exit 1):")
+    assert "boom" in str(err.value)
+    assert err.value.command == "sh -c echo boom && exit 1"
+    assert err.value.reason == "failed"
+
+
+def test_a_spent_deadline_stops_before_the_next_command(tmp_path, monkeypatch):
+    monkeypatch.setenv("FARM_CHECK_CMD", "true")
+    with pytest.raises(CheckFailure) as err:
+        run_checks(tmp_path, log=lambda *_: None, deadline=0.0)
+    assert err.value.reason == "timed_out"
+
+
 # ---- HZ-184: the failure digest — what failed, wherever it was printed ----
 
 
@@ -167,9 +202,10 @@ def missing_runner(monkeypatch):
 
     class NoRunners:
         TimeoutExpired = subprocess.TimeoutExpired
+        PIPE = subprocess.PIPE
 
         @staticmethod
-        def run(cmd, **_kwargs):
+        def Popen(cmd, **_kwargs):
             raise FileNotFoundError(cmd[0])
 
     monkeypatch.setattr(checks, "subprocess", NoRunners)

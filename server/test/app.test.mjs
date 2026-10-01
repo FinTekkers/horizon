@@ -7,6 +7,7 @@ import { mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { loginFixtureUser } from './helpers/session.mjs'
+import { withGreenPremerge } from './helpers/greenPremerge.mjs'
 
 process.env.HORIZON_DB = join(mkdtempSync(join(tmpdir(), 'horizon-app-')), 'test.db')
 delete process.env.GITHUB_WEBHOOK_SECRET
@@ -28,6 +29,7 @@ const WA_HEADERS = { 'x-wa-approval-secret': WA_APPROVAL_SECRET }
 const store = await import('../src/store.js')
 const auth = await import('../src/auth.js')
 const orchestrator = await import('../src/orchestrator.js')
+const premerge = await import('../src/premerge.js')
 
 // The seeded BF-* demo items would get kicked onto mock timers by
 // orchestrator.init below — remove them so only the fixtures run.
@@ -317,14 +319,13 @@ test('approve-via-whatsapp: 409 stale_step when the step index no longer matches
 })
 
 test('approve-via-whatsapp: 502 when the PR merge fails, and the gate stays open', async () => {
-  const realFetch = globalThis.fetch
-  globalThis.fetch = async () => ({
+  const mergeRefused = async () => ({
     ok: false,
     status: 405,
     json: async () => ({ message: 'required checks pending' }),
     text: async () => '',
   })
-  try {
+  await withGreenPremerge(premerge, mergeRefused, async () => {
     const res = await approveViaWhatsappPost(
       'T-GATE-MERGE',
       ACCEPT_GATE_INDEX,
@@ -334,9 +335,7 @@ test('approve-via-whatsapp: 502 when the PR merge fails, and the gate stays open
     assert.equal(res.statusCode, 502)
     assert.match(res.json().error, /merge failed/)
     assert.equal(db.prepare("SELECT cursor FROM work_item WHERE id = 'T-GATE-MERGE'").get().cursor, ACCEPT_GATE_INDEX)
-  } finally {
-    globalThis.fetch = realFetch
-  }
+  })
 })
 
 test('run-log tail reports 503 when no farm is configured', async () => {

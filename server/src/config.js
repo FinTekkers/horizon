@@ -84,6 +84,10 @@ export const RECONCILE_SWEEP_MS = Math.max(
 // same repo checks. A hung farmd (or a test/lint command that never returns)
 // must not hang the Accept-gate request forever.
 export const FARM_CONFLICT_RESOLVE_TIMEOUT_MS = Number(process.env.FARM_CONFLICT_RESOLVE_TIMEOUT_MS || 50 * 60 * 1000)
+// HZ-183: bounds the pre-merge check at Accept the code — a test-merge of the
+// PR into the current base and the repo's own checks (server/src/premerge.js).
+// A run that has not finished by then blocks the merge, fail-closed.
+export const PREMERGE_CHECK_TIMEOUT_MS = Number(process.env.PREMERGE_CHECK_TIMEOUT_MS || 20 * 60 * 1000)
 // HZ-182: after an automated review rejection, the next implement run is a
 // fix-only pass and the review after it sees only the fix's delta. "0" turns
 // it off: every cycle is a full implement plus a full review, as before.

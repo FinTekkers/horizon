@@ -283,12 +283,16 @@ export async function approveGate(id, notes) {
   if (!item) return { ok: false }
   // Approving "Accept the code" merges the PR server-side. If GitHub refuses
   // (conflicts, required checks), open the PR so the human resolves it there,
-  // then approves the gate again.
+  // then approves the gate again. A pre-merge check failure (HZ-183) is not
+  // GitHub's refusal — the PR page says nothing about it, the item's activity
+  // names the failing check — so that one stays on the tracker.
   const res = await gatePost(`/items/${id}/gates/${item.cursor}/approve`, notes ? { notes } : {})
-  if (res && !res.ok && res.status !== 401 && item.pr_url) {
+  if (!res) return { ok: false }
+  const data = await res.json().catch(() => ({ ok: false }))
+  if (!res.ok && res.status !== 401 && item.pr_url && !data.premerge) {
     window.open(item.pr_url, '_blank', 'noopener')
   }
-  return res ? await res.json().catch(() => ({ ok: false })) : { ok: false }
+  return data
 }
 
 export function requestChanges(id, target, feedback, targetStepIndex) {

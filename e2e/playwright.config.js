@@ -51,6 +51,11 @@ const BASE_URL = `http://localhost:${UI_PORT}`
 // starts from this file (see `use.storageState` below), so no spec needs its
 // own login step.
 const STORAGE_STATE_PATH = join(tmpdir(), `horizon-e2e-storage-state-${RUN_SUFFIX}.json`)
+// The server's FARM_HOME (HZ-183). Accept the code runs `python -m
+// farm.premerge`, which finds the repo hub, makes its scratch worktree and
+// takes its locks under FARM_HOME — so the e2e server must never see the
+// farm's own (~/.horizon-farm when unset): set explicitly, never inherited.
+const FARM_HOME = join(tmpdir(), `horizon-e2e-farm-home-${RUN_SUFFIX}`)
 
 // Read by global-setup.js, which seeds fixtures directly into the DB and
 // waits for the server to come up before any test runs.
@@ -58,6 +63,7 @@ process.env.HORIZON_E2E_DB = DB_PATH
 process.env.HORIZON_E2E_PORT = String(SERVER_PORT)
 process.env.HORIZON_E2E_STORAGE_STATE = STORAGE_STATE_PATH
 process.env.HORIZON_E2E_BASE_URL = BASE_URL
+process.env.HORIZON_E2E_FARM_HOME = FARM_HOME
 
 export default defineConfig({
   testDir: './tests',
@@ -102,7 +108,7 @@ export default defineConfig({
       // fresh. `exec` on the final command matters too: without it, the
       // intermediate shell doesn't forward Playwright's teardown SIGTERM to
       // the actual `node` process, orphaning it after every run.
-      command: `fuser -k ${SERVER_PORT}/tcp >/dev/null 2>&1; sleep 0.3; rm -f "${DB_PATH}" "${DB_PATH}-wal" "${DB_PATH}-shm" && exec node src/server.js`,
+      command: `fuser -k ${SERVER_PORT}/tcp >/dev/null 2>&1; sleep 0.3; rm -rf "${FARM_HOME}"; rm -f "${DB_PATH}" "${DB_PATH}-wal" "${DB_PATH}-shm" && exec node src/server.js`,
       cwd: '../server',
       port: SERVER_PORT,
       timeout: 30_000,
@@ -120,6 +126,7 @@ export default defineConfig({
         GITHUB_TOKEN: '',
         GITHUB_WEBHOOK_SECRET: '',
         FARM_URL: '',
+        FARM_HOME,
         // …and must never message a real human (HZ-141). This suite drives demo
         // items onto gates by design, which is exactly what the gate notifier
         // reacts to, so an ambient WA_NOTIFY_ENABLED=1 on the host — which the

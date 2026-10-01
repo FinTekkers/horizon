@@ -248,7 +248,7 @@ def test_queue_wait_does_not_eat_the_check_timeout(tmp_path, monkeypatch):
     """A run that waits longer than FARM_CHECK_TIMEOUT_S for a slot still
     gets its full check budget.
 
-    Asserted on the timeout ARGUMENT subprocess.run receives, not on elapsed
+    Asserted on the timeout ARGUMENT each check command receives, not on elapsed
     wall clock: the property is structural (checks.py reads no clock until
     after the `with`), and proving it by waiting out a real 600s budget would
     make this test unrunnable inside the suite it protects.
@@ -266,13 +266,13 @@ def test_queue_wait_does_not_eat_the_check_timeout(tmp_path, monkeypatch):
         assert _wait_for_lines(marker, 1)
 
         seen = {}
-        real_run = subprocess.run
+        real_run = checks._run_bounded
 
-        def spy(cmd, **kwargs):
-            seen["timeout"] = kwargs.get("timeout")
-            return real_run(cmd, **kwargs)
+        def spy(cmd, ws, timeout_s, env):
+            seen["timeout"] = timeout_s
+            return real_run(cmd, ws, timeout_s, env)
 
-        monkeypatch.setattr(checks.subprocess, "run", spy)
+        monkeypatch.setattr(checks, "_run_bounded", spy)
         started = time.monotonic()
         note = checks.run_checks(tmp_path, log=lambda *_: None, run_id="waiter")
         waited = time.monotonic() - started
@@ -293,13 +293,13 @@ def test_the_check_timeout_default_is_not_raised_to_hide_contention(tmp_path, mo
     monkeypatch.delenv("FARM_CHECK_TIMEOUT_S", raising=False)
     monkeypatch.setenv("FARM_CHECK_CMD", "true")
     seen = {}
-    real_run = subprocess.run
+    real_run = checks._run_bounded
 
-    def spy(cmd, **kwargs):
-        seen["timeout"] = kwargs.get("timeout")
-        return real_run(cmd, **kwargs)
+    def spy(cmd, ws, timeout_s, env):
+        seen["timeout"] = timeout_s
+        return real_run(cmd, ws, timeout_s, env)
 
-    monkeypatch.setattr(checks.subprocess, "run", spy)
+    monkeypatch.setattr(checks, "_run_bounded", spy)
     checks.run_checks(tmp_path, log=lambda *_: None)
     assert seen["timeout"] == 600
 

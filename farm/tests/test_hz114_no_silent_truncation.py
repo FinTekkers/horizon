@@ -15,6 +15,7 @@ The JS-side sites (server/src/store.js, server/src/definitions.js) have the
 equivalent checklist in server/test/hz114-no-silent-truncation.test.mjs.
 """
 
+from farm.checks import CHECK_TAIL_LINES, output_tail as checks_tail
 from farm.pm_agent import PATCH_FIELDS, validate
 from farm.rules import MAX_PROMPT_RULES_CHARS, render_rules_section
 from farm.step_agent import build_prompt as step_agent_build_prompt
@@ -95,10 +96,27 @@ def _site_pm_agent_validate_guardrails_patch():
     return fits or marked_boundary_cut
 
 
+def _site_checks_failure_tail():
+    """Site 4 (HZ-183): farm/checks.py run_checks() — a failing command's
+    output. Cut on a line boundary to the LAST lines (where the failing test
+    names are), with a marker saying earlier output was trimmed."""
+    lines = [f"output line {i}" for i in range(CHECK_TAIL_LINES * 3)]
+    result = checks_tail("\n".join(lines))
+    fits = result == "\n".join(lines)
+    kept = result.splitlines()
+    marked_boundary_cut = (
+        not fits
+        and kept[0].startswith("[earlier output trimmed")
+        and kept[1:] == lines[-CHECK_TAIL_LINES:]
+    )
+    return fits or marked_boundary_cut
+
+
 SITES = [
     ("farm/rules.py render_rules_section() — oversized rules block", _site_rules_render_oversized_block),
     ("farm/step_agent.py build_prompt() — oversized rules via the same render path", _site_step_agent_build_prompt_oversized_rules),
     ("farm/pm_agent.py validate() — oversized guardrails patch field", _site_pm_agent_validate_guardrails_patch),
+    ("farm/checks.py run_checks() — a failing check's output tail", _site_checks_failure_tail),
 ]
 
 

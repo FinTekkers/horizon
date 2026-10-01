@@ -780,9 +780,10 @@ def test_a_detected_check_runner_that_is_missing_on_this_host_escalates(isolated
 
     class NoRunners:
         TimeoutExpired = subprocess.TimeoutExpired
+        PIPE = subprocess.PIPE
 
         @staticmethod
-        def run(cmd, **_kwargs):
+        def Popen(cmd, **_kwargs):
             raise FileNotFoundError(cmd[0])
 
     # The checks module's own reference only: conflict_resolver's git plumbing

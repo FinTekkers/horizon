@@ -737,7 +737,7 @@ button { font-family: var(--font-sans); }
   display: flex; align-items: center; justify-content: center;
   font: 700 10px var(--font-sans); color: #fff; flex-shrink: 0;
 }
-.activity-row__text { font: 500 13px var(--font-sans); color: var(--deep); line-height: 1.4; }
+.activity-row__text { font: 500 13px var(--font-sans); color: var(--deep); line-height: 1.4; white-space: pre-line; overflow-wrap: anywhere; }
 .activity-row__time { font: 500 11px var(--font-sans); color: var(--muted); margin-top: 2px; }
 .activity-empty { font: 500 13px var(--font-sans); color: var(--muted); }
 

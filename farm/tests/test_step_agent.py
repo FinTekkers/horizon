@@ -1007,6 +1007,19 @@ def serve_html(html: bytes, delay_s: float = 0):
     return server, f"http://127.0.0.1:{server.server_port}/"
 
 
+# check.mjs imports @playwright/test from e2e/node_modules. That workspace is
+# only installed by `npm run test:e2e`, which farm/checks.py skips on a host
+# without Chromium. Without it check.mjs exits at import, so these two fail for
+# want of an install, not a bug — and (HZ-183) would redden every pre-merge
+# check on such a host. The two "fails" cases between them reach the same
+# verdict either way and stay unconditional.
+requires_e2e_workspace = pytest.mark.skipif(
+    not (step_agent.REPO_ROOT / "e2e" / "node_modules" / "@playwright" / "test").is_dir(),
+    reason="e2e/node_modules is not installed (npm --prefix e2e install) — check.mjs cannot load Playwright",
+)
+
+
+@requires_e2e_workspace
 def test_run_smoke_check_passes_against_a_real_rendering_page():
     server, url = serve_html(b"<html><body><h1>Item Board</h1><p>3 items in flight</p></body></html>")
     try:
@@ -1035,6 +1048,7 @@ def test_run_smoke_check_fails_when_the_url_is_unreachable():
     assert line.startswith("SMOKE_RESULT=fail:")
 
 
+@requires_e2e_workspace
 def test_run_smoke_check_fails_when_the_subprocess_itself_times_out(monkeypatch):
     # A page that never finishes responding — check.mjs's own NAV_TIMEOUT_MS
     # (15s) would eventually catch this too, but shrinking

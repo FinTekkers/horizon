@@ -23,10 +23,12 @@ so the cap can be measured. It also gave the subprocess an explicit `env=` —
 see _check_env() for the failure that made that necessary.
 """
 
+import contextlib
 import json
 import os
 import re
 import shutil
+import signal
 import subprocess
 import sys
 import time
@@ -34,15 +36,74 @@ from pathlib import Path
 
 from . import check_metrics, check_slots, config
 
+# HZ-183: how much of a failing command's output a CheckFailure carries. Lines,
+# not characters: the failing test names sit at the END of a test run's output
+# (pytest's "FAILED ..." summary, node --test's "not ok ..."), and the old
+# 400-character cut routinely kept half a stack trace and none of the names.
+CHECK_TAIL_LINES = 40
+
 
 class CheckFailure(RuntimeError):
-    """`digest` is the redacted failure_digest() of the failing command's
+    """str(exc) is the human-readable message every existing caller logs.
+
+    HZ-183 adds the parts separately so the pre-merge gate can name them:
+    `command` (the check that failed, as shown), `tail` (the last
+    CHECK_TAIL_LINES of its redacted output) and `reason` — "failed",
+    "timed_out", or "none_ran" (nothing was detected or every runner was
+    missing).
+
+    `digest` is the redacted failure_digest() of the failing command's
     output — empty when there is no output to digest (a timeout, nothing
     detected). step_agent checkpoints it into the WIP commit body (HZ-184)."""
 
-    def __init__(self, message: str, digest: str = ""):
+    def __init__(
+        self, message: str, digest: str = "", *, command: str | None = None, tail: str = "", reason: str = "failed"
+    ):
         super().__init__(message)
         self.digest = digest
+        self.command = command
+        self.tail = tail
+        self.reason = reason
+
+
+def output_tail(text: str) -> str:
+    """The last CHECK_TAIL_LINES lines of `text`, cut on a line boundary and
+    marked when anything was dropped (HZ-114: no silent truncation)."""
+    lines = text.strip().splitlines()
+    if len(lines) <= CHECK_TAIL_LINES:
+        return "\n".join(lines)
+    kept = lines[-CHECK_TAIL_LINES:]
+    return f"[earlier output trimmed — last {CHECK_TAIL_LINES} lines]\n" + "\n".join(kept)
+
+
+def _run_bounded(cmd: list[str], ws: Path, timeout_s: float, env: dict[str, str]) -> subprocess.CompletedProcess:
+    """subprocess.run(timeout=...) kills only the direct child: `npm test`'s
+    node and vite grandchildren outlive the timeout and keep running (CPU,
+    ports, a half-built tree) after the check has already been reported. Run
+    each check in its own session and kill the whole group, so a timed-out
+    check is actually stopped. Raises TimeoutExpired / FileNotFoundError
+    exactly like subprocess.run."""
+    proc = subprocess.Popen(
+        cmd,
+        cwd=str(ws),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        start_new_session=True,
+        env=env,
+    )
+    try:
+        stdout, stderr = proc.communicate(timeout=timeout_s)
+    except subprocess.TimeoutExpired:
+        with contextlib.suppress(ProcessLookupError):
+            os.killpg(proc.pid, signal.SIGKILL)
+        # wait(), not communicate(): a descendant that escaped the group could
+        # still hold the pipes open, and draining them would hang again.
+        proc.wait()
+        proc.stdout.close()
+        proc.stderr.close()
+        raise
+    return subprocess.CompletedProcess(cmd, proc.returncode, stdout, stderr)
 
 
 # ---- failure digest + redaction (HZ-184) ----
@@ -206,6 +267,8 @@ def run_checks(
     run_id=None,
     item_id=None,
     caller: str = "step_agent",
+    deadline: float | None = None,
+    child_env: dict[str, str] | None = None,
 ) -> str:
     """Returns a short human-readable note; raises CheckFailure on failure.
 
@@ -218,12 +281,22 @@ def run_checks(
 
     run_id/item_id/caller only label the metrics record (and the waiting
     marker on /farm/status) — they never change what runs.
+
+    deadline (HZ-183) is a time.monotonic() value bounding the WHOLE run.
+    FARM_CHECK_TIMEOUT_S bounds each command on its own, so three commands
+    could otherwise take three times the caller's budget; with a deadline each
+    command gets whatever is left, and a spent budget is a "timed_out"
+    CheckFailure rather than a silent overrun.
+
+    child_env (HZ-183) is laid over the check commands' environment only —
+    the pre-merge run uses it to give the PR's suites a throwaway FARM_HOME
+    while this process (its slot, its metrics record) stays on the real one.
     """
     commands = detect_check_commands(ws, log=log)
     if not commands:
         log("checks: no test/lint commands detected in the repo — nothing to enforce")
         if require_ran:
-            raise CheckFailure("no repo checks detected — nothing proves this change is safe to push")
+            raise CheckFailure("no repo checks detected — nothing proves this change is safe to push", reason="none_ran")
         return "no repo checks detected"
 
     # The slot is taken OUTSIDE the timeout read below, which is the whole
@@ -234,7 +307,7 @@ def run_checks(
     with check_slots.check_slot(log=log, run_id=run_id, item_id=item_id, caller=caller) as slot:
         timeout_s = int(os.environ.get("FARM_CHECK_TIMEOUT_S", "600"))
         record = check_metrics.new_record(run_id=run_id, item_id=item_id, caller=caller, slot=slot)
-        env = _check_env()
+        env = {**_check_env(), **(child_env or {})}
         # Host-wide free memory at each command boundary; the minimum is what
         # the record keeps. See farm/check_metrics.py on why this and not
         # ru_maxrss, and on the resolution this sampling rate gives up.
@@ -243,12 +316,18 @@ def run_checks(
         try:
             for cmd in commands:
                 shown = " ".join(cmd)
+                budget = float(timeout_s)
+                if deadline is not None:
+                    budget = min(budget, deadline - time.monotonic())
+                    if budget <= 0:
+                        record["outcome"] = "timeout"
+                        raise CheckFailure(
+                            f"repo checks ran out of time before: {shown}", command=shown, reason="timed_out"
+                        )
                 log(f"checks: running {shown}")
                 started = time.monotonic()
                 try:
-                    proc = subprocess.run(
-                        cmd, cwd=str(ws), capture_output=True, text=True, timeout=timeout_s, env=env
-                    )
+                    proc = _run_bounded(cmd, ws, budget, env)
                 except FileNotFoundError:
                     record["commands"].append({"cmd": shown, "skipped": "runner not installed"})
                     log(f"checks: {cmd[0]} is not installed on the farm host — skipped")
@@ -258,7 +337,9 @@ def run_checks(
                         {"cmd": shown, "duration_s": round(time.monotonic() - started, 1), "timed_out": True}
                     )
                     record["outcome"] = "timeout"
-                    raise CheckFailure(f"repo checks timed out after {timeout_s}s: {shown}") from exc
+                    raise CheckFailure(
+                        f"repo checks timed out after {int(budget)}s: {shown}", command=shown, reason="timed_out"
+                    ) from exc
                 finally:
                     mem_samples.append(check_metrics.mem_available_kb())
                 record["commands"].append(
@@ -279,8 +360,15 @@ def run_checks(
                     # the scrubbed check env: a test can still print a farm
                     # secret it read some other way.
                     secrets = {**os.environ, **env}
-                    digest = failure_digest(redact(output, secrets))
-                    raise CheckFailure(f"repo checks failed ({redact(shown, secrets)}):\n{digest}", digest=digest)
+                    redacted = redact(output, secrets)
+                    digest = failure_digest(redacted)
+                    shown = redact(shown, secrets)
+                    raise CheckFailure(
+                        f"repo checks failed ({shown}):\n{digest}",
+                        digest=digest,
+                        command=shown,
+                        tail=output_tail(redacted),
+                    )
                 ran += 1
             record["outcome"] = "pass"
         finally:
@@ -290,5 +378,7 @@ def run_checks(
             check_metrics.append_record(record, log=log)
 
     if not ran and require_ran:
-        raise CheckFailure("every detected check runner is missing on this host — no green to push behind")
+        raise CheckFailure(
+            "every detected check runner is missing on this host — no green to push behind", reason="none_ran"
+        )
     return f"{ran} repo check(s) passed" if ran else "check runners unavailable — skipped"
