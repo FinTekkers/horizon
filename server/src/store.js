@@ -51,6 +51,15 @@ export function registerRunStateProvider(provider) {
   runStateProvider = provider
 }
 
+// HZ-188: the orchestrator owns each item's in-memory conflict-resolution run
+// ({state, since, reason}) and registers its lookup here, same shape of seam
+// as runStateProvider — listItems() stays a synchronous read.
+let conflictRunProvider = () => null
+
+export function registerConflictRunProvider(provider) {
+  conflictRunProvider = provider
+}
+
 // ---- projects & repos ----
 
 export function listProjects() {
@@ -382,6 +391,7 @@ export function listItems() {
     events: selectEvents.all(row.id),
     stepOutputs: stepOutputs(row.id),
     activeRun: withRunState(selectActiveRun.get(row.id) || null),
+    conflictRun: conflictRunProvider(row.id) || null,
     ...dependencyFields(row.id),
   }))
 }

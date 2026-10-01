@@ -17,7 +17,17 @@ from fastapi.testclient import TestClient
 
 from farm import farmd, pm_agent, tmux_mgr, workspaces
 from farm.config import LOGS_DIR, PM_MALFORMED_GRACE_S, QUEUE_DIR
-from farm.tests.conflict_fixtures import clone_and_read, make_repo_hub, push_new_branch
+from farm.tests.conflict_fixtures import (
+    HZ157_CONFTEST,
+    HZ157_CONFTEST_BRANCH_LINE,
+    HZ157_CONFTEST_MAIN_LINE,
+    clone_and_read,
+    git,
+    make_repo_hub,
+    origin_branch_sha,
+    push_new_branch,
+    seed_hz157_conftest_conflict,
+)
 
 client = TestClient(farmd.app)
 
@@ -226,6 +236,197 @@ def test_conflicts_resolve_end_to_end_over_http_takes_the_scoped_path(running_fa
     assert isinstance(body.pop("files"), str)
     assert recorded.pop("files", None) is not None, "the recorded payload must keep a files key for the Node side"
     assert body == recorded, f"regenerate {SCOPED_RESOLVE_FIXTURE.name} — farmd's scoped reply shape changed"
+
+
+# ---- one run per item (HZ-188) ----
+# farmd refuses a second /conflicts/resolve on its own — no server involved —
+# and the same item_lock keeps the implement/review steps out of a worktree
+# the resolver owns. Every lock here is a real flock.
+
+
+@pytest.fixture
+def lock_dir(tmp_path, monkeypatch):
+    monkeypatch.setattr(workspaces, "WORKSPACES_DIR", tmp_path / "workspaces")
+    return tmp_path
+
+
+def test_conflicts_resolve_answers_409_and_starts_nothing_while_the_item_is_locked(running_farm, lock_dir, monkeypatch):
+    calls = []
+    monkeypatch.setattr(farmd.conflict_resolver, "resolve", lambda *a: calls.append(a) or {"resolved": True})
+
+    with workspaces.item_lock("acme/demo", "HZ-1", wait_s=0):
+        res = client.post("/conflicts/resolve", json={"item": {"id": "HZ-1", "repo": "acme/demo"}})
+
+    assert res.status_code == 409
+    assert res.json() == {"error": "resolve_in_progress"}
+    assert calls == []
+    # Released with the holder: the next request runs.
+    assert client.post("/conflicts/resolve", json={"item": {"id": "HZ-1", "repo": "acme/demo"}}).status_code == 200
+    assert len(calls) == 1
+
+
+def test_conflicts_resolve_releases_the_lock_when_the_resolver_raises(running_farm, lock_dir, monkeypatch):
+    def boom(*_a):
+        raise RuntimeError("git fetch failed")
+
+    monkeypatch.setattr(farmd.conflict_resolver, "resolve", boom)
+
+    res = client.post("/conflicts/resolve", json={"item": {"id": "HZ-1", "repo": "acme/demo"}})
+
+    assert res.status_code == 500
+    assert "error" in res.json()
+    with workspaces.item_lock("acme/demo", "HZ-1", wait_s=0):
+        pass
+
+
+def test_conflicts_resolve_validates_input_before_taking_the_lock(running_farm, lock_dir):
+    with workspaces.item_lock("acme/demo", "HZ-1", wait_s=0):
+        res = client.post("/conflicts/resolve", json={"item": {"id": "HZ-1"}})
+    assert res.status_code == 400
+
+
+def test_item_lock_is_released_when_its_holder_process_is_killed(lock_dir):
+    """A crashed resolver (farmd killed mid-run) must not leave the item
+    locked: the kernel drops a flock with its process."""
+    child = subprocess.Popen(
+        [
+            sys.executable,
+            "-c",
+            "import sys, time\n"
+            f"sys.path.insert(0, {str(REPO_ROOT)!r})\n"
+            "from pathlib import Path\n"
+            "from farm import workspaces\n"
+            f"workspaces.WORKSPACES_DIR = Path({str(workspaces.WORKSPACES_DIR)!r})\n"
+            "with workspaces.item_lock('acme/demo', 'HZ-188', wait_s=0):\n"
+            "    print('locked', flush=True)\n"
+            "    time.sleep(60)\n",
+        ],
+        stdout=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        assert child.stdout.readline().strip() == "locked"
+        with pytest.raises(workspaces.ItemBusy):
+            with workspaces.item_lock("acme/demo", "HZ-188", wait_s=0):
+                pass
+        assert workspaces.item_lock_held("acme/demo", "HZ-188")
+    finally:
+        child.kill()
+        child.wait(timeout=10)
+
+    with workspaces.item_lock("acme/demo", "HZ-188", wait_s=0):
+        pass
+
+
+def test_item_lock_is_case_insensitive_and_lives_outside_every_worktree(lock_dir):
+    with workspaces.item_lock("acme/demo", "HZ-188", wait_s=0):
+        with pytest.raises(workspaces.ItemBusy):
+            with workspaces.item_lock("acme/demo", "hz-188", wait_s=0):
+                pass
+        # Another item is a different lock.
+        with workspaces.item_lock("acme/demo", "HZ-189", wait_s=0):
+            pass
+    lock_path = workspaces._item_lock_path("acme/demo", "HZ-188")
+    items_root = workspaces._items_root("acme/demo")
+    assert not lock_path.is_relative_to(items_root), "git clean -fd in a worktree must never reach the lock"
+    assert workspaces.existing_item_ids("acme/demo") == []
+
+
+def test_item_lock_waits_for_a_holder_that_releases(lock_dir):
+    held = threading.Event()
+
+    def holder():
+        with workspaces.item_lock("acme/demo", "HZ-1", wait_s=0):
+            held.set()
+            time.sleep(1)
+
+    t = threading.Thread(target=holder)
+    t.start()
+    assert held.wait(5)
+    waits = []
+    with workspaces.item_lock("acme/demo", "HZ-1", wait_s=5, on_wait=lambda: waits.append(1)):
+        pass
+    t.join()
+    assert waits == [1]  # logged once, not once per retry
+
+
+@pytest.mark.parametrize("label", ["Specialist agent implements", "Automated review (code + QA)"])
+def test_step_never_touches_a_worktree_the_resolver_holds(lock_dir, monkeypatch, label):
+    from farm import step_agent
+
+    touched = []
+    monkeypatch.setattr(step_agent, "ITEM_LOCK_WAIT_S", 0)
+    monkeypatch.setattr(step_agent, "ensure_item_worktree", lambda *a: touched.append("ensure_item_worktree"))
+    monkeypatch.setattr(step_agent, "prepare_branch", lambda *a: touched.append("prepare_branch"))
+    task = {
+        "run_id": 1,
+        "attempt": 1,
+        "item": {"id": "HZ-188", "title": "t", "repo": "acme/demo", "issue": 1},
+        "step": {"index": 11, "label": label, "agent": "Eng"},
+        "artifacts": [],
+        "feedback": [],
+    }
+
+    with workspaces.item_lock("acme/demo", "hz-188", wait_s=0):
+        with pytest.raises(RuntimeError, match="workspace busy"):
+            step_agent.execute(task)
+
+    assert touched == []
+
+
+def test_hz157_replay_five_rapid_clicks_make_one_resolver_run_and_one_push(running_farm, tmp_path, monkeypatch):
+    """HZ-157: five clicks on Resolve conflicts for a 1-hunk conflict in
+    farm/tests/conftest.py started five resolvers that reset each other's
+    merges. Replayed against a real fixture repo: the five requests overlap
+    for real (the winner is held until the other four have answered), and
+    exactly one resolver runs and pushes once."""
+    monkeypatch.setattr(workspaces, "WORKSPACES_DIR", tmp_path / "workspaces")
+    monkeypatch.setenv("FARM_CHECK_CMD", "true")
+    monkeypatch.delenv("FARM_CONFLICT_SCOPED_ENABLED", raising=False)
+    _hub, origin = make_repo_hub(tmp_path)
+    seed_hz157_conftest_conflict(tmp_path, origin, "horizon/hz-157")
+    before = origin_branch_sha(origin, "horizon/hz-157")
+
+    real_resolve = farmd.conflict_resolver.resolve
+    others_answered = threading.Event()
+    runs = []
+
+    def held_resolve(*args):
+        runs.append(args)
+        assert others_answered.wait(30), "the other four requests never answered"
+        return real_resolve(*args)
+
+    monkeypatch.setattr(farmd.conflict_resolver, "resolve", held_resolve)
+
+    responses = []
+    lock = threading.Lock()
+
+    def click():
+        res = client.post("/conflicts/resolve", json={"item": {"id": "HZ-157", "repo": "acme/demo"}})
+        with lock:
+            responses.append(res)
+            if sum(r.status_code == 409 for r in responses) == 4:
+                others_answered.set()
+
+    threads = [threading.Thread(target=click) for _ in range(5)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=60)
+
+    assert sorted(r.status_code for r in responses) == [200, 409, 409, 409, 409]
+    assert [r.json() for r in responses if r.status_code == 409] == [{"error": "resolve_in_progress"}] * 4
+    winner = next(r.json() for r in responses if r.status_code == 200)
+    assert winner["resolved"] is True
+    assert winner["resolution"]["paths"] == [HZ157_CONFTEST]
+    assert winner["resolution"]["hunks"] == 1
+    assert len(runs) == 1
+
+    after = origin_branch_sha(origin, "horizon/hz-157")
+    pushed = git(origin, "rev-list", "--first-parent", f"{before}..{after}").stdout.split()
+    assert len(pushed) == 1, "exactly one push: one merge commit on top of the branch's old tip"
+    merged = clone_and_read(tmp_path, origin, "horizon/hz-157", HZ157_CONFTEST, "hz157-after")
+    assert HZ157_CONFTEST_BRANCH_LINE in merged and HZ157_CONFTEST_MAIN_LINE in merged
 
 
 # ---- /runs/status (HZ-54) ----

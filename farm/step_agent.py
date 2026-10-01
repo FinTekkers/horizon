@@ -8,6 +8,7 @@ item's branch in the workspace; the *script* owns git (branch, commit, push)
 """
 
 import argparse
+import contextlib
 import json
 import os
 import subprocess
@@ -40,10 +41,10 @@ from .agent_runner import (
     stamp_notes_artifact,
 )
 from .checks import run_checks
-from .config import FARM_PORT, STEP_MODEL
+from .config import FARM_PORT, ITEM_LOCK_WAIT_S, STEP_MODEL
 from .personas import compose_role, provider_for, resolve
 from .rules import render_rules_section
-from .workspaces import ensure_item_worktree, hub_lock
+from .workspaces import ItemBusy, ensure_item_worktree, hub_lock, item_lock
 
 FARMD = f"http://127.0.0.1:{FARM_PORT}"
 ROLES = Path(__file__).parent / "roles"
@@ -557,6 +558,29 @@ def run_smoke_check(url: str, expected_text: str) -> tuple[str, str]:
 
 
 def execute(task: dict) -> dict:
+    """HZ-188: the implement and review steps scrub, check out and (for
+    implement) push in the item's worktree, so they hold item_lock for the
+    whole step — taken before ensure_item_worktree, so not even the worktree's
+    creation can overlap a conflict resolver that owns the item. Every other
+    step only reads the workspace and runs unlocked."""
+    item = task["item"]
+    if task["step"]["label"] not in (IMPLEMENT_LABEL, REVIEW_LABEL) or not item.get("repo"):
+        return _execute(task)
+    lock = item_lock(
+        item["repo"],
+        item["id"],
+        wait_s=ITEM_LOCK_WAIT_S,
+        on_wait=lambda: log(f"workspace for {item['id']} is busy (conflict resolution running) — waiting up to {ITEM_LOCK_WAIT_S}s"),
+    )
+    with contextlib.ExitStack() as stack:
+        try:
+            stack.enter_context(lock)
+        except ItemBusy:
+            raise RuntimeError("workspace busy: conflict resolution still running") from None
+        return _execute(task)
+
+
+def _execute(task: dict) -> dict:
     label = task["step"]["label"]
     role_file, wants_artifact, tools, persona_agent = STEP_CONFIG[label]
     max_turns, timeout_s = steps.budget_for_label(steps.STEPS, label)

@@ -1,4 +1,4 @@
-import { useEffect, useState, useSyncExternalStore } from 'react'
+import { useEffect, useRef, useState, useSyncExternalStore } from 'react'
 import * as api from './api'
 import { STEPS, awaitingGate, reworkTargets, defaultReworkTarget } from '../../domain/js/lifecycle.js'
 import TopBar from './components/TopBar'
@@ -7,11 +7,33 @@ import Tracker from './components/Tracker'
 import ApprovalsDrawer from './components/ApprovalsDrawer'
 import ComposerModal from './components/ComposerModal'
 import ConfirmGateDialog from './components/ConfirmGateDialog'
+import ResolveConflictsDialog from './components/ResolveConflictsDialog'
 import AdminPage from './components/AdminPage'
 import AgentDefinitionsPage from './components/AgentDefinitionsPage'
 import NewItemModal from './components/NewItemModal'
 import LoginPage from './components/LoginPage'
 import LegalPage, { LEGAL_DOCS } from './components/LegalPage'
+
+// HZ-188: what a finished server-side run (item.conflictRun) means to the
+// resolve dialog, when this tab didn't make the request itself — a reload,
+// another tab, or a click answered resolve_in_progress.
+function resultFromConflictRun(run) {
+  if (run?.state === 'resolved') return { ok: true, resolved: true }
+  if (run?.state === 'escalated') return { ok: true, resolved: false, escalated: true, reason: run.reason }
+  if (run?.state === 'failed') return { error: 'failed', reason: run.reason }
+  return { error: 'resolve_in_progress', reason: 'another run was already using this item, so nothing new was started' }
+}
+
+// The phase the dialog actually shows: progress while this tab's request is
+// pending or the server reports the item's run as running (so it survives a
+// reload and shows a run another tab started), and the server's recorded
+// outcome once a run this tab only watched has ended.
+function resolveDialogView(dialog, item, pending) {
+  if (dialog.phase === 'done') return dialog
+  if (pending || item?.conflictRun?.state === 'running') return { ...dialog, phase: 'running' }
+  if (dialog.phase === 'running') return { ...dialog, phase: 'done', result: resultFromConflictRun(item?.conflictRun) }
+  return dialog
+}
 
 const CLOSED_COMPOSER = { open: false, mode: null, itemId: null, phase: null, target: '', stepOptions: [], defaultTargetLabel: null }
 
@@ -86,6 +108,13 @@ function AuthenticatedApp({ user, onLogout }) {
   // it went straight to the server on click (HZ-38). This is the one gate it
   // must clear first: nothing here calls api.approveGate directly.
   const [confirmApprove, setConfirmApprove] = useState(null)
+  // Resolve conflicts (HZ-188): the dialog, and the items this tab has a
+  // request in flight for. The ref is the guard — two clicks (or a click and
+  // an Enter) in the same tick both read the same stale state, but the second
+  // sees the ref the first one set. The state copy is only for rendering.
+  const [resolveDialog, setResolveDialog] = useState(null)
+  const resolveInFlight = useRef(new Set())
+  const [resolvePending, setResolvePending] = useState(() => new Set())
 
   const sync = api.getSync()
   const projects = api.getProjects()
@@ -94,6 +123,37 @@ function AuthenticatedApp({ user, onLogout }) {
   const activeProject = projects.find((p) => p.id === activeProjectId) || null
   const selected = items.find((it) => it.id === selectedId) || items[0]
   const pendingCount = items.filter(awaitingGate).length
+  const isResolving = (item) => !!item && (item.conflictRun?.state === 'running' || resolvePending.has(item.id))
+
+  const openResolveDialog = (itemId, pr) => {
+    const item = items.find((it) => it.id === itemId)
+    setResolveDialog({ itemId, pr, phase: isResolving(item) ? 'running' : 'confirm', result: null })
+  }
+  const confirmResolve = () => {
+    const d = resolveDialog
+    if (!d || d.phase !== 'confirm' || resolveInFlight.current.has(d.itemId)) return
+    resolveInFlight.current.add(d.itemId)
+    setResolvePending(new Set(resolveInFlight.current))
+    setResolveDialog({ ...d, phase: 'running' })
+    api
+      .resolveConflicts(d.itemId)
+      .catch(() => ({ ok: false }))
+      .then((result) => {
+        resolveInFlight.current.delete(d.itemId)
+        setResolvePending(new Set(resolveInFlight.current))
+        // Another click or tab already owns the run: keep showing progress —
+        // item.conflictRun says when it ends.
+        const next = result?.error === 'resolve_in_progress' ? { phase: 'running' } : { phase: 'done', result }
+        setResolveDialog((cur) => (cur && cur.itemId === d.itemId ? { ...cur, ...next } : cur))
+      })
+  }
+  const resolveView =
+    resolveDialog &&
+    resolveDialogView(
+      resolveDialog,
+      items.find((it) => it.id === resolveDialog.itemId),
+      resolvePending.has(resolveDialog.itemId),
+    )
 
   const toBoard = () => {
     navigate('/')
@@ -221,11 +281,23 @@ function AuthenticatedApp({ user, onLogout }) {
           onApprove={requestApprove}
           onApproveWithComments={(id, target) => openComposer('approve', id, { target })}
           onReject={(id, target) => openComposer('reject', id, { target })}
-          onResolveConflicts={(id) => api.resolveConflicts(id)}
+          onResolveConflicts={openResolveDialog}
+          resolving={isResolving(selected)}
           onTogglePause={api.togglePause}
           onRestartPhase={(id, phase) => openComposer('restart', id, { phase })}
           onSetPersona={api.setPersona}
           onAbandon={(id) => openComposer('abandon', id)}
+        />
+      )}
+
+      {resolveView && (
+        <ResolveConflictsDialog
+          itemId={resolveView.itemId}
+          pr={resolveView.pr}
+          phase={resolveView.phase}
+          result={resolveView.result}
+          onConfirm={confirmResolve}
+          onClose={() => setResolveDialog(null)}
         />
       )}
 

@@ -30,6 +30,7 @@ import {
   notifyChange,
   registerAgentRunner,
   registerRunStateProvider,
+  registerConflictRunProvider,
   recoverRejectedItems,
   blockersOf,
   requestChanges,
@@ -403,7 +404,14 @@ async function farmFetch(path, body, { timeoutMs = DEFAULT_FARM_FETCH_TIMEOUT_MS
     clearTimeout(timer)
   }
   const data = await res.json().catch(() => ({}))
-  if (!res.ok) throw new Error(data.error || `farm returned ${res.status} for ${path}`)
+  if (!res.ok) {
+    const err = new Error(data.error || `farm returned ${res.status} for ${path}`)
+    // Callers that must tell one farm refusal from another (HZ-188: a busy
+    // item vs a paused farm, both 409) read these, never the message text.
+    err.status = res.status
+    err.code = data.error
+    throw err
+  }
   return data
 }
 
@@ -489,6 +497,31 @@ function scopedResolutionText(pr, result) {
   )
 }
 
+// HZ-188: one resolver run per item. Each click used to start another farmd
+// resolver in the same worktree, and they reset each other's merges. This map
+// is the server half of the guard (farmd's item_lock is the other, and holds
+// on its own); it is also the item's visible progress — store.listItems()
+// reads it as `conflictRun`, so every tab, and a reloaded page, sees a run in
+// progress. Memory-only on purpose (HZ-92: no row to go stale): a restart
+// forgets it, and farmd's lock still refuses a duplicate in that window.
+// resolveConflicts() is the only writer, and its `finally` always moves the
+// entry out of `running`, so a timed-out or crashed call never leaves the
+// item locked.
+//
+// state: running → resolved | escalated (sent back to implement, with the
+// reason — including farmd unreachable or timed out) | failed (nothing ran
+// and nothing was sent back — farmd reported another writer owns the item,
+// or this code threw).
+const conflictRuns = new Map()
+
+export function getConflictRun(id) {
+  return conflictRuns.get(id) || null
+}
+
+registerConflictRunProvider(getConflictRun)
+
+const FARM_ITEM_BUSY_REASON = "another run is still using this item's workspace — nothing was started, try again once it finishes"
+
 export async function resolveConflicts(id, actor = 'You') {
   const item = getItem(id)
   if (!item) return { error: 'not_found' }
@@ -500,7 +533,24 @@ export async function resolveConflicts(id, actor = 'You') {
   // 1 is mergeable, NULL is unknown/not yet computed.
   if (item.pr_mergeable !== 0) return { error: 'not_conflicted' }
   if (!FARM_URL && cannedConflictReply === null) return { error: 'farm_unavailable' }
+  if (conflictRuns.get(id)?.state === 'running') return { error: 'resolve_in_progress' }
 
+  conflictRuns.set(id, { state: 'running', since: new Date().toISOString(), reason: null })
+  notifyChange()
+  let outcome = { state: 'failed', reason: 'conflict resolution stopped unexpectedly' }
+  try {
+    const run = await runConflictResolution(id, item, actor)
+    outcome = { state: run.state, reason: run.reason }
+    return run.result
+  } finally {
+    conflictRuns.set(id, { ...outcome, since: new Date().toISOString() })
+    notifyChange()
+  }
+}
+
+// The resolver call itself; returns { result, state, reason } — the route's
+// reply plus the conflictRun outcome resolveConflicts() records.
+async function runConflictResolution(id, item, actor) {
   const branch = `horizon/${id.toLowerCase()}`
   let result
   try {
@@ -513,8 +563,16 @@ export async function resolveConflicts(id, actor = 'You') {
             { timeoutMs: FARM_CONFLICT_RESOLVE_TIMEOUT_MS },
           )
   } catch (err) {
-    requestChanges(id, 'Accept the code', `PR #${item.pr}: automatic conflict resolution could not run (${err.message})`, actor)
-    return { ok: true, resolved: false, escalated: true }
+    // farmd's item_lock is held — another resolver or an implement/review
+    // step owns the worktree. Not a failed resolution: nothing ran, so
+    // nothing is sent back. Every other farm refusal (farm_not_running is
+    // also a 409) keeps the escalation below.
+    if (err.status === 409 && err.code === 'resolve_in_progress') {
+      return { result: { error: 'resolve_in_progress' }, state: 'failed', reason: FARM_ITEM_BUSY_REASON }
+    }
+    const reason = `automatic conflict resolution could not run (${err.message})`
+    requestChanges(id, 'Accept the code', `PR #${item.pr}: ${reason}`, actor)
+    return { result: { ok: true, resolved: false, escalated: true, reason }, state: 'escalated', reason }
   }
 
   if (result.resolved) {
@@ -529,15 +587,19 @@ export async function resolveConflicts(id, actor = 'You') {
       color: '#0E6E74',
       initials: 'RS',
     })
-    notifyChange()
-    return result.mode === 'scoped'
-      ? { ok: true, resolved: true, mode: 'scoped', review: result.review || null }
-      : { ok: true, resolved: true }
+    return {
+      result:
+        result.mode === 'scoped'
+          ? { ok: true, resolved: true, mode: 'scoped', review: result.review || null }
+          : { ok: true, resolved: true },
+      state: 'resolved',
+      reason: null,
+    }
   }
 
   const reason = CONFLICT_ESCALATION_REASONS[result.reason] || result.detail || 'conflict resolution could not complete automatically'
   requestChanges(id, 'Accept the code', `PR #${item.pr}: ${reason}`, actor)
-  return { ok: true, resolved: false, escalated: true }
+  return { result: { ok: true, resolved: false, escalated: true, reason }, state: 'escalated', reason }
 }
 
 function projectPayload(projectId) {

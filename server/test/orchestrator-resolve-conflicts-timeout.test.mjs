@@ -43,9 +43,35 @@ test('a farmd that never responds is aborted at FARM_CONFLICT_RESOLVE_TIMEOUT_MS
   const result = await orchestrator.resolveConflicts('RC-T1', 'Alice')
   const elapsedMs = Date.now() - started
 
-  assert.deepEqual(result, { ok: true, resolved: false, escalated: true })
+  assert.deepEqual(result, {
+    ok: true,
+    resolved: false,
+    escalated: true,
+    reason: 'automatic conflict resolution could not run (farm request to /conflicts/resolve timed out after 200ms)',
+  })
   assert.ok(elapsedMs < 5000, `expected the abort to fire near the 200ms timeout, took ${elapsedMs}ms`)
   assert.equal(db.prepare("SELECT cursor FROM work_item WHERE id = 'RC-T1'").get().cursor, IMPLEMENT_STEP_INDEX)
   const feedback = db.prepare("SELECT message FROM feedback WHERE item_id = 'RC-T1'").get()
   assert.match(feedback.message, /timed out after 200ms/)
+})
+
+test('a timed-out resolve releases the one-run guard (HZ-188): a retry reaches farmd again', async () => {
+  insertItem.run('RC-T2', 'Retry after timeout', ACCEPT_GATE_INDEX, 'acme/demo', 98, 0)
+  const realFetch = globalThis.fetch
+  let calls = 0
+  globalThis.fetch = (...args) => {
+    calls++
+    return realFetch(...args)
+  }
+  try {
+    await orchestrator.resolveConflicts('RC-T2', 'Alice')
+    assert.equal(orchestrator.getConflictRun('RC-T2').state, 'escalated')
+    // The timeout sent the item back; return it to the gate so only the guard is under test.
+    db.prepare('UPDATE work_item SET cursor = ? WHERE id = ?').run(ACCEPT_GATE_INDEX, 'RC-T2')
+    const retry = await orchestrator.resolveConflicts('RC-T2', 'Alice')
+    assert.equal(retry.escalated, true, 'the retry ran (and timed out) rather than answering resolve_in_progress')
+    assert.equal(calls, 2)
+  } finally {
+    globalThis.fetch = realFetch
+  }
 })
