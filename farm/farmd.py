@@ -25,11 +25,13 @@ from fastapi.responses import JSONResponse
 from domain.py import reasons, steps
 from . import check_slots, conflict_resolver, pause, rules, tmux_mgr, workspaces
 from . import config as farm_config
+from .task_files import read_launchable_task
 from .agent_runner import AgentError, assert_provider_auth
 from .config import (
     FARM_PORT,
     HORIZON_URL,
     LOGS_DIR,
+    PM_MALFORMED_GRACE_S,
     QUEUE_DIR,
     SHARED_SECRET,
     STATE_DIR,
@@ -56,10 +58,6 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def _pm_session_name() -> str:
-    return f"farm-pm-{slugify(state['project']['name'])}" if state["project"] else ""
-
-
 # HZ-50: raised from 2 to 4 now that per-item git worktrees (workspaces.py)
 # mean concurrent steps on different items no longer share a working tree to
 # reset/clean/checkout over each other. Steps mostly wait on the Claude API
@@ -76,16 +74,18 @@ def _pm_session_name() -> str:
 # instead would silently re-raise the cap on every other host too.
 MAX_EPHEMERAL = int(__import__("os").environ.get("FARM_MAX_EPHEMERAL", "4"))
 
+# HZ-212: PM steps (0/1/2/9) run as their own farm-run-* sessions now, but
+# keep the PM lane's limit — one at a time, as when a single long-lived
+# farm-pm-<project> session ran them serially. They do not use MAX_EPHEMERAL
+# slots, so a PM step never waits behind implement backlog or vice versa.
+PM_LANE_CAP = 1
+
+# The retired long-lived PM session (HZ-212). farmd kills any it finds at
+# boot; it never launches one.
+LEGACY_PM_SESSION_PREFIX = "farm-pm-"
+
 # run_id -> tmux session name for launched ephemeral runs (so cancel can kill).
 RUN_SESSIONS: dict = {}
-
-# run_ids currently claimed by the PM agent (HZ-100). Steps 0/1/2/9 have no
-# per-run tmux session of their own — the PM's session persists across the
-# farm's lifetime — so this is what /runs/alive checks to prove a claimed PM
-# run is still in flight, without which a lost server-side watchdog for a
-# genuinely-in-flight PM step could be misread as dead. Populated by
-# /internal/steps/started, cleared by /internal/steps/result.
-PM_ACTIVE_RUNS: set = set()
 
 # Farm state survives farmd restarts: on boot we ADOPT live agent sessions
 # instead of requiring a /farm/start (whose teardown would kill them).
@@ -96,7 +96,72 @@ def _persist_state() -> None:
     STATE_FILE.write_text(json.dumps({"project": state["project"], "repos": state["repos"]}))
 
 
+def _pid_farm_home(pid: int) -> Path | None:
+    """The FARM_HOME process `pid` runs under (config.py's default when it
+    has none), or None if its environment cannot be read. An empty environ
+    is unreadable too, not "no FARM_HOME": a process still inside execve,
+    before its new env block is mapped, reads as zero bytes."""
+    try:
+        raw = Path(f"/proc/{pid}/environ").read_bytes()
+    except OSError:
+        return None
+    if not raw:
+        return None
+    for entry in raw.split(b"\0"):
+        if entry.startswith(b"FARM_HOME=") and len(entry) > len(b"FARM_HOME="):
+            return Path(entry[len(b"FARM_HOME=") :].decode(errors="replace"))
+    return Path.home() / ".horizon-farm"
+
+
+def _session_in_this_farm(name: str) -> bool:
+    """Whether a pane of session `name` runs under this farmd's FARM_HOME.
+    Every farm on the host shares one tmux server — a test farmd started on
+    a temp FARM_HOME must never retire the real farm's session."""
+    ours = farm_config.FARM_HOME.resolve()
+    for pid in tmux_mgr.pane_pids(name):
+        home = _pid_farm_home(pid)
+        if home is not None and home.resolve() == ours:
+            return True
+    return False
+
+
+def _retire_legacy_pm_sessions() -> list[str]:
+    """HZ-212 cutover: kills any long-lived farm-pm-* session left by an older
+    farmd on this FARM_HOME, so it cannot keep polling queue/pm alongside the
+    dispatcher. A farm-pm-* of another FARM_HOME is left alone.
+
+    Its in-flight step (if any) has no farm record left, so /runs/alive
+    reports it dead and the server fails it once with a retryable reason
+    (its own timer or the HZ-100 sweep). Queued queue/pm files are untouched; the
+    dispatcher claims them.
+
+    Deletes nothing on disk: the old session-id files and PM logs are only
+    listed for the operator to archive."""
+    killed = []
+    for name in tmux_mgr.list_farm_sessions():
+        if not name.startswith(LEGACY_PM_SESSION_PREFIX):
+            continue
+        if not _session_in_this_farm(name):
+            print(f"farmd: leaving legacy PM session {name} alone — not running under {farm_config.FARM_HOME}", flush=True)
+            continue
+        tmux_mgr.kill_session(name)
+        killed.append(name)
+    if killed:
+        print(f"farmd: retired legacy PM session(s) {killed} — PM steps now run as farm-run-* sessions", flush=True)
+    stale = sorted([*STATE_DIR.glob("pm-session-*.txt"), *LOGS_DIR.glob("pm-*.log")])
+    if stale:
+        print(
+            "farmd: legacy PM files, no longer read (kept; the operator may archive them): "
+            + ", ".join(str(path) for path in stale),
+            flush=True,
+        )
+    return killed
+
+
 def _adopt_existing() -> None:
+    # Before any early return: a farm-pm-* session can outlive a missing or
+    # corrupt state file, and would otherwise race the dispatcher on queue/pm.
+    _retire_legacy_pm_sessions()
     if not STATE_FILE.exists():
         return
     try:
@@ -117,7 +182,7 @@ def _adopt_existing() -> None:
             continue
     print(
         f"farmd: adopted running farm for '{saved['project'].get('name')}' "
-        f"({len(RUN_SESSIONS)} in-flight run(s); the watchdog revives the PM if needed)",
+        f"({len(RUN_SESSIONS)} in-flight run(s))",
         flush=True,
     )
 
@@ -150,6 +215,26 @@ def _run_session_name(task: dict) -> str:
     return f"farm-run-{task['item']['id'].lower()}-s{task['step']['index']}-a{task.get('attempt', 1)}"
 
 
+def _session_step_index(name: str) -> int | None:
+    """The step index in a farm-run-<item>-s<idx>-a<n> name, or None.
+    rsplit, because an item id may itself contain "-s"."""
+    head, sep, tail = name.rpartition("-s")
+    if not head or not sep:
+        return None
+    index = tail.split("-a", 1)[0]
+    return int(index) if index.isdigit() else None
+
+
+def _lane_busy(sessions: list[str]) -> dict[str, int]:
+    """Live farm-run-* sessions per lane. An unparseable name counts as
+    "runs", so it can only ever hold back implement-lane work, never PM."""
+    busy = {"pm": 0, "runs": 0}
+    for name in sessions:
+        index = _session_step_index(name)
+        busy["pm" if index is not None and lane_for_index(steps.STEPS, index) == "pm" else "runs"] += 1
+    return busy
+
+
 # Workspace-mutating steps: implement and the automated review, both of
 # which call prepare_branch() (reset --hard / clean -fd) on the item's own
 # worktree. Since HZ-50 gave every item its own git worktree, different
@@ -164,9 +249,11 @@ def workspace_mutating_indexes(step_table: list[dict]) -> set[int]:
     return {entry["index"] for entry in step_table if entry.get("workspaceMutating")}
 
 
-# Lane routing: which long-running process handles a dispatched step — the
-# persistent PM session ("pm") or an ephemeral farm-dispatched agent
-# ("runs"). HZ-117: derived from steps.STEPS's runsIn field. An index absent
+# Lane routing: which queue and agent module handle a dispatched step — the
+# PM lane ("pm": queue/pm, farm.pm_agent, capped at PM_LANE_CAP) or the
+# ephemeral lane ("runs": queue/runs, farm.step_agent, MAX_EPHEMERAL). Since
+# HZ-212 both run as per-task farm-run-* sessions; runsIn keeps its name.
+# HZ-117: derived from steps.STEPS's runsIn field. An index absent
 # from the table (e.g. a gate, which is never dispatched here at all) falls
 # back to `default` — preserves the pre-HZ-117 behavior for an unrecognized
 # index.
@@ -251,6 +338,74 @@ def _select_dispatchable(task_paths: list, sessions: list[str], slots: int) -> l
         if step_idx in WORKSPACE_MUTATING_STEPS:
             busy.append(_run_session_name(task))
     return selected
+
+
+def _select_pm_dispatchable(task_paths: list, sessions: list[str], now: float | None = None) -> tuple[list, list]:
+    """Pure selection for the PM lane, like _select_dispatchable: returns
+    (launch, unusable). `launch` holds at most PM_LANE_CAP minus the live PM
+    sessions, oldest first, and only files read_launchable_task accepts.
+    `unusable` holds (path, why) for rejected files older than
+    PM_MALFORMED_GRACE_S — walked past, never blocking newer tasks (HZ-130)."""
+    now = time.time() if now is None else now
+    slots = PM_LANE_CAP - _lane_busy(sessions)["pm"]
+    launch, unusable = [], []
+    for task_path in task_paths:
+        task, why = read_launchable_task(task_path)
+        if task is not None:
+            if len(launch) < slots:
+                launch.append(task_path)
+            continue
+        try:
+            age = now - task_path.stat().st_mtime
+        except OSError:
+            continue  # vanished under us (a cancel): nothing to report
+        if age >= PM_MALFORMED_GRACE_S:
+            unusable.append((task_path, why))
+    return launch, unusable
+
+
+def _forward_result(body: dict) -> int | None:
+    """Relays an agent's result to the Node server's /complete or /fail.
+    Returns the server's status code, or None if it could not be reached."""
+    run_id = body.get("run_id")
+    path = "complete" if body.get("ok") else "fail"
+    if body.get("ok"):
+        payload = {"summary": body.get("summary", ""), "patch": body.get("patch") or {}, "artifacts": body.get("artifacts") or {}}
+    else:
+        payload = {"error": body.get("error", "unknown agent failure")}
+        # HZ-76: only a small, explicit set of reasons (e.g. "turn_cap") is
+        # ever auto-retried server-side — anything absent here just pauses
+        # for a human, same as before this existed.
+        if body.get("reason"):
+            payload["reason"] = body["reason"]
+    url = f"{HORIZON_URL}/api/farm/steps/{run_id}/{path}"
+    for attempt in (1, 2):
+        try:
+            res = httpx.post(url, json=payload, headers={"x-farm-secret": SHARED_SECRET}, timeout=15)
+            print(f"farmd: forwarded run {run_id} {path} -> {res.status_code}", flush=True)
+        except Exception as exc:
+            print(f"farmd: forward attempt {attempt} for run {run_id} failed: {exc}", flush=True)
+            time.sleep(2)
+            continue
+        if not 200 <= res.status_code < 300:
+            print(f"farmd: server REJECTED run {run_id} {path} ({res.status_code}): {res.text[:300]}", flush=True)
+        return res.status_code
+    return None
+
+
+def _report_unusable_task(path: Path, why: str) -> bool:
+    """HZ-130, moved here with the PM inbox (HZ-212): a queue/pm file that
+    can never be launched is reported once, under the same retryable reason
+    pm_agent used, and released only once the server took it (or no longer
+    knows the run). Otherwise it stays for the next tick."""
+    run_id = path.stem
+    error = f"farmd: PM task file {path.name} was unusable: {why}"
+    print(f"farmd: run {run_id}: {error}", flush=True)
+    status = _forward_result({"run_id": run_id, "ok": False, "error": error[:300], "reason": reasons.REASON["UNREACHABLE"]})
+    if status is None or not (200 <= status < 300 or status == 404):
+        return False
+    path.unlink(missing_ok=True)
+    return True
 
 
 def _notify_started(run_id) -> bool:
@@ -407,9 +562,13 @@ def _claim_and_launch(task_path, runs_dir: Path, repo_root: Path) -> str | None:
         claimed.unlink(missing_ok=True)
         return None
     name = _run_session_name(task)
+    # HZ-212: the step's lane picks the agent module; the launch is otherwise
+    # identical — same session naming, same per-run log, fresh interpreter
+    # and env on every step.
+    module = "farm.pm_agent" if lane_for_index(steps.STEPS, task["step"]["index"]) == "pm" else "farm.step_agent"
     tmux_mgr.new_session(
         name,
-        f"{sys.executable} -m farm.step_agent --task {claimed}",
+        f"{sys.executable} -m {module} --task {claimed}",
         cwd=str(repo_root),
         log_file=str(LOGS_DIR / f"{name}.log"),
     )
@@ -418,34 +577,57 @@ def _claim_and_launch(task_path, runs_dir: Path, repo_root: Path) -> str | None:
     return name
 
 
-def _ephemeral_dispatcher() -> None:
-    """Launches queued ephemeral steps, at most MAX_EPHEMERAL at once."""
+def _queued(queue: Path) -> list[Path]:
+    """Queued task files, oldest first; a file cancelled between the glob
+    and the stat sorts out of this batch."""
+    dated = []
+    for path in queue.glob("*.json"):
+        try:
+            dated.append((path.stat().st_mtime, path))
+        except OSError:
+            continue
+    return [path for _mtime, path in sorted(dated, key=lambda pair: pair[0])]
+
+
+def _dispatch_pm_lane(runs_dir: Path, repo_root: Path) -> None:
+    launch, unusable = _select_pm_dispatchable(_queued(QUEUE_DIR / "pm"), _ephemeral_sessions())
+    # One report per tick, as pm_agent's poll did: a report can block on the
+    # server for up to two timeouts, and this thread also feeds the runs lane.
+    for task_path, why in unusable[:1]:
+        _report_unusable_task(task_path, why)
+    for task_path in launch:
+        _claim_and_launch(task_path, runs_dir, repo_root)
+
+
+def _dispatch_runs_lane(runs_dir: Path, repo_root: Path) -> None:
+    sessions = _ephemeral_sessions()
+    slots = MAX_EPHEMERAL - _lane_busy(sessions)["runs"]
+    if slots <= 0:
+        return
+    for task_path in _select_dispatchable(_queued(runs_dir), sessions, slots):
+        _claim_and_launch(task_path, runs_dir, repo_root)
+
+
+def _dispatch_tick() -> None:
+    """One dispatcher pass. Each lane has its own try, so an error in one
+    can never starve the other."""
     runs_dir = QUEUE_DIR / "runs"
     repo_root = Path(__file__).resolve().parent.parent
+    for lane, dispatch in (("pm", _dispatch_pm_lane), ("runs", _dispatch_runs_lane)):
+        try:
+            dispatch(runs_dir, repo_root)
+        except Exception as exc:
+            print(f"farmd: dispatcher error ({lane} lane): {exc}", flush=True)
+
+
+def _ephemeral_dispatcher() -> None:
+    """Launches queued steps: PM steps at most PM_LANE_CAP at once, every
+    other step at most MAX_EPHEMERAL at once."""
     while True:
         time.sleep(3)
         if state["status"] != "running":
             continue
-        try:
-            slots = MAX_EPHEMERAL - len(_ephemeral_sessions())
-            if slots <= 0:
-                continue
-            candidates = sorted(runs_dir.glob("*.json"), key=lambda p: p.stat().st_mtime)
-            for task_path in _select_dispatchable(candidates, _ephemeral_sessions(), slots):
-                _claim_and_launch(task_path, runs_dir, repo_root)
-        except Exception as exc:
-            print(f"farmd: dispatcher error: {exc}", flush=True)
-
-
-def _launch_pm_session() -> None:
-    slug = slugify(state["project"]["name"])
-    repo_root = Path(__file__).resolve().parent.parent
-    tmux_mgr.new_session(
-        f"farm-pm-{slug}",
-        f"{sys.executable} -m farm.pm_agent --project '{state['project']['name']}'",
-        cwd=str(repo_root),
-        log_file=str(LOGS_DIR / f"pm-{slug}.log"),
-    )
+        _dispatch_tick()
 
 
 def _concierge_session_name() -> str:
@@ -468,21 +650,15 @@ def _maybe_launch_concierge() -> bool:
 
 
 def _watchdog() -> None:
-    """Agents die (a stray Ctrl-C in an attached pane, a crash) — revive them.
-    Queued tasks survive because the queue lives on disk, not in the agent."""
+    """The concierge dies (a stray Ctrl-C in an attached pane, a crash) —
+    revive it. PM steps have no long-lived session to revive (HZ-212): a dead
+    farm-run-* session is reconcile's job."""
     while True:
         time.sleep(15)
         with _lock:
             if state["status"] != "running" or not state["project"]:
                 continue
-            name = _pm_session_name()
             concierge = _concierge_session_name() if farm_config.FARM_WA_ENABLED else ""
-        if name and not tmux_mgr.session_exists(name):
-            print(f"farmd: watchdog reviving dead session {name}", flush=True)
-            try:
-                _launch_pm_session()
-            except Exception as exc:
-                print(f"farmd: watchdog revive failed: {exc}", flush=True)
         if concierge and not tmux_mgr.session_exists(concierge):
             print(f"farmd: watchdog reviving dead session {concierge}", flush=True)
             try:
@@ -504,7 +680,6 @@ def _start_async(project: dict, repos: list, token: str | None) -> None:
             except Exception as exc:  # workspaces are not needed until phase 3
                 print(f"farmd: WARNING workspace for {entry['repo']} failed: {exc}", flush=True)
 
-        _launch_pm_session()
         if _maybe_launch_concierge():
             print("farmd: WhatsApp concierge launched", flush=True)
         with _lock:
@@ -524,16 +699,19 @@ def root():
 
 @app.get("/farm/status")
 def farm_status():
-    # `agents` / `checks` are additive (HZ-144): the Node server's
-    # waitForFarmRunning reads only `status` and `error` from this route, so
-    # new keys can't break it. They exist because the check limiter is
+    # `agents` / `checks` / `pm_agents` are additive (HZ-144, HZ-212): the
+    # Node server's waitForFarmRunning reads only `status` and `error` from
+    # this route, so new keys can't break it. `agents.busy` counts the runs
+    # lane only, the slots MAX_EPHEMERAL bounds. They exist because the check limiter is
     # otherwise invisible — a run blocked on a check slot looks identical to
     # a run that is simply slow, and "who is waiting" was the one thing the
     # file-lock design gave up versus a farmd-brokered lease.
+    busy = _lane_busy(_ephemeral_sessions())
     return {
         **state,
         "sessions": tmux_mgr.list_farm_sessions(),
-        "agents": {"limit": MAX_EPHEMERAL, "busy": len(_ephemeral_sessions())},
+        "agents": {"limit": MAX_EPHEMERAL, "busy": busy["runs"]},
+        "pm_agents": {"limit": PM_LANE_CAP, "busy": busy["pm"]},
         "checks": check_slots.status(),
     }
 
@@ -551,10 +729,8 @@ async def farm_start(request: Request):
         return JSONResponse({"error": str(exc)}, status_code=500)
     with _lock:
         if state["status"] == "running" and state["project"] and state["project"].get("id") == project.get("id"):
-            # Same project: recover a dead PM session in place — queue untouched.
-            if not tmux_mgr.session_exists(_pm_session_name()):
-                _launch_pm_session()
-                return {"ok": True, "recovered": True}
+            # Same project: nothing to recover — PM steps have no long-lived
+            # session since HZ-212, and the queue is untouched.
             return {"ok": True, "already": True}
         _teardown()
         ensure_dirs()
@@ -592,7 +768,7 @@ async def runs_status(request: Request):
     run_ids = [str(r) for r in body.get("run_ids", [])]
     pm_queue = list((QUEUE_DIR / "pm").glob("*.json"))
     runs_queue = list((QUEUE_DIR / "runs").glob("*.json"))
-    busy = len(_ephemeral_sessions())
+    busy = _lane_busy(_ephemeral_sessions())["runs"]
     return {"states": {rid: _run_state(rid, pm_queue, runs_queue, busy) for rid in run_ids}}
 
 
@@ -614,9 +790,7 @@ def _run_alive(run_id: str) -> bool:
     if (QUEUE_DIR / "runs" / f"{run_id}.json").exists():
         return True  # still queued for a free ephemeral slot
     if (QUEUE_DIR / "pm" / f"{run_id}.json").exists():
-        return True  # still queued for the PM agent
-    if run_id in PM_ACTIVE_RUNS:
-        return tmux_mgr.session_exists(_pm_session_name())
+        return True  # still queued for the PM lane
     session = RUN_SESSIONS.get(run_id)
     return bool(session and tmux_mgr.session_exists(session))
 
@@ -640,9 +814,9 @@ async def steps_run(request: Request):
     for key in ("run_id", "item", "step"):
         if key not in body:
             return JSONResponse({"error": f"missing {key}"}, status_code=400)
-    # Plan/review-summary steps go to the long-running PM (it has the project
-    # context to synthesize); everything else runs as an ephemeral agent via
-    # the dispatcher (bounded by FARM_MAX_EPHEMERAL). HZ-117: which is which
+    # Plan/review-summary steps go to the PM lane (farm.pm_agent, one at a
+    # time); everything else to the ephemeral lane (farm.step_agent, bounded
+    # by FARM_MAX_EPHEMERAL). The dispatcher launches both (HZ-212). HZ-117: which is which
     # comes from steps.STEPS's runsIn field, not a hardcoded index tuple.
     body["project"] = state["project"]
     # Project/repo rules are stamped into the task at enqueue (HZ-9) as a
@@ -708,8 +882,8 @@ LOG_READ_CAP = 64 * 1024
 
 def _session_for_run(run_id: str) -> str | None:
     """Resolve a run to its ephemeral tmux session: the in-memory map first,
-    then the claimed task files (covers a farmd restarted mid-run). PM-queue
-    runs (steps 0/1/2/9) share the PM session's log and resolve to nothing."""
+    then the claimed task files (covers a farmd restarted mid-run). PM steps
+    (0/1/2/9) resolve the same way since HZ-212, each to its own log."""
     name = RUN_SESSIONS.get(run_id)
     if name:
         return name
@@ -858,18 +1032,12 @@ async def steps_cancel(request: Request):
 
 @app.post("/internal/steps/started")
 async def internal_steps_started(request: Request):
-    """The PM agent's equivalent of the ephemeral dispatcher's own
-    _notify_started call above — the PM queue (steps 0/1/2/9) can sit behind
-    other PM work just as long as the ephemeral queue can (HZ-57)."""
+    """The legacy PM polling loop's equivalent of the dispatcher's own
+    _notify_started call (HZ-57). Since HZ-212 farmd claims PM tasks and
+    notifies itself; kept for pm_agent's --project mode (tests, rollback)."""
     body = await request.json()
     run_id = str(body.get("run_id"))
     active = _notify_started(run_id)
-    if active:
-        # HZ-100: marks this run alive for /runs/alive until steps_result
-        # reports it done/failed — the PM has already unlinked its task file
-        # by this point (claim-before-work), so this is the only record left
-        # that this specific run is the one the PM session is working on.
-        PM_ACTIVE_RUNS.add(run_id)
     return {"ok": True, "active": active}
 
 
@@ -904,37 +1072,17 @@ def internal_snapshot():
 
 @app.post("/internal/steps/result")
 async def steps_result(request: Request):
-    """PM agent reports here; we forward to the Node server with the secret."""
+    """Agents report here; we forward to the Node server with the secret."""
     body = await request.json()
-    run_id = body.get("run_id")
-    PM_ACTIVE_RUNS.discard(str(run_id))
-    path = "complete" if body.get("ok") else "fail"
-    if body.get("ok"):
-        payload = {"summary": body.get("summary", ""), "patch": body.get("patch") or {}, "artifacts": body.get("artifacts") or {}}
-    else:
-        payload = {"error": body.get("error", "unknown agent failure")}
-        # HZ-76: only a small, explicit set of reasons (e.g. "turn_cap") is
-        # ever auto-retried server-side — anything absent here just pauses
-        # for a human, same as before this existed.
-        if body.get("reason"):
-            payload["reason"] = body["reason"]
-    url = f"{HORIZON_URL}/api/farm/steps/{run_id}/{path}"
-    for attempt in (1, 2):
-        try:
-            res = httpx.post(url, json=payload, headers={"x-farm-secret": SHARED_SECRET}, timeout=15)
-            print(f"farmd: forwarded run {run_id} {path} -> {res.status_code}", flush=True)
-        except Exception as exc:
-            print(f"farmd: forward attempt {attempt} for run {run_id} failed: {exc}", flush=True)
-            time.sleep(2)
-            continue
-        # HZ-184: a rejected report (e.g. a 400 over the route's length limit)
-        # is a lost result — the run would sit active until the server's
-        # watchdog called it a timeout. Never report that as delivered.
-        if not 200 <= res.status_code < 300:
-            print(f"farmd: server REJECTED run {run_id} {path} ({res.status_code}): {res.text[:300]}", flush=True)
-            return JSONResponse({"error": "horizon server rejected the result", "forwarded": res.status_code}, status_code=502)
-        return {"ok": True, "forwarded": res.status_code}
-    return JSONResponse({"error": "could not reach horizon server"}, status_code=502)
+    status = _forward_result(body)
+    if status is None:
+        return JSONResponse({"error": "could not reach horizon server"}, status_code=502)
+    # HZ-184: a rejected report (e.g. a 400 over the route's length limit)
+    # is a lost result — the run would sit active until the server's
+    # watchdog called it a timeout. Never report that as delivered.
+    if not 200 <= status < 300:
+        return JSONResponse({"error": "horizon server rejected the result", "forwarded": status}, status_code=502)
+    return {"ok": True, "forwarded": status}
 
 
 ensure_dirs()

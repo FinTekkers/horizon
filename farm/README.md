@@ -17,16 +17,17 @@ With `FARM_URL` unset the server uses the built-in mock agents (demo mode).
 ## What runs where
 
 - `farm-daemon` tmux session — farmd (FastAPI, port 4100)
-- `farm-pm-<project>` tmux session — the long-running PM agent
-  (`tmux attach -t farm-pm-<project>` to watch it work)
+- `farm-run-<item>-s<step>-a<attempt>` tmux sessions — one per step, PM
+  steps included (HZ-212), each logging to `~/.horizon-farm/logs/<session>.log`
 - `farm-concierge-<project>` tmux session — the WhatsApp concierge
   (only with `FARM_WA_ENABLED=1`; see below)
-- `~/.horizon-farm/` — task queue, PM session/inbox state, logs, workspaces
+- `~/.horizon-farm/` — task queue, state, logs, workspaces
 
 ## Current scope (phases 1–3)
 
-- **PM agent** (long-running, tmux, session-resumed Claude): the three Plan
-  steps.
+- **PM agent** (`farm/pm_agent.py`, one tmux session per step, one at a
+  time, never resumed — HZ-212): steps 0, 1, 2 and 9. Its only memory of other
+  items is the project-context block in its prompt (HZ-204).
 - **Ephemeral agents** (one tmux session per step, max `FARM_MAX_EPHEMERAL`
   concurrent — code default 4, set explicitly on this host in
   `/etc/horizon/farm.env`; the number of check suites they may run at once is

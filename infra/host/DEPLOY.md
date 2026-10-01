@@ -318,6 +318,39 @@ All three levers are config; no code revert is needed.
 Stale slot files under `$FARM_HOME/locks/checks/` need no cleanup — `flock`
 state is held by the kernel, not by the files' contents.
 
+## 2f. PM steps run per task (HZ-212)
+
+There is no long-lived `farm-pm-<project>` session any more. farmd launches
+each PM step (0, 1, 2, 9) as its own `farm-run-<item>-s<step>-a<attempt>`
+session with its own `~/.horizon-farm/logs/<session>.log`, one at a time,
+exactly like every other step. So a release's code reaches the next PM step
+with no PM-specific restart. A `farm.env` change still needs the farmd
+restart below, as it does for every step: farmd is the process that reads it.
+
+**Cutover is the farmd restart.** At boot, before dispatching anything, farmd
+kills any `farm-pm-*` session left by the old build. That session's in-flight
+step has no farm record left, so the server fails it once with a retryable
+reason (`timeout`, or `never_picked_up` after a server restart) and the
+orchestrator retries it. Tasks still queued in `queue/pm` are left alone; the
+dispatcher picks them up.
+
+**Stale files, kept on purpose.** farmd reads none of these any more and
+deletes none of them; it lists them in its log at every boot:
+
+- `~/.horizon-farm/state/pm-session-<slug>.txt` — the last session id. PM
+  steps never resume it.
+- `~/.horizon-farm/logs/pm-<slug>.log` — the old PM's combined log.
+
+Archive them once you no longer need them.
+
+**Rolling back.** Revert the release and restart farmd. The old watchdog
+relaunches `farm-pm-<slug>`, which resumes the id in `pm-session-<slug>.txt`.
+The new build keeps writing that file, so it holds the session of whichever
+PM step ran last — one unrelated item's context. That is harmless: every PM
+prompt already carries the item and its project context. A PM step still in a
+`farm-run-*` session finishes and reports through the unchanged
+`/internal/steps/result`.
+
 ## 3. Confirm the repo is pull-only
 
 `/opt/horizon` must be able to `git fetch`/`checkout` from `origin`, but must

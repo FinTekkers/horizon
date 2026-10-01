@@ -2,9 +2,10 @@
 
 Session naming:
   farm-daemon              farmd itself (started by run.sh)
-  farm-pm-<project>        the long-running PM agent
+  farm-pm-<project>        legacy long-lived PM agent (retired by HZ-212;
+                           farmd kills one at boot, never launches one)
   farm-concierge-<project> the WhatsApp concierge (FARM_WA_ENABLED=1)
-  farm-run-<...>           ephemeral per-step agents (phase 2+)
+  farm-run-<...>           per-step agents, PM steps included (HZ-212)
 """
 
 import os
@@ -135,6 +136,14 @@ def new_session(name: str, command: str, cwd: str, log_file: str | None = None) 
 
 def kill_session(name: str) -> None:
     _tmux("kill-session", "-t", f"={name}")
+
+
+def pane_pids(name: str) -> list[int]:
+    """The pid of each pane process in session `name` ([] if it is gone)."""
+    result = _tmux("list-panes", "-t", f"={name}", "-F", "#{pane_pid}")
+    if result.returncode != 0:
+        return []
+    return [int(pid) for pid in result.stdout.split() if pid.isdigit()]
 
 
 def list_farm_sessions() -> list[str]:
