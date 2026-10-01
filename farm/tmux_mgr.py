@@ -11,6 +11,7 @@ import os
 import shlex
 import subprocess
 
+from . import config
 from .credentials import GATE_APPROVING
 
 
@@ -34,6 +35,16 @@ def session_exists(name: str) -> bool:
 # only one that needs it — the provider seam and the concierge's own process
 # scrub the same names, and three copies of this set would drift.
 NEVER_FORWARD = GATE_APPROVING
+
+# HZ-144: a second, separate denylist — not an extension of NEVER_FORWARD.
+# These are not credentials and nothing about them is a security boundary;
+# they are the farm's own capacity tuning, which broke the checked repo's
+# tests when it reached them (see farm/config.py for the 30 Sept failure).
+# Kept separate on purpose: NEVER_FORWARD is identity-checked against
+# credentials.GATE_APPROVING by farm/tests/test_credentials.py, and conflating
+# "a secret an agent must not hold" with "a setting an agent has no use for"
+# would lose that check and muddle both docstrings.
+AGENT_NEVER_NEEDS = config.AGENT_NEVER_NEEDS
 
 # The one exception, keyed by session-name prefix: the concierge process *is*
 # the WhatsApp approval path, so it alone gets the approval credential back.
@@ -82,7 +93,7 @@ def agent_env(session_name: str, environ: dict[str, str] | None = None) -> dict[
     """
     source = os.environ if environ is None else environ
     pairs = {k: v for k, v in source.items() if k.startswith(("FARM_", "WA_", "CLAUDE_")) or k == "HORIZON_URL"}
-    for name in NEVER_FORWARD - granted_names(session_name):
+    for name in (NEVER_FORWARD - granted_names(session_name)) | AGENT_NEVER_NEEDS:
         pairs.pop(name, None)
     return pairs
 
@@ -97,8 +108,14 @@ def _env_prefix(session_name: str) -> str:
     credentials are explicitly unset with `env -u`, which wins over whatever
     the tmux server happened to be started with. Belt as well as braces: the
     denylist above decides, this line enforces.
+
+    The same argument applies to AGENT_NEVER_NEEDS for a different reason:
+    farmd is started by run.sh from /etc/horizon/farm.env, so it is exactly
+    the process that holds FARM_MAX_EPHEMERAL, and it is usually the one that
+    starts the tmux server. Omitting the name from `pairs` alone would leave
+    the session inheriting it from there.
     """
-    unset = sorted(NEVER_FORWARD - granted_names(session_name))
+    unset = sorted((NEVER_FORWARD - granted_names(session_name)) | AGENT_NEVER_NEEDS)
     parts = [f"-u {name}" for name in unset]
     parts += [f"{k}={shlex.quote(v)}" for k, v in agent_env(session_name).items()]
     if not parts:

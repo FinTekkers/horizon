@@ -252,6 +252,72 @@ To turn it off with no deploy: set `WA_POLL_ENABLED=0` and restart
 free-text approval carry on. **The vote route stays live either way**, so a
 poll already on someone's phone still decides its gate.
 
+## 2e. Farm capacity env (HZ-144)
+
+The farm's two concurrency limits live in `/etc/horizon/farm.env`, loaded by
+`infra/host/horizon-farm.service`. **That file is not in git**, so "set
+explicitly in the deployed farm config" is a host edit, not a reviewable
+diff — this section is the reviewable record of it.
+
+It is a **prescription, not a log**: the values below are what this host is to
+run, applied by whoever deploys the change. Nothing in the repo can assert
+they were applied, so confirm them with the commands at the end of this
+section rather than trusting this table. As of the HZ-144 PR the mechanism is
+in the code and the host edit has **not** been made — `FARM_MAX_EPHEMERAL` is
+unset on this host, so the code default of 4 is in force.
+
+| File | Var | Value to set | Notes |
+|---|---|---|---|
+| `/etc/horizon/farm.env` | `FARM_MAX_EPHEMERAL` | `6` | how many agent steps run at once. The code default in `farm/farmd.py` stays **4** on purpose: raising the default would silently re-raise the cap on every other host |
+| `/etc/horizon/farm.env` | `FARM_MAX_CONCURRENT_CHECKS` | `2` | how many check suites run at once. **Set this before raising the line above** |
+| `/etc/horizon/farm.env` | `FARM_CHECK_SLOT_WAIT_MAX_S` | (unset ⇒ 1200) | how long a run waits for a check slot before proceeding **without** one. Sized above the worst legitimate queue (2 waves × the measured p95 suite) and below the step watchdog — do not lower it to "fail faster", that disables the cap under load |
+| `/etc/horizon/farm.env` | `FARM_CHECK_METRICS_PHASE` | measurement only | tags records during a measurement window; remove it afterwards |
+
+The exact lines:
+
+```
+FARM_MAX_CONCURRENT_CHECKS=2
+FARM_MAX_EPHEMERAL=6
+```
+
+Then `sudo systemctl restart horizon-farm`. Existing tmux sessions keep the
+environment they were launched with, so the restart's teardown is what
+applies the new values.
+
+**Order matters.** Six agents all reaching their checks at once on 2 vCPUs is
+the failure this pairing exists to prevent — it was observed live on 30 Sept
+2026 (load ~8, the Playwright suite failing its own 85s budget). Add
+`FARM_MAX_CONCURRENT_CHECKS` first, restart, confirm, then raise
+`FARM_MAX_EPHEMERAL`.
+
+Confirm afterwards:
+
+```
+curl -s localhost:4100/farm/status | python3 -m json.tool   # agents.limit, checks.limit
+tmux list-sessions | grep -c farm-run-                      # never exceeds agents.limit
+farm/.venv/bin/python -m farm.tools.check_session_env       # no INFO line about FARM_MAX_EPHEMERAL
+```
+
+The last one matters: farmd holds `FARM_MAX_EPHEMERAL` and must not pass it
+into an agent session. The checked repo is Horizon, whose own suite asserts
+the default, so a leak there fails every implement run's pytest rather than
+showing up as a warning. It prints an `INFO` line (not a `LEAK`, and not a
+non-zero exit — that status is reserved for credentials).
+
+### Rolling back
+
+All three levers are config; no code revert is needed.
+
+- Too much contention: `FARM_MAX_EPHEMERAL=4`, restart.
+- The limiter itself is suspect: `FARM_MAX_CONCURRENT_CHECKS=0`, restart —
+  `check_slot()` becomes a no-op and pre-HZ-144 behaviour is restored.
+- Do **not** raise `FARM_CHECK_TIMEOUT_S` or the e2e `globalTimeout` to
+  absorb slow checks. Both are the contention detectors; report the numbers
+  from `python -m farm.tools.report_check_metrics` instead.
+
+Stale slot files under `$FARM_HOME/locks/checks/` need no cleanup — `flock`
+state is held by the kernel, not by the files' contents.
+
 ## 3. Confirm the repo is pull-only
 
 `/opt/horizon` must be able to `git fetch`/`checkout` from `origin`, but must

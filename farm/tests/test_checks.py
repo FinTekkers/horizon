@@ -5,8 +5,27 @@ import subprocess
 
 import pytest
 
-from farm import checks
+from farm import check_slots, checks
 from farm.checks import CheckFailure, detect_check_commands, run_checks
+
+
+@pytest.fixture(autouse=True)
+def hermetic_check_slots(tmp_path, monkeypatch):
+    """HZ-144: run_checks() now takes a check slot, so these tests must not
+    reach into the host's real $FARM_HOME and compete with live farm runs.
+
+    farm/tests/conftest.py already forces FARM_HOME to a throwaway directory,
+    so this is not what keeps the suite off the host's state. It narrows the
+    scope further: conftest's directory is created once per session, so this
+    gives one slot directory *per test* instead, and these tests cannot take
+    each other's slots when the limiter is exercised concurrently.
+
+    The sentinel is cleared because under a real farm check run it is set, and
+    it would make every acquisition here a no-op — these tests need the real
+    limiter. test_check_env_scrub.py sets it back on purpose.
+    """
+    monkeypatch.setenv("FARM_HOME", str(tmp_path / "farm-home"))
+    monkeypatch.delenv(check_slots.IN_CHECKS_ENV, raising=False)
 
 
 def test_no_project_files_means_no_checks(tmp_path):

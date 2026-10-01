@@ -114,10 +114,19 @@ def test_agent_env_never_mutates_the_environment_it_reads():
 
 def test_an_empty_environment_still_unsets_the_credentials(monkeypatch):
     """Even with nothing to forward, the prefix must still clear what the tmux
-    server's own global environment might be carrying."""
+    server's own global environment might be carrying.
+
+    HZ-144 added FARM_MAX_EPHEMERAL to the same `env -u` list for a
+    non-credential reason (the tmux server is usually started by farmd, the
+    one process that holds it), so the exact list grew — the property under
+    test is unchanged. The two sets stay separate; see
+    farm/tests/test_check_env_scrub.py.
+    """
     monkeypatch.setattr(tmux_mgr.os, "environ", {})
     assert shlex.split(tmux_mgr._env_prefix(STEP_SESSION)) == [
         "env",
+        "-u",
+        "FARM_MAX_EPHEMERAL",
         "-u",
         "FARM_SHARED_SECRET",
         "-u",

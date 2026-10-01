@@ -58,6 +58,16 @@ OFFLINE_LOG_FORENSICS_CALLS = {
     FARM / "tools" / "analyze_pm_context_reliance.py": 1,
 }
 
+# Farm-written metrics exemption, by path and by count (HZ-144). This module
+# reads back $FARM_HOME/logs/check-metrics.jsonl, one record per line, which
+# run_checks() itself appended with json.dumps — no model ever wrote a byte of
+# it. Like the forensics scanner it must skip a malformed line and keep going
+# (a torn append must not hide the other records), the opposite of
+# parse_agent_reply()'s one-reply, fail-loudly contract. Budgeted at one.
+FARM_METRICS_LOG_CALLS = {
+    FARM / "check_metrics.py": 1,
+}
+
 # Both spellings of the raw extractor. `_extract_json` is agent_runner's own
 # private variant — it returns which attempt produced the value, so it is even
 # more tempting to reach for and even less suitable outside the parser. Banning
@@ -104,7 +114,11 @@ def _offenders(paths: list[Path]) -> list[str]:
         except SyntaxError as exc:  # pragma: no cover - a broken module is its own failure
             found.append(f"{path}: could not be parsed ({exc})")
             continue
-        exempt_budget = TRANSPORT_ENVELOPE_CALLS.get(path, 0) + OFFLINE_LOG_FORENSICS_CALLS.get(path, 0)
+        exempt_budget = (
+            TRANSPORT_ENVELOPE_CALLS.get(path, 0)
+            + OFFLINE_LOG_FORENSICS_CALLS.get(path, 0)
+            + FARM_METRICS_LOG_CALLS.get(path, 0)
+        )
         for node in ast.walk(tree):
             # Any reference to the raw extractor at all, however it is spelled:
             # a bare call, an attribute access, or an aliased import.

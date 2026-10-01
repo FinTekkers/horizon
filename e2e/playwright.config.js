@@ -15,11 +15,19 @@ import { createHash } from 'node:crypto'
 // webServer command below, not from a unique-per-run path.
 // Every shared resource below is namespaced by RUN_KEY. The farm runs up to
 // FARM_MAX_EPHEMERAL agents concurrently (HZ-50 raised that to 4 and dropped
-// the implement-step serialisation), each executing this suite in its own
-// worktree. With fixed ports and a fixed DB path they collided: the loser saw
+// the implement-step serialisation; HZ-144 capped concurrent check suites
+// separately via FARM_MAX_CONCURRENT_CHECKS so the deployed agent cap can go
+// to 6 — see infra/host/DEPLOY.md §2c for the value this host runs),
+// each executing this suite in its own worktree. With fixed ports and a fixed
+// DB path they collided: the loser saw
 // "http://localhost:3057 is already used", and because each webServer command
 // starts with `fuser -k` on its port, concurrent runs actively killed each
 // other's servers mid-suite. Observed failing HZ-25, HZ-46 and HZ-57.
+//
+// PORT_OFFSET is a hash of the worktree path modulo 1000, so more concurrent
+// runs means a higher chance of two runs hashing to the same window. That is
+// now classified as `contention` by farm/check_metrics.py rather than being
+// lost in a generic failure bucket.
 //
 // RUN_KEY must be stable across Playwright's per-worker re-evaluation of this
 // module (see the DB_PATH note above — a pid would diverge between the worker

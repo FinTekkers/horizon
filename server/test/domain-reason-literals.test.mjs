@@ -69,6 +69,21 @@ const LITERALS_ALLOWED = {
   // instance of the same false positive as the two entries above: a
   // subprocess keyword-argument name, never a reason on the wire.
   'farm/tests/test_pm_run_timings.py': 'kwargs.get("timeout") on the measured subprocess calls — an option name, not a reason',
+  // HZ-144's check-metrics records classify each check run with their own
+  // outcome vocabulary (pass/timeout/oom/contention/leakage/other — see
+  // farm/check_metrics.py OUTCOMES). "timeout" there means "a check command hit
+  // FARM_CHECK_TIMEOUT_S", written to a local JSONL file, never a failure
+  // reason relayed to the server. The `never_picked_up` hits are docstring and
+  // README prose naming the success metric the item exists to move.
+  'farm/README.md': 'prose naming never_picked_up (the HZ-144 metric) and the check-outcome classes — not a reason on the wire',
+  'farm/check_metrics.py': 'declares the check-run OUTCOMES vocabulary, whose "timeout" is a check outcome, not a failure reason',
+  'farm/check_slots.py': 'docstring prose naming never_picked_up as what an unbounded slot wait would resurface as',
+  'farm/checks.py': 'sets the check-metrics outcome "timeout" on a record — a check outcome, not a failure reason',
+  'farm/tests/test_backfill_check_metrics.py': 'asserts the check-metrics outcome "timeout" — a check outcome, not a failure reason',
+  'farm/tests/test_check_metrics.py': 'asserts the check-metrics outcome "timeout" — a check outcome, not a failure reason',
+  'farm/tests/test_check_slots.py': 'a spy recording subprocess.run\'s "timeout" kwarg, plus never_picked_up in docstrings — not a reason',
+  'farm/tools/backfill_check_metrics.py': 'classifies historical check runs into the check-metrics outcome "timeout" — not a failure reason',
+  'farm/tools/report_check_metrics.py': 'tallies the check-metrics outcome "timeout" — a check outcome, not a failure reason',
 }
 
 function patternFor(id) {

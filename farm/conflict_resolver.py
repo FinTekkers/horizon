@@ -184,7 +184,17 @@ def resolve(repo_full: str, item_id: str, branch: str | None = None, base_branch
     diffstat = git(ws, "diff", "--stat", f"{pre_merge_sha}..HEAD", check=False).stdout.strip()
 
     try:
-        check_note = run_checks(ws, log)
+        # HZ-144: post-merge checks take a check slot like any other, and are
+        # labelled `conflict_resolver` so the measurement can separate them
+        # from agent runs. Deliberately NOT exempt: this runs the same repo
+        # suite on the same 2 vCPUs as an agent's checks, so exempting it
+        # would mean the real concurrent-check population is the configured
+        # limit plus one, which is the oversubscription the limit exists to
+        # prevent. It runs in farmd's own process, inside a synchronous
+        # request from the Node server, so the slot wait is bounded twice:
+        # by FARM_CHECK_SLOT_WAIT_MAX_S here, and by
+        # FARM_CONFLICT_RESOLVE_TIMEOUT_MS (50 min) on the caller's side.
+        check_note = run_checks(ws, log, item_id=item_id, caller="conflict_resolver")
     except CheckFailure as exc:
         return _escalate(ws, pre_merge_sha, "tests_failed", str(exc), log)
 
@@ -352,7 +362,7 @@ def _scoped_resolve(ws, repo_full, branch, default, unmerged, pre_merge_sha, log
     try:
         # require_ran: this path pushes a merge no human has read. "No green,
         # no push" has to mean a check suite that actually ran.
-        check_note = run_checks(ws, log, require_ran=True)
+        check_note = run_checks(ws, log, require_ran=True, caller="conflict_resolver")
     except CheckFailure as exc:
         return _escalate(ws, pre_merge_sha, "scoped_checks_failed", str(exc), log)
 

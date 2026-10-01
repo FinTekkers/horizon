@@ -21,6 +21,17 @@ Usage (from the repo root):
 
     farm/.venv/bin/python -m farm.tools.check_session_env
 
+HZ-144 added a second, weaker denylist to tmux_mgr — AGENT_NEVER_NEEDS, the
+farm's capacity settings. This checker stays **secrets-only**: a capacity
+variable in a session is a tuning bug that breaks the checked repo's tests,
+not a credential leak, so it must not set an exit status that means "a
+running agent can approve its own gate". It is reported on its own INFO line
+instead, because the information is genuinely useful when diagnosing a run
+whose checks failed on an assertion about farm capacity. The tripwire that
+*fails the build* for that regression is a unit test
+(farm/tests/test_check_env_scrub.py), and the live signal is the `leakage`
+outcome class in farm/check_metrics.py.
+
 Exit status: 0 if no session holds a credential it was not granted, 1 otherwise.
 """
 
@@ -33,7 +44,11 @@ from .. import tmux_mgr
 def forbidden_names(session_name: str) -> frozenset[str]:
     """Credentials this session must not hold. The concierge's grant (see
     tmux_mgr.SESSION_ENV_GRANTS) is subtracted, so it is judged by the same
-    policy that launched it rather than a second, driftable copy."""
+    policy that launched it rather than a second, driftable copy.
+
+    Deliberately NOT widened with tmux_mgr.AGENT_NEVER_NEEDS — see the module
+    docstring. This set is what the exit status means.
+    """
     return frozenset(tmux_mgr.NEVER_FORWARD - tmux_mgr.granted_names(session_name))
 
 
@@ -134,9 +149,24 @@ def grants_held(sessions: list[str] | None = None) -> dict[str, dict[int, list[s
     return _hits(sessions, tmux_mgr.granted_names)
 
 
+def capacity_vars_held(sessions: list[str] | None = None) -> dict[str, dict[int, list[str]]]:
+    """{session: {pid: [capacity var names]}} — HZ-144. Not a leak and not
+    part of the exit status (see the module docstring); printed so that "this
+    run's pytest failed on an assertion about MAX_EPHEMERAL" has a one-command
+    diagnosis instead of a code read."""
+    return _hits(sessions, lambda _session: tmux_mgr.AGENT_NEVER_NEEDS)
+
+
 def main() -> int:
     report = scan()
     grants = grants_held()
+    for session, hits in sorted(capacity_vars_held().items()):
+        for pid, names in sorted(hits.items()):
+            print(
+                f"INFO {session} pid {pid}: {', '.join(names)} — farm capacity settings should not reach an "
+                "agent session (HZ-144); restart farmd so its teardown replaces pre-upgrade sessions. "
+                "Not a credential leak, so it does not set the exit status."
+            )
     for session, hits in sorted(grants.items()):
         for pid, names in sorted(hits.items()):
             print(f"GRANT {session} pid {pid}: {', '.join(names)} (expected — this session is the approval path)")

@@ -2,6 +2,7 @@
 
 Newest first. Add one line per new doc — no other changes needed.
 
+- [`hz-144-check-concurrency-measurement.md`](hz-144-check-concurrency-measurement.md) — farm parallelism vs check concurrency: the host baseline, the three measurement windows, and the numbers.
 - [`pm-step-ephemeral-recommendation.md`](pm-step-ephemeral-recommendation.md) — HZ-115: how to make the PM agent's steps 0/1/2/9 ephemeral, with the measured cost and the evidence behind it.
 - [`pm-context-reliance-analysis.md`](pm-context-reliance-analysis.md) — point-in-time evidence on whether the PM agent's resumed cross-item session memory is load-bearing.
 - [`e2e-screenshots.md`](e2e-screenshots.md) — where e2e screenshots go: the per-item artifacts ref, the PR comparison, and baseline promotion, with diagrams.
