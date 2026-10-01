@@ -26,6 +26,10 @@ EXPECTED_COLUMNS = {"id", "chat_jid", "sender", "content", "timestamp", "is_from
 # echo-loop on the bot's own messages (they are is_from_me=1 in the same chat
 # as the human's commands).
 BOT_MARKER = "\U0001F916 "  # robot face + space
+# Messages addressed to the operator's Claude Code session rather than the
+# concierge ("claude: ..."). That session reads them itself and answers with
+# BOT_MARKER, so the concierge must not answer them too. Case-insensitive.
+OPERATOR_PREFIX = "claude:"
 
 
 def _normalize(jid: str) -> str:
@@ -94,6 +98,8 @@ class BridgeTransport:
         out = []
         for r in rows:
             text = r[4] or ""
+            if text.lstrip().lower().startswith(OPERATOR_PREFIX):
+                continue  # for the operator's Claude session, not the concierge
             if r[6]:  # is_from_me: only the self-chat and configured command chats count as inbound
                 if _normalize(r[2]) not in own_ids and _normalize(r[2]) not in self.command_chats:
                     continue  # owner's message in an unrelated chat — never a command
