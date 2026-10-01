@@ -9,6 +9,7 @@ item's branch in the workspace; the *script* owns git (branch, commit, push)
 
 import argparse
 import contextlib
+import fnmatch
 import json
 import os
 import re
@@ -41,7 +42,8 @@ from .agent_runner import (
     stamp_notes,
     stamp_notes_artifact,
 )
-from .checks import CheckFailure, run_checks
+from . import pause
+from .checks import CheckFailure, redact, run_checks
 from .config import FARM_PORT, ITEM_LOCK_WAIT_S
 from .personas import compose_role, provider_for, resolve
 from .rules import render_rules_section
@@ -156,6 +158,25 @@ REVIEW_DIFF_CHARS = 200_000
 CHECKPOINT_MARKER = "WIP checkpoint — attempt exhausted"
 CAUSE_EXHAUSTED = "exhausted"
 CAUSE_CHECKS_FAILED = "checks-failed"
+# HZ-194: an operator paused the item while this attempt was running.
+CAUSE_PAUSED = "paused"
+
+# HZ-194: files a checkpoint never commits, matched on the basename at any
+# depth (config/.env, deploy/id_rsa). .gitignore is already honoured by
+# `git add -A`; this catches secrets a repo forgot to ignore.
+SECRET_PATTERNS = (
+    ".env",
+    ".env.*",
+    "*.pem",
+    "*.key",
+    "id_rsa*",
+    "id_ed25519*",
+    ".npmrc",
+    "*credentials*.json",
+    "*.p12",
+)
+SECRET_PATTERN_EXCEPTIONS = ("*.example", "*.sample", "*.template")
+_URL_CREDENTIALS = re.compile(r"://[^/@\s]+@")
 
 # The error main() reports. Must not exceed the server's /fail route limit
 # (`error: maxLength` in server/src/app.js): over it, Fastify rejects the whole
@@ -469,6 +490,14 @@ def _checkpoint_resume_note(ws: Path) -> str | None:
             "Fix those failures on top of the checkpoint — read the diff below. Do not discard "
             f"it or restart from scratch.\n\n```\n{stat}\n```"
         )
+    if cause == CAUSE_PAUSED:
+        return (
+            "\n\nNOTE: this branch already has a WIP checkpoint commit "
+            f'("{subject}") saved when an operator paused the previous attempt mid-run. '
+            "That work is unfinished and was never checked — a file may even have been cut off "
+            "mid-edit. Continue it: read the diff below and pick up where it left off. Do not "
+            f"discard it or restart from scratch.\n\n```\n{stat}\n```"
+        )
     return (
         "\n\nNOTE: this branch already has a WIP checkpoint commit from a prior "
         f'attempt that ran out of turns/time ("{subject}"). Continue that work — '
@@ -680,11 +709,15 @@ def _salvage_checkpoint(
     cause: str = CAUSE_EXHAUSTED,
     detail: str = "",
     lease_sha: str = "",
-) -> None:
+) -> str:
     """Best-effort: never raises. A salvage failure (e.g. a concurrent push
     winning the --force-with-lease race) just means this attempt's partial
     work is lost — the caller's original exception is what must still
     propagate and fail the run, unchanged from pre-HZ-31 behavior.
+
+    HZ-194: returns what happened, for the pause path to report — "saved",
+    "nothing", "skipped: <why>" or "failed: <error>". The HZ-31/HZ-184
+    callers ignore it. Files matching SECRET_PATTERNS are never committed.
 
     HZ-188: a half-resolved merge of main is never checkpointed. Committing
     it would push conflict markers to the PR branch and make GitHub report it
@@ -697,13 +730,14 @@ def _salvage_checkpoint(
         markers = _conflict_markers_left(ws, conflicted or [])
         if markers:
             log(f"salvage: skipped — the merge of main still has conflict markers in {', '.join(markers)}")
-            return
+            return f"skipped: the merge of main still has conflict markers in {', '.join(markers)}"
         git(ws, "add", "-A")
+        _unstage_secrets(ws)
         staged = git(ws, "diff", "--cached", "--quiet", check=False)
         allow_empty = cause == CAUSE_CHECKS_FAILED
         if staged.returncode == 0 and not allow_empty:
             log("salvage: no uncommitted changes to checkpoint")
-            return
+            return "nothing"
         body = f"cause: {cause}" + (f"\n\n{detail}" if detail else "")
         git(
             ws,
@@ -717,8 +751,59 @@ def _salvage_checkpoint(
         )
         _push_with_lease(ws, item, branch, lease_sha)
         log(f"salvage: pushed WIP checkpoint ({cause}) to {branch}")
+        return "saved"
     except Exception as exc:
         log(f"salvage: failed to checkpoint ({exc}) — work is lost, next attempt starts clean")
+        return f"failed: {exc}"
+
+
+def _is_secret_path(path: str) -> bool:
+    name = path.rsplit("/", 1)[-1]
+    if any(fnmatch.fnmatch(name, pattern) for pattern in SECRET_PATTERN_EXCEPTIONS):
+        return False
+    return any(fnmatch.fnmatch(name, pattern) for pattern in SECRET_PATTERNS)
+
+
+def _unstage_secrets(ws: Path) -> list[str]:
+    """Unstages every staged path that looks like a secret (HZ-194), so a
+    checkpoint can never push one. Deletions are left staged: removing a
+    secret from the branch is never a leak."""
+    staged = git(ws, "diff", "--cached", "--name-only", "--diff-filter=d", "-z", check=False).stdout
+    secrets = [path for path in staged.split("\0") if path and _is_secret_path(path)]
+    if secrets:
+        git(ws, "reset", "-q", "--", *secrets)
+        log(f"salvage: left out of the checkpoint (secret-looking files): {', '.join(secrets)}")
+    return secrets
+
+
+def _pause_checkpoint(ws: Path, item: dict, branch: str, conflicted: list[str], lease_sha: str, scope: dict) -> tuple[str, str]:
+    """HZ-194: what a pause saves of a running implement attempt. Every child
+    (the claude CLI, check commands) is stopped first so nothing writes while
+    the tree is committed, and a git lock a killed git call left behind is
+    cleared. Reuses HZ-184's salvage — one checkpoint implementation. Never
+    opens or updates a PR through the API, and the run is never reported as
+    passed. Returns (outcome, detail) in pause's vocabulary."""
+    stopped = pause.kill_descendants()
+    if stopped:
+        log(f"pause: stopped {stopped} child process(es)")
+    lock = git(ws, "rev-parse", "--git-path", "index.lock", check=False).stdout.strip()
+    if lock:
+        lock_path = Path(lock) if Path(lock).is_absolute() else ws / lock
+        if lock_path.exists():
+            lock_path.unlink(missing_ok=True)
+            log("pause: removed a stale git index.lock left by a stopped git call")
+    if scope["mode"] == "fix":
+        # Pushing here would add commits to the open PR (and run its CI).
+        return pause.SKIPPED, f"a PR is open on {branch} — a checkpoint would update it"
+    result = _salvage_checkpoint(ws, item, branch, conflicted, cause=CAUSE_PAUSED, lease_sha=lease_sha)
+    if result == "saved":
+        return pause.SAVED, f"pushed a WIP checkpoint to {branch}"
+    if result == "nothing":
+        return pause.NOTHING, "no changes since the last commit"
+    # The detail reaches the server's activity log. A failed push can echo
+    # the remote URL, which carries the hub's token (workspaces.ensure).
+    detail = _URL_CREDENTIALS.sub("://[redacted]@", result.partition(": ")[2] or result)
+    return pause.FAILED, redact(detail, os.environ)
 
 
 # ---- automated review verdict shaping (HZ-30) ----
@@ -975,18 +1060,27 @@ def _execute(task: dict) -> dict:
             log(f"merged origin/main into {branch}" + (f" — {len(conflicted)} conflicted file(s) left for the agent" if conflicted else " cleanly"))
             extra += _merge_main_note(conflicted)
         try:
-            reply = run_agent(
-                build_prompt(task) + extra,
-                agent=model_agent,
-                step=label,
-                persona=persona,
-                append_system=role,
-                cwd=str(ws),
-                max_turns=max_turns,
-                timeout_s=timeout_s,
-                allowed_tools=tools,
-                provider_locked=provider_locked,
-            )
+            with pause.interruptible():
+                reply = run_agent(
+                    build_prompt(task) + extra,
+                    agent=model_agent,
+                    step=label,
+                    persona=persona,
+                    append_system=role,
+                    cwd=str(ws),
+                    max_turns=max_turns,
+                    timeout_s=timeout_s,
+                    allowed_tools=tools,
+                    provider_locked=provider_locked,
+                )
+        except pause.PauseRequested as exc:
+            # HZ-194: an operator paused the item mid-run. Save the work as a
+            # checkpoint BEFORE farmd kills the session. at_entry: the pause
+            # came before the agent started, and was already reported as
+            # "nothing to save".
+            if not exc.at_entry:
+                pause.report(*_pause_checkpoint(ws, item, branch, conflicted, prepared.lease_sha, scope))
+            raise
         except Exception:
             # SALVAGE (HZ-31): the run hit its turn/time cap (or any other
             # run_agent failure) — checkpoint whatever's on disk instead of
@@ -1019,7 +1113,13 @@ def _execute(task: dict) -> dict:
         # script, before anything is committed or pushed. A failure fails the
         # run (Node pauses the item with the reason) — no green, no push.
         try:
-            check_note = run_checks(ws, log, run_id=task.get("run_id"), item_id=item["id"])
+            with pause.interruptible():
+                check_note = run_checks(ws, log, run_id=task.get("run_id"), item_id=item["id"])
+        except pause.PauseRequested:
+            # HZ-194: the agent's work is finished but unchecked. The checks
+            # are stopped and never count as a failure; the code is saved.
+            pause.report(*_pause_checkpoint(ws, item, branch, conflicted, prepared.lease_sha, scope))
+            raise
         except CheckFailure as exc:
             # HZ-184: the finished work is checkpointed with what failed, so
             # the next attempt fixes it instead of rebuilding it. Re-raised:
@@ -1269,13 +1369,29 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--task", required=True)
     args = parser.parse_args()
-    task = json.loads(Path(args.task).read_text())
+    task_path = Path(args.task)
+    task = json.loads(task_path.read_text())
     run_id = task["run_id"]
+    # HZ-194: farmd pauses a run by SIGTERM to this pid, then waits for the
+    # outcome file. Neither name ends in .json, so no task-file glob in
+    # farmd ever reads them; farmd removes both once the pause is done.
+    pid_path = task_path.with_suffix(".pid")
+    outcome_path = task_path.with_suffix(".paused")
+    pid_path.write_text(str(os.getpid()))
+    pause.install_sigterm_handler(outcome_path)
 
     try:
         log(f"run {run_id}: {task['step']['label']} for {task['item']['id']}")
         outcome = execute(task)
         result = {"run_id": run_id, "ok": True, **outcome}
+    except pause.PauseRequested:
+        # The server already closed this run as cancelled when the operator
+        # paused it: there is no result to report, and a pause is never a
+        # failure. farmd kills the session once the outcome file exists.
+        if not pause.reported():
+            pause.report(pause.NOTHING, "the attempt had not started work that could be saved")
+        log(f"run {run_id}: paused by an operator — not reporting a result")
+        return 0
     except Exception as exc:
         log(f"run {run_id}: FAILED — {exc}")
         result = {"run_id": run_id, "ok": False, "error": str(exc)[:ERROR_MAX_CHARS]}
@@ -1286,9 +1402,19 @@ def main() -> int:
         if isinstance(exc, AgentExhaustedError):
             result["reason"] = reasons.REASON["TURN_CAP"]
 
+    if pause.pending() and not pause.reported():
+        # The pause landed after the work's last interruptible region (e.g.
+        # during finalize's push): the attempt ran to its end and its own
+        # result stands; the server ignores it for the already-closed run.
+        if result["ok"]:
+            pause.report(pause.SAVED, "the attempt had already finished and pushed its work")
+        else:
+            pause.report(pause.FAILED, f"the attempt ended before the pause took effect: {result['error'][:300]}")
     httpx.post(f"{FARMD}/internal/steps/result", json=result, timeout=30)
     log(f"run {run_id}: reported {'ok' if result['ok'] else 'failure'}")
-    Path(args.task).unlink(missing_ok=True)
+    task_path.unlink(missing_ok=True)
+    if not pause.pending():
+        pid_path.unlink(missing_ok=True)  # a pausing farmd still reads it
     return 0
 
 

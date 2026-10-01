@@ -94,6 +94,12 @@ CHECK_SUBPROCESS_SCRUB = frozenset({"FARM_MAX_EPHEMERAL", "FARM_MAX_CONCURRENT_C
 RECONCILE_INTERVAL_S = int(os.environ.get("FARM_RECONCILE_INTERVAL_S", "60"))
 RECONCILE_GRACE_S = int(os.environ.get("FARM_RECONCILE_GRACE_S", "90"))
 
+# HZ-194: how long a pause waits for the step agent to checkpoint its work
+# before farmd kills the session anyway. The server sends its own value
+# (HZ_PAUSE_CHECKPOINT_TIMEOUT_S in server/src/config.js) with each pause;
+# this default applies only when a request carries none.
+PAUSE_CHECKPOINT_TIMEOUT_S = int(os.environ.get("HZ_PAUSE_CHECKPOINT_TIMEOUT_S", "30"))
+
 # HZ-130: how long a PM task file must stay unusable before the PM reports it
 # to the server instead of retrying it. An unusable file is never deleted
 # unreported, and never retried forever — this is the bound between those two.

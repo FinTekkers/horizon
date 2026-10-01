@@ -35,6 +35,7 @@ import time
 from pathlib import Path
 
 from . import check_metrics, check_slots, config
+from .pause import PauseRequested
 
 # HZ-183: how much of a failing command's output a CheckFailure carries. Lines,
 # not characters: the failing test names sit at the END of a test run's output
@@ -371,6 +372,12 @@ def run_checks(
                     )
                 ran += 1
             record["outcome"] = "pass"
+        except PauseRequested:
+            # HZ-194: an operator paused the item mid-check. Not a failure:
+            # no CheckFailure, and the metrics record (still written by the
+            # finally below) says so. The caller stops the check processes.
+            record["outcome"] = "paused"
+            raise
         finally:
             measured = [x for x in mem_samples if x is not None]
             record["mem_available_low_kb"] = min(measured) if measured else None

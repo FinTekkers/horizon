@@ -204,6 +204,26 @@ def fake_tmux(request, monkeypatch):
         shutil.rmtree(socket_dir, ignore_errors=True)
 
 
+@pytest.fixture(autouse=True)
+def pause_state(monkeypatch):
+    """HZ-194: step_agent.main() installs a SIGTERM handler and keeps pause
+    state in farm.pause's module globals. A test that runs main() in-process
+    must leave neither behind on the pytest process itself, so every test
+    starts on fresh state and the handler is restored afterwards. Returns the
+    state dict (outcome_path is None: pause.report() is then a no-op)."""
+    import signal
+
+    from farm import pause
+
+    state = {"phase": "idle", "pending": False, "outcome_path": None}
+    monkeypatch.setattr(pause, "_state", state)
+    saved = signal.getsignal(signal.SIGTERM)
+    try:
+        yield state
+    finally:
+        signal.signal(signal.SIGTERM, saved)
+
+
 MUSE_SMOKE_TEST_PERSONA_AGENT = "eng"
 
 
