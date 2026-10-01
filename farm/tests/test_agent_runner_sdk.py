@@ -181,6 +181,66 @@ def test_sdk_error_max_turns_raises_agent_exhausted_error(sdk_runner, monkeypatc
         run_agent("hello", agent="eng", timeout_s=10)
 
 
+def _init_message(session_id="sdk-session-1"):
+    return sdk.SystemMessage(subtype="init", data={"type": "system", "subtype": "init", "session_id": session_id})
+
+
+def test_error_max_turns_carries_the_reply_in_progress_and_the_session_id(sdk_runner, monkeypatch):
+    """HZ-158: the result text is empty on error_max_turns, so partial_text
+    is the last assistant text — the reply the run was writing."""
+
+    def fake_query(*, prompt, options=None, **kwargs):
+        async def gen():
+            yield _init_message("sess-7")
+            yield sdk.AssistantMessage(content=[sdk.TextBlock(text='{"summary": "half')], model="m")
+            yield _result_message(session_id="sess-7", result="", is_error=True, subtype="error_max_turns")
+
+        return gen()
+
+    monkeypatch.setattr(sdk, "query", fake_query)
+    with pytest.raises(AgentExhaustedError) as exc_info:
+        run_agent("hello", agent="eng", timeout_s=10)
+    assert exc_info.value.partial_text == '{"summary": "half'
+    assert exc_info.value.session_id == "sess-7"
+    assert exc_info.value.provider == "claude"
+
+
+def test_sdk_timeout_carries_the_session_id_from_init_and_the_last_text(sdk_runner, monkeypatch):
+    import asyncio
+
+    def fake_query(*, prompt, options=None, **kwargs):
+        async def gen():
+            yield _init_message("sess-8")
+            yield sdk.AssistantMessage(content=[sdk.TextBlock(text="working on it")], model="m")
+            await asyncio.sleep(3600)
+
+        return gen()
+
+    monkeypatch.setattr(sdk, "query", fake_query)
+    with pytest.raises(AgentExhaustedError, match="timed out") as exc_info:
+        run_agent("hang", agent="eng", timeout_s=1)
+    assert exc_info.value.session_id == "sess-8"
+    assert exc_info.value.partial_text == "working on it"
+
+
+def test_sdk_retry_fresh_false_never_starts_a_fresh_session(sdk_runner, monkeypatch):
+    calls = []
+
+    def fake_query(*, prompt, options=None, **kwargs):
+        calls.append(options.resume)
+
+        async def gen():
+            raise sdk.ProcessError("stale session", exit_code=1)
+            yield  # pragma: no cover
+
+        return gen()
+
+    monkeypatch.setattr(sdk, "query", fake_query)
+    with pytest.raises(AgentError, match="stale session"):
+        run_agent("hello", agent="eng", session_id="dead-session", timeout_s=10, retry_fresh=False)
+    assert calls == ["dead-session"]
+
+
 @pytest.mark.parametrize(("override", "expected"), [(None, "claude-opus-5-5"), ("claude-test-emergency", "claude-test-emergency")])
 def test_a_dispatched_step_hands_the_resolved_model_to_claude_agent_options(sdk_runner, monkeypatch, override, expected):
     """HZ-192: the model run_agent() resolves from domain/personas.json — or
@@ -216,6 +276,9 @@ def test_a_dispatched_step_hands_the_resolved_model_to_claude_agent_options(sdk_
         max_turns=1,
         timeout_s=10,
         allowed_tools=None,
+        required_keys=("summary", "artifact_md"),
+        item_id="T-1",
+        guard=step_agent.HandoffGuard(),
     )
 
     assert seen and seen[0].get("model") == expected

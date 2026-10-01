@@ -25,7 +25,50 @@ class AgentExhaustedError(AgentError):
 
     Why the distinction earns a type: the orchestrator auto-retries THIS
     cause, up to its own hard cap, and no other (HZ-76). Callers must be able
-    to ask "ran out of budget?" without parsing a message string."""
+    to ask "ran out of budget?" without parsing a message string.
+
+    HZ-158: it also carries what the exhausted run left behind, so step_agent
+    can salvage a reply cut off mid-string and ask the session for a handoff
+    note instead of discarding a long run's work:
+
+    * partial_text — the last reply text seen before the budget ran out, or
+      None when the provider saw none (e.g. a timeout before any output).
+    * session_id — the session that ran out, or None when it never reported
+      one. Set by the provider.
+    * provider — the provider name that ran. Set by agent_runner.run_agent(),
+      the dispatcher, never by a provider module.
+
+    Can a session that ended error_max_turns be resumed?
+
+    * Claude: yes. The Agent SDK sessions docs
+      (https://code.claude.com/docs/en/agent-sdk/sessions, "Resume by ID")
+      list "Recover from a limit. The first run ended with error_max_turns
+      ... resume with a higher limit" as a supported use of
+      `resume=<session_id>`; the transcript is written to disk as the run
+      goes, and the session id is on every result, error or not. The CLI's
+      `--resume <id>` is the same mechanism. There is no docs/providers/ page
+      for Claude to cite, so this docstring is the record.
+    * Muse: no (unverified, treated as no). docs/providers/muse-code.md
+      verifies `exec --session-id` continuity between COMPLETED runs only, and
+      lists how exhaustion is reported as still unverified — no exhausting run
+      was observed. Each provider module states its answer as
+      RESUMES_AFTER_EXHAUSTION; on False the handoff falls back to a note
+      built mechanically from partial_text, with no model call."""
+
+    def __init__(self, msg: str, *, partial_text: str | None = None, session_id: str | None = None) -> None:
+        super().__init__(msg)
+        self.partial_text = partial_text
+        self.session_id = session_id
+        self.provider: str | None = None
+
+
+def decode_partial(output: bytes | str | None) -> str | None:
+    """The text a subprocess.TimeoutExpired captured, or None. Its .stdout is
+    bytes even under text=True, per the subprocess docs."""
+    if output is None:
+        return None
+    text = output.decode("utf-8", errors="replace") if isinstance(output, bytes) else output
+    return text or None
 
 
 class AgentProvider(Protocol):
@@ -33,6 +76,9 @@ class AgentProvider(Protocol):
     style. A provider is a module, not a class instance."""
 
     SUPPORTS_RESUME: bool
+    # HZ-158: whether a session that ran out of budget can be resumed — the
+    # docs answer in AgentExhaustedError's docstring, one flag per provider.
+    RESUMES_AFTER_EXHAUSTION: bool
 
     def run(
         self,
@@ -45,6 +91,7 @@ class AgentProvider(Protocol):
         max_turns: int,
         timeout_s: int,
         allowed_tools: str | None,
+        retry_fresh: bool = True,
     ) -> dict: ...
 
     def assert_subscription_auth(self) -> None: ...

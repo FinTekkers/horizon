@@ -230,6 +230,20 @@ def repair_counter(tmp_path, monkeypatch):
     return path
 
 
+@pytest.fixture(autouse=True)
+def handoff_dir(tmp_path, monkeypatch):
+    """Repoints farm.handoff's note directory into tmp_path for EVERY test.
+
+    HZ-158: build_prompt() reads a handoff note and an exhausted step writes
+    one, both under $FARM_HOME/state/handoff by default — so a note one test
+    left would surface in another test's prompt. Lazy import, as above."""
+    from farm import handoff
+
+    path = tmp_path / "handoff-notes"
+    monkeypatch.setattr(handoff, "HANDOFF_DIR", path)
+    return path
+
+
 @pytest.fixture
 def muse_smoke_test_persona(monkeypatch):
     """Registers a test-only persona mapped to the Muse provider.
