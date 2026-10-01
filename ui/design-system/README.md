@@ -5,6 +5,7 @@ A Horizon UI foundation themed with the Pantone **Aura** palette.
 ## Files
 - **Aura Design System.dc.html** — the reusable system: color tokens, surface/border tokens, the DM Sans type scale, and components (buttons, semantic buttons, status badges, inputs, stat card, progress bars, chart palette, nav items, promo card, data table). Fully static — open directly in a browser.
 - **Main Dashboard.dc.html** — an example screen built on the system.
+- **horizon-icon.svg** — the Horizon app icon as a standalone SVG: the top-bar logo tile (`.topbar__logo` in `ui/src/index.css`, a Super Sonic → Açaí gradient) with the white `GridIcon` from `ui/src/components/icons.jsx`. Keep it in step with those two if the logo changes.
 - **support.js** — runtime helper used by the `.dc.html` files (loaded via `<script src="./support.js">`).
 
 ## Aura palette (Pantone TCX)
