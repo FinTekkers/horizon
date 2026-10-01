@@ -11,6 +11,7 @@ import {
   isBlockedByAbandoned,
   curStep,
   IMPLEMENT_STEP_INDEX,
+  REVIEW_STEP_INDEX,
   ACCEPT_GATE_INDEX,
 } from '../../domain/js/lifecycle.js'
 import { isPriority } from '../../domain/js/priorities.js'
@@ -392,8 +393,40 @@ export function listItems() {
     stepOutputs: stepOutputs(row.id),
     activeRun: withRunState(selectActiveRun.get(row.id) || null),
     conflictRun: conflictRunProvider(row.id) || null,
+    reviewRejected: reviewRejected(row),
+    forwardedReview: forwardedReview(row),
     ...dependencyFields(row.id),
   }))
+}
+
+// HZ-185: the latest automated review rejected this item and sent it back to
+// implement — the only state a human may forward to Accept the code from. A
+// rejection is the one thing that sets fix_findings_json with the cursor at
+// implement; a passing review and every human send-back clear it. Shared with
+// orchestrator.forwardRejectedReview so the button and the route agree.
+export function reviewRejected(row) {
+  return row.cursor === IMPLEMENT_STEP_INDEX && row.fix_findings_json != null
+}
+
+const selectForwardedRun = db.prepare('SELECT attempt, artifact, output FROM step_run WHERE id = ? AND item_id = ?')
+const selectNewerReview = db.prepare(
+  "SELECT 1 FROM step_run WHERE item_id = ? AND step_index = ? AND status = 'done' AND id > ? LIMIT 1",
+)
+
+// HZ-185: the failing review a forward to Accept the code carried, keyed by
+// the review run that was forwarded (not "the newest review"), or null. A
+// review run since then (a send-back to review re-ran it) supersedes it.
+function forwardedReview(row) {
+  if (row.forwarded_review_run_id == null) return null
+  if (selectNewerReview.get(row.id, REVIEW_STEP_INDEX, row.forwarded_review_run_id)) return null
+  const run = selectForwardedRun.get(row.forwarded_review_run_id, row.id)
+  return {
+    runId: row.forwarded_review_run_id,
+    by: row.forwarded_by,
+    sha: row.forwarded_sha,
+    attempt: run?.attempt ?? null,
+    artifact: run ? run.artifact || run.output || null : null,
+  }
 }
 
 export function getItem(id) {
@@ -417,7 +450,9 @@ const touch = "updated_at = datetime('now')"
 // A human-directed rework at or before implement starts the automated review
 // loop over: fresh cycles, and no HZ-182 fix pass — a human send-back is an
 // unscoped change, so the next implement and review are both full.
-const RESET_REVIEW_STATE = ', review_cycle_count = 0, fix_pass = 0, fix_findings_json = NULL, last_reviewed_sha = NULL'
+const RESET_REVIEW_STATE =
+  ', review_cycle_count = 0, fix_pass = 0, fix_findings_json = NULL, last_reviewed_sha = NULL' +
+  ', forwarded_review_run_id = NULL, forwarded_by = NULL, forwarded_sha = NULL'
 
 export function addEvent(id, { who, text, color, initials }) {
   db.prepare('INSERT INTO event (item_id, who, text, color, initials) VALUES (?, ?, ?, ?, ?)').run(id, who, text, color, initials)

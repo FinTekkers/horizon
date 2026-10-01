@@ -902,6 +902,25 @@ export function buildApp({ logger = true, onRoute = null } = {}) {
     },
   )
 
+  // HZ-185: forward an item the latest automated review just rejected to
+  // Accept the code, with that failing verdict attached — the same path the
+  // review cap takes. Same gate PIN as /reject: it never approves anything, it
+  // only moves the item to the gate, where Accept still needs the PIN.
+  fastify.post(
+    '/api/items/:id/forward-to-accept',
+    {
+      schema: {
+        params: idParam,
+        response: { 200: OK_OBJECT, 401: ERROR_OBJECT, 404: ERROR_OBJECT, 409: ERROR_OBJECT },
+        security: HUMAN_GATE_SECURITY,
+      },
+    },
+    async (request, reply) => {
+      if (!humanAuthorized(request, reply)) return
+      return send(reply, await orchestrator.forwardRejectedReview(request.params.id, request.user.name))
+    },
+  )
+
   // Standalone feedback — the UI leg of "agents respond to feedback". If the
   // item is mid-agent-step the attempt is superseded and re-run with the
   // feedback ({rerun:true}); parked at a gate it queues for the next dispatch

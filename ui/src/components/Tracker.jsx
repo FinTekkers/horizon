@@ -1,6 +1,9 @@
+import { useRef, useState } from 'react'
 import {
   PHASES,
   STEPS,
+  IMPLEMENT_STEP_INDEX,
+  ACCEPT_GATE_INDEX,
   isClosed,
   isAbandoned,
   phaseIdx,
@@ -38,7 +41,66 @@ const STEP_META = {
 
 const STEP_META_COLOR = { awaiting: 'var(--warning-ink)', blocked: 'var(--danger-ink)', active: 'var(--primary-ink)' }
 
-function Step({ item, index, onApprove, onApproveWithComments, onReject, onResolveConflicts, resolving, onSetPersona }) {
+// HZ-185: why a forward to Accept the code didn't go through, keyed by the
+// route's error code. Anything else falls back to a generic line.
+const FORWARD_ERRORS = {
+  review_not_rejected: 'The latest review is no longer a rejection — nothing to forward.',
+  not_in_execute: 'This item is no longer in Execute.',
+  forward_in_progress: 'A forward is already in progress.',
+  branch_moved: 'The PR moved past the reviewed commit — implement restarted with the findings instead.',
+  branch_unverified: 'Could not confirm the PR is still at the reviewed commit — implement restarted with the findings instead.',
+}
+
+// HZ-185: on an item the latest automated review just rejected, sends it to
+// Accept the code with that verdict attached instead of another implement
+// cycle. The ref is the guard (two clicks in one tick both read the same
+// stale state); `busy` only renders it. Disabled until the request settles.
+function ForwardToAcceptButton({ item, onForwardToAccept }) {
+  const inFlight = useRef(false)
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState(null)
+  const forward = () => {
+    if (inFlight.current) return
+    inFlight.current = true
+    setBusy(true)
+    setError(null)
+    new Promise((resolve) => resolve(onForwardToAccept(item.id)))
+      .catch(() => null)
+      .then((result) => {
+        inFlight.current = false
+        setBusy(false)
+        if (result?.ok !== true) setError(FORWARD_ERRORS[result?.error] || 'The forward did not go through — try again.')
+      })
+  }
+  return (
+    <div className="step-card__conflict">
+      Automated review rejected this. Forward it to “{STEPS[ACCEPT_GATE_INDEX].label}” with the findings attached?
+      <button className="btn-gate-reject" disabled={busy} aria-busy={busy || undefined} onClick={forward}>
+        {busy ? 'Forwarding…' : `Forward to ${STEPS[ACCEPT_GATE_INDEX].label}`}
+      </button>
+      {error && <span role="alert">{error}</span>}
+    </div>
+  )
+}
+
+// HZ-185: on the Accept gate, the failing review a forward carried (the review
+// cap's or a human's) — that run's findings, not whatever review is newest.
+function ForwardedReview({ forwarded }) {
+  return (
+    <div className="step-card__forwarded">
+      <div className="step-card__forwarded-title">
+        Forwarded by {forwarded.by || 'Horizon'} with the failing review (run #{forwarded.runId}) attached
+      </div>
+      {forwarded.artifact ? (
+        <Markdown className="step-card__forwarded-body" text={forwarded.artifact} />
+      ) : (
+        <div>The review recorded no findings text.</div>
+      )}
+    </div>
+  )
+}
+
+function Step({ item, index, onApprove, onApproveWithComments, onReject, onResolveConflicts, resolving, onForwardToAccept, onSetPersona }) {
   const st = STEPS[index]
   const status = stepStatus(item, index)
   const isGate = st.kind === 'gate'
@@ -140,6 +202,12 @@ function Step({ item, index, onApprove, onApproveWithComments, onReject, onResol
                 </select>
               </div>
             ))}
+          {status === 'awaiting' && index === ACCEPT_GATE_INDEX && item.forwardedReview && (
+            <ForwardedReview forwarded={item.forwardedReview} />
+          )}
+          {index === IMPLEMENT_STEP_INDEX && item.reviewRejected && onForwardToAccept && !isAbandoned(item) && (
+            <ForwardToAcceptButton item={item} onForwardToAccept={onForwardToAccept} />
+          )}
           {status === 'awaiting' && st.label === 'Accept the code' && item.pr != null && item.pr_mergeable === false && (
             <div className="step-card__conflict">
               PR #{item.pr} has merge conflicts with main — approving would fail.
@@ -277,7 +345,7 @@ function buildActivity(item) {
     })
 }
 
-export default function Tracker({ item, onBack, onApprove, onApproveWithComments, onReject, onResolveConflicts, resolving, onTogglePause, onRestartPhase, onSetPersona, onAbandon }) {
+export default function Tracker({ item, onBack, onApprove, onApproveWithComments, onReject, onResolveConflicts, resolving, onForwardToAccept, onTogglePause, onRestartPhase, onSetPersona, onAbandon }) {
   const status = itemStatus(item, true)
   const activity = buildActivity(item)
   const closed = isClosed(item)
@@ -408,6 +476,7 @@ export default function Tracker({ item, onBack, onApprove, onApproveWithComments
                     onReject={onReject}
                     onResolveConflicts={onResolveConflicts}
                     resolving={resolving}
+                    onForwardToAccept={onForwardToAccept}
                     onSetPersona={onSetPersona}
                   />
                 ))}

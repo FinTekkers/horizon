@@ -34,8 +34,9 @@ import {
   recoverRejectedItems,
   blockersOf,
   requestChanges,
+  reviewRejected,
 } from './store.js'
-import { createMockPr, createDeployRelease, postIssueComment, createPrFromBranch } from './github.js'
+import { createMockPr, createDeployRelease, postIssueComment, createPrFromBranch, getPrHeadSha } from './github.js'
 import { PHASES } from '../../domain/js/lifecycle.js'
 import { getActiveProjectId, getSetting, setSetting, getToken } from './settings.js'
 import {
@@ -71,6 +72,13 @@ const timers = {}
 // (e.g. PR creation in completeFarmRun) so a second run can never be
 // dispatched for an item whose first run is still mid-finalization.
 const dispatching = new Set()
+
+// HZ-185: items a human is forwarding from a rejected review to Accept the
+// code. Held from before the implement run is cancelled until the forward
+// lands or is refused, so a second click is refused and kick() cannot start
+// a fresh implement run in the window between cancel and the cursor move.
+// Memory-only on purpose, like conflictRuns: a restart forgets it.
+const forwarding = new Set()
 
 // Execution budget once an agent has actually started (HZ-57): the implement
 // step legitimately runs long (real coding + tests), so its budget must
@@ -831,7 +839,7 @@ function runnable(item) {
 
 export function kick(id, opts = {}) {
   const item = getItem(id)
-  if (!runnable(item) || dispatching.has(id)) return
+  if (!runnable(item) || dispatching.has(id) || forwarding.has(id)) return
   dispatching.add(id)
 
   const stepIndex = item.cursor
@@ -1385,18 +1393,13 @@ function finalizeReviewStep(id, runId, text, artifactMd, verdict, patch, isMock,
   const cycle = db.prepare('SELECT review_cycle_count FROM work_item WHERE id = ?').get(id).review_cycle_count
 
   if (cycle >= REVIEW_CYCLE_CAP) {
-    db.prepare(
-      "UPDATE work_item SET cursor = cursor + 1, fix_pass = 0, fix_findings_json = NULL, updated_at = datetime('now') WHERE id = ?",
-    ).run(id)
-    addEvent(id, {
-      who: 'Horizon',
-      text: `automated review cap (${REVIEW_CYCLE_CAP}) reached — forwarded to the human gate with the failing verdict attached`,
-      color: '#9C333E',
-      initials: 'HZ',
-    })
     postStepComment(getItem(id), REVIEW_STEP_INDEX, attempt, text, patch, isMock, artifactMd)
-    notifyChange()
-    kick(id)
+    forwardToAcceptGate(id, {
+      who: 'Horizon',
+      initials: 'HZ',
+      reason: `automated review cap (${REVIEW_CYCLE_CAP}) reached`,
+      reviewRunId: runId,
+    })
     return
   }
 
@@ -1421,6 +1424,101 @@ function finalizeReviewStep(id, runId, text, artifactMd, verdict, patch, isMock,
   postStepComment(getItem(id), REVIEW_STEP_INDEX, attempt, text, patch, isMock, artifactMd)
   notifyChange()
   kick(id)
+}
+
+// The one way a failing review reaches the human gate (HZ-185): the review cap
+// above and a human's forwardRejectedReview below both land here, so both log
+// the same event shape and leave the item in the same state. It only moves the
+// cursor — Accept the code is still a gate, decided with the gate PIN.
+// forwarded_review_run_id / forwarded_by / forwarded_sha say which verdict the
+// gate shows, who sent it there, and which commit that verdict read.
+function forwardToAcceptGate(id, { who, initials, reason, reviewRunId }) {
+  db.prepare(
+    `UPDATE work_item SET cursor = ?, fix_pass = 0, fix_findings_json = NULL, forwarded_review_run_id = ?,
+       forwarded_by = ?, forwarded_sha = last_reviewed_sha, updated_at = datetime('now') WHERE id = ?`,
+  ).run(ACCEPT_GATE_INDEX, reviewRunId, who, id)
+  const event = {
+    who,
+    text: `${reason} — forwarded to the human gate with the failing verdict attached (review run #${reviewRunId})`,
+    color: '#9C333E',
+    initials,
+  }
+  addEvent(id, event)
+  notifyChange()
+  kick(id)
+  return event
+}
+
+// HZ-185: a human with the gate PIN forwards an item the latest review just
+// rejected to Accept the code, instead of letting it run another implement
+// cycle. Cancels the implement run the rejection started, and refuses — the
+// item goes back to implement with its findings — if the PR head moved past
+// the commit that review read, so the gate never shows code nobody reviewed.
+export async function forwardRejectedReview(id, actor = 'You') {
+  const item = getItem(id)
+  if (!item) return { error: 'not_found' }
+  if (isClosed(item) || isAbandoned(item) || PHASES[STEPS[item.cursor].phase] !== 'Execute') return { error: 'not_in_execute' }
+  if (!reviewRejected(item)) return { error: 'review_not_rejected' }
+  if (forwarding.has(id)) return { error: 'forward_in_progress' }
+  const reviewRun = db
+    .prepare("SELECT id, ended_at FROM step_run WHERE item_id = ? AND step_index = ? AND status = 'done' ORDER BY id DESC LIMIT 1")
+    .get(id, REVIEW_STEP_INDEX)
+  if (!reviewRun) return { error: 'review_not_rejected' }
+
+  forwarding.add(id)
+  try {
+    return await forwardOrRefuse(id, item, actor, reviewRun)
+  } finally {
+    forwarding.delete(id)
+    // Forwarded: a no-op at the gate. Refused: restarts implement.
+    kick(id)
+  }
+}
+
+async function forwardOrRefuse(id, item, actor, reviewRun) {
+  // The rejection's own feedback row: finalizeReviewStep inserts it right
+  // after it closes the review run. Only that row is consumed or re-queued —
+  // never other feedback a human queued for implement.
+  const rejection = db
+    .prepare('SELECT id FROM feedback WHERE item_id = ? AND target = ? AND created_at >= ? ORDER BY id LIMIT 1')
+    .get(id, STEPS[IMPLEMENT_STEP_INDEX].agent, reviewRun.ended_at)
+  const refuse = (error, why) => {
+    if (rejection) db.prepare('UPDATE feedback SET delivered_at = NULL WHERE id = ?').run(rejection.id)
+    addEvent(id, {
+      who: 'Horizon',
+      text: `forward to “${STEPS[ACCEPT_GATE_INDEX].label}” refused — ${why}; “${STEPS[IMPLEMENT_STEP_INDEX].label}” restarts with the review findings`,
+      color: '#9C333E',
+      initials: 'HZ',
+    })
+    notifyChange()
+    return { error }
+  }
+
+  if (!(await stopActiveRuns(id, 'cancelled'))) return refuse('branch_unverified', 'the farm did not confirm the implement run was stopped')
+  let head
+  try {
+    head = await getPrHeadSha(item)
+  } catch (err) {
+    return refuse('branch_unverified', `could not read the PR head (${err.message})`)
+  }
+  // null = no PR (demo mode): there is no branch to have moved.
+  if (head !== null && head !== item.last_reviewed_sha) {
+    return refuse('branch_moved', `PR #${item.pr} moved past the commit the review read`)
+  }
+  // Someone else (a send-back, a restart) may have moved the item while this
+  // awaited — theirs wins, and they already restarted whatever comes next.
+  if (!reviewRejected(getItem(id))) return { error: 'review_not_rejected' }
+
+  if (rejection) {
+    db.prepare("UPDATE feedback SET delivered_at = COALESCE(delivered_at, datetime('now')) WHERE id = ?").run(rejection.id)
+  }
+  forwardToAcceptGate(id, {
+    who: actor,
+    initials: 'YOU',
+    reason: `skipped the remaining automated review cycles (cycle ${item.review_cycle_count}/${REVIEW_CYCLE_CAP} failed)`,
+    reviewRunId: reviewRun.id,
+  })
+  return { ok: true, forwarded: true }
 }
 
 // ---- deploy verdict (HZ-22) ----
@@ -1716,6 +1814,14 @@ function closeActiveRuns(id, status) {
 // kill the run's session too — a superseded attempt must not keep burning
 // tokens or race its replacement on the shared horizon/<item-id> branch.
 export function cancel(id, status = 'cancelled') {
+  stopActiveRuns(id, status)
+}
+
+// cancel()'s body. Resolves true once the farm has acknowledged every kill
+// (or there was nothing to kill), false if any kill request failed. cancel()
+// ignores it; forwardRejectedReview awaits it (HZ-185) before it reads the PR
+// head, so a session that was still running cannot push after that check.
+function stopActiveRuns(id, status) {
   const activeRuns = db.prepare("SELECT id FROM step_run WHERE item_id = ? AND status = 'active'").all(id)
   for (const run of activeRuns) {
     clearTimeout(timers[run.id])
@@ -1723,11 +1829,10 @@ export function cancel(id, status = 'cancelled') {
   }
   dispatching.delete(id)
   closeActiveRuns(id, status)
-  if (FARM_URL) {
-    for (const run of activeRuns) {
-      farmFetch('/steps/cancel', { run_id: run.id }).catch(() => {})
-    }
-  }
+  if (!FARM_URL) return Promise.resolve(true)
+  return Promise.all(
+    activeRuns.map((run) => farmFetch('/steps/cancel', { run_id: run.id }).then(() => true, () => false)),
+  ).then((acks) => acks.every(Boolean))
 }
 
 // ---- durable reconciliation (HZ-100) ----

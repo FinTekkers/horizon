@@ -271,6 +271,15 @@ export async function resolveConflicts(id) {
   return { ok: true, resolved: true }
 }
 
+// HZ-185: mock mode's review never rejects (no `reviewRejected` item), so the
+// "Forward to Accept the code" button never renders here — this stub exists
+// only for interface parity with serverApi.js.
+export async function forwardToAccept(id) {
+  const it = items.find((x) => x.id === id)
+  if (!it) return { ok: false, error: 'not_found' }
+  return { error: 'review_not_rejected' }
+}
+
 export function togglePause(id) {
   const it = items.find((x) => x.id === id)
   if (!it) return
