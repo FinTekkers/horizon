@@ -144,13 +144,15 @@ test('a blocked result names the failing check and re-enables the buttons', asyn
 
 test('a merged result shows the merge and leaves no gate buttons once the gate advances', async () => {
   await openItem(acceptItem('GA-4', { gateAction: running() }))
-  // The merge lands a moment before the cursor moves: still not clickable.
-  pushItems([acceptItem('GA-4', { gateAction: finished({ state: 'merged' }) })])
-  for (const name of GATE_BUTTONS) expect(button(name).disabled, name).toBe(true)
-
   pushItems([acceptItem('GA-4', { cursor: ACCEPT_INDEX + 1, gateAction: finished({ state: 'merged' }) })])
   expect(status().textContent).toBe('Merged PR #7')
   expect(button('Approve')).toBeNull()
+})
+
+test('a merge whose gate advance was refused does not leave the gate disabled', async () => {
+  await openItem(acceptItem('GA-4b', { gateAction: running() }))
+  pushItems([acceptItem('GA-4b', { gateAction: finished({ state: 'merged' }) })])
+  for (const name of GATE_BUTTONS) expect(button(name).disabled, name).toBe(false)
 })
 
 test('a run whose lease ran out re-enables the gate and says so', async () => {

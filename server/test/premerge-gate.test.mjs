@@ -439,3 +439,42 @@ test('HZ-216: a blocked result is not shown again after the item is sent back an
   db.prepare('UPDATE work_item SET cursor = ? WHERE id = ?').run(ACCEPT_GATE_INDEX, id)
   assert.equal(await gateActionOf(id), null)
 })
+
+test('HZ-216: a merge whose gate advance is refused re-opens the gate rather than leaving it stuck', async () => {
+  const { getActiveProjectId, setSetting } = await import('../src/settings.js')
+  const before = getActiveProjectId()
+  const id = acceptItem()
+  const mine = store.createProject(`Mine ${id}`).id
+  const other = store.createProject(`Other ${id}`).id
+  db.prepare('UPDATE work_item SET project_id = ? WHERE id = ?').run(mine, id)
+  setSetting('active_project_id', String(mine))
+  try {
+    const held = holdRunner()
+    const pending = approve(id)
+    await held.started()
+    // The project is switched away mid-check: approveGate refuses with project_not_active.
+    setSetting('active_project_id', String(other))
+    held.release()
+    assert.notEqual((await pending).statusCode, 200)
+    assert.equal(cursorOf(id), ACCEPT_GATE_INDEX)
+    // Back on its own project, the board shows a finished row: nothing left
+    // running to disable the gate.
+    setSetting('active_project_id', String(mine))
+    assert.equal((await gateActionOf(id)).state, 'merged')
+  } finally {
+    if (before == null) db.prepare("DELETE FROM setting WHERE key = 'active_project_id'").run()
+    else setSetting('active_project_id', String(before))
+  }
+})
+
+test('HZ-216: a merge is shown on the done Accept step, but not when the item later returns to the gate', async () => {
+  const id = acceptItem()
+  assert.equal((await approve(id)).statusCode, 200)
+  assert.equal((await gateActionOf(id)).state, 'merged')
+
+  store.restartPhase(id, STEPS[ACCEPT_GATE_INDEX].phase, 'rebuild it', 'You')
+  assert.equal(await gateActionOf(id), null, 'not on the upcoming gate while it is rebuilt')
+  db.prepare("INSERT INTO step_run (item_id, step_index, agent, status) VALUES (?, ?, 'Eng', 'done')").run(id, ACCEPT_GATE_INDEX - 1)
+  db.prepare('UPDATE work_item SET cursor = ? WHERE id = ?').run(ACCEPT_GATE_INDEX, id)
+  assert.equal(await gateActionOf(id), null, 'not on a later visit to the gate')
+})

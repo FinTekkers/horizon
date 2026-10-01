@@ -4,7 +4,6 @@
 // the clicking tab's own state, so a reload, another tab and an approval from
 // WhatsApp all show the same thing. App.jsx adds this tab's in-flight request
 // on top, for the gap before the first push.
-import { ACCEPT_GATE_INDEX } from '../../../domain/js/lifecycle.js'
 
 // The action to show for an item, or null. A running conflictRun stands in
 // for a payload that has no gateAction key.
@@ -16,13 +15,11 @@ export function gateActionOf(item) {
   return null
 }
 
-// True while the gate's buttons must stay disabled: an action is running, or
-// the merge landed and the gate is about to advance. A blocked or ended run
-// re-enables them.
+// True while the gate's buttons must stay disabled: an action is running.
+// Any finished row re-enables them — a merge whose gate never advanced (the
+// advance was refused) must not leave the gate disabled for good.
 export function gateActionBusy(item) {
-  const action = gateActionOf(item)
-  if (!action) return false
-  return action.state === 'running' || (action.state === 'merged' && item.cursor === ACCEPT_GATE_INDEX)
+  return gateActionOf(item)?.state === 'running'
 }
 
 // "3m 12s" from a server ISO timestamp. Clock skew never shows a negative.

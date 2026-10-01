@@ -192,9 +192,10 @@ export function getConflictRun(itemId) {
 }
 
 // The item's gate action for the UI: a running one if any, else the latest
-// finished one from this visit to the gate (a merge is always kept — it is
-// what the done Accept step shows).
-function itemGateAction(rows, itemId) {
+// finished one from this visit to the gate. A merge is also kept once the
+// gate has advanced past Accept — it is what the done Accept step shows — but
+// never on a later visit back to the gate.
+function itemGateAction(rows, itemId, cursor) {
   const running =
     rows.find((r) => r.state === 'running' && r.kind === 'premerge') || rows.find((r) => r.state === 'running')
   if (running) return gateActionView(running)
@@ -202,7 +203,9 @@ function itemGateAction(rows, itemId) {
     .filter((r) => r.finished_at)
     .sort((a, b) => (a.finished_at < b.finished_at ? 1 : -1))[0]
   if (!finished) return null
-  if (finished.state !== 'merged' && finished.epoch !== gateEpoch(itemId)) return null
+  if (finished.state === 'merged' && cursor > ACCEPT_GATE_INDEX) return gateActionView(finished)
+  if (finished.state === 'merged' && cursor < ACCEPT_GATE_INDEX) return null
+  if (finished.epoch !== gateEpoch(itemId)) return null
   return gateActionView(finished)
 }
 
@@ -540,7 +543,7 @@ export function listItems() {
     stepOutputs: stepOutputs(row.id),
     activeRun: withRunState(selectActiveRun.get(row.id) || null),
     conflictRun: conflictRunView(gateActions.find((r) => r.kind === 'resolve')),
-    gateAction: itemGateAction(gateActions, row.id),
+    gateAction: itemGateAction(gateActions, row.id, row.cursor),
     reviewRejected: reviewRejected(row),
     forwardedReview: forwardedReview(row),
     ...dependencyFields(row.id),
