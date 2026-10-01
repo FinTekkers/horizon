@@ -77,6 +77,9 @@ os.environ.setdefault("FARM_RUNNER", "subprocess")
 # design) refuse to import farmd with it set. Tests set it back explicitly
 # where the guardrail itself is under test.
 os.environ.pop("ANTHROPIC_API_KEY", None)
+# HZ-192: the operator's emergency model override would change every model the
+# suite asserts. Tests that exercise it set it themselves.
+os.environ.pop("FARM_MODEL_OVERRIDE", None)
 
 sys.path.insert(0, str(REPO_ROOT))
 
@@ -260,3 +263,45 @@ def muse_smoke_test_personas(muse_smoke_test_persona):
     """The item `personas` map carrying the Muse-routed fixture persona — what
     a task payload actually holds since HZ-125."""
     return {MUSE_SMOKE_TEST_PERSONA_AGENT: muse_smoke_test_persona}
+
+
+class RecordingProviders:
+    """HZ-192: stands in for BOTH real providers inside agent_runner, so the
+    real run_agent() runs — provider selection, the provider lock and the
+    model resolution — and only provider.run() is faked. Each call records
+    which provider got it and every keyword it was handed, model included.
+
+    `replies` are handed out in order; the last one repeats once exhausted.
+    """
+
+    def __init__(self, replies):
+        self.replies = list(replies)
+        self.calls: list[dict] = []
+
+    def _provider(self, name):
+        import types
+
+        def run(prompt, **kwargs):
+            self.calls.append({"provider": name, "prompt": prompt, **kwargs})
+            reply = self.replies.pop(0) if len(self.replies) > 1 else self.replies[0]
+            return {"result": reply, "session_id": "recorded-session"}
+
+        return types.SimpleNamespace(SUPPORTS_RESUME=True, assert_subscription_auth=lambda: None, run=run)
+
+    def models(self):
+        return [call["model"] for call in self.calls]
+
+
+@pytest.fixture
+def recording_providers(monkeypatch):
+    """Installs RecordingProviders for "claude" and "muse". Call the returned
+    function with the replies to hand out; it returns the recorder."""
+    from farm import agent_runner
+
+    def install(*replies):
+        recorder = RecordingProviders(replies or ('{"summary": "ok"}',))
+        for name in ("claude", "muse"):
+            monkeypatch.setitem(agent_runner._PROVIDERS, name, recorder._provider(name))
+        return recorder
+
+    return install

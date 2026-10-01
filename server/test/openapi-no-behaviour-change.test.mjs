@@ -246,10 +246,13 @@ test('the document carries no examples at all', () => {
 })
 
 test('the security schemes carry no value, default or example', () => {
+  // An apiKey scheme names where the credential goes; an http scheme (the
+  // HZ-179 bearer token) names its auth scheme. Neither may carry anything else.
+  const SHAPE = { apiKey: ['description', 'in', 'name', 'type'], http: ['description', 'scheme', 'type'] }
   for (const [name, scheme] of Object.entries(spec.components.securitySchemes)) {
     assert.deepEqual(
       Object.keys(scheme).sort(),
-      ['description', 'in', 'name', 'type'],
+      SHAPE[scheme.type],
       `${name} declares more than the scheme's shape — a credential value may have come with it`,
     )
   }

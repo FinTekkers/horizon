@@ -268,8 +268,9 @@ Cost, measured against the current files:
 - `PATCH_FIELDS` and `_mark_truncated()` (HZ-114's truncation marking) must
   move into a file with no patch concept at all — along with the
   `domain.py.fields` import they depend on.
-- `PM_MODEL` (`FARM_PM_MODEL`) must be threaded per step; `step_agent` never
-  passes `model=`.
+- The PM's model must be threaded per step; `step_agent` never passes
+  `model=`. (Superseded by HZ-192: every call's model now resolves from
+  `domain/personas.json`.)
 - `farm/tests/test_pm_agent.py` is rewritten, not kept.
 
 The ticket's own guardrail warns against pre-committing to this file. The

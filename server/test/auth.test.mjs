@@ -310,3 +310,133 @@ test('deleteSession ends the session immediately', () => {
   auth.deleteSession(token)
   assert.equal(auth.getSessionUser(token), null)
 })
+
+// ---- personal API tokens (HZ-179) ----
+
+const TOKEN_SHAPE = /^hz_[A-Za-z0-9_-]{43}$/
+const tokenHash = (raw) => crypto.createHash('sha256').update(raw).digest('hex')
+
+test('createApiToken: hz_ prefix, 32 random bytes, distinct every time, stored only as sha256', () => {
+  const { user } = auth.createUser({ email: 'tokens1@example.com', name: 'Token One', authMethod: 'password' })
+  const seen = new Set()
+  for (let i = 0; i < 100; i++) {
+    const created = auth.createApiToken(user.id, `t${i}`)
+    assert.match(created.token, TOKEN_SHAPE)
+    assert.equal(Buffer.from(created.token.slice(3), 'base64url').length, 32)
+    seen.add(created.token)
+  }
+  assert.equal(seen.size, 100)
+
+  const created = auth.createApiToken(user.id, 'hash-check')
+  const row = db.prepare('SELECT * FROM api_token WHERE id = ?').get(created.id)
+  assert.equal(row.token_hash, tokenHash(created.token))
+  assert.equal(row.last4, created.token.slice(-4))
+  for (const [column, value] of Object.entries(row)) {
+    assert.notEqual(value, created.token, `api_token.${column} holds the raw token`)
+  }
+})
+
+test('createApiToken: defaults to a 90-day expiry', () => {
+  const { user } = auth.createUser({ email: 'tokens2@example.com', name: 'Token Two', authMethod: 'password' })
+  const created = auth.createApiToken(user.id, 'default-expiry')
+  const days = (Date.parse(created.expiresAt) - Date.parse(created.createdAt)) / 86_400_000
+  assert.equal(days, 90)
+})
+
+test('getTokenAuth resolves a live token to its user and records last use', () => {
+  const { user } = auth.createUser({ email: 'tokens3@example.com', name: 'Token Three', authMethod: 'password' })
+  const created = auth.createApiToken(user.id, 'ci-bot')
+  const found = auth.getTokenAuth(created.token)
+  assert.deepEqual(found, { user: auth.findUserById(user.id), tokenId: created.id, tokenName: 'ci-bot' })
+  assert.ok(db.prepare('SELECT last_used_at FROM api_token WHERE id = ?').get(created.id).last_used_at)
+})
+
+test('getTokenAuth writes last_used_at at most once a minute', () => {
+  const { user } = auth.createUser({ email: 'tokens4@example.com', name: 'Token Four', authMethod: 'password' })
+  const created = auth.createApiToken(user.id, 'throttle')
+  auth.getTokenAuth(created.token)
+  const first = db.prepare('SELECT last_used_at FROM api_token WHERE id = ?').get(created.id).last_used_at
+  db.prepare('UPDATE api_token SET last_used_at = ? WHERE id = ?').run(new Date(Date.now() - 30_000).toISOString(), created.id)
+  const pinned = db.prepare('SELECT last_used_at FROM api_token WHERE id = ?').get(created.id).last_used_at
+  auth.getTokenAuth(created.token)
+  assert.equal(db.prepare('SELECT last_used_at FROM api_token WHERE id = ?').get(created.id).last_used_at, pinned)
+  db.prepare('UPDATE api_token SET last_used_at = ? WHERE id = ?').run(new Date(Date.now() - 61_000).toISOString(), created.id)
+  auth.getTokenAuth(created.token)
+  assert.ok(db.prepare('SELECT last_used_at FROM api_token WHERE id = ?').get(created.id).last_used_at >= first)
+})
+
+test('getTokenAuth returns null for malformed, unknown, revoked, expired-now and orphaned tokens', () => {
+  const { user } = auth.createUser({ email: 'tokens5@example.com', name: 'Token Five', authMethod: 'password' })
+  for (const bad of [undefined, '', 'abc', 'hz_', `hz_${'A'.repeat(42)}`, `xx_${'A'.repeat(43)}`]) {
+    assert.equal(auth.getTokenAuth(bad), null, `accepted ${bad}`)
+  }
+  assert.equal(auth.getTokenAuth(`hz_${'A'.repeat(43)}`), null, 'accepted a well-formed unknown token')
+
+  const revoked = auth.createApiToken(user.id, 'revoked')
+  assert.ok(auth.getTokenAuth(revoked.token))
+  assert.equal(auth.revokeApiToken(user.id, revoked.id), true)
+  assert.equal(auth.getTokenAuth(revoked.token), null)
+  assert.equal(auth.revokeApiToken(user.id, revoked.id), false, 'revoking twice reports nothing revoked')
+
+  const expiring = auth.createApiToken(user.id, 'expiring')
+  assert.ok(auth.getTokenAuth(expiring.token))
+  db.prepare('UPDATE api_token SET expires_at = ? WHERE id = ?').run(new Date().toISOString(), expiring.id)
+  assert.equal(auth.getTokenAuth(expiring.token), null)
+
+  // A token whose user row is gone. user deletion has no app path, so the FK is
+  // switched off just long enough to simulate one.
+  const { user: doomed } = auth.createUser({ email: 'tokens6@example.com', name: 'Doomed', authMethod: 'password' })
+  const orphan = auth.createApiToken(doomed.id, 'orphan')
+  assert.ok(auth.getTokenAuth(orphan.token))
+  db.pragma('foreign_keys = OFF')
+  try {
+    db.prepare('DELETE FROM user WHERE id = ?').run(doomed.id)
+  } finally {
+    db.pragma('foreign_keys = ON')
+  }
+  assert.equal(auth.getTokenAuth(orphan.token), null)
+})
+
+test('revokeApiToken and listApiTokens only ever touch the caller’s own tokens', () => {
+  const { user: a } = auth.createUser({ email: 'tokens7@example.com', name: 'Owner A', authMethod: 'password' })
+  const { user: b } = auth.createUser({ email: 'tokens8@example.com', name: 'Owner B', authMethod: 'password' })
+  const tokenA = auth.createApiToken(a.id, 'a-token')
+  assert.equal(auth.revokeApiToken(b.id, tokenA.id), false)
+  assert.ok(auth.getTokenAuth(tokenA.token))
+  assert.deepEqual(auth.listApiTokens(b.id), [])
+  assert.deepEqual(auth.listApiTokens(a.id).map((t) => t.id), [tokenA.id])
+})
+
+test('getTokenAuth confirms the hash with crypto.timingSafeEqual (constant-time guardrail)', async () => {
+  // Timing cannot be asserted behaviourally in a unit test; this pins the call so
+  // it is not removed as redundant next to the indexed lookup.
+  const { readFileSync } = await import('node:fs')
+  const source = readFileSync(new URL('../src/auth.js', import.meta.url), 'utf8')
+  const body = source.slice(source.indexOf('export function getTokenAuth('))
+  const fnBody = body.slice(0, body.indexOf('\n}\n'))
+  assert.match(fnBody, /crypto\.timingSafeEqual\(/)
+})
+
+test('the api_token schema is additive: re-running init leaves every other table untouched', async () => {
+  const { spawnSync } = await import('node:child_process')
+  const { user } = auth.createUser({ email: 'tokens9@example.com', name: 'Schema', authMethod: 'password' })
+  const session = auth.createSession(user.id)
+  const others = () =>
+    db
+      .prepare("SELECT type, name, sql FROM sqlite_master WHERE name NOT IN ('api_token', 'idx_api_token_user') AND name NOT LIKE 'sqlite_autoindex_api_token%' ORDER BY name")
+      .all()
+  const before = others()
+  assert.ok(before.some((r) => r.name === 'session'))
+
+  db.exec('DROP TABLE api_token')
+  const dbModule = new URL('../src/db.js', import.meta.url).href
+  const child = spawnSync(process.execPath, ['--input-type=module', '-e', `await import(${JSON.stringify(dbModule)})`], {
+    env: { ...process.env },
+    encoding: 'utf8',
+  })
+  assert.equal(child.status, 0, child.stderr)
+
+  assert.deepEqual(others(), before)
+  assert.ok(db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'api_token'").get(), 'init did not recreate api_token')
+  assert.equal(auth.getSessionUser(session)?.id, user.id, 'a session from before re-init no longer authenticates')
+})

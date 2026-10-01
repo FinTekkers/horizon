@@ -1,6 +1,17 @@
 import { useEffect, useState } from 'react'
+import { STEPS } from '../../../domain/js/lifecycle.js'
 import { listDefinitions, getDefinition, saveDefinition, effectivePrompt } from '../api'
-import { DEFAULT_PERSONAS, PRIMARY_PERSONA_AGENT, personaSlotForFile } from '../domain/personas'
+import {
+  CONCIERGE_MODEL_AGENT,
+  CONFLICT_MODEL_AGENT,
+  CONFLICT_STEP_KEY,
+  DEFAULT_PERSONAS,
+  MODELS,
+  PRIMARY_PERSONA_AGENT,
+  modelAgentForStep,
+  personaSlotForFile,
+  resolveModel,
+} from '../domain/personas'
 import { BackIcon } from './icons'
 
 // The hierarchical agent-definitions library (HZ-9): Global (roles +
@@ -42,6 +53,71 @@ function DefinitionTree({ tree, selected, onSelect }) {
         </div>
       ))}
     </div>
+  )
+}
+
+// HZ-192: the model each agent call runs on, resolved exactly as the farm's
+// run_agent() does (persona override, then step override, then the agent's
+// default) from domain/personas.json. Read-only: models are changed by a
+// reviewed edit to that file, not here.
+function modelRows() {
+  return [
+    ...STEPS.filter((step) => step.kind === 'agent').map((step) => {
+      const agent = modelAgentForStep(step.agent)
+      return { key: step.label, call: step.label, agent, model: resolveModel(agent, step.label) }
+    }),
+    { key: 'concierge', call: 'WhatsApp concierge', agent: CONCIERGE_MODEL_AGENT, model: resolveModel(CONCIERGE_MODEL_AGENT) },
+    {
+      key: CONFLICT_STEP_KEY,
+      call: 'Merge-conflict resolution',
+      agent: CONFLICT_MODEL_AGENT,
+      model: resolveModel(CONFLICT_MODEL_AGENT, CONFLICT_STEP_KEY),
+    },
+  ]
+}
+
+function ModelsSection() {
+  const personaOverrides = Object.entries(MODELS.personas)
+  return (
+    <details className="defs__models">
+      <summary className="defs__group-title">Models — which Claude model each agent call uses</summary>
+      <table aria-label="Effective model per step" style={{ borderCollapse: 'collapse', font: '500 13px var(--font-sans)' }}>
+        <thead>
+          <tr>
+            <th align="left">Step</th>
+            <th align="left">Agent</th>
+            <th align="left">Model</th>
+          </tr>
+        </thead>
+        <tbody>
+          {modelRows().map((row) => (
+            <tr key={row.key} data-testid={`model-row-${row.key}`}>
+              <td>{row.call}</td>
+              <td>{row.agent}</td>
+              <td>
+                <code>{row.model}</code>
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      <div className="defs__group-title">Persona overrides</div>
+      {personaOverrides.length === 0 ? (
+        <div className="defs__empty">None — every persona runs on its step's model.</div>
+      ) : (
+        <ul aria-label="Persona model overrides">
+          {personaOverrides.map(([persona, model]) => (
+            <li key={persona}>
+              {persona} → <code>{model}</code>
+            </li>
+          ))}
+        </ul>
+      )}
+      <div className="gh-note">
+        Declared in <code>domain/personas.json</code>. When the farm host sets <code>FARM_MODEL_OVERRIDE</code>, it
+        replaces every Claude model shown here; this page cannot see it. Muse-routed calls never receive a model.
+      </div>
+    </details>
   )
 }
 
@@ -150,6 +226,8 @@ export default function AgentDefinitionsPage({ onBack }) {
         add to earlier ones — they never replace them. Saves are git commits; no secrets, use{' '}
         <code>$ENV_VAR</code> references.
       </div>
+
+      <ModelsSection />
 
       {loadError && <div className="gh-error">{loadError}</div>}
 

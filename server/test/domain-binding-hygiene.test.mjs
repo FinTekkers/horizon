@@ -635,8 +635,12 @@ test('the JS persona binding exports the registry and nothing presentational', (
   assert.deepEqual(
     Object.keys(personaBinding).sort(),
     [
+      'CONCIERGE_MODEL_AGENT',
+      'CONFLICT_MODEL_AGENT',
+      'CONFLICT_STEP_KEY',
       'DEFAULT_PERSONAS',
       'LEGACY_PERSONA_IDS',
+      'MODELS',
       'NAMESPACED_PERSONA_IDS',
       'PERSONA_AGENTS',
       'PERSONA_IDS',
@@ -645,7 +649,9 @@ test('the JS persona binding exports the registry and nothing presentational', (
       'isPersona',
       'isPersonaAgent',
       'legacyPersona',
+      'modelAgentForStep',
       'personaRoleFile',
+      'resolveModel',
     ],
     'domain/js/personas.js gained or lost an export — presentation stays in the layer registries',
   )
@@ -669,15 +675,21 @@ test('the Python persona binding owns the registry and nothing else — no label
   assert.deepEqual(
     pythonPersonaNames,
     [
+      'CONCIERGE_MODEL_AGENT',
+      'CONFLICT_MODEL_AGENT',
+      'CONFLICT_STEP_KEY',
       'DEFAULT_PERSONAS',
       'LEGACY_PERSONA_IDS',
+      'MODELS',
       'NAMESPACED_PERSONA_IDS',
       'PERSONA_AGENTS',
       'PERSONA_IDS',
       'PERSONA_PROVIDERS',
       'PRIMARY_PERSONA_AGENT',
       'is_persona',
+      'model_agent_for_step',
       'persona_role_file',
+      'resolve_model',
     ],
     'domain/py/personas.py gained or lost a public name — presentation stays in the layer registries',
   )

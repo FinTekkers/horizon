@@ -42,9 +42,12 @@ CLAUDE_BIN = os.environ.get("FARM_CLAUDE_BIN", "claude")
 # is the rollback lever restoring the silent `claude -p` path. Only affects
 # the claude provider's own internals — unrelated to FARM_PROVIDER below.
 FARM_RUNNER = os.environ.get("FARM_RUNNER", "sdk")
-PM_MODEL = os.environ.get("FARM_PM_MODEL")  # None -> CLI default
-# HZ-187: model for step agents and conflict resolution (Claude provider only).
-STEP_MODEL = os.environ.get("FARM_STEP_MODEL") or None  # unset/empty -> CLI default
+# HZ-192: no env var selects a model. Every farm call's model is declared in
+# domain/personas.json's `models` block and resolved inside run_agent(). The
+# one emergency lever, FARM_MODEL_OVERRIDE (a Claude model id for EVERY Claude
+# call; never reaches Muse), is read at call time in farm/agent_runner.py,
+# not here.
+
 # HZ-188: how long an implement/review step waits for the item's workspace
 # lock (farm/workspaces.py item_lock) while a conflict resolver still holds it
 # — e.g. the server timed out a resolve and sent the item back while farmd
@@ -148,7 +151,6 @@ FARM_WA_GROUP_JIDS = [j.strip() for j in os.environ.get("FARM_WA_GROUP_JIDS", ""
 # mcp_bridge transport: the whatsapp-mcp bridge's REST endpoint and SQLite store.
 WA_BRIDGE_URL = os.environ.get("WA_BRIDGE_URL", "http://localhost:8080")
 WA_DB_PATH = os.environ.get("WA_DB_PATH", "")
-CONCIERGE_MODEL = os.environ.get("FARM_CONCIERGE_MODEL")  # None -> CLI default
 
 # HZ-15: create work items and approve gates from WhatsApp.
 # Where the web UI lives — texted back as a deep link (e.g. "HZ-7" ->

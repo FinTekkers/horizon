@@ -1,9 +1,9 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
-  "$comment": "HZ-133: the contract for domain/personas.json. Validated by domain/validate.mjs — the same dependency-free Draft-07 subset validator the other domain/ schemas use, so only the keywords listed in its KEYWORDS set are honoured (no `pattern`, no schema-valued `additionalProperties`). Rules the subset cannot express — the id shape ^[a-z][a-z0-9_]*$ on agents and persona ids, unique agents, ids unique WITHIN their agent, `default` being one of its own agent's personas, `primaryAgent` naming a declared agent, and every legacyIds value and personaProviders key naming a live <agent>.<persona> pair — are asserted at LOAD time by the bindings themselves: see assertPersonasShape() in domain/js/personas.js and _validate_source() in domain/py/personas.py, which domain/fixtures/personas-cases.json drives from both sides so the two cannot drift. `additionalProperties: false` at every object level is what keeps presentation (labels, initials, colours) structurally out of this file rather than out by convention.",
-  "title": "Horizon specialist personas: ids, agent membership, defaults and persona-to-provider",
+  "$comment": "HZ-133: the contract for domain/personas.json. Validated by domain/validate.mjs — the same dependency-free Draft-07 subset validator the other domain/ schemas use, so only the keywords listed in its KEYWORDS set are honoured (no `pattern`, no schema-valued `additionalProperties`). Rules the subset cannot express — the id shape ^[a-z][a-z0-9_]*$ on agents and persona ids, unique agents, ids unique WITHIN their agent, `default` being one of its own agent's personas, `primaryAgent` naming a declared agent, every legacyIds value and personaProviders key naming a live <agent>.<persona> pair, and (HZ-192) every models value being a Claude model id matching ^claude-[a-z0-9][a-z0-9.-]*$, models.agents keys having the id shape, models.conflictAgent naming a models.agents key, and every models.personas key naming a live pair that personaProviders does NOT route elsewhere — are asserted at LOAD time by the bindings themselves: see assertPersonasShape() in domain/js/personas.js and _validate_source() in domain/py/personas.py, which domain/fixtures/personas-cases.json drives from both sides so the two cannot drift. `additionalProperties: false` at every object level is what keeps presentation (labels, initials, colours) structurally out of this file rather than out by convention.",
+  "title": "Horizon specialist personas: ids, agent membership, defaults, persona-to-provider and the model each agent call uses",
   "type": "object",
-  "required": ["primaryAgent", "agents", "legacyIds", "personaProviders"],
+  "required": ["primaryAgent", "agents", "legacyIds", "personaProviders", "models"],
   "additionalProperties": false,
   "properties": {
     "primaryAgent": {
@@ -47,6 +47,31 @@
     "personaProviders": {
       "$comment": "Namespaced \"<agent>.<persona>\" -> the farm provider that persona forces. Ships EMPTY (HZ-121): no shipped persona forces a provider. Keys must name a declared pair — asserted at load time.",
       "type": "object"
+    },
+    "models": {
+      "$comment": "HZ-192: the ONE place a farm call's Claude model is chosen. farm/agent_runner.py resolves every run_agent() call through resolve_model(): models.personas[\"<agent>.<persona>\"], then models.steps[<step label>], then models.agents[<agent>]. A lifecycle step's model agent is its domain/steps.json `agent` lower-cased (so those display names are a contract); the concierge is agent `concierge`; conflict resolution is agent `conflictAgent` with step key `conflict`. Never reaches a non-Claude provider: run_agent() passes no model to Muse.",
+      "type": "object",
+      "required": ["agents", "conflictAgent", "steps", "personas"],
+      "additionalProperties": false,
+      "properties": {
+        "agents": {
+          "$comment": "Model agent -> its default Claude model id. Must carry every lower-cased domain/steps.json agent plus `concierge` (farm/tests/test_models_domain.py).",
+          "type": "object"
+        },
+        "conflictAgent": {
+          "$comment": "The models.agents key merge-conflict resolution (farm/conflict_resolver.py) runs as. Data, not code, so neither binding inlines an agent name.",
+          "type": "string",
+          "minLength": 1
+        },
+        "steps": {
+          "$comment": "Exact domain/steps.json agent-step label (or the reserved key `conflict`) -> a Claude model id overriding the agent default for that step. Ships empty.",
+          "type": "object"
+        },
+        "personas": {
+          "$comment": "Namespaced \"<agent>.<persona>\" -> a Claude model id overriding step and agent. Ships empty. A key personaProviders routes to another provider is rejected at load time.",
+          "type": "object"
+        }
+      }
     }
   }
 }

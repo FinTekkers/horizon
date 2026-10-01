@@ -1,5 +1,5 @@
 {
-  "$comment": "HZ-133. Input/expected pairs for the persona bindings, asserted by BOTH server/test/domain-personas-cases.test.mjs and farm/tests/test_personas_fixtures.py. The `shared` section is the point of the file: domain/js/personas.js and domain/py/personas.py are two independent hand-written implementations, and without this nothing would prove a validation rule, a membership answer or a derived role filename meant the same thing in both languages. Every case in `shared` runs in both suites, and each suite asserts it executed the exact ids listed in shared.manifest. The `js` and `py` sections cover the exports that exist in only one binding; a coverage guard in each suite asserts SET EQUALITY between that section's keys and the binding's real exports. Every agent and persona id in this file is FABRICATED on purpose (alpha/beta, one/two/three) so the fixture is not a second declaration of the registry.",
+  "$comment": "HZ-133. Input/expected pairs for the persona bindings, asserted by BOTH server/test/domain-personas-cases.test.mjs and farm/tests/test_personas_fixtures.py. The `shared` section is the point of the file: domain/js/personas.js and domain/py/personas.py are two independent hand-written implementations, and without this nothing would prove a validation rule, a membership answer or a derived role filename meant the same thing in both languages. Every case in `shared` runs in both suites, and each suite asserts it executed the exact ids listed in shared.manifest. The `js` and `py` sections cover the exports that exist in only one binding; a coverage guard in each suite asserts SET EQUALITY between that section's keys and the binding's real exports. Every agent and persona id — and every model id — in this file is FABRICATED on purpose (alpha/beta, one/two/three) so the fixture is not a second declaration of the registry.",
 
   "shared": {
     "manifest": {
@@ -44,7 +44,31 @@
         "a personaProviders key naming an undeclared agent rejected",
         "a prototype-named personaProviders key rejected",
         "a non-string provider rejected",
-        "an empty provider rejected"
+        "an empty provider rejected",
+        "model overrides for a step and a Claude-run persona are accepted",
+        "a registry with no models block rejected — the pre-HZ-192 shape",
+        "an array models block rejected",
+        "an unknown key under models rejected",
+        "an empty models.agents rejected",
+        "a capitalised models.agents key rejected",
+        "an empty models.agents key rejected",
+        "a non-Claude agent model rejected",
+        "a Muse model id rejected",
+        "an empty model id rejected",
+        "a capitalised Claude model id rejected",
+        "a bare claude- model id rejected",
+        "a non-string model id rejected",
+        "a conflictAgent with no default model rejected",
+        "a missing conflictAgent rejected",
+        "a missing models.steps rejected",
+        "an empty step key rejected",
+        "a non-Claude step model rejected",
+        "a missing models.personas rejected",
+        "a models.personas key naming no live pair rejected",
+        "a bare models.personas key rejected",
+        "a prototype-named models.personas key rejected",
+        "a models.personas key routed to another provider rejected",
+        "a non-Claude persona model rejected"
       ],
       "membership": [
         "a declared pair is a persona",
@@ -65,6 +89,24 @@
         "an id belonging to another agent derives nothing",
         "a path-traversing id derives nothing",
         "a prototype-named agent derives nothing"
+      ],
+      "resolveModel": [
+        "an agent with no override gets its default",
+        "a step override beats the agent default",
+        "a step with no override falls back to the agent default",
+        "a persona override beats a step override on the same call",
+        "a persona override wins with no step",
+        "a persona with no override falls back to the step override",
+        "a persona with no override and no step falls back to the agent default",
+        "an override does not rescue an unknown agent",
+        "a missing agent is unknown",
+        "a prototype-named agent is unknown",
+        "a constructor-named agent is unknown",
+        "a toString-named agent is unknown",
+        "a prototype-named step falls through to the agent default",
+        "a constructor-named step falls through to the agent default",
+        "a prototype-named persona falls through to the step override",
+        "a toString-named persona falls through to the agent default"
       ]
     },
 
@@ -78,7 +120,8 @@
             { "agent": "beta", "default": "three", "personas": ["three", "four"] }
           ],
           "legacyIds": { "old_one": "alpha.one" },
-          "personaProviders": {}
+          "personaProviders": {},
+          "models": { "agents": { "alpha": "claude-test-1", "beta": "claude-test-2" }, "conflictAgent": "alpha", "steps": {}, "personas": {} }
         },
         "expect": { "throws": false }
       },
@@ -92,7 +135,8 @@
             { "agent": "beta", "default": "one", "personas": ["one", "three"] }
           ],
           "legacyIds": {},
-          "personaProviders": { "alpha.one": "prov_a", "beta.one": "prov_b" }
+          "personaProviders": { "alpha.one": "prov_a", "beta.one": "prov_b" },
+          "models": { "agents": { "alpha": "claude-test-1", "beta": "claude-test-2" }, "conflictAgent": "alpha", "steps": {}, "personas": {} }
         },
         "expect": { "throws": false }
       },
@@ -103,7 +147,8 @@
           "primaryAgent": "alpha",
           "agents": [{ "agent": "alpha", "default": "one", "personas": ["one"] }],
           "legacyIds": {},
-          "personaProviders": {}
+          "personaProviders": {},
+          "models": { "agents": { "alpha": "claude-test-1", "beta": "claude-test-2" }, "conflictAgent": "alpha", "steps": {}, "personas": {} }
         },
         "expect": { "throws": false }
       },
@@ -314,6 +359,417 @@
         "case": "an empty provider rejected",
         "input": { "primaryAgent": "alpha", "agents": [{ "agent": "alpha", "default": "one", "personas": ["one"] }], "legacyIds": {}, "personaProviders": { "alpha.one": "" } },
         "expect": { "throws": true, "messageContains": "personaProviders[\"alpha.one\"] \"\" must be a non-empty provider id string" }
+      },
+      {
+        "case": "model overrides for a step and a Claude-run persona are accepted",
+        "input": {
+          "primaryAgent": "alpha",
+          "agents": [
+            { "agent": "alpha", "default": "one", "personas": ["one", "two"] },
+            { "agent": "beta", "default": "three", "personas": ["three", "four"] }
+          ],
+          "legacyIds": { "old_one": "alpha.one" },
+          "personaProviders": {},
+          "models": {
+            "agents": { "alpha": "claude-test-1", "beta": "claude-test-2" },
+            "conflictAgent": "alpha",
+            "steps": { "Some step label": "claude-test-3", "conflict": "claude-test-3" },
+            "personas": { "alpha.one": "claude-test-3" }
+          }
+        },
+        "expect": { "throws": false }
+      },
+      {
+        "case": "a registry with no models block rejected — the pre-HZ-192 shape",
+        "input": {
+          "primaryAgent": "alpha",
+          "agents": [
+            { "agent": "alpha", "default": "one", "personas": ["one", "two"] },
+            { "agent": "beta", "default": "three", "personas": ["three", "four"] }
+          ],
+          "legacyIds": { "old_one": "alpha.one" },
+          "personaProviders": {}
+        },
+        "expect": { "throws": true, "messageContains": "models must be a JSON object with agents, conflictAgent, steps and personas" }
+      },
+      {
+        "case": "an array models block rejected",
+        "input": {
+          "primaryAgent": "alpha",
+          "agents": [
+            { "agent": "alpha", "default": "one", "personas": ["one", "two"] },
+            { "agent": "beta", "default": "three", "personas": ["three", "four"] }
+          ],
+          "legacyIds": { "old_one": "alpha.one" },
+          "personaProviders": {},
+          "models": []
+        },
+        "expect": { "throws": true, "messageContains": "models must be a JSON object with agents, conflictAgent, steps and personas" }
+      },
+      {
+        "case": "an unknown key under models rejected",
+        "input": {
+          "primaryAgent": "alpha",
+          "agents": [
+            { "agent": "alpha", "default": "one", "personas": ["one", "two"] },
+            { "agent": "beta", "default": "three", "personas": ["three", "four"] }
+          ],
+          "legacyIds": { "old_one": "alpha.one" },
+          "personaProviders": {},
+          "models": {
+            "agents": { "alpha": "claude-test-1", "beta": "claude-test-2" },
+            "conflictAgent": "alpha",
+            "steps": {},
+            "personas": {},
+            "default": "claude-test-1"
+          }
+        },
+        "expect": {
+          "throws": true,
+          "messageContains": "models has unknown key \"default\" — expected only [\"agents\",\"conflictAgent\",\"steps\",\"personas\"]"
+        }
+      },
+      {
+        "case": "an empty models.agents rejected",
+        "input": {
+          "primaryAgent": "alpha",
+          "agents": [
+            { "agent": "alpha", "default": "one", "personas": ["one", "two"] },
+            { "agent": "beta", "default": "three", "personas": ["three", "four"] }
+          ],
+          "legacyIds": { "old_one": "alpha.one" },
+          "personaProviders": {},
+          "models": { "agents": {}, "conflictAgent": "alpha", "steps": {}, "personas": {} }
+        },
+        "expect": { "throws": true, "messageContains": "models.agents must be a non-empty JSON object" }
+      },
+      {
+        "case": "a capitalised models.agents key rejected",
+        "input": {
+          "primaryAgent": "alpha",
+          "agents": [
+            { "agent": "alpha", "default": "one", "personas": ["one", "two"] },
+            { "agent": "beta", "default": "three", "personas": ["three", "four"] }
+          ],
+          "legacyIds": { "old_one": "alpha.one" },
+          "personaProviders": {},
+          "models": { "agents": { "alpha": "claude-test-1", "Eng": "claude-test-1" }, "conflictAgent": "alpha", "steps": {}, "personas": {} }
+        },
+        "expect": { "throws": true, "messageContains": "models.agents key \"Eng\" — expected a lower-case id matching /^[a-z][a-z0-9_]*$/" }
+      },
+      {
+        "case": "an empty models.agents key rejected",
+        "input": {
+          "primaryAgent": "alpha",
+          "agents": [
+            { "agent": "alpha", "default": "one", "personas": ["one", "two"] },
+            { "agent": "beta", "default": "three", "personas": ["three", "four"] }
+          ],
+          "legacyIds": { "old_one": "alpha.one" },
+          "personaProviders": {},
+          "models": { "agents": { "alpha": "claude-test-1", "": "claude-test-1" }, "conflictAgent": "alpha", "steps": {}, "personas": {} }
+        },
+        "expect": { "throws": true, "messageContains": "models.agents key \"\" — expected a lower-case id matching /^[a-z][a-z0-9_]*$/" }
+      },
+      {
+        "case": "a non-Claude agent model rejected",
+        "input": {
+          "primaryAgent": "alpha",
+          "agents": [
+            { "agent": "alpha", "default": "one", "personas": ["one", "two"] },
+            { "agent": "beta", "default": "three", "personas": ["three", "four"] }
+          ],
+          "legacyIds": { "old_one": "alpha.one" },
+          "personaProviders": {},
+          "models": { "agents": { "alpha": "gpt-4o" }, "conflictAgent": "alpha", "steps": {}, "personas": {} }
+        },
+        "expect": {
+          "throws": true,
+          "messageContains": "models.agents[\"alpha\"] \"gpt-4o\" is not a Claude model id matching /^claude-[a-z0-9][a-z0-9.-]*$/"
+        }
+      },
+      {
+        "case": "a Muse model id rejected",
+        "input": {
+          "primaryAgent": "alpha",
+          "agents": [
+            { "agent": "alpha", "default": "one", "personas": ["one", "two"] },
+            { "agent": "beta", "default": "three", "personas": ["three", "four"] }
+          ],
+          "legacyIds": { "old_one": "alpha.one" },
+          "personaProviders": {},
+          "models": { "agents": { "alpha": "muse-large" }, "conflictAgent": "alpha", "steps": {}, "personas": {} }
+        },
+        "expect": {
+          "throws": true,
+          "messageContains": "models.agents[\"alpha\"] \"muse-large\" is not a Claude model id matching /^claude-[a-z0-9][a-z0-9.-]*$/"
+        }
+      },
+      {
+        "case": "an empty model id rejected",
+        "input": {
+          "primaryAgent": "alpha",
+          "agents": [
+            { "agent": "alpha", "default": "one", "personas": ["one", "two"] },
+            { "agent": "beta", "default": "three", "personas": ["three", "four"] }
+          ],
+          "legacyIds": { "old_one": "alpha.one" },
+          "personaProviders": {},
+          "models": { "agents": { "alpha": "" }, "conflictAgent": "alpha", "steps": {}, "personas": {} }
+        },
+        "expect": {
+          "throws": true,
+          "messageContains": "models.agents[\"alpha\"] \"\" is not a Claude model id matching /^claude-[a-z0-9][a-z0-9.-]*$/"
+        }
+      },
+      {
+        "case": "a capitalised Claude model id rejected",
+        "input": {
+          "primaryAgent": "alpha",
+          "agents": [
+            { "agent": "alpha", "default": "one", "personas": ["one", "two"] },
+            { "agent": "beta", "default": "three", "personas": ["three", "four"] }
+          ],
+          "legacyIds": { "old_one": "alpha.one" },
+          "personaProviders": {},
+          "models": { "agents": { "alpha": "Claude-Opus-5-5" }, "conflictAgent": "alpha", "steps": {}, "personas": {} }
+        },
+        "expect": {
+          "throws": true,
+          "messageContains": "models.agents[\"alpha\"] \"Claude-Opus-5-5\" is not a Claude model id matching /^claude-[a-z0-9][a-z0-9.-]*$/"
+        }
+      },
+      {
+        "case": "a bare claude- model id rejected",
+        "input": {
+          "primaryAgent": "alpha",
+          "agents": [
+            { "agent": "alpha", "default": "one", "personas": ["one", "two"] },
+            { "agent": "beta", "default": "three", "personas": ["three", "four"] }
+          ],
+          "legacyIds": { "old_one": "alpha.one" },
+          "personaProviders": {},
+          "models": { "agents": { "alpha": "claude-" }, "conflictAgent": "alpha", "steps": {}, "personas": {} }
+        },
+        "expect": {
+          "throws": true,
+          "messageContains": "models.agents[\"alpha\"] \"claude-\" is not a Claude model id matching /^claude-[a-z0-9][a-z0-9.-]*$/"
+        }
+      },
+      {
+        "case": "a non-string model id rejected",
+        "input": {
+          "primaryAgent": "alpha",
+          "agents": [
+            { "agent": "alpha", "default": "one", "personas": ["one", "two"] },
+            { "agent": "beta", "default": "three", "personas": ["three", "four"] }
+          ],
+          "legacyIds": { "old_one": "alpha.one" },
+          "personaProviders": {},
+          "models": { "agents": { "alpha": 5 }, "conflictAgent": "alpha", "steps": {}, "personas": {} }
+        },
+        "expect": {
+          "throws": true,
+          "messageContains": "models.agents[\"alpha\"] 5 is not a Claude model id matching /^claude-[a-z0-9][a-z0-9.-]*$/"
+        }
+      },
+      {
+        "case": "a conflictAgent with no default model rejected",
+        "input": {
+          "primaryAgent": "alpha",
+          "agents": [
+            { "agent": "alpha", "default": "one", "personas": ["one", "two"] },
+            { "agent": "beta", "default": "three", "personas": ["three", "four"] }
+          ],
+          "legacyIds": { "old_one": "alpha.one" },
+          "personaProviders": {},
+          "models": { "agents": { "alpha": "claude-test-1", "beta": "claude-test-2" }, "conflictAgent": "gamma", "steps": {}, "personas": {} }
+        },
+        "expect": { "throws": true, "messageContains": "models.conflictAgent \"gamma\" is not a models.agents key [\"alpha\",\"beta\"]" }
+      },
+      {
+        "case": "a missing conflictAgent rejected",
+        "input": {
+          "primaryAgent": "alpha",
+          "agents": [
+            { "agent": "alpha", "default": "one", "personas": ["one", "two"] },
+            { "agent": "beta", "default": "three", "personas": ["three", "four"] }
+          ],
+          "legacyIds": { "old_one": "alpha.one" },
+          "personaProviders": {},
+          "models": { "agents": { "alpha": "claude-test-1", "beta": "claude-test-2" }, "steps": {}, "personas": {} }
+        },
+        "expect": { "throws": true, "messageContains": "models.conflictAgent null is not a models.agents key [\"alpha\",\"beta\"]" }
+      },
+      {
+        "case": "a missing models.steps rejected",
+        "input": {
+          "primaryAgent": "alpha",
+          "agents": [
+            { "agent": "alpha", "default": "one", "personas": ["one", "two"] },
+            { "agent": "beta", "default": "three", "personas": ["three", "four"] }
+          ],
+          "legacyIds": { "old_one": "alpha.one" },
+          "personaProviders": {},
+          "models": { "agents": { "alpha": "claude-test-1", "beta": "claude-test-2" }, "conflictAgent": "alpha", "personas": {} }
+        },
+        "expect": { "throws": true, "messageContains": "models.steps must be a JSON object" }
+      },
+      {
+        "case": "an empty step key rejected",
+        "input": {
+          "primaryAgent": "alpha",
+          "agents": [
+            { "agent": "alpha", "default": "one", "personas": ["one", "two"] },
+            { "agent": "beta", "default": "three", "personas": ["three", "four"] }
+          ],
+          "legacyIds": { "old_one": "alpha.one" },
+          "personaProviders": {},
+          "models": {
+            "agents": { "alpha": "claude-test-1", "beta": "claude-test-2" },
+            "conflictAgent": "alpha",
+            "steps": { "": "claude-test-1" },
+            "personas": {}
+          }
+        },
+        "expect": { "throws": true, "messageContains": "models.steps has an empty step key" }
+      },
+      {
+        "case": "a non-Claude step model rejected",
+        "input": {
+          "primaryAgent": "alpha",
+          "agents": [
+            { "agent": "alpha", "default": "one", "personas": ["one", "two"] },
+            { "agent": "beta", "default": "three", "personas": ["three", "four"] }
+          ],
+          "legacyIds": { "old_one": "alpha.one" },
+          "personaProviders": {},
+          "models": {
+            "agents": { "alpha": "claude-test-1", "beta": "claude-test-2" },
+            "conflictAgent": "alpha",
+            "steps": { "Some step label": "gpt-4o" },
+            "personas": {}
+          }
+        },
+        "expect": {
+          "throws": true,
+          "messageContains": "models.steps[\"Some step label\"] \"gpt-4o\" is not a Claude model id matching /^claude-[a-z0-9][a-z0-9.-]*$/"
+        }
+      },
+      {
+        "case": "a missing models.personas rejected",
+        "input": {
+          "primaryAgent": "alpha",
+          "agents": [
+            { "agent": "alpha", "default": "one", "personas": ["one", "two"] },
+            { "agent": "beta", "default": "three", "personas": ["three", "four"] }
+          ],
+          "legacyIds": { "old_one": "alpha.one" },
+          "personaProviders": {},
+          "models": { "agents": { "alpha": "claude-test-1", "beta": "claude-test-2" }, "conflictAgent": "alpha", "steps": {} }
+        },
+        "expect": { "throws": true, "messageContains": "models.personas must be a JSON object" }
+      },
+      {
+        "case": "a models.personas key naming no live pair rejected",
+        "input": {
+          "primaryAgent": "alpha",
+          "agents": [
+            { "agent": "alpha", "default": "one", "personas": ["one", "two"] },
+            { "agent": "beta", "default": "three", "personas": ["three", "four"] }
+          ],
+          "legacyIds": { "old_one": "alpha.one" },
+          "personaProviders": {},
+          "models": {
+            "agents": { "alpha": "claude-test-1", "beta": "claude-test-2" },
+            "conflictAgent": "alpha",
+            "steps": {},
+            "personas": { "alpha.nobody": "claude-test-1" }
+          }
+        },
+        "expect": { "throws": true, "messageContains": "models.personas key \"alpha.nobody\" does not name a declared <agent>.<persona> pair" }
+      },
+      {
+        "case": "a bare models.personas key rejected",
+        "input": {
+          "primaryAgent": "alpha",
+          "agents": [
+            { "agent": "alpha", "default": "one", "personas": ["one", "two"] },
+            { "agent": "beta", "default": "three", "personas": ["three", "four"] }
+          ],
+          "legacyIds": { "old_one": "alpha.one" },
+          "personaProviders": {},
+          "models": {
+            "agents": { "alpha": "claude-test-1", "beta": "claude-test-2" },
+            "conflictAgent": "alpha",
+            "steps": {},
+            "personas": { "one": "claude-test-1" }
+          }
+        },
+        "expect": { "throws": true, "messageContains": "models.personas key \"one\" does not name a declared <agent>.<persona> pair" }
+      },
+      {
+        "case": "a prototype-named models.personas key rejected",
+        "input": {
+          "primaryAgent": "alpha",
+          "agents": [
+            { "agent": "alpha", "default": "one", "personas": ["one", "two"] },
+            { "agent": "beta", "default": "three", "personas": ["three", "four"] }
+          ],
+          "legacyIds": { "old_one": "alpha.one" },
+          "personaProviders": {},
+          "models": {
+            "agents": { "alpha": "claude-test-1", "beta": "claude-test-2" },
+            "conflictAgent": "alpha",
+            "steps": {},
+            "personas": { "constructor": "claude-test-1" }
+          }
+        },
+        "expect": { "throws": true, "messageContains": "models.personas key \"constructor\" does not name a declared <agent>.<persona> pair" }
+      },
+      {
+        "case": "a models.personas key routed to another provider rejected",
+        "input": {
+          "primaryAgent": "alpha",
+          "agents": [
+            { "agent": "alpha", "default": "one", "personas": ["one", "two"] },
+            { "agent": "beta", "default": "three", "personas": ["three", "four"] }
+          ],
+          "legacyIds": { "old_one": "alpha.one" },
+          "personaProviders": { "alpha.two": "muse" },
+          "models": {
+            "agents": { "alpha": "claude-test-1", "beta": "claude-test-2" },
+            "conflictAgent": "alpha",
+            "steps": {},
+            "personas": { "alpha.two": "claude-test-1" }
+          }
+        },
+        "expect": {
+          "throws": true,
+          "messageContains": "models.personas key \"alpha.two\" is routed to \"muse\" by personaProviders — only a Claude-run persona can carry a model"
+        }
+      },
+      {
+        "case": "a non-Claude persona model rejected",
+        "input": {
+          "primaryAgent": "alpha",
+          "agents": [
+            { "agent": "alpha", "default": "one", "personas": ["one", "two"] },
+            { "agent": "beta", "default": "three", "personas": ["three", "four"] }
+          ],
+          "legacyIds": { "old_one": "alpha.one" },
+          "personaProviders": {},
+          "models": {
+            "agents": { "alpha": "claude-test-1", "beta": "claude-test-2" },
+            "conflictAgent": "alpha",
+            "steps": {},
+            "personas": { "alpha.one": "muse-large" }
+          }
+        },
+        "expect": {
+          "throws": true,
+          "messageContains": "models.personas[\"alpha.one\"] \"muse-large\" is not a Claude model id matching /^claude-[a-z0-9][a-z0-9.-]*$/"
+        }
       }
     ],
 
@@ -344,6 +800,201 @@
       { "case": "an id belonging to another agent derives nothing", "personaIds": { "alpha": ["one", "two"], "beta": ["three", "one"] }, "agent": "alpha", "id": "three", "expect": { "throws": "unknown persona [\"alpha\",\"three\"]" } },
       { "case": "a path-traversing id derives nothing", "personaIds": { "alpha": ["one", "two"], "beta": ["three", "one"] }, "agent": "alpha", "id": "../one", "expect": { "throws": "unknown persona [\"alpha\",\"../one\"]" } },
       { "case": "a prototype-named agent derives nothing", "personaIds": { "alpha": ["one", "two"], "beta": ["three", "one"] }, "agent": "__proto__", "id": "one", "expect": { "throws": "unknown persona [\"__proto__\",\"one\"]" } }
+    ],
+
+    "resolveModel": [
+      {
+        "case": "an agent with no override gets its default",
+        "models": {
+          "agents": { "alpha": "claude-a", "beta": "claude-b" },
+          "steps": { "Build it": "claude-s" },
+          "personas": { "alpha.one": "claude-p" }
+        },
+        "agent": "beta",
+        "step": null,
+        "persona": null,
+        "expect": { "model": "claude-b" }
+      },
+      {
+        "case": "a step override beats the agent default",
+        "models": {
+          "agents": { "alpha": "claude-a", "beta": "claude-b" },
+          "steps": { "Build it": "claude-s" },
+          "personas": { "alpha.one": "claude-p" }
+        },
+        "agent": "alpha",
+        "step": "Build it",
+        "persona": null,
+        "expect": { "model": "claude-s" }
+      },
+      {
+        "case": "a step with no override falls back to the agent default",
+        "models": {
+          "agents": { "alpha": "claude-a", "beta": "claude-b" },
+          "steps": { "Build it": "claude-s" },
+          "personas": { "alpha.one": "claude-p" }
+        },
+        "agent": "alpha",
+        "step": "Plan it",
+        "persona": null,
+        "expect": { "model": "claude-a" }
+      },
+      {
+        "case": "a persona override beats a step override on the same call",
+        "models": {
+          "agents": { "alpha": "claude-a", "beta": "claude-b" },
+          "steps": { "Build it": "claude-s" },
+          "personas": { "alpha.one": "claude-p" }
+        },
+        "agent": "alpha",
+        "step": "Build it",
+        "persona": "alpha.one",
+        "expect": { "model": "claude-p" }
+      },
+      {
+        "case": "a persona override wins with no step",
+        "models": {
+          "agents": { "alpha": "claude-a", "beta": "claude-b" },
+          "steps": { "Build it": "claude-s" },
+          "personas": { "alpha.one": "claude-p" }
+        },
+        "agent": "alpha",
+        "step": null,
+        "persona": "alpha.one",
+        "expect": { "model": "claude-p" }
+      },
+      {
+        "case": "a persona with no override falls back to the step override",
+        "models": {
+          "agents": { "alpha": "claude-a", "beta": "claude-b" },
+          "steps": { "Build it": "claude-s" },
+          "personas": { "alpha.one": "claude-p" }
+        },
+        "agent": "alpha",
+        "step": "Build it",
+        "persona": "alpha.two",
+        "expect": { "model": "claude-s" }
+      },
+      {
+        "case": "a persona with no override and no step falls back to the agent default",
+        "models": {
+          "agents": { "alpha": "claude-a", "beta": "claude-b" },
+          "steps": { "Build it": "claude-s" },
+          "personas": { "alpha.one": "claude-p" }
+        },
+        "agent": "alpha",
+        "step": null,
+        "persona": "alpha.two",
+        "expect": { "model": "claude-a" }
+      },
+      {
+        "case": "an override does not rescue an unknown agent",
+        "models": {
+          "agents": { "alpha": "claude-a", "beta": "claude-b" },
+          "steps": { "Build it": "claude-s" },
+          "personas": { "alpha.one": "claude-p" }
+        },
+        "agent": "gamma",
+        "step": "Build it",
+        "persona": "alpha.one",
+        "expect": { "throws": "unknown model agent \"gamma\"" }
+      },
+      {
+        "case": "a missing agent is unknown",
+        "models": {
+          "agents": { "alpha": "claude-a", "beta": "claude-b" },
+          "steps": { "Build it": "claude-s" },
+          "personas": { "alpha.one": "claude-p" }
+        },
+        "agent": null,
+        "step": null,
+        "persona": null,
+        "expect": { "throws": "unknown model agent null" }
+      },
+      {
+        "case": "a prototype-named agent is unknown",
+        "models": {
+          "agents": { "alpha": "claude-a", "beta": "claude-b" },
+          "steps": { "Build it": "claude-s" },
+          "personas": { "alpha.one": "claude-p" }
+        },
+        "agent": "__proto__",
+        "step": null,
+        "persona": null,
+        "expect": { "throws": "unknown model agent \"__proto__\"" }
+      },
+      {
+        "case": "a constructor-named agent is unknown",
+        "models": {
+          "agents": { "alpha": "claude-a", "beta": "claude-b" },
+          "steps": { "Build it": "claude-s" },
+          "personas": { "alpha.one": "claude-p" }
+        },
+        "agent": "constructor",
+        "step": null,
+        "persona": null,
+        "expect": { "throws": "unknown model agent \"constructor\"" }
+      },
+      {
+        "case": "a toString-named agent is unknown",
+        "models": {
+          "agents": { "alpha": "claude-a", "beta": "claude-b" },
+          "steps": { "Build it": "claude-s" },
+          "personas": { "alpha.one": "claude-p" }
+        },
+        "agent": "toString",
+        "step": null,
+        "persona": null,
+        "expect": { "throws": "unknown model agent \"toString\"" }
+      },
+      {
+        "case": "a prototype-named step falls through to the agent default",
+        "models": {
+          "agents": { "alpha": "claude-a", "beta": "claude-b" },
+          "steps": { "Build it": "claude-s" },
+          "personas": { "alpha.one": "claude-p" }
+        },
+        "agent": "alpha",
+        "step": "__proto__",
+        "persona": null,
+        "expect": { "model": "claude-a" }
+      },
+      {
+        "case": "a constructor-named step falls through to the agent default",
+        "models": {
+          "agents": { "alpha": "claude-a", "beta": "claude-b" },
+          "steps": { "Build it": "claude-s" },
+          "personas": { "alpha.one": "claude-p" }
+        },
+        "agent": "alpha",
+        "step": "constructor",
+        "persona": null,
+        "expect": { "model": "claude-a" }
+      },
+      {
+        "case": "a prototype-named persona falls through to the step override",
+        "models": {
+          "agents": { "alpha": "claude-a", "beta": "claude-b" },
+          "steps": { "Build it": "claude-s" },
+          "personas": { "alpha.one": "claude-p" }
+        },
+        "agent": "alpha",
+        "step": "Build it",
+        "persona": "__proto__",
+        "expect": { "model": "claude-s" }
+      },
+      {
+        "case": "a toString-named persona falls through to the agent default",
+        "models": {
+          "agents": { "alpha": "claude-a", "beta": "claude-b" },
+          "steps": { "Build it": "claude-s" },
+          "personas": { "alpha.one": "claude-p" }
+        },
+        "agent": "alpha",
+        "step": null,
+        "persona": "toString",
+        "expect": { "model": "claude-a" }
+      }
     ]
   },
 
@@ -374,7 +1025,16 @@
       { "case": "a prototype-named id is null", "legacyIds": { "old_one": ["alpha", "one"] }, "id": "__proto__", "expect": null },
       { "case": "a constructor-named id is null", "legacyIds": { "old_one": ["alpha", "one"] }, "id": "constructor", "expect": null },
       { "case": "a non-string id is null", "legacyIds": { "old_one": ["alpha", "one"] }, "id": null, "expect": null }
-    ]
+    ],
+    "MODELS": [{ "case": "the live block carries agents, steps and personas, frozen" }],
+    "CONCIERGE_MODEL_AGENT": [{ "case": "the concierge's model agent has a default model" }],
+    "CONFLICT_MODEL_AGENT": [{ "case": "conflict resolution's model agent has a default model" }],
+    "CONFLICT_STEP_KEY": [{ "case": "the reserved conflict step key is not a steps.json label" }],
+    "modelAgentForStep": [
+      { "case": "a display name lower-cases", "stepAgent": "DevOps", "expect": "devops" },
+      { "case": "a lower-case name is unchanged", "stepAgent": "eng", "expect": "eng" }
+    ],
+    "resolveModel": [{ "case": "driven by shared.resolveModel", "drivenBy": "shared.resolveModel" }]
   },
 
   "py": {
@@ -388,6 +1048,15 @@
     "PERSONA_PROVIDERS": [{ "case": "every live provider key names a declared pair" }],
     "is_persona": [{ "case": "driven by shared.membership", "drivenBy": "shared.membership" }],
     "persona_role_file": [{ "case": "driven by shared.roleFile", "drivenBy": "shared.roleFile" }],
-    "_validate_source": [{ "case": "driven by shared.validation", "drivenBy": "shared.validation" }]
+    "_validate_source": [{ "case": "driven by shared.validation", "drivenBy": "shared.validation" }],
+    "MODELS": [{ "case": "the live block carries agents, steps and personas, read-only" }],
+    "CONCIERGE_MODEL_AGENT": [{ "case": "the concierge's model agent has a default model" }],
+    "CONFLICT_MODEL_AGENT": [{ "case": "conflict resolution's model agent has a default model" }],
+    "CONFLICT_STEP_KEY": [{ "case": "the reserved conflict step key is not a steps.json label" }],
+    "model_agent_for_step": [
+      { "case": "a display name lower-cases", "stepAgent": "DevOps", "expect": "devops" },
+      { "case": "a lower-case name is unchanged", "stepAgent": "eng", "expect": "eng" }
+    ],
+    "resolve_model": [{ "case": "driven by shared.resolveModel", "drivenBy": "shared.resolveModel" }]
   }
 }

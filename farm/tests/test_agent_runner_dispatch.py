@@ -47,7 +47,7 @@ def register_fake_provider(monkeypatch):
 def test_unknown_provider_raises_agent_error(monkeypatch):
     monkeypatch.setenv("FARM_PROVIDER", "nonexistent")
     with pytest.raises(AgentError, match="nonexistent"):
-        agent_runner.run_agent("prompt")
+        agent_runner.run_agent("prompt", agent="eng")
 
 
 def test_resume_incapable_provider_refuses_before_calling_run(register_fake_provider):
@@ -58,7 +58,7 @@ def test_resume_incapable_provider_refuses_before_calling_run(register_fake_prov
     register_fake_provider(provider)
 
     with pytest.raises(AgentError, match="does not support resuming"):
-        agent_runner.run_agent("prompt", session_id="some-session")
+        agent_runner.run_agent("prompt", agent="eng", session_id="some-session")
 
     assert run_calls == [], "provider.run must never be invoked when the resume check refuses"
 
@@ -69,7 +69,7 @@ def test_resume_incapable_provider_runs_normally_without_a_session_id(register_f
     provider, run_calls, _ = _fake_provider(supports_resume=False)
     register_fake_provider(provider)
 
-    reply = agent_runner.run_agent("prompt")
+    reply = agent_runner.run_agent("prompt", agent="eng")
 
     assert reply == {"result": "ok", "session_id": "new-session", "provider": "fake", "command_id": None}
     assert len(run_calls) == 1
@@ -79,7 +79,7 @@ def test_resume_capable_provider_forwards_session_id(register_fake_provider):
     provider, run_calls, _ = _fake_provider(supports_resume=True)
     register_fake_provider(provider)
 
-    reply = agent_runner.run_agent("prompt", session_id="existing-session")
+    reply = agent_runner.run_agent("prompt", agent="eng", session_id="existing-session")
 
     assert reply["session_id"] == "existing-session"
     assert run_calls[0][1]["session_id"] == "existing-session"
@@ -89,7 +89,7 @@ def test_run_agent_calls_provider_auth_before_run(register_fake_provider):
     provider, run_calls, auth_calls = _fake_provider(supports_resume=True)
     register_fake_provider(provider)
 
-    agent_runner.run_agent("prompt")
+    agent_runner.run_agent("prompt", agent="eng")
 
     assert auth_calls == [1]
     assert len(run_calls) == 1
@@ -102,7 +102,7 @@ def test_run_agent_stamps_provider_and_defaults_missing_command_id(register_fake
     provider, run_calls, _ = _fake_provider(supports_resume=True)
     register_fake_provider(provider)
 
-    reply = agent_runner.run_agent("prompt")
+    reply = agent_runner.run_agent("prompt", agent="eng")
 
     assert reply["provider"] == "fake"
     assert reply["command_id"] is None
@@ -123,7 +123,7 @@ def test_explicit_provider_overrides_the_env_selected_default(monkeypatch):
     monkeypatch.setitem(agent_runner._PROVIDERS, "fake-default", default_provider)
     monkeypatch.setitem(agent_runner._PROVIDERS, "fake-override", override_provider)
 
-    reply = agent_runner.run_agent("prompt", provider="fake-override")
+    reply = agent_runner.run_agent("prompt", agent="eng", provider="fake-override")
 
     assert reply["provider"] == "fake-override"
     assert len(override_calls) == 1
@@ -137,7 +137,7 @@ def test_omitting_provider_keeps_dispatching_to_the_env_selected_default(registe
     provider, run_calls, _ = _fake_provider(supports_resume=True)
     register_fake_provider(provider)
 
-    reply = agent_runner.run_agent("prompt")
+    reply = agent_runner.run_agent("prompt", agent="eng")
 
     assert reply["provider"] == "fake"
     assert len(run_calls) == 1
@@ -145,7 +145,7 @@ def test_omitting_provider_keeps_dispatching_to_the_env_selected_default(registe
 
 def test_explicit_provider_unknown_name_raises_agent_error():
     with pytest.raises(AgentError, match="bogus-provider"):
-        agent_runner.run_agent("prompt", provider="bogus-provider")
+        agent_runner.run_agent("prompt", agent="eng", provider="bogus-provider")
 
 
 # ---- provider lock (HZ-117): closes the bare-FARM_PROVIDER hole ----
@@ -161,7 +161,7 @@ def test_provider_locked_step_refuses_non_default_provider_even_from_bare_env(mo
     monkeypatch.setenv("FARM_PROVIDER", "muse")
 
     with pytest.raises(AgentError, match="provider-locked"):
-        agent_runner.run_agent("prompt", provider_locked=True)
+        agent_runner.run_agent("prompt", agent="eng", provider_locked=True)
 
 
 def test_provider_locked_step_refuses_an_explicit_override_too(register_fake_provider):
@@ -169,7 +169,7 @@ def test_provider_locked_step_refuses_an_explicit_override_too(register_fake_pro
     register_fake_provider(provider)
 
     with pytest.raises(AgentError, match="provider-locked"):
-        agent_runner.run_agent("prompt", provider="fake", provider_locked=True)
+        agent_runner.run_agent("prompt", agent="eng", provider="fake", provider_locked=True)
     assert run_calls == [], "a provider-locked step must never dispatch to the refused provider"
 
 
@@ -177,7 +177,7 @@ def test_provider_locked_step_still_runs_on_the_default_provider(monkeypatch):
     monkeypatch.delenv("FARM_PROVIDER", raising=False)
     monkeypatch.setattr(agent_runner, "FARM_PROVIDER", agent_runner.DEFAULT_PROVIDER)
 
-    reply = agent_runner.run_agent("prompt", provider_locked=True)
+    reply = agent_runner.run_agent("prompt", agent="eng", provider_locked=True)
 
     assert reply["provider"] == agent_runner.DEFAULT_PROVIDER
 
@@ -186,7 +186,7 @@ def test_omitting_provider_locked_keeps_every_existing_caller_unaffected(registe
     provider, run_calls, _ = _fake_provider(supports_resume=True)
     register_fake_provider(provider)
 
-    reply = agent_runner.run_agent("prompt")
+    reply = agent_runner.run_agent("prompt", agent="eng")
 
     assert reply["provider"] == "fake"
     assert len(run_calls) == 1
@@ -269,3 +269,128 @@ def test_spend_tracker_charge_is_thread_safe_under_concurrent_calls():
 
     assert len(successes) == 20
     assert tracker.spent_usd == 20.00
+
+
+# ---- HZ-192: the model is resolved here, never passed in ----
+
+
+def _models(**overrides):
+    return {
+        "agents": {"eng": "claude-test-eng", "concierge": "claude-test-concierge"},
+        "steps": overrides.get("steps", {}),
+        "personas": overrides.get("personas", {}),
+    }
+
+
+@pytest.fixture
+def recorded(monkeypatch):
+    """Fake "claude" and "muse" providers recording what run() was handed,
+    plus a fabricated `models` block for the resolver."""
+    import functools
+
+    from domain.py import personas as domain_personas
+
+    calls = []
+
+    def install(**overrides):
+        for name in ("claude", "muse"):
+            provider, _, _ = _fake_provider(supports_resume=True)
+            provider.run = lambda prompt, _name=name, **kw: calls.append((_name, kw)) or {"result": "ok", "session_id": "s"}
+            monkeypatch.setitem(agent_runner._PROVIDERS, name, provider)
+        monkeypatch.setattr(
+            agent_runner, "resolve_model", functools.partial(domain_personas.resolve_model, models=_models(**overrides))
+        )
+        monkeypatch.delenv("FARM_PROVIDER", raising=False)
+        monkeypatch.delenv("FARM_MODEL_OVERRIDE", raising=False)
+        return calls
+
+    return install
+
+
+def test_run_agent_has_no_model_parameter():
+    import inspect
+
+    params = inspect.signature(agent_runner.run_agent).parameters
+    assert "model" not in params
+    assert params["agent"].kind is inspect.Parameter.KEYWORD_ONLY and params["agent"].default is inspect.Parameter.empty
+
+
+def test_passing_a_model_is_a_type_error():
+    with pytest.raises(TypeError, match="model"):
+        agent_runner.run_agent("p", agent="eng", model="claude-x")
+
+
+def test_omitting_the_agent_is_a_type_error():
+    with pytest.raises(TypeError, match="agent"):
+        agent_runner.run_agent("p")
+
+
+def test_claude_gets_the_resolved_model_persona_then_step_then_agent(recorded):
+    calls = recorded(steps={"Build": "claude-test-step"}, personas={"eng.python": "claude-test-persona"})
+
+    agent_runner.run_agent("p", agent="eng")
+    agent_runner.run_agent("p", agent="eng", step="Build")
+    agent_runner.run_agent("p", agent="eng", step="Build", persona="eng.python")
+
+    assert [kw["model"] for _, kw in calls] == ["claude-test-eng", "claude-test-step", "claude-test-persona"]
+
+
+def test_an_unknown_agent_fails_before_any_provider_runs_on_every_provider(recorded):
+    calls = recorded()
+    with pytest.raises(ValueError, match="unknown model agent"):
+        agent_runner.run_agent("p", agent="nobody")
+    with pytest.raises(ValueError, match="unknown model agent"):
+        agent_runner.run_agent("p", agent="nobody", provider="muse")
+    assert calls == []
+
+
+def test_a_valid_override_beats_even_a_persona_override_on_claude(recorded, monkeypatch):
+    calls = recorded(personas={"eng.python": "claude-test-persona"})
+    monkeypatch.setenv("FARM_MODEL_OVERRIDE", "claude-test-emergency")
+
+    agent_runner.run_agent("p", agent="eng", step="Build", persona="eng.python")
+
+    assert [kw["model"] for _, kw in calls] == ["claude-test-emergency"]
+
+
+def test_an_empty_override_counts_as_unset(recorded, monkeypatch):
+    calls = recorded()
+    monkeypatch.setenv("FARM_MODEL_OVERRIDE", "")
+
+    agent_runner.run_agent("p", agent="eng")
+
+    assert [kw["model"] for _, kw in calls] == ["claude-test-eng"]
+
+
+@pytest.mark.parametrize("bad", ["opus", "gpt-4o", " claude-opus-5-5", "claude-opus-5-5\n", "Claude-Opus-5-5"])
+def test_a_malformed_override_raises_before_the_provider_runs(recorded, monkeypatch, bad):
+    calls = recorded()
+    monkeypatch.setenv("FARM_MODEL_OVERRIDE", bad)
+
+    with pytest.raises(ValueError, match="FARM_MODEL_OVERRIDE"):
+        agent_runner.run_agent("p", agent="eng")
+
+    assert calls == []
+
+
+@pytest.mark.parametrize("override", [None, "claude-test-emergency"])
+@pytest.mark.parametrize("route", ["explicit", "env", "both"])
+def test_muse_never_receives_a_claude_model(recorded, monkeypatch, muse_smoke_test_persona, override, route):
+    """The runtime guard is the real protection: the load-time rule only sees
+    domain/personas.json, and a runtime-registered Muse persona whose model
+    override was injected past it must still reach Muse with no model."""
+    persona = f"eng.{muse_smoke_test_persona}"
+    calls = recorded(personas={persona: "claude-test-persona"}, steps={"Build": "claude-test-step"})
+    if override:
+        monkeypatch.setenv("FARM_MODEL_OVERRIDE", override)
+    if route in ("env", "both"):
+        monkeypatch.setenv("FARM_PROVIDER", "muse")
+
+    agent_runner.run_agent(
+        "p", agent="eng", step="Build", persona=persona, provider="muse" if route in ("explicit", "both") else None
+    )
+
+    assert len(calls) == 1
+    name, kw = calls[0]
+    assert name == "muse" and kw["model"] is None
+    assert not [v for v in kw.values() if isinstance(v, str) and v.startswith("claude-")]

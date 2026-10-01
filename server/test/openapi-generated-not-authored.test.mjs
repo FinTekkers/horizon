@@ -64,8 +64,9 @@ test('the probe arrives with its path parameter, query parameter, body and respo
 
 test('the probe also picked up the session cookie, from the same hook the real routes use', () => {
   // The probe is a /api/ route outside SESSION_EXEMPT, so the onRoute hook in
-  // buildApp() should have declared the cookie on it without the test asking.
-  assert.deepEqual(probe.security, [{ sessionCookie: [] }])
+  // buildApp() should have declared the cookie on it without the test asking —
+  // as an alternative to a bearer token since HZ-179.
+  assert.deepEqual(probe.security, [{ sessionCookie: [] }, { bearerToken: [] }])
 })
 
 test('the probe is absent from the spec of an app that never registered it', () => {

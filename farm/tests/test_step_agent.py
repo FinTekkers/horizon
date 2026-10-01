@@ -2152,133 +2152,143 @@ def test_an_unrepairable_step_reply_still_cancels_the_run(monkeypatch, repair_co
     assert agent_runner.repair_counts() == {}
 
 
-# ---- step model pin (HZ-187) ----
-# Every step-agent run_agent() call passes model=step_model(...): STEP_MODEL
-# (FARM_STEP_MODEL) on the claude provider, None anywhere else, so a
-# Muse-routed step never receives a Claude model id.
+# ---- step models (HZ-192) ----
+# run_agent() resolves every step's model from domain/personas.json's `models`
+# block. These run the REAL run_agent() over recording providers (conftest's
+# recording_providers) and assert the model each step_agent call site actually
+# handed its provider — so a call site passing the wrong agent, step or persona
+# fails here even though the AST check in test_model_call_sites.py passes.
+
+STEP_OPUS = "claude-opus-5-5"
+PLAN_LABEL = "Plan options & trade-offs (pros / cons)"
 
 
-def test_step_model_config_is_none_when_unset_and_the_value_when_set(monkeypatch):
-    import importlib
+def fabricated_models(monkeypatch, **overrides):
+    """Points run_agent()'s resolver at a fabricated `models` block: the live
+    agent defaults plus the given step/persona overrides."""
+    import functools
 
-    from farm import config
+    from domain.py import personas as domain_personas
+    from farm import agent_runner
 
-    try:
-        monkeypatch.delenv("FARM_STEP_MODEL", raising=False)
-        assert importlib.reload(config).STEP_MODEL is None
-        monkeypatch.setenv("FARM_STEP_MODEL", "")
-        assert importlib.reload(config).STEP_MODEL is None
-        monkeypatch.setenv("FARM_STEP_MODEL", "x-model")
-        assert importlib.reload(config).STEP_MODEL == "x-model"
-    finally:
-        monkeypatch.delenv("FARM_STEP_MODEL", raising=False)
-        importlib.reload(config)
-
-
-def test_every_step_agent_run_agent_call_passes_model_from_step_model():
-    import ast
-    from pathlib import Path
-
-    farm_dir = Path(step_agent.__file__).resolve().parent
-    found, problems = 0, []
-    for name in ("step_agent.py", "conflict_resolver.py"):
-        for node in ast.walk(ast.parse((farm_dir / name).read_text())):
-            if not isinstance(node, ast.Call):
-                continue
-            func = node.func
-            callee = func.id if isinstance(func, ast.Name) else func.attr if isinstance(func, ast.Attribute) else None
-            if callee != "run_agent":
-                continue
-            found += 1
-            model = next((kw.value for kw in node.keywords if kw.arg == "model"), None)
-            if model is None:
-                problems.append(f"farm/{name}:{node.lineno}: run_agent call omits model=")
-            elif not (isinstance(model, ast.Call) and isinstance(model.func, ast.Name) and model.func.id == "step_model"):
-                problems.append(f"farm/{name}:{node.lineno}: run_agent model= is not step_model(...)")
-    assert found >= 5, f"expected at least 5 run_agent calls, found {found}"
-    assert not problems, "\n".join(problems)
+    models = {
+        "agents": dict(domain_personas.MODELS["agents"]),
+        "steps": overrides.get("steps", {}),
+        "personas": overrides.get("personas", {}),
+    }
+    monkeypatch.setattr(agent_runner, "resolve_model", functools.partial(domain_personas.resolve_model, models=models))
 
 
-def capture_all_run_agent(calls, results=('{"summary": "did the step", "artifact_md": "# out"}',)):
-    replies = iter(results)
+def test_both_run_and_parse_call_sites_hand_the_step_model_to_claude(recording_providers):
+    # An invalid first reply forces the retry call site too.
+    recorder = recording_providers("not json", '{"summary": "ok"}')
 
-    def _fake(prompt, **kwargs):
-        calls.append(kwargs)
-        return {"result": next(replies), "session_id": "s-1"}
+    execute(make_task(4, PLAN_LABEL))
 
-    return _fake
+    assert [c["provider"] for c in recorder.calls] == ["claude", "claude"]
+    assert recorder.models()[0] == STEP_OPUS, "step_agent._run_and_parse: first run_agent call"
+    assert recorder.models()[1] == STEP_OPUS, "step_agent._run_and_parse: retry_once run_agent call"
 
 
-def run_and_parse(provider=None):
-    return step_agent._run_and_parse(
-        "p", append_system=None, cwd=None, max_turns=1, timeout_s=1, allowed_tools=None, provider=provider
+def test_the_step_agent_comes_from_the_step_table_not_the_payload(recording_providers, monkeypatch):
+    """make_task stamps "Eng" on every step; the plan step is Ensemble's in
+    domain/steps.json, and its model agent must say so."""
+    fabricated_models(monkeypatch, steps={})
+    recorder = recording_providers('{"summary": "ok"}')
+    from domain.py import personas as domain_personas
+    from farm import agent_runner
+
+    resolved = []
+    real_resolve = agent_runner.resolve_model
+    monkeypatch.setattr(
+        agent_runner, "resolve_model", lambda agent, step, persona: resolved.append((agent, step, persona)) or real_resolve(agent, step, persona)
     )
 
+    execute(make_task(4, PLAN_LABEL))
 
-@pytest.mark.parametrize(
-    ("provider", "env", "expected"),
-    [
-        (None, None, "claude-x"),
-        ("claude", None, "claude-x"),
-        ("muse", None, None),
-        (None, "muse", None),
-        # An explicit provider beats FARM_PROVIDER, as in agent_runner._selected_provider().
-        ("claude", "muse", "claude-x"),
-        ("muse", "claude", None),
-    ],
-)
-def test_step_model_reaches_both_run_and_parse_calls_only_on_claude(monkeypatch, provider, env, expected):
-    monkeypatch.setattr(step_agent, "STEP_MODEL", "claude-x")
-    if env:
-        monkeypatch.setenv("FARM_PROVIDER", env)
-    else:
-        monkeypatch.delenv("FARM_PROVIDER", raising=False)
-    calls = []
-    # An invalid first reply forces the retry call site too.
-    monkeypatch.setattr(step_agent, "run_agent", capture_all_run_agent(calls, ("not json", '{"summary": "ok"}')))
-
-    run_and_parse(provider)
-
-    assert len(calls) == 2
-    assert [c["model"] for c in calls] == [expected, expected]
+    assert resolved == [("ensemble", PLAN_LABEL, None)]
+    assert recorder.models() == [domain_personas.MODELS["agents"]["ensemble"]]
 
 
-def test_unset_step_model_passes_none_like_today(monkeypatch):
-    monkeypatch.setattr(step_agent, "STEP_MODEL", None)
-    monkeypatch.delenv("FARM_PROVIDER", raising=False)
-    calls = []
-    monkeypatch.setattr(step_agent, "run_agent", capture_all_run_agent(calls))
+def test_a_step_override_reaches_only_its_own_step(recording_providers, monkeypatch):
+    fabricated_models(monkeypatch, steps={PLAN_LABEL: "claude-test-plan"})
+    recorder = recording_providers('{"summary": "ok"}')
 
-    run_and_parse()
+    execute(make_task(4, PLAN_LABEL))
+    execute(make_task(5, "Draft implementation plan"))
 
-    assert calls[0]["model"] is None
-
-
-def test_muse_routed_persona_step_never_receives_the_claude_model(monkeypatch, muse_smoke_test_personas):
-    monkeypatch.setattr(step_agent, "STEP_MODEL", "claude-x")
-    monkeypatch.delenv("FARM_PROVIDER", raising=False)
-    calls = []
-    monkeypatch.setattr(step_agent, "run_agent", capture_all_run_agent(calls))
-    task = make_task(4, "Plan options & trade-offs (pros / cons)")
-    task["item"]["personas"] = muse_smoke_test_personas
-
-    execute(task)
-
-    assert calls and all(c["provider"] == "muse" and c["model"] is None for c in calls)
+    assert recorder.models() == ["claude-test-plan", STEP_OPUS]
 
 
-def test_implement_step_passes_the_step_model(tmp_path, monkeypatch):
-    monkeypatch.setattr(step_agent, "STEP_MODEL", "claude-x")
-    monkeypatch.delenv("FARM_PROVIDER", raising=False)
+def test_the_implement_call_site_hands_the_resolved_model_to_claude(tmp_path, monkeypatch, recording_providers):
     ws, _origin = make_git_workspace(tmp_path)
     monkeypatch.setattr(step_agent, "ensure_item_worktree", lambda repo, item_id: ws)
-    captured = {}
-    monkeypatch.setattr(step_agent, "run_agent", capture_run_agent(captured))
+    recorder = recording_providers('{"summary": "did it"}')
 
     with pytest.raises(RuntimeError, match="no code changes"):
         execute(make_task(11, "Specialist agent implements", repo="acme/demo"))
 
-    assert captured["model"] == "claude-x"
+    assert recorder.models() == [STEP_OPUS], "step_agent._execute: implement run_agent call"
+
+
+def test_the_implement_call_passes_the_composed_eng_persona(tmp_path, monkeypatch, recording_providers):
+    fabricated_models(monkeypatch, personas={"eng.python": "claude-test-python"})
+    ws, _origin = make_git_workspace(tmp_path)
+    monkeypatch.setattr(step_agent, "ensure_item_worktree", lambda repo, item_id: ws)
+    recorder = recording_providers('{"summary": "did it"}')
+    task = make_task(11, "Specialist agent implements", repo="acme/demo")
+    task["item"]["personas"] = {"eng": "python"}
+
+    with pytest.raises(RuntimeError, match="no code changes"):
+        execute(task)
+
+    assert recorder.models() == ["claude-test-python"]
+
+
+def test_the_review_passes_carry_their_own_personas(tmp_path, monkeypatch, recording_providers):
+    """The code pass composes the item's Eng persona, the QA pass its QA
+    persona (HZ-125) — and each resolves its model by the persona it composes,
+    never as qa.None."""
+    fabricated_models(monkeypatch, personas={f"qa.{DEFAULT_PERSONAS['qa']}": "claude-test-qa"})
+    ws, _origin = make_git_workspace(tmp_path)
+    (ws / "app.py").write_text("print('hi')\n")
+    git(ws, "add", "-A")
+    git(ws, "commit", "-m", "add app.py")
+    git(ws, "push", "-u", "origin", "HEAD:horizon/t-1")
+    monkeypatch.setattr(step_agent, "ensure_item_worktree", lambda repo, item_id: ws)
+    recorder = recording_providers(json.dumps({"summary": "reviewed", "verdict": "pass", "findings": []}))
+
+    execute(make_task(12, "Automated review (code + QA)", repo="acme/demo"))
+
+    assert recorder.models() == [STEP_OPUS, "claude-test-qa"]
+
+
+@pytest.mark.parametrize("override", [None, "claude-test-emergency"])
+def test_a_muse_routed_persona_step_never_receives_a_claude_model(
+    monkeypatch, muse_smoke_test_personas, recording_providers, override
+):
+    """The item-level provider override (provider_for on an eligible step)."""
+    if override:
+        monkeypatch.setenv("FARM_MODEL_OVERRIDE", override)
+    recorder = recording_providers("not json", '{"summary": "ok"}')
+    task = make_task(4, PLAN_LABEL)
+    task["item"]["personas"] = muse_smoke_test_personas
+
+    execute(task)
+
+    assert len(recorder.calls) == 2
+    for call in recorder.calls:
+        assert call["provider"] == "muse" and call["model"] is None
+        assert not [v for v in call.values() if isinstance(v, str) and v.startswith("claude-")]
+
+
+def test_farm_provider_muse_sends_a_step_no_model(monkeypatch, recording_providers):
+    monkeypatch.setenv("FARM_PROVIDER", "muse")
+    recorder = recording_providers('{"summary": "ok"}')
+
+    execute(make_task(4, PLAN_LABEL))
+
+    assert [(c["provider"], c["model"]) for c in recorder.calls] == [("muse", None)]
 
 
 # ---- HZ-188: a conflict send-back starts on a branch with main merged ----

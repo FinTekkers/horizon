@@ -25,6 +25,12 @@
 // consumer, so only domain/py/personas.py exposes it. assertPersonasShape still
 // validates the map, so the document cannot carry a broken entry either way.
 //
+// HZ-192: the same document declares which Claude model each agent call uses
+// (the `models` block). resolveModel() mirrors domain/py/personas.py's
+// resolve_model — persona override, then step override, then agent default —
+// and its JS consumer is the agent definitions page, which shows each step's
+// effective model. Every declared model id must look like a Claude id.
+//
 // Nothing presentational lives here. Labels, initials, colours and
 // PERSONA_AGENT_ROLES stay in server/src/personas.js and ui/src/domain/personas.js;
 // domain-binding-hygiene.test.mjs asserts no such name is exported.
@@ -50,9 +56,14 @@ import data from '../personas.json' with { type: 'json' }
 // drives both. `?? null` wherever an absent value is printed, so it reads `null`
 // like Python's json.dumps(None) rather than the bare word `undefined`.
 const ID_SHAPE = /^[a-z][a-z0-9_]*$/
+// HZ-192, kept in step with domain/py/personas.py's _MODEL_SHAPE.
+const MODEL_SHAPE = /^claude-[a-z0-9][a-z0-9.-]*$/
+const MODELS_KEYS = ['agents', 'conflictAgent', 'steps', 'personas']
 
 const isObject = (value) => value !== null && typeof value === 'object' && !Array.isArray(value)
 const isId = (value) => typeof value === 'string' && ID_SHAPE.test(value)
+const own = (object, key) => Object.prototype.hasOwnProperty.call(object, key)
+const isModel = (value) => typeof value === 'string' && MODEL_SHAPE.test(value)
 
 // [agent, persona] when `value` is `<agent>.<persona>` naming a live pair in
 // `ids` (a Map, so no prototype key can resolve), else null.
@@ -137,7 +148,60 @@ export function assertPersonasShape(data, source = 'domain/personas.json') {
     }
   }
 
+  assertModelsShape(data.models, ids, data.personaProviders, source)
   return data
+}
+
+// HZ-192's load-time rules for the `models` block. Same message fragments as
+// domain/py/personas.py's _validate_models.
+function assertModelsShape(models, ids, providers, source) {
+  const modelError = (key, value) =>
+    new Error(`${source}: ${key} ${JSON.stringify(value ?? null)} is not a Claude model id matching ${MODEL_SHAPE}`)
+
+  if (!isObject(models)) {
+    throw new Error(`${source}: models must be a JSON object with agents, conflictAgent, steps and personas`)
+  }
+  for (const key of Object.keys(models)) {
+    if (!MODELS_KEYS.includes(key)) {
+      throw new Error(`${source}: models has unknown key ${JSON.stringify(key)} — expected only ${JSON.stringify(MODELS_KEYS)}`)
+    }
+  }
+
+  const { agents } = models
+  if (!isObject(agents) || Object.keys(agents).length === 0) {
+    throw new Error(`${source}: models.agents must be a non-empty JSON object`)
+  }
+  for (const [key, value] of Object.entries(agents)) {
+    if (!isId(key)) {
+      throw new Error(`${source}: models.agents key ${JSON.stringify(key)} — expected a lower-case id matching ${ID_SHAPE}`)
+    }
+    if (!isModel(value)) throw modelError(`models.agents[${JSON.stringify(key)}]`, value)
+  }
+
+  if (typeof models.conflictAgent !== 'string' || !own(agents, models.conflictAgent)) {
+    throw new Error(
+      `${source}: models.conflictAgent ${JSON.stringify(models.conflictAgent ?? null)} is not a models.agents key ${JSON.stringify(Object.keys(agents))}`,
+    )
+  }
+
+  if (!isObject(models.steps)) throw new Error(`${source}: models.steps must be a JSON object`)
+  for (const [key, value] of Object.entries(models.steps)) {
+    if (key.length === 0) throw new Error(`${source}: models.steps has an empty step key`)
+    if (!isModel(value)) throw modelError(`models.steps[${JSON.stringify(key)}]`, value)
+  }
+
+  if (!isObject(models.personas)) throw new Error(`${source}: models.personas must be a JSON object`)
+  for (const [key, value] of Object.entries(models.personas)) {
+    if (!splitPair(key, ids)) {
+      throw new Error(`${source}: models.personas key ${JSON.stringify(key)} does not name a declared <agent>.<persona> pair`)
+    }
+    if (own(providers, key)) {
+      throw new Error(
+        `${source}: models.personas key ${JSON.stringify(key)} is routed to ${JSON.stringify(providers[key])} by personaProviders — only a Claude-run persona can carry a model`,
+      )
+    }
+    if (!isModel(value)) throw modelError(`models.personas[${JSON.stringify(key)}]`, value)
+  }
 }
 
 const source = assertPersonasShape(data)
@@ -173,8 +237,6 @@ export const LEGACY_PERSONA_IDS = Object.freeze(
 // persona. The farm's `in` on a dict has no such hole; these must match it.
 // Each table is a defaulted parameter so a fixture can drive the helper with a
 // fabricated registry — the convention isPriority uses.
-const own = (object, key) => Object.prototype.hasOwnProperty.call(object, key)
-
 export function isPersonaAgent(agent, personaIds = PERSONA_IDS) {
   return typeof agent === 'string' && own(personaIds, agent)
 }
@@ -196,4 +258,40 @@ export function legacyPersona(id, legacyIds = LEGACY_PERSONA_IDS) {
 export function personaRoleFile(agent, id, personaIds = PERSONA_IDS) {
   if (!isPersona(agent, id, personaIds)) throw new Error(`unknown persona ${JSON.stringify([agent ?? null, id ?? null])}`)
   return `${agent}_${id}.md`
+}
+
+// HZ-192: {agents, steps, personas} -> frozen {key -> Claude model id}. See
+// resolveModel() for the order they apply in.
+export const MODELS = Object.freeze({
+  agents: Object.freeze({ ...source.models.agents }),
+  steps: Object.freeze({ ...source.models.steps }),
+  personas: Object.freeze({ ...source.models.personas }),
+})
+
+// The model agent the WhatsApp concierge runs as.
+export const CONCIERGE_MODEL_AGENT = 'concierge'
+
+// Merge-conflict resolution runs as this model agent, under the reserved step
+// key CONFLICT_STEP_KEY — it is not a domain/steps.json step, so it has no
+// label of its own.
+export const CONFLICT_MODEL_AGENT = source.models.conflictAgent
+export const CONFLICT_STEP_KEY = 'conflict'
+
+// The model agent a domain/steps.json step runs as: its `agent` display name
+// lower-cased ('DevOps' -> 'devops'). Those names are therefore a contract.
+export function modelAgentForStep(stepAgent) {
+  return stepAgent.toLowerCase()
+}
+
+// The Claude model a call runs on: models.personas[persona] (a namespaced
+// `<agent>.<persona>`), else models.steps[step], else models.agents[agent].
+// Throws for an agent with no default, even when an override would apply.
+// own() on every lookup, so '__proto__' or 'constructor' never resolves.
+export function resolveModel(agent, step = null, persona = null, models = MODELS) {
+  if (typeof agent !== 'string' || !own(models.agents, agent)) {
+    throw new Error(`unknown model agent ${JSON.stringify(agent ?? null)}`)
+  }
+  if (typeof persona === 'string' && own(models.personas, persona)) return models.personas[persona]
+  if (typeof step === 'string' && own(models.steps, step)) return models.steps[step]
+  return models.agents[agent]
 }

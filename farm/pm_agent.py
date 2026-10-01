@@ -16,7 +16,8 @@ from pathlib import Path
 
 import httpx
 
-from domain.py import fields, reasons
+from domain.py import fields, reasons, steps
+from domain.py.personas import model_agent_for_step
 
 from .agent_runner import (
     AgentError,
@@ -29,7 +30,6 @@ from .agent_runner import (
 from .config import (
     FARM_PORT,
     PM_MALFORMED_GRACE_S,
-    PM_MODEL,
     QUEUE_DIR,
     STATE_DIR,
     ensure_dirs,
@@ -317,7 +317,14 @@ def process(task: dict, project_slug: str) -> None:
     try:
         prompt = build_prompt(task)
         log(f"run {run_id}: {task['step']['label']} for {task['item']['id']}")
-        reply = run_agent(prompt, session_id=session_id, append_system=ROLE_PROMPT, model=PM_MODEL)
+        # HZ-192: run_agent() resolves the model from who is calling — the
+        # step's own domain/steps.json agent (PM, or Architect for "Set
+        # guardrails") and its label.
+        step_label = task["step"]["label"]
+        model_agent = model_agent_for_step(steps.by_label(step_label)["agent"])
+        reply = run_agent(
+            prompt, agent=model_agent, step=step_label, session_id=session_id, append_system=ROLE_PROMPT
+        )
         if reply.get("session_id"):
             sid_path.write_text(reply["session_id"])
 
@@ -331,9 +338,10 @@ def process(task: dict, project_slug: str) -> None:
             log(f"run {run_id}: invalid reply; retrying once")
             retry = run_agent(
                 prompt,
+                agent=model_agent,
+                step=step_label,
                 session_id=sid_path.read_text().strip() if sid_path.exists() else None,
                 append_system=ROLE_PROMPT,
-                model=PM_MODEL,
             )
             return retry["result"]
 

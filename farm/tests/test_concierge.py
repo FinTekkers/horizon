@@ -746,3 +746,44 @@ def test_every_rung_note_is_labelled_a_repair_in_the_log(monkeypatch, capsys):
 
     assert agent_runner.REPAIR_NOTES == {rung.note for rung in agent_runner.REPAIRS}
     assert agent_runner.FIRST_OBJECT_NOTE not in agent_runner.REPAIR_NOTES
+
+
+# ---- the concierge's model (HZ-192) ----
+# The REAL run_agent() over recording providers (conftest): the model both
+# concierge call sites handed their provider.
+
+
+def _drive_concierge(stub, monkeypatch, recording_providers, slug):
+    from farm import agent_runner
+
+    monkeypatch.setattr(ca, "run_agent", agent_runner.run_agent)
+    # An invalid first reply forces the retry call site too.
+    recorder = recording_providers("plain prose, no json", json.dumps({"reply": "ok after retry", "actions": []}))
+    t = FakeTransport()
+    state = make_state(t, slug)
+    t.seed("hello there")
+    ca.poll_once(t, state, stub.url, farmd_url=stub.url)
+    assert t.sent[0][1] == "ok after retry"
+    return recorder
+
+
+def test_both_concierge_call_sites_hand_the_concierge_model_to_claude(stub, monkeypatch, recording_providers):
+    monkeypatch.delenv("FARM_PROVIDER", raising=False)
+
+    recorder = _drive_concierge(stub, monkeypatch, recording_providers, "model-claude")
+
+    assert recorder.models()[0] == "claude-sonnet-5", "concierge_agent.process_message: first run_agent call"
+    assert recorder.models()[1] == "claude-sonnet-5", "concierge_agent.process_message: retry_once run_agent call"
+
+
+@pytest.mark.parametrize("override", [None, "claude-test-emergency"])
+def test_both_concierge_calls_on_muse_receive_no_model(stub, monkeypatch, recording_providers, override):
+    """Unguarded before HZ-192: the env-selected concierge model went to whichever
+    provider FARM_PROVIDER selected."""
+    monkeypatch.setenv("FARM_PROVIDER", "muse")
+    if override:
+        monkeypatch.setenv("FARM_MODEL_OVERRIDE", override)
+
+    recorder = _drive_concierge(stub, monkeypatch, recording_providers, f"model-muse-{bool(override)}")
+
+    assert [(c["provider"], c["model"]) for c in recorder.calls] == [("muse", None), ("muse", None)]

@@ -332,6 +332,22 @@ button { font-family: var(--font-sans); }
 .deploy-target-row__service { font: 500 11px var(--font-mono); color: var(--muted); background: var(--subtle); border-radius: 5px; padding: 1px 6px; }
 .deploy-target-row__tag { font: 500 11px var(--font-mono); color: var(--muted); }
 .deploy-target-row__result { font: 500 11px var(--font-sans); color: var(--muted); margin-left: auto; text-align: right; }
+/* Personal API tokens (HZ-179) */
+.api-token-row { display: flex; align-items: center; gap: 9px; padding: 7px 2px; font: 500 13px var(--font-sans); }
+.api-token-row__name { color: var(--deep); font-weight: 600; }
+.api-token-row__last4 { font: 500 11px var(--font-mono); color: var(--muted); background: var(--subtle); border-radius: 5px; padding: 1px 6px; }
+.api-token-row__dates { font: 500 11px var(--font-sans); color: var(--muted); margin-left: auto; text-align: right; }
+.api-token-row__revoke {
+  border: none; background: none; cursor: pointer; color: var(--muted);
+  font: 700 12px var(--font-sans); border-radius: 6px; padding: 2px 7px;
+}
+.api-token-row__revoke:hover { color: var(--danger-ink); background: var(--danger-bg); }
+.api-tokens__created { font: 500 13px var(--font-sans); color: var(--deep); margin: 12px 0; line-height: 1.5; }
+.api-tokens__raw {
+  display: block; font: 500 12px var(--font-mono); background: var(--subtle); border-radius: 6px;
+  padding: 6px 8px; margin-top: 6px; word-break: break-all; user-select: all;
+}
+.project-block__add .api-tokens__days { width: 90px; flex: none; }
 .gh-note { font: 500 12px var(--font-sans); color: var(--muted); margin-top: 12px; line-height: 1.5; }
 .gh-note code { font: 500 11px var(--font-mono); background: var(--subtle); border-radius: 5px; padding: 1px 5px; }
 

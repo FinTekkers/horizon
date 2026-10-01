@@ -167,3 +167,57 @@ test('every scheme a route names is actually defined in components', () => {
   assert.deepEqual([...dangling], [], 'a route references a security scheme the document never defines')
   assert.ok(defined.size >= 2, `only ${defined.size} schemes defined`)
 })
+
+// ---- the bearer token (HZ-179) ----
+// "The OpenAPI spec declares the bearer scheme alongside the cookie scheme, and
+// documents the token management routes." A token is an ALTERNATIVE to the
+// cookie on ordinary routes, and absent from the two kinds of route that refuse
+// it: gates (humanAuthorized) and token management (requireSession). The latter
+// is derived from requireSession() call sites the same way the PIN leg above is.
+
+const SESSION_ONLY_CALL_SITES = APP_SOURCE.match(/if \(!requireSession\(request, reply\)\) return/g) || []
+
+test('the bearer scheme is defined as an http bearer scheme', () => {
+  const scheme = spec.components.securitySchemes.bearerToken
+  assert.ok(scheme, 'components.securitySchemes has no bearerToken')
+  assert.equal(scheme.type, 'http')
+  assert.equal(scheme.scheme, 'bearer')
+})
+
+test('an ordinary route accepts the cookie OR a bearer token', () => {
+  assert.deepEqual(operationFor({ method: 'GET', url: '/api/items' }).security, [{ sessionCookie: [] }, { bearerToken: [] }])
+})
+
+test('the token management routes are documented, cookie only', () => {
+  for (const route of [
+    { method: 'GET', url: '/api/tokens' },
+    { method: 'POST', url: '/api/tokens' },
+    { method: 'DELETE', url: '/api/tokens/:id' },
+  ]) {
+    assert.ok(operationFor(route), `${route.method} ${route.url} is missing from the spec`)
+    assert.deepEqual(operationFor(route).security, [{ sessionCookie: [] }], `${route.method} ${route.url} must not offer bearerToken`)
+  }
+})
+
+test('no gate route offers the bearer token', () => {
+  const offending = PUBLIC_ROUTES.filter((r) => schemesOn(r).has('humanGateKey') && schemesOn(r).has('bearerToken'))
+  assert.deepEqual(offending.map((r) => r.label), [])
+  for (const url of ['/api/items/:id/gates/:stepIndex/approve', '/api/items/:id/reject', '/api/items/:id/resolve-conflicts']) {
+    assert.equal(schemesOn({ method: 'POST', url }).has('bearerToken'), false, `${url} documents bearerToken`)
+  }
+})
+
+test('every gated route offers bearer except exactly the requireSession and gate routes', () => {
+  assert.match(APP_SOURCE, /function requireSession\(request, reply\) \{/, 'the declaration moved — re-anchor this scan')
+  assert.ok(SESSION_ONLY_CALL_SITES.length >= 3, `found ${SESSION_ONLY_CALL_SITES.length} requireSession call sites`)
+  const cookieOnly = GATED.filter((r) => !schemesOn(r).has('bearerToken'))
+  const pinRoutes = cookieOnly.filter((r) => schemesOn(r).has('humanGateKey'))
+  const sessionOnly = cookieOnly.filter((r) => !schemesOn(r).has('humanGateKey'))
+  assert.equal(pinRoutes.length, HUMAN_GATE_CALL_SITES.length)
+  assert.equal(
+    sessionOnly.length,
+    SESSION_ONLY_CALL_SITES.length,
+    `app.js calls requireSession at ${SESSION_ONLY_CALL_SITES.length} routes but ${sessionOnly.length} gated ` +
+      `operations refuse bearer without a PIN:\n  ${sessionOnly.map((r) => r.label).join('\n  ')}`,
+  )
+})
