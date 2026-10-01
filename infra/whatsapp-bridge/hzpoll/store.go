@@ -52,7 +52,7 @@ CREATE TABLE IF NOT EXISTS poll_votes (
     created_at   TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     forwarded_at TIMESTAMP
 );
-CREATE INDEX IF NOT EXISTS idx_poll_votes_pending ON poll_votes(forwarded_at, rowid);
+CREATE INDEX IF NOT EXISTS idx_poll_votes_pending ON poll_votes(forwarded_at);
 `
 
 // SQLVoteStore is VoteStore over database/sql. The driver is registered by the
