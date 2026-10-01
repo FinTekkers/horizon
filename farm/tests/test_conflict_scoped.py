@@ -21,7 +21,8 @@ from pathlib import Path
 
 import pytest
 
-from farm import agent_runner, checks, conflict_resolver, workspaces
+from farm import agent_runner, checks, conflict_hunks, conflict_resolver, workspaces
+from farm.agent_runner import TRAILING_COMMA_NOTE
 from farm.tests.conflict_fixtures import (
     clone_and_read,
     git,
@@ -914,6 +915,418 @@ def test_every_reason_the_resolver_reports_is_declared(isolated_workspaces_dir, 
 
     assert result["reason"] in conflict_resolver.ESCALATION_REASONS
     assert len(set(conflict_resolver.ESCALATION_REASONS)) == len(conflict_resolver.ESCALATION_REASONS)
+
+
+# ---- HZ-157: conflict_resolver is a caller of the shared reply parser too ----
+# Both of its agent replies go through agent_runner.parse_agent_reply, so both
+# can be byte-repaired — and a repair with no note in the run output is the
+# exact HZ-124 attempt-9 failure mode this item forbids. Every branch that
+# consumes a parsed reply is covered below, including the ORDINARY ones:
+# `resolved: false` and a rejecting review are normal outcomes, not edge cases,
+# and they were where the note first went missing.
+
+# The same two replies as above with one trailing comma added — the shape the
+# unambiguous rung repairs without spending an agent run. conflict_resolver
+# passes no `retry` callable, so this is the only shape it can ever repair; a
+# single-quoted reply raises there and escalates, which is correct.
+REPAIRED_RESOLUTION = '{"resolved": true, "summary": "kept both sides",}'
+REPAIRED_UNSURE = '{"resolved": false, "unsure_reason": "both sides rewrote the guard",}'
+REPAIRED_REVIEW = '{"summary": "kept both imports", "verdict": "pass", "findings": [],}'
+REPAIRED_FAILING_REVIEW = (
+    '{"summary": "one side was dropped", "verdict": "fail", "findings": '
+    '[{"file": "a", "line": 1, "severity": "block", "detail": "lost the PR\'s own import"}],}'
+)
+
+
+# The counter is repointed into tmp_path for every test in the suite by the
+# autouse `repair_counter` fixture in farm/tests/conftest.py, so the count
+# assertions below read this test's own ticks. Tests still name the fixture
+# where they assert on counts, so the dependency is visible in the signature.
+
+
+def test_a_repaired_resolution_reply_is_pushed_with_its_parser_note(
+    isolated_workspaces_dir, monkeypatch, repair_counter
+):
+    """The success path, which is where the note was dropped hardest: this
+    branch discards the resolution agent's `detail` entirely and reports its
+    own summary, so a note that only rode in `detail` would vanish on every
+    resolution that actually worked."""
+    tmp_path = isolated_workspaces_dir
+    _hub, origin = make_repo_hub(tmp_path)
+    install(
+        monkeypatch,
+        FakeAgents(
+            resolution=resolve_markers("line2 (branch and main)\n", reply=REPAIRED_RESOLUTION),
+            review=PASSING_REVIEW,
+        ),
+    )
+    same_line_conflict(tmp_path, origin, "HZ-30")
+
+    result = conflict_resolver.resolve("acme/demo", "HZ-30", log=lambda *_: None)
+
+    assert result["resolved"] is True
+    assert TRAILING_COMMA_NOTE in result["summary"], "a repaired reply was accepted silently"
+    assert agent_runner.repair_counts() == {"trailing_comma": 1}
+    # The resolution itself is unaffected — a repair recovers the reply, it does
+    # not change what the agent asked for.
+    assert clone_and_read(tmp_path, origin, "horizon/hz-30", "shared.txt", "repaired") == (
+        "line1\nline2 (branch and main)\nline3\n"
+    )
+
+
+def test_a_repaired_unsure_reply_escalates_with_its_parser_note(
+    isolated_workspaces_dir, monkeypatch, repair_counter
+):
+    """`resolved: false` is an ordinary outcome, not an edge case — and it is
+    the branch the code review caught dropping the note."""
+    tmp_path = isolated_workspaces_dir
+    _hub, origin = make_repo_hub(tmp_path)
+    install(monkeypatch, FakeAgents(resolution=lambda ws: REPAIRED_UNSURE))
+    branch_sha = same_line_conflict(tmp_path, origin, "HZ-31")
+
+    result = conflict_resolver.resolve("acme/demo", "HZ-31", log=lambda *_: None)
+
+    assert result["reason"] == "resolution_unsure"
+    assert "both sides rewrote the guard" in result["detail"]
+    assert TRAILING_COMMA_NOTE in result["detail"], "a repaired reply escalated silently"
+    assert agent_runner.repair_counts() == {"trailing_comma": 1}
+    assert_nothing_pushed_and_clean(origin, "HZ-31", branch_sha)
+
+
+def test_a_repaired_scoped_review_reply_carries_its_parser_note(
+    isolated_workspaces_dir, monkeypatch, repair_counter
+):
+    tmp_path = isolated_workspaces_dir
+    _hub, origin = make_repo_hub(tmp_path)
+    install(
+        monkeypatch,
+        FakeAgents(resolution=resolve_markers("line2 (both)\n"), review=REPAIRED_REVIEW),
+    )
+    same_line_conflict(tmp_path, origin, "HZ-32")
+
+    result = conflict_resolver.resolve("acme/demo", "HZ-32", log=lambda *_: None)
+
+    assert result["resolved"] is True
+    assert result["review"]["verdict"] == "pass"
+    assert TRAILING_COMMA_NOTE in result["review"]["summary"]
+    assert agent_runner.repair_counts() == {"trailing_comma": 1}
+
+
+def test_a_repaired_rejecting_review_escalates_with_its_parser_note(
+    isolated_workspaces_dir, monkeypatch, repair_counter
+):
+    """A reject carries BOTH facts: why it was rejected, and that the reply
+    had to be repaired to be read at all."""
+    tmp_path = isolated_workspaces_dir
+    _hub, origin = make_repo_hub(tmp_path)
+    install(
+        monkeypatch,
+        FakeAgents(
+            resolution=resolve_markers("line2 (a guess)\n"), review=REPAIRED_FAILING_REVIEW
+        ),
+    )
+    branch_sha = same_line_conflict(tmp_path, origin, "HZ-33")
+
+    result = conflict_resolver.resolve("acme/demo", "HZ-33", log=lambda *_: None)
+
+    assert result["reason"] == "scoped_review_rejected"
+    assert "lost the PR's own import" in result["detail"]
+    assert TRAILING_COMMA_NOTE in result["detail"]
+    assert_nothing_pushed_and_clean(origin, "HZ-33", branch_sha)
+
+
+def test_both_repairable_replies_in_one_run_are_both_reported(
+    isolated_workspaces_dir, monkeypatch, repair_counter
+):
+    """Two call sites, two repairs, two surfaces — neither note is lost to the
+    other, and the counter sees both."""
+    tmp_path = isolated_workspaces_dir
+    _hub, origin = make_repo_hub(tmp_path)
+    install(
+        monkeypatch,
+        FakeAgents(
+            resolution=resolve_markers("line2 (both)\n", reply=REPAIRED_RESOLUTION),
+            review=REPAIRED_REVIEW,
+        ),
+    )
+    same_line_conflict(tmp_path, origin, "HZ-34")
+
+    result = conflict_resolver.resolve("acme/demo", "HZ-34", log=lambda *_: None)
+
+    assert result["resolved"] is True
+    assert TRAILING_COMMA_NOTE in result["summary"]
+    assert TRAILING_COMMA_NOTE in result["review"]["summary"]
+    assert agent_runner.repair_counts() == {"trailing_comma": 2}
+
+
+def test_a_clean_run_reports_no_parser_note_anywhere(
+    isolated_workspaces_dir, monkeypatch, repair_counter
+):
+    """The other direction of the guardrail, and the control for every
+    assertion above: no byte change means no note, so these tests cannot be
+    passing on a note this module stamps unconditionally."""
+    tmp_path = isolated_workspaces_dir
+    _hub, origin = make_repo_hub(tmp_path)
+    install(
+        monkeypatch,
+        FakeAgents(resolution=resolve_markers("line2 (both)\n"), review=PASSING_REVIEW),
+    )
+    same_line_conflict(tmp_path, origin, "HZ-35")
+
+    result = conflict_resolver.resolve("acme/demo", "HZ-35", log=lambda *_: None)
+
+    assert result["resolved"] is True
+    assert "parser notes" not in result["summary"]
+    assert "parser notes" not in result["review"]["summary"]
+    assert agent_runner.repair_counts() == {}
+
+
+def test_the_deterministic_path_parses_no_reply_and_reports_no_note(
+    isolated_workspaces_dir, monkeypatch, repair_counter
+):
+    """Stage zero dispatches no agent, so there is no reply to repair and
+    nothing to report — the empty-notes default is not an accident of the
+    agent branch leaking into it."""
+    tmp_path = isolated_workspaces_dir
+    _hub, origin = make_repo_hub(tmp_path)
+    install(monkeypatch, FakeAgents())
+    additive_conflict(tmp_path, origin, "HZ-36")
+
+    result = conflict_resolver.resolve("acme/demo", "HZ-36", log=lambda *_: None)
+
+    assert result["resolved"] is True
+    assert result["resolution"]["strategy"] == "deterministic"
+    assert "parser notes" not in result["summary"]
+    assert agent_runner.repair_counts() == {}
+
+
+@pytest.mark.parametrize(
+    "runner,surface",
+    [
+        pytest.param(
+            lambda ws, files, delta, log: conflict_resolver._run_resolution_agent(ws, files, log),
+            # `notes`, not `detail`: _run_resolution_agent returns a RAW detail
+            # and _escalate() is what stamps the note onto it, for every branch
+            # alike. That the stamp then reaches the run output is proved
+            # through resolve() above.
+            "notes",
+            id="resolution",
+        ),
+        pytest.param(conflict_resolver._run_scoped_review, "summary", id="review"),
+    ],
+)
+def test_a_reply_that_parses_to_a_non_object_still_reports_its_note(monkeypatch, runner, surface):
+    """The no-verdict-object / not-a-dict branches, driven at the function
+    rather than through resolve().
+
+    Deliberate: no byte sequence reaches these branches through a repair today,
+    because a rung only ever edits the reply's `{`…`}` span and a span that
+    parses yields a dict. The branch still has to carry the note — part 3 adds
+    rungs that can produce other shapes, and "unreachable so untested" is how
+    this hole got in on the `resolved: false` branch in the first place.
+    """
+    monkeypatch.setattr(
+        agent_runner, "parse_agent_reply", lambda text: ([1, 2], [TRAILING_COMMA_NOTE])
+    )
+    monkeypatch.setattr(agent_runner, "run_agent", lambda *a, **kw: {"result": "whatever"})
+    empty_delta = conflict_hunks.Delta(novel=(), dropped=())
+
+    result = runner(Path("/nowhere"), [], empty_delta, lambda *_: None)
+
+    assert TRAILING_COMMA_NOTE in result[surface], "a non-object reply was repaired silently"
+
+
+# ---- every escalation AFTER a parsed reply reports that reply's repair ----
+# The first cut of this item stamped the note on three branches of eleven. The
+# eight that dropped it escalate for reasons the reply itself had nothing to do
+# with — the checks went red, a marker was left behind, the branch moved — and
+# that is exactly what made them easy to miss: the detail string reads complete
+# without the note. The counter had already recorded a repair, so no surface
+# said which reply it happened to.
+
+
+def out_of_scope_resolution(reply):
+    """Resolves the markers and then wanders into another file — the stray-path
+    escalation, which never looks at the agent's own `detail`."""
+
+    resolve = resolve_markers("line2 (both)\n", reply=reply)
+
+    def agent(ws):
+        resolve(ws)
+        (ws / "other.txt").write_text("while I was here I fixed this too\n")
+        return reply
+
+    return agent
+
+
+POST_RESOLUTION_ESCALATIONS = [
+    pytest.param(
+        "scoped_checks_failed",
+        lambda mp: mp.setenv("FARM_CHECK_CMD", "exit 1"),
+        lambda reply: resolve_markers("line2 (both)\n", reply=reply),
+        None,
+        id="scoped_checks_failed",
+    ),
+    pytest.param(
+        "resolution_out_of_scope",
+        None,
+        out_of_scope_resolution,
+        lambda w: (w / "other.txt").write_text("untouched\n"),
+        id="resolution_out_of_scope",
+    ),
+    pytest.param(
+        # Claims success while leaving the marked region exactly as it found it.
+        "markers_remaining",
+        None,
+        lambda reply: (lambda ws: reply),
+        None,
+        id="markers_remaining",
+    ),
+]
+
+
+@pytest.mark.parametrize("reason,prepare,resolution,extra_ours", POST_RESOLUTION_ESCALATIONS)
+def test_an_escalation_after_a_repaired_resolution_reply_still_reports_the_repair(
+    isolated_workspaces_dir, monkeypatch, repair_counter, reason, prepare, resolution, extra_ours
+):
+    """The gate action's run output has to name the repair even when the reason
+    it escalated for is unrelated to the reply.
+
+    The counter is the tell: it ticks on every one of these, so a detail with no
+    note means the totals record a repair that no surface can be traced back to.
+    """
+    tmp_path = isolated_workspaces_dir
+    _hub, origin = make_repo_hub(tmp_path)
+    install(monkeypatch, FakeAgents(resolution=resolution(REPAIRED_RESOLUTION), review=PASSING_REVIEW))
+    branch_sha = same_line_conflict(tmp_path, origin, "HZ-40", extra_ours=extra_ours)
+    if prepare:
+        prepare(monkeypatch)
+
+    result = conflict_resolver.resolve("acme/demo", "HZ-40", log=lambda *_: None)
+
+    assert result["reason"] == reason
+    assert agent_runner.repair_counts() == {"trailing_comma": 1}
+    assert TRAILING_COMMA_NOTE in result["detail"], "a repaired reply escalated silently"
+    assert_nothing_pushed_and_clean(origin, "HZ-40", branch_sha)
+
+
+def test_a_repaired_resolution_rejected_by_the_review_reports_both_repairs(
+    isolated_workspaces_dir, monkeypatch, repair_counter
+):
+    """Two replies repaired, one escalation detail. Both groups survive WHOLE,
+    and they are labelled apart so the detail does not read as one note printed
+    twice.
+
+    The review summary runs to the cap on purpose: the detail then has to be
+    cut to fit both groups, and a cut that lands in the review's note would
+    still leave two "parser notes" headings — so the note text itself is
+    counted, not the heading."""
+    tmp_path = isolated_workspaces_dir
+    _hub, origin = make_repo_hub(tmp_path)
+    long_summary = "one side was dropped " + "x" * (conflict_resolver.DETAIL_LIMIT - 30)
+    long_failing_review = REPAIRED_FAILING_REVIEW.replace("one side was dropped", long_summary)
+    install(
+        monkeypatch,
+        FakeAgents(
+            resolution=resolve_markers("line2 (a guess)\n", reply=REPAIRED_RESOLUTION),
+            review=long_failing_review,
+        ),
+    )
+    branch_sha = same_line_conflict(tmp_path, origin, "HZ-41")
+    logged: list[str] = []
+
+    result = conflict_resolver.resolve("acme/demo", "HZ-41", log=logged.append)
+
+    assert result["reason"] == "scoped_review_rejected"
+    assert agent_runner.repair_counts() == {"trailing_comma": 2}
+    assert result["detail"].startswith("one side was dropped")
+    assert len(result["detail"]) <= conflict_resolver.DETAIL_LIMIT
+    assert conflict_resolver.RESOLUTION_NOTE_LABEL in result["detail"]
+    assert result["detail"].count(TRAILING_COMMA_NOTE) == 2, "a repaired reply's note was cut by the cap"
+    # Each reply's repair also has an unsliced log line of its own.
+    assert any("scoped review reply was repaired" in line and TRAILING_COMMA_NOTE in line for line in logged)
+    assert any("resolution reply was repaired" in line and TRAILING_COMMA_NOTE in line for line in logged)
+    assert_nothing_pushed_and_clean(origin, "HZ-41", branch_sha)
+
+
+def test_the_repair_also_gets_a_log_line_of_its_own(isolated_workspaces_dir, monkeypatch, repair_counter):
+    """The escalation log line is sliced to 200 chars. A note that only rode
+    inside it would be the first thing a long detail dropped, so the notes get
+    their own unsliced line."""
+    tmp_path = isolated_workspaces_dir
+    _hub, origin = make_repo_hub(tmp_path)
+    install(monkeypatch, FakeAgents(resolution=lambda ws: REPAIRED_UNSURE))
+    same_line_conflict(tmp_path, origin, "HZ-42")
+    logged: list[str] = []
+
+    conflict_resolver.resolve("acme/demo", "HZ-42", log=logged.append)
+
+    assert any(TRAILING_COMMA_NOTE in line and "escalating" not in line for line in logged)
+
+
+def test_every_escalation_in_the_scoped_path_passes_its_notes():
+    """Structural, because per-branch review is what missed eight of them.
+
+    _scoped_resolve() declares `resolution_notes` before its first escalation
+    precisely so this rule has no exemptions: a new escalation added without
+    `notes=` fails here rather than quietly joining the eight. resolve()'s own
+    mechanical-path escalation is out of scope — no reply is ever parsed on it.
+    """
+    import ast
+
+    source = Path(conflict_resolver.__file__).read_text()
+    scoped = next(
+        node
+        for node in ast.walk(ast.parse(source))
+        if isinstance(node, ast.FunctionDef) and node.name == "_scoped_resolve"
+    )
+    calls = [
+        node
+        for node in ast.walk(scoped)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "_escalate"
+    ]
+    assert len(calls) >= 11, "the scoped path's escalations are not all going through _escalate()"
+    missing = [call.lineno for call in calls if "notes" not in {kw.arg for kw in call.keywords}]
+    assert missing == [], f"_escalate() called without notes= at line(s) {missing}"
+
+
+def test_an_escalation_with_no_notes_is_byte_identical_to_before(monkeypatch):
+    """The control: the notes channel adds nothing to a run that repaired
+    nothing, so the assertions above cannot be passing on an unconditional
+    stamp."""
+    calls, logged = [], []
+    monkeypatch.setattr(conflict_resolver, "git", lambda ws, *args, **kw: calls.append(args))
+
+    result = conflict_resolver._escalate(
+        Path("/nowhere"), "abc1234", "markers_remaining", "a marker was left behind", logged.append, notes=[]
+    )
+
+    assert result == {
+        "resolved": False,
+        "reason": "markers_remaining",
+        "detail": "a marker was left behind",
+    }
+    assert not any("parser notes" in line for line in logged)
+    assert [a[0] for a in calls] == ["merge", "reset", "clean"]
+
+
+def test_a_pathological_note_is_kept_at_the_cost_of_the_detail(monkeypatch):
+    """The reserve-room rule, at the one place it bites: a detail already at the
+    cap must lose its tail rather than the note. The note is the fact nothing
+    else in the system records."""
+    monkeypatch.setattr(conflict_resolver, "git", lambda ws, *args, **kw: None)
+
+    result = conflict_resolver._escalate(
+        Path("/nowhere"),
+        "abc1234",
+        "scoped_checks_failed",
+        "x" * conflict_resolver.DETAIL_LIMIT,
+        lambda *_: None,
+        notes=[TRAILING_COMMA_NOTE],
+    )
+
+    assert len(result["detail"]) == conflict_resolver.DETAIL_LIMIT
+    assert result["detail"].endswith(f"{TRAILING_COMMA_NOTE})")
 
 
 # ---- conflict models (HZ-192) ----

@@ -2357,6 +2357,125 @@ def test_an_exhaustion_inside_the_retry_is_reported_with_reason_turn_cap(tmp_pat
     assert posted["json"]["reason"] == "turn_cap"
 
 
+# ---- HZ-157: a repaired reply's note on both of this caller's surfaces ----
+# step_agent is the caller with a real artifact, so both shapes are asserted on
+# both surfaces here. The implement path is covered separately: it passes no
+# retry, which is what makes its tier rules different.
+
+
+# `repair_counter` is the suite-wide autouse fixture in farm/tests/conftest.py,
+# which repoints the counter into tmp_path. Named in the signatures below so the
+# dependency of a count assertion is visible where it is made.
+
+
+def _mangle(payload: dict, shape: str) -> str:
+    """Re-serialize a well-formed reply into one of the two broken shapes, so
+    the only difference from a clean reply is the defect under test."""
+    good = json.dumps(payload)
+    if shape == "trailing_comma":
+        return good[:-1] + ",}"
+    return good.replace('"', "'")
+
+
+@pytest.mark.parametrize(
+    "shape,note_attr,expected_runs",
+    [
+        ("trailing_comma", "TRAILING_COMMA_NOTE", 1),
+        ("single_quotes", "SINGLE_QUOTE_NOTE", 2),
+    ],
+)
+def test_a_repaired_reply_notes_both_surfaces_on_the_planner_path(
+    monkeypatch, repair_counter, shape, note_attr, expected_runs
+):
+    from farm import agent_runner
+
+    note = getattr(agent_runner, note_attr)
+    broken = _mangle({"summary": "planned it", "artifact_md": "# Options"}, shape)
+    fake, calls = _replies(broken, broken)
+    monkeypatch.setattr(step_agent, "run_agent", fake)
+
+    result = execute(make_task(4, "Plan options & trade-offs (pros / cons)"))
+
+    assert result["summary"].startswith("planned it")
+    assert len(calls) == expected_runs
+    assert note in result["summary"], "the repair is missing from the run's output line"
+    assert f"- {note}" in result["artifacts"]["artifact_md"], "the artifact has no note"
+    assert agent_runner.repair_counts() == {shape: 1}
+
+
+def test_a_repaired_reply_notes_the_summary_on_the_implement_path(
+    tmp_path, monkeypatch, repair_counter
+):
+    """The implement step passes no retry, so only the unambiguous rung can
+    fire here — and finalize_branch returns no artifact_md, which makes the
+    summary this path's only note surface."""
+    from farm import agent_runner
+
+    ws, _origin = make_git_workspace(tmp_path)
+    monkeypatch.setattr(step_agent, "ensure_item_worktree", lambda repo, item_id: ws)
+    fake, calls = _replies(_mangle({"summary": "built it"}, "trailing_comma"), writes_into=ws)
+    monkeypatch.setattr(step_agent, "run_agent", fake)
+
+    result = execute(make_task(11, "Specialist agent implements", repo="acme/demo"))
+
+    assert "built it" in result["summary"]
+    assert agent_runner.TRAILING_COMMA_NOTE in result["summary"]
+    assert len(calls) == 1
+    assert agent_runner.repair_counts() == {"trailing_comma": 1}
+
+
+def test_a_single_quoted_implement_reply_is_not_repaired(tmp_path, monkeypatch, repair_counter):
+    """No retry to spend means the lossless retry can never run, so the
+    ambiguous rung must not fire. The step still completes — the code in the
+    workspace is the deliverable — and says the reply was not valid JSON."""
+    from farm import agent_runner
+
+    ws, _origin = make_git_workspace(tmp_path)
+    monkeypatch.setattr(step_agent, "ensure_item_worktree", lambda repo, item_id: ws)
+    fake, calls = _replies(_mangle({"summary": "built it"}, "single_quotes"), writes_into=ws)
+    monkeypatch.setattr(step_agent, "run_agent", fake)
+
+    result = execute(make_task(11, "Specialist agent implements", repo="acme/demo"))
+
+    assert "not valid JSON" in result["summary"]
+    assert "built it" not in result["summary"], "an ambiguous repair fired with no retry spent"
+    assert len(calls) == 1
+    assert agent_runner.repair_counts() == {}
+
+
+def test_a_repaired_reply_notes_both_review_passes(tmp_path, monkeypatch, repair_counter):
+    """Five places in this module parse a reply; the two review passes are the
+    pair that could most easily surface a note from only one of them."""
+    from farm import agent_runner
+
+    ws, _origin = make_git_workspace(tmp_path)
+    monkeypatch.setattr(step_agent, "ensure_item_worktree", lambda repo, item_id: ws)
+    broken = _mangle({"verdict": "pass", "summary": "looks fine", "artifact_md": "# Review"}, "trailing_comma")
+    fake, calls = _replies(broken)
+    monkeypatch.setattr(step_agent, "run_agent", fake)
+
+    result = execute(make_task(12, step_agent.REVIEW_LABEL, repo="acme/demo"))
+
+    assert agent_runner.TRAILING_COMMA_NOTE in result["summary"]
+    # Both passes repaired their own reply, so the counter saw both.
+    assert agent_runner.repair_counts() == {"trailing_comma": 2}
+
+
+def test_an_unrepairable_step_reply_still_cancels_the_run(monkeypatch, repair_counter):
+    """No fabricated summary: an unparseable reply that no rung can fix fails
+    the step, exactly as it does today."""
+    from farm import agent_runner
+
+    bad = '{"summary":"he said "hi" to me"}'
+    fake, calls = _replies(bad, bad)
+    monkeypatch.setattr(step_agent, "run_agent", fake)
+
+    with pytest.raises((AgentError, json.JSONDecodeError)):
+        execute(make_task(4, "Plan options & trade-offs (pros / cons)"))
+    assert len(calls) == 2, "the lossless retry is still spent first"
+    assert agent_runner.repair_counts() == {}
+
+
 # ---- step models (HZ-192) ----
 # run_agent() resolves every step's model from domain/personas.json's `models`
 # block. These run the REAL run_agent() over recording providers (conftest's

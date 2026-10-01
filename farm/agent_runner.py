@@ -10,11 +10,12 @@ only to run_agent(); none of them know or care which provider actually ran.
 import json
 import os
 import re
-from typing import Any, Callable
+from pathlib import Path
+from typing import Any, Callable, Iterator, NamedTuple
 
 from domain.py.personas import resolve_model
 
-from .config import FARM_PROVIDER, MAX_TURNS, STEP_TIMEOUT_S
+from .config import FARM_PROVIDER, MAX_TURNS, STATE_DIR, STEP_TIMEOUT_S
 from .providers import claude, muse
 from .providers.base import AgentError, AgentExhaustedError
 
@@ -22,10 +23,18 @@ __all__ = [
     "AgentError",
     "AgentExhaustedError",
     "FIRST_OBJECT_NOTE",
+    "REPAIRS",
+    "REPAIR_COUNTS_PATH",
+    "REPAIR_NOTES",
+    "SINGLE_QUOTE_NOTE",
+    "TRAILING_COMMA_NOTE",
+    "Repair",
     "assert_provider_auth",
-    "run_agent",
     "extract_json",
     "parse_agent_reply",
+    "record_repair",
+    "repair_counts",
+    "run_agent",
     "stamp_notes",
     "stamp_notes_artifact",
 ]
@@ -172,25 +181,30 @@ def run_agent(
     return result
 
 
-def _first_balanced_object(text: str) -> str | None:
-    """The first brace-balanced span starting at the first `{`, or None.
+def _scan(text: str, start: int = 0) -> Iterator[tuple[int, str, bool]]:
+    """One forward pass over `text`, yielding `(index, char, in_string)`.
 
-    String-aware: a `{`/`}` inside a JSON string literal is content, not
-    structure, so `{"a": "}"}` must come back whole. Backslash escapes are
-    honoured, so a trailing `\\\\` before a quote does not swallow the quote.
+    THE string/escape state machine for this module (HZ-157). It was inline in
+    _first_balanced_object() until the repair rungs below needed the identical
+    rule — and two hand-maintained copies of escape handling is precisely the
+    bug this seam exists to prevent, since a rung that got it wrong would edit
+    bytes inside a string literal, i.e. fabricate content.
 
-    One forward pass, no backtracking — a reply of ten thousand unclosed
-    braces returns None in linear time rather than exploring spans.
+    A `{`/`}`/`,` inside a JSON string literal is content, not structure, so
+    `in_string` is True for it. Backslash escapes are honoured, so a trailing
+    `\\\\` before a quote does not swallow the quote. The OPENING quote of a
+    literal reports in_string=False and the CLOSING quote reports True, which
+    is the convention _first_balanced_object() has always used.
+
+    No backtracking — a reply of ten thousand unclosed braces is walked once,
+    in linear time, rather than exploring spans.
     """
-    start = text.find("{")
-    if start == -1:
-        return None
-    depth = 0
     in_string = False
     escaped = False
     for i in range(start, len(text)):
         ch = text[i]
         if in_string:
+            yield i, ch, True
             if escaped:
                 escaped = False
             elif ch == "\\":
@@ -198,15 +212,43 @@ def _first_balanced_object(text: str) -> str | None:
             elif ch == '"':
                 in_string = False
             continue
+        yield i, ch, False
         if ch == '"':
             in_string = True
-        elif ch == "{":
+
+
+def _first_balanced_object(text: str) -> str | None:
+    """The first brace-balanced span starting at the first `{`, or None."""
+    start = text.find("{")
+    if start == -1:
+        return None
+    depth = 0
+    for i, ch, in_string in _scan(text, start):
+        if in_string:
+            continue
+        if ch == "{":
             depth += 1
         elif ch == "}":
             depth -= 1
             if depth == 0:
                 return text[start : i + 1]
     return None
+
+
+def _strip_fences(text: str) -> str:
+    """The cleaning both _extract_json() and the repair rungs work from.
+
+    Byte-lossless in the sense that matters: it only ever removes surrounding
+    whitespace and a markdown code fence, never anything inside the JSON.
+    Factored out so a rung operates on exactly the bytes _extract_json()'s
+    attempt 2 saw — see _repair_span().
+    """
+    cleaned = text.strip()
+    if cleaned.startswith("```"):
+        cleaned = cleaned.strip("`")
+        if cleaned.startswith("json"):
+            cleaned = cleaned[4:]
+    return cleaned
 
 
 def _extract_json(text: str) -> tuple[Any, Exception | None]:
@@ -224,11 +266,7 @@ def _extract_json(text: str) -> tuple[Any, Exception | None]:
     public entry point and returns only the value, so the success metric's
     behaviour and every existing test read the same as before.
     """
-    cleaned = text.strip()
-    if cleaned.startswith("```"):
-        cleaned = cleaned.strip("`")
-        if cleaned.startswith("json"):
-            cleaned = cleaned[4:]
+    cleaned = _strip_fences(text)
     try:
         # strict=False: models occasionally emit raw control characters
         # (literal newlines/tabs) inside JSON strings — meaningful content
@@ -303,22 +341,296 @@ FIRST_OBJECT_NOTE = (
     "reply would not parse as a whole; used its first complete JSON object — see session log"
 )
 
+# HZ-157's two notes. One per repair rung, declared here rather than inline so
+# the six tests that assert them read the same constant the code emits.
+TRAILING_COMMA_NOTE = (
+    "reply had a trailing comma before a closing brace or bracket; removed it to parse "
+    "— see session log"
+)
+SINGLE_QUOTE_NOTE = (
+    "reply used single quotes as JSON string delimiters; re-quoted them to parse — see session log"
+)
+
 
 def _notes_for(reply_text: str, parsed: Any) -> list[str]:
-    """Per-repair parser notes for one reply. Always empty in HZ-156, by design.
+    """Per-repair parser notes for one reply. Still empty, by design.
 
-    NOT dead code: this is the reporting channel the two follow-up items
-    (byte-altering repair, then truncation salvage) report through, and the seam
-    their plumbing is already proven against — a test monkeypatches this function
-    to inject a note and asserts it reaches the run's output line and the step's
-    artifact. No repair exists yet, so it reports nothing yet, and every reply
-    that parses the way replies parsed before this item produces no note at all.
+    NOT dead code: this is the reporting channel the follow-up items report
+    through, and the seam their plumbing is proven against — a test
+    monkeypatches this function to inject a note and asserts it reaches the
+    run's output line and the step's artifact.
 
-    The one note HZ-156 itself can emit is FIRST_OBJECT_NOTE, added by
-    parse_agent_reply() rather than here: it describes which attempt parsed the
-    reply, not a repair applied to it.
+    HZ-157's own two notes are emitted by the repair ladder rather than here,
+    for the same reason FIRST_OBJECT_NOTE is: this function is handed the reply
+    and its parsed value, which is not enough to say WHICH transform ran. A
+    note must name the byte change it describes.
     """
     return []
+
+
+def _notes_with_scan(text: str, parsed: Any, *, scanned: bool) -> list[str]:
+    """_notes_for() plus the which-attempt-parsed note. One definition, because
+    both parse_agent_reply() and the repair ladder need exactly this list."""
+    notes = [*_notes_for(text, parsed)]
+    if scanned:
+        notes.append(FIRST_OBJECT_NOTE)
+    return notes
+
+
+# ---- HZ-157: the repair ladder ----
+# Repairs live HERE and nowhere else. extract_json() and _extract_json() stay
+# byte-lossless: they are the public/private raw extractors, and
+# farm/tests/test_one_reply_parser.py fails any module that reaches for either.
+#
+# Every rung obeys three rules, and each rule closes a way this could go wrong:
+#
+# 1. A rung only ever sees bytes the LOSSLESS ladder already refused. A reply
+#    that parses today parses by the same route to the same value.
+# 2. A rung that changes no byte is skipped before any parse attempt — no note,
+#    no counter tick. So "a note exists" and "bytes changed" are the same fact
+#    in both directions, which is the guardrail this item was split out for.
+# 3. An `ambiguous` rung — one where the bytes admit more than one reading —
+#    may only run AFTER the lossless retry has actually run. Declared as a
+#    field, not argued in prose, so part 3's rungs inherit the rule.
+#
+# Rungs are tried ONE AT A TIME and never composed, which is a deliberate limit
+# rather than an oversight: a reply carrying both defects (`{'a':1,}`) leaves
+# bytes that still fail after either rung alone, so no rung succeeds and the
+# reply raises. Raising is a correct outcome here — composing rungs would stack
+# an unambiguous edit underneath an ambiguous one and make the combined
+# transform's reading harder to defend than either part, for a shape nothing has
+# been observed to produce. The near-miss sweep in
+# farm/tests/test_agent_runner_repair.py carries `{'a':1,}` so the limit is
+# pinned, and the next change to this ladder is a decision rather than a drift.
+
+
+class Repair(NamedTuple):
+    """One rung of the ladder.
+
+    `apply` returns its input unchanged to decline (see rule 2 above): that is
+    how a rung says "these bytes are not my shape" and how it refuses bytes it
+    cannot edit safely. Raising is not the refusal channel — a rung must not
+    invent an exception the caller would have to classify.
+    """
+
+    name: str  # counter key and test handle
+    ambiguous: bool  # True -> post-retry only
+    note: str
+    apply: Callable[[str], str]
+
+
+def _repair_trailing_commas(span: str) -> str:
+    """Drop a `,` whose next non-space character closes the object or array.
+
+    UNAMBIGUOUS. A comma immediately before `}` or `]` is illegal JSON in every
+    reading, and deleting it is the only single-character edit that makes those
+    bytes valid — so there is nothing to choose between and no reason to spend a
+    retry first. String content is untouched: the comma in `{"a":"x, }"}` is
+    reported in_string by _scan() and never considered.
+
+    One pass, so ten thousand commas cost one walk. Two adjacent commas
+    (`{"a":1,,}`) leave only the last one dropped, the result still fails to
+    parse, and the rung fails — which is correct. Guessing further would be
+    fabrication.
+    """
+    drop: set[int] = set()
+    pending: int | None = None  # index of the most recent structural comma
+    for i, ch, in_string in _scan(span):
+        if in_string:
+            pending = None
+            continue
+        if ch == ",":
+            pending = i
+        elif ch in "}]":
+            if pending is not None:
+                drop.add(pending)
+            pending = None
+        elif not ch.isspace():
+            pending = None
+    if not drop:
+        return span
+    return "".join(ch for i, ch in enumerate(span) if i not in drop)
+
+
+def _repair_single_quotes(span: str) -> str:
+    """Rewrite `'` delimiters to `"`.
+
+    AMBIGUOUS, so post-retry only: an apostrophe inside a value has a second
+    reading, and nothing in the bytes says which was meant. Two preconditions
+    make the refusal case the default rather than the exception:
+
+    * any `"` in the span -> refuse. A mixed-quote reply (`{'a':"b"}`) could
+      only be re-quoted by choosing which quotes are delimiters, and a
+      re-quoting that collides with an existing double quote can silently
+      change what a value says.
+    * any `\\'` in the span -> refuse. That is not a JSON escape, and rewriting
+      it would turn an apostrophe the model escaped into a literal `"` inside
+      the value — content the reply never contained.
+
+    Anything that survives both and still does not parse (`{'a':'it's fine'}`)
+    fails the rung and raises, which is the correct outcome for bytes with two
+    readings.
+    """
+    if '"' in span or "\\'" in span or "'" not in span:
+        return span
+    return span.replace("'", '"')
+
+
+REPAIRS: tuple[Repair, ...] = (
+    Repair("trailing_comma", False, TRAILING_COMMA_NOTE, _repair_trailing_commas),
+    Repair("single_quotes", True, SINGLE_QUOTE_NOTE, _repair_single_quotes),
+)
+
+# Which notes mean "bytes were changed". Exported because a caller that labels
+# its log line needs to tell the two kinds of note apart: FIRST_OBJECT_NOTE
+# reports WHICH lossless attempt parsed the reply and no byte was edited, so
+# calling it a repair would overstate what happened on a reply the parser only
+# read differently. Derived from REPAIRS rather than listed, so part 3's rungs
+# join it without a second edit.
+REPAIR_NOTES: frozenset[str] = frozenset(rung.note for rung in REPAIRS)
+
+
+def _repairs_enabled() -> bool:
+    """Read at call time — like _selected_provider_name() above — so the lever
+    actually moves. An import-bound flag cannot be flipped by a restart's env
+    or by a test, which is a rollback lever that only looks like one."""
+    return os.environ.get("FARM_REPLY_REPAIR", "1").strip().lower() not in ("0", "false", "no")
+
+
+def _repair_span(text: str) -> str | None:
+    """The only bytes a rung is allowed to touch: the cleaned reply's widest
+    `{`…`}` span — exactly what _extract_json()'s attempt 2 tried.
+
+    Scoping matters more than it looks. A real reply carries prose and code
+    fences around its JSON, and a rung that inspected the whole reply would see
+    every `"` in that prose: the single-quote rung's refusal precondition would
+    then fire on almost every real reply while still passing against bare test
+    fixtures. Running on the span also means a repair can never edit the prose.
+    """
+    cleaned = _strip_fences(text)
+    start, end = cleaned.find("{"), cleaned.rfind("}")
+    if start == -1 or end <= start:
+        return None
+    return cleaned[start : end + 1]
+
+
+class _Repaired(NamedTuple):
+    value: Any
+    notes: list[str]
+    repair: str
+    # The repaired bytes parsed only by attempt 3's scan. HZ-156 owes such a
+    # reply the lossless retry first, so parse_agent_reply() may not take this
+    # value ahead of a retry it can still spend.
+    scanned: bool
+
+
+def _repair_ladder(
+    text: str, *, ambiguous: bool, validate: Callable[[Any], Any] | None
+) -> _Repaired | None:
+    """Try each rung of one ambiguity tier against `text`'s JSON span.
+
+    Returns the first rung's result that both parses AND passes `validate`, or
+    None when no rung fired. A validator rejection means the rung FAILED, not
+    that it succeeded with a bad value: `validate` is what the caller actually
+    consumes (concierge_agent unpacks a 4-tuple out of it), so an unvalidated
+    repair would hand the caller the wrong shape entirely.
+
+    Nothing this function raises is a parse failure the caller should classify.
+    An AgentExhaustedError from a validator keeps its turn-cap tag, and a rung's
+    own apply() is deliberately called OUTSIDE the try — a rung is pure text
+    editing, and swallowing an exception from one would hide a real bug.
+    """
+    if not _repairs_enabled():
+        return None
+    span = _repair_span(text)
+    if span is None:
+        return None
+    for rung in REPAIRS:
+        if rung.ambiguous != ambiguous:
+            continue
+        candidate = rung.apply(span)
+        if candidate == span:
+            # Rule 2: no byte changed, so there is nothing to report and
+            # nothing to count. Skipped before any parse attempt, so a rung
+            # that declines is indistinguishable from a rung that is not there.
+            continue
+        try:
+            parsed, pre_scan_failure = _extract_json(candidate)
+            notes = _notes_with_scan(candidate, parsed, scanned=pre_scan_failure is not None)
+            value = validate(parsed) if validate else parsed
+        except AgentExhaustedError:
+            raise
+        except (AgentError, json.JSONDecodeError):
+            continue
+        return _Repaired(value, [rung.note, *notes], rung.name, pre_scan_failure is not None)
+    return None
+
+
+# ---- HZ-157: how often each rung actually fires ----
+# A file rather than a process counter because the callers of this helper
+# (pm_agent, step_agent, concierge_agent, and conflict_resolver inside farmd)
+# are SEPARATE PROCESSES — an in-memory tally is unreadable by any script,
+# which is what the success metric asks for.
+REPAIR_COUNTS_PATH = STATE_DIR / "parser-repairs.json"
+
+
+def repair_counts(path: Path | None = None) -> dict[str, int]:
+    """Totals per repair path. Never raises.
+
+    A missing file, an unreadable file and a corrupt file all read as empty:
+    this is a measurement, and a broken measurement must not fail a step run.
+    Non-integer values are dropped rather than coerced, so one bad key cannot
+    poison the rest of the totals.
+    """
+    target = Path(path) if path is not None else REPAIR_COUNTS_PATH
+    try:
+        raw = json.loads(target.read_text())
+    except (OSError, ValueError):
+        return {}
+    if not isinstance(raw, dict):
+        return {}
+    return {
+        str(key): int(value)
+        for key, value in raw.items()
+        if isinstance(value, int) and not isinstance(value, bool)
+    }
+
+
+def record_repair(name: str, path: Path | None = None) -> None:
+    """Tick one repair path's counter. Best effort — never raises.
+
+    mkdir first, not just on failure: STATE_DIR is created by config's
+    ensure_dirs() at farmd startup, and an agent process may never have run it.
+    Without this every tick would be dropped into a missing directory and the
+    script would honestly print zeros forever — a metric that passes its own
+    test while measuring nothing.
+
+    Unknown keys are preserved, so a later item's rung cannot erase this one's
+    totals. Written to a sibling and os.replace()d, so a reader never sees a
+    half-written file — and the sibling is removed if the rename is what failed,
+    or a half-written `.tmp` would sit in STATE_DIR forever with nothing to
+    clean it up.
+
+    KNOWN LIMIT: two agent processes ticking in the same instant can lose one
+    increment. These are indicative totals, not an audit trail; locking the
+    farm's processes against each other is not worth a counter's correctness.
+    """
+    target = Path(path) if path is not None else REPAIR_COUNTS_PATH
+    counts = repair_counts(target)
+    counts[name] = counts.get(name, 0) + 1
+    tmp = target.with_name(target.name + ".tmp")
+    try:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        tmp.write_text(json.dumps(counts, indent=2, sort_keys=True) + "\n")
+        os.replace(tmp, target)
+    except OSError:
+        # A counter must never be the reason a step failed — but it must not
+        # leave litter either. missing_ok: the write itself may be what failed.
+        try:
+            tmp.unlink(missing_ok=True)
+        except OSError:
+            pass
+        return
 
 
 def parse_agent_reply(
@@ -366,24 +678,61 @@ def parse_agent_reply(
     untouched. AgentExhaustedError is a subclass of AgentError, so it must
     never be mistaken for a parse failure and retried (or swallowed): the
     orchestrator auto-retries a run only if it still carries that tag.
+
+    HZ-157 adds byte-altering repairs, under one invariant that decides every
+    branch below: a rung is only ever attempted on bytes the LOSSLESS ladder
+    refused, and only when no losslessly-parsed value is available. Two
+    consequences worth naming, because both were undefined in the plan:
+
+    * `_extract_json()` SUCCEEDING — including by attempt 3, with a
+      `pre_scan_failure` recorded — means no repair runs on that reply at all.
+      A value parsed from unaltered bytes is already in hand; repairing bytes
+      that parsed would change which value a reply returns today.
+    * when the retry will not parse but `fallback` holds a scanned object, the
+      FALLBACK WINS and no rung runs on the retried text. Lossless beats
+      repaired, always, even when the lossless value came from the weakest
+      attempt.
+
+    * a REPAIRED reply that parses only by attempt 3 is held to the same rule
+      as an unrepaired one: with a retry to spend, the lossless retry runs
+      first and the repair is only taken after it fails.
+
+    So repairs are reached on exactly two paths: the original reply failed the
+    lossless ladder outright (unambiguous rungs only, before the retry is
+    spent, and only when the repaired bytes parse without the scan), or that
+    plus the retry also failed with no fallback (both tiers).
     """
-
-    def notes_for(text: str, parsed: Any, *, scanned: bool) -> list[str]:
-        notes = [*_notes_for(text, parsed)]
-        if scanned:
-            notes.append(FIRST_OBJECT_NOTE)
-        return notes
-
     fallback: tuple[Any, list[str]] | None = None
     pre_scan_failure: Exception | None = None
+    extracted = False  # did the LOSSLESS ladder produce a value at all?
     try:
         parsed, pre_scan_failure = _extract_json(reply_text)
-        notes = notes_for(reply_text, parsed, scanned=pre_scan_failure is not None)
+        extracted = True
+        notes = _notes_with_scan(reply_text, parsed, scanned=pre_scan_failure is not None)
         value = validate(parsed) if validate else parsed
     except AgentExhaustedError:
         raise
     except (AgentError, json.JSONDecodeError) as exc:
+        # `extracted` separates the two failures this handler catches. False
+        # means _extract_json() refused the bytes, which is the only thing a
+        # repair can help with. True means the reply parsed cleanly and
+        # `validate` rejected the RESULT — editing bytes there would not fix a
+        # missing field, it would only invent a different object.
+        if not extracted:
+            repaired = _repair_ladder(reply_text, ambiguous=False, validate=validate)
+            # A repair that only parsed via the attempt-3 scan is the repaired
+            # twin of a reply only attempt 3 could parse — and HZ-156 spends
+            # the lossless retry on those first. So it is taken here only when
+            # there is no retry to spend; otherwise the retry runs and the
+            # unambiguous tier is tried again on the original after it fails.
+            if repaired is not None and (not repaired.scanned or retry is None):
+                return _accept(repaired)
         if retry is None:
+            # Ambiguous rungs stop here on purpose: the guardrail is that no
+            # repair chooses between two readings before the lossless retry has
+            # RUN, and with no retry to spend it never can. step_agent's
+            # implement step already has a documented fallback for a malformed
+            # final message, so raising costs it little.
             raise
         # `pre_scan_failure or exc`: a reply only attempt 3 could parse is asked
         # to try again with the error attempts 1 and 2 raised, so the prompt is
@@ -399,16 +748,52 @@ def parse_agent_reply(
     # may be caught here. An AgentExhaustedError from run_agent inside the
     # closure has to reach the caller with its turn-cap tag intact.
     fresh = retry(RETRY_PROMPT.format(exc=failure))
+    fresh_extracted = False
     try:
         parsed, retried_pre_scan_failure = _extract_json(fresh)
-        notes = notes_for(fresh, parsed, scanned=retried_pre_scan_failure is not None)
+        fresh_extracted = True
+        notes = _notes_with_scan(fresh, parsed, scanned=retried_pre_scan_failure is not None)
         return (validate(parsed) if validate else parsed), notes
     except AgentExhaustedError:
         raise
     except (AgentError, json.JSONDecodeError):
-        if fallback is None:
-            raise
-        return fallback
+        if fallback is not None:
+            return fallback  # lossless beats repaired — see the docstring
+        # The lossless retry has now run and produced nothing usable, so the
+        # ambiguous tier is unlocked. The retried reply is tried first: the
+        # model was explicitly told what was wrong with the original, so its
+        # second attempt is the better-informed bytes.
+        #
+        # The `extracted` flags apply the same rule to both texts as the
+        # pre-retry branch did to the original: a reply the LOSSLESS ladder
+        # already parsed is never repaired, because the only thing left wrong
+        # with it is a validator rejection that no byte edit can honestly fix.
+        # The original's unambiguous tier IS re-run: a repair that parsed only
+        # via the scan was deferred above until the retry had run, and this is
+        # where it is now allowed to win. When that tier failed outright above
+        # it fails identically here, costing one parse.
+        candidates = (
+            (fresh, () if fresh_extracted else (False, True)),
+            (reply_text, () if extracted else (False, True)),
+        )
+        for text, tiers in candidates:
+            for ambiguous in tiers:
+                repaired = _repair_ladder(text, ambiguous=ambiguous, validate=validate)
+                if repaired is not None:
+                    return _accept(repaired)
+        raise
+
+
+def _accept(repaired: _Repaired) -> tuple[Any, list[str]]:
+    """Tick the counter and hand back the repaired value.
+
+    The tick lives HERE, at the one place a repaired value is actually
+    returned, rather than where a rung parsed. A rung that parses but whose
+    value loses to the retry must not show up in the totals as a repair that
+    happened — it did not.
+    """
+    record_repair(repaired.repair)
+    return repaired.value, repaired.notes
 
 
 def stamp_notes(summary: str, notes: list[str], limit: int) -> str:
