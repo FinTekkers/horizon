@@ -17,7 +17,7 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
-from farm import check_metrics, checks, farmd, pause, step_agent, tmux_mgr
+from farm import check_metrics, check_slots, checks, farmd, pause, step_agent, tmux_mgr
 from farm import config as farm_config
 from farm.config import QUEUE_DIR
 from farm.tests.test_step_agent import (
@@ -143,6 +143,8 @@ def test_pause_during_checks_checkpoints_the_code_and_is_not_a_check_failure(tmp
     ws, origin, _ = ws_origin
     monkeypatch.setenv("FARM_HOME", str(tmp_path / "farmhome"))
     monkeypatch.setenv("FARM_CHECK_CMD", "true")
+    # Inside the farm's own check run this is set, and append_record skips.
+    monkeypatch.delenv(check_slots.IN_CHECKS_ENV, raising=False)
     monkeypatch.setattr(step_agent, "run_agent", finished_run(ws, text="finished, unchecked\n"))
 
     def paused_mid_check(*a, **k):
@@ -389,7 +391,10 @@ class ChildAgent:
         self.posted = tmp_path / f"posted-{run_id}.json"
         self.ready = tmp_path / f"ready-{run_id}"
         cfg = {"ws": str(ws), "task": str(self.task), "posted": str(self.posted), "ready": str(self.ready), "step": step, "block": block}
-        child_env = {**os.environ, "FARM_HOME": str(tmp_path / "farmhome"), "PYTHONPATH": str(REPO_ROOT), **(env or {})}
+        # FARM_IN_CHECKS is dropped: under the farm's own check run it would
+        # make the child skip its check-metrics record.
+        base_env = {k: v for k, v in os.environ.items() if k != check_slots.IN_CHECKS_ENV}
+        child_env = {**base_env, "FARM_HOME": str(tmp_path / "farmhome"), "PYTHONPATH": str(REPO_ROOT), **(env or {})}
         self.proc = subprocess.Popen([sys.executable, "-c", CHILD, json.dumps(cfg)], cwd=str(REPO_ROOT), env=child_env)
         self.seen: set[int] = set()
 
