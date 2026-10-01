@@ -169,6 +169,22 @@ db.exec(`
   );
   CREATE INDEX IF NOT EXISTS idx_session_user ON session(user_id);
 
+  -- Personal API tokens (HZ-179). token_hash is sha256(raw) hex, as for
+  -- session.id. The raw token is returned once by POST /api/tokens and never
+  -- stored; last4 is all that is kept of it, for the Admin list.
+  CREATE TABLE IF NOT EXISTS api_token (
+    id           TEXT PRIMARY KEY,
+    user_id      TEXT NOT NULL REFERENCES user(id),
+    name         TEXT NOT NULL,
+    token_hash   TEXT NOT NULL UNIQUE,
+    last4        TEXT NOT NULL,
+    created_at   TEXT NOT NULL,
+    expires_at   TEXT NOT NULL,
+    last_used_at TEXT,
+    revoked_at   TEXT
+  );
+  CREATE INDEX IF NOT EXISTS idx_api_token_user ON api_token(user_id);
+
   -- Gate-arrival notification outbox (HZ-141). One row per (arrival at a gate,
   -- approver). The body is rendered at ENQUEUE time and stored, so a retry hours
   -- later sends the state the item was in when it reached the gate rather than

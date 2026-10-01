@@ -173,6 +173,89 @@ export function deleteSession(token) {
   db.prepare('DELETE FROM session WHERE id = ?').run(sha256(token))
 }
 
+// ---- API tokens (HZ-179) ----
+// Personal bearer tokens for scripts. Stored exactly like sessions — only
+// sha256(raw) at rest — and checked by the same onRequest gate in app.js,
+// which marks the request as token-authenticated so humanAuthorized() and the
+// token-management routes can refuse it. A token is never a gate credential.
+
+export const API_TOKEN_DEFAULT_DAYS = 90
+export const API_TOKEN_MAX_DAYS = 365
+const API_TOKEN_PREFIX = 'hz_'
+// 'hz_' + base64url of 32 random bytes (43 chars, no padding). The prefix is
+// there so secret scanners can recognise a leaked token.
+const API_TOKEN_SHAPE = /^hz_[A-Za-z0-9_-]{43}$/
+const LAST_USED_THROTTLE_MS = 60_000
+
+function toPublicToken(row) {
+  return {
+    id: row.id,
+    name: row.name,
+    last4: row.last4,
+    createdAt: row.created_at,
+    lastUsedAt: row.last_used_at,
+    expiresAt: row.expires_at,
+  }
+}
+
+// Returns the public fields plus `token`, the raw value — the only time it
+// ever leaves this module.
+export function createApiToken(userId, name, expiresInDays = API_TOKEN_DEFAULT_DAYS) {
+  const token = API_TOKEN_PREFIX + crypto.randomBytes(32).toString('base64url')
+  const id = `tok_${crypto.randomUUID()}`
+  const now = Date.now()
+  const createdAt = new Date(now).toISOString()
+  const expiresAt = new Date(now + expiresInDays * 24 * 60 * 60 * 1000).toISOString()
+  db.prepare(
+    `INSERT INTO api_token (id, user_id, name, token_hash, last4, created_at, expires_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?)`,
+  ).run(id, userId, name, sha256(token), token.slice(-4), createdAt, expiresAt)
+  return { id, name, token, last4: token.slice(-4), createdAt, expiresAt }
+}
+
+// Active (unrevoked) tokens only. Never selects token_hash.
+export function listApiTokens(userId) {
+  return db
+    .prepare(
+      `SELECT id, name, last4, created_at, last_used_at, expires_at FROM api_token
+       WHERE user_id = ? AND revoked_at IS NULL ORDER BY created_at DESC, id`,
+    )
+    .all(userId)
+    .map(toPublicToken)
+}
+
+// Scoped to the caller's own tokens: someone else's id is indistinguishable
+// from an unknown one. Returns whether a token was revoked.
+export function revokeApiToken(userId, id) {
+  const result = db
+    .prepare('UPDATE api_token SET revoked_at = ? WHERE id = ? AND user_id = ? AND revoked_at IS NULL')
+    .run(new Date().toISOString(), id, userId)
+  return result.changes === 1
+}
+
+// Resolves a raw bearer value to { user, tokenId, tokenName }, or null when it
+// is malformed, unknown, revoked, expired, or its user no longer exists.
+export function getTokenAuth(raw) {
+  if (typeof raw !== 'string' || !API_TOKEN_SHAPE.test(raw)) return null
+  const hash = sha256(raw)
+  const row = db.prepare('SELECT * FROM api_token WHERE token_hash = ?').get(hash)
+  if (!row) return null
+  // The indexed lookup already matched; this constant-time re-check is here
+  // because the HZ-179 guardrail requires tokens be compared in constant time.
+  // Do not remove it as redundant.
+  if (!crypto.timingSafeEqual(Buffer.from(row.token_hash, 'hex'), Buffer.from(hash, 'hex'))) return null
+  if (row.revoked_at) return null
+  const now = Date.now()
+  if (new Date(row.expires_at).getTime() <= now) return null
+  const user = findUserById(row.user_id)
+  if (!user) return null
+  // Throttled in SQL rather than in memory: at most one write per token a minute.
+  db.prepare(
+    'UPDATE api_token SET last_used_at = ? WHERE id = ? AND (last_used_at IS NULL OR last_used_at < ?)',
+  ).run(new Date(now).toISOString(), row.id, new Date(now - LAST_USED_THROTTLE_MS).toISOString())
+  return { user, tokenId: row.id, tokenName: row.name }
+}
+
 // ---- gate PIN ----
 // Deliberately separate from everything above: verifying a PIN never touches
 // login state, and logging in never touches the PIN.

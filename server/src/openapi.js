@@ -95,6 +95,12 @@ export function textResponse(mime, description) {
 // drift from the gate that actually runs.
 export const SESSION_SECURITY = [{ sessionCookie: [] }]
 
+// The session cookie OR a personal API token (HZ-179) — two requirement objects
+// mean "either one". This is what the onRoute hook injects on ordinary routes;
+// SESSION_SECURITY stays for the routes a token may not call (token management
+// and the auth routes), and the gate routes keep HUMAN_GATE_SECURITY.
+export const API_SECURITY = [{ sessionCookie: [] }, { bearerToken: [] }]
+
 // The session cookie AND the per-account human gate PIN. Declared inline on the
 // routes that call humanAuthorized() — the PIN is a second, separate blocker
 // (auth.verifyGatePin), so both schemes are required together rather than being
@@ -129,6 +135,15 @@ export function swaggerOptions() {
             in: 'cookie',
             name: SESSION_COOKIE_NAME,
             description: 'Session cookie issued at login. Required by every route except the auth and probe routes.',
+          },
+          // Personal API tokens (HZ-179), created in Admin. Accepted wherever
+          // API_SECURITY is declared; never on gate or token-management routes.
+          bearerToken: {
+            type: 'http',
+            scheme: 'bearer',
+            description:
+              'Personal API token (hz_…), created in Admin and sent as `Authorization: Bearer <token>`. ' +
+              'Acts with its user’s permissions. Cannot approve gates or create, list or revoke tokens.',
           },
           // The human gate (HZ-21): every account has its own auto-generated
           // PIN, kept separate from login so an agent that can read this

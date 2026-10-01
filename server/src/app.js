@@ -35,6 +35,7 @@ import { PERSONAS } from './personas.js'
 import * as definitions from './definitions.js'
 import * as runLogView from './runLogView.js'
 import {
+  API_SECURITY,
   ERROR_OBJECT,
   HUMAN_GATE_SECURITY,
   OK_OBJECT,
@@ -132,10 +133,38 @@ function snapshot() {
 // PIN, a cryptographic blocker kept separate from login so an AI agent (which
 // can read this database) still can't self-approve its own gate. By the time
 // this runs the auth hook below has already confirmed request.user.
+//
+// HZ-179: only a browser session can pass a gate. A personal API token plus
+// a valid PIN is still refused — checked as "not a session" rather than "is a
+// token" so any future credential type is locked out of gates by default.
 function humanAuthorized(request, reply) {
-  if (auth.verifyGatePin(request.user.id, request.headers['x-human-key'] || '')) return true
+  if (request.auth?.via === 'session' && auth.verifyGatePin(request.user.id, request.headers['x-human-key'] || '')) {
+    return true
+  }
   reply.code(401).send({ error: 'human_gate_key_required' })
   return false
+}
+
+// HZ-179: a token may not mint, list or revoke tokens — a leaked token must
+// not be able to extend its own life or hide itself. 403, not 401: the caller
+// is authenticated, just with the wrong kind of credential.
+function requireSession(request, reply) {
+  if (request.auth?.via === 'session') return true
+  reply.code(403).send({ error: 'session_required' })
+  return false
+}
+
+// Who to record in the activity trail. Token-driven actions name the token
+// too, so a script's changes are distinguishable from its owner's clicks.
+function actorOf(request) {
+  if (request.auth?.via === 'token') return `${request.user.name} (token: ${request.auth.tokenName})`
+  return request.user.name
+}
+
+// The raw value of an `Authorization: Bearer <token>` header, or null.
+function bearerToken(request) {
+  const match = /^Bearer\s+(\S+)\s*$/i.exec(request.headers.authorization || '')
+  return match ? match[1] : null
 }
 
 // Routes reachable without a login session: the auth routes themselves, the
@@ -272,17 +301,18 @@ export function buildApp({ logger = true, onRoute = null } = {}) {
     if (err) throw err
   })
 
-  // The session cookie is declared on routes from the same sessionExempt() the
-  // login gate below uses, rather than repeated in 30-odd route schemas where it
-  // could drift from the gate that actually runs. Routes that declare their own
-  // `security` keep it — that is the human-gate PIN (HUMAN_GATE_SECURITY), and
-  // the two /api/auth routes which are exempt from the hook but check the
-  // session themselves. Internal routes are absent from the spec, so they need
-  // no security block at all.
+  // The session cookie (or, HZ-179, a bearer token) is declared on routes from
+  // the same sessionExempt() the login gate below uses, rather than repeated in
+  // 30-odd route schemas where it could drift from the gate that actually runs.
+  // Routes that declare their own `security` keep it — that is the human-gate
+  // PIN (HUMAN_GATE_SECURITY), the session-only /api/tokens routes, and the two
+  // /api/auth routes which are exempt from the hook but check the session
+  // themselves. Internal routes are absent from the spec, so they need no
+  // security block at all.
   fastify.addHook('onRoute', (routeOptions) => {
     if (isInternal(routeOptions.url) || sessionExempt(routeOptions.url)) return
     if (routeOptions.schema?.security) return
-    routeOptions.schema = { ...routeOptions.schema, security: SESSION_SECURITY }
+    routeOptions.schema = { ...routeOptions.schema, security: API_SECURITY }
   })
 
   // Keep the raw request body so webhook signatures can be verified.
@@ -300,14 +330,33 @@ export function buildApp({ logger = true, onRoute = null } = {}) {
   // (auth routes, the GitHub webhook, farm callbacks, the WhatsApp approval
   // leg, and the shared stylesheet) — this is the app-level login gate that
   // replaces nginx's HTTP Basic Auth (HZ-21).
+  //
+  // HZ-179: with no valid session, an `Authorization: Bearer` personal API
+  // token is tried instead. The session path runs first and is unchanged. Every
+  // bad token — malformed, unknown, expired, revoked — gets the same
+  // invalid_token, so a caller cannot probe which case applies. request.auth
+  // records which credential was used; humanAuthorized() and requireSession()
+  // read it.
   fastify.addHook('onRequest', async (request, reply) => {
     if (!request.url.startsWith('/api/') || sessionExempt(request.url)) return
     const user = auth.getSessionUser(request.cookies[SESSION_COOKIE_NAME])
-    if (!user) {
+    if (user) {
+      request.user = user
+      request.auth = { via: 'session' }
+      return
+    }
+    const raw = bearerToken(request)
+    if (!raw) {
       reply.code(401).send({ error: 'login_required' })
       return
     }
-    request.user = user
+    const tokenAuth = auth.getTokenAuth(raw)
+    if (!tokenAuth) {
+      reply.code(401).send({ error: 'invalid_token' })
+      return
+    }
+    request.user = tokenAuth.user
+    request.auth = { via: 'token', tokenId: tokenAuth.tokenId, tokenName: tokenAuth.tokenName }
   })
 
   // The response schema documents the media type only: this route hijacks the
@@ -706,7 +755,7 @@ export function buildApp({ logger = true, onRoute = null } = {}) {
       if (!humanAuthorized(request, reply)) return
       const { id, stepIndex } = request.params
       const notes = (request.body?.notes || '').trim()
-      const result = await performGateApproval(id, stepIndex, notes, request.user.name)
+      const result = await performGateApproval(id, stepIndex, notes, actorOf(request))
       if (result.status === 502) return reply.code(502).send({ error: result.error })
       return send(reply, result)
     },
@@ -872,7 +921,7 @@ export function buildApp({ logger = true, onRoute = null } = {}) {
           request.params.id,
           request.body?.target,
           request.body?.feedback,
-          request.user.name,
+          actorOf(request),
           request.body?.targetStepIndex ?? null,
         ),
       )
@@ -897,7 +946,7 @@ export function buildApp({ logger = true, onRoute = null } = {}) {
     },
     async (request, reply) => {
       if (!humanAuthorized(request, reply)) return
-      const result = await orchestrator.resolveConflicts(request.params.id, request.user.name)
+      const result = await orchestrator.resolveConflicts(request.params.id, actorOf(request))
       return send(reply, result)
     },
   )
@@ -970,7 +1019,7 @@ export function buildApp({ logger = true, onRoute = null } = {}) {
         response: { 200: OK_OBJECT, 404: ERROR_OBJECT, 409: ERROR_OBJECT },
       },
     },
-    (request, reply) => send(reply, store.addDependency(request.params.id, request.body.dependsOnId, request.user.name)),
+    (request, reply) => send(reply, store.addDependency(request.params.id, request.body.dependsOnId, actorOf(request))),
   )
 
   // Same shape as /projects/:id/repos/disconnect — a removal is a POST to a
@@ -988,7 +1037,7 @@ export function buildApp({ logger = true, onRoute = null } = {}) {
         response: { 200: OK_OBJECT, 404: ERROR_OBJECT, 409: ERROR_OBJECT },
       },
     },
-    (request, reply) => send(reply, store.removeDependency(request.params.id, request.body.dependsOnId, request.user.name)),
+    (request, reply) => send(reply, store.removeDependency(request.params.id, request.body.dependsOnId, actorOf(request))),
   )
 
   // Confirm/override one agent's specialist persona (the PM proposes the Eng
@@ -1064,7 +1113,7 @@ export function buildApp({ logger = true, onRoute = null } = {}) {
       if (!humanAuthorized(request, reply)) return
       return send(
         reply,
-        store.restartPhase(request.params.id, request.params.phase, request.body?.reason, request.user.name),
+        store.restartPhase(request.params.id, request.params.phase, request.body?.reason, actorOf(request)),
       )
     },
   )
@@ -1097,7 +1146,7 @@ export function buildApp({ logger = true, onRoute = null } = {}) {
       if (!humanAuthorized(request, reply)) return
       const { id } = request.params
       const item = store.getItem(id)
-      const result = store.abandonItem(id, request.body.reason, request.user.name)
+      const result = store.abandonItem(id, request.body.reason, actorOf(request))
       if (result.error) return send(reply, result)
       if (item?.repo && item.issue != null) {
         try {
@@ -1263,6 +1312,61 @@ export function buildApp({ logger = true, onRoute = null } = {}) {
     },
   )
 
+  // ---- personal API tokens (HZ-179) ----
+  // Managed from Admin with a browser session only (requireSession). The raw
+  // token is in the 201 body of POST and nowhere else, ever.
+
+  const TOKEN_ROUTE_RESPONSES = { 401: ERROR_OBJECT, 403: ERROR_OBJECT }
+
+  fastify.get(
+    '/api/tokens',
+    { schema: { response: { 200: OK_OBJECT, ...TOKEN_ROUTE_RESPONSES }, security: SESSION_SECURITY } },
+    (request, reply) => {
+      if (!requireSession(request, reply)) return
+      return { tokens: auth.listApiTokens(request.user.id) }
+    },
+  )
+
+  fastify.post(
+    '/api/tokens',
+    {
+      schema: {
+        body: {
+          type: 'object',
+          required: ['name'],
+          properties: {
+            // At least one visible character, no control characters: the name
+            // lands in the activity trail's `who` on every token action.
+            name: { type: 'string', minLength: 1, maxLength: 60, pattern: '^[^\\u0000-\\u001f\\u007f]*\\S[^\\u0000-\\u001f\\u007f]*$' },
+            expiresInDays: {
+              type: 'integer',
+              minimum: 1,
+              maximum: auth.API_TOKEN_MAX_DAYS,
+              default: auth.API_TOKEN_DEFAULT_DAYS,
+            },
+          },
+        },
+        response: { 201: OK_OBJECT, 400: ERROR_OBJECT, ...TOKEN_ROUTE_RESPONSES },
+        security: SESSION_SECURITY,
+      },
+    },
+    (request, reply) => {
+      if (!requireSession(request, reply)) return
+      const created = auth.createApiToken(request.user.id, request.body.name.trim(), request.body.expiresInDays)
+      return reply.code(201).send(created)
+    },
+  )
+
+  fastify.delete(
+    '/api/tokens/:id',
+    { schema: { params: idParam, response: { 200: OK_OBJECT, 404: ERROR_OBJECT, ...TOKEN_ROUTE_RESPONSES }, security: SESSION_SECURITY } },
+    (request, reply) => {
+      if (!requireSession(request, reply)) return
+      if (!auth.revokeApiToken(request.user.id, request.params.id)) return reply.code(404).send({ error: 'token_not_found' })
+      return { ok: true }
+    },
+  )
+
   // ---- agent definitions (HZ-9: hierarchical, git-versioned, UI-editable) ----
 
   fastify.get('/api/definitions', { schema: { response: { 200: OK_OBJECT } } }, () => definitions.listDefinitions())
@@ -1336,7 +1440,7 @@ export function buildApp({ logger = true, onRoute = null } = {}) {
     (request, reply) => {
       if (!humanAuthorized(request, reply)) return
       const { kind, name } = request.params
-      const actor = request.user.name
+      const actor = actorOf(request)
       try {
         return definitions.writeDefinition(kind, name, request.body.content, actor)
       } catch (err) {
