@@ -36,7 +36,7 @@ import {
   requestChanges,
   reviewRejected,
 } from './store.js'
-import { createMockPr, createDeployRelease, postIssueComment, createPrFromBranch, getPrHeadSha } from './github.js'
+import { createMockPr, createDeployRelease, postIssueComment, syncIssueBodyFields, createPrFromBranch, getPrHeadSha } from './github.js'
 import { PHASES } from '../../domain/js/lifecycle.js'
 import { getActiveProjectId, getSetting, setSetting, getToken } from './settings.js'
 import {
@@ -926,6 +926,10 @@ async function dispatchToFarm(id, stepIndex, runId, attempt, scope) {
     item = getItem(id)
   }
 
+  // HZ-204: built BEFORE the delivered_at stamp below, so this attempt's own
+  // pending feedback rides in `feedback` only, never twice.
+  const projectContext = step.runsIn === 'pm' ? buildProjectContext(id) : null
+
   // Undelivered human feedback rides along and is considered delivered.
   const feedback = db
     .prepare('SELECT message, target, created_at FROM feedback WHERE item_id = ? AND delivered_at IS NULL')
@@ -1017,9 +1021,49 @@ async function dispatchToFarm(id, stepIndex, runId, attempt, scope) {
     feedback,
     ...(mergeMain ? { merge_main: true } : {}),
     ...(scope ? { scope } : {}),
+    ...(projectContext ? { project_context: projectContext } : {}),
   }).catch((err) => {
     failFarmRun(runId, `could not hand the step to the farm: ${err.message}`, REASON.UNREACHABLE)
   })
+}
+
+// Agents whose steps run in the PM lane — derived, so a step moving lanes
+// changes which feedback counts as PM-lane history.
+const PM_LANE_AGENTS = [...new Set(STEPS.filter((s) => s.runsIn === 'pm').map((s) => s.agent))]
+const PROJECT_CONTEXT_ITEMS = 10
+const PROJECT_CONTEXT_FEEDBACK = 5
+
+// HZ-204 (HZ-115 Stage 1): the explicit context a PM step gets in place of a
+// resumed session's memory — other recent items in the same project and the
+// latest human feedback already delivered to PM-lane steps. This only SELECTS
+// rows; farm/pm_agent.py's render_project_context() owns all trimming and the
+// size cap, so there is one owner for the budget.
+//
+// `rejected` is deliberately not filtered on: it means "sent back right now"
+// (store.js resets it as the item advances), and those items are often the
+// most relevant context. Abandoned items are dropped.
+export function buildProjectContext(itemId) {
+  const row = db.prepare('SELECT project_id FROM work_item WHERE id = ?').get(itemId)
+  const projectId = row?.project_id ?? null
+  const items = db
+    .prepare(
+      `SELECT id, title, "desc", updated_at FROM work_item
+       WHERE project_id IS ? AND id <> ? AND abandoned_at IS NULL
+       ORDER BY updated_at DESC, rowid DESC LIMIT ?`,
+    )
+    .all(projectId, itemId, PROJECT_CONTEXT_ITEMS)
+  const placeholders = PM_LANE_AGENTS.map(() => '?').join(', ')
+  const feedback = PM_LANE_AGENTS.length
+    ? db
+        .prepare(
+          `SELECT f.item_id, f.target, f.message, f.created_at
+           FROM feedback f JOIN work_item w ON w.id = f.item_id
+           WHERE w.project_id IS ? AND f.delivered_at IS NOT NULL AND f.target IN (${placeholders})
+           ORDER BY f.created_at DESC, f.id DESC LIMIT ?`,
+        )
+        .all(projectId, ...PM_LANE_AGENTS, PROJECT_CONTEXT_FEEDBACK)
+    : []
+  return { items, feedback }
 }
 
 // Called from POST /api/farm/steps/:runId/started, pushed by farmd the
@@ -1115,9 +1159,23 @@ export function stepCommentBody(item, stepIndex, attempt, summary, patch, isMock
 
 // Every completed agent step is mirrored onto the GitHub issue — the issue
 // thread is the human-readable record of what the bots did.
+// Body text first, then the comment: the comment's webhook re-reads the body,
+// so a refinement must already be in it (see syncIssueBodyFields).
+const BODY_FIELDS = ['desc', 'metric', 'guardrails']
 function postStepComment(item, stepIndex, attempt, summary, patch, isMock, artifactMd) {
   if (!item.repo || item.issue == null) return
-  postIssueComment(item, stepCommentBody(item, stepIndex, attempt, summary, patch, isMock, artifactMd)).catch((err) => {
+  const touchesBody = !isMock && patch && BODY_FIELDS.some((f) => typeof patch[f] === 'string')
+  const bodySynced = touchesBody
+    ? syncIssueBodyFields(item).catch((err) => {
+        addEvent(item.id, {
+          who: 'Horizon',
+          text: `could not update issue #${item.issue}'s body with the refined fields: ${err.message}`,
+          color: '#9C333E',
+          initials: 'HZ',
+        })
+      })
+    : Promise.resolve()
+  bodySynced.then(() => postIssueComment(item, stepCommentBody(item, stepIndex, attempt, summary, patch, isMock, artifactMd))).catch((err) => {
     addEvent(item.id, {
       who: 'Horizon',
       text: `could not post the step result to issue #${item.issue}: ${err.message}`,

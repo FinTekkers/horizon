@@ -32,9 +32,11 @@ __all__ = [
     "assert_provider_auth",
     "extract_json",
     "parse_agent_reply",
+    "provider_resumes_after_exhaustion",
     "record_repair",
     "repair_counts",
     "run_agent",
+    "salvage_truncated_reply",
     "stamp_notes",
     "stamp_notes_artifact",
 ]
@@ -126,9 +128,15 @@ def run_agent(
     allowed_tools: str | None = None,
     provider: str | None = None,
     provider_locked: bool = False,
+    retry_fresh: bool = True,
 ) -> dict:
     """Returns {"result": <final text>, "session_id": <id>, "provider": <name>,
     "command_id": <id or None>}.
+
+    retry_fresh=False (HZ-158) is handed to the provider: a failed resume
+    raises instead of quietly starting a fresh session. Every caller but the
+    handoff note keeps the default. An AgentExhaustedError leaves here with
+    .provider set to the provider that ran.
 
     provider names which entry in _PROVIDERS to dispatch to for this one
     call, overriding FARM_PROVIDER (HZ-102 — e.g. a persona mapped to Muse
@@ -164,21 +172,104 @@ def run_agent(
             f"provider '{name}' does not support resuming a session (SUPPORTS_RESUME=False) — "
             "refusing this call rather than silently starting fresh"
         )
-    result = provider_module.run(
-        prompt,
-        session_id=session_id,
-        append_system=append_system,
-        cwd=cwd,
-        model=model,
-        max_turns=max_turns,
-        timeout_s=timeout_s,
-        allowed_tools=allowed_tools,
-    )
+    try:
+        result = provider_module.run(
+            prompt,
+            session_id=session_id,
+            append_system=append_system,
+            cwd=cwd,
+            model=model,
+            max_turns=max_turns,
+            timeout_s=timeout_s,
+            allowed_tools=allowed_tools,
+            retry_fresh=retry_fresh,
+        )
+    except AgentExhaustedError as exc:
+        # The same provenance a reply carries, so a salvaged reply can record
+        # which provider really ran (HZ-158).
+        exc.provider = name
+        raise
     # Provenance (HZ-102): which provider actually ran, plus its run-level
     # id where one exists (Muse's command_id; Claude has no equivalent).
     result["provider"] = name
     result.setdefault("command_id", None)
     return result
+
+
+def provider_resumes_after_exhaustion(name: str | None) -> bool:
+    """HZ-158: whether provider `name` can resume a session that ran out of
+    budget — the provider module's RESUMES_AFTER_EXHAUSTION. False for an
+    unknown or missing name: no resume is ever attempted on a guess."""
+    module = _PROVIDERS.get(name) if isinstance(name, str) else None
+    return bool(getattr(module, "RESUMES_AFTER_EXHAUSTION", False))
+
+
+SALVAGE_NOTE = (
+    "the agent ran out of turns while writing this reply; it was salvaged from a "
+    "JSON reply cut off mid-string, so its last field is incomplete"
+)
+
+
+def salvage_truncated_reply(text: str | None, required_keys: tuple[str, ...]) -> tuple[dict, str] | None:
+    """HZ-158: recover a reply that was valid JSON until it was cut off inside
+    a string value, or None. Returns (parsed object, note for the record).
+
+    Only one repair is made, and it adds no content: close the open string,
+    then the open arrays and objects in stack order. Everything else returns
+    None, so the caller re-raises the exhaustion:
+
+    * no text, or text that does not start with `{` once fences are stripped;
+    * a cut anywhere but inside a string — `{`, or between tokens, where a
+      value or key would have to be invented;
+    * a cut right after a backslash (a half-written escape);
+    * text whose top-level object already closed — it was not cut off;
+    * a closed result that does not parse — e.g. a cut inside a key;
+    * a non-object, an empty object, or one where any of required_keys is
+      missing, null or an empty string. No required_keys at all is also a
+      rejection: a caller must say what a reply needs.
+    * any object with a "verdict" key. This is a backstop only: which steps
+      may be salvaged is decided by step_agent.SALVAGE_STEPS, never here.
+
+    Deliberately not extract_json(): its prose-tolerant attempts would accept
+    the shapes this function must refuse (farm/tests/test_one_reply_parser.py).
+    """
+    if not required_keys or not isinstance(text, str):
+        return None
+    cleaned = _strip_fences(text).lstrip()
+    if not cleaned.startswith("{") or cleaned.endswith("\\"):
+        return None
+    stack: list[str] = []
+    pairs = {"}": "{", "]": "["}
+    in_string_at_end = False
+    # The appended quote closes the string the text was cut in — and reports
+    # in_string=True for it — or opens a new one, reporting False.
+    for i, ch, in_string in _scan(cleaned + '"'):
+        if i == len(cleaned):
+            in_string_at_end = in_string
+            break
+        if in_string:
+            continue
+        if ch in "{[":
+            stack.append(ch)
+        elif ch in pairs:
+            if not stack or stack.pop() != pairs[ch]:
+                return None
+            if not stack:
+                return None  # the object closed, so the reply was not cut off
+    if not in_string_at_end or not stack:
+        return None
+    closers = "".join("}" if opener == "{" else "]" for opener in reversed(stack))
+    try:
+        parsed = json.loads(cleaned + '"' + closers, strict=False)
+    except (ValueError, RecursionError):
+        return None
+    if not isinstance(parsed, dict) or not parsed or "verdict" in parsed:
+        return None
+    for key in required_keys:
+        value = parsed.get(key)
+        if value is None or (isinstance(value, str) and not value.strip()):
+            return None
+    return parsed, SALVAGE_NOTE
 
 
 def _scan(text: str, start: int = 0) -> Iterator[tuple[int, str, bool]]:

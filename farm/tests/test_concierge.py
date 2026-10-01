@@ -383,6 +383,16 @@ def test_item_line_reports_paused_and_closed_states():
     assert _line(currentStep={"label": "Closed", "kind": "done", "gate": False}).endswith("— closed")
 
 
+def test_item_line_never_offers_an_abandoned_item_as_awaiting_approval():
+    # Abandoned items keep their cursor, so HZ-79 abandoned at gate 5 still has a
+    # gate as its current step. It must read as abandoned, never as awaiting,
+    # and carry no step_index the model could turn into a gate option.
+    line = _line(abandoned_at="2026-09-25 17:56:51",
+                 currentStep={"index": 5, "label": "Approve the high-level design", "kind": "gate", "gate": True})
+    assert line.endswith("— abandoned")
+    assert "AWAITING" not in line and "step_index" not in line
+
+
 def test_item_line_survives_a_snapshot_without_current_step():
     # An older server (or a test stub) that doesn't send currentStep must not crash the concierge.
     assert _line().endswith("— waiting")

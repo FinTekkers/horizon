@@ -16,12 +16,15 @@ from pathlib import Path
 
 from ..config import FARM_MUSE_BIN, MAX_TURNS, STEP_TIMEOUT_S
 from ..credentials import without_gate_credentials
-from .base import AgentError, AgentExhaustedError
+from .base import AgentError, AgentExhaustedError, decode_partial
 
 # `muse exec --session-id <UUID>` genuinely carries context across calls
 # (verified: two separate processes sharing one id, see the vendor doc) —
 # unlike Claude, the id is caller-supplied, not echoed back.
 SUPPORTS_RESUME = True
+# HZ-158: no (unverified, treated as no) — continuity is verified only between
+# completed runs; see AgentExhaustedError's docstring in providers/base.py.
+RESUMES_AFTER_EXHAUSTION = False
 
 
 def assert_subscription_auth() -> None:
@@ -44,8 +47,12 @@ def run(
     max_turns: int = MAX_TURNS,
     timeout_s: int = STEP_TIMEOUT_S,
     allowed_tools: str | None = None,
+    retry_fresh: bool = True,
 ) -> dict:
     """Returns {"result": <final text>, "session_id": <id>}.
+
+    retry_fresh is accepted for the same reason and ignored: this provider
+    never falls back to a fresh session, so there is nothing to turn off.
 
     allowed_tools is accepted (same public signature as every provider) but
     has no effect: Muse's CLI exposes no tool-restriction flag equivalent to
@@ -108,7 +115,11 @@ def run(
                 env=without_gate_credentials(),
             )
         except subprocess.TimeoutExpired as exc:
-            raise AgentExhaustedError(f"muse timed out after {timeout_s}s") from exc
+            # The captured stdout is the JSONL event stream so far, not prose —
+            # carried raw; a salvage of it fails closed.
+            raise AgentExhaustedError(
+                f"muse timed out after {timeout_s}s", partial_text=decode_partial(exc.output), session_id=sid
+            ) from exc
         except FileNotFoundError as exc:
             raise AgentError(f"muse binary not found: {FARM_MUSE_BIN}") from exc
     finally:
@@ -153,7 +164,13 @@ def _parse_events(proc: subprocess.CompletedProcess, session_id: str) -> dict:
     # proves wrong.
     exhausted = next((e for e in events if "exhaust" in e.get("payload_type", "")), None)
     if exhausted is not None:
-        raise AgentExhaustedError(f"muse reported exhaustion: {exhausted.get('payload_type')}")
+        payload = exhausted.get("payload")
+        text = payload.get("text") if isinstance(payload, dict) else None
+        raise AgentExhaustedError(
+            f"muse reported exhaustion: {exhausted.get('payload_type')}",
+            partial_text=text if isinstance(text, str) and text else None,
+            session_id=session_id,
+        )
 
     if proc.returncode != 0:
         raise AgentError(f"muse exited {proc.returncode}: {proc.stderr.strip()[:300]}")

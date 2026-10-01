@@ -682,6 +682,28 @@ export async function createDeployRelease(item) {
 
 // Agent step results are posted to the issue so GitHub stays the
 // human-readable record of what the bots did.
+// Agent refinements (outcome, metric, guardrails) must reach the issue body,
+// not only the database: store.upsertFromGithub() re-reads those sections from
+// the body on every issue webhook, and the step comment posted right after a
+// patch fires one, so a database-only refinement was overwritten seconds later
+// (seen on HZ-204 and HZ-216, 2026-10-01). Only bodies already in Horizon's
+// section format are rewritten; an issue written freehand on GitHub has no
+// "## Success metric" heading, keeps its body, and upsert already keeps the
+// database's metric for it.
+const HORIZON_BODY = /^##\s+Success metric\s*$/m
+export async function syncIssueBodyFields(item) {
+  if (!item.repo || item.issue == null) return false
+  const res = await gh(`/repos/${item.repo}/issues/${item.issue}`)
+  if (!res.ok) throw new Error(`GitHub returned ${res.status} reading issue #${item.issue}`)
+  const current = (await res.json()).body || ''
+  if (!HORIZON_BODY.test(current)) return false
+  const body = composeIssueBody({ outcome: item.desc || '', metric: item.metric || '', guardrails: item.guardrails })
+  if (body === current) return false
+  const upd = await gh(`/repos/${item.repo}/issues/${item.issue}`, { method: 'PATCH', body: JSON.stringify({ body }) })
+  if (!upd.ok) throw new Error(`GitHub returned ${upd.status} updating issue #${item.issue}`)
+  return true
+}
+
 export async function postIssueComment(item, body) {
   const res = await gh(`/repos/${item.repo}/issues/${item.issue}/comments`, {
     method: 'POST',

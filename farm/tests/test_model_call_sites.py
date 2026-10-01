@@ -26,9 +26,10 @@ REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 FARM_DIR = REPO_ROOT / "farm"
 THIS_FILE = Path(__file__).resolve()
 
-CALLER_MODULES = ("pm_agent.py", "step_agent.py", "concierge_agent.py", "conflict_resolver.py")
-# 2 in pm_agent, 3 in step_agent, 2 in concierge_agent, 2 in conflict_resolver.
-EXPECTED_CALL_SITES = 9
+CALLER_MODULES = ("pm_agent.py", "step_agent.py", "concierge_agent.py", "conflict_resolver.py", "handoff.py")
+# 2 in pm_agent, 3 in step_agent, 2 in concierge_agent, 2 in conflict_resolver,
+# 1 in handoff (HZ-158's note from an exhausted session).
+EXPECTED_CALL_SITES = 10
 
 
 def call_site_problems(source: str, filename: str) -> tuple[int, list[str]]:
@@ -156,7 +157,9 @@ def model_id_scope(paths, root) -> list[Path]:
 
 def test_the_old_model_env_vars_appear_in_no_tracked_file():
     hits = scan(tracked_files(), OLD_MODEL_VARS, REPO_ROOT)
-    assert not hits, "FARM_PM_MODEL / FARM_STEP_MODEL / FARM_CONCIERGE_MODEL are gone (HZ-192):\n" + "\n".join(hits)
+    # The message names the pattern, not the variables, so this file holds no
+    # literal hit either (HZ-204: the PM's one appears nowhere in the repo).
+    assert not hits, f"the per-agent model env vars ({OLD_MODEL_VARS.pattern}) are gone (HZ-192):\n" + "\n".join(hits)
 
 
 def test_no_model_id_is_hard_coded_outside_domain():

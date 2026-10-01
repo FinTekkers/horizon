@@ -160,6 +160,35 @@ def test_run_exhaustion_event_raises_agent_exhausted_error(monkeypatch):
         muse.run("hello")
 
 
+def test_the_exhaustion_event_carries_the_session_id_and_its_partial_text(monkeypatch):
+    """HZ-158, against the same unverified fake event as the test above,
+    unchanged: its payload has no text, so partial_text is None."""
+
+    def fake_run(cmd, **kwargs):
+        line = json.dumps({"payload_type": "run.terminal.exhausted", "payload": {}})
+        return _completed(stdout=line, returncode=0)
+
+    monkeypatch.setattr(muse.subprocess, "run", fake_run)
+    with pytest.raises(AgentExhaustedError) as exc_info:
+        muse.run("hello", session_id="sid-1")
+    assert exc_info.value.session_id == "sid-1"
+    assert exc_info.value.partial_text is None
+
+
+def test_a_timeout_carries_the_minted_session_id_and_the_captured_output(monkeypatch):
+    captured = {}
+
+    def fake_run(cmd, **kwargs):
+        captured["sid"] = cmd[cmd.index("--session-id") + 1]
+        raise subprocess.TimeoutExpired(cmd=cmd, timeout=kwargs.get("timeout"), output=b'{"payload_type": "run.output.delta"}')
+
+    monkeypatch.setattr(muse.subprocess, "run", fake_run)
+    with pytest.raises(AgentExhaustedError, match="timed out") as exc_info:
+        muse.run("hang forever", timeout_s=5)
+    assert exc_info.value.session_id == captured["sid"]
+    assert exc_info.value.partial_text == '{"payload_type": "run.output.delta"}'
+
+
 def test_binary_not_found_raises_agent_error(monkeypatch):
     def fake_run(cmd, **kwargs):
         raise FileNotFoundError()
