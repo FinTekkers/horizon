@@ -25,6 +25,8 @@ import httpx
 # reports is a constant the server already knows, never a string typed here.
 from domain.py import reasons, steps
 
+from . import agent_runner
+
 # AgentExhaustedError is this branch's name for main's TurnCapExceeded — the
 # same "ran out of turn budget" signal, renamed by the provider refactor. The
 # import conflicted while its USE below merged cleanly, so the rename has to be
@@ -38,7 +40,7 @@ from .agent_runner import (
     stamp_notes_artifact,
 )
 from .checks import run_checks
-from .config import FARM_PORT
+from .config import FARM_PORT, STEP_MODEL
 from .personas import compose_role, provider_for, resolve
 from .rules import render_rules_section
 from .workspaces import ensure_item_worktree, hub_lock
@@ -63,7 +65,7 @@ MAX_PROMPT_ARTIFACT_CHARS = 100_000
 # one place and not the other would silently truncate the notes back off.
 SUMMARY_MAX_CHARS = 600
 
-# step label -> (role file, needs JSON artifact, tool access, wants persona).
+# step label -> (role file, needs JSON artifact, tool access, persona agent).
 # HZ-117: keyed by label (the table's own primary key, see domain/steps.json),
 # never index — an insertion elsewhere in the table can't repoint one of
 # these at the wrong step. Turn budgets and timeouts moved to
@@ -72,6 +74,13 @@ SUMMARY_MAX_CHARS = 600
 # the generated table instead of a second hand-maintained mapping here.
 # Personas specialize only the steps that act on the item's stack — QA and
 # implement; the planning steps stay generalist.
+#
+# HZ-125: the last field used to be a bool ("wants a persona"). Personas are
+# now scoped by agent, so it names WHICH agent's persona bucket this step
+# composes from — None for the steps that compose none. The same three steps
+# compose as before; only the sentinel's shape changed, and it is now
+# load-bearing: a QA step can no longer be handed an Eng persona because the
+# agent is what selects the bucket.
 PLANNER_TOOLS = "Read,Glob,Grep"
 IMPLEMENT_TOOLS = "Read,Glob,Grep,Edit,Write,Bash"
 # DevOps investigates and can hit live URLs (curl, gh cli, etc.) but never
@@ -83,22 +92,29 @@ REVIEW_LABEL = "Automated review (code + QA)"
 DEPLOY_LABEL = "Deploy the changes"
 
 STEP_CONFIG = {
-    "Plan options & trade-offs (pros / cons)": ("ensemble.md", True, PLANNER_TOOLS, False),
-    "Draft implementation plan": ("eng_plan.md", True, PLANNER_TOOLS, False),
-    "Architecture review": ("architect_review.md", True, PLANNER_TOOLS, False),
-    "QA reviews the test plan": ("qa.md", True, PLANNER_TOOLS, True),
-    IMPLEMENT_LABEL: ("eng_implement.md", False, IMPLEMENT_TOOLS, True),
-    # code_review.md is loaded here for the first (code) pass; qa_review.md
-    # is loaded separately inside execute()'s review branch for the second
-    # pass. Read-only tools: the reviewer can never edit, push, merge or
-    # approve the human gate (HZ-30) — enforced here, not by prompt alone.
-    REVIEW_LABEL: ("code_review.md", True, PLANNER_TOOLS, True),
+    "Plan options & trade-offs (pros / cons)": ("ensemble.md", True, PLANNER_TOOLS, None),
+    "Draft implementation plan": ("eng_plan.md", True, PLANNER_TOOLS, None),
+    "Architecture review": ("architect_review.md", True, PLANNER_TOOLS, None),
+    "QA reviews the test plan": ("qa.md", True, PLANNER_TOOLS, "qa"),
+    IMPLEMENT_LABEL: ("eng_implement.md", False, IMPLEMENT_TOOLS, "eng"),
+    # code_review.md is loaded here for the first (code) pass and composes the
+    # item's ENG persona (it reviews the code as an engineer); qa_review.md is
+    # loaded separately inside execute()'s review branch for the second pass
+    # and composes the item's QA persona. Read-only tools: the reviewer can
+    # never edit, push, merge or approve the human gate (HZ-30) — enforced
+    # here, not by prompt alone.
+    REVIEW_LABEL: ("code_review.md", True, PLANNER_TOOLS, "eng"),
     # DevOps is a role, not a persona (HZ-22 architecture review) — it is
     # project-scoped via farm/rules/projects/*.md, not stack-scoped, so it
     # never gets a persona composed in.
-    DEPLOY_LABEL: ("devops.md", True, DEVOPS_TOOLS, False),
+    DEPLOY_LABEL: ("devops.md", True, DEVOPS_TOOLS, None),
 }
 
+# The agent whose persona the review step's second (QA) pass composes. Named
+# here rather than inlined because it is the fix HZ-125 exists for: both passes
+# used to compose the item's single flat persona, so the QA reviewer was handed
+# the Eng specialization of the engineer whose diff it was reviewing.
+REVIEW_QA_PERSONA_AGENT = "qa"
 
 def _assert_step_config_matches_table(config_labels: set[str], table_labels: set[str]) -> None:
     """The actual Python-side enforcement of "an inserted/renamed step must
@@ -147,6 +163,35 @@ def git(ws: Path, *args: str, check: bool = True, env: dict | None = None) -> su
     return result
 
 
+def item_personas(item: dict) -> dict:
+    """The item's {agent: persona id} map (HZ-125).
+
+    Falls back to reading the pre-HZ-125 flat `persona` field as the item's Eng
+    persona. The server translates legacy rows before dispatch, so this only
+    matters for a task file enqueued by an older server and claimed after this
+    shipped — a real window on a single-host deploy, and cheap to survive:
+    resolve() accepts the legacy id (farm/personas.py's LEGACY_PERSONA_IDS).
+    """
+    personas = item.get("personas")
+    if isinstance(personas, dict):
+        return personas
+    legacy = item.get("persona")
+    return {"eng": legacy} if isinstance(legacy, str) and legacy.strip() else {}
+
+
+def _persona_line(task: dict) -> str:
+    """The prompt's persona line: the persona this step will actually compose,
+    named with its agent, or an explicit "generalist" for the steps that
+    compose none. Pre-HZ-125 this printed one resolved id for every step —
+    including the generalist planning steps, which never received it."""
+    config = STEP_CONFIG.get(task["step"]["label"])
+    persona_agent = config[3] if config else None
+    if not persona_agent:
+        return "  persona: (none — this step is generalist)"
+    resolved = resolve(persona_agent, item_personas(task["item"]).get(persona_agent))
+    return f"  persona: {persona_agent}/{resolved}"
+
+
 def build_prompt(task: dict) -> str:
     item, step = task["item"], task["step"]
     lines = [
@@ -155,7 +200,7 @@ def build_prompt(task: dict) -> str:
         f"  outcome: {item.get('desc') or '(empty)'}",
         f"  success metric: {item.get('metric') or '(empty)'}",
         f"  guardrails: {item.get('guardrails') or '(defaults only)'}",
-        f"  persona: {resolve(item.get('persona'))}",
+        _persona_line(task),
     ]
     if item.get("release_tag"):
         lines.append(f"  release: {item['release_tag']}  ({item.get('release_url') or 'no url'}) — already published")
@@ -400,6 +445,19 @@ def _review_summary(verdict: dict) -> str:
     return summary[:SUMMARY_MAX_CHARS]
 
 
+def step_model(provider: str | None = None) -> str | None:
+    """HZ-187: the model every step-agent run_agent() call passes — STEP_MODEL
+    on the claude provider, None (the provider's own default) anywhere else,
+    so a Muse-routed step never receives a Claude model id.
+
+    Must mirror agent_runner._selected_provider()'s rule: an explicit provider
+    wins, else FARM_PROVIDER read at call time. Called through the module so a
+    test patching agent_runner._selected_provider_name reaches it too.
+    """
+    name = provider or agent_runner._selected_provider_name()
+    return STEP_MODEL if name == agent_runner.DEFAULT_PROVIDER else None
+
+
 def _provenance(reply: dict) -> dict:
     return {"provider": reply.get("provider"), "command_id": reply.get("command_id")}
 
@@ -442,6 +500,7 @@ def _run_and_parse(
         allowed_tools=allowed_tools,
         provider=provider,
         provider_locked=provider_locked,
+        model=step_model(provider),
     )
     produced = reply
 
@@ -458,6 +517,7 @@ def _run_and_parse(
             allowed_tools=allowed_tools,
             provider=provider,
             provider_locked=provider_locked,
+            model=step_model(provider),
         )
         return produced["result"]
 
@@ -498,15 +558,16 @@ def run_smoke_check(url: str, expected_text: str) -> tuple[str, str]:
 
 def execute(task: dict) -> dict:
     label = task["step"]["label"]
-    role_file, wants_artifact, tools, wants_persona = STEP_CONFIG[label]
+    role_file, wants_artifact, tools, persona_agent = STEP_CONFIG[label]
     max_turns, timeout_s = steps.budget_for_label(steps.STEPS, label)
     provider_locked = steps.provider_locked_for(steps.STEPS, label)
     role = (ROLES / role_file).read_text()
     item = task["item"]
-    if wants_persona:
-        role = compose_role(role, item.get("persona"))
+    personas = item_personas(item)
+    if persona_agent:
+        role = compose_role(role, persona_agent, personas.get(persona_agent))
     provider_override = (
-        provider_for(item.get("persona")) if steps.provider_override_eligible(steps.STEPS, label) else None
+        provider_for(personas) if steps.provider_override_eligible(steps.STEPS, label) else None
     )
 
     ws = None
@@ -538,6 +599,7 @@ def execute(task: dict) -> dict:
                 timeout_s=timeout_s,
                 allowed_tools=tools,
                 provider_locked=provider_locked,
+                model=step_model(),
             )
         except Exception:
             # SALVAGE (HZ-31): the run hit its turn/time cap (or any other
@@ -625,9 +687,11 @@ def execute(task: dict) -> dict:
             provider_locked=provider_locked,
         )
 
+        # The item's QA persona, never the Eng one the code pass above used
+        # (HZ-125): a reviewer wearing the implementer's specialization reviews
+        # the work as the engineer who wrote it.
         qa_role = (ROLES / "qa_review.md").read_text()
-        if wants_persona:
-            qa_role = compose_role(qa_role, item.get("persona"))
+        qa_role = compose_role(qa_role, REVIEW_QA_PERSONA_AGENT, personas.get(REVIEW_QA_PERSONA_AGENT))
         qa_parsed, _qa_provenance, qa_notes = _run_and_parse(
             prompt,
             append_system=qa_role,

@@ -61,9 +61,12 @@ export default defineConfig({
   workers: 1,
   retries: 0,
   timeout: 30_000,
-  // Automatic enforcement of the 90s runtime budget (leaves margin below it
-  // for a slower host) instead of relying on someone re-measuring by hand.
-  globalTimeout: 85_000,
+  // Hard ceiling, not the target. The suite should still run in well under
+  // 90s on a quiet host (about 55s today), so keep new specs lean. The ceiling
+  // is 180s because the farm runs several suites at once on a 2-CPU host, and
+  // at 85s a green suite that ran slow under load failed its check and threw
+  // away a finished implement attempt (HZ-157, HZ-178, HZ-187 on 2026-10-01).
+  globalTimeout: 180_000,
   globalSetup: './global-setup.js',
   reporter: [['list']],
   use: {

@@ -47,7 +47,7 @@ import {
   RECONCILE_SWEEP_MS,
   UI_URL,
 } from './config.js'
-import { isPersona, personaLabel, proposePersona } from './personas.js'
+import { PRIMARY_PERSONA_AGENT, isPersona, personaLabel, proposePersona } from './personas.js'
 
 // Keyed by step_run.id (HZ-100) — NOT item id. Keying by item used to let a
 // stale callback for a superseded run clear/overwrite the CURRENT run's
@@ -651,11 +651,15 @@ export const MOCK_STEP_BEHAVIOR = {
     const result = it.desc
       ? { summary: 'refined the outcome statement from the issue description', patch: {} }
       : { summary: 'drafted an outcome statement for gate review', patch: { desc: `Deliver: ${it.title}` } }
-    // Propose a specialist persona once; never re-propose over a set value —
-    // it may be a human's choice (the server-side no-clobber is the real guard).
-    if (!it.persona) {
-      result.patch.persona = proposePersona(it)
-      result.summary += ` — proposed the ${personaLabel(result.patch.persona)} persona (confirm at the gate)`
+    // Propose the Eng specialist persona once; never re-propose over a set
+    // value — it may be a human's choice (the server-side no-clobber is the
+    // real guard). Only the Eng slot is proposed: the other agents' personas
+    // default and the human picks them at the gate (same rule as the real PM
+    // agent's, see farm/roles/pm.md).
+    if (!it.personas?.[PRIMARY_PERSONA_AGENT]) {
+      const persona = proposePersona(it, PRIMARY_PERSONA_AGENT)
+      result.patch.personas = { [PRIMARY_PERSONA_AGENT]: persona }
+      result.summary += ` — proposed the ${personaLabel(PRIMARY_PERSONA_AGENT, persona)} persona (confirm at the gate)`
     }
     if (Object.keys(result.patch).length === 0) delete result.patch
     return result
@@ -903,7 +907,7 @@ async function dispatchToFarm(id, stepIndex, runId, attempt) {
       priority: item.priority,
       repo: item.repo,
       issue: item.issue,
-      persona: item.persona,
+      personas: item.personas,
       ...releaseFields,
     },
     step: { index: stepIndex, label: step.label, agent: step.agent },
@@ -940,13 +944,40 @@ export function markFarmRunStarted(runId) {
 // the two sides of the wire cannot disagree about which fields exist. Only the
 // key list is needed here: the limits themselves are enforced agent-side, at the
 // point the over-long value is produced, where a marker can still be attached.
+//
+// `personas` is deliberately NOT in this list and never will be: since HZ-125 it
+// is an { agent: persona id } object rather than a text column, so it is
+// validated and written separately (see completeFarmRun and writeWorkItemPatch
+// below). That is also why domain/fields.json marks the legacy `persona` column
+// agentRevisable: false — nothing reaches it through this loop any more.
 const FARM_PATCH_FIELDS = Object.keys(patchLimits())
 // Display copy, deliberately NOT in domain/ (guardrail 5): these are the names a
 // human reads in the GitHub step comment, not part of the field model. A
 // patchable field missing from this map is written to the database but silently
 // omitted from the comment, so domain-fields-consumers.test.mjs drives
 // stepCommentBody with every patchable column set and asserts each one renders.
-const PATCH_FIELD_LABELS = { desc: 'Outcome', metric: 'Success metric', guardrails: 'Guardrails', persona: 'Specialist persona' }
+const PATCH_FIELD_LABELS = { desc: 'Outcome', metric: 'Success metric', guardrails: 'Guardrails', personas: 'Specialist personas' }
+
+// Applies a completed step's patch to the item. Split out because `personas` is
+// an object that merges into one JSON column while every other field is a plain
+// column assignment — building `SET <key> = ?` straight off the patch keys (as
+// both callers used to) would emit `SET personas = ?` and fail.
+function writeWorkItemPatch(id, item, patch) {
+  const fields = Object.keys(patch || {}).filter((f) => f !== 'personas')
+  const assignments = fields.map((f) => `${f} = ?`)
+  const values = fields.map((f) => patch[f])
+  if (patch?.personas) {
+    // Merge, never replace: a patch that proposes an eng persona must not drop
+    // the qa persona a human already chose.
+    assignments.push('personas_json = ?')
+    values.push(JSON.stringify({ ...item.personas, ...patch.personas }))
+  }
+  if (assignments.length === 0) return
+  db.prepare(`UPDATE work_item SET ${assignments.join(', ')}, updated_at = datetime('now') WHERE id = ?`).run(
+    ...values,
+    id,
+  )
+}
 
 // Exported for tests: the comment body is the human-readable record, so its
 // rendering (e.g. persona labels, never raw ids) is pinned directly.
@@ -958,7 +989,12 @@ export function stepCommentBody(item, stepIndex, attempt, summary, patch, isMock
   if (changed.length > 0) {
     lines.push('', '**Updated fields:**')
     for (const key of changed) {
-      const shown = key === 'persona' ? personaLabel(patch[key]) : patch[key]
+      const shown =
+        key === 'personas'
+          ? Object.entries(patch.personas)
+              .map(([agent, persona]) => `${agent} — ${personaLabel(agent, persona)}`)
+              .join(', ')
+          : patch[key]
       lines.push(`- **${PATCH_FIELD_LABELS[key]}:** ${shown}`)
     }
   }
@@ -1172,15 +1208,18 @@ export async function completeFarmRun(runId, { summary, patch, artifacts }) {
     if (typeof patch?.[field] === 'string' && patch[field].trim()) cleanPatch[field] = patch[field].trim()
   }
   // Persona patches are dropped (not failed) when invalid, and when the item
-  // already carries one — a set value may be a human's gate-time choice, and
-  // the farm must never clobber it. The run itself still completes.
-  if ('persona' in cleanPatch && (!isPersona(cleanPatch.persona) || item.persona)) delete cleanPatch.persona
-  if (Object.keys(cleanPatch).length > 0) {
-    const fields = Object.keys(cleanPatch)
-    db.prepare(
-      `UPDATE work_item SET ${fields.map((f) => `${f} = ?`).join(', ')}, updated_at = datetime('now') WHERE id = ?`,
-    ).run(...fields.map((f) => cleanPatch[f]), id)
+  // already carries one for that agent — a set value may be a human's gate-time
+  // choice, and the farm must never clobber it. The run itself still completes.
+  // Per-agent since HZ-125: a proposal for the qa slot still lands on an item
+  // whose eng slot a human already set.
+  if (patch?.personas && typeof patch.personas === 'object' && !Array.isArray(patch.personas)) {
+    const survivors = {}
+    for (const [agent, persona] of Object.entries(patch.personas)) {
+      if (isPersona(agent, persona) && !item.personas?.[agent]) survivors[agent] = persona
+    }
+    if (Object.keys(survivors).length > 0) cleanPatch.personas = survivors
   }
+  writeWorkItemPatch(id, item, cleanPatch)
 
   const step = STEPS[run.step_index]
   const agent = AGENTS[step.agent]
@@ -1340,13 +1379,7 @@ async function runMockStep(id, stepIndex, runId) {
     return
   }
 
-  if (patch) {
-    const fields = Object.keys(patch)
-    db.prepare(`UPDATE work_item SET ${fields.map((f) => `${f} = ?`).join(', ')}, updated_at = datetime('now') WHERE id = ?`).run(
-      ...fields.map((f) => patch[f]),
-      id,
-    )
-  }
+  if (patch) writeWorkItemPatch(id, after, patch)
 
   if (stepIndex === REVIEW_STEP_INDEX) {
     // finalizeReviewStep releases the busy mutex itself before it calls kick().

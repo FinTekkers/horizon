@@ -40,13 +40,25 @@ from .rules import render_rules_section
 # The fields a PM revision may patch, and how long each may be — DERIVED from
 # domain/fields.json (HZ-134), which is also where server/src/app.js's POST
 # /api/items body schema gets the same numbers. Until HZ-134 these were four
-# hand-typed integers (desc 500, metric 400, guardrails 400) that had drifted
-# below what the API accepted, so a PM revision could not write a guardrails
-# value a human could type into the create form. Keyed by work_item column,
-# which is what a patch payload uses; persona is a specialist routing tag (HZ-4)
-# the server registry-validates and drops over a set value, so its limit is just
-# a size cap.
+# hand-typed integers that had drifted below what the API accepted, so a PM
+# revision could not write a guardrails value a human could type into the create
+# form. Keyed by work_item column, which is what a patch payload uses.
+#
+# Every entry here is a PROSE field. The specialist routing tag is not one of
+# them any more: since HZ-125 it is a {agent: persona id} MAP carried under
+# `personas`, with no single length to cap, so domain/fields.json marks the
+# legacy `persona` column agentRevisable: false and it drops out of this
+# derivation — see _clean_personas() below for the shape check it gets instead.
 PATCH_FIELDS = fields.patch_limits(fields.FIELDS)
+
+# Size caps for that map (HZ-125). Not limits in the PATCH_FIELDS sense: the
+# server registry-validates every agent/id pair and drops re-proposals over a
+# set value, so these only ever fire on a pathological reply.
+PERSONA_ID_MAX_CHARS = 40
+PERSONA_AGENT_MAX_CHARS = 40
+# There are four persona agents (farm/personas.py). A generous ceiling that
+# only fires on a runaway reply, never on a real one.
+MAX_PERSONA_SLOTS = 8
 
 # The placeholder farm/roles/pm.md carries in place of the numbers. Substituted
 # below so the prompt cannot state a budget validate() no longer enforces.
@@ -168,6 +180,19 @@ def session_file(project_slug: str) -> Path:
     return STATE_DIR / f"pm-session-{project_slug}.txt"
 
 
+def _render_personas(item: dict) -> str:
+    """The item's specialist personas for the prompt, one slot per composing
+    agent (HZ-125). Also accepts the pre-HZ-125 flat `persona` string so a task
+    file enqueued by an older server still shows the routing it carried."""
+    personas = item.get("personas")
+    if not isinstance(personas, dict) or not personas:
+        legacy = item.get("persona")
+        personas = {"eng": legacy} if isinstance(legacy, str) and legacy.strip() else {}
+    if not personas:
+        return "(not set)"
+    return ", ".join(f"{agent}={persona}" for agent, persona in sorted(personas.items()))
+
+
 def build_prompt(task: dict) -> str:
     item = task["item"]
     step = task["step"]
@@ -179,7 +204,7 @@ def build_prompt(task: dict) -> str:
         f"  outcome/description: {item.get('desc') or '(empty)'}",
         f"  success metric: {item.get('metric') or '(empty)'}",
         f"  guardrails: {item.get('guardrails') or '(empty)'}",
-        f"  persona: {item.get('persona') or '(not set)'}",
+        f"  personas: {_render_personas(item)}",
         "",
         f"Step to perform now: \"{step['label']}\" (attempt {task.get('attempt', 1)})",
     ]
@@ -202,10 +227,10 @@ def build_prompt(task: dict) -> str:
     return "\n".join(lines)
 
 
-# Fields that carry prose a human or agent reads, as opposed to `persona` — a
-# registry-validated routing enum the server drops outright unless it exactly
-# matches a known persona id, so a marker there would decorate a value that's
-# discarded either way.
+# Fields that carry prose a human or agent reads, as opposed to `personas` —
+# registry-validated routing enums the server drops outright unless each id
+# exactly matches a known persona in that agent's bucket, so a marker there
+# would decorate a value that's discarded either way.
 MARKED_PATCH_FIELDS = {"desc", "metric", "guardrails"}
 
 
@@ -241,16 +266,44 @@ def _mark_truncated(value: str, limit: int) -> str:
     return f"{cut}{note}"
 
 
+def _clean_personas(value) -> dict:
+    """The reply's proposed {agent: persona id} map, size-capped (HZ-125).
+
+    Shape-checks only — which agents and ids exist is the server's registry
+    call, not the PM's. Anything that isn't a flat string->string map
+    contributes nothing, so a malformed personas field costs the run its
+    persona proposal (which the server would have dropped anyway) rather than
+    failing the step.
+    """
+    if not isinstance(value, dict):
+        return {}
+    cleaned = {}
+    for agent, persona in value.items():
+        if not isinstance(agent, str) or not isinstance(persona, str):
+            continue
+        agent, persona = agent.strip(), persona.strip()
+        if not agent or not persona:
+            continue
+        cleaned[agent[:PERSONA_AGENT_MAX_CHARS]] = persona[:PERSONA_ID_MAX_CHARS]
+        if len(cleaned) >= MAX_PERSONA_SLOTS:
+            break
+    return cleaned
+
+
 def validate(parsed: dict) -> tuple[str, dict, str | None]:
     summary = str(parsed.get("summary", "")).strip()
     if not summary:
         raise AgentError("agent reply missing 'summary'")
     patch = {}
+    raw_patch = parsed.get("patch") if isinstance(parsed.get("patch"), dict) else {}
     for key, limit in PATCH_FIELDS.items():
-        value = parsed.get("patch", {}).get(key) if isinstance(parsed.get("patch"), dict) else None
+        value = raw_patch.get(key)
         if isinstance(value, str) and value.strip():
             value = value.strip()
             patch[key] = _mark_truncated(value, limit) if key in MARKED_PATCH_FIELDS else value[:limit]
+    personas = _clean_personas(raw_patch.get("personas"))
+    if personas:
+        patch["personas"] = personas
     artifact = parsed.get("artifact_md")
     artifact = artifact.strip()[:WRITE_ARTIFACT_SANITY_CEILING_CHARS] if isinstance(artifact, str) and artifact.strip() else None
     return summary[:SUMMARY_MAX_CHARS], patch, artifact

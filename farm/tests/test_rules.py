@@ -207,7 +207,7 @@ def test_every_shipped_rules_file_passes_the_credential_lint():
 def test_effective_prompt_layers_role_persona_project_repo(rules_tree):
     (rules_tree / "projects" / "acme.md").write_text("PROJECT RULES")
     (rules_tree / "repos" / "acme__demo.md").write_text("REPO RULES")
-    prompt = effective_prompt("BASE ROLE", "fullstack", "Acme", "acme/demo")
+    prompt = effective_prompt("BASE ROLE", "eng", "fullstack", "Acme", "acme/demo")
     assert prompt.startswith("BASE ROLE")
     assert "## Your specialization" in prompt
     assert prompt.endswith("## Project rules\nPROJECT RULES\n\nREPO RULES")
@@ -216,4 +216,14 @@ def test_effective_prompt_layers_role_persona_project_repo(rules_tree):
 def test_effective_prompt_without_rules_is_just_the_composed_role(rules_tree):
     from farm.personas import compose_role
 
-    assert effective_prompt("BASE ROLE", "fullstack", None, None) == compose_role("BASE ROLE", "fullstack")
+    assert effective_prompt("BASE ROLE", "eng", "fullstack", None, None) == compose_role("BASE ROLE", "eng", "fullstack")
+
+
+def test_effective_prompt_composes_the_named_agents_persona(rules_tree):
+    """HZ-125: the agent selects the bucket, so previewing the QA role shows a
+    QA persona rather than an Eng one."""
+    from farm.personas import PERSONA_DIR, PERSONAS
+
+    prompt = effective_prompt("BASE ROLE", "qa", "e2e_journey", None, None)
+    assert (PERSONA_DIR / PERSONAS["qa"]["e2e_journey"]).read_text() in prompt
+    assert (PERSONA_DIR / PERSONAS["eng"]["fullstack"]).read_text() not in prompt

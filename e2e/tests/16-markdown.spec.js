@@ -7,7 +7,7 @@
 // styles rather than asserting on markup, the same way 11-theme.spec.js
 // checks a repaint instead of just the attribute.
 //
-// One test, not six: the suite runs under an 85s globalTimeout
+// One test, not six: the suite targets well under 90s (180s hard ceiling)
 // (playwright.config.js) and every extra test pays for a fresh browser
 // context plus a page load.
 

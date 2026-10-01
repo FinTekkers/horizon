@@ -991,8 +991,13 @@ export function buildApp({ logger = true, onRoute = null } = {}) {
     (request, reply) => send(reply, store.removeDependency(request.params.id, request.body.dependsOnId, request.user.name)),
   )
 
-  // Confirm/override the specialist persona (proposed by the PM at intake).
-  // Unknown ids 400 at the schema layer; the next dispatch reads the item.
+  // Confirm/override one agent's specialist persona (the PM proposes the Eng
+  // one at intake). Personas are agent-scoped (HZ-125), so both halves are
+  // required: an unknown agent 400s at the schema layer, and an id that isn't
+  // in THAT agent's bucket is refused by store.setPersona's bad_persona (409,
+  // like every other store-level refusal) — a conditional enum per agent isn't
+  // cheap to express here, so that half of the validation lives one level down.
+  // The next dispatch reads the item.
   fastify.post(
     '/api/items/:id/persona',
     {
@@ -1000,13 +1005,16 @@ export function buildApp({ logger = true, onRoute = null } = {}) {
         params: idParam,
         body: {
           type: 'object',
-          required: ['persona'],
-          properties: { persona: { type: 'string', enum: Object.keys(PERSONAS) } },
+          required: ['agent', 'persona'],
+          properties: {
+            agent: { type: 'string', enum: Object.keys(PERSONAS) },
+            persona: { type: 'string', maxLength: 100 },
+          },
         },
         response: { 200: OK_OBJECT, 404: ERROR_OBJECT, 409: ERROR_OBJECT },
       },
     },
-    (request, reply) => send(reply, store.setPersona(request.params.id, request.body.persona)),
+    (request, reply) => send(reply, store.setPersona(request.params.id, request.body.agent, request.body.persona)),
   )
 
   // Reprioritize (UI or the WhatsApp concierge). Bad enum values 400 at the
@@ -1268,6 +1276,9 @@ export function buildApp({ logger = true, onRoute = null } = {}) {
           type: 'object',
           properties: {
             role: { type: 'string', maxLength: 100 },
+            // agent selects the persona bucket (HZ-125) — a persona id is only
+            // unique within one agent.
+            agent: { type: 'string', maxLength: 100 },
             persona: { type: 'string', maxLength: 100 },
             project: { type: 'string', maxLength: 200 },
             repo: { type: 'string', maxLength: 300 },

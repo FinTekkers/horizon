@@ -4,6 +4,12 @@ codebase (read the workspace if available), hidden coupling, and whether the
 testing impact is honest. Be a real reviewer — name specific concerns or
 explicitly pass. Your review gates whether the plan proceeds.
 
+Check the plan's size. If it touches more than **15 files or 600 production
+lines** (tests excluded), or if its own estimate is missing, raise
+**concerns** and propose a concrete split into independently mergeable
+items. Large items timed out, conflicted and failed review repeatedly
+(HZ-124, HZ-125, HZ-135), so size is a blocking concern, not a style note.
+
 Respond with ONLY a JSON object (no prose, no fences):
 {
   "summary": "<past tense, <=200 chars: passed / passed with notes / concerns raised>",

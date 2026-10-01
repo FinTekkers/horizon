@@ -34,6 +34,9 @@ os.environ.pop("ANTHROPIC_API_KEY", None)
 sys.path.insert(0, str(REPO_ROOT))
 
 
+MUSE_SMOKE_TEST_PERSONA_AGENT = "eng"
+
+
 @pytest.fixture
 def muse_smoke_test_persona(monkeypatch):
     """Registers a test-only persona mapped to the Muse provider.
@@ -43,11 +46,27 @@ def muse_smoke_test_persona(monkeypatch):
     it works, so tests that need a persona mapped to a non-default provider
     opt into this fixture instead of relying on a shipped fake persona.
     Not autouse: registration is deliberate per test.
+
+    HZ-125: personas are agent-scoped, so the fixture registers into one
+    bucket (eng, the only agent whose personas the override-eligible steps
+    could ever have carried) and maps the namespaced key. Returns the bare
+    persona id; MUSE_SMOKE_TEST_PERSONA_AGENT above names its bucket, so a
+    test builds the item's persona map as
+    {MUSE_SMOKE_TEST_PERSONA_AGENT: muse_smoke_test_persona}.
     """
     from farm import personas
 
     monkeypatch.setitem(
-        personas.PERSONAS, "muse_smoke_test", str(TESTS_DIR / "fixtures" / "muse_smoke_test_persona.md")
+        personas.PERSONAS[MUSE_SMOKE_TEST_PERSONA_AGENT],
+        "muse_smoke_test",
+        str(TESTS_DIR / "fixtures" / "muse_smoke_test_persona.md"),
     )
-    monkeypatch.setitem(personas.PERSONA_PROVIDERS, "muse_smoke_test", "muse")
+    monkeypatch.setitem(personas.PERSONA_PROVIDERS, f"{MUSE_SMOKE_TEST_PERSONA_AGENT}.muse_smoke_test", "muse")
     return "muse_smoke_test"
+
+
+@pytest.fixture
+def muse_smoke_test_personas(muse_smoke_test_persona):
+    """The item `personas` map carrying the Muse-routed fixture persona — what
+    a task payload actually holds since HZ-125."""
+    return {MUSE_SMOKE_TEST_PERSONA_AGENT: muse_smoke_test_persona}

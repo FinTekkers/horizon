@@ -1,0 +1,393 @@
+{
+  "$comment": "HZ-133. Input/expected pairs for the persona bindings, asserted by BOTH server/test/domain-personas-cases.test.mjs and farm/tests/test_personas_fixtures.py. The `shared` section is the point of the file: domain/js/personas.js and domain/py/personas.py are two independent hand-written implementations, and without this nothing would prove a validation rule, a membership answer or a derived role filename meant the same thing in both languages. Every case in `shared` runs in both suites, and each suite asserts it executed the exact ids listed in shared.manifest. The `js` and `py` sections cover the exports that exist in only one binding; a coverage guard in each suite asserts SET EQUALITY between that section's keys and the binding's real exports. Every agent and persona id in this file is FABRICATED on purpose (alpha/beta, one/two/three) so the fixture is not a second declaration of the registry.",
+
+  "shared": {
+    "manifest": {
+      "validation": [
+        "a valid registry is accepted",
+        "the same persona id under two agents is accepted — ids are unique within their agent",
+        "an agent with a single persona is accepted",
+        "a root that is not an object rejected",
+        "a root that is an array rejected",
+        "a null root rejected",
+        "an empty object rejected",
+        "an empty agents array rejected",
+        "an agents entry that is not an object rejected",
+        "a missing agent name rejected",
+        "a capitalised agent name rejected",
+        "a path-traversing agent name rejected",
+        "a prototype-named agent rejected",
+        "a duplicate agent rejected",
+        "a missing personas array rejected",
+        "an empty personas array rejected",
+        "a persona id with a slash rejected",
+        "a dot-dot persona id rejected",
+        "a capitalised persona id rejected",
+        "a persona id starting with a digit rejected",
+        "an empty persona id rejected",
+        "a persona id with a dot rejected — it would break the namespaced form",
+        "a non-string persona id rejected",
+        "a duplicate persona id within one agent rejected",
+        "a missing default rejected",
+        "a default belonging to another agent rejected",
+        "a missing primaryAgent rejected",
+        "an undeclared primaryAgent rejected",
+        "a missing legacyIds map rejected",
+        "an array legacyIds rejected",
+        "a prototype-named legacy key rejected",
+        "a bare legacy value rejected",
+        "a legacy value naming a dead pair rejected",
+        "a non-string legacy value rejected",
+        "a missing personaProviders map rejected",
+        "a bare personaProviders key rejected",
+        "a personaProviders key naming an undeclared persona rejected",
+        "a personaProviders key naming an undeclared agent rejected",
+        "a prototype-named personaProviders key rejected",
+        "a non-string provider rejected",
+        "an empty provider rejected"
+      ],
+      "membership": [
+        "a declared pair is a persona",
+        "an id belonging to another agent is not",
+        "an id shared by two agents is a persona of each",
+        "an undeclared agent is not",
+        "a prototype-named agent is not",
+        "a constructor-named agent is not",
+        "a prototype-named id is not",
+        "a hasOwnProperty-named id is not",
+        "a non-string id is not",
+        "an empty id is not",
+        "the answer follows the argument, not the live document"
+      ],
+      "roleFile": [
+        "a declared pair derives <agent>_<persona>.md",
+        "a shared id derives a file per agent",
+        "an id belonging to another agent derives nothing",
+        "a path-traversing id derives nothing",
+        "a prototype-named agent derives nothing"
+      ]
+    },
+
+    "validation": [
+      {
+        "case": "a valid registry is accepted",
+        "input": {
+          "primaryAgent": "alpha",
+          "agents": [
+            { "agent": "alpha", "default": "one", "personas": ["one", "two"] },
+            { "agent": "beta", "default": "three", "personas": ["three", "four"] }
+          ],
+          "legacyIds": { "old_one": "alpha.one" },
+          "personaProviders": {}
+        },
+        "expect": { "throws": false }
+      },
+      {
+        "case": "the same persona id under two agents is accepted — ids are unique within their agent",
+        "$comment": "HZ-125 scoped ids BY agent. A globally-unique rule would make a future second-agent `python` persona an import crash.",
+        "input": {
+          "primaryAgent": "alpha",
+          "agents": [
+            { "agent": "alpha", "default": "one", "personas": ["one", "two"] },
+            { "agent": "beta", "default": "one", "personas": ["one", "three"] }
+          ],
+          "legacyIds": {},
+          "personaProviders": { "alpha.one": "prov_a", "beta.one": "prov_b" }
+        },
+        "expect": { "throws": false }
+      },
+      {
+        "case": "an agent with a single persona is accepted",
+        "$comment": "\"At least two personas per agent\" is a test in farm/tests/test_personas.py, deliberately NOT a load rule.",
+        "input": {
+          "primaryAgent": "alpha",
+          "agents": [{ "agent": "alpha", "default": "one", "personas": ["one"] }],
+          "legacyIds": {},
+          "personaProviders": {}
+        },
+        "expect": { "throws": false }
+      },
+      {
+        "case": "a root that is not an object rejected",
+        "input": "not a registry",
+        "expect": { "throws": true, "messageContains": "must be a JSON object with a non-empty agents array" }
+      },
+      {
+        "case": "a root that is an array rejected",
+        "input": [{ "agent": "alpha", "default": "one", "personas": ["one"] }],
+        "expect": { "throws": true, "messageContains": "must be a JSON object with a non-empty agents array" }
+      },
+      {
+        "case": "a null root rejected",
+        "input": null,
+        "expect": { "throws": true, "messageContains": "must be a JSON object with a non-empty agents array" }
+      },
+      {
+        "case": "an empty object rejected",
+        "input": {},
+        "expect": { "throws": true, "messageContains": "agents must be a non-empty JSON array" }
+      },
+      {
+        "case": "an empty agents array rejected",
+        "input": { "primaryAgent": "alpha", "agents": [], "legacyIds": {}, "personaProviders": {} },
+        "expect": { "throws": true, "messageContains": "agents must be a non-empty JSON array" }
+      },
+      {
+        "case": "an agents entry that is not an object rejected",
+        "input": { "primaryAgent": "alpha", "agents": ["alpha"], "legacyIds": {}, "personaProviders": {} },
+        "expect": { "throws": true, "messageContains": "agents[0] must be a JSON object" }
+      },
+      {
+        "case": "a missing agent name rejected",
+        "input": { "primaryAgent": "alpha", "agents": [{ "default": "one", "personas": ["one"] }], "legacyIds": {}, "personaProviders": {} },
+        "expect": { "throws": true, "messageContains": "agents[0].agent declares null — expected a lower-case id matching /^[a-z][a-z0-9_]*$/" }
+      },
+      {
+        "case": "a capitalised agent name rejected",
+        "input": { "primaryAgent": "Alpha", "agents": [{ "agent": "Alpha", "default": "one", "personas": ["one"] }], "legacyIds": {}, "personaProviders": {} },
+        "expect": { "throws": true, "messageContains": "agents[0].agent declares \"Alpha\" — expected a lower-case id" }
+      },
+      {
+        "case": "a path-traversing agent name rejected",
+        "$comment": "personaRoleFile/persona_role_file interpolate the agent into a path under farm/roles/personas/.",
+        "input": { "primaryAgent": "alpha", "agents": [{ "agent": "../x", "default": "one", "personas": ["one"] }], "legacyIds": {}, "personaProviders": {} },
+        "expect": { "throws": true, "messageContains": "agents[0].agent declares \"../x\" — expected a lower-case id" }
+      },
+      {
+        "case": "a prototype-named agent rejected",
+        "input": { "primaryAgent": "alpha", "agents": [{ "agent": "__proto__", "default": "one", "personas": ["one"] }], "legacyIds": {}, "personaProviders": {} },
+        "expect": { "throws": true, "messageContains": "agents[0].agent declares \"__proto__\" — expected a lower-case id" }
+      },
+      {
+        "case": "a duplicate agent rejected",
+        "input": {
+          "primaryAgent": "alpha",
+          "agents": [
+            { "agent": "alpha", "default": "one", "personas": ["one"] },
+            { "agent": "alpha", "default": "two", "personas": ["two"] }
+          ],
+          "legacyIds": {},
+          "personaProviders": {}
+        },
+        "expect": { "throws": true, "messageContains": "agent \"alpha\" is declared more than once" }
+      },
+      {
+        "case": "a missing personas array rejected",
+        "input": { "primaryAgent": "alpha", "agents": [{ "agent": "alpha", "default": "one" }], "legacyIds": {}, "personaProviders": {} },
+        "expect": { "throws": true, "messageContains": "agents[0].personas must be a non-empty JSON array of persona ids" }
+      },
+      {
+        "case": "an empty personas array rejected",
+        "input": { "primaryAgent": "alpha", "agents": [{ "agent": "alpha", "default": "one", "personas": [] }], "legacyIds": {}, "personaProviders": {} },
+        "expect": { "throws": true, "messageContains": "agents[0].personas must be a non-empty JSON array of persona ids" }
+      },
+      {
+        "case": "a persona id with a slash rejected",
+        "input": { "primaryAgent": "alpha", "agents": [{ "agent": "alpha", "default": "one", "personas": ["one", "a/b"] }], "legacyIds": {}, "personaProviders": {} },
+        "expect": { "throws": true, "messageContains": "agents[0].personas[1] declares \"a/b\" — expected a lower-case id" }
+      },
+      {
+        "case": "a dot-dot persona id rejected",
+        "input": { "primaryAgent": "alpha", "agents": [{ "agent": "alpha", "default": "one", "personas": ["one", ".."] }], "legacyIds": {}, "personaProviders": {} },
+        "expect": { "throws": true, "messageContains": "agents[0].personas[1] declares \"..\" — expected a lower-case id" }
+      },
+      {
+        "case": "a capitalised persona id rejected",
+        "input": { "primaryAgent": "alpha", "agents": [{ "agent": "alpha", "default": "one", "personas": ["one", "Two"] }], "legacyIds": {}, "personaProviders": {} },
+        "expect": { "throws": true, "messageContains": "agents[0].personas[1] declares \"Two\" — expected a lower-case id" }
+      },
+      {
+        "case": "a persona id starting with a digit rejected",
+        "input": { "primaryAgent": "alpha", "agents": [{ "agent": "alpha", "default": "one", "personas": ["one", "1x"] }], "legacyIds": {}, "personaProviders": {} },
+        "expect": { "throws": true, "messageContains": "agents[0].personas[1] declares \"1x\" — expected a lower-case id" }
+      },
+      {
+        "case": "an empty persona id rejected",
+        "input": { "primaryAgent": "alpha", "agents": [{ "agent": "alpha", "default": "one", "personas": ["one", ""] }], "legacyIds": {}, "personaProviders": {} },
+        "expect": { "throws": true, "messageContains": "agents[0].personas[1] declares \"\" — expected a lower-case id" }
+      },
+      {
+        "case": "a persona id with a dot rejected — it would break the namespaced form",
+        "input": { "primaryAgent": "alpha", "agents": [{ "agent": "alpha", "default": "one", "personas": ["one", "a.b"] }], "legacyIds": {}, "personaProviders": {} },
+        "expect": { "throws": true, "messageContains": "agents[0].personas[1] declares \"a.b\" — expected a lower-case id" }
+      },
+      {
+        "case": "a non-string persona id rejected",
+        "input": { "primaryAgent": "alpha", "agents": [{ "agent": "alpha", "default": "one", "personas": ["one", 7] }], "legacyIds": {}, "personaProviders": {} },
+        "expect": { "throws": true, "messageContains": "agents[0].personas[1] declares 7 — expected a lower-case id" }
+      },
+      {
+        "case": "a duplicate persona id within one agent rejected",
+        "input": { "primaryAgent": "alpha", "agents": [{ "agent": "alpha", "default": "one", "personas": ["one", "two", "one"] }], "legacyIds": {}, "personaProviders": {} },
+        "expect": { "throws": true, "messageContains": "agent \"alpha\" declares persona \"one\" more than once" }
+      },
+      {
+        "case": "a missing default rejected",
+        "input": { "primaryAgent": "alpha", "agents": [{ "agent": "alpha", "personas": ["one", "two"] }], "legacyIds": {}, "personaProviders": {} },
+        "expect": { "throws": true, "messageContains": "agents[0].default null is not one of agent \"alpha\"'s personas [\"one\",\"two\"]" }
+      },
+      {
+        "case": "a default belonging to another agent rejected",
+        "input": {
+          "primaryAgent": "alpha",
+          "agents": [
+            { "agent": "alpha", "default": "one", "personas": ["one"] },
+            { "agent": "beta", "default": "one", "personas": ["three"] }
+          ],
+          "legacyIds": {},
+          "personaProviders": {}
+        },
+        "expect": { "throws": true, "messageContains": "agents[1].default \"one\" is not one of agent \"beta\"'s personas [\"three\"]" }
+      },
+      {
+        "case": "a missing primaryAgent rejected",
+        "input": { "agents": [{ "agent": "alpha", "default": "one", "personas": ["one"] }], "legacyIds": {}, "personaProviders": {} },
+        "expect": { "throws": true, "messageContains": "primaryAgent null is not a declared agent [\"alpha\"]" }
+      },
+      {
+        "case": "an undeclared primaryAgent rejected",
+        "input": { "primaryAgent": "gamma", "agents": [{ "agent": "alpha", "default": "one", "personas": ["one"] }], "legacyIds": {}, "personaProviders": {} },
+        "expect": { "throws": true, "messageContains": "primaryAgent \"gamma\" is not a declared agent [\"alpha\"]" }
+      },
+      {
+        "case": "a missing legacyIds map rejected",
+        "input": { "primaryAgent": "alpha", "agents": [{ "agent": "alpha", "default": "one", "personas": ["one"] }], "personaProviders": {} },
+        "expect": { "throws": true, "messageContains": "legacyIds must be a JSON object" }
+      },
+      {
+        "case": "an array legacyIds rejected",
+        "input": { "primaryAgent": "alpha", "agents": [{ "agent": "alpha", "default": "one", "personas": ["one"] }], "legacyIds": ["alpha.one"], "personaProviders": {} },
+        "expect": { "throws": true, "messageContains": "legacyIds must be a JSON object" }
+      },
+      {
+        "case": "a prototype-named legacy key rejected",
+        "input": { "primaryAgent": "alpha", "agents": [{ "agent": "alpha", "default": "one", "personas": ["one"] }], "legacyIds": { "__proto__": "alpha.one" }, "personaProviders": {} },
+        "expect": { "throws": true, "messageContains": "legacyIds key \"__proto__\" — expected a lower-case id" }
+      },
+      {
+        "case": "a bare legacy value rejected",
+        "input": { "primaryAgent": "alpha", "agents": [{ "agent": "alpha", "default": "one", "personas": ["one"] }], "legacyIds": { "old_one": "one" }, "personaProviders": {} },
+        "expect": { "throws": true, "messageContains": "legacyIds[\"old_one\"] \"one\" does not name a declared <agent>.<persona> pair" }
+      },
+      {
+        "case": "a legacy value naming a dead pair rejected",
+        "input": { "primaryAgent": "alpha", "agents": [{ "agent": "alpha", "default": "one", "personas": ["one"] }], "legacyIds": { "old_one": "alpha.nope" }, "personaProviders": {} },
+        "expect": { "throws": true, "messageContains": "legacyIds[\"old_one\"] \"alpha.nope\" does not name a declared <agent>.<persona> pair" }
+      },
+      {
+        "case": "a non-string legacy value rejected",
+        "input": { "primaryAgent": "alpha", "agents": [{ "agent": "alpha", "default": "one", "personas": ["one"] }], "legacyIds": { "old_one": 3 }, "personaProviders": {} },
+        "expect": { "throws": true, "messageContains": "legacyIds[\"old_one\"] 3 does not name a declared <agent>.<persona> pair" }
+      },
+      {
+        "case": "a missing personaProviders map rejected",
+        "input": { "primaryAgent": "alpha", "agents": [{ "agent": "alpha", "default": "one", "personas": ["one"] }], "legacyIds": {} },
+        "expect": { "throws": true, "messageContains": "personaProviders must be a JSON object" }
+      },
+      {
+        "case": "a bare personaProviders key rejected",
+        "$comment": "Keys are namespaced because ids are only unique within an agent.",
+        "input": { "primaryAgent": "alpha", "agents": [{ "agent": "alpha", "default": "one", "personas": ["one"] }], "legacyIds": {}, "personaProviders": { "one": "prov_a" } },
+        "expect": { "throws": true, "messageContains": "personaProviders key \"one\" does not name a declared <agent>.<persona> pair" }
+      },
+      {
+        "case": "a personaProviders key naming an undeclared persona rejected",
+        "input": { "primaryAgent": "alpha", "agents": [{ "agent": "alpha", "default": "one", "personas": ["one"] }], "legacyIds": {}, "personaProviders": { "alpha.nope": "prov_a" } },
+        "expect": { "throws": true, "messageContains": "personaProviders key \"alpha.nope\" does not name a declared <agent>.<persona> pair" }
+      },
+      {
+        "case": "a personaProviders key naming an undeclared agent rejected",
+        "input": { "primaryAgent": "alpha", "agents": [{ "agent": "alpha", "default": "one", "personas": ["one"] }], "legacyIds": {}, "personaProviders": { "nope.one": "prov_a" } },
+        "expect": { "throws": true, "messageContains": "personaProviders key \"nope.one\" does not name a declared <agent>.<persona> pair" }
+      },
+      {
+        "case": "a prototype-named personaProviders key rejected",
+        "input": { "primaryAgent": "alpha", "agents": [{ "agent": "alpha", "default": "one", "personas": ["one"] }], "legacyIds": {}, "personaProviders": { "__proto__": "prov_a" } },
+        "expect": { "throws": true, "messageContains": "personaProviders key \"__proto__\" does not name a declared <agent>.<persona> pair" }
+      },
+      {
+        "case": "a non-string provider rejected",
+        "input": { "primaryAgent": "alpha", "agents": [{ "agent": "alpha", "default": "one", "personas": ["one"] }], "legacyIds": {}, "personaProviders": { "alpha.one": 1 } },
+        "expect": { "throws": true, "messageContains": "personaProviders[\"alpha.one\"] 1 must be a non-empty provider id string" }
+      },
+      {
+        "case": "an empty provider rejected",
+        "input": { "primaryAgent": "alpha", "agents": [{ "agent": "alpha", "default": "one", "personas": ["one"] }], "legacyIds": {}, "personaProviders": { "alpha.one": "" } },
+        "expect": { "throws": true, "messageContains": "personaProviders[\"alpha.one\"] \"\" must be a non-empty provider id string" }
+      }
+    ],
+
+    "membership": [
+      { "case": "a declared pair is a persona", "personaIds": { "alpha": ["one", "two"], "beta": ["three", "one"] }, "agent": "alpha", "id": "two", "expect": true },
+      { "case": "an id belonging to another agent is not", "personaIds": { "alpha": ["one", "two"], "beta": ["three", "one"] }, "agent": "alpha", "id": "three", "expect": false },
+      { "case": "an id shared by two agents is a persona of each", "personaIds": { "alpha": ["one", "two"], "beta": ["three", "one"] }, "agent": "beta", "id": "one", "expect": true },
+      { "case": "an undeclared agent is not", "personaIds": { "alpha": ["one", "two"], "beta": ["three", "one"] }, "agent": "gamma", "id": "one", "expect": false },
+      { "case": "a prototype-named agent is not", "personaIds": { "alpha": ["one", "two"], "beta": ["three", "one"] }, "agent": "__proto__", "id": "one", "expect": false },
+      { "case": "a constructor-named agent is not", "personaIds": { "alpha": ["one", "two"], "beta": ["three", "one"] }, "agent": "constructor", "id": "one", "expect": false },
+      { "case": "a prototype-named id is not", "personaIds": { "alpha": ["one", "two"], "beta": ["three", "one"] }, "agent": "alpha", "id": "__proto__", "expect": false },
+      { "case": "a hasOwnProperty-named id is not", "personaIds": { "alpha": ["one", "two"], "beta": ["three", "one"] }, "agent": "alpha", "id": "hasOwnProperty", "expect": false },
+      { "case": "a non-string id is not", "personaIds": { "alpha": ["one", "two"], "beta": ["three", "one"] }, "agent": "alpha", "id": null, "expect": false },
+      { "case": "an empty id is not", "personaIds": { "alpha": ["one", "two"], "beta": ["three", "one"] }, "agent": "alpha", "id": "", "expect": false },
+      {
+        "case": "the answer follows the argument, not the live document",
+        "$comment": "A fabricated pair that is NOT in the real registry, answered true because the fabricated table carries it. This is what proves the parameter is actually used.",
+        "personaIds": { "zeta": ["omega"] },
+        "agent": "zeta",
+        "id": "omega",
+        "expect": true
+      }
+    ],
+
+    "roleFile": [
+      { "case": "a declared pair derives <agent>_<persona>.md", "personaIds": { "alpha": ["one", "two"], "beta": ["three", "one"] }, "agent": "alpha", "id": "two", "expect": { "file": "alpha_two.md" } },
+      { "case": "a shared id derives a file per agent", "personaIds": { "alpha": ["one", "two"], "beta": ["three", "one"] }, "agent": "beta", "id": "one", "expect": { "file": "beta_one.md" } },
+      { "case": "an id belonging to another agent derives nothing", "personaIds": { "alpha": ["one", "two"], "beta": ["three", "one"] }, "agent": "alpha", "id": "three", "expect": { "throws": "unknown persona [\"alpha\",\"three\"]" } },
+      { "case": "a path-traversing id derives nothing", "personaIds": { "alpha": ["one", "two"], "beta": ["three", "one"] }, "agent": "alpha", "id": "../one", "expect": { "throws": "unknown persona [\"alpha\",\"../one\"]" } },
+      { "case": "a prototype-named agent derives nothing", "personaIds": { "alpha": ["one", "two"], "beta": ["three", "one"] }, "agent": "__proto__", "id": "one", "expect": { "throws": "unknown persona [\"__proto__\",\"one\"]" } }
+    ]
+  },
+
+  "js": {
+    "$comment": "Keys here must equal domain/js/personas.js's exports exactly — set equality, asserted.",
+    "PERSONA_AGENTS": [{ "case": "the live agent list is a non-empty frozen array" }],
+    "PERSONA_IDS": [{ "case": "every live agent has a non-empty frozen id list" }],
+    "NAMESPACED_PERSONA_IDS": [{ "case": "every <agent>.<persona>, agents in order, personas in order" }],
+    "DEFAULT_PERSONAS": [{ "case": "every live agent's default is one of its own personas" }],
+    "PRIMARY_PERSONA_AGENT": [{ "case": "the live primary agent is a declared agent" }],
+    "LEGACY_PERSONA_IDS": [{ "case": "every live legacy alias names a declared pair" }],
+    "assertPersonasShape": [{ "case": "driven by shared.validation", "drivenBy": "shared.validation" }],
+    "isPersona": [{ "case": "driven by shared.membership", "drivenBy": "shared.membership" }],
+    "personaRoleFile": [{ "case": "driven by shared.roleFile", "drivenBy": "shared.roleFile" }],
+    "isPersonaAgent": [
+      { "case": "a declared agent is one", "personaIds": { "alpha": ["one"] }, "agent": "alpha", "expect": true },
+      { "case": "an undeclared agent is not", "personaIds": { "alpha": ["one"] }, "agent": "beta", "expect": false },
+      { "case": "a prototype-named agent is not", "personaIds": { "alpha": ["one"] }, "agent": "__proto__", "expect": false },
+      { "case": "a constructor-named agent is not", "personaIds": { "alpha": ["one"] }, "agent": "constructor", "expect": false },
+      { "case": "a toString-named agent is not", "personaIds": { "alpha": ["one"] }, "agent": "toString", "expect": false },
+      { "case": "a non-string agent is not", "personaIds": { "alpha": ["one"] }, "agent": null, "expect": false }
+    ],
+    "legacyPersona": [
+      { "case": "a declared alias resolves to its pair", "legacyIds": { "old_one": ["alpha", "one"] }, "id": "old_one", "expect": ["alpha", "one"] },
+      { "case": "an undeclared alias is null", "legacyIds": { "old_one": ["alpha", "one"] }, "id": "old_two", "expect": null },
+      { "case": "the namespaced form is not an alias", "legacyIds": { "old_one": ["alpha", "one"] }, "id": "alpha.one", "expect": null },
+      { "case": "an empty id is null", "legacyIds": { "old_one": ["alpha", "one"] }, "id": "", "expect": null },
+      { "case": "a prototype-named id is null", "legacyIds": { "old_one": ["alpha", "one"] }, "id": "__proto__", "expect": null },
+      { "case": "a constructor-named id is null", "legacyIds": { "old_one": ["alpha", "one"] }, "id": "constructor", "expect": null },
+      { "case": "a non-string id is null", "legacyIds": { "old_one": ["alpha", "one"] }, "id": null, "expect": null }
+    ]
+  },
+
+  "py": {
+    "$comment": "Keys here must equal domain/py/personas.py's public names (plus the required private ones) exactly — set equality, asserted.",
+    "PERSONA_AGENTS": [{ "case": "the live agent list is a non-empty tuple" }],
+    "PERSONA_IDS": [{ "case": "every live agent has a non-empty tuple of ids" }],
+    "NAMESPACED_PERSONA_IDS": [{ "case": "every <agent>.<persona>, agents in order, personas in order" }],
+    "DEFAULT_PERSONAS": [{ "case": "every live agent's default is one of its own personas" }],
+    "PRIMARY_PERSONA_AGENT": [{ "case": "the live primary agent is a declared agent" }],
+    "LEGACY_PERSONA_IDS": [{ "case": "every live legacy alias names a declared pair, as a tuple" }],
+    "PERSONA_PROVIDERS": [{ "case": "every live provider key names a declared pair" }],
+    "is_persona": [{ "case": "driven by shared.membership", "drivenBy": "shared.membership" }],
+    "persona_role_file": [{ "case": "driven by shared.roleFile", "drivenBy": "shared.roleFile" }],
+    "_validate_source": [{ "case": "driven by shared.validation", "drivenBy": "shared.validation" }]
+  }
+}

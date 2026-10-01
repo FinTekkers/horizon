@@ -95,27 +95,46 @@ test('feedback on a live agent step returns {ok:true,rerun:true} and re-runs it 
   orchestrator.cancel('T-AGENT', 'cancelled') // don't leave the mock timer running
 })
 
-// ---- specialist persona endpoint (HZ-4) ----
+// ---- specialist persona endpoint (HZ-4, agent-scoped since HZ-125) ----
 
 const personaPost = (id, payload) => inject({ method: 'POST', url: `/api/items/${id}/persona`, payload })
 
 test('setting a persona returns 200, persists, and the snapshot carries it', async () => {
-  const res = await personaPost('T-GATE', { persona: 'python_backend' })
+  const res = await personaPost('T-GATE', { agent: 'eng', persona: 'python' })
   assert.equal(res.statusCode, 200)
   assert.deepEqual(res.json(), { ok: true })
-  assert.equal(db.prepare("SELECT persona FROM work_item WHERE id = 'T-GATE'").get().persona, 'python_backend')
+  assert.deepEqual(
+    JSON.parse(db.prepare("SELECT personas_json FROM work_item WHERE id = 'T-GATE'").get().personas_json),
+    { eng: 'python' },
+  )
   const snapshot = (await inject({ method: 'GET', url: '/api/items' })).json()
-  assert.equal(snapshot.items.find((it) => it.id === 'T-GATE').persona, 'python_backend')
+  assert.deepEqual(snapshot.items.find((it) => it.id === 'T-GATE').personas, { eng: 'python' })
 })
 
-test('an unknown persona id is rejected at the schema layer (400)', async () => {
-  assert.equal((await personaPost('T-GATE', { persona: 'rustacean' })).statusCode, 400)
+test('one slot per agent: a second agent’s persona lands beside the first, not over it', async () => {
+  assert.equal((await personaPost('T-GATE', { agent: 'qa', persona: 'e2e_journey' })).statusCode, 200)
+  const snapshot = (await inject({ method: 'GET', url: '/api/items' })).json()
+  assert.deepEqual(snapshot.items.find((it) => it.id === 'T-GATE').personas, { eng: 'python', qa: 'e2e_journey' })
+})
+
+test('an unknown agent is rejected at the schema layer (400); a bad id for a real agent is refused (409)', async () => {
+  // The agent is a closed enum, so the schema catches it. The id can only be
+  // validated against THAT agent's bucket, which happens in the store.
+  assert.equal((await personaPost('T-GATE', { agent: 'devops', persona: 'python' })).statusCode, 400)
+  assert.equal((await personaPost('T-GATE', { persona: 'python' })).statusCode, 400)
+  assert.equal((await personaPost('T-GATE', { agent: 'eng' })).statusCode, 400)
   assert.equal((await personaPost('T-GATE', {})).statusCode, 400)
+
+  const rejected = await personaPost('T-GATE', { agent: 'eng', persona: 'rustacean' })
+  assert.equal(rejected.statusCode, 409)
+  assert.deepEqual(rejected.json(), { error: 'bad_persona' })
+  // A real persona, but from another agent's bucket.
+  assert.equal((await personaPost('T-GATE', { agent: 'eng', persona: 'e2e_journey' })).statusCode, 409)
 })
 
 test('persona on an unknown item is 404, on a closed item 409', async () => {
-  assert.equal((await personaPost('NOPE-9', { persona: 'fullstack' })).statusCode, 404)
-  const closed = await personaPost('T-CLOSED', { persona: 'fullstack' })
+  assert.equal((await personaPost('NOPE-9', { agent: 'eng', persona: 'fullstack' })).statusCode, 404)
+  const closed = await personaPost('T-CLOSED', { agent: 'eng', persona: 'fullstack' })
   assert.equal(closed.statusCode, 409)
   assert.deepEqual(closed.json(), { error: 'closed' })
 })

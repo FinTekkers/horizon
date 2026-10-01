@@ -16,7 +16,7 @@ import importlib
 import re
 from pathlib import Path
 
-from domain.py import fields, priorities, reasons, steps
+from domain.py import fields, personas, priorities, reasons, steps
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 
@@ -35,6 +35,10 @@ def test_the_field_binding_resolves_under_domain_py_too():
 
 def test_the_priority_binding_resolves_under_domain_py_too():
     assert Path(priorities.__file__).resolve() == (REPO_ROOT / "domain" / "py" / "priorities.py").resolve()
+
+
+def test_the_persona_binding_resolves_under_domain_py_too():
+    assert Path(personas.__file__).resolve() == (REPO_ROOT / "domain" / "py" / "personas.py").resolve()
 
 
 def test_the_relocated_module_carries_the_farm_shaped_table():
@@ -113,6 +117,7 @@ def test_the_binding_imports_from_any_working_directory(tmp_path, monkeypatch):
     importlib.reload(reasons)
     importlib.reload(fields)
     importlib.reload(priorities)
+    importlib.reload(personas)
     assert len(steps.STEPS) == 11
     assert steps.PHASES == ["Plan", "Technical Plan", "Execute", "Deploy", "Review"]
     assert reasons.REASON_IDS
@@ -121,3 +126,5 @@ def test_the_binding_imports_from_any_working_directory(tmp_path, monkeypatch):
     assert fields._SOURCE_PATH == (REPO_ROOT / "domain" / "fields.json").resolve()
     assert priorities.PRIORITIES
     assert priorities._SOURCE_PATH == (REPO_ROOT / "domain" / "priorities.json").resolve()
+    assert personas.PERSONA_AGENTS
+    assert personas._SOURCE_PATH == (REPO_ROOT / "domain" / "personas.json").resolve()
