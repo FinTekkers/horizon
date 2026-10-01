@@ -25,9 +25,17 @@ from datetime import datetime
 
 from ..config import CLAUDE_BIN, FARM_RUNNER, MAX_TURNS, STEP_TIMEOUT_S
 from ..credentials import without_gate_credentials
-from .base import AgentError, AgentExhaustedError, assert_metered_billing_authorized, metered_billing_opted_in
+from .base import (
+    AgentError,
+    AgentExhaustedError,
+    assert_metered_billing_authorized,
+    decode_partial,
+    metered_billing_opted_in,
+)
 
 SUPPORTS_RESUME = True
+# HZ-158: yes — see AgentExhaustedError's docstring in providers/base.py.
+RESUMES_AFTER_EXHAUSTION = True
 
 
 def assert_subscription_auth() -> None:
@@ -63,8 +71,14 @@ def run(
     max_turns: int = MAX_TURNS,
     timeout_s: int = STEP_TIMEOUT_S,
     allowed_tools: str | None = None,
+    retry_fresh: bool = True,
 ) -> dict:
-    """Returns {"result": <final text>, "session_id": <id>}."""
+    """Returns {"result": <final text>, "session_id": <id>}.
+
+    retry_fresh=False (HZ-158) turns off the stale-resume fallback below: a
+    failed resume raises AgentError instead of silently starting a second,
+    fresh session. The handoff note uses it, since it must be exactly one
+    model call on the session that ran out."""
     if _selected_runner() == "subprocess":
         return _run_subprocess(
             prompt,
@@ -75,6 +89,7 @@ def run(
             max_turns=max_turns,
             timeout_s=timeout_s,
             allowed_tools=allowed_tools,
+            retry_fresh=retry_fresh,
         )
 
     # This runs inside the agent process (tmux pane), whose environment is
@@ -89,6 +104,9 @@ def run(
             "or set FARM_RUNNER=subprocess to fall back to the old runner"
         ) from exc
 
+    # What the stream saw before it stopped — the only record a timeout
+    # leaves, since wait_for cancels _stream_query before it can return.
+    seen: dict = {"session_id": None, "text": None}
     try:
         return asyncio.run(
             asyncio.wait_for(
@@ -100,15 +118,20 @@ def run(
                     model=model,
                     max_turns=max_turns,
                     allowed_tools=allowed_tools,
+                    seen=seen,
                 ),
                 timeout_s,
             )
         )
     except TimeoutError as exc:
-        raise AgentExhaustedError(f"claude timed out after {timeout_s}s") from exc
+        raise AgentExhaustedError(
+            f"claude timed out after {timeout_s}s",
+            partial_text=seen["text"],
+            session_id=seen["session_id"] or session_id,
+        ) from exc
     except ClaudeSDKError as exc:
         # A stale `resume` session is the common recoverable failure: retry fresh.
-        if session_id:
+        if session_id and retry_fresh:
             return run(
                 prompt,
                 session_id=None,
@@ -131,8 +154,11 @@ async def _stream_query(
     model: str | None,
     max_turns: int,
     allowed_tools: str | None,
+    seen: dict | None = None,
 ) -> dict:
     import claude_agent_sdk as sdk
+
+    seen = seen if seen is not None else {}
 
     options = sdk.ClaudeAgentOptions(
         # The preset+append form mirrors the CLI's --append-system-prompt.
@@ -157,6 +183,15 @@ async def _stream_query(
     try:
         async for message in stream:
             _print_event(message)
+            if isinstance(message, sdk.SystemMessage) and message.subtype == "init":
+                # The session id arrives here first; a timeout before the
+                # ResultMessage has no other source for it.
+                data = message.data if isinstance(message.data, dict) else {}
+                seen["session_id"] = data.get("session_id") or seen.get("session_id")
+            elif isinstance(message, sdk.AssistantMessage):
+                text = "".join(b.text for b in message.content if isinstance(b, sdk.TextBlock))
+                if text.strip():
+                    seen["text"] = text
             if isinstance(message, sdk.ResultMessage):
                 result_text = message.result or ""
                 new_session_id = message.session_id
@@ -167,7 +202,13 @@ async def _stream_query(
                     subtype = getattr(message, "subtype", None) or "unknown"
                     detail = result_text[:300] or f"no result text (subtype: {subtype}, {message.num_turns} turns)"
                     if subtype == "error_max_turns":
-                        raise AgentExhaustedError(f"claude reported an error result [{subtype}]: {detail}")
+                        raise AgentExhaustedError(
+                            f"claude reported an error result [{subtype}]: {detail}",
+                            # The result text is usually empty here; the last
+                            # assistant text is then the reply in progress.
+                            partial_text=result_text or seen.get("text"),
+                            session_id=new_session_id or seen.get("session_id"),
+                        )
                     raise AgentError(f"claude reported an error result [{subtype}]: {detail}")
     finally:
         # Cancellation (asyncio.wait_for timeout) lands here too: closing the
@@ -214,6 +255,7 @@ def _run_subprocess(
     max_turns: int = MAX_TURNS,
     timeout_s: int = STEP_TIMEOUT_S,
     allowed_tools: str | None = None,
+    retry_fresh: bool = True,
 ) -> dict:
     """The pre-HZ-5 path: silent `claude -p --output-format json` subprocess."""
     # --strict-mcp-config: farm agents must NOT inherit the human's personal
@@ -242,13 +284,20 @@ def _run_subprocess(
             env=without_gate_credentials(),
         )
     except subprocess.TimeoutExpired as exc:
-        raise AgentExhaustedError(f"claude timed out after {timeout_s}s") from exc
+        # --output-format json writes nothing until the run ends, so stdout is
+        # usually empty here, and the new session id is unknown — the resumed
+        # one, if any, is the best there is.
+        raise AgentExhaustedError(
+            f"claude timed out after {timeout_s}s",
+            partial_text=decode_partial(exc.stdout),
+            session_id=session_id,
+        ) from exc
     except FileNotFoundError as exc:
         raise AgentError(f"claude binary not found: {CLAUDE_BIN}") from exc
 
     if proc.returncode != 0:
         # A stale --resume session is the common recoverable failure: retry fresh.
-        if session_id:
+        if session_id and retry_fresh:
             return _run_subprocess(
                 prompt,
                 session_id=None,

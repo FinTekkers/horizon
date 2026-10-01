@@ -15,6 +15,7 @@ import re
 import subprocess
 import sys
 import tempfile
+import time
 from datetime import datetime
 from pathlib import Path
 from typing import NamedTuple
@@ -38,11 +39,14 @@ from .agent_runner import (
     AgentExhaustedError,
     parse_agent_reply,
     run_agent,
+    salvage_truncated_reply,
     stamp_notes,
     stamp_notes_artifact,
 )
+from . import handoff
 from .checks import CheckFailure, run_checks
 from .config import FARM_PORT, ITEM_LOCK_WAIT_S
+from .handoff import HandoffContext, HandoffGuard
 from .personas import compose_role, provider_for, resolve
 from .rules import render_rules_section
 from .workspaces import ItemBusy, ensure_item_worktree, hub_lock, item_lock
@@ -111,6 +115,15 @@ STEP_CONFIG = {
     # never gets a persona composed in.
     DEPLOY_LABEL: ("devops.md", True, DEVOPS_TOOLS, None),
 }
+
+# HZ-158: the ONLY steps whose turn-capped reply may be salvaged — a reply cut
+# off mid-string, with every required key present, is accepted instead of
+# failing the run. Both are planning steps whose output a later gate reviews.
+# Never a step whose output decides a gate: not review or deploy (they emit
+# the verdict), not Architecture review or QA reviews the test plan (they emit
+# one too), and not implement (its checks are a gate, and _salvage_checkpoint()
+# already keeps its code). farm/tests/test_exhaustion_salvage.py pins this set.
+SALVAGE_STEPS = frozenset({"Plan options & trade-offs (pros / cons)", "Draft implementation plan"})
 
 # The agent whose persona the review step's second (QA) pass composes. Named
 # here rather than inlined because it is the fix HZ-125 exists for: both passes
@@ -231,6 +244,16 @@ def build_prompt(task: dict) -> str:
         lines.append("Human feedback to address:")
         for fb in feedback:
             lines.append(f"- {fb.get('message', '')}")
+    note = handoff.read_note(str(item.get("id", "")), str(step.get("label", "")))
+    if note:
+        lines += [
+            "",
+            "## Handoff note from a previous attempt — UNVERIFIED",
+            "Written by the previous attempt's session as it ran out of turns. Check every "
+            "claim against the code before relying on it.",
+            "",
+            note,
+        ]
     rules_section = render_rules_section(task.get("rules"))
     if rules_section:
         lines.append("")
@@ -788,6 +811,50 @@ def _provenance(reply: dict) -> dict:
     return {"provider": reply.get("provider"), "command_id": reply.get("command_id")}
 
 
+# ---- turn-cap salvage and handoff (HZ-158) ----
+# Every branch below ends in the ORIGINAL AgentExhaustedError, re-raised as is,
+# unless a salvage passed every check — so main() still tags it with the
+# turn-cap reason and the orchestrator still auto-retries it. Never a plain
+# AgentError, which would pause the item for a human.
+
+
+def _handoff_once(exc: AgentExhaustedError, ctx: HandoffContext, guard: HandoffGuard, ws: Path | None) -> None:
+    """Ask the exhausted session for one note for the next attempt, at most
+    once per run. Never raises: the caller's exhaustion must propagate."""
+    try:
+        if not guard.claim():
+            log("handoff: already requested once this run — not asking again")
+            return
+        handoff.write_note(ctx.item_id, ctx.step, handoff.request_note(exc, ctx, ws))
+    except Exception as err:
+        log(f"handoff: failed ({type(err).__name__}: {str(err)[:200]}) — the next attempt starts without a note")
+
+
+def _on_exhaustion(
+    exc: AgentExhaustedError,
+    *,
+    required_keys: tuple[str, ...],
+    ctx: HandoffContext,
+    guard: HandoffGuard,
+    salvage: bool,
+) -> tuple[dict, list[str]]:
+    """Salvage a cut-off reply on a SALVAGE_STEPS step, or hand off and
+    re-raise `exc` itself. Returns (parsed, notes) only for a salvage."""
+    if salvage and ctx.step in SALVAGE_STEPS:
+        try:
+            salvaged = salvage_truncated_reply(exc.partial_text, required_keys)
+        except Exception as err:
+            log(f"salvage: the truncated-reply check raised ({type(err).__name__}: {err}) — not salvaging")
+            salvaged = None
+        if salvaged is not None:
+            parsed, note = salvaged
+            log("salvage: accepted a reply cut off mid-string with every required key present")
+            return parsed, [note]
+        log("salvage: the partial reply did not pass — failing the run as a turn-cap exhaustion")
+    _handoff_once(exc, ctx, guard, Path(ctx.cwd) if ctx.cwd else None)
+    raise exc
+
+
 def _run_and_parse(
     prompt: str,
     *,
@@ -799,6 +866,9 @@ def _run_and_parse(
     max_turns: int,
     timeout_s: int,
     allowed_tools: str | None,
+    required_keys: tuple[str, ...],
+    item_id: str,
+    guard: HandoffGuard,
     provider: str | None = None,
     provider_locked: bool = False,
 ) -> tuple[dict, dict, list[str]]:
@@ -819,20 +889,40 @@ def _run_and_parse(
     after this call returns. Moving one inside the retry envelope would buy a
     second full agent run for a reply that costs nothing to reject today, and
     on the review path a retry could flip a deliberately fail-closed gate.
+
+    HZ-158: required_keys, item_id and guard have no default, so every call
+    site must say what its reply needs. They are used only when run_agent
+    raises AgentExhaustedError — see _on_exhaustion(). Only the first call may
+    be salvaged; an exhaustion inside the retry is handed off and re-raised.
+    A salvaged reply's provenance is the provider that ran, no command_id.
     """
-    reply = run_agent(
-        prompt,
-        agent=agent,
+    ctx = HandoffContext(
+        item_id=item_id,
         step=step,
+        agent=agent,
         persona=persona,
         append_system=append_system,
         cwd=cwd,
-        max_turns=max_turns,
-        timeout_s=timeout_s,
-        allowed_tools=allowed_tools,
-        provider=provider,
+        deadline=time.monotonic() + timeout_s,
         provider_locked=provider_locked,
     )
+    try:
+        reply = run_agent(
+            prompt,
+            agent=agent,
+            step=step,
+            persona=persona,
+            append_system=append_system,
+            cwd=cwd,
+            max_turns=max_turns,
+            timeout_s=timeout_s,
+            allowed_tools=allowed_tools,
+            provider=provider,
+            provider_locked=provider_locked,
+        )
+    except AgentExhaustedError as exc:
+        parsed, notes = _on_exhaustion(exc, required_keys=required_keys, ctx=ctx, guard=guard, salvage=True)
+        return parsed, {"provider": exc.provider, "command_id": None}, notes
     produced = reply
 
     def retry_once(retry_prompt: str) -> str:
@@ -854,7 +944,11 @@ def _run_and_parse(
         )
         return produced["result"]
 
-    parsed, notes = parse_agent_reply(reply["result"], retry_once)
+    try:
+        parsed, notes = parse_agent_reply(reply["result"], retry_once)
+    except AgentExhaustedError as exc:
+        _on_exhaustion(exc, required_keys=required_keys, ctx=ctx, guard=guard, salvage=False)
+        raise  # never reached: _on_exhaustion always raises when salvage=False
     return parsed, _provenance(produced), notes
 
 
@@ -894,10 +988,13 @@ def execute(task: dict) -> dict:
     implement) push in the item's worktree, so they hold item_lock for the
     whole step — taken before ensure_item_worktree, so not even the worktree's
     creation can overlap a conflict resolver that owns the item. Every other
-    step only reads the workspace and runs unlocked."""
+    step only reads the workspace and runs unlocked.
+
+    HZ-158: one execute() is one run, so the run's handoff guard is made here."""
     item = task["item"]
+    guard = HandoffGuard()
     if task["step"]["label"] not in (IMPLEMENT_LABEL, REVIEW_LABEL) or not item.get("repo"):
-        return _execute(task)
+        return _execute(task, guard)
     lock = item_lock(
         item["repo"],
         item["id"],
@@ -909,10 +1006,10 @@ def execute(task: dict) -> dict:
             stack.enter_context(lock)
         except ItemBusy:
             raise RuntimeError("workspace busy: conflict resolution still running") from None
-        return _execute(task)
+        return _execute(task, guard)
 
 
-def _execute(task: dict) -> dict:
+def _execute(task: dict, guard: HandoffGuard) -> dict:
     label = task["step"]["label"]
     role_file, wants_artifact, tools, persona_agent = STEP_CONFIG[label]
     max_turns, timeout_s = steps.budget_for_label(steps.STEPS, label)
@@ -974,6 +1071,7 @@ def _execute(task: dict) -> dict:
             conflicted = merge_default_branch(ws)
             log(f"merged origin/main into {branch}" + (f" — {len(conflicted)} conflicted file(s) left for the agent" if conflicted else " cleanly"))
             extra += _merge_main_note(conflicted)
+        deadline = time.monotonic() + timeout_s
         try:
             reply = run_agent(
                 build_prompt(task) + extra,
@@ -987,13 +1085,32 @@ def _execute(task: dict) -> dict:
                 allowed_tools=tools,
                 provider_locked=provider_locked,
             )
-        except Exception:
+        except Exception as exc:
             # SALVAGE (HZ-31): the run hit its turn/time cap (or any other
             # run_agent failure) — checkpoint whatever's on disk instead of
             # letting the next attempt's prepare_branch scrub it away. Still
             # re-raises unchanged: a failed attempt still fails and pauses,
             # no checks run, no PR opens, nothing advances.
             _salvage_checkpoint(ws, item, branch, conflicted, lease_sha=prepared.lease_sha)
+            # HZ-158: a handoff note only, never a reply salvage — the code is
+            # what _salvage_checkpoint() keeps. It runs after the checkpoint,
+            # with read-only tools, and never raises over `exc`.
+            if isinstance(exc, AgentExhaustedError):
+                _handoff_once(
+                    exc,
+                    HandoffContext(
+                        item_id=item["id"],
+                        step=label,
+                        agent=model_agent,
+                        persona=persona,
+                        append_system=role,
+                        cwd=str(ws),
+                        deadline=deadline,
+                        provider_locked=provider_locked,
+                    ),
+                    guard,
+                    ws,
+                )
             raise
         # The summary is reporting, not the deliverable — the code in the
         # workspace is. Never torch a completed implement run over a
@@ -1108,6 +1225,9 @@ def _execute(task: dict) -> dict:
             max_turns=max_turns,
             timeout_s=timeout_s,
             allowed_tools=tools,
+            required_keys=("verdict",),
+            item_id=item["id"],
+            guard=guard,
             provider_locked=provider_locked,
         )
 
@@ -1126,6 +1246,9 @@ def _execute(task: dict) -> dict:
             max_turns=max_turns,
             timeout_s=timeout_s,
             allowed_tools=tools,
+            required_keys=("verdict",),
+            item_id=item["id"],
+            guard=guard,
             provider_locked=provider_locked,
         )
 
@@ -1187,6 +1310,9 @@ def _execute(task: dict) -> dict:
             max_turns=max_turns,
             timeout_s=timeout_s,
             allowed_tools=tools,
+            required_keys=("summary", "url", "expected_text"),
+            item_id=item["id"],
+            guard=guard,
             provider_locked=provider_locked,
         )
         summary = str(parsed.get("summary", "")).strip()[:SUMMARY_MAX_CHARS] or "deploy verification finished"
@@ -1222,6 +1348,9 @@ def _execute(task: dict) -> dict:
         max_turns=max_turns,
         timeout_s=timeout_s,
         allowed_tools=tools if ws else None,
+        required_keys=("summary", "artifact_md") if wants_artifact else ("summary",),
+        item_id=item["id"],
+        guard=guard,
         provider=provider_override,
         provider_locked=provider_locked,
     )
@@ -1276,6 +1405,9 @@ def main() -> int:
         log(f"run {run_id}: {task['step']['label']} for {task['item']['id']}")
         outcome = execute(task)
         result = {"run_id": run_id, "ok": True, **outcome}
+        # HZ-158: a handoff note is for the attempt after an exhausted one;
+        # once the step succeeds it must not reach a later re-run.
+        handoff.clear_note(str(task["item"].get("id", "")), str(task["step"].get("label", "")))
     except Exception as exc:
         log(f"run {run_id}: FAILED — {exc}")
         result = {"run_id": run_id, "ok": False, "error": str(exc)[:ERROR_MAX_CHARS]}
