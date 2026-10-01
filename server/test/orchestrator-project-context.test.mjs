@@ -103,3 +103,22 @@ test('a farm-lane dispatch carries no project_context key at all', async () => {
   const { body } = await dispatchFor('D-FARM')
   assert.equal('project_context' in body, false)
 })
+
+// Intended: items with no project (pre-projects rows, or created before a
+// project was picked) form one shared "no project" bucket — the same items the
+// retired single PM session saw side by side. They never mix with a real
+// project's items, in either direction.
+test('project-less items share one context bucket and never mix with a project', () => {
+  item('N-CUR', { project: null, cursor: 0 })
+  item('N-PEER', { project: null, updated: '2026-09-15 00:00:00' })
+  item('N-PROJ', { project: 6, updated: '2026-09-16 00:00:00' })
+  insertFeedback.run('N-PEER', 'PM', 'no-project feedback', '2026-09-15 00:00:00', '2026-09-30 00:00:00')
+
+  const nullCtx = orchestrator.buildProjectContext('N-CUR')
+  assert.deepEqual(nullCtx.items.map((i) => i.id), ['N-PEER'])
+  assert.deepEqual(nullCtx.feedback.map((f) => f.message), ['no-project feedback'])
+
+  const projCtx = orchestrator.buildProjectContext('N-PROJ')
+  assert.deepEqual(projCtx.items, [])
+  assert.deepEqual(projCtx.feedback, [])
+})

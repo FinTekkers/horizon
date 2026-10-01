@@ -117,7 +117,7 @@ def _retire_pm_lane() -> int:
     under the same name (never overwriting a file already there), then any
     leftover `farm-pm-*` session is killed — it would run stale code, which is
     the bug HZ-204 fixes. Its one in-flight run, if any, is reported not alive
-    by /runs/alive and auto-retried by the server's sweep (never_picked_up).
+    by /runs/alive and auto-retried by the server's never-picked-up sweep.
     Returns how many task files moved; a second call is a no-op."""
     moved = 0
     runs = QUEUE_DIR / "runs"

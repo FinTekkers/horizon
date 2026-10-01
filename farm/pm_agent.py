@@ -111,7 +111,7 @@ def report_result(result: dict) -> bool:
     released. Anything that leaves us unsure (farmd down or restarting
     mid-deploy, the Node server unreachable, a non-2xx) returns False, so the
     caller keeps the file: farmd's reconciler then reports the run
-    `unreachable` once this session is gone, and the server retries it. An
+    unreachable (a retryable reason) once this session is gone, and the server retries it. An
     unreachable server is not evidence the run was handled — the same rule
     farmd's _report_run_dead follows.
 
@@ -471,7 +471,7 @@ def main() -> int:
     The file is unlinked strictly after an accepted report. If this process is
     killed first (farmd restart, a deploy), or the report is not accepted, the
     file stays in runs/active and the exit is non-zero: farmd's reconciler
-    reports the run `unreachable` once this session is gone, and the server
+    reports the run unreachable (retryable) once this session is gone, and the server
     retries it — a claimed PM task is never lost.
     """
     parser = argparse.ArgumentParser()

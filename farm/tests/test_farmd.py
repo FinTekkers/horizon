@@ -1961,6 +1961,7 @@ def _farmd_over_testclient(monkeypatch):
 def _pm_task(run_id: int) -> dict:
     task = make_task(run_id, item_id="HZ-204", step_index=PM_LANE_INDEXES[0])
     task["step"]["label"] = next(e["label"] for e in farmd.steps.STEPS if e["index"] == PM_LANE_INDEXES[0])
+    task["item"]["title"] = "Run PM steps per task"
     return task
 
 

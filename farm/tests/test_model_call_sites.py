@@ -156,7 +156,9 @@ def model_id_scope(paths, root) -> list[Path]:
 
 def test_the_old_model_env_vars_appear_in_no_tracked_file():
     hits = scan(tracked_files(), OLD_MODEL_VARS, REPO_ROOT)
-    assert not hits, "FARM_PM_MODEL / FARM_STEP_MODEL / FARM_CONCIERGE_MODEL are gone (HZ-192):\n" + "\n".join(hits)
+    # The message names the pattern, not the variables, so this file holds no
+    # literal hit either (HZ-204: the PM's one appears nowhere in the repo).
+    assert not hits, f"the per-agent model env vars ({OLD_MODEL_VARS.pattern}) are gone (HZ-192):\n" + "\n".join(hits)
 
 
 def test_no_model_id_is_hard_coded_outside_domain():
