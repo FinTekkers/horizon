@@ -42,7 +42,7 @@ from domain.py import priorities
 from . import config
 from . import credentials
 from . import wizard
-from .agent_runner import AgentError, parse_agent_reply, run_agent
+from .agent_runner import REPAIR_NOTES, AgentError, parse_agent_reply, run_agent
 from .config import CONCIERGE_MODEL, FARM_PORT, HORIZON_URL, STATE_DIR, ensure_dirs, slugify
 from .whatsapp.transport import Inbound, Transport, TransportError
 
@@ -364,8 +364,15 @@ def process_message(
     # stamp — so without this the session log would show a clean turn for a
     # reply whose bytes the parser had to change. The text below is the note's
     # other surface; neither one alone is enough.
+    #
+    # Only a note from a repair rung is LABELLED a repair. The other note this
+    # channel can carry (FIRST_OBJECT_NOTE) says which lossless attempt parsed
+    # the reply and no byte was edited — logging that as "repaired" would claim
+    # a byte change that never happened, which is the same kind of misreport as
+    # hiding one.
     for note in parse_notes:
-        log(f"message {msg.msg_id}: reply was repaired to parse — {note}")
+        what = "reply was repaired to parse" if note in REPAIR_NOTES else "parser note"
+        log(f"message {msg.msg_id}: {what} — {note}")
     # Appended last, after the action results, and a no-op when empty.
     notes = execute_actions(actions, base_url) + notes + parse_notes
     # Remembers this sender's numbered choices (or clears stale ones) so a

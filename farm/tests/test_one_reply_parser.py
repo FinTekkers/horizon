@@ -339,6 +339,8 @@ def test_the_notes_rule_flags_a_planted_offender(source, why):
         # step_agent's two real shapes
         "parsed, notes = parse_agent_reply(r['result'], retry)\nuse(notes)\n",
         "parsed, prov, notes = _run_and_parse(p)\nuse(notes)\n",
+        # conflict_resolver's, called through the module rather than a bound name
+        "parsed, notes = agent_runner.parse_agent_reply(r.get('result') or '')\nuse(notes)\n",
     ],
 )
 def test_the_notes_rule_passes_the_shapes_really_in_use(source):
@@ -347,12 +349,29 @@ def test_the_notes_rule_passes_the_shapes_really_in_use(source):
 
 def test_the_notes_rule_scans_the_modules_that_really_call_the_helper():
     """Guards the rule itself: without this it could pass by finding no call
-    sites at all."""
-    calls = 0
-    for _label, tree in _trees_for(farm_modules()):
-        calls += sum(
+    sites at all.
+
+    Asserted per MODULE, not as a bare total, because that is how this nearly
+    went wrong: conflict_resolver.py became a fourth caller (a31972a) while the
+    rule's guard still only said "at least three", so a count the three
+    original callers already satisfied proved nothing about the new one.
+    """
+    callers = {
+        "concierge_agent.py": 1,
+        "conflict_resolver.py": 2,  # the resolution agent and the scoped review
+        "pm_agent.py": 1,
+        "step_agent.py": 2,  # _run_and_parse, plus the implement step's own call
+    }
+    found: dict[str, int] = {}
+    for label, tree in _trees_for(farm_modules()):
+        count = sum(
             1
             for node in ast.walk(tree)
             if isinstance(node, ast.Call) and _called_name(node) == "parse_agent_reply"
         )
-    assert calls >= 3, f"expected the three known callers to call the helper, found {calls}"
+        if count:
+            found[Path(label).name] = count
+    assert found == callers, (
+        "every caller of the shared helper must be named here, so the notes rule above "
+        f"is known to have scanned it: {found}"
+    )

@@ -708,3 +708,46 @@ def test_an_unrepairable_concierge_reply_sends_the_error_and_fabricates_nothing(
     assert "hit an error" in sent, "an unrepairable reply must not be answered with a guess"
     assert "he said" not in sent
     assert agent_runner.repair_counts() == {}
+
+
+def test_a_note_that_changed_no_byte_is_not_logged_as_a_repair(
+    stub, monkeypatch, capsys, repair_counter
+):
+    """FIRST_OBJECT_NOTE says WHICH lossless attempt parsed the reply — not one
+    byte was edited. Logging it as "repaired to parse" would claim a byte
+    change that never happened, which misreports the parser just as badly as
+    hiding a real repair does. It must still be logged, under its own wording.
+    """
+    from farm import agent_runner
+
+    # Attempts 1 and 2 both fail, attempt 3 lifts the leading object out, and
+    # the lossless retry then returns nothing usable — so the scanned object is
+    # what the human gets, with its note.
+    replies = ['{"reply":"ok","actions":[]} prose {"b":2}', "still just prose"]
+
+    def fake_run(prompt, **kw):
+        return {"result": replies.pop(0), "session_id": "s1"}
+
+    monkeypatch.setattr(ca, "run_agent", fake_run)
+    t = FakeTransport()
+    state = make_state(t, "firstobject")
+    t.seed("what's up")
+    ca.poll_once(t, state, stub.url, farmd_url=stub.url)
+
+    assert replies == [], "both the first reply and the lossless retry should have run"
+    assert agent_runner.FIRST_OBJECT_NOTE in t.sent[0][1]
+    logged = capsys.readouterr().out
+    assert agent_runner.FIRST_OBJECT_NOTE in logged, "the note must still reach the log"
+    assert "repaired to parse" not in logged, "no byte changed — this is not a repair"
+    assert "parser note" in logged
+    assert agent_runner.repair_counts() == {}
+
+
+def test_every_rung_note_is_labelled_a_repair_in_the_log(monkeypatch, capsys):
+    """The labelling rule stated over the whole ladder rather than per rung, so
+    a rung added by part 3 is covered the day it lands: REPAIR_NOTES is derived
+    from REPAIRS, so a new rung's note joins it without a second edit."""
+    from farm import agent_runner
+
+    assert agent_runner.REPAIR_NOTES == {rung.note for rung in agent_runner.REPAIRS}
+    assert agent_runner.FIRST_OBJECT_NOTE not in agent_runner.REPAIR_NOTES

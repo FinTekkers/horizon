@@ -2,8 +2,8 @@
 
     $ python -m farm.tools.repair_counts
     reply repair counts — /home/you/.horizon-farm/state/parser-repairs.json
-    (indicative totals: three agent processes tick this file, so a simultaneous
-    tick can lose one increment)
+    (indicative totals: several farm processes tick this file, so a
+    simultaneous tick can lose one increment)
       trailing_comma      12
       single_quotes        3
       TOTAL               15
@@ -45,7 +45,7 @@ def rows(counts: dict[str, int]) -> list[tuple[str, int]]:
 def render(counts: dict[str, int], path: Path) -> str:
     lines = [
         f"reply repair counts — {path}",
-        "(indicative totals: three agent processes tick this file, so a simultaneous "
+        "(indicative totals: several farm processes tick this file, so a simultaneous "
         "tick can lose one increment)",
     ]
     table = rows(counts)

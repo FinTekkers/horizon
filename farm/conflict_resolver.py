@@ -63,6 +63,12 @@ from .workspaces import ensure_item_worktree, hub_lock
 # workspaces.py) — a hung git process must not hang the resolution forever.
 GIT_TIMEOUT_S = 300
 
+# The cap every escalation detail and scoped-review summary already carried.
+# Named rather than repeated as a bare 400, because _with_notes() has to
+# reserve room INSIDE it: a parser note appended and then sliced off the end is
+# a note that did not arrive, which is the silent repair HZ-157 forbids.
+DETAIL_LIMIT = 400
+
 # Index status codes from `git status --porcelain=v1` that mean "still
 # unmerged" — any code with a 'U' in either column, plus the two "both sides
 # touched it the same way" pairs that porcelain reports without a 'U'.
@@ -198,7 +204,7 @@ def resolve(repo_full: str, item_id: str, branch: str | None = None, base_branch
         # Someone else pushed to this branch while we were merging/testing —
         # refuse rather than force over it.
         log(f"conflict_resolver: push rejected — escalating ({exc})")
-        return {"resolved": False, "reason": "push_rejected", "detail": str(exc)[:400]}
+        return {"resolved": False, "reason": "push_rejected", "detail": str(exc)[:DETAIL_LIMIT]}
 
     log(f"conflict_resolver: merged origin/{default} into {branch} and pushed — {check_note}")
     return {"resolved": True, "files": diffstat, "summary": f"merged origin/{default} into {branch}; {check_note}"}
@@ -233,7 +239,7 @@ def _escalate(ws: Path, pre_merge_sha: str, reason: str, detail: str, log) -> di
         reason, detail = "merge_conflict", f"{reason}: {detail}"
     log(f"conflict_resolver: escalating ({reason}) — {str(detail)[:200]}")
     _abort_and_clean(ws, pre_merge_sha)
-    return {"resolved": False, "reason": reason, "detail": str(detail)[:400]}
+    return {"resolved": False, "reason": reason, "detail": str(detail)[:DETAIL_LIMIT]}
 
 
 def _worktree_dirty_paths(ws: Path) -> set[str]:
@@ -291,6 +297,11 @@ def _scoped_resolve(ws, repo_full, branch, default, unmerged, pre_merge_sha, log
     stage_zero = {cf.path: [conflict_hunks.deterministic_resolve(h) for h in cf.hunks] for cf in files}
     every_hunk_is_mechanical = all(r is not None for per_file in stage_zero.values() for r in per_file)
 
+    # HZ-157: the resolution agent's parser notes, carried down to this
+    # function's own summary. The deterministic branch dispatches no agent, so
+    # it parses no reply and has nothing to report.
+    resolution_notes: list[str] = []
+
     if every_hunk_is_mechanical:
         # Stage zero: the two sides edited different lines of every hunk, so
         # applying both is the only answer — deterministically, no agent, and
@@ -301,6 +312,7 @@ def _scoped_resolve(ws, repo_full, branch, default, unmerged, pre_merge_sha, log
     else:
         strategy = "agent"
         agent = _run_resolution_agent(ws, files, log)
+        resolution_notes = agent["notes"]
         if not agent["resolved"]:
             return _escalate(ws, pre_merge_sha, "resolution_unsure", agent["detail"], log)
 
@@ -383,9 +395,14 @@ def _scoped_resolve(ws, repo_full, branch, default, unmerged, pre_merge_sha, log
         "resolved": True,
         "mode": "scoped",
         "files": diffstat,
-        "summary": (
+        # The resolution agent's parser notes ride the summary, which is the
+        # run output the orchestrator records for this gate action. Uncapped:
+        # nothing downstream slices this string, and a note cut in half is a
+        # note that did not arrive.
+        "summary": _with_notes(
             f"resolved {hunk_count} conflicted hunk(s) in {len(files)} file(s) "
-            f"while merging origin/{default} ({strategy}); {check_note}"
+            f"while merging origin/{default} ({strategy}); {check_note}",
+            resolution_notes,
         ),
         "resolution": {
             "strategy": strategy,
@@ -408,8 +425,13 @@ def _hunk_brief(cf: conflict_hunks.ConflictFile) -> str:
 
 def _run_resolution_agent(ws: Path, files, log) -> dict:
     """Dispatch the one resolution agent. Returns
-    {"resolved": bool, "detail": str} — "cannot be sure" is a first-class
-    reply, not a failure to parse.
+    {"resolved": bool, "detail": str, "notes": list[str]} — "cannot be sure" is
+    a first-class reply, not a failure to parse.
+
+    `notes` is the parser's repair notes, returned separately as well as folded
+    into `detail`: on the resolved path the caller drops `detail` and reports
+    its own summary, so a note that only rode in `detail` would vanish on the
+    commonest success.
 
     Deliberately called through the agent_runner MODULE, not a `from ... import
     run_agent` binding: the mechanical path's "never dispatches an agent" test
@@ -432,19 +454,59 @@ def _run_resolution_agent(ws: Path, files, log) -> dict:
         )
         parsed, notes = agent_runner.parse_agent_reply(reply.get("result") or "")
     except (AgentError, ValueError) as exc:
-        return {"resolved": False, "detail": f"the resolution agent did not return a usable answer: {exc}"}
+        # Nothing parsed, so there are no notes to carry — the exception IS the
+        # report.
+        return {
+            "resolved": False,
+            "detail": f"the resolution agent did not return a usable answer: {exc}",
+            "notes": [],
+        }
     if not isinstance(parsed, dict) or parsed.get("resolved") is not True:
         unsure = ""
         if isinstance(parsed, dict):
             unsure = str(parsed.get("unsure_reason") or parsed.get("summary") or "")
-        return {"resolved": False, "detail": unsure or "the agent reported it could not be sure of the resolution"}
-    return {"resolved": True, "detail": _with_notes(str(parsed.get("summary") or "resolved the conflicted hunks"), notes)}
+        return {
+            "resolved": False,
+            # HZ-157: `resolved: false` is an ORDINARY outcome, not an edge
+            # case, so it is exactly the branch a dropped note would hide on.
+            "detail": _with_notes(
+                unsure or "the agent reported it could not be sure of the resolution",
+                notes,
+                DETAIL_LIMIT,
+            ),
+            "notes": notes,
+        }
+    return {
+        "resolved": True,
+        "detail": _with_notes(
+            str(parsed.get("summary") or "resolved the conflicted hunks"), notes, DETAIL_LIMIT
+        ),
+        "notes": notes,
+    }
 
 
-def _with_notes(text: str, notes: list[str]) -> str:
+def _with_notes(text: str, notes: list[str], limit: int | None = None) -> str:
     """Carry parse_agent_reply's repair notes into the text the orchestrator
-    records, so a repaired reply is never silently accepted."""
-    return f"{text} (parser notes: {'; '.join(notes)})" if notes else text
+    records, so a repaired reply is never silently accepted.
+
+    EVERY branch that consumes a parse_agent_reply result goes through here —
+    including the plain `resolved: false` and no-verdict-object outcomes. A
+    reply whose bytes the parser had to change is not an edge case, and
+    dropping the note on the commonest branch is the silent repair HZ-157
+    exists to prevent.
+
+    `limit` reserves room for the notes rather than letting a later slice cut
+    them off the end — the same rule, for the same reason, as
+    agent_runner.stamp_notes(). None means the caller imposes no cap.
+    """
+    if not notes:
+        return text
+    suffix = f" (parser notes: {'; '.join(notes)})"
+    if limit is None:
+        return text + suffix
+    if len(suffix) >= limit:
+        return suffix[:limit]  # pathological notes: the note wins, not the text
+    return text[: limit - len(suffix)] + suffix
 
 
 def _resolution_prompt(files) -> str:
@@ -493,9 +555,15 @@ def _run_scoped_review(ws: Path, files, delta, log) -> dict:
     except (AgentError, ValueError) as exc:
         return {"verdict": "fail", "reviewed": True, "summary": f"the scoped review returned no usable verdict: {exc}"}
     if not isinstance(parsed, dict):
-        return {"verdict": "fail", "reviewed": True, "summary": "the scoped review returned no verdict object"}
+        # Repaired bytes that parsed to a non-object still had their bytes
+        # changed — the note belongs on this branch too (HZ-157).
+        return {
+            "verdict": "fail",
+            "reviewed": True,
+            "summary": _with_notes("the scoped review returned no verdict object", notes, DETAIL_LIMIT),
+        }
     section = _review_section(parsed)
-    summary = _with_notes(str(parsed.get("summary") or ""), notes)
+    summary = _with_notes(str(parsed.get("summary") or ""), notes, DETAIL_LIMIT)
     if section["verdict"] != "pass" and section["findings"]:
         first = section["findings"][0]
         detail = first.get("detail") if isinstance(first, dict) else None
@@ -504,7 +572,9 @@ def _run_scoped_review(ws: Path, files, delta, log) -> dict:
     return {
         "verdict": section["verdict"],
         "reviewed": True,
-        "summary": (summary or "no summary given")[:400],
+        # summary already reserved room for its notes, and it is the PREFIX of
+        # this string, so the note survives whatever this slice removes.
+        "summary": (summary or "no summary given")[:DETAIL_LIMIT],
         "findings": section["findings"],
     }
 

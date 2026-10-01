@@ -22,6 +22,7 @@ __all__ = [
     "FIRST_OBJECT_NOTE",
     "REPAIRS",
     "REPAIR_COUNTS_PATH",
+    "REPAIR_NOTES",
     "SINGLE_QUOTE_NOTE",
     "TRAILING_COMMA_NOTE",
     "Repair",
@@ -426,6 +427,14 @@ REPAIRS: tuple[Repair, ...] = (
     Repair("single_quotes", True, SINGLE_QUOTE_NOTE, _repair_single_quotes),
 )
 
+# Which notes mean "bytes were changed". Exported because a caller that labels
+# its log line needs to tell the two kinds of note apart: FIRST_OBJECT_NOTE
+# reports WHICH lossless attempt parsed the reply and no byte was edited, so
+# calling it a repair would overstate what happened on a reply the parser only
+# read differently. Derived from REPAIRS rather than listed, so part 3's rungs
+# join it without a second edit.
+REPAIR_NOTES: frozenset[str] = frozenset(rung.note for rung in REPAIRS)
+
 
 def _repairs_enabled() -> bool:
     """Read at call time — like _selected_provider_name() above — so the lever
@@ -500,9 +509,10 @@ def _repair_ladder(
 
 
 # ---- HZ-157: how often each rung actually fires ----
-# A file rather than a process counter because pm_agent, step_agent and
-# concierge_agent are three SEPARATE PROCESSES — an in-memory tally is
-# unreadable by any script, which is what the success metric asks for.
+# A file rather than a process counter because the callers of this helper
+# (pm_agent, step_agent, concierge_agent, and conflict_resolver inside farmd)
+# are SEPARATE PROCESSES — an in-memory tally is unreadable by any script,
+# which is what the success metric asks for.
 REPAIR_COUNTS_PATH = STATE_DIR / "parser-repairs.json"
 
 
@@ -539,11 +549,13 @@ def record_repair(name: str, path: Path | None = None) -> None:
 
     Unknown keys are preserved, so a later item's rung cannot erase this one's
     totals. Written to a sibling and os.replace()d, so a reader never sees a
-    half-written file.
+    half-written file — and the sibling is removed if the rename is what failed,
+    or a half-written `.tmp` would sit in STATE_DIR forever with nothing to
+    clean it up.
 
     KNOWN LIMIT: two agent processes ticking in the same instant can lose one
-    increment. These are indicative totals, not an audit trail; locking three
-    processes against each other is not worth a counter's correctness.
+    increment. These are indicative totals, not an audit trail; locking the
+    farm's processes against each other is not worth a counter's correctness.
     """
     target = Path(path) if path is not None else REPAIR_COUNTS_PATH
     counts = repair_counts(target)
@@ -554,7 +566,13 @@ def record_repair(name: str, path: Path | None = None) -> None:
         tmp.write_text(json.dumps(counts, indent=2, sort_keys=True) + "\n")
         os.replace(tmp, target)
     except OSError:
-        return  # a counter must never be the reason a step failed
+        # A counter must never be the reason a step failed — but it must not
+        # leave litter either. missing_ok: the write itself may be what failed.
+        try:
+            tmp.unlink(missing_ok=True)
+        except OSError:
+            pass
+        return
 
 
 def parse_agent_reply(

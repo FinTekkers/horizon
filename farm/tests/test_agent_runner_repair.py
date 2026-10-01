@@ -514,6 +514,40 @@ def test_no_temporary_file_is_left_behind(counter):
     assert list(counter.parent.iterdir()) == [counter]
 
 
+def test_a_failed_rename_leaves_no_temporary_file_behind(counter, monkeypatch):
+    """The split failure the happy-path test above cannot see: write_text()
+    SUCCEEDS and os.replace() is what raises. Without an unlink in the handler
+    a half-written `.tmp` sits in STATE_DIR forever, and nothing cleans it up —
+    one orphan per failed tick."""
+
+    def boom(src, dst):
+        raise OSError("rename failed")
+
+    counter.parent.mkdir(parents=True)
+    monkeypatch.setattr(agent_runner.os, "replace", boom)
+
+    parsed, notes = parse_agent_reply(TRAILING_COMMA)
+
+    assert parsed == {"a": 1} and notes == [TRAILING_COMMA_NOTE]
+    assert list(counter.parent.iterdir()) == [], "a .tmp sibling was left behind"
+
+
+def test_a_cleanup_that_also_fails_still_never_fails_a_parse(counter, monkeypatch):
+    """The handler's own handler. Nothing about a counter — not the write, not
+    the rename, not tidying up after them — may be the reason a step failed."""
+
+    def boom(*args, **kwargs):
+        raise OSError("filesystem gone")
+
+    counter.parent.mkdir(parents=True)
+    monkeypatch.setattr(agent_runner.os, "replace", boom)
+    monkeypatch.setattr(Path, "unlink", boom)
+
+    parsed, notes = parse_agent_reply(TRAILING_COMMA)
+
+    assert parsed == {"a": 1} and notes == [TRAILING_COMMA_NOTE]
+
+
 # ---- exhaustion is never mistaken for a parse failure ----
 
 

@@ -127,7 +127,7 @@ def test_an_unknown_key_is_printed_rather_than_dropped():
 
 
 def test_the_header_discloses_the_known_concurrency_limit():
-    """Three agent processes tick one file. Totals are indicative, and the
+    """Several farm processes tick one file. Totals are indicative, and the
     report has to say so where a human reads them, not only in a docstring."""
     rendered = tool.render({"trailing_comma": 1}, Path("/tmp/x.json"))
     assert "indicative" in rendered
