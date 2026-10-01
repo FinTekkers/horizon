@@ -165,6 +165,23 @@ export async function regenerateGatePin() {
   return result
 }
 
+// ---- personal API tokens (HZ-179) ----
+// The raw token comes back once, from createApiToken, and is handed straight
+// to the caller to show — it is never stored here (no localStorage, unlike
+// the gate PIN above): the browser has no use for it after the user copies it.
+
+export function listApiTokens() {
+  return getJson('/tokens')
+}
+
+export function createApiToken({ name, expiresInDays }) {
+  return postJson('/tokens', { name, expiresInDays })
+}
+
+export function revokeApiToken(id) {
+  return deleteJson(`/tokens/${encodeURIComponent(id)}`)
+}
+
 export function getProjects() {
   return projects
 }
@@ -187,6 +204,13 @@ async function postJson(path, body) {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
   })
+  const data = await res.json().catch(() => ({}))
+  if (!res.ok) throw new Error(data.error || data.message || `HTTP ${res.status}`)
+  return data
+}
+
+async function deleteJson(path) {
+  const res = await fetch(`${API_BASE}${path}`, { method: 'DELETE' })
   const data = await res.json().catch(() => ({}))
   if (!res.ok) throw new Error(data.error || data.message || `HTTP ${res.status}`)
   return data

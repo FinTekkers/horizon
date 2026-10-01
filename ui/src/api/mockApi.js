@@ -126,6 +126,31 @@ export async function regenerateGatePin() {
   return { ok: true, pin: '000000' }
 }
 
+// ---- personal API tokens (HZ-179) ----
+// In-memory only; the mock raw token is a fixed-shape placeholder.
+
+let mockApiTokens = []
+let mockApiTokenSeq = 0
+
+export async function listApiTokens() {
+  return { tokens: mockApiTokens.map((t) => ({ ...t })) }
+}
+
+export async function createApiToken({ name, expiresInDays = 90 }) {
+  const token = `hz_mock${String(Date.now()).padStart(40, '0')}`
+  const createdAt = new Date().toISOString()
+  const expiresAt = new Date(Date.now() + expiresInDays * 86_400_000).toISOString()
+  mockApiTokenSeq += 1
+  const entry = { id: `tok_mock_${mockApiTokenSeq}`, name, last4: token.slice(-4), createdAt, lastUsedAt: null, expiresAt }
+  mockApiTokens = [entry, ...mockApiTokens]
+  return { ...entry, token }
+}
+
+export async function revokeApiToken(id) {
+  mockApiTokens = mockApiTokens.filter((t) => t.id !== id)
+  return { ok: true }
+}
+
 export function getProjects() {
   return []
 }
