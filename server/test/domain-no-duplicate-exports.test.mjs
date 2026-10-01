@@ -35,6 +35,7 @@ const uiLifecycle = await import('../../ui/src/domain/lifecycle.js')
 const domainLifecycle = await import('../../domain/js/lifecycle.js')
 const domainReasons = await import('../../domain/js/reasons.js')
 const domainFields = await import('../../domain/js/fields.js')
+const domainPersonas = await import('../../domain/js/personas.js')
 const uiPauseReason = await import('../../ui/src/domain/pauseReason.js')
 
 function exportedNames(mod) {
@@ -86,11 +87,12 @@ test('the one model module for reasons and the UI module that renders them share
   assert.deepEqual(intersection(ui, model), [])
 })
 
-test('the three model modules in domain/ share no exported name either', () => {
+test('the model modules in domain/ share no exported name either', () => {
   const modules = [
     ['lifecycle', exportedNames(domainLifecycle)],
     ['reasons', exportedNames(domainReasons)],
     ['fields', exportedNames(domainFields)],
+    ['personas', exportedNames(domainPersonas)],
   ]
   for (const [aName, a] of modules) {
     for (const [bName, b] of modules) {
