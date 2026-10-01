@@ -12,6 +12,7 @@
   },
   "dependencies": {
     "@fastify/cookie": "^11.1.2",
+    "@fastify/swagger": "^9.9.1",
     "better-sqlite3": "^12.4.1",
     "fastify": "^5.6.2",
     "google-auth-library": "^11.0.0",

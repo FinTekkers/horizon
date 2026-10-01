@@ -11,12 +11,16 @@ step:
   sentences of what "done" looks like from the user's point of view. If the
   existing description is already clear, keep it and say so. On this step you
   ALSO classify the item's dominant stack so the right specialist implements
-  it later: include "persona" in your patch with exactly one of "fullstack",
-  "python_backend" or "frontend_ui". Pick "python_backend" only for clearly
-  Python/backend-dominated work, "frontend_ui" only for clearly UI-dominated
-  work, and "fullstack" whenever the work spans stacks or the signal is
-  ambiguous. If the item already shows a persona, OMIT the field entirely —
-  a human may have chosen it, and the server drops re-proposals anyway.
+  it later: include "personas" in your patch as an object keyed by the agent
+  the persona is for. Set the "eng" slot only, to exactly one of "fullstack",
+  "python", "ui" or "performance" — so `"personas": {"eng": "python"}`. Pick
+  "python" only for clearly Python/backend-dominated work, "ui" only for
+  clearly UI-dominated work, "performance" only when the item is explicitly
+  about speed or resource cost, and "fullstack" whenever the work spans stacks
+  or the signal is ambiguous. Do NOT set a "qa", "architect" or "pm" slot —
+  those default sensibly and a human picks them at the gate. If the item
+  already shows an eng persona, OMIT "personas" entirely — a human may have
+  chosen it, and the server drops re-proposals anyway.
 - "Define how we measure success": ensure the success metric is objectively
   checkable (a number, threshold, or verifiable condition). Improve vague
   metrics; keep good ones.
@@ -31,12 +35,12 @@ Respond with ONLY a JSON object, no prose, no code fences:
 
 {
   "summary": "<past-tense, <=200 chars, what you did — shown in the activity feed>",
-  "patch": { "desc": "...", "metric": "...", "guardrails": "...", "persona": "fullstack|python_backend|frontend_ui" }
+  "patch": { "desc": "...", "metric": "...", "guardrails": "...", "personas": { "eng": "fullstack|python|ui|performance" } }
 }
 
 Rules for "patch": include ONLY fields you are actually changing; omit the
 whole "patch" key if nothing changes. Field limits: {{FIELD_LIMITS}}.
-"persona" is only ever set on the "Define the outcome" step, per the rules
+"personas" is only ever set on the "Define the outcome" step, per the rules
 above.
 
 Additional step you own — "Summarize reviews & recommend": you receive the
@@ -49,6 +53,11 @@ QA review). Your job is to digest them for a busy human deciding at the
   "artifact_md": "<the digest, EXACTLY this structure:
 ## Recommendation
 **PROCEED** | **PROCEED WITH CONDITIONS** | **SEND BACK** — one sentence why.
+## Test contract
+The binding test list for implement and review. One bullet per kept case:
+- **Kept:** <case> — verifies <metric line N | guardrail N>
+Dropped / downgraded:
+- <case> — **dropped** | **optional** — <one-line reason>
 ## What's being built
 Max 3 plain-language bullets. No jargon.
 ## Reviewer findings
@@ -61,6 +70,17 @@ Numbered list of concrete actions (who does what), or 'None.'>"
 Rules for the digest: every OPEN finding must map to an action. If any input
 artifact looks truncated, contradictory, or a reviewer accepted something
 untestable, call it out and recommend SEND BACK — do not paper over it.
+If the architect raised a size concern (more than 15 files or 600 production
+lines), recommend SEND BACK and name the proposed split.
+
+Rules for the Test contract: rule on QA's test list instead of copying it.
+- Keep only cases tied to a success-metric line or guardrail. Each kept case
+  names the metric line or guardrail it verifies.
+- List every dropped or downgraded case with a one-line reason.
+- Soft cap: 2 cases per metric line plus 1 per guardrail. Going over the cap
+  requires a stated reason in the section.
+- Never drop a test that is the only verification of a metric line or
+  guardrail. If QA's list leaves one unverified, add a case for it.
 
 Writing rules (strict — outputs violating these get rejected at review):
 - Write for a busy human skimming on a small screen.

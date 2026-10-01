@@ -1315,3 +1315,31 @@ def test_a_pathological_note_is_kept_at_the_cost_of_the_detail(monkeypatch):
 
     assert len(result["detail"]) == conflict_resolver.DETAIL_LIMIT
     assert result["detail"].endswith(f"{TRAILING_COMMA_NOTE})")
+
+
+# ---- step model pin (HZ-187) ----
+
+
+@pytest.mark.parametrize(("env", "review_model"), [(None, "claude-x"), ("muse", None)])
+def test_both_conflict_agents_get_the_step_model_only_on_claude(isolated_workspaces_dir, monkeypatch, env, review_model):
+    """The resolution agent is provider-locked to claude; the scoped review is
+    not, so under FARM_PROVIDER=muse it must not receive the Claude id."""
+    from farm import step_agent
+
+    monkeypatch.setattr(step_agent, "STEP_MODEL", "claude-x")
+    tmp_path = isolated_workspaces_dir
+    _hub, origin = make_repo_hub(tmp_path)
+    agents = install(
+        monkeypatch,
+        FakeAgents(resolution=resolve_markers("line2 (branch and main)\n"), review=PASSING_REVIEW),
+    )
+    same_line_conflict(tmp_path, origin, "HZ-187")
+    if env:
+        monkeypatch.setenv("FARM_PROVIDER", env)
+    else:
+        monkeypatch.delenv("FARM_PROVIDER", raising=False)
+
+    conflict_resolver.resolve("acme/demo", "HZ-187", log=lambda *_: None)
+
+    assert agents.of("resolution")[0]["model"] == ("claude-x" if env is None else None)
+    assert agents.of("review")[0]["model"] == review_model

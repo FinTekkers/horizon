@@ -378,6 +378,34 @@ def test_a_shadowed_reply_that_also_needs_a_comma_removed_reports_both_facts():
     assert notes == [TRAILING_COMMA_NOTE, agent_runner.FIRST_OBJECT_NOTE]
 
 
+def test_a_repair_that_only_the_scanner_could_parse_waits_for_the_lossless_retry():
+    """HZ-156's invariant, applied to repaired bytes: a reply only attempt 3
+    could parse is owed the lossless retry first. Removing the comma leaves
+    exactly such a reply, so the retry runs and its clean value wins."""
+    calls: list[str] = []
+
+    def retry(prompt: str) -> str:
+        calls.append(prompt)
+        return '{"real":1}'
+
+    parsed, notes = parse_agent_reply('{"a":1,} prose {"b":2}', retry)
+    assert len(calls) == 1, "a scanned repair skipped the lossless retry"
+    assert parsed == {"real": 1}
+    assert notes == []
+    assert repair_counts() == {}
+
+
+def test_a_scanned_repair_is_taken_once_the_lossless_retry_has_failed():
+    """The deferred repair is not lost: after the retry fails, it is the value
+    returned, with both facts about its bytes reported."""
+    retry, calls = recorder()
+    parsed, notes = parse_agent_reply('{"a":1,} prose {"b":2}', retry)
+    assert len(calls) == 1
+    assert parsed == {"a": 1}
+    assert notes == [TRAILING_COMMA_NOTE, agent_runner.FIRST_OBJECT_NOTE]
+    assert repair_counts() == {"trailing_comma": 1}
+
+
 def test_a_repair_of_the_retried_reply_is_reported_against_the_retried_text():
     """When the original is unparseable and unrepairable, the model's second
     attempt is what gets repaired — and the note travels with it rather than
@@ -640,7 +668,7 @@ def test_the_farm_requirements_are_unchanged_and_carry_no_json_repair_library():
         "uvicorn>=0.32",
         "httpx>=0.27",
         "httpx2>=0",
-        "claude-agent-sdk>=0.2",
+        "claude-agent-sdk>=0.2.163",
     ]
     lowered = path.read_text().lower()
     for banned in ("json-repair", "jsonrepair", "json5", "demjson", "dirtyjson", "hjson", "pyjson5"):

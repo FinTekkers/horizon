@@ -18,6 +18,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from domain.py import steps as domain_steps
 from farm import agent_runner, pm_agent
 from farm.config import PM_MALFORMED_GRACE_S
 from farm.pm_agent import (
@@ -31,13 +32,20 @@ from farm.pm_agent import (
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 
+# Read off the one declaration (domain/steps.json) rather than typed here:
+# server/test/domain-one-declaration.test.mjs allowlists every file that spells
+# a step label out, and a test fixture has no business being on that list.
+FIRST_PM_STEP_LABEL = domain_steps.STEPS[0]["label"]
+
 # Derived, never typed (HZ-134): PATCH_FIELDS comes from domain/fields.json now,
 # so a test that built its oversized input from a literal 400 would go VACUOUS
 # the moment the declared limit rose past it — the input would simply fit, the
 # marked branch would never run, and the test would stay green while proving
 # nothing.
 GUARDRAILS_LIMIT = PATCH_FIELDS["guardrails"]
-PERSONA_LIMIT = PATCH_FIELDS["persona"]
+# The persona cap is NOT read out of PATCH_FIELDS: since HZ-125 the routing tag
+# is a {agent: persona id} map under `personas`, so it has no entry there — its
+# size caps live on pm_agent itself (see PERSONA_ID_MAX_CHARS below).
 
 
 def _over_by_words(limit: int) -> str:
@@ -230,15 +238,179 @@ def test_mark_truncated_run_on_word_extends_to_the_next_boundary_past_the_limit(
 
 
 def test_validate_persona_stays_hard_capped_with_no_marker():
-    # persona is a registry-validated routing enum, not prose a human/agent
+    # persona ids are registry-validated routing enums, not prose a human/agent
     # reads — the server drops anything that isn't an exact match anyway, so
-    # marking it would just decorate a value that's discarded either way.
-    # The cap is DERIVED (HZ-134). A literal 40 here would let this documented
-    # exception go vacuous the moment the declared persona limit changed.
-    over = "x" * (PERSONA_LIMIT * 2)
-    _summary, patch, _artifact = validate({"summary": "did it", "patch": {"persona": over}})
-    assert patch["persona"] == over[:PERSONA_LIMIT]
-    assert "chars omitted" not in patch["persona"]
+    # marking one would just decorate a value that's discarded either way.
+    # The cap is read off pm_agent rather than typed, so this documented
+    # exception cannot go vacuous if the cap moves.
+    from farm.pm_agent import PERSONA_ID_MAX_CHARS
+
+    over = "x" * (PERSONA_ID_MAX_CHARS * 2)
+    _summary, patch, _artifact = validate({"summary": "did it", "patch": {"personas": {"eng": over}}})
+    assert patch["personas"]["eng"] == over[:PERSONA_ID_MAX_CHARS]
+    assert "chars omitted" not in patch["personas"]["eng"]
+
+
+# ---- agent-scoped persona proposal (HZ-125) ----
+# The real farm PM path, not the server's demo-mode heuristic: pm.md tells the
+# agent to emit `"personas": {"eng": ...}` and completeFarmRun only accepts an
+# object under `patch.personas`. A flat string here would be silently discarded
+# server-side, so the shape is pinned at this end too.
+
+
+def test_validate_forwards_an_agent_scoped_personas_map():
+    _summary, patch, _artifact = validate({"summary": "did it", "patch": {"personas": {"eng": "python"}}})
+    assert patch["personas"] == {"eng": "python"}
+
+
+def test_validate_keeps_one_slot_per_agent():
+    _summary, patch, _artifact = validate(
+        {"summary": "did it", "patch": {"personas": {"eng": "python", "qa": "data_integrity"}}}
+    )
+    assert patch["personas"] == {"eng": "python", "qa": "data_integrity"}
+
+
+@pytest.mark.parametrize(
+    "bogus", ["python", 42, [], {"eng": 7}, {7: "python"}, {"eng": "   "}, {"": "python"}, {}, None]
+)
+def test_validate_drops_a_malformed_personas_field_without_failing_the_step(bogus):
+    _summary, patch, _artifact = validate({"summary": "did it", "patch": {"personas": bogus}})
+    assert "personas" not in patch
+
+
+def test_validate_caps_how_many_persona_slots_a_reply_can_claim():
+    """MAX_PERSONA_SLOTS is the break in _clean_personas. Four agents compose a
+    persona; a reply naming dozens is either confused or hostile, and the patch
+    it produces is forwarded to the server as JSON — so the map is bounded here
+    rather than trusted to be small."""
+    from farm.pm_agent import MAX_PERSONA_SLOTS
+
+    proposed = {f"agent{i}": f"persona{i}" for i in range(MAX_PERSONA_SLOTS + 5)}
+    _summary, patch, _artifact = validate({"summary": "did it", "patch": {"personas": proposed}})
+    assert len(patch["personas"]) == MAX_PERSONA_SLOTS
+    # The cap keeps the first slots seen, it doesn't shuffle or empty the map.
+    assert list(patch["personas"]) == [f"agent{i}" for i in range(MAX_PERSONA_SLOTS)]
+
+
+def test_validate_keeps_a_reply_that_sits_exactly_on_the_slot_cap():
+    """The boundary itself: `>=` breaks *after* inserting, so a reply with
+    exactly MAX_PERSONA_SLOTS entries keeps all of them — the cap must not cost
+    the last slot."""
+    from farm.pm_agent import MAX_PERSONA_SLOTS
+
+    proposed = {f"agent{i}": f"persona{i}" for i in range(MAX_PERSONA_SLOTS)}
+    _summary, patch, _artifact = validate({"summary": "did it", "patch": {"personas": proposed}})
+    assert patch["personas"] == proposed
+
+
+def test_validate_truncates_an_over_long_agent_key_like_the_persona_id():
+    """Both halves of the map are size-capped, not just the value: an agent key
+    is a routing enum the server matches exactly, so an unbounded one would be
+    carried into a patch (and a log line) for nothing."""
+    from farm.pm_agent import PERSONA_AGENT_MAX_CHARS
+
+    over = "e" * 100
+    _summary, patch, _artifact = validate({"summary": "did it", "patch": {"personas": {over: "python"}}})
+    assert list(patch["personas"]) == [over[:PERSONA_AGENT_MAX_CHARS]]
+    assert patch["personas"][over[:PERSONA_AGENT_MAX_CHARS]] == "python"
+
+
+def test_validate_drops_a_pre_hz125_flat_persona_field():
+    """A prompt (or a cached session) still emitting the old flat field must not
+    smuggle a bare string through under a key the server no longer reads — it
+    would be silently dropped there. Dropping it here keeps the patch honest
+    about what it changed."""
+    _summary, patch, _artifact = validate({"summary": "did it", "patch": {"persona": "python_backend"}})
+    assert "persona" not in patch
+    assert "personas" not in patch
+
+
+def test_pm_role_prompt_asks_for_the_agent_scoped_shape():
+    """The prompt and the validator have to agree: an agent told to emit a flat
+    "persona" string would have its proposal dropped at every layer below."""
+    from farm.pm_agent import ROLE_PROMPT
+
+    assert '"personas"' in ROLE_PROMPT
+    assert '"persona"' not in ROLE_PROMPT
+    # The ids it offers must exist in the eng bucket it is told to fill.
+    from farm.personas import PERSONAS
+
+    for persona_id in ("fullstack", "python", "ui", "performance"):
+        assert persona_id in PERSONAS["eng"]
+        assert persona_id in ROLE_PROMPT
+    # The retired flat ids must not still be advertised.
+    assert "python_backend" not in ROLE_PROMPT
+    assert "frontend_ui" not in ROLE_PROMPT
+
+
+# HZ-191: the PM rules on QA's test list in its step-9 digest and publishes a
+# binding Test contract. Role files wrap prose, so normalise
+# whitespace before matching.
+def _pm_role_text():
+    return " ".join(pm_agent.ROLE_PROMPT.split())
+
+
+def test_pm_role_requires_a_test_contract_section():
+    text = _pm_role_text()
+    # Inside the EXACTLY structure, second, so digestToFit keeps it whole.
+    recommendation = text.index("## Recommendation")
+    contract = text.index("## Test contract")
+    built = text.index("## What's being built")
+    assert recommendation < contract < built
+    assert "Each kept case names the metric line or guardrail it verifies." in text
+    assert "<case> — verifies <metric line N | guardrail N>" in text
+    assert "List every dropped or downgraded case with a one-line reason." in text
+
+
+def test_pm_role_states_the_test_contract_cap():
+    text = _pm_role_text()
+    assert "Soft cap: 2 cases per metric line plus 1 per guardrail." in text
+    assert "Going over the cap requires a stated reason in the section." in text
+
+
+def test_pm_role_forbids_dropping_the_only_verification():
+    text = _pm_role_text()
+    assert "Never drop a test that is the only verification of a metric line or guardrail." in text
+
+
+def test_pm_role_keeps_its_fail_closed_send_back_rule():
+    text = _pm_role_text()
+    assert (
+        "If any input artifact looks truncated, contradictory, or a reviewer accepted something "
+        "untestable, call it out and recommend SEND BACK" in text
+    )
+
+
+def test_build_prompt_renders_the_items_personas_per_agent():
+    from farm.pm_agent import build_prompt
+
+    task = {
+        "run_id": "r1",
+        "item": {"id": "T-1", "title": "t", "personas": {"eng": "python", "qa": "e2e_journey"}},
+        "step": {"label": FIRST_PM_STEP_LABEL},
+    }
+    prompt = build_prompt(task)
+    assert "personas: eng=python, qa=e2e_journey" in prompt
+
+
+def test_build_prompt_renders_a_legacy_flat_persona_value():
+    """Guardrail 3: a task file enqueued before HZ-125 still shows its routing
+    instead of reading as "(not set)"."""
+    from farm.pm_agent import build_prompt
+
+    task = {
+        "run_id": "r1",
+        "item": {"id": "T-1", "title": "t", "persona": "python_backend"},
+        "step": {"label": FIRST_PM_STEP_LABEL},
+    }
+    assert "personas: eng=python_backend" in build_prompt(task)
+
+
+def test_build_prompt_says_not_set_when_the_item_carries_no_persona():
+    from farm.pm_agent import build_prompt
+
+    task = {"run_id": "r1", "item": {"id": "T-1", "title": "t"}, "step": {"label": FIRST_PM_STEP_LABEL}}
+    assert "personas: (not set)" in build_prompt(task)
 
 
 # ---- HZ-57: /started notify before processing a claimed PM-queue task ----

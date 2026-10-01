@@ -56,7 +56,7 @@ from .config import CONFLICT_AGENT_TIMEOUT_S, CONFLICT_REVIEW_TIMEOUT_S, CONFLIC
 # "anything that is not exactly 'pass' is a fail" keeps exactly one definition
 # in this codebase. step_agent does not import this module, so the dependency
 # stays one-directional; nothing in it is modified by this file.
-from .step_agent import ROLES, _code_review_section as _review_section
+from .step_agent import ROLES, _code_review_section as _review_section, step_model
 from .workspaces import ensure_item_worktree, hub_lock
 
 # Bounded like every other git subprocess in this codebase (step_agent.py,
@@ -195,7 +195,17 @@ def resolve(repo_full: str, item_id: str, branch: str | None = None, base_branch
     diffstat = git(ws, "diff", "--stat", f"{pre_merge_sha}..HEAD", check=False).stdout.strip()
 
     try:
-        check_note = run_checks(ws, log)
+        # HZ-144: post-merge checks take a check slot like any other, and are
+        # labelled `conflict_resolver` so the measurement can separate them
+        # from agent runs. Deliberately NOT exempt: this runs the same repo
+        # suite on the same 2 vCPUs as an agent's checks, so exempting it
+        # would mean the real concurrent-check population is the configured
+        # limit plus one, which is the oversubscription the limit exists to
+        # prevent. It runs in farmd's own process, inside a synchronous
+        # request from the Node server, so the slot wait is bounded twice:
+        # by FARM_CHECK_SLOT_WAIT_MAX_S here, and by
+        # FARM_CONFLICT_RESOLVE_TIMEOUT_MS (50 min) on the caller's side.
+        check_note = run_checks(ws, log, item_id=item_id, caller="conflict_resolver")
     except CheckFailure as exc:
         return _escalate(ws, pre_merge_sha, "tests_failed", str(exc), log)
 
@@ -424,7 +434,7 @@ def _scoped_resolve(ws, repo_full, branch, default, unmerged, pre_merge_sha, log
     try:
         # require_ran: this path pushes a merge no human has read. "No green,
         # no push" has to mean a check suite that actually ran.
-        check_note = run_checks(ws, log, require_ran=True)
+        check_note = run_checks(ws, log, require_ran=True, caller="conflict_resolver")
     except CheckFailure as exc:
         return _escalate(
             ws, pre_merge_sha, "scoped_checks_failed", str(exc), log, notes=resolution_notes
@@ -517,6 +527,7 @@ def _run_resolution_agent(ws: Path, files, log) -> dict:
             timeout_s=CONFLICT_AGENT_TIMEOUT_S,
             # Same lock as the implement step: this call edits code.
             provider_locked=True,
+            model=step_model(),
         )
         parsed, notes = agent_runner.parse_agent_reply(reply.get("result") or "")
     except (AgentError, ValueError) as exc:
@@ -619,6 +630,7 @@ def _run_scoped_review(ws: Path, files, delta, log) -> dict:
             allowed_tools=REVIEW_TOOLS,
             max_turns=REVIEW_MAX_TURNS,
             timeout_s=CONFLICT_REVIEW_TIMEOUT_S,
+            model=step_model(),
         )
         parsed, notes = agent_runner.parse_agent_reply(reply.get("result") or "")
     except (AgentError, ValueError) as exc:

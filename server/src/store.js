@@ -14,7 +14,7 @@ import {
   ACCEPT_GATE_INDEX,
 } from '../../domain/js/lifecycle.js'
 import { isPriority } from '../../domain/js/priorities.js'
-import { isPersona, personaLabel } from './personas.js'
+import { isPersona, personaLabel, personasFromRow } from './personas.js'
 import { priorityFromLabels } from './priorityLabels.js'
 import { getActiveProjectId, setSetting } from './settings.js'
 
@@ -49,6 +49,15 @@ let runStateProvider = () => ({})
 
 export function registerRunStateProvider(provider) {
   runStateProvider = provider
+}
+
+// HZ-188: the orchestrator owns each item's in-memory conflict-resolution run
+// ({state, since, reason}) and registers its lookup here, same shape of seam
+// as runStateProvider — listItems() stays a synchronous read.
+let conflictRunProvider = () => null
+
+export function registerConflictRunProvider(provider) {
+  conflictRunProvider = provider
 }
 
 // ---- projects & repos ----
@@ -368,7 +377,7 @@ export function listItems() {
     pr_mergeable: row.pr_mergeable == null ? null : !!row.pr_mergeable,
     release_tag: row.release_tag,
     release_url: row.release_url,
-    persona: row.persona,
+    personas: personasFromRow(row),
     cursor: row.cursor,
     currentStep: currentStepOf(row),
     paused: !!row.paused,
@@ -382,6 +391,7 @@ export function listItems() {
     events: selectEvents.all(row.id),
     stepOutputs: stepOutputs(row.id),
     activeRun: withRunState(selectActiveRun.get(row.id) || null),
+    conflictRun: conflictRunProvider(row.id) || null,
     ...dependencyFields(row.id),
   }))
 }
@@ -389,7 +399,10 @@ export function listItems() {
 export function getItem(id) {
   const row = db.prepare('SELECT * FROM work_item WHERE id = ?').get(id)
   if (!row) return null
-  return { ...row, paused: !!row.paused, rejected: !!row.rejected }
+  // `personas` is derived here, at the one seam every caller reads an item
+  // through, so nothing downstream has to know about personas_json or the
+  // legacy `persona` column (HZ-125). The raw columns stay on the object.
+  return { ...row, paused: !!row.paused, rejected: !!row.rejected, personas: personasFromRow(row) }
 }
 
 // Human actions are only valid against the active project's items.
@@ -401,6 +414,10 @@ function inactiveProject(item) {
 // ---- mutations ----
 
 const touch = "updated_at = datetime('now')"
+// A human-directed rework at or before implement starts the automated review
+// loop over: fresh cycles, and no HZ-182 fix pass — a human send-back is an
+// unscoped change, so the next implement and review are both full.
+const RESET_REVIEW_STATE = ', review_cycle_count = 0, fix_pass = 0, fix_findings_json = NULL, last_reviewed_sha = NULL'
 
 export function addEvent(id, { who, text, color, initials }) {
   db.prepare('INSERT INTO event (item_id, who, text, color, initials) VALUES (?, ?, ?, ?, ?)').run(id, who, text, color, initials)
@@ -505,7 +522,7 @@ export function requestChanges(id, target, feedbackText, actor = 'You', targetSt
   )
   // A human-directed rework gets a fresh set of automated review cycles —
   // otherwise a prior automated cap-out could falsely cap this new attempt.
-  const resetReview = reworkIdx <= IMPLEMENT_STEP_INDEX ? ', review_cycle_count = 0' : ''
+  const resetReview = reworkIdx <= IMPLEMENT_STEP_INDEX ? RESET_REVIEW_STATE : ''
   db.prepare(`UPDATE work_item SET cursor = ?, rejected = 0, paused = 0${resetReview}, ${touch} WHERE id = ?`).run(reworkIdx, id)
   addEvent(id, {
     who: actor,
@@ -540,18 +557,24 @@ export function setPaused(id, paused) {
 
 // The human leg of specialist routing: confirm or override the persona the PM
 // proposed (usually at the intake gate; the next dispatch reads the item).
-export function setPersona(id, persona) {
+//
+// One slot per agent (HZ-125): setting the QA persona leaves the Eng one alone,
+// so the write merges rather than replaces. Because `it.personas` already came
+// through personasFromRow, the first call on a pre-HZ-125 item carries its
+// translated legacy value into personas_json instead of dropping it.
+export function setPersona(id, agent, persona) {
   const it = getItem(id)
   if (!it) return { error: 'not_found' }
   if (inactiveProject(it)) return { error: 'project_not_active' }
   if (isClosed(it)) return { error: 'closed' }
   if (isAbandoned(it)) return { error: 'abandoned' }
-  if (!isPersona(persona)) return { error: 'bad_persona' }
+  if (!isPersona(agent, persona)) return { error: 'bad_persona' }
 
-  db.prepare(`UPDATE work_item SET persona = ?, ${touch} WHERE id = ?`).run(persona, id)
+  const merged = { ...it.personas, [agent]: persona }
+  db.prepare(`UPDATE work_item SET personas_json = ?, ${touch} WHERE id = ?`).run(JSON.stringify(merged), id)
   addEvent(id, {
     who: 'You',
-    text: `set the specialist persona to ${personaLabel(persona)}`,
+    text: `set the ${agent} specialist persona to ${personaLabel(agent, persona)}`,
     color: '#5E4380',
     initials: 'YOU',
   })
@@ -606,7 +629,7 @@ export function restartPhase(id, phase, reason, actor = 'You') {
       reason,
     )
   }
-  const resetReview = firstIdx <= IMPLEMENT_STEP_INDEX ? ', review_cycle_count = 0' : ''
+  const resetReview = firstIdx <= IMPLEMENT_STEP_INDEX ? RESET_REVIEW_STATE : ''
   db.prepare(`UPDATE work_item SET cursor = ?, rejected = 0, paused = 0${resetReview}, ${touch} WHERE id = ?`).run(firstIdx, id)
   addEvent(id, {
     who: actor,
@@ -864,7 +887,7 @@ export function recoverRejectedItems() {
       STEPS[reworkIdx].agent || '',
       notes || 'changes requested',
     )
-    const resetReview = reworkIdx <= IMPLEMENT_STEP_INDEX ? ', review_cycle_count = 0' : ''
+    const resetReview = reworkIdx <= IMPLEMENT_STEP_INDEX ? RESET_REVIEW_STATE : ''
     db.prepare(`UPDATE work_item SET cursor = ?, rejected = 0${resetReview}, ${touch} WHERE id = ?`).run(reworkIdx, row.id)
     addEvent(row.id, {
       who: 'Horizon',

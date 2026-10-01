@@ -3,6 +3,9 @@
 
 import Fastify from 'fastify'
 import fastifyCookie from '@fastify/cookie'
+// The package's own unwrapped plugin body, not its fastify-plugin wrapper — see
+// where it is called in buildApp() for why it is invoked directly (HZ-178).
+import { fastifySwagger } from '@fastify/swagger'
 import crypto from 'node:crypto'
 import * as store from './store.js'
 import * as github from './github.js'
@@ -31,6 +34,16 @@ import { PRIORITIES, DEFAULT_PRIORITY } from '../../domain/js/priorities.js'
 import { PERSONAS } from './personas.js'
 import * as definitions from './definitions.js'
 import * as runLogView from './runLogView.js'
+import {
+  ERROR_OBJECT,
+  HUMAN_GATE_SECURITY,
+  OK_OBJECT,
+  SESSION_SECURITY,
+  isInternal,
+  noContent,
+  swaggerOptions,
+  textResponse,
+} from './openapi.js'
 import { readFileSync } from 'node:fs'
 
 // These routes render plain HTML server-side (no React, no bundler) and
@@ -133,7 +146,13 @@ function humanAuthorized(request, reply) {
 // and the deploy liveness probe (HZ-43 — nginx proxies /horizon/api/
 // wholesale, so deploy.sh has no session to send; see /api/health below for
 // what stays out of its payload).
-const SESSION_EXEMPT = [
+//
+// Exported for openapi-security-derived.test.mjs (HZ-178), which asserts the
+// published spec declares the session cookie on exactly the routes that
+// actually require one. openapi.js cannot import this file without a cycle, so
+// the test reads the real list from here rather than keeping a second copy that
+// could drift from the gate below.
+export const SESSION_EXEMPT = [
   /^\/api\/auth\//,
   /^\/api\/webhooks\/github$/,
   /^\/api\/farm\//,
@@ -143,6 +162,11 @@ const SESSION_EXEMPT = [
   // line above — the bridge is a daemon and has no session either.
   /^\/api\/wa\/poll-vote$/,
   /^\/api\/health$/,
+  // HZ-178: the generated API reference. Reachable like /api/health is, and for
+  // the same reason — a published reference nobody can fetch is not published.
+  // Its contents are route shapes only: no values, no examples, and the
+  // credential-bearing internal routes are absent from it entirely.
+  /^\/api\/openapi\.json$/,
 ]
 
 function sessionExempt(url) {
@@ -213,10 +237,53 @@ export const ITEM_BODY_PROPERTIES = Object.fromEntries(
 // item's priority to nothing is not, and that asymmetry predates HZ-135.
 export const PRIORITY_PROPERTY = { type: 'string', enum: PRIORITIES, default: DEFAULT_PRIORITY }
 
-export function buildApp({ logger = true } = {}) {
+// `onRoute` is a test seam (HZ-178). An onRoute hook only fires for routes
+// registered after it, and every route below is registered before buildApp()
+// returns — so a caller cannot install one from the outside, and Fastify exposes
+// no authored schema afterwards (findRoute() returns the handler and params,
+// nothing else). openapi-route-coverage-derived.test.mjs passes a collector here
+// to read each route's declared params/querystring/body and check them against
+// the published document; without it that gate could only assert the document
+// agrees with itself. Production passes nothing and the hook is never added.
+export function buildApp({ logger = true, onRoute = null } = {}) {
   const fastify = Fastify({ logger })
 
+  if (onRoute) fastify.addHook('onRoute', onRoute)
+
   fastify.register(fastifyCookie)
+
+  // HZ-178: the OpenAPI document is built from an `onRoute` hook, so that hook
+  // has to exist BEFORE the first fastify.get() below. fastify.register()
+  // defers plugin loading until ready(), by which point every route is already
+  // registered and the generated spec comes out with an empty `paths` — that is
+  // measured, not assumed. buildApp() is synchronous by contract (server.js
+  // listens on its return value and ~20 server tests call it without await), so
+  // the alternative — awaiting the registration, or moving all 47 route
+  // registrations into a child plugin — would mean changing that contract or
+  // reindenting this entire file.
+  //
+  // So the plugin body is invoked directly against this instance, which is what
+  // fastify-plugin's wrapper would do with it anyway: it adds three hooks and
+  // the `swagger` decorator, synchronously, then calls back (see
+  // @fastify/swagger's lib/mode/dynamic.js). If a future version stops being
+  // synchronous, openapi-route-coverage-derived.test.mjs fails naming every
+  // missing route rather than quietly serving an empty document.
+  fastifySwagger(fastify, swaggerOptions(), (err) => {
+    if (err) throw err
+  })
+
+  // The session cookie is declared on routes from the same sessionExempt() the
+  // login gate below uses, rather than repeated in 30-odd route schemas where it
+  // could drift from the gate that actually runs. Routes that declare their own
+  // `security` keep it — that is the human-gate PIN (HUMAN_GATE_SECURITY), and
+  // the two /api/auth routes which are exempt from the hook but check the
+  // session themselves. Internal routes are absent from the spec, so they need
+  // no security block at all.
+  fastify.addHook('onRoute', (routeOptions) => {
+    if (isInternal(routeOptions.url) || sessionExempt(routeOptions.url)) return
+    if (routeOptions.schema?.security) return
+    routeOptions.schema = { ...routeOptions.schema, security: SESSION_SECURITY }
+  })
 
   // Keep the raw request body so webhook signatures can be verified.
   fastify.addContentTypeParser('application/json', { parseAs: 'string' }, (request, body, done) => {
@@ -243,17 +310,25 @@ export function buildApp({ logger = true } = {}) {
     request.user = user
   })
 
-  fastify.get('/api/stream', (request, reply) => {
-    reply.hijack()
-    reply.raw.writeHead(200, {
-      'Content-Type': 'text/event-stream',
-      'Cache-Control': 'no-cache',
-      Connection: 'keep-alive',
-    })
-    reply.raw.write(`data: ${JSON.stringify(snapshot())}\n\n`)
-    sseClients.add(reply.raw)
-    request.raw.on('close', () => sseClients.delete(reply.raw))
-  })
+  // The response schema documents the media type only: this route hijacks the
+  // reply, so the serializer never runs on it either way (HZ-178).
+  const STREAM_DESCRIPTION =
+    'A `data:` frame carrying the full board snapshot on every change, plus a `:ping` comment every 25s.'
+  fastify.get(
+    '/api/stream',
+    { schema: { response: { 200: textResponse('text/event-stream', STREAM_DESCRIPTION) } } },
+    (request, reply) => {
+      reply.hijack()
+      reply.raw.writeHead(200, {
+        'Content-Type': 'text/event-stream',
+        'Cache-Control': 'no-cache',
+        Connection: 'keep-alive',
+      })
+      reply.raw.write(`data: ${JSON.stringify(snapshot())}\n\n`)
+      sseClients.add(reply.raw)
+      request.raw.on('close', () => sseClients.delete(reply.raw))
+    },
+  )
 
   // ---- REST ----
 
@@ -269,7 +344,12 @@ export function buildApp({ logger = true } = {}) {
     return reply.send(result)
   }
 
-  fastify.get('/api/items', () => snapshot())
+  fastify.get('/api/items', { schema: { response: { 200: OK_OBJECT } } }, () => snapshot())
+
+  // The generated API reference (HZ-178). fastify.swagger() is the decorator the
+  // plugin installed at the top of buildApp(); it may only be called after
+  // ready(), which a request by definition is.
+  fastify.get('/api/openapi.json', { schema: { response: { 200: OK_OBJECT } } }, () => fastify.swagger())
 
   // Public liveness probe for deploy.sh (HZ-43): every /api/* route sits
   // behind the session gate above except this one, because nginx proxies
@@ -281,7 +361,7 @@ export function buildApp({ logger = true } = {}) {
   // again the way the old /api/items probe did (HZ-21 gated /api/items;
   // store.listItems() is also scoped to the active project, a second way an
   // unrelated app change could break this probe).
-  fastify.get('/api/health', (request, reply) => {
+  fastify.get('/api/health', { schema: { response: { 200: OK_OBJECT, 503: ERROR_OBJECT } } }, (request, reply) => {
     let itemCount
     try {
       itemCount = db.prepare('SELECT COUNT(*) AS n FROM work_item').get().n
@@ -293,9 +373,13 @@ export function buildApp({ logger = true } = {}) {
 
   // Stylesheet shared by the standalone pages below. Cacheable by the
   // browser across all three instead of re-sent inline with every page.
-  fastify.get('/api/agent-pages.css', (request, reply) => {
-    reply.type('text/css').send(PAGES_CSS)
-  })
+  fastify.get(
+    '/api/agent-pages.css',
+    { schema: { response: { 200: textResponse('text/css', 'Stylesheet shared by the standalone artifact, output and log pages.') } } },
+    (request, reply) => {
+      reply.type('text/css').send(PAGES_CSS)
+    },
+  )
 
   // Full-page, formatted view of a step's artifact ("View full artifact"
   // opens this in a new tab — the inline viewport is too cramped for plans).
@@ -308,6 +392,10 @@ export function buildApp({ logger = true } = {}) {
           type: 'object',
           required: ['id', 'stepIndex'],
           properties: { id: { type: 'string' }, stepIndex: { type: 'integer', minimum: 0 } },
+        },
+        response: {
+          200: textResponse('text/html', 'A standalone HTML page rendering the latest attempt’s artifact.'),
+          404: ERROR_OBJECT,
         },
       },
     },
@@ -345,6 +433,10 @@ export function buildApp({ logger = true } = {}) {
             attempt: { type: 'integer', minimum: 1 },
           },
         },
+        response: {
+          200: textResponse('text/html', 'A standalone HTML page rendering that specific attempt’s artifact.'),
+          404: ERROR_OBJECT,
+        },
       },
     },
     (request, reply) => {
@@ -368,6 +460,10 @@ export function buildApp({ logger = true } = {}) {
       schema: {
         params: { type: 'object', required: ['runId'], properties: { runId: { type: 'integer' } } },
         querystring: { type: 'object', properties: { offset: { type: 'integer', minimum: 0, default: 0 } } },
+        // Any other status here is farmd's own, relayed verbatim by the handler
+        // below; declaring only the two this route decides itself keeps the
+        // relayed bodies out of a serializer.
+        response: { 200: OK_OBJECT, 503: ERROR_OBJECT },
       },
     },
     async (request, reply) => {
@@ -394,6 +490,10 @@ export function buildApp({ logger = true } = {}) {
           type: 'object',
           required: ['id', 'stepIndex'],
           properties: { id: { type: 'string' }, stepIndex: { type: 'integer', minimum: 0 } },
+        },
+        response: {
+          200: textResponse('text/html', 'A standalone HTML page rendering the step’s raw agent output.'),
+          404: ERROR_OBJECT,
         },
       },
     },
@@ -430,6 +530,9 @@ export function buildApp({ logger = true } = {}) {
     {
       schema: {
         params: { type: 'object', required: ['runId'], properties: { runId: { type: 'integer' } } },
+        response: {
+          200: textResponse('text/html', 'A standalone HTML page that live-tails the run by polling /api/runs/{runId}/log.'),
+        },
       },
     },
     (request, reply) => {
@@ -471,6 +574,7 @@ export function buildApp({ logger = true } = {}) {
             priority: PRIORITY_PROPERTY,
           },
         },
+        response: { 200: OK_OBJECT, 400: ERROR_OBJECT, 502: ERROR_OBJECT },
       },
     },
     async (request, reply) => {
@@ -594,6 +698,8 @@ export function buildApp({ logger = true } = {}) {
           type: 'object',
           properties: { notes: { type: 'string', maxLength: 2000 } },
         },
+        response: { 200: OK_OBJECT, 401: ERROR_OBJECT, 404: ERROR_OBJECT, 409: ERROR_OBJECT, 502: ERROR_OBJECT },
+        security: HUMAN_GATE_SECURITY,
       },
     },
     async (request, reply) => {
@@ -754,6 +860,8 @@ export function buildApp({ logger = true } = {}) {
             targetStepIndex: { type: 'integer' },
           },
         },
+        response: { 200: OK_OBJECT, 401: ERROR_OBJECT, 404: ERROR_OBJECT, 409: ERROR_OBJECT },
+        security: HUMAN_GATE_SECURITY,
       },
     },
     (request, reply) => {
@@ -780,7 +888,13 @@ export function buildApp({ logger = true } = {}) {
   // its PIN are never approved or bypassed by either outcome.
   fastify.post(
     '/api/items/:id/resolve-conflicts',
-    { schema: { params: idParam } },
+    {
+      schema: {
+        params: idParam,
+        response: { 200: OK_OBJECT, 401: ERROR_OBJECT, 404: ERROR_OBJECT, 409: ERROR_OBJECT },
+        security: HUMAN_GATE_SECURITY,
+      },
+    },
     async (request, reply) => {
       if (!humanAuthorized(request, reply)) return
       const result = await orchestrator.resolveConflicts(request.params.id, request.user.name)
@@ -805,6 +919,7 @@ export function buildApp({ logger = true } = {}) {
             target: { type: 'string', maxLength: 40 },
           },
         },
+        response: { 200: OK_OBJECT, 404: ERROR_OBJECT, 409: ERROR_OBJECT },
       },
     },
     (request, reply) => {
@@ -832,6 +947,7 @@ export function buildApp({ logger = true } = {}) {
           required: ['paused'],
           properties: { paused: { type: 'boolean' } },
         },
+        response: { 200: OK_OBJECT, 404: ERROR_OBJECT, 409: ERROR_OBJECT },
       },
     },
     (request, reply) => send(reply, store.setPaused(request.params.id, request.body.paused)),
@@ -851,6 +967,7 @@ export function buildApp({ logger = true } = {}) {
           required: ['dependsOnId'],
           properties: { dependsOnId: { type: 'string', minLength: 1 } },
         },
+        response: { 200: OK_OBJECT, 404: ERROR_OBJECT, 409: ERROR_OBJECT },
       },
     },
     (request, reply) => send(reply, store.addDependency(request.params.id, request.body.dependsOnId, request.user.name)),
@@ -868,13 +985,19 @@ export function buildApp({ logger = true } = {}) {
           required: ['dependsOnId'],
           properties: { dependsOnId: { type: 'string', minLength: 1 } },
         },
+        response: { 200: OK_OBJECT, 404: ERROR_OBJECT, 409: ERROR_OBJECT },
       },
     },
     (request, reply) => send(reply, store.removeDependency(request.params.id, request.body.dependsOnId, request.user.name)),
   )
 
-  // Confirm/override the specialist persona (proposed by the PM at intake).
-  // Unknown ids 400 at the schema layer; the next dispatch reads the item.
+  // Confirm/override one agent's specialist persona (the PM proposes the Eng
+  // one at intake). Personas are agent-scoped (HZ-125), so both halves are
+  // required: an unknown agent 400s at the schema layer, and an id that isn't
+  // in THAT agent's bucket is refused by store.setPersona's bad_persona (409,
+  // like every other store-level refusal) — a conditional enum per agent isn't
+  // cheap to express here, so that half of the validation lives one level down.
+  // The next dispatch reads the item.
   fastify.post(
     '/api/items/:id/persona',
     {
@@ -882,12 +1005,16 @@ export function buildApp({ logger = true } = {}) {
         params: idParam,
         body: {
           type: 'object',
-          required: ['persona'],
-          properties: { persona: { type: 'string', enum: Object.keys(PERSONAS) } },
+          required: ['agent', 'persona'],
+          properties: {
+            agent: { type: 'string', enum: Object.keys(PERSONAS) },
+            persona: { type: 'string', maxLength: 100 },
+          },
         },
+        response: { 200: OK_OBJECT, 404: ERROR_OBJECT, 409: ERROR_OBJECT },
       },
     },
-    (request, reply) => send(reply, store.setPersona(request.params.id, request.body.persona)),
+    (request, reply) => send(reply, store.setPersona(request.params.id, request.body.agent, request.body.persona)),
   )
 
   // Reprioritize (UI or the WhatsApp concierge). Bad enum values 400 at the
@@ -902,6 +1029,7 @@ export function buildApp({ logger = true } = {}) {
           required: ['priority'],
           properties: { priority: { type: 'string', enum: PRIORITIES } },
         },
+        response: { 200: OK_OBJECT, 404: ERROR_OBJECT, 409: ERROR_OBJECT },
       },
     },
     (request, reply) => {
@@ -928,6 +1056,8 @@ export function buildApp({ logger = true } = {}) {
           type: 'object',
           properties: { reason: { type: 'string' } },
         },
+        response: { 200: OK_OBJECT, 401: ERROR_OBJECT, 404: ERROR_OBJECT, 409: ERROR_OBJECT },
+        security: HUMAN_GATE_SECURITY,
       },
     },
     (request, reply) => {
@@ -959,6 +1089,8 @@ export function buildApp({ logger = true } = {}) {
           required: ['reason'],
           properties: { reason: { type: 'string', minLength: 1, maxLength: 2000 } },
         },
+        response: { 200: OK_OBJECT, 401: ERROR_OBJECT, 404: ERROR_OBJECT, 409: ERROR_OBJECT },
+        security: HUMAN_GATE_SECURITY,
       },
     },
     async (request, reply) => {
@@ -1004,6 +1136,7 @@ export function buildApp({ logger = true } = {}) {
             password: { type: 'string', minLength: 1, maxLength: 200 },
           },
         },
+        response: { 200: OK_OBJECT, 401: ERROR_OBJECT },
       },
     },
     (request, reply) => {
@@ -1017,21 +1150,25 @@ export function buildApp({ logger = true } = {}) {
   // Server-driven redirect to Google's consent screen — no Google JS SDK in
   // the UI bundle. `oauth_state` is a short-lived CSRF nonce checked at the
   // callback.
-  fastify.get('/api/auth/google/start', (request, reply) => {
-    // Browser-facing (reached via a plain <a href>, not fetch()) — every
-    // error on this route family redirects to the login page instead of
-    // rendering raw JSON in the tab (HZ-37).
-    if (!googleAuth.configured()) return reply.redirect(`${UI_URL}/?error=google_sso_not_configured`)
-    const state = crypto.randomBytes(16).toString('hex')
-    reply.setCookie('oauth_state', state, {
-      httpOnly: true,
-      secure: cookieIsSecure(),
-      sameSite: 'lax',
-      path: '/',
-      maxAge: 300,
-    })
-    reply.redirect(googleAuth.buildAuthUrl(state))
-  })
+  fastify.get(
+    '/api/auth/google/start',
+    { schema: { response: { 302: noContent('Redirect to Google’s consent screen, or back to the UI with ?error= when SSO is not configured.') } } },
+    (request, reply) => {
+      // Browser-facing (reached via a plain <a href>, not fetch()) — every
+      // error on this route family redirects to the login page instead of
+      // rendering raw JSON in the tab (HZ-37).
+      if (!googleAuth.configured()) return reply.redirect(`${UI_URL}/?error=google_sso_not_configured`)
+      const state = crypto.randomBytes(16).toString('hex')
+      reply.setCookie('oauth_state', state, {
+        httpOnly: true,
+        secure: cookieIsSecure(),
+        sameSite: 'lax',
+        path: '/',
+        maxAge: 300,
+      })
+      reply.redirect(googleAuth.buildAuthUrl(state))
+    },
+  )
 
   fastify.get(
     '/api/auth/google/callback',
@@ -1041,6 +1178,7 @@ export function buildApp({ logger = true } = {}) {
           type: 'object',
           properties: { code: { type: 'string' }, state: { type: 'string' } },
         },
+        response: { 302: noContent('Redirect to the UI — logged in on success, with ?error= on every rejection.') },
       },
     },
     async (request, reply) => {
@@ -1093,29 +1231,41 @@ export function buildApp({ logger = true } = {}) {
     },
   )
 
-  fastify.post('/api/auth/logout', (request, reply) => {
+  fastify.post('/api/auth/logout', { schema: { response: { 200: OK_OBJECT } } }, (request, reply) => {
     auth.deleteSession(request.cookies[SESSION_COOKIE_NAME])
     reply.clearCookie(SESSION_COOKIE_NAME, { path: '/' })
     return { ok: true }
   })
 
-  fastify.get('/api/auth/me', (request, reply) => {
-    const user = auth.getSessionUser(request.cookies[SESSION_COOKIE_NAME])
-    if (!user) return reply.code(401).send({ error: 'login_required' })
-    return { user }
-  })
+  // The two routes below sit under /api/auth/ and so are exempt from the
+  // onRequest login gate, but each checks the session itself and 401s without
+  // one — hence `security` declared here rather than left to the hook that
+  // reads sessionExempt() (HZ-178).
+  fastify.get(
+    '/api/auth/me',
+    { schema: { response: { 200: OK_OBJECT, 401: ERROR_OBJECT }, security: SESSION_SECURITY } },
+    (request, reply) => {
+      const user = auth.getSessionUser(request.cookies[SESSION_COOKIE_NAME])
+      if (!user) return reply.code(401).send({ error: 'login_required' })
+      return { user }
+    },
+  )
 
   // Requires only a login session (not the PIN itself) — regenerating your
   // own PIN can't be gated behind the PIN it's replacing.
-  fastify.post('/api/auth/gate-pin/regenerate', (request, reply) => {
-    const user = auth.getSessionUser(request.cookies[SESSION_COOKIE_NAME])
-    if (!user) return reply.code(401).send({ error: 'login_required' })
-    return { ok: true, pin: auth.regenerateGatePin(user.id) }
-  })
+  fastify.post(
+    '/api/auth/gate-pin/regenerate',
+    { schema: { response: { 200: OK_OBJECT, 401: ERROR_OBJECT }, security: SESSION_SECURITY } },
+    (request, reply) => {
+      const user = auth.getSessionUser(request.cookies[SESSION_COOKIE_NAME])
+      if (!user) return reply.code(401).send({ error: 'login_required' })
+      return { ok: true, pin: auth.regenerateGatePin(user.id) }
+    },
+  )
 
   // ---- agent definitions (HZ-9: hierarchical, git-versioned, UI-editable) ----
 
-  fastify.get('/api/definitions', () => definitions.listDefinitions())
+  fastify.get('/api/definitions', { schema: { response: { 200: OK_OBJECT } } }, () => definitions.listDefinitions())
 
   // Static segment registered alongside /:kind/:name — Fastify prefers it.
   fastify.get(
@@ -1126,11 +1276,15 @@ export function buildApp({ logger = true } = {}) {
           type: 'object',
           properties: {
             role: { type: 'string', maxLength: 100 },
+            // agent selects the persona bucket (HZ-125) — a persona id is only
+            // unique within one agent.
+            agent: { type: 'string', maxLength: 100 },
             persona: { type: 'string', maxLength: 100 },
             project: { type: 'string', maxLength: 200 },
             repo: { type: 'string', maxLength: 300 },
           },
         },
+        response: { 200: OK_OBJECT },
       },
     },
     (request) => ({ prompt: definitions.effectivePrompt(request.query) }),
@@ -1142,11 +1296,15 @@ export function buildApp({ logger = true } = {}) {
     properties: { kind: { type: 'string' }, name: { type: 'string', maxLength: 200 } },
   }
 
-  fastify.get('/api/definitions/:kind/:name', { schema: { params: definitionParams } }, (request, reply) => {
-    const def = definitions.readDefinition(request.params.kind, request.params.name)
-    if (!def) return reply.code(404).send({ error: 'unknown_definition' })
-    return def
-  })
+  fastify.get(
+    '/api/definitions/:kind/:name',
+    { schema: { params: definitionParams, response: { 200: OK_OBJECT, 404: ERROR_OBJECT } } },
+    (request, reply) => {
+      const def = definitions.readDefinition(request.params.kind, request.params.name)
+      if (!def) return reply.code(404).send({ error: 'unknown_definition' })
+      return def
+    },
+  )
 
   // Edits are human-gated (same PIN as approvals) and become git commits with
   // the actor in the message — git history is the audit trail. The actor is
@@ -1164,6 +1322,15 @@ export function buildApp({ logger = true } = {}) {
             content: { type: 'string', minLength: 1, maxLength: 20000 },
           },
         },
+        response: {
+          200: OK_OBJECT,
+          400: ERROR_OBJECT,
+          401: ERROR_OBJECT,
+          404: ERROR_OBJECT,
+          409: ERROR_OBJECT,
+          502: ERROR_OBJECT,
+        },
+        security: HUMAN_GATE_SECURITY,
       },
     },
     (request, reply) => {
@@ -1191,11 +1358,13 @@ export function buildApp({ logger = true } = {}) {
   // with no write path from this app — this endpoint only surfaces each
   // target's on-disk deploy state for the Admin page.
 
-  fastify.get('/api/admin/deploy-targets', () => ({ targets: deploy.listTargetStatuses() }))
+  fastify.get('/api/admin/deploy-targets', { schema: { response: { 200: OK_OBJECT } } }, () => ({
+    targets: deploy.listTargetStatuses(),
+  }))
 
   // ---- GitHub sync configuration (from the UI) ----
 
-  fastify.get('/api/sync/status', () => github.getSyncState())
+  fastify.get('/api/sync/status', { schema: { response: { 200: OK_OBJECT } } }, () => github.getSyncState())
 
   // Save the shared GitHub token (validated before persisting).
   fastify.post(
@@ -1207,6 +1376,7 @@ export function buildApp({ logger = true } = {}) {
           required: ['token'],
           properties: { token: { type: 'string', minLength: 10 } },
         },
+        response: { 200: OK_OBJECT, 400: ERROR_OBJECT },
       },
     },
     async (request, reply) => {
@@ -1232,6 +1402,7 @@ export function buildApp({ logger = true } = {}) {
           required: ['name'],
           properties: { name: { type: 'string', minLength: 2, maxLength: 80 } },
         },
+        response: { 200: OK_OBJECT, 409: ERROR_OBJECT },
       },
     },
     (request, reply) => {
@@ -1258,6 +1429,7 @@ export function buildApp({ logger = true } = {}) {
           required: ['repo'],
           properties: { repo: { type: 'string', minLength: 1, maxLength: 300 } },
         },
+        response: { 200: OK_OBJECT, 400: ERROR_OBJECT, 404: ERROR_OBJECT, 409: ERROR_OBJECT },
       },
     },
     async (request, reply) => {
@@ -1291,6 +1463,7 @@ export function buildApp({ logger = true } = {}) {
           required: ['id'],
           properties: { id: { type: 'integer', minimum: 1 } },
         },
+        response: { 200: OK_OBJECT, 404: ERROR_OBJECT },
       },
     },
     (request, reply) => {
@@ -1317,6 +1490,7 @@ export function buildApp({ logger = true } = {}) {
           required: ['repo'],
           properties: { repo: { type: 'string', minLength: 1, maxLength: 300 } },
         },
+        response: { 200: OK_OBJECT, 404: ERROR_OBJECT },
       },
     },
     (request, reply) => {

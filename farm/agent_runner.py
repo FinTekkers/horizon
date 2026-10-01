@@ -474,6 +474,10 @@ class _Repaired(NamedTuple):
     value: Any
     notes: list[str]
     repair: str
+    # The repaired bytes parsed only by attempt 3's scan. HZ-156 owes such a
+    # reply the lossless retry first, so parse_agent_reply() may not take this
+    # value ahead of a retry it can still spend.
+    scanned: bool
 
 
 def _repair_ladder(
@@ -514,7 +518,7 @@ def _repair_ladder(
             raise
         except (AgentError, json.JSONDecodeError):
             continue
-        return _Repaired(value, [rung.note, *notes], rung.name)
+        return _Repaired(value, [rung.note, *notes], rung.name, pre_scan_failure is not None)
     return None
 
 
@@ -645,9 +649,14 @@ def parse_agent_reply(
       repaired, always, even when the lossless value came from the weakest
       attempt.
 
+    * a REPAIRED reply that parses only by attempt 3 is held to the same rule
+      as an unrepaired one: with a retry to spend, the lossless retry runs
+      first and the repair is only taken after it fails.
+
     So repairs are reached on exactly two paths: the original reply failed the
     lossless ladder outright (unambiguous rungs only, before the retry is
-    spent), or that plus the retry also failed with no fallback (both tiers).
+    spent, and only when the repaired bytes parse without the scan), or that
+    plus the retry also failed with no fallback (both tiers).
     """
     fallback: tuple[Any, list[str]] | None = None
     pre_scan_failure: Exception | None = None
@@ -667,7 +676,12 @@ def parse_agent_reply(
         # missing field, it would only invent a different object.
         if not extracted:
             repaired = _repair_ladder(reply_text, ambiguous=False, validate=validate)
-            if repaired is not None:
+            # A repair that only parsed via the attempt-3 scan is the repaired
+            # twin of a reply only attempt 3 could parse — and HZ-156 spends
+            # the lossless retry on those first. So it is taken here only when
+            # there is no retry to spend; otherwise the retry runs and the
+            # unambiguous tier is tried again on the original after it fails.
+            if repaired is not None and (not repaired.scanned or retry is None):
                 return _accept(repaired)
         if retry is None:
             # Ambiguous rungs stop here on purpose: the guardrail is that no
@@ -710,11 +724,13 @@ def parse_agent_reply(
         # pre-retry branch did to the original: a reply the LOSSLESS ladder
         # already parsed is never repaired, because the only thing left wrong
         # with it is a validator rejection that no byte edit can honestly fix.
-        # The original's unambiguous tier is also not re-run — it already
-        # failed above, and re-running it could only fail identically.
+        # The original's unambiguous tier IS re-run: a repair that parsed only
+        # via the scan was deferred above until the retry had run, and this is
+        # where it is now allowed to win. When that tier failed outright above
+        # it fails identically here, costing one parse.
         candidates = (
             (fresh, () if fresh_extracted else (False, True)),
-            (reply_text, () if extracted else (True,)),
+            (reply_text, () if extracted else (False, True)),
         )
         for text, tiers in candidates:
             for ambiguous in tiers:

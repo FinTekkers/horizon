@@ -22,25 +22,42 @@ const { effectivePrompt } = await import('../src/definitions.js')
 
 const REPO_ROOT = path.resolve(import.meta.dirname, '../..')
 
+// HZ-125: personas are agent-scoped, so `agent` selects the bucket and both
+// sides have to agree on it as well as on the id. The fixtures cover each
+// agent's bucket, the cross-agent fallback, and the no-persona roles.
 const FIXTURES = [
-  { role: 'eng_implement', persona: 'fullstack', project: 'FinTekkers', repo: 'FinTekkers/ui-service' },
-  { role: 'qa', persona: 'python_backend', project: 'FinTekkers', repo: 'FinTekkers/ledger-models' },
-  { role: 'eng_implement', persona: 'frontend_ui', project: 'FinTekkers', repo: null }, // planning: no repo yet
-  { role: 'eng_implement', persona: 'nonsense-id', project: 'No Such Project', repo: 'acme/none' }, // all fallbacks
-  { role: 'devops', persona: null, project: 'Horizon', repo: 'FinTekkers/horizon' }, // HZ-22: direct-to-EC2 topology
-  { role: 'devops', persona: null, project: 'FinTekkers', repo: 'FinTekkers/ui-service' }, // HZ-22: LB + RDS topology
+  { role: 'eng_implement', agent: 'eng', persona: 'fullstack', project: 'FinTekkers', repo: 'FinTekkers/ui-service' },
+  { role: 'eng_implement', agent: 'eng', persona: 'performance', project: 'FinTekkers', repo: 'FinTekkers/ui-service' },
+  { role: 'qa', agent: 'qa', persona: 'data_integrity', project: 'FinTekkers', repo: 'FinTekkers/ledger-models' },
+  { role: 'qa_review', agent: 'qa', persona: 'e2e_journey', project: 'FinTekkers', repo: null },
+  { role: 'architect_review', agent: 'architect', persona: 'distributed_systems', project: 'Horizon', repo: null },
+  { role: 'pm', agent: 'pm', persona: 'feature_development', project: 'Horizon', repo: null },
+  { role: 'eng_implement', agent: 'eng', persona: 'ui', project: 'FinTekkers', repo: null }, // planning: no repo yet
+  { role: 'eng_implement', agent: 'eng', persona: 'nonsense-id', project: 'No Such Project', repo: 'acme/none' }, // all fallbacks
+  { role: 'qa', agent: 'qa', persona: 'python', project: 'FinTekkers', repo: null }, // wrong bucket -> qa default
+  { role: 'eng_implement', agent: 'eng', persona: 'python_backend', project: 'FinTekkers', repo: null }, // legacy flat id
+  { role: 'eng_implement', agent: 'devops', persona: 'fullstack', project: 'FinTekkers', repo: null }, // unknown agent -> bare role
+  // Object.prototype keys: a JS registry lookup that tests truthiness instead
+  // of ownership reads these as registered personas/agents, which Python's
+  // `in bucket` never does. Both sides must treat them as plain junk.
+  { role: 'eng_implement', agent: 'eng', persona: 'constructor', project: 'FinTekkers', repo: null },
+  { role: 'eng_implement', agent: 'eng', persona: '__proto__', project: 'FinTekkers', repo: null },
+  { role: 'eng_implement', agent: 'constructor', persona: 'fullstack', project: 'FinTekkers', repo: null },
+  { role: 'eng_implement', agent: '__proto__', persona: 'fullstack', project: 'FinTekkers', repo: null },
+  { role: 'devops', agent: 'eng', persona: null, project: 'Horizon', repo: 'FinTekkers/horizon' }, // HZ-22: direct-to-EC2 topology
+  { role: 'devops', agent: 'eng', persona: null, project: 'FinTekkers', repo: 'FinTekkers/ui-service' }, // HZ-22: LB + RDS topology
 ]
 
-function pythonEffectivePrompt({ role, persona, project, repo }) {
+function pythonEffectivePrompt({ role, agent, persona, project, repo }) {
   const script = [
     'import json, sys',
     'from pathlib import Path',
     'from farm.rules import effective_prompt',
     'args = json.loads(sys.argv[1])',
     "role_text = (Path('farm/roles') / (args['role'] + '.md')).read_text()",
-    "sys.stdout.write(effective_prompt(role_text, args['persona'], args['project'], args['repo']))",
+    "sys.stdout.write(effective_prompt(role_text, args['agent'], args['persona'], args['project'], args['repo']))",
   ].join('\n')
-  return execFileSync('python3', ['-c', script, JSON.stringify({ role, persona, project, repo })], {
+  return execFileSync('python3', ['-c', script, JSON.stringify({ role, agent, persona, project, repo })], {
     cwd: REPO_ROOT,
     encoding: 'utf8',
   })

@@ -209,6 +209,26 @@ def test_pool_eviction_never_reaps_a_worktree_with_an_active_run(isolated_worksp
     assert "t-2" not in ids  # evicted instead
 
 
+def test_pool_eviction_never_reaps_a_worktree_whose_item_lock_is_held(isolated_workspaces_dir, monkeypatch):
+    """HZ-188: the conflict resolver has no task file, so _active_item_ids()
+    can't see it — its item_lock is what protects its worktree."""
+    tmp_path = isolated_workspaces_dir
+    make_repo_hub(tmp_path)
+    monkeypatch.setattr(workspaces, "WORKSPACE_ITEM_POOL_SIZE", 2)
+    monkeypatch.setattr(workspaces, "_active_item_ids", lambda: set())
+
+    workspaces.ensure_item_worktree("acme/demo", "T-1")
+    workspaces.ensure_item_worktree("acme/demo", "T-2")
+    with workspaces.item_lock("acme/demo", "T-1", wait_s=0):
+        workspaces.ensure_item_worktree("acme/demo", "T-3")
+
+    ids = workspaces.existing_item_ids("acme/demo")
+    assert "t-1" in ids  # oldest, but a resolver holds it
+    assert "t-2" not in ids  # evicted instead
+    assert "t-3" in ids
+    assert workspaces.workspace_path("acme/demo", "T-1").exists()
+
+
 # ---- crash / stale-metadata recovery ----
 
 

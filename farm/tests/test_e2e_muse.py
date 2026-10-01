@@ -66,7 +66,7 @@ def test_terminal_completed_parse_holds_against_a_real_run():
     assert reply["command_id"]
 
 
-def test_one_real_planning_step_completes_with_muse_and_records_provenance(muse_smoke_test_persona):
+def test_one_real_planning_step_completes_with_muse_and_records_provenance(muse_smoke_test_personas):
     """The HZ-102 success metric itself: one real lifecycle step, dispatched
     through the farm's normal path (step_agent.execute() -> run_agent() ->
     the muse provider — never a direct call into farm.providers.muse),
@@ -90,7 +90,7 @@ def test_one_real_planning_step_completes_with_muse_and_records_provenance(muse_
             "priority": "Low",
             "repo": None,
             "issue": None,
-            "persona": muse_smoke_test_persona,
+            "personas": muse_smoke_test_personas,
         },
         "step": {"index": 4, "label": "Plan options & trade-offs (pros / cons)", "agent": "Ensemble"},
         "artifacts": [],

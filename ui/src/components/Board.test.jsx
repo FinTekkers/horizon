@@ -12,6 +12,7 @@ vi.mock('../api', () => ({
 }))
 
 import Board from './Board'
+import { DEFAULT_PERSONAS, PERSONAS, PRIMARY_PERSONA_AGENT } from '../domain/personas'
 
 afterEach(() => {
   cleanup()
@@ -29,7 +30,7 @@ function makeItem(id, state) {
     pr: null,
     paused: false,
     rejected: false,
-    persona: 'fullstack',
+    personas: { eng: 'fullstack' },
     activeRun: {
       id: Number(id.split('-')[1]) || 1,
       step_index: 11,
@@ -141,4 +142,37 @@ test('a blocked card and a paused card render distinct badges/pills, not one col
   const pausedPill = getByText('Paused').closest('.status-pill')
   const blockedPill = container.querySelector('.dep-pill--blocked')
   expect(pausedPill.className).not.toBe(blockedPill.className)
+})
+
+// ---- HZ-125: the card's persona badge is the item's *Eng* persona ----
+// Personas became agent-scoped, so an item carries one per composing agent.
+// The badge shows Eng's — the specialization that decides who writes the code.
+// Fixtures alone don't prove that: without these, the badge could silently
+// start rendering another agent's slot (or a raw id) with every test green.
+
+test('the card persona badge renders the Eng persona’s label, not another agent’s', () => {
+  const items = [
+    {
+      ...makeItem('HZ-97', 'running'),
+      personas: { eng: 'python', qa: 'e2e_journey', architect: 'distributed_systems', pm: 'roadmap' },
+    },
+  ]
+  const { container } = render(
+    <Board items={items} onOpen={noop} onApprove={noop} onReject={noop} onTogglePause={noop} onNewItem={noop} />,
+  )
+  const badge = container.querySelector('.card__persona')
+  expect(badge.textContent).toBe(PERSONAS[PRIMARY_PERSONA_AGENT].python.label)
+  for (const agent of Object.keys(PERSONAS)) {
+    if (agent === PRIMARY_PERSONA_AGENT) continue
+    expect(badge.textContent).not.toBe(PERSONAS[agent][items[0].personas[agent]].label)
+  }
+})
+
+test('a card whose item carries no Eng persona shows the Eng default, never a blank or a raw id', () => {
+  const items = [{ ...makeItem('HZ-98', 'running'), personas: { qa: 'data_integrity' } }]
+  const { container } = render(
+    <Board items={items} onOpen={noop} onApprove={noop} onReject={noop} onTogglePause={noop} onNewItem={noop} />,
+  )
+  const badge = container.querySelector('.card__persona')
+  expect(badge.textContent).toBe(PERSONAS[PRIMARY_PERSONA_AGENT][DEFAULT_PERSONAS[PRIMARY_PERSONA_AGENT]].label)
 })

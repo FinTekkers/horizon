@@ -32,7 +32,7 @@ const { db } = await import('../src/db.js')
 const orchestrator = await import('../src/orchestrator.js')
 const { FIELDS, patchLimits } = await import('../../domain/js/fields.js')
 const { STEPS, IMPLEMENT_STEP_INDEX } = await import('../../domain/js/lifecycle.js')
-const { DEFAULT_PERSONA, personaLabel } = await import('../src/personas.js')
+const { DEFAULT_PERSONAS, PRIMARY_PERSONA_AGENT, personaLabel } = await import('../src/personas.js')
 
 const workItemColumns = new Set(db.prepare('PRAGMA table_info(work_item)').all().map((c) => c.name))
 
@@ -70,19 +70,37 @@ test('stepCommentBody renders every agent-patchable field — none is written bu
   assert.ok(columns.length >= 3, `only ${columns.length} patchable field(s) — this check would be near-vacuous`)
 
   const item = { id: 'FC-1', repo: 'Org/repo', issue: 1 }
-  // `persona` must be a real persona id: stepCommentBody renders it through
-  // personaLabel(), which is the point of it having its own branch there.
-  const patch = Object.fromEntries(columns.map((c) => [c, c === 'persona' ? DEFAULT_PERSONA : `new ${c} value`]))
+  const patch = Object.fromEntries(columns.map((c) => [c, `new ${c} value`]))
   const body = orchestrator.stepCommentBody(item, IMPLEMENT_STEP_INDEX, 1, 'did the step', patch, false, null)
 
   assert.match(body, /\*\*Updated fields:\*\*/, 'the patch section did not render at all')
   for (const column of columns) {
-    const shown = column === 'persona' ? personaLabel(DEFAULT_PERSONA) : `new ${column} value`
     assert.ok(
-      body.includes(shown),
+      body.includes(`new ${column} value`),
       `patchable field "${column}" is written to work_item but missing from the GitHub comment — it has no entry in PATCH_FIELD_LABELS`,
     )
   }
+  // Every column is prose now that `persona` has left the derived list (HZ-125):
+  // the routing tag travels as a `personas` MAP outside patchLimits(), so it
+  // would slip past the loop above. It has the same silent-drop failure mode, so
+  // it gets the same end-to-end check — rendered through personaLabel(), which is
+  // the point of it having its own branch in stepCommentBody.
+  const agent = PRIMARY_PERSONA_AGENT
+  const persona = DEFAULT_PERSONAS[agent]
+  const withPersonas = orchestrator.stepCommentBody(
+    item,
+    IMPLEMENT_STEP_INDEX,
+    1,
+    'did the step',
+    { personas: { [agent]: persona } },
+    false,
+    null,
+  )
+  assert.ok(
+    withPersonas.includes(personaLabel(agent, persona)),
+    'a `personas` patch is written to work_item but missing from the GitHub comment',
+  )
+  assert.ok(!withPersonas.includes(`${agent} — ${persona}`), 'the raw persona id rendered instead of its label')
   // Positive control: the filter that drops unlabelled keys is still in place, so
   // the loop above is not passing because everything renders unconditionally.
   const withStray = orchestrator.stepCommentBody(item, IMPLEMENT_STEP_INDEX, 1, 'did it', { not_a_field: 'x' }, false, null)

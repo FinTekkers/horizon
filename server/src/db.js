@@ -269,12 +269,24 @@ db.exec(`
 `)
 
 // Additive migrations for databases created before these columns existed.
-// persona: specialist persona id (see personas.js); NULL = fullstack default.
+// persona: the pre-HZ-125 flat specialist persona id. Read-only since HZ-125 —
+// never written again, kept so rows that predate personas_json still carry the
+// value personasFromRow (personas.js) translates into an eng-slot persona.
+// personas_json (HZ-125): the item's { agent: persona id } map, one slot per
+// composing agent. NULL/absent = every agent's default (see DEFAULT_PERSONAS).
+// A JSON column rather than a child table because nothing queries across items
+// by persona, and one column keeps reads a single-row operation.
 // notified_step (HZ-141): the gate index this item was last notified about, or
 // NULL when it is not parked at a notified gate. Derived state, not a log — the
 // sweep clears it the moment the cursor leaves a gate, which is what makes a
 // send-back-then-re-approve notify twice and a restart notify zero more times.
-for (const column of ['pr INTEGER', 'pr_url TEXT', 'pr_mergeable INTEGER', 'release_tag TEXT', 'release_url TEXT', 'repo TEXT', 'project_id INTEGER', 'persona TEXT', 'review_cycle_count INTEGER NOT NULL DEFAULT 0', 'abandoned_at TEXT', 'abandoned_reason TEXT', 'abandoned_by TEXT', 'notified_step INTEGER']) {
+// last_reviewed_sha (HZ-182): the PR head the last automated review read, as
+// reported by the farm. NULL = no review yet, so the next review is full.
+// fix_pass / fix_findings_json (HZ-182): set when a review rejects under the
+// cap — the next implement run is fix-only and the review after it is a delta
+// review over these findings. 0 / NULL = full mode, so existing rows migrate
+// to today's behaviour untouched.
+for (const column of ['pr INTEGER', 'pr_url TEXT', 'pr_mergeable INTEGER', 'release_tag TEXT', 'release_url TEXT', 'repo TEXT', 'project_id INTEGER', 'persona TEXT', 'personas_json TEXT', 'review_cycle_count INTEGER NOT NULL DEFAULT 0', 'abandoned_at TEXT', 'abandoned_reason TEXT', 'abandoned_by TEXT', 'notified_step INTEGER', 'last_reviewed_sha TEXT', 'fix_pass INTEGER NOT NULL DEFAULT 0', 'fix_findings_json TEXT']) {
   try {
     db.exec(`ALTER TABLE work_item ADD COLUMN ${column}`)
   } catch {
@@ -326,6 +338,14 @@ try {
 }
 try {
   db.exec('ALTER TABLE step_run ADD COLUMN command_id TEXT')
+} catch {
+  // column already exists
+}
+try {
+  // HZ-182: the scope an implement or review run was dispatched with
+  // ({mode: 'fix'|'delta'|'full', ...}). Completion reads it back rather than
+  // recomputing from the item, which may have changed mid-run. NULL = full.
+  db.exec('ALTER TABLE step_run ADD COLUMN scope_json TEXT')
 } catch {
   // column already exists
 }

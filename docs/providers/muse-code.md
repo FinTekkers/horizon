@@ -107,8 +107,9 @@ check, established differently.
 budget, or the concurrent-subagent limit. The claim that
 `muse-code account status` prints those does not hold for this CLI. The
 concurrent-subagent limit therefore cannot be read at runtime and cannot be
-reconciled with `FARM_MAX_EPHEMERAL` (currently 4) without vendor docs or
-empirical testing.
+reconciled with `FARM_MAX_EPHEMERAL` (code default 4; the deployed value on
+this host is in `/etc/horizon/farm.env` — see `infra/host/DEPLOY.md`) without
+vendor docs or empirical testing.
 
 ## Flags that matter for the farm
 
@@ -179,9 +180,11 @@ until HZ-102. What HZ-102 adds:
   `provider_override_eligible()` — which reads each step's
   `providerOverrideEligible` flag in `domain/steps.json`, the single place a
   step is declared (HZ-128) — not just by convention on the persona.
-  `PERSONA_PROVIDERS` ships **empty** (HZ-121): every real persona
-  (`fullstack`, `python_backend`, `frontend_ui`) is absent from it, so Claude
-  stays the default for all real work. The mechanism itself is proven by a
+  `PERSONA_PROVIDERS` ships **empty** (HZ-121): every real persona in
+  `PERSONAS` — all four agent buckets of it, since HZ-125 — is absent from it,
+  so Claude stays the default for all real work. Its keys are namespaced
+  `<agent>.<persona>` (`eng.python`, not `python`), because an id is only
+  unique within its agent. The mechanism itself is proven by a
   test-registered fixture persona (`farm/tests/conftest.py`'s
   `muse_smoke_test_persona`), not a shipped one — deciding which real
   persona, if any, should route to Muse needs evidence about provider
