@@ -1994,3 +1994,132 @@ def test_an_exhaustion_inside_the_retry_is_reported_with_reason_turn_cap(tmp_pat
 
     assert posted["json"]["ok"] is False
     assert posted["json"]["reason"] == "turn_cap"
+
+
+# ---- step model pin (HZ-187) ----
+# Every step-agent run_agent() call passes model=step_model(...): STEP_MODEL
+# (FARM_STEP_MODEL) on the claude provider, None anywhere else, so a
+# Muse-routed step never receives a Claude model id.
+
+
+def test_step_model_config_is_none_when_unset_and_the_value_when_set(monkeypatch):
+    import importlib
+
+    from farm import config
+
+    try:
+        monkeypatch.delenv("FARM_STEP_MODEL", raising=False)
+        assert importlib.reload(config).STEP_MODEL is None
+        monkeypatch.setenv("FARM_STEP_MODEL", "")
+        assert importlib.reload(config).STEP_MODEL is None
+        monkeypatch.setenv("FARM_STEP_MODEL", "x-model")
+        assert importlib.reload(config).STEP_MODEL == "x-model"
+    finally:
+        monkeypatch.delenv("FARM_STEP_MODEL", raising=False)
+        importlib.reload(config)
+
+
+def test_every_step_agent_run_agent_call_passes_model_from_step_model():
+    import ast
+    from pathlib import Path
+
+    farm_dir = Path(step_agent.__file__).resolve().parent
+    found, problems = 0, []
+    for name in ("step_agent.py", "conflict_resolver.py"):
+        for node in ast.walk(ast.parse((farm_dir / name).read_text())):
+            if not isinstance(node, ast.Call):
+                continue
+            func = node.func
+            callee = func.id if isinstance(func, ast.Name) else func.attr if isinstance(func, ast.Attribute) else None
+            if callee != "run_agent":
+                continue
+            found += 1
+            model = next((kw.value for kw in node.keywords if kw.arg == "model"), None)
+            if model is None:
+                problems.append(f"farm/{name}:{node.lineno}: run_agent call omits model=")
+            elif not (isinstance(model, ast.Call) and isinstance(model.func, ast.Name) and model.func.id == "step_model"):
+                problems.append(f"farm/{name}:{node.lineno}: run_agent model= is not step_model(...)")
+    assert found >= 5, f"expected at least 5 run_agent calls, found {found}"
+    assert not problems, "\n".join(problems)
+
+
+def capture_all_run_agent(calls, results=('{"summary": "did the step", "artifact_md": "# out"}',)):
+    replies = iter(results)
+
+    def _fake(prompt, **kwargs):
+        calls.append(kwargs)
+        return {"result": next(replies), "session_id": "s-1"}
+
+    return _fake
+
+
+def run_and_parse(provider=None):
+    return step_agent._run_and_parse(
+        "p", append_system=None, cwd=None, max_turns=1, timeout_s=1, allowed_tools=None, provider=provider
+    )
+
+
+@pytest.mark.parametrize(
+    ("provider", "env", "expected"),
+    [
+        (None, None, "claude-x"),
+        ("claude", None, "claude-x"),
+        ("muse", None, None),
+        (None, "muse", None),
+        # An explicit provider beats FARM_PROVIDER, as in agent_runner._selected_provider().
+        ("claude", "muse", "claude-x"),
+        ("muse", "claude", None),
+    ],
+)
+def test_step_model_reaches_both_run_and_parse_calls_only_on_claude(monkeypatch, provider, env, expected):
+    monkeypatch.setattr(step_agent, "STEP_MODEL", "claude-x")
+    if env:
+        monkeypatch.setenv("FARM_PROVIDER", env)
+    else:
+        monkeypatch.delenv("FARM_PROVIDER", raising=False)
+    calls = []
+    # An invalid first reply forces the retry call site too.
+    monkeypatch.setattr(step_agent, "run_agent", capture_all_run_agent(calls, ("not json", '{"summary": "ok"}')))
+
+    run_and_parse(provider)
+
+    assert len(calls) == 2
+    assert [c["model"] for c in calls] == [expected, expected]
+
+
+def test_unset_step_model_passes_none_like_today(monkeypatch):
+    monkeypatch.setattr(step_agent, "STEP_MODEL", None)
+    monkeypatch.delenv("FARM_PROVIDER", raising=False)
+    calls = []
+    monkeypatch.setattr(step_agent, "run_agent", capture_all_run_agent(calls))
+
+    run_and_parse()
+
+    assert calls[0]["model"] is None
+
+
+def test_muse_routed_persona_step_never_receives_the_claude_model(monkeypatch, muse_smoke_test_personas):
+    monkeypatch.setattr(step_agent, "STEP_MODEL", "claude-x")
+    monkeypatch.delenv("FARM_PROVIDER", raising=False)
+    calls = []
+    monkeypatch.setattr(step_agent, "run_agent", capture_all_run_agent(calls))
+    task = make_task(4, "Plan options & trade-offs (pros / cons)")
+    task["item"]["personas"] = muse_smoke_test_personas
+
+    execute(task)
+
+    assert calls and all(c["provider"] == "muse" and c["model"] is None for c in calls)
+
+
+def test_implement_step_passes_the_step_model(tmp_path, monkeypatch):
+    monkeypatch.setattr(step_agent, "STEP_MODEL", "claude-x")
+    monkeypatch.delenv("FARM_PROVIDER", raising=False)
+    ws, _origin = make_git_workspace(tmp_path)
+    monkeypatch.setattr(step_agent, "ensure_item_worktree", lambda repo, item_id: ws)
+    captured = {}
+    monkeypatch.setattr(step_agent, "run_agent", capture_run_agent(captured))
+
+    with pytest.raises(RuntimeError, match="no code changes"):
+        execute(make_task(11, "Specialist agent implements", repo="acme/demo"))
+
+    assert captured["model"] == "claude-x"

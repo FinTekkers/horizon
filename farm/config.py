@@ -28,6 +28,8 @@ CLAUDE_BIN = os.environ.get("FARM_CLAUDE_BIN", "claude")
 # the claude provider's own internals — unrelated to FARM_PROVIDER below.
 FARM_RUNNER = os.environ.get("FARM_RUNNER", "sdk")
 PM_MODEL = os.environ.get("FARM_PM_MODEL")  # None -> CLI default
+# HZ-187: model for step agents and conflict resolution (Claude provider only).
+STEP_MODEL = os.environ.get("FARM_STEP_MODEL") or None  # unset/empty -> CLI default
 STEP_TIMEOUT_S = int(os.environ.get("FARM_STEP_TIMEOUT_S", "900"))
 MAX_TURNS = int(os.environ.get("FARM_MAX_TURNS", "8"))
 

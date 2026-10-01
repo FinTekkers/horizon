@@ -56,7 +56,7 @@ from .config import CONFLICT_AGENT_TIMEOUT_S, CONFLICT_REVIEW_TIMEOUT_S, CONFLIC
 # "anything that is not exactly 'pass' is a fail" keeps exactly one definition
 # in this codebase. step_agent does not import this module, so the dependency
 # stays one-directional; nothing in it is modified by this file.
-from .step_agent import ROLES, _code_review_section as _review_section
+from .step_agent import ROLES, _code_review_section as _review_section, step_model
 from .workspaces import ensure_item_worktree, hub_lock
 
 # Bounded like every other git subprocess in this codebase (step_agent.py,
@@ -429,6 +429,7 @@ def _run_resolution_agent(ws: Path, files, log) -> dict:
             timeout_s=CONFLICT_AGENT_TIMEOUT_S,
             # Same lock as the implement step: this call edits code.
             provider_locked=True,
+            model=step_model(),
         )
         parsed, notes = agent_runner.parse_agent_reply(reply.get("result") or "")
     except (AgentError, ValueError) as exc:
@@ -488,6 +489,7 @@ def _run_scoped_review(ws: Path, files, delta, log) -> dict:
             allowed_tools=REVIEW_TOOLS,
             max_turns=REVIEW_MAX_TURNS,
             timeout_s=CONFLICT_REVIEW_TIMEOUT_S,
+            model=step_model(),
         )
         parsed, notes = agent_runner.parse_agent_reply(reply.get("result") or "")
     except (AgentError, ValueError) as exc:
