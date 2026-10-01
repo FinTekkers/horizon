@@ -715,7 +715,9 @@ button { font-family: var(--font-sans); }
   font: 700 12px var(--font-sans); color: var(--danger-ink);
   background: var(--surface); border: 1.5px solid var(--danger-border);
 }
-.btn-gate-reject:disabled { opacity: 0.6; cursor: default; }
+.btn-gate-reject:disabled,
+.btn-gate-approve:disabled,
+.btn-gate-feedback:disabled { opacity: 0.6; cursor: default; }
 .btn-gate-feedback {
   border: none; cursor: pointer; border-radius: 9px; padding: 9px 16px;
   font: 700 12px var(--font-sans); color: var(--deep); background: var(--subtle);
@@ -881,6 +883,19 @@ button { font-family: var(--font-sans); }
 }
 .step-card__forwarded-title { font-weight: 700; color: var(--danger-ink); margin-bottom: 8px; }
 .step-card__forwarded-body { max-height: 320px; overflow-y: auto; }
+
+/* HZ-216: the Accept gate's in-flight action (pre-merge checks, merge,
+   conflict resolution) and its result. */
+.gate-action-status {
+  display: flex; flex-direction: column; gap: 4px;
+  margin-top: 12px; padding: 10px 13px; border-radius: 10px;
+  font: 600 12.5px var(--font-sans);
+}
+.gate-action-status--running { background: var(--warning-bg-soft); border: 1px solid var(--warning-border-soft); color: var(--warning-ink); }
+.gate-action-status--ok { background: var(--success-bg); color: var(--success-ink); }
+.gate-action-status--error { background: var(--danger-bg-soft); border: 1px solid var(--danger-border-soft); color: var(--danger-ink); }
+.gate-action-status__elapsed { font-variant-numeric: tabular-nums; }
+.gate-action-status__note { font-weight: 500; }
 
 /* ---- login (HZ-21) ---- */
 .login { min-height: 100vh; display: flex; align-items: center; justify-content: center; padding: 24px; }

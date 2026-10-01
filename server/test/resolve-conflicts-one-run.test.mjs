@@ -10,7 +10,7 @@
 // farmd's own refusal is tested without the server in
 // farm/tests/test_farmd.py.
 
-import { test } from 'node:test'
+import { test, beforeEach } from 'node:test'
 import assert from 'node:assert/strict'
 import { mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -30,6 +30,12 @@ const auth = await import('../src/auth.js')
 const orchestrator = await import('../src/orchestrator.js')
 
 store.purgeDemoItems()
+
+// HZ-216: a gate_action row left running by an earlier test would answer a
+// later one's click with a false 409.
+beforeEach(() => {
+  db.prepare('DELETE FROM gate_action').run()
+})
 
 const app = buildApp({ logger: false })
 const { pin, cookie } = loginFixtureUser(auth, config)
@@ -214,4 +220,72 @@ test('a bad PIN during a run is 401 and does not touch the guard', async () => {
 
   farmCalls[0].resolve(replyOk({ ok: true, resolved: true, summary: 'merged' }))
   assert.equal((await pending).statusCode, 200)
+})
+
+// ---- HZ-216: the run is the persisted gate_action row ----
+
+test('HZ-216: a running resolve shows as gateAction kind resolve, with its own label detail, and clears the same way', async () => {
+  insertItem.run('OR-9', 'Gate action', ACCEPT_GATE_INDEX, 309)
+  farmCalls = []
+
+  const pending = resolvePost('OR-9')
+  await untilFarmCalls(1)
+  const during = await listItem('OR-9')
+  assert.equal(during.gateAction.kind, 'resolve')
+  assert.equal(during.gateAction.state, 'running')
+  assert.equal(during.gateAction.detail, 'resolving conflicts on PR #309')
+  assert.equal(during.gateAction.since, during.conflictRun.since)
+
+  farmCalls[0].resolve(replyOk({ ok: true, resolved: true, summary: 'merged' }))
+  assert.equal((await pending).statusCode, 200)
+  const after = await listItem('OR-9')
+  assert.equal(after.gateAction.state, 'resolved')
+})
+
+test('HZ-216: conflictRun keeps exactly { state, since, reason } — running, resolved and escalated', async () => {
+  insertItem.run('OR-10', 'Shape lock resolved', ACCEPT_GATE_INDEX, 310)
+  insertItem.run('OR-11', 'Shape lock escalated', ACCEPT_GATE_INDEX, 311)
+  farmCalls = []
+
+  const first = resolvePost('OR-10')
+  await untilFarmCalls(1)
+  const running = (await listItem('OR-10')).conflictRun
+  assert.deepEqual(Object.keys(running).sort(), ['reason', 'since', 'state'])
+  assert.deepEqual(running, { state: 'running', since: store.getGateAction('OR-10', 'resolve').since, reason: null })
+  farmCalls[0].resolve(replyOk({ ok: true, resolved: true, summary: 'merged' }))
+  await first
+  const resolved = (await listItem('OR-10')).conflictRun
+  assert.deepEqual(resolved, { state: 'resolved', since: store.getGateAction('OR-10', 'resolve').finishedAt, reason: null })
+
+  const second = resolvePost('OR-11')
+  await untilFarmCalls(2)
+  farmCalls[1].resolve(replyOk({ ok: true, resolved: false, reason: 'conflict_too_large' }))
+  await second
+  const escalated = (await listItem('OR-11')).conflictRun
+  assert.deepEqual(Object.keys(escalated).sort(), ['reason', 'since', 'state'])
+  assert.equal(escalated.state, 'escalated')
+  assert.equal(escalated.since, store.getGateAction('OR-11', 'resolve').finishedAt)
+  assert.match(escalated.reason, /too many conflicted files/)
+  assert.deepEqual(orchestrator.getConflictRun('OR-11'), escalated)
+})
+
+test('HZ-216: a resolve that throws ends the row failed with a reason, and a new resolve is accepted', async () => {
+  insertItem.run('OR-12', 'Throws', ACCEPT_GATE_INDEX, 312)
+  farmCalls = []
+  orchestrator.setConflictReplyForTest({
+    get resolved() {
+      throw new Error('farmd reply could not be read')
+    },
+  })
+
+  await assert.rejects(orchestrator.resolveConflicts('OR-12', 'Alice'), /farmd reply could not be read/)
+  const after = await listItem('OR-12')
+  assert.equal(after.gateAction.state, 'failed')
+  assert.equal(after.conflictRun.state, 'failed')
+  assert.match(after.conflictRun.reason, /stopped unexpectedly/)
+
+  const retry = resolvePost('OR-12')
+  await untilFarmCalls(1)
+  farmCalls[0].resolve(replyOk({ ok: true, resolved: true, summary: 'merged' }))
+  assert.equal((await retry).statusCode, 200)
 })

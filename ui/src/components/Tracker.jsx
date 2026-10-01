@@ -1,4 +1,4 @@
-import { useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import {
   PHASES,
   STEPS,
@@ -15,6 +15,7 @@ import { PHASE_ACCENT, PHASE_ACCENT_BG, priorityColor } from '../domain/lifecycl
 import { PERSONAS, PERSONA_AGENT_ROLES, PRIMARY_PERSONA_AGENT, personaFor, personaId } from '../domain/personas'
 import { itemStatus } from '../domain/status'
 import { pauseReason } from '../domain/pauseReason'
+import { gateActionOf, gateActionView, elapsedText } from '../domain/gateAction'
 import { resolveEventColor } from '../domain/eventColors'
 import { issueUrl, issueLabel, artifactUrl, outputUrl, runLogViewUrl } from '../api'
 import StatusPill from './StatusPill'
@@ -54,8 +55,9 @@ const FORWARD_ERRORS = {
 // HZ-185: on an item the latest automated review just rejected, sends it to
 // Accept the code with that verdict attached instead of another implement
 // cycle. The ref is the guard (two clicks in one tick both read the same
-// stale state); `busy` only renders it. Disabled until the request settles.
-function ForwardToAcceptButton({ item, onForwardToAccept }) {
+// stale state); `busy` only renders it. Disabled until the request settles,
+// and while a gate action runs (HZ-216).
+function ForwardToAcceptButton({ item, onForwardToAccept, disabled }) {
   const inFlight = useRef(false)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState(null)
@@ -75,7 +77,7 @@ function ForwardToAcceptButton({ item, onForwardToAccept }) {
   return (
     <div className="step-card__conflict">
       Automated review rejected this. Forward it to “{STEPS[ACCEPT_GATE_INDEX].label}” with the findings attached?
-      <button className="btn-gate-reject" disabled={busy} aria-busy={busy || undefined} onClick={forward}>
+      <button className="btn-gate-reject" disabled={busy || disabled} aria-busy={busy || undefined} onClick={forward}>
         {busy ? 'Forwarding…' : `Forward to ${STEPS[ACCEPT_GATE_INDEX].label}`}
       </button>
       {error && <span role="alert">{error}</span>}
@@ -100,7 +102,33 @@ function ForwardedReview({ forwarded }) {
   )
 }
 
-function Step({ item, index, onApprove, onApproveWithComments, onReject, onResolveConflicts, resolving, onForwardToAccept, onSetPersona }) {
+// HZ-216: the Accept gate's long action — what it is doing and for how long
+// while it runs (elapsed from the server's startedAt, so a reload shows the
+// same clock), then its result. A blocked result names the failing check only,
+// never its output.
+function GateActionStatus({ action, pr }) {
+  const view = gateActionView(action, pr)
+  const running = view?.tone === 'running'
+  const [now, setNow] = useState(() => Date.now())
+  useEffect(() => {
+    if (!running) return undefined
+    setNow(Date.now())
+    const timer = setInterval(() => setNow(Date.now()), 1000)
+    return () => clearInterval(timer)
+  }, [running])
+  if (!view) return null
+  return (
+    <div className={`gate-action-status gate-action-status--${view.tone}`} role="status" aria-live="polite">
+      <span className="gate-action-status__text">
+        {view.text}
+        {running && <span className="gate-action-status__elapsed"> · {elapsedText(action.since, now)}</span>}
+      </span>
+      {view.note && <span className="gate-action-status__note">{view.note}</span>}
+    </div>
+  )
+}
+
+function Step({ item, index, onApprove, onApproveWithComments, onReject, onResolveConflicts, resolving, gateBusy, onForwardToAccept, onSetPersona }) {
   const st = STEPS[index]
   const status = stepStatus(item, index)
   const isGate = st.kind === 'gate'
@@ -113,6 +141,7 @@ function Step({ item, index, onApprove, onApproveWithComments, onReject, onResol
   const showsPersonaPicker = status === 'awaiting' && st.label === 'Approve & prioritize this work'
   const agent = isGate ? AGENTS.Human : AGENTS[st.agent]
   const agentLabel = isGate ? (st.gate === 'optional' ? 'Human gate · optional' : 'Human gate') : agent.label
+  const gateAction = index === ACCEPT_GATE_INDEX ? gateActionOf(item) : null
 
   return (
     <div className="step">
@@ -206,7 +235,10 @@ function Step({ item, index, onApprove, onApproveWithComments, onReject, onResol
             <ForwardedReview forwarded={item.forwardedReview} />
           )}
           {index === IMPLEMENT_STEP_INDEX && item.reviewRejected && onForwardToAccept && !isAbandoned(item) && (
-            <ForwardToAcceptButton item={item} onForwardToAccept={onForwardToAccept} />
+            <ForwardToAcceptButton item={item} onForwardToAccept={onForwardToAccept} disabled={gateBusy} />
+          )}
+          {gateAction && (status === 'awaiting' || gateAction.state === 'merged') && (
+            <GateActionStatus action={gateAction} pr={item.pr} />
           )}
           {status === 'awaiting' && st.label === 'Accept the code' && item.pr != null && item.pr_mergeable === false && (
             <div className="step-card__conflict">
@@ -216,7 +248,7 @@ function Step({ item, index, onApprove, onApproveWithComments, onReject, onResol
                   started twice; View progress reopens the dialog. */}
               <button
                 className="btn-gate-reject"
-                disabled={resolving}
+                disabled={resolving || gateBusy}
                 aria-busy={resolving || undefined}
                 onClick={() => onResolveConflicts(item.id, item.pr)}
               >
@@ -237,13 +269,30 @@ function Step({ item, index, onApprove, onApproveWithComments, onReject, onResol
                   Review PR #{item.pr} ↗
                 </a>
               )}
-              <button className="btn-gate-approve" onClick={() => onApprove(item.id, st.label)}>
+              {/* HZ-216: disabled while a gate action runs, whoever started it.
+                  The server's 409 stays the real protection. */}
+              <button
+                className="btn-gate-approve"
+                disabled={gateBusy}
+                aria-busy={gateBusy || undefined}
+                onClick={() => onApprove(item.id, st.label)}
+              >
                 Approve
               </button>
-              <button className="btn-gate-feedback" onClick={() => onApproveWithComments(item.id, st.label)}>
+              <button
+                className="btn-gate-feedback"
+                disabled={gateBusy}
+                aria-busy={gateBusy || undefined}
+                onClick={() => onApproveWithComments(item.id, st.label)}
+              >
                 Approve with comments
               </button>
-              <button className="btn-gate-reject" onClick={() => onReject(item.id, st.label)}>
+              <button
+                className="btn-gate-reject"
+                disabled={gateBusy}
+                aria-busy={gateBusy || undefined}
+                onClick={() => onReject(item.id, st.label)}
+              >
                 Send back with feedback
               </button>
             </div>
@@ -345,7 +394,7 @@ function buildActivity(item) {
     })
 }
 
-export default function Tracker({ item, onBack, onApprove, onApproveWithComments, onReject, onResolveConflicts, resolving, onForwardToAccept, onTogglePause, onRestartPhase, onSetPersona, onAbandon }) {
+export default function Tracker({ item, onBack, onApprove, onApproveWithComments, onReject, onResolveConflicts, resolving, gateBusy, onForwardToAccept, onTogglePause, onRestartPhase, onSetPersona, onAbandon }) {
   const status = itemStatus(item, true)
   const activity = buildActivity(item)
   const closed = isClosed(item)
@@ -476,6 +525,7 @@ export default function Tracker({ item, onBack, onApprove, onApproveWithComments
                     onReject={onReject}
                     onResolveConflicts={onResolveConflicts}
                     resolving={resolving}
+                    gateBusy={gateBusy}
                     onForwardToAccept={onForwardToAccept}
                     onSetPersona={onSetPersona}
                   />

@@ -112,6 +112,9 @@ const redRun = (args) =>
   cliResult(args, { ok: false, reason: 'checks_failed', failing_check: '/usr/bin/python3 -m pytest -q', tail: LONG_TAIL }, 1)
 
 beforeEach(() => {
+  // HZ-216: a gate_action row left running by an earlier test would answer a
+  // later one's Accept with a false 409.
+  db.prepare('DELETE FROM gate_action').run()
   resetGithub()
   stubRunner(greenRun)
 })
@@ -303,4 +306,175 @@ test('WhatsApp poll vote: red checks leave the vote retakeable and issue no merg
   assert.equal(green.statusCode, 200)
   assert.equal(mergeCalls().length, 1)
   assert.equal(cursorOf(id), ACCEPT_GATE_INDEX + 1)
+})
+
+// ---- HZ-216: the gate action is server state, visible to every client ----
+
+const gateActionOf = async (id) => {
+  const res = await app.inject({ method: 'GET', url: '/api/items', headers: { cookie } })
+  return res.json().items.find((it) => it.id === id).gateAction
+}
+
+// Holds the check run open until release(); resolves once it has started.
+function holdRunner(outcome = greenRun) {
+  let release
+  const gate = new Promise((resolve) => (release = resolve))
+  stubRunner(async (args) => {
+    await gate
+    return outcome(args)
+  })
+  return {
+    release,
+    started: async () => {
+      while (runs.length === 0) await new Promise((r) => setImmediate(r))
+    },
+  }
+}
+
+const pollVote = (id) => {
+  const pollId = votes.registerPoll({ itemId: id, stepIndex: ACCEPT_GATE_INDEX, recipient: DAVID, question: `${id} — ${STEPS[ACCEPT_GATE_INDEX].label}` })
+  votes.attachPollMessageId(pollId, `MSG-GA-${id}`)
+  return app.inject({
+    method: 'POST',
+    url: '/api/wa/poll-vote',
+    payload: { voteId: `V-GA-${id}`, pollMessageId: `MSG-GA-${id}`, voterJid: DAVID, selectedOption: POLL_APPROVE },
+    headers: WA_HEADERS,
+  })
+}
+
+for (const [leg, start] of [
+  ['the browser route', approve],
+  ['the WhatsApp concierge', approveViaWhatsapp],
+  ['a WhatsApp poll vote', pollVote],
+]) {
+  test(`HZ-216: an Accept via ${leg} shows gateAction running in GET /api/items, with a server-side startedAt`, async () => {
+    const id = acceptItem()
+    const pr = db.prepare('SELECT pr FROM work_item WHERE id = ?').get(id).pr
+    assert.equal(await gateActionOf(id), null, 'no gate action before the click')
+    const held = holdRunner()
+    const pending = start(id)
+    await held.started()
+
+    const during = await gateActionOf(id)
+    assert.equal(during.kind, 'premerge')
+    assert.equal(during.state, 'running')
+    assert.equal(during.detail, `running checks on main + PR #${pr}`)
+    assert.ok(!Number.isNaN(Date.parse(during.since)), 'since is an ISO timestamp')
+    assert.ok(Date.parse(during.deadline) > Date.parse(during.since))
+    // A reload reads the same row: the same startedAt.
+    assert.equal((await gateActionOf(id)).since, during.since)
+
+    held.release()
+    assert.equal((await pending).statusCode, 200)
+    const after = await gateActionOf(id)
+    assert.equal(after.state, 'merged')
+    assert.equal(after.since, during.since)
+  })
+}
+
+test('HZ-216: red checks finish the row as blocked, naming the failing check — never its output', async () => {
+  stubRunner(redRun)
+  const id = acceptItem()
+  await approve(id)
+  const action = await gateActionOf(id)
+  assert.equal(action.state, 'blocked')
+  assert.equal(action.failingCheck, '/usr/bin/python3 -m pytest -q')
+  assert.ok(action.finishedAt)
+  assert.doesNotMatch(JSON.stringify(action), /FAILED farm\/tests|812 passed/)
+})
+
+test('HZ-216: a check run that times out finishes the row as timed_out with its own reason', async () => {
+  stubRunner({ timedOut: true, code: null })
+  const id = acceptItem()
+  await approve(id)
+  const action = await gateActionOf(id)
+  assert.equal(action.state, 'timed_out')
+  assert.match(action.reason, /^pre-merge checks did not finish: no result within/)
+  assert.notEqual(action.reason, store.GATE_ACTION_EXPIRED_REASON)
+})
+
+test('HZ-216: the runner rejecting is a 502, the row ends failed with a reason, and a retry is not a 409', async () => {
+  premerge.runner.spawn = async () => {
+    throw new Error('spawn exploded')
+  }
+  const id = acceptItem()
+  const res = await approve(id)
+  assert.equal(res.statusCode, 502)
+  assert.deepEqual(Object.keys(res.json()).sort(), ['error', 'premerge'])
+  assert.equal(mergeCalls().length, 0)
+  const action = await gateActionOf(id)
+  assert.equal(action.state, 'failed')
+  assert.ok(action.reason)
+
+  stubRunner(greenRun)
+  assert.equal((await approve(id)).statusCode, 200)
+})
+
+test('HZ-216: the merge call throwing is a 502, the row ends failed with a reason, and a retry is not a 409', async () => {
+  const id = acceptItem()
+  const realFetch = globalThis.fetch
+  globalThis.fetch = async (url, options = {}) => {
+    if ((options.method || 'GET') === 'PUT') throw new Error('socket hang up')
+    return realFetch(url, options)
+  }
+  const res = await approve(id)
+  assert.equal(res.statusCode, 502)
+  assert.deepEqual(Object.keys(res.json()), ['error'])
+  assert.equal(cursorOf(id), ACCEPT_GATE_INDEX)
+  const action = await gateActionOf(id)
+  assert.equal(action.state, 'failed')
+  assert.match(action.reason, /merge failed/)
+
+  globalThis.fetch = realFetch
+  assert.equal((await approve(id)).statusCode, 200)
+})
+
+test('HZ-216: a blocked result is not shown again after the item is sent back and returns to the gate', async () => {
+  stubRunner(redRun)
+  const id = acceptItem()
+  await approve(id)
+  assert.equal((await gateActionOf(id)).state, 'blocked')
+
+  store.requestChanges(id, 'Accept the code', 'fix the test', 'You')
+  db.prepare('UPDATE work_item SET cursor = ? WHERE id = ?').run(ACCEPT_GATE_INDEX, id)
+  assert.equal(await gateActionOf(id), null)
+})
+
+test('HZ-216: a merge whose gate advance is refused re-opens the gate rather than leaving it stuck', async () => {
+  const { getActiveProjectId, setSetting } = await import('../src/settings.js')
+  const before = getActiveProjectId()
+  const id = acceptItem()
+  const mine = store.createProject(`Mine ${id}`).id
+  const other = store.createProject(`Other ${id}`).id
+  db.prepare('UPDATE work_item SET project_id = ? WHERE id = ?').run(mine, id)
+  setSetting('active_project_id', String(mine))
+  try {
+    const held = holdRunner()
+    const pending = approve(id)
+    await held.started()
+    // The project is switched away mid-check: approveGate refuses with project_not_active.
+    setSetting('active_project_id', String(other))
+    held.release()
+    assert.notEqual((await pending).statusCode, 200)
+    assert.equal(cursorOf(id), ACCEPT_GATE_INDEX)
+    // Back on its own project, the board shows a finished row: nothing left
+    // running to disable the gate.
+    setSetting('active_project_id', String(mine))
+    assert.equal((await gateActionOf(id)).state, 'merged')
+  } finally {
+    if (before == null) db.prepare("DELETE FROM setting WHERE key = 'active_project_id'").run()
+    else setSetting('active_project_id', String(before))
+  }
+})
+
+test('HZ-216: a merge is shown on the done Accept step, but not when the item later returns to the gate', async () => {
+  const id = acceptItem()
+  assert.equal((await approve(id)).statusCode, 200)
+  assert.equal((await gateActionOf(id)).state, 'merged')
+
+  store.restartPhase(id, STEPS[ACCEPT_GATE_INDEX].phase, 'rebuild it', 'You')
+  assert.equal(await gateActionOf(id), null, 'not on the upcoming gate while it is rebuilt')
+  db.prepare("INSERT INTO step_run (item_id, step_index, agent, status) VALUES (?, ?, 'Eng', 'done')").run(id, ACCEPT_GATE_INDEX - 1)
+  db.prepare('UPDATE work_item SET cursor = ? WHERE id = ?').run(ACCEPT_GATE_INDEX, id)
+  assert.equal(await gateActionOf(id), null, 'not on a later visit to the gate')
 })

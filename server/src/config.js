@@ -88,6 +88,14 @@ export const FARM_CONFLICT_RESOLVE_TIMEOUT_MS = Number(process.env.FARM_CONFLICT
 // PR into the current base and the repo's own checks (server/src/premerge.js).
 // A run that has not finished by then blocks the merge, fail-closed.
 export const PREMERGE_CHECK_TIMEOUT_MS = Number(process.env.PREMERGE_CHECK_TIMEOUT_MS || 20 * 60 * 1000)
+// HZ-216: a gate action's lease (db.js gate_action) is the run's own timeout
+// above — PREMERGE_CHECK_TIMEOUT_MS or FARM_CONFLICT_RESOLVE_TIMEOUT_MS — plus
+// this margin, which covers the GitHub reads and merge call around the checks.
+// Not a second timeout: nothing is stopped by it, it only bounds how long a
+// run nobody finished (a restart, a crash) keeps the gate disabled.
+export const GATE_ACTION_MARGIN_MS = Number(process.env.GATE_ACTION_MARGIN_MS || 5 * 60 * 1000)
+// How often the orchestrator sweeps expired gate-action leases.
+export const GATE_ACTION_SWEEP_MS = Number(process.env.GATE_ACTION_SWEEP_MS || 60 * 1000)
 // HZ-182: after an automated review rejection, the next implement run is a
 // fix-only pass and the review after it sees only the fix's delta. "0" turns
 // it off: every cycle is a full implement plus a full review, as before.

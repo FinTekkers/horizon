@@ -13,6 +13,7 @@ import AgentDefinitionsPage from './components/AgentDefinitionsPage'
 import NewItemModal from './components/NewItemModal'
 import LoginPage from './components/LoginPage'
 import LegalPage, { LEGAL_DOCS } from './components/LegalPage'
+import { gateActionBusy } from './domain/gateAction'
 
 // HZ-188: what a finished server-side run (item.conflictRun) means to the
 // resolve dialog, when this tab didn't make the request itself — a reload,
@@ -122,6 +123,10 @@ function AuthenticatedApp({ user, onLogout }) {
   const [resolveDialog, setResolveDialog] = useState(null)
   const resolveInFlight = useRef(new Set())
   const [resolvePending, setResolvePending] = useState(() => new Set())
+  // HZ-216: the same guard for an approve request this tab has in flight — it
+  // covers the gap before the server's push says a gate action is running.
+  const approveInFlight = useRef(new Set())
+  const [approvePending, setApprovePending] = useState(() => new Set())
 
   const sync = api.getSync()
   const projects = api.getProjects()
@@ -131,6 +136,10 @@ function AuthenticatedApp({ user, onLogout }) {
   const selected = items.find((it) => it.id === selectedId) || items[0]
   const pendingCount = items.filter(awaitingGate).length
   const isResolving = (item) => !!item && (item.conflictRun?.state === 'running' || resolvePending.has(item.id))
+  // HZ-216: HZ-188's isResolving, generalised to every long gate action —
+  // whatever started it (this tab, another tab, WhatsApp), the server's
+  // item.gateAction disables the gate's buttons until it finishes.
+  const isGateBusy = (item) => !!item && (isResolving(item) || gateActionBusy(item) || approvePending.has(item.id))
 
   const openResolveDialog = (itemId, pr) => {
     const item = items.find((it) => it.id === itemId)
@@ -178,7 +187,16 @@ function AuthenticatedApp({ user, onLogout }) {
   // Approving a gate only navigates away when it closed the item — earlier
   // gates leave the user in place since the next agent step starts immediately.
   const approveAndMaybeClose = async (itemId, notes) => {
-    const result = await api.approveGate(itemId, notes)
+    if (approveInFlight.current.has(itemId)) return
+    approveInFlight.current.add(itemId)
+    setApprovePending(new Set(approveInFlight.current))
+    let result
+    try {
+      result = await api.approveGate(itemId, notes)
+    } finally {
+      approveInFlight.current.delete(itemId)
+      setApprovePending(new Set(approveInFlight.current))
+    }
     if (result?.closed) toBoard()
   }
   const toTracker = () => {
@@ -298,6 +316,7 @@ function AuthenticatedApp({ user, onLogout }) {
           onReject={(id, target) => openComposer('reject', id, { target })}
           onResolveConflicts={openResolveDialog}
           resolving={isResolving(selected)}
+          gateBusy={isGateBusy(selected)}
           onForwardToAccept={(id) => api.forwardToAccept(id)}
           onTogglePause={api.togglePause}
           onRestartPhase={(id, phase) => openComposer('restart', id, { phase })}
