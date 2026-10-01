@@ -16,7 +16,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from farm import farmd, pm_agent, tmux_mgr, workspaces
-from farm.config import LOGS_DIR, PM_MALFORMED_GRACE_S, QUEUE_DIR
+from farm.config import LOGS_DIR, QUEUE_DIR
 from farm.tests.conflict_fixtures import (
     HZ157_CONFTEST,
     HZ157_CONFTEST_BRANCH_LINE,
@@ -32,6 +32,9 @@ from farm.tests.conflict_fixtures import (
 client = TestClient(farmd.app)
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
+
+# The PM lane's step indexes (0/1/2/9 today), read off the step table.
+PM_LANE_INDEXES = [entry["index"] for entry in farmd.steps.STEPS if entry["runsIn"] == "pm"]
 
 
 def make_task(run_id, item_id="hz-3", step_index=10, attempt=2):
@@ -68,17 +71,20 @@ def test_cancel_of_unknown_run_is_a_noop():
 
 
 @pytest.fixture
-def running_farm():
-    """Flip farmd to running for one test; tasks go to the pm queue (step 9),
-    which no background dispatcher consumes in tests."""
+def running_farm(monkeypatch):
+    """Flip farmd to running for one test. Every step is queued on queue/runs
+    since HZ-204, so the background dispatcher is held at zero slots — a
+    test's queued task is never claimed out from under it."""
     saved = dict(farmd.state)
+    monkeypatch.setattr(farmd, "MAX_EPHEMERAL", 0)
     farmd.state.update(status="running", project={"id": 1, "name": "FinTekkers"})
     try:
         yield
     finally:
         farmd.state.update(saved)
-        for f in (QUEUE_DIR / "pm").glob("*.json"):
-            f.unlink(missing_ok=True)
+        for sub in ("pm", "runs"):
+            for f in (QUEUE_DIR / sub).glob("*.json"):
+                f.unlink(missing_ok=True)
 
 
 # ---- HZ-190: a running farm under test never reaches the host's tmux ----
@@ -90,9 +96,10 @@ class _StopWatchdog(Exception):
 
 def test_running_farm_never_reaches_real_tmux(running_farm, fake_tmux, monkeypatch):
     """running_farm puts farmd in exactly the state its watchdog revives
-    sessions for — the incident's farm-pm-fintekkers / farm-concierge-
-    fintekkers respawns. Drive one real watchdog pass on this thread and
-    prove both launches land in FakeTmux and the real _tmux never runs."""
+    sessions for — the incident's farm-concierge-fintekkers respawn. Drive
+    one real watchdog pass on this thread and prove the launch lands in
+    FakeTmux and the real _tmux never runs. HZ-204: the concierge is the only
+    session it revives — there is no long-lived PM session any more."""
     real_tmux_calls = []
 
     def real_subprocess_run(argv, *args, **kwargs):
@@ -123,9 +130,10 @@ def test_running_farm_never_reaches_real_tmux(running_farm, fake_tmux, monkeypat
         farmd._watchdog()
 
     launched = {call[call.index("-s") + 1]: call[-1] for call in fake_tmux.calls if call[0] == "new-session"}
-    # Positive control: the revive branch really ran, for both sessions.
-    assert {"farm-pm-fintekkers", "farm-concierge-fintekkers"} <= set(launched)
-    assert "HORIZON_URL=http://127.0.0.1:9 " in launched["farm-pm-fintekkers"]
+    # Positive control: the revive branch really ran.
+    assert set(launched) == {"farm-concierge-fintekkers"}
+    assert "HORIZON_URL=http://127.0.0.1:9 " in launched["farm-concierge-fintekkers"]
+    assert not any(name.startswith("farm-pm-") for name in launched), "the watchdog never launches a PM session"
     assert real_tmux_calls == []
 
 
@@ -146,7 +154,8 @@ def test_steps_run_stamps_the_repos_rules_into_the_task_payload(running_farm):
     res = client.post("/steps/run", json=task)
     assert res.status_code == 200
 
-    queued = json.loads((QUEUE_DIR / "pm" / "101.json").read_text())
+    assert res.json() == {"ok": True, "queued": "runs"}
+    queued = json.loads((QUEUE_DIR / "runs" / "101.json").read_text())
     # The success metric's payload check: the migrated ui-service rules are in
     # the queued task verbatim, alongside the project-level FinTekkers rules.
     # HZ-114: `rules` is now a list of unrendered parts (project, then repo) —
@@ -165,7 +174,7 @@ def test_steps_run_without_matching_rules_stamps_an_empty_list(running_farm):
     task["item"]["repo"] = "acme/unmapped"
     res = client.post("/steps/run", json=task)
     assert res.status_code == 200
-    assert json.loads((QUEUE_DIR / "pm" / "102.json").read_text())["rules"] == []
+    assert json.loads((QUEUE_DIR / "runs" / "102.json").read_text())["rules"] == []
 
 
 # ---- /conflicts/resolve (HZ-92) ----
@@ -564,11 +573,19 @@ def test_farm_status_reports_the_check_limiter_as_disabled_when_switched_off(tmp
     assert checks_block == {"limit": 0, "busy": 0, "waiting": []}
 
 
-def test_runs_status_reports_queued_for_a_pm_queued_task(queue_dirs):
-    (QUEUE_DIR / "pm" / "201.json").write_text(json.dumps(make_task(201, step_index=9)))
+@pytest.mark.parametrize("step_index", PM_LANE_INDEXES)
+def test_a_queued_pm_step_is_alive_and_waits_for_an_agent_slot(queue_dirs, monkeypatch, step_index):
+    """HZ-204: a PM step waits on queue/runs like every other step. It must
+    read as alive (or the server's sweep fails it never_picked_up) and as
+    queued for a slot — never the retired "waiting for the PM agent"."""
+    monkeypatch.setattr(farmd, "_ephemeral_sessions", lambda: ["farm-run-a-s11-a1"])
+    (QUEUE_DIR / "runs" / "201.json").write_text(json.dumps(make_task(201, step_index=step_index)))
+    assert farmd._run_alive("201") is True
     res = client.post("/runs/status", json={"run_ids": [201]})
     assert res.status_code == 200
-    assert res.json() == {"states": {"201": {"state": "queued", "reason": "waiting for the PM agent"}}}
+    assert res.json() == {
+        "states": {"201": {"state": "queued", "reason": f"waiting for a free agent slot (1/{farmd.MAX_EPHEMERAL} in use)"}}
+    }
 
 
 def test_runs_status_reports_queued_for_an_ephemeral_queued_task_with_the_busy_count(queue_dirs, monkeypatch):
@@ -596,7 +613,7 @@ def test_runs_status_reports_running_for_an_unknown_run_id(queue_dirs):
 
 
 def test_runs_status_never_leaks_a_tmux_session_name(queue_dirs):
-    (QUEUE_DIR / "pm" / "204.json").write_text(json.dumps(make_task(204, item_id="HZ-54", step_index=9)))
+    (QUEUE_DIR / "runs" / "204.json").write_text(json.dumps(make_task(204, item_id="HZ-54", step_index=9)))
     (QUEUE_DIR / "runs" / "205.json").write_text(json.dumps(make_task(205, item_id="HZ-54", step_index=11)))
     res = client.post("/runs/status", json={"run_ids": [204, 205]})
     body = json.dumps(res.json())
@@ -760,24 +777,136 @@ def test_notify_started_fails_open_on_a_non_2xx_reply(monkeypatch):
     assert farmd._notify_started(80) is True
 
 
-def test_internal_steps_started_forwards_and_returns_the_active_flag(monkeypatch):
-    captured = {}
+def test_the_pm_agents_started_route_is_gone():
+    """HZ-204: its only caller was the retired PM poll loop — _claim_and_launch
+    notifies for PM steps now. A stale pm_agent from an older checkout fails
+    loudly instead of notifying twice."""
+    assert client.post("/internal/steps/started", json={"run_id": 81}).status_code == 404
 
-    class FakeResponse:
+
+# ---- HZ-204: PM steps launch per task, like every other step ----
+
+
+@pytest.mark.parametrize("step_index", PM_LANE_INDEXES)
+def test_a_pm_step_launches_pm_agent_in_its_own_run_session_and_log(tmp_path, monkeypatch, fake_tmux, step_index):
+    monkeypatch.setattr(farmd, "_notify_started", lambda run_id: True)
+    runs_dir = tmp_path / "runs"
+    runs_dir.mkdir()
+    task_path = _write_task(runs_dir / "301.json", 301, item_id="HZ-1", step_index=step_index)
+    try:
+        name = farmd._claim_and_launch(task_path, runs_dir, tmp_path)
+    finally:
+        farmd.RUN_SESSIONS.pop("301", None)
+
+    assert name == f"farm-run-hz-1-s{step_index}-a2"
+    (new_session,) = [c for c in fake_tmux.calls if c[0] == "new-session"]
+    assert new_session[new_session.index("-s") + 1] == name
+    claimed = runs_dir / "active" / "301.json"
+    assert new_session[-1].endswith(f"{sys.executable} -m farm.pm_agent --task {claimed}")
+    (pipe,) = [c for c in fake_tmux.calls if c[0] == "pipe-pane"]
+    assert pipe[-1] == f"cat >> '{farmd.LOGS_DIR / f'{name}.log'}'"
+    assert not any(c[c.index("-s") + 1].startswith("farm-pm-") for c in fake_tmux.calls if c[0] == "new-session")
+
+
+def test_a_non_pm_step_still_launches_step_agent():
+    assert farmd._module_for_task(make_task(1, step_index=4)) == "farm.step_agent"
+    assert farmd._module_for_task({"run_id": 1}) == "farm.step_agent"
+    for index in PM_LANE_INDEXES:
+        assert farmd._module_for_task(make_task(1, step_index=index)) == "farm.pm_agent"
+
+
+def test_a_pm_step_runs_the_env_present_at_dispatch_not_at_farmd_start(tmp_path, monkeypatch, fake_tmux):
+    """A deploy's farm.env change reaches the next PM step with no restart:
+    the session is launched behind tmux_mgr._env_prefix(), evaluated at claim
+    time, with a fresh interpreter (`python -m`), not a process that has been
+    up since farmd started."""
+    monkeypatch.setattr(farmd, "_notify_started", lambda run_id: True)
+    monkeypatch.setenv("FARM_HZ204_PROBE", "after-farmd-import")  # set long after farmd was imported
+    runs_dir = tmp_path / "runs"
+    runs_dir.mkdir()
+    task_path = _write_task(runs_dir / "302.json", 302, item_id="HZ-1", step_index=PM_LANE_INDEXES[-1])
+    try:
+        name = farmd._claim_and_launch(task_path, runs_dir, tmp_path)
+    finally:
+        farmd.RUN_SESSIONS.pop("302", None)
+
+    (new_session,) = [c for c in fake_tmux.calls if c[0] == "new-session"]
+    command = new_session[-1]
+    prefix = tmux_mgr._env_prefix(name)
+    assert "FARM_HZ204_PROBE=after-farmd-import" in prefix
+    assert command.startswith(prefix)
+    assert command[len(prefix):].startswith(f"{sys.executable} -m farm.pm_agent ")
+
+
+def test_a_pm_step_killed_mid_run_is_reported_retryable_not_lost(queue_dirs, monkeypatch):
+    """Killing farmd or deploying mid-step: the claimed PM task sits in
+    runs/active (pm_agent unlinks it only after an accepted report), so once
+    its session is gone the reconciler reports it with a reason the server
+    auto-retries."""
+    monkeypatch.setattr(farmd, "_notify_started", lambda run_id: True)
+    posted = []
+
+    class _Ok:
         status_code = 200
 
-        def json(self):
-            return {"active": True}
+    monkeypatch.setattr(farmd.httpx, "post", lambda url, json=None, **k: posted.append((url, json)) or _Ok())
+    task = make_task(303, item_id="HZ-1", step_index=PM_LANE_INDEXES[0])
+    task["claimed_at"] = time.time() - farmd.farm_config.RECONCILE_GRACE_S - 1
+    claimed = QUEUE_DIR / "runs" / "active" / "303.json"
+    claimed.write_text(json.dumps(task))  # its session is not in FakeTmux: killed
 
-    def fake_post(url, headers=None, timeout=None):
-        captured["url"] = url
-        return FakeResponse()
+    farmd._reconcile_claimed_runs()
 
-    monkeypatch.setattr(farmd.httpx, "post", fake_post)
-    res = client.post("/internal/steps/started", json={"run_id": 81})
-    assert res.status_code == 200
-    assert res.json() == {"ok": True, "active": True}
-    assert captured["url"] == f"{farmd.HORIZON_URL}/api/farm/steps/81/started"
+    (url, payload), = posted
+    assert url.endswith("/api/farm/steps/303/fail")
+    assert payload["reason"] == farmd.reasons.REASON["UNREACHABLE"]
+    declared = json.loads((REPO_ROOT / "domain" / "reasons.json").read_text())["reasons"]
+    assert {"id": payload["reason"], "retryable": True} in declared, "the server must auto-retry this reason"
+    assert not claimed.exists()
+
+
+def test_adopting_a_pre_hz204_farm_retires_the_pm_lane(queue_dirs, monkeypatch, fake_tmux):
+    """Boot after the deploy that ships HZ-204: the old farm-pm-<slug> session
+    is killed, never adopted or revived, and a PM task still queued on the old
+    lane moves onto queue/runs instead of being orphaned."""
+    monkeypatch.setattr(farmd, "STATE_FILE", QUEUE_DIR.parent / "state" / "hz204-adopt.json")
+    farmd.STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
+    farmd.STATE_FILE.write_text(json.dumps({"project": {"id": 1, "name": "FinTekkers"}, "repos": []}))
+    saved = dict(farmd.state)
+    fake_tmux.sessions.update({"farm-pm-fintekkers", "farm-concierge-fintekkers"})
+    (QUEUE_DIR / "pm" / "7.json").write_text(json.dumps(make_task(7, step_index=PM_LANE_INDEXES[0])))
+    try:
+        farmd._adopt_existing()
+    finally:
+        farmd.state.update(saved)
+        farmd.STATE_FILE.unlink(missing_ok=True)
+
+    assert "farm-pm-fintekkers" not in fake_tmux.sessions
+    assert "farm-concierge-fintekkers" in fake_tmux.sessions  # out of scope: untouched
+    assert not (QUEUE_DIR / "pm" / "7.json").exists()
+    assert json.loads((QUEUE_DIR / "runs" / "7.json").read_text())["run_id"] == 7
+    assert farmd._run_alive("7") is True
+
+
+def test_retire_pm_lane_is_idempotent_and_never_overwrites(queue_dirs, fake_tmux):
+    assert farmd._retire_pm_lane() == 0  # nothing queued: a no-op
+    (QUEUE_DIR / "runs" / "8.json").write_text(json.dumps({"run_id": 8, "keep": True}))
+    (QUEUE_DIR / "pm" / "8.json").write_text(json.dumps({"run_id": 8}))
+    (QUEUE_DIR / "pm" / "9.json").write_text(json.dumps({"run_id": 9}))
+
+    assert farmd._retire_pm_lane() == 1
+    assert json.loads((QUEUE_DIR / "runs" / "8.json").read_text())["keep"] is True
+    assert (QUEUE_DIR / "runs" / "9.json").exists()
+    assert list((QUEUE_DIR / "pm").glob("*.json")) == []
+    assert farmd._retire_pm_lane() == 0
+
+
+def test_retire_pm_lane_with_no_pm_queue_dir_is_a_noop(queue_dirs, fake_tmux):
+    (QUEUE_DIR / "pm").rmdir()
+    try:
+        assert farmd._retire_pm_lane() == 0
+    finally:
+        (QUEUE_DIR / "pm").mkdir(exist_ok=True)
 
 
 def test_claim_and_launch_launches_when_the_run_is_still_active(tmp_path, monkeypatch):
@@ -1506,8 +1635,8 @@ def test_runs_alive_false_for_a_claimed_run_whose_session_is_gone(queue_dirs, mo
     assert res.json() == {"alive": {"402": False}}
 
 
-def test_runs_alive_true_for_a_task_still_queued_in_pm_or_runs(queue_dirs):
-    (QUEUE_DIR / "pm" / "403.json").write_text(json.dumps(make_task(403, step_index=9)))
+def test_runs_alive_true_for_a_task_still_queued(queue_dirs):
+    (QUEUE_DIR / "runs" / "403.json").write_text(json.dumps(make_task(403, step_index=9)))
     (QUEUE_DIR / "runs" / "404.json").write_text(json.dumps(make_task(404, step_index=11)))
     res = client.post("/runs/alive", json={"run_ids": [403, 404]})
     assert res.json() == {"alive": {"403": True, "404": True}}
@@ -1518,33 +1647,6 @@ def test_runs_alive_false_for_a_run_the_farm_has_no_record_of(queue_dirs):
     # genuinely does not know about this run.
     res = client.post("/runs/alive", json={"run_ids": [999999]})
     assert res.json() == {"alive": {"999999": False}}
-
-
-def test_runs_alive_true_for_an_in_flight_pm_claimed_run(queue_dirs, monkeypatch):
-    """A PM-claimed run has no per-run task file (claim-before-work unlinks
-    it) and no per-run tmux session — its only proof of life is
-    PM_ACTIVE_RUNS plus the shared PM session still being up."""
-    farmd.state["project"] = {"id": 1, "name": "Test Project"}
-    farmd.PM_ACTIVE_RUNS.add("405")
-    try:
-        monkeypatch.setattr(farmd.tmux_mgr, "session_exists", lambda name: name == farmd._pm_session_name())
-        res = client.post("/runs/alive", json={"run_ids": [405]})
-        assert res.json() == {"alive": {"405": True}}
-    finally:
-        farmd.PM_ACTIVE_RUNS.discard("405")
-        farmd.state["project"] = None
-
-
-def test_runs_alive_false_for_a_pm_claimed_run_whose_pm_session_died(queue_dirs, monkeypatch):
-    farmd.state["project"] = {"id": 1, "name": "Test Project"}
-    farmd.PM_ACTIVE_RUNS.add("406")
-    try:
-        monkeypatch.setattr(farmd.tmux_mgr, "session_exists", lambda name: False)
-        res = client.post("/runs/alive", json={"run_ids": [406]})
-        assert res.json() == {"alive": {"406": False}}
-    finally:
-        farmd.PM_ACTIVE_RUNS.discard("406")
-        farmd.state["project"] = None
 
 
 def test_runs_alive_never_leaks_a_tmux_session_name(queue_dirs):
@@ -1592,37 +1694,6 @@ def test_runs_alive_end_to_end_over_real_tmux_reports_true_for_a_claimed_run_wit
         tmux_mgr.kill_session(name)
 
     assert res.json() == {"alive": {"502": True}}
-
-
-def test_internal_steps_started_tracks_pm_active_runs_until_the_result_lands():
-    """The lifecycle that backs the PM-alive check above: started adds to
-    PM_ACTIVE_RUNS, the result callback (ok or not) always removes it."""
-    farmd.PM_ACTIVE_RUNS.discard("408")
-    try:
-        with pytest.MonkeyPatch.context() as mp:
-            mp.setattr(farmd, "_notify_started", lambda run_id: True)
-            res = client.post("/internal/steps/started", json={"run_id": 408})
-            assert res.json()["active"] is True
-        assert "408" in farmd.PM_ACTIVE_RUNS
-
-        with pytest.MonkeyPatch.context() as mp:
-            mp.setattr(farmd.httpx, "post", lambda *a, **k: _FakeFailResponse(200))
-            client.post("/internal/steps/result", json={"run_id": 408, "ok": False, "error": "boom"})
-        assert "408" not in farmd.PM_ACTIVE_RUNS
-    finally:
-        farmd.PM_ACTIVE_RUNS.discard("408")
-
-
-def test_internal_steps_started_does_not_track_a_run_the_server_no_longer_considers_active():
-    farmd.PM_ACTIVE_RUNS.discard("409")
-    try:
-        with pytest.MonkeyPatch.context() as mp:
-            mp.setattr(farmd, "_notify_started", lambda run_id: False)
-            res = client.post("/internal/steps/started", json={"run_id": 409})
-            assert res.json()["active"] is False
-        assert "409" not in farmd.PM_ACTIVE_RUNS
-    finally:
-        farmd.PM_ACTIVE_RUNS.discard("409")
 
 
 # ---- HZ-140: /internal/snapshot, the concierge's credential-free read path ----
@@ -1821,7 +1892,7 @@ def test_steps_run_enqueues_atomically(running_farm, monkeypatch):
     res = client.post("/steps/run", json=make_task(881, item_id="HZ-130", step_index=9))
     assert res.status_code == 200
 
-    queued = QUEUE_DIR / "pm" / "881.json"
+    queued = QUEUE_DIR / "runs" / "881.json"
     assert calls == [queued]
     assert json.loads(queued.read_text())["run_id"] == 881
 
@@ -1862,85 +1933,12 @@ def test_a_leaked_temp_file_never_makes_a_run_look_queued_or_alive(queue_dirs):
         leaked_runs.unlink(missing_ok=True)
 
 
-# ---- HZ-130: the contract the PM and ephemeral lanes share ----
-# Success metric 6, stated precisely. The lanes are NOT identical: the PM lane
-# eventually reports an unusable file, the ephemeral lane never does (guardrail
-# 4 forbids changing it — it is the reference implementation). What they share,
-# and what this asserts, is the three-part read contract: SKIP the file, NEVER
-# delete it, and RETRY it on the next poll.
-#
-# Known residual gap, stated rather than implied: because the ephemeral lane
-# does not report, farmd's _run_alive still answers True while an unparseable
-# `queue/runs/<id>.json` exists, so such a run can sit active with no worker
-# and no report. Atomic writes remove the *cause* on both lanes, leaving only
-# corrupt-on-disk; closing the ephemeral report path needs its own item, since
-# guardrail 4 puts it out of scope here.
-
-
-@pytest.mark.parametrize("payload", [TRUNCATED_TASK, "", "not json at all"])
-def test_both_lanes_skip_an_unparseable_task_file_without_deleting_it(tmp_path, monkeypatch, payload):
-    """The shared input class is a file that does not parse. (Valid JSON that
-    is merely unusable is PM-specific — the ephemeral lane's own field
-    handling is out of scope under guardrail 4 and is unchanged here.)"""
-    monkeypatch.setattr(pm_agent, "process", lambda *a: pytest.fail("an unusable task must not be processed"))
-
-    ephemeral = tmp_path / "runs"
-    ephemeral.mkdir()
-    eph_path = ephemeral / "881.json"
-    eph_path.write_text(payload)
-    pm_dir = tmp_path / "pm"
-    pm_dir.mkdir()
-    pm_path = pm_dir / "881.json"
-    pm_path.write_text(payload)
-
-    # Ephemeral lane: the reference. Skips, keeps.
-    assert farmd._select_dispatchable([eph_path], [], 4) == []
-    assert eph_path.exists()
-    # PM lane: same skip, same keep.
-    assert pm_agent.poll_once(pm_dir, "fintekkers", {}) == "skipped"
-    assert pm_path.exists()
-
-
-def test_both_lanes_retry_the_file_once_it_becomes_valid(tmp_path, monkeypatch):
-    ephemeral = tmp_path / "runs"
-    ephemeral.mkdir()
-    eph_path = ephemeral / "881.json"
-    eph_path.write_text(TRUNCATED_TASK)
-    pm_dir = tmp_path / "pm"
-    pm_dir.mkdir()
-    pm_path = pm_dir / "881.json"
-    pm_path.write_text(TRUNCATED_TASK)
-
-    pm_failures = {}
-    assert farmd._select_dispatchable([eph_path], [], 4) == []
-    assert pm_agent.poll_once(pm_dir, "fintekkers", pm_failures) == "skipped"
-
-    valid = json.dumps(make_task(881, item_id="hz-130", step_index=9))
-    eph_path.write_text(valid)
-    pm_path.write_text(valid)
-
-    processed = []
-    monkeypatch.setattr(pm_agent, "notify_started", lambda run_id: True)
-    monkeypatch.setattr(pm_agent, "process", lambda task, slug: processed.append(task))
-
-    assert farmd._select_dispatchable([eph_path], [], 4) == [eph_path]  # dispatchable now
-    assert pm_agent.poll_once(pm_dir, "fintekkers", pm_failures) == "processed"
-    assert [t["run_id"] for t in processed] == [881]
-    assert pm_failures == {}  # the retry cleared the file's failure count
-
-
-# ---- HZ-130 end to end: enqueue, corrupt, report, stop being alive ----
-# Nothing below is mocked except the far side of the network (a real local
-# HTTP server standing in for the Node horizon server) and the PM's own
-# `process`, which would otherwise spawn a Claude session. The enqueue goes
-# through the real /steps/run route, the report goes through the real
-# /internal/steps/result route, and the liveness answer comes from the real
-# /runs/alive route — the same idiom as the reconcile end-to-end tests above.
-
-
-def _age_file(path: Path, seconds: float) -> None:
-    when = path.stat().st_mtime - seconds
-    os.utime(path, (when, when))
+# ---- HZ-204: a PM task file is released only after an accepted report ----
+# pm_agent.main() runs one claimed task and unlinks it strictly after farmd
+# (and through it the Node server) accepted the result. Nothing below is
+# mocked except the model call and the far side of the network (a real local
+# HTTP server standing in for the Node horizon server): the report goes
+# through the real /internal/steps/result route.
 
 
 def _farmd_over_testclient(monkeypatch):
@@ -1960,80 +1958,47 @@ def _farmd_over_testclient(monkeypatch):
     monkeypatch.setattr(pm_agent, "httpx", SimpleNamespace(post=post))
 
 
-def test_an_unusable_pm_task_file_is_reported_end_to_end_over_real_http(queue_dirs, running_farm, monkeypatch):
-    """HZ-128's stall, replayed through the real wiring, and the assertion the
-    item actually turns on: the run must stop being alive.
+def _pm_task(run_id: int) -> dict:
+    task = make_task(run_id, item_id="HZ-204", step_index=PM_LANE_INDEXES[0])
+    task["step"]["label"] = next(e["label"] for e in farmd.steps.STEPS if e["index"] == PM_LANE_INDEXES[0])
+    return task
 
-    Before HZ-130 run 881's truncated task file was deleted and nobody was
-    told, so /runs/alive kept answering... nothing — the file was gone, the PM
-    had never reported, and `agent_started_at` stayed NULL. The run sat
-    `active` server-side with no worker and no report for 11 minutes.
-    """
-    server, url, requests = _serve_fake_horizon(fail_status=200)
+
+def _run_pm_main(monkeypatch, task_path: Path) -> int:
+    monkeypatch.setattr(pm_agent, "run_agent", lambda prompt, **kw: {"result": json.dumps({"summary": "done"})})
+    monkeypatch.setattr(sys, "argv", ["pm_agent", "--task", str(task_path)])
+    return pm_agent.main()
+
+
+@pytest.mark.parametrize("server_status, accepted", [(200, True), (503, False), (500, False)])
+def test_a_pm_task_is_released_only_once_its_report_is_accepted(queue_dirs, monkeypatch, server_status, accepted):
+    server, url, requests = _serve_fake_horizon(fail_status=server_status)
     monkeypatch.setattr(farmd, "HORIZON_URL", url)
-    monkeypatch.setattr(pm_agent, "process", lambda *a: pytest.fail("an unusable task must not be processed"))
     _farmd_over_testclient(monkeypatch)
+    task_path = QUEUE_DIR / "runs" / "active" / "883.json"
+    task_path.write_text(json.dumps(_pm_task(883)))
     try:
-        res = client.post("/steps/run", json=make_task(881, item_id="HZ-128", step_index=9))
-        assert res.status_code == 200 and res.json()["queued"] == "pm"
-        task_path = QUEUE_DIR / "pm" / "881.json"
-        assert json.loads(task_path.read_text())["run_id"] == 881  # enqueued whole
-
-        # The truncated read the non-atomic write used to hand a poller, aged
-        # past the grace so this poll has to decide rather than retry.
-        task_path.write_text(TRUNCATED_TASK)
-        _age_file(task_path, PM_MALFORMED_GRACE_S + 1)
-        assert client.post("/runs/alive", json={"run_ids": [881]}).json()["alive"]["881"] is True
-
-        assert pm_agent.poll_once(QUEUE_DIR / "pm", "fintekkers", {}) == "reported"
+        code = _run_pm_main(monkeypatch, task_path)
     finally:
         server.shutdown()
 
-    fails = [r for r in requests if r["path"] == "/api/farm/steps/881/fail"]
-    assert len(fails) == 1, f"expected exactly one fail report, got {[r['path'] for r in requests]}"
-    assert fails[0]["headers"]["x-farm-secret"] == farmd.SHARED_SECRET
-    assert fails[0]["body"]["reason"] == "unreachable"  # in AUTO_RETRY_REASONS: auto-retried, not human-paused
-    assert "881.json" in fails[0]["body"]["error"]
-    # The run was never claimed, so it must never have been marked started —
-    # reporting a failure and arming the execution timer are different things.
-    assert not [r for r in requests if r["path"].endswith("/started")]
-
-    # Metric 5, the assertion that actually closes this item: the run is no
-    # longer alive in the farm, and the server has been told why.
-    assert not (QUEUE_DIR / "pm" / "881.json").exists()
-    assert client.post("/runs/alive", json={"run_ids": [881]}).json()["alive"]["881"] is False
+    assert [r["path"] for r in requests] == ["/api/farm/steps/883/complete"]
+    if accepted:
+        assert code == 0 and not task_path.exists()
+    else:
+        assert code != 0
+        assert task_path.exists(), "an unaccepted report must keep the claimed file for the reconciler"
 
 
-def test_an_unusable_pm_task_file_stays_alive_and_on_disk_when_the_report_is_not_accepted(
-    queue_dirs, running_farm, monkeypatch
-):
-    """The other half of the same wiring: the report reaches the Node server
-    and it 503s. A report that was not accepted is not evidence the run was
-    handled — the file must stay, the run must stay alive, and the next poll
-    must retry it.
+def test_a_pm_task_survives_farmd_being_down_when_it_reports(queue_dirs, monkeypatch):
+    """farmd restarting mid-deploy: the POST itself raises."""
 
-    (A real 503 from the fake server, rather than an unreachable host: farmd's
-    forward retries twice with a 2s backoff, and the only way to skip that
-    would be patching the shared `time` module out from under farmd's own
-    daemon threads.)"""
-    server, url, requests = _serve_fake_horizon(fail_status=503)
-    monkeypatch.setattr(farmd, "HORIZON_URL", url)
-    monkeypatch.setattr(pm_agent, "process", lambda *a: pytest.fail("an unusable task must not be processed"))
-    _farmd_over_testclient(monkeypatch)
-    try:
-        client.post("/steps/run", json=make_task(882, item_id="HZ-128", step_index=9))
-        task_path = QUEUE_DIR / "pm" / "882.json"
-        task_path.write_text(TRUNCATED_TASK)
-        _age_file(task_path, PM_MALFORMED_GRACE_S + 1)
+    def down(*a, **k):
+        raise ConnectionError("farmd is restarting")
 
-        assert pm_agent.poll_once(QUEUE_DIR / "pm", "fintekkers", {}) == "skipped"
-        assert task_path.exists(), "an unacknowledged report must not release the file"
-        assert client.post("/runs/alive", json={"run_ids": [882]}).json()["alive"]["882"] is True
+    monkeypatch.setattr(pm_agent, "httpx", SimpleNamespace(post=down))
+    task_path = QUEUE_DIR / "runs" / "active" / "884.json"
+    task_path.write_text(json.dumps(_pm_task(884)))
 
-        # And it is retried rather than abandoned after the refused report.
-        assert pm_agent.poll_once(QUEUE_DIR / "pm", "fintekkers", {}) == "skipped"
-    finally:
-        server.shutdown()
-
-    assert len([r for r in requests if r["path"] == "/api/farm/steps/882/fail"]) == 2
-    assert (QUEUE_DIR / "pm" / "882.json").exists()
+    assert _run_pm_main(monkeypatch, task_path) != 0
+    assert task_path.exists()
