@@ -30,6 +30,14 @@ FARM_RUNNER = os.environ.get("FARM_RUNNER", "sdk")
 PM_MODEL = os.environ.get("FARM_PM_MODEL")  # None -> CLI default
 # HZ-187: model for step agents and conflict resolution (Claude provider only).
 STEP_MODEL = os.environ.get("FARM_STEP_MODEL") or None  # unset/empty -> CLI default
+# HZ-188: how long an implement/review step waits for the item's workspace
+# lock (farm/workspaces.py item_lock) while a conflict resolver still holds it
+# — e.g. the server timed out a resolve and sent the item back while farmd
+# was finishing. Kept short: the wait runs inside the step's own server-side
+# execution timer (50 min for implement against a 45 min agent budget), so a
+# long wait would just turn into a timeout. Past it the step fails with
+# "workspace busy" and never touches the worktree.
+ITEM_LOCK_WAIT_S = int(os.environ.get("FARM_ITEM_LOCK_WAIT_S", "300"))
 STEP_TIMEOUT_S = int(os.environ.get("FARM_STEP_TIMEOUT_S", "900"))
 MAX_TURNS = int(os.environ.get("FARM_MAX_TURNS", "8"))
 

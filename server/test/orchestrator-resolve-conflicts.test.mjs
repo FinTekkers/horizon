@@ -95,7 +95,12 @@ test('an incompatible same-line conflict escalates to the full implement cycle, 
 
   const result = await orchestrator.resolveConflicts('RC-2', 'Alice')
 
-  assert.deepEqual(result, { ok: true, resolved: false, escalated: true })
+  assert.deepEqual(result, {
+    ok: true,
+    resolved: false,
+    escalated: true,
+    reason: orchestrator.CONFLICT_ESCALATION_REASONS.merge_conflict,
+  })
   assert.equal(db.prepare("SELECT cursor FROM work_item WHERE id = 'RC-2'").get().cursor, IMPLEMENT_STEP_INDEX)
   const decision = db.prepare("SELECT decision, decided_by FROM gate_decision WHERE item_id = 'RC-2'").get()
   assert.equal(decision.decision, 'rejected')
@@ -114,7 +119,12 @@ test('a clean merge whose tests then fail still escalates — the gate is the su
 
   const result = await orchestrator.resolveConflicts('RC-3', 'Alice')
 
-  assert.deepEqual(result, { ok: true, resolved: false, escalated: true })
+  assert.deepEqual(result, {
+    ok: true,
+    resolved: false,
+    escalated: true,
+    reason: orchestrator.CONFLICT_ESCALATION_REASONS.tests_failed,
+  })
   assert.equal(db.prepare("SELECT cursor FROM work_item WHERE id = 'RC-3'").get().cursor, IMPLEMENT_STEP_INDEX)
   const feedback = db.prepare("SELECT message FROM feedback WHERE item_id = 'RC-3'").get()
   assert.match(feedback.message, /repo's own tests failed afterward/)
@@ -127,7 +137,12 @@ test('farmd being unreachable escalates the same way as a reported failure, rath
 
   const result = await orchestrator.resolveConflicts('RC-4', 'Alice')
 
-  assert.deepEqual(result, { ok: true, resolved: false, escalated: true })
+  assert.deepEqual(result, {
+    ok: true,
+    resolved: false,
+    escalated: true,
+    reason: 'automatic conflict resolution could not run (farm returned 502)',
+  })
   assert.equal(db.prepare("SELECT cursor FROM work_item WHERE id = 'RC-4'").get().cursor, IMPLEMENT_STEP_INDEX)
 })
 
@@ -329,7 +344,11 @@ test('each scoped refusal escalates with its own message, and an unknown reason 
 
     const result = await orchestrator.resolveConflicts(id, 'Alice')
 
-    assert.deepEqual(result, { ok: true, resolved: false, escalated: true }, reason)
+    assert.deepEqual(
+      result,
+      { ok: true, resolved: false, escalated: true, reason: orchestrator.CONFLICT_ESCALATION_REASONS[reason] || 'the raw detail farmd sent' },
+      reason,
+    )
     assert.equal(db.prepare('SELECT cursor FROM work_item WHERE id = ?').get(id).cursor, IMPLEMENT_STEP_INDEX, reason)
     const feedback = db.prepare('SELECT message FROM feedback WHERE item_id = ?').get(id)
     assert.match(feedback.message, expected, reason)
@@ -354,7 +373,12 @@ test('the e2e conflict-reply hook is one-shot and never stubs a second resolve',
   assert.equal(lastRequest, null, 'the canned reply must replace the farmd call, not race it')
 
   const second = await orchestrator.resolveConflicts('RC-14', 'Alice')
-  assert.deepEqual(second, { ok: true, resolved: false, escalated: true })
+  assert.deepEqual(second, {
+    ok: true,
+    resolved: false,
+    escalated: true,
+    reason: orchestrator.CONFLICT_ESCALATION_REASONS.merge_conflict,
+  })
   assert.equal(lastRequest.url, 'http://farm.test/conflicts/resolve', 'the next call must go to the real farmd')
 })
 
@@ -370,6 +394,11 @@ test('an escalated conflict still leaves every prior step_run row — including 
   const before = allStepRuns('RC-7')
   const result = await orchestrator.resolveConflicts('RC-7', 'Alice')
 
-  assert.deepEqual(result, { ok: true, resolved: false, escalated: true })
+  assert.deepEqual(result, {
+    ok: true,
+    resolved: false,
+    escalated: true,
+    reason: orchestrator.CONFLICT_ESCALATION_REASONS.merge_conflict,
+  })
   assert.deepEqual(allStepRuns('RC-7'), before, 'escalation must not touch any existing step_run row either')
 })

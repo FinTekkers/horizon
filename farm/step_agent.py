@@ -8,6 +8,7 @@ item's branch in the workspace; the *script* owns git (branch, commit, push)
 """
 
 import argparse
+import contextlib
 import json
 import os
 import re
@@ -41,10 +42,10 @@ from .agent_runner import (
     stamp_notes_artifact,
 )
 from .checks import run_checks
-from .config import FARM_PORT, STEP_MODEL
+from .config import FARM_PORT, ITEM_LOCK_WAIT_S, STEP_MODEL
 from .personas import compose_role, provider_for, resolve
 from .rules import render_rules_section
-from .workspaces import ensure_item_worktree, hub_lock
+from .workspaces import ItemBusy, ensure_item_worktree, hub_lock, item_lock
 
 FARMD = f"http://127.0.0.1:{FARM_PORT}"
 ROLES = Path(__file__).parent / "roles"
@@ -323,6 +324,59 @@ def prepare_branch(ws: Path, item: dict) -> str:
     return branch
 
 
+def merge_default_branch(ws: Path) -> list[str]:
+    """HZ-188: merge origin/<default> into the freshly prepared item branch
+    before the agent starts, so a conflict send-back reworks the code on top
+    of today's main instead of the stale base the conflict came from (HZ-125,
+    HZ-144). A clean merge is committed; a conflicted one is left IN PROGRESS
+    with its markers on disk for the agent to resolve — finalize_branch's
+    commit then records it as the merge commit. Returns the conflicted paths
+    (empty for a clean merge). Any other merge failure raises: the agent must
+    not start on a half-merged tree it was never told about."""
+    head = git(ws, "symbolic-ref", "refs/remotes/origin/HEAD", check=False).stdout.strip()
+    default = head.rsplit("/", 1)[-1] if head else "main"
+    merged = git(ws, "merge", "--no-edit", f"origin/{default}", check=False)
+    if merged.returncode == 0:
+        return []
+    conflicted = git(ws, "diff", "--name-only", "--diff-filter=U", check=False).stdout.split()
+    if not conflicted:
+        raise RuntimeError(f"merging origin/{default} failed: {(merged.stderr or merged.stdout).strip()[:300]}")
+    return conflicted
+
+
+def _conflict_markers_left(ws: Path, paths: list[str]) -> list[str]:
+    """The paths merge_default_branch left conflicted that still hold a
+    `<<<<<<<` or `>>>>>>>` marker line. Only those paths are scanned: git
+    wrote markers into nothing else, and a repo may carry marker-looking text
+    elsewhere on purpose (conflict test fixtures)."""
+    left = []
+    for path in paths:
+        try:
+            text = (ws / path).read_text(errors="replace")
+        except (FileNotFoundError, IsADirectoryError):
+            continue  # the agent resolved it by deleting the file
+        if any(line.startswith(("<<<<<<<", ">>>>>>>")) for line in text.splitlines()):
+            left.append(path)
+    return left
+
+
+def _merge_main_note(conflicted: list[str]) -> str:
+    if not conflicted:
+        return (
+            "\n\nNOTE: this branch's PR conflicted with main. origin/main has already "
+            "been merged into it cleanly — build on the merged code as it is now."
+        )
+    files = "\n".join(f"- {path}" for path in conflicted)
+    return (
+        "\n\nNOTE: this branch's PR conflicted with main. origin/main has been merged "
+        "into it and the merge is still in progress: these files have conflict markers "
+        f"left in place for you to resolve —\n{files}\n"
+        "Resolve every marker keeping the intent of both sides, then carry on with the "
+        "step. Do not run `git merge --abort` and do not commit — the harness commits "
+        "the merge after you finish."
+    )
+
+
 def _checkpoint_resume_note(ws: Path) -> str | None:
     """If HEAD is a salvage checkpoint left by a prior exhausted attempt
     (prepare_branch() already based this branch off origin/<branch>, so a
@@ -471,10 +525,20 @@ def delta_review_section(scope: dict, base: str, delta_files: list[str]) -> str:
     return "\n".join(lines)
 
 
-def finalize_branch(ws: Path, item: dict, branch: str) -> dict:
+def finalize_branch(ws: Path, item: dict, branch: str, conflicted: list[str] | None = None) -> dict:
+    # A merge of main still carrying conflict markers must never be committed:
+    # GitHub would then call the PR mergeable with the markers in it, and no
+    # later send-back would be told which files still hold them.
+    markers = _conflict_markers_left(ws, conflicted or [])
+    if markers:
+        raise RuntimeError(f"conflict markers left unresolved in: {', '.join(markers)} — nothing committed or pushed")
     git(ws, "add", "-A")
     staged = git(ws, "diff", "--cached", "--quiet", check=False)
-    if staged.returncode != 0:  # there are staged changes
+    # An in-progress merge of main (merge_default_branch) must be committed
+    # even when its resolution kept this branch's side verbatim — otherwise
+    # the push leaves main unmerged and the conflict survives.
+    merging = git(ws, "rev-parse", "-q", "--verify", "MERGE_HEAD", check=False)
+    if staged.returncode != 0 or merging.returncode == 0:
         git(ws, "commit", "-m", f"{item['id']}: {item['title']} (Horizon Eng agent)")
     head = git(ws, "symbolic-ref", "refs/remotes/origin/HEAD", check=False).stdout.strip()
     default = head.rsplit("/", 1)[-1] if head else "main"
@@ -502,12 +566,21 @@ def finalize_branch(ws: Path, item: dict, branch: str) -> dict:
 # from zero.
 
 
-def _salvage_checkpoint(ws: Path, item: dict, branch: str) -> None:
+def _salvage_checkpoint(ws: Path, item: dict, branch: str, conflicted: list[str] | None = None) -> None:
     """Best-effort: never raises. A salvage failure (e.g. a concurrent push
     winning the --force-with-lease race) just means this attempt's partial
     work is lost — the caller's original exception is what must still
-    propagate and fail the run, unchanged from pre-HZ-31 behavior."""
+    propagate and fail the run, unchanged from pre-HZ-31 behavior.
+
+    HZ-188: a half-resolved merge of main is never checkpointed. Committing
+    it would push conflict markers to the PR branch and make GitHub report it
+    mergeable, so the next send-back would not merge main or name the files.
+    Dropping it is safe: that send-back merges main again from scratch."""
     try:
+        markers = _conflict_markers_left(ws, conflicted or [])
+        if markers:
+            log(f"salvage: skipped — the merge of main still has conflict markers in {', '.join(markers)}")
+            return
         git(ws, "add", "-A")
         staged = git(ws, "diff", "--cached", "--quiet", check=False)
         if staged.returncode == 0:
@@ -687,6 +760,29 @@ def run_smoke_check(url: str, expected_text: str) -> tuple[str, str]:
 
 
 def execute(task: dict) -> dict:
+    """HZ-188: the implement and review steps scrub, check out and (for
+    implement) push in the item's worktree, so they hold item_lock for the
+    whole step — taken before ensure_item_worktree, so not even the worktree's
+    creation can overlap a conflict resolver that owns the item. Every other
+    step only reads the workspace and runs unlocked."""
+    item = task["item"]
+    if task["step"]["label"] not in (IMPLEMENT_LABEL, REVIEW_LABEL) or not item.get("repo"):
+        return _execute(task)
+    lock = item_lock(
+        item["repo"],
+        item["id"],
+        wait_s=ITEM_LOCK_WAIT_S,
+        on_wait=lambda: log(f"workspace for {item['id']} is busy (conflict resolution running) — waiting up to {ITEM_LOCK_WAIT_S}s"),
+    )
+    with contextlib.ExitStack() as stack:
+        try:
+            stack.enter_context(lock)
+        except ItemBusy:
+            raise RuntimeError("workspace busy: conflict resolution still running") from None
+        return _execute(task)
+
+
+def _execute(task: dict) -> dict:
     label = task["step"]["label"]
     role_file, wants_artifact, tools, persona_agent = STEP_CONFIG[label]
     max_turns, timeout_s = steps.budget_for_label(steps.STEPS, label)
@@ -732,6 +828,13 @@ def execute(task: dict) -> dict:
             extra = _checkpoint_resume_note(ws) or ""
             if extra:
                 log("resuming a prior attempt's WIP checkpoint")
+        # After the resume check: a merge commit would hide the checkpoint's
+        # subject from it.
+        conflicted: list[str] = []
+        if task.get("merge_main"):
+            conflicted = merge_default_branch(ws)
+            log(f"merged origin/main into {branch}" + (f" — {len(conflicted)} conflicted file(s) left for the agent" if conflicted else " cleanly"))
+            extra += _merge_main_note(conflicted)
         try:
             reply = run_agent(
                 build_prompt(task) + extra,
@@ -749,7 +852,7 @@ def execute(task: dict) -> dict:
             # letting the next attempt's prepare_branch scrub it away. Still
             # re-raises unchanged: a failed attempt still fails and pauses,
             # no checks run, no PR opens, nothing advances.
-            _salvage_checkpoint(ws, item, branch)
+            _salvage_checkpoint(ws, item, branch, conflicted)
             raise
         # The summary is reporting, not the deliverable — the code in the
         # workspace is. Never torch a completed implement run over a
@@ -776,7 +879,7 @@ def execute(task: dict) -> dict:
         # run (Node pauses the item with the reason) — no green, no push.
         check_note = run_checks(ws, log)
         publish_screenshots(ws, item)
-        artifacts = finalize_branch(ws, item, branch)
+        artifacts = finalize_branch(ws, item, branch, conflicted)
         if scope["mode"] == "fix":
             artifacts.update(fix_diff_report(ws, scope.get("base_sha")))
         # finalize_branch returns branch/files_changed, not an artifact_md, so

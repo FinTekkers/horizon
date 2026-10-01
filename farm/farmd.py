@@ -653,7 +653,13 @@ async def conflicts_resolve(request: Request):
     one to review only what that resolution changed — so this handler is no
     longer LLM-free. The request and response contracts are unchanged; a
     scoped success just carries three extra keys (mode/resolution/review) that
-    this route already passes straight through."""
+    this route already passes straight through.
+
+    HZ-188: one run per item. item_lock is tried once, before the thread
+    starts; if a resolver or an implement/review step already owns the item's
+    worktree this answers 409 resolve_in_progress and starts nothing. The
+    lock is released when the thread returns (or raises), and by the kernel
+    if farmd itself dies."""
     body = await request.json()
     if state["status"] != "running":
         return JSONResponse({"error": f"farm_not_running (status={state['status']})"}, status_code=409)
@@ -662,9 +668,12 @@ async def conflicts_resolve(request: Request):
     if not item_id or not repo:
         return JSONResponse({"error": "item.id and item.repo are required"}, status_code=400)
     try:
-        result = await asyncio.to_thread(
-            conflict_resolver.resolve, repo, item_id, body.get("branch"), body.get("base_branch")
-        )
+        with workspaces.item_lock(repo, item_id, wait_s=0):
+            result = await asyncio.to_thread(
+                conflict_resolver.resolve, repo, item_id, body.get("branch"), body.get("base_branch")
+            )
+    except workspaces.ItemBusy:
+        return JSONResponse({"error": "resolve_in_progress"}, status_code=409)
     except Exception as exc:
         print(f"farmd: conflict resolution for {item_id} failed: {exc}", flush=True)
         return JSONResponse({"error": str(exc)[:300]}, status_code=500)
