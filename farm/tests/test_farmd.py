@@ -71,6 +71,65 @@ def running_farm():
             f.unlink(missing_ok=True)
 
 
+# ---- HZ-190: a running farm under test never reaches the host's tmux ----
+
+
+class _StopWatchdog(Exception):
+    pass
+
+
+def test_running_farm_never_reaches_real_tmux(running_farm, fake_tmux, monkeypatch):
+    """running_farm puts farmd in exactly the state its watchdog revives
+    sessions for — the incident's farm-pm-fintekkers / farm-concierge-
+    fintekkers respawns. Drive one real watchdog pass on this thread and
+    prove both launches land in FakeTmux and the real _tmux never runs."""
+    real_tmux_calls = []
+
+    def real_subprocess_run(argv, *args, **kwargs):
+        real_tmux_calls.append(argv)
+        raise AssertionError(f"real tmux reached: {argv!r}")
+
+    # tmux_mgr's own `subprocess` binding is used only by the real _tmux, so
+    # this catches a bypassed fake without touching the shared module.
+    monkeypatch.setattr(tmux_mgr, "subprocess", SimpleNamespace(run=real_subprocess_run))
+
+    # time.sleep is shared with farmd's live background threads: only this
+    # thread's second sleep stops the loop; every other caller really sleeps.
+    test_thread = threading.current_thread()
+    real_sleep = time.sleep
+    slept = []
+
+    def one_pass_sleep(seconds):
+        if threading.current_thread() is not test_thread:
+            return real_sleep(seconds)
+        if slept:
+            raise _StopWatchdog
+        slept.append(seconds)
+
+    monkeypatch.setattr(farmd.time, "sleep", one_pass_sleep)
+    monkeypatch.setattr(farmd.farm_config, "FARM_WA_ENABLED", True)
+
+    with pytest.raises(_StopWatchdog):
+        farmd._watchdog()
+
+    launched = {call[call.index("-s") + 1]: call[-1] for call in fake_tmux.calls if call[0] == "new-session"}
+    # Positive control: the revive branch really ran, for both sessions.
+    assert {"farm-pm-fintekkers", "farm-concierge-fintekkers"} <= set(launched)
+    assert "HORIZON_URL=http://127.0.0.1:9 " in launched["farm-pm-fintekkers"]
+    assert real_tmux_calls == []
+
+
+def test_farmd_import_did_not_adopt_host_state():
+    """Importing farmd runs _adopt_existing() against STATE_DIR. Under an
+    inherited production FARM_HOME that adopted the real running FinTekkers
+    project for the whole run (and pointed the dispatcher at the real queue)."""
+    farm_home = Path(os.environ["FARM_HOME"])
+    assert farm_home.name.startswith("horizon-farm-test-")
+    assert farmd.STATE_FILE.is_relative_to(farm_home)
+    assert farmd.QUEUE_DIR.is_relative_to(farm_home)
+    assert farmd.state["status"] != "running"
+
+
 def test_steps_run_stamps_the_repos_rules_into_the_task_payload(running_farm):
     task = make_task(101, item_id="HZ-9", step_index=9)
     task["item"]["repo"] = "FinTekkers/ui-service"
@@ -1058,6 +1117,7 @@ def _serve_fake_horizon(fail_status: int = 200, snapshot_status: int = 200):
     return server, f"http://127.0.0.1:{server.server_port}", requests
 
 
+@pytest.mark.real_tmux
 def test_reconcile_end_to_end_over_real_tmux_and_http_reports_a_dead_run(queue_dirs, monkeypatch):
     """No mocks on tmux_mgr or httpx: the tmux session named by the task file
     is genuinely never created (a real `tmux has-session` lookup proves it's
@@ -1083,6 +1143,7 @@ def test_reconcile_end_to_end_over_real_tmux_and_http_reports_a_dead_run(queue_d
     assert fail_reqs[0]["body"]["reason"] == "unreachable"  # already in AUTO_RETRY_REASONS
 
 
+@pytest.mark.real_tmux
 def test_reconcile_end_to_end_over_real_tmux_never_touches_a_real_live_session(queue_dirs, monkeypatch):
     """The other half of the same wiring, with a genuinely live tmux session
     this time — proves the real `tmux has-session` short-circuits before any
@@ -1184,6 +1245,7 @@ def test_runs_alive_never_leaks_a_tmux_session_name(queue_dirs):
 # specifically — the Node reconciliation sweep's own proof-of-life check.
 
 
+@pytest.mark.real_tmux
 def test_runs_alive_end_to_end_over_real_tmux_reports_false_for_a_claimed_run_with_no_session(queue_dirs):
     """No monkeypatch on tmux_mgr: a claimed task file names a tmux session
     that was genuinely never created — a real `tmux has-session` lookup, not
@@ -1199,6 +1261,7 @@ def test_runs_alive_end_to_end_over_real_tmux_reports_false_for_a_claimed_run_wi
     assert res.json() == {"alive": {"501": False}}
 
 
+@pytest.mark.real_tmux
 def test_runs_alive_end_to_end_over_real_tmux_reports_true_for_a_claimed_run_with_a_live_session(queue_dirs):
     """The other half of the same wiring: a genuinely live tmux session this
     time, proving the real `tmux has-session` call — not a stub — is what
