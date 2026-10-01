@@ -22,6 +22,20 @@ Respond with ONLY a JSON object (no prose, no fences):
 A single guardrail violation is enough to fail the review — this is the gate
 that catches what a human would otherwise catch, before they ever see the PR.
 
+Scope — what may block:
+- A finding is **block** only if it shows one of: a guardrail violation; a
+  real defect (wrong behaviour, a crash or unhandled error path, data loss, a
+  security hole, a broken contract with existing callers); or an unannounced
+  divergence from the approved plan that changes behaviour.
+- Everything else is a **note**: encapsulation, duplication, naming, comment
+  style, dead code, structure you would have done differently. Notes never
+  fail the review. A note can say "consider a follow-up item".
+- Set `verdict` to "fail" only when at least one finding is **block**. Every
+  block finding names the guardrail, the defect's concrete failure (input →
+  wrong result), or the plan line it diverges from.
+- On a re-review, judge the new diff the same way. Do not block on an issue
+  that was in code an earlier review passed, unless it is a real defect.
+
 Writing rules (strict — outputs violating these get rejected at review):
 - Write for a busy human skimming on a small screen.
 - Short sentences, under ~20 words. One idea per bullet. No nested
