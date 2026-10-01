@@ -97,10 +97,14 @@ def _persist_state() -> None:
 
 def _pid_farm_home(pid: int) -> Path | None:
     """The FARM_HOME process `pid` runs under (config.py's default when it
-    has none), or None if its environment cannot be read."""
+    has none), or None if its environment cannot be read. An empty environ
+    is unreadable too, not "no FARM_HOME": a process still inside execve,
+    before its new env block is mapped, reads as zero bytes."""
     try:
         raw = Path(f"/proc/{pid}/environ").read_bytes()
     except OSError:
+        return None
+    if not raw:
         return None
     for entry in raw.split(b"\0"):
         if entry.startswith(b"FARM_HOME=") and len(entry) > len(b"FARM_HOME="):

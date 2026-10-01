@@ -118,6 +118,14 @@ def legacy_pm(fake_tmux):
             env["FARM_HOME"] = home
         proc = subprocess.Popen(["sleep", "120"], env=env)
         procs.append(proc)
+        # Popen returns once execve has released the parent, before the
+        # child's env block is mapped: until then /proc/<pid>/environ reads
+        # empty, which farmd rightly treats as unreadable. Wait it out
+        # (bounded; time.sleep may be patched, so yield instead).
+        environ, deadline = Path(f"/proc/{proc.pid}/environ"), time.monotonic() + 10
+        while not environ.read_bytes():
+            assert time.monotonic() < deadline, f"sleep {proc.pid} never mapped its environment"
+            os.sched_yield()
         fake_tmux.sessions.add(name)
         fake_tmux.pane_pids[name] = [proc.pid]
         return name
@@ -573,3 +581,11 @@ def test_no_secret_reaches_the_pm_steps_output_or_its_log_target(pm_run, farm, f
     assert sentinel not in out.out and sentinel not in out.err
     assert sentinel not in new_sessions(fake_tmux)["farm-run-hz-1-s9-a1"]  # env -u, never forwarded
     assert pipe_targets(fake_tmux) == {"farm-run-hz-1-s9-a1": f"cat >> '{LOGS_DIR / 'farm-run-hz-1-s9-a1.log'}'"}
+
+
+def test_an_empty_pane_environ_counts_as_unreadable_not_the_default_home(monkeypatch):
+    """A pane still inside execve, before its new env block is mapped, reads
+    zero environ bytes. That is "unknown", never config.py's default
+    FARM_HOME — which would wrongly disown this farm's own legacy PM."""
+    monkeypatch.setattr(farmd, "Path", lambda path: SimpleNamespace(read_bytes=lambda: b""))
+    assert farmd._pid_farm_home(4242) is None
