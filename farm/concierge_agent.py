@@ -150,6 +150,11 @@ def fetch_snapshot(farmd_url: str = FARMD) -> dict:
 def _item_line(item: dict) -> str:
     step = item.get("currentStep") or {}
     label = step.get("label")
+    # Abandoned items keep their cursor, so one abandoned at a gate still has a
+    # gate as its current step. It is not waiting on anyone: say so first, or
+    # the concierge offers dead items as approvals (seen 2026-10-01).
+    if item.get("abandoned_at"):
+        return f"- {item['id']} [{item.get('priority')}] {item.get('title')} — abandoned"
     if item.get("activeRun"):
         status = f'agent working on "{label}"' if label else "step running now"
     elif item.get("paused"):
