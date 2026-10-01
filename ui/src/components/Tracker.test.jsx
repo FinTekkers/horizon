@@ -9,7 +9,7 @@
 // success metric 11 — not just the domain module's filter logic.
 
 import { expect, test, vi } from 'vitest'
-import { render, fireEvent, cleanup } from '@testing-library/react'
+import { render, fireEvent, cleanup, waitFor } from '@testing-library/react'
 import { afterEach } from 'vitest'
 
 vi.mock('../api', () => ({
@@ -21,7 +21,7 @@ vi.mock('../api', () => ({
 }))
 
 import Tracker from './Tracker'
-import { ACCEPT_GATE_INDEX } from '../../../domain/js/lifecycle.js'
+import { ACCEPT_GATE_INDEX, IMPLEMENT_STEP_INDEX, REVIEW_STEP_INDEX } from '../../../domain/js/lifecycle.js'
 // HZ-132: reason ids come from domain/reasons.json via the binding, never typed
 // here — a second hand-copy of the vocabulary inside ui/src is exactly the
 // drift this repo now forbids.
@@ -687,4 +687,79 @@ test('the abandoned reason stays plain text', () => {
   })
   expect(container.textContent).toContain('went **nowhere**')
   expect(container.querySelector('.tile__value strong')).toBeNull()
+})
+
+// ---- HZ-185: forward a rejected review to Accept the code ----
+
+function renderWithForward(item, onForwardToAccept) {
+  return render(
+    <Tracker
+      item={item}
+      onBack={noop}
+      onApprove={noop}
+      onApproveWithComments={noop}
+      onReject={noop}
+      onResolveConflicts={noop}
+      onForwardToAccept={onForwardToAccept}
+      onTogglePause={noop}
+      onRestartPhase={noop}
+      onSetPersona={noop}
+      onAbandon={noop}
+    />,
+  )
+}
+
+const rejectedItem = { ...baseItem, cursor: IMPLEMENT_STEP_INDEX, reviewRejected: true }
+
+test('the forward button disables while its request runs, and two clicks make one call (R11)', async () => {
+  let settle
+  const onForward = vi.fn(() => new Promise((resolve) => (settle = resolve)))
+  const { getByRole } = renderWithForward(rejectedItem, onForward)
+  const button = getByRole('button', { name: 'Forward to Accept the code' })
+
+  fireEvent.click(button)
+  fireEvent.click(button)
+
+  expect(onForward).toHaveBeenCalledTimes(1)
+  expect(onForward).toHaveBeenCalledWith('T-1')
+  expect(button.disabled).toBe(true)
+  expect(button.getAttribute('aria-busy')).toBe('true')
+
+  // A 409 settles the request: the button comes back and says why.
+  settle({ error: 'branch_moved' })
+  await waitFor(() => expect(button.disabled).toBe(false))
+  expect(getByRole('alert').textContent).toMatch(/moved past the reviewed commit/)
+  fireEvent.click(button)
+  expect(onForward).toHaveBeenCalledTimes(2)
+})
+
+test('a failed forward request re-enables the button too', async () => {
+  const onForward = vi.fn(() => Promise.reject(new Error('network down')))
+  const { getByRole } = renderWithForward(rejectedItem, onForward)
+  const button = getByRole('button', { name: 'Forward to Accept the code' })
+  fireEvent.click(button)
+  await waitFor(() => expect(button.disabled).toBe(false))
+  expect(getByRole('alert').textContent).toMatch(/did not go through/)
+})
+
+test('the forward button is absent when the latest review did not reject (O2)', () => {
+  const { queryByRole } = renderWithForward({ ...rejectedItem, reviewRejected: false }, vi.fn())
+  expect(queryByRole('button', { name: 'Forward to Accept the code' })).toBeNull()
+})
+
+test("the Accept gate shows who forwarded it and the forwarded run's findings, not the newest review (R12)", () => {
+  const { container, getByText } = renderWithForward(
+    {
+      ...baseItem,
+      cursor: ACCEPT_GATE_INDEX,
+      stepOutputs: { [REVIEW_STEP_INDEX]: { output: 'newer', attempt: 2, artifact: '## Newest review\n- not this one', attemptCount: 2 } },
+      forwardedReview: { runId: 41, by: 'Alice', sha: 'abc', attempt: 1, artifact: '## Code review\n- **unchecked input** in x.js' },
+    },
+    vi.fn(),
+  )
+  expect(getByText(/Forwarded by Alice with the failing review \(run #41\)/)).toBeTruthy()
+  const body = container.querySelector('.step-card__forwarded-body')
+  expect(body.textContent).toContain('unchecked input in x.js')
+  expect(body.querySelector('strong').textContent).toBe('unchecked input')
+  expect(container.querySelector('.step-card__forwarded').textContent).not.toContain('Newest review')
 })

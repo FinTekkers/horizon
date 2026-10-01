@@ -3,15 +3,18 @@ that a dispatched step completes and produces the branch/artifact the Node
 side needs to advance the item ("agents push tasks forward")."""
 
 import json
+import os
+import re
 import subprocess
 import sys
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 
 import pytest
 
-from farm import step_agent
+from farm import checks, step_agent
 from farm.agent_runner import AgentError, AgentExhaustedError
 from farm.personas import DEFAULT_PERSONAS, PERSONA_DIR, PERSONAS
 from farm.step_agent import (
@@ -122,19 +125,20 @@ def test_implement_step_fails_when_checks_fail(tmp_path, monkeypatch):
     monkeypatch.setattr(step_agent, "ensure_item_worktree", lambda repo, item_id: ws)
     monkeypatch.setenv("FARM_CHECK_CMD", "exit 1")
 
-    try:
+    with pytest.raises(RuntimeError, match="repo checks failed"):
         execute(make_task(11, "Specialist agent implements", repo="acme/demo"))
-        raised = False
-    except Exception as exc:
-        raised = True
-        assert "repo checks failed" in str(exc)
-    assert raised, "failing checks must fail the step"
 
-    # Nothing was pushed: guardrails are enforced before the push, not after.
-    branches = subprocess.run(
-        ["git", "--git-dir", str(origin), "branch", "--list"], capture_output=True, text=True, check=True
+    # Guardrails are enforced before the finalize push, not after: the only
+    # thing pushed is a WIP checkpoint of the work (HZ-184), never the
+    # finished commit a PR is opened from.
+    log_text = subprocess.run(
+        ["git", "--git-dir", str(origin), "log", "--format=%s", "horizon/t-1"],
+        capture_output=True,
+        text=True,
+        check=True,
     ).stdout
-    assert "horizon/t-1" not in branches
+    assert log_text.splitlines()[0] == f"T-1: {step_agent.CHECKPOINT_MARKER} (Horizon Eng agent)"
+    assert "T-1: Test item (Horizon Eng agent)" not in log_text
 
 
 # ---- screenshot publishing (HZ-63) ----
@@ -1384,26 +1388,6 @@ def test_review_step_code_pass_exhausting_its_retry_still_cancels_the_run(tmp_pa
     assert all("QA Reviewer agent" not in c.get("append_system", "") for c in calls)
 
 
-def test_implement_step_fails_when_checks_fail(tmp_path, monkeypatch):
-    ws, origin = make_git_workspace(tmp_path)
-    monkeypatch.setattr(step_agent, "ensure_item_worktree", lambda repo, item_id: ws)
-    monkeypatch.setenv("FARM_CHECK_CMD", "exit 1")
-
-    try:
-        execute(make_task(11, "Specialist agent implements", repo="acme/demo"))
-        raised = False
-    except Exception as exc:
-        raised = True
-        assert "repo checks failed" in str(exc)
-    assert raised, "failing checks must fail the step"
-
-    # Nothing was pushed: guardrails are enforced before the push, not after.
-    branches = subprocess.run(
-        ["git", "--git-dir", str(origin), "branch", "--list"], capture_output=True, text=True, check=True
-    ).stdout
-    assert "horizon/t-1" not in branches
-
-
 # ---- checkpoint salvage on turn/time exhaustion (HZ-31) ----
 # A run that hits its max-turns/timeout cap must not lose its uncommitted
 # work: the next attempt's prepare_branch() would otherwise scrub the
@@ -1462,25 +1446,365 @@ def test_implement_step_does_not_checkpoint_a_kill_before_any_edit(tmp_path, mon
     assert "horizon/t-1" not in branches
 
 
-def test_implement_step_does_not_salvage_after_checks_fail(tmp_path, monkeypatch):
-    """run_agent succeeding and run_checks failing is a different failure
-    mode than run_agent raising — the checks-failed path must not push
-    anything, checkpoint or otherwise (guardrail: checks still gate finalize
-    exactly as before salvage existed)."""
+def origin_body(origin, ref="horizon/t-1"):
+    return subprocess.run(
+        ["git", "--git-dir", str(origin), "log", "-1", "--format=%b", ref],
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout
+
+
+def finished_run(ws, filename="fake_implementation.txt", text="finished work\n"):
+    """A run_agent that completes normally after writing one file."""
+
+    def _fake(prompt, **kwargs):
+        if filename:
+            (ws / filename).write_text(text)
+        return {"result": '{"summary": "built it"}'}
+
+    return _fake
+
+
+def test_checks_failure_after_finished_run_pushes_checkpoint_and_next_attempt_resumes(tmp_path, monkeypatch):
+    """HZ-184 metric 1 + guardrail "never push a checkpoint as if it passed":
+    the finished work is checkpointed with what failed, finalize and the
+    screenshot publish never run, and the next attempt starts on that work
+    with the failure in its prompt."""
     ws, origin = make_git_workspace(tmp_path)
     monkeypatch.setattr(step_agent, "ensure_item_worktree", lambda repo, item_id: ws)
-    monkeypatch.setenv("FARM_CHECK_CMD", "exit 1")
-    spy = []
-    monkeypatch.setattr(step_agent, "_salvage_checkpoint", lambda *a, **k: spy.append(1))
+    monkeypatch.setenv("FARM_CHECK_CMD", "echo 'ok 1 - fine'; echo 'not ok 2 - widget renders'; echo '# fail 1'; exit 1")
+    monkeypatch.setattr(step_agent, "run_agent", finished_run(ws))
+    spies = []
+    monkeypatch.setattr(step_agent, "finalize_branch", lambda *a, **k: spies.append("finalize_branch"))
+    monkeypatch.setattr(step_agent, "publish_screenshots", lambda *a, **k: spies.append("publish_screenshots"))
 
-    with pytest.raises(RuntimeError, match="repo checks failed"):
+    with pytest.raises(step_agent.CheckFailure, match="repo checks failed"):
         execute(make_task(11, "Specialist agent implements", repo="acme/demo"))
 
-    assert spy == []
-    branches = subprocess.run(
-        ["git", "--git-dir", str(origin), "branch", "--list"], capture_output=True, text=True, check=True
+    assert spies == []
+    assert origin_log(origin).splitlines()[0] == f"T-1: {step_agent.CHECKPOINT_MARKER} (Horizon Eng agent)"
+    body = origin_body(origin)
+    assert body.startswith("cause: checks-failed")
+    assert "not ok 2 - widget renders" in body
+    assert "# fail 1" in body  # a '#' line survives the commit message cleanup
+
+    # Attempt 2: checks now pass. Leftovers in the worktree are scrubbed, but
+    # attempt 1's work is there before the agent starts — from the checkpoint.
+    monkeypatch.undo()
+    monkeypatch.setattr(step_agent, "ensure_item_worktree", lambda repo, item_id: ws)
+    (ws / "fake_implementation.txt").unlink()
+    seen = {}
+
+    def attempt_2(prompt, **kwargs):
+        seen["prompt"] = prompt
+        seen["file"] = (ws / "fake_implementation.txt").read_text()
+        (ws / "more.txt").write_text("the fix\n")
+        return {"result": '{"summary": "fixed the widget"}'}
+
+    monkeypatch.setattr(step_agent, "run_agent", attempt_2)
+    result = execute(make_task(11, "Specialist agent implements", repo="acme/demo"))
+
+    assert seen["file"] == "finished work\n"
+    assert "not ok 2 - widget renders" in seen["prompt"]
+    assert "holds the previous attempt's complete work" in seen["prompt"]
+    assert result["artifacts"]["branch"] == "horizon/t-1"
+
+
+def test_checks_failure_with_no_edits_still_checkpoints_the_failure(tmp_path, monkeypatch):
+    """A failure caused by main alone (HZ-157): no diff, but the next attempt
+    must still learn what failed — so the checkpoint is committed empty."""
+    ws, origin = make_git_workspace(tmp_path)
+    monkeypatch.setattr(step_agent, "ensure_item_worktree", lambda repo, item_id: ws)
+    monkeypatch.setenv("FARM_CHECK_CMD", "echo 'FAILED tests/test_main.py::test_broken_on_main'; exit 1")
+    monkeypatch.setattr(step_agent, "run_agent", finished_run(ws, filename=None))
+
+    with pytest.raises(step_agent.CheckFailure):
+        execute(make_task(11, "Specialist agent implements", repo="acme/demo"))
+
+    assert step_agent.CHECKPOINT_MARKER in origin_log(origin).splitlines()[0]
+    body = origin_body(origin)
+    assert body.startswith("cause: checks-failed")
+    assert "FAILED tests/test_main.py::test_broken_on_main" in body
+    changed = subprocess.run(
+        ["git", "--git-dir", str(origin), "diff", "--name-only", "main", "horizon/t-1"],
+        capture_output=True,
+        text=True,
+        check=True,
     ).stdout
-    assert "horizon/t-1" not in branches
+    assert changed == ""
+
+
+def test_exhaustion_checkpoint_records_its_cause(tmp_path, monkeypatch):
+    ws, origin = make_git_workspace(tmp_path)
+    monkeypatch.setattr(step_agent, "ensure_item_worktree", lambda repo, item_id: ws)
+
+    def _fake(prompt, **kwargs):
+        (ws / "fake_implementation.txt").write_text("partial work\n")
+        raise AgentError("claude timed out after 2700s")
+
+    monkeypatch.setattr(step_agent, "run_agent", _fake)
+    with pytest.raises(AgentError):
+        execute(make_task(11, "Specialist agent implements", repo="acme/demo"))
+
+    assert origin_body(origin).strip() == "cause: exhausted"
+
+
+def test_check_output_secrets_never_reach_the_commit_body_or_log(tmp_path, monkeypatch, capsys):
+    """A farm secret the scrubbed check env doesn't even carry, printed by the
+    check from a file, is redacted from everything that leaves the run."""
+    ws, origin = make_git_workspace(tmp_path)
+    secret = "ghp_" + "Z9" * 18
+    secret_file = tmp_path / "leak"
+    secret_file.write_text(secret)
+    monkeypatch.setattr(step_agent, "ensure_item_worktree", lambda repo, item_id: ws)
+    monkeypatch.setenv("GITHUB_TOKEN", secret)
+    monkeypatch.setattr(checks, "_check_env", lambda: {k: v for k, v in os.environ.items() if k != "GITHUB_TOKEN"})
+    monkeypatch.setenv("FARM_CHECK_CMD", f"echo \"not ok 1 - auth with $(cat {secret_file})\"; exit 1")
+    monkeypatch.setattr(step_agent, "run_agent", finished_run(ws))
+
+    with pytest.raises(step_agent.CheckFailure) as err:
+        execute(make_task(11, "Specialist agent implements", repo="acme/demo"))
+
+    assert secret not in str(err.value) and "not ok 1 - auth with [redacted]" in str(err.value)
+    assert secret not in err.value.digest
+    assert secret not in origin_body(origin) and "[redacted]" in origin_body(origin)
+    assert secret not in capsys.readouterr().out
+
+
+def make_checkpoint(ws, origin, *, cause="checks-failed", detail="not ok 7 - x", path="wip.txt", text="wip\n"):
+    """Pushes a checkpoint commit to origin/horizon/t-1 the way salvage writes
+    it (cause=None: a pre-HZ-184 checkpoint, with no body at all) and returns
+    its sha."""
+    git(ws, "checkout", "-B", "horizon/t-1", "origin/main")
+    (ws / path).write_text(text)
+    git(ws, "add", "-A")
+    msg = ["-m", f"T-1: {step_agent.CHECKPOINT_MARKER} (Horizon Eng agent)"]
+    if cause:
+        msg += ["-m", f"cause: {cause}\n\n{detail}"]
+    git(ws, "commit", *msg)
+    git(ws, "push", "-f", "origin", "horizon/t-1")
+    git(ws, "checkout", "main")
+    return subprocess.run(
+        ["git", "--git-dir", str(origin), "rev-parse", "horizon/t-1"], capture_output=True, text=True, check=True
+    ).stdout.strip()
+
+
+def advance_main(tmp_path, origin, path="main_fix.txt", text="fix on main\n"):
+    other = tmp_path / f"other-{path.replace('/', '_')}"
+    subprocess.run(["git", "clone", "--quiet", str(origin), str(other)], check=True, capture_output=True)
+    git(other, "config", "user.email", "other@example.com")
+    git(other, "config", "user.name", "Other")
+    (other / path).write_text(text)
+    git(other, "add", "-A")
+    git(other, "commit", "-m", f"main: {path}")
+    git(other, "push", "origin", "main")
+
+
+def head_contains_main(ws):
+    return subprocess.run(
+        ["git", "-C", str(ws), "merge-base", "--is-ancestor", "origin/main", "HEAD"], capture_output=True
+    ).returncode == 0
+
+
+ITEM = {"id": "T-1", "title": "Test item", "repo": "acme/demo"}
+
+
+def test_checkpoint_rebases_onto_advanced_main(tmp_path, monkeypatch):
+    ws, origin = make_git_workspace(tmp_path)
+    checkpoint = make_checkpoint(ws, origin)
+    advance_main(tmp_path, origin)
+
+    prepared = step_agent.prepare_branch(ws, ITEM, rebase_checkpoint=True)
+
+    assert prepared.lease_sha == checkpoint
+    assert head_contains_main(ws)
+    assert (ws / "main_fix.txt").exists() and (ws / "wip.txt").exists()
+    assert step_agent._checkpoint_cause(ws) == ("checks-failed", "not ok 7 - x")
+    assert "rebased onto current origin/main" in prepared.note
+
+    # The rebased checkpoint finalizes over the remote one it replaced: the
+    # lease names exactly the sha prepare_branch checked out.
+    monkeypatch.setattr(step_agent, "ensure_item_worktree", lambda repo, item_id: ws)
+    monkeypatch.setattr(step_agent, "run_agent", finished_run(ws, "done.txt"))
+    result = execute(make_task(11, "Specialist agent implements", repo="acme/demo"))
+    assert result["artifacts"]["branch"] == "horizon/t-1"
+    shown = subprocess.run(
+        ["git", "--git-dir", str(origin), "show", "horizon/t-1:main_fix.txt"], capture_output=True, text=True, check=True
+    ).stdout
+    assert shown == "fix on main\n"
+
+
+def test_conflicting_rebase_aborts_and_resumes_unrebased_with_note(tmp_path):
+    ws, origin = make_git_workspace(tmp_path)
+    checkpoint = make_checkpoint(ws, origin, path="README.md", text="# checkpoint's readme\n")
+    advance_main(tmp_path, origin, path="README.md", text="# main's readme\n")
+
+    prepared = step_agent.prepare_branch(ws, ITEM, rebase_checkpoint=True)
+
+    head = subprocess.run(["git", "-C", str(ws), "rev-parse", "HEAD"], capture_output=True, text=True).stdout.strip()
+    assert head == checkpoint == prepared.lease_sha
+    assert not head_contains_main(ws)
+    assert not (ws / ".git" / "rebase-merge").exists() and not (ws / ".git" / "rebase-apply").exists()
+    assert (ws / "README.md").read_text() == "# checkpoint's readme\n"
+    assert "could not be rebased" in prepared.note and "unrebased" in prepared.note
+
+
+def test_checkpoint_whose_parent_is_a_merge_of_main_takes_a_known_path(tmp_path):
+    """HZ-188's send-back merges main into the branch, so a checkpoint can sit
+    on a merge commit. Rebase linearizes it; either way no work is lost."""
+    ws, origin = make_git_workspace(tmp_path)
+    git(ws, "checkout", "-B", "horizon/t-1", "origin/main")
+    (ws / "feature.txt").write_text("feature\n")
+    git(ws, "add", "-A")
+    git(ws, "commit", "-m", "T-1: feature")
+    git(ws, "push", "-f", "origin", "horizon/t-1")
+    advance_main(tmp_path, origin, path="m1.txt")
+    git(ws, "fetch", "origin")
+    git(ws, "merge", "--no-edit", "origin/main")
+    (ws / "wip.txt").write_text("wip\n")
+    git(ws, "add", "-A")
+    git(ws, "commit", "-m", f"T-1: {step_agent.CHECKPOINT_MARKER} (Horizon Eng agent)", "-m", "cause: exhausted")
+    git(ws, "push", "-f", "origin", "horizon/t-1")
+    git(ws, "checkout", "main")
+    advance_main(tmp_path, origin, path="m2.txt")
+
+    prepared = step_agent.prepare_branch(ws, ITEM, rebase_checkpoint=True)
+
+    assert "rebased onto current origin/main" in prepared.note
+    assert head_contains_main(ws)
+    for path in ("feature.txt", "wip.txt", "m1.txt", "m2.txt"):
+        assert (ws / path).exists(), path
+
+
+def test_prepare_branch_never_rebases_without_being_asked(tmp_path):
+    """The fix-scope path (HZ-182): base_sha..HEAD must stay a valid diff."""
+    ws, origin = make_git_workspace(tmp_path)
+    checkpoint = make_checkpoint(ws, origin)
+    advance_main(tmp_path, origin)
+
+    prepared = step_agent.prepare_branch(ws, ITEM)
+
+    head = subprocess.run(["git", "-C", str(ws), "rev-parse", "HEAD"], capture_output=True, text=True).stdout.strip()
+    assert head == checkpoint and prepared.note == ""
+
+
+def test_fix_pass_hears_the_last_check_failure_without_a_continue_note(tmp_path, monkeypatch):
+    ws, origin = make_git_workspace(tmp_path)
+    checkpoint = make_checkpoint(ws, origin, detail="not ok 9 - the fix broke this")
+    advance_main(tmp_path, origin)
+    monkeypatch.setattr(step_agent, "ensure_item_worktree", lambda repo, item_id: ws)
+    seen = {}
+
+    def _fake(prompt, **kwargs):
+        seen["prompt"] = prompt
+        seen["head"] = subprocess.run(["git", "-C", str(ws), "rev-parse", "HEAD"], capture_output=True, text=True).stdout.strip()
+        (ws / "fix.txt").write_text("fix\n")
+        return {"result": '{"summary": "fixed"}'}
+
+    monkeypatch.setattr(step_agent, "run_agent", _fake)
+    task = make_task(11, "Specialist agent implements", repo="acme/demo")
+    task["scope"] = {"mode": "fix", "base_sha": checkpoint, "findings": []}
+    execute(task)
+
+    assert seen["head"] == checkpoint  # not rebased
+    assert "not ok 9 - the fix broke this" in seen["prompt"]
+    assert "Do not discard it or restart" not in seen["prompt"]
+
+
+def test_resume_note_names_last_failure_and_preserved_work(tmp_path):
+    ws, origin = make_git_workspace(tmp_path)
+    make_checkpoint(ws, origin, detail="not ok 3 - parser\n# fail 1")
+    step_agent.prepare_branch(ws, ITEM)
+
+    note = step_agent._checkpoint_resume_note(ws)
+
+    assert "repo's checks failed" in note
+    assert "not ok 3 - parser\n# fail 1" in note
+    assert "holds the previous attempt's complete work" in note
+    assert "wip.txt" in note
+
+
+def test_a_pre_hz184_checkpoint_with_no_body_keeps_todays_note_and_is_rebased(tmp_path):
+    ws, origin = make_git_workspace(tmp_path)
+    make_checkpoint(ws, origin, cause=None)
+    advance_main(tmp_path, origin)
+
+    prepared = step_agent.prepare_branch(ws, ITEM, rebase_checkpoint=True)
+    note = step_agent._checkpoint_resume_note(ws)
+
+    assert "rebased onto current origin/main" in prepared.note
+    assert "ran out of turns/time" in note
+    assert "checks failed" not in note
+
+
+def test_push_rejected_when_remote_moved_after_prepare(tmp_path):
+    """The hub fetch shares refs/remotes/origin/* across every item's
+    worktree: another item's fetch moving origin/horizon/t-1 after this
+    attempt's prepare_branch must not turn a stale push into a valid lease."""
+    ws, origin = make_git_workspace(tmp_path)
+    git(ws, "push", "origin", "HEAD:horizon/t-1")
+    prepared = step_agent.prepare_branch(ws, ITEM)
+
+    race = tmp_path / "race"
+    subprocess.run(["git", "clone", "--quiet", "-b", "horizon/t-1", str(origin), str(race)], check=True, capture_output=True)
+    git(race, "config", "user.email", "race@example.com")
+    git(race, "config", "user.name", "Racer")
+    (race / "race.txt").write_text("someone else's push\n")
+    git(race, "add", "-A")
+    git(race, "commit", "-m", "concurrent push")
+    git(race, "push", "origin", "horizon/t-1")
+    git(ws, "fetch", "origin")  # another item's fetch, through the shared refs
+
+    (ws / "mine.txt").write_text("mine\n")
+    with pytest.raises(RuntimeError):
+        step_agent.finalize_branch(ws, ITEM, prepared.branch, lease_sha=prepared.lease_sha)
+    assert "concurrent push" in origin_log(origin)
+
+
+def test_main_reports_a_failure_at_line_900_end_to_end(tmp_path, monkeypatch):
+    """HZ-184 metric 2 across the farm boundary: the error main() posts holds
+    the failure printed after 899 passing lines, and the counts."""
+    ws, origin = make_git_workspace(tmp_path)
+    monkeypatch.setattr(step_agent, "ensure_item_worktree", lambda repo, item_id: ws)
+    monkeypatch.setenv(
+        "FARM_CHECK_CMD",
+        "for i in $(seq 1 899); do echo \"ok $i - passing test number $i\"; done; "
+        "echo 'not ok 900 - x'; echo '# pass 899'; echo '# fail 1'; exit 1",
+    )
+    monkeypatch.setattr(step_agent, "run_agent", finished_run(ws))
+    task = make_task(11, "Specialist agent implements", repo="acme/demo")
+    task_file = tmp_path / "task.json"
+    task_file.write_text(json.dumps(task))
+    monkeypatch.setattr(sys, "argv", ["step_agent", "--task", str(task_file)])
+    posted = {}
+
+    def fake_post(url, json=None, timeout=None):
+        posted["json"] = json
+
+        class _Resp:
+            pass
+
+        return _Resp()
+
+    monkeypatch.setattr(step_agent.httpx, "post", fake_post)
+
+    step_agent.main()
+
+    error = posted["json"]["error"]
+    assert posted["json"]["ok"] is False and "artifacts" not in posted["json"]
+    assert error.startswith("repo checks failed (sh -c ")
+    assert "not ok 900 - x" in error and "# pass 899" in error and "# fail 1" in error
+    assert len(error) <= step_agent.ERROR_MAX_CHARS
+
+
+def test_error_cap_fits_the_servers_fail_route_limit():
+    """Over the route's maxLength, Fastify rejects the whole report with a 400
+    and the failure is lost to a watchdog timeout."""
+    app_js = (Path(__file__).resolve().parents[2] / "server" / "src" / "app.js").read_text()
+    route = app_js[app_js.index("'/api/farm/steps/:runId/fail'"):]
+    limit = int(re.search(r"error: \{ type: 'string', maxLength: (\d+) \}", route).group(1))
+    assert step_agent.ERROR_MAX_CHARS <= limit
 
 
 def test_salvage_never_fires_for_planner_steps(monkeypatch):
@@ -2045,6 +2369,125 @@ def test_an_exhaustion_inside_the_retry_is_reported_with_reason_turn_cap(tmp_pat
 
     assert posted["json"]["ok"] is False
     assert posted["json"]["reason"] == "turn_cap"
+
+
+# ---- HZ-157: a repaired reply's note on both of this caller's surfaces ----
+# step_agent is the caller with a real artifact, so both shapes are asserted on
+# both surfaces here. The implement path is covered separately: it passes no
+# retry, which is what makes its tier rules different.
+
+
+# `repair_counter` is the suite-wide autouse fixture in farm/tests/conftest.py,
+# which repoints the counter into tmp_path. Named in the signatures below so the
+# dependency of a count assertion is visible where it is made.
+
+
+def _mangle(payload: dict, shape: str) -> str:
+    """Re-serialize a well-formed reply into one of the two broken shapes, so
+    the only difference from a clean reply is the defect under test."""
+    good = json.dumps(payload)
+    if shape == "trailing_comma":
+        return good[:-1] + ",}"
+    return good.replace('"', "'")
+
+
+@pytest.mark.parametrize(
+    "shape,note_attr,expected_runs",
+    [
+        ("trailing_comma", "TRAILING_COMMA_NOTE", 1),
+        ("single_quotes", "SINGLE_QUOTE_NOTE", 2),
+    ],
+)
+def test_a_repaired_reply_notes_both_surfaces_on_the_planner_path(
+    monkeypatch, repair_counter, shape, note_attr, expected_runs
+):
+    from farm import agent_runner
+
+    note = getattr(agent_runner, note_attr)
+    broken = _mangle({"summary": "planned it", "artifact_md": "# Options"}, shape)
+    fake, calls = _replies(broken, broken)
+    monkeypatch.setattr(step_agent, "run_agent", fake)
+
+    result = execute(make_task(4, "Plan options & trade-offs (pros / cons)"))
+
+    assert result["summary"].startswith("planned it")
+    assert len(calls) == expected_runs
+    assert note in result["summary"], "the repair is missing from the run's output line"
+    assert f"- {note}" in result["artifacts"]["artifact_md"], "the artifact has no note"
+    assert agent_runner.repair_counts() == {shape: 1}
+
+
+def test_a_repaired_reply_notes_the_summary_on_the_implement_path(
+    tmp_path, monkeypatch, repair_counter
+):
+    """The implement step passes no retry, so only the unambiguous rung can
+    fire here — and finalize_branch returns no artifact_md, which makes the
+    summary this path's only note surface."""
+    from farm import agent_runner
+
+    ws, _origin = make_git_workspace(tmp_path)
+    monkeypatch.setattr(step_agent, "ensure_item_worktree", lambda repo, item_id: ws)
+    fake, calls = _replies(_mangle({"summary": "built it"}, "trailing_comma"), writes_into=ws)
+    monkeypatch.setattr(step_agent, "run_agent", fake)
+
+    result = execute(make_task(11, "Specialist agent implements", repo="acme/demo"))
+
+    assert "built it" in result["summary"]
+    assert agent_runner.TRAILING_COMMA_NOTE in result["summary"]
+    assert len(calls) == 1
+    assert agent_runner.repair_counts() == {"trailing_comma": 1}
+
+
+def test_a_single_quoted_implement_reply_is_not_repaired(tmp_path, monkeypatch, repair_counter):
+    """No retry to spend means the lossless retry can never run, so the
+    ambiguous rung must not fire. The step still completes — the code in the
+    workspace is the deliverable — and says the reply was not valid JSON."""
+    from farm import agent_runner
+
+    ws, _origin = make_git_workspace(tmp_path)
+    monkeypatch.setattr(step_agent, "ensure_item_worktree", lambda repo, item_id: ws)
+    fake, calls = _replies(_mangle({"summary": "built it"}, "single_quotes"), writes_into=ws)
+    monkeypatch.setattr(step_agent, "run_agent", fake)
+
+    result = execute(make_task(11, "Specialist agent implements", repo="acme/demo"))
+
+    assert "not valid JSON" in result["summary"]
+    assert "built it" not in result["summary"], "an ambiguous repair fired with no retry spent"
+    assert len(calls) == 1
+    assert agent_runner.repair_counts() == {}
+
+
+def test_a_repaired_reply_notes_both_review_passes(tmp_path, monkeypatch, repair_counter):
+    """Five places in this module parse a reply; the two review passes are the
+    pair that could most easily surface a note from only one of them."""
+    from farm import agent_runner
+
+    ws, _origin = make_git_workspace(tmp_path)
+    monkeypatch.setattr(step_agent, "ensure_item_worktree", lambda repo, item_id: ws)
+    broken = _mangle({"verdict": "pass", "summary": "looks fine", "artifact_md": "# Review"}, "trailing_comma")
+    fake, calls = _replies(broken)
+    monkeypatch.setattr(step_agent, "run_agent", fake)
+
+    result = execute(make_task(12, step_agent.REVIEW_LABEL, repo="acme/demo"))
+
+    assert agent_runner.TRAILING_COMMA_NOTE in result["summary"]
+    # Both passes repaired their own reply, so the counter saw both.
+    assert agent_runner.repair_counts() == {"trailing_comma": 2}
+
+
+def test_an_unrepairable_step_reply_still_cancels_the_run(monkeypatch, repair_counter):
+    """No fabricated summary: an unparseable reply that no rung can fix fails
+    the step, exactly as it does today."""
+    from farm import agent_runner
+
+    bad = '{"summary":"he said "hi" to me"}'
+    fake, calls = _replies(bad, bad)
+    monkeypatch.setattr(step_agent, "run_agent", fake)
+
+    with pytest.raises((AgentError, json.JSONDecodeError)):
+        execute(make_task(4, "Plan options & trade-offs (pros / cons)"))
+    assert len(calls) == 2, "the lossless retry is still spent first"
+    assert agent_runner.repair_counts() == {}
 
 
 # ---- step models (HZ-192) ----

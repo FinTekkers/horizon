@@ -43,7 +43,7 @@ from domain.py.personas import CONCIERGE_MODEL_AGENT
 from . import config
 from . import credentials
 from . import wizard
-from .agent_runner import AgentError, parse_agent_reply, run_agent
+from .agent_runner import REPAIR_NOTES, AgentError, parse_agent_reply, run_agent
 from .config import FARM_PORT, HORIZON_URL, STATE_DIR, ensure_dirs, slugify
 from .whatsapp.transport import Inbound, Transport, TransportError
 
@@ -360,9 +360,21 @@ def process_message(
 
     # Claim before executing: a crash from here on can not replay actions.
     state.claim(msg)
-    # The concierge is not a step: it has no run output line and no artifact,
-    # so the WhatsApp reply is where its parser notes surface. Appended last,
-    # after the action results, and a no-op when empty.
+    # HZ-157: a repaired reply is LOGGED as well as texted. The concierge has
+    # no run output line and no artifact — the two surfaces the other callers
+    # stamp — so without this the session log would show a clean turn for a
+    # reply whose bytes the parser had to change. The text below is the note's
+    # other surface; neither one alone is enough.
+    #
+    # Only a note from a repair rung is LABELLED a repair. The other note this
+    # channel can carry (FIRST_OBJECT_NOTE) says which lossless attempt parsed
+    # the reply and no byte was edited — logging that as "repaired" would claim
+    # a byte change that never happened, which is the same kind of misreport as
+    # hiding one.
+    for note in parse_notes:
+        what = "reply was repaired to parse" if note in REPAIR_NOTES else "parser note"
+        log(f"message {msg.msg_id}: {what} — {note}")
+    # Appended last, after the action results, and a no-op when empty.
     notes = execute_actions(actions, base_url) + notes + parse_notes
     # Remembers this sender's numbered choices (or clears stale ones) so a
     # later bare-number reply from them resolves deterministically.

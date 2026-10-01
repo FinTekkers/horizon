@@ -1,6 +1,7 @@
 """Guardrail enforcement: check detection and pass/fail behavior."""
 
 import json
+import os
 import subprocess
 
 import pytest
@@ -90,7 +91,7 @@ def test_check_failure_message_still_names_the_command_for_existing_callers(tmp_
     monkeypatch.setenv("FARM_CHECK_CMD", "echo boom && exit 1")
     with pytest.raises(CheckFailure) as err:
         run_checks(tmp_path, log=lambda *_: None)
-    assert str(err.value).startswith("repo checks failed (sh -c echo boom && exit 1): ")
+    assert str(err.value).startswith("repo checks failed (sh -c echo boom && exit 1):")
     assert "boom" in str(err.value)
     assert err.value.command == "sh -c echo boom && exit 1"
     assert err.value.reason == "failed"
@@ -101,6 +102,91 @@ def test_a_spent_deadline_stops_before_the_next_command(tmp_path, monkeypatch):
     with pytest.raises(CheckFailure) as err:
         run_checks(tmp_path, log=lambda *_: None, deadline=0.0)
     assert err.value.reason == "timed_out"
+
+
+# ---- HZ-184: the failure digest — what failed, wherever it was printed ----
+
+
+def test_failure_digest_reports_a_failure_at_line_900(tmp_path, monkeypatch):
+    monkeypatch.setenv(
+        "FARM_CHECK_CMD",
+        "echo 'not ok 3 - an early failure'; "
+        "for i in $(seq 4 899); do echo \"ok $i - passing test number $i\"; done; "
+        "echo 'not ok 900 - the late failure'; echo '# pass 898'; echo '# fail 2'; exit 1",
+    )
+    with pytest.raises(CheckFailure) as err:
+        run_checks(tmp_path, log=lambda *_: None)
+
+    for text in (err.value.digest, str(err.value)):
+        assert "not ok 3 - an early failure" in text
+        assert "not ok 900 - the late failure" in text
+        assert "# pass 898" in text and "# fail 2" in text
+        assert "ok 500 - passing test number 500" not in text
+    # The command stays on the first line, where the check_metrics backfill
+    # parser reads it.
+    assert str(err.value).splitlines()[0] == "repo checks failed (sh -c " + os.environ["FARM_CHECK_CMD"] + "):"
+
+
+def test_failure_digest_keeps_failures_first_when_over_the_cap():
+    output = "\n".join(f"not ok {i} - failing test with a fairly long name {i}" for i in range(200))
+    output += "\nTests: 200 failed, 0 passed\n"
+
+    digest = checks.failure_digest(output)
+
+    assert len(digest) <= checks.DIGEST_MAX_CHARS
+    assert digest.startswith("not ok 0 - ")
+    assert "more lines omitted" in digest.splitlines()[-1]
+
+
+def test_failure_digest_keeps_pytest_failed_lines_and_counts():
+    output = "\n".join(
+        [*(f"tests/test_a.py::test_{i} PASSED" for i in range(300)),
+         "FAILED tests/test_b.py::test_docstring - AssertionError",
+         *(f"noise line {i}" for i in range(100)),
+         "1 failed, 300 passed in 12.3s"]
+    )
+
+    digest = checks.failure_digest(output)
+
+    assert "FAILED tests/test_b.py::test_docstring - AssertionError" in digest
+    assert "1 failed, 300 passed in 12.3s" in digest
+    assert "noise line 10\n" not in digest  # outside the 40-line tail
+
+
+def test_digest_redacts_env_secret_values(tmp_path, monkeypatch):
+    monkeypatch.setenv("FAKE_TOKEN", "abcd1234efgh")
+    monkeypatch.setenv("FARM_CHECK_CMD", 'echo "not ok 1 - got $FAKE_TOKEN back"; exit 1')
+    with pytest.raises(CheckFailure) as err:
+        run_checks(tmp_path, log=lambda *_: None)
+
+    assert "abcd1234efgh" not in str(err.value) and "abcd1234efgh" not in err.value.digest
+    assert "not ok 1 - got [redacted] back" in err.value.digest
+
+
+def test_digest_redacts_a_farm_secret_the_check_env_does_not_carry(tmp_path, monkeypatch):
+    secret = "ghp_" + "a1" * 18
+    (tmp_path / "leak").write_text(secret)
+    monkeypatch.setenv("GITHUB_TOKEN", secret)
+    monkeypatch.setattr(checks, "_check_env", lambda: {k: v for k, v in os.environ.items() if k != "GITHUB_TOKEN"})
+    monkeypatch.setenv("FARM_CHECK_CMD", "echo \"not ok 1 - $(cat leak)\"; exit 1")
+    with pytest.raises(CheckFailure) as err:
+        run_checks(tmp_path, log=lambda *_: None)
+
+    assert secret not in str(err.value)
+    assert "not ok 1 - [redacted]" in err.value.digest
+
+
+def test_redact_replaces_token_shapes_without_an_env_entry():
+    text = "key AKIAABCDEFGHIJKLMNOP and sk-ant-api03-xyzxyzxyzxyz end"
+    assert checks.redact(text, {}) == "key [redacted] and [redacted] end"
+
+
+def test_a_timeout_carries_no_digest(tmp_path, monkeypatch):
+    monkeypatch.setenv("FARM_CHECK_TIMEOUT_S", "1")
+    monkeypatch.setenv("FARM_CHECK_CMD", "sleep 5")
+    with pytest.raises(CheckFailure, match="timed out") as err:
+        run_checks(tmp_path, log=lambda *_: None)
+    assert err.value.digest == ""
 
 
 # ---- HZ-154: require_ran — "no green, no push" for the scoped conflict path ----

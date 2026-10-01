@@ -590,6 +590,19 @@ export async function mergePr(item, { sha } = {}) {
   throw new Error(message)
 }
 
+// The commit the item's PR head points at right now, or null when the item
+// has no PR (demo mode). HZ-185's forward compares it with the commit the
+// last automated review read. Throws when GitHub can't answer, so a caller
+// never mistakes "unknown" for "unchanged".
+export async function getPrHeadSha(item) {
+  if (!item.repo || item.pr == null) return null
+  const res = await gh(`/repos/${item.repo}/pulls/${item.pr}`)
+  if (!res.ok) throw new Error(`GitHub returned ${res.status} reading PR #${item.pr}`)
+  const sha = (await res.json())?.head?.sha
+  if (typeof sha !== 'string' || !sha) throw new Error(`GitHub returned no head commit for PR #${item.pr}`)
+  return sha
+}
+
 // ---- deploy: release ----
 // The DevOps step publishes a GitHub Release. A "release published" webhook
 // (server/src/deploy.js) is what actually ships it — it pulls the tag to the

@@ -588,6 +588,166 @@ def test_a_parse_note_is_appended_after_the_action_notes(stub, monkeypatch):
     assert any("priority set to Critical" in line for line in lines)
 
 
+# ---- HZ-157: a repaired reply is logged AND texted, never sent silently ----
+# The concierge is the caller the HZ-124 attempt-9 review actually rejected: it
+# has no run output line and no artifact, so a silent repair here would leave
+# no record anywhere. The outbound text is one surface, the session log is the
+# other, and these tests assert both.
+
+
+# `repair_counter` is the suite-wide autouse fixture in farm/tests/conftest.py,
+# which repoints the counter into tmp_path — poll_once() runs the real parser,
+# which ticks a real file. Named in the signatures below so the dependency of a
+# count assertion is visible where it is made.
+
+
+def _replying(text, monkeypatch):
+    calls = []
+
+    def fake_run(prompt, **kw):
+        calls.append(prompt)
+        return {"result": text, "session_id": "s1"}
+
+    monkeypatch.setattr(ca, "run_agent", fake_run)
+    return calls
+
+
+def test_the_success_metrics_concierge_shape_is_repaired_and_reported(
+    stub, monkeypatch, capsys, repair_counter
+):
+    """The exact reply the success metric names: `{"reply":"ok","actions":[],}`.
+
+    It must parse, it must be LOGGED as repaired, and the note must ride out on
+    the WhatsApp text. A run where the human sees a bare "ok" and nothing else
+    is the version review sent back.
+    """
+    from farm import agent_runner
+
+    calls = _replying('{"reply":"ok","actions":[],}', monkeypatch)
+    t = FakeTransport()
+    state = make_state(t, "repaircomma")
+    t.seed("what's up")
+    ca.poll_once(t, state, stub.url, farmd_url=stub.url)
+
+    assert len(calls) == 1, "a trailing comma must not cost a second agent run"
+    sent = t.sent[0][1]
+    assert sent.startswith("ok")
+    assert agent_runner.TRAILING_COMMA_NOTE in sent, "the repair was sent silently"
+    logged = capsys.readouterr().out
+    assert "repaired to parse" in logged, "the repair was never logged"
+    assert agent_runner.TRAILING_COMMA_NOTE in logged
+    assert agent_runner.repair_counts() == {"trailing_comma": 1}
+
+
+def test_a_single_quoted_concierge_reply_is_repaired_after_the_retry(
+    stub, monkeypatch, capsys, repair_counter
+):
+    from farm import agent_runner
+
+    calls = []
+
+    def fake_run(prompt, **kw):
+        calls.append(prompt)
+        # Both attempts come back single-quoted, so the ambiguous rung is what
+        # finally recovers it — after the lossless retry has really run.
+        return {"result": "{'reply':'ok','actions':[]}", "session_id": "s1"}
+
+    monkeypatch.setattr(ca, "run_agent", fake_run)
+    t = FakeTransport()
+    state = make_state(t, "repairquotes")
+    t.seed("what's up")
+    ca.poll_once(t, state, stub.url, farmd_url=stub.url)
+
+    assert len(calls) == 2, "the lossless retry must run before an ambiguous repair"
+    sent = t.sent[0][1]
+    assert agent_runner.SINGLE_QUOTE_NOTE in sent
+    assert "repaired to parse" in capsys.readouterr().out
+    assert agent_runner.repair_counts() == {"single_quotes": 1}
+
+
+def test_a_repaired_reply_still_goes_through_validate_reply(stub, monkeypatch, repair_counter):
+    """validate_reply builds the 4-tuple process_message unpacks. A repaired
+    value that skipped it would crash the unpack instead of replying — this is
+    the concrete failure the architecture review flagged."""
+    _replying(
+        '{"reply":"done","actions":[{"type":"set_priority","item_id":"HZ-7",'
+        '"priority":"Critical"},],}',
+        monkeypatch,
+    )
+    t = FakeTransport()
+    state = make_state(t, "repairvalidate")
+    t.seed("set HZ-7 priority to Critical")
+    ca.poll_once(t, state, stub.url, farmd_url=stub.url)
+
+    lines = t.sent[0][1].splitlines()
+    # The action survived validation and really executed...
+    assert any("priority set to Critical" in line for line in lines)
+    # ...and the parse note is still last, after the action results.
+    from farm import agent_runner
+
+    assert lines[-1] == agent_runner.TRAILING_COMMA_NOTE
+
+
+def test_an_unrepairable_concierge_reply_sends_the_error_and_fabricates_nothing(
+    stub, monkeypatch, repair_counter
+):
+    from farm import agent_runner
+
+    _replying('{"reply":"he said "hi" to me","actions":[]}', monkeypatch)
+    t = FakeTransport()
+    state = make_state(t, "unrepairable")
+    t.seed("hello")
+    ca.poll_once(t, state, stub.url, farmd_url=stub.url)
+
+    sent = t.sent[0][1]
+    assert "hit an error" in sent, "an unrepairable reply must not be answered with a guess"
+    assert "he said" not in sent
+    assert agent_runner.repair_counts() == {}
+
+
+def test_a_note_that_changed_no_byte_is_not_logged_as_a_repair(
+    stub, monkeypatch, capsys, repair_counter
+):
+    """FIRST_OBJECT_NOTE says WHICH lossless attempt parsed the reply — not one
+    byte was edited. Logging it as "repaired to parse" would claim a byte
+    change that never happened, which misreports the parser just as badly as
+    hiding a real repair does. It must still be logged, under its own wording.
+    """
+    from farm import agent_runner
+
+    # Attempts 1 and 2 both fail, attempt 3 lifts the leading object out, and
+    # the lossless retry then returns nothing usable — so the scanned object is
+    # what the human gets, with its note.
+    replies = ['{"reply":"ok","actions":[]} prose {"b":2}', "still just prose"]
+
+    def fake_run(prompt, **kw):
+        return {"result": replies.pop(0), "session_id": "s1"}
+
+    monkeypatch.setattr(ca, "run_agent", fake_run)
+    t = FakeTransport()
+    state = make_state(t, "firstobject")
+    t.seed("what's up")
+    ca.poll_once(t, state, stub.url, farmd_url=stub.url)
+
+    assert replies == [], "both the first reply and the lossless retry should have run"
+    assert agent_runner.FIRST_OBJECT_NOTE in t.sent[0][1]
+    logged = capsys.readouterr().out
+    assert agent_runner.FIRST_OBJECT_NOTE in logged, "the note must still reach the log"
+    assert "repaired to parse" not in logged, "no byte changed — this is not a repair"
+    assert "parser note" in logged
+    assert agent_runner.repair_counts() == {}
+
+
+def test_every_rung_note_is_labelled_a_repair_in_the_log(monkeypatch, capsys):
+    """The labelling rule stated over the whole ladder rather than per rung, so
+    a rung added by part 3 is covered the day it lands: REPAIR_NOTES is derived
+    from REPAIRS, so a new rung's note joins it without a second edit."""
+    from farm import agent_runner
+
+    assert agent_runner.REPAIR_NOTES == {rung.note for rung in agent_runner.REPAIRS}
+    assert agent_runner.FIRST_OBJECT_NOTE not in agent_runner.REPAIR_NOTES
+
+
 # ---- the concierge's model (HZ-192) ----
 # The REAL run_agent() over recording providers (conftest): the model both
 # concierge call sites handed their provider.

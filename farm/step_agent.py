@@ -17,6 +17,7 @@ import sys
 import tempfile
 from datetime import datetime
 from pathlib import Path
+from typing import NamedTuple
 
 import httpx
 
@@ -40,7 +41,7 @@ from .agent_runner import (
     stamp_notes,
     stamp_notes_artifact,
 )
-from .checks import run_checks
+from .checks import CheckFailure, run_checks
 from .config import FARM_PORT, ITEM_LOCK_WAIT_S
 from .personas import compose_role, provider_for, resolve
 from .rules import render_rules_section
@@ -149,7 +150,18 @@ REVIEW_DIFF_CHARS = 200_000
 # Subject-line marker for a salvage commit (HZ-31) — written by
 # _salvage_checkpoint() and detected by _checkpoint_resume_note() so the next
 # attempt's prompt can name it instead of silently continuing from it.
+# HZ-184: a checks-failed checkpoint carries the same subject, so every
+# existing reader still finds it; the "attempt exhausted" wording is kept for
+# that compatibility only. The commit body's `cause:` line is what says why.
 CHECKPOINT_MARKER = "WIP checkpoint — attempt exhausted"
+CAUSE_EXHAUSTED = "exhausted"
+CAUSE_CHECKS_FAILED = "checks-failed"
+
+# The error main() reports. Must not exceed the server's /fail route limit
+# (`error: maxLength` in server/src/app.js): over it, Fastify rejects the whole
+# report and the run sits active until the step watchdog times it out, losing
+# the failure (HZ-184). farm/tests/test_step_agent.py pins the two together.
+ERROR_MAX_CHARS = 2000
 
 
 def log(msg: str) -> None:
@@ -303,7 +315,16 @@ def truncate_diff(diff_full: str) -> tuple[str, str]:
     return shown, note
 
 
-def prepare_branch(ws: Path, item: dict) -> str:
+class PreparedBranch(NamedTuple):
+    branch: str
+    # origin/<branch>'s sha as fetched — the expected value for every push of
+    # this attempt (see _push_with_lease). Empty when the branch is new.
+    lease_sha: str
+    # Prompt text describing a checkpoint rebase, or "".
+    note: str
+
+
+def prepare_branch(ws: Path, item: dict, *, rebase_checkpoint: bool = False) -> PreparedBranch:
     branch = f"horizon/{item['id'].lower()}"
     # A superseded/killed attempt leaves uncommitted edits behind; every new
     # attempt starts from a scrubbed tree (pushed branches are the only state
@@ -313,14 +334,51 @@ def prepare_branch(ws: Path, item: dict) -> str:
     # serialized against every other item's fetch/push on this repo.
     git(ws, "reset", "--hard")
     git(ws, "clean", "-fd")
+    #
+    # HZ-184: the lease sha is read INSIDE the lock. Another item's fetch moves
+    # the same shared origin/<branch> ref, so a bare --force-with-lease later
+    # would compare against whatever that fetch saw, not what this attempt
+    # built on — and could overwrite a remote change.
     with hub_lock(item["repo"]):
         git(ws, "fetch", "origin", "--prune")
-    head = git(ws, "symbolic-ref", "refs/remotes/origin/HEAD", check=False).stdout.strip()
-    default = head.rsplit("/", 1)[-1] if head else "main"
-    remote_branch = git(ws, "rev-parse", "--verify", f"origin/{branch}", check=False)
-    base = f"origin/{branch}" if remote_branch.returncode == 0 else f"origin/{default}"
-    git(ws, "checkout", "-B", branch, base)
-    return branch
+        remote_branch = git(ws, "rev-parse", "--verify", f"origin/{branch}", check=False)
+    lease_sha = remote_branch.stdout.strip() if remote_branch.returncode == 0 else ""
+    default = _default_branch(ws)
+    git(ws, "checkout", "-B", branch, lease_sha or f"origin/{default}")
+    note = _rebase_checkpoint(ws, default, lease_sha) if rebase_checkpoint else ""
+    return PreparedBranch(branch, lease_sha, note)
+
+
+def _rebase_checkpoint(ws: Path, default: str, lease_sha: str) -> str:
+    """HZ-184: a resumed checkpoint is rebased onto current origin/<default>
+    first, so fixes that landed on main since (HZ-125) reach it. A conflicting
+    rebase is abandoned and the attempt resumes from the checkpoint as it was —
+    the work is never lost to a rebase. Runs only in this item's worktree;
+    nothing is pushed here."""
+    subject = git(ws, "log", "-1", "--format=%s", check=False).stdout.strip()
+    if CHECKPOINT_MARKER not in subject:
+        return ""
+    if not lease_sha:
+        # HEAD came from origin/<default>, so it is no checkpoint of this
+        # item's — and the abort path below must never `reset --hard ''`.
+        return ""
+    if git(ws, "merge-base", "--is-ancestor", f"origin/{default}", "HEAD", check=False).returncode == 0:
+        return ""  # already on current main
+    rebased = git(ws, "rebase", f"origin/{default}", check=False)
+    if rebased.returncode == 0:
+        log(f"rebased the WIP checkpoint onto origin/{default}")
+        return (
+            f"\n\nNOTE: the checkpoint was rebased onto current origin/{default} before this attempt "
+            "started, so fixes that landed on main since the previous attempt are included."
+        )
+    git(ws, "rebase", "--abort", check=False)
+    git(ws, "reset", "--hard", lease_sha)
+    log(f"rebasing the WIP checkpoint onto origin/{default} conflicted — resuming it unrebased")
+    return (
+        f"\n\nNOTE: the checkpoint could not be rebased onto current origin/{default} (the rebase "
+        f"conflicted), so this attempt resumes it unrebased, on an older origin/{default}. Fixes that "
+        "landed on main since are NOT in this tree."
+    )
 
 
 def merge_default_branch(ws: Path) -> list[str]:
@@ -376,17 +434,41 @@ def _merge_main_note(conflicted: list[str]) -> str:
     )
 
 
-def _checkpoint_resume_note(ws: Path) -> str | None:
-    """If HEAD is a salvage checkpoint left by a prior exhausted attempt
-    (prepare_branch() already based this branch off origin/<branch>, so a
-    pushed checkpoint is HEAD by construction), returns prompt text pointing
-    the next attempt at it. Returns None for a normal, non-checkpoint HEAD."""
+def _checkpoint_cause(ws: Path) -> tuple[str, str] | None:
+    """(cause, detail) of the checkpoint at HEAD, or None when HEAD is not a
+    checkpoint. A checkpoint written before HZ-184 has no body and reads as
+    (CAUSE_EXHAUSTED, "") — the only cause that existed then."""
     subject = git(ws, "log", "-1", "--format=%s", check=False).stdout.strip()
     if CHECKPOINT_MARKER not in subject:
         return None
-    head = git(ws, "symbolic-ref", "refs/remotes/origin/HEAD", check=False).stdout.strip()
-    default = head.rsplit("/", 1)[-1] if head else "main"
-    stat = git(ws, "diff", "--stat", f"origin/{default}...HEAD", check=False).stdout.strip()
+    body = git(ws, "log", "-1", "--format=%b", check=False).stdout.strip()
+    first, _, detail = body.partition("\n")
+    if not first.startswith("cause: "):
+        return CAUSE_EXHAUSTED, ""
+    return first[len("cause: "):].strip(), detail.strip()
+
+
+def _checkpoint_resume_note(ws: Path) -> str | None:
+    """If HEAD is a salvage checkpoint left by a prior attempt (prepare_branch()
+    already based this branch off origin/<branch>, so a pushed checkpoint is
+    HEAD by construction), returns prompt text pointing the next attempt at it
+    and saying why that attempt stopped. Returns None for a normal,
+    non-checkpoint HEAD."""
+    checkpoint = _checkpoint_cause(ws)
+    if checkpoint is None:
+        return None
+    cause, detail = checkpoint
+    subject = git(ws, "log", "-1", "--format=%s", check=False).stdout.strip()
+    stat = git(ws, "diff", "--stat", f"origin/{_default_branch(ws)}...HEAD", check=False).stdout.strip()
+    if cause == CAUSE_CHECKS_FAILED:
+        return (
+            "\n\nNOTE: this branch already has a WIP checkpoint commit "
+            f'("{subject}") that holds the previous attempt\'s complete work. That attempt '
+            "finished, but the repo's checks failed on it:\n\n"
+            f"```\n{detail or '(no check output was captured)'}\n```\n\n"
+            "Fix those failures on top of the checkpoint — read the diff below. Do not discard "
+            f"it or restart from scratch.\n\n```\n{stat}\n```"
+        )
     return (
         "\n\nNOTE: this branch already has a WIP checkpoint commit from a prior "
         f'attempt that ran out of turns/time ("{subject}"). Continue that work — '
@@ -454,6 +536,18 @@ def fix_diff_report(ws: Path, base: str | None) -> dict:
         # Binary files report "-"; count each as one changed line.
         lines += (int(added) if added.isdigit() else 1) + (int(removed) if removed.isdigit() else 1)
     return {"fix_diff_lines": lines, "fix_diff_files": _names(ws, f"{base}..HEAD")}
+
+
+def _last_check_failure(ws: Path) -> str:
+    """Fix-scope counterpart of _checkpoint_resume_note: only what failed, as
+    no "continue the WIP" text may contradict the fix-only instruction."""
+    checkpoint = _checkpoint_cause(ws)
+    if checkpoint is None or checkpoint[0] != CAUSE_CHECKS_FAILED:
+        return ""
+    return (
+        "\n\nThe previous fix attempt's changes are in the WIP checkpoint at HEAD, but the "
+        f"repo's checks failed on them:\n\n```\n{checkpoint[1] or '(no check output was captured)'}\n```"
+    )
 
 
 def fix_pass_section(scope: dict) -> str:
@@ -524,7 +618,19 @@ def delta_review_section(scope: dict, base: str, delta_files: list[str]) -> str:
     return "\n".join(lines)
 
 
-def finalize_branch(ws: Path, item: dict, branch: str, conflicted: list[str] | None = None) -> dict:
+def _push_with_lease(ws: Path, item: dict, branch: str, lease_sha: str) -> None:
+    """Agent work branches are single-writer (the implement mutex): a rebase
+    rewriting earlier attempts is legitimate, so this force-pushes — but only
+    over the exact sha prepare_branch() checked out (empty: the branch must
+    not exist yet), the same explicit lease conflict_resolver uses. Same
+    hub-shared-refs lock as the fetch in prepare_branch."""
+    with hub_lock(item["repo"]):
+        git(ws, "push", f"--force-with-lease=refs/heads/{branch}:{lease_sha}", "-u", "origin", branch)
+
+
+def finalize_branch(
+    ws: Path, item: dict, branch: str, conflicted: list[str] | None = None, *, lease_sha: str = ""
+) -> dict:
     # A merge of main still carrying conflict markers must never be committed:
     # GitHub would then call the PR mergeable with the markers in it, and no
     # later send-back would be told which files still hold them.
@@ -544,12 +650,7 @@ def finalize_branch(ws: Path, item: dict, branch: str, conflicted: list[str] | N
     ahead = git(ws, "rev-list", "--count", f"origin/{default}..HEAD", check=False).stdout.strip()
     if ahead == "0":
         raise RuntimeError("the agent made no code changes — nothing to push")
-    # Agent work branches are single-writer (the implement mutex): a rebase
-    # rewriting earlier attempts is legitimate, so push with lease protection
-    # rather than failing on non-fast-forward. Same hub-shared-refs lock as
-    # the fetch in prepare_branch.
-    with hub_lock(item["repo"]):
-        git(ws, "push", "--force-with-lease", "-u", "origin", branch)
+    _push_with_lease(ws, item, branch, lease_sha)
     stat = git(ws, "diff", "--stat", f"origin/{default}...HEAD", check=False).stdout.strip().splitlines()
     return {"branch": branch, "files_changed": stat[-1] if stat else ""}
 
@@ -563,9 +664,23 @@ def finalize_branch(ws: Path, item: dict, branch: str, conflicted: list[str] | N
 # never converge on a job bigger than one budget. Salvage checkpoints
 # whatever was on disk so the next attempt continues instead of restarting
 # from zero.
+#
+# HZ-184: a finished run whose repo checks fail is checkpointed the same way
+# (cause checks-failed, with the failure digest in the body), instead of
+# being scrubbed by the next attempt. A checkpoint is still a failed run: the
+# exception propagates, finalize_branch never runs and no PR is opened.
 
 
-def _salvage_checkpoint(ws: Path, item: dict, branch: str, conflicted: list[str] | None = None) -> None:
+def _salvage_checkpoint(
+    ws: Path,
+    item: dict,
+    branch: str,
+    conflicted: list[str] | None = None,
+    *,
+    cause: str = CAUSE_EXHAUSTED,
+    detail: str = "",
+    lease_sha: str = "",
+) -> None:
     """Best-effort: never raises. A salvage failure (e.g. a concurrent push
     winning the --force-with-lease race) just means this attempt's partial
     work is lost — the caller's original exception is what must still
@@ -574,7 +689,10 @@ def _salvage_checkpoint(ws: Path, item: dict, branch: str, conflicted: list[str]
     HZ-188: a half-resolved merge of main is never checkpointed. Committing
     it would push conflict markers to the PR branch and make GitHub report it
     mergeable, so the next send-back would not merge main or name the files.
-    Dropping it is safe: that send-back merges main again from scratch."""
+    Dropping it is safe: that send-back merges main again from scratch.
+
+    A checks-failed checkpoint is committed even with no changes: a failure
+    caused by main alone (HZ-157) must still carry its digest forward."""
     try:
         markers = _conflict_markers_left(ws, conflicted or [])
         if markers:
@@ -582,13 +700,23 @@ def _salvage_checkpoint(ws: Path, item: dict, branch: str, conflicted: list[str]
             return
         git(ws, "add", "-A")
         staged = git(ws, "diff", "--cached", "--quiet", check=False)
-        if staged.returncode == 0:
+        allow_empty = cause == CAUSE_CHECKS_FAILED
+        if staged.returncode == 0 and not allow_empty:
             log("salvage: no uncommitted changes to checkpoint")
             return
-        git(ws, "commit", "-m", f"{item['id']}: {CHECKPOINT_MARKER} (Horizon Eng agent)")
-        with hub_lock(item["repo"]):
-            git(ws, "push", "--force-with-lease", "-u", "origin", branch)
-        log(f"salvage: pushed WIP checkpoint to {branch}")
+        body = f"cause: {cause}" + (f"\n\n{detail}" if detail else "")
+        git(
+            ws,
+            "commit",
+            *(["--allow-empty"] if allow_empty else []),
+            "--cleanup=verbatim",
+            "-m",
+            f"{item['id']}: {CHECKPOINT_MARKER} (Horizon Eng agent)",
+            "-m",
+            body,
+        )
+        _push_with_lease(ws, item, branch, lease_sha)
+        log(f"salvage: pushed WIP checkpoint ({cause}) to {branch}")
     except Exception as exc:
         log(f"salvage: failed to checkpoint ({exc}) — work is lost, next attempt starts clean")
 
@@ -818,9 +946,12 @@ def _execute(task: dict) -> dict:
             if item.get("repo"):
                 raise RuntimeError("workspace not provisioned for this repo — restart the farm")
             return {"summary": "no repository attached — implementation skipped (demo item)"}
-        branch = prepare_branch(ws, item)
-        log(f"workspace {ws} on branch {branch}")
         scope = scope_of(task)
+        # HZ-182: a fix pass is never rebased — rewriting history would break
+        # the server's base_sha..HEAD diff.
+        prepared = prepare_branch(ws, item, rebase_checkpoint=scope["mode"] != "fix")
+        branch = prepared.branch
+        log(f"workspace {ws} on branch {branch}")
         if scope["mode"] == "fix":
             # HZ-182: the server's reduced budget, clamped — never raised —
             # against the step's own. A "continue your WIP" note would
@@ -830,11 +961,12 @@ def _execute(task: dict) -> dict:
             if isinstance(scope.get("timeout_s"), int) and scope["timeout_s"] > 0:
                 timeout_s = min(timeout_s, scope["timeout_s"])
             log(f"fix pass from {scope.get('base_sha')}: {max_turns} turns, {timeout_s}s")
-            extra = fix_pass_section(scope)
+            extra = fix_pass_section(scope) + _last_check_failure(ws)
         else:
             extra = _checkpoint_resume_note(ws) or ""
             if extra:
                 log("resuming a prior attempt's WIP checkpoint")
+            extra += prepared.note
         # After the resume check: a merge commit would hide the checkpoint's
         # subject from it.
         conflicted: list[str] = []
@@ -861,7 +993,7 @@ def _execute(task: dict) -> dict:
             # letting the next attempt's prepare_branch scrub it away. Still
             # re-raises unchanged: a failed attempt still fails and pauses,
             # no checks run, no PR opens, nothing advances.
-            _salvage_checkpoint(ws, item, branch, conflicted)
+            _salvage_checkpoint(ws, item, branch, conflicted, lease_sha=prepared.lease_sha)
             raise
         # The summary is reporting, not the deliverable — the code in the
         # workspace is. Never torch a completed implement run over a
@@ -886,9 +1018,24 @@ def _execute(task: dict) -> dict:
         # Guardrail enforcement: the repo's own tests/linters run here, by the
         # script, before anything is committed or pushed. A failure fails the
         # run (Node pauses the item with the reason) — no green, no push.
-        check_note = run_checks(ws, log, run_id=task.get("run_id"), item_id=item["id"])
+        try:
+            check_note = run_checks(ws, log, run_id=task.get("run_id"), item_id=item["id"])
+        except CheckFailure as exc:
+            # HZ-184: the finished work is checkpointed with what failed, so
+            # the next attempt fixes it instead of rebuilding it. Re-raised:
+            # the run still fails, nothing below runs, no PR opens.
+            _salvage_checkpoint(
+                ws,
+                item,
+                branch,
+                conflicted,
+                cause=CAUSE_CHECKS_FAILED,
+                detail=exc.digest or str(exc),
+                lease_sha=prepared.lease_sha,
+            )
+            raise
         publish_screenshots(ws, item)
-        artifacts = finalize_branch(ws, item, branch, conflicted)
+        artifacts = finalize_branch(ws, item, branch, conflicted, lease_sha=prepared.lease_sha)
         if scope["mode"] == "fix":
             artifacts.update(fix_diff_report(ws, scope.get("base_sha")))
         # finalize_branch returns branch/files_changed, not an artifact_md, so
@@ -918,7 +1065,7 @@ def _execute(task: dict) -> dict:
         # worktree is isolated from every other item's (HZ-50), but a
         # superseded/killed implement attempt on THIS item can still leave
         # uncommitted leftovers in it — scrub before reading the diff.
-        branch = prepare_branch(ws, item)
+        branch = prepare_branch(ws, item).branch
         log(f"workspace {ws} on branch {branch} — reviewing diff")
         default = _default_branch(ws)
         # HZ-182: a delta review reads only base..HEAD — unless the base is
@@ -1131,7 +1278,7 @@ def main() -> int:
         result = {"run_id": run_id, "ok": True, **outcome}
     except Exception as exc:
         log(f"run {run_id}: FAILED — {exc}")
-        result = {"run_id": run_id, "ok": False, "error": str(exc)[:300]}
+        result = {"run_id": run_id, "ok": False, "error": str(exc)[:ERROR_MAX_CHARS]}
         # HZ-76: tag the one failure cause the orchestrator is willing to
         # auto-retry from this side (running out of turn budget) — anything
         # else (a checks failure, a malformed reply, ...) reports no reason

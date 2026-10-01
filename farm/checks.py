@@ -26,6 +26,7 @@ see _check_env() for the failure that made that necessary.
 import contextlib
 import json
 import os
+import re
 import shutil
 import signal
 import subprocess
@@ -47,11 +48,19 @@ class CheckFailure(RuntimeError):
 
     HZ-183 adds the parts separately so the pre-merge gate can name them:
     `command` (the check that failed, as shown), `tail` (the last
-    CHECK_TAIL_LINES of its output) and `reason` — "failed", "timed_out", or
-    "none_ran" (nothing was detected or every runner was missing)."""
+    CHECK_TAIL_LINES of its redacted output) and `reason` — "failed",
+    "timed_out", or "none_ran" (nothing was detected or every runner was
+    missing).
 
-    def __init__(self, message: str, *, command: str | None = None, tail: str = "", reason: str = "failed"):
+    `digest` is the redacted failure_digest() of the failing command's
+    output — empty when there is no output to digest (a timeout, nothing
+    detected). step_agent checkpoints it into the WIP commit body (HZ-184)."""
+
+    def __init__(
+        self, message: str, digest: str = "", *, command: str | None = None, tail: str = "", reason: str = "failed"
+    ):
         super().__init__(message)
+        self.digest = digest
         self.command = command
         self.tail = tail
         self.reason = reason
@@ -95,6 +104,78 @@ def _run_bounded(cmd: list[str], ws: Path, timeout_s: float, env: dict[str, str]
         proc.stderr.close()
         raise
     return subprocess.CompletedProcess(cmd, proc.returncode, stdout, stderr)
+
+
+# ---- failure digest + redaction (HZ-184) ----
+# The failure text is stored on the server (step_run.output), pushed to GitHub
+# in a checkpoint commit body and shown to the next attempt's agent. A raw
+# head or tail of the output is the wrong shape for that: 900 lines of
+# passing tests bury the one `not ok`. The digest keeps the lines that say
+# what failed, the counts, and the last few lines for context.
+
+# Must leave room for the "repo checks failed (<cmd>):" prefix under the
+# server's /fail route limit (step_agent.ERROR_MAX_CHARS).
+DIGEST_MAX_CHARS = 1800
+DIGEST_TAIL_LINES = 40
+DIGEST_LINE_MAX_CHARS = 300
+_FAIL_LINE = re.compile(r"^\s*not ok\b|FAILED|^\s*✖")
+_SUMMARY_LINE = re.compile(
+    r"\b\d+ (passed|failed|failing|passing|errors?|skipped)\b"
+    r"|^\s*#\s*(tests|suites|pass|fail|cancelled|skipped|todo)\s+\d+"
+    r"|^\s*ℹ\s*(tests|suites|pass|fail|cancelled|skipped|todo)\s+\d+"
+    r"|^\s*Tests:"
+)
+
+# Env var names whose values are secrets, and token shapes that are secrets
+# wherever they appear. A denylist: it can miss an unusual shape, which is why
+# it runs over everything that leaves run_checks, not just the digest.
+_SECRET_NAME = re.compile(r"TOKEN|SECRET|KEY|PASSWORD|PASSWD|CREDENTIAL", re.IGNORECASE)
+_SECRET_MIN_LEN = 8
+_TOKEN_SHAPES = re.compile(
+    r"gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|sk-ant-[A-Za-z0-9_\-]{10,}|AKIA[0-9A-Z]{16}"
+)
+REDACTED = "[redacted]"
+
+
+def redact(text: str, env) -> str:
+    """Replaces every secret-named env value (of at least 8 chars) and every
+    known token shape in `text`. Longest values first, so a secret that
+    contains another secret is replaced whole."""
+    values = sorted(
+        {v for k, v in env.items() if _SECRET_NAME.search(k) and v and len(v) >= _SECRET_MIN_LEN},
+        key=len,
+        reverse=True,
+    )
+    for value in values:
+        text = text.replace(value, REDACTED)
+    return _TOKEN_SHAPES.sub(REDACTED, text)
+
+
+def failure_digest(output: str, max_chars: int = DIGEST_MAX_CHARS) -> str:
+    """Every failure line, then every summary-count line, then the last
+    DIGEST_TAIL_LINES lines (newest first), each line kept once and printed in
+    its original order. Over max_chars, the lower-priority lines are the ones
+    dropped, and a marker says how many."""
+    lines = [line.rstrip()[:DIGEST_LINE_MAX_CHARS] for line in output.splitlines()]
+    failures = [i for i, line in enumerate(lines) if _FAIL_LINE.search(line)]
+    summaries = [i for i, line in enumerate(lines) if _SUMMARY_LINE.search(line)]
+    tail = [i for i in range(len(lines) - 1, max(-1, len(lines) - 1 - DIGEST_TAIL_LINES), -1) if lines[i].strip()]
+    kept: set[int] = set()
+    wanted: set[int] = set()
+    used = 0
+    budget = max_chars - 40  # room for the omitted-lines marker
+    for i in failures + summaries + tail:
+        if i in wanted:
+            continue
+        wanted.add(i)
+        if used + len(lines[i]) + 1 <= budget:
+            kept.add(i)
+            used += len(lines[i]) + 1
+    digest = "\n".join(lines[i] for i in sorted(kept))
+    omitted = len(wanted) - len(kept)
+    if omitted:
+        digest += f"\n… {omitted} more lines omitted"
+    return digest
 
 
 def _playwright_chromium_installed() -> bool:
@@ -269,9 +350,25 @@ def run_checks(
                     }
                 )
                 if proc.returncode != 0:
-                    tail = output_tail((proc.stdout or "") + "\n" + (proc.stderr or ""))
-                    record["outcome"] = check_metrics.classify_failure(tail, proc.returncode)
-                    raise CheckFailure(f"repo checks failed ({shown}): {tail}", command=shown, tail=tail)
+                    output = ((proc.stdout or "") + "\n" + (proc.stderr or "")).strip()
+                    # classify_failure keeps reading the raw last 400 chars, NOT
+                    # the digest: its signatures and the backfilled history were
+                    # both built on that input, and a different one would shift
+                    # the metrics without any real change behind it.
+                    record["outcome"] = check_metrics.classify_failure(output[-400:], proc.returncode)
+                    # Redacted against the farm's own environment too, not just
+                    # the scrubbed check env: a test can still print a farm
+                    # secret it read some other way.
+                    secrets = {**os.environ, **env}
+                    redacted = redact(output, secrets)
+                    digest = failure_digest(redacted)
+                    shown = redact(shown, secrets)
+                    raise CheckFailure(
+                        f"repo checks failed ({shown}):\n{digest}",
+                        digest=digest,
+                        command=shown,
+                        tail=output_tail(redacted),
+                    )
                 ran += 1
             record["outcome"] = "pass"
         finally:

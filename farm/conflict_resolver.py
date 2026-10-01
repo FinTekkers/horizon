@@ -65,6 +65,17 @@ from .workspaces import ensure_item_worktree, hub_lock
 # workspaces.py) — a hung git process must not hang the resolution forever.
 GIT_TIMEOUT_S = 300
 
+# The cap every escalation detail and scoped-review summary already carried.
+# Named rather than repeated as a bare 400, because _with_notes() has to
+# reserve room INSIDE it: a parser note appended and then sliced off the end is
+# a note that did not arrive, which is the silent repair HZ-157 forbids.
+DETAIL_LIMIT = 400
+
+# Whose reply a note describes. The resolution agent's notes are stamped by
+# _escalate() onto details that may ALREADY carry the scoped review's own notes,
+# so the two groups need telling apart. Both contain "parser notes".
+RESOLUTION_NOTE_LABEL = "resolution reply parser notes"
+
 # Index status codes from `git status --porcelain=v1` that mean "still
 # unmerged" — any code with a 'U' in either column, plus the two "both sides
 # touched it the same way" pairs that porcelain reports without a 'U'.
@@ -210,7 +221,7 @@ def resolve(repo_full: str, item_id: str, branch: str | None = None, base_branch
         # Someone else pushed to this branch while we were merging/testing —
         # refuse rather than force over it.
         log(f"conflict_resolver: push rejected — escalating ({exc})")
-        return {"resolved": False, "reason": "push_rejected", "detail": str(exc)[:400]}
+        return {"resolved": False, "reason": "push_rejected", "detail": str(exc)[:DETAIL_LIMIT]}
 
     log(f"conflict_resolver: merged origin/{default} into {branch} and pushed — {check_note}")
     return {"resolved": True, "files": diffstat, "summary": f"merged origin/{default} into {branch}; {check_note}"}
@@ -236,16 +247,51 @@ def _abort_and_clean(ws: Path, pre_merge_sha: str) -> None:
     git(ws, "clean", "-fd")
 
 
-def _escalate(ws: Path, pre_merge_sha: str, reason: str, detail: str, log) -> dict:
+def _escalate(
+    ws: Path,
+    pre_merge_sha: str,
+    reason: str,
+    detail: str,
+    log,
+    notes: list[str] | None = None,
+    review_notes: list[str] | None = None,
+) -> dict:
+    """The ONE escalation exit of the scoped path, and where a repaired reply's
+    parser notes reach the run output (HZ-157).
+
+    `notes` is parse_agent_reply's repair notes for the resolution reply this
+    run already consumed. EVERY escalation after that reply passes them — not
+    only the ones whose `detail` came out of it. An escalation for a reason the
+    reply had nothing to do with (the checks went red, the branch moved) still
+    ran off bytes the parser had to edit, the counter already recorded that a
+    repair happened, and a run output that does not say which reply was repaired
+    is the silent repair HZ-124 attempt 9 was rejected for.
+
+    The notes also get a log line of their own, emitted BEFORE the escalation
+    line that `detail` is sliced into: a note that only rode inside a string
+    someone later truncates is a note that did not arrive.
+
+    `review_notes` is the scoped review reply's own notes, for the one
+    escalation whose `detail` is that review's summary. They are passed RAW,
+    never pre-stamped into `detail`, so the cap below reserves room for both
+    groups together — a pre-stamped group sits inside the text the cap cuts.
+    """
     if reason not in ESCALATION_REASONS:
         # A reason the Node side has no message for would surface as a raw
         # detail string in the item's feedback. Report the generic one and say
         # loudly that this is a bug — never crash an escalation over it.
         log(f"conflict_resolver: BUG — unknown escalation reason {reason!r}; reporting merge_conflict")
         reason, detail = "merge_conflict", f"{reason}: {detail}"
-    log(f"conflict_resolver: escalating ({reason}) — {str(detail)[:200]}")
+    if notes:
+        log(f"conflict_resolver: the resolution reply was repaired to parse — {'; '.join(notes)}")
+    detail = _with_note_groups(
+        str(detail),
+        [("parser notes", review_notes or []), (RESOLUTION_NOTE_LABEL, notes or [])],
+        DETAIL_LIMIT,
+    )
+    log(f"conflict_resolver: escalating ({reason}) — {detail[:200]}")
     _abort_and_clean(ws, pre_merge_sha)
-    return {"resolved": False, "reason": reason, "detail": str(detail)[:400]}
+    return {"resolved": False, "reason": reason, "detail": detail}
 
 
 def _worktree_dirty_paths(ws: Path) -> set[str]:
@@ -276,17 +322,27 @@ def _scoped_resolve(ws, repo_full, branch, default, unmerged, pre_merge_sha, log
 
     Returns the same two shapes resolve() documents. Never raises for an
     ordinary refusal: every exit either pushes or escalates with a reason.
+
+    HZ-157: `resolution_notes` is declared before the first escalation and
+    handed to EVERY `_escalate()` call below, including the two that run before
+    any agent could have been dispatched (where it is still empty, and
+    _with_notes() is a no-op). One unconditional rule, no per-branch judgement:
+    test_conflict_scoped.py reads this function's own AST and fails any
+    `_escalate()` call here that omits `notes=`, because the first cut of this
+    item passed it on three branches out of eleven and the eight that dropped it
+    all looked fine in review.
     """
+    resolution_notes: list[str] = []
     try:
         files = _conflict_files(ws, unmerged)
     except UnsupportedConflict as exc:
-        return _escalate(ws, pre_merge_sha, "conflict_unsupported", str(exc), log)
+        return _escalate(ws, pre_merge_sha, "conflict_unsupported", str(exc), log, notes=resolution_notes)
 
     too_large = conflict_hunks.exceeds_caps(files)
     if too_large:
         # Checked before any dispatch: an oversized conflict must not cost an
         # agent call before being sent to the full cycle.
-        return _escalate(ws, pre_merge_sha, "conflict_too_large", too_large, log)
+        return _escalate(ws, pre_merge_sha, "conflict_too_large", too_large, log, notes=resolution_notes)
 
     hunk_count = sum(len(f.hunks) for f in files)
     paths = [f.path for f in files]
@@ -313,13 +369,21 @@ def _scoped_resolve(ws, repo_full, branch, default, unmerged, pre_merge_sha, log
     else:
         strategy = "agent"
         agent = _run_resolution_agent(ws, files, log)
+        resolution_notes = agent["notes"]
         if not agent["resolved"]:
-            return _escalate(ws, pre_merge_sha, "resolution_unsure", agent["detail"], log)
+            return _escalate(
+                ws, pre_merge_sha, "resolution_unsure", agent["detail"], log, notes=resolution_notes
+            )
 
     stray = sorted(_worktree_dirty_paths(ws) - dirty_before)
     if stray:
         return _escalate(
-            ws, pre_merge_sha, "resolution_out_of_scope", f"files changed outside the conflict: {', '.join(stray)}", log
+            ws,
+            pre_merge_sha,
+            "resolution_out_of_scope",
+            f"files changed outside the conflict: {', '.join(stray)}",
+            log,
+            notes=resolution_notes,
         )
 
     novel: list[tuple[str, str]] = []
@@ -328,11 +392,17 @@ def _scoped_resolve(ws, repo_full, branch, default, unmerged, pre_merge_sha, log
         try:
             regions = conflict_hunks.assert_in_scope(cf, (ws / cf.path).read_text())
         except MarkerRemaining as exc:
-            return _escalate(ws, pre_merge_sha, "markers_remaining", str(exc), log)
+            return _escalate(
+                ws, pre_merge_sha, "markers_remaining", str(exc), log, notes=resolution_notes
+            )
         except ScopeViolation as exc:
-            return _escalate(ws, pre_merge_sha, "resolution_out_of_scope", str(exc), log)
+            return _escalate(
+                ws, pre_merge_sha, "resolution_out_of_scope", str(exc), log, notes=resolution_notes
+            )
         except UnsupportedConflict as exc:
-            return _escalate(ws, pre_merge_sha, "conflict_unsupported", str(exc), log)
+            return _escalate(
+                ws, pre_merge_sha, "conflict_unsupported", str(exc), log, notes=resolution_notes
+            )
         delta = conflict_hunks.resolution_delta(cf, regions)
         novel.extend(delta.novel)
         dropped.extend(delta.dropped)
@@ -351,14 +421,37 @@ def _scoped_resolve(ws, repo_full, branch, default, unmerged, pre_merge_sha, log
         }
     else:
         review = _run_scoped_review(ws, files, delta, log)
+        # Popped, not read: the review dict lands in the run result as-is, and
+        # these two exist only so the rejection below can cap the detail
+        # without cutting either reply's notes. review["summary"] stays the
+        # stamped copy for that result.
+        review_detail = review.pop("detail", review["summary"])
+        review_notes = review.pop("notes", [])
         if review["verdict"] != "pass":
-            return _escalate(ws, pre_merge_sha, "scoped_review_rejected", review["summary"], log)
+            # Two groups — the REVIEW reply's notes and the RESOLUTION reply's —
+            # labelled differently (see _with_notes) and capped together.
+            return _escalate(
+                ws,
+                pre_merge_sha,
+                "scoped_review_rejected",
+                review_detail,
+                log,
+                notes=resolution_notes,
+                review_notes=review_notes,
+            )
 
     git(ws, "add", "--", *paths)
     if _unmerged_paths(ws):
         # Defensive: staging every conflicted path resolves the index, so this
         # should be impossible. Never commit a half-merged index.
-        return _escalate(ws, pre_merge_sha, "merge_conflict", "paths still unmerged after staging the resolution", log)
+        return _escalate(
+            ws,
+            pre_merge_sha,
+            "merge_conflict",
+            "paths still unmerged after staging the resolution",
+            log,
+            notes=resolution_notes,
+        )
     git(ws, "commit", "--no-edit")
 
     try:
@@ -366,7 +459,9 @@ def _scoped_resolve(ws, repo_full, branch, default, unmerged, pre_merge_sha, log
         # no push" has to mean a check suite that actually ran.
         check_note = run_checks(ws, log, require_ran=True, caller="conflict_resolver")
     except CheckFailure as exc:
-        return _escalate(ws, pre_merge_sha, "scoped_checks_failed", str(exc), log)
+        return _escalate(
+            ws, pre_merge_sha, "scoped_checks_failed", str(exc), log, notes=resolution_notes
+        )
 
     try:
         with hub_lock(repo_full):
@@ -384,10 +479,13 @@ def _scoped_resolve(ws, repo_full, branch, default, unmerged, pre_merge_sha, log
                     "push_rejected",
                     f"origin/{branch} moved to {remote_now[:8]} while resolving (resolved {pre_merge_sha[:8]})",
                     log,
+                    notes=resolution_notes,
                 )
             git(ws, "push", f"--force-with-lease=refs/heads/{branch}:{pre_merge_sha}", "origin", branch)
     except RuntimeError as exc:
-        return _escalate(ws, pre_merge_sha, "push_rejected", str(exc), log)
+        return _escalate(
+            ws, pre_merge_sha, "push_rejected", str(exc), log, notes=resolution_notes
+        )
 
     diffstat = git(ws, "diff", "--stat", f"{pre_merge_sha}..HEAD", check=False).stdout.strip()
     log(f"conflict_resolver: pushed the scoped resolution of {branch} ({strategy}) — {check_note}")
@@ -395,9 +493,14 @@ def _scoped_resolve(ws, repo_full, branch, default, unmerged, pre_merge_sha, log
         "resolved": True,
         "mode": "scoped",
         "files": diffstat,
-        "summary": (
+        # The resolution agent's parser notes ride the summary, which is the
+        # run output the orchestrator records for this gate action. Uncapped:
+        # nothing downstream slices this string, and a note cut in half is a
+        # note that did not arrive.
+        "summary": _with_notes(
             f"resolved {hunk_count} conflicted hunk(s) in {len(files)} file(s) "
-            f"while merging origin/{default} ({strategy}); {check_note}"
+            f"while merging origin/{default} ({strategy}); {check_note}",
+            resolution_notes,
         ),
         "resolution": {
             "strategy": strategy,
@@ -420,8 +523,14 @@ def _hunk_brief(cf: conflict_hunks.ConflictFile) -> str:
 
 def _run_resolution_agent(ws: Path, files, log) -> dict:
     """Dispatch the one resolution agent. Returns
-    {"resolved": bool, "detail": str} — "cannot be sure" is a first-class
-    reply, not a failure to parse.
+    {"resolved": bool, "detail": str, "notes": list[str]} — "cannot be sure" is
+    a first-class reply, not a failure to parse.
+
+    `detail` is RAW: the parser's repair notes ride `notes` only, and the caller
+    stamps them exactly once — _escalate() on every escalation, _scoped_resolve()'s
+    own summary on success. Folding them into `detail` here as well would double
+    them on the one branch whose detail is an escalation detail, and would still
+    miss the eight escalations that never look at `detail` at all.
 
     Deliberately called through the agent_runner MODULE, not a `from ... import
     run_agent` binding: the mechanical path's "never dispatches an agent" test
@@ -446,19 +555,69 @@ def _run_resolution_agent(ws: Path, files, log) -> dict:
         )
         parsed, notes = agent_runner.parse_agent_reply(reply.get("result") or "")
     except (AgentError, ValueError) as exc:
-        return {"resolved": False, "detail": f"the resolution agent did not return a usable answer: {exc}"}
+        # Nothing parsed, so there are no notes to carry — the exception IS the
+        # report.
+        return {
+            "resolved": False,
+            "detail": f"the resolution agent did not return a usable answer: {exc}",
+            "notes": [],
+        }
     if not isinstance(parsed, dict) or parsed.get("resolved") is not True:
         unsure = ""
         if isinstance(parsed, dict):
             unsure = str(parsed.get("unsure_reason") or parsed.get("summary") or "")
-        return {"resolved": False, "detail": unsure or "the agent reported it could not be sure of the resolution"}
-    return {"resolved": True, "detail": _with_notes(str(parsed.get("summary") or "resolved the conflicted hunks"), notes)}
+        return {
+            "resolved": False,
+            # HZ-157: `resolved: false` is an ORDINARY outcome, not an edge
+            # case, so it is exactly the branch a dropped note would hide on —
+            # and _escalate() is what stamps it, for every branch alike.
+            "detail": unsure or "the agent reported it could not be sure of the resolution",
+            "notes": notes,
+        }
+    return {
+        "resolved": True,
+        "detail": str(parsed.get("summary") or "resolved the conflicted hunks"),
+        "notes": notes,
+    }
 
 
-def _with_notes(text: str, notes: list[str]) -> str:
+def _with_notes(
+    text: str, notes: list[str], limit: int | None = None, *, label: str = "parser notes"
+) -> str:
     """Carry parse_agent_reply's repair notes into the text the orchestrator
-    records, so a repaired reply is never silently accepted."""
-    return f"{text} (parser notes: {'; '.join(notes)})" if notes else text
+    records, so a repaired reply is never silently accepted.
+
+    EVERY branch that consumes a parse_agent_reply result goes through here —
+    including the plain `resolved: false` and no-verdict-object outcomes, and
+    every escalation that happens after a reply was parsed (see _escalate). A
+    reply whose bytes the parser had to change is not an edge case, and dropping
+    the note on an ordinary branch is the silent repair HZ-157 exists to prevent.
+
+    `label` names WHOSE reply was repaired. One escalation detail can carry two
+    groups — the scoped review's own notes are already inside the summary that
+    becomes the detail — and two groups under one identical heading would read
+    as a bug rather than as two repaired replies. Every label contains "parser
+    notes", so one substring still finds any of them.
+
+    `limit` reserves room for the notes rather than letting a later slice cut
+    them off the end — the same rule, for the same reason, as
+    agent_runner.stamp_notes(). None means the caller imposes no cap.
+    """
+    return _with_note_groups(text, [(label, notes)], limit)
+
+
+def _with_note_groups(text: str, groups: list[tuple[str, list[str]]], limit: int | None = None) -> str:
+    """_with_notes for several labelled groups at once. The room for EVERY
+    group is reserved before `text` is cut, so no group can be the one a cap
+    slices in half."""
+    suffix = "".join(f" ({label}: {'; '.join(notes)})" for label, notes in groups if notes)
+    if not suffix:
+        return text
+    if limit is None:
+        return text + suffix
+    if len(suffix) >= limit:
+        return suffix[:limit]  # pathological notes: the note wins, not the text
+    return text[: limit - len(suffix)] + suffix
 
 
 def _resolution_prompt(files) -> str:
@@ -508,19 +667,39 @@ def _run_scoped_review(ws: Path, files, delta, log) -> dict:
         parsed, notes = agent_runner.parse_agent_reply(reply.get("result") or "")
     except (AgentError, ValueError) as exc:
         return {"verdict": "fail", "reviewed": True, "summary": f"the scoped review returned no usable verdict: {exc}"}
+    if notes:
+        # The run output's own line for this reply's repair (HZ-157): the
+        # summary below is capped and may later be cut again, a log line is not.
+        log(f"conflict_resolver: the scoped review reply was repaired to parse — {'; '.join(notes)}")
     if not isinstance(parsed, dict):
-        return {"verdict": "fail", "reviewed": True, "summary": "the scoped review returned no verdict object"}
+        # Repaired bytes that parsed to a non-object still had their bytes
+        # changed — the note belongs on this branch too (HZ-157).
+        detail = "the scoped review returned no verdict object"
+        return {
+            "verdict": "fail",
+            "reviewed": True,
+            "summary": _with_notes(detail, notes, DETAIL_LIMIT),
+            "detail": detail,
+            "notes": notes,
+        }
     section = _review_section(parsed)
-    summary = _with_notes(str(parsed.get("summary") or ""), notes)
+    summary = str(parsed.get("summary") or "")
     if section["verdict"] != "pass" and section["findings"]:
         first = section["findings"][0]
-        detail = first.get("detail") if isinstance(first, dict) else None
-        if detail:
-            summary = f"{summary} — {detail}" if summary else str(detail)
+        finding = first.get("detail") if isinstance(first, dict) else None
+        if finding:
+            summary = f"{summary} — {finding}" if summary else str(finding)
+    summary = (summary or "no summary given")[:DETAIL_LIMIT]
     return {
         "verdict": section["verdict"],
         "reviewed": True,
-        "summary": (summary or "no summary given")[:400],
+        # The notes are stamped AFTER the text is assembled, and _with_notes
+        # reserves their room inside the cap, so no slice can cut them.
+        "summary": _with_notes(summary, notes, DETAIL_LIMIT),
+        # RAW summary and notes, for _escalate() to cap together with the
+        # resolution reply's notes. _scoped_resolve() pops both.
+        "detail": summary,
+        "notes": notes,
         "findings": section["findings"],
     }
 
