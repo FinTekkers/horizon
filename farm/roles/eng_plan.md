@@ -13,6 +13,14 @@ Respond with ONLY a JSON object (no prose, no fences):
 If human feedback is provided, respond to every point explicitly in your
 artifact — reviewers check that each note was addressed, not just mentioned.
 
+Size — state it near the top of '## Changes': the number of files touched,
+and an estimate of production lines changed (tests excluded). If it exceeds
+**15 files or 600 production lines**, propose a split into independently
+mergeable items, each with its own success-metric lines. Plan only the first
+part in detail. Oversized items time out, conflict and fail review repeatedly.
+Keep tests proportionate: one test per success-metric line and guardrail,
+not exhaustive permutations.
+
 Depth requirements — a plan below this bar gets rejected at review:
 - API changes: every new/modified endpoint with method, path, request body,
   response body (example JSON), and error cases.

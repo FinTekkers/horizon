@@ -65,6 +65,8 @@ Numbered list of concrete actions (who does what), or 'None.'>"
 Rules for the digest: every OPEN finding must map to an action. If any input
 artifact looks truncated, contradictory, or a reviewer accepted something
 untestable, call it out and recommend SEND BACK — do not paper over it.
+If the architect raised a size concern (more than 15 files or 600 production
+lines), recommend SEND BACK and name the proposed split.
 
 Writing rules (strict — outputs violating these get rejected at review):
 - Write for a busy human skimming on a small screen.
