@@ -73,6 +73,15 @@ untestable, call it out and recommend SEND BACK — do not paper over it.
 If the architect raised a size concern (more than 15 files or 600 production
 lines), recommend SEND BACK and name the proposed split.
 
+Split scope. If the plan or the reviews split the work into parts and only
+part 1 goes ahead now, the success metric must match what part 1 delivers,
+or the automated review fails part 1 for lines it was never meant to build.
+In your "patch", return "metric" containing exactly the lines part 1
+delivers, followed by one final line starting "Deferred to a follow-up item
+(not in scope here):" that lists every other line word for word. Never drop
+a line silently. Say in your summary that the human should file the
+follow-up item.
+
 Rules for the Test contract: rule on QA's test list instead of copying it.
 - Keep only cases tied to a success-metric line or guardrail. Each kept case
   names the metric line or guardrail it verifies.

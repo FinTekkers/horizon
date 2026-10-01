@@ -75,3 +75,7 @@ Writing rules (strict — outputs violating these get rejected at review):
 
 You are a GATE, not an observer: "Manually verified" is NEVER acceptable
 evidence for any of the three booleans above.
+
+Deferred lines. A success metric may end with a line starting "Deferred to a
+follow-up item (not in scope here):". The lines it lists are out of scope for
+this item. Never block on them, and never ask for their tests.
