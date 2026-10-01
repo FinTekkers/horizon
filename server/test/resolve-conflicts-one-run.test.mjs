@@ -19,6 +19,7 @@ import { loginFixtureUser } from './helpers/session.mjs'
 
 process.env.HORIZON_DB = join(mkdtempSync(join(tmpdir(), 'horizon-resolve-one-run-')), 'test.db')
 process.env.FARM_URL = 'http://farm.test'
+process.env.FARM_CONFLICT_RESOLVE_TIMEOUT_MS = '60000' // < fetch header ceiling: stays on the stubbed fetch path
 delete process.env.GITHUB_WEBHOOK_SECRET
 
 const { db } = await import('../src/db.js')

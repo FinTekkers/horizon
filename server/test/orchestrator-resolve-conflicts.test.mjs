@@ -19,6 +19,7 @@ import { join } from 'node:path'
 
 process.env.HORIZON_DB = join(mkdtempSync(join(tmpdir(), 'horizon-orch-resolve-conflicts-')), 'test.db')
 process.env.FARM_URL = 'http://farm.test'
+process.env.FARM_CONFLICT_RESOLVE_TIMEOUT_MS = '60000' // < fetch header ceiling: stays on the stubbed fetch path
 
 const { db } = await import('../src/db.js')
 const store = await import('../src/store.js')
