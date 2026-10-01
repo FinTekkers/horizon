@@ -1704,7 +1704,8 @@ export function buildApp({ logger = true, onRoute = null } = {}) {
     },
   )
 
-  // Activate a project: the bot farm restarts with that project's context.
+  // Activate a project: the board shows it, and it is enabled (HZ-207). No
+  // farm restart and no cancel — `restarting` stays in the body, always false.
   fastify.post(
     '/api/projects/:id/activate',
     {
@@ -1720,10 +1721,43 @@ export function buildApp({ logger = true, onRoute = null } = {}) {
     (request, reply) => {
       const project = store.listProjects().find((p) => p.id === request.params.id)
       if (!project) return reply.code(404).send({ error: 'Project not found' })
-      if (project.id === getActiveProjectId()) return { ok: true, alreadyActive: true }
-      orchestrator.switchProject(project.id, request.log)
+      if (!project.enabled) orchestrator.setProjectEnabled(project.id, true, request.log)
+      if (project.id === getActiveProjectId()) {
+        if (!project.enabled) broadcast()
+        return { ok: true, alreadyActive: true }
+      }
+      setSetting('active_project_id', String(project.id))
       broadcast()
-      return { ok: true, restarting: true }
+      return { ok: true, restarting: false }
+    },
+  )
+
+  // HZ-207: turn a project's dispatch on or off. A flag write only — no farm
+  // restart, and no step in any project is cancelled or re-queued.
+  fastify.post(
+    '/api/projects/:id/enabled',
+    {
+      schema: {
+        params: {
+          type: 'object',
+          required: ['id'],
+          properties: { id: { type: 'integer', minimum: 1 } },
+        },
+        body: {
+          type: 'object',
+          required: ['enabled'],
+          properties: { enabled: { type: 'boolean' } },
+        },
+        response: { 200: OK_OBJECT, 404: ERROR_OBJECT, 409: ERROR_OBJECT },
+      },
+    },
+    (request, reply) => {
+      const project = store.listProjects().find((p) => p.id === request.params.id)
+      if (!project) return reply.code(404).send({ error: 'Project not found' })
+      const result = orchestrator.setProjectEnabled(project.id, request.body.enabled, request.log)
+      if (result.error) return reply.code(409).send({ error: result.error })
+      broadcast()
+      return result
     },
   )
 

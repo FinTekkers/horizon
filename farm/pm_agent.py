@@ -41,7 +41,7 @@ from .config import (
     slugify,
 )
 from .rules import render_rules_section
-from .task_files import read_task
+from .task_files import read_task, task_project
 
 # The fields a PM revision may patch, and how long each may be — DERIVED from
 # domain/fields.json (HZ-134), which is also where server/src/app.js's POST
@@ -327,9 +327,9 @@ def render_project_context(ctx) -> str:
 def build_prompt(task: dict) -> str:
     item = task["item"]
     step = task["step"]
-    project = task.get("project") or {}
+    project = task_project(task)
     lines = [
-        f"Project: {project.get('name', 'unknown')}",
+        f"Project: {project['name']}",
         f"Work item {item['id']}: {item['title']}",
         f"  repo: {item.get('repo') or '(none)'}   issue: #{item.get('issue') or '-'}   priority: {item.get('priority')}",
         f"  outcome/description: {item.get('desc') or '(empty)'}",
@@ -652,9 +652,8 @@ def run_task(path: Path) -> int:
     if task is None:
         log(f"task file {path.name} is unusable: {why} — keeping it for farmd's reconcile")
         return 1
-    project = task.get("project") if isinstance(task.get("project"), dict) else {}
     try:
-        delivered = process(task, slugify(project.get("name") or "unknown"))
+        delivered = process(task, slugify(task_project(task)["name"]))
     except Exception as exc:
         log(f"run {task['run_id']}: result not delivered ({exc}) — keeping the task file for farmd's reconcile")
         return 1

@@ -40,7 +40,9 @@ def make_task(run_id, item_id="hz-3", step_index=10, attempt=2):
     return {
         "run_id": run_id,
         "attempt": attempt,
-        "item": {"id": item_id},
+        # HZ-207: /steps/run refuses a task without its own project and repo.
+        "project": {"id": 1, "name": "FinTekkers"},
+        "item": {"id": item_id, "repo": "acme/demo"},
         "step": {"index": step_index, "label": "x"},
     }
 
@@ -75,6 +77,8 @@ def running_farm(monkeypatch):
     The background dispatcher consumes that queue since HZ-212, so its tick
     is paused first — a test reads its own queue file without a race."""
     monkeypatch.setattr(farmd, "_dispatch_tick", lambda: None)
+    # HZ-207: a task's repo has no hub in the test FARM_HOME; never clone it.
+    monkeypatch.setattr(farmd, "_provision_hub", lambda repo: False)
     saved = dict(farmd.state)
     farmd.state.update(status="running", project={"id": 1, "name": "FinTekkers"})
     try:
@@ -166,8 +170,8 @@ def test_steps_run_stamps_the_repos_rules_into_the_task_payload(running_farm):
 
 
 def test_steps_run_without_matching_rules_stamps_an_empty_list(running_farm):
-    farmd.state["project"] = {"id": 2, "name": "NoSuchProject"}
     task = make_task(102, item_id="X-1", step_index=9)
+    task["project"] = {"id": 2, "name": "NoSuchProject"}
     task["item"]["repo"] = "acme/unmapped"
     res = client.post("/steps/run", json=task)
     assert res.status_code == 200
