@@ -348,6 +348,16 @@ def _notes_with_scan(text: str, parsed: Any, *, scanned: bool) -> list[str]:
 # 3. An `ambiguous` rung — one where the bytes admit more than one reading —
 #    may only run AFTER the lossless retry has actually run. Declared as a
 #    field, not argued in prose, so part 3's rungs inherit the rule.
+#
+# Rungs are tried ONE AT A TIME and never composed, which is a deliberate limit
+# rather than an oversight: a reply carrying both defects (`{'a':1,}`) leaves
+# bytes that still fail after either rung alone, so no rung succeeds and the
+# reply raises. Raising is a correct outcome here — composing rungs would stack
+# an unambiguous edit underneath an ambiguous one and make the combined
+# transform's reading harder to defend than either part, for a shape nothing has
+# been observed to produce. The near-miss sweep in
+# farm/tests/test_agent_runner_repair.py carries `{'a':1,}` so the limit is
+# pinned, and the next change to this ladder is a decision rather than a drift.
 
 
 class Repair(NamedTuple):

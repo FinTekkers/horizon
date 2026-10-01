@@ -34,6 +34,29 @@ os.environ.pop("ANTHROPIC_API_KEY", None)
 sys.path.insert(0, str(REPO_ROOT))
 
 
+@pytest.fixture(autouse=True)
+def repair_counter(tmp_path, monkeypatch):
+    """Repoints agent_runner's repair counter into tmp_path for EVERY test.
+
+    HZ-157: parse_agent_reply() ticks a real file on disk, and the default is
+    $FARM_HOME/state/parser-repairs.json. Only repointing it in the tests that
+    assert on counts leaves every other test that happens to repair a reply
+    ticking the shared counter — so the totals the checked-in script prints on a
+    dev box mix in test traffic, and a count assertion reads another test's
+    leftovers. Autouse, because the tests that need it are not the ones that
+    cause the problem.
+
+    farm.agent_runner is imported lazily: farm.config reads the environment at
+    import time, so nothing under farm/ may be imported until the block above
+    has run.
+    """
+    from farm import agent_runner
+
+    path = tmp_path / "repair-counter" / "parser-repairs.json"
+    monkeypatch.setattr(agent_runner, "REPAIR_COUNTS_PATH", path)
+    return path
+
+
 @pytest.fixture
 def muse_smoke_test_persona(monkeypatch):
     """Registers a test-only persona mapped to the Muse provider.

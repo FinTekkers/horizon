@@ -1924,13 +1924,9 @@ def test_an_exhaustion_inside_the_retry_is_reported_with_reason_turn_cap(tmp_pat
 # retry, which is what makes its tier rules different.
 
 
-@pytest.fixture
-def repair_counter(tmp_path, monkeypatch):
-    from farm import agent_runner
-
-    path = tmp_path / "parser-repairs.json"
-    monkeypatch.setattr(agent_runner, "REPAIR_COUNTS_PATH", path)
-    return path
+# `repair_counter` is the suite-wide autouse fixture in farm/tests/conftest.py,
+# which repoints the counter into tmp_path. Named in the signatures below so the
+# dependency of a count assertion is visible where it is made.
 
 
 def _mangle(payload: dict, shape: str) -> str:

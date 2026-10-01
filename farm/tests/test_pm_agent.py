@@ -995,13 +995,9 @@ def test_turn_cap_is_retryable_in_the_shared_vocabulary():
 # being spot-checked on one surface.
 
 
-@pytest.fixture
-def repair_counter(tmp_path, monkeypatch):
-    from farm import agent_runner
-
-    path = tmp_path / "parser-repairs.json"
-    monkeypatch.setattr(agent_runner, "REPAIR_COUNTS_PATH", path)
-    return path
+# `repair_counter` is the suite-wide autouse fixture in farm/tests/conftest.py,
+# which repoints the counter into tmp_path. Named in the signatures below so the
+# dependency of a count assertion is visible where it is made.
 
 
 def _malformed(shape: str) -> str:

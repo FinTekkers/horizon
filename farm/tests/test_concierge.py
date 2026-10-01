@@ -595,15 +595,10 @@ def test_a_parse_note_is_appended_after_the_action_notes(stub, monkeypatch):
 # other, and these tests assert both.
 
 
-@pytest.fixture
-def repair_counter(tmp_path, monkeypatch):
-    """Repoints the repair counter into tmp_path — poll_once() runs the real
-    parser, which ticks a real file."""
-    from farm import agent_runner
-
-    path = tmp_path / "parser-repairs.json"
-    monkeypatch.setattr(agent_runner, "REPAIR_COUNTS_PATH", path)
-    return path
+# `repair_counter` is the suite-wide autouse fixture in farm/tests/conftest.py,
+# which repoints the counter into tmp_path — poll_once() runs the real parser,
+# which ticks a real file. Named in the signatures below so the dependency of a
+# count assertion is visible where it is made.
 
 
 def _replying(text, monkeypatch):

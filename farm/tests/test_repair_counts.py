@@ -21,7 +21,13 @@ from pathlib import Path
 import pytest
 
 from farm.agent_runner import REPAIRS
+from farm.agent_runner import REPAIR_COUNTS_PATH as REAL_COUNTS_PATH
 from farm.tools import repair_counts as tool
+
+# REAL_COUNTS_PATH is bound HERE, at import, deliberately: conftest's autouse
+# `repair_counter` fixture repoints agent_runner.REPAIR_COUNTS_PATH into tmp_path
+# for every test, and the default-path test below has to compare the script's
+# default against the parser's real one, not against that repoint.
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 RUN_TIMEOUT_S = 60
@@ -87,11 +93,9 @@ def test_the_script_survives_a_corrupt_counter_file(tmp_path):
 def test_the_default_path_is_the_counter_the_parser_actually_writes():
     """No --path: the script must read the same file record_repair() ticks, or
     it would print zeros forever while the farm repaired replies all day."""
-    from farm import agent_runner
-
     result = run_script()
     assert result.returncode == 0, result.stderr
-    assert str(agent_runner.REPAIR_COUNTS_PATH) in result.stdout
+    assert str(REAL_COUNTS_PATH) in result.stdout
 
 
 def test_the_script_reports_totals_the_parser_really_wrote(tmp_path, monkeypatch):

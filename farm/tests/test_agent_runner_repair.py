@@ -48,20 +48,18 @@ NEAR_MISSES = [
     pytest.param('{"a":1', id="truncated-no-closer"),
     pytest.param('{"a":1,,}', id="double-comma"),
     pytest.param('{"a":,}', id="comma-for-a-value"),
+    # Both defects at once. Rungs are tried one at a time and never composed, so
+    # each one alone leaves bytes that still fail and the reply raises — see the
+    # ladder comment in agent_runner.py for why that limit is deliberate.
+    pytest.param("{'a':1,}", id="both-defects-at-once"),
 ]
 
 
-@pytest.fixture(autouse=True)
-def counter(tmp_path, monkeypatch):
-    """Repoints the repair counter into tmp_path for every test in this file.
-
-    Not optional: parse_agent_reply() ticks a real file, and without this the
-    suite's own repairs would accumulate in the shared state dir and each
-    counter assertion would read another test's leftovers.
-    """
-    path = tmp_path / "state" / "parser-repairs.json"
-    monkeypatch.setattr(agent_runner, "REPAIR_COUNTS_PATH", path)
-    return path
+# The counter is repointed into tmp_path for every test in the suite by the
+# autouse `repair_counter` fixture in farm/tests/conftest.py. It lives there
+# rather than here because parse_agent_reply() ticks a real file from ANY test
+# that happens to repair a reply, not only from the ones that assert on counts —
+# so the tests that need the isolation are not the tests that cause the problem.
 
 
 def recorder():
@@ -442,34 +440,34 @@ def test_an_injected_seam_note_still_reaches_a_repaired_reply(monkeypatch):
 # ---- the counter ----
 
 
-def test_each_repair_path_is_counted_separately(counter):
+def test_each_repair_path_is_counted_separately(repair_counter):
     retry, _calls = recorder()
     parse_agent_reply(TRAILING_COMMA)
     parse_agent_reply(TRAILING_COMMA)
     parse_agent_reply(SINGLE_QUOTES, retry)
     assert repair_counts() == {"trailing_comma": 2, "single_quotes": 1}
-    assert counter.exists()
+    assert repair_counter.exists()
 
 
-def test_the_counter_ticks_with_the_state_directory_absent(counter):
+def test_the_counter_ticks_with_the_state_directory_absent(repair_counter):
     """Without an explicit mkdir every tick is dropped into a missing directory
     and the script prints zeros forever — a metric that passes its own test
     while measuring nothing. STATE_DIR is created by config.ensure_dirs() at
     farmd startup, and an agent process may never have run it."""
-    assert not counter.parent.exists()
+    assert not repair_counter.parent.exists()
     parse_agent_reply(TRAILING_COMMA)
     assert repair_counts() == {"trailing_comma": 1}
 
 
-def test_a_corrupt_counter_file_never_fails_a_parse(counter):
-    counter.parent.mkdir(parents=True)
-    counter.write_text("{not json at all")
+def test_a_corrupt_counter_file_never_fails_a_parse(repair_counter):
+    repair_counter.parent.mkdir(parents=True)
+    repair_counter.write_text("{not json at all")
     parsed, notes = parse_agent_reply(TRAILING_COMMA)
     assert parsed == {"a": 1} and notes == [TRAILING_COMMA_NOTE]
     assert repair_counts() == {"trailing_comma": 1}  # rewritten from scratch
 
 
-def test_an_unwritable_counter_never_fails_a_parse(counter, monkeypatch):
+def test_an_unwritable_counter_never_fails_a_parse(repair_counter, monkeypatch):
     def boom(*args, **kwargs):
         raise OSError("read-only filesystem")
 
@@ -478,10 +476,10 @@ def test_an_unwritable_counter_never_fails_a_parse(counter, monkeypatch):
     assert parsed == {"a": 1} and notes == [TRAILING_COMMA_NOTE]
 
 
-def test_unknown_keys_survive_a_tick(counter):
+def test_unknown_keys_survive_a_tick(repair_counter):
     """A rung added by part 3 must not erase part 2's totals, and vice versa."""
-    counter.parent.mkdir(parents=True)
-    counter.write_text(json.dumps({"truncation": 7}))
+    repair_counter.parent.mkdir(parents=True)
+    repair_counter.write_text(json.dumps({"truncation": 7}))
     parse_agent_reply(TRAILING_COMMA)
     assert repair_counts() == {"truncation": 7, "trailing_comma": 1}
 
@@ -509,12 +507,12 @@ def test_record_repair_accepts_an_explicit_path(tmp_path):
     assert repair_counts(path) == {"trailing_comma": 2}
 
 
-def test_no_temporary_file_is_left_behind(counter):
+def test_no_temporary_file_is_left_behind(repair_counter):
     parse_agent_reply(TRAILING_COMMA)
-    assert list(counter.parent.iterdir()) == [counter]
+    assert list(repair_counter.parent.iterdir()) == [repair_counter]
 
 
-def test_a_failed_rename_leaves_no_temporary_file_behind(counter, monkeypatch):
+def test_a_failed_rename_leaves_no_temporary_file_behind(repair_counter, monkeypatch):
     """The split failure the happy-path test above cannot see: write_text()
     SUCCEEDS and os.replace() is what raises. Without an unlink in the handler
     a half-written `.tmp` sits in STATE_DIR forever, and nothing cleans it up —
@@ -523,23 +521,23 @@ def test_a_failed_rename_leaves_no_temporary_file_behind(counter, monkeypatch):
     def boom(src, dst):
         raise OSError("rename failed")
 
-    counter.parent.mkdir(parents=True)
+    repair_counter.parent.mkdir(parents=True)
     monkeypatch.setattr(agent_runner.os, "replace", boom)
 
     parsed, notes = parse_agent_reply(TRAILING_COMMA)
 
     assert parsed == {"a": 1} and notes == [TRAILING_COMMA_NOTE]
-    assert list(counter.parent.iterdir()) == [], "a .tmp sibling was left behind"
+    assert list(repair_counter.parent.iterdir()) == [], "a .tmp sibling was left behind"
 
 
-def test_a_cleanup_that_also_fails_still_never_fails_a_parse(counter, monkeypatch):
+def test_a_cleanup_that_also_fails_still_never_fails_a_parse(repair_counter, monkeypatch):
     """The handler's own handler. Nothing about a counter — not the write, not
     the rename, not tidying up after them — may be the reason a step failed."""
 
     def boom(*args, **kwargs):
         raise OSError("filesystem gone")
 
-    counter.parent.mkdir(parents=True)
+    repair_counter.parent.mkdir(parents=True)
     monkeypatch.setattr(agent_runner.os, "replace", boom)
     monkeypatch.setattr(Path, "unlink", boom)
 

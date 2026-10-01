@@ -938,13 +938,10 @@ REPAIRED_FAILING_REVIEW = (
 )
 
 
-@pytest.fixture
-def repair_counter(tmp_path, monkeypatch):
-    """Repoints the repair counter, so a count assertion here reads this test's
-    own ticks rather than whatever the rest of the suite repaired first."""
-    path = tmp_path / "repair-state" / "parser-repairs.json"
-    monkeypatch.setattr(agent_runner, "REPAIR_COUNTS_PATH", path)
-    return path
+# The counter is repointed into tmp_path for every test in the suite by the
+# autouse `repair_counter` fixture in farm/tests/conftest.py, so the count
+# assertions below read this test's own ticks. Tests still name the fixture
+# where they assert on counts, so the dependency is visible in the signature.
 
 
 def test_a_repaired_resolution_reply_is_pushed_with_its_parser_note(
@@ -1108,7 +1105,11 @@ def test_the_deterministic_path_parses_no_reply_and_reports_no_note(
     [
         pytest.param(
             lambda ws, files, delta, log: conflict_resolver._run_resolution_agent(ws, files, log),
-            "detail",
+            # `notes`, not `detail`: _run_resolution_agent returns a RAW detail
+            # and _escalate() is what stamps the note onto it, for every branch
+            # alike. That the stamp then reaches the run output is proved
+            # through resolve() above.
+            "notes",
             id="resolution",
         ),
         pytest.param(conflict_resolver._run_scoped_review, "summary", id="review"),
@@ -1133,3 +1134,184 @@ def test_a_reply_that_parses_to_a_non_object_still_reports_its_note(monkeypatch,
     result = runner(Path("/nowhere"), [], empty_delta, lambda *_: None)
 
     assert TRAILING_COMMA_NOTE in result[surface], "a non-object reply was repaired silently"
+
+
+# ---- every escalation AFTER a parsed reply reports that reply's repair ----
+# The first cut of this item stamped the note on three branches of eleven. The
+# eight that dropped it escalate for reasons the reply itself had nothing to do
+# with — the checks went red, a marker was left behind, the branch moved — and
+# that is exactly what made them easy to miss: the detail string reads complete
+# without the note. The counter had already recorded a repair, so no surface
+# said which reply it happened to.
+
+
+def out_of_scope_resolution(reply):
+    """Resolves the markers and then wanders into another file — the stray-path
+    escalation, which never looks at the agent's own `detail`."""
+
+    resolve = resolve_markers("line2 (both)\n", reply=reply)
+
+    def agent(ws):
+        resolve(ws)
+        (ws / "other.txt").write_text("while I was here I fixed this too\n")
+        return reply
+
+    return agent
+
+
+POST_RESOLUTION_ESCALATIONS = [
+    pytest.param(
+        "scoped_checks_failed",
+        lambda mp: mp.setenv("FARM_CHECK_CMD", "exit 1"),
+        lambda reply: resolve_markers("line2 (both)\n", reply=reply),
+        None,
+        id="scoped_checks_failed",
+    ),
+    pytest.param(
+        "resolution_out_of_scope",
+        None,
+        out_of_scope_resolution,
+        lambda w: (w / "other.txt").write_text("untouched\n"),
+        id="resolution_out_of_scope",
+    ),
+    pytest.param(
+        # Claims success while leaving the marked region exactly as it found it.
+        "markers_remaining",
+        None,
+        lambda reply: (lambda ws: reply),
+        None,
+        id="markers_remaining",
+    ),
+]
+
+
+@pytest.mark.parametrize("reason,prepare,resolution,extra_ours", POST_RESOLUTION_ESCALATIONS)
+def test_an_escalation_after_a_repaired_resolution_reply_still_reports_the_repair(
+    isolated_workspaces_dir, monkeypatch, repair_counter, reason, prepare, resolution, extra_ours
+):
+    """The gate action's run output has to name the repair even when the reason
+    it escalated for is unrelated to the reply.
+
+    The counter is the tell: it ticks on every one of these, so a detail with no
+    note means the totals record a repair that no surface can be traced back to.
+    """
+    tmp_path = isolated_workspaces_dir
+    _hub, origin = make_repo_hub(tmp_path)
+    install(monkeypatch, FakeAgents(resolution=resolution(REPAIRED_RESOLUTION), review=PASSING_REVIEW))
+    branch_sha = same_line_conflict(tmp_path, origin, "HZ-40", extra_ours=extra_ours)
+    if prepare:
+        prepare(monkeypatch)
+
+    result = conflict_resolver.resolve("acme/demo", "HZ-40", log=lambda *_: None)
+
+    assert result["reason"] == reason
+    assert agent_runner.repair_counts() == {"trailing_comma": 1}
+    assert TRAILING_COMMA_NOTE in result["detail"], "a repaired reply escalated silently"
+    assert_nothing_pushed_and_clean(origin, "HZ-40", branch_sha)
+
+
+def test_a_repaired_resolution_rejected_by_the_review_reports_both_repairs(
+    isolated_workspaces_dir, monkeypatch, repair_counter
+):
+    """Two replies repaired, one escalation detail. Both groups survive, and
+    they are labelled apart so the detail does not read as one note printed
+    twice."""
+    tmp_path = isolated_workspaces_dir
+    _hub, origin = make_repo_hub(tmp_path)
+    install(
+        monkeypatch,
+        FakeAgents(
+            resolution=resolve_markers("line2 (a guess)\n", reply=REPAIRED_RESOLUTION),
+            review=REPAIRED_FAILING_REVIEW,
+        ),
+    )
+    branch_sha = same_line_conflict(tmp_path, origin, "HZ-41")
+
+    result = conflict_resolver.resolve("acme/demo", "HZ-41", log=lambda *_: None)
+
+    assert result["reason"] == "scoped_review_rejected"
+    assert agent_runner.repair_counts() == {"trailing_comma": 2}
+    assert "lost the PR's own import" in result["detail"]
+    assert conflict_resolver.RESOLUTION_NOTE_LABEL in result["detail"]
+    assert result["detail"].count("parser notes") == 2, "one of the two repaired replies is unreported"
+    assert_nothing_pushed_and_clean(origin, "HZ-41", branch_sha)
+
+
+def test_the_repair_also_gets_a_log_line_of_its_own(isolated_workspaces_dir, monkeypatch, repair_counter):
+    """The escalation log line is sliced to 200 chars. A note that only rode
+    inside it would be the first thing a long detail dropped, so the notes get
+    their own unsliced line."""
+    tmp_path = isolated_workspaces_dir
+    _hub, origin = make_repo_hub(tmp_path)
+    install(monkeypatch, FakeAgents(resolution=lambda ws: REPAIRED_UNSURE))
+    same_line_conflict(tmp_path, origin, "HZ-42")
+    logged: list[str] = []
+
+    conflict_resolver.resolve("acme/demo", "HZ-42", log=logged.append)
+
+    assert any(TRAILING_COMMA_NOTE in line and "escalating" not in line for line in logged)
+
+
+def test_every_escalation_in_the_scoped_path_passes_its_notes():
+    """Structural, because per-branch review is what missed eight of them.
+
+    _scoped_resolve() declares `resolution_notes` before its first escalation
+    precisely so this rule has no exemptions: a new escalation added without
+    `notes=` fails here rather than quietly joining the eight. resolve()'s own
+    mechanical-path escalation is out of scope — no reply is ever parsed on it.
+    """
+    import ast
+
+    source = Path(conflict_resolver.__file__).read_text()
+    scoped = next(
+        node
+        for node in ast.walk(ast.parse(source))
+        if isinstance(node, ast.FunctionDef) and node.name == "_scoped_resolve"
+    )
+    calls = [
+        node
+        for node in ast.walk(scoped)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "_escalate"
+    ]
+    assert len(calls) >= 11, "the scoped path's escalations are not all going through _escalate()"
+    missing = [call.lineno for call in calls if "notes" not in {kw.arg for kw in call.keywords}]
+    assert missing == [], f"_escalate() called without notes= at line(s) {missing}"
+
+
+def test_an_escalation_with_no_notes_is_byte_identical_to_before(monkeypatch):
+    """The control: the notes channel adds nothing to a run that repaired
+    nothing, so the assertions above cannot be passing on an unconditional
+    stamp."""
+    calls, logged = [], []
+    monkeypatch.setattr(conflict_resolver, "git", lambda ws, *args, **kw: calls.append(args))
+
+    result = conflict_resolver._escalate(
+        Path("/nowhere"), "abc1234", "markers_remaining", "a marker was left behind", logged.append, notes=[]
+    )
+
+    assert result == {
+        "resolved": False,
+        "reason": "markers_remaining",
+        "detail": "a marker was left behind",
+    }
+    assert not any("parser notes" in line for line in logged)
+    assert [a[0] for a in calls] == ["merge", "reset", "clean"]
+
+
+def test_a_pathological_note_is_kept_at_the_cost_of_the_detail(monkeypatch):
+    """The reserve-room rule, at the one place it bites: a detail already at the
+    cap must lose its tail rather than the note. The note is the fact nothing
+    else in the system records."""
+    monkeypatch.setattr(conflict_resolver, "git", lambda ws, *args, **kw: None)
+
+    result = conflict_resolver._escalate(
+        Path("/nowhere"),
+        "abc1234",
+        "scoped_checks_failed",
+        "x" * conflict_resolver.DETAIL_LIMIT,
+        lambda *_: None,
+        notes=[TRAILING_COMMA_NOTE],
+    )
+
+    assert len(result["detail"]) == conflict_resolver.DETAIL_LIMIT
+    assert result["detail"].endswith(f"{TRAILING_COMMA_NOTE})")
