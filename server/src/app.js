@@ -664,18 +664,17 @@ export function buildApp({ logger = true, onRoute = null } = {}) {
   // activity log, so it must not open the PR on GitHub as if GitHub refused.
   const gateFailureBody = (result) => (result.premerge ? { error: result.error, premerge: true } : { error: result.error })
 
-  // HZ-183: items whose Accept is mid pre-merge check (or mid merge). A fast
-  // 409 for the double click; farm/premerge.py's per-item file lock is the
-  // real mutex, and it survives a server restart this Set does not.
-  const premergeInFlight = new Set()
-
   // HZ-183: test-merge the PR head into the current base tip and run the
   // repo's checks there (server/src/premerge.js -> farm/premerge.py) before
   // the merge call. Resolves { headSha } when the merge may proceed with
   // exactly that head, or a performGateApproval error result. Every
   // inconclusive outcome blocks: this can only stop a merge, never make one.
-  async function preMergeChecks(id, item) {
-    const blocked = (text, error) => {
+  //
+  // HZ-216: `token` is the item's premerge gate_action claim. Each error result
+  // also carries `outcome` — what that row finishes as — which the routes do
+  // not send (gateFailureBody picks error and premerge only).
+  async function preMergeChecks(id, item, token) {
+    const blocked = (text, error, outcome = { state: 'blocked', reason: error }) => {
       store.addEvent(id, {
         who: 'Horizon',
         text: `PR #${item.pr} is not merged and the gate stays open — ${text}`,
@@ -683,7 +682,7 @@ export function buildApp({ logger = true, onRoute = null } = {}) {
         initials: 'HZ',
       })
       store.notifyChange()
-      return { error, status: 502, premerge: true }
+      return { error, status: 502, premerge: true, outcome }
     }
     let head
     let baseSha
@@ -691,8 +690,10 @@ export function buildApp({ logger = true, onRoute = null } = {}) {
       head = await github.getPrHead(item)
       baseSha = await github.getBranchSha(item.repo, head.baseRef)
     } catch (err) {
-      return blocked(`could not read the PR to test-merge it: ${err.message}`, `pre-merge check failed: ${err.message}`)
+      const error = `pre-merge check failed: ${err.message}`
+      return blocked(`could not read the PR to test-merge it: ${err.message}`, error, { state: 'failed', reason: error })
     }
+    store.setGateActionDetail(id, 'premerge', token, `running checks on ${head.baseRef} + PR #${item.pr}`)
     // Logged and pushed BEFORE the run: it takes minutes, and the human must
     // see that something is happening rather than click Accept again.
     store.addEvent(id, {
@@ -702,17 +703,32 @@ export function buildApp({ logger = true, onRoute = null } = {}) {
       initials: 'HZ',
     })
     store.notifyChange()
-    const result = await premerge.runPreMergeChecks(item, {
-      headSha: head.sha,
-      baseSha,
-      timeoutMs: PREMERGE_CHECK_TIMEOUT_MS,
-    })
+    let result
+    try {
+      result = await premerge.runPreMergeChecks(item, {
+        headSha: head.sha,
+        baseSha,
+        timeoutMs: PREMERGE_CHECK_TIMEOUT_MS,
+      })
+    } catch (err) {
+      // The runner promises never to reject; if it does, that is a crash, and
+      // a crash blocks — fail closed, as for every other inconclusive result.
+      result = { ok: false, reason: 'crash', detail: err.message, head_sha: head.sha, base_sha: baseSha }
+    }
     if (!result.ok) {
       const error =
         result.reason === 'checks_failed'
           ? `pre-merge checks failed: ${result.failing_check}`
           : `pre-merge checks blocked the merge (${result.reason})`
-      return blocked(premerge.describeFailure(result), error)
+      // blocked: the checks answered no; timed_out / failed: they gave no
+      // answer. Only the check's name reaches the gate — never its output.
+      const outcome =
+        result.reason === 'checks_failed' || result.reason === 'merge_conflict'
+          ? { state: 'blocked', reason: error, failingCheck: result.failing_check || null }
+          : result.reason === 'timed_out'
+            ? { state: 'timed_out', reason: `pre-merge checks did not finish: ${result.detail || 'timed out'}` }
+            : { state: 'failed', reason: error }
+      return blocked(premerge.describeFailure(result), error, outcome)
     }
     // The checks proved base_sha + head_sha. If the base moved meanwhile, the
     // squash would land on a main nobody tested — the HZ-154 x HZ-156 window.
@@ -721,7 +737,8 @@ export function buildApp({ logger = true, onRoute = null } = {}) {
     try {
       baseNow = await github.getBranchSha(item.repo, head.baseRef)
     } catch (err) {
-      return blocked(`could not re-read ${head.baseRef} after the checks: ${err.message}`, `pre-merge check failed: ${err.message}`)
+      const error = `pre-merge check failed: ${err.message}`
+      return blocked(`could not re-read ${head.baseRef} after the checks: ${err.message}`, error, { state: 'failed', reason: error })
     }
     if (baseNow !== result.base_sha) {
       return blocked(
@@ -757,15 +774,32 @@ export function buildApp({ logger = true, onRoute = null } = {}) {
       item.pr != null &&
       item.repo
     ) {
-      if (premergeInFlight.has(id)) {
-        return { error: 'pre-merge checks are already running for this item — wait for them to finish', status: 409, premerge: true }
+      // HZ-216: the item's premerge gate_action row is the lock — a fast 409
+      // for the double click, from any tab or WhatsApp, that also holds across
+      // a restart (farm/premerge.py's per-item file lock is the other mutex).
+      // The same row is what every client shows while the run goes.
+      const claim = store.claimGateAction(id, 'premerge', {
+        detail: `reading PR #${item.pr}`,
+        timeoutMs: PREMERGE_CHECK_TIMEOUT_MS,
+      })
+      if (!claim) {
+        const running = store.getGateAction(id, 'premerge')
+        const orphaned = running?.startedBeforeRestart
+          ? ` (they started before the server restarted — the gate re-opens by ${running.deadline})`
+          : ''
+        return { error: `pre-merge checks are already running for this item — wait for them to finish${orphaned}`, status: 409, premerge: true }
       }
-      premergeInFlight.add(id)
+      let outcome = { state: 'failed', reason: 'pre-merge checks stopped unexpectedly' }
       try {
-        const gate = await preMergeChecks(id, item)
-        if (gate.error) return gate
+        const gate = await preMergeChecks(id, item, claim.token)
+        if (gate.error) {
+          outcome = gate.outcome
+          return gate
+        }
+        store.setGateActionDetail(id, 'premerge', claim.token, `checks passed, merging PR #${item.pr}`)
         try {
           await github.mergePr(item, { sha: gate.headSha })
+          outcome = { state: 'merged' }
           store.addEvent(id, {
             who: 'Horizon',
             text: `merged PR #${item.pr} (squash) and deleted the work branch`,
@@ -780,10 +814,11 @@ export function buildApp({ logger = true, onRoute = null } = {}) {
             initials: 'HZ',
           })
           store.notifyChange()
+          outcome = { state: 'failed', reason: `merge failed: ${err.message}` }
           return { error: `merge failed: ${err.message}`, status: 502 }
         }
       } finally {
-        premergeInFlight.delete(id)
+        store.finishGateAction(id, 'premerge', claim.token, outcome)
       }
     }
     // The final gate closes the GitHub issue (with a summary comment) so the
