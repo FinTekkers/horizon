@@ -13,10 +13,24 @@
 //   ADMIN_EMAIL/PASSWORD   hardcoded login credential (dev fallback: admin@example.com/admin)
 //   ALLOWED_LOGIN_EMAILS   comma-separated Google-login allowlist (deny-by-default: empty/
 //                          unset means NO Google logins succeed; the password path is unaffected)
+//   WA_APPROVAL_SECRET     credential for POST .../approve-via-whatsapp — held ONLY by the
+//                          WhatsApp concierge, never by step/PM agents. No dev fallback:
+//                          unset means every WhatsApp approval is refused (503).
+//   WA_APPROVER_JIDS       comma-separated WhatsApp approver allowlist (deny-by-default:
+//                          empty/unset means NO sender can approve a gate)
+//   WA_NOTIFY_ENABLED      "1" turns on the gate-arrival WhatsApp notifier (HZ-141).
+//                          Unset/anything else means the sweep never runs at all.
+//   WA_BRIDGE_URL          whatsapp-mcp bridge base URL (default http://localhost:8080) —
+//                          same env name farm/config.py reads
+//   WA_NOTIFY_SWEEP_MS     backstop cadence for the gate-arrival sweep (default 60s, floor 10s)
+//   WA_NOTIFY_MAX_ATTEMPTS give-up count per queued notification (default 8)
+//   WA_POLL_ENABLED        "0" stops attaching the ✅/↩️ approval poll to gate
+//                          notifications (HZ-142). Otherwise on whenever
+//                          WA_NOTIFY_ENABLED is — rollback tier 1, no deploy.
 //   SESSION_SECRET         unused placeholder — session tokens are random, not signed
 //   HORIZON_TEST_HOOKS     "1" registers e2e-only routes (see app.js) — never set in production
 
-import { agentStepIndexes } from './lifecycle.js'
+import { agentStepIndexes } from '../../domain/js/lifecycle.js'
 
 export const WEBHOOK_SECRET = process.env.GITHUB_WEBHOOK_SECRET || null
 
@@ -27,7 +41,7 @@ export const UI_URL = (process.env.HORIZON_UI_URL || 'http://localhost:5173').re
 export const FARM_URL = process.env.FARM_URL || null
 export const FARM_SHARED_SECRET = process.env.FARM_SHARED_SECRET || 'dev-secret'
 // Which step indexes the farm handles. Default: every agent step (HZ-117:
-// derived from lifecycle.js's STEPS, never a hand-maintained literal),
+// derived from domain/js/lifecycle.js's STEPS, never a hand-maintained literal),
 // including Deploy — HZ-22 wires the DevOps role in for deep post-deploy
 // verification. The release publish itself (needs the GitHub token the farm
 // doesn't have) still happens here in Node, in dispatchToFarm(), before the
@@ -93,6 +107,68 @@ export const ALLOWED_LOGIN_EMAILS = new Set(
     .map((s) => s.trim().toLowerCase())
     .filter(Boolean),
 )
+
+// ---- WhatsApp gate approval (HZ-140) ----
+// Until HZ-140, POST .../approve-via-whatsapp was guarded by
+// FARM_SHARED_SECRET — which farm/tmux_mgr.py forwarded into every agent
+// session — so any agent with Bash could approve its own gate. These two are
+// the replacement: a credential that never enters a step/PM agent session,
+// and a server-held allowlist so the caller-supplied sender is proved here
+// rather than trusted.
+//
+// Deliberately NO 'dev-secret' fallback (unlike FARM_SHARED_SECRET above):
+// an unset value must fail approvals closed, never silently accept them.
+export const WA_APPROVAL_SECRET = process.env.WA_APPROVAL_SECRET || null
+// Raw entries, in whatever form an operator wrote them (a bare number, or a
+// jid with a device suffix). waApprovers.js is what interprets them, in the two
+// directions they are needed: normalizeJid for "is this sender an approver",
+// canonicalJid for "what address does a notification go to".
+export const WA_APPROVER_JIDS = (process.env.WA_APPROVER_JIDS || '')
+  .split(',')
+  .map((s) => s.trim())
+  .filter(Boolean)
+
+// ---- gate-arrival notification (HZ-141) ----
+// Who gets notified is NOT configured here: it is WA_APPROVER_JIDS above, read
+// through waApprovers.js's approverJids(). One source of truth for who approves
+// a gate and who is told a gate is waiting — a second list would let the two
+// drift into "notified someone who cannot approve".
+//
+// OFF by default, and deliberately not defaulted on by the presence of an
+// approver list: this path messages a real human, so turning it on must be an
+// explicit ops act (/etc/horizon/server.env), never a side effect of
+// configuring HZ-140's approval path. e2e pins it to '0' — see
+// e2e/playwright.config.js's demo-mode env block.
+export const WA_NOTIFY_ENABLED = process.env.WA_NOTIFY_ENABLED === '1'
+// Same env name farm/config.py:59 reads, so one host setting serves both
+// processes. Node strips trailing slashes where Python's rstrip("/") happens
+// inside BridgeTransport instead — same effective URL either way.
+export const WA_BRIDGE_URL = (process.env.WA_BRIDGE_URL || 'http://localhost:8080').replace(/\/+$/, '')
+// Backstop only: the sweep also runs on every store.onChange, so this is what
+// catches a notification whose enqueue-time send failed, not the arrival itself.
+export const WA_NOTIFY_SWEEP_MS = Math.max(Number(process.env.WA_NOTIFY_SWEEP_MS) || 60_000, 10_000)
+// Caps a wedged bridge at ~2h of exponential backoff per row rather than
+// retrying a dead endpoint forever.
+export const WA_NOTIFY_MAX_ATTEMPTS = Math.max(Number(process.env.WA_NOTIFY_MAX_ATTEMPTS) || 8, 1)
+
+// ---- gate-approval poll (HZ-142) ----
+// Whether each gate notification also carries a native two-option WhatsApp
+// poll (✅ Approve / ↩️ Send back).
+//
+// ON by default WHEN THE NOTIFIER IS ON, off otherwise. A poll is attached to
+// a gate notification, so "notify nobody" has to mean "poll nobody" — and the
+// coupling is also what keeps every pre-HZ-142 test that drives sweepGates()
+// with WA_NOTIFY_ENABLED unset seeing exactly the rows it saw before.
+//
+// WA_POLL_ENABLED=0 is rollback tier 1: polls stop being attached with no
+// deploy, text notices and the concierge's free-text approval carry on
+// untouched. POST /api/wa/poll-vote stays registered either way, so a poll
+// already on someone's phone still decides its gate after the flag goes off.
+export const WA_POLL_ENABLED = WA_NOTIFY_ENABLED && process.env.WA_POLL_ENABLED !== '0'
+// Same give-up rule as the text outbox, deliberately sharing the setting: a
+// wedged bridge wedges both paths, and two knobs would only ever be set to the
+// same value.
+export const WA_POLL_MAX_ATTEMPTS = WA_NOTIFY_MAX_ATTEMPTS
 
 // e2e only (HZ-54): the e2e suite runs with no real farm daemon (FARM_URL
 // unset — see e2e/playwright.config.js), so it has no way to make the board

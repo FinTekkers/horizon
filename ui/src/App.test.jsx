@@ -5,7 +5,7 @@
 
 import { expect, test, vi, afterEach } from 'vitest'
 import { render, fireEvent, cleanup, waitFor } from '@testing-library/react'
-import { STEPS } from './domain/lifecycle'
+import { STEPS } from '../../domain/js/lifecycle.js'
 
 const CLOSING_GATE_INDEX = STEPS.length - 1
 const CLOSING_GATE_LABEL = STEPS[CLOSING_GATE_INDEX].label

@@ -1,7 +1,7 @@
 import { test, expect, captureScreenshot } from '../fixtures/test-base.js'
 import { openDb, insertItem } from '../fixtures/seed.js'
 // Derived, not hardcoded — see global-setup.js's E2E-4 fixture for the same pattern.
-import { STEPS } from '../../server/src/lifecycle.js'
+import { STEPS } from '../../domain/js/lifecycle.js'
 
 const DB_PATH = process.env.HORIZON_E2E_DB
 
@@ -38,6 +38,11 @@ test('one item travels the full lifecycle from creation to closed', async ({ req
   // finishes the item — it must bounce the user back to the board (HZ-62)
   // rather than stranding them on a now-closed item page.
   await expect(page).toHaveURL(/\/$/, { timeout: 10_000 })
+  // Closed items are hidden by default (HZ-143), so the item just finished is
+  // not on the board until its chip is toggled off. The chip, not
+  // `.board__show-all` — the latter clears every filter and would also drag in
+  // the stale and abandoned fixtures, muddying what this assertion proves.
+  await page.locator('.board__filter-chip', { hasText: 'Closed' }).click()
   const card = page.locator('.card').filter({ has: page.locator('.card__id', { hasText: id }) })
   await expect(card.locator('.status-pill')).toContainText('Closed')
 
@@ -63,6 +68,9 @@ test('approving the closing gate with comments also returns to the board', async
   await page.locator('.composer__submit').click()
 
   await expect(page).toHaveURL(/\/$/, { timeout: 10_000 })
+  // Its own reveal — each test gets a fresh browser context, so the chip
+  // toggled off in the test above does not carry over (HZ-143).
+  await page.locator('.board__filter-chip', { hasText: 'Closed' }).click()
   const card = page.locator('.card').filter({ has: page.locator('.card__id', { hasText: id }) })
   await expect(card.locator('.status-pill')).toContainText('Closed')
 })

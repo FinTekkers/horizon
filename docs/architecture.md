@@ -5,10 +5,16 @@ Horizon is a small system that runs software work items through a fixed
 development lifecycle, dispatching each step either to a human (via the web
 board) or to an AI agent (via a farm of tmux sessions). There are four real
 layers, plus a deploy layer that ships changes to the one server that runs
-all of this.
+all of this — and one shared model directory all four layers read from.
 
 ```mermaid
 graph TD
+    subgraph DOMAIN["Domain — domain/ (the lifecycle model, shared)"]
+        DSrc["steps.json — the ONE step declaration"]
+        DJs["js/lifecycle.js — hand-written JS binding"]
+        DPy["py/steps.py — hand-written Python binding"]
+    end
+
     subgraph UI["UI — ui/src/ (React board, browser)"]
         UIApp["App.jsx — top-level state & routing"]
         UIBoard["components/Board.jsx — the work-item board"]
@@ -18,7 +24,7 @@ graph TD
     subgraph SERVER["Server — server/src/ (Fastify API + SQLite)"]
         SApp["app.js — Fastify app, HTTP routes"]
         SOrch["orchestrator.js — walks each item through the lifecycle"]
-        SLife["lifecycle.js — PHASES / STEPS / AGENTS definitions"]
+        SAgents["agentTokens.js — AGENTS presentation (label / initials / hex)"]
         SDb["db.js — SQLite schema & connection"]
         SDeploy["deploy.js — self-deploy on GitHub release webhook"]
     end
@@ -36,9 +42,14 @@ graph TD
         ISystemd["horizon-server.service — systemd unit for the API"]
     end
 
+    DSrc -->|"read at import"| DJs
+    DSrc -->|"read at import"| DPy
     UIApi -->|"HTTP: /api/items, /api/farm/*"| SApp
     SApp --> SOrch
-    SOrch --> SLife
+    SOrch -->|"imports STEPS / PHASES"| DJs
+    UIBoard -->|"imports STEPS / PHASES"| DJs
+    FDaemon -->|"from domain.py import steps"| DPy
+    FStep -->|"from domain.py import steps"| DPy
     SOrch --> SDb
     SOrch -->|"POST FARM_URL/steps/run"| FDaemon
     FDaemon --> FTmux
@@ -52,6 +63,14 @@ graph TD
 ```
 
 ## The four layers, in plain terms
+
+- **Domain (`domain/`)** — not a layer so much as the model the layers share.
+  `domain/steps.json` is the only place a lifecycle step is declared; the JS
+  and Python bindings beside it are hand-written source that read it at import
+  (a static JSON import in JS, `json.load` in Python), and are imported by
+  relative path from `server/src`, `ui/src`, `e2e/` and `farm/`. It holds no
+  presentation and no behaviour beyond derived lookups.
+  Start at [`domain/README.md`](../domain/README.md).
 
 - **UI (`ui/`)** — a React app the browser loads. It shows the board of work
   items, lets a human approve/reject gates, and polls/streams the server for
@@ -67,8 +86,9 @@ graph TD
   Key files: `server/src/app.js` (routes, e.g. `/api/items`,
   `/api/webhooks/github`, `/api/farm/*`), `server/src/orchestrator.js` (drives
   each item's `cursor` through the lifecycle — see `docs/workflow.md`),
-  `server/src/lifecycle.js` (the lifecycle definition itself: which phases
-  and steps exist), `server/src/db.js` (SQLite schema).
+  `domain/steps.json` (the lifecycle definition itself: which phases and
+  steps exist — see [`domain/README.md`](../domain/README.md)),
+  `server/src/db.js` (SQLite schema).
 
 - **Farm (`farm/`)** — a Python [FastAPI](https://fastapi.tiangolo.com)
   daemon (`farmd.py`) that runs on the same host as the server. When the

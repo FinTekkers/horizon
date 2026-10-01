@@ -1,17 +1,15 @@
 import { useSyncExternalStore } from 'react'
 import {
   PHASES,
-  PHASE_ACCENT,
-  PHASE_ACCENT_BG,
   isClosed,
   isAbandoned,
   curStep,
   phaseIdx,
   awaitingGate,
-  priorityColor,
-} from '../domain/lifecycle'
+} from '../../../domain/js/lifecycle.js'
+import { PHASE_ACCENT, PHASE_ACCENT_BG, priorityColor } from '../domain/lifecycle'
 import { FILTERS, visibleItems, hiddenCounts, matchCounts } from '../domain/filters'
-import { personaFor } from '../domain/personas'
+import { PRIMARY_PERSONA_AGENT, personaFor } from '../domain/personas'
 import { itemStatus } from '../domain/status'
 import { issueUrl, issueLabel } from '../api'
 import * as boardFilters from '../boardFilters'
@@ -86,8 +84,12 @@ function BoardCard({ item, onOpen, onApprove, onReject, onTogglePause }) {
       </div>
       <div className="card__status-row">
         <span className="card__phase">{PHASES[phaseIdx(item)]}</span>
-        <span className="card__persona" style={{ color: personaFor(item).color }} title="Specialist persona">
-          {personaFor(item).label}
+        <span
+          className="card__persona"
+          style={{ color: personaFor(item, PRIMARY_PERSONA_AGENT).color }}
+          title="Eng specialist persona"
+        >
+          {personaFor(item, PRIMARY_PERSONA_AGENT).label}
         </span>
         <StatusPill status={itemStatus(item)} />
       </div>

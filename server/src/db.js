@@ -3,6 +3,8 @@ import { mkdirSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { reconcileGoogleUsers } from './loginAllowlist.js'
+import { gateStepIndexes } from '../../domain/js/lifecycle.js'
+import { PRIORITIES } from '../../domain/js/priorities.js'
 
 const DB_PATH =
   process.env.HORIZON_DB || join(dirname(fileURLToPath(import.meta.url)), '..', 'data', 'horizon.db')
@@ -12,11 +14,28 @@ export const db = new Database(DB_PATH)
 db.pragma('journal_mode = WAL')
 db.pragma('foreign_keys = ON')
 
+// The work_item priority constraint, built from the one declaration rather than
+// hand-typed (HZ-135). The emitted clause is byte-identical to the literal it
+// replaced — server/test/domain-priority-pins.test.mjs asserts that, because
+// this string is the one thing in the change that a reader cannot diff by eye.
+// Module-local: that pin reads the constraint back out of the live database's
+// sqlite_master rather than importing this binding, so nothing here is exported
+// for a test's benefit and the pin covers what SQLite actually stored.
+//
+// It sits inside CREATE TABLE IF NOT EXISTS below, so on an existing database
+// the statement is a no-op and the stored constraint is untouched: no migration,
+// no backfill, and every stored value still passes because the vocabulary did not
+// move. Interpolating into SQL is safe here because the values are repo-owned AND
+// because domain/js/priorities.js rejects anything outside /^[A-Z][A-Za-z]*$/ at
+// load time — that rule is what makes this provably safe rather than
+// safe-by-convention.
+const PRIORITY_CHECK = `CHECK (priority IN (${PRIORITIES.map((value) => `'${value}'`).join(',')}))`
+
 db.exec(`
   CREATE TABLE IF NOT EXISTS work_item (
     id         TEXT PRIMARY KEY,
     title      TEXT NOT NULL,
-    priority   TEXT NOT NULL CHECK (priority IN ('Critical','High','Medium','Low')),
+    priority   TEXT NOT NULL ${PRIORITY_CHECK},
     desc       TEXT NOT NULL DEFAULT '',
     metric     TEXT NOT NULL DEFAULT '',
     guardrails TEXT NOT NULL DEFAULT '',
@@ -79,7 +98,7 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_step_run_item ON step_run(item_id, id DESC);
 
   -- Work-item dependencies (HZ-78): item_id is blocked until depends_on_id
-  -- closes (see lifecycle.js isBlocked). Many-to-many so an item can have
+  -- closes (see domain/js/lifecycle.js isBlocked). Many-to-many so an item can have
   -- more than one blocker. A brand-new table, not a column on work_item, so
   -- this is purely additive — no CHECK constraint on work_item/step_run is
   -- touched and older databases keep opening unchanged.
@@ -149,11 +168,119 @@ db.exec(`
     expires_at TEXT NOT NULL
   );
   CREATE INDEX IF NOT EXISTS idx_session_user ON session(user_id);
+
+  -- Gate-arrival notification outbox (HZ-141). One row per (arrival at a gate,
+  -- approver). The body is rendered at ENQUEUE time and stored, so a retry hours
+  -- later sends the state the item was in when it reached the gate rather than
+  -- whatever has drifted since.
+  --
+  -- ON DELETE CASCADE, unlike every other child table here: purgeDemoItems()
+  -- in store.js deletes work_item rows directly with foreign_keys = ON, and it
+  -- hand-enumerates the children to clear first. A table missing from that list
+  -- turns demo-item cleanup into an FK constraint error, so this one does not
+  -- rely on being remembered there.
+  CREATE TABLE IF NOT EXISTS gate_notice (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    item_id         TEXT NOT NULL REFERENCES work_item(id) ON DELETE CASCADE,
+    step_index      INTEGER NOT NULL,
+    recipient       TEXT NOT NULL,
+    body            TEXT NOT NULL,
+    status          TEXT NOT NULL DEFAULT 'pending'
+                    CHECK (status IN ('pending','sending','sent','failed')),
+    attempts        INTEGER NOT NULL DEFAULT 0,
+    last_error      TEXT,
+    created_at      TEXT NOT NULL DEFAULT (datetime('now')),
+    next_attempt_at TEXT NOT NULL DEFAULT (datetime('now')),
+    sent_at         TEXT
+  );
+  CREATE INDEX IF NOT EXISTS idx_gate_notice_due ON gate_notice(status, next_attempt_at);
+  CREATE INDEX IF NOT EXISTS idx_gate_notice_item ON gate_notice(item_id, id DESC);
+
+  -- Gate-approval poll outbox (HZ-142). One row per (arrival at a gate,
+  -- approver) — the same grain as gate_notice, and sent alongside it.
+  --
+  -- ITS OWN OUTBOX, not a second kind of gate_notice row. Two reasons, and the
+  -- second is the load-bearing one:
+  --
+  --   * a poll that the bridge refuses must not take the text notice down with
+  --     it. Separate rows means separate attempts counters, so the human still
+  --     gets the message and the deep link, and the concierge's free-text
+  --     approval still works;
+  --   * "one gate_notice row per arrival per approver" is asserted literally in
+  --     four existing test files. Adding a second row per arrival there would
+  --     have broken all of them for no gain.
+  --
+  -- step_index IS the cursor at send time: gateNotifier.js only ever enqueues
+  -- while the cursor sits on that gate. So there is no separate cursor column.
+  --
+  -- decided_at scopes decidedness TO THIS ARRIVAL. A gate_decision lookup
+  -- cannot: store.requestChanges() writes a 'rejected' gate_decision row that
+  -- is never deleted, so an item that is sent back, reworked and returns to the
+  -- same gate would have every later vote refused forever.
+  --
+  -- superseded_at closes the other end of the same window: arrival #2's poll
+  -- being live must not leave arrival #1's poll able to decide it.
+  --
+  -- ON DELETE CASCADE for the same reason gate_notice has it: purgeDemoItems()
+  -- in store.js hand-enumerates the children it clears, and this must not rely
+  -- on being remembered there.
+  CREATE TABLE IF NOT EXISTS gate_poll (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    item_id         TEXT NOT NULL REFERENCES work_item(id) ON DELETE CASCADE,
+    step_index      INTEGER NOT NULL,
+    recipient       TEXT NOT NULL,
+    question        TEXT NOT NULL,
+    poll_msg_id     TEXT,
+    status          TEXT NOT NULL DEFAULT 'pending'
+                    CHECK (status IN ('pending','sending','sent','failed')),
+    attempts        INTEGER NOT NULL DEFAULT 0,
+    last_error      TEXT,
+    created_at      TEXT NOT NULL DEFAULT (datetime('now')),
+    next_attempt_at TEXT NOT NULL DEFAULT (datetime('now')),
+    sent_at         TEXT,
+    decided_at      TEXT,
+    superseded_at   TEXT
+  );
+  -- A PARTIAL unique index, not a UNIQUE column: poll_msg_id is NULL between
+  -- enqueue and a successful send, and many NULLs have to coexist. Unique once
+  -- set, because the id is what a vote is looked up by.
+  CREATE UNIQUE INDEX IF NOT EXISTS idx_gate_poll_msg ON gate_poll(poll_msg_id) WHERE poll_msg_id IS NOT NULL;
+  CREATE INDEX IF NOT EXISTS idx_gate_poll_due ON gate_poll(status, next_attempt_at);
+  CREATE INDEX IF NOT EXISTS idx_gate_poll_item ON gate_poll(item_id, id DESC);
+
+  -- Every vote the server has ever seen, applied or not (HZ-142).
+  --
+  -- vote_id is the poll-update message id, and the PRIMARY KEY on it IS the
+  -- idempotence mechanism: processing the same vote twice collides and inserts
+  -- nothing, so there is no separate bookkeeping to keep in step. The bridge
+  -- retries, so a double delivery is the normal case rather than an edge one.
+  --
+  -- poll_id is nullable so a vote naming a poll this server has never heard of
+  -- is still recorded rather than silently dropped.
+  CREATE TABLE IF NOT EXISTS gate_poll_vote (
+    vote_id    TEXT PRIMARY KEY,
+    poll_id    INTEGER REFERENCES gate_poll(id) ON DELETE CASCADE,
+    voter_jid  TEXT NOT NULL,
+    choice     TEXT NOT NULL,
+    outcome    TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+  CREATE INDEX IF NOT EXISTS idx_gate_poll_vote_poll ON gate_poll_vote(poll_id);
 `)
 
 // Additive migrations for databases created before these columns existed.
-// persona: specialist persona id (see personas.js); NULL = fullstack default.
-for (const column of ['pr INTEGER', 'pr_url TEXT', 'pr_mergeable INTEGER', 'release_tag TEXT', 'release_url TEXT', 'repo TEXT', 'project_id INTEGER', 'persona TEXT', 'review_cycle_count INTEGER NOT NULL DEFAULT 0', 'abandoned_at TEXT', 'abandoned_reason TEXT', 'abandoned_by TEXT']) {
+// persona: the pre-HZ-125 flat specialist persona id. Read-only since HZ-125 —
+// never written again, kept so rows that predate personas_json still carry the
+// value personasFromRow (personas.js) translates into an eng-slot persona.
+// personas_json (HZ-125): the item's { agent: persona id } map, one slot per
+// composing agent. NULL/absent = every agent's default (see DEFAULT_PERSONAS).
+// A JSON column rather than a child table because nothing queries across items
+// by persona, and one column keeps reads a single-row operation.
+// notified_step (HZ-141): the gate index this item was last notified about, or
+// NULL when it is not parked at a notified gate. Derived state, not a log — the
+// sweep clears it the moment the cursor leaves a gate, which is what makes a
+// send-back-then-re-approve notify twice and a restart notify zero more times.
+for (const column of ['pr INTEGER', 'pr_url TEXT', 'pr_mergeable INTEGER', 'release_tag TEXT', 'release_url TEXT', 'repo TEXT', 'project_id INTEGER', 'persona TEXT', 'personas_json TEXT', 'review_cycle_count INTEGER NOT NULL DEFAULT 0', 'abandoned_at TEXT', 'abandoned_reason TEXT', 'abandoned_by TEXT', 'notified_step INTEGER']) {
   try {
     db.exec(`ALTER TABLE work_item ADD COLUMN ${column}`)
   } catch {
@@ -294,4 +421,37 @@ if (count === 0 && !syncConfigured) {
   `)
   const seedAll = db.transaction((items) => items.forEach((it) => insert.run(it)))
   seedAll(SEED_ITEMS)
+}
+
+// HZ-141: re-baseline notified_step against the cursors as they stand right
+// now — every item currently parked at a gate is treated as ALREADY notified,
+// every item that is not is cleared.
+//
+// ANY FUTURE CURSOR-SHIFT MIGRATION MUST CALL THIS. The pipeline-v2 and -v3
+// shifts above are the precedent: shifting `cursor` without re-baselining
+// leaves notified_step pointing at a step index that has moved, so the sweep
+// reads the shift as five fresh arrivals and messages a human five times. This
+// is exported (and covered by gate-notifier-baseline.test.mjs) so the next
+// shift author gets a function to call and a red test, not a comment to notice.
+export function baselineNotifiedStep(database = db) {
+  const gates = gateStepIndexes()
+  const placeholders = gates.map(() => '?').join(',')
+  return database.transaction(() => {
+    database.prepare(`UPDATE work_item SET notified_step = cursor WHERE cursor IN (${placeholders})`).run(...gates)
+    database.prepare(`UPDATE work_item SET notified_step = NULL WHERE cursor NOT IN (${placeholders})`).run(...gates)
+  })
+}
+
+// One-time on first boot after HZ-141 ships, and placed LAST on purpose: it
+// reads final cursors, so it must run after both cursor-shift migrations AND
+// after the demo seed (whose SEED_ITEMS park items on all five gates — without
+// this, a fresh dev box with WA_NOTIFY_ENABLED=1 fires five demo notifications
+// on the first sweep). Same double-boot guard as the shifts above: the setting
+// INSERT is the last statement, so a racing second boot rolls the whole
+// transaction back on the primary-key collision.
+if (!db.prepare("SELECT value FROM setting WHERE key = 'gate_notice_baseline'").get()) {
+  db.transaction(() => {
+    baselineNotifiedStep(db)()
+    db.prepare("INSERT INTO setting (key, value) VALUES ('gate_notice_baseline', 'done')").run()
+  })()
 }

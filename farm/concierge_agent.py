@@ -37,14 +37,24 @@ from pathlib import Path
 
 import httpx
 
+from domain.py import priorities
+
 from . import config
+from . import credentials
 from . import wizard
-from .agent_runner import AgentError, extract_json, run_agent
-from .config import CONCIERGE_MODEL, HORIZON_URL, SHARED_SECRET, STATE_DIR, ensure_dirs, slugify
+from .agent_runner import AgentError, parse_agent_reply, run_agent
+from .config import CONCIERGE_MODEL, FARM_PORT, HORIZON_URL, STATE_DIR, ensure_dirs, slugify
 from .whatsapp.transport import Inbound, Transport, TransportError
 
+# farmd's loopback API, same as step_agent.py's. HZ-140: the concierge holds
+# no FARM_SHARED_SECRET, so its one authenticated read goes through farmd.
+FARMD = f"http://127.0.0.1:{FARM_PORT}"
+
 ROLE_PROMPT = (Path(__file__).parent / "roles" / "concierge.md").read_text()
-PRIORITIES = ("Critical", "High", "Medium", "Low")
+# HZ-135: one declaration, in domain/priorities.json. This tuple used to be a
+# hand-typed copy that had to agree with the API enum it POSTs into — and with
+# wizard.py's, one file over.
+PRIORITIES = priorities.PRIORITIES
 ALLOWED_ACTIONS = ("set_priority", "feedback")
 PROCESSED_KEEP = 500  # msg_id dedupe window persisted across restarts
 MAX_ACTIONS = 3
@@ -124,17 +134,14 @@ class ConciergeState:
 # ---- prompt ----
 
 
-def fetch_snapshot(base_url: str) -> dict:
-    # /api/farm/snapshot, not /api/items: the concierge is a daemon with no
-    # browser session, and HZ-21 put /api/items behind the login gate — this
-    # call 401'd on every message from 2026-08-04 onwards, which the catch-all
-    # in process_message() reported as a generic agent error. The farm's
-    # shared secret is the boundary that applies to a daemon.
-    res = httpx.get(
-        f"{base_url}/api/farm/snapshot",
-        headers={"x-farm-secret": SHARED_SECRET},
-        timeout=15,
-    )
+def fetch_snapshot(farmd_url: str = FARMD) -> dict:
+    # Through farmd, not straight to the server. The concierge is a daemon
+    # with no browser session, and HZ-21 put /api/items behind the login gate,
+    # so this read has to go to /api/farm/snapshot — which needs
+    # FARM_SHARED_SECRET. HZ-140 took that credential away from every agent
+    # session, this one included, so farmd (which does hold it) makes the call
+    # and the concierge asks farmd over loopback with no credential at all.
+    res = httpx.get(f"{farmd_url}/internal/snapshot", timeout=15)
     res.raise_for_status()
     return res.json()
 
@@ -310,26 +317,40 @@ def _error_of(res: httpx.Response) -> str:
 # ---- per-message pipeline ----
 
 
-def process_message(msg: Inbound, transport: Transport, state: ConciergeState, base_url: str = HORIZON_URL) -> None:
+def process_message(
+    msg: Inbound,
+    transport: Transport,
+    state: ConciergeState,
+    base_url: str = HORIZON_URL,
+    farmd_url: str = FARMD,
+) -> None:
     try:
-        snapshot = fetch_snapshot(base_url)
+        snapshot = fetch_snapshot(farmd_url)
         prompt = build_prompt(msg, snapshot)
         reply_raw = run_agent(
             prompt, session_id=state.session_id(), append_system=ROLE_PROMPT, model=CONCIERGE_MODEL
         )
         state.save_session(reply_raw.get("session_id"))
-        try:
-            reply, actions, notes, gate_options = validate_reply(extract_json(reply_raw["result"]))
-        except (AgentError, json.JSONDecodeError) as exc:
-            log(f"invalid concierge reply ({exc}); retrying once")
+
+        # The session save stays inside the closure, where it was before the
+        # parse path moved into agent_runner — session continuity across the
+        # retry is unchanged. validate_reply is handed to the helper rather
+        # than called after it so a reply that parses but is missing 'reply'
+        # still takes the lossless retry, as it always has.
+        def retry_once(prompt: str) -> str:
+            log("invalid concierge reply; retrying once")
             retry = run_agent(
-                f"Your previous reply was invalid: {exc}. Respond again with ONLY the JSON object, no other text.",
+                prompt,
                 session_id=state.session_id(),
                 append_system=ROLE_PROMPT,
                 model=CONCIERGE_MODEL,
             )
             state.save_session(retry.get("session_id"))
-            reply, actions, notes, gate_options = validate_reply(extract_json(retry["result"]))
+            return retry["result"]
+
+        (reply, actions, notes, gate_options), parse_notes = parse_agent_reply(
+            reply_raw["result"], retry_once, validate=validate_reply
+        )
     except Exception as exc:
         log(f"message {msg.msg_id}: agent failed — {exc}")
         state.claim(msg)
@@ -338,7 +359,10 @@ def process_message(msg: Inbound, transport: Transport, state: ConciergeState, b
 
     # Claim before executing: a crash from here on can not replay actions.
     state.claim(msg)
-    notes = execute_actions(actions, base_url) + notes
+    # The concierge is not a step: it has no run output line and no artifact,
+    # so the WhatsApp reply is where its parser notes surface. Appended last,
+    # after the action results, and a no-op when empty.
+    notes = execute_actions(actions, base_url) + notes + parse_notes
     # Remembers this sender's numbered choices (or clears stale ones) so a
     # later bare-number reply from them resolves deterministically.
     wizard.offer_gate_choices(msg.chat_jid, msg.sender_jid, gate_options, state.choice_store)
@@ -355,7 +379,9 @@ def _send_safely(transport: Transport, chat_jid: str, text: str) -> None:
         log(f"send to {chat_jid} failed: {exc}")
 
 
-def poll_once(transport: Transport, state: ConciergeState, base_url: str = HORIZON_URL) -> int:
+def poll_once(
+    transport: Transport, state: ConciergeState, base_url: str = HORIZON_URL, farmd_url: str = FARMD
+) -> int:
     """One poll pass; returns how many messages went through the agent."""
     handled = 0
     for msg in transport.fetch_new(state.cursor):
@@ -381,7 +407,7 @@ def poll_once(transport: Transport, state: ConciergeState, base_url: str = HORIZ
             handled += 1
             continue
         log(f"processing {msg.msg_id} from {normalize_jid(msg.sender_jid)}: {msg.text[:80]!r}")
-        process_message(msg, transport, state, base_url)
+        process_message(msg, transport, state, base_url, farmd_url)
         handled += 1
     return handled
 
@@ -403,6 +429,17 @@ def main() -> None:
     parser.add_argument("--project", required=True)
     parser.add_argument("--once", action="store_true", help="one poll pass and exit (testing)")
     args = parser.parse_args()
+
+    # HZ-140: this process is the one agent session granted a gate-approving
+    # credential, and the next thing it does is run a model over WhatsApp text
+    # a stranger can write. config.py captured the value at import; drop the
+    # name here, before any model is spawned, so the child cannot inherit it.
+    # Names only — never the value. See farm/credentials.py for why the
+    # provider seam's env= can't cover this on its own (the SDK runner merges
+    # options.env over os.environ, so it can override a name but not remove it).
+    dropped = credentials.drop_from_process_environ()
+    if dropped:
+        log(f"dropped from this process's environment before running any model: {', '.join(dropped)}")
 
     ensure_dirs()
     if not config.FARM_WA_ALLOWED_JIDS:

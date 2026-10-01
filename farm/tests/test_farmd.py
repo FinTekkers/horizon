@@ -10,12 +10,13 @@ import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from fastapi.testclient import TestClient
 
-from farm import farmd, tmux_mgr, workspaces
-from farm.config import LOGS_DIR, QUEUE_DIR
+from farm import farmd, pm_agent, tmux_mgr, workspaces
+from farm.config import LOGS_DIR, PM_MALFORMED_GRACE_S, QUEUE_DIR
 from farm.tests.conflict_fixtures import clone_and_read, make_repo_hub, push_new_branch
 
 client = TestClient(farmd.app)
@@ -171,6 +172,60 @@ def test_conflicts_resolve_end_to_end_over_http_does_a_real_merge_and_push(runni
     merged = clone_and_read(tmp_path, origin, "horizon/hz-5", "shared.txt", "after")
     assert "branch edit" in merged
     assert (tmp_path / "read-after" / "other.txt").exists()  # main's independent change made it in too
+
+
+SCOPED_RESOLVE_FIXTURE = Path(__file__).resolve().parent / "fixtures" / "scoped_resolve_response.json"
+
+
+def test_conflicts_resolve_end_to_end_over_http_takes_the_scoped_path(running_farm, tmp_path, monkeypatch):
+    """The HZ-154 sibling of the test above: an OVERLAPPING conflict, which the
+    mechanical path would have escalated, goes all the way through FastAPI
+    routing into the real scoped resolution — real git stages, real diff3
+    reference, real scope check, real checks gate, real push.
+
+    The body it returns is the recorded payload in
+    fixtures/scoped_resolve_response.json, which
+    server/test/orchestrator-resolve-conflicts.test.mjs feeds to the Node side
+    verbatim — so the two halves of the seam are pinned to one real reply
+    rather than to two hand-written literals that can drift apart.
+    """
+    monkeypatch.setattr(workspaces, "WORKSPACES_DIR", tmp_path / "workspaces")
+    monkeypatch.setenv("FARM_CHECK_CMD", "true")  # the scoped path refuses to push behind a suite that never ran
+    monkeypatch.delenv("FARM_CONFLICT_SCOPED_ENABLED", raising=False)
+    _hub, origin = make_repo_hub(tmp_path)
+    push_new_branch(
+        tmp_path, origin, "horizon/hz-124",
+        lambda w: (w / "shared.txt").write_text("line1\nline2\nours-added\nline3\n"), "branch",
+    )
+    push_new_branch(
+        tmp_path, origin, "main",
+        lambda w: (w / "shared.txt").write_text("line1\nline2\ntheirs-added\nline3\n"), "main-advance",
+    )
+
+    res = client.post("/conflicts/resolve", json={"item": {"id": "HZ-124", "repo": "acme/demo"}})
+
+    assert res.status_code == 200
+    body = res.json()
+    assert body["ok"] is True
+    assert body["resolved"] is True
+    assert body["mode"] == "scoped"
+    assert body["resolution"]["paths"] == ["shared.txt"]
+    assert body["resolution"]["hunks"] == 1
+    assert body["resolution"]["strategy"] == "deterministic"
+    assert body["review"]["verdict"] == "pass"
+    assert body["review"]["reviewed"] is False
+
+    # Both sides survived the merge the route just pushed.
+    merged = clone_and_read(tmp_path, origin, "horizon/hz-124", "shared.txt", "scoped-after")
+    assert merged == "line1\nline2\nours-added\ntheirs-added\nline3\n"
+
+    # `files` is a diffstat whose column widths depend on the path, so it is
+    # the one key the recorded payload does not pin; everything the Node side
+    # actually renders is compared exactly.
+    recorded = json.loads(SCOPED_RESOLVE_FIXTURE.read_text())
+    assert isinstance(body.pop("files"), str)
+    assert recorded.pop("files", None) is not None, "the recorded payload must keep a files key for the Node side"
+    assert body == recorded, f"regenerate {SCOPED_RESOLVE_FIXTURE.name} — farmd's scoped reply shape changed"
 
 
 # ---- /runs/status (HZ-54) ----
@@ -953,6 +1008,18 @@ def test_reconcile_leaves_the_file_in_place_on_a_non_2xx_fail_response(queue_dir
 class _FakeHorizonHandler(BaseHTTPRequestHandler):
     requests: list = []
     fail_status = 200
+    # HZ-140: what GET /api/farm/snapshot answers when farmd proxies it.
+    snapshot_status = 200
+
+    def do_GET(self):
+        self.__class__.requests.append({"path": self.path, "headers": dict(self.headers), "body": None})
+        status = self.__class__.snapshot_status
+        payload = json.dumps({"items": [{"id": "HZ-140"}]}).encode() if status == 200 else b'{"error":"nope"}'
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(payload)))
+        self.end_headers()
+        self.wfile.write(payload)
 
     def do_POST(self):
         length = int(self.headers.get("Content-Length", 0))
@@ -977,9 +1044,13 @@ class _FakeHorizonHandler(BaseHTTPRequestHandler):
         pass  # keep test output quiet
 
 
-def _serve_fake_horizon(fail_status: int = 200):
+def _serve_fake_horizon(fail_status: int = 200, snapshot_status: int = 200):
     requests: list = []
-    handler = type("Handler", (_FakeHorizonHandler,), {"requests": requests, "fail_status": fail_status})
+    handler = type(
+        "Handler",
+        (_FakeHorizonHandler,),
+        {"requests": requests, "fail_status": fail_status, "snapshot_status": snapshot_status},
+    )
     server = ThreadingHTTPServer(("127.0.0.1", 0), handler)
     server.daemon_threads = True
     thread = threading.Thread(target=server.serve_forever, daemon=True)
@@ -1174,3 +1245,417 @@ def test_internal_steps_started_does_not_track_a_run_the_server_no_longer_consid
         assert "409" not in farmd.PM_ACTIVE_RUNS
     finally:
         farmd.PM_ACTIVE_RUNS.discard("409")
+
+
+# ---- HZ-140: /internal/snapshot, the concierge's credential-free read path ----
+# The concierge no longer holds FARM_SHARED_SECRET (no agent session does), so
+# its one authenticated read goes through farmd — the process that does hold it.
+
+
+def test_internal_snapshot_forwards_with_the_farm_secret_and_returns_the_body(monkeypatch):
+    server, url, requests = _serve_fake_horizon()
+    monkeypatch.setattr(farmd, "HORIZON_URL", url)
+    try:
+        res = client.get("/internal/snapshot")
+    finally:
+        server.shutdown()
+
+    assert res.status_code == 200
+    assert res.json() == {"items": [{"id": "HZ-140"}]}
+    gets = [r for r in requests if r["path"].endswith("/api/farm/snapshot")]
+    assert len(gets) == 1
+    assert gets[0]["headers"]["x-farm-secret"] == farmd.SHARED_SECRET
+
+
+def test_internal_snapshot_needs_no_credential_from_its_caller(monkeypatch):
+    """The concierge sends nothing: that is the point. farmd is the only farm
+    process holding a server credential."""
+    server, url, _ = _serve_fake_horizon()
+    monkeypatch.setattr(farmd, "HORIZON_URL", url)
+    try:
+        res = client.get("/internal/snapshot")
+    finally:
+        server.shutdown()
+    assert res.status_code == 200
+
+
+@pytest.mark.parametrize("upstream", [401, 500])
+def test_internal_snapshot_maps_an_upstream_error_to_502_without_passing_it_through(monkeypatch, upstream):
+    server, url, _ = _serve_fake_horizon(snapshot_status=upstream)
+    monkeypatch.setattr(farmd, "HORIZON_URL", url)
+    try:
+        res = client.get("/internal/snapshot")
+    finally:
+        server.shutdown()
+
+    assert res.status_code == 502
+    assert res.json() == {"error": "could not reach horizon server"}
+
+
+def test_internal_snapshot_reports_502_when_the_server_is_unreachable(monkeypatch):
+    # Port 1 on loopback: nothing listens, so the request fails at connect.
+    monkeypatch.setattr(farmd, "HORIZON_URL", "http://127.0.0.1:1")
+    res = client.get("/internal/snapshot")
+    assert res.status_code == 502
+    assert res.json() == {"error": "could not reach horizon server"}
+
+
+# ---- HZ-130: queue files are written atomically ----
+# The race underneath the PM lane's silent data loss: a plain write_text let a
+# poller read a task file mid-write and get truncated JSON. The final path must
+# only ever hold a complete payload.
+
+TRUNCATED_TASK = '{\n  "run_id": 881,\n  "item": {\n    "id": "HZ-128"'
+
+
+def _big_task(run_id, filler="x"):
+    """A payload large enough that a single write() is genuinely interruptible —
+    a real task carries rules and prior artifacts, not four short keys."""
+    return dict(make_task(run_id), blob=filler * 200_000)
+
+
+def test_write_task_atomic_writes_a_complete_parseable_file(tmp_path):
+    path = tmp_path / "881.json"
+    farmd._write_task_atomic(path, make_task(881))
+    assert json.loads(path.read_text())["run_id"] == 881
+
+
+def test_write_task_atomic_leaves_no_temp_file_behind(tmp_path):
+    path = tmp_path / "881.json"
+    farmd._write_task_atomic(path, make_task(881))
+    assert [p.name for p in tmp_path.iterdir()] == ["881.json"]
+
+
+def test_a_temp_file_is_invisible_to_every_readers_glob(tmp_path, monkeypatch):
+    """The temp name must not end `.json`: every reader in farmd and the PM
+    agent globs `*.json`, and matching a partial file is the whole bug."""
+    seen = {}
+    real_replace = farmd.os.replace
+
+    def spy_replace(src, dst):
+        if str(dst) == str(tmp_path / "881.json"):
+            seen["during"] = sorted(p.name for p in tmp_path.glob("*.json"))
+            seen["temps"] = sorted(p.name for p in tmp_path.iterdir())
+        return real_replace(src, dst)
+
+    monkeypatch.setattr(farmd.os, "replace", spy_replace)
+    farmd._write_task_atomic(tmp_path / "881.json", make_task(881))
+
+    assert seen["during"] == [], "no *.json file may exist at the final path until the rename"
+    assert len(seen["temps"]) == 1 and seen["temps"][0].endswith(".json.tmp")
+
+
+def test_a_failed_write_leaves_nothing_at_the_final_path(tmp_path, monkeypatch):
+    """The rename fails (disk full, EXDEV): the caller must see the failure and
+    the final path must not exist at all, half-written or otherwise."""
+    path = tmp_path / "881.json"
+    real_replace = farmd.os.replace
+
+    def failing_replace(src, dst):
+        if str(dst) == str(path):  # scoped: os.replace is process-global
+            raise OSError("no space left on device")
+        return real_replace(src, dst)
+
+    monkeypatch.setattr(farmd.os, "replace", failing_replace)
+    with pytest.raises(OSError):
+        farmd._write_task_atomic(path, make_task(881))
+
+    assert not path.exists()
+    assert list(tmp_path.iterdir()) == [], "the temp file must be cleaned up too"
+
+
+def test_a_concurrent_reader_never_observes_a_partial_queue_file(tmp_path):
+    """Success metric 1, asserted the way the metric is stated: a poller
+    globbing the queue while the writer runs must only ever see complete,
+    parseable task files. The reader is deadline-bounded and joined — a stuck
+    reader has to fail the suite, not hang it."""
+    path = tmp_path / "881.json"
+    body = _big_task(881)
+    errors = []
+    reads = []
+    done = threading.Event()
+
+    def read_loop():
+        deadline = time.time() + 30
+        while not done.is_set() and time.time() < deadline:
+            for p in tmp_path.glob("*.json"):  # exactly what the pollers do
+                try:
+                    reads.append(json.loads(p.read_text())["run_id"])
+                except (json.JSONDecodeError, OSError, KeyError) as exc:
+                    errors.append(f"{p.name}: {exc}")
+                    return
+
+    reader = threading.Thread(target=read_loop, daemon=True)
+    reader.start()
+    try:
+        for _ in range(200):
+            farmd._write_task_atomic(path, body)
+    finally:
+        done.set()
+    reader.join(timeout=10)
+
+    assert not reader.is_alive()
+    assert errors == []
+    assert reads, "the reader never observed the file at all — the test proved nothing"
+    assert set(reads) == {881}
+    assert list(tmp_path.glob("*.tmp")) == []
+
+
+def test_two_concurrent_writers_of_the_same_run_never_splice_their_payloads(tmp_path):
+    """A fixed `<run_id>.json.tmp` would let two writes for one run_id
+    interleave into the same temp file — a fresh instance of the exact race
+    this change closes. Unique temp names mean each payload lands whole."""
+    path = tmp_path / "881.json"
+    bodies = [_big_task(881, filler=c) for c in ("a", "b")]
+    blobs = {b["blob"] for b in bodies}
+    errors = []
+
+    def writer(body):
+        try:
+            for _ in range(40):
+                farmd._write_task_atomic(path, body)
+                observed = json.loads(path.read_text())  # whoever's write is current
+                if observed["blob"] not in blobs:
+                    errors.append("spliced payload at the final path")
+                    return
+        except Exception as exc:
+            errors.append(f"{type(exc).__name__}: {exc}")
+
+    threads = [threading.Thread(target=writer, args=(b,), daemon=True) for b in bodies]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=60)
+
+    assert not any(t.is_alive() for t in threads)
+    assert errors == []
+    assert json.loads(path.read_text())["blob"] in blobs
+    assert list(tmp_path.glob("*.tmp")) == []
+
+
+def test_steps_run_enqueues_atomically(running_farm, monkeypatch):
+    """The enqueue write named in HZ-130 — asserted through the HTTP route, not
+    just on the helper, so the call site can't regress to write_text."""
+    calls = []
+    real = farmd._write_task_atomic
+    monkeypatch.setattr(farmd, "_write_task_atomic", lambda path, body: (calls.append(path), real(path, body))[1])
+
+    res = client.post("/steps/run", json=make_task(881, item_id="HZ-130", step_index=9))
+    assert res.status_code == 200
+
+    queued = QUEUE_DIR / "pm" / "881.json"
+    assert calls == [queued]
+    assert json.loads(queued.read_text())["run_id"] == 881
+
+
+def test_teardown_removes_a_leaked_temp_queue_file(monkeypatch):
+    """A farmd killed between the temp write and the rename leaks a
+    `.json.tmp`; `*.json` would never reach it and nothing else cleans it."""
+    monkeypatch.setattr(farmd.tmux_mgr, "kill_all_farm_sessions", lambda: [])
+    for sub in ("pm", "runs", "runs/active"):
+        (QUEUE_DIR / sub).mkdir(parents=True, exist_ok=True)
+    leaked = QUEUE_DIR / "pm" / "881.abcdef.json.tmp"
+    leaked.write_text(TRUNCATED_TASK)
+    queued = QUEUE_DIR / "pm" / "882.json"
+    queued.write_text(json.dumps(make_task(882)))
+
+    farmd._teardown()
+
+    assert not leaked.exists()
+    assert not queued.exists()
+
+
+def test_a_leaked_temp_file_never_makes_a_run_look_queued_or_alive(queue_dirs):
+    """Proof the `.json.tmp` suffix is load-bearing on the read side too: a
+    leftover temp file must not hold a run alive with no worker."""
+    leaked_pm = QUEUE_DIR / "pm" / "881.abcdef.json.tmp"
+    leaked_runs = QUEUE_DIR / "runs" / "882.abcdef.json.tmp"
+    try:
+        leaked_pm.write_text(TRUNCATED_TASK)
+        leaked_runs.write_text(TRUNCATED_TASK)
+
+        assert farmd._run_alive("881") is False
+        assert farmd._run_alive("882") is False
+        states = client.post("/runs/status", json={"run_ids": [881, 882]}).json()["states"]
+        assert states["881"]["state"] != "queued"
+        assert states["882"]["state"] != "queued"
+    finally:
+        leaked_pm.unlink(missing_ok=True)
+        leaked_runs.unlink(missing_ok=True)
+
+
+# ---- HZ-130: the contract the PM and ephemeral lanes share ----
+# Success metric 6, stated precisely. The lanes are NOT identical: the PM lane
+# eventually reports an unusable file, the ephemeral lane never does (guardrail
+# 4 forbids changing it — it is the reference implementation). What they share,
+# and what this asserts, is the three-part read contract: SKIP the file, NEVER
+# delete it, and RETRY it on the next poll.
+#
+# Known residual gap, stated rather than implied: because the ephemeral lane
+# does not report, farmd's _run_alive still answers True while an unparseable
+# `queue/runs/<id>.json` exists, so such a run can sit active with no worker
+# and no report. Atomic writes remove the *cause* on both lanes, leaving only
+# corrupt-on-disk; closing the ephemeral report path needs its own item, since
+# guardrail 4 puts it out of scope here.
+
+
+@pytest.mark.parametrize("payload", [TRUNCATED_TASK, "", "not json at all"])
+def test_both_lanes_skip_an_unparseable_task_file_without_deleting_it(tmp_path, monkeypatch, payload):
+    """The shared input class is a file that does not parse. (Valid JSON that
+    is merely unusable is PM-specific — the ephemeral lane's own field
+    handling is out of scope under guardrail 4 and is unchanged here.)"""
+    monkeypatch.setattr(pm_agent, "process", lambda *a: pytest.fail("an unusable task must not be processed"))
+
+    ephemeral = tmp_path / "runs"
+    ephemeral.mkdir()
+    eph_path = ephemeral / "881.json"
+    eph_path.write_text(payload)
+    pm_dir = tmp_path / "pm"
+    pm_dir.mkdir()
+    pm_path = pm_dir / "881.json"
+    pm_path.write_text(payload)
+
+    # Ephemeral lane: the reference. Skips, keeps.
+    assert farmd._select_dispatchable([eph_path], [], 4) == []
+    assert eph_path.exists()
+    # PM lane: same skip, same keep.
+    assert pm_agent.poll_once(pm_dir, "fintekkers", {}) == "skipped"
+    assert pm_path.exists()
+
+
+def test_both_lanes_retry_the_file_once_it_becomes_valid(tmp_path, monkeypatch):
+    ephemeral = tmp_path / "runs"
+    ephemeral.mkdir()
+    eph_path = ephemeral / "881.json"
+    eph_path.write_text(TRUNCATED_TASK)
+    pm_dir = tmp_path / "pm"
+    pm_dir.mkdir()
+    pm_path = pm_dir / "881.json"
+    pm_path.write_text(TRUNCATED_TASK)
+
+    pm_failures = {}
+    assert farmd._select_dispatchable([eph_path], [], 4) == []
+    assert pm_agent.poll_once(pm_dir, "fintekkers", pm_failures) == "skipped"
+
+    valid = json.dumps(make_task(881, item_id="hz-130", step_index=9))
+    eph_path.write_text(valid)
+    pm_path.write_text(valid)
+
+    processed = []
+    monkeypatch.setattr(pm_agent, "notify_started", lambda run_id: True)
+    monkeypatch.setattr(pm_agent, "process", lambda task, slug: processed.append(task))
+
+    assert farmd._select_dispatchable([eph_path], [], 4) == [eph_path]  # dispatchable now
+    assert pm_agent.poll_once(pm_dir, "fintekkers", pm_failures) == "processed"
+    assert [t["run_id"] for t in processed] == [881]
+    assert pm_failures == {}  # the retry cleared the file's failure count
+
+
+# ---- HZ-130 end to end: enqueue, corrupt, report, stop being alive ----
+# Nothing below is mocked except the far side of the network (a real local
+# HTTP server standing in for the Node horizon server) and the PM's own
+# `process`, which would otherwise spawn a Claude session. The enqueue goes
+# through the real /steps/run route, the report goes through the real
+# /internal/steps/result route, and the liveness answer comes from the real
+# /runs/alive route — the same idiom as the reconcile end-to-end tests above.
+
+
+def _age_file(path: Path, seconds: float) -> None:
+    when = path.stat().st_mtime - seconds
+    os.utime(path, (when, when))
+
+
+def _farmd_over_testclient(monkeypatch):
+    """Points the PM's HTTP calls at the real farmd app instead of stubbing a
+    reply, so the PM's report is parsed out of what farmd actually returns.
+
+    `pm_agent.httpx` is swapped for a shim rather than `httpx.post` patched in
+    place: it is the same module object farmd holds, so patching the attribute
+    would also hijack farmd's own forward to the horizon server — which is the
+    far side this test wants left real."""
+
+    def post(url, json=None, timeout=None):
+        assert timeout, "every network call in the farm is bounded"
+        assert url.startswith(pm_agent.FARMD), f"the PM only ever talks to farmd, not {url}"
+        return client.post(url[len(pm_agent.FARMD) :], json=json)
+
+    monkeypatch.setattr(pm_agent, "httpx", SimpleNamespace(post=post))
+
+
+def test_an_unusable_pm_task_file_is_reported_end_to_end_over_real_http(queue_dirs, running_farm, monkeypatch):
+    """HZ-128's stall, replayed through the real wiring, and the assertion the
+    item actually turns on: the run must stop being alive.
+
+    Before HZ-130 run 881's truncated task file was deleted and nobody was
+    told, so /runs/alive kept answering... nothing — the file was gone, the PM
+    had never reported, and `agent_started_at` stayed NULL. The run sat
+    `active` server-side with no worker and no report for 11 minutes.
+    """
+    server, url, requests = _serve_fake_horizon(fail_status=200)
+    monkeypatch.setattr(farmd, "HORIZON_URL", url)
+    monkeypatch.setattr(pm_agent, "process", lambda *a: pytest.fail("an unusable task must not be processed"))
+    _farmd_over_testclient(monkeypatch)
+    try:
+        res = client.post("/steps/run", json=make_task(881, item_id="HZ-128", step_index=9))
+        assert res.status_code == 200 and res.json()["queued"] == "pm"
+        task_path = QUEUE_DIR / "pm" / "881.json"
+        assert json.loads(task_path.read_text())["run_id"] == 881  # enqueued whole
+
+        # The truncated read the non-atomic write used to hand a poller, aged
+        # past the grace so this poll has to decide rather than retry.
+        task_path.write_text(TRUNCATED_TASK)
+        _age_file(task_path, PM_MALFORMED_GRACE_S + 1)
+        assert client.post("/runs/alive", json={"run_ids": [881]}).json()["alive"]["881"] is True
+
+        assert pm_agent.poll_once(QUEUE_DIR / "pm", "fintekkers", {}) == "reported"
+    finally:
+        server.shutdown()
+
+    fails = [r for r in requests if r["path"] == "/api/farm/steps/881/fail"]
+    assert len(fails) == 1, f"expected exactly one fail report, got {[r['path'] for r in requests]}"
+    assert fails[0]["headers"]["x-farm-secret"] == farmd.SHARED_SECRET
+    assert fails[0]["body"]["reason"] == "unreachable"  # in AUTO_RETRY_REASONS: auto-retried, not human-paused
+    assert "881.json" in fails[0]["body"]["error"]
+    # The run was never claimed, so it must never have been marked started —
+    # reporting a failure and arming the execution timer are different things.
+    assert not [r for r in requests if r["path"].endswith("/started")]
+
+    # Metric 5, the assertion that actually closes this item: the run is no
+    # longer alive in the farm, and the server has been told why.
+    assert not (QUEUE_DIR / "pm" / "881.json").exists()
+    assert client.post("/runs/alive", json={"run_ids": [881]}).json()["alive"]["881"] is False
+
+
+def test_an_unusable_pm_task_file_stays_alive_and_on_disk_when_the_report_is_not_accepted(
+    queue_dirs, running_farm, monkeypatch
+):
+    """The other half of the same wiring: the report reaches the Node server
+    and it 503s. A report that was not accepted is not evidence the run was
+    handled — the file must stay, the run must stay alive, and the next poll
+    must retry it.
+
+    (A real 503 from the fake server, rather than an unreachable host: farmd's
+    forward retries twice with a 2s backoff, and the only way to skip that
+    would be patching the shared `time` module out from under farmd's own
+    daemon threads.)"""
+    server, url, requests = _serve_fake_horizon(fail_status=503)
+    monkeypatch.setattr(farmd, "HORIZON_URL", url)
+    monkeypatch.setattr(pm_agent, "process", lambda *a: pytest.fail("an unusable task must not be processed"))
+    _farmd_over_testclient(monkeypatch)
+    try:
+        client.post("/steps/run", json=make_task(882, item_id="HZ-128", step_index=9))
+        task_path = QUEUE_DIR / "pm" / "882.json"
+        task_path.write_text(TRUNCATED_TASK)
+        _age_file(task_path, PM_MALFORMED_GRACE_S + 1)
+
+        assert pm_agent.poll_once(QUEUE_DIR / "pm", "fintekkers", {}) == "skipped"
+        assert task_path.exists(), "an unacknowledged report must not release the file"
+        assert client.post("/runs/alive", json={"run_ids": [882]}).json()["alive"]["882"] is True
+
+        # And it is retried rather than abandoned after the refused report.
+        assert pm_agent.poll_once(QUEUE_DIR / "pm", "fintekkers", {}) == "skipped"
+    finally:
+        server.shutdown()
+
+    assert len([r for r in requests if r["path"] == "/api/farm/steps/882/fail"]) == 2
+    assert (QUEUE_DIR / "pm" / "882.json").exists()

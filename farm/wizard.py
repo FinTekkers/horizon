@@ -25,6 +25,8 @@ from typing import TYPE_CHECKING
 
 import httpx
 
+from domain.py import priorities
+
 from . import config
 from .config import STATE_DIR
 from .whatsapp.transport import Inbound, Transport, TransportError
@@ -32,7 +34,12 @@ from .whatsapp.transport import Inbound, Transport, TransportError
 if TYPE_CHECKING:
     from .concierge_agent import ConciergeState
 
-PRIORITIES = ("Critical", "High", "Medium", "Low")
+# HZ-135: the vocabulary, its order and the wizard's default all come from
+# domain/priorities.json. The numbered prompt below is DERIVED from that order —
+# it used to spell all four values out twice (the question and the retry line),
+# which is three copies counting the number->value parser, all of which had to
+# agree with the API's enum by hand.
+PRIORITIES = priorities.PRIORITIES
 NEW_ITEM_RE = re.compile(r"^\[new item\]\s*(.*)$", re.IGNORECASE | re.DOTALL)
 NUMERIC_RE = re.compile(r"^[1-9]$")
 # A message that is nothing but a thumbs-up, tolerating skin-tone modifiers
@@ -41,14 +48,39 @@ NUMERIC_RE = re.compile(r"^[1-9]$")
 # model like any other message.
 THUMBS_RE = re.compile("^\U0001F44D[\U0001F3FB-\U0001F3FF]?\uFE0F?$")
 
+
+def _priority_options(values: tuple[str, ...] = PRIORITIES) -> str:
+    """The numbered option list this wizard offers, e.g. "1) A 2) B".
+
+    DERIVED from the declared order, never hand-typed — that is success metric 2
+    from the farm side. The question below and the retry line further down both
+    spell this list out, and _priority_by_number parses the numbers back, so all
+    three have to come from one expression or they drift.
+
+    It lives HERE rather than in domain/py/priorities.py because the numbering and
+    the `) ` separator are WhatsApp display copy, and domain/ declares vocabulary,
+    not the strings a human reads. `values` is a parameter with a default so a
+    test can fabricate a vocabulary and assert the numbering follows it. 1-based,
+    because a human is typing the reply.
+    """
+    return " ".join(f"{i + 1}) {value}" for i, value in enumerate(values))
+
+
+def _priority_by_number(values: tuple[str, ...] = PRIORITIES) -> dict[str, str]:
+    """{"1": <first>, "2": <second>, ...} — the exact inverse of
+    _priority_options()'s numbering. Keys are strings because the reply arrives as
+    text."""
+    return {str(i + 1): value for i, value in enumerate(values)}
+
+
 STEP_PROMPTS = {
     "title": "What's the title?",
     "outcome": "What's the outcome — what should be true when this is done?",
     "metric": "How will we measure success?",
     "guardrails": "Any guardrails or constraints? (reply 'skip' for none)",
-    "priority": "Priority — reply 1) Critical 2) High 3) Medium 4) Low",
+    "priority": f"Priority — reply {_priority_options()}",
 }
-_PRIORITY_NUMS = {"1": "Critical", "2": "High", "3": "Medium", "4": "Low"}
+_PRIORITY_NUMS = _priority_by_number()
 
 
 def _log(msg: str) -> None:
@@ -130,7 +162,7 @@ def _new_session(title: str) -> dict:
             "outcome": "",
             "metric": "",
             "guardrails": "",
-            "priority": "Medium",
+            "priority": priorities.DEFAULT_PRIORITY,
         }
     )
 
@@ -244,7 +276,11 @@ def try_handle_item_wizard(
         priority = _parse_priority(text)
         state.claim(msg)
         if priority is None:
-            _reply(transport, msg, "Sorry, I didn't catch that — reply 1) Critical 2) High 3) Medium 4) Low.")
+            _reply(
+                transport,
+                msg,
+                f"Sorry, I didn't catch that — reply {_priority_options()}.",
+            )
             return True
         session["priority"] = priority
         session["step"] = "confirm"
@@ -292,18 +328,33 @@ def offer_gate_choices(chat_jid: str, sender_jid: str, options: list[dict], csto
     cstore.set(key, _touch({"options": options}))
 
 
-def _approve_gate(base_url: str, option: dict, sender: str) -> tuple[bool, str]:
+def _approve_gate(base_url: str, option: dict, sender: str, sender_jid: str) -> tuple[bool, str]:
+    """HZ-140: this is the one place in the farm that can approve a gate, and
+    it uses WA_APPROVAL_SECRET — not FARM_SHARED_SECRET, which the server no
+    longer accepts here and which no agent session holds any more. The jid
+    rides along because the server, not this process, is now the authority on
+    who may approve; sender_allowed() upstream stays as defence in depth."""
+    if not config.WA_APPROVAL_SECRET:
+        # Refuse locally rather than send an unauthenticated request the
+        # server would answer 401 to — the reason is a misconfigured host.
+        return False, "the approval credential isn't configured on this host"
     try:
         res = httpx.post(
             f"{base_url}/api/items/{option['item_id']}/gates/{option['step_index']}/approve-via-whatsapp",
-            json={"sender": sender},
-            headers={"x-farm-secret": config.SHARED_SECRET},
+            json={"sender": sender, "senderJid": sender_jid},
+            headers={"x-wa-approval-secret": config.WA_APPROVAL_SECRET},
             timeout=15,
         )
     except httpx.HTTPError as exc:
         return False, f"Horizon unreachable ({exc})"
     if res.status_code == 200:
         return True, ""
+    # The two HZ-140 rejections get plain replies instead of a raw error code.
+    # Neither text ever contains the jid or any credential.
+    if res.status_code == 403:
+        return False, "this WhatsApp number isn't on Horizon's approver list"
+    if res.status_code == 503:
+        return False, "WhatsApp approvals aren't configured on the Horizon server"
     try:
         return False, str(res.json().get("error", res.status_code))
     except ValueError:
@@ -356,7 +407,7 @@ def try_handle_gate_choice(
         return True
     option = options[idx]
     cstore.clear(key)
-    ok, err = _approve_gate(base_url, option, sender_label(msg.sender_jid))
+    ok, err = _approve_gate(base_url, option, sender_label(msg.sender_jid), msg.sender_jid)
     if ok:
         _reply(transport, msg, f"Approved {option['item_id']} — {option['label']}.")
     else:

@@ -31,7 +31,7 @@ process.env.FARM_STEP_TIMEOUT_MS = '300'
 
 const { db } = await import('../src/db.js')
 const store = await import('../src/store.js')
-const { STEPS, IMPLEMENT_STEP_INDEX } = await import('../src/lifecycle.js')
+const { STEPS, IMPLEMENT_STEP_INDEX } = await import('../../domain/js/lifecycle.js')
 const orchestrator = await import('../src/orchestrator.js')
 
 store.purgeDemoItems()

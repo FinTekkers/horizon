@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import * as api from '../api'
 import { GridIcon } from './icons'
+import { LegalLinks } from './LegalPage'
 
 // A failed /api/auth/google/* callback (HZ-37) redirects back here with
 // ?error=<code> instead of rendering raw JSON in the tab — this maps each
@@ -106,6 +107,7 @@ export default function LoginPage({ onLoggedIn }) {
           Sign in with Google
         </a>
       </div>
+      <LegalLinks className="legal-links login__legal" />
     </div>
   )
 }

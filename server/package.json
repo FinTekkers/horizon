@@ -7,8 +7,8 @@
     "dev": "node --watch src/server.js",
     "start": "node src/server.js",
     "test": "node --test \"test/*.test.mjs\"",
-    "gen:steps": "node scripts/gen-steps.mjs",
-    "check:required-input-gate": "node scripts/check-required-input-gate.mjs"
+    "check:required-input-gate": "node scripts/check-required-input-gate.mjs",
+    "check:no-leaked-farmd": "node scripts/check-no-leaked-farmd.mjs"
   },
   "dependencies": {
     "@fastify/cookie": "^11.1.2",

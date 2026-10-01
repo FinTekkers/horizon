@@ -1,14 +1,16 @@
 # PM cross-item context reliance — a point-in-time analysis
 
-Generated 2026-09-30 against `/home/ubuntu/.horizon-farm/logs/pm-horizon.log`, for HZ-115's evidence gate: "Is the accumulated cross-item context actually load-bearing?" (247 PM runs, 61 distinct work items in this log.)
+Generated 2026-10-01 against `/home/ubuntu/.horizon-farm/logs/pm-horizon.log`, for HZ-115's evidence gate: "Is the accumulated cross-item context actually load-bearing?" (341 PM runs, 85 distinct work items in this log.)
 
 **This is a snapshot, not an ongoing metric.** It reflects one production `pm-<slug>.log` file at generation time; re-run `python -m farm.tools.analyze_pm_context_reliance` and recommit this file against a fresher log for an updated answer.
+
+**Corpus coverage: 156/341 runs yielded at least one parseable `patch` field (185 contributed nothing to Signal 1).** A run contributes nothing when it proposed no patch (common and legitimate — the PM step often reports "no changes needed"), when it failed, or when its reply text never reached the log at all. That last case is provider-shaped: only `farm/providers/claude.py` echoes reply text into the log, so a Muse-routed PM run is invisible here. **These findings describe the Claude-routed corpus**, and the count above is stated so a thin parse is visible as a number rather than mistaken for full coverage.
 
 ## Signal 1 — verbatim phrase reuse across different items' patch fields
 
 `farm/pm_agent.py`'s `build_prompt()` never renders one item's `desc`/`metric`/`guardrails` into another item's prompt — each item's prompt carries only its own fields. So a word-for-word phrase shared between two different items' `patch` output can only have reached the second item's reply through the resumed session's own memory of writing the first, not through anything explicitly given to the model this call.
 
-**22 shared-phrase occurrence(s) found, on wording specific enough it is not plausibly independent convergence — cross-item memory reuse is present in this log:**
+**49 shared-phrase occurrence(s) found, on wording specific enough it is not plausibly independent convergence — cross-item memory reuse is present in this log:**
 
 | Earlier item (run) | Later item (run) | Shared phrase |
 | --- | --- | --- |
@@ -34,6 +36,33 @@ Generated 2026-09-30 against `/home/ubuntu/.horizon-farm/logs/pm-horizon.log`, f
 | HZ-79 (run 546, `desc`) | HZ-95 (run 642, `desc`) | "board blocked is visually distinct from idle paused" |
 | HZ-79 (run 546, `desc`) | HZ-95 (run 642, `desc`) | "blocked is visually distinct from idle paused and" |
 | HZ-79 (run 546, `desc`) | HZ-95 (run 642, `desc`) | "is visually distinct from idle paused and queued" |
+| HZ-128 (run 889, `guardrails`) | HZ-130 (run 895, `guardrails`) | "no test regressions every test passing before this" |
+| HZ-128 (run 889, `guardrails`) | HZ-130 (run 895, `guardrails`) | "test regressions every test passing before this change" |
+| HZ-128 (run 889, `guardrails`) | HZ-130 (run 895, `guardrails`) | "regressions every test passing before this change passes" |
+| HZ-128 (run 889, `guardrails`) | HZ-130 (run 895, `guardrails`) | "every test passing before this change passes after" |
+| HZ-126 (run 873, `guardrails`) | HZ-130 (run 895, `guardrails`) | "11 defaults apply tests linters and e2e must" |
+| HZ-139 (run 927, `guardrails`) | HZ-140 (run 940, `guardrails`) | "every test passing before passes after 8 defaults" |
+| HZ-139 (run 927, `guardrails`) | HZ-140 (run 940, `guardrails`) | "test passing before passes after 8 defaults apply" |
+| HZ-139 (run 927, `guardrails`) | HZ-140 (run 940, `guardrails`) | "passing before passes after 8 defaults apply tests" |
+| HZ-139 (run 927, `guardrails`) | HZ-140 (run 940, `guardrails`) | "before passes after 8 defaults apply tests linters" |
+| HZ-139 (run 927, `guardrails`) | HZ-140 (run 940, `guardrails`) | "passes after 8 defaults apply tests linters and" |
+| HZ-139 (run 927, `guardrails`) | HZ-140 (run 940, `guardrails`) | "after 8 defaults apply tests linters and e2e" |
+| HZ-139 (run 927, `guardrails`) | HZ-140 (run 940, `guardrails`) | "8 defaults apply tests linters and e2e must" |
+| HZ-139 (run 927, `guardrails`) | HZ-144 (run 973, `guardrails`) | "each line is a prohibition 1 do not" |
+| HZ-141 (run 942, `guardrails`) | HZ-144 (run 973, `guardrails`) | "8 no test regressions every test passing before" |
+| HZ-141 (run 942, `guardrails`) | HZ-144 (run 973, `guardrails`) | "regressions every test passing before passes after 9" |
+| HZ-141 (run 942, `guardrails`) | HZ-144 (run 973, `guardrails`) | "every test passing before passes after 9 defaults" |
+| HZ-141 (run 942, `guardrails`) | HZ-144 (run 973, `guardrails`) | "test passing before passes after 9 defaults apply" |
+| HZ-141 (run 942, `guardrails`) | HZ-144 (run 973, `guardrails`) | "passing before passes after 9 defaults apply tests" |
+| HZ-141 (run 942, `guardrails`) | HZ-144 (run 973, `guardrails`) | "before passes after 9 defaults apply tests linters" |
+| HZ-141 (run 942, `guardrails`) | HZ-144 (run 973, `guardrails`) | "passes after 9 defaults apply tests linters and" |
+| HZ-141 (run 942, `guardrails`) | HZ-144 (run 973, `guardrails`) | "after 9 defaults apply tests linters and e2e" |
+| HZ-130 (run 895, `guardrails`) | HZ-142 (run 1095, `guardrails`) | "9 no test regressions every test passing before" |
+| HZ-124 (run 846, `desc`) | HZ-157 (run 1153, `guardrails`) | "a note in both the run output and" |
+| HZ-124 (run 846, `desc`) | HZ-157 (run 1153, `guardrails`) | "note in both the run output and the" |
+| HZ-124 (run 846, `desc`) | HZ-157 (run 1153, `guardrails`) | "in both the run output and the artifact" |
+| HZ-156 (run 1067, `guardrails`) | HZ-157 (run 1153, `guardrails`) | "any step's output the step sequence or any" |
+| HZ-156 (run 1067, `guardrails`) | HZ-157 (run 1153, `guardrails`) | "step's output the step sequence or any gate" |
 
 **5 additional occurrence(s) excluded as file-path-shaped text** — the shared shingle was built from a token that sat directly against a `/` or `.` in the source text (e.g. a list of source file paths). Two items independently listing the same repo files produce this identical word sequence with zero cross-item recall involved — it is determined by the directory layout, not by anything carried from a resumed session:
 
@@ -43,15 +72,20 @@ Generated 2026-09-30 against `/home/ubuntu/.horizon-farm/logs/pm-horizon.log`, f
 - "server src personas js ui src domain personas"
 - "src personas js ui src domain personas js"
 
-**2 additional occurrence(s) excluded as likely convergent boilerplate** — the shared shingle recurs across 3+ distinct items independently, more consistent with a stock phrase the model drafts the same way regardless of memory than with recall of one specific earlier item:
+**29 additional occurrence(s) excluded as likely convergent boilerplate** — the shared shingle recurs across 3+ distinct items independently, more consistent with a stock phrase the model drafts the same way regardless of memory than with recall of one specific earlier item:
 
+- "7 no test regressions every test passing before"
+- "9 defaults apply tests linters and e2e must"
 - "defaults apply tests linters and e2e must pass"
+- "no test regressions every test passing before passes"
+- "regressions every test passing before passes after 8"
+- "test regressions every test passing before passes after"
 
 ## Signal 2 — cross-item ID mentions (weaker signal, reported for context)
 
 A run's reply mentioning a *different* item's ID. This does **not** distinguish cross-item memory from a legitimate reference already present in the current item's own `desc`/`guardrails` text (which the current item's own prompt does carry) — reported as raw counts for a human to read the excerpts and judge, not as a standalone verdict.
 
-**87 mention(s) found:**
+**124 mention(s) found:**
 
 | Run | Item | Step | Mentions | Excerpt |
 | --- | --- | --- | --- | --- |
@@ -106,9 +140,9 @@ A run's reply mentioning a *different* item's ID. This does **not** distinguish 
 | 561 | HZ-81 | Set guardrails | HZ-76 | ...he orchestrator's retry classification (HZ-76) depends on distinguishing exhaustion f... |
 | 571 | HZ-78 | Summarize reviews & recommend | HZ-33 | ...ill silently won't dispatch — the exact HZ-33 failure mode the guardrail names — **op... |
 
-...and 37 more occurrence(s), truncated for table length — full count above.
+...and 74 more occurrence(s), truncated for table length — full count above.
 
 ## Verdict
 
-**Load-bearing: yes, evidenced.** Signal 1 shows the model carrying specific, exact wording from one item's `patch` output into a different item's reply — this could only happen via the resumed session's memory, since `build_prompt()` never sends that wording for any item but its own. Per HZ-115's guardrails, this means migrating to ephemeral execution should not delete this context outright — it should be replaced with an explicit, reproducible digest injected into the prompt (Option D's premise, folded into Option A's migration), not silently dropped.
+**Load-bearing: yes, evidenced.** Signal 1 shows the model carrying specific, exact wording from one item's `patch` output into a different item's reply — this could only happen via the resumed session's memory, since `build_prompt()` never sends that wording for any item but its own. Per HZ-115's guardrails, this means migrating to ephemeral execution should not delete this context outright — it should be replaced with an explicit, reproducible digest injected into the prompt, not silently dropped. Which migration option carries that digest is a separate decision; see `docs/pm-step-ephemeral-recommendation.md`.
 

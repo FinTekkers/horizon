@@ -11,9 +11,23 @@ summary. Check specifically:
   suite ran, not a subset.
 - **New code has unit test coverage** — read the diff; every new function or
   branch of real logic needs a test that would fail without it.
-- **An explicit end-to-end test exercises the change** — a real user-facing
-  flow (e.g. the actual login redirect + callback for an SSO change), not
-  just unit mocks. "Manually verified" is never acceptable evidence.
+- **User-facing changes have an end-to-end test** — if the change alters what
+  a user sees or does, a real user-facing flow must exercise it (e.g. the
+  actual login redirect + callback for an SSO change), not just unit mocks.
+  A change with no user-visible behaviour change (a refactor, a move into
+  domain/, internal plumbing) needs no NEW e2e test: set `e2e_test_present`
+  true if the existing e2e suite ran green, and say so in the artifact.
+  "Manually verified" is never acceptable evidence.
+
+Scope — the item's success metric and guardrails are the acceptance bar:
+- A finding is **block** only if it shows one of: the regression suite did
+  not run; new logic has no test that would fail without it; a success-metric
+  line or guardrail is not verified by any test; a user-facing change has no
+  e2e test.
+- Everything else is a **note**: extra edge cases, nicer test structure,
+  coverage beyond what the metric asks. Notes never fail the review.
+- Set `verdict` to "fail" only when at least one finding is **block**. Each
+  block finding names the metric line, guardrail or check it fails.
 
 Respond with ONLY a JSON object (no prose, no fences):
 {
@@ -27,7 +41,8 @@ Respond with ONLY a JSON object (no prose, no fences):
 }
 
 Any one of the three checks being false is a blocking finding — fail the
-review and say exactly what test is missing.
+review and say exactly what test is missing. Do not set a check false for
+anything the scope rules above classify as a note.
 
 Writing rules (strict — outputs violating these get rejected at review):
 - Write for a busy human skimming on a small screen.

@@ -31,12 +31,16 @@ farm/tools/measure_text_caps.py for the same one-off-snapshot pattern.
 
 import argparse
 import json
+import os
 import re
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 DEFAULT_LOG_PATH = Path.home() / ".horizon-farm" / "logs" / "pm-horizon.log"
 ROLE_PROMPT_PATH = REPO_ROOT / "farm" / "roles" / "pm.md"
+# Mirrors farm/rules.py's own env override so this analysis reads the same
+# rules tree the agents were actually given.
+RULES_DIR = Path(os.environ.get("FARM_RULES_DIR", str(REPO_ROOT / "farm" / "rules")))
 
 _ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[a-zA-Z]")
 _RUN_HEADER_RE = re.compile(r"^\[(\d{2}:\d{2}:\d{2})\] run (\d+): (.+) for ([A-Z]{2,6}-\d+)$")
@@ -209,6 +213,38 @@ def role_prompt_shingles(role_prompt_path: Path = ROLE_PROMPT_PATH) -> set:
     return _shingles(role_prompt_path.read_text(encoding="utf-8"))
 
 
+def rules_shingles(rules_dir: Path = RULES_DIR) -> set:
+    """Shingles drawn from the versioned project/repo rules files.
+
+    `build_prompt()` renders `render_rules_section(task["rules"])` into every
+    PM prompt, and farmd stamps the same project rules onto every task for a
+    given project. So rules prose reaches *every* item's prompt identically —
+    exactly the same false-positive generator as the role prompt, and for
+    exactly the same reason. Two items echoing a sentence out of
+    `farm/rules/projects/horizon.md` demonstrates that they were both handed
+    that sentence, not that anything was remembered between them.
+
+    Missing or unreadable files degrade to nothing: this is an exclusion set,
+    so failing to read one can only make the report *more* conservative about
+    what it claims, never less."""
+    shingles: set = set()
+    if not rules_dir.exists():
+        return shingles
+    for path in sorted(rules_dir.rglob("*.md")):
+        try:
+            shingles |= _shingles(path.read_text(encoding="utf-8"))
+        except OSError:
+            continue
+    return shingles
+
+
+def always_present_prompt_shingles() -> set:
+    """Every shingle that reaches the model on each call regardless of session
+    state — the PM role prompt plus the versioned rules. This is the honest
+    exclusion set for "could the current prompt alone explain this wording?"."""
+    return role_prompt_shingles() | rules_shingles()
+
+
 def find_phrase_reuse(runs: list[dict], role_shingles: set | None = None) -> list[dict]:
     """Pairs of (earlier item, later item) whose patch field text shares a
     SHINGLE_SIZE-word sequence, in chronological (log) order. Same-item reuse
@@ -228,7 +264,7 @@ def find_phrase_reuse(runs: list[dict], role_shingles: set | None = None) -> lis
     None of these tags prove a match isn't memory; each is a principled
     reason a match should NOT be counted as evidence that it is."""
     if role_shingles is None:
-        role_shingles = role_prompt_shingles()
+        role_shingles = always_present_prompt_shingles()
     first_seen: dict = {}  # shingle -> (item, field, run_id)
     shingle_items: dict = {}  # shingle -> set of distinct items that wrote it
     shingle_path_like: dict = {}  # shingle -> True if any occurrence was path-adjacent
@@ -289,6 +325,7 @@ def find_cross_item_mentions(runs: list[dict]) -> list[dict]:
 
 def render_markdown(runs: list[dict], phrase_matches: list[dict], mentions: list[dict], as_of: str, source: str) -> str:
     items = sorted({run["item"] for run in runs})
+    runs_with_patch = sum(1 for run in runs if extract_patch_values(run))
     lines = [
         "# PM cross-item context reliance — a point-in-time analysis",
         "",
@@ -300,6 +337,15 @@ def render_markdown(runs: list[dict], phrase_matches: list[dict], mentions: list
         "`pm-<slug>.log` file at generation time; re-run "
         "`python -m farm.tools.analyze_pm_context_reliance` and recommit this file "
         "against a fresher log for an updated answer.",
+        "",
+        f"**Corpus coverage: {runs_with_patch}/{len(runs)} runs yielded at least one parseable "
+        f"`patch` field ({len(runs) - runs_with_patch} contributed nothing to Signal 1).** A run "
+        "contributes nothing when it proposed no patch (common and legitimate — the PM step often "
+        "reports \"no changes needed\"), when it failed, or when its reply text never reached the "
+        "log at all. That last case is provider-shaped: only `farm/providers/claude.py` echoes "
+        "reply text into the log, so a Muse-routed PM run is invisible here. **These findings "
+        "describe the Claude-routed corpus**, and the count above is stated so a thin parse is "
+        "visible as a number rather than mistaken for full coverage.",
         "",
         "## Signal 1 — verbatim phrase reuse across different items' patch fields",
         "",
@@ -349,10 +395,11 @@ def render_markdown(runs: list[dict], phrase_matches: list[dict], mentions: list
         lines.append("")
         lines.append(
             f"**{len(role_prompt_matches)} additional occurrence(s) excluded — the shared shingle also "
-            "appears verbatim in `farm/roles/pm.md`, the PM role's own system prompt.** That prompt is "
-            "appended fresh on every single call, session or no session, so this wording is fully "
-            "explained by the current call's own prompt and is not evidence of anything carried from a "
-            "resumed session:"
+            "appears verbatim in text every prompt carries anyway:** `farm/roles/pm.md` (the PM role's "
+            "own system prompt, appended fresh on every single call) or the versioned project/repo "
+            "rules under `farm/rules/`, which `build_prompt()` renders into every item's prompt via "
+            "`render_rules_section()`. Either way the wording is fully explained by the current call's "
+            "own prompt and is not evidence of anything carried from a resumed session:"
         )
         lines.append("")
         for shingle in role_prompt_shingles_found:
@@ -423,8 +470,9 @@ def render_markdown(runs: list[dict], phrase_matches: list[dict], mentions: list
             "for any item but its own. Per HZ-115's guardrails, this means "
             "migrating to ephemeral execution should not delete this context "
             "outright — it should be replaced with an explicit, reproducible "
-            "digest injected into the prompt (Option D's premise, folded into "
-            "Option A's migration), not silently dropped."
+            "digest injected into the prompt, not silently dropped. Which "
+            "migration option carries that digest is a separate decision; see "
+            "`docs/pm-step-ephemeral-recommendation.md`."
         )
     else:
         lines.append(

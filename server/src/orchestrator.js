@@ -10,9 +10,9 @@
 // step_run/event bookkeeping and gate semantics stay exactly as they are.
 
 import { db } from './db.js'
+import { AGENTS } from './agentTokens.js'
 import {
   STEPS,
-  AGENTS,
   isClosed,
   isAbandoned,
   isBlocked,
@@ -21,7 +21,9 @@ import {
   ACCEPT_GATE_INDEX,
   DEPLOY_STEP_INDEX,
   requiredStepIndex,
-} from './lifecycle.js'
+} from '../../domain/js/lifecycle.js'
+import { AUTO_RETRY_REASONS, REASON } from '../../domain/js/reasons.js'
+import { patchLimits } from '../../domain/js/fields.js'
 import {
   getItem,
   addEvent,
@@ -33,7 +35,7 @@ import {
   requestChanges,
 } from './store.js'
 import { createMockPr, createDeployRelease, postIssueComment, createPrFromBranch } from './github.js'
-import { PHASES } from './lifecycle.js'
+import { PHASES } from '../../domain/js/lifecycle.js'
 import { getActiveProjectId, getSetting, setSetting, getToken } from './settings.js'
 import {
   FARM_URL,
@@ -45,7 +47,7 @@ import {
   RECONCILE_SWEEP_MS,
   UI_URL,
 } from './config.js'
-import { isPersona, personaLabel, proposePersona } from './personas.js'
+import { PRIMARY_PERSONA_AGENT, isPersona, personaLabel, proposePersona } from './personas.js'
 
 // Keyed by step_run.id (HZ-100) — NOT item id. Keying by item used to let a
 // stale callback for a superseded run clear/overwrite the CURRENT run's
@@ -82,12 +84,16 @@ const REVIEW_CYCLE_CAP = 3
 
 // Hard cap on consecutive AUTOMATIC retries of a step failure (HZ-76),
 // enforced HERE and persisted on step_run.auto_retry_count — never decided
-// by an agent or a prompt. Only the reasons below are ever retried; anything
+// by an agent or a prompt. Only retryable reasons are ever retried; anything
 // else (malformed verdict, PR/release failure, checks-failed, an unrecognized
 // or missing reason) pauses for a human exactly as before this existed —
 // that default-safe behavior is what keeps a real defect from being masked.
+//
+// HZ-132: which reasons those are is no longer typed here. The vocabulary and
+// its retryable flag are declared once, in domain/reasons.json, and
+// AUTO_RETRY_REASONS is derived from it by domain/js/reasons.js — the farm
+// emits the same constants and the UI's pause banner reads the same document.
 export const AUTO_RETRY_CAP = 3
-const AUTO_RETRY_REASONS = new Set(['never_picked_up', 'timeout', 'unreachable', 'turn_cap'])
 
 // MOCK_STEP_LATENCY_MS lets tests drive the mock pipeline without waiting.
 const latency = () => Number(process.env.MOCK_STEP_LATENCY_MS) || 2000 + Math.floor(Math.random() * 3000)
@@ -275,7 +281,7 @@ export function budgetArtifacts(rows) {
   })
 }
 
-// Exported for tests. `step.requires` (server/src/lifecycle.js) names prior
+// Exported for tests. `step.requires` (domain/steps.json) names prior
 // steps this step cannot review without in full. Returns one entry per
 // required label whose budgeted artifact was truncated — empty when every
 // required input is suppliable whole (including when the step has no
@@ -341,6 +347,31 @@ export function pollRunStates() {
 export function setRunStateForTest(runId, state, reason = null) {
   farm.runStates = { ...farm.runStates, [String(runId)]: { state, reason } }
   notifyChange()
+}
+
+// e2e only (HZ-154), same wiring and same reasoning as the hook above: the
+// suite has no farm daemon, so the scoped conflict path's whole visible
+// outcome — the item coming back to the Accept gate resolved, with the
+// activity feed naming the files, the hunks and the scoped verdict, and the
+// implement step's attempt count sitting still — would otherwise be covered
+// only below the UI. This queues ONE canned /conflicts/resolve reply for the
+// next resolveConflicts() call, in place of the farmd round trip.
+//
+// It stubs farmd's ANSWER, never the trigger or the gate: the click, the
+// session, the PIN, the escalation path and every guard clause in
+// resolveConflicts() all still run exactly as they do in production. Left
+// null unless a spec sets it, and the route that sets it exists only when
+// HORIZON_TEST_HOOKS=1, which production never sets.
+let cannedConflictReply = null
+
+export function setConflictReplyForTest(reply) {
+  cannedConflictReply = reply
+}
+
+function takeCannedConflictReply() {
+  const reply = cannedConflictReply
+  cannedConflictReply = null
+  return reply
 }
 
 // ---- real farm (farm/ Python daemon) plumbing ----
@@ -415,11 +446,47 @@ export async function fetchRunLog(runId, offset = 0) {
 // is a bounded-but-long synchronous farmd call (real git merge + the repo's
 // own test suite) instead of an async dispatch — FARM_CONFLICT_RESOLVE_TIMEOUT_MS
 // (config.js) is what bounds that trade.
-const CONFLICT_ESCALATION_REASONS = {
+//
+// HZ-154 adds a narrow middle path INSIDE the same call: farmd may now resolve
+// the conflicted hunks themselves (deterministically where the two sides
+// edited different lines of the hunk, otherwise with a tool-restricted agent)
+// and review only the resolution delta, rather than escalating every
+// overlapping edit to a full re-implementation plus a full re-review of the
+// whole PR. Everything above
+// still holds: one human click, no row, no poll loop, no step_run write, and
+// the item only ever comes back to this gate for a human. The reasons below
+// grew a code per way that path can refuse — Python's own list is
+// farm/conflict_resolver.py's ESCALATION_REASONS, and
+// orchestrator-conflict-reason-parity.test.mjs holds the two in sync.
+export const CONFLICT_ESCALATION_REASONS = {
   merge_conflict: 'both branches changed the same lines — needs a human or a full implement cycle to resolve',
   tests_failed: "the merge applied cleanly but the repo's own tests failed afterward",
   branch_missing: 'the PR branch could not be found on the remote',
   push_rejected: 'the branch changed on GitHub while resolving — try again',
+  conflict_too_large: 'too many conflicted files or lines for a scoped fix — needs a full implement cycle',
+  conflict_unsupported: 'the conflict is a rename, a deletion or a binary clash — needs a full implement cycle',
+  resolution_unsure: 'the resolution agent reported it could not be sure of the fix',
+  resolution_out_of_scope: 'the resolution changed code outside the conflicted regions — rejected, nothing pushed',
+  markers_remaining: 'conflict markers were still present after the resolution — rejected, nothing pushed',
+  scoped_review_rejected: 'the scoped review of the resolution rejected it',
+  scoped_checks_failed: "the conflicted hunks were resolved but the repo's own checks then failed",
+}
+
+// The success line for the scoped path: names the files and hunks that were
+// resolved and the scoped review's verdict, so the event log answers "what
+// exactly changed, and who said it was fine" without opening the PR.
+function scopedResolutionText(pr, result) {
+  const { strategy, hunks, paths = [] } = result.resolution || {}
+  const review = result.review || {}
+  const how = strategy === 'deterministic' ? 'both sides kept, no agent needed' : 'resolved by an agent'
+  const verdict =
+    review.reviewed === false
+      ? review.summary || 'no agent review — the resolution used only parent lines'
+      : `scoped review ${review.verdict === 'pass' ? 'passed' : 'failed'}: ${review.summary || 'no summary'}`
+  return (
+    `resolved ${hunks || 0} conflicted hunk(s) on PR #${pr} in ${paths.join(', ') || 'the PR branch'} (${how}) — ` +
+    `${verdict} — no re-implementation and no re-review of the rest of the PR (${result.summary || 'pushed'})`
+  )
 }
 
 export async function resolveConflicts(id, actor = 'You') {
@@ -432,30 +499,40 @@ export async function resolveConflicts(id, actor = 'You') {
   // booleanizes this column for the UI) — 0 is "GitHub reports conflicts",
   // 1 is mergeable, NULL is unknown/not yet computed.
   if (item.pr_mergeable !== 0) return { error: 'not_conflicted' }
-  if (!FARM_URL) return { error: 'farm_unavailable' }
+  if (!FARM_URL && cannedConflictReply === null) return { error: 'farm_unavailable' }
 
   const branch = `horizon/${id.toLowerCase()}`
   let result
   try {
-    result = await farmFetch(
-      '/conflicts/resolve',
-      { item: { id, repo: item.repo }, branch },
-      { timeoutMs: FARM_CONFLICT_RESOLVE_TIMEOUT_MS },
-    )
+    result =
+      cannedConflictReply !== null
+        ? takeCannedConflictReply()
+        : await farmFetch(
+            '/conflicts/resolve',
+            { item: { id, repo: item.repo }, branch },
+            { timeoutMs: FARM_CONFLICT_RESOLVE_TIMEOUT_MS },
+          )
   } catch (err) {
     requestChanges(id, 'Accept the code', `PR #${item.pr}: automatic conflict resolution could not run (${err.message})`, actor)
     return { ok: true, resolved: false, escalated: true }
   }
 
   if (result.resolved) {
+    // The mechanical text stays byte-identical: only farmd reporting
+    // mode: 'scoped' switches to the richer line.
     addEvent(id, {
       who: 'Horizon',
-      text: `resolved merge conflicts on PR #${item.pr} mechanically — no re-implementation needed (${result.summary || 'merged and pushed'})`,
+      text:
+        result.mode === 'scoped'
+          ? scopedResolutionText(item.pr, result)
+          : `resolved merge conflicts on PR #${item.pr} mechanically — no re-implementation needed (${result.summary || 'merged and pushed'})`,
       color: '#0E6E74',
       initials: 'RS',
     })
     notifyChange()
-    return { ok: true, resolved: true }
+    return result.mode === 'scoped'
+      ? { ok: true, resolved: true, mode: 'scoped', review: result.review || null }
+      : { ok: true, resolved: true }
   }
 
   const reason = CONFLICT_ESCALATION_REASONS[result.reason] || result.detail || 'conflict resolution could not complete automatically'
@@ -565,7 +642,7 @@ const MOCK_REVIEW_FAIL_COUNT = Number(process.env.MOCK_REVIEW_FAIL_COUNT) || 0
 const MOCK_QA_PASS = { verdict: 'pass', regression_tests_run: true, new_code_unit_coverage: true, e2e_test_present: true, findings: [] }
 
 // Mock behavior per step label (HZ-117: keyed by label, not index — the
-// pipeline's step identities are fixed, see lifecycle.js; an insertion
+// pipeline's step identities are fixed, see domain/steps.json; an insertion
 // elsewhere in STEPS must never repoint one of these at the wrong step).
 // Returns { summary, patch? } where patch updates work_item fields, mimicking
 // the artifacts each agent is supposed to produce.
@@ -574,11 +651,15 @@ export const MOCK_STEP_BEHAVIOR = {
     const result = it.desc
       ? { summary: 'refined the outcome statement from the issue description', patch: {} }
       : { summary: 'drafted an outcome statement for gate review', patch: { desc: `Deliver: ${it.title}` } }
-    // Propose a specialist persona once; never re-propose over a set value —
-    // it may be a human's choice (the server-side no-clobber is the real guard).
-    if (!it.persona) {
-      result.patch.persona = proposePersona(it)
-      result.summary += ` — proposed the ${personaLabel(result.patch.persona)} persona (confirm at the gate)`
+    // Propose the Eng specialist persona once; never re-propose over a set
+    // value — it may be a human's choice (the server-side no-clobber is the
+    // real guard). Only the Eng slot is proposed: the other agents' personas
+    // default and the human picks them at the gate (same rule as the real PM
+    // agent's, see farm/roles/pm.md).
+    if (!it.personas?.[PRIMARY_PERSONA_AGENT]) {
+      const persona = proposePersona(it, PRIMARY_PERSONA_AGENT)
+      result.patch.personas = { [PRIMARY_PERSONA_AGENT]: persona }
+      result.summary += ` — proposed the ${personaLabel(PRIMARY_PERSONA_AGENT, persona)} persona (confirm at the gate)`
     }
     if (Object.keys(result.patch).length === 0) delete result.patch
     return result
@@ -721,7 +802,7 @@ async function dispatchToFarm(id, stepIndex, runId, attempt) {
   // this is what catches a step that's stuck in the queue (or a farm that's
   // down, or a lost task file) within a bounded window (HZ-57).
   timers[runId] = setTimeout(
-    () => failFarmRun(runId, 'step was never picked up by the farm', 'never_picked_up'),
+    () => failFarmRun(runId, 'step was never picked up by the farm', REASON.NEVER_PICKED_UP),
     FARM_QUEUE_TIMEOUT_MS,
   )
 
@@ -765,11 +846,17 @@ async function dispatchToFarm(id, stepIndex, runId, attempt) {
   // never sets artifact — without the OR clause the QA reviewer would never
   // see proof that regression tests actually ran). Keep only the
   // most-recently-completed row per step_index: a re-run step's superseded
-  // attempt must not ride along next to the current one.
+  // attempt must not ride along next to the current one. Only steps BEFORE
+  // this one count as prior: after a send-back, the item's earlier cycle
+  // left done artifacts at and after this step (e.g. step 8's own old QA
+  // verdict and step 9's summary of it). Feeding those back biases the
+  // re-review toward its own stale conclusion and, on HZ-128, pushed the
+  // total 3 chars over budget so HZ-105 refused the required plan forever.
   const rows = db
     .prepare(
       `SELECT step_index, artifact, output FROM step_run
        WHERE item_id = ? AND status = 'done' AND (artifact IS NOT NULL OR step_index = ?)
+         AND step_index < ?
          AND id IN (
            SELECT MAX(id) FROM step_run
            WHERE item_id = ? AND status = 'done' AND (artifact IS NOT NULL OR step_index = ?)
@@ -777,7 +864,7 @@ async function dispatchToFarm(id, stepIndex, runId, attempt) {
          )
        ORDER BY id`,
     )
-    .all(id, IMPLEMENT_STEP_INDEX, id, IMPLEMENT_STEP_INDEX)
+    .all(id, IMPLEMENT_STEP_INDEX, stepIndex, id, IMPLEMENT_STEP_INDEX)
     .map((row) => ({ step_index: row.step_index, artifact: row.artifact ?? row.output ?? '' }))
   const budgeted = budgetArtifacts(rows)
 
@@ -793,7 +880,7 @@ async function dispatchToFarm(id, stepIndex, runId, attempt) {
     const detail = missingRequired
       .map((m) => `"${m.label}" needs ${m.fullLen} chars, only ${m.gotLen} could be supplied (${m.fullLen - m.gotLen} short)`)
       .join('; ')
-    return failFarmRun(runId, `required input incomplete: ${detail}`, 'required_input_incomplete')
+    return failFarmRun(runId, `required input incomplete: ${detail}`, REASON.REQUIRED_INPUT_INCOMPLETE)
   }
 
   const artifacts = budgeted.map(({ label, content }) => ({ label, content }))
@@ -820,13 +907,13 @@ async function dispatchToFarm(id, stepIndex, runId, attempt) {
       priority: item.priority,
       repo: item.repo,
       issue: item.issue,
-      persona: item.persona,
+      personas: item.personas,
       ...releaseFields,
     },
     step: { index: stepIndex, label: step.label, agent: step.agent },
     feedback,
   }).catch((err) => {
-    failFarmRun(runId, `could not hand the step to the farm: ${err.message}`, 'unreachable')
+    failFarmRun(runId, `could not hand the step to the farm: ${err.message}`, REASON.UNREACHABLE)
   })
 }
 
@@ -848,12 +935,49 @@ export function markFarmRunStarted(runId) {
   clearTimeout(timers[runId])
   db.prepare("UPDATE step_run SET agent_started_at = datetime('now') WHERE id = ?").run(runId)
   const executionMs = executionBudgetFor(run.step_index)
-  timers[runId] = setTimeout(() => failFarmRun(runId, 'step timed out', 'timeout'), executionMs)
+  timers[runId] = setTimeout(() => failFarmRun(runId, 'step timed out', REASON.TIMEOUT), executionMs)
   return { ok: true, active: true }
 }
 
-const FARM_PATCH_FIELDS = ['desc', 'metric', 'guardrails', 'persona']
-const PATCH_FIELD_LABELS = { desc: 'Outcome', metric: 'Success metric', guardrails: 'Guardrails', persona: 'Specialist persona' }
+// Which work_item columns an agent may patch — DERIVED from domain/fields.json
+// (HZ-134), the same document farm/pm_agent.py builds its PATCH_FIELDS from, so
+// the two sides of the wire cannot disagree about which fields exist. Only the
+// key list is needed here: the limits themselves are enforced agent-side, at the
+// point the over-long value is produced, where a marker can still be attached.
+//
+// `personas` is deliberately NOT in this list and never will be: since HZ-125 it
+// is an { agent: persona id } object rather than a text column, so it is
+// validated and written separately (see completeFarmRun and writeWorkItemPatch
+// below). That is also why domain/fields.json marks the legacy `persona` column
+// agentRevisable: false — nothing reaches it through this loop any more.
+const FARM_PATCH_FIELDS = Object.keys(patchLimits())
+// Display copy, deliberately NOT in domain/ (guardrail 5): these are the names a
+// human reads in the GitHub step comment, not part of the field model. A
+// patchable field missing from this map is written to the database but silently
+// omitted from the comment, so domain-fields-consumers.test.mjs drives
+// stepCommentBody with every patchable column set and asserts each one renders.
+const PATCH_FIELD_LABELS = { desc: 'Outcome', metric: 'Success metric', guardrails: 'Guardrails', personas: 'Specialist personas' }
+
+// Applies a completed step's patch to the item. Split out because `personas` is
+// an object that merges into one JSON column while every other field is a plain
+// column assignment — building `SET <key> = ?` straight off the patch keys (as
+// both callers used to) would emit `SET personas = ?` and fail.
+function writeWorkItemPatch(id, item, patch) {
+  const fields = Object.keys(patch || {}).filter((f) => f !== 'personas')
+  const assignments = fields.map((f) => `${f} = ?`)
+  const values = fields.map((f) => patch[f])
+  if (patch?.personas) {
+    // Merge, never replace: a patch that proposes an eng persona must not drop
+    // the qa persona a human already chose.
+    assignments.push('personas_json = ?')
+    values.push(JSON.stringify({ ...item.personas, ...patch.personas }))
+  }
+  if (assignments.length === 0) return
+  db.prepare(`UPDATE work_item SET ${assignments.join(', ')}, updated_at = datetime('now') WHERE id = ?`).run(
+    ...values,
+    id,
+  )
+}
 
 // Exported for tests: the comment body is the human-readable record, so its
 // rendering (e.g. persona labels, never raw ids) is pinned directly.
@@ -865,7 +989,12 @@ export function stepCommentBody(item, stepIndex, attempt, summary, patch, isMock
   if (changed.length > 0) {
     lines.push('', '**Updated fields:**')
     for (const key of changed) {
-      const shown = key === 'persona' ? personaLabel(patch[key]) : patch[key]
+      const shown =
+        key === 'personas'
+          ? Object.entries(patch.personas)
+              .map(([agent, persona]) => `${agent} — ${personaLabel(agent, persona)}`)
+              .join(', ')
+          : patch[key]
       lines.push(`- **${PATCH_FIELD_LABELS[key]}:** ${shown}`)
     }
   }
@@ -1079,15 +1208,18 @@ export async function completeFarmRun(runId, { summary, patch, artifacts }) {
     if (typeof patch?.[field] === 'string' && patch[field].trim()) cleanPatch[field] = patch[field].trim()
   }
   // Persona patches are dropped (not failed) when invalid, and when the item
-  // already carries one — a set value may be a human's gate-time choice, and
-  // the farm must never clobber it. The run itself still completes.
-  if ('persona' in cleanPatch && (!isPersona(cleanPatch.persona) || item.persona)) delete cleanPatch.persona
-  if (Object.keys(cleanPatch).length > 0) {
-    const fields = Object.keys(cleanPatch)
-    db.prepare(
-      `UPDATE work_item SET ${fields.map((f) => `${f} = ?`).join(', ')}, updated_at = datetime('now') WHERE id = ?`,
-    ).run(...fields.map((f) => cleanPatch[f]), id)
+  // already carries one for that agent — a set value may be a human's gate-time
+  // choice, and the farm must never clobber it. The run itself still completes.
+  // Per-agent since HZ-125: a proposal for the qa slot still lands on an item
+  // whose eng slot a human already set.
+  if (patch?.personas && typeof patch.personas === 'object' && !Array.isArray(patch.personas)) {
+    const survivors = {}
+    for (const [agent, persona] of Object.entries(patch.personas)) {
+      if (isPersona(agent, persona) && !item.personas?.[agent]) survivors[agent] = persona
+    }
+    if (Object.keys(survivors).length > 0) cleanPatch.personas = survivors
   }
+  writeWorkItemPatch(id, item, cleanPatch)
 
   const step = STEPS[run.step_index]
   const agent = AGENTS[step.agent]
@@ -1125,9 +1257,10 @@ export async function completeFarmRun(runId, { summary, patch, artifacts }) {
   }
 
   // HZ-102 provenance: farm/step_agent.py only sets these two fields when a
-  // persona forced a non-default provider for this step (today, only
-  // muse_smoke_test -> muse) — every other step keeps writing NULL here,
-  // unchanged from before this column existed.
+  // persona forced a non-default provider for this step (PERSONA_PROVIDERS
+  // ships empty per HZ-121, so today this only happens via a test-registered
+  // fixture persona) — every other step keeps writing NULL here, unchanged
+  // from before this column existed.
   const provider =
     typeof artifacts?.provider === 'string' && artifacts.provider.trim() ? artifacts.provider.trim() : null
   const commandId =
@@ -1246,13 +1379,7 @@ async function runMockStep(id, stepIndex, runId) {
     return
   }
 
-  if (patch) {
-    const fields = Object.keys(patch)
-    db.prepare(`UPDATE work_item SET ${fields.map((f) => `${f} = ?`).join(', ')}, updated_at = datetime('now') WHERE id = ?`).run(
-      ...fields.map((f) => patch[f]),
-      id,
-    )
-  }
+  if (patch) writeWorkItemPatch(id, after, patch)
 
   if (stepIndex === REVIEW_STEP_INDEX) {
     // finalizeReviewStep releases the busy mutex itself before it calls kick().
@@ -1350,7 +1477,7 @@ export async function reconcileActiveRuns() {
       failFarmRun(
         runId,
         'step_run left active with no local timer, no farm claim, and no live agent session',
-        'never_picked_up',
+        REASON.NEVER_PICKED_UP,
       )
       failed++
     }
@@ -1453,7 +1580,7 @@ export function rearmFarmRuns() {
     const anchor = run.agent_started_at || run.started_at
     const elapsedMs = Date.now() - new Date(anchor).getTime()
     const remainingMs = Math.max(0, executionBudgetFor(run.step_index) - elapsedMs)
-    timers[run.id] = setTimeout(() => failFarmRun(run.id, 'step timed out', 'timeout'), remainingMs)
+    timers[run.id] = setTimeout(() => failFarmRun(run.id, 'step timed out', REASON.TIMEOUT), remainingMs)
     // Re-key removed the free busy-mutex side effect timers[item_id] used to
     // give kick() — without this, a restart would leave every one of these
     // items looking idle and resumeActiveItems()/a human resume could

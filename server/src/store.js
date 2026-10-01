@@ -12,8 +12,10 @@ import {
   curStep,
   IMPLEMENT_STEP_INDEX,
   ACCEPT_GATE_INDEX,
-} from './lifecycle.js'
-import { isPersona, personaLabel } from './personas.js'
+} from '../../domain/js/lifecycle.js'
+import { isPriority } from '../../domain/js/priorities.js'
+import { isPersona, personaLabel, personasFromRow } from './personas.js'
+import { priorityFromLabels } from './priorityLabels.js'
 import { getActiveProjectId, setSetting } from './settings.js'
 
 const listeners = new Set()
@@ -144,6 +146,20 @@ function stepOutputs(itemId) {
   return map
 }
 
+// The newest done attempt's artifact for one step, or null. Exported (HZ-141)
+// so gateNotifier.js can quote the PM's recommendation into a gate
+// notification through the same latest-attempt-wins rule stepOutputs() applies
+// above, rather than opening a second raw query onto step_run. `artifact`
+// falls back to `output` because some steps mark done with only a summary.
+export function latestArtifact(itemId, stepIndex) {
+  const row = db
+    .prepare(
+      "SELECT output, artifact FROM step_run WHERE item_id = ? AND step_index = ? AND status = 'done' ORDER BY id DESC LIMIT 1",
+    )
+    .get(itemId, stepIndex)
+  return row ? (row.artifact || row.output || null) : null
+}
+
 // ---- artifact version history (HZ-46) ----
 // Every retained done+artifact attempt for a step, oldest first, each
 // labelled (where one exists) with the feedback that drove it: the newest
@@ -184,7 +200,7 @@ function withRunState(activeRun) {
 
 // ---- dependencies (HZ-78) ----
 // item_id is blocked until every depends_on_id row it names has closed (see
-// lifecycle.js isBlocked). Enforced at dispatch time in orchestrator.js's
+// domain/js/lifecycle.js isBlocked). Enforced at dispatch time in orchestrator.js's
 // runnable() — the same gate that already decides dispatch — via blockersOf
 // below; the API-facing blocked/blockedBy fields here are read-only
 // reporting of that same derived state, not a second source of truth.
@@ -250,7 +266,7 @@ function wakeDependents(id) {
 // dependents can never satisfy that dependency by waiting. They are NOT
 // auto-unblocked (removing someone else's dependency edge without asking is
 // its own surprise) and NOT paused (paused is a human action with a Resume
-// button — see lifecycle.js and the guardrails this item shipped under).
+// button — see domain/js/lifecycle.js and the guardrails this item shipped under).
 // Instead each live dependent gets an event naming the abandoned blocker and
 // keeps reading blocked: true / blockedByAbandoned: true in the API until a
 // human calls removeDependency (or replaces the dependency) — visible and
@@ -352,7 +368,7 @@ export function listItems() {
     pr_mergeable: row.pr_mergeable == null ? null : !!row.pr_mergeable,
     release_tag: row.release_tag,
     release_url: row.release_url,
-    persona: row.persona,
+    personas: personasFromRow(row),
     cursor: row.cursor,
     currentStep: currentStepOf(row),
     paused: !!row.paused,
@@ -373,7 +389,10 @@ export function listItems() {
 export function getItem(id) {
   const row = db.prepare('SELECT * FROM work_item WHERE id = ?').get(id)
   if (!row) return null
-  return { ...row, paused: !!row.paused, rejected: !!row.rejected }
+  // `personas` is derived here, at the one seam every caller reads an item
+  // through, so nothing downstream has to know about personas_json or the
+  // legacy `persona` column (HZ-125). The raw columns stay on the object.
+  return { ...row, paused: !!row.paused, rejected: !!row.rejected, personas: personasFromRow(row) }
 }
 
 // Human actions are only valid against the active project's items.
@@ -524,18 +543,24 @@ export function setPaused(id, paused) {
 
 // The human leg of specialist routing: confirm or override the persona the PM
 // proposed (usually at the intake gate; the next dispatch reads the item).
-export function setPersona(id, persona) {
+//
+// One slot per agent (HZ-125): setting the QA persona leaves the Eng one alone,
+// so the write merges rather than replaces. Because `it.personas` already came
+// through personasFromRow, the first call on a pre-HZ-125 item carries its
+// translated legacy value into personas_json instead of dropping it.
+export function setPersona(id, agent, persona) {
   const it = getItem(id)
   if (!it) return { error: 'not_found' }
   if (inactiveProject(it)) return { error: 'project_not_active' }
   if (isClosed(it)) return { error: 'closed' }
   if (isAbandoned(it)) return { error: 'abandoned' }
-  if (!isPersona(persona)) return { error: 'bad_persona' }
+  if (!isPersona(agent, persona)) return { error: 'bad_persona' }
 
-  db.prepare(`UPDATE work_item SET persona = ?, ${touch} WHERE id = ?`).run(persona, id)
+  const merged = { ...it.personas, [agent]: persona }
+  db.prepare(`UPDATE work_item SET personas_json = ?, ${touch} WHERE id = ?`).run(JSON.stringify(merged), id)
   addEvent(id, {
     who: 'You',
-    text: `set the specialist persona to ${personaLabel(persona)}`,
+    text: `set the ${agent} specialist persona to ${personaLabel(agent, persona)}`,
     color: '#5E4380',
     initials: 'YOU',
   })
@@ -546,15 +571,18 @@ export function setPersona(id, persona) {
 // Priority changes arrive from the UI or the WhatsApp concierge; either way
 // it is the human speaking. GitHub label mirroring lives in the route (best
 // effort) — this only owns the database and the activity trail.
-export const PRIORITIES = ['Critical', 'High', 'Medium', 'Low']
-
+//
+// HZ-135 deleted the `export const PRIORITIES` that stood here. The vocabulary
+// is domain/priorities.json's; its one caller (the POST /api/items/:id/priority
+// body enum in app.js) now reads the binding directly, so there is no re-export
+// to keep in step.
 export function setPriority(id, priority) {
   const it = getItem(id)
   if (!it) return { error: 'not_found' }
   if (inactiveProject(it)) return { error: 'project_not_active' }
   if (isClosed(it)) return { error: 'closed' }
   if (isAbandoned(it)) return { error: 'abandoned' }
-  if (!PRIORITIES.includes(priority)) return { error: 'bad_priority' }
+  if (!isPriority(priority)) return { error: 'bad_priority' }
   if (it.priority === priority) return { ok: true, unchanged: true }
 
   db.prepare(`UPDATE work_item SET priority = ?, ${touch} WHERE id = ?`).run(priority, id)
@@ -682,6 +710,9 @@ export function purgeDemoItems() {
   if (ids.length === 0) return
   ids.forEach((id) => agentRunner.cancel(id, 'cancelled'))
   db.transaction(() => {
+    // gate_notice is deliberately absent: it declares ON DELETE CASCADE (see
+    // db.js), so it clears with the work_item row below. Every table named here
+    // does not, and foreign_keys = ON makes a forgotten one an FK error.
     for (const table of ['event', 'gate_decision', 'feedback', 'step_run']) {
       db.prepare(`DELETE FROM ${table} WHERE item_id LIKE 'BF-%'`).run()
     }
@@ -760,16 +791,9 @@ export function approveGateFromGithub(id) {
 // title/description/priority/open-closed; the lifecycle state (cursor, flags,
 // metric, guardrails) stays ours and is never clobbered by a sync.
 
-const PRIORITY_LABEL = /^(?:priority\s*[:/-]?\s*)?(critical|high|medium|low)$/i
-
-function priorityFromLabels(labels) {
-  for (const label of labels || []) {
-    const match = PRIORITY_LABEL.exec(label?.name || '')
-    if (match) return match[1][0].toUpperCase() + match[1].slice(1).toLowerCase()
-  }
-  return 'Medium'
-}
-
+// priorityFromLabels moved to server/src/priorityLabels.js in HZ-135, alongside
+// the label NAME format that has to match it and the pattern github.js had
+// hand-typed a second, byte-identical copy of. Label syntax is not persistence.
 export function upsertFromGithub(ghIssue, repoFullName) {
   if (!ghIssue || ghIssue.pull_request) return false // /issues endpoints include PRs
   const repoRow = findRepo(repoFullName)

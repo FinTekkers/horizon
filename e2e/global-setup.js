@@ -3,7 +3,7 @@ import { request } from '@playwright/test'
 import { openDb, insertItem, insertStepRun, insertFeedback, insertDependency } from './fixtures/seed.js'
 // Derived, not hardcoded: a future pipeline step insertion (like HZ-30's own
 // Review step) must not silently break these fixtures' intended positions.
-import { STEPS, ACCEPT_GATE_INDEX } from '../server/src/lifecycle.js'
+import { STEPS, ACCEPT_GATE_INDEX } from '../domain/js/lifecycle.js'
 
 const PORT = process.env.HORIZON_E2E_PORT
 const DB_PATH = process.env.HORIZON_E2E_DB
@@ -45,6 +45,18 @@ const FIXTURES = [
     cursor: ACCEPT_GATE_INDEX,
     pr: 501,
     pr_url: 'https://github.com/FinTekkers/horizon/pull/501',
+    pr_mergeable: 0,
+  },
+  // HZ-154: the scoped path's own conflicted item. Separate from CFL-1, which
+  // the banner specs read and must leave untouched — this one gets clicked.
+  {
+    id: 'CFL-2',
+    title: 'E2E fixture — merge conflict, resolved in scope',
+    priority: 'High',
+    cursor: ACCEPT_GATE_INDEX,
+    repo: 'FinTekkers/horizon',
+    pr: 503,
+    pr_url: 'https://github.com/FinTekkers/horizon/pull/503',
     pr_mergeable: 0,
   },
   {

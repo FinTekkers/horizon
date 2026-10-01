@@ -13,8 +13,9 @@
 //   POST /items/:id/phases/:phase/restart      → restartPhase(id, phase, reason)
 //   POST /items/:id/feedback                   → sendFeedback(id, target, message)
 
-import { STEPS, PHASES, isClosed, ACCEPT_GATE_INDEX, IMPLEMENT_STEP_INDEX } from '../domain/lifecycle'
-import { PERSONAS } from '../domain/personas'
+import { STEPS, PHASES, isClosed, ACCEPT_GATE_INDEX, IMPLEMENT_STEP_INDEX } from '../../../domain/js/lifecycle.js'
+import { DEFAULT_PRIORITY } from '../../../domain/js/priorities.js'
+import { PERSONAS, isPersona } from '../domain/personas'
 
 const SEED_ITEMS = [
   { id: 'BF-145', title: 'Risk-limit breach dashboard', priority: 'Low', cursor: 1, issue: 412, desc: 'Give risk managers a live view of limit utilization across every desk.', metric: 'Limit breaches acknowledged in < 2 min (from 14 min).', guardrails: 'Read-only — no position mutation. No PII in telemetry.' },
@@ -159,7 +160,9 @@ export async function disconnectRepo() {
 
 let localSeq = 0
 
-export async function createItem({ title, outcome, metric, guardrails, priority = 'Medium' }) {
+// The default mirrors POST /api/items' (HZ-135) rather than restating it, so the
+// offline mock cannot start answering differently from the real route.
+export async function createItem({ title, outcome, metric, guardrails, priority = DEFAULT_PRIORITY }) {
   const id = `LOC-${++localSeq}`
   items = [
     {
@@ -283,12 +286,12 @@ export function togglePause(id) {
   else runAgents(id)
 }
 
-export function setPersona(id, persona) {
-  if (!PERSONAS[persona]) return
-  update(id, (it) => ({ ...it, persona }))
+export function setPersona(id, agent, persona) {
+  if (!isPersona(agent, persona)) return
+  update(id, (it) => ({ ...it, personas: { ...it.personas, [agent]: persona } }))
   pushEvent(id, {
     who: 'You',
-    text: `set the specialist persona to ${PERSONAS[persona].label}`,
+    text: `set the ${agent} specialist persona to ${PERSONAS[agent][persona].label}`,
     color: '#5E4380',
     initials: 'YOU',
   })
@@ -302,9 +305,17 @@ const MOCK_DEFINITIONS = {
   global: [
     { kind: 'role', name: 'eng_implement', bytes: 1420 },
     { kind: 'role', name: 'qa', bytes: 980 },
-    { kind: 'persona', name: 'fullstack', bytes: 812 },
-    { kind: 'persona', name: 'python_backend', bytes: 764 },
-    { kind: 'persona', name: 'frontend_ui', bytes: 790 },
+    { kind: 'persona', name: 'eng_fullstack', bytes: 812 },
+    { kind: 'persona', name: 'eng_python', bytes: 764 },
+    { kind: 'persona', name: 'eng_ui', bytes: 790 },
+    { kind: 'persona', name: 'eng_performance', bytes: 800 },
+    { kind: 'persona', name: 'qa_api_contract', bytes: 1120 },
+    { kind: 'persona', name: 'qa_e2e_journey', bytes: 1080 },
+    { kind: 'persona', name: 'qa_data_integrity', bytes: 1060 },
+    { kind: 'persona', name: 'architect_data_modelling', bytes: 1140 },
+    { kind: 'persona', name: 'architect_distributed_systems', bytes: 1250 },
+    { kind: 'persona', name: 'pm_roadmap', bytes: 1000 },
+    { kind: 'persona', name: 'pm_feature_development', bytes: 1100 },
   ],
   projects: [{ kind: 'project', name: 'fintekkers', bytes: 1500 }],
   repos: [

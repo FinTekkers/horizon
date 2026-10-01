@@ -45,6 +45,213 @@ sudo systemctl daemon-reload
 sudo systemctl restart horizon-server
 ```
 
+## 2b. WhatsApp gate-approval env (HZ-140)
+
+Set these **before** the release ships, or every WhatsApp approval fails
+closed. Names only below — values live on the host, never in this repo.
+
+| File | Var | Notes |
+|---|---|---|
+| `/etc/horizon/server.env` | `WA_APPROVAL_SECRET` | the only credential that can approve a gate. Unset ⇒ the route answers **503** |
+| `/etc/horizon/server.env` | `WA_APPROVER_JIDS` | comma-separated approver numbers. Unset/empty ⇒ **deny all**, every sender gets **403** |
+| `/etc/horizon/farm.env` | `WA_APPROVAL_SECRET` | same value as the server's |
+
+`FARM_SHARED_SECRET` stays where it is, in both files. It no longer opens the
+approval route — it is farmd's credential for `/api/farm/*` and nothing else.
+
+Diagnosing a failed approval without reading code:
+
+- **503, "aren't configured on the Horizon server"** — `WA_APPROVAL_SECRET`
+  missing from `server.env`.
+- **401** — the two `WA_APPROVAL_SECRET` values disagree between
+  `server.env` and `farm.env`.
+- **403, "isn't on Horizon's approver list"** — the sender's number is
+  missing from `WA_APPROVER_JIDS` on the server.
+- **Silence, no reply at all** — the sender is missing from the farm's own
+  `FARM_WA_ALLOWED_JIDS`, which drops the message before it is ever read.
+
+After deploying, restart `horizon-server`, then restart farmd. Existing tmux
+sessions keep the environment they were launched with, so a pre-upgrade
+session still holds the old credential until farmd's teardown kills it.
+Confirm with `python -m farm.tools.check_session_env` (names only, exits
+non-zero on a find).
+
+## 2c. Gate-arrival notification env (HZ-141)
+
+Turns on the server-side notifier that messages the approver when an item
+lands on a gate. **Off by default** — it messages a real human, so it is
+never on by accident, and configuring HZ-140's approval path above does not
+enable it.
+
+| File | Var | Notes |
+|---|---|---|
+| `/etc/horizon/server.env` | `WA_NOTIFY_ENABLED` | `1` turns it on. Anything else ⇒ the sweep never runs |
+| `/etc/horizon/server.env` | `WA_BRIDGE_URL` | whatsapp-mcp bridge base URL. Unset ⇒ `http://localhost:8080`. Same var `farm.env` already sets |
+
+**Who gets notified is `WA_APPROVER_JIDS` from 2b — there is no separate
+recipient setting.** Whoever can approve a gate is exactly who is told one is
+waiting. `WA_NOTIFY_ENABLED=1` with an empty `WA_APPROVER_JIDS` logs a warning
+at boot and delivers nothing.
+
+Accepted entry formats, all equivalent — the server canonicalizes each one to
+`<number>@s.whatsapp.net` before it reaches the bridge, so a bare number is a
+valid setting for both approving and being notified:
+
+| You write | Sent to | Note |
+|---|---|---|
+| `15551112222` | `15551112222@s.whatsapp.net` | the documented short form |
+| `15551112222@s.whatsapp.net` | `15551112222@s.whatsapp.net` | already canonical |
+| `15551112222:7@s.whatsapp.net` | `15551112222@s.whatsapp.net` | device suffix dropped — it addresses one phone, not the person |
+
+Two entries that canonicalize to the same jid are one recipient, so a person
+listed twice still gets one message per gate arrival. An explicit non-default
+server part (`…@g.us`) is kept as written rather than rewritten.
+
+No credential is on this path. `POST /api/send` takes no auth and is
+localhost-only, so neither `FARM_SHARED_SECRET` nor `WA_APPROVAL_SECRET` is
+read by the notifier.
+
+### That the feature works is a test, not an ops step
+
+`server/test/gate-notifier-e2e.test.mjs` boots the real `node src/server.js`
+with `WA_NOTIFY_ENABLED=1` against a stub bridge on a real socket, lets the
+pipeline walk items onto gates on its own, and asserts what the bridge
+received and the exact row state below. It runs in `npm test`. Nothing on
+this page needs a human to confirm the code sends messages — the steps that
+follow confirm only that *this host's* configuration is right.
+
+### Verifying this host's configuration
+
+Restarting and waiting for a text is not a check — it has no observable if
+nothing arrives. The outbox records every attempt, so read it back instead.
+After `systemctl restart horizon-server`, drive one item to a gate (or wait
+for one), then:
+
+```
+# HORIZON_DB is unset on this host, so the server uses its default path,
+# relative to horizon-server.service's WorkingDirectory=/opt/horizon/server.
+sqlite3 -header -column /opt/horizon/server/data/horizon.db \
+  "SELECT item_id, step_index, status, attempts, last_error, sent_at
+     FROM gate_notice ORDER BY id DESC LIMIT 5;"
+```
+
+Expected on success: one row per approver for that arrival, `status = sent`,
+`attempts = 0`, `last_error` empty, `sent_at` set — the same four values
+`gate-notifier-e2e.test.mjs` asserts, so a row that looks different here is a
+configuration problem on this host, not a code problem.
+
+- **No rows at all** — `WA_NOTIFY_ENABLED` is not `1`, or
+  `WA_APPROVER_JIDS` is empty. Check the boot log for the notifier's own
+  warning.
+- **`status = pending`, `attempts ≥ 1`** — the bridge rejected or was
+  unreachable; `last_error` says which. It retries with 60s doubling backoff
+  and nothing about the item is affected.
+- **`status = failed`, `last_error` set** — gave up after
+  `WA_NOTIFY_MAX_ATTEMPTS` (default 8, ≈2h). Fix the bridge; this arrival is
+  not resent.
+- **`status = failed`, `last_error = interrupted…`** — the process exited
+  mid-send. Deliberately not resent: one logged miss beats two pings about the
+  same arrival.
+
+To turn it off with no deploy: set `WA_NOTIFY_ENABLED=0` and restart
+`horizon-server`. Nothing else changes.
+
+## 2d. Approve-or-send-back poll env (HZ-142)
+
+Each gate notification now also carries a native two-option WhatsApp poll —
+**✅ Approve** / **↩️ Send back** — and a tap decides the gate with no model
+anywhere on the path. The concierge's free-text approval is unchanged and
+still works; whichever decides the gate first moves the cursor, and the
+other is then refused as `ignored_stale_gate`.
+
+**This needs the forked bridge.** An un-forked `whatsapp-mcp` has no
+`POST /api/send-poll`, so every poll row fails with a 404 while every text
+notice still goes out — see `infra/whatsapp-bridge/README.md` for the patch
+and `infra/whatsapp-bridge/PROBE.md` for what was verified about the pinned
+whatsmeow build before any of it was written.
+
+| File | Var | Notes |
+|---|---|---|
+| `/etc/horizon/server.env` | `WA_POLL_ENABLED` | `0` stops attaching polls. Anything else ⇒ on whenever `WA_NOTIFY_ENABLED=1` |
+| bridge env | `HORIZON_VOTE_URL` | e.g. `http://127.0.0.1:3001/api/wa/poll-vote`. The bridge refuses to start without it |
+| bridge env | `WA_APPROVAL_SECRET` | **the same value as `server.env` and `farm.env`.** The bridge refuses to start without it |
+
+`WA_APPROVAL_SECRET` now lives in **three** places — server, farm, bridge. A
+mismatch on the bridge's copy is a 401 on every vote, and the poll itself is
+silent about it, so it is the first thing to check when a tap does nothing.
+**`FARM_SHARED_SECRET` is never used on this path**; it opens nothing here,
+which is the whole point of HZ-140 and is asserted in
+`server/test/wa-poll-vote-auth.test.mjs` — and again over a real socket, into
+a really-booted `server.js`, in `server/test/wa-poll-vote-e2e.test.mjs`. That
+second file is the one to read if a tap misbehaves in production: it drives an
+Approve and a Send back through the same route the bridge calls, using a poll
+id the bridge itself minted, so the whole join is exercised rather than mocked.
+
+### Before turning it on for the first time
+
+Probe 2 in `PROBE.md` verifies that the pinned whatsmeow exposes
+`DecryptPollVote` and what shape it yields, but the AES/HKDF layer needs a
+live paired session and cannot be exercised offline. So do it once, by hand:
+
+```
+# 1. Send yourself a poll through the forked bridge.
+curl -s localhost:8080/api/send-poll -H 'Content-Type: application/json' \
+  -d '{"recipient":"<your-number>@s.whatsapp.net","name":"probe","options":["✅ Approve","↩️ Send back"]}'
+# -> {"success":true,"messageId":"3EB0…"}   the poll should render as tappable
+
+# 2. Tap an option, then read the bridge's log. Expect a line naming the
+#    resolved option. A decryption failure logs "poll vote could not be
+#    decrypted" instead — stop and report it rather than working around it.
+```
+
+### Reading the poll outbox
+
+Polls have **their own** outbox, separate from `gate_notice`, so a bridge
+that cannot serve `/api/send-poll` never suppresses a text notification.
+
+```
+sqlite3 -header -column /opt/horizon/server/data/horizon.db \
+  "SELECT item_id, step_index, status, attempts, poll_msg_id, decided_at, last_error
+     FROM gate_poll ORDER BY id DESC LIMIT 5;"
+```
+
+Expected on success: one row per approver per arrival, `status = sent`,
+`attempts = 0`, `poll_msg_id` set, `decided_at` empty until someone taps.
+
+- **No rows at all** — `WA_POLL_ENABLED=0`, or `WA_NOTIFY_ENABLED` is not `1`.
+- **`status = pending`, `last_error` mentions 404** — the bridge is not the
+  fork. Text notices are unaffected; apply the patch or set
+  `WA_POLL_ENABLED=0`.
+- **`status = pending`, `last_error` mentions `messageId`** — the bridge sent
+  a poll and returned no id. Treated as a failure on purpose: an untracked
+  poll is tappable and decides nothing.
+- **`status = failed`, `last_error = interrupted…`** — the process exited
+  mid-send. That poll may be on a phone with no id recorded here, so a tap on
+  it logs `ignored_unknown_poll` and does nothing. Not resent, same
+  at-most-once rule as a text notice.
+
+### Diagnosing a tap that did nothing
+
+The server logs one line per refused vote (`wa poll vote <id> ignored: …`).
+Every refusal is a **4xx**, which the bridge treats as final and never
+retries.
+
+| In the log / response | Means |
+|---|---|
+| `503 wa_approval_not_configured` | `WA_APPROVAL_SECRET` missing from `server.env` |
+| `401 bad_approval_secret` | the bridge's copy disagrees with the server's |
+| `403 voter_not_allowed` | the voter's number is missing from `WA_APPROVER_JIDS` |
+| `404 ignored_unknown_poll` | no `gate_poll` row for that poll — usually an interrupted send, above |
+| `409 ignored_superseded` | an older poll for an item that has since arrived again |
+| `409 ignored_stale_gate` | the item has left that gate — often because the concierge or the UI decided it first |
+| `409 ignored_already_decided` | someone else's tap got there first |
+| `422 ignored_unknown_option` | the option strings drifted between the bridge and the server |
+
+To turn it off with no deploy: set `WA_POLL_ENABLED=0` and restart
+`horizon-server`. Polls stop being attached; text notices and the concierge's
+free-text approval carry on. **The vote route stays live either way**, so a
+poll already on someone's phone still decides its gate.
+
 ## 3. Confirm the repo is pull-only
 
 `/opt/horizon` must be able to `git fetch`/`checkout` from `origin`, but must

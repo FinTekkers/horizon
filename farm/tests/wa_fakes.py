@@ -77,6 +77,9 @@ class StubHorizon:
         self.feedback_rerun = feedback_rerun
         self.known_ids = {it["id"] for it in self.items}
         self.requests: list[tuple[str, str, dict]] = []
+        # HZ-140: (path, [credential header NAMES present]). Names only —
+        # a test double must not record, compare or print a secret's value.
+        self.auth_headers: list[tuple[str, list[str]]] = []
         self.created_items: list[dict] = []  # payloads POSTed to /api/items
         self.approvals: list[tuple[str, int, dict]] = []  # (item_id, step_index, payload) via approve-via-whatsapp
         self.create_item_result = create_item_result
@@ -98,10 +101,16 @@ class StubHorizon:
 
             def do_GET(self):
                 stub.requests.append(("GET", self.path, {}))
+                stub.auth_headers.append((self.path, stub._header_names(self.headers)))
                 if self.path == "/api/items":
                     return self._reply(200, {"items": stub.items})
-                # The concierge reads its snapshot here (farm secret, no
-                # browser session) — see fetch_snapshot().
+                # HZ-140: the concierge reads its snapshot through farmd's
+                # loopback API, holding no credential of its own. This stub
+                # plays both farmd and the Node server, so it serves the
+                # farmd route the concierge actually calls...
+                if self.path == "/internal/snapshot":
+                    return self._reply(200, {"items": stub.items})
+                # ...and the secret-gated server route farmd forwards to.
                 if self.path == "/api/farm/snapshot":
                     return self._reply(200, {"items": stub.items})
                 return self._reply(404, {"error": "not_found"})
@@ -110,6 +119,7 @@ class StubHorizon:
                 length = int(self.headers.get("Content-Length", 0))
                 payload = json.loads(self.rfile.read(length) or b"{}")
                 stub.requests.append(("POST", self.path, payload))
+                stub.auth_headers.append((self.path, stub._header_names(self.headers)))
                 if self.path == "/api/items":
                     status, body = stub._handle_create_item(payload)
                     return self._reply(status, body)
@@ -135,6 +145,17 @@ class StubHorizon:
         self._thread = threading.Thread(target=self._server.serve_forever, daemon=True)
         self._thread.start()
         self.url = f"http://127.0.0.1:{self._server.server_port}"
+
+    CREDENTIAL_HEADERS = ("x-farm-secret", "x-wa-approval-secret", "x-human-key", "authorization")
+
+    @staticmethod
+    def _header_names(headers) -> list[str]:
+        return sorted(name for name in StubHorizon.CREDENTIAL_HEADERS if headers.get(name) is not None)
+
+    def credential_headers_for(self, suffix: str) -> list[list[str]]:
+        """Which credential headers rode along with each request to a path —
+        by name, never by value."""
+        return [names for (path, names) in self.auth_headers if path.endswith(suffix)]
 
     def posts(self, suffix=None):
         posts = [(p, body) for (m, p, body) in self.requests if m == "POST"]

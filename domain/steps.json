@@ -1,0 +1,100 @@
+{
+  "phases": ["Plan", "Technical Plan", "Execute", "Deploy", "Review"],
+  "steps": [
+    { "phase": 0, "kind": "agent", "agent": "PM", "label": "Define the outcome", "runsIn": "pm" },
+    { "phase": 0, "kind": "agent", "agent": "PM", "label": "Define how we measure success", "runsIn": "pm" },
+    { "phase": 0, "kind": "agent", "agent": "Architect", "label": "Set guardrails", "runsIn": "pm" },
+    { "phase": 0, "kind": "gate", "gate": "required", "label": "Approve & prioritize this work" },
+    {
+      "phase": 1,
+      "kind": "agent",
+      "agent": "Ensemble",
+      "label": "Plan options & trade-offs (pros / cons)",
+      "runsIn": "farm",
+      "workspaceMutating": false,
+      "providerOverrideEligible": true,
+      "providerLocked": false,
+      "maxTurns": 40,
+      "timeoutS": 1140
+    },
+    { "phase": 1, "kind": "gate", "gate": "required", "label": "Approve the high-level design" },
+    {
+      "phase": 1,
+      "kind": "agent",
+      "agent": "Eng",
+      "label": "Draft implementation plan",
+      "runsIn": "farm",
+      "workspaceMutating": false,
+      "providerOverrideEligible": true,
+      "providerLocked": false,
+      "maxTurns": 40,
+      "timeoutS": 1140
+    },
+    {
+      "phase": 1,
+      "kind": "agent",
+      "agent": "Architect",
+      "label": "Architecture review",
+      "runsIn": "farm",
+      "workspaceMutating": false,
+      "providerOverrideEligible": true,
+      "providerLocked": false,
+      "maxTurns": 40,
+      "timeoutS": 1140,
+      "requires": ["Draft implementation plan"]
+    },
+    {
+      "phase": 1,
+      "kind": "agent",
+      "agent": "QA",
+      "label": "QA reviews the test plan",
+      "runsIn": "farm",
+      "workspaceMutating": false,
+      "providerOverrideEligible": false,
+      "providerLocked": false,
+      "maxTurns": 40,
+      "timeoutS": 1140,
+      "requires": ["Draft implementation plan"]
+    },
+    { "phase": 1, "kind": "agent", "agent": "PM", "label": "Summarize reviews & recommend", "runsIn": "pm" },
+    { "phase": 1, "kind": "gate", "gate": "required", "label": "Review before execution" },
+    {
+      "phase": 2,
+      "kind": "agent",
+      "agent": "Eng",
+      "label": "Specialist agent implements",
+      "runsIn": "farm",
+      "workspaceMutating": true,
+      "providerOverrideEligible": false,
+      "providerLocked": true,
+      "maxTurns": 160,
+      "timeoutS": 2700
+    },
+    {
+      "phase": 2,
+      "kind": "agent",
+      "agent": "Review",
+      "label": "Automated review (code + QA)",
+      "runsIn": "farm",
+      "workspaceMutating": true,
+      "providerOverrideEligible": false,
+      "providerLocked": false,
+      "maxTurns": 60,
+      "timeoutS": 1800
+    },
+    { "phase": 2, "kind": "gate", "gate": "required", "label": "Accept the code" },
+    {
+      "phase": 3,
+      "kind": "agent",
+      "agent": "DevOps",
+      "label": "Deploy the changes",
+      "runsIn": "farm",
+      "workspaceMutating": false,
+      "providerOverrideEligible": false,
+      "providerLocked": true,
+      "maxTurns": 40,
+      "timeoutS": 900
+    },
+    { "phase": 4, "kind": "gate", "gate": "required", "label": "Review the work & close" }
+  ]
+}

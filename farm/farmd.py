@@ -7,6 +7,8 @@ tmux session `farm-daemon` (see run.sh) on port 4100.
 
 import asyncio
 import json
+import os
+import tempfile
 import threading
 import time
 from datetime import datetime, timezone
@@ -15,7 +17,12 @@ import httpx
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
-from . import conflict_resolver, rules, steps, tmux_mgr, workspaces
+# HZ-128: the step model lives in domain/, not in farm/ — an absolute import
+# off the repo root, which farmd already runs from (`python -m farm.farmd`).
+# HZ-132 put the failure-reason vocabulary there under the same rule, so the
+# tags this daemon relays are the ones the server classifies, by construction.
+from domain.py import reasons, steps
+from . import conflict_resolver, rules, tmux_mgr, workspaces
 from . import config as farm_config
 from .agent_runner import AgentError, assert_provider_auth
 from .config import (
@@ -112,7 +119,11 @@ def _teardown() -> None:
     killed = tmux_mgr.kill_all_farm_sessions()
     RUN_SESSIONS.clear()
     for sub in ("pm", "runs", "runs/active"):
-        for f in (QUEUE_DIR / sub).glob("*.json"):
+        # HZ-130: `*.json*`, not `*.json` — a farmd killed between
+        # _write_task_atomic's temp write and its rename() leaves a
+        # `<run_id>.<suffix>.json.tmp` behind, which a `*.json` glob would
+        # never reach and nothing else ever cleans.
+        for f in (QUEUE_DIR / sub).glob("*.json*"):
             f.unlink(missing_ok=True)
     if killed:
         print(f"farmd: tore down sessions {killed}", flush=True)
@@ -166,6 +177,45 @@ def _item_worktree_busy(item_id: str, sessions: list[str]) -> bool:
         if rest is not None and rest.split("-", 1)[0] in _WORKSPACE_MUTATING_STEP_STRS:
             return True
     return False
+
+
+def _write_task_atomic(path: Path, body: dict) -> None:
+    """HZ-130: no poller may ever observe a half-written task file.
+
+    The plain `write_text` this replaces let a poller read a truncated payload
+    mid-write; on the PM lane that turned into silent data loss (an
+    unparseable file was deleted and nobody was told). Writing to a temp file
+    and rename()-ing it means the final path only ever holds a complete
+    payload — the file appears whole or not at all.
+
+    Three properties the temp name has to carry, each load-bearing:
+
+    * same directory as the target — rename() cannot cross filesystems;
+    * a `.json.tmp` suffix — every reader here globs `*.json`, which must
+      never match a partial file (_adopt_existing, _select_dispatchable,
+      _session_for_run, _reconcile_claimed_runs, _run_state, and the PM
+      agent's own poll);
+    * unique per call, via mkstemp — a fixed `<run_id>.json.tmp` would let two
+      writes for the same run interleave into one temp file, which is the very
+      race this function exists to close.
+
+    On any failure the temp file is removed and the exception propagates: the
+    caller must see a failed enqueue, and the final path is never left holding
+    a partial payload (it is not written at all until the rename).
+    """
+    fd, tmp_name = tempfile.mkstemp(dir=str(path.parent), prefix=f"{path.stem}.", suffix=".json.tmp")
+    tmp = Path(tmp_name)
+    try:
+        with os.fdopen(fd, "w") as f:
+            f.write(json.dumps(body, indent=2))
+        # mkstemp is 0600; these files are only ever read by this user's own
+        # agents, but keep the permissions the write_text this replaces
+        # produced rather than quietly tightening them.
+        os.chmod(tmp, 0o644)
+        os.replace(tmp, path)
+    except BaseException:
+        tmp.unlink(missing_ok=True)
+        raise
 
 
 def _select_dispatchable(task_paths: list, sessions: list[str], slots: int) -> list:
@@ -227,9 +277,10 @@ def _report_run_dead(run_id, name: str) -> bool:
     url = f"{HORIZON_URL}/api/farm/steps/{run_id}/fail"
     payload = {
         "error": f"farmd: session '{name}' is gone for run {run_id} (reconciliation)",
-        # Already in AUTO_RETRY_REASONS (server/src/orchestrator.js) — HZ-76's
-        # default-safe rule stands, no new reason is introduced.
-        "reason": "unreachable",
+        # Already declared retryable in domain/reasons.json, which is where
+        # the server's AUTO_RETRY_REASONS is derived from too (HZ-132) —
+        # HZ-76's default-safe rule stands, no new reason is introduced.
+        "reason": reasons.REASON["UNREACHABLE"],
     }
     try:
         res = httpx.post(url, json=payload, headers={"x-farm-secret": SHARED_SECRET}, timeout=15)
@@ -335,7 +386,11 @@ def _claim_and_launch(task_path, runs_dir: Path, repo_root: Path) -> str | None:
     # actually gone, and stat().st_mtime here would still read the original
     # enqueue time, not this claim.
     task["claimed_at"] = time.time()
-    claimed.write_text(json.dumps(task, indent=2))
+    # HZ-130: atomic, same as the enqueue in steps_run —
+    # _reconcile_one_claimed_run and _session_for_run both read this file
+    # live, concurrently with this write. Behaviour is unchanged; only the
+    # partial-read window is gone.
+    _write_task_atomic(claimed, task)
     if not _notify_started(task["run_id"]):
         print(f"farmd: run {task['run_id']} no longer active server-side — not launching", flush=True)
         claimed.unlink(missing_ok=True)
@@ -578,17 +633,27 @@ async def steps_run(request: Request):
     queue = lane_for_index(steps.STEPS, body["step"].get("index", 99))
     (QUEUE_DIR / queue).mkdir(parents=True, exist_ok=True)
     task_path = QUEUE_DIR / queue / f"{body['run_id']}.json"
-    task_path.write_text(json.dumps(body, indent=2))
+    # HZ-130: the enqueue write. A poller globbing this directory used to be
+    # able to read this file mid-write and get truncated JSON.
+    _write_task_atomic(task_path, body)
     return {"ok": True, "queued": queue}
 
 
 @app.post("/conflicts/resolve")
 async def conflicts_resolve(request: Request):
-    """HZ-92: deterministic, LLM-free merge-conflict resolution — no tmux
-    session, no agent dispatch, no queue file. Runs inline (off the event
-    loop thread so a slow git/test run doesn't stall other requests) and
-    returns the outcome directly; the Node orchestrator decides what an
-    escalation means (send back to the full implement step)."""
+    """HZ-92: merge-conflict resolution with no tmux session, no queue file
+    and no run row. Runs inline (off the event loop thread so a slow git/test
+    run doesn't stall other requests) and returns the outcome directly; the
+    Node orchestrator decides what an escalation means (send back to the full
+    implement step).
+
+    HZ-154: a plain `git merge` is still the first thing tried and still the
+    only thing most calls do. When it conflicts, the resolver may now dispatch
+    up to two bounded agent calls inline — one to resolve the conflicted hunks,
+    one to review only what that resolution changed — so this handler is no
+    longer LLM-free. The request and response contracts are unchanged; a
+    scoped success just carries three extra keys (mode/resolution/review) that
+    this route already passes straight through."""
     body = await request.json()
     if state["status"] != "running":
         return JSONResponse({"error": f"farm_not_running (status={state['status']})"}, status_code=409)
@@ -697,6 +762,35 @@ async def internal_steps_started(request: Request):
         # that this specific run is the one the PM session is working on.
         PM_ACTIVE_RUNS.add(run_id)
     return {"ok": True, "active": active}
+
+
+@app.get("/internal/snapshot")
+def internal_snapshot():
+    """The concierge's read path (HZ-140).
+
+    farmd holds FARM_SHARED_SECRET; no agent session does any more, including
+    the concierge's own. So the concierge reads the work-item snapshot the
+    same way the PM agent reports results: over loopback, through farmd, with
+    no credential of its own.
+
+    Exposure, decided explicitly rather than left implicit: /internal/* is
+    unauthenticated on 127.0.0.1, so any local agent with Bash can now read
+    this snapshot. That is accepted — every step agent is already handed its
+    item's full contents in its prompt, farmd binds to loopback only, and this
+    route grants no write capability whatsoever. It cannot approve a gate,
+    which is the capability HZ-140 exists to take away.
+    """
+    try:
+        res = httpx.get(f"{HORIZON_URL}/api/farm/snapshot", headers={"x-farm-secret": SHARED_SECRET}, timeout=15)
+        if res.status_code != 200:
+            # Upstream status/body are not passed through: a 401 here is a
+            # farmd misconfiguration, not something the concierge can act on.
+            print(f"farmd: snapshot fetch -> {res.status_code}", flush=True)
+            return JSONResponse({"error": "could not reach horizon server"}, status_code=502)
+        return res.json()
+    except Exception as exc:
+        print(f"farmd: snapshot fetch failed: {exc}", flush=True)
+        return JSONResponse({"error": "could not reach horizon server"}, status_code=502)
 
 
 @app.post("/internal/steps/result")

@@ -18,16 +18,29 @@ from pathlib import Path
 
 import httpx
 
+# HZ-128: the step model lives in domain/, not in farm/ — an absolute import
+# off the repo root (already on sys.path, since farmd runs as
+# `python -m farm.farmd` from there and farm/tests/conftest.py inserts it).
+# HZ-132 put the failure-reason vocabulary there too, so the reason this script
+# reports is a constant the server already knows, never a string typed here.
+from domain.py import reasons, steps
+
 # AgentExhaustedError is this branch's name for main's TurnCapExceeded — the
 # same "ran out of turn budget" signal, renamed by the provider refactor. The
 # import conflicted while its USE below merged cleanly, so the rename has to be
 # applied there too or the merged file references a symbol that no longer exists.
-from .agent_runner import AgentError, AgentExhaustedError, extract_json, run_agent
+from .agent_runner import (
+    AgentError,
+    AgentExhaustedError,
+    parse_agent_reply,
+    run_agent,
+    stamp_notes,
+    stamp_notes_artifact,
+)
 from .checks import run_checks
 from .config import FARM_PORT
 from .personas import compose_role, provider_for, resolve
 from .rules import render_rules_section
-from . import steps
 from .workspaces import ensure_item_worktree, hub_lock
 
 FARMD = f"http://127.0.0.1:{FARM_PORT}"
@@ -44,9 +57,14 @@ WRITE_ARTIFACT_SANITY_CEILING_CHARS = 200_000
 # The server already budgets the total it sends (~60k), so this should never
 # fire in practice — mirrors farm/rules.py's MAX_PROMPT_RULES_CHARS backstop.
 MAX_PROMPT_ARTIFACT_CHARS = 100_000
+# The cap on this script's own `summary` — step_run.output on the server side.
+# Named once (HZ-156) rather than restated as a literal at each shaping site:
+# stamp_notes() reserves room inside exactly this budget, so a cap raised in
+# one place and not the other would silently truncate the notes back off.
+SUMMARY_MAX_CHARS = 600
 
-# step label -> (role file, needs JSON artifact, tool access, wants persona).
-# HZ-117: keyed by label (the table's own primary key, see farm/steps.py),
+# step label -> (role file, needs JSON artifact, tool access, persona agent).
+# HZ-117: keyed by label (the table's own primary key, see domain/steps.json),
 # never index — an insertion elsewhere in the table can't repoint one of
 # these at the wrong step. Turn budgets and timeouts moved to
 # steps.budget_for_label(); provider eligibility to
@@ -54,6 +72,13 @@ MAX_PROMPT_ARTIFACT_CHARS = 100_000
 # the generated table instead of a second hand-maintained mapping here.
 # Personas specialize only the steps that act on the item's stack — QA and
 # implement; the planning steps stay generalist.
+#
+# HZ-125: the last field used to be a bool ("wants a persona"). Personas are
+# now scoped by agent, so it names WHICH agent's persona bucket this step
+# composes from — None for the steps that compose none. The same three steps
+# compose as before; only the sentinel's shape changed, and it is now
+# load-bearing: a QA step can no longer be handed an Eng persona because the
+# agent is what selects the bucket.
 PLANNER_TOOLS = "Read,Glob,Grep"
 IMPLEMENT_TOOLS = "Read,Glob,Grep,Edit,Write,Bash"
 # DevOps investigates and can hit live URLs (curl, gh cli, etc.) but never
@@ -65,22 +90,29 @@ REVIEW_LABEL = "Automated review (code + QA)"
 DEPLOY_LABEL = "Deploy the changes"
 
 STEP_CONFIG = {
-    "Plan options & trade-offs (pros / cons)": ("ensemble.md", True, PLANNER_TOOLS, False),
-    "Draft implementation plan": ("eng_plan.md", True, PLANNER_TOOLS, False),
-    "Architecture review": ("architect_review.md", True, PLANNER_TOOLS, False),
-    "QA reviews the test plan": ("qa.md", True, PLANNER_TOOLS, True),
-    IMPLEMENT_LABEL: ("eng_implement.md", False, IMPLEMENT_TOOLS, True),
-    # code_review.md is loaded here for the first (code) pass; qa_review.md
-    # is loaded separately inside execute()'s review branch for the second
-    # pass. Read-only tools: the reviewer can never edit, push, merge or
-    # approve the human gate (HZ-30) — enforced here, not by prompt alone.
-    REVIEW_LABEL: ("code_review.md", True, PLANNER_TOOLS, True),
+    "Plan options & trade-offs (pros / cons)": ("ensemble.md", True, PLANNER_TOOLS, None),
+    "Draft implementation plan": ("eng_plan.md", True, PLANNER_TOOLS, None),
+    "Architecture review": ("architect_review.md", True, PLANNER_TOOLS, None),
+    "QA reviews the test plan": ("qa.md", True, PLANNER_TOOLS, "qa"),
+    IMPLEMENT_LABEL: ("eng_implement.md", False, IMPLEMENT_TOOLS, "eng"),
+    # code_review.md is loaded here for the first (code) pass and composes the
+    # item's ENG persona (it reviews the code as an engineer); qa_review.md is
+    # loaded separately inside execute()'s review branch for the second pass
+    # and composes the item's QA persona. Read-only tools: the reviewer can
+    # never edit, push, merge or approve the human gate (HZ-30) — enforced
+    # here, not by prompt alone.
+    REVIEW_LABEL: ("code_review.md", True, PLANNER_TOOLS, "eng"),
     # DevOps is a role, not a persona (HZ-22 architecture review) — it is
     # project-scoped via farm/rules/projects/*.md, not stack-scoped, so it
     # never gets a persona composed in.
-    DEPLOY_LABEL: ("devops.md", True, DEVOPS_TOOLS, False),
+    DEPLOY_LABEL: ("devops.md", True, DEVOPS_TOOLS, None),
 }
 
+# The agent whose persona the review step's second (QA) pass composes. Named
+# here rather than inlined because it is the fix HZ-125 exists for: both passes
+# used to compose the item's single flat persona, so the QA reviewer was handed
+# the Eng specialization of the engineer whose diff it was reviewing.
+REVIEW_QA_PERSONA_AGENT = "qa"
 
 def _assert_step_config_matches_table(config_labels: set[str], table_labels: set[str]) -> None:
     """The actual Python-side enforcement of "an inserted/renamed step must
@@ -96,7 +128,7 @@ def _assert_step_config_matches_table(config_labels: set[str], table_labels: set
         problems.append(f"in the generated steps table but missing from STEP_CONFIG: {sorted(missing_from_config)}")
     if missing_from_table:
         problems.append(f"in STEP_CONFIG but missing from the generated steps table: {sorted(missing_from_table)}")
-    raise RuntimeError("step_agent.STEP_CONFIG has drifted from farm/steps_generated.json — " + "; ".join(problems))
+    raise RuntimeError("step_agent.STEP_CONFIG has drifted from domain/steps.json — " + "; ".join(problems))
 
 
 _assert_step_config_matches_table(
@@ -129,6 +161,35 @@ def git(ws: Path, *args: str, check: bool = True, env: dict | None = None) -> su
     return result
 
 
+def item_personas(item: dict) -> dict:
+    """The item's {agent: persona id} map (HZ-125).
+
+    Falls back to reading the pre-HZ-125 flat `persona` field as the item's Eng
+    persona. The server translates legacy rows before dispatch, so this only
+    matters for a task file enqueued by an older server and claimed after this
+    shipped — a real window on a single-host deploy, and cheap to survive:
+    resolve() accepts the legacy id (farm/personas.py's LEGACY_PERSONA_IDS).
+    """
+    personas = item.get("personas")
+    if isinstance(personas, dict):
+        return personas
+    legacy = item.get("persona")
+    return {"eng": legacy} if isinstance(legacy, str) and legacy.strip() else {}
+
+
+def _persona_line(task: dict) -> str:
+    """The prompt's persona line: the persona this step will actually compose,
+    named with its agent, or an explicit "generalist" for the steps that
+    compose none. Pre-HZ-125 this printed one resolved id for every step —
+    including the generalist planning steps, which never received it."""
+    config = STEP_CONFIG.get(task["step"]["label"])
+    persona_agent = config[3] if config else None
+    if not persona_agent:
+        return "  persona: (none — this step is generalist)"
+    resolved = resolve(persona_agent, item_personas(task["item"]).get(persona_agent))
+    return f"  persona: {persona_agent}/{resolved}"
+
+
 def build_prompt(task: dict) -> str:
     item, step = task["item"], task["step"]
     lines = [
@@ -137,7 +198,7 @@ def build_prompt(task: dict) -> str:
         f"  outcome: {item.get('desc') or '(empty)'}",
         f"  success metric: {item.get('metric') or '(empty)'}",
         f"  guardrails: {item.get('guardrails') or '(defaults only)'}",
-        f"  persona: {resolve(item.get('persona'))}",
+        _persona_line(task),
     ]
     if item.get("release_tag"):
         lines.append(f"  release: {item['release_tag']}  ({item.get('release_url') or 'no url'}) — already published")
@@ -379,7 +440,7 @@ def _review_summary(verdict: dict) -> str:
         if detail:
             summary = f"{summary} — {detail}"
             break
-    return summary[:600]
+    return summary[:SUMMARY_MAX_CHARS]
 
 
 def _provenance(reply: dict) -> dict:
@@ -396,15 +457,24 @@ def _run_and_parse(
     allowed_tools: str | None,
     provider: str | None = None,
     provider_locked: bool = False,
-) -> tuple[dict, dict]:
-    """run_agent + extract_json with one retry-with-feedback on a parse
-    failure (HZ-44) — mirrors pm_agent.process()'s recovery. Asking the model
-    to re-emit valid JSON is lossless; a genuine second failure still
+) -> tuple[dict, dict, list[str]]:
+    """run_agent + the shared reply parser, with one retry-with-feedback on a
+    parse failure (HZ-44) — mirrors pm_agent.process()'s recovery. Asking the
+    model to re-emit valid JSON is lossless; a genuine second failure still
     propagates so the run cancels and the item pauses, unchanged.
 
-    Returns (parsed_json, provenance) — provenance is {"provider",
+    Returns (parsed_json, provenance, notes). Provenance is {"provider",
     "command_id"} from whichever run_agent() call actually produced the JSON
-    that parsed (HZ-102), so a caller can record which provider really ran.
+    that parsed (HZ-102), so a caller can record which provider really ran —
+    hence the `produced` rebind in the closure rather than reading `reply`
+    after the fact. Notes are the shared parser's reporting channel (HZ-156).
+
+    No validate= is handed to the parser, deliberately. Every required-field
+    check on this side (a missing 'summary', a deploy reply with no 'url', a
+    review reply with no verdict) stays exactly where it has always been —
+    after this call returns. Moving one inside the retry envelope would buy a
+    second full agent run for a reply that costs nothing to reject today, and
+    on the review path a retry could flip a deliberately fail-closed gate.
     """
     reply = run_agent(
         prompt,
@@ -416,12 +486,13 @@ def _run_and_parse(
         provider=provider,
         provider_locked=provider_locked,
     )
-    try:
-        return extract_json(reply["result"]), _provenance(reply)
-    except (AgentError, json.JSONDecodeError) as exc:
-        log(f"invalid reply ({exc}); retrying once")
-        retry = run_agent(
-            f"Your previous reply was invalid: {exc}. Respond again with ONLY the JSON object, no other text.",
+    produced = reply
+
+    def retry_once(retry_prompt: str) -> str:
+        nonlocal produced
+        log("invalid reply; retrying once")
+        produced = run_agent(
+            retry_prompt,
             session_id=reply.get("session_id"),
             append_system=append_system,
             cwd=cwd,
@@ -431,7 +502,10 @@ def _run_and_parse(
             provider=provider,
             provider_locked=provider_locked,
         )
-        return extract_json(retry["result"]), _provenance(retry)
+        return produced["result"]
+
+    parsed, notes = parse_agent_reply(reply["result"], retry_once)
+    return parsed, _provenance(produced), notes
 
 
 # ---- deploy deep-verification (HZ-22) ----
@@ -467,15 +541,16 @@ def run_smoke_check(url: str, expected_text: str) -> tuple[str, str]:
 
 def execute(task: dict) -> dict:
     label = task["step"]["label"]
-    role_file, wants_artifact, tools, wants_persona = STEP_CONFIG[label]
+    role_file, wants_artifact, tools, persona_agent = STEP_CONFIG[label]
     max_turns, timeout_s = steps.budget_for_label(steps.STEPS, label)
     provider_locked = steps.provider_locked_for(steps.STEPS, label)
     role = (ROLES / role_file).read_text()
     item = task["item"]
-    if wants_persona:
-        role = compose_role(role, item.get("persona"))
+    personas = item_personas(item)
+    if persona_agent:
+        role = compose_role(role, persona_agent, personas.get(persona_agent))
     provider_override = (
-        provider_for(item.get("persona")) if steps.provider_override_eligible(steps.STEPS, label) else None
+        provider_for(personas) if steps.provider_override_eligible(steps.STEPS, label) else None
     )
 
     ws = None
@@ -519,8 +594,21 @@ def execute(task: dict) -> dict:
         # The summary is reporting, not the deliverable — the code in the
         # workspace is. Never torch a completed implement run over a
         # malformed final message; fall back and let checks judge the work.
+        # No retry= here on purpose: this step must not gain one. Its fallback
+        # below is what a malformed final message costs, and that is cheaper
+        # than a second full implement run.
+        notes: list[str] = []
         try:
-            summary = str(extract_json(reply["result"]).get("summary", "implementation finished")).strip()[:600]
+            parsed, notes = parse_agent_reply(reply["result"])
+            summary = str(parsed.get("summary", "")).strip()[:SUMMARY_MAX_CHARS]
+            if not summary:
+                # Parsed, but carried nothing usable. Without a note the run
+                # would report a bare "implementation finished" — indistinguishable
+                # from a clean run, with the only evidence that the reply was junk
+                # thrown away. The except branch below says so for an unparseable
+                # reply; this says so for a parseable but empty one.
+                summary = "implementation finished"
+                notes = [*notes, "agent's final message carried no 'summary' — see session log"]
         except Exception:
             summary = "implementation finished (agent's final message was not valid JSON — see session log)"
         # Guardrail enforcement: the repo's own tests/linters run here, by the
@@ -529,7 +617,10 @@ def execute(task: dict) -> dict:
         check_note = run_checks(ws, log)
         publish_screenshots(ws, item)
         artifacts = finalize_branch(ws, item, branch)
-        return {"summary": f"{summary} · {check_note}"[:600], "artifacts": artifacts}
+        # finalize_branch returns branch/files_changed, not an artifact_md, so
+        # the summary is this path's only note surface.
+        summary = stamp_notes(f"{summary} · {check_note}"[:SUMMARY_MAX_CHARS], notes, SUMMARY_MAX_CHARS)
+        return {"summary": summary, "artifacts": artifacts}
 
     # Automated review (HZ-30): two independent read-only passes over the
     # actual diff — code correctness against guardrails/the approved plan,
@@ -568,7 +659,7 @@ def execute(task: dict) -> dict:
             + "\n\nRespond with ONLY the JSON object described in your role instructions."
         )
 
-        code_parsed, _code_provenance = _run_and_parse(
+        code_parsed, _code_provenance, code_notes = _run_and_parse(
             prompt,
             append_system=role,
             cwd=str(ws),
@@ -578,10 +669,12 @@ def execute(task: dict) -> dict:
             provider_locked=provider_locked,
         )
 
+        # The item's QA persona, never the Eng one the code pass above used
+        # (HZ-125): a reviewer wearing the implementer's specialization reviews
+        # the work as the engineer who wrote it.
         qa_role = (ROLES / "qa_review.md").read_text()
-        if wants_persona:
-            qa_role = compose_role(qa_role, item.get("persona"))
-        qa_parsed, _qa_provenance = _run_and_parse(
+        qa_role = compose_role(qa_role, REVIEW_QA_PERSONA_AGENT, personas.get(REVIEW_QA_PERSONA_AGENT))
+        qa_parsed, _qa_provenance, qa_notes = _run_and_parse(
             prompt,
             append_system=qa_role,
             cwd=str(ws),
@@ -600,10 +693,17 @@ def execute(task: dict) -> dict:
         summary = _review_summary(verdict)
         feedback = task.get("feedback") or []
         if feedback:
-            summary = f"addressed feedback (“{feedback[0].get('message', '')[:80]}”) — {summary}"[:600]
+            summary = f"addressed feedback (“{feedback[0].get('message', '')[:80]}”) — {summary}"[:SUMMARY_MAX_CHARS]
+        # Both passes' notes, in the order they ran.
+        notes = code_notes + qa_notes
         return {
-            "summary": summary,
-            "artifacts": {"artifact_md": artifact_md[:WRITE_ARTIFACT_SANITY_CEILING_CHARS], "verdict": verdict},
+            "summary": stamp_notes(summary, notes, SUMMARY_MAX_CHARS),
+            "artifacts": {
+                "artifact_md": stamp_notes_artifact(
+                    artifact_md[:WRITE_ARTIFACT_SANITY_CEILING_CHARS], notes, WRITE_ARTIFACT_SANITY_CEILING_CHARS
+                ),
+                "verdict": verdict,
+            },
         }
 
     # Deploy (HZ-22): the release is already published by the time this runs
@@ -627,7 +727,7 @@ def execute(task: dict) -> dict:
             "with e2e/smoke/check.mjs — pick an expected_text that is actually visible on that "
             "page right now."
         )
-        parsed, _deploy_provenance = _run_and_parse(
+        parsed, _deploy_provenance, notes = _run_and_parse(
             prompt,
             append_system=role,
             cwd=None,
@@ -636,7 +736,7 @@ def execute(task: dict) -> dict:
             allowed_tools=tools,
             provider_locked=provider_locked,
         )
-        summary = str(parsed.get("summary", "")).strip()[:600] or "deploy verification finished"
+        summary = str(parsed.get("summary", "")).strip()[:SUMMARY_MAX_CHARS] or "deploy verification finished"
         artifact_md = str(parsed.get("artifact_md", "")).strip()
 
         url, expected_text = parsed.get("url"), parsed.get("expected_text")
@@ -646,9 +746,11 @@ def execute(task: dict) -> dict:
         verdict, smoke_line = run_smoke_check(url.strip(), expected_text.strip())
         artifact_md = f"{artifact_md}\n\n## Machine-checked result\n`{smoke_line}`".strip()
         return {
-            "summary": f"{summary} · {smoke_line}"[:600],
+            "summary": stamp_notes(f"{summary} · {smoke_line}"[:SUMMARY_MAX_CHARS], notes, SUMMARY_MAX_CHARS),
             "artifacts": {
-                "artifact_md": artifact_md[:WRITE_ARTIFACT_SANITY_CEILING_CHARS],
+                "artifact_md": stamp_notes_artifact(
+                    artifact_md[:WRITE_ARTIFACT_SANITY_CEILING_CHARS], notes, WRITE_ARTIFACT_SANITY_CEILING_CHARS
+                ),
                 # Wrapped in an object, not a bare string: validateDeployVerdict in
                 # server/src/orchestrator.js requires `typeof v === 'object'` with a
                 # `.verdict` field — same wire contract the review step's verdict
@@ -657,7 +759,7 @@ def execute(task: dict) -> dict:
             },
         }
 
-    parsed, reply_provenance = _run_and_parse(
+    parsed, reply_provenance, notes = _run_and_parse(
         build_prompt(task) + "\n\nRespond with ONLY the JSON object described in your role instructions.",
         append_system=role,
         cwd=str(ws) if ws else None,
@@ -667,7 +769,7 @@ def execute(task: dict) -> dict:
         provider=provider_override,
         provider_locked=provider_locked,
     )
-    summary = str(parsed.get("summary", "")).strip()[:600]
+    summary = str(parsed.get("summary", "")).strip()[:SUMMARY_MAX_CHARS]
     if not summary:
         raise AgentError("agent reply missing 'summary'")
 
@@ -676,25 +778,30 @@ def execute(task: dict) -> dict:
     # so nobody has to guess what a revision was responding to.
     feedback = task.get("feedback") or []
     if feedback:
-        summary = f"addressed feedback (“{feedback[0].get('message', '')[:80]}”) — {summary}"[:600]
+        summary = f"addressed feedback (“{feedback[0].get('message', '')[:80]}”) — {summary}"[:SUMMARY_MAX_CHARS]
 
     # HZ-102: when a persona forced a non-default provider for this step
-    # (today, only muse_smoke_test -> muse), stamp what actually ran into the
-    # run log — visible to a human without inspecting config — and into the
-    # artifact sent to the server, which persists it on
+    # (PERSONA_PROVIDERS ships empty — HZ-121 — so today this only happens
+    # via a test-registered fixture persona), stamp what actually ran into
+    # the run log — visible to a human without inspecting config — and into
+    # the artifact sent to the server, which persists it on
     # step_run.provider/command_id (server/src/orchestrator.js).
     if provider_override:
         note = f"provider={reply_provenance.get('provider')} command_id={reply_provenance.get('command_id')}"
         log(f"HZ-102 provenance: {note}")
-        summary = f"{summary} [{note}]"[:600]
+        summary = f"{summary} [{note}]"[:SUMMARY_MAX_CHARS]
 
-    result = {"summary": summary}
+    result = {"summary": stamp_notes(summary, notes, SUMMARY_MAX_CHARS)}
     if wants_artifact and isinstance(parsed.get("artifact_md"), str) and parsed["artifact_md"].strip():
         artifact = parsed["artifact_md"].strip()
         if feedback:
             header = "\n".join(f"> {fb.get('message', '')}" for fb in feedback)
             artifact = f"## Human feedback addressed in this revision\n{header}\n\n{artifact}"
-        result["artifacts"] = {"artifact_md": artifact[:WRITE_ARTIFACT_SANITY_CEILING_CHARS]}
+        result["artifacts"] = {
+            "artifact_md": stamp_notes_artifact(
+                artifact[:WRITE_ARTIFACT_SANITY_CEILING_CHARS], notes, WRITE_ARTIFACT_SANITY_CEILING_CHARS
+            )
+        }
     if provider_override:
         artifacts = result.setdefault("artifacts", {})
         artifacts["provider"] = reply_provenance.get("provider")
@@ -721,7 +828,7 @@ def main() -> int:
         # else (a checks failure, a malformed reply, ...) reports no reason
         # and the server pauses for a human exactly as before.
         if isinstance(exc, AgentExhaustedError):
-            result["reason"] = "turn_cap"
+            result["reason"] = reasons.REASON["TURN_CAP"]
 
     httpx.post(f"{FARMD}/internal/steps/result", json=result, timeout=30)
     log(f"run {run_id}: reported {'ok' if result['ok'] else 'failure'}")

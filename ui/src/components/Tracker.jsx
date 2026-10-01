@@ -1,23 +1,22 @@
 import {
-  AGENTS,
   PHASES,
-  PHASE_ACCENT,
-  PHASE_ACCENT_BG,
   STEPS,
   isClosed,
   isAbandoned,
   phaseIdx,
   stepStatus,
   phaseStepIndexes,
-  priorityColor,
-} from '../domain/lifecycle'
-import { PERSONAS, personaFor, personaId } from '../domain/personas'
+} from '../../../domain/js/lifecycle.js'
+import { AGENTS } from '../domain/agentTokens'
+import { PHASE_ACCENT, PHASE_ACCENT_BG, priorityColor } from '../domain/lifecycle'
+import { PERSONAS, PERSONA_AGENT_ROLES, PRIMARY_PERSONA_AGENT, personaFor, personaId } from '../domain/personas'
 import { itemStatus } from '../domain/status'
 import { pauseReason } from '../domain/pauseReason'
 import { resolveEventColor } from '../domain/eventColors'
 import { issueUrl, issueLabel, artifactUrl, outputUrl, runLogViewUrl } from '../api'
 import StatusPill from './StatusPill'
 import DependencyBadge from './DependencyBadge'
+import Markdown from './Markdown'
 import { BackIcon, LinkIcon, RestartIcon, PrIcon } from './icons'
 
 const STEP_GLYPHS = { done: '✓', active: '•', awaiting: '!', pending: '', blocked: '✕' }
@@ -116,27 +115,31 @@ function Step({ item, index, onApprove, onApproveWithComments, onReject, onResol
                 : 'View full artifact ↗'}
             </a>
           )}
-          {showsPersonaPicker && (
-            <div className="step-card__persona">
-              <label className="step-card__persona-label" htmlFor={`persona-${item.id}`}>
-                Specialist persona
-              </label>
-              <select
-                id={`persona-${item.id}`}
-                className="step-card__persona-select"
-                value={personaId(item)}
-                onChange={(e) => onSetPersona(item.id, e.target.value)}
-              >
-                {Object.entries(PERSONAS)
-                  .filter(([, p]) => !p.testOnly)
-                  .map(([id, p]) => (
-                    <option key={id} value={id}>
-                      {p.label}
-                    </option>
-                  ))}
-              </select>
-            </div>
-          )}
+          {/* One control per persona agent (HZ-125): personas are agent-scoped,
+              so the human confirms the Eng specialization the PM proposed and
+              can set the QA, Architect and PM ones in the same place. */}
+          {showsPersonaPicker &&
+            Object.keys(PERSONAS).map((agent) => (
+              <div className="step-card__persona" key={agent}>
+                <label className="step-card__persona-label" htmlFor={`persona-${agent}-${item.id}`}>
+                  {AGENTS[PERSONA_AGENT_ROLES[agent]].label} persona
+                </label>
+                <select
+                  id={`persona-${agent}-${item.id}`}
+                  className="step-card__persona-select"
+                  value={personaId(item, agent)}
+                  onChange={(e) => onSetPersona(item.id, agent, e.target.value)}
+                >
+                  {Object.entries(PERSONAS[agent])
+                    .filter(([, p]) => !p.testOnly)
+                    .map(([id, p]) => (
+                      <option key={id} value={id}>
+                        {p.label}
+                      </option>
+                    ))}
+                </select>
+              </div>
+            ))}
           {status === 'awaiting' && st.label === 'Accept the code' && item.pr != null && item.pr_mergeable === false && (
             <div className="step-card__conflict">
               PR #{item.pr} has merge conflicts with main — approving would fail.
@@ -283,9 +286,15 @@ export default function Tracker({ item, onBack, onApprove, onApproveWithComments
                 <span className="tracker__priority-dot" style={{ background: priorityColor(item.priority) }} />
                 {item.priority} priority
               </span>
-              <span className="tracker__priority" style={{ color: personaFor(item).color }}>
-                <span className="tracker__priority-dot" style={{ background: personaFor(item).color }} />
-                {personaFor(item).label}
+              {/* The Eng persona: the item's primary specialization, the one
+                  that decides who writes the code. Every agent's persona is
+                  visible in the gate's picker. */}
+              <span className="tracker__priority" style={{ color: personaFor(item, PRIMARY_PERSONA_AGENT).color }}>
+                <span
+                  className="tracker__priority-dot"
+                  style={{ background: personaFor(item, PRIMARY_PERSONA_AGENT).color }}
+                />
+                {personaFor(item, PRIMARY_PERSONA_AGENT).label}
               </span>
               {item.issue != null && (
                 <a className="tracker__issue" href={issueUrl(item)} target="_blank" rel="noopener noreferrer">
@@ -307,7 +316,9 @@ export default function Tracker({ item, onBack, onApprove, onApproveWithComments
               )}
             </div>
             <div className="tracker__title">{item.title}</div>
-            <div className="tracker__desc">{item.desc}</div>
+            {/* HZ-153: issue bodies are markdown — Markdown renders them as
+                React elements, never as HTML. Same for the two tiles below. */}
+            <Markdown className="tracker__desc" text={item.desc} />
           </div>
           <StatusPill status={status} className="tracker__status" />
         </div>
@@ -334,11 +345,11 @@ export default function Tracker({ item, onBack, onApprove, onApproveWithComments
         <div className="tracker__tiles">
           <div className="tile">
             <div className="tile__label">Success metric</div>
-            <div className="tile__value">{item.metric}</div>
+            <Markdown className="tile__value md-body--tile" text={item.metric} />
           </div>
           <div className="tile">
             <div className="tile__label">Guardrails</div>
-            <div className="tile__value">{item.guardrails}</div>
+            <Markdown className="tile__value md-body--tile" text={item.guardrails} />
           </div>
         </div>
         <DependencyBadge item={item} />

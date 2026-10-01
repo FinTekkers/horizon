@@ -9,11 +9,12 @@
 // "extensibility" test for a literal proof: it appends a throwaway predicate
 // and asserts these functions handle it with zero edits.
 //
-// `stale` and `abandoned` are independent predicates, not one merged rule —
-// an item that is both stale and abandoned matches both, and a reader can
-// ask "what did we abandon?" separately from "what went stale?".
+// `stale`, `abandoned` and `closed` are independent predicates, not one
+// merged rule — an item that is both stale and closed matches both, and a
+// reader can ask "what did we abandon?" separately from "what went stale?"
+// and from "what did we finish?".
 
-import { isAbandoned } from './lifecycle'
+import { isAbandoned, isClosed } from '../../../domain/js/lifecycle.js'
 
 export const STALE_DAYS = 30
 
@@ -49,11 +50,23 @@ export const FILTERS = [
     noun: 'abandoned',
     hides: (item) => isAbandoned(item),
   },
+  // HZ-143: finished work crowds the Review column. `!isAbandoned` keeps this
+  // independent of the `abandoned` filter rather than double-counting an item
+  // abandoned at the final gate — the same "abandoned beats closed"
+  // precedence domain/status.js's itemStatus encodes for the status pill. The
+  // two must not drift: change one, check the other.
+  {
+    key: 'closed',
+    label: 'Closed',
+    noun: 'closed',
+    hides: (item) => isClosed(item) && !isAbandoned(item),
+  },
 ]
 
-// Hidden-by-default: both predicates start active, matching the success
+// Hidden-by-default: every predicate starts active, matching the success
 // metric ("hides items with no progress for 30+ days by default") plus the
-// later scope addition to also hide abandoned items by default.
+// later scope additions to also hide abandoned (HZ-59) and closed (HZ-143)
+// items by default.
 export const DEFAULT_ACTIVE_FILTERS = FILTERS.map((f) => f.key)
 
 // `filters` defaults to the real registry but takes an explicit param so a

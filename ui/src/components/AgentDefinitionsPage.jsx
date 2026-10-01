@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { listDefinitions, getDefinition, saveDefinition, effectivePrompt } from '../api'
+import { DEFAULT_PERSONAS, PRIMARY_PERSONA_AGENT, personaSlotForFile } from '../domain/personas'
 import { BackIcon } from './icons'
 
 // The hierarchical agent-definitions library (HZ-9): Global (roles +
@@ -47,9 +48,23 @@ function DefinitionTree({ tree, selected, onSelect }) {
 // Derive the preview context from the selection so the human sees the merged
 // prompt this definition actually lands in.
 function previewParams(selected) {
-  const params = { role: 'eng_implement', persona: 'fullstack', project: 'FinTekkers' }
+  const params = {
+    role: 'eng_implement',
+    agent: PRIMARY_PERSONA_AGENT,
+    persona: DEFAULT_PERSONAS[PRIMARY_PERSONA_AGENT],
+    project: 'FinTekkers',
+  }
   if (!selected) return params
-  if (selected.kind === 'persona') params.persona = selected.name
+  // Persona files are agent-prefixed (HZ-125), so the selection names a file,
+  // not a persona id — the agent has to travel with it or the preview composes
+  // the default instead of what was clicked.
+  if (selected.kind === 'persona') {
+    const slot = personaSlotForFile(selected.name)
+    if (slot) {
+      params.agent = slot.agent
+      params.persona = slot.persona
+    }
+  }
   if (selected.kind === 'role') params.role = selected.name
   if (selected.kind === 'project') params.project = selected.name
   if (selected.kind === 'repo') params.repo = selected.name.replace('__', '/')

@@ -7,6 +7,7 @@ test_measure_text_caps.py."""
 import json
 
 from farm.tools.analyze_pm_context_reliance import (
+    always_present_prompt_shingles,
     clean_log_text,
     extract_patch_values,
     find_cross_item_mentions,
@@ -15,6 +16,7 @@ from farm.tools.analyze_pm_context_reliance import (
     parse_runs,
     render_markdown,
     role_prompt_shingles,
+    rules_shingles,
 )
 
 
@@ -207,3 +209,82 @@ def test_render_markdown_states_load_bearing_not_evidenced_when_no_specific_matc
     mentions = find_cross_item_mentions(runs)
     md = render_markdown(runs, matches, mentions, "2026-09-30", "test.log")
     assert "Load-bearing: not evidenced." in md
+
+
+# --- HZ-115: text that reaches EVERY prompt is a false-positive generator ---
+# build_prompt() renders render_rules_section(task["rules"]) into every item's
+# prompt, and the PM role prompt is appended to every call. Wording shared via
+# either channel is explained by the current prompt, not by session memory.
+
+
+def test_rules_text_is_excluded_because_every_prompt_already_carries_it(tmp_path):
+    rules = tmp_path / "projects"
+    rules.mkdir()
+    shared = "deploys never auto rollback a failed health check leaves the bad code live"
+    (rules / "horizon.md").write_text(f"# Rules\n\n{shared}\n")
+
+    shingles = rules_shingles(rules_dir=tmp_path)
+    assert shingles, "rules files must contribute shingles"
+
+    log_text = build_log(
+        (1, "Set guardrails", "HZ-1", {"summary": "s", "patch": {"guardrails": shared}}),
+        (2, "Set guardrails", "HZ-2", {"summary": "s", "patch": {"guardrails": shared}}),
+    )
+    runs = parse_runs(log_text)
+    matches = find_phrase_reuse(runs, role_shingles=shingles)
+
+    assert matches, "the shared phrase should still be detected..."
+    assert all(m["role_prompt"] for m in matches), "...but excluded as prompt-explained"
+
+    md = render_markdown(runs, matches, find_cross_item_mentions(runs), "2026-10-01", "test.log")
+    # Excluded, and the reason is printed — an exclusion nobody can see is an
+    # unfalsifiable method.
+    assert "Load-bearing: not evidenced." in md
+    assert "farm/rules/" in md
+    assert "render_rules_section()" in md
+
+
+def test_rules_shingles_degrades_to_empty_when_the_rules_tree_is_missing(tmp_path):
+    """An unreadable exclusion source may only make the report more
+    conservative about what it claims, never less — so it must not raise."""
+    assert rules_shingles(rules_dir=tmp_path / "does-not-exist") == set()
+
+
+def test_always_present_shingles_covers_both_the_role_prompt_and_the_rules():
+    combined = always_present_prompt_shingles()
+    assert role_prompt_shingles() <= combined
+    assert rules_shingles() <= combined
+
+
+def test_render_markdown_reports_corpus_coverage_rather_than_implying_it():
+    """A run whose reply never reached the log contributes nothing to Signal 1.
+    Only farm/providers/claude.py echoes reply text, so a Muse-routed run is
+    invisible — that has to be a visible number, not an unstated assumption."""
+    log_text = build_log(
+        (1, "Define the outcome", "HZ-1", {"summary": "s", "patch": {"desc": "some wording here for item one"}}),
+        (2, "Define the outcome", "HZ-2", None),
+        (3, "Define the outcome", "HZ-3", None),
+    )
+    runs = parse_runs(log_text)
+    md = render_markdown(runs, find_phrase_reuse(runs, role_shingles=set()),
+                         find_cross_item_mentions(runs), "2026-10-01", "test.log")
+
+    assert "Corpus coverage: 1/3 runs" in md
+    assert "2 contributed nothing to Signal 1" in md
+    assert "Claude-routed corpus" in md
+
+
+def test_the_verdict_does_not_pre_commit_to_a_migration_option():
+    """The evidence tool answers "is the context load-bearing?". Which option
+    carries that context is the recommendation's call, not the probe's."""
+    log_text = build_log(
+        (1, "Define the outcome", "HZ-1", {"summary": "s", "patch": {"desc": "an item blocked by another shows what blocks it and what would unblock it"}}),
+        (2, "Define the outcome", "HZ-2", {"summary": "s", "patch": {"desc": "an item blocked by another shows what blocks it and what would unblock it"}}),
+    )
+    runs = parse_runs(log_text)
+    md = render_markdown(runs, find_phrase_reuse(runs, role_shingles=set()),
+                         find_cross_item_mentions(runs), "2026-10-01", "test.log")
+
+    assert "Load-bearing: yes, evidenced." in md
+    assert "Option A" not in md and "Option D" not in md
+    assert "pm-step-ephemeral-recommendation.md" in md

@@ -23,7 +23,11 @@ import { getActiveProjectId, getRepoUrl, setSetting, getToken } from './settings
 import * as auth from './auth.js'
 import { googleAuth } from './googleAuth.js'
 import { isAllowedEmail } from './loginAllowlist.js'
-import { STEPS } from './lifecycle.js'
+import { approvalSecretConfigured, approvalSecretOk, isAllowedApprover, normalizeJid } from './waApprovers.js'
+import * as waPollVotes from './waPollVotes.js'
+import { STEPS } from '../../domain/js/lifecycle.js'
+import { intakeFields } from '../../domain/js/fields.js'
+import { PRIORITIES, DEFAULT_PRIORITY } from '../../domain/js/priorities.js'
 import { PERSONAS } from './personas.js'
 import * as definitions from './definitions.js'
 import * as runLogView from './runLogView.js'
@@ -123,16 +127,21 @@ function humanAuthorized(request, reply) {
 
 // Routes reachable without a login session: the auth routes themselves, the
 // GitHub webhook (HMAC-verified, GitHub can't send a cookie), the farm
-// callbacks and the WhatsApp-approval leg (both authorized by the farm's
-// shared secret instead), the shared stylesheet, and the deploy liveness
-// probe (HZ-43 — nginx proxies /horizon/api/ wholesale, so deploy.sh has no
-// session to send; see /api/health below for what stays out of its payload).
+// callbacks (farmAuthorized, the farm's shared secret), the WhatsApp-approval
+// leg (HZ-140 — its own WA_APPROVAL_SECRET plus a server-held approver
+// allowlist; FARM_SHARED_SECRET gets a 401 there now), the shared stylesheet,
+// and the deploy liveness probe (HZ-43 — nginx proxies /horizon/api/
+// wholesale, so deploy.sh has no session to send; see /api/health below for
+// what stays out of its payload).
 const SESSION_EXEMPT = [
   /^\/api\/auth\//,
   /^\/api\/webhooks\/github$/,
   /^\/api\/farm\//,
   /^\/api\/agent-pages\.css$/,
   /^\/api\/items\/[^/]+\/gates\/\d+\/approve-via-whatsapp$/,
+  // HZ-142's poll-vote leg. Same credential and the same allowlist as the
+  // line above — the bridge is a daemon and has no session either.
+  /^\/api\/wa\/poll-vote$/,
   /^\/api\/health$/,
 ]
 
@@ -168,6 +177,41 @@ store.onChange(broadcast)
 setInterval(() => {
   sseClients.forEach((res) => res.write(':ping\n\n'))
 }, 25_000).unref()
+
+// POST /api/items's body properties, DERIVED from domain/fields.json (HZ-134).
+// Before this, every length here was a literal that had drifted from the PM
+// agent's own cap for the same field — the API accepted a 2,000-char guardrails
+// a PM revision could only write 400 of. The JSON-Schema *shape* stays here on
+// purpose: a Fastify body schema is a transport artifact, and guardrail 5 keeps
+// transport out of domain/. Only the numbers cross the boundary.
+//
+// Exported so server/test/api-field-limits-derived.test.mjs can diff this
+// fragment against domain/fields.json read independently (success metric 2).
+// That test's other leg is behavioural — it posts at maxLength and maxLength+1
+// through the real route — because a structural diff alone could not tell you
+// whether the route is actually using this object.
+//
+// `required` stays a literal below: it is not a length, so it does not belong in
+// a file about field limits. Recorded in domain/README.md so the split is
+// findable rather than rediscovered. The `priority` enum used to be named here
+// as the other half of that split; HZ-135 moved it to domain/priorities.json, so
+// the route now reads from two domain documents and one literal.
+export const ITEM_BODY_PROPERTIES = Object.fromEntries(
+  intakeFields().map((f) => [
+    f.name,
+    { type: 'string', ...(f.minLength === undefined ? {} : { minLength: f.minLength }), maxLength: f.maxLength },
+  ]),
+)
+
+// The intake route's `priority` property, exported for the same reason
+// ITEM_BODY_PROPERTIES is: server/test/api-priority-enum-derived.test.mjs diffs it
+// against domain/priorities.json structurally, alongside a behavioural leg that
+// posts every declared value through the real route.
+//
+// POST /api/items/:id/priority deliberately reuses only the `enum` and declares
+// NO default — creating an item without naming a priority is normal, changing an
+// item's priority to nothing is not, and that asymmetry predates HZ-135.
+export const PRIORITY_PROPERTY = { type: 'string', enum: PRIORITIES, default: DEFAULT_PRIORITY }
 
 export function buildApp({ logger = true } = {}) {
   const fastify = Fastify({ logger })
@@ -423,18 +467,14 @@ export function buildApp({ logger = true } = {}) {
           type: 'object',
           required: ['title', 'outcome', 'metric'],
           properties: {
-            title: { type: 'string', minLength: 3, maxLength: 200 },
-            outcome: { type: 'string', minLength: 10, maxLength: 4000 },
-            metric: { type: 'string', minLength: 5, maxLength: 2000 },
-            guardrails: { type: 'string', maxLength: 2000 },
-            priority: { type: 'string', enum: ['Critical', 'High', 'Medium', 'Low'], default: 'Medium' },
-            repo: { type: 'string', maxLength: 300 },
+            ...ITEM_BODY_PROPERTIES,
+            priority: PRIORITY_PROPERTY,
           },
         },
       },
     },
     async (request, reply) => {
-      const { title, outcome, metric, guardrails = '', priority = 'Medium', repo } = request.body
+      const { title, outcome, metric, guardrails = '', priority = DEFAULT_PRIORITY, repo } = request.body
       // New work goes into the active project only.
       const activeId = getActiveProjectId()
       const connected = store.listRepos().filter((r) => activeId == null || r.project_id === activeId)
@@ -566,13 +606,29 @@ export function buildApp({ logger = true } = {}) {
     },
   )
 
-  // WhatsApp-concierge leg of gate approval (HZ-15): authorized by the farm's
-  // shared secret + the concierge's own WhatsApp sender allowlist, not the
-  // browser-only human gate key — a deliberate, narrower trust boundary. The
-  // sender's name is always folded into the actor label so every WhatsApp
-  // approval is attributable in the event log, gate_decision row, and the
-  // mirrored GitHub comment, the same way GitHub- and browser-driven
-  // approvals already are.
+  // WhatsApp-concierge leg of gate approval (HZ-15, re-secured by HZ-140).
+  //
+  // This route used to be guarded by farmAuthorized() — the same
+  // FARM_SHARED_SECRET that farm/tmux_mgr.py forwarded into every agent
+  // session — and it trusted the `sender` string the caller supplied, with
+  // the approver allowlist living farm-side where a forged call simply never
+  // ran it. Any agent with Bash could therefore approve its own gate.
+  //
+  // Now it proves its own origin, in three checks that all run BEFORE
+  // performGateApproval, so a rejected call leaves the cursor, the
+  // gate_decision rows and the event log untouched:
+  //
+  //   503  no WA_APPROVAL_SECRET on this host — fail closed, never open
+  //   401  wrong/missing credential (FARM_SHARED_SECRET included: it is not
+  //        accepted here any more, which is the whole point)
+  //   403  senderJid is not on the server-held WA_APPROVER_JIDS allowlist
+  //
+  // farmAuthorized() is unchanged and still guards /api/farm/*, which farmd
+  // — not an agent — calls. `sender` survives only as a display label: the
+  // sender's name is folded into the actor string so every WhatsApp approval
+  // stays attributable in the event log, gate_decision row and the mirrored
+  // GitHub comment, the same way GitHub- and browser-driven approvals are.
+  // Identity, though, comes from senderJid and nothing else.
   fastify.post(
     '/api/items/:id/gates/:stepIndex/approve-via-whatsapp',
     {
@@ -584,22 +640,104 @@ export function buildApp({ logger = true } = {}) {
         },
         body: {
           type: 'object',
-          required: ['sender'],
+          required: ['senderJid'],
           properties: {
-            sender: { type: 'string', minLength: 1, maxLength: 120 },
+            senderJid: { type: 'string', minLength: 1, maxLength: 120 },
+            sender: { type: 'string', maxLength: 120 },
             notes: { type: 'string', maxLength: 2000 },
           },
         },
       },
     },
     async (request, reply) => {
-      if (!farmAuthorized(request, reply)) return
+      if (!approvalSecretConfigured()) return reply.code(503).send({ error: 'wa_approval_not_configured' })
+      if (!approvalSecretOk(request.headers['x-wa-approval-secret'])) {
+        return reply.code(401).send({ error: 'bad_approval_secret' })
+      }
+      const senderJid = request.body.senderJid
+      // Checked before the item is even looked up, so a rejected sender gets
+      // no oracle for which item ids exist.
+      if (!isAllowedApprover(senderJid)) return reply.code(403).send({ error: 'sender_not_allowed' })
       const { id, stepIndex } = request.params
       const notes = (request.body?.notes || '').trim()
-      const actor = `${request.body.sender.trim()} via WhatsApp`
+      // Same shape the farm sends today; falls back to the last 4 digits of
+      // the (now proven) jid when no display name rides along.
+      const label = (request.body.sender || '').trim() || `...${normalizeJid(senderJid).slice(-4)}`
+      const actor = `${label} via WhatsApp`
       const result = await performGateApproval(id, stepIndex, notes, actor)
       if (result.status === 502) return reply.code(502).send({ error: result.error })
       return send(reply, result)
+    },
+  )
+
+  // WhatsApp gate-approval POLL vote (HZ-142).
+  //
+  // The route above is the concierge's free-text leg: a human types at a
+  // model, the model decides an approval happened, and the farm calls it.
+  // That produced false "processing that approval now" replies and wiped
+  // pending offers. This is the replacement — a tap on a native two-option
+  // poll, resolved deterministically. Both stay live through the rollout;
+  // whichever decides the gate first moves the cursor, and the cursor check
+  // in waPollVotes.js is what stops the other one deciding it twice.
+  //
+  // GUARDRAIL 1: no model is reachable from here. waPollVotes.js imports no
+  // orchestrator and no personas (pinned by wa-poll-no-model.test.mjs), and
+  // the two actions below are handed to it rather than imported by it, so
+  // this file importing the orchestrator does not widen its reach.
+  //
+  // The 503/401/403 ladder is the same three helpers, in the same order, as
+  // approve-via-whatsapp: all three run before any lookup or any write, so a
+  // rejected caller gets no oracle and an unauthorised flood writes no rows.
+  //
+  // EVERY 4xx IS FINAL. The bridge retries 5xx and network failures only — a
+  // 403 retried forever would hammer this route over one unauthorised tap.
+  fastify.post(
+    '/api/wa/poll-vote',
+    {
+      schema: {
+        body: {
+          type: 'object',
+          required: ['voteId', 'pollMessageId', 'voterJid', 'selectedOption'],
+          properties: {
+            voteId: { type: 'string', minLength: 1, maxLength: 120 },
+            pollMessageId: { type: 'string', minLength: 1, maxLength: 120 },
+            voterJid: { type: 'string', minLength: 1, maxLength: 120 },
+            selectedOption: { type: 'string', minLength: 1, maxLength: 200 },
+          },
+        },
+      },
+    },
+    async (request, reply) => {
+      if (!approvalSecretConfigured()) return reply.code(503).send({ error: 'wa_approval_not_configured' })
+      if (!approvalSecretOk(request.headers['x-wa-approval-secret'])) {
+        return reply.code(401).send({ error: 'bad_approval_secret' })
+      }
+      const { voteId, pollMessageId, voterJid, selectedOption } = request.body
+      if (!isAllowedApprover(voterJid)) return reply.code(403).send({ error: 'voter_not_allowed' })
+
+      const result = await waPollVotes.applyVote(
+        { voteId, pollMsgId: pollMessageId, voterJid, selectedOption },
+        {
+          approve: (id, stepIndex, notes, actor) => performGateApproval(id, stepIndex, notes, actor),
+          // targetStepIndex stays null: store.requestChanges derives the
+          // default rework target itself, Accept-gate exception included. A
+          // second derivation here could only ever drift from that one.
+          sendBack: (id, feedback, actor) =>
+            store.requestChanges(id, STEPS[store.getItem(id)?.cursor]?.label || null, feedback, actor, null),
+        },
+      )
+      if (result.status === 200) {
+        return reply.code(200).send({
+          ok: true,
+          outcome: result.outcome,
+          ...(result.itemId ? { itemId: result.itemId, stepIndex: result.stepIndex, choice: result.choice } : {}),
+        })
+      }
+      // Logged, not just answered. unknown_poll in particular is the tappable
+      // orphan a crash mid-send leaves behind: silent, it looks to the human
+      // exactly like the bug this item removes.
+      request.log?.warn?.(`wa poll vote ${voteId} ignored: ${result.outcome}${result.error ? ` (${result.error})` : ''}`)
+      return reply.code(result.status).send({ error: result.error || result.outcome })
     },
   )
 
@@ -633,10 +771,13 @@ export function buildApp({ logger = true } = {}) {
     },
   )
 
-  // HZ-92: mechanical merge-conflict resolution — same gate PIN requirement
-  // as /reject above (this is the fast path that replaces sending the item
-  // straight back to the implement step), the Accept gate itself is
-  // untouched either way.
+  // HZ-92/HZ-154: merge-conflict resolution — same gate PIN requirement as
+  // /reject above (this is the fast path that replaces sending the item
+  // straight back to the implement step), the Accept gate itself is untouched
+  // either way. HZ-154 let the farm side resolve the conflicted hunks and
+  // review just that resolution, so this can now involve an agent; what it
+  // can do here did not change — it resolves or it escalates, and the gate and
+  // its PIN are never approved or bypassed by either outcome.
   fastify.post(
     '/api/items/:id/resolve-conflicts',
     { schema: { params: idParam } },
@@ -732,8 +873,13 @@ export function buildApp({ logger = true } = {}) {
     (request, reply) => send(reply, store.removeDependency(request.params.id, request.body.dependsOnId, request.user.name)),
   )
 
-  // Confirm/override the specialist persona (proposed by the PM at intake).
-  // Unknown ids 400 at the schema layer; the next dispatch reads the item.
+  // Confirm/override one agent's specialist persona (the PM proposes the Eng
+  // one at intake). Personas are agent-scoped (HZ-125), so both halves are
+  // required: an unknown agent 400s at the schema layer, and an id that isn't
+  // in THAT agent's bucket is refused by store.setPersona's bad_persona (409,
+  // like every other store-level refusal) — a conditional enum per agent isn't
+  // cheap to express here, so that half of the validation lives one level down.
+  // The next dispatch reads the item.
   fastify.post(
     '/api/items/:id/persona',
     {
@@ -741,12 +887,15 @@ export function buildApp({ logger = true } = {}) {
         params: idParam,
         body: {
           type: 'object',
-          required: ['persona'],
-          properties: { persona: { type: 'string', enum: Object.keys(PERSONAS) } },
+          required: ['agent', 'persona'],
+          properties: {
+            agent: { type: 'string', enum: Object.keys(PERSONAS) },
+            persona: { type: 'string', maxLength: 100 },
+          },
         },
       },
     },
-    (request, reply) => send(reply, store.setPersona(request.params.id, request.body.persona)),
+    (request, reply) => send(reply, store.setPersona(request.params.id, request.body.agent, request.body.persona)),
   )
 
   // Reprioritize (UI or the WhatsApp concierge). Bad enum values 400 at the
@@ -759,7 +908,7 @@ export function buildApp({ logger = true } = {}) {
         body: {
           type: 'object',
           required: ['priority'],
-          properties: { priority: { type: 'string', enum: store.PRIORITIES } },
+          properties: { priority: { type: 'string', enum: PRIORITIES } },
         },
       },
     },
@@ -985,6 +1134,9 @@ export function buildApp({ logger = true } = {}) {
           type: 'object',
           properties: {
             role: { type: 'string', maxLength: 100 },
+            // agent selects the persona bucket (HZ-125) — a persona id is only
+            // unique within one agent.
+            agent: { type: 'string', maxLength: 100 },
             persona: { type: 'string', maxLength: 100 },
             project: { type: 'string', maxLength: 200 },
             repo: { type: 'string', maxLength: 300 },
@@ -1321,6 +1473,16 @@ export function buildApp({ logger = true } = {}) {
     fastify.post('/api/test/run-state', async (request, reply) => {
       const { run_id, state, reason } = request.body || {}
       orchestrator.setRunStateForTest(run_id, state, reason ?? null)
+      return { ok: true }
+    })
+
+    // e2e only (HZ-154), same reasoning: with no farm daemon, the scoped
+    // conflict path has nothing to answer the /conflicts/resolve call the
+    // Accept gate's "send back to resolve conflicts" button makes. This queues
+    // one canned farmd reply so the spec can drive the real button, through
+    // the real PIN, and assert what the human actually ends up looking at.
+    fastify.post('/api/test/conflict-reply', async (request) => {
+      orchestrator.setConflictReplyForTest(request.body?.reply ?? null)
       return { ok: true }
     })
   }
