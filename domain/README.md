@@ -239,7 +239,13 @@ language:
 - **`agentRevisable`** — an agent may patch it later. `patchLimits()` keys by
   `column` and is what `farm/pm_agent.py`'s `PATCH_FIELDS` and
   `server/src/orchestrator.js`'s `FARM_PATCH_FIELDS` both are, so the two sides
-  of the wire cannot disagree about which fields exist.
+  of the wire cannot disagree about which fields exist. `persona` is false here
+  too, as of HZ-125: the specialist routing tag became a `{agent: persona id}`
+  map carried under a `personas` patch key, validated per agent against the
+  registry and written to `personas_json`. The `persona` column is still
+  declared — it is a real, legacy, read-only column that pre-HZ-125 items carry
+  a value in — but nothing patches it any more, so it must not appear in either
+  derived patch list.
 
 Three things adjacent to a field limit are deliberately **not** here:
 
@@ -269,11 +275,14 @@ are unchanged by it, but "every over-limit value is marked" is the obvious wrong
 reading of the rule above, so they are stated here rather than left to a reader
 who trusts it:
 
-- **`persona`** is not in `MARKED_PATCH_FIELDS`. It is a registry-validated
-  routing id, not prose, and a value that overruns its declared cap matches no
-  known persona and is discarded either way — so it is hard-sliced, silently.
-  `test_validate_persona_stays_hard_capped_with_no_marker` pins that, deriving
-  the cap from the declaration so it cannot go vacuous.
+- **The specialist routing tag** is not in `MARKED_PATCH_FIELDS`. It is a
+  registry-validated routing id, not prose, and a value that overruns its cap
+  matches no known persona and is discarded either way — so it is hard-sliced,
+  silently. Since HZ-125 it is the `personas` map rather than a `persona`
+  string, so its cap is `farm/pm_agent.py`'s `PERSONA_ID_MAX_CHARS` rather than
+  a `maxLength` in this document.
+  `test_the_routing_tag_is_still_hard_cut_with_no_marker_and_that_is_deliberate`
+  pins that, reading the cap off the module so it cannot go vacuous.
 - **A single run-on token with no space anywhere** (a URL or a hash longer than
   the whole budget) is returned whole and unmarked. `_mark_truncated` has no
   boundary to cut at, and cutting mid-token would corrupt the value rather than

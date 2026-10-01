@@ -138,19 +138,23 @@ provider module it dispatches to is resolved in this order:
    running for a while still picks up an env change on its *next* call.
 3. **The `config.py:37` default, `"claude"`.**
 
-**Persona override.** `farm/personas.py:43`'s `PERSONA_PROVIDERS` ships
+**Persona override.** `farm/personas.py`'s `PERSONA_PROVIDERS` ships
 **empty** (HZ-121) — no shipped persona forces a non-default provider yet.
 The mechanism is proven by a test-registered fixture persona
 (`farm/tests/conftest.py`'s `muse_smoke_test_persona`), not a shipped one.
-Every real persona — `fullstack`, `python_backend`, `frontend_ui` — is
-absent from that map, so
-`provider_for()` (`personas.py:59-66`) returns `None` for them, and their
-steps fall through to (2)/(3) above unchanged. The override is only ever
+Every real persona is absent from that map, so `provider_for()` returns
+`None` for them, and their steps fall through to (2)/(3) above unchanged.
+Since HZ-125 the map is keyed by the *namespaced* persona id
+(`"<agent>.<persona>"`, e.g. `eng.python`) because ids are only unique within
+an agent, and `provider_for()` takes the item's whole `{agent: persona}` map
+rather than one id — a provider-forcing persona in any slot wins, since the
+only one that exists is a test fixture and the override-eligible steps compose
+no persona at all. The override is only ever
 *honored*, even when a persona does map to one, on steps 4, 6 and 7 — the
 steps whose `domain/steps.json` entry carries `providerOverrideEligible:
 true`, read via `domain/py/steps.py`'s `provider_override_eligible()`
 (HZ-117 replaced the old `PROVIDER_OVERRIDE_ELIGIBLE_STEPS` allowlist;
-HZ-128 relocated the table) and applied at `step_agent.py:481-483`.
+HZ-128 relocated the table) and applied in `step_agent.py`'s `execute()`.
 Implement (11) and deploy (14) can never receive a provider override,
 enforced in code — not just by naming convention on the persona. PM-queued steps (0, 1, 2, 9) never pass a `provider=` argument at
 all (`pm_agent.py:119` has no such parameter), so they are always

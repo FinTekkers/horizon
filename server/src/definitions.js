@@ -12,6 +12,8 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { execFileSync } from 'node:child_process'
 
+import { DEFAULT_PERSONAS, PERSONAS, isPersona, isPersonaAgent, legacyPersona } from './personas.js'
+
 // Server and farm live in one repo/checkout, so a UI edit is immediately what
 // farmd stamps into the next task. Overridable for tests only.
 const FARM_DIR = process.env.HORIZON_FARM_DIR || path.resolve(import.meta.dirname, '../../farm')
@@ -172,15 +174,28 @@ function slugify(name) {
   return [...name.toLowerCase()].map((c) => (/[a-z0-9]/.test(c) ? c : '-')).join('').replace(/^-+|-+$/g, '')
 }
 
-const PERSONA_IDS = ['fullstack', 'python_backend', 'frontend_ui']
-const DEFAULT_PERSONA = 'fullstack'
-
-// Mirror of farm/personas.py resolve + compose_role.
-function composeRole(roleText, personaId) {
+// Mirror of farm/personas.py resolve + compose_role. Agent-scoped since
+// HZ-125: the registry (imported from personas.js — one literal, not a second
+// copy) is keyed agent-then-persona, and the file name comes off the entry
+// rather than being derived from the id, exactly as the farm side does it.
+// Every registry lookup goes through isPersona/isPersonaAgent/legacyPersona
+// rather than a bare `bucket[id]` truthiness check: an id like 'constructor'
+// or '__proto__' hits Object.prototype and reads as a registered persona, which
+// would blow up on `.file` here and 500 the effective-prompt preview. The farm
+// side (`candidate in bucket`) has never had that hole, and this function
+// exists to match it byte-for-byte.
+function composeRole(roleText, agent, personaId) {
+  if (!isPersonaAgent(agent)) return roleText
+  const bucket = PERSONAS[agent]
   const candidate = typeof personaId === 'string' ? personaId.trim().toLowerCase() : ''
-  const resolved = PERSONA_IDS.includes(candidate) ? candidate : DEFAULT_PERSONA
-  for (const id of [resolved, DEFAULT_PERSONA]) {
-    const personaMd = readFarmFile(path.join('roles/personas', `${id}.md`))
+  const legacy = legacyPersona(candidate)
+  const resolved = isPersona(agent, candidate)
+    ? candidate
+    : legacy && legacy[0] === agent && isPersona(agent, legacy[1])
+      ? legacy[1]
+      : DEFAULT_PERSONAS[agent]
+  for (const id of [resolved, DEFAULT_PERSONAS[agent]]) {
+    const personaMd = readFarmFile(path.join('roles/personas', bucket[id].file))
     if (personaMd !== null) return `${roleText}\n\n## Your specialization\n${personaMd}`
   }
   return roleText
@@ -258,10 +273,10 @@ export function renderRulesSection(rulesParts) {
 
 // Mirror of farm/rules.py effective_prompt — the exact string an agent for
 // this project/repo/persona receives (role defaults to the implement step).
-export function effectivePrompt({ role = 'eng_implement', persona, project, repo } = {}) {
+export function effectivePrompt({ role = 'eng_implement', agent = 'eng', persona, project, repo } = {}) {
   const roleFile = definitionPath('role', role)
   const roleText = roleFile && fs.existsSync(roleFile) ? fs.readFileSync(roleFile, 'utf8') : ''
-  const composed = composeRole(roleText, persona)
+  const composed = composeRole(roleText, agent, persona)
   const section = renderRulesSection(resolveRules(project, repo))
   return section ? `${composed}\n\n${section}` : composed
 }

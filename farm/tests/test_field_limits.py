@@ -142,17 +142,41 @@ def test_the_truncation_marker_deliberately_pushes_a_stored_value_past_the_limit
     assert len(content) <= limit
 
 
-def test_persona_is_still_hard_cut_with_no_marker_and_that_is_deliberate():
+def test_the_routing_tag_is_still_hard_cut_with_no_marker_and_that_is_deliberate():
     """Metric 5 says markers fire "for anything over the limit". Two documented
     exceptions predate this item and are unchanged by it — this is the first.
-    `persona` is a registry-validated routing enum the server drops outright
-    unless it matches a known id, so a marker there would decorate a value that
-    is discarded either way."""
-    limit = pm_agent.PATCH_FIELDS["persona"]
-    assert "persona" not in pm_agent.MARKED_PATCH_FIELDS
-    _summary, patch, _artifact = pm_agent.validate({"summary": "did it", "patch": {"persona": "x" * (limit + 5)}})
-    assert patch["persona"] == "x" * limit
-    assert "chars omitted" not in patch["persona"]
+    The specialist routing tag is a registry-validated enum the server drops
+    outright unless it matches a known id, so a marker there would decorate a
+    value that is discarded either way.
+
+    Since HZ-125 the tag is a {agent: persona id} MAP under `personas` rather
+    than one `persona` string, so it is NOT an entry in PATCH_FIELDS at all —
+    its caps live on pm_agent (PERSONA_ID_MAX_CHARS) and the assertion below
+    reads them from there. The exception itself is unchanged: still hard-cut,
+    still unmarked."""
+    limit = pm_agent.PERSONA_ID_MAX_CHARS
+    assert "persona" not in pm_agent.PATCH_FIELDS, "the routing tag is a map now, not a prose field"
+    assert "personas" not in pm_agent.MARKED_PATCH_FIELDS
+    _summary, patch, _artifact = pm_agent.validate(
+        {"summary": "did it", "patch": {"personas": {"eng": "x" * (limit + 5)}}}
+    )
+    assert patch["personas"]["eng"] == "x" * limit
+    assert "chars omitted" not in patch["personas"]["eng"]
+
+
+def test_the_legacy_persona_column_is_declared_but_not_agent_revisable():
+    """The flip HZ-125 makes to the one field declaration, read off the raw
+    document: `persona` is still a real (legacy, read-only) work_item column, so
+    it stays in the table with its limit — but nothing patches it any more, so it
+    must not appear in either derived patch list. Without this, the column would
+    silently re-enter PATCH_FIELDS and FARM_PATCH_FIELDS the next time someone
+    flipped the flag back."""
+    persona = next(field for field in FIELDS if field["name"] == "persona")
+    assert persona["agentRevisable"] is False
+    assert persona["column"] == "persona"
+    assert "persona" not in pm_agent.PATCH_FIELDS
+    source = (REPO_ROOT / "server" / "src" / "orchestrator.js").read_text()
+    assert "persona: 'Specialist persona'" not in source
 
 
 def test_a_single_run_on_token_is_returned_whole_and_unmarked_and_that_is_deliberate():

@@ -13,7 +13,7 @@ import pytest
 
 from farm import step_agent
 from farm.agent_runner import AgentError, AgentExhaustedError
-from farm.personas import PERSONA_DIR, PERSONAS
+from farm.personas import DEFAULT_PERSONAS, PERSONA_DIR, PERSONAS
 from farm.step_agent import (
     STEP_CONFIG,
     _assert_step_config_matches_table,
@@ -314,10 +314,12 @@ def test_implement_step_publishes_screenshots_without_polluting_the_code_branch(
     assert "e2e/__screenshots__" not in code_files
 
 
-# ---- persona injection (HZ-4) ----
-# The farm-side link of the success metric: an item tagged python_backend runs
-# its specialist steps with the Python persona composed into the role prompt,
-# a frontend_ui item with the UI persona — and planning steps stay generalist.
+# ---- persona injection (HZ-4, agent-scoped since HZ-125) ----
+# The farm-side link of the success metric: an item tagged eng/python runs its
+# implement step with the Python persona composed into the role prompt, an
+# eng/ui item with the UI persona — and planning steps stay generalist.
+# HZ-125 adds the second half: each composing step reads the slot for ITS OWN
+# agent, so a QA step can never wear the Eng specialization.
 
 
 def capture_run_agent(captured):
@@ -328,19 +330,34 @@ def capture_run_agent(captured):
     return _fake
 
 
-def persona_md(persona_id):
-    return (PERSONA_DIR / PERSONAS[persona_id]).read_text()
+def persona_md(agent, persona_id):
+    return (PERSONA_DIR / PERSONAS[agent][persona_id]).read_text()
 
 
-def test_qa_step_composes_the_items_persona_into_the_role(monkeypatch):
+def test_qa_step_composes_the_items_qa_persona_into_the_role(monkeypatch):
     captured = {}
     monkeypatch.setattr(step_agent, "run_agent", capture_run_agent(captured))
     task = make_task(8, "QA reviews the test plan")
-    task["item"]["persona"] = "python_backend"
+    task["item"]["personas"] = {"eng": "python", "qa": "e2e_journey"}
     execute(task)
     assert "## Your specialization" in captured["append_system"]
-    assert persona_md("python_backend") in captured["append_system"]
-    assert persona_md("frontend_ui") not in captured["append_system"]
+    assert persona_md("qa", "e2e_journey") in captured["append_system"]
+    assert persona_md("qa", "data_integrity") not in captured["append_system"]
+
+
+def test_a_qa_step_never_receives_an_eng_persona(monkeypatch):
+    """HZ-125 success metric 5, and the bug the item exists for: an item
+    carrying only an Eng persona leaves the QA step wearing the QA default,
+    never the Eng specialization of whoever writes the code."""
+    captured = {}
+    monkeypatch.setattr(step_agent, "run_agent", capture_run_agent(captured))
+    task = make_task(8, "QA reviews the test plan")
+    task["item"]["personas"] = {"eng": "python"}
+    execute(task)
+    composed = captured["append_system"]
+    for eng_persona in PERSONAS["eng"]:
+        assert persona_md("eng", eng_persona) not in composed, f"QA step composed the eng/{eng_persona} persona"
+    assert persona_md("qa", DEFAULT_PERSONAS["qa"]) in composed
 
 
 def test_implement_step_composes_the_items_persona(tmp_path, monkeypatch):
@@ -349,12 +366,29 @@ def test_implement_step_composes_the_items_persona(tmp_path, monkeypatch):
     captured = {}
     monkeypatch.setattr(step_agent, "run_agent", capture_run_agent(captured))
     task = make_task(11, "Specialist agent implements", repo="acme/demo")
-    task["item"]["persona"] = "frontend_ui"
+    task["item"]["personas"] = {"eng": "ui"}
     # The captured stub edits no files, so the push step correctly balks —
     # the role had already been composed and passed to the model by then.
     with pytest.raises(RuntimeError, match="no code changes"):
         execute(task)
-    assert persona_md("frontend_ui") in captured["append_system"]
+    assert persona_md("eng", "ui") in captured["append_system"]
+
+
+def test_implement_step_still_composes_a_legacy_flat_persona_value(tmp_path, monkeypatch):
+    """HZ-125 guardrail 3 / success metric 12, farm side: a task file enqueued
+    before personas were agent-scoped carries a flat `persona` string. The item
+    must still run, and still run as the specialist it was routed to — not
+    silently demoted to the generalist."""
+    ws, _origin = make_git_workspace(tmp_path)
+    monkeypatch.setattr(step_agent, "ensure_item_worktree", lambda repo, item_id: ws)
+    captured = {}
+    monkeypatch.setattr(step_agent, "run_agent", capture_run_agent(captured))
+    task = make_task(11, "Specialist agent implements", repo="acme/demo")
+    task["item"]["persona"] = "python_backend"  # the pre-HZ-125 field, verbatim
+    with pytest.raises(RuntimeError, match="no code changes"):
+        execute(task)
+    assert persona_md("eng", "python") in captured["append_system"]
+    assert persona_md("eng", DEFAULT_PERSONAS["eng"]) not in captured["append_system"]
 
 
 def test_planning_steps_do_not_get_a_persona(monkeypatch):
@@ -366,26 +400,34 @@ def test_planning_steps_do_not_get_a_persona(monkeypatch):
         captured = {}
         monkeypatch.setattr(step_agent, "run_agent", capture_run_agent(captured))
         task = make_task(index, label)
-        task["item"]["persona"] = "python_backend"
+        task["item"]["personas"] = {"eng": "python"}
         execute(task)
         assert "## Your specialization" not in captured["append_system"], f"step {index} leaked a persona"
 
 
-def test_step_config_persona_flags_match_the_design():
-    wants = {label: config[3] for label, config in STEP_CONFIG.items()}
-    # DevOps ("Deploy the changes") is a role, not a persona (HZ-22
-    # architecture review): it is project-scoped via
-    # farm/rules/projects/*.md, not stack-scoped, so it never gets a persona
-    # composed in — same as the other planning steps.
-    assert wants == {
-        "Plan options & trade-offs (pros / cons)": False,
-        "Draft implementation plan": False,
-        "Architecture review": False,
-        "QA reviews the test plan": True,
-        "Specialist agent implements": True,
-        "Automated review (code + QA)": True,
-        "Deploy the changes": False,
+def test_step_config_persona_agents_match_the_design():
+    """HZ-125 guardrail 2: exactly the same three steps compose a persona as
+    before, and each one names the agent whose bucket it composes from. DevOps
+    ("Deploy the changes") is a role, not a persona (HZ-22 architecture
+    review): it is project-scoped via farm/rules/projects/*.md, not
+    stack-scoped, so it never gets a persona composed in — same as the other
+    planning steps."""
+    agents = {label: config[3] for label, config in STEP_CONFIG.items()}
+    assert agents == {
+        "Plan options & trade-offs (pros / cons)": None,
+        "Draft implementation plan": None,
+        "Architecture review": None,
+        "QA reviews the test plan": "qa",
+        "Specialist agent implements": "eng",
+        "Automated review (code + QA)": "eng",
+        "Deploy the changes": None,
     }
+    # Every named agent is a real persona bucket — a typo here would silently
+    # compose nothing at all (compose_role never raises).
+    for label, agent in agents.items():
+        assert agent is None or agent in PERSONAS, f"{label} names unknown persona agent {agent!r}"
+    # No DevOps personas, ever (HZ-125 guardrail 1).
+    assert "devops" not in PERSONAS
 
 
 # ---- STEP_CONFIG / generated-table drift detection (HZ-117) ----
@@ -456,7 +498,7 @@ def test_the_drift_message_names_the_models_new_home():
 # is covered separately in test_providers_muse.py.
 
 
-def test_muse_smoke_test_persona_dispatches_with_provider_muse_on_eligible_steps(monkeypatch, muse_smoke_test_persona):
+def test_muse_smoke_test_persona_dispatches_with_provider_muse_on_eligible_steps(monkeypatch, muse_smoke_test_personas):
     for index, label in [
         (4, "Plan options & trade-offs (pros / cons)"),
         (6, "Draft implementation plan"),
@@ -465,34 +507,41 @@ def test_muse_smoke_test_persona_dispatches_with_provider_muse_on_eligible_steps
         captured = {}
         monkeypatch.setattr(step_agent, "run_agent", capture_run_agent(captured))
         task = make_task(index, label)
-        task["item"]["persona"] = muse_smoke_test_persona
+        task["item"]["personas"] = muse_smoke_test_personas
         execute(task)
         assert captured.get("provider") == "muse", f"step {index} did not dispatch with provider=muse"
 
 
 def test_real_personas_never_force_a_provider_override(monkeypatch):
-    for persona in ("fullstack", "python_backend", "frontend_ui"):
-        captured = {}
-        monkeypatch.setattr(step_agent, "run_agent", capture_run_agent(captured))
-        task = make_task(4, "Plan options & trade-offs (pros / cons)")
-        task["item"]["persona"] = persona
-        execute(task)
-        assert captured.get("provider") is None, f"persona {persona} must never force a provider"
+    """Driven off the registry, not a hand-listed set of ids: provider_for()
+    scans every agent slot (HZ-125), so a new persona in any bucket must be
+    covered the moment it is registered rather than when someone remembers to
+    extend this list."""
+    for agent, bucket in PERSONAS.items():
+        for persona in bucket:
+            captured = {}
+            monkeypatch.setattr(step_agent, "run_agent", capture_run_agent(captured))
+            task = make_task(4, "Plan options & trade-offs (pros / cons)")
+            task["item"]["personas"] = {agent: persona}
+            execute(task)
+            assert captured.get("provider") is None, (
+                f"persona {agent}.{persona} must never force a provider"
+            )
 
 
-def test_muse_smoke_test_persona_never_forces_a_provider_on_qa(monkeypatch, muse_smoke_test_persona):
+def test_muse_smoke_test_persona_never_forces_a_provider_on_qa(monkeypatch, muse_smoke_test_personas):
     """HZ-102 guardrail, code-enforced: QA (8) is a real specialist step, not
     a pure-planning one, so the override must never apply even if an item
     somehow carries the test persona."""
     captured = {}
     monkeypatch.setattr(step_agent, "run_agent", capture_run_agent(captured))
     task = make_task(8, "QA reviews the test plan")
-    task["item"]["persona"] = muse_smoke_test_persona
+    task["item"]["personas"] = muse_smoke_test_personas
     execute(task)
     assert captured.get("provider") is None
 
 
-def test_muse_smoke_test_persona_never_forces_a_provider_on_deploy(monkeypatch, muse_smoke_test_persona):
+def test_muse_smoke_test_persona_never_forces_a_provider_on_deploy(monkeypatch, muse_smoke_test_personas):
     """HZ-102 guardrail, code-enforced: never route deploy to Muse, even if
     an item somehow carries the test persona."""
     captured = {}
@@ -511,18 +560,18 @@ def test_muse_smoke_test_persona_never_forces_a_provider_on_deploy(monkeypatch, 
     monkeypatch.setattr(step_agent, "run_agent", fake_run_agent)
     monkeypatch.setattr(step_agent, "run_smoke_check", lambda url, text: ("pass", 'SMOKE_RESULT=pass — "Horizon" rendered'))
     task = make_task(14, "Deploy the changes", repo="acme/demo")
-    task["item"]["persona"] = muse_smoke_test_persona
+    task["item"]["personas"] = muse_smoke_test_personas
     execute(task)
     assert captured.get("provider") is None
 
 
-def test_muse_smoke_test_persona_never_forces_a_provider_on_implement(tmp_path, monkeypatch, muse_smoke_test_persona):
+def test_muse_smoke_test_persona_never_forces_a_provider_on_implement(tmp_path, monkeypatch, muse_smoke_test_personas):
     ws, _origin = make_git_workspace(tmp_path)
     monkeypatch.setattr(step_agent, "ensure_item_worktree", lambda repo, item_id: ws)
     captured = {}
     monkeypatch.setattr(step_agent, "run_agent", capture_run_agent(captured))
     task = make_task(11, "Specialist agent implements", repo="acme/demo")
-    task["item"]["persona"] = muse_smoke_test_persona
+    task["item"]["personas"] = muse_smoke_test_personas
     with pytest.raises(RuntimeError, match="no code changes"):
         execute(task)
     assert captured.get("provider") is None
@@ -553,7 +602,7 @@ def test_deploy_refuses_a_bare_farm_provider_env_override(monkeypatch):
         execute(make_task(14, "Deploy the changes", repo="acme/demo"))
 
 
-def test_muse_smoke_test_provenance_is_stamped_into_summary_and_artifacts(monkeypatch, muse_smoke_test_persona):
+def test_muse_smoke_test_provenance_is_stamped_into_summary_and_artifacts(monkeypatch, muse_smoke_test_personas):
     """The success metric's human-readability bar: a human reading the run
     log (this summary) or the artifact can tell Muse ran without inspecting
     config."""
@@ -568,7 +617,7 @@ def test_muse_smoke_test_provenance_is_stamped_into_summary_and_artifacts(monkey
 
     monkeypatch.setattr(step_agent, "run_agent", fake_run_agent)
     task = make_task(4, "Plan options & trade-offs (pros / cons)")
-    task["item"]["persona"] = muse_smoke_test_persona
+    task["item"]["personas"] = muse_smoke_test_personas
 
     result = execute(task)
 
@@ -578,7 +627,7 @@ def test_muse_smoke_test_provenance_is_stamped_into_summary_and_artifacts(monkey
     assert result["artifacts"]["command_id"] == "the-real-command-id"
 
 
-def test_muse_smoke_test_dispatch_goes_through_the_real_muse_provider_module(monkeypatch, muse_smoke_test_persona):
+def test_muse_smoke_test_dispatch_goes_through_the_real_muse_provider_module(monkeypatch, muse_smoke_test_personas):
     """End-to-end through the actual provider seam, not a stand-in: only the
     OS-level `muse` subprocess is faked (the same boundary
     test_providers_muse.py mocks at) — execute() -> run_agent() ->
@@ -605,7 +654,7 @@ def test_muse_smoke_test_dispatch_goes_through_the_real_muse_provider_module(mon
     monkeypatch.setattr(muse_provider.subprocess, "run", fake_subprocess_run)
 
     task = make_task(4, "Plan options & trade-offs (pros / cons)")
-    task["item"]["persona"] = muse_smoke_test_persona
+    task["item"]["personas"] = muse_smoke_test_personas
 
     result = execute(task)
 
@@ -655,15 +704,33 @@ def test_build_prompt_drops_a_runaway_rules_block_whole_instead_of_slicing_it():
     assert "do not infer" in prompt.lower()
 
 
-def test_build_prompt_renders_the_resolved_persona():
+def test_build_prompt_renders_the_resolved_persona_for_a_composing_step():
+    task = make_task(11, "Specialist agent implements")
+    task["item"]["personas"] = {"eng": "python"}
+    assert "persona: eng/python" in build_prompt(task)
+
+
+def test_build_prompt_names_the_step_agents_own_persona_not_another_agents():
+    task = make_task(8, "QA reviews the test plan")
+    task["item"]["personas"] = {"eng": "python", "qa": "data_integrity"}
+    prompt = build_prompt(task)
+    assert "persona: qa/data_integrity" in prompt
+    assert "python" not in prompt.split("persona:")[1].splitlines()[0]
+
+
+def test_build_prompt_says_generalist_for_a_step_that_composes_none():
+    """Pre-HZ-125 this line printed a resolved Eng persona for every step,
+    including the planning steps that never receive one."""
     task = make_task(6, "Draft implementation plan")
-    task["item"]["persona"] = "python_backend"
-    assert "persona: python_backend" in build_prompt(task)
+    task["item"]["personas"] = {"eng": "python"}
+    prompt = build_prompt(task)
+    assert "persona: (none — this step is generalist)" in prompt
+    assert "persona: eng/python" not in prompt
 
 
 def test_build_prompt_renders_default_persona_never_none():
-    prompt = build_prompt(make_task(6, "Draft implementation plan"))
-    assert "persona: fullstack" in prompt
+    prompt = build_prompt(make_task(11, "Specialist agent implements"))
+    assert f"persona: eng/{DEFAULT_PERSONAS['eng']}" in prompt
     assert "persona: None" not in prompt
 
 
@@ -942,7 +1009,11 @@ def test_run_smoke_check_fails_when_the_subprocess_itself_times_out(monkeypatch)
     assert "timed out" in line
 
 
-def test_review_step_composes_the_items_persona_into_both_passes(tmp_path, monkeypatch):
+def test_review_step_composes_each_pass_with_its_own_agents_persona(tmp_path, monkeypatch):
+    """HZ-125's headline fix. The review step runs two passes — code review in
+    the Eng voice, QA review in the QA voice — and both used to compose the
+    item's single flat persona, so the QA reviewer was handed the
+    specialization of the engineer whose diff it was reviewing."""
     ws, _origin = make_git_workspace(tmp_path)
     git(ws, "push", "-u", "origin", "HEAD:horizon/t-1")
     monkeypatch.setattr(step_agent, "ensure_item_worktree", lambda repo, item_id: ws)
@@ -958,12 +1029,19 @@ def test_review_step_composes_the_items_persona_into_both_passes(tmp_path, monke
     monkeypatch.setattr(step_agent, "run_agent", two_pass_run_agent(ok, ok, calls))
 
     task = make_task(12, "Automated review (code + QA)", repo="acme/demo")
-    task["item"]["persona"] = "python_backend"
+    task["item"]["personas"] = {"eng": "python", "qa": "data_integrity"}
     execute(task)
 
     assert len(calls) == 2
-    for call in calls:
-        assert persona_md("python_backend") in call["append_system"]
+    code_pass = next(c for c in calls if "QA Reviewer agent" not in c["append_system"])
+    qa_pass = next(c for c in calls if "QA Reviewer agent" in c["append_system"])
+
+    assert persona_md("eng", "python") in code_pass["append_system"]
+    assert persona_md("qa", "data_integrity") not in code_pass["append_system"]
+
+    assert persona_md("qa", "data_integrity") in qa_pass["append_system"]
+    for eng_persona in PERSONAS["eng"]:
+        assert persona_md("eng", eng_persona) not in qa_pass["append_system"]
 
 
 def test_review_step_reuses_prepare_branch_to_scrub_a_superseded_attempts_leftovers(tmp_path, monkeypatch):
