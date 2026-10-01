@@ -67,7 +67,17 @@ def summarise(records: list[dict]) -> dict:
     loads = [r["load_end"] for r in agent_runs if r.get("load_end") is not None]
     outcomes = {name: 0 for name in check_metrics.OUTCOMES}
     for record in records:
-        outcomes[record.get("outcome", "other")] = outcomes.get(record.get("outcome", "other"), 0) + 1
+        name = record.get("outcome")
+        # An outcome that is absent or not a string counts as `other`. An
+        # unrecognised *string* is kept as-is, because a label this reporter
+        # has not heard of is information worth printing — but it still has to
+        # be a string: the tally is rendered via sorted(), so a single null
+        # here used to raise TypeError and take down the whole report.
+        # read_records() already refuses to let one bad line do that; this is
+        # the same principle one level in.
+        if not isinstance(name, str):
+            name = "other"
+        outcomes[name] = outcomes.get(name, 0) + 1
     # Runs that gave up waiting and ran with no slot at all (check_slots'
     # fail-open ceiling). Counted over EVERY caller, because an unthrottled
     # conflict-resolver run oversubscribes the host just as hard as an agent

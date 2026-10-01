@@ -13,12 +13,15 @@ def hermetic_check_slots(tmp_path, monkeypatch):
     """HZ-144: run_checks() now takes a check slot, so these tests must not
     reach into the host's real $FARM_HOME and compete with live farm runs.
 
-    farm/tests/conftest.py sets FARM_HOME with setdefault, which means an
-    exported value wins — so a per-test redirect is needed, not just the
-    conftest default. Under a real farm check run the sentinel already makes
-    every acquisition a no-op; this covers a developer running pytest by hand
-    with FARM_HOME exported, and is cleared here so the tests that do exercise
-    slot behaviour still do.
+    farm/tests/conftest.py already forces FARM_HOME to a throwaway directory,
+    so this is not what keeps the suite off the host's state. It narrows the
+    scope further: conftest's directory is created once per session, so this
+    gives one slot directory *per test* instead, and these tests cannot take
+    each other's slots when the limiter is exercised concurrently.
+
+    The sentinel is cleared because under a real farm check run it is set, and
+    it would make every acquisition here a no-op — these tests need the real
+    limiter. test_check_env_scrub.py sets it back on purpose.
     """
     monkeypatch.setenv("FARM_HOME", str(tmp_path / "farm-home"))
     monkeypatch.delenv(check_slots.IN_CHECKS_ENV, raising=False)

@@ -345,14 +345,20 @@ this), so the "linters must pass" guardrail is vacuous for the new Python
 files — stated plainly rather than implied covered. The gates that do run are
 `npm test`, `npm run test:e2e` and `python -m pytest -q`.
 
-Counts on this branch, 2026-09-30:
+Counts on this branch, re-run 2026-10-01 (all three green, each run to
+completion rather than sampled):
 
 | Gate | Result |
 | --- | --- |
-| `npm test` | **651 pass, 0 fail** across the server/UI suites, plus **50 pass, 0 fail** in the deploy shell harness and the production-base UI build check |
-| `npm run test:e2e` | **30 passed** (suite 44.2s) |
-| `python -m pytest -q` | **631 passed, 4 skipped** |
+| `npm test` | **exit 0** — the server/UI suites, plus **50 pass, 0 fail** in the deploy shell harness and the production-base UI build check |
+| `npm run test:e2e` | **30 passed** (suite 55.4s) |
+| `python -m pytest -q` | **633 passed, 4 skipped** (637 collected) |
 | Python linter | none configured in this repo — no coverage claimed |
+
+The e2e suite's 55.4s against `globalTimeout: 85_000` is **~35% headroom** on a
+host that was not idle (load 2.0, four live `farm-run-*` sessions). That is the
+contention detector reading green at the current cap, and it is the same
+quantity `cap6-limit2` has to re-confirm after the cap moves.
 
 Guardrail 7 ("every test passing before passes after") checked by running the
 suite at this branch's parent (`161d267`) as well:
@@ -360,11 +366,17 @@ suite at this branch's parent (`161d267`) as well:
 | Commit | pytest |
 | --- | --- |
 | `161d267` (before) | 519 passed, 4 skipped |
-| this branch (after) | **631 passed, 4 skipped** |
+| this branch (after) | **633 passed, 4 skipped** |
 
-112 tests added, none removed, none newly skipped. The parent run also showed 2
-failures in `test_step_agent.py`'s smoke-check cases, which are an artifact of
-measuring in a bare `git worktree` with no `node_modules`
-(`ERR_MODULE_NOT_FOUND: Cannot find package '@playwright/test'`) — both pass
-in a provisioned workspace, on this branch and on the parent, so they are not
-a pre-existing failure this branch inherited or masked.
+114 tests added, none removed, none newly skipped. "None removed" is checked
+mechanically, not by eye: the only `-def test_` line in the whole branch diff
+is `test_max_ephemeral_default_is_four` gaining a `monkeypatch` parameter.
+
+The parent run also showed 2 failures in `test_step_agent.py`'s smoke-check
+cases. Those are an artifact of measuring in a bare `git worktree` with no
+`e2e/node_modules` (`ERR_MODULE_NOT_FOUND: Cannot find package
+'@playwright/test'`), not something this branch inherited or masked —
+confirmed directly on 2026-10-01 rather than assumed: both fail before
+`npm --prefix e2e install` and both pass after it, with no code change in
+between. They are also untouched by this branch, which edits neither
+`run_smoke_check` nor `e2e/smoke/`.

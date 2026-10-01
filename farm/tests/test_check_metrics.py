@@ -226,6 +226,31 @@ def test_the_reporter_skips_a_malformed_line_and_says_how_many(tmp_path):
     assert "2 malformed line(s)" in reporter.render(reporter.by_phase(records), skipped, path, markdown=False)
 
 
+def test_a_record_with_a_null_outcome_does_not_take_the_whole_report_down(tmp_path):
+    """read_records() deliberately survives a truncated line from a killed
+    writer. The outcome tally has to survive the same class of bad row: it is
+    rendered through sorted(), so one `"outcome": null` would otherwise raise
+    TypeError on mixed None/str keys and lose every other number in the file.
+    Counted as `other` — never guessed into a friendlier class.
+    """
+    records = [_record(), _record(outcome=None), _record(outcome=123)]
+    summary = reporter.summarise(records)
+    assert summary["outcomes"]["pass"] == 1
+    assert summary["outcomes"]["other"] == 2
+    # The crash was in rendering, so the tally alone is not enough of an assert.
+    assert "cap4-nolimit" in reporter.render(reporter.by_phase(records), 0, tmp_path / "m.jsonl", markdown=False)
+
+
+def test_an_unrecognised_outcome_string_is_reported_rather_than_folded_away(tmp_path):
+    """The opposite case to the one above, and the reason that fix checks the
+    *type* rather than membership of OUTCOMES: a label this reporter has not
+    heard of is information worth printing, so it must not be silently
+    relabelled `other`. It only has to be sortable."""
+    summary = reporter.summarise([_record(outcome="some-future-class")])
+    assert summary["outcomes"]["some-future-class"] == 1
+    assert summary["outcomes"]["other"] == 0
+
+
 def test_conflict_resolver_records_are_separable_from_agent_runs(tmp_path):
     """farm/conflict_resolver.py is a second run_checks() caller, running in
     farmd's own process. It takes a slot like anything else, but it is not an
