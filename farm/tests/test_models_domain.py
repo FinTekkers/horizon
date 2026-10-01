@@ -17,8 +17,8 @@ REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 
 OPUS = "claude-opus-5-5"
 # Operator-recorded production values, 2026-10-01: PM and every step agent on
-# Opus (FARM_PM_MODEL / FARM_STEP_MODEL), the concierge on the Sonnet its
-# session was created on (FARM_CONCIERGE_MODEL unset).
+# Opus (the retired PM and step model env vars), the concierge on the Sonnet
+# its session was created on (its retired env var was unset).
 PRODUCTION_MODELS = {
     "agents": {
         "pm": OPUS,
