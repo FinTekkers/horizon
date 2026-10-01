@@ -2,7 +2,7 @@
 
 **Effective date:** October 1, 2026
 
-These Terms of Service (the "**Terms**") govern access to and use of Horizon, the AI-assisted software delivery service provided by Shoreward ("**Shoreward**", "**we**", "**us**") (the "**Service**"). By accessing or using the Service, you agree to these Terms on behalf of the organization you represent (the "**Customer**", "**you**"). You represent that you have authority to bind the Customer. If you do not agree, do not use the Service.
+These Terms of Service (the "**Terms**") govern access to and use of Horizon, the AI-assisted software delivery service provided by Shoreward LLC ("**Shoreward**", "**we**", "**us**") (the "**Service**"). By accessing or using the Service, you agree to these Terms on behalf of the organization you represent (the "**Customer**", "**you**"). You represent that you have authority to bind the Customer. If you do not agree, do not use the Service.
 
 If the Customer has a signed order form, master services agreement or other written agreement with Shoreward (an "**Order**"), the Order controls wherever it conflicts with these Terms.
 
@@ -96,4 +96,4 @@ These Terms are governed by the laws of the State of New York, without regard to
 
 ## 17. Contact
 
-**Shoreward** — [help@fintekkers.org](mailto:help@fintekkers.org)
+**Shoreward LLC** — [help@fintekkers.org](mailto:help@fintekkers.org)
