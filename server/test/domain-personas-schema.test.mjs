@@ -27,7 +27,11 @@ const schema = JSON.parse(readFileSync(path.join(REPO_ROOT, 'domain/personas.sch
 const source = JSON.parse(readFileSync(path.join(REPO_ROOT, 'domain/personas.json'), 'utf8'))
 
 function doc({ agents = [{ agent: 'alpha', default: 'one', personas: ['one', 'two'] }], ...rest } = {}) {
-  return { primaryAgent: 'alpha', agents, legacyIds: {}, personaProviders: {}, ...rest }
+  return { primaryAgent: 'alpha', agents, legacyIds: {}, personaProviders: {}, models: models(), ...rest }
+}
+
+function models(rest = {}) {
+  return { agents: { alpha: 'claude-test-1' }, conflictAgent: 'alpha', steps: {}, personas: {}, ...rest }
 }
 
 test('the real domain/personas.json satisfies its own schema', () => {
@@ -73,6 +77,19 @@ expectInvalid(
 expectInvalid('a non-object legacyIds (type)', doc({ legacyIds: ['alpha.one'] }), 'legacyIds')
 expectInvalid('a top-level extra key (additionalProperties)', { ...doc(), version: 2 }, 'version')
 
+// HZ-192: the models block. The pre-HZ-192 document — today's file without it
+// — must fail loudly, naming `models`.
+const { models: _dropped, ...noModels } = doc()
+expectInvalid('the pre-HZ-192 shape with no models block (required)', noModels, 'models')
+expectInvalid('a non-object models block (type)', doc({ models: [] }), 'models')
+expectInvalid('an unknown key under models (additionalProperties)', doc({ models: models({ default: 'claude-test-1' }) }), 'default')
+expectInvalid('a models block with no agents (required)', doc({ models: { conflictAgent: 'alpha', steps: {}, personas: {} } }), 'agents')
+expectInvalid('a models block with no conflictAgent (required)', doc({ models: { agents: { alpha: 'claude-test-1' }, steps: {}, personas: {} } }), 'conflictAgent')
+
+test('POSITIVE CONTROL: step and persona model overrides validate clean', () => {
+  assert.deepEqual(validate(schema, doc({ models: models({ steps: { 'Some step': 'claude-test-2' }, personas: { 'alpha.one': 'claude-test-3' } }) })), [])
+})
+
 // additionalProperties:false on each entry is what keeps presentation out of
 // this document structurally (guardrail 5): a label, initials, colour or file
 // beside a persona has nowhere to go.
@@ -93,6 +110,12 @@ const ONLY_LOAD_TIME = [
   ['an undeclared primaryAgent', doc({ primaryAgent: 'gamma' }), /is not a declared agent/],
   ['a legacy alias naming a dead pair', doc({ legacyIds: { old_one: 'alpha.nope' } }), /does not name a declared <agent>\.<persona> pair/],
   ['a bare personaProviders key', doc({ personaProviders: { one: 'prov' } }), /does not name a declared <agent>\.<persona> pair/],
+  ['a non-Claude model id', doc({ models: models({ agents: { alpha: 'gpt-4o' } }) }), /is not a Claude model id/],
+  [
+    'a model on a persona routed to another provider',
+    doc({ personaProviders: { 'alpha.two': 'muse' }, models: models({ personas: { 'alpha.two': 'claude-test-1' } }) }),
+    /only a Claude-run persona can carry a model/,
+  ],
   [
     'a duplicate agent',
     doc({ agents: [{ agent: 'alpha', default: 'one', personas: ['one'] }, { agent: 'alpha', default: 'two', personas: ['two'] }] }),

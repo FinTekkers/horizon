@@ -60,6 +60,7 @@ def test_sdk_path_streams_events_and_returns_result(sdk_runner, monkeypatch, cap
     monkeypatch.setattr(sdk, "query", fake_query)
     reply = run_agent(
         "do it",
+        agent="eng",
         append_system="be terse",
         max_turns=5,
         timeout_s=10,
@@ -96,7 +97,7 @@ def test_sdk_stale_resume_retries_exactly_once_fresh(sdk_runner, monkeypatch):
         return gen()
 
     monkeypatch.setattr(sdk, "query", fake_query)
-    reply = run_agent("hello", session_id="dead-session", timeout_s=10)
+    reply = run_agent("hello", agent="eng", session_id="dead-session", timeout_s=10)
     assert reply["session_id"] == "fresh-1"
     assert calls == ["dead-session", None]
 
@@ -111,7 +112,7 @@ def test_sdk_failure_without_resume_raises(sdk_runner, monkeypatch):
 
     monkeypatch.setattr(sdk, "query", fake_query)
     with pytest.raises(AgentError, match="cli exploded"):
-        run_agent("hello", timeout_s=10)
+        run_agent("hello", agent="eng", timeout_s=10)
 
 
 def test_sdk_timeout_closes_the_stream_and_kills_the_child(sdk_runner, monkeypatch):
@@ -137,7 +138,7 @@ def test_sdk_timeout_closes_the_stream_and_kills_the_child(sdk_runner, monkeypat
     monkeypatch.setattr(sdk, "query", fake_query)
     try:
         with pytest.raises(AgentExhaustedError, match="timed out after 1s"):
-            run_agent("hang forever", timeout_s=1)
+            run_agent("hang forever", agent="eng", timeout_s=1)
         deadline = time.time() + 10
         while child.poll() is None and time.time() < deadline:
             time.sleep(0.05)
@@ -160,7 +161,7 @@ def test_sdk_error_result_raises_plain_agent_error(sdk_runner, monkeypatch):
 
     monkeypatch.setattr(sdk, "query", fake_query)
     with pytest.raises(AgentError, match="error result") as exc_info:
-        run_agent("hello", timeout_s=10)
+        run_agent("hello", agent="eng", timeout_s=10)
     assert not isinstance(exc_info.value, AgentExhaustedError)
 
 
@@ -177,17 +178,18 @@ def test_sdk_error_max_turns_raises_agent_exhausted_error(sdk_runner, monkeypatc
 
     monkeypatch.setattr(sdk, "query", fake_query)
     with pytest.raises(AgentExhaustedError, match="error_max_turns"):
-        run_agent("hello", timeout_s=10)
+        run_agent("hello", agent="eng", timeout_s=10)
 
 
-@pytest.mark.parametrize("step_model", ["claude-x", None])
-def test_a_dispatched_step_hands_the_step_model_to_claude_agent_options(sdk_runner, monkeypatch, step_model):
-    """HZ-187: FARM_STEP_MODEL reaches ClaudeAgentOptions; unset stays None
-    (the CLI default), exactly as before."""
+@pytest.mark.parametrize(("override", "expected"), [(None, "claude-opus-5-5"), ("claude-test-emergency", "claude-test-emergency")])
+def test_a_dispatched_step_hands_the_resolved_model_to_claude_agent_options(sdk_runner, monkeypatch, override, expected):
+    """HZ-192: the model run_agent() resolves from domain/personas.json — or
+    the operator's FARM_MODEL_OVERRIDE — reaches ClaudeAgentOptions."""
     from farm import step_agent
 
-    monkeypatch.setattr(step_agent, "STEP_MODEL", step_model)
     monkeypatch.delenv("FARM_PROVIDER", raising=False)
+    if override:
+        monkeypatch.setenv("FARM_MODEL_OVERRIDE", override)
     seen = []
     real_options = sdk.ClaudeAgentOptions
 
@@ -205,7 +207,15 @@ def test_a_dispatched_step_hands_the_step_model_to_claude_agent_options(sdk_runn
     monkeypatch.setattr(sdk, "query", fake_query)
 
     step_agent._run_and_parse(
-        "do it", append_system=None, cwd=None, max_turns=1, timeout_s=10, allowed_tools=None
+        "do it",
+        agent="eng",
+        step="Draft implementation plan",
+        persona=None,
+        append_system=None,
+        cwd=None,
+        max_turns=1,
+        timeout_s=10,
+        allowed_tools=None,
     )
 
-    assert seen and seen[0].get("model") == step_model
+    assert seen and seen[0].get("model") == expected
