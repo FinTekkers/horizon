@@ -36,6 +36,28 @@ TRANSPORT_ENVELOPE_CALLS = {
     FARM / "providers" / "muse.py": 1,
 }
 
+# Offline-forensics exemption, by path and by count (HZ-115). This module is
+# not an agent and never runs in the dispatch path: it is a one-off CLI that
+# reads a historical pm-<slug>.log off disk and reports statistics about
+# replies that were emitted, acted on and archived long ago. There is no
+# reply to hand onward, no retry to share, and so none of the drift HZ-156
+# fixed is possible here.
+#
+# parse_agent_reply() is not merely unnecessary for it — it has the opposite
+# contract. That function parses exactly ONE reply and fails loudly (or
+# retries) when it cannot. This scanner walks arbitrary log text containing
+# hundreds of replies, including ones the agent itself rejected as invalid,
+# and MUST skip an unparseable span silently to keep going. Routing it
+# through the shared parser would either abort the analysis on the first
+# malformed span or require teaching the shared parser to swallow errors,
+# which is exactly the weakening this guard exists to prevent.
+#
+# Budgeted at one call site so a second parse cannot appear quietly under an
+# exemption granted for one.
+OFFLINE_LOG_FORENSICS_CALLS = {
+    FARM / "tools" / "analyze_pm_context_reliance.py": 1,
+}
+
 # Both spellings of the raw extractor. `_extract_json` is agent_runner's own
 # private variant — it returns which attempt produced the value, so it is even
 # more tempting to reach for and even less suitable outside the parser. Banning
@@ -82,7 +104,7 @@ def _offenders(paths: list[Path]) -> list[str]:
         except SyntaxError as exc:  # pragma: no cover - a broken module is its own failure
             found.append(f"{path}: could not be parsed ({exc})")
             continue
-        exempt_budget = TRANSPORT_ENVELOPE_CALLS.get(path, 0)
+        exempt_budget = TRANSPORT_ENVELOPE_CALLS.get(path, 0) + OFFLINE_LOG_FORENSICS_CALLS.get(path, 0)
         for node in ast.walk(tree):
             # Any reference to the raw extractor at all, however it is spelled:
             # a bare call, an attribute access, or an aliased import.
@@ -230,3 +252,27 @@ def test_the_transport_exemption_covers_exactly_two_call_sites():
         finally:
             TRANSPORT_ENVELOPE_CALLS.clear()
             TRANSPORT_ENVELOPE_CALLS.update(saved)
+
+
+def test_the_offline_forensics_exemption_covers_exactly_one_call_site():
+    """Same shape as the transport exemption above, and for the same reason:
+    budgeted, not blanket. A second json.loads() in the analysis tool — or a
+    second tool added to the dict — has to be justified here, in this test.
+
+    The guard against a decorative exemption is the same too: with the budget
+    removed the module must fail the rule. If it ever stops failing (the
+    json.loads() was dropped, or the file was deleted), the exemption is dead
+    weight and should go rather than sit here implying a constraint.
+    """
+    assert sum(OFFLINE_LOG_FORENSICS_CALLS.values()) == 1
+    for path, budget in OFFLINE_LOG_FORENSICS_CALLS.items():
+        assert path.exists(), f"{path} no longer exists — drop its exemption"
+        # It must also be a tool, never an agent: the justification for this
+        # exemption is precisely that nothing here runs in the dispatch path.
+        assert path.parent == FARM / "tools", "this exemption is for offline tools only"
+        saved = OFFLINE_LOG_FORENSICS_CALLS.copy()
+        OFFLINE_LOG_FORENSICS_CALLS.clear()
+        try:
+            assert len(_offenders([path])) == budget
+        finally:
+            OFFLINE_LOG_FORENSICS_CALLS.update(saved)

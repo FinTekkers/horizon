@@ -214,6 +214,43 @@ def test_reviewer_roles_stop_instead_of_judging_truncated_input():
         assert phrase in normalized, f"{role_file} is missing the stop-on-truncation instruction"
 
 
+# HZ-191: the PM's step-9 digest carries a binding Test contract. The label is
+# read off domain/steps.json so a rename can't leave these roles pointing at a
+# section that no longer exists.
+def _role_text(role_file):
+    return " ".join((step_agent.ROLES / role_file).read_text().split())
+
+
+def _contract_step_label():
+    from domain.py import steps as domain_steps
+
+    step = domain_steps.STEP_BY_INDEX[9]
+    assert step["agent"] == "PM"
+    return step["label"]
+
+
+def test_implement_role_treats_test_contract_as_binding():
+    text = _role_text("eng_implement.md")
+    assert f'The `## Test contract` in the "{_contract_step_label()}" artifact is the binding test list.' in text
+    assert "It overrides the Required list in QA's plan review." in text
+    assert "Optional cases are allowed only if cheap." in text
+    assert "each Test contract case needs a test that would fail without your change." in text
+
+
+def test_qa_review_role_checks_coverage_against_the_test_contract():
+    text = _role_text("qa_review.md")
+    assert f'Check coverage against the `## Test contract` in the "{_contract_step_label()}" artifact.' in text
+    assert "A missing contract case is **block**." in text
+    assert "Do not add required tests unless the contract leaves a metric line or guardrail unverified." in text
+
+
+def test_qa_review_role_keeps_manual_verification_and_fail_closed_rules():
+    text = _role_text("qa_review.md")
+    assert '"Manually verified" is never acceptable evidence.' in text
+    assert 'You are a GATE, not an observer: "Manually verified" is NEVER acceptable evidence' in text
+    assert 'If your input appears truncated or inconsistent, do NOT proceed silently: say so in the summary and set verdict to "fail".' in text
+
+
 def write_fake_screenshot(ws, name):
     shots = ws / "e2e" / "__screenshots__"
     shots.mkdir(parents=True, exist_ok=True)
