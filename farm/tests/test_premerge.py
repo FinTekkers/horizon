@@ -291,12 +291,13 @@ def test_cli_exits_zero_only_on_green(ws_dir):
     assert json.loads(proc.stdout)["ok"] is True
 
 
-def test_cli_checks_never_inherit_the_real_farm_home(ws_dir):
-    """The checks run the PR's code; the farm's own conftest only setdefaults
-    FARM_HOME, so an inherited value would point the PR's tests at the real
-    farm's queue."""
+def test_cli_checks_run_under_a_throwaway_farm_home_never_the_farms(ws_dir, tmp_path):
+    """The checks run the PR's code; a PR test that inherited (or defaulted)
+    FARM_HOME would read and write the live farm's queue and workspaces. They
+    get a fresh directory instead, which is gone once the run ends."""
     hub, s = crossing_fixture(ws_dir)
-    env = {**os.environ, "FARM_HOME": str(ws_dir), "FARM_CHECK_CMD": 'test -z "$FARM_HOME"'}
+    seen = tmp_path / "seen-farm-home"
+    env = {**os.environ, "FARM_HOME": str(ws_dir), "FARM_CHECK_CMD": f'printf %s "$FARM_HOME" > {seen}'}
     proc = subprocess.run(
         [sys.executable, "-m", "farm.premerge", REPO, "HZ-154", s["pr_head"], "--base", s["main"]],
         capture_output=True,
@@ -305,3 +306,89 @@ def test_cli_checks_never_inherit_the_real_farm_home(ws_dir):
         cwd=str(premerge.RUNNING_CHECKOUT),
     )
     assert json.loads(proc.stdout)["ok"] is True, proc.stdout + proc.stderr
+    checks_home = Path(seen.read_text())
+    assert checks_home.name.startswith("horizon-premerge-farm-home-")
+    assert checks_home != ws_dir and ws_dir not in checks_home.parents
+    assert not checks_home.exists()
+
+
+# ---- isolation: nothing outside the test's FARM_HOME, nothing outside __premerge ----
+
+
+def item_worktree(hub, item_id):
+    """A real item worktree on the hub, where farmd would put one."""
+    path = workspaces.workspace_path(REPO, item_id)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    git(hub, "worktree", "add", "--quiet", "--detach", str(path), "origin/main")
+    return path
+
+
+def test_premerge_and_its_cleanup_touch_no_path_outside_the_tests_farm_home(ws_dir, monkeypatch):
+    """Every path the pre-merge code hands git or rmtree must sit inside this
+    test's own FARM_HOME. The farm's real ~/.horizon-farm (or anything else)
+    showing up here is the attempt-3 isolation bug."""
+    scratch_tmp = ws_dir / "tmp"
+    scratch_tmp.mkdir()
+    monkeypatch.setattr(premerge.tempfile, "tempdir", str(scratch_tmp))
+    touched = []
+    real_git, real_rmtree = premerge._git, premerge.shutil.rmtree
+
+    def spy_git(path, *args, **kw):
+        touched.append(Path(path))
+        touched.extend(Path(a) for a in args if a.startswith("/"))
+        return real_git(path, *args, **kw)
+
+    def spy_rmtree(path, *args, **kw):
+        touched.append(Path(path))
+        return real_rmtree(path, *args, **kw)
+
+    monkeypatch.setattr(premerge, "_git", spy_git)
+    monkeypatch.setattr(premerge.shutil, "rmtree", spy_rmtree)
+    hub, s = crossing_fixture(ws_dir)
+    monkeypatch.setenv("FARM_CHECK_CMD", f'test "$FARM_HOME" != "{ws_dir}" && {sys.executable} -m pytest -q')
+
+    assert run(hub, s["pr_head"], s["fork"])["ok"] is True
+    assert run(hub, s["pr_head"], s["main"])["reason"] == "checks_failed"
+
+    assert touched, "the spies saw nothing — the test is not observing premerge"
+    root = ws_dir.resolve()
+    outside = [p for p in touched if p.resolve() != root and root not in p.resolve().parents]
+    assert outside == []
+
+
+def test_runs_leave_every_item_worktree_on_the_hub_alone(ws_dir):
+    hub, s = crossing_fixture(ws_dir)
+    items = [item_worktree(hub, "hz-1"), item_worktree(hub, "hz-2")]
+    run(hub, s["pr_head"], s["main"])  # red
+    run(hub, s["pr_head"], s["fork"])  # green
+    listed = subprocess.run(["git", "-C", str(hub), "worktree", "list"], capture_output=True, text=True).stdout
+    for path in items:
+        assert path.is_dir() and (path / ".git").exists()
+        assert str(path) in listed
+
+
+@pytest.mark.parametrize(
+    "victim",
+    ["item", "items_root", "hub", "premerge_root", "workspaces_dir"],
+)
+def test_cleanup_can_only_remove_a_premerge_scratch_path(ws_dir, victim):
+    """_remove_scratch is the one deleting call in farm/premerge.py; fed any
+    path but <WORKSPACES_DIR>/<repo>__premerge/<item> it refuses, and the
+    target survives — whether or not git knows it as a worktree."""
+    hub, _origin = make_repo_hub(ws_dir)
+    item = item_worktree(hub, "hz-1")
+    premerge_root = premerge.premerge_path(REPO, "hz-1").parent
+    premerge_root.mkdir(parents=True)
+    path = {
+        "item": item,
+        "items_root": item.parent,
+        "hub": hub,
+        "premerge_root": premerge_root,
+        "workspaces_dir": ws_dir / "workspaces",
+    }[victim]
+    with pytest.raises(premerge.PremergeRefused):
+        premerge._reap(REPO, hub, path)
+    assert path.is_dir()
+    assert item.is_dir() and str(item) in subprocess.run(
+        ["git", "-C", str(hub), "worktree", "list"], capture_output=True, text=True
+    ).stdout

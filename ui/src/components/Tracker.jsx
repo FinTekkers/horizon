@@ -38,7 +38,7 @@ const STEP_META = {
 
 const STEP_META_COLOR = { awaiting: 'var(--warning-ink)', blocked: 'var(--danger-ink)', active: 'var(--primary-ink)' }
 
-function Step({ item, index, onApprove, onApproveWithComments, onReject, onResolveConflicts, onSetPersona }) {
+function Step({ item, index, onApprove, onApproveWithComments, onReject, onResolveConflicts, resolving, onSetPersona }) {
   const st = STEPS[index]
   const status = stepStatus(item, index)
   const isGate = st.kind === 'gate'
@@ -143,9 +143,22 @@ function Step({ item, index, onApprove, onApproveWithComments, onReject, onResol
           {status === 'awaiting' && st.label === 'Accept the code' && item.pr != null && item.pr_mergeable === false && (
             <div className="step-card__conflict">
               PR #{item.pr} has merge conflicts with main — approving would fail.
-              <button className="btn-gate-reject" onClick={() => onResolveConflicts(item.id, item.pr)}>
-                Send back to resolve conflicts
+              {/* HZ-188: disabled while a run is in progress (here or in any tab —
+                  `resolving` comes from the server's conflictRun), so it can't be
+                  started twice; View progress reopens the dialog. */}
+              <button
+                className="btn-gate-reject"
+                disabled={resolving}
+                aria-busy={resolving || undefined}
+                onClick={() => onResolveConflicts(item.id, item.pr)}
+              >
+                {resolving ? 'Resolving conflicts…' : 'Resolve conflicts…'}
               </button>
+              {resolving && (
+                <button className="btn-gate-feedback" onClick={() => onResolveConflicts(item.id, item.pr)}>
+                  View progress
+                </button>
+              )}
             </div>
           )}
           {status === 'awaiting' && (
@@ -264,7 +277,7 @@ function buildActivity(item) {
     })
 }
 
-export default function Tracker({ item, onBack, onApprove, onApproveWithComments, onReject, onResolveConflicts, onTogglePause, onRestartPhase, onSetPersona, onAbandon }) {
+export default function Tracker({ item, onBack, onApprove, onApproveWithComments, onReject, onResolveConflicts, resolving, onTogglePause, onRestartPhase, onSetPersona, onAbandon }) {
   const status = itemStatus(item, true)
   const activity = buildActivity(item)
   const closed = isClosed(item)
@@ -394,6 +407,7 @@ export default function Tracker({ item, onBack, onApprove, onApproveWithComments
                     onApproveWithComments={onApproveWithComments}
                     onReject={onReject}
                     onResolveConflicts={onResolveConflicts}
+                    resolving={resolving}
                     onSetPersona={onSetPersona}
                   />
                 ))}

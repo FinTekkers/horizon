@@ -214,6 +214,43 @@ def test_reviewer_roles_stop_instead_of_judging_truncated_input():
         assert phrase in normalized, f"{role_file} is missing the stop-on-truncation instruction"
 
 
+# HZ-191: the PM's step-9 digest carries a binding Test contract. The label is
+# read off domain/steps.json so a rename can't leave these roles pointing at a
+# section that no longer exists.
+def _role_text(role_file):
+    return " ".join((step_agent.ROLES / role_file).read_text().split())
+
+
+def _contract_step_label():
+    from domain.py import steps as domain_steps
+
+    step = domain_steps.STEP_BY_INDEX[9]
+    assert step["agent"] == "PM"
+    return step["label"]
+
+
+def test_implement_role_treats_test_contract_as_binding():
+    text = _role_text("eng_implement.md")
+    assert f'The `## Test contract` in the "{_contract_step_label()}" artifact is the binding test list.' in text
+    assert "It overrides the Required list in QA's plan review." in text
+    assert "Optional cases are allowed only if cheap." in text
+    assert "each Test contract case needs a test that would fail without your change." in text
+
+
+def test_qa_review_role_checks_coverage_against_the_test_contract():
+    text = _role_text("qa_review.md")
+    assert f'Check coverage against the `## Test contract` in the "{_contract_step_label()}" artifact.' in text
+    assert "A missing contract case is **block**." in text
+    assert "Do not add required tests unless the contract leaves a metric line or guardrail unverified." in text
+
+
+def test_qa_review_role_keeps_manual_verification_and_fail_closed_rules():
+    text = _role_text("qa_review.md")
+    assert '"Manually verified" is never acceptable evidence.' in text
+    assert 'You are a GATE, not an observer: "Manually verified" is NEVER acceptable evidence' in text
+    assert 'If your input appears truncated or inconsistent, do NOT proceed silently: say so in the summary and set verdict to "fail".' in text
+
+
 def write_fake_screenshot(ws, name):
     shots = ws / "e2e" / "__screenshots__"
     shots.mkdir(parents=True, exist_ok=True)
@@ -2010,130 +2047,346 @@ def test_an_exhaustion_inside_the_retry_is_reported_with_reason_turn_cap(tmp_pat
     assert posted["json"]["reason"] == "turn_cap"
 
 
-# ---- step model pin (HZ-187) ----
-# Every step-agent run_agent() call passes model=step_model(...): STEP_MODEL
-# (FARM_STEP_MODEL) on the claude provider, None anywhere else, so a
-# Muse-routed step never receives a Claude model id.
+# ---- step models (HZ-192) ----
+# run_agent() resolves every step's model from domain/personas.json's `models`
+# block. These run the REAL run_agent() over recording providers (conftest's
+# recording_providers) and assert the model each step_agent call site actually
+# handed its provider — so a call site passing the wrong agent, step or persona
+# fails here even though the AST check in test_model_call_sites.py passes.
+
+STEP_OPUS = "claude-opus-5-5"
+PLAN_LABEL = "Plan options & trade-offs (pros / cons)"
 
 
-def test_step_model_config_is_none_when_unset_and_the_value_when_set(monkeypatch):
-    import importlib
+def fabricated_models(monkeypatch, **overrides):
+    """Points run_agent()'s resolver at a fabricated `models` block: the live
+    agent defaults plus the given step/persona overrides."""
+    import functools
 
-    from farm import config
+    from domain.py import personas as domain_personas
+    from farm import agent_runner
 
-    try:
-        monkeypatch.delenv("FARM_STEP_MODEL", raising=False)
-        assert importlib.reload(config).STEP_MODEL is None
-        monkeypatch.setenv("FARM_STEP_MODEL", "")
-        assert importlib.reload(config).STEP_MODEL is None
-        monkeypatch.setenv("FARM_STEP_MODEL", "x-model")
-        assert importlib.reload(config).STEP_MODEL == "x-model"
-    finally:
-        monkeypatch.delenv("FARM_STEP_MODEL", raising=False)
-        importlib.reload(config)
-
-
-def test_every_step_agent_run_agent_call_passes_model_from_step_model():
-    import ast
-    from pathlib import Path
-
-    farm_dir = Path(step_agent.__file__).resolve().parent
-    found, problems = 0, []
-    for name in ("step_agent.py", "conflict_resolver.py"):
-        for node in ast.walk(ast.parse((farm_dir / name).read_text())):
-            if not isinstance(node, ast.Call):
-                continue
-            func = node.func
-            callee = func.id if isinstance(func, ast.Name) else func.attr if isinstance(func, ast.Attribute) else None
-            if callee != "run_agent":
-                continue
-            found += 1
-            model = next((kw.value for kw in node.keywords if kw.arg == "model"), None)
-            if model is None:
-                problems.append(f"farm/{name}:{node.lineno}: run_agent call omits model=")
-            elif not (isinstance(model, ast.Call) and isinstance(model.func, ast.Name) and model.func.id == "step_model"):
-                problems.append(f"farm/{name}:{node.lineno}: run_agent model= is not step_model(...)")
-    assert found >= 5, f"expected at least 5 run_agent calls, found {found}"
-    assert not problems, "\n".join(problems)
+    models = {
+        "agents": dict(domain_personas.MODELS["agents"]),
+        "steps": overrides.get("steps", {}),
+        "personas": overrides.get("personas", {}),
+    }
+    monkeypatch.setattr(agent_runner, "resolve_model", functools.partial(domain_personas.resolve_model, models=models))
 
 
-def capture_all_run_agent(calls, results=('{"summary": "did the step", "artifact_md": "# out"}',)):
-    replies = iter(results)
+def test_both_run_and_parse_call_sites_hand_the_step_model_to_claude(recording_providers):
+    # An invalid first reply forces the retry call site too.
+    recorder = recording_providers("not json", '{"summary": "ok"}')
 
-    def _fake(prompt, **kwargs):
-        calls.append(kwargs)
-        return {"result": next(replies), "session_id": "s-1"}
+    execute(make_task(4, PLAN_LABEL))
 
-    return _fake
+    assert [c["provider"] for c in recorder.calls] == ["claude", "claude"]
+    assert recorder.models()[0] == STEP_OPUS, "step_agent._run_and_parse: first run_agent call"
+    assert recorder.models()[1] == STEP_OPUS, "step_agent._run_and_parse: retry_once run_agent call"
 
 
-def run_and_parse(provider=None):
-    return step_agent._run_and_parse(
-        "p", append_system=None, cwd=None, max_turns=1, timeout_s=1, allowed_tools=None, provider=provider
+def test_the_step_agent_comes_from_the_step_table_not_the_payload(recording_providers, monkeypatch):
+    """make_task stamps "Eng" on every step; the plan step is Ensemble's in
+    domain/steps.json, and its model agent must say so."""
+    fabricated_models(monkeypatch, steps={})
+    recorder = recording_providers('{"summary": "ok"}')
+    from domain.py import personas as domain_personas
+    from farm import agent_runner
+
+    resolved = []
+    real_resolve = agent_runner.resolve_model
+    monkeypatch.setattr(
+        agent_runner, "resolve_model", lambda agent, step, persona: resolved.append((agent, step, persona)) or real_resolve(agent, step, persona)
     )
 
+    execute(make_task(4, PLAN_LABEL))
 
-@pytest.mark.parametrize(
-    ("provider", "env", "expected"),
-    [
-        (None, None, "claude-x"),
-        ("claude", None, "claude-x"),
-        ("muse", None, None),
-        (None, "muse", None),
-        # An explicit provider beats FARM_PROVIDER, as in agent_runner._selected_provider().
-        ("claude", "muse", "claude-x"),
-        ("muse", "claude", None),
-    ],
-)
-def test_step_model_reaches_both_run_and_parse_calls_only_on_claude(monkeypatch, provider, env, expected):
-    monkeypatch.setattr(step_agent, "STEP_MODEL", "claude-x")
-    if env:
-        monkeypatch.setenv("FARM_PROVIDER", env)
-    else:
-        monkeypatch.delenv("FARM_PROVIDER", raising=False)
-    calls = []
-    # An invalid first reply forces the retry call site too.
-    monkeypatch.setattr(step_agent, "run_agent", capture_all_run_agent(calls, ("not json", '{"summary": "ok"}')))
-
-    run_and_parse(provider)
-
-    assert len(calls) == 2
-    assert [c["model"] for c in calls] == [expected, expected]
+    assert resolved == [("ensemble", PLAN_LABEL, None)]
+    assert recorder.models() == [domain_personas.MODELS["agents"]["ensemble"]]
 
 
-def test_unset_step_model_passes_none_like_today(monkeypatch):
-    monkeypatch.setattr(step_agent, "STEP_MODEL", None)
-    monkeypatch.delenv("FARM_PROVIDER", raising=False)
-    calls = []
-    monkeypatch.setattr(step_agent, "run_agent", capture_all_run_agent(calls))
+def test_a_step_override_reaches_only_its_own_step(recording_providers, monkeypatch):
+    fabricated_models(monkeypatch, steps={PLAN_LABEL: "claude-test-plan"})
+    recorder = recording_providers('{"summary": "ok"}')
 
-    run_and_parse()
+    execute(make_task(4, PLAN_LABEL))
+    execute(make_task(5, "Draft implementation plan"))
 
-    assert calls[0]["model"] is None
-
-
-def test_muse_routed_persona_step_never_receives_the_claude_model(monkeypatch, muse_smoke_test_personas):
-    monkeypatch.setattr(step_agent, "STEP_MODEL", "claude-x")
-    monkeypatch.delenv("FARM_PROVIDER", raising=False)
-    calls = []
-    monkeypatch.setattr(step_agent, "run_agent", capture_all_run_agent(calls))
-    task = make_task(4, "Plan options & trade-offs (pros / cons)")
-    task["item"]["personas"] = muse_smoke_test_personas
-
-    execute(task)
-
-    assert calls and all(c["provider"] == "muse" and c["model"] is None for c in calls)
+    assert recorder.models() == ["claude-test-plan", STEP_OPUS]
 
 
-def test_implement_step_passes_the_step_model(tmp_path, monkeypatch):
-    monkeypatch.setattr(step_agent, "STEP_MODEL", "claude-x")
-    monkeypatch.delenv("FARM_PROVIDER", raising=False)
+def test_the_implement_call_site_hands_the_resolved_model_to_claude(tmp_path, monkeypatch, recording_providers):
     ws, _origin = make_git_workspace(tmp_path)
     monkeypatch.setattr(step_agent, "ensure_item_worktree", lambda repo, item_id: ws)
-    captured = {}
-    monkeypatch.setattr(step_agent, "run_agent", capture_run_agent(captured))
+    recorder = recording_providers('{"summary": "did it"}')
 
     with pytest.raises(RuntimeError, match="no code changes"):
         execute(make_task(11, "Specialist agent implements", repo="acme/demo"))
 
-    assert captured["model"] == "claude-x"
+    assert recorder.models() == [STEP_OPUS], "step_agent._execute: implement run_agent call"
+
+
+def test_the_implement_call_passes_the_composed_eng_persona(tmp_path, monkeypatch, recording_providers):
+    fabricated_models(monkeypatch, personas={"eng.python": "claude-test-python"})
+    ws, _origin = make_git_workspace(tmp_path)
+    monkeypatch.setattr(step_agent, "ensure_item_worktree", lambda repo, item_id: ws)
+    recorder = recording_providers('{"summary": "did it"}')
+    task = make_task(11, "Specialist agent implements", repo="acme/demo")
+    task["item"]["personas"] = {"eng": "python"}
+
+    with pytest.raises(RuntimeError, match="no code changes"):
+        execute(task)
+
+    assert recorder.models() == ["claude-test-python"]
+
+
+def test_the_review_passes_carry_their_own_personas(tmp_path, monkeypatch, recording_providers):
+    """The code pass composes the item's Eng persona, the QA pass its QA
+    persona (HZ-125) — and each resolves its model by the persona it composes,
+    never as qa.None."""
+    fabricated_models(monkeypatch, personas={f"qa.{DEFAULT_PERSONAS['qa']}": "claude-test-qa"})
+    ws, _origin = make_git_workspace(tmp_path)
+    (ws / "app.py").write_text("print('hi')\n")
+    git(ws, "add", "-A")
+    git(ws, "commit", "-m", "add app.py")
+    git(ws, "push", "-u", "origin", "HEAD:horizon/t-1")
+    monkeypatch.setattr(step_agent, "ensure_item_worktree", lambda repo, item_id: ws)
+    recorder = recording_providers(json.dumps({"summary": "reviewed", "verdict": "pass", "findings": []}))
+
+    execute(make_task(12, "Automated review (code + QA)", repo="acme/demo"))
+
+    assert recorder.models() == [STEP_OPUS, "claude-test-qa"]
+
+
+@pytest.mark.parametrize("override", [None, "claude-test-emergency"])
+def test_a_muse_routed_persona_step_never_receives_a_claude_model(
+    monkeypatch, muse_smoke_test_personas, recording_providers, override
+):
+    """The item-level provider override (provider_for on an eligible step)."""
+    if override:
+        monkeypatch.setenv("FARM_MODEL_OVERRIDE", override)
+    recorder = recording_providers("not json", '{"summary": "ok"}')
+    task = make_task(4, PLAN_LABEL)
+    task["item"]["personas"] = muse_smoke_test_personas
+
+    execute(task)
+
+    assert len(recorder.calls) == 2
+    for call in recorder.calls:
+        assert call["provider"] == "muse" and call["model"] is None
+        assert not [v for v in call.values() if isinstance(v, str) and v.startswith("claude-")]
+
+
+def test_farm_provider_muse_sends_a_step_no_model(monkeypatch, recording_providers):
+    monkeypatch.setenv("FARM_PROVIDER", "muse")
+    recorder = recording_providers('{"summary": "ok"}')
+
+    execute(make_task(4, PLAN_LABEL))
+
+    assert [(c["provider"], c["model"]) for c in recorder.calls] == [("muse", None)]
+
+
+# ---- HZ-188: a conflict send-back starts on a branch with main merged ----
+# The server stamps merge_main on an implement task whose PR GitHub reports as
+# conflicted. Before the agent runs, prepare_branch's branch must already have
+# origin/main merged in, with any conflicted files named in the prompt and
+# their markers left on disk for the agent.
+
+
+def make_diverged_workspace(tmp_path, *, conflict):
+    """origin/horizon/t-1 and origin/main both moved on from the seed; with
+    conflict=True they changed the same line of shared.txt."""
+    ws, origin = make_git_workspace(tmp_path)
+    (ws / "shared.txt").write_text("base\n")
+    git(ws, "add", "-A")
+    git(ws, "commit", "-m", "shared")
+    git(ws, "push", "-q", "origin", "HEAD:main")
+    git(ws, "checkout", "-q", "-b", "horizon/t-1")
+    (ws / "shared.txt").write_text("item side\n" if conflict else "base\n")
+    (ws / "item_only.txt").write_text("item\n")
+    git(ws, "add", "-A")
+    git(ws, "commit", "-m", "item work")
+    git(ws, "push", "-q", "origin", "horizon/t-1")
+    git(ws, "checkout", "-q", "main")
+    git(ws, "reset", "-q", "--hard", "origin/main")
+    (ws / "shared.txt").write_text("main side\n" if conflict else "base\n")
+    (ws / "main_only.txt").write_text("main\n")
+    git(ws, "add", "-A")
+    git(ws, "commit", "-m", "main moved on")
+    git(ws, "push", "-q", "origin", "main")
+    return ws, origin
+
+
+def rev(cwd, ref):
+    return subprocess.run(["git", "-C", str(cwd), "rev-parse", ref], capture_output=True, text=True, check=True).stdout.strip()
+
+
+def is_ancestor(cwd, ancestor, ref):
+    return subprocess.run(["git", "-C", str(cwd), "merge-base", "--is-ancestor", ancestor, ref]).returncode == 0
+
+
+def test_a_conflict_send_back_merges_main_before_the_agent_and_lists_the_conflicted_files(tmp_path, monkeypatch):
+    ws, origin = make_diverged_workspace(tmp_path, conflict=True)
+    monkeypatch.setattr(step_agent, "ensure_item_worktree", lambda repo, item_id: ws)
+    main_sha = rev(ws, "origin/main")
+    seen = {}
+
+    def _agent(prompt, **kwargs):
+        # The state the agent starts in: main merged (in progress, markers on
+        # disk), main's own changes present, the item's work still there.
+        seen["prompt"] = prompt
+        seen["merge_head"] = (ws / ".git" / "MERGE_HEAD").read_text().strip()
+        seen["shared"] = (ws / "shared.txt").read_text()
+        seen["main_only"] = (ws / "main_only.txt").exists()
+        seen["item_only"] = (ws / "item_only.txt").exists()
+        (ws / "shared.txt").write_text("item side\nmain side\n")
+        return {"result": '{"summary": "resolved the merge"}'}
+
+    monkeypatch.setattr(step_agent, "run_agent", _agent)
+    task = make_task(11, "Specialist agent implements", repo="acme/demo")
+    task["merge_main"] = True
+
+    execute(task)
+
+    assert seen["merge_head"] == main_sha
+    assert "<<<<<<<" in seen["shared"] and "main side" in seen["shared"] and "item side" in seen["shared"]
+    assert seen["main_only"] and seen["item_only"]
+    assert "- shared.txt" in seen["prompt"]
+    assert "conflict markers" in seen["prompt"]
+    # The harness committed the merge and pushed it: the PR branch now
+    # contains main, so the conflict cannot survive the send-back.
+    assert is_ancestor(origin, main_sha, "horizon/t-1")
+    pushed = subprocess.run(
+        ["git", "--git-dir", str(origin), "show", "horizon/t-1:shared.txt"], capture_output=True, text=True, check=True
+    ).stdout
+    assert pushed == "item side\nmain side\n"
+
+
+def test_a_clean_merge_of_main_is_committed_before_the_agent_starts(tmp_path, monkeypatch):
+    ws, origin = make_diverged_workspace(tmp_path, conflict=False)
+    monkeypatch.setattr(step_agent, "ensure_item_worktree", lambda repo, item_id: ws)
+    main_sha = rev(ws, "origin/main")
+    seen = {}
+
+    def _agent(prompt, **kwargs):
+        seen["prompt"] = prompt
+        seen["main_in_head"] = is_ancestor(ws, main_sha, "HEAD")
+        seen["merging"] = (ws / ".git" / "MERGE_HEAD").exists()
+        (ws / "agent.txt").write_text("work\n")
+        return {"result": '{"summary": "did it"}'}
+
+    monkeypatch.setattr(step_agent, "run_agent", _agent)
+    task = make_task(11, "Specialist agent implements", repo="acme/demo")
+    task["merge_main"] = True
+
+    execute(task)
+
+    assert seen["main_in_head"] and not seen["merging"]
+    assert "merged into it cleanly" in seen["prompt"]
+    assert is_ancestor(origin, main_sha, "horizon/t-1")
+
+
+def test_an_implement_run_without_merge_main_leaves_main_unmerged(tmp_path, monkeypatch):
+    ws, origin = make_diverged_workspace(tmp_path, conflict=True)
+    monkeypatch.setattr(step_agent, "ensure_item_worktree", lambda repo, item_id: ws)
+    main_sha = rev(ws, "origin/main")
+    seen = {}
+
+    def _agent(prompt, **kwargs):
+        seen["prompt"] = prompt
+        seen["main_in_head"] = is_ancestor(ws, main_sha, "HEAD")
+        (ws / "agent.txt").write_text("work\n")
+        return {"result": '{"summary": "did it"}'}
+
+    monkeypatch.setattr(step_agent, "run_agent", _agent)
+
+    execute(make_task(11, "Specialist agent implements", repo="acme/demo"))
+
+    assert not seen["main_in_head"]
+    assert "conflicted with main" not in seen["prompt"]
+
+
+def test_a_conflicted_merge_resolved_to_the_branchs_own_side_is_still_committed(tmp_path, monkeypatch):
+    """Keeping the branch's side verbatim stages no diff against HEAD, but the
+    merge itself must still be committed or the pushed branch lacks main."""
+    ws, origin = make_diverged_workspace(tmp_path, conflict=True)
+    monkeypatch.setattr(step_agent, "ensure_item_worktree", lambda repo, item_id: ws)
+    main_sha = rev(ws, "origin/main")
+
+    def _agent(prompt, **kwargs):
+        (ws / "shared.txt").write_text("item side\n")
+        (ws / "main_only.txt").unlink()
+        return {"result": '{"summary": "kept ours"}'}
+
+    monkeypatch.setattr(step_agent, "run_agent", _agent)
+    task = make_task(11, "Specialist agent implements", repo="acme/demo")
+    task["merge_main"] = True
+
+    execute(task)
+
+    assert is_ancestor(origin, main_sha, "horizon/t-1")
+
+
+def test_an_exhausted_run_never_checkpoints_a_merge_that_still_has_conflict_markers(tmp_path, monkeypatch):
+    """Salvaging a half-resolved merge would push markers to the PR branch and
+    make GitHub call it mergeable — the next send-back would then neither
+    merge main nor name the files."""
+    ws, origin = make_diverged_workspace(tmp_path, conflict=True)
+    monkeypatch.setattr(step_agent, "ensure_item_worktree", lambda repo, item_id: ws)
+    before = rev(origin, "horizon/t-1")
+
+    def _agent(prompt, **kwargs):
+        (ws / "agent.txt").write_text("partial\n")  # shared.txt still has its markers
+        raise AgentExhaustedError("ran out of turns")
+
+    monkeypatch.setattr(step_agent, "run_agent", _agent)
+    task = make_task(11, "Specialist agent implements", repo="acme/demo")
+    task["merge_main"] = True
+
+    with pytest.raises(AgentExhaustedError):
+        execute(task)
+
+    assert rev(origin, "horizon/t-1") == before
+
+
+def test_an_exhausted_run_still_checkpoints_a_merge_whose_markers_are_resolved(tmp_path, monkeypatch):
+    ws, origin = make_diverged_workspace(tmp_path, conflict=True)
+    monkeypatch.setattr(step_agent, "ensure_item_worktree", lambda repo, item_id: ws)
+    main_sha = rev(ws, "origin/main")
+
+    def _agent(prompt, **kwargs):
+        (ws / "shared.txt").write_text("item side\nmain side\n")
+        raise AgentExhaustedError("ran out of turns")
+
+    monkeypatch.setattr(step_agent, "run_agent", _agent)
+    task = make_task(11, "Specialist agent implements", repo="acme/demo")
+    task["merge_main"] = True
+
+    with pytest.raises(AgentExhaustedError):
+        execute(task)
+
+    assert is_ancestor(origin, main_sha, "horizon/t-1")
+
+
+def test_a_finished_run_that_left_conflict_markers_fails_without_committing_or_pushing(tmp_path, monkeypatch):
+    """run_checks may not parse the file (.txt, .md), so the markers are
+    checked before the commit, not left to the checks."""
+    ws, origin = make_diverged_workspace(tmp_path, conflict=True)
+    monkeypatch.setattr(step_agent, "ensure_item_worktree", lambda repo, item_id: ws)
+    before_remote = rev(origin, "horizon/t-1")
+
+    def _agent(prompt, **kwargs):
+        (ws / "agent.txt").write_text("work\n")  # never touched shared.txt
+        return {"result": '{"summary": "done"}'}
+
+    monkeypatch.setattr(step_agent, "run_agent", _agent)
+    task = make_task(11, "Specialist agent implements", repo="acme/demo")
+    task["merge_main"] = True
+
+    with pytest.raises(RuntimeError, match="conflict markers left unresolved in: shared.txt"):
+        execute(task)
+
+    assert rev(origin, "horizon/t-1") == before_remote
+    # Not even a local commit: HEAD is still the branch tip, merge uncommitted.
+    assert rev(ws, "HEAD") == before_remote
+    assert (ws / ".git" / "MERGE_HEAD").exists()

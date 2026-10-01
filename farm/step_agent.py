@@ -8,8 +8,10 @@ item's branch in the workspace; the *script* owns git (branch, commit, push)
 """
 
 import argparse
+import contextlib
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -24,8 +26,7 @@ import httpx
 # HZ-132 put the failure-reason vocabulary there too, so the reason this script
 # reports is a constant the server already knows, never a string typed here.
 from domain.py import reasons, steps
-
-from . import agent_runner
+from domain.py.personas import model_agent_for_step
 
 # AgentExhaustedError is this branch's name for main's TurnCapExceeded — the
 # same "ran out of turn budget" signal, renamed by the provider refactor. The
@@ -40,10 +41,10 @@ from .agent_runner import (
     stamp_notes_artifact,
 )
 from .checks import run_checks
-from .config import FARM_PORT, STEP_MODEL
+from .config import FARM_PORT, ITEM_LOCK_WAIT_S
 from .personas import compose_role, provider_for, resolve
 from .rules import render_rules_section
-from .workspaces import ensure_item_worktree, hub_lock
+from .workspaces import ItemBusy, ensure_item_worktree, hub_lock, item_lock
 
 FARMD = f"http://127.0.0.1:{FARM_PORT}"
 ROLES = Path(__file__).parent / "roles"
@@ -322,6 +323,59 @@ def prepare_branch(ws: Path, item: dict) -> str:
     return branch
 
 
+def merge_default_branch(ws: Path) -> list[str]:
+    """HZ-188: merge origin/<default> into the freshly prepared item branch
+    before the agent starts, so a conflict send-back reworks the code on top
+    of today's main instead of the stale base the conflict came from (HZ-125,
+    HZ-144). A clean merge is committed; a conflicted one is left IN PROGRESS
+    with its markers on disk for the agent to resolve — finalize_branch's
+    commit then records it as the merge commit. Returns the conflicted paths
+    (empty for a clean merge). Any other merge failure raises: the agent must
+    not start on a half-merged tree it was never told about."""
+    head = git(ws, "symbolic-ref", "refs/remotes/origin/HEAD", check=False).stdout.strip()
+    default = head.rsplit("/", 1)[-1] if head else "main"
+    merged = git(ws, "merge", "--no-edit", f"origin/{default}", check=False)
+    if merged.returncode == 0:
+        return []
+    conflicted = git(ws, "diff", "--name-only", "--diff-filter=U", check=False).stdout.split()
+    if not conflicted:
+        raise RuntimeError(f"merging origin/{default} failed: {(merged.stderr or merged.stdout).strip()[:300]}")
+    return conflicted
+
+
+def _conflict_markers_left(ws: Path, paths: list[str]) -> list[str]:
+    """The paths merge_default_branch left conflicted that still hold a
+    `<<<<<<<` or `>>>>>>>` marker line. Only those paths are scanned: git
+    wrote markers into nothing else, and a repo may carry marker-looking text
+    elsewhere on purpose (conflict test fixtures)."""
+    left = []
+    for path in paths:
+        try:
+            text = (ws / path).read_text(errors="replace")
+        except (FileNotFoundError, IsADirectoryError):
+            continue  # the agent resolved it by deleting the file
+        if any(line.startswith(("<<<<<<<", ">>>>>>>")) for line in text.splitlines()):
+            left.append(path)
+    return left
+
+
+def _merge_main_note(conflicted: list[str]) -> str:
+    if not conflicted:
+        return (
+            "\n\nNOTE: this branch's PR conflicted with main. origin/main has already "
+            "been merged into it cleanly — build on the merged code as it is now."
+        )
+    files = "\n".join(f"- {path}" for path in conflicted)
+    return (
+        "\n\nNOTE: this branch's PR conflicted with main. origin/main has been merged "
+        "into it and the merge is still in progress: these files have conflict markers "
+        f"left in place for you to resolve —\n{files}\n"
+        "Resolve every marker keeping the intent of both sides, then carry on with the "
+        "step. Do not run `git merge --abort` and do not commit — the harness commits "
+        "the merge after you finish."
+    )
+
+
 def _checkpoint_resume_note(ws: Path) -> str | None:
     """If HEAD is a salvage checkpoint left by a prior exhausted attempt
     (prepare_branch() already based this branch off origin/<branch>, so a
@@ -341,10 +395,149 @@ def _checkpoint_resume_note(ws: Path) -> str | None:
     )
 
 
-def finalize_branch(ws: Path, item: dict, branch: str) -> dict:
+# ---- fix pass + delta review (HZ-182) ----
+# After a review rejection the server dispatches the implement step with
+# scope {"mode": "fix", "base_sha", "max_turns", "timeout_s", "findings"} and
+# the review after it with {"mode": "delta", "base_sha", "previous_findings"}.
+# Every decision is the server's; this side only executes the scope and
+# reports what it actually did, so the server can fall back to full.
+
+
+def scope_of(task: dict) -> dict:
+    scope = task.get("scope")
+    return scope if isinstance(scope, dict) and scope.get("mode") in ("fix", "delta") else {"mode": "full"}
+
+
+def _default_branch(ws: Path) -> str:
+    head = git(ws, "symbolic-ref", "refs/remotes/origin/HEAD", check=False).stdout.strip()
+    return head.rsplit("/", 1)[-1] if head else "main"
+
+
+def _names(ws: Path, rev_range: str) -> list[str]:
+    out = git(ws, "diff", "--name-only", rev_range, check=False).stdout
+    return [line for line in out.splitlines() if line.strip()]
+
+
+def delta_base_problem(ws: Path, base: str | None, default: str) -> str | None:
+    """Why `base..HEAD` is NOT a trustworthy delta, or None when it is.
+
+    The last reviewed commit must still exist AND be an ancestor of HEAD. A
+    force-with-lease push after a rebase leaves the old commit in the object
+    store, so existence alone would diff against a dead commit and produce a
+    wrong delta rather than an empty one. A merge from main that changed files
+    the PR touches also disqualifies the delta: main's changes would ride in it.
+    """
+    # A commit sha, nothing else — the value reaches git argv.
+    if not isinstance(base, str) or not re.fullmatch(r"[0-9a-f]{7,64}", base):
+        return "base_missing"
+    if git(ws, "rev-parse", "--verify", "--quiet", f"{base}^{{commit}}", check=False).returncode != 0:
+        return "base_missing"
+    if git(ws, "merge-base", "--is-ancestor", base, "HEAD", check=False).returncode != 0:
+        return "base_not_ancestor"
+    old_mb = git(ws, "merge-base", base, f"origin/{default}", check=False).stdout.strip()
+    new_mb = git(ws, "merge-base", "HEAD", f"origin/{default}", check=False).stdout.strip()
+    if old_mb and new_mb and old_mb != new_mb:
+        if set(_names(ws, f"{old_mb}..{new_mb}")) & set(_names(ws, f"origin/{default}...HEAD")):
+            return "main_merged"
+    return None
+
+
+def fix_diff_report(ws: Path, base: str | None) -> dict:
+    """The fix pass's size, for the server's full-review threshold — or why
+    it could not be measured, which the server treats as oversize."""
+    problem = delta_base_problem(ws, base, _default_branch(ws))
+    if problem:
+        return {"scope_fallback": problem}
+    lines = 0
+    for row in git(ws, "diff", "--numstat", f"{base}..HEAD", check=False).stdout.splitlines():
+        added, removed = (row.split("\t") + ["", ""])[:2]
+        # Binary files report "-"; count each as one changed line.
+        lines += (int(added) if added.isdigit() else 1) + (int(removed) if removed.isdigit() else 1)
+    return {"fix_diff_lines": lines, "fix_diff_files": _names(ws, f"{base}..HEAD")}
+
+
+def fix_pass_section(scope: dict) -> str:
+    """The scope rule for a fix-pass implement prompt. The findings themselves
+    arrive once, as the "Human feedback to address" list above."""
+    files = sorted({f["file"] for f in scope.get("findings") or [] if isinstance(f, dict) and isinstance(f.get("file"), str)})
+    involved = ", ".join(f"`{f}`" for f in files) or "(none named)"
+    return (
+        "\n\n## Fix pass\n"
+        f"This is a fix pass after an automated review rejection. Everything up to commit "
+        f"`{scope.get('base_sha')}` already passed review. Fix ONLY the blocking findings in the "
+        "feedback above. Do not refactor, restyle or extend anything else.\n"
+        f"Files the findings involve: {involved}.\n"
+        "Change no other file unless the fix needs it; if it does, name each such file and say "
+        "why in your summary. The next review sees every line you change."
+    )
+
+
+def _merge_previous_findings(previous: list, replies: list[dict]) -> list[dict]:
+    """ONE previous_findings array from both reviewers, fail-closed: a finding
+    is resolved only when every reviewer reports it `resolved: true`. A
+    reviewer that omits it, or returns no list at all, leaves it unresolved."""
+    merged = []
+    for prev in previous:
+        index = prev.get("index") if isinstance(prev, dict) else None
+        if not isinstance(index, int):
+            continue
+        resolved, details = True, []
+        for reply in replies:
+            entries = reply.get("previous_findings")
+            entry = next(
+                (e for e in entries if isinstance(e, dict) and e.get("index") == index), None
+            ) if isinstance(entries, list) else None
+            if entry is None or entry.get("resolved") is not True:
+                resolved = False
+            if entry is not None and isinstance(entry.get("detail"), str) and entry["detail"].strip():
+                details.append(entry["detail"].strip())
+        merged.append({"index": index, "resolved": resolved, "detail": "; ".join(details)})
+    return merged
+
+
+def delta_review_section(scope: dict, base: str, delta_files: list[str]) -> str:
+    lines = [
+        "## Fix-pass delta review",
+        f"This is a re-review after a rejection. The diff below is ONLY the change since `{base}`, "
+        "the last reviewed commit. Everything else in the PR already passed review.",
+        'Report every previous finding below in "previous_findings", by index, with `resolved` true or false.',
+        "",
+        "Previous findings:",
+    ]
+    finding_files = set()
+    for prev in scope.get("previous_findings") or []:
+        if not isinstance(prev, dict):
+            continue
+        loc = prev.get("file") or "general"
+        if prev.get("file"):
+            finding_files.add(prev["file"])
+            if prev.get("line"):
+                loc = f"{loc}:{prev['line']}"
+        lines.append(f"- [{prev.get('index')}] `{loc}` — {prev.get('detail', '')}")
+    outside = [f for f in delta_files if f not in finding_files]
+    if outside:
+        lines += [
+            "",
+            "Changed outside the findings — the implement summary must explain each; block if it does not:",
+            *[f"- `{f}`" for f in outside],
+        ]
+    return "\n".join(lines)
+
+
+def finalize_branch(ws: Path, item: dict, branch: str, conflicted: list[str] | None = None) -> dict:
+    # A merge of main still carrying conflict markers must never be committed:
+    # GitHub would then call the PR mergeable with the markers in it, and no
+    # later send-back would be told which files still hold them.
+    markers = _conflict_markers_left(ws, conflicted or [])
+    if markers:
+        raise RuntimeError(f"conflict markers left unresolved in: {', '.join(markers)} — nothing committed or pushed")
     git(ws, "add", "-A")
     staged = git(ws, "diff", "--cached", "--quiet", check=False)
-    if staged.returncode != 0:  # there are staged changes
+    # An in-progress merge of main (merge_default_branch) must be committed
+    # even when its resolution kept this branch's side verbatim — otherwise
+    # the push leaves main unmerged and the conflict survives.
+    merging = git(ws, "rev-parse", "-q", "--verify", "MERGE_HEAD", check=False)
+    if staged.returncode != 0 or merging.returncode == 0:
         git(ws, "commit", "-m", f"{item['id']}: {item['title']} (Horizon Eng agent)")
     head = git(ws, "symbolic-ref", "refs/remotes/origin/HEAD", check=False).stdout.strip()
     default = head.rsplit("/", 1)[-1] if head else "main"
@@ -372,12 +565,21 @@ def finalize_branch(ws: Path, item: dict, branch: str) -> dict:
 # from zero.
 
 
-def _salvage_checkpoint(ws: Path, item: dict, branch: str) -> None:
+def _salvage_checkpoint(ws: Path, item: dict, branch: str, conflicted: list[str] | None = None) -> None:
     """Best-effort: never raises. A salvage failure (e.g. a concurrent push
     winning the --force-with-lease race) just means this attempt's partial
     work is lost — the caller's original exception is what must still
-    propagate and fail the run, unchanged from pre-HZ-31 behavior."""
+    propagate and fail the run, unchanged from pre-HZ-31 behavior.
+
+    HZ-188: a half-resolved merge of main is never checkpointed. Committing
+    it would push conflict markers to the PR branch and make GitHub report it
+    mergeable, so the next send-back would not merge main or name the files.
+    Dropping it is safe: that send-back merges main again from scratch."""
     try:
+        markers = _conflict_markers_left(ws, conflicted or [])
+        if markers:
+            log(f"salvage: skipped — the merge of main still has conflict markers in {', '.join(markers)}")
+            return
         git(ws, "add", "-A")
         staged = git(ws, "diff", "--cached", "--quiet", check=False)
         if staged.returncode == 0:
@@ -445,17 +647,13 @@ def _review_summary(verdict: dict) -> str:
     return summary[:SUMMARY_MAX_CHARS]
 
 
-def step_model(provider: str | None = None) -> str | None:
-    """HZ-187: the model every step-agent run_agent() call passes — STEP_MODEL
-    on the claude provider, None (the provider's own default) anywhere else,
-    so a Muse-routed step never receives a Claude model id.
-
-    Must mirror agent_runner._selected_provider()'s rule: an explicit provider
-    wins, else FARM_PROVIDER read at call time. Called through the module so a
-    test patching agent_runner._selected_provider_name reaches it too.
-    """
-    name = provider or agent_runner._selected_provider_name()
-    return STEP_MODEL if name == agent_runner.DEFAULT_PROVIDER else None
+def model_persona(persona_agent: str | None, personas: dict) -> str | None:
+    """HZ-192: the namespaced "<agent>.<persona>" a run_agent() call composes —
+    the key domain/personas.json's models.personas overrides by — or None for
+    a call that composes no persona."""
+    if not persona_agent:
+        return None
+    return f"{persona_agent}.{resolve(persona_agent, personas.get(persona_agent))}"
 
 
 def _provenance(reply: dict) -> dict:
@@ -465,6 +663,9 @@ def _provenance(reply: dict) -> dict:
 def _run_and_parse(
     prompt: str,
     *,
+    agent: str,
+    step: str,
+    persona: str | None,
     append_system: str | None,
     cwd: str | None,
     max_turns: int,
@@ -493,6 +694,9 @@ def _run_and_parse(
     """
     reply = run_agent(
         prompt,
+        agent=agent,
+        step=step,
+        persona=persona,
         append_system=append_system,
         cwd=cwd,
         max_turns=max_turns,
@@ -500,7 +704,6 @@ def _run_and_parse(
         allowed_tools=allowed_tools,
         provider=provider,
         provider_locked=provider_locked,
-        model=step_model(provider),
     )
     produced = reply
 
@@ -509,6 +712,9 @@ def _run_and_parse(
         log("invalid reply; retrying once")
         produced = run_agent(
             retry_prompt,
+            agent=agent,
+            step=step,
+            persona=persona,
             session_id=reply.get("session_id"),
             append_system=append_system,
             cwd=cwd,
@@ -517,7 +723,6 @@ def _run_and_parse(
             allowed_tools=allowed_tools,
             provider=provider,
             provider_locked=provider_locked,
-            model=step_model(provider),
         )
         return produced["result"]
 
@@ -557,6 +762,29 @@ def run_smoke_check(url: str, expected_text: str) -> tuple[str, str]:
 
 
 def execute(task: dict) -> dict:
+    """HZ-188: the implement and review steps scrub, check out and (for
+    implement) push in the item's worktree, so they hold item_lock for the
+    whole step — taken before ensure_item_worktree, so not even the worktree's
+    creation can overlap a conflict resolver that owns the item. Every other
+    step only reads the workspace and runs unlocked."""
+    item = task["item"]
+    if task["step"]["label"] not in (IMPLEMENT_LABEL, REVIEW_LABEL) or not item.get("repo"):
+        return _execute(task)
+    lock = item_lock(
+        item["repo"],
+        item["id"],
+        wait_s=ITEM_LOCK_WAIT_S,
+        on_wait=lambda: log(f"workspace for {item['id']} is busy (conflict resolution running) — waiting up to {ITEM_LOCK_WAIT_S}s"),
+    )
+    with contextlib.ExitStack() as stack:
+        try:
+            stack.enter_context(lock)
+        except ItemBusy:
+            raise RuntimeError("workspace busy: conflict resolution still running") from None
+        return _execute(task)
+
+
+def _execute(task: dict) -> dict:
     label = task["step"]["label"]
     role_file, wants_artifact, tools, persona_agent = STEP_CONFIG[label]
     max_turns, timeout_s = steps.budget_for_label(steps.STEPS, label)
@@ -569,6 +797,11 @@ def execute(task: dict) -> dict:
     provider_override = (
         provider_for(personas) if steps.provider_override_eligible(steps.STEPS, label) else None
     )
+    # HZ-192: who this step's run_agent() calls are; run_agent() resolves the
+    # model from these, so it is never chosen here. The agent comes from the
+    # step table, like the budget above, not from the task payload.
+    model_agent = model_agent_for_step(steps.by_label(label)["agent"])
+    persona = model_persona(persona_agent, personas)
 
     ws = None
     if item.get("repo"):
@@ -587,19 +820,40 @@ def execute(task: dict) -> dict:
             return {"summary": "no repository attached — implementation skipped (demo item)"}
         branch = prepare_branch(ws, item)
         log(f"workspace {ws} on branch {branch}")
-        resume_note = _checkpoint_resume_note(ws)
-        if resume_note:
-            log("resuming a prior attempt's WIP checkpoint")
+        scope = scope_of(task)
+        if scope["mode"] == "fix":
+            # HZ-182: the server's reduced budget, clamped — never raised —
+            # against the step's own. A "continue your WIP" note would
+            # contradict a fix-only instruction, so it is not added.
+            if isinstance(scope.get("max_turns"), int) and scope["max_turns"] > 0:
+                max_turns = min(max_turns, scope["max_turns"])
+            if isinstance(scope.get("timeout_s"), int) and scope["timeout_s"] > 0:
+                timeout_s = min(timeout_s, scope["timeout_s"])
+            log(f"fix pass from {scope.get('base_sha')}: {max_turns} turns, {timeout_s}s")
+            extra = fix_pass_section(scope)
+        else:
+            extra = _checkpoint_resume_note(ws) or ""
+            if extra:
+                log("resuming a prior attempt's WIP checkpoint")
+        # After the resume check: a merge commit would hide the checkpoint's
+        # subject from it.
+        conflicted: list[str] = []
+        if task.get("merge_main"):
+            conflicted = merge_default_branch(ws)
+            log(f"merged origin/main into {branch}" + (f" — {len(conflicted)} conflicted file(s) left for the agent" if conflicted else " cleanly"))
+            extra += _merge_main_note(conflicted)
         try:
             reply = run_agent(
-                build_prompt(task) + (resume_note or ""),
+                build_prompt(task) + extra,
+                agent=model_agent,
+                step=label,
+                persona=persona,
                 append_system=role,
                 cwd=str(ws),
                 max_turns=max_turns,
                 timeout_s=timeout_s,
                 allowed_tools=tools,
                 provider_locked=provider_locked,
-                model=step_model(),
             )
         except Exception:
             # SALVAGE (HZ-31): the run hit its turn/time cap (or any other
@@ -607,7 +861,7 @@ def execute(task: dict) -> dict:
             # letting the next attempt's prepare_branch scrub it away. Still
             # re-raises unchanged: a failed attempt still fails and pauses,
             # no checks run, no PR opens, nothing advances.
-            _salvage_checkpoint(ws, item, branch)
+            _salvage_checkpoint(ws, item, branch, conflicted)
             raise
         # The summary is reporting, not the deliverable — the code in the
         # workspace is. Never torch a completed implement run over a
@@ -632,9 +886,11 @@ def execute(task: dict) -> dict:
         # Guardrail enforcement: the repo's own tests/linters run here, by the
         # script, before anything is committed or pushed. A failure fails the
         # run (Node pauses the item with the reason) — no green, no push.
-        check_note = run_checks(ws, log)
+        check_note = run_checks(ws, log, run_id=task.get("run_id"), item_id=item["id"])
         publish_screenshots(ws, item)
-        artifacts = finalize_branch(ws, item, branch)
+        artifacts = finalize_branch(ws, item, branch, conflicted)
+        if scope["mode"] == "fix":
+            artifacts.update(fix_diff_report(ws, scope.get("base_sha")))
         # finalize_branch returns branch/files_changed, not an artifact_md, so
         # the summary is this path's only note surface.
         summary = stamp_notes(f"{summary} · {check_note}"[:SUMMARY_MAX_CHARS], notes, SUMMARY_MAX_CHARS)
@@ -664,21 +920,42 @@ def execute(task: dict) -> dict:
         # uncommitted leftovers in it — scrub before reading the diff.
         branch = prepare_branch(ws, item)
         log(f"workspace {ws} on branch {branch} — reviewing diff")
-        head = git(ws, "symbolic-ref", "refs/remotes/origin/HEAD", check=False).stdout.strip()
-        default = head.rsplit("/", 1)[-1] if head else "main"
-        diff_stat = git(ws, "diff", "--stat", f"origin/{default}...HEAD", check=False).stdout.strip()
-        diff_full = git(ws, "diff", f"origin/{default}...HEAD", check=False).stdout
+        default = _default_branch(ws)
+        # HZ-182: a delta review reads only base..HEAD — unless the base is
+        # gone, no longer an ancestor, or main was merged over the PR's files,
+        # in which case it falls back to the full PR and says so.
+        scope = scope_of(task)
+        review_extra = {"reviewed_sha": git(ws, "rev-parse", "HEAD").stdout.strip(), "review_mode": "full"}
+        delta_section = ""
+        rev_range = f"origin/{default}...HEAD"
+        if scope["mode"] == "delta":
+            base = scope.get("base_sha")
+            problem = delta_base_problem(ws, base, default)
+            if problem:
+                log(f"delta review falling back to a full review: {problem}")
+                review_extra["scope_fallback"] = problem
+            else:
+                rev_range = f"{base}..HEAD"
+                delta_files = _names(ws, rev_range)
+                review_extra.update(review_mode="delta", delta_files=delta_files)
+                delta_section = delta_review_section(scope, base, delta_files) + "\n\n"
+        diff_stat = git(ws, "diff", "--stat", rev_range, check=False).stdout.strip()
+        diff_full = git(ws, "diff", rev_range, check=False).stdout
         diff_text, diff_note = truncate_diff(diff_full)
         diff_section = f"## Code diff under review\n\n```\n{diff_stat}\n```\n\n```diff\n{diff_text}\n```{diff_note}"
         prompt = (
             build_prompt(task)
             + "\n\n"
+            + delta_section
             + diff_section
             + "\n\nRespond with ONLY the JSON object described in your role instructions."
         )
 
         code_parsed, _code_provenance, code_notes = _run_and_parse(
             prompt,
+            agent=model_agent,
+            step=label,
+            persona=persona,
             append_system=role,
             cwd=str(ws),
             max_turns=max_turns,
@@ -694,6 +971,9 @@ def execute(task: dict) -> dict:
         qa_role = compose_role(qa_role, REVIEW_QA_PERSONA_AGENT, personas.get(REVIEW_QA_PERSONA_AGENT))
         qa_parsed, _qa_provenance, qa_notes = _run_and_parse(
             prompt,
+            agent=model_agent,
+            step=label,
+            persona=model_persona(REVIEW_QA_PERSONA_AGENT, personas),
             append_system=qa_role,
             cwd=str(ws),
             max_turns=max_turns,
@@ -703,6 +983,10 @@ def execute(task: dict) -> dict:
         )
 
         verdict = {"code_review": _code_review_section(code_parsed), "qa_review": _qa_review_section(qa_parsed)}
+        if review_extra["review_mode"] == "delta":
+            verdict["previous_findings"] = _merge_previous_findings(
+                scope.get("previous_findings") or [], [code_parsed, qa_parsed]
+            )
         artifact_md = "\n\n".join(
             part.strip()
             for part in (code_parsed.get("artifact_md"), qa_parsed.get("artifact_md"))
@@ -721,6 +1005,7 @@ def execute(task: dict) -> dict:
                     artifact_md[:WRITE_ARTIFACT_SANITY_CEILING_CHARS], notes, WRITE_ARTIFACT_SANITY_CEILING_CHARS
                 ),
                 "verdict": verdict,
+                **review_extra,
             },
         }
 
@@ -747,6 +1032,9 @@ def execute(task: dict) -> dict:
         )
         parsed, _deploy_provenance, notes = _run_and_parse(
             prompt,
+            agent=model_agent,
+            step=label,
+            persona=persona,
             append_system=role,
             cwd=None,
             max_turns=max_turns,
@@ -779,6 +1067,9 @@ def execute(task: dict) -> dict:
 
     parsed, reply_provenance, notes = _run_and_parse(
         build_prompt(task) + "\n\nRespond with ONLY the JSON object described in your role instructions.",
+        agent=model_agent,
+        step=label,
+        persona=persona,
         append_system=role,
         cwd=str(ws) if ws else None,
         max_turns=max_turns,

@@ -392,6 +392,23 @@ test('HZ-128 regression: stale later-step artifacts no longer push a required pl
   orchestrator.cancel('D-7c')
 })
 
+test("HZ-191: the step-9 PM digest's Test contract reaches both implement and automated review whole", async () => {
+  // STEPS[9] is the PM digest; STEPS[11] implements and STEPS[12] reviews.
+  assert.equal(STEPS[9].agent, 'PM')
+  const digest = '## Recommendation\n**PROCEED**.\n## Test contract\n- **Kept:** role text test — verifies metric line 1\n'
+  for (const [id, cursor] of [['D-7d', 11], ['D-7e', 12]]) {
+    insertItem.run(id, 'Test contract reaches downstream', 'Medium', cursor, null)
+    doneStepRun(id, 4, 1, 'options')
+    doneStepRun(id, 6, 1, 'plan')
+    doneStepRun(id, 9, 1, digest)
+    const dispatch = await dispatchFor(id)
+    const contract = dispatch.body.artifacts.find((a) => a.label === STEPS[9].label)
+    assert.ok(contract, `step ${cursor} did not receive the step-9 digest`)
+    assert.equal(contract.content, digest, `step ${cursor} received the Test contract altered or reduced`)
+    assert.ok(!contract.content.includes('[...reduced:'))
+  }
+})
+
 test('dispatchToFarm budgets a large plan complete and marks truncated older artifacts, with an item event', async () => {
   insertItem.run('D-8', 'Large plan with old context', 'Medium', 11, null)
   doneStepRun('D-8', 4, 1, 'a'.repeat(50000))
@@ -654,4 +671,52 @@ test('the GitHub step comment renders persona labels per agent, not raw ids', ()
   )
   assert.match(body, /\*\*Specialist personas:\*\* eng — Python backend, qa — Data integrity/)
   assert.ok(!body.includes('data_integrity'), 'raw persona id leaked into the issue comment')
+})
+
+// HZ-188: a send-back on a PR GitHub reports as conflicted must not rework the
+// stale base the conflict came from. Its implement dispatch carries
+// merge_main, which makes the farm merge origin/main into the branch (with the
+// conflicted files listed in the prompt) before the agent starts — the farm
+// half is covered in farm/tests/test_step_agent.py.
+const insertPrItem = db.prepare(
+  `INSERT INTO work_item (id, title, priority, cursor, repo, pr, pr_mergeable)
+   VALUES (?, ?, 'Medium', ?, 'acme/demo', ?, ?)`,
+)
+
+test('a resolve-conflicts escalation dispatches the next implement run with merge_main set', async () => {
+  const { IMPLEMENT_STEP_INDEX, ACCEPT_GATE_INDEX } = await import('../../domain/js/lifecycle.js')
+  insertPrItem.run('MM-1', 'Escalates to implement', ACCEPT_GATE_INDEX, 140, 0)
+  const realFetch = globalThis.fetch
+  globalThis.fetch = async (url, opts) => {
+    if (String(url).endsWith('/conflicts/resolve')) {
+      return { ok: true, json: async () => ({ ok: true, resolved: false, reason: 'conflict_too_large' }) }
+    }
+    return realFetch(url, opts)
+  }
+  try {
+    const result = await orchestrator.resolveConflicts('MM-1', 'Alice')
+    assert.equal(result.escalated, true)
+    await new Promise((r) => setTimeout(r, 20)) // dispatch is fire-and-forget
+  } finally {
+    globalThis.fetch = realFetch
+  }
+  const dispatch = dispatches.find((d) => d.url.includes('/steps/run') && d.body?.item?.id === 'MM-1')
+  orchestrator.cancel('MM-1')
+  assert.ok(dispatch, 'the escalation dispatched no implement run')
+  assert.equal(dispatch.body.step.index, IMPLEMENT_STEP_INDEX)
+  assert.equal(dispatch.body.merge_main, true)
+})
+
+test('an implement run on a PR with no reported conflict carries no merge_main', async () => {
+  const { IMPLEMENT_STEP_INDEX } = await import('../../domain/js/lifecycle.js')
+  insertPrItem.run('MM-2', 'Mergeable PR', IMPLEMENT_STEP_INDEX, 141, 1)
+  insertPrItem.run('MM-3', 'Unknown mergeability', IMPLEMENT_STEP_INDEX, 142, null)
+  assert.equal('merge_main' in (await dispatchFor('MM-2')).body, false)
+  assert.equal('merge_main' in (await dispatchFor('MM-3')).body, false)
+})
+
+test('only the implement step carries merge_main, even on a conflicted PR', async () => {
+  const { REVIEW_STEP_INDEX } = await import('../../domain/js/lifecycle.js')
+  insertPrItem.run('MM-4', 'Conflicted PR under review', REVIEW_STEP_INDEX, 143, 0)
+  assert.equal('merge_main' in (await dispatchFor('MM-4')).body, false)
 })

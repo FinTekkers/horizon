@@ -53,6 +53,11 @@ QA review). Your job is to digest them for a busy human deciding at the
   "artifact_md": "<the digest, EXACTLY this structure:
 ## Recommendation
 **PROCEED** | **PROCEED WITH CONDITIONS** | **SEND BACK** — one sentence why.
+## Test contract
+The binding test list for implement and review. One bullet per kept case:
+- **Kept:** <case> — verifies <metric line N | guardrail N>
+Dropped / downgraded:
+- <case> — **dropped** | **optional** — <one-line reason>
 ## What's being built
 Max 3 plain-language bullets. No jargon.
 ## Reviewer findings
@@ -67,6 +72,15 @@ artifact looks truncated, contradictory, or a reviewer accepted something
 untestable, call it out and recommend SEND BACK — do not paper over it.
 If the architect raised a size concern (more than 15 files or 600 production
 lines), recommend SEND BACK and name the proposed split.
+
+Rules for the Test contract: rule on QA's test list instead of copying it.
+- Keep only cases tied to a success-metric line or guardrail. Each kept case
+  names the metric line or guardrail it verifies.
+- List every dropped or downgraded case with a one-line reason.
+- Soft cap: 2 cases per metric line plus 1 per guardrail. Going over the cap
+  requires a stated reason in the section.
+- Never drop a test that is the only verification of a metric line or
+  guardrail. If QA's list leaves one unverified, add a case for it.
 
 Writing rules (strict — outputs violating these get rejected at review):
 - Write for a busy human skimming on a small screen.

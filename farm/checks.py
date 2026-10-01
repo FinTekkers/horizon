@@ -15,6 +15,12 @@ A repo with none of these yields no commands: nothing to enforce, the push
 proceeds (the guardrail is "tests must pass", not "tests must exist").
 A check *runner* that isn't installed on the farm host is skipped with a
 warning; a check that runs and fails raises CheckFailure and fails the step.
+
+HZ-144 added two things around that, both because this is the one genuinely
+CPU-bound part of a step: a cross-process cap on how many check suites run at
+once (farm/check_slots.py), and a JSONL record per run (farm/check_metrics.py)
+so the cap can be measured. It also gave the subprocess an explicit `env=` —
+see _check_env() for the failure that made that necessary.
 """
 
 import contextlib
@@ -26,6 +32,8 @@ import subprocess
 import sys
 import time
 from pathlib import Path
+
+from . import check_metrics, check_slots, config
 
 # HZ-183: how much of a failing command's output a CheckFailure carries. Lines,
 # not characters: the failing test names sit at the END of a test run's output
@@ -59,7 +67,7 @@ def output_tail(text: str) -> str:
     return f"[earlier output trimmed — last {CHECK_TAIL_LINES} lines]\n" + "\n".join(kept)
 
 
-def _run_bounded(cmd: list[str], ws: Path, timeout_s: float) -> subprocess.CompletedProcess:
+def _run_bounded(cmd: list[str], ws: Path, timeout_s: float, env: dict[str, str]) -> subprocess.CompletedProcess:
     """subprocess.run(timeout=...) kills only the direct child: `npm test`'s
     node and vite grandchildren outlive the timeout and keep running (CPU,
     ports, a half-built tree) after the check has already been reported. Run
@@ -67,7 +75,13 @@ def _run_bounded(cmd: list[str], ws: Path, timeout_s: float) -> subprocess.Compl
     check is actually stopped. Raises TimeoutExpired / FileNotFoundError
     exactly like subprocess.run."""
     proc = subprocess.Popen(
-        cmd, cwd=str(ws), stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, start_new_session=True
+        cmd,
+        cwd=str(ws),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        start_new_session=True,
+        env=env,
     )
     try:
         stdout, stderr = proc.communicate(timeout=timeout_s)
@@ -139,7 +153,42 @@ def detect_check_commands(ws: Path, log=lambda *_: None) -> list[list[str]]:
     return commands
 
 
-def run_checks(ws: Path, log=print, *, require_ran: bool = False, deadline: float | None = None) -> str:
+def _check_env() -> dict[str, str]:
+    """The environment the check commands run under.
+
+    Until HZ-144 the subprocess had no `env=` at all, so the checked repo's
+    own test process inherited everything farmd or the step agent held. The
+    checked repo is Horizon itself, and Horizon's suite asserts the farm's
+    capacity defaults — so setting FARM_MAX_EPHEMERAL=6 in
+    /etc/horizon/farm.env on 30 Sept 2026 failed every implement run's pytest
+    on `assert farmd.MAX_EPHEMERAL == 4`. Operational tuning of the farm must
+    not reach the tests the farm runs. This is the seam that enforces that,
+    and the only one that can: FARM_MAX_CONCURRENT_CHECKS has to survive as
+    far as run_checks() itself, which executes inside the agent session.
+
+    FARM_IN_CHECKS is added rather than removed — it marks the child as
+    already being inside a check slot, which is what makes nested acquisition
+    a structural no-op instead of a deadlock (see farm/check_slots.py).
+    Everything else is passed through: the inner suite needs FARM_HOME,
+    FARM_CLAUDE_BIN and PATH, so this is an explicit denylist, never a
+    "drop every FARM_*".
+    """
+    env = {k: v for k, v in os.environ.items() if k not in config.CHECK_SUBPROCESS_SCRUB}
+    env[check_slots.IN_CHECKS_ENV] = "1"
+    return env
+
+
+def run_checks(
+    ws: Path,
+    log=print,
+    *,
+    require_ran: bool = False,
+    run_id=None,
+    item_id=None,
+    caller: str = "step_agent",
+    deadline: float | None = None,
+    child_env: dict[str, str] | None = None,
+) -> str:
     """Returns a short human-readable note; raises CheckFailure on failure.
 
     require_ran (HZ-154) turns "nothing to enforce" into a failure. The scoped
@@ -149,12 +198,19 @@ def run_checks(ws: Path, log=print, *, require_ran: bool = False, deadline: floa
     instead. Every other caller keeps today's behaviour — the guardrail there
     is "tests must pass", not "tests must exist".
 
+    run_id/item_id/caller only label the metrics record (and the waiting
+    marker on /farm/status) — they never change what runs.
+
     deadline (HZ-183) is a time.monotonic() value bounding the WHOLE run.
     FARM_CHECK_TIMEOUT_S bounds each command on its own, so three commands
     could otherwise take three times the caller's budget; with a deadline each
     command gets whatever is left, and a spent budget is a "timed_out"
-    CheckFailure rather than a silent overrun."""
-    timeout_s = int(os.environ.get("FARM_CHECK_TIMEOUT_S", "600"))
+    CheckFailure rather than a silent overrun.
+
+    child_env (HZ-183) is laid over the check commands' environment only —
+    the pre-merge run uses it to give the PR's suites a throwaway FARM_HOME
+    while this process (its slot, its metrics record) stays on the real one.
+    """
     commands = detect_check_commands(ws, log=log)
     if not commands:
         log("checks: no test/lint commands detected in the repo — nothing to enforce")
@@ -162,28 +218,67 @@ def run_checks(ws: Path, log=print, *, require_ran: bool = False, deadline: floa
             raise CheckFailure("no repo checks detected — nothing proves this change is safe to push", reason="none_ran")
         return "no repo checks detected"
 
-    ran = 0
-    for cmd in commands:
-        shown = " ".join(cmd)
-        budget = float(timeout_s)
-        if deadline is not None:
-            budget = min(budget, deadline - time.monotonic())
-            if budget <= 0:
-                raise CheckFailure(f"repo checks ran out of time before: {shown}", command=shown, reason="timed_out")
-        log(f"checks: running {shown}")
+    # The slot is taken OUTSIDE the timeout read below, which is the whole
+    # point: FARM_CHECK_TIMEOUT_S is the budget for *running* the checks, and
+    # queueing for a slot must not eat it (HZ-144 guardrail 2). That holds by
+    # construction here, not by arithmetic — every clock this function starts
+    # begins after the `with`.
+    with check_slots.check_slot(log=log, run_id=run_id, item_id=item_id, caller=caller) as slot:
+        timeout_s = int(os.environ.get("FARM_CHECK_TIMEOUT_S", "600"))
+        record = check_metrics.new_record(run_id=run_id, item_id=item_id, caller=caller, slot=slot)
+        env = {**_check_env(), **(child_env or {})}
+        # Host-wide free memory at each command boundary; the minimum is what
+        # the record keeps. See farm/check_metrics.py on why this and not
+        # ru_maxrss, and on the resolution this sampling rate gives up.
+        mem_samples = [check_metrics.mem_available_kb()]
+        ran = 0
         try:
-            proc = _run_bounded(cmd, ws, budget)
-        except FileNotFoundError:
-            log(f"checks: {cmd[0]} is not installed on the farm host — skipped")
-            continue
-        except subprocess.TimeoutExpired as exc:
-            raise CheckFailure(
-                f"repo checks timed out after {int(budget)}s: {shown}", command=shown, reason="timed_out"
-            ) from exc
-        if proc.returncode != 0:
-            tail = output_tail((proc.stdout or "") + "\n" + (proc.stderr or ""))
-            raise CheckFailure(f"repo checks failed ({shown}): {tail}", command=shown, tail=tail)
-        ran += 1
+            for cmd in commands:
+                shown = " ".join(cmd)
+                budget = float(timeout_s)
+                if deadline is not None:
+                    budget = min(budget, deadline - time.monotonic())
+                    if budget <= 0:
+                        record["outcome"] = "timeout"
+                        raise CheckFailure(
+                            f"repo checks ran out of time before: {shown}", command=shown, reason="timed_out"
+                        )
+                log(f"checks: running {shown}")
+                started = time.monotonic()
+                try:
+                    proc = _run_bounded(cmd, ws, budget, env)
+                except FileNotFoundError:
+                    record["commands"].append({"cmd": shown, "skipped": "runner not installed"})
+                    log(f"checks: {cmd[0]} is not installed on the farm host — skipped")
+                    continue
+                except subprocess.TimeoutExpired as exc:
+                    record["commands"].append(
+                        {"cmd": shown, "duration_s": round(time.monotonic() - started, 1), "timed_out": True}
+                    )
+                    record["outcome"] = "timeout"
+                    raise CheckFailure(
+                        f"repo checks timed out after {int(budget)}s: {shown}", command=shown, reason="timed_out"
+                    ) from exc
+                finally:
+                    mem_samples.append(check_metrics.mem_available_kb())
+                record["commands"].append(
+                    {
+                        "cmd": shown,
+                        "duration_s": round(time.monotonic() - started, 1),
+                        "returncode": proc.returncode,
+                    }
+                )
+                if proc.returncode != 0:
+                    tail = output_tail((proc.stdout or "") + "\n" + (proc.stderr or ""))
+                    record["outcome"] = check_metrics.classify_failure(tail, proc.returncode)
+                    raise CheckFailure(f"repo checks failed ({shown}): {tail}", command=shown, tail=tail)
+                ran += 1
+            record["outcome"] = "pass"
+        finally:
+            measured = [x for x in mem_samples if x is not None]
+            record["mem_available_low_kb"] = min(measured) if measured else None
+            record["load_end"] = check_metrics.load_average()
+            check_metrics.append_record(record, log=log)
 
     if not ran and require_ran:
         raise CheckFailure(

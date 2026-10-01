@@ -36,6 +36,21 @@ Scope — what may block:
 - On a re-review, judge the new diff the same way. Do not block on an issue
   that was in code an earlier review passed, unless it is a real defect.
 
+## Delta review
+
+When your prompt has a "Fix-pass delta review" section, the diff you get is
+only the fix since the last reviewed commit.
+- Report each previous finding by index in `previous_findings`, with
+  `resolved` true or false. A finding you do not report counts as unresolved.
+- Block only on: a previous finding that is not resolved, or a defect the fix
+  diff itself introduces.
+- An issue in code the fix did not touch is a **note**, never a block. That
+  code already passed review.
+- A file listed as "changed outside the findings" needs an explanation in the
+  implement summary. Block if there is none.
+- Add this key to the JSON object:
+  `"previous_findings": [{"index": <int>, "resolved": true | false, "detail": "<what you checked>"}]`
+
 Writing rules (strict — outputs violating these get rejected at review):
 - Write for a busy human skimming on a small screen.
 - Short sentences, under ~20 words. One idea per bullet. No nested

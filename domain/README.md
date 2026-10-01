@@ -1,4 +1,4 @@
-# `domain/` — the lifecycle model, the failure-reason vocabulary, the work-item field limits and the priority vocabulary
+# `domain/` — the lifecycle model, the failure-reason vocabulary, the work-item field limits, the priority vocabulary and the persona registry
 
 **One JSON is the source of truth. Bindings read it. Consumers import from
 here.**
@@ -6,7 +6,8 @@ here.**
 Ask "what is a lifecycle step?" — or, since HZ-132, "what can make a step
 fail, and will Horizon retry it?", or, since HZ-134, "how long may a work-item
 field be?", or, since HZ-135, "what priority may a work item carry, and in what
-order?" — and the answer is this directory, by
+order?", or, since HZ-133, "which specialist personas exist, and which agent does
+each belong to?" — and the answer is this directory, by
 definition. Before HZ-128 the answer was spread across `server/src/lifecycle.js`,
 `ui/src/domain/lifecycle.js`, `farm/steps.py`, two committed
 `steps_generated.json` files and a build script living inside one consumer —
@@ -56,6 +57,46 @@ navigate them like any other file.
   (an LLM prompt, so it is pinned rather than rewritten).
   `domain-priority-pins.test.mjs` fails on all three if you forget.
 
+- **Changing the persona registry** — a new persona, a new persona agent, a
+  different default, a legacy alias, or a persona that forces a farm provider —
+  means editing **`domain/personas.json`**. Persona ids are unique *within* their
+  agent, not globally (HZ-125). There is no `file` field: the role markdown is
+  derived as `farm/roles/personas/<agent>_<persona>.md`, and the id shape
+  (`^[a-z][a-z0-9_]*$`) is enforced at load time because that derivation is a
+  path. `personaProviders` ships empty (HZ-121).
+
+  **HZ-133 lands in parts.** The bindings arrived first; `farm/personas.py`,
+  `server/src/personas.js` and `ui/src/domain/personas.js` still hold their own
+  copies of the ids until they are repointed here, so until then a new persona
+  is still a four-file edit. `domain-personas-parity.test.mjs` and
+  `farm/tests/test_personas_domain.py` fail if the document and those copies
+  disagree. Labels, initials, colours and `PERSONA_AGENT_ROLES` stay in those
+  layer files permanently — they are presentation.
+
+- **Changing which model an agent call uses** (HZ-192) means editing the
+  `models` block of **`domain/personas.json`** — no env var selects a model.
+  One resolver (`resolve_model` / `resolveModel`) picks it per call:
+  `models.personas["<agent>.<persona>"]`, then `models.steps[<step label>]`,
+  then `models.agents[<agent>]`. `farm/agent_runner.py`'s `run_agent()` takes
+  `agent=`/`step=`/`persona=` and resolves the model itself; it has no `model=`
+  parameter, and it hands Muse (any non-Claude provider) no model at all.
+  - A lifecycle step's model agent is its `steps.json` **`agent` display name
+    lower-cased** (`DevOps` → `devops`), so those names are now a contract:
+    renaming one without its `models.agents` key fails at dispatch, and
+    `farm/tests/test_models_domain.py` fails first.
+  - The concierge runs as `concierge`; merge-conflict resolution as
+    `models.conflictAgent` under the reserved step key `conflict`.
+  - A step override is keyed by the step's exact **label**, so renaming a step
+    orphans its override; `test_models_domain.py` and `domain-models.test.mjs`
+    fail on a key that names no live step.
+  - The PM lane resumes one session per project across its steps. A per-step
+    override on a PM-lane step would switch models inside that resumed
+    session — set one deliberately.
+  - Only a Claude id (`^claude-[a-z0-9][a-z0-9.-]*$`) can be declared, and a
+    persona `personaProviders` routes elsewhere cannot carry one.
+  - `FARM_MODEL_OVERRIDE` on the farm host is the one emergency lever: it
+    replaces every Claude call's model and never reaches Muse.
+
 - **Adding or changing a *helper*** means editing `js/lifecycle.js` or
   `py/steps.py` **directly**. Edit the binding you mean; there is no indirection
   between you and it.
@@ -89,6 +130,11 @@ enforced rather than remembered.
 | `fixtures/lifecycle-cases.json` | Input/expected pairs asserted by **both** language suites |
 | `fixtures/fields-cases.json` | The same, for the field bindings |
 | `fixtures/priorities-cases.json` | The same, for the priority bindings |
+| `personas.json` | The only place a persona id, its agent, each agent's default, the pre-HZ-125 legacy aliases, persona-to-provider and (HZ-192) the model each agent call uses are declared |
+| `personas.schema.json` | The contract `personas.json` must satisfy |
+| `js/personas.js` | The JS binding: imports `personas.json`, exposes the ids, defaults, legacy aliases and `isPersona` / `personaRoleFile`. No `PERSONA_PROVIDERS` — it has no JS consumer |
+| `py/personas.py` | The Python binding: loads `personas.json`, exposes the same registry plus `PERSONA_PROVIDERS`, as tuples and read-only maps. Both bindings also expose `MODELS` and the one model resolver |
+| `fixtures/personas-cases.json` | The same as the other fixtures, for the persona bindings |
 
 Every file here is authored. Nothing is output.
 
@@ -380,6 +426,14 @@ keys as well as colours, and `domain-binding-hygiene.test.mjs` asserts it.
 `steps.json` cannot join that half: a step's `label` **is** its identity, the
 thing every lookup resolves by, not a string shown to a human.
 
+**No persona presentation.** `domain/personas.json` declares ids, membership,
+defaults, legacy aliases and providers — never a label, initials, a colour or a
+role-file path. `additionalProperties: false` at every level of
+`personas.schema.json` makes that structural, and `domain-binding-hygiene.test.mjs`
+pins both bindings' public names by set equality. The persona-agent →
+lifecycle-agent bridge (`PERSONA_AGENT_ROLES`: `eng` → `Eng`) stays in
+`ui/src/domain/personas.js` too.
+
 **The one surviving duplicate.** `server/src/agentTokens.js` and
 `ui/src/domain/agentTokens.js` both export `AGENTS`, and their `label` /
 `initials` fields are the same by hand. They cannot merge: the server persists
@@ -446,6 +500,12 @@ here as a known limit, not hidden.
 | The UI picker is derived | `ui/src/components/NewItemModal.test.jsx` | Metric 2's UI leg, which had no test at any level. Renders the real modal and asserts the options equal the vocabulary **in order**, one per value, with the declared default selected |
 | The picker is derived in the SHIPPED BUNDLE | `e2e/tests/02-create-item.spec.js` | The same claim one level down, in a real browser against `vite build`'s output rather than Vite's dev resolution. This journey already opened the intake modal but never touched the priority control, so a picker rendering **zero options** — the exact failure a dropped `priorities.json` produces, since the UI inlines it at build time — left all 31 e2e tests green. Now it selects a NON-default value, asserts the rendered options and their order, and reads the value back off the board card: picker → `POST /api/items` → the `CHECK` constraint the same list builds → render |
 | The offline mock answers like the route | `ui/src/api/mockApi.test.js` | `createItem`'s `priority = DEFAULT_PRIORITY` drifting from `POST /api/items`' default. mock mode is the UI's stand-in backend with no server, and that default was the one priority-carrying branch of this change with no assertion at all — a drift only offline users would have seen |
+| Persona schema + load-time rules | `domain-personas-schema.test.mjs` | An invalid registry: a path-unsafe id, a duplicate agent, a default from another agent, an undeclared primary agent, a legacy alias or provider key naming a dead pair — including real subprocess imports, in **both** languages, over a tampered `personas.json`. Also asserts the schema passes what only the bindings reject, and rejects a `label`/`initials`/`color`/`file` key |
+| Cross-language persona fixtures | `fixtures/personas-cases.json` + `domain-personas-cases.test.mjs` + `farm/tests/test_personas_fixtures.py` | The two persona validators, `isPersona`/`is_persona` or `personaRoleFile`/`persona_role_file` disagreeing. Same set-equality / non-empty / pinned-manifest guards as the other fixtures |
+| Cross-language persona parity | `domain-personas-parity.test.mjs` | The two persona bindings drifting — agent and id **order**, defaults, legacy aliases, providers, every membership answer and every derived role file (which must exist on disk). Also pins the document to today's server and UI registries, value for value |
+| Models: pins and coverage | `farm/tests/test_models_domain.py` + `domain-models.test.mjs` | A model changing at merge (the block is pinned to production, and every agent step's EFFECTIVE model is asserted), a steps.json agent with no default model, a step override naming no live step, or the two bindings loading different models |
+| Every call takes its model from the resolver | `farm/tests/test_model_call_sites.py` | A `run_agent` call passing `model=`, omitting `agent=`, splatting `**kwargs`, or aliased past the check — named as `farm/<file>:<line>`. Also: the old `FARM_*_MODEL` vars in any tracked file, and a model id outside `domain/` |
+| Persona document equals the farm registry | `farm/tests/test_personas_domain.py` | The farm leg of the above: `farm/personas.py`'s ids, order, defaults, legacy aliases and providers equal the document's, and every role file on disk is a declared persona |
 | The wizard's text has not moved | `farm/tests/test_wizard.py` | A renumbered or reworded WhatsApp prompt. Both emitted strings pinned byte-for-byte, because for a bot the emitted string IS the behaviour |
 
 One honest limit remains: `domain-no-drift-scaffolding.test.mjs`'s

@@ -91,3 +91,27 @@ test('a pre-merge check failure stays on the tracker instead of opening the PR (
   await expect(serverApi.approveGate('X4', '')).resolves.toEqual(body)
   expect(openSpy).not.toHaveBeenCalled()
 })
+
+// HZ-179: the token client hits the server's routes with the right verbs, and
+// createApiToken leaves nothing behind in browser storage.
+test('the API token client calls GET/POST/DELETE /api/tokens and stores nothing', async () => {
+  const serverApi = await import('./serverApi')
+  const fetchMock = vi.fn(() =>
+    Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({ token: 'hz_secret', tokens: [] }) }),
+  )
+  vi.stubGlobal('fetch', fetchMock)
+
+  await serverApi.listApiTokens()
+  await serverApi.createApiToken({ name: 'ci-bot', expiresInDays: 30 })
+  await serverApi.revokeApiToken('tok_1')
+
+  const calls = fetchMock.mock.calls.map(([url, opts]) => [opts?.method || 'GET', url.replace(serverApi.API_BASE, '')])
+  expect(calls).toEqual([
+    ['GET', '/tokens'],
+    ['POST', '/tokens'],
+    ['DELETE', '/tokens/tok_1'],
+  ])
+  expect(JSON.parse(fetchMock.mock.calls[1][1].body)).toEqual({ name: 'ci-bot', expiresInDays: 30 })
+  expect(JSON.stringify({ ...localStorage })).not.toContain('hz_secret')
+  expect(JSON.stringify({ ...sessionStorage })).not.toContain('hz_secret')
+})

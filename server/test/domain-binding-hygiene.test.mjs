@@ -28,6 +28,7 @@ import * as binding from '../../domain/js/lifecycle.js'
 import * as reasonBinding from '../../domain/js/reasons.js'
 import * as fieldBinding from '../../domain/js/fields.js'
 import * as priorityBinding from '../../domain/js/priorities.js'
+import * as personaBinding from '../../domain/js/personas.js'
 import { REPO_ROOT, stripComments } from './helpers/repoFiles.mjs'
 
 const jsSource = readFileSync(path.join(REPO_ROOT, 'domain/js/lifecycle.js'), 'utf8')
@@ -77,6 +78,16 @@ const prioritiesJsCode = stripComments(prioritiesJsSource)
 const prioritiesPySource = readFileSync(path.join(REPO_ROOT, 'domain/py/priorities.py'), 'utf8')
 const prioritiesPyCode = stripPythonDocstrings(stripComments(prioritiesPySource))
 const prioritiesJson = readFileSync(path.join(REPO_ROOT, 'domain/priorities.json'), 'utf8')
+
+// HZ-133 added a FIFTH source/binding pair, under the same rules again. No
+// consumer imports it yet, but the layer registries it replaces are bundled into
+// the UI, so the no-runtime-I/O half will be load-bearing the moment they are
+// repointed — held to the bar now so it cannot arrive without it.
+const personasJsSource = readFileSync(path.join(REPO_ROOT, 'domain/js/personas.js'), 'utf8')
+const personasJsCode = stripComments(personasJsSource)
+const personasPySource = readFileSync(path.join(REPO_ROOT, 'domain/py/personas.py'), 'utf8')
+const personasPyCode = stripPythonDocstrings(stripComments(personasPySource))
+const personasJson = readFileSync(path.join(REPO_ROOT, 'domain/personas.json'), 'utf8')
 
 // ---- guardrail 4: no runtime fetch, no filesystem read ----
 
@@ -245,6 +256,8 @@ test('every binding is real hand-written source — no placeholder, no GENERATED
     ['domain/py/fields.py', fieldsPySource],
     ['domain/js/priorities.js', prioritiesJsSource],
     ['domain/py/priorities.py', prioritiesPySource],
+    ['domain/js/personas.js', personasJsSource],
+    ['domain/py/personas.py', personasPySource],
   ]) {
     assert.ok(!src.includes('@@'), `${rel} still carries an @@PLACEHOLDER@@`)
     assert.doesNotMatch(src, /GENERATED/, `${rel} still carries the "GENERATED — do not edit" banner`)
@@ -572,4 +585,112 @@ test('SHAPE PIN (reasons): both bindings expose the authored entries, with exact
     assert.deepEqual(table, authored, 'a reason binding reshapes the authored vocabulary instead of exposing it')
     for (const entry of table) assert.deepEqual(Object.keys(entry).sort(), ['id', 'retryable'])
   }
+})
+
+// ---- HZ-133: the persona registry ----
+
+test('the JS persona binding does no runtime I/O', () => {
+  for (const forbidden of [/\bfetch\s*\(/, /readFileSync/, /readFile\b/, /import\s*\(/, /require\s*\(/, /XMLHttpRequest/]) {
+    assert.ok(!forbidden.test(personasJsCode), `domain/js/personas.js matches ${forbidden}`)
+  }
+})
+
+test('the JS persona binding reads its data from domain/personas.json with one static import', () => {
+  assert.match(personasJsCode, /^import data from '\.\.\/personas\.json' with \{ type: 'json' \}$/m)
+  assert.equal((personasJsCode.match(/^import /gm) || []).length, 1, 'domain/js/personas.js imports something besides its JSON')
+})
+
+// The whole point of HZ-133: ids live in ONE place. An id or agent name typed
+// into either binding's CODE would be the second copy this item removes.
+test('neither persona binding inlines an agent name or a persona id — every one, both files', () => {
+  const names = [...personaBinding.PERSONA_AGENTS, ...Object.values(personaBinding.PERSONA_IDS).flat()]
+  assert.ok(names.length > 0, 'sanity: the JS persona binding exports an empty registry')
+  // Positive controls for the two strippers: each really is still reading code.
+  assert.ok(personasJsCode.includes('export const PERSONA_IDS'))
+  assert.ok(personasPyCode.includes('def persona_role_file'))
+  for (const name of new Set(names)) {
+    for (const [rel, code] of [
+      ['domain/js/personas.js', personasJsCode],
+      ['domain/py/personas.py', personasPyCode],
+    ]) {
+      assert.ok(!new RegExp(`\\b${name}\\b`).test(code), `"${name}" is inlined in ${rel}`)
+    }
+    assert.ok(personasJson.includes(`"${name}"`), `positive control: "${name}" is not in domain/personas.json`)
+  }
+})
+
+// Guardrail 5. Labels, initials and colours are the presentation the two layer
+// registries carry today; `file` is derived, never stored.
+test('domain/personas.json declares no copy, colour, theme token or role-file path at any depth', () => {
+  const PERSONA_PRESENTATION_KEY = new RegExp(`${THEME_OR_COPY_KEY.source}|^(initials|file)$`, 'i')
+  assert.deepEqual(presentationOffendersIn(personasJson, PERSONA_PRESENTATION_KEY), [])
+  assert.ok(JSON.parse(personasJson).agents.length > 0)
+  assert.deepEqual(
+    presentationOffendersIn('{"agents":[{"agent":"x","label":"X","initials":"XX","color":"#000","file":"x.md"}]}', PERSONA_PRESENTATION_KEY),
+    ['.agents[0].label', '.agents[0].initials', '.agents[0].color', '.agents[0].file'],
+  )
+})
+
+test('the JS persona binding exports the registry and nothing presentational', () => {
+  assert.deepEqual(
+    Object.keys(personaBinding).sort(),
+    [
+      'CONCIERGE_MODEL_AGENT',
+      'CONFLICT_MODEL_AGENT',
+      'CONFLICT_STEP_KEY',
+      'DEFAULT_PERSONAS',
+      'LEGACY_PERSONA_IDS',
+      'MODELS',
+      'NAMESPACED_PERSONA_IDS',
+      'PERSONA_AGENTS',
+      'PERSONA_IDS',
+      'PRIMARY_PERSONA_AGENT',
+      'assertPersonasShape',
+      'isPersona',
+      'isPersonaAgent',
+      'legacyPersona',
+      'modelAgentForStep',
+      'personaRoleFile',
+      'resolveModel',
+    ],
+    'domain/js/personas.js gained or lost an export — presentation stays in the layer registries',
+  )
+  for (const forbidden of ['PERSONAS', 'PERSONA_AGENT_ROLES', 'personaLabel', 'personaFor', 'personaSlotForFile', 'PERSONA_PROVIDERS']) {
+    assert.equal(personaBinding[forbidden], undefined, `domain/js/personas.js exports ${forbidden}`)
+  }
+})
+
+const pythonPersonaNames = JSON.parse(
+  execFileSync(
+    'python3',
+    [
+      '-c',
+      'import inspect, json; from domain.py import personas; print(json.dumps(sorted(n for n, v in vars(personas).items() if not n.startswith("_") and not inspect.ismodule(v) and getattr(v, "__module__", personas.__name__) == personas.__name__)))',
+    ],
+    { cwd: REPO_ROOT, encoding: 'utf8' },
+  ),
+)
+
+test('the Python persona binding owns the registry and nothing else — no labels, no colours', () => {
+  assert.deepEqual(
+    pythonPersonaNames,
+    [
+      'CONCIERGE_MODEL_AGENT',
+      'CONFLICT_MODEL_AGENT',
+      'CONFLICT_STEP_KEY',
+      'DEFAULT_PERSONAS',
+      'LEGACY_PERSONA_IDS',
+      'MODELS',
+      'NAMESPACED_PERSONA_IDS',
+      'PERSONA_AGENTS',
+      'PERSONA_IDS',
+      'PERSONA_PROVIDERS',
+      'PRIMARY_PERSONA_AGENT',
+      'is_persona',
+      'model_agent_for_step',
+      'persona_role_file',
+      'resolve_model',
+    ],
+    'domain/py/personas.py gained or lost a public name — presentation stays in the layer registries',
+  )
 })

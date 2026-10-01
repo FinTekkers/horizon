@@ -15,7 +15,22 @@ SHARED_SECRET = os.environ.get("FARM_SHARED_SECRET", "dev-secret")
 # refuse (the server answers 503), never silently succeed.
 WA_APPROVAL_SECRET = os.environ.get("WA_APPROVAL_SECRET", "")
 
-FARM_HOME = Path(os.environ.get("FARM_HOME", str(Path.home() / ".horizon-farm")))
+
+def farm_home() -> Path:
+    """FARM_HOME read at CALL time, unlike the constant below.
+
+    Everything else in this file is import-bound, which is fine for a
+    long-lived process that is configured before it starts. The check-slot
+    directory (farm/check_slots.py) is the exception: it is a shared path that
+    tests must be able to redirect per-test with monkeypatch.setenv, and an
+    import-bound value cannot be redirected after the first `farm.*` import.
+    The constant is kept so existing callers are untouched; both read the same
+    default, so they cannot drift.
+    """
+    return Path(os.environ.get("FARM_HOME", str(Path.home() / ".horizon-farm")))
+
+
+FARM_HOME = farm_home()
 QUEUE_DIR = FARM_HOME / "queue"
 STATE_DIR = FARM_HOME / "state"
 LOGS_DIR = FARM_HOME / "logs"
@@ -27,11 +42,50 @@ CLAUDE_BIN = os.environ.get("FARM_CLAUDE_BIN", "claude")
 # is the rollback lever restoring the silent `claude -p` path. Only affects
 # the claude provider's own internals — unrelated to FARM_PROVIDER below.
 FARM_RUNNER = os.environ.get("FARM_RUNNER", "sdk")
-PM_MODEL = os.environ.get("FARM_PM_MODEL")  # None -> CLI default
-# HZ-187: model for step agents and conflict resolution (Claude provider only).
-STEP_MODEL = os.environ.get("FARM_STEP_MODEL") or None  # unset/empty -> CLI default
+# HZ-192: no env var selects a model. Every farm call's model is declared in
+# domain/personas.json's `models` block and resolved inside run_agent(). The
+# one emergency lever, FARM_MODEL_OVERRIDE (a Claude model id for EVERY Claude
+# call; never reaches Muse), is read at call time in farm/agent_runner.py,
+# not here.
+
+# HZ-188: how long an implement/review step waits for the item's workspace
+# lock (farm/workspaces.py item_lock) while a conflict resolver still holds it
+# — e.g. the server timed out a resolve and sent the item back while farmd
+# was finishing. Kept short: the wait runs inside the step's own server-side
+# execution timer (50 min for implement against a 45 min agent budget), so a
+# long wait would just turn into a timeout. Past it the step fails with
+# "workspace busy" and never touches the worktree.
+ITEM_LOCK_WAIT_S = int(os.environ.get("FARM_ITEM_LOCK_WAIT_S", "300"))
 STEP_TIMEOUT_S = int(os.environ.get("FARM_STEP_TIMEOUT_S", "900"))
 MAX_TURNS = int(os.environ.get("FARM_MAX_TURNS", "8"))
+
+# ---- HZ-144: farm capacity settings, and the two seams that scrub them ----
+#
+# Names only here. The VALUES are read at call time in farm/check_slots.py
+# (slot_limit(), wait_ceiling_s()) and farm/farmd.py (MAX_EPHEMERAL), so there
+# is exactly one reader per setting — a second import-bound copy in this file
+# would be the one that drifts.
+#
+# Why they are scrubbed at all: the repo whose checks the farm runs is Horizon
+# itself, and Horizon's own suite asserts these defaults
+# (farm/tests/test_farmd.py). On 30 Sept 2026, FARM_MAX_EPHEMERAL=6 in
+# /etc/horizon/farm.env was forwarded into every agent session and inherited by
+# the pytest that ran inside it, so every implement run's checks failed on
+# `assert farmd.MAX_EPHEMERAL == 4`. Operational tuning must not reach a test
+# process. An explicit denylist, not "drop every FARM_*": blanket stripping
+# would break unrelated things (FARM_HOME, FARM_CLAUDE_BIN) that the inner
+# suite genuinely needs.
+
+# Stripped at the tmux seam (farm/tmux_mgr.py). An agent has no use for the
+# farm's own agent-concurrency cap.
+AGENT_NEVER_NEEDS = frozenset({"FARM_MAX_EPHEMERAL"})
+
+# Stripped one layer deeper, at the subprocess that runs the checked repo's
+# tests (farm/checks.py). FARM_MAX_CONCURRENT_CHECKS deliberately is NOT in
+# AGENT_NEVER_NEEDS: run_checks() executes *inside* the agent session and has
+# to read the limit, so stripping it at tmux would silently disable the
+# limiter. It is stripped here instead — past the reader, before the tests.
+CHECK_SUBPROCESS_SCRUB = frozenset({"FARM_MAX_EPHEMERAL", "FARM_MAX_CONCURRENT_CHECKS"})
 
 # HZ-101: how often farmd reconciles claimed runs against live tmux sessions
 # (session gone -> report the run failed instead of waiting for the server's
@@ -97,7 +151,6 @@ FARM_WA_GROUP_JIDS = [j.strip() for j in os.environ.get("FARM_WA_GROUP_JIDS", ""
 # mcp_bridge transport: the whatsapp-mcp bridge's REST endpoint and SQLite store.
 WA_BRIDGE_URL = os.environ.get("WA_BRIDGE_URL", "http://localhost:8080")
 WA_DB_PATH = os.environ.get("WA_DB_PATH", "")
-CONCIERGE_MODEL = os.environ.get("FARM_CONCIERGE_MODEL")  # None -> CLI default
 
 # HZ-15: create work items and approve gates from WhatsApp.
 # Where the web UI lives — texted back as a deep link (e.g. "HZ-7" ->

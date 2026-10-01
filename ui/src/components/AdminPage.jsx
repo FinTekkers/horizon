@@ -1,5 +1,15 @@
 import { useEffect, useState } from 'react'
-import { saveToken, createProject, addRepoToProject, disconnectRepo, regenerateGatePin, getDeployTargets } from '../api'
+import {
+  saveToken,
+  createProject,
+  addRepoToProject,
+  disconnectRepo,
+  regenerateGatePin,
+  getDeployTargets,
+  listApiTokens,
+  createApiToken,
+  revokeApiToken,
+} from '../api'
 import { BackIcon, GithubIcon, LockIcon } from './icons'
 
 function SecurityPanel() {
@@ -47,6 +57,155 @@ function SecurityPanel() {
           {busy ? 'Generating…' : 'Regenerate my PIN'}
         </button>
       </div>
+    </div>
+  )
+}
+
+// Mirrors the server's API_TOKEN_DEFAULT_DAYS / API_TOKEN_MAX_DAYS (auth.js),
+// which re-validates — these only shape the input.
+const API_TOKEN_DEFAULT_DAYS = 90
+const API_TOKEN_MAX_DAYS = 365
+
+const formatWhen = (iso) => (iso ? new Date(iso).toLocaleDateString() : 'never')
+
+function ApiTokenRow({ token, onRevoke }) {
+  const [busy, setBusy] = useState(false)
+
+  const revoke = async () => {
+    if (!window.confirm(`Revoke the token "${token.name}"? Anything using it stops working immediately.`)) return
+    setBusy(true)
+    try {
+      await onRevoke(token.id)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <div className="api-token-row">
+      <span className="api-token-row__name">{token.name}</span>
+      <span className="api-token-row__last4">…{token.last4}</span>
+      <span className="api-token-row__dates">
+        created {formatWhen(token.createdAt)} · last used {formatWhen(token.lastUsedAt)} · expires{' '}
+        {formatWhen(token.expiresAt)}
+      </span>
+      <button className="api-token-row__revoke" onClick={revoke} disabled={busy}>
+        Revoke
+      </button>
+    </div>
+  )
+}
+
+// Personal API tokens (HZ-179). The raw token lives only in this component's
+// state, from the create response until it is dismissed or the page is left —
+// never in localStorage, and the server cannot show it again.
+function ApiTokensPanel() {
+  const [tokens, setTokens] = useState(null)
+  const [name, setName] = useState('')
+  const [days, setDays] = useState(String(API_TOKEN_DEFAULT_DAYS))
+  const [created, setCreated] = useState(null)
+  const [error, setError] = useState(null)
+  const [busy, setBusy] = useState(false)
+
+  const refresh = () =>
+    listApiTokens()
+      .then((result) => setTokens(result.tokens || []))
+      .catch((err) => setError(err.message))
+
+  useEffect(() => {
+    refresh()
+  }, [])
+
+  const submit = async () => {
+    const expiresInDays = Number(days)
+    if (!name.trim()) {
+      setError('Give the token a name')
+      return
+    }
+    if (!Number.isInteger(expiresInDays) || expiresInDays < 1 || expiresInDays > API_TOKEN_MAX_DAYS) {
+      setError(`Expiry must be a whole number of days from 1 to ${API_TOKEN_MAX_DAYS}`)
+      return
+    }
+    setBusy(true)
+    setError(null)
+    try {
+      const result = await createApiToken({ name: name.trim(), expiresInDays })
+      setCreated({ name: result.name, token: result.token })
+      setName('')
+      setDays(String(API_TOKEN_DEFAULT_DAYS))
+      await refresh()
+    } catch (err) {
+      setError(err.message)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const revoke = async (id) => {
+    setError(null)
+    try {
+      await revokeApiToken(id)
+      await refresh()
+    } catch (err) {
+      setError(err.message)
+    }
+  }
+
+  return (
+    <div className="panel admin__panel api-tokens">
+      <div className="panel__title admin__panel-title">
+        <LockIcon size={18} />
+        Personal API tokens
+      </div>
+      <div className="panel__subtitle">
+        For scripts: send <code>Authorization: Bearer &lt;token&gt;</code> to call the API as you. A token can never
+        approve a gate or manage tokens — those still need this browser and your gate PIN.
+      </div>
+
+      {created && (
+        <div className="api-tokens__created">
+          <div>
+            New token <strong>{created.name}</strong> — copy it now, it will not be shown again:
+          </div>
+          <code className="api-tokens__raw">{created.token}</code>
+          <div className="composer__actions">
+            <button className="composer__cancel" onClick={() => navigator.clipboard?.writeText(created.token)}>
+              Copy
+            </button>
+            <button className="composer__cancel" onClick={() => setCreated(null)}>
+              Done
+            </button>
+          </div>
+        </div>
+      )}
+
+      {tokens && tokens.length === 0 && <div className="gh-note">No active tokens.</div>}
+      {tokens && tokens.map((token) => <ApiTokenRow key={token.id} token={token} onRevoke={revoke} />)}
+
+      <div className="project-block__add" style={{ marginTop: 18 }}>
+        <input
+          className="field__input"
+          placeholder="Token name, e.g. ci-bot"
+          maxLength={60}
+          value={name}
+          onChange={(e) => setName(e.target.value)}
+          onKeyDown={(e) => e.key === 'Enter' && submit()}
+        />
+        <input
+          className="field__input api-tokens__days"
+          type="number"
+          min={1}
+          max={API_TOKEN_MAX_DAYS}
+          aria-label="Expires in days"
+          title="Expires in days"
+          value={days}
+          onChange={(e) => setDays(e.target.value)}
+        />
+        <button className="composer__submit" style={{ background: 'var(--primary)' }} onClick={submit} disabled={busy}>
+          {busy ? 'Creating…' : 'Create token'}
+        </button>
+      </div>
+      {error && <div className="gh-error">{error}</div>}
     </div>
   )
 }
@@ -357,6 +516,8 @@ export default function AdminPage({ sync, projects, onBack }) {
       </button>
       <div className="admin__title">Admin</div>
       <SecurityPanel />
+      <div style={{ height: 22 }} />
+      <ApiTokensPanel />
       <div style={{ height: 22 }} />
       <TokenPanel sync={sync} />
       <div style={{ height: 22 }} />

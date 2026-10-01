@@ -1,0 +1,42 @@
+{
+  "_source": "HZ-125 automated review attempt 4 (step_run 1168): findings verbatim from the feedback row it wrote (feedback 160); severities from its artifact's Blocking / Notes sections",
+  "reviewed_sha": "5f0477f427c1a1407363a3ad34f53a0d4f4a545d",
+  "verdict": {
+    "code_review": {
+      "verdict": "fail",
+      "findings": [
+        {
+          "file": "server/src/definitions.js",
+          "line": 186,
+          "severity": "block",
+          "detail": "`composeRole()` resolves the id with an unguarded lookup: `bucket[candidate] ? candidate : ...`. For an inherited key the lookup is truthy, so `bucket[id].file` is `undefined` and `path.join()` throws. `GET /api/definitions/effective?role=eng_implement&agent=eng&persona=constructor` returns **500**; the pre-change `PERSONA_IDS.includes()` returned the default. `farm/rules.py`'s `effective_prompt` still returns the default for that input, so the cross-language parity this file exists to guarantee diverges too (the fixtures in `definitions-parity.test.mjs` don't cover it). Fix: use the `isPersona()` already exported from the imported `./personas.js`, which guards with `hasOwnProperty`. Same pattern at `server/src/personas.js:101` (`LEGACY_PERSONA_IDS[row?.persona]`) — not reachable from app data, but worth hardening in the same pass."
+        },
+        {
+          "file": "farm/personas.py",
+          "line": 169,
+          "severity": "note",
+          "detail": "`provider_for()` now scans all four persona slots, so a provider-forcing persona in any slot wins on any override-eligible step. Guardrail 9 bars changes to provider selection logic. Inert today (`PERSONA_PROVIDERS` ships empty), flagged and accepted in planning, and documented here and in `docs/agent-architecture.md` — raising it so the widening is a conscious record, not a rediscovery."
+        },
+        {
+          "file": "docs/providers/muse-code.md",
+          "line": 183,
+          "severity": "note",
+          "detail": "Still names `fullstack`, `python_backend`, `frontend_ui` as \"every real persona\". `docs/agent-architecture.md` was updated; this file was missed and no test covers it."
+        },
+        {
+          "file": "farm/tests/test_step_agent.py",
+          "line": 516,
+          "severity": "note",
+          "detail": "`test_real_personas_never_force_a_provider_override` still loops the retired flat ids, so it exercises the legacy aliases and never covers `performance`. Switch it to `PERSONAS[\"eng\"]`."
+        }
+      ]
+    },
+    "qa_review": {
+      "verdict": "pass",
+      "regression_tests_run": true,
+      "new_code_unit_coverage": true,
+      "e2e_test_present": true,
+      "findings": []
+    }
+  }
+}

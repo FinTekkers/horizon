@@ -29,6 +29,9 @@
 //                          WA_NOTIFY_ENABLED is — rollback tier 1, no deploy.
 //   SESSION_SECRET         unused placeholder — session tokens are random, not signed
 //   HORIZON_TEST_HOOKS     "1" registers e2e-only routes (see app.js) — never set in production
+//   FIX_PASS_ENABLED       "0" turns off HZ-182's fix-only implement + delta review after a rejection
+//   FIX_PASS_TURN_DIVISOR  fix-pass budget = implement budget / this (default 3)
+//   FIX_PASS_MAX_LINES     fix diffs larger than this get a full review (default 200)
 
 import { agentStepIndexes } from '../../domain/js/lifecycle.js'
 
@@ -85,6 +88,18 @@ export const FARM_CONFLICT_RESOLVE_TIMEOUT_MS = Number(process.env.FARM_CONFLICT
 // PR into the current base and the repo's own checks (server/src/premerge.js).
 // A run that has not finished by then blocks the merge, fail-closed.
 export const PREMERGE_CHECK_TIMEOUT_MS = Number(process.env.PREMERGE_CHECK_TIMEOUT_MS || 20 * 60 * 1000)
+// HZ-182: after an automated review rejection, the next implement run is a
+// fix-only pass and the review after it sees only the fix's delta. "0" turns
+// it off: every cycle is a full implement plus a full review, as before.
+export const FIX_PASS_ENABLED = process.env.FIX_PASS_ENABLED !== '0'
+// The fix pass gets the implement step's turn and time budget divided by
+// this. Whole numbers >= 1 only; anything else falls back to 3.
+const fixPassDivisor = Math.floor(Number(process.env.FIX_PASS_TURN_DIVISOR))
+export const FIX_PASS_TURN_DIVISOR = fixPassDivisor >= 1 ? fixPassDivisor : 3
+// A fix diff over this many changed lines (added + removed) gets a full
+// review instead of a delta review.
+const fixPassMaxLines = Math.floor(Number(process.env.FIX_PASS_MAX_LINES))
+export const FIX_PASS_MAX_LINES = fixPassMaxLines >= 1 ? fixPassMaxLines : 200
 export const POLL_INTERVAL_MS = Number(process.env.POLL_INTERVAL_MS || 60_000)
 export const PORT = Number(process.env.PORT || 3001)
 

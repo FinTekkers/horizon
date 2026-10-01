@@ -19,18 +19,25 @@ server refuses to merge on any of them: fail closed, never "skip and merge".
 
 The scratch worktree lives at <WORKSPACES_DIR>/<owner>__<repo>__premerge/<item>,
 never in /opt/horizon or the checkout this code is running from — see
-assert_scratch_path(). It is reaped unconditionally when the run ends.
+assert_scratch_path(). It is reaped unconditionally when the run ends, and
+every removal re-checks that path first, so cleanup can never reach an item
+worktree under <repo>__items/.
+
+The PR's own suites run with FARM_HOME pointed at a throwaway directory made
+for the run, never the farm's: the farm's real FARM_HOME is how this module
+finds the hub, but a test in the PR that defaulted or inherited it would be
+reading and writing the live farm's queue and workspaces.
 """
 
 import argparse
 import contextlib
 import fcntl
 import json
-import os
 import re
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
 
@@ -119,15 +126,24 @@ def _item_lock(repo_full: str, item_id: str):
             fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
 
 
+def _remove_scratch(hub: Path, ws: Path) -> None:
+    """The ONLY place this module deletes anything in the farm's workspaces.
+    Caller holds hub_lock. assert_scratch_path() runs first, every time, so
+    whatever `ws` turns out to be, nothing outside <repo>__premerge/<item> is
+    removed — never an item worktree under <repo>__items/."""
+    assert_scratch_path(ws)
+    _git(hub, "worktree", "remove", "--force", str(ws), check=False)
+    if ws.exists():
+        shutil.rmtree(ws, ignore_errors=True)
+    _git(hub, "worktree", "prune", check=False)
+
+
 def _reap(repo_full: str, hub: Path, ws: Path) -> None:
     """Unconditional — this worktree is outside the item pool's eviction, so
     the reap is the only thing bounding its disk use. Same sequence and lock
     as workspaces.reap_item_worktree()."""
     with workspaces.hub_lock(repo_full):
-        _git(hub, "worktree", "remove", "--force", str(ws), check=False)
-        if ws.exists():
-            shutil.rmtree(ws, ignore_errors=True)
-        _git(hub, "worktree", "prune", check=False)
+        _remove_scratch(hub, ws)
 
 
 def premerge_check(repo_full: str, item_id: str, head_sha: str, base_sha: str, *, timeout_s: float, log=print) -> dict:
@@ -155,6 +171,7 @@ def premerge_check(repo_full: str, item_id: str, head_sha: str, base_sha: str, *
     with _item_lock(repo_full, item_id) as held:
         if not held:
             return {**out, "reason": "busy", "detail": "pre-merge checks are already running for this item"}
+        checks_home = Path(tempfile.mkdtemp(prefix="horizon-premerge-farm-home-"))
         try:
             with workspaces.hub_lock(repo_full):
                 _git(hub, "fetch", "origin", "--prune")
@@ -167,9 +184,7 @@ def premerge_check(repo_full: str, item_id: str, head_sha: str, base_sha: str, *
                 if missing:
                     return {**out, "reason": "crash", "detail": f"commit(s) not found after fetch: {', '.join(missing)}"}
                 if ws.exists():
-                    _git(hub, "worktree", "remove", "--force", str(ws), check=False)
-                    shutil.rmtree(ws, ignore_errors=True)
-                    _git(hub, "worktree", "prune")
+                    _remove_scratch(hub, ws)
                 ws.parent.mkdir(parents=True, exist_ok=True)
                 _git(hub, "worktree", "add", "--detach", str(ws), base_sha)
 
@@ -187,7 +202,15 @@ def premerge_check(repo_full: str, item_id: str, head_sha: str, base_sha: str, *
             out["merge_sha"] = _git(ws, "rev-parse", "HEAD").stdout.strip()
 
             try:
-                note = run_checks(ws, log=log, require_ran=True, deadline=deadline)
+                note = run_checks(
+                    ws,
+                    log=log,
+                    require_ran=True,
+                    deadline=deadline,
+                    item_id=item_id,
+                    caller="premerge",
+                    child_env={"FARM_HOME": str(checks_home)},
+                )
             except CheckFailure as exc:
                 if exc.reason == "timed_out":
                     return {**out, "reason": "timed_out", "failing_check": exc.command, "detail": str(exc)}
@@ -200,7 +223,10 @@ def premerge_check(repo_full: str, item_id: str, head_sha: str, base_sha: str, *
         except Exception as exc:  # noqa: BLE001 — every surprise is a fail-closed "crash"
             return {**out, "reason": "crash", "detail": f"{type(exc).__name__}: {exc}"}
         finally:
-            _reap(repo_full, hub, ws)
+            try:
+                _reap(repo_full, hub, ws)
+            finally:
+                shutil.rmtree(checks_home, ignore_errors=True)
 
 
 def main(argv=None) -> int:
@@ -212,10 +238,6 @@ def main(argv=None) -> int:
     parser.add_argument("--timeout-s", type=float, default=1200)
     parser.add_argument("--json", action="store_true", help="accepted for clarity; output is always JSON")
     args = parser.parse_args(argv)
-    # WORKSPACES_DIR is resolved (farm.config read FARM_HOME at import). The
-    # checks run the PR's own code, and farm/tests' conftest only setdefaults
-    # FARM_HOME — inherited, the PR's tests would use the real farm's queue.
-    os.environ.pop("FARM_HOME", None)
 
     def log(msg):
         print(msg, file=sys.stderr, flush=True)

@@ -508,10 +508,27 @@ async function promoteBaseline(item) {
 
 const SHA_RE = /^[0-9a-f]{40}$/
 
+// e2e only (HZ-183), same pattern as orchestrator.js's setConflictReplyForTest:
+// the e2e server has no GitHub token, so nothing could answer getPrHead() and
+// getBranchSha() for the Accept gate's pre-merge check. This holds GitHub's
+// ANSWER for one PR — { repo, pr, headSha, headRef, baseRef, baseSha } — and
+// nothing else: the click, the PIN, the real `python -m farm.premerge` run and
+// the gate's handling of its result all stay the production ones. Null unless
+// a spec sets it, through a route that exists only when HORIZON_TEST_HOOKS=1.
+let cannedPrForTest = null
+
+export function setPrStateForTest(state) {
+  cannedPrForTest = state
+}
+
 // HZ-183: the commits the pre-merge check tests. Both shas come from GitHub,
 // the same source mergePr's sha guard and the base re-check read, so "the
 // tested head" and "the tested base" mean the same thing on every side.
 export async function getPrHead(item) {
+  const canned = cannedPrForTest
+  if (canned && canned.repo === item.repo && canned.pr === item.pr) {
+    return { sha: canned.headSha, ref: canned.headRef, baseRef: canned.baseRef }
+  }
   const res = await gh(`/repos/${item.repo}/pulls/${item.pr}`)
   if (!res.ok) {
     throw new Error(
@@ -528,6 +545,8 @@ export async function getPrHead(item) {
 // The current tip of a branch. Read before the check (what to test against)
 // and again after it (did it move while the checks ran).
 export async function getBranchSha(repo, branch) {
+  const canned = cannedPrForTest
+  if (canned && canned.repo === repo && canned.baseRef === branch) return canned.baseSha
   const res = await gh(`/repos/${repo}/git/ref/${encodeURIComponent(`heads/${branch}`)}`)
   if (!res.ok) throw new Error(`could not read the ${branch} branch (GitHub returned ${res.status})`)
   const sha = (await res.json().catch(() => ({})))?.object?.sha

@@ -27,8 +27,11 @@ With `FARM_URL` unset the server uses the built-in mock agents (demo mode).
 
 - **PM agent** (long-running, tmux, session-resumed Claude): the three Plan
   steps.
-- **Ephemeral agents** (one tmux session per step, max `FARM_MAX_EPHEMERAL`=4
-  concurrent): Ensemble options (4), impl plan (6), architecture review (7),
+- **Ephemeral agents** (one tmux session per step, max `FARM_MAX_EPHEMERAL`
+  concurrent — code default 4, set explicitly on this host in
+  `/etc/horizon/farm.env`; the number of check suites they may run at once is
+  capped separately by `FARM_MAX_CONCURRENT_CHECKS`): Ensemble options (4),
+  impl plan (6), architecture review (7),
   QA test plan (8) — planners read the repo workspace and produce markdown
   artifacts (stored on the step_run, posted to the issue) — and the
   **implement step (10)**: the Eng agent edits real code in the workspace on
@@ -50,11 +53,19 @@ sessions; queued work survives on disk.
 | `FARM_SHARED_SECRET` | dev-secret | must match the Node server's value. **farmd only** (HZ-140): `tmux_mgr.py` refuses to forward it into any agent session, and unsets it in the session's own command, so a step/PM/concierge agent can't read it out of its environment |
 | `FARM_HOME` | ~/.horizon-farm | queue/state/logs/workspaces |
 | `FARM_CLAUDE_BIN` | claude | override with tests/fake_claude in tests |
-| `FARM_PM_MODEL` | (CLI default) | model for the PM agent |
-| `FARM_STEP_MODEL` | (CLI default) | model for step agents and conflict resolution (Claude provider only) |
+| `FARM_MODEL_OVERRIDE` | (unset) | **emergency only** (HZ-192): a Claude model id (`claude-<id>`) that replaces the model of EVERY Claude call — PM, steps, conflict resolution and the concierge. Never reaches Muse. A malformed value fails each call rather than reaching the CLI |
 | `FARM_STEP_TIMEOUT_S` | 900 | per-claude-invocation timeout |
 | `FARM_CHECK_CMD` | (auto-detect) | guardrail check command run before push (via `sh -c`) |
-| `FARM_CHECK_TIMEOUT_S` | 600 | guardrail check timeout |
+| `FARM_CHECK_TIMEOUT_S` | 600 | how long the checks may **run**. Never includes time spent queueing for a check slot — see below |
+| `FARM_MAX_EPHEMERAL` | 4 | how many ephemeral agent steps run at once. The code default is deliberately conservative; the value this host runs is set in `/etc/horizon/farm.env` (`infra/host/DEPLOY.md`). Never forwarded into an agent session |
+| `FARM_MAX_CONCURRENT_CHECKS` | 2 | how many check suites may run at once, independently of the agent cap. `<=0` disables the limiter entirely (the rollback lever) |
+| `FARM_CHECK_SLOT_WAIT_MAX_S` | 1200 | how long a run waits for a check slot before proceeding **without** one, loudly. `<=0` waits forever |
+| `FARM_CHECK_METRICS_PHASE` | (unlabelled) | tags check-metric records with a measurement-window name, e.g. `cap6-limit2` |
+
+No env var selects a model. Every agent's default model, and any per-step or
+per-persona override, is declared in `domain/personas.json`'s `models` block
+(HZ-192); `run_agent()` resolves it per call. Edit `/etc/horizon/farm.env` on
+the host for `FARM_MODEL_OVERRIDE`.
 
 Node side: `FARM_URL`, `FARM_SHARED_SECRET`, `FARM_STEP_INDEXES` (default
 `0,1,2`). Two independent watchdogs (HZ-57): `FARM_QUEUE_TIMEOUT_MS` (default
@@ -124,7 +135,6 @@ to stop attaching polls entirely.
 | `WA_BRIDGE_URL` | http://localhost:8080 | the bridge's REST endpoint |
 | `FARM_WA_POLL_S` | 5 | poll interval |
 | `FARM_WA_TRANSPORT` | mcp_bridge | `cloud_api` arrives with the Option B cutover |
-| `FARM_CONCIERGE_MODEL` | (CLI default) | model for the concierge agent |
 | `FARM_UI_URL` | http://localhost:5173 | web UI base, for deep links texted back on item creation |
 | `FARM_WA_SENDER_NAMES` | `{}` | JSON jid->name map, e.g. `{"15551112222":"David"}` — every wizard/approval reply names whose turn it is |
 | `FARM_WA_WIZARD_TTL_S` | 1800 | item-wizard conversation expiry (seconds) |
@@ -227,6 +237,90 @@ the `server` and `ui` suites — that wiring is what makes the guardrail gate
 actually run all three. No linters are configured anywhere in the repo yet,
 so the "linters must pass" guardrail is currently vacuous.
 
+### How many check suites run at once (HZ-144)
+
+An agent step is cheap while it waits on the model API and expensive only
+here: `npm test`, pytest, a Vite build and Playwright driving Chromium are
+the one genuinely CPU-bound part of a step. So the agent cap and the check
+cap are tuned **separately** — `FARM_MAX_EPHEMERAL` for queue throughput,
+`FARM_MAX_CONCURRENT_CHECKS` for CPU headroom. Raising the first without the
+second is the failure this exists to prevent: on 30 Sept 2026, six
+unthrottled agents on this 2-vCPU host drove the load to ~8 and the
+Playwright suite failed its own 85s `globalTimeout`.
+
+`farm/check_slots.py` implements the limit as `flock` on
+`$FARM_HOME/locks/checks/slot-N`. A filesystem lock, not a Python one: every
+step is its own OS process in its own tmux session, so nothing in-process
+could cap them. Three properties are worth knowing:
+
+- **Queueing for a slot never counts against `FARM_CHECK_TIMEOUT_S`.** The
+  slot is taken before any command starts, so the 600s budget always covers
+  running the checks, never waiting for a turn.
+- **A killed agent cannot wedge a slot.** The kernel drops an `flock` when
+  the holder dies; nothing needs reaping.
+- **Nested acquisition is a no-op.** The repo the farm checks is Horizon,
+  whose own suite calls `run_checks()`. `farm/checks.py` marks the check
+  subprocess with `FARM_IN_CHECKS=1`, and an inner call sees it and passes
+  straight through instead of waiting for a slot its own parent holds.
+
+Past `FARM_CHECK_SLOT_WAIT_MAX_S` a run proceeds *without* a slot and logs a
+warning. Fail-open on purpose: checks run before commit/push, so failing
+would discard a whole attempt's work, and an unbounded wait can outlive the
+server's step watchdog and resurface as a mystery `never_picked_up`. A
+repeated warning there means the farm is over its check capacity — a number
+to report, not a timeout to raise.
+
+That escape hatch is only safe while it stays rare, since past it the cap
+genuinely stops applying. So the 1200s default is derived, not round: above
+the worst *legitimate* queue (the 6th arrival at cap 6 / limit 2 waits two
+waves of a measured p95 suite ≈ 906s) and below the implement step's 50-minute
+watchdog once the agent's own budget and the check budget are subtracted. The
+derivation lives next to `DEFAULT_WAIT_CEILING_S` in `farm/check_slots.py` and
+is enforced by two tests. The reporter has an `Unthrottled` column so a run
+that took that path shows up as a number rather than a line in a session log.
+
+`GET /farm/status` reports both limits (`agents`, `checks`) including who is
+currently queued for a slot.
+
+### Measuring it
+
+Every check run appends one JSONL record to
+`$FARM_HOME/logs/check-metrics.jsonl` (`farm/check_metrics.py`): slot wait,
+per-command duration, host-wide `MemAvailable` low-water mark, load average
+at both ends, and a classified outcome (`pass`, `timeout`, `oom`,
+`contention`, `leakage`, `other`). Read it back with:
+
+```
+farm/.venv/bin/python -m farm.tools.report_check_metrics [--markdown]
+```
+
+The pre-limiter baseline is recoverable without waiting for it: every run
+before this existed still timestamped its check commands into its session log,
+so `farm/tools/backfill_check_metrics.py` reconstructs those records and feeds
+them to the same reporter.
+
+```
+farm/.venv/bin/python -m farm.tools.backfill_check_metrics --last 40 -o /tmp/base.jsonl
+farm/.venv/bin/python -m farm.tools.report_check_metrics --path /tmp/base.jsonl
+```
+
+See `docs/hz-144-check-concurrency-measurement.md` for the measurement
+protocol and the recorded numbers.
+
+### Capacity settings never reach the checked repo's tests
+
+`FARM_MAX_EPHEMERAL` is stripped at the tmux seam (`farm/tmux_mgr.py`'s
+`AGENT_NEVER_NEEDS`, enforced with `env -u`), and both it and
+`FARM_MAX_CONCURRENT_CHECKS` are stripped at the check subprocess
+(`farm/checks.py`'s `_check_env()`). The reason is specific: the repo under
+check is Horizon, whose suite asserts these defaults, so on 30 Sept 2026
+`FARM_MAX_EPHEMERAL=6` in `farm.env` failed every implement run's pytest on
+`assert farmd.MAX_EPHEMERAL == 4`. The asymmetry is deliberate —
+`FARM_MAX_CONCURRENT_CHECKS` must survive *into* the agent session, because
+`run_checks()` runs there and reads it; it is scrubbed one layer deeper
+instead. Both denylists are explicit names, never "drop every `FARM_*`":
+the inner suite needs `FARM_HOME` and `FARM_CLAUDE_BIN` to work at all.
+
 ## Pre-merge check (Accept the code, HZ-183)
 
 A PR green against the main it branched from can still turn main red once it
@@ -237,7 +331,10 @@ and the base branch tip from GitHub, then runs
 (`farm/premerge.py`). That makes a scratch worktree off the repo hub at
 `~/.horizon-farm/workspaces/<owner>__<repo>__premerge/<item>/` — never
 `/opt/horizon` or the running checkout — merges the head into the base there,
-runs `run_checks()`, and always reaps the worktree.
+runs `run_checks()`, and always reaps the worktree. Every removal re-checks
+that the path is `<repo>__premerge/<item>`, so cleanup can never touch an item
+worktree under `<repo>__items/`. The PR's own suites run with `FARM_HOME` set
+to a throwaway directory made for that run, never the farm's.
 
 - **Green:** the server re-reads the base tip; if it moved, the merge is
   blocked and the human clicks Accept again. Otherwise it merges with the
@@ -253,6 +350,8 @@ runs `run_checks()`, and always reaps the worktree.
 
 Measure it on an idle host with
 `HORIZON_PREMERGE_LIVE=1 python3 -m pytest -s farm/tests/test_premerge_live.py`.
+It clones the repo into a throwaway `FARM_HOME` under pytest's `tmp_path` and
+never touches `~/.horizon-farm`.
 
 ## Tests
 

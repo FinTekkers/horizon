@@ -1,0 +1,46 @@
+{
+  "primaryAgent": "eng",
+  "agents": [
+    {
+      "agent": "eng",
+      "default": "fullstack",
+      "personas": ["fullstack", "python", "ui", "performance"]
+    },
+    {
+      "agent": "qa",
+      "default": "api_contract",
+      "personas": ["api_contract", "e2e_journey", "data_integrity"]
+    },
+    {
+      "agent": "architect",
+      "default": "data_modelling",
+      "personas": ["data_modelling", "distributed_systems"]
+    },
+    {
+      "agent": "pm",
+      "default": "roadmap",
+      "personas": ["roadmap", "feature_development"]
+    }
+  ],
+  "legacyIds": {
+    "fullstack": "eng.fullstack",
+    "python_backend": "eng.python",
+    "frontend_ui": "eng.ui"
+  },
+  "personaProviders": {},
+  "models": {
+    "agents": {
+      "pm": "claude-opus-5-5",
+      "concierge": "claude-sonnet-5",
+      "eng": "claude-opus-5-5",
+      "architect": "claude-opus-5-5",
+      "qa": "claude-opus-5-5",
+      "devops": "claude-opus-5-5",
+      "ensemble": "claude-opus-5-5",
+      "review": "claude-opus-5-5"
+    },
+    "conflictAgent": "eng",
+    "steps": {},
+    "personas": {}
+  }
+}

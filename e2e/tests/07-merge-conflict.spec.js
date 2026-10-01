@@ -49,7 +49,16 @@ test('resolving a conflict in scope reports back at the Accept gate instead of r
   const conflict = page.locator('.step-card__conflict')
   await expect(conflict).toContainText('PR #503 has merge conflicts')
 
-  await conflict.locator('button').click()
+  await conflict.locator('.btn-gate-reject').click()
+
+  // HZ-188: the dialog explains what will happen; nothing runs until it's confirmed.
+  const dialog = page.locator('.resolve-dialog')
+  await expect(dialog).toContainText('Resolve merge conflicts?')
+  await expect(dialog.locator('.resolve-dialog__steps li')).toHaveCount(5)
+  await dialog.locator('.composer__submit').click()
+  await expect(dialog).toContainText('Conflicts resolved', { timeout: 10_000 })
+  await dialog.locator('.composer__cancel').click()
+  await expect(dialog).toHaveCount(0)
 
   const activity = page.locator('.tracker__activity')
   await expect(activity).toContainText('resolved 2 conflicted hunk(s) on PR #503', { timeout: 10_000 })

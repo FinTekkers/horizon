@@ -13,6 +13,18 @@
 // set is mirrored in server/src/personas.js and farm/personas.py
 // (parity-tested farm-side) — append-only, change all three copies together.
 
+// HZ-192: which Claude model each agent call uses is declared once, in
+// domain/personas.json's `models` block. Re-exported for the agent definitions
+// page, never copied here.
+export {
+  CONCIERGE_MODEL_AGENT,
+  CONFLICT_MODEL_AGENT,
+  CONFLICT_STEP_KEY,
+  MODELS,
+  modelAgentForStep,
+  resolveModel,
+} from '../../../domain/js/personas.js'
+
 export const PERSONAS = {
   eng: {
     fullstack: { label: 'Full-stack', initials: 'FS', color: 'var(--success-ink)' },

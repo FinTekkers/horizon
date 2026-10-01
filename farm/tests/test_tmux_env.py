@@ -114,10 +114,19 @@ def test_agent_env_never_mutates_the_environment_it_reads():
 
 def test_an_empty_environment_still_unsets_the_credentials(monkeypatch):
     """Even with nothing to forward, the prefix must still clear what the tmux
-    server's own global environment might be carrying."""
+    server's own global environment might be carrying.
+
+    HZ-144 added FARM_MAX_EPHEMERAL to the same `env -u` list for a
+    non-credential reason (the tmux server is usually started by farmd, the
+    one process that holds it), so the exact list grew — the property under
+    test is unchanged. The two sets stay separate; see
+    farm/tests/test_check_env_scrub.py.
+    """
     monkeypatch.setattr(tmux_mgr.os, "environ", {})
     assert shlex.split(tmux_mgr._env_prefix(STEP_SESSION)) == [
         "env",
+        "-u",
+        "FARM_MAX_EPHEMERAL",
         "-u",
         "FARM_SHARED_SECRET",
         "-u",
@@ -181,8 +190,9 @@ def test_the_tripwire_itself_can_fail():
     assert found - set(tmux_mgr.NEVER_FORWARD) - KNOWN_FORWARDABLE == {"FOO_TOKEN"}
 
 
-def test_farm_step_model_is_forwarded_to_a_step_session():
-    """HZ-187: STEP_MODEL is read inside the agent process, so the operator's
-    FARM_STEP_MODEL must reach the pane — and it is no secret."""
-    assert "FARM_STEP_MODEL" not in tmux_mgr.NEVER_FORWARD
-    assert tmux_mgr.agent_env(STEP_SESSION, {"FARM_STEP_MODEL": "claude-x"})["FARM_STEP_MODEL"] == "claude-x"
+def test_farm_model_override_is_forwarded_to_a_step_session():
+    """HZ-192: the one emergency model override is read inside the agent
+    process (agent_runner._model_for), so the operator's FARM_MODEL_OVERRIDE
+    must reach the pane — and it is no secret."""
+    assert "FARM_MODEL_OVERRIDE" not in tmux_mgr.NEVER_FORWARD
+    assert tmux_mgr.agent_env(STEP_SESSION, {"FARM_MODEL_OVERRIDE": "claude-x"})["FARM_MODEL_OVERRIDE"] == "claude-x"

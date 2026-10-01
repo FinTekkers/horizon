@@ -202,18 +202,18 @@ test('no output link on a done step with no recorded output', () => {
 
 // ---- resolve conflicts (HZ-92) ----
 
-test('a PR with merge conflicts at the Accept gate offers "Send back to resolve conflicts", and clicking it fires onResolveConflicts', () => {
+test('a PR with merge conflicts at the Accept gate offers "Resolve conflicts…", and clicking it fires onResolveConflicts', () => {
   const item = { ...baseItem, cursor: ACCEPT_GATE_INDEX, pr: 42, pr_mergeable: false }
   const spy = vi.fn()
   const { getByText } = renderTracker(item, noop, noop, spy)
-  fireEvent.click(getByText('Send back to resolve conflicts'))
+  fireEvent.click(getByText('Resolve conflicts…'))
   expect(spy).toHaveBeenCalledWith('T-1', 42)
 })
 
 test('a mergeable PR at the Accept gate shows no conflict-resolution button', () => {
   const item = { ...baseItem, cursor: ACCEPT_GATE_INDEX, pr: 42, pr_mergeable: true }
   const { queryByText } = renderTracker(item)
-  expect(queryByText('Send back to resolve conflicts')).toBeNull()
+  expect(queryByText('Resolve conflicts…')).toBeNull()
 })
 
 // ---- abandon (HZ-59) ----

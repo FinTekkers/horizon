@@ -22,7 +22,7 @@ from fastapi.responses import JSONResponse
 # HZ-132 put the failure-reason vocabulary there under the same rule, so the
 # tags this daemon relays are the ones the server classifies, by construction.
 from domain.py import reasons, steps
-from . import conflict_resolver, rules, tmux_mgr, workspaces
+from . import check_slots, conflict_resolver, rules, tmux_mgr, workspaces
 from . import config as farm_config
 from .agent_runner import AgentError, assert_provider_auth
 from .config import (
@@ -64,9 +64,15 @@ def _pm_session_name() -> str:
 # reset/clean/checkout over each other. Steps mostly wait on the Claude API
 # and git network calls rather than burning CPU, so 4-way concurrency is
 # reasonable even on this host's 2 vCPUs — the exception is run_checks()
-# (the repo's own tests/linters), which is genuinely CPU-bound; if that
-# starts timing out under real four-way load, lower this via the env var
-# rather than editing code — it stays a variable, not a constant.
+# (the repo's own tests/linters), which is genuinely CPU-bound.
+#
+# HZ-144 answered that exception directly: FARM_MAX_CONCURRENT_CHECKS
+# (farm/check_slots.py) caps how many check suites run at once, independently
+# of how many agents are in flight. So the two pressures are now tuned
+# separately — raise this for queue throughput, lower that for CPU headroom.
+# The code default stays 4 deliberately: the cap this host runs is set in
+# /etc/horizon/farm.env (see infra/host/DEPLOY.md), and raising the default
+# instead would silently re-raise the cap on every other host too.
 MAX_EPHEMERAL = int(__import__("os").environ.get("FARM_MAX_EPHEMERAL", "4"))
 
 # run_id -> tmux session name for launched ephemeral runs (so cancel can kill).
@@ -513,7 +519,18 @@ def root():
 
 @app.get("/farm/status")
 def farm_status():
-    return {**state, "sessions": tmux_mgr.list_farm_sessions()}
+    # `agents` / `checks` are additive (HZ-144): the Node server's
+    # waitForFarmRunning reads only `status` and `error` from this route, so
+    # new keys can't break it. They exist because the check limiter is
+    # otherwise invisible — a run blocked on a check slot looks identical to
+    # a run that is simply slow, and "who is waiting" was the one thing the
+    # file-lock design gave up versus a farmd-brokered lease.
+    return {
+        **state,
+        "sessions": tmux_mgr.list_farm_sessions(),
+        "agents": {"limit": MAX_EPHEMERAL, "busy": len(_ephemeral_sessions())},
+        "checks": check_slots.status(),
+    }
 
 
 @app.post("/farm/start")
@@ -653,7 +670,13 @@ async def conflicts_resolve(request: Request):
     one to review only what that resolution changed — so this handler is no
     longer LLM-free. The request and response contracts are unchanged; a
     scoped success just carries three extra keys (mode/resolution/review) that
-    this route already passes straight through."""
+    this route already passes straight through.
+
+    HZ-188: one run per item. item_lock is tried once, before the thread
+    starts; if a resolver or an implement/review step already owns the item's
+    worktree this answers 409 resolve_in_progress and starts nothing. The
+    lock is released when the thread returns (or raises), and by the kernel
+    if farmd itself dies."""
     body = await request.json()
     if state["status"] != "running":
         return JSONResponse({"error": f"farm_not_running (status={state['status']})"}, status_code=409)
@@ -662,9 +685,12 @@ async def conflicts_resolve(request: Request):
     if not item_id or not repo:
         return JSONResponse({"error": "item.id and item.repo are required"}, status_code=400)
     try:
-        result = await asyncio.to_thread(
-            conflict_resolver.resolve, repo, item_id, body.get("branch"), body.get("base_branch")
-        )
+        with workspaces.item_lock(repo, item_id, wait_s=0):
+            result = await asyncio.to_thread(
+                conflict_resolver.resolve, repo, item_id, body.get("branch"), body.get("base_branch")
+            )
+    except workspaces.ItemBusy:
+        return JSONResponse({"error": "resolve_in_progress"}, status_code=409)
     except Exception as exc:
         print(f"farmd: conflict resolution for {item_id} failed: {exc}", flush=True)
         return JSONResponse({"error": str(exc)[:300]}, status_code=500)

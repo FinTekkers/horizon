@@ -343,6 +343,44 @@ def test_pm_role_prompt_asks_for_the_agent_scoped_shape():
     assert "frontend_ui" not in ROLE_PROMPT
 
 
+# HZ-191: the PM rules on QA's test list in its step-9 digest and publishes a
+# binding Test contract. Role files wrap prose, so normalise
+# whitespace before matching.
+def _pm_role_text():
+    return " ".join(pm_agent.ROLE_PROMPT.split())
+
+
+def test_pm_role_requires_a_test_contract_section():
+    text = _pm_role_text()
+    # Inside the EXACTLY structure, second, so digestToFit keeps it whole.
+    recommendation = text.index("## Recommendation")
+    contract = text.index("## Test contract")
+    built = text.index("## What's being built")
+    assert recommendation < contract < built
+    assert "Each kept case names the metric line or guardrail it verifies." in text
+    assert "<case> — verifies <metric line N | guardrail N>" in text
+    assert "List every dropped or downgraded case with a one-line reason." in text
+
+
+def test_pm_role_states_the_test_contract_cap():
+    text = _pm_role_text()
+    assert "Soft cap: 2 cases per metric line plus 1 per guardrail." in text
+    assert "Going over the cap requires a stated reason in the section." in text
+
+
+def test_pm_role_forbids_dropping_the_only_verification():
+    text = _pm_role_text()
+    assert "Never drop a test that is the only verification of a metric line or guardrail." in text
+
+
+def test_pm_role_keeps_its_fail_closed_send_back_rule():
+    text = _pm_role_text()
+    assert (
+        "If any input artifact looks truncated, contradictory, or a reviewer accepted something "
+        "untestable, call it out and recommend SEND BACK" in text
+    )
+
+
 def test_build_prompt_renders_the_items_personas_per_agent():
     from farm.pm_agent import build_prompt
 
@@ -1121,3 +1159,59 @@ def test_turn_cap_is_retryable_in_the_shared_vocabulary():
     assert reasons.is_retryable(reasons.REASON["TURN_CAP"])
     js = (REPO_ROOT / "domain" / "js" / "reasons.js").read_text()
     assert "AUTO_RETRY_REASONS" in js, "the JS binding no longer derives the set — re-point this test"
+
+
+# ---- process(): the PM's model (HZ-192) ----
+# The REAL run_agent() over recording providers: the model each PM call site
+# handed its provider, resolved from domain/personas.json by the step's own
+# domain/steps.json agent.
+
+
+# Read off the step table rather than typed: the lane includes an Architect
+# step, whose model agent is architect, not pm.
+PM_LANE_STEPS = [step for step in domain_steps.STEPS if step["runsIn"] == "pm"]
+
+
+def _pm_task(step):
+    task = json.loads(_task_json())
+    task["step"] = {"index": step["index"], "label": step["label"]}
+    return task
+
+
+def test_the_pm_lane_runs_more_than_one_model_agent():
+    assert {step["agent"] for step in PM_LANE_STEPS} >= {"PM", "Architect"}
+
+
+@pytest.mark.parametrize("step", PM_LANE_STEPS, ids=lambda step: step["label"])
+def test_both_pm_call_sites_hand_the_steps_model_to_claude(pm_process, monkeypatch, recording_providers, step):
+    monkeypatch.setattr(pm_agent, "run_agent", agent_runner.run_agent)
+    monkeypatch.delenv("FARM_PROVIDER", raising=False)
+    resolved = []
+    real_resolve = agent_runner.resolve_model
+    monkeypatch.setattr(
+        agent_runner, "resolve_model", lambda *args: resolved.append(args) or real_resolve(*args)
+    )
+    # An invalid first reply forces the retry call site too.
+    recorder = recording_providers("plain prose, no json", json.dumps({"summary": "done"}))
+
+    posted = pm_process.run(task=_pm_task(step))
+
+    assert posted["ok"] is True
+    assert resolved == [(step["agent"].lower(), step["label"], None)] * 2
+    assert recorder.models()[0] == "claude-opus-5-5", "pm_agent.process: first run_agent call"
+    assert recorder.models()[1] == "claude-opus-5-5", "pm_agent.process: retry_once run_agent call"
+
+
+@pytest.mark.parametrize("override", [None, "claude-test-emergency"])
+def test_a_pm_call_on_muse_receives_no_model(pm_process, monkeypatch, recording_providers, override):
+    """Unguarded before HZ-192: the PM handed its env-selected model to whichever
+    provider FARM_PROVIDER selected."""
+    monkeypatch.setattr(pm_agent, "run_agent", agent_runner.run_agent)
+    monkeypatch.setenv("FARM_PROVIDER", "muse")
+    if override:
+        monkeypatch.setenv("FARM_MODEL_OVERRIDE", override)
+    recorder = recording_providers("plain prose, no json", json.dumps({"summary": "done"}))
+
+    pm_process.run(task=_pm_task(PM_LANE_STEPS[0]))
+
+    assert [(c["provider"], c["model"]) for c in recorder.calls] == [("muse", None), ("muse", None)]

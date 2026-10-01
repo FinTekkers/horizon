@@ -17,7 +17,17 @@ from fastapi.testclient import TestClient
 
 from farm import farmd, pm_agent, tmux_mgr, workspaces
 from farm.config import LOGS_DIR, PM_MALFORMED_GRACE_S, QUEUE_DIR
-from farm.tests.conflict_fixtures import clone_and_read, make_repo_hub, push_new_branch
+from farm.tests.conflict_fixtures import (
+    HZ157_CONFTEST,
+    HZ157_CONFTEST_BRANCH_LINE,
+    HZ157_CONFTEST_MAIN_LINE,
+    clone_and_read,
+    git,
+    make_repo_hub,
+    origin_branch_sha,
+    push_new_branch,
+    seed_hz157_conftest_conflict,
+)
 
 client = TestClient(farmd.app)
 
@@ -69,6 +79,65 @@ def running_farm():
         farmd.state.update(saved)
         for f in (QUEUE_DIR / "pm").glob("*.json"):
             f.unlink(missing_ok=True)
+
+
+# ---- HZ-190: a running farm under test never reaches the host's tmux ----
+
+
+class _StopWatchdog(Exception):
+    pass
+
+
+def test_running_farm_never_reaches_real_tmux(running_farm, fake_tmux, monkeypatch):
+    """running_farm puts farmd in exactly the state its watchdog revives
+    sessions for — the incident's farm-pm-fintekkers / farm-concierge-
+    fintekkers respawns. Drive one real watchdog pass on this thread and
+    prove both launches land in FakeTmux and the real _tmux never runs."""
+    real_tmux_calls = []
+
+    def real_subprocess_run(argv, *args, **kwargs):
+        real_tmux_calls.append(argv)
+        raise AssertionError(f"real tmux reached: {argv!r}")
+
+    # tmux_mgr's own `subprocess` binding is used only by the real _tmux, so
+    # this catches a bypassed fake without touching the shared module.
+    monkeypatch.setattr(tmux_mgr, "subprocess", SimpleNamespace(run=real_subprocess_run))
+
+    # time.sleep is shared with farmd's live background threads: only this
+    # thread's second sleep stops the loop; every other caller really sleeps.
+    test_thread = threading.current_thread()
+    real_sleep = time.sleep
+    slept = []
+
+    def one_pass_sleep(seconds):
+        if threading.current_thread() is not test_thread:
+            return real_sleep(seconds)
+        if slept:
+            raise _StopWatchdog
+        slept.append(seconds)
+
+    monkeypatch.setattr(farmd.time, "sleep", one_pass_sleep)
+    monkeypatch.setattr(farmd.farm_config, "FARM_WA_ENABLED", True)
+
+    with pytest.raises(_StopWatchdog):
+        farmd._watchdog()
+
+    launched = {call[call.index("-s") + 1]: call[-1] for call in fake_tmux.calls if call[0] == "new-session"}
+    # Positive control: the revive branch really ran, for both sessions.
+    assert {"farm-pm-fintekkers", "farm-concierge-fintekkers"} <= set(launched)
+    assert "HORIZON_URL=http://127.0.0.1:9 " in launched["farm-pm-fintekkers"]
+    assert real_tmux_calls == []
+
+
+def test_farmd_import_did_not_adopt_host_state():
+    """Importing farmd runs _adopt_existing() against STATE_DIR. Under an
+    inherited production FARM_HOME that adopted the real running FinTekkers
+    project for the whole run (and pointed the dispatcher at the real queue)."""
+    farm_home = Path(os.environ["FARM_HOME"])
+    assert farm_home.name.startswith("horizon-farm-test-")
+    assert farmd.STATE_FILE.is_relative_to(farm_home)
+    assert farmd.QUEUE_DIR.is_relative_to(farm_home)
+    assert farmd.state["status"] != "running"
 
 
 def test_steps_run_stamps_the_repos_rules_into_the_task_payload(running_farm):
@@ -228,6 +297,214 @@ def test_conflicts_resolve_end_to_end_over_http_takes_the_scoped_path(running_fa
     assert body == recorded, f"regenerate {SCOPED_RESOLVE_FIXTURE.name} — farmd's scoped reply shape changed"
 
 
+# ---- one run per item (HZ-188) ----
+# farmd refuses a second /conflicts/resolve on its own — no server involved —
+# and the same item_lock keeps the implement/review steps out of a worktree
+# the resolver owns. Every lock here is a real flock.
+
+
+@pytest.fixture
+def lock_dir(tmp_path, monkeypatch):
+    monkeypatch.setattr(workspaces, "WORKSPACES_DIR", tmp_path / "workspaces")
+    return tmp_path
+
+
+def test_conflicts_resolve_answers_409_and_starts_nothing_while_the_item_is_locked(running_farm, lock_dir, monkeypatch):
+    calls = []
+    monkeypatch.setattr(farmd.conflict_resolver, "resolve", lambda *a: calls.append(a) or {"resolved": True})
+
+    with workspaces.item_lock("acme/demo", "HZ-1", wait_s=0):
+        res = client.post("/conflicts/resolve", json={"item": {"id": "HZ-1", "repo": "acme/demo"}})
+
+    assert res.status_code == 409
+    assert res.json() == {"error": "resolve_in_progress"}
+    assert calls == []
+    # Released with the holder: the next request runs.
+    assert client.post("/conflicts/resolve", json={"item": {"id": "HZ-1", "repo": "acme/demo"}}).status_code == 200
+    assert len(calls) == 1
+
+
+def test_conflicts_resolve_releases_the_lock_when_the_resolver_raises(running_farm, lock_dir, monkeypatch):
+    def boom(*_a):
+        raise RuntimeError("git fetch failed")
+
+    monkeypatch.setattr(farmd.conflict_resolver, "resolve", boom)
+
+    res = client.post("/conflicts/resolve", json={"item": {"id": "HZ-1", "repo": "acme/demo"}})
+
+    assert res.status_code == 500
+    assert "error" in res.json()
+    with workspaces.item_lock("acme/demo", "HZ-1", wait_s=0):
+        pass
+
+
+def test_conflicts_resolve_validates_input_before_taking_the_lock(running_farm, lock_dir):
+    with workspaces.item_lock("acme/demo", "HZ-1", wait_s=0):
+        res = client.post("/conflicts/resolve", json={"item": {"id": "HZ-1"}})
+    assert res.status_code == 400
+
+
+def test_item_lock_is_released_when_its_holder_process_is_killed(lock_dir):
+    """A crashed resolver (farmd killed mid-run) must not leave the item
+    locked: the kernel drops a flock with its process."""
+    assert not workspaces.item_lock_held("acme/demo", "HZ-188")  # no lock file yet
+    child = subprocess.Popen(
+        [
+            sys.executable,
+            "-c",
+            "import sys, time\n"
+            f"sys.path.insert(0, {str(REPO_ROOT)!r})\n"
+            "from pathlib import Path\n"
+            "from farm import workspaces\n"
+            f"workspaces.WORKSPACES_DIR = Path({str(workspaces.WORKSPACES_DIR)!r})\n"
+            "with workspaces.item_lock('acme/demo', 'HZ-188', wait_s=0):\n"
+            "    print('locked', flush=True)\n"
+            "    time.sleep(60)\n",
+        ],
+        stdout=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        assert child.stdout.readline().strip() == "locked"
+        with pytest.raises(workspaces.ItemBusy):
+            with workspaces.item_lock("acme/demo", "HZ-188", wait_s=0):
+                pass
+        assert workspaces.item_lock_held("acme/demo", "HZ-188")
+    finally:
+        child.kill()
+        child.wait(timeout=10)
+
+    assert not workspaces.item_lock_held("acme/demo", "HZ-188")
+    with workspaces.item_lock("acme/demo", "HZ-188", wait_s=0):
+        pass
+
+
+def test_item_lock_held_never_takes_the_lock_itself(lock_dir, monkeypatch):
+    """Pool eviction asks item_lock_held about every worktree. If the probe
+    briefly took the lock, farmd's wait_s=0 acquire at that moment would
+    answer a spurious 409 resolve_in_progress with nothing running."""
+    with workspaces.item_lock("acme/demo", "HZ-1", wait_s=0):
+        pass  # the lock file now exists, unheld
+    with workspaces.item_lock("acme/demo", "HZ-2", wait_s=0):
+        real_flock = workspaces.fcntl.flock
+        probes = []
+        monkeypatch.setattr(workspaces.fcntl, "flock", lambda *a: probes.append(a) or real_flock(*a))
+        assert not workspaces.item_lock_held("acme/demo", "HZ-1")
+        assert workspaces.item_lock_held("acme/demo", "HZ-2")
+        assert probes == []
+
+
+def test_item_lock_is_case_insensitive_and_lives_outside_every_worktree(lock_dir):
+    with workspaces.item_lock("acme/demo", "HZ-188", wait_s=0):
+        with pytest.raises(workspaces.ItemBusy):
+            with workspaces.item_lock("acme/demo", "hz-188", wait_s=0):
+                pass
+        # Another item is a different lock.
+        with workspaces.item_lock("acme/demo", "HZ-189", wait_s=0):
+            pass
+    lock_path = workspaces._item_lock_path("acme/demo", "HZ-188")
+    items_root = workspaces._items_root("acme/demo")
+    assert not lock_path.is_relative_to(items_root), "git clean -fd in a worktree must never reach the lock"
+    assert workspaces.existing_item_ids("acme/demo") == []
+
+
+def test_item_lock_waits_for_a_holder_that_releases(lock_dir):
+    held = threading.Event()
+
+    def holder():
+        with workspaces.item_lock("acme/demo", "HZ-1", wait_s=0):
+            held.set()
+            time.sleep(1)
+
+    t = threading.Thread(target=holder)
+    t.start()
+    assert held.wait(5)
+    waits = []
+    with workspaces.item_lock("acme/demo", "HZ-1", wait_s=5, on_wait=lambda: waits.append(1)):
+        pass
+    t.join()
+    assert waits == [1]  # logged once, not once per retry
+
+
+@pytest.mark.parametrize("label", ["Specialist agent implements", "Automated review (code + QA)"])
+def test_step_never_touches_a_worktree_the_resolver_holds(lock_dir, monkeypatch, label):
+    from farm import step_agent
+
+    touched = []
+    monkeypatch.setattr(step_agent, "ITEM_LOCK_WAIT_S", 0)
+    monkeypatch.setattr(step_agent, "ensure_item_worktree", lambda *a: touched.append("ensure_item_worktree"))
+    monkeypatch.setattr(step_agent, "prepare_branch", lambda *a: touched.append("prepare_branch"))
+    task = {
+        "run_id": 1,
+        "attempt": 1,
+        "item": {"id": "HZ-188", "title": "t", "repo": "acme/demo", "issue": 1},
+        "step": {"index": 11, "label": label, "agent": "Eng"},
+        "artifacts": [],
+        "feedback": [],
+    }
+
+    with workspaces.item_lock("acme/demo", "hz-188", wait_s=0):
+        with pytest.raises(RuntimeError, match="workspace busy"):
+            step_agent.execute(task)
+
+    assert touched == []
+
+
+def test_hz157_replay_five_rapid_clicks_make_one_resolver_run_and_one_push(running_farm, tmp_path, monkeypatch):
+    """HZ-157: five clicks on Resolve conflicts for a 1-hunk conflict in
+    farm/tests/conftest.py started five resolvers that reset each other's
+    merges. Replayed against a real fixture repo: the five requests overlap
+    for real (the winner is held until the other four have answered), and
+    exactly one resolver runs and pushes once."""
+    monkeypatch.setattr(workspaces, "WORKSPACES_DIR", tmp_path / "workspaces")
+    monkeypatch.setenv("FARM_CHECK_CMD", "true")
+    monkeypatch.delenv("FARM_CONFLICT_SCOPED_ENABLED", raising=False)
+    _hub, origin = make_repo_hub(tmp_path)
+    seed_hz157_conftest_conflict(tmp_path, origin, "horizon/hz-157")
+    before = origin_branch_sha(origin, "horizon/hz-157")
+
+    real_resolve = farmd.conflict_resolver.resolve
+    others_answered = threading.Event()
+    runs = []
+
+    def held_resolve(*args):
+        runs.append(args)
+        assert others_answered.wait(30), "the other four requests never answered"
+        return real_resolve(*args)
+
+    monkeypatch.setattr(farmd.conflict_resolver, "resolve", held_resolve)
+
+    responses = []
+    lock = threading.Lock()
+
+    def click():
+        res = client.post("/conflicts/resolve", json={"item": {"id": "HZ-157", "repo": "acme/demo"}})
+        with lock:
+            responses.append(res)
+            if sum(r.status_code == 409 for r in responses) == 4:
+                others_answered.set()
+
+    threads = [threading.Thread(target=click) for _ in range(5)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=60)
+
+    assert sorted(r.status_code for r in responses) == [200, 409, 409, 409, 409]
+    assert [r.json() for r in responses if r.status_code == 409] == [{"error": "resolve_in_progress"}] * 4
+    winner = next(r.json() for r in responses if r.status_code == 200)
+    assert winner["resolved"] is True
+    assert winner["resolution"]["paths"] == [HZ157_CONFTEST]
+    assert winner["resolution"]["hunks"] == 1
+    assert len(runs) == 1
+
+    after = origin_branch_sha(origin, "horizon/hz-157")
+    pushed = git(origin, "rev-list", "--first-parent", f"{before}..{after}").stdout.split()
+    assert len(pushed) == 1, "exactly one push: one merge commit on top of the branch's old tip"
+    merged = clone_and_read(tmp_path, origin, "horizon/hz-157", HZ157_CONFTEST, "hz157-after")
+    assert HZ157_CONFTEST_BRANCH_LINE in merged and HZ157_CONFTEST_MAIN_LINE in merged
+
+
 # ---- /runs/status (HZ-54) ----
 # Board/tracker guardrail: the farm reports a small {state, reason} vocabulary
 # only — never a tmux session name — so a queued run can't be told apart from
@@ -242,6 +519,49 @@ def queue_dirs():
     for sub in ("pm", "runs", "runs/active"):
         for f in (QUEUE_DIR / sub).glob("*.json"):
             f.unlink(missing_ok=True)
+
+
+def test_farm_status_reports_both_capacity_limits(tmp_path, monkeypatch):
+    """HZ-144: the check limiter is otherwise invisible — a run blocked on a
+    check slot looks exactly like a run that is merely slow, and "who is
+    waiting" was the one thing the file-lock design gave up next to a
+    farmd-brokered lease.
+
+    Both keys are ADDITIVE. server/src/orchestrator.js's waitForFarmRunning
+    (the only consumer of this route in server/ or ui/) reads `status` and
+    `error` only, so the two are asserted to still be exactly where they were.
+    """
+    monkeypatch.setattr(farmd, "MAX_EPHEMERAL", 6)
+    monkeypatch.setattr(farmd, "_ephemeral_sessions", lambda: ["farm-run-a-s10-a1", "farm-run-b-s10-a1"])
+    monkeypatch.setenv("FARM_MAX_CONCURRENT_CHECKS", "2")
+    # Both `busy` and `waiting` are read off the real lock directory, so
+    # FARM_HOME must be a throwaway. conftest.py now makes the whole suite
+    # hermetic, but this stays explicit: it is what the assertions below
+    # actually depend on, and a per-test redirect is cheaper to reason about
+    # than a module-level one when this test is read on its own.
+    monkeypatch.setenv("FARM_HOME", str(tmp_path / "farm-home"))
+
+    body = client.get("/farm/status").json()
+
+    assert body["status"] == farmd.state["status"]
+    assert "error" in body
+    assert body["agents"] == {"limit": 6, "busy": 2}
+    assert body["checks"]["limit"] == 2
+    assert body["checks"]["busy"] == 0
+    assert body["checks"]["waiting"] == []
+
+
+def test_farm_status_reports_the_check_limiter_as_disabled_when_switched_off(tmp_path, monkeypatch):
+    """`waiting` is read unconditionally, including at limit 0 — a marker left
+    by a run that was queued when the limiter was switched off is still a fact
+    worth reporting. So this needs the same FARM_HOME redirect as the test
+    above: without it, one neighbouring run queued for a slot makes the
+    `"waiting": []` assertion fail against LIVE farm state, which under the
+    farm's own check gate discards the whole implement attempt."""
+    monkeypatch.setenv("FARM_MAX_CONCURRENT_CHECKS", "0")
+    monkeypatch.setenv("FARM_HOME", str(tmp_path / "farm-home"))
+    checks_block = client.get("/farm/status").json()["checks"]
+    assert checks_block == {"limit": 0, "busy": 0, "waiting": []}
 
 
 def test_runs_status_reports_queued_for_a_pm_queued_task(queue_dirs):
@@ -642,9 +962,22 @@ def _write_task(path, run_id, item_id, step_index):
     return path
 
 
-def test_max_ephemeral_default_is_four():
-    """The cap-raise itself (farmd.py:54): 2 -> 4, still env-overridable."""
+def test_max_ephemeral_default_is_four(monkeypatch):
+    """The cap-raise itself (farmd.py:54): 2 -> 4, still env-overridable.
+
+    The delenv is belt as well as braces for HZ-144. This exact assertion is
+    what failed on every implement run on 30 Sept 2026 when
+    FARM_MAX_EPHEMERAL=6 leaked from /etc/horizon/farm.env into the checked
+    repo's pytest. The real fix is the two scrub seams
+    (farm/tests/test_check_env_scrub.py); this line additionally protects a
+    developer who has exported the variable in their own shell. MAX_EPHEMERAL
+    is import-bound, so re-reading it here (rather than reloading farmd, which
+    would rebind the module this suite's TestClient is holding) is what keeps
+    the two facts — the default, and where it comes from — in one place.
+    """
+    monkeypatch.delenv("FARM_MAX_EPHEMERAL", raising=False)
     assert farmd.MAX_EPHEMERAL == 4
+    assert int(os.environ.get("FARM_MAX_EPHEMERAL", "4")) == 4
 
 
 def test_max_ephemeral_stays_env_overridable(monkeypatch):
@@ -675,6 +1008,31 @@ def test_select_dispatchable_respects_the_free_slot_count(tmp_path):
     paths = [_write_task(tmp_path / f"{i}.json", i, item_id=f"hz-{i}", step_index=4) for i in range(3)]
     selected = farmd._select_dispatchable(paths, sessions=[], slots=2)
     assert selected == paths[:2]
+
+
+def test_the_dispatcher_launches_up_to_the_configured_cap_and_no_further(tmp_path, monkeypatch):
+    """HZ-144 metric 1, automated half: at a cap of 6, six queued steps on
+    six different items launch on one tick and the seventh stays queued.
+
+    A runner cannot start six real agents on this 2-vCPU host, so the
+    cap-honouring logic is proven here and the "6 simultaneous farm-run-*
+    sessions" observation is a committed `tmux list-sessions` capture in
+    docs/hz-144-check-concurrency-measurement.md. Neither alone is enough.
+    """
+    monkeypatch.setattr(farmd, "MAX_EPHEMERAL", 6)
+    paths = [_write_task(tmp_path / f"{i}.json", i, item_id=f"hz-{i}", step_index=10) for i in range(7)]
+
+    # Nothing ephemeral in flight, so the dispatcher's own arithmetic
+    # (MAX_EPHEMERAL - live farm-run-* sessions) gives every slot away.
+    selected = farmd._select_dispatchable(paths, sessions=[], slots=farmd.MAX_EPHEMERAL)
+
+    assert selected == paths[:6]
+    assert paths[6] not in selected
+
+    # ...and with five already in flight, exactly one more goes out.
+    in_flight = [f"farm-run-hz-9{i}-s10-a1" for i in range(5)]
+    slots = farmd.MAX_EPHEMERAL - len(in_flight)
+    assert farmd._select_dispatchable(paths, sessions=in_flight, slots=slots) == paths[:1]
 
 
 def test_select_dispatchable_serializes_step11_and_step12_for_the_same_item(tmp_path):
@@ -1058,6 +1416,7 @@ def _serve_fake_horizon(fail_status: int = 200, snapshot_status: int = 200):
     return server, f"http://127.0.0.1:{server.server_port}", requests
 
 
+@pytest.mark.real_tmux
 def test_reconcile_end_to_end_over_real_tmux_and_http_reports_a_dead_run(queue_dirs, monkeypatch):
     """No mocks on tmux_mgr or httpx: the tmux session named by the task file
     is genuinely never created (a real `tmux has-session` lookup proves it's
@@ -1083,6 +1442,7 @@ def test_reconcile_end_to_end_over_real_tmux_and_http_reports_a_dead_run(queue_d
     assert fail_reqs[0]["body"]["reason"] == "unreachable"  # already in AUTO_RETRY_REASONS
 
 
+@pytest.mark.real_tmux
 def test_reconcile_end_to_end_over_real_tmux_never_touches_a_real_live_session(queue_dirs, monkeypatch):
     """The other half of the same wiring, with a genuinely live tmux session
     this time — proves the real `tmux has-session` short-circuits before any
@@ -1184,6 +1544,7 @@ def test_runs_alive_never_leaks_a_tmux_session_name(queue_dirs):
 # specifically — the Node reconciliation sweep's own proof-of-life check.
 
 
+@pytest.mark.real_tmux
 def test_runs_alive_end_to_end_over_real_tmux_reports_false_for_a_claimed_run_with_no_session(queue_dirs):
     """No monkeypatch on tmux_mgr: a claimed task file names a tmux session
     that was genuinely never created — a real `tmux has-session` lookup, not
@@ -1199,6 +1560,7 @@ def test_runs_alive_end_to_end_over_real_tmux_reports_false_for_a_claimed_run_wi
     assert res.json() == {"alive": {"501": False}}
 
 
+@pytest.mark.real_tmux
 def test_runs_alive_end_to_end_over_real_tmux_reports_true_for_a_claimed_run_with_a_live_session(queue_dirs):
     """The other half of the same wiring: a genuinely live tmux session this
     time, proving the real `tmux has-session` call — not a stub — is what

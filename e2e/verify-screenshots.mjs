@@ -32,6 +32,8 @@ const EXPECTED_JOURNEYS = [
   'queued-work',
   'markdown',
   'persona-picker',
+  'api-tokens',
+  'premerge-checks-red',
 ]
 
 const missing = EXPECTED_JOURNEYS.filter((name) => !existsSync(join(SCREENSHOTS_DIR, `${name}.png`)))
