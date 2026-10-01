@@ -64,6 +64,11 @@ const LITERALS_ALLOWED = {
   // when the list was next looked at — this entry was missing and the assertion
   // below had been failing since.
   'farm/tests/test_pm_agent.py': 'a stubbed httpx.post recording its "timeout" kwarg — an option name, not a reason',
+  // HZ-115's spawn benchmark asserts every subprocess it measures was given a
+  // timeout, so the fake runner's recorded kwargs are checked by name. Third
+  // instance of the same false positive as the two entries above: a
+  // subprocess keyword-argument name, never a reason on the wire.
+  'farm/tests/test_pm_run_timings.py': 'kwargs.get("timeout") on the measured subprocess calls — an option name, not a reason',
 }
 
 function patternFor(id) {
