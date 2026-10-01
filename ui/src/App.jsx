@@ -28,11 +28,18 @@ function resultFromConflictRun(run) {
 // pending or the server reports the item's run as running (so it survives a
 // reload and shows a run another tab started), and the server's recorded
 // outcome once a run this tab only watched has ended.
+// A request that got no usable answer (a dropped connection, a proxy
+// timeout page) watches the server the same way, but if the server never
+// recorded a new run for it there is no outcome to show — only that the
+// answer was lost.
 function resolveDialogView(dialog, item, pending) {
   if (dialog.phase === 'done') return dialog
   if (pending || item?.conflictRun?.state === 'running') return { ...dialog, phase: 'running' }
-  if (dialog.phase === 'running') return { ...dialog, phase: 'done', result: resultFromConflictRun(item?.conflictRun) }
-  return dialog
+  if (dialog.phase !== 'running') return dialog
+  if (dialog.lostContact && (item?.conflictRun?.since ?? null) === dialog.runBefore) {
+    return { ...dialog, phase: 'done', result: { error: 'no_response' } }
+  }
+  return { ...dialog, phase: 'done', result: resultFromConflictRun(item?.conflictRun) }
 }
 
 const CLOSED_COMPOSER = { open: false, mode: null, itemId: null, phase: null, target: '', stepOptions: [], defaultTargetLabel: null }
@@ -134,16 +141,24 @@ function AuthenticatedApp({ user, onLogout }) {
     if (!d || d.phase !== 'confirm' || resolveInFlight.current.has(d.itemId)) return
     resolveInFlight.current.add(d.itemId)
     setResolvePending(new Set(resolveInFlight.current))
-    setResolveDialog({ ...d, phase: 'running' })
+    const runBefore = items.find((it) => it.id === d.itemId)?.conflictRun?.since ?? null
+    setResolveDialog({ ...d, phase: 'running', runBefore })
     api
       .resolveConflicts(d.itemId)
-      .catch(() => ({ ok: false }))
+      .catch(() => null)
       .then((result) => {
         resolveInFlight.current.delete(d.itemId)
         setResolvePending(new Set(resolveInFlight.current))
         // Another click or tab already owns the run: keep showing progress —
-        // item.conflictRun says when it ends.
-        const next = result?.error === 'resolve_in_progress' ? { phase: 'running' } : { phase: 'done', result }
+        // item.conflictRun says when it ends. No usable answer at all says
+        // nothing about the run, so it is watched the same way rather than
+        // reported as "nothing changed" while the server may still be working.
+        const answered = result?.ok === true || typeof result?.error === 'string'
+        const next = !answered
+          ? { phase: 'running', lostContact: true }
+          : result.error === 'resolve_in_progress'
+            ? { phase: 'running' }
+            : { phase: 'done', result }
         setResolveDialog((cur) => (cur && cur.itemId === d.itemId ? { ...cur, ...next } : cur))
       })
   }

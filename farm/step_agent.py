@@ -343,6 +343,22 @@ def merge_default_branch(ws: Path) -> list[str]:
     return conflicted
 
 
+def _conflict_markers_left(ws: Path, paths: list[str]) -> list[str]:
+    """The paths merge_default_branch left conflicted that still hold a
+    `<<<<<<<` or `>>>>>>>` marker line. Only those paths are scanned: git
+    wrote markers into nothing else, and a repo may carry marker-looking text
+    elsewhere on purpose (conflict test fixtures)."""
+    left = []
+    for path in paths:
+        try:
+            text = (ws / path).read_text(errors="replace")
+        except (FileNotFoundError, IsADirectoryError):
+            continue  # the agent resolved it by deleting the file
+        if any(line.startswith(("<<<<<<<", ">>>>>>>")) for line in text.splitlines()):
+            left.append(path)
+    return left
+
+
 def _merge_main_note(conflicted: list[str]) -> str:
     if not conflicted:
         return (
@@ -379,7 +395,13 @@ def _checkpoint_resume_note(ws: Path) -> str | None:
     )
 
 
-def finalize_branch(ws: Path, item: dict, branch: str) -> dict:
+def finalize_branch(ws: Path, item: dict, branch: str, conflicted: list[str] | None = None) -> dict:
+    # A merge of main still carrying conflict markers must never be committed:
+    # GitHub would then call the PR mergeable with the markers in it, and no
+    # later send-back would be told which files still hold them.
+    markers = _conflict_markers_left(ws, conflicted or [])
+    if markers:
+        raise RuntimeError(f"conflict markers left unresolved in: {', '.join(markers)} — nothing committed or pushed")
     git(ws, "add", "-A")
     staged = git(ws, "diff", "--cached", "--quiet", check=False)
     # An in-progress merge of main (merge_default_branch) must be committed
@@ -414,12 +436,21 @@ def finalize_branch(ws: Path, item: dict, branch: str) -> dict:
 # from zero.
 
 
-def _salvage_checkpoint(ws: Path, item: dict, branch: str) -> None:
+def _salvage_checkpoint(ws: Path, item: dict, branch: str, conflicted: list[str] | None = None) -> None:
     """Best-effort: never raises. A salvage failure (e.g. a concurrent push
     winning the --force-with-lease race) just means this attempt's partial
     work is lost — the caller's original exception is what must still
-    propagate and fail the run, unchanged from pre-HZ-31 behavior."""
+    propagate and fail the run, unchanged from pre-HZ-31 behavior.
+
+    HZ-188: a half-resolved merge of main is never checkpointed. Committing
+    it would push conflict markers to the PR branch and make GitHub report it
+    mergeable, so the next send-back would not merge main or name the files.
+    Dropping it is safe: that send-back merges main again from scratch."""
     try:
+        markers = _conflict_markers_left(ws, conflicted or [])
+        if markers:
+            log(f"salvage: skipped — the merge of main still has conflict markers in {', '.join(markers)}")
+            return
         git(ws, "add", "-A")
         staged = git(ws, "diff", "--cached", "--quiet", check=False)
         if staged.returncode == 0:
@@ -658,6 +689,7 @@ def _execute(task: dict) -> dict:
         # After the resume check: a merge commit would hide the checkpoint's
         # subject from it.
         merge_note = ""
+        conflicted: list[str] = []
         if task.get("merge_main"):
             conflicted = merge_default_branch(ws)
             log(f"merged origin/main into {branch}" + (f" — {len(conflicted)} conflicted file(s) left for the agent" if conflicted else " cleanly"))
@@ -679,7 +711,7 @@ def _execute(task: dict) -> dict:
             # letting the next attempt's prepare_branch scrub it away. Still
             # re-raises unchanged: a failed attempt still fails and pauses,
             # no checks run, no PR opens, nothing advances.
-            _salvage_checkpoint(ws, item, branch)
+            _salvage_checkpoint(ws, item, branch, conflicted)
             raise
         # The summary is reporting, not the deliverable — the code in the
         # workspace is. Never torch a completed implement run over a
@@ -706,7 +738,7 @@ def _execute(task: dict) -> dict:
         # run (Node pauses the item with the reason) — no green, no push.
         check_note = run_checks(ws, log)
         publish_screenshots(ws, item)
-        artifacts = finalize_branch(ws, item, branch)
+        artifacts = finalize_branch(ws, item, branch, conflicted)
         # finalize_branch returns branch/files_changed, not an artifact_md, so
         # the summary is this path's only note surface.
         summary = stamp_notes(f"{summary} · {check_note}"[:SUMMARY_MAX_CHARS], notes, SUMMARY_MAX_CHARS)

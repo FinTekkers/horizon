@@ -122,10 +122,29 @@ def item_lock(repo_full: str, item_id: str, *, wait_s: float | None = None, on_w
 
 
 def item_lock_held(repo_full: str, item_id: str) -> bool:
-    """True while some run holds item_lock() for this item."""
+    """True while some run holds item_lock() for this item.
+
+    Read from /proc/locks rather than by trying the lock: a probe that briefly
+    takes it would make a concurrent wait_s=0 acquire (farmd's
+    /conflicts/resolve) fail with a spurious ItemBusy. The probe is only the
+    fallback where /proc/locks can't be read."""
     lock_path = _item_lock_path(repo_full, item_id)
-    if not lock_path.exists():
+    try:
+        st = lock_path.stat()
+    except FileNotFoundError:
         return False
+    try:
+        proc_locks = Path("/proc/locks").read_text()
+    except OSError:
+        proc_locks = None
+    if proc_locks is not None:
+        # "1: FLOCK  ADVISORY  WRITE 1234 103:01:5678 0 EOF" — the device is
+        # printed as %02x:%02x:%lu (major:minor:inode).
+        dev = f"{os.major(st.st_dev):02x}:{os.minor(st.st_dev):02x}:{st.st_ino}"
+        return any(
+            len(fields) > 5 and fields[1] == "FLOCK" and fields[5] == dev
+            for fields in (line.split() for line in proc_locks.splitlines())
+        )
     with open(lock_path, "a") as fh:
         try:
             fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)

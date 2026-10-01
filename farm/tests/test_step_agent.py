@@ -2264,3 +2264,68 @@ def test_a_conflicted_merge_resolved_to_the_branchs_own_side_is_still_committed(
     execute(task)
 
     assert is_ancestor(origin, main_sha, "horizon/t-1")
+
+
+def test_an_exhausted_run_never_checkpoints_a_merge_that_still_has_conflict_markers(tmp_path, monkeypatch):
+    """Salvaging a half-resolved merge would push markers to the PR branch and
+    make GitHub call it mergeable — the next send-back would then neither
+    merge main nor name the files."""
+    ws, origin = make_diverged_workspace(tmp_path, conflict=True)
+    monkeypatch.setattr(step_agent, "ensure_item_worktree", lambda repo, item_id: ws)
+    before = rev(origin, "horizon/t-1")
+
+    def _agent(prompt, **kwargs):
+        (ws / "agent.txt").write_text("partial\n")  # shared.txt still has its markers
+        raise AgentExhaustedError("ran out of turns")
+
+    monkeypatch.setattr(step_agent, "run_agent", _agent)
+    task = make_task(11, "Specialist agent implements", repo="acme/demo")
+    task["merge_main"] = True
+
+    with pytest.raises(AgentExhaustedError):
+        execute(task)
+
+    assert rev(origin, "horizon/t-1") == before
+
+
+def test_an_exhausted_run_still_checkpoints_a_merge_whose_markers_are_resolved(tmp_path, monkeypatch):
+    ws, origin = make_diverged_workspace(tmp_path, conflict=True)
+    monkeypatch.setattr(step_agent, "ensure_item_worktree", lambda repo, item_id: ws)
+    main_sha = rev(ws, "origin/main")
+
+    def _agent(prompt, **kwargs):
+        (ws / "shared.txt").write_text("item side\nmain side\n")
+        raise AgentExhaustedError("ran out of turns")
+
+    monkeypatch.setattr(step_agent, "run_agent", _agent)
+    task = make_task(11, "Specialist agent implements", repo="acme/demo")
+    task["merge_main"] = True
+
+    with pytest.raises(AgentExhaustedError):
+        execute(task)
+
+    assert is_ancestor(origin, main_sha, "horizon/t-1")
+
+
+def test_a_finished_run_that_left_conflict_markers_fails_without_committing_or_pushing(tmp_path, monkeypatch):
+    """run_checks may not parse the file (.txt, .md), so the markers are
+    checked before the commit, not left to the checks."""
+    ws, origin = make_diverged_workspace(tmp_path, conflict=True)
+    monkeypatch.setattr(step_agent, "ensure_item_worktree", lambda repo, item_id: ws)
+    before_remote = rev(origin, "horizon/t-1")
+
+    def _agent(prompt, **kwargs):
+        (ws / "agent.txt").write_text("work\n")  # never touched shared.txt
+        return {"result": '{"summary": "done"}'}
+
+    monkeypatch.setattr(step_agent, "run_agent", _agent)
+    task = make_task(11, "Specialist agent implements", repo="acme/demo")
+    task["merge_main"] = True
+
+    with pytest.raises(RuntimeError, match="conflict markers left unresolved in: shared.txt"):
+        execute(task)
+
+    assert rev(origin, "horizon/t-1") == before_remote
+    # Not even a local commit: HEAD is still the branch tip, merge uncommitted.
+    assert rev(ws, "HEAD") == before_remote
+    assert (ws / ".git" / "MERGE_HEAD").exists()

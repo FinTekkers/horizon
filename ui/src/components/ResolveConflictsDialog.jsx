@@ -8,7 +8,8 @@ import { useEffect, useRef } from 'react'
 // refuse a second run on their own (HZ-188); this is the UX half.
 //
 // phase: 'confirm' | 'running' | 'done'. `result` is the server's reply once
-// phase is 'done': {ok: true, resolved, escalated, reason} or {error, reason}.
+// phase is 'done': {ok: true, resolved, escalated, reason} or {error, reason};
+// {error: 'no_response'} means the request got no usable answer at all.
 export const RESOLVE_STEPS = [
   'Merge the latest main into the item’s branch.',
   'If the conflict is small (a few files, a few dozen lines), an agent edits only the conflicting sections. Code outside them cannot change.',
@@ -18,6 +19,13 @@ export const RESOLVE_STEPS = [
 ]
 
 function resultMessage(result) {
+  if (result?.error === 'no_response') {
+    return {
+      tone: 'warn',
+      title: 'No answer from Horizon',
+      body: 'The request got no answer, so it isn’t known whether a run started. Check the item’s activity log before trying again.',
+    }
+  }
   if (result?.ok !== true) {
     const why = result?.reason || (result?.error ? result.error.replaceAll('_', ' ') : '')
     return {

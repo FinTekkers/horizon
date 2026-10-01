@@ -185,11 +185,31 @@ test('a request that could not start says nothing changed, with the error', asyn
   expect(document.querySelector('.resolve-dialog__result').textContent).toMatch(/Nothing was changed \(not conflicted\)/)
 })
 
-test('a network failure (no reply) is reported as could not start', async () => {
+test('a request with no usable answer that the server never recorded says so, not "nothing changed"', async () => {
   api.resolveConflicts.mockResolvedValue({ ok: false })
   const { findByText } = await openItem('RC-6')
   await confirmFrom(findByText)
-  await findByText('Couldn’t start conflict resolution')
+  await findByText('No answer from Horizon')
+  expect(dialogText()).not.toMatch(/Nothing was changed/)
+  expect(dialogText()).toMatch(/activity log before trying again/)
+})
+
+test('a lost answer while the server’s run is going keeps showing progress, then the real outcome', async () => {
+  // A proxy timeout page: the request's answer is lost, but the server's
+  // push already says the run it started is going.
+  const reply = deferred()
+  api.resolveConflicts.mockReturnValue(reply.promise)
+  const { findByText } = await openItem('RC-12')
+  await confirmFrom(findByText)
+  pushItems([conflictedItem('RC-12', { conflictRun: { state: 'running', since: '2026-10-01T14:02:11Z', reason: null } })])
+  await act(async () => reply.resolve({ ok: false }))
+
+  expect(document.querySelector('.composer__title').textContent).toBe('Resolving conflicts…')
+  expect(conflictButton().disabled).toBe(true)
+
+  pushItems([conflictedItem('RC-12', { conflictRun: { state: 'resolved', since: '2026-10-01T14:02:11Z', reason: null } })])
+  await findByText('Conflicts resolved')
+  expect(api.resolveConflicts).toHaveBeenCalledTimes(1)
 })
 
 test('after a reload, an item whose run is still going shows a disabled button and progress, not a Confirm', async () => {

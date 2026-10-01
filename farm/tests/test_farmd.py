@@ -320,6 +320,21 @@ def test_item_lock_is_released_when_its_holder_process_is_killed(lock_dir):
         pass
 
 
+def test_item_lock_held_never_takes_the_lock_itself(lock_dir, monkeypatch):
+    """Pool eviction asks item_lock_held about every worktree. If the probe
+    briefly took the lock, farmd's wait_s=0 acquire at that moment would
+    answer a spurious 409 resolve_in_progress with nothing running."""
+    with workspaces.item_lock("acme/demo", "HZ-1", wait_s=0):
+        pass  # the lock file now exists, unheld
+    with workspaces.item_lock("acme/demo", "HZ-2", wait_s=0):
+        real_flock = workspaces.fcntl.flock
+        probes = []
+        monkeypatch.setattr(workspaces.fcntl, "flock", lambda *a: probes.append(a) or real_flock(*a))
+        assert not workspaces.item_lock_held("acme/demo", "HZ-1")
+        assert workspaces.item_lock_held("acme/demo", "HZ-2")
+        assert probes == []
+
+
 def test_item_lock_is_case_insensitive_and_lives_outside_every_worktree(lock_dir):
     with workspaces.item_lock("acme/demo", "HZ-188", wait_s=0):
         with pytest.raises(workspaces.ItemBusy):
