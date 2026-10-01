@@ -2123,3 +2123,144 @@ def test_implement_step_passes_the_step_model(tmp_path, monkeypatch):
         execute(make_task(11, "Specialist agent implements", repo="acme/demo"))
 
     assert captured["model"] == "claude-x"
+
+
+# ---- HZ-188: a conflict send-back starts on a branch with main merged ----
+# The server stamps merge_main on an implement task whose PR GitHub reports as
+# conflicted. Before the agent runs, prepare_branch's branch must already have
+# origin/main merged in, with any conflicted files named in the prompt and
+# their markers left on disk for the agent.
+
+
+def make_diverged_workspace(tmp_path, *, conflict):
+    """origin/horizon/t-1 and origin/main both moved on from the seed; with
+    conflict=True they changed the same line of shared.txt."""
+    ws, origin = make_git_workspace(tmp_path)
+    (ws / "shared.txt").write_text("base\n")
+    git(ws, "add", "-A")
+    git(ws, "commit", "-m", "shared")
+    git(ws, "push", "-q", "origin", "HEAD:main")
+    git(ws, "checkout", "-q", "-b", "horizon/t-1")
+    (ws / "shared.txt").write_text("item side\n" if conflict else "base\n")
+    (ws / "item_only.txt").write_text("item\n")
+    git(ws, "add", "-A")
+    git(ws, "commit", "-m", "item work")
+    git(ws, "push", "-q", "origin", "horizon/t-1")
+    git(ws, "checkout", "-q", "main")
+    git(ws, "reset", "-q", "--hard", "origin/main")
+    (ws / "shared.txt").write_text("main side\n" if conflict else "base\n")
+    (ws / "main_only.txt").write_text("main\n")
+    git(ws, "add", "-A")
+    git(ws, "commit", "-m", "main moved on")
+    git(ws, "push", "-q", "origin", "main")
+    return ws, origin
+
+
+def rev(cwd, ref):
+    return subprocess.run(["git", "-C", str(cwd), "rev-parse", ref], capture_output=True, text=True, check=True).stdout.strip()
+
+
+def is_ancestor(cwd, ancestor, ref):
+    return subprocess.run(["git", "-C", str(cwd), "merge-base", "--is-ancestor", ancestor, ref]).returncode == 0
+
+
+def test_a_conflict_send_back_merges_main_before_the_agent_and_lists_the_conflicted_files(tmp_path, monkeypatch):
+    ws, origin = make_diverged_workspace(tmp_path, conflict=True)
+    monkeypatch.setattr(step_agent, "ensure_item_worktree", lambda repo, item_id: ws)
+    main_sha = rev(ws, "origin/main")
+    seen = {}
+
+    def _agent(prompt, **kwargs):
+        # The state the agent starts in: main merged (in progress, markers on
+        # disk), main's own changes present, the item's work still there.
+        seen["prompt"] = prompt
+        seen["merge_head"] = (ws / ".git" / "MERGE_HEAD").read_text().strip()
+        seen["shared"] = (ws / "shared.txt").read_text()
+        seen["main_only"] = (ws / "main_only.txt").exists()
+        seen["item_only"] = (ws / "item_only.txt").exists()
+        (ws / "shared.txt").write_text("item side\nmain side\n")
+        return {"result": '{"summary": "resolved the merge"}'}
+
+    monkeypatch.setattr(step_agent, "run_agent", _agent)
+    task = make_task(11, "Specialist agent implements", repo="acme/demo")
+    task["merge_main"] = True
+
+    execute(task)
+
+    assert seen["merge_head"] == main_sha
+    assert "<<<<<<<" in seen["shared"] and "main side" in seen["shared"] and "item side" in seen["shared"]
+    assert seen["main_only"] and seen["item_only"]
+    assert "- shared.txt" in seen["prompt"]
+    assert "conflict markers" in seen["prompt"]
+    # The harness committed the merge and pushed it: the PR branch now
+    # contains main, so the conflict cannot survive the send-back.
+    assert is_ancestor(origin, main_sha, "horizon/t-1")
+    pushed = subprocess.run(
+        ["git", "--git-dir", str(origin), "show", "horizon/t-1:shared.txt"], capture_output=True, text=True, check=True
+    ).stdout
+    assert pushed == "item side\nmain side\n"
+
+
+def test_a_clean_merge_of_main_is_committed_before_the_agent_starts(tmp_path, monkeypatch):
+    ws, origin = make_diverged_workspace(tmp_path, conflict=False)
+    monkeypatch.setattr(step_agent, "ensure_item_worktree", lambda repo, item_id: ws)
+    main_sha = rev(ws, "origin/main")
+    seen = {}
+
+    def _agent(prompt, **kwargs):
+        seen["prompt"] = prompt
+        seen["main_in_head"] = is_ancestor(ws, main_sha, "HEAD")
+        seen["merging"] = (ws / ".git" / "MERGE_HEAD").exists()
+        (ws / "agent.txt").write_text("work\n")
+        return {"result": '{"summary": "did it"}'}
+
+    monkeypatch.setattr(step_agent, "run_agent", _agent)
+    task = make_task(11, "Specialist agent implements", repo="acme/demo")
+    task["merge_main"] = True
+
+    execute(task)
+
+    assert seen["main_in_head"] and not seen["merging"]
+    assert "merged into it cleanly" in seen["prompt"]
+    assert is_ancestor(origin, main_sha, "horizon/t-1")
+
+
+def test_an_implement_run_without_merge_main_leaves_main_unmerged(tmp_path, monkeypatch):
+    ws, origin = make_diverged_workspace(tmp_path, conflict=True)
+    monkeypatch.setattr(step_agent, "ensure_item_worktree", lambda repo, item_id: ws)
+    main_sha = rev(ws, "origin/main")
+    seen = {}
+
+    def _agent(prompt, **kwargs):
+        seen["prompt"] = prompt
+        seen["main_in_head"] = is_ancestor(ws, main_sha, "HEAD")
+        (ws / "agent.txt").write_text("work\n")
+        return {"result": '{"summary": "did it"}'}
+
+    monkeypatch.setattr(step_agent, "run_agent", _agent)
+
+    execute(make_task(11, "Specialist agent implements", repo="acme/demo"))
+
+    assert not seen["main_in_head"]
+    assert "conflicted with main" not in seen["prompt"]
+
+
+def test_a_conflicted_merge_resolved_to_the_branchs_own_side_is_still_committed(tmp_path, monkeypatch):
+    """Keeping the branch's side verbatim stages no diff against HEAD, but the
+    merge itself must still be committed or the pushed branch lacks main."""
+    ws, origin = make_diverged_workspace(tmp_path, conflict=True)
+    monkeypatch.setattr(step_agent, "ensure_item_worktree", lambda repo, item_id: ws)
+    main_sha = rev(ws, "origin/main")
+
+    def _agent(prompt, **kwargs):
+        (ws / "shared.txt").write_text("item side\n")
+        (ws / "main_only.txt").unlink()
+        return {"result": '{"summary": "kept ours"}'}
+
+    monkeypatch.setattr(step_agent, "run_agent", _agent)
+    task = make_task(11, "Specialist agent implements", repo="acme/demo")
+    task["merge_main"] = True
+
+    execute(task)
+
+    assert is_ancestor(origin, main_sha, "horizon/t-1")

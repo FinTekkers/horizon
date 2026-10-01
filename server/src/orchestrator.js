@@ -946,6 +946,14 @@ async function dispatchToFarm(id, stepIndex, runId, attempt) {
   }
 
   const artifacts = budgeted.map(({ label, content }) => ({ label, content }))
+  // HZ-188: an implement run on a PR GitHub reports as conflicted (a
+  // resolve-conflicts escalation, or any other send-back while main has moved
+  // underneath it) must start on a branch that already has origin/main merged
+  // in — otherwise the agent reworks the old base and the conflict survives
+  // (HZ-125, HZ-144). The farm does the merge and lists the conflicted files
+  // in the prompt; this only says when. pr_mergeable is the raw column here:
+  // 0 is "GitHub reports conflicts", null is unknown.
+  const mergeMain = stepIndex === IMPLEMENT_STEP_INDEX && item.pr_mergeable === 0
   const truncatedLabels = budgeted.filter((a) => a.truncated).map((a) => a.label)
   if (truncatedLabels.length > 0) {
     addEvent(id, {
@@ -974,6 +982,7 @@ async function dispatchToFarm(id, stepIndex, runId, attempt) {
     },
     step: { index: stepIndex, label: step.label, agent: step.agent },
     feedback,
+    ...(mergeMain ? { merge_main: true } : {}),
   }).catch((err) => {
     failFarmRun(runId, `could not hand the step to the farm: ${err.message}`, REASON.UNREACHABLE)
   })

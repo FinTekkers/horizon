@@ -323,6 +323,43 @@ def prepare_branch(ws: Path, item: dict) -> str:
     return branch
 
 
+def merge_default_branch(ws: Path) -> list[str]:
+    """HZ-188: merge origin/<default> into the freshly prepared item branch
+    before the agent starts, so a conflict send-back reworks the code on top
+    of today's main instead of the stale base the conflict came from (HZ-125,
+    HZ-144). A clean merge is committed; a conflicted one is left IN PROGRESS
+    with its markers on disk for the agent to resolve — finalize_branch's
+    commit then records it as the merge commit. Returns the conflicted paths
+    (empty for a clean merge). Any other merge failure raises: the agent must
+    not start on a half-merged tree it was never told about."""
+    head = git(ws, "symbolic-ref", "refs/remotes/origin/HEAD", check=False).stdout.strip()
+    default = head.rsplit("/", 1)[-1] if head else "main"
+    merged = git(ws, "merge", "--no-edit", f"origin/{default}", check=False)
+    if merged.returncode == 0:
+        return []
+    conflicted = git(ws, "diff", "--name-only", "--diff-filter=U", check=False).stdout.split()
+    if not conflicted:
+        raise RuntimeError(f"merging origin/{default} failed: {(merged.stderr or merged.stdout).strip()[:300]}")
+    return conflicted
+
+
+def _merge_main_note(conflicted: list[str]) -> str:
+    if not conflicted:
+        return (
+            "\n\nNOTE: this branch's PR conflicted with main. origin/main has already "
+            "been merged into it cleanly — build on the merged code as it is now."
+        )
+    files = "\n".join(f"- {path}" for path in conflicted)
+    return (
+        "\n\nNOTE: this branch's PR conflicted with main. origin/main has been merged "
+        "into it and the merge is still in progress: these files have conflict markers "
+        f"left in place for you to resolve —\n{files}\n"
+        "Resolve every marker keeping the intent of both sides, then carry on with the "
+        "step. Do not run `git merge --abort` and do not commit — the harness commits "
+        "the merge after you finish."
+    )
+
+
 def _checkpoint_resume_note(ws: Path) -> str | None:
     """If HEAD is a salvage checkpoint left by a prior exhausted attempt
     (prepare_branch() already based this branch off origin/<branch>, so a
@@ -345,7 +382,11 @@ def _checkpoint_resume_note(ws: Path) -> str | None:
 def finalize_branch(ws: Path, item: dict, branch: str) -> dict:
     git(ws, "add", "-A")
     staged = git(ws, "diff", "--cached", "--quiet", check=False)
-    if staged.returncode != 0:  # there are staged changes
+    # An in-progress merge of main (merge_default_branch) must be committed
+    # even when its resolution kept this branch's side verbatim — otherwise
+    # the push leaves main unmerged and the conflict survives.
+    merging = git(ws, "rev-parse", "-q", "--verify", "MERGE_HEAD", check=False)
+    if staged.returncode != 0 or merging.returncode == 0:
         git(ws, "commit", "-m", f"{item['id']}: {item['title']} (Horizon Eng agent)")
     head = git(ws, "symbolic-ref", "refs/remotes/origin/HEAD", check=False).stdout.strip()
     default = head.rsplit("/", 1)[-1] if head else "main"
@@ -614,9 +655,16 @@ def _execute(task: dict) -> dict:
         resume_note = _checkpoint_resume_note(ws)
         if resume_note:
             log("resuming a prior attempt's WIP checkpoint")
+        # After the resume check: a merge commit would hide the checkpoint's
+        # subject from it.
+        merge_note = ""
+        if task.get("merge_main"):
+            conflicted = merge_default_branch(ws)
+            log(f"merged origin/main into {branch}" + (f" — {len(conflicted)} conflicted file(s) left for the agent" if conflicted else " cleanly"))
+            merge_note = _merge_main_note(conflicted)
         try:
             reply = run_agent(
-                build_prompt(task) + (resume_note or ""),
+                build_prompt(task) + (resume_note or "") + merge_note,
                 append_system=role,
                 cwd=str(ws),
                 max_turns=max_turns,

@@ -288,6 +288,7 @@ def test_conflicts_resolve_validates_input_before_taking_the_lock(running_farm, 
 def test_item_lock_is_released_when_its_holder_process_is_killed(lock_dir):
     """A crashed resolver (farmd killed mid-run) must not leave the item
     locked: the kernel drops a flock with its process."""
+    assert not workspaces.item_lock_held("acme/demo", "HZ-188")  # no lock file yet
     child = subprocess.Popen(
         [
             sys.executable,
@@ -314,6 +315,7 @@ def test_item_lock_is_released_when_its_holder_process_is_killed(lock_dir):
         child.kill()
         child.wait(timeout=10)
 
+    assert not workspaces.item_lock_held("acme/demo", "HZ-188")
     with workspaces.item_lock("acme/demo", "HZ-188", wait_s=0):
         pass
 
