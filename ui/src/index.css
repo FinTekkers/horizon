@@ -884,3 +884,23 @@ button { font-family: var(--font-sans); }
   text-decoration: none; box-sizing: border-box;
 }
 .login__google:hover { border-color: var(--primary); color: var(--primary-ink); }
+
+/* Public legal pages (/privacy, /terms) and the links to them. */
+.legal { min-height: 100vh; display: flex; flex-direction: column; align-items: center; padding: 28px 16px 40px; }
+.legal__header { width: 100%; max-width: 760px; margin-bottom: 18px; }
+.legal__brand { display: inline-flex; align-items: center; gap: 12px; color: var(--deep); text-decoration: none; }
+.legal__card {
+  width: 100%; max-width: 760px; background: var(--surface); border: 1px solid var(--border);
+  border-radius: 18px; padding: 32px clamp(18px, 4vw, 40px);
+}
+.legal__title { font: 800 26px var(--font-sans); letter-spacing: -0.3px; color: var(--deep); margin: 0 0 14px; }
+.legal__body { font-size: 14.5px; line-height: 1.65; color: var(--ink); }
+.legal__body h3 { margin-top: 24px; }
+.legal__body a { color: var(--primary-ink); }
+.legal__footer { margin-top: 18px; }
+.legal-links { display: flex; gap: 16px; justify-content: center; flex-wrap: wrap; font: 500 12px var(--font-sans); }
+.legal-links a { color: var(--muted); text-decoration: none; }
+.legal-links a:hover { color: var(--primary-ink); text-decoration: underline; }
+.login { flex-direction: column; }
+.login__legal { margin-top: 16px; }
+.usermenu__legal { justify-content: flex-start; padding: 8px 12px 4px; border-top: 1px solid var(--border); margin-top: 4px; }
