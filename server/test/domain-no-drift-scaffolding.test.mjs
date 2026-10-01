@@ -29,6 +29,16 @@ const PINNED_DEPS = {
   'server/package.json': {
     dependencies: {
       '@fastify/cookie': '^11.1.2',
+      // HZ-178 added `@fastify/swagger` — deliberately, as guardrail 3 intends,
+      // and the same way HZ-153 added `marked` below: that item allowed at most
+      // one new runtime dependency, to generate the published OpenAPI document
+      // from the routes app.js already registers, and this is it. No Swagger UI
+      // package came with it, and NOTHING was added to devDependencies, which
+      // stays `undefined` below: openapi-spec-valid.test.mjs validates the
+      // document with the ajv that fastify itself depends on through
+      // @fastify/ajv-compiler, so the "just add ajv" this file warns about above
+      // did not happen either.
+      '@fastify/swagger': '^9.9.1',
       'better-sqlite3': '^12.4.1',
       fastify: '^5.6.2',
       'google-auth-library': '^11.0.0',
