@@ -298,6 +298,7 @@ function AuthenticatedApp({ user, onLogout }) {
           onReject={(id, target) => openComposer('reject', id, { target })}
           onResolveConflicts={openResolveDialog}
           resolving={isResolving(selected)}
+          onForwardToAccept={(id) => api.forwardToAccept(id)}
           onTogglePause={api.togglePause}
           onRestartPhase={(id, phase) => openComposer('restart', id, { phase })}
           onSetPersona={api.setPersona}

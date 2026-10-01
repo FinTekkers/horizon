@@ -306,6 +306,14 @@ export async function resolveConflicts(id) {
   return res ? await res.json().catch(() => ({ ok: false })) : { ok: false }
 }
 
+// HZ-185: forward an item the latest automated review rejected to Accept the
+// code with the failing verdict attached, gated by the same PIN. Resolves with
+// the server's {ok, forwarded} or {error} so the caller can say why not.
+export async function forwardToAccept(id) {
+  const res = await gatePost(`/items/${id}/forward-to-accept`, {})
+  return res ? await res.json().catch(() => ({ ok: false })) : { ok: false }
+}
+
 export function togglePause(id) {
   const item = items.find((it) => it.id === id)
   if (!item) return
