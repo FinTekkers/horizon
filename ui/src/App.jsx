@@ -7,6 +7,7 @@ import Tracker from './components/Tracker'
 import ApprovalsDrawer from './components/ApprovalsDrawer'
 import ComposerModal from './components/ComposerModal'
 import ConfirmGateDialog from './components/ConfirmGateDialog'
+import ResolveConflictsDialog from './components/ResolveConflictsDialog'
 import AdminPage from './components/AdminPage'
 import AgentDefinitionsPage from './components/AgentDefinitionsPage'
 import NewItemModal from './components/NewItemModal'
@@ -80,6 +81,34 @@ function AuthenticatedApp({ user, onLogout }) {
   const [selectedId, setSelectedId] = useState(initial.id)
   const [approvalsOpen, setApprovalsOpen] = useState(false)
   const [composer, setComposer] = useState(CLOSED_COMPOSER)
+  // Resolve-conflicts dialog, plus the items with a resolve in flight. The set
+  // is what stops a second request: confirm is ignored while an item is in it.
+  const [resolveDialog, setResolveDialog] = useState(null)
+  const [resolvingIds, setResolvingIds] = useState(() => new Set())
+  const [resolveResults, setResolveResults] = useState({})
+
+  const openResolveDialog = (itemId, pr) => {
+    const phase = resolvingIds.has(itemId) ? 'running' : 'confirm'
+    setResolveDialog({ itemId, pr, phase })
+  }
+  const confirmResolve = () => {
+    const d = resolveDialog
+    if (!d || d.phase !== 'confirm' || resolvingIds.has(d.itemId)) return
+    setResolvingIds((s) => new Set(s).add(d.itemId))
+    setResolveDialog({ ...d, phase: 'running' })
+    api
+      .resolveConflicts(d.itemId)
+      .catch(() => ({ ok: false }))
+      .then((result) => {
+        setResolvingIds((s) => {
+          const next = new Set(s)
+          next.delete(d.itemId)
+          return next
+        })
+        setResolveResults((r) => ({ ...r, [d.itemId]: result }))
+        setResolveDialog((cur) => (cur && cur.itemId === d.itemId ? { ...cur, phase: 'done', result } : cur))
+      })
+  }
   const [newItemOpen, setNewItemOpen] = useState(false)
   const [switchTarget, setSwitchTarget] = useState(null)
   // Plain Approve never used to pause for anything — with a cached gate PIN
@@ -221,11 +250,23 @@ function AuthenticatedApp({ user, onLogout }) {
           onApprove={requestApprove}
           onApproveWithComments={(id, target) => openComposer('approve', id, { target })}
           onReject={(id, target) => openComposer('reject', id, { target })}
-          onResolveConflicts={(id) => api.resolveConflicts(id)}
+          onResolveConflicts={openResolveDialog}
+          resolving={resolvingIds.has(selected.id)}
           onTogglePause={api.togglePause}
           onRestartPhase={(id, phase) => openComposer('restart', id, { phase })}
           onSetPersona={api.setPersona}
           onAbandon={(id) => openComposer('abandon', id)}
+        />
+      )}
+
+      {resolveDialog && (
+        <ResolveConflictsDialog
+          itemId={resolveDialog.itemId}
+          pr={resolveDialog.pr}
+          phase={resolveDialog.phase}
+          result={resolveDialog.result ?? resolveResults[resolveDialog.itemId]}
+          onConfirm={confirmResolve}
+          onClose={() => setResolveDialog(null)}
         />
       )}
 

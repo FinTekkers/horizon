@@ -51,6 +51,14 @@ test('resolving a conflict in scope reports back at the Accept gate instead of r
 
   await conflict.locator('button').click()
 
+  // The dialog explains what will happen; nothing runs until it's confirmed.
+  const dialog = page.locator('.resolve-dialog')
+  await expect(dialog).toContainText('Resolve merge conflicts?')
+  await expect(dialog.locator('.resolve-dialog__steps li')).toHaveCount(5)
+  await dialog.locator('.composer__submit').click()
+  await expect(dialog).toContainText('Conflicts resolved', { timeout: 10_000 })
+  await dialog.locator('.composer__cancel').click()
+
   const activity = page.locator('.tracker__activity')
   await expect(activity).toContainText('resolved 2 conflicted hunk(s) on PR #503', { timeout: 10_000 })
   await expect(activity).toContainText('farm/providers/claude.py, farm/providers/muse.py')

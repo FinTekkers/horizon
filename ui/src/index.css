@@ -904,3 +904,21 @@ button { font-family: var(--font-sans); }
 .login { flex-direction: column; }
 .login__legal { margin-top: 16px; }
 .usermenu__legal { justify-content: flex-start; padding: 8px 12px 4px; border-top: 1px solid var(--border); margin-top: 4px; }
+
+/* Resolve-conflicts dialog: says what will happen, shows it running, reports the result. */
+.resolve-dialog { max-width: 520px; }
+.resolve-dialog__body { font: 400 13.5px/1.55 var(--font-sans); color: var(--ink); margin: 4px 0 14px; }
+.resolve-dialog__body p { margin: 0 0 8px; }
+.resolve-dialog__steps { margin: 0 0 10px; padding-left: 20px; }
+.resolve-dialog__steps li { margin-bottom: 5px; }
+.resolve-dialog__running { display: flex; gap: 10px; align-items: flex-start; }
+.resolve-dialog__spinner {
+  flex: none; width: 16px; height: 16px; margin-top: 2px; border-radius: 50%;
+  border: 2px solid var(--border); border-top-color: var(--primary-ink); animation: resolve-spin 0.9s linear infinite;
+}
+@keyframes resolve-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .resolve-dialog__spinner { animation: none; } }
+.resolve-dialog__result { border-left: 3px solid var(--border); padding-left: 10px; }
+.resolve-dialog__result--good { border-color: var(--success); }
+.resolve-dialog__result--warn { border-color: var(--warning-ink); }
+.resolve-dialog__result--bad { border-color: var(--danger-ink); }
