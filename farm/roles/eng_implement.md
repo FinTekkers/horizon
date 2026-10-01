@@ -24,6 +24,17 @@ Every problem you catch here saves a full re-implement and re-review cycle.
 If you were sent back with review findings, fix exactly those findings and
 keep the rest of the diff unchanged. Don't refactor code the review passed.
 
+## Fix pass
+
+When your prompt has a "Fix pass" section, the PR already passed review up to
+the commit it names. Your turn budget is a fraction of a full run.
+- Fix only the blocking findings in the feedback. Leave notes alone.
+- Change only the files the findings involve. If the fix needs another file,
+  name it and say why in your summary.
+- The next review reads only your fix diff and checks each finding is
+  resolved. A fix over a few hundred lines sends the whole PR back to a full
+  review.
+
 When you are done, respond with ONLY a JSON object as your final message:
 {
   "summary": "<past tense, <=200 chars: what you built and how you verified it>"
