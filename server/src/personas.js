@@ -61,8 +61,19 @@ export const LEGACY_PERSONA_IDS = {
   frontend_ui: ['eng', 'ui'],
 }
 
+// Every lookup below guards with hasOwnProperty rather than testing the value
+// for truthiness. These three tables are plain object literals, so an id like
+// 'constructor' or '__proto__' resolves off Object.prototype and would read as
+// a registered persona — the farm mirror (`candidate in bucket`, dict.get) has
+// no such hole, and these functions exist to behave identically to it.
 export function isPersonaAgent(agent) {
   return Object.prototype.hasOwnProperty.call(PERSONAS, agent)
+}
+
+// [agent, persona id] for a pre-HZ-125 flat value, or null.
+export function legacyPersona(id) {
+  if (typeof id !== 'string') return null
+  return Object.prototype.hasOwnProperty.call(LEGACY_PERSONA_IDS, id) ? LEGACY_PERSONA_IDS[id] : null
 }
 
 // An id is only a persona *within an agent*: 'python' is an Eng persona and
@@ -73,9 +84,9 @@ export function isPersona(agent, id) {
 
 // Human-readable label for events and GitHub comments — never show raw ids.
 export function personaLabel(agent, id) {
+  if (!isPersonaAgent(agent)) return id == null ? '' : String(id)
   const bucket = PERSONAS[agent]
-  if (!bucket) return id == null ? '' : String(id)
-  return (bucket[id] || bucket[DEFAULT_PERSONAS[agent]]).label
+  return (isPersona(agent, id) ? bucket[id] : bucket[DEFAULT_PERSONAS[agent]]).label
 }
 
 // The item's { agent: persona id } map, read from a work_item row.
@@ -98,7 +109,7 @@ export function personasFromRow(row) {
     }
   }
   if (Object.keys(personas).length > 0) return personas
-  const legacy = LEGACY_PERSONA_IDS[row?.persona]
+  const legacy = legacyPersona(row?.persona)
   if (legacy) personas[legacy[0]] = legacy[1]
   return personas
 }

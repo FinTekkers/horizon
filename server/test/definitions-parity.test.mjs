@@ -37,6 +37,13 @@ const FIXTURES = [
   { role: 'qa', agent: 'qa', persona: 'python', project: 'FinTekkers', repo: null }, // wrong bucket -> qa default
   { role: 'eng_implement', agent: 'eng', persona: 'python_backend', project: 'FinTekkers', repo: null }, // legacy flat id
   { role: 'eng_implement', agent: 'devops', persona: 'fullstack', project: 'FinTekkers', repo: null }, // unknown agent -> bare role
+  // Object.prototype keys: a JS registry lookup that tests truthiness instead
+  // of ownership reads these as registered personas/agents, which Python's
+  // `in bucket` never does. Both sides must treat them as plain junk.
+  { role: 'eng_implement', agent: 'eng', persona: 'constructor', project: 'FinTekkers', repo: null },
+  { role: 'eng_implement', agent: 'eng', persona: '__proto__', project: 'FinTekkers', repo: null },
+  { role: 'eng_implement', agent: 'constructor', persona: 'fullstack', project: 'FinTekkers', repo: null },
+  { role: 'eng_implement', agent: '__proto__', persona: 'fullstack', project: 'FinTekkers', repo: null },
   { role: 'devops', agent: 'eng', persona: null, project: 'Horizon', repo: 'FinTekkers/horizon' }, // HZ-22: direct-to-EC2 topology
   { role: 'devops', agent: 'eng', persona: null, project: 'FinTekkers', repo: 'FinTekkers/ui-service' }, // HZ-22: LB + RDS topology
 ]

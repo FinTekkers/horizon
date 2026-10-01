@@ -10,6 +10,7 @@ import {
   PERSONAS,
   PERSONA_AGENT_ROLES,
   PRIMARY_PERSONA_AGENT,
+  isPersona,
   personaFor,
   personaId,
   personaSlotForFile,
@@ -58,6 +59,20 @@ test('personaFor always returns a renderable entry for a known agent', () => {
     const entry = personaFor({ personas: {} }, agent)
     expect(entry.label).toBeTruthy()
     expect(entry.color).toBeTruthy()
+  }
+})
+
+// PERSONAS is a plain object literal, so a name that is an Object.prototype
+// member reads truthy under a bare `PERSONAS[agent][id]` lookup. Matches the
+// same pin in server/test/personas.test.mjs and the farm's `in bucket`.
+test('prototype-member names are not personas, and never become a selected value', () => {
+  for (const key of ['constructor', '__proto__', 'hasOwnProperty', 'valueOf']) {
+    expect(isPersona('eng', key)).toBe(false)
+    expect(isPersona(key, 'fullstack')).toBe(false)
+    expect(personaId({ personas: { eng: key } }, 'eng')).toBe(DEFAULT_PERSONAS.eng)
+    expect(personaFor({ personas: { eng: key } }, 'eng').label).toBe(PERSONAS.eng[DEFAULT_PERSONAS.eng].label)
+    expect(personaFor({ personas: {} }, key)).toBeUndefined()
+    expect(personaSlotForFile(`eng_${key}`)).toBeNull()
   }
 })
 

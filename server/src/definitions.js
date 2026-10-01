@@ -12,7 +12,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { execFileSync } from 'node:child_process'
 
-import { DEFAULT_PERSONAS, LEGACY_PERSONA_IDS, PERSONAS } from './personas.js'
+import { DEFAULT_PERSONAS, PERSONAS, isPersona, isPersonaAgent, legacyPersona } from './personas.js'
 
 // Server and farm live in one repo/checkout, so a UI edit is immediately what
 // farmd stamps into the next task. Overridable for tests only.
@@ -178,14 +178,20 @@ function slugify(name) {
 // HZ-125: the registry (imported from personas.js — one literal, not a second
 // copy) is keyed agent-then-persona, and the file name comes off the entry
 // rather than being derived from the id, exactly as the farm side does it.
+// Every registry lookup goes through isPersona/isPersonaAgent/legacyPersona
+// rather than a bare `bucket[id]` truthiness check: an id like 'constructor'
+// or '__proto__' hits Object.prototype and reads as a registered persona, which
+// would blow up on `.file` here and 500 the effective-prompt preview. The farm
+// side (`candidate in bucket`) has never had that hole, and this function
+// exists to match it byte-for-byte.
 function composeRole(roleText, agent, personaId) {
+  if (!isPersonaAgent(agent)) return roleText
   const bucket = PERSONAS[agent]
-  if (!bucket) return roleText
   const candidate = typeof personaId === 'string' ? personaId.trim().toLowerCase() : ''
-  const legacy = LEGACY_PERSONA_IDS[candidate]
-  const resolved = bucket[candidate]
+  const legacy = legacyPersona(candidate)
+  const resolved = isPersona(agent, candidate)
     ? candidate
-    : legacy && legacy[0] === agent && bucket[legacy[1]]
+    : legacy && legacy[0] === agent && isPersona(agent, legacy[1])
       ? legacy[1]
       : DEFAULT_PERSONAS[agent]
   for (const id of [resolved, DEFAULT_PERSONAS[agent]]) {

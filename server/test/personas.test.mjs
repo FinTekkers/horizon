@@ -22,6 +22,8 @@ const {
   LEGACY_PERSONA_IDS,
   PRIMARY_PERSONA_AGENT,
   isPersona,
+  isPersonaAgent,
+  legacyPersona,
   personaLabel,
   personasFromRow,
   proposePersona,
@@ -119,6 +121,28 @@ test('personasFromRow translates a legacy flat persona value and never throws on
   assert.deepEqual(personasFromRow({ personas_json: '[]' }), {})
   assert.deepEqual(personasFromRow({}), {})
   assert.deepEqual(personasFromRow(null), {})
+})
+
+// The three registry tables are plain object literals, so a name that happens
+// to be an Object.prototype member resolves truthy under a bare `TABLE[name]`
+// lookup and reads as registered. The farm mirror (`candidate in bucket`,
+// dict.get) has never had that hole; every JS lookup must match it, or the
+// composed prompt diverges from what the agent actually receives — and
+// composeRole, which reaches for `.file`, throws outright.
+const PROTOTYPE_KEYS = ['constructor', '__proto__', 'hasOwnProperty', 'valueOf']
+
+test('prototype-member names are not personas, agents or legacy aliases', () => {
+  for (const key of PROTOTYPE_KEYS) {
+    assert.ok(!isPersona('eng', key), `eng/${key} must not read as registered`)
+    assert.ok(!isPersona(key, 'fullstack'), `${key} must not read as an agent`)
+    assert.ok(!isPersonaAgent(key), `${key} must not read as an agent`)
+    assert.equal(legacyPersona(key), null, `${key} must not read as a legacy alias`)
+    // Falls back to the agent default rather than returning undefined.
+    assert.equal(personaLabel('eng', key), PERSONAS.eng[DEFAULT_PERSONAS.eng].label)
+    assert.deepEqual(personasFromRow({ personas_json: JSON.stringify({ eng: key }) }), {})
+    assert.deepEqual(personasFromRow({ persona: key }), {})
+    assert.equal(proposePersona({ title: 'x' }, key), null, `${key} must not propose a persona`)
+  }
 })
 
 test('every legacy alias points at a live persona', () => {

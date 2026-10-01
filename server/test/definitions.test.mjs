@@ -246,6 +246,36 @@ test('the effective-prompt preview composes role → persona → project → rep
   assert.ok(prompt.indexOf('version ') > prompt.indexOf('push me'), 'repo rules follow project rules')
 })
 
+// A persona/agent named after an Object.prototype member used to resolve
+// truthy in the registry lookup, so composeRole reached for `.file` on a
+// function and the preview 500'd. Both must be plain unknown values: an
+// unknown persona falls back to the agent's default, an unknown agent leaves
+// the role text bare — which is what farm/rules.py has always done
+// (definitions-parity.test.mjs pins the two sides together).
+test('the effective-prompt preview treats prototype-keyed names as unknown, not registered', async () => {
+  for (const persona of ['constructor', '__proto__']) {
+    const res = await app.inject({
+      method: 'GET',
+      url: `/api/definitions/effective?role=eng_implement&agent=eng&persona=${encodeURIComponent(persona)}`,
+      headers: { cookie },
+    })
+    assert.equal(res.statusCode, 200, `persona=${persona} must not 500`)
+    assert.ok(
+      res.json().prompt.includes('## Your specialization\nPERSONA TEXT'),
+      `persona=${persona} must fall back to the eng default`,
+    )
+  }
+  for (const agent of ['constructor', '__proto__']) {
+    const res = await app.inject({
+      method: 'GET',
+      url: `/api/definitions/effective?role=eng_implement&agent=${encodeURIComponent(agent)}&persona=fullstack`,
+      headers: { cookie },
+    })
+    assert.equal(res.statusCode, 200, `agent=${agent} must not 500`)
+    assert.ok(!res.json().prompt.includes('## Your specialization'), `agent=${agent} must compose nothing`)
+  }
+})
+
 // ---- resolveRules / renderRulesSection whole-part drop (HZ-114) ----
 // JS mirror of farm/rules.py's fix: an oversized rules block must be dropped
 // whole, with a marked note, never sliced mid-block.

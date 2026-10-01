@@ -15,7 +15,7 @@
 
 import { STEPS, PHASES, isClosed, ACCEPT_GATE_INDEX, IMPLEMENT_STEP_INDEX } from '../../../domain/js/lifecycle.js'
 import { DEFAULT_PRIORITY } from '../../../domain/js/priorities.js'
-import { PERSONAS } from '../domain/personas'
+import { PERSONAS, isPersona } from '../domain/personas'
 
 const SEED_ITEMS = [
   { id: 'BF-145', title: 'Risk-limit breach dashboard', priority: 'Low', cursor: 1, issue: 412, desc: 'Give risk managers a live view of limit utilization across every desk.', metric: 'Limit breaches acknowledged in < 2 min (from 14 min).', guardrails: 'Read-only — no position mutation. No PII in telemetry.' },
@@ -287,7 +287,7 @@ export function togglePause(id) {
 }
 
 export function setPersona(id, agent, persona) {
-  if (!PERSONAS[agent]?.[persona]) return
+  if (!isPersona(agent, persona)) return
   update(id, (it) => ({ ...it, personas: { ...it.personas, [agent]: persona } }))
   pushEvent(id, {
     who: 'You',

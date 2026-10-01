@@ -57,15 +57,25 @@ export const PERSONA_AGENT_ROLES = {
 // code. The other buckets are visible in the gate's picker.
 export const PRIMARY_PERSONA_AGENT = 'eng'
 
+// Registry membership, not value truthiness: PERSONAS is a plain object
+// literal, so 'constructor'/'__proto__' would otherwise resolve off
+// Object.prototype and read as a registered persona. Mirrors
+// server/src/personas.js isPersona and farm/personas.py's `in bucket`.
+export function isPersona(agent, id) {
+  if (!Object.prototype.hasOwnProperty.call(PERSONAS, agent)) return false
+  return typeof id === 'string' && Object.prototype.hasOwnProperty.call(PERSONAS[agent], id)
+}
+
 // Unknown/absent personas (older items, rows written before an id was added)
 // read as that agent's default — a picker must always have a selected value.
 export function personaId(item, agent) {
   const id = item?.personas?.[agent]
-  return PERSONAS[agent]?.[id] ? id : DEFAULT_PERSONAS[agent]
+  return isPersona(agent, id) ? id : DEFAULT_PERSONAS[agent]
 }
 
 export function personaFor(item, agent) {
-  return PERSONAS[agent]?.[personaId(item, agent)]
+  const id = personaId(item, agent)
+  return isPersona(agent, id) ? PERSONAS[agent][id] : undefined
 }
 
 // The definitions browser (HZ-9) identifies personas by FILE name, which is

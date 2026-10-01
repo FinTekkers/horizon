@@ -513,13 +513,20 @@ def test_muse_smoke_test_persona_dispatches_with_provider_muse_on_eligible_steps
 
 
 def test_real_personas_never_force_a_provider_override(monkeypatch):
-    for persona in ("fullstack", "python_backend", "frontend_ui"):
-        captured = {}
-        monkeypatch.setattr(step_agent, "run_agent", capture_run_agent(captured))
-        task = make_task(4, "Plan options & trade-offs (pros / cons)")
-        task["item"]["personas"] = {"eng": persona}
-        execute(task)
-        assert captured.get("provider") is None, f"persona {persona} must never force a provider"
+    """Driven off the registry, not a hand-listed set of ids: provider_for()
+    scans every agent slot (HZ-125), so a new persona in any bucket must be
+    covered the moment it is registered rather than when someone remembers to
+    extend this list."""
+    for agent, bucket in PERSONAS.items():
+        for persona in bucket:
+            captured = {}
+            monkeypatch.setattr(step_agent, "run_agent", capture_run_agent(captured))
+            task = make_task(4, "Plan options & trade-offs (pros / cons)")
+            task["item"]["personas"] = {agent: persona}
+            execute(task)
+            assert captured.get("provider") is None, (
+                f"persona {agent}.{persona} must never force a provider"
+            )
 
 
 def test_muse_smoke_test_persona_never_forces_a_provider_on_qa(monkeypatch, muse_smoke_test_personas):
