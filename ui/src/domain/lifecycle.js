@@ -12,14 +12,22 @@
 // AGENTS moved one file over to ./agentTokens.js so the server's hex map and
 // this themed map are named identically on both sides.
 
+import { PRIORITY } from '../../../domain/js/priorities.js'
+
 export const PHASE_ACCENT = ['var(--primary-ink)', 'var(--architect-ink)', 'var(--success-ink)', 'var(--danger-ink)', 'var(--warning-ink)']
 export const PHASE_ACCENT_BG = ['var(--primary-bg)', 'var(--accent-bg)', 'var(--success-bg)', 'var(--danger-bg)', 'var(--warning-bg)']
 
+// HZ-135: the theme tokens stay here — colour is presentation and domain/ must
+// never carry it — but the KEYS are PRIORITY's rather than a fifth hand-typed
+// copy of the vocabulary. Keyed by named constant, not by array position, so a
+// reordered domain/priorities.json cannot silently recolour the board.
+// server/test/domain-priority-pins.test.mjs pins this map to the exact tokens it
+// carried before HZ-135 and asserts every declared priority has one.
 export const PRIORITY_COLORS = {
-  Critical: 'var(--danger-ink)',
-  High: 'var(--warning-ink)',
-  Medium: 'var(--primary-ink)',
-  Low: 'var(--muted)',
+  [PRIORITY.CRITICAL]: 'var(--danger-ink)',
+  [PRIORITY.HIGH]: 'var(--warning-ink)',
+  [PRIORITY.MEDIUM]: 'var(--primary-ink)',
+  [PRIORITY.LOW]: 'var(--muted)',
 }
 
 export function priorityColor(priority) {

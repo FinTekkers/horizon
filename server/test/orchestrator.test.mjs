@@ -1,7 +1,12 @@
 // Orchestrator-level persona plumbing: the dispatch payload carries the item's
-// persona, farm patches are registry-validated and never clobber a set value,
-// the GitHub comment renders persona labels (not raw ids), and the required
-// pre-execution gate is never auto-advanced.
+// personas, farm patches are registry-validated per agent and never clobber a
+// set value, the GitHub comment renders persona labels (not raw ids), and the
+// required pre-execution gate is never auto-advanced.
+//
+// HZ-125 made personas agent-scoped: an item carries a { agent: persona id } map
+// in work_item.personas_json. The pre-HZ-125 flat `persona` column survives
+// read-only, so the legacy-row cases below seed it directly and assert the
+// translated map — that is success metric 12's actual evidence.
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
@@ -39,18 +44,37 @@ globalThis.fetch = async (url, opts) => {
 // has no other side effect (ensureFarm/rearmFarmRuns both no-op on an empty db).
 orchestrator.init({ info: () => {}, warn: () => {} })
 
+// Seeds the LEGACY flat column on purpose — see the header note. Items that
+// carry an agent-scoped map use insertItemWithPersonas below.
 const insertItem = db.prepare(
   'INSERT INTO work_item (id, title, priority, cursor, persona) VALUES (?, ?, ?, ?, ?)',
 )
+const insertItemWithPersonas = db.prepare(
+  'INSERT INTO work_item (id, title, priority, cursor, personas_json) VALUES (?, ?, ?, ?, ?)',
+)
 
-test('dispatchToFarm sends the item persona to the farm', async () => {
-  insertItem.run('D-1', 'Dispatch carries persona', 'Medium', 11, 'python_backend')
-  orchestrator.kick('D-1')
+async function dispatchFor(id) {
+  orchestrator.kick(id)
   await new Promise((r) => setTimeout(r, 20)) // dispatch is fire-and-forget
-  const dispatch = dispatches.find((d) => d.url.includes('/steps/run') && d.body?.item?.id === 'D-1')
-  assert.ok(dispatch, 'no /steps/run dispatch captured')
-  assert.equal(dispatch.body.item.persona, 'python_backend')
-  orchestrator.cancel('D-1') // clear the watchdog so the test process can exit
+  const dispatch = dispatches.find((d) => d.url.includes('/steps/run') && d.body?.item?.id === id)
+  assert.ok(dispatch, `no /steps/run dispatch captured for ${id}`)
+  orchestrator.cancel(id) // clear the watchdog so the test process can exit
+  return dispatch
+}
+
+test('dispatchToFarm sends the item personas to the farm', async () => {
+  insertItemWithPersonas.run('D-1', 'Dispatch carries personas', 'Medium', 11, JSON.stringify({ eng: 'python', qa: 'data_integrity' }))
+  const dispatch = await dispatchFor('D-1')
+  assert.deepEqual(dispatch.body.item.personas, { eng: 'python', qa: 'data_integrity' })
+})
+
+test('a legacy flat persona value still loads and dispatches as an eng persona', async () => {
+  // HZ-125 success metric 12, with the literal value the metric names. No
+  // migration script runs: personasFromRow translates on read.
+  insertItem.run('D-1L', 'Legacy python_backend item', 'Medium', 11, 'python_backend')
+  assert.deepEqual(store.getItem('D-1L').personas, { eng: 'python' })
+  const dispatch = await dispatchFor('D-1L')
+  assert.deepEqual(dispatch.body.item.personas, { eng: 'python' })
 })
 
 test('kick at the required pre-execution gate does not dispatch or advance', async () => {
@@ -74,12 +98,12 @@ test('a valid persona patch from the farm lands when the item has none', async (
   const runId = activeRunFor('D-3', 4)
   const result = await orchestrator.completeFarmRun(runId, {
     summary: 'planned',
-    patch: { persona: 'frontend_ui', desc: 'planned outcome' },
+    patch: { personas: { eng: 'ui' }, desc: 'planned outcome' },
     artifacts: { artifact_md: '# plan' },
   })
   assert.deepEqual(result, { ok: true })
   const item = store.getItem('D-3')
-  assert.equal(item.persona, 'frontend_ui')
+  assert.deepEqual(item.personas, { eng: 'ui' })
   assert.equal(item.desc, 'planned outcome')
   assert.equal(item.cursor, 5)
 })
@@ -89,13 +113,35 @@ test('an invalid persona patch is dropped; the run completes and siblings surviv
   const runId = activeRunFor('D-4', 4)
   const result = await orchestrator.completeFarmRun(runId, {
     summary: 'planned',
-    patch: { persona: 'rustacean', desc: 'still lands' },
+    patch: { personas: { eng: 'rustacean' }, desc: 'still lands' },
   })
   assert.deepEqual(result, { ok: true })
   const item = store.getItem('D-4')
-  assert.equal(item.persona, null)
+  assert.deepEqual(item.personas, {})
   assert.equal(item.desc, 'still lands')
   assert.equal(item.cursor, 5)
+})
+
+test('a persona patch for an unknown agent is dropped, and a flat string patch is ignored entirely', async () => {
+  insertItem.run('D-4B', 'Unknown agent patch', 'Medium', 4, null)
+  const runId = activeRunFor('D-4B', 4)
+  await orchestrator.completeFarmRun(runId, {
+    summary: 'planned',
+    // devops has no personas by design (guardrail 1), and `persona` is the
+    // retired flat field — neither may reach the database.
+    patch: { personas: { devops: 'data_modelling' }, persona: 'python_backend', desc: 'lands' },
+  })
+  const item = store.getItem('D-4B')
+  assert.deepEqual(item.personas, {})
+  assert.equal(item.persona, null)
+  assert.equal(item.desc, 'lands')
+})
+
+test('a patch for one agent leaves the other agents’ personas untouched', async () => {
+  insertItemWithPersonas.run('D-4C', 'Per-agent slots', 'Medium', 4, JSON.stringify({ qa: 'e2e_journey' }))
+  const runId = activeRunFor('D-4C', 4)
+  await orchestrator.completeFarmRun(runId, { summary: 'planned', patch: { personas: { eng: 'python' } } })
+  assert.deepEqual(store.getItem('D-4C').personas, { qa: 'e2e_journey', eng: 'python' })
 })
 
 // ---- HZ-102: provider/command_id provenance ----
@@ -131,16 +177,29 @@ test('completeFarmRun leaves provider and command_id NULL for an ordinary step (
 })
 
 test('a persona patch never clobbers a value already set (human choice wins)', async () => {
-  insertItem.run('D-5', 'No clobber', 'Medium', 4, 'fullstack')
+  insertItemWithPersonas.run('D-5', 'No clobber', 'Medium', 4, JSON.stringify({ eng: 'fullstack' }))
   const runId = activeRunFor('D-5', 4)
   const result = await orchestrator.completeFarmRun(runId, {
     summary: 'planned',
-    patch: { persona: 'python_backend', metric: 'faster' },
+    patch: { personas: { eng: 'python' }, metric: 'faster' },
   })
   assert.deepEqual(result, { ok: true })
   const item = store.getItem('D-5')
-  assert.equal(item.persona, 'fullstack')
+  assert.deepEqual(item.personas, { eng: 'fullstack' })
   assert.equal(item.metric, 'faster')
+})
+
+test('the no-clobber rule is per agent: a legacy item keeps its eng persona but still gains a qa one', async () => {
+  insertItem.run('D-5L', 'Legacy no clobber', 'Medium', 4, 'frontend_ui')
+  const runId = activeRunFor('D-5L', 4)
+  await orchestrator.completeFarmRun(runId, {
+    summary: 'planned',
+    patch: { personas: { eng: 'python', qa: 'data_integrity' } },
+  })
+  // eng was already set (via the legacy column) so the proposal is dropped;
+  // qa was empty so it lands. Writing personas_json also carries the
+  // translated legacy value forward.
+  assert.deepEqual(store.getItem('D-5L').personas, { eng: 'ui', qa: 'data_integrity' })
 })
 
 // ---- artifact prompt budget (HZ-29, reallocated by HZ-104) ----
@@ -331,6 +390,23 @@ test('HZ-128 regression: stale later-step artifacts no longer push a required pl
   const plan = dispatch.body.artifacts.find((a) => a.label === STEPS[6].label)
   assert.equal(plan.content.length, 32596, 'required plan was not supplied whole')
   orchestrator.cancel('D-7c')
+})
+
+test("HZ-191: the step-9 PM digest's Test contract reaches both implement and automated review whole", async () => {
+  // STEPS[9] is the PM digest; STEPS[11] implements and STEPS[12] reviews.
+  assert.equal(STEPS[9].agent, 'PM')
+  const digest = '## Recommendation\n**PROCEED**.\n## Test contract\n- **Kept:** role text test — verifies metric line 1\n'
+  for (const [id, cursor] of [['D-7d', 11], ['D-7e', 12]]) {
+    insertItem.run(id, 'Test contract reaches downstream', 'Medium', cursor, null)
+    doneStepRun(id, 4, 1, 'options')
+    doneStepRun(id, 6, 1, 'plan')
+    doneStepRun(id, 9, 1, digest)
+    const dispatch = await dispatchFor(id)
+    const contract = dispatch.body.artifacts.find((a) => a.label === STEPS[9].label)
+    assert.ok(contract, `step ${cursor} did not receive the step-9 digest`)
+    assert.equal(contract.content, digest, `step ${cursor} received the Test contract altered or reduced`)
+    assert.ok(!contract.content.includes('[...reduced:'))
+  }
 })
 
 test('dispatchToFarm budgets a large plan complete and marks truncated older artifacts, with an item event', async () => {
@@ -583,16 +659,64 @@ test('pollRunStates never overlaps: a tick that fires while one is still in flig
   orchestrator.cancel('P-4')
 })
 
-test('the GitHub step comment renders the persona label, not the raw id', () => {
+test('the GitHub step comment renders persona labels per agent, not raw ids', () => {
   const body = orchestrator.stepCommentBody(
     { id: 'D-6', repo: 'acme/demo', issue: 7 },
     0,
     1,
     'defined the outcome',
-    { persona: 'python_backend', desc: 'the outcome' },
+    { personas: { eng: 'python', qa: 'data_integrity' }, desc: 'the outcome' },
     true,
     null,
   )
-  assert.match(body, /\*\*Specialist persona:\*\* Python backend/)
-  assert.ok(!body.includes('python_backend'), 'raw persona id leaked into the issue comment')
+  assert.match(body, /\*\*Specialist personas:\*\* eng — Python backend, qa — Data integrity/)
+  assert.ok(!body.includes('data_integrity'), 'raw persona id leaked into the issue comment')
+})
+
+// HZ-188: a send-back on a PR GitHub reports as conflicted must not rework the
+// stale base the conflict came from. Its implement dispatch carries
+// merge_main, which makes the farm merge origin/main into the branch (with the
+// conflicted files listed in the prompt) before the agent starts — the farm
+// half is covered in farm/tests/test_step_agent.py.
+const insertPrItem = db.prepare(
+  `INSERT INTO work_item (id, title, priority, cursor, repo, pr, pr_mergeable)
+   VALUES (?, ?, 'Medium', ?, 'acme/demo', ?, ?)`,
+)
+
+test('a resolve-conflicts escalation dispatches the next implement run with merge_main set', async () => {
+  const { IMPLEMENT_STEP_INDEX, ACCEPT_GATE_INDEX } = await import('../../domain/js/lifecycle.js')
+  insertPrItem.run('MM-1', 'Escalates to implement', ACCEPT_GATE_INDEX, 140, 0)
+  const realFetch = globalThis.fetch
+  globalThis.fetch = async (url, opts) => {
+    if (String(url).endsWith('/conflicts/resolve')) {
+      return { ok: true, json: async () => ({ ok: true, resolved: false, reason: 'conflict_too_large' }) }
+    }
+    return realFetch(url, opts)
+  }
+  try {
+    const result = await orchestrator.resolveConflicts('MM-1', 'Alice')
+    assert.equal(result.escalated, true)
+    await new Promise((r) => setTimeout(r, 20)) // dispatch is fire-and-forget
+  } finally {
+    globalThis.fetch = realFetch
+  }
+  const dispatch = dispatches.find((d) => d.url.includes('/steps/run') && d.body?.item?.id === 'MM-1')
+  orchestrator.cancel('MM-1')
+  assert.ok(dispatch, 'the escalation dispatched no implement run')
+  assert.equal(dispatch.body.step.index, IMPLEMENT_STEP_INDEX)
+  assert.equal(dispatch.body.merge_main, true)
+})
+
+test('an implement run on a PR with no reported conflict carries no merge_main', async () => {
+  const { IMPLEMENT_STEP_INDEX } = await import('../../domain/js/lifecycle.js')
+  insertPrItem.run('MM-2', 'Mergeable PR', IMPLEMENT_STEP_INDEX, 141, 1)
+  insertPrItem.run('MM-3', 'Unknown mergeability', IMPLEMENT_STEP_INDEX, 142, null)
+  assert.equal('merge_main' in (await dispatchFor('MM-2')).body, false)
+  assert.equal('merge_main' in (await dispatchFor('MM-3')).body, false)
+})
+
+test('only the implement step carries merge_main, even on a conflicted PR', async () => {
+  const { REVIEW_STEP_INDEX } = await import('../../domain/js/lifecycle.js')
+  insertPrItem.run('MM-4', 'Conflicted PR under review', REVIEW_STEP_INDEX, 143, 0)
+  assert.equal('merge_main' in (await dispatchFor('MM-4')).body, false)
 })

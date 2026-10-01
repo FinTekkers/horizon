@@ -1,0 +1,180 @@
+"""The Muse Code provider (HZ-83): shells out to `muse exec --json`, parses
+the JSONL event stream on stdout, and returns the same {"result",
+"session_id"} shape run_agent() promises regardless of provider.
+
+Verified against Muse Code 1.3.0 on this host — see docs/providers/muse-code.md,
+the spec every claim below is checked against. Where that doc says a
+behaviour is unverified, this module says so too instead of guessing.
+"""
+
+import json
+import os
+import subprocess
+import tempfile
+import uuid
+from pathlib import Path
+
+from ..config import FARM_MUSE_BIN, MAX_TURNS, STEP_TIMEOUT_S
+from .base import AgentError, AgentExhaustedError, decode_partial_output
+
+# `muse exec --session-id <UUID>` genuinely carries context across calls
+# (verified: two separate processes sharing one id, see the vendor doc) —
+# unlike Claude, the id is caller-supplied, not echoed back.
+SUPPORTS_RESUME = True
+
+
+def assert_subscription_auth() -> None:
+    """Muse has no `account status` command (unverified per
+    docs/providers/muse-code.md — confirmed there is no `account` subcommand
+    at all), so there is nothing to query here. What holds the HZ-5
+    guarantee instead: this module never wires up Muse's metered-credential
+    flags (`--api-key-stdin` / `auth set --api-key-stdin`) anywhere in run()
+    below — there is no code path from a farm-triggered run to metered
+    billing on Muse, refused by absence rather than a comment."""
+
+
+def run(
+    prompt: str,
+    *,
+    session_id: str | None = None,
+    append_system: str | None = None,
+    cwd: str | None = None,
+    model: str | None = None,
+    max_turns: int = MAX_TURNS,
+    timeout_s: int = STEP_TIMEOUT_S,
+    allowed_tools: str | None = None,
+) -> dict:
+    """Returns {"result": <final text>, "session_id": <id>}.
+
+    allowed_tools is accepted (same public signature as every provider) but
+    has no effect: Muse's CLI exposes no tool-restriction flag equivalent to
+    Claude's --allowedTools (verified absent from docs/providers/muse-code.md's
+    flag table). Callers that need enforced tool restriction must run those
+    steps on a provider that supports it.
+    """
+    sid = session_id or str(uuid.uuid4())
+    full_prompt = f"{append_system}\n\n{prompt}" if append_system else prompt
+
+    prompt_fd, prompt_path = tempfile.mkstemp(prefix="horizon-muse-prompt-", suffix=".txt")
+    try:
+        with os.fdopen(prompt_fd, "w") as f:
+            f.write(full_prompt)
+
+        cmd = [
+            FARM_MUSE_BIN,
+            "exec",
+            "--json",
+            "--session-id",
+            sid,
+            "--prompt-file",
+            prompt_path,
+            "--max-model-steps",
+            str(max_turns),
+            # Headless-safety (docs/providers/muse-code.md): --approval-mode
+            # defaults to on-request and blocks forever waiting on a human
+            # that will never answer a farm-launched run; --user-input-auto-
+            # resolve auto-cancels anything left over instead of hanging.
+            "--approval-mode",
+            "never",
+            "--user-input-auto-resolve",
+            # The farm always runs agents inside its own per-item git
+            # worktree; Muse otherwise treats a fresh directory as untrusted
+            # and disables agent delegation for it (observed on stderr).
+            "--trust-workspace",
+            # HZ-102 sandbox guardrail, decided deliberately: --disable-sandbox
+            # and --sandbox-network are never passed. Muse's sandbox network
+            # defaults to proxy-only (docs/providers/muse-code.md), but that
+            # only governs network calls made from *inside* Muse's own
+            # sandbox; nothing this provider runs needs that. The call to the
+            # Horizon server happens outside the sandbox entirely — farm/
+            # step_agent.py's own process posts the result via httpx after
+            # this subprocess has already exited. So the minimum needed for a
+            # headless run to reach the Horizon server is nothing: no
+            # sandbox flag is relaxed here.
+        ]
+        if model:
+            cmd += ["--model", model]
+
+        try:
+            proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout_s, cwd=cwd)
+        except subprocess.TimeoutExpired as exc:
+            # HZ-124: session_id is always known here (sid is caller-minted
+            # up front, unlike Claude's server-issued id); exc.stdout is
+            # whatever partial JSONL got captured before the kill, best-effort
+            # — and raw bytes despite text=True, hence decode_partial_output().
+            raise AgentExhaustedError(
+                f"muse timed out after {timeout_s}s",
+                partial_text=decode_partial_output(exc.stdout),
+                session_id=sid,
+            ) from exc
+        except FileNotFoundError as exc:
+            raise AgentError(f"muse binary not found: {FARM_MUSE_BIN}") from exc
+    finally:
+        Path(prompt_path).unlink(missing_ok=True)
+
+    return _parse_events(proc, sid)
+
+
+def _parse_events(proc: subprocess.CompletedProcess, session_id: str) -> dict:
+    events = []
+    for line in proc.stdout.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            events.append(json.loads(line))
+        except json.JSONDecodeError:
+            continue
+
+    terminal = next((e for e in events if e.get("payload_type") == "run.terminal.completed"), None)
+    if terminal is not None:
+        payload = terminal.get("payload", {})
+        command_id = payload.get("command_id")
+        # HZ-102 success metric: provenance requires a non-empty command_id
+        # from this exact event. Do not use it as a session handle (that's
+        # --session-id) — this only identifies the one run, which is exactly
+        # what provenance needs. A terminal event without one means the
+        # event shape docs/providers/muse-code.md verified no longer holds —
+        # fail loudly rather than silently recording provenance-less output.
+        if not isinstance(command_id, str) or not command_id.strip():
+            raise AgentError(
+                "muse run.terminal.completed event is missing command_id — cannot record "
+                "provenance for this run"
+            )
+        return {"result": payload.get("text", ""), "session_id": session_id, "command_id": command_id}
+
+    # ASSUMPTION — unverified per docs/providers/muse-code.md ("how
+    # exhaustion is reported... unverified... no exhausting run was
+    # observed"): treat any terminal payload_type naming exhaustion as the
+    # --max-model-steps analogue of Claude's error_max_turns. This needs
+    # confirming against a real exhausting Muse run; file a follow-up if it
+    # proves wrong.
+    exhausted = next((e for e in events if "exhaust" in e.get("payload_type", "")), None)
+    if exhausted is not None:
+        # HZ-124: best-effort partial text — the last event carrying a
+        # payload.text string before exhaustion was reported. session_id is
+        # always known (see above) even though the text is a guess.
+        partial_text = ""
+        for event in reversed(events):
+            text = event.get("payload", {}).get("text")
+            if isinstance(text, str) and text:
+                partial_text = text
+                break
+        # HZ-124/HZ-102: if the exhaustion event carries a command_id, keep it
+        # — a reply salvaged out of this exception is still a real Muse run and
+        # must record which one. Unlike the run.terminal.completed path above
+        # this is NOT a hard requirement: exhaustion reporting is the
+        # unverified branch, so a missing command_id degrades provenance to
+        # None rather than replacing a turn_cap retry with a hard AgentError.
+        command_id = exhausted.get("payload", {}).get("command_id")
+        raise AgentExhaustedError(
+            f"muse reported exhaustion: {exhausted.get('payload_type')}",
+            partial_text=partial_text,
+            session_id=session_id,
+            provider="muse",
+            command_id=command_id.strip() if isinstance(command_id, str) and command_id.strip() else None,
+        )
+
+    if proc.returncode != 0:
+        raise AgentError(f"muse exited {proc.returncode}: {proc.stderr.strip()[:300]}")
+    raise AgentError(f"muse produced no terminal.completed event: {proc.stdout[:300]}")

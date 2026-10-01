@@ -9,7 +9,7 @@ vi.mock('../api', () => ({
   listDefinitions: vi.fn(async () => ({
     global: [
       { kind: 'role', name: 'eng_implement', bytes: 1400 },
-      { kind: 'persona', name: 'fullstack', bytes: 800 },
+      { kind: 'persona', name: 'eng_fullstack', bytes: 800 },
     ],
     projects: [{ kind: 'project', name: 'fintekkers', bytes: 1500 }],
     repos: [{ kind: 'repo', name: 'FinTekkers__ui-service', bytes: 2100 }],
@@ -40,7 +40,7 @@ test('renders the three hierarchy layers with their definitions', async () => {
   expect(getByText('Projects')).toBeTruthy()
   expect(getByText('Repositories')).toBeTruthy()
   expect(getByText('eng_implement')).toBeTruthy()
-  expect(getByText('fullstack')).toBeTruthy()
+  expect(getByText('eng_fullstack')).toBeTruthy()
   expect(getByText('fintekkers')).toBeTruthy()
 })
 
@@ -55,7 +55,7 @@ test('selecting a definition loads its content into the editor', async () => {
 
 test('editing a global definition shows the every-project warning', async () => {
   const { findByText } = render(<AgentDefinitionsPage onBack={() => {}} />)
-  fireEvent.click(await findByText('fullstack'))
+  fireEvent.click(await findByText('eng_fullstack'))
   await findByText(/edits here apply to/)
 })
 
@@ -89,8 +89,26 @@ test('the preview button renders the merged effective prompt', async () => {
   await findByText(/MERGED RULES/)
   expect(api.effectivePrompt).toHaveBeenCalledWith({
     role: 'eng_implement',
+    agent: 'eng',
     persona: 'fullstack',
     project: 'FinTekkers',
     repo: 'FinTekkers/ui-service',
+  })
+})
+
+// HZ-125: persona files are agent-prefixed and flat (eng_fullstack.md), so the
+// selection names a FILE, not a persona id. Without translating it back to its
+// { agent, persona } slot the preview would silently compose the default
+// instead of the persona the human clicked.
+test('previewing a selected persona file sends that persona and its agent', async () => {
+  const { findByText } = render(<AgentDefinitionsPage onBack={() => {}} />)
+  fireEvent.click(await findByText('eng_fullstack'))
+  fireEvent.click(await findByText('Preview effective prompt'))
+  await findByText(/MERGED RULES/)
+  expect(api.effectivePrompt).toHaveBeenCalledWith({
+    role: 'eng_implement',
+    agent: 'eng',
+    persona: 'fullstack',
+    project: 'FinTekkers',
   })
 })

@@ -1,9 +1,57 @@
 """PM agent prompt construction — planning steps run before any workspace
 exists, so the rules stamped into the task (HZ-9) are their only source of
-project context."""
+project context.
 
-from farm import pm_agent
-from farm.pm_agent import MAX_PROMPT_ARTIFACT_CHARS, _mark_truncated, build_prompt, notify_started, validate
+Plus the poll loop itself (HZ-130): a task file that will not parse must be
+skipped and retried, never deleted, and never retried forever without a
+report. Before HZ-130 this file had no poll-loop coverage at all, so these
+tests are the only claim-before-work coverage there is — "the existing test
+still passes" would have been a vacuous gate.
+"""
+
+import json
+import math
+import os
+import re
+from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
+
+from domain.py import steps as domain_steps
+from farm import agent_runner, pm_agent
+from farm.config import PM_MALFORMED_GRACE_S
+from farm.pm_agent import (
+    MAX_PROMPT_ARTIFACT_CHARS,
+    PATCH_FIELDS,
+    _mark_truncated,
+    build_prompt,
+    notify_started,
+    validate,
+)
+
+REPO_ROOT = Path(__file__).resolve().parent.parent.parent
+
+# Read off the one declaration (domain/steps.json) rather than typed here:
+# server/test/domain-one-declaration.test.mjs allowlists every file that spells
+# a step label out, and a test fixture has no business being on that list.
+FIRST_PM_STEP_LABEL = domain_steps.STEPS[0]["label"]
+
+# Derived, never typed (HZ-134): PATCH_FIELDS comes from domain/fields.json now,
+# so a test that built its oversized input from a literal 400 would go VACUOUS
+# the moment the declared limit rose past it — the input would simply fit, the
+# marked branch would never run, and the test would stay green while proving
+# nothing.
+GUARDRAILS_LIMIT = PATCH_FIELDS["guardrails"]
+# The persona cap is NOT read out of PATCH_FIELDS: since HZ-125 the routing tag
+# is a {agent: persona id} map under `personas`, so it has no entry there — its
+# size caps live on pm_agent itself (see PERSONA_ID_MAX_CHARS below).
+
+
+def _over_by_words(limit: int) -> str:
+    """A space-delimited value comfortably past `limit`, so _mark_truncated has a
+    word boundary to cut at whatever the declared limit is."""
+    return ("word " * (limit // 5 + 20)).strip()
 
 
 def make_task(rules=None, feedback=None):
@@ -84,27 +132,63 @@ def test_validate_keeps_a_large_artifact_in_full():
 
 
 # ---- marked fallback for over-budget patch fields (HZ-114) ----
-# role/pm.md instructs the PM agent to stay within desc<=500/metric<=400/
-# guardrails<=400, but an instruction is not enforcement (per this item's
-# guardrails) — validate() must mark, not silently shorten, a reply that
-# ignores the instruction.
+# farm/roles/pm.md instructs the PM agent to stay inside each field's limit, but
+# an instruction is not enforcement (per HZ-114's guardrails) — validate() must
+# mark, not silently shorten, a reply that ignores the instruction. Since HZ-134
+# the limit it states and the limit validate() applies are the same number,
+# rendered into the prompt from PATCH_FIELDS.
 
 
-def test_validate_marks_a_guardrails_patch_over_400_chars_instead_of_silently_shortening():
-    over = ("word " * 100).strip()  # far over 400 chars
-    assert len(over) > 400
+def test_validate_marks_a_guardrails_patch_over_the_limit_instead_of_silently_shortening():
+    over = _over_by_words(GUARDRAILS_LIMIT)
+    assert len(over) > GUARDRAILS_LIMIT
     _summary, patch, _artifact = validate({"summary": "did it", "patch": {"guardrails": over}})
-    assert len(patch["guardrails"]) > 400  # the marker is appended, not squeezed inside the budget
+    # The marker is appended AFTER the cut, so the result runs past the budget it
+    # reports on — deliberate, and pinned in test_field_limits.py.
+    assert len(patch["guardrails"]) > GUARDRAILS_LIMIT
     assert "chars omitted" in patch["guardrails"]
     assert "do not infer the field is complete" in patch["guardrails"]
 
 
 def test_validate_leaves_a_within_budget_guardrails_patch_untouched():
-    within = ("word " * 50).strip()
-    assert len(within) <= 400
+    within = ("word " * ((GUARDRAILS_LIMIT // 5) - 2)).strip()
+    assert len(within) <= GUARDRAILS_LIMIT
     _summary, patch, _artifact = validate({"summary": "did it", "patch": {"guardrails": within}})
     assert patch["guardrails"] == within
     assert "chars omitted" not in patch["guardrails"]
+
+
+# ---- HZ-134 metric 4: a PM revision can write what the API accepts ----
+# The metric names 1,999 chars, so that exact number is typed here on purpose.
+# The boundary either side of it is derived, because "1,999 fits" only proves the
+# cap is ABOVE 1,999 — the trio is what proves the cap IS the declared one.
+
+
+def test_validate_writes_a_1999_char_guardrails_revision_byte_for_byte():
+    revision = "x" * 1999
+    _summary, patch, _artifact = validate({"summary": "did it", "patch": {"guardrails": revision}})
+    assert patch["guardrails"] == revision
+    assert "chars omitted" not in patch["guardrails"]
+
+
+def test_validate_boundary_trio_around_the_declared_guardrails_limit():
+    # Space-delimited so _mark_truncated has a boundary to cut at; a single
+    # run-on token is a separate, deliberately unmarked case (see below).
+    def value(length):
+        text = ("word " * (length // 5 + 1))[:length]
+        return text[:-1] + "z" if text.endswith(" ") else text
+
+    for length in (GUARDRAILS_LIMIT - 1, GUARDRAILS_LIMIT):
+        under = value(length)
+        assert len(under) == length
+        _summary, patch, _artifact = validate({"summary": "did it", "patch": {"guardrails": under}})
+        assert patch["guardrails"] == under, f"a {length}-char revision was not written byte-for-byte"
+        assert "chars omitted" not in patch["guardrails"]
+
+    over = value(GUARDRAILS_LIMIT + 1)
+    _summary, patch, _artifact = validate({"summary": "did it", "patch": {"guardrails": over}})
+    assert patch["guardrails"] != over, "one char over the limit was let through unmarked"
+    assert "chars omitted" in patch["guardrails"]
 
 
 def test_mark_truncated_boundary_exactly_at_limit_is_untouched():
@@ -154,13 +238,179 @@ def test_mark_truncated_run_on_word_extends_to_the_next_boundary_past_the_limit(
 
 
 def test_validate_persona_stays_hard_capped_with_no_marker():
-    # persona is a registry-validated routing enum, not prose a human/agent
+    # persona ids are registry-validated routing enums, not prose a human/agent
     # reads — the server drops anything that isn't an exact match anyway, so
-    # marking it would just decorate a value that's discarded either way.
-    over = "x" * 100
-    _summary, patch, _artifact = validate({"summary": "did it", "patch": {"persona": over}})
-    assert patch["persona"] == over[:40]
-    assert "chars omitted" not in patch["persona"]
+    # marking one would just decorate a value that's discarded either way.
+    # The cap is read off pm_agent rather than typed, so this documented
+    # exception cannot go vacuous if the cap moves.
+    from farm.pm_agent import PERSONA_ID_MAX_CHARS
+
+    over = "x" * (PERSONA_ID_MAX_CHARS * 2)
+    _summary, patch, _artifact = validate({"summary": "did it", "patch": {"personas": {"eng": over}}})
+    assert patch["personas"]["eng"] == over[:PERSONA_ID_MAX_CHARS]
+    assert "chars omitted" not in patch["personas"]["eng"]
+
+
+# ---- agent-scoped persona proposal (HZ-125) ----
+# The real farm PM path, not the server's demo-mode heuristic: pm.md tells the
+# agent to emit `"personas": {"eng": ...}` and completeFarmRun only accepts an
+# object under `patch.personas`. A flat string here would be silently discarded
+# server-side, so the shape is pinned at this end too.
+
+
+def test_validate_forwards_an_agent_scoped_personas_map():
+    _summary, patch, _artifact = validate({"summary": "did it", "patch": {"personas": {"eng": "python"}}})
+    assert patch["personas"] == {"eng": "python"}
+
+
+def test_validate_keeps_one_slot_per_agent():
+    _summary, patch, _artifact = validate(
+        {"summary": "did it", "patch": {"personas": {"eng": "python", "qa": "data_integrity"}}}
+    )
+    assert patch["personas"] == {"eng": "python", "qa": "data_integrity"}
+
+
+@pytest.mark.parametrize(
+    "bogus", ["python", 42, [], {"eng": 7}, {7: "python"}, {"eng": "   "}, {"": "python"}, {}, None]
+)
+def test_validate_drops_a_malformed_personas_field_without_failing_the_step(bogus):
+    _summary, patch, _artifact = validate({"summary": "did it", "patch": {"personas": bogus}})
+    assert "personas" not in patch
+
+
+def test_validate_caps_how_many_persona_slots_a_reply_can_claim():
+    """MAX_PERSONA_SLOTS is the break in _clean_personas. Four agents compose a
+    persona; a reply naming dozens is either confused or hostile, and the patch
+    it produces is forwarded to the server as JSON — so the map is bounded here
+    rather than trusted to be small."""
+    from farm.pm_agent import MAX_PERSONA_SLOTS
+
+    proposed = {f"agent{i}": f"persona{i}" for i in range(MAX_PERSONA_SLOTS + 5)}
+    _summary, patch, _artifact = validate({"summary": "did it", "patch": {"personas": proposed}})
+    assert len(patch["personas"]) == MAX_PERSONA_SLOTS
+    # The cap keeps the first slots seen, it doesn't shuffle or empty the map.
+    assert list(patch["personas"]) == [f"agent{i}" for i in range(MAX_PERSONA_SLOTS)]
+
+
+def test_validate_keeps_a_reply_that_sits_exactly_on_the_slot_cap():
+    """The boundary itself: `>=` breaks *after* inserting, so a reply with
+    exactly MAX_PERSONA_SLOTS entries keeps all of them — the cap must not cost
+    the last slot."""
+    from farm.pm_agent import MAX_PERSONA_SLOTS
+
+    proposed = {f"agent{i}": f"persona{i}" for i in range(MAX_PERSONA_SLOTS)}
+    _summary, patch, _artifact = validate({"summary": "did it", "patch": {"personas": proposed}})
+    assert patch["personas"] == proposed
+
+
+def test_validate_truncates_an_over_long_agent_key_like_the_persona_id():
+    """Both halves of the map are size-capped, not just the value: an agent key
+    is a routing enum the server matches exactly, so an unbounded one would be
+    carried into a patch (and a log line) for nothing."""
+    from farm.pm_agent import PERSONA_AGENT_MAX_CHARS
+
+    over = "e" * 100
+    _summary, patch, _artifact = validate({"summary": "did it", "patch": {"personas": {over: "python"}}})
+    assert list(patch["personas"]) == [over[:PERSONA_AGENT_MAX_CHARS]]
+    assert patch["personas"][over[:PERSONA_AGENT_MAX_CHARS]] == "python"
+
+
+def test_validate_drops_a_pre_hz125_flat_persona_field():
+    """A prompt (or a cached session) still emitting the old flat field must not
+    smuggle a bare string through under a key the server no longer reads — it
+    would be silently dropped there. Dropping it here keeps the patch honest
+    about what it changed."""
+    _summary, patch, _artifact = validate({"summary": "did it", "patch": {"persona": "python_backend"}})
+    assert "persona" not in patch
+    assert "personas" not in patch
+
+
+def test_pm_role_prompt_asks_for_the_agent_scoped_shape():
+    """The prompt and the validator have to agree: an agent told to emit a flat
+    "persona" string would have its proposal dropped at every layer below."""
+    from farm.pm_agent import ROLE_PROMPT
+
+    assert '"personas"' in ROLE_PROMPT
+    assert '"persona"' not in ROLE_PROMPT
+    # The ids it offers must exist in the eng bucket it is told to fill.
+    from farm.personas import PERSONAS
+
+    for persona_id in ("fullstack", "python", "ui", "performance"):
+        assert persona_id in PERSONAS["eng"]
+        assert persona_id in ROLE_PROMPT
+    # The retired flat ids must not still be advertised.
+    assert "python_backend" not in ROLE_PROMPT
+    assert "frontend_ui" not in ROLE_PROMPT
+
+
+# HZ-191: the PM rules on QA's test list in its step-9 digest and publishes a
+# binding Test contract. Role files wrap prose, so normalise
+# whitespace before matching.
+def _pm_role_text():
+    return " ".join(pm_agent.ROLE_PROMPT.split())
+
+
+def test_pm_role_requires_a_test_contract_section():
+    text = _pm_role_text()
+    # Inside the EXACTLY structure, second, so digestToFit keeps it whole.
+    recommendation = text.index("## Recommendation")
+    contract = text.index("## Test contract")
+    built = text.index("## What's being built")
+    assert recommendation < contract < built
+    assert "Each kept case names the metric line or guardrail it verifies." in text
+    assert "<case> — verifies <metric line N | guardrail N>" in text
+    assert "List every dropped or downgraded case with a one-line reason." in text
+
+
+def test_pm_role_states_the_test_contract_cap():
+    text = _pm_role_text()
+    assert "Soft cap: 2 cases per metric line plus 1 per guardrail." in text
+    assert "Going over the cap requires a stated reason in the section." in text
+
+
+def test_pm_role_forbids_dropping_the_only_verification():
+    text = _pm_role_text()
+    assert "Never drop a test that is the only verification of a metric line or guardrail." in text
+
+
+def test_pm_role_keeps_its_fail_closed_send_back_rule():
+    text = _pm_role_text()
+    assert (
+        "If any input artifact looks truncated, contradictory, or a reviewer accepted something "
+        "untestable, call it out and recommend SEND BACK" in text
+    )
+
+
+def test_build_prompt_renders_the_items_personas_per_agent():
+    from farm.pm_agent import build_prompt
+
+    task = {
+        "run_id": "r1",
+        "item": {"id": "T-1", "title": "t", "personas": {"eng": "python", "qa": "e2e_journey"}},
+        "step": {"label": FIRST_PM_STEP_LABEL},
+    }
+    prompt = build_prompt(task)
+    assert "personas: eng=python, qa=e2e_journey" in prompt
+
+
+def test_build_prompt_renders_a_legacy_flat_persona_value():
+    """Guardrail 3: a task file enqueued before HZ-125 still shows its routing
+    instead of reading as "(not set)"."""
+    from farm.pm_agent import build_prompt
+
+    task = {
+        "run_id": "r1",
+        "item": {"id": "T-1", "title": "t", "persona": "python_backend"},
+        "step": {"label": FIRST_PM_STEP_LABEL},
+    }
+    assert "personas: eng=python_backend" in build_prompt(task)
+
+
+def test_build_prompt_says_not_set_when_the_item_carries_no_persona():
+    from farm.pm_agent import build_prompt
+
+    task = {"run_id": "r1", "item": {"id": "T-1", "title": "t"}, "step": {"label": FIRST_PM_STEP_LABEL}}
+    assert "personas: (not set)" in build_prompt(task)
 
 
 # ---- HZ-57: /started notify before processing a claimed PM-queue task ----
@@ -205,3 +455,707 @@ def test_notify_started_fails_open_on_a_non_2xx_reply(monkeypatch):
 
     monkeypatch.setattr(pm_agent.httpx, "post", lambda *a, **k: FakeResponse())
     assert notify_started(13) is True
+
+
+# ---- HZ-130: a malformed task file is never silently dropped ----
+# The bug: the poll loop deleted any task file that failed to parse and told
+# nobody, so the run stayed `active` server-side with no worker and no report
+# until a human intervened (observed live: run 881 stalled 11 minutes after
+# "dropping unreadable task file 881.json"). The contract now: skip, keep,
+# retry — and once bounded, report.
+
+# Exactly what a poller reading a task file mid-write used to get back.
+TRUNCATED = '{\n  "run_id": 881,\n  "item": {\n    "id": "HZ-128"'
+
+
+def _task_json(run_id=881, step_index=9):
+    return json.dumps(
+        {
+            "run_id": run_id,
+            "attempt": 1,
+            "item": {"id": "HZ-128", "title": "t"},
+            "step": {"index": step_index, "label": "Specialist agent implements"},
+        },
+        indent=2,
+    )
+
+
+def _backdate(path, seconds):
+    """Age a queue file past the report bound without waiting for wall clock."""
+    when = path.stat().st_mtime - seconds
+    os.utime(path, (when, when))
+
+
+class _FarmdReply:
+    """farmd's own /internal/steps/result envelope: its HTTP status, plus the
+    status it got when forwarding to the Node server.
+
+    A stub, for driving the reply cases farmd can produce (5xx forward, 404,
+    unreachable) one at a time. The wiring itself is not taken on trust —
+    test_an_unusable_pm_task_file_is_reported_end_to_end_over_real_http in
+    test_farmd.py drives the same path through the real farmd app and a real
+    HTTP server with nothing stubbed.
+    """
+
+    def __init__(self, status_code=200, forwarded=200, raises=None):
+        self.status_code = status_code
+        self._forwarded = forwarded
+        self._raises = raises
+
+    def json(self):
+        if self._raises:
+            raise self._raises
+        return {"ok": True, "forwarded": self._forwarded}
+
+
+@pytest.fixture
+def pm(tmp_path, monkeypatch):
+    """One PM lane under test: a throwaway queue directory, `process` and
+    `notify_started` stubbed, every POST captured, and every sleep recorded so
+    a test can prove poll_once never sleeps."""
+    queue = tmp_path / "pm"
+    queue.mkdir()
+    lane = SimpleNamespace(queue=queue, processed=[], posts=[], failures={}, reply=_FarmdReply(), sleeps=[])
+
+    def fake_post(url, json=None, timeout=None):
+        lane.posts.append({"url": url, "json": json, "timeout": timeout})
+        if isinstance(lane.reply, Exception):
+            raise lane.reply
+        return lane.reply
+
+    monkeypatch.setattr(pm_agent.httpx, "post", fake_post)
+    monkeypatch.setattr(pm_agent, "notify_started", lambda run_id: True)
+    monkeypatch.setattr(pm_agent, "process", lambda task, slug: lane.processed.append(task))
+    monkeypatch.setattr(pm_agent.time, "sleep", lambda s: lane.sleeps.append(s))
+    def write(name, text):
+        path = queue / name
+        path.write_text(text)
+        return path
+
+    lane.write = write
+    lane.poll = lambda: pm_agent.poll_once(queue, "fintekkers", lane.failures)
+    return lane
+
+
+# -- metric 2: never delete a file that did not parse --
+
+
+def test_a_malformed_task_file_is_not_deleted(pm):
+    path = pm.queue / "881.json"
+    path.write_text(TRUNCATED)
+
+    assert pm.poll() == "skipped"
+
+    assert path.exists(), "a task file that did not parse must survive the poll"
+    assert path.read_text() == TRUNCATED  # untouched, not rewritten
+    assert pm.processed == []
+    assert pm.posts == []  # nothing reported yet: it may simply have been mid-write
+
+
+# -- metric 3: an unparseable file is retried --
+
+
+def test_a_malformed_task_file_is_processed_normally_once_it_becomes_valid(pm):
+    path = pm.queue / "881.json"
+    path.write_text(TRUNCATED)
+    assert pm.poll() == "skipped"
+
+    path.write_text(_task_json(881))
+
+    assert pm.poll() == "processed"
+    assert [t["run_id"] for t in pm.processed] == [881]
+    assert not path.exists()  # claimed
+
+
+# -- metric 8: HZ-128's exact sequence, end to end --
+
+
+def test_hz128_regression_malformed_read_no_delete_retry_success(pm):
+    """Run 881: farmd's non-atomic write let the PM read `881.json` truncated;
+    the PM deleted it and reported nothing, so the run sat `active` with no
+    worker for 11 minutes. The whole sequence, in order."""
+    path = pm.queue / "881.json"
+    path.write_text(TRUNCATED)  # the truncated read
+
+    assert pm.poll() == "skipped"
+    assert path.exists()  # no delete
+    assert pm.posts == []  # and nothing prematurely reported
+
+    path.write_text(_task_json(881))  # farmd's rename() lands
+
+    assert pm.poll() == "processed"  # retried and processed
+    assert [t["run_id"] for t in pm.processed] == [881]
+    assert not path.exists()
+
+
+# -- metric 4: still unusable after a bounded number of polls -> reported --
+
+
+def test_a_file_still_unusable_past_the_bound_is_reported_with_an_auto_retry_reason(pm):
+    path = pm.queue / "881.json"
+    path.write_text(TRUNCATED)
+    _backdate(path, PM_MALFORMED_GRACE_S + 1)
+
+    assert pm.poll() == "reported"
+
+    assert len(pm.posts) == 1
+    post = pm.posts[0]
+    assert post["url"] == f"{pm_agent.FARMD}/internal/steps/result"
+    assert post["json"]["run_id"] == "881"  # from the filename: the contents are unreadable
+    assert post["json"]["ok"] is False
+    assert post["json"]["reason"] == pm_agent.UNUSABLE_TASK_REASON
+    assert "881.json" in post["json"]["error"]
+    assert not path.exists()  # released only after the report was accepted
+    assert pm.processed == []
+
+
+def test_no_report_fires_before_the_bound(pm):
+    """The grace exists so a file that was merely mid-write is never reported.
+    A fresh malformed file must fire nothing at all."""
+    pm.write("881.json", TRUNCATED)
+
+    for _ in range(5):
+        assert pm.poll() == "skipped"
+
+    assert pm.posts == []
+
+
+def test_exactly_one_report_fires_per_unusable_file(pm):
+    path = pm.queue / "881.json"
+    path.write_text(TRUNCATED)
+    _backdate(path, PM_MALFORMED_GRACE_S + 1)
+
+    outcomes = [pm.poll() for _ in range(5)]
+
+    assert outcomes == ["reported", "idle", "idle", "idle", "idle"]
+    assert len(pm.posts) == 1  # not one per poll for the rest of the farm's life
+
+
+def test_the_report_carries_a_timeout(pm):
+    path = pm.queue / "881.json"
+    path.write_text(TRUNCATED)
+    _backdate(path, PM_MALFORMED_GRACE_S + 1)
+    pm.poll()
+    assert pm.posts[0]["timeout"]  # every network call in the farm is bounded
+
+
+# -- metric 5: no run ends `active` with neither a worker nor a report --
+
+
+def test_the_malformed_path_always_ends_in_processed_or_reported(pm):
+    """Driven to a fixed, bounded number of polls: "never forever" is not a
+    test, so the assertion is that a terminal outcome lands within N."""
+    path = pm.queue / "881.json"
+    path.write_text(TRUNCATED)
+    _backdate(path, PM_MALFORMED_GRACE_S + 1)
+
+    outcomes = []
+    for _ in range(4):
+        outcomes.append(pm.poll())
+        if outcomes[-1] in ("processed", "reported"):
+            break
+
+    assert outcomes[-1] in ("processed", "reported")
+    assert not path.exists()  # the run is the server's problem now, not a stuck file
+
+
+# -- the report channel's failure modes: an unaccepted report keeps the file --
+
+
+def test_an_unforwarded_report_keeps_the_file_for_the_next_poll(pm):
+    """farmd answered 200 but the Node server 5xx'd: we do not know the run was
+    handled, so the file must stay and the next poll must retry."""
+    path = pm.queue / "881.json"
+    path.write_text(TRUNCATED)
+    _backdate(path, PM_MALFORMED_GRACE_S + 1)
+    pm.reply = _FarmdReply(status_code=200, forwarded=503)
+
+    assert pm.poll() == "skipped"
+    assert path.exists()
+    assert len(pm.posts) == 1
+
+    assert pm.poll() == "skipped"  # retried
+    assert len(pm.posts) == 2
+    assert path.exists()
+
+
+def test_an_unreachable_server_keeps_the_file(pm):
+    path = pm.queue / "881.json"
+    path.write_text(TRUNCATED)
+    _backdate(path, PM_MALFORMED_GRACE_S + 1)
+    pm.reply = _FarmdReply(status_code=502, forwarded=0)  # farmd could not reach Horizon
+
+    assert pm.poll() == "skipped"
+    assert path.exists()
+
+
+def test_a_raising_post_keeps_the_file_and_does_not_escape_the_poll(pm):
+    path = pm.queue / "881.json"
+    path.write_text(TRUNCATED)
+    _backdate(path, PM_MALFORMED_GRACE_S + 1)
+    pm.reply = ConnectionError("farmd unreachable")
+
+    assert pm.poll() == "skipped"  # the PM must not die on a failed report
+    assert path.exists()
+
+
+def test_an_unreadable_reply_body_keeps_the_file(pm):
+    """farmd answered 200 but the body is not the JSON envelope we read the
+    forwarded status out of (a proxy's HTML error page, a truncated response).
+    An unreadable acknowledgement is not an acknowledgement: the file must be
+    kept and retried, not released on a 200 we could not actually interpret."""
+    path = pm.queue / "881.json"
+    path.write_text(TRUNCATED)
+    _backdate(path, PM_MALFORMED_GRACE_S + 1)
+    pm.reply = _FarmdReply(status_code=200, raises=ValueError("not json"))
+
+    assert pm.poll() == "skipped"
+    assert path.exists()
+    assert len(pm.posts) == 1
+
+    assert pm.poll() == "skipped"  # and the next poll retries it
+    assert len(pm.posts) == 2
+    assert path.exists()
+
+
+def test_a_run_the_server_no_longer_knows_about_releases_the_file(pm):
+    """A 404 from the server is the one delete that is legal on an unparseable
+    file: there is nothing left to report it to, so holding it would strand it
+    on disk and keep farmd's /runs/alive answering true forever."""
+    path = pm.queue / "881.json"
+    path.write_text(TRUNCATED)
+    _backdate(path, PM_MALFORMED_GRACE_S + 1)
+    pm.reply = _FarmdReply(status_code=200, forwarded=404)
+
+    assert pm.poll() == "reported"
+    assert not path.exists()
+
+
+# -- neighbouring input classes: same contract, no silent loss --
+
+
+def test_valid_json_with_no_run_id_is_reported_not_dropped(pm):
+    """Parseable but unusable: process() reads task["run_id"] before its own
+    try block, so this used to KeyError *after* the claim unlink — file gone,
+    no report, PM dead, run stuck `active`. Same failure as the malformed
+    case, one input class over."""
+    path = pm.queue / "881.json"
+    path.write_text(json.dumps({"foo": 1}))
+
+    assert pm.poll() == "skipped"
+    assert path.exists()
+    assert pm.processed == []
+
+    _backdate(path, PM_MALFORMED_GRACE_S + 1)
+    assert pm.poll() == "reported"
+    assert pm.posts[0]["json"]["reason"] == pm_agent.UNUSABLE_TASK_REASON
+    assert "no run_id" in pm.posts[0]["json"]["error"]
+
+
+def test_a_json_array_is_unusable_rather_than_crashing_the_loop(pm):
+    pm.write("881.json", "[1, 2, 3]")
+    assert pm.poll() == "skipped"
+    assert (pm.queue / "881.json").exists()
+
+
+def test_an_unreadable_file_is_skipped_and_never_deleted(pm, monkeypatch):
+    """An OSError on read is caught alongside JSONDecodeError — but it leads to
+    a retry and then a report, never to a silent delete."""
+    path = pm.queue / "881.json"
+    path.write_text(_task_json(881))  # perfectly valid; the *read* is what fails
+
+    def denied(self, *a, **k):
+        raise PermissionError(f"denied: {self}")
+
+    monkeypatch.setattr(Path, "read_text", denied)
+    assert pm.poll() == "skipped"
+    assert path.exists()
+    assert pm.processed == []
+
+
+# -- metric 7 / guardrail 3: claim-before-work survives for valid files --
+
+
+def test_a_valid_file_is_unlinked_after_the_parse_and_before_the_work(pm, monkeypatch):
+    path = pm.queue / "881.json"
+    path.write_text(_task_json(881))
+    seen = []
+    monkeypatch.setattr(pm_agent, "process", lambda task, slug: seen.append(path.exists()))
+
+    assert pm.poll() == "processed"
+    assert seen == [False], "the task file must be claimed (unlinked) before the work starts"
+
+
+def test_a_valid_task_is_never_processed_twice(pm):
+    pm.write("881.json", _task_json(881))
+
+    assert pm.poll() == "processed"
+    assert pm.poll() == "idle"
+
+    assert len(pm.processed) == 1
+
+
+# -- head-of-line blocking: a surviving malformed file must not wedge the lane --
+
+
+def test_a_surviving_malformed_file_does_not_block_a_newer_valid_task(pm):
+    """Before HZ-130 the malformed file was deleted, so nothing could queue
+    behind it. Now that it survives, stopping at the head of the queue would
+    block every newer task for the whole grace window."""
+    bad = pm.queue / "881.json"
+    bad.write_text(TRUNCATED)
+    good = pm.queue / "882.json"
+    good.write_text(_task_json(882))
+    _backdate(bad, 5)  # older than the valid one, but not past the bound
+
+    assert pm.poll() == "processed"
+    assert [t["run_id"] for t in pm.processed] == [882]
+    assert bad.exists()  # walked past, untouched
+    assert not good.exists()
+
+
+def test_a_malformed_file_past_the_bound_is_reported_even_while_the_queue_is_busy(pm):
+    """The bound is checked as the loop walks past, so a permanently busy queue
+    can never starve the report of an unusable file."""
+    bad = pm.queue / "881.json"
+    bad.write_text(TRUNCATED)
+    _backdate(bad, PM_MALFORMED_GRACE_S + 1)
+    pm.write("882.json", _task_json(882))
+
+    assert pm.poll() == "reported"
+    assert not bad.exists()
+    assert pm.poll() == "processed"  # the valid task runs on the very next poll
+    assert [t["run_id"] for t in pm.processed] == [882]
+
+
+# -- poll_once is a pure decision: no sleeping, no unbounded bookkeeping --
+
+
+def test_poll_once_never_sleeps(pm):
+    pm.write("881.json", TRUNCATED)
+    pm.poll()
+    pm.poll()
+    pm.write("882.json", _task_json(882))
+    pm.poll()
+    assert pm.sleeps == [], "main() owns the pacing; poll_once decides and returns"
+
+
+def test_the_failure_counter_does_not_grow_for_the_life_of_the_farm(pm):
+    bad = pm.queue / "881.json"
+    bad.write_text(TRUNCATED)
+    pm.write("882.json", _task_json(882))
+
+    pm.poll()  # processes 882, records a failure for 881
+    assert set(pm.failures) == {"881.json"}
+
+    bad.unlink()  # e.g. /steps/cancel dropped it
+    pm.poll()
+    assert pm.failures == {}, "keys for files that are gone must be pruned"
+
+
+def test_a_file_cancelled_between_the_glob_and_the_stat_does_not_crash_the_poll(pm, monkeypatch):
+    """/steps/cancel unlinks PM-queue files, so a queued path can vanish
+    mid-poll. An unhandled FileNotFoundError would take the PM session down
+    and leave whatever else is queued unworked until the watchdog revived it."""
+    real_glob = Path.glob
+    pm.write("882.json", _task_json(882))
+
+    def glob_with_a_ghost(self, pattern):
+        yield self / "881.json"  # never created: unlinked under us
+        yield from real_glob(self, pattern)
+
+    monkeypatch.setattr(Path, "glob", glob_with_a_ghost)
+
+    assert pm.poll() == "processed"
+    assert [t["run_id"] for t in pm.processed] == [882]
+
+
+def test_an_empty_queue_is_idle(pm):
+    assert pm.poll() == "idle"
+    assert pm.posts == []
+
+
+def test_a_stale_run_is_reported_by_the_server_not_processed(pm, monkeypatch):
+    monkeypatch.setattr(pm_agent, "notify_started", lambda run_id: False)
+    pm.write("881.json", _task_json(881))
+
+    assert pm.poll() == "stale"
+    assert pm.processed == []
+
+
+# -- main()'s exit table: --once must return on every terminal outcome --
+
+
+@pytest.mark.parametrize("outcome", ["processed", "reported", "stale"])
+def test_once_mode_exits_on_every_terminal_outcome(monkeypatch, outcome):
+    """"stale" included: the pre-HZ-130 loop returned when notify_started
+    reported the run inactive, and dropping that would spin --once forever on
+    a cancelled run."""
+    polls = []
+
+    def fake_poll(queue, slug, failures):
+        polls.append(queue)
+        return outcome
+
+    monkeypatch.setattr(pm_agent, "poll_once", fake_poll)
+    monkeypatch.setattr(
+        pm_agent.time, "sleep", lambda s: pytest.fail(f"--once must exit on {outcome}, not keep polling")
+    )
+    monkeypatch.setattr(pm_agent.sys, "argv", ["pm_agent", "--project", "FinTekkers", "--once"])
+
+    pm_agent.main()
+
+    assert len(polls) == 1
+
+
+@pytest.mark.parametrize("outcome,expected_sleep", [("idle", 1), ("skipped", 2)])
+def test_once_mode_keeps_polling_on_a_non_terminal_outcome(monkeypatch, outcome, expected_sleep):
+    """Unchanged from before HZ-130: --once waits for work rather than exiting
+    empty-handed. `skipped` is new and must wait too, or the loop spins."""
+    slept = []
+
+    def stop_after_one_sleep(seconds):
+        slept.append(seconds)
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(pm_agent, "poll_once", lambda *a: outcome)
+    monkeypatch.setattr(pm_agent.time, "sleep", stop_after_one_sleep)
+    monkeypatch.setattr(pm_agent.sys, "argv", ["pm_agent", "--project", "FinTekkers", "--once"])
+
+    with pytest.raises(KeyboardInterrupt):
+        pm_agent.main()
+
+    assert slept == [expected_sleep]
+
+
+# -- the server-side contract this report depends on --
+
+
+def test_the_reported_reason_is_still_auto_retryable_server_side():
+    """The report is only useful if the server auto-retries it; flipping the
+    reason's `retryable` flag would otherwise silently turn a corrupt task file
+    into a human-pause.
+
+    Read out of the ONE declaration rather than assumed. This used to regex
+    `AUTO_RETRY_REASONS = new Set([...])` out of server/src/orchestrator.js; HZ-132
+    moved that set into domain/reasons.json and derived it, so the regex stopped
+    matching and the assertion stopped running — it was failing outright, not
+    passing vacuously. Repointed at the declaration, which is where a future edit
+    would actually be made."""
+    source = json.loads((REPO_ROOT / "domain" / "reasons.json").read_text())
+    retryable = {reason["id"] for reason in source["reasons"] if reason["retryable"]}
+    assert retryable, "the reason vocabulary declares nothing retryable — this check would be vacuous"
+    assert pm_agent.UNUSABLE_TASK_REASON in retryable
+
+
+def test_the_malformed_grace_stays_well_under_the_servers_queue_timeout():
+    """The PM's specific report must win the race against the server's generic
+    `never_picked_up` queue watchdog, or the operator loses the reason."""
+    src = (REPO_ROOT / "server" / "src" / "config.js").read_text()
+    match = re.search(r"FARM_QUEUE_TIMEOUT_MS \|\| ([\d\s*]+)\)", src)
+    assert match, "could not find the server's FARM_QUEUE_TIMEOUT_MS default"
+    queue_timeout_s = math.prod(int(p) for p in match.group(1).split("*")) / 1000
+    assert 0 < PM_MALFORMED_GRACE_S < queue_timeout_s / 2
+
+
+# ---- process(): the shared reply parser, its notes, and turn_cap (HZ-156) ----
+# Before HZ-156 this file covered build_prompt, validate and the poll loop —
+# nothing called process() at all. The three claims below (validation stays
+# inside the lossless retry, notes reach both surfaces, an exhausted PM step
+# reports a retryable reason) are all properties of process(), so they need a
+# harness that actually runs it.
+
+
+@pytest.fixture
+def pm_process(tmp_path, monkeypatch):
+    """Runs the real pm_agent.process() with run_agent, httpx.post and the
+    session file faked.
+
+    session_file is repointed into tmp_path deliberately: process() writes the
+    returned session id, and without this the suite would write into the real
+    FARM_HOME state dir.
+    """
+    lane = SimpleNamespace(replies=[], prompts=[], posted=None, session_dir=tmp_path)
+
+    def fake_run_agent(prompt, **kw):
+        lane.prompts.append(prompt)
+        nxt = lane.replies.pop(0)
+        if isinstance(nxt, Exception):
+            raise nxt
+        return {"result": nxt, "session_id": "sess-1"}
+
+    def fake_post(url, json=None, timeout=None):
+        lane.posted = json
+        return _FarmdReply()
+
+    monkeypatch.setattr(pm_agent, "run_agent", fake_run_agent)
+    monkeypatch.setattr(pm_agent.httpx, "post", fake_post)
+    monkeypatch.setattr(pm_agent, "session_file", lambda slug: tmp_path / f"pm-session-{slug}.txt")
+
+    def run(*replies, task=None):
+        lane.replies = list(replies)
+        pm_agent.process(task or json.loads(_task_json()), "proj")
+        return lane.posted
+
+    lane.run = run
+    return lane
+
+
+def test_process_writes_its_session_file_inside_tmp_path(pm_process, tmp_path):
+    """Guards the harness itself: if session_file were not repointed, this
+    suite would scribble into the real state dir."""
+    pm_process.run(json.dumps({"summary": "done"}))
+    assert (tmp_path / "pm-session-proj.txt").read_text() == "sess-1"
+
+
+def test_a_clean_reply_is_reported_ok(pm_process):
+    posted = pm_process.run(json.dumps({"summary": "done", "artifact_md": "# A"}))
+    assert posted["ok"] is True
+    assert posted["summary"] == "done"
+    assert posted["artifacts"] == {"artifact_md": "# A"}
+    assert len(pm_process.prompts) == 1  # no retry on a good reply
+
+
+def test_an_invalid_reply_still_takes_the_lossless_retry(pm_process):
+    posted = pm_process.run("plain prose, no json", json.dumps({"summary": "done"}))
+    assert posted["ok"] is True and posted["summary"] == "done"
+    assert len(pm_process.prompts) == 2
+    assert "Your previous reply was invalid" in pm_process.prompts[1]
+
+
+def test_a_parsed_but_invalid_reply_still_takes_the_lossless_retry(pm_process):
+    """The regression the shared parser could easily have introduced: this
+    reply PARSES, and fails validate() for a missing 'summary'. That took the
+    retry before the parse moved into agent_runner, and must still."""
+    posted = pm_process.run(json.dumps({"patch": {}}), json.dumps({"summary": "recovered"}))
+    assert posted["ok"] is True and posted["summary"] == "recovered"
+    assert len(pm_process.prompts) == 2
+    assert "missing 'summary'" in pm_process.prompts[1]
+
+
+def test_a_second_failure_is_reported_as_a_failure(pm_process):
+    posted = pm_process.run("prose", "still prose")
+    assert posted["ok"] is False
+    assert "reason" not in posted  # a malformed reply is NOT auto-retryable
+
+
+def test_with_no_notes_the_posted_payload_is_byte_identical(pm_process):
+    """The 'behaviour otherwise unchanged' proof: _notes_for returns [] in this
+    item, so the whole posted dict is exactly what it was before the notes
+    channel existed."""
+    posted = pm_process.run(json.dumps({"summary": "done", "patch": {"desc": "d"}, "artifact_md": "# A"}))
+    assert posted == {
+        "run_id": 881,
+        "ok": True,
+        "summary": "done",
+        "patch": {"desc": "d"},
+        "artifacts": {"artifact_md": "# A"},
+    }
+
+
+def test_an_injected_note_reaches_the_summary_and_the_artifact(pm_process, monkeypatch):
+    from farm import agent_runner
+
+    monkeypatch.setattr(agent_runner, "_notes_for", lambda text, parsed: ["fake note"])
+    posted = pm_process.run(json.dumps({"summary": "done", "artifact_md": "# A"}))
+    assert "fake note" in posted["summary"]
+    assert "## Parser notes" in posted["artifacts"]["artifact_md"]
+    assert "- fake note" in posted["artifacts"]["artifact_md"]
+
+
+def test_a_scanner_fallback_note_reaches_both_surfaces_without_a_monkeypatch(pm_process):
+    """The one note this item really produces, end to end and unfaked.
+
+    Both replies are the success metric's own shape — object, prose, object — so
+    neither parses whole. The retry is spent first, as it was before the
+    first-object scan existed, and only when the second reply is no better does
+    the leading object get used, with the note as the record. A run that
+    cancelled outright before this item.
+    """
+    shadowed = json.dumps({"summary": "done", "artifact_md": "# A"}) + ' prose {"summary": "second"}'
+    posted = pm_process.run(shadowed, shadowed)
+
+    assert len(pm_process.prompts) == 2  # the retry was still spent first
+    assert posted["ok"] is True
+    assert agent_runner.FIRST_OBJECT_NOTE in posted["summary"]
+    assert f"- {agent_runner.FIRST_OBJECT_NOTE}" in posted["artifacts"]["artifact_md"]
+
+
+def test_a_note_survives_a_max_length_summary_and_artifact(pm_process, monkeypatch):
+    """validate() already slices the summary to 300, so a note appended and
+    then re-sliced would be dropped in the common case, not the rare one."""
+    from farm import agent_runner
+
+    monkeypatch.setattr(agent_runner, "_notes_for", lambda text, parsed: ["fake note"])
+    posted = pm_process.run(
+        json.dumps(
+            {
+                "summary": "s" * 400,
+                "artifact_md": "a" * (pm_agent.WRITE_ARTIFACT_SANITY_CEILING_CHARS + 50),
+            }
+        )
+    )
+    assert len(posted["summary"]) == 300
+    assert "fake note" in posted["summary"]
+    artifact = posted["artifacts"]["artifact_md"]
+    assert len(artifact) == pm_agent.WRITE_ARTIFACT_SANITY_CEILING_CHARS
+    assert "- fake note" in artifact
+
+
+def test_moving_the_summary_cap_moves_both_the_slice_and_the_notes_budget(pm_process, monkeypatch):
+    """Restating the cap as a literal at each shaping site is hidden coupling:
+    stamp_notes() reserves room inside exactly the budget validate() already
+    sliced the summary to, so a cap raised in one place and not the other would
+    silently truncate the notes back off."""
+    from farm import agent_runner
+
+    monkeypatch.setattr(agent_runner, "_notes_for", lambda text, parsed: ["n"])
+    monkeypatch.setattr(pm_agent, "SUMMARY_MAX_CHARS", 60)
+
+    posted = pm_process.run(json.dumps({"summary": "s" * 400}))
+
+    assert len(posted["summary"]) == 60
+    assert posted["summary"].endswith(" [n]")
+
+
+# -- turn_cap: the reason tag that makes a PM step auto-retry (HZ-156) --
+# step_agent.main() has always tagged this; pm_agent.process() did not, so the
+# identical exhaustion paused a PM step for a human while an ephemeral step
+# retried itself.
+
+
+def test_a_turn_cap_failure_is_reported_with_reason_turn_cap(pm_process):
+    from farm.agent_runner import AgentExhaustedError
+
+    posted = pm_process.run(AgentExhaustedError("claude reported an error result [error_max_turns]"))
+    assert posted["ok"] is False
+    assert posted["reason"] == "turn_cap"
+
+
+def test_an_exhaustion_inside_the_retry_is_reported_with_reason_turn_cap(pm_process):
+    """AgentExhaustedError subclasses AgentError, so an exhaustion raised by the
+    retry's own run_agent call must not be mistaken for a parse failure and have
+    its tag stripped."""
+    from farm.agent_runner import AgentExhaustedError
+
+    posted = pm_process.run("prose", AgentExhaustedError("ran out of turns"))
+    assert posted["ok"] is False
+    assert posted["reason"] == "turn_cap"
+    assert len(pm_process.prompts) == 2  # the retry really was attempted
+
+
+def test_an_ordinary_failure_carries_no_reason(pm_process):
+    """What keeps a non-exhaustion failure un-retryable server-side."""
+    posted = pm_process.run(RuntimeError("something else broke"))
+    assert posted["ok"] is False
+    assert "reason" not in posted
+
+
+def test_turn_cap_is_retryable_in_the_shared_vocabulary():
+    """The report is only useful if the server auto-retries it, and since
+    HZ-132 both bindings derive that from domain/reasons.json."""
+    from domain.py import reasons
+
+    assert reasons.is_retryable(reasons.REASON["TURN_CAP"])
+    js = (REPO_ROOT / "domain" / "js" / "reasons.js").read_text()
+    assert "AUTO_RETRY_REASONS" in js, "the JS binding no longer derives the set — re-point this test"

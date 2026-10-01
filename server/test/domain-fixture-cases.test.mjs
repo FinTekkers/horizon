@@ -174,6 +174,25 @@ test('js/agentStepIndexes: agent entries only, in order', () => {
   }
 })
 
+test('js/gateStepIndexes: gate entries only, in order', () => {
+  for (const c of js.gateStepIndexes) {
+    assert.deepEqual(binding.gateStepIndexes(FABRICATED), c.expect, c.case)
+  }
+})
+
+// The two index helpers partition the table — no step is both kinds and none is
+// neither. Asserted over the LIVE table, not FABRICATED, because that is where a
+// step added with a typo'd kind would actually land.
+test('js/agentStepIndexes and js/gateStepIndexes partition the live step table', () => {
+  const agents = binding.agentStepIndexes()
+  const gates = binding.gateStepIndexes()
+  assert.ok(agents.length > 0 && gates.length > 0, 'one half is empty — the partition claim is vacuous')
+  assert.deepEqual(
+    [...agents, ...gates].sort((a, b) => a - b),
+    binding.STEPS.map((_, i) => i),
+  )
+})
+
 for (const name of ['isClosed', 'isAbandoned']) {
   test(`js/${name}`, () => {
     for (const c of js[name]) assert.equal(binding[name](c.item), c.expect, c.case)

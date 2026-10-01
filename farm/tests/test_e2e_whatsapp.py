@@ -29,6 +29,13 @@ below skips if it isn't), and approving a gate by reply needs
 WA_APPROVAL_SECRET set for this process with the sender's number in the
 server's own WA_APPROVER_JIDS. Without those the approval fails closed —
 503 or 403 — which is correct behaviour, not a regression.
+
+HZ-190: farm/tests/conftest.py clears every WA_* / FARM_WA_* var and stubs
+HORIZON_URL for normal runs. Under FARM_WA_E2E=1 it keeps exactly
+FARM_WA_ALLOWED_JIDS, WA_DB_PATH, WA_BRIDGE_URL, WA_APPROVAL_SECRET and
+HORIZON_URL — set anything else this run needs on the command line above.
+FARM_HOME is a throwaway temp dir even here, so concierge state never lands
+in the real ~/.horizon-farm/state.
 """
 
 import os

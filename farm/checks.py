@@ -119,8 +119,23 @@ def _check_env() -> dict[str, str]:
     return env
 
 
-def run_checks(ws: Path, log=print, *, run_id=None, item_id=None, caller: str = "step_agent") -> str:
+def run_checks(
+    ws: Path,
+    log=print,
+    *,
+    require_ran: bool = False,
+    run_id=None,
+    item_id=None,
+    caller: str = "step_agent",
+) -> str:
     """Returns a short human-readable note; raises CheckFailure on failure.
+
+    require_ran (HZ-154) turns "nothing to enforce" into a failure. The scoped
+    conflict path pushes a merge no human has looked at, so "no green, no
+    push" has to mean an actual green: a repo where zero check runners are
+    detected or installed gives that path no evidence at all, and it escalates
+    instead. Every other caller keeps today's behaviour — the guardrail there
+    is "tests must pass", not "tests must exist".
 
     run_id/item_id/caller only label the metrics record (and the waiting
     marker on /farm/status) — they never change what runs.
@@ -128,6 +143,8 @@ def run_checks(ws: Path, log=print, *, run_id=None, item_id=None, caller: str = 
     commands = detect_check_commands(ws, log=log)
     if not commands:
         log("checks: no test/lint commands detected in the repo — nothing to enforce")
+        if require_ran:
+            raise CheckFailure("no repo checks detected — nothing proves this change is safe to push")
         return "no repo checks detected"
 
     # The slot is taken OUTSIDE the timeout read below, which is the whole
@@ -184,4 +201,6 @@ def run_checks(ws: Path, log=print, *, run_id=None, item_id=None, caller: str = 
             record["load_end"] = check_metrics.load_average()
             check_metrics.append_record(record, log=log)
 
+    if not ran and require_ran:
+        raise CheckFailure("every detected check runner is missing on this host — no green to push behind")
     return f"{ran} repo check(s) passed" if ran else "check runners unavailable — skipped"

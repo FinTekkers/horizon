@@ -1,0 +1,233 @@
+{
+  "$comment": "HZ-134. Input/expected pairs for the work-item field bindings, asserted by BOTH server/test/domain-fields-cases.test.mjs and farm/tests/test_fields_fixtures.py. The `shared` section is the point of the file: domain/js/fields.js and domain/py/fields.py are two independent hand-written implementations, and without this nothing would prove a field lookup, a patch-limit derivation or a validation rule meant the same thing in both languages — the exact gap domain/fixtures/lifecycle-cases.json was added to close for the step table. Every case in `shared` runs in both suites, and each suite asserts it executed the exact ids listed in shared.manifest, so a suite cannot quietly skip a section and still pass. The `js` and `py` sections cover the helpers that exist in only one binding; a coverage guard in each suite asserts SET EQUALITY between that section's keys and the binding's real exports, so a new export with no case fails, and a stale case naming a removed export fails too. Every field name in this file is FABRICATED on purpose — no real work-item field or limit appears, so the fixture is not a second declaration of the table.",
+
+  "shared": {
+    "manifest": {
+      "validation": [
+        "a valid table is accepted",
+        "a root that is not an object rejected",
+        "a root that is an array rejected",
+        "an empty object rejected",
+        "an empty fields array rejected",
+        "a field that is not an object rejected",
+        "a field with no name rejected",
+        "a field with no column rejected",
+        "a non-integer maxLength rejected",
+        "a maxLength of zero rejected",
+        "a boolean maxLength rejected",
+        "a non-integer minLength rejected",
+        "a non-boolean settableAtIntake rejected",
+        "a non-boolean agentRevisable rejected",
+        "a minLength at or above maxLength rejected",
+        "duplicate field names rejected",
+        "duplicate columns rejected",
+        "a table with nothing settable at intake rejected",
+        "a table with nothing agent-revisable rejected"
+      ],
+      "fieldLookup": [
+        "resolves a field and its limit",
+        "raises, naming the missing field"
+      ],
+      "patchLimits": [
+        "agent-revisable fields only, keyed by column, in authored order",
+        "a non-revisable field is absent even though it declares a limit"
+      ]
+    },
+
+    "validation": [
+      {
+        "case": "a valid table is accepted",
+        "input": {
+          "fields": [
+            { "name": "alpha", "column": "alpha_col", "minLength": 2, "maxLength": 100, "settableAtIntake": true, "agentRevisable": false },
+            { "name": "beta", "column": "beta_col", "maxLength": 250, "settableAtIntake": true, "agentRevisable": true }
+          ]
+        },
+        "expect": { "throws": false }
+      },
+      {
+        "case": "a root that is not an object rejected",
+        "input": "not a field table",
+        "expect": { "throws": true, "messageContains": "must be a JSON object with a fields array" }
+      },
+      {
+        "case": "a root that is an array rejected",
+        "input": [],
+        "expect": { "throws": true, "messageContains": "must be a JSON object with a fields array" }
+      },
+      {
+        "case": "an empty object rejected",
+        "input": {},
+        "expect": { "throws": true, "messageContains": "fields must be a non-empty JSON array of field objects" }
+      },
+      {
+        "case": "an empty fields array rejected",
+        "input": { "fields": [] },
+        "expect": { "throws": true, "messageContains": "fields must be a non-empty JSON array of field objects" }
+      },
+      {
+        "case": "a field that is not an object rejected",
+        "input": { "fields": ["alpha"] },
+        "expect": { "throws": true, "messageContains": "fields[0] must be a field object" }
+      },
+      {
+        "case": "a field with no name rejected",
+        "input": { "fields": [{ "column": "alpha_col", "maxLength": 100, "settableAtIntake": true, "agentRevisable": true }] },
+        "expect": { "throws": true, "messageContains": "fields[0] has no name" }
+      },
+      {
+        "case": "a field with no column rejected",
+        "input": { "fields": [{ "name": "alpha", "maxLength": 100, "settableAtIntake": true, "agentRevisable": true }] },
+        "expect": { "throws": true, "messageContains": "fields[0] (\"alpha\") has no column" }
+      },
+      {
+        "case": "a non-integer maxLength rejected",
+        "input": { "fields": [{ "name": "alpha", "column": "alpha_col", "maxLength": "100", "settableAtIntake": true, "agentRevisable": true }] },
+        "expect": { "throws": true, "messageContains": "declares a non-integer or non-positive maxLength" }
+      },
+      {
+        "case": "a maxLength of zero rejected",
+        "input": { "fields": [{ "name": "alpha", "column": "alpha_col", "maxLength": 0, "settableAtIntake": true, "agentRevisable": true }] },
+        "expect": { "throws": true, "messageContains": "declares a non-integer or non-positive maxLength" }
+      },
+      {
+        "case": "a boolean maxLength rejected",
+        "$comment": "bool is an int subclass in Python — a `\"maxLength\": true` must not pass the integer check on either side.",
+        "input": { "fields": [{ "name": "alpha", "column": "alpha_col", "maxLength": true, "settableAtIntake": true, "agentRevisable": true }] },
+        "expect": { "throws": true, "messageContains": "declares a non-integer or non-positive maxLength" }
+      },
+      {
+        "case": "a non-integer minLength rejected",
+        "input": { "fields": [{ "name": "alpha", "column": "alpha_col", "minLength": "2", "maxLength": 100, "settableAtIntake": true, "agentRevisable": true }] },
+        "expect": { "throws": true, "messageContains": "declares a non-integer or non-positive minLength" }
+      },
+      {
+        "case": "a non-boolean settableAtIntake rejected",
+        "input": { "fields": [{ "name": "alpha", "column": "alpha_col", "maxLength": 100, "settableAtIntake": "yes", "agentRevisable": true }] },
+        "expect": { "throws": true, "messageContains": "declares a non-boolean settableAtIntake — a truthy value is not a flag" }
+      },
+      {
+        "case": "a non-boolean agentRevisable rejected",
+        "input": { "fields": [{ "name": "alpha", "column": "alpha_col", "maxLength": 100, "settableAtIntake": true, "agentRevisable": 1 }] },
+        "expect": { "throws": true, "messageContains": "declares a non-boolean agentRevisable — a truthy value is not a flag" }
+      },
+      {
+        "case": "a minLength at or above maxLength rejected",
+        "input": { "fields": [{ "name": "alpha", "column": "alpha_col", "minLength": 100, "maxLength": 100, "settableAtIntake": true, "agentRevisable": true }] },
+        "expect": { "throws": true, "messageContains": "declares minLength 100 at or above maxLength 100 — no value could satisfy it" }
+      },
+      {
+        "case": "duplicate field names rejected",
+        "input": {
+          "fields": [
+            { "name": "alpha", "column": "alpha_col", "maxLength": 100, "settableAtIntake": true, "agentRevisable": true },
+            { "name": "alpha", "column": "beta_col", "maxLength": 250, "settableAtIntake": true, "agentRevisable": true }
+          ]
+        },
+        "expect": { "throws": true, "messageContains": "has duplicate field name(s)" }
+      },
+      {
+        "case": "duplicate columns rejected",
+        "$comment": "Two fields sharing a column silently collapse to one key in patchLimits() — the field declared later wins and the earlier limit disappears.",
+        "input": {
+          "fields": [
+            { "name": "alpha", "column": "alpha_col", "maxLength": 100, "settableAtIntake": true, "agentRevisable": true },
+            { "name": "beta", "column": "alpha_col", "maxLength": 250, "settableAtIntake": true, "agentRevisable": true }
+          ]
+        },
+        "expect": { "throws": true, "messageContains": "has duplicate column(s)" }
+      },
+      {
+        "case": "a table with nothing settable at intake rejected",
+        "input": { "fields": [{ "name": "alpha", "column": "alpha_col", "maxLength": 100, "settableAtIntake": false, "agentRevisable": true }] },
+        "expect": { "throws": true, "messageContains": "no field is settableAtIntake" }
+      },
+      {
+        "case": "a table with nothing agent-revisable rejected",
+        "input": { "fields": [{ "name": "alpha", "column": "alpha_col", "maxLength": 100, "settableAtIntake": true, "agentRevisable": false }] },
+        "expect": { "throws": true, "messageContains": "no field is agentRevisable" }
+      }
+    ],
+
+    "fieldLookup": [
+      {
+        "case": "resolves a field and its limit",
+        "input": {
+          "fields": [
+            { "name": "alpha", "column": "alpha_col", "minLength": 2, "maxLength": 100, "settableAtIntake": true, "agentRevisable": false },
+            { "name": "beta", "column": "beta_col", "maxLength": 250, "settableAtIntake": true, "agentRevisable": true }
+          ]
+        },
+        "name": "beta",
+        "expect": { "found": true, "column": "beta_col", "maxLength": 250, "agentRevisable": true }
+      },
+      {
+        "case": "raises, naming the missing field",
+        "input": {
+          "fields": [
+            { "name": "alpha", "column": "alpha_col", "maxLength": 100, "settableAtIntake": true, "agentRevisable": true }
+          ]
+        },
+        "name": "nosuchfield",
+        "expect": { "found": false, "messageContains": "no work-item field named" }
+      }
+    ],
+
+    "patchLimits": [
+      {
+        "case": "agent-revisable fields only, keyed by column, in authored order",
+        "input": {
+          "fields": [
+            { "name": "alpha", "column": "alpha_col", "minLength": 2, "maxLength": 100, "settableAtIntake": true, "agentRevisable": false },
+            { "name": "beta", "column": "beta_col", "maxLength": 250, "settableAtIntake": true, "agentRevisable": true },
+            { "name": "gamma", "column": "gamma_col", "maxLength": 33, "settableAtIntake": false, "agentRevisable": true }
+          ]
+        },
+        "expect": { "beta_col": 250, "gamma_col": 33 },
+        "expectOrder": ["beta_col", "gamma_col"]
+      },
+      {
+        "case": "a non-revisable field is absent even though it declares a limit",
+        "input": {
+          "fields": [
+            { "name": "alpha", "column": "alpha_col", "maxLength": 100, "settableAtIntake": true, "agentRevisable": false },
+            { "name": "solo", "column": "solo_col", "maxLength": 7, "settableAtIntake": true, "agentRevisable": true }
+          ]
+        },
+        "expect": { "solo_col": 7 },
+        "expectOrder": ["solo_col"]
+      }
+    ]
+  },
+
+  "js": {
+    "$comment": "Keys here must equal domain/js/fields.js's exports exactly — set equality, asserted.",
+    "FIELDS": [{ "case": "the live field table is non-empty", "expectNonEmpty": true }],
+    "assertFieldsShape": [{ "case": "driven by shared.validation", "drivenBy": "shared.validation" }],
+    "fieldByName": [{ "case": "driven by shared.fieldLookup", "drivenBy": "shared.fieldLookup" }],
+    "intakeFields": [
+      {
+        "case": "intake fields only, in authored order",
+        "input": {
+          "fields": [
+            { "name": "alpha", "column": "alpha_col", "maxLength": 100, "settableAtIntake": true, "agentRevisable": false },
+            { "name": "beta", "column": "beta_col", "maxLength": 250, "settableAtIntake": true, "agentRevisable": true },
+            { "name": "gamma", "column": "gamma_col", "maxLength": 33, "settableAtIntake": false, "agentRevisable": true }
+          ]
+        },
+        "expectNames": ["alpha", "beta"]
+      }
+    ],
+    "patchLimits": [{ "case": "driven by shared.patchLimits", "drivenBy": "shared.patchLimits" }]
+  },
+
+  "py": {
+    "$comment": "Keys here must equal domain/py/fields.py's public names (plus the required private ones) exactly — set equality, asserted.",
+    "FIELDS": [{ "case": "the live field table is non-empty", "expectNonEmpty": true }],
+    "BY_NAME": [{ "case": "every authored field is reachable by its API name", "expectKeyedBy": "name" }],
+    "BY_COLUMN": [{ "case": "every authored field is reachable by its DB column", "expectKeyedBy": "column" }],
+    "field_by_name": [{ "case": "driven by shared.fieldLookup", "drivenBy": "shared.fieldLookup" }],
+    "patch_limits": [{ "case": "driven by shared.patchLimits", "drivenBy": "shared.patchLimits" }],
+    "_validate_source": [{ "case": "driven by shared.validation", "drivenBy": "shared.validation" }]
+  }
+}

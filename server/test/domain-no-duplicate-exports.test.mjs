@@ -33,6 +33,10 @@ const serverAgentTokens = await import('../src/agentTokens.js')
 const uiAgentTokens = await import('../../ui/src/domain/agentTokens.js')
 const uiLifecycle = await import('../../ui/src/domain/lifecycle.js')
 const domainLifecycle = await import('../../domain/js/lifecycle.js')
+const domainReasons = await import('../../domain/js/reasons.js')
+const domainFields = await import('../../domain/js/fields.js')
+const domainPersonas = await import('../../domain/js/personas.js')
+const uiPauseReason = await import('../../ui/src/domain/pauseReason.js')
 
 function exportedNames(mod) {
   return new Set(Object.keys(mod).filter((k) => k !== 'default'))
@@ -68,6 +72,48 @@ test('the ONE surviving duplicate is exactly {AGENTS}, across the two agentToken
   assert.ok(server.size > 0, 'server/src/agentTokens.js exports nothing')
   assert.ok(ui.size > 0, 'ui/src/domain/agentTokens.js exports nothing')
   assert.deepEqual(intersection(server, ui), ['AGENTS'])
+})
+
+// HZ-132: the reason vocabulary and the UI module that renders it are the one
+// new pair that could grow a shared export. pauseReason.js owns the COPY and
+// domain/js/reasons.js owns the VOCABULARY — re-exporting REASON from the UI
+// module, or growing a `label` in the binding, would put the same name in both
+// and is what this intersection catches.
+test('the one model module for reasons and the UI module that renders them share no exported name', () => {
+  const ui = exportedNames(uiPauseReason)
+  const model = exportedNames(domainReasons)
+  assert.ok(ui.size > 0, 'ui/src/domain/pauseReason.js exports nothing')
+  assert.ok(model.size > 0, 'domain/js/reasons.js exports nothing')
+  assert.deepEqual(intersection(ui, model), [])
+})
+
+test('the model modules in domain/ share no exported name either', () => {
+  const modules = [
+    ['lifecycle', exportedNames(domainLifecycle)],
+    ['reasons', exportedNames(domainReasons)],
+    ['fields', exportedNames(domainFields)],
+    ['personas', exportedNames(domainPersonas)],
+  ]
+  for (const [aName, a] of modules) {
+    for (const [bName, b] of modules) {
+      if (aName >= bName) continue
+      assert.deepEqual(intersection(a, b), [], `domain/js/${aName}.js and domain/js/${bName}.js share an export`)
+    }
+  }
+})
+
+test('the field binding exports the limits and nothing presentational', () => {
+  assert.deepEqual(
+    [...exportedNames(domainFields)].sort(),
+    ['FIELDS', 'assertFieldsShape', 'fieldByName', 'intakeFields', 'patchLimits'],
+  )
+})
+
+test('the reason binding exports the vocabulary and nothing presentational', () => {
+  assert.deepEqual(
+    [...exportedNames(domainReasons)].sort(),
+    ['AUTO_RETRY_REASONS', 'REASON', 'REASONS', 'REASON_IDS', 'assertReasonsShape', 'isRetryable'],
+  )
 })
 
 test('neither agentTokens module carries step data — presentation only, both sides', () => {

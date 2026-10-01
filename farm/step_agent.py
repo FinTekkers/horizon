@@ -8,8 +8,10 @@ item's branch in the workspace; the *script* owns git (branch, commit, push)
 """
 
 import argparse
+import contextlib
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -21,18 +23,29 @@ import httpx
 # HZ-128: the step model lives in domain/, not in farm/ — an absolute import
 # off the repo root (already on sys.path, since farmd runs as
 # `python -m farm.farmd` from there and farm/tests/conftest.py inserts it).
-from domain.py import steps
+# HZ-132 put the failure-reason vocabulary there too, so the reason this script
+# reports is a constant the server already knows, never a string typed here.
+from domain.py import reasons, steps
+
+from . import agent_runner
 
 # AgentExhaustedError is this branch's name for main's TurnCapExceeded — the
 # same "ran out of turn budget" signal, renamed by the provider refactor. The
 # import conflicted while its USE below merged cleanly, so the rename has to be
 # applied there too or the merged file references a symbol that no longer exists.
-from .agent_runner import AgentError, AgentExhaustedError, extract_json, run_agent
+from .agent_runner import (
+    AgentError,
+    AgentExhaustedError,
+    parse_agent_reply,
+    run_agent,
+    stamp_notes,
+    stamp_notes_artifact,
+)
 from .checks import run_checks
-from .config import FARM_PORT
+from .config import FARM_PORT, ITEM_LOCK_WAIT_S, STEP_MODEL
 from .personas import compose_role, provider_for, resolve
 from .rules import render_rules_section
-from .workspaces import ensure_item_worktree, hub_lock
+from .workspaces import ItemBusy, ensure_item_worktree, hub_lock, item_lock
 
 FARMD = f"http://127.0.0.1:{FARM_PORT}"
 ROLES = Path(__file__).parent / "roles"
@@ -48,8 +61,13 @@ WRITE_ARTIFACT_SANITY_CEILING_CHARS = 200_000
 # The server already budgets the total it sends (~60k), so this should never
 # fire in practice — mirrors farm/rules.py's MAX_PROMPT_RULES_CHARS backstop.
 MAX_PROMPT_ARTIFACT_CHARS = 100_000
+# The cap on this script's own `summary` — step_run.output on the server side.
+# Named once (HZ-156) rather than restated as a literal at each shaping site:
+# stamp_notes() reserves room inside exactly this budget, so a cap raised in
+# one place and not the other would silently truncate the notes back off.
+SUMMARY_MAX_CHARS = 600
 
-# step label -> (role file, needs JSON artifact, tool access, wants persona).
+# step label -> (role file, needs JSON artifact, tool access, persona agent).
 # HZ-117: keyed by label (the table's own primary key, see domain/steps.json),
 # never index — an insertion elsewhere in the table can't repoint one of
 # these at the wrong step. Turn budgets and timeouts moved to
@@ -58,6 +76,13 @@ MAX_PROMPT_ARTIFACT_CHARS = 100_000
 # the generated table instead of a second hand-maintained mapping here.
 # Personas specialize only the steps that act on the item's stack — QA and
 # implement; the planning steps stay generalist.
+#
+# HZ-125: the last field used to be a bool ("wants a persona"). Personas are
+# now scoped by agent, so it names WHICH agent's persona bucket this step
+# composes from — None for the steps that compose none. The same three steps
+# compose as before; only the sentinel's shape changed, and it is now
+# load-bearing: a QA step can no longer be handed an Eng persona because the
+# agent is what selects the bucket.
 PLANNER_TOOLS = "Read,Glob,Grep"
 IMPLEMENT_TOOLS = "Read,Glob,Grep,Edit,Write,Bash"
 # DevOps investigates and can hit live URLs (curl, gh cli, etc.) but never
@@ -69,22 +94,29 @@ REVIEW_LABEL = "Automated review (code + QA)"
 DEPLOY_LABEL = "Deploy the changes"
 
 STEP_CONFIG = {
-    "Plan options & trade-offs (pros / cons)": ("ensemble.md", True, PLANNER_TOOLS, False),
-    "Draft implementation plan": ("eng_plan.md", True, PLANNER_TOOLS, False),
-    "Architecture review": ("architect_review.md", True, PLANNER_TOOLS, False),
-    "QA reviews the test plan": ("qa.md", True, PLANNER_TOOLS, True),
-    IMPLEMENT_LABEL: ("eng_implement.md", False, IMPLEMENT_TOOLS, True),
-    # code_review.md is loaded here for the first (code) pass; qa_review.md
-    # is loaded separately inside execute()'s review branch for the second
-    # pass. Read-only tools: the reviewer can never edit, push, merge or
-    # approve the human gate (HZ-30) — enforced here, not by prompt alone.
-    REVIEW_LABEL: ("code_review.md", True, PLANNER_TOOLS, True),
+    "Plan options & trade-offs (pros / cons)": ("ensemble.md", True, PLANNER_TOOLS, None),
+    "Draft implementation plan": ("eng_plan.md", True, PLANNER_TOOLS, None),
+    "Architecture review": ("architect_review.md", True, PLANNER_TOOLS, None),
+    "QA reviews the test plan": ("qa.md", True, PLANNER_TOOLS, "qa"),
+    IMPLEMENT_LABEL: ("eng_implement.md", False, IMPLEMENT_TOOLS, "eng"),
+    # code_review.md is loaded here for the first (code) pass and composes the
+    # item's ENG persona (it reviews the code as an engineer); qa_review.md is
+    # loaded separately inside execute()'s review branch for the second pass
+    # and composes the item's QA persona. Read-only tools: the reviewer can
+    # never edit, push, merge or approve the human gate (HZ-30) — enforced
+    # here, not by prompt alone.
+    REVIEW_LABEL: ("code_review.md", True, PLANNER_TOOLS, "eng"),
     # DevOps is a role, not a persona (HZ-22 architecture review) — it is
     # project-scoped via farm/rules/projects/*.md, not stack-scoped, so it
     # never gets a persona composed in.
-    DEPLOY_LABEL: ("devops.md", True, DEVOPS_TOOLS, False),
+    DEPLOY_LABEL: ("devops.md", True, DEVOPS_TOOLS, None),
 }
 
+# The agent whose persona the review step's second (QA) pass composes. Named
+# here rather than inlined because it is the fix HZ-125 exists for: both passes
+# used to compose the item's single flat persona, so the QA reviewer was handed
+# the Eng specialization of the engineer whose diff it was reviewing.
+REVIEW_QA_PERSONA_AGENT = "qa"
 
 def _assert_step_config_matches_table(config_labels: set[str], table_labels: set[str]) -> None:
     """The actual Python-side enforcement of "an inserted/renamed step must
@@ -133,6 +165,35 @@ def git(ws: Path, *args: str, check: bool = True, env: dict | None = None) -> su
     return result
 
 
+def item_personas(item: dict) -> dict:
+    """The item's {agent: persona id} map (HZ-125).
+
+    Falls back to reading the pre-HZ-125 flat `persona` field as the item's Eng
+    persona. The server translates legacy rows before dispatch, so this only
+    matters for a task file enqueued by an older server and claimed after this
+    shipped — a real window on a single-host deploy, and cheap to survive:
+    resolve() accepts the legacy id (farm/personas.py's LEGACY_PERSONA_IDS).
+    """
+    personas = item.get("personas")
+    if isinstance(personas, dict):
+        return personas
+    legacy = item.get("persona")
+    return {"eng": legacy} if isinstance(legacy, str) and legacy.strip() else {}
+
+
+def _persona_line(task: dict) -> str:
+    """The prompt's persona line: the persona this step will actually compose,
+    named with its agent, or an explicit "generalist" for the steps that
+    compose none. Pre-HZ-125 this printed one resolved id for every step —
+    including the generalist planning steps, which never received it."""
+    config = STEP_CONFIG.get(task["step"]["label"])
+    persona_agent = config[3] if config else None
+    if not persona_agent:
+        return "  persona: (none — this step is generalist)"
+    resolved = resolve(persona_agent, item_personas(task["item"]).get(persona_agent))
+    return f"  persona: {persona_agent}/{resolved}"
+
+
 def build_prompt(task: dict) -> str:
     item, step = task["item"], task["step"]
     lines = [
@@ -141,7 +202,7 @@ def build_prompt(task: dict) -> str:
         f"  outcome: {item.get('desc') or '(empty)'}",
         f"  success metric: {item.get('metric') or '(empty)'}",
         f"  guardrails: {item.get('guardrails') or '(defaults only)'}",
-        f"  persona: {resolve(item.get('persona'))}",
+        _persona_line(task),
     ]
     if item.get("release_tag"):
         lines.append(f"  release: {item['release_tag']}  ({item.get('release_url') or 'no url'}) — already published")
@@ -263,6 +324,59 @@ def prepare_branch(ws: Path, item: dict) -> str:
     return branch
 
 
+def merge_default_branch(ws: Path) -> list[str]:
+    """HZ-188: merge origin/<default> into the freshly prepared item branch
+    before the agent starts, so a conflict send-back reworks the code on top
+    of today's main instead of the stale base the conflict came from (HZ-125,
+    HZ-144). A clean merge is committed; a conflicted one is left IN PROGRESS
+    with its markers on disk for the agent to resolve — finalize_branch's
+    commit then records it as the merge commit. Returns the conflicted paths
+    (empty for a clean merge). Any other merge failure raises: the agent must
+    not start on a half-merged tree it was never told about."""
+    head = git(ws, "symbolic-ref", "refs/remotes/origin/HEAD", check=False).stdout.strip()
+    default = head.rsplit("/", 1)[-1] if head else "main"
+    merged = git(ws, "merge", "--no-edit", f"origin/{default}", check=False)
+    if merged.returncode == 0:
+        return []
+    conflicted = git(ws, "diff", "--name-only", "--diff-filter=U", check=False).stdout.split()
+    if not conflicted:
+        raise RuntimeError(f"merging origin/{default} failed: {(merged.stderr or merged.stdout).strip()[:300]}")
+    return conflicted
+
+
+def _conflict_markers_left(ws: Path, paths: list[str]) -> list[str]:
+    """The paths merge_default_branch left conflicted that still hold a
+    `<<<<<<<` or `>>>>>>>` marker line. Only those paths are scanned: git
+    wrote markers into nothing else, and a repo may carry marker-looking text
+    elsewhere on purpose (conflict test fixtures)."""
+    left = []
+    for path in paths:
+        try:
+            text = (ws / path).read_text(errors="replace")
+        except (FileNotFoundError, IsADirectoryError):
+            continue  # the agent resolved it by deleting the file
+        if any(line.startswith(("<<<<<<<", ">>>>>>>")) for line in text.splitlines()):
+            left.append(path)
+    return left
+
+
+def _merge_main_note(conflicted: list[str]) -> str:
+    if not conflicted:
+        return (
+            "\n\nNOTE: this branch's PR conflicted with main. origin/main has already "
+            "been merged into it cleanly — build on the merged code as it is now."
+        )
+    files = "\n".join(f"- {path}" for path in conflicted)
+    return (
+        "\n\nNOTE: this branch's PR conflicted with main. origin/main has been merged "
+        "into it and the merge is still in progress: these files have conflict markers "
+        f"left in place for you to resolve —\n{files}\n"
+        "Resolve every marker keeping the intent of both sides, then carry on with the "
+        "step. Do not run `git merge --abort` and do not commit — the harness commits "
+        "the merge after you finish."
+    )
+
+
 def _checkpoint_resume_note(ws: Path) -> str | None:
     """If HEAD is a salvage checkpoint left by a prior exhausted attempt
     (prepare_branch() already based this branch off origin/<branch>, so a
@@ -282,10 +396,149 @@ def _checkpoint_resume_note(ws: Path) -> str | None:
     )
 
 
-def finalize_branch(ws: Path, item: dict, branch: str) -> dict:
+# ---- fix pass + delta review (HZ-182) ----
+# After a review rejection the server dispatches the implement step with
+# scope {"mode": "fix", "base_sha", "max_turns", "timeout_s", "findings"} and
+# the review after it with {"mode": "delta", "base_sha", "previous_findings"}.
+# Every decision is the server's; this side only executes the scope and
+# reports what it actually did, so the server can fall back to full.
+
+
+def scope_of(task: dict) -> dict:
+    scope = task.get("scope")
+    return scope if isinstance(scope, dict) and scope.get("mode") in ("fix", "delta") else {"mode": "full"}
+
+
+def _default_branch(ws: Path) -> str:
+    head = git(ws, "symbolic-ref", "refs/remotes/origin/HEAD", check=False).stdout.strip()
+    return head.rsplit("/", 1)[-1] if head else "main"
+
+
+def _names(ws: Path, rev_range: str) -> list[str]:
+    out = git(ws, "diff", "--name-only", rev_range, check=False).stdout
+    return [line for line in out.splitlines() if line.strip()]
+
+
+def delta_base_problem(ws: Path, base: str | None, default: str) -> str | None:
+    """Why `base..HEAD` is NOT a trustworthy delta, or None when it is.
+
+    The last reviewed commit must still exist AND be an ancestor of HEAD. A
+    force-with-lease push after a rebase leaves the old commit in the object
+    store, so existence alone would diff against a dead commit and produce a
+    wrong delta rather than an empty one. A merge from main that changed files
+    the PR touches also disqualifies the delta: main's changes would ride in it.
+    """
+    # A commit sha, nothing else — the value reaches git argv.
+    if not isinstance(base, str) or not re.fullmatch(r"[0-9a-f]{7,64}", base):
+        return "base_missing"
+    if git(ws, "rev-parse", "--verify", "--quiet", f"{base}^{{commit}}", check=False).returncode != 0:
+        return "base_missing"
+    if git(ws, "merge-base", "--is-ancestor", base, "HEAD", check=False).returncode != 0:
+        return "base_not_ancestor"
+    old_mb = git(ws, "merge-base", base, f"origin/{default}", check=False).stdout.strip()
+    new_mb = git(ws, "merge-base", "HEAD", f"origin/{default}", check=False).stdout.strip()
+    if old_mb and new_mb and old_mb != new_mb:
+        if set(_names(ws, f"{old_mb}..{new_mb}")) & set(_names(ws, f"origin/{default}...HEAD")):
+            return "main_merged"
+    return None
+
+
+def fix_diff_report(ws: Path, base: str | None) -> dict:
+    """The fix pass's size, for the server's full-review threshold — or why
+    it could not be measured, which the server treats as oversize."""
+    problem = delta_base_problem(ws, base, _default_branch(ws))
+    if problem:
+        return {"scope_fallback": problem}
+    lines = 0
+    for row in git(ws, "diff", "--numstat", f"{base}..HEAD", check=False).stdout.splitlines():
+        added, removed = (row.split("\t") + ["", ""])[:2]
+        # Binary files report "-"; count each as one changed line.
+        lines += (int(added) if added.isdigit() else 1) + (int(removed) if removed.isdigit() else 1)
+    return {"fix_diff_lines": lines, "fix_diff_files": _names(ws, f"{base}..HEAD")}
+
+
+def fix_pass_section(scope: dict) -> str:
+    """The scope rule for a fix-pass implement prompt. The findings themselves
+    arrive once, as the "Human feedback to address" list above."""
+    files = sorted({f["file"] for f in scope.get("findings") or [] if isinstance(f, dict) and isinstance(f.get("file"), str)})
+    involved = ", ".join(f"`{f}`" for f in files) or "(none named)"
+    return (
+        "\n\n## Fix pass\n"
+        f"This is a fix pass after an automated review rejection. Everything up to commit "
+        f"`{scope.get('base_sha')}` already passed review. Fix ONLY the blocking findings in the "
+        "feedback above. Do not refactor, restyle or extend anything else.\n"
+        f"Files the findings involve: {involved}.\n"
+        "Change no other file unless the fix needs it; if it does, name each such file and say "
+        "why in your summary. The next review sees every line you change."
+    )
+
+
+def _merge_previous_findings(previous: list, replies: list[dict]) -> list[dict]:
+    """ONE previous_findings array from both reviewers, fail-closed: a finding
+    is resolved only when every reviewer reports it `resolved: true`. A
+    reviewer that omits it, or returns no list at all, leaves it unresolved."""
+    merged = []
+    for prev in previous:
+        index = prev.get("index") if isinstance(prev, dict) else None
+        if not isinstance(index, int):
+            continue
+        resolved, details = True, []
+        for reply in replies:
+            entries = reply.get("previous_findings")
+            entry = next(
+                (e for e in entries if isinstance(e, dict) and e.get("index") == index), None
+            ) if isinstance(entries, list) else None
+            if entry is None or entry.get("resolved") is not True:
+                resolved = False
+            if entry is not None and isinstance(entry.get("detail"), str) and entry["detail"].strip():
+                details.append(entry["detail"].strip())
+        merged.append({"index": index, "resolved": resolved, "detail": "; ".join(details)})
+    return merged
+
+
+def delta_review_section(scope: dict, base: str, delta_files: list[str]) -> str:
+    lines = [
+        "## Fix-pass delta review",
+        f"This is a re-review after a rejection. The diff below is ONLY the change since `{base}`, "
+        "the last reviewed commit. Everything else in the PR already passed review.",
+        'Report every previous finding below in "previous_findings", by index, with `resolved` true or false.',
+        "",
+        "Previous findings:",
+    ]
+    finding_files = set()
+    for prev in scope.get("previous_findings") or []:
+        if not isinstance(prev, dict):
+            continue
+        loc = prev.get("file") or "general"
+        if prev.get("file"):
+            finding_files.add(prev["file"])
+            if prev.get("line"):
+                loc = f"{loc}:{prev['line']}"
+        lines.append(f"- [{prev.get('index')}] `{loc}` — {prev.get('detail', '')}")
+    outside = [f for f in delta_files if f not in finding_files]
+    if outside:
+        lines += [
+            "",
+            "Changed outside the findings — the implement summary must explain each; block if it does not:",
+            *[f"- `{f}`" for f in outside],
+        ]
+    return "\n".join(lines)
+
+
+def finalize_branch(ws: Path, item: dict, branch: str, conflicted: list[str] | None = None) -> dict:
+    # A merge of main still carrying conflict markers must never be committed:
+    # GitHub would then call the PR mergeable with the markers in it, and no
+    # later send-back would be told which files still hold them.
+    markers = _conflict_markers_left(ws, conflicted or [])
+    if markers:
+        raise RuntimeError(f"conflict markers left unresolved in: {', '.join(markers)} — nothing committed or pushed")
     git(ws, "add", "-A")
     staged = git(ws, "diff", "--cached", "--quiet", check=False)
-    if staged.returncode != 0:  # there are staged changes
+    # An in-progress merge of main (merge_default_branch) must be committed
+    # even when its resolution kept this branch's side verbatim — otherwise
+    # the push leaves main unmerged and the conflict survives.
+    merging = git(ws, "rev-parse", "-q", "--verify", "MERGE_HEAD", check=False)
+    if staged.returncode != 0 or merging.returncode == 0:
         git(ws, "commit", "-m", f"{item['id']}: {item['title']} (Horizon Eng agent)")
     head = git(ws, "symbolic-ref", "refs/remotes/origin/HEAD", check=False).stdout.strip()
     default = head.rsplit("/", 1)[-1] if head else "main"
@@ -313,12 +566,21 @@ def finalize_branch(ws: Path, item: dict, branch: str) -> dict:
 # from zero.
 
 
-def _salvage_checkpoint(ws: Path, item: dict, branch: str) -> None:
+def _salvage_checkpoint(ws: Path, item: dict, branch: str, conflicted: list[str] | None = None) -> None:
     """Best-effort: never raises. A salvage failure (e.g. a concurrent push
     winning the --force-with-lease race) just means this attempt's partial
     work is lost — the caller's original exception is what must still
-    propagate and fail the run, unchanged from pre-HZ-31 behavior."""
+    propagate and fail the run, unchanged from pre-HZ-31 behavior.
+
+    HZ-188: a half-resolved merge of main is never checkpointed. Committing
+    it would push conflict markers to the PR branch and make GitHub report it
+    mergeable, so the next send-back would not merge main or name the files.
+    Dropping it is safe: that send-back merges main again from scratch."""
     try:
+        markers = _conflict_markers_left(ws, conflicted or [])
+        if markers:
+            log(f"salvage: skipped — the merge of main still has conflict markers in {', '.join(markers)}")
+            return
         git(ws, "add", "-A")
         staged = git(ws, "diff", "--cached", "--quiet", check=False)
         if staged.returncode == 0:
@@ -383,7 +645,20 @@ def _review_summary(verdict: dict) -> str:
         if detail:
             summary = f"{summary} — {detail}"
             break
-    return summary[:600]
+    return summary[:SUMMARY_MAX_CHARS]
+
+
+def step_model(provider: str | None = None) -> str | None:
+    """HZ-187: the model every step-agent run_agent() call passes — STEP_MODEL
+    on the claude provider, None (the provider's own default) anywhere else,
+    so a Muse-routed step never receives a Claude model id.
+
+    Must mirror agent_runner._selected_provider()'s rule: an explicit provider
+    wins, else FARM_PROVIDER read at call time. Called through the module so a
+    test patching agent_runner._selected_provider_name reaches it too.
+    """
+    name = provider or agent_runner._selected_provider_name()
+    return STEP_MODEL if name == agent_runner.DEFAULT_PROVIDER else None
 
 
 def _provenance(reply: dict) -> dict:
@@ -400,15 +675,24 @@ def _run_and_parse(
     allowed_tools: str | None,
     provider: str | None = None,
     provider_locked: bool = False,
-) -> tuple[dict, dict]:
-    """run_agent + extract_json with one retry-with-feedback on a parse
-    failure (HZ-44) — mirrors pm_agent.process()'s recovery. Asking the model
-    to re-emit valid JSON is lossless; a genuine second failure still
+) -> tuple[dict, dict, list[str]]:
+    """run_agent + the shared reply parser, with one retry-with-feedback on a
+    parse failure (HZ-44) — mirrors pm_agent.process()'s recovery. Asking the
+    model to re-emit valid JSON is lossless; a genuine second failure still
     propagates so the run cancels and the item pauses, unchanged.
 
-    Returns (parsed_json, provenance) — provenance is {"provider",
+    Returns (parsed_json, provenance, notes). Provenance is {"provider",
     "command_id"} from whichever run_agent() call actually produced the JSON
-    that parsed (HZ-102), so a caller can record which provider really ran.
+    that parsed (HZ-102), so a caller can record which provider really ran —
+    hence the `produced` rebind in the closure rather than reading `reply`
+    after the fact. Notes are the shared parser's reporting channel (HZ-156).
+
+    No validate= is handed to the parser, deliberately. Every required-field
+    check on this side (a missing 'summary', a deploy reply with no 'url', a
+    review reply with no verdict) stays exactly where it has always been —
+    after this call returns. Moving one inside the retry envelope would buy a
+    second full agent run for a reply that costs nothing to reject today, and
+    on the review path a retry could flip a deliberately fail-closed gate.
     """
     reply = run_agent(
         prompt,
@@ -419,13 +703,15 @@ def _run_and_parse(
         allowed_tools=allowed_tools,
         provider=provider,
         provider_locked=provider_locked,
+        model=step_model(provider),
     )
-    try:
-        return extract_json(reply["result"]), _provenance(reply)
-    except (AgentError, json.JSONDecodeError) as exc:
-        log(f"invalid reply ({exc}); retrying once")
-        retry = run_agent(
-            f"Your previous reply was invalid: {exc}. Respond again with ONLY the JSON object, no other text.",
+    produced = reply
+
+    def retry_once(retry_prompt: str) -> str:
+        nonlocal produced
+        log("invalid reply; retrying once")
+        produced = run_agent(
+            retry_prompt,
             session_id=reply.get("session_id"),
             append_system=append_system,
             cwd=cwd,
@@ -434,8 +720,12 @@ def _run_and_parse(
             allowed_tools=allowed_tools,
             provider=provider,
             provider_locked=provider_locked,
+            model=step_model(provider),
         )
-        return extract_json(retry["result"]), _provenance(retry)
+        return produced["result"]
+
+    parsed, notes = parse_agent_reply(reply["result"], retry_once)
+    return parsed, _provenance(produced), notes
 
 
 # ---- deploy deep-verification (HZ-22) ----
@@ -470,16 +760,40 @@ def run_smoke_check(url: str, expected_text: str) -> tuple[str, str]:
 
 
 def execute(task: dict) -> dict:
+    """HZ-188: the implement and review steps scrub, check out and (for
+    implement) push in the item's worktree, so they hold item_lock for the
+    whole step — taken before ensure_item_worktree, so not even the worktree's
+    creation can overlap a conflict resolver that owns the item. Every other
+    step only reads the workspace and runs unlocked."""
+    item = task["item"]
+    if task["step"]["label"] not in (IMPLEMENT_LABEL, REVIEW_LABEL) or not item.get("repo"):
+        return _execute(task)
+    lock = item_lock(
+        item["repo"],
+        item["id"],
+        wait_s=ITEM_LOCK_WAIT_S,
+        on_wait=lambda: log(f"workspace for {item['id']} is busy (conflict resolution running) — waiting up to {ITEM_LOCK_WAIT_S}s"),
+    )
+    with contextlib.ExitStack() as stack:
+        try:
+            stack.enter_context(lock)
+        except ItemBusy:
+            raise RuntimeError("workspace busy: conflict resolution still running") from None
+        return _execute(task)
+
+
+def _execute(task: dict) -> dict:
     label = task["step"]["label"]
-    role_file, wants_artifact, tools, wants_persona = STEP_CONFIG[label]
+    role_file, wants_artifact, tools, persona_agent = STEP_CONFIG[label]
     max_turns, timeout_s = steps.budget_for_label(steps.STEPS, label)
     provider_locked = steps.provider_locked_for(steps.STEPS, label)
     role = (ROLES / role_file).read_text()
     item = task["item"]
-    if wants_persona:
-        role = compose_role(role, item.get("persona"))
+    personas = item_personas(item)
+    if persona_agent:
+        role = compose_role(role, persona_agent, personas.get(persona_agent))
     provider_override = (
-        provider_for(item.get("persona")) if steps.provider_override_eligible(steps.STEPS, label) else None
+        provider_for(personas) if steps.provider_override_eligible(steps.STEPS, label) else None
     )
 
     ws = None
@@ -499,18 +813,38 @@ def execute(task: dict) -> dict:
             return {"summary": "no repository attached — implementation skipped (demo item)"}
         branch = prepare_branch(ws, item)
         log(f"workspace {ws} on branch {branch}")
-        resume_note = _checkpoint_resume_note(ws)
-        if resume_note:
-            log("resuming a prior attempt's WIP checkpoint")
+        scope = scope_of(task)
+        if scope["mode"] == "fix":
+            # HZ-182: the server's reduced budget, clamped — never raised —
+            # against the step's own. A "continue your WIP" note would
+            # contradict a fix-only instruction, so it is not added.
+            if isinstance(scope.get("max_turns"), int) and scope["max_turns"] > 0:
+                max_turns = min(max_turns, scope["max_turns"])
+            if isinstance(scope.get("timeout_s"), int) and scope["timeout_s"] > 0:
+                timeout_s = min(timeout_s, scope["timeout_s"])
+            log(f"fix pass from {scope.get('base_sha')}: {max_turns} turns, {timeout_s}s")
+            extra = fix_pass_section(scope)
+        else:
+            extra = _checkpoint_resume_note(ws) or ""
+            if extra:
+                log("resuming a prior attempt's WIP checkpoint")
+        # After the resume check: a merge commit would hide the checkpoint's
+        # subject from it.
+        conflicted: list[str] = []
+        if task.get("merge_main"):
+            conflicted = merge_default_branch(ws)
+            log(f"merged origin/main into {branch}" + (f" — {len(conflicted)} conflicted file(s) left for the agent" if conflicted else " cleanly"))
+            extra += _merge_main_note(conflicted)
         try:
             reply = run_agent(
-                build_prompt(task) + (resume_note or ""),
+                build_prompt(task) + extra,
                 append_system=role,
                 cwd=str(ws),
                 max_turns=max_turns,
                 timeout_s=timeout_s,
                 allowed_tools=tools,
                 provider_locked=provider_locked,
+                model=step_model(),
             )
         except Exception:
             # SALVAGE (HZ-31): the run hit its turn/time cap (or any other
@@ -518,13 +852,26 @@ def execute(task: dict) -> dict:
             # letting the next attempt's prepare_branch scrub it away. Still
             # re-raises unchanged: a failed attempt still fails and pauses,
             # no checks run, no PR opens, nothing advances.
-            _salvage_checkpoint(ws, item, branch)
+            _salvage_checkpoint(ws, item, branch, conflicted)
             raise
         # The summary is reporting, not the deliverable — the code in the
         # workspace is. Never torch a completed implement run over a
         # malformed final message; fall back and let checks judge the work.
+        # No retry= here on purpose: this step must not gain one. Its fallback
+        # below is what a malformed final message costs, and that is cheaper
+        # than a second full implement run.
+        notes: list[str] = []
         try:
-            summary = str(extract_json(reply["result"]).get("summary", "implementation finished")).strip()[:600]
+            parsed, notes = parse_agent_reply(reply["result"])
+            summary = str(parsed.get("summary", "")).strip()[:SUMMARY_MAX_CHARS]
+            if not summary:
+                # Parsed, but carried nothing usable. Without a note the run
+                # would report a bare "implementation finished" — indistinguishable
+                # from a clean run, with the only evidence that the reply was junk
+                # thrown away. The except branch below says so for an unparseable
+                # reply; this says so for a parseable but empty one.
+                summary = "implementation finished"
+                notes = [*notes, "agent's final message carried no 'summary' — see session log"]
         except Exception:
             summary = "implementation finished (agent's final message was not valid JSON — see session log)"
         # Guardrail enforcement: the repo's own tests/linters run here, by the
@@ -532,8 +879,13 @@ def execute(task: dict) -> dict:
         # run (Node pauses the item with the reason) — no green, no push.
         check_note = run_checks(ws, log, run_id=task.get("run_id"), item_id=item["id"])
         publish_screenshots(ws, item)
-        artifacts = finalize_branch(ws, item, branch)
-        return {"summary": f"{summary} · {check_note}"[:600], "artifacts": artifacts}
+        artifacts = finalize_branch(ws, item, branch, conflicted)
+        if scope["mode"] == "fix":
+            artifacts.update(fix_diff_report(ws, scope.get("base_sha")))
+        # finalize_branch returns branch/files_changed, not an artifact_md, so
+        # the summary is this path's only note surface.
+        summary = stamp_notes(f"{summary} · {check_note}"[:SUMMARY_MAX_CHARS], notes, SUMMARY_MAX_CHARS)
+        return {"summary": summary, "artifacts": artifacts}
 
     # Automated review (HZ-30): two independent read-only passes over the
     # actual diff — code correctness against guardrails/the approved plan,
@@ -559,20 +911,38 @@ def execute(task: dict) -> dict:
         # uncommitted leftovers in it — scrub before reading the diff.
         branch = prepare_branch(ws, item)
         log(f"workspace {ws} on branch {branch} — reviewing diff")
-        head = git(ws, "symbolic-ref", "refs/remotes/origin/HEAD", check=False).stdout.strip()
-        default = head.rsplit("/", 1)[-1] if head else "main"
-        diff_stat = git(ws, "diff", "--stat", f"origin/{default}...HEAD", check=False).stdout.strip()
-        diff_full = git(ws, "diff", f"origin/{default}...HEAD", check=False).stdout
+        default = _default_branch(ws)
+        # HZ-182: a delta review reads only base..HEAD — unless the base is
+        # gone, no longer an ancestor, or main was merged over the PR's files,
+        # in which case it falls back to the full PR and says so.
+        scope = scope_of(task)
+        review_extra = {"reviewed_sha": git(ws, "rev-parse", "HEAD").stdout.strip(), "review_mode": "full"}
+        delta_section = ""
+        rev_range = f"origin/{default}...HEAD"
+        if scope["mode"] == "delta":
+            base = scope.get("base_sha")
+            problem = delta_base_problem(ws, base, default)
+            if problem:
+                log(f"delta review falling back to a full review: {problem}")
+                review_extra["scope_fallback"] = problem
+            else:
+                rev_range = f"{base}..HEAD"
+                delta_files = _names(ws, rev_range)
+                review_extra.update(review_mode="delta", delta_files=delta_files)
+                delta_section = delta_review_section(scope, base, delta_files) + "\n\n"
+        diff_stat = git(ws, "diff", "--stat", rev_range, check=False).stdout.strip()
+        diff_full = git(ws, "diff", rev_range, check=False).stdout
         diff_text, diff_note = truncate_diff(diff_full)
         diff_section = f"## Code diff under review\n\n```\n{diff_stat}\n```\n\n```diff\n{diff_text}\n```{diff_note}"
         prompt = (
             build_prompt(task)
             + "\n\n"
+            + delta_section
             + diff_section
             + "\n\nRespond with ONLY the JSON object described in your role instructions."
         )
 
-        code_parsed, _code_provenance = _run_and_parse(
+        code_parsed, _code_provenance, code_notes = _run_and_parse(
             prompt,
             append_system=role,
             cwd=str(ws),
@@ -582,10 +952,12 @@ def execute(task: dict) -> dict:
             provider_locked=provider_locked,
         )
 
+        # The item's QA persona, never the Eng one the code pass above used
+        # (HZ-125): a reviewer wearing the implementer's specialization reviews
+        # the work as the engineer who wrote it.
         qa_role = (ROLES / "qa_review.md").read_text()
-        if wants_persona:
-            qa_role = compose_role(qa_role, item.get("persona"))
-        qa_parsed, _qa_provenance = _run_and_parse(
+        qa_role = compose_role(qa_role, REVIEW_QA_PERSONA_AGENT, personas.get(REVIEW_QA_PERSONA_AGENT))
+        qa_parsed, _qa_provenance, qa_notes = _run_and_parse(
             prompt,
             append_system=qa_role,
             cwd=str(ws),
@@ -596,6 +968,10 @@ def execute(task: dict) -> dict:
         )
 
         verdict = {"code_review": _code_review_section(code_parsed), "qa_review": _qa_review_section(qa_parsed)}
+        if review_extra["review_mode"] == "delta":
+            verdict["previous_findings"] = _merge_previous_findings(
+                scope.get("previous_findings") or [], [code_parsed, qa_parsed]
+            )
         artifact_md = "\n\n".join(
             part.strip()
             for part in (code_parsed.get("artifact_md"), qa_parsed.get("artifact_md"))
@@ -604,10 +980,18 @@ def execute(task: dict) -> dict:
         summary = _review_summary(verdict)
         feedback = task.get("feedback") or []
         if feedback:
-            summary = f"addressed feedback (“{feedback[0].get('message', '')[:80]}”) — {summary}"[:600]
+            summary = f"addressed feedback (“{feedback[0].get('message', '')[:80]}”) — {summary}"[:SUMMARY_MAX_CHARS]
+        # Both passes' notes, in the order they ran.
+        notes = code_notes + qa_notes
         return {
-            "summary": summary,
-            "artifacts": {"artifact_md": artifact_md[:WRITE_ARTIFACT_SANITY_CEILING_CHARS], "verdict": verdict},
+            "summary": stamp_notes(summary, notes, SUMMARY_MAX_CHARS),
+            "artifacts": {
+                "artifact_md": stamp_notes_artifact(
+                    artifact_md[:WRITE_ARTIFACT_SANITY_CEILING_CHARS], notes, WRITE_ARTIFACT_SANITY_CEILING_CHARS
+                ),
+                "verdict": verdict,
+                **review_extra,
+            },
         }
 
     # Deploy (HZ-22): the release is already published by the time this runs
@@ -631,7 +1015,7 @@ def execute(task: dict) -> dict:
             "with e2e/smoke/check.mjs — pick an expected_text that is actually visible on that "
             "page right now."
         )
-        parsed, _deploy_provenance = _run_and_parse(
+        parsed, _deploy_provenance, notes = _run_and_parse(
             prompt,
             append_system=role,
             cwd=None,
@@ -640,7 +1024,7 @@ def execute(task: dict) -> dict:
             allowed_tools=tools,
             provider_locked=provider_locked,
         )
-        summary = str(parsed.get("summary", "")).strip()[:600] or "deploy verification finished"
+        summary = str(parsed.get("summary", "")).strip()[:SUMMARY_MAX_CHARS] or "deploy verification finished"
         artifact_md = str(parsed.get("artifact_md", "")).strip()
 
         url, expected_text = parsed.get("url"), parsed.get("expected_text")
@@ -650,9 +1034,11 @@ def execute(task: dict) -> dict:
         verdict, smoke_line = run_smoke_check(url.strip(), expected_text.strip())
         artifact_md = f"{artifact_md}\n\n## Machine-checked result\n`{smoke_line}`".strip()
         return {
-            "summary": f"{summary} · {smoke_line}"[:600],
+            "summary": stamp_notes(f"{summary} · {smoke_line}"[:SUMMARY_MAX_CHARS], notes, SUMMARY_MAX_CHARS),
             "artifacts": {
-                "artifact_md": artifact_md[:WRITE_ARTIFACT_SANITY_CEILING_CHARS],
+                "artifact_md": stamp_notes_artifact(
+                    artifact_md[:WRITE_ARTIFACT_SANITY_CEILING_CHARS], notes, WRITE_ARTIFACT_SANITY_CEILING_CHARS
+                ),
                 # Wrapped in an object, not a bare string: validateDeployVerdict in
                 # server/src/orchestrator.js requires `typeof v === 'object'` with a
                 # `.verdict` field — same wire contract the review step's verdict
@@ -661,7 +1047,7 @@ def execute(task: dict) -> dict:
             },
         }
 
-    parsed, reply_provenance = _run_and_parse(
+    parsed, reply_provenance, notes = _run_and_parse(
         build_prompt(task) + "\n\nRespond with ONLY the JSON object described in your role instructions.",
         append_system=role,
         cwd=str(ws) if ws else None,
@@ -671,7 +1057,7 @@ def execute(task: dict) -> dict:
         provider=provider_override,
         provider_locked=provider_locked,
     )
-    summary = str(parsed.get("summary", "")).strip()[:600]
+    summary = str(parsed.get("summary", "")).strip()[:SUMMARY_MAX_CHARS]
     if not summary:
         raise AgentError("agent reply missing 'summary'")
 
@@ -680,7 +1066,7 @@ def execute(task: dict) -> dict:
     # so nobody has to guess what a revision was responding to.
     feedback = task.get("feedback") or []
     if feedback:
-        summary = f"addressed feedback (“{feedback[0].get('message', '')[:80]}”) — {summary}"[:600]
+        summary = f"addressed feedback (“{feedback[0].get('message', '')[:80]}”) — {summary}"[:SUMMARY_MAX_CHARS]
 
     # HZ-102: when a persona forced a non-default provider for this step
     # (PERSONA_PROVIDERS ships empty — HZ-121 — so today this only happens
@@ -691,15 +1077,19 @@ def execute(task: dict) -> dict:
     if provider_override:
         note = f"provider={reply_provenance.get('provider')} command_id={reply_provenance.get('command_id')}"
         log(f"HZ-102 provenance: {note}")
-        summary = f"{summary} [{note}]"[:600]
+        summary = f"{summary} [{note}]"[:SUMMARY_MAX_CHARS]
 
-    result = {"summary": summary}
+    result = {"summary": stamp_notes(summary, notes, SUMMARY_MAX_CHARS)}
     if wants_artifact and isinstance(parsed.get("artifact_md"), str) and parsed["artifact_md"].strip():
         artifact = parsed["artifact_md"].strip()
         if feedback:
             header = "\n".join(f"> {fb.get('message', '')}" for fb in feedback)
             artifact = f"## Human feedback addressed in this revision\n{header}\n\n{artifact}"
-        result["artifacts"] = {"artifact_md": artifact[:WRITE_ARTIFACT_SANITY_CEILING_CHARS]}
+        result["artifacts"] = {
+            "artifact_md": stamp_notes_artifact(
+                artifact[:WRITE_ARTIFACT_SANITY_CEILING_CHARS], notes, WRITE_ARTIFACT_SANITY_CEILING_CHARS
+            )
+        }
     if provider_override:
         artifacts = result.setdefault("artifacts", {})
         artifacts["provider"] = reply_provenance.get("provider")
@@ -726,7 +1116,7 @@ def main() -> int:
         # else (a checks failure, a malformed reply, ...) reports no reason
         # and the server pauses for a human exactly as before.
         if isinstance(exc, AgentExhaustedError):
-            result["reason"] = "turn_cap"
+            result["reason"] = reasons.REASON["TURN_CAP"]
 
     httpx.post(f"{FARMD}/internal/steps/result", json=result, timeout=30)
     log(f"run {run_id}: reported {'ok' if result['ok'] else 'failure'}")

@@ -2,6 +2,11 @@
 // leg of HZ-4's specialist routing (QA condition 1: this replaces any
 // "manually verified" claim) — plus the HZ-14 "See agent output" links that
 // replaced inline step output and the HZ-5 Live activity panel.
+//
+// HZ-125: personas are agent-scoped, so the gate shows ONE control per persona
+// agent, each labelled with that agent's own name and offering only its own
+// bucket. These render the real component, so they are the UI-layer proof of
+// success metric 11 — not just the domain module's filter logic.
 
 import { expect, test, vi } from 'vitest'
 import { render, fireEvent, cleanup } from '@testing-library/react'
@@ -17,7 +22,12 @@ vi.mock('../api', () => ({
 
 import Tracker from './Tracker'
 import { ACCEPT_GATE_INDEX } from '../../../domain/js/lifecycle.js'
-import { PERSONAS } from '../domain/personas'
+// HZ-132: reason ids come from domain/reasons.json via the binding, never typed
+// here — a second hand-copy of the vocabulary inside ui/src is exactly the
+// drift this repo now forbids.
+import { REASON, REASON_IDS } from '../../../domain/js/reasons.js'
+import { DEFAULT_PERSONAS, PERSONAS, PERSONA_AGENT_ROLES, PRIMARY_PERSONA_AGENT } from '../domain/personas'
+import { AGENTS } from '../domain/agentTokens'
 
 afterEach(() => {
   cleanup()
@@ -57,39 +67,85 @@ function renderTracker(item, onSetPersona = noop, onAbandon = noop, onResolveCon
   )
 }
 
-test('the intake gate shows the persona select, defaulting to the proposed persona', () => {
-  const { getByLabelText } = renderTracker({ ...baseItem, persona: 'python_backend' })
-  expect(getByLabelText('Specialist persona').value).toBe('python_backend')
+// The picker's label for one agent's control, built from that agent's own
+// lifecycle name rather than a second hand-typed copy of it.
+const pickerLabel = (agent) => `${AGENTS[PERSONA_AGENT_ROLES[agent]].label} persona`
+
+test('the intake gate shows one persona select per agent, defaulting to the proposed persona', () => {
+  const { getByLabelText } = renderTracker({ ...baseItem, personas: { eng: 'python' } })
+  for (const agent of Object.keys(PERSONAS)) {
+    expect(getByLabelText(pickerLabel(agent))).toBeTruthy()
+  }
+  expect(getByLabelText(pickerLabel('eng')).value).toBe('python')
 })
 
-test('an item with no persona defaults the select to fullstack', () => {
+test('each agent’s select offers only that agent’s own personas', () => {
+  const { getByLabelText } = renderTracker({ ...baseItem, personas: { eng: 'python' } })
+  for (const agent of Object.keys(PERSONAS)) {
+    const offered = Array.from(getByLabelText(pickerLabel(agent)).options).map((o) => o.value)
+    expect(offered.sort()).toEqual(Object.keys(PERSONAS[agent]).sort())
+  }
+})
+
+test('an item with no personas defaults every select to that agent’s default', () => {
   const { getByLabelText } = renderTracker(baseItem)
-  expect(getByLabelText('Specialist persona').value).toBe('fullstack')
+  expect(getByLabelText(pickerLabel('eng')).value).toBe('fullstack')
+  expect(getByLabelText(pickerLabel('qa')).value).toBe('api_contract')
+  expect(getByLabelText(pickerLabel('architect')).value).toBe('data_modelling')
+  expect(getByLabelText(pickerLabel('pm')).value).toBe('roadmap')
 })
 
-test('changing the select fires setPersona with the chosen id', () => {
+test('changing a select fires setPersona with that agent and the chosen id', () => {
   const spy = vi.fn()
-  const { getByLabelText } = renderTracker({ ...baseItem, persona: 'python_backend' }, spy)
-  fireEvent.change(getByLabelText('Specialist persona'), { target: { value: 'frontend_ui' } })
-  expect(spy).toHaveBeenCalledWith('T-1', 'frontend_ui')
+  const { getByLabelText } = renderTracker({ ...baseItem, personas: { eng: 'python' } }, spy)
+  fireEvent.change(getByLabelText(pickerLabel('eng')), { target: { value: 'ui' } })
+  expect(spy).toHaveBeenCalledWith('T-1', 'eng', 'ui')
+  fireEvent.change(getByLabelText(pickerLabel('qa')), { target: { value: 'data_integrity' } })
+  expect(spy).toHaveBeenCalledWith('T-1', 'qa', 'data_integrity')
 })
 
-test('the select is absent when the item is past the intake gate', () => {
-  const { queryByLabelText } = renderTracker({ ...baseItem, cursor: 4, persona: 'python_backend' })
-  expect(queryByLabelText('Specialist persona')).toBeNull()
+test('the selects are absent when the item is past the intake gate', () => {
+  const { queryByLabelText } = renderTracker({ ...baseItem, cursor: 4, personas: { eng: 'python' } })
+  for (const agent of Object.keys(PERSONAS)) {
+    expect(queryByLabelText(pickerLabel(agent))).toBeNull()
+  }
+})
+
+// The header badge is a separate render of the persona from the picker: it
+// shows the item's primary (Eng) specialization whatever the gate is doing. An
+// item carrying a different persona per agent is the case that tells a
+// regression to another agent's slot apart from a correct render.
+test('the tracker header badge shows the Eng persona, not another agent’s', () => {
+  const { container } = renderTracker({
+    ...baseItem,
+    personas: { eng: 'ui', qa: 'data_integrity', architect: 'distributed_systems', pm: 'feature_development' },
+  })
+  const header = container.querySelector('.tracker__header')
+  expect(header.textContent).toContain(PERSONAS[PRIMARY_PERSONA_AGENT].ui.label)
+  expect(header.textContent).not.toContain(PERSONAS.qa.data_integrity.label)
+  expect(header.textContent).not.toContain(PERSONAS.architect.distributed_systems.label)
+})
+
+test('the header badge falls back to the Eng default when the item carries no Eng persona', () => {
+  const { container } = renderTracker({ ...baseItem, personas: { qa: 'data_integrity' } })
+  const header = container.querySelector('.tracker__header')
+  expect(header.textContent).toContain(PERSONAS[PRIMARY_PERSONA_AGENT][DEFAULT_PERSONAS[PRIMARY_PERSONA_AGENT]].label)
 })
 
 // HZ-121: no shipped persona is testOnly anymore, so this test proves the
 // filter itself (Tracker.jsx's `.filter(([, p]) => !p.testOnly)`) against a
-// synthetic entry rather than relying on a real one to exist.
+// synthetic entry rather than relying on a real one to exist. HZ-125 applies it
+// per agent bucket, so the fixture is registered inside one.
 test('the persona picker never offers a testOnly persona', () => {
-  PERSONAS.__fixture_test_only__ = { label: 'Fixture (test-only)', initials: 'FX', color: '#000', testOnly: true }
+  PERSONAS.eng.__fixture_test_only__ = { label: 'Fixture (test-only)', initials: 'FX', color: '#000', testOnly: true }
   try {
-    const { getByLabelText } = renderTracker({ ...baseItem, persona: 'python_backend' })
-    const options = Array.from(getByLabelText('Specialist persona').options).map((o) => o.value)
-    expect(options).not.toContain('__fixture_test_only__')
+    const { getByLabelText } = renderTracker({ ...baseItem, personas: { eng: 'python' } })
+    for (const agent of Object.keys(PERSONAS)) {
+      const offered = Array.from(getByLabelText(pickerLabel(agent)).options).map((o) => o.value)
+      expect(offered).not.toContain('__fixture_test_only__')
+    }
   } finally {
-    delete PERSONAS.__fixture_test_only__
+    delete PERSONAS.eng.__fixture_test_only__
   }
 })
 
@@ -146,18 +202,18 @@ test('no output link on a done step with no recorded output', () => {
 
 // ---- resolve conflicts (HZ-92) ----
 
-test('a PR with merge conflicts at the Accept gate offers "Send back to resolve conflicts", and clicking it fires onResolveConflicts', () => {
+test('a PR with merge conflicts at the Accept gate offers "Resolve conflicts…", and clicking it fires onResolveConflicts', () => {
   const item = { ...baseItem, cursor: ACCEPT_GATE_INDEX, pr: 42, pr_mergeable: false }
   const spy = vi.fn()
   const { getByText } = renderTracker(item, noop, noop, spy)
-  fireEvent.click(getByText('Send back to resolve conflicts'))
+  fireEvent.click(getByText('Resolve conflicts…'))
   expect(spy).toHaveBeenCalledWith('T-1', 42)
 })
 
 test('a mergeable PR at the Accept gate shows no conflict-resolution button', () => {
   const item = { ...baseItem, cursor: ACCEPT_GATE_INDEX, pr: 42, pr_mergeable: true }
   const { queryByText } = renderTracker(item)
-  expect(queryByText('Send back to resolve conflicts')).toBeNull()
+  expect(queryByText('Resolve conflicts…')).toBeNull()
 })
 
 // ---- abandon (HZ-59) ----
@@ -282,18 +338,18 @@ test('a done step with repeated attempts but no artifact still shows the plain "
 
 // ---- HZ-94: a paused item explains itself, not just "Paused" ----
 
-test('a turn_cap pause renders its own distinct message naming the category, cause and next action', () => {
+test(`a ${REASON.TURN_CAP} pause renders its own distinct message naming the category, cause and next action`, () => {
   const item = {
     ...baseItem,
     paused: true,
     events: [
       {
         created_at: '2026-01-01 00:00:00',
-        text: 'agent step failed (turn_cap): ran out of turns — auto-retry budget (3) exhausted; item paused, resume to retry',
+        text: `agent step failed (${REASON.TURN_CAP}): ran out of turns — auto-retry budget (3) exhausted; item paused, resume to retry`,
       },
-      { created_at: '2026-01-01 00:00:00', text: 'transient failure (turn_cap): ran out of turns — auto-retrying (3/3)' },
-      { created_at: '2026-01-01 00:00:00', text: 'transient failure (turn_cap): ran out of turns — auto-retrying (2/3)' },
-      { created_at: '2026-01-01 00:00:00', text: 'transient failure (turn_cap): ran out of turns — auto-retrying (1/3)' },
+      { created_at: '2026-01-01 00:00:00', text: `transient failure (${REASON.TURN_CAP}): ran out of turns — auto-retrying (3/3)` },
+      { created_at: '2026-01-01 00:00:00', text: `transient failure (${REASON.TURN_CAP}): ran out of turns — auto-retrying (2/3)` },
+      { created_at: '2026-01-01 00:00:00', text: `transient failure (${REASON.TURN_CAP}): ran out of turns — auto-retrying (1/3)` },
     ],
   }
   const { container } = renderTracker(item)
@@ -304,8 +360,13 @@ test('a turn_cap pause renders its own distinct message naming the category, cau
   expect(banner.querySelector('.pause-banner__meta').textContent).toContain('Resume to retry')
 })
 
-test('each named pause category renders a distinct banner title from the others', () => {
-  const titles = ['never_picked_up', 'timeout', 'unreachable', 'turn_cap'].map((reason) => {
+// HZ-132: driven off REASON_IDS rather than a hand-typed four. That widens it
+// from the retryable set to EVERY declared reason — required_input_incomplete
+// renders a banner too — and makes it success criterion 5 at the render layer:
+// a reason added to domain/reasons.json with no pause-banner copy collapses two
+// titles into one and fails here.
+test('every declared pause category renders a distinct banner title from the others', () => {
+  const titles = REASON_IDS.map((reason) => {
     const item = {
       ...baseItem,
       paused: true,
@@ -316,7 +377,7 @@ test('each named pause category renders a distinct banner title from the others'
     cleanup()
     return title
   })
-  expect(new Set(titles).size).toBe(4)
+  expect(new Set(titles).size).toBe(REASON_IDS.length)
 })
 
 test('an unrecognized pause reason degrades to the raw cause rather than a blank banner', () => {
@@ -368,7 +429,7 @@ test('the pause banner coexists with the Resume control and the activity feed, r
     ...baseItem,
     paused: true,
     events: [
-      { created_at: '2026-01-01 00:00:00', text: 'agent step failed (timeout): step timed out — item paused; resume to retry' },
+      { created_at: '2026-01-01 00:00:00', text: `agent step failed (${REASON.TIMEOUT}): step timed out — item paused; resume to retry` },
     ],
   }
   const { getByText, container } = renderTracker(item)
@@ -454,4 +515,176 @@ test('an abandoned blocker is flagged in the detail view rather than silently dr
   const { getByText } = renderTracker(item)
   expect(getByText(/Dead end/)).toBeTruthy()
   expect(getByText(/abandoned/)).toBeTruthy()
+})
+
+// ===== HZ-153: markdown in the description and the two tiles =====
+//
+// These render through components/Markdown.jsx, which maps marked's *lexer*
+// tokens onto React elements. The security cases below are the point of that
+// design: no HTML string exists at any stage, so raw markup can only ever
+// become visible text.
+
+test('a rich description renders real heading, list, emphasis, code, link and paragraph elements', () => {
+  const desc = [
+    '### A heading',
+    '',
+    'First paragraph with **bold**, `FARM_MAX_EPHEMERAL` and [a link](https://example.test).',
+    '',
+    '- first bullet',
+    '- second bullet',
+    '',
+    'Second paragraph.',
+  ].join('\n')
+  const { container } = renderTracker({ ...baseItem, desc })
+
+  // `###` is depth 3, clamped to h5 so it can never outrank the item title.
+  expect(container.querySelector('.tracker__desc h5').textContent).toBe('A heading')
+  expect(container.querySelector('.tracker__desc strong').textContent).toBe('bold')
+  expect(container.querySelector('.tracker__desc code').textContent).toBe('FARM_MAX_EPHEMERAL')
+  expect(container.querySelectorAll('.tracker__desc ul li')).toHaveLength(2)
+  expect(container.querySelectorAll('.tracker__desc p').length).toBeGreaterThanOrEqual(2)
+
+  const link = container.querySelector('.tracker__desc a')
+  expect(link.getAttribute('href')).toBe('https://example.test')
+  expect(link.getAttribute('target')).toBe('_blank')
+  expect(link.getAttribute('rel')).toBe('noopener noreferrer')
+
+  // No literal markup survives anywhere in the rendered description.
+  const text = container.querySelector('.tracker__desc').textContent
+  expect(text).not.toContain('###')
+  expect(text).not.toContain('**')
+  expect(text).not.toContain('`')
+  expect(text).not.toMatch(/(^|\n)- /)
+})
+
+test('raw HTML in a description is inert visible text, in block and inline position', () => {
+  const desc = 'Text with <img src=x onerror=alert(1)> inline.\n\n<script>alert(1)</script>'
+  const { container } = renderTracker({ ...baseItem, desc })
+
+  expect(container.querySelector('script')).toBeNull()
+  expect(container.querySelector('img')).toBeNull()
+  // textContent, not getByText: React may split these across sibling text
+  // nodes, and this is the one assertion that must not silently pass.
+  expect(container.textContent).toContain('<img src=x onerror=alert(1)>')
+  expect(container.textContent).toContain('<script>alert(1)</script>')
+})
+
+test('only http(s) and mailto links are clickable; everything else keeps its label as text', () => {
+  const desc = [
+    '[click me](javascript:alert(1))',
+    '[data one](data:text/html,hi)',
+    '[mixed case](JavaScript:alert(1))',
+    '[protocol relative](//evil.test)',
+  ].join('\n\n')
+  const { container } = renderTracker({ ...baseItem, desc })
+
+  expect(container.querySelectorAll('.tracker__desc a')).toHaveLength(0)
+  // Rejecting a link must not delete what it said.
+  for (const label of ['click me', 'data one', 'mixed case', 'protocol relative']) {
+    expect(container.textContent).toContain(label)
+  }
+})
+
+test('a mailto link and a bare autolinked URL both render as safe external links', () => {
+  const desc = 'Mail <a@b.test> or read https://example.test/docs'
+  const { container } = renderTracker({ ...baseItem, desc })
+
+  const links = Array.from(container.querySelectorAll('.tracker__desc a'))
+  expect(links.map((a) => a.getAttribute('href'))).toEqual(['mailto:a@b.test', 'https://example.test/docs'])
+  for (const a of links) {
+    expect(a.getAttribute('target')).toBe('_blank')
+    expect(a.getAttribute('rel')).toBe('noopener noreferrer')
+  }
+})
+
+test('inline formatting inside a list item is rendered, not flattened to its source text', () => {
+  const desc = '- **bold** and `code`\n- plain'
+  const { container } = renderTracker({ ...baseItem, desc })
+  expect(container.querySelector('.tracker__desc li strong').textContent).toBe('bold')
+  expect(container.querySelector('.tracker__desc li code').textContent).toBe('code')
+})
+
+test('nested and ordered lists keep their structure, with no literal bullet markers left', () => {
+  const desc = '- outer\n  - inner\n\n1. one\n2. two'
+  const { container } = renderTracker({ ...baseItem, desc })
+  expect(container.querySelector('.tracker__desc ul ul li').textContent).toBe('inner')
+  expect(container.querySelectorAll('.tracker__desc ol > li')).toHaveLength(2)
+  expect(container.querySelector('.tracker__desc').textContent).not.toMatch(/(^|\n)\s*- /)
+})
+
+test('ampersands and angle brackets are not double-escaped', () => {
+  const desc = 'A & B < C, and `a && b` in code.'
+  const { container } = renderTracker({ ...baseItem, desc })
+  const text = container.querySelector('.tracker__desc').textContent
+  expect(text).toContain('A & B < C')
+  expect(text).not.toContain('&amp;')
+  expect(text).not.toContain('&lt;')
+  expect(container.querySelector('.tracker__desc code').textContent).toBe('a && b')
+})
+
+test('an intra-word underscore is left alone rather than turned into emphasis', () => {
+  const { container } = renderTracker({ ...baseItem, desc: 'Set FARM_MAX_EPHEMERAL to 4.' })
+  expect(container.querySelector('.tracker__desc em')).toBeNull()
+  expect(container.querySelector('.tracker__desc').textContent).toContain('FARM_MAX_EPHEMERAL')
+})
+
+test('a fenced code block renders as a pre/code pair keeping both lines', () => {
+  const { container } = renderTracker({ ...baseItem, desc: '```\nline one\nline two\n```' })
+  const code = container.querySelector('.tracker__desc pre > code')
+  expect(code).not.toBeNull()
+  expect(code.textContent).toBe('line one\nline two')
+})
+
+test('a markdown table falls back to its source text instead of crashing or vanishing', () => {
+  const { container } = renderTracker({ ...baseItem, desc: '| a | b |\n| --- | --- |\n| 1 | 2 |' })
+  expect(container.querySelector('.tracker__desc table')).toBeNull()
+  expect(container.querySelector('.tracker__desc').textContent).toContain('| a | b |')
+})
+
+test('a top-level heading is demoted so it cannot outrank the item title', () => {
+  const { container } = renderTracker({ ...baseItem, desc: '# One' })
+  expect(container.querySelector('.tracker__desc h1, .tracker__desc h2')).toBeNull()
+  expect(container.querySelector('.tracker__desc h3').textContent).toBe('One')
+})
+
+test('a null or undefined description renders nothing instead of throwing', () => {
+  const { container } = renderTracker({ ...baseItem, desc: null, metric: undefined })
+  expect(container.querySelector('.tracker__desc')).toBeNull()
+  expect(container.querySelector('.tile__value')).toBeNull()
+})
+
+test('a plain-text description keeps both of its lines and gains no markup', () => {
+  const { container } = renderTracker({ ...baseItem, desc: 'First line.\nSecond line.' })
+  const desc = container.querySelector('.tracker__desc')
+  expect(desc.textContent).toContain('First line.')
+  expect(desc.textContent).toContain('Second line.')
+  expect(desc.querySelector('ul')).toBeNull()
+  expect(desc.querySelector('strong')).toBeNull()
+})
+
+test('the success metric and guardrails tiles each render their bullets as a real list', () => {
+  const { container } = renderTracker({
+    ...baseItem,
+    metric: '- metric one\n- metric two',
+    guardrails: '- only guardrail',
+  })
+  const tiles = container.querySelectorAll('.tile__value')
+  expect(tiles).toHaveLength(2)
+  expect(tiles[0].querySelectorAll('li')).toHaveLength(2)
+  expect(tiles[1].querySelectorAll('li')).toHaveLength(1)
+})
+
+// Scope pin: HZ-153 covers the description and the two tiles only. The
+// abandoned-reason line reuses .tile__value but is deliberately still plain
+// text — if that ever changes, this test should be the thing that says so.
+test('the abandoned reason stays plain text', () => {
+  const { container } = renderTracker({
+    ...baseItem,
+    cursor: 11,
+    abandoned_at: '2026-01-01 00:00:00',
+    abandoned_reason: 'went **nowhere**',
+    abandoned_by: 'a human',
+  })
+  expect(container.textContent).toContain('went **nowhere**')
+  expect(container.querySelector('.tile__value strong')).toBeNull()
 })

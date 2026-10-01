@@ -1,11 +1,13 @@
 import { useState } from 'react'
 import { createItem } from '../api'
+// HZ-135: the picker's options and its initial value are domain/priorities.json's,
+// not a fourth hand-typed copy. The ORDER matters and comes from there too — the
+// segmented control renders the array left-to-right, severity first.
+import { PRIORITIES, DEFAULT_PRIORITY } from '../../../domain/js/priorities.js'
 
 // The intake form doubles as the spec for "work the bot farm can process":
 // a clear outcome and a measurable success criterion are required before an
 // item enters the lifecycle; everything else the Plan-phase agents refine.
-
-const PRIORITIES = ['Critical', 'High', 'Medium', 'Low']
 
 export default function NewItemModal({ activeProject, onClose, onCreated }) {
   const repos = activeProject?.repos || []
@@ -13,7 +15,7 @@ export default function NewItemModal({ activeProject, onClose, onCreated }) {
   const [outcome, setOutcome] = useState('')
   const [metric, setMetric] = useState('')
   const [guardrails, setGuardrails] = useState('')
-  const [priority, setPriority] = useState('Medium')
+  const [priority, setPriority] = useState(DEFAULT_PRIORITY)
   const [repo, setRepo] = useState(repos[0]?.repo ?? null)
   const [errors, setErrors] = useState({})
   const [serverError, setServerError] = useState(null)

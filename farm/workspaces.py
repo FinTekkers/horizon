@@ -25,6 +25,7 @@ import json
 import os
 import shutil
 import subprocess
+import time
 from pathlib import Path
 
 from .config import QUEUE_DIR, WORKSPACES_DIR
@@ -65,6 +66,92 @@ def hub_lock(repo_full: str):
             yield
         finally:
             fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+
+
+class ItemBusy(RuntimeError):
+    """item_lock() could not be taken within its wait — another writer
+    (the conflict resolver, or an implement/review step) owns the item."""
+
+
+def _item_lock_path(repo_full: str, item_id: str) -> Path:
+    # Outside every worktree (so `git clean -fd` in one can never delete it)
+    # and outside the __items root (so existing_item_ids() never mistakes it
+    # for a worktree). Lowercased like workspace_path(): HZ-188 and hz-188
+    # are the same worktree, so they must be the same lock.
+    return WORKSPACES_DIR / ".item-locks" / f"{repo_full.replace('/', '__')}__{item_id.lower()}.lock"
+
+
+@contextlib.contextmanager
+def item_lock(repo_full: str, item_id: str, *, wait_s: float | None = None, on_wait=None):
+    """HZ-188: the one-writer-per-worktree lock. Held by farmd's
+    /conflicts/resolve for the whole resolver run and by step_agent around
+    every implement/review step, so the resolver and a step can never reset,
+    merge or push in the same item worktree at once.
+
+    A real flock like hub_lock(): the kernel drops it when the holding
+    process dies, so a crashed or killed run can never leave the item locked.
+    flock is per open file description, so two threads in one process (two
+    concurrent farmd requests) exclude each other too.
+
+    wait_s=None blocks until free; wait_s=0 tries once; wait_s=N retries
+    every second for N seconds. Raises ItemBusy when the wait runs out.
+    on_wait, if given, is called once when the first try finds it held.
+
+    Lock order: item_lock OUTSIDE, hub_lock inside — never take item_lock
+    while holding hub_lock."""
+    lock_path = _item_lock_path(repo_full, item_id)
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(lock_path, "a") as fh:
+        deadline = None if wait_s is None else time.monotonic() + wait_s
+        waited = False
+        while True:
+            try:
+                fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except BlockingIOError:
+                if not waited and on_wait is not None:
+                    on_wait()
+                waited = True
+                if deadline is not None and time.monotonic() >= deadline:
+                    raise ItemBusy(f"{item_id} is busy: another run holds its workspace") from None
+                time.sleep(1 if deadline is None else max(0.0, min(1.0, deadline - time.monotonic())))
+        try:
+            yield
+        finally:
+            fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+
+
+def item_lock_held(repo_full: str, item_id: str) -> bool:
+    """True while some run holds item_lock() for this item.
+
+    Read from /proc/locks rather than by trying the lock: a probe that briefly
+    takes it would make a concurrent wait_s=0 acquire (farmd's
+    /conflicts/resolve) fail with a spurious ItemBusy. The probe is only the
+    fallback where /proc/locks can't be read."""
+    lock_path = _item_lock_path(repo_full, item_id)
+    try:
+        st = lock_path.stat()
+    except FileNotFoundError:
+        return False
+    try:
+        proc_locks = Path("/proc/locks").read_text()
+    except OSError:
+        proc_locks = None
+    if proc_locks is not None:
+        # "1: FLOCK  ADVISORY  WRITE 1234 103:01:5678 0 EOF" — the device is
+        # printed as %02x:%02x:%lu (major:minor:inode).
+        dev = f"{os.major(st.st_dev):02x}:{os.minor(st.st_dev):02x}:{st.st_ino}"
+        return any(
+            len(fields) > 5 and fields[1] == "FLOCK" and fields[5] == dev
+            for fields in (line.split() for line in proc_locks.splitlines())
+        )
+    with open(lock_path, "a") as fh:
+        try:
+            fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            return True
+        fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+        return False
 
 
 def _git(path: Path, *args: str, check: bool = True) -> subprocess.CompletedProcess:
@@ -141,7 +228,10 @@ def _evict_lru_if_over_pool(repo_full: str, keep_item_id: str) -> None:
     if len(ids) < WORKSPACE_ITEM_POOL_SIZE:
         return
     protected = _active_item_ids() | {keep_item_id.lower()}
-    candidates = [root / i for i in ids if i not in protected]
+    # HZ-188: the conflict resolver runs with no task file, so the active-run
+    # set can't see it — its item_lock is what keeps its worktree from being
+    # reaped out from under it.
+    candidates = [root / i for i in ids if i not in protected and not item_lock_held(repo_full, i)]
     if not candidates:
         return
     oldest = min(candidates, key=lambda p: p.stat().st_mtime)

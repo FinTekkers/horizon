@@ -31,7 +31,7 @@ function item(id, overrides = {}) {
     pr: null,
     paused: false,
     rejected: false,
-    persona: 'fullstack',
+    personas: { eng: 'fullstack' },
     last_activity_at: new Date().toISOString(),
     ...overrides,
   }

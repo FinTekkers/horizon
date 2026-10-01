@@ -13,6 +13,8 @@ import * as store from './store.js'
 import { getToken, getSetting, setSetting } from './settings.js'
 import { POLL_INTERVAL_MS, UI_URL } from './config.js'
 import { ACCEPT_GATE_INDEX } from '../../domain/js/lifecycle.js'
+import { PRIORITY } from '../../domain/js/priorities.js'
+import { PRIORITY_LABEL_RE, priorityLabelName } from './priorityLabels.js'
 
 const itemLink = (item) => `[open in Horizon](${UI_URL}/${item.id.toLowerCase()})`
 
@@ -95,10 +97,29 @@ export function composeIssueBody({ outcome, metric, guardrails }) {
   ].join('\n')
 }
 
-const PRIORITY_LABEL_COLORS = { Critical: '9C333E', High: 'DFA200', Medium: '2E6CB2', Low: '8C8C8E' }
+// Hex, not theme tokens: these are persisted to GitHub, which has no idea what a
+// CSS variable is. Colour is presentation, so it stays here rather than moving
+// into domain/ (HZ-135 guardrail 5) — but the KEYS are PRIORITY's, not a second
+// hand-typed copy of the vocabulary. Keying by named constant rather than by
+// array position is deliberate: a reordered domain/priorities.json must not
+// silently recolour every label. server/test/domain-priority-pins.test.mjs pins
+// the resulting map to the exact hex values it had before HZ-135, and asserts
+// every declared priority has one.
+// Exported so the two tests can split the work without either becoming a
+// tautology: server/test/priority-labels.test.mjs asserts the POST body carries
+// THIS map's colour for each value (proving the path is wired), and
+// domain-priority-pins.test.mjs asserts the map itself still equals the
+// hand-typed hex it had before HZ-135 (proving no colour moved). Same split
+// ui/src/domain/lifecycle.js's PRIORITY_COLORS already gets.
+export const PRIORITY_LABEL_COLORS = {
+  [PRIORITY.CRITICAL]: '9C333E',
+  [PRIORITY.HIGH]: 'DFA200',
+  [PRIORITY.MEDIUM]: '2E6CB2',
+  [PRIORITY.LOW]: '8C8C8E',
+}
 
 async function ensurePriorityLabel(repo, token, priority) {
-  const name = `priority: ${priority.toLowerCase()}`
+  const name = priorityLabelName(priority)
   // Creating an issue with a nonexistent label silently drops it, so create
   // the label first; 422 means it already exists.
   const res = await fetch(`https://api.github.com/repos/${repo}/labels`, {
@@ -114,8 +135,11 @@ async function ensurePriorityLabel(repo, token, priority) {
 // so the next sync reads the same value back. Best-effort by design: the
 // caller never blocks on it, but a swallowed failure here means a later issue
 // edit can sync the stale label's priority back over the database.
-const PRIORITY_LABEL_RE = /^(?:priority\s*[:/-]?\s*)?(critical|high|medium|low)$/i
-
+//
+// HZ-135: the pattern that used to be declared here was a byte-for-byte copy of
+// store.js's, under a different name. Both now come from ./priorityLabels.js,
+// which also owns the name format ensurePriorityLabel writes — so the label we
+// create and the label we recognise as stale cannot drift apart.
 export async function setPriorityLabel(item, priority) {
   const token = getToken()
   const name = await ensurePriorityLabel(item.repo, token, priority)

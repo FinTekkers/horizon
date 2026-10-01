@@ -1,0 +1,22 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$comment": "HZ-135: the contract for domain/priorities.json. Validated by domain/validate.mjs — the same dependency-free Draft-07 subset validator steps.schema.json, reasons.schema.json and fields.schema.json use, so only the keywords listed in its KEYWORDS set are honoured. Rules the subset cannot express (each value matching ^[A-Z][A-Za-z]*$, case-INSENSITIVE uniqueness, and `default` being a member of `priorities`) are asserted at LOAD time by the bindings themselves — see assertPrioritiesShape() in domain/js/priorities.js and _validate_source() in domain/py/priorities.py, which domain/fixtures/priorities-cases.json drives from both sides so the two cannot drift.",
+  "title": "Horizon work-item priority vocabulary",
+  "type": "object",
+  "required": ["priorities", "default"],
+  "additionalProperties": false,
+  "properties": {
+    "priorities": {
+      "$comment": "ARRAY ORDER IS THE ORDER. It is severity, highest first, and it is display order: the intake picker renders it top-to-bottom and the WhatsApp wizard numbers it 1..n. Nothing in the repo sorts work items by priority, so there are deliberately no rank integers — a second representation of the same order would be the drift this file exists to remove.",
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": { "type": "string", "minLength": 1 }
+    },
+    "default": {
+      "$comment": "What an item gets when nobody says: POST /api/items with no priority, an issue synced from GitHub carrying no priority label, and the wizard's opening session state. Must be one of `priorities` — asserted at load time, not here.",
+      "type": "string",
+      "minLength": 1
+    }
+  }
+}

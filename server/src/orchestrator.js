@@ -22,12 +22,15 @@ import {
   DEPLOY_STEP_INDEX,
   requiredStepIndex,
 } from '../../domain/js/lifecycle.js'
+import { AUTO_RETRY_REASONS, REASON } from '../../domain/js/reasons.js'
+import { patchLimits } from '../../domain/js/fields.js'
 import {
   getItem,
   addEvent,
   notifyChange,
   registerAgentRunner,
   registerRunStateProvider,
+  registerConflictRunProvider,
   recoverRejectedItems,
   blockersOf,
   requestChanges,
@@ -44,8 +47,11 @@ import {
   FARM_CONFLICT_RESOLVE_TIMEOUT_MS,
   RECONCILE_SWEEP_MS,
   UI_URL,
+  FIX_PASS_ENABLED,
+  FIX_PASS_TURN_DIVISOR,
+  FIX_PASS_MAX_LINES,
 } from './config.js'
-import { isPersona, personaLabel, proposePersona } from './personas.js'
+import { PRIMARY_PERSONA_AGENT, isPersona, personaLabel, proposePersona } from './personas.js'
 
 // Keyed by step_run.id (HZ-100) — NOT item id. Keying by item used to let a
 // stale callback for a superseded run clear/overwrite the CURRENT run's
@@ -82,12 +88,16 @@ const REVIEW_CYCLE_CAP = 3
 
 // Hard cap on consecutive AUTOMATIC retries of a step failure (HZ-76),
 // enforced HERE and persisted on step_run.auto_retry_count — never decided
-// by an agent or a prompt. Only the reasons below are ever retried; anything
+// by an agent or a prompt. Only retryable reasons are ever retried; anything
 // else (malformed verdict, PR/release failure, checks-failed, an unrecognized
 // or missing reason) pauses for a human exactly as before this existed —
 // that default-safe behavior is what keeps a real defect from being masked.
+//
+// HZ-132: which reasons those are is no longer typed here. The vocabulary and
+// its retryable flag are declared once, in domain/reasons.json, and
+// AUTO_RETRY_REASONS is derived from it by domain/js/reasons.js — the farm
+// emits the same constants and the UI's pause banner reads the same document.
 export const AUTO_RETRY_CAP = 3
-const AUTO_RETRY_REASONS = new Set(['never_picked_up', 'timeout', 'unreachable', 'turn_cap'])
 
 // MOCK_STEP_LATENCY_MS lets tests drive the mock pipeline without waiting.
 const latency = () => Number(process.env.MOCK_STEP_LATENCY_MS) || 2000 + Math.floor(Math.random() * 3000)
@@ -343,6 +353,31 @@ export function setRunStateForTest(runId, state, reason = null) {
   notifyChange()
 }
 
+// e2e only (HZ-154), same wiring and same reasoning as the hook above: the
+// suite has no farm daemon, so the scoped conflict path's whole visible
+// outcome — the item coming back to the Accept gate resolved, with the
+// activity feed naming the files, the hunks and the scoped verdict, and the
+// implement step's attempt count sitting still — would otherwise be covered
+// only below the UI. This queues ONE canned /conflicts/resolve reply for the
+// next resolveConflicts() call, in place of the farmd round trip.
+//
+// It stubs farmd's ANSWER, never the trigger or the gate: the click, the
+// session, the PIN, the escalation path and every guard clause in
+// resolveConflicts() all still run exactly as they do in production. Left
+// null unless a spec sets it, and the route that sets it exists only when
+// HORIZON_TEST_HOOKS=1, which production never sets.
+let cannedConflictReply = null
+
+export function setConflictReplyForTest(reply) {
+  cannedConflictReply = reply
+}
+
+function takeCannedConflictReply() {
+  const reply = cannedConflictReply
+  cannedConflictReply = null
+  return reply
+}
+
 // ---- real farm (farm/ Python daemon) plumbing ----
 
 // Every farm call is bounded — a hung farmd (network partition, a deadlocked
@@ -372,7 +407,14 @@ async function farmFetch(path, body, { timeoutMs = DEFAULT_FARM_FETCH_TIMEOUT_MS
     clearTimeout(timer)
   }
   const data = await res.json().catch(() => ({}))
-  if (!res.ok) throw new Error(data.error || `farm returned ${res.status} for ${path}`)
+  if (!res.ok) {
+    const err = new Error(data.error || `farm returned ${res.status} for ${path}`)
+    // Callers that must tell one farm refusal from another (HZ-188: a busy
+    // item vs a paused farm, both 409) read these, never the message text.
+    err.status = res.status
+    err.code = data.error
+    throw err
+  }
   return data
 }
 
@@ -415,12 +457,73 @@ export async function fetchRunLog(runId, offset = 0) {
 // is a bounded-but-long synchronous farmd call (real git merge + the repo's
 // own test suite) instead of an async dispatch — FARM_CONFLICT_RESOLVE_TIMEOUT_MS
 // (config.js) is what bounds that trade.
-const CONFLICT_ESCALATION_REASONS = {
+//
+// HZ-154 adds a narrow middle path INSIDE the same call: farmd may now resolve
+// the conflicted hunks themselves (deterministically where the two sides
+// edited different lines of the hunk, otherwise with a tool-restricted agent)
+// and review only the resolution delta, rather than escalating every
+// overlapping edit to a full re-implementation plus a full re-review of the
+// whole PR. Everything above
+// still holds: one human click, no row, no poll loop, no step_run write, and
+// the item only ever comes back to this gate for a human. The reasons below
+// grew a code per way that path can refuse — Python's own list is
+// farm/conflict_resolver.py's ESCALATION_REASONS, and
+// orchestrator-conflict-reason-parity.test.mjs holds the two in sync.
+export const CONFLICT_ESCALATION_REASONS = {
   merge_conflict: 'both branches changed the same lines — needs a human or a full implement cycle to resolve',
   tests_failed: "the merge applied cleanly but the repo's own tests failed afterward",
   branch_missing: 'the PR branch could not be found on the remote',
   push_rejected: 'the branch changed on GitHub while resolving — try again',
+  conflict_too_large: 'too many conflicted files or lines for a scoped fix — needs a full implement cycle',
+  conflict_unsupported: 'the conflict is a rename, a deletion or a binary clash — needs a full implement cycle',
+  resolution_unsure: 'the resolution agent reported it could not be sure of the fix',
+  resolution_out_of_scope: 'the resolution changed code outside the conflicted regions — rejected, nothing pushed',
+  markers_remaining: 'conflict markers were still present after the resolution — rejected, nothing pushed',
+  scoped_review_rejected: 'the scoped review of the resolution rejected it',
+  scoped_checks_failed: "the conflicted hunks were resolved but the repo's own checks then failed",
 }
+
+// The success line for the scoped path: names the files and hunks that were
+// resolved and the scoped review's verdict, so the event log answers "what
+// exactly changed, and who said it was fine" without opening the PR.
+function scopedResolutionText(pr, result) {
+  const { strategy, hunks, paths = [] } = result.resolution || {}
+  const review = result.review || {}
+  const how = strategy === 'deterministic' ? 'both sides kept, no agent needed' : 'resolved by an agent'
+  const verdict =
+    review.reviewed === false
+      ? review.summary || 'no agent review — the resolution used only parent lines'
+      : `scoped review ${review.verdict === 'pass' ? 'passed' : 'failed'}: ${review.summary || 'no summary'}`
+  return (
+    `resolved ${hunks || 0} conflicted hunk(s) on PR #${pr} in ${paths.join(', ') || 'the PR branch'} (${how}) — ` +
+    `${verdict} — no re-implementation and no re-review of the rest of the PR (${result.summary || 'pushed'})`
+  )
+}
+
+// HZ-188: one resolver run per item. Each click used to start another farmd
+// resolver in the same worktree, and they reset each other's merges. This map
+// is the server half of the guard (farmd's item_lock is the other, and holds
+// on its own); it is also the item's visible progress — store.listItems()
+// reads it as `conflictRun`, so every tab, and a reloaded page, sees a run in
+// progress. Memory-only on purpose (HZ-92: no row to go stale): a restart
+// forgets it, and farmd's lock still refuses a duplicate in that window.
+// resolveConflicts() is the only writer, and its `finally` always moves the
+// entry out of `running`, so a timed-out or crashed call never leaves the
+// item locked.
+//
+// state: running → resolved | escalated (sent back to implement, with the
+// reason — including farmd unreachable or timed out) | failed (nothing ran
+// and nothing was sent back — farmd reported another writer owns the item,
+// or this code threw).
+const conflictRuns = new Map()
+
+export function getConflictRun(id) {
+  return conflictRuns.get(id) || null
+}
+
+registerConflictRunProvider(getConflictRun)
+
+const FARM_ITEM_BUSY_REASON = "another run is still using this item's workspace — nothing was started, try again once it finishes"
 
 export async function resolveConflicts(id, actor = 'You') {
   const item = getItem(id)
@@ -432,35 +535,74 @@ export async function resolveConflicts(id, actor = 'You') {
   // booleanizes this column for the UI) — 0 is "GitHub reports conflicts",
   // 1 is mergeable, NULL is unknown/not yet computed.
   if (item.pr_mergeable !== 0) return { error: 'not_conflicted' }
-  if (!FARM_URL) return { error: 'farm_unavailable' }
+  if (!FARM_URL && cannedConflictReply === null) return { error: 'farm_unavailable' }
+  if (conflictRuns.get(id)?.state === 'running') return { error: 'resolve_in_progress' }
 
+  conflictRuns.set(id, { state: 'running', since: new Date().toISOString(), reason: null })
+  notifyChange()
+  let outcome = { state: 'failed', reason: 'conflict resolution stopped unexpectedly' }
+  try {
+    const run = await runConflictResolution(id, item, actor)
+    outcome = { state: run.state, reason: run.reason }
+    return run.result
+  } finally {
+    conflictRuns.set(id, { ...outcome, since: new Date().toISOString() })
+    notifyChange()
+  }
+}
+
+// The resolver call itself; returns { result, state, reason } — the route's
+// reply plus the conflictRun outcome resolveConflicts() records.
+async function runConflictResolution(id, item, actor) {
   const branch = `horizon/${id.toLowerCase()}`
   let result
   try {
-    result = await farmFetch(
-      '/conflicts/resolve',
-      { item: { id, repo: item.repo }, branch },
-      { timeoutMs: FARM_CONFLICT_RESOLVE_TIMEOUT_MS },
-    )
+    result =
+      cannedConflictReply !== null
+        ? takeCannedConflictReply()
+        : await farmFetch(
+            '/conflicts/resolve',
+            { item: { id, repo: item.repo }, branch },
+            { timeoutMs: FARM_CONFLICT_RESOLVE_TIMEOUT_MS },
+          )
   } catch (err) {
-    requestChanges(id, 'Accept the code', `PR #${item.pr}: automatic conflict resolution could not run (${err.message})`, actor)
-    return { ok: true, resolved: false, escalated: true }
+    // farmd's item_lock is held — another resolver or an implement/review
+    // step owns the worktree. Not a failed resolution: nothing ran, so
+    // nothing is sent back. Every other farm refusal (farm_not_running is
+    // also a 409) keeps the escalation below.
+    if (err.status === 409 && err.code === 'resolve_in_progress') {
+      return { result: { error: 'resolve_in_progress' }, state: 'failed', reason: FARM_ITEM_BUSY_REASON }
+    }
+    const reason = `automatic conflict resolution could not run (${err.message})`
+    requestChanges(id, 'Accept the code', `PR #${item.pr}: ${reason}`, actor)
+    return { result: { ok: true, resolved: false, escalated: true, reason }, state: 'escalated', reason }
   }
 
   if (result.resolved) {
+    // The mechanical text stays byte-identical: only farmd reporting
+    // mode: 'scoped' switches to the richer line.
     addEvent(id, {
       who: 'Horizon',
-      text: `resolved merge conflicts on PR #${item.pr} mechanically — no re-implementation needed (${result.summary || 'merged and pushed'})`,
+      text:
+        result.mode === 'scoped'
+          ? scopedResolutionText(item.pr, result)
+          : `resolved merge conflicts on PR #${item.pr} mechanically — no re-implementation needed (${result.summary || 'merged and pushed'})`,
       color: '#0E6E74',
       initials: 'RS',
     })
-    notifyChange()
-    return { ok: true, resolved: true }
+    return {
+      result:
+        result.mode === 'scoped'
+          ? { ok: true, resolved: true, mode: 'scoped', review: result.review || null }
+          : { ok: true, resolved: true },
+      state: 'resolved',
+      reason: null,
+    }
   }
 
   const reason = CONFLICT_ESCALATION_REASONS[result.reason] || result.detail || 'conflict resolution could not complete automatically'
   requestChanges(id, 'Accept the code', `PR #${item.pr}: ${reason}`, actor)
-  return { ok: true, resolved: false, escalated: true }
+  return { result: { ok: true, resolved: false, escalated: true, reason }, state: 'escalated', reason }
 }
 
 function projectPayload(projectId) {
@@ -574,11 +716,15 @@ export const MOCK_STEP_BEHAVIOR = {
     const result = it.desc
       ? { summary: 'refined the outcome statement from the issue description', patch: {} }
       : { summary: 'drafted an outcome statement for gate review', patch: { desc: `Deliver: ${it.title}` } }
-    // Propose a specialist persona once; never re-propose over a set value —
-    // it may be a human's choice (the server-side no-clobber is the real guard).
-    if (!it.persona) {
-      result.patch.persona = proposePersona(it)
-      result.summary += ` — proposed the ${personaLabel(result.patch.persona)} persona (confirm at the gate)`
+    // Propose the Eng specialist persona once; never re-propose over a set
+    // value — it may be a human's choice (the server-side no-clobber is the
+    // real guard). Only the Eng slot is proposed: the other agents' personas
+    // default and the human picks them at the gate (same rule as the real PM
+    // agent's, see farm/roles/pm.md).
+    if (!it.personas?.[PRIMARY_PERSONA_AGENT]) {
+      const persona = proposePersona(it, PRIMARY_PERSONA_AGENT)
+      result.patch.personas = { [PRIMARY_PERSONA_AGENT]: persona }
+      result.summary += ` — proposed the ${personaLabel(PRIMARY_PERSONA_AGENT, persona)} persona (confirm at the gate)`
     }
     if (Object.keys(result.patch).length === 0) delete result.patch
     return result
@@ -696,12 +842,19 @@ export function kick(id, opts = {}) {
       stepIndex,
     ).n
   const autoRetryCount = opts.autoRetryCount || 0
+  const toFarm = FARM_URL && FARM_STEP_INDEXES.has(stepIndex)
+  // HZ-182: decided once, here, and stored on the run — completion reads the
+  // scope the run was dispatched with, never a recomputation from the item.
+  // Mock runs stay full: demo mode has no commits to scope a review to.
+  const scope = toFarm ? scopeFor(item, stepIndex) : null
   const runId = db
-    .prepare('INSERT INTO step_run (item_id, step_index, attempt, agent, auto_retry_count) VALUES (?, ?, ?, ?, ?)')
-    .run(id, stepIndex, attempt, step.agent, autoRetryCount).lastInsertRowid
+    .prepare(
+      'INSERT INTO step_run (item_id, step_index, attempt, agent, auto_retry_count, scope_json) VALUES (?, ?, ?, ?, ?, ?)',
+    )
+    .run(id, stepIndex, attempt, step.agent, autoRetryCount, scope ? JSON.stringify(scope) : null).lastInsertRowid
 
-  if (FARM_URL && FARM_STEP_INDEXES.has(stepIndex)) {
-    dispatchToFarm(id, stepIndex, runId, attempt)
+  if (toFarm) {
+    dispatchToFarm(id, stepIndex, runId, attempt, scope)
   } else {
     timers[runId] = setTimeout(() => runMockStep(id, stepIndex, runId), latency())
   }
@@ -709,7 +862,7 @@ export function kick(id, opts = {}) {
 
 // ---- farm-dispatched steps ----
 
-async function dispatchToFarm(id, stepIndex, runId, attempt) {
+async function dispatchToFarm(id, stepIndex, runId, attempt, scope) {
   const step = STEPS[stepIndex]
   let item = getItem(id)
 
@@ -721,7 +874,7 @@ async function dispatchToFarm(id, stepIndex, runId, attempt) {
   // this is what catches a step that's stuck in the queue (or a farm that's
   // down, or a lost task file) within a bounded window (HZ-57).
   timers[runId] = setTimeout(
-    () => failFarmRun(runId, 'step was never picked up by the farm', 'never_picked_up'),
+    () => failFarmRun(runId, 'step was never picked up by the farm', REASON.NEVER_PICKED_UP),
     FARM_QUEUE_TIMEOUT_MS,
   )
 
@@ -799,10 +952,18 @@ async function dispatchToFarm(id, stepIndex, runId, attempt) {
     const detail = missingRequired
       .map((m) => `"${m.label}" needs ${m.fullLen} chars, only ${m.gotLen} could be supplied (${m.fullLen - m.gotLen} short)`)
       .join('; ')
-    return failFarmRun(runId, `required input incomplete: ${detail}`, 'required_input_incomplete')
+    return failFarmRun(runId, `required input incomplete: ${detail}`, REASON.REQUIRED_INPUT_INCOMPLETE)
   }
 
   const artifacts = budgeted.map(({ label, content }) => ({ label, content }))
+  // HZ-188: an implement run on a PR GitHub reports as conflicted (a
+  // resolve-conflicts escalation, or any other send-back while main has moved
+  // underneath it) must start on a branch that already has origin/main merged
+  // in — otherwise the agent reworks the old base and the conflict survives
+  // (HZ-125, HZ-144). The farm does the merge and lists the conflicted files
+  // in the prompt; this only says when. pr_mergeable is the raw column here:
+  // 0 is "GitHub reports conflicts", null is unknown.
+  const mergeMain = stepIndex === IMPLEMENT_STEP_INDEX && item.pr_mergeable === 0
   const truncatedLabels = budgeted.filter((a) => a.truncated).map((a) => a.label)
   if (truncatedLabels.length > 0) {
     addEvent(id, {
@@ -826,13 +987,15 @@ async function dispatchToFarm(id, stepIndex, runId, attempt) {
       priority: item.priority,
       repo: item.repo,
       issue: item.issue,
-      persona: item.persona,
+      personas: item.personas,
       ...releaseFields,
     },
     step: { index: stepIndex, label: step.label, agent: step.agent },
     feedback,
+    ...(mergeMain ? { merge_main: true } : {}),
+    ...(scope ? { scope } : {}),
   }).catch((err) => {
-    failFarmRun(runId, `could not hand the step to the farm: ${err.message}`, 'unreachable')
+    failFarmRun(runId, `could not hand the step to the farm: ${err.message}`, REASON.UNREACHABLE)
   })
 }
 
@@ -854,12 +1017,49 @@ export function markFarmRunStarted(runId) {
   clearTimeout(timers[runId])
   db.prepare("UPDATE step_run SET agent_started_at = datetime('now') WHERE id = ?").run(runId)
   const executionMs = executionBudgetFor(run.step_index)
-  timers[runId] = setTimeout(() => failFarmRun(runId, 'step timed out', 'timeout'), executionMs)
+  timers[runId] = setTimeout(() => failFarmRun(runId, 'step timed out', REASON.TIMEOUT), executionMs)
   return { ok: true, active: true }
 }
 
-const FARM_PATCH_FIELDS = ['desc', 'metric', 'guardrails', 'persona']
-const PATCH_FIELD_LABELS = { desc: 'Outcome', metric: 'Success metric', guardrails: 'Guardrails', persona: 'Specialist persona' }
+// Which work_item columns an agent may patch — DERIVED from domain/fields.json
+// (HZ-134), the same document farm/pm_agent.py builds its PATCH_FIELDS from, so
+// the two sides of the wire cannot disagree about which fields exist. Only the
+// key list is needed here: the limits themselves are enforced agent-side, at the
+// point the over-long value is produced, where a marker can still be attached.
+//
+// `personas` is deliberately NOT in this list and never will be: since HZ-125 it
+// is an { agent: persona id } object rather than a text column, so it is
+// validated and written separately (see completeFarmRun and writeWorkItemPatch
+// below). That is also why domain/fields.json marks the legacy `persona` column
+// agentRevisable: false — nothing reaches it through this loop any more.
+const FARM_PATCH_FIELDS = Object.keys(patchLimits())
+// Display copy, deliberately NOT in domain/ (guardrail 5): these are the names a
+// human reads in the GitHub step comment, not part of the field model. A
+// patchable field missing from this map is written to the database but silently
+// omitted from the comment, so domain-fields-consumers.test.mjs drives
+// stepCommentBody with every patchable column set and asserts each one renders.
+const PATCH_FIELD_LABELS = { desc: 'Outcome', metric: 'Success metric', guardrails: 'Guardrails', personas: 'Specialist personas' }
+
+// Applies a completed step's patch to the item. Split out because `personas` is
+// an object that merges into one JSON column while every other field is a plain
+// column assignment — building `SET <key> = ?` straight off the patch keys (as
+// both callers used to) would emit `SET personas = ?` and fail.
+function writeWorkItemPatch(id, item, patch) {
+  const fields = Object.keys(patch || {}).filter((f) => f !== 'personas')
+  const assignments = fields.map((f) => `${f} = ?`)
+  const values = fields.map((f) => patch[f])
+  if (patch?.personas) {
+    // Merge, never replace: a patch that proposes an eng persona must not drop
+    // the qa persona a human already chose.
+    assignments.push('personas_json = ?')
+    values.push(JSON.stringify({ ...item.personas, ...patch.personas }))
+  }
+  if (assignments.length === 0) return
+  db.prepare(`UPDATE work_item SET ${assignments.join(', ')}, updated_at = datetime('now') WHERE id = ?`).run(
+    ...values,
+    id,
+  )
+}
 
 // Exported for tests: the comment body is the human-readable record, so its
 // rendering (e.g. persona labels, never raw ids) is pinned directly.
@@ -871,7 +1071,12 @@ export function stepCommentBody(item, stepIndex, attempt, summary, patch, isMock
   if (changed.length > 0) {
     lines.push('', '**Updated fields:**')
     for (const key of changed) {
-      const shown = key === 'persona' ? personaLabel(patch[key]) : patch[key]
+      const shown =
+        key === 'personas'
+          ? Object.entries(patch.personas)
+              .map(([agent, persona]) => `${agent} — ${personaLabel(agent, persona)}`)
+              .join(', ')
+          : patch[key]
       lines.push(`- **${PATCH_FIELD_LABELS[key]}:** ${shown}`)
     }
   }
@@ -943,6 +1148,186 @@ export function formatReviewFeedback(verdict, cycle) {
   return lines.join('\n').slice(0, 2000)
 }
 
+// ---- fix pass + delta review (HZ-182) ----
+// A rejection used to restart a full implement run and a full review of the
+// whole PR, and each re-review found unrelated new issues (HZ-124: rejected 7
+// times). Now a rejection under the cap leads to a fix-only implement run on a
+// third of the budget, then a review of only the commits since the last
+// review, which must say whether each previous finding is resolved. Every
+// decision below is made HERE; the farm only executes the scope it is handed.
+
+function parseJson(text) {
+  try {
+    return JSON.parse(text)
+  } catch {
+    return null
+  }
+}
+
+function storedFixFindings(item) {
+  const findings = item.fix_findings_json ? parseJson(item.fix_findings_json) : null
+  return Array.isArray(findings) ? findings : []
+}
+
+// Both scopes require the same state; anything missing means full mode. The
+// first review of an item always lands here as full: last_reviewed_sha is only
+// ever written by a completed review.
+function fixPassReady(item) {
+  return FIX_PASS_ENABLED && item.fix_pass === 1 && !!item.last_reviewed_sha && storedFixFindings(item).length > 0
+}
+
+// Exported for tests. The scope the next implement run is dispatched with.
+export function implementScope(item) {
+  if (!fixPassReady(item)) return { mode: 'full' }
+  const step = STEPS[IMPLEMENT_STEP_INDEX]
+  return {
+    mode: 'fix',
+    base_sha: item.last_reviewed_sha,
+    max_turns: Math.floor(step.maxTurns / FIX_PASS_TURN_DIVISOR),
+    timeout_s: Math.floor(step.timeoutS / FIX_PASS_TURN_DIVISOR),
+    findings: storedFixFindings(item),
+  }
+}
+
+// Exported for tests. The scope the next review is dispatched with. The
+// implement completion clears fix_pass when the fix outgrew a delta review,
+// so this needs no line count of its own.
+export function reviewScope(item) {
+  if (!fixPassReady(item)) return { mode: 'full' }
+  return {
+    mode: 'delta',
+    base_sha: item.last_reviewed_sha,
+    previous_findings: storedFixFindings(item).map((f, index) => ({ ...f, index })),
+  }
+}
+
+function scopeFor(item, stepIndex) {
+  if (stepIndex === IMPLEMENT_STEP_INDEX) return implementScope(item)
+  if (stepIndex === REVIEW_STEP_INDEX) return reviewScope(item)
+  return null
+}
+
+function runScope(run) {
+  const scope = run.scope_json ? parseJson(run.scope_json) : null
+  return scope && typeof scope === 'object' ? scope : { mode: 'full' }
+}
+
+// Exported for tests. A delta verdict is a full verdict plus ONE merged
+// previous_findings array (the farm merges both reviewers fail-closed).
+// Anything else is malformed: the caller routes it to failFarmRun, exactly as
+// a malformed full verdict is today.
+export function validateDeltaVerdict(v) {
+  if (!validateVerdict(v) || !Array.isArray(v.previous_findings)) return false
+  return v.previous_findings.every(
+    (p) => p && typeof p === 'object' && Number.isInteger(p.index) && typeof p.resolved === 'boolean',
+  )
+}
+
+const SECTION_LABELS = [['code_review', 'Code review'], ['qa_review', 'QA review']]
+
+// The findings a full review rejected on, kept as the fix pass's record. A
+// failing section with no block finding still yields one entry, so a fix pass
+// never starts from an empty list.
+function blockingFindings(verdict) {
+  const blocks = []
+  for (const [key, label] of SECTION_LABELS) {
+    const section = verdict[key]
+    if (section.verdict !== 'fail') continue
+    const found = (Array.isArray(section.findings) ? section.findings : []).filter(
+      (f) => f && typeof f === 'object' && f.severity !== 'note',
+    )
+    if (key === 'qa_review') {
+      for (const flag of QA_BOOLEAN_FLAGS) if (section[flag] === false) found.push({ detail: `QA: ${flag} is false` })
+    }
+    if (found.length === 0) found.push({ detail: `${label} failed without a specific finding` })
+    blocks.push(...found.map((f) => ({ file: typeof f.file === 'string' ? f.file : null, line: f.line ?? null, detail: String(f.detail || 'issue flagged') })))
+  }
+  return blocks
+}
+
+const normalizePath = (p) => p.replace(/^\.\//, '')
+
+// Exported for tests. The note-versus-block rule of a delta review, in code.
+// Blocks on exactly: a previous finding not reported `resolved: true`, a new
+// finding in a file the fix diff changed, a new finding with no file (it
+// cannot be placed outside the diff), a failing section with no findings, and
+// a false QA flag. A new finding in a file the fix did not touch is in code an
+// earlier review already passed: it becomes a note.
+export function resolveDeltaFindings(verdict, deltaFiles, previousFindings) {
+  const inDelta = new Set(deltaFiles.map(normalizePath))
+  const reported = new Map()
+  for (const p of verdict.previous_findings) reported.set(p.index, p)
+  const unresolved = previousFindings
+    .filter((prev) => reported.get(prev.index)?.resolved !== true)
+    .map((prev) => ({ ...prev, detail: `unresolved: ${String(prev.detail).replace(/^unresolved: /, '')}` }))
+  const blocks = []
+  const notes = []
+  for (const [key, label] of SECTION_LABELS) {
+    const section = verdict[key]
+    if (section.verdict !== 'fail') continue
+    const findings = Array.isArray(section.findings) ? section.findings : []
+    if (findings.length === 0) blocks.push({ file: null, line: null, detail: `${label} failed without a specific finding` })
+    for (const f of findings) {
+      const entry = { file: typeof f?.file === 'string' ? f.file : null, line: f?.line ?? null, detail: String(f?.detail || 'issue flagged') }
+      if (f?.severity === 'note') notes.push(entry)
+      else if (entry.file === null || inDelta.has(normalizePath(entry.file))) blocks.push(entry)
+      else notes.push(entry)
+    }
+    if (key === 'qa_review') {
+      for (const flag of QA_BOOLEAN_FLAGS) {
+        if (section[flag] === false) blocks.push({ file: null, line: null, detail: `QA: ${flag} is false` })
+      }
+    }
+  }
+  return { passed: unresolved.length === 0 && blocks.length === 0, blocks: [...unresolved, ...blocks], notes }
+}
+
+// What the next fix pass reads as "Human feedback to address" after a delta
+// review rejects: only the blocks, so it is never told to fix a note.
+function formatFixFeedback(blocks, cycle) {
+  const lines = [`Automated fix-pass review cycle ${cycle}/${REVIEW_CYCLE_CAP} failed — fix only these findings.`, '']
+  for (const f of blocks.slice(0, 10)) {
+    lines.push(`- **${f.file ? `${f.file}${f.line ? `:${f.line}` : ''}` : 'general'}** — ${f.detail}`)
+  }
+  return lines.join('\n').slice(0, 2000)
+}
+
+function notesSection(notes) {
+  return [
+    '## Notes — outside the fix diff, not blocking',
+    ...notes.map((n) => `- ${n.file ? `\`${n.file}${n.line ? `:${n.line}` : ''}\`` : 'general'} — ${n.detail}`),
+  ].join('\n')
+}
+
+// A delta review's farm report must carry what the server needs to apply the
+// rule above. Missing any of it is malformed, never "nothing changed".
+function deltaReport(artifacts) {
+  if (!validateDeltaVerdict(artifacts?.verdict)) return null
+  const { reviewed_sha: sha, delta_files: files } = artifacts
+  if (typeof sha !== 'string' || !sha.trim()) return null
+  if (!Array.isArray(files) || !files.every((f) => typeof f === 'string')) return null
+  return { reviewedSha: sha.trim(), deltaFiles: files }
+}
+
+// After an implement run: keep the fix pass only when the run WAS a fix pass
+// and the farm proved its diff small and descended from the reviewed commit.
+// Anything else (a full run, an oversize diff, a missing count from an older
+// farm, a rebase or a merge from main touching the PR's files) sends the next
+// review back to full.
+function settleFixPass(id, run, artifacts) {
+  const item = getItem(id)
+  if (item.fix_pass !== 1) return
+  const lines = artifacts?.fix_diff_lines
+  let reason = null
+  if (runScope(run).mode !== 'fix') reason = 'this implement run was a full run'
+  else if (typeof artifacts?.scope_fallback === 'string') reason = `the fix diff could not be scoped (${artifacts.scope_fallback})`
+  else if (!Number.isInteger(lines)) reason = 'the farm reported no fix diff size'
+  else if (lines > FIX_PASS_MAX_LINES) reason = `the fix diff changed ${lines} lines (limit ${FIX_PASS_MAX_LINES})`
+  if (!reason) return
+  db.prepare("UPDATE work_item SET fix_pass = 0, updated_at = datetime('now') WHERE id = ?").run(id)
+  addEvent(id, { who: 'Horizon', text: `next review is a full review: ${reason}`, color: '#DFA200', initials: 'HZ' })
+}
+
 // A markdown rendering so the mock path (no real agent artifact_md) still
 // gives the human gate and the GitHub issue something to read.
 function mockReviewArtifactMd(verdict) {
@@ -958,7 +1343,13 @@ function mockReviewArtifactMd(verdict) {
 // cap), or force-advances to the human gate with the failing verdict still
 // attached (fail, cap reached) — the loop counter that proves the cap is
 // enforced lives in work_item.review_cycle_count, read back by tests.
-function finalizeReviewStep(id, runId, text, artifactMd, verdict, patch, isMock) {
+//
+// HZ-182: `review` is { reviewedSha, delta } from the farm's report — null on
+// the mock path, which has no commits, so demo mode stays full by
+// construction. `delta` (validated by the caller) is set only for a review the
+// farm actually ran as a delta review; it swaps the pass rule for
+// resolveDeltaFindings. Fix-pass cycles count toward the same cap.
+function finalizeReviewStep(id, runId, text, artifactMd, verdict, patch, isMock, review) {
   // This run has fully completed by the time we're called (no more awaits
   // pending on it) — safe to release the busy mutex before any of the three
   // branches below calls kick() for the item's next step.
@@ -966,15 +1357,23 @@ function finalizeReviewStep(id, runId, text, artifactMd, verdict, patch, isMock)
   const step = STEPS[REVIEW_STEP_INDEX]
   const agent = AGENTS[step.agent]
   const attempt = db.prepare('SELECT attempt FROM step_run WHERE id = ?').get(runId)?.attempt || 1
+  const delta = review?.delta
+    ? resolveDeltaFindings(verdict, review.delta.deltaFiles, review.delta.previousFindings)
+    : null
+  if (delta && delta.notes.length > 0) artifactMd = [artifactMd, notesSection(delta.notes)].filter(Boolean).join('\n\n')
   db.prepare("UPDATE step_run SET status = 'done', output = ?, artifact = ?, ended_at = datetime('now') WHERE id = ?").run(
     text,
     artifactMd,
     runId,
   )
+  // Written on every completed review, pass or fail: the next delta starts here.
+  db.prepare('UPDATE work_item SET last_reviewed_sha = ? WHERE id = ?').run(review?.reviewedSha || null, id)
 
-  const passed = verdict.code_review.verdict === 'pass' && verdict.qa_review.verdict === 'pass'
+  const passed = delta ? delta.passed : verdict.code_review.verdict === 'pass' && verdict.qa_review.verdict === 'pass'
   if (passed) {
-    db.prepare("UPDATE work_item SET cursor = cursor + 1, updated_at = datetime('now') WHERE id = ?").run(id)
+    db.prepare(
+      "UPDATE work_item SET cursor = cursor + 1, fix_pass = 0, fix_findings_json = NULL, updated_at = datetime('now') WHERE id = ?",
+    ).run(id)
     addEvent(id, { who: agent.label, text: `completed “${step.label}” — ${text.slice(0, 300)}`, color: agent.color, initials: agent.initials })
     postStepComment(getItem(id), REVIEW_STEP_INDEX, attempt, text, patch, isMock, artifactMd)
     notifyChange()
@@ -986,7 +1385,9 @@ function finalizeReviewStep(id, runId, text, artifactMd, verdict, patch, isMock)
   const cycle = db.prepare('SELECT review_cycle_count FROM work_item WHERE id = ?').get(id).review_cycle_count
 
   if (cycle >= REVIEW_CYCLE_CAP) {
-    db.prepare("UPDATE work_item SET cursor = cursor + 1, updated_at = datetime('now') WHERE id = ?").run(id)
+    db.prepare(
+      "UPDATE work_item SET cursor = cursor + 1, fix_pass = 0, fix_findings_json = NULL, updated_at = datetime('now') WHERE id = ?",
+    ).run(id)
     addEvent(id, {
       who: 'Horizon',
       text: `automated review cap (${REVIEW_CYCLE_CAP}) reached — forwarded to the human gate with the failing verdict attached`,
@@ -999,12 +1400,18 @@ function finalizeReviewStep(id, runId, text, artifactMd, verdict, patch, isMock)
     return
   }
 
+  // The feedback row is the human-readable copy the fix pass reads;
+  // fix_findings_json is the machine record the next delta review is judged
+  // against. The findings reach the implement prompt once, through feedback.
   db.prepare('INSERT INTO feedback (item_id, target, message) VALUES (?, ?, ?)').run(
     id,
     STEPS[IMPLEMENT_STEP_INDEX].agent,
-    formatReviewFeedback(verdict, cycle),
+    delta ? formatFixFeedback(delta.blocks, cycle) : formatReviewFeedback(verdict, cycle),
   )
-  db.prepare("UPDATE work_item SET cursor = ?, updated_at = datetime('now') WHERE id = ?").run(IMPLEMENT_STEP_INDEX, id)
+  const fixFindings = delta ? delta.blocks.map(({ file, line, detail }) => ({ file, line, detail })) : blockingFindings(verdict)
+  db.prepare(
+    "UPDATE work_item SET cursor = ?, fix_pass = ?, fix_findings_json = ?, updated_at = datetime('now') WHERE id = ?",
+  ).run(IMPLEMENT_STEP_INDEX, FIX_PASS_ENABLED && review?.reviewedSha ? 1 : 0, JSON.stringify(fixFindings), id)
   addEvent(id, {
     who: agent.label,
     text: `automated review failed (cycle ${cycle}/${REVIEW_CYCLE_CAP}) — sent back to “${STEPS[IMPLEMENT_STEP_INDEX].label}”`,
@@ -1085,15 +1492,18 @@ export async function completeFarmRun(runId, { summary, patch, artifacts }) {
     if (typeof patch?.[field] === 'string' && patch[field].trim()) cleanPatch[field] = patch[field].trim()
   }
   // Persona patches are dropped (not failed) when invalid, and when the item
-  // already carries one — a set value may be a human's gate-time choice, and
-  // the farm must never clobber it. The run itself still completes.
-  if ('persona' in cleanPatch && (!isPersona(cleanPatch.persona) || item.persona)) delete cleanPatch.persona
-  if (Object.keys(cleanPatch).length > 0) {
-    const fields = Object.keys(cleanPatch)
-    db.prepare(
-      `UPDATE work_item SET ${fields.map((f) => `${f} = ?`).join(', ')}, updated_at = datetime('now') WHERE id = ?`,
-    ).run(...fields.map((f) => cleanPatch[f]), id)
+  // already carries one for that agent — a set value may be a human's gate-time
+  // choice, and the farm must never clobber it. The run itself still completes.
+  // Per-agent since HZ-125: a proposal for the qa slot still lands on an item
+  // whose eng slot a human already set.
+  if (patch?.personas && typeof patch.personas === 'object' && !Array.isArray(patch.personas)) {
+    const survivors = {}
+    for (const [agent, persona] of Object.entries(patch.personas)) {
+      if (isPersona(agent, persona) && !item.personas?.[agent]) survivors[agent] = persona
+    }
+    if (Object.keys(survivors).length > 0) cleanPatch.personas = survivors
   }
+  writeWorkItemPatch(id, item, cleanPatch)
 
   const step = STEPS[run.step_index]
   const agent = AGENTS[step.agent]
@@ -1120,7 +1530,19 @@ export async function completeFarmRun(runId, { summary, patch, artifacts }) {
 
   if (run.step_index === REVIEW_STEP_INDEX) {
     if (!validateVerdict(artifacts?.verdict)) return failFarmRun(runId, 'malformed review verdict JSON')
-    finalizeReviewStep(id, runId, text, artifactMd, artifacts.verdict, cleanPatch, false)
+    // HZ-182: delta rules apply only when the run was DISPATCHED as a delta
+    // review and the farm confirms it ran one. A farm that fell back to the
+    // full range (stale base, merge from main) is judged by the full rules.
+    const scope = runScope(run)
+    let delta = null
+    if (scope.mode === 'delta' && artifacts.review_mode === 'delta') {
+      const report = deltaReport(artifacts)
+      if (!report) return failFarmRun(runId, 'malformed fix-pass review verdict JSON')
+      const previousFindings = Array.isArray(scope.previous_findings) ? scope.previous_findings : []
+      delta = { deltaFiles: report.deltaFiles, previousFindings }
+    }
+    const reviewedSha = typeof artifacts.reviewed_sha === 'string' && artifacts.reviewed_sha.trim() ? artifacts.reviewed_sha.trim() : null
+    finalizeReviewStep(id, runId, text, artifactMd, artifacts.verdict, cleanPatch, false, { reviewedSha, delta })
     return { ok: true }
   }
 
@@ -1139,6 +1561,8 @@ export async function completeFarmRun(runId, { summary, patch, artifacts }) {
     typeof artifacts?.provider === 'string' && artifacts.provider.trim() ? artifacts.provider.trim() : null
   const commandId =
     typeof artifacts?.command_id === 'string' && artifacts.command_id.trim() ? artifacts.command_id.trim() : null
+
+  if (run.step_index === IMPLEMENT_STEP_INDEX) settleFixPass(id, run, artifacts)
 
   db.prepare(
     "UPDATE step_run SET status = 'done', output = ?, artifact = ?, provider = ?, command_id = ?, ended_at = datetime('now') WHERE id = ?",
@@ -1253,20 +1677,16 @@ async function runMockStep(id, stepIndex, runId) {
     return
   }
 
-  if (patch) {
-    const fields = Object.keys(patch)
-    db.prepare(`UPDATE work_item SET ${fields.map((f) => `${f} = ?`).join(', ')}, updated_at = datetime('now') WHERE id = ?`).run(
-      ...fields.map((f) => patch[f]),
-      id,
-    )
-  }
+  if (patch) writeWorkItemPatch(id, after, patch)
 
   if (stepIndex === REVIEW_STEP_INDEX) {
     // finalizeReviewStep releases the busy mutex itself before it calls kick().
-    finalizeReviewStep(id, runId, summary, mockReviewArtifactMd(verdict), verdict, patch, true)
+    finalizeReviewStep(id, runId, summary, mockReviewArtifactMd(verdict), verdict, patch, true, null)
     return
   }
 
+  // A mock implement is never a scoped fix: its review must be full.
+  if (stepIndex === IMPLEMENT_STEP_INDEX) settleFixPass(id, { scope_json: null }, null)
   db.prepare("UPDATE step_run SET status = 'done', output = ?, ended_at = datetime('now') WHERE id = ?").run(
     summary,
     runId,
@@ -1357,7 +1777,7 @@ export async function reconcileActiveRuns() {
       failFarmRun(
         runId,
         'step_run left active with no local timer, no farm claim, and no live agent session',
-        'never_picked_up',
+        REASON.NEVER_PICKED_UP,
       )
       failed++
     }
@@ -1460,7 +1880,7 @@ export function rearmFarmRuns() {
     const anchor = run.agent_started_at || run.started_at
     const elapsedMs = Date.now() - new Date(anchor).getTime()
     const remainingMs = Math.max(0, executionBudgetFor(run.step_index) - elapsedMs)
-    timers[run.id] = setTimeout(() => failFarmRun(run.id, 'step timed out', 'timeout'), remainingMs)
+    timers[run.id] = setTimeout(() => failFarmRun(run.id, 'step timed out', REASON.TIMEOUT), remainingMs)
     // Re-key removed the free busy-mutex side effect timers[item_id] used to
     // give kick() — without this, a restart would leave every one of these
     // items looking idle and resumeActiveItems()/a human resume could

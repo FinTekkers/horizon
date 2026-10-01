@@ -297,8 +297,10 @@ export function abandonItem(id, reason) {
   gatePost(`/items/${id}/abandon`, { reason: reason || '' })
 }
 
-export function setPersona(id, persona) {
-  return post(`/items/${id}/persona`, { persona })
+// Personas are agent-scoped (HZ-125): one slot per composing agent, so the
+// agent travels with the id and the server merges rather than replaces.
+export function setPersona(id, agent, persona) {
+  return post(`/items/${id}/persona`, { agent, persona })
 }
 
 // ---- agent definitions (HZ-9) ----

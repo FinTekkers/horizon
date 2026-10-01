@@ -10,13 +10,24 @@ import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from fastapi.testclient import TestClient
 
-from farm import farmd, tmux_mgr, workspaces
-from farm.config import LOGS_DIR, QUEUE_DIR
-from farm.tests.conflict_fixtures import clone_and_read, make_repo_hub, push_new_branch
+from farm import farmd, pm_agent, tmux_mgr, workspaces
+from farm.config import LOGS_DIR, PM_MALFORMED_GRACE_S, QUEUE_DIR
+from farm.tests.conflict_fixtures import (
+    HZ157_CONFTEST,
+    HZ157_CONFTEST_BRANCH_LINE,
+    HZ157_CONFTEST_MAIN_LINE,
+    clone_and_read,
+    git,
+    make_repo_hub,
+    origin_branch_sha,
+    push_new_branch,
+    seed_hz157_conftest_conflict,
+)
 
 client = TestClient(farmd.app)
 
@@ -68,6 +79,65 @@ def running_farm():
         farmd.state.update(saved)
         for f in (QUEUE_DIR / "pm").glob("*.json"):
             f.unlink(missing_ok=True)
+
+
+# ---- HZ-190: a running farm under test never reaches the host's tmux ----
+
+
+class _StopWatchdog(Exception):
+    pass
+
+
+def test_running_farm_never_reaches_real_tmux(running_farm, fake_tmux, monkeypatch):
+    """running_farm puts farmd in exactly the state its watchdog revives
+    sessions for — the incident's farm-pm-fintekkers / farm-concierge-
+    fintekkers respawns. Drive one real watchdog pass on this thread and
+    prove both launches land in FakeTmux and the real _tmux never runs."""
+    real_tmux_calls = []
+
+    def real_subprocess_run(argv, *args, **kwargs):
+        real_tmux_calls.append(argv)
+        raise AssertionError(f"real tmux reached: {argv!r}")
+
+    # tmux_mgr's own `subprocess` binding is used only by the real _tmux, so
+    # this catches a bypassed fake without touching the shared module.
+    monkeypatch.setattr(tmux_mgr, "subprocess", SimpleNamespace(run=real_subprocess_run))
+
+    # time.sleep is shared with farmd's live background threads: only this
+    # thread's second sleep stops the loop; every other caller really sleeps.
+    test_thread = threading.current_thread()
+    real_sleep = time.sleep
+    slept = []
+
+    def one_pass_sleep(seconds):
+        if threading.current_thread() is not test_thread:
+            return real_sleep(seconds)
+        if slept:
+            raise _StopWatchdog
+        slept.append(seconds)
+
+    monkeypatch.setattr(farmd.time, "sleep", one_pass_sleep)
+    monkeypatch.setattr(farmd.farm_config, "FARM_WA_ENABLED", True)
+
+    with pytest.raises(_StopWatchdog):
+        farmd._watchdog()
+
+    launched = {call[call.index("-s") + 1]: call[-1] for call in fake_tmux.calls if call[0] == "new-session"}
+    # Positive control: the revive branch really ran, for both sessions.
+    assert {"farm-pm-fintekkers", "farm-concierge-fintekkers"} <= set(launched)
+    assert "HORIZON_URL=http://127.0.0.1:9 " in launched["farm-pm-fintekkers"]
+    assert real_tmux_calls == []
+
+
+def test_farmd_import_did_not_adopt_host_state():
+    """Importing farmd runs _adopt_existing() against STATE_DIR. Under an
+    inherited production FARM_HOME that adopted the real running FinTekkers
+    project for the whole run (and pointed the dispatcher at the real queue)."""
+    farm_home = Path(os.environ["FARM_HOME"])
+    assert farm_home.name.startswith("horizon-farm-test-")
+    assert farmd.STATE_FILE.is_relative_to(farm_home)
+    assert farmd.QUEUE_DIR.is_relative_to(farm_home)
+    assert farmd.state["status"] != "running"
 
 
 def test_steps_run_stamps_the_repos_rules_into_the_task_payload(running_farm):
@@ -171,6 +241,268 @@ def test_conflicts_resolve_end_to_end_over_http_does_a_real_merge_and_push(runni
     merged = clone_and_read(tmp_path, origin, "horizon/hz-5", "shared.txt", "after")
     assert "branch edit" in merged
     assert (tmp_path / "read-after" / "other.txt").exists()  # main's independent change made it in too
+
+
+SCOPED_RESOLVE_FIXTURE = Path(__file__).resolve().parent / "fixtures" / "scoped_resolve_response.json"
+
+
+def test_conflicts_resolve_end_to_end_over_http_takes_the_scoped_path(running_farm, tmp_path, monkeypatch):
+    """The HZ-154 sibling of the test above: an OVERLAPPING conflict, which the
+    mechanical path would have escalated, goes all the way through FastAPI
+    routing into the real scoped resolution — real git stages, real diff3
+    reference, real scope check, real checks gate, real push.
+
+    The body it returns is the recorded payload in
+    fixtures/scoped_resolve_response.json, which
+    server/test/orchestrator-resolve-conflicts.test.mjs feeds to the Node side
+    verbatim — so the two halves of the seam are pinned to one real reply
+    rather than to two hand-written literals that can drift apart.
+    """
+    monkeypatch.setattr(workspaces, "WORKSPACES_DIR", tmp_path / "workspaces")
+    monkeypatch.setenv("FARM_CHECK_CMD", "true")  # the scoped path refuses to push behind a suite that never ran
+    monkeypatch.delenv("FARM_CONFLICT_SCOPED_ENABLED", raising=False)
+    _hub, origin = make_repo_hub(tmp_path)
+    push_new_branch(
+        tmp_path, origin, "horizon/hz-124",
+        lambda w: (w / "shared.txt").write_text("line1\nline2\nours-added\nline3\n"), "branch",
+    )
+    push_new_branch(
+        tmp_path, origin, "main",
+        lambda w: (w / "shared.txt").write_text("line1\nline2\ntheirs-added\nline3\n"), "main-advance",
+    )
+
+    res = client.post("/conflicts/resolve", json={"item": {"id": "HZ-124", "repo": "acme/demo"}})
+
+    assert res.status_code == 200
+    body = res.json()
+    assert body["ok"] is True
+    assert body["resolved"] is True
+    assert body["mode"] == "scoped"
+    assert body["resolution"]["paths"] == ["shared.txt"]
+    assert body["resolution"]["hunks"] == 1
+    assert body["resolution"]["strategy"] == "deterministic"
+    assert body["review"]["verdict"] == "pass"
+    assert body["review"]["reviewed"] is False
+
+    # Both sides survived the merge the route just pushed.
+    merged = clone_and_read(tmp_path, origin, "horizon/hz-124", "shared.txt", "scoped-after")
+    assert merged == "line1\nline2\nours-added\ntheirs-added\nline3\n"
+
+    # `files` is a diffstat whose column widths depend on the path, so it is
+    # the one key the recorded payload does not pin; everything the Node side
+    # actually renders is compared exactly.
+    recorded = json.loads(SCOPED_RESOLVE_FIXTURE.read_text())
+    assert isinstance(body.pop("files"), str)
+    assert recorded.pop("files", None) is not None, "the recorded payload must keep a files key for the Node side"
+    assert body == recorded, f"regenerate {SCOPED_RESOLVE_FIXTURE.name} — farmd's scoped reply shape changed"
+
+
+# ---- one run per item (HZ-188) ----
+# farmd refuses a second /conflicts/resolve on its own — no server involved —
+# and the same item_lock keeps the implement/review steps out of a worktree
+# the resolver owns. Every lock here is a real flock.
+
+
+@pytest.fixture
+def lock_dir(tmp_path, monkeypatch):
+    monkeypatch.setattr(workspaces, "WORKSPACES_DIR", tmp_path / "workspaces")
+    return tmp_path
+
+
+def test_conflicts_resolve_answers_409_and_starts_nothing_while_the_item_is_locked(running_farm, lock_dir, monkeypatch):
+    calls = []
+    monkeypatch.setattr(farmd.conflict_resolver, "resolve", lambda *a: calls.append(a) or {"resolved": True})
+
+    with workspaces.item_lock("acme/demo", "HZ-1", wait_s=0):
+        res = client.post("/conflicts/resolve", json={"item": {"id": "HZ-1", "repo": "acme/demo"}})
+
+    assert res.status_code == 409
+    assert res.json() == {"error": "resolve_in_progress"}
+    assert calls == []
+    # Released with the holder: the next request runs.
+    assert client.post("/conflicts/resolve", json={"item": {"id": "HZ-1", "repo": "acme/demo"}}).status_code == 200
+    assert len(calls) == 1
+
+
+def test_conflicts_resolve_releases_the_lock_when_the_resolver_raises(running_farm, lock_dir, monkeypatch):
+    def boom(*_a):
+        raise RuntimeError("git fetch failed")
+
+    monkeypatch.setattr(farmd.conflict_resolver, "resolve", boom)
+
+    res = client.post("/conflicts/resolve", json={"item": {"id": "HZ-1", "repo": "acme/demo"}})
+
+    assert res.status_code == 500
+    assert "error" in res.json()
+    with workspaces.item_lock("acme/demo", "HZ-1", wait_s=0):
+        pass
+
+
+def test_conflicts_resolve_validates_input_before_taking_the_lock(running_farm, lock_dir):
+    with workspaces.item_lock("acme/demo", "HZ-1", wait_s=0):
+        res = client.post("/conflicts/resolve", json={"item": {"id": "HZ-1"}})
+    assert res.status_code == 400
+
+
+def test_item_lock_is_released_when_its_holder_process_is_killed(lock_dir):
+    """A crashed resolver (farmd killed mid-run) must not leave the item
+    locked: the kernel drops a flock with its process."""
+    assert not workspaces.item_lock_held("acme/demo", "HZ-188")  # no lock file yet
+    child = subprocess.Popen(
+        [
+            sys.executable,
+            "-c",
+            "import sys, time\n"
+            f"sys.path.insert(0, {str(REPO_ROOT)!r})\n"
+            "from pathlib import Path\n"
+            "from farm import workspaces\n"
+            f"workspaces.WORKSPACES_DIR = Path({str(workspaces.WORKSPACES_DIR)!r})\n"
+            "with workspaces.item_lock('acme/demo', 'HZ-188', wait_s=0):\n"
+            "    print('locked', flush=True)\n"
+            "    time.sleep(60)\n",
+        ],
+        stdout=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        assert child.stdout.readline().strip() == "locked"
+        with pytest.raises(workspaces.ItemBusy):
+            with workspaces.item_lock("acme/demo", "HZ-188", wait_s=0):
+                pass
+        assert workspaces.item_lock_held("acme/demo", "HZ-188")
+    finally:
+        child.kill()
+        child.wait(timeout=10)
+
+    assert not workspaces.item_lock_held("acme/demo", "HZ-188")
+    with workspaces.item_lock("acme/demo", "HZ-188", wait_s=0):
+        pass
+
+
+def test_item_lock_held_never_takes_the_lock_itself(lock_dir, monkeypatch):
+    """Pool eviction asks item_lock_held about every worktree. If the probe
+    briefly took the lock, farmd's wait_s=0 acquire at that moment would
+    answer a spurious 409 resolve_in_progress with nothing running."""
+    with workspaces.item_lock("acme/demo", "HZ-1", wait_s=0):
+        pass  # the lock file now exists, unheld
+    with workspaces.item_lock("acme/demo", "HZ-2", wait_s=0):
+        real_flock = workspaces.fcntl.flock
+        probes = []
+        monkeypatch.setattr(workspaces.fcntl, "flock", lambda *a: probes.append(a) or real_flock(*a))
+        assert not workspaces.item_lock_held("acme/demo", "HZ-1")
+        assert workspaces.item_lock_held("acme/demo", "HZ-2")
+        assert probes == []
+
+
+def test_item_lock_is_case_insensitive_and_lives_outside_every_worktree(lock_dir):
+    with workspaces.item_lock("acme/demo", "HZ-188", wait_s=0):
+        with pytest.raises(workspaces.ItemBusy):
+            with workspaces.item_lock("acme/demo", "hz-188", wait_s=0):
+                pass
+        # Another item is a different lock.
+        with workspaces.item_lock("acme/demo", "HZ-189", wait_s=0):
+            pass
+    lock_path = workspaces._item_lock_path("acme/demo", "HZ-188")
+    items_root = workspaces._items_root("acme/demo")
+    assert not lock_path.is_relative_to(items_root), "git clean -fd in a worktree must never reach the lock"
+    assert workspaces.existing_item_ids("acme/demo") == []
+
+
+def test_item_lock_waits_for_a_holder_that_releases(lock_dir):
+    held = threading.Event()
+
+    def holder():
+        with workspaces.item_lock("acme/demo", "HZ-1", wait_s=0):
+            held.set()
+            time.sleep(1)
+
+    t = threading.Thread(target=holder)
+    t.start()
+    assert held.wait(5)
+    waits = []
+    with workspaces.item_lock("acme/demo", "HZ-1", wait_s=5, on_wait=lambda: waits.append(1)):
+        pass
+    t.join()
+    assert waits == [1]  # logged once, not once per retry
+
+
+@pytest.mark.parametrize("label", ["Specialist agent implements", "Automated review (code + QA)"])
+def test_step_never_touches_a_worktree_the_resolver_holds(lock_dir, monkeypatch, label):
+    from farm import step_agent
+
+    touched = []
+    monkeypatch.setattr(step_agent, "ITEM_LOCK_WAIT_S", 0)
+    monkeypatch.setattr(step_agent, "ensure_item_worktree", lambda *a: touched.append("ensure_item_worktree"))
+    monkeypatch.setattr(step_agent, "prepare_branch", lambda *a: touched.append("prepare_branch"))
+    task = {
+        "run_id": 1,
+        "attempt": 1,
+        "item": {"id": "HZ-188", "title": "t", "repo": "acme/demo", "issue": 1},
+        "step": {"index": 11, "label": label, "agent": "Eng"},
+        "artifacts": [],
+        "feedback": [],
+    }
+
+    with workspaces.item_lock("acme/demo", "hz-188", wait_s=0):
+        with pytest.raises(RuntimeError, match="workspace busy"):
+            step_agent.execute(task)
+
+    assert touched == []
+
+
+def test_hz157_replay_five_rapid_clicks_make_one_resolver_run_and_one_push(running_farm, tmp_path, monkeypatch):
+    """HZ-157: five clicks on Resolve conflicts for a 1-hunk conflict in
+    farm/tests/conftest.py started five resolvers that reset each other's
+    merges. Replayed against a real fixture repo: the five requests overlap
+    for real (the winner is held until the other four have answered), and
+    exactly one resolver runs and pushes once."""
+    monkeypatch.setattr(workspaces, "WORKSPACES_DIR", tmp_path / "workspaces")
+    monkeypatch.setenv("FARM_CHECK_CMD", "true")
+    monkeypatch.delenv("FARM_CONFLICT_SCOPED_ENABLED", raising=False)
+    _hub, origin = make_repo_hub(tmp_path)
+    seed_hz157_conftest_conflict(tmp_path, origin, "horizon/hz-157")
+    before = origin_branch_sha(origin, "horizon/hz-157")
+
+    real_resolve = farmd.conflict_resolver.resolve
+    others_answered = threading.Event()
+    runs = []
+
+    def held_resolve(*args):
+        runs.append(args)
+        assert others_answered.wait(30), "the other four requests never answered"
+        return real_resolve(*args)
+
+    monkeypatch.setattr(farmd.conflict_resolver, "resolve", held_resolve)
+
+    responses = []
+    lock = threading.Lock()
+
+    def click():
+        res = client.post("/conflicts/resolve", json={"item": {"id": "HZ-157", "repo": "acme/demo"}})
+        with lock:
+            responses.append(res)
+            if sum(r.status_code == 409 for r in responses) == 4:
+                others_answered.set()
+
+    threads = [threading.Thread(target=click) for _ in range(5)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=60)
+
+    assert sorted(r.status_code for r in responses) == [200, 409, 409, 409, 409]
+    assert [r.json() for r in responses if r.status_code == 409] == [{"error": "resolve_in_progress"}] * 4
+    winner = next(r.json() for r in responses if r.status_code == 200)
+    assert winner["resolved"] is True
+    assert winner["resolution"]["paths"] == [HZ157_CONFTEST]
+    assert winner["resolution"]["hunks"] == 1
+    assert len(runs) == 1
+
+    after = origin_branch_sha(origin, "horizon/hz-157")
+    pushed = git(origin, "rev-list", "--first-parent", f"{before}..{after}").stdout.split()
+    assert len(pushed) == 1, "exactly one push: one merge commit on top of the branch's old tip"
+    merged = clone_and_read(tmp_path, origin, "horizon/hz-157", HZ157_CONFTEST, "hz157-after")
+    assert HZ157_CONFTEST_BRANCH_LINE in merged and HZ157_CONFTEST_MAIN_LINE in merged
 
 
 # ---- /runs/status (HZ-54) ----
@@ -1084,6 +1416,7 @@ def _serve_fake_horizon(fail_status: int = 200, snapshot_status: int = 200):
     return server, f"http://127.0.0.1:{server.server_port}", requests
 
 
+@pytest.mark.real_tmux
 def test_reconcile_end_to_end_over_real_tmux_and_http_reports_a_dead_run(queue_dirs, monkeypatch):
     """No mocks on tmux_mgr or httpx: the tmux session named by the task file
     is genuinely never created (a real `tmux has-session` lookup proves it's
@@ -1109,6 +1442,7 @@ def test_reconcile_end_to_end_over_real_tmux_and_http_reports_a_dead_run(queue_d
     assert fail_reqs[0]["body"]["reason"] == "unreachable"  # already in AUTO_RETRY_REASONS
 
 
+@pytest.mark.real_tmux
 def test_reconcile_end_to_end_over_real_tmux_never_touches_a_real_live_session(queue_dirs, monkeypatch):
     """The other half of the same wiring, with a genuinely live tmux session
     this time — proves the real `tmux has-session` short-circuits before any
@@ -1210,6 +1544,7 @@ def test_runs_alive_never_leaks_a_tmux_session_name(queue_dirs):
 # specifically — the Node reconciliation sweep's own proof-of-life check.
 
 
+@pytest.mark.real_tmux
 def test_runs_alive_end_to_end_over_real_tmux_reports_false_for_a_claimed_run_with_no_session(queue_dirs):
     """No monkeypatch on tmux_mgr: a claimed task file names a tmux session
     that was genuinely never created — a real `tmux has-session` lookup, not
@@ -1225,6 +1560,7 @@ def test_runs_alive_end_to_end_over_real_tmux_reports_false_for_a_claimed_run_wi
     assert res.json() == {"alive": {"501": False}}
 
 
+@pytest.mark.real_tmux
 def test_runs_alive_end_to_end_over_real_tmux_reports_true_for_a_claimed_run_with_a_live_session(queue_dirs):
     """The other half of the same wiring: a genuinely live tmux session this
     time, proving the real `tmux has-session` call — not a stub — is what
@@ -1324,3 +1660,364 @@ def test_internal_snapshot_reports_502_when_the_server_is_unreachable(monkeypatc
     res = client.get("/internal/snapshot")
     assert res.status_code == 502
     assert res.json() == {"error": "could not reach horizon server"}
+
+
+# ---- HZ-130: queue files are written atomically ----
+# The race underneath the PM lane's silent data loss: a plain write_text let a
+# poller read a task file mid-write and get truncated JSON. The final path must
+# only ever hold a complete payload.
+
+TRUNCATED_TASK = '{\n  "run_id": 881,\n  "item": {\n    "id": "HZ-128"'
+
+
+def _big_task(run_id, filler="x"):
+    """A payload large enough that a single write() is genuinely interruptible —
+    a real task carries rules and prior artifacts, not four short keys."""
+    return dict(make_task(run_id), blob=filler * 200_000)
+
+
+def test_write_task_atomic_writes_a_complete_parseable_file(tmp_path):
+    path = tmp_path / "881.json"
+    farmd._write_task_atomic(path, make_task(881))
+    assert json.loads(path.read_text())["run_id"] == 881
+
+
+def test_write_task_atomic_leaves_no_temp_file_behind(tmp_path):
+    path = tmp_path / "881.json"
+    farmd._write_task_atomic(path, make_task(881))
+    assert [p.name for p in tmp_path.iterdir()] == ["881.json"]
+
+
+def test_a_temp_file_is_invisible_to_every_readers_glob(tmp_path, monkeypatch):
+    """The temp name must not end `.json`: every reader in farmd and the PM
+    agent globs `*.json`, and matching a partial file is the whole bug."""
+    seen = {}
+    real_replace = farmd.os.replace
+
+    def spy_replace(src, dst):
+        if str(dst) == str(tmp_path / "881.json"):
+            seen["during"] = sorted(p.name for p in tmp_path.glob("*.json"))
+            seen["temps"] = sorted(p.name for p in tmp_path.iterdir())
+        return real_replace(src, dst)
+
+    monkeypatch.setattr(farmd.os, "replace", spy_replace)
+    farmd._write_task_atomic(tmp_path / "881.json", make_task(881))
+
+    assert seen["during"] == [], "no *.json file may exist at the final path until the rename"
+    assert len(seen["temps"]) == 1 and seen["temps"][0].endswith(".json.tmp")
+
+
+def test_a_failed_write_leaves_nothing_at_the_final_path(tmp_path, monkeypatch):
+    """The rename fails (disk full, EXDEV): the caller must see the failure and
+    the final path must not exist at all, half-written or otherwise."""
+    path = tmp_path / "881.json"
+    real_replace = farmd.os.replace
+
+    def failing_replace(src, dst):
+        if str(dst) == str(path):  # scoped: os.replace is process-global
+            raise OSError("no space left on device")
+        return real_replace(src, dst)
+
+    monkeypatch.setattr(farmd.os, "replace", failing_replace)
+    with pytest.raises(OSError):
+        farmd._write_task_atomic(path, make_task(881))
+
+    assert not path.exists()
+    assert list(tmp_path.iterdir()) == [], "the temp file must be cleaned up too"
+
+
+def test_a_concurrent_reader_never_observes_a_partial_queue_file(tmp_path):
+    """Success metric 1, asserted the way the metric is stated: a poller
+    globbing the queue while the writer runs must only ever see complete,
+    parseable task files. The reader is deadline-bounded and joined — a stuck
+    reader has to fail the suite, not hang it."""
+    path = tmp_path / "881.json"
+    body = _big_task(881)
+    errors = []
+    reads = []
+    done = threading.Event()
+
+    def read_loop():
+        deadline = time.time() + 30
+        while not done.is_set() and time.time() < deadline:
+            for p in tmp_path.glob("*.json"):  # exactly what the pollers do
+                try:
+                    reads.append(json.loads(p.read_text())["run_id"])
+                except (json.JSONDecodeError, OSError, KeyError) as exc:
+                    errors.append(f"{p.name}: {exc}")
+                    return
+
+    reader = threading.Thread(target=read_loop, daemon=True)
+    reader.start()
+    try:
+        for _ in range(200):
+            farmd._write_task_atomic(path, body)
+    finally:
+        done.set()
+    reader.join(timeout=10)
+
+    assert not reader.is_alive()
+    assert errors == []
+    assert reads, "the reader never observed the file at all — the test proved nothing"
+    assert set(reads) == {881}
+    assert list(tmp_path.glob("*.tmp")) == []
+
+
+def test_two_concurrent_writers_of_the_same_run_never_splice_their_payloads(tmp_path):
+    """A fixed `<run_id>.json.tmp` would let two writes for one run_id
+    interleave into the same temp file — a fresh instance of the exact race
+    this change closes. Unique temp names mean each payload lands whole."""
+    path = tmp_path / "881.json"
+    bodies = [_big_task(881, filler=c) for c in ("a", "b")]
+    blobs = {b["blob"] for b in bodies}
+    errors = []
+
+    def writer(body):
+        try:
+            for _ in range(40):
+                farmd._write_task_atomic(path, body)
+                observed = json.loads(path.read_text())  # whoever's write is current
+                if observed["blob"] not in blobs:
+                    errors.append("spliced payload at the final path")
+                    return
+        except Exception as exc:
+            errors.append(f"{type(exc).__name__}: {exc}")
+
+    threads = [threading.Thread(target=writer, args=(b,), daemon=True) for b in bodies]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=60)
+
+    assert not any(t.is_alive() for t in threads)
+    assert errors == []
+    assert json.loads(path.read_text())["blob"] in blobs
+    assert list(tmp_path.glob("*.tmp")) == []
+
+
+def test_steps_run_enqueues_atomically(running_farm, monkeypatch):
+    """The enqueue write named in HZ-130 — asserted through the HTTP route, not
+    just on the helper, so the call site can't regress to write_text."""
+    calls = []
+    real = farmd._write_task_atomic
+    monkeypatch.setattr(farmd, "_write_task_atomic", lambda path, body: (calls.append(path), real(path, body))[1])
+
+    res = client.post("/steps/run", json=make_task(881, item_id="HZ-130", step_index=9))
+    assert res.status_code == 200
+
+    queued = QUEUE_DIR / "pm" / "881.json"
+    assert calls == [queued]
+    assert json.loads(queued.read_text())["run_id"] == 881
+
+
+def test_teardown_removes_a_leaked_temp_queue_file(monkeypatch):
+    """A farmd killed between the temp write and the rename leaks a
+    `.json.tmp`; `*.json` would never reach it and nothing else cleans it."""
+    monkeypatch.setattr(farmd.tmux_mgr, "kill_all_farm_sessions", lambda: [])
+    for sub in ("pm", "runs", "runs/active"):
+        (QUEUE_DIR / sub).mkdir(parents=True, exist_ok=True)
+    leaked = QUEUE_DIR / "pm" / "881.abcdef.json.tmp"
+    leaked.write_text(TRUNCATED_TASK)
+    queued = QUEUE_DIR / "pm" / "882.json"
+    queued.write_text(json.dumps(make_task(882)))
+
+    farmd._teardown()
+
+    assert not leaked.exists()
+    assert not queued.exists()
+
+
+def test_a_leaked_temp_file_never_makes_a_run_look_queued_or_alive(queue_dirs):
+    """Proof the `.json.tmp` suffix is load-bearing on the read side too: a
+    leftover temp file must not hold a run alive with no worker."""
+    leaked_pm = QUEUE_DIR / "pm" / "881.abcdef.json.tmp"
+    leaked_runs = QUEUE_DIR / "runs" / "882.abcdef.json.tmp"
+    try:
+        leaked_pm.write_text(TRUNCATED_TASK)
+        leaked_runs.write_text(TRUNCATED_TASK)
+
+        assert farmd._run_alive("881") is False
+        assert farmd._run_alive("882") is False
+        states = client.post("/runs/status", json={"run_ids": [881, 882]}).json()["states"]
+        assert states["881"]["state"] != "queued"
+        assert states["882"]["state"] != "queued"
+    finally:
+        leaked_pm.unlink(missing_ok=True)
+        leaked_runs.unlink(missing_ok=True)
+
+
+# ---- HZ-130: the contract the PM and ephemeral lanes share ----
+# Success metric 6, stated precisely. The lanes are NOT identical: the PM lane
+# eventually reports an unusable file, the ephemeral lane never does (guardrail
+# 4 forbids changing it — it is the reference implementation). What they share,
+# and what this asserts, is the three-part read contract: SKIP the file, NEVER
+# delete it, and RETRY it on the next poll.
+#
+# Known residual gap, stated rather than implied: because the ephemeral lane
+# does not report, farmd's _run_alive still answers True while an unparseable
+# `queue/runs/<id>.json` exists, so such a run can sit active with no worker
+# and no report. Atomic writes remove the *cause* on both lanes, leaving only
+# corrupt-on-disk; closing the ephemeral report path needs its own item, since
+# guardrail 4 puts it out of scope here.
+
+
+@pytest.mark.parametrize("payload", [TRUNCATED_TASK, "", "not json at all"])
+def test_both_lanes_skip_an_unparseable_task_file_without_deleting_it(tmp_path, monkeypatch, payload):
+    """The shared input class is a file that does not parse. (Valid JSON that
+    is merely unusable is PM-specific — the ephemeral lane's own field
+    handling is out of scope under guardrail 4 and is unchanged here.)"""
+    monkeypatch.setattr(pm_agent, "process", lambda *a: pytest.fail("an unusable task must not be processed"))
+
+    ephemeral = tmp_path / "runs"
+    ephemeral.mkdir()
+    eph_path = ephemeral / "881.json"
+    eph_path.write_text(payload)
+    pm_dir = tmp_path / "pm"
+    pm_dir.mkdir()
+    pm_path = pm_dir / "881.json"
+    pm_path.write_text(payload)
+
+    # Ephemeral lane: the reference. Skips, keeps.
+    assert farmd._select_dispatchable([eph_path], [], 4) == []
+    assert eph_path.exists()
+    # PM lane: same skip, same keep.
+    assert pm_agent.poll_once(pm_dir, "fintekkers", {}) == "skipped"
+    assert pm_path.exists()
+
+
+def test_both_lanes_retry_the_file_once_it_becomes_valid(tmp_path, monkeypatch):
+    ephemeral = tmp_path / "runs"
+    ephemeral.mkdir()
+    eph_path = ephemeral / "881.json"
+    eph_path.write_text(TRUNCATED_TASK)
+    pm_dir = tmp_path / "pm"
+    pm_dir.mkdir()
+    pm_path = pm_dir / "881.json"
+    pm_path.write_text(TRUNCATED_TASK)
+
+    pm_failures = {}
+    assert farmd._select_dispatchable([eph_path], [], 4) == []
+    assert pm_agent.poll_once(pm_dir, "fintekkers", pm_failures) == "skipped"
+
+    valid = json.dumps(make_task(881, item_id="hz-130", step_index=9))
+    eph_path.write_text(valid)
+    pm_path.write_text(valid)
+
+    processed = []
+    monkeypatch.setattr(pm_agent, "notify_started", lambda run_id: True)
+    monkeypatch.setattr(pm_agent, "process", lambda task, slug: processed.append(task))
+
+    assert farmd._select_dispatchable([eph_path], [], 4) == [eph_path]  # dispatchable now
+    assert pm_agent.poll_once(pm_dir, "fintekkers", pm_failures) == "processed"
+    assert [t["run_id"] for t in processed] == [881]
+    assert pm_failures == {}  # the retry cleared the file's failure count
+
+
+# ---- HZ-130 end to end: enqueue, corrupt, report, stop being alive ----
+# Nothing below is mocked except the far side of the network (a real local
+# HTTP server standing in for the Node horizon server) and the PM's own
+# `process`, which would otherwise spawn a Claude session. The enqueue goes
+# through the real /steps/run route, the report goes through the real
+# /internal/steps/result route, and the liveness answer comes from the real
+# /runs/alive route — the same idiom as the reconcile end-to-end tests above.
+
+
+def _age_file(path: Path, seconds: float) -> None:
+    when = path.stat().st_mtime - seconds
+    os.utime(path, (when, when))
+
+
+def _farmd_over_testclient(monkeypatch):
+    """Points the PM's HTTP calls at the real farmd app instead of stubbing a
+    reply, so the PM's report is parsed out of what farmd actually returns.
+
+    `pm_agent.httpx` is swapped for a shim rather than `httpx.post` patched in
+    place: it is the same module object farmd holds, so patching the attribute
+    would also hijack farmd's own forward to the horizon server — which is the
+    far side this test wants left real."""
+
+    def post(url, json=None, timeout=None):
+        assert timeout, "every network call in the farm is bounded"
+        assert url.startswith(pm_agent.FARMD), f"the PM only ever talks to farmd, not {url}"
+        return client.post(url[len(pm_agent.FARMD) :], json=json)
+
+    monkeypatch.setattr(pm_agent, "httpx", SimpleNamespace(post=post))
+
+
+def test_an_unusable_pm_task_file_is_reported_end_to_end_over_real_http(queue_dirs, running_farm, monkeypatch):
+    """HZ-128's stall, replayed through the real wiring, and the assertion the
+    item actually turns on: the run must stop being alive.
+
+    Before HZ-130 run 881's truncated task file was deleted and nobody was
+    told, so /runs/alive kept answering... nothing — the file was gone, the PM
+    had never reported, and `agent_started_at` stayed NULL. The run sat
+    `active` server-side with no worker and no report for 11 minutes.
+    """
+    server, url, requests = _serve_fake_horizon(fail_status=200)
+    monkeypatch.setattr(farmd, "HORIZON_URL", url)
+    monkeypatch.setattr(pm_agent, "process", lambda *a: pytest.fail("an unusable task must not be processed"))
+    _farmd_over_testclient(monkeypatch)
+    try:
+        res = client.post("/steps/run", json=make_task(881, item_id="HZ-128", step_index=9))
+        assert res.status_code == 200 and res.json()["queued"] == "pm"
+        task_path = QUEUE_DIR / "pm" / "881.json"
+        assert json.loads(task_path.read_text())["run_id"] == 881  # enqueued whole
+
+        # The truncated read the non-atomic write used to hand a poller, aged
+        # past the grace so this poll has to decide rather than retry.
+        task_path.write_text(TRUNCATED_TASK)
+        _age_file(task_path, PM_MALFORMED_GRACE_S + 1)
+        assert client.post("/runs/alive", json={"run_ids": [881]}).json()["alive"]["881"] is True
+
+        assert pm_agent.poll_once(QUEUE_DIR / "pm", "fintekkers", {}) == "reported"
+    finally:
+        server.shutdown()
+
+    fails = [r for r in requests if r["path"] == "/api/farm/steps/881/fail"]
+    assert len(fails) == 1, f"expected exactly one fail report, got {[r['path'] for r in requests]}"
+    assert fails[0]["headers"]["x-farm-secret"] == farmd.SHARED_SECRET
+    assert fails[0]["body"]["reason"] == "unreachable"  # in AUTO_RETRY_REASONS: auto-retried, not human-paused
+    assert "881.json" in fails[0]["body"]["error"]
+    # The run was never claimed, so it must never have been marked started —
+    # reporting a failure and arming the execution timer are different things.
+    assert not [r for r in requests if r["path"].endswith("/started")]
+
+    # Metric 5, the assertion that actually closes this item: the run is no
+    # longer alive in the farm, and the server has been told why.
+    assert not (QUEUE_DIR / "pm" / "881.json").exists()
+    assert client.post("/runs/alive", json={"run_ids": [881]}).json()["alive"]["881"] is False
+
+
+def test_an_unusable_pm_task_file_stays_alive_and_on_disk_when_the_report_is_not_accepted(
+    queue_dirs, running_farm, monkeypatch
+):
+    """The other half of the same wiring: the report reaches the Node server
+    and it 503s. A report that was not accepted is not evidence the run was
+    handled — the file must stay, the run must stay alive, and the next poll
+    must retry it.
+
+    (A real 503 from the fake server, rather than an unreachable host: farmd's
+    forward retries twice with a 2s backoff, and the only way to skip that
+    would be patching the shared `time` module out from under farmd's own
+    daemon threads.)"""
+    server, url, requests = _serve_fake_horizon(fail_status=503)
+    monkeypatch.setattr(farmd, "HORIZON_URL", url)
+    monkeypatch.setattr(pm_agent, "process", lambda *a: pytest.fail("an unusable task must not be processed"))
+    _farmd_over_testclient(monkeypatch)
+    try:
+        client.post("/steps/run", json=make_task(882, item_id="HZ-128", step_index=9))
+        task_path = QUEUE_DIR / "pm" / "882.json"
+        task_path.write_text(TRUNCATED_TASK)
+        _age_file(task_path, PM_MALFORMED_GRACE_S + 1)
+
+        assert pm_agent.poll_once(QUEUE_DIR / "pm", "fintekkers", {}) == "skipped"
+        assert task_path.exists(), "an unacknowledged report must not release the file"
+        assert client.post("/runs/alive", json={"run_ids": [882]}).json()["alive"]["882"] is True
+
+        # And it is retried rather than abandoned after the refused report.
+        assert pm_agent.poll_once(QUEUE_DIR / "pm", "fintekkers", {}) == "skipped"
+    finally:
+        server.shutdown()
+
+    assert len([r for r in requests if r["path"] == "/api/farm/steps/882/fail"]) == 2
+    assert (QUEUE_DIR / "pm" / "882.json").exists()

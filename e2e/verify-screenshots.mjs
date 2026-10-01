@@ -23,12 +23,15 @@ const EXPECTED_JOURNEYS = [
   'deep-links',
   'approvals-drawer',
   'merge-conflict',
+  'merge-conflict-resolved',
   'full-lifecycle',
   'abandon',
   'gate-key',
   'artifact-history',
   'login-error',
   'queued-work',
+  'markdown',
+  'persona-picker',
 ]
 
 const missing = EXPECTED_JOURNEYS.filter((name) => !existsSync(join(SCREENSHOTS_DIR, `${name}.png`)))

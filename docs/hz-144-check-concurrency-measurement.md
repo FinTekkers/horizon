@@ -77,7 +77,7 @@ means a sub-second command reads as 0s.
 
 ## Collecting the two remaining windows
 
-Add to `/etc/horizon/farm.env` (see `infra/host/DEPLOY.md` §2c), then
+Add to `/etc/horizon/farm.env` (see `infra/host/DEPLOY.md` §2e), then
 `sudo systemctl restart horizon-farm`:
 
 ```
@@ -290,7 +290,7 @@ to this branch.
 | 5 | Zero OOM kills, zero contention timeouts | **pending** — `oom`/`contention` classes and a host-wide `MemAvailable` low-water mark are recorded per run. The baseline shows 0 OOM and 7 contention failures **at cap 4 today**, which is the number the after-windows have to beat |
 | 6 | Median check duration ≤50% above baseline | **baseline recorded: 248.0s, so the bound is 372.0s.** Verdict pending `cap6-limit2`; the reporter computes the ratio rather than leaving it to be eyeballed |
 | 7 | `never_picked_up` over 7 days below 23 | **pending** — baseline 23 confirmed; see the follow-up below |
-| 8 | Both limits env-configurable and documented | **pass** — `FARM_MAX_EPHEMERAL`, `FARM_MAX_CONCURRENT_CHECKS` (plus `FARM_CHECK_SLOT_WAIT_MAX_S`) in `farm/README.md` and `infra/host/DEPLOY.md` §2c |
+| 8 | Both limits env-configurable and documented | **pass** — `FARM_MAX_EPHEMERAL`, `FARM_MAX_CONCURRENT_CHECKS` (plus `FARM_CHECK_SLOT_WAIT_MAX_S`) in `farm/README.md` and `infra/host/DEPLOY.md` §2e |
 | — | Zero failures from configuration leakage or contention (human feedback) | **pending** for the window; the `leakage` class exists and both scrub seams have tripwire tests |
 
 ### Metric 7's closure step

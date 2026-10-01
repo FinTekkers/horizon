@@ -1,0 +1,10 @@
+{
+  "fields": [
+    { "name": "title", "column": "title", "minLength": 3, "maxLength": 200, "settableAtIntake": true, "agentRevisable": false },
+    { "name": "outcome", "column": "desc", "minLength": 10, "maxLength": 4000, "settableAtIntake": true, "agentRevisable": true },
+    { "name": "metric", "column": "metric", "minLength": 5, "maxLength": 2000, "settableAtIntake": true, "agentRevisable": true },
+    { "name": "guardrails", "column": "guardrails", "maxLength": 2000, "settableAtIntake": true, "agentRevisable": true },
+    { "name": "repo", "column": "repo", "maxLength": 300, "settableAtIntake": true, "agentRevisable": false },
+    { "name": "persona", "column": "persona", "maxLength": 40, "settableAtIntake": false, "agentRevisable": false }
+  ]
+}

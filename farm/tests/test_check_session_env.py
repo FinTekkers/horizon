@@ -130,6 +130,7 @@ def test_grants_held_asks_for_the_granted_names_not_the_forbidden_ones(monkeypat
 
 @tmux_available
 @proc_available
+@pytest.mark.real_tmux
 def test_a_real_step_session_holds_neither_credential(monkeypatch):
     """The end of the forgery path, measured rather than argued: launch a step
     session through the same code farmd uses, then read the pane process's own
@@ -156,6 +157,7 @@ def test_a_real_step_session_holds_neither_credential(monkeypatch):
 
 @tmux_available
 @proc_available
+@pytest.mark.real_tmux
 def test_the_live_check_would_catch_a_session_launched_the_old_way(monkeypatch):
     """A pre-upgrade session still holds the credential. If this didn't fail,
     the live check couldn't tell a clean host from a stale one."""

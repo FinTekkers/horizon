@@ -29,6 +29,16 @@ const PINNED_DEPS = {
   'server/package.json': {
     dependencies: {
       '@fastify/cookie': '^11.1.2',
+      // HZ-178 added `@fastify/swagger` — deliberately, as guardrail 3 intends,
+      // and the same way HZ-153 added `marked` below: that item allowed at most
+      // one new runtime dependency, to generate the published OpenAPI document
+      // from the routes app.js already registers, and this is it. No Swagger UI
+      // package came with it, and NOTHING was added to devDependencies, which
+      // stays `undefined` below: openapi-spec-valid.test.mjs validates the
+      // document with the ajv that fastify itself depends on through
+      // @fastify/ajv-compiler, so the "just add ajv" this file warns about above
+      // did not happen either.
+      '@fastify/swagger': '^9.9.1',
       'better-sqlite3': '^12.4.1',
       fastify: '^5.6.2',
       'google-auth-library': '^11.0.0',
@@ -39,7 +49,14 @@ const PINNED_DEPS = {
     devDependencies: undefined,
   },
   'ui/package.json': {
-    dependencies: { react: '^18.3.1', 'react-dom': '^18.3.1' },
+    // HZ-153 added `marked` — deliberately, as guardrail 3 intends: the item
+    // allowed at most one new runtime dependency to render issue markdown on
+    // the item page, and this is it. Same pin as server/ above (one markdown
+    // dialect across the app), and marked has no transitive packages, so the
+    // UI is still a three-dependency bundle. components/Markdown.jsx uses
+    // marked.lexer() only — never marked.parse() — so no HTML sanitiser had
+    // to come with it.
+    dependencies: { marked: '^18.0.6', react: '^18.3.1', 'react-dom': '^18.3.1' },
     devDependencies: {
       '@testing-library/dom': '^10.4.1',
       '@testing-library/react': '^16.3.2',
@@ -166,9 +183,22 @@ test('the production-base build verifier runs the literal command criterion 10 n
   assert.match(verifier, /HORIZON_BASE: '\/horizon\/'/)
   assert.match(verifier, /\/horizon\/assets\//)
   // HZ-139: it must also prove the step data was INLINED into the bundle, not
-  // emitted as a separate asset that 404s under the production base.
+  // emitted as a separate asset that 404s under the production base. HZ-132
+  // added a second probe for domain/reasons.json, reached from the UI through
+  // ui/src/domain/pauseReason.js — same failure mode, different blank screen.
   assert.match(verifier, /STEPS\[0\]\.label/)
-  assert.match(verifier, /bundled\.includes\(probeLabel\)/)
+  assert.match(verifier, /REASON_IDS\[0\]/)
+  // HZ-135 added a third probe, for domain/priorities.json. It could not be
+  // `PRIORITIES[0]`: that value already ships in the bundle via
+  // ui/src/api/mockApi.js's demo seeds, so a single-value probe would pass even
+  // with priorities.json deleted. It greps for the whole ORDERED sequence against
+  // a quote- and whitespace-stripped bundle instead, which only the inlined array
+  // can produce — so this guard pins the joined form, not an index.
+  assert.match(verifier, /PRIORITIES\.join\(','\)/)
+  assert.match(verifier, /bundled\.replace\(/, 'the priority probe no longer normalises the bundle')
+  // Every probe is still matched against the real bundle text: `probe.in` defaults
+  // to it, so a probe cannot quietly check something that is not the build output.
+  assert.match(verifier, /\(probe\.in \?\? bundled\)\.includes\(probe\.value\)/)
 })
 
 // ---- the dev server can still serve a file from outside its root ----

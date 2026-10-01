@@ -31,11 +31,60 @@ export function normalizeJid(jid) {
   return jid.split('@')[0].split(':')[0].trim().toLowerCase()
 }
 
+// Where a bare number is routed. WhatsApp's own server part for an individual
+// chat; a group would be '@g.us', which an operator must spell out (see
+// canonicalJid) because the approver list is individuals by design — HZ-141
+// deliberately added no group recipient setting.
+const DEFAULT_SERVER = 's.whatsapp.net'
+
+// '15551112222' and '15551112222:7@s.whatsapp.net' both ->
+// '15551112222@s.whatsapp.net'.
+//
+// normalizeJid answers "who is this", which is all the allowlist needs. A
+// RECIPIENT needs more than that: the bridge routes on a full jid, so a bare
+// number — which is the form DEPLOY.md documents and farm/config.py's own
+// example uses — cannot be posted as-is, and a device suffix addresses one
+// specific phone rather than the person. This is the one function that turns a
+// configured entry into something sendable, so every configured form that the
+// allowlist accepts is also deliverable.
+//
+// An explicit server part is KEPT rather than forced to the default, so an
+// operator who does spell out '@g.us' gets what they wrote instead of a silently
+// rewritten address that routes somewhere else.
+export function canonicalJid(entry) {
+  const user = normalizeJid(entry)
+  if (!user) return ''
+  const server = typeof entry === 'string' && entry.includes('@') ? entry.split('@').pop().trim().toLowerCase() : ''
+  return `${user}@${server || DEFAULT_SERVER}`
+}
+
 const ALLOWED_APPROVERS = new Set(WA_APPROVER_JIDS.map(normalizeJid).filter(Boolean))
 
 export function isAllowedApprover(jid) {
   const normalized = normalizeJid(jid)
   return normalized !== '' && ALLOWED_APPROVERS.has(normalized)
+}
+
+// The same list, as recipients — HZ-141's gate-arrival notifier needs to send
+// TO the approvers, not just check a jid against them. Deliberately one export
+// away from isAllowedApprover rather than a second setting: whoever can approve
+// a gate is exactly whoever is told one is waiting, and a parallel notify list
+// would eventually mean messaging someone whose approval is then refused.
+//
+// Returns CANONICAL jids, not the raw entries: one setting must not mean two
+// formats. WA_APPROVER_JIDS is documented as approver *numbers*, and a bare
+// number approves a gate fine (isAllowedApprover normalizes both sides) but is
+// not a routable recipient — posting it to the bridge would fail every attempt
+// and give up silently a couple of hours later, on a configuration the runbook
+// calls valid. canonicalJid closes that gap in the one direction it exists.
+//
+// De-duplicated, because two entries for the same person ('155…' and
+// '155…:7@s.whatsapp.net') are one human and must produce one message per
+// arrival, not two.
+//
+// Empty stays empty — deny-all above means notify-nobody here, not notify-all.
+export function approverJids() {
+  return [...new Set(WA_APPROVER_JIDS.map(canonicalJid).filter(Boolean))]
 }
 
 export function approvalSecretConfigured() {
