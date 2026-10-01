@@ -37,13 +37,14 @@ test.each([
   expect(api.getCurrentUser).not.toHaveBeenCalled()
 })
 
-test('legal pages name Shoreward, New York law and the contact address', () => {
+test('legal pages name Shoreward LLC, New York law and the contact address', () => {
   const privacy = visit('/privacy').container
-  expect(privacy.textContent).toContain('Shoreward')
+  expect(privacy.textContent).toContain('Shoreward LLC')
   expect(privacy.querySelector('a[href="mailto:help@fintekkers.org"]')).not.toBeNull()
   cleanup()
   const terms = visit('/terms').container
   expect(terms.textContent).toContain('laws of the State of New York')
+  expect(terms.textContent).toContain('Shoreward LLC')
   expect(terms.querySelector('a[href="mailto:help@fintekkers.org"]')).not.toBeNull()
 })
 

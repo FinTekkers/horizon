@@ -2,7 +2,7 @@
 
 **Effective date:** October 1, 2026
 
-This Privacy Policy explains how Shoreward ("**Shoreward**", "**we**", "**us**") collects, uses, shares and protects personal information in connection with Horizon, our AI-assisted software delivery service (the "**Service**"). It applies to the Horizon web application and its related integrations.
+This Privacy Policy explains how Shoreward LLC ("**Shoreward**", "**we**", "**us**") collects, uses, shares and protects personal information in connection with Horizon, our AI-assisted software delivery service (the "**Service**"). It applies to the Horizon web application and its related integrations.
 
 Horizon is provided to businesses. If your organization has signed an agreement with us (an order form, master services agreement or data processing agreement), that agreement governs our processing of your organization's data and takes precedence over this policy where they conflict.
 
@@ -116,6 +116,6 @@ We may update this policy from time to time. We will post the updated version he
 
 ## 14. Contact us
 
-**Shoreward** — [help@fintekkers.org](mailto:help@fintekkers.org)
+**Shoreward LLC** — [help@fintekkers.org](mailto:help@fintekkers.org)
 
 For questions about this policy, or to exercise your rights, please contact us at the address above.
