@@ -1213,27 +1213,39 @@ def test_an_escalation_after_a_repaired_resolution_reply_still_reports_the_repai
 def test_a_repaired_resolution_rejected_by_the_review_reports_both_repairs(
     isolated_workspaces_dir, monkeypatch, repair_counter
 ):
-    """Two replies repaired, one escalation detail. Both groups survive, and
-    they are labelled apart so the detail does not read as one note printed
-    twice."""
+    """Two replies repaired, one escalation detail. Both groups survive WHOLE,
+    and they are labelled apart so the detail does not read as one note printed
+    twice.
+
+    The review summary runs to the cap on purpose: the detail then has to be
+    cut to fit both groups, and a cut that lands in the review's note would
+    still leave two "parser notes" headings — so the note text itself is
+    counted, not the heading."""
     tmp_path = isolated_workspaces_dir
     _hub, origin = make_repo_hub(tmp_path)
+    long_summary = "one side was dropped " + "x" * (conflict_resolver.DETAIL_LIMIT - 30)
+    long_failing_review = REPAIRED_FAILING_REVIEW.replace("one side was dropped", long_summary)
     install(
         monkeypatch,
         FakeAgents(
             resolution=resolve_markers("line2 (a guess)\n", reply=REPAIRED_RESOLUTION),
-            review=REPAIRED_FAILING_REVIEW,
+            review=long_failing_review,
         ),
     )
     branch_sha = same_line_conflict(tmp_path, origin, "HZ-41")
+    logged: list[str] = []
 
-    result = conflict_resolver.resolve("acme/demo", "HZ-41", log=lambda *_: None)
+    result = conflict_resolver.resolve("acme/demo", "HZ-41", log=logged.append)
 
     assert result["reason"] == "scoped_review_rejected"
     assert agent_runner.repair_counts() == {"trailing_comma": 2}
-    assert "lost the PR's own import" in result["detail"]
+    assert result["detail"].startswith("one side was dropped")
+    assert len(result["detail"]) <= conflict_resolver.DETAIL_LIMIT
     assert conflict_resolver.RESOLUTION_NOTE_LABEL in result["detail"]
-    assert result["detail"].count("parser notes") == 2, "one of the two repaired replies is unreported"
+    assert result["detail"].count(TRAILING_COMMA_NOTE) == 2, "a repaired reply's note was cut by the cap"
+    # Each reply's repair also has an unsliced log line of its own.
+    assert any("scoped review reply was repaired" in line and TRAILING_COMMA_NOTE in line for line in logged)
+    assert any("resolution reply was repaired" in line and TRAILING_COMMA_NOTE in line for line in logged)
     assert_nothing_pushed_and_clean(origin, "HZ-41", branch_sha)
 
 

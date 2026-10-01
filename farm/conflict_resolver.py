@@ -248,7 +248,13 @@ def _abort_and_clean(ws: Path, pre_merge_sha: str) -> None:
 
 
 def _escalate(
-    ws: Path, pre_merge_sha: str, reason: str, detail: str, log, notes: list[str] | None = None
+    ws: Path,
+    pre_merge_sha: str,
+    reason: str,
+    detail: str,
+    log,
+    notes: list[str] | None = None,
+    review_notes: list[str] | None = None,
 ) -> dict:
     """The ONE escalation exit of the scoped path, and where a repaired reply's
     parser notes reach the run output (HZ-157).
@@ -264,6 +270,11 @@ def _escalate(
     The notes also get a log line of their own, emitted BEFORE the escalation
     line that `detail` is sliced into: a note that only rode inside a string
     someone later truncates is a note that did not arrive.
+
+    `review_notes` is the scoped review reply's own notes, for the one
+    escalation whose `detail` is that review's summary. They are passed RAW,
+    never pre-stamped into `detail`, so the cap below reserves room for both
+    groups together — a pre-stamped group sits inside the text the cap cuts.
     """
     if reason not in ESCALATION_REASONS:
         # A reason the Node side has no message for would surface as a raw
@@ -273,7 +284,11 @@ def _escalate(
         reason, detail = "merge_conflict", f"{reason}: {detail}"
     if notes:
         log(f"conflict_resolver: the resolution reply was repaired to parse — {'; '.join(notes)}")
-    detail = _with_notes(str(detail), notes or [], DETAIL_LIMIT, label=RESOLUTION_NOTE_LABEL)
+    detail = _with_note_groups(
+        str(detail),
+        [("parser notes", review_notes or []), (RESOLUTION_NOTE_LABEL, notes or [])],
+        DETAIL_LIMIT,
+    )
     log(f"conflict_resolver: escalating ({reason}) — {detail[:200]}")
     _abort_and_clean(ws, pre_merge_sha)
     return {"resolved": False, "reason": reason, "detail": detail}
@@ -406,17 +421,23 @@ def _scoped_resolve(ws, repo_full, branch, default, unmerged, pre_merge_sha, log
         }
     else:
         review = _run_scoped_review(ws, files, delta, log)
+        # Popped, not read: the review dict lands in the run result as-is, and
+        # these two exist only so the rejection below can cap the detail
+        # without cutting either reply's notes. review["summary"] stays the
+        # stamped copy for that result.
+        review_detail = review.pop("detail", review["summary"])
+        review_notes = review.pop("notes", [])
         if review["verdict"] != "pass":
-            # review["summary"] already carries the REVIEW reply's own notes;
-            # these are the RESOLUTION reply's, which is why the two groups are
-            # labelled differently (see _with_notes).
+            # Two groups — the REVIEW reply's notes and the RESOLUTION reply's —
+            # labelled differently (see _with_notes) and capped together.
             return _escalate(
                 ws,
                 pre_merge_sha,
                 "scoped_review_rejected",
-                review["summary"],
+                review_detail,
                 log,
                 notes=resolution_notes,
+                review_notes=review_notes,
             )
 
     git(ws, "add", "--", *paths)
@@ -582,9 +603,16 @@ def _with_notes(
     them off the end — the same rule, for the same reason, as
     agent_runner.stamp_notes(). None means the caller imposes no cap.
     """
-    if not notes:
+    return _with_note_groups(text, [(label, notes)], limit)
+
+
+def _with_note_groups(text: str, groups: list[tuple[str, list[str]]], limit: int | None = None) -> str:
+    """_with_notes for several labelled groups at once. The room for EVERY
+    group is reserved before `text` is cut, so no group can be the one a cap
+    slices in half."""
+    suffix = "".join(f" ({label}: {'; '.join(notes)})" for label, notes in groups if notes)
+    if not suffix:
         return text
-    suffix = f" ({label}: {'; '.join(notes)})"
     if limit is None:
         return text + suffix
     if len(suffix) >= limit:
@@ -639,27 +667,39 @@ def _run_scoped_review(ws: Path, files, delta, log) -> dict:
         parsed, notes = agent_runner.parse_agent_reply(reply.get("result") or "")
     except (AgentError, ValueError) as exc:
         return {"verdict": "fail", "reviewed": True, "summary": f"the scoped review returned no usable verdict: {exc}"}
+    if notes:
+        # The run output's own line for this reply's repair (HZ-157): the
+        # summary below is capped and may later be cut again, a log line is not.
+        log(f"conflict_resolver: the scoped review reply was repaired to parse — {'; '.join(notes)}")
     if not isinstance(parsed, dict):
         # Repaired bytes that parsed to a non-object still had their bytes
         # changed — the note belongs on this branch too (HZ-157).
+        detail = "the scoped review returned no verdict object"
         return {
             "verdict": "fail",
             "reviewed": True,
-            "summary": _with_notes("the scoped review returned no verdict object", notes, DETAIL_LIMIT),
+            "summary": _with_notes(detail, notes, DETAIL_LIMIT),
+            "detail": detail,
+            "notes": notes,
         }
     section = _review_section(parsed)
-    summary = _with_notes(str(parsed.get("summary") or ""), notes, DETAIL_LIMIT)
+    summary = str(parsed.get("summary") or "")
     if section["verdict"] != "pass" and section["findings"]:
         first = section["findings"][0]
-        detail = first.get("detail") if isinstance(first, dict) else None
-        if detail:
-            summary = f"{summary} — {detail}" if summary else str(detail)
+        finding = first.get("detail") if isinstance(first, dict) else None
+        if finding:
+            summary = f"{summary} — {finding}" if summary else str(finding)
+    summary = (summary or "no summary given")[:DETAIL_LIMIT]
     return {
         "verdict": section["verdict"],
         "reviewed": True,
-        # summary already reserved room for its notes, and it is the PREFIX of
-        # this string, so the note survives whatever this slice removes.
-        "summary": (summary or "no summary given")[:DETAIL_LIMIT],
+        # The notes are stamped AFTER the text is assembled, and _with_notes
+        # reserves their room inside the cap, so no slice can cut them.
+        "summary": _with_notes(summary, notes, DETAIL_LIMIT),
+        # RAW summary and notes, for _escalate() to cap together with the
+        # resolution reply's notes. _scoped_resolve() pops both.
+        "detail": summary,
+        "notes": notes,
         "findings": section["findings"],
     }
 
