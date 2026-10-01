@@ -193,6 +193,115 @@ def _render_personas(item: dict) -> str:
     return ", ".join(f"{agent}={persona}" for agent, persona in sorted(personas.items()))
 
 
+# HZ-204 (HZ-115 Stage 1): the explicit project context that replaces session
+# memory. The server selects the rows (orchestrator.js buildProjectContext);
+# this is the single owner of how they are shaped and capped. The cap covers
+# the whole rendered section — header and omission note included.
+PROJECT_CONTEXT_MAX_CHARS = 4000
+PROJECT_CONTEXT_ID_CHARS = 40
+PROJECT_CONTEXT_TITLE_CHARS = 200
+PROJECT_CONTEXT_DESC_CHARS = 160
+PROJECT_CONTEXT_FEEDBACK_CHARS = 300
+PROJECT_CONTEXT_HEADER = (
+    "Project context (other recent items in this project, and recent human feedback "
+    "on sent-back PM/Architect steps):"
+)
+
+
+def _clip_context_text(value: str, limit: int) -> str:
+    """Bound one context field to `limit` chars of content, saying so when
+    cut (HZ-114: never a silent slice). Unlike _mark_truncated() this always
+    stays bounded — a run-on token is cut mid-token — because the section's
+    hard cap must hold."""
+    if len(value) <= limit:
+        return value
+    cut = value[:limit]
+    last_space = cut.rfind(" ")
+    if last_space > limit // 2:
+        cut = cut[:last_space]
+    return f"{cut} […{len(value) - len(cut)} chars omitted]"
+
+
+def _context_str(value) -> str:
+    return value.strip() if isinstance(value, str) else ""
+
+
+def _first_line(value: str) -> str:
+    for line in value.splitlines():
+        if line.strip():
+            return line.strip()
+    return ""
+
+
+def _context_entries(ctx: dict) -> list[tuple[str, str, str]]:
+    """(kind, sort key, rendered line) for each well-formed row; malformed
+    rows are skipped rather than failing the step."""
+    entries = []
+    items = ctx.get("items")
+    for item in items if isinstance(items, list) else []:
+        if not isinstance(item, dict):
+            continue
+        item_id, title = _context_str(item.get("id")), _context_str(item.get("title"))
+        if not item_id or not title:
+            continue
+        line = (
+            f"- {_clip_context_text(item_id, PROJECT_CONTEXT_ID_CHARS)}: "
+            f"{_clip_context_text(title, PROJECT_CONTEXT_TITLE_CHARS)}"
+        )
+        desc = _first_line(_context_str(item.get("desc")))
+        if desc:
+            line += f" — {_clip_context_text(desc, PROJECT_CONTEXT_DESC_CHARS)}"
+        entries.append(("item", _context_str(item.get("updated_at")), line))
+    feedback = ctx.get("feedback")
+    for row in feedback if isinstance(feedback, list) else []:
+        if not isinstance(row, dict):
+            continue
+        message = " ".join(_context_str(row.get("message")).split())
+        if not message:
+            continue
+        item_id = _clip_context_text(_context_str(row.get("item_id")) or "?", PROJECT_CONTEXT_ID_CHARS)
+        target = _clip_context_text(_context_str(row.get("target")) or "?", PROJECT_CONTEXT_ID_CHARS)
+        line = f"- [{item_id} · {target}] {_clip_context_text(message, PROJECT_CONTEXT_FEEDBACK_CHARS)}"
+        entries.append(("feedback", _context_str(row.get("created_at")), line))
+    return entries
+
+
+def _render_context_entries(kept: list[tuple[str, str, str]], omitted: int) -> str:
+    lines = [PROJECT_CONTEXT_HEADER]
+    items = [line for kind, _, line in kept if kind == "item"]
+    feedback = [line for kind, _, line in kept if kind == "feedback"]
+    if items:
+        lines.append("Recent items:")
+        lines.extend(items)
+    if feedback:
+        lines.append("Recent human feedback:")
+        lines.extend(feedback)
+    if omitted:
+        lines.append(f"[{omitted} older entries omitted to fit {PROJECT_CONTEXT_MAX_CHARS} chars]")
+    return "\n".join(lines)
+
+
+def render_project_context(ctx) -> str:
+    """The `Project context` prompt section, or "" when there is nothing to
+    show (no field, a malformed field, or no well-formed rows). Over the cap,
+    whole entries are dropped oldest first across both lists, and one closing
+    line says how many."""
+    if not isinstance(ctx, dict):
+        return ""
+    entries = _context_entries(ctx)
+    if not entries:
+        return ""
+    # Newest first; a stable sort keeps the server's order among equal keys.
+    entries.sort(key=lambda entry: entry[1], reverse=True)
+    for keep in range(len(entries), 0, -1):
+        rendered = _render_context_entries(entries[:keep], len(entries) - keep)
+        if len(rendered) <= PROJECT_CONTEXT_MAX_CHARS:
+            return rendered
+    # Unreachable with the per-field caps above (one entry is far under the
+    # cap), but if those caps change, say so rather than overrun or fail.
+    return _render_context_entries([], len(entries))
+
+
 def build_prompt(task: dict) -> str:
     item = task["item"]
     step = task["step"]
@@ -218,6 +327,10 @@ def build_prompt(task: dict) -> str:
         lines.append("Human feedback to address:")
         for fb in feedback:
             lines.append(f"- {fb.get('message', '')}")
+    context_section = render_project_context(task.get("project_context"))
+    if context_section:
+        lines.append("")
+        lines.append(context_section)
     rules_section = render_rules_section(task.get("rules"))
     if rules_section:
         lines.append("")
