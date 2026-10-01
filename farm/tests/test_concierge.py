@@ -586,3 +586,125 @@ def test_a_parse_note_is_appended_after_the_action_notes(stub, monkeypatch):
     lines = t.sent[0][1].splitlines()
     assert "fake parse note" == lines[-1], "the parse note must come last, after the action results"
     assert any("priority set to Critical" in line for line in lines)
+
+
+# ---- HZ-157: a repaired reply is logged AND texted, never sent silently ----
+# The concierge is the caller the HZ-124 attempt-9 review actually rejected: it
+# has no run output line and no artifact, so a silent repair here would leave
+# no record anywhere. The outbound text is one surface, the session log is the
+# other, and these tests assert both.
+
+
+@pytest.fixture
+def repair_counter(tmp_path, monkeypatch):
+    """Repoints the repair counter into tmp_path — poll_once() runs the real
+    parser, which ticks a real file."""
+    from farm import agent_runner
+
+    path = tmp_path / "parser-repairs.json"
+    monkeypatch.setattr(agent_runner, "REPAIR_COUNTS_PATH", path)
+    return path
+
+
+def _replying(text, monkeypatch):
+    calls = []
+
+    def fake_run(prompt, **kw):
+        calls.append(prompt)
+        return {"result": text, "session_id": "s1"}
+
+    monkeypatch.setattr(ca, "run_agent", fake_run)
+    return calls
+
+
+def test_the_success_metrics_concierge_shape_is_repaired_and_reported(
+    stub, monkeypatch, capsys, repair_counter
+):
+    """The exact reply the success metric names: `{"reply":"ok","actions":[],}`.
+
+    It must parse, it must be LOGGED as repaired, and the note must ride out on
+    the WhatsApp text. A run where the human sees a bare "ok" and nothing else
+    is the version review sent back.
+    """
+    from farm import agent_runner
+
+    calls = _replying('{"reply":"ok","actions":[],}', monkeypatch)
+    t = FakeTransport()
+    state = make_state(t, "repaircomma")
+    t.seed("what's up")
+    ca.poll_once(t, state, stub.url, farmd_url=stub.url)
+
+    assert len(calls) == 1, "a trailing comma must not cost a second agent run"
+    sent = t.sent[0][1]
+    assert sent.startswith("ok")
+    assert agent_runner.TRAILING_COMMA_NOTE in sent, "the repair was sent silently"
+    logged = capsys.readouterr().out
+    assert "repaired to parse" in logged, "the repair was never logged"
+    assert agent_runner.TRAILING_COMMA_NOTE in logged
+    assert agent_runner.repair_counts() == {"trailing_comma": 1}
+
+
+def test_a_single_quoted_concierge_reply_is_repaired_after_the_retry(
+    stub, monkeypatch, capsys, repair_counter
+):
+    from farm import agent_runner
+
+    calls = []
+
+    def fake_run(prompt, **kw):
+        calls.append(prompt)
+        # Both attempts come back single-quoted, so the ambiguous rung is what
+        # finally recovers it — after the lossless retry has really run.
+        return {"result": "{'reply':'ok','actions':[]}", "session_id": "s1"}
+
+    monkeypatch.setattr(ca, "run_agent", fake_run)
+    t = FakeTransport()
+    state = make_state(t, "repairquotes")
+    t.seed("what's up")
+    ca.poll_once(t, state, stub.url, farmd_url=stub.url)
+
+    assert len(calls) == 2, "the lossless retry must run before an ambiguous repair"
+    sent = t.sent[0][1]
+    assert agent_runner.SINGLE_QUOTE_NOTE in sent
+    assert "repaired to parse" in capsys.readouterr().out
+    assert agent_runner.repair_counts() == {"single_quotes": 1}
+
+
+def test_a_repaired_reply_still_goes_through_validate_reply(stub, monkeypatch, repair_counter):
+    """validate_reply builds the 4-tuple process_message unpacks. A repaired
+    value that skipped it would crash the unpack instead of replying — this is
+    the concrete failure the architecture review flagged."""
+    _replying(
+        '{"reply":"done","actions":[{"type":"set_priority","item_id":"HZ-7",'
+        '"priority":"Critical"},],}',
+        monkeypatch,
+    )
+    t = FakeTransport()
+    state = make_state(t, "repairvalidate")
+    t.seed("set HZ-7 priority to Critical")
+    ca.poll_once(t, state, stub.url, farmd_url=stub.url)
+
+    lines = t.sent[0][1].splitlines()
+    # The action survived validation and really executed...
+    assert any("priority set to Critical" in line for line in lines)
+    # ...and the parse note is still last, after the action results.
+    from farm import agent_runner
+
+    assert lines[-1] == agent_runner.TRAILING_COMMA_NOTE
+
+
+def test_an_unrepairable_concierge_reply_sends_the_error_and_fabricates_nothing(
+    stub, monkeypatch, repair_counter
+):
+    from farm import agent_runner
+
+    _replying('{"reply":"he said "hi" to me","actions":[]}', monkeypatch)
+    t = FakeTransport()
+    state = make_state(t, "unrepairable")
+    t.seed("hello")
+    ca.poll_once(t, state, stub.url, farmd_url=stub.url)
+
+    sent = t.sent[0][1]
+    assert "hit an error" in sent, "an unrepairable reply must not be answered with a guess"
+    assert "he said" not in sent
+    assert agent_runner.repair_counts() == {}

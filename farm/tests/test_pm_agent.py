@@ -987,3 +987,96 @@ def test_turn_cap_is_retryable_in_the_shared_vocabulary():
     assert reasons.is_retryable(reasons.REASON["TURN_CAP"])
     js = (REPO_ROOT / "domain" / "js" / "reasons.js").read_text()
     assert "AUTO_RETRY_REASONS" in js, "the JS binding no longer derives the set — re-point this test"
+
+
+# ---- HZ-157: a repaired reply's note on both surfaces this step owns ----
+# The metric asks for a note "in the output line and the artifact" per shape,
+# so both shapes are parametrized over both surfaces rather than one shape
+# being spot-checked on one surface.
+
+
+@pytest.fixture
+def repair_counter(tmp_path, monkeypatch):
+    from farm import agent_runner
+
+    path = tmp_path / "parser-repairs.json"
+    monkeypatch.setattr(agent_runner, "REPAIR_COUNTS_PATH", path)
+    return path
+
+
+def _malformed(shape: str) -> str:
+    """A well-formed PM reply re-serialized into one of the two broken shapes.
+
+    Built by mangling real JSON rather than hand-typing it, so the only
+    difference from a clean reply is the defect under test.
+    """
+    good = json.dumps({"summary": "planned it", "artifact_md": "# Options"})
+    if shape == "trailing_comma":
+        return good[:-1] + ",}"
+    return good.replace('"', "'")
+
+
+@pytest.mark.parametrize(
+    "shape,note_attr,expected_runs",
+    [
+        # A trailing comma has one reading, so it costs no extra agent run.
+        ("trailing_comma", "TRAILING_COMMA_NOTE", 1),
+        # Single quotes are ambiguous, so the lossless retry runs first.
+        ("single_quotes", "SINGLE_QUOTE_NOTE", 2),
+    ],
+)
+def test_a_repaired_reply_notes_both_surfaces(
+    pm_process, repair_counter, shape, note_attr, expected_runs
+):
+    from farm import agent_runner
+
+    note = getattr(agent_runner, note_attr)
+    # Both replies carry the same defect, so the retry (when spent) is no help
+    # and the repair is what recovers the run.
+    posted = pm_process.run(_malformed(shape), _malformed(shape))
+
+    assert posted["ok"] is True
+    assert posted["summary"].startswith("planned it")
+    assert len(pm_process.prompts) == expected_runs
+    assert note in posted["summary"], "the repair is missing from the run's output line"
+    assert f"- {note}" in posted["artifacts"]["artifact_md"], "the artifact has no note"
+    assert agent_runner.repair_counts() == {shape: 1}
+
+
+def test_a_repaired_note_survives_a_max_length_summary_and_artifact(pm_process, repair_counter):
+    """validate() slices the summary to its cap, so a note appended and then
+    re-sliced would be dropped in the common case, not the rare one."""
+    from farm import agent_runner
+
+    good = json.dumps({"summary": "s" * 400, "artifact_md": "a" * 200})
+    posted = pm_process.run(good[:-1] + ",}")
+    assert agent_runner.TRAILING_COMMA_NOTE in posted["summary"]
+    assert agent_runner.TRAILING_COMMA_NOTE in posted["artifacts"]["artifact_md"]
+
+
+def test_an_unrepairable_pm_reply_is_reported_as_a_failure(pm_process, repair_counter):
+    """No fabricated content: the run fails rather than reporting a plausible
+    summary the model never sent."""
+    from farm import agent_runner
+
+    bad = '{"summary":"he said "hi" to me"}'
+    posted = pm_process.run(bad, bad)
+    assert posted["ok"] is False
+    assert "summary" not in posted
+    assert agent_runner.repair_counts() == {}
+
+
+def test_a_repaired_reply_still_takes_the_validator(pm_process, repair_counter):
+    """The comma repair yields a parseable object with no 'summary', which
+    validate() must still reject — so the retry runs and wins, and nothing is
+    counted as a repair that happened."""
+    from farm import agent_runner
+
+    posted = pm_process.run('{"patch":{},}', json.dumps({"summary": "recovered"}))
+    assert posted["ok"] is True and posted["summary"] == "recovered"
+    assert len(pm_process.prompts) == 2
+    # The retry names the PARSE failure, not the validator's complaint: these
+    # bytes really did not parse, and that is what the model has to be told.
+    assert "Expecting property name" in pm_process.prompts[1]
+    assert agent_runner.repair_counts() == {}
+    assert agent_runner.TRAILING_COMMA_NOTE not in posted["summary"]

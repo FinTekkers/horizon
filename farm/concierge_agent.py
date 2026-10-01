@@ -359,9 +359,14 @@ def process_message(
 
     # Claim before executing: a crash from here on can not replay actions.
     state.claim(msg)
-    # The concierge is not a step: it has no run output line and no artifact,
-    # so the WhatsApp reply is where its parser notes surface. Appended last,
-    # after the action results, and a no-op when empty.
+    # HZ-157: a repaired reply is LOGGED as well as texted. The concierge has
+    # no run output line and no artifact — the two surfaces the other callers
+    # stamp — so without this the session log would show a clean turn for a
+    # reply whose bytes the parser had to change. The text below is the note's
+    # other surface; neither one alone is enough.
+    for note in parse_notes:
+        log(f"message {msg.msg_id}: reply was repaired to parse — {note}")
+    # Appended last, after the action results, and a no-op when empty.
     notes = execute_actions(actions, base_url) + notes + parse_notes
     # Remembers this sender's numbered choices (or clears stale ones) so a
     # later bare-number reply from them resolves deterministically.

@@ -230,3 +230,129 @@ def test_the_transport_exemption_covers_exactly_two_call_sites():
         finally:
             TRANSPORT_ENVELOPE_CALLS.clear()
             TRANSPORT_ENVELOPE_CALLS.update(saved)
+
+
+# ---- HZ-157: and the notes the helper returns may not be thrown away ----
+# A repair that changes bytes without a note in the run output is the exact
+# version of HZ-124 that review sent back. The helper always RETURNS the note,
+# so the remaining way to lose one is at the call site: `parsed, _notes = ...`.
+# This is the rule against that.
+#
+# WHAT IT PROVES, precisely: that the notes element is bound to a usable name
+# which is read somewhere else in the module. It does NOT prove the notes reach
+# a human — a `notes` that is reassigned before use would pass. Asserting that
+# end to end is the job of the per-caller tests in test_pm_agent.py,
+# test_step_agent.py and test_concierge.py; this rule catches the mechanical
+# discard those tests would not notice being added to a fourth call site.
+
+# Functions whose LAST return element is the notes list. _run_and_parse is
+# step_agent's own thin wrapper, so discarding notes there loses them just as
+# completely as discarding them from the helper itself.
+NOTES_RETURNING = {"parse_agent_reply", "_run_and_parse"}
+
+
+def _called_name(node: ast.Call) -> str | None:
+    func = node.func
+    if isinstance(func, ast.Name):
+        return func.id
+    if isinstance(func, ast.Attribute):
+        return func.attr
+    return None
+
+
+def _discarded_notes(paths_or_trees) -> list[str]:
+    """Call sites that drop the notes element. One string per finding."""
+    found: list[str] = []
+    for label, tree in paths_or_trees:
+        # Every name READ anywhere in the module, so "bound but never used" is
+        # distinguishable from "bound and consumed".
+        loaded = {
+            n.id for n in ast.walk(tree) if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Load)
+        }
+        assigned_from: dict[int, ast.AST] = {}
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Assign) and isinstance(node.value, ast.Call):
+                assigned_from[id(node.value)] = node
+
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call) or _called_name(node) not in NOTES_RETURNING:
+                continue
+            name = _called_name(node)
+            where = f"{label}:{node.lineno}"
+            assign = assigned_from.get(id(node))
+            if assign is None or len(assign.targets) != 1 or not isinstance(assign.targets[0], ast.Tuple):
+                found.append(
+                    f"{where}: {name}() result is not unpacked — its notes cannot reach any output"
+                )
+                continue
+            target = assign.targets[0].elts[-1]
+            if not isinstance(target, ast.Name):
+                found.append(f"{where}: {name}()'s notes element is not bound to a plain name")
+            elif target.id.startswith("_"):
+                found.append(
+                    f"{where}: {name}()'s notes are discarded into '{target.id}' — a repair that "
+                    "changed bytes would then be silent. Stamp them into the summary/artifact."
+                )
+            elif target.id not in loaded:
+                found.append(
+                    f"{where}: {name}()'s notes are bound to '{target.id}' and never read again"
+                )
+    return found
+
+
+def _trees_for(paths: list[Path]) -> list[tuple[str, ast.AST]]:
+    return [(str(path), ast.parse(path.read_text())) for path in paths]
+
+
+def test_no_caller_discards_the_parsers_notes():
+    offenders = _discarded_notes(_trees_for(farm_modules() + [PARSER_MODULE]))
+    assert offenders == [], "parser notes must reach the caller's output:\n" + "\n".join(offenders)
+
+
+@pytest.mark.parametrize(
+    "source,why",
+    [
+        ("p, _notes = parse_agent_reply(r)\nuse(p)\n", "underscore-prefixed discard"),
+        ("p, notes = parse_agent_reply(r)\nuse(p)\n", "bound but never read"),
+        ("use(parse_agent_reply(r))\n", "not unpacked at all"),
+        ("p = parse_agent_reply(r)\nuse(p)\n", "whole tuple kept, notes never split out"),
+        ("a, b, _notes = _run_and_parse(x)\nuse(a, b)\n", "discarded from step_agent's wrapper"),
+    ],
+)
+def test_the_notes_rule_flags_a_planted_offender(source, why):
+    """Fed as an ast-parsed SOURCE STRING, not a decoy module on disk: a real
+    planted file under farm/ would trip the HZ-156 rule above instead, and this
+    test would then pass for the wrong reason."""
+    offenders = _discarded_notes([("planted.py", ast.parse(source))])
+    assert offenders, f"the notes rule missed a {why}"
+    assert "planted.py" in offenders[0]
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        # pm_agent's real shape
+        "(s, p, a), notes = parse_agent_reply(r, retry, validate=v)\nuse(notes)\n",
+        # concierge_agent's real shape
+        "(r2, ac, nt, go), parse_notes = parse_agent_reply(r, retry, validate=v)\n"
+        "use(parse_notes)\n",
+        # step_agent's two real shapes
+        "parsed, notes = parse_agent_reply(r['result'], retry)\nuse(notes)\n",
+        "parsed, prov, notes = _run_and_parse(p)\nuse(notes)\n",
+    ],
+)
+def test_the_notes_rule_passes_the_shapes_really_in_use(source):
+    assert _discarded_notes([("real.py", ast.parse(source))]) == []
+
+
+def test_the_notes_rule_scans_the_modules_that_really_call_the_helper():
+    """Guards the rule itself: without this it could pass by finding no call
+    sites at all."""
+    calls = 0
+    for _label, tree in _trees_for(farm_modules()):
+        calls += sum(
+            1
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Call) and _called_name(node) == "parse_agent_reply"
+        )
+    assert calls >= 3, f"expected the three known callers to call the helper, found {calls}"
