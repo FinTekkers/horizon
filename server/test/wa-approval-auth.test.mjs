@@ -17,6 +17,7 @@ import assert from 'node:assert/strict'
 import { mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { withGreenPremerge } from './helpers/greenPremerge.mjs'
 
 process.env.HORIZON_DB = join(mkdtempSync(join(tmpdir(), 'horizon-wa-approval-')), 'test.db')
 delete process.env.GITHUB_WEBHOOK_SECRET
@@ -32,6 +33,7 @@ const { buildApp } = await import('../src/app.js')
 const { STEPS, ACCEPT_GATE_INDEX } = await import('../../domain/js/lifecycle.js')
 const { FARM_SHARED_SECRET, WA_APPROVAL_SECRET } = await import('../src/config.js')
 const store = await import('../src/store.js')
+const premerge = await import('../src/premerge.js')
 
 store.purgeDemoItems()
 const app = buildApp({ logger: false })
@@ -228,21 +230,18 @@ test('409 stale_step when the step index no longer matches the cursor', async ()
 })
 
 test('502 when the PR merge fails, and the gate stays open', async () => {
-  const realFetch = globalThis.fetch
-  globalThis.fetch = async () => ({
+  const mergeRefused = async () => ({
     ok: false,
     status: 405,
     json: async () => ({ message: 'required checks pending' }),
     text: async () => '',
   })
-  try {
+  await withGreenPremerge(premerge, mergeRefused, async () => {
     const res = await approve('W-MERGE', ACCEPT_GATE_INDEX, { senderJid: EVAN, sender: 'Evan' })
     assert.equal(res.statusCode, 502)
     assert.match(res.json().error, /merge failed/)
     assert.equal(cursorOf('W-MERGE'), ACCEPT_GATE_INDEX)
-  } finally {
-    globalThis.fetch = realFetch
-  }
+  })
 })
 
 // ---- guardrail 4: farmd's own routes are untouched ----

@@ -227,6 +227,33 @@ the `server` and `ui` suites — that wiring is what makes the guardrail gate
 actually run all three. No linters are configured anywhere in the repo yet,
 so the "linters must pass" guardrail is currently vacuous.
 
+## Pre-merge check (Accept the code, HZ-183)
+
+A PR green against the main it branched from can still turn main red once it
+lands next to another PR. So approving **Accept the code** first runs the same
+checks on a test-merge: the server (`server/src/premerge.js`) reads the PR head
+and the base branch tip from GitHub, then runs
+`python -m farm.premerge <repo> <item> <head-sha> --base <base-sha>`
+(`farm/premerge.py`). That makes a scratch worktree off the repo hub at
+`~/.horizon-farm/workspaces/<owner>__<repo>__premerge/<item>/` — never
+`/opt/horizon` or the running checkout — merges the head into the base there,
+runs `run_checks()`, and always reaps the worktree.
+
+- **Green:** the server re-reads the base tip; if it moved, the merge is
+  blocked and the human clicks Accept again. Otherwise it merges with the
+  tested head as `sha`, so GitHub refuses if the head moved too. The merge is
+  a squash, so the tested merge commit itself is never pushed: the head pin
+  and the base re-check together are what make the squash the tested tree.
+- **Anything else** — a red check, a conflict, a timeout, no checks detected,
+  no hub, a crash — leaves the gate open and the PR unmerged, and the item's
+  activity names the failing check and the last 40 lines of its output.
+- `PREMERGE_CHECK_TIMEOUT_MS` (server env, default 20 minutes) bounds the
+  whole run. The server and the farm must share `FARM_HOME` (both default to
+  `~/.horizon-farm` for the `ubuntu` user).
+
+Measure it on an idle host with
+`HORIZON_PREMERGE_LIVE=1 python3 -m pytest -s farm/tests/test_premerge_live.py`.
+
 ## Tests
 
 ```

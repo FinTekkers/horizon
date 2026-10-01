@@ -506,14 +506,48 @@ async function promoteBaseline(item) {
   await deleteArtifactRef(repo, item)
 }
 
+const SHA_RE = /^[0-9a-f]{40}$/
+
+// HZ-183: the commits the pre-merge check tests. Both shas come from GitHub,
+// the same source mergePr's sha guard and the base re-check read, so "the
+// tested head" and "the tested base" mean the same thing on every side.
+export async function getPrHead(item) {
+  const res = await gh(`/repos/${item.repo}/pulls/${item.pr}`)
+  if (!res.ok) {
+    throw new Error(
+      res.status === 404 ? 'the PR was not found — was it closed on GitHub?' : `could not read PR #${item.pr} (GitHub returned ${res.status})`,
+    )
+  }
+  const data = await res.json().catch(() => ({}))
+  const sha = data?.head?.sha
+  const baseRef = data?.base?.ref
+  if (!SHA_RE.test(sha || '') || !baseRef) throw new Error(`GitHub returned PR #${item.pr} without a head commit or base branch`)
+  return { sha, ref: data.head.ref, baseRef }
+}
+
+// The current tip of a branch. Read before the check (what to test against)
+// and again after it (did it move while the checks ran).
+export async function getBranchSha(repo, branch) {
+  const res = await gh(`/repos/${repo}/git/ref/${encodeURIComponent(`heads/${branch}`)}`)
+  if (!res.ok) throw new Error(`could not read the ${branch} branch (GitHub returned ${res.status})`)
+  const sha = (await res.json().catch(() => ({})))?.object?.sha
+  if (!SHA_RE.test(sha || '')) throw new Error(`GitHub returned the ${branch} branch without a commit sha`)
+  return sha
+}
+
 // Accepting the code merges its PR (squash), removes the work branch, and —
 // only here, never from a PR branch — promotes this item's screenshots to be
 // the new baseline that future PRs compare against.
-export async function mergePr(item) {
+//
+// `sha` (HZ-183) pins the merge to the PR head the pre-merge check tested:
+// GitHub refuses with 409 if the head moved since. A squash builds its own
+// commit, so the tested merge commit itself is never pushed; the head pin plus
+// app.js's base re-check together are what make the squash the tested tree.
+export async function mergePr(item, { sha } = {}) {
   const repo = item.repo
   const res = await gh(`/repos/${repo}/pulls/${item.pr}/merge`, {
     method: 'PUT',
-    body: JSON.stringify({ merge_method: 'squash' }),
+    body: JSON.stringify(sha ? { merge_method: 'squash', sha } : { merge_method: 'squash' }),
   })
   if (res.ok) {
     // Best-effort branch cleanup; the merge is what matters.
@@ -531,7 +565,9 @@ export async function mergePr(item) {
         ? 'the token is not allowed to merge (Contents read/write required)'
         : res.status === 404
           ? 'the PR was not found — was it closed on GitHub?'
-          : data.message || `GitHub returned ${res.status}`
+          : res.status === 409
+            ? 'the PR head moved while the checks ran — click Accept again'
+            : data.message || `GitHub returned ${res.status}`
   throw new Error(message)
 }
 

@@ -76,3 +76,18 @@ test('a non-401 approval failure opens the PR tab and still returns the parsed b
   await expect(serverApi.approveGate('X3', '')).resolves.toEqual({ error: 'merge_conflict' })
   expect(openSpy).toHaveBeenCalledWith('https://github.com/org/repo/pull/9', '_blank', 'noopener')
 })
+
+test('a pre-merge check failure stays on the tracker instead of opening the PR (HZ-183)', async () => {
+  const serverApi = await import('./serverApi')
+  serverApi.subscribe(() => {})
+  seedItem({ id: 'X4', cursor: 5, pr_url: 'https://github.com/org/repo/pull/9' })
+  const body = { error: 'pre-merge checks failed: npm test --silent', premerge: true }
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(() => Promise.resolve({ ok: false, status: 502, json: () => Promise.resolve(body) })),
+  )
+  const openSpy = vi.spyOn(window, 'open').mockImplementation(() => {})
+
+  await expect(serverApi.approveGate('X4', '')).resolves.toEqual(body)
+  expect(openSpy).not.toHaveBeenCalled()
+})

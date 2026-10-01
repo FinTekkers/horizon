@@ -8,6 +8,7 @@ import * as store from './store.js'
 import * as github from './github.js'
 import * as deploy from './deploy.js'
 import * as orchestrator from './orchestrator.js'
+import * as premerge from './premerge.js'
 import {
   WEBHOOK_SECRET,
   FARM_SHARED_SECRET,
@@ -16,6 +17,7 @@ import {
   SESSION_COOKIE_NAME,
   SESSION_TTL_DAYS,
   TEST_HOOKS_ENABLED,
+  PREMERGE_CHECK_TIMEOUT_MS,
 } from './config.js'
 import { marked } from 'marked'
 import { db } from './db.js'
@@ -504,15 +506,96 @@ export function buildApp({ logger = true } = {}) {
     },
   )
 
-  // Shared by the session/gate-PIN browser route and the WhatsApp-concierge
-  // route below — same merge/close/approve sequence, only the actor label and
-  // the auth check at the call site differ. Returns either a store.js-shaped
-  // result ({ok:true} / {error:'not_found'|'not_at_gate'|'stale_step'}) or
-  // {error, status:502} for a merge/close failure, which the caller maps to
-  // a 502 instead of send()'s default 404/409.
+  // The body for a performGateApproval {error, status} result. `premerge`
+  // tells the UI the failure is the pre-merge check's — the reason is in the
+  // activity log, so it must not open the PR on GitHub as if GitHub refused.
+  const gateFailureBody = (result) => (result.premerge ? { error: result.error, premerge: true } : { error: result.error })
+
+  // HZ-183: items whose Accept is mid pre-merge check (or mid merge). A fast
+  // 409 for the double click; farm/premerge.py's per-item file lock is the
+  // real mutex, and it survives a server restart this Set does not.
+  const premergeInFlight = new Set()
+
+  // HZ-183: test-merge the PR head into the current base tip and run the
+  // repo's checks there (server/src/premerge.js -> farm/premerge.py) before
+  // the merge call. Resolves { headSha } when the merge may proceed with
+  // exactly that head, or a performGateApproval error result. Every
+  // inconclusive outcome blocks: this can only stop a merge, never make one.
+  async function preMergeChecks(id, item) {
+    const blocked = (text, error) => {
+      store.addEvent(id, {
+        who: 'Horizon',
+        text: `PR #${item.pr} is not merged and the gate stays open — ${text}`,
+        color: '#9C333E',
+        initials: 'HZ',
+      })
+      store.notifyChange()
+      return { error, status: 502, premerge: true }
+    }
+    let head
+    let baseSha
+    try {
+      head = await github.getPrHead(item)
+      baseSha = await github.getBranchSha(item.repo, head.baseRef)
+    } catch (err) {
+      return blocked(`could not read the PR to test-merge it: ${err.message}`, `pre-merge check failed: ${err.message}`)
+    }
+    // Logged and pushed BEFORE the run: it takes minutes, and the human must
+    // see that something is happening rather than click Accept again.
+    store.addEvent(id, {
+      who: 'Horizon',
+      text: `running the repo's checks on a test-merge of ${head.baseRef} + PR #${item.pr} before merging — this takes a few minutes, don't click Accept again`,
+      color: '#DFA200',
+      initials: 'HZ',
+    })
+    store.notifyChange()
+    const result = await premerge.runPreMergeChecks(item, {
+      headSha: head.sha,
+      baseSha,
+      timeoutMs: PREMERGE_CHECK_TIMEOUT_MS,
+    })
+    if (!result.ok) {
+      const error =
+        result.reason === 'checks_failed'
+          ? `pre-merge checks failed: ${result.failing_check}`
+          : `pre-merge checks blocked the merge (${result.reason})`
+      return blocked(premerge.describeFailure(result), error)
+    }
+    // The checks proved base_sha + head_sha. If the base moved meanwhile, the
+    // squash would land on a main nobody tested — the HZ-154 x HZ-156 window.
+    // Same source (GitHub) as the sha the check was given.
+    let baseNow
+    try {
+      baseNow = await github.getBranchSha(item.repo, head.baseRef)
+    } catch (err) {
+      return blocked(`could not re-read ${head.baseRef} after the checks: ${err.message}`, `pre-merge check failed: ${err.message}`)
+    }
+    if (baseNow !== result.base_sha) {
+      return blocked(
+        `${head.baseRef} moved from ${result.base_sha.slice(0, 12)} to ${baseNow.slice(0, 12)} while the checks ran, so the test-merge no longer matches what would land — click Accept again to re-test`,
+        `${head.baseRef} moved while the pre-merge checks ran — click Accept again`,
+      )
+    }
+    store.addEvent(id, {
+      who: 'Horizon',
+      text: `pre-merge checks passed on the test-merge of ${head.baseRef} ${result.base_sha.slice(0, 12)} + PR head ${result.head_sha.slice(0, 12)} (${result.note || 'green'})`,
+      color: '#0E6E74',
+      initials: 'HZ',
+    })
+    return { headSha: result.head_sha }
+  }
+
+  // Shared by the session/gate-PIN browser route, the WhatsApp-concierge
+  // route and the WhatsApp poll vote below — same merge/close/approve
+  // sequence, only the actor label and the auth check at the call site
+  // differ. Returns either a store.js-shaped result ({ok:true} /
+  // {error:'not_found'|'not_at_gate'|'stale_step'}) or {error, status} for a
+  // pre-merge/merge/close failure (502) or a pre-merge check already running
+  // (409), which the routes send with that status.
   async function performGateApproval(id, stepIndex, notes, actor = 'You') {
     // Accepting the code means merging its PR — the gate does not advance if
-    // the merge fails, and the reason is logged to the item's activity.
+    // the pre-merge checks or the merge fail, and the reason is logged to the
+    // item's activity.
     const item = store.getItem(id)
     if (
       item &&
@@ -521,23 +604,33 @@ export function buildApp({ logger = true } = {}) {
       item.pr != null &&
       item.repo
     ) {
+      if (premergeInFlight.has(id)) {
+        return { error: 'pre-merge checks are already running for this item — wait for them to finish', status: 409, premerge: true }
+      }
+      premergeInFlight.add(id)
       try {
-        await github.mergePr(item)
-        store.addEvent(id, {
-          who: 'Horizon',
-          text: `merged PR #${item.pr} (squash) and deleted the work branch`,
-          color: '#0E6E74',
-          initials: 'HZ',
-        })
-      } catch (err) {
-        store.addEvent(id, {
-          who: 'Horizon',
-          text: `could not merge PR #${item.pr}: ${err.message} — the gate stays open`,
-          color: '#9C333E',
-          initials: 'HZ',
-        })
-        store.notifyChange()
-        return { error: `merge failed: ${err.message}`, status: 502 }
+        const gate = await preMergeChecks(id, item)
+        if (gate.error) return gate
+        try {
+          await github.mergePr(item, { sha: gate.headSha })
+          store.addEvent(id, {
+            who: 'Horizon',
+            text: `merged PR #${item.pr} (squash) and deleted the work branch`,
+            color: '#0E6E74',
+            initials: 'HZ',
+          })
+        } catch (err) {
+          store.addEvent(id, {
+            who: 'Horizon',
+            text: `could not merge PR #${item.pr}: ${err.message} — the gate stays open`,
+            color: '#9C333E',
+            initials: 'HZ',
+          })
+          store.notifyChange()
+          return { error: `merge failed: ${err.message}`, status: 502 }
+        }
+      } finally {
+        premergeInFlight.delete(id)
       }
     }
     // The final gate closes the GitHub issue (with a summary comment) so the
@@ -601,7 +694,7 @@ export function buildApp({ logger = true } = {}) {
       const { id, stepIndex } = request.params
       const notes = (request.body?.notes || '').trim()
       const result = await performGateApproval(id, stepIndex, notes, request.user.name)
-      if (result.status === 502) return reply.code(502).send({ error: result.error })
+      if (result.status) return reply.code(result.status).send(gateFailureBody(result))
       return send(reply, result)
     },
   )
@@ -665,7 +758,7 @@ export function buildApp({ logger = true } = {}) {
       const label = (request.body.sender || '').trim() || `...${normalizeJid(senderJid).slice(-4)}`
       const actor = `${label} via WhatsApp`
       const result = await performGateApproval(id, stepIndex, notes, actor)
-      if (result.status === 502) return reply.code(502).send({ error: result.error })
+      if (result.status) return reply.code(result.status).send(gateFailureBody(result))
       return send(reply, result)
     },
   )

@@ -17,16 +17,70 @@ A check *runner* that isn't installed on the farm host is skipped with a
 warning; a check that runs and fails raises CheckFailure and fails the step.
 """
 
+import contextlib
 import json
 import os
 import shutil
+import signal
 import subprocess
 import sys
+import time
 from pathlib import Path
+
+# HZ-183: how much of a failing command's output a CheckFailure carries. Lines,
+# not characters: the failing test names sit at the END of a test run's output
+# (pytest's "FAILED ..." summary, node --test's "not ok ..."), and the old
+# 400-character cut routinely kept half a stack trace and none of the names.
+CHECK_TAIL_LINES = 40
 
 
 class CheckFailure(RuntimeError):
-    pass
+    """str(exc) is the human-readable message every existing caller logs.
+
+    HZ-183 adds the parts separately so the pre-merge gate can name them:
+    `command` (the check that failed, as shown), `tail` (the last
+    CHECK_TAIL_LINES of its output) and `reason` — "failed", "timed_out", or
+    "none_ran" (nothing was detected or every runner was missing)."""
+
+    def __init__(self, message: str, *, command: str | None = None, tail: str = "", reason: str = "failed"):
+        super().__init__(message)
+        self.command = command
+        self.tail = tail
+        self.reason = reason
+
+
+def output_tail(text: str) -> str:
+    """The last CHECK_TAIL_LINES lines of `text`, cut on a line boundary and
+    marked when anything was dropped (HZ-114: no silent truncation)."""
+    lines = text.strip().splitlines()
+    if len(lines) <= CHECK_TAIL_LINES:
+        return "\n".join(lines)
+    kept = lines[-CHECK_TAIL_LINES:]
+    return f"[earlier output trimmed — last {CHECK_TAIL_LINES} lines]\n" + "\n".join(kept)
+
+
+def _run_bounded(cmd: list[str], ws: Path, timeout_s: float) -> subprocess.CompletedProcess:
+    """subprocess.run(timeout=...) kills only the direct child: `npm test`'s
+    node and vite grandchildren outlive the timeout and keep running (CPU,
+    ports, a half-built tree) after the check has already been reported. Run
+    each check in its own session and kill the whole group, so a timed-out
+    check is actually stopped. Raises TimeoutExpired / FileNotFoundError
+    exactly like subprocess.run."""
+    proc = subprocess.Popen(
+        cmd, cwd=str(ws), stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, start_new_session=True
+    )
+    try:
+        stdout, stderr = proc.communicate(timeout=timeout_s)
+    except subprocess.TimeoutExpired:
+        with contextlib.suppress(ProcessLookupError):
+            os.killpg(proc.pid, signal.SIGKILL)
+        # wait(), not communicate(): a descendant that escaped the group could
+        # still hold the pipes open, and draining them would hang again.
+        proc.wait()
+        proc.stdout.close()
+        proc.stderr.close()
+        raise
+    return subprocess.CompletedProcess(cmd, proc.returncode, stdout, stderr)
 
 
 def _playwright_chromium_installed() -> bool:
@@ -85,7 +139,7 @@ def detect_check_commands(ws: Path, log=lambda *_: None) -> list[list[str]]:
     return commands
 
 
-def run_checks(ws: Path, log=print, *, require_ran: bool = False) -> str:
+def run_checks(ws: Path, log=print, *, require_ran: bool = False, deadline: float | None = None) -> str:
     """Returns a short human-readable note; raises CheckFailure on failure.
 
     require_ran (HZ-154) turns "nothing to enforce" into a failure. The scoped
@@ -93,31 +147,46 @@ def run_checks(ws: Path, log=print, *, require_ran: bool = False) -> str:
     push" has to mean an actual green: a repo where zero check runners are
     detected or installed gives that path no evidence at all, and it escalates
     instead. Every other caller keeps today's behaviour — the guardrail there
-    is "tests must pass", not "tests must exist"."""
+    is "tests must pass", not "tests must exist".
+
+    deadline (HZ-183) is a time.monotonic() value bounding the WHOLE run.
+    FARM_CHECK_TIMEOUT_S bounds each command on its own, so three commands
+    could otherwise take three times the caller's budget; with a deadline each
+    command gets whatever is left, and a spent budget is a "timed_out"
+    CheckFailure rather than a silent overrun."""
     timeout_s = int(os.environ.get("FARM_CHECK_TIMEOUT_S", "600"))
     commands = detect_check_commands(ws, log=log)
     if not commands:
         log("checks: no test/lint commands detected in the repo — nothing to enforce")
         if require_ran:
-            raise CheckFailure("no repo checks detected — nothing proves this change is safe to push")
+            raise CheckFailure("no repo checks detected — nothing proves this change is safe to push", reason="none_ran")
         return "no repo checks detected"
 
     ran = 0
     for cmd in commands:
         shown = " ".join(cmd)
+        budget = float(timeout_s)
+        if deadline is not None:
+            budget = min(budget, deadline - time.monotonic())
+            if budget <= 0:
+                raise CheckFailure(f"repo checks ran out of time before: {shown}", command=shown, reason="timed_out")
         log(f"checks: running {shown}")
         try:
-            proc = subprocess.run(cmd, cwd=str(ws), capture_output=True, text=True, timeout=timeout_s)
+            proc = _run_bounded(cmd, ws, budget)
         except FileNotFoundError:
             log(f"checks: {cmd[0]} is not installed on the farm host — skipped")
             continue
         except subprocess.TimeoutExpired as exc:
-            raise CheckFailure(f"repo checks timed out after {timeout_s}s: {shown}") from exc
+            raise CheckFailure(
+                f"repo checks timed out after {int(budget)}s: {shown}", command=shown, reason="timed_out"
+            ) from exc
         if proc.returncode != 0:
-            tail = ((proc.stdout or "") + "\n" + (proc.stderr or "")).strip()[-400:]
-            raise CheckFailure(f"repo checks failed ({shown}): {tail}")
+            tail = output_tail((proc.stdout or "") + "\n" + (proc.stderr or ""))
+            raise CheckFailure(f"repo checks failed ({shown}): {tail}", command=shown, tail=tail)
         ran += 1
 
     if not ran and require_ran:
-        raise CheckFailure("every detected check runner is missing on this host — no green to push behind")
+        raise CheckFailure(
+            "every detected check runner is missing on this host — no green to push behind", reason="none_ran"
+        )
     return f"{ran} repo check(s) passed" if ran else "check runners unavailable — skipped"
