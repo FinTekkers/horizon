@@ -679,6 +679,22 @@ def test_steps_result_omits_reason_when_the_agent_did_not_report_one(monkeypatch
     assert "reason" not in captured["json"]
 
 
+def test_steps_result_reports_a_rejected_fail_as_a_failure(monkeypatch, capsys):
+    """HZ-184: a /fail the server rejects (e.g. 400, over the route's length
+    limit) is a lost failure report — never answered as delivered."""
+
+    class FakeResponse:
+        status_code = 400
+        text = '{"statusCode":400,"error":"Bad Request","message":"body/error must NOT have more than 2000 characters"}'
+
+    monkeypatch.setattr(farmd.httpx, "post", lambda *a, **k: FakeResponse())
+    res = client.post("/internal/steps/result", json={"run_id": 58, "ok": False, "error": "x" * 5000})
+
+    assert res.status_code == 502
+    assert res.json()["forwarded"] == 400
+    assert "REJECTED run 58 fail (400)" in capsys.readouterr().out
+
+
 # ---- HZ-57: /started notify + claim-time launch gate ----
 # The server's timeout used to start counting at dispatch, so time a step
 # spent sitting in the farm's queue burned the same clock as its actual

@@ -840,10 +840,17 @@ async def steps_result(request: Request):
         try:
             res = httpx.post(url, json=payload, headers={"x-farm-secret": SHARED_SECRET}, timeout=15)
             print(f"farmd: forwarded run {run_id} {path} -> {res.status_code}", flush=True)
-            return {"ok": True, "forwarded": res.status_code}
         except Exception as exc:
             print(f"farmd: forward attempt {attempt} for run {run_id} failed: {exc}", flush=True)
             time.sleep(2)
+            continue
+        # HZ-184: a rejected report (e.g. a 400 over the route's length limit)
+        # is a lost result — the run would sit active until the server's
+        # watchdog called it a timeout. Never report that as delivered.
+        if not 200 <= res.status_code < 300:
+            print(f"farmd: server REJECTED run {run_id} {path} ({res.status_code}): {res.text[:300]}", flush=True)
+            return JSONResponse({"error": "horizon server rejected the result", "forwarded": res.status_code}, status_code=502)
+        return {"ok": True, "forwarded": res.status_code}
     return JSONResponse({"error": "could not reach horizon server"}, status_code=502)
 
 

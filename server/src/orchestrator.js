@@ -1674,6 +1674,12 @@ export async function completeFarmRun(runId, { summary, patch, artifacts }) {
   return { ok: true }
 }
 
+// HZ-184: a check failure's digest (every failing line plus the counts) is
+// what the next attempt and a human read to learn what broke. 300 chars kept
+// only the head of it — usually passing tests. This matches the /fail route's
+// `error` maxLength in app.js, so whatever the route accepts is kept whole.
+const FAILED_OUTPUT_MAX_CHARS = 2000
+
 // reason is one of AUTO_RETRY_REASONS's tags (assigned by the call site that
 // detected the failure) or null/unrecognized — only a tagged reason, under
 // the cap, on a still-runnable item is ever auto-retried. Everything else
@@ -1691,7 +1697,7 @@ export function failFarmRun(runId, error, reason = null) {
   // with a FAILED-prefixed output, and say why.
   db.prepare(
     "UPDATE step_run SET status = 'cancelled', output = ?, ended_at = datetime('now') WHERE id = ?",
-  ).run(`FAILED: ${String(error).slice(0, 300)}`, runId)
+  ).run(`FAILED: ${String(error).slice(0, FAILED_OUTPUT_MAX_CHARS)}`, runId)
   // Tell the farm too (same call cancel() makes): a step failed here by
   // either watchdog firing (queue or execution) may still be sitting queued
   // or running on the farm side. Without this, farmd can claim and launch a
