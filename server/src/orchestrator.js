@@ -36,7 +36,7 @@ import {
   requestChanges,
   reviewRejected,
 } from './store.js'
-import { createMockPr, createDeployRelease, postIssueComment, createPrFromBranch, getPrHeadSha } from './github.js'
+import { createMockPr, createDeployRelease, postIssueComment, syncIssueBodyFields, createPrFromBranch, getPrHeadSha } from './github.js'
 import { PHASES } from '../../domain/js/lifecycle.js'
 import { getActiveProjectId, getSetting, setSetting, getToken } from './settings.js'
 import {
@@ -1100,9 +1100,23 @@ export function stepCommentBody(item, stepIndex, attempt, summary, patch, isMock
 
 // Every completed agent step is mirrored onto the GitHub issue — the issue
 // thread is the human-readable record of what the bots did.
+// Body text first, then the comment: the comment's webhook re-reads the body,
+// so a refinement must already be in it (see syncIssueBodyFields).
+const BODY_FIELDS = ['desc', 'metric', 'guardrails']
 function postStepComment(item, stepIndex, attempt, summary, patch, isMock, artifactMd) {
   if (!item.repo || item.issue == null) return
-  postIssueComment(item, stepCommentBody(item, stepIndex, attempt, summary, patch, isMock, artifactMd)).catch((err) => {
+  const touchesBody = !isMock && patch && BODY_FIELDS.some((f) => typeof patch[f] === 'string')
+  const bodySynced = touchesBody
+    ? syncIssueBodyFields(item).catch((err) => {
+        addEvent(item.id, {
+          who: 'Horizon',
+          text: `could not update issue #${item.issue}'s body with the refined fields: ${err.message}`,
+          color: '#9C333E',
+          initials: 'HZ',
+        })
+      })
+    : Promise.resolve()
+  bodySynced.then(() => postIssueComment(item, stepCommentBody(item, stepIndex, attempt, summary, patch, isMock, artifactMd))).catch((err) => {
     addEvent(item.id, {
       who: 'Horizon',
       text: `could not post the step result to issue #${item.issue}: ${err.message}`,
