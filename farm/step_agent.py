@@ -25,6 +25,8 @@ import httpx
 # reports is a constant the server already knows, never a string typed here.
 from domain.py import reasons, steps
 
+from . import agent_runner
+
 # AgentExhaustedError is this branch's name for main's TurnCapExceeded — the
 # same "ran out of turn budget" signal, renamed by the provider refactor. The
 # import conflicted while its USE below merged cleanly, so the rename has to be
@@ -38,7 +40,7 @@ from .agent_runner import (
     stamp_notes_artifact,
 )
 from .checks import run_checks
-from .config import FARM_PORT
+from .config import FARM_PORT, STEP_MODEL
 from .personas import compose_role, provider_for, resolve
 from .rules import render_rules_section
 from .workspaces import ensure_item_worktree, hub_lock
@@ -443,6 +445,19 @@ def _review_summary(verdict: dict) -> str:
     return summary[:SUMMARY_MAX_CHARS]
 
 
+def step_model(provider: str | None = None) -> str | None:
+    """HZ-187: the model every step-agent run_agent() call passes — STEP_MODEL
+    on the claude provider, None (the provider's own default) anywhere else,
+    so a Muse-routed step never receives a Claude model id.
+
+    Must mirror agent_runner._selected_provider()'s rule: an explicit provider
+    wins, else FARM_PROVIDER read at call time. Called through the module so a
+    test patching agent_runner._selected_provider_name reaches it too.
+    """
+    name = provider or agent_runner._selected_provider_name()
+    return STEP_MODEL if name == agent_runner.DEFAULT_PROVIDER else None
+
+
 def _provenance(reply: dict) -> dict:
     return {"provider": reply.get("provider"), "command_id": reply.get("command_id")}
 
@@ -485,6 +500,7 @@ def _run_and_parse(
         allowed_tools=allowed_tools,
         provider=provider,
         provider_locked=provider_locked,
+        model=step_model(provider),
     )
     produced = reply
 
@@ -501,6 +517,7 @@ def _run_and_parse(
             allowed_tools=allowed_tools,
             provider=provider,
             provider_locked=provider_locked,
+            model=step_model(provider),
         )
         return produced["result"]
 
@@ -582,6 +599,7 @@ def execute(task: dict) -> dict:
                 timeout_s=timeout_s,
                 allowed_tools=tools,
                 provider_locked=provider_locked,
+                model=step_model(),
             )
         except Exception:
             # SALVAGE (HZ-31): the run hit its turn/time cap (or any other
