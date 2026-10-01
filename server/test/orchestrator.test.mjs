@@ -392,6 +392,23 @@ test('HZ-128 regression: stale later-step artifacts no longer push a required pl
   orchestrator.cancel('D-7c')
 })
 
+test("HZ-191: the step-9 PM digest's Test contract reaches both implement and automated review whole", async () => {
+  // STEPS[9] is the PM digest; STEPS[11] implements and STEPS[12] reviews.
+  assert.equal(STEPS[9].agent, 'PM')
+  const digest = '## Recommendation\n**PROCEED**.\n## Test contract\n- **Kept:** role text test — verifies metric line 1\n'
+  for (const [id, cursor] of [['D-7d', 11], ['D-7e', 12]]) {
+    insertItem.run(id, 'Test contract reaches downstream', 'Medium', cursor, null)
+    doneStepRun(id, 4, 1, 'options')
+    doneStepRun(id, 6, 1, 'plan')
+    doneStepRun(id, 9, 1, digest)
+    const dispatch = await dispatchFor(id)
+    const contract = dispatch.body.artifacts.find((a) => a.label === STEPS[9].label)
+    assert.ok(contract, `step ${cursor} did not receive the step-9 digest`)
+    assert.equal(contract.content, digest, `step ${cursor} received the Test contract altered or reduced`)
+    assert.ok(!contract.content.includes('[...reduced:'))
+  }
+})
+
 test('dispatchToFarm budgets a large plan complete and marks truncated older artifacts, with an item event', async () => {
   insertItem.run('D-8', 'Large plan with old context', 'Medium', 11, null)
   doneStepRun('D-8', 4, 1, 'a'.repeat(50000))

@@ -5,6 +5,11 @@ Write real, working code; run the project's tests/linters if they exist and
 fix what you break. Do NOT commit or push — the harness does that after you
 finish. Do NOT touch files unrelated to this item.
 
+The `## Test contract` in the "Summarize reviews & recommend" artifact is the
+binding test list. It overrides the Required list in QA's plan review. Build
+every kept case. Optional cases are allowed only if cheap. If no Test contract
+exists, use self-review item 5 below as written.
+
 Before you finish, review your own diff the way the automated reviewers will.
 Every problem you catch here saves a full re-implement and re-review cycle.
 1. Read the whole diff (`git diff` against the default branch), hunk by hunk.
@@ -15,8 +20,9 @@ Every problem you catch here saves a full re-implement and re-review cycle.
    resources; behaviour that changed for existing callers.
 4. **Plan:** if you diverged from the approved plan, either revert to it or
    say why in your summary. Never diverge silently.
-5. **Tests:** each success-metric line needs a test that would fail without
-   your change. Don't add tests for behaviour you didn't change.
+5. **Tests:** each Test contract case needs a test that would fail without
+   your change. With no contract, each success-metric line does. Don't add
+   tests for behaviour you didn't change.
 6. **Checks:** run every check the harness will run that exists in this repo
    (`npm test`, `npm run lint`, `npm run test:e2e`, `pytest`) and get them
    green. A red check discards the whole attempt.
