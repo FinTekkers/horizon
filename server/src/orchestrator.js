@@ -9,6 +9,8 @@
 // dispatch to a real agent in a tmux session reporting progress back; the
 // step_run/event bookkeeping and gate semantics stay exactly as they are.
 
+import http from 'node:http'
+import https from 'node:https'
 import { db } from './db.js'
 import { AGENTS } from './agentTokens.js'
 import {
@@ -409,17 +411,80 @@ function takeCannedConflictReply() {
 // sized the same as the implement step's own execution budget below.
 const DEFAULT_FARM_FETCH_TIMEOUT_MS = 30_000
 
-async function farmFetch(path, body, { timeoutMs = DEFAULT_FARM_FETCH_TIMEOUT_MS } = {}) {
-  const controller = new AbortController()
-  const timer = setTimeout(() => controller.abort(), timeoutMs)
+// HZ-221: Node's built-in fetch (undici) gives up after 300s waiting for
+// response headers, whatever our AbortController says — and farmd answers
+// /conflicts/resolve only once the repo's whole suite has run. A call allowed
+// to wait at least that long goes via node:http instead, which has no header
+// ceiling; every shorter call stays on fetch, unchanged.
+export const FARM_FETCH_HEADER_CEILING_MS = 300_000
+let farmFetchHeaderCeilingMs = FARM_FETCH_HEADER_CEILING_MS
+
+// Test-only: lowers the ceiling so a test can cross it in milliseconds rather
+// than waiting out the real 300s. null restores the default. Nothing under
+// src/ calls this (farm-fetch-long-call.test.mjs pins that).
+export function setFarmFetchHeaderCeilingForTest(ms) {
+  farmFetchHeaderCeilingMs = ms == null ? FARM_FETCH_HEADER_CEILING_MS : ms
+}
+
+export function farmFetchTransport(timeoutMs) {
+  return timeoutMs < farmFetchHeaderCeilingMs ? 'fetch' : 'http'
+}
+
+// A minimal fetch-shaped request over node:http(s), for farmFetch's long
+// calls. It deliberately fakes fetch's own failures — an AbortError on
+// timeout, TypeError('fetch failed') on a network error — so farmFetch's
+// catch and every caller see exactly what they see from fetch. Unlike fetch,
+// whose abort timer stops once headers arrive, timeoutMs here bounds the
+// whole exchange, body included: it is the only limit, and on expiry the
+// request and its socket are destroyed. agent: false leaves no keep-alive
+// socket behind.
+function farmHttpRequest(url, { method, headers, body, timeoutMs }) {
+  return new Promise((resolve, reject) => {
+    let settled = false
+    let timer = null
+    const settle = (fn, value) => {
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
+      fn(value)
+    }
+    const fail = (err) => settle(reject, new TypeError('fetch failed', { cause: err }))
+    const { protocol } = new URL(url)
+    const req = (protocol === 'https:' ? https : http).request(url, { method, headers, agent: false }, (res) => {
+      const chunks = []
+      res.on('data', (chunk) => chunks.push(chunk))
+      res.on('error', fail)
+      res.on('end', () => {
+        const status = res.statusCode
+        const text = Buffer.concat(chunks).toString('utf8')
+        settle(resolve, { ok: status >= 200 && status < 300, status, json: async () => JSON.parse(text) })
+      })
+    })
+    timer = setTimeout(() => {
+      settle(reject, new DOMException('This operation was aborted', 'AbortError'))
+      req.destroy()
+    }, timeoutMs)
+    req.on('error', fail)
+    req.on('close', () => fail(new Error('socket closed before the response completed')))
+    req.end(body)
+  })
+}
+
+export async function farmFetch(path, body, { timeoutMs = DEFAULT_FARM_FETCH_TIMEOUT_MS } = {}) {
+  const url = `${FARM_URL}${path}`
+  const init = {
+    method: body === undefined ? 'GET' : 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: body === undefined ? undefined : JSON.stringify(body),
+  }
+  const viaFetch = farmFetchTransport(timeoutMs) === 'fetch'
+  const controller = viaFetch ? new AbortController() : null
+  const timer = viaFetch ? setTimeout(() => controller.abort(), timeoutMs) : null
   let res
   try {
-    res = await fetch(`${FARM_URL}${path}`, {
-      method: body === undefined ? 'GET' : 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: body === undefined ? undefined : JSON.stringify(body),
-      signal: controller.signal,
-    })
+    res = viaFetch
+      ? await fetch(url, { ...init, signal: controller.signal })
+      : await farmHttpRequest(url, { ...init, timeoutMs })
   } catch (err) {
     if (err.name === 'AbortError') throw new Error(`farm request to ${path} timed out after ${timeoutMs}ms`)
     throw err

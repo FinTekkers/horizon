@@ -18,6 +18,7 @@ process.env.HORIZON_DB = join(mkdtempSync(join(tmpdir(), 'horizon-orch-')), 'tes
 // FARM_URL set => kick() dispatches to the farm (via the stubbed fetch below)
 // instead of running mock timers.
 process.env.FARM_URL = 'http://farm.test'
+process.env.FARM_CONFLICT_RESOLVE_TIMEOUT_MS = '60000' // < fetch header ceiling: stays on the stubbed fetch path
 // Tests drive pollRunStates() directly; keep the real setInterval init() sets
 // up from ever firing during the run and racing test assertions on `dispatches`.
 process.env.FARM_RUN_STATE_POLL_MS = String(60 * 60 * 1000)
