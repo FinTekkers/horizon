@@ -45,9 +45,12 @@ function ProjectSwitcher({ projects, activeProjectId, farm, onRequestSwitch }) {
   return (
     <div className="usermenu">
       <button className="projswitch" onClick={() => setOpen((o) => !o)}>
-        <span className="projswitch__dot" />
-        {active.name}
-        <span className="projswitch__caret">▾</span>
+        <span className="projswitch__dot" aria-hidden="true" />
+        {/* Visually hidden on a phone (HZ-224), still the button's name. */}
+        <span className="projswitch__name">{active.name}</span>
+        <span className="projswitch__caret" aria-hidden="true">
+          ▾
+        </span>
       </button>
       {open && (
         <>
