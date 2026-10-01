@@ -62,8 +62,7 @@ const LABEL_MENTIONS_ALLOWED = {
   'docs/workflow.md': 'prose',
   'docs/agent-architecture.md': 'prose',
   'docs/pm-step-ephemeral-recommendation.md': 'prose — HZ-115, names the four PM steps it recommends making ephemeral',
-  'docs/pm-context-reliance-analysis.md':
-    'generated report — the per-run table names the step each PM run performed',
+  'docs/pm-step-ephemeral-evidence/pm-run-timings.md': 'generated report — the timing table is keyed by step label',
   'farm/tests/test_pm_run_timings.py': 'PM log fixture copied verbatim from a real pm-<slug>.log',
   'farm/tests/test_analyze_pm_context_reliance.py': 'fabricated PM log fixtures',
 }

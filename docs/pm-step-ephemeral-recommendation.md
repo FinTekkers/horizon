@@ -10,7 +10,10 @@ long-lived PM agent session. Every other agent step is ephemeral. This is the
 recommendation for closing that gap.
 
 > **Every number below was printed by a command in
-> [Reproducing the numbers](#reproducing-the-numbers).** None is estimated.
+> [Reproducing the numbers](#reproducing-the-numbers), and the raw output is
+> committed:** [`pm-context-reliance-analysis.md`](pm-context-reliance-analysis.md)
+> (§2) and [`pm-step-ephemeral-evidence/pm-run-timings.md`](pm-step-ephemeral-evidence/pm-run-timings.md)
+> (§3). None is estimated.
 
 ---
 
@@ -24,8 +27,8 @@ The three facts that decide it:
 
 1. **The accumulated context is load-bearing.** Measured, not assumed — §2.
    So no option that simply deletes the session is acceptable.
-2. **Going ephemeral costs a median of 0.326 s per step** against a median
-   step time of 13 s, and the PM lane *already* pays a measured median 2 s
+2. **Going ephemeral costs a median of 0.337 s per step** against a median
+   step time of 12 s, and the PM lane *already* pays a measured median 2 s
    queue poll. The migration is cheaper than the overhead it already carries — §3.
 3. **B closes three of the four audit gaps for free and the fourth with ~6
    lines; A closes the same four but at several times the surface area; C
@@ -53,33 +56,37 @@ worthless. It is the one genuine argument for the current design."*
 `desc`/`metric`/`guardrails`, its own prior artifacts, its own feedback, and
 the project rules. It never serialises another item's fields. Therefore a
 verbatim 8-word phrase appearing in two *different* items' `patch` output
-cannot have arrived through the prompt. The resumed session is the only
-remaining channel.
+cannot have arrived through the prompt — unless the later item's own prompt
+already carried it, which the exclusions below test for. Otherwise the
+resumed session is the only remaining channel.
 
 The instrument is `farm/tools/analyze_pm_context_reliance.py`; its output is
 committed at [`docs/pm-context-reliance-analysis.md`](pm-context-reliance-analysis.md).
 
 ### The result
 
-Against the production log — **341 PM runs across 85 distinct work items**:
+Against the production log — **362 PM runs across 90 distinct work items**:
 
-**49 shared-phrase occurrences survive every exclusion.** For example
-HZ-79 (run 546) → HZ-95 (run 642): *"blocked is visually distinct from idle
-paused and queued"*.
+**50 shared-phrase occurrences survive every exclusion**, spread over 12
+distinct earlier→later item pairs (counted from the committed table). For
+example HZ-79 (run 546) → HZ-95 (run 642): *"blocked is visually distinct from
+idle paused and queued"*.
 
 The exclusions matter more than the headline, because the method has to argue
 against itself before it concludes. Four classes of false positive are
-removed, each with its reason printed in the report:
+removed, each with its reason printed in the report, and same-item reuse is
+never counted at all:
 
 | Excluded | Count | Why it is not evidence |
 | --- | --- | --- |
-| Role-prompt / rules text | — | `farm/roles/pm.md` is appended to every call, and `render_rules_section()` renders `farm/rules/` into every prompt. Shared wording here is explained by the prompt. |
+| Role-prompt / rules text | 0 | `farm/roles/pm.md` is appended to every call, and `render_rules_section()` renders `farm/rules/` into every prompt. Shared wording here is explained by the prompt. |
+| Later item's own pre-run fields | 0 | The later item's *own* earlier patch already wrote the phrase, so its own prompt carried it. Reconstructed by replaying the log in time order — **not** read from the current `work_item` row, which the patch under analysis itself wrote and which would exclude the very signal being measured. |
 | File-path-shaped text | 5 | Two items listing the same repo files produce identical word sequences from the directory layout, not from recall. |
 | Convergent boilerplate | 29 | A shingle written independently by 3+ distinct items is a stock phrase, not recall of one earlier item. |
-| Same-item reuse | — | An item's own revision echoing its own earlier patch is self-consistency. |
+| Same-item reuse | not counted | An item's own revision echoing its own earlier patch is self-consistency, never a match. |
 
-**Corpus coverage is reported as a number, not implied: 156/341 runs yielded a
-parseable `patch` field.** The other 185 proposed no patch (legitimate and
+**Corpus coverage is reported as a number, not implied: 169/362 runs yielded a
+parseable `patch` field.** The other 193 proposed no patch (legitimate and
 common — the step often reports "no changes needed"), failed, or never echoed
 reply text to the log at all.
 
@@ -88,7 +95,7 @@ reply text to the log at all.
 **Load-bearing: yes, evidenced.** The model carries specific prior wording
 across items through session memory.
 
-Two limits stated rather than glossed:
+Four limits stated rather than glossed:
 
 - **This is a one-directional proof.** Finding reuse proves the channel is
   live. It does **not** measure how much the output would *degrade* without
@@ -98,6 +105,26 @@ Two limits stated rather than glossed:
   text and timing into the log; `farm/providers/muse.py` prints neither. A
   Muse-routed PM run is invisible to both instruments. Both now report this
   in their own output.
+- **A human-written field cannot be excluded.** An item's fields *before its
+  first PM run* are not in the log. If a human copied a phrase from item A
+  into item B's issue, B's prompt carried it and the probe would still count
+  it. The probe cannot rule this out; it is why the verdict rests on 12
+  distinct item pairs rather than one.
+- **The ablation was not run.** The plan's opt-in replay — the same issue
+  bodies sent with and without a resumed session — is the only direct
+  measure of what the context is *worth*. It costs model calls and was not
+  funded under this item. Stage 2 (§6) is that measurement, done on real
+  traffic instead. Whoever runs a replay must use a **throwaway session id**,
+  never the value in `pm-session-<slug>.txt`: replaying through the live id
+  would inject fabricated prompts into the conversation still serving real
+  intake, contaminating the thing under study.
+
+**Why the tmux log and not `step_run`.** `step_run` stores each attempt's
+`output`, `artifact`, `provider` and `command_id` and is the better corpus for
+provider attribution. It does not store the raw reply's `patch` object or the
+per-run model seconds, which are what both probes measure; the PM log has
+both. The cost: the log is host-local and Claude-only, which is why the
+Claude-only limit above is stated.
 
 **Consequence for the migration: the context may not simply be dropped.** It
 must be replaced with an explicit, reproducible prompt input. That is why
@@ -110,7 +137,7 @@ Option D is a mandatory stage rather than a competing option.
 The ticket requires this be quantified, "not hand-waved." Source:
 `farm/tools/pm_run_timings.py` against the production log.
 
-**Corpus coverage: 338/341 runs carry a timing line (3 unmeasured, Claude-only
+**Corpus coverage: 359/362 runs carry a timing line (3 unmeasured, Claude-only
 corpus — see §2).** Model time is logged to whole seconds, so a short step
 carries roughly ±10% quantisation.
 
@@ -118,12 +145,12 @@ carries roughly ±10% quantisation.
 
 | Step label | n | min | median | p90 | max |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| Define the outcome | 94 | 2 s | **9 s** | 24 s | 44 s |
-| Define how we measure success | 79 | 1 s | **6 s** | 21 s | 50 s |
-| Set guardrails | 80 | 2 s | **9 s** | 23 s | 51 s |
-| Summarize reviews & recommend | 85 | 12 s | **25 s** | 39 s | 227 s |
+| Define the outcome | 100 | 2 s | **9 s** | 22 s | 44 s |
+| Define how we measure success | 83 | 1 s | **6 s** | 20 s | 50 s |
+| Set guardrails | 84 | 2 s | **9 s** | 23 s | 51 s |
+| Summarize reviews & recommend | 92 | 12 s | **24 s** | 38 s | 227 s |
 
-Pooled: median **13 s**, p90 30 s, max 227 s (n=338). This broadly confirms the
+Pooled: median **12 s**, p90 28 s, max 227 s (n=359). This broadly confirms the
 ticket's "roughly 10-20 seconds each" for steps 0-2, and shows step 9 is
 substantially more expensive.
 
@@ -133,8 +160,8 @@ substantially more expensive.
 one run's `reported` line to the next run's header, split at 5 s so genuine
 idle waiting cannot inflate the figure:
 
-- **Poll latency (≤5 s): n=184, median 2 s, p90 2 s, max 4 s.**
-- Idle waits (>5 s): n=156, median 560.5 s — not per-step cost, listed so the
+- **Poll latency (≤5 s): n=193, median 2 s, p90 2 s, max 4 s.**
+- Idle waits (>5 s): n=168, median 498 s — not per-step cost, listed so the
   split is auditable.
 
 **The current design is not overhead-free.** It already pays a median 2 s per
@@ -146,9 +173,9 @@ Measured on the farm host over 5 samples:
 
 | Component | min | median | p90 | max |
 | --- | ---: | ---: | ---: | ---: |
-| Cold CPython + `import farm.pm_agent` | 0.272 s | **0.294 s** | 0.428 s | 0.428 s |
-| tmux new / has / kill round trip | 0.028 s | **0.029 s** | 0.048 s | 0.048 s |
-| **Total added per step** | **0.301 s** | **0.326 s** | **0.456 s** | **0.456 s** |
+| Cold CPython + `import farm.pm_agent` | 0.288 s | **0.306 s** | 0.344 s | 0.344 s |
+| tmux new / has / kill round trip | 0.028 s | **0.029 s** | 0.031 s | 0.031 s |
+| **Total added per step** | **0.317 s** | **0.337 s** | **0.373 s** | **0.373 s** |
 
 ### The verdict against the pre-published threshold
 
@@ -156,14 +183,14 @@ The acceptance threshold **≤ 2 s** was published in the approved options
 artifact *before* this measurement was taken, so the decision cannot be fitted
 to the number.
 
-**Measured median 0.326 s — comfortably inside the threshold, and about a
+**Measured median 0.337 s — comfortably inside the threshold, and about a
 sixth of the 2 s queue poll the PM lane already pays today.**
 
 Queue-poll latency itself is a wash: the ephemeral dispatcher polls on
 `time.sleep(3)` (0-3 s, mean 1.5 s) against the PM's measured median 2 s.
 
-**Net: ephemeral execution adds roughly 0.33 s to a 13 s median step — under
-3%, and under 1.5% of step 9's 25 s median.** The cost argument does not
+**Net: ephemeral execution adds roughly 0.34 s to a 12 s median step — under
+3%, and under 1.5% of step 9's 24 s median.** The cost argument does not
 defend the long-lived design.
 
 ---
@@ -273,7 +300,7 @@ Same module, one task, then exit. Its own tmux session and its own log.
 - Two step-runner modules remain; the duplicated prompt/report plumbing
   persists until the Stage 5 consolidation.
 - PM steps begin consuming `MAX_EPHEMERAL` slots (default **4**) shared with
-  implement steps. At a 13 s median this is minor, but it is a real change to
+  implement steps. At a 12 s median this is minor, but it is a real change to
   contention and should be watched after the flip — consider raising
   `FARM_MAX_EPHEMERAL` if intake latency regresses.
 - `runsIn: "pm"` becomes a slightly misleading name: it selects a *module*,
@@ -393,7 +420,7 @@ languages the way a hardcoded tuple could.
   concierge's own untagged session file is named in §4 as out of scope rather
   than passed over.
 - **The accumulated context was not assumed worthless.** It was measured
-  across 341 runs and found load-bearing, which is why Option D's content is
+  across 362 runs and found load-bearing, which is why Option D's content is
   mandatory rather than optional.
 - **`step_agent.py` was not pre-committed to.** It was evaluated as Option A
   and rejected on measured cost (§5.1).
@@ -417,6 +444,7 @@ date, following `docs/text-caps-measurement.md`.
 
 ```bash
 # §3 — per-step cost, queue-poll latency, and spawn overhead
+# (output committed as docs/pm-step-ephemeral-evidence/pm-run-timings.md)
 python -m farm.tools.pm_run_timings \
   --log ~/.horizon-farm/logs/pm-horizon.log --spawn-bench 5
 

@@ -10,7 +10,6 @@ from farm.tools.analyze_pm_context_reliance import (
     always_present_prompt_shingles,
     clean_log_text,
     extract_patch_values,
-    find_cross_item_mentions,
     find_phrase_reuse,
     iter_json_objects,
     parse_runs,
@@ -124,9 +123,9 @@ def test_find_phrase_reuse_tags_a_file_path_list_as_path_like_not_specific():
     matches = find_phrase_reuse(runs, role_shingles=set())
     assert matches
     assert all(m["path_like"] for m in matches)
-    md = render_markdown(runs, matches, find_cross_item_mentions(runs), "2026-09-30", "test.log")
-    assert "excluded as file-path-shaped text" in md
-    assert "Load-bearing: not evidenced." in md
+    md = render_markdown(runs, matches, "2026-09-30", "test.log")
+    assert "path_like: " in md and "file-path-shaped text" in md
+    assert "Load-bearing: not evidenced" in md
 
 
 def test_find_phrase_reuse_does_not_flag_ordinary_prose_with_a_sentence_period_as_path_like():
@@ -177,16 +176,6 @@ def test_role_prompt_shingles_reads_the_real_pm_role_file():
     assert "beyond the defaults tests linters e2e must pass" in shingles
 
 
-def test_find_cross_item_mentions_excludes_the_runs_own_item():
-    log_text = build_log(
-        (1, "Define the outcome", "HZ-1", {"summary": "depends on HZ-1 and HZ-2"}),
-    )
-    runs = parse_runs(log_text)
-    mentions = find_cross_item_mentions(runs)
-    assert len(mentions) == 1
-    assert mentions[0]["mentioned_item"] == "HZ-2"
-
-
 def test_render_markdown_states_load_bearing_yes_when_specific_matches_exist():
     log_text = build_log(
         (1, "Define the outcome", "HZ-1", {"summary": "s", "patch": {"desc": "an item blocked by another shows what blocks it and what would unblock it"}}),
@@ -194,9 +183,8 @@ def test_render_markdown_states_load_bearing_yes_when_specific_matches_exist():
     )
     runs = parse_runs(log_text)
     matches = find_phrase_reuse(runs, role_shingles=set())
-    mentions = find_cross_item_mentions(runs)
-    md = render_markdown(runs, matches, mentions, "2026-09-30", "test.log")
-    assert "Load-bearing: yes, evidenced." in md
+    md = render_markdown(runs, matches, "2026-09-30", "test.log")
+    assert "Load-bearing: yes, evidenced" in md
 
 
 def test_render_markdown_states_load_bearing_not_evidenced_when_no_specific_matches():
@@ -206,9 +194,8 @@ def test_render_markdown_states_load_bearing_not_evidenced_when_no_specific_matc
     )
     runs = parse_runs(log_text)
     matches = find_phrase_reuse(runs, role_shingles=set())
-    mentions = find_cross_item_mentions(runs)
-    md = render_markdown(runs, matches, mentions, "2026-09-30", "test.log")
-    assert "Load-bearing: not evidenced." in md
+    md = render_markdown(runs, matches, "2026-09-30", "test.log")
+    assert "Load-bearing: not evidenced" in md
 
 
 # --- HZ-115: text that reaches EVERY prompt is a false-positive generator ---
@@ -236,10 +223,10 @@ def test_rules_text_is_excluded_because_every_prompt_already_carries_it(tmp_path
     assert matches, "the shared phrase should still be detected..."
     assert all(m["role_prompt"] for m in matches), "...but excluded as prompt-explained"
 
-    md = render_markdown(runs, matches, find_cross_item_mentions(runs), "2026-10-01", "test.log")
+    md = render_markdown(runs, matches, "2026-10-01", "test.log")
     # Excluded, and the reason is printed — an exclusion nobody can see is an
     # unfalsifiable method.
-    assert "Load-bearing: not evidenced." in md
+    assert "Load-bearing: not evidenced" in md
     assert "farm/rules/" in md
     assert "render_rules_section()" in md
 
@@ -266,11 +253,10 @@ def test_render_markdown_reports_corpus_coverage_rather_than_implying_it():
         (3, "Define the outcome", "HZ-3", None),
     )
     runs = parse_runs(log_text)
-    md = render_markdown(runs, find_phrase_reuse(runs, role_shingles=set()),
-                         find_cross_item_mentions(runs), "2026-10-01", "test.log")
+    md = render_markdown(runs, find_phrase_reuse(runs, role_shingles=set()), "2026-10-01", "test.log")
 
     assert "Corpus coverage: 1/3 runs" in md
-    assert "2 contributed nothing to Signal 1" in md
+    assert "2 contributed nothing" in md
     assert "Claude-routed corpus" in md
 
 
@@ -282,9 +268,29 @@ def test_the_verdict_does_not_pre_commit_to_a_migration_option():
         (2, "Define the outcome", "HZ-2", {"summary": "s", "patch": {"desc": "an item blocked by another shows what blocks it and what would unblock it"}}),
     )
     runs = parse_runs(log_text)
-    md = render_markdown(runs, find_phrase_reuse(runs, role_shingles=set()),
-                         find_cross_item_mentions(runs), "2026-10-01", "test.log")
+    md = render_markdown(runs, find_phrase_reuse(runs, role_shingles=set()), "2026-10-01", "test.log")
 
-    assert "Load-bearing: yes, evidenced." in md
+    assert "Load-bearing: yes, evidenced" in md
     assert "Option A" not in md and "Option D" not in md
     assert "pm-step-ephemeral-recommendation.md" in md
+
+
+def test_own_pre_run_state_is_replayed_from_the_log_not_read_from_the_current_row():
+    """Item B's FIRST echo of A's phrase is cross-item evidence even though B's
+    current row now holds it (its own patch wrote it). B's LATER repeat is not:
+    by then B's own pre-run fields, rendered into B's prompt, carried it."""
+    shared = "blocked is visually distinct from idle paused and queued on the board"
+    log_text = build_log(
+        (10, "Define the outcome", "HZ-1", {"summary": "s", "patch": {"desc": shared}}),
+        (20, "Define the outcome", "HZ-2", {"summary": "s", "patch": {"desc": shared}}),
+        (30, "Set guardrails", "HZ-2", {"summary": "s", "patch": {"guardrails": shared}}),
+    )
+    matches = find_phrase_reuse(parse_runs(log_text), role_shingles=set())
+    first = [m for m in matches if m["later_run_id"] == "20"]
+    repeat = [m for m in matches if m["later_run_id"] == "30"]
+    assert first and not any(m["own_prior"] for m in first)
+    assert repeat and all(m["own_prior"] for m in repeat)
+
+    md = render_markdown(parse_runs(log_text), matches, "2026-10-01", "test.log")
+    assert f"**{len(first)} shared-phrase occurrence(s) survive every exclusion:**" in md
+    assert f"own_prior: {len(repeat)} occurrence(s)" in md
