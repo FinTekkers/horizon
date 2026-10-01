@@ -4,8 +4,10 @@ payload-visibility metric)."""
 
 import json
 import os
+import shutil
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -68,9 +70,11 @@ def test_cancel_of_unknown_run_is_a_noop():
 
 
 @pytest.fixture
-def running_farm():
-    """Flip farmd to running for one test; tasks go to the pm queue (step 9),
-    which no background dispatcher consumes in tests."""
+def running_farm(monkeypatch):
+    """Flip farmd to running for one test; tasks go to the pm queue (step 9).
+    The background dispatcher consumes that queue since HZ-212, so its tick
+    is paused first — a test reads its own queue file without a race."""
+    monkeypatch.setattr(farmd, "_dispatch_tick", lambda: None)
     saved = dict(farmd.state)
     farmd.state.update(status="running", project={"id": 1, "name": "FinTekkers"})
     try:
@@ -92,7 +96,8 @@ def test_running_farm_never_reaches_real_tmux(running_farm, fake_tmux, monkeypat
     """running_farm puts farmd in exactly the state its watchdog revives
     sessions for — the incident's farm-pm-fintekkers / farm-concierge-
     fintekkers respawns. Drive one real watchdog pass on this thread and
-    prove both launches land in FakeTmux and the real _tmux never runs."""
+    prove the concierge launch lands in FakeTmux, the real _tmux never runs,
+    and (HZ-212) no farm-pm-* session is launched at all."""
     real_tmux_calls = []
 
     def real_subprocess_run(argv, *args, **kwargs):
@@ -123,9 +128,10 @@ def test_running_farm_never_reaches_real_tmux(running_farm, fake_tmux, monkeypat
         farmd._watchdog()
 
     launched = {call[call.index("-s") + 1]: call[-1] for call in fake_tmux.calls if call[0] == "new-session"}
-    # Positive control: the revive branch really ran, for both sessions.
-    assert {"farm-pm-fintekkers", "farm-concierge-fintekkers"} <= set(launched)
-    assert "HORIZON_URL=http://127.0.0.1:9 " in launched["farm-pm-fintekkers"]
+    # Positive control: the revive branch really ran.
+    assert "farm-concierge-fintekkers" in launched
+    assert "HORIZON_URL=http://127.0.0.1:9 " in launched["farm-concierge-fintekkers"]
+    assert not [name for name in launched if name.startswith("farm-pm-")]
     assert real_tmux_calls == []
 
 
@@ -844,10 +850,24 @@ def test_farm_start_refuses_with_api_key_set(monkeypatch):
     assert "ANTHROPIC_API_KEY" in res.json()["error"]
 
 
-def test_farmd_refuses_to_boot_with_api_key_set():
+@pytest.fixture
+def private_tmux_env():
+    """The env for a subprocess that imports farmd: FakeTmux does not reach a
+    child process, and farmd's boot kills legacy farm-pm-* sessions (HZ-212),
+    so the child gets its own throwaway tmux socket — never the host's."""
+    socket_dir = tempfile.mkdtemp(prefix="hz-tmux-", dir="/tmp")
+    env = {k: v for k, v in os.environ.items() if k != "TMUX"}
+    env["TMUX_TMPDIR"] = socket_dir
+    try:
+        yield env
+    finally:
+        shutil.rmtree(socket_dir, ignore_errors=True)
+
+
+def test_farmd_refuses_to_boot_with_api_key_set(private_tmux_env):
     """Module init runs the guardrail, so the adopt path (which never goes
     through /farm/start) can't bring up a farm on API billing either."""
-    env = {**os.environ, "ANTHROPIC_API_KEY": "sk-ant-test"}
+    env = {**private_tmux_env, "ANTHROPIC_API_KEY": "sk-ant-test"}
     proc = subprocess.run(
         [sys.executable, "-c", "import farm.farmd"],
         capture_output=True,
@@ -996,11 +1016,11 @@ def test_max_ephemeral_default_is_four(monkeypatch):
     assert int(os.environ.get("FARM_MAX_EPHEMERAL", "4")) == 4
 
 
-def test_max_ephemeral_stays_env_overridable(monkeypatch):
+def test_max_ephemeral_stays_env_overridable(monkeypatch, private_tmux_env):
     """Guardrail: the target must remain a variable, not a hardcoded
     constant — a smaller host must be able to lower it without a code
     change."""
-    env = {**os.environ, "FARM_MAX_EPHEMERAL": "1"}
+    env = {**private_tmux_env, "FARM_MAX_EPHEMERAL": "1"}
     proc = subprocess.run(
         [sys.executable, "-c", "from farm import farmd; print(farmd.MAX_EPHEMERAL)"],
         capture_output=True,
@@ -1010,7 +1030,8 @@ def test_max_ephemeral_stays_env_overridable(monkeypatch):
         timeout=60,
     )
     assert proc.returncode == 0, proc.stderr
-    assert proc.stdout.strip() == "1"
+    # The last line: farmd's boot may first list legacy PM files (HZ-212).
+    assert proc.stdout.strip().splitlines()[-1] == "1"
 
 
 def test_item_worktree_busy_matches_only_s11_and_s12_sessions_for_that_item():
@@ -1521,30 +1542,19 @@ def test_runs_alive_false_for_a_run_the_farm_has_no_record_of(queue_dirs):
 
 
 def test_runs_alive_true_for_an_in_flight_pm_claimed_run(queue_dirs, monkeypatch):
-    """A PM-claimed run has no per-run task file (claim-before-work unlinks
-    it) and no per-run tmux session — its only proof of life is
-    PM_ACTIVE_RUNS plus the shared PM session still being up."""
-    farmd.state["project"] = {"id": 1, "name": "Test Project"}
-    farmd.PM_ACTIVE_RUNS.add("405")
-    try:
-        monkeypatch.setattr(farmd.tmux_mgr, "session_exists", lambda name: name == farmd._pm_session_name())
-        res = client.post("/runs/alive", json={"run_ids": [405]})
-        assert res.json() == {"alive": {"405": True}}
-    finally:
-        farmd.PM_ACTIVE_RUNS.discard("405")
-        farmd.state["project"] = None
+    """HZ-212: a claimed PM run lives in runs/active with its own
+    farm-run-*-s9-* session, like any other step — no PM_ACTIVE_RUNS."""
+    (QUEUE_DIR / "runs" / "active" / "405.json").write_text(json.dumps(make_task(405, item_id="hz-1", step_index=9, attempt=1)))
+    monkeypatch.setattr(farmd.tmux_mgr, "session_exists", lambda name: name == "farm-run-hz-1-s9-a1")
+    res = client.post("/runs/alive", json={"run_ids": [405]})
+    assert res.json() == {"alive": {"405": True}}
 
 
-def test_runs_alive_false_for_a_pm_claimed_run_whose_pm_session_died(queue_dirs, monkeypatch):
-    farmd.state["project"] = {"id": 1, "name": "Test Project"}
-    farmd.PM_ACTIVE_RUNS.add("406")
-    try:
-        monkeypatch.setattr(farmd.tmux_mgr, "session_exists", lambda name: False)
-        res = client.post("/runs/alive", json={"run_ids": [406]})
-        assert res.json() == {"alive": {"406": False}}
-    finally:
-        farmd.PM_ACTIVE_RUNS.discard("406")
-        farmd.state["project"] = None
+def test_runs_alive_false_for_a_pm_claimed_run_whose_session_died(queue_dirs, monkeypatch):
+    (QUEUE_DIR / "runs" / "active" / "406.json").write_text(json.dumps(make_task(406, item_id="hz-1", step_index=9, attempt=1)))
+    monkeypatch.setattr(farmd.tmux_mgr, "session_exists", lambda name: False)
+    res = client.post("/runs/alive", json={"run_ids": [406]})
+    assert res.json() == {"alive": {"406": False}}
 
 
 def test_runs_alive_never_leaks_a_tmux_session_name(queue_dirs):
@@ -1592,37 +1602,6 @@ def test_runs_alive_end_to_end_over_real_tmux_reports_true_for_a_claimed_run_wit
         tmux_mgr.kill_session(name)
 
     assert res.json() == {"alive": {"502": True}}
-
-
-def test_internal_steps_started_tracks_pm_active_runs_until_the_result_lands():
-    """The lifecycle that backs the PM-alive check above: started adds to
-    PM_ACTIVE_RUNS, the result callback (ok or not) always removes it."""
-    farmd.PM_ACTIVE_RUNS.discard("408")
-    try:
-        with pytest.MonkeyPatch.context() as mp:
-            mp.setattr(farmd, "_notify_started", lambda run_id: True)
-            res = client.post("/internal/steps/started", json={"run_id": 408})
-            assert res.json()["active"] is True
-        assert "408" in farmd.PM_ACTIVE_RUNS
-
-        with pytest.MonkeyPatch.context() as mp:
-            mp.setattr(farmd.httpx, "post", lambda *a, **k: _FakeFailResponse(200))
-            client.post("/internal/steps/result", json={"run_id": 408, "ok": False, "error": "boom"})
-        assert "408" not in farmd.PM_ACTIVE_RUNS
-    finally:
-        farmd.PM_ACTIVE_RUNS.discard("408")
-
-
-def test_internal_steps_started_does_not_track_a_run_the_server_no_longer_considers_active():
-    farmd.PM_ACTIVE_RUNS.discard("409")
-    try:
-        with pytest.MonkeyPatch.context() as mp:
-            mp.setattr(farmd, "_notify_started", lambda run_id: False)
-            res = client.post("/internal/steps/started", json={"run_id": 409})
-            assert res.json()["active"] is False
-        assert "409" not in farmd.PM_ACTIVE_RUNS
-    finally:
-        farmd.PM_ACTIVE_RUNS.discard("409")
 
 
 # ---- HZ-140: /internal/snapshot, the concierge's credential-free read path ----

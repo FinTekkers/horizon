@@ -1,14 +1,19 @@
-"""The long-running PM agent loop. Runs inside tmux session farm-pm-<project>.
+"""The PM agent: runs one lifecycle step (0/1/2/9) per process.
 
-A deliberate *script* around the model: it takes tasks from the filesystem
-queue (written by farmd), executes exactly one lifecycle step per task via a
-resumed Claude session (context accumulates across items for the life of the
-farm), and reports the result back to farmd. It never decides what runs next
-— the Node orchestrator does.
+HZ-212: farmd's dispatcher claims each PM task into queue/runs/active and
+launches `python -m farm.pm_agent --task <file>` in its own
+farm-run-<item>-s<step>-a<attempt> tmux session, exactly as it launches
+step_agent — so every PM step starts on the code, env and farm/roles/pm.md
+present at dispatch. Nothing is resumed: the HZ-204 project-context block in
+the prompt is the only memory a step has of other items.
+
+A deliberate *script* around the model: it executes exactly one lifecycle
+step per task and reports the result back to farmd. It never decides what
+runs next — the Node orchestrator does. The `--project` polling loop is kept
+for tests and for a rollback build; farmd no longer launches it.
 """
 
 import argparse
-import json
 import sys
 import time
 from datetime import datetime, timezone
@@ -36,6 +41,7 @@ from .config import (
     slugify,
 )
 from .rules import render_rules_section
+from .task_files import read_task
 
 # The fields a PM revision may patch, and how long each may be — DERIVED from
 # domain/fields.json (HZ-134), which is also where server/src/app.js's POST
@@ -438,10 +444,15 @@ def validate(parsed: dict) -> tuple[str, dict, str | None]:
     return summary[:SUMMARY_MAX_CHARS], patch, artifact
 
 
-def process(task: dict, project_slug: str) -> None:
+def process(task: dict, project_slug: str) -> bool:
+    """Runs one PM step and reports it. Returns whether farmd accepted the
+    result; a post that raises (farmd down) propagates to the caller.
+
+    HZ-212: never resumes a session. Any stored session id is ignored — the
+    HZ-204 context block is the only cross-item memory. The returned id is
+    still written to the session file so a rollback build finds one."""
     run_id = task["run_id"]
     sid_path = session_file(project_slug)
-    session_id = sid_path.read_text().strip() if sid_path.exists() else None
 
     try:
         prompt = build_prompt(task)
@@ -451,25 +462,23 @@ def process(task: dict, project_slug: str) -> None:
         # guardrails") and its label.
         step_label = task["step"]["label"]
         model_agent = model_agent_for_step(steps.by_label(step_label)["agent"])
-        reply = run_agent(
-            prompt, agent=model_agent, step=step_label, session_id=session_id, append_system=ROLE_PROMPT
-        )
+        reply = run_agent(prompt, agent=model_agent, step=step_label, session_id=None, append_system=ROLE_PROMPT)
         if reply.get("session_id"):
             sid_path.write_text(reply["session_id"])
 
         # One retry, telling the model exactly what was wrong with its reply.
-        # The session is re-read inside the closure, as it was before the
-        # parse path moved into agent_runner — the helper parses, this module
-        # still owns the run and the session file. validate= keeps validation
-        # inside the retry envelope, so a reply that parses but is missing
-        # 'summary' takes the retry exactly as it always did.
-        def retry_once(prompt: str) -> str:
+        # Fresh, like the first call (HZ-212): it used to resume the session
+        # the first call had just written, so the bare correction was enough.
+        # With no resume the task prompt goes first, then the correction.
+        # validate= keeps validation inside the retry envelope, so a reply that
+        # parses but is missing 'summary' takes the retry exactly as it always did.
+        def retry_once(retry_prompt: str) -> str:
             log(f"run {run_id}: invalid reply; retrying once")
             retry = run_agent(
-                prompt,
+                f"{prompt}\n\n{retry_prompt}",
                 agent=model_agent,
                 step=step_label,
-                session_id=sid_path.read_text().strip() if sid_path.exists() else None,
+                session_id=None,
                 append_system=ROLE_PROMPT,
             )
             return retry["result"]
@@ -507,40 +516,9 @@ def process(task: dict, project_slug: str) -> None:
         if isinstance(exc, AgentExhaustedError):
             result["reason"] = reasons.REASON["TURN_CAP"]
 
-    httpx.post(f"{FARMD}/internal/steps/result", json=result, timeout=30)
+    res = httpx.post(f"{FARMD}/internal/steps/result", json=result, timeout=30)
     log(f"run {run_id}: reported {'ok' if result['ok'] else 'failure'}")
-
-
-def read_task(path: Path) -> tuple[dict | None, str]:
-    """HZ-130: reads one queued task file WITHOUT ever deleting it.
-
-    Returns `(task, "")` when the file is usable, or `(None, reason)` when it
-    is not: a truncated or corrupt payload, a file we could not read at all,
-    or valid JSON missing the one field the PM cannot proceed without.
-
-    OSError is caught alongside JSONDecodeError on purpose, and that does not
-    turn this into "catch wider and continue" — the caller retries a bounded
-    number of times and then *reports*, so a file we cannot read still ends in
-    a report rather than in silence.
-
-    `run_id` is validated here, at the boundary, rather than being trusted
-    deeper in: process() reads it before its own try block, so a task file
-    that parses but carries no run_id used to kill the loop with a KeyError
-    *after* the file had already been unlinked — the same silent-loss shape as
-    the malformed case, on a neighbouring input. Nothing else is validated
-    here: any other missing field surfaces inside process(), which reports it.
-    """
-    try:
-        task = json.loads(path.read_text())
-    except json.JSONDecodeError as exc:
-        return None, f"unparseable JSON ({exc})"
-    except OSError as exc:
-        return None, f"unreadable ({exc})"
-    if not isinstance(task, dict):
-        return None, f"not a JSON object (got {type(task).__name__})"
-    if task.get("run_id") in (None, ""):
-        return None, "no run_id field"
-    return task, ""
+    return 200 <= res.status_code < 300
 
 
 def _queued_tasks(queue: Path) -> list[Path]:
@@ -662,11 +640,40 @@ def poll_once(queue: Path, project_slug: str, failures: dict) -> str:
     return "processed"
 
 
-def main() -> None:
+def run_task(path: Path) -> int:
+    """HZ-212: runs the one claimed task farmd launched this process for.
+
+    The file is released only once farmd has accepted the result. Any other
+    ending — an unreadable file, a result post that raised or was rejected —
+    keeps it in queue/runs/active and exits non-zero; farmd's reconcile then
+    finds the session gone and fails the run once with a retryable reason
+    (or releases it quietly if the server already has the result)."""
+    task, why = read_task(path)
+    if task is None:
+        log(f"task file {path.name} is unusable: {why} — keeping it for farmd's reconcile")
+        return 1
+    project = task.get("project") if isinstance(task.get("project"), dict) else {}
+    try:
+        delivered = process(task, slugify(project.get("name") or "unknown"))
+    except Exception as exc:
+        log(f"run {task['run_id']}: result not delivered ({exc}) — keeping the task file for farmd's reconcile")
+        return 1
+    if not delivered:
+        log(f"run {task['run_id']}: farmd did not accept the result — keeping the task file for farmd's reconcile")
+        return 1
+    path.unlink(missing_ok=True)
+    return 0
+
+
+def main() -> int | None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--project", required=True)
+    mode = parser.add_mutually_exclusive_group(required=True)
+    mode.add_argument("--task", help="run this one claimed task file and exit (how farmd launches PM steps)")
+    mode.add_argument("--project", help="legacy polling loop over queue/pm (tests and rollback only)")
     parser.add_argument("--once", action="store_true", help="process one task and exit (testing)")
     args = parser.parse_args()
+    if args.task:
+        return run_task(Path(args.task))
     project_slug = slugify(args.project)
 
     ensure_dirs()
@@ -691,5 +698,5 @@ if __name__ == "__main__":
     try:
         sys.exit(main())
     except KeyboardInterrupt:
-        log("interrupted — exiting (farmd's watchdog will restart this agent)")
+        log("interrupted — exiting")
         sys.exit(130)

@@ -128,7 +128,7 @@ def spawn_overhead(samples: int = 5, *, runner=subprocess.run, clock=time.perf_c
         tmux_times.append(clock() - start)
     totals = [a + b for a, b in zip(import_times, tmux_times)]
     return {"samples": samples, "import_s": _stats(import_times), "tmux_s": _stats(tmux_times),
-            "total_s": _stats(totals)}
+            "total_s": _stats(totals), "total_samples_s": [round(t, 3) for t in totals]}
 
 
 def _fmt(value) -> str:
@@ -173,6 +173,10 @@ def render_markdown(summary: dict, gaps: dict, spawn: dict | None, source: str) 
                   _row("Cold CPython + `import farm.pm_agent`", spawn["import_s"]),
                   _row("tmux new/has/kill round trip", spawn["tmux_s"]),
                   _row("**Total added per step**", spawn["total_s"])]
+        # HZ-212: the raw totals, one per line, so a reader (or a test) can
+        # recompute the median instead of trusting the table.
+        lines += ["", "Raw per-sample totals (seconds):", "", "```",
+                  *(f"{t:.3f}" for t in spawn["total_samples_s"]), "```"]
     return "\n".join(lines) + "\n"
 
 

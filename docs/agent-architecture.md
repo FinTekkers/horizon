@@ -176,7 +176,9 @@ farmd, so every `FARM_*` variable is baked into the launch command at session
 *creation time* by `tmux_mgr._farm_env_prefix()`.
 Ephemeral steps get a brand-new tmux session per dispatch
 (`_claim_and_launch()`), so they pick up a `FARM_PROVIDER` change on the very
-next step. The PM session is different: it's launched once, at farm start
+next step. **Since HZ-212 PM steps do too** — the rest of this paragraph
+describes the long-lived PM session that HZ-212 retired, kept as history. The
+PM session was different: it's launched once, at farm start
 (`_start_async` → `_launch_pm_session`), and is only ever relaunched by the
 watchdog if its tmux session is found dead, or by a same-project
 `POST /farm/start` recovering an already-dead session.
@@ -196,6 +198,9 @@ and the missing provenance stamp are all consequences of the PM session being
 long-lived. HZ-115 measured the cost of ending that and recommends a path:
 see [`docs/pm-step-ephemeral-recommendation.md`](pm-step-ephemeral-recommendation.md).
 The concierge's own long-lived session is deliberately **not** in that scope.
+HZ-204 shipped stage 1 (the context block); HZ-212 shipped stage 2: PM steps
+run per task through `_claim_and_launch()`, with no session resume, each with
+its own log.
 
 ## Muse provider
 

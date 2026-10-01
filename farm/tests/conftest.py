@@ -99,6 +99,8 @@ class FakeTmux:
     def __init__(self) -> None:
         self.calls: list[tuple[str, ...]] = []
         self.sessions: set[str] = set()
+        # session -> pane pids, for `list-panes`; a test registers real pids.
+        self.pane_pids: dict[str, list[int]] = {}
         # farmd's watchdog/dispatcher/reconcile threads call in concurrently.
         self._lock = threading.Lock()
 
@@ -106,6 +108,7 @@ class FakeTmux:
         with self._lock:
             self.calls.clear()
             self.sessions.clear()
+            self.pane_pids.clear()
 
     @staticmethod
     def _flag(args: tuple[str, ...], flag: str) -> str:
@@ -134,6 +137,10 @@ class FakeTmux:
             code = 0 if self.sessions else 1  # real tmux: "no server running"
         elif cmd == "pipe-pane":
             pass
+        elif cmd == "list-panes":
+            target = self._flag(args, "-t").removeprefix("=")
+            code = 0 if target in self.sessions else 1
+            out = "".join(f"{pid}\n" for pid in self.pane_pids.get(target, [])) if code == 0 else ""
         else:
             raise AssertionError(f"FakeTmux does not model `tmux {' '.join(args)}` — mark the test real_tmux")
         return subprocess.CompletedProcess(["tmux", *args], code, out, "")
