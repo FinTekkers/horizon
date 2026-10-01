@@ -50,11 +50,15 @@ sessions; queued work survives on disk.
 | `FARM_SHARED_SECRET` | dev-secret | must match the Node server's value. **farmd only** (HZ-140): `tmux_mgr.py` refuses to forward it into any agent session, and unsets it in the session's own command, so a step/PM/concierge agent can't read it out of its environment |
 | `FARM_HOME` | ~/.horizon-farm | queue/state/logs/workspaces |
 | `FARM_CLAUDE_BIN` | claude | override with tests/fake_claude in tests |
-| `FARM_PM_MODEL` | (CLI default) | model for the PM agent |
-| `FARM_STEP_MODEL` | (CLI default) | model for step agents and conflict resolution (Claude provider only) |
+| `FARM_MODEL_OVERRIDE` | (unset) | **emergency only** (HZ-192): a Claude model id (`claude-<id>`) that replaces the model of EVERY Claude call — PM, steps, conflict resolution and the concierge. Never reaches Muse. A malformed value fails each call rather than reaching the CLI |
 | `FARM_STEP_TIMEOUT_S` | 900 | per-claude-invocation timeout |
 | `FARM_CHECK_CMD` | (auto-detect) | guardrail check command run before push (via `sh -c`) |
 | `FARM_CHECK_TIMEOUT_S` | 600 | guardrail check timeout |
+
+No env var selects a model. Every agent's default model, and any per-step or
+per-persona override, is declared in `domain/personas.json`'s `models` block
+(HZ-192); `run_agent()` resolves it per call. Edit `/etc/horizon/farm.env` on
+the host for `FARM_MODEL_OVERRIDE`.
 
 Node side: `FARM_URL`, `FARM_SHARED_SECRET`, `FARM_STEP_INDEXES` (default
 `0,1,2`). Two independent watchdogs (HZ-57): `FARM_QUEUE_TIMEOUT_MS` (default
@@ -124,7 +128,6 @@ to stop attaching polls entirely.
 | `WA_BRIDGE_URL` | http://localhost:8080 | the bridge's REST endpoint |
 | `FARM_WA_POLL_S` | 5 | poll interval |
 | `FARM_WA_TRANSPORT` | mcp_bridge | `cloud_api` arrives with the Option B cutover |
-| `FARM_CONCIERGE_MODEL` | (CLI default) | model for the concierge agent |
 | `FARM_UI_URL` | http://localhost:5173 | web UI base, for deep links texted back on item creation |
 | `FARM_WA_SENDER_NAMES` | `{}` | JSON jid->name map, e.g. `{"15551112222":"David"}` — every wizard/approval reply names whose turn it is |
 | `FARM_WA_WIZARD_TTL_S` | 1800 | item-wizard conversation expiry (seconds) |

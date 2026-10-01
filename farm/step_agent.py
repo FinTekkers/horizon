@@ -26,8 +26,7 @@ import httpx
 # HZ-132 put the failure-reason vocabulary there too, so the reason this script
 # reports is a constant the server already knows, never a string typed here.
 from domain.py import reasons, steps
-
-from . import agent_runner
+from domain.py.personas import model_agent_for_step
 
 # AgentExhaustedError is this branch's name for main's TurnCapExceeded — the
 # same "ran out of turn budget" signal, renamed by the provider refactor. The
@@ -42,7 +41,7 @@ from .agent_runner import (
     stamp_notes_artifact,
 )
 from .checks import run_checks
-from .config import FARM_PORT, ITEM_LOCK_WAIT_S, STEP_MODEL
+from .config import FARM_PORT, ITEM_LOCK_WAIT_S
 from .personas import compose_role, provider_for, resolve
 from .rules import render_rules_section
 from .workspaces import ItemBusy, ensure_item_worktree, hub_lock, item_lock
@@ -648,17 +647,13 @@ def _review_summary(verdict: dict) -> str:
     return summary[:SUMMARY_MAX_CHARS]
 
 
-def step_model(provider: str | None = None) -> str | None:
-    """HZ-187: the model every step-agent run_agent() call passes — STEP_MODEL
-    on the claude provider, None (the provider's own default) anywhere else,
-    so a Muse-routed step never receives a Claude model id.
-
-    Must mirror agent_runner._selected_provider()'s rule: an explicit provider
-    wins, else FARM_PROVIDER read at call time. Called through the module so a
-    test patching agent_runner._selected_provider_name reaches it too.
-    """
-    name = provider or agent_runner._selected_provider_name()
-    return STEP_MODEL if name == agent_runner.DEFAULT_PROVIDER else None
+def model_persona(persona_agent: str | None, personas: dict) -> str | None:
+    """HZ-192: the namespaced "<agent>.<persona>" a run_agent() call composes —
+    the key domain/personas.json's models.personas overrides by — or None for
+    a call that composes no persona."""
+    if not persona_agent:
+        return None
+    return f"{persona_agent}.{resolve(persona_agent, personas.get(persona_agent))}"
 
 
 def _provenance(reply: dict) -> dict:
@@ -668,6 +663,9 @@ def _provenance(reply: dict) -> dict:
 def _run_and_parse(
     prompt: str,
     *,
+    agent: str,
+    step: str,
+    persona: str | None,
     append_system: str | None,
     cwd: str | None,
     max_turns: int,
@@ -696,6 +694,9 @@ def _run_and_parse(
     """
     reply = run_agent(
         prompt,
+        agent=agent,
+        step=step,
+        persona=persona,
         append_system=append_system,
         cwd=cwd,
         max_turns=max_turns,
@@ -703,7 +704,6 @@ def _run_and_parse(
         allowed_tools=allowed_tools,
         provider=provider,
         provider_locked=provider_locked,
-        model=step_model(provider),
     )
     produced = reply
 
@@ -712,6 +712,9 @@ def _run_and_parse(
         log("invalid reply; retrying once")
         produced = run_agent(
             retry_prompt,
+            agent=agent,
+            step=step,
+            persona=persona,
             session_id=reply.get("session_id"),
             append_system=append_system,
             cwd=cwd,
@@ -720,7 +723,6 @@ def _run_and_parse(
             allowed_tools=allowed_tools,
             provider=provider,
             provider_locked=provider_locked,
-            model=step_model(provider),
         )
         return produced["result"]
 
@@ -795,6 +797,11 @@ def _execute(task: dict) -> dict:
     provider_override = (
         provider_for(personas) if steps.provider_override_eligible(steps.STEPS, label) else None
     )
+    # HZ-192: who this step's run_agent() calls are; run_agent() resolves the
+    # model from these, so it is never chosen here. The agent comes from the
+    # step table, like the budget above, not from the task payload.
+    model_agent = model_agent_for_step(steps.by_label(label)["agent"])
+    persona = model_persona(persona_agent, personas)
 
     ws = None
     if item.get("repo"):
@@ -838,13 +845,15 @@ def _execute(task: dict) -> dict:
         try:
             reply = run_agent(
                 build_prompt(task) + extra,
+                agent=model_agent,
+                step=label,
+                persona=persona,
                 append_system=role,
                 cwd=str(ws),
                 max_turns=max_turns,
                 timeout_s=timeout_s,
                 allowed_tools=tools,
                 provider_locked=provider_locked,
-                model=step_model(),
             )
         except Exception:
             # SALVAGE (HZ-31): the run hit its turn/time cap (or any other
@@ -944,6 +953,9 @@ def _execute(task: dict) -> dict:
 
         code_parsed, _code_provenance, code_notes = _run_and_parse(
             prompt,
+            agent=model_agent,
+            step=label,
+            persona=persona,
             append_system=role,
             cwd=str(ws),
             max_turns=max_turns,
@@ -959,6 +971,9 @@ def _execute(task: dict) -> dict:
         qa_role = compose_role(qa_role, REVIEW_QA_PERSONA_AGENT, personas.get(REVIEW_QA_PERSONA_AGENT))
         qa_parsed, _qa_provenance, qa_notes = _run_and_parse(
             prompt,
+            agent=model_agent,
+            step=label,
+            persona=model_persona(REVIEW_QA_PERSONA_AGENT, personas),
             append_system=qa_role,
             cwd=str(ws),
             max_turns=max_turns,
@@ -1017,6 +1032,9 @@ def _execute(task: dict) -> dict:
         )
         parsed, _deploy_provenance, notes = _run_and_parse(
             prompt,
+            agent=model_agent,
+            step=label,
+            persona=persona,
             append_system=role,
             cwd=None,
             max_turns=max_turns,
@@ -1049,6 +1067,9 @@ def _execute(task: dict) -> dict:
 
     parsed, reply_provenance, notes = _run_and_parse(
         build_prompt(task) + "\n\nRespond with ONLY the JSON object described in your role instructions.",
+        agent=model_agent,
+        step=label,
+        persona=persona,
         append_system=role,
         cwd=str(ws) if ws else None,
         max_turns=max_turns,

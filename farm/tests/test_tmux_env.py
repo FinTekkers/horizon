@@ -181,8 +181,9 @@ def test_the_tripwire_itself_can_fail():
     assert found - set(tmux_mgr.NEVER_FORWARD) - KNOWN_FORWARDABLE == {"FOO_TOKEN"}
 
 
-def test_farm_step_model_is_forwarded_to_a_step_session():
-    """HZ-187: STEP_MODEL is read inside the agent process, so the operator's
-    FARM_STEP_MODEL must reach the pane — and it is no secret."""
-    assert "FARM_STEP_MODEL" not in tmux_mgr.NEVER_FORWARD
-    assert tmux_mgr.agent_env(STEP_SESSION, {"FARM_STEP_MODEL": "claude-x"})["FARM_STEP_MODEL"] == "claude-x"
+def test_farm_model_override_is_forwarded_to_a_step_session():
+    """HZ-192: the one emergency model override is read inside the agent
+    process (agent_runner._model_for), so the operator's FARM_MODEL_OVERRIDE
+    must reach the pane — and it is no secret."""
+    assert "FARM_MODEL_OVERRIDE" not in tmux_mgr.NEVER_FORWARD
+    assert tmux_mgr.agent_env(STEP_SESSION, {"FARM_MODEL_OVERRIDE": "claude-x"})["FARM_MODEL_OVERRIDE"] == "claude-x"

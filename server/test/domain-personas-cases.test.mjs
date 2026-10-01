@@ -23,7 +23,7 @@ const cases = JSON.parse(readFileSync(path.join(REPO_ROOT, 'domain/fixtures/pers
 const { shared, js } = cases
 
 // Ids this run actually executed, checked against shared.manifest at the end.
-const executed = { validation: [], membership: [], roleFile: [] }
+const executed = { validation: [], membership: [], roleFile: [], resolveModel: [] }
 
 // ---- coverage guard ----
 
@@ -96,6 +96,25 @@ for (const c of shared.roleFile) {
   })
 }
 
+// ---- shared: resolveModel (resolveModel vs Python's resolve_model) — HZ-192 ----
+
+for (const c of shared.resolveModel) {
+  test(`shared/resolveModel: ${c.case}`, () => {
+    executed.resolveModel.push(c.case)
+    if (c.expect.throws) {
+      assert.throws(
+        () => binding.resolveModel(c.agent, c.step, c.persona, c.models),
+        (err) => {
+          assert.ok(err.message.includes(c.expect.throws), `expected "${c.expect.throws}", got: ${err.message}`)
+          return true
+        },
+      )
+    } else {
+      assert.equal(binding.resolveModel(c.agent, c.step, c.persona, c.models), c.expect.model)
+    }
+  })
+}
+
 // ---- js-only exports ----
 
 test('js/isPersonaAgent: registry membership, never a prototype key', () => {
@@ -154,6 +173,31 @@ test('js/LEGACY_PERSONA_IDS: every live legacy alias names a declared pair', () 
   assert.ok(Object.isFrozen(binding.LEGACY_PERSONA_IDS))
 })
 
+test('js/MODELS: the live block carries agents, steps and personas, frozen', () => {
+  assert.equal(js.MODELS.length, 1)
+  assert.deepEqual(Object.keys(binding.MODELS), ['agents', 'steps', 'personas'])
+  assert.ok(Object.keys(binding.MODELS.agents).length > 0)
+  assert.ok(Object.isFrozen(binding.MODELS))
+  for (const map of Object.values(binding.MODELS)) assert.ok(Object.isFrozen(map))
+})
+
+test("js/CONCIERGE_MODEL_AGENT and CONFLICT_MODEL_AGENT: each has a default model", () => {
+  assert.equal(js.CONCIERGE_MODEL_AGENT.length, 1)
+  assert.equal(js.CONFLICT_MODEL_AGENT.length, 1)
+  assert.ok(Object.hasOwn(binding.MODELS.agents, binding.CONCIERGE_MODEL_AGENT))
+  assert.ok(Object.hasOwn(binding.MODELS.agents, binding.CONFLICT_MODEL_AGENT))
+})
+
+test('js/CONFLICT_STEP_KEY: the reserved conflict step key is not a steps.json label', async () => {
+  assert.equal(js.CONFLICT_STEP_KEY.length, 1)
+  const { STEPS } = await import('../../domain/js/lifecycle.js')
+  assert.ok(!STEPS.some((step) => step.label === binding.CONFLICT_STEP_KEY))
+})
+
+test('js/modelAgentForStep: a steps.json agent display name lower-cases', () => {
+  for (const c of js.modelAgentForStep) assert.equal(binding.modelAgentForStep(c.stepAgent), c.expect, c.case)
+})
+
 test('the frozen exports reject a runtime write in strict mode', () => {
   assert.throws(() => {
     binding.PERSONA_IDS.eng = []
@@ -161,12 +205,16 @@ test('the frozen exports reject a runtime write in strict mode', () => {
   assert.throws(() => {
     binding.DEFAULT_PERSONAS.eng = 'nope'
   }, TypeError)
+  assert.throws(() => {
+    binding.MODELS.agents.eng = 'claude-other'
+  }, TypeError)
 })
 
-test('js/assertPersonasShape, isPersona and personaRoleFile: covered by the shared sections above', () => {
+test('js/assertPersonasShape, isPersona, personaRoleFile and resolveModel: covered by the shared sections above', () => {
   assert.equal(js.assertPersonasShape[0].drivenBy, 'shared.validation')
   assert.equal(js.isPersona[0].drivenBy, 'shared.membership')
   assert.equal(js.personaRoleFile[0].drivenBy, 'shared.roleFile')
+  assert.equal(js.resolveModel[0].drivenBy, 'shared.resolveModel')
 })
 
 // ---- the manifest: this suite really ran every shared case ----

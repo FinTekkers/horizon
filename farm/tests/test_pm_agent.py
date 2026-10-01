@@ -1159,3 +1159,59 @@ def test_turn_cap_is_retryable_in_the_shared_vocabulary():
     assert reasons.is_retryable(reasons.REASON["TURN_CAP"])
     js = (REPO_ROOT / "domain" / "js" / "reasons.js").read_text()
     assert "AUTO_RETRY_REASONS" in js, "the JS binding no longer derives the set — re-point this test"
+
+
+# ---- process(): the PM's model (HZ-192) ----
+# The REAL run_agent() over recording providers: the model each PM call site
+# handed its provider, resolved from domain/personas.json by the step's own
+# domain/steps.json agent.
+
+
+# Read off the step table rather than typed: the lane includes an Architect
+# step, whose model agent is architect, not pm.
+PM_LANE_STEPS = [step for step in domain_steps.STEPS if step["runsIn"] == "pm"]
+
+
+def _pm_task(step):
+    task = json.loads(_task_json())
+    task["step"] = {"index": step["index"], "label": step["label"]}
+    return task
+
+
+def test_the_pm_lane_runs_more_than_one_model_agent():
+    assert {step["agent"] for step in PM_LANE_STEPS} >= {"PM", "Architect"}
+
+
+@pytest.mark.parametrize("step", PM_LANE_STEPS, ids=lambda step: step["label"])
+def test_both_pm_call_sites_hand_the_steps_model_to_claude(pm_process, monkeypatch, recording_providers, step):
+    monkeypatch.setattr(pm_agent, "run_agent", agent_runner.run_agent)
+    monkeypatch.delenv("FARM_PROVIDER", raising=False)
+    resolved = []
+    real_resolve = agent_runner.resolve_model
+    monkeypatch.setattr(
+        agent_runner, "resolve_model", lambda *args: resolved.append(args) or real_resolve(*args)
+    )
+    # An invalid first reply forces the retry call site too.
+    recorder = recording_providers("plain prose, no json", json.dumps({"summary": "done"}))
+
+    posted = pm_process.run(task=_pm_task(step))
+
+    assert posted["ok"] is True
+    assert resolved == [(step["agent"].lower(), step["label"], None)] * 2
+    assert recorder.models()[0] == "claude-opus-5-5", "pm_agent.process: first run_agent call"
+    assert recorder.models()[1] == "claude-opus-5-5", "pm_agent.process: retry_once run_agent call"
+
+
+@pytest.mark.parametrize("override", [None, "claude-test-emergency"])
+def test_a_pm_call_on_muse_receives_no_model(pm_process, monkeypatch, recording_providers, override):
+    """Unguarded before HZ-192: the PM handed its env-selected model to whichever
+    provider FARM_PROVIDER selected."""
+    monkeypatch.setattr(pm_agent, "run_agent", agent_runner.run_agent)
+    monkeypatch.setenv("FARM_PROVIDER", "muse")
+    if override:
+        monkeypatch.setenv("FARM_MODEL_OVERRIDE", override)
+    recorder = recording_providers("plain prose, no json", json.dumps({"summary": "done"}))
+
+    pm_process.run(task=_pm_task(PM_LANE_STEPS[0]))
+
+    assert [(c["provider"], c["model"]) for c in recorder.calls] == [("muse", None), ("muse", None)]

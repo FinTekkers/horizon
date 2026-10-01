@@ -38,12 +38,13 @@ from pathlib import Path
 import httpx
 
 from domain.py import priorities
+from domain.py.personas import CONCIERGE_MODEL_AGENT
 
 from . import config
 from . import credentials
 from . import wizard
 from .agent_runner import AgentError, parse_agent_reply, run_agent
-from .config import CONCIERGE_MODEL, FARM_PORT, HORIZON_URL, STATE_DIR, ensure_dirs, slugify
+from .config import FARM_PORT, HORIZON_URL, STATE_DIR, ensure_dirs, slugify
 from .whatsapp.transport import Inbound, Transport, TransportError
 
 # farmd's loopback API, same as step_agent.py's. HZ-140: the concierge holds
@@ -328,7 +329,7 @@ def process_message(
         snapshot = fetch_snapshot(farmd_url)
         prompt = build_prompt(msg, snapshot)
         reply_raw = run_agent(
-            prompt, session_id=state.session_id(), append_system=ROLE_PROMPT, model=CONCIERGE_MODEL
+            prompt, agent=CONCIERGE_MODEL_AGENT, session_id=state.session_id(), append_system=ROLE_PROMPT
         )
         state.save_session(reply_raw.get("session_id"))
 
@@ -341,9 +342,9 @@ def process_message(
             log("invalid concierge reply; retrying once")
             retry = run_agent(
                 prompt,
+                agent=CONCIERGE_MODEL_AGENT,
                 session_id=state.session_id(),
                 append_system=ROLE_PROMPT,
-                model=CONCIERGE_MODEL,
             )
             state.save_session(retry.get("session_id"))
             return retry["result"]

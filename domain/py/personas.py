@@ -38,6 +38,13 @@ module that needs a MUTABLE copy — farm/personas.py's registry is
 monkeypatched by farm/tests/conftest.py — builds its own from these, never
 aliases them.
 
+HZ-192: the same document also declares which Claude model each agent call
+uses (the `models` block). resolve_model() is the one resolver —
+persona override, then step override, then agent default — and
+farm/agent_runner.py is its only farm caller: run_agent() takes agent/step/
+persona, never a model. Every declared model id must look like a Claude id,
+and a persona routed elsewhere by personaProviders cannot carry one.
+
 _SOURCE_PATH is derived from __file__, never from the process's cwd: farm
 agents run inside workspace clones, not from the repo root
 (farm/tests/test_domain_import.py asserts that).
@@ -53,6 +60,10 @@ _SOURCE_PATH = Path(__file__).resolve().parent.parent / "personas.json"
 # Kept in step with domain/js/personas.js's ID_SHAPE; both validators print it
 # in their messages and domain/fixtures/personas-cases.json compares those.
 _ID_SHAPE = re.compile(r"^[a-z][a-z0-9_]*$")
+# HZ-192, kept in step with domain/js/personas.js's MODEL_SHAPE. Only a Claude
+# id can be declared, so no models value can name another provider's model.
+_MODEL_SHAPE = re.compile(r"^claude-[a-z0-9][a-z0-9.-]*$")
+_MODELS_KEYS = ("agents", "conflictAgent", "steps", "personas")
 
 
 def _json(value: object) -> str:
@@ -66,6 +77,10 @@ def _is_id(value: object) -> bool:
     # fullmatch, not match: `$` also matches before a trailing newline, and
     # "ui\n" must not pass as an id that is later interpolated into a filename.
     return isinstance(value, str) and _ID_SHAPE.fullmatch(value) is not None
+
+
+def _is_model(value: object) -> bool:
+    return isinstance(value, str) and _MODEL_SHAPE.fullmatch(value) is not None
 
 
 def _split_pair(value: object, ids: dict) -> tuple[str, str] | None:
@@ -167,7 +182,67 @@ def _validate_source(data: object, source: str) -> dict:
                 f"{prefix}{source}: personaProviders[{_json(key)}] {_json(value)} "
                 "must be a non-empty provider id string"
             )
+
+    _validate_models(data.get("models"), ids, providers, prefix + source)
     return data
+
+
+def _validate_models(models: object, ids: dict, providers: dict, where: str) -> None:
+    """HZ-192's load-time rules for the `models` block. Same message fragments
+    as domain/js/personas.js's assertModelsShape."""
+
+    def model_error(key: str, value: object) -> RuntimeError:
+        return RuntimeError(
+            f"{where}: {key} {_json(value)} is not a Claude model id matching /{_MODEL_SHAPE.pattern}/"
+        )
+
+    if not isinstance(models, dict):
+        raise RuntimeError(f"{where}: models must be a JSON object with agents, conflictAgent, steps and personas")
+    for key in models:
+        if key not in _MODELS_KEYS:
+            raise RuntimeError(f"{where}: models has unknown key {_json(key)} — expected only {_json(list(_MODELS_KEYS))}")
+
+    agents = models.get("agents")
+    if not isinstance(agents, dict) or not agents:
+        raise RuntimeError(f"{where}: models.agents must be a non-empty JSON object")
+    for key, value in agents.items():
+        if not _is_id(key):
+            raise RuntimeError(
+                f"{where}: models.agents key {_json(key)} — expected a lower-case id matching /{_ID_SHAPE.pattern}/"
+            )
+        if not _is_model(value):
+            raise model_error(f"models.agents[{_json(key)}]", value)
+
+    conflict_agent = models.get("conflictAgent")
+    if not isinstance(conflict_agent, str) or conflict_agent not in agents:
+        raise RuntimeError(
+            f"{where}: models.conflictAgent {_json(conflict_agent)} is not a models.agents key {_json(list(agents))}"
+        )
+
+    steps = models.get("steps")
+    if not isinstance(steps, dict):
+        raise RuntimeError(f"{where}: models.steps must be a JSON object")
+    for key, value in steps.items():
+        if not key:
+            raise RuntimeError(f"{where}: models.steps has an empty step key")
+        if not _is_model(value):
+            raise model_error(f"models.steps[{_json(key)}]", value)
+
+    personas = models.get("personas")
+    if not isinstance(personas, dict):
+        raise RuntimeError(f"{where}: models.personas must be a JSON object")
+    for key, value in personas.items():
+        if _split_pair(key, ids) is None:
+            raise RuntimeError(
+                f"{where}: models.personas key {_json(key)} does not name a declared <agent>.<persona> pair"
+            )
+        if key in providers:
+            raise RuntimeError(
+                f"{where}: models.personas key {_json(key)} is routed to {_json(providers[key])} by "
+                "personaProviders — only a Claude-run persona can carry a model"
+            )
+        if not _is_model(value):
+            raise model_error(f"models.personas[{_json(key)}]", value)
 
 
 def _load_source(path: Path) -> dict:
@@ -215,6 +290,21 @@ LEGACY_PERSONA_IDS = types.MappingProxyType(
 # "<agent>.<persona>" -> the provider that persona forces. Ships empty (HZ-121).
 PERSONA_PROVIDERS = types.MappingProxyType(dict(_SOURCE["personaProviders"]))
 
+# HZ-192: {"agents", "steps", "personas"} -> read-only {key -> Claude model id}.
+# See resolve_model() for the order they apply in.
+MODELS = types.MappingProxyType(
+    {key: types.MappingProxyType(dict(_SOURCE["models"][key])) for key in ("agents", "steps", "personas")}
+)
+
+# The model agent the WhatsApp concierge runs as.
+CONCIERGE_MODEL_AGENT = "concierge"
+
+# Merge-conflict resolution (farm/conflict_resolver.py) runs as this model
+# agent, under the reserved step key CONFLICT_STEP_KEY — it is not a
+# domain/steps.json step, so it has no label of its own.
+CONFLICT_MODEL_AGENT: str = _SOURCE["models"]["conflictAgent"]
+CONFLICT_STEP_KEY = "conflict"
+
 
 def is_persona(agent: str, persona_id: str, persona_ids=PERSONA_IDS) -> bool:
     """Whether `persona_id` is a declared persona OF `agent`. An id is only a
@@ -235,3 +325,33 @@ def persona_role_file(agent: str, persona_id: str, persona_ids=PERSONA_IDS) -> s
     if not is_persona(agent, persona_id, persona_ids):
         raise ValueError(f"domain/py/personas.py: unknown persona {_json([agent, persona_id])}")
     return f"{agent}_{persona_id}.md"
+
+
+def model_agent_for_step(step_agent: str) -> str:
+    """The model agent a domain/steps.json step runs as: its `agent` display
+    name lower-cased ("DevOps" -> "devops"). Those names are therefore a
+    contract — renaming one without its models.agents key fails at dispatch,
+    and farm/tests/test_models_domain.py fails first."""
+    return step_agent.lower()
+
+
+def resolve_model(agent: str, step: str | None = None, persona: str | None = None, models=MODELS) -> str:
+    """The Claude model a call runs on: models["personas"][persona] (a
+    namespaced "<agent>.<persona>"), else models["steps"][step], else
+    models["agents"][agent].
+
+    Raises ValueError for an agent with no default, even when an override
+    would apply, so a misspelt agent fails on every call rather than only on
+    the ones no override happens to cover. Says nothing about providers:
+    farm/agent_runner.py passes the result only to Claude.
+
+    `models` is a parameter with a default so a fixture can drive it with a
+    fabricated block — the convention is_persona uses."""
+    agents = models["agents"]
+    if not isinstance(agent, str) or agent not in agents:
+        raise ValueError(f"domain/py/personas.py: unknown model agent {_json(agent)}")
+    if isinstance(persona, str) and persona in models["personas"]:
+        return models["personas"][persona]
+    if isinstance(step, str) and step in models["steps"]:
+        return models["steps"][step]
+    return agents[agent]

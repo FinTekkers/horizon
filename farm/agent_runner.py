@@ -9,7 +9,10 @@ only to run_agent(); none of them know or care which provider actually ran.
 
 import json
 import os
+import re
 from typing import Any, Callable
+
+from domain.py.personas import resolve_model
 
 from .config import FARM_PROVIDER, MAX_TURNS, STEP_TIMEOUT_S
 from .providers import claude, muse
@@ -45,6 +48,37 @@ def _selected_provider_name() -> str:
     return os.environ.get("FARM_PROVIDER", FARM_PROVIDER)
 
 
+# HZ-192: the one emergency override, for every Claude call at once. Read at
+# call time, like FARM_PROVIDER. Shape-checked against the same pattern as
+# domain/personas.json's model ids (kept in step with domain/py/personas.py's
+# _MODEL_SHAPE), so a typo fails here instead of reaching the CLI.
+MODEL_OVERRIDE_ENV = "FARM_MODEL_OVERRIDE"
+_MODEL_SHAPE = re.compile(r"^claude-[a-z0-9][a-z0-9.-]*$")
+
+
+def _model_for(name: str, agent: str, step: str | None, persona: str | None) -> str | None:
+    """HZ-192: the model a run_agent() call hands its provider — the one place
+    a farm call's model is chosen, and the one Muse guard.
+
+    The agent is resolved on every provider, so a misspelt agent fails on Muse
+    too. Any provider but DEFAULT_PROVIDER gets None (its own default): a
+    Claude model id never reaches Muse, whichever path chose Muse — a
+    persona's provider, FARM_PROVIDER, or both, and with or without
+    FARM_MODEL_OVERRIDE."""
+    model = resolve_model(agent, step, persona)
+    if name != DEFAULT_PROVIDER:
+        return None
+    override = os.environ.get(MODEL_OVERRIDE_ENV, "")
+    if not override:
+        return model
+    if _MODEL_SHAPE.fullmatch(override) is None:
+        raise ValueError(
+            f"{MODEL_OVERRIDE_ENV}={override!r} is not a Claude model id matching /{_MODEL_SHAPE.pattern}/ — "
+            "unset it or fix it in /etc/horizon/farm.env"
+        )
+    return override
+
+
 def _selected_provider(name: str | None = None, *, provider_locked: bool = False):
     # An explicit name (HZ-102: a persona-forced provider override) always
     # wins over FARM_PROVIDER for this one call; omitting it keeps the
@@ -72,10 +106,12 @@ def assert_provider_auth() -> None:
 def run_agent(
     prompt: str,
     *,
+    agent: str,
+    step: str | None = None,
+    persona: str | None = None,
     session_id: str | None = None,
     append_system: str | None = None,
     cwd: str | None = None,
-    model: str | None = None,
     max_turns: int = MAX_TURNS,
     timeout_s: int = STEP_TIMEOUT_S,
     allowed_tools: str | None = None,
@@ -99,8 +135,16 @@ def run_agent(
     explicit provider= override and a bare FARM_PROVIDER env var. Checked
     once, at this single dispatch chokepoint, before any provider call is
     made — every caller that omits it (the default) is unaffected.
+
+    agent, step and persona (HZ-192) say WHO is calling, never which model:
+    the model comes from domain/personas.json's `models` block through
+    _model_for(). There is deliberately no model= parameter, so no caller can
+    pick one any other way (farm/tests/test_model_call_sites.py). agent is a
+    models.agents key; step a domain/steps.json label or CONFLICT_STEP_KEY;
+    persona a namespaced "<agent>.<persona>".
     """
     name, provider_module = _selected_provider(provider, provider_locked=provider_locked)
+    model = _model_for(name, agent, step, persona)
     provider_module.assert_subscription_auth()
     if session_id and not provider_module.SUPPORTS_RESUME:
         # Refuse rather than silently starting fresh — a resume-incapable

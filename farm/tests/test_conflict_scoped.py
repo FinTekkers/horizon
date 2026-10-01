@@ -916,29 +916,70 @@ def test_every_reason_the_resolver_reports_is_declared(isolated_workspaces_dir, 
     assert len(set(conflict_resolver.ESCALATION_REASONS)) == len(conflict_resolver.ESCALATION_REASONS)
 
 
-# ---- step model pin (HZ-187) ----
+# ---- conflict models (HZ-192) ----
+# Both conflict calls run as models.conflictAgent under the reserved step key
+# "conflict". These keep the REAL run_agent() — its provider lock and model
+# resolution — and fake only the provider underneath it.
 
 
-@pytest.mark.parametrize(("env", "review_model"), [(None, "claude-x"), ("muse", None)])
-def test_both_conflict_agents_get_the_step_model_only_on_claude(isolated_workspaces_dir, monkeypatch, env, review_model):
-    """The resolution agent is provider-locked to claude; the scoped review is
-    not, so under FARM_PROVIDER=muse it must not receive the Claude id."""
-    from farm import step_agent
+def install_providers(monkeypatch, agents):
+    import types
 
-    monkeypatch.setattr(step_agent, "STEP_MODEL", "claude-x")
+    def provider(name):
+        def run(prompt, **kwargs):
+            return {**agents(prompt, provider_name=name, **kwargs), "session_id": "s"}
+
+        return types.SimpleNamespace(SUPPORTS_RESUME=True, assert_subscription_auth=lambda: None, run=run)
+
+    for name in ("claude", "muse"):
+        monkeypatch.setitem(agent_runner._PROVIDERS, name, provider(name))
+    return agents
+
+
+def test_both_conflict_call_sites_hand_the_conflict_model_to_claude(isolated_workspaces_dir, monkeypatch):
     tmp_path = isolated_workspaces_dir
     _hub, origin = make_repo_hub(tmp_path)
-    agents = install(
+    agents = install_providers(
         monkeypatch,
         FakeAgents(resolution=resolve_markers("line2 (branch and main)\n"), review=PASSING_REVIEW),
     )
-    same_line_conflict(tmp_path, origin, "HZ-187")
-    if env:
-        monkeypatch.setenv("FARM_PROVIDER", env)
-    else:
-        monkeypatch.delenv("FARM_PROVIDER", raising=False)
+    same_line_conflict(tmp_path, origin, "HZ-192")
+    monkeypatch.delenv("FARM_PROVIDER", raising=False)
 
-    conflict_resolver.resolve("acme/demo", "HZ-187", log=lambda *_: None)
+    conflict_resolver.resolve("acme/demo", "HZ-192", log=lambda *_: None)
 
-    assert agents.of("resolution")[0]["model"] == ("claude-x" if env is None else None)
-    assert agents.of("review")[0]["model"] == review_model
+    resolution, review = agents.of("resolution"), agents.of("review")
+    assert [(c["provider_name"], c["model"]) for c in resolution] == [("claude", "claude-opus-5-5")], (
+        "conflict_resolver._run_resolution_agent: run_agent call"
+    )
+    assert [(c["provider_name"], c["model"]) for c in review] == [("claude", "claude-opus-5-5")], (
+        "conflict_resolver._run_scoped_review: run_agent call"
+    )
+
+
+@pytest.mark.parametrize("override", [None, "claude-test-emergency"])
+def test_the_unlocked_scoped_review_sends_muse_no_model(tmp_path, monkeypatch, override):
+    """The resolution agent is provider-locked, so FARM_PROVIDER=muse never
+    reaches it; the scoped review is not locked, so it does reach Muse — and
+    must arrive with no model, emergency override or not."""
+    if override:
+        monkeypatch.setenv("FARM_MODEL_OVERRIDE", override)
+    monkeypatch.setenv("FARM_PROVIDER", "muse")
+    monkeypatch.setattr(conflict_resolver, "_review_prompt", lambda files, delta: "review this")
+    agents = install_providers(monkeypatch, FakeAgents(review=PASSING_REVIEW))
+
+    result = conflict_resolver._run_scoped_review(tmp_path, [], "", lambda *_: None)
+
+    assert result["verdict"] == "pass"
+    assert [(c["provider_name"], c["model"]) for c in agents.of("review")] == [("muse", None)]
+
+
+def test_the_locked_resolution_agent_is_never_dispatched_to_muse(tmp_path, monkeypatch):
+    monkeypatch.setenv("FARM_PROVIDER", "muse")
+    monkeypatch.setattr(conflict_resolver, "_resolution_prompt", lambda files: "resolve this")
+    agents = install_providers(monkeypatch, FakeAgents())  # any dispatch would raise
+
+    result = conflict_resolver._run_resolution_agent(tmp_path, [], lambda *_: None)
+
+    assert result["resolved"] is False and "provider-locked" in result["detail"]
+    assert agents.calls == []

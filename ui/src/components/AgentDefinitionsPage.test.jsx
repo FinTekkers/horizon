@@ -112,3 +112,21 @@ test('previewing a selected persona file sends that persona and its agent', asyn
     project: 'FinTekkers',
   })
 })
+
+// HZ-192: the page shows each step's effective model from domain/personas.json.
+// AgentDefinitionsPage.models.test.jsx drives it with overrides; this pins the
+// values that ship.
+test('the models section shows every agent step, the concierge and conflict resolution with their models', async () => {
+  const { STEPS } = await import('../../../domain/js/lifecycle.js')
+  const { findByText, getByTestId } = render(<AgentDefinitionsPage onBack={() => {}} />)
+  await findByText('FinTekkers__ui-service')
+  const agentSteps = STEPS.filter((step) => step.kind === 'agent')
+  expect(agentSteps.length).toBeGreaterThan(0)
+  for (const step of agentSteps) {
+    expect(getByTestId(`model-row-${step.label}`).textContent).toContain('claude-opus-5-5')
+  }
+  expect(getByTestId('model-row-Set guardrails').textContent).toContain('architect')
+  expect(getByTestId('model-row-concierge').textContent).toContain('claude-sonnet-5')
+  expect(getByTestId('model-row-concierge').textContent).not.toContain('claude-sonnet-5-5')
+  expect(getByTestId('model-row-conflict').textContent).toContain('claude-opus-5-5')
+})

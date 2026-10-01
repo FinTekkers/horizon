@@ -32,7 +32,7 @@ PY = {name: cases for name, cases in CASES["py"].items() if not name.startswith(
 # helpers with no rule of their own.
 REQUIRED_PRIVATE = {"_validate_source"}
 
-SECTIONS = ("validation", "membership", "roleFile")
+SECTIONS = ("validation", "membership", "roleFile", "resolveModel")
 
 
 def _defined_here(value) -> bool:
@@ -110,6 +110,21 @@ def test_shared_role_file(case):
         assert personas.persona_role_file(case["agent"], case["id"], case["personaIds"]) == expect["file"]
 
 
+# ---- shared: resolveModel (resolve_model vs JS's resolveModel) — HZ-192 ----
+
+
+@pytest.mark.parametrize("case", SHARED["resolveModel"], ids=lambda c: c["case"])
+def test_shared_resolve_model(case):
+    _EXECUTED["resolveModel"].append(case["case"])
+    expect = case["expect"]
+    if "throws" in expect:
+        with pytest.raises(ValueError) as exc:
+            personas.resolve_model(case["agent"], case["step"], case["persona"], case["models"])
+        assert expect["throws"] in str(exc.value)
+    else:
+        assert personas.resolve_model(case["agent"], case["step"], case["persona"], case["models"]) == expect["model"]
+
+
 # ---- py-only names, checked against the live document ----
 
 
@@ -162,8 +177,37 @@ def test_py_persona_providers_keys_name_declared_pairs():
         assert key in personas.NAMESPACED_PERSONA_IDS, key
 
 
+def test_py_models_carries_agents_steps_and_personas_read_only():
+    assert PY["MODELS"]
+    assert isinstance(personas.MODELS, types.MappingProxyType)
+    assert tuple(personas.MODELS) == ("agents", "steps", "personas")
+    assert personas.MODELS["agents"]
+    for name, mapping in personas.MODELS.items():
+        assert isinstance(mapping, types.MappingProxyType), name
+    with pytest.raises(TypeError):
+        personas.MODELS["agents"]["intruder"] = "claude-x"
+
+
+def test_py_concierge_and_conflict_model_agents_have_a_default_model():
+    assert PY["CONCIERGE_MODEL_AGENT"] and PY["CONFLICT_MODEL_AGENT"]
+    assert personas.CONCIERGE_MODEL_AGENT in personas.MODELS["agents"]
+    assert personas.CONFLICT_MODEL_AGENT in personas.MODELS["agents"]
+
+
+def test_py_conflict_step_key_is_not_a_steps_json_label():
+    from domain.py import steps
+
+    assert PY["CONFLICT_STEP_KEY"]
+    assert personas.CONFLICT_STEP_KEY not in {step["label"] for step in steps.STEPS}
+
+
+@pytest.mark.parametrize("case", CASES["py"]["model_agent_for_step"], ids=lambda c: c["case"])
+def test_py_model_agent_for_step_lower_cases_the_display_name(case):
+    assert personas.model_agent_for_step(case["stepAgent"]) == case["expect"]
+
+
 def test_py_helpers_are_driven_by_the_shared_sections():
-    for name in ("is_persona", "persona_role_file", *REQUIRED_PRIVATE):
+    for name in ("is_persona", "persona_role_file", "resolve_model", *REQUIRED_PRIVATE):
         assert PY[name][0]["drivenBy"].startswith("shared."), f"py.{name} claims no shared driver"
 
 
