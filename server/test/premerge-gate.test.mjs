@@ -448,18 +448,20 @@ test('HZ-216: a merge whose gate advance is refused re-opens the gate rather tha
   const other = store.createProject(`Other ${id}`).id
   db.prepare('UPDATE work_item SET project_id = ? WHERE id = ?').run(mine, id)
   setSetting('active_project_id', String(mine))
+  store.setProjectEnabled(mine, true)
   try {
     const held = holdRunner()
     const pending = approve(id)
     await held.started()
-    // The project is switched away mid-check: approveGate refuses with project_not_active.
-    setSetting('active_project_id', String(other))
+    // The project is disabled mid-check (HZ-207: switching the board away no
+    // longer does it): approveGate refuses with project_not_active.
+    store.setProjectEnabled(mine, false)
     held.release()
     assert.notEqual((await pending).statusCode, 200)
     assert.equal(cursorOf(id), ACCEPT_GATE_INDEX)
     // Back on its own project, the board shows a finished row: nothing left
     // running to disable the gate.
-    setSetting('active_project_id', String(mine))
+    store.setProjectEnabled(mine, true)
     assert.equal((await gateActionOf(id)).state, 'merged')
   } finally {
     if (before == null) db.prepare("DELETE FROM setting WHERE key = 'active_project_id'").run()

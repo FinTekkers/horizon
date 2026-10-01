@@ -218,6 +218,7 @@ export function listProjects() {
   return projects.map((p) => ({
     id: p.id,
     name: p.name,
+    enabled: !!p.enabled,
     repos: repos.filter((r) => r.project_id === p.id).map((r) => ({ repo: r.repo, prefix: r.prefix })),
   }))
 }
@@ -233,12 +234,33 @@ export function findRepo(repoFullName) {
 export function createProject(name) {
   const existing = db.prepare('SELECT id FROM project WHERE name = ?').get(name)
   if (existing) return { error: 'exists' }
-  const id = db.prepare('INSERT INTO project (name) VALUES (?)').run(name).lastInsertRowid
-  // The first project becomes active without a farm restart — nothing was
-  // running before it existed.
-  if (getActiveProjectId() == null) setSetting('active_project_id', String(id))
+  // The first project becomes active and enabled without a farm restart —
+  // nothing was running before it existed. Later ones start disabled (HZ-207).
+  const first = getActiveProjectId() == null
+  const id = db.prepare('INSERT INTO project (name, enabled) VALUES (?, ?)').run(name, first ? 1 : 0).lastInsertRowid
+  if (first) {
+    setSetting('active_project_id', String(id))
+    setSetting('farm_project_id', String(id))
+  }
   notify()
   return { ok: true, id, name }
+}
+
+// HZ-207: the farm dispatches every enabled project's items. Items with no
+// project (local demo items) are always on, and so is everything before any
+// project has been chosen — the rule the single active project had.
+export function isProjectEnabled(projectId) {
+  if (projectId == null || getActiveProjectId() == null) return true
+  return !!db.prepare('SELECT enabled FROM project WHERE id = ?').get(projectId)?.enabled
+}
+
+// Writes the flag only: a disabled project's items are never cancelled,
+// paused or modified, and its in-flight steps finish normally.
+export function setProjectEnabled(projectId, enabled) {
+  const changes = db.prepare('UPDATE project SET enabled = ? WHERE id = ?').run(enabled ? 1 : 0, projectId).changes
+  if (changes === 0) return { error: 'not_found' }
+  notify()
+  return { ok: true }
 }
 
 // SH for shoreward, US for ui-service, LS for ledger-service… deduped
@@ -454,7 +476,7 @@ function escalateDependents(blockerId, actor) {
 export function addDependency(id, dependsOnId, actor = 'You') {
   const it = getItem(id)
   if (!it) return { error: 'not_found' }
-  if (inactiveProject(it)) return { error: 'project_not_active' }
+  if (disabledProject(it)) return { error: 'project_not_active' }
   if (isClosed(it)) return { error: 'closed' }
   if (isAbandoned(it)) return { error: 'abandoned' }
   if (id === dependsOnId) return { error: 'self_dependency', message: `${id} cannot depend on itself` }
@@ -487,7 +509,7 @@ export function addDependency(id, dependsOnId, actor = 'You') {
 export function removeDependency(id, dependsOnId, actor = 'You') {
   const it = getItem(id)
   if (!it) return { error: 'not_found' }
-  if (inactiveProject(it)) return { error: 'project_not_active' }
+  if (disabledProject(it)) return { error: 'project_not_active' }
   const result = db.prepare('DELETE FROM work_item_dependency WHERE item_id = ? AND depends_on_id = ?').run(id, dependsOnId)
   if (result.changes === 0) return { error: 'not_found' }
   addEvent(id, { who: actor, text: `removed the dependency on ${dependsOnId}`, color: '#5E4380', initials: 'YOU' })
@@ -591,10 +613,10 @@ export function getItem(id) {
   return { ...row, paused: !!row.paused, rejected: !!row.rejected, personas: personasFromRow(row) }
 }
 
-// Human actions are only valid against the active project's items.
-function inactiveProject(item) {
-  const activeId = getActiveProjectId()
-  return item.project_id != null && activeId != null && item.project_id !== activeId
+// Human actions are only valid against an enabled project's items (HZ-207;
+// the error code stays project_not_active, which waPollVotes.js keys on).
+function disabledProject(item) {
+  return !isProjectEnabled(item.project_id)
 }
 
 // ---- mutations ----
@@ -614,7 +636,7 @@ export function addEvent(id, { who, text, color, initials }) {
 export function approveGate(id, stepIndex, notes, actor = 'You') {
   const it = getItem(id)
   if (!it) return { error: 'not_found' }
-  if (inactiveProject(it)) return { error: 'project_not_active' }
+  if (disabledProject(it)) return { error: 'project_not_active' }
   if (isClosed(it) || isAbandoned(it) || STEPS[it.cursor].kind !== 'gate') return { error: 'not_at_gate' }
   if (stepIndex !== it.cursor) return { error: 'stale_step' }
 
@@ -664,7 +686,7 @@ export function approveGate(id, stepIndex, notes, actor = 'You') {
 export function requestChanges(id, target, feedbackText, actor = 'You', targetStepIndex = null) {
   const it = getItem(id)
   if (!it) return { error: 'not_found' }
-  if (inactiveProject(it)) return { error: 'project_not_active' }
+  if (disabledProject(it)) return { error: 'project_not_active' }
   if (isClosed(it)) return { error: 'closed' }
   if (isAbandoned(it)) return { error: 'abandoned' }
 
@@ -726,7 +748,7 @@ export function requestChanges(id, target, feedbackText, actor = 'You', targetSt
 export function setPaused(id, paused) {
   const it = getItem(id)
   if (!it) return { error: 'not_found' }
-  if (inactiveProject(it)) return { error: 'project_not_active' }
+  if (disabledProject(it)) return { error: 'project_not_active' }
   if (isClosed(it)) return { error: 'closed' }
   if (isAbandoned(it)) return { error: 'abandoned' }
 
@@ -754,7 +776,7 @@ export function setPaused(id, paused) {
 export function setPersona(id, agent, persona) {
   const it = getItem(id)
   if (!it) return { error: 'not_found' }
-  if (inactiveProject(it)) return { error: 'project_not_active' }
+  if (disabledProject(it)) return { error: 'project_not_active' }
   if (isClosed(it)) return { error: 'closed' }
   if (isAbandoned(it)) return { error: 'abandoned' }
   if (!isPersona(agent, persona)) return { error: 'bad_persona' }
@@ -782,7 +804,7 @@ export function setPersona(id, agent, persona) {
 export function setPriority(id, priority) {
   const it = getItem(id)
   if (!it) return { error: 'not_found' }
-  if (inactiveProject(it)) return { error: 'project_not_active' }
+  if (disabledProject(it)) return { error: 'project_not_active' }
   if (isClosed(it)) return { error: 'closed' }
   if (isAbandoned(it)) return { error: 'abandoned' }
   if (!isPriority(priority)) return { error: 'bad_priority' }
@@ -802,7 +824,7 @@ export function setPriority(id, priority) {
 export function restartPhase(id, phase, reason, actor = 'You') {
   const it = getItem(id)
   if (!it) return { error: 'not_found' }
-  if (inactiveProject(it)) return { error: 'project_not_active' }
+  if (disabledProject(it)) return { error: 'project_not_active' }
   // Abandonment must not be silently undone by a lever that predates it —
   // reopening an abandoned item is a deliberate act this function doesn't own.
   if (isAbandoned(it)) return { error: 'abandoned' }
@@ -841,7 +863,7 @@ export function restartPhase(id, phase, reason, actor = 'You') {
 export function abandonItem(id, reason, actor = 'You') {
   const it = getItem(id)
   if (!it) return { error: 'not_found' }
-  if (inactiveProject(it)) return { error: 'project_not_active' }
+  if (disabledProject(it)) return { error: 'project_not_active' }
   if (isClosed(it)) return { error: 'closed' }
   if (isAbandoned(it)) return { error: 'already_abandoned' }
   const trimmed = (reason || '').trim()
@@ -869,7 +891,7 @@ export function abandonItem(id, reason, actor = 'You') {
 export function addFeedback(id, { message, target = '', source = 'ui', ghCommentId = null }) {
   const it = getItem(id)
   if (!it) return { error: 'not_found' }
-  if (inactiveProject(it)) return { error: 'project_not_active' }
+  if (disabledProject(it)) return { error: 'project_not_active' }
   if (isClosed(it)) return { error: 'closed' }
   if (isAbandoned(it)) return { error: 'abandoned' }
 

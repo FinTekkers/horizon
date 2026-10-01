@@ -58,3 +58,17 @@ def read_launchable_task(path: Path) -> tuple[dict | None, str]:
     if not isinstance(item, dict) or not isinstance(item.get("id"), str) or not item["id"]:
         return None, "no item.id field"
     return task, ""
+
+
+# HZ-207: /steps/run refuses a task without a project, so the only task file
+# that can lack one was queued by an older farmd — which wrote the key as
+# null when it had no project — and those predate multi-project: Horizon.
+LEGACY_PROJECT = {"name": "Horizon"}
+
+
+def task_project(task: dict) -> dict:
+    """The project a queued task belongs to, with the legacy rule above."""
+    project = task.get("project")
+    if isinstance(project, dict) and isinstance(project.get("name"), str) and project["name"].strip():
+        return project
+    return dict(LEGACY_PROJECT)

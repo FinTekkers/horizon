@@ -40,7 +40,9 @@ def make_task(run_id, item_id="hz-3", step_index=10, attempt=2):
     return {
         "run_id": run_id,
         "attempt": attempt,
-        "item": {"id": item_id},
+        # HZ-207: /steps/run refuses a task without its own project and repo.
+        "project": {"id": 1, "name": "FinTekkers"},
+        "item": {"id": item_id, "repo": "acme/demo"},
         "step": {"index": step_index, "label": "x"},
     }
 
@@ -75,6 +77,8 @@ def running_farm(monkeypatch):
     The background dispatcher consumes that queue since HZ-212, so its tick
     is paused first — a test reads its own queue file without a race."""
     monkeypatch.setattr(farmd, "_dispatch_tick", lambda: None)
+    # HZ-207: a task's repo has no hub in the test FARM_HOME; never clone it.
+    monkeypatch.setattr(farmd, "_provision_hub", lambda repo: False)
     saved = dict(farmd.state)
     farmd.state.update(status="running", project={"id": 1, "name": "FinTekkers"})
     try:
@@ -166,8 +170,8 @@ def test_steps_run_stamps_the_repos_rules_into_the_task_payload(running_farm):
 
 
 def test_steps_run_without_matching_rules_stamps_an_empty_list(running_farm):
-    farmd.state["project"] = {"id": 2, "name": "NoSuchProject"}
     task = make_task(102, item_id="X-1", step_index=9)
+    task["project"] = {"id": 2, "name": "NoSuchProject"}
     task["item"]["repo"] = "acme/unmapped"
     res = client.post("/steps/run", json=task)
     assert res.status_code == 200
@@ -1446,11 +1450,18 @@ def _serve_fake_horizon(fail_status: int = 200, snapshot_status: int = 200):
         (_FakeHorizonHandler,),
         {"requests": requests, "fail_status": fail_status, "snapshot_status": snapshot_status},
     )
+    # Non-daemon handler threads, so server_close() joins them: no handler
+    # is left running (and able to raise) past the test that started it.
     server = ThreadingHTTPServer(("127.0.0.1", 0), handler)
-    server.daemon_threads = True
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
-    return server, f"http://127.0.0.1:{server.server_port}", requests
+
+    def stop():
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+
+    return stop, f"http://127.0.0.1:{server.server_port}", requests
 
 
 @pytest.mark.real_tmux
@@ -1460,7 +1471,7 @@ def test_reconcile_end_to_end_over_real_tmux_and_http_reports_a_dead_run(queue_d
     gone), and a real local HTTP server stands in for the horizon server —
     this proves the whole reconcile path wires together end to end, not just
     each layer in isolation under a monkeypatch."""
-    server, url, requests = _serve_fake_horizon(fail_status=200)
+    stop_server, url, requests = _serve_fake_horizon(fail_status=200)
     monkeypatch.setattr(farmd, "HORIZON_URL", url)
     name = "farm-run-hz-e2e-s11-a1"
     assert not tmux_mgr.session_exists(name)  # real tmux lookup: genuinely dead
@@ -1468,7 +1479,7 @@ def test_reconcile_end_to_end_over_real_tmux_and_http_reports_a_dead_run(queue_d
     try:
         farmd._reconcile_claimed_runs()
     finally:
-        server.shutdown()
+        stop_server()
 
     assert not task_path.exists()
     started_reqs = [r for r in requests if r["path"].endswith("/api/farm/steps/9001/started")]
@@ -1485,7 +1496,7 @@ def test_reconcile_end_to_end_over_real_tmux_never_touches_a_real_live_session(q
     this time — proves the real `tmux has-session` short-circuits before any
     HTTP call is ever made, matching the guardrail that a live session must
     never be reported or removed."""
-    server, url, requests = _serve_fake_horizon(fail_status=200)
+    stop_server, url, requests = _serve_fake_horizon(fail_status=200)
     monkeypatch.setattr(farmd, "HORIZON_URL", url)
     name = "farm-run-hz-e2e2-s11-a1"
     tmux_mgr.new_session(name, "sleep 30", cwd="/tmp")
@@ -1495,7 +1506,7 @@ def test_reconcile_end_to_end_over_real_tmux_never_touches_a_real_live_session(q
         farmd._reconcile_claimed_runs()
     finally:
         tmux_mgr.kill_session(name)
-        server.shutdown()
+        stop_server()
 
     assert task_path.exists()  # a false positive here would kill live work
     assert requests == []  # never even asked the server about a live session
@@ -1610,12 +1621,12 @@ def test_runs_alive_end_to_end_over_real_tmux_reports_true_for_a_claimed_run_wit
 
 
 def test_internal_snapshot_forwards_with_the_farm_secret_and_returns_the_body(monkeypatch):
-    server, url, requests = _serve_fake_horizon()
+    stop_server, url, requests = _serve_fake_horizon()
     monkeypatch.setattr(farmd, "HORIZON_URL", url)
     try:
         res = client.get("/internal/snapshot")
     finally:
-        server.shutdown()
+        stop_server()
 
     assert res.status_code == 200
     assert res.json() == {"items": [{"id": "HZ-140"}]}
@@ -1627,23 +1638,23 @@ def test_internal_snapshot_forwards_with_the_farm_secret_and_returns_the_body(mo
 def test_internal_snapshot_needs_no_credential_from_its_caller(monkeypatch):
     """The concierge sends nothing: that is the point. farmd is the only farm
     process holding a server credential."""
-    server, url, _ = _serve_fake_horizon()
+    stop_server, url, _ = _serve_fake_horizon()
     monkeypatch.setattr(farmd, "HORIZON_URL", url)
     try:
         res = client.get("/internal/snapshot")
     finally:
-        server.shutdown()
+        stop_server()
     assert res.status_code == 200
 
 
 @pytest.mark.parametrize("upstream", [401, 500])
 def test_internal_snapshot_maps_an_upstream_error_to_502_without_passing_it_through(monkeypatch, upstream):
-    server, url, _ = _serve_fake_horizon(snapshot_status=upstream)
+    stop_server, url, _ = _serve_fake_horizon(snapshot_status=upstream)
     monkeypatch.setattr(farmd, "HORIZON_URL", url)
     try:
         res = client.get("/internal/snapshot")
     finally:
-        server.shutdown()
+        stop_server()
 
     assert res.status_code == 502
     assert res.json() == {"error": "could not reach horizon server"}
@@ -1948,7 +1959,7 @@ def test_an_unusable_pm_task_file_is_reported_end_to_end_over_real_http(queue_di
     had never reported, and `agent_started_at` stayed NULL. The run sat
     `active` server-side with no worker and no report for 11 minutes.
     """
-    server, url, requests = _serve_fake_horizon(fail_status=200)
+    stop_server, url, requests = _serve_fake_horizon(fail_status=200)
     monkeypatch.setattr(farmd, "HORIZON_URL", url)
     monkeypatch.setattr(pm_agent, "process", lambda *a: pytest.fail("an unusable task must not be processed"))
     _farmd_over_testclient(monkeypatch)
@@ -1966,7 +1977,7 @@ def test_an_unusable_pm_task_file_is_reported_end_to_end_over_real_http(queue_di
 
         assert pm_agent.poll_once(QUEUE_DIR / "pm", "fintekkers", {}) == "reported"
     finally:
-        server.shutdown()
+        stop_server()
 
     fails = [r for r in requests if r["path"] == "/api/farm/steps/881/fail"]
     assert len(fails) == 1, f"expected exactly one fail report, got {[r['path'] for r in requests]}"
@@ -1995,7 +2006,7 @@ def test_an_unusable_pm_task_file_stays_alive_and_on_disk_when_the_report_is_not
     forward retries twice with a 2s backoff, and the only way to skip that
     would be patching the shared `time` module out from under farmd's own
     daemon threads.)"""
-    server, url, requests = _serve_fake_horizon(fail_status=503)
+    stop_server, url, requests = _serve_fake_horizon(fail_status=503)
     monkeypatch.setattr(farmd, "HORIZON_URL", url)
     monkeypatch.setattr(pm_agent, "process", lambda *a: pytest.fail("an unusable task must not be processed"))
     _farmd_over_testclient(monkeypatch)
@@ -2012,7 +2023,7 @@ def test_an_unusable_pm_task_file_stays_alive_and_on_disk_when_the_report_is_not
         # And it is retried rather than abandoned after the refused report.
         assert pm_agent.poll_once(QUEUE_DIR / "pm", "fintekkers", {}) == "skipped"
     finally:
-        server.shutdown()
+        stop_server()
 
     assert len([r for r in requests if r["path"] == "/api/farm/steps/882/fail"]) == 2
     assert (QUEUE_DIR / "pm" / "882.json").exists()

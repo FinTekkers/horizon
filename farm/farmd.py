@@ -334,6 +334,8 @@ def _select_dispatchable(task_paths: list, sessions: list[str], slots: int) -> l
         item_id = task.get("item", {}).get("id") or ""
         if step_idx in WORKSPACE_MUTATING_STEPS and _item_worktree_busy(item_id, busy):
             continue
+        if _provisioning(task.get("item", {}).get("repo")):
+            continue  # HZ-207: its hub is still cloning; stays queued
         selected.append(task_path)
         if step_idx in WORKSPACE_MUTATING_STEPS:
             busy.append(_run_session_name(task))
@@ -667,6 +669,56 @@ def _watchdog() -> None:
                 print(f"farmd: watchdog revive failed: {exc}", flush=True)
 
 
+def _non_empty_str(value) -> bool:
+    return isinstance(value, str) and bool(value.strip())
+
+
+# HZ-207: /farm/start provisions hubs only for the farm project's repos, so a
+# task from any other enabled project may name a repo with no hub yet. Its
+# clone runs in the background; the runs lane holds the repo's tasks queued
+# while it does. A failed clone just leaves the set — the task then launches
+# and step_agent fails it visibly ("workspace not provisioned"), not silently.
+_PROVISIONING: set[str] = set()
+# The token from the last /farm/start, in memory only: never written to a
+# task file, the state file or a log line.
+_hub_auth = {"token": None}
+
+
+def _hub_token() -> str | None:
+    return _hub_auth["token"] or os.environ.get("GITHUB_TOKEN") or None
+
+
+def _provisioning(repo) -> bool:
+    with _lock:
+        return repo in _PROVISIONING
+
+
+def _provision_hub(repo: str) -> bool:
+    """Starts cloning `repo`'s hub unless a clone is already in flight.
+    Returns whether this call started one."""
+    with _lock:
+        if repo in _PROVISIONING:
+            return False
+        _PROVISIONING.add(repo)
+    threading.Thread(target=_clone_hub, args=(repo,), daemon=True).start()
+    return True
+
+
+def _clone_hub(repo: str) -> None:
+    token = _hub_token()
+    try:
+        workspaces.ensure(repo, token)
+        print(f"farmd: workspace ready for {repo}", flush=True)
+    except Exception as exc:
+        detail = str(exc)
+        if token:
+            detail = detail.replace(token, "***")
+        print(f"farmd: WARNING workspace for {repo} failed: {detail}", flush=True)
+    finally:
+        with _lock:
+            _PROVISIONING.discard(repo)
+
+
 def _start_async(project: dict, repos: list, token: str | None) -> None:
     try:
         for entry in repos:
@@ -735,6 +787,7 @@ async def farm_start(request: Request):
         _teardown()
         ensure_dirs()
         state.update(status="starting", project=project, repos=repos, error=None, since=_now())
+        _hub_auth["token"] = body.get("token")
     threading.Thread(target=_start_async, args=(project, repos, body.get("token")), daemon=True).start()
     return {"ok": True, "starting": True}
 
@@ -814,18 +867,28 @@ async def steps_run(request: Request):
     for key in ("run_id", "item", "step"):
         if key not in body:
             return JSONResponse({"error": f"missing {key}"}, status_code=400)
+    # HZ-207: every task carries its own project and repo, and a task without
+    # them is refused — never filled in from the farm's own state["project"],
+    # which would hand one project's rules to another project's item.
+    project = body.get("project")
+    if not isinstance(project, dict) or project.get("id") is None or not _non_empty_str(project.get("name")):
+        return JSONResponse({"error": "missing project"}, status_code=400)
+    item_repo = body["item"].get("repo") if isinstance(body["item"], dict) else None
+    if not _non_empty_str(item_repo):
+        return JSONResponse({"error": "missing item.repo"}, status_code=400)
+    if not (workspaces.hub_path(item_repo) / ".git").exists():
+        _provision_hub(item_repo)
     # Plan/review-summary steps go to the PM lane (farm.pm_agent, one at a
     # time); everything else to the ephemeral lane (farm.step_agent, bounded
     # by FARM_MAX_EPHEMERAL). The dispatcher launches both (HZ-212). HZ-117: which is which
     # comes from steps.STEPS's runsIn field, not a hardcoded index tuple.
-    body["project"] = state["project"]
+    #
     # Project/repo rules are stamped into the task at enqueue (HZ-9) as a
     # list of unrendered parts — render_rules_section() (farm/rules.py) does
     # the actual whole-part-drop-with-note decision later, at prompt-build
     # time, so this queued payload is the *inputs* to that render, not the
     # rendered prompt text itself.
-    item_repo = body["item"].get("repo") if isinstance(body["item"], dict) else None
-    body["rules"] = rules.resolve_rules(state["project"]["name"] if state["project"] else None, item_repo)
+    body["rules"] = rules.resolve_rules(project["name"], item_repo)
     queue = lane_for_index(steps.STEPS, body["step"].get("index", 99))
     (QUEUE_DIR / queue).mkdir(parents=True, exist_ok=True)
     task_path = QUEUE_DIR / queue / f"{body['run_id']}.json"

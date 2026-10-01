@@ -30,9 +30,18 @@ export function getRepoUrl() {
   return repo ? `https://github.com/${repo}` : 'https://github.com/FinTekkers/horizon'
 }
 
-// The bot farm carries one project's context at a time; everything item-facing
-// (board, tracker, agents, item APIs) is scoped to this project.
+// The project the board shows (HZ-207: no longer the only one the farm runs —
+// every enabled project's items are dispatched). Board, tracker and item
+// creation are scoped to it until HZ-208.
 export function getActiveProjectId() {
   const value = getSetting('active_project_id')
   return value ? Number(value) : null
+}
+
+// The project farmd was started for (/farm/start), which the concierge serves
+// until HZ-209. Separate from the board's project so switching the board never
+// restarts farmd. Falls back to the board's project when never pinned.
+export function getFarmProjectId() {
+  const value = getSetting('farm_project_id')
+  return value ? Number(value) : getActiveProjectId()
 }
