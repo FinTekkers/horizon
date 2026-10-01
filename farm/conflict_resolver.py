@@ -430,7 +430,7 @@ def _run_resolution_agent(ws: Path, files, log) -> dict:
             # Same lock as the implement step: this call edits code.
             provider_locked=True,
         )
-        parsed = agent_runner.extract_json(reply.get("result") or "")
+        parsed, notes = agent_runner.parse_agent_reply(reply.get("result") or "")
     except (AgentError, ValueError) as exc:
         return {"resolved": False, "detail": f"the resolution agent did not return a usable answer: {exc}"}
     if not isinstance(parsed, dict) or parsed.get("resolved") is not True:
@@ -438,7 +438,13 @@ def _run_resolution_agent(ws: Path, files, log) -> dict:
         if isinstance(parsed, dict):
             unsure = str(parsed.get("unsure_reason") or parsed.get("summary") or "")
         return {"resolved": False, "detail": unsure or "the agent reported it could not be sure of the resolution"}
-    return {"resolved": True, "detail": str(parsed.get("summary") or "resolved the conflicted hunks")}
+    return {"resolved": True, "detail": _with_notes(str(parsed.get("summary") or "resolved the conflicted hunks"), notes)}
+
+
+def _with_notes(text: str, notes: list[str]) -> str:
+    """Carry parse_agent_reply's repair notes into the text the orchestrator
+    records, so a repaired reply is never silently accepted."""
+    return f"{text} (parser notes: {'; '.join(notes)})" if notes else text
 
 
 def _resolution_prompt(files) -> str:
@@ -483,13 +489,13 @@ def _run_scoped_review(ws: Path, files, delta, log) -> dict:
             max_turns=REVIEW_MAX_TURNS,
             timeout_s=CONFLICT_REVIEW_TIMEOUT_S,
         )
-        parsed = agent_runner.extract_json(reply.get("result") or "")
+        parsed, notes = agent_runner.parse_agent_reply(reply.get("result") or "")
     except (AgentError, ValueError) as exc:
         return {"verdict": "fail", "reviewed": True, "summary": f"the scoped review returned no usable verdict: {exc}"}
     if not isinstance(parsed, dict):
         return {"verdict": "fail", "reviewed": True, "summary": "the scoped review returned no verdict object"}
     section = _review_section(parsed)
-    summary = str(parsed.get("summary") or "")
+    summary = _with_notes(str(parsed.get("summary") or ""), notes)
     if section["verdict"] != "pass" and section["findings"]:
         first = section["findings"][0]
         detail = first.get("detail") if isinstance(first, dict) else None
