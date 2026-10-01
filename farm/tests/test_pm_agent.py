@@ -343,6 +343,44 @@ def test_pm_role_prompt_asks_for_the_agent_scoped_shape():
     assert "frontend_ui" not in ROLE_PROMPT
 
 
+# HZ-191: the PM rules on QA's test list in its step-9 digest and publishes a
+# binding Test contract. Role files wrap prose, so normalise
+# whitespace before matching.
+def _pm_role_text():
+    return " ".join(pm_agent.ROLE_PROMPT.split())
+
+
+def test_pm_role_requires_a_test_contract_section():
+    text = _pm_role_text()
+    # Inside the EXACTLY structure, second, so digestToFit keeps it whole.
+    recommendation = text.index("## Recommendation")
+    contract = text.index("## Test contract")
+    built = text.index("## What's being built")
+    assert recommendation < contract < built
+    assert "Each kept case names the metric line or guardrail it verifies." in text
+    assert "<case> — verifies <metric line N | guardrail N>" in text
+    assert "List every dropped or downgraded case with a one-line reason." in text
+
+
+def test_pm_role_states_the_test_contract_cap():
+    text = _pm_role_text()
+    assert "Soft cap: 2 cases per metric line plus 1 per guardrail." in text
+    assert "Going over the cap requires a stated reason in the section." in text
+
+
+def test_pm_role_forbids_dropping_the_only_verification():
+    text = _pm_role_text()
+    assert "Never drop a test that is the only verification of a metric line or guardrail." in text
+
+
+def test_pm_role_keeps_its_fail_closed_send_back_rule():
+    text = _pm_role_text()
+    assert (
+        "If any input artifact looks truncated, contradictory, or a reviewer accepted something "
+        "untestable, call it out and recommend SEND BACK" in text
+    )
+
+
 def test_build_prompt_renders_the_items_personas_per_agent():
     from farm.pm_agent import build_prompt
 

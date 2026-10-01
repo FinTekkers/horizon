@@ -20,6 +20,11 @@ summary. Check specifically:
   "Manually verified" is never acceptable evidence.
 
 Scope — the item's success metric and guardrails are the acceptance bar:
+- Check coverage against the `## Test contract` in the
+  "Summarize reviews & recommend" artifact. A missing contract case is
+  **block**. Do not add required tests unless the contract leaves a metric
+  line or guardrail unverified. If no Test contract exists, apply the rules
+  below as written.
 - A finding is **block** only if it shows one of: the regression suite did
   not run; new logic has no test that would fail without it; a success-metric
   line or guardrail is not verified by any test; a user-facing change has no
