@@ -11,10 +11,12 @@ import AdminPage from './components/AdminPage'
 import AgentDefinitionsPage from './components/AgentDefinitionsPage'
 import NewItemModal from './components/NewItemModal'
 import LoginPage from './components/LoginPage'
+import LegalPage, { LEGAL_DOCS } from './components/LegalPage'
 
 const CLOSED_COMPOSER = { open: false, mode: null, itemId: null, phase: null, target: '', stepOptions: [], defaultTargetLabel: null }
 
 // Deep links: /  → board, /admin → admin, /definitions → agent definitions,
+// /privacy and /terms → the public legal pages (no login required),
 // /<item-id> → that item's tracker (case-insensitive, e.g. localhost:5173/hz-102).
 // All relative to the vite base — '' at the dev root, '/horizon' when the
 // production build is mounted under a subpath.
@@ -27,6 +29,7 @@ function parsePath(pathname) {
   if (!seg) return { view: 'board', id: null }
   if (seg.toLowerCase() === 'admin') return { view: 'admin', id: null }
   if (seg.toLowerCase() === 'definitions') return { view: 'definitions', id: null }
+  if (Object.hasOwn(LEGAL_DOCS, seg.toLowerCase())) return { view: 'legal', id: seg.toLowerCase() }
   return { view: 'tracker', id: seg.toUpperCase() }
 }
 
@@ -39,6 +42,14 @@ function navigate(path) {
 // replaces nginx's HTTP Basic Auth. `user` is undefined while the initial
 // /api/auth/me check is in flight, null once it comes back unauthenticated.
 export default function App() {
+  // The legal pages are public: they render before (and regardless of) the
+  // session check, so a signed-out visitor never sees the login page instead.
+  const route = parsePath(window.location.pathname)
+  if (route.view === 'legal') return <LegalPage doc={route.id} />
+  return <GatedApp />
+}
+
+function GatedApp() {
   const [user, setUser] = useState(undefined)
 
   useEffect(() => {

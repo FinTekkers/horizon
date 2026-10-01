@@ -1,6 +1,7 @@
 import { useState, useSyncExternalStore } from 'react'
 import { GridIcon, LockIcon, SlidersIcon } from './icons'
 import * as theme from '../theme'
+import { LegalLinks } from './LegalPage'
 
 // A switch, not a menu item: toggling it shouldn't dismiss the menu the way
 // every other usermenu__item does, since a user very plausibly wants to
@@ -110,6 +111,7 @@ function UserMenu({ user, onLogout, onOpenAdmin, onOpenDefinitions }) {
               Admin
             </button>
             <ThemeToggle />
+            <LegalLinks className="legal-links usermenu__legal" />
             <button
               className="usermenu__item"
               onClick={() => {
