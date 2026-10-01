@@ -51,6 +51,7 @@ sessions; queued work survives on disk.
 | `FARM_HOME` | ~/.horizon-farm | queue/state/logs/workspaces |
 | `FARM_CLAUDE_BIN` | claude | override with tests/fake_claude in tests |
 | `FARM_PM_MODEL` | (CLI default) | model for the PM agent |
+| `FARM_STEP_MODEL` | (CLI default) | model for step agents and conflict resolution (Claude provider only) |
 | `FARM_STEP_TIMEOUT_S` | 900 | per-claude-invocation timeout |
 | `FARM_CHECK_CMD` | (auto-detect) | guardrail check command run before push (via `sh -c`) |
 | `FARM_CHECK_TIMEOUT_S` | 600 | guardrail check timeout |

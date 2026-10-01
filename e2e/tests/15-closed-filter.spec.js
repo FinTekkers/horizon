@@ -4,7 +4,7 @@
 // only, so a closed item must still come back from the API and still open by
 // its own URL while the board is not showing it.
 //
-// One test, not four — the suite runs under an 85s globalTimeout
+// One test, not four — the suite targets well under 90s (180s hard ceiling)
 // (playwright.config.js) and every extra test pays for a fresh browser
 // context plus a board load.
 //
