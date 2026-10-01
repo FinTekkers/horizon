@@ -302,3 +302,17 @@ def test_bridge_group_member_message_passes_with_real_sender(tmp_path):
         assert [m.sender_jid for m in msgs] == ["15551230000@s.whatsapp.net"]
     finally:
         h.close()
+
+
+def test_bridge_skips_messages_addressed_to_the_operator_session(tmp_path):
+    # "claude: ..." goes to the operator's Claude Code session, which answers
+    # it itself; the concierge must not answer it too. Case-insensitive, and
+    # leading whitespace is ignored. Ordinary messages still come through.
+    h = BridgeHarness(tmp_path)
+    pair_device(tmp_path)
+    try:
+        for text in ("claude: what's running?", "  Claude: pause HZ-5", "What's the status of HZ-5?"):
+            h.seed(text, chat="275096967086230@lid", sender="275096967086230@lid", is_from_me=1)
+        assert [m.text for m in h.transport.fetch_new(0)] == ["What's the status of HZ-5?"]
+    finally:
+        h.close()
