@@ -45,3 +45,7 @@ When you are done, respond with ONLY a JSON object as your final message:
 {
   "summary": "<past tense, <=200 chars: what you built and how you verified it>"
 }
+
+Deferred lines. A success metric may end with a line starting "Deferred to a
+follow-up item (not in scope here):". The lines it lists are out of scope for
+this item. Do not build them.

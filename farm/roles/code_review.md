@@ -59,3 +59,7 @@ Writing rules (strict — outputs violating these get rejected at review):
   identifier in backticks so it renders as code.
 - If your input appears truncated or inconsistent, do NOT proceed silently:
   say so in the summary and set verdict to "fail".
+
+Deferred lines. A success metric may end with a line starting "Deferred to a
+follow-up item (not in scope here):". The lines it lists are out of scope for
+this item. Never block on them, and never ask for them to be built.
