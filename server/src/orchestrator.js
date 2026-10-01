@@ -30,7 +30,10 @@ import {
   notifyChange,
   registerAgentRunner,
   registerRunStateProvider,
-  registerConflictRunProvider,
+  claimGateAction,
+  finishGateAction,
+  getConflictRun as conflictRunOf,
+  sweepGateActions,
   recoverRejectedItems,
   blockersOf,
   requestChanges,
@@ -47,6 +50,7 @@ import {
   FARM_START_TIMEOUT_MS,
   FARM_CONFLICT_RESOLVE_TIMEOUT_MS,
   PAUSE_CHECKPOINT_TIMEOUT_S,
+  GATE_ACTION_SWEEP_MS,
   RECONCILE_SWEEP_MS,
   UI_URL,
   FIX_PASS_ENABLED,
@@ -78,7 +82,7 @@ const dispatching = new Set()
 // code. Held from before the implement run is cancelled until the forward
 // lands or is refused, so a second click is refused and kick() cannot start
 // a fresh implement run in the window between cancel and the cursor move.
-// Memory-only on purpose, like conflictRuns: a restart forgets it.
+// Memory-only on purpose: a restart forgets it.
 const forwarding = new Set()
 
 // HZ-194: item id -> the promise of its pause's farm call, while a paused
@@ -517,27 +521,24 @@ function scopedResolutionText(pr, result) {
 }
 
 // HZ-188: one resolver run per item. Each click used to start another farmd
-// resolver in the same worktree, and they reset each other's merges. This map
-// is the server half of the guard (farmd's item_lock is the other, and holds
-// on its own); it is also the item's visible progress — store.listItems()
-// reads it as `conflictRun`, so every tab, and a reloaded page, sees a run in
-// progress. Memory-only on purpose (HZ-92: no row to go stale): a restart
-// forgets it, and farmd's lock still refuses a duplicate in that window.
-// resolveConflicts() is the only writer, and its `finally` always moves the
-// entry out of `running`, so a timed-out or crashed call never leaves the
-// item locked.
+// resolver in the same worktree, and they reset each other's merges. The
+// item's 'resolve' gate_action row (HZ-216, store.js) is the server half of
+// the guard (farmd's item_lock is the other, and holds on its own); it is also
+// the item's visible progress — store.listItems() reads it as `conflictRun`
+// and `gateAction`, so every tab, and a reloaded page, sees a run in progress.
+// Persisted since HZ-216, so a restart neither forgets a run nor allows a
+// second one; its lease (FARM_CONFLICT_RESOLVE_TIMEOUT_MS plus a margin) and
+// the sweep in init() end a run nobody finished. resolveConflicts() is the
+// only claimer, and its `finally` always moves the row out of `running`, so a
+// timed-out or crashed call never leaves the item locked.
 //
 // state: running → resolved | escalated (sent back to implement, with the
 // reason — including farmd unreachable or timed out) | failed (nothing ran
 // and nothing was sent back — farmd reported another writer owns the item,
-// or this code threw).
-const conflictRuns = new Map()
-
+// this code threw, or the lease ran out).
 export function getConflictRun(id) {
-  return conflictRuns.get(id) || null
+  return conflictRunOf(id)
 }
-
-registerConflictRunProvider(getConflictRun)
 
 const FARM_ITEM_BUSY_REASON = "another run is still using this item's workspace — nothing was started, try again once it finishes"
 
@@ -552,18 +553,19 @@ export async function resolveConflicts(id, actor = 'You') {
   // 1 is mergeable, NULL is unknown/not yet computed.
   if (item.pr_mergeable !== 0) return { error: 'not_conflicted' }
   if (!FARM_URL && cannedConflictReply === null) return { error: 'farm_unavailable' }
-  if (conflictRuns.get(id)?.state === 'running') return { error: 'resolve_in_progress' }
+  const claim = claimGateAction(id, 'resolve', {
+    detail: `resolving conflicts on PR #${item.pr}`,
+    timeoutMs: FARM_CONFLICT_RESOLVE_TIMEOUT_MS,
+  })
+  if (!claim) return { error: 'resolve_in_progress' }
 
-  conflictRuns.set(id, { state: 'running', since: new Date().toISOString(), reason: null })
-  notifyChange()
   let outcome = { state: 'failed', reason: 'conflict resolution stopped unexpectedly' }
   try {
     const run = await runConflictResolution(id, item, actor)
     outcome = { state: run.state, reason: run.reason }
     return run.result
   } finally {
-    conflictRuns.set(id, { ...outcome, since: new Date().toISOString() })
-    notifyChange()
+    finishGateAction(id, 'resolve', claim.token, outcome)
   }
 }
 
@@ -2050,6 +2052,10 @@ export async function init(log) {
     const first = db.prepare('SELECT id FROM project ORDER BY id LIMIT 1').get()
     if (first) setSetting('active_project_id', String(first.id))
   }
+  // HZ-216: end gate actions whose lease ran out — one a restart orphaned
+  // becomes `interrupted` and its gate re-opens — now and every minute.
+  sweepGateActions()
+  setInterval(() => sweepGateActions(), GATE_ACTION_SWEEP_MS).unref()
   if (FARM_URL) {
     // Ask the farm about every currently-active row BEFORE rearmFarmRuns()
     // below gives each one a local timer. rearmFarmRuns() arms one

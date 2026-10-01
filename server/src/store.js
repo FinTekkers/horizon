@@ -1,7 +1,9 @@
 // Domain operations over SQLite. Every mutation notifies subscribers so the
 // HTTP layer can push fresh state to SSE clients.
 
+import { randomUUID } from 'node:crypto'
 import { db } from './db.js'
+import { GATE_ACTION_MARGIN_MS } from './config.js'
 import {
   STEPS,
   PHASES,
@@ -53,13 +55,159 @@ export function registerRunStateProvider(provider) {
   runStateProvider = provider
 }
 
-// HZ-188: the orchestrator owns each item's in-memory conflict-resolution run
-// ({state, since, reason}) and registers its lookup here, same shape of seam
-// as runStateProvider — listItems() stays a synchronous read.
-let conflictRunProvider = () => null
+// ---- HZ-216: long gate actions (pre-merge checks + merge, conflict resolution) ----
+//
+// One persisted gate_action row per (item, kind) — see db.js. It is both the
+// server's 409 lock and what every client is shown (listItems' gateAction and
+// HZ-188's conflictRun), so the two cannot disagree, and both survive a reload
+// and a restart. app.js's performGateApproval and orchestrator.js's
+// resolveConflicts are the only claimers; each finishes its own row in a
+// `finally`, and sweepGateActions() ends any row whose lease ran out.
 
-export function registerConflictRunProvider(provider) {
-  conflictRunProvider = provider
+// When this process started. A running row that started earlier has lost its
+// owner — whatever it was running can no longer report back here.
+export const BOOTED_AT = new Date().toISOString()
+
+const selectGateEpoch = db.prepare(
+  `SELECT (SELECT COALESCE(MAX(id), 0) FROM gate_decision WHERE item_id = ?) || ':' ||
+          (SELECT COALESCE(MAX(id), 0) FROM step_run WHERE item_id = ?) AS epoch`,
+)
+const gateEpoch = (itemId) => selectGateEpoch.get(itemId, itemId).epoch
+
+const claimGateActionStmt = db.prepare(
+  `INSERT INTO gate_action (item_id, kind, state, run_token, epoch, detail, reason, failing_check, started_at, deadline_at, finished_at)
+   VALUES (@itemId, @kind, 'running', @token, @epoch, @detail, NULL, NULL, @startedAt, @deadlineAt, NULL)
+   ON CONFLICT(item_id, kind) DO UPDATE SET
+     state = 'running', run_token = excluded.run_token, epoch = excluded.epoch, detail = excluded.detail,
+     reason = NULL, failing_check = NULL, started_at = excluded.started_at,
+     deadline_at = excluded.deadline_at, finished_at = NULL
+   WHERE gate_action.state != 'running'`,
+)
+const selectGateAction = db.prepare('SELECT * FROM gate_action WHERE item_id = ? AND kind = ?')
+const selectItemGateActions = db.prepare('SELECT * FROM gate_action WHERE item_id = ?')
+
+// Takes the item's lock for `kind`. Returns { token } or null when a run of
+// that kind is already going (the caller's 409). The lease is the run's own
+// timeout plus GATE_ACTION_MARGIN_MS.
+export function claimGateAction(itemId, kind, { detail = null, timeoutMs }) {
+  const now = Date.now()
+  const token = randomUUID()
+  const res = claimGateActionStmt.run({
+    itemId,
+    kind,
+    token,
+    epoch: gateEpoch(itemId),
+    detail,
+    startedAt: new Date(now).toISOString(),
+    deadlineAt: new Date(now + timeoutMs + GATE_ACTION_MARGIN_MS).toISOString(),
+  })
+  if (res.changes === 0) return null
+  notify()
+  return { token }
+}
+
+// What a running action is doing now ("running checks on main + PR #12").
+export function setGateActionDetail(itemId, kind, token, detail) {
+  const res = db
+    .prepare("UPDATE gate_action SET detail = ? WHERE item_id = ? AND kind = ? AND run_token = ? AND state = 'running'")
+    .run(detail, itemId, kind, token)
+  if (res.changes > 0) notify()
+}
+
+// Records the outcome. Only the claiming run's token matches, so a stale
+// owner changes nothing; the real outcome does replace a sweep's timed_out,
+// since it is better information.
+export function finishGateAction(itemId, kind, token, { state, reason = null, failingCheck = null }) {
+  const res = db
+    .prepare(
+      `UPDATE gate_action SET state = ?, reason = ?, failing_check = ?, finished_at = ?
+       WHERE item_id = ? AND kind = ? AND run_token = ?`,
+    )
+    .run(state, reason, failingCheck, new Date().toISOString(), itemId, kind, token)
+  if (res.changes > 0) notify()
+  return res.changes > 0
+}
+
+export const GATE_ACTION_INTERRUPTED_REASON =
+  'Horizon restarted while this ran and it never reported back before its time limit — nothing was merged or changed by it'
+export const GATE_ACTION_EXPIRED_REASON = 'no result before its time limit, so Horizon stopped waiting for it'
+
+// Ends every running row whose lease has run out: `interrupted` when it
+// started before this process (its owner is gone), `timed_out` otherwise.
+// Returns how many rows it moved.
+export function sweepGateActions({ bootedAt = BOOTED_AT, now = new Date() } = {}) {
+  const at = now.toISOString()
+  const expired = db.prepare("SELECT item_id, kind, started_at FROM gate_action WHERE state = 'running' AND deadline_at < ?").all(at)
+  const end = db.prepare(
+    "UPDATE gate_action SET state = ?, reason = ?, finished_at = ? WHERE item_id = ? AND kind = ? AND state = 'running'",
+  )
+  let moved = 0
+  for (const row of expired) {
+    const interrupted = row.started_at < bootedAt
+    moved += end.run(
+      interrupted ? 'interrupted' : 'timed_out',
+      interrupted ? GATE_ACTION_INTERRUPTED_REASON : GATE_ACTION_EXPIRED_REASON,
+      at,
+      row.item_id,
+      row.kind,
+    ).changes
+  }
+  if (moved > 0) notify()
+  return moved
+}
+
+function gateActionView(row) {
+  if (!row) return null
+  return {
+    kind: row.kind,
+    state: row.state,
+    detail: row.detail,
+    since: row.started_at,
+    deadline: row.deadline_at,
+    finishedAt: row.finished_at,
+    reason: row.reason,
+    failingCheck: row.failing_check,
+    startedBeforeRestart: row.started_at < BOOTED_AT,
+  }
+}
+
+export function getGateAction(itemId, kind) {
+  return gateActionView(selectGateAction.get(itemId, kind))
+}
+
+// HZ-188's conflictRun, unchanged in shape: { state, since, reason }, where
+// since is when it started while running and when it ended after. A lease
+// that ran out reads as `failed`, a state older clients already know.
+function conflictRunView(row) {
+  if (!row) return null
+  const lapsed = row.state === 'timed_out' || row.state === 'interrupted'
+  return {
+    state: lapsed ? 'failed' : row.state,
+    since: row.finished_at ?? row.started_at,
+    reason: row.reason,
+  }
+}
+
+export function getConflictRun(itemId) {
+  return conflictRunView(selectGateAction.get(itemId, 'resolve'))
+}
+
+// The item's gate action for the UI: a running one if any, else the latest
+// finished one from this visit to the gate. A merge is also kept once the
+// gate has advanced past Accept — it is what the done Accept step shows — but
+// never on a later visit back to the gate.
+function itemGateAction(rows, itemId, cursor) {
+  const running =
+    rows.find((r) => r.state === 'running' && r.kind === 'premerge') || rows.find((r) => r.state === 'running')
+  if (running) return gateActionView(running)
+  const finished = rows
+    .filter((r) => r.finished_at)
+    .sort((a, b) => (a.finished_at < b.finished_at ? 1 : -1))[0]
+  if (!finished) return null
+  if (finished.state === 'merged' && cursor > ACCEPT_GATE_INDEX) return gateActionView(finished)
+  if (finished.state === 'merged' && cursor < ACCEPT_GATE_INDEX) return null
+  if (finished.epoch !== gateEpoch(itemId)) return null
+  return gateActionView(finished)
 }
 
 // ---- projects & repos ----
@@ -364,7 +512,9 @@ export function listItems() {
   return selectItems
     .all()
     .filter((row) => row.project_id == null || activeId == null || row.project_id === activeId)
-    .map((row) => ({
+    .map((row) => {
+    const gateActions = selectItemGateActions.all(row.id)
+    return {
     id: row.id,
     title: row.title,
     priority: row.priority,
@@ -393,11 +543,13 @@ export function listItems() {
     events: selectEvents.all(row.id),
     stepOutputs: stepOutputs(row.id),
     activeRun: withRunState(selectActiveRun.get(row.id) || null),
-    conflictRun: conflictRunProvider(row.id) || null,
+    conflictRun: conflictRunView(gateActions.find((r) => r.kind === 'resolve')),
+    gateAction: itemGateAction(gateActions, row.id, row.cursor),
     reviewRejected: reviewRejected(row),
     forwardedReview: forwardedReview(row),
     ...dependencyFields(row.id),
-  }))
+    }
+  })
 }
 
 // HZ-185: the latest automated review rejected this item and sent it back to

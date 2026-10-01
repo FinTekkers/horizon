@@ -277,3 +277,18 @@ test('an item from an older payload with no conflictRun key renders an enabled b
   expect(conflictButton().disabled).toBe(false)
   expect(progressButton()).toBeNull()
 })
+
+test('HZ-216: a running conflictRun shows its own label and elapsed time and disables the gate buttons until it clears', async () => {
+  const since = new Date(Date.now() - 65_000).toISOString()
+  const { findByText } = await openItem('RC-13', { conflictRun: { state: 'running', since, reason: null } })
+  const gateButton = (name) => [...document.querySelectorAll('.step-card__actions button')].find((b) => b.textContent === name)
+
+  expect(document.querySelector('.gate-action-status').textContent).toMatch(/^Resolving conflicts on PR #7 · 1m 0\ds/)
+  for (const name of ['Approve', 'Approve with comments', 'Send back with feedback']) expect(gateButton(name).disabled, name).toBe(true)
+
+  await waitFor(() => expect(listeners.size).toBeGreaterThan(0))
+  pushItems([conflictedItem('RC-13', { conflictRun: { state: 'resolved', since: new Date().toISOString(), reason: null } })])
+  await findByText(/has merge conflicts with main/)
+  for (const name of ['Approve', 'Approve with comments', 'Send back with feedback']) expect(gateButton(name).disabled, name).toBe(false)
+  expect(document.querySelector('.gate-action-status')).toBeNull()
+})

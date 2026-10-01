@@ -282,6 +282,37 @@ db.exec(`
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
   );
   CREATE INDEX IF NOT EXISTS idx_gate_poll_vote_poll ON gate_poll_vote(poll_id);
+
+  -- HZ-216: the long gate actions — pre-merge checks + merge (HZ-183) and
+  -- conflict resolution (HZ-188). One row per (item, kind). It replaces the
+  -- memory-only premergeInFlight Set and conflictRuns Map: the same row is the
+  -- 409 lock and what the UI shows, so a restart neither forgets a run nor
+  -- allows a second one. deadline_at is the lease — the run's own timeout plus
+  -- GATE_ACTION_MARGIN_MS; store.sweepGateActions() moves an expired running
+  -- row out of running, so a gate is never disabled for good.
+  --
+  -- run_token: only the run that claimed the row may finish it, so a stale
+  -- owner cannot release a newer run's lock. epoch: the item's latest
+  -- gate_decision and step_run ids at claim time — a finished row from an
+  -- earlier visit to the gate is not shown on a later one.
+  --
+  -- ON DELETE CASCADE for the same reason gate_notice has it.
+  CREATE TABLE IF NOT EXISTS gate_action (
+    item_id       TEXT NOT NULL REFERENCES work_item(id) ON DELETE CASCADE,
+    kind          TEXT NOT NULL CHECK (kind IN ('premerge','resolve')),
+    state         TEXT NOT NULL CHECK (state IN ('running','merged','blocked','failed',
+                    'resolved','escalated','timed_out','interrupted')),
+    run_token     TEXT NOT NULL,
+    epoch         TEXT NOT NULL,
+    detail        TEXT,
+    reason        TEXT,
+    failing_check TEXT,
+    started_at    TEXT NOT NULL,
+    deadline_at   TEXT NOT NULL,
+    finished_at   TEXT,
+    PRIMARY KEY (item_id, kind)
+  );
+  CREATE INDEX IF NOT EXISTS idx_gate_action_running ON gate_action(state, deadline_at);
 `)
 
 // Additive migrations for databases created before these columns existed.
