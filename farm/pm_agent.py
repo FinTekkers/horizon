@@ -16,9 +16,16 @@ from pathlib import Path
 
 import httpx
 
-from domain.py import reasons
+from domain.py import fields, reasons
 
-from .agent_runner import AgentError, extract_json, run_agent
+from .agent_runner import (
+    AgentError,
+    AgentExhaustedError,
+    parse_agent_reply,
+    run_agent,
+    stamp_notes,
+    stamp_notes_artifact,
+)
 from .config import (
     FARM_PORT,
     PM_MALFORMED_GRACE_S,
@@ -30,19 +37,53 @@ from .config import (
 )
 from .rules import render_rules_section
 
-ROLE_PROMPT = (Path(__file__).parent / "roles" / "pm.md").read_text()
-# Prose fields, with their character budgets. `personas` is handled separately
-# below: since HZ-125 the specialist routing tag is a {agent: persona id} MAP,
-# not one string, so it has no single length to cap.
-PATCH_FIELDS = {"desc": 500, "metric": 400, "guardrails": 400}
-# persona: specialist routing tag (HZ-4, agent-scoped since HZ-125) — the
-# server registry-validates every id and drops re-proposals over a set value,
-# so these limits are just size caps on a pathological reply.
+# The fields a PM revision may patch, and how long each may be — DERIVED from
+# domain/fields.json (HZ-134), which is also where server/src/app.js's POST
+# /api/items body schema gets the same numbers. Until HZ-134 these were four
+# hand-typed integers that had drifted below what the API accepted, so a PM
+# revision could not write a guardrails value a human could type into the create
+# form. Keyed by work_item column, which is what a patch payload uses.
+#
+# Every entry here is a PROSE field. The specialist routing tag is not one of
+# them any more: since HZ-125 it is a {agent: persona id} MAP carried under
+# `personas`, with no single length to cap, so domain/fields.json marks the
+# legacy `persona` column agentRevisable: false and it drops out of this
+# derivation — see _clean_personas() below for the shape check it gets instead.
+PATCH_FIELDS = fields.patch_limits(fields.FIELDS)
+
+# Size caps for that map (HZ-125). Not limits in the PATCH_FIELDS sense: the
+# server registry-validates every agent/id pair and drops re-proposals over a
+# set value, so these only ever fire on a pathological reply.
 PERSONA_ID_MAX_CHARS = 40
 PERSONA_AGENT_MAX_CHARS = 40
 # There are four persona agents (farm/personas.py). A generous ceiling that
 # only fires on a runaway reply, never on a real one.
 MAX_PERSONA_SLOTS = 8
+
+# The placeholder farm/roles/pm.md carries in place of the numbers. Substituted
+# below so the prompt cannot state a budget validate() no longer enforces.
+FIELD_LIMITS_PLACEHOLDER = "{{FIELD_LIMITS}}"
+
+
+def render_role_prompt(source: str, limits: dict) -> str:
+    """The PM role prompt with its field-limit line filled in from PATCH_FIELDS.
+
+    Raises if the placeholder is absent rather than returning the text
+    unchanged. `str.replace` no-ops silently on a missing needle, so an edit to
+    pm.md that dropped the placeholder would leave the agent told nothing at all
+    about field limits — and a test asserting only "no {{ survives in the
+    output" would still pass. Both halves are checked: this raise, and the
+    rendered-output assertion in farm/tests/test_field_limits.py."""
+    if FIELD_LIMITS_PLACEHOLDER not in source:
+        raise RuntimeError(
+            f"farm/roles/pm.md no longer carries {FIELD_LIMITS_PLACEHOLDER} — "
+            "the PM agent would be given no field limits at all"
+        )
+    rendered = ", ".join(f"{column} <={limit} chars" for column, limit in limits.items())
+    return source.replace(FIELD_LIMITS_PLACEHOLDER, rendered)
+
+
+ROLE_PROMPT = render_role_prompt((Path(__file__).parent / "roles" / "pm.md").read_text(), PATCH_FIELDS)
 FARMD = f"http://127.0.0.1:{FARM_PORT}"
 
 # Write-side: a pathological-payload guard, not a working limit — the agent's
@@ -56,6 +97,11 @@ WRITE_ARTIFACT_SANITY_CEILING_CHARS = 200_000
 # rules blocks with a note instead (HZ-114), so this is no longer a real
 # mirror — flagging the drift rather than leaving a stale claim in place.
 MAX_PROMPT_ARTIFACT_CHARS = 100_000
+# The cap on this agent's own `summary` — step_run.output on the server side.
+# Named once (HZ-156) rather than restated as a literal at each shaping site:
+# stamp_notes() reserves room inside exactly this budget, so a cap raised in
+# validate() and not in the stamp would silently truncate the notes back off.
+SUMMARY_MAX_CHARS = 300
 
 
 def log(msg: str) -> None:
@@ -78,10 +124,16 @@ def notify_started(run_id) -> bool:
     return True
 
 
-# HZ-130: the reason an unusable task file is reported under. Already in the
-# server's AUTO_RETRY_REASONS (server/src/orchestrator.js), so the step is
-# auto-retried rather than paused for a human, and no server change is needed
-# to report one — see the test that reads that set back out of the server.
+# HZ-130: the reason an unusable task file is reported under. Declared retryable
+# in domain/reasons.json, so the step is auto-retried rather than paused for a
+# human, and no server change is needed to report one — see the test that reads
+# that flag back out of the declaration.
+#
+# Reached through the binding's constant rather than typed as a string. HZ-130
+# added this as a literal, which left farm/pm_agent.py holding the one reason
+# literal HZ-132 had just finished removing from the farm — and
+# server/test/domain-reason-literals.test.mjs failing. Same value, one
+# declaration: reasons.REASON raises KeyError on a typo, a literal does not.
 UNUSABLE_TASK_REASON = reasons.REASON["UNREACHABLE"]
 
 
@@ -254,7 +306,7 @@ def validate(parsed: dict) -> tuple[str, dict, str | None]:
         patch["personas"] = personas
     artifact = parsed.get("artifact_md")
     artifact = artifact.strip()[:WRITE_ARTIFACT_SANITY_CEILING_CHARS] if isinstance(artifact, str) and artifact.strip() else None
-    return summary[:300], patch, artifact
+    return summary[:SUMMARY_MAX_CHARS], patch, artifact
 
 
 def process(task: dict, project_slug: str) -> None:
@@ -269,27 +321,40 @@ def process(task: dict, project_slug: str) -> None:
         if reply.get("session_id"):
             sid_path.write_text(reply["session_id"])
 
-        try:
-            summary, patch, artifact = validate(extract_json(reply["result"]))
-        except (AgentError, json.JSONDecodeError) as exc:
-            # One retry, telling the model exactly what was wrong with its reply.
-            log(f"run {run_id}: invalid reply ({exc}); retrying once")
+        # One retry, telling the model exactly what was wrong with its reply.
+        # The session is re-read inside the closure, as it was before the
+        # parse path moved into agent_runner — the helper parses, this module
+        # still owns the run and the session file. validate= keeps validation
+        # inside the retry envelope, so a reply that parses but is missing
+        # 'summary' takes the retry exactly as it always did.
+        def retry_once(prompt: str) -> str:
+            log(f"run {run_id}: invalid reply; retrying once")
             retry = run_agent(
-                f"Your previous reply was invalid: {exc}. "
-                "Respond again with ONLY the JSON object, no other text.",
+                prompt,
                 session_id=sid_path.read_text().strip() if sid_path.exists() else None,
                 append_system=ROLE_PROMPT,
                 model=PM_MODEL,
             )
-            summary, patch, artifact = validate(extract_json(retry["result"]))
+            return retry["result"]
+
+        (summary, patch, artifact), notes = parse_agent_reply(
+            reply["result"], retry_once, validate=validate
+        )
 
         # Script-stamped feedback trail, same as the ephemeral agents.
         feedback = task.get("feedback") or []
         if feedback:
-            summary = f"addressed feedback (“{feedback[0].get('message', '')[:80]}”) — {summary}"[:300]
+            summary = f"addressed feedback (“{feedback[0].get('message', '')[:80]}”) — {summary}"[:SUMMARY_MAX_CHARS]
             if artifact:
                 header = "\n".join(f"> {fb.get('message', '')}" for fb in feedback)
                 artifact = f"## Human feedback addressed in this revision\n{header}\n\n{artifact}"[:WRITE_ARTIFACT_SANITY_CEILING_CHARS]
+
+        # Parser notes reach the human on both surfaces this step owns: the
+        # run's output line (server/src/orchestrator.js persists `summary` as
+        # step_run.output) and the step's artifact. No-ops when empty.
+        summary = stamp_notes(summary, notes, SUMMARY_MAX_CHARS)
+        if artifact:
+            artifact = stamp_notes_artifact(artifact, notes, WRITE_ARTIFACT_SANITY_CEILING_CHARS)
 
         result = {"run_id": run_id, "ok": True, "summary": summary, "patch": patch}
         if artifact:
@@ -297,6 +362,13 @@ def process(task: dict, project_slug: str) -> None:
     except Exception as exc:  # report every failure; farmd forwards to the server
         log(f"run {run_id}: FAILED — {exc}")
         result = {"run_id": run_id, "ok": False, "error": str(exc)[:300]}
+        # HZ-156: tag the one failure cause the orchestrator auto-retries from
+        # this side, exactly as the ephemeral step agent already does in
+        # step_agent.main() — a PM step that ran out of turn budget was
+        # pausing for a human where the identical failure on a step agent
+        # retried itself. Anything else still reports no reason and pauses.
+        if isinstance(exc, AgentExhaustedError):
+            result["reason"] = reasons.REASON["TURN_CAP"]
 
     httpx.post(f"{FARMD}/internal/steps/result", json=result, timeout=30)
     log(f"run {run_id}: reported {'ok' if result['ok'] else 'failure'}")

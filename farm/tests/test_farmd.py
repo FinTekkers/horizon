@@ -174,6 +174,60 @@ def test_conflicts_resolve_end_to_end_over_http_does_a_real_merge_and_push(runni
     assert (tmp_path / "read-after" / "other.txt").exists()  # main's independent change made it in too
 
 
+SCOPED_RESOLVE_FIXTURE = Path(__file__).resolve().parent / "fixtures" / "scoped_resolve_response.json"
+
+
+def test_conflicts_resolve_end_to_end_over_http_takes_the_scoped_path(running_farm, tmp_path, monkeypatch):
+    """The HZ-154 sibling of the test above: an OVERLAPPING conflict, which the
+    mechanical path would have escalated, goes all the way through FastAPI
+    routing into the real scoped resolution — real git stages, real diff3
+    reference, real scope check, real checks gate, real push.
+
+    The body it returns is the recorded payload in
+    fixtures/scoped_resolve_response.json, which
+    server/test/orchestrator-resolve-conflicts.test.mjs feeds to the Node side
+    verbatim — so the two halves of the seam are pinned to one real reply
+    rather than to two hand-written literals that can drift apart.
+    """
+    monkeypatch.setattr(workspaces, "WORKSPACES_DIR", tmp_path / "workspaces")
+    monkeypatch.setenv("FARM_CHECK_CMD", "true")  # the scoped path refuses to push behind a suite that never ran
+    monkeypatch.delenv("FARM_CONFLICT_SCOPED_ENABLED", raising=False)
+    _hub, origin = make_repo_hub(tmp_path)
+    push_new_branch(
+        tmp_path, origin, "horizon/hz-124",
+        lambda w: (w / "shared.txt").write_text("line1\nline2\nours-added\nline3\n"), "branch",
+    )
+    push_new_branch(
+        tmp_path, origin, "main",
+        lambda w: (w / "shared.txt").write_text("line1\nline2\ntheirs-added\nline3\n"), "main-advance",
+    )
+
+    res = client.post("/conflicts/resolve", json={"item": {"id": "HZ-124", "repo": "acme/demo"}})
+
+    assert res.status_code == 200
+    body = res.json()
+    assert body["ok"] is True
+    assert body["resolved"] is True
+    assert body["mode"] == "scoped"
+    assert body["resolution"]["paths"] == ["shared.txt"]
+    assert body["resolution"]["hunks"] == 1
+    assert body["resolution"]["strategy"] == "deterministic"
+    assert body["review"]["verdict"] == "pass"
+    assert body["review"]["reviewed"] is False
+
+    # Both sides survived the merge the route just pushed.
+    merged = clone_and_read(tmp_path, origin, "horizon/hz-124", "shared.txt", "scoped-after")
+    assert merged == "line1\nline2\nours-added\ntheirs-added\nline3\n"
+
+    # `files` is a diffstat whose column widths depend on the path, so it is
+    # the one key the recorded payload does not pin; everything the Node side
+    # actually renders is compared exactly.
+    recorded = json.loads(SCOPED_RESOLVE_FIXTURE.read_text())
+    assert isinstance(body.pop("files"), str)
+    assert recorded.pop("files", None) is not None, "the recorded payload must keep a files key for the Node side"
+    assert body == recorded, f"regenerate {SCOPED_RESOLVE_FIXTURE.name} — farmd's scoped reply shape changed"
+
+
 # ---- /runs/status (HZ-54) ----
 # Board/tracker guardrail: the farm reports a small {state, reason} vocabulary
 # only — never a tmux session name — so a queued run can't be told apart from

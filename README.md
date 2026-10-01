@@ -41,9 +41,9 @@ HORIZON_REPO=FinTekkers/horizon GITHUB_TOKEN=ghp_... npm run dev
 
 Sync is event-based (webhooks) with an ETag-conditional polling fallback (60s default,
 `POLL_INTERVAL_MS` to change). New/edited/closed issues upsert into the board; GitHub owns
-title/description/priority (via a `critical|high|medium|low` or `priority: x` label, default
-Medium), the lifecycle state stays local. Delete `server/data` when switching between demo
-and synced mode.
+title/description/priority (via a bare value label or a `priority: x` one — the vocabulary
+and its default are declared in `domain/priorities.json`), the lifecycle state stays local.
+Delete `server/data` when switching between demo and synced mode.
 
 For instant updates, add a repo webhook (issues events, JSON, with a secret) pointing at
 `POST /api/webhooks/github` and start the server with `GITHUB_WEBHOOK_SECRET=...`.

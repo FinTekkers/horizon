@@ -30,6 +30,18 @@ const CONSUMERS = [
   // from one document, by relative path, with no npm workspace in between.
   { root: 'server/src', specifier: '../../domain/js/reasons.js', witness: 'server/src/orchestrator.js' },
   { root: 'ui/src', specifier: 'domain/js/reasons.js', witness: 'ui/src/domain/pauseReason.js' },
+  // HZ-134 moved the work-item field limits into domain/ under the same rule.
+  // Two server consumers: app.js derives the POST /api/items body schema from it,
+  // orchestrator.js derives which columns an agent may patch. There is no UI
+  // consumer — ui/src sets no maxLength on the create form (pre-existing, and
+  // unchanged by HZ-134), so listing one here would fail as a stale entry.
+  { root: 'server/src', specifier: '../../domain/js/fields.js', witness: 'server/src/app.js' },
+  // HZ-135 moved the work-item priority vocabulary into domain/ under the same
+  // rule. Unlike the field limits this one HAS a UI consumer — two, in fact: the
+  // intake picker renders the vocabulary and ui/src/domain/lifecycle.js keys its
+  // theme tokens off it — so both roots are listed.
+  { root: 'server/src', specifier: '../../domain/js/priorities.js', witness: 'server/src/store.js' },
+  { root: 'ui/src', specifier: 'domain/js/priorities.js', witness: 'ui/src/components/NewItemModal.jsx' },
 ]
 
 const files = repoFiles()
@@ -90,6 +102,24 @@ test('the farm imports the model as domain.py, from the repo root, in both produ
   }
 })
 
+// HZ-134: architecture review asked for the same pin on the new Python import.
+// farm/pm_agent.py's PATCH_FIELDS and farm/tools/measure_text_caps.py's CAPS
+// table both read domain/fields.json, and both must reach it the same way the
+// other farm modules reach domain.py — off the repo root, not by a relative path
+// or a sys.path insert.
+test('the farm modules that carry a field limit import it as domain.py, from the repo root', () => {
+  // Matched on the imported NAMES rather than the whole line: farm/pm_agent.py
+  // reaches for `reasons` on the same line, the way farmd.py and step_agent.py
+  // already do.
+  for (const file of ['farm/pm_agent.py', 'farm/tools/measure_text_caps.py']) {
+    const text = readFileSync(path.join(REPO_ROOT, file), 'utf8')
+    const line = text.match(/^from domain\.py import (.+)$/m)
+    assert.ok(line, `${file} does not import anything from domain.py`)
+    const imported = line[1].split(',').map((name) => name.trim())
+    assert.ok(imported.includes('fields'), `${file} imports ${line[1]} from domain.py, not the field limits`)
+  }
+})
+
 test('the farm tests that exercise the step table import it from domain.py too', () => {
   for (const file of ['farm/tests/test_steps.py', 'farm/tests/test_steps_insertion.py', 'farm/tests/test_e2e_muse.py']) {
     const text = readFileSync(path.join(REPO_ROOT, file), 'utf8')
@@ -122,5 +152,59 @@ test('every import of the reason vocabulary resolves to a real file, from every 
     assert.ok(match, `${file} has no domain/ import to resolve`)
     const resolved = path.resolve(path.dirname(path.join(REPO_ROOT, file)), match[1])
     assert.equal(resolved, path.join(REPO_ROOT, 'domain/js/reasons.js'), `${file}'s relative path does not land on the vocabulary`)
+  }
+})
+
+// HZ-135: the same pin on the new Python import. farm/wizard.py builds its
+// numbered prompt from the order and farm/concierge_agent.py validates a
+// set_priority action against the vocabulary; both must reach it the way every
+// other farm module reaches domain.py — off the repo root, not by a relative path
+// or a sys.path insert.
+test('the farm modules that speak about priority import it as domain.py, from the repo root', () => {
+  for (const file of ['farm/wizard.py', 'farm/concierge_agent.py']) {
+    const text = readFileSync(path.join(REPO_ROOT, file), 'utf8')
+    const line = text.match(/^from domain\.py import (.+)$/m)
+    assert.ok(line, `${file} does not import anything from domain.py`)
+    const imported = line[1].split(',').map((name) => name.trim())
+    assert.ok(imported.includes('priorities'), `${file} imports ${line[1]} from domain.py, not the vocabulary`)
+  }
+})
+
+test('every import of the priority vocabulary resolves to a real file, from every consumer (HZ-135)', async () => {
+  const fromHere = await import('../../domain/js/priorities.js')
+  assert.ok(Array.isArray(fromHere.PRIORITIES) && fromHere.PRIORITIES.length > 0)
+
+  for (const file of [
+    'server/src/db.js',
+    'server/src/store.js',
+    'server/src/github.js',
+    'server/src/app.js',
+    'server/src/priorityLabels.js',
+    'ui/src/components/NewItemModal.jsx',
+    'ui/src/domain/lifecycle.js',
+    'ui/src/api/mockApi.js',
+  ]) {
+    const text = readFileSync(path.join(REPO_ROOT, file), 'utf8')
+    const match = text.match(/from\s+'([^']*domain\/js\/priorities\.js)'/)
+    assert.ok(match, `${file} has no domain/ import to resolve`)
+    const resolved = path.resolve(path.dirname(path.join(REPO_ROOT, file)), match[1])
+    assert.equal(
+      resolved,
+      path.join(REPO_ROOT, 'domain/js/priorities.js'),
+      `${file}'s relative path does not land on the vocabulary`,
+    )
+  }
+})
+
+test('every import of the field limits resolves to a real file, from every consumer (HZ-134)', async () => {
+  const fromHere = await import('../../domain/js/fields.js')
+  assert.ok(Array.isArray(fromHere.FIELDS) && fromHere.FIELDS.length > 0)
+
+  for (const file of ['server/src/app.js', 'server/src/orchestrator.js']) {
+    const text = readFileSync(path.join(REPO_ROOT, file), 'utf8')
+    const match = text.match(/from\s+'([^']*domain\/js\/fields\.js)'/)
+    assert.ok(match, `${file} has no domain/ import to resolve`)
+    const resolved = path.resolve(path.dirname(path.join(REPO_ROOT, file)), match[1])
+    assert.equal(resolved, path.join(REPO_ROOT, 'domain/js/fields.js'), `${file}'s relative path does not land on the field limits`)
   }
 })

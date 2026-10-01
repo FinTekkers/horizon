@@ -16,10 +16,15 @@
 import http from 'node:http'
 
 // `handler(request, n)` decides the reply for the n-th request and may return:
-//   undefined / {}          -> 200 {"success": true, "message": "sent"}
+//   undefined / {}          -> the default success body for that path
 //   { status, payload }     -> that status and that exact body
 //   { hang: true }          -> never answers (for the timeout path)
 // It may be replaced at any time with setHandler().
+//
+// HZ-142 added POST /api/send-poll, which the forked bridge serves alongside
+// /api/send. Its default reply carries a messageId, because waSend.js's
+// sendPoll treats a 200 without one as a failure — an untracked poll is a
+// tappable orphan.
 export async function startStubBridge(initialHandler) {
   const requests = []
   const sockets = new Set()
@@ -47,7 +52,11 @@ export async function startStubBridge(initialHandler) {
         reply = { status: 500, payload: JSON.stringify({ success: false, message: String(err) }) }
       }
       if (reply.hang) return // deliberately never answers — the caller's timeout must fire
-      const { status = 200, payload = JSON.stringify({ success: true, message: 'sent' }) } = reply
+      const isPoll = req.url === '/api/send-poll'
+      const defaultPayload = isPoll
+        ? JSON.stringify({ success: true, message: 'poll sent', messageId: `3EB0POLL${requests.length}` })
+        : JSON.stringify({ success: true, message: 'sent' })
+      const { status = 200, payload = defaultPayload } = reply
       res.writeHead(status, { 'Content-Type': 'application/json' })
       res.end(payload)
     })
@@ -64,6 +73,7 @@ export async function startStubBridge(initialHandler) {
     // to /api/send, so a test can assert nothing else was ever contacted.
     requests,
     sends: () => requests.filter((r) => r.method === 'POST' && r.path === '/api/send'),
+    pollSends: () => requests.filter((r) => r.method === 'POST' && r.path === '/api/send-poll'),
     setHandler(fn) {
       handler = fn
     },

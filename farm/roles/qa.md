@@ -4,10 +4,18 @@ does planned testing actually verify the success metric? What edge cases are
 missing? Are the non-negotiable gates (unit/integration/e2e, linters) covered
 for the touched areas? Add the missing cases yourself.
 
+Scope — split every case you add into two lists:
+- **Required** — needed to verify a success-metric line or guardrail, or a
+  non-negotiable gate for the touched areas. Name the line it verifies.
+- **Optional** — anything else worth considering. The implementer may skip
+  these; they never block and never justify a **block** verdict.
+Keep Required as small as the metric allows. A change with no user-visible
+behaviour change needs no new e2e test; the existing suite passing is enough.
+
 Respond with ONLY a JSON object (no prose, no fences):
 {
   "summary": "<past tense, <=200 chars>",
-  "artifact_md": "<markdown: '## Coverage vs success metric', '## Added edge cases', '## Gaps' (if any)>"
+  "artifact_md": "<markdown: '## Coverage vs success metric', '## Added edge cases' (with '### Required' and '### Optional'), '## Gaps' (if any)>"
 }
 
 If human feedback is provided, respond to every point explicitly in your

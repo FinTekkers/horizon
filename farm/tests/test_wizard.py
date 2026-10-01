@@ -8,6 +8,8 @@ create-then-approve loop through poll_once) lives in test_concierge.py.
 
 import pytest
 
+from domain.py import priorities
+
 from farm import concierge_agent as ca
 from farm import config, wizard
 from farm.config import ensure_dirs
@@ -181,6 +183,72 @@ def test_item_wizard_bad_priority_input_reprompts_without_advancing():
         assert stub.created_items == []
     finally:
         stub.close()
+
+
+# ---- HZ-135: the emitted text is now DERIVED from domain/priorities.json ----
+# Guardrail 1 says no behaviour change, and for a WhatsApp bot the emitted string
+# IS the behaviour — a renumbered list would silently invalidate every reply a
+# human has learned to send. So both prompts are pinned BYTE FOR BYTE against the
+# text that stood before the vocabulary moved. These are the only two assertions
+# in this file that hand-type the list, which is the point of them.
+
+
+def test_the_priority_question_is_byte_identical_to_the_pre_hz135_text():
+    assert wizard.STEP_PROMPTS["priority"] == "Priority — reply 1) Critical 2) High 3) Medium 4) Low"
+
+
+def test_the_priority_retry_line_is_byte_identical_to_the_pre_hz135_text():
+    t = FakeTransport()
+    state = make_state(t, "wiz-retrytext")
+    stub = StubHorizon()
+    try:
+        step(t, state, stub, "[New Item] X")
+        step(t, state, stub, "outcome")
+        step(t, state, stub, "metric")
+        step(t, state, stub, "skip")
+        step(t, state, stub, "banana")
+        assert t.sent[-1][1].endswith(
+            "Sorry, I didn't catch that — reply 1) Critical 2) High 3) Medium 4) Low."
+        )
+    finally:
+        stub.close()
+
+
+def test_the_option_line_numbers_the_declared_order_one_based():
+    expected = " ".join(f"{i + 1}) {value}" for i, value in enumerate(priorities.PRIORITIES))
+    assert wizard._priority_options() == expected
+
+
+def test_the_number_map_is_the_exact_inverse_of_the_option_lines_numbering():
+    mapping = wizard._priority_by_number()
+    assert list(mapping) == [str(i + 1) for i in range(len(priorities.PRIORITIES))]
+    for number, value in mapping.items():
+        assert f"{number}) {value}" in wizard._priority_options()
+
+
+def test_the_numbering_helpers_follow_their_argument_not_the_live_document():
+    # Zero literals from the real vocabulary: this is what proves the helpers are
+    # derivations rather than dressed-up constants. They live in wizard.py rather
+    # than in domain/py/priorities.py because a numbered option line is display
+    # copy, and domain/ declares vocabulary — so their coverage lives here too.
+    assert wizard._priority_options(("Solo",)) == "1) Solo"
+    assert wizard._priority_options(("Solo", "Duo")) == "1) Solo 2) Duo"
+    assert wizard._priority_by_number(("Solo", "Duo")) == {"1": "Solo", "2": "Duo"}
+
+
+def test_every_declared_priority_is_reachable_by_its_number_and_by_its_word():
+    # Derived, so a value added to domain/priorities.json is covered here without
+    # an edit — and a value the wizard cannot reach fails loudly.
+    for index, value in enumerate(priorities.PRIORITIES):
+        assert wizard._parse_priority(str(index + 1)) == value
+        assert wizard._parse_priority(value) == value
+        assert wizard._parse_priority(value.lower()) == value
+    assert wizard._parse_priority(str(len(priorities.PRIORITIES) + 1)) is None
+    assert wizard._parse_priority("banana") is None
+
+
+def test_a_new_session_opens_on_the_declared_default():
+    assert wizard._new_session("X")["priority"] == priorities.DEFAULT_PRIORITY
 
 
 def test_item_wizard_edit_choice_restarts_at_the_title_step():

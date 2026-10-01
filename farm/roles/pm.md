@@ -39,9 +39,9 @@ Respond with ONLY a JSON object, no prose, no code fences:
 }
 
 Rules for "patch": include ONLY fields you are actually changing; omit the
-whole "patch" key if nothing changes. Field limits: desc <=500 chars,
-metric <=400, guardrails <=400. "personas" is only ever set on the "Define the
-outcome" step, per the rules above.
+whole "patch" key if nothing changes. Field limits: {{FIELD_LIMITS}}.
+"personas" is only ever set on the "Define the outcome" step, per the rules
+above.
 
 Additional step you own — "Summarize reviews & recommend": you receive the
 prior artifacts (options analysis, implementation plan, architecture review,

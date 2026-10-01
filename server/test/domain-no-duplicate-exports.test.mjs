@@ -34,6 +34,7 @@ const uiAgentTokens = await import('../../ui/src/domain/agentTokens.js')
 const uiLifecycle = await import('../../ui/src/domain/lifecycle.js')
 const domainLifecycle = await import('../../domain/js/lifecycle.js')
 const domainReasons = await import('../../domain/js/reasons.js')
+const domainFields = await import('../../domain/js/fields.js')
 const uiPauseReason = await import('../../ui/src/domain/pauseReason.js')
 
 function exportedNames(mod) {
@@ -85,8 +86,25 @@ test('the one model module for reasons and the UI module that renders them share
   assert.deepEqual(intersection(ui, model), [])
 })
 
-test('the two model modules in domain/ share no exported name either', () => {
-  assert.deepEqual(intersection(exportedNames(domainLifecycle), exportedNames(domainReasons)), [])
+test('the three model modules in domain/ share no exported name either', () => {
+  const modules = [
+    ['lifecycle', exportedNames(domainLifecycle)],
+    ['reasons', exportedNames(domainReasons)],
+    ['fields', exportedNames(domainFields)],
+  ]
+  for (const [aName, a] of modules) {
+    for (const [bName, b] of modules) {
+      if (aName >= bName) continue
+      assert.deepEqual(intersection(a, b), [], `domain/js/${aName}.js and domain/js/${bName}.js share an export`)
+    }
+  }
+})
+
+test('the field binding exports the limits and nothing presentational', () => {
+  assert.deepEqual(
+    [...exportedNames(domainFields)].sort(),
+    ['FIELDS', 'assertFieldsShape', 'fieldByName', 'intakeFields', 'patchLimits'],
+  )
 })
 
 test('the reason binding exports the vocabulary and nothing presentational', () => {

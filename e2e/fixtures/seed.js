@@ -32,14 +32,18 @@ export function insertItem(
     pr = null,
     pr_url = null,
     pr_mergeable = null,
+    // Every PR-side action (HZ-154's conflict resolution included) refuses an
+    // item with no repo, so a fixture that gets *acted on* rather than just
+    // rendered has to carry one.
+    repo = null,
     updatedAt = null,
     paused = 0,
   },
 ) {
   db.prepare(
-    `INSERT INTO work_item (id, title, priority, desc, metric, guardrails, cursor, pr, pr_url, pr_mergeable, paused)
-     VALUES (@id, @title, @priority, @desc, @metric, @guardrails, @cursor, @pr, @pr_url, @pr_mergeable, @paused)`,
-  ).run({ id, title, priority, desc, metric, guardrails, cursor, pr, pr_url, pr_mergeable, paused: paused ? 1 : 0 })
+    `INSERT INTO work_item (id, title, priority, desc, metric, guardrails, cursor, repo, pr, pr_url, pr_mergeable, paused)
+     VALUES (@id, @title, @priority, @desc, @metric, @guardrails, @cursor, @repo, @pr, @pr_url, @pr_mergeable, @paused)`,
+  ).run({ id, title, priority, desc, metric, guardrails, cursor, repo, pr, pr_url, pr_mergeable, paused: paused ? 1 : 0 })
   if (updatedAt) {
     db.prepare('UPDATE work_item SET updated_at = ? WHERE id = ?').run(updatedAt, id)
   }

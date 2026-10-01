@@ -156,6 +156,102 @@ configuration problem on this host, not a code problem.
 To turn it off with no deploy: set `WA_NOTIFY_ENABLED=0` and restart
 `horizon-server`. Nothing else changes.
 
+## 2d. Approve-or-send-back poll env (HZ-142)
+
+Each gate notification now also carries a native two-option WhatsApp poll —
+**✅ Approve** / **↩️ Send back** — and a tap decides the gate with no model
+anywhere on the path. The concierge's free-text approval is unchanged and
+still works; whichever decides the gate first moves the cursor, and the
+other is then refused as `ignored_stale_gate`.
+
+**This needs the forked bridge.** An un-forked `whatsapp-mcp` has no
+`POST /api/send-poll`, so every poll row fails with a 404 while every text
+notice still goes out — see `infra/whatsapp-bridge/README.md` for the patch
+and `infra/whatsapp-bridge/PROBE.md` for what was verified about the pinned
+whatsmeow build before any of it was written.
+
+| File | Var | Notes |
+|---|---|---|
+| `/etc/horizon/server.env` | `WA_POLL_ENABLED` | `0` stops attaching polls. Anything else ⇒ on whenever `WA_NOTIFY_ENABLED=1` |
+| bridge env | `HORIZON_VOTE_URL` | e.g. `http://127.0.0.1:3001/api/wa/poll-vote`. The bridge refuses to start without it |
+| bridge env | `WA_APPROVAL_SECRET` | **the same value as `server.env` and `farm.env`.** The bridge refuses to start without it |
+
+`WA_APPROVAL_SECRET` now lives in **three** places — server, farm, bridge. A
+mismatch on the bridge's copy is a 401 on every vote, and the poll itself is
+silent about it, so it is the first thing to check when a tap does nothing.
+**`FARM_SHARED_SECRET` is never used on this path**; it opens nothing here,
+which is the whole point of HZ-140 and is asserted in
+`server/test/wa-poll-vote-auth.test.mjs` — and again over a real socket, into
+a really-booted `server.js`, in `server/test/wa-poll-vote-e2e.test.mjs`. That
+second file is the one to read if a tap misbehaves in production: it drives an
+Approve and a Send back through the same route the bridge calls, using a poll
+id the bridge itself minted, so the whole join is exercised rather than mocked.
+
+### Before turning it on for the first time
+
+Probe 2 in `PROBE.md` verifies that the pinned whatsmeow exposes
+`DecryptPollVote` and what shape it yields, but the AES/HKDF layer needs a
+live paired session and cannot be exercised offline. So do it once, by hand:
+
+```
+# 1. Send yourself a poll through the forked bridge.
+curl -s localhost:8080/api/send-poll -H 'Content-Type: application/json' \
+  -d '{"recipient":"<your-number>@s.whatsapp.net","name":"probe","options":["✅ Approve","↩️ Send back"]}'
+# -> {"success":true,"messageId":"3EB0…"}   the poll should render as tappable
+
+# 2. Tap an option, then read the bridge's log. Expect a line naming the
+#    resolved option. A decryption failure logs "poll vote could not be
+#    decrypted" instead — stop and report it rather than working around it.
+```
+
+### Reading the poll outbox
+
+Polls have **their own** outbox, separate from `gate_notice`, so a bridge
+that cannot serve `/api/send-poll` never suppresses a text notification.
+
+```
+sqlite3 -header -column /opt/horizon/server/data/horizon.db \
+  "SELECT item_id, step_index, status, attempts, poll_msg_id, decided_at, last_error
+     FROM gate_poll ORDER BY id DESC LIMIT 5;"
+```
+
+Expected on success: one row per approver per arrival, `status = sent`,
+`attempts = 0`, `poll_msg_id` set, `decided_at` empty until someone taps.
+
+- **No rows at all** — `WA_POLL_ENABLED=0`, or `WA_NOTIFY_ENABLED` is not `1`.
+- **`status = pending`, `last_error` mentions 404** — the bridge is not the
+  fork. Text notices are unaffected; apply the patch or set
+  `WA_POLL_ENABLED=0`.
+- **`status = pending`, `last_error` mentions `messageId`** — the bridge sent
+  a poll and returned no id. Treated as a failure on purpose: an untracked
+  poll is tappable and decides nothing.
+- **`status = failed`, `last_error = interrupted…`** — the process exited
+  mid-send. That poll may be on a phone with no id recorded here, so a tap on
+  it logs `ignored_unknown_poll` and does nothing. Not resent, same
+  at-most-once rule as a text notice.
+
+### Diagnosing a tap that did nothing
+
+The server logs one line per refused vote (`wa poll vote <id> ignored: …`).
+Every refusal is a **4xx**, which the bridge treats as final and never
+retries.
+
+| In the log / response | Means |
+|---|---|
+| `503 wa_approval_not_configured` | `WA_APPROVAL_SECRET` missing from `server.env` |
+| `401 bad_approval_secret` | the bridge's copy disagrees with the server's |
+| `403 voter_not_allowed` | the voter's number is missing from `WA_APPROVER_JIDS` |
+| `404 ignored_unknown_poll` | no `gate_poll` row for that poll — usually an interrupted send, above |
+| `409 ignored_superseded` | an older poll for an item that has since arrived again |
+| `409 ignored_stale_gate` | the item has left that gate — often because the concierge or the UI decided it first |
+| `409 ignored_already_decided` | someone else's tap got there first |
+| `422 ignored_unknown_option` | the option strings drifted between the bridge and the server |
+
+To turn it off with no deploy: set `WA_POLL_ENABLED=0` and restart
+`horizon-server`. Polls stop being attached; text notices and the concierge's
+free-text approval carry on. **The vote route stays live either way**, so a
+poll already on someone's phone still decides its gate.
+
 ## 3. Confirm the repo is pull-only
 
 `/opt/horizon` must be able to `git fetch`/`checkout` from `origin`, but must

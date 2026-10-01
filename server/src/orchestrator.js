@@ -23,6 +23,7 @@ import {
   requiredStepIndex,
 } from '../../domain/js/lifecycle.js'
 import { AUTO_RETRY_REASONS, REASON } from '../../domain/js/reasons.js'
+import { patchLimits } from '../../domain/js/fields.js'
 import {
   getItem,
   addEvent,
@@ -348,6 +349,31 @@ export function setRunStateForTest(runId, state, reason = null) {
   notifyChange()
 }
 
+// e2e only (HZ-154), same wiring and same reasoning as the hook above: the
+// suite has no farm daemon, so the scoped conflict path's whole visible
+// outcome — the item coming back to the Accept gate resolved, with the
+// activity feed naming the files, the hunks and the scoped verdict, and the
+// implement step's attempt count sitting still — would otherwise be covered
+// only below the UI. This queues ONE canned /conflicts/resolve reply for the
+// next resolveConflicts() call, in place of the farmd round trip.
+//
+// It stubs farmd's ANSWER, never the trigger or the gate: the click, the
+// session, the PIN, the escalation path and every guard clause in
+// resolveConflicts() all still run exactly as they do in production. Left
+// null unless a spec sets it, and the route that sets it exists only when
+// HORIZON_TEST_HOOKS=1, which production never sets.
+let cannedConflictReply = null
+
+export function setConflictReplyForTest(reply) {
+  cannedConflictReply = reply
+}
+
+function takeCannedConflictReply() {
+  const reply = cannedConflictReply
+  cannedConflictReply = null
+  return reply
+}
+
 // ---- real farm (farm/ Python daemon) plumbing ----
 
 // Every farm call is bounded — a hung farmd (network partition, a deadlocked
@@ -420,11 +446,47 @@ export async function fetchRunLog(runId, offset = 0) {
 // is a bounded-but-long synchronous farmd call (real git merge + the repo's
 // own test suite) instead of an async dispatch — FARM_CONFLICT_RESOLVE_TIMEOUT_MS
 // (config.js) is what bounds that trade.
-const CONFLICT_ESCALATION_REASONS = {
+//
+// HZ-154 adds a narrow middle path INSIDE the same call: farmd may now resolve
+// the conflicted hunks themselves (deterministically where the two sides
+// edited different lines of the hunk, otherwise with a tool-restricted agent)
+// and review only the resolution delta, rather than escalating every
+// overlapping edit to a full re-implementation plus a full re-review of the
+// whole PR. Everything above
+// still holds: one human click, no row, no poll loop, no step_run write, and
+// the item only ever comes back to this gate for a human. The reasons below
+// grew a code per way that path can refuse — Python's own list is
+// farm/conflict_resolver.py's ESCALATION_REASONS, and
+// orchestrator-conflict-reason-parity.test.mjs holds the two in sync.
+export const CONFLICT_ESCALATION_REASONS = {
   merge_conflict: 'both branches changed the same lines — needs a human or a full implement cycle to resolve',
   tests_failed: "the merge applied cleanly but the repo's own tests failed afterward",
   branch_missing: 'the PR branch could not be found on the remote',
   push_rejected: 'the branch changed on GitHub while resolving — try again',
+  conflict_too_large: 'too many conflicted files or lines for a scoped fix — needs a full implement cycle',
+  conflict_unsupported: 'the conflict is a rename, a deletion or a binary clash — needs a full implement cycle',
+  resolution_unsure: 'the resolution agent reported it could not be sure of the fix',
+  resolution_out_of_scope: 'the resolution changed code outside the conflicted regions — rejected, nothing pushed',
+  markers_remaining: 'conflict markers were still present after the resolution — rejected, nothing pushed',
+  scoped_review_rejected: 'the scoped review of the resolution rejected it',
+  scoped_checks_failed: "the conflicted hunks were resolved but the repo's own checks then failed",
+}
+
+// The success line for the scoped path: names the files and hunks that were
+// resolved and the scoped review's verdict, so the event log answers "what
+// exactly changed, and who said it was fine" without opening the PR.
+function scopedResolutionText(pr, result) {
+  const { strategy, hunks, paths = [] } = result.resolution || {}
+  const review = result.review || {}
+  const how = strategy === 'deterministic' ? 'both sides kept, no agent needed' : 'resolved by an agent'
+  const verdict =
+    review.reviewed === false
+      ? review.summary || 'no agent review — the resolution used only parent lines'
+      : `scoped review ${review.verdict === 'pass' ? 'passed' : 'failed'}: ${review.summary || 'no summary'}`
+  return (
+    `resolved ${hunks || 0} conflicted hunk(s) on PR #${pr} in ${paths.join(', ') || 'the PR branch'} (${how}) — ` +
+    `${verdict} — no re-implementation and no re-review of the rest of the PR (${result.summary || 'pushed'})`
+  )
 }
 
 export async function resolveConflicts(id, actor = 'You') {
@@ -437,30 +499,40 @@ export async function resolveConflicts(id, actor = 'You') {
   // booleanizes this column for the UI) — 0 is "GitHub reports conflicts",
   // 1 is mergeable, NULL is unknown/not yet computed.
   if (item.pr_mergeable !== 0) return { error: 'not_conflicted' }
-  if (!FARM_URL) return { error: 'farm_unavailable' }
+  if (!FARM_URL && cannedConflictReply === null) return { error: 'farm_unavailable' }
 
   const branch = `horizon/${id.toLowerCase()}`
   let result
   try {
-    result = await farmFetch(
-      '/conflicts/resolve',
-      { item: { id, repo: item.repo }, branch },
-      { timeoutMs: FARM_CONFLICT_RESOLVE_TIMEOUT_MS },
-    )
+    result =
+      cannedConflictReply !== null
+        ? takeCannedConflictReply()
+        : await farmFetch(
+            '/conflicts/resolve',
+            { item: { id, repo: item.repo }, branch },
+            { timeoutMs: FARM_CONFLICT_RESOLVE_TIMEOUT_MS },
+          )
   } catch (err) {
     requestChanges(id, 'Accept the code', `PR #${item.pr}: automatic conflict resolution could not run (${err.message})`, actor)
     return { ok: true, resolved: false, escalated: true }
   }
 
   if (result.resolved) {
+    // The mechanical text stays byte-identical: only farmd reporting
+    // mode: 'scoped' switches to the richer line.
     addEvent(id, {
       who: 'Horizon',
-      text: `resolved merge conflicts on PR #${item.pr} mechanically — no re-implementation needed (${result.summary || 'merged and pushed'})`,
+      text:
+        result.mode === 'scoped'
+          ? scopedResolutionText(item.pr, result)
+          : `resolved merge conflicts on PR #${item.pr} mechanically — no re-implementation needed (${result.summary || 'merged and pushed'})`,
       color: '#0E6E74',
       initials: 'RS',
     })
     notifyChange()
-    return { ok: true, resolved: true }
+    return result.mode === 'scoped'
+      ? { ok: true, resolved: true, mode: 'scoped', review: result.review || null }
+      : { ok: true, resolved: true }
   }
 
   const reason = CONFLICT_ESCALATION_REASONS[result.reason] || result.detail || 'conflict resolution could not complete automatically'
@@ -867,11 +939,23 @@ export function markFarmRunStarted(runId) {
   return { ok: true, active: true }
 }
 
-// Plain string columns a farm patch may set. `personas` is deliberately NOT
-// here: since HZ-125 it is an { agent: persona id } object, not a column, so it
-// is validated and written separately (see completeFarmRun and
-// writeWorkItemPatch below).
-const FARM_PATCH_FIELDS = ['desc', 'metric', 'guardrails']
+// Which work_item columns an agent may patch — DERIVED from domain/fields.json
+// (HZ-134), the same document farm/pm_agent.py builds its PATCH_FIELDS from, so
+// the two sides of the wire cannot disagree about which fields exist. Only the
+// key list is needed here: the limits themselves are enforced agent-side, at the
+// point the over-long value is produced, where a marker can still be attached.
+//
+// `personas` is deliberately NOT in this list and never will be: since HZ-125 it
+// is an { agent: persona id } object rather than a text column, so it is
+// validated and written separately (see completeFarmRun and writeWorkItemPatch
+// below). That is also why domain/fields.json marks the legacy `persona` column
+// agentRevisable: false — nothing reaches it through this loop any more.
+const FARM_PATCH_FIELDS = Object.keys(patchLimits())
+// Display copy, deliberately NOT in domain/ (guardrail 5): these are the names a
+// human reads in the GitHub step comment, not part of the field model. A
+// patchable field missing from this map is written to the database but silently
+// omitted from the comment, so domain-fields-consumers.test.mjs drives
+// stepCommentBody with every patchable column set and asserts each one renders.
 const PATCH_FIELD_LABELS = { desc: 'Outcome', metric: 'Success metric', guardrails: 'Guardrails', personas: 'Specialist personas' }
 
 // Applies a completed step's patch to the item. Split out because `personas` is

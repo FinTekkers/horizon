@@ -19,9 +19,16 @@ from types import SimpleNamespace
 import pytest
 
 from domain.py import steps as domain_steps
-from farm import pm_agent
+from farm import agent_runner, pm_agent
 from farm.config import PM_MALFORMED_GRACE_S
-from farm.pm_agent import MAX_PROMPT_ARTIFACT_CHARS, _mark_truncated, build_prompt, notify_started, validate
+from farm.pm_agent import (
+    MAX_PROMPT_ARTIFACT_CHARS,
+    PATCH_FIELDS,
+    _mark_truncated,
+    build_prompt,
+    notify_started,
+    validate,
+)
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 
@@ -29,6 +36,22 @@ REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 # server/test/domain-one-declaration.test.mjs allowlists every file that spells
 # a step label out, and a test fixture has no business being on that list.
 FIRST_PM_STEP_LABEL = domain_steps.STEPS[0]["label"]
+
+# Derived, never typed (HZ-134): PATCH_FIELDS comes from domain/fields.json now,
+# so a test that built its oversized input from a literal 400 would go VACUOUS
+# the moment the declared limit rose past it — the input would simply fit, the
+# marked branch would never run, and the test would stay green while proving
+# nothing.
+GUARDRAILS_LIMIT = PATCH_FIELDS["guardrails"]
+# The persona cap is NOT read out of PATCH_FIELDS: since HZ-125 the routing tag
+# is a {agent: persona id} map under `personas`, so it has no entry there — its
+# size caps live on pm_agent itself (see PERSONA_ID_MAX_CHARS below).
+
+
+def _over_by_words(limit: int) -> str:
+    """A space-delimited value comfortably past `limit`, so _mark_truncated has a
+    word boundary to cut at whatever the declared limit is."""
+    return ("word " * (limit // 5 + 20)).strip()
 
 
 def make_task(rules=None, feedback=None):
@@ -109,27 +132,63 @@ def test_validate_keeps_a_large_artifact_in_full():
 
 
 # ---- marked fallback for over-budget patch fields (HZ-114) ----
-# role/pm.md instructs the PM agent to stay within desc<=500/metric<=400/
-# guardrails<=400, but an instruction is not enforcement (per this item's
-# guardrails) — validate() must mark, not silently shorten, a reply that
-# ignores the instruction.
+# farm/roles/pm.md instructs the PM agent to stay inside each field's limit, but
+# an instruction is not enforcement (per HZ-114's guardrails) — validate() must
+# mark, not silently shorten, a reply that ignores the instruction. Since HZ-134
+# the limit it states and the limit validate() applies are the same number,
+# rendered into the prompt from PATCH_FIELDS.
 
 
-def test_validate_marks_a_guardrails_patch_over_400_chars_instead_of_silently_shortening():
-    over = ("word " * 100).strip()  # far over 400 chars
-    assert len(over) > 400
+def test_validate_marks_a_guardrails_patch_over_the_limit_instead_of_silently_shortening():
+    over = _over_by_words(GUARDRAILS_LIMIT)
+    assert len(over) > GUARDRAILS_LIMIT
     _summary, patch, _artifact = validate({"summary": "did it", "patch": {"guardrails": over}})
-    assert len(patch["guardrails"]) > 400  # the marker is appended, not squeezed inside the budget
+    # The marker is appended AFTER the cut, so the result runs past the budget it
+    # reports on — deliberate, and pinned in test_field_limits.py.
+    assert len(patch["guardrails"]) > GUARDRAILS_LIMIT
     assert "chars omitted" in patch["guardrails"]
     assert "do not infer the field is complete" in patch["guardrails"]
 
 
 def test_validate_leaves_a_within_budget_guardrails_patch_untouched():
-    within = ("word " * 50).strip()
-    assert len(within) <= 400
+    within = ("word " * ((GUARDRAILS_LIMIT // 5) - 2)).strip()
+    assert len(within) <= GUARDRAILS_LIMIT
     _summary, patch, _artifact = validate({"summary": "did it", "patch": {"guardrails": within}})
     assert patch["guardrails"] == within
     assert "chars omitted" not in patch["guardrails"]
+
+
+# ---- HZ-134 metric 4: a PM revision can write what the API accepts ----
+# The metric names 1,999 chars, so that exact number is typed here on purpose.
+# The boundary either side of it is derived, because "1,999 fits" only proves the
+# cap is ABOVE 1,999 — the trio is what proves the cap IS the declared one.
+
+
+def test_validate_writes_a_1999_char_guardrails_revision_byte_for_byte():
+    revision = "x" * 1999
+    _summary, patch, _artifact = validate({"summary": "did it", "patch": {"guardrails": revision}})
+    assert patch["guardrails"] == revision
+    assert "chars omitted" not in patch["guardrails"]
+
+
+def test_validate_boundary_trio_around_the_declared_guardrails_limit():
+    # Space-delimited so _mark_truncated has a boundary to cut at; a single
+    # run-on token is a separate, deliberately unmarked case (see below).
+    def value(length):
+        text = ("word " * (length // 5 + 1))[:length]
+        return text[:-1] + "z" if text.endswith(" ") else text
+
+    for length in (GUARDRAILS_LIMIT - 1, GUARDRAILS_LIMIT):
+        under = value(length)
+        assert len(under) == length
+        _summary, patch, _artifact = validate({"summary": "did it", "patch": {"guardrails": under}})
+        assert patch["guardrails"] == under, f"a {length}-char revision was not written byte-for-byte"
+        assert "chars omitted" not in patch["guardrails"]
+
+    over = value(GUARDRAILS_LIMIT + 1)
+    _summary, patch, _artifact = validate({"summary": "did it", "patch": {"guardrails": over}})
+    assert patch["guardrails"] != over, "one char over the limit was let through unmarked"
+    assert "chars omitted" in patch["guardrails"]
 
 
 def test_mark_truncated_boundary_exactly_at_limit_is_untouched():
@@ -182,9 +241,13 @@ def test_validate_persona_stays_hard_capped_with_no_marker():
     # persona ids are registry-validated routing enums, not prose a human/agent
     # reads — the server drops anything that isn't an exact match anyway, so
     # marking one would just decorate a value that's discarded either way.
-    over = "x" * 100
+    # The cap is read off pm_agent rather than typed, so this documented
+    # exception cannot go vacuous if the cap moves.
+    from farm.pm_agent import PERSONA_ID_MAX_CHARS
+
+    over = "x" * (PERSONA_ID_MAX_CHARS * 2)
     _summary, patch, _artifact = validate({"summary": "did it", "patch": {"personas": {"eng": over}}})
-    assert patch["personas"]["eng"] == over[:40]
+    assert patch["personas"]["eng"] == over[:PERSONA_ID_MAX_CHARS]
     assert "chars omitted" not in patch["personas"]["eng"]
 
 
@@ -831,19 +894,20 @@ def test_once_mode_keeps_polling_on_a_non_terminal_outcome(monkeypatch, outcome,
 
 
 def test_the_reported_reason_is_still_auto_retryable_server_side():
-    """The report is only useful if the server auto-retries it; an edit to
-    the reason's retryability would otherwise silently turn a corrupt task
-    file into a human-pause. Since HZ-132 the server's AUTO_RETRY_REASONS is
-    derived from domain/reasons.json (server/src/orchestrator.js imports it
-    from domain/js/reasons.js), so the domain binding is the one place to
-    read it from."""
-    from domain.py import reasons
+    """The report is only useful if the server auto-retries it; flipping the
+    reason's `retryable` flag would otherwise silently turn a corrupt task file
+    into a human-pause.
 
-    assert reasons.is_retryable(pm_agent.UNUSABLE_TASK_REASON)
-    src = (REPO_ROOT / "server" / "src" / "orchestrator.js").read_text()
-    assert "import { AUTO_RETRY_REASONS" in src and "domain/js/reasons.js" in src, (
-        "the server no longer takes AUTO_RETRY_REASONS from domain/ — re-point this test"
-    )
+    Read out of the ONE declaration rather than assumed. This used to regex
+    `AUTO_RETRY_REASONS = new Set([...])` out of server/src/orchestrator.js; HZ-132
+    moved that set into domain/reasons.json and derived it, so the regex stopped
+    matching and the assertion stopped running — it was failing outright, not
+    passing vacuously. Repointed at the declaration, which is where a future edit
+    would actually be made."""
+    source = json.loads((REPO_ROOT / "domain" / "reasons.json").read_text())
+    retryable = {reason["id"] for reason in source["reasons"] if reason["retryable"]}
+    assert retryable, "the reason vocabulary declares nothing retryable — this check would be vacuous"
+    assert pm_agent.UNUSABLE_TASK_REASON in retryable
 
 
 def test_the_malformed_grace_stays_well_under_the_servers_queue_timeout():
@@ -854,3 +918,206 @@ def test_the_malformed_grace_stays_well_under_the_servers_queue_timeout():
     assert match, "could not find the server's FARM_QUEUE_TIMEOUT_MS default"
     queue_timeout_s = math.prod(int(p) for p in match.group(1).split("*")) / 1000
     assert 0 < PM_MALFORMED_GRACE_S < queue_timeout_s / 2
+
+
+# ---- process(): the shared reply parser, its notes, and turn_cap (HZ-156) ----
+# Before HZ-156 this file covered build_prompt, validate and the poll loop —
+# nothing called process() at all. The three claims below (validation stays
+# inside the lossless retry, notes reach both surfaces, an exhausted PM step
+# reports a retryable reason) are all properties of process(), so they need a
+# harness that actually runs it.
+
+
+@pytest.fixture
+def pm_process(tmp_path, monkeypatch):
+    """Runs the real pm_agent.process() with run_agent, httpx.post and the
+    session file faked.
+
+    session_file is repointed into tmp_path deliberately: process() writes the
+    returned session id, and without this the suite would write into the real
+    FARM_HOME state dir.
+    """
+    lane = SimpleNamespace(replies=[], prompts=[], posted=None, session_dir=tmp_path)
+
+    def fake_run_agent(prompt, **kw):
+        lane.prompts.append(prompt)
+        nxt = lane.replies.pop(0)
+        if isinstance(nxt, Exception):
+            raise nxt
+        return {"result": nxt, "session_id": "sess-1"}
+
+    def fake_post(url, json=None, timeout=None):
+        lane.posted = json
+        return _FarmdReply()
+
+    monkeypatch.setattr(pm_agent, "run_agent", fake_run_agent)
+    monkeypatch.setattr(pm_agent.httpx, "post", fake_post)
+    monkeypatch.setattr(pm_agent, "session_file", lambda slug: tmp_path / f"pm-session-{slug}.txt")
+
+    def run(*replies, task=None):
+        lane.replies = list(replies)
+        pm_agent.process(task or json.loads(_task_json()), "proj")
+        return lane.posted
+
+    lane.run = run
+    return lane
+
+
+def test_process_writes_its_session_file_inside_tmp_path(pm_process, tmp_path):
+    """Guards the harness itself: if session_file were not repointed, this
+    suite would scribble into the real state dir."""
+    pm_process.run(json.dumps({"summary": "done"}))
+    assert (tmp_path / "pm-session-proj.txt").read_text() == "sess-1"
+
+
+def test_a_clean_reply_is_reported_ok(pm_process):
+    posted = pm_process.run(json.dumps({"summary": "done", "artifact_md": "# A"}))
+    assert posted["ok"] is True
+    assert posted["summary"] == "done"
+    assert posted["artifacts"] == {"artifact_md": "# A"}
+    assert len(pm_process.prompts) == 1  # no retry on a good reply
+
+
+def test_an_invalid_reply_still_takes_the_lossless_retry(pm_process):
+    posted = pm_process.run("plain prose, no json", json.dumps({"summary": "done"}))
+    assert posted["ok"] is True and posted["summary"] == "done"
+    assert len(pm_process.prompts) == 2
+    assert "Your previous reply was invalid" in pm_process.prompts[1]
+
+
+def test_a_parsed_but_invalid_reply_still_takes_the_lossless_retry(pm_process):
+    """The regression the shared parser could easily have introduced: this
+    reply PARSES, and fails validate() for a missing 'summary'. That took the
+    retry before the parse moved into agent_runner, and must still."""
+    posted = pm_process.run(json.dumps({"patch": {}}), json.dumps({"summary": "recovered"}))
+    assert posted["ok"] is True and posted["summary"] == "recovered"
+    assert len(pm_process.prompts) == 2
+    assert "missing 'summary'" in pm_process.prompts[1]
+
+
+def test_a_second_failure_is_reported_as_a_failure(pm_process):
+    posted = pm_process.run("prose", "still prose")
+    assert posted["ok"] is False
+    assert "reason" not in posted  # a malformed reply is NOT auto-retryable
+
+
+def test_with_no_notes_the_posted_payload_is_byte_identical(pm_process):
+    """The 'behaviour otherwise unchanged' proof: _notes_for returns [] in this
+    item, so the whole posted dict is exactly what it was before the notes
+    channel existed."""
+    posted = pm_process.run(json.dumps({"summary": "done", "patch": {"desc": "d"}, "artifact_md": "# A"}))
+    assert posted == {
+        "run_id": 881,
+        "ok": True,
+        "summary": "done",
+        "patch": {"desc": "d"},
+        "artifacts": {"artifact_md": "# A"},
+    }
+
+
+def test_an_injected_note_reaches_the_summary_and_the_artifact(pm_process, monkeypatch):
+    from farm import agent_runner
+
+    monkeypatch.setattr(agent_runner, "_notes_for", lambda text, parsed: ["fake note"])
+    posted = pm_process.run(json.dumps({"summary": "done", "artifact_md": "# A"}))
+    assert "fake note" in posted["summary"]
+    assert "## Parser notes" in posted["artifacts"]["artifact_md"]
+    assert "- fake note" in posted["artifacts"]["artifact_md"]
+
+
+def test_a_scanner_fallback_note_reaches_both_surfaces_without_a_monkeypatch(pm_process):
+    """The one note this item really produces, end to end and unfaked.
+
+    Both replies are the success metric's own shape — object, prose, object — so
+    neither parses whole. The retry is spent first, as it was before the
+    first-object scan existed, and only when the second reply is no better does
+    the leading object get used, with the note as the record. A run that
+    cancelled outright before this item.
+    """
+    shadowed = json.dumps({"summary": "done", "artifact_md": "# A"}) + ' prose {"summary": "second"}'
+    posted = pm_process.run(shadowed, shadowed)
+
+    assert len(pm_process.prompts) == 2  # the retry was still spent first
+    assert posted["ok"] is True
+    assert agent_runner.FIRST_OBJECT_NOTE in posted["summary"]
+    assert f"- {agent_runner.FIRST_OBJECT_NOTE}" in posted["artifacts"]["artifact_md"]
+
+
+def test_a_note_survives_a_max_length_summary_and_artifact(pm_process, monkeypatch):
+    """validate() already slices the summary to 300, so a note appended and
+    then re-sliced would be dropped in the common case, not the rare one."""
+    from farm import agent_runner
+
+    monkeypatch.setattr(agent_runner, "_notes_for", lambda text, parsed: ["fake note"])
+    posted = pm_process.run(
+        json.dumps(
+            {
+                "summary": "s" * 400,
+                "artifact_md": "a" * (pm_agent.WRITE_ARTIFACT_SANITY_CEILING_CHARS + 50),
+            }
+        )
+    )
+    assert len(posted["summary"]) == 300
+    assert "fake note" in posted["summary"]
+    artifact = posted["artifacts"]["artifact_md"]
+    assert len(artifact) == pm_agent.WRITE_ARTIFACT_SANITY_CEILING_CHARS
+    assert "- fake note" in artifact
+
+
+def test_moving_the_summary_cap_moves_both_the_slice_and_the_notes_budget(pm_process, monkeypatch):
+    """Restating the cap as a literal at each shaping site is hidden coupling:
+    stamp_notes() reserves room inside exactly the budget validate() already
+    sliced the summary to, so a cap raised in one place and not the other would
+    silently truncate the notes back off."""
+    from farm import agent_runner
+
+    monkeypatch.setattr(agent_runner, "_notes_for", lambda text, parsed: ["n"])
+    monkeypatch.setattr(pm_agent, "SUMMARY_MAX_CHARS", 60)
+
+    posted = pm_process.run(json.dumps({"summary": "s" * 400}))
+
+    assert len(posted["summary"]) == 60
+    assert posted["summary"].endswith(" [n]")
+
+
+# -- turn_cap: the reason tag that makes a PM step auto-retry (HZ-156) --
+# step_agent.main() has always tagged this; pm_agent.process() did not, so the
+# identical exhaustion paused a PM step for a human while an ephemeral step
+# retried itself.
+
+
+def test_a_turn_cap_failure_is_reported_with_reason_turn_cap(pm_process):
+    from farm.agent_runner import AgentExhaustedError
+
+    posted = pm_process.run(AgentExhaustedError("claude reported an error result [error_max_turns]"))
+    assert posted["ok"] is False
+    assert posted["reason"] == "turn_cap"
+
+
+def test_an_exhaustion_inside_the_retry_is_reported_with_reason_turn_cap(pm_process):
+    """AgentExhaustedError subclasses AgentError, so an exhaustion raised by the
+    retry's own run_agent call must not be mistaken for a parse failure and have
+    its tag stripped."""
+    from farm.agent_runner import AgentExhaustedError
+
+    posted = pm_process.run("prose", AgentExhaustedError("ran out of turns"))
+    assert posted["ok"] is False
+    assert posted["reason"] == "turn_cap"
+    assert len(pm_process.prompts) == 2  # the retry really was attempted
+
+
+def test_an_ordinary_failure_carries_no_reason(pm_process):
+    """What keeps a non-exhaustion failure un-retryable server-side."""
+    posted = pm_process.run(RuntimeError("something else broke"))
+    assert posted["ok"] is False
+    assert "reason" not in posted
+
+
+def test_turn_cap_is_retryable_in_the_shared_vocabulary():
+    """The report is only useful if the server auto-retries it, and since
+    HZ-132 both bindings derive that from domain/reasons.json."""
+    from domain.py import reasons
+
+    assert reasons.is_retryable(reasons.REASON["TURN_CAP"])
+    js = (REPO_ROOT / "domain" / "js" / "reasons.js").read_text()
+    assert "AUTO_RETRY_REASONS" in js, "the JS binding no longer derives the set — re-point this test"

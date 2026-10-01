@@ -1,10 +1,12 @@
-# `domain/` — the lifecycle model and the failure-reason vocabulary
+# `domain/` — the lifecycle model, the failure-reason vocabulary, the work-item field limits and the priority vocabulary
 
 **One JSON is the source of truth. Bindings read it. Consumers import from
 here.**
 
 Ask "what is a lifecycle step?" — or, since HZ-132, "what can make a step
-fail, and will Horizon retry it?" — and the answer is this directory, by
+fail, and will Horizon retry it?", or, since HZ-134, "how long may a work-item
+field be?", or, since HZ-135, "what priority may a work item carry, and in what
+order?" — and the answer is this directory, by
 definition. Before HZ-128 the answer was spread across `server/src/lifecycle.js`,
 `ui/src/domain/lifecycle.js`, `farm/steps.py`, two committed
 `steps_generated.json` files and a build script living inside one consumer —
@@ -27,13 +29,41 @@ navigate them like any other file.
   outside `domain/`: its banner copy in `ui/src/domain/pauseReason.js`. That is
   deliberate — copy is presentation — and
   `ui/src/domain/pauseReason.test.js` fails if you forget it.
+- **Changing a work-item field's length limit** — or adding a field that carries
+  one — means editing **`domain/fields.json` only**. The API's `POST /api/items`
+  body schema, the PM agent's `PATCH_FIELDS`, the PM role prompt's field-limit
+  line and `measure_text_caps.py`'s report all derive from it. Before HZ-134 those
+  were four independent copies of the same three numbers, and they had already
+  drifted: the API accepted a `guardrails` value five times longer than a PM
+  revision could write.
+- **Changing the priority vocabulary** — a new value, a different order, a
+  different default — means editing **`domain/priorities.json` only**. The API's
+  two enums, the `work_item` `CHECK` constraint, the GitHub label pattern, the
+  intake picker and the WhatsApp wizard's numbered prompt all derive from it.
+  Before HZ-135 those were ten independent copies across three layers, and two of
+  them (a label-matching regex in `server/src/store.js` and another in
+  `server/src/github.js`) were byte-for-byte identical.
+
+  **Order is part of the declaration.** The array order is severity, highest
+  first, and it is *display* order: the intake picker renders it left to right and
+  the wizard numbers it `1) … 2) …`. Nothing in the repo sorts work items by
+  priority, so there are deliberately no rank integers.
+
+  A new value does need **three** more edits outside `domain/`, all of them
+  presentation or integration, and all of them enforced rather than remembered:
+  its label colour in `server/src/github.js`, its theme token in
+  `ui/src/domain/lifecycle.js`, and the prose list in `farm/roles/concierge.md`
+  (an LLM prompt, so it is pinned rather than rewritten).
+  `domain-priority-pins.test.mjs` fails on all three if you forget.
+
 - **Adding or changing a *helper*** means editing `js/lifecycle.js` or
   `py/steps.py` **directly**. Edit the binding you mean; there is no indirection
   between you and it.
 
 If a helper is meant to behave the same in both languages, add a case to
-`fixtures/lifecycle-cases.json` in the same change. The suites on both sides
-fail if an export has no case, so this is enforced rather than remembered.
+`fixtures/lifecycle-cases.json` (or `fixtures/fields-cases.json`) in the same
+change. The suites on both sides fail if an export has no case, so this is
+enforced rather than remembered.
 
 ## Layout
 
@@ -48,13 +78,24 @@ fail if an export has no case, so this is enforced rather than remembered.
 | `py/steps.py` | The Python binding: loads `steps.json`, exposes the farm-shaped table + accessors |
 | `js/reasons.js` | The JS binding: imports `reasons.json`, exposes the vocabulary + the derived `AUTO_RETRY_REASONS` |
 | `py/reasons.py` | The Python binding: loads `reasons.json`, exposes the same vocabulary to the farm |
+| `fields.json` | The only place a work-item field's length limit is declared |
+| `fields.schema.json` | The contract `fields.json` must satisfy |
+| `js/fields.js` | The JS binding: imports `fields.json`, exposes the table + the derived `intakeFields` / `patchLimits` |
+| `py/fields.py` | The Python binding: loads `fields.json`, exposes the same table and `patch_limits` to the farm |
+| `priorities.json` | The only place a work-item priority, and the order of them, is declared |
+| `priorities.schema.json` | The contract `priorities.json` must satisfy |
+| `js/priorities.js` | The JS binding: imports `priorities.json`, exposes `PRIORITIES`, `DEFAULT_PRIORITY` and the derived `PRIORITY` constants |
+| `py/priorities.py` | The Python binding: loads `priorities.json`, exposes the same vocabulary. The wizard's numbered option line is *not* here — `1) Critical 2) High …` is display copy, so `farm/wizard.py` derives it from this order where it is shown |
 | `fixtures/lifecycle-cases.json` | Input/expected pairs asserted by **both** language suites |
+| `fixtures/fields-cases.json` | The same, for the field bindings |
+| `fixtures/priorities-cases.json` | The same, for the priority bindings |
 
 Every file here is authored. Nothing is output.
 
-The two sources are **siblings, not one document**. `steps.json` answers "what
+The four sources are **siblings, not one document**. `steps.json` answers "what
 is a lifecycle step" and nothing else; a retry policy living inside a file
-titled *step table* is the kind of thing nobody finds by grepping. They share
+titled *step table* is the kind of thing nobody finds by grepping, and so is a
+field limit, and so is a priority. They share
 the validator, the load-time-validation pattern and every guard, and share no
 data.
 
@@ -76,10 +117,19 @@ carry a step label, which is the difference between "the build succeeded" and
 _SOURCE_PATH = Path(__file__).resolve().parent.parent / "steps.json"
 ```
 
-`js/reasons.js` and `py/reasons.py` read `reasons.json` exactly the same two
-ways. `ui/scripts/verify-base-build.mjs` probes the built bundle for **both** a
-step label and a reason id, because a tree-shake that drops one says nothing
-about the other.
+`js/reasons.js`/`py/reasons.py`, `js/fields.js`/`py/fields.py` and
+`js/priorities.js`/`py/priorities.py` read their own
+source exactly the same two ways. `ui/scripts/verify-base-build.mjs` probes the built bundle for a
+step label, a reason id **and** the priority vocabulary, because a tree-shake that drops one says nothing
+about the others.
+
+The priority probe is shaped differently from the other two, and the difference is
+worth knowing before copying it. `PRIORITIES[0]` is `"Critical"`, which already
+ships in the bundle via `ui/src/api/mockApi.js`'s demo seed rows — so probing for
+a single value would pass even if `priorities.json` were deleted outright. The
+probe is the whole **ordered sequence**, joined, against a quote- and
+whitespace-stripped bundle: only the inlined array can produce those values
+contiguously and in that order.
 
 Derived from `__file__`, never from the process's working directory — farm
 agents run inside workspace clones, not from the repo root.
@@ -101,6 +151,19 @@ boolean `retryable`, and at least one retryable reason. The id-shape rule is
 **load-bearing, not cosmetic** — `REASON`'s keys are derived by upper-casing the
 id, so a hyphenated id would produce a key no caller can name and a mixed-case
 one would collide with its own lower-case form.
+
+`priorities.json` gets it too, with three rules its schema subset cannot express:
+each value matching `^[A-Z][A-Za-z]*$`, uniqueness **ignoring case**, and
+`default` being a member of `priorities`. None is cosmetic. The value shape is
+**load-bearing** because `server/src/db.js` interpolates these values into the
+`work_item` `CHECK` constraint — it is what makes that emitted SQL provably safe
+rather than safe-by-convention — and because `PRIORITY`'s keys are derived by
+upper-casing. The case-insensitive rule exists because the GitHub label match is
+case-insensitive, so two values differing only in case would make
+`priorityFromLabels` resolve to whichever came first.
+`server/test/domain-priorities-schema.test.mjs` asserts the split is real: it
+drives the schema over all three and shows it passes, then shows the binding
+rejects them — in **both** languages, over a tampered copy in a temp dir.
 
 Full schema validation stays in `validate.mjs`, exercised by
 `server/test/domain-schema.test.mjs` and
@@ -150,6 +213,88 @@ a `frozenset` in Python so the farm cannot widen the server's retry policy.
 Both types are pinned: a derived Array would answer `undefined` to `.has()` and
 quietly pause every transient failure.
 
+### The field bindings ship ONE shape too, for the same reason
+
+There is no projection here either. The length the API enforces at intake and the
+length a PM revision is held to are the **same number** — that is the entire
+point of `fields.json`, and the bug HZ-134 closed was precisely that they were
+not. Both bindings expose the authored table verbatim.
+
+Each field carries **two names**, and the difference is the file's other job:
+
+- **`name`** — the field's name on the API, i.e. the `POST /api/items` body key.
+- **`column`** — its `work_item` column, which is also the key a PM patch and the
+  `UPDATE work_item` statement use.
+
+They differ for exactly one field: `outcome` is stored in `desc`. That mapping
+used to be implicit in two unrelated files, with each side re-deriving it. It
+lives here now and nowhere else.
+
+The two flags say who may write the field, in domain language rather than layer
+language:
+
+- **`settableAtIntake`** — a human may set it when the item is created.
+  `intakeFields()` is what `POST /api/items` builds its body properties from.
+  `persona` is deliberately false: it is assigned by an agent or at a gate.
+- **`agentRevisable`** — an agent may patch it later. `patchLimits()` keys by
+  `column` and is what `farm/pm_agent.py`'s `PATCH_FIELDS` and
+  `server/src/orchestrator.js`'s `FARM_PATCH_FIELDS` both are, so the two sides
+  of the wire cannot disagree about which fields exist. `persona` is false here
+  too, as of HZ-125: the specialist routing tag became a `{agent: persona id}`
+  map carried under a `personas` patch key, validated per agent against the
+  registry and written to `personas_json`. The `persona` column is still
+  declared — it is a real, legacy, read-only column that pre-HZ-125 items carry
+  a value in — but nothing patches it any more, so it must not appear in either
+  derived patch list.
+
+Three things adjacent to a field limit are deliberately **not** here:
+
+- **`required: ['title', 'outcome', 'metric']`** stays a literal in
+  `server/src/app.js`, and so does the `priority` enum. Neither is a length, so
+  neither belongs in a file about lengths — but it does mean the same route reads
+  from two homes. `api-field-limits-derived.test.mjs` asserts every `required`
+  name is a property the derived fragment defines, so the split cannot silently
+  break.
+- **`PATCH_FIELD_LABELS`** (`server/src/orchestrator.js`) — "Outcome", "Success
+  metric". Display copy, which guardrail 5 keeps out of `domain/`.
+  `domain-fields-consumers.test.mjs` drives `stepCommentBody` with every patchable
+  column set, so a field written to the database but missing from the comment
+  fails.
+- **`MARKED_PATCH_FIELDS`** (`farm/pm_agent.py`) — which over-long fields get a
+  truncation marker. A marking policy, not a limit.
+
+**`maxLength` is an INTAKE cap, not a database invariant.** HZ-114's truncation
+marker is appended *after* the cut, so a PM revision that ran over lands in
+`work_item` **longer** than the declared maximum for that column — content inside
+the budget, note outside it. That is intended: squeezing the marker inside the
+budget would eat real content to make room for a message about eating real
+content. Pinned by `farm/tests/test_field_limits.py`.
+
+**Two over-limit values are deliberately not marked.** Both predate HZ-134 and
+are unchanged by it, but "every over-limit value is marked" is the obvious wrong
+reading of the rule above, so they are stated here rather than left to a reader
+who trusts it:
+
+- **The specialist routing tag** is not in `MARKED_PATCH_FIELDS`. It is a
+  registry-validated routing id, not prose, and a value that overruns its cap
+  matches no known persona and is discarded either way — so it is hard-sliced,
+  silently. Since HZ-125 it is the `personas` map rather than a `persona`
+  string, so its cap is `farm/pm_agent.py`'s `PERSONA_ID_MAX_CHARS` rather than
+  a `maxLength` in this document.
+  `test_the_routing_tag_is_still_hard_cut_with_no_marker_and_that_is_deliberate`
+  pins that, reading the cap off the module so it cannot go vacuous.
+- **A single run-on token with no space anywhere** (a URL or a hash longer than
+  the whole budget) is returned whole and unmarked. `_mark_truncated` has no
+  boundary to cut at, and cutting mid-token would corrupt the value rather than
+  shorten it.
+
+One more caveat, on the field taking the biggest jump: a long `outcome` revision
+is **reverted by the next GitHub webhook sync**. `store.js`'s `upsertFromGithub`
+rewrites `desc` from the parsed issue body unconditionally, where `metric` and
+`guardrails` have an `|| row.metric` fallback. Pre-existing at any cap length and
+out of scope here — which is why `guardrails`, not `desc`, is the field
+`server/test/pm-revision-full-length.test.mjs` proves the full-length write on.
+
 ## Consumers
 
 Imported by relative path. No npm workspace, no published package, no new
@@ -161,13 +306,36 @@ asserts that, including that `domain/package.json` does not exist).
 | --- | --- |
 | `server/src`, `server/test` | `import … from '../../domain/js/lifecycle.js'` |
 | `ui/src` | `import … from '../../../domain/js/lifecycle.js'` |
-| `e2e/` | `import … from '../domain/js/lifecycle.js'` |
-| `farm/` | `from domain.py import reasons, steps` |
+| `e2e/` | `import … from '../domain/js/lifecycle.js'`, `'../../domain/js/priorities.js'` |
+| `farm/` | `from domain.py import fields, priorities, reasons, steps` |
 
 The reason vocabulary has two consumers, by the same relative paths:
 `server/src/orchestrator.js` (which classifies a failure) and
 `ui/src/domain/pauseReason.js` (which renders the pause banner). The farm reaches
-it through `reasons.REASON[…]` in `farm/step_agent.py` and `farm/farmd.py`.
+it through `reasons.REASON[…]` in `farm/step_agent.py`, `farm/farmd.py` and
+`farm/pm_agent.py`.
+
+The priority vocabulary has the widest consumer list of the four, which is why it
+was the most duplicated: `server/src/db.js` (the `CHECK` constraint),
+`server/src/store.js`, `server/src/github.js`, `server/src/app.js` and
+`server/src/priorityLabels.js` on the server; `ui/src/components/NewItemModal.jsx`,
+`ui/src/domain/lifecycle.js` and `ui/src/api/mockApi.js` in the UI; and
+`farm/wizard.py` plus `farm/concierge_agent.py` in the farm.
+
+`server/src/priorityLabels.js` is new and is **not** part of `domain/`. It owns
+GitHub's *spelling* of a priority — the `priority: critical` label name, the
+pattern that reads one back, and `priorityFromLabels` — which is an integration
+detail, not domain data. Before HZ-135 the pattern existed twice byte-for-byte
+(`store.js` and `github.js`, under two different names) and the name format lived a
+file away from it, so we could have written a label the next sync could not read
+and silently reverted a human's change on the following webhook.
+
+The field limits have **no UI consumer**, and that is a real gap rather than a
+design choice: `ui/src/components/NewItemModal.jsx` sets no `maxLength`, so a long
+paste reaches the API and comes back 400. Pre-existing, unchanged by HZ-134, and
+recorded here rather than left to be rediscovered.
+`domain-consumer-imports.test.mjs` would fail on a stale `ui/src` entry, so adding
+one later is a deliberate act.
 
 The Python side is a PEP 420 namespace package: no `__init__.py` at either
 level, resolved off the repo root — which is on `sys.path` because `farmd` runs
@@ -186,8 +354,23 @@ would pass CI and fail at deploy time on an older runtime.
 
 **No presentation.** `AGENTS` colours, `PHASE_ACCENT`, `PHASE_ACCENT_BG`,
 `PRIORITY_COLORS` stay in the UI (`ui/src/domain/lifecycle.js`,
-`ui/src/domain/agentTokens.js`). `steps.json` contains no colour, accent or
+`ui/src/domain/agentTokens.js`), and `PRIORITY_LABEL_COLORS`' hex stays in
+`server/src/github.js` because it is persisted to GitHub, which has no idea what a
+CSS variable is. Both of those maps now **key off** `PRIORITY.*` rather than
+re-typing the vocabulary — keyed by named constant, not by array position, so a
+reordered `priorities.json` cannot silently recolour anything. `steps.json` contains no colour, accent or
 theme key at any depth, asserted.
+
+**No display copy either, and the priority vocabulary is where that line is
+easiest to blur.** The WhatsApp wizard's numbered option line — `1) Critical 2)
+High 3) Medium 4) Low` — is *derived* from the order declared here, which makes it
+tempting to build beside the order it numbers. It is still a string shown to a
+human, so it lives in `farm/wizard.py._priority_options`, and the GitHub label
+spelling lives in `server/src/priorityLabels.js` for the same reason.
+`domain-binding-hygiene.test.mjs` enforces the split on **both** bindings: the JS
+half by named export, the Python half by set equality over the names the module
+actually owns, so a new public name has to be argued for rather than appearing
+quietly.
 
 `reasons.json` is held to a **wider** bar than `steps.json` on this, because the
 temptation is different. Sitting a `label` and a `detail` next to the `retryable`
@@ -208,9 +391,12 @@ overlap is exactly `{AGENTS}` and `personas.test.mjs` asserts the shared fields
 still agree.
 
 **`ui/design-system/Lifecycle Tracker.dc.html`** holds a third hand-copy of
-the step labels and is **explicitly excluded** from the
+the step labels — and, at line 352, a hand-copy of the priority colour map — and is
+**explicitly excluded** from both the
 "no step declared outside `domain/`" check (see `EXCLUDED_DIRS` in
-`server/test/domain-one-declaration.test.mjs`). It is a Design Compiler export:
+`server/test/domain-one-declaration.test.mjs`) and the priority equivalent
+(`domain-priority-literals.test.mjs`). The priority detector *does* fire on that
+line; the file is excluded for what it is, not because the detector is wrong. It is a Design Compiler export:
 non-executing, in no build, in no bundle, imported by nothing, and re-emitted
 wholesale by the design tool. Nothing here can own it, and pinning its labels
 would turn a design re-export into a test failure.
@@ -241,10 +427,91 @@ here as a known limit, not hidden.
 | No mistyped `REASON` key | `domain-reason-member-access.test.mjs` | `REASON.TYPO` in JS, which reads as `undefined` instead of throwing the way Python's dict does |
 | Cross-language reason parity | `domain-reasons-parity.test.mjs` + `farm/tests/test_reasons.py` | The two reason bindings drifting. Compares the **paired** `(id, retryable)` table, not two independent lists |
 | Every reason has banner copy | `ui/src/domain/pauseReason.test.js`, `ui/src/components/Tracker.test.jsx` | A reason declared in `reasons.json` that renders a blank pause banner — driven through the real `pauseReason()`, so it also proves the event-text regex extracts the id |
+| Field schema + load-time rules | `domain-fields-schema.test.mjs` | An invalid field table: a missing column, a zero `maxLength`, a duplicate name or column, a `minLength` at-or-above its own `maxLength`, nothing settable at intake, nothing agent-revisable — including real subprocess imports, in **both** languages, over a tampered `fields.json` |
+| Cross-language field fixtures | `fixtures/fields-cases.json` + `domain-fields-cases.test.mjs` + `farm/tests/test_fields_fixtures.py` | The two field validators disagreeing about what a rule *means*, or their messages drifting. Same set-equality / non-empty / pinned-manifest guards as the lifecycle fixture |
+| Cross-language field parity | `domain-fields-parity.test.mjs` | The two field bindings drifting. Compares the authored table AND the derived `patch_limits` **including key order**, which `validate()` and `FARM_PATCH_FIELDS` both depend on |
+| API limits are derived | `api-field-limits-derived.test.mjs` | A stale `maxLength` literal in `POST /api/items`. Posts each field at exactly its limit and one over, **through the real route** — plus a structural diff of the fragment against `fields.json` |
+| PM limits are derived | `farm/tests/test_field_limits.py` | `PATCH_FIELDS` drifting from the declaration (order included), a superseded cap reappearing in `pm_agent.py`, a `pm.md` that lost its `{{FIELD_LIMITS}}` placeholder, and the marker-overshoot behaviour above |
+| One field declaration | `domain-one-field-declaration.test.mjs` | A second copy of a field limit anywhere in the tree — structurally (three or more field/limit pairs in one file) and per-pair (set-equality allowlist) |
+| Every column is real | `domain-fields-consumers.test.mjs` | A typo'd `column` in `fields.json`, which `completeFarmRun`'s `UPDATE work_item SET <column> = ?` would otherwise turn into a runtime SQL error mid-run. Checked against a real database via `PRAGMA table_info` |
+| A PM revision can fill the field | `pm-revision-full-length.test.mjs`, `farm/tests/test_pm_agent.py` | A cap reappearing anywhere on the write path. Drives a 1,999-char `guardrails` revision through the real `POST /api/farm/steps/:runId/complete` and asserts the stored value byte-for-byte |
+| Priority schema + load-time rules | `domain-priorities-schema.test.mjs` | An invalid vocabulary: a value that could not be safely interpolated into SQL, a case-only duplicate, a default outside the vocabulary, an empty list — including real subprocess imports, in **both** languages, over a tampered `priorities.json`. Also asserts the schema/load-time split is real by showing the schema passes what only the binding rejects |
+| Cross-language priority fixtures | `fixtures/priorities-cases.json` + `domain-priorities-cases.test.mjs` + `farm/tests/test_priorities_fixtures.py` | The two priority validators disagreeing about what a rule *means*. Same set-equality / non-empty / pinned-manifest guards as the other two fixtures |
+| Cross-language priority parity | `domain-priorities-parity.test.mjs` | The two priority bindings drifting. Compares the vocabulary **as an ordered sequence**, the default, and every `isPriority`/`is_priority` answer — plus that the Python side is a `tuple`, so the farm cannot widen what the server enforces |
+| Message parity across languages | `farm/tests/test_priorities.py` | The two validators' error text drifting outside the fragment the fixture compares — e.g. Python's `json.dumps` spacing. Runs every rule through both implementations and diffs the FULL messages |
+| Hand-written priority pins | `domain-priority-pins.test.mjs` | Any change to the four values, their ORDER, the default, the emitted SQL `CHECK` clause, the GitHub label name format, every label hex, every theme token, or the prose list in `concierge.md`. **Permanent — never delete this file** |
+| No priority literal LIST anywhere | `domain-priority-literals.test.mjs` | A second declaration of the vocabulary, whole-tree, in any of the three shapes one takes: a quoted collection, an unquoted key set, or a regex alternation. Also names all ten repointed sites individually, so a gutted consumer fails |
+| GitHub label behaviour | `priority-labels.test.mjs` | Metric 4, which had **zero** coverage before HZ-135. The `priorityFromLabels` matrix through the real `upsertFromGithub`, and `setPriorityLabel`'s exact POST bodies, stale-label `DELETE` and colour fallback against a stubbed `fetch` |
+| The API enums are derived | `api-priority-enum-derived.test.mjs` | A stale priority literal in `POST /api/items`. Posts every declared value through the real route and reads the stored value back, plus a structural diff of the exported fragment against `priorities.json` |
+| The UI picker is derived | `ui/src/components/NewItemModal.test.jsx` | Metric 2's UI leg, which had no test at any level. Renders the real modal and asserts the options equal the vocabulary **in order**, one per value, with the declared default selected |
+| The picker is derived in the SHIPPED BUNDLE | `e2e/tests/02-create-item.spec.js` | The same claim one level down, in a real browser against `vite build`'s output rather than Vite's dev resolution. This journey already opened the intake modal but never touched the priority control, so a picker rendering **zero options** — the exact failure a dropped `priorities.json` produces, since the UI inlines it at build time — left all 31 e2e tests green. Now it selects a NON-default value, asserts the rendered options and their order, and reads the value back off the board card: picker → `POST /api/items` → the `CHECK` constraint the same list builds → render |
+| The offline mock answers like the route | `ui/src/api/mockApi.test.js` | `createItem`'s `priority = DEFAULT_PRIORITY` drifting from `POST /api/items`' default. mock mode is the UI's stand-in backend with no server, and that default was the one priority-carrying branch of this change with no assertion at all — a drift only offline users would have seen |
+| The wizard's text has not moved | `farm/tests/test_wizard.py` | A renumbered or reworded WhatsApp prompt. Both emitted strings pinned byte-for-byte, because for a bot the emitted string IS the behaviour |
 
 One honest limit remains: `domain-no-drift-scaffolding.test.mjs`'s
 `server.fs.allow` assertion is a **config-shape proxy**, not a dev-server boot
 test; it is labelled as such in the test.
+
+### How the priority no-literal scan differs, and why
+
+`domain-priority-literals.test.mjs` is metric 3's mechanism, and it is shaped
+differently from the reason scan below — deliberately, because the vocabularies are
+different in kind.
+
+**There is no single-literal tier.** Every priority value is an ordinary English
+word. `High`, `Medium` and `Low` appear as *one-value* fixture data in fourteen
+files that are all perfectly legitimate — a board test's `priority: 'Medium'`, an
+e2e fixture row, a demo seed. A scan for those would be a fourteen-entry allowlist
+protecting nothing. Metric 3's word is **list**, so the scan detects
+**collections** only: three or more distinct values inside a three-line window.
+
+**Three shapes count as a collection**, because the vocabulary was written in all
+three before this change:
+
+- a **quoted** collection — `['Critical', 'High', …]`, `("Critical", …)`;
+- an **unquoted key set** — `{ Critical: '9C333E', High: 'DFA200', … }`, which is
+  exactly what both colour maps were. Without this tier the scan would have passed
+  on the two files the change works hardest on, and the named-constant keying
+  would be unverified ceremony;
+- an **alternation** — the folded form as a token of a pipe-separated *run*, which
+  is how the label pattern spelled the list in two files at once, and how prose
+  shorthands it.
+
+  That tier reads a **run**, not a value sitting between two delimiters. The
+  stricter reading required a delimiter before *and* after, which scored the first
+  and last branch zero — so a bare four-value alternation with no surrounding
+  parens yielded two hits and fell under the threshold. `README.md` described the
+  GitHub label vocabulary in exactly that shape and this scan walked past it, which
+  is the failure the run form fixes. It is also *narrower* where it counts: a
+  markdown table row (pipes separated by spaces) and parenthesised prose such as
+  `(high performance)` both score zero, so a docs table naming the vocabulary never
+  needs allowlisting.
+
+**One exclusion makes it usable**, and it is structural rather than an allowlist:
+a value in **object-property value position** (preceded by `:`) does not count.
+That is what clears `server/src/db.js`'s demo seeds, `ui/src/api/mockApi.js`'s,
+`e2e/global-setup.js`'s and the Design Compiler export's — four production and
+fixture files, none of which needed naming. An *array element* is preceded by `[`
+or `,`, so a real list still fires, including inside `"priorities": [...]`.
+
+**The accepted limit, stated rather than hidden:** a map keyed *by number* whose
+values are priorities — `{"1": "Critical", "2": "High", …}`, which is what
+`wizard.py`'s `_PRIORITY_NUMS` used to be — escapes the value-position exclusion
+and matches neither other tier. That specific shape is covered instead by
+`test_the_numbering_helpers_follow_their_argument_not_the_live_document` in
+`farm/tests/test_wizard.py`, which drives `wizard._priority_by_number` with a
+fabricated vocabulary.
+
+Two files outside `domain/` may hold a collection, by set equality so a stale entry
+also fails: `domain-priority-pins.test.mjs` (typing the values out *is* what a pin
+is) and `farm/tests/fake_claude` (a stand-in for the `claude` CLI, exec'd by bare
+name from an arbitrary workspace clone with no package context, so it cannot reach
+`domain.py`).
+
+`farm/roles/concierge.md` is correctly **not** a hit: only one value is quoted
+there, and the other three are bare prose. It is pinned separately, anchored on
+content rather than a line number, because it is an LLM prompt and rewriting it
+would be the behaviour change guardrail 1 forbids.
 
 ### How the no-literal scan actually works
 
@@ -279,7 +546,8 @@ three or more ids rather than by counting mentions per file.
 `npm test` runs `ui/scripts/verify-base-build.mjs`, which executes the literal
 `HORIZON_BASE=/horizon/ npm --prefix ui run build`, asserts the emitted
 `ui/dist/index.html` references `/horizon/assets/` **and that the emitted JS
-bundle contains a step label and a reason id**, then deletes `ui/dist` so no `/horizon/`-based
+bundle contains a step label, a reason id and the whole ordered priority
+sequence**, then deletes `ui/dist` so no `/horizon/`-based
 bundle is left for a local `vite preview`. **Measured: ~2.7s** (2.1s of that is
 Vite). The bundle-contents assertion is the one that matters here: a build can
 succeed while emitting `steps.json` as a separate asset that then 404s under the

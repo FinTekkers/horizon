@@ -4,6 +4,7 @@ import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { reconcileGoogleUsers } from './loginAllowlist.js'
 import { gateStepIndexes } from '../../domain/js/lifecycle.js'
+import { PRIORITIES } from '../../domain/js/priorities.js'
 
 const DB_PATH =
   process.env.HORIZON_DB || join(dirname(fileURLToPath(import.meta.url)), '..', 'data', 'horizon.db')
@@ -13,11 +14,28 @@ export const db = new Database(DB_PATH)
 db.pragma('journal_mode = WAL')
 db.pragma('foreign_keys = ON')
 
+// The work_item priority constraint, built from the one declaration rather than
+// hand-typed (HZ-135). The emitted clause is byte-identical to the literal it
+// replaced — server/test/domain-priority-pins.test.mjs asserts that, because
+// this string is the one thing in the change that a reader cannot diff by eye.
+// Module-local: that pin reads the constraint back out of the live database's
+// sqlite_master rather than importing this binding, so nothing here is exported
+// for a test's benefit and the pin covers what SQLite actually stored.
+//
+// It sits inside CREATE TABLE IF NOT EXISTS below, so on an existing database
+// the statement is a no-op and the stored constraint is untouched: no migration,
+// no backfill, and every stored value still passes because the vocabulary did not
+// move. Interpolating into SQL is safe here because the values are repo-owned AND
+// because domain/js/priorities.js rejects anything outside /^[A-Z][A-Za-z]*$/ at
+// load time — that rule is what makes this provably safe rather than
+// safe-by-convention.
+const PRIORITY_CHECK = `CHECK (priority IN (${PRIORITIES.map((value) => `'${value}'`).join(',')}))`
+
 db.exec(`
   CREATE TABLE IF NOT EXISTS work_item (
     id         TEXT PRIMARY KEY,
     title      TEXT NOT NULL,
-    priority   TEXT NOT NULL CHECK (priority IN ('Critical','High','Medium','Low')),
+    priority   TEXT NOT NULL ${PRIORITY_CHECK},
     desc       TEXT NOT NULL DEFAULT '',
     metric     TEXT NOT NULL DEFAULT '',
     guardrails TEXT NOT NULL DEFAULT '',
@@ -177,6 +195,77 @@ db.exec(`
   );
   CREATE INDEX IF NOT EXISTS idx_gate_notice_due ON gate_notice(status, next_attempt_at);
   CREATE INDEX IF NOT EXISTS idx_gate_notice_item ON gate_notice(item_id, id DESC);
+
+  -- Gate-approval poll outbox (HZ-142). One row per (arrival at a gate,
+  -- approver) — the same grain as gate_notice, and sent alongside it.
+  --
+  -- ITS OWN OUTBOX, not a second kind of gate_notice row. Two reasons, and the
+  -- second is the load-bearing one:
+  --
+  --   * a poll that the bridge refuses must not take the text notice down with
+  --     it. Separate rows means separate attempts counters, so the human still
+  --     gets the message and the deep link, and the concierge's free-text
+  --     approval still works;
+  --   * "one gate_notice row per arrival per approver" is asserted literally in
+  --     four existing test files. Adding a second row per arrival there would
+  --     have broken all of them for no gain.
+  --
+  -- step_index IS the cursor at send time: gateNotifier.js only ever enqueues
+  -- while the cursor sits on that gate. So there is no separate cursor column.
+  --
+  -- decided_at scopes decidedness TO THIS ARRIVAL. A gate_decision lookup
+  -- cannot: store.requestChanges() writes a 'rejected' gate_decision row that
+  -- is never deleted, so an item that is sent back, reworked and returns to the
+  -- same gate would have every later vote refused forever.
+  --
+  -- superseded_at closes the other end of the same window: arrival #2's poll
+  -- being live must not leave arrival #1's poll able to decide it.
+  --
+  -- ON DELETE CASCADE for the same reason gate_notice has it: purgeDemoItems()
+  -- in store.js hand-enumerates the children it clears, and this must not rely
+  -- on being remembered there.
+  CREATE TABLE IF NOT EXISTS gate_poll (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    item_id         TEXT NOT NULL REFERENCES work_item(id) ON DELETE CASCADE,
+    step_index      INTEGER NOT NULL,
+    recipient       TEXT NOT NULL,
+    question        TEXT NOT NULL,
+    poll_msg_id     TEXT,
+    status          TEXT NOT NULL DEFAULT 'pending'
+                    CHECK (status IN ('pending','sending','sent','failed')),
+    attempts        INTEGER NOT NULL DEFAULT 0,
+    last_error      TEXT,
+    created_at      TEXT NOT NULL DEFAULT (datetime('now')),
+    next_attempt_at TEXT NOT NULL DEFAULT (datetime('now')),
+    sent_at         TEXT,
+    decided_at      TEXT,
+    superseded_at   TEXT
+  );
+  -- A PARTIAL unique index, not a UNIQUE column: poll_msg_id is NULL between
+  -- enqueue and a successful send, and many NULLs have to coexist. Unique once
+  -- set, because the id is what a vote is looked up by.
+  CREATE UNIQUE INDEX IF NOT EXISTS idx_gate_poll_msg ON gate_poll(poll_msg_id) WHERE poll_msg_id IS NOT NULL;
+  CREATE INDEX IF NOT EXISTS idx_gate_poll_due ON gate_poll(status, next_attempt_at);
+  CREATE INDEX IF NOT EXISTS idx_gate_poll_item ON gate_poll(item_id, id DESC);
+
+  -- Every vote the server has ever seen, applied or not (HZ-142).
+  --
+  -- vote_id is the poll-update message id, and the PRIMARY KEY on it IS the
+  -- idempotence mechanism: processing the same vote twice collides and inserts
+  -- nothing, so there is no separate bookkeeping to keep in step. The bridge
+  -- retries, so a double delivery is the normal case rather than an edge one.
+  --
+  -- poll_id is nullable so a vote naming a poll this server has never heard of
+  -- is still recorded rather than silently dropped.
+  CREATE TABLE IF NOT EXISTS gate_poll_vote (
+    vote_id    TEXT PRIMARY KEY,
+    poll_id    INTEGER REFERENCES gate_poll(id) ON DELETE CASCADE,
+    voter_jid  TEXT NOT NULL,
+    choice     TEXT NOT NULL,
+    outcome    TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+  CREATE INDEX IF NOT EXISTS idx_gate_poll_vote_poll ON gate_poll_vote(poll_id);
 `)
 
 // Additive migrations for databases created before these columns existed.

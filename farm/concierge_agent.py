@@ -37,10 +37,12 @@ from pathlib import Path
 
 import httpx
 
+from domain.py import priorities
+
 from . import config
 from . import credentials
 from . import wizard
-from .agent_runner import AgentError, extract_json, run_agent
+from .agent_runner import AgentError, parse_agent_reply, run_agent
 from .config import CONCIERGE_MODEL, FARM_PORT, HORIZON_URL, STATE_DIR, ensure_dirs, slugify
 from .whatsapp.transport import Inbound, Transport, TransportError
 
@@ -49,7 +51,10 @@ from .whatsapp.transport import Inbound, Transport, TransportError
 FARMD = f"http://127.0.0.1:{FARM_PORT}"
 
 ROLE_PROMPT = (Path(__file__).parent / "roles" / "concierge.md").read_text()
-PRIORITIES = ("Critical", "High", "Medium", "Low")
+# HZ-135: one declaration, in domain/priorities.json. This tuple used to be a
+# hand-typed copy that had to agree with the API enum it POSTs into — and with
+# wizard.py's, one file over.
+PRIORITIES = priorities.PRIORITIES
 ALLOWED_ACTIONS = ("set_priority", "feedback")
 PROCESSED_KEEP = 500  # msg_id dedupe window persisted across restarts
 MAX_ACTIONS = 3
@@ -326,18 +331,26 @@ def process_message(
             prompt, session_id=state.session_id(), append_system=ROLE_PROMPT, model=CONCIERGE_MODEL
         )
         state.save_session(reply_raw.get("session_id"))
-        try:
-            reply, actions, notes, gate_options = validate_reply(extract_json(reply_raw["result"]))
-        except (AgentError, json.JSONDecodeError) as exc:
-            log(f"invalid concierge reply ({exc}); retrying once")
+
+        # The session save stays inside the closure, where it was before the
+        # parse path moved into agent_runner — session continuity across the
+        # retry is unchanged. validate_reply is handed to the helper rather
+        # than called after it so a reply that parses but is missing 'reply'
+        # still takes the lossless retry, as it always has.
+        def retry_once(prompt: str) -> str:
+            log("invalid concierge reply; retrying once")
             retry = run_agent(
-                f"Your previous reply was invalid: {exc}. Respond again with ONLY the JSON object, no other text.",
+                prompt,
                 session_id=state.session_id(),
                 append_system=ROLE_PROMPT,
                 model=CONCIERGE_MODEL,
             )
             state.save_session(retry.get("session_id"))
-            reply, actions, notes, gate_options = validate_reply(extract_json(retry["result"]))
+            return retry["result"]
+
+        (reply, actions, notes, gate_options), parse_notes = parse_agent_reply(
+            reply_raw["result"], retry_once, validate=validate_reply
+        )
     except Exception as exc:
         log(f"message {msg.msg_id}: agent failed — {exc}")
         state.claim(msg)
@@ -346,7 +359,10 @@ def process_message(
 
     # Claim before executing: a crash from here on can not replay actions.
     state.claim(msg)
-    notes = execute_actions(actions, base_url) + notes
+    # The concierge is not a step: it has no run output line and no artifact,
+    # so the WhatsApp reply is where its parser notes surface. Appended last,
+    # after the action results, and a no-op when empty.
+    notes = execute_actions(actions, base_url) + notes + parse_notes
     # Remembers this sender's numbered choices (or clears stale ones) so a
     # later bare-number reply from them resolves deterministically.
     wizard.offer_gate_choices(msg.chat_jid, msg.sender_jid, gate_options, state.choice_store)

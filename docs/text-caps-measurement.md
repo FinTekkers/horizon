@@ -4,6 +4,14 @@ Generated 2026-09-29 against a live `horizon.db`, for HZ-114's success metric: "
 
 **This is a snapshot, not an ongoing metric.** It reflects the rows in the database at generation time; re-run `python -m farm.tools.measure_text_caps` and recommit this file for a fresh answer. No telemetry runs continuously for any of these caps except `orchestrator.js`'s existing `logArtifactBudgetUsage()` line (HZ-104), which is unrelated to the caps below.
 
+> **Stale as of 2026-09-30 — HZ-134 raised two of these caps, and this file was not regenerated.**
+>
+> The `work_item.metric` and `work_item.guardrails` rows below describe a 400-char PM-revision cap that no longer exists. HZ-134 declared each work-item field's limit once, in `domain/fields.json`, and raised the PM caps to the API's own numbers: `desc` 500 → 4,000, `metric` 400 → 2,000, `guardrails` 400 → 2,000. The tool itself reads the live numbers from that declaration now, so **re-running it produces correct rows**; this committed output is simply older than the change.
+>
+> It was deliberately not regenerated: that needs the live `horizon.db` on the production host, which CI does not have, and inventing numbers would be worse than a dated caveat. The two verdicts below ("fires, 37/65" and "fires, 44/65") remain true statements about the 400-char cap that was in force when they were measured.
+>
+> One consequence worth stating: a value sitting exactly at the cap no longer implies a PM revision hit it, because the ingest limit and the PM limit are now the same number — a human could have typed exactly that much. A PM revision that ran over is still identifiable by the `chars omitted` marker HZ-114 appends.
+
 | Cap | Site | Verdict |
 | --- | --- | --- |
 | work_item.desc (pre-HZ-114 ingest cap, now removed) (cap 500) | server/src/store.js parseIssueBody (removed by this item) | fires (51/65 rows at-or-over 500 chars) |

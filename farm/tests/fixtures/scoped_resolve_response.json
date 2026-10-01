@@ -1,0 +1,22 @@
+{
+  "ok": true,
+  "resolved": true,
+  "mode": "scoped",
+  "files": "shared.txt | 1 +\n 1 file changed, 1 insertion(+)",
+  "summary": "resolved 1 conflicted hunk(s) in 1 file(s) while merging origin/main (deterministic); 1 repo check(s) passed",
+  "resolution": {
+    "strategy": "deterministic",
+    "hunks": 1,
+    "paths": [
+      "shared.txt"
+    ],
+    "hunk_labels": [
+      "shared.txt hunk 1"
+    ]
+  },
+  "review": {
+    "verdict": "pass",
+    "reviewed": false,
+    "summary": "no agent review — the resolution used only parent lines, kept every side's own"
+  }
+}

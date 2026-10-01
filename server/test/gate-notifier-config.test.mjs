@@ -208,10 +208,17 @@ test('the notification path reads no credential and no other service URL (guardr
       assert.ok(!src.includes(forbidden), `${file} reads ${forbidden} — it has no business on this path`)
     }
   }
-  // The only outbound URL anywhere on the path is the bridge's.
+  // The only outbound URL anywhere on the path is the bridge's. HZ-142 added
+  // a second call — sendPoll, to the same bridge — so the assertion is on
+  // every call rather than on there being one, which is the property that
+  // actually mattered.
   const urls = [...NOTIFIER_SOURCE['server/src/waSend.js'].matchAll(/fetchImpl\(([^)]*)/g)].map((m) => m[1])
-  assert.equal(urls.length, 1, 'waSend.js makes more than one outbound call')
-  assert.match(urls[0], /WA_BRIDGE_URL/)
+  assert.equal(urls.length, 2, 'waSend.js makes an outbound call this test does not know about')
+  for (const url of urls) assert.match(url, /WA_BRIDGE_URL/)
+  assert.deepEqual(
+    urls.map((u) => u.match(/\/api\/[a-z-]+/)?.[0]).sort(),
+    ['/api/send', '/api/send-poll'],
+  )
   // gateNotifier.js makes no network call at all — it delegates to waSend.js.
   assert.ok(!/\bfetch\s*\(/.test(NOTIFIER_SOURCE['server/src/gateNotifier.js']))
 })

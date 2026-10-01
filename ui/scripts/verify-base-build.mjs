@@ -30,6 +30,7 @@ import path from 'node:path'
 
 import { STEPS } from '../../domain/js/lifecycle.js'
 import { REASON_IDS } from '../../domain/js/reasons.js'
+import { PRIORITIES } from '../../domain/js/priorities.js'
 
 const REPO_ROOT = path.resolve(import.meta.dirname, '../..')
 const DIST = path.join(REPO_ROOT, 'ui/dist')
@@ -76,12 +77,39 @@ if (jsBundles.length === 0) fail('the build emitted no JS bundle')
 // the data arrived. Without it, a tree-shake that drops reasons.json leaves
 // every pause banner blank in production with npm test still green.
 const bundled = jsBundles.map((f) => readFileSync(path.join(assetsDir, f), 'utf8')).join('\n')
+
+// HZ-135 added a THIRD JSON under domain/, reached from
+// ui/src/components/NewItemModal.jsx and ui/src/domain/lifecycle.js. It needs a
+// probe too — but a single value cannot be the probe here, and that distinction
+// is the whole point of this block.
+//
+// PRIORITIES[0] is "Critical", which ALREADY ships in the bundle via
+// ui/src/api/mockApi.js's demo seed rows. Probing for it would pass even if
+// domain/priorities.json were deleted outright — a vacuous check that reads like
+// a real one. So the probe is the whole ORDERED SEQUENCE, joined: only the
+// inlined array can produce those values contiguously and in that order, because
+// the seeds mention them one at a time, lines apart, interleaved with titles and
+// metrics.
+//
+// Quotes and whitespace are stripped first so the assertion survives whatever
+// Rollup does with quoting and minification. The stray-JSON check further down is
+// the other half of the proof: together they say the data is inlined AND not also
+// emitted as a fetchable asset.
+const squashed = bundled.replace(/["'\s]/g, '')
+
 const PROBES = [
   { value: STEPS[0].label, what: 'the step label', source: 'domain/steps.json', effect: 'the board would render empty' },
   { value: REASON_IDS[0], what: 'the reason id', source: 'domain/reasons.json', effect: 'every pause banner would render blank' },
+  {
+    value: PRIORITIES.join(','),
+    in: squashed,
+    what: 'the ordered priority vocabulary',
+    source: 'domain/priorities.json',
+    effect: 'the intake picker would render no options at all',
+  },
 ]
 for (const probe of PROBES) {
-  if (!bundled.includes(probe.value)) {
+  if (!(probe.in ?? bundled).includes(probe.value)) {
     fail(
       `no emitted JS bundle contains ${probe.what} "${probe.value}" — ${probe.source} was not inlined. ` +
         `Rollup emitted it as a separate asset, which 404s under the production base: ${probe.effect}.`,
@@ -89,16 +117,16 @@ for (const probe of PROBES) {
   }
 }
 
-// A stray steps.json or reasons.json beside the bundle means it was emitted as
-// a fetchable asset. Harmless only if it is ALSO inlined, which is not a state
-// to ship.
+// A stray steps.json, reasons.json or priorities.json beside the bundle means it
+// was emitted as a fetchable asset. Harmless only if it is ALSO inlined, which is
+// not a state to ship.
 const strayJson = readdirSync(assetsDir).filter((f) => f.endsWith('.json'))
 if (strayJson.length > 0) {
   fail(`the build emitted JSON asset(s) ${strayJson.join(', ')} — the domain data must be inlined, not fetched`)
 }
 
 console.log(
-  `verify-base-build: ui/dist/index.html references ${EXPECTED}, and the bundle inlines the step table and the reason vocabulary (${seconds.toFixed(1)}s)`,
+  `verify-base-build: ui/dist/index.html references ${EXPECTED}, and the bundle inlines the step table, the reason vocabulary and the priority vocabulary (${seconds.toFixed(1)}s)`,
 )
 
 // A /horizon/-based bundle must not linger: `npm --prefix ui run preview`

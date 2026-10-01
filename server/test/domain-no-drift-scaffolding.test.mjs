@@ -178,7 +178,17 @@ test('the production-base build verifier runs the literal command criterion 10 n
   // ui/src/domain/pauseReason.js — same failure mode, different blank screen.
   assert.match(verifier, /STEPS\[0\]\.label/)
   assert.match(verifier, /REASON_IDS\[0\]/)
-  assert.match(verifier, /bundled\.includes\(probe\.value\)/)
+  // HZ-135 added a third probe, for domain/priorities.json. It could not be
+  // `PRIORITIES[0]`: that value already ships in the bundle via
+  // ui/src/api/mockApi.js's demo seeds, so a single-value probe would pass even
+  // with priorities.json deleted. It greps for the whole ORDERED sequence against
+  // a quote- and whitespace-stripped bundle instead, which only the inlined array
+  // can produce — so this guard pins the joined form, not an index.
+  assert.match(verifier, /PRIORITIES\.join\(','\)/)
+  assert.match(verifier, /bundled\.replace\(/, 'the priority probe no longer normalises the bundle')
+  // Every probe is still matched against the real bundle text: `probe.in` defaults
+  // to it, so a probe cannot quietly check something that is not the build output.
+  assert.match(verifier, /\(probe\.in \?\? bundled\)\.includes\(probe\.value\)/)
 })
 
 // ---- the dev server can still serve a file from outside its root ----

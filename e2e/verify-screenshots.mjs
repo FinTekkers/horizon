@@ -23,6 +23,7 @@ const EXPECTED_JOURNEYS = [
   'deep-links',
   'approvals-drawer',
   'merge-conflict',
+  'merge-conflict-resolved',
   'full-lifecycle',
   'abandon',
   'gate-key',
