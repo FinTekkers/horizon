@@ -7,6 +7,9 @@ const iconProps = (size, strokeWidth) => ({
   strokeWidth,
   strokeLinecap: 'round',
   strokeLinejoin: 'round',
+  // Decorative: every icon sits next to a text label (HZ-224).
+  'aria-hidden': true,
+  focusable: 'false',
 })
 
 export function GridIcon({ size = 20 }) {
@@ -16,6 +19,31 @@ export function GridIcon({ size = 20 }) {
       <rect x="14" y="3" width="7" height="7" rx="1.5" />
       <rect x="3" y="14" width="7" height="7" rx="1.5" />
       <rect x="14" y="14" width="7" height="7" rx="1.5" />
+    </svg>
+  )
+}
+
+// HZ-224: the bottom nav's Board and Tracker tabs. currentColor only, unlike
+// GridIcon, so they follow the tab's themed text colour.
+export function ColumnsIcon({ size = 22 }) {
+  return (
+    <svg {...iconProps(size, 2)}>
+      <rect x="3" y="4" width="5" height="16" rx="1.5" />
+      <rect x="10" y="4" width="5" height="11" rx="1.5" />
+      <rect x="17" y="4" width="4" height="7" rx="1.5" />
+    </svg>
+  )
+}
+
+export function ListIcon({ size = 22 }) {
+  return (
+    <svg {...iconProps(size, 2)}>
+      <line x1="9" y1="6" x2="20" y2="6" />
+      <line x1="9" y1="12" x2="20" y2="12" />
+      <line x1="9" y1="18" x2="20" y2="18" />
+      <circle cx="4.5" cy="6" r="1.2" />
+      <circle cx="4.5" cy="12" r="1.2" />
+      <circle cx="4.5" cy="18" r="1.2" />
     </svg>
   )
 }

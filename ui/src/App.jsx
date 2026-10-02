@@ -2,6 +2,8 @@ import { useEffect, useRef, useState, useSyncExternalStore } from 'react'
 import * as api from './api'
 import { STEPS, awaitingGate, reworkTargets, defaultReworkTarget } from '../../domain/js/lifecycle.js'
 import TopBar from './components/TopBar'
+import BottomNav from './components/BottomNav'
+import { MOBILE_QUERY, useMediaQuery } from './useMediaQuery'
 import Board from './components/Board'
 import Tracker from './components/Tracker'
 import ApprovalsDrawer from './components/ApprovalsDrawer'
@@ -147,6 +149,7 @@ function AuthenticatedApp({ user, onLogout }) {
   const selected = items.find((it) => it.id === selectedId) || visibleItems[0]
   // Every enabled project's pending gates, whatever the filter shows.
   const pendingCount = items.filter(awaitingGate).length
+  const isMobile = useMediaQuery(MOBILE_QUERY)
   const isResolving = (item) => !!item && (item.conflictRun?.state === 'running' || resolvePending.has(item.id))
   // HZ-216: HZ-188's isResolving, generalised to every long gate action —
   // whatever started it (this tab, another tab, WhatsApp), the server's
@@ -293,6 +296,16 @@ function AuthenticatedApp({ user, onLogout }) {
           setApprovalsOpen(false)
         }}
       />
+
+      {isMobile && (
+        <BottomNav
+          view={view}
+          pendingCount={pendingCount}
+          onBoard={toBoard}
+          onTracker={toTracker}
+          onOpenApprovals={() => setApprovalsOpen(true)}
+        />
+      )}
 
       {farm?.status === 'restarting' && (
         <div className="farm-banner">

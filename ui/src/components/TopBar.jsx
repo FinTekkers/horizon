@@ -51,11 +51,14 @@ function ProjectFilter({ projects, value, onChange }) {
         aria-label={`Project filter: ${current ? current.name : 'All projects'}`}
         onClick={() => setOpen((o) => !o)}
       >
-        <span className="projswitch__dot" />
+        <span className="projswitch__dot" aria-hidden="true" />
+        {/* Visually hidden on a phone (HZ-224); the aria-label stays the name. */}
         <span className="projswitch__label" title={current ? current.name : undefined}>
           {current ? current.name : 'All projects'}
         </span>
-        <span className="projswitch__caret">▾</span>
+        <span className="projswitch__caret" aria-hidden="true">
+          ▾
+        </span>
       </button>
       {open && (
         <>
