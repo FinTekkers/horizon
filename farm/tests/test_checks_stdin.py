@@ -32,3 +32,17 @@ def test_a_check_reads_end_of_file_on_stdin_and_never_sees_a_tty(tmp_path, monke
         os.close(slave)
         os.close(master)
     assert result.returncode == 0, f"child saw a tty or non-empty stdin (exit {result.returncode})"
+
+
+def test_a_check_runs_with_ci_set_so_older_runners_skip_watch_mode(tmp_path, monkeypatch):
+    # vitest 0.34 (ui-service) picks watch mode whenever CI is unset.
+    monkeypatch.delenv("CI", raising=False)
+    env = checks._check_env()
+    probe = "import os, sys; sys.exit(0 if os.environ.get('CI') == '1' else 5)"
+    result = checks._run_bounded([sys.executable, "-c", probe], Path(tmp_path), 30, env)
+    assert result.returncode == 0, "check child did not see CI=1"
+
+
+def test_an_explicit_ci_value_is_kept(monkeypatch):
+    monkeypatch.setenv("CI", "true")
+    assert checks._check_env()["CI"] == "true"

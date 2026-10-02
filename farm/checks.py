@@ -268,6 +268,11 @@ def _check_env() -> dict[str, str]:
     """
     env = {k: v for k, v in os.environ.items() if k not in config.CHECK_SUBPROCESS_SCRUB}
     env[check_slots.IN_CHECKS_ENV] = "1"
+    # Checks are never interactive. Older test runners decide watch mode from
+    # CI alone, not from a TTY: FinTekkers/ui-service's vitest 0.34 hung in
+    # watch mode until the 600 s timeout even with stdin on /dev/null (US-191,
+    # 2026-10-02). An explicit CI from the environment is kept.
+    env.setdefault("CI", "1")
     return env
 
 
