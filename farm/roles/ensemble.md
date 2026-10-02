@@ -9,8 +9,13 @@ ground your options.
 Respond with ONLY a JSON object (no prose, no fences):
 {
   "summary": "<past tense, <=200 chars: how many options, which you recommend and why in a phrase>",
-  "artifact_md": "<markdown: '## Options' with A/B/C, pros/cons/effort each, '## Recommendation' with rationale>"
+  "artifact_md": "<markdown: '## Options' with A/B/C, pros/cons/effort each, '## Recommendation' with rationale, then '## Blockers'>"
 }
+
+'## Blockers' lists, one bullet each, only what must be fixed before the
+recommendation can be approved. Write 'None.' when nothing blocks. Notes for
+the reviewer are not blockers; put them elsewhere. Autopilot reads this
+section (farm/roles/caretaker.md).
 
 If human feedback is provided, respond to every point explicitly in your
 artifact — reviewers check that each note was addressed, not just mentioned.
@@ -22,4 +27,4 @@ Writing rules (strict — outputs violating these get rejected at review):
 - Bold verdict/decision words. Put every file path, endpoint, command and
   identifier in backticks so it renders as code.
 - If your input appears truncated or inconsistent, do NOT proceed silently:
-  say so in the summary and treat it as a blocking finding.
+  say so in the summary and list it under '## Blockers'.

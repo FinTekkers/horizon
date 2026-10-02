@@ -318,6 +318,10 @@ button { font-family: var(--font-sans); }
 .project-block__head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 8px; }
 .project-block__head .project-block__name { margin-bottom: 0; min-width: 0; overflow-wrap: anywhere; }
 .project-enabled { display: inline-flex; align-items: center; gap: 8px; margin-left: auto; font: 600 12px var(--font-sans); color: var(--muted); }
+.project-autopilot { margin-bottom: 8px; }
+.project-autopilot__row { display: inline-flex; align-items: center; gap: 8px; font: 600 12px var(--font-sans); color: var(--muted); }
+.project-autopilot__row .field__input { width: auto; }
+.project-autopilot__history { margin: 4px 0 0; padding-left: 16px; }
 .project-block__add .field__input { flex: 1; }
 
 .repo-row { display: flex; align-items: center; gap: 9px; padding: 7px 2px; font: 500 13px var(--font-sans); }

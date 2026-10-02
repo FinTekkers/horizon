@@ -167,6 +167,10 @@ export async function setProjectEnabled() {
   throw new Error('Projects are not available in mock mode')
 }
 
+export async function setProjectAutopilot() {
+  throw new Error('Projects are not available in mock mode')
+}
+
 export async function saveToken() {
   throw new Error('GitHub sync is not available in mock mode')
 }

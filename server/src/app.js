@@ -1873,6 +1873,37 @@ export function buildApp({ logger = true, onRoute = null } = {}) {
     },
   )
 
+  // HZ-270: a project's Autopilot mode. Gate-PIN protected exactly like
+  // /enabled, checked before the lookup so a bad PIN never touches state. A
+  // flag write only: no gate, PR or GitHub path runs from here.
+  fastify.post(
+    '/api/projects/:id/autopilot',
+    {
+      schema: {
+        security: HUMAN_GATE_SECURITY,
+        params: {
+          type: 'object',
+          required: ['id'],
+          properties: { id: { type: 'integer', minimum: 1 } },
+        },
+        body: {
+          type: 'object',
+          required: ['mode'],
+          additionalProperties: false,
+          properties: { mode: { type: 'string', enum: store.AUTOPILOT_MODES } },
+        },
+        response: { 200: OK_OBJECT, 401: ERROR_OBJECT, 404: ERROR_OBJECT },
+      },
+    },
+    (request, reply) => {
+      if (!humanAuthorized(request, reply)) return
+      const result = store.setProjectAutopilot(request.params.id, request.body.mode, actorOf(request))
+      if (result.error) return reply.code(404).send({ error: 'Project not found' })
+      broadcast()
+      return { ok: true, projectId: request.params.id, old: result.old, new: result.new, ...(result.unchanged ? { unchanged: true } : {}) }
+    },
+  )
+
   fastify.post(
     '/api/projects/:id/repos/disconnect',
     {

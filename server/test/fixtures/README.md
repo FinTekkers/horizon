@@ -28,3 +28,12 @@ subschema the `#meta` dynamic anchor names. That subschema is
 `{"type": ["object", "boolean"]}` — this is the "without schema validation"
 variant of the meta-schema, which deliberately does not recurse into Schema
 Objects, so the substitution removes nothing the document would otherwise check.
+
+## caretaker/
+
+Excerpts of HZ-270's own planning artifacts, copied from its step runs:
+`hz270-options.md` is the "Plan options & trade-offs" artifact and
+`hz270-pm-summary.md` the PM's summary. `caretaker-rules.test.mjs` runs the
+caretaker policy over them. The options artifact is kept because it says
+"Blocking finding" in prose with no `## Blockers` section, which must not send
+it back.
