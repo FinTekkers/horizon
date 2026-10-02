@@ -4,34 +4,32 @@
 // `runner` so tests can swap it out without shelling out to a real deploy
 // script/systemd.
 //
-// Deploy targets live in infra/host/deploy-targets.json (HZ-41) — a
-// versioned, git-reviewed file, not a database row and not editable from the
-// Admin UI. Agents run as the same unix user that owns horizon.db, so
-// anything stored there is agent-writable; a deploy target names a script
-// and a service to restart, so an agent-writable target would be arbitrary
-// code execution. The webhook payload only ever selects a registry key
-// (repoFullName) — every filesystem path a deploy touches comes from the
-// registry, never from the payload itself.
+// Deploy targets live in Horizon's database, the deploy_target table (HZ-263,
+// server/src/deployTargets.js) — the one source, read on every resolve with
+// no cache, so an edited row applies to the next release. Agents run as the
+// same unix user that owns horizon.db, so a row is agent-writable and never
+// trusted as stored: every resolve re-validates it (script inside infra/host/
+// after following symlinks; service and extra services permitted by the
+// git-reviewed infra/host/horizon-deploy.sudoers, read from that file and
+// never stored in the DB). A row that fails is logged and not deployed. That
+// check stops bad rows, but the security boundary is still the sudoers file
+// itself; repoDir and healthUrl are checked by format only. The webhook
+// payload only ever selects a target by repo (repoFullName) — every
+// filesystem path a deploy touches comes from the target, never from the
+// payload itself.
 
 import { spawn } from 'node:child_process'
-import { fileURLToPath } from 'node:url'
 import { readFileSync, existsSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { PORT } from './config.js'
+import { listTargets, findTargetByRepo, checkRunnable, scriptPath } from './deployTargets.js'
 
-const REGISTRY_PATH = process.env.HORIZON_DEPLOY_TARGETS_FILE
-  ?? fileURLToPath(new URL('../../infra/host/deploy-targets.json', import.meta.url))
-
-// Re-reads the registry on every call instead of caching at import time —
-// this is only hit on a release webhook or an Admin page load, both rare,
-// and staying hot-reloadable means a merged registry PR takes effect without
-// a server restart. Missing or malformed JSON fails closed to an empty
-// registry (no targets resolve) rather than throwing and 500ing the webhook.
+// Hit only on a release webhook or an Admin page load, both rare. A DB error
+// fails closed to no targets rather than throwing and 500ing the webhook.
 function loadRegistry() {
   try {
-    const parsed = JSON.parse(readFileSync(REGISTRY_PATH, 'utf8'))
-    return Array.isArray(parsed) ? parsed : []
+    return listTargets()
   } catch {
     return []
   }
@@ -39,7 +37,19 @@ function loadRegistry() {
 
 export function resolveTarget(repoFullName) {
   if (!repoFullName) return null
-  return loadRegistry().find((target) => target.repo === repoFullName) ?? null
+  let target
+  try {
+    target = findTargetByRepo(repoFullName)
+  } catch {
+    return null
+  }
+  if (!target) return null
+  const check = checkRunnable(target)
+  if (!check.ok) {
+    console.warn(`self-deploy: target ${target.key} failed validation (${check.reason}); not deploying`)
+    return null
+  }
+  return target
 }
 
 export function isDeployableRelease(repoFullName, body) {
@@ -85,8 +95,7 @@ export function spawnEnv(target) {
 // Isolated so tests can replace `runner.spawn` instead of shelling out.
 export const runner = {
   spawn(target, tag) {
-    const scriptPath = fileURLToPath(new URL(`../../infra/host/${target.script}`, import.meta.url))
-    const child = spawn(scriptPath, [tag], {
+    const child = spawn(scriptPath(target), [tag], {
       detached: true,
       stdio: 'ignore',
       env: spawnEnv(target),

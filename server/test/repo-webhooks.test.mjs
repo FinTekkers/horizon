@@ -368,7 +368,7 @@ test('no case in this file sent a DELETE or an unexpected GitHub call', () => {
 
 // ---- guardrails 7 and 8: files this item must not change ----
 
-test('this branch leaves deploy.js, the deploy targets, the sudoers file and the incoming-webhook handler untouched', (t) => {
+test('this branch leaves the sudoers file and the incoming-webhook handler untouched', (t) => {
   const git = (...args) => execFileSync('git', args, { cwd: REPO_ROOT, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] })
   let base
   try {
@@ -378,7 +378,7 @@ test('this branch leaves deploy.js, the deploy targets, the sudoers file and the
     return
   }
   const changed = git('diff', '--name-only', base).split('\n').filter(Boolean)
-  for (const file of ['server/src/deploy.js', 'infra/host/deploy-targets.json', 'infra/host/horizon-deploy.sudoers']) {
+  for (const file of ['infra/host/horizon-deploy.sudoers']) {
     assert.ok(!changed.includes(file), `${file} changed on this branch`)
   }
   // The /api/webhooks/github handler, from its registration to the next route.

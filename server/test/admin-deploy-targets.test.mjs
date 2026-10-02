@@ -9,6 +9,7 @@ import { mkdtempSync, writeFileSync, mkdirSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { loginFixtureUser } from './helpers/session.mjs'
+import { useDeployTargetRows } from './helpers/deployTargetRows.mjs'
 
 process.env.HORIZON_DB = join(mkdtempSync(join(tmpdir(), 'horizon-admin-deploy-targets-')), 'test.db')
 delete process.env.GITHUB_WEBHOOK_SECRET
@@ -17,33 +18,28 @@ delete process.env.FARM_URL
 const fixtureHome = mkdtempSync(join(tmpdir(), 'horizon-admin-deploy-targets-home-'))
 process.env.HOME = fixtureHome
 
-const registryFile = join(mkdtempSync(join(tmpdir(), 'horizon-admin-deploy-targets-registry-')), 'deploy-targets.json')
-writeFileSync(
-  registryFile,
-  JSON.stringify([
-    {
-      key: 'horizon',
-      repo: 'FinTekkers/horizon',
-      script: 'stub-horizon.sh',
-      service: 'horizon-server-test',
-      repoDir: '/tmp/fixture-horizon',
-      stateKey: 'horizon',
-      healthUrl: 'http://stub.invalid/horizon',
-      healthCheckType: 'json-items',
-    },
-    {
-      key: 'ui-service',
-      repo: 'FinTekkers/ui-service',
-      script: 'stub-ui.sh',
-      service: 'fintekkers-ui-test',
-      repoDir: '/tmp/fixture-ui-service',
-      stateKey: 'ui-service',
-      healthUrl: 'http://stub.invalid/ui-service',
-      healthCheckType: 'ssr-asset-check',
-    },
-  ]),
-)
-process.env.HORIZON_DEPLOY_TARGETS_FILE = registryFile
+await useDeployTargetRows([
+  {
+    key: 'horizon',
+    repo: 'FinTekkers/horizon',
+    script: 'stub-horizon.sh',
+    service: 'horizon-server-test',
+    repoDir: '/tmp/fixture-horizon',
+    stateKey: 'horizon',
+    healthUrl: 'http://stub.invalid/horizon',
+    healthCheckType: 'json-items',
+  },
+  {
+    key: 'ui-service',
+    repo: 'FinTekkers/ui-service',
+    script: 'stub-ui.sh',
+    service: 'fintekkers-ui-test',
+    repoDir: '/tmp/fixture-ui-service',
+    stateKey: 'ui-service',
+    healthUrl: 'http://stub.invalid/ui-service',
+    healthCheckType: 'ssr-asset-check',
+  },
+])
 
 // horizon has a recorded successful deploy; ui-service has never deployed —
 // the response must reflect each target's own state independently.

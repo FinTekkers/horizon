@@ -9,33 +9,29 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import crypto from 'node:crypto'
-import { mkdtempSync, writeFileSync } from 'node:fs'
+import { mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Writable } from 'node:stream'
+import { useDeployTargetRows } from './helpers/deployTargetRows.mjs'
 
 process.env.HORIZON_DB = join(mkdtempSync(join(tmpdir(), 'horizon-webhook-deploy-')), 'test.db')
 process.env.GITHUB_WEBHOOK_SECRET = 'test-webhook-secret'
 process.env.HOME = mkdtempSync(join(tmpdir(), 'horizon-webhook-deploy-home-'))
 delete process.env.FARM_URL
 
-const registryFile = join(mkdtempSync(join(tmpdir(), 'horizon-webhook-deploy-registry-')), 'deploy-targets.json')
-writeFileSync(
-  registryFile,
-  JSON.stringify([
-    {
-      key: 'horizon',
-      repo: 'FinTekkers/horizon',
-      script: 'stub-horizon.sh',
-      service: 'horizon-server-test',
-      repoDir: '/tmp/fixture-horizon',
-      stateKey: 'horizon',
-      healthUrl: 'http://stub.invalid/horizon',
-      healthCheckType: 'json-items',
-    },
-  ]),
-)
-process.env.HORIZON_DEPLOY_TARGETS_FILE = registryFile
+await useDeployTargetRows([
+  {
+    key: 'horizon',
+    repo: 'FinTekkers/horizon',
+    script: 'stub-horizon.sh',
+    service: 'horizon-server-test',
+    repoDir: '/tmp/fixture-horizon',
+    stateKey: 'horizon',
+    healthUrl: 'http://stub.invalid/horizon',
+    healthCheckType: 'json-items',
+  },
+])
 
 const { buildApp } = await import('../src/app.js')
 const deploy = await import('../src/deploy.js')

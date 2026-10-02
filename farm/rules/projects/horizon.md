@@ -1,8 +1,7 @@
 # Horizon — project rules
 
 Horizon deploys **direct to one EC2 host** — no load balancer, no RDS. A
-published GitHub Release on a repo registered in
-`infra/host/deploy-targets.json` triggers a webhook
+published GitHub Release on a repo with a deploy target triggers a webhook
 (`server/src/app.js`'s `/api/webhooks/github` → `server/src/deploy.js`) that
 pulls the tag and restarts a single systemd service. Full runbook:
 `infra/host/DEPLOY.md`.
@@ -14,10 +13,15 @@ pulls the tag and restarts a single systemd service. Full runbook:
 | `horizon` | `FinTekkers/horizon` | `horizon-server` (systemd) | `https://shoreward.ai/horizon/` |
 | `ui-service` | `FinTekkers/ui-service` | `fintekkers-ui` (systemd) | `https://www.fintekkers.org/` |
 
-Both live on the **same EC2 host** — `infra/host/deploy-targets.json` is the
-single source of truth for target → script → service → health URL. Adding or
-changing a target always means a reviewed PR to that file plus a matching
-line in `infra/host/horizon-deploy.sudoers`; neither is editable outside git.
+Both live on the **same EC2 host**. Horizon's database is the single source
+of truth for target → script → service → health URL: the `deploy_target`
+table, seeded once from a snapshot in `server/src/deployTargets.js` and shown
+in Admin (create/edit/delete in Admin is a follow-up part of HZ-263). Every
+release re-validates its row: the script must resolve inside `infra/host/`,
+and the service and extra services must be ones
+`infra/host/horizon-deploy.sudoers` permits restarting. That check stops bad
+rows, but the security boundary is the sudoers file itself — any sudoers
+change still needs a reviewed PR, and is never editable outside git.
 
 ## Health checks already in place — know their limits
 

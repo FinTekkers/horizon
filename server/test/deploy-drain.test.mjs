@@ -12,10 +12,11 @@ import { test, beforeEach } from 'node:test'
 import assert from 'node:assert/strict'
 import crypto from 'node:crypto'
 import { execFileSync } from 'node:child_process'
-import { mkdtempSync, writeFileSync } from 'node:fs'
+import { mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { loginFixtureUser } from './helpers/session.mjs'
+import { useDeployTargetRows } from './helpers/deployTargetRows.mjs'
 
 const DB_PATH = join(mkdtempSync(join(tmpdir(), 'horizon-deploy-drain-')), 'test.db')
 process.env.HORIZON_DB = DB_PATH
@@ -29,15 +30,10 @@ process.env.DEPLOY_BLOCK_MAX_TTL_S = '3600'
 process.env.HOME = mkdtempSync(join(tmpdir(), 'horizon-deploy-drain-home-'))
 delete process.env.HORIZON_DEPLOY_DRAIN_URL
 
-const registryFile = join(mkdtempSync(join(tmpdir(), 'horizon-deploy-drain-registry-')), 'deploy-targets.json')
-writeFileSync(
-  registryFile,
-  JSON.stringify([
-    { key: 'horizon', repo: 'FinTekkers/horizon', script: 'stub.sh', service: 'horizon-server-test', repoDir: '/tmp/x', stateKey: 'horizon', healthUrl: 'http://stub.invalid/' },
-    { key: 'ui-service', repo: 'FinTekkers/ui-service', script: 'stub-ui.sh', service: 'fintekkers-ui-test', repoDir: '/tmp/y', stateKey: 'ui-service', healthUrl: 'http://stub.invalid/' },
-  ]),
-)
-process.env.HORIZON_DEPLOY_TARGETS_FILE = registryFile
+await useDeployTargetRows([
+  { key: 'horizon', repo: 'FinTekkers/horizon', script: 'stub.sh', service: 'horizon-server-test', repoDir: '/tmp/x', stateKey: 'horizon', healthUrl: 'http://stub.invalid/' },
+  { key: 'ui-service', repo: 'FinTekkers/ui-service', script: 'stub-ui.sh', service: 'fintekkers-ui-test', repoDir: '/tmp/y', stateKey: 'ui-service', healthUrl: 'http://stub.invalid/' },
+])
 
 const { db } = await import('../src/db.js')
 const { buildApp } = await import('../src/app.js')

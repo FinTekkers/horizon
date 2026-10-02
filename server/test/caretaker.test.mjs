@@ -11,6 +11,7 @@ import assert from 'node:assert/strict'
 import { mkdtempSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { useDeployTargetRows } from './helpers/deployTargetRows.mjs'
 
 const fetchCalls = []
 globalThis.fetch = async (...args) => {
@@ -21,18 +22,14 @@ globalThis.fetch = async (...args) => {
 const dir = mkdtempSync(join(tmpdir(), 'horizon-caretaker-'))
 process.env.HORIZON_DB = join(dir, 'test.db')
 process.env.HOME = join(dir, 'home')
-process.env.HORIZON_DEPLOY_TARGETS_FILE = join(dir, 'deploy-targets.json')
-writeFileSync(
-  process.env.HORIZON_DEPLOY_TARGETS_FILE,
-  JSON.stringify(
-    ['shadowed', 'late', 'failing', 'quiet'].map((key) => ({ key, repo: `Acme/${key}`, stateKey: key, script: 'x.sh', service: 'x' })),
-  ),
-)
 mkdirSync(join(process.env.HOME, '.horizon', 'shadowed'), { recursive: true })
 // The format deploy-horizon.sh writes: "refs/tags/<tag>:<commit>".
 writeFileSync(join(process.env.HOME, '.horizon', 'shadowed', 'last-good-tag'), 'refs/tags/v2026.10.02-1:abc123\n')
 delete process.env.FARM_URL
 delete process.env.GITHUB_TOKEN
+await useDeployTargetRows(
+  ['shadowed', 'late', 'failing', 'quiet'].map((key) => ({ key, repo: `Acme/${key}`, stateKey: key, script: 'x.sh', service: 'x' })),
+)
 
 const { db } = await import('../src/db.js')
 const store = await import('../src/store.js')

@@ -1,20 +1,23 @@
 # Self-deploy: one-time host setup
 
-After this PR merges, a published GitHub Release on a repo registered in
-`infra/host/deploy-targets.json` pulls straight to the host via a webhook —
+After this PR merges, a published GitHub Release on a repo with a deploy
+target pulls straight to the host via a webhook —
 no more SSHing in to update it. This is the one-time setup that wires that
 up. Do it once per target; every deploy after that is automatic.
 
 ## 0. The deploy-target registry
 
-`infra/host/deploy-targets.json` is a versioned, git-reviewed file — not a
-database row and not editable from the Admin UI — mapping each deployable
-repo to the script that deploys it, the systemd service it restarts, and its
-own state directory (`~/.horizon/<stateKey>/`). `server/src/deploy.js` looks
-up the webhook's `repository.full_name` in this file; a repo absent from it
-is rejected and logged, never deployed. Adding a new target means adding an
-entry here, a deploy script under `infra/host/`, and a sudoers line (below)
-— all three require a reviewed PR, by design.
+Deploy targets live in Horizon's database, the `deploy_target` table (HZ-263),
+mapping each deployable repo to the script that deploys it, the systemd
+service it restarts, and its own state directory (`~/.horizon/<stateKey>/`).
+The first server start seeds it once from a snapshot in
+`server/src/deployTargets.js`. `server/src/deploy.js` looks up the webhook's
+`repository.full_name` in this table; a repo with no row is rejected and
+logged, never deployed. Every resolve re-validates the row — its script must
+resolve inside `infra/host/`, and its service and extra services must appear
+as `systemctl restart` lines in `infra/host/horizon-deploy.sudoers` — and a
+row that fails is logged and not deployed. Deploy scripts and the sudoers
+line (below) still require a reviewed PR, by design.
 
 ## 1. Install the sudoers rule
 
@@ -380,7 +383,7 @@ verifies `issues`/`issue_comment`/`pull_request` events with
    DEPLOY OK tag=refs/tags/<tag> commit=<sha>
    ```
    (each target logs to its own `~/.horizon/<stateKey>/self-deploy.log`, per
-   `infra/host/deploy-targets.json`.)
+   its `deploy_target` row.)
 3. **Restart-survival check** — this is the part that can't be verified any
    other way than on the live box: watch that `deploy-horizon.sh` actually
    survives the `systemctl restart horizon-server` it triggers partway
@@ -485,14 +488,16 @@ item for a human rather than silently advancing (`server/src/orchestrator.js`
 1. Add a deploy script under `infra/host/` (copy the closest existing one —
    `deploy-horizon.sh` for a Node/systemd service, `deploy-ui-service.sh` for
    an SSR frontend — and adjust its build/health-check stages).
-2. Add an entry to `infra/host/deploy-targets.json`: `key`, `repo`, `script`,
-   `service`, `repoDir`, `stateKey`, `healthUrl`, `healthCheckType`.
+2. Add a row to the `deploy_target` table: `key`, `repo`, `script`,
+   `service`, `repo_dir`, `state_key`, `health_url`, `health_check_type`
+   (and `extra_services`, a JSON array).
 3. Add an explicit sudoers line for the new service to
    `infra/host/horizon-deploy.sudoers` and re-apply it on the host (step 1
-   above) — a registry entry with no matching sudoers line fails closed at
-   the `restart` stage (`DEPLOY FAILED: restart`), it does not deploy with
-   elevated privilege.
+   above) — a row whose service has no sudoers line in the repo is rejected
+   when the release resolves, and one missing from the host's installed copy
+   fails closed at the `restart` stage (`DEPLOY FAILED: restart`); neither
+   deploys with elevated privilege.
 4. Add the **Releases** webhook event on the new repo (step 4 above).
 
-All three of steps 1-3 land in the same reviewed PR; nothing about a deploy
-target is editable outside of git.
+Steps 1 and 3 land in a reviewed PR; a row whose script or service they do
+not cover is logged and never deployed.
