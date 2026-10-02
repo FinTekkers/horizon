@@ -40,6 +40,7 @@ import { intakeFields } from '../../domain/js/fields.js'
 import { PRIORITIES, DEFAULT_PRIORITY } from '../../domain/js/priorities.js'
 import { PERSONAS } from './personas.js'
 import * as definitions from './definitions.js'
+import * as rulesStore from './rulesStore.js'
 import * as runLogView from './runLogView.js'
 import {
   API_SECURITY,
@@ -1614,7 +1615,14 @@ export function buildApp({ logger = true, onRoute = null } = {}) {
         response: { 200: OK_OBJECT },
       },
     },
-    (request) => ({ prompt: definitions.effectivePrompt(request.query) }),
+    // HZ-246: the served DB rules ride in as overrides, so the preview is what
+    // an agent dispatched now would get.
+    (request) => ({
+      prompt: definitions.effectivePrompt({
+        ...request.query,
+        overrides: rulesStore.servedRulesFor(request.query.project, request.query.repo),
+      }),
+    }),
   )
 
   const definitionParams = {
@@ -1676,6 +1684,144 @@ export function buildApp({ logger = true, onRoute = null } = {}) {
           return reply.code(502).send({ error: err.code, commit: err.commit, detail: err.detail })
         }
         throw err
+      }
+    },
+  )
+
+  // ---- project and repo rules (HZ-246: DB versions over the .md defaults) ----
+  // Saving and restoring are gate-grade (session + gate PIN, checked before
+  // anything is read or written); the PIN is only ever passed to
+  // humanAuthorized, never logged or echoed. History is append-only: restore
+  // inserts a new version. The .md files are never written from here.
+
+  const ruleParams = {
+    type: 'object',
+    required: ['scope', 'key'],
+    properties: { scope: { type: 'string', maxLength: 20 }, key: { type: 'string', maxLength: 300 } },
+  }
+
+  function ruleTarget(request, reply) {
+    const { scope, key } = request.params
+    if (!rulesStore.isRuleScope(scope)) {
+      reply.code(400).send({ error: 'bad_scope' })
+      return null
+    }
+    if (!rulesStore.isRuleKey(scope, key)) {
+      reply.code(400).send({ error: 'bad_key' })
+      return null
+    }
+    return { scope, key }
+  }
+
+  const RULES_ERROR_STATUS = {
+    bad_key: 400,
+    bad_content: 400,
+    rules_too_large: 400,
+    credential_pattern: 400,
+    unknown_version: 404,
+    unverified_version: 409,
+    rules_secret_not_configured: 503,
+  }
+
+  function rulesError(err, reply) {
+    if (!(err instanceof rulesStore.RulesError) || !Object.hasOwn(RULES_ERROR_STATUS, err.code)) throw err
+    const body = { error: err.code }
+    if (err.limit !== undefined) body.limit = err.limit
+    if (err.matches !== undefined) body.matches = err.matches
+    return reply.code(RULES_ERROR_STATUS[err.code]).send(body)
+  }
+
+  // Every project and repo whose rules the owner can edit: those with a
+  // rules file, plus DB projects and connected repos that have none.
+  function ruleTargets(scope, fileDefs, named) {
+    const byKey = new Map()
+    for (const def of fileDefs) {
+      byKey.set(def.name, { scope, key: def.name, label: scope === 'repo' ? def.name.replace('__', '/') : def.name, file: true })
+    }
+    for (const name of named) {
+      const key = definitions.rulesKey(scope, name)
+      if (!rulesStore.isRuleKey(scope, key)) continue
+      byKey.set(key, { scope, key, label: name, file: byKey.has(key) })
+    }
+    return [...byKey.values()]
+      .map((target) => ({ ...target, versions: rulesStore.listRuleVersions(scope, target.key).length }))
+      .sort((a, b) => a.label.localeCompare(b.label))
+  }
+
+  fastify.get('/api/rules/targets', { schema: { response: { 200: OK_OBJECT } } }, () => {
+    const files = definitions.listDefinitions()
+    return {
+      projects: ruleTargets('project', files.projects, store.listProjects({ checks: false }).map((p) => p.name)),
+      repos: ruleTargets('repo', files.repos, store.listRepos().map((r) => r.repo)),
+    }
+  })
+
+  fastify.get(
+    '/api/rules/:scope/:key/versions',
+    { schema: { params: ruleParams, response: { 200: OK_OBJECT, 400: ERROR_OBJECT } } },
+    (request, reply) => {
+      const target = ruleTarget(request, reply)
+      if (!target) return
+      const file = definitions.readDefinition(target.scope, target.key)
+      return {
+        ...target,
+        default: { exists: !!file, path: file?.path ?? null, content: file?.content ?? '' },
+        served_version: rulesStore.servedVersion(target.scope, target.key),
+        versions: rulesStore.listRuleVersions(target.scope, target.key),
+      }
+    },
+  )
+
+  fastify.post(
+    '/api/rules/:scope/:key',
+    {
+      schema: {
+        params: ruleParams,
+        body: {
+          type: 'object',
+          required: ['content'],
+          properties: { content: { type: 'string', maxLength: 20000 } },
+        },
+        response: { 200: OK_OBJECT, 400: ERROR_OBJECT, 401: ERROR_OBJECT, 503: ERROR_OBJECT },
+        security: HUMAN_GATE_SECURITY,
+      },
+    },
+    (request, reply) => {
+      if (!humanAuthorized(request, reply)) return
+      const target = ruleTarget(request, reply)
+      if (!target) return
+      try {
+        return { ok: true, version: rulesStore.saveRule(target.scope, target.key, request.body.content, actorOf(request)) }
+      } catch (err) {
+        return rulesError(err, reply)
+      }
+    },
+  )
+
+  fastify.post(
+    '/api/rules/:scope/:key/versions/:version/restore',
+    {
+      schema: {
+        params: {
+          type: 'object',
+          required: ['scope', 'key', 'version'],
+          properties: { ...ruleParams.properties, version: { type: 'integer', minimum: 1 } },
+        },
+        response: { 200: OK_OBJECT, 400: ERROR_OBJECT, 401: ERROR_OBJECT, 404: ERROR_OBJECT, 409: ERROR_OBJECT, 503: ERROR_OBJECT },
+        security: HUMAN_GATE_SECURITY,
+      },
+    },
+    (request, reply) => {
+      if (!humanAuthorized(request, reply)) return
+      const target = ruleTarget(request, reply)
+      if (!target) return
+      try {
+        return {
+          ok: true,
+          version: rulesStore.restoreRule(target.scope, target.key, request.params.version, actorOf(request)),
+        }
+      } catch (err) {
+        return rulesError(err, reply)
       }
     },
   )
@@ -2129,6 +2275,26 @@ export function buildApp({ logger = true, onRoute = null } = {}) {
     (request, reply) => {
       if (!farmAuthorized(request, reply)) return
       return snapshot({ scope: request.query.scope, estimates: false, checks: false })
+    },
+  )
+
+  // HZ-246: farmd re-reads the served rules when it claims a task, so a save
+  // made while the task sat in the queue still reaches it. null for a scope
+  // means "use the rules file".
+  fastify.get(
+    '/api/farm/rules',
+    {
+      schema: {
+        querystring: {
+          type: 'object',
+          properties: { project: { type: 'string', maxLength: 200 }, repo: { type: 'string', maxLength: 300 } },
+        },
+      },
+    },
+    (request, reply) => {
+      if (!farmAuthorized(request, reply)) return
+      const served = rulesStore.servedRulesFor(request.query.project, request.query.repo)
+      return { project: served.project ?? null, repo: served.repo ?? null }
     },
   )
 

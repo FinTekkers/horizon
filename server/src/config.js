@@ -188,6 +188,11 @@ export const ALLOWED_LOGIN_EMAILS = new Set(
 // Deliberately NO 'dev-secret' fallback (unlike FARM_SHARED_SECRET above):
 // an unset value must fail approvals closed, never silently accept them.
 export const WA_APPROVAL_SECRET = process.env.WA_APPROVAL_SECRET || null
+
+// HZ-246: signs every PIN-approved rules version (server/src/rulesStore.js).
+// Server-only — never in farm.env. No fallback: unset fails saves closed
+// (503) and serves only the rules files, never a DB row.
+export const RULES_HMAC_SECRET = process.env.RULES_HMAC_SECRET || null
 // Raw entries, in whatever form an operator wrote them (a bare number, or a
 // jid with a device suffix). waApprovers.js is what interprets them, in the two
 // directions they are needed: normalizeJid for "is this sender an approver",

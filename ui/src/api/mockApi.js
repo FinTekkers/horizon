@@ -422,6 +422,31 @@ export async function effectivePrompt() {
   return { prompt: '(the effective-prompt preview requires the server)' }
 }
 
+// HZ-246: rules versions live in the server's DB — read-only here too.
+export async function listRuleTargets() {
+  const target = (scope) => (def) => ({
+    scope,
+    key: def.name,
+    label: scope === 'repo' ? def.name.replace('__', '/') : def.name,
+    file: true,
+    versions: 0,
+  })
+  return { projects: MOCK_DEFINITIONS.projects.map(target('project')), repos: MOCK_DEFINITIONS.repos.map(target('repo')) }
+}
+
+export async function listRuleVersions(scope, key) {
+  const { content, path } = await getDefinition(scope, key)
+  return { scope, key, default: { exists: true, path, content }, served_version: null, versions: [] }
+}
+
+export async function saveRule() {
+  throw new Error('Rules are read-only in mock mode — run the server to edit them')
+}
+
+export async function restoreRule() {
+  throw new Error('Rules are read-only in mock mode — run the server to edit them')
+}
+
 export function restartPhase(id, phase, reason) {
   const firstIdx = STEPS.findIndex((st) => st.phase === phase)
   update(id, (x) => ({ ...x, cursor: firstIdx, rejected: false, paused: false }))

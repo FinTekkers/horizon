@@ -8,6 +8,10 @@ farm/rules/repos/<owner>__<repo>.md), stamped verbatim into the task payload
 by farmd at enqueue and rendered into every agent prompt — they compose with
 the global personas, never fork them.
 
+HZ-246: a version saved in Admin lives in the server's DB and reaches farmd as
+the task's rules_override (at dispatch, refreshed at claim); it replaces that
+scope's file read. The files stay the defaults.
+
 The compose logic is mirrored in server/src/definitions.js for the UI's
 effective-prompt preview and parity-tested byte-for-byte in
 server/test/definitions-parity.test.mjs — change both sides together.
@@ -69,17 +73,31 @@ def _read_capped(path: Path) -> str:
         return ""
 
 
-def resolve_rules(project_name, repo) -> list[str]:
+def _override(overrides, scope):
+    """HZ-246: the saved DB rules for one scope, or None (use the file). A
+    non-blank string is kept byte-for-byte; absent, non-string, empty and
+    whitespace-only all mean "no DB rules"."""
+    value = overrides.get(scope) if isinstance(overrides, dict) else None
+    return value if isinstance(value, str) and value.strip() else None
+
+
+def resolve_rules(project_name, repo, overrides=None) -> list[str]:
     """Project rules then repo rules, as separate parts in order. Never
     raises: anything missing or malformed contributes nothing, mirroring
     personas.compose_role. Kept as parts (not pre-joined) so
     render_rules_section can drop an oversized part whole instead of slicing
-    across a part boundary."""
+    across a part boundary.
+
+    `overrides` ({"project"?, "repo"?}) is the rules the server serves from
+    its DB (HZ-246, the task's rules_override). A scope with an override
+    skips its file read; with no override the lookup is exactly the file's."""
     parts = []
     if isinstance(project_name, str) and project_name.strip():
-        parts.append(_read_capped(RULES_DIR / "projects" / f"{slugify(project_name)}.md"))
+        override = _override(overrides, "project")
+        parts.append(override if override is not None else _read_capped(RULES_DIR / "projects" / f"{slugify(project_name)}.md"))
     if isinstance(repo, str) and repo.strip():
-        parts.append(_read_capped(RULES_DIR / "repos" / f"{repo.strip().replace('/', '__')}.md"))
+        override = _override(overrides, "repo")
+        parts.append(override if override is not None else _read_capped(RULES_DIR / "repos" / f"{repo.strip().replace('/', '__')}.md"))
     return [p for p in parts if p]
 
 
@@ -97,7 +115,9 @@ def render_rules_section(rules_parts) -> str:
     if isinstance(rules_parts, str):
         parts = [rules_parts.strip()] if rules_parts.strip() else []
     elif isinstance(rules_parts, list):
-        parts = [p.strip() for p in rules_parts if isinstance(p, str) and p.strip()]
+        # HZ-246: parts are kept as given — file parts arrive stripped
+        # already, and saved DB rules reach the prompt byte-for-byte.
+        parts = [p for p in rules_parts if isinstance(p, str) and p.strip()]
     else:
         parts = []
     if not parts:

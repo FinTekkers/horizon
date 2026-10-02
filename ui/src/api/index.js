@@ -49,5 +49,9 @@ export const {
   getDefinition,
   saveDefinition,
   effectivePrompt,
+  listRuleTargets,
+  listRuleVersions,
+  saveRule,
+  restoreRule,
   getDeployTargets,
 } = impl

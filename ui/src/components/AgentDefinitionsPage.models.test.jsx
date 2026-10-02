@@ -11,6 +11,10 @@ vi.mock('../api', () => ({
   getDefinition: vi.fn(),
   saveDefinition: vi.fn(),
   effectivePrompt: vi.fn(),
+  listRuleTargets: vi.fn(async () => ({ projects: [], repos: [] })),
+  listRuleVersions: vi.fn(),
+  saveRule: vi.fn(),
+  restoreRule: vi.fn(),
 }))
 
 vi.mock('../domain/personas', async (importOriginal) => {

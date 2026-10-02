@@ -146,6 +146,9 @@ export default defineConfig({
         // 09-queued-work.spec.js simulate the farm reporting a run as queued
         // without a live farm process, which this suite otherwise has none of.
         HORIZON_TEST_HOOKS: '1',
+        // HZ-246: signs saved rules versions. Without it every rules save
+        // answers 503 and 27-rules-versions.spec.js cannot run.
+        RULES_HMAC_SECRET: 'e2e-rules-hmac-secret',
       },
     },
     {

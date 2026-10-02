@@ -1,6 +1,15 @@
 import { useEffect, useState } from 'react'
 import { STEPS } from '../../../domain/js/lifecycle.js'
-import { listDefinitions, getDefinition, saveDefinition, effectivePrompt } from '../api'
+import {
+  listDefinitions,
+  getDefinition,
+  saveDefinition,
+  effectivePrompt,
+  listRuleTargets,
+  listRuleVersions,
+  saveRule,
+  restoreRule,
+} from '../api'
 import {
   CONCIERGE_MODEL_AGENT,
   CONFLICT_MODEL_AGENT,
@@ -16,8 +25,10 @@ import { BackIcon } from './icons'
 
 // The hierarchical agent-definitions library (HZ-9): Global (roles +
 // personas, shared by every project) → Projects → Repos. Every layer is
-// editable here; each save becomes a git commit server-side, so git history
-// is the audit log. Rules compose onto the global personas — they never fork
+// editable here. Global saves become git commits server-side, so git history
+// is the audit log; project and repo rules save as versions in Horizon's DB
+// (HZ-246) over the farm/rules/*.md defaults, each save and restore gated by
+// the gate PIN. Rules compose onto the global personas — they never fork
 // them — which is why the effective-prompt preview shows all layers merged.
 
 const GROUPS = [
@@ -25,6 +36,54 @@ const GROUPS = [
   { key: 'projects', title: 'Projects', hint: 'Cross-repo rules: service startup order, shared environment quirks.' },
   { key: 'repos', title: 'Repositories', hint: 'Build/run/test commands and constraints for one repo.' },
 ]
+
+const isRulesKind = (kind) => kind === 'project' || kind === 'repo'
+
+function itemNote(def) {
+  if (!isRulesKind(def.kind)) return `${def.bytes} B`
+  if (def.versions > 0) return `${def.versions} saved`
+  return def.file ? 'file' : 'no rules'
+}
+
+// A rules target from GET /api/rules/targets, shaped like a definition.
+const rulesEntry = (target) => ({ kind: target.scope, name: target.key, label: target.label, file: target.file, versions: target.versions })
+
+// What agents are served, in words (null served_version = the file default).
+function servingNote(rules) {
+  if (rules.served_version != null) return `Agents get saved version ${rules.served_version}.`
+  if (rules.default.exists) return `Agents get the file default (${rules.default.path}).`
+  return 'No rules — no file and no saved version.'
+}
+
+function servedContent(rules) {
+  const served = rules.versions.find((v) => v.version === rules.served_version)
+  return served ? served.content : rules.default.content
+}
+
+function RuleVersions({ rules, onRestore, busy }) {
+  if (rules.versions.length === 0) return <div className="defs__empty">No saved versions yet.</div>
+  return (
+    <ul className="defs__versions" aria-label="Saved versions">
+      {rules.versions.map((v) => (
+        <li key={v.id} data-testid={`rule-version-${v.version}`}>
+          <strong>v{v.version}</strong> · {v.actor} · {v.created_at}
+          {v.restored_from != null && ` · restored from v${v.restored_from}`}
+          {v.version === rules.served_version && ' · serving'}
+          {!v.verified && <span className="gh-error"> · tampered — not served</span>}{' '}
+          <button
+            type="button"
+            className="composer__cancel"
+            aria-label={`Restore version ${v.version}`}
+            disabled={busy || !v.verified}
+            onClick={() => onRestore(v.version)}
+          >
+            Restore
+          </button>
+        </li>
+      ))}
+    </ul>
+  )
+}
 
 function DefinitionTree({ tree, selected, onSelect }) {
   return (
@@ -45,7 +104,7 @@ function DefinitionTree({ tree, selected, onSelect }) {
               >
                 <span className="defs__item-kind">{def.kind}</span>
                 {def.name}
-                <span className="defs__item-bytes">{def.bytes} B</span>
+                <span className="defs__item-bytes">{itemNote(def)}</span>
               </button>
             )
           })}
@@ -158,11 +217,23 @@ export default function AgentDefinitionsPage({ onBack }) {
   const [error, setError] = useState(null)
   const [saved, setSaved] = useState(null)
   const [preview, setPreview] = useState(null)
+  const [rules, setRules] = useState(null)
+  const [pin, setPin] = useState('')
 
   const refreshTree = () =>
-    listDefinitions()
-      .then(setTree)
+    Promise.all([listDefinitions(), listRuleTargets()])
+      .then(([defs, targets]) =>
+        setTree({ global: defs.global, projects: targets.projects.map(rulesEntry), repos: targets.repos.map(rulesEntry) }),
+      )
       .catch((err) => setLoadError(err.message))
+
+  const loadRules = async (def) => {
+    const data = await listRuleVersions(def.kind, def.name)
+    setRules(data)
+    setContent(servedContent(data))
+    setFilePath(data.default.path || '')
+    setDirty(false)
+  }
 
   useEffect(() => {
     refreshTree()
@@ -174,7 +245,9 @@ export default function AgentDefinitionsPage({ onBack }) {
     setSaved(null)
     setPreview(null)
     setDirty(false)
+    setRules(null)
     try {
+      if (isRulesKind(def.kind)) return await loadRules(def)
       const full = await getDefinition(def.kind, def.name)
       setContent(full.content)
       setFilePath(full.path)
@@ -191,13 +264,39 @@ export default function AgentDefinitionsPage({ onBack }) {
     setError(null)
     setSaved(null)
     try {
+      if (isRulesKind(selected.kind)) {
+        const result = await saveRule(selected.kind, selected.name, content, pin)
+        await loadRules(selected)
+        setSaved(`Saved as version ${result.version.version}`)
+        refreshTree()
+        return
+      }
       const result = await saveDefinition(selected.kind, selected.name, content)
       setDirty(false)
       setSaved(result.unchanged ? 'No changes to save.' : `Saved — commit ${result.commit}${result.pushed ? ', pushed' : ' (local only)'}`)
       refreshTree()
     } catch (err) {
-      setError(err.message)
+      setError(err.status === 401 ? 'Gate PIN incorrect' : err.message)
     } finally {
+      setPin('')
+      setBusy(false)
+    }
+  }
+
+  const restore = async (version) => {
+    if (!selected) return
+    setBusy(true)
+    setError(null)
+    setSaved(null)
+    try {
+      const result = await restoreRule(selected.kind, selected.name, version, pin)
+      await loadRules(selected)
+      setSaved(`Restored version ${version} as version ${result.version.version}`)
+      refreshTree()
+    } catch (err) {
+      setError(err.status === 401 ? 'Gate PIN incorrect' : err.message)
+    } finally {
+      setPin('')
       setBusy(false)
     }
   }
@@ -213,6 +312,7 @@ export default function AgentDefinitionsPage({ onBack }) {
   }
 
   const isGlobal = selected && (selected.kind === 'role' || selected.kind === 'persona')
+  const isRules = selected && isRulesKind(selected.kind)
 
   return (
     <div className="admin defs">
@@ -223,8 +323,8 @@ export default function AgentDefinitionsPage({ onBack }) {
       <div className="admin__title">Agent definitions</div>
       <div className="panel__subtitle">
         What every agent is told, layered: global role &amp; persona → project rules → repo rules. Later layers
-        add to earlier ones — they never replace them. Saves are git commits; no secrets, use{' '}
-        <code>$ENV_VAR</code> references.
+        add to earlier ones — they never replace them. Global saves are git commits; project and repo rules save
+        as versions in Horizon's database, over the files in git. No secrets, use <code>$ENV_VAR</code> references.
       </div>
 
       <ModelsSection />
@@ -260,21 +360,39 @@ export default function AgentDefinitionsPage({ onBack }) {
                   setSaved(null)
                 }}
               />
+              {isRules && rules && <div className="gh-note">{servingNote(rules)}</div>}
               {error && <div className="gh-error">{error}</div>}
               {saved && <div className="gh-success">{saved}</div>}
               <div className="composer__actions">
                 <button className="composer__cancel" onClick={showPreview}>
                   Preview effective prompt
                 </button>
+                {isRules && (
+                  <input
+                    className="field__input"
+                    type="password"
+                    autoComplete="off"
+                    aria-label="Gate PIN to save or restore rules"
+                    placeholder="Gate PIN"
+                    value={pin}
+                    onChange={(e) => setPin(e.target.value)}
+                  />
+                )}
                 <button
                   className="composer__submit"
                   style={{ background: 'var(--primary)' }}
                   onClick={save}
-                  disabled={busy || !dirty}
+                  disabled={busy || !dirty || (isRules && !pin)}
                 >
-                  {busy ? 'Saving…' : 'Save (commits to git)'}
+                  {busy ? 'Saving…' : isRules ? 'Save new version' : 'Save (commits to git)'}
                 </button>
               </div>
+              {isRules && rules && (
+                <div className="defs__preview">
+                  <div className="defs__preview-title">Saved versions — restoring copies one into a new version</div>
+                  <RuleVersions rules={rules} onRestore={restore} busy={busy || !pin} />
+                </div>
+              )}
               {preview != null && (
                 <div className="defs__preview">
                   <div className="defs__preview-title">Effective prompt — what an agent would receive</div>
