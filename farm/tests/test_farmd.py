@@ -1630,8 +1630,10 @@ def test_internal_snapshot_forwards_with_the_farm_secret_and_returns_the_body(mo
 
     assert res.status_code == 200
     assert res.json() == {"items": [{"id": "HZ-140"}]}
-    gets = [r for r in requests if r["path"].endswith("/api/farm/snapshot")]
+    # HZ-209: the path now carries ?scope=enabled, so match on the path alone.
+    gets = [r for r in requests if r["path"].split("?", 1)[0].endswith("/api/farm/snapshot")]
     assert len(gets) == 1
+    assert gets[0]["path"].endswith("?scope=enabled")
     assert gets[0]["headers"]["x-farm-secret"] == farmd.SHARED_SECRET
 
 
