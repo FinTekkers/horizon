@@ -136,6 +136,17 @@ test('a send-back re-arrival (a new source run) is judged again: a second event'
   assert.equal(events[1].text, 'caretaker would approve — PM said PROCEED')
 })
 
+test('gate 13: a forwarded failing review pings the human even when the PR merges cleanly', () => {
+  item('SH-13f', SHADOW, 13, { pr_mergeable: 1 })
+  const runId = doneRun('SH-13f', 12, 'automated review failed — forwarded to the human')
+  db.prepare('UPDATE work_item SET forwarded_review_run_id = ? WHERE id = ?').run(runId, 'SH-13f')
+  sweep()
+  const events = caretakerEvents('SH-13f')
+  assert.equal(events.length, 1)
+  assert.equal(EVENT_RE.exec(events[0].text)?.[1], 'ping the human', events[0].text)
+  assert.equal(evals('SH-13f')[0].decision, 'ping_human')
+})
+
 test('off: items at every gate get no caretaker rows and no events', () => {
   const off = project('Switched off', 'off')
   const ids = [...seedAllGates('OFF', off), 'OFF-3']
