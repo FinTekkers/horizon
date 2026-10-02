@@ -76,6 +76,8 @@ def test_a_leaky_run_fails_and_names_the_dir_it_left(tmp_path):
     leaked = (tmp_path / "leaked-path").read_text()
     assert result.returncode == 1, result.stdout + result.stderr
     assert f"LEAKED temp entry (created by this run, left in place): {leaked}" in result.stdout
+    # A FAILED line, so farm/checks.py's failure digest always keeps the verdict.
+    assert "FAILED HZ-238 /tmp leak guard: this run left 1 entries" in result.stdout
     # Named for the operator, never deleted.
     assert Path(leaked).is_dir()
 
@@ -106,6 +108,24 @@ def test_another_runs_sandbox_is_never_a_leak(tmp_path):
     assert result.returncode == 0, result.stdout + result.stderr
     assert "horizon-run-99999-x" not in result.stdout
     assert (other / "in-use.json").exists()
+
+
+def test_entries_outside_the_sandbox_only_warn_and_are_capped(tmp_path):
+    # What a concurrent npm test does to /tmp mid-run: many new horizon-*
+    # dirs that are not this run's. They must never change the exit status,
+    # and must not flood the output.
+    real_tmp = tmp_path / "tmp"
+    body = f"""
+    for i in range(8):
+        (Path({str(real_tmp)!r}) / f"horizon-concurrent-{{i}}").mkdir()
+    """
+    result, _ = _run_guarded_suite(tmp_path, body)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "WARNING 8 new temp entries outside this run's sandbox" in result.stdout
+    assert result.stdout.count("WARNING new temp entry outside this run's sandbox") == 5
+    assert "LEAKED" not in result.stdout
+    assert "FAILED" not in result.stdout
+    assert all((real_tmp / f"horizon-concurrent-{i}").is_dir() for i in range(8))
 
 
 def test_leftovers_already_there_at_start_are_ignored(tmp_path):

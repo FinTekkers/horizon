@@ -1034,7 +1034,17 @@ requires_e2e_workspace = pytest.mark.skipif(
 )
 
 
+@pytest.fixture
+def smoke_check_tmpdir(tmp_path, monkeypatch):
+    """HZ-238: Chromium puts its profile and playwright-artifacts dirs in
+    TMPDIR. The timeout case SIGKILLs check.mjs mid-launch, so those dirs are
+    never cleaned up by Playwright — point them at this test's own tmp_path,
+    which pytest removes, instead of the run's sandbox."""
+    monkeypatch.setenv("TMPDIR", str(tmp_path))
+
+
 @requires_e2e_workspace
+@pytest.mark.usefixtures("smoke_check_tmpdir")
 def test_run_smoke_check_passes_against_a_real_rendering_page():
     stop_server, url = serve_html(b"<html><body><h1>Item Board</h1><p>3 items in flight</p></body></html>")
     try:
@@ -1045,6 +1055,7 @@ def test_run_smoke_check_passes_against_a_real_rendering_page():
     assert line.startswith("SMOKE_RESULT=pass")
 
 
+@pytest.mark.usefixtures("smoke_check_tmpdir")
 def test_run_smoke_check_fails_against_a_page_missing_the_expected_text():
     stop_server, url = serve_html(b"<html><body><h1>Something went wrong</h1></body></html>")
     try:
@@ -1055,6 +1066,7 @@ def test_run_smoke_check_fails_against_a_page_missing_the_expected_text():
     assert line.startswith("SMOKE_RESULT=fail:")
 
 
+@pytest.mark.usefixtures("smoke_check_tmpdir")
 def test_run_smoke_check_fails_when_the_url_is_unreachable():
     # Port 1 is reserved and nothing answers on it — same case
     # check.test.mjs's "url never responds" test covers for check.mjs alone.
@@ -1064,6 +1076,7 @@ def test_run_smoke_check_fails_when_the_url_is_unreachable():
 
 
 @requires_e2e_workspace
+@pytest.mark.usefixtures("smoke_check_tmpdir")
 def test_run_smoke_check_fails_when_the_subprocess_itself_times_out(monkeypatch):
     # A page that never finishes responding — check.mjs's own NAV_TIMEOUT_MS
     # (15s) would eventually catch this too, but shrinking

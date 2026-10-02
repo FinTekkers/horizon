@@ -29,6 +29,8 @@ import pytest
 # (scripts/tmp-leak-guard.mjs) is to carry the same list — keep them equal.
 TMP_PREFIXES = ("horizon-", "hz-tmux-", "claude-resume-", "pino-", "sonic-boom-", "thread-stream-")
 SANDBOX_PREFIX = "horizon-run-"
+# Out-of-sandbox entries are listed this many at most, after their count.
+MAX_WARNINGS_SHOWN = 5
 
 
 def tmp_entries(root: Path, prefixes: tuple[str, ...] = TMP_PREFIXES) -> set[str]:
@@ -83,7 +85,19 @@ class TmpLeakGuard:
             return
         write = terminalreporter.write_line
         terminalreporter.section("HZ-238 /tmp leak guard")
+        # Warnings first and capped: a concurrent npm test makes hundreds of
+        # them, and the farm's check digest keeps only the newest lines, so
+        # an uncapped list once pushed this run's own LEAKED lines out of it.
+        if self.warnings:
+            shown = self.warnings[:MAX_WARNINGS_SHOWN]
+            write(
+                f"WARNING {len(self.warnings)} new temp entries outside this run's sandbox "
+                f"(not attributed to it, exit status unchanged); first {len(shown)}:",
+                yellow=True,
+            )
+            for path in shown:
+                write(f"WARNING new temp entry outside this run's sandbox (not attributed to it): {path}", yellow=True)
         for path in self.leaks:
             write(f"LEAKED temp entry (created by this run, left in place): {path}", red=True)
-        for path in self.warnings:
-            write(f"WARNING new temp entry outside this run's sandbox (not attributed to it): {path}", yellow=True)
+        if self.leaks:
+            write(f"FAILED HZ-238 /tmp leak guard: this run left {len(self.leaks)} entries in {self.sandbox}", red=True)
