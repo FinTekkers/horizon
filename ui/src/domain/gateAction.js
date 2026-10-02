@@ -23,11 +23,18 @@ export function gateActionBusy(item) {
 }
 
 // "3m 12s" from a server ISO timestamp. Clock skew never shows a negative.
-export function elapsedText(since, now = Date.now()) {
+// HZ-228: { seconds: false } is the Board card's coarser form — "<1m", "12m",
+// and "1h 05m" from an hour up — for a label that ticks once a minute.
+export function elapsedText(since, now = Date.now(), { seconds = true } = {}) {
   const t = Date.parse(since)
   if (Number.isNaN(t)) return ''
   const secs = Math.max(0, Math.floor((now - t) / 1000))
   const mins = Math.floor(secs / 60)
+  if (!seconds) {
+    if (mins < 1) return '<1m'
+    if (mins < 60) return `${mins}m`
+    return `${Math.floor(mins / 60)}h ${String(mins % 60).padStart(2, '0')}m`
+  }
   return mins > 0 ? `${mins}m ${String(secs % 60).padStart(2, '0')}s` : `${secs}s`
 }
 

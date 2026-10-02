@@ -472,7 +472,12 @@ export function removeRepoFromProject(projectId, repoFullName) {
 
 // ---- queries ----
 
-const selectItems = db.prepare('SELECT * FROM work_item ORDER BY id')
+// last_run_ended_at (HZ-228) is a correlated subquery on idx_step_run_item, so
+// the board's state_since adds no per-item query.
+const selectItems = db.prepare(
+  `SELECT w.*, (SELECT MAX(s.ended_at) FROM step_run s WHERE s.item_id = w.id) AS last_run_ended_at
+   FROM work_item w ORDER BY w.id`,
+)
 const selectEvents = db.prepare('SELECT who, text, color, initials, created_at FROM event WHERE item_id = ? ORDER BY id DESC LIMIT 20')
 const selectOutputs = db.prepare(
   "SELECT step_index, attempt, output, artifact FROM step_run WHERE item_id = ? AND status = 'done' ORDER BY id",
@@ -789,7 +794,39 @@ export function itemGateFields(row) {
   }
 }
 
+// SQLite's datetime('now') is UTC written without a zone ("2026-10-02 09:14:03"),
+// which Date.parse would read as local time. Values already in ISO form (the
+// gate_action timestamps) pass through unchanged.
+function toIsoUtc(ts) {
+  if (typeof ts !== 'string' || !ts) return null
+  const iso = /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(\.\d+)?$/.test(ts) ? `${ts.replace(' ', 'T')}Z` : ts
+  return Number.isNaN(Date.parse(iso)) ? null : iso
+}
+
+// HZ-228: when the item entered its current state, for the board's elapsed
+// label — ISO UTC, or null when the card shows no timer. Read-only. In order:
+//   1. closed, abandoned, rejected or paused → null (paused has no pause
+//      timestamp, so a paused card shows no timer);
+//   2. an active run → its start. At the parallel review steps that is the
+//      newest active run, not necessarily the cursor step's own;
+//   3. a gate with a running gate action → the action's start;
+//   4. a gate → the item's latest step_run end: domain/steps.json never has
+//      two gates in a row, so that run is the one that parked it here. An item
+//      created at a gate (seed data, GitHub import) has no runs and falls back
+//      to created_at. HZ-185's forward to Accept closes no run, so there it
+//      reads from the forwarded review's end;
+//   5. anything else (an agent step not yet dispatched) → null.
+function stateSince(row, activeRun, gateAction) {
+  if (isClosed(row) || row.abandoned_at || row.rejected || row.paused) return null
+  if (activeRun) return toIsoUtc(activeRun.started_at)
+  if (STEPS[row.cursor]?.kind !== 'gate') return null
+  if (gateAction?.state === 'running') return toIsoUtc(gateAction.since)
+  return toIsoUtc(row.last_run_ended_at ?? row.created_at)
+}
+
 function itemView(row) {
+  const activeRun = withRunState(selectActiveRun.get(row.id) || null)
+  const gateFields = itemGateFields(row)
   return {
     id: row.id,
     title: row.title,
@@ -818,8 +855,9 @@ function itemView(row) {
     abandoned_by: row.abandoned_by,
     events: selectEvents.all(row.id),
     stepOutputs: stepOutputs(row.id),
-    activeRun: withRunState(selectActiveRun.get(row.id) || null),
-    ...itemGateFields(row),
+    activeRun,
+    ...gateFields,
+    state_since: stateSince(row, activeRun, gateFields.gateAction),
     reviewRejected: reviewRejected(row),
     forwardedReview: forwardedReview(row),
     ...dependencyFields(row.id),
