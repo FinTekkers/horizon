@@ -446,6 +446,43 @@ def _notify_started(run_id) -> bool:
     return True
 
 
+def _fetch_rules_override(task) -> dict | None:
+    """HZ-246: the rules the server serves right now for this task's project
+    and repo ({"project": str|None, "repo": str|None}; None means "use the
+    file"), or None if the server can't be asked. One short attempt: a miss
+    keeps the dispatch-time rules already in the task."""
+    project = task.get("project") if isinstance(task.get("project"), dict) else {}
+    item = task.get("item") if isinstance(task.get("item"), dict) else {}
+    params = {k: v for k, v in (("project", project.get("name")), ("repo", item.get("repo"))) if isinstance(v, str)}
+    try:
+        res = httpx.get(
+            f"{HORIZON_URL}/api/farm/rules", params=params, headers={"x-farm-secret": SHARED_SECRET}, timeout=5
+        )
+        if res.status_code != 200:
+            print(f"farmd: rules refresh for run {task.get('run_id')} -> {res.status_code}", flush=True)
+            return None
+        data = res.json()
+        return data if isinstance(data, dict) else None
+    except Exception as exc:
+        print(f"farmd: rules refresh for run {task.get('run_id')} failed: {exc}", flush=True)
+        return None
+
+
+def _refresh_rules(task) -> bool:
+    """Re-resolves task["rules"] from the server's current DB rules, so a save
+    made while the task was queued reaches this step. Returns whether it did;
+    on a failed fetch the dispatch-time rules stand (never the bare file when
+    a DB version was stamped)."""
+    fresh = _fetch_rules_override(task)
+    if fresh is None:
+        return False
+    project = task.get("project") if isinstance(task.get("project"), dict) else {}
+    item = task.get("item") if isinstance(task.get("item"), dict) else {}
+    task["rules_override"] = {k: v for k, v in fresh.items() if k in ("project", "repo") and isinstance(v, str)}
+    task["rules"] = rules.resolve_rules(project.get("name"), item.get("repo"), task["rules_override"])
+    return True
+
+
 def _report_run_dead(run_id, name: str) -> bool:
     """HZ-101: reports a claimed run whose session is gone — the farm side of
     reconciliation. No retry loop here (unlike _notify_started/steps_result):
@@ -572,6 +609,10 @@ def _claim_and_launch(task_path, runs_dir: Path, repo_root: Path) -> str | None:
         print(f"farmd: run {task['run_id']} no longer active server-side — not launching", flush=True)
         claimed.unlink(missing_ok=True)
         return None
+    # HZ-246: the prompt is built from this file moments from now — read the
+    # rules fresh here rather than trusting the enqueue-time stamp.
+    if _refresh_rules(task):
+        _write_task_atomic(claimed, task)
     name = _run_session_name(task)
     # HZ-212: the step's lane picks the agent module; the launch is otherwise
     # identical — same session naming, same per-run log, fresh interpreter
@@ -922,7 +963,9 @@ async def steps_run(request: Request):
     # the actual whole-part-drop-with-note decision later, at prompt-build
     # time, so this queued payload is the *inputs* to that render, not the
     # rendered prompt text itself.
-    body["rules"] = rules.resolve_rules(project["name"], item_repo)
+    # HZ-246: rules_override is what the server's DB serves for this project
+    # and repo at dispatch; _claim_and_launch refreshes it at claim time.
+    body["rules"] = rules.resolve_rules(project["name"], item_repo, body.get("rules_override"))
     queue = lane_for_index(steps.STEPS, body["step"].get("index", 99))
     (QUEUE_DIR / queue).mkdir(parents=True, exist_ok=True)
     task_path = QUEUE_DIR / queue / f"{body['run_id']}.json"

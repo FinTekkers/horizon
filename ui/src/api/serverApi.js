@@ -466,3 +466,49 @@ export async function saveDefinition(kind, name, content) {
   }
   return data
 }
+
+// ---- project and repo rules (HZ-246: DB versions over the .md defaults) ----
+
+export function listRuleTargets() {
+  return getJson('/rules/targets')
+}
+
+export function listRuleVersions(scope, key) {
+  return getJson(`/rules/${encodeURIComponent(scope)}/${encodeURIComponent(key)}/versions`)
+}
+
+// Same PIN handling as setProjectEnabled: asked for on every save or restore,
+// sent only in the x-human-key header, never cached.
+async function rulesPost(path, body, pin) {
+  const res = await fetch(`${API_BASE}${path}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'x-human-key': pin },
+    body: JSON.stringify(body ?? {}),
+  })
+  const data = await res.json().catch(() => ({}))
+  if (!res.ok) {
+    let message = data.error || `HTTP ${res.status}`
+    if (data.error === 'credential_pattern') {
+      message = `Looks like a credential — move it to an $ENV_VAR reference (${data.matches.join(', ')})`
+    }
+    if (data.error === 'rules_too_large') message = `Too large — the cap is ${data.limit} bytes`
+    if (data.error === 'rules_secret_not_configured') message = 'Rules saving is not configured on the Horizon server'
+    if (data.error === 'unverified_version') message = 'That version failed its integrity check and cannot be restored'
+    const err = new Error(message)
+    err.status = res.status
+    throw err
+  }
+  return data
+}
+
+export function saveRule(scope, key, content, pin) {
+  return rulesPost(`/rules/${encodeURIComponent(scope)}/${encodeURIComponent(key)}`, { content }, pin)
+}
+
+export function restoreRule(scope, key, version, pin) {
+  return rulesPost(
+    `/rules/${encodeURIComponent(scope)}/${encodeURIComponent(key)}/versions/${encodeURIComponent(version)}/restore`,
+    {},
+    pin,
+  )
+}

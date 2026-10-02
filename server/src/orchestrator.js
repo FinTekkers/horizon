@@ -69,6 +69,7 @@ import { PRIMARY_PERSONA_AGENT, isPersona, personaLabel, proposePersona } from '
 import { SUMMARIZE_STEP_INDEX, OVERLAP_INPUT_LABEL, computeOverlap, overlapFailure, applyOverlap } from './overlapService.js'
 import { renderOverlapInput, renderOverlapSection, replaceOverlapSection } from './overlap.js'
 import { DEPLOY_BLOCK_MESSAGE, isDeployBlocked } from './deployDrain.js'
+import { servedRulesFor } from './rulesStore.js'
 
 // Keyed by step_run.id (HZ-100) — NOT item id. Keying by item used to let a
 // stale callback for a superseded run clear/overwrite the CURRENT run's
@@ -1143,6 +1144,7 @@ async function dispatchToFarm(id, stepIndex, runId, attempt, scope) {
     ...(scope ? { scope } : {}),
     ...(projectContext ? { project_context: projectContext } : {}),
     ...checkCommandsField(item.repo),
+    ...rulesOverrideField(project?.name, item.repo),
   }).catch((err) => {
     // A refused task is not an unreachable farm: say why, and don't retry.
     if (err.status === 400 && Object.hasOwn(FARM_REFUSALS, err.code ?? '')) return failFarmRun(runId, FARM_REFUSALS[err.code])
@@ -1156,6 +1158,15 @@ async function dispatchToFarm(id, stepIndex, runId, attempt, scope) {
 function checkCommandsField(repo) {
   const checkCommands = getRepoCheckCommands(repo)
   return checkCommands ? { check_commands: checkCommands } : {}
+}
+
+// HZ-246: project/repo rules saved in Admin, read from the DB at dispatch
+// (farmd refreshes them again when it claims the task). Absent when neither
+// scope has DB rules, so farmd reads the files exactly as before and an older
+// farm sees no new key.
+function rulesOverrideField(projectName, repo) {
+  const overrides = servedRulesFor(projectName, repo)
+  return Object.keys(overrides).length > 0 ? { rules_override: overrides } : {}
 }
 
 // HZ-245: Admin's placeholders — what farmd's auto-detection finds for the

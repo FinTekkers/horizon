@@ -354,6 +354,27 @@ prompt already carries the item and its project context. A PM step still in a
 `farm-run-*` session finishes and reports through the unchanged
 `/internal/steps/result`.
 
+## 2g. Rules signing secret (HZ-246)
+
+Project and repo rules saved in Admin are versions in Horizon's DB, each
+signed with this secret; agents are only ever served a version whose
+signature checks out. Set it **before** the release ships, or rules saves fail
+closed. Names only — the value lives on the host.
+
+| File | Var | Notes |
+|---|---|---|
+| `/etc/horizon/server.env` | `RULES_HMAC_SECRET` | a long random string, e.g. `openssl rand -hex 32`. Unset ⇒ saves and restores answer **503** and agents get only the `farm/rules/*.md` files |
+
+**Never** put it in `farm.env`: agents are launched from there. Changing it
+later makes every saved version fail its check (agents fall back to the
+files, Admin shows each version as tampered) — set it once.
+
+A version edited straight in SQLite fails its check: it is skipped, the
+newest version that still verifies is served instead (else the file), and the
+server logs `rules: TAMPER scope=… key=… version=…`. Accepted risk: an agent
+running as this OS user can read the server's environment, so this catches
+naive or accidental DB edits, not a determined forger.
+
 ## 3. Confirm the repo is pull-only
 
 `/opt/horizon` must be able to `git fetch`/`checkout` from `origin`, but must

@@ -3,6 +3,9 @@
 // project) → project rules → repo rules. The farm's own files are read and
 // written in place; there is no DB copy to drift. Every UI save becomes a git
 // commit (and a push when a remote exists) so git history is the audit log.
+// HZ-246: project and repo rules saved in Admin are DB versions instead
+// (rulesStore.js); the files here stay the defaults, and callers pass the
+// served DB text in as `overrides`.
 //
 // The compose logic in effectivePrompt() mirrors farm/rules.py
 // effective_prompt() and farm/personas.py compose_role() — parity-tested
@@ -201,10 +204,24 @@ function composeRole(roleText, agent, personaId) {
   return roleText
 }
 
+// The rules file stem for a project name or an owner/repo (HZ-246: also the
+// rule_version key). null when there is nothing to look up.
+export function rulesKey(scope, name) {
+  if (typeof name !== 'string' || !name.trim()) return null
+  if (scope === 'project') return slugify(name) || null
+  if (scope === 'repo') return name.trim().replaceAll('/', '__')
+  return null
+}
+
 // Mirror of farm/rules.py resolve_rules (byte cap included). Returns parts
 // in order, not pre-joined, so renderRulesSection can drop an oversized part
 // whole instead of slicing across a part boundary.
-export function resolveRules(projectName, repo) {
+//
+// HZ-246: `overrides` is the served DB rules ({ project?, repo? }), passed in
+// by the caller — this module never reads the DB. A non-blank string replaces
+// that part's file read and is kept byte-for-byte (no trim); anything else
+// (absent, null, empty or whitespace-only) leaves today's file read.
+export function resolveRules(projectName, repo, overrides = null) {
   const parts = []
   const readCapped = (relpath) => {
     const full = path.join(FARM_DIR, relpath)
@@ -217,11 +234,15 @@ export function resolveRules(projectName, repo) {
     if (raw.length > MAX_DEFINITION_BYTES) return ''
     return raw.toString('utf8').trim()
   }
+  const override = (scope) => {
+    const value = overrides && Object.hasOwn(overrides, scope) ? overrides[scope] : null
+    return typeof value === 'string' && value.trim() ? value : null
+  }
   if (typeof projectName === 'string' && projectName.trim()) {
-    parts.push(readCapped(path.join('rules/projects', `${slugify(projectName)}.md`)))
+    parts.push(override('project') ?? readCapped(path.join('rules/projects', `${slugify(projectName)}.md`)))
   }
   if (typeof repo === 'string' && repo.trim()) {
-    parts.push(readCapped(path.join('rules/repos', `${repo.trim().replaceAll('/', '__')}.md`)))
+    parts.push(override('repo') ?? readCapped(path.join('rules/repos', `${repo.trim().replaceAll('/', '__')}.md`)))
   }
   return parts.filter(Boolean)
 }
@@ -239,7 +260,9 @@ export function renderRulesSection(rulesParts) {
   if (typeof rulesParts === 'string') {
     parts = rulesParts.trim() ? [rulesParts.trim()] : []
   } else if (Array.isArray(rulesParts)) {
-    parts = rulesParts.filter((p) => typeof p === 'string' && p.trim()).map((p) => p.trim())
+    // HZ-246: parts are kept as given — file parts arrive trimmed already,
+    // and saved DB rules reach the prompt byte-for-byte.
+    parts = rulesParts.filter((p) => typeof p === 'string' && p.trim())
   } else {
     parts = []
   }
@@ -273,10 +296,11 @@ export function renderRulesSection(rulesParts) {
 
 // Mirror of farm/rules.py effective_prompt — the exact string an agent for
 // this project/repo/persona receives (role defaults to the implement step).
-export function effectivePrompt({ role = 'eng_implement', agent = 'eng', persona, project, repo } = {}) {
+// `overrides` is the served DB rules, as for resolveRules.
+export function effectivePrompt({ role = 'eng_implement', agent = 'eng', persona, project, repo, overrides = null } = {}) {
   const roleFile = definitionPath('role', role)
   const roleText = roleFile && fs.existsSync(roleFile) ? fs.readFileSync(roleFile, 'utf8') : ''
   const composed = composeRole(roleText, agent, persona)
-  const section = renderRulesSection(resolveRules(project, repo))
+  const section = renderRulesSection(resolveRules(project, repo, overrides))
   return section ? `${composed}\n\n${section}` : composed
 }
