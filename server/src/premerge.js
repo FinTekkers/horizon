@@ -177,7 +177,11 @@ export const runner = {
 // onSlot (HZ-227) hears 'queued' when the run waits for a check slot and
 // 'granted' when it gets one; a run that never waits calls it not at all.
 // Fire-and-forget: it is never awaited and anything it throws is ignored.
-export async function runPreMergeChecks(item, { headSha, baseSha, timeoutMs, onSlot }) {
+//
+// checkCommands (HZ-245) is the repo's Admin-configured {install,test,lint,e2e},
+// or null for auto-detect. It goes to the CLI as argv, never env, so it can't
+// reach the check processes' environment.
+export async function runPreMergeChecks(item, { headSha, baseSha, timeoutMs, onSlot, checkCommands = null }) {
   const shas = { head_sha: headSha, base_sha: baseSha }
   if (!SHA_RE.test(headSha || '') || !SHA_RE.test(baseSha || '')) {
     return { ok: false, reason: 'bad_input', detail: 'GitHub did not return full commit shas', ...shas }
@@ -188,6 +192,7 @@ export async function runPreMergeChecks(item, { headSha, baseSha, timeoutMs, onS
     '--timeout-s', String(Math.floor(timeoutMs / 1000)),
     '--json',
   ]
+  if (checkCommands) args.push('--check-commands', JSON.stringify(checkCommands))
   const spawnOpts = { cwd: path.dirname(FARM_DIR), timeoutMs, env: childEnv(timeoutMs), itemId: item.id }
   if (onSlot) {
     spawnOpts.onStderrLine = (line) => {

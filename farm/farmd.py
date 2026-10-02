@@ -8,6 +8,7 @@ tmux session `farm-daemon` (see run.sh) on port 4100.
 import asyncio
 import json
 import os
+import re
 import signal
 import tempfile
 import threading
@@ -25,6 +26,7 @@ from fastapi.responses import JSONResponse
 from domain.py import reasons, steps
 from . import check_slots, conflict_resolver, pause, rules, tmux_mgr, workspaces
 from . import config as farm_config
+from .checks import CHECK_SLOTS, default_check_slots
 from .task_files import read_launchable_task
 from .agent_runner import AgentError, assert_provider_auth
 from .config import (
@@ -960,8 +962,11 @@ async def conflicts_resolve(request: Request):
         return JSONResponse({"error": "item.id and item.repo are required"}, status_code=400)
     try:
         with workspaces.item_lock(repo, item_id, wait_s=0):
+            # HZ-245: the repo's Admin-configured check commands, when the
+            # server sent any; absent means auto-detect, exactly as before.
+            extra = {"configured": body["check_commands"]} if body.get("check_commands") else {}
             result = await asyncio.to_thread(
-                conflict_resolver.resolve, repo, item_id, body.get("branch"), body.get("base_branch")
+                conflict_resolver.resolve, repo, item_id, body.get("branch"), body.get("base_branch"), **extra
             )
     except workspaces.ItemBusy:
         return JSONResponse({"error": "resolve_in_progress"}, status_code=409)
@@ -969,6 +974,27 @@ async def conflicts_resolve(request: Request):
         print(f"farmd: conflict resolution for {item_id} failed: {exc}", flush=True)
         return JSONResponse({"error": str(exc)[:300]}, status_code=500)
     return {"ok": True, **result}
+
+
+# HZ-245: `owner/name`, each part starting with an alphanumeric — so no
+# `.`/`..` segment and no extra `/` can reach hub_path().
+_REPO_NAME_RE = re.compile(r"^[A-Za-z0-9][\w.-]*/[A-Za-z0-9][\w.-]*$")
+
+
+@app.post("/repos/check-defaults")
+async def repos_check_defaults(request: Request):
+    """HZ-245: what auto-detection would run for a repo, labelled by slot
+    (install/test/lint/e2e) — Admin shows it as placeholders. Read-only: no
+    git, no lock, no writes. Detected on the hub clone, so it is a hint; a
+    missing hub gives all nulls."""
+    body = await request.json()
+    repo = body.get("repo") if isinstance(body, dict) else None
+    if not isinstance(repo, str) or not _REPO_NAME_RE.match(repo):
+        return JSONResponse({"error": "repo must be owner/name"}, status_code=400)
+    hub = workspaces.hub_path(repo)
+    if not (hub / ".git").exists():
+        return {"repo": repo, "defaults": {slot: None for slot in CHECK_SLOTS}}
+    return {"repo": repo, "defaults": await asyncio.to_thread(default_check_slots, hub)}
 
 
 # Each pipe-pane read is capped; the UI pages with `offset`.

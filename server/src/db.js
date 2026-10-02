@@ -462,6 +462,15 @@ if (!db.prepare('PRAGMA table_info(gate_action)').all().some((column) => column.
   db.exec('ALTER TABLE gate_action ADD COLUMN started_by TEXT')
 }
 
+// HZ-245: per-repo check commands, set by a human in Admin. Additive and
+// nullable: NULL in all four is "not configured", so the farm auto-detects
+// exactly as before. Deliberately no seed — not for FinTekkers/horizon, not
+// for anything else; a human enters them after deploy.
+const projectRepoColumns = new Set(db.prepare('PRAGMA table_info(project_repo)').all().map((column) => column.name))
+for (const column of ['check_install', 'check_test', 'check_lint', 'check_e2e']) {
+  if (!projectRepoColumns.has(column)) db.exec(`ALTER TABLE project_repo ADD COLUMN ${column} TEXT`)
+}
+
 const SEED_ITEMS = [
   { id: 'BF-145', title: 'Risk-limit breach dashboard', priority: 'Low', cursor: 1, issue: 412, desc: 'Give risk managers a live view of limit utilization across every desk.', metric: 'Limit breaches acknowledged in < 2 min (from 14 min).', guardrails: 'Read-only — no position mutation. No PII in telemetry.' },
   { id: 'BF-128', title: 'Real-time P&L attribution service', priority: 'High', cursor: 3, issue: 398, desc: 'Attribute intraday P&L to factors, trades and fees in real time.', metric: 'Attribution available < 5s after fill; 99.9% coverage.', guardrails: 'No client identifiers in logs. Must reconcile to EOD books.' },

@@ -136,6 +136,25 @@ test('setProjectEnabled POSTs {enabled} with the PIN in x-human-key only, and st
   expect(localStorage.length).toBe(0)
 })
 
+// HZ-245: the check-commands save — PUT, the PIN in x-human-key only.
+test('saveRepoChecks PUTs {repo, ...checks} with the PIN in x-human-key only, and stores nothing', async () => {
+  localStorage.clear()
+  const serverApi = await import('./serverApi')
+  const reply = { ok: true, repo: 'acme/web', checks: { install: 'npm ci', test: 'npm test', lint: null, e2e: null } }
+  const fetchSpy = vi.fn(async () => ({ ok: true, status: 200, json: async () => reply }))
+  vi.stubGlobal('fetch', fetchSpy)
+
+  const checks = { install: 'npm ci', test: 'npm test', lint: '', e2e: '' }
+  await expect(serverApi.saveRepoChecks(7, 'acme/web', checks, 'pin-1234')).resolves.toEqual(reply)
+  const [url, opts] = fetchSpy.mock.calls[0]
+  expect(url).toBe(`${serverApi.API_BASE}/projects/7/repos/checks`)
+  expect(String(url)).not.toContain('pin-1234')
+  expect(opts.method).toBe('PUT')
+  expect(opts.headers['x-human-key']).toBe('pin-1234')
+  expect(JSON.parse(opts.body)).toEqual({ repo: 'acme/web', ...checks })
+  expect(localStorage.length).toBe(0)
+})
+
 test('setProjectEnabled throws the server’s error text on a 401', async () => {
   localStorage.clear()
   const serverApi = await import('./serverApi')

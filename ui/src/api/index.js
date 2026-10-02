@@ -26,6 +26,8 @@ export const {
   createProject,
   addRepoToProject,
   disconnectRepo,
+  saveRepoChecks,
+  getRepoCheckDefaults,
   createItem,
   artifactUrl,
   outputUrl,

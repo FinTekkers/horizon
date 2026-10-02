@@ -392,3 +392,42 @@ def test_cleanup_can_only_remove_a_premerge_scratch_path(ws_dir, victim):
     assert item.is_dir() and str(item) in subprocess.run(
         ["git", "-C", str(hub), "worktree", "list"], capture_output=True, text=True
     ).stdout
+
+
+# ---- HZ-245: the repo's configured check commands ----
+
+
+def test_cli_check_commands_run_exactly_the_configured_slots(ws_dir, monkeypatch, capsys):
+    """A partial config (install + test) is exactly what the test-merge runs —
+    the crossed merge's pytest suite, which auto-detection would run and
+    fail on, is not run at all."""
+    hub, s = crossing_fixture(ws_dir)
+    ran = []
+    monkeypatch.setattr(
+        checks,
+        "_run_bounded",
+        lambda cmd, ws, timeout_s, env: ran.append(cmd) or subprocess.CompletedProcess(cmd, 0, "", ""),
+    )
+    configured = {"install": "npm install --ignore-scripts", "test": "npm test", "lint": None, "e2e": None}
+
+    code = premerge.main(
+        [REPO, "HZ-154", s["pr_head"], "--base", s["main"], "--json", "--check-commands", json.dumps(configured)]
+    )
+
+    result = json.loads(capsys.readouterr().out)
+    assert code == 0 and result["ok"] is True, result
+    assert ran == [["sh", "-c", "npm install --ignore-scripts"], ["sh", "-c", "npm test"]]
+
+
+@pytest.mark.parametrize("bad", ["{not json", "[]", '"npm test"', "null"])
+def test_unreadable_check_commands_fail_closed_never_auto_detect(ws_dir, monkeypatch, capsys, bad):
+    hub, s = crossing_fixture(ws_dir)
+    ran = []
+    monkeypatch.setattr(checks, "_run_bounded", lambda cmd, *a: ran.append(cmd))
+
+    code = premerge.main([REPO, "HZ-154", s["pr_head"], "--base", s["fork"], "--check-commands", bad])
+
+    result = json.loads(capsys.readouterr().out)
+    assert code == 1
+    assert result["ok"] is False and result["reason"] == "crash"
+    assert ran == []

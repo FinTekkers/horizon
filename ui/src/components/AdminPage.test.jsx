@@ -21,6 +21,11 @@ vi.mock('../api', () => ({
   createApiToken: vi.fn(),
   revokeApiToken: vi.fn(async () => ({ ok: true })),
   setProjectEnabled: vi.fn(async () => ({ ok: true })),
+  saveRepoChecks: vi.fn(),
+  getRepoCheckDefaults: vi.fn(async () => ({
+    available: true,
+    defaults: { install: 'npm install --no-audit --no-fund', test: 'npm test --silent · python -m pytest -q', lint: null, e2e: null },
+  })),
   getDeployTargets: vi.fn(async () => ({
     targets: [
       {
@@ -229,4 +234,80 @@ test('disabling asks for the PIN too', async () => {
   fireEvent.change(alpha.getByLabelText('Gate PIN to disable Alpha'), { target: { value: 'right-pin' } })
   fireEvent.click(alpha.getByRole('button', { name: 'Disable' }))
   await waitFor(() => expect(api.setProjectEnabled).toHaveBeenCalledWith(1, false, 'right-pin'))
+})
+
+// ---- HZ-245: per-repo check commands, gate-PIN protected ----
+
+const CHECK_PROJECTS = [
+  {
+    id: 3,
+    name: 'Fin',
+    enabled: true,
+    repos: [
+      { repo: 'acme/web', prefix: 'AW', checks: { install: 'npm install --ignore-scripts', test: 'npm test', lint: null, e2e: null } },
+      { repo: 'acme/api', prefix: 'AA', checks: { install: null, test: null, lint: null, e2e: null } },
+    ],
+  },
+]
+
+test('check commands show the saved values, and detected defaults as placeholders — fetched only on open', async () => {
+  const { container } = render(<AdminPage sync={{}} projects={CHECK_PROJECTS} onBack={() => {}} />)
+  const fin = within(projectBlock(container, 'Fin'))
+  expect(api.getRepoCheckDefaults).not.toHaveBeenCalled()
+  const [webToggle, apiToggle] = fin.getAllByRole('button', { name: /Check commands/ })
+
+  fireEvent.click(webToggle)
+  expect(fin.getByLabelText('Install command for acme/web').value).toBe('npm install --ignore-scripts')
+  expect(fin.getByLabelText('Test command for acme/web').value).toBe('npm test')
+  expect(fin.getByLabelText('Lint command for acme/web').value).toBe('')
+  expect(fin.getByLabelText('E2E command for acme/web').value).toBe('')
+  expect(api.getRepoCheckDefaults).toHaveBeenCalledWith(3, 'acme/web')
+
+  fireEvent.click(apiToggle)
+  expect(api.getRepoCheckDefaults).toHaveBeenCalledWith(3, 'acme/api')
+  await waitFor(() =>
+    expect(fin.getByLabelText('Install command for acme/api').placeholder).toBe('npm install --no-audit --no-fund'),
+  )
+  expect(fin.getByLabelText('Test command for acme/api').placeholder).toBe('npm test --silent · python -m pytest -q')
+  expect(fin.getByLabelText('Lint command for acme/api').placeholder).toBe('')
+  expect(fin.getByLabelText('Install command for acme/api').value).toBe('')
+})
+
+test('saving check commands needs the PIN and sends the edited slots with it', async () => {
+  const { container } = render(<AdminPage sync={{}} projects={CHECK_PROJECTS} onBack={() => {}} />)
+  const fin = within(projectBlock(container, 'Fin'))
+  fireEvent.click(fin.getAllByRole('button', { name: /Check commands/ })[0])
+  fireEvent.change(fin.getByLabelText('Lint command for acme/web'), { target: { value: 'npm run lint' } })
+
+  const pinInput = fin.getByLabelText('Gate PIN to save check commands for acme/web')
+  expect(pinInput.getAttribute('type')).toBe('password')
+  const save = fin.getByRole('button', { name: 'Save commands' })
+  expect(save.disabled).toBe(true)
+  fireEvent.submit(pinInput.closest('form'))
+  expect(api.saveRepoChecks).not.toHaveBeenCalled()
+
+  // Wrong PIN: an error, and the typed values stay.
+  api.saveRepoChecks.mockRejectedValueOnce(Object.assign(new Error('human_gate_key_required'), { status: 401 }))
+  fireEvent.change(pinInput, { target: { value: 'wrong-pin' } })
+  fireEvent.click(save)
+  await fin.findByText('Gate PIN incorrect')
+  expect(fin.getByLabelText('Lint command for acme/web').value).toBe('npm run lint')
+  expect(fin.queryByText('Check commands saved.')).toBeNull()
+
+  api.saveRepoChecks.mockResolvedValueOnce({
+    ok: true,
+    repo: 'acme/web',
+    checks: { install: 'npm install --ignore-scripts', test: 'npm test', lint: 'npm run lint', e2e: null },
+  })
+  fireEvent.change(fin.getByLabelText('Gate PIN to save check commands for acme/web'), { target: { value: 'right-pin' } })
+  fireEvent.click(fin.getByRole('button', { name: 'Save commands' }))
+  await fin.findByText('Check commands saved.')
+  expect(api.saveRepoChecks).toHaveBeenLastCalledWith(
+    3,
+    'acme/web',
+    { install: 'npm install --ignore-scripts', test: 'npm test', lint: 'npm run lint', e2e: '' },
+    'right-pin',
+  )
+  expect(fin.getByLabelText('Gate PIN to save check commands for acme/web').value).toBe('')
+  expect(Object.values({ ...localStorage })).not.toContain('right-pin')
 })

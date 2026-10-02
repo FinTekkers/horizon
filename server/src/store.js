@@ -254,15 +254,56 @@ function itemGateAction(rows, itemId, cursor) {
 
 // ---- projects & repos ----
 
-export function listProjects() {
+// `checks` (HZ-245) adds each repo's check commands; off for consumers with
+// no use for them.
+export function listProjects({ checks = true } = {}) {
   const projects = db.prepare('SELECT * FROM project ORDER BY name').all()
   const repos = db.prepare('SELECT * FROM project_repo ORDER BY repo').all()
   return projects.map((p) => ({
     id: p.id,
     name: p.name,
     enabled: !!p.enabled,
-    repos: repos.filter((r) => r.project_id === p.id).map((r) => ({ repo: r.repo, prefix: r.prefix })),
+    repos: repos
+      .filter((r) => r.project_id === p.id)
+      .map((r) => ({ repo: r.repo, prefix: r.prefix, ...(checks ? { checks: repoChecks(r) } : {}) })),
   }))
+}
+
+// ---- per-repo check commands (HZ-245) ----
+// The four commands farm/checks.py runs for a repo, in this order. A human
+// sets them in Admin; NULL everywhere means "not configured" (auto-detect).
+
+export const CHECK_SLOTS = ['install', 'test', 'lint', 'e2e']
+
+function repoChecks(row) {
+  return Object.fromEntries(CHECK_SLOTS.map((slot) => [slot, row[`check_${slot}`] ?? null]))
+}
+
+// What the farm is sent with a task: the stored slots, or null when the repo
+// is unknown or has nothing configured (the caller then sends nothing).
+export function getRepoCheckCommands(repoFullName) {
+  const row = repoFullName ? findRepo(repoFullName) : null
+  if (!row) return null
+  const checks = repoChecks(row)
+  return CHECK_SLOTS.some((slot) => checks[slot] != null) ? checks : null
+}
+
+// The ONLY writer of the check columns, and its only caller is the
+// PIN-gated Admin route in app.js: no agent, step or farm path may change the
+// commands that judge its own work. Each string is stored exactly as entered;
+// empty or whitespace-only becomes NULL (the same rule as the farm's).
+export function setRepoCheckCommands(projectId, repoFullName, checks) {
+  const row = db.prepare('SELECT id FROM project_repo WHERE project_id = ? AND repo = ?').get(projectId, repoFullName)
+  if (!row) return { error: 'not_found' }
+  const values = CHECK_SLOTS.map((slot) => {
+    const value = checks?.[slot]
+    return typeof value === 'string' && value.trim() ? value : null
+  })
+  db.prepare(
+    'UPDATE project_repo SET check_install = ?, check_test = ?, check_lint = ?, check_e2e = ? WHERE id = ?',
+  ).run(...values, row.id)
+  notify()
+  return { ok: true, checks: Object.fromEntries(CHECK_SLOTS.map((slot, i) => [slot, values[i]])) }
 }
 
 export function listRepos() {

@@ -42,6 +42,7 @@ import {
   reviewRejected,
   isProjectEnabled,
   setProjectEnabled as writeProjectEnabled,
+  getRepoCheckCommands,
 } from './store.js'
 import { createMockPr, createDeployRelease, postIssueComment, syncIssueBodyFields, createPrFromBranch, getPrHeadSha } from './github.js'
 import { PHASES } from '../../domain/js/lifecycle.js'
@@ -658,7 +659,7 @@ async function runConflictResolution(id, item, actor) {
         ? takeCannedConflictReply()
         : await farmFetch(
             '/conflicts/resolve',
-            { item: { id, repo: item.repo }, branch },
+            { item: { id, repo: item.repo }, branch, ...checkCommandsField(item.repo) },
             { timeoutMs: FARM_CONFLICT_RESOLVE_TIMEOUT_MS },
           )
   } catch (err) {
@@ -1120,11 +1121,34 @@ async function dispatchToFarm(id, stepIndex, runId, attempt, scope) {
     ...(mergeMain ? { merge_main: true } : {}),
     ...(scope ? { scope } : {}),
     ...(projectContext ? { project_context: projectContext } : {}),
+    ...checkCommandsField(item.repo),
   }).catch((err) => {
     // A refused task is not an unreachable farm: say why, and don't retry.
     if (err.status === 400 && Object.hasOwn(FARM_REFUSALS, err.code ?? '')) return failFarmRun(runId, FARM_REFUSALS[err.code])
     failFarmRun(runId, `could not hand the step to the farm: ${err.message}`, REASON.UNREACHABLE)
   })
+}
+
+// HZ-245: the repo's Admin-configured check commands ride with the task, read
+// from the DB at dispatch. Absent (never null) when nothing is configured, so
+// the farm auto-detects exactly as before and an older farm sees no new key.
+function checkCommandsField(repo) {
+  const checkCommands = getRepoCheckCommands(repo)
+  return checkCommands ? { check_commands: checkCommands } : {}
+}
+
+// HZ-245: Admin's placeholders — what farmd's auto-detection finds for the
+// repo on its hub clone. Read-only, short timeout; a farm that is off or
+// unreachable yields available:false and the UI shows empty placeholders.
+export async function fetchCheckDefaults(repo) {
+  const empty = { available: false, defaults: { install: null, test: null, lint: null, e2e: null } }
+  if (!FARM_URL) return empty
+  try {
+    const data = await farmFetch('/repos/check-defaults', { repo }, { timeoutMs: 5000 })
+    return { available: true, defaults: { ...empty.defaults, ...(data.defaults || {}) } }
+  } catch {
+    return empty
+  }
 }
 
 const FARM_REFUSALS = {

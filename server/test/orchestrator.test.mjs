@@ -721,3 +721,34 @@ test('only the implement step carries merge_main, even on a conflicted PR', asyn
   insertPrItem.run('MM-4', 'Conflicted PR under review', REVIEW_STEP_INDEX, 143, 0)
   assert.equal('merge_main' in (await dispatchFor('MM-4')).body, false)
 })
+
+// ---- HZ-245: the repo's check commands ride with the task ----
+
+test('a step for a repo with stored check commands carries them as check_commands; with none the key is absent', async () => {
+  const projectId = db.prepare("INSERT INTO project (name, enabled) VALUES ('HZ-245 dispatch', 1)").run().lastInsertRowid
+  db.prepare("INSERT INTO project_repo (project_id, repo, prefix) VALUES (?, 'acme/configured', 'AC')").run(projectId)
+  db.prepare("INSERT INTO project_repo (project_id, repo, prefix) VALUES (?, 'acme/unconfigured', 'AU')").run(projectId)
+  const insertRepoItem = db.prepare('INSERT INTO work_item (id, title, priority, cursor, repo) VALUES (?, ?, ?, ?, ?)')
+  try {
+    const result = store.setRepoCheckCommands(projectId, 'acme/configured', { install: 'npm ci', test: 'npm test', lint: '  ', e2e: '' })
+    assert.equal(result.ok, true)
+    insertRepoItem.run('D-CC1', 'Configured repo', 'Medium', 11, 'acme/configured')
+    const configured = await dispatchFor('D-CC1')
+    assert.deepEqual(configured.body.check_commands, { install: 'npm ci', test: 'npm test', lint: null, e2e: null })
+    assert.deepEqual(configured.body.check_commands, store.getRepoCheckCommands('acme/configured'))
+
+    insertRepoItem.run('D-CC2', 'Unconfigured repo', 'Medium', 11, 'acme/unconfigured')
+    const unconfigured = await dispatchFor('D-CC2')
+    assert.equal(Object.hasOwn(unconfigured.body, 'check_commands'), false)
+
+    // Clearing every slot is "not configured" again: the key goes away.
+    store.setRepoCheckCommands(projectId, 'acme/configured', { install: '', test: '', lint: '', e2e: '' })
+    db.prepare("DELETE FROM step_run WHERE item_id = 'D-CC1'").run()
+    dispatches.length = 0
+    const cleared = await dispatchFor('D-CC1')
+    assert.equal(Object.hasOwn(cleared.body, 'check_commands'), false)
+  } finally {
+    db.prepare('DELETE FROM project_repo WHERE project_id = ?').run(projectId)
+    db.prepare('DELETE FROM project WHERE id = ?').run(projectId)
+  }
+})

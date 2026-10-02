@@ -480,3 +480,36 @@ test('HZ-216: a merge is shown on the done Accept step, but not when the item la
   db.prepare('UPDATE work_item SET cursor = ? WHERE id = ?').run(ACCEPT_GATE_INDEX, id)
   assert.equal(await gateActionOf(id), null, 'not on a later visit to the gate')
 })
+
+// ---- HZ-245: the repo's Admin-configured check commands reach the CLI ----
+
+test('HZ-245: Accept passes the stored check commands as --check-commands; an unconfigured repo gets no flag', async () => {
+  // Rows written directly: createProject/addRepoToProject would also move the
+  // active project and purge demo items, which other tests here rely on.
+  const projectId = db.prepare("INSERT INTO project (name, enabled) VALUES ('HZ-245 checks', 1)").run().lastInsertRowid
+  db.prepare("INSERT INTO project_repo (project_id, repo, prefix) VALUES (?, ?, 'AD')").run(projectId, REPO)
+  db.prepare("INSERT INTO project_repo (project_id, repo, prefix) VALUES (?, 'acme/plain', 'AP')").run(projectId)
+  try {
+    const stored = { install: 'npm install --ignore-scripts', test: ' npm test ', lint: '', e2e: null }
+    store.setRepoCheckCommands(projectId, REPO, stored)
+
+    const id = acceptItem()
+    assert.equal((await approve(id)).statusCode, 200)
+    const { args } = runs.at(-1)
+    const at = args.indexOf('--check-commands')
+    assert.ok(at > 0, `no --check-commands in ${JSON.stringify(args)}`)
+    assert.deepEqual(JSON.parse(args[at + 1]), { install: 'npm install --ignore-scripts', test: ' npm test ', lint: null, e2e: null })
+    assert.equal(at + 2, args.length, 'one flag, one JSON value')
+    const envValues = Object.values(runs.at(-1).opts.env ?? {})
+    assert.ok(!envValues.some((v) => String(v).includes('--ignore-scripts')), 'argv only, never env')
+
+    const plain = acceptItem()
+    db.prepare("UPDATE work_item SET repo = 'acme/plain' WHERE id = ?").run(plain)
+    stubRunner(greenRun)
+    assert.equal((await approve(plain)).statusCode, 200)
+    assert.equal(runs.at(-1).args.includes('--check-commands'), false)
+  } finally {
+    db.prepare('DELETE FROM project_repo WHERE project_id = ?').run(projectId)
+    db.prepare('DELETE FROM project WHERE id = ?').run(projectId)
+  }
+})

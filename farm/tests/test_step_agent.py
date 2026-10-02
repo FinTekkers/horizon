@@ -141,6 +141,31 @@ def test_implement_step_fails_when_checks_fail(tmp_path, monkeypatch):
     assert "T-1: Test item (Horizon Eng agent)" not in log_text
 
 
+def test_implement_step_runs_exactly_the_tasks_configured_check_commands(tmp_path, monkeypatch):
+    """HZ-245: the task's check_commands (install + test only) are what the
+    implement checks run — two `sh -c` argvs, and no auto-detected npm or
+    pytest command even though the workspace has a package.json with test
+    and lint scripts."""
+    ws, origin = make_git_workspace(tmp_path)
+    (ws / "package.json").write_text(json.dumps({"scripts": {"test": "node --test", "lint": "eslint ."}}))
+    (ws / "pytest.ini").write_text("[pytest]\n")
+    monkeypatch.setattr(step_agent, "ensure_item_worktree", lambda repo, item_id: ws)
+    monkeypatch.delenv("FARM_CHECK_CMD", raising=False)
+    ran = []
+    monkeypatch.setattr(
+        checks,
+        "_run_bounded",
+        lambda cmd, ws, timeout_s, env: ran.append(cmd) or subprocess.CompletedProcess(cmd, 0, "", ""),
+    )
+    task = make_task(11, "Specialist agent implements", repo="acme/demo")
+    task["check_commands"] = {"install": "npm install --ignore-scripts", "test": "npm test", "lint": None, "e2e": None}
+
+    result = execute(task)
+
+    assert ran == [["sh", "-c", "npm install --ignore-scripts"], ["sh", "-c", "npm test"]]
+    assert "2 repo check(s) passed" in result["summary"]
+
+
 # ---- screenshot publishing (HZ-63) ----
 # Screenshots are gitignored now (no more committed PNGs), published instead
 # to a per-item git ref so two branches touching the same journey never

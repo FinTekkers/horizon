@@ -330,6 +330,11 @@ button { font-family: var(--font-sans); }
   font: 700 13px var(--font-sans); border-radius: 6px; padding: 2px 7px;
 }
 .repo-row__disconnect:hover { color: var(--danger-ink); background: var(--danger-bg); }
+.repo-checks { padding: 0 2px 6px 18px; }
+.repo-checks__toggle { border: none; background: none; cursor: pointer; color: var(--muted); font: 600 12px var(--font-sans); padding: 0; }
+.repo-checks__toggle:hover { color: var(--primary); }
+.repo-checks__form { margin-top: 8px; }
+.repo-checks__form .field__input::placeholder { font-family: var(--font-mono); }
 
 .deploy-target-row { display: flex; align-items: center; gap: 9px; padding: 7px 2px; font: 500 13px var(--font-sans); }
 .deploy-target-row__repo { color: var(--deep); font-weight: 600; }

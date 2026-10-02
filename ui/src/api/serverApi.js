@@ -212,6 +212,29 @@ export async function setProjectEnabled(projectId, enabled, pin) {
   return data
 }
 
+// HZ-245: a repo's check commands (install, test, lint, e2e). Same PIN
+// handling as setProjectEnabled: asked for on every save, sent only in the
+// x-human-key header, never cached.
+export async function saveRepoChecks(projectId, repo, checks, pin) {
+  const res = await fetch(`${API_BASE}/projects/${encodeURIComponent(projectId)}/repos/checks`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json', 'x-human-key': pin },
+    body: JSON.stringify({ repo, ...checks }),
+  })
+  const data = await res.json().catch(() => ({}))
+  if (!res.ok) {
+    const err = new Error(data.error || `HTTP ${res.status}`)
+    err.status = res.status
+    throw err
+  }
+  return data
+}
+
+// What auto-detection would run for the repo — Admin's placeholders.
+export function getRepoCheckDefaults(projectId, repo) {
+  return getJson(`/projects/${encodeURIComponent(projectId)}/repos/check-defaults?repo=${encodeURIComponent(repo)}`)
+}
+
 async function postJson(path, body) {
   const res = await fetch(`${API_BASE}${path}`, {
     method: 'POST',
