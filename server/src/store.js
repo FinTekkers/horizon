@@ -941,6 +941,22 @@ export function addFeedback(id, { message, target = '', source = 'ui', ghComment
   return { ok: true, queued: true }
 }
 
+// HZ-236: queues a message for the item's next agent dispatch, once. Unlike
+// addFeedback it never cancels or re-kicks anything — step 9's overlap check
+// writes onto OTHER items, whose running steps must not be touched — and a
+// message already on the item (delivered or not) is not queued again, so
+// re-running step 9 never leaves a second copy.
+export function queueFeedbackOnce(id, { message, target = 'Eng', source = 'overlap' }) {
+  if (!getItem(id)) return { error: 'not_found' }
+  const text = String(message || '').trim().slice(0, 2000)
+  if (!text) return { error: 'empty_message' }
+  if (db.prepare('SELECT 1 FROM feedback WHERE item_id = ? AND message = ?').get(id, text)) return { ok: true, duplicate: true }
+  db.prepare('INSERT INTO feedback (item_id, target, message, source) VALUES (?, ?, ?, ?)').run(id, target, text, source)
+  addEvent(id, { who: 'Horizon', text: `queued feedback for the next agent step: ${text.slice(0, 200)}`, color: '#5E4380', initials: 'HZ' })
+  notify()
+  return { ok: true, queued: true }
+}
+
 // Remove the BF-* demo items (called when real GitHub sync is connected).
 export function purgeDemoItems() {
   const ids = db.prepare("SELECT id FROM work_item WHERE id LIKE 'BF-%'").all().map((r) => r.id)

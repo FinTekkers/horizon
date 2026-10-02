@@ -594,6 +594,30 @@ export async function mergePr(item, { sha } = {}) {
 // has no PR (demo mode). HZ-185's forward compares it with the commit the
 // last automated review read. Throws when GitHub can't answer, so a caller
 // never mistakes "unknown" for "unchanged".
+// HZ-236: a PR's changed files, for step 9's overlap check on an in-flight
+// item that has no step-6 plan. Read-only. Callers reduce the result to file
+// and function names (server/src/overlap.js); the patch text never leaves the
+// server. Errors carry the status only — never a header, so never the token.
+let cannedPrFilesForTest = null
+
+// Tests only: { "<repo>#<pr>": [{ filename, patch }] } answers getPrFiles for
+// those PRs without a GitHub call. Any other PR still goes to GitHub.
+export function setPrFilesForTest(map) {
+  cannedPrFilesForTest = map
+}
+
+export async function getPrFiles(item) {
+  const key = `${item.repo}#${item.pr}`
+  if (cannedPrFilesForTest && Object.hasOwn(cannedPrFilesForTest, key)) return cannedPrFilesForTest[key]
+  const res = await gh(`/repos/${item.repo}/pulls/${item.pr}/files?per_page=100`)
+  if (!res.ok) throw new Error(`could not read PR #${item.pr}'s changed files (GitHub returned ${res.status})`)
+  const data = await res.json().catch(() => null)
+  if (!Array.isArray(data)) throw new Error(`GitHub returned no file list for PR #${item.pr}`)
+  return data
+    .map((f) => ({ filename: typeof f?.filename === 'string' ? f.filename : '', patch: typeof f?.patch === 'string' ? f.patch : '' }))
+    .filter((f) => f.filename)
+}
+
 export async function getPrHeadSha(item) {
   if (!item.repo || item.pr == null) return null
   const res = await gh(`/repos/${item.repo}/pulls/${item.pr}`)

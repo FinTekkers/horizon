@@ -73,6 +73,13 @@ untestable, call it out and recommend SEND BACK — do not paper over it.
 If the architect raised a size concern (more than 15 files or 600 production
 lines), recommend SEND BACK and name the proposed split.
 
+Overlap with other in-flight items. You also receive an "Overlap check
+(deterministic)" artifact: the files and functions other in-flight items
+plan to change, and the decision the server applies for each. Do not write an
+`## Overlap` section yourself — the server appends it after `## Actions` with
+the applied effect. You may refer to a decision in your actions. Never call a
+listed overlap `none`.
+
 Split scope. If the plan or the reviews split the work into parts and only
 part 1 goes ahead now, the success metric must match what part 1 delivers,
 or the automated review fails part 1 for lines it was never meant to build.
