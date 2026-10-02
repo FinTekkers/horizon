@@ -176,3 +176,27 @@ test('a card whose item carries no Eng persona shows the Eng default, never a bl
   const badge = container.querySelector('.card__persona')
   expect(badge.textContent).toBe(PERSONAS[PRIMARY_PERSONA_AGENT][DEFAULT_PERSONAS[PRIMARY_PERSONA_AGENT]].label)
 })
+
+// HZ-208: every card names its own project.
+test('every card shows a badge with its own project’s name', () => {
+  const projects = [
+    { id: 1, name: 'Alpha', enabled: true },
+    { id: 2, name: 'Beta', enabled: true },
+  ]
+  const items = [
+    { ...makeItem('AL-1', 'running'), project_id: 1 },
+    { ...makeItem('AL-2', 'queued'), project_id: 1 },
+    { ...makeItem('BE-1', 'queued'), project_id: 2 },
+  ]
+  const { container } = render(
+    <Board items={items} projects={projects} onOpen={noop} onApprove={noop} onReject={noop} onTogglePause={noop} onNewItem={noop} />,
+  )
+  const cards = [...container.querySelectorAll('.card')]
+  expect(cards).toHaveLength(3)
+  const expected = { 'AL-1': 'Alpha', 'AL-2': 'Alpha', 'BE-1': 'Beta' }
+  for (const card of cards) {
+    const id = card.querySelector('.card__id').textContent
+    expect(card.querySelectorAll('.proj-badge'), id).toHaveLength(1)
+    expect(card.querySelector('.proj-badge').textContent, id).toBe(expected[id])
+  }
+})

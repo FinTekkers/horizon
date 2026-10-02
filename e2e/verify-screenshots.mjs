@@ -35,6 +35,8 @@ const EXPECTED_JOURNEYS = [
   'api-tokens',
   'premerge-checks-red',
   'gate-in-flight-blocked',
+  'project-filter',
+  'project-enabled',
 ]
 
 const missing = EXPECTED_JOURNEYS.filter((name) => !existsSync(join(SCREENSHOTS_DIR, `${name}.png`)))

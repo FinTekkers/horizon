@@ -38,15 +38,24 @@ export function insertItem(
     repo = null,
     updatedAt = null,
     paused = 0,
+    // HZ-208: the project the item belongs to; null (a local demo item) by default.
+    project_id = null,
   },
 ) {
   db.prepare(
-    `INSERT INTO work_item (id, title, priority, desc, metric, guardrails, cursor, repo, pr, pr_url, pr_mergeable, paused)
-     VALUES (@id, @title, @priority, @desc, @metric, @guardrails, @cursor, @repo, @pr, @pr_url, @pr_mergeable, @paused)`,
-  ).run({ id, title, priority, desc, metric, guardrails, cursor, repo, pr, pr_url, pr_mergeable, paused: paused ? 1 : 0 })
+    `INSERT INTO work_item (id, title, priority, desc, metric, guardrails, cursor, repo, pr, pr_url, pr_mergeable, paused, project_id)
+     VALUES (@id, @title, @priority, @desc, @metric, @guardrails, @cursor, @repo, @pr, @pr_url, @pr_mergeable, @paused, @project_id)`,
+  ).run({ id, title, priority, desc, metric, guardrails, cursor, repo, pr, pr_url, pr_mergeable, paused: paused ? 1 : 0, project_id })
   if (updatedAt) {
     db.prepare('UPDATE work_item SET updated_at = ? WHERE id = ?').run(updatedAt, id)
   }
+}
+
+// HZ-208: a project row with no repositories, written directly so no repo is
+// connected (connecting one purges the demo items other specs rely on).
+// Returns the new id.
+export function insertProject(db, { name, enabled = true }) {
+  return Number(db.prepare('INSERT INTO project (name, enabled) VALUES (?, ?)').run(name, enabled ? 1 : 0).lastInsertRowid)
 }
 
 // A Horizon activity-log row, written directly like insertItem above so it

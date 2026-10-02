@@ -9,6 +9,7 @@ import {
   listApiTokens,
   createApiToken,
   revokeApiToken,
+  setProjectEnabled,
 } from '../api'
 import { BackIcon, GithubIcon, LockIcon } from './icons'
 
@@ -414,6 +415,81 @@ function RepoRow({ projectId, repoConn, syncRepos }) {
   )
 }
 
+// HZ-208: a project's dispatch on/off switch. Every flip, both ways, asks for
+// the gate PIN; it lives in this form's state only until the request settles,
+// and goes out in a header (setProjectEnabled), never a URL or a log line.
+// The switch shows the server's state from the snapshot — never an
+// optimistic guess — so a refused PIN leaves it exactly as it was.
+function ProjectEnabledToggle({ project }) {
+  const [asking, setAsking] = useState(false)
+  const [pin, setPin] = useState('')
+  const [error, setError] = useState(null)
+  const [busy, setBusy] = useState(false)
+  const next = !project.enabled
+  const verb = next ? 'Enable' : 'Disable'
+
+  const cancel = () => {
+    setAsking(false)
+    setPin('')
+    setError(null)
+  }
+
+  const submit = async (e) => {
+    e.preventDefault()
+    if (!pin || busy) return
+    setBusy(true)
+    setError(null)
+    try {
+      await setProjectEnabled(project.id, next, pin)
+      setAsking(false)
+    } catch (err) {
+      setError(err.status === 401 ? 'Gate PIN incorrect' : err.message)
+    } finally {
+      setPin('')
+      setBusy(false)
+    }
+  }
+
+  return (
+    <>
+      <div className="project-enabled">
+        <span>{project.enabled ? 'Enabled' : 'Disabled'}</span>
+        <button
+          type="button"
+          role="switch"
+          aria-checked={!!project.enabled}
+          aria-label={`${project.name} enabled`}
+          className="theme-switch"
+          onClick={() => (asking ? cancel() : setAsking(true))}
+        >
+          <span className="theme-switch__thumb" />
+        </button>
+      </div>
+      {asking && (
+        <form className="project-block__add" style={{ flexBasis: '100%' }} onSubmit={submit}>
+          <input
+            className="field__input"
+            type="password"
+            autoComplete="off"
+            aria-label={`Gate PIN to ${verb.toLowerCase()} ${project.name}`}
+            placeholder={`Gate PIN to ${verb.toLowerCase()} this project`}
+            value={pin}
+            onChange={(e) => setPin(e.target.value)}
+            autoFocus
+          />
+          <button type="submit" className="composer__submit" style={{ background: 'var(--primary)' }} disabled={!pin || busy}>
+            {busy ? `${verb.replace(/e$/, '')}ing…` : verb}
+          </button>
+          <button type="button" className="composer__cancel" onClick={cancel}>
+            Cancel
+          </button>
+        </form>
+      )}
+      {error && <div className="gh-error" style={{ flexBasis: '100%' }}>{error}</div>}
+    </>
+  )
+}
+
 function ProjectPanel({ project, syncRepos }) {
   const [repo, setRepo] = useState('')
   const [error, setError] = useState(null)
@@ -435,7 +511,10 @@ function ProjectPanel({ project, syncRepos }) {
 
   return (
     <div className="project-block">
-      <div className="project-block__name">{project.name}</div>
+      <div className="project-block__head">
+        <div className="project-block__name">{project.name}</div>
+        <ProjectEnabledToggle project={project} />
+      </div>
       {project.repos.map((r) => (
         <RepoRow key={r.repo} projectId={project.id} repoConn={r} syncRepos={syncRepos} />
       ))}
