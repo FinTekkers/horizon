@@ -37,6 +37,7 @@ const EXPECTED_JOURNEYS = [
   'gate-in-flight-blocked',
   'project-filter',
   'project-enabled',
+  'board-gate-status-running',
 ]
 
 const missing = EXPECTED_JOURNEYS.filter((name) => !existsSync(join(SCREENSHOTS_DIR, `${name}.png`)))
