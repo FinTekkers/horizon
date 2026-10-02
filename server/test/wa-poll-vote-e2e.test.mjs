@@ -267,7 +267,11 @@ test('an Approve tap on the id the bridge minted approves the gate (metric 3)', 
   // The gate opened: the cursor is past it. Only a bound, because the pipeline
   // keeps walking the item forward from here.
   assert.ok(itemRow(APPROVE_ITEM).cursor > gate, `cursor ${itemRow(APPROVE_ITEM).cursor} did not clear gate ${gate}`)
-  assert.ok(pollFor(APPROVE_ITEM).poll_msg_id !== poll.poll_msg_id || pollFor(APPROVE_ITEM).decided_at)
+  // By id, not pollFor: the pipeline is already walking BF-145 to its next
+  // gate, so the latest poll can change between two reads.
+  const tapped = read('SELECT * FROM gate_poll WHERE id = ?', poll.id)[0]
+  assert.equal(tapped.poll_msg_id, poll.poll_msg_id)
+  assert.ok(tapped.decided_at, `tapped poll ${poll.id} was not marked decided`)
 })
 
 test('a replay of that applied vote is 200 duplicate, not a second approval', async () => {
