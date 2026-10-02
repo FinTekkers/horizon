@@ -13,6 +13,7 @@ import * as deploy from './deploy.js'
 import * as orchestrator from './orchestrator.js'
 import * as premerge from './premerge.js'
 import * as autoResolve from './autoResolve.js'
+import * as deployDrain from './deployDrain.js'
 import {
   WEBHOOK_SECRET,
   FARM_SHARED_SECRET,
@@ -805,6 +806,10 @@ export function buildApp({ logger = true, onRoute = null } = {}) {
       // for the double click, from any tab or WhatsApp, that also holds across
       // a restart (farm/premerge.py's per-item file lock is the other mutex).
       // The same row is what every client shows while the run goes.
+      //
+      // HZ-250: no new run while a self-deploy drains. Checked in the same
+      // tick as the claim, so a run either is refused or is in the drain's list.
+      if (deployDrain.isDeployBlocked()) return { error: deployDrain.DEPLOY_BLOCK_MESSAGE, status: 409, premerge: true }
       const claim = store.claimGateAction(id, 'premerge', {
         detail: `reading PR #${item.pr}`,
         timeoutMs: PREMERGE_CHECK_TIMEOUT_MS,
@@ -1824,6 +1829,63 @@ export function buildApp({ logger = true, onRoute = null } = {}) {
     }
     return true
   }
+
+  // HZ-250: the deploy-drain routes are called only by deploy-horizon.sh on
+  // this host (infra/host/deploy-drain.mjs). nginx proxies /horizon/api/ and
+  // always sets x-forwarded-for, so a proxied request is refused even from
+  // loopback. The socket peer, not request.ip, which trustProxy would change.
+  const LOOPBACK_PEERS = new Set(['127.0.0.1', '::1', '::ffff:127.0.0.1'])
+  function loopbackOnly(request, reply) {
+    if (!LOOPBACK_PEERS.has(request.socket?.remoteAddress) || request.headers['x-forwarded-for'] !== undefined) {
+      reply.code(403).send({ error: 'loopback only' })
+      return false
+    }
+    return true
+  }
+  const drainAuthorized = (request, reply) => loopbackOnly(request, reply) && farmAuthorized(request, reply)
+  const DRAIN_KINDS = ['premerge', 'resolve']
+
+  // Starts (or extends) the block on new pre-merge and resolve runs and lists
+  // the running ones. Validated by hand: Fastify's schema coercion would
+  // accept "30" as an integer.
+  fastify.post('/api/farm/deploy-drain', (request, reply) => {
+    if (!drainAuthorized(request, reply)) return
+    const ttlS = request.body?.ttl_s
+    if (!Number.isInteger(ttlS) || ttlS < 0) return reply.code(400).send({ error: 'ttl_s must be a non-negative integer' })
+    return deployDrain.beginDrain({ ttlS })
+  })
+
+  fastify.get('/api/farm/deploy-drain', (request, reply) => {
+    if (!drainAuthorized(request, reply)) return
+    return deployDrain.drainStatus()
+  })
+
+  fastify.post('/api/farm/deploy-drain/interrupt', async (request, reply) => {
+    if (!drainAuthorized(request, reply)) return
+    const runs = request.body?.runs
+    const valid =
+      Array.isArray(runs) &&
+      runs.every(
+        (run) =>
+          run !== null &&
+          typeof run === 'object' &&
+          typeof run.itemId === 'string' &&
+          run.itemId !== '' &&
+          DRAIN_KINDS.includes(run.kind),
+      )
+    if (!valid) return reply.code(400).send({ error: 'runs must be an array of {itemId, kind: premerge|resolve}' })
+    const result = await deployDrain.interruptForDeploy(runs.map(({ itemId, kind }) => ({ itemId, kind })))
+    for (const { itemId, kind, killed } of result.interrupted) {
+      request.log.warn(`self-deploy: interrupted ${kind} run of ${itemId} (${killed ? 'checker stopped' : 'no checker process tracked'})`)
+    }
+    return result
+  })
+
+  fastify.delete('/api/farm/deploy-drain', (request, reply) => {
+    if (!drainAuthorized(request, reply)) return
+    deployDrain.endDrain()
+    return { blocked: false }
+  })
 
   // The snapshot the WhatsApp concierge renders into its replies. It is a
   // daemon with no browser session, so it cannot use /api/items — HZ-21 gated

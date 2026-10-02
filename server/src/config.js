@@ -37,6 +37,7 @@
 //   AUTO_RESOLVE_DEBOUNCE_MS       how long merges into main coalesce into one scan (default 30s)
 //   AUTO_RESOLVE_MERGEABLE_WAIT_MS how long a scan waits for GitHub to compute a PR's
 //                                  mergeability before re-checking it next poll (default 60s)
+//   DEPLOY_BLOCK_MAX_TTL_S  cap on a self-deploy's block on new pre-merge/resolve runs (default 2h)
 
 import { agentStepIndexes } from '../../domain/js/lifecycle.js'
 
@@ -105,6 +106,10 @@ export const PREMERGE_CHECK_TIMEOUT_MS = Number(process.env.PREMERGE_CHECK_TIMEO
 // Not a second timeout: nothing is stopped by it, it only bounds how long a
 // run nobody finished (a restart, a crash) keeps the gate disabled.
 export const GATE_ACTION_MARGIN_MS = Number(process.env.GATE_ACTION_MARGIN_MS || 5 * 60 * 1000)
+// HZ-250: the longest a self-deploy's block on new pre-merge and resolve runs
+// can last (deployDrain.js), whatever TTL the deploy script asks for — so a
+// deploy script that died mid-drain can never hold the block for good.
+export const DEPLOY_BLOCK_MAX_TTL_S = Number(process.env.DEPLOY_BLOCK_MAX_TTL_S || 2 * 60 * 60)
 // How often the orchestrator sweeps expired gate-action leases.
 export const GATE_ACTION_SWEEP_MS = Number(process.env.GATE_ACTION_SWEEP_MS || 60 * 1000)
 // HZ-182: after an automated review rejection, the next implement run is a

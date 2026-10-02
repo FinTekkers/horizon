@@ -18,6 +18,7 @@ import { fileURLToPath } from 'node:url'
 import { readFileSync, existsSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
+import { PORT } from './config.js'
 
 const REGISTRY_PATH = process.env.HORIZON_DEPLOY_TARGETS_FILE
   ?? fileURLToPath(new URL('../../infra/host/deploy-targets.json', import.meta.url))
@@ -56,6 +57,31 @@ function stateDirFor(target) {
   return join(homedir(), '.horizon', target.stateKey)
 }
 
+// The deploy script's environment.
+export function spawnEnv(target) {
+  const env = {
+    ...process.env,
+    HORIZON_REPO_DIR: target.repoDir,
+    HORIZON_STATE_DIR: stateDirFor(target),
+    HORIZON_SERVICE_NAME: target.service,
+    HORIZON_HEALTH_URL: target.healthUrl,
+    // Companion daemons this target must also restart. A long-running
+    // process that outlives a deploy keeps running the old code (see
+    // the restart stage in the deploy script); the registry names them
+    // so the scripts stay service-agnostic.
+    HORIZON_EXTRA_SERVICES: (target.extraServices || []).join(' '),
+  }
+  // HZ-250: only Horizon's own deploy restarts this server, so only it drains
+  // this server's running pre-merge/resolve runs first (deploy-horizon.sh's
+  // drain stage). Every other target's deploy is untouched.
+  if (target.key === 'horizon') {
+    env.HORIZON_DEPLOY_DRAIN_URL = `http://127.0.0.1:${PORT}/api/farm/deploy-drain`
+  } else {
+    delete env.HORIZON_DEPLOY_DRAIN_URL
+  }
+  return env
+}
+
 // Isolated so tests can replace `runner.spawn` instead of shelling out.
 export const runner = {
   spawn(target, tag) {
@@ -63,18 +89,7 @@ export const runner = {
     const child = spawn(scriptPath, [tag], {
       detached: true,
       stdio: 'ignore',
-      env: {
-        ...process.env,
-        HORIZON_REPO_DIR: target.repoDir,
-        HORIZON_STATE_DIR: stateDirFor(target),
-        HORIZON_SERVICE_NAME: target.service,
-        HORIZON_HEALTH_URL: target.healthUrl,
-        // Companion daemons this target must also restart. A long-running
-        // process that outlives a deploy keeps running the old code (see
-        // the restart stage in the deploy script); the registry names them
-        // so the scripts stay service-agnostic.
-        HORIZON_EXTRA_SERVICES: (target.extraServices || []).join(' '),
-      },
+      env: spawnEnv(target),
     })
     child.unref()
   },

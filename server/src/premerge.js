@@ -78,6 +78,11 @@ export function parseSlotEvent(line) {
   return SLOT_EVENTS.includes(name) ? name : null
 }
 
+// HZ-250: the process group of each running check, by item id, so a
+// self-deploy can stop exactly the runs it interrupts (interruptRun below).
+// The child is spawned detached, so its pid is also its process group id.
+const runningChecks = new Map()
+
 export const runner = {
   // Resolves { code, stdout, stderr, timedOut, error } — never rejects. The
   // child leads its own process group so a timeout kills npm's and pytest's
@@ -86,7 +91,10 @@ export const runner = {
   // onStderrLine (HZ-227), when given, also hears each complete stderr line as
   // it arrives. It is only an observer: `stderr` is accumulated exactly as
   // without it, and a listener that throws is ignored.
-  spawn(args, { cwd, timeoutMs, env, onStderrLine }) {
+  //
+  // itemId (HZ-250), when given, registers the run for interruptRun(); a run
+  // it stopped resolves with `interrupted: true`.
+  spawn(args, { cwd, timeoutMs, env, onStderrLine, itemId }) {
     return new Promise((resolve) => {
       let stdout = ''
       let stderr = ''
@@ -96,6 +104,7 @@ export const runner = {
       const decoder = new StringDecoder('utf8')
       let timedOut = false
       let settled = false
+      let tracked = null
       const emitLine = (line) => {
         try {
           onStderrLine(line.endsWith('\r') ? line.slice(0, -1) : line)
@@ -122,9 +131,19 @@ export const runner = {
         if (settled) return
         settled = true
         clearTimeout(timer)
+        if (tracked) {
+          if (runningChecks.get(itemId) === tracked) runningChecks.delete(itemId)
+          tracked.settle()
+          if (tracked.interrupted) out = { ...out, interrupted: true }
+        }
         resolve({ stdout, stderr, timedOut, ...out })
       }
       const child = spawn(pythonBin(), args, { cwd, env, detached: true, stdio: ['ignore', 'pipe', 'pipe'] })
+      if (itemId != null && Number.isInteger(child.pid)) {
+        tracked = { pgid: child.pid, interrupted: false }
+        tracked.settled = new Promise((resolveSettled) => (tracked.settle = resolveSettled))
+        runningChecks.set(itemId, tracked)
+      }
       const timer = setTimeout(() => {
         timedOut = true
         try {
@@ -169,7 +188,7 @@ export async function runPreMergeChecks(item, { headSha, baseSha, timeoutMs, onS
     '--timeout-s', String(Math.floor(timeoutMs / 1000)),
     '--json',
   ]
-  const spawnOpts = { cwd: path.dirname(FARM_DIR), timeoutMs, env: childEnv(timeoutMs) }
+  const spawnOpts = { cwd: path.dirname(FARM_DIR), timeoutMs, env: childEnv(timeoutMs), itemId: item.id }
   if (onSlot) {
     spawnOpts.onStderrLine = (line) => {
       const name = parseSlotEvent(line)
@@ -182,6 +201,9 @@ export async function runPreMergeChecks(item, { headSha, baseSha, timeoutMs, onS
     }
   }
   const out = await runner.spawn(args, spawnOpts)
+  if (out.interrupted) {
+    return { ok: false, reason: 'interrupted', detail: DEPLOY_INTERRUPTED_DETAIL, ...shas }
+  }
   if (out.timedOut) {
     return { ok: false, reason: 'timed_out', detail: `no result within ${Math.round(timeoutMs / 60000)} min`, ...shas }
   }
@@ -207,6 +229,53 @@ export async function runPreMergeChecks(item, { headSha, baseSha, timeoutMs, onS
   return { ...shas, ...parsed, ok: false, reason: parsed.reason || 'crash' }
 }
 
+const DEPLOY_INTERRUPTED_DETAIL = 'server restarted for deploy'
+
+function groupAlive(pgid) {
+  try {
+    process.kill(-pgid, 0)
+    return true
+  } catch (err) {
+    return err.code === 'EPERM'
+  }
+}
+
+function signalGroup(pgid, signal) {
+  try {
+    process.kill(-pgid, signal)
+  } catch {
+    // already gone
+  }
+}
+
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+
+// HZ-250: stops the item's running check — its whole process group, so npm's
+// and pytest's descendants too: SIGTERM, then SIGKILL after graceMs. Only a
+// group this module spawned and still tracks is ever signalled, never this
+// server or another item's run. Resolves true once the group is gone, after
+// the run itself has settled, so the gate's "stopped" event is already
+// written; false when no run is tracked for the item.
+export async function interruptRun(itemId, { graceMs = 5000 } = {}) {
+  const run = runningChecks.get(itemId)
+  if (!run || !(run.pgid > 1) || run.pgid === process.pid) return false
+  run.interrupted = true
+  signalGroup(run.pgid, 'SIGTERM')
+  const termDeadline = Date.now() + graceMs
+  while (groupAlive(run.pgid) && Date.now() < termDeadline) await sleep(25)
+  if (groupAlive(run.pgid)) {
+    signalGroup(run.pgid, 'SIGKILL')
+    const killDeadline = Date.now() + 2000
+    while (groupAlive(run.pgid) && Date.now() < killDeadline) await sleep(25)
+  }
+  // Let the gate record the outcome (it runs a few ticks after the child closes).
+  let settleTimer
+  await Promise.race([run.settled, new Promise((resolve) => (settleTimer = setTimeout(resolve, 2000)))])
+  clearTimeout(settleTimer)
+  await new Promise((resolve) => setImmediate(resolve))
+  return !groupAlive(run.pgid)
+}
+
 const short = (sha) => String(sha || '').slice(0, 12)
 
 // The activity-log line for an ok:false result. Names the failing check and
@@ -226,6 +295,8 @@ export function describeFailure(result) {
       return 'the farm has no checkout of this repo to test-merge in — start the farm so the repo hub exists, then click Accept again'
     case 'busy':
       return 'pre-merge checks are already running for this item'
+    case 'interrupted':
+      return `pre-merge checks were stopped: ${result.detail || DEPLOY_INTERRUPTED_DETAIL} — click Accept again once Horizon is back`
     default: {
       const detail = result.detail ? `: ${result.detail}` : ''
       const tail = result.tail ? `\n${result.tail}` : ''
