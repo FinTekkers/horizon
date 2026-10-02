@@ -399,6 +399,58 @@ the target's own script and state directory:
 infra/host/deploy-horizon.sh "$(cat ~/.horizon/horizon/last-good-tag | cut -d: -f1 | sed 's#refs/tags/##')"
 ```
 
+To have a manual run drain running checks first (below), as a webhook deploy
+does, give it the drain URL and the farm secret:
+
+```
+HORIZON_DEPLOY_DRAIN_URL=http://127.0.0.1:3001/api/farm/deploy-drain \
+FARM_SHARED_SECRET="$(sudo sh -c '. /etc/horizon/server.env; printf %s "$FARM_SHARED_SECRET"')" \
+  infra/host/deploy-horizon.sh "<tag>"
+```
+
+## Drain before restart (HZ-250)
+
+`systemctl restart horizon-server` used to strand another item's running
+pre-merge checks: the checker is spawned detached and `KillMode=process`
+leaves it alive with nobody to read its result, and its `gate_action` row
+sat `running` until its lease ran out. `deploy-horizon.sh` now has a `drain`
+stage, inside its `flock`, just before `restart`:
+
+1. It asks the server (`POST /api/farm/deploy-drain`, loopback only, farm
+   secret) to refuse new runs. Accept, WhatsApp approve, the approval poll and
+   Resolve-conflicts then answer **409** `deploy in progress, try again in a
+   few minutes`; auto-resolve logs `skipped (deploy in progress)` and starts
+   nothing.
+2. It waits for every running `premerge`/`resolve` run, polling, up to
+   `HORIZON_DEPLOY_DRAIN_TIMEOUT_S` (default **1500** = 25 min; `0` = don't
+   wait). `self-deploy.log` gets a `DRAIN waiting …` line naming each item and
+   kind, then `DRAIN finished: <item> <kind>` or `DRAIN timed out: <item>
+   <kind> — interrupted (server restarted for deploy)`.
+3. Runs still going when the wait ends are marked `interrupted`, reason
+   `server restarted for deploy`, and each pre-merge checker's process group
+   is stopped (SIGTERM, then SIGKILL) before the restart.
+
+The block lives in the server's memory: the restart clears it, a failed
+deploy's `ERR` trap clears it (`DRAIN released`), and it expires by itself
+after the wait + 10 min (never more than `DEPLOY_BLOCK_MAX_TTL_S`, default
+2 h, in `server.env`). No DB edit is ever needed.
+
+The drain never stops a deploy: a server that is down, hung or erroring is
+logged as `DRAIN skipped: …` and the restart goes ahead. Each request has its
+own bound (`HORIZON_DEPLOY_DRAIN_REQUEST_TIMEOUT_S`, default 10 s; the
+interrupt `HORIZON_DEPLOY_DRAIN_INTERRUPT_TIMEOUT_S`, default 60 s). The
+server sets `HORIZON_DEPLOY_DRAIN_URL` for the `horizon` target only — the
+`ui-service` deploy is unchanged — and a deploy started by a server older
+than HZ-250 has no drain stage. Off switch: set
+`HORIZON_DEPLOY_DRAIN_TIMEOUT_S=0` in `server.env`.
+
+Known gap (HZ-256): an interrupted `resolve` run's resolver is not stopped
+here — it runs inside farmd, which this script restarts right after
+`horizon-server`. farmd will not re-launch it: `/conflicts/resolve` runs
+inline in a thread and writes no task file (`farm/farmd.py`
+`conflicts_resolve`), and `_adopt_existing()` only re-adopts step runs from
+`queue/runs/active/*.json`.
+
 ## Deep verification beyond the health check (HZ-22)
 
 Each deploy script's health check proves the process restarted and answered

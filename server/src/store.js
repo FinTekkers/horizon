@@ -115,6 +115,7 @@ export function setGateActionDetail(itemId, kind, token, detail) {
     .prepare("UPDATE gate_action SET detail = ? WHERE item_id = ? AND kind = ? AND run_token = ? AND state = 'running'")
     .run(detail, itemId, kind, token)
   if (res.changes > 0) notify()
+  return res.changes > 0
 }
 
 // Records the outcome. Only the claiming run's token matches, so a stale
@@ -133,7 +134,45 @@ export function finishGateAction(itemId, kind, token, { state, reason = null, fa
 
 export const GATE_ACTION_INTERRUPTED_REASON =
   'Horizon restarted while this ran and it never reported back before its time limit — nothing was merged or changed by it'
+// HZ-250: the exact reason a self-deploy writes on the runs it stops.
+export const DEPLOY_INTERRUPTED_REASON = 'server restarted for deploy'
 export const GATE_ACTION_EXPIRED_REASON = 'no result before its time limit, so Horizon stopped waiting for it'
+
+// HZ-250: the runs a self-deploy waits for before it restarts the server.
+export function listRunningGateActions() {
+  return db
+    .prepare(
+      `SELECT item_id, kind, started_at, detail FROM gate_action
+       WHERE state = 'running' AND kind IN ('premerge','resolve') ORDER BY started_at, item_id, kind`,
+    )
+    .all()
+    .map((row) => ({ itemId: row.item_id, kind: row.kind, startedAt: row.started_at, detail: row.detail }))
+}
+
+// HZ-250: ends the listed runs as `interrupted` when a deploy's wait ran out.
+// Only a row still running is moved; one that finished meanwhile keeps its
+// outcome. Returns the rows it actually moved.
+//
+// The run_token is rotated on purpose: it is what makes the owner's late
+// finishGateAction()/setGateActionDetail() — still pending in this process
+// until the restart — match nothing, so `interrupted` is never overwritten.
+export function interruptGateActionsForDeploy(runs) {
+  const end = db.prepare(
+    `UPDATE gate_action
+        SET state = 'interrupted', reason = @reason, finished_at = @now, run_token = @token
+      WHERE item_id = @itemId AND kind = @kind
+        AND state = 'running' AND kind IN ('premerge','resolve')`,
+  )
+  const now = new Date().toISOString()
+  const moved = db.transaction(() =>
+    runs.filter(
+      ({ itemId, kind }) =>
+        end.run({ itemId, kind, reason: DEPLOY_INTERRUPTED_REASON, now, token: `deploy:${randomUUID()}` }).changes > 0,
+    ),
+  )()
+  if (moved.length > 0) notify()
+  return moved.map(({ itemId, kind }) => ({ itemId, kind }))
+}
 
 // Ends every running row whose lease has run out: `interrupted` when it
 // started before this process (its owner is gone), `timed_out` otherwise.

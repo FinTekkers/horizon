@@ -37,6 +37,7 @@ import { db } from './db.js'
 import * as github from './github.js'
 import * as orchestrator from './orchestrator.js'
 import { isAutoResolveOnMain } from './settings.js'
+import { DEPLOY_BLOCK_MESSAGE, isDeployBlocked } from './deployDrain.js'
 import { AUTO_RESOLVE_DEBOUNCE_MS, AUTO_RESOLVE_MERGEABLE_WAIT_MS } from './config.js'
 import { ACCEPT_GATE_INDEX, IMPLEMENT_STEP_INDEX, isClosed, isAbandoned } from '../../domain/js/lifecycle.js'
 
@@ -229,6 +230,8 @@ async function decide(item, text) {
   if (item.pr == null) return done('skipped (no PR)')
   if (gateActionRunning(id, 'premerge')) return done('skipped (merge in progress)')
   if (gateActionRunning(id, 'resolve')) return done('skipped (lock held)')
+  // HZ-250: a self-deploy is draining runs — re-check later, start nothing.
+  if (isDeployBlocked()) return keep('skipped (deploy in progress)')
 
   let flag
   try {
@@ -246,6 +249,7 @@ async function decide(item, text) {
     startedEvent: `main moved (${text}) — PR #${item.pr} no longer merges cleanly; started Resolve conflicts automatically`,
   })
   if (result?.error === 'resolve_in_progress') return 'skipped (lock held)'
+  if (result?.error === DEPLOY_BLOCK_MESSAGE) return keep('skipped (deploy in progress)')
   if (result?.error) return `skipped (${result.error.replace(/_/g, ' ')})`
   if (result?.resolved) {
     // Read-only: so the gate shows the resolved PR's new state at once.

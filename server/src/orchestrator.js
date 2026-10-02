@@ -64,6 +64,7 @@ import {
 import { PRIMARY_PERSONA_AGENT, isPersona, personaLabel, proposePersona } from './personas.js'
 import { SUMMARIZE_STEP_INDEX, OVERLAP_INPUT_LABEL, computeOverlap, overlapFailure, applyOverlap } from './overlapService.js'
 import { renderOverlapInput, renderOverlapSection, replaceOverlapSection } from './overlap.js'
+import { DEPLOY_BLOCK_MESSAGE, isDeployBlocked } from './deployDrain.js'
 
 // Keyed by step_run.id (HZ-100) — NOT item id. Keying by item used to let a
 // stale callback for a superseded run clear/overwrite the CURRENT run's
@@ -624,6 +625,8 @@ export async function resolveConflicts(id, actor = 'You', { startedBy = 'human',
   // 1 is mergeable, NULL is unknown/not yet computed.
   if (item.pr_mergeable !== 0) return { error: 'not_conflicted' }
   if (!FARM_URL && cannedConflictReply === null) return { error: 'farm_unavailable' }
+  // HZ-250: no new run while a self-deploy drains (same tick as the claim).
+  if (isDeployBlocked()) return { error: DEPLOY_BLOCK_MESSAGE }
   const claim = claimGateAction(id, 'resolve', {
     detail: detail ?? `resolving conflicts on PR #${item.pr}`,
     timeoutMs: FARM_CONFLICT_RESOLVE_TIMEOUT_MS,
