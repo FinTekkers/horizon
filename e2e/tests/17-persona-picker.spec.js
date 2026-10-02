@@ -53,7 +53,7 @@ test('the intake gate offers a persona select per agent, and picking a QA one po
   }
 
   const qa = page.getByLabel('QA agent persona')
-  await expect(qa).toHaveValue('api_contract') // the QA default, nothing proposed yet
+  await expect(qa).toHaveValue('e2e_journey') // the QA default, nothing proposed yet
   // Whatever the mock PM step proposed for Eng — read, not hardcoded, so the
   // "a QA write touches only the QA slot" check below can't pass by accident.
   const engBefore = await page.getByLabel('Eng agent persona').inputValue()
@@ -63,11 +63,11 @@ test('the intake gate offers a persona select per agent, and picking a QA one po
   const qaOptions = await qa.locator('option').evaluateAll((els) => els.map((el) => el.value))
   expect(qaOptions).toEqual(['api_contract', 'e2e_journey', 'data_integrity'])
 
-  await qa.selectOption('e2e_journey')
+  await qa.selectOption('data_integrity') // a non-default, so the change really fires
 
   // The request carries the agent, not just a bare persona id.
   await expect.poll(() => bodies.length, { timeout: 10_000 }).toBe(1)
-  expect(bodies[0]).toEqual({ agent: 'qa', persona: 'e2e_journey' })
+  expect(bodies[0]).toEqual({ agent: 'qa', persona: 'data_integrity' })
 
   await captureScreenshot(page, 'persona-picker')
 
@@ -76,13 +76,13 @@ test('the intake gate offers a persona select per agent, and picking a QA one po
   await expect(page.locator('.step-card--awaiting')).toContainText('Approve & prioritize this work', {
     timeout: 10_000,
   })
-  await expect(page.getByLabel('QA agent persona')).toHaveValue('e2e_journey')
+  await expect(page.getByLabel('QA agent persona')).toHaveValue('data_integrity')
   // The other agents' slots are untouched by a QA write — one persona per
   // composing agent, not one per item.
   await expect(page.getByLabel('Eng agent persona')).toHaveValue(engBefore)
   await expect(page.getByLabel('Architect agent persona')).toHaveValue('data_modelling')
   // The human's choice is on the record, named by agent and by label.
   await expect(page.locator('.tracker__activity')).toContainText(
-    'set the qa specialist persona to End-to-end journey',
+    'set the qa specialist persona to Data integrity',
   )
 })
