@@ -4,7 +4,9 @@ Session naming:
   farm-daemon              farmd itself (started by run.sh)
   farm-pm-<project>        legacy long-lived PM agent (retired by HZ-212;
                            farmd kills one at boot, never launches one)
-  farm-concierge-<project> the WhatsApp concierge (FARM_WA_ENABLED=1)
+  farm-concierge-_shared   the one WhatsApp concierge for every enabled
+                           project (FARM_WA_ENABLED=1; HZ-209 — farmd retires
+                           any older per-project farm-concierge-<slug>)
   farm-run-<...>           per-step agents, PM steps included (HZ-212)
 """
 

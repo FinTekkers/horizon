@@ -84,6 +84,13 @@ PM_LANE_CAP = 1
 # boot; it never launches one.
 LEGACY_PM_SESSION_PREFIX = "farm-pm-"
 
+# HZ-209: the one WhatsApp concierge, whatever the active project. It keeps
+# the farm-concierge- prefix, which tmux_mgr's WA_APPROVAL_SECRET grant and
+# teardown key on; "_" is never in a slugify()'d name, so no per-project
+# farm-concierge-<slug> can be this session.
+CONCIERGE_SESSION_PREFIX = "farm-concierge-"
+CONCIERGE_SESSION = "farm-concierge-_shared"
+
 # run_id -> tmux session name for launched ephemeral runs (so cancel can kill).
 RUN_SESSIONS: dict = {}
 
@@ -633,20 +640,45 @@ def _ephemeral_dispatcher() -> None:
 
 
 def _concierge_session_name() -> str:
-    return f"farm-concierge-{slugify(state['project']['name'])}" if state["project"] else ""
+    return CONCIERGE_SESSION if state["project"] else ""
+
+
+def _retire_legacy_concierge_sessions() -> list[str]:
+    """HZ-209: kills any per-project farm-concierge-<slug> session on this
+    FARM_HOME — an older farmd's, or one left from before the active project
+    changed — so exactly one concierge ever polls WhatsApp. Never kills
+    CONCIERGE_SESSION, and leaves another FARM_HOME's sessions alone. Its
+    state files stay; the shared concierge copies them once on start."""
+    killed = []
+    for name in tmux_mgr.list_farm_sessions():
+        if not name.startswith(CONCIERGE_SESSION_PREFIX) or name == CONCIERGE_SESSION:
+            continue
+        if not _session_in_this_farm(name):
+            print(f"farmd: leaving concierge session {name} alone — not running under {farm_config.FARM_HOME}", flush=True)
+            continue
+        tmux_mgr.kill_session(name)
+        killed.append(name)
+    if killed:
+        print(f"farmd: retired per-project concierge session(s) {killed} — one {CONCIERGE_SESSION} serves them all", flush=True)
+    return killed
 
 
 def _maybe_launch_concierge() -> bool:
-    """WhatsApp concierge (HZ-7) — launches only with FARM_WA_ENABLED=1."""
+    """WhatsApp concierge (HZ-7) — launches only with FARM_WA_ENABLED=1.
+
+    HZ-209: one session, CONCIERGE_SESSION, for every enabled project. Every
+    launch (boot and the watchdog's revive) retires per-project sessions
+    first, so a second concierge can never run alongside it."""
     if not farm_config.FARM_WA_ENABLED or not state["project"]:
         return False
+    _retire_legacy_concierge_sessions()
     slug = slugify(state["project"]["name"])
     repo_root = Path(__file__).resolve().parent.parent
     tmux_mgr.new_session(
-        f"farm-concierge-{slug}",
-        f"{sys.executable} -m farm.concierge_agent --project '{state['project']['name']}'",
+        CONCIERGE_SESSION,
+        f"{sys.executable} -m farm.concierge_agent --project '{state['project']['name']}' --legacy-slug {slug}",
         cwd=str(repo_root),
-        log_file=str(LOGS_DIR / f"concierge-{slug}.log"),
+        log_file=str(LOGS_DIR / "concierge-_shared.log"),
     )
     return True
 
@@ -1119,9 +1151,20 @@ def internal_snapshot():
     item's full contents in its prompt, farmd binds to loopback only, and this
     route grants no write capability whatsoever. It cannot approve a gate,
     which is the capability HZ-140 exists to take away.
+
+    HZ-209 widens it, also on purpose: the snapshot is scope=enabled, the
+    items of EVERY enabled project, because one concierge serves them all.
+    A step agent working on one project can therefore read every enabled
+    project's items through here. Still read-only; a disabled project's
+    items are never in it.
     """
     try:
-        res = httpx.get(f"{HORIZON_URL}/api/farm/snapshot", headers={"x-farm-secret": SHARED_SECRET}, timeout=15)
+        res = httpx.get(
+            f"{HORIZON_URL}/api/farm/snapshot",
+            params={"scope": "enabled"},
+            headers={"x-farm-secret": SHARED_SECRET},
+            timeout=15,
+        )
         if res.status_code != 200:
             # Upstream status/body are not passed through: a 401 here is a
             # farmd misconfiguration, not something the concierge can act on.

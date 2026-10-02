@@ -133,8 +133,8 @@ def test_running_farm_never_reaches_real_tmux(running_farm, fake_tmux, monkeypat
 
     launched = {call[call.index("-s") + 1]: call[-1] for call in fake_tmux.calls if call[0] == "new-session"}
     # Positive control: the revive branch really ran.
-    assert "farm-concierge-fintekkers" in launched
-    assert "HORIZON_URL=http://127.0.0.1:9 " in launched["farm-concierge-fintekkers"]
+    assert "farm-concierge-_shared" in launched
+    assert "HORIZON_URL=http://127.0.0.1:9 " in launched["farm-concierge-_shared"]
     assert not [name for name in launched if name.startswith("farm-pm-")]
     assert real_tmux_calls == []
 
@@ -841,7 +841,7 @@ def test_concierge_launches_when_the_flag_is_on(monkeypatch):
     monkeypatch.setattr(farmd.farm_config, "FARM_WA_ENABLED", True)
     monkeypatch.setitem(farmd.state, "project", {"id": 1, "name": "My Proj"})
     assert farmd._maybe_launch_concierge() is True
-    assert launched == ["farm-concierge-my-proj"]
+    assert launched == ["farm-concierge-_shared"]
 
 
 # ---- HZ-5 cost guardrail ----
@@ -1630,8 +1630,10 @@ def test_internal_snapshot_forwards_with_the_farm_secret_and_returns_the_body(mo
 
     assert res.status_code == 200
     assert res.json() == {"items": [{"id": "HZ-140"}]}
-    gets = [r for r in requests if r["path"].endswith("/api/farm/snapshot")]
+    # HZ-209: the path now carries ?scope=enabled, so match on the path alone.
+    gets = [r for r in requests if r["path"].split("?", 1)[0].endswith("/api/farm/snapshot")]
     assert len(gets) == 1
+    assert gets[0]["path"].endswith("?scope=enabled")
     assert gets[0]["headers"]["x-farm-secret"] == farmd.SHARED_SECRET
 
 

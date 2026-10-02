@@ -19,6 +19,7 @@
 //   1. the voter is on the server-held allowlist        (guardrail 2)
 //   2. the poll is one this server sent, and is current (guardrail 3)
 //   3. the item is STILL at that gate                   (guardrail 3)
+//      ...and its project is still enabled               (HZ-209)
 //   4. this arrival at the gate is not already decided
 //
 // Checks 2 and 4 are arrival-scoped on purpose. The obvious implementation of
@@ -47,6 +48,7 @@ export const OUTCOMES = {
   ignored_superseded: 409,
   ignored_stale_gate: 409,
   ignored_already_decided: 409,
+  ignored_project_disabled: 409,
   failed: 502,
 }
 
@@ -255,6 +257,10 @@ export async function applyVote({ voteId, pollMsgId, voterJid, selectedOption },
   if (!item || item.cursor !== poll.step_index || isClosed(item) || isAbandoned(item)) {
     return result('ignored_stale_gate', at)
   }
+  // HZ-209: checked when the vote is applied, not only when the poll went out
+  // — a project disabled since then is never acted on. store.js refuses it
+  // too (project_not_active); this catches it before the claim writes a row.
+  if (!store.isProjectEnabled(item.project_id)) return result('ignored_project_disabled', at)
 
   // 4. First valid vote decides. Atomic.
   const refused = claim(voteId, poll, voterJid, choice)

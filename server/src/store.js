@@ -544,9 +544,12 @@ export function listItems({ scope = 'active' } = {}) {
   return selectItems
     .all()
     .filter((row) => row.project_id == null || activeId == null || inScope(row.project_id))
-    .map((row) => {
-    const gateActions = selectItemGateActions.all(row.id)
-    return {
+    .map(itemView)
+}
+
+function itemView(row) {
+  const gateActions = selectItemGateActions.all(row.id)
+  return {
     id: row.id,
     title: row.title,
     priority: row.priority,
@@ -580,8 +583,7 @@ export function listItems({ scope = 'active' } = {}) {
     reviewRejected: reviewRejected(row),
     forwardedReview: forwardedReview(row),
     ...dependencyFields(row.id),
-    }
-  })
+  }
 }
 
 // HZ-185: the latest automated review rejected this item and sent it back to

@@ -1,0 +1,80 @@
+{
+  "activeProjectId": 1,
+  "projects": [
+    {
+      "id": 2,
+      "name": "FinTekkers",
+      "enabled": true,
+      "repos": [
+        {
+          "repo": "FinTekkers/ui-service",
+          "prefix": "US"
+        }
+      ]
+    },
+    {
+      "id": 1,
+      "name": "Horizon",
+      "enabled": true,
+      "repos": [
+        {
+          "repo": "FinTekkers/horizon",
+          "prefix": "HZ"
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "name": "Ledger",
+      "enabled": false,
+      "repos": [
+        {
+          "repo": "FinTekkers/ledger-service",
+          "prefix": "LS"
+        }
+      ]
+    }
+  ],
+  "items": [
+    {
+      "id": "HZ-12",
+      "project_id": 1,
+      "title": "Horizon dashboard refresh",
+      "priority": "High",
+      "desc": "Horizon dashboard refresh outcome",
+      "metric": "Horizon dashboard refresh metric",
+      "paused": false,
+      "activeRun": null,
+      "abandoned_at": null,
+      "currentStep": {
+        "index": 3,
+        "label": "Approve & prioritize this work",
+        "kind": "gate",
+        "phase": "Plan",
+        "gate": true
+      },
+      "pr": null,
+      "stepOutputs": {}
+    },
+    {
+      "id": "US-12",
+      "project_id": 2,
+      "title": "Portfolio export button",
+      "priority": "High",
+      "desc": "Portfolio export button outcome",
+      "metric": "Portfolio export button metric",
+      "paused": false,
+      "activeRun": null,
+      "abandoned_at": null,
+      "currentStep": {
+        "index": 3,
+        "label": "Approve & prioritize this work",
+        "kind": "gate",
+        "phase": "Plan",
+        "gate": true
+      },
+      "pr": null,
+      "stepOutputs": {}
+    }
+  ]
+}

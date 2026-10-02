@@ -120,8 +120,9 @@ ${nav}
 
 const sseClients = new Set()
 
-// scope 'active' carries the active project's items, 'enabled' every enabled
-// project's (HZ-208). The browser's SSE feed and GET /api/items use 'enabled'.
+// `scope` picks the items: 'active' is the active project's, 'enabled' every
+// enabled project's. The browser's SSE feed and GET /api/items use 'enabled'
+// (HZ-208); so does the WhatsApp concierge's farm snapshot (HZ-209).
 function snapshot({ scope = 'active' } = {}) {
   return {
     repoUrl: getRepoUrl(),
@@ -625,15 +626,26 @@ export function buildApp({ logger = true, onRoute = null } = {}) {
           properties: {
             ...ITEM_BODY_PROPERTIES,
             priority: PRIORITY_PROPERTY,
+            // HZ-209: the WhatsApp wizard names the project when more than one
+            // is enabled, rather than falling back to the active one.
+            projectId: { type: 'integer' },
           },
         },
         response: { 200: OK_OBJECT, 400: ERROR_OBJECT, 502: ERROR_OBJECT },
       },
     },
     async (request, reply) => {
-      const { title, outcome, metric, guardrails = '', priority = DEFAULT_PRIORITY, repo } = request.body
-      // New work goes into any enabled project's repository (HZ-208).
-      const connected = store.listRepos().filter((r) => store.isProjectEnabled(r.project_id))
+      const { title, outcome, metric, guardrails = '', priority = DEFAULT_PRIORITY, repo, projectId } = request.body
+      // New work goes into an enabled project's repository (HZ-208); a named
+      // project (HZ-209) must exist and be enabled and narrows the choice to
+      // its own repositories — a disabled project is never acted on.
+      if (projectId != null) {
+        const named = store.listProjects().find((p) => p.id === projectId)
+        if (!named?.enabled) return reply.code(400).send({ error: 'project_not_enabled' })
+      }
+      const connected = store
+        .listRepos()
+        .filter((r) => store.isProjectEnabled(r.project_id) && (projectId == null || r.project_id === projectId))
       if (repo && !connected.some((r) => r.repo === repo) && store.findRepo(repo)) {
         return reply.code(400).send({ error: 'That repository’s project is disabled' })
       }
@@ -1809,10 +1821,24 @@ export function buildApp({ logger = true, onRoute = null } = {}) {
   // /horizon/api/ wholesale: anything in SESSION_EXEMPT is reachable from the
   // internet with no login, and /api/items carries every work item's full
   // contents. This sits behind the farm's own shared-secret boundary instead.
-  fastify.get('/api/farm/snapshot', (request, reply) => {
-    if (!farmAuthorized(request, reply)) return
-    return snapshot()
-  })
+  //
+  // HZ-209: farmd asks for ?scope=enabled, the items of every enabled project.
+  // The default stays the active project's view.
+  fastify.get(
+    '/api/farm/snapshot',
+    {
+      schema: {
+        querystring: {
+          type: 'object',
+          properties: { scope: { type: 'string', enum: ['active', 'enabled'], default: 'active' } },
+        },
+      },
+    },
+    (request, reply) => {
+      if (!farmAuthorized(request, reply)) return
+      return snapshot({ scope: request.query.scope })
+    },
+  )
 
   // Pushed by farmd the instant it claims a queued task (ephemeral dispatch
   // or the PM queue) — flips the run's watchdog from the queue-wait timer to
