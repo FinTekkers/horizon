@@ -3,8 +3,8 @@
 // state, never collapsing into Closed or any of the other statuses.
 
 import { expect, test } from 'vitest'
-import { itemStatus } from './status'
-import { STEPS } from '../../../domain/js/lifecycle.js'
+import { itemStatus, stateLabel, stepStateLabel } from './status'
+import { STEPS, ACCEPT_GATE_INDEX } from '../../../domain/js/lifecycle.js'
 
 const base = { cursor: 0, paused: false, rejected: false, abandoned_at: null }
 
@@ -100,4 +100,22 @@ test('closed, rejected, paused and awaiting-gate all take priority over a queued
   expect(itemStatus({ ...baseItem, cursor: 16, activeRun: queuedRun }).label).toBe('Closed')
   expect(itemStatus({ ...baseItem, rejected: true, activeRun: queuedRun }).label).toBe('Changes requested')
   expect(itemStatus({ ...baseItem, paused: true, activeRun: queuedRun }).label).toBe('Paused')
+})
+
+// HZ-228: the card's elapsed line names each agent step by a short name, so
+// it fits the card. An added or re-phased step must not silently fall back to
+// a long label.
+test('every agent step has a short elapsed-line name', () => {
+  for (const step of STEPS.filter((s) => s.kind === 'agent')) {
+    expect(stepStateLabel(step).length).toBeLessThanOrEqual(20)
+  }
+})
+
+test('stateLabel names a running conflict resolution and has no timer without state_since', () => {
+  const accept = { ...base, cursor: ACCEPT_GATE_INDEX, state_since: '2026-10-02T10:00:00Z' }
+  expect(stateLabel({ ...accept, gateAction: { kind: 'resolve', state: 'running', since: accept.state_since } })).toBe(
+    'Resolving conflicts',
+  )
+  expect(stateLabel({ ...accept, gateAction: null })).toBe('Waiting on you')
+  expect(stateLabel({ ...accept, state_since: null })).toBeNull()
 })

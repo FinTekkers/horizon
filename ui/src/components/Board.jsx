@@ -11,8 +11,9 @@ import {
 import { PHASE_ACCENT, PHASE_ACCENT_BG, priorityColor } from '../domain/lifecycle'
 import { FILTERS, visibleItems, hiddenCounts, matchCounts } from '../domain/filters'
 import { PRIMARY_PERSONA_AGENT, personaFor } from '../domain/personas'
-import { itemStatus } from '../domain/status'
-import { gateActionOf, gateActionBusy } from '../domain/gateAction'
+import { itemStatus, stateLabel } from '../domain/status'
+import { gateActionOf, gateActionBusy, elapsedText } from '../domain/gateAction'
+import { useClockTick } from '../useClockTick'
 import { issueUrl, issueLabel } from '../api'
 import * as boardFilters from '../boardFilters'
 import StatusPill from './StatusPill'
@@ -37,7 +38,7 @@ function progressSegs(item) {
   })
 }
 
-function BoardCard({ item, projects, onOpen, onApprove, onReject, onTogglePause, isGateBusy }) {
+function BoardCard({ item, projects, now, onOpen, onApprove, onReject, onTogglePause, isGateBusy }) {
   const closed = isClosed(item)
   const abandoned = isAbandoned(item)
   const rejected = item.rejected && !closed && !abandoned
@@ -55,6 +56,9 @@ function BoardCard({ item, projects, onOpen, onApprove, onReject, onTogglePause,
   const atAccept = awaiting && item.cursor === ACCEPT_GATE_INDEX
   const gateAction = atAccept ? gateActionOf(item) : null
   const gateRunning = atAccept && isGateBusy(item)
+  // HZ-228: how long the item has been in its current state, ticked by the
+  // Board's one shared clock (`now`).
+  const elapsedLabel = stateLabel(item)
 
   return (
     <div className={`card${awaiting ? ' card--awaiting' : ''}`} onClick={() => onOpen(item.id)}>
@@ -107,6 +111,11 @@ function BoardCard({ item, projects, onOpen, onApprove, onReject, onTogglePause,
         </span>
         <StatusPill status={itemStatus(item)} />
       </div>
+      {elapsedLabel && (
+        <div className="card__elapsed">
+          {elapsedLabel} · {elapsedText(item.state_since, now, { seconds: false })}
+        </div>
+      )}
       <DependencyBadge item={item} compact />
 
       {awaiting && (
@@ -179,6 +188,9 @@ export default function Board({
   isGateBusy = gateActionBusy,
 }) {
   const activeFilterKeys = useSyncExternalStore(boardFilters.subscribe, boardFilters.getActiveFilters)
+  // HZ-228: one clock tick for the whole Board, once a minute while any card
+  // shows an elapsed label — cards start no timers of their own.
+  useClockTick(60_000, items.some((it) => it.state_since))
   const now = new Date()
   // Filtering is a view concern only — it narrows what's rendered here, and
   // never touches an item or what the farm dispatches (HZ-80).
@@ -261,6 +273,7 @@ export default function Board({
                       key={item.id}
                       item={item}
                       projects={projects}
+                      now={now.getTime()}
                       onOpen={onOpen}
                       onApprove={onApprove}
                       onReject={onReject}

@@ -2,6 +2,7 @@
 
 import { isClosed, isAbandoned, curStep, awaitingGate } from '../../../domain/js/lifecycle.js'
 import { AGENTS } from './agentTokens'
+import { gateActionOf } from './gateAction'
 
 // A dispatched step whose run the farm currently reports as queued rather
 // than running (HZ-54) — distinct from a step merely "not yet reached"
@@ -38,4 +39,42 @@ export function itemStatus(item, verbose = false) {
   }
   const agent = AGENTS[cur.agent]
   return { label: verbose ? `${agent.label} working` : agent.label, color: 'var(--primary-ink)', bg: 'var(--primary-bg)' }
+}
+
+// HZ-228: a short name for each agent step, so the card's elapsed line fits
+// one line at the Board's card width. Keyed by `agent:phase` from
+// domain/steps.json, never by label text; a step with no entry shows its own
+// label (status.test.js checks every agent step has one).
+const STEP_STATE_LABEL = {
+  'PM:0': 'Defining the outcome',
+  'Architect:0': 'Setting guardrails',
+  'Ensemble:1': 'Planning options',
+  'Eng:1': 'Drafting the plan',
+  'Architect:1': 'Architecture review',
+  'QA:1': 'QA review',
+  'PM:1': 'Summarizing reviews',
+  'Eng:2': 'Implementing',
+  'Review:2': 'Automated review',
+  'DevOps:3': 'Deploying',
+}
+
+export function stepStateLabel(step) {
+  return STEP_STATE_LABEL[`${step.agent}:${step.phase}`] ?? step.label
+}
+
+// What the card's elapsed line names, e.g. 'Implementing' or 'Waiting on you',
+// or null for no timer. Paused rule: a paused card shows no timer — there is
+// no pause timestamp to count from, and adding one would be a schema change.
+// Closed, abandoned and rejected cards show none either; the server sends
+// state_since: null for all four.
+export function stateLabel(item) {
+  if (!item.state_since) return null
+  if (isClosed(item) || isAbandoned(item) || item.rejected || item.paused) return null
+  const cur = curStep(item)
+  if (cur.kind === 'gate') {
+    const action = gateActionOf(item)
+    if (action?.state === 'running') return action.kind === 'resolve' ? 'Resolving conflicts' : 'Running checks'
+    return 'Waiting on you'
+  }
+  return stepStateLabel(cur)
 }
