@@ -124,7 +124,9 @@ const sseClients = new Set()
 // `scope` picks the items: 'active' is the active project's, 'enabled' every
 // enabled project's. The browser's SSE feed and GET /api/items use 'enabled'
 // (HZ-208); so does the WhatsApp concierge's farm snapshot (HZ-209).
-function snapshot({ scope = 'active' } = {}) {
+// `estimates` adds the board's top-level durationEstimates (HZ-229) — once per
+// snapshot, never per item. The concierge's /api/farm/snapshot leaves it off.
+export function snapshot({ scope = 'active', estimates = true } = {}) {
   return {
     repoUrl: getRepoUrl(),
     projects: store.listProjects(),
@@ -132,6 +134,7 @@ function snapshot({ scope = 'active' } = {}) {
     farm: orchestrator.getFarmState(),
     sync: github.getSyncState(),
     items: store.listItems({ scope }),
+    ...(estimates ? { durationEstimates: store.durationEstimates() } : {}),
   }
 }
 
@@ -1837,7 +1840,7 @@ export function buildApp({ logger = true, onRoute = null } = {}) {
     },
     (request, reply) => {
       if (!farmAuthorized(request, reply)) return
-      return snapshot({ scope: request.query.scope })
+      return snapshot({ scope: request.query.scope, estimates: false })
     },
   )
 
