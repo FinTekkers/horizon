@@ -763,3 +763,32 @@ test("the Accept gate shows who forwarded it and the forwarded run's findings, n
   expect(body.querySelector('strong').textContent).toBe('unchecked input')
   expect(container.querySelector('.step-card__forwarded').textContent).not.toContain('Newest review')
 })
+
+// HZ-208: the tracker row for an item names its project — for each project.
+test('the tracker row shows a badge with the item’s own project name', () => {
+  const projects = [
+    { id: 1, name: 'Alpha', enabled: true },
+    { id: 2, name: 'Beta', enabled: true },
+  ]
+  for (const [id, projectId, name] of [['AL-1', 1, 'Alpha'], ['BE-1', 2, 'Beta']]) {
+    const { container, unmount } = render(
+      <Tracker
+        item={{ ...baseItem, id, project_id: projectId }}
+        projects={projects}
+        onBack={noop}
+        onApprove={noop}
+        onApproveWithComments={noop}
+        onReject={noop}
+        onResolveConflicts={noop}
+        onTogglePause={noop}
+        onRestartPhase={noop}
+        onSetPersona={noop}
+        onAbandon={noop}
+      />,
+    )
+    const row = container.querySelector('.tracker__meta')
+    expect(row.querySelector('.tracker__id').textContent).toBe(id)
+    expect([...row.querySelectorAll('.proj-badge')].map((b) => b.textContent)).toEqual([name])
+    unmount()
+  }
+})

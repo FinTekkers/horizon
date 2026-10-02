@@ -251,7 +251,13 @@ export function createProject(name) {
 // project has been chosen — the rule the single active project had.
 export function isProjectEnabled(projectId) {
   if (projectId == null || getActiveProjectId() == null) return true
-  return !!db.prepare('SELECT enabled FROM project WHERE id = ?').get(projectId)?.enabled
+  return enabledProjectIds().has(projectId)
+}
+
+// The ids of every enabled project, read in one query — the single source of
+// the "enabled" rule for isProjectEnabled and listItems' 'enabled' scope.
+export function enabledProjectIds() {
+  return new Set(db.prepare('SELECT id FROM project WHERE enabled = 1').all().map((r) => r.id))
 }
 
 // Writes the flag only: a disabled project's items are never cancelled,
@@ -526,24 +532,18 @@ function currentStepOf(row) {
   return { index: row.cursor, label: step.label, kind: step.kind, phase: PHASES[step.phase], gate: step.kind === 'gate' }
 }
 
-// Board/tracker only ever see the active project's items (plus local demo
-// items, which have no project). Other projects keep syncing in the
-// background but are invisible until activated.
-export function listItems() {
+// Which items a snapshot carries. scope 'active' (the default) is the active
+// project's items; 'enabled' is every enabled project's (HZ-208 — the board,
+// tracker and approvals filter it client-side). Both include local demo items,
+// which have no project, and everything before any project has been chosen.
+// 'enabled' never carries a disabled project's items.
+export function listItems({ scope = 'active' } = {}) {
   const activeId = getActiveProjectId()
+  const enabled = scope === 'enabled' ? enabledProjectIds() : null
+  const inScope = (projectId) => (enabled ? enabled.has(projectId) : projectId === activeId)
   return selectItems
     .all()
-    .filter((row) => row.project_id == null || activeId == null || row.project_id === activeId)
-    .map(itemView)
-}
-
-// HZ-209: every enabled project's items (plus project-less local items, which
-// isProjectEnabled always counts as on) — the one WhatsApp concierge serves
-// them all. A disabled project's items are never in it.
-export function listEnabledItems() {
-  return selectItems
-    .all()
-    .filter((row) => isProjectEnabled(row.project_id))
+    .filter((row) => row.project_id == null || activeId == null || inScope(row.project_id))
     .map(itemView)
 }
 

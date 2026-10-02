@@ -29,8 +29,9 @@ const config = await import('../src/config.js')
 store.purgeDemoItems()
 
 const app = buildApp({ logger: false })
-const { cookie } = loginFixtureUser(auth, config)
-const inject = (opts) => app.inject({ ...opts, headers: { ...opts.headers, cookie } })
+const { cookie, pin } = loginFixtureUser(auth, config)
+// HZ-208: /enabled is gate-PIN protected, so every call carries the PIN.
+const inject = (opts) => app.inject({ ...opts, headers: { 'x-human-key': pin, ...opts.headers, cookie } })
 await app.ready()
 
 // The fake farm: records every call; /steps/run refuses a task without a

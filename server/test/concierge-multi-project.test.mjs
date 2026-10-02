@@ -298,8 +298,10 @@ test('POST /api/items with a disabled or unknown projectId is refused and create
   assert.equal(githubCalls.length, calls, 'a refused create reached GitHub')
 })
 
-test('POST /api/items with no projectId still goes to the active project', async () => {
+// Merged with HZ-208: with several projects enabled, a request naming neither a
+// project nor a repo is ambiguous and refused (projects-ui-scope.test.mjs) —
+// the wizard always asks which project first and sends its projectId.
+test('POST /api/items with no projectId and several enabled projects is refused, never defaulted', async () => {
   const res = await createItem({})
-  assert.equal(res.statusCode, 200, res.body)
-  assert.match(res.json().id, /^HZ-\d+$/)
+  assert.equal(res.statusCode, 400, res.body)
 })

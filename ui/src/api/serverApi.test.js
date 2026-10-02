@@ -115,3 +115,36 @@ test('the API token client calls GET/POST/DELETE /api/tokens and stores nothing'
   expect(JSON.stringify({ ...localStorage })).not.toContain('hz_secret')
   expect(JSON.stringify({ ...sessionStorage })).not.toContain('hz_secret')
 })
+
+// HZ-208: the enabled switch's client. POST with the PIN in the header only —
+// never the URL, never localStorage (gatePost would have cached it there).
+test('setProjectEnabled POSTs {enabled} with the PIN in x-human-key only, and stores nothing', async () => {
+  localStorage.clear()
+  const serverApi = await import('./serverApi')
+  const fetchSpy = vi.fn(async () => ({ ok: true, status: 200, json: async () => ({ ok: true, enabled: false }) }))
+  vi.stubGlobal('fetch', fetchSpy)
+
+  await expect(serverApi.setProjectEnabled(7, false, 'pin-1234')).resolves.toEqual({ ok: true, enabled: false })
+  expect(fetchSpy).toHaveBeenCalledTimes(1)
+  const [url, opts] = fetchSpy.mock.calls[0]
+  expect(url).toBe(`${serverApi.API_BASE}/projects/7/enabled`)
+  expect(String(url)).not.toContain('pin-1234')
+  expect(opts.method).toBe('POST')
+  expect(opts.headers['Content-Type']).toBe('application/json')
+  expect(opts.headers['x-human-key']).toBe('pin-1234')
+  expect(JSON.parse(opts.body)).toEqual({ enabled: false })
+  expect(localStorage.length).toBe(0)
+})
+
+test('setProjectEnabled throws the server’s error text on a 401', async () => {
+  localStorage.clear()
+  const serverApi = await import('./serverApi')
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(async () => ({ ok: false, status: 401, json: async () => ({ error: 'human_gate_key_required' }) })),
+  )
+  const err = await serverApi.setProjectEnabled(7, true, 'bad').catch((e) => e)
+  expect(err.message).toBe('human_gate_key_required')
+  expect(err.status).toBe(401)
+  expect(localStorage.length).toBe(0)
+})

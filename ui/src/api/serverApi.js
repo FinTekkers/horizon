@@ -194,8 +194,22 @@ export function getFarm() {
   return farm
 }
 
-export function activateProject(projectId) {
-  return postJson(`/projects/${projectId}/activate`, {})
+// HZ-208: flip a project's enabled flag. The PIN is asked for on every flip
+// and sent only in the x-human-key header — never cached (unlike gatePost,
+// which keeps it in localStorage), never logged, never in the URL.
+export async function setProjectEnabled(projectId, enabled, pin) {
+  const res = await fetch(`${API_BASE}/projects/${encodeURIComponent(projectId)}/enabled`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'x-human-key': pin },
+    body: JSON.stringify({ enabled }),
+  })
+  const data = await res.json().catch(() => ({}))
+  if (!res.ok) {
+    const err = new Error(data.error || `HTTP ${res.status}`)
+    err.status = res.status
+    throw err
+  }
+  return data
 }
 
 async function postJson(path, body) {
