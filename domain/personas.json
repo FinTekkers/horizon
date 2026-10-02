@@ -8,7 +8,7 @@
     },
     {
       "agent": "qa",
-      "default": "api_contract",
+      "default": "e2e_journey",
       "personas": ["api_contract", "e2e_journey", "data_integrity"]
     },
     {

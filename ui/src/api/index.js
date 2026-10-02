@@ -28,6 +28,8 @@ export const {
   disconnectRepo,
   saveRepoChecks,
   getRepoCheckDefaults,
+  getRepoWebhooks,
+  fixRepoWebhook,
   createItem,
   artifactUrl,
   outputUrl,

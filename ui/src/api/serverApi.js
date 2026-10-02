@@ -269,6 +269,29 @@ export function disconnectRepo(projectId, repo) {
   return postJson(`/projects/${projectId}/repos/disconnect`, { repo })
 }
 
+// HZ-244: each connected repo's GitHub webhook status, read live by the server.
+export function getRepoWebhooks(projectId) {
+  return getJson(`/projects/${encodeURIComponent(projectId)}/repos/webhooks`)
+}
+
+// HZ-244: create a missing webhook or repair a mismatched one. Gate-PIN
+// protected like setProjectEnabled — the PIN goes only in the x-human-key
+// header, never cached or put in the URL.
+export async function fixRepoWebhook(projectId, repo, pin) {
+  const res = await fetch(`${API_BASE}/projects/${encodeURIComponent(projectId)}/repos/webhook/fix`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'x-human-key': pin },
+    body: JSON.stringify({ repo }),
+  })
+  const data = await res.json().catch(() => ({}))
+  if (!res.ok) {
+    const err = new Error(data.error || `HTTP ${res.status}`)
+    err.status = res.status
+    throw err
+  }
+  return data
+}
+
 export function artifactUrl(itemId, stepIndex) {
   return `${API_BASE}/items/${itemId}/artifacts/${stepIndex}`
 }

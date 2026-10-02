@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { Fragment, useEffect, useState } from 'react'
 import {
   saveToken,
   createProject,
@@ -12,6 +12,8 @@ import {
   setProjectEnabled,
   saveRepoChecks,
   getRepoCheckDefaults,
+  getRepoWebhooks,
+  fixRepoWebhook,
 } from '../api'
 import { BackIcon, GithubIcon, LockIcon } from './icons'
 
@@ -481,7 +483,101 @@ function RepoChecks({ projectId, repoConn }) {
   )
 }
 
-function RepoRow({ projectId, repoConn, syncRepos }) {
+// HZ-244: why a webhook row is not plain ok/missing, in a few words.
+const WEBHOOK_REASON = {
+  foreign_url: 'other host',
+  secret_not_configured: 'secret not configured',
+  webhook_url_not_public: 'webhook URL not public',
+  github_unreachable: 'GitHub unreachable',
+}
+
+function WebhookStatus({ webhook }) {
+  const detail = webhook.httpStatus
+    ? `GitHub ${webhook.httpStatus}`
+    : Object.hasOwn(WEBHOOK_REASON, webhook.reason ?? '')
+      ? WEBHOOK_REASON[webhook.reason]
+      : null
+  return (
+    <>
+      <span className={`repo-webhook repo-webhook--${webhook.status}`}>
+        Webhook: {webhook.status}
+        {detail ? ` (${detail})` : ''}
+      </span>
+      <span className="repo-webhook__code">
+        {webhook.lastResponseCode != null ? `last delivery ${webhook.lastResponseCode}` : 'no deliveries'}
+      </span>
+    </>
+  )
+}
+
+// HZ-244: Fix webhook — creates a missing hook or repairs Horizon's own
+// mismatched one. Same PIN handling as ProjectEnabledToggle: the PIN lives in
+// this form's state only until the request settles and goes out in a header.
+function FixWebhookForm({ projectId, repo, onFixed }) {
+  const [asking, setAsking] = useState(false)
+  const [pin, setPin] = useState('')
+  const [error, setError] = useState(null)
+  const [busy, setBusy] = useState(false)
+
+  const cancel = () => {
+    setAsking(false)
+    setPin('')
+    setError(null)
+  }
+
+  const submit = async (e) => {
+    e.preventDefault()
+    if (!pin || busy) return
+    setBusy(true)
+    setError(null)
+    try {
+      await fixRepoWebhook(projectId, repo, pin)
+      setAsking(false)
+      onFixed?.()
+    } catch (err) {
+      setError(err.status === 401 ? 'Gate PIN incorrect' : err.message)
+    } finally {
+      setPin('')
+      setBusy(false)
+    }
+  }
+
+  if (!asking) {
+    return (
+      <div className="project-block__add" style={{ marginTop: 0 }}>
+        <button type="button" className="composer__cancel" onClick={() => setAsking(true)}>
+          Fix webhook
+        </button>
+        {error && <div className="gh-error">{error}</div>}
+      </div>
+    )
+  }
+  return (
+    <>
+      <form className="project-block__add" style={{ marginTop: 0 }} onSubmit={submit}>
+        <input
+          className="field__input"
+          type="password"
+          autoComplete="off"
+          aria-label={`Gate PIN to fix the ${repo} webhook`}
+          placeholder="Gate PIN to fix this webhook"
+          value={pin}
+          onChange={(e) => setPin(e.target.value)}
+          autoFocus
+        />
+        <button type="submit" className="composer__submit" style={{ background: 'var(--primary)' }} disabled={!pin || busy}>
+          {busy ? 'Fixing…' : 'Fix'}
+        </button>
+        <button type="button" className="composer__cancel" onClick={cancel}>
+          Cancel
+        </button>
+      </form>
+      {error && <div className="gh-error">{error}</div>}
+    </>
+  )
+}
+
+function RepoRow({ projectId, repoConn, syncRepos, webhook }) {
   const [busy, setBusy] = useState(false)
   const state = syncRepos?.find((r) => r.repo === repoConn.repo)
   const failing = state?.last?.error
@@ -506,6 +602,7 @@ function RepoRow({ projectId, repoConn, syncRepos }) {
         {repoConn.repo}
       </a>
       <span className="repo-row__prefix">{repoConn.prefix}-*</span>
+      {webhook && <WebhookStatus webhook={webhook} />}
       <span className="repo-row__status">
         {failing ? failing : lastAt ? `checked ${lastAt}` : 'waiting for first poll'}
       </span>
@@ -600,6 +697,25 @@ function ProjectPanel({ project, syncRepos }) {
   const [repo, setRepo] = useState('')
   const [error, setError] = useState(null)
   const [busy, setBusy] = useState(false)
+  const [webhooks, setWebhooks] = useState({})
+  const [webhooksError, setWebhooksError] = useState(null)
+  const repoKey = project.repos.map((r) => r.repo).join(',')
+
+  // HZ-244: live webhook status per repo — on mount, whenever the repo list
+  // changes (a connect or disconnect), and after a Fix.
+  const refreshWebhooks = () => {
+    if (!repoKey) return setWebhooks({})
+    return getRepoWebhooks(project.id)
+      .then((result) => {
+        setWebhooks(Object.fromEntries((result.webhooks || []).map((w) => [w.repo, w])))
+        setWebhooksError(null)
+      })
+      .catch((err) => setWebhooksError(err.message))
+  }
+
+  useEffect(() => {
+    refreshWebhooks()
+  }, [project.id, repoKey])
 
   const submit = async () => {
     if (!repo.trim()) return
@@ -621,12 +737,19 @@ function ProjectPanel({ project, syncRepos }) {
         <div className="project-block__name">{project.name}</div>
         <ProjectEnabledToggle project={project} />
       </div>
-      {project.repos.map((r) => (
-        <div key={r.repo}>
-          <RepoRow projectId={project.id} repoConn={r} syncRepos={syncRepos} />
-          <RepoChecks projectId={project.id} repoConn={r} />
-        </div>
-      ))}
+      {project.repos.map((r) => {
+        const webhook = Object.hasOwn(webhooks, r.repo) ? webhooks[r.repo] : null
+        return (
+          <Fragment key={r.repo}>
+            <RepoRow projectId={project.id} repoConn={r} syncRepos={syncRepos} webhook={webhook} />
+            {(webhook?.status === 'missing' || webhook?.status === 'mismatched') && (
+              <FixWebhookForm projectId={project.id} repo={r.repo} onFixed={refreshWebhooks} />
+            )}
+            <RepoChecks projectId={project.id} repoConn={r} />
+          </Fragment>
+        )
+      })}
+      {webhooksError && <div className="gh-error">Webhook status unavailable: {webhooksError}</div>}
       {project.repos.length === 0 && <div className="gh-note" style={{ marginTop: 4 }}>No repositories connected yet.</div>}
       <div className="project-block__add">
         <input

@@ -13,6 +13,7 @@ import * as deploy from './deploy.js'
 import * as orchestrator from './orchestrator.js'
 import * as premerge from './premerge.js'
 import * as autoResolve from './autoResolve.js'
+import * as webhooks from './webhooks.js'
 import * as deployDrain from './deployDrain.js'
 import {
   WEBHOOK_SECRET,
@@ -1736,8 +1737,80 @@ export function buildApp({ logger = true, onRoute = null } = {}) {
         return reply.code(409).send({ error: 'That repository is already connected' })
       }
       await github.pollRepo(repo, request.log).catch(() => {})
+      // HZ-244: set up the repo's GitHub webhook. Never fails the connect — the
+      // outcome rides along as `webhook` for Admin to show.
+      const webhook = await webhooks.ensure(canonical).catch(() => ({ status: 'error', lastResponseCode: null, reason: null }))
       broadcast()
-      return result
+      return { ...result, webhook }
+    },
+  )
+
+  // HZ-244: each connected repo's webhook status, read live from GitHub's hooks
+  // API. Read-only — one GET per repo; a failure is that row's `error`, never a
+  // 5xx for the list.
+  fastify.get(
+    '/api/projects/:id/repos/webhooks',
+    {
+      schema: {
+        params: {
+          type: 'object',
+          required: ['id'],
+          properties: { id: { type: 'integer', minimum: 1 } },
+        },
+        response: { 200: OK_OBJECT, 404: ERROR_OBJECT },
+      },
+    },
+    async (request, reply) => {
+      const project = store.listProjects().find((p) => p.id === request.params.id)
+      if (!project) return reply.code(404).send({ error: 'Project not found' })
+      const settled = await Promise.allSettled(project.repos.map((r) => webhooks.inspect(r.repo)))
+      return {
+        webhooks: project.repos.map((r, i) => ({
+          repo: r.repo,
+          ...(settled[i].status === 'fulfilled'
+            ? settled[i].value
+            : { status: 'error', lastResponseCode: null, reason: null }),
+        })),
+      }
+    },
+  )
+
+  // HZ-244: Fix webhook — creates a missing hook (POST) or repairs our own
+  // mismatched one (PATCH on its id). Gate-PIN protected like every Admin
+  // write, checked before any lookup so a bad PIN never reaches GitHub.
+  fastify.post(
+    '/api/projects/:id/repos/webhook/fix',
+    {
+      schema: {
+        security: HUMAN_GATE_SECURITY,
+        params: {
+          type: 'object',
+          required: ['id'],
+          properties: { id: { type: 'integer', minimum: 1 } },
+        },
+        body: {
+          type: 'object',
+          required: ['repo'],
+          properties: { repo: { type: 'string', minLength: 1, maxLength: 300 } },
+        },
+        response: { 200: OK_OBJECT, 401: ERROR_OBJECT, 404: ERROR_OBJECT, 502: ERROR_OBJECT, 503: ERROR_OBJECT },
+      },
+    },
+    async (request, reply) => {
+      if (!humanAuthorized(request, reply)) return
+      const project = store.listProjects().find((p) => p.id === request.params.id)
+      if (!project) return reply.code(404).send({ error: 'Project not found' })
+      const repo = project.repos.find((r) => r.repo === request.body.repo)?.repo
+      if (!repo) return reply.code(404).send({ error: 'That repository is not connected to this project' })
+      const { action, status, lastResponseCode, reason, httpStatus } = await webhooks.fix(repo)
+      if (status === 'error') {
+        if (reason === 'secret_not_configured') return reply.code(503).send({ error: 'webhook_secret_not_configured' })
+        if (reason === 'webhook_url_not_public') return reply.code(503).send({ error: 'webhook_url_not_public' })
+        request.log.warn({ repo, httpStatus }, 'webhook fix failed')
+        return reply.code(502).send({ error: httpStatus ? `GitHub returned ${httpStatus}` : 'GitHub could not be reached' })
+      }
+      request.log.info({ repo, action }, 'webhook fixed')
+      return { ok: true, repo, action, webhook: { status, lastResponseCode, reason } }
     },
   )
 

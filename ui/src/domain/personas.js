@@ -49,7 +49,7 @@ export const PERSONAS = {
 
 export const DEFAULT_PERSONAS = {
   eng: 'fullstack',
-  qa: 'api_contract',
+  qa: 'e2e_journey',
   architect: 'data_modelling',
   pm: 'roadmap',
 }
