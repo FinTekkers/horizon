@@ -24,6 +24,10 @@ test.beforeAll(() => {
     // Our own gated item, so the pending count is non-zero no matter what
     // earlier specs approved (cursor 3 is the intake gate, like E2E-1).
     insertItem(db, { id: 'MOB-GATE', title: 'E2E fixture — mobile approvals', cursor: 3, project_id })
+    // The item header's link chips (Issue, PR, Release) must wrap, not widen
+    // the page — a live item with all three overflowed to 457px at 393px.
+    insertItem(db, { id: 'MOB-LINKS', title: 'E2E fixture — mobile header links', cursor: 0, paused: 1, project_id, pr: 9225, pr_url: 'https://github.com/example/repo/pull/9225' })
+    db.prepare("UPDATE work_item SET issue = 9207, release_tag = 'deploy-mob-links', release_url = 'https://github.com/example/repo/releases/tag/deploy-mob-links' WHERE id = 'MOB-LINKS'").run()
     // Enough cards that the board is taller than a phone screen.
     for (let n = 1; n <= 6; n++) {
       insertItem(db, { id: `MOB-${n}`, title: `E2E fixture — mobile filler ${n}`, cursor: 0, paused: 1, project_id })
@@ -114,6 +118,10 @@ test('phones never scroll sideways on the board, tracker or an item page', async
 
     await page.goto('/mob-gate')
     await expect(page.locator('.tracker__meta .proj-badge')).toBeVisible()
+    await expectNoSideScroll(page)
+
+    await page.goto('/mob-links')
+    await expect(page.locator('.tracker__meta .tracker__issue')).toHaveCount(3)
     await expectNoSideScroll(page)
   }
 
