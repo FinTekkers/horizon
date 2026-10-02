@@ -40,6 +40,8 @@ Respond with ONLY a JSON object, no prose, no code fences:
 
 Rules for "patch": include ONLY fields you are actually changing; omit the
 whole "patch" key if nothing changes. Field limits: {{FIELD_LIMITS}}.
+metric and guardrails are hard budgets: a reply over budget is rejected, not
+cut. Tighten the wording to fit; never drop lines.
 "personas" is only ever set on the "Define the outcome" step, per the rules
 above.
 
