@@ -23,16 +23,30 @@ const premerge = await import('../src/premerge.js')
 const deployDrain = await import('../src/deployDrain.js')
 const { ACCEPT_GATE_INDEX } = await import('../../domain/js/lifecycle.js')
 
+// Every group this file started, with a promise that settles once its leader
+// has been reaped. Cleanup signals only a group whose leader has not been
+// reaped yet: after that its id is free, and on a busy host the kernel can hand
+// it to a sibling test file's detached group (a test farmd's, say).
 const strays = []
-after(() => {
-  for (const pid of strays) {
+after(async () => {
+  for (const stray of strays) {
+    if (stray.reaped) continue
     try {
-      process.kill(-pid, 'SIGKILL')
+      process.kill(-stray.pgid, 'SIGKILL')
     } catch {
       // gone
     }
   }
+  await Promise.all(strays.map((stray) => stray.done))
 })
+
+function track(pgid, done) {
+  const stray = { pgid, reaped: false }
+  stray.done = done.then(() => {
+    stray.reaped = true
+  })
+  strays.push(stray)
+}
 
 const alive = (pid) => {
   try {
@@ -53,11 +67,11 @@ function startCheck(itemId, { trapTerm = false } = {}) {
   return { pidFile, result }
 }
 
-async function pidsOf(pidFile, n = 4) {
+async function pidsOf({ pidFile, result }, n = 4) {
   for (let i = 0; i < 400; i++) {
     const pids = existsSync(pidFile) ? readFileSync(pidFile, 'utf8').trim().split('\n').filter(Boolean).map(Number) : []
     if (pids.length >= n) {
-      strays.push(pids[0])
+      track(pids[0], result)
       return pids
     }
     await new Promise((r) => setTimeout(r, 10))
@@ -77,10 +91,10 @@ test('M4: the interrupted run\'s whole checker tree is gone; another item\'s che
   acceptItem('KEEP-1')
   const victim = startCheck('KILL-1')
   const bystander = startCheck('KEEP-1')
-  const victimPids = await pidsOf(victim.pidFile)
-  const bystanderPids = await pidsOf(bystander.pidFile)
+  const victimPids = await pidsOf(victim)
+  const bystanderPids = await pidsOf(bystander)
   const unrelated = spawn('sleep', ['300'], { detached: true, stdio: 'ignore' })
-  strays.push(unrelated.pid)
+  track(unrelated.pid, new Promise((resolve) => unrelated.once('exit', resolve)))
 
   const res = await deployDrain.interruptForDeploy([{ itemId: 'KILL-1', kind: 'premerge' }], { graceMs: 200 })
   assert.deepEqual(res, { interrupted: [{ itemId: 'KILL-1', kind: 'premerge', killed: true }] })
@@ -103,7 +117,7 @@ test('M4: the interrupted run\'s whole checker tree is gone; another item\'s che
 test('M4: a checker that ignores SIGTERM is SIGKILLed after the grace period', async () => {
   acceptItem('KILL-2')
   const stubborn = startCheck('KILL-2', { trapTerm: true })
-  const pids = await pidsOf(stubborn.pidFile)
+  const pids = await pidsOf(stubborn)
   const started = Date.now()
   const res = await deployDrain.interruptForDeploy([{ itemId: 'KILL-2', kind: 'premerge' }], { graceMs: 150 })
   assert.deepEqual(res.interrupted, [{ itemId: 'KILL-2', kind: 'premerge', killed: true }])

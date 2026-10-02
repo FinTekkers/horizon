@@ -261,19 +261,28 @@ export async function interruptRun(itemId, { graceMs = 5000 } = {}) {
   if (!run || !(run.pgid > 1) || run.pgid === process.pid) return false
   run.interrupted = true
   signalGroup(run.pgid, 'SIGTERM')
+  // Once the group has been seen empty it is never probed or signalled again:
+  // its id is free for the kernel to hand to some other process group.
+  let alive = groupAlive(run.pgid)
   const termDeadline = Date.now() + graceMs
-  while (groupAlive(run.pgid) && Date.now() < termDeadline) await sleep(25)
-  if (groupAlive(run.pgid)) {
+  while (alive && Date.now() < termDeadline) {
+    await sleep(25)
+    alive = groupAlive(run.pgid)
+  }
+  if (alive) {
     signalGroup(run.pgid, 'SIGKILL')
     const killDeadline = Date.now() + 2000
-    while (groupAlive(run.pgid) && Date.now() < killDeadline) await sleep(25)
+    while (alive && Date.now() < killDeadline) {
+      await sleep(25)
+      alive = groupAlive(run.pgid)
+    }
   }
   // Let the gate record the outcome (it runs a few ticks after the child closes).
   let settleTimer
   await Promise.race([run.settled, new Promise((resolve) => (settleTimer = setTimeout(resolve, 2000)))])
   clearTimeout(settleTimer)
   await new Promise((resolve) => setImmediate(resolve))
-  return !groupAlive(run.pgid)
+  return !alive
 }
 
 const short = (sha) => String(sha || '').slice(0, 12)
