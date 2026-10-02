@@ -90,7 +90,7 @@ test('each agent’s select offers only that agent’s own personas', () => {
 test('an item with no personas defaults every select to that agent’s default', () => {
   const { getByLabelText } = renderTracker(baseItem)
   expect(getByLabelText(pickerLabel('eng')).value).toBe('fullstack')
-  expect(getByLabelText(pickerLabel('qa')).value).toBe('api_contract')
+  expect(getByLabelText(pickerLabel('qa')).value).toBe('e2e_journey')
   expect(getByLabelText(pickerLabel('architect')).value).toBe('data_modelling')
   expect(getByLabelText(pickerLabel('pm')).value).toBe('roadmap')
 })

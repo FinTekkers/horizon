@@ -74,7 +74,7 @@ PERSONAS = {
 # carries one that does not belong to it).
 DEFAULT_PERSONAS = {
     "eng": "fullstack",
-    "qa": "api_contract",
+    "qa": "e2e_journey",
     "architect": "data_modelling",
     "pm": "roadmap",
 }

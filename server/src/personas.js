@@ -39,7 +39,7 @@ export const PERSONAS = {
 // agent -> the persona an item gets when it carries none for that agent.
 export const DEFAULT_PERSONAS = {
   eng: 'fullstack',
-  qa: 'api_contract',
+  qa: 'e2e_journey',
   architect: 'data_modelling',
   pm: 'roadmap',
 }
