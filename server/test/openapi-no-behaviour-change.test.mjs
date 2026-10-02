@@ -87,7 +87,7 @@ test('GET /api/stream still streams a snapshot frame as text/event-stream', asyn
     const payload = JSON.parse(frame.slice('data: '.length))
     // The same keys snapshot() builds — a hijacked reply runs no serializer, so
     // this is really a check that documenting the route changed nothing.
-    assert.deepEqual(Object.keys(payload).sort(), ['activeProjectId', 'farm', 'items', 'projects', 'repoUrl', 'sync'])
+    assert.deepEqual(Object.keys(payload).sort(), ['activeProjectId', 'durationEstimates', 'farm', 'items', 'projects', 'repoUrl', 'sync'])
     await reader.cancel()
   } finally {
     await streamApp.close()

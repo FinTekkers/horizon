@@ -15,6 +15,7 @@ import {
   IMPLEMENT_STEP_INDEX,
   REVIEW_STEP_INDEX,
   ACCEPT_GATE_INDEX,
+  agentStepIndexes,
 } from '../../domain/js/lifecycle.js'
 import { isPriority } from '../../domain/js/priorities.js'
 import { isPersona, personaLabel, personasFromRow } from './personas.js'
@@ -547,6 +548,67 @@ export function listItems({ scope = 'active' } = {}) {
     .all()
     .filter((row) => row.project_id == null || activeId == null || inScope(row.project_id))
     .map(itemView)
+}
+
+// ---- duration estimates (HZ-229) ----
+
+// The typical wall-clock duration of each agent step and of the two gate
+// actions (Accept's pre-merge checks, Resolve conflicts), for the board's ETA.
+// Farm-wide on purpose: step_run and gate_action carry no project, and the
+// board shows one set of estimates whatever its project filter.
+const DURATION_SAMPLE_LIMIT = 20
+const DURATION_MIN_SAMPLES = 5
+// Human gates are never sampled — only agent-kind steps get an arm.
+const DURATION_STEP_INDEXES = agentStepIndexes()
+const DURATION_GATE_KINDS = { premerge: 'merged', resolve: 'resolved' }
+const durationSec = (end, start) => `(julianday(${end}) - julianday(${start})) * 86400`
+// One statement, one bounded arm per key. A step's "most recent" runs are its
+// highest ids (insertion order, walked by rowid); a gate action keeps one row
+// per item, so its arms order by finished_at. Rows with a missing or
+// backwards end time are skipped rather than counted.
+const selectDurationSamples = db.prepare(
+  [
+    ...DURATION_STEP_INDEXES.map(
+      () =>
+        `SELECT * FROM (SELECT CAST(step_index AS TEXT) AS k, ${durationSec('ended_at', 'started_at')} AS sec
+          FROM step_run WHERE step_index = ? AND status = 'done'
+            AND julianday(ended_at) >= julianday(started_at)
+          ORDER BY id DESC LIMIT ${DURATION_SAMPLE_LIMIT})`,
+    ),
+    ...Object.keys(DURATION_GATE_KINDS).map(
+      () =>
+        `SELECT * FROM (SELECT kind AS k, ${durationSec('finished_at', 'started_at')} AS sec
+          FROM gate_action WHERE kind = ? AND state = ?
+            AND julianday(finished_at) >= julianday(started_at)
+          ORDER BY finished_at DESC LIMIT ${DURATION_SAMPLE_LIMIT})`,
+    ),
+  ].join(' UNION ALL '),
+)
+
+// Median in whole seconds; an even count averages the middle pair. Samples are
+// first rounded to the millisecond so julianday's float noise can't tip a .5.
+function medianSec(values) {
+  const sorted = values.map((v) => Math.round(v * 1000) / 1000).sort((a, b) => a - b)
+  const mid = sorted.length >> 1
+  return Math.round(sorted.length % 2 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2)
+}
+
+// { "<agent step index>": { medianSec, count } | null, premerge: …, resolve: … }
+// — null below DURATION_MIN_SAMPLES. One query per call, computed fresh.
+export function durationEstimates() {
+  const rows = selectDurationSamples.all(...DURATION_STEP_INDEXES, ...Object.entries(DURATION_GATE_KINDS).flat())
+  const samples = new Map()
+  for (const { k, sec } of rows) {
+    if (!samples.has(k)) samples.set(k, [])
+    samples.get(k).push(sec)
+  }
+  const keys = [...DURATION_STEP_INDEXES.map(String), ...Object.keys(DURATION_GATE_KINDS)]
+  return Object.fromEntries(
+    keys.map((k) => {
+      const values = samples.get(k) || []
+      return [k, values.length < DURATION_MIN_SAMPLES ? null : { medianSec: medianSec(values), count: values.length }]
+    }),
+  )
 }
 
 function itemView(row) {
