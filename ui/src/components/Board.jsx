@@ -37,7 +37,7 @@ function progressSegs(item) {
   })
 }
 
-function BoardCard({ item, projects, onOpen, onApprove, onReject, onTogglePause }) {
+function BoardCard({ item, projects, onOpen, onApprove, onReject, onTogglePause, isGateBusy }) {
   const closed = isClosed(item)
   const abandoned = isAbandoned(item)
   const rejected = item.rejected && !closed && !abandoned
@@ -50,9 +50,11 @@ function BoardCard({ item, projects, onOpen, onApprove, onReject, onTogglePause 
   // checks + merge, or conflict resolution) shows here as it does on the
   // Tracker. While it runs the line replaces the gate buttons; any finished
   // state brings them back. Cards at any other gate never show it.
+  // HZ-279: isGateBusy is App.jsx's, so this tab's in-flight Accept hides the
+  // buttons too, before the first push.
   const atAccept = awaiting && item.cursor === ACCEPT_GATE_INDEX
   const gateAction = atAccept ? gateActionOf(item) : null
-  const gateRunning = atAccept && gateActionBusy(item)
+  const gateRunning = atAccept && isGateBusy(item)
 
   return (
     <div className={`card${awaiting ? ' card--awaiting' : ''}`} onClick={() => onOpen(item.id)}>
@@ -166,7 +168,16 @@ function BoardCard({ item, projects, onOpen, onApprove, onReject, onTogglePause 
   )
 }
 
-export default function Board({ items, projects, onOpen, onApprove, onReject, onTogglePause, onNewItem }) {
+export default function Board({
+  items,
+  projects,
+  onOpen,
+  onApprove,
+  onReject,
+  onTogglePause,
+  onNewItem,
+  isGateBusy = gateActionBusy,
+}) {
   const activeFilterKeys = useSyncExternalStore(boardFilters.subscribe, boardFilters.getActiveFilters)
   const now = new Date()
   // Filtering is a view concern only — it narrows what's rendered here, and
@@ -254,6 +265,7 @@ export default function Board({ items, projects, onOpen, onApprove, onReject, on
                       onApprove={onApprove}
                       onReject={onReject}
                       onTogglePause={onTogglePause}
+                      isGateBusy={isGateBusy}
                     />
                   ))}
                 </div>

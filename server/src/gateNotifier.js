@@ -25,6 +25,14 @@
 // synchronous forEach, so a throw in here would otherwise surface as a 500 on
 // an approval that had already succeeded.
 //
+// HZ-279: A RUNNING GATE ACTION COUNTS AS OFF THE GATE. While an item's
+// pre-merge or Resolve-conflicts run is going it is not waiting on anyone, so
+// the sweep clears notified_step exactly as it does for an agent step. When
+// the run ends blocked, failed, timed out, interrupted or resolved, the item is
+// a fresh arrival and gets one notice. A merge does not: it is marked notified
+// with nothing sent, so the advance it is about to make is notified once at the
+// next gate — and a refused advance stays quiet, as it always was.
+//
 // GUARDRAIL 1: there is no model on this path. This module imports store, db,
 // config, waApprovers and waSend — no orchestrator, no personas, no farm. The
 // message is a template; rendering it cannot call an agent because there is
@@ -150,11 +158,26 @@ export function renderPollQuestion(item) {
 // notified_step and a non-gate cursor is the steady state for most of the board
 // (including every closed item), already agrees with reality, and would
 // otherwise be selected on every single mutation forever.
+//
+// HZ-279: an item with a running gate action is selected only while it still
+// has a notified_step to clear, so a long run is not re-read on every
+// mutation. The EXISTS is a lookup on gate_action's (item_id, kind) key.
 const selectStale = db.prepare(`
   SELECT * FROM work_item
-   WHERE notified_step IS NOT cursor
-     AND (notified_step IS NOT NULL OR cursor IN (${GATE_INDEXES.map(() => '?').join(',')}))
+   WHERE CASE WHEN EXISTS (SELECT 1 FROM gate_action ga WHERE ga.item_id = work_item.id AND ga.state = 'running')
+              THEN notified_step IS NOT NULL
+              ELSE notified_step IS NOT cursor
+                   AND (notified_step IS NOT NULL OR cursor IN (${GATE_INDEXES.map(() => '?').join(',')}))
+         END
 `)
+
+const ACCEPT_GATE = requiredStepIndex('Accept the code')
+
+// The UI's gateActionBusy() rule (ui/src/domain/gateAction.js), read from the
+// same item.gateAction and item.conflictRun the UI is sent.
+function gateActionRunning({ gateAction, conflictRun }) {
+  return gateAction?.state === 'running' || conflictRun?.state === 'running'
+}
 
 // `render` is injectable for the same reason drainOutbox's `send` is: the
 // per-item failure path below is only testable if one item can be made to fail
@@ -190,7 +213,8 @@ export function sweepGates({ log, render = renderNotice, renderPoll = renderPoll
       // Paused is NOT skipped: a paused item parked at a gate is still waiting
       // on a human, which is the whole thing this notifies about. Closed and
       // abandoned are, because neither is waiting on anyone.
-      const atGate = !isClosed(item) && !isAbandoned(item) && isGateIndex(item.cursor)
+      const gate = store.itemGateFields(item)
+      const atGate = !isClosed(item) && !isAbandoned(item) && isGateIndex(item.cursor) && !gateActionRunning(gate)
       if (!atGate) {
         if (item.notified_step !== null) {
           setNotified.run(null, item.id)
@@ -202,6 +226,14 @@ export function sweepGates({ log, render = renderNotice, renderPoll = renderPoll
       // notified either, so re-enabling the project notifies it on the next
       // sweep. It stays stale until then, the same as an unrenderable item.
       if (!store.isProjectEnabled(item.project_id)) continue
+      // HZ-279: a merge at Accept is marked notified with nothing sent.
+      // finishGateAction notifies BEFORE the gate advances, so sending here
+      // would be a notice for a gate that is about to be left. itemGateFields
+      // shows a merge only from this visit to the gate.
+      if (item.cursor === ACCEPT_GATE && gate.gateAction?.state === 'merged') {
+        setNotified.run(item.cursor, item.id)
+        continue
+      }
       // Read through store.latestArtifact, not a second raw query onto step_run:
       // "latest done attempt wins" is already decided there, once.
       const recommendation =

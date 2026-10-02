@@ -778,8 +778,18 @@ export function durationEstimates() {
   )
 }
 
-function itemView(row) {
+// The item's conflictRun and gateAction exactly as listItems shows them —
+// itemGateAction's epoch rule included. HZ-279's notifier reads them through
+// this too, so it applies the same busy rule as the UI.
+export function itemGateFields(row) {
   const gateActions = selectItemGateActions.all(row.id)
+  return {
+    conflictRun: conflictRunView(gateActions.find((r) => r.kind === 'resolve')),
+    gateAction: itemGateAction(gateActions, row.id, row.cursor),
+  }
+}
+
+function itemView(row) {
   return {
     id: row.id,
     title: row.title,
@@ -809,8 +819,7 @@ function itemView(row) {
     events: selectEvents.all(row.id),
     stepOutputs: stepOutputs(row.id),
     activeRun: withRunState(selectActiveRun.get(row.id) || null),
-    conflictRun: conflictRunView(gateActions.find((r) => r.kind === 'resolve')),
-    gateAction: itemGateAction(gateActions, row.id, row.cursor),
+    ...itemGateFields(row),
     reviewRejected: reviewRejected(row),
     forwardedReview: forwardedReview(row),
     ...dependencyFields(row.id),
