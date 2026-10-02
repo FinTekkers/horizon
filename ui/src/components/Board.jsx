@@ -1,6 +1,7 @@
 import { useSyncExternalStore } from 'react'
 import {
   PHASES,
+  ACCEPT_GATE_INDEX,
   isClosed,
   isAbandoned,
   curStep,
@@ -11,10 +12,12 @@ import { PHASE_ACCENT, PHASE_ACCENT_BG, priorityColor } from '../domain/lifecycl
 import { FILTERS, visibleItems, hiddenCounts, matchCounts } from '../domain/filters'
 import { PRIMARY_PERSONA_AGENT, personaFor } from '../domain/personas'
 import { itemStatus } from '../domain/status'
+import { gateActionOf, gateActionBusy } from '../domain/gateAction'
 import { issueUrl, issueLabel } from '../api'
 import * as boardFilters from '../boardFilters'
 import StatusPill from './StatusPill'
 import DependencyBadge from './DependencyBadge'
+import GateActionStatus from './GateActionStatus'
 import ProjectBadge from './ProjectBadge'
 import { LinkIcon, LockIcon, PrIcon } from './icons'
 
@@ -43,6 +46,13 @@ function BoardCard({ item, projects, onOpen, onApprove, onReject, onTogglePause 
   const cur = curStep(item)
   const isActiveAgent = !closed && !abandoned && !awaiting && !rejected && !paused && cur && cur.kind === 'agent'
   const rejectTarget = awaiting && cur ? cur.label : cur ? cur.label : 'this step'
+  // HZ-226: at the Accept gate, the server's in-flight action (pre-merge
+  // checks + merge, or conflict resolution) shows here as it does on the
+  // Tracker. While it runs the line replaces the gate buttons; any finished
+  // state brings them back. Cards at any other gate never show it.
+  const atAccept = awaiting && item.cursor === ACCEPT_GATE_INDEX
+  const gateAction = atAccept ? gateActionOf(item) : null
+  const gateRunning = atAccept && gateActionBusy(item)
 
   return (
     <div className={`card${awaiting ? ' card--awaiting' : ''}`} onClick={() => onOpen(item.id)}>
@@ -103,26 +113,29 @@ function BoardCard({ item, projects, onOpen, onApprove, onReject, onTogglePause 
             <LockIcon size={13} strokeWidth={2.4} />
             {cur.label}
           </div>
-          <div className="card__gate-actions">
-            <button
-              className="btn-approve"
-              onClick={(e) => {
-                e.stopPropagation()
-                onApprove(item.id, cur.label)
-              }}
-            >
-              Approve
-            </button>
-            <button
-              className="btn-reject"
-              onClick={(e) => {
-                e.stopPropagation()
-                onReject(item.id, rejectTarget)
-              }}
-            >
-              Send back
-            </button>
-          </div>
+          {gateAction && <GateActionStatus action={gateAction} pr={item.pr} showElapsed={false} />}
+          {!gateRunning && (
+            <div className="card__gate-actions">
+              <button
+                className="btn-approve"
+                onClick={(e) => {
+                  e.stopPropagation()
+                  onApprove(item.id, cur.label)
+                }}
+              >
+                Approve
+              </button>
+              <button
+                className="btn-reject"
+                onClick={(e) => {
+                  e.stopPropagation()
+                  onReject(item.id, rejectTarget)
+                }}
+              >
+                Send back
+              </button>
+            </div>
+          )}
         </div>
       )}
 

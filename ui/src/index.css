@@ -908,6 +908,10 @@ button { font-family: var(--font-sans); }
 .gate-action-status--error { background: var(--danger-bg-soft); border: 1px solid var(--danger-border-soft); color: var(--danger-ink); }
 .gate-action-status__elapsed { font-variant-numeric: tabular-nums; }
 .gate-action-status__note { font-weight: 500; }
+/* HZ-226: the same line on a Board card, between the gate label and its
+   buttons. Long check names or details wrap inside the narrow card. */
+.card__gate .gate-action-status { margin-top: 0; overflow-wrap: anywhere; }
+.card__gate .gate-action-status + .card__gate-actions { margin-top: 8px; }
 
 /* ---- login (HZ-21) ---- */
 .login { min-height: 100vh; display: flex; align-items: center; justify-content: center; padding: 24px; }

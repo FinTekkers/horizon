@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useRef, useState } from 'react'
 import {
   PHASES,
   STEPS,
@@ -15,12 +15,13 @@ import { PHASE_ACCENT, PHASE_ACCENT_BG, priorityColor } from '../domain/lifecycl
 import { PERSONAS, PERSONA_AGENT_ROLES, PRIMARY_PERSONA_AGENT, personaFor, personaId } from '../domain/personas'
 import { itemStatus } from '../domain/status'
 import { pauseReason } from '../domain/pauseReason'
-import { gateActionOf, gateActionView, elapsedText } from '../domain/gateAction'
+import { gateActionOf } from '../domain/gateAction'
 import { resolveEventColor } from '../domain/eventColors'
 import { issueUrl, issueLabel, artifactUrl, outputUrl, runLogViewUrl } from '../api'
 import StatusPill from './StatusPill'
 import DependencyBadge from './DependencyBadge'
 import Markdown from './Markdown'
+import GateActionStatus from './GateActionStatus'
 import ProjectBadge from './ProjectBadge'
 import { BackIcon, LinkIcon, RestartIcon, PrIcon } from './icons'
 
@@ -99,32 +100,6 @@ function ForwardedReview({ forwarded }) {
       ) : (
         <div>The review recorded no findings text.</div>
       )}
-    </div>
-  )
-}
-
-// HZ-216: the Accept gate's long action — what it is doing and for how long
-// while it runs (elapsed from the server's startedAt, so a reload shows the
-// same clock), then its result. A blocked result names the failing check only,
-// never its output.
-function GateActionStatus({ action, pr }) {
-  const view = gateActionView(action, pr)
-  const running = view?.tone === 'running'
-  const [now, setNow] = useState(() => Date.now())
-  useEffect(() => {
-    if (!running) return undefined
-    setNow(Date.now())
-    const timer = setInterval(() => setNow(Date.now()), 1000)
-    return () => clearInterval(timer)
-  }, [running])
-  if (!view) return null
-  return (
-    <div className={`gate-action-status gate-action-status--${view.tone}`} role="status" aria-live="polite">
-      <span className="gate-action-status__text">
-        {view.text}
-        {running && <span className="gate-action-status__elapsed"> · {elapsedText(action.since, now)}</span>}
-      </span>
-      {view.note && <span className="gate-action-status__note">{view.note}</span>}
     </div>
   )
 }
