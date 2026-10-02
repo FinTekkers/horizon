@@ -29,6 +29,10 @@ HEALTH_URL="${HORIZON_HEALTH_URL:-http://127.0.0.1:3001/api/health}"
 HEALTH_TIMEOUT_S="${HORIZON_HEALTH_TIMEOUT_S:-30}"
 HEALTH_POLL_S="${HORIZON_HEALTH_POLL_S:-2}"
 LOCK_TIMEOUT_S="${HORIZON_DEPLOY_LOCK_TIMEOUT_S:-300}"
+# HZ-250: set by server/src/deploy.js for this target only. Unset (an older
+# server, or a manual run without it) means no drain stage at all.
+DRAIN_URL="${HORIZON_DEPLOY_DRAIN_URL:-}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 mkdir -p "$STATE_DIR"
 LOCK_FILE="$STATE_DIR/deploy.lock"
@@ -40,8 +44,17 @@ log() {
   printf '%s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$1" >>"$LOG_FILE"
 }
 
+# Appends each line the drain helper prints to the log.
+drain() {
+  node "$SCRIPT_DIR/deploy-drain.mjs" "$1" | while IFS= read -r line; do log "$line"; done
+}
+
 STAGE="lock"
+DRAINING=""
 on_error() {
+  # A deploy that fails before the restart lifts the drain's block on new
+  # runs; once the server has restarted the block is gone with the old process.
+  if [ -n "$DRAINING" ]; then drain release || true; fi
   log "DEPLOY FAILED: ${STAGE} (tag=${TAG:-origin/main})"
 }
 trap on_error ERR
@@ -81,6 +94,18 @@ STAGE="ui-build-verify"
 if ! grep -q '/horizon/assets/' ui/dist/index.html; then
   log "DEPLOY FAILED: ${STAGE} (tag=${REF} commit=${COMMIT}) — ui/dist/index.html does not reference /horizon/assets/, HORIZON_BASE likely didn't reach the build"
   exit 1
+fi
+
+# HZ-250: the restart below would strand any pre-merge or resolve run the
+# server is still running (KillMode=process, detached checkers). Wait for
+# them, bounded by HORIZON_DEPLOY_DRAIN_TIMEOUT_S (default 25 min), while the
+# server refuses new ones; whatever is left is interrupted and its checker
+# stopped. Inside the flock, so overlapping deploys still serialize. The
+# helper always exits 0: an unreachable server never stops the deploy.
+STAGE="drain"
+if [ -n "$DRAIN_URL" ] && [ -f "$SCRIPT_DIR/deploy-drain.mjs" ]; then
+  DRAINING=1
+  drain drain || log "DRAIN skipped: the drain helper failed to run"
 fi
 
 STAGE="restart"
