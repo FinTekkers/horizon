@@ -62,6 +62,8 @@ import {
   FIX_PASS_MAX_LINES,
 } from './config.js'
 import { PRIMARY_PERSONA_AGENT, isPersona, personaLabel, proposePersona } from './personas.js'
+import { SUMMARIZE_STEP_INDEX, OVERLAP_INPUT_LABEL, computeOverlap, overlapFailure, applyOverlap } from './overlapService.js'
+import { renderOverlapInput, renderOverlapSection, replaceOverlapSection } from './overlap.js'
 
 // Keyed by step_run.id (HZ-100) — NOT item id. Keying by item used to let a
 // stale callback for a superseded run clear/overwrite the CURRENT run's
@@ -998,6 +1000,22 @@ async function dispatchToFarm(id, stepIndex, runId, attempt, scope) {
     item = getItem(id)
   }
 
+  // HZ-236: step 9 sees every other in-flight item's footprint and the
+  // decision the server will apply. Context only: completeFarmRun recomputes
+  // and applies. Awaited before the feedback stamp below, so a run cancelled
+  // meanwhile never marks feedback delivered that it did not send.
+  let overlapInput = null
+  if (stepIndex === SUMMARIZE_STEP_INDEX) {
+    let check
+    try {
+      check = await computeOverlap(id)
+    } catch (err) {
+      check = overlapFailure(id, err)
+    }
+    if (!runStillActive(runId)) return
+    overlapInput = { label: OVERLAP_INPUT_LABEL, content: renderOverlapInput(check) }
+  }
+
   // HZ-204: built BEFORE the delivered_at stamp below, so this attempt's own
   // pending feedback rides in `feedback` only, never twice.
   const projectContext = step.runsIn === 'pm' ? buildProjectContext(id) : null
@@ -1055,6 +1073,7 @@ async function dispatchToFarm(id, stepIndex, runId, attempt, scope) {
   }
 
   const artifacts = budgeted.map(({ label, content }) => ({ label, content }))
+  if (overlapInput) artifacts.push(overlapInput)
   // HZ-207: every farm step carries its own project; farmd refuses one
   // without a project or repo and never falls back to a global project.
   const project = item.project_id == null ? null : db.prepare('SELECT id, name FROM project WHERE id = ?').get(item.project_id)
@@ -1800,7 +1819,7 @@ export async function completeFarmRun(runId, { summary, patch, artifacts }) {
     }
   }
 
-  const artifactMd =
+  let artifactMd =
     typeof artifacts?.artifact_md === 'string' ? artifacts.artifact_md.slice(0, WRITE_TIME_SANITY_CEILING_CHARS) : null
 
   if (run.step_index === REVIEW_STEP_INDEX) {
@@ -1838,6 +1857,25 @@ export async function completeFarmRun(runId, { summary, patch, artifacts }) {
     typeof artifacts?.provider === 'string' && artifacts.provider.trim() ? artifacts.provider.trim() : null
   const commandId =
     typeof artifacts?.command_id === 'string' && artifacts.command_id.trim() ? artifacts.command_id.trim() : null
+
+  // HZ-236: the overlap check is recomputed here and this result is the one
+  // applied — the dispatch-time copy was context for the model only. The
+  // server's `## Overlap` section replaces any the model wrote, so a computed
+  // decision can never be downgraded. A failed check never fails the step:
+  // its peers are listed as not checked. All awaits come first; from the
+  // re-check on there is none, because the dependency edge applyOverlap may
+  // add blocks this item, and the run must be marked done before anything
+  // could see a blocked item holding an active run.
+  if (run.step_index === SUMMARIZE_STEP_INDEX) {
+    let check
+    try {
+      check = await computeOverlap(id)
+    } catch (err) {
+      check = overlapFailure(id, err)
+    }
+    if (!runStillActive(runId)) return { ok: true, stale: true }
+    artifactMd = replaceOverlapSection(artifactMd || '', renderOverlapSection(applyOverlap(id, check)))
+  }
 
   if (run.step_index === IMPLEMENT_STEP_INDEX) settleFixPass(id, run, artifacts)
 
