@@ -120,14 +120,16 @@ ${nav}
 
 const sseClients = new Set()
 
-function snapshot() {
+// scope 'active' carries the active project's items, 'enabled' every enabled
+// project's (HZ-208). The browser's SSE feed and GET /api/items use 'enabled'.
+function snapshot({ scope = 'active' } = {}) {
   return {
     repoUrl: getRepoUrl(),
     projects: store.listProjects(),
     activeProjectId: getActiveProjectId(),
     farm: orchestrator.getFarmState(),
     sync: github.getSyncState(),
-    items: store.listItems(), // scoped to the active project
+    items: store.listItems({ scope }),
   }
 }
 
@@ -221,7 +223,7 @@ function startSession(reply, userId) {
 }
 
 export function broadcast() {
-  const data = `data: ${JSON.stringify(snapshot())}\n\n`
+  const data = `data: ${JSON.stringify(snapshot({ scope: 'enabled' }))}\n\n`
   sseClients.forEach((res) => res.write(data))
 }
 
@@ -375,7 +377,7 @@ export function buildApp({ logger = true, onRoute = null } = {}) {
         'Cache-Control': 'no-cache',
         Connection: 'keep-alive',
       })
-      reply.raw.write(`data: ${JSON.stringify(snapshot())}\n\n`)
+      reply.raw.write(`data: ${JSON.stringify(snapshot({ scope: 'enabled' }))}\n\n`)
       sseClients.add(reply.raw)
       request.raw.on('close', () => sseClients.delete(reply.raw))
     },
@@ -395,7 +397,7 @@ export function buildApp({ logger = true, onRoute = null } = {}) {
     return reply.send(result)
   }
 
-  fastify.get('/api/items', { schema: { response: { 200: OK_OBJECT } } }, () => snapshot())
+  fastify.get('/api/items', { schema: { response: { 200: OK_OBJECT } } }, () => snapshot({ scope: 'enabled' }))
 
   // The generated API reference (HZ-178). fastify.swagger() is the decorator the
   // plugin installed at the top of buildApp(); it may only be called after
@@ -410,8 +412,8 @@ export function buildApp({ logger = true, onRoute = null } = {}) {
   // by anyone on the internet with no login. The count comes from a raw DB
   // query rather than store.listItems() so it can't silently start failing
   // again the way the old /api/items probe did (HZ-21 gated /api/items;
-  // store.listItems() is also scoped to the active project, a second way an
-  // unrelated app change could break this probe).
+  // store.listItems() is also scoped by project, a second way an unrelated
+  // app change could break this probe).
   fastify.get('/api/health', { schema: { response: { 200: OK_OBJECT, 503: ERROR_OBJECT } } }, (request, reply) => {
     let itemCount
     try {
@@ -630,9 +632,11 @@ export function buildApp({ logger = true, onRoute = null } = {}) {
     },
     async (request, reply) => {
       const { title, outcome, metric, guardrails = '', priority = DEFAULT_PRIORITY, repo } = request.body
-      // New work goes into the active project only.
-      const activeId = getActiveProjectId()
-      const connected = store.listRepos().filter((r) => activeId == null || r.project_id === activeId)
+      // New work goes into any enabled project's repository (HZ-208).
+      const connected = store.listRepos().filter((r) => store.isProjectEnabled(r.project_id))
+      if (repo && !connected.some((r) => r.repo === repo) && store.findRepo(repo)) {
+        return reply.code(400).send({ error: 'That repository’s project is disabled' })
+      }
       if (connected.length > 0) {
         const target = repo
           ? connected.find((r) => r.repo === repo) || null
@@ -640,7 +644,7 @@ export function buildApp({ logger = true, onRoute = null } = {}) {
             ? connected[0]
             : null
         if (!target) {
-          return reply.code(400).send({ error: 'Pick which of the active project’s repositories this work item belongs to' })
+          return reply.code(400).send({ error: 'Pick which of the enabled projects’ repositories this work item belongs to' })
         }
         let ghIssue
         try {
@@ -652,7 +656,7 @@ export function buildApp({ logger = true, onRoute = null } = {}) {
         return { ok: true, id: `${target.prefix}-${ghIssue.number}`, issue: ghIssue.number, url: ghIssue.html_url }
       }
       if (store.listRepos().length > 0) {
-        return reply.code(400).send({ error: 'The active project has no connected repositories — add one in Admin' })
+        return reply.code(400).send({ error: 'No enabled project has a connected repository — add one in Admin' })
       }
       const id = store.createLocalItem({ title, outcome, metric, guardrails, priority })
       return { ok: true, id }
@@ -1704,7 +1708,8 @@ export function buildApp({ logger = true, onRoute = null } = {}) {
     },
   )
 
-  // Activate a project: the bot farm restarts with that project's context.
+  // Activate a project. Activate only — it never enables the project (HZ-208).
+  // No farm restart and no cancel — `restarting` stays in the body, always false.
   fastify.post(
     '/api/projects/:id/activate',
     {
@@ -1720,10 +1725,45 @@ export function buildApp({ logger = true, onRoute = null } = {}) {
     (request, reply) => {
       const project = store.listProjects().find((p) => p.id === request.params.id)
       if (!project) return reply.code(404).send({ error: 'Project not found' })
-      if (project.id === getActiveProjectId()) return { ok: true, alreadyActive: true }
-      orchestrator.switchProject(project.id, request.log)
+      if (project.id === getActiveProjectId()) {
+        return { ok: true, alreadyActive: true }
+      }
+      setSetting('active_project_id', String(project.id))
       broadcast()
-      return { ok: true, restarting: true }
+      return { ok: true, restarting: false }
+    },
+  )
+
+  // HZ-207: turn a project's dispatch on or off. A flag write only — no farm
+  // restart, and no step in any project is cancelled or re-queued. HZ-208:
+  // gate-PIN protected, checked before the project lookup so a bad PIN never
+  // touches state.
+  fastify.post(
+    '/api/projects/:id/enabled',
+    {
+      schema: {
+        security: HUMAN_GATE_SECURITY,
+        params: {
+          type: 'object',
+          required: ['id'],
+          properties: { id: { type: 'integer', minimum: 1 } },
+        },
+        body: {
+          type: 'object',
+          required: ['enabled'],
+          properties: { enabled: { type: 'boolean' } },
+        },
+        response: { 200: OK_OBJECT, 401: ERROR_OBJECT, 404: ERROR_OBJECT, 409: ERROR_OBJECT },
+      },
+    },
+    (request, reply) => {
+      if (!humanAuthorized(request, reply)) return
+      const project = store.listProjects().find((p) => p.id === request.params.id)
+      if (!project) return reply.code(404).send({ error: 'Project not found' })
+      const result = orchestrator.setProjectEnabled(project.id, request.body.enabled, request.log)
+      if (result.error) return reply.code(409).send({ error: result.error })
+      broadcast()
+      return result
     },
   )
 

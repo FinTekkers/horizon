@@ -5,7 +5,7 @@
 // one global time budget (see playwright.config.js).
 
 import { test, expect, captureScreenshot } from '../fixtures/test-base.js'
-import { openDb, insertItem, insertEvent } from '../fixtures/seed.js'
+import { openDb, insertItem, insertEvent, insertProject } from '../fixtures/seed.js'
 import { DARK, LIGHT } from '../../ui/src/theme-tokens.js'
 
 const DB_PATH = process.env.HORIZON_E2E_DB
@@ -16,17 +16,20 @@ test.beforeAll(() => {
   try {
     // beforeAll re-runs in a fresh worker after a failed test; seed once.
     if (db.prepare('SELECT 1 FROM work_item WHERE id = ?').get('MOB-GATE')) return
-    // The project switcher only renders once a project exists.
-    db.prepare('INSERT OR IGNORE INTO project (name) VALUES (?)').run('Mobile E2E')
+    // The project filter only renders once an enabled project exists. Every
+    // fixture belongs to it, so cards and the item header carry a project
+    // badge (HZ-208) — long on purpose, the no-sideways-scroll check must
+    // hold with badges present.
+    const project_id = insertProject(db, { name: 'Mobile E2E project with a deliberately long name' })
     // Our own gated item, so the pending count is non-zero no matter what
     // earlier specs approved (cursor 3 is the intake gate, like E2E-1).
-    insertItem(db, { id: 'MOB-GATE', title: 'E2E fixture — mobile approvals', cursor: 3 })
+    insertItem(db, { id: 'MOB-GATE', title: 'E2E fixture — mobile approvals', cursor: 3, project_id })
     // Enough cards that the board is taller than a phone screen.
     for (let n = 1; n <= 6; n++) {
-      insertItem(db, { id: `MOB-${n}`, title: `E2E fixture — mobile filler ${n}`, cursor: 0, paused: 1 })
+      insertItem(db, { id: `MOB-${n}`, title: `E2E fixture — mobile filler ${n}`, cursor: 0, paused: 1, project_id })
     }
     // Enough activity that the item page scrolls past the bottom nav.
-    insertItem(db, { id: 'MOB-LOG', title: 'E2E fixture — mobile activity', cursor: 0, paused: 1 })
+    insertItem(db, { id: 'MOB-LOG', title: 'E2E fixture — mobile activity', cursor: 0, paused: 1, project_id })
     for (let n = 1; n <= 25; n++) {
       insertEvent(db, { itemId: 'MOB-LOG', color: '#2E6CB2', text: `mobile fixture event ${n}` })
     }
@@ -98,6 +101,7 @@ test('phones never scroll sideways on the board, tracker or an item page', async
     await page.setViewportSize(size)
     await page.goto('/')
     await expect(nav(page)).toBeVisible()
+    await expect(page.locator('.card', { hasText: 'MOB-GATE' }).locator('.proj-badge')).toBeVisible()
     await expectNoSideScroll(page)
 
     await navTab(page, 'Tracker').click()
@@ -106,6 +110,10 @@ test('phones never scroll sideways on the board, tracker or an item page', async
 
     await page.goto('/hz-102')
     await expect(page.locator('.tracker__id')).toHaveText('HZ-102')
+    await expectNoSideScroll(page)
+
+    await page.goto('/mob-gate')
+    await expect(page.locator('.tracker__meta .proj-badge')).toBeVisible()
     await expectNoSideScroll(page)
   }
 
@@ -152,7 +160,7 @@ test('the phone top bar is one slim row with 44px targets, and the nav is keyboa
     navTab(page, 'Board'),
     navTab(page, 'Tracker'),
     navTab(page, /^Approvals/),
-    page.getByRole('button', { name: 'Mobile E2E' }),
+    page.getByRole('button', { name: /^Project filter:/ }),
     page.locator('.topbar__avatar'),
   ]
   for (const target of targets) {

@@ -9,14 +9,24 @@ import { PRIORITIES, DEFAULT_PRIORITY } from '../../../domain/js/priorities.js'
 // a clear outcome and a measurable success criterion are required before an
 // item enters the lifecycle; everything else the Plan-phase agents refine.
 
-export default function NewItemModal({ activeProject, onClose, onCreated }) {
-  const repos = activeProject?.repos || []
+// HZ-208: `projects` is every ENABLED project (the caller filters); new work
+// can go into any of them. Picking a project selects its first repository.
+export default function NewItemModal({ projects = [], defaultProjectId = null, onClose, onCreated }) {
+  const [projectId, setProjectId] = useState(
+    () => (projects.find((p) => p.id === defaultProjectId) || projects[0])?.id ?? null,
+  )
+  const project = projects.find((p) => p.id === projectId) || null
+  const repos = project?.repos || []
   const [title, setTitle] = useState('')
   const [outcome, setOutcome] = useState('')
   const [metric, setMetric] = useState('')
   const [guardrails, setGuardrails] = useState('')
   const [priority, setPriority] = useState(DEFAULT_PRIORITY)
   const [repo, setRepo] = useState(repos[0]?.repo ?? null)
+  const chooseProject = (p) => {
+    setProjectId(p.id)
+    setRepo(p.repos?.[0]?.repo ?? null)
+  }
   const [errors, setErrors] = useState({})
   const [serverError, setServerError] = useState(null)
   const [busy, setBusy] = useState(false)
@@ -60,12 +70,31 @@ export default function NewItemModal({ activeProject, onClose, onCreated }) {
     <div className="composer">
       <div className="composer__scrim" onClick={onClose} />
       <div className="composer__panel composer__panel--wide">
-        <div className="composer__title">New work item{activeProject ? ` · ${activeProject.name}` : ''}</div>
+        <div className="composer__title">New work item{project ? ` · ${project.name}` : ''}</div>
         <div className="composer__sub">
           {repo
             ? `Creates an issue in ${repo} — GitHub stays the source of truth.`
             : 'Creates a local demo item (connect a repo in Admin to create real issues).'}
         </div>
+
+        {projects.length > 1 && (
+          <div className="field">
+            <div className="field__label">Project</div>
+            <div className="prio-seg" style={{ flexWrap: 'wrap', maxWidth: '100%' }}>
+              {projects.map((p) => (
+                <button
+                  key={p.id}
+                  type="button"
+                  aria-pressed={projectId === p.id}
+                  className={`prio-seg__btn${projectId === p.id ? ' prio-seg__btn--on' : ''}`}
+                  onClick={() => chooseProject(p)}
+                >
+                  {p.name}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
 
         {repos.length > 1 && (
           <div className="field">

@@ -40,10 +40,10 @@ const noop = () => {}
 // as the priority control — so an unscoped selector would pass here only by the
 // accident of a single-repo fixture, and would silently start counting repository
 // buttons as priorities for any real multi-repo project.
-const PROJECT = { repos: [{ repo: 'FinTekkers/horizon' }, { repo: 'FinTekkers/ui-service' }] }
+const PROJECT = { id: 1, name: 'FinTekkers', enabled: true, repos: [{ repo: 'FinTekkers/horizon' }, { repo: 'FinTekkers/ui-service' }] }
 
 function renderModal() {
-  return render(<NewItemModal activeProject={PROJECT} onClose={noop} onCreated={noop} />)
+  return render(<NewItemModal projects={[PROJECT]} onClose={noop} onCreated={noop} />)
 }
 
 // The PRIORITY segmented control's buttons, in DOM order — scoped by the visible
@@ -121,4 +121,31 @@ test('the submitted payload carries the selected priority', async () => {
 
   await vi.waitFor(() => expect(createItem).toHaveBeenCalled())
   expect(createItem.mock.calls.at(-1)[0].priority).toBe(chosen)
+})
+
+// ---- HZ-208: file into any enabled project ----
+
+test('the project picker lists the given (enabled) projects, and picking one files with its repo', async () => {
+  const { createItem } = await import('../api')
+  const alpha = { id: 1, name: 'Alpha', enabled: true, repos: [{ repo: 'Org/alpha' }] }
+  const beta = { id: 2, name: 'Beta', enabled: true, repos: [{ repo: 'Org/beta' }] }
+  const { container, getByText, getByRole } = render(
+    <NewItemModal projects={[alpha, beta]} defaultProjectId={1} onClose={noop} onCreated={noop} />,
+  )
+  const projectField = [...container.querySelectorAll('.field')].find(
+    (f) => f.querySelector('.field__label')?.textContent === 'Project',
+  )
+  expect([...projectField.querySelectorAll('button')].map((b) => b.textContent)).toEqual(['Alpha', 'Beta'])
+  expect(getByText(/Creates an issue in Org\/alpha/)).toBeTruthy()
+
+  fireEvent.click(getByRole('button', { name: 'Beta' }))
+  expect(getByText(/Creates an issue in Org\/beta/)).toBeTruthy()
+  fireEvent.change(container.querySelector('input'), { target: { value: 'Cross-project work' } })
+  const textareas = [...container.querySelectorAll('textarea')]
+  fireEvent.change(textareas[0], { target: { value: 'A clear outcome for the farm to plan against.' } })
+  fireEvent.change(textareas[1], { target: { value: 'A measurable success criterion.' } })
+  fireEvent.click(getByText('Create work item'))
+
+  await vi.waitFor(() => expect(createItem.mock.calls.at(-1)?.[0].title).toBe('Cross-project work'))
+  expect(createItem.mock.calls.at(-1)[0].repo).toBe('Org/beta')
 })

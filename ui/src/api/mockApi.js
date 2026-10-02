@@ -163,7 +163,7 @@ export function getFarm() {
   return { status: 'running' }
 }
 
-export async function activateProject() {
+export async function setProjectEnabled() {
   throw new Error('Projects are not available in mock mode')
 }
 

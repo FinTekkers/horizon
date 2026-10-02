@@ -1,6 +1,6 @@
-// HZ-224: on a phone CSS shrinks the project switcher to dot + caret. The
-// name is only visually hidden, so the button keeps it as its accessible
-// name; the decorative dot, caret and icons are hidden from assistive tech.
+// HZ-224: on a phone CSS shrinks HZ-208's project filter to dot + caret. The
+// label is only visually hidden and the button keeps its aria-label name;
+// the decorative dot, caret and icons are hidden from assistive tech.
 // TopBar.test.jsx (desktop behaviour) is deliberately left untouched.
 
 import { expect, test, afterEach } from 'vitest'
@@ -20,12 +20,11 @@ const renderBar = () =>
     <TopBar
       view="board"
       pendingCount={2}
-      projects={[{ id: 1, name: 'Shoreward', repos: [] }]}
-      activeProjectId={1}
-      farm={{ status: 'running' }}
+      projects={[{ id: 1, name: 'Shoreward', enabled: true, repos: [] }]}
+      projectFilter={1}
+      onProjectFilterChange={noop}
       user={user}
       onLogout={noop}
-      onRequestSwitch={noop}
       onBoard={noop}
       onTracker={noop}
       onOpenApprovals={noop}
@@ -34,14 +33,15 @@ const renderBar = () =>
     />,
   )
 
-test("the project switcher's accessible name is exactly the project name", () => {
+test("the compact project filter keeps HZ-208's accessible name, with the project in it", () => {
   const { container } = renderBar()
-  const button = screen.getByRole('button', { name: 'Shoreward' })
+  const button = screen.getByRole('button', { name: 'Project filter: Shoreward' })
   expect(button).toBe(container.querySelector('.projswitch'))
-  expect(button.querySelector('.projswitch__name').textContent).toBe('Shoreward')
+  // The label CSS visually hides on a phone is still the project name.
+  expect(button.querySelector('.projswitch__label').textContent).toBe('Shoreward')
 })
 
-test("the switcher's dot and caret are aria-hidden", () => {
+test("the filter's dot and caret are aria-hidden", () => {
   const { container } = renderBar()
   expect(container.querySelector('.projswitch__dot').getAttribute('aria-hidden')).toBe('true')
   expect(container.querySelector('.projswitch__caret').getAttribute('aria-hidden')).toBe('true')

@@ -40,10 +40,12 @@ import {
   blockersOf,
   requestChanges,
   reviewRejected,
+  isProjectEnabled,
+  setProjectEnabled as writeProjectEnabled,
 } from './store.js'
 import { createMockPr, createDeployRelease, postIssueComment, syncIssueBodyFields, createPrFromBranch, getPrHeadSha } from './github.js'
 import { PHASES } from '../../domain/js/lifecycle.js'
-import { getActiveProjectId, getSetting, setSetting, getToken } from './settings.js'
+import { getActiveProjectId, getFarmProjectId, getSetting, setSetting, getToken } from './settings.js'
 import {
   FARM_URL,
   FARM_STEP_INDEXES,
@@ -125,11 +127,9 @@ export const AUTO_RETRY_CAP = 3
 const latency = () => Number(process.env.MOCK_STEP_LATENCY_MS) || 2000 + Math.floor(Math.random() * 3000)
 
 // ---- bot farm lifecycle ----
-// The farm runs with ONE project's context at a time. Switching projects
-// tears the agents down and restarts them with the new context — mocked here
-// with a delay (the real farm spin-up will take minutes).
-
-const RESTART_MS = Number(process.env.FARM_RESTART_MS || 8000)
+// HZ-207: one farm runs every enabled project's items at once; each step
+// carries its own project and repo. Enabling or disabling a project is a
+// flag write — it never restarts the farm or cancels a step.
 
 // ---- artifact prompt budget (HZ-29, reallocated by HZ-104) ----
 // Prior artifacts (options analysis, impl plan, reviews) ride along in every
@@ -721,52 +721,42 @@ async function startRealFarm(projectId, log) {
   notifyChange()
 }
 
-// Called at boot and when the active project's farm should exist but doesn't.
+// Called at boot and when the farm should exist but doesn't. farmd is started
+// for the farm project (the concierge's, until HZ-209), never the board's, so
+// switching the board can't restart it.
 export function ensureFarm(log) {
   if (!FARM_URL) return
-  const activeId = getActiveProjectId()
-  if (!activeId || farm.status === 'restarting') return
-  if (farm.status === 'running' && farm.projectId === activeId) return
-  farm.projectId = activeId
-  startRealFarm(activeId, log).then(() => {
-    farm.projectId = activeId
+  const farmId = getFarmProjectId()
+  if (!farmId || farm.status === 'restarting') return
+  if (farm.status === 'running' && farm.projectId === farmId) return
+  if (!getSetting('farm_project_id')) setSetting('farm_project_id', String(farmId))
+  farm.projectId = farmId
+  startRealFarm(farmId, log).then(() => {
+    farm.projectId = farmId
   })
 }
 
-export function switchProject(projectId, log) {
-  // Agents down: cancel every in-flight step across all items. Snapshot
-  // dispatching first — cancel() mutates it as each item is cancelled.
-  for (const id of [...dispatching]) cancel(id, 'superseded')
-  setSetting('active_project_id', String(projectId))
-
-  if (FARM_URL) {
-    farm.projectId = projectId
-    ;(async () => {
-      try {
-        await farmFetch('/farm/stop', {})
-      } catch {
-        // farm may already be down; start will surface real problems
+// HZ-207: a flag write. Enabling kicks the project's runnable items; disabling
+// only stops new dispatch — nothing is cancelled, paused, re-queued or sent to
+// the farm, in this project or any other. The farm project can't be disabled:
+// the concierge is pinned to it until HZ-209.
+export function setProjectEnabled(projectId, enabled, log) {
+  if (!enabled && projectId === getFarmProjectId()) return { error: 'farm_project_cannot_be_disabled' }
+  const written = writeProjectEnabled(projectId, enabled)
+  if (written.error) return written
+  if (enabled) {
+    let kicked = 0
+    for (const { id } of db.prepare('SELECT id FROM work_item WHERE project_id = ?').all(projectId)) {
+      if (runnable(getItem(id))) {
+        kick(id)
+        kicked++
       }
-      await startRealFarm(projectId, log)
-    })()
-    return
+    }
+    log?.info(`Project ${projectId} enabled; kicked ${kicked} item(s)`)
+  } else {
+    log?.info(`Project ${projectId} disabled; its in-flight steps finish, no new ones start`)
   }
-
-  // No real farm configured: simulate the restart as before.
-  farm = { status: 'restarting', since: new Date().toISOString() }
-  notifyChange()
-  log?.info(`Bot farm restarting with project ${projectId} context (${RESTART_MS}ms simulated)`)
-  setTimeout(() => {
-    farm = { status: 'running', since: new Date().toISOString() }
-    const resumed = resumeActiveItems()
-    log?.info(`Bot farm up for project ${projectId}; resumed ${resumed} item(s)`)
-    notifyChange()
-  }, RESTART_MS).unref()
-}
-
-function projectActive(item) {
-  const activeId = getActiveProjectId()
-  return item.project_id == null || activeId == null || item.project_id === activeId
+  return { ok: true, enabled: !!enabled }
 }
 
 function resumeActiveItems() {
@@ -898,11 +888,18 @@ export const MOCK_STEP_BEHAVIOR = {
   },
 }
 
+// Whether an item may start a new step: its project must be enabled (HZ-207).
 function runnable(item) {
+  return inFlightRunnable(item) && isProjectEnabled(item.project_id)
+}
+
+// The check a step already in flight is held to. It sets the project's
+// enabled flag aside, so disabling a project never discards a running step's
+// result — the step finishes normally and only the next dispatch is held.
+function inFlightRunnable(item) {
   return (
     farm.status === 'running' &&
     item &&
-    projectActive(item) &&
     !isClosed(item) &&
     !isAbandoned(item) &&
     !item.paused &&
@@ -1050,6 +1047,9 @@ async function dispatchToFarm(id, stepIndex, runId, attempt, scope) {
   }
 
   const artifacts = budgeted.map(({ label, content }) => ({ label, content }))
+  // HZ-207: every farm step carries its own project; farmd refuses one
+  // without a project or repo and never falls back to a global project.
+  const project = item.project_id == null ? null : db.prepare('SELECT id, name FROM project WHERE id = ?').get(item.project_id)
   // HZ-188: an implement run on a PR GitHub reports as conflicted (a
   // resolve-conflicts escalation, or any other send-back while main has moved
   // underneath it) must start on a branch that already has origin/main merged
@@ -1085,13 +1085,21 @@ async function dispatchToFarm(id, stepIndex, runId, attempt, scope) {
       ...releaseFields,
     },
     step: { index: stepIndex, label: step.label, agent: step.agent },
+    ...(project ? { project: { id: project.id, name: project.name } } : {}),
     feedback,
     ...(mergeMain ? { merge_main: true } : {}),
     ...(scope ? { scope } : {}),
     ...(projectContext ? { project_context: projectContext } : {}),
   }).catch((err) => {
+    // A refused task is not an unreachable farm: say why, and don't retry.
+    if (err.status === 400 && Object.hasOwn(FARM_REFUSALS, err.code ?? '')) return failFarmRun(runId, FARM_REFUSALS[err.code])
     failFarmRun(runId, `could not hand the step to the farm: ${err.message}`, REASON.UNREACHABLE)
   })
+}
+
+const FARM_REFUSALS = {
+  'missing project': 'missing project: this item belongs to no project, so the farm cannot run it',
+  'missing item.repo': 'missing repo: this item has no repository, so the farm cannot run it',
 }
 
 // Agents whose steps run in the PM lane — derived, so a step moving lanes
@@ -1719,7 +1727,7 @@ export async function completeFarmRun(runId, { summary, patch, artifacts }) {
   clearTimeout(timers[runId])
   delete timers[runId]
 
-  if (!item || item.cursor !== run.step_index || !runnable(item)) {
+  if (!item || item.cursor !== run.step_index || !inFlightRunnable(item)) {
     dispatching.delete(id)
     closeActiveRuns(id, 'superseded')
     return { ok: true, stale: true }
@@ -1892,7 +1900,7 @@ async function runMockStep(id, stepIndex, runId) {
   delete timers[runId]
   const item = getItem(id)
   // Re-validate: the world may have changed while the "agent" was working.
-  if (!runnable(item) || item.cursor !== stepIndex || !runStillActive(runId)) {
+  if (!inFlightRunnable(item) || item.cursor !== stepIndex || !runStillActive(runId)) {
     dispatching.delete(id)
     closeActiveRuns(id, 'superseded')
     return
@@ -1915,7 +1923,7 @@ async function runMockStep(id, stepIndex, runId) {
 
   // Re-check after any await (e.g. PR creation): a pause/reject may have landed.
   const after = getItem(id)
-  if (!runnable(after) || after.cursor !== stepIndex || !runStillActive(runId)) {
+  if (!inFlightRunnable(after) || after.cursor !== stepIndex || !runStillActive(runId)) {
     dispatching.delete(id)
     if (runStillActive(runId)) closeActiveRuns(id, 'superseded')
     return

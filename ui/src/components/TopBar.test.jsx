@@ -22,9 +22,8 @@ const baseProps = {
   view: 'board',
   pendingCount: 0,
   projects: [],
-  activeProjectId: null,
-  farm: { status: 'running' },
-  onRequestSwitch: noop,
+  projectFilter: 'all',
+  onProjectFilterChange: noop,
   onBoard: noop,
   onTracker: noop,
   onOpenApprovals: noop,
@@ -112,4 +111,34 @@ test('toggling the theme does not close the user menu (unlike every other item)'
   fireEvent.click(screen.getByRole('switch', { name: 'Dark mode' }))
   expect(screen.getByRole('switch', { name: 'Dark mode' })).toBeTruthy()
   expect(screen.getByText('Ada Lovelace')).toBeTruthy()
+})
+
+// ---- HZ-208: a project filter, not a farm switcher ----
+
+const PROJECTS = [
+  { id: 1, name: 'Alpha', enabled: true },
+  { id: 2, name: 'Beta', enabled: true },
+  { id: 3, name: 'Gamma', enabled: false },
+]
+const USER = { id: 'u1', email: 'ada@example.com', name: 'Ada Lovelace', initials: 'AL', authMethod: 'google' }
+
+test('the filter offers exactly All projects and the enabled projects, and never says restart', () => {
+  render(<TopBar {...baseProps} projects={PROJECTS} projectFilter="all" onProjectFilterChange={noop} user={USER} onLogout={noop} />)
+  fireEvent.click(document.querySelector('.projswitch'))
+  expect(screen.getAllByRole('menuitemradio').map((b) => b.textContent.replace('✓', '').trim())).toEqual([
+    'All projects',
+    'Alpha',
+    'Beta',
+  ])
+  expect(document.body.textContent).not.toMatch(/restart/i)
+  expect(document.body.textContent).not.toMatch(/bot farm/i)
+})
+
+test('choosing a project only reports the choice', () => {
+  const onChange = vi.fn()
+  render(<TopBar {...baseProps} projects={PROJECTS} projectFilter="all" onProjectFilterChange={onChange} user={USER} onLogout={noop} />)
+  fireEvent.click(document.querySelector('.projswitch'))
+  fireEvent.click(screen.getByRole('menuitemradio', { name: 'Beta' }))
+  expect(onChange).toHaveBeenCalledWith(2)
+  expect(screen.queryByRole('menu')).toBeNull()
 })

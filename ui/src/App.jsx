@@ -16,6 +16,7 @@ import NewItemModal from './components/NewItemModal'
 import LoginPage from './components/LoginPage'
 import LegalPage, { LEGAL_DOCS } from './components/LegalPage'
 import { gateActionBusy } from './domain/gateAction'
+import { enabledProjects, filterByProject, readStoredProjectFilter, validProjectFilter, writeProjectFilter } from './projectFilter'
 
 // HZ-188: what a finished server-side run (item.conflictRun) means to the
 // resolve dialog, when this tab didn't make the request itself — a reload,
@@ -113,7 +114,6 @@ function AuthenticatedApp({ user, onLogout }) {
   const [approvalsOpen, setApprovalsOpen] = useState(false)
   const [composer, setComposer] = useState(CLOSED_COMPOSER)
   const [newItemOpen, setNewItemOpen] = useState(false)
-  const [switchTarget, setSwitchTarget] = useState(null)
   // Plain Approve never used to pause for anything — with a cached gate PIN
   // it went straight to the server on click (HZ-38). This is the one gate it
   // must clear first: nothing here calls api.approveGate directly.
@@ -135,7 +135,19 @@ function AuthenticatedApp({ user, onLogout }) {
   const activeProjectId = api.getActiveProjectId()
   const farm = api.getFarm()
   const activeProject = projects.find((p) => p.id === activeProjectId) || null
-  const selected = items.find((it) => it.id === selectedId) || items[0]
+  // HZ-208: the project filter is view state only. It is re-validated on every
+  // render, so a project disabled live (over SSE) while selected falls back to
+  // 'All projects' instead of hiding everything.
+  const [storedProjectFilter, setStoredProjectFilter] = useState(readStoredProjectFilter)
+  const projectFilter = validProjectFilter(storedProjectFilter, projects)
+  const changeProjectFilter = (value) => {
+    setStoredProjectFilter(value)
+    writeProjectFilter(value)
+  }
+  const visibleItems = filterByProject(items, projectFilter)
+  // A deep link resolves against every item; only the fallback is filtered.
+  const selected = items.find((it) => it.id === selectedId) || visibleItems[0]
+  // Every enabled project's pending gates, whatever the filter shows.
   const pendingCount = items.filter(awaitingGate).length
   const isMobile = useMediaQuery(MOBILE_QUERY)
   const isResolving = (item) => !!item && (item.conflictRun?.state === 'running' || resolvePending.has(item.id))
@@ -266,11 +278,10 @@ function AuthenticatedApp({ user, onLogout }) {
         view={view}
         pendingCount={pendingCount}
         projects={projects}
-        activeProjectId={activeProjectId}
-        farm={farm}
+        projectFilter={projectFilter}
+        onProjectFilterChange={changeProjectFilter}
         user={user}
         onLogout={onLogout}
-        onRequestSwitch={setSwitchTarget}
         onBoard={toBoard}
         onTracker={toTracker}
         onOpenApprovals={() => setApprovalsOpen(true)}
@@ -305,7 +316,8 @@ function AuthenticatedApp({ user, onLogout }) {
 
       {view === 'board' && (
         <Board
-          items={items}
+          items={visibleItems}
+          projects={projects}
           onOpen={openItem}
           onApprove={requestApprove}
           onReject={(id, target) => openComposer('reject', id, { target })}
@@ -323,6 +335,7 @@ function AuthenticatedApp({ user, onLogout }) {
       {view === 'tracker' && selected && (
         <Tracker
           item={selected}
+          projects={projects}
           onBack={toBoard}
           onApprove={requestApprove}
           onApproveWithComments={(id, target) => openComposer('approve', id, { target })}
@@ -351,7 +364,7 @@ function AuthenticatedApp({ user, onLogout }) {
 
       {approvalsOpen && (
         <ApprovalsDrawer
-          items={items}
+          items={visibleItems}
           onClose={() => setApprovalsOpen(false)}
           onOpenItem={openItem}
           onApprove={requestApprove}
@@ -375,37 +388,12 @@ function AuthenticatedApp({ user, onLogout }) {
         />
       )}
 
-      {newItemOpen && <NewItemModal activeProject={activeProject} onClose={() => setNewItemOpen(false)} />}
-
-      {switchTarget && (
-        <div className="composer">
-          <div className="composer__scrim" onClick={() => setSwitchTarget(null)} />
-          <div className="composer__panel">
-            <div className="composer__title">Switch bot farm to {switchTarget.name}?</div>
-            <div className="composer__sub">
-              The bot farm runs with one project's context at a time. Switching shuts down the current agents and
-              restarts them with {switchTarget.name}'s context — <strong>this can take a few minutes</strong>.
-              In-flight agent steps are re-queued and resume automatically; work in{' '}
-              {activeProject?.name || 'the current project'} pauses until you switch back.
-            </div>
-            <div className="composer__actions">
-              <button className="composer__cancel" onClick={() => setSwitchTarget(null)}>
-                Cancel
-              </button>
-              <button
-                className="composer__submit"
-                style={{ background: 'var(--primary)' }}
-                onClick={() => {
-                  api.activateProject(switchTarget.id).catch((err) => console.error(err))
-                  setSwitchTarget(null)
-                  setView('board')
-                }}
-              >
-                Switch & restart farm
-              </button>
-            </div>
-          </div>
-        </div>
+      {newItemOpen && (
+        <NewItemModal
+          projects={enabledProjects(projects)}
+          defaultProjectId={typeof projectFilter === 'number' ? projectFilter : activeProjectId}
+          onClose={() => setNewItemOpen(false)}
+        />
       )}
     </div>
   )

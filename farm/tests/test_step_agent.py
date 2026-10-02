@@ -980,14 +980,21 @@ def test_deploy_step_fails_closed_when_the_agent_omits_url_or_expected_text(monk
 class _StallableHandler(BaseHTTPRequestHandler):
     html = b"<html><body><h1>Item Board</h1></body></html>"
     delay_s = 0
+    release: threading.Event  # set at teardown, so a stalled handler exits now
 
     def do_GET(self):
         if self.delay_s:
-            time.sleep(self.delay_s)
-        self.send_response(200)
-        self.send_header("Content-Type", "text/html")
-        self.end_headers()
-        self.wfile.write(self.html)
+            self.release.wait(self.delay_s)
+        try:
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html")
+            self.end_headers()
+            self.wfile.write(self.html)
+        except (BrokenPipeError, ConnectionResetError):
+            # The timeout case: check.mjs was killed before the page answered.
+            # Raising here would print from a server thread — at interpreter
+            # shutdown that is a fatal "_enter_buffered_busy" crash.
+            pass
 
     def log_message(self, *args):
         pass  # keep test output quiet
@@ -995,16 +1002,24 @@ class _StallableHandler(BaseHTTPRequestHandler):
 
 def serve_html(html: bytes, delay_s: float = 0):
     # Threading, not the plain single-request-at-a-time HTTPServer: the
-    # timeout test's handler sleeps past run_smoke_check's own timeout, and a
-    # single-threaded server's shutdown() would block on that same handler —
-    # threading + daemon_threads lets the test tear down immediately instead
-    # of waiting out the full delay.
-    handler = type("Handler", (_StallableHandler,), {"html": html, "delay_s": delay_s})
+    # timeout test's handler stalls past run_smoke_check's own timeout, and a
+    # single-threaded server's shutdown() would block on that same handler.
+    # Handler threads are non-daemon so server_close() joins them; the stall
+    # waits on `release`, which stop() sets first, so that join is immediate
+    # and no handler is left running past its test.
+    release = threading.Event()
+    handler = type("Handler", (_StallableHandler,), {"html": html, "delay_s": delay_s, "release": release})
     server = ThreadingHTTPServer(("127.0.0.1", 0), handler)
-    server.daemon_threads = True
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
-    return server, f"http://127.0.0.1:{server.server_port}/"
+
+    def stop():
+        release.set()
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+
+    return stop, f"http://127.0.0.1:{server.server_port}/"
 
 
 # check.mjs imports @playwright/test from e2e/node_modules. That workspace is
@@ -1021,21 +1036,21 @@ requires_e2e_workspace = pytest.mark.skipif(
 
 @requires_e2e_workspace
 def test_run_smoke_check_passes_against_a_real_rendering_page():
-    server, url = serve_html(b"<html><body><h1>Item Board</h1><p>3 items in flight</p></body></html>")
+    stop_server, url = serve_html(b"<html><body><h1>Item Board</h1><p>3 items in flight</p></body></html>")
     try:
         verdict, line = step_agent.run_smoke_check(url, "Item Board")
     finally:
-        server.shutdown()
+        stop_server()
     assert verdict == "pass"
     assert line.startswith("SMOKE_RESULT=pass")
 
 
 def test_run_smoke_check_fails_against_a_page_missing_the_expected_text():
-    server, url = serve_html(b"<html><body><h1>Something went wrong</h1></body></html>")
+    stop_server, url = serve_html(b"<html><body><h1>Something went wrong</h1></body></html>")
     try:
         verdict, line = step_agent.run_smoke_check(url, "Item Board")
     finally:
-        server.shutdown()
+        stop_server()
     assert verdict == "fail"
     assert line.startswith("SMOKE_RESULT=fail:")
 
@@ -1055,11 +1070,11 @@ def test_run_smoke_check_fails_when_the_subprocess_itself_times_out(monkeypatch)
     # SMOKE_CHECK_TIMEOUT_S proves run_smoke_check's *own* TimeoutExpired
     # handling fires, not just that check.mjs eventually gives up.
     monkeypatch.setattr(step_agent, "SMOKE_CHECK_TIMEOUT_S", 2)
-    server, url = serve_html(b"<html><body><h1>Item Board</h1></body></html>", delay_s=30)
+    stop_server, url = serve_html(b"<html><body><h1>Item Board</h1></body></html>", delay_s=30)
     try:
         verdict, line = step_agent.run_smoke_check(url, "Item Board")
     finally:
-        server.shutdown()
+        stop_server()
     assert verdict == "fail"
     assert "timed out" in line
 

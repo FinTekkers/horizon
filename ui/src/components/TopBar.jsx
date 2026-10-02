@@ -2,6 +2,7 @@ import { useState, useSyncExternalStore } from 'react'
 import { GridIcon, LockIcon, SlidersIcon } from './icons'
 import * as theme from '../theme'
 import { LegalLinks } from './LegalPage'
+import { ALL_PROJECTS, enabledProjects } from '../projectFilter'
 
 // A switch, not a menu item: toggling it shouldn't dismiss the menu the way
 // every other usermenu__item does, since a user very plausibly wants to
@@ -26,28 +27,35 @@ function ThemeToggle() {
   )
 }
 
-// The bot farm holds one project's context at a time — this is a switcher,
-// not a filter. Selecting a different project restarts the farm.
-function ProjectSwitcher({ projects, activeProjectId, farm, onRequestSwitch }) {
+// HZ-208: a view filter, not a switcher. It only narrows what the board,
+// tracker and approvals show — choosing a project calls onChange and nothing
+// else, so it can never touch the farm or any item. Disabled projects are not
+// offered; Admin is the only place they appear.
+function ProjectFilter({ projects, value, onChange }) {
   const [open, setOpen] = useState(false)
-  if (!projects || projects.length === 0) return null
-  const active = projects.find((p) => p.id === activeProjectId) || projects[0]
-
-  if (farm?.status === 'restarting') {
-    return (
-      <div className="farm-chip">
-        <span className="farm-chip__dot" />
-        Bot farm restarting…
-      </div>
-    )
+  const options = enabledProjects(projects)
+  if (options.length === 0) return null
+  const current = options.find((p) => p.id === value)
+  const choose = (next) => {
+    setOpen(false)
+    onChange(next)
   }
 
   return (
     <div className="usermenu">
-      <button className="projswitch" onClick={() => setOpen((o) => !o)}>
+      <button
+        type="button"
+        className="projswitch"
+        aria-haspopup="menu"
+        aria-expanded={open}
+        aria-label={`Project filter: ${current ? current.name : 'All projects'}`}
+        onClick={() => setOpen((o) => !o)}
+      >
         <span className="projswitch__dot" aria-hidden="true" />
-        {/* Visually hidden on a phone (HZ-224), still the button's name. */}
-        <span className="projswitch__name">{active.name}</span>
+        {/* Visually hidden on a phone (HZ-224); the aria-label stays the name. */}
+        <span className="projswitch__label" title={current ? current.name : undefined}>
+          {current ? current.name : 'All projects'}
+        </span>
         <span className="projswitch__caret" aria-hidden="true">
           ▾
         </span>
@@ -55,20 +63,19 @@ function ProjectSwitcher({ projects, activeProjectId, farm, onRequestSwitch }) {
       {open && (
         <>
           <div className="usermenu__scrim" onClick={() => setOpen(false)} />
-          <div className="usermenu__menu usermenu__menu--left">
-            <div className="usermenu__header">Bot farm runs one project at a time</div>
-            {projects.map((p) => (
+          <div className="usermenu__menu usermenu__menu--left" role="menu">
+            <div className="usermenu__header">Show items from</div>
+            {[{ id: ALL_PROJECTS, name: 'All projects' }, ...options].map((p) => (
               <button
                 key={p.id}
+                type="button"
+                role="menuitemradio"
+                aria-checked={p.id === value}
                 className="usermenu__item"
-                disabled={p.id === active.id}
-                onClick={() => {
-                  setOpen(false)
-                  onRequestSwitch(p)
-                }}
+                onClick={() => choose(p.id)}
               >
                 {p.name}
-                {p.id === active.id && <span style={{ marginLeft: 'auto', color: 'var(--success-ink)' }}>✓ active</span>}
+                {p.id === value && <span style={{ marginLeft: 'auto', color: 'var(--success-ink)' }}>✓</span>}
               </button>
             ))}
           </div>
@@ -135,11 +142,10 @@ export default function TopBar({
   view,
   pendingCount,
   projects,
-  activeProjectId,
-  farm,
+  projectFilter,
+  onProjectFilterChange,
   user,
   onLogout,
-  onRequestSwitch,
   onBoard,
   onTracker,
   onOpenApprovals,
@@ -168,12 +174,7 @@ export default function TopBar({
         </button>
       </div>
 
-      <ProjectSwitcher
-        projects={projects}
-        activeProjectId={activeProjectId}
-        farm={farm}
-        onRequestSwitch={onRequestSwitch}
-      />
+      <ProjectFilter projects={projects} value={projectFilter} onChange={onProjectFilterChange} />
 
       <div className="topbar__spacer" />
 

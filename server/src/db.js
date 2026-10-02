@@ -429,6 +429,32 @@ if (projectCount === 0 && legacyRepo) {
   )
 }
 
+// HZ-207: each project has an enabled flag; the farm dispatches every enabled
+// project's items. Additive and once-only: Horizon is on, and so is the
+// project the board shows today, so nothing that runs now stops running.
+// With neither, the first project is on. farm_project_id pins the project
+// farmd was started for (the concierge's) to the one it runs now, so the
+// deploy never restarts farmd. One transaction: a crash after the ALTER
+// can't leave every project disabled with nothing to re-run the UPDATE.
+if (!db.prepare('PRAGMA table_info(project)').all().some((column) => column.name === 'enabled')) {
+  db.transaction(() => {
+    db.exec('ALTER TABLE project ADD COLUMN enabled INTEGER NOT NULL DEFAULT 0')
+    db.exec(`
+      UPDATE project SET enabled = 1
+      WHERE name = 'Horizon' COLLATE NOCASE
+         OR id = (SELECT CAST(value AS INTEGER) FROM setting WHERE key = 'active_project_id');
+      UPDATE project SET enabled = 1
+      WHERE id = (SELECT MIN(id) FROM project) AND NOT EXISTS (SELECT 1 FROM project WHERE enabled = 1);
+      INSERT OR IGNORE INTO setting (key, value)
+        SELECT 'farm_project_id', CAST(id AS TEXT) FROM project
+        WHERE enabled = 1
+        ORDER BY id = (SELECT CAST(value AS INTEGER) FROM setting WHERE key = 'active_project_id') DESC,
+                 name = 'Horizon' COLLATE NOCASE DESC, id
+        LIMIT 1;
+    `)
+  })()
+}
+
 const SEED_ITEMS = [
   { id: 'BF-145', title: 'Risk-limit breach dashboard', priority: 'Low', cursor: 1, issue: 412, desc: 'Give risk managers a live view of limit utilization across every desk.', metric: 'Limit breaches acknowledged in < 2 min (from 14 min).', guardrails: 'Read-only — no position mutation. No PII in telemetry.' },
   { id: 'BF-128', title: 'Real-time P&L attribution service', priority: 'High', cursor: 3, issue: 398, desc: 'Attribute intraday P&L to factors, trades and fees in real time.', metric: 'Attribution available < 5s after fill; 99.9% coverage.', guardrails: 'No client identifiers in logs. Must reconcile to EOD books.' },

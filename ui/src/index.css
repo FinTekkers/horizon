@@ -195,6 +195,7 @@ button { font-family: var(--font-sans); }
 .projswitch:hover { border-color: var(--hover-border); }
 .projswitch__dot { width: 7px; height: 7px; border-radius: 50%; background: var(--success); }
 .projswitch__caret { color: var(--muted); font-size: 10px; }
+.projswitch__label { max-width: 22ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 .farm-chip {
   display: inline-flex; align-items: center; gap: 8px;
@@ -314,6 +315,9 @@ button { font-family: var(--font-sans); }
 .project-block { margin-top: 18px; padding: 14px 16px; background: var(--canvas); border: 1px solid var(--border); border-radius: 14px; }
 .project-block__name { font: 700 15px var(--font-sans); margin-bottom: 8px; }
 .project-block__add { display: flex; gap: 8px; margin-top: 10px; }
+.project-block__head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 8px; }
+.project-block__head .project-block__name { margin-bottom: 0; min-width: 0; overflow-wrap: anywhere; }
+.project-enabled { display: inline-flex; align-items: center; gap: 8px; margin-left: auto; font: 600 12px var(--font-sans); color: var(--muted); }
 .project-block__add .field__input { flex: 1; }
 
 .repo-row { display: flex; align-items: center; gap: 9px; padding: 7px 2px; font: 500 13px var(--font-sans); }
@@ -435,6 +439,14 @@ button { font-family: var(--font-sans); }
   font: 500 10px var(--font-mono); color: var(--muted);
   background: var(--subtle); border-radius: 5px; padding: 1px 6px;
   max-width: 110px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+/* HZ-208: the item's project. Clamped and shrinkable so a long project name
+   never widens a card or tracker header. */
+.proj-badge {
+  font: 600 10px var(--font-sans); color: var(--primary-ink);
+  background: var(--primary-bg); border-radius: 5px; padding: 1px 6px;
+  max-width: 10ch; min-width: 0; flex-shrink: 1;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 .card__title { font: 700 15px var(--font-sans); color: var(--deep); line-height: 1.3; margin-bottom: 13px; }
 .card__segs { display: flex; gap: 3px; margin-bottom: 8px; }
@@ -982,7 +994,7 @@ button { font-family: var(--font-sans); }
   .topbar { padding: 8px 12px; gap: 10px; }
   .topbar__title, .topbar__subtitle, .seg-tabs, .pending-btn { display: none; }
   .projswitch { min-width: 44px; min-height: 44px; justify-content: center; padding: 8px 12px; }
-  .projswitch__name {
+  .projswitch__label {
     position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0;
     overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0;
   }
