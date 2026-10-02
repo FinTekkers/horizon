@@ -6,6 +6,7 @@ against the main it was about to land on. This module closes that window.
 The server's Accept handler (server/src/premerge.js) runs
 
     python -m farm.premerge <owner/repo> <item-id> <head-sha> --base <base-sha> --timeout-s N --json
+        [--check-commands <JSON object: the repo's install/test/lint/e2e commands>]
 
 which makes a scratch worktree off the repo's hub at exactly <base-sha> (the
 tip of the PR's base branch, as GitHub reported it to the server), merges
@@ -160,7 +161,15 @@ def stderr_event(event: dict) -> None:
 
 
 def premerge_check(
-    repo_full: str, item_id: str, head_sha: str, base_sha: str, *, timeout_s: float, log=print, on_slot_event=None
+    repo_full: str,
+    item_id: str,
+    head_sha: str,
+    base_sha: str,
+    *,
+    timeout_s: float,
+    log=print,
+    on_slot_event=None,
+    configured=None,
 ) -> dict:
     """Never raises for an expected outcome: returns the CLI's result dict."""
     started = time.monotonic()
@@ -226,6 +235,7 @@ def premerge_check(
                     caller="premerge",
                     child_env={"FARM_HOME": str(checks_home)},
                     on_slot_event=on_slot_event,
+                    configured=configured,
                 )
             except CheckFailure as exc:
                 if exc.reason == "timed_out":
@@ -253,7 +263,23 @@ def main(argv=None) -> int:
     parser.add_argument("--base", required=True, dest="base_sha")
     parser.add_argument("--timeout-s", type=float, default=1200)
     parser.add_argument("--json", action="store_true", help="accepted for clarity; output is always JSON")
+    parser.add_argument(
+        "--check-commands",
+        default=None,
+        help="HZ-245: JSON {install,test,lint,e2e} configured for the repo in Admin; absent means auto-detect",
+    )
     args = parser.parse_args(argv)
+
+    configured = None
+    if args.check_commands is not None:
+        # Fail closed: an unreadable config must never fall back to
+        # auto-detect, which would judge the merge by different checks.
+        with contextlib.suppress(json.JSONDecodeError):
+            configured = json.loads(args.check_commands)
+        if not isinstance(configured, dict):
+            detail = f"--check-commands is not a JSON object: {args.check_commands[:200]!r}"
+            print(json.dumps({"ok": False, "reason": "crash", "detail": detail}), flush=True)
+            return 1
 
     def log(msg):
         print(msg, file=sys.stderr, flush=True)
@@ -267,6 +293,7 @@ def main(argv=None) -> int:
             timeout_s=args.timeout_s,
             log=log,
             on_slot_event=stderr_event,
+            configured=configured,
         )
     except Exception as exc:  # noqa: BLE001 — stdout must stay one JSON line
         result = {"ok": False, "reason": "crash", "detail": f"{type(exc).__name__}: {exc}"}

@@ -2029,3 +2029,42 @@ def test_an_unusable_pm_task_file_stays_alive_and_on_disk_when_the_report_is_not
 
     assert len([r for r in requests if r["path"] == "/api/farm/steps/882/fail"]) == 2
     assert (QUEUE_DIR / "pm" / "882.json").exists()
+
+
+# ---- HZ-245: check commands and Admin's placeholders ----
+
+
+def test_conflicts_resolve_passes_the_tasks_check_commands_through(running_farm, monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        farmd.conflict_resolver,
+        "resolve",
+        lambda repo, item_id, branch, base_branch, configured=None: calls.append(configured) or {"resolved": True},
+    )
+    cc = {"install": None, "test": "npm test", "lint": None, "e2e": None}
+    body = {"item": {"id": "HZ-1", "repo": "acme/demo"}, "check_commands": cc}
+    assert client.post("/conflicts/resolve", json=body).status_code == 200
+    assert client.post("/conflicts/resolve", json={"item": {"id": "HZ-1", "repo": "acme/demo"}}).status_code == 200
+    assert calls == [cc, None]
+
+
+@pytest.mark.parametrize("repo", ["../x", "a/b/c", "", "acme", "./x", "acme/..", None, 7])
+def test_check_defaults_refuses_anything_but_owner_name(repo):
+    assert client.post("/repos/check-defaults", json={"repo": repo}).status_code == 400
+
+
+def test_check_defaults_with_no_hub_is_all_null(tmp_path, monkeypatch):
+    monkeypatch.setattr(farmd.workspaces, "WORKSPACES_DIR", tmp_path / "workspaces")
+    res = client.post("/repos/check-defaults", json={"repo": "acme/demo"})
+    assert res.status_code == 200
+    assert res.json() == {"repo": "acme/demo", "defaults": {"install": None, "test": None, "lint": None, "e2e": None}}
+
+
+def test_check_defaults_reads_detection_off_the_hub(tmp_path, monkeypatch):
+    monkeypatch.setattr(farmd.workspaces, "WORKSPACES_DIR", tmp_path / "workspaces")
+    hub = farmd.workspaces.hub_path("acme/demo")
+    (hub / ".git").mkdir(parents=True)
+    (hub / "package.json").write_text('{"scripts": {"test": "node --test"}}')
+    (hub / "node_modules").mkdir()
+    res = client.post("/repos/check-defaults", json={"repo": "acme/demo"})
+    assert res.json()["defaults"] == {"install": None, "test": "npm test --silent", "lint": None, "e2e": None}

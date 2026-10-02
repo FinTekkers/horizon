@@ -204,7 +204,10 @@ def detect_check_commands(ws: Path, log=lambda *_: None) -> list[list[str]]:
     override = os.environ.get("FARM_CHECK_CMD")
     if override:
         return [["sh", "-c", override]]
+    return _auto_detect(ws, log)
 
+
+def _auto_detect(ws: Path, log=lambda *_: None) -> list[list[str]]:
     commands: list[list[str]] = []
     pkg = ws / "package.json"
     scripts: dict = {}
@@ -244,6 +247,63 @@ def detect_check_commands(ws: Path, log=lambda *_: None) -> list[list[str]]:
         commands.append([sys.executable, "-m", "pytest", "-q"])
 
     return commands
+
+
+# ---- per-repo configured commands (HZ-245) ----
+# A human sets up to four commands per repo in Admin; the server stores them
+# and sends them with the task (implement, conflicts) or as --check-commands
+# (pre-merge). Nothing on the farm writes them: an agent must not be able to
+# change the commands that judge its own work. Each one runs exactly as
+# stored via `sh -c`, the same trust level as FARM_CHECK_CMD.
+CHECK_SLOTS = ("install", "test", "lint", "e2e")
+
+
+def configured_commands(configured) -> list[list[str]] | None:
+    """The configured slots as argvs, in CHECK_SLOTS order, or None when
+    nothing is configured. Blank (empty or whitespace-only) and non-string
+    slots are skipped — and never back-filled by auto-detection: once any
+    slot is set, only the set slots run."""
+    if not isinstance(configured, dict):
+        return None
+    commands = [
+        ["sh", "-c", value]
+        for slot in CHECK_SLOTS
+        if isinstance(value := configured.get(slot), str) and value.strip()
+    ]
+    return commands or None
+
+
+def resolve_check_commands(ws: Path, configured=None, log=lambda *_: None) -> list[list[str]]:
+    """What run_checks() runs: FARM_CHECK_CMD if set, else the repo's
+    configured commands, else today's auto-detection."""
+    override = os.environ.get("FARM_CHECK_CMD")
+    if override:
+        return [["sh", "-c", override]]
+    commands = configured_commands(configured)
+    if commands is not None:
+        log(f"checks: using the {len(commands)} command(s) configured for this repo in Admin")
+        return commands
+    return detect_check_commands(ws, log=log)
+
+
+def default_check_slots(ws: Path) -> dict[str, str | None]:
+    """Auto-detection labelled by slot, as Admin placeholders. Detected on
+    the hub clone, so it is a hint: a fresh workspace may differ (e.g. the
+    install step depends on node_modules being absent). Two detected test
+    commands (npm and pytest) share the test slot, joined by " · "."""
+    slots: dict[str, list[str]] = {slot: [] for slot in CHECK_SLOTS}
+    for cmd in _auto_detect(ws):
+        if cmd[:2] == ["npm", "install"]:
+            slots["install"].append(" ".join(cmd))
+        elif cmd[:3] == ["npm", "run", "lint"]:
+            slots["lint"].append(" ".join(cmd))
+        elif cmd[:3] == ["npm", "run", "test:e2e"]:
+            slots["e2e"].append(" ".join(cmd))
+        elif cmd[1:3] == ["-m", "pytest"]:
+            slots["test"].append("python " + " ".join(cmd[1:]))
+        else:
+            slots["test"].append(" ".join(cmd))
+    return {slot: (" · ".join(cmds) or None) for slot, cmds in slots.items()}
 
 
 def _check_env() -> dict[str, str]:
@@ -287,6 +347,7 @@ def run_checks(
     deadline: float | None = None,
     child_env: dict[str, str] | None = None,
     on_slot_event=None,
+    configured=None,
 ) -> str:
     """Returns a short human-readable note; raises CheckFailure on failure.
 
@@ -312,8 +373,12 @@ def run_checks(
 
     on_slot_event (HZ-227) is check_slots.check_slot()'s on_event: it hears
     when this run queues for a slot and when it gets one.
+
+    configured (HZ-245) is the repo's {install,test,lint,e2e} commands as the
+    server sent them; see resolve_check_commands(). None keeps today's
+    behaviour exactly.
     """
-    commands = detect_check_commands(ws, log=log)
+    commands = resolve_check_commands(ws, configured, log=log)
     if not commands:
         log("checks: no test/lint commands detected in the repo — nothing to enforce")
         if require_ran:

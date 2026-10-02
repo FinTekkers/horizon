@@ -1230,7 +1230,11 @@ def _execute(task: dict, guard: HandoffGuard) -> dict:
         # run (Node pauses the item with the reason) — no green, no push.
         try:
             with pause.interruptible():
-                check_note = run_checks(ws, log, run_id=task.get("run_id"), item_id=item["id"])
+                # HZ-245: the repo's Admin-configured commands, from the task dict
+                # parsed at startup — never re-read after the agent has run.
+                check_note = run_checks(
+                    ws, log, run_id=task.get("run_id"), item_id=item["id"], configured=task.get("check_commands")
+                )
         except pause.PauseRequested:
             # HZ-194: the agent's work is finished but unchecked. The checks
             # are stopped and never count as a failure; the code is saved.

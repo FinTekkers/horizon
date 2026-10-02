@@ -249,3 +249,23 @@ def test_post_merge_checks_take_a_labelled_check_slot(isolated_workspaces_dir, m
     assert records[0]["outcome"] == "pass"
     # Released on the way out: the next resolve (or agent run) is not blocked.
     assert check_slots.busy_slots() == 0
+
+
+def test_the_mechanical_path_runs_the_repos_configured_check_commands(isolated_workspaces_dir, monkeypatch):
+    """HZ-245: a configured (red) command judges the merge, so it escalates
+    in a repo where auto-detection would have found nothing to run."""
+    tmp_path = isolated_workspaces_dir
+    _hub, origin = make_repo_hub(tmp_path)
+    monkeypatch.delenv("FARM_CHECK_CMD", raising=False)
+    branch_sha = push_new_branch(
+        tmp_path, origin, "horizon/hz-9", lambda w: (w / "a.txt").write_text("branch\n"), "branch"
+    )
+    push_new_branch(tmp_path, origin, "main", lambda w: (w / "b.txt").write_text("main\n"), "main-advance")
+
+    result = conflict_resolver.resolve(
+        "acme/demo", "HZ-9", log=lambda *_: None, configured={"lint": "echo configured-lint-ran; exit 3"}
+    )
+
+    assert result["resolved"] is False and result["reason"] == "tests_failed"
+    assert "configured-lint-ran" in result["detail"]
+    assert origin_branch_sha(origin, "horizon/hz-9") == branch_sha

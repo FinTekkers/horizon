@@ -128,10 +128,12 @@ const sseClients = new Set()
 // (HZ-208); so does the WhatsApp concierge's farm snapshot (HZ-209).
 // `estimates` adds the board's top-level durationEstimates (HZ-229) — once per
 // snapshot, never per item. The concierge's /api/farm/snapshot leaves it off.
-export function snapshot({ scope = 'active', estimates = true } = {}) {
+// `checks` adds each repo's check commands (HZ-245) for Admin; the concierge
+// leaves those off too — it has no use for them.
+export function snapshot({ scope = 'active', estimates = true, checks = true } = {}) {
   return {
     repoUrl: getRepoUrl(),
-    projects: store.listProjects(),
+    projects: store.listProjects({ checks }),
     activeProjectId: getActiveProjectId(),
     farm: orchestrator.getFarmState(),
     sync: github.getSyncState(),
@@ -731,6 +733,9 @@ export function buildApp({ logger = true, onRoute = null } = {}) {
         headSha: head.sha,
         baseSha,
         timeoutMs: PREMERGE_CHECK_TIMEOUT_MS,
+        // HZ-245: the repo's Admin-configured check commands, read now and
+        // passed as argv, never env (see premerge.js). Null means auto-detect.
+        checkCommands: store.getRepoCheckCommands(item.repo),
         // HZ-227: a run queued behind the check-slot limiter (farm/check_slots.py)
         // says so, rather than looking stuck. The token guard in
         // setGateActionDetail drops an event that lands after the row finished.
@@ -1893,6 +1898,74 @@ export function buildApp({ logger = true, onRoute = null } = {}) {
     },
   )
 
+  // HZ-245: a repo's check commands (install, test, lint, e2e). Gate-PIN
+  // protected and browser-session only, like a gate: these commands judge
+  // every agent's work, so no API token or agent may write them. Checked
+  // before the repo lookup so a bad PIN never touches state. Reading them
+  // needs only a login — they ride on snapshot()'s projects.
+  const CHECK_COMMAND_SCHEMA = { type: 'string', maxLength: 2000 }
+  fastify.put(
+    '/api/projects/:id/repos/checks',
+    {
+      schema: {
+        security: HUMAN_GATE_SECURITY,
+        params: {
+          type: 'object',
+          required: ['id'],
+          properties: { id: { type: 'integer', minimum: 1 } },
+        },
+        body: {
+          type: 'object',
+          required: ['repo'],
+          additionalProperties: false,
+          properties: {
+            repo: { type: 'string', minLength: 1, maxLength: 300 },
+            install: CHECK_COMMAND_SCHEMA,
+            test: CHECK_COMMAND_SCHEMA,
+            lint: CHECK_COMMAND_SCHEMA,
+            e2e: CHECK_COMMAND_SCHEMA,
+          },
+        },
+        response: { 200: OK_OBJECT, 400: ERROR_OBJECT, 401: ERROR_OBJECT, 404: ERROR_OBJECT },
+      },
+    },
+    (request, reply) => {
+      if (!humanAuthorized(request, reply)) return
+      const { repo, ...checks } = request.body
+      const result = store.setRepoCheckCommands(request.params.id, repo, checks)
+      if (result.error) return reply.code(404).send({ error: 'That repository is not connected to this project' })
+      broadcast()
+      return { ok: true, repo, checks: result.checks }
+    },
+  )
+
+  // HZ-245: Admin's placeholders — what auto-detection would run for the repo.
+  fastify.get(
+    '/api/projects/:id/repos/check-defaults',
+    {
+      schema: {
+        params: {
+          type: 'object',
+          required: ['id'],
+          properties: { id: { type: 'integer', minimum: 1 } },
+        },
+        querystring: {
+          type: 'object',
+          required: ['repo'],
+          properties: { repo: { type: 'string', minLength: 1, maxLength: 300 } },
+        },
+        response: { 200: OK_OBJECT, 404: ERROR_OBJECT },
+      },
+    },
+    async (request, reply) => {
+      const project = store.listProjects().find((p) => p.id === request.params.id)
+      if (!project?.repos.some((r) => r.repo === request.query.repo)) {
+        return reply.code(404).send({ error: 'That repository is not connected to this project' })
+      }
+      return { repo: request.query.repo, ...(await orchestrator.fetchCheckDefaults(request.query.repo)) }
+    },
+  )
+
   // ---- farm callbacks (farm/ Python daemon reporting step results) ----
 
   function farmAuthorized(request, reply) {
@@ -1982,7 +2055,7 @@ export function buildApp({ logger = true, onRoute = null } = {}) {
     },
     (request, reply) => {
       if (!farmAuthorized(request, reply)) return
-      return snapshot({ scope: request.query.scope, estimates: false })
+      return snapshot({ scope: request.query.scope, estimates: false, checks: false })
     },
   )
 

@@ -144,7 +144,14 @@ def _unmerged_paths(ws: Path) -> list[str]:
     return paths
 
 
-def resolve(repo_full: str, item_id: str, branch: str | None = None, base_branch: str | None = None, log=print) -> dict:
+def resolve(
+    repo_full: str,
+    item_id: str,
+    branch: str | None = None,
+    base_branch: str | None = None,
+    log=print,
+    configured=None,
+) -> dict:
     """Attempt a mechanical merge-conflict resolution for one item's PR
     branch, in that item's existing worktree.
 
@@ -188,7 +195,7 @@ def resolve(repo_full: str, item_id: str, branch: str | None = None, base_branch
             # HZ-154: the narrow middle path. Owns its own cleanup and returns
             # a fully-formed result either way — resolved, or escalated with a
             # reason naming exactly why it refused.
-            return _scoped_resolve(ws, repo_full, branch, default, unmerged, pre_merge_sha, log)
+            return _scoped_resolve(ws, repo_full, branch, default, unmerged, pre_merge_sha, log, configured=configured)
         log(f"conflict_resolver: {len(unmerged)} unmerged path(s) — escalating, aborting merge")
         return _escalate(
             ws, pre_merge_sha, "merge_conflict", f"conflicts in: {', '.join(sorted(unmerged))}", log
@@ -207,7 +214,7 @@ def resolve(repo_full: str, item_id: str, branch: str | None = None, base_branch
         # request from the Node server, so the slot wait is bounded twice:
         # by FARM_CHECK_SLOT_WAIT_MAX_S here, and by
         # FARM_CONFLICT_RESOLVE_TIMEOUT_MS (50 min) on the caller's side.
-        check_note = run_checks(ws, log, item_id=item_id, caller="conflict_resolver")
+        check_note = run_checks(ws, log, item_id=item_id, caller="conflict_resolver", configured=configured)
     except CheckFailure as exc:
         return _escalate(ws, pre_merge_sha, "tests_failed", str(exc), log)
 
@@ -316,7 +323,7 @@ def _conflict_files(ws: Path, unmerged: list[str]) -> list[conflict_hunks.Confli
     return files
 
 
-def _scoped_resolve(ws, repo_full, branch, default, unmerged, pre_merge_sha, log) -> dict:
+def _scoped_resolve(ws, repo_full, branch, default, unmerged, pre_merge_sha, log, configured=None) -> dict:
     """Resolve only the conflicted hunks, review only what the resolution
     changed, and push only behind a green check suite.
 
@@ -457,7 +464,7 @@ def _scoped_resolve(ws, repo_full, branch, default, unmerged, pre_merge_sha, log
     try:
         # require_ran: this path pushes a merge no human has read. "No green,
         # no push" has to mean a check suite that actually ran.
-        check_note = run_checks(ws, log, require_ran=True, caller="conflict_resolver")
+        check_note = run_checks(ws, log, require_ran=True, caller="conflict_resolver", configured=configured)
     except CheckFailure as exc:
         return _escalate(
             ws, pre_merge_sha, "scoped_checks_failed", str(exc), log, notes=resolution_notes

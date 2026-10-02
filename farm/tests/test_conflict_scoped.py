@@ -1397,3 +1397,21 @@ def test_the_locked_resolution_agent_is_never_dispatched_to_muse(tmp_path, monke
 
     assert result["resolved"] is False and "provider-locked" in result["detail"]
     assert agents.calls == []
+
+
+def test_the_scoped_path_runs_the_repos_configured_check_commands(isolated_workspaces_dir, monkeypatch):
+    """HZ-245: configured commands reach _scoped_resolve's run_checks too,
+    which still requires a green that actually ran (require_ran=True)."""
+    tmp_path = isolated_workspaces_dir
+    _hub, origin = make_repo_hub(tmp_path)
+    install(monkeypatch, FakeAgents())
+    additive_conflict(tmp_path, origin, "HZ-23")
+    monkeypatch.delenv("FARM_CHECK_CMD", raising=False)
+    marker = tmp_path / "configured-ran"
+
+    result = conflict_resolver.resolve(
+        "acme/demo", "HZ-23", log=lambda *_: None, configured={"test": f"touch {marker}"}
+    )
+
+    assert result["resolved"] is True and result["mode"] == "scoped"
+    assert marker.exists()

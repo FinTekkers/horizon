@@ -68,6 +68,16 @@ FARM_METRICS_LOG_CALLS = {
     FARM / "check_metrics.py": 1,
 }
 
+# Server-argv exemption, by path and by count (HZ-245). farm.premerge's CLI
+# reads --check-commands, the repo's Admin-configured check commands, which
+# server/src/premerge.js serialises with JSON.stringify from the DB — no model
+# wrote it. A value that does not parse to an object fails the run closed
+# ("crash"), never retried or repaired: the opposite of parse_agent_reply()'s
+# contract. Budgeted at one.
+SERVER_ARGV_CALLS = {
+    FARM / "premerge.py": 1,
+}
+
 # Both spellings of the raw extractor. `_extract_json` is agent_runner's own
 # private variant — it returns which attempt produced the value, so it is even
 # more tempting to reach for and even less suitable outside the parser. Banning
@@ -118,6 +128,7 @@ def _offenders(paths: list[Path]) -> list[str]:
             TRANSPORT_ENVELOPE_CALLS.get(path, 0)
             + OFFLINE_LOG_FORENSICS_CALLS.get(path, 0)
             + FARM_METRICS_LOG_CALLS.get(path, 0)
+            + SERVER_ARGV_CALLS.get(path, 0)
         )
         for node in ast.walk(tree):
             # Any reference to the raw extractor at all, however it is spelled:
