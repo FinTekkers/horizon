@@ -1,4 +1,4 @@
-"""The WhatsApp concierge loop. Runs inside tmux session farm-concierge-<slug>.
+"""The WhatsApp concierge loop. Runs inside tmux session farm-concierge-_shared.
 
 A deliberate *script* around the model, same shape as pm_agent.py: it polls
 the WhatsApp transport, maps each allowed inbound message to one resumed
@@ -26,10 +26,16 @@ risk. The cursor is the transport's rowid-style position, not a timestamp,
 so equal-timestamp messages can't be skipped or double-read. wizard.py's
 state machines follow the identical claim-before-side-effect ordering so a
 crash can never create a duplicate work item or gate approval either.
+
+HZ-209: one concierge, one session, serves every enabled project.
+concierge_routing.py decides — in code, before any model call — which
+project a message is about; a message that names none, with two or more
+enabled, gets a question back instead of a guess.
 """
 
 import argparse
 import json
+import shutil
 import sys
 import time
 from datetime import datetime
@@ -40,6 +46,7 @@ import httpx
 from domain.py import priorities
 from domain.py.personas import CONCIERGE_MODEL_AGENT
 
+from . import concierge_routing
 from . import config
 from . import credentials
 from . import wizard
@@ -60,6 +67,18 @@ ALLOWED_ACTIONS = ("set_priority", "feedback")
 PROCESSED_KEEP = 500  # msg_id dedupe window persisted across restarts
 MAX_ACTIONS = 3
 MAX_GATE_OPTIONS = 9
+# HZ-209: the one concierge's state-file key, whatever the active project.
+# A leading "_" is something slugify() never emits, so no project slug can
+# collide with it.
+CONCIERGE_KEY = "_shared"
+# The per-slug state files an older, per-project concierge kept.
+LEGACY_STATE_FILES = (
+    "concierge-cursor-{}.txt",
+    "concierge-processed-{}.json",
+    "concierge-session-{}.txt",
+    "concierge-wizard-{}.json",
+    "concierge-choice-{}.json",
+)
 
 
 def log(msg: str) -> None:
@@ -130,6 +149,24 @@ class ConciergeState:
     def save_session(self, session_id: str | None) -> None:
         if session_id:
             self.session_path.write_text(session_id)
+
+
+def migrate_legacy_state(legacy_slug: str | None) -> list[Path]:
+    """HZ-209: copies a per-project concierge's state (cursor, processed ids,
+    session, wizard drafts, offered choices) to the shared key, once — only
+    while the shared cursor does not exist yet, so it can never overwrite
+    state the shared concierge already has. Copies, never moves: the old
+    files stay for a rollback. Returns the files written."""
+    if not legacy_slug or (STATE_DIR / LEGACY_STATE_FILES[0].format(CONCIERGE_KEY)).exists():
+        return []
+    copied = []
+    for pattern in LEGACY_STATE_FILES:
+        src = STATE_DIR / pattern.format(legacy_slug)
+        if src.exists():
+            dst = STATE_DIR / pattern.format(CONCIERGE_KEY)
+            shutil.copyfile(src, dst)
+            copied.append(dst)
+    return copied
 
 
 # ---- prompt ----
@@ -323,6 +360,12 @@ def _error_of(res: httpx.Response) -> str:
 # ---- per-message pipeline ----
 
 
+def _fail(msg: Inbound, transport: Transport, state: ConciergeState, exc: Exception) -> None:
+    log(f"message {msg.msg_id}: agent failed — {exc}")
+    state.claim(msg)
+    _send_safely(transport, msg.chat_jid, "Sorry — I hit an error handling that message. Nothing was changed; please try again.")
+
+
 def process_message(
     msg: Inbound,
     transport: Transport,
@@ -331,8 +374,21 @@ def process_message(
     farmd_url: str = FARMD,
 ) -> None:
     try:
-        snapshot = fetch_snapshot(farmd_url)
-        prompt = build_prompt(msg, snapshot)
+        route = concierge_routing.plan(msg.text, fetch_snapshot(farmd_url))
+    except Exception as exc:
+        _fail(msg, transport, state, exc)
+        return
+    if route.reply is not None:
+        # HZ-209: no project named with several enabled, or only a disabled
+        # one named. Answered by the script: no model call, no action, no
+        # gate choice offered.
+        state.claim(msg)
+        log(f"message {msg.msg_id}: answered without the model — {route.reply[:80]!r}")
+        _send_safely(transport, msg.chat_jid, route.reply)
+        return
+
+    try:
+        prompt = build_prompt(msg, route.snapshot)
         reply_raw = run_agent(
             prompt, agent=CONCIERGE_MODEL_AGENT, session_id=state.session_id(), append_system=ROLE_PROMPT
         )
@@ -358,10 +414,15 @@ def process_message(
             reply_raw["result"], retry_once, validate=validate_reply
         )
     except Exception as exc:
-        log(f"message {msg.msg_id}: agent failed — {exc}")
-        state.claim(msg)
-        _send_safely(transport, msg.chat_jid, "Sorry — I hit an error handling that message. Nothing was changed; please try again.")
+        _fail(msg, transport, state, exc)
         return
+    if route.item_ids is not None:
+        # The script picked the project; anything the model emits for an item
+        # outside it is dropped, whatever the model inferred.
+        actions, gate_options, dropped = concierge_routing.filter_to_items(actions, gate_options, route.item_ids)
+        notes = notes + dropped
+    if route.note:
+        notes = notes + [route.note]
 
     # Claim before executing: a crash from here on can not replay actions.
     state.claim(msg)
@@ -418,7 +479,7 @@ def poll_once(
             continue
         # Deterministic, non-LLM turns first: an item wizard step or a bare
         # numeric gate-approval reply never reaches Claude.
-        if wizard.try_handle_item_wizard(msg, transport, state.wizard_store, state, base_url):
+        if wizard.try_handle_item_wizard(msg, transport, state.wizard_store, state, base_url, farmd_url):
             handled += 1
             continue
         if wizard.try_handle_gate_choice(msg, transport, state.choice_store, state, base_url):
@@ -444,7 +505,11 @@ def make_transport() -> Transport:
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--project", required=True)
+    # HZ-209: one concierge serves every enabled project. --project is the
+    # farm's project, logged only; --legacy-slug names the per-project state
+    # an older concierge left, copied to the shared key once.
+    parser.add_argument("--project", default="")
+    parser.add_argument("--legacy-slug", default="")
     parser.add_argument("--once", action="store_true", help="one poll pass and exit (testing)")
     args = parser.parse_args()
 
@@ -465,8 +530,14 @@ def main() -> None:
         # misconfiguration is visible in the tmux pane and the log.
         raise SystemExit("FARM_WA_ALLOWED_JIDS is empty — set the allowlist before enabling the concierge")
     transport = make_transport()
-    state = ConciergeState(slugify(args.project), transport)
-    log(f"concierge up for project '{args.project}' (cursor {state.cursor}, poll every {config.FARM_WA_POLL_S}s)")
+    migrated = migrate_legacy_state(slugify(args.legacy_slug) if args.legacy_slug else "")
+    if migrated:
+        log(f"copied legacy concierge state from '{args.legacy_slug}': {', '.join(p.name for p in migrated)}")
+    state = ConciergeState(CONCIERGE_KEY, transport)
+    log(
+        f"concierge up for every enabled project (farm project '{args.project}', cursor {state.cursor}, "
+        f"poll every {config.FARM_WA_POLL_S}s)"
+    )
 
     while True:
         try:

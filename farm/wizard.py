@@ -154,17 +154,58 @@ class PendingChoiceStore(_JsonStore):
 # ---- item-creation wizard ----
 
 
-def _new_session(title: str) -> dict:
-    return _touch(
-        {
-            "step": "outcome" if title else "title",
-            "title": title,
-            "outcome": "",
-            "metric": "",
-            "guardrails": "",
-            "priority": priorities.DEFAULT_PRIORITY,
-        }
-    )
+def _new_session(title: str, projects: list[dict] | None = None) -> dict:
+    session = {
+        "step": "outcome" if title else "title",
+        "title": title,
+        "outcome": "",
+        "metric": "",
+        "guardrails": "",
+        "priority": priorities.DEFAULT_PRIORITY,
+    }
+    if projects:
+        # HZ-209: with several projects enabled the wizard asks which one,
+        # first, and never defaults — the item is created in the one picked.
+        session.update(step="project", projects=projects, project_id=None)
+    return _touch(session)
+
+
+def _project_choices(farmd_url: str | None) -> list[dict]:
+    """The enabled projects to choose from, as [{id, name}] — empty when there
+    is nothing to choose (one or no project enabled) or no farmd_url was given.
+    Raises httpx.HTTPError when the snapshot can't be read."""
+    if not farmd_url:
+        return []
+    from .concierge_agent import fetch_snapshot
+    from .concierge_routing import enabled_projects
+
+    projects = enabled_projects(fetch_snapshot(farmd_url))
+    if len(projects) < 2:
+        return []
+    return [{"id": p["id"], "name": p.get("name", "?")} for p in projects]
+
+
+def _project_prompt(projects: list[dict]) -> str:
+    listed = " ".join(f"{i + 1}) {p['name']}" for i, p in enumerate(projects))
+    return f"Which project is this for? Reply {listed}"
+
+
+def _first_prompt(session: dict) -> str:
+    if session["step"] == "project":
+        return _project_prompt(session["projects"])
+    return STEP_PROMPTS[session["step"]]
+
+
+def _start(msg: Inbound, transport: Transport, farmd_url: str | None) -> dict | None:
+    """A fresh session for a [New Item] trigger, or None (after replying) when
+    the enabled projects couldn't be read — the wizard never starts on a guess."""
+    try:
+        projects = _project_choices(farmd_url)
+    except (httpx.HTTPError, ValueError) as exc:
+        _log(f"couldn't list enabled projects: {exc}")
+        _reply(transport, msg, "I couldn't reach Horizon to check which projects are enabled — nothing was started. Try again shortly.")
+        return None
+    return _new_session(NEW_ITEM_RE.match(msg.text.strip()).group(1).strip(), projects)
 
 
 def _parse_priority(text: str) -> str | None:
@@ -180,6 +221,7 @@ def _parse_priority(text: str) -> str | None:
 def _summary(session: dict) -> str:
     lines = [
         "Here's what I've got:",
+        *([f"Project: {_project_name(session)}"] if session.get("project_id") is not None else []),
         f"Title: {session['title']}",
         f"Outcome: {session['outcome']}",
         f"Success metric: {session['metric']}",
@@ -190,19 +232,22 @@ def _summary(session: dict) -> str:
     return "\n".join(lines)
 
 
+def _project_name(session: dict) -> str:
+    return next((p["name"] for p in session.get("projects") or [] if p["id"] == session.get("project_id")), "?")
+
+
 def _create_item(base_url: str, session: dict) -> tuple[bool, str]:
+    payload = {
+        "title": session["title"],
+        "outcome": session["outcome"],
+        "metric": session["metric"],
+        "guardrails": session["guardrails"],
+        "priority": session["priority"],
+    }
+    if session.get("project_id") is not None:
+        payload["projectId"] = session["project_id"]
     try:
-        res = httpx.post(
-            f"{base_url}/api/items",
-            json={
-                "title": session["title"],
-                "outcome": session["outcome"],
-                "metric": session["metric"],
-                "guardrails": session["guardrails"],
-                "priority": session["priority"],
-            },
-            timeout=15,
-        )
+        res = httpx.post(f"{base_url}/api/items", json=payload, timeout=15)
     except httpx.HTTPError as exc:
         return False, f"Couldn't create the item — Horizon is unreachable ({exc})."
     if res.status_code != 200:
@@ -225,9 +270,14 @@ def try_handle_item_wizard(
     wstore: WizardStore,
     state: "ConciergeState",
     base_url: str,
+    farmd_url: str | None = None,
 ) -> bool:
     """Returns True if this message belongs to the item-creation wizard
-    (start/advance/edit/cancel/confirm) and must not reach Claude."""
+    (start/advance/edit/cancel/confirm) and must not reach Claude.
+
+    farmd_url is where the enabled projects are read when a session starts
+    (HZ-209); with two or more enabled the first step asks which project.
+    The concierge always passes it; without it there is no project step."""
     key = _key(msg)
     text = msg.text.strip()
     session = wstore.get(key)
@@ -241,16 +291,20 @@ def try_handle_item_wizard(
         if not m:
             return False
         state.claim(msg)
-        session = _new_session(m.group(1).strip())
+        session = _start(msg, transport, farmd_url)
+        if session is None:
+            return True
         wstore.set(key, session)
-        _reply(transport, msg, STEP_PROMPTS[session["step"]])
+        _reply(transport, msg, _first_prompt(session))
         return True
 
     if m:  # a fresh trigger mid-conversation restarts it; the old draft is discarded, never created
         state.claim(msg)
-        session = _new_session(m.group(1).strip())
+        session = _start(msg, transport, farmd_url)
+        if session is None:
+            return True
         wstore.set(key, session)
-        _reply(transport, msg, f"Starting a new item (the previous draft was discarded). {STEP_PROMPTS[session['step']]}")
+        _reply(transport, msg, f"Starting a new item (the previous draft was discarded). {_first_prompt(session)}")
         return True
 
     if text.lower() == "cancel":
@@ -260,6 +314,19 @@ def try_handle_item_wizard(
         return True
 
     step = session["step"]
+    if step == "project":
+        state.claim(msg)
+        projects = session["projects"]
+        pick = int(text) - 1 if text.isascii() and text.isdigit() else -1
+        if not 0 <= pick < len(projects):
+            _reply(transport, msg, f"Sorry, I didn't catch that — {_project_prompt(projects)}")
+            return True
+        session["project_id"] = projects[pick]["id"]
+        session["step"] = "outcome" if session["title"] else "title"
+        wstore.set(key, _touch(session))
+        _reply(transport, msg, STEP_PROMPTS[session["step"]])
+        return True
+
     if step in ("title", "outcome", "metric", "guardrails"):
         state.claim(msg)
         next_step = {"title": "outcome", "outcome": "metric", "metric": "guardrails", "guardrails": "priority"}[step]

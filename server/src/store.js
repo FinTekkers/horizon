@@ -534,9 +534,22 @@ export function listItems() {
   return selectItems
     .all()
     .filter((row) => row.project_id == null || activeId == null || row.project_id === activeId)
-    .map((row) => {
-    const gateActions = selectItemGateActions.all(row.id)
-    return {
+    .map(itemView)
+}
+
+// HZ-209: every enabled project's items (plus project-less local items, which
+// isProjectEnabled always counts as on) — the one WhatsApp concierge serves
+// them all. A disabled project's items are never in it.
+export function listEnabledItems() {
+  return selectItems
+    .all()
+    .filter((row) => isProjectEnabled(row.project_id))
+    .map(itemView)
+}
+
+function itemView(row) {
+  const gateActions = selectItemGateActions.all(row.id)
+  return {
     id: row.id,
     title: row.title,
     priority: row.priority,
@@ -570,8 +583,7 @@ export function listItems() {
     reviewRejected: reviewRejected(row),
     forwardedReview: forwardedReview(row),
     ...dependencyFields(row.id),
-    }
-  })
+  }
 }
 
 // HZ-185: the latest automated review rejected this item and sent it back to

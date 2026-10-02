@@ -19,8 +19,8 @@ With `FARM_URL` unset the server uses the built-in mock agents (demo mode).
 - `farm-daemon` tmux session — farmd (FastAPI, port 4100)
 - `farm-run-<item>-s<step>-a<attempt>` tmux sessions — one per step, PM
   steps included (HZ-212), each logging to `~/.horizon-farm/logs/<session>.log`
-- `farm-concierge-<project>` tmux session — the WhatsApp concierge
-  (only with `FARM_WA_ENABLED=1`; see below)
+- `farm-concierge-_shared` tmux session — the one WhatsApp concierge for
+  every enabled project (HZ-209; only with `FARM_WA_ENABLED=1`; see below)
 - `~/.horizon-farm/` — task queue, state, logs, workspaces
 
 ## Current scope (phases 1–3)
@@ -198,7 +198,13 @@ check is the part that holds regardless: a forged call still has to come from
 an allowlisted number.
 
 3. Restart farmd (`./farm/run.sh`); the concierge appears as
-   `farm-concierge-<project>` and its log lands in `~/.horizon-farm/logs/`.
+   `farm-concierge-_shared` and its log lands in
+   `~/.horizon-farm/logs/concierge-_shared.log`. One session serves every
+   enabled project (HZ-209): a message naming an item key (`HZ-12`, `US-12`)
+   or a project name is answered from that project only, and one naming
+   neither, with two or more projects enabled, gets "which project?" back.
+   farmd retires any older per-project `farm-concierge-<slug>` session, and
+   the shared concierge copies that slug's cursor and pending state once.
 
 Messages from senders not on the allowlist are consumed silently (no reply
 that would confirm the bot exists). Side effects are at-most-once: each

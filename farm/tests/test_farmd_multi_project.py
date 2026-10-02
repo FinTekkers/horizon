@@ -3,6 +3,8 @@ own project and repo; rules, workspace and PM context come from the task,
 never from the farm's single state["project"]. The limits stay global."""
 
 import json
+import os
+import subprocess
 import threading
 import time
 from pathlib import Path
@@ -11,6 +13,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from farm import check_slots, farmd, pm_agent, step_agent, workspaces
+from farm import config as farm_config
 from farm.config import QUEUE_DIR
 from farm.task_files import task_project
 
@@ -259,3 +262,117 @@ def test_a_task_for_an_unprovisioned_repo_waits_for_its_clone_and_the_token_neve
         for d in ("pm", "runs", "runs/active"):
             for f in (QUEUE_DIR / d).glob("*.json*"):
                 f.unlink(missing_ok=True)
+
+
+# ---- HZ-209: exactly one concierge session, whatever the active project ----
+
+
+@pytest.fixture
+def concierge_pane(fake_tmux):
+    """Adds a farm-concierge-* session to FakeTmux whose pane is a real
+    process under `home`, so farmd's FARM_HOME ownership check reads a real
+    /proc entry. Never the host's tmux."""
+    procs = []
+
+    def add(name, home=str(farm_config.FARM_HOME)):
+        env = {k: v for k, v in os.environ.items() if k != "FARM_HOME"}
+        env["FARM_HOME"] = home
+        proc = subprocess.Popen(["sleep", "120"], env=env)
+        procs.append(proc)
+        environ, deadline = Path(f"/proc/{proc.pid}/environ"), time.monotonic() + 10
+        while not environ.read_bytes():  # mapped only once execve finishes
+            assert time.monotonic() < deadline
+            os.sched_yield()
+        fake_tmux.sessions.add(name)
+        fake_tmux.pane_pids[name] = [proc.pid]
+        return name
+
+    yield add
+    for proc in procs:
+        proc.kill()
+        proc.wait()
+
+
+def launched(fake_tmux):
+    return {call[call.index("-s") + 1]: call[-1] for call in fake_tmux.calls if call[0] == "new-session"}
+
+
+def test_the_concierge_session_name_does_not_follow_the_active_project(farm, monkeypatch):
+    names = set()
+    for project in (HORIZON, FINTEKKERS):
+        monkeypatch.setitem(farmd.state, "project", dict(project))
+        names.add(farmd._concierge_session_name())
+    assert names == {farmd.CONCIERGE_SESSION} == {"farm-concierge-_shared"}
+
+
+def test_a_launch_retires_this_farms_per_project_concierges_and_starts_the_shared_one(farm, fake_tmux, concierge_pane, monkeypatch):
+    monkeypatch.setattr(farmd.farm_config, "FARM_WA_ENABLED", True)
+    concierge_pane("farm-concierge-horizon")
+    concierge_pane("farm-concierge-fintekkers", home="/tmp/some-other-farm")
+
+    assert farmd._maybe_launch_concierge() is True
+
+    assert "farm-concierge-horizon" not in fake_tmux.sessions
+    assert "farm-concierge-fintekkers" in fake_tmux.sessions  # another FARM_HOME's
+    assert list(launched(fake_tmux)) == ["farm-concierge-_shared"]
+    command = launched(fake_tmux)["farm-concierge-_shared"]
+    assert "-m farm.concierge_agent --project 'Horizon' --legacy-slug horizon" in command
+
+
+def test_retiring_never_kills_the_shared_concierge(farm, fake_tmux, concierge_pane):
+    concierge_pane("farm-concierge-_shared")
+    concierge_pane("farm-concierge-horizon")
+
+    assert farmd._retire_legacy_concierge_sessions() == ["farm-concierge-horizon"]
+    assert "farm-concierge-_shared" in fake_tmux.sessions
+
+
+class _StopWatchdog(Exception):
+    pass
+
+
+def test_the_watchdog_revive_retires_a_per_project_concierge_too(farm, fake_tmux, concierge_pane, monkeypatch):
+    """The active project changed under a running per-project concierge: the
+    watchdog sees no farm-concierge-_shared and launches it — retiring the
+    old one first, so two never poll at once."""
+    monkeypatch.setattr(farmd.farm_config, "FARM_WA_ENABLED", True)
+    monkeypatch.setitem(farmd.state, "project", dict(FINTEKKERS))
+    concierge_pane("farm-concierge-horizon")
+
+    test_thread, real_sleep, slept = threading.current_thread(), time.sleep, []
+
+    def one_pass(seconds):
+        if threading.current_thread() is not test_thread:
+            return real_sleep(seconds)
+        if slept:
+            raise _StopWatchdog
+        slept.append(seconds)
+
+    monkeypatch.setattr(farmd.time, "sleep", one_pass)
+    with pytest.raises(_StopWatchdog):
+        farmd._watchdog()
+
+    assert "farm-concierge-horizon" not in fake_tmux.sessions
+    assert list(launched(fake_tmux)) == ["farm-concierge-_shared"]
+    assert {n for n in fake_tmux.sessions if n.startswith("farm-concierge-")} == {"farm-concierge-_shared"}
+
+
+def test_internal_snapshot_asks_the_server_for_every_enabled_project(monkeypatch):
+    seen = []
+
+    class Res:
+        status_code = 200
+
+        @staticmethod
+        def json():
+            return {"items": [{"id": "HZ-12"}, {"id": "US-12"}]}
+
+    def get(url, **kwargs):
+        seen.append((url, kwargs.get("params")))
+        return Res()
+
+    monkeypatch.setattr(farmd.httpx, "get", get)
+    res = client.get("/internal/snapshot")
+    assert res.status_code == 200
+    assert res.json() == {"items": [{"id": "HZ-12"}, {"id": "US-12"}]}
+    assert seen == [(f"{farmd.HORIZON_URL}/api/farm/snapshot", {"scope": "enabled"})]

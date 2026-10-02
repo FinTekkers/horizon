@@ -133,8 +133,8 @@ def test_running_farm_never_reaches_real_tmux(running_farm, fake_tmux, monkeypat
 
     launched = {call[call.index("-s") + 1]: call[-1] for call in fake_tmux.calls if call[0] == "new-session"}
     # Positive control: the revive branch really ran.
-    assert "farm-concierge-fintekkers" in launched
-    assert "HORIZON_URL=http://127.0.0.1:9 " in launched["farm-concierge-fintekkers"]
+    assert "farm-concierge-_shared" in launched
+    assert "HORIZON_URL=http://127.0.0.1:9 " in launched["farm-concierge-_shared"]
     assert not [name for name in launched if name.startswith("farm-pm-")]
     assert real_tmux_calls == []
 
@@ -841,7 +841,7 @@ def test_concierge_launches_when_the_flag_is_on(monkeypatch):
     monkeypatch.setattr(farmd.farm_config, "FARM_WA_ENABLED", True)
     monkeypatch.setitem(farmd.state, "project", {"id": 1, "name": "My Proj"})
     assert farmd._maybe_launch_concierge() is True
-    assert launched == ["farm-concierge-my-proj"]
+    assert launched == ["farm-concierge-_shared"]
 
 
 # ---- HZ-5 cost guardrail ----

@@ -224,12 +224,12 @@ def test_a_legacy_pm_session_is_killed_on_every_boot_path(farm, fake_tmux, legac
     if state_text is not None:
         farmd.STATE_FILE.write_text(state_text)
     legacy_pm()
-    fake_tmux.sessions.add("farm-concierge-fintekkers")
+    fake_tmux.sessions.add("farm-concierge-_shared")
 
     farmd._adopt_existing()
 
     assert "farm-pm-fintekkers" not in fake_tmux.sessions
-    assert "farm-concierge-fintekkers" in fake_tmux.sessions  # the concierge stays long-lived
+    assert "farm-concierge-_shared" in fake_tmux.sessions  # the concierge stays long-lived
 
 
 @pytest.mark.parametrize("pane", ["default_home", "other_home", "unreadable"])

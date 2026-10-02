@@ -198,6 +198,10 @@ export function sweepGates({ log, render = renderNotice, renderPoll = renderPoll
         }
         continue
       }
+      // HZ-209: a disabled project's arrival is not notified — and not marked
+      // notified either, so re-enabling the project notifies it on the next
+      // sweep. It stays stale until then, the same as an unrenderable item.
+      if (!store.isProjectEnabled(item.project_id)) continue
       // Read through store.latestArtifact, not a second raw query onto step_run:
       // "latest done attempt wins" is already decided there, once.
       const recommendation =
