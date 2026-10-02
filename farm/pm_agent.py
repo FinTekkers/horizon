@@ -366,7 +366,28 @@ def build_prompt(task: dict) -> str:
 # registry-validated routing enums the server drops outright unless each id
 # exactly matches a known persona in that agent's bucket, so a marker there
 # would decorate a value that's discarded either way.
+#
+# metric and guardrails stay listed here only for direct callers of validate()
+# (farm/tests/test_hz114_no_silent_truncation.py site 3 pins that path).
+# Production never marks them: process() validates through
+# validate_within_budget(), which rejects an over-budget value before
+# validate() could cut it (HZ-264).
 MARKED_PATCH_FIELDS = {"desc", "metric", "guardrails"}
+
+# Fields an over-budget reply is REJECTED for rather than cut (HZ-264). A cut
+# metric or guardrails silently loses the lines after the boundary, and the
+# operator had to repair those items by hand. Budgets are PATCH_FIELDS's, i.e.
+# domain/fields.json's.
+BUDGETED_PATCH_FIELDS = ("metric", "guardrails")
+
+
+class FieldOverBudgetError(AgentError):
+    """A reply's metric or guardrails is over its domain/fields.json budget.
+
+    An AgentError, so parse_agent_reply() spends its one retry on it with this
+    message as the correction, and _repair_ladder() treats it as a failed rung.
+    A second over-budget reply propagates and process() reports the step
+    failed with no patch."""
 
 
 def _mark_truncated(value: str, limit: int) -> str:
@@ -444,6 +465,34 @@ def validate(parsed: dict) -> tuple[str, dict, str | None]:
     return summary[:SUMMARY_MAX_CHARS], patch, artifact
 
 
+def _reject_over_budget(parsed: dict) -> None:
+    """Raise FieldOverBudgetError for the first budgeted field over its limit.
+
+    Measured on the stripped value, the same normalisation validate() applies,
+    so whitespace padding never counts against the budget."""
+    raw_patch = parsed.get("patch") if isinstance(parsed, dict) else None
+    if not isinstance(raw_patch, dict):
+        return
+    for key in BUDGETED_PATCH_FIELDS:
+        value = raw_patch.get(key)
+        if not isinstance(value, str):
+            continue
+        length, limit = len(value.strip()), PATCH_FIELDS[key]
+        if length > limit:
+            raise FieldOverBudgetError(
+                f"{key} is {length} chars; budget is {limit} chars (domain/fields.json). "
+                "Tighten the wording to fit; do not drop lines"
+            )
+
+
+def validate_within_budget(parsed: dict) -> tuple[str, dict, str | None]:
+    """validate(), but an over-budget metric or guardrails is rejected rather
+    than cut and marked (HZ-264). The budget check runs FIRST: after validate()
+    the value would already be cut, and the cut is what this exists to stop."""
+    _reject_over_budget(parsed)
+    return validate(parsed)
+
+
 def process(task: dict, project_slug: str) -> bool:
     """Runs one PM step and reports it. Returns whether farmd accepted the
     result; a post that raises (farmd down) propagates to the caller.
@@ -471,7 +520,8 @@ def process(task: dict, project_slug: str) -> bool:
         # the first call had just written, so the bare correction was enough.
         # With no resume the task prompt goes first, then the correction.
         # validate= keeps validation inside the retry envelope, so a reply that
-        # parses but is missing 'summary' takes the retry exactly as it always did.
+        # parses but is missing 'summary' takes the retry exactly as it always did,
+        # and so does an over-budget metric or guardrails (HZ-264).
         def retry_once(retry_prompt: str) -> str:
             log(f"run {run_id}: invalid reply; retrying once")
             retry = run_agent(
@@ -484,7 +534,7 @@ def process(task: dict, project_slug: str) -> bool:
             return retry["result"]
 
         (summary, patch, artifact), notes = parse_agent_reply(
-            reply["result"], retry_once, validate=validate
+            reply["result"], retry_once, validate=validate_within_budget
         )
 
         # Script-stamped feedback trail, same as the ephemeral agents.
