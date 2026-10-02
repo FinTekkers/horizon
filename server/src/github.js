@@ -554,6 +554,31 @@ export async function getBranchSha(repo, branch) {
   return sha
 }
 
+// HZ-257: whether `baseSha` is an ancestor of (or equal to) `headSha` — so a
+// test-merge of the two would be the head itself. Ancestry only: nothing here
+// reads a commit status or any claim that checks passed. Throws on any
+// answer it cannot read, so a caller never mistakes "unknown" for "yes". The
+// canned PR's optional `ancestry` ('ahead' | 'identical' | 'behind' |
+// 'diverged') answers for e2e; a canned PR without one (or with any other
+// value) throws, as does any status GitHub does not document.
+const COMPARE_ANCESTOR_STATUSES = new Set(['ahead', 'identical'])
+const COMPARE_STATUSES = new Set(['ahead', 'identical', 'behind', 'diverged'])
+
+export async function isAncestor(repo, baseSha, headSha) {
+  if (!SHA_RE.test(baseSha || '') || !SHA_RE.test(headSha || '')) throw new Error('isAncestor needs two full commit shas')
+  const canned = cannedPrForTest
+  let status
+  if (canned && canned.repo === repo) {
+    status = canned.ancestry
+  } else {
+    const res = await gh(`/repos/${repo}/compare/${baseSha}...${headSha}`)
+    if (!res.ok) throw new Error(`could not compare ${baseSha.slice(0, 12)}...${headSha.slice(0, 12)} (GitHub returned ${res.status})`)
+    status = (await res.json().catch(() => ({})))?.status
+  }
+  if (!COMPARE_STATUSES.has(status)) throw new Error('GitHub returned a comparison without a known status')
+  return COMPARE_ANCESTOR_STATUSES.has(status)
+}
+
 // Accepting the code merges its PR (squash), removes the work branch, and —
 // only here, never from a PR branch — promotes this item's screenshots to be
 // the new baseline that future PRs compare against.

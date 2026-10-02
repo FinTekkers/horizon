@@ -24,6 +24,8 @@ import {
   SESSION_TTL_DAYS,
   TEST_HOOKS_ENABLED,
   PREMERGE_CHECK_TIMEOUT_MS,
+  PREMERGE_SKIP_ENABLED,
+  PREMERGE_SKIP_MAX_AGE_MS,
 } from './config.js'
 import { marked } from 'marked'
 import { db } from './db.js'
@@ -717,6 +719,20 @@ export function buildApp({ logger = true, onRoute = null } = {}) {
       const error = `pre-merge check failed: ${err.message}`
       return blocked(`could not read the PR to test-merge it: ${err.message}`, error, { state: 'failed', reason: error })
     }
+    // HZ-257: the test-merge would be the head itself, and the farm's own
+    // checks already passed on exactly that head — no run, same merge pin.
+    const skip = await tryPreMergeSkip(item, head, baseSha)
+    if (skip) {
+      store.setGateActionDetail(id, 'premerge', token, `checks already passed on ${skip.sha}, main unchanged`)
+      store.addEvent(id, {
+        who: 'Horizon',
+        text: `pre-merge checks skipped for PR #${item.pr}: the repo's checks already passed on ${skip.sha} (${skip.source}, finished ${skip.finishedAt}) and ${head.baseRef} ${baseSha.slice(0, 12)} is already in that head, so a test-merge would re-test the same commit`,
+        color: '#0E6E74',
+        initials: 'HZ',
+      })
+      store.notifyChange()
+      return { headSha: skip.sha, skipped: true }
+    }
     store.setGateActionDetail(id, 'premerge', token, `running checks on ${head.baseRef} + PR #${item.pr}`)
     // Logged and pushed BEFORE the run: it takes minutes, and the human must
     // see that something is happening rather than click Accept again.
@@ -789,6 +805,26 @@ export function buildApp({ logger = true, onRoute = null } = {}) {
     return { headSha: result.head_sha }
   }
 
+  // HZ-257: { sha, finishedAt, source } when pre-merge may be skipped — a
+  // fresh check_pass row for exactly this repo, item and head sha, the base tip
+  // already an ancestor of that head, and the base still there on a re-read.
+  // Null otherwise. Never throws: any doubt (no row, a git or API error, a
+  // moved base) is null, which runs pre-merge exactly as before. The local
+  // lookup goes first, so an item with no record never calls GitHub here.
+  async function tryPreMergeSkip(item, head, baseSha) {
+    if (!PREMERGE_SKIP_ENABLED) return null
+    try {
+      const pass = store.findCheckPass({ repo: item.repo, itemId: item.id, sha: head.sha, maxAgeMs: PREMERGE_SKIP_MAX_AGE_MS })
+      if (!pass || pass.sha !== head.sha) return null
+      if ((await github.isAncestor(item.repo, baseSha, head.sha)) !== true) return null
+      if ((await github.getBranchSha(item.repo, head.baseRef)) !== baseSha) return null
+      return pass
+    } catch (err) {
+      fastify.log.warn(`pre-merge skip not used for ${item.id}: ${err.message}`)
+      return null
+    }
+  }
+
   // Shared by the session/gate-PIN browser route, the WhatsApp-concierge
   // route and the WhatsApp poll vote below — same merge/close/approve
   // sequence, only the actor label and the auth check at the call site
@@ -834,7 +870,9 @@ export function buildApp({ logger = true, onRoute = null } = {}) {
           outcome = gate.outcome
           return gate
         }
-        store.setGateActionDetail(id, 'premerge', claim.token, `checks passed, merging PR #${item.pr}`)
+        // HZ-257: a skipped run keeps its "checks already passed on <sha>"
+        // detail through to merged — don't overwrite it here.
+        if (!gate.skipped) store.setGateActionDetail(id, 'premerge', claim.token, `checks passed, merging PR #${item.pr}`)
         try {
           await github.mergePr(item, { sha: gate.headSha })
           outcome = { state: 'merged' }

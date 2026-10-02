@@ -106,6 +106,19 @@ export const PAUSE_CHECKPOINT_TIMEOUT_S = pauseCheckpointTimeoutS > 0 ? pauseChe
 // PR into the current base and the repo's own checks (server/src/premerge.js).
 // A run that has not finished by then blocks the merge, fail-closed.
 export const PREMERGE_CHECK_TIMEOUT_MS = Number(process.env.PREMERGE_CHECK_TIMEOUT_MS || 20 * 60 * 1000)
+// HZ-257: Accept skips the pre-merge run when the farm's own checks already
+// passed on exactly the PR head and that head already contains the base tip
+// (app.js tryPreMergeSkip). A passing record older than this many hours is
+// not used. Anything but a finite positive number — missing, 0, negative,
+// unparseable — falls back to 24; it never means "no limit". check_pass rows
+// are pruned at max(7 days, this limit), so the limit is never cut short.
+export function parseSkipMaxAgeHours(raw) {
+  const hours = Number(raw)
+  return raw != null && raw !== '' && Number.isFinite(hours) && hours > 0 ? hours : 24
+}
+export const PREMERGE_SKIP_MAX_AGE_MS = parseSkipMaxAgeHours(process.env.PREMERGE_SKIP_MAX_AGE_HOURS) * 60 * 60 * 1000
+// Rollback lever: "off" makes every Accept run pre-merge as before HZ-257.
+export const PREMERGE_SKIP_ENABLED = process.env.PREMERGE_SKIP !== 'off'
 // HZ-216: a gate action's lease (db.js gate_action) is the run's own timeout
 // above — PREMERGE_CHECK_TIMEOUT_MS or FARM_CONFLICT_RESOLVE_TIMEOUT_MS — plus
 // this margin, which covers the GitHub reads and merge call around the checks.

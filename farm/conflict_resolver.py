@@ -57,7 +57,7 @@ from pathlib import Path
 
 from domain.py.personas import CONFLICT_MODEL_AGENT, CONFLICT_STEP_KEY
 
-from . import agent_runner, conflict_hunks
+from . import agent_runner, check_record, conflict_hunks
 from .agent_runner import AgentError
 from .check_slots import WaitCancelled
 from .checks import CheckFailure, run_checks
@@ -334,7 +334,9 @@ def _resolve(repo_full, item_id, branch, base_branch, log, configured) -> dict:
         # request from the Node server, so the slot wait is bounded twice:
         # by FARM_CHECK_SLOT_WAIT_MAX_S here, and by
         # FARM_CONFLICT_RESOLVE_TIMEOUT_MS (50 min) on the caller's side.
+        checked_tree = check_record.snapshot_tree(ws, log)
         check_note = _run_checks(ws, pre_merge_sha, log, item_id=item_id, caller="conflict_resolver", configured=configured)
+        checks_finished_at = check_record.now_iso()
     except CheckFailure as exc:
         return _escalate(ws, pre_merge_sha, "tests_failed", str(exc), log)
     _check_cancelled(ws, pre_merge_sha)
@@ -353,7 +355,13 @@ def _resolve(repo_full, item_id, branch, base_branch, log, configured) -> dict:
         return {"resolved": False, "reason": "push_rejected", "detail": str(exc)[:DETAIL_LIMIT]}
 
     log(f"conflict_resolver: merged origin/{default} into {branch} and pushed — {check_note}")
-    return {"resolved": True, "files": diffstat, "summary": f"merged origin/{default} into {branch}; {check_note}"}
+    return {
+        "resolved": True,
+        "files": diffstat,
+        "summary": f"merged origin/{default} into {branch}; {check_note}",
+        # HZ-257: the pushed commit the checks passed on, when exactly named.
+        **check_record.report_fields(ws, checked_tree, check_note, checks_finished_at, log),
+    }
 
 
 # ---- HZ-154: the scoped path ----
@@ -594,7 +602,9 @@ def _scoped_resolve(ws, repo_full, branch, default, unmerged, pre_merge_sha, log
     try:
         # require_ran: this path pushes a merge no human has read. "No green,
         # no push" has to mean a check suite that actually ran.
+        checked_tree = check_record.snapshot_tree(ws, log)
         check_note = _run_checks(ws, pre_merge_sha, log, require_ran=True, caller="conflict_resolver", configured=configured)
+        checks_finished_at = check_record.now_iso()
     except CheckFailure as exc:
         return _escalate(
             ws, pre_merge_sha, "scoped_checks_failed", str(exc), log, notes=resolution_notes
@@ -647,6 +657,8 @@ def _scoped_resolve(ws, repo_full, branch, default, unmerged, pre_merge_sha, log
             "hunk_labels": [h.label for cf in files for h in cf.hunks],
         },
         "review": review,
+        # HZ-257: the pushed commit the checks passed on, when exactly named.
+        **check_record.report_fields(ws, checked_tree, check_note, checks_finished_at, log),
     }
 
 

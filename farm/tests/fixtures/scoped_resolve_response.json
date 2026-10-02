@@ -18,5 +18,7 @@
     "verdict": "pass",
     "reviewed": false,
     "summary": "no agent review — the resolution used only parent lines, kept every side's own"
-  }
+  },
+  "checks_passed_sha": "04ead30ff0abed3c3f17106d53600faa32b5ed79",
+  "checks_finished_at": "2026-10-02T16:55:20Z"
 }
