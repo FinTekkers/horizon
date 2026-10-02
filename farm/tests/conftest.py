@@ -40,6 +40,15 @@ STUB_SHARED_SECRET = "farm-shared-secret-for-tests"
 # one), so the suite supplies its own. Tests for the unconfigured case
 # monkeypatch it back to "".
 STUB_WA_APPROVAL_SECRET = "wa-approval-secret-for-tests"
+# HZ-238: the run, and every process it spawns, makes its temp dirs inside
+# one sandbox of its own, so tmp_guard.py can tell this run's leftovers from a
+# concurrent run's. pytest's tmp_path root stays under the real temp dir
+# (PYTEST_DEBUG_TEMPROOT, read lazily), where pytest.ini's retention applies.
+_REAL_TMP = tempfile.gettempdir()
+os.environ.setdefault("PYTEST_DEBUG_TEMPROOT", _REAL_TMP)
+RUN_TMP = tempfile.mkdtemp(prefix=f"horizon-run-{os.getpid()}-", dir=_REAL_TMP)
+os.environ["TMPDIR"] = RUN_TMP
+tempfile.tempdir = RUN_TMP
 TEST_FARM_HOME = tempfile.mkdtemp(prefix="horizon-farm-test-")
 
 # The manual real-bridge run (test_e2e_whatsapp.py, FARM_WA_E2E=1) needs the
@@ -85,6 +94,7 @@ sys.path.insert(0, str(REPO_ROOT))
 
 from farm import tmux_mgr  # noqa: E402 — must follow the env block above
 from farm.tests.leak_guard import LeakGuard, host_farm_sessions, session_attributed_to_tests  # noqa: E402
+from farm.tests.tmp_guard import TmpLeakGuard  # noqa: E402
 
 
 class FakeTmux:
@@ -173,6 +183,23 @@ def pytest_configure(config):
         ),
         "hz190-host-leak-guard",
     )
+    config.pluginmanager.register(TmpLeakGuard(Path(_REAL_TMP), Path(RUN_TMP)), "hz238-tmp-leak-guard")
+
+
+@pytest.hookimpl(tryfirst=True)
+def pytest_sessionfinish(session, exitstatus):
+    """HZ-238: TEST_FARM_HOME is the suite's own dir — remove it before the
+    tmp leak guard lists the sandbox it lives in."""
+    shutil.rmtree(TEST_FARM_HOME, ignore_errors=True)
+
+
+def pytest_unconfigure(config):
+    """HZ-238: removes the sandbox only when it is empty (never recursive).
+    Anything still in it has been named by the tmp leak guard and stays."""
+    try:
+        os.rmdir(RUN_TMP)
+    except OSError:
+        pass
 
 
 @pytest.fixture
@@ -196,9 +223,10 @@ def fake_tmux(request, monkeypatch):
     if request.node.get_closest_marker("real_tmux") is None:
         yield FAKE_TMUX
         return
-    # Short and under /tmp: a tmux socket path ($TMUX_TMPDIR/tmux-<uid>/default)
-    # must fit in ~108 bytes, which a pytest tmp_path can exceed.
-    socket_dir = tempfile.mkdtemp(prefix="hz-tmux-", dir="/tmp")
+    # Short and in the run's sandbox: a tmux socket path
+    # ($TMUX_TMPDIR/tmux-<uid>/default) must fit in ~108 bytes, which a pytest
+    # tmp_path can exceed.
+    socket_dir = tempfile.mkdtemp(prefix="hz-tmux-", dir=tempfile.gettempdir())
     monkeypatch.setenv("TMUX_TMPDIR", socket_dir)
     monkeypatch.delenv("TMUX", raising=False)
     monkeypatch.setattr(tmux_mgr, "_tmux", REAL_TMUX)

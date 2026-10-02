@@ -859,7 +859,7 @@ def private_tmux_env():
     """The env for a subprocess that imports farmd: FakeTmux does not reach a
     child process, and farmd's boot kills legacy farm-pm-* sessions (HZ-212),
     so the child gets its own throwaway tmux socket — never the host's."""
-    socket_dir = tempfile.mkdtemp(prefix="hz-tmux-", dir="/tmp")
+    socket_dir = tempfile.mkdtemp(prefix="hz-tmux-", dir=tempfile.gettempdir())
     env = {k: v for k, v in os.environ.items() if k != "TMUX"}
     env["TMUX_TMPDIR"] = socket_dir
     try:

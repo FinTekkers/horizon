@@ -42,7 +42,7 @@ def test_host_farm_sessions_without_a_tmux_binary_is_none(tmp_path):
 
 @pytest.mark.skipif(shutil.which("tmux") is None, reason="tmux is not installed")
 def test_host_farm_sessions_with_no_server_running_is_empty():
-    socket_dir = tempfile.mkdtemp(prefix="hz-tmux-", dir="/tmp")
+    socket_dir = tempfile.mkdtemp(prefix="hz-tmux-", dir=tempfile.gettempdir())
     try:
         assert leak_guard.host_farm_sessions({"PATH": os.environ["PATH"], "TMUX_TMPDIR": socket_dir}) == set()
     finally:
