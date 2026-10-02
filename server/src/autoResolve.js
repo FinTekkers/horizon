@@ -29,13 +29,16 @@
 // review are logged and re-checked when their step ends or on the next poll
 // tick, which also catches steps ended by cancel, supersede or a sweep.
 //
-// State is in memory: a restart loses the debounce and the re-check list, and
-// the next main move or poll tick catches up. A resolve lock held across a
-// restart is still swept by HZ-216.
+// State is in memory: a restart loses the debounce and the re-check list. So
+// (HZ-255) every boot queues one scan per connected repo through the same
+// debounce — a merge whose release deploy restarted the server inside its
+// debounce window is still scanned. A merge arriving during that window joins
+// the boot scan. A resolve lock held across a restart is still swept by HZ-216.
 
 import { db } from './db.js'
 import * as github from './github.js'
 import * as orchestrator from './orchestrator.js'
+import * as store from './store.js'
 import { isAutoResolveOnMain } from './settings.js'
 import { DEPLOY_BLOCK_MESSAGE, isDeployBlocked } from './deployDrain.js'
 import { AUTO_RESOLVE_DEBOUNCE_MS, AUTO_RESOLVE_MERGEABLE_WAIT_MS } from './config.js'
@@ -45,8 +48,9 @@ const SHA_RE = /^[0-9a-f]{40}$/
 
 let log = null
 let started = false
+let wired = false
 
-const pendingTriggers = new Map() // repo -> { prs: Set<number>, sha } not yet scanned
+const pendingTriggers = new Map() // repo -> { prs: Set<number>, sha, boot } not yet scanned
 const waiting = new Map() // item id -> trigger text of the scan that skipped it, re-checked later
 const rechecks = new Set() // waiting item ids queued for a single-item re-check
 const lastSeenSha = new Map() // repo -> main's head as last read by the poll
@@ -60,25 +64,44 @@ let running = false
 let currentItem = null
 let chain = Promise.resolve()
 
-export function startAutoResolve(logger) {
+// Synchronous: wires the listeners and queues the boot scans, which run only
+// when the debounce fires — nothing here reads GitHub or scans items.
+// `listRepos` is injectable for tests.
+export function startAutoResolve(logger, { listRepos = store.listRepos } = {}) {
   log = logger
   if (started) return
   started = true
-  github.setMainHeadListener(onMainHead)
-  orchestrator.onStepEnded(recheckItem)
+  if (!wired) {
+    wired = true
+    github.setMainHeadListener(onMainHead)
+    orchestrator.onStepEnded(recheckItem)
+  }
+  queueBootScans(listRepos)
 }
 
-// Queues a scan of `repo`. Called by the webhook and the poll; it never scans
+// One scan per connected repo, queued exactly like a main move. A failed repo
+// read is logged; it never reaches startup.
+function queueBootScans(listRepos) {
+  try {
+    for (const { repo } of listRepos()) noteMainMoved(repo, { boot: true })
+  } catch (err) {
+    log?.warn(`auto-resolve: boot scan not queued (${err?.name || 'error'})`)
+  }
+}
+
+// Queues a scan of `repo`. Called by the webhook, the poll and the boot scan
+// (`boot: true`, which only changes the logged trigger text); it never scans
 // inline, so the webhook's reply is not held up. A no-op until
 // startAutoResolve() runs, so an app built without it (tests) starts nothing.
-export function noteMainMoved(repo, { prs = [], sha = null } = {}) {
+export function noteMainMoved(repo, { prs = [], sha = null, boot = false } = {}) {
   if (!started) return
   const validSha = SHA_RE.test(sha || '') ? sha : null
   // A merge whose commit a scan already read as main's head was covered by it.
   if (validSha && lastScannedSha.get(repo) === validSha) return
-  const trigger = pendingTriggers.get(repo) || { prs: new Set(), sha: null }
+  const trigger = pendingTriggers.get(repo) || { prs: new Set(), sha: null, boot: false }
   for (const pr of prs) if (Number.isInteger(pr)) trigger.prs.add(pr)
   if (validSha) trigger.sha = validSha
+  if (boot) trigger.boot = true
   pendingTriggers.set(repo, trigger)
   // A fixed window from the first merge, so a steady stream of merges cannot
   // postpone the scan forever.
@@ -168,9 +191,10 @@ async function drain() {
   }
 }
 
-function triggerText({ prs, sha }) {
+function triggerText({ prs, sha, boot }) {
   if (prs.size > 0) return `merged PR ${[...prs].sort((a, b) => a - b).map((n) => `#${n}`).join(', ')}`
-  return sha ? `main now at ${sha.slice(0, 7)}` : 'main moved'
+  if (sha) return `main now at ${sha.slice(0, 7)}`
+  return boot ? 'server restarted' : 'main moved'
 }
 
 async function scanRepo(repo, trigger, decided) {
@@ -188,6 +212,8 @@ async function scanRepo(repo, trigger, decided) {
   // Items a previous scan left waiting may have moved out of that window
   // (closed, sent back) — they still get their one decision line.
   for (const id of waiting.keys()) if (!ids.includes(id) && itemRow(id)?.repo === repo) ids.push(id)
+  // So the log shows the scan ran even when it had nothing to decide.
+  if (ids.length === 0) log?.info(`auto-resolve ${repo} [main moved: ${text}]: scan ran, no open items`)
   for (const id of ids) {
     if (decided.has(id)) continue
     decided.add(id)
@@ -307,6 +333,12 @@ export function resetForTest() {
   rechecks.clear()
   lastSeenSha.clear()
   lastScannedSha.clear()
+}
+
+// Undoes startAutoResolve() so a test can boot again; the listeners stay
+// wired and no-op meanwhile. Call only while idle, after resetForTest().
+export function stopForTest() {
+  started = false
 }
 
 export function waitingForTest() {
