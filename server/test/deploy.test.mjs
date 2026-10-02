@@ -1,6 +1,7 @@
-// Self-deploy guardrail (HZ-19, extended for HZ-41's versioned deploy-target
-// registry): isDeployableRelease must never trigger a deploy for a release
-// published on a repo absent from the registry, runDeploy must never shell
+// Self-deploy guardrail (HZ-19, extended for HZ-41's deploy-target registry,
+// the deploy_target table since HZ-263): isDeployableRelease must never
+// trigger a deploy for a release published on a repo absent from the
+// registry, runDeploy must never shell
 // out directly in a test — it goes through the swappable `runner` — and two
 // targets' on-disk state must never cross-contaminate.
 
@@ -9,13 +10,13 @@ import assert from 'node:assert/strict'
 import { mkdtempSync, writeFileSync, mkdirSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { useDeployTargetRows } from './helpers/deployTargetRows.mjs'
 
 process.env.HORIZON_DB = join(mkdtempSync(join(tmpdir(), 'horizon-deploy-')), 'test.db')
 
 const fixtureHome = mkdtempSync(join(tmpdir(), 'horizon-deploy-home-'))
 process.env.HOME = fixtureHome // deploy.js derives every state dir from os.homedir()
 
-const registryFile = join(mkdtempSync(join(tmpdir(), 'horizon-deploy-registry-')), 'deploy-targets.json')
 const FIXTURE_TARGETS = [
   {
     key: 'horizon',
@@ -38,10 +39,10 @@ const FIXTURE_TARGETS = [
     healthCheckType: 'ssr-asset-check',
   },
 ]
-writeFileSync(registryFile, JSON.stringify(FIXTURE_TARGETS))
-process.env.HORIZON_DEPLOY_TARGETS_FILE = registryFile
+await useDeployTargetRows(FIXTURE_TARGETS)
 
 const deploy = await import('../src/deploy.js')
+const { db } = await import('../src/db.js')
 
 const publishedRelease = (over = {}) => ({
   action: 'published',
@@ -186,24 +187,29 @@ test('listTargetStatuses reports a failed deploy without a last-good-tag', () =>
   rmSync(uiStateDir, { recursive: true, force: true })
 })
 
-test('a missing deploy-targets.json fails closed: no throw, no targets resolve', () => {
-  rmSync(registryFile, { force: true }) // registry file briefly absent, as if deleted or not yet deployed
+test('an empty deploy_target table fails closed: no throw, no targets resolve', async () => {
+  db.prepare('DELETE FROM deploy_target').run() // table briefly empty, as if the seed had failed
   try {
     assert.equal(deploy.resolveTarget('FinTekkers/horizon'), null)
     assert.equal(deploy.isDeployableRelease('FinTekkers/horizon', publishedRelease()), false)
     assert.deepEqual(deploy.listTargetStatuses(), [])
   } finally {
-    writeFileSync(registryFile, JSON.stringify(FIXTURE_TARGETS))
+    await useDeployTargetRows(FIXTURE_TARGETS)
   }
 })
 
-test('a corrupt (invalid JSON) deploy-targets.json fails closed: no throw, no targets resolve', () => {
-  writeFileSync(registryFile, '{ not valid json')
+test('a deploy_target row failing validation fails closed: no throw, no targets resolve', async () => {
+  db.prepare('DELETE FROM deploy_target').run()
+  db.prepare(`INSERT INTO deploy_target (key, repo, script, service, repo_dir, state_key, health_url, health_check_type)
+    VALUES ('horizon', 'FinTekkers/horizon', '../escape.sh', 'horizon-server-test', '/tmp/x', 'horizon', 'http://stub.invalid/', 'json-items')`).run()
   try {
     assert.equal(deploy.resolveTarget('FinTekkers/horizon'), null)
     assert.equal(deploy.isDeployableRelease('FinTekkers/horizon', publishedRelease()), false)
+    // listTargetStatuses lists rows for display without deploying them, so the
+    // invalid row is cleared before the status check (as in the empty-table case)
+    db.prepare('DELETE FROM deploy_target').run()
     assert.deepEqual(deploy.listTargetStatuses(), [])
   } finally {
-    writeFileSync(registryFile, JSON.stringify(FIXTURE_TARGETS))
+    await useDeployTargetRows(FIXTURE_TARGETS)
   }
 })

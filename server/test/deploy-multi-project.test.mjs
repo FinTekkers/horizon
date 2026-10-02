@@ -1,5 +1,6 @@
-// HZ-207: each project's release deploys through its own entry in the real
-// infra/host/deploy-targets.json — read only, never edited here.
+// HZ-207: each project's release deploys through its own deploy target — the
+// rows the HZ-263 migration seeds on first start, validated against the real
+// infra/host/ scripts and horizon-deploy.sudoers.
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
@@ -9,7 +10,7 @@ import { join } from 'node:path'
 
 process.env.HORIZON_DB = join(mkdtempSync(join(tmpdir(), 'horizon-deploy-multi-')), 'test.db')
 process.env.HOME = mkdtempSync(join(tmpdir(), 'horizon-deploy-multi-home-'))
-delete process.env.HORIZON_DEPLOY_TARGETS_FILE // the registry on disk
+delete process.env.HORIZON_DEPLOY_SCRIPTS_DIR // the real infra/host/
 
 const deploy = await import('../src/deploy.js')
 
