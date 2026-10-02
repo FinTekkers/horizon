@@ -1030,11 +1030,13 @@ async def conflicts_cancel(request: Request):
 
     deadline = time.monotonic() + _conflict_cancel_wait_s()
     ws = workspaces.workspace_path(repo, item_id)
-    killed = await asyncio.to_thread(conflict_cancel.sweep_worktree, ws)
+    # Fence before the first sweep: killing a push's helper processes mid-
+    # transfer could move the remote branch yet report nothing pushed.
     try:
         await asyncio.wait_for(asyncio.to_thread(_fence_pushes, repo), timeout=max(0.0, deadline - time.monotonic()))
     except asyncio.TimeoutError:
         pass
+    killed = await asyncio.to_thread(conflict_cancel.sweep_worktree, ws)
     while conflict_resolver.is_active(repo, item_id) or workspaces.item_lock_held(repo, item_id):
         if time.monotonic() >= deadline:
             break
