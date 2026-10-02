@@ -5,7 +5,8 @@
 // editable target would be arbitrary code execution.
 //
 // Also the personal API tokens panel (HZ-179): the raw token is shown once and
-// never persisted, and the list shows only the safe fields.
+// never persisted, and the list shows only the safe fields. And each repo
+// row's webhook status plus the PIN-gated Fix webhook (HZ-244).
 
 import { expect, test, vi, afterEach } from 'vitest'
 import { render, cleanup, within, fireEvent, waitFor } from '@testing-library/react'
@@ -21,6 +22,8 @@ vi.mock('../api', () => ({
   createApiToken: vi.fn(),
   revokeApiToken: vi.fn(async () => ({ ok: true })),
   setProjectEnabled: vi.fn(async () => ({ ok: true })),
+  getRepoWebhooks: vi.fn(async () => ({ webhooks: [] })),
+  fixRepoWebhook: vi.fn(async () => ({ ok: true })),
   getDeployTargets: vi.fn(async () => ({
     targets: [
       {
@@ -55,6 +58,8 @@ afterEach(() => {
   // leaks into the next.
   api.listApiTokens.mockReset()
   api.createApiToken.mockReset()
+  api.getRepoWebhooks.mockReset()
+  api.getRepoWebhooks.mockResolvedValue({ webhooks: [] })
   localStorage.clear()
   sessionStorage.clear()
 })
@@ -229,4 +234,76 @@ test('disabling asks for the PIN too', async () => {
   fireEvent.change(alpha.getByLabelText('Gate PIN to disable Alpha'), { target: { value: 'right-pin' } })
   fireEvent.click(alpha.getByRole('button', { name: 'Disable' }))
   await waitFor(() => expect(api.setProjectEnabled).toHaveBeenCalledWith(1, false, 'right-pin'))
+})
+
+// ---- HZ-244: each repo row's webhook status and the Fix webhook action ----
+
+const REPO_PROJECT = [{ id: 7, name: 'Hooks', enabled: true, repos: [{ repo: 'FinTekkers/ui-service', prefix: 'UI' }] }]
+
+function repoRow(container) {
+  return within(container.querySelector('.repo-row'))
+}
+
+for (const [status, row, label, code] of [
+  ['ok', { status: 'ok', lastResponseCode: 200, reason: null }, 'Webhook: ok', 'last delivery 200'],
+  ['missing', { status: 'missing', lastResponseCode: null, reason: null }, 'Webhook: missing', 'no deliveries'],
+  ['mismatched', { status: 'mismatched', lastResponseCode: 404, reason: null }, 'Webhook: mismatched', 'last delivery 404'],
+  // A failed GitHub call arrives as a row, not a rejected list (the server
+  // never 5xxs the whole list for one repo).
+  ['error', { status: 'error', lastResponseCode: null, reason: 'github_error', httpStatus: 403 }, 'Webhook: error (GitHub 403)', 'no deliveries'],
+]) {
+  test(`a repo row shows webhook status ${status} and the last delivery's response code`, async () => {
+    api.getRepoWebhooks.mockResolvedValue({ webhooks: [{ repo: 'FinTekkers/ui-service', ...row }] })
+    const { container } = render(<AdminPage sync={{}} projects={REPO_PROJECT} onBack={() => {}} />)
+    const scoped = repoRow(container)
+    expect(await scoped.findByText(label)).toBeTruthy()
+    expect(scoped.getByText(code)).toBeTruthy()
+    expect(api.getRepoWebhooks).toHaveBeenCalledWith(7)
+    const fixShown = !!within(projectBlock(container, 'Hooks')).queryByText('Fix webhook')
+    expect(fixShown).toBe(status === 'missing' || status === 'mismatched')
+  })
+}
+
+test('a mismatched hook on another host is labelled so', async () => {
+  api.getRepoWebhooks.mockResolvedValue({
+    webhooks: [{ repo: 'FinTekkers/ui-service', status: 'mismatched', lastResponseCode: 200, reason: 'foreign_url' }],
+  })
+  const { container } = render(<AdminPage sync={{}} projects={REPO_PROJECT} onBack={() => {}} />)
+  expect(await repoRow(container).findByText('Webhook: mismatched (other host)')).toBeTruthy()
+})
+
+test('Fix webhook asks for the PIN: none sends nothing, a wrong one shows Gate PIN incorrect, a right one fixes and re-reads status', async () => {
+  api.getRepoWebhooks.mockResolvedValue({
+    webhooks: [{ repo: 'FinTekkers/ui-service', status: 'missing', lastResponseCode: null, reason: null }],
+  })
+  const { container } = render(<AdminPage sync={{}} projects={REPO_PROJECT} onBack={() => {}} />)
+  const block = within(projectBlock(container, 'Hooks'))
+  fireEvent.click(await block.findByText('Fix webhook'))
+  const pinInput = block.getByLabelText('Gate PIN to fix the FinTekkers/ui-service webhook')
+  expect(pinInput.getAttribute('type')).toBe('password')
+
+  const confirm = block.getByRole('button', { name: 'Fix' })
+  expect(confirm.disabled).toBe(true)
+  fireEvent.submit(pinInput.closest('form'))
+  expect(api.fixRepoWebhook).not.toHaveBeenCalled()
+
+  api.fixRepoWebhook.mockRejectedValueOnce(Object.assign(new Error('human_gate_key_required'), { status: 401 }))
+  fireEvent.change(pinInput, { target: { value: 'wrong-pin' } })
+  fireEvent.click(confirm)
+  await block.findByText('Gate PIN incorrect')
+  expect(block.getByLabelText('Gate PIN to fix the FinTekkers/ui-service webhook').value).toBe('')
+
+  api.fixRepoWebhook.mockClear()
+  api.getRepoWebhooks.mockClear()
+  api.getRepoWebhooks.mockResolvedValue({
+    webhooks: [{ repo: 'FinTekkers/ui-service', status: 'ok', lastResponseCode: null, reason: null }],
+  })
+  fireEvent.change(block.getByLabelText('Gate PIN to fix the FinTekkers/ui-service webhook'), { target: { value: 'right-pin' } })
+  fireEvent.click(block.getByRole('button', { name: 'Fix' }))
+  await waitFor(() => expect(api.fixRepoWebhook).toHaveBeenCalledTimes(1))
+  expect(api.fixRepoWebhook).toHaveBeenCalledWith(7, 'FinTekkers/ui-service', 'right-pin')
+  await block.findByText('Webhook: ok')
+  expect(api.getRepoWebhooks).toHaveBeenCalledTimes(1)
+  expect(block.queryByText('Fix webhook')).toBeNull()
+  expect(Object.values({ ...localStorage })).not.toContain('right-pin')
 })

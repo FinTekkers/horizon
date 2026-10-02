@@ -26,6 +26,8 @@ export const {
   createProject,
   addRepoToProject,
   disconnectRepo,
+  getRepoWebhooks,
+  fixRepoWebhook,
   createItem,
   artifactUrl,
   outputUrl,

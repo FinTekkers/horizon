@@ -183,6 +183,14 @@ export async function disconnectRepo() {
   throw new Error('Projects are not available in mock mode')
 }
 
+export async function getRepoWebhooks() {
+  throw new Error('Projects are not available in mock mode')
+}
+
+export async function fixRepoWebhook() {
+  throw new Error('Projects are not available in mock mode')
+}
+
 let localSeq = 0
 
 // The default mirrors POST /api/items' (HZ-135) rather than restating it, so the
