@@ -348,6 +348,7 @@ def run_checks(
     child_env: dict[str, str] | None = None,
     on_slot_event=None,
     configured=None,
+    cancel=None,
 ) -> str:
     """Returns a short human-readable note; raises CheckFailure on failure.
 
@@ -377,6 +378,9 @@ def run_checks(
     configured (HZ-245) is the repo's {install,test,lint,e2e} commands as the
     server sent them; see resolve_check_commands(). None keeps today's
     behaviour exactly.
+
+    cancel (HZ-256) is passed to check_slots.check_slot(): setting it ends a
+    slot wait with check_slots.WaitCancelled. None keeps today's behaviour.
     """
     commands = resolve_check_commands(ws, configured, log=log)
     if not commands:
@@ -391,7 +395,7 @@ def run_checks(
     # construction here, not by arithmetic — every clock this function starts
     # begins after the `with`.
     with check_slots.check_slot(
-        log=log, run_id=run_id, item_id=item_id, caller=caller, on_event=on_slot_event
+        log=log, run_id=run_id, item_id=item_id, caller=caller, on_event=on_slot_event, cancel=cancel
     ) as slot:
         timeout_s = int(os.environ.get("FARM_CHECK_TIMEOUT_S", "600"))
         record = check_metrics.new_record(run_id=run_id, item_id=item_id, caller=caller, slot=slot)
