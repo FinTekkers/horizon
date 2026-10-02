@@ -24,10 +24,13 @@ process.env.HOME = join(dir, 'home')
 process.env.HORIZON_DEPLOY_TARGETS_FILE = join(dir, 'deploy-targets.json')
 writeFileSync(
   process.env.HORIZON_DEPLOY_TARGETS_FILE,
-  JSON.stringify([{ key: 'shadowed', repo: 'Acme/shadowed', stateKey: 'shadowed', script: 'x.sh', service: 'x' }]),
+  JSON.stringify(
+    ['shadowed', 'late', 'failing', 'quiet'].map((key) => ({ key, repo: `Acme/${key}`, stateKey: key, script: 'x.sh', service: 'x' })),
+  ),
 )
 mkdirSync(join(process.env.HOME, '.horizon', 'shadowed'), { recursive: true })
-writeFileSync(join(process.env.HOME, '.horizon', 'shadowed', 'last-good-tag'), 'v2026.10.02-1:abc123\n')
+// The format deploy-horizon.sh writes: "refs/tags/<tag>:<commit>".
+writeFileSync(join(process.env.HOME, '.horizon', 'shadowed', 'last-good-tag'), 'refs/tags/v2026.10.02-1:abc123\n')
 delete process.env.FARM_URL
 delete process.env.GITHUB_TOKEN
 
@@ -170,6 +173,55 @@ test("on behaves like shadow: same decisions and reasons, and it acts on nothing
     assert.equal(caretakerEvents(id).length, 1)
   }
   assert.equal(db.prepare("SELECT cursor FROM work_item WHERE id = 'ON-5'").get().cursor, 5)
+})
+
+// ---- gate 15: the deploy lands after the arrival ----
+
+const stateDir = (key) => {
+  const d = join(process.env.HOME, '.horizon', key)
+  mkdirSync(d, { recursive: true })
+  return d
+}
+const releaseItem = (id, repoKey, tag, endedAgo = '0 minutes') => {
+  const pid = project(`Release ${id}`, 'shadow')
+  db.prepare(
+    "INSERT INTO work_item (id, title, priority, cursor, project_id, repo, release_tag) VALUES (?, ?, 'High', 15, ?, ?, ?)",
+  ).run(id, `fixture ${id}`, pid, `Acme/${repoKey}`, tag)
+  db.prepare(
+    "INSERT INTO step_run (item_id, step_index, agent, status, output, ended_at) VALUES (?, 14, 'DevOps', 'done', ?, datetime('now', ?))",
+  ).run(id, `published release ${tag} — the self-deploy webhook will pull it to shoreward.ai`, `-${endedAgo}`)
+}
+const isoNow = () => new Date().toISOString().replace(/\.\d+Z$/, 'Z')
+
+test('gate 15: nothing is recorded until the webhook deploy lands, then it approves', () => {
+  releaseItem('LT-15', 'late', 'v2026.10.02-2')
+  sweep()
+  assert.equal(evals('LT-15').length, 0, 'judged before the deploy settled')
+  const dir = stateDir('late')
+  writeFileSync(join(dir, 'self-deploy.log'), `${isoNow()} DEPLOY OK tag=refs/tags/v2026.10.02-2 commit=def456\n`)
+  writeFileSync(join(dir, 'last-good-tag'), 'refs/tags/v2026.10.02-2:def456\n')
+  sweep()
+  const events = caretakerEvents('LT-15')
+  assert.equal(events.length, 1)
+  assert.match(events[0].text, /^caretaker would approve — release v2026\.10\.02-2 /)
+})
+
+test('gate 15: a failed deploy logged after the arrival pings the human', () => {
+  releaseItem('LF-15', 'failing', 'v2026.10.02-3')
+  sweep()
+  assert.equal(evals('LF-15').length, 0)
+  const dir = stateDir('failing')
+  writeFileSync(join(dir, 'self-deploy.log'), `${isoNow()} DEPLOY FAILED: health-check (tag=refs/tags/v2026.10.02-3 commit=abc)\n`)
+  sweep()
+  const [row] = evals('LF-15')
+  assert.equal(row.decision, 'ping_human')
+  assert.equal(caretakerEvents('LF-15').length, 1)
+})
+
+test('gate 15: a deploy that never reports is judged after the settle window', () => {
+  releaseItem('LQ-15', 'quiet', 'v2026.10.02-4', `${caretaker.RELEASE_SETTLE_MS / 60000 + 1} minutes`)
+  sweep()
+  assert.equal(evals('LQ-15')[0].decision, 'ping_human')
 })
 
 // ---- metric 3: read-only ----

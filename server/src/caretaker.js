@@ -28,6 +28,10 @@ import { DECISIONS, decide, parsePolicy, redact } from './caretakerRules.js'
 const APPROVE_AND_PRIORITIZE = requiredStepIndex('Approve & prioritize this work')
 export const CARETAKER_GATES = gateStepIndexes().filter((i) => i !== APPROVE_AND_PRIORITIZE)
 const RELEASE_GATE = requiredStepIndex('Review the work & close')
+// How long gate 15 waits for the webhook deploy to log an outcome before it
+// is judged on whatever is on record (which then pings the human).
+export const RELEASE_SETTLE_MS = 30 * 60 * 1000
+const RESWEEP_MS = 60 * 1000
 
 // The candidate set is only live items in shadow/on projects, parked at a
 // caretaker gate (so never closed), whose current arrival has no row yet. An 'off' project's items never
@@ -44,7 +48,7 @@ const selectCandidates = db.prepare(`
                 WHERE s.item_id = w.id AND s.step_index = w.cursor - 1 AND s.status = 'done'), 0))
 `)
 const selectSourceRun = db.prepare(
-  "SELECT id, output, artifact FROM step_run WHERE item_id = ? AND step_index = ? AND status = 'done' ORDER BY id DESC LIMIT 1",
+  "SELECT id, output, artifact, started_at, ended_at FROM step_run WHERE item_id = ? AND step_index = ? AND status = 'done' ORDER BY id DESC LIMIT 1",
 )
 const insertEval = db.prepare(`
   INSERT OR IGNORE INTO caretaker_eval (item_id, gate_index, arrival_run_id, mode, decision, rule_id, reason, comment)
@@ -68,9 +72,32 @@ export function gatherFacts(item, gateIndex, sourceRun) {
     lastGoodTag: null,
   }
   if (gateIndex === RELEASE_GATE) {
-    facts.lastGoodTag = listTargetStatuses().find((t) => t.repo === item.repo)?.lastTag ?? null
+    facts.lastGoodTag = bareTag(releaseTarget(item)?.lastTag)
   }
   return facts
+}
+
+// deploy-*.sh writes last-good-tag as "refs/tags/<tag>:<commit>".
+const bareTag = (ref) => (ref ? ref.replace(/^refs\/tags\//, '') : null)
+const releaseTarget = (item) => listTargetStatuses().find((t) => t.repo === item.repo)
+// SQLite datetime('now') is UTC without a zone; the deploy log is ISO with Z.
+const toMs = (sqlTime) => (sqlTime ? Date.parse(`${sqlTime.replace(' ', 'T')}Z`) : NaN)
+
+// Gate 15 arrives as soon as the release is published; the webhook deploy
+// that writes last-good-tag finishes later. Judge the arrival only once the
+// deploy has settled: this release is last-good, a deploy outcome was logged
+// after the arrival, or RELEASE_SETTLE_MS passed. Until then record nothing,
+// so a later sweep (onChange, boot, or the periodic re-sweep) judges it.
+export function releaseSettled(item, sourceRun, now = Date.now()) {
+  if (!item.release_tag) return true
+  const target = releaseTarget(item)
+  if (!target) return true
+  if (bareTag(target.lastTag) === item.release_tag) return true
+  const arrivedAt = toMs(sourceRun?.ended_at ?? sourceRun?.started_at)
+  if (Number.isNaN(arrivedAt)) return true
+  const loggedAt = Date.parse(target.lastAt ?? '')
+  if (!Number.isNaN(loggedAt) && loggedAt >= arrivedAt - 1000) return true
+  return now - arrivedAt >= RELEASE_SETTLE_MS
 }
 
 // One decision for one arrival, never a throw. null for a non-caretaker gate:
@@ -109,6 +136,7 @@ export function sweepCaretaker({ log, policy = loadPolicy } = {}) {
     for (const item of candidates) {
       try {
         const sourceRun = selectSourceRun.get(item.id, item.cursor - 1) ?? null
+        if (item.cursor === RELEASE_GATE && !releaseSettled(item, sourceRun)) continue
         const result = evaluateArrival(item, item.cursor, loaded, sourceRun, log)
         if (!result) continue
         // Several arrivals with no source run share key 0, so at most one of
@@ -132,8 +160,11 @@ export function sweepCaretaker({ log, policy = loadPolicy } = {}) {
 }
 
 // Never throws, so a broken caretaker cannot fail a human gate action whose
-// onChange it rides on. `opts.policy` is for the tests.
+// onChange it rides on. `opts.policy` is for the tests. The periodic re-sweep
+// picks up gate-15 arrivals once their deploy settles, since a deploy writes
+// files, not the DB, and so fires no onChange.
 export function init(log, { policy = loadPolicy } = {}) {
   store.onChange(() => sweepCaretaker({ log, policy }))
   sweepCaretaker({ log, policy })
+  setInterval(() => sweepCaretaker({ log, policy }), RESWEEP_MS).unref()
 }
