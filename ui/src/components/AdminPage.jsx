@@ -10,6 +10,7 @@ import {
   createApiToken,
   revokeApiToken,
   setProjectEnabled,
+  setProjectAutopilot,
   saveRepoChecks,
   getRepoCheckDefaults,
   getRepoWebhooks,
@@ -693,6 +694,91 @@ function ProjectEnabledToggle({ project }) {
   )
 }
 
+// HZ-270: a project's Autopilot mode. Picking a mode asks for the gate PIN,
+// exactly like ProjectEnabledToggle; the select always shows the server's
+// value, so a refused PIN leaves it as it was. The last few changes show
+// underneath, from the project_event audit trail.
+const AUTOPILOT_MODES = ['off', 'shadow', 'on']
+
+function ProjectAutopilot({ project }) {
+  const [pending, setPending] = useState(null)
+  const [pin, setPin] = useState('')
+  const [error, setError] = useState(null)
+  const [busy, setBusy] = useState(false)
+
+  const cancel = () => {
+    setPending(null)
+    setPin('')
+    setError(null)
+  }
+
+  const submit = async (e) => {
+    e.preventDefault()
+    if (!pin || busy) return
+    setBusy(true)
+    setError(null)
+    try {
+      await setProjectAutopilot(project.id, pending, pin)
+      setPending(null)
+    } catch (err) {
+      setError(err.status === 401 ? 'Gate PIN incorrect' : err.message)
+    } finally {
+      setPin('')
+      setBusy(false)
+    }
+  }
+
+  return (
+    <div className="project-autopilot">
+      <label className="project-autopilot__row">
+        <span>Autopilot</span>
+        <select
+          className="field__input"
+          aria-label={`${project.name} Autopilot`}
+          value={project.autopilot || 'off'}
+          onChange={(e) => (e.target.value === (project.autopilot || 'off') ? cancel() : setPending(e.target.value))}
+        >
+          {AUTOPILOT_MODES.map((mode) => (
+            <option key={mode} value={mode}>
+              {mode}
+            </option>
+          ))}
+        </select>
+      </label>
+      {pending && (
+        <form className="project-block__add" onSubmit={submit}>
+          <input
+            className="field__input"
+            type="password"
+            autoComplete="off"
+            aria-label={`Gate PIN to set ${project.name} Autopilot to ${pending}`}
+            placeholder={`Gate PIN to set Autopilot to ${pending}`}
+            value={pin}
+            onChange={(e) => setPin(e.target.value)}
+            autoFocus
+          />
+          <button type="submit" className="composer__submit" style={{ background: 'var(--primary)' }} disabled={!pin || busy}>
+            {busy ? 'Saving…' : 'Save'}
+          </button>
+          <button type="button" className="composer__cancel" onClick={cancel}>
+            Cancel
+          </button>
+        </form>
+      )}
+      {error && <div className="gh-error">{error}</div>}
+      {(project.autopilotEvents || []).length > 0 && (
+        <ul className="gh-note project-autopilot__history" aria-label={`${project.name} Autopilot history`}>
+          {project.autopilotEvents.map((ev) => (
+            <li key={`${ev.at}-${ev.old}-${ev.new}`}>
+              {ev.old} → {ev.new} · {ev.who} · {ev.at}
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  )
+}
+
 function ProjectPanel({ project, syncRepos }) {
   const [repo, setRepo] = useState('')
   const [error, setError] = useState(null)
@@ -737,6 +823,7 @@ function ProjectPanel({ project, syncRepos }) {
         <div className="project-block__name">{project.name}</div>
         <ProjectEnabledToggle project={project} />
       </div>
+      <ProjectAutopilot project={project} />
       {project.repos.map((r) => {
         const webhook = Object.hasOwn(webhooks, r.repo) ? webhooks[r.repo] : null
         return (

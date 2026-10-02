@@ -212,6 +212,23 @@ export async function setProjectEnabled(projectId, enabled, pin) {
   return data
 }
 
+// HZ-270: a project's Autopilot mode (off | shadow | on). Same PIN handling
+// as setProjectEnabled: sent only in the x-human-key header, never cached.
+export async function setProjectAutopilot(projectId, mode, pin) {
+  const res = await fetch(`${API_BASE}/projects/${encodeURIComponent(projectId)}/autopilot`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'x-human-key': pin },
+    body: JSON.stringify({ mode }),
+  })
+  const data = await res.json().catch(() => ({}))
+  if (!res.ok) {
+    const err = new Error(data.error || `HTTP ${res.status}`)
+    err.status = res.status
+    throw err
+  }
+  return data
+}
+
 // HZ-245: a repo's check commands (install, test, lint, e2e). Same PIN
 // handling as setProjectEnabled: asked for on every save, sent only in the
 // x-human-key header, never cached.

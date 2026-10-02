@@ -488,6 +488,45 @@ for (const column of ['check_install', 'check_test', 'check_lint', 'check_e2e'])
   if (!projectRepoColumns.has(column)) db.exec(`ALTER TABLE project_repo ADD COLUMN ${column} TEXT`)
 }
 
+// HZ-270: per-project Autopilot. Additive: every existing and new project is
+// 'off', and an 'off' project's items are never read by the caretaker.
+if (!db.prepare('PRAGMA table_info(project)').all().some((column) => column.name === 'autopilot')) {
+  db.exec("ALTER TABLE project ADD COLUMN autopilot TEXT NOT NULL DEFAULT 'off' CHECK (autopilot IN ('off','shadow','on'))")
+}
+
+// HZ-270: project_event is the project-level audit trail (event.item_id is
+// NOT NULL, so an Autopilot change cannot live there). caretaker_eval holds one
+// row per gate arrival the caretaker judged; its UNIQUE key is the persisted
+// "once per arrival" rule, so a re-run or a restart can never add a second.
+// arrival_run_id is the done step_run that fed the gate (0 when there is none).
+db.exec(`
+  CREATE TABLE IF NOT EXISTS project_event (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id INTEGER NOT NULL REFERENCES project(id),
+    kind       TEXT NOT NULL,
+    old_value  TEXT,
+    new_value  TEXT,
+    who        TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+  CREATE INDEX IF NOT EXISTS idx_project_event_project ON project_event(project_id, id DESC);
+
+  CREATE TABLE IF NOT EXISTS caretaker_eval (
+    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    item_id        TEXT NOT NULL REFERENCES work_item(id),
+    gate_index     INTEGER NOT NULL,
+    arrival_run_id INTEGER NOT NULL,
+    mode           TEXT NOT NULL CHECK (mode IN ('shadow','on')),
+    decision       TEXT NOT NULL CHECK (decision IN ('approve','send_back','resolve_conflicts','wait','ping_human')),
+    rule_id        TEXT,
+    reason         TEXT NOT NULL,
+    comment        TEXT,
+    event_id       INTEGER REFERENCES event(id),
+    created_at     TEXT NOT NULL DEFAULT (datetime('now')),
+    UNIQUE (item_id, gate_index, arrival_run_id)
+  );
+`)
+
 const SEED_ITEMS = [
   { id: 'BF-145', title: 'Risk-limit breach dashboard', priority: 'Low', cursor: 1, issue: 412, desc: 'Give risk managers a live view of limit utilization across every desk.', metric: 'Limit breaches acknowledged in < 2 min (from 14 min).', guardrails: 'Read-only — no position mutation. No PII in telemetry.' },
   { id: 'BF-128', title: 'Real-time P&L attribution service', priority: 'High', cursor: 3, issue: 398, desc: 'Attribute intraday P&L to factors, trades and fees in real time.', metric: 'Attribution available < 5s after fill; 99.9% coverage.', guardrails: 'No client identifiers in logs. Must reconcile to EOD books.' },

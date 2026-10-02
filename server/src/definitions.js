@@ -161,7 +161,7 @@ export function writeDefinition(kind, name, content, actor = 'unknown') {
 
 // ---- effective-prompt preview (mirrors the farm composition exactly) ----
 
-function readFarmFile(relpath) {
+export function readFarmFile(relpath) {
   try {
     return fs.readFileSync(path.join(FARM_DIR, relpath), 'utf8')
   } catch {

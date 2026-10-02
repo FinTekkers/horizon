@@ -22,6 +22,7 @@ export const {
   getActiveProjectId,
   getFarm,
   setProjectEnabled,
+  setProjectAutopilot,
   saveToken,
   createProject,
   addRepoToProject,

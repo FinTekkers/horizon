@@ -321,6 +321,8 @@ export function listProjects({ checks = true } = {}) {
     id: p.id,
     name: p.name,
     enabled: !!p.enabled,
+    autopilot: p.autopilot,
+    autopilotEvents: selectAutopilotEvents.all(p.id),
     repos: repos
       .filter((r) => r.project_id === p.id)
       .map((r) => ({ repo: r.repo, prefix: r.prefix, ...(checks ? { checks: repoChecks(r) } : {}) })),
@@ -408,6 +410,33 @@ export function setProjectEnabled(projectId, enabled) {
   if (changes === 0) return { error: 'not_found' }
   notify()
   return { ok: true }
+}
+
+// ---- HZ-270: per-project Autopilot (off | shadow | on) ----
+
+export const AUTOPILOT_MODES = ['off', 'shadow', 'on']
+
+const selectAutopilotEvents = db.prepare(
+  "SELECT old_value AS old, new_value AS new, who, created_at AS at FROM project_event WHERE project_id = ? AND kind = 'autopilot' ORDER BY id DESC LIMIT 3",
+)
+
+// The ONLY writer of project.autopilot; its only caller is the PIN-gated
+// Admin route in app.js. The flag and its audit row land in one transaction,
+// and a same-value write records nothing.
+export function setProjectAutopilot(projectId, mode, who) {
+  if (!AUTOPILOT_MODES.includes(mode)) return { error: 'invalid_mode' }
+  const result = db.transaction(() => {
+    const row = db.prepare('SELECT autopilot FROM project WHERE id = ?').get(projectId)
+    if (!row) return { error: 'not_found' }
+    if (row.autopilot === mode) return { ok: true, old: mode, new: mode, unchanged: true }
+    db.prepare('UPDATE project SET autopilot = ? WHERE id = ?').run(mode, projectId)
+    db.prepare(
+      "INSERT INTO project_event (project_id, kind, old_value, new_value, who) VALUES (?, 'autopilot', ?, ?, ?)",
+    ).run(projectId, row.autopilot, mode, who)
+    return { ok: true, old: row.autopilot, new: mode }
+  })()
+  if (result.ok && !result.unchanged) notify()
+  return result
 }
 
 // SH for shoreward, US for ui-service, LS for ledger-service… deduped

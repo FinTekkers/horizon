@@ -37,6 +37,7 @@ const EXPECTED_JOURNEYS = [
   'gate-in-flight-blocked',
   'project-filter',
   'project-enabled',
+  'project-autopilot',
   'board-gate-status-running',
 ]
 
