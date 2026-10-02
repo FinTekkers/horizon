@@ -3,7 +3,7 @@
 
 import { randomUUID } from 'node:crypto'
 import { db } from './db.js'
-import { GATE_ACTION_MARGIN_MS } from './config.js'
+import { GATE_ACTION_MARGIN_MS, PREMERGE_SKIP_MAX_AGE_MS } from './config.js'
 import {
   STEPS,
   PHASES,
@@ -232,6 +232,64 @@ function conflictRunView(row) {
 
 export function getConflictRun(itemId) {
   return conflictRunView(selectGateAction.get(itemId, 'resolve'))
+}
+
+// ---- HZ-257: the farm's own check passes (db.js check_pass) ----
+
+// The farm report fields that carry a pass — the implement step's artifacts
+// and the conflict resolver's reply. farm/check_record.py names them too.
+export const CHECKS_PASSED_SHA_KEY = 'checks_passed_sha'
+export const CHECKS_FINISHED_AT_KEY = 'checks_finished_at'
+
+const CHECK_PASS_SHA_RE = /^[0-9a-f]{40}$/
+const CHECK_PASS_FUTURE_SLACK_MS = 5 * 60 * 1000
+const CHECK_PASS_KEEP_MS = Math.max(7 * 24 * 60 * 60 * 1000, PREMERGE_SKIP_MAX_AGE_MS)
+
+// Records that `sha` passed the repo's checks for this item. Never throws and
+// never blocks its caller's run: anything doubtful (a bad sha, a finish time
+// that is unparseable or in the future, a DB error) is logged and refused,
+// which only means the next Accept runs pre-merge. Returns whether it stored.
+export function recordCheckPass({ repo, itemId, sha, finishedAt, source }) {
+  try {
+    const finishedMs = typeof finishedAt === 'string' ? Date.parse(finishedAt) : NaN
+    if (
+      typeof repo !== 'string' ||
+      !repo ||
+      typeof sha !== 'string' ||
+      !CHECK_PASS_SHA_RE.test(sha) ||
+      !Number.isFinite(finishedMs) ||
+      finishedMs > Date.now() + CHECK_PASS_FUTURE_SLACK_MS
+    ) {
+      console.warn(`[check_pass] not recorded for ${itemId}: bad sha or finish time`)
+      return false
+    }
+    db.prepare('INSERT INTO check_pass (repo, item_id, sha, finished_at, source) VALUES (?, ?, ?, ?, ?)').run(
+      repo,
+      itemId,
+      sha,
+      new Date(finishedMs).toISOString(),
+      source,
+    )
+    db.prepare('DELETE FROM check_pass WHERE finished_at < ?').run(new Date(Date.now() - CHECK_PASS_KEEP_MS).toISOString())
+    return true
+  } catch (err) {
+    console.warn(`[check_pass] not recorded for ${itemId}: ${err.message}`)
+    return false
+  }
+}
+
+// The newest pass for exactly this repo, item and sha that finished within
+// maxAgeMs, or null. Exact equality only — never another sha, repo or item.
+// May throw; app.js treats a throw as "run pre-merge".
+export function findCheckPass({ repo, itemId, sha, maxAgeMs, now = Date.now() }) {
+  const row = db
+    .prepare(
+      `SELECT sha, finished_at, source FROM check_pass
+       WHERE repo = ? AND item_id = ? AND sha = ? AND finished_at >= ?
+       ORDER BY finished_at DESC LIMIT 1`,
+    )
+    .get(repo, itemId, sha, new Date(now - maxAgeMs).toISOString())
+  return row ? { sha: row.sha, finishedAt: row.finished_at, source: row.source } : null
 }
 
 // The item's gate action for the UI: a running one if any, else the latest

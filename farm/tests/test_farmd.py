@@ -4,6 +4,7 @@ payload-visibility metric)."""
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -304,6 +305,12 @@ def test_conflicts_resolve_end_to_end_over_http_takes_the_scoped_path(running_fa
     recorded = json.loads(SCOPED_RESOLVE_FIXTURE.read_text())
     assert isinstance(body.pop("files"), str)
     assert recorded.pop("files", None) is not None, "the recorded payload must keep a files key for the Node side"
+    # HZ-257: the pushed sha and the finish time change on every run too; both
+    # sides must carry them, and the sha must be a full commit id.
+    for key in ("checks_passed_sha", "checks_finished_at"):
+        assert recorded.pop(key, None) is not None, f"the recorded payload must keep a {key} key for the Node side"
+    assert re.fullmatch(r"[0-9a-f]{40}", body.pop("checks_passed_sha"))
+    assert isinstance(body.pop("checks_finished_at"), str)
     assert body == recorded, f"regenerate {SCOPED_RESOLVE_FIXTURE.name} — farmd's scoped reply shape changed"
 
 

@@ -2886,3 +2886,78 @@ def test_a_finished_run_that_left_conflict_markers_fails_without_committing_or_p
     # Not even a local commit: HEAD is still the branch tip, merge uncommitted.
     assert rev(ws, "HEAD") == before_remote
     assert (ws / ".git" / "MERGE_HEAD").exists()
+
+
+# ---- HZ-257: a green implement run names the exact commit its checks passed on ----
+
+
+def _origin_sha(origin, ref):
+    return subprocess.run(
+        ["git", "--git-dir", str(origin), "rev-parse", ref], capture_output=True, text=True, check=True
+    ).stdout.strip()
+
+
+def test_a_green_implement_run_reports_the_pushed_sha_its_checks_passed_on(tmp_path, monkeypatch):
+    ws, origin = make_git_workspace(tmp_path)
+    monkeypatch.setattr(step_agent, "ensure_item_worktree", lambda repo, item_id: ws)
+    monkeypatch.setenv("FARM_CHECK_CMD", "true")
+    monkeypatch.setattr(step_agent, "run_agent", finished_run(ws))
+
+    result = execute(make_task(11, "Specialist agent implements", repo="acme/demo"))
+
+    assert result["artifacts"]["checks_passed_sha"] == _origin_sha(origin, "horizon/t-1")
+    assert re.fullmatch(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ", result["artifacts"]["checks_finished_at"])
+
+
+def test_a_failing_implement_run_reports_no_sha(tmp_path, monkeypatch):
+    ws, _origin = make_git_workspace(tmp_path)
+    monkeypatch.setattr(step_agent, "ensure_item_worktree", lambda repo, item_id: ws)
+    monkeypatch.setenv("FARM_CHECK_CMD", "exit 1")
+    monkeypatch.setattr(step_agent, "run_agent", finished_run(ws))
+    reported = []
+    monkeypatch.setattr(step_agent.check_record, "report_fields", lambda *a, **k: reported.append(a) or {})
+
+    with pytest.raises(step_agent.CheckFailure):
+        execute(make_task(11, "Specialist agent implements", repo="acme/demo"))
+
+    assert reported == [], "a red run never reaches the report"
+
+
+def test_a_check_that_leaves_a_file_behind_reports_no_sha(tmp_path, monkeypatch):
+    ws, _origin = make_git_workspace(tmp_path)
+    monkeypatch.setattr(step_agent, "ensure_item_worktree", lambda repo, item_id: ws)
+    monkeypatch.setenv("FARM_CHECK_CMD", "echo generated > generated.txt")
+    monkeypatch.setattr(step_agent, "run_agent", finished_run(ws))
+
+    result = execute(make_task(11, "Specialist agent implements", repo="acme/demo"))
+
+    assert result["artifacts"]["branch"] == "horizon/t-1"
+    assert "checks_passed_sha" not in result["artifacts"]
+
+
+def test_a_run_with_no_checks_to_run_reports_no_sha(tmp_path, monkeypatch):
+    ws, _origin = make_git_workspace(tmp_path)
+    monkeypatch.setattr(step_agent, "ensure_item_worktree", lambda repo, item_id: ws)
+    monkeypatch.delenv("FARM_CHECK_CMD", raising=False)
+    monkeypatch.setattr(step_agent, "run_agent", finished_run(ws))
+
+    result = execute(make_task(11, "Specialist agent implements", repo="acme/demo"))
+
+    assert "checks_passed_sha" not in result["artifacts"]
+
+
+def test_a_snapshot_timeout_still_completes_green_with_no_sha(tmp_path, monkeypatch):
+    ws, _origin = make_git_workspace(tmp_path)
+    monkeypatch.setattr(step_agent, "ensure_item_worktree", lambda repo, item_id: ws)
+    monkeypatch.setenv("FARM_CHECK_CMD", "true")
+    monkeypatch.setattr(step_agent, "run_agent", finished_run(ws))
+
+    def hung_git(ws_, *args, timeout=10, **_kwargs):
+        raise subprocess.TimeoutExpired(["git", *args], timeout)
+
+    monkeypatch.setattr(step_agent.check_record, "_git", hung_git)
+
+    result = execute(make_task(11, "Specialist agent implements", repo="acme/demo"))
+
+    assert result["artifacts"]["branch"] == "horizon/t-1"
+    assert "checks_passed_sha" not in result["artifacts"]

@@ -44,7 +44,7 @@ from .agent_runner import (
     stamp_notes,
     stamp_notes_artifact,
 )
-from . import handoff, pause
+from . import check_record, handoff, pause
 from .checks import CheckFailure, redact, run_checks
 from .config import FARM_PORT, ITEM_LOCK_WAIT_S
 from .handoff import HandoffContext, HandoffGuard
@@ -1228,6 +1228,9 @@ def _execute(task: dict, guard: HandoffGuard) -> dict:
         # Guardrail enforcement: the repo's own tests/linters run here, by the
         # script, before anything is committed or pushed. A failure fails the
         # run (Node pauses the item with the reason) — no green, no push.
+        # HZ-257: the tree the checks are about to test, so the commit made
+        # after them can be named as the sha that passed — only if identical.
+        checked_tree = check_record.snapshot_tree(ws, log)
         try:
             with pause.interruptible():
                 # HZ-245: the repo's Admin-configured commands, from the task dict
@@ -1235,6 +1238,7 @@ def _execute(task: dict, guard: HandoffGuard) -> dict:
                 check_note = run_checks(
                     ws, log, run_id=task.get("run_id"), item_id=item["id"], configured=task.get("check_commands")
                 )
+            checks_finished_at = check_record.now_iso()
         except pause.PauseRequested:
             # HZ-194: the agent's work is finished but unchecked. The checks
             # are stopped and never count as a failure; the code is saved.
@@ -1256,6 +1260,7 @@ def _execute(task: dict, guard: HandoffGuard) -> dict:
             raise
         publish_screenshots(ws, item)
         artifacts = finalize_branch(ws, item, branch, conflicted, lease_sha=prepared.lease_sha)
+        artifacts.update(check_record.report_fields(ws, checked_tree, check_note, checks_finished_at, log))
         if scope["mode"] == "fix":
             artifacts.update(fix_diff_report(ws, scope.get("base_sha")))
         # finalize_branch returns branch/files_changed, not an artifact_md, so

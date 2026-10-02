@@ -313,6 +313,23 @@ db.exec(`
     PRIMARY KEY (item_id, kind)
   );
   CREATE INDEX IF NOT EXISTS idx_gate_action_running ON gate_action(state, deadline_at);
+
+  -- HZ-257: the farm's own repo-check passes, one row per exact commit that
+  -- passed and was pushed — by the implement step or the conflict resolver
+  -- (never pre-merge: its --no-ff test-merge is never a PR head). Written only
+  -- from the farm-authenticated step-complete and resolve replies, with repo
+  -- taken from the item row. Accept reads it to skip a pre-merge run that
+  -- would re-test the same head (app.js tryPreMergeSkip).
+  CREATE TABLE IF NOT EXISTS check_pass (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    repo        TEXT NOT NULL,
+    item_id     TEXT NOT NULL REFERENCES work_item(id) ON DELETE CASCADE,
+    sha         TEXT NOT NULL CHECK (length(sha) = 40),
+    finished_at TEXT NOT NULL,
+    source      TEXT NOT NULL CHECK (source IN ('implement','conflict_resolver')),
+    recorded_at TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+  CREATE INDEX IF NOT EXISTS idx_check_pass_lookup ON check_pass(repo, item_id, sha, finished_at);
 `)
 
 // Additive migrations for databases created before these columns existed.

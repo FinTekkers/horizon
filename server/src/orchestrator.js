@@ -43,6 +43,9 @@ import {
   isProjectEnabled,
   setProjectEnabled as writeProjectEnabled,
   getRepoCheckCommands,
+  recordCheckPass,
+  CHECKS_PASSED_SHA_KEY,
+  CHECKS_FINISHED_AT_KEY,
 } from './store.js'
 import { createMockPr, createDeployRelease, postIssueComment, syncIssueBodyFields, createPrFromBranch, getPrHeadSha } from './github.js'
 import { PHASES } from '../../domain/js/lifecycle.js'
@@ -648,6 +651,16 @@ export async function resolveConflicts(id, actor = 'You', { startedBy = 'human',
   }
 }
 
+// HZ-257: a farm report (implement artifacts, resolver reply) that names the
+// exact pushed commit its checks passed on becomes a check_pass row. The repo
+// is the item row's, never the payload's. A report without the fields, or a
+// refused write, records nothing and changes nothing else.
+function recordFarmCheckPass(item, report, source) {
+  const sha = report?.[CHECKS_PASSED_SHA_KEY]
+  if (sha === undefined || !item.repo) return
+  recordCheckPass({ repo: item.repo, itemId: item.id, sha, finishedAt: report[CHECKS_FINISHED_AT_KEY], source })
+}
+
 // The resolver call itself; returns { result, state, reason } — the route's
 // reply plus the conflictRun outcome resolveConflicts() records.
 async function runConflictResolution(id, item, actor) {
@@ -676,6 +689,7 @@ async function runConflictResolution(id, item, actor) {
   }
 
   if (result.resolved) {
+    recordFarmCheckPass(item, result, 'conflict_resolver')
     // The mechanical text stays byte-identical: only farmd reporting
     // mode: 'scoped' switches to the richer line.
     addEvent(id, {
@@ -1904,7 +1918,10 @@ export async function completeFarmRun(runId, { summary, patch, artifacts }) {
     artifactMd = replaceOverlapSection(artifactMd || '', renderOverlapSection(applyOverlap(id, check)))
   }
 
-  if (run.step_index === IMPLEMENT_STEP_INDEX) settleFixPass(id, run, artifacts)
+  if (run.step_index === IMPLEMENT_STEP_INDEX) {
+    settleFixPass(id, run, artifacts)
+    recordFarmCheckPass(item, artifacts, 'implement')
+  }
 
   db.prepare(
     "UPDATE step_run SET status = 'done', output = ?, artifact = ?, provider = ?, command_id = ?, ended_at = datetime('now') WHERE id = ?",

@@ -269,3 +269,50 @@ def test_the_mechanical_path_runs_the_repos_configured_check_commands(isolated_w
     assert result["resolved"] is False and result["reason"] == "tests_failed"
     assert "configured-lint-ran" in result["detail"]
     assert origin_branch_sha(origin, "horizon/hz-9") == branch_sha
+
+
+# ---- HZ-257: a resolution pushed behind green checks names that exact sha ----
+
+
+def test_the_mechanical_path_reports_the_pushed_sha_its_checks_passed_on(isolated_workspaces_dir, monkeypatch):
+    tmp_path = isolated_workspaces_dir
+    _hub, origin = make_repo_hub(tmp_path)
+    monkeypatch.setenv("FARM_CHECK_CMD", "true")
+    push_new_branch(tmp_path, origin, "horizon/hz-7", lambda w: (w / "shared.txt").write_text("line1 (branch edit)\nline2\nline3\n"), "branch")
+    push_new_branch(tmp_path, origin, "main", lambda w: (w / "other.txt").write_text("new on main\n"), "main-advance")
+
+    result = conflict_resolver.resolve("acme/demo", "HZ-7", log=lambda *_: None)
+
+    assert result["resolved"] is True
+    assert result["checks_passed_sha"] == origin_branch_sha(origin, "horizon/hz-7")
+    assert result["checks_finished_at"]
+
+
+def test_the_scoped_path_reports_the_pushed_sha_its_checks_passed_on(isolated_workspaces_dir, monkeypatch):
+    tmp_path = isolated_workspaces_dir
+    _hub, origin = make_repo_hub(tmp_path)
+    monkeypatch.setenv("FARM_CHECK_CMD", "true")
+    monkeypatch.delenv("FARM_CONFLICT_SCOPED_ENABLED", raising=False)
+    push_new_branch(tmp_path, origin, "horizon/hz-8", lambda w: (w / "shared.txt").write_text("line1\nline2\nours-added\nline3\n"), "branch")
+    push_new_branch(tmp_path, origin, "main", lambda w: (w / "shared.txt").write_text("line1\nline2\ntheirs-added\nline3\n"), "main-advance")
+
+    result = conflict_resolver.resolve("acme/demo", "HZ-8", log=lambda *_: None)
+
+    assert result["resolved"] is True
+    assert result["mode"] == "scoped"
+    assert result["checks_passed_sha"] == origin_branch_sha(origin, "horizon/hz-8")
+    assert result["checks_finished_at"]
+
+
+def test_failing_checks_report_no_sha(isolated_workspaces_dir, monkeypatch):
+    tmp_path = isolated_workspaces_dir
+    _hub, origin = make_repo_hub(tmp_path)
+    monkeypatch.setenv("FARM_CHECK_CMD", "exit 1")
+    push_new_branch(tmp_path, origin, "horizon/hz-9", lambda w: (w / "shared.txt").write_text("line1 (branch)\nline2\nline3\n"), "branch")
+    push_new_branch(tmp_path, origin, "main", lambda w: (w / "other.txt").write_text("new on main\n"), "main-advance")
+
+    result = conflict_resolver.resolve("acme/demo", "HZ-9", log=lambda *_: None)
+
+    assert result["resolved"] is False
+    assert "checks_passed_sha" not in result
+    assert "checks_finished_at" not in result
