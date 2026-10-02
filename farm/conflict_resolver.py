@@ -39,16 +39,27 @@ the scoped path keeps its own guarantees in code, not in a prompt:
     after re-verifying origin has not moved
   - it only ever returns the item to the Accept gate for a human; it never
     approves a gate, never touches a step_run row, never bypasses a PIN
+
+HZ-256: a self-deploy can stop a running resolve before horizon-server
+restarts (farmd's POST /conflicts/cancel -> request_cancel()). Each run
+registers a cancel event while it runs; once that is set, the run checks it
+between stages, at every escalation and inside hub_lock just before any push,
+and raises Cancelled instead of escalating or pushing. Nothing sets the event
+except that route, so with no deploy running every check is a no-op.
 """
 
+import contextlib
+import contextvars
 import os
 import subprocess
+import threading
 from pathlib import Path
 
 from domain.py.personas import CONFLICT_MODEL_AGENT, CONFLICT_STEP_KEY
 
 from . import agent_runner, check_record, conflict_hunks
 from .agent_runner import AgentError
+from .check_slots import WaitCancelled
 from .checks import CheckFailure, run_checks
 from .conflict_hunks import MarkerRemaining, ScopeViolation, UnsupportedConflict
 from .config import CONFLICT_AGENT_TIMEOUT_S, CONFLICT_REVIEW_TIMEOUT_S, CONFLICT_SCOPED_ENABLED
@@ -115,6 +126,104 @@ ESCALATION_REASONS = (
 )
 
 
+# ---- HZ-256: cancelling a run for a self-deploy ----
+
+
+class Cancelled(Exception):
+    """The run was cancelled (farmd's /conflicts/cancel). Raised instead of an
+    escalation or a push; the worktree is already reset when it propagates."""
+
+
+# One event per running resolve(), keyed by (repo, lowercased item id) like
+# item_lock(). item_lock is held around every resolve(), so a key has at most
+# one entry.
+_ACTIVE: dict[tuple[str, str], threading.Event] = {}
+_ACTIVE_GUARD = threading.Lock()
+# The running resolve()'s event, read by _check_cancelled() anywhere below it
+# on the same thread. None outside resolve() — a direct _scoped_resolve() call
+# can never be cancelled.
+_CANCEL: contextvars.ContextVar[threading.Event | None] = contextvars.ContextVar("conflict_cancel", default=None)
+
+
+def _key(repo_full: str, item_id: str) -> tuple[str, str]:
+    return (repo_full, item_id.lower())
+
+
+def request_cancel(repo_full: str, item_id: str) -> bool:
+    """Sets the running resolve()'s cancel event for this item only. False
+    when no resolve() is running for it (nothing changes)."""
+    with _ACTIVE_GUARD:
+        ev = _ACTIVE.get(_key(repo_full, item_id))
+    if ev is None:
+        return False
+    ev.set()
+    return True
+
+
+def is_active(repo_full: str, item_id: str) -> bool:
+    with _ACTIVE_GUARD:
+        return _key(repo_full, item_id) in _ACTIVE
+
+
+@contextlib.contextmanager
+def cancel_scope(repo_full: str, item_id: str):
+    """Registers one run's cancel event for its duration. Any exception that
+    leaves a cancelled run (a git command or a check that the cancel's process
+    sweep killed) becomes Cancelled, so the caller never reads it as an
+    infrastructure failure."""
+    ev = threading.Event()
+    key = _key(repo_full, item_id)
+    with _ACTIVE_GUARD:
+        _ACTIVE[key] = ev
+    token = _CANCEL.set(ev)
+    try:
+        yield ev
+    except Cancelled:
+        raise
+    except Exception as exc:
+        if ev.is_set():
+            raise Cancelled(f"{item_id}: conflict resolution cancelled") from exc
+        raise
+    finally:
+        _CANCEL.reset(token)
+        with _ACTIVE_GUARD:
+            if _ACTIVE.get(key) is ev:
+                del _ACTIVE[key]
+
+
+def _check_cancelled(ws: Path | None = None, pre_merge_sha: str | None = None) -> None:
+    """Raises Cancelled once this run's cancel event is set, after resetting
+    the worktree to the branch's own tip when the merge has started."""
+    ev = _CANCEL.get()
+    if ev is None or not ev.is_set():
+        return
+    if ws is not None and pre_merge_sha is not None:
+        _abort_and_clean(ws, pre_merge_sha)
+    raise Cancelled("conflict resolution cancelled")
+
+
+def _push_guarded(ws: Path, pre_merge_sha: str, *args: str) -> None:
+    """The ONLY `git push` in this module (test_conflict_cancel.py checks its
+    AST). Called inside the caller's hub_lock: /conflicts/cancel takes that
+    same lock after setting the event, so a push either finished before the
+    cancel or sees the event here and never starts."""
+    _check_cancelled(ws, pre_merge_sha)
+    git(ws, "push", *args)
+
+
+def _run_checks(ws: Path, pre_merge_sha: str, log, **kwargs) -> str:
+    """run_checks(), with this run's cancel event ending a check-slot wait.
+    A cancelled wait is a cancel, not a check failure."""
+    ev = _CANCEL.get()
+    if ev is None:
+        return run_checks(ws, log, **kwargs)
+    try:
+        return run_checks(ws, log, cancel=ev, **kwargs)
+    except WaitCancelled:
+        _check_cancelled(ws, pre_merge_sha)
+        raise
+
+
 def git(ws: Path, *args: str, check: bool = True) -> subprocess.CompletedProcess:
     result = subprocess.run(
         ["git", "-C", str(ws), *args], capture_output=True, text=True, timeout=GIT_TIMEOUT_S
@@ -168,7 +277,15 @@ def resolve(
     Never raises for an ordinary escalation — only for something the caller
     (the farmd route) should treat as an infrastructure failure (worktree not
     provisioned, a git command failing outside the merge itself).
+
+    HZ-256: raises Cancelled when request_cancel() stopped the run; nothing
+    was pushed and the worktree is back at the branch's own tip.
     """
+    with cancel_scope(repo_full, item_id):
+        return _resolve(repo_full, item_id, branch, base_branch, log, configured)
+
+
+def _resolve(repo_full, item_id, branch, base_branch, log, configured) -> dict:
     branch = branch or f"horizon/{item_id.lower()}"
     ws = ensure_item_worktree(repo_full, item_id)
 
@@ -178,9 +295,11 @@ def resolve(
     git(ws, "clean", "-fd")
     with hub_lock(repo_full):
         git(ws, "fetch", "origin", "--prune")
+    _check_cancelled()
 
     remote_branch = git(ws, "rev-parse", "--verify", f"origin/{branch}", check=False)
     if remote_branch.returncode != 0:
+        _check_cancelled()
         return {"resolved": False, "reason": "branch_missing", "detail": f"origin/{branch} not found"}
     git(ws, "checkout", "-B", branch, f"origin/{branch}")
     pre_merge_sha = git(ws, "rev-parse", "HEAD").stdout.strip()
@@ -188,6 +307,7 @@ def resolve(
     default = base_branch or _default_branch(ws)
     log(f"conflict_resolver: merging origin/{default} into {branch}")
     git(ws, "merge", "--no-edit", f"origin/{default}", check=False)
+    _check_cancelled(ws, pre_merge_sha)
 
     unmerged = _unmerged_paths(ws)
     if unmerged:
@@ -215,18 +335,20 @@ def resolve(
         # by FARM_CHECK_SLOT_WAIT_MAX_S here, and by
         # FARM_CONFLICT_RESOLVE_TIMEOUT_MS (50 min) on the caller's side.
         checked_tree = check_record.snapshot_tree(ws, log)
-        check_note = run_checks(ws, log, item_id=item_id, caller="conflict_resolver", configured=configured)
+        check_note = _run_checks(ws, pre_merge_sha, log, item_id=item_id, caller="conflict_resolver", configured=configured)
         checks_finished_at = check_record.now_iso()
     except CheckFailure as exc:
         return _escalate(ws, pre_merge_sha, "tests_failed", str(exc), log)
+    _check_cancelled(ws, pre_merge_sha)
 
     # A clean merge is a fast-forward of the branch's own previous tip (its
     # first parent is exactly pre_merge_sha) — a plain push is always
     # sufficient and never discards a commit this run did not itself create.
     try:
         with hub_lock(repo_full):
-            git(ws, "push", "origin", branch)
+            _push_guarded(ws, pre_merge_sha, "origin", branch)
     except RuntimeError as exc:
+        _check_cancelled(ws, pre_merge_sha)
         # Someone else pushed to this branch while we were merging/testing —
         # refuse rather than force over it.
         log(f"conflict_resolver: push rejected — escalating ({exc})")
@@ -290,7 +412,12 @@ def _escalate(
     escalation whose `detail` is that review's summary. They are passed RAW,
     never pre-stamped into `detail`, so the cap below reserves room for both
     groups together — a pre-stamped group sits inside the text the cap cuts.
+
+    HZ-256: a cancelled run never escalates. A killed agent or check looks
+    like an ordinary failure to the code that called it, so the check is
+    here, on the one exit every escalation takes.
     """
+    _check_cancelled(ws, pre_merge_sha)
     if reason not in ESCALATION_REASONS:
         # A reason the Node side has no message for would surface as a raw
         # detail string in the item's feedback. Report the generic one and say
@@ -384,6 +511,7 @@ def _scoped_resolve(ws, repo_full, branch, default, unmerged, pre_merge_sha, log
     else:
         strategy = "agent"
         agent = _run_resolution_agent(ws, files, log)
+        _check_cancelled(ws, pre_merge_sha)
         resolution_notes = agent["notes"]
         if not agent["resolved"]:
             return _escalate(
@@ -436,6 +564,7 @@ def _scoped_resolve(ws, repo_full, branch, default, unmerged, pre_merge_sha, log
         }
     else:
         review = _run_scoped_review(ws, files, delta, log)
+        _check_cancelled(ws, pre_merge_sha)
         # Popped, not read: the review dict lands in the run result as-is, and
         # these two exist only so the rejection below can cap the detail
         # without cutting either reply's notes. review["summary"] stays the
@@ -468,17 +597,19 @@ def _scoped_resolve(ws, repo_full, branch, default, unmerged, pre_merge_sha, log
             notes=resolution_notes,
         )
     git(ws, "commit", "--no-edit")
+    _check_cancelled(ws, pre_merge_sha)
 
     try:
         # require_ran: this path pushes a merge no human has read. "No green,
         # no push" has to mean a check suite that actually ran.
         checked_tree = check_record.snapshot_tree(ws, log)
-        check_note = run_checks(ws, log, require_ran=True, caller="conflict_resolver", configured=configured)
+        check_note = _run_checks(ws, pre_merge_sha, log, require_ran=True, caller="conflict_resolver", configured=configured)
         checks_finished_at = check_record.now_iso()
     except CheckFailure as exc:
         return _escalate(
             ws, pre_merge_sha, "scoped_checks_failed", str(exc), log, notes=resolution_notes
         )
+    _check_cancelled(ws, pre_merge_sha)
 
     try:
         with hub_lock(repo_full):
@@ -498,7 +629,7 @@ def _scoped_resolve(ws, repo_full, branch, default, unmerged, pre_merge_sha, log
                     log,
                     notes=resolution_notes,
                 )
-            git(ws, "push", f"--force-with-lease=refs/heads/{branch}:{pre_merge_sha}", "origin", branch)
+            _push_guarded(ws, pre_merge_sha, f"--force-with-lease=refs/heads/{branch}:{pre_merge_sha}", "origin", branch)
     except RuntimeError as exc:
         return _escalate(
             ws, pre_merge_sha, "push_rejected", str(exc), log, notes=resolution_notes

@@ -104,6 +104,11 @@ POLL_JITTER = 0.5
 MARKER_MAX_AGE_S = 3600.0
 
 
+class WaitCancelled(Exception):
+    """HZ-256: check_slot()'s `cancel` event was set while it waited for a
+    slot. Raised instead of yielding, so nothing runs."""
+
+
 @dataclass
 class SlotHold:
     """What a check run got, and what it paid for it.
@@ -311,7 +316,7 @@ def _emit(on_event, name: str, **fields) -> None:
 
 @contextlib.contextmanager
 def check_slot(
-    *, log=lambda *_: None, run_id=None, item_id=None, caller="step_agent", poll_s=POLL_S, on_event=None
+    *, log=lambda *_: None, run_id=None, item_id=None, caller="step_agent", poll_s=POLL_S, on_event=None, cancel=None
 ):
     """Hold one of FARM_MAX_CONCURRENT_CHECKS check slots for the duration.
 
@@ -322,6 +327,11 @@ def check_slot(
     on_event (HZ-227) observes the queue: {"check_slot": "queued"} once when
     every slot is busy, then {"check_slot": "granted", "mode": ...} once when
     the wait ends. A run that never waits emits nothing.
+
+    cancel (HZ-256) is a threading.Event. Once it is set, a run still waiting
+    for a slot raises WaitCancelled at once instead of waiting on. Only the
+    conflict resolver passes one, so a deploy can stop it; None waits exactly
+    as before.
     """
     limit = slot_limit(log)
     if limit <= 0:
@@ -375,7 +385,12 @@ def check_slot(
                 marker = _write_marker(run_id, item_id, caller)
                 log(f"check_slots: all {limit} check slots busy — waiting for one")
                 _emit(on_event, "queued")
-            time.sleep(poll_s * (1 + random.random() * POLL_JITTER))
+            pause = poll_s * (1 + random.random() * POLL_JITTER)
+            if cancel is None:
+                time.sleep(pause)
+            elif cancel.wait(pause):
+                log("check_slots: cancelled while waiting for a check slot")
+                raise WaitCancelled("cancelled while waiting for a check slot")
 
         waited = time.monotonic() - started
         _clear_marker(marker)
