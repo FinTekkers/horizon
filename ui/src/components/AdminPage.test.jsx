@@ -20,6 +20,7 @@ vi.mock('../api', () => ({
   listApiTokens: vi.fn(async () => ({ tokens: [] })),
   createApiToken: vi.fn(),
   revokeApiToken: vi.fn(async () => ({ ok: true })),
+  setProjectEnabled: vi.fn(async () => ({ ok: true })),
   getDeployTargets: vi.fn(async () => ({
     targets: [
       {
@@ -163,4 +164,69 @@ test('cancelling the Revoke confirmation revokes nothing', async () => {
   const panel = within(findTokensPanel(container))
   fireEvent.click(await panel.findByText('Revoke'))
   expect(api.revokeApiToken).not.toHaveBeenCalled()
+})
+
+// ---- HZ-208: the per-project enabled switch, gate-PIN protected ----
+
+const PROJECTS = [
+  { id: 1, name: 'Alpha', enabled: true, repos: [] },
+  { id: 2, name: 'Gamma', enabled: false, repos: [] },
+]
+
+function projectBlock(container, name) {
+  return [...container.querySelectorAll('.project-block')].find(
+    (b) => b.querySelector('.project-block__name')?.textContent === name,
+  )
+}
+
+test('Admin lists every project with its enabled state', () => {
+  const { container } = render(<AdminPage sync={{}} projects={PROJECTS} onBack={() => {}} />)
+  const alpha = within(projectBlock(container, 'Alpha'))
+  const gamma = within(projectBlock(container, 'Gamma'))
+  expect(alpha.getByRole('switch', { name: 'Alpha enabled' }).getAttribute('aria-checked')).toBe('true')
+  expect(alpha.getByText('Enabled')).toBeTruthy()
+  expect(gamma.getByRole('switch', { name: 'Gamma enabled' }).getAttribute('aria-checked')).toBe('false')
+  expect(gamma.getByText('Disabled')).toBeTruthy()
+})
+
+test('flipping asks for the PIN: none sends nothing, a wrong one leaves the state, a correct one calls setProjectEnabled once', async () => {
+  const { container, rerender } = render(<AdminPage sync={{}} projects={PROJECTS} onBack={() => {}} />)
+  const gamma = within(projectBlock(container, 'Gamma'))
+  fireEvent.click(gamma.getByRole('switch', { name: 'Gamma enabled' }))
+  const pinInput = gamma.getByLabelText('Gate PIN to enable Gamma')
+  expect(pinInput.getAttribute('type')).toBe('password')
+
+  // Missing PIN: the confirm button is disabled and submitting does nothing.
+  const confirm = gamma.getByRole('button', { name: 'Enable' })
+  expect(confirm.disabled).toBe(true)
+  fireEvent.submit(pinInput.closest('form'))
+  expect(api.setProjectEnabled).not.toHaveBeenCalled()
+
+  // Wrong PIN: the server refuses; the switch still shows Disabled.
+  api.setProjectEnabled.mockRejectedValueOnce(Object.assign(new Error('human_gate_key_required'), { status: 401 }))
+  fireEvent.change(pinInput, { target: { value: 'wrong-pin' } })
+  fireEvent.click(confirm)
+  await gamma.findByText('Gate PIN incorrect')
+  expect(gamma.getByRole('switch', { name: 'Gamma enabled' }).getAttribute('aria-checked')).toBe('false')
+  expect(gamma.getByLabelText('Gate PIN to enable Gamma').value).toBe('')
+
+  // Correct PIN: exactly one call with the PIN; the state comes from the next snapshot.
+  api.setProjectEnabled.mockClear()
+  fireEvent.change(gamma.getByLabelText('Gate PIN to enable Gamma'), { target: { value: 'right-pin' } })
+  fireEvent.click(gamma.getByRole('button', { name: 'Enable' }))
+  await waitFor(() => expect(api.setProjectEnabled).toHaveBeenCalledTimes(1))
+  expect(api.setProjectEnabled).toHaveBeenCalledWith(2, true, 'right-pin')
+  await waitFor(() => expect(gamma.queryByLabelText('Gate PIN to enable Gamma')).toBeNull())
+  rerender(<AdminPage sync={{}} projects={[PROJECTS[0], { ...PROJECTS[1], enabled: true }]} onBack={() => {}} />)
+  expect(gamma.getByRole('switch', { name: 'Gamma enabled' }).getAttribute('aria-checked')).toBe('true')
+  expect(Object.values({ ...localStorage })).not.toContain('right-pin')
+})
+
+test('disabling asks for the PIN too', async () => {
+  const { container } = render(<AdminPage sync={{}} projects={PROJECTS} onBack={() => {}} />)
+  const alpha = within(projectBlock(container, 'Alpha'))
+  fireEvent.click(alpha.getByRole('switch', { name: 'Alpha enabled' }))
+  fireEvent.change(alpha.getByLabelText('Gate PIN to disable Alpha'), { target: { value: 'right-pin' } })
+  fireEvent.click(alpha.getByRole('button', { name: 'Disable' }))
+  await waitFor(() => expect(api.setProjectEnabled).toHaveBeenCalledWith(1, false, 'right-pin'))
 })

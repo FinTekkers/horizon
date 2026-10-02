@@ -21,6 +21,7 @@ import { issueUrl, issueLabel, artifactUrl, outputUrl, runLogViewUrl } from '../
 import StatusPill from './StatusPill'
 import DependencyBadge from './DependencyBadge'
 import Markdown from './Markdown'
+import ProjectBadge from './ProjectBadge'
 import { BackIcon, LinkIcon, RestartIcon, PrIcon } from './icons'
 
 const STEP_GLYPHS = { done: '✓', active: '•', awaiting: '!', pending: '', blocked: '✕' }
@@ -394,7 +395,7 @@ function buildActivity(item) {
     })
 }
 
-export default function Tracker({ item, onBack, onApprove, onApproveWithComments, onReject, onResolveConflicts, resolving, gateBusy, onForwardToAccept, onTogglePause, onRestartPhase, onSetPersona, onAbandon }) {
+export default function Tracker({ item, projects, onBack, onApprove, onApproveWithComments, onReject, onResolveConflicts, resolving, gateBusy, onForwardToAccept, onTogglePause, onRestartPhase, onSetPersona, onAbandon }) {
   const status = itemStatus(item, true)
   const activity = buildActivity(item)
   const closed = isClosed(item)
@@ -412,6 +413,7 @@ export default function Tracker({ item, onBack, onApprove, onApproveWithComments
           <div className="tracker__header-main">
             <div className="tracker__meta">
               <span className="tracker__id">{item.id}</span>
+              <ProjectBadge projectId={item.project_id} projects={projects} />
               <span className="tracker__priority" style={{ color: priorityColor(item.priority) }}>
                 <span className="tracker__priority-dot" style={{ background: priorityColor(item.priority) }} />
                 {item.priority} priority

@@ -21,7 +21,7 @@ export const {
   getProjects,
   getActiveProjectId,
   getFarm,
-  activateProject,
+  setProjectEnabled,
   saveToken,
   createProject,
   addRepoToProject,

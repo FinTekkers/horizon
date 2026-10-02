@@ -15,6 +15,7 @@ import { issueUrl, issueLabel } from '../api'
 import * as boardFilters from '../boardFilters'
 import StatusPill from './StatusPill'
 import DependencyBadge from './DependencyBadge'
+import ProjectBadge from './ProjectBadge'
 import { LinkIcon, LockIcon, PrIcon } from './icons'
 
 function progressSegs(item) {
@@ -33,7 +34,7 @@ function progressSegs(item) {
   })
 }
 
-function BoardCard({ item, onOpen, onApprove, onReject, onTogglePause }) {
+function BoardCard({ item, projects, onOpen, onApprove, onReject, onTogglePause }) {
   const closed = isClosed(item)
   const abandoned = isAbandoned(item)
   const rejected = item.rejected && !closed && !abandoned
@@ -48,6 +49,7 @@ function BoardCard({ item, onOpen, onApprove, onReject, onTogglePause }) {
       <div className="card__meta">
         <span className="card__dot" style={{ background: priorityColor(item.priority) }} />
         <span className="card__id">{item.id}</span>
+        <ProjectBadge projectId={item.project_id} projects={projects} />
         {item.repo && <span className="card__repo">{item.repo.split('/')[1]}</span>}
         {item.issue != null && (
           <a
@@ -151,7 +153,7 @@ function BoardCard({ item, onOpen, onApprove, onReject, onTogglePause }) {
   )
 }
 
-export default function Board({ items, onOpen, onApprove, onReject, onTogglePause, onNewItem }) {
+export default function Board({ items, projects, onOpen, onApprove, onReject, onTogglePause, onNewItem }) {
   const activeFilterKeys = useSyncExternalStore(boardFilters.subscribe, boardFilters.getActiveFilters)
   const now = new Date()
   // Filtering is a view concern only — it narrows what's rendered here, and
@@ -234,6 +236,7 @@ export default function Board({ items, onOpen, onApprove, onReject, onTogglePaus
                     <BoardCard
                       key={item.id}
                       item={item}
+                      projects={projects}
                       onOpen={onOpen}
                       onApprove={onApprove}
                       onReject={onReject}
