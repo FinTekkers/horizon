@@ -77,16 +77,27 @@ def output_tail(text: str) -> str:
     return f"[earlier output trimmed — last {CHECK_TAIL_LINES} lines]\n" + "\n".join(kept)
 
 
+# Bound at import: tests swap `checks.subprocess` for stubs without DEVNULL.
+_DEVNULL = subprocess.DEVNULL
+
+
 def _run_bounded(cmd: list[str], ws: Path, timeout_s: float, env: dict[str, str]) -> subprocess.CompletedProcess:
     """subprocess.run(timeout=...) kills only the direct child: `npm test`'s
     node and vite grandchildren outlive the timeout and keep running (CPU,
     ports, a half-built tree) after the check has already been reported. Run
     each check in its own session and kill the whole group, so a timed-out
     check is actually stopped. Raises TimeoutExpired / FileNotFoundError
-    exactly like subprocess.run."""
+    exactly like subprocess.run.
+
+    stdin is /dev/null, never the caller's: inside a step the caller's stdin is
+    the agent's tmux pty, and a test runner that sees a TTY assumes a human is
+    watching. FinTekkers/ui-service's `npm test` is plain `vitest`, which then
+    starts watch mode and never exits, so US-191's check hung until the 600 s
+    timeout (2026-10-02)."""
     proc = subprocess.Popen(
         cmd,
         cwd=str(ws),
+        stdin=_DEVNULL,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
