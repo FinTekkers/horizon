@@ -24,7 +24,7 @@ from fastapi.responses import JSONResponse
 # HZ-132 put the failure-reason vocabulary there under the same rule, so the
 # tags this daemon relays are the ones the server classifies, by construction.
 from domain.py import reasons, steps
-from . import check_slots, conflict_resolver, pause, rules, tmux_mgr, workspaces
+from . import check_slots, conflict_cancel, conflict_resolver, pause, rules, tmux_mgr, workspaces
 from . import config as farm_config
 from .checks import CHECK_SLOTS, default_check_slots
 from .task_files import read_launchable_task
@@ -952,7 +952,10 @@ async def conflicts_resolve(request: Request):
     starts; if a resolver or an implement/review step already owns the item's
     worktree this answers 409 resolve_in_progress and starts nothing. The
     lock is released when the thread returns (or raises), and by the kernel
-    if farmd itself dies."""
+    if farmd itself dies.
+
+    HZ-256: a run stopped by /conflicts/cancel answers 409 cancelled — nothing
+    was pushed, and the Node side neither escalates nor sends the item back."""
     body = await request.json()
     if state["status"] != "running":
         return JSONResponse({"error": f"farm_not_running (status={state['status']})"}, status_code=409)
@@ -970,10 +973,80 @@ async def conflicts_resolve(request: Request):
             )
     except workspaces.ItemBusy:
         return JSONResponse({"error": "resolve_in_progress"}, status_code=409)
+    except conflict_resolver.Cancelled:
+        print(f"farmd: conflict resolution for {item_id} was cancelled — nothing pushed", flush=True)
+        return JSONResponse({"error": "cancelled"}, status_code=409)
     except Exception as exc:
         print(f"farmd: conflict resolution for {item_id} failed: {exc}", flush=True)
         return JSONResponse({"error": str(exc)[:300]}, status_code=500)
     return {"ok": True, **result}
+
+
+# HZ-256: the only farmd route that checks its caller itself. farmd binds to
+# 127.0.0.1 anyway; this route can stop a run, so it does not rely on that.
+LOOPBACK_HOSTS = {"127.0.0.1", "::1", "::ffff:127.0.0.1"}
+CONFLICT_CANCEL_POLL_S = 0.2
+
+
+def _conflict_cancel_wait_s() -> float:
+    try:
+        return max(0.0, float(os.environ.get("FARM_CONFLICT_CANCEL_WAIT_S", "30")))
+    except ValueError:
+        return 30.0
+
+
+def _fence_pushes(repo: str) -> None:
+    # A push already inside hub_lock finishes; none can start after this,
+    # because _push_guarded() re-checks the cancel event under the same lock.
+    with workspaces.hub_lock(repo):
+        pass
+
+
+@app.post("/conflicts/cancel")
+async def conflicts_cancel(request: Request):
+    """HZ-256: stop one item's running conflict resolver, for a self-deploy
+    (server/src/deployDrain.js is the only caller). Sets the resolver's cancel
+    event, fences off any push, then kills the processes running in the item's
+    worktree — again on every poll, so one started after a sweep dies too —
+    until the resolver has unwound and released the item's lock, or
+    FARM_CONFLICT_CANCEL_WAIT_S runs out.
+
+    Only the named item: no other item's run, lock or worktree is touched. No
+    resolver running for it answers 200 and changes nothing. Works whatever
+    the farm's status, so a pausing farm can still be drained."""
+    host = request.client.host if request.client else None
+    if host not in LOOPBACK_HOSTS:
+        return JSONResponse({"error": "loopback only"}, status_code=403)
+    try:
+        body = await request.json()
+    except ValueError:
+        body = None
+    item_id = body.get("item") if isinstance(body, dict) else None
+    repo = body.get("repo") if isinstance(body, dict) else None
+    if not _non_empty_str(item_id) or not _non_empty_str(repo):
+        return JSONResponse({"error": "item and repo are required"}, status_code=400)
+    if not conflict_resolver.request_cancel(repo, item_id):
+        return {"ok": True, "cancelled": False, "killed": 0, "lock_released": not workspaces.item_lock_held(repo, item_id)}
+
+    deadline = time.monotonic() + _conflict_cancel_wait_s()
+    ws = workspaces.workspace_path(repo, item_id)
+    killed = await asyncio.to_thread(conflict_cancel.sweep_worktree, ws)
+    try:
+        await asyncio.wait_for(asyncio.to_thread(_fence_pushes, repo), timeout=max(0.0, deadline - time.monotonic()))
+    except asyncio.TimeoutError:
+        pass
+    while conflict_resolver.is_active(repo, item_id) or workspaces.item_lock_held(repo, item_id):
+        if time.monotonic() >= deadline:
+            break
+        killed += await asyncio.to_thread(conflict_cancel.sweep_worktree, ws)
+        await asyncio.sleep(CONFLICT_CANCEL_POLL_S)
+    released = not conflict_resolver.is_active(repo, item_id) and not workspaces.item_lock_held(repo, item_id)
+    print(
+        f"farmd: cancelled conflict resolution for {item_id} — {killed} process(es) stopped, "
+        f"lock {'released' if released else 'still held'}",
+        flush=True,
+    )
+    return {"ok": True, "cancelled": True, "killed": killed, "lock_released": released}
 
 
 # HZ-245: `owner/name`, each part starting with an alphanumeric — so no

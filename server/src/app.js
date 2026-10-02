@@ -2022,7 +2022,11 @@ export function buildApp({ logger = true, onRoute = null } = {}) {
     if (!valid) return reply.code(400).send({ error: 'runs must be an array of {itemId, kind: premerge|resolve}' })
     const result = await deployDrain.interruptForDeploy(runs.map(({ itemId, kind }) => ({ itemId, kind })))
     for (const { itemId, kind, killed } of result.interrupted) {
-      request.log.warn(`self-deploy: interrupted ${kind} run of ${itemId} (${killed ? 'checker stopped' : 'no checker process tracked'})`)
+      const outcome =
+        kind === 'resolve'
+          ? killed ? 'resolver stopped' : 'resolver not confirmed stopped'
+          : killed ? 'checker stopped' : 'no checker process tracked'
+      request.log.warn(`self-deploy: interrupted ${kind} run of ${itemId} (${outcome})`)
     }
     return result
   })

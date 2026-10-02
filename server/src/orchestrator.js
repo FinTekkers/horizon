@@ -610,6 +610,8 @@ export function getConflictRun(id) {
 }
 
 const FARM_ITEM_BUSY_REASON = "another run is still using this item's workspace — nothing was started, try again once it finishes"
+// HZ-256: a self-deploy stopped the resolver (deployDrain.js). Nothing was pushed.
+const FARM_RESOLVE_CANCELLED_REASON = 'a deploy stopped this run before it pushed anything — try again'
 
 // HZ-235: autoResolve.js starts this same run when main moves. Its options
 // change only what is recorded: startedBy on the lock row, the lock's detail,
@@ -669,6 +671,11 @@ async function runConflictResolution(id, item, actor) {
     // also a 409) keeps the escalation below.
     if (err.status === 409 && err.code === 'resolve_in_progress') {
       return { result: { error: 'resolve_in_progress' }, state: 'failed', reason: FARM_ITEM_BUSY_REASON }
+    }
+    // HZ-256: cancelled for a deploy — not an escalation either. The row is
+    // already `interrupted`, so finishGateAction() below writes nothing.
+    if (err.status === 409 && err.code === 'cancelled') {
+      return { result: { error: 'cancelled' }, state: 'failed', reason: FARM_RESOLVE_CANCELLED_REASON }
     }
     const reason = `automatic conflict resolution could not run (${err.message})`
     requestChanges(id, 'Accept the code', `PR #${item.pr}: ${reason}`, actor)
