@@ -27,6 +27,7 @@
 import * as store from './store.js'
 import * as premerge from './premerge.js'
 import { DEPLOY_BLOCK_MAX_TTL_S, FARM_URL } from './config.js'
+import { REASON } from '../../domain/js/reasons.js'
 
 // farmd's own wait (FARM_CONFLICT_CANCEL_WAIT_S, 30s) plus slack, inside
 // deploy-drain.mjs's 60s bound on the whole interrupt request.
@@ -71,7 +72,7 @@ export async function cancelResolve(itemId, { timeoutMs = CANCEL_RESOLVE_TIMEOUT
     if (!res.ok) return { cancelled: false, error: `HTTP ${res.status}` }
     return await res.json()
   } catch (err) {
-    return { cancelled: false, error: err.name === 'TimeoutError' ? 'timed out' : err.code || err.name || 'unreachable' }
+    return { cancelled: false, error: err.name === 'TimeoutError' ? 'timed out' : err.code || err.name || REASON.UNREACHABLE }
   }
 }
 
