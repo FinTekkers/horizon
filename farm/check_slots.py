@@ -298,13 +298,30 @@ def _try_slots(directory: Path, limit: int):
     return None, None
 
 
+def _emit(on_event, name: str, **fields) -> None:
+    """Tell an observer about the queue (HZ-227). Fire-and-forget: a listener
+    that raises must never stop, or fail, the check run it is watching."""
+    if on_event is None:
+        return
+    try:
+        on_event({"check_slot": name, **fields})
+    except Exception:  # noqa: BLE001 — an observer can never break the limiter
+        pass
+
+
 @contextlib.contextmanager
-def check_slot(*, log=lambda *_: None, run_id=None, item_id=None, caller="step_agent", poll_s=POLL_S):
+def check_slot(
+    *, log=lambda *_: None, run_id=None, item_id=None, caller="step_agent", poll_s=POLL_S, on_event=None
+):
     """Hold one of FARM_MAX_CONCURRENT_CHECKS check slots for the duration.
 
     Yields a SlotHold. Always yields — the limiter throttles work, it never
     refuses it: every early-return path below hands back a SlotHold whose
     `mode` records why no slot is held.
+
+    on_event (HZ-227) observes the queue: {"check_slot": "queued"} once when
+    every slot is busy, then {"check_slot": "granted", "mode": ...} once when
+    the wait ends. A run that never waits emits nothing.
     """
     limit = slot_limit(log)
     if limit <= 0:
@@ -349,12 +366,15 @@ def check_slot(*, log=lambda *_: None, run_id=None, item_id=None, caller="step_a
                 )
                 _clear_marker(marker)
                 marker = None
+                if announced:
+                    _emit(on_event, "granted", mode="fail-open")
                 yield SlotHold(mode="fail-open", waited_s=waited, limit=limit, timed_out=True)
                 return
             if not announced:
                 announced = True
                 marker = _write_marker(run_id, item_id, caller)
                 log(f"check_slots: all {limit} check slots busy — waiting for one")
+                _emit(on_event, "queued")
             time.sleep(poll_s * (1 + random.random() * POLL_JITTER))
 
         waited = time.monotonic() - started
@@ -362,6 +382,8 @@ def check_slot(*, log=lambda *_: None, run_id=None, item_id=None, caller="step_a
         marker = None
         if waited >= 1:
             log(f"check_slots: got check slot {index} after waiting {waited:.0f}s")
+        if announced:
+            _emit(on_event, "granted", mode="held")
         yield SlotHold(mode="held", slot_index=index, waited_s=waited, limit=limit)
     finally:
         _clear_marker(marker)
