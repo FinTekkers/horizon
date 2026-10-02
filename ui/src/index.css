@@ -538,7 +538,7 @@ button { font-family: var(--font-sans); }
 .tracker__header { padding: 28px 30px; margin-bottom: 22px; }
 .tracker__header-row { display: flex; align-items: flex-start; justify-content: space-between; gap: 24px; flex-wrap: wrap; }
 .tracker__header-main { flex: 1; min-width: 280px; }
-.tracker__meta { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; }
+.tracker__meta { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-bottom: 8px; }
 .tracker__id { font: 500 13px var(--font-mono); color: var(--muted); }
 .tracker__priority { display: inline-flex; align-items: center; gap: 6px; font: 700 11px var(--font-sans); }
 .tracker__priority-dot { width: 7px; height: 7px; border-radius: 50%; }
