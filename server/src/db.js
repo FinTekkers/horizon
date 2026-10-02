@@ -455,6 +455,13 @@ if (!db.prepare('PRAGMA table_info(project)').all().some((column) => column.name
   })()
 }
 
+// HZ-235: who started a gate action — 'human' (a click) or 'main_moved'
+// (autoResolve.js, after a merge into main). Additive and nullable: NULL is a
+// row from before this column, which only a human could have started.
+if (!db.prepare('PRAGMA table_info(gate_action)').all().some((column) => column.name === 'started_by')) {
+  db.exec('ALTER TABLE gate_action ADD COLUMN started_by TEXT')
+}
+
 const SEED_ITEMS = [
   { id: 'BF-145', title: 'Risk-limit breach dashboard', priority: 'Low', cursor: 1, issue: 412, desc: 'Give risk managers a live view of limit utilization across every desk.', metric: 'Limit breaches acknowledged in < 2 min (from 14 min).', guardrails: 'Read-only — no position mutation. No PII in telemetry.' },
   { id: 'BF-128', title: 'Real-time P&L attribution service', priority: 'High', cursor: 3, issue: 398, desc: 'Attribute intraday P&L to factors, trades and fees in real time.', metric: 'Attribution available < 5s after fill; 99.9% coverage.', guardrails: 'No client identifiers in logs. Must reconcile to EOD books.' },

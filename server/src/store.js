@@ -75,12 +75,12 @@ const selectGateEpoch = db.prepare(
 const gateEpoch = (itemId) => selectGateEpoch.get(itemId, itemId).epoch
 
 const claimGateActionStmt = db.prepare(
-  `INSERT INTO gate_action (item_id, kind, state, run_token, epoch, detail, reason, failing_check, started_at, deadline_at, finished_at)
-   VALUES (@itemId, @kind, 'running', @token, @epoch, @detail, NULL, NULL, @startedAt, @deadlineAt, NULL)
+  `INSERT INTO gate_action (item_id, kind, state, run_token, epoch, detail, reason, failing_check, started_at, deadline_at, finished_at, started_by)
+   VALUES (@itemId, @kind, 'running', @token, @epoch, @detail, NULL, NULL, @startedAt, @deadlineAt, NULL, @startedBy)
    ON CONFLICT(item_id, kind) DO UPDATE SET
      state = 'running', run_token = excluded.run_token, epoch = excluded.epoch, detail = excluded.detail,
      reason = NULL, failing_check = NULL, started_at = excluded.started_at,
-     deadline_at = excluded.deadline_at, finished_at = NULL
+     deadline_at = excluded.deadline_at, finished_at = NULL, started_by = excluded.started_by
    WHERE gate_action.state != 'running'`,
 )
 const selectGateAction = db.prepare('SELECT * FROM gate_action WHERE item_id = ? AND kind = ?')
@@ -88,8 +88,9 @@ const selectItemGateActions = db.prepare('SELECT * FROM gate_action WHERE item_i
 
 // Takes the item's lock for `kind`. Returns { token } or null when a run of
 // that kind is already going (the caller's 409). The lease is the run's own
-// timeout plus GATE_ACTION_MARGIN_MS.
-export function claimGateAction(itemId, kind, { detail = null, timeoutMs }) {
+// timeout plus GATE_ACTION_MARGIN_MS. startedBy (HZ-235) records who started
+// it: 'human', or 'main_moved' for autoResolve.js's runs.
+export function claimGateAction(itemId, kind, { detail = null, timeoutMs, startedBy = 'human' }) {
   const now = Date.now()
   const token = randomUUID()
   const res = claimGateActionStmt.run({
@@ -100,6 +101,7 @@ export function claimGateAction(itemId, kind, { detail = null, timeoutMs }) {
     detail,
     startedAt: new Date(now).toISOString(),
     deadlineAt: new Date(now + timeoutMs + GATE_ACTION_MARGIN_MS).toISOString(),
+    startedBy,
   })
   if (res.changes === 0) return null
   notify()

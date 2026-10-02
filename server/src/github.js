@@ -911,6 +911,48 @@ export function handlePrStateChange(repoFullName, prNumber, { merged, state }, l
   return false
 }
 
+// Surface mergeability so the accept gate can offer a one-click
+// conflict-resolution rework (GitHub computes it async; null = unknown).
+// Returns the flag written: 1 mergeable, 0 conflicted, null unknown.
+export function recordPrMergeable(itemId, pr) {
+  const flag = pr.merged || pr.state === 'closed' || pr.mergeable == null ? null : pr.mergeable ? 1 : 0
+  const row = db.prepare('SELECT pr_mergeable FROM work_item WHERE id = ?').get(itemId)
+  if (row && (row.pr_mergeable ?? null) !== flag) {
+    db.prepare("UPDATE work_item SET pr_mergeable = ?, updated_at = datetime('now') WHERE id = ?").run(flag, itemId)
+    store.notifyChange()
+  }
+  return flag
+}
+
+// HZ-235: a read-only re-read of one PR's mergeability, for the main-moved
+// scan (autoResolve.js) — it must not wait for the next poll tick. Only the
+// flag is recorded; a PR GitHub reports merged or closed is left to
+// pollPrStates/handlePrStateChange, so this never acts on a gate.
+export async function refreshPrMergeable(itemId, repo, prNumber) {
+  const res = await gh(`/repos/${repo}/pulls/${prNumber}`)
+  if (!res.ok) throw new Error(`GitHub returned ${res.status} for PR #${prNumber}`)
+  return recordPrMergeable(itemId, await res.json())
+}
+
+// HZ-235: the PRs merged into main by `sha`, so a main move the poll noticed
+// (no webhook) can still name the merges behind it. [] when GitHub can't say.
+export async function prsForCommit(repo, sha) {
+  const res = await gh(`/repos/${repo}/commits/${encodeURIComponent(sha)}/pulls`)
+  if (!res.ok) return []
+  const prs = await res.json().catch(() => [])
+  return Array.isArray(prs) ? prs.filter((pr) => pr?.merged_at && pr?.base?.ref === 'main').map((pr) => pr.number) : []
+}
+
+// HZ-235: called with (repo, mainSha) for every connected repo at the end of
+// each poll tick — the poll fallback for "main moved". A listener rather than
+// an import, so autoResolve.js (which imports this module) is not imported
+// back. Null until autoResolve.startAutoResolve() sets it.
+let mainHeadListener = null
+
+export function setMainHeadListener(fn) {
+  mainHeadListener = fn
+}
+
 async function pollPrStates(log) {
   let changed = 0
   const waiting = db
@@ -922,14 +964,7 @@ async function pollPrStates(log) {
       if (!res.ok) continue
       const pr = await res.json()
       if (handlePrStateChange(item.repo, item.pr, { merged: !!pr.merged, state: pr.state }, log)) changed++
-      // Surface mergeability so the accept gate can offer a one-click
-      // conflict-resolution rework (GitHub computes it async; null = unknown).
-      const flag = pr.merged || pr.state === 'closed' || pr.mergeable == null ? null : pr.mergeable ? 1 : 0
-      const row = db.prepare('SELECT pr_mergeable FROM work_item WHERE id = ?').get(item.id)
-      if (row && (row.pr_mergeable ?? null) !== flag) {
-        db.prepare("UPDATE work_item SET pr_mergeable = ?, updated_at = datetime('now') WHERE id = ?").run(flag, item.id)
-        store.notifyChange()
-      }
+      recordPrMergeable(item.id, pr)
     } catch {
       // transient; next poll retries
     }
@@ -951,6 +986,12 @@ export async function pollOnce(log) {
     }
   }
   changed += await pollPrStates(log) // PRs merged/closed directly on GitHub
+  if (mainHeadListener) {
+    for (const { repo } of store.listRepos()) {
+      const sha = await getBranchSha(repo, 'main').catch(() => null)
+      if (sha) mainHeadListener(repo, sha)
+    }
+  }
   return { changed }
 }
 
