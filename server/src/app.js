@@ -12,6 +12,7 @@ import * as github from './github.js'
 import * as deploy from './deploy.js'
 import * as orchestrator from './orchestrator.js'
 import * as premerge from './premerge.js'
+import * as autoResolve from './autoResolve.js'
 import {
   WEBHOOK_SECRET,
   FARM_SHARED_SECRET,
@@ -1926,6 +1927,12 @@ export function buildApp({ logger = true, onRoute = null } = {}) {
     if (event === 'pull_request' && request.body?.action === 'closed' && request.body?.pull_request && repoFullName) {
       const pr = request.body.pull_request
       github.handlePrStateChange(repoFullName, pr.number, { merged: !!pr.merged, state: pr.state }, request.log)
+      // HZ-235: a merge into main may leave other items' PRs conflicted —
+      // queue the auto-resolve scan (autoResolve.js). Only merges into main
+      // on a connected repo; it never scans inline.
+      if (pr.merged && pr.base?.ref === 'main' && store.listRepos().some((r) => r.repo === repoFullName)) {
+        autoResolve.noteMainMoved(repoFullName, { prs: [pr.number], sha: pr.merge_commit_sha ?? null })
+      }
     }
     // A published release on a registered repo self-deploys: pull the tag to
     // the host and restart, no SSH/push access needed. Which repos are

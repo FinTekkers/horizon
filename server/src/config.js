@@ -32,6 +32,11 @@
 //   FIX_PASS_ENABLED       "0" turns off HZ-182's fix-only implement + delta review after a rejection
 //   FIX_PASS_TURN_DIVISOR  fix-pass budget = implement budget / this (default 3)
 //   FIX_PASS_MAX_LINES     fix diffs larger than this get a full review (default 200)
+//   AUTO_RESOLVE_ON_MAIN   "0" stops HZ-235's auto Resolve-conflicts when main moves
+//                          (the auto_resolve_on_main setting row, if set, wins — settings.js)
+//   AUTO_RESOLVE_DEBOUNCE_MS       how long merges into main coalesce into one scan (default 30s)
+//   AUTO_RESOLVE_MERGEABLE_WAIT_MS how long a scan waits for GitHub to compute a PR's
+//                                  mergeability before re-checking it next poll (default 60s)
 
 import { agentStepIndexes } from '../../domain/js/lifecycle.js'
 
@@ -115,6 +120,13 @@ export const FIX_PASS_TURN_DIVISOR = fixPassDivisor >= 1 ? fixPassDivisor : 3
 const fixPassMaxLines = Math.floor(Number(process.env.FIX_PASS_MAX_LINES))
 export const FIX_PASS_MAX_LINES = fixPassMaxLines >= 1 ? fixPassMaxLines : 200
 export const POLL_INTERVAL_MS = Number(process.env.POLL_INTERVAL_MS || 60_000)
+// HZ-235 (autoResolve.js): merges into main within this window share one
+// scan, and its event text names every one of them.
+export const AUTO_RESOLVE_DEBOUNCE_MS = Number(process.env.AUTO_RESOLVE_DEBOUNCE_MS || 30_000)
+// GitHub computes `mergeable` lazily after main moves (null meanwhile). The
+// scan retries with backoff up to this long, then leaves the item to be
+// re-checked on the next poll tick.
+export const AUTO_RESOLVE_MERGEABLE_WAIT_MS = Number(process.env.AUTO_RESOLVE_MERGEABLE_WAIT_MS || 60_000)
 export const PORT = Number(process.env.PORT || 3001)
 
 // ---- auth (HZ-21) ----

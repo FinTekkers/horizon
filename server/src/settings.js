@@ -45,3 +45,10 @@ export function getFarmProjectId() {
   const value = getSetting('farm_project_id')
   return value ? Number(value) : getActiveProjectId()
 }
+
+// HZ-235: auto-resolve conflicts on open items when main moves. On by
+// default; '0' in the setting row (checked first) or AUTO_RESOLVE_ON_MAIN
+// turns it off — rollback tier 1, no deploy. Read at every scan.
+export function isAutoResolveOnMain() {
+  return (getSetting('auto_resolve_on_main') ?? process.env.AUTO_RESOLVE_ON_MAIN) !== '0'
+}

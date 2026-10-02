@@ -607,7 +607,11 @@ export function getConflictRun(id) {
 
 const FARM_ITEM_BUSY_REASON = "another run is still using this item's workspace — nothing was started, try again once it finishes"
 
-export async function resolveConflicts(id, actor = 'You') {
+// HZ-235: autoResolve.js starts this same run when main moves. Its options
+// change only what is recorded: startedBy on the lock row, the lock's detail,
+// and one `startedEvent` line written once the claim succeeds (never for a
+// refused call). The button's route passes none of them.
+export async function resolveConflicts(id, actor = 'You', { startedBy = 'human', detail = null, startedEvent = null } = {}) {
   const item = getItem(id)
   if (!item) return { error: 'not_found' }
   if (isClosed(item) || isAbandoned(item)) return { error: 'closed' }
@@ -619,10 +623,14 @@ export async function resolveConflicts(id, actor = 'You') {
   if (item.pr_mergeable !== 0) return { error: 'not_conflicted' }
   if (!FARM_URL && cannedConflictReply === null) return { error: 'farm_unavailable' }
   const claim = claimGateAction(id, 'resolve', {
-    detail: `resolving conflicts on PR #${item.pr}`,
+    detail: detail ?? `resolving conflicts on PR #${item.pr}`,
     timeoutMs: FARM_CONFLICT_RESOLVE_TIMEOUT_MS,
+    startedBy,
   })
   if (!claim) return { error: 'resolve_in_progress' }
+  if (startedBy === 'main_moved' && startedEvent) {
+    addEvent(id, { who: 'Horizon', text: startedEvent, color: '#0E6E74', initials: 'HZ' })
+  }
 
   let outcome = { state: 'failed', reason: 'conflict resolution stopped unexpectedly' }
   try {
@@ -1718,6 +1726,27 @@ function finalizeDeployStep(id, runId, text, artifactMd, verdict, patch) {
   kick(id)
 }
 
+// HZ-235: told when a farm step run ends (completed or failed), so
+// autoResolve.js can re-check an item it skipped while that step ran. Called
+// on a microtask and guarded, so a listener can never fail the run.
+const stepEndedListeners = []
+
+export function onStepEnded(fn) {
+  stepEndedListeners.push(fn)
+}
+
+function emitStepEnded(id) {
+  queueMicrotask(() => {
+    for (const fn of stepEndedListeners) {
+      try {
+        fn(id)
+      } catch {
+        // a listener's failure is its own
+      }
+    }
+  })
+}
+
 export async function completeFarmRun(runId, { summary, patch, artifacts }) {
   const run = db.prepare('SELECT * FROM step_run WHERE id = ?').get(runId)
   if (!run || run.status !== 'active') return { ok: true, stale: true }
@@ -1789,12 +1818,14 @@ export async function completeFarmRun(runId, { summary, patch, artifacts }) {
     }
     const reviewedSha = typeof artifacts.reviewed_sha === 'string' && artifacts.reviewed_sha.trim() ? artifacts.reviewed_sha.trim() : null
     finalizeReviewStep(id, runId, text, artifactMd, artifacts.verdict, cleanPatch, false, { reviewedSha, delta })
+    emitStepEnded(id)
     return { ok: true }
   }
 
   if (run.step_index === DEPLOY_STEP_INDEX) {
     if (!validateDeployVerdict(artifacts?.verdict)) return failFarmRun(runId, 'malformed deploy verdict JSON')
     finalizeDeployStep(id, runId, text, artifactMd, artifacts.verdict, cleanPatch)
+    emitStepEnded(id)
     return { ok: true }
   }
 
@@ -1819,6 +1850,7 @@ export async function completeFarmRun(runId, { summary, patch, artifacts }) {
   notifyChange()
   dispatching.delete(id)
   kick(id)
+  emitStepEnded(id)
   return { ok: true }
 }
 
@@ -1866,6 +1898,7 @@ export function failFarmRun(runId, error, reason = null) {
     })
     notifyChange()
     kick(id, { autoRetryCount: nextCount })
+    emitStepEnded(id)
     return { ok: true, retried: true }
   }
 
@@ -1883,6 +1916,7 @@ export function failFarmRun(runId, error, reason = null) {
     initials: 'HZ',
   })
   notifyChange()
+  emitStepEnded(id)
   return { ok: true }
 }
 
