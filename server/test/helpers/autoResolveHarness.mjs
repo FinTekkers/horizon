@@ -95,6 +95,7 @@ export async function setupAutoResolve(name, { webhookSecret = WEBHOOK_SECRET } 
   }
   const log = { info: record, warn: record, error: record }
   autoResolve.startAutoResolve(log)
+  autoResolve.resetForTest() // drop the boot scan; auto-resolve-boot drives it itself
 
   const app = buildApp({ logger: false })
   const { pin, cookie } = loginFixtureUser(auth, config)
