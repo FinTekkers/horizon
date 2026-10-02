@@ -270,6 +270,7 @@ def run_checks(
     caller: str = "step_agent",
     deadline: float | None = None,
     child_env: dict[str, str] | None = None,
+    on_slot_event=None,
 ) -> str:
     """Returns a short human-readable note; raises CheckFailure on failure.
 
@@ -292,6 +293,9 @@ def run_checks(
     child_env (HZ-183) is laid over the check commands' environment only —
     the pre-merge run uses it to give the PR's suites a throwaway FARM_HOME
     while this process (its slot, its metrics record) stays on the real one.
+
+    on_slot_event (HZ-227) is check_slots.check_slot()'s on_event: it hears
+    when this run queues for a slot and when it gets one.
     """
     commands = detect_check_commands(ws, log=log)
     if not commands:
@@ -305,7 +309,9 @@ def run_checks(
     # queueing for a slot must not eat it (HZ-144 guardrail 2). That holds by
     # construction here, not by arithmetic — every clock this function starts
     # begins after the `with`.
-    with check_slots.check_slot(log=log, run_id=run_id, item_id=item_id, caller=caller) as slot:
+    with check_slots.check_slot(
+        log=log, run_id=run_id, item_id=item_id, caller=caller, on_event=on_slot_event
+    ) as slot:
         timeout_s = int(os.environ.get("FARM_CHECK_TIMEOUT_S", "600"))
         record = check_metrics.new_record(run_id=run_id, item_id=item_id, caller=caller, slot=slot)
         env = {**_check_env(), **(child_env or {})}

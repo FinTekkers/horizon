@@ -56,6 +56,11 @@ RUNNING_CHECKOUT = Path(__file__).resolve().parents[1]
 # the server's wall-clock kill does.
 RESERVE_S = 60
 
+# HZ-227: a stderr line starting with this carries one JSON event for the
+# server — today only check_slots' queued/granted. Must match EVENT_PREFIX in
+# server/src/premerge.js (parseSlotEvent). stdout stays one JSON line.
+EVENT_PREFIX = "HORIZON_EVENT "
+
 _REPO_RE = re.compile(r"^[\w.-]+/[\w.-]+$")
 _ITEM_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9-]*$")
 _SHA_RE = re.compile(r"^[0-9a-f]{40}$")
@@ -146,7 +151,17 @@ def _reap(repo_full: str, hub: Path, ws: Path) -> None:
         _remove_scratch(hub, ws)
 
 
-def premerge_check(repo_full: str, item_id: str, head_sha: str, base_sha: str, *, timeout_s: float, log=print) -> dict:
+def stderr_event(event: dict) -> None:
+    """Fire-and-forget: one EVENT_PREFIX line on stderr, never raises."""
+    try:
+        print(EVENT_PREFIX + json.dumps(event), file=sys.stderr, flush=True)
+    except Exception:  # noqa: BLE001 — an event is never worth failing a run over
+        pass
+
+
+def premerge_check(
+    repo_full: str, item_id: str, head_sha: str, base_sha: str, *, timeout_s: float, log=print, on_slot_event=None
+) -> dict:
     """Never raises for an expected outcome: returns the CLI's result dict."""
     started = time.monotonic()
     deadline = started + max(timeout_s - RESERVE_S, 1)
@@ -210,6 +225,7 @@ def premerge_check(repo_full: str, item_id: str, head_sha: str, base_sha: str, *
                     item_id=item_id,
                     caller="premerge",
                     child_env={"FARM_HOME": str(checks_home)},
+                    on_slot_event=on_slot_event,
                 )
             except CheckFailure as exc:
                 if exc.reason == "timed_out":
@@ -244,7 +260,13 @@ def main(argv=None) -> int:
 
     try:
         result = premerge_check(
-            args.repo, args.item_id, args.head_sha, args.base_sha, timeout_s=args.timeout_s, log=log
+            args.repo,
+            args.item_id,
+            args.head_sha,
+            args.base_sha,
+            timeout_s=args.timeout_s,
+            log=log,
+            on_slot_event=stderr_event,
         )
     except Exception as exc:  # noqa: BLE001 — stdout must stay one JSON line
         result = {"ok": False, "reason": "crash", "detail": f"{type(exc).__name__}: {exc}"}

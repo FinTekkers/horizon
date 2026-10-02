@@ -21,6 +21,7 @@
 import { spawn } from 'node:child_process'
 import { existsSync } from 'node:fs'
 import path from 'node:path'
+import { StringDecoder } from 'node:string_decoder'
 
 const FARM_DIR = process.env.HORIZON_FARM_DIR || path.resolve(import.meta.dirname, '../../farm')
 const SHA_RE = /^[0-9a-f]{40}$/
@@ -59,16 +60,64 @@ function tailLines(text) {
   return [`[earlier output trimmed — last ${TAIL_LINES} lines]`, ...lines.slice(-TAIL_LINES)].join('\n')
 }
 
+// HZ-227: a stderr line the CLI writes for the server, not for a human. Must
+// match EVENT_PREFIX in farm/premerge.py (stderr_event).
+const EVENT_PREFIX = 'HORIZON_EVENT '
+const SLOT_EVENTS = ['queued', 'granted']
+
+// 'queued' | 'granted' for a check_slots event line, else null.
+export function parseSlotEvent(line) {
+  if (typeof line !== 'string' || !line.startsWith(EVENT_PREFIX)) return null
+  let event
+  try {
+    event = JSON.parse(line.slice(EVENT_PREFIX.length))
+  } catch {
+    return null
+  }
+  const name = event && typeof event === 'object' && Object.hasOwn(event, 'check_slot') ? event.check_slot : null
+  return SLOT_EVENTS.includes(name) ? name : null
+}
+
 export const runner = {
   // Resolves { code, stdout, stderr, timedOut, error } — never rejects. The
   // child leads its own process group so a timeout kills npm's and pytest's
   // descendants too, not just the python parent.
-  spawn(args, { cwd, timeoutMs, env }) {
+  //
+  // onStderrLine (HZ-227), when given, also hears each complete stderr line as
+  // it arrives. It is only an observer: `stderr` is accumulated exactly as
+  // without it, and a listener that throws is ignored.
+  spawn(args, { cwd, timeoutMs, env, onStderrLine }) {
     return new Promise((resolve) => {
       let stdout = ''
       let stderr = ''
+      let partial = ''
+      // Its own decoder: a multi-byte character split across chunks still
+      // reaches the listener whole, and `stderr` is built as it always was.
+      const decoder = new StringDecoder('utf8')
       let timedOut = false
       let settled = false
+      const emitLine = (line) => {
+        try {
+          onStderrLine(line.endsWith('\r') ? line.slice(0, -1) : line)
+        } catch {
+          // fire-and-forget
+        }
+      }
+      const splitLines = (chunk) => {
+        if (!onStderrLine) return
+        partial += decoder.write(chunk)
+        const lines = partial.split('\n')
+        partial = lines.pop()
+        for (const line of lines) emitLine(line)
+      }
+      const flushLines = () => {
+        if (!onStderrLine) return
+        partial += decoder.end()
+        if (partial === '') return
+        const line = partial
+        partial = ''
+        emitLine(line)
+      }
       const done = (out) => {
         if (settled) return
         settled = true
@@ -90,16 +139,26 @@ export const runner = {
         done({ code: null })
       }, timeoutMs)
       child.stdout.on('data', (d) => (stdout += d))
-      child.stderr.on('data', (d) => (stderr += d))
+      child.stderr.on('data', (d) => {
+        stderr += d
+        splitLines(d)
+      })
       child.on('error', (error) => done({ code: null, error }))
-      child.on('close', (code) => done({ code }))
+      child.on('close', (code) => {
+        flushLines()
+        done({ code })
+      })
     })
   },
 }
 
 // Returns the CLI's parsed result with a guaranteed boolean `ok`, plus
 // `reason` on every ok:false. Never throws.
-export async function runPreMergeChecks(item, { headSha, baseSha, timeoutMs }) {
+//
+// onSlot (HZ-227) hears 'queued' when the run waits for a check slot and
+// 'granted' when it gets one; a run that never waits calls it not at all.
+// Fire-and-forget: it is never awaited and anything it throws is ignored.
+export async function runPreMergeChecks(item, { headSha, baseSha, timeoutMs, onSlot }) {
   const shas = { head_sha: headSha, base_sha: baseSha }
   if (!SHA_RE.test(headSha || '') || !SHA_RE.test(baseSha || '')) {
     return { ok: false, reason: 'bad_input', detail: 'GitHub did not return full commit shas', ...shas }
@@ -110,11 +169,19 @@ export async function runPreMergeChecks(item, { headSha, baseSha, timeoutMs }) {
     '--timeout-s', String(Math.floor(timeoutMs / 1000)),
     '--json',
   ]
-  const out = await runner.spawn(args, {
-    cwd: path.dirname(FARM_DIR),
-    timeoutMs,
-    env: childEnv(timeoutMs),
-  })
+  const spawnOpts = { cwd: path.dirname(FARM_DIR), timeoutMs, env: childEnv(timeoutMs) }
+  if (onSlot) {
+    spawnOpts.onStderrLine = (line) => {
+      const name = parseSlotEvent(line)
+      if (!name) return
+      try {
+        onSlot(name)
+      } catch {
+        // fire-and-forget
+      }
+    }
+  }
+  const out = await runner.spawn(args, spawnOpts)
   if (out.timedOut) {
     return { ok: false, reason: 'timed_out', detail: `no result within ${Math.round(timeoutMs / 60000)} min`, ...shas }
   }

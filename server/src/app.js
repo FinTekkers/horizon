@@ -726,6 +726,13 @@ export function buildApp({ logger = true, onRoute = null } = {}) {
         headSha: head.sha,
         baseSha,
         timeoutMs: PREMERGE_CHECK_TIMEOUT_MS,
+        // HZ-227: a run queued behind the check-slot limiter (farm/check_slots.py)
+        // says so, rather than looking stuck. The token guard in
+        // setGateActionDetail drops an event that lands after the row finished.
+        onSlot: (name) => {
+          const detail = name === 'queued' ? 'Waiting for a check slot' : 'Running checks'
+          store.setGateActionDetail(id, 'premerge', token, detail)
+        },
       })
     } catch (err) {
       // The runner promises never to reject; if it does, that is a crash, and
