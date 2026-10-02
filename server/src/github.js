@@ -34,7 +34,7 @@ export function getSyncState() {
   }
 }
 
-function ghHeaders(token) {
+export function ghHeaders(token) {
   const headers = {
     Accept: 'application/vnd.github+json',
     'X-GitHub-Api-Version': '2022-11-28',

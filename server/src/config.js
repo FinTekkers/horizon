@@ -3,6 +3,7 @@
 //   HORIZON_REPO           "owner/name" — enables GitHub issue sync
 //   GITHUB_TOKEN           token for private repos / higher rate limits
 //   GITHUB_WEBHOOK_SECRET  enables POST /api/webhooks/github (HMAC-verified)
+//                          — also the secret set on the repo webhooks Horizon creates (HZ-244)
 //   POLL_INTERVAL_MS       poll fallback cadence (default 60s; ETag-conditional,
 //                          so unchanged polls don't count against rate limits)
 //   HORIZON_DB             path to the SQLite file (default server/data/horizon.db)
@@ -44,6 +45,11 @@ export const WEBHOOK_SECRET = process.env.GITHUB_WEBHOOK_SECRET || null
 
 // Where the Horizon UI lives — used for deep links in GitHub comments/PRs.
 export const UI_URL = (process.env.HORIZON_UI_URL || 'http://localhost:5173').replace(/\/+$/, '')
+
+// HZ-244: where GitHub delivers repo webhooks — derived from HORIZON_UI_URL the
+// same way GOOGLE_REDIRECT_URI is, not a new env var. In prod this is
+// https://shoreward.ai/horizon/api/webhooks/github (infra/host/DEPLOY.md).
+export const WEBHOOK_URL = `${UI_URL}/api/webhooks/github`
 
 // Agent farm (farm/ Python daemon). FARM_URL unset -> mock agents run in-process.
 export const FARM_URL = process.env.FARM_URL || null

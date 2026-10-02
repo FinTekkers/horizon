@@ -330,6 +330,11 @@ button { font-family: var(--font-sans); }
   font: 700 13px var(--font-sans); border-radius: 6px; padding: 2px 7px;
 }
 .repo-row__disconnect:hover { color: var(--danger-ink); background: var(--danger-bg); }
+.repo-webhook { font: 600 11px var(--font-sans); border-radius: 5px; padding: 1px 6px; white-space: nowrap; }
+.repo-webhook--ok { color: var(--success-ink); background: var(--success-bg); }
+.repo-webhook--missing, .repo-webhook--mismatched { color: var(--warning-ink); background: var(--warning-bg); }
+.repo-webhook--error { color: var(--danger-ink); background: var(--danger-bg); }
+.repo-webhook__code { font: 500 11px var(--font-mono); color: var(--muted); white-space: nowrap; }
 
 .deploy-target-row { display: flex; align-items: center; gap: 9px; padding: 7px 2px; font: 500 13px var(--font-sans); }
 .deploy-target-row__repo { color: var(--deep); font-weight: 600; }
