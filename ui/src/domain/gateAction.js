@@ -38,6 +38,16 @@ export function elapsedText(since, now = Date.now(), { seconds = true } = {}) {
   return mins > 0 ? `${mins}m ${String(secs % 60).padStart(2, '0')}s` : `${secs}s`
 }
 
+// HZ-231: the pre-merge runs that ended with no answer or broke, where the
+// gate offers Retry — Accept's own action, relabelled. A blocked run is not
+// here: a conflict keeps Resolve conflicts. Nothing retries on its own.
+export const RETRY_STATES = ['timed_out', 'interrupted', 'failed']
+export const RETRY_LABEL = 'Retry'
+
+export function isRetryable(action) {
+  return action?.kind === 'premerge' && RETRY_STATES.includes(action.state)
+}
+
 // { tone: 'running' | 'ok' | 'error', text, note? } for the status line.
 export function gateActionView(action, pr) {
   if (!action) return null
@@ -60,10 +70,10 @@ export function gateActionView(action, pr) {
     }
   }
   if (action.kind === 'premerge' && action.state === 'failed') {
-    return { tone: 'error', text: 'Not merged — click Approve again', note: action.reason }
+    return { tone: 'error', text: `Not merged — press ${RETRY_LABEL}`, note: action.reason }
   }
   if (action.kind === 'premerge' && (action.state === 'timed_out' || action.state === 'interrupted')) {
-    return { tone: 'error', text: 'Checks did not finish — click Approve again', note: action.reason }
+    return { tone: 'error', text: `Checks did not finish — press ${RETRY_LABEL}`, note: action.reason }
   }
   // Resolve outcomes keep HZ-188's own dialog and wording.
   return null

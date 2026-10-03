@@ -214,7 +214,12 @@ function Step({ item, index, onApprove, onApproveWithComments, onReject, onResol
             <ForwardToAcceptButton item={item} onForwardToAccept={onForwardToAccept} disabled={gateBusy} />
           )}
           {gateAction && (status === 'awaiting' || gateAction.state === 'merged') && (
-            <GateActionStatus action={gateAction} pr={item.pr} />
+            <GateActionStatus
+              action={gateAction}
+              pr={item.pr}
+              onRetry={status === 'awaiting' ? () => onApprove(item.id, st.label) : undefined}
+              retryDisabled={gateBusy}
+            />
           )}
           {status === 'awaiting' && st.label === 'Accept the code' && item.pr != null && item.pr_mergeable === false && (
             <div className="step-card__conflict">

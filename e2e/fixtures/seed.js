@@ -118,3 +118,22 @@ export function setGatePinDirect(db, email, plaintext) {
   const result = db.prepare('UPDATE user SET gate_pin_hash = ? WHERE email = ?').run(value, email)
   if (result.changes === 0) throw new Error(`setGatePinDirect: no user row for ${email} — did global setup log in first?`)
 }
+
+// HZ-231: a finished Accept-gate action row (server/src/db.js's gate_action),
+// as if a pre-merge run had already ended — timed_out, interrupted, failed —
+// so a spec starts at the failure without waiting out a real deadline. The
+// epoch is this visit to the gate, computed as store.js's gateEpoch does —
+// a finished row from another visit is never shown.
+export function insertGateAction(db, { itemId, kind = 'premerge', state, reason = null, failingCheck = null }) {
+  const now = new Date().toISOString()
+  const { epoch } = db
+    .prepare(
+      `SELECT (SELECT COALESCE(MAX(id), 0) FROM gate_decision WHERE item_id = ?) || ':' ||
+              (SELECT COALESCE(MAX(id), 0) FROM step_run WHERE item_id = ?) AS epoch`,
+    )
+    .get(itemId, itemId)
+  db.prepare(
+    `INSERT INTO gate_action (item_id, kind, state, run_token, epoch, detail, reason, failing_check, started_at, deadline_at, finished_at)
+     VALUES (?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?)`,
+  ).run(itemId, kind, state, crypto.randomBytes(8).toString('hex'), epoch, reason, failingCheck, now, now, now)
+}

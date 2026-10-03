@@ -133,7 +133,15 @@ function BoardCard({ item, projects, durationEstimates, now, onOpen, onApprove, 
             <LockIcon size={13} strokeWidth={2.4} />
             {cur.label}
           </div>
-          {gateAction && <GateActionStatus action={gateAction} pr={item.pr} showElapsed={false} />}
+          {gateAction && (
+            <GateActionStatus
+              action={gateAction}
+              pr={item.pr}
+              showElapsed={false}
+              onRetry={() => onApprove(item.id, cur.label)}
+              retryDisabled={gateRunning}
+            />
+          )}
           {!gateRunning && (
             <div className="card__gate-actions">
               <button
