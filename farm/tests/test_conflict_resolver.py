@@ -316,3 +316,22 @@ def test_failing_checks_report_no_sha(isolated_workspaces_dir, monkeypatch):
     assert result["resolved"] is False
     assert "checks_passed_sha" not in result
     assert "checks_finished_at" not in result
+
+
+# ---- HZ-249: the dependency cache is keyed by the resolved repo ----
+
+
+def test_the_mechanical_path_passes_its_repo_to_run_checks(isolated_workspaces_dir, monkeypatch):
+    tmp_path = isolated_workspaces_dir
+    _hub, origin = make_repo_hub(tmp_path)
+    monkeypatch.setenv("FARM_CHECK_CMD", "true")
+    push_new_branch(tmp_path, origin, "horizon/hz-7", lambda w: (w / "a.txt").write_text("branch\n"), "branch")
+    push_new_branch(tmp_path, origin, "main", lambda w: (w / "b.txt").write_text("main\n"), "main-advance")
+    seen = []
+    real = conflict_resolver.run_checks
+    monkeypatch.setattr(
+        conflict_resolver, "run_checks", lambda ws, log, **kw: seen.append(kw.get("repo")) or real(ws, log, **kw)
+    )
+
+    assert conflict_resolver.resolve("acme/demo", "HZ-7", log=lambda *_: None)["resolved"] is True
+    assert seen == ["acme/demo"]

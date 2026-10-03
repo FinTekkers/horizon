@@ -227,6 +227,53 @@ def render(report: dict[str, dict], skipped: int, source: Path, markdown: bool) 
     return "\n".join(lines) + "\n"
 
 
+def dep_cache_summary(records: list[dict]) -> dict[str, dict]:
+    """HZ-249: per repo, cache hits vs misses, the median install time of
+    each, and the repo's cache size on disk as of its latest record. Records
+    from before HZ-249 (no "install") and runs with the cache off are left
+    out of the hit/miss columns."""
+    repos: dict[str, dict] = {}
+    for record in records:
+        install = record.get("install")
+        repo = record.get("repo")
+        if not isinstance(install, dict) or not isinstance(repo, str):
+            continue
+        row = repos.setdefault(repo, {"hit": [], "miss": [], "other": 0, "bytes": None, "entries": None})
+        status, duration = install.get("cache"), install.get("duration_s")
+        if status in ("hit", "miss") and isinstance(duration, (int, float)):
+            row[status].append(float(duration))
+        else:
+            row["other"] += 1
+        if install.get("cache_repo_bytes") is not None:
+            row["bytes"], row["entries"] = install["cache_repo_bytes"], install.get("cache_entries")
+    return {
+        repo: {
+            "hits": len(row["hit"]),
+            "misses": len(row["miss"]),
+            "other_runs": row["other"],
+            "median_hit_install_s": _percentile(row["hit"], 0.5),
+            "median_miss_install_s": _percentile(row["miss"], 0.5),
+            "cache_bytes": row["bytes"],
+            "cache_entries": row["entries"],
+        }
+        for repo, row in sorted(repos.items())
+    }
+
+
+def render_dep_cache(summary: dict[str, dict]) -> str:
+    if not summary:
+        return ""
+    lines = ["", "Dependency cache (HZ-249), per repo:"]
+    for repo, s in summary.items():
+        size = "—" if s["cache_bytes"] is None else f"{s['cache_bytes'] / 1024**2:.0f} MB"
+        lines.append(
+            f"  {repo}: {s['hits']} hit(s), median install {_fmt(s['median_hit_install_s'], 's')}; "
+            f"{s['misses']} miss(es), median install {_fmt(s['median_miss_install_s'], 's')}; "
+            f"{s['other_runs']} other run(s); cache on disk {size} ({_fmt(s['cache_entries'])} entries)"
+        )
+    return "\n".join(lines) + "\n"
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Report on recorded farm check runs (HZ-144).")
     parser.add_argument("--path", default=None, help="check-metrics.jsonl (default: $FARM_HOME/logs/)")
@@ -239,6 +286,7 @@ def main() -> int:
         print(f"no check runs recorded in {source} yet")
         return 1
     print(render(by_phase(records), skipped, source, args.markdown), end="")
+    print(render_dep_cache(dep_cache_summary(records)), end="")
     return 0
 
 

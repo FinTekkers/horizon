@@ -240,6 +240,7 @@ def premerge_check(
                     child_env={"FARM_HOME": str(checks_home)},
                     on_slot_event=on_slot_event,
                     configured=configured,
+                    repo=repo_full,
                 )
             except CheckFailure as exc:
                 if exc.reason == "timed_out":

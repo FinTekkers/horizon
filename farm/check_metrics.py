@@ -114,7 +114,9 @@ def classify_failure(tail: str, returncode: int | None) -> str:
     return "other"
 
 
-def new_record(*, run_id=None, item_id=None, caller: str = "step_agent", slot: check_slots.SlotHold) -> dict:
+def new_record(
+    *, run_id=None, item_id=None, caller: str = "step_agent", slot: check_slots.SlotHold, repo: str | None = None
+) -> dict:
     return {
         "ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         "phase": os.environ.get(PHASE_ENV) or "unlabelled",
@@ -140,6 +142,11 @@ def new_record(*, run_id=None, item_id=None, caller: str = "step_agent", slot: c
         "load_start": load_average(),
         "commands": [],
         "outcome": "other",
+        # HZ-249: whose dependency cache this run used, and what the install
+        # command cost — farm/dep_cache.py's InstallRun.info, or None when the
+        # run had no install command.
+        "repo": repo,
+        "install": None,
     }
 
 
