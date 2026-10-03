@@ -75,6 +75,20 @@ export const FARM_STEP_INDEXES = new Set(
 // (POST .../started), not at dispatch — see FARM_QUEUE_TIMEOUT_MS below for
 // the queue-wait half of that split (HZ-57).
 export const FARM_STEP_TIMEOUT_MS = Number(process.env.FARM_STEP_TIMEOUT_MS || 20 * 60 * 1000)
+// HZ-275: how long the Deploy step waits for its own release to go live (the
+// target's last-good-tag naming it) before the smoke check. Sent to the farm
+// with the step, and added to the Deploy step's execution budget. Anything
+// not a positive number means the default, as the farm reads it too.
+const deployWaitEnvMs = Number(process.env.HORIZON_DEPLOY_WAIT_MS)
+export const DEPLOY_WAIT_MS = deployWaitEnvMs > 0 ? deployWaitEnvMs : 20 * 60 * 1000
+// HZ-275 (gate-5 ruling): a release deploy that finds another deploy holding
+// the lock waits up to 30 min for it, not the scripts' own 5-min default, so
+// two releases published close together both deploy, in order. Set in this
+// process's env because spawnEnv (deploy.js) hands that env to every deploy
+// script, and the scripts already read HORIZON_DEPLOY_LOCK_TIMEOUT_S. An
+// explicit value in server.env still wins.
+export const DEPLOY_LOCK_TIMEOUT_S = process.env.HORIZON_DEPLOY_LOCK_TIMEOUT_S || '1800'
+process.env.HORIZON_DEPLOY_LOCK_TIMEOUT_S = DEPLOY_LOCK_TIMEOUT_S
 // Queue-wait budget: armed the moment a step is handed to the farm. A step
 // that sits queued behind other work longer than this is failed as "never
 // picked up" — this must stay well short of FARM_STEP_TIMEOUT_MS so a step
