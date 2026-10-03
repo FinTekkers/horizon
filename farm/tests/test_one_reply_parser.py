@@ -73,9 +73,11 @@ FARM_METRICS_LOG_CALLS = {
 # server/src/premerge.js serialises with JSON.stringify from the DB — no model
 # wrote it. A value that does not parse to an object fails the run closed
 # ("crash"), never retried or repaired: the opposite of parse_agent_reply()'s
-# contract. Budgeted at one.
+# contract. Budgeted at one. farm.validate (HZ-248) reads the same argument
+# from server/src/projectValidate.js, with the same fail-closed rule.
 SERVER_ARGV_CALLS = {
     FARM / "premerge.py": 1,
+    FARM / "validate.py": 1,
 }
 
 # Both spellings of the raw extractor. `_extract_json` is agent_runner's own

@@ -448,6 +448,34 @@ export function setProjectAutopilot(projectId, mode, who) {
   return result
 }
 
+// ---- HZ-248: 'Validate project' results ----
+
+// The ONLY writer of project_validation; its one caller is
+// projectValidate.validateProject(). Details arrive already scrubbed.
+export function recordValidation({ projectId, startedAt, finishedAt, pass, checks, who }) {
+  return db
+    .prepare(
+      'INSERT INTO project_validation (project_id, started_at, finished_at, pass, checks_json, who) VALUES (?, ?, ?, ?, ?, ?)',
+    )
+    .run(projectId, startedAt, finishedAt, pass ? 1 : 0, JSON.stringify(checks), who).lastInsertRowid
+}
+
+// The project's newest result, or null when it was never validated.
+export function latestValidation(projectId) {
+  const row = db
+    .prepare('SELECT * FROM project_validation WHERE project_id = ? ORDER BY id DESC LIMIT 1')
+    .get(projectId)
+  if (!row) return null
+  return {
+    id: row.id,
+    projectId: row.project_id,
+    startedAt: row.started_at,
+    finishedAt: row.finished_at,
+    pass: row.pass === 1,
+    checks: JSON.parse(row.checks_json),
+  }
+}
+
 // SH for shoreward, US for ui-service, LS for ledger-service… deduped
 // against prefixes already taken.
 function generatePrefix(repoFullName) {

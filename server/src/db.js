@@ -527,6 +527,22 @@ db.exec(`
   );
 `)
 
+// HZ-248: one row per finished 'Validate project' run (projectValidate.js).
+// checks_json is [{check, pass, detail, durationMs}], details already scrubbed
+// of secrets. A run cut short by a restart leaves no row.
+db.exec(`
+  CREATE TABLE IF NOT EXISTS project_validation (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id  INTEGER NOT NULL REFERENCES project(id),
+    started_at  TEXT NOT NULL,
+    finished_at TEXT NOT NULL,
+    pass        INTEGER NOT NULL CHECK (pass IN (0, 1)),
+    checks_json TEXT NOT NULL,
+    who         TEXT NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS idx_project_validation_project ON project_validation(project_id, id DESC);
+`)
+
 // HZ-271: what the Autopilot caretaker DID (caretakerActor.js). caretaker_eval
 // above is not altered. One caretaker_action row per acted-on decision —
 // eval_id UNIQUE is the claim, so an arrival is acted on at most once — and
