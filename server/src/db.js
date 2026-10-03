@@ -510,6 +510,8 @@ db.exec(`
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
   );
   CREATE INDEX IF NOT EXISTS idx_project_event_project ON project_event(project_id, id DESC);
+  -- HZ-298: the caretaker's repeat send-back guard reads an item's latest gate_decision.
+  CREATE INDEX IF NOT EXISTS idx_gate_decision_item ON gate_decision(item_id, id DESC);
 
   CREATE TABLE IF NOT EXISTS caretaker_eval (
     id             INTEGER PRIMARY KEY AUTOINCREMENT,

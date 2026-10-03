@@ -16,13 +16,17 @@
 // READ-ONLY BY CONSTRUCTION. This module imports no github, orchestrator,
 // premerge, autoResolve, waSend or gateNotifier, and writes only its own
 // caretaker_eval row and the item event. server.js init() is the only caller.
+//
+// HZ-298: a send-back that would be the caretaker's second in a row at the
+// same gate is recorded as 'ping_human' instead (applyRepeatGuard), so a
+// blocker re-planning cannot fix waits for the owner rather than looping.
 
 import { db } from './db.js'
 import * as store from './store.js'
 import { listTargetStatuses } from './deploy.js'
 import { readFarmFile } from './definitions.js'
 import { gateStepIndexes, requiredStepIndex, ACCEPT_GATE_INDEX } from '../../domain/js/lifecycle.js'
-import { DECISIONS, decide, parsePolicy, redact } from './caretakerRules.js'
+import { ACTOR, DECISIONS, decide, parsePolicy, redact } from './caretakerRules.js'
 
 // Gate 3 is excluded HERE, in code, before any evaluation in any mode: new
 // work never enters without a human.
@@ -114,6 +118,44 @@ export function evaluateArrival(item, gateIndex, policyOrError, sourceRun = null
   }
 }
 
+export const REPEAT_SEND_BACK_RULE = 'repeat_send_back'
+
+// The item's latest gate decision, at any gate, by anyone. gate_decision ids
+// are one sequence for the caretaker and humans alike, so "in a row" is just
+// "the latest row".
+const selectLatestGateDecision = db.prepare(
+  'SELECT step_index, decision, decided_by, created_at FROM gate_decision WHERE item_id = ? ORDER BY id DESC LIMIT 1',
+)
+// Any Autopilot switch, off or on, at or after that decision. Same one-second
+// tie rule as ACTIONABLE_EVAL_SQL: a switch in the same second resets.
+const selectSwitchSince = db.prepare(
+  "SELECT 1 FROM project_event WHERE project_id = ? AND kind = 'autopilot' AND created_at >= ? LIMIT 1",
+)
+
+// True when the item's latest gate decision is the caretaker's own send-back
+// at this gate, with no Autopilot switch since. A human approval or send-back,
+// or a caretaker decision at another gate, is a newer row and resets it.
+export function repeatSendBack(item, gateIndex) {
+  const last = selectLatestGateDecision.get(item.id)
+  if (!last) return false
+  if (last.decided_by !== ACTOR || last.decision !== 'rejected' || last.step_index !== gateIndex) return false
+  return !selectSwitchSince.get(item.project_id, last.created_at)
+}
+
+// A would-be second send-back in a row becomes 'ping_human'; any other result
+// is returned unchanged. No side effects.
+export function applyRepeatGuard(item, gateIndex, result) {
+  if (result?.decision !== 'send_back' || !repeatSendBack(item, gateIndex)) return result
+  return {
+    decision: 'ping_human',
+    ruleId: REPEAT_SEND_BACK_RULE,
+    // Uncapped: result.reason is already one capped line, and the prefix must
+    // not push the blocker out of the owner's ping.
+    reason: redact(`sent back twice in a row at step ${gateIndex}: ${result.reason}`, { oneLine: false }),
+    comment: null,
+  }
+}
+
 export function loadPolicy() {
   const text = readFarmFile('roles/caretaker.md')
   if (text === null) throw new Error('farm/roles/caretaker.md is missing')
@@ -138,7 +180,7 @@ export function sweepCaretaker({ log, policy = loadPolicy } = {}) {
       try {
         const sourceRun = selectSourceRun.get(item.id, item.cursor - 1) ?? null
         if (item.cursor === RELEASE_GATE && !releaseSettled(item, sourceRun)) continue
-        const result = evaluateArrival(item, item.cursor, loaded, sourceRun, log)
+        const result = applyRepeatGuard(item, item.cursor, evaluateArrival(item, item.cursor, loaded, sourceRun, log))
         if (!result) continue
         // Several arrivals with no source run share key 0, so at most one of
         // them is judged — fewer events, never a duplicate.
