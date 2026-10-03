@@ -35,7 +35,7 @@ import { getActiveProjectId, getRepoUrl, setSetting, getToken } from './settings
 import * as auth from './auth.js'
 import { googleAuth } from './googleAuth.js'
 import { isAllowedEmail } from './loginAllowlist.js'
-import { approvalSecretConfigured, approvalSecretOk, isAllowedApprover, normalizeJid } from './waApprovers.js'
+import { approvalSecretConfigured, approvalSecretOk, isAllowedApprover, isOwner, normalizeJid } from './waApprovers.js'
 import * as waPollVotes from './waPollVotes.js'
 import { STEPS } from '../../domain/js/lifecycle.js'
 import { intakeFields } from '../../domain/js/fields.js'
@@ -208,6 +208,9 @@ export const SESSION_EXEMPT = [
   // HZ-142's poll-vote leg. Same credential and the same allowlist as the
   // line above — the bridge is a daemon and has no session either.
   /^\/api\/wa\/poll-vote$/,
+  // HZ-274's WhatsApp kill switch: the concierge has no session either. Same
+  // credential, and only the owner's jid is accepted.
+  /^\/api\/projects\/autopilot-off-via-whatsapp$/,
   /^\/api\/health$/,
   // HZ-178: the generated API reference. Reachable like /api/health is, and for
   // the same reason — a published reference nobody can fetch is not published.
@@ -2242,6 +2245,49 @@ export function buildApp({ logger = true, onRoute = null } = {}) {
       if (result.error) return reply.code(404).send({ error: 'Project not found' })
       broadcast()
       return { ok: true, projectId: request.params.id, old: result.old, new: result.new, ...(result.unchanged ? { unchanged: true } : {}) }
+    },
+  )
+
+  // HZ-274: the WhatsApp kill switch. The concierge forwards
+  // 'autopilot off <project>' here; turning Autopilot on or to shadow stays
+  // Admin + PIN only. There is no mode field — this route can only write
+  // 'off' — and a body naming any other key is a 400.
+  //
+  // The 503/401/403 ladder runs before the project lookup, the same helpers
+  // in the same order as approve-via-whatsapp, so a non-owner gets one
+  // identical refusal whether or not the project exists and learns nothing
+  // about its setting. 404 is reachable by the owner only.
+  fastify.post(
+    '/api/projects/autopilot-off-via-whatsapp',
+    {
+      schema: {
+        body: {
+          type: 'object',
+          required: ['project', 'senderJid'],
+          // propertyNames, not additionalProperties: false — Fastify's ajv
+          // silently strips unknown keys under the latter, and a body that
+          // tries to carry a mode, PIN or rules must be refused outright.
+          propertyNames: { enum: ['project', 'senderJid'] },
+          properties: {
+            project: { type: 'string', minLength: 1, maxLength: 200 },
+            senderJid: { type: 'string', minLength: 1, maxLength: 120 },
+          },
+        },
+      },
+    },
+    (request, reply) => {
+      if (!approvalSecretConfigured()) return reply.code(503).send({ error: 'wa_approval_not_configured' })
+      if (!approvalSecretOk(request.headers['x-wa-approval-secret'])) {
+        return reply.code(401).send({ error: 'bad_approval_secret' })
+      }
+      if (!isOwner(request.body.senderJid)) return reply.code(403).send({ error: 'refused' })
+      const project = store.findProjectByName(request.body.project)
+      if (!project) return reply.code(404).send({ error: 'project_not_found' })
+      // The audit row records the source; no jid is stored.
+      const result = store.setProjectAutopilot(project.id, 'off', 'Owner via WhatsApp')
+      if (result.error) return reply.code(404).send({ error: 'project_not_found' })
+      broadcast()
+      return { ok: true, project: project.name, old: result.old, new: result.new, ...(result.unchanged ? { unchanged: true } : {}) }
     },
   )
 

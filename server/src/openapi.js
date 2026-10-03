@@ -36,6 +36,8 @@ export const INTERNAL_PREFIXES = [
   /^\/api\/webhooks\//,
   /^\/api\/wa\//,
   /^\/api\/items\/[^/]+\/gates\/[^/]+\/approve-via-whatsapp$/,
+  // HZ-274's WhatsApp kill switch: the same credential and no browser caller.
+  /^\/api\/projects\/autopilot-off-via-whatsapp$/,
 ]
 
 export function isInternal(url) {

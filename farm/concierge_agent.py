@@ -10,7 +10,10 @@ human gate key or, via the deterministic wizard.py state machines below, a
 bare numeric reply the *script* resolves against a list the model can only
 offer, never act on directly.
 
-Two turns bypass the model entirely, handled by wizard.py before any Claude
+HZ-274: `autopilot off|on|shadow <project>` bypasses the model too, handled
+by autopilot_command.py — only 'off' ever reaches the server.
+
+Two more turns bypass the model entirely, handled by wizard.py before any Claude
 call: `[New Item] <title>` starts the item-creation wizard, and a bare 1-9
 reply resolves a previously offered gate-approval choice (WhatsApp's
 numbered-reply proxy for a radio button). Both are deterministic on purpose
@@ -46,6 +49,7 @@ import httpx
 from domain.py import priorities
 from domain.py.personas import CONCIERGE_MODEL_AGENT
 
+from . import autopilot_command
 from . import concierge_routing
 from . import config
 from . import credentials
@@ -477,8 +481,11 @@ def poll_once(
             log(f"dropping message {msg.msg_id} from non-allowlisted sender {normalize_jid(msg.sender_jid)}")
             state.claim(msg)
             continue
-        # Deterministic, non-LLM turns first: an item wizard step or a bare
-        # numeric gate-approval reply never reaches Claude.
+        # Deterministic, non-LLM turns first: an Autopilot command, an item
+        # wizard step or a bare numeric gate-approval reply never reaches Claude.
+        if autopilot_command.try_handle(msg, transport, state, base_url):
+            handled += 1
+            continue
         if wizard.try_handle_item_wizard(msg, transport, state.wizard_store, state, base_url, farmd_url):
             handled += 1
             continue

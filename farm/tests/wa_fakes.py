@@ -70,9 +70,14 @@ class StubHorizon:
     approve_result: None -> auto (404 for unknown ids, else 200 {"ok": true});
       or a fixed (status, body) tuple; or a callable(item_id, step_index,
       payload) -> (status, body).
+    autopilot_off_result: HZ-274's kill switch. None -> 200 naming the
+      payload's project; or a fixed (status, body) tuple; or a
+      callable(payload) -> (status, body).
     """
 
-    def __init__(self, items=None, feedback_rerun=False, create_item_result=None, approve_result=None):
+    def __init__(
+        self, items=None, feedback_rerun=False, create_item_result=None, approve_result=None, autopilot_off_result=None
+    ):
         self.items = items or []
         self.feedback_rerun = feedback_rerun
         self.known_ids = {it["id"] for it in self.items}
@@ -84,6 +89,8 @@ class StubHorizon:
         self.approvals: list[tuple[str, int, dict]] = []  # (item_id, step_index, payload) via approve-via-whatsapp
         self.create_item_result = create_item_result
         self.approve_result = approve_result
+        self.autopilot_offs: list[dict] = []  # payloads POSTed to the kill switch
+        self.autopilot_off_result = autopilot_off_result
         self._create_seq = 0
         stub = self
 
@@ -122,6 +129,9 @@ class StubHorizon:
                 stub.auth_headers.append((self.path, stub._header_names(self.headers)))
                 if self.path == "/api/items":
                     status, body = stub._handle_create_item(payload)
+                    return self._reply(status, body)
+                if self.path == "/api/projects/autopilot-off-via-whatsapp":
+                    status, body = stub._handle_autopilot_off(payload)
                     return self._reply(status, body)
                 parts = self.path.strip("/").split("/")
                 # /api/items/<id>/priority | /api/items/<id>/feedback
@@ -181,6 +191,14 @@ class StubHorizon:
         if item_id not in self.known_ids:
             return 404, {"error": "not_found"}
         return 200, {"ok": True}
+
+    def _handle_autopilot_off(self, payload):
+        self.autopilot_offs.append(payload)
+        if callable(self.autopilot_off_result):
+            return self.autopilot_off_result(payload)
+        if self.autopilot_off_result is not None:
+            return self.autopilot_off_result
+        return 200, {"ok": True, "project": payload.get("project"), "old": "on", "new": "off"}
 
     def close(self):
         self._server.shutdown()
