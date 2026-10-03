@@ -953,9 +953,12 @@ export function buildApp({ logger = true, onRoute = null } = {}) {
   // can act — so the caretaker runs exactly the checks a human click runs
   // (gate state, review-cycle cap, step status), minus only the route's
   // humanAuthorized() wrapper. Decorated so server.js and the tests reach it.
+  // HZ-272: resolveConflicts is the Resolve-conflicts button's run, for the
+  // caretaker at Accept the code (caretakerAccept.js).
   const gateActions = {
     approve: (id, stepIndex, notes, actor) => performGateApproval(id, stepIndex, notes, actor),
     sendBack: (id, opts, actor) => performSendBack(id, opts, actor),
+    resolveConflicts: (id, actor, opts) => orchestrator.resolveConflicts(id, actor, opts),
   }
   fastify.decorate('gateActions', gateActions)
 
@@ -1173,7 +1176,7 @@ export function buildApp({ logger = true, onRoute = null } = {}) {
     },
     async (request, reply) => {
       if (!humanAuthorized(request, reply)) return
-      const result = await orchestrator.resolveConflicts(request.params.id, actorOf(request))
+      const result = await gateActions.resolveConflicts(request.params.id, actorOf(request))
       return send(reply, result)
     },
   )

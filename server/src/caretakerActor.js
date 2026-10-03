@@ -7,7 +7,9 @@
 // `gateActions` object and server.js hands that object in; nothing here
 // imports github, the orchestrator or premerge, and the only item writes it
 // can make are those two calls. It never creates, abandons or reprioritises
-// an item, and gate 3 (and gate 13) can never be in ACT_GATES.
+// an item, and gate 3 (and gate 13) can never be in ACT_GATES. Gate 13 is
+// caretakerAccept.js's own pass (HZ-272), which init() below runs on the same
+// triggers with the same gateActions.
 //
 // It stops — takes no gate action and pings the owner once on WhatsApp — on
 // the hourly action limit, the review-cycle cap, or a step that has failed
@@ -22,6 +24,7 @@ import * as store from './store.js'
 import { STEPS, requiredStepIndex, ACCEPT_GATE_INDEX } from '../../domain/js/lifecycle.js'
 import { redact } from './caretakerRules.js'
 import { loadPolicy } from './caretaker.js'
+import { actOnAcceptGate, failInterruptedAcceptActions } from './caretakerAccept.js'
 import { sendWhatsApp } from './waSend.js'
 import { canonicalJid } from './waApprovers.js'
 import {
@@ -383,9 +386,22 @@ export function failInterruptedActions() {
 // the tests. `opts` (now, send, owner, limit) are for the tests too.
 export function init(log, { gateActions, ...opts } = {}) {
   if (!gateActions) throw new Error('caretakerActor.init needs the gateActions app.js builds')
-  const interrupted = failInterruptedActions()
+  const interrupted = failInterruptedActions() + failInterruptedAcceptActions()
   if (interrupted > 0) log?.warn?.(`caretaker: ${interrupted} gate action(s) were mid-call at shutdown — not retried`)
-  const run = () => actOnDecisions({ gateActions, log, ...opts })
+  // Gate 13 first: it is synchronous and never waits on a runner, so a slow
+  // gate-15 approval in actOnDecisions cannot hold it up, and the pings it
+  // records are drained by the actOnDecisions that follows.
+  const run = () => {
+    actOnAcceptGate({
+      gateActions,
+      actor: ACTOR,
+      log,
+      now: opts.now ?? Date.now,
+      owner: opts.owner ?? ownerJid,
+      limit: opts.limit ?? CARETAKER_HOURLY_LIMIT,
+    })
+    return actOnDecisions({ gateActions, log, ...opts })
+  }
   let scheduled = false
   const unsubscribe = store.onChange(() => {
     if (scheduled) return

@@ -534,6 +534,18 @@ db.exec(`
 // caretaker_ping is the owner-ping outbox; dedupe_key UNIQUE is what makes a
 // stall ping once per arrival. The *_ms columns hold caretakerActor's
 // injectable clock, which SQLite's datetime('now') could not be.
+const CARETAKER_PING_REASONS = [
+  'hourly_limit',
+  'review_cycle_cap',
+  'step_failed_twice',
+  'premerge_blocked',
+  'premerge_failed',
+  'resolve_escalated',
+  'resolve_failed',
+  'accept_failed',
+]
+  .map((reason) => `'${reason}'`)
+  .join(',')
 db.exec(`
   CREATE TABLE IF NOT EXISTS caretaker_action (
     id           INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -552,7 +564,7 @@ db.exec(`
     id                 INTEGER PRIMARY KEY AUTOINCREMENT,
     project_id         INTEGER NOT NULL REFERENCES project(id),
     item_id            TEXT REFERENCES work_item(id) ON DELETE CASCADE,
-    reason             TEXT NOT NULL CHECK (reason IN ('hourly_limit','review_cycle_cap','step_failed_twice')),
+    reason             TEXT NOT NULL CHECK (reason IN (${CARETAKER_PING_REASONS})),
     dedupe_key         TEXT NOT NULL UNIQUE,
     recipient          TEXT NOT NULL,
     body               TEXT NOT NULL,
@@ -564,6 +576,59 @@ db.exec(`
     sent_at            TEXT
   );
   CREATE INDEX IF NOT EXISTS idx_caretaker_ping_project ON caretaker_ping(project_id, reason, created_at_ms);
+`)
+
+// HZ-272: the gate-13 stop reasons. SQLite cannot widen a CHECK in place, so a
+// caretaker_ping created before them is rebuilt once, rows copied column by
+// column, in one transaction. A DB whose CHECK already names them is skipped.
+const CARETAKER_PING_COLUMNS =
+  'id, project_id, item_id, reason, dedupe_key, recipient, body, status, attempts, last_error, created_at_ms, next_attempt_at_ms, sent_at'
+const caretakerPingSql = db.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'caretaker_ping'").get()?.sql ?? ''
+if (!caretakerPingSql.includes('premerge_blocked')) {
+  db.transaction(() => {
+    db.exec(`
+      CREATE TABLE caretaker_ping_v2 (
+        id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+        project_id         INTEGER NOT NULL REFERENCES project(id),
+        item_id            TEXT REFERENCES work_item(id) ON DELETE CASCADE,
+        reason             TEXT NOT NULL CHECK (reason IN (${CARETAKER_PING_REASONS})),
+        dedupe_key         TEXT NOT NULL UNIQUE,
+        recipient          TEXT NOT NULL,
+        body               TEXT NOT NULL,
+        status             TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','sending','sent','failed')),
+        attempts           INTEGER NOT NULL DEFAULT 0,
+        last_error         TEXT,
+        created_at_ms      INTEGER NOT NULL,
+        next_attempt_at_ms INTEGER NOT NULL DEFAULT 0,
+        sent_at            TEXT
+      );
+      INSERT INTO caretaker_ping_v2 (${CARETAKER_PING_COLUMNS}) SELECT ${CARETAKER_PING_COLUMNS} FROM caretaker_ping;
+      DROP TABLE caretaker_ping;
+      ALTER TABLE caretaker_ping_v2 RENAME TO caretaker_ping;
+      CREATE INDEX IF NOT EXISTS idx_caretaker_ping_project ON caretaker_ping(project_id, reason, created_at_ms);
+    `)
+  })()
+}
+
+// HZ-272: the gate-13 caretaker's claims (caretakerAccept.js). One row per
+// (item, arrival, action) — the UNIQUE key is the claim, so a restart or a
+// second tick never presses Accept or starts Resolve conflicts twice for the
+// same review result. result is the runner's state once the call returned.
+db.exec(`
+  CREATE TABLE IF NOT EXISTS caretaker_accept_action (
+    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id     INTEGER NOT NULL REFERENCES project(id),
+    item_id        TEXT NOT NULL REFERENCES work_item(id) ON DELETE CASCADE,
+    arrival_run_id INTEGER NOT NULL,
+    action         TEXT NOT NULL CHECK (action IN ('accept','resolve')),
+    outcome        TEXT NOT NULL CHECK (outcome IN ('pending','ok','failed','interrupted')),
+    result         TEXT,
+    error          TEXT,
+    acted_at_ms    INTEGER NOT NULL,
+    UNIQUE (item_id, arrival_run_id, action)
+  );
+  CREATE INDEX IF NOT EXISTS idx_caretaker_accept_window ON caretaker_accept_action(project_id, acted_at_ms);
+  CREATE INDEX IF NOT EXISTS idx_caretaker_accept_inflight ON caretaker_accept_action(project_id, action, outcome);
 `)
 
 // HZ-263: deploy targets, the one source the self-deploy resolver reads

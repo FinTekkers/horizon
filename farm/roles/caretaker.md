@@ -36,6 +36,14 @@ matches, the decision is **ping the human**.
    - A pre-merge or conflict-resolution run in progress: **wait**.
    - The PR does not merge cleanly: **resolve conflicts**.
    - The automated review passed and the PR merges cleanly: **approve**.
+   - With Autopilot `on`, the server acts here too (HZ-272): it presses
+     Accept through the same path as the UI, one item at a time per project,
+     and starts at most one Resolve-conflicts run per review result. An
+     escalated resolve, a blocked or failed pre-merge, or an Accept that did
+     not complete is never retried: the item stays put and the owner is
+     pinged once. Only a new review result re-arms the caretaker; a human can
+     still act at any time. Gate 13 has its own hourly action limit, separate
+     from gates 5, 10 and 15.
 5. **Review the work & close.**
    - The item's release tag equals the deploy target's last-good tag:
      **approve**.

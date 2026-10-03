@@ -487,7 +487,9 @@ test('off then on again: a decision evaluated before the last switch is never ac
 
 // ---- metric 6: gate 3, gate 13 and shadow rows; no lifecycle actions ----
 
-test('gate 3, gate 13 and shadow-mode decisions are never acted on in off, shadow or on; no item is created, abandoned or reprioritised', async () => {
+// Gate 13 here is the generic decision pass only: G13-* have no PR, so the
+// HZ-272 Accept pass (caretaker-accept.test.mjs) has nothing to act on either.
+test('the generic pass never acts on gate 3, gate 13 or shadow-mode decisions in off, shadow or on; no item is created, abandoned or reprioritised', async () => {
   const lifecycle = () => db.prepare('SELECT id, priority, abandoned_at FROM work_item ORDER BY id').all()
   for (const mode of ['off', 'shadow', 'on']) {
     const pid = project(mode)
@@ -495,6 +497,7 @@ test('gate 3, gate 13 and shadow-mode decisions are never acted on in off, shado
     decisionOnRecord(`G3-${mode}`, 3, 'approve')
     item(`G13-${mode}`, pid, 12)
     decisionOnRecord(`G13-${mode}`, 13, 'approve')
+    assert.equal(db.prepare('SELECT pr FROM work_item WHERE id = ?').get(`G13-${mode}`).pr, null)
     item(`SH-${mode}`, pid, 4)
     decisionOnRecord(`SH-${mode}`, 5, 'approve', { mode: 'shadow' })
     const before = lifecycle()
