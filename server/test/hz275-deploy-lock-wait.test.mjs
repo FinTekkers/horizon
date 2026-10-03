@@ -3,7 +3,9 @@
 // needed a manual re-run. A deploy the server starts now waits for a held lock
 // for up to 30 minutes (server/src/config.js sets HORIZON_DEPLOY_LOCK_TIMEOUT_S,
 // which spawnEnv hands to the script and the script already reads; an
-// explicit value still wins). The scripts themselves are unchanged.
+// explicit value still wins). The scripts themselves stay unchanged:
+// deploy-dry-run.test.mjs (HZ-258) requires infra/host/ and deploy.js to match
+// main, and metric 4 forbids editing that test.
 //
 // Same approach as infra/host/test/deploy.test.sh: the real deploy-horizon.sh
 // against a throwaway git repo, with npm, sudo, systemctl and curl stubbed on
@@ -33,6 +35,8 @@ const { spawnEnv } = await import('../src/deploy.js')
 
 const HOST_DIR = join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'infra', 'host')
 const DEPLOY_HORIZON_SH = join(HOST_DIR, 'deploy-horizon.sh')
+const DEPLOY_UI_SERVICE_SH = join(HOST_DIR, 'deploy-ui-service.sh')
+const REPO_ROOT = join(HOST_DIR, '..', '..')
 const REAL_FLOCK = execFileSync('bash', ['-c', 'command -v flock'], { encoding: 'utf8' }).trim()
 
 function stub(dir, name, body) {
@@ -169,4 +173,42 @@ test('every deploy the server starts waits up to 30 minutes for the lock by defa
   assert.equal(DEPLOY_LOCK_TIMEOUT_S, '1800')
   const env = spawnEnv({ key: 'ui-service', repoDir: '/opt/x', stateKey: 'ui-service', service: 'fintekkers-ui', healthUrl: 'http://x/' })
   assert.equal(env.HORIZON_DEPLOY_LOCK_TIMEOUT_S, '1800')
+  // Both scripts take their lock bound from that variable.
+  for (const script of [DEPLOY_HORIZON_SH, DEPLOY_UI_SERVICE_SH]) {
+    assert.match(readFileSync(script, 'utf8'), /flock -w "\$LOCK_TIMEOUT_S"/, script)
+    assert.match(readFileSync(script, 'utf8'), /LOCK_TIMEOUT_S="\$\{HORIZON_DEPLOY_LOCK_TIMEOUT_S:-/, script)
+  }
+})
+
+// Guardrail diff checks against the branch point with main (origin/main when
+// fetched, else the local main). Skipped outside a git checkout.
+function gitOut(...args) {
+  return execFileSync('git', args, { cwd: REPO_ROOT, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] })
+}
+function mainBase() {
+  for (const ref of ['origin/main', 'main']) {
+    try {
+      return gitOut('merge-base', 'HEAD', ref).trim()
+    } catch {}
+  }
+  return null
+}
+
+test('existing deploy tests, the deploy targets, sudoers and the smoke check are unchanged vs main', (t) => {
+  const base = mainBase()
+  if (!base) return t.skip('no main ref to diff against')
+  const unchanged = [
+    'server/test/deploy*',
+    'server/test/webhook-deploy*',
+    'infra/host/deploy-targets.json',
+    'infra/host/horizon-deploy.sudoers',
+    'e2e/smoke/check.mjs',
+  ]
+  assert.equal(gitOut('diff', '--name-only', base, '--', ...unchanged.map((p) => `:(glob)${p}`)).trim(), '')
+})
+
+test('the deploy scripts and the rest of infra/host/ are unchanged vs main', (t) => {
+  const base = mainBase()
+  if (!base) return t.skip('no main ref to diff against')
+  assert.equal(gitOut('diff', '--name-only', base, '--', 'infra/host/').trim(), '')
 })
