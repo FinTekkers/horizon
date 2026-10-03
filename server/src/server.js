@@ -7,6 +7,7 @@ import * as orchestrator from './orchestrator.js'
 import * as gateNotifier from './gateNotifier.js'
 import * as caretaker from './caretaker.js'
 import * as caretakerActor from './caretakerActor.js'
+import * as caretakerRuling from './caretakerRuling.js'
 import * as autoResolve from './autoResolve.js'
 import { PORT } from './config.js'
 
@@ -30,6 +31,10 @@ caretaker.init(fastify.log)
 // gateActions the UI routes call. Registered AFTER caretaker.init so, on any
 // change, the decision row is written before this looks for it.
 caretakerActor.init(fastify.log, { gateActions: fastify.gateActions })
+// HZ-273: rules on 'Operator must decide:' arrivals at gates 5 and 10 for
+// Autopilot 'on' projects — edits only the named issue-body lines, then sends
+// back with a note through the same gateActions.
+caretakerRuling.init(fastify.log, { gateActions: fastify.gateActions })
 // Before polling starts, so the first tick already seeds main's head (HZ-235).
 autoResolve.startAutoResolve(fastify.log)
 github.startPolling(fastify.log)

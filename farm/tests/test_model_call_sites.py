@@ -26,10 +26,18 @@ REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 FARM_DIR = REPO_ROOT / "farm"
 THIS_FILE = Path(__file__).resolve()
 
-CALLER_MODULES = ("pm_agent.py", "step_agent.py", "concierge_agent.py", "conflict_resolver.py", "handoff.py")
+CALLER_MODULES = (
+    "pm_agent.py",
+    "step_agent.py",
+    "concierge_agent.py",
+    "conflict_resolver.py",
+    "handoff.py",
+    "caretaker_ruling.py",
+)
 # 2 in pm_agent, 3 in step_agent, 2 in concierge_agent, 2 in conflict_resolver,
-# 1 in handoff (HZ-158's note from an exhausted session).
-EXPECTED_CALL_SITES = 10
+# 1 in handoff (HZ-158's note from an exhausted session), 1 in caretaker_ruling
+# (HZ-273's ruling proposal).
+EXPECTED_CALL_SITES = 11
 
 
 def call_site_problems(source: str, filename: str) -> tuple[int, list[str]]:

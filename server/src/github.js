@@ -15,6 +15,7 @@ import { POLL_INTERVAL_MS, UI_URL } from './config.js'
 import { ACCEPT_GATE_INDEX } from '../../domain/js/lifecycle.js'
 import { PRIORITY } from '../../domain/js/priorities.js'
 import { PRIORITY_LABEL_RE, priorityLabelName } from './priorityLabels.js'
+import { spliceIssueBody } from './caretakerRulingRules.js'
 
 const itemLink = (item) => `[open in Horizon](${UI_URL}/${item.id.toLowerCase()})`
 
@@ -713,6 +714,30 @@ export async function syncIssueBodyFields(item) {
   const upd = await gh(`/repos/${item.repo}/issues/${item.issue}`, { method: 'PATCH', body: JSON.stringify({ body }) })
   if (!upd.ok) throw new Error(`GitHub returned ${upd.status} updating issue #${item.issue}`)
   return true
+}
+
+// ---- HZ-273: the caretaker's line-level ruling edits ----
+// Unlike syncIssueBodyFields above, which rebuilds the whole body, these
+// change only the named lines (spliceIssueBody), so every other byte of the
+// issue — description, other lines, line endings — stays as it was. The
+// PATCH sends `body` alone: never a title, label or state.
+
+export async function getIssueBody(item) {
+  if (!item.repo || item.issue == null) throw new Error('the item has no GitHub issue')
+  const res = await gh(`/repos/${item.repo}/issues/${item.issue}`)
+  if (!res.ok) throw new Error(`GitHub returned ${res.status} reading issue #${item.issue}`)
+  return (await res.json()).body || ''
+}
+
+// Re-reads the body first, so an edit whose line has changed since the ruling
+// was checked fails closed (err.code 'stale_body') with nothing written.
+// Returns the updated issue as GitHub sent it back.
+export async function patchIssueBodyLines(item, edits) {
+  const spliced = spliceIssueBody(await getIssueBody(item), edits)
+  if (!spliced.ok) throw Object.assign(new Error(spliced.detail), { code: spliced.code })
+  const res = await gh(`/repos/${item.repo}/issues/${item.issue}`, { method: 'PATCH', body: JSON.stringify({ body: spliced.body }) })
+  if (!res.ok) throw new Error(`GitHub returned ${res.status} updating issue #${item.issue}`)
+  return res.json()
 }
 
 export async function postIssueComment(item, body) {

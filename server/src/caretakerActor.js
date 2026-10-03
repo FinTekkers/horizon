@@ -52,20 +52,24 @@ const FAILED_RUNS_STOP = 2
 // away from 'on' at or after the evaluation retires that decision for good.
 // project_event.created_at has one-second resolution, so a switch in the same
 // second as the evaluation also retires it — the safe side of the tie.
+// HZ-273: exported as the one WHERE fragment (aliases c, w, p) that
+// caretakerRuling.js's query shares, so the safety rules have one copy.
+export const ACTIONABLE_EVAL_SQL = `p.autopilot = 'on' AND p.enabled = 1 AND c.mode = 'on'
+     AND c.gate_index IN (${ACT_GATES.join(',')}) AND w.cursor = c.gate_index
+     AND w.abandoned_at IS NULL
+     AND c.arrival_run_id = COALESCE((SELECT MAX(s.id) FROM step_run s WHERE s.item_id = w.id
+           AND s.step_index = w.cursor - 1 AND s.status = 'done'), 0)
+     AND NOT EXISTS (SELECT 1 FROM caretaker_action a WHERE a.eval_id = c.id)
+     AND NOT EXISTS (SELECT 1 FROM project_event pe WHERE pe.project_id = p.id AND pe.kind = 'autopilot'
+           AND pe.new_value <> 'on' AND pe.created_at >= c.created_at)`
 const CANDIDATE_SQL = `
   SELECT c.id AS eval_id, c.item_id, c.gate_index, c.arrival_run_id, c.decision, c.rule_id, c.reason, c.comment,
          w.project_id, w.review_cycle_count, p.name AS project_name
     FROM caretaker_eval c
     JOIN work_item w ON w.id = c.item_id
     JOIN project p ON p.id = w.project_id
-   WHERE p.autopilot = 'on' AND p.enabled = 1 AND c.mode = 'on'
-     AND c.gate_index IN (${ACT_GATES.join(',')}) AND w.cursor = c.gate_index
-     AND c.decision IN ('approve','send_back') AND w.abandoned_at IS NULL
-     AND c.arrival_run_id = COALESCE((SELECT MAX(s.id) FROM step_run s WHERE s.item_id = w.id
-           AND s.step_index = w.cursor - 1 AND s.status = 'done'), 0)
-     AND NOT EXISTS (SELECT 1 FROM caretaker_action a WHERE a.eval_id = c.id)
-     AND NOT EXISTS (SELECT 1 FROM project_event pe WHERE pe.project_id = p.id AND pe.kind = 'autopilot'
-           AND pe.new_value <> 'on' AND pe.created_at >= c.created_at)`
+   WHERE ${ACTIONABLE_EVAL_SQL}
+     AND c.decision IN ('approve','send_back')`
 const selectCandidates = db.prepare(`${CANDIDATE_SQL} ORDER BY c.id`)
 const selectStillActionable = db.prepare(`${CANDIDATE_SQL} AND c.id = ?`)
 const selectMode = db.prepare('SELECT autopilot FROM project WHERE id = ?')
@@ -130,7 +134,7 @@ export function queueHelpPings({ now = Date.now, owner = ownerJid } = {}) {
   return queued
 }
 
-const STALL_TEXT = {
+export const STALL_TEXT = {
   review_cycle_cap: 'review-cycle cap reached',
   step_failed_twice: 'the step before this gate has failed twice',
 }
@@ -140,7 +144,9 @@ export function actionsInWindow(projectId, nowMs) {
   return countWindow.get(projectId, nowMs - HOUR_MS).n
 }
 
-function stallReason(c) {
+// `c` needs item_id, gate_index and review_cycle_count. HZ-273's rulings stop
+// on the same caps through this.
+export function stallReason(c) {
   if (c.review_cycle_count >= REVIEW_CYCLE_CAP) return 'review_cycle_cap'
   // The caretaker's own send-backs reset the item's review cycles, so they
   // are counted too — an endless caretaker send-back loop stops at the cap.

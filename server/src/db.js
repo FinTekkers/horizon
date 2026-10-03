@@ -634,6 +634,29 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_caretaker_accept_inflight ON caretaker_accept_action(project_id, action, outcome);
 `)
 
+// HZ-273: the caretaker's rulings (caretakerRuling.js) on an `Operator must
+// decide:` arrival. eval_id UNIQUE is the claim: one ruling per arrival.
+// edits (JSON [{field, before, after}], redacted) is written BEFORE the issue
+// is patched, so a crash mid-ruling still leaves its before/after on record.
+// 'defer' and followup_item are for 273-2; the period index is for the digest.
+db.exec(`
+  CREATE TABLE IF NOT EXISTS caretaker_ruling (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    eval_id       INTEGER NOT NULL UNIQUE REFERENCES caretaker_eval(id) ON DELETE CASCADE,
+    project_id    INTEGER NOT NULL REFERENCES project(id),
+    item_id       TEXT NOT NULL REFERENCES work_item(id) ON DELETE CASCADE,
+    gate_index    INTEGER NOT NULL,
+    kind          TEXT CHECK (kind IN ('narrow','clarify','restore','defer')),
+    outcome       TEXT NOT NULL CHECK (outcome IN ('pending','applied','rejected','failed','dropped')),
+    code          TEXT,
+    reason        TEXT,
+    edits         TEXT,
+    followup_item TEXT,
+    created_at_ms INTEGER NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS idx_caretaker_ruling_period ON caretaker_ruling(project_id, outcome, created_at_ms);
+`)
+
 // HZ-263: deploy targets, the one source the self-deploy resolver reads
 // (server/src/deployTargets.js seeds it once and re-validates every row on
 // read). Field names mirror the old infra/host registry entries; repo is
