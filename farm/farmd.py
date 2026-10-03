@@ -24,7 +24,7 @@ from fastapi.responses import JSONResponse
 # HZ-132 put the failure-reason vocabulary there under the same rule, so the
 # tags this daemon relays are the ones the server classifies, by construction.
 from domain.py import reasons, steps
-from . import check_slots, conflict_cancel, conflict_resolver, pause, rules, tmux_mgr, workspaces
+from . import caretaker_ruling, check_slots, conflict_cancel, conflict_resolver, pause, rules, tmux_mgr, workspaces
 from . import config as farm_config
 from .checks import CHECK_SLOTS, default_check_slots
 from .task_files import read_launchable_task
@@ -1023,6 +1023,28 @@ async def conflicts_resolve(request: Request):
         print(f"farmd: conflict resolution for {item_id} failed: {exc}", flush=True)
         return JSONResponse({"error": str(exc)[:300]}, status_code=500)
     return {"ok": True, **result}
+
+
+@app.post("/caretaker/ruling")
+async def caretaker_ruling_route(request: Request):
+    """HZ-273: one bounded agent call proposing an operator ruling, returned
+    directly — no tmux session, queue file or run row. The proposal is only a
+    proposal: the Node server checks it in code and is the only side that
+    edits the issue. 400 for a missing key, 503 when the provider is not
+    authenticated; an unusable model reply is a 200 {"unsure": true}."""
+    body = await request.json()
+    if not isinstance(body, dict):
+        return JSONResponse({"error": "a JSON object is required"}, status_code=400)
+    for key in caretaker_ruling.REQUIRED_KEYS:
+        if not isinstance(body.get(key), str):
+            return JSONResponse({"error": f"missing {key}"}, status_code=400)
+    try:
+        assert_provider_auth()
+    except Exception as exc:
+        return JSONResponse({"error": f"provider not authenticated: {exc}"[:300]}, status_code=503)
+    return await asyncio.to_thread(
+        caretaker_ruling.propose, body["item_id"], body["request"], body["metric"], body["guardrails"]
+    )
 
 
 # HZ-256: the only farmd route that checks its caller itself. farmd binds to

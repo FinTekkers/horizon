@@ -38,14 +38,20 @@ const bullets = (lines) => lines.filter((l) => LIST_ITEM.test(l)).map((l) => l.r
 
 const firstSentence = (s) => s.replace(/\*\*/g, '').trim()
 
+// Every line of `text` that starts with the rule's linePrefix, list markers
+// and bold stripped. HZ-273's ruling step reads the whole request through this.
+export function operatorDecideLines(rule, text) {
+  const prefix = rule.linePrefix.toLowerCase()
+  return String(text || '')
+    .split('\n')
+    .map((raw) => raw.trim().replace(/^[-*>#\s]+/, '').replace(/\*\*/g, '').trim())
+    .filter((line) => line.toLowerCase().startsWith(prefix))
+}
+
 export const EVALUATORS = {
   'any.operator_decide': (rule, facts) => {
-    const prefix = rule.linePrefix.toLowerCase()
-    for (const raw of String(facts.artifact || '').split('\n')) {
-      const line = raw.trim().replace(/^[-*>#\s]+/, '').replace(/\*\*/g, '').trim()
-      if (line.toLowerCase().startsWith(prefix)) return { reason: `ruling needed: ${line.slice(prefix.length).trim()}` }
-    }
-    return null
+    const [line] = operatorDecideLines(rule, facts.artifact)
+    return line ? { reason: `ruling needed: ${line.slice(rule.linePrefix.length).trim()}` } : null
   },
   'g5.blocker': (rule, facts) => {
     const open = bullets(section(facts.artifact, rule.section)).filter(

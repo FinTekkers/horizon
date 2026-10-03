@@ -23,7 +23,11 @@ matches, the decision is **ping the human**.
 
 1. **Any gate.** A line in the source artifact that starts with
    `Operator must decide:` means a ruling is needed. **Ping the human.**
-   Making rulings is Autopilot 4.
+   With Autopilot `on`, at Approve the high-level design and Review before
+   execution, the server's ruling step (HZ-273) then rules within its
+   limits: it may narrow, clarify or restore only the named metric or
+   guardrail lines in the GitHub issue body, and sends the item back with a
+   note. Anything its checks reject is left for the human.
 2. **Approve the high-level design.** Read the options artifact.
    - An open bullet under `## Blockers` means **send back with comment**,
      naming the blocker. A bullet that says `None` or is ticked `[x]` is not open.
