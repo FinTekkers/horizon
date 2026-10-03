@@ -42,6 +42,24 @@ const bullets = (lines) => lines.filter((l) => LIST_ITEM.test(l)).map((l) => l.r
 
 const firstSentence = (s) => s.replace(/\*\*/g, '').trim()
 
+// Quoted spans are examples, not recommendations. Each is matched on one line
+// only, so an unclosed quote cannot swallow the text after it. A `'` opens a
+// span only at a word start, so the apostrophe in "don't" survives.
+const QUOTED = [/`[^`\n]*`/g, /"[^"\n]*"/g, /“[^”\n]*”/g, /‘[^’\n]*’/g, /(?<!\w)'[^'\n]*'/g]
+
+// HZ-299: the sentences of some section lines, bold, quotes and leading list
+// markers stripped. A line that is wholly one code span is unwrapped first, so
+// `Recommended option: A` written as code still counts.
+function sentences(lines) {
+  return lines
+    .map((l) => l.replace(/\*\*/g, '').trim().replace(/^(?:(?:[-*+>]|\d+[.)])\s+)+/, ''))
+    .map((l) => l.replace(/^`([^`]*)`$/, '$1'))
+    .map((l) => QUOTED.reduce((s, re) => s.replace(re, ' '), l))
+    .flatMap((l) => l.split(/(?<=[.!?;])\s+/))
+    .map((s) => s.trim())
+    .filter(Boolean)
+}
+
 // Every line of `text` that starts with the rule's linePrefix, list markers
 // and bold stripped. HZ-273's ruling step reads the whole request through this.
 export function operatorDecideLines(rule, text) {
@@ -64,9 +82,18 @@ export const EVALUATORS = {
     if (open.length === 0) return null
     return { reason: `open blocker: ${firstSentence(open[0])}`, comment: open.map((b) => `- ${b}`).join('\n') }
   },
+  // Exactly one option letter, from non-negated sentences, approves. None or
+  // two different letters fall through to ping_human: never guess.
   'g5.approve': (rule, facts) => {
-    const match = new RegExp(rule.pattern).exec(section(facts.artifact, rule.section).join('\n'))
-    return match ? { reason: `recommended option ${match[1]}` } : null
+    const negations = rule.negations.map((n) => new RegExp(n, 'i'))
+    const letters = new Set()
+    for (const sentence of sentences(section(facts.artifact, rule.section))) {
+      if (negations.some((re) => re.test(sentence))) continue
+      for (const pattern of rule.patterns) {
+        for (const m of sentence.matchAll(new RegExp(pattern, 'g'))) letters.add(m[1])
+      }
+    }
+    return letters.size === 1 ? { reason: `recommended option ${[...letters][0]}` } : null
   },
   'g10.send_back': (rule, facts) => {
     const verdict = section(facts.artifact, rule.section).join('\n')

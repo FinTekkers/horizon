@@ -17,6 +17,10 @@ recommendation can be approved. Write 'None.' when nothing blocks. Notes for
 the reviewer are not blockers; put them elsewhere. Autopilot reads this
 section (farm/roles/caretaker.md).
 
+End '## Recommendation' with one final line, exactly `Recommended option: <letter>`,
+in plain text, e.g. `Recommended option: A`. Name one option only. Autopilot
+reads this line (farm/roles/caretaker.md).
+
 If human feedback is provided, respond to every point explicitly in your
 artifact — reviewers check that each note was addressed, not just mentioned.
 
