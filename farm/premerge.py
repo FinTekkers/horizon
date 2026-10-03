@@ -46,6 +46,9 @@ from . import workspaces
 from .checks import CheckFailure, output_tail, run_checks
 from .config import WORKSPACES_DIR
 
+# farm/validate.py (HZ-248) imports _git, _has_commit, _within and
+# _remove_scratch from here: keep their signatures stable.
+
 # Deployed checkouts the pre-merge run must never touch, whatever a caller
 # passes in. /opt/horizon is where horizon-server and farmd run from.
 DEPLOYED_ROOTS = (Path("/opt/horizon"),)
@@ -132,12 +135,13 @@ def _item_lock(repo_full: str, item_id: str):
             fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
 
 
-def _remove_scratch(hub: Path, ws: Path) -> None:
+def _remove_scratch(hub: Path, ws: Path, guard=assert_scratch_path) -> None:
     """The ONLY place this module deletes anything in the farm's workspaces.
     Caller holds hub_lock. assert_scratch_path() runs first, every time, so
     whatever `ws` turns out to be, nothing outside <repo>__premerge/<item> is
-    removed — never an item worktree under <repo>__items/."""
-    assert_scratch_path(ws)
+    removed — never an item worktree under <repo>__items/. farm/validate.py
+    reuses this sequence with its own path check as `guard`."""
+    guard(ws)
     _git(hub, "worktree", "remove", "--force", str(ws), check=False)
     if ws.exists():
         shutil.rmtree(ws, ignore_errors=True)

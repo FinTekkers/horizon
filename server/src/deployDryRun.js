@@ -219,8 +219,8 @@ const PROBES = {
 }
 
 // One check, bounded: it settles by the timeout whatever the probe does, and
-// never throws.
-function bounded(check, probe, timeoutMs) {
+// never throws. Also bounds each 'Validate project' check (HZ-248).
+export function bounded(check, probe, timeoutMs) {
   let timer
   const limit = new Promise((resolve) => {
     timer = setTimeout(() => resolve(fail(`${check} check timed out after ${timeoutMs}ms`)), timeoutMs + 250)

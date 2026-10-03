@@ -16,6 +16,7 @@ import * as autoResolve from './autoResolve.js'
 import * as webhooks from './webhooks.js'
 import * as deployDrain from './deployDrain.js'
 import * as deployDryRun from './deployDryRun.js'
+import * as projectValidate from './projectValidate.js'
 import { createTarget, deleteTarget, findTargetByKey, listTargets, targetFromBody, updateTarget } from './deployTargets.js'
 import {
   WEBHOOK_SECRET,
@@ -2214,6 +2215,65 @@ export function buildApp({ logger = true, onRoute = null } = {}) {
       if (result.error) return reply.code(409).send({ error: result.error })
       broadcast()
       return result
+    },
+  )
+
+  // HZ-248: 'Validate project' — the six read-only onboarding pre-flight
+  // checks (projectValidate.js). PIN first, before the project lookup, the
+  // same model as the Dry run; the body must be empty. Check commands can take
+  // minutes, so this answers 202 at once and the run finishes in the
+  // background; GET /validation reads the stored result.
+  fastify.post(
+    '/api/projects/:id/validate',
+    {
+      schema: {
+        security: HUMAN_GATE_SECURITY,
+        params: {
+          type: 'object',
+          required: ['id'],
+          properties: { id: { type: 'integer', minimum: 1 } },
+        },
+        body: { type: 'object', maxProperties: 0 },
+        response: { 202: OK_OBJECT, 400: ERROR_OBJECT, 401: ERROR_OBJECT, 404: ERROR_OBJECT, 409: ERROR_OBJECT },
+      },
+    },
+    (request, reply) => {
+      if (!humanAuthorized(request, reply)) return
+      const project = store.listProjects({ checks: false }).find((p) => p.id === request.params.id)
+      if (!project) return reply.code(404).send({ error: 'Project not found' })
+      if (!projectValidate.tryBeginValidation(project.id)) return reply.code(409).send({ error: 'validation_in_progress' })
+      const startedAt = new Date().toISOString()
+      projectValidate
+        .validateProject(project, { who: actorOf(request), log: fastify.log })
+        .catch((err) => fastify.log.error(`project validation crashed: ${projectValidate.scrub(err?.message ?? err)}`))
+        .finally(() => {
+          projectValidate.endValidation(project.id)
+          broadcast()
+        })
+      return reply.code(202).send({ projectId: project.id, running: true, startedAt })
+    },
+  )
+
+  fastify.get(
+    '/api/projects/:id/validation',
+    {
+      schema: {
+        params: {
+          type: 'object',
+          required: ['id'],
+          properties: { id: { type: 'integer', minimum: 1 } },
+        },
+        response: { 200: OK_OBJECT, 404: ERROR_OBJECT },
+      },
+    },
+    (request, reply) => {
+      const project = store.listProjects({ checks: false }).find((p) => p.id === request.params.id)
+      if (!project) return reply.code(404).send({ error: 'Project not found' })
+      return {
+        projectId: project.id,
+        running: projectValidate.isValidating(project.id),
+        latest: store.latestValidation(project.id),
+      }
     },
   )
 

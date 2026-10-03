@@ -555,6 +555,20 @@ export async function getBranchSha(repo, branch) {
   return sha
 }
 
+// HZ-248: whether the token can push to `repo` — one read-only GET. Never
+// throws: { ok, status, push }, status null when GitHub was unreachable.
+export async function getRepoPermissions(repo) {
+  let res
+  try {
+    res = await gh(`/repos/${repo}`)
+  } catch {
+    return { ok: false, status: null, push: false }
+  }
+  if (!res.ok) return { ok: false, status: res.status, push: false }
+  const data = await res.json().catch(() => null)
+  return { ok: true, status: res.status, push: data?.permissions?.push === true }
+}
+
 // HZ-257: whether `baseSha` is an ancestor of (or equal to) `headSha` — so a
 // test-merge of the two would be the head itself. Ancestry only: nothing here
 // reads a commit status or any claim that checks passed. Throws on any
