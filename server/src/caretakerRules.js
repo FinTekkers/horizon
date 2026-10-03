@@ -74,6 +74,8 @@ export const EVALUATORS = {
     const marker = rule.markers.find((m) => verdict.includes(m))
     return marker ? { reason: `PM said ${marker.replace(/\*\*/g, '')}` } : null
   },
+  // Advisory only (the "would …" event). What the caretaker DOES at gate 13 is
+  // decideAcceptGate() in caretakerAccept.js — keep the two in step.
   'g13.wait': (rule, facts) => {
     const kind = rule.kinds.find((k) => (facts.runningKinds || []).includes(k))
     return kind ? { reason: `a ${kind} run is in progress` } : null
