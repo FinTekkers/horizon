@@ -77,6 +77,7 @@ test.each([
   ['running', action('running', { detail: 'npm test' })],
   ['merged', action('merged')],
   ['blocked', action('blocked', { failingCheck: 'unit-tests' })],
+  ['timed_out', action('timed_out', { reason: 'pre-merge checks did not finish: timed out' })],
 ])('Tracker and Board card show identical status text when %s', (_, a) => {
   const it = item(a)
   const tracker = render(

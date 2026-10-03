@@ -185,3 +185,140 @@ test('an item from an older payload with no gateAction key renders enabled butto
   for (const name of GATE_BUTTONS) expect(button(name).disabled, name).toBe(false)
   expect(status()).toBeNull()
 })
+
+// HZ-231: Retry beside the reason of a run that timed out, was interrupted or
+// failed is Accept relabelled — same confirm dialog, same request, same lock.
+
+async function openBoard(item) {
+  items = [item]
+  window.history.pushState({}, '', '/')
+  const view = render(<App />)
+  await view.findByText('Accept the code')
+  await waitFor(() => expect(listeners.size).toBeGreaterThan(0))
+  return view
+}
+
+const retryButton = () => status()?.querySelector('button') || null
+const dialogTitle = () => document.querySelector('.composer__title')?.textContent ?? null
+const timedOut = () => finished({ state: 'timed_out', reason: 'pre-merge checks did not finish: timed out' })
+
+test('Retry opens the same confirm dialog and sends the request Accept sends', async () => {
+  api.approveGate.mockResolvedValue({ ok: true })
+  const { findByText } = await openItem(acceptItem('GA-8'))
+
+  fireEvent.click(button('Approve'))
+  await findByText('Approve this gate?')
+  const acceptDialog = dialogTitle()
+  fireEvent.click(document.querySelector('.composer__submit'))
+  await waitFor(() => expect(api.approveGate).toHaveBeenCalledTimes(1))
+  const acceptArgs = api.approveGate.mock.calls[0]
+  api.approveGate.mockClear()
+
+  pushItems([acceptItem('GA-8', { gateAction: timedOut() })])
+  await waitFor(() => expect(retryButton()?.disabled).toBe(false))
+  expect(retryButton().textContent).toBe('Retry')
+  fireEvent.click(retryButton())
+  await findByText('Approve this gate?')
+  expect(dialogTitle()).toBe(acceptDialog)
+  fireEvent.click(document.querySelector('.composer__submit'))
+  await waitFor(() => expect(api.approveGate).toHaveBeenCalledTimes(1))
+  expect(api.approveGate.mock.calls[0]).toEqual(acceptArgs)
+})
+
+test('Tracker: a double click on Retry and confirm starts one run; the gate stays locked and the reason stays until a running push', async () => {
+  let answer
+  api.approveGate.mockReturnValue(new Promise((resolve) => (answer = resolve)))
+  const { findByText } = await openItem(acceptItem('GA-9', { gateAction: timedOut() }))
+
+  fireEvent.click(retryButton())
+  fireEvent.click(retryButton())
+  await findByText('Approve this gate?')
+  const submit = document.querySelector('.composer__submit')
+  fireEvent.click(submit)
+  fireEvent.click(submit)
+  await waitFor(() => expect(retryButton().disabled).toBe(true))
+  for (const name of GATE_BUTTONS) expect(button(name).disabled, name).toBe(true)
+  fireEvent.click(retryButton())
+  fireEvent.click(button('Approve'))
+  expect(document.querySelector('.composer__submit')).toBeNull()
+  expect(api.approveGate).toHaveBeenCalledTimes(1)
+  // The failure stays beside the disabled Retry while the request is pending.
+  expect(status().textContent).toMatch(/Checks did not finish/)
+  expect(status().textContent).toMatch(/pre-merge checks did not finish: timed out/)
+
+  pushItems([acceptItem('GA-9', { gateAction: running() })])
+  expect(status().textContent).toMatch(/^Merging:/)
+  expect(status().textContent).not.toMatch(/timed out/)
+  expect(retryButton()).toBeNull()
+  await act(async () => answer({ ok: true }))
+  expect(api.approveGate).toHaveBeenCalledTimes(1)
+})
+
+test('Board card: a double click on Retry and confirm starts one run, with Retry disabled until it settles', async () => {
+  let answer
+  api.approveGate.mockReturnValue(new Promise((resolve) => (answer = resolve)))
+  const { findByText } = await openBoard(acceptItem('GA-10', { gateAction: timedOut() }))
+
+  fireEvent.click(retryButton())
+  fireEvent.click(retryButton())
+  await findByText('Approve this gate?')
+  const submit = document.querySelector('.composer__submit')
+  fireEvent.click(submit)
+  fireEvent.click(submit)
+  await waitFor(() => expect(retryButton().disabled).toBe(true))
+  fireEvent.click(retryButton())
+  expect(document.querySelector('.composer__submit')).toBeNull()
+  expect(api.approveGate).toHaveBeenCalledTimes(1)
+  expect(status().textContent).toMatch(/pre-merge checks did not finish: timed out/)
+
+  await act(async () => answer({ ok: true }))
+  expect(retryButton().disabled).toBe(false)
+  expect(api.approveGate).toHaveBeenCalledTimes(1)
+})
+
+test.each([
+  ['{ ok: false }', { ok: false }],
+  ['a 409', { error: 'a gate action is already running', status: 409 }],
+])('a Retry that comes back with %s keeps the failure and re-enables Retry', async (_, result) => {
+  api.approveGate.mockResolvedValue(result)
+  const { findByText } = await openItem(acceptItem('GA-11', { gateAction: timedOut() }))
+
+  fireEvent.click(retryButton())
+  await findByText('Approve this gate?')
+  fireEvent.click(document.querySelector('.composer__submit'))
+  await waitFor(() => expect(api.approveGate).toHaveBeenCalledTimes(1))
+  await waitFor(() => expect(retryButton().disabled).toBe(false))
+  expect(status().textContent).toMatch(/Checks did not finish/)
+  expect(status().textContent).toMatch(/pre-merge checks did not finish: timed out/)
+})
+
+test('cancelling the dialog sends nothing, keeps the failure, and the next Retry asks again', async () => {
+  const { findByText } = await openItem(acceptItem('GA-12', { gateAction: timedOut() }))
+
+  fireEvent.click(retryButton())
+  await findByText('Approve this gate?')
+  fireEvent.click(document.querySelector('.composer__cancel'))
+  expect(dialogTitle()).toBeNull()
+  expect(api.approveGate).not.toHaveBeenCalled()
+  expect(retryButton().disabled).toBe(false)
+  expect(status().textContent).toMatch(/pre-merge checks did not finish: timed out/)
+
+  fireEvent.click(retryButton())
+  await findByText('Approve this gate?')
+  expect(api.approveGate).not.toHaveBeenCalled()
+})
+
+test('nothing retries on its own: time passing and another timed_out push send no request', async () => {
+  vi.useFakeTimers({ shouldAdvanceTime: true })
+  try {
+    await openItem(acceptItem('GA-13', { gateAction: timedOut() }))
+    await act(async () => vi.advanceTimersByTime(10 * 60_000))
+    pushItems([acceptItem('GA-13', { gateAction: timedOut() })])
+    await act(async () => vi.advanceTimersByTime(10 * 60_000))
+    expect(retryButton().textContent).toBe('Retry')
+    expect(api.approveGate).not.toHaveBeenCalled()
+    expect(dialogTitle()).toBeNull()
+  } finally {
+    vi.useRealTimers()
+  }
+})
