@@ -24,12 +24,22 @@
 // The advisory g13.* rules in farm/roles/caretaker.md (caretakerRules.js) say
 // what the caretaker WOULD do; decideAcceptGate() below is what it DOES. Keep
 // the two in step.
+//
+// HZ-296: while GitHub has not reported mergeability, the pass re-reads the PR
+// a fixed number of times through the injected refreshMergeable (github's
+// refreshPrMergeable in production — injected, so this module still imports
+// no github). Once caretaker.js has recorded a 'ping_human' decision for the
+// arrival the owner owns it: the caretaker never also presses Accept or starts
+// Resolve conflicts on it (stops still ping under their own key). An
+// Accept whose pre-merge row says merged is 'ok' even when GitHub's merge
+// webhook moved the item off the gate before approveGate ran.
 
 import { db } from './db.js'
 import * as store from './store.js'
 import { STEPS, ACCEPT_GATE_INDEX } from '../../domain/js/lifecycle.js'
 import { redact } from './caretakerRules.js'
 import { isDeployBlocked } from './deployDrain.js'
+import { MERGEABLE_PROBE_DELAYS_MS, MERGEABLE_PROBE_ATTEMPTS, reviewPassed as passedReview } from './caretakerMergeable.js'
 
 const HOUR_MS = 60 * 60 * 1000
 const GATE_LABEL = STEPS[ACCEPT_GATE_INDEX].label
@@ -48,7 +58,7 @@ export const ACCEPT_STOP_TEXT = {
 // the same key caretaker.js judges an arrival by. Oldest arrival first, so
 // items are accepted in the order they reached the gate.
 const selectCandidates = db.prepare(`
-  SELECT w.id AS item_id, w.project_id, w.pr, w.pr_mergeable, w.forwarded_review_run_id, p.name AS project_name,
+  SELECT w.id AS item_id, w.project_id, w.repo, w.pr, w.pr_mergeable, w.forwarded_review_run_id, p.name AS project_name,
          COALESCE((SELECT MAX(s.id) FROM step_run s WHERE s.item_id = w.id
                AND s.step_index = w.cursor - 1 AND s.status = 'done'), 0) AS arrival_run_id
     FROM work_item w JOIN project p ON p.id = w.project_id
@@ -82,7 +92,20 @@ const insertClaim = db.prepare(`
   INSERT INTO caretaker_accept_action (project_id, item_id, arrival_run_id, action, outcome, acted_at_ms)
   VALUES (?, ?, ?, ?, 'pending', ?)`)
 const finishClaim = db.prepare('UPDATE caretaker_accept_action SET outcome = ?, result = ?, error = ? WHERE id = ?')
-const selectRowState = db.prepare('SELECT state FROM gate_action WHERE item_id = ? AND kind = ?')
+const selectRowState = db.prepare('SELECT state, epoch FROM gate_action WHERE item_id = ? AND kind = ?')
+// The owner was asked about this arrival (caretaker.js judged it 'ping_human'
+// while 'on', which caretakerActor.js pings): the caretaker leaves it to them.
+const selectGatePing = db.prepare(`
+  SELECT 1 FROM caretaker_eval WHERE item_id = ? AND gate_index = ${ACCEPT_GATE_INDEX} AND arrival_run_id = ?
+     AND decision = 'ping_human' AND mode = 'on' LIMIT 1`)
+const insertProbe = db.prepare(
+  'INSERT OR IGNORE INTO caretaker_mergeable_probe (item_id, arrival_run_id, first_seen_ms) VALUES (?, ?, ?)',
+)
+const selectProbe = db.prepare(
+  'SELECT id, first_seen_ms, attempts, last_attempt_ms FROM caretaker_mergeable_probe WHERE item_id = ? AND arrival_run_id = ?',
+)
+const startProbe = db.prepare('UPDATE caretaker_mergeable_probe SET attempts = attempts + 1, last_attempt_ms = ? WHERE id = ? AND attempts = ?')
+const settleProbe = db.prepare('UPDATE caretaker_mergeable_probe SET settled = settled + 1, last_error = ? WHERE id = ?')
 const insertEvent = db.prepare(
   "INSERT INTO event (item_id, who, text, color, initials) VALUES (?, 'Caretaker', ?, '#4A6B5D', 'CT')",
 )
@@ -97,7 +120,8 @@ const selectRecentLimitPing = db.prepare(
 // row claimed during this arrival has a step_run id at or past the arrival
 // run; anything lower is from an earlier visit to the gate.
 const epochRun = (epoch) => Number(String(epoch ?? '').split(':')[1]) || 0
-const reviewPassed = (row) => row.arrival_run_id !== 0 && row.arrival_run_id !== row.forwarded_review_run_id
+const reviewPassed = (row) => passedReview(row.arrival_run_id, row.forwarded_review_run_id)
+export const MERGEABLE_UNKNOWN = 'GitHub has not reported whether the PR merges'
 
 // What decideAcceptGate() looks at, all read from the DB.
 export function gatherAcceptFacts(row) {
@@ -136,7 +160,46 @@ export function decideAcceptGate(f) {
     return { kind: 'wait', reason: 'waiting for GitHub to recompute the PR after the resolve' }
   }
   if (f.mergeable === 1) return { kind: 'accept', reason: 'automated review passed, PR merges cleanly' }
-  return { kind: 'wait', reason: 'GitHub has not reported whether the PR merges' }
+  return { kind: 'wait', reason: MERGEABLE_UNKNOWN }
+}
+
+// One bounded re-read of the PR's mergeability, when the next one is due. The
+// attempt is claimed in the DB (after re-reading the mode) before the call
+// starts, so a tick, a second pass or a restart never adds a fifth; the call
+// runs on and only counts itself settled. A recorded flag notifies on its own
+// (github.recordPrMergeable), and the next pass presses Accept as usual.
+function probeMergeable(row, nowMs, refreshMergeable, log) {
+  const probe = db.transaction(() => {
+    if (selectMode.get(row.project_id)?.autopilot !== 'on') return null
+    insertProbe.run(row.item_id, row.arrival_run_id, nowMs)
+    const p = selectProbe.get(row.item_id, row.arrival_run_id)
+    if (p.attempts >= MERGEABLE_PROBE_ATTEMPTS) return null
+    if (nowMs < (p.last_attempt_ms ?? p.first_seen_ms) + MERGEABLE_PROBE_DELAYS_MS[p.attempts]) return null
+    if (startProbe.run(nowMs, p.id, p.attempts).changes !== 1) return null
+    return { id: p.id, attempt: p.attempts + 1 }
+  })()
+  if (!probe) return false
+  let pending
+  try {
+    pending = Promise.resolve(refreshMergeable(row.item_id, row.repo, row.pr))
+  } catch (err) {
+    pending = Promise.reject(err)
+  }
+  pending
+    .then(
+      () => null,
+      (err) => redact(err?.message || String(err)),
+    )
+    .then((error) => {
+      try {
+        settleProbe.run(error, probe.id)
+        if (error) log?.warn?.(`caretaker: re-read ${probe.attempt}/${MERGEABLE_PROBE_ATTEMPTS} of PR #${row.pr} for ${row.item_id} failed: ${error}`)
+        store.notifyChange()
+      } catch (err) {
+        log?.error?.(`caretaker: ${row.item_id} re-read could not be recorded: ${redact(err?.message)}`)
+      }
+    })
+  return true
 }
 
 // One ping and one event per arrival; a repeat tick or a restart adds nothing.
@@ -188,6 +251,7 @@ function settle(claimId, row, action, call, log) {
     .then((result) => {
       try {
         const kind = action === 'accept' ? 'premerge' : 'resolve'
+        const runner = selectRowState.get(row.item_id, kind)
         const state =
           action === 'resolve' && result && !result.error
             ? result.escalated
@@ -195,8 +259,12 @@ function settle(claimId, row, action, call, log) {
               : result.resolved
                 ? 'resolved'
                 : null
-            : selectRowState.get(row.item_id, kind)?.state ?? null
-        const error = result && !result.error ? null : redact(result?.error ?? 'no result')
+            : runner?.state ?? null
+        // HZ-296: this Accept's own pre-merge merged the PR, so it worked —
+        // even if GitHub's merge webhook moved the item on first and
+        // approveGate then answered not_at_gate.
+        const merged = action === 'accept' && state === 'merged' && epochRun(runner?.epoch) >= row.arrival_run_id
+        const error = merged || (result && !result.error) ? null : redact(result?.error ?? 'no result')
         finishClaim.run(error ? 'failed' : 'ok', state, error, claimId)
         if (error) log?.warn?.(`caretaker: ${action} on ${row.item_id} did not complete: ${error}`)
         store.notifyChange()
@@ -214,14 +282,20 @@ function settle(claimId, row, action, call, log) {
 // candidate in this loop already sees the pre-merge it just started, and no
 // second pass (a change signal while caretakerActor is busy, the 60s timer)
 // can interleave between a read and a claim. Do not add an await here.
-export function actOnAcceptGate({ gateActions, actor, log, now = Date.now, owner = () => null, limit } = {}) {
-  const counts = { accepted: 0, resolving: 0, stopped: 0, waited: 0 }
+//
+// `refreshMergeable(itemId, repo, pr)` re-reads one PR's mergeability. Without
+// it, mergeability unknown is a plain wait.
+export function actOnAcceptGate({ gateActions, actor, log, now = Date.now, owner = () => null, limit, refreshMergeable } = {}) {
+  const counts = { accepted: 0, resolving: 0, stopped: 0, waited: 0, probed: 0 }
   let changed = false
   try {
     for (const row of selectCandidates.all()) {
       try {
         const nowMs = now()
-        const decision = decideAcceptGate(gatherAcceptFacts(row))
+        let decision = decideAcceptGate(gatherAcceptFacts(row))
+        if ((decision.kind === 'accept' || decision.kind === 'resolve') && selectGatePing.get(row.item_id, row.arrival_run_id)) {
+          decision = { kind: 'wait', reason: 'the owner was asked to decide' }
+        }
         if (decision.kind === 'stop') {
           if (recordStop(row, decision.reason, nowMs, owner())) {
             counts.stopped++
@@ -232,6 +306,7 @@ export function actOnAcceptGate({ gateActions, actor, log, now = Date.now, owner
         }
         if (decision.kind === 'wait') {
           counts.waited++
+          if (decision.reason === MERGEABLE_UNKNOWN && refreshMergeable && probeMergeable(row, nowMs, refreshMergeable, log)) counts.probed++
           continue
         }
         // A self-deploy refuses new runs; wait it out rather than spend the claim.

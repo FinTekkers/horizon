@@ -23,6 +23,9 @@
 // a help ping — one owner message per arrival naming the item and the gate.
 // HZ-298: caretaker.js turns a second send-back in a row at one gate into such
 // a 'ping_human' decision, so the item waits for a human instead of looping.
+// HZ-296: a 'ping_human' decision at gate 13 is a help ping too, so every
+// genuine one in an 'on' project reaches the owner. Gate 13 is still never
+// acted on here (ACT_GATES); caretakerAccept.js leaves a pinged arrival alone.
 
 import { db } from './db.js'
 import * as store from './store.js'
@@ -107,15 +110,17 @@ const selectRecentLimitPing = db.prepare(
 )
 
 // HZ-274: 'ping_human' decisions for the CURRENT arrival of items still parked
-// at an act gate, in an enabled 'on' project, judged while 'on'. Same arrival
-// rule as CANDIDATE_SQL; gate 13 stops ping from caretakerAccept.js instead.
+// at an act gate or (HZ-296) Accept the code, in an enabled 'on' project,
+// judged while 'on'. Same arrival rule as CANDIDATE_SQL; gate 13's stops
+// (caretakerAccept.js) are not decisions and ping under their own key.
+const HELP_GATES = [...ACT_GATES, ACCEPT_GATE_INDEX]
 const selectHelpCandidates = db.prepare(`
   SELECT c.id AS eval_id, c.item_id, c.gate_index, c.rule_id, c.reason, w.project_id, w.title
     FROM caretaker_eval c
     JOIN work_item w ON w.id = c.item_id
     JOIN project p ON p.id = w.project_id
    WHERE p.autopilot = 'on' AND p.enabled = 1 AND c.mode = 'on' AND c.decision = 'ping_human'
-     AND c.gate_index IN (${ACT_GATES.join(',')}) AND w.cursor = c.gate_index AND w.abandoned_at IS NULL
+     AND c.gate_index IN (${HELP_GATES.join(',')}) AND w.cursor = c.gate_index AND w.abandoned_at IS NULL
      AND c.arrival_run_id = COALESCE((SELECT MAX(s.id) FROM step_run s WHERE s.item_id = w.id
            AND s.step_index = w.cursor - 1 AND s.status = 'done'), 0)
    ORDER BY c.id`)
@@ -434,7 +439,9 @@ export function failInterruptedActions() {
 // Change signals are coalesced onto the next turn of the event loop, so an
 // action never runs inside another mutation's notify(). Returns stop() for
 // the tests. `opts` (now, send, owner, limit) are for the tests too.
-export function init(log, { gateActions, ...opts } = {}) {
+// `refreshMergeable` (HZ-296) is github.refreshPrMergeable, handed to the
+// gate-13 pass for its bounded re-reads; without it, unknown just waits.
+export function init(log, { gateActions, refreshMergeable, ...opts } = {}) {
   if (!gateActions) throw new Error('caretakerActor.init needs the gateActions app.js builds')
   const interrupted = failInterruptedActions() + failInterruptedAcceptActions()
   if (interrupted > 0) log?.warn?.(`caretaker: ${interrupted} gate action(s) were mid-call at shutdown — not retried`)
@@ -449,6 +456,7 @@ export function init(log, { gateActions, ...opts } = {}) {
       now: opts.now ?? Date.now,
       owner: opts.owner ?? ownerJid,
       limit: opts.limit ?? CARETAKER_HOURLY_LIMIT,
+      refreshMergeable,
     })
     return actOnDecisions({ gateActions, log, ...opts })
   }
