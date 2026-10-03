@@ -15,6 +15,8 @@ import * as premerge from './premerge.js'
 import * as autoResolve from './autoResolve.js'
 import * as webhooks from './webhooks.js'
 import * as deployDrain from './deployDrain.js'
+import * as deployDryRun from './deployDryRun.js'
+import { findTargetByKey } from './deployTargets.js'
 import {
   WEBHOOK_SECRET,
   FARM_SHARED_SECRET,
@@ -1847,13 +1849,46 @@ export function buildApp({ logger = true, onRoute = null } = {}) {
   )
 
   // ---- Deploy targets (HZ-41, read-only) ----
-  // The registry itself (infra/host/deploy-targets.json) is a versioned file
-  // with no write path from this app — this endpoint only surfaces each
-  // target's on-disk deploy state for the Admin page.
+  // The targets are rows in the deploy_target table (HZ-263) — this endpoint
+  // only surfaces each target's on-disk deploy state for the Admin page.
 
   fastify.get('/api/admin/deploy-targets', { schema: { response: { 200: OK_OBJECT } } }, () => ({
     targets: deploy.listTargetStatuses(),
   }))
+
+  // HZ-258: a target's Dry run — five read-only checks (deployDryRun.js). PIN
+  // first, before the row is even looked up. The body must be empty: what is
+  // probed comes only from the stored row, never from the request.
+  fastify.post(
+    '/api/admin/deploy-targets/:key/dry-run',
+    {
+      schema: {
+        params: {
+          type: 'object',
+          required: ['key'],
+          properties: { key: { type: 'string', pattern: '^[a-z0-9][a-z0-9-]{0,63}$' } },
+        },
+        body: { type: 'object', maxProperties: 0 },
+        response: { 200: OK_OBJECT, 400: ERROR_OBJECT, 401: ERROR_OBJECT, 404: ERROR_OBJECT, 409: ERROR_OBJECT },
+        security: HUMAN_GATE_SECURITY,
+      },
+    },
+    async (request, reply) => {
+      if (!humanAuthorized(request, reply)) return
+      const { key } = request.params
+      const target = findTargetByKey(key)
+      if (!target) return reply.code(404).send({ error: 'deploy_target_not_found' })
+      if (!deployDryRun.tryBeginDryRun(key)) return reply.code(409).send({ error: 'dry_run_in_progress' })
+      try {
+        const ranAt = new Date().toISOString()
+        const results = await deployDryRun.runDryRun(target)
+        request.log.info({ key, pass: results.map((r) => r.pass) }, 'deploy target dry run')
+        return { key, ranAt, results }
+      } finally {
+        deployDryRun.endDryRun(key)
+      }
+    },
+  )
 
   // ---- GitHub sync configuration (from the UI) ----
 

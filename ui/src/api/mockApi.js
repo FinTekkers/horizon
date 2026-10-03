@@ -409,6 +409,21 @@ export async function getDeployTargets() {
   }
 }
 
+// HZ-258: canned Dry run — five checks, one failing, so the panel shows both.
+export async function dryRunDeployTarget(key) {
+  return {
+    key,
+    ranAt: new Date().toISOString(),
+    results: [
+      { check: 'script', pass: true, reason: 'script found in infra/host and executable' },
+      { check: 'repo dir', pass: true, reason: 'git work tree, origin is FinTekkers/horizon' },
+      { check: 'service', pass: true, reason: 'horizon-server, horizon-farm active' },
+      { check: 'sudo', pass: false, reason: 'sudo would prompt or is denied (exit 1)' },
+      { check: 'health', pass: true, reason: 'health responded 200, ok: true' },
+    ],
+  }
+}
+
 export async function getDefinition(kind, name) {
   const content = `# ${name}\n\nDemo content — connect the Horizon server to view and edit the real ${kind} definition.`
   return { kind, name, content, path: `farm/…/${name}.md`, bytes: content.length }

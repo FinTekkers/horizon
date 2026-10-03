@@ -41,6 +41,7 @@
 //   DEPLOY_BLOCK_MAX_TTL_S  cap on a self-deploy's block on new pre-merge/resolve runs (default 2h)
 //   CARETAKER_HOURLY_LIMIT  most automatic gate actions per project per rolling hour (HZ-271;
 //                           default 10, whole numbers >= 1 only)
+//   HORIZON_DRY_RUN_TIMEOUT_MS  per-check bound on a deploy-target Dry run (HZ-258; default 5s)
 
 import { agentStepIndexes } from '../../domain/js/lifecycle.js'
 
@@ -131,6 +132,10 @@ export const GATE_ACTION_MARGIN_MS = Number(process.env.GATE_ACTION_MARGIN_MS ||
 // can last (deployDrain.js), whatever TTL the deploy script asks for — so a
 // deploy script that died mid-drain can never hold the block for good.
 export const DEPLOY_BLOCK_MAX_TTL_S = Number(process.env.DEPLOY_BLOCK_MAX_TTL_S || 2 * 60 * 60)
+// HZ-258: how long each of a deploy-target Dry run's five checks may take
+// before it fails (deployDryRun.js). The checks run side by side, so a whole
+// Dry run answers within about this long.
+export const DRY_RUN_TIMEOUT_MS = Number(process.env.HORIZON_DRY_RUN_TIMEOUT_MS || 5000)
 // How often the orchestrator sweeps expired gate-action leases.
 export const GATE_ACTION_SWEEP_MS = Number(process.env.GATE_ACTION_SWEEP_MS || 60 * 1000)
 // HZ-182: after an automated review rejection, the next implement run is a

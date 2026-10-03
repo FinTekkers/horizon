@@ -350,6 +350,15 @@ button { font-family: var(--font-sans); }
 .deploy-target-row__service { font: 500 11px var(--font-mono); color: var(--muted); background: var(--subtle); border-radius: 5px; padding: 1px 6px; }
 .deploy-target-row__tag { font: 500 11px var(--font-mono); color: var(--muted); }
 .deploy-target-row__result { font: 500 11px var(--font-sans); color: var(--muted); margin-left: auto; text-align: right; }
+/* Deploy-target Dry run (HZ-258) */
+.deploy-dry-run { padding: 0 2px 8px 18px; }
+.deploy-dry-run__list { list-style: none; margin: 8px 0 0; padding: 0; }
+.deploy-dry-run__item { display: flex; align-items: baseline; gap: 9px; padding: 3px 0; font: 500 13px var(--font-sans); }
+.deploy-dry-run__check { color: var(--deep); font-weight: 600; min-width: 64px; }
+.deploy-dry-run__badge { font: 700 10px var(--font-sans); text-transform: uppercase; border-radius: 5px; padding: 1px 6px; }
+.deploy-dry-run__item--pass .deploy-dry-run__badge { color: var(--success-ink); background: var(--success-bg); }
+.deploy-dry-run__item--fail .deploy-dry-run__badge { color: var(--danger-ink); background: var(--danger-bg); }
+.deploy-dry-run__reason { color: var(--muted); font-size: 12px; }
 /* Personal API tokens (HZ-179) */
 .api-token-row { display: flex; align-items: center; gap: 9px; padding: 7px 2px; font: 500 13px var(--font-sans); }
 .api-token-row__name { color: var(--deep); font-weight: 600; }

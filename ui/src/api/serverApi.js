@@ -435,6 +435,24 @@ export function getDeployTargets() {
   return getJson('/admin/deploy-targets')
 }
 
+// HZ-258: a target's Dry run — five read-only checks. Gate-PIN protected like
+// fixRepoWebhook: the PIN goes only in the x-human-key header, never cached.
+// The body is always empty: the server probes only the stored target.
+export async function dryRunDeployTarget(key, pin) {
+  const res = await fetch(`${API_BASE}/admin/deploy-targets/${encodeURIComponent(key)}/dry-run`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'x-human-key': pin },
+    body: JSON.stringify({}),
+  })
+  const data = await res.json().catch(() => ({}))
+  if (!res.ok) {
+    const err = new Error(data.error || `HTTP ${res.status}`)
+    err.status = res.status
+    throw err
+  }
+  return data
+}
+
 export function getDefinition(kind, name) {
   return getJson(`/definitions/${encodeURIComponent(kind)}/${encodeURIComponent(name)}`)
 }
