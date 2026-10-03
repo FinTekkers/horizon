@@ -420,9 +420,18 @@ const selectAutopilotEvents = db.prepare(
   "SELECT old_value AS old, new_value AS new, who, created_at AS at FROM project_event WHERE project_id = ? AND kind = 'autopilot' ORDER BY id DESC LIMIT 3",
 )
 
-// The ONLY writer of project.autopilot; its only caller is the PIN-gated
-// Admin route in app.js. The flag and its audit row land in one transaction,
-// and a same-value write records nothing.
+// HZ-274: the WhatsApp kill switch names a project, not an id. Case and
+// surrounding spaces are ignored. { id, name } or null when nothing matches.
+export function findProjectByName(name) {
+  const wanted = String(name ?? '').trim()
+  if (!wanted) return null
+  return db.prepare('SELECT id, name FROM project WHERE lower(trim(name)) = lower(?) ORDER BY id LIMIT 1').get(wanted) ?? null
+}
+
+// The ONLY writer of project.autopilot. Two callers in app.js: the PIN-gated
+// Admin route (any mode) and HZ-274's WhatsApp kill switch ('off' only). The
+// flag and its audit row land in one transaction, and a same-value write
+// records nothing.
 export function setProjectAutopilot(projectId, mode, who) {
   if (!AUTOPILOT_MODES.includes(mode)) return { error: 'invalid_mode' }
   const result = db.transaction(() => {

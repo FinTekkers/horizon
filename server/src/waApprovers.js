@@ -87,6 +87,22 @@ export function approverJids() {
   return [...new Set(WA_APPROVER_JIDS.map(canonicalJid).filter(Boolean))]
 }
 
+// "The owner" (operator ruling, 2026-10-02): the first WA_APPROVER_JIDS entry,
+// as a sendable jid. The one definition — the caretaker pings this jid and the
+// WhatsApp kill switch (HZ-274) accepts only this sender. null when unset.
+export function ownerJid() {
+  const first = WA_APPROVER_JIDS[0]
+  return first ? canonicalJid(first) || null : null
+}
+
+// Compared like isAllowedApprover, on the user part only, so any jid form the
+// concierge lets through ('…@s.whatsapp.net', a device suffix) is the owner
+// when its number is.
+export function isOwner(jid) {
+  const owner = normalizeJid(ownerJid() ?? '')
+  return owner !== '' && normalizeJid(jid) === owner
+}
+
 export function approvalSecretConfigured() {
   return typeof WA_APPROVAL_SECRET === 'string' && WA_APPROVAL_SECRET.length > 0
 }

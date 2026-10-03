@@ -15,9 +15,12 @@
 // the hourly action limit, the review-cycle cap, or a step that has failed
 // twice. It never raises or bypasses either cap; it only reads them.
 //
-// Owner pings: the first entry of WA_APPROVER_JIDS (config.js), that one jid
-// only, through the existing sender. Ping and event text name the item and
-// the reason only, and every reason and comment goes through redact().
+// Owner pings: the first entry of WA_APPROVER_JIDS (waApprovers.ownerJid),
+// that one jid only, through the existing sender. Ping and event text name the
+// item and the reason only, and every reason and comment goes through redact().
+//
+// HZ-274: a 'ping_human' decision at gates 5, 10 and 15 in an 'on' project is
+// a help ping — one owner message per arrival naming the item and the gate.
 
 import { db } from './db.js'
 import * as store from './store.js'
@@ -26,14 +29,8 @@ import { redact } from './caretakerRules.js'
 import { loadPolicy } from './caretaker.js'
 import { actOnAcceptGate, failInterruptedAcceptActions } from './caretakerAccept.js'
 import { sendWhatsApp } from './waSend.js'
-import { canonicalJid } from './waApprovers.js'
-import {
-  CARETAKER_HOURLY_LIMIT,
-  REVIEW_CYCLE_CAP,
-  WA_APPROVER_JIDS,
-  WA_NOTIFY_ENABLED,
-  WA_NOTIFY_MAX_ATTEMPTS,
-} from './config.js'
+import { ownerJid } from './waApprovers.js'
+import { CARETAKER_HOURLY_LIMIT, REVIEW_CYCLE_CAP, WA_NOTIFY_ENABLED, WA_NOTIFY_MAX_ATTEMPTS } from './config.js'
 
 export const ACT_GATES = ['Approve the high-level design', 'Review before execution', 'Review the work & close'].map(
   (label) => requiredStepIndex(label),
@@ -48,12 +45,6 @@ export const HOUR_MS = 60 * 60 * 1000
 const RESWEEP_MS = 60 * 1000
 // The step feeding a gate counts as "failed twice" at this many FAILED runs.
 const FAILED_RUNS_STOP = 2
-
-// "The owner" (operator ruling, 2026-10-02): the first WA_APPROVER_JIDS entry.
-export function ownerJid() {
-  const first = WA_APPROVER_JIDS[0]
-  return first ? canonicalJid(first) || null : null
-}
 
 // Decisions for the CURRENT arrival of items still parked at the gate, in an
 // enabled 'on' project, judged while 'on' (shadow-era rows are never acted
@@ -108,6 +99,36 @@ const insertPing = db.prepare(`
 const selectRecentLimitPing = db.prepare(
   "SELECT 1 FROM caretaker_ping WHERE project_id = ? AND reason = 'hourly_limit' AND created_at_ms > ? LIMIT 1",
 )
+
+// HZ-274: 'ping_human' decisions for the CURRENT arrival of items still parked
+// at an act gate, in an enabled 'on' project, judged while 'on'. Same arrival
+// rule as CANDIDATE_SQL; gate 13 stops ping from caretakerAccept.js instead.
+const selectHelpCandidates = db.prepare(`
+  SELECT c.id AS eval_id, c.item_id, c.gate_index, w.project_id, w.title
+    FROM caretaker_eval c
+    JOIN work_item w ON w.id = c.item_id
+    JOIN project p ON p.id = w.project_id
+   WHERE p.autopilot = 'on' AND p.enabled = 1 AND c.mode = 'on' AND c.decision = 'ping_human'
+     AND c.gate_index IN (${ACT_GATES.join(',')}) AND w.cursor = c.gate_index AND w.abandoned_at IS NULL
+     AND c.arrival_run_id = COALESCE((SELECT MAX(s.id) FROM step_run s WHERE s.item_id = w.id
+           AND s.step_index = w.cursor - 1 AND s.status = 'done'), 0)
+   ORDER BY c.id`)
+
+// One 'needs_human' ping per caretaker_eval row, i.e. per gate arrival: the
+// dedupe key is the eval id, held UNIQUE in SQLite, so a repeat tick, a
+// restart or a deploy adds nothing and only a new arrival (a new eval) pings
+// again. The body names the item, its title and the gate — never the eval's
+// free-text reason. Returns how many were queued.
+export function queueHelpPings({ now = Date.now, owner = ownerJid } = {}) {
+  let queued = 0
+  for (const c of selectHelpCandidates.all()) {
+    const body = redact(
+      `Autopilot needs you: ${c.item_id} "${c.title}" is waiting at step ${c.gate_index} (${STEPS[c.gate_index].label}).`,
+    )
+    queued += insertPing.run(c.project_id, c.item_id, 'needs_human', `help:${c.eval_id}`, owner() || '', body, now()).changes
+  }
+  return queued
+}
 
 const STALL_TEXT = {
   review_cycle_cap: 'review-cycle cap reached',
@@ -223,6 +244,14 @@ export async function actOnDecisions({
   acting = true
   let changed = false
   try {
+    // Inside the acting guard, so two passes cannot race on the same arrival;
+    // the drain below sends what this queued.
+    try {
+      const queued = queueHelpPings({ now, owner })
+      if (queued > 0) log?.info?.(`caretaker: ${queued} item(s) need a human — pinged the owner`)
+    } catch (err) {
+      log?.error?.(`caretaker: help pings could not be queued: ${redact(err?.message)}`)
+    }
     for (const c of selectCandidates.all()) {
       try {
         const nowMs = now()
@@ -337,10 +366,18 @@ export async function drainPings({ send = sendWhatsApp, now = Date.now } = {}) {
     for (;;) {
       const row = db
         .prepare(
-          "SELECT id, recipient, body, attempts FROM caretaker_ping WHERE status = 'pending' AND next_attempt_at_ms <= ? ORDER BY id LIMIT 1",
+          `SELECT g.id, g.recipient, g.body, g.attempts, g.reason, p.autopilot
+             FROM caretaker_ping g JOIN project p ON p.id = g.project_id
+            WHERE g.status = 'pending' AND g.next_attempt_at_ms <= ? ORDER BY g.id LIMIT 1`,
         )
         .get(now())
       if (!row) break
+      // HZ-274: a help ping still waiting when Autopilot left 'on' is not sent
+      // — the owner switched the caretaker off, so it no longer asks for help.
+      if (row.reason === 'needs_human' && row.autopilot !== 'on') {
+        db.prepare("UPDATE caretaker_ping SET status = 'failed', last_error = 'Autopilot is no longer on — not sent' WHERE id = ?").run(row.id)
+        continue
+      }
       if (!row.recipient) {
         db.prepare("UPDATE caretaker_ping SET status = 'failed', last_error = 'no owner: WA_APPROVER_JIDS is empty' WHERE id = ?").run(row.id)
         failed++

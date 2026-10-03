@@ -543,9 +543,10 @@ const CARETAKER_PING_REASONS = [
   'resolve_escalated',
   'resolve_failed',
   'accept_failed',
+  // HZ-274: a 'ping_human' decision — the caretaker needs a human at a gate.
+  'needs_human',
 ]
-  .map((reason) => `'${reason}'`)
-  .join(',')
+const CARETAKER_PING_REASON_SQL = CARETAKER_PING_REASONS.map((reason) => `'${reason}'`).join(',')
 db.exec(`
   CREATE TABLE IF NOT EXISTS caretaker_action (
     id           INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -564,7 +565,7 @@ db.exec(`
     id                 INTEGER PRIMARY KEY AUTOINCREMENT,
     project_id         INTEGER NOT NULL REFERENCES project(id),
     item_id            TEXT REFERENCES work_item(id) ON DELETE CASCADE,
-    reason             TEXT NOT NULL CHECK (reason IN (${CARETAKER_PING_REASONS})),
+    reason             TEXT NOT NULL CHECK (reason IN (${CARETAKER_PING_REASON_SQL})),
     dedupe_key         TEXT NOT NULL UNIQUE,
     recipient          TEXT NOT NULL,
     body               TEXT NOT NULL,
@@ -578,20 +579,22 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_caretaker_ping_project ON caretaker_ping(project_id, reason, created_at_ms);
 `)
 
-// HZ-272: the gate-13 stop reasons. SQLite cannot widen a CHECK in place, so a
-// caretaker_ping created before them is rebuilt once, rows copied column by
-// column, in one transaction. A DB whose CHECK already names them is skipped.
+// HZ-272: the gate-13 stop reasons; HZ-274: needs_human. SQLite cannot widen a
+// CHECK in place, so a caretaker_ping whose CHECK is missing any current reason
+// is rebuilt once, rows copied column by column, in one transaction. A DB
+// whose CHECK already names them all is skipped. The DROP is safe with foreign
+// keys on: no other table references caretaker_ping.
 const CARETAKER_PING_COLUMNS =
   'id, project_id, item_id, reason, dedupe_key, recipient, body, status, attempts, last_error, created_at_ms, next_attempt_at_ms, sent_at'
 const caretakerPingSql = db.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'caretaker_ping'").get()?.sql ?? ''
-if (!caretakerPingSql.includes('premerge_blocked')) {
+if (!CARETAKER_PING_REASONS.every((reason) => caretakerPingSql.includes(`'${reason}'`))) {
   db.transaction(() => {
     db.exec(`
       CREATE TABLE caretaker_ping_v2 (
         id                 INTEGER PRIMARY KEY AUTOINCREMENT,
         project_id         INTEGER NOT NULL REFERENCES project(id),
         item_id            TEXT REFERENCES work_item(id) ON DELETE CASCADE,
-        reason             TEXT NOT NULL CHECK (reason IN (${CARETAKER_PING_REASONS})),
+        reason             TEXT NOT NULL CHECK (reason IN (${CARETAKER_PING_REASON_SQL})),
         dedupe_key         TEXT NOT NULL UNIQUE,
         recipient          TEXT NOT NULL,
         body               TEXT NOT NULL,

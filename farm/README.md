@@ -101,6 +101,14 @@ ask questions about items and their plan/review artifacts.
   feedback/priority actions below, and state is keyed per `(chat, sender)`
   pair so two people in one group chat can never read or advance each
   other's wizard or approval choice.
+- `autopilot off <project>` (HZ-274) is the Autopilot kill switch, handled by
+  `farm/autopilot_command.py` with no model call. The server accepts it only
+  from **the owner — the first `WA_APPROVER_JIDS` entry** — and records
+  `Owner via WhatsApp` on the audit row; any other approver gets "Refused…".
+  `autopilot on|shadow <project>` is always refused: Admin and the PIN only.
+  The owner is also pinged once per gate arrival when the caretaker needs a
+  human (a `needs_human` row in `caretaker_ping`; `WA_NOTIFY_ENABLED=0` stops
+  it).
 - Everything else the model can do is capped by a two-entry action
   whitelist (`set_priority`, `feedback`) the concierge script enforces
   before anything touches the farm.
