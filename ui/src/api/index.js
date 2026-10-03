@@ -55,4 +55,8 @@ export const {
   restoreRule,
   getDeployTargets,
   dryRunDeployTarget,
+  getDeployTargetConfig,
+  createDeployTarget,
+  updateDeployTarget,
+  deleteDeployTarget,
 } = impl

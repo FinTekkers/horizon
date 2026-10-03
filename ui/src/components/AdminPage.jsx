@@ -18,6 +18,7 @@ import {
   fixRepoWebhook,
 } from '../api'
 import { BackIcon, GithubIcon, LockIcon } from './icons'
+import DeployTargetOverrides from './DeployTargetOverrides'
 
 function SecurityPanel() {
   const [pin, setPin] = useState(null)
@@ -421,12 +422,13 @@ function DeployTargetRow({ target }) {
   )
 }
 
-// Read-only by design (HZ-41 guardrail): a deploy target names a script and a
-// service to restart, so an editable target would be arbitrary code
-// execution. This panel only renders the deploy_target table's rows plus each
-// target's on-disk deploy state — there is no create, edit, or delete path
-// here. Its one action, Dry run (HZ-258), only reads.
-function DeployTargetsPanel() {
+// Status and Dry run only: this panel renders the deploy_target table's rows
+// plus each target's on-disk deploy state, with no create, edit, or delete
+// path here. Its one action, Dry run (HZ-258), only reads. Targets are edited
+// in Deploy target overrides (HZ-259), PIN-gated and re-validated against
+// horizon-deploy.sudoers; `version` bumps after each edit so this list (and
+// its Dry run) picks up new targets without a reload.
+function DeployTargetsPanel({ version = 0 }) {
   const [targets, setTargets] = useState(null)
   const [error, setError] = useState(null)
 
@@ -434,14 +436,14 @@ function DeployTargetsPanel() {
     getDeployTargets()
       .then((result) => setTargets(result.targets || []))
       .catch((err) => setError(err.message))
-  }, [])
+  }, [version])
 
   return (
     <div className="panel admin__panel">
       <div className="panel__title">Deploy targets</div>
       <div className="panel__subtitle">
-        Read-only — stored in the deploy_target table. Dry run checks a target without deploying,
-        restarting or writing anything.
+        Status and Dry run — stored in the deploy_target table. Edit targets in Deploy target overrides below.
+        Dry run checks a target without deploying, restarting or writing anything.
       </div>
 
       {error && <div className="gh-error">{error}</div>}
@@ -977,6 +979,7 @@ function ProjectsPanel({ projects, sync }) {
 }
 
 export default function AdminPage({ sync, projects, onBack }) {
+  const [deployTargetsVersion, setDeployTargetsVersion] = useState(0)
   return (
     <div className="admin">
       <button className="tracker__back" onClick={onBack}>
@@ -990,7 +993,9 @@ export default function AdminPage({ sync, projects, onBack }) {
       <div style={{ height: 22 }} />
       <TokenPanel sync={sync} />
       <div style={{ height: 22 }} />
-      <DeployTargetsPanel />
+      <DeployTargetsPanel version={deployTargetsVersion} />
+      <div style={{ height: 22 }} />
+      <DeployTargetOverrides projects={projects} onChanged={() => setDeployTargetsVersion((v) => v + 1)} />
       <div style={{ height: 22 }} />
       <ProjectsPanel projects={projects} sync={sync} />
     </div>

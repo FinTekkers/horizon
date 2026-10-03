@@ -204,6 +204,70 @@ export function checkRunnable(target) {
   return { ok: true }
 }
 
+// ---- Admin create / edit / delete (HZ-259) ----
+// Each write runs checkRunnable() first — the only rule validator — so Admin
+// can never store a row a release would refuse. The sudoers file stays the
+// boundary: a service it does not permit is refused here and on every read.
+// Results are { ok: true, target } or { ok: false, code, reason? } with code
+// 'invalid' | 'conflict' | 'not_found'.
+
+const TARGET_BODY_FIELDS = ['repo', 'script', 'service', 'repoDir', 'stateKey', 'healthUrl', 'healthCheckType']
+
+// The target shape from a request body: only the known fields, key from the path.
+export function targetFromBody(key, body) {
+  const target = { key }
+  for (const field of TARGET_BODY_FIELDS) target[field] = body?.[field]
+  if (body?.extraServices !== undefined) target.extraServices = body.extraServices
+  return target
+}
+
+function rowParams(target) {
+  return {
+    ...target,
+    extraServices: target.extraServices?.length ? JSON.stringify(target.extraServices) : null,
+  }
+}
+
+function writeTarget(target, statement) {
+  const check = checkRunnable(target)
+  if (!check.ok) return { ok: false, code: 'invalid', reason: check.reason }
+  let changes
+  try {
+    changes = statement.run(rowParams(target)).changes
+  } catch (error) {
+    if (String(error.code).startsWith('SQLITE_CONSTRAINT')) return { ok: false, code: 'conflict' }
+    throw error
+  }
+  return changes ? { ok: true } : { ok: false, code: 'not_found' }
+}
+
+export function createTarget(target, database = db) {
+  const result = writeTarget(target, database.prepare(`
+    INSERT INTO deploy_target
+      (key, repo, script, service, repo_dir, state_key, health_url, health_check_type, extra_services)
+    VALUES (@key, @repo, @script, @service, @repoDir, @stateKey, @healthUrl, @healthCheckType, @extraServices)
+  `))
+  return result.ok ? { ok: true, target: findTargetByKey(target.key, database) } : result
+}
+
+// key comes from the path and never changes; an unknown key is not_found.
+export function updateTarget(key, fields, database = db) {
+  if (!findTargetByKey(key, database)) return { ok: false, code: 'not_found' }
+  const result = writeTarget(targetFromBody(key, fields), database.prepare(`
+    UPDATE deploy_target SET
+      repo = @repo, script = @script, service = @service, repo_dir = @repoDir, state_key = @stateKey,
+      health_url = @healthUrl, health_check_type = @healthCheckType, extra_services = @extraServices,
+      updated_at = datetime('now')
+    WHERE key = @key
+  `))
+  return result.ok ? { ok: true, target: findTargetByKey(key, database) } : result
+}
+
+export function deleteTarget(key, database = db) {
+  const { changes } = database.prepare('DELETE FROM deploy_target WHERE key = ?').run(key)
+  return changes ? { ok: true } : { ok: false, code: 'not_found' }
+}
+
 // The one-time migration, on first import — which is server start, through
 // deploy.js. A failure is logged and rolled back; boot continues and every
 // release resolves to no target (fails closed).

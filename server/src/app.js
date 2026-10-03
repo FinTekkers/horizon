@@ -16,7 +16,7 @@ import * as autoResolve from './autoResolve.js'
 import * as webhooks from './webhooks.js'
 import * as deployDrain from './deployDrain.js'
 import * as deployDryRun from './deployDryRun.js'
-import { findTargetByKey } from './deployTargets.js'
+import { createTarget, deleteTarget, findTargetByKey, listTargets, targetFromBody, updateTarget } from './deployTargets.js'
 import {
   WEBHOOK_SECRET,
   FARM_SHARED_SECRET,
@@ -1890,6 +1890,105 @@ export function buildApp({ logger = true, onRoute = null } = {}) {
       } finally {
         deployDryRun.endDryRun(key)
       }
+    },
+  )
+
+  // HZ-259: Admin create / edit / delete of deploy targets. The schema checks
+  // shape only; every rule (script inside infra/host, services the sudoers file
+  // permits) is checkRunnable's, run by the deployTargets.js writers. PIN
+  // first on every write, before any lookup; the body is never logged.
+
+  const DEPLOY_TARGET_KEY = { type: 'string', pattern: '^[a-z0-9][a-z0-9-]{0,63}$' }
+  const DEPLOY_TARGET_FIELDS = {
+    type: 'object',
+    additionalProperties: false,
+    required: ['repo', 'script', 'service', 'repoDir', 'stateKey', 'healthUrl', 'healthCheckType'],
+    properties: {
+      repo: { type: 'string', maxLength: 300, pattern: '^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$' },
+      script: { type: 'string', minLength: 1, maxLength: 300 },
+      service: { type: 'string', minLength: 1, maxLength: 300 },
+      repoDir: { type: 'string', minLength: 1, maxLength: 300 },
+      stateKey: { type: 'string', minLength: 1, maxLength: 300 },
+      healthUrl: { type: 'string', minLength: 1, maxLength: 300 },
+      healthCheckType: { type: 'string', minLength: 1, maxLength: 300 },
+      extraServices: { type: 'array', maxItems: 10, items: { type: 'string', maxLength: 300 } },
+    },
+  }
+  const DEPLOY_TARGET_WRITE_RESPONSES = {
+    400: ERROR_OBJECT,
+    401: ERROR_OBJECT,
+    404: ERROR_OBJECT,
+    409: ERROR_OBJECT,
+  }
+  const DEPLOY_TARGET_ERROR = {
+    invalid: [400, 'deploy_target_invalid'],
+    conflict: [409, 'deploy_target_conflict'],
+    not_found: [404, 'deploy_target_not_found'],
+  }
+
+  function deployTargetResult(request, reply, result, action, okCode = 200) {
+    if (!result.ok) {
+      const [status, error] = DEPLOY_TARGET_ERROR[result.code]
+      return reply.code(status).send(result.reason ? { error, reason: result.reason } : { error })
+    }
+    request.log.info({ key: request.params?.key ?? request.body.key, action, actor: actorOf(request) }, 'deploy target changed')
+    return reply.code(okCode).send(result.target ? { ok: true, target: result.target } : { ok: true })
+  }
+
+  // The stored rows (script, repoDir, health URL…) for the overrides panel.
+  // Rows hold no tokens or env values.
+  fastify.get('/api/admin/deploy-targets/config', { schema: { response: { 200: OK_OBJECT } } }, () => ({
+    targets: listTargets(),
+  }))
+
+  fastify.post(
+    '/api/admin/deploy-targets',
+    {
+      schema: {
+        body: {
+          ...DEPLOY_TARGET_FIELDS,
+          required: ['key', ...DEPLOY_TARGET_FIELDS.required],
+          properties: { key: DEPLOY_TARGET_KEY, ...DEPLOY_TARGET_FIELDS.properties },
+        },
+        response: { 201: OK_OBJECT, ...DEPLOY_TARGET_WRITE_RESPONSES },
+        security: HUMAN_GATE_SECURITY,
+      },
+    },
+    (request, reply) => {
+      if (!humanAuthorized(request, reply)) return
+      const result = createTarget(targetFromBody(request.body.key, request.body))
+      return deployTargetResult(request, reply, result, 'create', 201)
+    },
+  )
+
+  fastify.put(
+    '/api/admin/deploy-targets/:key',
+    {
+      schema: {
+        params: { type: 'object', required: ['key'], properties: { key: DEPLOY_TARGET_KEY } },
+        body: DEPLOY_TARGET_FIELDS,
+        response: { 200: OK_OBJECT, ...DEPLOY_TARGET_WRITE_RESPONSES },
+        security: HUMAN_GATE_SECURITY,
+      },
+    },
+    (request, reply) => {
+      if (!humanAuthorized(request, reply)) return
+      return deployTargetResult(request, reply, updateTarget(request.params.key, request.body), 'update')
+    },
+  )
+
+  fastify.delete(
+    '/api/admin/deploy-targets/:key',
+    {
+      schema: {
+        params: { type: 'object', required: ['key'], properties: { key: DEPLOY_TARGET_KEY } },
+        response: { 200: OK_OBJECT, ...DEPLOY_TARGET_WRITE_RESPONSES },
+        security: HUMAN_GATE_SECURITY,
+      },
+    },
+    (request, reply) => {
+      if (!humanAuthorized(request, reply)) return
+      return deployTargetResult(request, reply, deleteTarget(request.params.key), 'delete')
     },
   )
 
