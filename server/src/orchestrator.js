@@ -54,6 +54,7 @@ import {
   FARM_URL,
   FARM_STEP_INDEXES,
   FARM_STEP_TIMEOUT_MS,
+  DEPLOY_WAIT_MS,
   FARM_QUEUE_TIMEOUT_MS,
   FARM_START_TIMEOUT_MS,
   FARM_CONFLICT_RESOLVE_TIMEOUT_MS,
@@ -70,6 +71,7 @@ import { PRIMARY_PERSONA_AGENT, isPersona, personaLabel, proposePersona } from '
 import { SUMMARIZE_STEP_INDEX, OVERLAP_INPUT_LABEL, computeOverlap, overlapFailure, applyOverlap } from './overlapService.js'
 import { renderOverlapInput, renderOverlapSection, replaceOverlapSection } from './overlap.js'
 import { DEPLOY_BLOCK_MESSAGE, isDeployBlocked } from './deployDrain.js'
+import { deployWaitFor } from './deployWait.js'
 import { servedRulesFor } from './rulesStore.js'
 
 // Keyed by step_run.id (HZ-100) — NOT item id. Keying by item used to let a
@@ -110,8 +112,12 @@ const pausing = new Map()
 // outlast the farm's own 40-minute step timeout. Shared by dispatch-time
 // arming, the /started callback, and restart re-arming so the three can't
 // drift apart.
-function executionBudgetFor(stepIndex) {
-  return stepIndex === IMPLEMENT_STEP_INDEX ? Math.max(FARM_STEP_TIMEOUT_MS, 50 * 60 * 1000) : FARM_STEP_TIMEOUT_MS
+// HZ-275: the Deploy step first waits up to DEPLOY_WAIT_MS for its release
+// to go live, so its budget is that wait on top of the usual one.
+export function executionBudgetFor(stepIndex) {
+  if (stepIndex === IMPLEMENT_STEP_INDEX) return Math.max(FARM_STEP_TIMEOUT_MS, 50 * 60 * 1000)
+  if (stepIndex === DEPLOY_STEP_INDEX) return FARM_STEP_TIMEOUT_MS + DEPLOY_WAIT_MS
+  return FARM_STEP_TIMEOUT_MS
 }
 
 // Hard cap enforced HERE, by the orchestrator, never by an agent prompt — a
@@ -916,7 +922,7 @@ export const MOCK_STEP_BEHAVIOR = {
     try {
       const release = await createDeployRelease(it)
       return {
-        summary: `published release ${release.tag_name}${release.addedWorkflow ? ' (and added the Horizon Deploy workflow to the repo)' : ''} — the self-deploy webhook will pull it to shoreward.ai`,
+        summary: `published release ${release.tag_name} — the self-deploy webhook will pull it to shoreward.ai`,
         patch: { release_tag: release.tag_name, release_url: release.html_url },
       }
     } catch (err) {
@@ -1009,6 +1015,9 @@ async function dispatchToFarm(id, stepIndex, runId, attempt, scope) {
   // DevOps agent only does what it actually has the credentials and tools
   // for: deep post-deploy verification of the already-published release.
   let releaseFields = {}
+  // HZ-275: where and how long the farm waits for this release to go live
+  // before its smoke check. Absent for a repo with no deploy target.
+  let deployWait = null
   if (stepIndex === DEPLOY_STEP_INDEX && item.repo && item.issue != null) {
     try {
       const release = await createDeployRelease(item)
@@ -1025,6 +1034,7 @@ async function dispatchToFarm(id, stepIndex, runId, attempt, scope) {
     // could have cancelled/rejected the item) — re-check before dispatching.
     if (!runStillActive(runId)) return
     item = getItem(id)
+    deployWait = deployWaitFor(item.repo)
   }
 
   // HZ-236: step 9 sees every other in-flight item's footprint and the
@@ -1142,6 +1152,7 @@ async function dispatchToFarm(id, stepIndex, runId, attempt, scope) {
     ...(project ? { project: { id: project.id, name: project.name } } : {}),
     feedback,
     ...(mergeMain ? { merge_main: true } : {}),
+    ...(deployWait ? { deploy_wait: deployWait } : {}),
     ...(scope ? { scope } : {}),
     ...(projectContext ? { project_context: projectContext } : {}),
     ...checkCommandsField(item.repo),

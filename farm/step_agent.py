@@ -11,6 +11,7 @@ import argparse
 import contextlib
 import fnmatch
 import json
+import math
 import os
 import re
 import subprocess
@@ -1067,6 +1068,170 @@ def run_smoke_check(url: str, expected_text: str) -> tuple[str, str]:
     return "fail", f"SMOKE_RESULT=fail: check.mjs exited {result.returncode} with no result line ({result.stderr.strip()[:200]})"
 
 
+# ---- HZ-275: wait for the item's own release before the smoke check ----
+# The release is published before this step is dispatched, but the deploy it
+# triggers takes minutes (ui-service's npm ci + build ran ~8 min on
+# 2026-10-02), and a smoke check run meanwhile tests the PREVIOUS version —
+# US-191's passed against the old fintekkers.org that way. So the step first
+# waits, bounded, until the target's last-good-tag names this release, and
+# fails with the deploy log's tail if the log records DEPLOY FAILED for it or
+# the wait runs out. Read-only: it never runs a deploy script or writes the
+# state dir.
+
+DEFAULT_DEPLOY_WAIT_S = 1200
+# A hard cap, so no payload can make the wait unbounded.
+DEPLOY_WAIT_MAX_S = 7200
+DEPLOY_POLL_S = 5
+# The log grows forever: no read takes more than this many bytes off its end.
+DEPLOY_LOG_READ_BYTES = 64 * 1024
+DEPLOY_LOG_TAIL_LINES = 20
+DEPLOY_LOG_LINE_MAX_CHARS = 160
+# Fits inside ERROR_MAX_CHARS with the reason in front of it.
+DEPLOY_LOG_TAIL_MAX_CHARS = 1500
+# `NAME=value` for a secret-looking NAME, even one this process's env lacks
+# (the farm never holds $GITHUB_WEBHOOK_SECRET, so redact() can't know it).
+_SECRET_ASSIGNMENT = re.compile(
+    r"\b([A-Za-z_][A-Za-z0-9_]*(?:TOKEN|SECRET|KEY|PASSWORD|PASSWD|CREDENTIAL)[A-Za-z0-9_]*)=(\S+)", re.IGNORECASE
+)
+
+
+class ReleaseWait(NamedTuple):
+    outcome: str  # "live", "failed" or "expired"
+    detail: str
+
+
+class DeployNotLiveError(RuntimeError):
+    pass
+
+
+def deploy_wait_bound(value) -> float:
+    """The wait bound from the task payload: anything not a positive number
+    (0, negative, NaN, non-numeric, null) means the default; never above the cap."""
+    try:
+        seconds = float(value)
+    except (TypeError, ValueError):
+        return DEFAULT_DEPLOY_WAIT_S
+    if math.isnan(seconds) or seconds <= 0:
+        return DEFAULT_DEPLOY_WAIT_S
+    return min(seconds, DEPLOY_WAIT_MAX_S)
+
+
+def _release_is_live(tag: str, state_dir: Path) -> bool:
+    """last-good-tag reads `refs/tags/<tag>:<commit>`. Exact match only — a
+    missing, unreadable or empty file, origin/main, or a neighbouring tag
+    (deploy-hz-10, deploy-hz-1-2 for deploy-hz-1) is not live."""
+    try:
+        content = (state_dir / "last-good-tag").read_text(encoding="utf-8").strip()
+    except (OSError, UnicodeDecodeError):
+        return False
+    ref = content.split(":", 1)[0].strip()
+    return ref.removeprefix("refs/tags/") == tag
+
+
+def _read_log_end(path: Path, offset: int = 0) -> tuple[bytes, int] | None:
+    """The bytes after `offset`, at most DEPLOY_LOG_READ_BYTES off the end,
+    and the file size. A file shorter than `offset` was truncated or rotated:
+    read from its start again. None when it can't be read."""
+    try:
+        with open(path, "rb") as f:
+            size = os.fstat(f.fileno()).st_size
+            if size < offset:
+                offset = 0
+            start = max(offset, size - DEPLOY_LOG_READ_BYTES)
+            f.seek(start)
+            return f.read(size - start), size
+    except OSError:
+        return None
+
+
+def wait_for_release(
+    tag: str,
+    state_dir: str,
+    timeout_s: float = DEFAULT_DEPLOY_WAIT_S,
+    *,
+    poll_s: float | None = None,
+    clock=None,
+    sleep=None,
+) -> ReleaseWait:
+    """Polls until `tag` is live, the log records DEPLOY FAILED for it, or
+    `timeout_s` runs out (an explicit 0 checks once). Each poll reads only the
+    log bytes added since the last one."""
+    clock = clock or time.monotonic
+    sleep = sleep or time.sleep
+    poll_s = DEPLOY_POLL_S if poll_s is None else poll_s
+    timeout_s = min(timeout_s, DEPLOY_WAIT_MAX_S) if timeout_s >= 0 else 0  # NaN fails >= too
+    state = Path(state_dir)
+    log_path = state / "self-deploy.log"
+    # Both log forms: `(tag=<TAG>)` before checkout, `(tag=refs/tags/<TAG> commit=...)` after.
+    failed_line = re.compile(r"DEPLOY FAILED: .*\(tag=(?:refs/tags/)?" + re.escape(tag) + r"[) ]")
+    offset = 0
+    deadline = clock() + timeout_s
+    while True:
+        if _release_is_live(tag, state):
+            return ReleaseWait("live", f"last-good-tag names {tag}")
+        read = _read_log_end(log_path, offset)
+        if read is not None:
+            chunk, size = read
+            # Only whole lines: a line still being written is read next poll.
+            whole = chunk[: chunk.rfind(b"\n") + 1]
+            offset = size - len(chunk) + len(whole)
+            for line in whole.decode("utf-8", "replace").splitlines():
+                if failed_line.search(line):
+                    return ReleaseWait("failed", "the deploy log records DEPLOY FAILED for this tag")
+        remaining = deadline - clock()
+        if remaining <= 0:
+            return ReleaseWait("expired", f"the {timeout_s:g}s wait ran out with last-good-tag still on another version")
+        sleep(min(poll_s, remaining))
+
+
+def deploy_log_tail(state_dir: str) -> str:
+    """The newest lines of self-deploy.log, bounded (DEPLOY_LOG_TAIL_LINES
+    lines, DEPLOY_LOG_TAIL_MAX_CHARS chars) and redacted before any line is
+    cut, so a cut can never leave half a token unrecognised."""
+    read = _read_log_end(Path(state_dir) / "self-deploy.log")
+    if read is None:
+        return "--- self-deploy.log: not readable ---"
+    chunk, size = read
+    if len(chunk) < size:
+        # Read from mid-file: the first line is partial, and could hold half a token.
+        chunk = chunk[chunk.find(b"\n") + 1 :]
+    text = redact(chunk.decode("utf-8", "replace"), os.environ)
+    text = _SECRET_ASSIGNMENT.sub(r"\1=[redacted]", text)
+    lines = [line.rstrip()[:DEPLOY_LOG_LINE_MAX_CHARS] for line in text.splitlines() if line.strip()]
+    lines = lines[-DEPLOY_LOG_TAIL_LINES:]
+    while lines and sum(len(line) + 1 for line in lines) > DEPLOY_LOG_TAIL_MAX_CHARS:
+        lines.pop(0)
+    if not lines:
+        return "--- self-deploy.log: empty ---"
+    return f"--- self-deploy.log (last {len(lines)} lines, redacted) ---\n" + "\n".join(lines)
+
+
+def wait_until_release_live(task: dict) -> None:
+    """Returns once the item's release is live; raises DeployNotLiveError
+    otherwise. An item with no release_tag had no release published (the
+    server fails the run itself when publishing fails), so there is nothing
+    to wait for."""
+    item = task["item"]
+    tag = item.get("release_tag")
+    if not tag:
+        return
+    wait = task.get("deploy_wait")
+    state_dir = wait.get("state_dir") if isinstance(wait, dict) else None
+    if not isinstance(state_dir, str) or not state_dir:
+        # Fail closed: with nothing to wait on, a smoke check would test
+        # whatever version was there before.
+        raise DeployNotLiveError(
+            f"release {tag} cannot be verified: no deploy target for {item.get('repo')}, so there is no deploy to wait for"
+        )
+    bound = deploy_wait_bound(wait.get("timeout_s"))
+    log(f"waiting up to {bound:g}s for release {tag} to go live ({state_dir})")
+    result = wait_for_release(tag, state_dir, bound)
+    if result.outcome == "live":
+        log(f"release {tag} is live: {result.detail}")
+        return
+    raise DeployNotLiveError(f"release {tag} did not go live: {result.detail}\n{deploy_log_tail(state_dir)}")
+
+
 def execute(task: dict) -> dict:
     """HZ-188: the implement and review steps scrub, check out and (for
     implement) push in the item's worktree, so they hold item_lock for the
@@ -1401,6 +1566,9 @@ def _execute(task: dict, guard: HandoffGuard) -> dict:
                 },
             }
 
+        # HZ-275: never verify before this item's own release is live.
+        wait_until_release_live(task)
+
         prompt = (
             build_prompt(task)
             + "\n\nRespond with ONLY the JSON object described in your role instructions. Your "
@@ -1502,6 +1670,26 @@ def _execute(task: dict, guard: HandoffGuard) -> dict:
     return result
 
 
+# HZ-275: a Horizon self-deploy restarts farmd just before last-good-tag is
+# written, so the Deploy step's result can reach a farmd still booting. Its
+# tmux session survives the restart; the post retries, bounded, until farmd
+# answers.
+RESULT_POST_ATTEMPTS = 12
+RESULT_POST_RETRY_S = 10
+
+
+def post_result(result: dict) -> None:
+    for attempt in range(1, RESULT_POST_ATTEMPTS + 1):
+        try:
+            httpx.post(f"{FARMD}/internal/steps/result", json=result, timeout=30)
+            return
+        except httpx.TransportError as exc:
+            if attempt == RESULT_POST_ATTEMPTS:
+                raise
+            log(f"run {result['run_id']}: farmd unreachable ({exc}) — retrying in {RESULT_POST_RETRY_S}s")
+            time.sleep(RESULT_POST_RETRY_S)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--task", required=True)
@@ -1550,7 +1738,7 @@ def main() -> int:
             pause.report(pause.SAVED, "the attempt had already finished and pushed its work")
         else:
             pause.report(pause.FAILED, f"the attempt ended before the pause took effect: {result['error'][:300]}")
-    httpx.post(f"{FARMD}/internal/steps/result", json=result, timeout=30)
+    post_result(result)
     log(f"run {run_id}: reported {'ok' if result['ok'] else 'failure'}")
     task_path.unlink(missing_ok=True)
     if not pause.pending():

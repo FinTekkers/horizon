@@ -655,46 +655,10 @@ export async function getPrHeadSha(item) {
 // ---- deploy: release ----
 // The DevOps step publishes a GitHub Release. A "release published" webhook
 // (server/src/deploy.js) is what actually ships it — it pulls the tag to the
-// shoreward.ai host and restarts the service, no SSH needed. The workflow
-// file below is a legacy stub kept for repos that still reference it; it is
-// self-provisioned on the default branch the first time a deploy runs
-// (requires the Workflows permission) but no longer drives the real deploy.
-
-const DEPLOY_WORKFLOW_PATH = '.github/workflows/horizon-deploy.yml'
-const DEPLOY_WORKFLOW_YML = [
-  'name: Horizon Deploy',
-  'on:',
-  '  release:',
-  '    types: [published]',
-  '  workflow_dispatch:',
-  '',
-  'jobs:',
-  '  deploy:',
-  '    runs-on: ubuntu-latest',
-  '    steps:',
-  '      - name: Simulate deploy',
-  '        run: |',
-  '          echo "Horizon dummy deploy pipeline"',
-  '          echo "Release: ${GITHUB_REF_NAME}"',
-  '          echo "Replace this job with the real deployment."',
-  '',
-].join('\n')
-
-async function ensureDeployWorkflow(repo) {
-  const existing = await gh(`/repos/${repo}/contents/${DEPLOY_WORKFLOW_PATH}`)
-  if (existing.ok) return false
-  const put = await gh(`/repos/${repo}/contents/${DEPLOY_WORKFLOW_PATH}`, {
-    method: 'PUT',
-    body: JSON.stringify({
-      message: 'Horizon: add dummy deploy workflow (runs on release)',
-      content: Buffer.from(DEPLOY_WORKFLOW_YML, 'utf8').toString('base64'),
-    }),
-  })
-  if (!put.ok) {
-    throw new Error(`could not add the deploy workflow (${put.status} — check the token has Workflows read/write)`)
-  }
-  return true
-}
+// shoreward.ai host and restarts the service, no SSH needed. Publishing only
+// creates the release: it never commits a file to the product repo (HZ-275 —
+// a dummy workflow used to be pushed here, unreviewed, on a repo's first
+// deploy).
 
 async function freeReleaseTag(repo, base) {
   for (let i = 0; i < 25; i++) {
@@ -707,7 +671,6 @@ async function freeReleaseTag(repo, base) {
 
 export async function createDeployRelease(item) {
   const repo = item.repo
-  const addedWorkflow = await ensureDeployWorkflow(repo)
   const tag = await freeReleaseTag(repo, `deploy-${item.id.toLowerCase()}`)
   const res = await gh(`/repos/${repo}/releases`, {
     method: 'POST',
@@ -725,8 +688,7 @@ export async function createDeployRelease(item) {
   if (!res.ok) {
     throw new Error(`could not publish the release (${res.status} — check the token has Contents read/write)`)
   }
-  const release = await res.json()
-  return { ...release, addedWorkflow }
+  return res.json()
 }
 
 // Agent step results are posted to the issue so GitHub stays the
