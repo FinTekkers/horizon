@@ -7,6 +7,8 @@ import subprocess
 import sys
 import tempfile
 import textwrap
+import time
+from contextlib import contextmanager
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -49,16 +51,100 @@ def test_host_farm_sessions_with_no_server_running_is_empty():
         shutil.rmtree(socket_dir, ignore_errors=True)
 
 
-@pytest.fixture
-def child_with_test_env():
-    """A process whose /proc environ holds this run's FARM_HOME and stub URL
-    (our own /proc entry shows the env we were exec'd with, not conftest's)."""
+def _wait_for_test_env(proc: subprocess.Popen, deadline_s: float = 10.0) -> None:
+    """Block until proc's /proc environ holds this run's FARM_HOME and stub URL.
+
+    HZ-260: Popen returns once exec has closed the CLOEXEC error pipe, but the
+    kernel publishes the new environ later in execve, so an early read is empty.
+    """
+    want = {key: os.environ[key] for key in ("FARM_HOME", "HORIZON_URL")}
+    deadline = time.monotonic() + deadline_s
+    while True:
+        if proc.poll() is not None:
+            missing = f"process exited with {proc.returncode}"
+        else:
+            environ = leak_guard._proc_environ(proc.pid)
+            wrong = [key for key, value in want.items() if environ.get(key) != value]
+            if not wrong:
+                return
+            missing = "/proc environ unreadable or empty" if not environ else f"{', '.join(wrong)} missing or different"
+        if time.monotonic() >= deadline:
+            pytest.fail(f"pid {proc.pid}: {missing} after {deadline_s}s")
+        time.sleep(0.01)
+
+
+@contextmanager
+def _child_with_test_env(deadline_s: float = 10.0):
     proc = subprocess.Popen(["sleep", "30"])
     try:
-        yield proc.pid
+        _wait_for_test_env(proc, deadline_s)
+        yield proc
     finally:
         proc.kill()
         proc.wait(timeout=15)
+
+
+@pytest.fixture
+def child_with_test_env():
+    """A process whose /proc environ holds this run's FARM_HOME and stub URL
+    (our own /proc entry shows the env we were exec'd with, not conftest's).
+    Waits until exec has published that environ before handing out the pid."""
+    with _child_with_test_env() as proc:
+        yield proc.pid
+
+
+def test_waiting_on_a_dead_child_fails_naming_the_pid():
+    proc = subprocess.Popen(["true"])
+    proc.wait(timeout=15)
+    with pytest.raises(pytest.fail.Exception) as failed:
+        _wait_for_test_env(proc, deadline_s=0.2)
+    assert str(proc.pid) in str(failed.value)
+    assert "exited" in str(failed.value)
+
+
+def test_waiting_on_an_empty_environ_fails_naming_the_pid(monkeypatch):
+    monkeypatch.setattr(leak_guard, "_proc_environ", lambda pid: {})
+    proc = subprocess.Popen(["sleep", "30"])
+    try:
+        with pytest.raises(pytest.fail.Exception) as failed:
+            _wait_for_test_env(proc, deadline_s=0.2)
+        assert str(proc.pid) in str(failed.value)
+        assert "unreadable or empty" in str(failed.value)
+    finally:
+        proc.kill()
+        proc.wait(timeout=15)
+
+
+def test_waiting_on_a_different_farm_home_names_the_variable(monkeypatch):
+    monkeypatch.setattr(
+        leak_guard, "_proc_environ", lambda pid: {"FARM_HOME": "/other", "HORIZON_URL": os.environ["HORIZON_URL"]}
+    )
+    proc = subprocess.Popen(["sleep", "30"])
+    try:
+        with pytest.raises(pytest.fail.Exception) as failed:
+            _wait_for_test_env(proc, deadline_s=0.2)
+        assert "FARM_HOME missing or different" in str(failed.value)
+        assert "HORIZON_URL" not in str(failed.value)
+    finally:
+        proc.kill()
+        proc.wait(timeout=15)
+
+
+def test_a_failed_wait_still_kills_and_reaps_the_child(monkeypatch):
+    monkeypatch.setattr(leak_guard, "_proc_environ", lambda pid: {})
+    seen = []
+    real_wait = _wait_for_test_env
+
+    def wait_and_record(proc, deadline_s):
+        seen.append(proc)
+        real_wait(proc, deadline_s)
+
+    monkeypatch.setattr(sys.modules[__name__], "_wait_for_test_env", wait_and_record)
+    with pytest.raises(pytest.fail.Exception):
+        with _child_with_test_env(deadline_s=0.2):
+            pass
+    (proc,) = seen
+    assert proc.returncode is not None
 
 
 def _panes(monkeypatch, pid):
