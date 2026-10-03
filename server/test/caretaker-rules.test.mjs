@@ -193,3 +193,127 @@ test('redact strips token values and caps to one line', () => {
     delete process.env.GITHUB_TOKEN
   }
 })
+
+// ---- gate 5: recommendation phrasing (HZ-299) ----
+
+const ENSEMBLE_TEXT = readFileSync(join(REPO_ROOT, 'farm/roles/ensemble.md'), 'utf8')
+const g5 = (recommendation, blockers = 'None.') =>
+  `## Options\n\n### A — one\n### B — two\n### C — three\n\n## Recommendation\n\n${recommendation}\n\n## Blockers\n\n${blockers}\n`
+const g5Decide = (recommendation, blockers, p = policy) => decide(G5, facts({ artifact: g5(recommendation, blockers) }), p)
+
+test('ensemble role: the Recommendation ends with the fixed `Recommended option: <letter>` line, headings in order', () => {
+  assert.match(ENSEMBLE_TEXT, /End '## Recommendation' with one final line, exactly `Recommended option: <letter>`/)
+  const rec = ENSEMBLE_TEXT.indexOf("'## Recommendation' with rationale")
+  assert.ok(rec !== -1 && rec < ENSEMBLE_TEXT.indexOf("then '## Blockers'"))
+})
+
+const G5_PHRASES = [
+  ['Recommended option: A', 'A'],
+  ['Approve Option A', 'A'],
+  ['**Approve Option A.**', 'A'],
+  ['Recommended: A', 'A'],
+  ['Option A is recommended', 'A'],
+  ['choose A', 'A'],
+  ['recommend Option B', 'B'],
+  ['go with option C', 'C'],
+  ['- Recommended option: A', 'A'],
+  ['* Recommended option: A', 'A'],
+  ['> Recommended option: A', 'A'],
+  ['1. Recommended option: A', 'A'],
+]
+test('g5.approve: each phrase approves with its option letter, twice against one parsed policy', () => {
+  for (let round = 0; round < 2; round++) {
+    for (const [text, letter] of G5_PHRASES) {
+      const result = g5Decide(`Some rationale here.\n\n${text}`)
+      assert.equal(result.decision, 'approve', `${text} (round ${round})`)
+      assert.equal(result.ruleId, 'g5.approve', text)
+      assert.equal(result.reason, `recommended option ${letter}`, text)
+    }
+  }
+})
+
+test('g5.approve: a Recommendation naming no option pings the human', () => {
+  const result = g5Decide('All options look viable.')
+  assert.equal(result.decision, 'ping_human')
+  assert.equal(result.ruleId, null)
+})
+
+for (const name of ['hz296-options.md', 'us193-options.md', 'hz299-options.md']) {
+  test(`g5.approve: ${name} (real options text, Blockers: None) approves option A`, () => {
+    const result = decide(G5, facts({ artifact: fixture(name) }), policy)
+    assert.equal(result.decision, 'approve')
+    assert.equal(result.ruleId, 'g5.approve')
+    assert.equal(result.reason, 'recommended option A')
+  })
+}
+
+test('g5.blocker: Blockers "None", "None." or empty is not open; HZ-296 text still approves', () => {
+  const body = fixture('hz296-options.md').replace(/## Blockers[\s\S]*$/, '')
+  for (const blockers of ['None', 'None.', '']) {
+    const result = decide(G5, facts({ artifact: `${body}## Blockers\n\n${blockers}\n` }), policy)
+    assert.equal(result.decision, 'approve', JSON.stringify(blockers))
+    assert.equal(result.reason, 'recommended option A')
+  }
+})
+
+test('g5.blocker: a real Blockers bullet sends back even when the Recommendation names an option', () => {
+  const result = g5Decide('Recommended option: A', '- `GMAIL_REFRESH_TOKEN` is not provisioned')
+  assert.equal(result.decision, 'send_back')
+  assert.equal(result.ruleId, 'g5.blocker')
+})
+
+for (const text of [
+  'Option A is not recommended',
+  'do not choose A',
+  'don’t choose A',
+  "don't choose A",
+  'reject Option B',
+]) {
+  test(`g5.approve: negated phrasing "${text}" pings the human`, () => {
+    assert.equal(g5Decide(text).decision, 'ping_human')
+  })
+}
+
+for (const [name, text] of [
+  ['the canonical line plus "go with B"', 'We could go with B.\n\nRecommended option: A'],
+  ['an unclosed quote before a second option on a new line', "Approve Option A. The 'fast path idea\ngo with B"],
+]) {
+  test(`g5.approve: two different options (${name}) pings the human`, () => {
+    assert.equal(g5Decide(text).decision, 'ping_human')
+  })
+}
+
+test('g5.approve: an option phrase outside ## Recommendation does not approve', () => {
+  const artifact = '## Options\n\nchoose A\n\n## Recommendation\n\nAll options look viable.\n\n## Blockers\n\nNone.\n'
+  assert.equal(decide(G5, facts({ artifact }), policy).decision, 'ping_human')
+})
+
+test('g5.approve: a quoted example is not a recommendation', () => {
+  assert.equal(g5Decide("If the prose says 'go with B', that pings.\n\nRecommended option: A").reason, 'recommended option A')
+})
+
+test('policy mutation: dropping a negation from the file lets that negated phrase approve', () => {
+  const mutated = parsePolicy(POLICY_TEXT.replace('"\\\\bnot\\\\b", ', ''))
+  assert.equal(g5Decide('do not choose A', 'None.', mutated).decision, 'approve')
+  assert.equal(g5Decide('do not choose A').decision, 'ping_human')
+})
+
+test('HZ-299 changed only g5.approve: every other rule parses as before', () => {
+  const others = policy.rules.filter((r) => r.id !== 'g5.approve')
+  assert.deepEqual(
+    others.map(({ gateIndex, ...r }) => r),
+    [
+      { id: 'any.operator_decide', gate: 'any', decision: 'ping_human', linePrefix: 'operator must decide:' },
+      { id: 'g5.blocker', gate: 'Approve the high-level design', decision: 'send_back', section: '## Blockers' },
+      { id: 'g10.send_back', gate: 'Review before execution', decision: 'send_back', section: '## Recommendation',
+        markers: ['**SEND BACK**'], commentSection: '## Actions' },
+      { id: 'g10.approve', gate: 'Review before execution', decision: 'approve', section: '## Recommendation',
+        markers: ['**PROCEED WITH CONDITIONS**', '**PROCEED**'] },
+      { id: 'g13.wait', gate: 'Accept the code', decision: 'wait', kinds: ['premerge', 'resolve'] },
+      { id: 'g13.conflicts', gate: 'Accept the code', decision: 'resolve_conflicts', mergeable: 0 },
+      { id: 'g13.approve', gate: 'Accept the code', decision: 'approve', review: 'pass', mergeable: 1 },
+      { id: 'g15.approve', gate: 'Review the work & close', decision: 'approve' },
+      { id: 'g15.ping', gate: 'Review the work & close', decision: 'ping_human' },
+    ],
+  )
+})

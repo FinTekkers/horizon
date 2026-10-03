@@ -32,6 +32,10 @@ matches, the decision is **ping the human**.
    - An open bullet under `## Blockers` means **send back with comment**,
      naming the blocker. A bullet that says `None` or is ticked `[x]` is not open.
    - Otherwise, **approve** the option named in `## Recommendation`.
+     The architect ends that section with `Recommended option: <letter>`;
+     the phrases in `g5.approve` below are also accepted. A negated
+     sentence counts for nothing, quoted text is ignored, and naming no
+     option or two different options means **ping the human**.
 3. **Review before execution.** Read the PM's `## Recommendation`.
    - `**SEND BACK**`: **send back with comment**. The comment carries the
      PM's `## Actions` list.
@@ -67,7 +71,14 @@ copy. `gate` is a step label, or `any`.
     { "id": "any.operator_decide", "gate": "any", "decision": "ping_human", "linePrefix": "operator must decide:" },
     { "id": "g5.blocker", "gate": "Approve the high-level design", "decision": "send_back", "section": "## Blockers" },
     { "id": "g5.approve", "gate": "Approve the high-level design", "decision": "approve", "section": "## Recommendation",
-      "pattern": "\\b(?:[Cc]hoose|[Rr]ecommend(?:ed)?|[Gg]o with)\\s+(?:[Oo]ption\\s+)?\\**([A-Z])\\b" },
+      "patterns": [
+        "^Recommended [Oo]ption:\\s*([A-Z])\\b",
+        "\\b[Aa]pprove\\s+(?:[Oo]ption\\s+)?([A-Z])\\b",
+        "\\b[Rr]ecommended:\\s*(?:[Oo]ption\\s+)?([A-Z])\\b",
+        "\\b[Oo]ption\\s+([A-Z])\\s+is\\s+(?:the\\s+)?recommended\\b",
+        "\\b(?:[Cc]hoose|[Rr]ecommend(?:ed)?|[Gg]o with)\\s+(?:[Oo]ption\\s+)?\\**([A-Z])\\b"
+      ],
+      "negations": ["\\bnot\\b", "n't\\b", "n’t\\b", "\\bnever\\b", "\\breject", "\\bavoid", "\\bagainst\\b"] },
     { "id": "g10.send_back", "gate": "Review before execution", "decision": "send_back", "section": "## Recommendation",
       "markers": ["**SEND BACK**"], "commentSection": "## Actions" },
     { "id": "g10.approve", "gate": "Review before execution", "decision": "approve", "section": "## Recommendation",
