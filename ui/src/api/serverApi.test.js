@@ -192,3 +192,90 @@ test('setProjectEnabled throws the server’s error text on a 401', async () => 
   expect(err.status).toBe(401)
   expect(localStorage.length).toBe(0)
 })
+
+// ---- HZ-259: deploy target create / edit / delete — PIN in x-human-key only ----
+
+const PIN = 'pin-5678'
+const DOCS_FIELDS = {
+  repo: 'FinTekkers/docs',
+  script: 'deploy-docs.sh',
+  service: 'fintekkers-docs',
+  repoDir: '/opt/fintekkers/docs',
+  stateKey: 'docs',
+  healthUrl: 'https://docs.example/',
+  healthCheckType: 'http-200',
+}
+
+function expectPinInHeaderOnly(url, opts) {
+  expect(opts.headers['x-human-key']).toBe(PIN)
+  expect(String(url)).not.toContain(PIN)
+  expect(String(opts.body ?? '')).not.toContain(PIN)
+  expect(localStorage.length).toBe(0)
+  expect(sessionStorage.length).toBe(0)
+}
+
+async function expectPinlessError(call) {
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(async () => ({
+      ok: false,
+      status: 400,
+      json: async () => ({ error: 'deploy_target_invalid', reason: 'service x not in horizon-deploy.sudoers' }),
+    })),
+  )
+  const err = await call().catch((e) => e)
+  expect(err.status).toBe(400)
+  expect(err.code).toBe('deploy_target_invalid')
+  expect(err.reason).toBe('service x not in horizon-deploy.sudoers')
+  expect(JSON.stringify({ message: err.message, code: err.code, reason: err.reason })).not.toContain(PIN)
+}
+
+test('createDeployTarget POSTs the target with the PIN in x-human-key only', async () => {
+  localStorage.clear()
+  sessionStorage.clear()
+  const serverApi = await import('./serverApi')
+  const fetchSpy = vi.fn(async () => ({ ok: true, status: 201, json: async () => ({ ok: true }) }))
+  vi.stubGlobal('fetch', fetchSpy)
+
+  const target = { key: 'docs', ...DOCS_FIELDS }
+  await expect(serverApi.createDeployTarget(target, PIN)).resolves.toEqual({ ok: true })
+  const [url, opts] = fetchSpy.mock.calls[0]
+  expect(url).toBe(`${serverApi.API_BASE}/admin/deploy-targets`)
+  expect(opts.method).toBe('POST')
+  expect(JSON.parse(opts.body)).toEqual(target)
+  expectPinInHeaderOnly(url, opts)
+  await expectPinlessError(() => serverApi.createDeployTarget(target, PIN))
+})
+
+test('updateDeployTarget PUTs the fields to the key path with the PIN in x-human-key only', async () => {
+  localStorage.clear()
+  sessionStorage.clear()
+  const serverApi = await import('./serverApi')
+  const fetchSpy = vi.fn(async () => ({ ok: true, status: 200, json: async () => ({ ok: true }) }))
+  vi.stubGlobal('fetch', fetchSpy)
+
+  await serverApi.updateDeployTarget('docs', DOCS_FIELDS, PIN)
+  const [url, opts] = fetchSpy.mock.calls[0]
+  expect(url).toBe(`${serverApi.API_BASE}/admin/deploy-targets/docs`)
+  expect(opts.method).toBe('PUT')
+  expect(JSON.parse(opts.body)).toEqual(DOCS_FIELDS)
+  expectPinInHeaderOnly(url, opts)
+  await expectPinlessError(() => serverApi.updateDeployTarget('docs', DOCS_FIELDS, PIN))
+})
+
+test('deleteDeployTarget sends DELETE with no body and the PIN in x-human-key only', async () => {
+  localStorage.clear()
+  sessionStorage.clear()
+  const serverApi = await import('./serverApi')
+  const fetchSpy = vi.fn(async () => ({ ok: true, status: 200, json: async () => ({ ok: true }) }))
+  vi.stubGlobal('fetch', fetchSpy)
+
+  await serverApi.deleteDeployTarget('docs', PIN)
+  const [url, opts] = fetchSpy.mock.calls[0]
+  expect(url).toBe(`${serverApi.API_BASE}/admin/deploy-targets/docs`)
+  expect(opts.method).toBe('DELETE')
+  expect(opts.body).toBeUndefined()
+  expect(opts.headers['Content-Type']).toBeUndefined()
+  expectPinInHeaderOnly(url, opts)
+  await expectPinlessError(() => serverApi.deleteDeployTarget('docs', PIN))
+})

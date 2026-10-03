@@ -453,6 +453,46 @@ export async function dryRunDeployTarget(key, pin) {
   return data
 }
 
+// ---- deploy target overrides (HZ-259) ----
+// The stored rows, and PIN-gated create / edit / delete. The PIN goes only in
+// the x-human-key header — never the URL, body or storage. Errors carry the
+// status, the server's error code and checkRunnable's reason, nothing else.
+
+export function getDeployTargetConfig() {
+  return getJson('/admin/deploy-targets/config')
+}
+
+async function deployTargetWrite(method, path, body, pin) {
+  const headers = { 'x-human-key': pin }
+  if (body !== undefined) headers['Content-Type'] = 'application/json'
+  const res = await fetch(`${API_BASE}/admin/deploy-targets${path}`, {
+    method,
+    headers,
+    ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
+  })
+  const data = await res.json().catch(() => ({}))
+  if (!res.ok) {
+    const err = new Error(data.error || `HTTP ${res.status}`)
+    err.status = res.status
+    err.code = data.error ?? data.code
+    err.reason = data.reason
+    throw err
+  }
+  return data
+}
+
+export function createDeployTarget(target, pin) {
+  return deployTargetWrite('POST', '', target, pin)
+}
+
+export function updateDeployTarget(key, fields, pin) {
+  return deployTargetWrite('PUT', `/${encodeURIComponent(key)}`, fields, pin)
+}
+
+export function deleteDeployTarget(key, pin) {
+  return deployTargetWrite('DELETE', `/${encodeURIComponent(key)}`, undefined, pin)
+}
+
 export function getDefinition(kind, name) {
   return getJson(`/definitions/${encodeURIComponent(kind)}/${encodeURIComponent(name)}`)
 }

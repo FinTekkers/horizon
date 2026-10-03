@@ -424,6 +424,54 @@ export async function dryRunDeployTarget(key) {
   }
 }
 
+// ---- deploy target overrides (HZ-259) — in-memory, so VITE_MOCK=1 works ----
+
+const mockDeployTargetConfig = [
+  {
+    key: 'horizon',
+    repo: 'FinTekkers/horizon',
+    script: 'deploy-horizon.sh',
+    service: 'horizon-server',
+    repoDir: '/opt/horizon',
+    stateKey: 'horizon',
+    healthUrl: 'http://127.0.0.1:3001/api/health',
+    healthCheckType: 'json-health',
+    extraServices: ['horizon-farm'],
+  },
+  {
+    key: 'ui-service',
+    repo: 'FinTekkers/ui-service',
+    script: 'deploy-ui-service.sh',
+    service: 'fintekkers-ui',
+    repoDir: '/opt/fintekkers/ui-service',
+    stateKey: 'ui-service',
+    healthUrl: 'https://www.fintekkers.org/',
+    healthCheckType: 'ssr-asset-check',
+  },
+]
+
+export async function getDeployTargetConfig() {
+  return { targets: mockDeployTargetConfig.map((t) => ({ ...t })) }
+}
+
+export async function createDeployTarget(target) {
+  mockDeployTargetConfig.push({ ...target })
+  return { ok: true, target: { ...target } }
+}
+
+export async function updateDeployTarget(key, fields) {
+  const index = mockDeployTargetConfig.findIndex((t) => t.key === key)
+  if (index < 0) throw Object.assign(new Error('deploy_target_not_found'), { status: 404, code: 'deploy_target_not_found' })
+  mockDeployTargetConfig[index] = { key, ...fields }
+  return { ok: true, target: { ...mockDeployTargetConfig[index] } }
+}
+
+export async function deleteDeployTarget(key) {
+  const index = mockDeployTargetConfig.findIndex((t) => t.key === key)
+  if (index >= 0) mockDeployTargetConfig.splice(index, 1)
+  return { ok: true }
+}
+
 export async function getDefinition(kind, name) {
   const content = `# ${name}\n\nDemo content — connect the Horizon server to view and edit the real ${kind} definition.`
   return { kind, name, content, path: `farm/…/${name}.md`, bytes: content.length }
