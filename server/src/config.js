@@ -39,6 +39,8 @@
 //   AUTO_RESOLVE_MERGEABLE_WAIT_MS how long a scan waits for GitHub to compute a PR's
 //                                  mergeability before re-checking it next poll (default 60s)
 //   DEPLOY_BLOCK_MAX_TTL_S  cap on a self-deploy's block on new pre-merge/resolve runs (default 2h)
+//   CARETAKER_HOURLY_LIMIT  most automatic gate actions per project per rolling hour (HZ-271;
+//                           default 10, whole numbers >= 1 only)
 
 import { agentStepIndexes } from '../../domain/js/lifecycle.js'
 
@@ -143,6 +145,18 @@ export const FIX_PASS_TURN_DIVISOR = fixPassDivisor >= 1 ? fixPassDivisor : 3
 // review instead of a delta review.
 const fixPassMaxLines = Math.floor(Number(process.env.FIX_PASS_MAX_LINES))
 export const FIX_PASS_MAX_LINES = fixPassMaxLines >= 1 ? fixPassMaxLines : 200
+// Hard cap on automated review cycles (HZ-30), enforced by the orchestrator
+// and read by the Autopilot caretaker (HZ-271), which only stops on it.
+// Deliberately NOT read from the environment: nothing may raise it.
+export const REVIEW_CYCLE_CAP = 3
+// HZ-271: the most automatic gate actions the caretaker takes per project in
+// any rolling hour, counted from persisted caretaker_action rows. Whole
+// numbers >= 1 only; anything else falls back to 10.
+export function parseCaretakerHourlyLimit(raw) {
+  const n = Number(raw)
+  return raw != null && raw !== '' && Number.isInteger(n) && n >= 1 ? n : 10
+}
+export const CARETAKER_HOURLY_LIMIT = parseCaretakerHourlyLimit(process.env.CARETAKER_HOURLY_LIMIT)
 export const POLL_INTERVAL_MS = Number(process.env.POLL_INTERVAL_MS || 60_000)
 // HZ-235 (autoResolve.js): merges into main within this window share one
 // scan, and its event text names every one of them.
@@ -197,6 +211,9 @@ export const RULES_HMAC_SECRET = process.env.RULES_HMAC_SECRET || null
 // jid with a device suffix). waApprovers.js is what interprets them, in the two
 // directions they are needed: normalizeJid for "is this sender an approver",
 // canonicalJid for "what address does a notification go to".
+//
+// The FIRST entry is "the owner" (HZ-271 operator ruling): the Autopilot
+// caretaker's help pings go to that one jid only, never to the whole list.
 export const WA_APPROVER_JIDS = (process.env.WA_APPROVER_JIDS || '')
   .split(',')
   .map((s) => s.trim())

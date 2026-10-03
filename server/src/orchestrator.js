@@ -64,6 +64,7 @@ import {
   FIX_PASS_ENABLED,
   FIX_PASS_TURN_DIVISOR,
   FIX_PASS_MAX_LINES,
+  REVIEW_CYCLE_CAP,
 } from './config.js'
 import { PRIMARY_PERSONA_AGENT, isPersona, personaLabel, proposePersona } from './personas.js'
 import { SUMMARIZE_STEP_INDEX, OVERLAP_INPUT_LABEL, computeOverlap, overlapFailure, applyOverlap } from './overlapService.js'
@@ -115,8 +116,8 @@ function executionBudgetFor(stepIndex) {
 
 // Hard cap enforced HERE, by the orchestrator, never by an agent prompt — a
 // reviewer that keeps failing forwards the item to the human gate with the
-// failing verdict attached rather than looping forever (HZ-30).
-const REVIEW_CYCLE_CAP = 3
+// failing verdict attached rather than looping forever (HZ-30). The value
+// lives in config.js (REVIEW_CYCLE_CAP), so the caretaker reads the same one.
 
 // Hard cap on consecutive AUTOMATIC retries of a step failure (HZ-76),
 // enforced HERE and persisted on step_run.auto_retry_count — never decided

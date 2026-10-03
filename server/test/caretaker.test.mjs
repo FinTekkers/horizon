@@ -168,7 +168,7 @@ test('gate 3 never gets a caretaker event in off, shadow or on', () => {
   }
 })
 
-test("on behaves like shadow: same decisions and reasons, and it acts on nothing", () => {
+test('on evaluates like shadow: same decisions and reasons, and the sweep itself acts on nothing', () => {
   const on = project('Turned on', 'on')
   const onItems = seedAllGates('ON', on)
   sweep()

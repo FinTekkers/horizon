@@ -2,8 +2,9 @@
 //
 // When an item in an Autopilot 'shadow' or 'on' project arrives at a gate, the
 // caretaker judges it once against farm/roles/caretaker.md and records one
-// "caretaker would …" item event. It acts on nothing — 'on' runs exactly the
-// shadow path until Autopilot 2–5 add acting.
+// "caretaker would …" item event. It acts on nothing itself — 'on' records
+// exactly what shadow does, and caretakerActor.js (HZ-271) is what acts on an
+// 'on' decision at gates 5, 10 and 15, through app.js's gateActions.
 //
 // DERIVED STATE, like gateNotifier.js. No cursor write site is touched: the
 // sweep runs from store.onChange, after the write has committed, and looks
