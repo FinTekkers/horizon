@@ -20,6 +20,12 @@
 // HZ-298: a send-back that would be the caretaker's second in a row at the
 // same gate is recorded as 'ping_human' instead (applyRepeatGuard), so a
 // blocker re-planning cannot fix waits for the owner rather than looping.
+//
+// HZ-296: at gate 13 with mergeability unknown and the review passed, the
+// arrival is not judged while caretakerAccept.js is still re-reading the PR
+// (mergeableHold), so an item about to be accepted never records "would ping
+// the human". If GitHub still has not said once the re-reads are done, the
+// 'ping_human' is recorded with that reason.
 
 import { db } from './db.js'
 import * as store from './store.js'
@@ -27,6 +33,7 @@ import { listTargetStatuses } from './deploy.js'
 import { readFarmFile } from './definitions.js'
 import { gateStepIndexes, requiredStepIndex, ACCEPT_GATE_INDEX } from '../../domain/js/lifecycle.js'
 import { ACTOR, DECISIONS, decide, parsePolicy, redact } from './caretakerRules.js'
+import { MERGEABLE_DEFER_CAP_MS, mergeableProbeState, reviewPassed } from './caretakerMergeable.js'
 
 // Gate 3 is excluded HERE, in code, before any evaluation in any mode: new
 // work never enters without a human.
@@ -105,6 +112,21 @@ export function releaseSettled(item, sourceRun, now = Date.now()) {
   return now - arrivedAt >= RELEASE_SETTLE_MS
 }
 
+export const MERGEABLE_UNKNOWN_REASON = 'GitHub still reports mergeability unknown; a human needs to look'
+
+// Gate 13, a PR whose mergeability GitHub has not reported, a passing review.
+// 'hold' while the bounded re-reads may still answer (record nothing yet, like
+// releaseSettled), 'unknown' once they are done or MERGEABLE_DEFER_CAP_MS has
+// passed since the arrival, null for any other arrival.
+export function mergeableHold(item, sourceRun, now = Date.now()) {
+  if (item.cursor !== ACCEPT_GATE_INDEX || item.pr == null || !item.repo || item.pr_mergeable != null) return null
+  if (!sourceRun || !reviewPassed(sourceRun.id, item.forwarded_review_run_id)) return null
+  if (mergeableProbeState(item.id, sourceRun.id)?.exhausted) return 'unknown'
+  const arrivedAt = toMs(sourceRun.ended_at ?? sourceRun.started_at)
+  if (Number.isNaN(arrivedAt) || now - arrivedAt >= MERGEABLE_DEFER_CAP_MS) return 'unknown'
+  return 'hold'
+}
+
 // One decision for one arrival, never a throw. null for a non-caretaker gate:
 // the second, belt-and-braces gate-3 guard behind the SQL filter.
 export function evaluateArrival(item, gateIndex, policyOrError, sourceRun = null, log) {
@@ -164,7 +186,8 @@ export function loadPolicy() {
 
 // Exported for the tests; init() below is the only production caller.
 // `policy` is injectable so a test can drive a mutated or broken policy.
-export function sweepCaretaker({ log, policy = loadPolicy } = {}) {
+// `now` is for the tests too.
+export function sweepCaretaker({ log, policy = loadPolicy, now = Date.now } = {}) {
   let recorded = 0
   try {
     const candidates = selectCandidates.all(...CARETAKER_GATES)
@@ -179,9 +202,14 @@ export function sweepCaretaker({ log, policy = loadPolicy } = {}) {
     for (const item of candidates) {
       try {
         const sourceRun = selectSourceRun.get(item.id, item.cursor - 1) ?? null
-        if (item.cursor === RELEASE_GATE && !releaseSettled(item, sourceRun)) continue
-        const result = applyRepeatGuard(item, item.cursor, evaluateArrival(item, item.cursor, loaded, sourceRun, log))
+        if (item.cursor === RELEASE_GATE && !releaseSettled(item, sourceRun, now())) continue
+        const hold = mergeableHold(item, sourceRun, now())
+        if (hold === 'hold') continue
+        let result = applyRepeatGuard(item, item.cursor, evaluateArrival(item, item.cursor, loaded, sourceRun, log))
         if (!result) continue
+        if (hold === 'unknown' && result.decision === 'ping_human' && result.ruleId === null) {
+          result = { ...result, reason: MERGEABLE_UNKNOWN_REASON }
+        }
         // Several arrivals with no source run share key 0, so at most one of
         // them is judged — fewer events, never a duplicate.
         db.transaction(() => {
@@ -205,9 +233,10 @@ export function sweepCaretaker({ log, policy = loadPolicy } = {}) {
 // Never throws, so a broken caretaker cannot fail a human gate action whose
 // onChange it rides on. `opts.policy` is for the tests. The periodic re-sweep
 // picks up gate-15 arrivals once their deploy settles, since a deploy writes
-// files, not the DB, and so fires no onChange.
-export function init(log, { policy = loadPolicy } = {}) {
-  store.onChange(() => sweepCaretaker({ log, policy }))
-  sweepCaretaker({ log, policy })
-  setInterval(() => sweepCaretaker({ log, policy }), RESWEEP_MS).unref()
+// files, not the DB, and so fires no onChange — and gate-13 arrivals whose
+// mergeability hold has run out. `opts.now` is for the tests too.
+export function init(log, { policy = loadPolicy, now = Date.now } = {}) {
+  store.onChange(() => sweepCaretaker({ log, policy, now }))
+  sweepCaretaker({ log, policy, now })
+  setInterval(() => sweepCaretaker({ log, policy, now }), RESWEEP_MS).unref()
 }

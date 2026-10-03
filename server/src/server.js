@@ -29,8 +29,9 @@ gateNotifier.init(fastify.log)
 caretaker.init(fastify.log)
 // HZ-271: acts on 'on'-mode decisions at gates 5, 10 and 15 through the same
 // gateActions the UI routes call. Registered AFTER caretaker.init so, on any
-// change, the decision row is written before this looks for it.
-caretakerActor.init(fastify.log, { gateActions: fastify.gateActions })
+// change, the decision row is written before this looks for it. HZ-296: the
+// gate-13 pass re-reads an unknown mergeability through the existing helper.
+caretakerActor.init(fastify.log, { gateActions: fastify.gateActions, refreshMergeable: github.refreshPrMergeable })
 // HZ-273: rules on 'Operator must decide:' arrivals at gates 5 and 10 for
 // Autopilot 'on' projects — edits only the named issue-body lines, then sends
 // back with a note through the same gateActions.

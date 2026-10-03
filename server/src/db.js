@@ -652,6 +652,24 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_caretaker_accept_inflight ON caretaker_accept_action(project_id, action, outcome);
 `)
 
+// HZ-296: gate 13's bounded re-reads of a PR whose mergeability GitHub has not
+// reported (caretakerMergeable.js). One row per (item, arrival): attempts is
+// re-reads started, settled is re-reads finished (ok or error), so a fixed
+// count holds across ticks and restarts. last_error is redacted.
+db.exec(`
+  CREATE TABLE IF NOT EXISTS caretaker_mergeable_probe (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    item_id         TEXT NOT NULL REFERENCES work_item(id) ON DELETE CASCADE,
+    arrival_run_id  INTEGER NOT NULL,
+    first_seen_ms   INTEGER NOT NULL,
+    attempts        INTEGER NOT NULL DEFAULT 0,
+    settled         INTEGER NOT NULL DEFAULT 0,
+    last_attempt_ms INTEGER,
+    last_error      TEXT,
+    UNIQUE (item_id, arrival_run_id)
+  );
+`)
+
 // HZ-273: the caretaker's rulings (caretakerRuling.js) on an `Operator must
 // decide:` arrival. eval_id UNIQUE is the claim: one ruling per arrival.
 // edits (JSON [{field, before, after}], redacted) is written BEFORE the issue
