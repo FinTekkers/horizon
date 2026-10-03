@@ -21,12 +21,14 @@
 //
 // HZ-274: a 'ping_human' decision at gates 5, 10 and 15 in an 'on' project is
 // a help ping — one owner message per arrival naming the item and the gate.
+// HZ-298: caretaker.js turns a second send-back in a row at one gate into such
+// a 'ping_human' decision, so the item waits for a human instead of looping.
 
 import { db } from './db.js'
 import * as store from './store.js'
 import { STEPS, requiredStepIndex, ACCEPT_GATE_INDEX } from '../../domain/js/lifecycle.js'
-import { redact } from './caretakerRules.js'
-import { loadPolicy } from './caretaker.js'
+import { ACTOR, redact } from './caretakerRules.js'
+import { loadPolicy, REPEAT_SEND_BACK_RULE } from './caretaker.js'
 import { actOnAcceptGate, failInterruptedAcceptActions } from './caretakerAccept.js'
 import { sendWhatsApp } from './waSend.js'
 import { ownerJid } from './waApprovers.js'
@@ -40,7 +42,7 @@ if (ACT_GATES.some((g) => NEVER_ACT.includes(g))) {
   throw new Error(`caretakerActor: ACT_GATES ${JSON.stringify(ACT_GATES)} includes gate 3 or gate 13`)
 }
 
-export const ACTOR = 'Caretaker'
+export { ACTOR }
 export const HOUR_MS = 60 * 60 * 1000
 const RESWEEP_MS = 60 * 1000
 // The step feeding a gate counts as "failed twice" at this many FAILED runs.
@@ -108,7 +110,7 @@ const selectRecentLimitPing = db.prepare(
 // at an act gate, in an enabled 'on' project, judged while 'on'. Same arrival
 // rule as CANDIDATE_SQL; gate 13 stops ping from caretakerAccept.js instead.
 const selectHelpCandidates = db.prepare(`
-  SELECT c.id AS eval_id, c.item_id, c.gate_index, w.project_id, w.title
+  SELECT c.id AS eval_id, c.item_id, c.gate_index, c.rule_id, c.reason, w.project_id, w.title
     FROM caretaker_eval c
     JOIN work_item w ON w.id = c.item_id
     JOIN project p ON p.id = w.project_id
@@ -122,13 +124,18 @@ const selectHelpCandidates = db.prepare(`
 // dedupe key is the eval id, held UNIQUE in SQLite, so a repeat tick, a
 // restart or a deploy adds nothing and only a new arrival (a new eval) pings
 // again. The body names the item, its title and the gate — never the eval's
-// free-text reason. Returns how many were queued.
+// free-text reason, except (HZ-298) a repeat send-back's: that ping quotes the
+// blocker, redacted, after the unchanged prefix and outside its length cap.
+// Returns how many were queued.
 export function queueHelpPings({ now = Date.now, owner = ownerJid } = {}) {
   let queued = 0
   for (const c of selectHelpCandidates.all()) {
-    const body = redact(
+    let body = redact(
       `Autopilot needs you: ${c.item_id} "${c.title}" is waiting at step ${c.gate_index} (${STEPS[c.gate_index].label}).`,
     )
+    if (c.rule_id === REPEAT_SEND_BACK_RULE) {
+      body += ` Blocker: ${redact(c.reason, { oneLine: false }).replace(/\s+/g, ' ').trim()}`
+    }
     queued += insertPing.run(c.project_id, c.item_id, 'needs_human', `help:${c.eval_id}`, owner() || '', body, now()).changes
   }
   return queued

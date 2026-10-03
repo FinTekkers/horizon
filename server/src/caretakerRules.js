@@ -18,6 +18,10 @@ export const DECISIONS = {
   ping_human: 'ping the human',
 }
 
+// Who the caretaker's gate actions are decided_by (HZ-271). Lives here, not in
+// caretakerActor.js, so caretaker.js can read it without an import cycle.
+export const ACTOR = 'Caretaker'
+
 const REASON_MAX = 200
 
 // The non-blank lines of one `## Heading` section, up to the next heading of
@@ -115,6 +119,19 @@ export function parsePolicy(text) {
   }
 }
 
+// HZ-298: every env var whose NAME looks secret ($GOOGLE_CLIENT_SECRET, any
+// *_TOKEN, …) is redacted too. The names are scanned once, on first use;
+// their values are still read at call time. Short values (under 8 chars)
+// would redact ordinary words, so they are left alone.
+const SECRET_ENV_NAME = /SECRET|TOKEN|KEY|PASSWORD/i
+const SECRET_ENV_MIN = 8
+let secretEnvNames = null
+
+// For the tests: rescan the env names on the next redact().
+export function resetSecretEnvCache() {
+  secretEnvNames = null
+}
+
 // Strips secrets and collapses to one capped line. The token values are read
 // from the environment at call time, so a rotated token is still caught.
 export function redact(text, { oneLine = true } = {}) {
@@ -122,6 +139,11 @@ export function redact(text, { oneLine = true } = {}) {
   for (const key of ['GITHUB_TOKEN', 'GITHUB_WEBHOOK_SECRET', 'WA_APPROVAL_SECRET']) {
     const secret = process.env[key]
     if (secret && secret.length >= 4) out = out.split(secret).join('[redacted]')
+  }
+  secretEnvNames ??= Object.keys(process.env).filter((name) => SECRET_ENV_NAME.test(name))
+  for (const name of secretEnvNames) {
+    const secret = process.env[name]
+    if (secret && secret.length >= SECRET_ENV_MIN) out = out.split(secret).join('[redacted]')
   }
   out = out.replace(/\bgh[pousr]_[A-Za-z0-9]{20,}\b/g, '[redacted]')
   if (!oneLine) return out
