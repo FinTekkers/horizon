@@ -13,6 +13,9 @@ let items = []
 let projects = []
 let activeProjectId = null
 let farm = { status: 'running' }
+// HZ-229's per-step typical durations. The concierge snapshot omits them, so
+// a snapshot without the field keeps the last one.
+let durationEstimates = null
 let sync = { tokenConfigured: false, repos: [] }
 let started = false
 const listeners = new Set()
@@ -27,6 +30,7 @@ function applySnapshot(data) {
   projects = data.projects || projects
   activeProjectId = data.activeProjectId ?? activeProjectId
   farm = data.farm || farm
+  durationEstimates = data.durationEstimates ?? durationEstimates
   items = data.items || []
   emit()
 }
@@ -192,6 +196,10 @@ export function getActiveProjectId() {
 
 export function getFarm() {
   return farm
+}
+
+export function getDurationEstimates() {
+  return durationEstimates
 }
 
 // HZ-208: flip a project's enabled flag. The PIN is asked for on every flip

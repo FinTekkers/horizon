@@ -163,6 +163,11 @@ export function getFarm() {
   return { status: 'running' }
 }
 
+// No history in mock mode: cards show elapsed time only.
+export function getDurationEstimates() {
+  return null
+}
+
 export async function setProjectEnabled() {
   throw new Error('Projects are not available in mock mode')
 }

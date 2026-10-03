@@ -482,6 +482,8 @@ button { font-family: var(--font-sans); }
   font: 500 12px var(--font-sans); color: var(--muted);
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-top: 4px;
 }
+/* HZ-230: past twice the usual duration. */
+.card__usual--long { color: var(--warning-ink); }
 
 .status-pill {
   display: inline-flex; align-items: center; gap: 6px;

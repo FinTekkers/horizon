@@ -66,6 +66,9 @@ function pairs(t) {
     [t.primaryInk, t.surface, AA_NORMAL, 'Medium priority label'],
     [t.muted, t.surface, AA_NORMAL, 'Low priority label'],
 
+    // ---- Board card elapsed line (HZ-230; .card is var(--surface)) ----
+    [t.warningInk, t.surface, AA_NORMAL, 'Board card running long label'],
+
     // ---- gate buttons ----
     [t.white, t.success, AA_NORMAL, 'Approve / btn-gate-approve label'],
     [t.dangerInk, t.surface, AA_NORMAL, 'Send back / btn-gate-reject label'],

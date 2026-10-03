@@ -21,6 +21,7 @@ export const {
   getProjects,
   getActiveProjectId,
   getFarm,
+  getDurationEstimates,
   setProjectEnabled,
   setProjectAutopilot,
   saveToken,

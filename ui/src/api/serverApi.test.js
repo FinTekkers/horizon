@@ -279,3 +279,23 @@ test('deleteDeployTarget sends DELETE with no body and the PIN in x-human-key on
   expectPinInHeaderOnly(url, opts)
   await expectPinlessError(() => serverApi.deleteDeployTarget('docs', PIN))
 })
+
+// HZ-230: the Board's usual-duration hint reads HZ-229's durationEstimates
+// straight off the snapshot — no fetch of its own.
+test('getDurationEstimates returns the snapshot estimates and keeps them across a snapshot without the field', async () => {
+  const fetchSpy = vi.fn(() => Promise.reject(new Error('no fetch expected')))
+  vi.stubGlobal('fetch', fetchSpy)
+  const serverApi = await import('./serverApi')
+  serverApi.subscribe(() => {})
+  expect(serverApi.getDurationEstimates()).toBeNull()
+
+  const estimates = { 7: { medianSec: 1200, count: 5 }, premerge: null, resolve: null }
+  const source = MockEventSource.instances.at(-1)
+  source.onmessage({ data: JSON.stringify({ items: [], durationEstimates: estimates }) })
+  expect(serverApi.getDurationEstimates()).toEqual(estimates)
+
+  // The concierge's /api/farm/snapshot shape carries no durationEstimates.
+  source.onmessage({ data: JSON.stringify({ items: [] }) })
+  expect(serverApi.getDurationEstimates()).toEqual(estimates)
+  expect(fetchSpy).not.toHaveBeenCalled()
+})
