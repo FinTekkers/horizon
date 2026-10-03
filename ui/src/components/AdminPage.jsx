@@ -6,6 +6,7 @@ import {
   disconnectRepo,
   regenerateGatePin,
   getDeployTargets,
+  dryRunDeployTarget,
   listApiTokens,
   createApiToken,
   revokeApiToken,
@@ -337,24 +338,94 @@ function TokenPanel({ sync }) {
 
 const RESULT_COLOR = { ok: 'var(--success)', failed: 'var(--danger)', never: 'var(--neutral-badge)' }
 
+const DRY_RUN_ERROR = { 401: 'Gate PIN incorrect', 409: 'Dry run already running' }
+
+// HZ-258: five read-only checks of the stored target (script, repo dir,
+// service, sudo, health). Asks for the gate PIN on every run and sends it in
+// a header only; the request carries nothing else, so it cannot change what is
+// probed. Results live in this component only.
+function DeployDryRun({ target }) {
+  const [pin, setPin] = useState('')
+  const [results, setResults] = useState(null)
+  const [error, setError] = useState(null)
+  const [busy, setBusy] = useState(false)
+
+  const run = async () => {
+    if (!pin || busy) return
+    setBusy(true)
+    setError(null)
+    setResults(null)
+    try {
+      const result = await dryRunDeployTarget(target.key, pin)
+      setResults(result.results || [])
+    } catch (err) {
+      setError(Object.hasOwn(DRY_RUN_ERROR, err.status ?? '') ? DRY_RUN_ERROR[err.status] : err.message)
+    } finally {
+      setPin('')
+      setBusy(false)
+    }
+  }
+
+  return (
+    <div className="deploy-dry-run">
+      <div className="project-block__add">
+        <input
+          className="field__input"
+          type="password"
+          autoComplete="off"
+          aria-label={`Gate PIN to dry-run ${target.repo}`}
+          placeholder="Gate PIN to dry-run"
+          value={pin}
+          onChange={(e) => setPin(e.target.value)}
+          onKeyDown={(e) => e.key === 'Enter' && run()}
+        />
+        <button type="button" className="composer__submit" style={{ background: 'var(--primary)' }} onClick={run} disabled={!pin || busy}>
+          {busy ? 'Running…' : 'Run'}
+        </button>
+      </div>
+      {error && <div className="gh-error">{error}</div>}
+      {results && (
+        <ol className="deploy-dry-run__list" aria-label={`Dry run results for ${target.repo}`}>
+          {results.map((r) => (
+            <li key={r.check} className={`deploy-dry-run__item deploy-dry-run__item--${r.pass ? 'pass' : 'fail'}`}>
+              <span className="deploy-dry-run__check">{r.check}</span>
+              <span className="deploy-dry-run__badge">{r.pass ? 'pass' : 'fail'}</span>
+              <span className="deploy-dry-run__reason">{r.reason}</span>
+            </li>
+          ))}
+        </ol>
+      )}
+    </div>
+  )
+}
+
 function DeployTargetRow({ target }) {
+  const [open, setOpen] = useState(false)
   const lastAt = target.lastAt ? new Date(target.lastAt).toLocaleString() : 'never deployed'
   return (
-    <div className="deploy-target-row">
-      <span className="admin-status__dot" style={{ background: RESULT_COLOR[target.lastResult] || RESULT_COLOR.never }} />
-      <span className="deploy-target-row__repo">{target.repo}</span>
-      <span className="deploy-target-row__service">{target.service}</span>
-      <span className="deploy-target-row__tag">{target.lastTag || 'no deploy yet'}</span>
-      <span className="deploy-target-row__result">{target.lastResult} · {lastAt}</span>
+    <div>
+      <div className="deploy-target-row">
+        <span className="admin-status__dot" style={{ background: RESULT_COLOR[target.lastResult] || RESULT_COLOR.never }} />
+        <span className="deploy-target-row__repo">{target.repo}</span>
+        <span className="deploy-target-row__service">{target.service}</span>
+        <span className="deploy-target-row__tag">{target.lastTag || 'no deploy yet'}</span>
+        <span className="deploy-target-row__result">{target.lastResult} · {lastAt}</span>
+      </div>
+      <div className="repo-checks">
+        <button type="button" className="repo-checks__toggle" aria-expanded={open} onClick={() => setOpen(!open)}>
+          {open ? '▾' : '▸'} Dry run
+        </button>
+      </div>
+      {open && <DeployDryRun target={target} />}
     </div>
   )
 }
 
 // Read-only by design (HZ-41 guardrail): a deploy target names a script and a
 // service to restart, so an editable target would be arbitrary code
-// execution. This panel only ever renders infra/host/deploy-targets.json's
-// contents plus each target's on-disk deploy state — there is no create,
-// edit, or delete path here, and never should be.
+// execution. This panel only renders the deploy_target table's rows plus each
+// target's on-disk deploy state — there is no create, edit, or delete path
+// here. Its one action, Dry run (HZ-258), only reads.
 function DeployTargetsPanel() {
   const [targets, setTargets] = useState(null)
   const [error, setError] = useState(null)
@@ -369,8 +440,8 @@ function DeployTargetsPanel() {
     <div className="panel admin__panel">
       <div className="panel__title">Deploy targets</div>
       <div className="panel__subtitle">
-        Read-only — defined in infra/host/deploy-targets.json. Changing a target requires a reviewed PR, not this
-        page.
+        Read-only — stored in the deploy_target table. Dry run checks a target without deploying,
+        restarting or writing anything.
       </div>
 
       {error && <div className="gh-error">{error}</div>}

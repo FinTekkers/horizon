@@ -155,6 +155,31 @@ test('saveRepoChecks PUTs {repo, ...checks} with the PIN in x-human-key only, an
   expect(localStorage.length).toBe(0)
 })
 
+test('dryRunDeployTarget POSTs an empty body with the PIN in x-human-key only, and throws 401s', async () => {
+  localStorage.clear()
+  const serverApi = await import('./serverApi')
+  const reply = { key: 'horizon', ranAt: '2026-10-03T12:00:00.000Z', results: [] }
+  const fetchSpy = vi.fn(async () => ({ ok: true, status: 200, json: async () => reply }))
+  vi.stubGlobal('fetch', fetchSpy)
+
+  await expect(serverApi.dryRunDeployTarget('horizon', '1234')).resolves.toEqual(reply)
+  const [url, opts] = fetchSpy.mock.calls[0]
+  expect(url).toBe(`${serverApi.API_BASE}/admin/deploy-targets/horizon/dry-run`)
+  expect(String(url)).not.toContain('1234')
+  expect(opts.method).toBe('POST')
+  expect(opts.headers['x-human-key']).toBe('1234')
+  expect(JSON.parse(opts.body)).toEqual({})
+  expect(localStorage.length).toBe(0)
+
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(async () => ({ ok: false, status: 401, json: async () => ({ error: 'human_gate_key_required' }) })),
+  )
+  const err = await serverApi.dryRunDeployTarget('horizon', 'bad').catch((e) => e)
+  expect(err.message).toBe('human_gate_key_required')
+  expect(err.status).toBe(401)
+})
+
 test('setProjectEnabled throws the server’s error text on a 401', async () => {
   localStorage.clear()
   const serverApi = await import('./serverApi')

@@ -122,15 +122,15 @@ export function findTargetByRepo(repo, database = db) {
   return row ? toTarget(row) : null
 }
 
-// The services horizon-deploy.sudoers lets the deploy user restart, one per
-// `systemctl restart <service>` on a non-comment line. Unreadable file: none.
-export function allowedServices() {
-  let text
-  try {
-    text = readFileSync(join(scriptsDir(), 'horizon-deploy.sudoers'), 'utf8')
-  } catch {
-    return new Set()
-  }
+export function findTargetByKey(key, database = db) {
+  const row = database.prepare('SELECT * FROM deploy_target WHERE key = ?').get(key)
+  return row ? toTarget(row) : null
+}
+
+// The services a sudoers text lets the deploy user restart, one per
+// `systemctl restart <service>` on a non-comment line. Also parses
+// `sudo -n -l` output, which lists the same commands (HZ-258 Dry run).
+export function servicesInSudoersText(text) {
   const services = new Set()
   for (const line of text.split('\n')) {
     if (line.trimStart().startsWith('#')) continue
@@ -139,20 +139,39 @@ export function allowedServices() {
   return services
 }
 
+// The services horizon-deploy.sudoers permits restarting. Unreadable file: none.
+export function allowedServices() {
+  let text
+  try {
+    text = readFileSync(join(scriptsDir(), 'horizon-deploy.sudoers'), 'utf8')
+  } catch {
+    return new Set()
+  }
+  return servicesInSudoersText(text)
+}
+
 const REQUIRED_FIELDS = ['key', 'repo', 'script', 'service', 'repoDir', 'stateKey', 'healthUrl', 'healthCheckType']
 const SLUG = /^[a-z0-9][a-z0-9-]{0,63}$/
 const SERVICE = /^[A-Za-z0-9@_.-]+$/
 const SCRIPT = /^[A-Za-z0-9_-][A-Za-z0-9_.-]*(\/[A-Za-z0-9_-][A-Za-z0-9_.-]*)*$/
 const REPO_DIR = /^\/[A-Za-z0-9_./-]*$/
 
-function scriptInsideScriptsDir(script) {
-  if (!SCRIPT.test(script)) return false
+export function scriptInsideScriptsDir(script) {
+  if (typeof script !== 'string' || !SCRIPT.test(script)) return false
   try {
     const root = realpathSync(scriptsDir())
     return realpathSync(join(root, script)).startsWith(root + sep)
   } catch {
     return false // missing file, broken symlink, missing dir
   }
+}
+
+export function serviceAllowed(service, allowed = allowedServices()) {
+  return typeof service === 'string' && SERVICE.test(service) && allowed.has(service)
+}
+
+export function serviceNotAllowedReason(service) {
+  return `service ${service} not in horizon-deploy.sudoers`
 }
 
 // { ok: true } or { ok: false, reason }. Never throws.
@@ -180,9 +199,7 @@ export function checkRunnable(target) {
   }
   const allowed = allowedServices()
   for (const service of [target.service, ...extras]) {
-    if (!SERVICE.test(service) || !allowed.has(service)) {
-      return { ok: false, reason: `service ${service} not in horizon-deploy.sudoers` }
-    }
+    if (!serviceAllowed(service, allowed)) return { ok: false, reason: serviceNotAllowedReason(service) }
   }
   return { ok: true }
 }

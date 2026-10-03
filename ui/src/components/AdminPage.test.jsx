@@ -1,8 +1,9 @@
 // Render tests for the read-only deploy-targets panel (HZ-41): it must show
 // each target's repo/service/last-tag/last-result, and — this is the
-// guardrail that matters — it must never render a button, form, or input,
-// since a deploy target names a script and a service to restart and an
-// editable target would be arbitrary code execution.
+// guardrail that matters — it must never render a form or a field that edits
+// a target, since a deploy target names a script and a service to restart and
+// an editable target would be arbitrary code execution. Its only controls are
+// the PIN-gated, read-only Dry run (HZ-258).
 //
 // Also the personal API tokens panel (HZ-179): the raw token is shown once and
 // never persisted, and the list shows only the safe fields. And each repo
@@ -30,6 +31,7 @@ vi.mock('../api', () => ({
   })),
   getRepoWebhooks: vi.fn(async () => ({ webhooks: [] })),
   fixRepoWebhook: vi.fn(async () => ({ ok: true })),
+  dryRunDeployTarget: vi.fn(),
   getDeployTargets: vi.fn(async () => ({
     targets: [
       {
@@ -92,12 +94,71 @@ test('renders one row per deploy target with repo, service, tag, and result', as
   expect(scoped.getByText(/^never/)).toBeTruthy()
 })
 
-test('the deploy-targets panel renders no button, form, or input anywhere (read-only guardrail)', async () => {
+test('the deploy-targets panel has no form or target field — only Dry run, its PIN and Run (read-only guardrail)', async () => {
   const { findByText, container } = render(<AdminPage sync={{}} projects={[]} onBack={() => {}} />)
   await findByText('FinTekkers/horizon')
 
   const panel = findDeployTargetsPanel(container)
-  expect(panel.querySelectorAll('button, form, input, textarea, select').length).toBe(0)
+  const scoped = within(panel)
+  expect(panel.querySelectorAll('form, textarea, select').length).toBe(0)
+  expect(panel.querySelectorAll('input').length).toBe(0)
+  const toggles = scoped.getAllByRole('button')
+  expect(toggles.map((b) => b.textContent)).toEqual(['▸ Dry run', '▸ Dry run'])
+
+  for (const toggle of toggles) fireEvent.click(toggle)
+  const inputs = Array.from(panel.querySelectorAll('input'))
+  expect(inputs.map((i) => i.getAttribute('aria-label'))).toEqual([
+    'Gate PIN to dry-run FinTekkers/horizon',
+    'Gate PIN to dry-run FinTekkers/ui-service',
+  ])
+  expect(inputs.every((i) => i.type === 'password')).toBe(true)
+  expect(scoped.getAllByRole('button').map((b) => b.textContent)).toEqual(['▾ Dry run', 'Run', '▾ Dry run', 'Run'])
+  for (const field of [/^script/i, /^service/i, /^health/i, /^repo dir/i]) expect(scoped.queryByLabelText(field)).toBeNull()
+  expect(panel.querySelectorAll('form, textarea, select').length).toBe(0)
+})
+
+test('Dry run with the PIN shows all five checks, each with pass/fail and its reason', async () => {
+  const results = [
+    { check: 'script', pass: true, reason: 'script found in infra/host and executable' },
+    { check: 'repo dir', pass: true, reason: 'git work tree, origin is FinTekkers/horizon' },
+    { check: 'service', pass: false, reason: 'service horizon-server is not active (exit 3)' },
+    { check: 'sudo', pass: true, reason: 'sudo -n allows restarting horizon-server' },
+    { check: 'health', pass: false, reason: 'health timed out after 5000ms' },
+  ]
+  api.dryRunDeployTarget.mockResolvedValueOnce({ key: 'horizon', ranAt: '2026-10-03T12:00:00.000Z', results })
+  const { findByText, container } = render(<AdminPage sync={{}} projects={[]} onBack={() => {}} />)
+  await findByText('FinTekkers/horizon')
+  const panel = within(findDeployTargetsPanel(container))
+
+  fireEvent.click(panel.getAllByRole('button', { name: /Dry run/ })[0])
+  const pinInput = panel.getByLabelText('Gate PIN to dry-run FinTekkers/horizon')
+  fireEvent.change(pinInput, { target: { value: '1234' } })
+  fireEvent.click(panel.getByRole('button', { name: 'Run' }))
+
+  const list = await panel.findByRole('list', { name: 'Dry run results for FinTekkers/horizon' })
+  expect(api.dryRunDeployTarget).toHaveBeenCalledWith('horizon', '1234')
+  const items = within(list).getAllByRole('listitem')
+  expect(items).toHaveLength(5)
+  items.forEach((item, i) => {
+    expect(item.textContent).toContain(results[i].check)
+    expect(within(item).getByText(results[i].pass ? 'pass' : 'fail')).toBeTruthy()
+    expect(within(item).getByText(results[i].reason)).toBeTruthy()
+  })
+  expect(pinInput.value).toBe('')
+})
+
+test('a wrong PIN on Dry run says so and shows no results', async () => {
+  api.dryRunDeployTarget.mockRejectedValueOnce(Object.assign(new Error('human_gate_key_required'), { status: 401 }))
+  const { findByText, container } = render(<AdminPage sync={{}} projects={[]} onBack={() => {}} />)
+  await findByText('FinTekkers/horizon')
+  const panel = within(findDeployTargetsPanel(container))
+
+  fireEvent.click(panel.getAllByRole('button', { name: /Dry run/ })[0])
+  fireEvent.change(panel.getByLabelText('Gate PIN to dry-run FinTekkers/horizon'), { target: { value: 'bad' } })
+  fireEvent.click(panel.getByRole('button', { name: 'Run' }))
+
+  await panel.findByText('Gate PIN incorrect')
+  expect(panel.queryByRole('list')).toBeNull()
 })
 
 // ---- personal API tokens (HZ-179) ----
