@@ -13,6 +13,7 @@ import { FILTERS, visibleItems, hiddenCounts, matchCounts } from '../domain/filt
 import { PRIMARY_PERSONA_AGENT, personaFor } from '../domain/personas'
 import { itemStatus, stateLabel } from '../domain/status'
 import { gateActionOf, gateActionBusy, elapsedText } from '../domain/gateAction'
+import { usualDurationHint } from '../domain/durationHint'
 import { useClockTick } from '../useClockTick'
 import { issueUrl, issueLabel } from '../api'
 import * as boardFilters from '../boardFilters'
@@ -38,7 +39,7 @@ function progressSegs(item) {
   })
 }
 
-function BoardCard({ item, projects, now, onOpen, onApprove, onReject, onTogglePause, isGateBusy }) {
+function BoardCard({ item, projects, durationEstimates, now, onOpen, onApprove, onReject, onTogglePause, isGateBusy }) {
   const closed = isClosed(item)
   const abandoned = isAbandoned(item)
   const rejected = item.rejected && !closed && !abandoned
@@ -59,6 +60,8 @@ function BoardCard({ item, projects, now, onOpen, onApprove, onReject, onToggleP
   // HZ-228: how long the item has been in its current state, ticked by the
   // Board's one shared clock (`now`).
   const elapsedLabel = stateLabel(item)
+  // HZ-230: 'usually ~20m' (or 'running long') from the snapshot's estimates.
+  const hint = usualDurationHint(item, durationEstimates, now)
 
   return (
     <div className={`card${awaiting ? ' card--awaiting' : ''}`} onClick={() => onOpen(item.id)}>
@@ -114,6 +117,12 @@ function BoardCard({ item, projects, now, onOpen, onApprove, onReject, onToggleP
       {elapsedLabel && (
         <div className="card__elapsed">
           {elapsedLabel} · {elapsedText(item.state_since, now, { seconds: false })}
+          {hint && (
+            <>
+              {' · '}
+              <span className={`card__usual${hint.long ? ' card__usual--long' : ''}`}>{hint.text}</span>
+            </>
+          )}
         </div>
       )}
       <DependencyBadge item={item} compact />
@@ -180,6 +189,7 @@ function BoardCard({ item, projects, now, onOpen, onApprove, onReject, onToggleP
 export default function Board({
   items,
   projects,
+  durationEstimates,
   onOpen,
   onApprove,
   onReject,
@@ -273,6 +283,7 @@ export default function Board({
                       key={item.id}
                       item={item}
                       projects={projects}
+                      durationEstimates={durationEstimates}
                       now={now.getTime()}
                       onOpen={onOpen}
                       onApprove={onApprove}

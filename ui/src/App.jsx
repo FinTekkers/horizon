@@ -134,6 +134,7 @@ function AuthenticatedApp({ user, onLogout }) {
   const projects = api.getProjects()
   const activeProjectId = api.getActiveProjectId()
   const farm = api.getFarm()
+  const durationEstimates = api.getDurationEstimates()
   const activeProject = projects.find((p) => p.id === activeProjectId) || null
   // HZ-208: the project filter is view state only. It is re-validated on every
   // render, so a project disabled live (over SSE) while selected falls back to
@@ -323,6 +324,7 @@ function AuthenticatedApp({ user, onLogout }) {
         <Board
           items={visibleItems}
           projects={projects}
+          durationEstimates={durationEstimates}
           onOpen={openItem}
           onApprove={requestApprove}
           onReject={(id, target) => openComposer('reject', id, { target })}
