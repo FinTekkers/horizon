@@ -166,6 +166,18 @@ def test_implement_step_runs_exactly_the_tasks_configured_check_commands(tmp_pat
     assert "2 repo check(s) passed" in result["summary"]
 
 
+def test_implement_step_passes_the_items_repo_to_run_checks(tmp_path, monkeypatch):
+    """HZ-249: without repo=, the dependency cache stays inert in production."""
+    ws, origin = make_git_workspace(tmp_path)
+    monkeypatch.setattr(step_agent, "ensure_item_worktree", lambda repo, item_id: ws)
+    seen = []
+    monkeypatch.setattr(step_agent, "run_checks", lambda ws, log, **kw: seen.append(kw.get("repo")) or "1 repo check(s) passed")
+
+    execute(make_task(11, "Specialist agent implements", repo="acme/demo"))
+
+    assert seen == ["acme/demo"]
+
+
 # ---- screenshot publishing (HZ-63) ----
 # Screenshots are gitignored now (no more committed PNGs), published instead
 # to a per-item git ref so two branches touching the same journey never

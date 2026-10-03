@@ -85,7 +85,48 @@ AGENT_NEVER_NEEDS = frozenset({"FARM_MAX_EPHEMERAL"})
 # AGENT_NEVER_NEEDS: run_checks() executes *inside* the agent session and has
 # to read the limit, so stripping it at tmux would silently disable the
 # limiter. It is stripped here instead — past the reader, before the tests.
-CHECK_SUBPROCESS_SCRUB = frozenset({"FARM_MAX_EPHEMERAL", "FARM_MAX_CONCURRENT_CHECKS"})
+CHECK_SUBPROCESS_SCRUB = frozenset(
+    {
+        "FARM_MAX_EPHEMERAL",
+        "FARM_MAX_CONCURRENT_CHECKS",
+        # HZ-249: the dependency cache's settings, for the same reason — the
+        # checked repo's own suite asserts their defaults.
+        "FARM_DEP_CACHE",
+        "FARM_DEP_CACHE_MAX_ENTRIES",
+        "FARM_DEP_CACHE_MAX_GB",
+        "FARM_DEP_CACHE_MIN_FREE_GB",
+    }
+)
+
+
+# ---- HZ-249: per-repo dependency cache (farm/dep_cache.py) ----
+# Read at call time, like farm_home(): tests flip them per test, and the off
+# switch must take effect on the next check run without a code change.
+_GB = 1024**3
+
+
+def _env_number(name: str, default: float) -> float:
+    try:
+        return float(os.environ.get(name, "") or default)
+    except ValueError:
+        return default
+
+
+def dep_cache_enabled() -> bool:
+    """FARM_DEP_CACHE=0 turns the cache off; off is exactly the pre-HZ-249 path."""
+    return os.environ.get("FARM_DEP_CACHE", "1").strip().lower() not in ("0", "false", "no", "off")
+
+
+def dep_cache_max_entries() -> int:
+    return max(1, int(_env_number("FARM_DEP_CACHE_MAX_ENTRIES", 3)))
+
+
+def dep_cache_max_bytes() -> int:
+    return int(_env_number("FARM_DEP_CACHE_MAX_GB", 5) * _GB)
+
+
+def dep_cache_min_free_bytes() -> int:
+    return int(_env_number("FARM_DEP_CACHE_MIN_FREE_GB", 3) * _GB)
 
 # HZ-101: how often farmd reconciles claimed runs against live tmux sessions
 # (session gone -> report the run failed instead of waiting for the server's

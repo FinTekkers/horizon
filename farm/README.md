@@ -62,6 +62,10 @@ sessions; queued work survives on disk.
 | `FARM_MAX_CONCURRENT_CHECKS` | 2 | how many check suites may run at once, independently of the agent cap. `<=0` disables the limiter entirely (the rollback lever) |
 | `FARM_CHECK_SLOT_WAIT_MAX_S` | 1200 | how long a run waits for a check slot before proceeding **without** one, loudly. `<=0` waits forever |
 | `FARM_CHECK_METRICS_PHASE` | (unlabelled) | tags check-metric records with a measurement-window name, e.g. `cap6-limit2` |
+| `FARM_DEP_CACHE` | 1 | per-repo dependency cache for the install check (HZ-249). `0` turns it off with no cache I/O at all — exactly the old install path |
+| `FARM_DEP_CACHE_MAX_ENTRIES` | 3 | cache entries kept per repo (one per lockfile/toolchain key), least recently used pruned first |
+| `FARM_DEP_CACHE_MAX_GB` | 5 | cache size cap per repo; also the largest tree that is ever saved |
+| `FARM_DEP_CACHE_MIN_FREE_GB` | 3 | a new entry is not written if it would leave less free disk than this |
 
 No env var selects a model. Every agent's default model, and any per-step or
 per-persona override, is declared in `domain/personas.json`'s `models` block
@@ -251,6 +255,33 @@ Detection is root-level only, so this repo carries a root `pytest.ini`
 the `server` and `ui` suites — that wiring is what makes the guardrail gate
 actually run all three. No linters are configured anywhere in the repo yet,
 so the "linters must pass" guardrail is currently vacuous.
+
+### Dependency cache (HZ-249)
+
+The install command (the Admin `install` slot, or the auto-detected
+`npm install`) is the only check the cache wraps. Before it runs in a
+workspace with no `node_modules`, `farm/dep_cache.py` looks up
+`$FARM_HOME/dep-cache/<owner>__<repo>/<key>/` — the key hashes the lockfile,
+`package.json`, the package manager and its version, `node --version`,
+OS/arch and the install command — and on a hit extracts a **private copy** of
+the saved tree into the workspace. The install command then runs unchanged;
+on a matching tree it has nothing to fetch. On a miss, the freshly installed
+tree is tarred into the cache straight after the install (before tests can
+write into it) and the repo's cache is pruned to its caps.
+
+- Each check-metrics record carries `install` (`cache` = hit / miss / corrupt
+  / present / off / error, `duration_s`, `restore_s`, `save_s`,
+  `lockfile_drift`, `cache_repo_bytes`), and each run logs one
+  `checks: dep-cache <repo> …; repo cache <size> (<n> entries)` line.
+  `python -m farm.tools.report_check_metrics` prints each repo's hits, misses,
+  median install time and cache size.
+- A missing, corrupt or unreadable entry, or any cache error, falls back to a
+  full install. If the install rewrites the lockfile, that tree is not cached.
+- A restored tree is a real copy on this host's ext4 (no reflinks): each
+  workspace's `node_modules` costs its full size on top of the cache entry.
+- To wipe it: `rm -rf ~/.horizon-farm/dep-cache` (or one repo's directory)
+  while no check is running. To turn it off: `FARM_DEP_CACHE=0` in
+  `/etc/horizon/farm.env`, then restart farmd.
 
 ### How many check suites run at once (HZ-144)
 

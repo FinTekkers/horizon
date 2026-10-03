@@ -1415,3 +1415,23 @@ def test_the_scoped_path_runs_the_repos_configured_check_commands(isolated_works
 
     assert result["resolved"] is True and result["mode"] == "scoped"
     assert marker.exists()
+
+
+# ---- HZ-249: the dependency cache is keyed by the resolved repo ----
+
+
+def test_the_scoped_path_passes_its_repo_to_run_checks(isolated_workspaces_dir, monkeypatch):
+    tmp_path = isolated_workspaces_dir
+    _hub, origin = make_repo_hub(tmp_path)
+    install(monkeypatch, FakeAgents())
+    additive_conflict(tmp_path, origin, "HZ-23")
+    seen = []
+    real = conflict_resolver.run_checks
+    monkeypatch.setattr(
+        conflict_resolver, "run_checks", lambda ws, log, **kw: seen.append(kw.get("repo")) or real(ws, log, **kw)
+    )
+
+    result = conflict_resolver.resolve("acme/demo", "HZ-23", log=lambda *_: None)
+
+    assert result["resolved"] is True and result["mode"] == "scoped"
+    assert seen == ["acme/demo"]

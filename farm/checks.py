@@ -34,7 +34,7 @@ import sys
 import time
 from pathlib import Path
 
-from . import check_metrics, check_slots, config
+from . import check_metrics, check_slots, config, dep_cache
 from .pause import PauseRequested
 
 # HZ-183: how much of a failing command's output a CheckFailure carries. Lines,
@@ -258,32 +258,45 @@ def _auto_detect(ws: Path, log=lambda *_: None) -> list[list[str]]:
 CHECK_SLOTS = ("install", "test", "lint", "e2e")
 
 
+def _configured_slots(configured) -> list[tuple[str, list[str]]]:
+    if not isinstance(configured, dict):
+        return []
+    return [
+        (slot, ["sh", "-c", value])
+        for slot in CHECK_SLOTS
+        if isinstance(value := configured.get(slot), str) and value.strip()
+    ]
+
+
 def configured_commands(configured) -> list[list[str]] | None:
     """The configured slots as argvs, in CHECK_SLOTS order, or None when
     nothing is configured. Blank (empty or whitespace-only) and non-string
     slots are skipped — and never back-filled by auto-detection: once any
     slot is set, only the set slots run."""
-    if not isinstance(configured, dict):
-        return None
-    commands = [
-        ["sh", "-c", value]
-        for slot in CHECK_SLOTS
-        if isinstance(value := configured.get(slot), str) and value.strip()
-    ]
+    commands = [argv for _, argv in _configured_slots(configured)]
     return commands or None
+
+
+def _resolve_tagged(ws: Path, configured, log) -> tuple[list[list[str]], int | None]:
+    """resolve_check_commands(), plus the index of the install command in it
+    (HZ-249: the only command the dependency cache wraps), or None. Tagged
+    where the list is built, so a blank install slot can never make the cache
+    wrap the test command. FARM_CHECK_CMD is one opaque command: no install."""
+    override = os.environ.get("FARM_CHECK_CMD")
+    if override:
+        return [["sh", "-c", override]], None
+    slots = _configured_slots(configured)
+    if slots:
+        log(f"checks: using the {len(slots)} command(s) configured for this repo in Admin")
+        return [argv for _, argv in slots], next((i for i, (slot, _) in enumerate(slots) if slot == "install"), None)
+    commands = detect_check_commands(ws, log=log)
+    return commands, next((i for i, cmd in enumerate(commands) if cmd[:2] == ["npm", "install"]), None)
 
 
 def resolve_check_commands(ws: Path, configured=None, log=lambda *_: None) -> list[list[str]]:
     """What run_checks() runs: FARM_CHECK_CMD if set, else the repo's
     configured commands, else today's auto-detection."""
-    override = os.environ.get("FARM_CHECK_CMD")
-    if override:
-        return [["sh", "-c", override]]
-    commands = configured_commands(configured)
-    if commands is not None:
-        log(f"checks: using the {len(commands)} command(s) configured for this repo in Admin")
-        return commands
-    return detect_check_commands(ws, log=log)
+    return _resolve_tagged(ws, configured, log)[0]
 
 
 def default_check_slots(ws: Path) -> dict[str, str | None]:
@@ -349,6 +362,7 @@ def run_checks(
     on_slot_event=None,
     configured=None,
     cancel=None,
+    repo: str | None = None,
 ) -> str:
     """Returns a short human-readable note; raises CheckFailure on failure.
 
@@ -381,8 +395,13 @@ def run_checks(
 
     cancel (HZ-256) is passed to check_slots.check_slot(): setting it ends a
     slot wait with check_slots.WaitCancelled. None keeps today's behaviour.
+
+    repo (HZ-249) is the owner/name whose dependency cache the install
+    command may restore from and save to (farm/dep_cache.py). None — or
+    FARM_DEP_CACHE=0, or a nested run inside a check — runs the install
+    exactly as before, with no cache I/O at all.
     """
-    commands = resolve_check_commands(ws, configured, log=log)
+    commands, install_at = _resolve_tagged(ws, configured, log)
     if not commands:
         log("checks: no test/lint commands detected in the repo — nothing to enforce")
         if require_ran:
@@ -398,7 +417,7 @@ def run_checks(
         log=log, run_id=run_id, item_id=item_id, caller=caller, on_event=on_slot_event, cancel=cancel
     ) as slot:
         timeout_s = int(os.environ.get("FARM_CHECK_TIMEOUT_S", "600"))
-        record = check_metrics.new_record(run_id=run_id, item_id=item_id, caller=caller, slot=slot)
+        record = check_metrics.new_record(run_id=run_id, item_id=item_id, caller=caller, slot=slot, repo=repo)
         env = {**_check_env(), **(child_env or {})}
         # Host-wide free memory at each command boundary; the minimum is what
         # the record keeps. See farm/check_metrics.py on why this and not
@@ -406,8 +425,19 @@ def run_checks(
         mem_samples = [check_metrics.mem_available_kb()]
         ran = 0
         try:
-            for cmd in commands:
+            for index, cmd in enumerate(commands):
                 shown = " ".join(cmd)
+                cache = None
+                if index == install_at:
+                    if repo and config.dep_cache_enabled() and not os.environ.get(check_slots.IN_CHECKS_ENV):
+                        cache = dep_cache.InstallRun(repo, ws, shown, env, log)
+                        record["install"] = cache.info
+                        # Before the budget below is computed, so restore
+                        # time comes out of this command's share.
+                        left = float(timeout_s) if deadline is None else min(timeout_s, deadline - time.monotonic())
+                        cache.before(left)
+                    else:
+                        record["install"] = dep_cache.off_info()
                 budget = float(timeout_s)
                 if deadline is not None:
                     budget = min(budget, deadline - time.monotonic())
@@ -434,13 +464,20 @@ def run_checks(
                     ) from exc
                 finally:
                     mem_samples.append(check_metrics.mem_available_kb())
+                duration = time.monotonic() - started
                 record["commands"].append(
                     {
                         "cmd": shown,
-                        "duration_s": round(time.monotonic() - started, 1),
+                        "duration_s": round(duration, 1),
                         "returncode": proc.returncode,
                     }
                 )
+                if cache is not None:
+                    # Straight after install, before test/lint/e2e can touch
+                    # node_modules — see InstallRun.after().
+                    cache.after(proc.returncode, duration, deadline)
+                elif index == install_at:
+                    record["install"]["duration_s"] = round(duration, 1)
                 if proc.returncode != 0:
                     output = ((proc.stdout or "") + "\n" + (proc.stderr or "")).strip()
                     # classify_failure keeps reading the raw last 400 chars, NOT

@@ -1401,7 +1401,12 @@ def _execute(task: dict, guard: HandoffGuard) -> dict:
                 # HZ-245: the repo's Admin-configured commands, from the task dict
                 # parsed at startup — never re-read after the agent has run.
                 check_note = run_checks(
-                    ws, log, run_id=task.get("run_id"), item_id=item["id"], configured=task.get("check_commands")
+                    ws,
+                    log,
+                    run_id=task.get("run_id"),
+                    item_id=item["id"],
+                    configured=task.get("check_commands"),
+                    repo=item.get("repo"),
                 )
             checks_finished_at = check_record.now_iso()
         except pause.PauseRequested:

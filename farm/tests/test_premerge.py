@@ -431,3 +431,16 @@ def test_unreadable_check_commands_fail_closed_never_auto_detect(ws_dir, monkeyp
     assert code == 1
     assert result["ok"] is False and result["reason"] == "crash"
     assert ran == []
+
+
+# ---- HZ-249: the dependency cache is keyed by the PR's repo ----
+
+
+def test_premerge_passes_its_repo_to_run_checks_for_the_dependency_cache(ws_dir, monkeypatch):
+    hub, s = crossing_fixture(ws_dir)
+    seen = []
+    real = premerge.run_checks
+    monkeypatch.setattr(premerge, "run_checks", lambda ws, **kw: seen.append(kw.get("repo")) or real(ws, **kw))
+
+    assert run(hub, s["pr_head"], s["fork"])["ok"] is True
+    assert seen == [REPO]
