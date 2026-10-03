@@ -6,6 +6,7 @@ import * as github from './github.js'
 import * as orchestrator from './orchestrator.js'
 import * as gateNotifier from './gateNotifier.js'
 import * as caretaker from './caretaker.js'
+import * as caretakerActor from './caretakerActor.js'
 import * as autoResolve from './autoResolve.js'
 import { PORT } from './config.js'
 
@@ -25,6 +26,10 @@ gateNotifier.init(fastify.log)
 // HZ-270: records "caretaker would …" events for Autopilot shadow/on projects
 // only; an 'off' project's items are never selected.
 caretaker.init(fastify.log)
+// HZ-271: acts on 'on'-mode decisions at gates 5, 10 and 15 through the same
+// gateActions the UI routes call. Registered AFTER caretaker.init so, on any
+// change, the decision row is written before this looks for it.
+caretakerActor.init(fastify.log, { gateActions: fastify.gateActions })
 // Before polling starts, so the first tick already seeds main's head (HZ-235).
 autoResolve.startAutoResolve(fastify.log)
 github.startPolling(fastify.log)

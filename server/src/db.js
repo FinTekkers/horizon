@@ -527,6 +527,45 @@ db.exec(`
   );
 `)
 
+// HZ-271: what the Autopilot caretaker DID (caretakerActor.js). caretaker_eval
+// above is not altered. One caretaker_action row per acted-on decision —
+// eval_id UNIQUE is the claim, so an arrival is acted on at most once — and
+// the rolling hourly limit counts these rows, so a restart cannot reset it.
+// caretaker_ping is the owner-ping outbox; dedupe_key UNIQUE is what makes a
+// stall ping once per arrival. The *_ms columns hold caretakerActor's
+// injectable clock, which SQLite's datetime('now') could not be.
+db.exec(`
+  CREATE TABLE IF NOT EXISTS caretaker_action (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    eval_id      INTEGER NOT NULL UNIQUE REFERENCES caretaker_eval(id) ON DELETE CASCADE,
+    project_id   INTEGER NOT NULL REFERENCES project(id),
+    item_id      TEXT NOT NULL REFERENCES work_item(id) ON DELETE CASCADE,
+    gate_index   INTEGER NOT NULL,
+    action       TEXT NOT NULL CHECK (action IN ('approve','send_back')),
+    outcome      TEXT NOT NULL CHECK (outcome IN ('pending','ok','failed','dropped','skipped','interrupted')),
+    error        TEXT,
+    acted_at_ms  INTEGER NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS idx_caretaker_action_window ON caretaker_action(project_id, acted_at_ms);
+
+  CREATE TABLE IF NOT EXISTS caretaker_ping (
+    id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id         INTEGER NOT NULL REFERENCES project(id),
+    item_id            TEXT REFERENCES work_item(id) ON DELETE CASCADE,
+    reason             TEXT NOT NULL CHECK (reason IN ('hourly_limit','review_cycle_cap','step_failed_twice')),
+    dedupe_key         TEXT NOT NULL UNIQUE,
+    recipient          TEXT NOT NULL,
+    body               TEXT NOT NULL,
+    status             TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','sending','sent','failed')),
+    attempts           INTEGER NOT NULL DEFAULT 0,
+    last_error         TEXT,
+    created_at_ms      INTEGER NOT NULL,
+    next_attempt_at_ms INTEGER NOT NULL DEFAULT 0,
+    sent_at            TEXT
+  );
+  CREATE INDEX IF NOT EXISTS idx_caretaker_ping_project ON caretaker_ping(project_id, reason, created_at_ms);
+`)
+
 // HZ-263: deploy targets, the one source the self-deploy resolver reads
 // (server/src/deployTargets.js seeds it once and re-validates every row on
 // read). Field names mirror the old infra/host registry entries; repo is

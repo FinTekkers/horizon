@@ -939,6 +939,24 @@ export function buildApp({ logger = true, onRoute = null } = {}) {
     return result
   }
 
+  // The /reject body, moved out unchanged (HZ-271) so every send-back — the
+  // browser, the WhatsApp poll vote and the Autopilot caretaker — runs it.
+  function performSendBack(id, { target, feedback, targetStepIndex } = {}, actor = 'You') {
+    return store.requestChanges(id, target, feedback, actor, targetStepIndex ?? null)
+  }
+
+  // HZ-271: THE one approve and the one send-back. Every route below calls
+  // these through this object, looked up at call time, and caretakerActor.js
+  // is handed the same object (server.js) rather than importing anything that
+  // can act — so the caretaker runs exactly the checks a human click runs
+  // (gate state, review-cycle cap, step status), minus only the route's
+  // humanAuthorized() wrapper. Decorated so server.js and the tests reach it.
+  const gateActions = {
+    approve: (id, stepIndex, notes, actor) => performGateApproval(id, stepIndex, notes, actor),
+    sendBack: (id, opts, actor) => performSendBack(id, opts, actor),
+  }
+  fastify.decorate('gateActions', gateActions)
+
   fastify.post(
     '/api/items/:id/gates/:stepIndex/approve',
     {
@@ -960,7 +978,7 @@ export function buildApp({ logger = true, onRoute = null } = {}) {
       if (!humanAuthorized(request, reply)) return
       const { id, stepIndex } = request.params
       const notes = (request.body?.notes || '').trim()
-      const result = await performGateApproval(id, stepIndex, notes, actorOf(request))
+      const result = await gateActions.approve(id, stepIndex, notes, actorOf(request))
       if (result.status) return reply.code(result.status).send(gateFailureBody(result))
       return send(reply, result)
     },
@@ -1024,7 +1042,7 @@ export function buildApp({ logger = true, onRoute = null } = {}) {
       // the (now proven) jid when no display name rides along.
       const label = (request.body.sender || '').trim() || `...${normalizeJid(senderJid).slice(-4)}`
       const actor = `${label} via WhatsApp`
-      const result = await performGateApproval(id, stepIndex, notes, actor)
+      const result = await gateActions.approve(id, stepIndex, notes, actor)
       if (result.status) return reply.code(result.status).send(gateFailureBody(result))
       return send(reply, result)
     },
@@ -1078,12 +1096,12 @@ export function buildApp({ logger = true, onRoute = null } = {}) {
       const result = await waPollVotes.applyVote(
         { voteId, pollMsgId: pollMessageId, voterJid, selectedOption },
         {
-          approve: (id, stepIndex, notes, actor) => performGateApproval(id, stepIndex, notes, actor),
+          approve: (id, stepIndex, notes, actor) => gateActions.approve(id, stepIndex, notes, actor),
           // targetStepIndex stays null: store.requestChanges derives the
           // default rework target itself, Accept-gate exception included. A
           // second derivation here could only ever drift from that one.
           sendBack: (id, feedback, actor) =>
-            store.requestChanges(id, STEPS[store.getItem(id)?.cursor]?.label || null, feedback, actor, null),
+            gateActions.sendBack(id, { target: STEPS[store.getItem(id)?.cursor]?.label || null, feedback }, actor),
         },
       )
       if (result.status === 200) {
@@ -1122,12 +1140,14 @@ export function buildApp({ logger = true, onRoute = null } = {}) {
       if (!humanAuthorized(request, reply)) return
       return send(
         reply,
-        store.requestChanges(
+        gateActions.sendBack(
           request.params.id,
-          request.body?.target,
-          request.body?.feedback,
+          {
+            target: request.body?.target,
+            feedback: request.body?.feedback,
+            targetStepIndex: request.body?.targetStepIndex,
+          },
           actorOf(request),
-          request.body?.targetStepIndex ?? null,
         ),
       )
     },
