@@ -176,8 +176,26 @@ test('every deploy the server starts waits up to 30 minutes for the lock by defa
   // Both scripts take their lock bound from that variable.
   for (const script of [DEPLOY_HORIZON_SH, DEPLOY_UI_SERVICE_SH]) {
     assert.match(readFileSync(script, 'utf8'), /flock -w "\$LOCK_TIMEOUT_S"/, script)
-    assert.match(readFileSync(script, 'utf8'), /LOCK_TIMEOUT_S="\$\{HORIZON_DEPLOY_LOCK_TIMEOUT_S:-/, script)
   }
+})
+
+// Contract deviation, pending an operator ruling: the contract asks both
+// scripts to contain HORIZON_DEPLOY_LOCK_TIMEOUT_S:-1800, but HZ-258's
+// deploy-dry-run.test.mjs pins infra/host/ to main. This pins the actual state,
+// so a manual run's 5-min default is visible rather than silently assumed.
+test('the scripts keep their own 5-minute default; only server-started deploys get 30 minutes', () => {
+  for (const script of [DEPLOY_HORIZON_SH, DEPLOY_UI_SERVICE_SH]) {
+    assert.match(readFileSync(script, 'utf8'), /LOCK_TIMEOUT_S="\$\{HORIZON_DEPLOY_LOCK_TIMEOUT_S:-300\}"/, script)
+  }
+})
+
+test('an explicit HORIZON_DEPLOY_LOCK_TIMEOUT_S in the server env wins over the 30-minute default', () => {
+  const out = execFileSync(
+    process.execPath,
+    ['--input-type=module', '-e', "const c = await import('./src/config.js'); console.log(c.DEPLOY_LOCK_TIMEOUT_S, process.env.HORIZON_DEPLOY_LOCK_TIMEOUT_S)"],
+    { cwd: join(REPO_ROOT, 'server'), env: { ...process.env, HORIZON_DEPLOY_LOCK_TIMEOUT_S: '42' }, encoding: 'utf8' },
+  )
+  assert.equal(out.trim(), '42 42')
 })
 
 // Guardrail diff checks against the branch point with main (origin/main when
