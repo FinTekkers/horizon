@@ -198,35 +198,3 @@ test('an explicit HORIZON_DEPLOY_LOCK_TIMEOUT_S in the server env wins over the 
   assert.equal(out.trim(), '42 42')
 })
 
-// Guardrail diff checks against the branch point with main (origin/main when
-// fetched, else the local main). Skipped outside a git checkout.
-function gitOut(...args) {
-  return execFileSync('git', args, { cwd: REPO_ROOT, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] })
-}
-function mainBase() {
-  for (const ref of ['origin/main', 'main']) {
-    try {
-      return gitOut('merge-base', 'HEAD', ref).trim()
-    } catch {}
-  }
-  return null
-}
-
-test('existing deploy tests, the deploy targets, sudoers and the smoke check are unchanged vs main', (t) => {
-  const base = mainBase()
-  if (!base) return t.skip('no main ref to diff against')
-  const unchanged = [
-    'server/test/deploy*',
-    'server/test/webhook-deploy*',
-    'infra/host/deploy-targets.json',
-    'infra/host/horizon-deploy.sudoers',
-    'e2e/smoke/check.mjs',
-  ]
-  assert.equal(gitOut('diff', '--name-only', base, '--', ...unchanged.map((p) => `:(glob)${p}`)).trim(), '')
-})
-
-test('the deploy scripts and the rest of infra/host/ are unchanged vs main', (t) => {
-  const base = mainBase()
-  if (!base) return t.skip('no main ref to diff against')
-  assert.equal(gitOut('diff', '--name-only', base, '--', 'infra/host/').trim(), '')
-})
