@@ -504,6 +504,27 @@ for (const column of ['check_install', 'check_test', 'check_lint', 'check_e2e'])
   if (!projectRepoColumns.has(column)) db.exec(`ALTER TABLE project_repo ADD COLUMN ${column} TEXT`)
 }
 
+// HZ-304: repo readiness. no_checks / no_deploy are the owner's PIN-gated
+// marks (store.setRepoMarks is their only writer); every repo starts
+// unmarked, so an unconfigured one is flagged, never waved through.
+// enforced_since is when enforcement began for a repo that was already
+// connected: an item whose implement started before it may still pre-merge
+// and resolve conflicts with no commands. It is stamped only in the boot that
+// adds the column, so a repo connected later keeps NULL — enforced from the
+// start.
+if (!projectRepoColumns.has('no_checks')) {
+  db.exec('ALTER TABLE project_repo ADD COLUMN no_checks INTEGER NOT NULL DEFAULT 0 CHECK (no_checks IN (0, 1))')
+}
+if (!projectRepoColumns.has('no_deploy')) {
+  db.exec('ALTER TABLE project_repo ADD COLUMN no_deploy INTEGER NOT NULL DEFAULT 0 CHECK (no_deploy IN (0, 1))')
+}
+if (!projectRepoColumns.has('enforced_since')) {
+  db.transaction(() => {
+    db.exec('ALTER TABLE project_repo ADD COLUMN enforced_since TEXT')
+    db.exec("UPDATE project_repo SET enforced_since = datetime('now') WHERE enforced_since IS NULL")
+  })()
+}
+
 // HZ-270: per-project Autopilot. Additive: every existing and new project is
 // 'off', and an 'off' project's items are never read by the caretaker.
 if (!db.prepare('PRAGMA table_info(project)').all().some((column) => column.name === 'autopilot')) {

@@ -179,9 +179,13 @@ export const runner = {
 // Fire-and-forget: it is never awaited and anything it throws is ignored.
 //
 // checkCommands (HZ-245) is the repo's Admin-configured {install,test,lint,e2e},
-// or null for auto-detect. It goes to the CLI as argv, never env, so it can't
+// or null for none. It goes to the CLI as argv, never env, so it can't
 // reach the check processes' environment.
-export async function runPreMergeChecks(item, { headSha, baseSha, timeoutMs, onSlot, checkCommands = null }) {
+//
+// checksWaiver (HZ-304) is store.CHECKS_WAIVER's value excusing a repo with no
+// commands (orchestrator.checksWaiverFor), or null: then a repo with no
+// commands fails no_checks_detected.
+export async function runPreMergeChecks(item, { headSha, baseSha, timeoutMs, onSlot, checkCommands = null, checksWaiver = null }) {
   const shas = { head_sha: headSha, base_sha: baseSha }
   if (!SHA_RE.test(headSha || '') || !SHA_RE.test(baseSha || '')) {
     return { ok: false, reason: 'bad_input', detail: 'GitHub did not return full commit shas', ...shas }
@@ -193,6 +197,7 @@ export async function runPreMergeChecks(item, { headSha, baseSha, timeoutMs, onS
     '--json',
   ]
   if (checkCommands) args.push('--check-commands', JSON.stringify(checkCommands))
+  if (checksWaiver) args.push('--checks-waiver', checksWaiver)
   const spawnOpts = { cwd: path.dirname(FARM_DIR), timeoutMs, env: childEnv(timeoutMs), itemId: item.id }
   if (onSlot) {
     spawnOpts.onStderrLine = (line) => {
@@ -304,7 +309,7 @@ export function describeFailure(result) {
     case 'merge_conflict':
       return `the PR does not merge cleanly into the current base (${short(result.base_sha)}) — resolve the conflict first`
     case 'no_checks_detected':
-      return `no repo checks were detected on ${on}, so nothing proves the merge is safe — add a test script (or FARM_CHECK_CMD) for this repo`
+      return `${result.detail || 'no check commands configured'} — nothing proves the merge of ${on} is safe. Set the repo's check commands in Admin, or mark it 'no checks'`
     case 'no_hub':
       return 'the farm has no checkout of this repo to test-merge in — start the farm so the repo hub exists, then click Accept again'
     case 'busy':

@@ -134,6 +134,7 @@ def test_concurrent_implement_runs_on_different_items_do_not_clobber_each_other(
             "step": {"index": 11, "label": "Specialist agent implements", "agent": "Eng"},
             "artifacts": [],
             "feedback": [],
+            "checks_waiver": "no_checks",  # HZ-304: the seed repo has no checks configured
         }
 
     results, errors = {}, {}

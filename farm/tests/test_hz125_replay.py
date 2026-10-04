@@ -69,7 +69,11 @@ def test_hz125_attempt4_rejection_replays_as_a_fix_run_and_a_delta_review(tmp_pa
         return {"result": '{"summary": "guarded every persona-registry lookup with isPersona"}'}
 
     monkeypatch.setattr(step_agent, "run_agent", fix_agent)
-    implemented = execute(task(DISPATCH["step"]["label"], scope, [{"message": DISPATCH["feedback_message"]}]))
+    # HZ-304: the replay repo has no checks configured; the waiver is the
+    # explicit "nothing to run" the server sends for such a repo.
+    implemented = execute(
+        {**task(DISPATCH["step"]["label"], scope, [{"message": DISPATCH["feedback_message"]}]), "checks_waiver": "no_checks"}
+    )
     assert captured["max_turns"] == 53
     assert "## Fix pass" in captured["prompt"]
     assert "`server/src/definitions.js`" in captured["prompt"]

@@ -294,6 +294,23 @@ export async function saveRepoChecks(projectId, repo, checks, pin) {
   return data
 }
 
+// HZ-304: a repo's 'no checks' / 'no deploy' marks ({noChecks?, noDeploy?}).
+// Same PIN handling as saveRepoChecks: sent only in the x-human-key header.
+export async function saveRepoMarks(projectId, repo, marks, pin) {
+  const res = await fetch(`${API_BASE}/projects/${encodeURIComponent(projectId)}/repos/marks`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json', 'x-human-key': pin },
+    body: JSON.stringify({ repo, ...marks }),
+  })
+  const data = await res.json().catch(() => ({}))
+  if (!res.ok) {
+    const err = new Error(data.error || `HTTP ${res.status}`)
+    err.status = res.status
+    throw err
+  }
+  return data
+}
+
 // What auto-detection would run for the repo — Admin's placeholders.
 export function getRepoCheckDefaults(projectId, repo) {
   return getJson(`/projects/${encodeURIComponent(projectId)}/repos/check-defaults?repo=${encodeURIComponent(repo)}`)

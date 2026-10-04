@@ -172,7 +172,7 @@ def test_fix_pass_implement_runs_on_the_reduced_budget_with_the_scope_rule(tmp_p
     monkeypatch.setattr(step_agent, "run_agent", _fake)
     scope = {"mode": "fix", "base_sha": base, "max_turns": 53, "timeout_s": 900,
              "findings": [{"file": "fix.py", "line": 1, "detail": "FINDING_DETAIL_TEXT"}]}
-    result = execute(task(IMPLEMENT, scope))
+    result = execute({**task(IMPLEMENT, scope), "checks_waiver": "no_checks"})
     assert captured["max_turns"] == 53
     assert captured["timeout_s"] == 900
     assert "## Fix pass" in captured["prompt"]
@@ -193,7 +193,7 @@ def test_a_full_implement_task_keeps_the_full_budget(tmp_path, monkeypatch):
         return {"result": '{"summary": "did it"}'}
 
     monkeypatch.setattr(step_agent, "run_agent", _fake)
-    result = execute(task(IMPLEMENT, {"mode": "full"}))
+    result = execute({**task(IMPLEMENT, {"mode": "full"}), "checks_waiver": "no_checks"})
     assert (captured["max_turns"], captured["timeout_s"]) == step_agent.steps.budget_for_label(step_agent.steps.STEPS, IMPLEMENT)
     assert "## Fix pass" not in captured["prompt"]
     assert "fix_diff_lines" not in result["artifacts"]

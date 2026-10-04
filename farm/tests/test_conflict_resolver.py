@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from farm import agent_runner, conflict_resolver, workspaces
+from farm import agent_runner, checks, conflict_resolver, workspaces
 from farm.tests.conflict_fixtures import (
     clone_and_read,
     git,
@@ -36,7 +36,7 @@ def test_clean_non_overlapping_merge_resolves_and_pushes(isolated_workspaces_dir
     push_new_branch(tmp_path, origin, "horizon/hz-1", lambda w: (w / "shared.txt").write_text("line1 (branch edit)\nline2\nline3\n"), "branch")
     push_new_branch(tmp_path, origin, "main", lambda w: (w / "other.txt").write_text("new on main\n"), "main-advance")
 
-    result = conflict_resolver.resolve("acme/demo", "HZ-1", log=lambda *_: None)
+    result = conflict_resolver.resolve("acme/demo", "HZ-1", log=lambda *_: None, checks_waiver="no_checks")
 
     assert result["resolved"] is True
     assert set(result) == {"resolved", "files", "summary"}
@@ -64,7 +64,7 @@ def test_never_dispatches_an_agent_for_the_mechanical_path(isolated_workspaces_d
     push_new_branch(tmp_path, origin, "horizon/hz-1", lambda w: (w / "shared.txt").write_text("line1 (branch edit)\nline2\nline3\n"), "branch")
     push_new_branch(tmp_path, origin, "main", lambda w: (w / "other.txt").write_text("new on main\n"), "main-advance")
 
-    result = conflict_resolver.resolve("acme/demo", "HZ-1", log=lambda *_: None)
+    result = conflict_resolver.resolve("acme/demo", "HZ-1", log=lambda *_: None, checks_waiver="no_checks")
 
     assert result["resolved"] is True
 
@@ -108,7 +108,7 @@ def test_the_mechanical_path_pushes_with_no_force_flag_at_all(isolated_workspace
     push_new_branch(tmp_path, origin, "horizon/hz-1", lambda w: (w / "shared.txt").write_text("line1 (branch edit)\nline2\nline3\n"), "branch")
     push_new_branch(tmp_path, origin, "main", lambda w: (w / "other.txt").write_text("new on main\n"), "main-advance")
 
-    assert conflict_resolver.resolve("acme/demo", "HZ-1", log=lambda *_: None)["resolved"] is True
+    assert conflict_resolver.resolve("acme/demo", "HZ-1", log=lambda *_: None, checks_waiver="no_checks")["resolved"] is True
 
     pushes = [args for args in calls if args and args[0] == "push"]
     assert pushes == [("push", "origin", "horizon/hz-1")]
@@ -205,7 +205,7 @@ def test_a_file_containing_marker_shaped_text_is_not_mistaken_for_a_conflict(iso
     )
     push_new_branch(tmp_path, origin, "main", lambda w: (w / "other.txt").write_text("new on main\n"), "main-advance")
 
-    result = conflict_resolver.resolve("acme/demo", "HZ-4", log=lambda *_: None)
+    result = conflict_resolver.resolve("acme/demo", "HZ-4", log=lambda *_: None, checks_waiver="no_checks")
 
     assert result["resolved"] is True
 
@@ -335,3 +335,60 @@ def test_the_mechanical_path_passes_its_repo_to_run_checks(isolated_workspaces_d
 
     assert conflict_resolver.resolve("acme/demo", "HZ-7", log=lambda *_: None)["resolved"] is True
     assert seen == ["acme/demo"]
+
+
+# ---- HZ-304: no commands is a named failure, not a silent pass ----
+
+
+def test_the_mechanical_path_with_no_commands_and_no_waiver_escalates_by_name(isolated_workspaces_dir, monkeypatch):
+    tmp_path = isolated_workspaces_dir
+    _hub, origin = make_repo_hub(tmp_path)
+    monkeypatch.delenv("FARM_CHECK_CMD", raising=False)
+    branch_sha = push_new_branch(
+        tmp_path, origin, "horizon/hz-30", lambda w: (w / "shared.txt").write_text("line1 (branch)\nline2\nline3\n"), "branch"
+    )
+    push_new_branch(tmp_path, origin, "main", lambda w: (w / "other.txt").write_text("new on main\n"), "main-advance")
+
+    result = conflict_resolver.resolve("acme/demo", "HZ-30", log=lambda *_: None)
+
+    assert result["resolved"] is False
+    assert result["reason"] == "tests_failed"
+    assert "no check commands configured for acme/demo" in result["detail"]
+    assert origin_branch_sha(origin, "horizon/hz-30") == branch_sha  # nothing pushed
+
+
+def test_an_item_that_predates_enforcement_still_merges_and_says_its_checks_were_waived(isolated_workspaces_dir, monkeypatch):
+    tmp_path = isolated_workspaces_dir
+    _hub, origin = make_repo_hub(tmp_path)
+    monkeypatch.delenv("FARM_CHECK_CMD", raising=False)
+    branch_sha = push_new_branch(
+        tmp_path, origin, "horizon/hz-31", lambda w: (w / "shared.txt").write_text("line1 (branch)\nline2\nline3\n"), "branch"
+    )
+    push_new_branch(tmp_path, origin, "main", lambda w: (w / "other.txt").write_text("new on main\n"), "main-advance")
+
+    result = conflict_resolver.resolve("acme/demo", "HZ-31", log=lambda *_: None, checks_waiver="predates_enforcement")
+
+    assert result["resolved"] is True
+    assert result["summary"].endswith("; checks waived for acme/demo: item predates readiness enforcement")
+    assert "checks_passed_sha" not in result, "a waived run is never pass evidence"
+    assert origin_branch_sha(origin, "horizon/hz-31") != branch_sha  # the merge was pushed
+
+
+def test_configured_commands_whose_runner_is_missing_escalate_none_ran(isolated_workspaces_dir, monkeypatch):
+    tmp_path = isolated_workspaces_dir
+    _hub, origin = make_repo_hub(tmp_path)
+    monkeypatch.delenv("FARM_CHECK_CMD", raising=False)
+    push_new_branch(tmp_path, origin, "horizon/hz-32", lambda w: (w / "shared.txt").write_text("line1 (branch)\nline2\nline3\n"), "branch")
+    push_new_branch(tmp_path, origin, "main", lambda w: (w / "other.txt").write_text("new on main\n"), "main-advance")
+
+    def missing(cmd, *_a, **_k):
+        raise FileNotFoundError(cmd[0])
+
+    monkeypatch.setattr(checks, "_run_bounded", missing)
+    result = conflict_resolver.resolve(
+        "acme/demo", "HZ-32", log=lambda *_: None, configured={"test": "npm test"}, checks_waiver="no_checks"
+    )
+
+    assert result["resolved"] is False
+    assert result["reason"] == "tests_failed"
+    assert "every check runner is missing on this host" in result["detail"]

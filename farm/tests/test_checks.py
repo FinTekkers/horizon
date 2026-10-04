@@ -29,9 +29,13 @@ def hermetic_check_slots(tmp_path, monkeypatch):
     monkeypatch.delenv(check_slots.IN_CHECKS_ENV, raising=False)
 
 
-def test_no_project_files_means_no_checks(tmp_path):
+def test_no_project_files_means_no_checks_and_the_run_fails(tmp_path):
+    """HZ-304: nothing configured is a failure, not a silent pass."""
     assert detect_check_commands(tmp_path) == []
-    assert run_checks(tmp_path, log=lambda *_: None) == "no repo checks detected"
+    with pytest.raises(CheckFailure) as err:
+        run_checks(tmp_path, log=lambda *_: None)
+    assert str(err.value) == "no check commands configured for this repo"
+    assert err.value.reason == "none_ran"
 
 
 def test_npm_placeholder_test_script_is_ignored(tmp_path):
@@ -189,7 +193,7 @@ def test_a_timeout_carries_no_digest(tmp_path, monkeypatch):
     assert err.value.digest == ""
 
 
-# ---- HZ-154: require_ran — "no green, no push" for the scoped conflict path ----
+# ---- HZ-154 / HZ-304: "no green, no push" — an actual green on every path ----
 
 
 def missing_runner(monkeypatch):
@@ -211,38 +215,64 @@ def missing_runner(monkeypatch):
     monkeypatch.setattr(checks, "subprocess", NoRunners)
 
 
-def test_a_missing_runner_is_skipped_but_still_counts_as_nothing_run(tmp_path, monkeypatch):
+def test_a_missing_runner_is_skipped_with_a_warning_and_counts_as_nothing_run(tmp_path, monkeypatch):
+    """HZ-304: the missing runner is still skipped with a warning, but a run
+    where nothing ran is a failure for every caller now."""
     monkeypatch.setenv("FARM_CHECK_CMD", "pytest -q")
     missing_runner(monkeypatch)
 
     warnings = []
-    assert run_checks(tmp_path, log=warnings.append) == "check runners unavailable — skipped"
+    with pytest.raises(CheckFailure) as err:
+        run_checks(tmp_path, log=warnings.append)
+    assert err.value.reason == "none_ran"
     assert any("not installed on the farm host" in w for w in warnings)
 
 
-def test_require_ran_turns_every_runner_missing_into_a_failure(tmp_path, monkeypatch):
-    """The commands WERE detected — they just could not execute here. Today's
-    callers accept that; the scoped conflict path cannot, because it is about
-    to push a merge nobody has read."""
+def test_every_runner_missing_is_a_failure_for_every_caller(tmp_path, monkeypatch):
+    """The commands WERE configured — they just could not execute here. No
+    caller may push behind that (HZ-304 replaced HZ-154's opt-in require_ran)."""
     monkeypatch.setenv("FARM_CHECK_CMD", "pytest -q")
     missing_runner(monkeypatch)
 
-    with pytest.raises(CheckFailure, match="every detected check runner is missing"):
-        run_checks(tmp_path, log=lambda *_: None, require_ran=True)
+    for caller in ("step_agent", "conflict_resolver", "premerge"):
+        with pytest.raises(CheckFailure, match="every check runner is missing on this host") as err:
+            run_checks(tmp_path, log=lambda *_: None, caller=caller)
+        assert err.value.reason == "none_ran"
 
 
-def test_require_ran_turns_no_detected_checks_into_a_failure(tmp_path):
-    """The other half: a repo with no runner to detect in the first place."""
-    assert run_checks(tmp_path, log=lambda *_: None) == "no repo checks detected"
+def test_no_configured_checks_is_a_failure_even_when_a_test_script_exists(tmp_path):
+    """The other half: nothing configured. A package.json with a real test
+    script proves run_checks no longer guesses commands from the tree."""
+    (tmp_path / "package.json").write_text(json.dumps({"scripts": {"test": "node --test"}}))
+    assert ["npm", "test", "--silent"] in detect_check_commands(tmp_path)
 
-    with pytest.raises(CheckFailure, match="no repo checks detected"):
-        run_checks(tmp_path, log=lambda *_: None, require_ran=True)
+    with pytest.raises(CheckFailure) as err:
+        run_checks(tmp_path, log=lambda *_: None, repo="acme/demo")
+    assert str(err.value) == "no check commands configured for acme/demo"
+    assert err.value.reason == "none_ran"
 
 
-def test_require_ran_is_satisfied_by_one_real_green_run(tmp_path, monkeypatch):
+@pytest.mark.parametrize(
+    "waiver, note",
+    [
+        ("no_checks", "checks waived for acme/demo: marked 'no checks' in Admin"),
+        ("predates_enforcement", "checks waived for acme/demo: item predates readiness enforcement"),
+    ],
+)
+def test_a_checks_waiver_lets_a_repo_with_no_commands_through_with_a_waived_note(tmp_path, waiver, note):
+    assert run_checks(tmp_path, log=lambda *_: None, repo="acme/demo", checks_waiver=waiver) == note
+
+
+def test_an_unknown_checks_waiver_is_no_waiver(tmp_path):
+    with pytest.raises(CheckFailure) as err:
+        run_checks(tmp_path, log=lambda *_: None, checks_waiver="please")
+    assert err.value.reason == "none_ran"
+
+
+def test_one_real_green_run_passes(tmp_path, monkeypatch):
     monkeypatch.setenv("FARM_CHECK_CMD", "true")
 
-    assert run_checks(tmp_path, log=lambda *_: None, require_ran=True) == "1 repo check(s) passed"
+    assert run_checks(tmp_path, log=lambda *_: None) == "1 repo check(s) passed"
 
 
 def _write_e2e_repo(tmp_path):

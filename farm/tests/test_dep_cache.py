@@ -643,8 +643,13 @@ def test_an_existing_node_modules_is_left_alone_and_never_saved(tmp_path, counte
 
 def test_which_command_is_the_install_is_tagged_where_the_list_is_built(tmp_path, monkeypatch):
     (tmp_path / "package.json").write_text(json.dumps({"scripts": {"test": "node --test"}}))
-    commands, at = checks._resolve_tagged(tmp_path, None, lambda *_: None)
-    assert commands[at][:2] == ["npm", "install"]
+    # HZ-304: an auto-detected `npm install` is no longer run, so never tagged.
+    assert ["npm", "install", "--no-audit", "--no-fund"] in checks.detect_check_commands(tmp_path)
+    assert checks._resolve_tagged(tmp_path, None, lambda *_: None) == ([], None)
+    # The configured install slot is the one tagged, wherever the payload put it.
+    commands, at = checks._resolve_tagged(tmp_path, {"lint": "l", "test": "x", "install": "npm ci"}, lambda *_: None)
+    assert commands[at] == ["sh", "-c", "npm ci"]
+    assert [c for i, c in enumerate(commands) if i != at] == [["sh", "-c", "x"], ["sh", "-c", "l"]]
     assert checks._resolve_tagged(tmp_path, {"test": "x"}, lambda *_: None)[1] is None
     assert checks._resolve_tagged(tmp_path, {"install": "i", "test": "x"}, lambda *_: None)[1] == 0
     monkeypatch.setenv("FARM_CHECK_CMD", "npm install && npm test")

@@ -9,6 +9,7 @@ names the failing check and the failing test.
 
 import json
 import os
+import shlex
 import subprocess
 import sys
 import time
@@ -89,6 +90,11 @@ def crossing_fixture(tmp_path):
     return hub, {"fork": fork, "pr_head": pr_head, "main": main_tip}
 
 
+# HZ-304: run_checks no longer auto-detects the fixture's pytest suite; this is
+# the command auto-detection used to run, configured explicitly as in Admin.
+PYTEST_CHECKS = {"test": f"{shlex.quote(sys.executable)} -m pytest -q"}
+
+
 def run(hub_shas, head, base, **kw):
     return premerge.premerge_check(REPO, "HZ-154", head, base, timeout_s=kw.pop("timeout_s", 600), log=lambda *_: None, **kw)
 
@@ -99,12 +105,12 @@ def run(hub_shas, head, base, **kw):
 def test_replay_of_the_hz154_hz156_crossing_is_red_though_each_side_is_green_alone(ws_dir):
     hub, s = crossing_fixture(ws_dir)
 
-    main_alone = run(hub, s["main"], s["main"])
-    pr_alone = run(hub, s["pr_head"], s["fork"])
+    main_alone = run(hub, s["main"], s["main"], configured=PYTEST_CHECKS)
+    pr_alone = run(hub, s["pr_head"], s["fork"], configured=PYTEST_CHECKS)
     assert main_alone["ok"] is True, main_alone
     assert pr_alone["ok"] is True, pr_alone
 
-    crossed = run(hub, s["pr_head"], s["main"])
+    crossed = run(hub, s["pr_head"], s["main"], configured=PYTEST_CHECKS)
     assert crossed["ok"] is False
     assert crossed["reason"] == "checks_failed"
     assert "pytest" in crossed["failing_check"]
@@ -114,7 +120,7 @@ def test_replay_of_the_hz154_hz156_crossing_is_red_though_each_side_is_green_alo
 
 def test_the_green_result_reports_the_tested_commits_and_the_merge(ws_dir):
     hub, s = crossing_fixture(ws_dir)
-    result = run(hub, s["pr_head"], s["fork"])
+    result = run(hub, s["pr_head"], s["fork"], configured=PYTEST_CHECKS)
     assert result["ok"] is True
     assert result["head_sha"] == s["pr_head"]
     assert result["base_sha"] == s["fork"]
@@ -127,8 +133,8 @@ def test_the_green_result_reports_the_tested_commits_and_the_merge(ws_dir):
 
 def test_the_scratch_worktree_is_reaped_after_every_run(ws_dir):
     hub, s = crossing_fixture(ws_dir)
-    run(hub, s["pr_head"], s["main"])  # red
-    run(hub, s["pr_head"], s["fork"])  # green
+    run(hub, s["pr_head"], s["main"], configured=PYTEST_CHECKS)  # red
+    run(hub, s["pr_head"], s["fork"], configured=PYTEST_CHECKS)  # green
     ws = premerge.premerge_path(REPO, "HZ-154")
     assert not ws.exists()
     assert str(ws) not in subprocess.run(
@@ -359,8 +365,8 @@ def test_premerge_and_its_cleanup_touch_no_path_outside_the_tests_farm_home(ws_d
 def test_runs_leave_every_item_worktree_on_the_hub_alone(ws_dir):
     hub, s = crossing_fixture(ws_dir)
     items = [item_worktree(hub, "hz-1"), item_worktree(hub, "hz-2")]
-    run(hub, s["pr_head"], s["main"])  # red
-    run(hub, s["pr_head"], s["fork"])  # green
+    run(hub, s["pr_head"], s["main"], configured=PYTEST_CHECKS)  # red
+    run(hub, s["pr_head"], s["fork"], configured=PYTEST_CHECKS)  # green
     listed = subprocess.run(["git", "-C", str(hub), "worktree", "list"], capture_output=True, text=True).stdout
     for path in items:
         assert path.is_dir() and (path / ".git").exists()
@@ -442,5 +448,49 @@ def test_premerge_passes_its_repo_to_run_checks_for_the_dependency_cache(ws_dir,
     real = premerge.run_checks
     monkeypatch.setattr(premerge, "run_checks", lambda ws, **kw: seen.append(kw.get("repo")) or real(ws, **kw))
 
-    assert run(hub, s["pr_head"], s["fork"])["ok"] is True
+    assert run(hub, s["pr_head"], s["fork"], configured=PYTEST_CHECKS)["ok"] is True
     assert seen == [REPO]
+
+
+# ---- HZ-304: no commands, a waiver, and missing runners ----
+
+
+def test_a_waived_repo_merges_with_the_waiver_named_and_runs_nothing(ws_dir, monkeypatch):
+    hub, _origin = make_repo_hub(ws_dir)
+    tip = sha(ws_dir / "seed")
+
+    def no_slot(*_a, **_k):
+        raise AssertionError("a waived run must not take a check slot")
+
+    monkeypatch.setattr(checks.check_slots, "check_slot", no_slot)
+    result = run(hub, tip, tip, checks_waiver="predates_enforcement")
+    assert result["ok"] is True
+    assert result["note"] == "checks waived for acme/demo: item predates readiness enforcement"
+
+
+def test_a_repo_with_no_commands_names_the_repo_in_its_failure(ws_dir):
+    hub, _origin = make_repo_hub(ws_dir)
+    tip = sha(ws_dir / "seed")
+    result = run(hub, tip, tip)
+    assert result["reason"] == "no_checks_detected"
+    assert result["detail"] == "no check commands configured for acme/demo"
+
+
+def test_configured_commands_whose_runner_is_missing_block_the_merge(ws_dir, monkeypatch):
+    hub, _origin = make_repo_hub(ws_dir)
+    tip = sha(ws_dir / "seed")
+
+    def missing(cmd, *_a, **_k):
+        raise FileNotFoundError(cmd[0])
+
+    monkeypatch.setattr(checks, "_run_bounded", missing)
+    result = run(hub, tip, tip, configured={"test": "npm test"}, checks_waiver="no_checks")
+    assert result["ok"] is False
+    assert result["reason"] == "no_checks_detected"
+    assert "every check runner is missing on this host" in result["detail"]
+
+
+def test_cli_rejects_an_unknown_waiver(ws_dir, capsys):
+    with pytest.raises(SystemExit):
+        premerge.main(["acme/demo", "HZ-154", "a" * 40, "--base", "b" * 40, "--checks-waiver", "everything"])
+    assert "invalid choice" in capsys.readouterr().err

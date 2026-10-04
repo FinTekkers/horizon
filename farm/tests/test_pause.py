@@ -109,15 +109,15 @@ def test_pause_mid_implement_pushes_a_checkpoint_and_the_next_attempt_resumes_on
         return capture_run_agent(seen)(prompt, **kwargs)
 
     monkeypatch.setattr(step_agent, "run_agent", attempt_2)
-    execute_implement()
+    execute_implement(checks_waiver="no_checks")
     assert seen["head"] == checkpoint
     assert seen["file"] == "half done\n"
     assert "an operator paused the previous attempt mid-run" in seen["prompt"]
     assert "paused_work.txt" in seen["prompt"]
 
 
-def execute_implement(scope=None):
-    task = make_task(11, IMPLEMENT, repo="acme/demo")
+def execute_implement(scope=None, checks_waiver=None):
+    task = make_task(11, IMPLEMENT, repo="acme/demo", checks_waiver=checks_waiver)
     if scope:
         task["scope"] = scope
     return step_agent.execute(task)

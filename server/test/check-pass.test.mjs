@@ -22,6 +22,10 @@ const { IMPLEMENT_STEP_INDEX, ACCEPT_GATE_INDEX } = await import('../../domain/j
 const orchestrator = await import('../src/orchestrator.js')
 
 store.purgeDemoItems()
+const { connectReadyRepo } = await import('./helpers/readyRepo.mjs')
+// HZ-304: implement and deploy dispatches need a ready repo; readiness itself
+// is orchestrator-readiness.test.mjs's subject.
+connectReadyRepo(db, 'acme/demo')
 
 globalThis.fetch = async () => ({ ok: true, status: 200, json: async () => ({}), text: async () => '' })
 

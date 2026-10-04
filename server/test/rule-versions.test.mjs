@@ -79,6 +79,9 @@ const restoreCo = insertProject.run('Restore Co').lastInsertRowid
 insertRepo.run(restoreCo, 'acme/restore', 'AR')
 const verbatimCo = insertProject.run('Verbatim Co').lastInsertRowid
 insertRepo.run(verbatimCo, 'acme/verbatim', 'AV')
+// HZ-304: these implement dispatches need check commands on each repo.
+const { connectReadyRepo } = await import('./helpers/readyRepo.mjs')
+for (const repo of ['acme/demo', 'acme/none', 'acme/restore', 'acme/verbatim']) connectReadyRepo(db, repo)
 
 const insertItem = db.prepare('INSERT INTO work_item (id, title, priority, cursor, repo, project_id) VALUES (?, ?, ?, 11, ?, ?)')
 
@@ -379,5 +382,6 @@ test('a row edited directly in SQLite is not served: the last verified version i
   assert.ok((await preview('Tamper Co')).endsWith('## Project rules\nTAMPER CO FILE'))
   const tamperCo = insertProject.run('Tamper Co').lastInsertRowid
   insertRepo.run(tamperCo, 'acme/tamper', 'AT')
+  connectReadyRepo(db, 'acme/tamper')
   assert.equal(Object.hasOwn(await dispatchFor('RV-7', 'acme/tamper', tamperCo), 'rules_override'), false)
 })

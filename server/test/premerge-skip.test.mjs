@@ -34,6 +34,10 @@ const premerge = await import('../src/premerge.js')
 const orchestrator = await import('../src/orchestrator.js')
 
 store.purgeDemoItems()
+const { connectReadyRepo } = await import('./helpers/readyRepo.mjs')
+// HZ-304: implement and deploy dispatches need a ready repo; readiness itself
+// is orchestrator-readiness.test.mjs's subject.
+connectReadyRepo(db, 'acme/demo')
 const app = buildApp({ logger: false })
 const { pin, cookie } = loginFixtureUser(auth, config)
 

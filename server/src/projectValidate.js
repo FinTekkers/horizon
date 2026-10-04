@@ -62,6 +62,7 @@ export const deps = {
   getBranchSha: (repo, branch) => github.getBranchSha(repo, branch),
   spawn: (args, opts) => premerge.runner.spawn(args, opts),
   checkCommands: (repo) => store.getRepoCheckCommands(repo),
+  repoConfig: (repo) => store.getRepoConfig(repo),
   resolveRules: (projectName, repo) => resolveRules(projectName, repo, servedRulesFor(projectName, repo)),
   findTargetByRepo: (repo) => findTargetByRepo(repo),
   listTargets: () => listTargets(),
@@ -175,6 +176,9 @@ async function checkCommands(ctx, timeoutMs) {
     for (const root of forbid) args.push('--forbid', root)
     const configured = deps.checkCommands(repo)
     if (configured) args.push('--check-commands', JSON.stringify(configured))
+    // HZ-304: a repo the owner marked 'no checks' runs nothing and reports
+    // the waiver; an unmarked repo with no commands fails by name.
+    else if (deps.repoConfig(repo)?.noChecks) args.push('--checks-waiver', store.CHECKS_WAIVER.NO_CHECKS)
     const cwd = path.dirname(FARM_DIR)
     const out = await deps.spawn(args, { cwd, timeoutMs, env: premerge.childEnv(timeoutMs) })
     if (out.timedOut) {

@@ -202,6 +202,10 @@ export async function saveRepoChecks() {
   throw new Error('Projects are not available in mock mode')
 }
 
+export async function saveRepoMarks() {
+  throw new Error('Projects are not available in mock mode')
+}
+
 export async function getRepoCheckDefaults() {
   return { available: false, defaults: { install: null, test: null, lint: null, e2e: null } }
 }

@@ -360,6 +360,9 @@ button { font-family: var(--font-sans); }
 }
 .repo-row__disconnect:hover { color: var(--danger-ink); background: var(--danger-bg); }
 .repo-checks { padding: 0 2px 6px 18px; }
+.repo-marks { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 16px; padding: 0 2px 6px 18px; }
+.repo-marks .project-enabled { margin-left: 0; }
+.repo-marks__warning { flex-basis: 100%; }
 .repo-checks__toggle { border: none; background: none; cursor: pointer; color: var(--muted); font: 600 12px var(--font-sans); padding: 0; }
 .repo-checks__toggle:hover { color: var(--primary); }
 .repo-checks__form { margin-top: 8px; }

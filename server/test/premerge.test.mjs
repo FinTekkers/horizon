@@ -125,7 +125,10 @@ test('describeFailure names the failing check and carries its tail', () => {
 })
 
 test('describeFailure tells the human what to do for each fail-closed reason', () => {
-  assert.match(premerge.describeFailure({ reason: 'no_checks_detected' }), /add a test script/)
+  assert.match(
+    premerge.describeFailure({ reason: 'no_checks_detected', detail: 'no check commands configured for acme/demo' }),
+    /^no check commands configured for acme\/demo — .*Set the repo's check commands in Admin, or mark it 'no checks'$/,
+  )
   assert.match(premerge.describeFailure({ reason: 'no_hub' }), /start the farm/)
   assert.match(premerge.describeFailure({ reason: 'timed_out' }), /PREMERGE_CHECK_TIMEOUT_MS/)
   assert.match(premerge.describeFailure({ reason: 'merge_conflict' }), /resolve the conflict/)

@@ -29,6 +29,10 @@ const { IMPLEMENT_STEP_INDEX } = await import('../../domain/js/lifecycle.js')
 const orchestrator = await import('../src/orchestrator.js')
 
 store.purgeDemoItems()
+const { connectReadyRepo } = await import('./helpers/readyRepo.mjs')
+// HZ-304: implement and deploy dispatches need a ready repo; readiness itself
+// is orchestrator-readiness.test.mjs's subject.
+connectReadyRepo(db, 'acme/demo')
 
 // Gates every GitHub API call behind a manually-released promise so the test
 // can control exactly how long completeFarmRun's PR-creation await stays

@@ -1589,6 +1589,8 @@ def _execute(task: dict, guard: HandoffGuard) -> dict:
                     item_id=item["id"],
                     configured=task.get("check_commands"),
                     repo=item.get("repo"),
+                    # HZ-304: from the server, like check_commands.
+                    checks_waiver=task.get("checks_waiver"),
                 )
             checks_finished_at = check_record.now_iso()
         except pause.PauseRequested:

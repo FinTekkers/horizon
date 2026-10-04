@@ -22,6 +22,10 @@ const { STEPS, DEPLOY_STEP_INDEX } = await import('../../domain/js/lifecycle.js'
 const orchestrator = await import('../src/orchestrator.js')
 
 store.purgeDemoItems()
+const { connectReadyRepo } = await import('./helpers/readyRepo.mjs')
+// HZ-304: acme/demo has no deploy target; the 'no deploy' mark keeps today's
+// deploy path (a target-less deploy is orchestrator-readiness.test.mjs's subject).
+connectReadyRepo(db, 'acme/demo', { noDeploy: true })
 
 const insertItem = db.prepare(
   'INSERT INTO work_item (id, title, priority, cursor, repo, issue) VALUES (?, ?, ?, ?, ?, ?)',

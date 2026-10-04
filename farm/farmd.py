@@ -1010,8 +1010,11 @@ async def conflicts_resolve(request: Request):
     try:
         with workspaces.item_lock(repo, item_id, wait_s=0):
             # HZ-245: the repo's Admin-configured check commands, when the
-            # server sent any; absent means auto-detect, exactly as before.
+            # server sent any. HZ-304: absent means no commands — the checks
+            # fail by name unless the server also sent a checks_waiver.
             extra = {"configured": body["check_commands"]} if body.get("check_commands") else {}
+            if body.get("checks_waiver"):
+                extra["checks_waiver"] = body["checks_waiver"]
             result = await asyncio.to_thread(
                 conflict_resolver.resolve, repo, item_id, body.get("branch"), body.get("base_branch"), **extra
             )

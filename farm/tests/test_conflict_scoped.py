@@ -751,9 +751,8 @@ def test_a_red_check_suite_escalates_and_pushes_nothing(isolated_workspaces_dir,
 
 
 def test_a_repo_with_no_check_runner_at_all_escalates(isolated_workspaces_dir, monkeypatch):
-    """No green, no push — and "no suite ran" is not green. The mechanical
-    path keeps its own behaviour here (a repo need not have tests to take a
-    plain fast-forward merge); this path is pushing a resolution instead."""
+    """No green, no push — and "no suite ran" is not green. HZ-304: nothing
+    configured and no waiver fails every path; this one escalates."""
     tmp_path = isolated_workspaces_dir
     _hub, origin = make_repo_hub(tmp_path)
     install(monkeypatch, FakeAgents())
@@ -763,15 +762,15 @@ def test_a_repo_with_no_check_runner_at_all_escalates(isolated_workspaces_dir, m
     result = conflict_resolver.resolve("acme/demo", "HZ-22", log=lambda *_: None)
 
     assert result["reason"] == "scoped_checks_failed"
-    assert "no repo checks detected" in result["detail"]
+    assert "no check commands configured for acme/demo" in result["detail"]
     assert_nothing_pushed_and_clean(origin, "HZ-22", branch_sha)
 
 
 def test_a_detected_check_runner_that_is_missing_on_this_host_escalates(isolated_workspaces_dir, monkeypatch):
     """The subtler half of "no green, no push": commands ARE detected, but
-    every one of their binaries is absent, so nothing actually ran. Today's
-    callers accept that as "skipped"; this path must not, or a host with a
-    broken toolchain would silently push every resolution unverified."""
+    every one of their binaries is absent, so nothing actually ran. This path
+    must not accept that, or a host with a broken toolchain would silently
+    push every resolution unverified."""
     tmp_path = isolated_workspaces_dir
     _hub, origin = make_repo_hub(tmp_path)
     install(monkeypatch, FakeAgents())
@@ -794,7 +793,7 @@ def test_a_detected_check_runner_that_is_missing_on_this_host_escalates(isolated
     result = conflict_resolver.resolve("acme/demo", "HZ-33", log=lambda *_: None)
 
     assert result["reason"] == "scoped_checks_failed"
-    assert "every detected check runner is missing" in result["detail"]
+    assert "every check runner is missing on this host" in result["detail"]
     assert_nothing_pushed_and_clean(origin, "HZ-33", branch_sha)
 
 
@@ -1401,7 +1400,7 @@ def test_the_locked_resolution_agent_is_never_dispatched_to_muse(tmp_path, monke
 
 def test_the_scoped_path_runs_the_repos_configured_check_commands(isolated_workspaces_dir, monkeypatch):
     """HZ-245: configured commands reach _scoped_resolve's run_checks too,
-    which still requires a green that actually ran (require_ran=True)."""
+    which still requires a green that actually ran."""
     tmp_path = isolated_workspaces_dir
     _hub, origin = make_repo_hub(tmp_path)
     install(monkeypatch, FakeAgents())

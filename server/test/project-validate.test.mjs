@@ -72,6 +72,7 @@ function stubAllPassing() {
     getBranchSha: async () => MAIN,
     spawn: okSpawn,
     checkCommands: () => null,
+    repoConfig: () => null,
     resolveRules: () => ['# Horizon rules'],
     findTargetByRepo: () => TARGET,
     listTargets: () => [TARGET, { key: 'ui-service', repoDir: '/srv/checkouts/ui' }],
@@ -206,6 +207,29 @@ test('check commands get --forbid for every deploy checkout and ~/.horizon, boun
   assert.ok(opts.timeoutMs <= 10_000, `spawn timeout ${opts.timeoutMs} exceeds the cap left`)
   assert.equal(opts.env.GITHUB_TOKEN, undefined)
   assert.equal(opts.env.FARM_CHECK_TIMEOUT_S, String(Math.floor(opts.timeoutMs / 1000)))
+})
+
+// HZ-304: the existing check_commands check, not a second path, carries the
+// owner's 'no checks' mark to farm/validate.py. Commands win over the mark.
+test("a repo marked 'no checks' with no commands runs check_commands with --checks-waiver no_checks", async () => {
+  pv.deps.repoConfig = () => ({ checks: null, noChecks: true, noDeploy: false, enforcedSince: null })
+  pv.deps.spawn = async (args, opts) => {
+    spawns.push({ args, opts })
+    const detail = "checks waived for this repo: marked 'no checks' in Admin"
+    return { code: 0, stdout: JSON.stringify({ ok: true, detail }), stderr: '', timedOut: false }
+  }
+  const result = await pv.validateProject(PROJECT, { capMs: 10_000, timeouts: { ...pv.CHECK_TIMEOUT_MS, check_commands: 10 ** 9 } })
+  assert.equal(spawns.length, 1)
+  const { args } = spawns[0]
+  assert.deepEqual(args.slice(args.indexOf('--checks-waiver'), args.indexOf('--checks-waiver') + 2), ['--checks-waiver', 'no_checks'])
+  assert.equal(args.includes('--check-commands'), false)
+  assert.match(byName(result, 'check_commands').detail, /checks waived for this repo: marked 'no checks' in Admin/)
+  assert.deepEqual(result.checks.map((c) => c.check), [...pv.VALIDATION_CHECKS], 'still the same six checks')
+
+  spawns = []
+  pv.deps.checkCommands = () => ({ install: null, test: 'npm test', lint: null, e2e: null })
+  await pv.validateProject(PROJECT, { capMs: 10_000, timeouts: { ...pv.CHECK_TIMEOUT_MS, check_commands: 10 ** 9 } })
+  assert.equal(spawns[0].args.includes('--checks-waiver'), false, 'configured commands win over the mark')
 })
 
 test('a check run Node had to kill is followed by --reap-only with the same forbid roots', async () => {

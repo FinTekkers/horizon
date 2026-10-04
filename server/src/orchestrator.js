@@ -43,6 +43,9 @@ import {
   isProjectEnabled,
   setProjectEnabled as writeProjectEnabled,
   getRepoCheckCommands,
+  getRepoConfig,
+  implementStartedBefore,
+  CHECKS_WAIVER,
   recordCheckPass,
   CHECKS_PASSED_SHA_KEY,
   CHECKS_FINISHED_AT_KEY,
@@ -73,6 +76,7 @@ import { SUMMARIZE_STEP_INDEX, OVERLAP_INPUT_LABEL, computeOverlap, overlapFailu
 import { renderOverlapInput, renderOverlapSection, replaceOverlapSection } from './overlap.js'
 import { DEPLOY_BLOCK_MESSAGE, isDeployBlocked, onDrainEnd } from './deployDrain.js'
 import { deployWaitFor } from './deployWait.js'
+import { findTargetByRepo } from './deployTargets.js'
 import { servedRulesFor } from './rulesStore.js'
 import { OPTIONS_STEP_INDEX, proposeSplit } from './split.js'
 
@@ -690,7 +694,7 @@ async function runConflictResolution(id, item, actor) {
         ? takeCannedConflictReply()
         : await farmFetch(
             '/conflicts/resolve',
-            { item: { id, repo: item.repo }, branch, ...checkCommandsField(item.repo) },
+            { item: { id, repo: item.repo }, branch, ...checkCommandsField(item) },
             { timeoutMs: FARM_CONFLICT_RESOLVE_TIMEOUT_MS },
           )
   } catch (err) {
@@ -927,6 +931,10 @@ export const MOCK_STEP_BEHAVIOR = {
     if (!it.repo || it.issue == null) {
       return { summary: 'deployed to the target environment; smoke checks passed (no GitHub — release skipped)' }
     }
+    // HZ-304: this branch publishes a real release, so it is held to the same
+    // rule as the farm path. runMockStep fails the run on `failure`.
+    const failure = readinessFailure(it, DEPLOY_STEP_INDEX)
+    if (failure) return { failure }
     try {
       const release = await createDeployRelease(it)
       return {
@@ -1018,6 +1026,12 @@ export function kick(id, opts = {}) {
 async function dispatchToFarm(id, stepIndex, runId, attempt, scope) {
   const step = STEPS[stepIndex]
   let item = getItem(id)
+
+  // HZ-304: an unready repo fails here, in this call — before the queue
+  // watchdog below is armed and before a release is published or an agent
+  // spent. No timer, no poll; the reason is untagged, so never auto-retried.
+  const unready = readinessFailure(item, stepIndex)
+  if (unready) return failFarmRun(runId, unready)
 
   // Queue watchdog: bounds how long a step may sit queued behind other work
   // before the farm actually launches an agent on it. Deliberately NOT
@@ -1180,7 +1194,7 @@ async function dispatchToFarm(id, stepIndex, runId, attempt, scope) {
     ...(deployWait ? { deploy_wait: deployWait } : {}),
     ...(scope ? { scope } : {}),
     ...(projectContext ? { project_context: projectContext } : {}),
-    ...checkCommandsField(item.repo),
+    ...checkCommandsField(item),
     ...rulesOverrideField(project?.name, item.repo),
   }).catch((err) => {
     // A refused task is not an unreachable farm: say why, and don't retry.
@@ -1190,11 +1204,50 @@ async function dispatchToFarm(id, stepIndex, runId, attempt, scope) {
 }
 
 // HZ-245: the repo's Admin-configured check commands ride with the task, read
-// from the DB at dispatch. Absent (never null) when nothing is configured, so
-// the farm auto-detects exactly as before and an older farm sees no new key.
-function checkCommandsField(repo) {
-  const checkCommands = getRepoCheckCommands(repo)
-  return checkCommands ? { check_commands: checkCommands } : {}
+// from the DB at dispatch. Absent (never null) when nothing is configured.
+// HZ-304: then the farm's checks fail by name, unless checks_waiver rides too.
+function checkCommandsField(item) {
+  const checkCommands = getRepoCheckCommands(item.repo)
+  if (checkCommands) return { check_commands: checkCommands }
+  const waiver = checksWaiverFor(item)
+  return waiver ? { checks_waiver: waiver } : {}
+}
+
+// ---- repo readiness (HZ-304) ----
+// Horizon never silently builds or ships an unready repo. Both rules read the
+// DB at the moment of dispatch; nothing is cached. An item with no repo (a
+// demo item) is never judged.
+
+// The named reason an implement or deploy step must not start, or null.
+// Implement needs check commands, or the repo marked 'no checks'. Deploy
+// needs a deploy_target row for the repo, or the repo marked 'no deploy' —
+// whether or not the item has an issue. A target that exists but fails
+// re-validation is not "missing": it takes the deploy path exactly as before.
+export function readinessFailure(item, stepIndex) {
+  if (!item?.repo) return null
+  if (stepIndex === IMPLEMENT_STEP_INDEX) {
+    const config = getRepoConfig(item.repo)
+    if (config?.checks || config?.noChecks) return null
+    return `no check commands configured for ${item.repo}`
+  }
+  if (stepIndex === DEPLOY_STEP_INDEX) {
+    if (getRepoConfig(item.repo)?.noDeploy || findTargetByRepo(item.repo)) return null
+    return `no deploy target configured for ${item.repo}`
+  }
+  return null
+}
+
+// Why a repo with no check commands may still run checks for this item, or
+// null. Configured commands always win: no waiver is ever sent beside them.
+// 'predates_enforcement' covers an item whose implement started before the
+// repo was enforced: it may pre-merge and resolve conflicts as before. A
+// send-back to implement still fails at dispatch (readinessFailure).
+export function checksWaiverFor(item) {
+  const config = item?.repo ? getRepoConfig(item.repo) : null
+  if (!config || config.checks) return null
+  if (config.noChecks) return CHECKS_WAIVER.NO_CHECKS
+  if (implementStartedBefore(item.id, config.enforcedSince)) return CHECKS_WAIVER.PREDATES_ENFORCEMENT
+  return null
 }
 
 // HZ-246: project/repo rules saved in Admin, read from the DB at dispatch
@@ -2087,7 +2140,14 @@ async function runMockStep(id, stepIndex, runId) {
   const step = STEPS[stepIndex]
   const agent = AGENTS[step.agent]
   const behavior = MOCK_STEP_BEHAVIOR[step.label] || (() => ({ summary: `completed ${step.label.toLowerCase()}` }))
-  let { summary, patch, verdict } = await behavior(item)
+  let { summary, patch, verdict, failure } = await behavior(item)
+  // HZ-304: a mock step that refused to run (an unready repo) fails the run
+  // the way the farm path does — paused for a human, never auto-retried.
+  if (failure) {
+    if (runStillActive(runId)) return failFarmRun(runId, failure)
+    dispatching.delete(id)
+    return
+  }
 
   // Deliver any queued human feedback to this "agent" — the mock acknowledges
   // it in its output; a real agent gets it injected into its session.

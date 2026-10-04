@@ -7,7 +7,7 @@ import subprocess
 import pytest
 
 from farm import check_record
-from farm.checks import run_checks
+from farm.checks import CHECKS_WAIVERS, run_checks
 
 
 def git(ws, *args):
@@ -118,12 +118,17 @@ def test_checks_ran_only_for_a_run_that_ran_at_least_one_check():
 
 def test_checks_ran_matches_run_checks_own_notes(repo, tmp_path, monkeypatch):
     """Pins the coupling to run_checks()'s note text: a real green run is
-    recognised, a run with nothing to run is not."""
+    recognised, a waived run with nothing to run (either waiver) is not."""
     monkeypatch.setenv("FARM_HOME", str(tmp_path / "farm-home"))
     monkeypatch.setenv("FARM_CHECK_CMD", "true")
-    assert check_record.checks_ran(run_checks(repo, log=quiet))
+    passed = run_checks(repo, log=quiet)
+    assert passed == "1 repo check(s) passed"
+    assert check_record.checks_ran(passed)
     monkeypatch.delenv("FARM_CHECK_CMD")
-    assert not check_record.checks_ran(run_checks(repo, log=quiet))
+    for waiver in CHECKS_WAIVERS:
+        waived = run_checks(repo, log=quiet, checks_waiver=waiver)
+        assert waived.startswith("checks waived for ")
+        assert not check_record.checks_ran(waived)
 
 
 def test_report_fields_carries_both_keys_only_when_checks_ran_and_the_tree_matches(repo):
