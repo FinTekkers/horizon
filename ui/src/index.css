@@ -344,6 +344,8 @@ button { font-family: var(--font-sans); }
 .repo-webhook--missing, .repo-webhook--mismatched { color: var(--warning-ink); background: var(--warning-bg); }
 .repo-webhook--error { color: var(--danger-ink); background: var(--danger-bg); }
 .repo-webhook__code { font: 500 11px var(--font-mono); color: var(--muted); white-space: nowrap; }
+.repo-webhook__impact { margin: 2px 0 4px 18px; color: var(--warning-ink); }
+.repo-webhook__hint { margin: 0; align-self: center; }
 
 .deploy-target-row { display: flex; align-items: center; gap: 9px; padding: 7px 2px; font: 500 13px var(--font-sans); }
 .deploy-target-row__repo { color: var(--deep); font-weight: 600; }
