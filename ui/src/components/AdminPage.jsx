@@ -19,6 +19,7 @@ import {
 } from '../api'
 import { BackIcon, GithubIcon, LockIcon } from './icons'
 import DeployTargetOverrides from './DeployTargetOverrides'
+import { WEBHOOK_IMPACT, repoHasDeployTarget, webhookImpact } from '../domain/webhookImpact'
 
 function SecurityPanel() {
   const [pin, setPin] = useState(null)
@@ -426,18 +427,10 @@ function DeployTargetRow({ target }) {
 // plus each target's on-disk deploy state, with no create, edit, or delete
 // path here. Its one action, Dry run (HZ-258), only reads. Targets are edited
 // in Deploy target overrides (HZ-259), PIN-gated and re-validated against
-// horizon-deploy.sudoers; `version` bumps after each edit so this list (and
+// horizon-deploy.sudoers. AdminPage owns the fetch (HZ-303: the project
+// rows read the same targets) and re-reads after each edit, so this list (and
 // its Dry run) picks up new targets without a reload.
-function DeployTargetsPanel({ version = 0 }) {
-  const [targets, setTargets] = useState(null)
-  const [error, setError] = useState(null)
-
-  useEffect(() => {
-    getDeployTargets()
-      .then((result) => setTargets(result.targets || []))
-      .catch((err) => setError(err.message))
-  }, [version])
-
+function DeployTargetsPanel({ targets, error }) {
   return (
     <div className="panel admin__panel">
       <div className="panel__title">Deploy targets</div>
@@ -584,6 +577,20 @@ function WebhookStatus({ webhook }) {
   )
 }
 
+// HZ-303: under a missing or mismatched webhook row, what that breaks for this
+// repo. The copy lives in domain/webhookImpact.js.
+function WebhookImpact({ status, hasDeployTarget }) {
+  const lines = webhookImpact({ status, hasDeployTarget })
+  if (!lines) return null
+  return (
+    <div className="gh-note repo-webhook__impact">
+      {lines.map((line) => (
+        <div key={line}>{line}</div>
+      ))}
+    </div>
+  )
+}
+
 // HZ-244: Fix webhook — creates a missing hook or repairs Horizon's own
 // mismatched one. Same PIN handling as ProjectEnabledToggle: the PIN lives in
 // this form's state only until the request settles and goes out in a header.
@@ -623,11 +630,13 @@ function FixWebhookForm({ projectId, repo, onFixed }) {
           Fix webhook
         </button>
         {error && <div className="gh-error">{error}</div>}
+        <div className="gh-note repo-webhook__hint">{WEBHOOK_IMPACT.FIX_HINT}</div>
       </div>
     )
   }
   return (
     <>
+      <div className="gh-note repo-webhook__hint">{WEBHOOK_IMPACT.FIX_HINT}</div>
       <form className="project-block__add" style={{ marginTop: 0 }} onSubmit={submit}>
         <input
           className="field__input"
@@ -852,7 +861,7 @@ function ProjectAutopilot({ project }) {
   )
 }
 
-function ProjectPanel({ project, syncRepos }) {
+function ProjectPanel({ project, syncRepos, deployTargets }) {
   const [repo, setRepo] = useState('')
   const [error, setError] = useState(null)
   const [busy, setBusy] = useState(false)
@@ -902,6 +911,7 @@ function ProjectPanel({ project, syncRepos }) {
         return (
           <Fragment key={r.repo}>
             <RepoRow projectId={project.id} repoConn={r} syncRepos={syncRepos} webhook={webhook} />
+            <WebhookImpact status={webhook?.status} hasDeployTarget={repoHasDeployTarget(deployTargets, r.repo)} />
             {(webhook?.status === 'missing' || webhook?.status === 'mismatched') && (
               <FixWebhookForm projectId={project.id} repo={r.repo} onFixed={refreshWebhooks} />
             )}
@@ -928,7 +938,7 @@ function ProjectPanel({ project, syncRepos }) {
   )
 }
 
-function ProjectsPanel({ projects, sync }) {
+function ProjectsPanel({ projects, sync, deployTargets }) {
   const [name, setName] = useState('')
   const [error, setError] = useState(null)
   const [busy, setBusy] = useState(false)
@@ -957,7 +967,7 @@ function ProjectsPanel({ projects, sync }) {
       </div>
 
       {projects.map((p) => (
-        <ProjectPanel key={p.id} project={p} syncRepos={sync?.repos} />
+        <ProjectPanel key={p.id} project={p} syncRepos={sync?.repos} deployTargets={deployTargets} />
       ))}
       {projects.length === 0 && <div className="gh-note">No projects yet — create one below.</div>}
 
@@ -980,6 +990,17 @@ function ProjectsPanel({ projects, sync }) {
 
 export default function AdminPage({ sync, projects, onBack }) {
   const [deployTargetsVersion, setDeployTargetsVersion] = useState(0)
+  const [deployTargets, setDeployTargets] = useState({ targets: null, error: null })
+
+  // One read of the deploy_target rows per version: the Deploy targets panel
+  // lists them, and each project row uses them to say what a broken webhook
+  // breaks (HZ-303). Bumped after each edit in Deploy target overrides.
+  useEffect(() => {
+    getDeployTargets()
+      .then((result) => setDeployTargets({ targets: result.targets || [], error: null }))
+      .catch((err) => setDeployTargets((prev) => ({ ...prev, error: err.message })))
+  }, [deployTargetsVersion])
+
   return (
     <div className="admin">
       <button className="tracker__back" onClick={onBack}>
@@ -993,11 +1014,11 @@ export default function AdminPage({ sync, projects, onBack }) {
       <div style={{ height: 22 }} />
       <TokenPanel sync={sync} />
       <div style={{ height: 22 }} />
-      <DeployTargetsPanel version={deployTargetsVersion} />
+      <DeployTargetsPanel targets={deployTargets.targets} error={deployTargets.error} />
       <div style={{ height: 22 }} />
       <DeployTargetOverrides projects={projects} onChanged={() => setDeployTargetsVersion((v) => v + 1)} />
       <div style={{ height: 22 }} />
-      <ProjectsPanel projects={projects} sync={sync} />
+      <ProjectsPanel projects={projects} sync={sync} deployTargets={deployTargets.targets} />
     </div>
   )
 }
