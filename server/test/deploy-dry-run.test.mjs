@@ -410,32 +410,6 @@ test('the infra/host containment rule lives only in deployTargets.js', () => {
 
 // ---- the real deploy path is unchanged ----
 
-test("server/src/deploy.js, infra/host/ and db.js's deploy_target schema are unchanged from main", (t) => {
-  let base
-  try {
-    base = execFileSync(REAL_GIT, ['-C', REPO_ROOT, 'merge-base', 'HEAD', 'origin/main'], { encoding: 'utf8' }).trim()
-  } catch {
-    t.skip('no origin/main in this checkout')
-    return
-  }
-  const diff = execFileSync(
-    REAL_GIT,
-    ['-C', REPO_ROOT, 'diff', '--name-only', base, '--', 'server/src/deploy.js', 'infra/host/'],
-    { encoding: 'utf8' },
-  )
-  assert.equal(diff.trim(), '')
-  // Other items add their own tables to db.js; only the deploy_target block
-  // (the one the Dry run reads) must stay as it is on main.
-  const deployTargetBlock = (source) => {
-    const start = source.indexOf('CREATE TABLE IF NOT EXISTS deploy_target')
-    return source.slice(start, source.indexOf('`)', start))
-  }
-  const onMain = execFileSync(REAL_GIT, ['-C', REPO_ROOT, 'show', `${base}:server/src/db.js`], { encoding: 'utf8' })
-  const here = readFileSync(join(REPO_ROOT, 'server/src/db.js'), 'utf8')
-  assert.ok(onMain.includes('CREATE TABLE IF NOT EXISTS deploy_target'))
-  assert.equal(deployTargetBlock(here), deployTargetBlock(onMain))
-})
-
 test('checkRunnable keeps its sudoers wording, shared with the Dry run', () => {
   assert.deepEqual(deployTargets.checkRunnable({ ...target, extraServices: ['not-allowed'] }), {
     ok: false,

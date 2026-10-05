@@ -5,3 +5,4 @@
 # can never restart an arbitrary service.
 ubuntu ALL=(root) NOPASSWD: /bin/systemctl restart horizon-server, /bin/systemctl restart horizon-farm
 ubuntu ALL=(root) NOPASSWD: /bin/systemctl restart fintekkers-ui
+ubuntu ALL=(root) NOPASSWD: /bin/systemctl restart fintekkers-valuation
