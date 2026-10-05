@@ -1068,6 +1068,37 @@ def run_smoke_check(url: str, expected_text: str) -> tuple[str, str]:
     return "fail", f"SMOKE_RESULT=fail: check.mjs exited {result.returncode} with no result line ({result.stderr.strip()[:200]})"
 
 
+# A grpc-health deploy target serves gRPC only, so the browser check above
+# can't load it. Its gate is the standard gRPC health check
+# (grpc.health.v1.Health/Check), sent with curl over HTTP/2 cleartext, the
+# same probe the target's deploy script uses. A SERVING reply passes.
+GRPC_HEALTH_REQUEST = b"\x00\x00\x00\x00\x00"  # empty HealthCheckRequest frame
+GRPC_HEALTH_SERVING = b"\x00\x00\x00\x00\x02\x08\x01"  # status: SERVING
+
+
+def run_grpc_health_check(health_url: str) -> tuple[str, str]:
+    base = health_url.rstrip("/")
+    try:
+        result = subprocess.run(
+            [
+                "curl", "-sS", "--http2-prior-knowledge", "--max-time", "10",
+                "-H", "content-type: application/grpc", "-H", "te: trailers",
+                "--data-binary", "@-", f"{base}/grpc.health.v1.Health/Check",
+            ],
+            input=GRPC_HEALTH_REQUEST,
+            capture_output=True,
+            timeout=SMOKE_CHECK_TIMEOUT_S,
+        )
+    except subprocess.TimeoutExpired:
+        return "fail", f"SMOKE_RESULT=fail: gRPC health check timed out ({base})"
+    except OSError as exc:
+        return "fail", f"SMOKE_RESULT=fail: could not run curl for the gRPC health check: {exc}"
+    if result.returncode == 0 and result.stdout == GRPC_HEALTH_SERVING:
+        return "pass", f"SMOKE_RESULT=pass: gRPC health SERVING at {base}"
+    detail = result.stderr.decode(errors="replace").strip()[:200] or f"reply bytes {result.stdout.hex() or 'none'}"
+    return "fail", f"SMOKE_RESULT=fail: gRPC health not SERVING at {base} ({detail})"
+
+
 # ---- HZ-275: wait for the item's own release before the smoke check ----
 # The release is published before this step is dispatched, but the deploy it
 # triggers takes minutes (ui-service's npm ci + build ran ~8 min on
@@ -1574,6 +1605,9 @@ def _execute(task: dict, guard: HandoffGuard) -> dict:
         # HZ-275: never verify before this item's own release is live.
         wait_until_release_live(task)
 
+        wait = task.get("deploy_wait") if isinstance(task.get("deploy_wait"), dict) else {}
+        grpc_url = wait.get("health_url") if wait.get("health_check_type") == "grpc-health" else None
+
         prompt = (
             build_prompt(task)
             + "\n\nRespond with ONLY the JSON object described in your role instructions. Your "
@@ -1581,6 +1615,13 @@ def _execute(task: dict, guard: HandoffGuard) -> dict:
             "with e2e/smoke/check.mjs — pick an expected_text that is actually visible on that "
             "page right now."
         )
+        if grpc_url:
+            prompt = (
+                build_prompt(task)
+                + "\n\nRespond with ONLY the JSON object described in your role instructions. This "
+                f"service is gRPC-only at {grpc_url}: this script gates the deploy on its gRPC health "
+                "check, so 'url' and 'expected_text' are not used and may be omitted."
+            )
         parsed, _deploy_provenance, notes = _run_and_parse(
             prompt,
             agent=model_agent,
@@ -1591,7 +1632,7 @@ def _execute(task: dict, guard: HandoffGuard) -> dict:
             max_turns=max_turns,
             timeout_s=timeout_s,
             allowed_tools=tools,
-            required_keys=("summary", "url", "expected_text"),
+            required_keys=("summary",) if grpc_url else ("summary", "url", "expected_text"),
             item_id=item["id"],
             guard=guard,
             provider_locked=provider_locked,
@@ -1599,11 +1640,13 @@ def _execute(task: dict, guard: HandoffGuard) -> dict:
         summary = str(parsed.get("summary", "")).strip()[:SUMMARY_MAX_CHARS] or "deploy verification finished"
         artifact_md = str(parsed.get("artifact_md", "")).strip()
 
-        url, expected_text = parsed.get("url"), parsed.get("expected_text")
-        if not isinstance(url, str) or not url.strip() or not isinstance(expected_text, str) or not expected_text.strip():
-            raise AgentError("devops reply missing 'url'/'expected_text' needed for deep verification")
-
-        verdict, smoke_line = run_smoke_check(url.strip(), expected_text.strip())
+        if grpc_url:
+            verdict, smoke_line = run_grpc_health_check(grpc_url)
+        else:
+            url, expected_text = parsed.get("url"), parsed.get("expected_text")
+            if not isinstance(url, str) or not url.strip() or not isinstance(expected_text, str) or not expected_text.strip():
+                raise AgentError("devops reply missing 'url'/'expected_text' needed for deep verification")
+            verdict, smoke_line = run_smoke_check(url.strip(), expected_text.strip())
         artifact_md = f"{artifact_md}\n\n## Machine-checked result\n`{smoke_line}`".strip()
         return {
             "summary": stamp_notes(f"{summary} · {smoke_line}"[:SUMMARY_MAX_CHARS], notes, SUMMARY_MAX_CHARS),
