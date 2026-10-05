@@ -297,7 +297,7 @@ test('ruling 1: a row whose service is not in horizon-deploy.sudoers resolves nu
 })
 
 test('ruling 1: both seeded rows pass validation against the real infra/host/ and sudoers file', () => {
-  assert.deepEqual([...deployTargets.allowedServices()].sort(), ['fintekkers-ui', 'fintekkers-valuation', 'horizon-farm', 'horizon-server'])
+  assert.deepEqual([...deployTargets.allowedServices()].sort(), ['fintekkers-broker', 'fintekkers-ledger', 'fintekkers-price', 'fintekkers-ui', 'fintekkers-valuation', 'horizon-farm', 'horizon-server'])
   for (const target of deployTargets.listTargets()) {
     assert.deepEqual(deployTargets.checkRunnable(target), { ok: true }, target.key)
   }

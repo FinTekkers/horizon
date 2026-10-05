@@ -1,0 +1,21 @@
+[Unit]
+Description=Fintekkers ledger-service (Java gRPC, :8082; port 8082 is firewalled to loopback)
+After=network.target postgresql.service fintekkers-valuation.service
+Requires=postgresql.service
+
+[Service]
+User=ubuntu
+WorkingDirectory=/opt/fintekkers/ledger-service
+EnvironmentFile=/etc/fintekkers/ledger.env
+Environment=JAVA_HOME=/usr/lib/jvm/java-17-openjdk-arm64
+Environment=SUBLEDGER_PORT=8082
+Environment=FINTEKKERS_RUNNING_LOCALLY=true
+Environment=VALUATION_SERVICE_HOST=127.0.0.1
+Environment=VALUATION_SERVICE_PORT=8090
+Environment=SUBLEDGER_OPTS=-Xms256m -Xmx1g
+ExecStart=/opt/fintekkers/ledger-service/subledger/build/install/subledger/bin/subledger
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

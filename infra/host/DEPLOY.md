@@ -508,7 +508,12 @@ item for a human rather than silently advancing (`server/src/orchestrator.js`
 
 1. Add a deploy script under `infra/host/` (copy the closest existing one —
    `deploy-horizon.sh` for a Node/systemd service, `deploy-ui-service.sh` for
-   an SSR frontend — and adjust its build/health-check stages).
+   an SSR frontend — and adjust its build/health-check stages). A gRPC
+   backend needs only a wrapper like `deploy-broker-service.sh`: it sets the
+   `DEPLOY_*` variables (checkout, unit, port, build command) and execs
+   `deploy-grpc-service.sh`, which health-checks with
+   `grpc.health.v1.Health/Check`; give its row `health_check_type`
+   `grpc-health`. Keep the unit file next to it (`fintekkers-*.service`).
 2. Add a row to the `deploy_target` table: `key`, `repo`, `script`,
    `service`, `repo_dir`, `state_key`, `health_url`, `health_check_type`
    (and `extra_services`, a JSON array).

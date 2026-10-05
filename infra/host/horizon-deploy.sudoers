@@ -6,3 +6,6 @@
 ubuntu ALL=(root) NOPASSWD: /bin/systemctl restart horizon-server, /bin/systemctl restart horizon-farm
 ubuntu ALL=(root) NOPASSWD: /bin/systemctl restart fintekkers-ui
 ubuntu ALL=(root) NOPASSWD: /bin/systemctl restart fintekkers-valuation
+ubuntu ALL=(root) NOPASSWD: /bin/systemctl restart fintekkers-broker
+ubuntu ALL=(root) NOPASSWD: /bin/systemctl restart fintekkers-ledger
+ubuntu ALL=(root) NOPASSWD: /bin/systemctl restart fintekkers-price
