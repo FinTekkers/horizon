@@ -67,10 +67,26 @@ function stateDirFor(target) {
   return join(homedir(), '.horizon', target.stateKey)
 }
 
+// What a deploy script inherits from this server's environment. Never the
+// whole of it: server.env holds Horizon's own secrets (admin password, OAuth
+// client, webhook and farm secrets), and the scripts build the target repo's
+// code. A build tool also lets inherited variables win over the repo's own
+// config, which is how ui-service's build picked up Horizon's Google OAuth
+// client instead of the one in its .env.
+const INHERITED_ENV = ['PATH', 'HOME', 'USER', 'LOGNAME', 'SHELL', 'LANG', 'LC_ALL', 'TMPDIR', 'TZ']
+
+function inheritedEnv() {
+  const env = {}
+  for (const [name, value] of Object.entries(process.env)) {
+    if (value !== undefined && (INHERITED_ENV.includes(name) || name.startsWith('HORIZON_'))) env[name] = value
+  }
+  return env
+}
+
 // The deploy script's environment.
 export function spawnEnv(target) {
   const env = {
-    ...process.env,
+    ...inheritedEnv(),
     HORIZON_REPO_DIR: target.repoDir,
     HORIZON_STATE_DIR: stateDirFor(target),
     HORIZON_SERVICE_NAME: target.service,
@@ -86,6 +102,8 @@ export function spawnEnv(target) {
   // drain stage). Every other target's deploy is untouched.
   if (target.key === 'horizon') {
     env.HORIZON_DEPLOY_DRAIN_URL = `http://127.0.0.1:${PORT}/api/farm/deploy-drain`
+    // deploy-drain.mjs authenticates to this server with it.
+    if (process.env.FARM_SHARED_SECRET) env.FARM_SHARED_SECRET = process.env.FARM_SHARED_SECRET
   } else {
     delete env.HORIZON_DEPLOY_DRAIN_URL
   }
