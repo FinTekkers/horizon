@@ -1,0 +1,18 @@
+[Unit]
+Description=Fintekkers price-service (Rust gRPC, 127.0.0.1:8083)
+After=network.target postgresql.service
+Requires=postgresql.service
+
+[Service]
+User=ubuntu
+WorkingDirectory=/opt/fintekkers/price-service-rust
+EnvironmentFile=/etc/fintekkers/price-db.env
+Environment=PRICE_SERVICE_PORT=8083
+Environment=PRICE_SERVICE_HOST=127.0.0.1
+Environment=RUST_LOG=info
+ExecStart=/opt/fintekkers/price-service-rust/target/release/price-service-rust
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,23 @@
+[Unit]
+Description=Fintekkers broker-service (Rust gRPC, 127.0.0.1:8085)
+After=network.target postgresql.service
+Requires=postgresql.service
+
+[Service]
+User=ubuntu
+WorkingDirectory=/opt/fintekkers/broker-service
+EnvironmentFile=/etc/fintekkers/broker-db.env
+Environment=PORT=8085
+Environment=IPV4=127.0.0.1
+Environment=LEDGER_SERVICE_HOST=127.0.0.1
+Environment=SECURITY_SERVICE_HOST=127.0.0.1
+Environment=PRICE_SERVICE_HOST=127.0.0.1
+Environment=VALUATION_SERVICE_HOST=127.0.0.1
+Environment=VALUATION_SERVICE_PORT=8090
+Environment=RUST_LOG=info
+ExecStart=/opt/fintekkers/broker-service/target/release/broker-service-server
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
