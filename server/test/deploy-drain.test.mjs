@@ -401,3 +401,33 @@ test('G7: only the horizon deploy gets HORIZON_DEPLOY_DRAIN_URL; ui-service neve
     delete process.env.HORIZON_DEPLOY_DRAIN_URL
   }
 })
+
+// ---- deploy scripts get an allow-listed environment, not the server's ----
+
+test("deploy scripts don't inherit the server's secrets; FARM_SHARED_SECRET reaches only the horizon drain", () => {
+  const horizon = deploy.resolveTarget('FinTekkers/horizon')
+  const ui = deploy.resolveTarget('FinTekkers/ui-service')
+  const saved = { ...process.env }
+  Object.assign(process.env, {
+    GOOGLE_CLIENT_ID: 'horizon-client',
+    GOOGLE_CLIENT_SECRET: 'horizon-secret',
+    ADMIN_PASSWORD: 'admin',
+    FARM_SHARED_SECRET: 'farm',
+    HORIZON_DEPLOY_DRAIN_TIMEOUT_S: '7',
+  })
+  try {
+    const uiEnv = deploy.spawnEnv(ui)
+    for (const name of ['GOOGLE_CLIENT_ID', 'GOOGLE_CLIENT_SECRET', 'ADMIN_PASSWORD', 'FARM_SHARED_SECRET']) {
+      assert.equal(Object.hasOwn(uiEnv, name), false, name)
+    }
+    assert.equal(uiEnv.PATH, process.env.PATH)
+    assert.equal(uiEnv.HOME, process.env.HOME)
+    assert.equal(uiEnv.HORIZON_DEPLOY_DRAIN_TIMEOUT_S, '7')
+    const horizonEnv = deploy.spawnEnv(horizon)
+    assert.equal(horizonEnv.FARM_SHARED_SECRET, 'farm')
+    assert.equal(Object.hasOwn(horizonEnv, 'GOOGLE_CLIENT_SECRET'), false)
+  } finally {
+    for (const name of Object.keys(process.env)) if (!(name in saved)) delete process.env[name]
+    Object.assign(process.env, saved)
+  }
+})

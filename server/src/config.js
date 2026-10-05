@@ -84,7 +84,7 @@ export const DEPLOY_WAIT_MS = deployWaitEnvMs > 0 ? deployWaitEnvMs : 20 * 60 * 
 // HZ-275 (metric 5): a release deploy that finds another deploy holding
 // the lock waits up to 30 min for it, not the scripts' own 5-min default, so
 // two releases published close together both deploy, in order. Set in this
-// process's env because spawnEnv (deploy.js) hands that env to every deploy
+// process's env because spawnEnv (deploy.js) passes HORIZON_* to every deploy
 // script, and the scripts already read HORIZON_DEPLOY_LOCK_TIMEOUT_S. An
 // explicit value in server.env still wins.
 // DIVERGES from the gate-5 ruling, which put the 30-min default in
