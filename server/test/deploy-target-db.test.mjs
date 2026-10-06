@@ -316,3 +316,40 @@ test('rules: horizon.md and DEPLOY.md name the deploy_target table, not the JSON
   assert.match(runbook, /deploy_target/)
   assert.ok(!runbook.includes('deploy-targets.json'), 'DEPLOY.md still names deploy-targets.json')
 })
+
+// ---- registry-publish: a library target restarts no service ----
+
+const LIBRARY = {
+  key: 'ledger-models',
+  repo: 'FinTekkers/ledger-models',
+  script: 'deploy-ledger-models.sh',
+  service: '',
+  repoDir: '/opt/fintekkers/ledger-models',
+  stateKey: 'ledger-models',
+  healthUrl: 'https://github.com/FinTekkers/ledger-models',
+  healthCheckType: 'registry-publish',
+}
+
+test('registry-publish: a library row with no service is runnable; any other type still needs one', () => {
+  assert.deepEqual(deployTargets.checkRunnable(LIBRARY), { ok: true })
+  assert.deepEqual(deployTargets.checkRunnable({ ...LIBRARY, healthCheckType: 'grpc-health' }), { ok: false, reason: 'missing service' })
+  // A named service on a library row is still held to the sudoers allow-list.
+  assert.deepEqual(deployTargets.checkRunnable({ ...LIBRARY, service: 'sshd' }), {
+    ok: false,
+    reason: 'service sshd not in horizon-deploy.sudoers',
+  })
+})
+
+test('registry-publish: the Deploy step is told to trust the deploy script, not to load a page', async () => {
+  const { deployWaitFor } = await import('../src/deployWait.js')
+  db.prepare(`INSERT INTO deploy_target (key, repo, script, service, repo_dir, state_key, health_url, health_check_type)
+    VALUES (@key, @repo, @script, @service, @repoDir, @stateKey, @healthUrl, @healthCheckType)`).run(LIBRARY)
+  try {
+    const wait = deployWaitFor('FinTekkers/ledger-models')
+    assert.equal(wait.health_check_type, 'registry-publish')
+    assert.equal(Object.hasOwn(wait, 'health_url'), false)
+    assert.equal(deploy.resolveTarget('FinTekkers/ledger-models')?.key, 'ledger-models')
+  } finally {
+    db.prepare('DELETE FROM deploy_target WHERE key = ?').run(LIBRARY.key)
+  }
+})

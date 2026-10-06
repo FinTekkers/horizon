@@ -20,6 +20,10 @@ export function deployWaitFor(repoFullName) {
   if (target.healthCheckType === 'grpc-health') {
     wait.health_check_type = 'grpc-health'
     wait.health_url = target.healthUrl
+  } else if (target.healthCheckType === 'registry-publish') {
+    // The deploy script only reports DEPLOY OK once the registries published,
+    // so the release going live is the whole check.
+    wait.health_check_type = 'registry-publish'
   }
   return wait
 }

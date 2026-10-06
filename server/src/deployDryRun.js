@@ -23,6 +23,7 @@ import { access, stat } from 'node:fs/promises'
 import { isAbsolute } from 'node:path'
 import { DRY_RUN_TIMEOUT_MS } from './config.js'
 import {
+  restartsNothing,
   scriptInsideScriptsDir,
   scriptPath,
   serviceAllowed,
@@ -143,12 +144,14 @@ async function checkRepoDir(target, { exec, remaining }) {
 
 function targetServices(target) {
   const extras = target.extraServices ?? []
-  return Array.isArray(extras) ? [target.service, ...extras] : null
+  if (!Array.isArray(extras)) return null
+  return restartsNothing(target) ? extras : [target.service, ...extras]
 }
 
 async function checkService(target, { exec, remaining, helpers }) {
   const services = targetServices(target)
   if (!services) return fail('bad extraServices')
+  if (services.length === 0) return pass('no service: this target publishes to package registries')
   for (const service of services) {
     if (!helpers.serviceAllowed(service)) return fail(serviceNotAllowedReason(service))
   }
@@ -162,6 +165,7 @@ async function checkService(target, { exec, remaining, helpers }) {
 
 async function checkSudo(target, { exec, remaining, helpers }) {
   const services = (targetServices(target) ?? [target.service]).filter((s) => typeof s === 'string')
+  if (services.length === 0) return pass('no service to restart')
   const result = await exec('sudo', ['-n', '-l'], remaining())
   if (result.timedOut) return fail(`sudo -n -l timed out after ${remaining.total}ms`)
   if (result.code !== 0) return fail(`sudo would prompt or is denied (${exitDetail(result)})`)

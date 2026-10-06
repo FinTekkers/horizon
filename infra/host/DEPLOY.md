@@ -514,6 +514,11 @@ item for a human rather than silently advancing (`server/src/orchestrator.js`
    `deploy-grpc-service.sh`, which health-checks with
    `grpc.health.v1.Health/Check`; give its row `health_check_type`
    `grpc-health`. Keep the unit file next to it (`fintekkers-*.service`).
+   A library published by GitHub Actions on a `vX.Y.Z` tag gets a wrapper
+   like `deploy-ledger-models.sh` around `deploy-publish-release.sh`: the
+   deploy pushes the next patch tag on the release commit and waits for the
+   publish workflows. Its row has `health_check_type` `registry-publish` and
+   an empty `service` (nothing restarts, so no sudoers line).
 2. Add a row to the `deploy_target` table: `key`, `repo`, `script`,
    `service`, `repo_dir`, `state_key`, `health_url`, `health_check_type`
    (and `extra_services`, a JSON array).

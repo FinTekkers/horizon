@@ -1215,6 +1215,32 @@ def wait_for_release(
         sleep(min(poll_s, remaining))
 
 
+def registry_publish_result(tag: str, state_dir: str) -> dict:
+    """The Deploy step's result for a library (health check type
+    registry-publish). Its deploy script records DEPLOY OK only after the
+    publish workflows for the new version succeeded, and wait_until_release_live
+    has already seen that, so there is no page or port to check: the verdict is
+    a pass naming the version from the script's DEPLOY OK line."""
+    version = None
+    read = _read_log_end(Path(state_dir) / "self-deploy.log") if tag and state_dir else None
+    if read is not None:
+        ok_line = re.compile(r"DEPLOY OK tag=(?:refs/tags/)?" + re.escape(tag) + r" .*version=(\S+)")
+        for line in read[0].decode("utf-8", "replace").splitlines():
+            match = ok_line.search(line)
+            if match:
+                version = match.group(1)
+    release = f"release {tag}" if tag else "the release"
+    published = f"published {version}" if version else "published"
+    smoke_line = f"SMOKE_RESULT=pass: {release} {published}; the deploy script verified the registry workflows"
+    return {
+        "summary": f"{release} {published} to the package registries"[:SUMMARY_MAX_CHARS],
+        "artifacts": {
+            "artifact_md": f"## Verdict\n**pass** — {release} {published}.\n\n## Machine-checked result\n`{smoke_line}`",
+            "verdict": {"verdict": "pass"},
+        },
+    }
+
+
 def deploy_log_tail(state_dir: str) -> str:
     """The newest lines of self-deploy.log, bounded (DEPLOY_LOG_TAIL_LINES
     lines, DEPLOY_LOG_TAIL_MAX_CHARS chars) and redacted before any line is
@@ -1606,6 +1632,8 @@ def _execute(task: dict, guard: HandoffGuard) -> dict:
         wait_until_release_live(task)
 
         wait = task.get("deploy_wait") if isinstance(task.get("deploy_wait"), dict) else {}
+        if wait.get("health_check_type") == "registry-publish":
+            return registry_publish_result(item.get("release_tag") or "", str(wait.get("state_dir") or ""))
         grpc_url = wait.get("health_url") if wait.get("health_check_type") == "grpc-health" else None
 
         prompt = (

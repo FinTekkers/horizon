@@ -151,6 +151,13 @@ export function allowedServices() {
 }
 
 const REQUIRED_FIELDS = ['key', 'repo', 'script', 'service', 'repoDir', 'stateKey', 'healthUrl', 'healthCheckType']
+// A library's deploy publishes to package registries (deploy-publish-release.sh)
+// and restarts nothing, so its row has no service: service is '' and sudo is
+// never involved. Its script's registry check is its health check.
+export const NO_SERVICE_HEALTH_CHECK_TYPES = new Set(['registry-publish'])
+export function restartsNothing(target) {
+  return NO_SERVICE_HEALTH_CHECK_TYPES.has(target?.healthCheckType) && target?.service === ''
+}
 const SLUG = /^[a-z0-9][a-z0-9-]{0,63}$/
 const SERVICE = /^[A-Za-z0-9@_.-]+$/
 const SCRIPT = /^[A-Za-z0-9_-][A-Za-z0-9_.-]*(\/[A-Za-z0-9_-][A-Za-z0-9_.-]*)*$/
@@ -177,6 +184,7 @@ export function serviceNotAllowedReason(service) {
 // { ok: true } or { ok: false, reason }. Never throws.
 export function checkRunnable(target) {
   for (const field of REQUIRED_FIELDS) {
+    if (field === 'service' && restartsNothing(target)) continue
     if (typeof target?.[field] !== 'string' || target[field] === '') return { ok: false, reason: `missing ${field}` }
   }
   if (!SLUG.test(target.key)) return { ok: false, reason: 'bad key' }
@@ -198,7 +206,7 @@ export function checkRunnable(target) {
     return { ok: false, reason: 'bad extraServices' }
   }
   const allowed = allowedServices()
-  for (const service of [target.service, ...extras]) {
+  for (const service of restartsNothing(target) ? extras : [target.service, ...extras]) {
     if (!serviceAllowed(service, allowed)) return { ok: false, reason: serviceNotAllowedReason(service) }
   }
   return { ok: true }

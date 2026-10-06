@@ -1910,7 +1910,7 @@ export function buildApp({ logger = true, onRoute = null } = {}) {
     properties: {
       repo: { type: 'string', maxLength: 300, pattern: '^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$' },
       script: { type: 'string', minLength: 1, maxLength: 300 },
-      service: { type: 'string', minLength: 1, maxLength: 300 },
+      service: { type: 'string', minLength: 0, maxLength: 300 },
       repoDir: { type: 'string', minLength: 1, maxLength: 300 },
       stateKey: { type: 'string', minLength: 1, maxLength: 300 },
       healthUrl: { type: 'string', minLength: 1, maxLength: 300 },
