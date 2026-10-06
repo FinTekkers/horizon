@@ -51,3 +51,11 @@ standalone for frontend-only work — pages that don't fetch data work fine.
 - Run `npx svelte-check` before marking work complete — no new errors.
 - Keep the dev server running after changes (`npm run dev -- --host 0.0.0.0`)
   so the app stays available in the browser and on the network.
+
+## ledger-models dependency
+
+- `@fintekkers/ledger-models` is a range in `package.json`; the version in
+  use is the one in `package-lock.json`. Read that version's source (tag `vX.Y.Z` in FinTekkers/ledger-models) when tracing
+  a model or proto problem, and apply the project rules' "Models first"
+  section before working around it here.
+
