@@ -792,3 +792,62 @@ test('the tracker row shows a badge with the item’s own project name', () => {
     unmount()
   }
 })
+
+// ---- HZ-310: remove a dependency from the item view ----
+
+test('clicking X beside a blocker in the item view calls onRemoveDependency(item.id, depId)', () => {
+  const spy = vi.fn().mockResolvedValue({ ok: true })
+  const item = {
+    ...baseItem,
+    blockedBy: [
+      { id: 'T-B1', title: 'First blocker', abandoned: false },
+      { id: 'T-B2', title: 'Second blocker', abandoned: false },
+    ],
+    dependents: [],
+  }
+  const { getAllByRole, getByRole } = render(
+    <Tracker
+      item={item}
+      onBack={noop}
+      onApprove={noop}
+      onApproveWithComments={noop}
+      onReject={noop}
+      onResolveConflicts={noop}
+      onTogglePause={noop}
+      onRestartPhase={noop}
+      onSetPersona={noop}
+      onAbandon={noop}
+      onRemoveDependency={spy}
+    />,
+  )
+  expect(getAllByRole('button', { name: /^Remove dependency on / })).toHaveLength(2)
+  fireEvent.click(getByRole('button', { name: 'Remove dependency on T-B2' }))
+  expect(spy).toHaveBeenCalledTimes(1)
+  expect(spy).toHaveBeenCalledWith('T-1', 'T-B2')
+})
+
+test('a failed remove does not carry its error or disabled X over to the next item', async () => {
+  const spy = vi.fn().mockRejectedValue(new Error('not_found'))
+  const blockedBy = [{ id: 'T-B1', title: 'Shared blocker', abandoned: false }]
+  const props = {
+    onBack: noop,
+    onApprove: noop,
+    onApproveWithComments: noop,
+    onReject: noop,
+    onResolveConflicts: noop,
+    onTogglePause: noop,
+    onRestartPhase: noop,
+    onSetPersona: noop,
+    onAbandon: noop,
+    onRemoveDependency: spy,
+  }
+  const { rerender, getByRole, findByText, queryByText } = render(
+    <Tracker item={{ ...baseItem, blockedBy, dependents: [] }} {...props} />,
+  )
+  fireEvent.click(getByRole('button', { name: 'Remove dependency on T-B1' }))
+  await findByText(/Couldn't remove: not_found/)
+
+  rerender(<Tracker item={{ ...baseItem, id: 'T-2', blockedBy, dependents: [] }} {...props} />)
+  expect(queryByText(/Couldn't remove/)).toBeNull()
+  expect(getByRole('button', { name: 'Remove dependency on T-B1' }).disabled).toBe(false)
+})

@@ -299,3 +299,21 @@ test('getDurationEstimates returns the snapshot estimates and keeps them across 
   expect(serverApi.getDurationEstimates()).toEqual(estimates)
   expect(fetchSpy).not.toHaveBeenCalled()
 })
+
+// ---- HZ-310: removeDependency posts one edge and surfaces failures ----
+
+test('removeDependency POSTs {dependsOnId} to the item\'s remove route and rejects on a 404', async () => {
+  const serverApi = await import('./serverApi')
+  const fetchSpy = vi.fn(async () => ({ ok: true, status: 200, json: async () => ({ ok: true }) }))
+  vi.stubGlobal('fetch', fetchSpy)
+
+  await expect(serverApi.removeDependency('X-1', 'X-B')).resolves.toEqual({ ok: true })
+  expect(fetchSpy).toHaveBeenCalledTimes(1)
+  const [url, opts] = fetchSpy.mock.calls[0]
+  expect(url).toBe(`${serverApi.API_BASE}/items/X-1/dependencies/remove`)
+  expect(opts.method).toBe('POST')
+  expect(JSON.parse(opts.body)).toEqual({ dependsOnId: 'X-B' })
+
+  vi.stubGlobal('fetch', vi.fn(async () => ({ ok: false, status: 404, json: async () => ({ error: 'not_found' }) })))
+  await expect(serverApi.removeDependency('X-1', 'X-B')).rejects.toThrow('not_found')
+})

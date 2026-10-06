@@ -409,6 +409,13 @@ export function togglePause(id) {
   post(`/items/${id}/pause`, { paused: !item.paused })
 }
 
+// HZ-310: drops one edge. postJson (not the fire-and-forget post) so a 404 or
+// 409 rejects and the item view keeps the edge shown with the error. The
+// server logs the event, broadcasts the snapshot and re-kicks the item.
+export function removeDependency(id, dependsOnId) {
+  return postJson(`/items/${id}/dependencies/remove`, { dependsOnId })
+}
+
 export function restartPhase(id, phase, reason) {
   gatePost(`/items/${id}/phases/${phase}/restart`, { reason: reason || '' })
 }

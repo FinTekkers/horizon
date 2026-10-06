@@ -72,6 +72,16 @@ const FIXTURES = [
   // by DEP-1" and DEP-1 as "Blocks 1" — the two directions of one edge.
   { id: 'DEP-1', title: 'E2E fixture — dependency blocker', priority: 'Medium', cursor: 6 },
   { id: 'DEP-2', title: 'E2E fixture — dependency dependent', priority: 'Medium', cursor: 6 },
+  // HZ-310: removing a dependency from the item view. DEP-RM-3 depends on
+  // DEP-RM-1 and DEP-RM-2 and sits at a gate, so nothing runs when an edge
+  // goes. DEP-RM-5 sits at an agent step blocked only by DEP-RM-4, so
+  // removing that edge must start its next step. Separate from DEP-1/DEP-2,
+  // which 13-dependencies.spec.js asserts unchanged.
+  { id: 'DEP-RM-1', title: 'E2E fixture — removable blocker one', priority: 'Medium', cursor: 5 },
+  { id: 'DEP-RM-2', title: 'E2E fixture — removable blocker two', priority: 'Medium', cursor: 5 },
+  { id: 'DEP-RM-3', title: 'E2E fixture — two removable blockers', priority: 'Medium', cursor: 5 },
+  { id: 'DEP-RM-4', title: 'E2E fixture — only blocker', priority: 'Medium', cursor: 5 },
+  { id: 'DEP-RM-5', title: 'E2E fixture — waiting on its only blocker', priority: 'Medium', cursor: 0 },
 ]
 
 export default async function globalSetup() {
@@ -139,6 +149,9 @@ export default async function globalSetup() {
   try {
     for (const fixture of FIXTURES) insertItem(db, fixture)
     insertDependency(db, { itemId: 'DEP-2', dependsOnId: 'DEP-1' })
+    insertDependency(db, { itemId: 'DEP-RM-3', dependsOnId: 'DEP-RM-1' })
+    insertDependency(db, { itemId: 'DEP-RM-3', dependsOnId: 'DEP-RM-2' })
+    insertDependency(db, { itemId: 'DEP-RM-5', dependsOnId: 'DEP-RM-4' })
 
     // Two retained attempts at E2E-5's step 4 ("Plan options & trade-offs",
     // agent Ensemble), with a feedback row timed between them so

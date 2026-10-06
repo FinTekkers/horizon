@@ -355,6 +355,7 @@ function AuthenticatedApp({ user, onLogout }) {
           onTogglePause={api.togglePause}
           onRestartPhase={(id, phase) => openComposer('restart', id, { phase })}
           onSetPersona={api.setPersona}
+          onRemoveDependency={(id, dependsOnId) => api.removeDependency(id, dependsOnId)}
           onAbandon={(id) => openComposer('abandon', id)}
         />
       )}
