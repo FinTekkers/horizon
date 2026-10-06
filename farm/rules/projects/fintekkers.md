@@ -86,6 +86,17 @@ file), not the issue text: many reported bugs are already fixed in models.
 defect inside a service, or that redefines a model's meaning, unless it
 links the ledger-models issue that removes the workaround.
 
+## Checks versus live checks
+
+- `scripts/checks/`: offline checks Horizon runs before merging (unit
+  tests, lint). They never call a running service.
+- `scripts/smoke/`: live checks against a running service, host:port from
+  an argument or env var. Read-only by default; anything that writes needs
+  an explicit flag, books complete valid data, and removes it after.
+- The services on the Horizon host are the live FinTekkers stack. Never
+  write test data to them; one bad seeded row hung ledger-service at
+  startup (2026-10-06).
+
 ## Deploy topology
 
 Unlike Horizon's direct-to-one-EC2-instance deploy, FinTekkers deploys
