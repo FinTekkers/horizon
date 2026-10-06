@@ -10,11 +10,14 @@ The shared protobuf model library every FinTekkers service depends on.
 
 ## Build & test
 
+- **All languages at once:** `scripts/checks/test.sh` is the check Horizon
+  runs (main's copy). Run it before pushing.
+
 - **Compile protos:** `./compile.sh` at the repo root — regenerates code for
   all languages. Requires `protoc` (`brew install protobuf`, verify with
   `protoc --version`).
-- **Java:** `cd ledger-models-java && JAVA_HOME="/opt/homebrew/opt/openjdk@17" ./gradlew test`
-  (Gradle needs JDK 17 — newer JDKs are incompatible).
+- **Java:** `cd ledger-models-java && ./gradlew test` (Gradle needs JDK 17;
+  on a Mac prefix `JAVA_HOME="/opt/homebrew/opt/openjdk@17"`).
 - **Python:** `cd ledger-models-python && python -m pytest` (use a venv).
 - **Rust:** `cd ledger-models-rust && cargo test`
 - **JavaScript:** `cd ledger-models-javascript && npm test`
@@ -43,3 +46,30 @@ The shared protobuf model library every FinTekkers service depends on.
 - Every new model/field needs an ADR (Architecture Decision Record) in this
   repo explaining the design rationale.
 - Ensure backward compatibility or coordinate breaking changes.
+
+## The shared library ("Models first")
+
+Services are told to fix shared behaviour here rather than work around it
+(project rules, "Models first"). When an item lands here:
+
+- **Same behaviour in every language.** A fix in one language's wrappers
+  or serializers goes into all four unless the item says why not (e.g.
+  Python and JS already create a nested Price UUID; Java did not).
+- **Null-safe serialization.** Unset UUIDs, decimals and dates in
+  `ProtoSerializationUtil` and its counterparts must not throw NPEs or
+  `DateTimeException`: return unset, or raise a typed error naming the field.
+- **Input errors are typed.** Validation failures (bad or missing fields)
+  use a distinct exception from state errors (e.g. no lots to reduce), so
+  services can map them to INVALID_ARGUMENT versus FAILED_PRECONDITION.
+- **Validation returns field-level violations** that a service can return
+  as-is, so services stop copying the rules.
+- **Proto comments are the spec** for meaning, units and formulas. Change
+  them deliberately and in the same change as the code.
+
+## Releases
+
+Merging is not releasing. Horizon's Deploy step tags the merged commit with
+the next patch version (`vX.Y.Z`), which runs the publish workflows
+(crates.io, PyPI, npmjs, GitHub Packages, Maven Central). Consumers pick it
+up by bumping their pinned version. Don't edit version numbers by hand.
+

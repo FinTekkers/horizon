@@ -18,6 +18,10 @@ ui-service**. The broker routes to everything else, so it comes up last
 before the UI. Start Postgres with `brew services start postgresql@17` and
 verify with `pg_isready`.
 
+On the Horizon host (where agents run) the services are systemd units
+listening on 127.0.0.1: broker 8085, valuation 8090, price 8083, ledger
+8082, ui-service 3003, Postgres 16 on 5432. JDK 17 is the system Java.
+
 ## Environment quirks
 
 - **JDK 17 for Gradle**: Gradle 7.x builds are incompatible with newer JDKs
@@ -41,6 +45,46 @@ verify with `pg_isready`.
 - ledger-service orchestrates valuation/price/security calls; individual
   services must not create circular dependencies. Stateless services
   (valuation, broker) stay stateless.
+
+## Models first: fix shared behaviour in ledger-models
+
+`FinTekkers/ledger-models` is the contract and the shared model library for
+every service and every language (Java, Python, Rust, JS). A defect fixed
+there is fixed for all of them; a workaround in one service is copied, or
+drifts, in the rest. Prefer the ledger-models fix.
+
+Fix it in ledger-models (or split the item: models part first, then the
+service bumps its pinned version) when:
+
+1. **The stack trace tops out in the models jar**: `common.models.*` or
+   `protos.serializers.*`, e.g. `ProtoSerializationUtil` failing on an
+   unset UUID, decimal or date. A service-side guard is at most a stopgap
+   that links the models fix.
+2. **The rule is about the data itself**: it holds whichever service
+   receives the object (required fields, date order, a TBILL has no coupon,
+   a bond needs face_value, creating nested IDs). It belongs in a models
+   validator that returns field-level violations. Services keep only rules
+   that need their own state: existence, duplicates, tax lots, permissions.
+3. **It changes meaning**: what a field, measure or enum means, its units,
+   its formula, or absent versus zero. The proto comment is the spec. Amend
+   ledger-models first; an item's metric must match it, never redefine it.
+4. **It needs a new request or response capability**: paging, flags, new
+   RPCs. That is a proto change.
+5. **The logic exists, or would have to, in two or more places**: filter
+   parsing, error builders, cost-basis maths. Lift it into ledger-models.
+
+Stays in the service: gRPC status mapping, routing (broker), persistence
+and stores, indexes, calls to other services, deploy and config.
+
+**For guardrails and plans**: don't default to "no ledger-models changes".
+If a metric needs a models change, or contradicts the models contract,
+say so and recommend a split; never work around it in the service. Check
+the bug against the ledger-models version the service pins (its build
+file), not the issue text: many reported bugs are already fixed in models.
+
+**For reviewers**: fail a plan or change that works around a ledger-models
+defect inside a service, or that redefines a model's meaning, unless it
+links the ledger-models issue that removes the workaround.
 
 ## Deploy topology
 
