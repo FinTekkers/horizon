@@ -1,4 +1,4 @@
-import { useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import {
   PHASES,
   STEPS,
@@ -17,7 +17,7 @@ import { itemStatus } from '../domain/status'
 import { pauseReason } from '../domain/pauseReason'
 import { gateActionOf } from '../domain/gateAction'
 import { resolveEventColor } from '../domain/eventColors'
-import { issueUrl, issueLabel, artifactUrl, outputUrl, runLogViewUrl } from '../api'
+import { issueUrl, issueLabel, artifactUrl, outputUrl, runLogViewUrl, getStepOutputs } from '../api'
 import StatusPill from './StatusPill'
 import DependencyBadge from './DependencyBadge'
 import Markdown from './Markdown'
@@ -104,7 +104,7 @@ function ForwardedReview({ forwarded }) {
   )
 }
 
-function Step({ item, index, onApprove, onApproveWithComments, onReject, onResolveConflicts, resolving, gateBusy, onForwardToAccept, onSetPersona }) {
+function Step({ item, stepOutputs, outputsSettled, index, onApprove, onApproveWithComments, onReject, onResolveConflicts, resolving, gateBusy, onForwardToAccept, onSetPersona }) {
   const st = STEPS[index]
   const status = stepStatus(item, index)
   const isGate = st.kind === 'gate'
@@ -118,6 +118,7 @@ function Step({ item, index, onApprove, onApproveWithComments, onReject, onResol
   const agent = isGate ? AGENTS.Human : AGENTS[st.agent]
   const agentLabel = isGate ? (st.gate === 'optional' ? 'Human gate · optional' : 'Human gate') : agent.label
   const gateAction = index === ACCEPT_GATE_INDEX ? gateActionOf(item) : null
+  const output = stepOutputs?.[index]
 
   return (
     <div className="step">
@@ -153,14 +154,16 @@ function Step({ item, index, onApprove, onApproveWithComments, onReject, onResol
                 {queued && item.activeRun.reason && ` · ${item.activeRun.reason}`}
               </span>
             )}
-            {status === 'done' && item.stepOutputs?.[index]?.attempt > 1 && !item.stepOutputs?.[index]?.artifact && (
-              <span className="step-card__attempt"> · attempt {item.stepOutputs[index].attempt}</span>
+            {status === 'done' && output?.attempt > 1 && !output?.artifact && (
+              <span className="step-card__attempt"> · attempt {output.attempt}</span>
             )}
-            {status === 'done' && !isGate && !item.stepOutputs?.[index] && (
+            {/* Not while the outputs are loading: a step that just finished
+                would read "no output recorded" for a moment. */}
+            {status === 'done' && !isGate && outputsSettled && !output && (
               <span> · no output recorded (step predates this item's run or was skipped)</span>
             )}
           </div>
-          {status === 'done' && !isGate && item.stepOutputs?.[index]?.output && (
+          {status === 'done' && !isGate && output?.output && (
             <a
               className="step-card__output-link"
               href={outputUrl(item.id, index)}
@@ -170,15 +173,15 @@ function Step({ item, index, onApprove, onApproveWithComments, onReject, onResol
               See agent output ↗
             </a>
           )}
-          {status === 'done' && !isGate && item.stepOutputs?.[index]?.artifact && (
+          {status === 'done' && !isGate && output?.artifact && (
             <a
               className="step-card__artifact-link"
               href={artifactUrl(item.id, index)}
               target="_blank"
               rel="noopener noreferrer"
             >
-              {item.stepOutputs[index].attemptCount > 1
-                ? `attempt ${item.stepOutputs[index].attempt} of ${item.stepOutputs[index].attemptCount} ↗`
+              {output.attemptCount > 1
+                ? `attempt ${output.attempt} of ${output.attemptCount} ↗`
                 : 'View full artifact ↗'}
             </a>
           )}
@@ -375,11 +378,49 @@ function buildActivity(item) {
     })
 }
 
+// HZ-318: the board feed leaves stepOutputs off, so the open item loads its
+// own. The feed keeps an unchanged item's object, so this reruns only when the
+// open item changed — a step finishing included. An item that still carries
+// the field (a server from before HZ-318, the mock) is used as it is. A reply
+// for an item no longer open is dropped.
+//
+// { stepOutputs, settled }: until a good reply for this exact item lands,
+// stepOutputs is the last one for the same id (links don't flicker away on a
+// refetch or vanish on a failed one) or null for a different id, and settled
+// is false.
+function useStepOutputs(item) {
+  const [loaded, setLoaded] = useState({ item: null, stepOutputs: null, ok: false })
+  const carried = item.stepOutputs
+  useEffect(() => {
+    if (carried) return undefined
+    let current = true
+    getStepOutputs(item.id)
+      .catch(() => null)
+      .then((stepOutputs) => {
+        if (!current) return
+        setLoaded((prev) => ({
+          item,
+          stepOutputs: stepOutputs ?? (prev.item?.id === item.id ? prev.stepOutputs : null),
+          ok: stepOutputs != null,
+        }))
+      })
+    return () => {
+      current = false
+    }
+  }, [item, carried])
+  if (carried) return { stepOutputs: carried, settled: true }
+  return {
+    stepOutputs: loaded.item?.id === item.id ? loaded.stepOutputs : null,
+    settled: loaded.item === item && loaded.ok,
+  }
+}
+
 export default function Tracker({ item, projects, onBack, onApprove, onApproveWithComments, onReject, onResolveConflicts, resolving, gateBusy, onForwardToAccept, onTogglePause, onRestartPhase, onSetPersona, onAbandon, onRemoveDependency }) {
   const status = itemStatus(item, true)
   const activity = buildActivity(item)
   const closed = isClosed(item)
   const abandoned = isAbandoned(item)
+  const { stepOutputs, settled: outputsSettled } = useStepOutputs(item)
 
   return (
     <div className="tracker">
@@ -501,6 +542,8 @@ export default function Tracker({ item, projects, onBack, onApprove, onApproveWi
                   <Step
                     key={i}
                     item={item}
+                    stepOutputs={stepOutputs}
+                    outputsSettled={outputsSettled}
                     index={i}
                     onApprove={onApprove}
                     onApproveWithComments={onApproveWithComments}

@@ -34,6 +34,7 @@ import { marked } from 'marked'
 import { db } from './db.js'
 import { getActiveProjectId, getRepoUrl, setSetting, getToken } from './settings.js'
 import * as auth from './auth.js'
+import { diffSnapshot, makeBaseline } from './streamDelta.js'
 import { googleAuth } from './googleAuth.js'
 import { isAllowedEmail } from './loginAllowlist.js'
 import { approvalSecretConfigured, approvalSecretOk, isAllowedApprover, isOwner, normalizeJid } from './waApprovers.js'
@@ -128,7 +129,15 @@ ${nav}
 
 // ---- SSE ----
 
+// HZ-318: tabs on the v2 feed (/api/stream?v=2). Each got a full slim snapshot
+// on connect and now receives `delta` events; see flushStream().
 const sseClients = new Set()
+
+// How many v2 tabs are connected — a test seam, so stream tests can wait for
+// a closed connection to be noticed.
+export function streamClientCount() {
+  return sseClients.size
+}
 
 // `scope` picks the items: 'active' is the active project's, 'enabled' every
 // enabled project's. The browser's SSE feed and GET /api/items use 'enabled'
@@ -137,14 +146,16 @@ const sseClients = new Set()
 // snapshot, never per item. The concierge's /api/farm/snapshot leaves it off.
 // `checks` adds each repo's check commands (HZ-245) for Admin; the concierge
 // leaves those off too — it has no use for them.
-export function snapshot({ scope = 'active', estimates = true, checks = true } = {}) {
+// `stepOutputs: false` (HZ-318) is the slim board: the v2 stream and
+// GET /api/items?v=2. The concierge keeps the field — it quotes step outputs.
+export function snapshot({ scope = 'active', estimates = true, checks = true, stepOutputs = true } = {}) {
   return {
     repoUrl: getRepoUrl(),
     projects: store.listProjects({ checks }),
     activeProjectId: getActiveProjectId(),
     farm: orchestrator.getFarmState(),
     sync: github.getSyncState(),
-    items: store.listItems({ scope }),
+    items: store.listItems({ scope, stepOutputs }),
     ...(estimates ? { durationEstimates: store.durationEstimates() } : {}),
   }
 }
@@ -241,15 +252,63 @@ function startSession(reply, userId) {
   })
 }
 
+// HZ-318: what every v2 tab was last sent, or null while no v2 tab is
+// connected (nothing to diff against — the next tab's connect snapshot seeds
+// it). Holds one JSON string per item, ~2 MB on the 2026-10-06 board.
+let streamBaseline = null
+let flushTimer = null
+
+// One delta per tab per window at most. A store change only schedules a flush;
+// every change inside the window lands in that one flush. Measured on a copy of
+// the live DB (234 items, 2026-10-06): one flush — slim build plus diff — is
+// ~55 ms; the old per-change full snapshot was ~145 ms to build and 9.4 MB per
+// tab. A single-item delta is ~3 KB (16 KB for the largest item).
+export const STREAM_BATCH_MS = 1000
+
+// A store change, or one of the routes below after a farm/sync state change.
+// Never writes to a socket itself: see flushStream().
 export function broadcast() {
-  const data = `data: ${JSON.stringify(snapshot({ scope: 'enabled' }))}\n\n`
+  if (!flushTimer) flushTimer = setTimeout(flushFromTimer, STREAM_BATCH_MS).unref()
+}
+
+// A throw in a timer callback would take the whole server down; the feed
+// resyncs on the next change or reconnect instead.
+function flushFromTimer() {
+  try {
+    flushStream()
+  } catch (err) {
+    console.error(`stream flush failed: ${err.stack || err.message}`)
+  }
+}
+
+// Sends every v2 tab one `delta`: the items whose JSON changed since the last
+// flush (whole items, so a tab that already has one can take it again), the
+// ids that left the board, and the changed top-level keys. Exported so tests
+// can flush without waiting out the window.
+export function flushStream() {
+  clearTimeout(flushTimer)
+  flushTimer = null
+  if (sseClients.size === 0) {
+    streamBaseline = null
+    return
+  }
+  const current = snapshot({ scope: 'enabled', stepOutputs: false })
+  if (!streamBaseline) {
+    streamBaseline = makeBaseline(current)
+    return
+  }
+  const { delta, baseline } = diffSnapshot(streamBaseline, current)
+  streamBaseline = baseline
+  if (!delta) return
+  const data = `event: delta\ndata: ${JSON.stringify(delta)}\n\n`
   sseClients.forEach((res) => res.write(data))
 }
 
 store.onChange(broadcast)
 
 // Heartbeat comment keeps proxies from idle-closing the stream and lets the
-// browser notice dead connections promptly.
+// browser notice dead connections promptly. Its own timer, so batching never
+// delays it.
 setInterval(() => {
   sseClients.forEach((res) => res.write(':ping\n\n'))
 }, 25_000).unref()
@@ -384,11 +443,27 @@ export function buildApp({ logger = true, onRoute = null } = {}) {
 
   // The response schema documents the media type only: this route hijacks the
   // reply, so the serializer never runs on it either way (HZ-178).
+  //
+  // HZ-318: `?v=2` is the slim feed — an `event: snapshot` frame (the board
+  // without stepOutputs) on every connect, then `event: delta` frames at most
+  // once a second. Without `v` is a tab built before HZ-318: it only knows the
+  // default event and treats every frame as the whole board, so it gets one
+  // full snapshot (stepOutputs included) and the stream ends; `retry` brings it
+  // back in ten minutes, and tab focus refetches sooner. It never sees a delta.
+  // Remove that legacy branch once old tabs are gone (follow-up to HZ-318).
   const STREAM_DESCRIPTION =
-    'A `data:` frame carrying the full board snapshot on every change, plus a `:ping` comment every 25s.'
+    'With `v=2`: an `event: snapshot` frame carrying the board (no stepOutputs) on connect, then `event: delta` frames ' +
+    '(`upserts`, `removed`, `top`, and `order` when the id list changed) at most once a second, plus a `:ping` comment ' +
+    'every 25s. Without `v`: one `data:` frame carrying the full board, then the stream ends.'
+  const LEGACY_STREAM_RETRY_MS = 600_000
   fastify.get(
     '/api/stream',
-    { schema: { response: { 200: textResponse('text/event-stream', STREAM_DESCRIPTION) } } },
+    {
+      schema: {
+        querystring: { type: 'object', properties: { v: { type: 'string' } } },
+        response: { 200: textResponse('text/event-stream', STREAM_DESCRIPTION) },
+      },
+    },
     (request, reply) => {
       reply.hijack()
       reply.raw.writeHead(200, {
@@ -396,9 +471,24 @@ export function buildApp({ logger = true, onRoute = null } = {}) {
         'Cache-Control': 'no-cache',
         Connection: 'keep-alive',
       })
-      reply.raw.write(`data: ${JSON.stringify(snapshot({ scope: 'enabled' }))}\n\n`)
+      if (request.query.v !== '2') {
+        reply.raw.write(`retry: ${LEGACY_STREAM_RETRY_MS}\ndata: ${JSON.stringify(snapshot({ scope: 'enabled' }))}\n\n`)
+        reply.raw.end()
+        return
+      }
+      // Written now, never through the batch timer: a (re)connecting tab gets
+      // the whole current board straight away.
+      const current = snapshot({ scope: 'enabled', stepOutputs: false })
+      reply.raw.write(`event: snapshot\ndata: ${JSON.stringify(current)}\n\n`)
+      // The first tab seeds the baseline. With tabs already connected it is
+      // kept: any change since it is pending in the next flush, which this tab
+      // can apply on top of the snapshot it just got.
+      if (sseClients.size === 0) streamBaseline = makeBaseline(current)
       sseClients.add(reply.raw)
-      request.raw.on('close', () => sseClients.delete(reply.raw))
+      request.raw.on('close', () => {
+        sseClients.delete(reply.raw)
+        if (sseClients.size === 0) streamBaseline = null
+      })
     },
   )
 
@@ -416,7 +506,32 @@ export function buildApp({ logger = true, onRoute = null } = {}) {
     return reply.send(result)
   }
 
-  fastify.get('/api/items', { schema: { response: { 200: OK_OBJECT } } }, () => snapshot({ scope: 'enabled' }))
+  // HZ-318: `?v=2` leaves stepOutputs off, as the v2 stream does; the Tracker
+  // loads them per item from /api/items/:id/step-outputs. Without `v` (a tab
+  // built before HZ-318) the items keep them.
+  fastify.get(
+    '/api/items',
+    {
+      schema: {
+        querystring: { type: 'object', properties: { v: { type: 'string' } } },
+        response: { 200: OK_OBJECT },
+      },
+    },
+    (request) => snapshot({ scope: 'enabled', stepOutputs: request.query.v !== '2' }),
+  )
+
+  // HZ-318: one item's stepOutputs, the field the slim board leaves off — the
+  // same store.stepOutputs() data /api/items carried, and the same items: an id
+  // outside the board's 'enabled' scope is a 404 just like an unknown one.
+  fastify.get(
+    '/api/items/:id/step-outputs',
+    { schema: { params: idParam, response: { 200: OK_OBJECT, 404: ERROR_OBJECT } } },
+    (request, reply) => {
+      const stepOutputs = store.itemStepOutputs(request.params.id)
+      if (!stepOutputs) return reply.code(404).send({ error: 'not_found' })
+      return { id: request.params.id, stepOutputs }
+    },
+  )
 
   // The generated API reference (HZ-178). fastify.swagger() is the decorator the
   // plugin installed at the top of buildApp(); it may only be called after

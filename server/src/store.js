@@ -755,14 +755,32 @@ function currentStepOf(row) {
 // tracker and approvals filter it client-side). Both include local demo items,
 // which have no project, and everything before any project has been chosen.
 // 'enabled' never carries a disabled project's items.
-export function listItems({ scope = 'active' } = {}) {
+//
+// HZ-318: `stepOutputs: false` leaves each item's stepOutputs off — 79% of the
+// board's bytes. The live feed and GET /api/items?v=2 use it; the Tracker
+// loads one item's outputs on open through itemStepOutputs() below.
+export function listItems({ scope = 'active', stepOutputs = true } = {}) {
+  return selectItems
+    .all()
+    .filter(scopeFilter(scope))
+    .map((row) => itemView(row, { stepOutputs }))
+}
+
+// The row filter behind listItems' scope, shared with itemStepOutputs so the
+// per-item route can never show an item the list would not.
+function scopeFilter(scope) {
   const activeId = getActiveProjectId()
   const enabled = scope === 'enabled' ? enabledProjectIds() : null
   const inScope = (projectId) => (enabled ? enabled.has(projectId) : projectId === activeId)
-  return selectItems
-    .all()
-    .filter((row) => row.project_id == null || activeId == null || inScope(row.project_id))
-    .map(itemView)
+  return (row) => row.project_id == null || activeId == null || inScope(row.project_id)
+}
+
+// HZ-318: one item's stepOutputs exactly as listItems({ scope: 'enabled' })
+// carries them, or null when the id is unknown or outside that scope.
+export function itemStepOutputs(id) {
+  const row = db.prepare('SELECT id, project_id FROM work_item WHERE id = ?').get(id)
+  if (!row || !scopeFilter('enabled')(row)) return null
+  return stepOutputs(row.id)
 }
 
 // ---- duration estimates (HZ-229) ----
@@ -867,7 +885,7 @@ function stateSince(row, activeRun, gateAction) {
   return toIsoUtc(row.last_run_ended_at ?? row.created_at)
 }
 
-function itemView(row) {
+function itemView(row, { stepOutputs: withStepOutputs = true } = {}) {
   const activeRun = withRunState(selectActiveRun.get(row.id) || null)
   const gateFields = itemGateFields(row)
   return {
@@ -897,7 +915,7 @@ function itemView(row) {
     abandoned_reason: row.abandoned_reason,
     abandoned_by: row.abandoned_by,
     events: selectEvents.all(row.id),
-    stepOutputs: stepOutputs(row.id),
+    ...(withStepOutputs ? { stepOutputs: stepOutputs(row.id) } : {}),
     activeRun,
     ...gateFields,
     state_since: stateSince(row, activeRun, gateFields.gateAction),
