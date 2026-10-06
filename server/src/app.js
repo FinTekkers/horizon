@@ -45,6 +45,7 @@ import { PERSONAS } from './personas.js'
 import * as definitions from './definitions.js'
 import * as rulesStore from './rulesStore.js'
 import * as runLogView from './runLogView.js'
+import * as split from './split.js'
 import {
   API_SECURITY,
   ERROR_OBJECT,
@@ -931,6 +932,13 @@ export function buildApp({ logger = true, onRoute = null } = {}) {
         store.notifyChange()
         return { error: `issue close failed: ${err.message}`, status: 502 }
       }
+    }
+    // HZ-313: approving the design files the split its plan proposed, before
+    // the gate moves — the close-issue pattern above: no filing, no gate.
+    // Every approver (browser, WhatsApp, Autopilot) comes through here.
+    if (item && item.cursor === stepIndex && stepIndex === split.DESIGN_GATE_INDEX) {
+      const filed = await split.fileApprovedSplit(item, actor)
+      if (filed.error) return filed
     }
     const result = store.approveGate(id, stepIndex, notes, actor)
     // Approval notes are decisions — mirror them onto the issue thread.

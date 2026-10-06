@@ -73,6 +73,7 @@ import { renderOverlapInput, renderOverlapSection, replaceOverlapSection } from 
 import { DEPLOY_BLOCK_MESSAGE, isDeployBlocked } from './deployDrain.js'
 import { deployWaitFor } from './deployWait.js'
 import { servedRulesFor } from './rulesStore.js'
+import { OPTIONS_STEP_INDEX, proposeSplit } from './split.js'
 
 // Keyed by step_run.id (HZ-100) — NOT item id. Keying by item used to let a
 // stale callback for a superseded run clear/overwrite the CURRENT run's
@@ -1946,6 +1947,13 @@ export async function completeFarmRun(runId, { summary, patch, artifacts }) {
     }
     if (!runStillActive(runId)) return { ok: true, stale: true }
     artifactMd = replaceOverlapSection(artifactMd || '', renderOverlapSection(applyOverlap(id, check)))
+  }
+
+  // HZ-313: a split the plan proposes is validated and recorded here, and
+  // shown at gate 5. Nothing is filed until that gate is approved; a refusal
+  // is a `## Blockers` bullet, never a failed run.
+  if (run.step_index === OPTIONS_STEP_INDEX) {
+    artifactMd = proposeSplit(item, runId, artifacts?.split, artifactMd)
   }
 
   if (run.step_index === IMPLEMENT_STEP_INDEX) {

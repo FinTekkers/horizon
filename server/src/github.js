@@ -163,7 +163,9 @@ export async function setPriorityLabel(item, priority) {
   if (!add.ok) throw new Error(`GitHub returned ${add.status} adding the priority label`)
 }
 
-export async function createIssue(repo, { title, outcome, metric, guardrails, priority }) {
+// `bodySuffix` (HZ-313) is appended after the composed sections — the split's
+// back-link and marker. The new-item route sends none.
+export async function createIssue(repo, { title, outcome, metric, guardrails, priority, bodySuffix = '' }) {
   const token = getToken()
   const label = await ensurePriorityLabel(repo, token, priority)
   const res = await fetch(`https://api.github.com/repos/${repo}/issues`, {
@@ -171,7 +173,7 @@ export async function createIssue(repo, { title, outcome, metric, guardrails, pr
     headers: ghHeaders(token),
     body: JSON.stringify({
       title,
-      body: composeIssueBody({ outcome, metric, guardrails }),
+      body: composeIssueBody({ outcome, metric, guardrails }) + (bodySuffix ? `\n\n${bodySuffix}` : ''),
       labels: label ? [label] : [],
     }),
   })
@@ -728,6 +730,36 @@ export async function syncIssueBodyFields(item) {
   const upd = await gh(`/repos/${item.repo}/issues/${item.issue}`, { method: 'PATCH', body: JSON.stringify({ body }) })
   if (!upd.ok) throw new Error(`GitHub returned ${upd.status} updating issue #${item.issue}`)
   return true
+}
+
+// ---- HZ-313: a plan's cross-repo split ----
+
+// The issue a split already filed on `repo`, found by the marker in its body,
+// or null. Covers a crash between the create POST and the row's 'filed'
+// write. The list endpoint, not search: search indexing lags a fresh issue.
+// `since` (ISO) bounds the pages to issues touched after the split was proposed.
+const SPLIT_SEARCH_MAX_PAGES = 10
+export async function findSplitIssue(repo, marker, since) {
+  for (let page = 1; page <= SPLIT_SEARCH_MAX_PAGES; page++) {
+    const query = `state=all&since=${encodeURIComponent(since)}&per_page=100&page=${page}`
+    const res = await gh(`/repos/${repo}/issues?${query}`)
+    if (!res.ok) throw new Error(`GitHub returned ${res.status} listing issues on ${repo}`)
+    const issues = await res.json()
+    const found = issues.find((i) => !i.pull_request && (i.body || '').includes(marker))
+    if (found) return found
+    if (issues.length < 100) return null
+  }
+  return null
+}
+
+// Rewrites the item's issue body to the given outcome and metric (its
+// guardrails kept). Unlike syncIssueBodyFields this also rewrites a freehand
+// body: upsertFromGithub reads desc from every body, so a split's narrowed
+// scope only survives the next sync once GitHub holds it.
+export async function pushIssueScope(item, { desc, metric }) {
+  const body = composeIssueBody({ outcome: desc || '', metric: metric || '', guardrails: item.guardrails })
+  const res = await gh(`/repos/${item.repo}/issues/${item.issue}`, { method: 'PATCH', body: JSON.stringify({ body }) })
+  if (!res.ok) throw new Error(`GitHub returned ${res.status} updating issue #${item.issue}`)
 }
 
 // ---- HZ-273: the caretaker's line-level ruling edits ----

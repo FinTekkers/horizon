@@ -98,6 +98,8 @@ DEVOPS_TOOLS = "Read,Glob,Grep,Bash"
 IMPLEMENT_LABEL = "Specialist agent implements"
 REVIEW_LABEL = "Automated review (code + QA)"
 DEPLOY_LABEL = "Deploy the changes"
+# HZ-313: the only step whose reply may carry a cross-repo `split`.
+SPLIT_STEP_LABEL = "Plan options & trade-offs (pros / cons)"
 
 STEP_CONFIG = {
     "Plan options & trade-offs (pros / cons)": ("ensemble.md", True, PLANNER_TOOLS, None),
@@ -1743,6 +1745,11 @@ def _execute(task: dict, guard: HandoffGuard) -> dict:
         artifacts = result.setdefault("artifacts", {})
         artifacts["provider"] = reply_provenance.get("provider")
         artifacts["command_id"] = reply_provenance.get("command_id")
+    # HZ-313: the Ensemble's optional cross-repo split rides through untouched.
+    # The server (server/src/split.js) validates it and files nothing until
+    # gate 5 is approved; any other step's or shape's `split` is dropped.
+    if label == SPLIT_STEP_LABEL and isinstance(parsed.get("split"), dict):
+        result.setdefault("artifacts", {})["split"] = parsed["split"]
     return result
 
 
