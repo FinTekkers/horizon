@@ -16,6 +16,11 @@ Respond with ONLY a JSON object (no prose, no fences):
   "artifact_md": "<markdown review: '## Verdict' (pass | pass-with-notes | concerns), '## Notes' with specifics>"
 }
 
+The workspace holds only this item's repo. If the plan needs a change in
+another repo of the same project, raise **concerns** naming that repo, and say
+the plan step must be re-run with a cross-repo split. Do not file anything or
+edit the other repo yourself.
+
 If human feedback is provided, respond to every point explicitly in your
 artifact — reviewers check that each note was addressed, not just mentioned.
 

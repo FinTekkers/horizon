@@ -637,6 +637,12 @@ function wouldCycle(id, dependsOnId) {
   return false
 }
 
+// HZ-313: the same check addDependency runs, for split.js to refuse a plan
+// whose already-filed upstream item now depends on this one.
+export function wouldCycleBetween(id, dependsOnId) {
+  return wouldCycle(id, dependsOnId)
+}
+
 function dependencyFields(id) {
   const blockers = blockersOf(id)
   const dependents = selectDependents.all(id)
@@ -1311,6 +1317,29 @@ export function parseIssueBody(body) {
   }
   if (!result.desc) result.desc = preamble || text
   return result
+}
+
+// The item synced from this repo's issue, or null.
+export function findItemByIssue(repoFullName, issue) {
+  const row = db.prepare('SELECT id FROM work_item WHERE repo = ? AND issue = ?').get(repoFullName, issue)
+  return row ? getItem(row.id) : null
+}
+
+// HZ-313: after a split is filed, the source item's description and metric
+// cover only its own repo. Its only caller is split.js, which has already
+// pushed the same text to the item's GitHub issue, so a later sync reads it back.
+export function applySplitScope(id, { desc, metric }, actor = 'Horizon') {
+  const it = getItem(id)
+  if (!it) return { error: 'not_found' }
+  db.prepare(`UPDATE work_item SET desc = ?, metric = ?, ${touch} WHERE id = ?`).run(desc ?? it.desc, metric ?? it.metric, id)
+  addEvent(id, {
+    who: actor,
+    text: 'narrowed this item’s description and success metric to its own repo after the split',
+    color: '#5E4380',
+    initials: 'HZ',
+  })
+  notify()
+  return { ok: true }
 }
 
 // ---- local (demo-mode) item creation ----

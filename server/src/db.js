@@ -714,6 +714,29 @@ db.exec(`
   );
 `)
 
+// HZ-313: a plan step's proposal to file part of the fix on another connected
+// repo of the same project (server/src/split.js). UNIQUE(source_item_id,
+// target_repo) is the durable "file at most one issue per split" key: a
+// re-run plan updates the row, a re-approval finds it 'filed', and a restart
+// mid-'filing' finds target_issue (or the issue's body marker) before filing.
+db.exec(`
+  CREATE TABLE IF NOT EXISTS item_split (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    source_item_id  TEXT NOT NULL REFERENCES work_item(id),
+    target_repo     TEXT NOT NULL,
+    status          TEXT NOT NULL CHECK (status IN ('proposed','filing','filed','failed')),
+    payload_json    TEXT NOT NULL,
+    plan_run_id     INTEGER NOT NULL,
+    target_issue    INTEGER,
+    target_item_id  TEXT REFERENCES work_item(id),
+    error           TEXT,
+    created_at      TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at      TEXT NOT NULL DEFAULT (datetime('now')),
+    UNIQUE (source_item_id, target_repo)
+  );
+  CREATE INDEX IF NOT EXISTS idx_item_split_source ON item_split(source_item_id);
+`)
+
 // HZ-246: project and repo rules saved in Admin, one row per version. key is
 // the rules file stem (project slug, or owner__repo). Append-only: restore
 // inserts a copy, and the triggers refuse UPDATE/DELETE. hmac signs each row

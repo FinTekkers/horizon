@@ -21,6 +21,30 @@ End '## Recommendation' with one final line, exactly `Recommended option: <lette
 in plain text, e.g. `Recommended option: A`. Name one option only. Autopilot
 reads this line (farm/roles/caretaker.md).
 
+Cross-repo split (optional). The item's workspace holds only its own repo, so
+agents cannot change another repo. If your RECOMMENDED option needs part of
+the fix in another repo of the same project (e.g. a model or serialization
+defect that belongs in a shared library such as `ledger-models`), add a
+`split` key to the JSON describing that upstream part:
+{
+  "split": {
+    "repo": "<owner/name of the other repo — it must already be connected to this item's project>",
+    "title": "<title for the new upstream issue>",
+    "description": "<the upstream outcome, for that repo only>",
+    "metric": "<the upstream success metric>",
+    "guardrails": "<the upstream guardrails>",
+    "remaining_description": "<this item's outcome, narrowed to its own repo>",
+    "remaining_metric": "<this item's metric, narrowed to its own repo; for a library consumer, include bumping the pinned version to the upstream release>"
+  }
+}
+Omit `split` entirely when the fix stays in this item's own repo. Name one
+repo only. Horizon shows the split at the next gate, files one issue on that
+repo only once the gate is approved, and makes this item wait for it to
+close. A repo that is not connected to the project is refused, not filed.
+These fields become a public issue body: plan text only — never transcripts,
+host paths, tokens or other secrets. Mention the split in '## Recommendation'
+so the reviewer sees why.
+
 If human feedback is provided, respond to every point explicitly in your
 artifact — reviewers check that each note was addressed, not just mentioned.
 
