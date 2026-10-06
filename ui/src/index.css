@@ -525,6 +525,14 @@ button { font-family: var(--font-sans); }
 .dep-detail__id { font-family: var(--font-mono, ui-monospace, monospace); font-weight: 700; color: var(--accent, var(--deep)); text-decoration: none; }
 .dep-detail__id:hover { text-decoration: underline; }
 .dep-detail__title { color: var(--deep); }
+.dep-detail__remove {
+  margin-left: 6px; padding: 0 6px; border: none; border-radius: 6px; background: transparent;
+  font: 700 14px var(--font-sans); line-height: 1.3; color: var(--danger-ink); cursor: pointer;
+}
+.dep-detail__remove:hover:not(:disabled) { background: var(--danger-bg); text-decoration: underline; }
+.dep-detail__remove:focus-visible { outline: 2px solid var(--danger-ink); outline-offset: 1px; }
+.dep-detail__remove:disabled { opacity: 0.5; cursor: default; }
+.dep-detail__error { display: block; color: var(--danger-ink); font-weight: 700; overflow-wrap: anywhere; }
 
 .card__gate { margin-top: 12px; padding-top: 12px; border-top: 1px dashed var(--gate-divider); }
 .card__gate-label {

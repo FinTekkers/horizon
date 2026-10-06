@@ -171,3 +171,25 @@ test('createItem honours an explicitly chosen priority — the default must not 
   expect(findItem(id).priority).toBe(chosen)
   vi.clearAllTimers()
 })
+
+// ---- HZ-310: removeDependency, the offline mirror of store.removeDependency ----
+// Fresh module so the removed edge can't leak into the fixture checks above.
+
+test('removeDependency drops the edge on both items, logs it, and clears the blocked flags', async () => {
+  vi.useFakeTimers()
+  vi.resetModules()
+  const fresh = await import('./mockApi')
+  const get = (id) => fresh.getItems().find((it) => it.id === id)
+  expect(get('BF-131').blocked).toBe(true)
+
+  await expect(fresh.removeDependency('BF-131', 'BF-128')).resolves.toEqual({ ok: true })
+  const item = get('BF-131')
+  expect(item.blockedBy.map((b) => b.id)).not.toContain('BF-128')
+  expect(item.blocked).toBe(false)
+  expect(item.blockedByAbandoned).toBeFalsy()
+  expect(get('BF-128').dependents.map((d) => d.id)).not.toContain('BF-131')
+  expect(item.events[0].text).toBe('removed the dependency on BF-128')
+
+  await expect(fresh.removeDependency('BF-131', 'BF-128')).rejects.toThrow('not_found')
+  vi.useRealTimers()
+})

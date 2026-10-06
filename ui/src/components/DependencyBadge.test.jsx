@@ -7,6 +7,8 @@ import { expect, test, afterEach } from 'vitest'
 import { render, cleanup } from '@testing-library/react'
 
 import DependencyBadge from './DependencyBadge'
+import { vi } from 'vitest'
+import { fireEvent, waitFor, act } from '@testing-library/react'
 
 afterEach(() => {
   cleanup()
@@ -149,4 +151,79 @@ test('the compact pill leads with the id and keeps every id in its tooltip', () 
   expect(pill.title).toContain('X-B1')
   expect(pill.title).toContain('X-B2')
   expect(pill.title).toContain('(abandoned)')
+})
+
+// ---- HZ-310: the X beside each "Blocked by" entry, full form only ----
+
+const twoBlockers = {
+  id: 'X-5',
+  blockedBy: [
+    { id: 'X-B1', title: 'First blocker', abandoned: false },
+    { id: 'X-B2', title: 'Second blocker', abandoned: false },
+  ],
+  dependents: [{ id: 'X-D', title: 'The waiting item', abandoned: false }],
+}
+
+const removeButtons = (utils) => utils.queryAllByRole('button', { name: /^Remove dependency on / })
+
+test('two blockers plus onRemove show exactly two remove controls', () => {
+  const utils = render(<DependencyBadge item={twoBlockers} onRemove={vi.fn()} />)
+  expect(removeButtons(utils)).toHaveLength(2)
+  expect(utils.getByRole('button', { name: 'Remove dependency on X-B1' })).toBeTruthy()
+  expect(utils.getByRole('button', { name: 'Remove dependency on X-B2' })).toBeTruthy()
+})
+
+test('the Blocks list renders no remove control', () => {
+  const utils = render(<DependencyBadge item={twoBlockers} onRemove={vi.fn()} />)
+  const blocks = utils.container.querySelector('.dep-detail__section--dependents')
+  expect(blocks.querySelector('button')).toBeNull()
+  expect(utils.queryByRole('button', { name: 'Remove dependency on X-D' })).toBeNull()
+})
+
+test('the compact form renders no remove control even when onRemove is passed', () => {
+  const utils = render(<DependencyBadge item={twoBlockers} compact onRemove={vi.fn()} />)
+  expect(removeButtons(utils)).toHaveLength(0)
+})
+
+test('the full form without onRemove renders no remove control', () => {
+  const utils = render(<DependencyBadge item={twoBlockers} />)
+  expect(removeButtons(utils)).toHaveLength(0)
+})
+
+test('one click calls onRemove once for that edge; the other blocker stays listed', () => {
+  const onRemove = vi.fn().mockResolvedValue({ ok: true })
+  const utils = render(<DependencyBadge item={twoBlockers} onRemove={onRemove} />)
+  fireEvent.click(utils.getByRole('button', { name: 'Remove dependency on X-B1' }))
+  expect(onRemove).toHaveBeenCalledTimes(1)
+  expect(onRemove).toHaveBeenCalledWith('X-5', 'X-B1')
+  expect(utils.getByText('X-B2')).toBeTruthy()
+  expect(utils.getByRole('button', { name: 'Remove dependency on X-B2' }).disabled).toBe(false)
+})
+
+test('after onRemove resolves the X stays disabled until the edge leaves, then the edge is gone', async () => {
+  const onRemove = vi.fn().mockResolvedValue({ ok: true })
+  const utils = render(<DependencyBadge item={twoBlockers} onRemove={onRemove} />)
+  const x = () => utils.getByRole('button', { name: 'Remove dependency on X-B1' })
+  fireEvent.click(x())
+  await waitFor(() => expect(onRemove).toHaveBeenCalledTimes(1))
+  await act(async () => {})
+  expect(x().disabled).toBe(true)
+  fireEvent.click(x())
+  expect(onRemove).toHaveBeenCalledTimes(1)
+
+  // The SSE snapshot arrives without the edge.
+  utils.rerender(<DependencyBadge item={{ ...twoBlockers, blockedBy: [twoBlockers.blockedBy[1]] }} onRemove={onRemove} />)
+  expect(utils.queryByText('X-B1')).toBeNull()
+  expect(utils.queryByRole('button', { name: 'Remove dependency on X-B1' })).toBeNull()
+  expect(utils.getByText('X-B2')).toBeTruthy()
+})
+
+test('a rejected remove keeps the edge listed and shows the error', async () => {
+  const onRemove = vi.fn().mockRejectedValue(new Error('not_found'))
+  const utils = render(<DependencyBadge item={twoBlockers} onRemove={onRemove} />)
+  fireEvent.click(utils.getByRole('button', { name: 'Remove dependency on X-B1' }))
+  const alert = await utils.findByRole('alert')
+  expect(alert.textContent).toMatch(/not_found/)
+  expect(utils.getByText('X-B1')).toBeTruthy()
+  expect(utils.getByRole('button', { name: 'Remove dependency on X-B1' }).disabled).toBe(false)
 })

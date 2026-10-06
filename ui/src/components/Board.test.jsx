@@ -200,3 +200,20 @@ test('every card shows a badge with its own project’s name', () => {
     expect(card.querySelector('.proj-badge').textContent, id).toBe(expected[id])
   }
 })
+
+// HZ-310: removal lives only in the item view — the board card's compact
+// badge stays display-only.
+test('a card with two blockers renders no remove-dependency control', () => {
+  const items = [
+    depItem('HZ-97', {
+      blockedBy: [
+        { id: 'HZ-89', title: 'The prerequisite', abandoned: false },
+        { id: 'HZ-88', title: 'Another prerequisite', abandoned: false },
+      ],
+    }),
+  ]
+  const { queryAllByRole } = render(
+    <Board items={items} onOpen={noop} onApprove={noop} onReject={noop} onTogglePause={noop} onNewItem={noop} />,
+  )
+  expect(queryAllByRole('button', { name: /Remove dependency/ })).toHaveLength(0)
+})

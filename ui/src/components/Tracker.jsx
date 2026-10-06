@@ -375,7 +375,7 @@ function buildActivity(item) {
     })
 }
 
-export default function Tracker({ item, projects, onBack, onApprove, onApproveWithComments, onReject, onResolveConflicts, resolving, gateBusy, onForwardToAccept, onTogglePause, onRestartPhase, onSetPersona, onAbandon }) {
+export default function Tracker({ item, projects, onBack, onApprove, onApproveWithComments, onReject, onResolveConflicts, resolving, gateBusy, onForwardToAccept, onTogglePause, onRestartPhase, onSetPersona, onAbandon, onRemoveDependency }) {
   const status = itemStatus(item, true)
   const activity = buildActivity(item)
   const closed = isClosed(item)
@@ -464,7 +464,7 @@ export default function Tracker({ item, projects, onBack, onApprove, onApproveWi
             <Markdown className="tile__value md-body--tile" text={item.guardrails} />
           </div>
         </div>
-        <DependencyBadge item={item} />
+        <DependencyBadge key={item.id} item={item} onRemove={onRemoveDependency} />
       </div>
 
       <div className="tracker__body">

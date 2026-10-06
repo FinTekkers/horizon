@@ -345,6 +345,22 @@ export function togglePause(id) {
   else runAgents(id)
 }
 
+// Mirrors store.removeDependency: drop the edge on both sides, log it, and
+// re-kick the item. Mock blockedBy already lists only open blockers, so the
+// flags recompute from what remains.
+export async function removeDependency(id, dependsOnId) {
+  const it = items.find((x) => x.id === id)
+  if (!it || !(it.blockedBy || []).some((b) => b.id === dependsOnId)) throw new Error('not_found')
+  update(id, (x) => {
+    const blockedBy = x.blockedBy.filter((b) => b.id !== dependsOnId)
+    return { ...x, blockedBy, blocked: blockedBy.length > 0, blockedByAbandoned: blockedBy.some((b) => b.abandoned) }
+  })
+  update(dependsOnId, (x) => ({ ...x, dependents: (x.dependents || []).filter((d) => d.id !== id) }))
+  pushEvent(id, { who: 'You', text: `removed the dependency on ${dependsOnId}`, color: '#5E4380', initials: 'YOU' })
+  if (!items.find((x) => x.id === id).blocked) runAgents(id)
+  return { ok: true }
+}
+
 export function setPersona(id, agent, persona) {
   if (!isPersona(agent, persona)) return
   update(id, (it) => ({ ...it, personas: { ...it.personas, [agent]: persona } }))
