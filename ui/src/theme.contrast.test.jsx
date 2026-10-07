@@ -88,6 +88,7 @@ function pairs(t) {
     [t.successInk, t.successBg, AA_NORMAL, 'Closed status pill'],
     [t.dangerInk, t.dangerBg, AA_NORMAL, 'Changes requested status pill'],
     [t.mutedStrong, t.chip, AA_NORMAL, 'Paused status pill'],
+    [t.dangerInk, t.dangerBg, AA_NORMAL, 'Blocked status pill'],
     [t.warningInk, t.warningBg, AA_NORMAL, 'Awaiting status pill'],
     [t.primaryInk, t.primaryBg, AA_NORMAL, 'Agent working status pill'],
 

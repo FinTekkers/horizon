@@ -13,7 +13,7 @@ import {
 import { AGENTS } from '../domain/agentTokens'
 import { PHASE_ACCENT, PHASE_ACCENT_BG, priorityColor } from '../domain/lifecycle'
 import { PERSONAS, PERSONA_AGENT_ROLES, PRIMARY_PERSONA_AGENT, personaFor, personaId } from '../domain/personas'
-import { itemStatus } from '../domain/status'
+import { itemStatus, isDependencyBlocked } from '../domain/status'
 import { pauseReason } from '../domain/pauseReason'
 import { gateActionOf } from '../domain/gateAction'
 import { resolveEventColor } from '../domain/eventColors'
@@ -470,9 +470,13 @@ export default function Tracker({ item, projects, onBack, onApprove, onApproveWi
         </div>
         {!abandoned && (
           <div className="tracker__actions">
-            <button className="btn-outline" onClick={() => onTogglePause(item.id)}>
-              {item.paused ? 'Resume work' : 'Pause work'}
-            </button>
+            {/* HZ-335: no Pause work while a dependency blocks the item;
+                a paused item always keeps Resume work. */}
+            {(item.paused || !isDependencyBlocked(item)) && (
+              <button className="btn-outline" onClick={() => onTogglePause(item.id)}>
+                {item.paused ? 'Resume work' : 'Pause work'}
+              </button>
+            )}
             {!closed && (
               <button className="btn-outline" style={{ color: '#5C1F2B' }} onClick={() => onAbandon(item.id)}>
                 Abandon

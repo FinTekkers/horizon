@@ -38,8 +38,8 @@ test('an item with neither direction renders nothing at all, full form', () => {
 })
 
 test('a blocker renders "Blocked by" with the blocker named, compact form — never bare "Blocked"', () => {
-  const { getByText, queryByText } = render(<DependencyBadge item={blockedOnly} compact />)
-  expect(getByText(/Blocked by X-B/)).toBeTruthy()
+  const { container, queryByText } = render(<DependencyBadge item={blockedOnly} compact />)
+  expect(container.querySelector('.dep-pill--blocked').textContent).toBe('Blocked by X-B')
   expect(queryByText('Blocks 1')).toBeNull()
 })
 
@@ -50,8 +50,8 @@ test('dependents render "Blocks N" with no blocked text at all, compact form', (
 })
 
 test('an item with both directions renders both pills, compact form', () => {
-  const { getByText } = render(<DependencyBadge item={both} compact />)
-  expect(getByText(/Blocked by X-B/)).toBeTruthy()
+  const { container, getByText } = render(<DependencyBadge item={both} compact />)
+  expect(container.querySelector('.dep-pill--blocked').textContent).toBe('Blocked by X-B')
   expect(getByText('Blocks 1')).toBeTruthy()
 })
 
@@ -64,7 +64,8 @@ test('the two compact pills resolve to different CSS classes — blocked is visu
   expect(blocked.className).not.toBe(dependents.className)
 })
 
-test('a second blocker is summarized as "+N more", full title list still available via title attribute', () => {
+// HZ-335: the card names every blocker as a link — no "+N more" summary.
+test('every blocker is named as its own link, compact form, full title list still in the tooltip', () => {
   const item = {
     id: 'X-5',
     blockedBy: [
@@ -73,14 +74,21 @@ test('a second blocker is summarized as "+N more", full title list still availab
     ],
     dependents: [],
   }
-  const { getByText } = render(<DependencyBadge item={item} compact />)
-  expect(getByText(/Blocked by X-B1 \+1 more/)).toBeTruthy()
+  const { container } = render(<DependencyBadge item={item} compact />)
+  const pill = container.querySelector('.dep-pill--blocked')
+  expect(pill.textContent).toBe('Blocked by X-B1, X-B2')
+  const links = [...pill.querySelectorAll('a')]
+  expect(links.map((a) => a.textContent)).toEqual(['X-B1', 'X-B2'])
+  expect(links[0].getAttribute('href').endsWith('/x-b1')).toBe(true)
+  expect(links[1].getAttribute('href').endsWith('/x-b2')).toBe(true)
+  expect(pill.title).toContain('First blocker')
+  expect(pill.title).toContain('Second blocker')
 })
 
 test('an abandoned blocker is flagged, not dropped, compact form', () => {
   const item = { id: 'X-6', blockedBy: [{ id: 'X-B', title: 'Dead end', abandoned: true }], dependents: [] }
-  const { getByText } = render(<DependencyBadge item={item} compact />)
-  expect(getByText(/Blocked by X-B \(abandoned\)/)).toBeTruthy()
+  const { container } = render(<DependencyBadge item={item} compact />)
+  expect(container.querySelector('.dep-pill--blocked').textContent).toBe('Blocked by X-B (abandoned)')
 })
 
 test('full form: a blocker section names the blocker under a "Blocked by" label', () => {

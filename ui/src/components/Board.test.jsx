@@ -88,10 +88,10 @@ function depItem(id, deps) {
 
 test('a card blocked by another item names the blocker, never bare "Blocked"', () => {
   const items = [depItem('HZ-90', { blockedBy: [{ id: 'HZ-89', title: 'The prerequisite', abandoned: false }] })]
-  const { getByText } = render(
+  const { container } = render(
     <Board items={items} onOpen={noop} onApprove={noop} onReject={noop} onTogglePause={noop} onNewItem={noop} />,
   )
-  expect(getByText(/Blocked by HZ-89/)).toBeTruthy()
+  expect(container.querySelector('.dep-pill--blocked').textContent).toBe('Blocked by HZ-89')
 })
 
 test('a card with dependents shows what is waiting behind it', () => {
@@ -112,7 +112,7 @@ test('a card with both a blocker and dependents shows both, each visually distin
   const { getByText, container } = render(
     <Board items={items} onOpen={noop} onApprove={noop} onReject={noop} onTogglePause={noop} onNewItem={noop} />,
   )
-  expect(getByText(/Blocked by HZ-89/)).toBeTruthy()
+  expect(container.querySelector('.dep-pill--blocked').textContent).toBe('Blocked by HZ-89')
   expect(getByText('Blocks 1')).toBeTruthy()
   const blocked = container.querySelector('.dep-pill--blocked')
   const blocks = container.querySelector('.dep-pill--dependents')
@@ -138,7 +138,7 @@ test('a blocked card and a paused card render distinct badges/pills, not one col
     <Board items={items} onOpen={noop} onApprove={noop} onReject={noop} onTogglePause={noop} onNewItem={noop} />,
   )
   expect(getByText('Paused')).toBeTruthy()
-  expect(getByText(/Blocked by HZ-89/)).toBeTruthy()
+  expect(container.querySelector('.dep-pill--blocked').textContent).toBe('Blocked by HZ-89')
   const pausedPill = getByText('Paused').closest('.status-pill')
   const blockedPill = container.querySelector('.dep-pill--blocked')
   expect(pausedPill.className).not.toBe(blockedPill.className)

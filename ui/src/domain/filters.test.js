@@ -174,3 +174,12 @@ test('a persona-style predicate can be appended without touching visibleItems or
     'persona:eng': 1,
   })
 })
+
+// ---- HZ-335: no default filter hides an item because it is blocked ----
+
+test('a blocked item with recent activity stays visible under the default filters and counts as hidden by none', () => {
+  const blocked = item('B-1', { cursor: 11, blocked: true, blockedBy: [{ id: 'B-0', title: 'Blocker', abandoned: false }] })
+  const items = [blocked, item('B-2')]
+  expect(visibleItems(items, DEFAULT_ACTIVE_FILTERS, NOW).map((it) => it.id)).toEqual(['B-1', 'B-2'])
+  expect(Object.values(hiddenCounts(items, DEFAULT_ACTIVE_FILTERS, NOW)).every((n) => n === 0)).toBe(true)
+})

@@ -949,3 +949,39 @@ test('an item that still carries stepOutputs (a server from before HZ-318) opens
   renderTracker({ ...baseItem, cursor: 12, stepOutputs: { 11: { output: 'x', attempt: 1 } } })
   expect(subscribeStepOutputs).not.toHaveBeenCalled()
 })
+
+// ---- HZ-335: a dependency-blocked item reads Blocked, with no Pause work ----
+
+const blockedAt = (extra = {}) => ({
+  ...baseItem,
+  cursor: IMPLEMENT_STEP_INDEX,
+  blocked: true,
+  blockedBy: [{ id: 'T-0', title: 'The prerequisite', abandoned: false }],
+  dependents: [],
+  ...extra,
+})
+
+test('a blocked item shows the Blocked status and no Pause work', () => {
+  const { container, queryByText, getByText } = renderTracker(blockedAt())
+  expect(container.querySelector('.tracker__status').textContent).toBe('Blocked')
+  expect(queryByText('Pause work')).toBeNull()
+  expect(queryByText('Resume work')).toBeNull()
+  expect(getByText('Abandon')).toBeTruthy()
+})
+
+test('a paused and blocked item still shows Resume work', () => {
+  const { container, getByText, queryByText } = renderTracker(blockedAt({ paused: true }))
+  expect(container.querySelector('.tracker__status').textContent).toBe('Paused')
+  expect(getByText('Resume work')).toBeTruthy()
+  expect(queryByText('Pause work')).toBeNull()
+})
+
+test.each([
+  ['blocked: false', { blocked: false }],
+  ['blocked absent', {}],
+])('a non-blocked agent-step item (%s) still shows Pause work', (_, extra) => {
+  const item = { ...baseItem, cursor: IMPLEMENT_STEP_INDEX, ...extra }
+  const { getByText, queryByText } = renderTracker(item)
+  expect(getByText('Pause work')).toBeTruthy()
+  expect(queryByText('Resume work')).toBeNull()
+})

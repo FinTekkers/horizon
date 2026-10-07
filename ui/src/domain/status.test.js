@@ -119,3 +119,65 @@ test('stateLabel names a running conflict resolution and has no timer without st
   expect(stateLabel({ ...accept, gateAction: null })).toBe('Waiting on you')
   expect(stateLabel({ ...accept, state_since: null })).toBeNull()
 })
+
+// ---- HZ-335: an item held up by an open dependency reads Blocked ----
+// item.blocked is read as the API gives it (HZ-95); nothing runs for the item,
+// so it must never read as an agent working.
+
+import { isDependencyBlocked } from './status'
+import { agentStepIndexes, gateStepIndexes } from '../../../domain/js/lifecycle.js'
+
+const blockedItem = { ...base, blocked: true, blockedBy: [{ id: 'HZ-327', title: 'Blocker', abandoned: false }], activeRun: null }
+const BLOCKED = { label: 'Blocked', color: 'var(--danger-ink)', bg: 'var(--danger-bg)' }
+
+test('a blocked, open, not-paused item with no run reads Blocked at every agent step', () => {
+  for (const cursor of agentStepIndexes()) {
+    const item = { ...blockedItem, cursor }
+    expect(itemStatus(item), `cursor ${cursor}`).toEqual(BLOCKED)
+    expect(itemStatus(item, true), `cursor ${cursor}`).toEqual(BLOCKED)
+    expect(isDependencyBlocked(item)).toBe(true)
+  }
+})
+
+test('the Blocked colour differs from Paused, Queued and the working pill', () => {
+  const cursor = agentStepIndexes()[0]
+  const blocked = itemStatus({ ...blockedItem, cursor })
+  const paused = itemStatus({ ...base, cursor, paused: true })
+  const queued = itemStatus({ ...base, cursor, activeRun: { step_index: cursor, state: 'queued' } })
+  const working = itemStatus({ ...base, cursor, activeRun: null })
+  expect(working.label).toMatch(/agent/)
+  for (const other of [paused, queued, working]) {
+    expect([blocked.color, blocked.bg]).not.toEqual([other.color, other.bg])
+    expect(blocked.bg).not.toBe(other.bg)
+  }
+})
+
+test('status precedence: Abandoned, Closed, Changes requested and Paused beat Blocked; Blocked beats Awaiting, Queued and working', () => {
+  const agentCursor = 11
+  const gateCursor = gateStepIndexes()[0]
+  const cases = [
+    [{ ...blockedItem, cursor: agentCursor, abandoned_at: '2026-01-01 00:00:00' }, 'Abandoned'],
+    [{ ...blockedItem, cursor: STEPS.length }, 'Closed'],
+    [{ ...blockedItem, cursor: agentCursor, rejected: true }, 'Changes requested'],
+    [{ ...blockedItem, cursor: agentCursor, paused: true }, 'Paused'],
+    [{ ...blockedItem, cursor: gateCursor }, 'Blocked'],
+    [{ ...blockedItem, cursor: ACCEPT_GATE_INDEX }, 'Blocked'],
+    [{ ...blockedItem, cursor: agentCursor, activeRun: { step_index: agentCursor, state: 'queued', reason: 'slots' } }, 'Blocked'],
+    [{ ...blockedItem, cursor: agentCursor }, 'Blocked'],
+    // A dependency added mid-run: the run really is running, so it reads working.
+    [{ ...blockedItem, cursor: agentCursor, activeRun: { step_index: agentCursor, state: 'running' } }, 'Eng agent'],
+    // A running run left over from an earlier step does not unblock the item.
+    [{ ...blockedItem, cursor: agentCursor, activeRun: { step_index: agentCursor - 1, state: 'running' } }, 'Blocked'],
+    // Not blocked: unchanged.
+    [{ ...base, cursor: agentCursor, blocked: false, activeRun: null }, 'Eng agent'],
+    [{ ...base, cursor: gateCursor, blocked: false }, 'Awaiting you'],
+  ]
+  for (const [item, label] of cases) expect(itemStatus(item).label).toBe(label)
+})
+
+test('a blocked item shows no elapsed label; paused or unblocked rules are unchanged', () => {
+  const item = { ...blockedItem, cursor: 11, state_since: '2026-10-02T11:00:00Z' }
+  expect(stateLabel(item)).toBeNull()
+  expect(stateLabel({ ...item, blocked: false })).toBe('Implementing')
+  expect(stateLabel({ ...item, cursor: gateStepIndexes()[0] })).toBeNull()
+})

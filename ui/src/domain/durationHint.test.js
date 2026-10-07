@@ -109,3 +109,10 @@ test('paused, rejected, abandoned and closed items show no hint', () => {
   expect(usualDurationHint(item({ abandoned_at: '2026-10-02 11:00:00' }), ALL, NOW)).toBeNull()
   expect(usualDurationHint(item({ cursor: 99 }), ALL, NOW)).toBeNull()
 })
+
+// HZ-335: nothing runs while a dependency holds the item up.
+test('a dependency-blocked item gets no hint, even long past its usual time', () => {
+  expect(usualDurationHint(item({ blocked: true }), ALL, NOW)).toBeNull()
+  expect(usualDurationHint(item({ blocked: true, state_since: ago(600) }), ALL, NOW)).toBeNull()
+  expect(usualDurationHint(item({ blocked: false }), ALL, NOW)).not.toBeNull()
+})
