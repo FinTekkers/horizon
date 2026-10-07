@@ -219,6 +219,58 @@ test('an out-of-range expiry is refused before any request is made', async () =>
   expect(api.createApiToken).not.toHaveBeenCalled()
 })
 
+// HZ-319: the expiry reads "Expires in [90 days]", with a "1 to 365 days" hint below.
+test('the expiry shows a visible "days" unit, not only a title or aria-label', () => {
+  const { container } = render(<AdminPage sync={{}} projects={[]} onBack={() => {}} />)
+  const unit = within(findTokensPanel(container)).getByText('days', { exact: true })
+  expect(unit.tagName).not.toBe('INPUT')
+  expect(unit.textContent).toBe('days')
+})
+
+test('exactly one control on the page is labelled with days: the number input', () => {
+  const { container } = render(<AdminPage sync={{}} projects={[]} onBack={() => {}} />)
+  const matches = within(container).getAllByLabelText(/days/i)
+  expect(matches).toHaveLength(1)
+  expect(matches[0].id).toBe('api-token-days')
+  expect(matches[0].getAttribute('type')).toBe('number')
+})
+
+test('a visible "Expires in" label precedes the input, and "days" sits in the same bordered field', () => {
+  const { container } = render(<AdminPage sync={{}} projects={[]} onBack={() => {}} />)
+  const panel = within(findTokensPanel(container))
+  const label = panel.getByText('Expires in')
+  const input = container.querySelector('#api-token-days')
+  expect(label.tagName).toBe('LABEL')
+  expect(label.getAttribute('for')).toBe('api-token-days')
+  expect(label.compareDocumentPosition(input) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+  const field = input.closest('.api-tokens__days-field')
+  expect(field).not.toBeNull()
+  expect(field.contains(panel.getByText('days', { exact: true }))).toBe(true)
+})
+
+test('the hint "1 to 365 days" is shown below the row and describes the input', () => {
+  const { container } = render(<AdminPage sync={{}} projects={[]} onBack={() => {}} />)
+  const panel = within(findTokensPanel(container))
+  const hint = panel.getByText('1 to 365 days')
+  expect(hint.tagName).not.toBe('LABEL')
+  const row = container.querySelector('.api-tokens__form')
+  expect(row.compareDocumentPosition(hint) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+  expect(row.contains(hint)).toBe(false)
+  expect(container.querySelector('#api-token-days').getAttribute('aria-describedby')).toBe(hint.id)
+  expect(panel.queryByText(/Expires on/)).toBeNull()
+})
+
+test('creating a token with the expiry untouched sends the default 90 as a number', async () => {
+  api.createApiToken.mockResolvedValueOnce({ ...LISTED, token: RAW_TOKEN })
+  const { container } = render(<AdminPage sync={{}} projects={[]} onBack={() => {}} />)
+  const panel = within(findTokensPanel(container))
+  fireEvent.change(panel.getByPlaceholderText(/Token name/), { target: { value: 'ci-bot' } })
+  fireEvent.click(panel.getByText('Create token'))
+  await panel.findByText(RAW_TOKEN)
+  expect(api.createApiToken).toHaveBeenCalledWith({ name: 'ci-bot', expiresInDays: 90 })
+  expect(typeof api.createApiToken.mock.calls[0][0].expiresInDays).toBe('number')
+})
+
 test('Revoke asks for confirmation, then revokes and drops the row', async () => {
   api.listApiTokens.mockResolvedValueOnce({ tokens: [LISTED] }).mockResolvedValue({ tokens: [] })
   vi.spyOn(window, 'confirm').mockReturnValue(true)

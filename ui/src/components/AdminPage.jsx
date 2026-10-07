@@ -192,7 +192,7 @@ function ApiTokensPanel() {
       {tokens && tokens.length === 0 && <div className="gh-note">No active tokens.</div>}
       {tokens && tokens.map((token) => <ApiTokenRow key={token.id} token={token} onRevoke={revoke} />)}
 
-      <div className="project-block__add" style={{ marginTop: 18 }}>
+      <div className="api-tokens__form">
         <input
           className="field__input"
           placeholder="Token name, e.g. ci-bot"
@@ -201,19 +201,33 @@ function ApiTokensPanel() {
           onChange={(e) => setName(e.target.value)}
           onKeyDown={(e) => e.key === 'Enter' && submit()}
         />
-        <input
-          className="field__input api-tokens__days"
-          type="number"
-          min={1}
-          max={API_TOKEN_MAX_DAYS}
-          aria-label="Expires in days"
-          title="Expires in days"
-          value={days}
-          onChange={(e) => setDays(e.target.value)}
-        />
+        <span className="api-tokens__expiry">
+          <label className="api-tokens__expiry-label" htmlFor="api-token-days">
+            Expires in
+          </label>
+          <span className="api-tokens__days-field">
+            <input
+              id="api-token-days"
+              className="api-tokens__days"
+              type="number"
+              min={1}
+              max={API_TOKEN_MAX_DAYS}
+              aria-label="Expires in days"
+              aria-describedby="api-token-days-hint"
+              value={days}
+              onChange={(e) => setDays(e.target.value)}
+            />
+            <span className="api-tokens__unit" aria-hidden="true">
+              days
+            </span>
+          </span>
+        </span>
         <button className="composer__submit" style={{ background: 'var(--primary)' }} onClick={submit} disabled={busy}>
           {busy ? 'Creating…' : 'Create token'}
         </button>
+      </div>
+      <div id="api-token-days-hint" className="api-tokens__hint">
+        1 to {API_TOKEN_MAX_DAYS} days
       </div>
       {error && <div className="gh-error">{error}</div>}
     </div>
