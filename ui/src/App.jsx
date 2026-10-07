@@ -16,7 +16,17 @@ import NewItemModal from './components/NewItemModal'
 import LoginPage from './components/LoginPage'
 import LegalPage, { LEGAL_DOCS } from './components/LegalPage'
 import { gateActionBusy } from './domain/gateAction'
-import { enabledProjects, filterByProject, readStoredProjectFilter, validProjectFilter, writeProjectFilter } from './projectFilter'
+import {
+  enabledProjects,
+  filterByProject,
+  readStoredProjectFilter,
+  readStoredRepoFilters,
+  storedReposFor,
+  validProjectFilter,
+  validRepoFilter,
+  writeProjectFilter,
+  writeRepoFilters,
+} from './projectFilter'
 
 // HZ-188: what a finished server-side run (item.conflictRun) means to the
 // resolve dialog, when this tab didn't make the request itself — a reload,
@@ -145,7 +155,19 @@ function AuthenticatedApp({ user, onLogout }) {
     setStoredProjectFilter(value)
     writeProjectFilter(value)
   }
-  const visibleItems = filterByProject(items, projectFilter)
+  // HZ-317: each project's repo choice is saved under its own id, so
+  // switching projects never carries one across; validated every render too.
+  const [storedRepoFilters, setStoredRepoFilters] = useState(readStoredRepoFilters)
+  const filteredProject = projects.find((p) => p.id === projectFilter) || null
+  const repoFilter = validRepoFilter(storedReposFor(storedRepoFilters, projectFilter), filteredProject)
+  const changeRepoFilter = (repos) => {
+    const next = { ...storedRepoFilters }
+    if (repos) next[projectFilter] = repos
+    else delete next[projectFilter]
+    setStoredRepoFilters(next)
+    writeRepoFilters(next)
+  }
+  const visibleItems = filterByProject(items, projectFilter, repoFilter)
   // A deep link resolves against every item; only the fallback is filtered.
   const selected = items.find((it) => it.id === selectedId) || visibleItems[0]
   const isMobile = useMediaQuery(MOBILE_QUERY)
@@ -286,6 +308,8 @@ function AuthenticatedApp({ user, onLogout }) {
         projects={projects}
         projectFilter={projectFilter}
         onProjectFilterChange={changeProjectFilter}
+        repoFilter={repoFilter}
+        onRepoFilterChange={changeRepoFilter}
         user={user}
         onLogout={onLogout}
         onBoard={toBoard}
