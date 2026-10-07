@@ -48,14 +48,21 @@ const insertItem = db.prepare('INSERT INTO work_item (id, title, priority, curso
 const insertRun = db.prepare(
   "INSERT INTO step_run (item_id, step_index, attempt, agent, status, output, artifact, ended_at) VALUES (?, ?, ?, 'PM', 'done', ?, ?, datetime('now'))",
 )
+// The setup runs are stamped in the past. SO-OPEN sits at a gate, where its only
+// run-derived board field is state_since (its latest ended_at, one-second
+// resolution), so a later insertRun always moves it and the board sends a delta.
+// Stamped "now", a run in the same second as setup changed nothing on the board.
+const insertSeedRun = db.prepare(
+  "INSERT INTO step_run (item_id, step_index, attempt, agent, status, output, artifact, started_at, ended_at) VALUES (?, ?, ?, 'PM', 'done', ?, ?, '2026-01-01 00:00:00', '2026-01-01 00:00:00')",
+)
 insertItem.run('SO-OPEN', 'open', 'Medium', 3, ON)
 insertItem.run('SO-CLOSED', 'closed', 'Medium', STEPS.length, ON)
 insertItem.run('SO-HIDDEN', 'disabled project', 'Medium', 3, OFF)
-insertRun.run('SO-OPEN', 1, 1, 'first output', '# first')
-insertRun.run('SO-CLOSED', 1, 1, 'old output', '# v1')
-insertRun.run('SO-CLOSED', 1, 2, 'newer output', '# v2')
-insertRun.run('SO-CLOSED', 2, 1, 'summary only', null)
-insertRun.run('SO-HIDDEN', 1, 1, 'must not leak', '# secret')
+insertSeedRun.run('SO-OPEN', 1, 1, 'first output', '# first')
+insertSeedRun.run('SO-CLOSED', 1, 1, 'old output', '# v1')
+insertSeedRun.run('SO-CLOSED', 1, 2, 'newer output', '# v2')
+insertSeedRun.run('SO-CLOSED', 2, 1, 'summary only', null)
+insertSeedRun.run('SO-HIDDEN', 1, 1, 'must not leak', '# secret')
 
 // An SSE client over fetch: collects { event, data, comment } frames.
 async function openStream(path) {
@@ -140,15 +147,13 @@ test('the board stream carries no step output at all, in its snapshot or its del
   const board = await openStream('/api/stream?v=2')
   try {
     const snap = await board.nth(0, (f) => f.event === 'snapshot')
+    // Drain any flush setup left pending, so the next delta is the write's.
+    appModule.flushStream()
     insertRun.run('SO-OPEN', 4, 1, 'fresh board-only output', '# fresh board-only artifact')
-    // A new step output alone does not change the slim board item, so the
-    // board may rightly send no delta for it (the test used to wait for one
-    // and failed about 2 runs in 3). Change something the board does show in
-    // the same tick, so a delta always comes, then check that it still
-    // carries none of the step output.
-    db.prepare('UPDATE work_item SET title = ? WHERE id = ?').run('board-visible change', 'SO-OPEN')
     store.notifyChange()
+    appModule.flushStream()
     const delta = await board.nth(0, (f) => f.event === 'delta')
+    assert.ok(delta, 'no board delta followed the step write')
     assert.deepEqual(
       delta.data.upserts.map((it) => it.id),
       ['SO-OPEN'],
