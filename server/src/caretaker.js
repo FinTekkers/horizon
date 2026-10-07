@@ -85,6 +85,8 @@ export function gatherFacts(item, gateIndex, sourceRun) {
   }
   if (gateIndex === RELEASE_GATE) {
     facts.lastGoodTag = bareTag(releaseTarget(item)?.lastTag)
+    // HZ-333: the deploy queue batch that shipped this item, if one did.
+    facts.batch = store.deployBatchFactsFor(item.id)
   }
   return facts
 }
@@ -102,6 +104,7 @@ const toMs = (sqlTime) => (sqlTime ? Date.parse(`${sqlTime.replace(' ', 'T')}Z`)
 // so a later sweep (onChange, boot, or the periodic re-sweep) judges it.
 export function releaseSettled(item, sourceRun, now = Date.now()) {
   if (!item.release_tag) return true
+  if (store.deployBatchFactsFor(item.id)) return true
   const target = releaseTarget(item)
   if (!target) return true
   if (bareTag(target.lastTag) === item.release_tag) return true

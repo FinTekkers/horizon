@@ -13,10 +13,13 @@ import { resolveTarget, spawnEnv } from './deploy.js'
 // Null when the repo has no deploy target. A grpc-health target also carries
 // its health URL, so the Deploy step checks gRPC health instead of loading a
 // web page (a gRPC-only port is not one).
-export function deployWaitFor(repoFullName) {
+// HZ-333: `startedAt` (ms) is when a deploy queue batch's deploy started; the
+// wait bound then counts from it, not from this dispatch.
+export function deployWaitFor(repoFullName, { startedAt = null, now = Date.now() } = {}) {
   const target = resolveTarget(repoFullName)
   if (!target) return null
-  const wait = { state_dir: spawnEnv(target).HORIZON_STATE_DIR, timeout_s: DEPLOY_WAIT_MS / 1000 }
+  const waitMs = startedAt == null ? DEPLOY_WAIT_MS : Math.max(0, DEPLOY_WAIT_MS - (now - startedAt))
+  const wait = { state_dir: spawnEnv(target).HORIZON_STATE_DIR, timeout_s: waitMs / 1000 }
   if (target.healthCheckType === 'grpc-health') {
     wait.health_check_type = 'grpc-health'
     wait.health_url = target.healthUrl

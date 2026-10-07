@@ -14,6 +14,7 @@ import { PRIMARY_PERSONA_AGENT, personaFor } from '../domain/personas'
 import { itemStatus, stateLabel, isDependencyBlocked } from '../domain/status'
 import { gateActionOf, gateActionBusy, elapsedText } from '../domain/gateAction'
 import { usualDurationHint } from '../domain/durationHint'
+import { deployQueueLabel } from '../domain/deployQueue'
 import { useClockTick } from '../useClockTick'
 import { issueUrl, issueLabel } from '../api'
 import * as boardFilters from '../boardFilters'
@@ -127,6 +128,7 @@ function BoardCard({ item, projects, durationEstimates, now, onOpen, onApprove, 
           )}
         </div>
       )}
+      {deployQueueLabel(item) && <div className="card__deploy-queue">{deployQueueLabel(item)}</div>}
       <DependencyBadge item={item} compact />
 
       {awaiting && (

@@ -25,7 +25,7 @@ vi.mock('../api', () => ({
 
 import Tracker from './Tracker'
 import { subscribeStepOutputs } from '../api'
-import { ACCEPT_GATE_INDEX, IMPLEMENT_STEP_INDEX, REVIEW_STEP_INDEX } from '../../../domain/js/lifecycle.js'
+import { ACCEPT_GATE_INDEX, DEPLOY_STEP_INDEX, IMPLEMENT_STEP_INDEX, REVIEW_STEP_INDEX } from '../../../domain/js/lifecycle.js'
 // HZ-132: reason ids come from domain/reasons.json via the binding, never typed
 // here — a second hand-copy of the vocabulary inside ui/src is exactly the
 // drift this repo now forbids.
@@ -984,4 +984,24 @@ test.each([
   const { getByText, queryByText } = renderTracker(item)
   expect(getByText('Pause work')).toBeTruthy()
   expect(queryByText('Resume work')).toBeNull()
+})
+
+// HZ-333: an item waiting in its deploy target's queue says so on its current
+// step, with the window's close time in the viewer's local HH:MM.
+test('a queued deploy step shows "waiting for next <target> deploy" and when the window closes', () => {
+  const closes = new Date(2026, 9, 7, 14, 5).toISOString()
+  const item = {
+    ...baseItem,
+    cursor: DEPLOY_STEP_INDEX,
+    deploy_queue: { target: 'horizon', status: 'queued', batch_status: 'open', window_closes_at: closes, tag: null },
+  }
+  const { container } = renderTracker(item)
+  const label = container.querySelector('.step-card__deploy-queue')
+  expect(label?.textContent).toBe(' · waiting for next horizon deploy · window closes 14:05')
+})
+
+test('an item not in a deploy queue shows no queue label', () => {
+  const { container } = renderTracker({ ...baseItem, cursor: DEPLOY_STEP_INDEX, deploy_queue: null })
+  expect(container.querySelector('.step-card__deploy-queue')).toBeNull()
+  expect(container.textContent).not.toMatch(/waiting for next/)
 })

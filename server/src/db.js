@@ -821,6 +821,48 @@ db.exec(`
   );
 `)
 
+// HZ-333: the deploy queue (server/src/deployQueue.js). Step 14 joins its
+// target's open batch instead of publishing; one batch publishes one release
+// of main and deploys once. tag is saved before any GitHub call, so a resumed
+// batch finds its release instead of publishing another. The partial unique
+// indexes hold each target to one open window and one running deploy.
+db.exec(`
+  CREATE TABLE IF NOT EXISTS deploy_batch (
+    id               INTEGER PRIMARY KEY AUTOINCREMENT,
+    target           TEXT NOT NULL,
+    repo             TEXT NOT NULL,
+    status           TEXT NOT NULL DEFAULT 'open'
+                     CHECK (status IN ('open','publishing','deploying','verifying','done','failed')),
+    window_closes_at TEXT NOT NULL,
+    tag              TEXT UNIQUE,
+    commit_sha       TEXT,
+    release_url      TEXT,
+    started_at       TEXT,
+    live_at          TEXT,
+    ended_at         TEXT,
+    failure          TEXT,
+    created_at       TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+  CREATE UNIQUE INDEX IF NOT EXISTS idx_deploy_batch_one_open ON deploy_batch(target) WHERE status = 'open';
+  CREATE UNIQUE INDEX IF NOT EXISTS idx_deploy_batch_one_running
+    ON deploy_batch(target) WHERE status IN ('publishing','deploying','verifying');
+
+  CREATE TABLE IF NOT EXISTS deploy_queue_entry (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    item_id    TEXT NOT NULL REFERENCES work_item(id),
+    target     TEXT NOT NULL,
+    merge_sha  TEXT NOT NULL,
+    batch_id   INTEGER REFERENCES deploy_batch(id),
+    status     TEXT NOT NULL DEFAULT 'queued'
+               CHECK (status IN ('queued','released','passed','failed','left')),
+    joined_at  TEXT NOT NULL DEFAULT (datetime('now')),
+    ended_at   TEXT
+  );
+  CREATE UNIQUE INDEX IF NOT EXISTS idx_deploy_queue_one_live
+    ON deploy_queue_entry(item_id) WHERE status IN ('queued','released');
+  CREATE INDEX IF NOT EXISTS idx_deploy_queue_batch ON deploy_queue_entry(batch_id);
+`)
+
 // HZ-313: a plan step's proposal to file part of the fix on another connected
 // repo of the same project (server/src/split.js). UNIQUE(source_item_id,
 // target_repo) is the durable "file at most one issue per split" key: a

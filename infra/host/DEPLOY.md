@@ -534,6 +534,38 @@ Notes:
   sessions, which is why the drain checkpoints them first. The systemd units
   and the sudoers file are unchanged.
 
+## Deploy queue: one release per batch (HZ-333)
+
+Step 14 no longer publishes a release per item. An item joins its deploy
+target's queue (`server/src/deployQueue.js`, rows in `deploy_batch` and
+`deploy_queue_entry`) and records its PR's merge commit. Library targets
+(`registry-publish`) and items with no PR keep the per-item release.
+
+- **Window.** `HORIZON_DEPLOY_BATCH_S` in `server.env` (default `900`; `0`
+  means no window) counts from the first join. When it has passed and nothing
+  is deploying on that target, Horizon reads main's head and publishes **one**
+  release pinned to it. The webhook deploys it as before. Targets are
+  independent; one target runs one deploy at a time.
+- **Tag.** `deploy-<target>-<yyyymmdd>-b<batch id>`, e.g.
+  `deploy-horizon-20261007-b7`. It is saved before the GitHub call and looked
+  up first on every retry or restart, so a batch never publishes a second
+  release and never a `-2` tag. Rollback is unchanged: re-run the script with
+  the tag from `last-good-tag`.
+- **Live.** Once `last-good-tag` names the batch's tag, each queued item
+  whose merge commit is an ancestor of the deployed commit runs its smoke
+  check against that release; one merged after main was read waits for the
+  next batch. `HORIZON_DEPLOY_WAIT_MS` counts from the batch's deploy start.
+- **Failure.** `DEPLOY FAILED` for the tag in `self-deploy.log`, or no live
+  deploy within `HORIZON_DEPLOY_WAIT_MS`, fails step 14 for every item in the
+  batch, naming the tag and the items. Resuming an item re-queues it.
+- **Hold.** A batch stays `verifying` until its items' smoke checks end, so
+  the next batch cannot move `last-good-tag` under them. That holds the next
+  batch for at most `FARM_STEP_TIMEOUT_MS + HORIZON_DEPLOY_WAIT_MS` after the
+  batch went live.
+- **Restart.** All state is in the database; the server resumes each batch
+  where it stopped at boot. A Horizon batch is one release, one deploy and one
+  drain.
+
 ## Deep verification beyond the health check (HZ-22)
 
 Each deploy script's health check proves the process restarted and answered

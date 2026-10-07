@@ -16,6 +16,7 @@ import { PERSONAS, PERSONA_AGENT_ROLES, PRIMARY_PERSONA_AGENT, personaFor, perso
 import { itemStatus, isDependencyBlocked } from '../domain/status'
 import { pauseReason } from '../domain/pauseReason'
 import { gateActionOf } from '../domain/gateAction'
+import { deployQueueLabel } from '../domain/deployQueue'
 import { resolveEventColor } from '../domain/eventColors'
 import { issueUrl, issueLabel, artifactUrl, outputUrl, runLogViewUrl, subscribeStepOutputs } from '../api'
 import StatusPill from './StatusPill'
@@ -153,6 +154,9 @@ function Step({ item, stepOutputs, outputsSettled, index, onApprove, onApproveWi
                 {item.activeRun.attempt > 1 && ` · attempt ${item.activeRun.attempt}`}
                 {queued && item.activeRun.reason && ` · ${item.activeRun.reason}`}
               </span>
+            )}
+            {index === item.cursor && deployQueueLabel(item) && (
+              <span className="step-card__deploy-queue"> · {deployQueueLabel(item)}</span>
             )}
             {status === 'done' && output?.attempt > 1 && !output?.artifact && (
               <span className="step-card__attempt"> · attempt {output.attempt}</span>
