@@ -1,7 +1,8 @@
 // Real data layer: talks to the Horizon server (server/) via /api (Vite proxy).
 // Same interface as mockApi.js — components never know which one they're on.
 // State arrives over SSE (/api/stream), so all actions are fire-and-forget
-// POSTs; the server broadcasts the updated item list after every mutation.
+// POSTs; the server sends what changed after every mutation (HZ-318: a full
+// `snapshot` event on connect, then `delta` events at most once a second).
 
 // Every server request goes through this base so the app works both at the
 // dev root (/) and mounted under a subpath in production (vite `base`, e.g.
@@ -25,18 +26,40 @@ function emit() {
 }
 
 function applySnapshot(data) {
+  applyTop(data)
+  items = data.items || []
+  emit()
+}
+
+// HZ-318: what changed since the last event — whole items to add or replace,
+// ids that left the board, changed top-level keys, and the full id order when
+// it changed. Items the delta does not name keep their object, so a component
+// keyed on one item (the Tracker's step-output fetch) only reruns when that
+// item actually changed.
+function applyDelta({ upserts = [], removed = [], top = {}, order }) {
+  applyTop(top)
+  const byId = new Map(items.map((it) => [it.id, it]))
+  for (const id of removed) byId.delete(id)
+  for (const item of upserts) byId.set(item.id, item)
+  // A Map keeps insertion order, so without `order` the board order is
+  // unchanged and an id this tab has never seen goes last.
+  items = order ? order.filter((id) => byId.has(id)).map((id) => byId.get(id)) : [...byId.values()]
+  emit()
+}
+
+// The board's top-level keys from a snapshot or a delta's `top`. A key the
+// payload leaves out keeps its last value.
+function applyTop(data) {
   repoUrl = data.repoUrl || repoUrl
   sync = data.sync || sync
   projects = data.projects || projects
   activeProjectId = data.activeProjectId ?? activeProjectId
   farm = data.farm || farm
   durationEstimates = data.durationEstimates ?? durationEstimates
-  items = data.items || []
-  emit()
 }
 
 function refetch() {
-  fetch(`${API_BASE}/items`)
+  fetch(`${API_BASE}/items?v=2`)
     .then((r) => r.json())
     .then(applySnapshot)
     .catch((err) => console.error('Failed to load items', err))
@@ -50,10 +73,14 @@ let source = null
 let retryMs = 1000
 
 function connect() {
-  source = new EventSource(`${API_BASE}/stream`)
+  source = new EventSource(`${API_BASE}/stream?v=2`)
   source.onopen = () => {
     retryMs = 1000
   }
+  source.addEventListener('snapshot', (msg) => applySnapshot(JSON.parse(msg.data)))
+  source.addEventListener('delta', (msg) => applyDelta(JSON.parse(msg.data)))
+  // A server from before HZ-318 (a rollback) ignores `v` and sends the whole
+  // board as default `message` frames.
   source.onmessage = (msg) => applySnapshot(JSON.parse(msg.data))
   source.onerror = () => {
     if (source.readyState === EventSource.CLOSED) {
@@ -95,6 +122,18 @@ export function getItems() {
 
 export function getSync() {
   return sync
+}
+
+// HZ-318: one item's stepOutputs, which the board feed leaves off, over the
+// item's own stream — the only route to them. Calls onOutputs with the
+// { "<step index>": { output, attempt, artifact, attemptCount, label } } map on
+// open and on every change. Returns the close function: the Tracker opens it on
+// mount and closes it on leave. EventSource reconnects by itself after a drop;
+// a 404 (the item is not on the board) closes it for good.
+export function subscribeStepOutputs(id, onOutputs) {
+  const stream = new EventSource(`${API_BASE}/items/${encodeURIComponent(id)}/stream`)
+  stream.addEventListener('outputs', (msg) => onOutputs(JSON.parse(msg.data).stepOutputs))
+  return () => stream.close()
 }
 
 // ---- auth (HZ-21): hardcoded credential OR Google SSO ----

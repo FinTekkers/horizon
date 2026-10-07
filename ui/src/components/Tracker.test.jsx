@@ -9,7 +9,7 @@
 // success metric 11 — not just the domain module's filter logic.
 
 import { expect, test, vi } from 'vitest'
-import { render, fireEvent, cleanup, waitFor } from '@testing-library/react'
+import { render, fireEvent, cleanup, waitFor, act } from '@testing-library/react'
 import { afterEach } from 'vitest'
 
 vi.mock('../api', () => ({
@@ -18,9 +18,13 @@ vi.mock('../api', () => ({
   artifactUrl: () => 'https://example.test/artifact',
   outputUrl: (itemId, stepIndex) => `https://example.test/api/items/${itemId}/steps/${stepIndex}/output`,
   runLogViewUrl: (runId) => `https://example.test/api/runs/${runId}/log/view`,
+  // HZ-318: only items without a stepOutputs field open their stream; each
+  // test that needs it sets an implementation.
+  subscribeStepOutputs: vi.fn(),
 }))
 
 import Tracker from './Tracker'
+import { subscribeStepOutputs } from '../api'
 import { ACCEPT_GATE_INDEX, IMPLEMENT_STEP_INDEX, REVIEW_STEP_INDEX } from '../../../domain/js/lifecycle.js'
 // HZ-132: reason ids come from domain/reasons.json via the binding, never typed
 // here — a second hand-copy of the vocabulary inside ui/src is exactly the
@@ -850,4 +854,98 @@ test('a failed remove does not carry its error or disabled X over to the next it
   rerender(<Tracker item={{ ...baseItem, id: 'T-2', blockedBy, dependents: [] }} {...props} />)
   expect(queryByText(/Couldn't remove/)).toBeNull()
   expect(getByRole('button', { name: 'Remove dependency on T-B1' }).disabled).toBe(false)
+})
+
+// ---- HZ-318: the slim board feed has no stepOutputs; the Tracker loads them ----
+
+// A fake per-item stream per id: push(id, outputs) sends a frame, closed(id)
+// says whether the Tracker closed it.
+function fakeStreams() {
+  const open = {}
+  subscribeStepOutputs.mockReset().mockImplementation((id, onOutputs) => {
+    const close = vi.fn()
+    open[id] = { onOutputs, close }
+    return close
+  })
+  return {
+    push: (id, outputs) => act(async () => open[id].onOutputs(outputs)),
+    closed: (id) => open[id].close.mock.calls.length > 0,
+  }
+}
+
+const slimItem = (id, extra = {}) => {
+  const { stepOutputs, ...rest } = { ...baseItem, id, cursor: 12, ...extra }
+  return rest
+}
+
+const trackerProps = {
+  onBack: noop,
+  onApprove: noop,
+  onApproveWithComments: noop,
+  onReject: noop,
+  onResolveConflicts: noop,
+  onTogglePause: noop,
+  onRestartPhase: noop,
+  onSetPersona: noop,
+  onAbandon: noop,
+}
+
+test('an item without stepOutputs streams them, showing no "no output recorded" while loading', async () => {
+  const streams = fakeStreams()
+  const { queryAllByText, findByRole, queryByRole } = renderTracker(slimItem('T-1'))
+  expect(subscribeStepOutputs).toHaveBeenCalledTimes(1)
+  expect(subscribeStepOutputs.mock.calls[0][0]).toBe('T-1')
+  expect(queryAllByText(/no output recorded/)).toHaveLength(0)
+  expect(queryByRole('link', { name: 'See agent output ↗' })).toBeNull()
+
+  await streams.push('T-1', { 11: { output: 'did the thing', artifact: '# v2', attempt: 2, attemptCount: 2 } })
+  expect((await findByRole('link', { name: 'See agent output ↗' })).getAttribute('href')).toBe(
+    'https://example.test/api/items/T-1/steps/11/output',
+  )
+  expect(queryByRole('link', { name: 'attempt 2 of 2 ↗' })).not.toBeNull()
+  // Done steps with nothing recorded say so once loaded, as before.
+  expect(queryAllByText(/no output recorded/).length).toBeGreaterThan(0)
+})
+
+test('a later frame on the open stream updates the cards; a board change to the item reopens nothing', async () => {
+  const streams = fakeStreams()
+  const { rerender, queryByRole, findByRole } = render(<Tracker item={slimItem('T-1')} {...trackerProps} />)
+  await streams.push('T-1', { 11: { output: 'first', artifact: '# v1', attempt: 1, attemptCount: 1 } })
+  await findByRole('link', { name: 'View full artifact ↗' })
+  rerender(<Tracker item={slimItem('T-1', { title: 'renamed on the board' })} {...trackerProps} />)
+  await streams.push('T-1', { 11: { output: 'second', artifact: '# v2', attempt: 2, attemptCount: 2 } })
+  expect(queryByRole('link', { name: 'attempt 2 of 2 ↗' })).not.toBeNull()
+  expect(subscribeStepOutputs).toHaveBeenCalledTimes(1)
+  expect(streams.closed('T-1')).toBe(false)
+})
+
+test('switching items fast closes the old stream, and a late frame for it never shows on the new one', async () => {
+  const streams = fakeStreams()
+  const { rerender, queryByRole, findByRole } = render(<Tracker item={slimItem('T-A')} {...trackerProps} />)
+  rerender(<Tracker item={slimItem('T-B')} {...trackerProps} />)
+  expect(streams.closed('T-A')).toBe(true)
+
+  await streams.push('T-B', { 11: { output: 'B output', artifact: '# B', attempt: 1, attemptCount: 1 } })
+  await findByRole('link', { name: 'View full artifact ↗' })
+  await streams.push('T-A', { 11: { output: 'A output', artifact: '# A', attempt: 3, attemptCount: 3 } })
+
+  expect(queryByRole('link', { name: 'attempt 3 of 3 ↗' })).toBeNull()
+  expect(queryByRole('link', { name: 'View full artifact ↗' })).not.toBeNull()
+  expect(queryByRole('link', { name: 'See agent output ↗' }).getAttribute('href')).toBe(
+    'https://example.test/api/items/T-B/steps/11/output',
+  )
+})
+
+test('leaving the item (back to the Board) closes its stream', () => {
+  const streams = fakeStreams()
+  const { unmount } = render(<Tracker item={slimItem('T-1')} {...trackerProps} />)
+  expect(streams.closed('T-1')).toBe(false)
+  unmount()
+  expect(streams.closed('T-1')).toBe(true)
+})
+
+test('an item that still carries stepOutputs (a server from before HZ-318) opens no stream', () => {
+  subscribeStepOutputs.mockReset()
+  renderTracker({ ...baseItem, cursor: 12, stepOutputs: { 11: { output: 'x', attempt: 1 } } })
+  expect(subscribeStepOutputs).not.toHaveBeenCalled()
 })

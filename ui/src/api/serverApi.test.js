@@ -11,7 +11,15 @@ import { afterEach, beforeEach, expect, test, vi } from 'vitest'
 class MockEventSource {
   constructor(url) {
     this.url = url
+    this.listeners = {}
     MockEventSource.instances.push(this)
+  }
+  // HZ-318: named `snapshot` and `delta` events.
+  addEventListener(type, fn) {
+    this.listeners[type] = fn
+  }
+  dispatch(type, data) {
+    this.listeners[type]({ data: JSON.stringify(data) })
   }
   close() {}
 }
@@ -316,4 +324,66 @@ test('removeDependency POSTs {dependsOnId} to the item\'s remove route and rejec
 
   vi.stubGlobal('fetch', vi.fn(async () => ({ ok: false, status: 404, json: async () => ({ error: 'not_found' }) })))
   await expect(serverApi.removeDependency('X-1', 'X-B')).rejects.toThrow('not_found')
+})
+
+// ---- HZ-318: the slim feed — named snapshot/delta events ----
+
+test('the stream opens with ?v=2 and a `snapshot` event replaces the board', async () => {
+  const serverApi = await import('./serverApi')
+  serverApi.subscribe(() => {})
+  const source = MockEventSource.instances.at(-1)
+  expect(source.url).toBe(`${serverApi.API_BASE}/stream?v=2`)
+  source.dispatch('snapshot', { items: [{ id: 'A' }, { id: 'B' }], activeProjectId: 4 })
+  expect(serverApi.getItems().map((it) => it.id)).toEqual(['A', 'B'])
+  expect(serverApi.getActiveProjectId()).toBe(4)
+})
+
+test('a default `message` frame (a server from before HZ-318) still applies as a whole board', async () => {
+  const serverApi = await import('./serverApi')
+  serverApi.subscribe(() => {})
+  const source = MockEventSource.instances.at(-1)
+  source.dispatch('snapshot', { items: [{ id: 'A' }, { id: 'B' }] })
+  source.onmessage({ data: JSON.stringify({ items: [{ id: 'C', stepOutputs: {} }] }) })
+  expect(serverApi.getItems()).toEqual([{ id: 'C', stepOutputs: {} }])
+})
+
+test('a `delta` merges upserts, drops removed ids and keeps unchanged items as the same objects', async () => {
+  const serverApi = await import('./serverApi')
+  const seen = vi.fn()
+  serverApi.subscribe(seen)
+  const source = MockEventSource.instances.at(-1)
+  source.dispatch('snapshot', {
+    items: [{ id: 'A', title: 'a' }, { id: 'B', title: 'b' }, { id: 'C', title: 'c' }],
+    farm: { status: 'running' },
+    projects: [{ id: 1 }],
+  })
+  const [a, , c] = serverApi.getItems()
+
+  source.dispatch('delta', { upserts: [{ id: 'B', title: 'b2' }], removed: [], top: { farm: { status: 'paused' } } })
+  let items = serverApi.getItems()
+  expect(items.map((it) => it.title)).toEqual(['a', 'b2', 'c'])
+  expect(items[0]).toBe(a)
+  expect(items[2]).toBe(c)
+  expect(serverApi.getFarm()).toEqual({ status: 'paused' })
+  expect(serverApi.getProjects()).toEqual([{ id: 1 }])
+
+  source.dispatch('delta', { upserts: [{ id: 'AA', title: 'new' }], removed: ['C'], top: {}, order: ['A', 'AA', 'B'] })
+  items = serverApi.getItems()
+  expect(items.map((it) => it.id)).toEqual(['A', 'AA', 'B'])
+  expect(items[0]).toBe(a)
+  expect(seen).toHaveBeenCalledTimes(3)
+})
+
+test('subscribeStepOutputs opens the item\'s own stream, passes each `outputs` frame on, and closes it', async () => {
+  const serverApi = await import('./serverApi')
+  const outputs = { 4: { output: 'done', attempt: 1, artifact: null, attemptCount: 0, label: 'x' } }
+  const seen = vi.fn()
+  const close = serverApi.subscribeStepOutputs('X 1', seen)
+  const stream = MockEventSource.instances.at(-1)
+  expect(stream.url).toBe(`${serverApi.API_BASE}/items/X%201/stream`)
+  stream.dispatch('outputs', { id: 'X 1', stepOutputs: outputs })
+  expect(seen).toHaveBeenCalledWith(outputs)
+  stream.close = vi.fn()
+  close()
+  expect(stream.close).toHaveBeenCalled()
 })

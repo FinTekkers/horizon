@@ -9,6 +9,7 @@ const impl = import.meta.env.VITE_MOCK === '1' ? mock : server
 export const {
   subscribe,
   getItems,
+  subscribeStepOutputs,
   getSync,
   getCurrentUser,
   login,
