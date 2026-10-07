@@ -652,6 +652,12 @@ def test_which_command_is_the_install_is_tagged_where_the_list_is_built(tmp_path
     assert [c for i, c in enumerate(commands) if i != at] == [["sh", "-c", "x"], ["sh", "-c", "l"]]
     assert checks._resolve_tagged(tmp_path, {"test": "x"}, lambda *_: None)[1] is None
     assert checks._resolve_tagged(tmp_path, {"install": "i", "test": "x"}, lambda *_: None)[1] == 0
+    # HZ-334: with several install lines, only install line 1 is tagged.
+    commands, at = checks._resolve_tagged(
+        tmp_path, {"install": "npm ci\nnpx playwright install", "test": "npm test\npytest"}, lambda *_: None
+    )
+    assert at == 0 and commands[0] == ["sh", "-c", "npm ci"]
+    assert commands[1:] == [["sh", "-c", "npx playwright install"], ["sh", "-c", "npm test"], ["sh", "-c", "pytest"]]
     monkeypatch.setenv("FARM_CHECK_CMD", "npm install && npm test")
     assert checks._resolve_tagged(tmp_path, {"install": "i"}, lambda *_: None)[1] is None
 

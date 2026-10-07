@@ -196,3 +196,108 @@ def test_no_farm_file_writes_check_commands():
         if "tests" not in path.relative_to(REPO_ROOT / "farm").parts and pattern.search(path.read_text())
     ]
     assert offenders == []
+
+
+# ---- HZ-334: several commands per slot, one per line ----
+
+
+def _records():
+    return [json.loads(line) for line in check_metrics.metrics_path().read_text().splitlines()]
+
+
+def test_a_failing_line_stops_the_slot_names_it_and_later_lines_never_run(tmp_path):
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    with pytest.raises(CheckFailure) as err:
+        run_checks(ws, log=lambda *_: None, configured={"test": "true\nexit 3\ntouch ran3"})
+    assert "test slot, line 2: sh -c exit 3" in str(err.value)
+    assert err.value.reason != "timed_out"
+    assert not (ws / "ran3").exists()
+    [record] = _records()
+    assert [c["returncode"] for c in record["commands"]] == [0, 3]
+
+
+def test_blank_lines_are_skipped_and_the_failure_names_the_physical_line(tmp_path):
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    configured = {"test": "true\n \t\n\nfalse"}
+    assert resolve_check_commands(ws, configured) == [["sh", "-c", "true"], ["sh", "-c", "false"]]
+    with pytest.raises(CheckFailure) as err:
+        run_checks(ws, log=lambda *_: None, configured=configured)
+    assert "(test slot, line 4: sh -c false)" in str(err.value)
+
+
+def test_each_line_gets_its_own_check_budget(tmp_path, monkeypatch):
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    monkeypatch.setenv("FARM_CHECK_TIMEOUT_S", "2")
+    assert run_checks(ws, log=lambda *_: None, configured={"test": "sleep 1.5\nsleep 1.5"}) == "2 repo check(s) passed"
+    # Control: the same 3 s of work on one line does not fit the 2 s budget.
+    with pytest.raises(CheckFailure) as err:
+        run_checks(ws, log=lambda *_: None, configured={"test": "sleep 1.5; sleep 1.5"})
+    assert err.value.reason == "timed_out"
+
+
+def test_a_line_over_its_budget_is_named_by_slot_and_line(tmp_path, monkeypatch):
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    monkeypatch.setenv("FARM_CHECK_TIMEOUT_S", "1")
+    with pytest.raises(CheckFailure) as err:
+        run_checks(ws, log=lambda *_: None, configured={"test": "true\nsleep 5"})
+    assert err.value.reason == "timed_out"
+    assert "test slot, line 2: sh -c sleep 5" in str(err.value)
+
+
+def test_each_line_is_its_own_record_entry_and_its_own_step_output(tmp_path):
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    lines = []
+    run_checks(ws, log=lines.append, configured={"test": "true\nsleep 0.5\ntrue"})
+    [record] = _records()
+    entries = record["commands"]
+    assert [(c["cmd"], c["slot"], c["line"], c["returncode"]) for c in entries] == [
+        ("sh -c true", "test", 1, 0),
+        ("sh -c sleep 0.5", "test", 2, 0),
+        ("sh -c true", "test", 3, 0),
+    ]
+    assert [c["duration_s"] >= 0.5 for c in entries] == [False, True, False]
+    assert [line for line in lines if line.startswith("checks: running ")] == [
+        "checks: running sh -c true",
+        "checks: running sh -c sleep 0.5",
+        "checks: running sh -c true",
+    ]
+
+
+def test_a_line_runs_as_stored_with_no_split_on_and_or_semicolon(npm_repo, recorded):
+    run_checks(npm_repo, log=lambda *_: None, configured={"test": "echo a && echo b\necho c; echo d"})
+    assert recorded == [["sh", "-c", "echo a && echo b"], ["sh", "-c", "echo c; echo d"]]
+
+
+def test_the_whole_run_deadline_still_bounds_every_line(tmp_path):
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    with pytest.raises(CheckFailure) as err:
+        run_checks(
+            ws,
+            log=lambda *_: None,
+            configured={"test": "sleep 1.5\nsleep 1.5"},
+            deadline=checks.time.monotonic() + 2,
+        )
+    assert err.value.reason == "timed_out"
+    assert "test slot, line 2" in str(err.value)
+
+
+def test_a_line_starting_after_the_deadline_is_named_by_slot_and_line(tmp_path, monkeypatch):
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    deadline = checks.time.monotonic() + 0.5
+
+    def finishes_at_the_deadline(cmd, ws, timeout_s, env):
+        checks.time.sleep(max(deadline - checks.time.monotonic(), 0) + 0.05)
+        return checks.subprocess.CompletedProcess(cmd, 0, "", "")
+
+    monkeypatch.setattr(checks, "_run_bounded", finishes_at_the_deadline)
+    with pytest.raises(CheckFailure) as err:
+        run_checks(ws, log=lambda *_: None, configured={"test": "true\ntrue"}, deadline=deadline)
+    assert err.value.reason == "timed_out"
+    assert "ran out of time before: test slot, line 2: sh -c true" in str(err.value)
