@@ -76,6 +76,7 @@ import { SUMMARIZE_STEP_INDEX, OVERLAP_INPUT_LABEL, computeOverlap, overlapFailu
 import { renderOverlapInput, renderOverlapSection, replaceOverlapSection } from './overlap.js'
 import { DEPLOY_BLOCK_MESSAGE, isDeployBlocked, onDrainEnd } from './deployDrain.js'
 import { deployWaitFor } from './deployWait.js'
+import * as deployQueue from './deployQueue.js'
 import { findTargetByRepo } from './deployTargets.js'
 import { servedRulesFor } from './rulesStore.js'
 import { OPTIONS_STEP_INDEX, proposeSplit } from './split.js'
@@ -990,6 +991,13 @@ export function kick(id, opts = {}) {
     heldForDeploy.set(id, opts)
     return
   }
+  // HZ-333: Deploy joins its target's queue and publishes nothing; the queue
+  // kicks it again once a batch containing its merge is live. Farm mode only:
+  // the mock Deploy step keeps today's per-item release.
+  if (FARM_URL && item.cursor === DEPLOY_STEP_INDEX && deployQueue.queueTargetFor(item) && !deployQueue.releasedEntryFor(id)) {
+    deployQueue.join(item).catch((err) => console.warn(`deploy queue: ${id} could not join: ${err.message}`))
+    return
+  }
   dispatching.add(id)
 
   const stepIndex = item.cursor
@@ -1061,7 +1069,13 @@ async function dispatchToFarm(id, stepIndex, runId, attempt, scope) {
   // HZ-275: where and how long the farm waits for this release to go live
   // before its smoke check. Absent for a repo with no deploy target.
   let deployWait = null
-  if (stepIndex === DEPLOY_STEP_INDEX && item.repo && item.issue != null) {
+  const shipped = stepIndex === DEPLOY_STEP_INDEX ? deployQueue.releasedEntryFor(id) : null
+  if (shipped) {
+    // HZ-333: a deploy queue batch already published and deployed this
+    // item's release; the wait bound counts from that deploy's start.
+    releaseFields = { release_tag: shipped.tag, release_url: shipped.release_url }
+    deployWait = deployWaitFor(item.repo, { startedAt: shipped.startedAtMs })
+  } else if (stepIndex === DEPLOY_STEP_INDEX && item.repo && item.issue != null) {
     try {
       const release = await createDeployRelease(item)
       releaseFields = { release_tag: release.tag_name, release_url: release.html_url }
@@ -1880,6 +1894,7 @@ function finalizeDeployStep(id, runId, text, artifactMd, verdict, patch) {
     runId,
   )
 
+  deployQueue.endDeployEntry(id, verdict.verdict === 'pass' ? 'passed' : 'failed')
   if (verdict.verdict !== 'pass') {
     db.prepare("UPDATE work_item SET paused = 1, updated_at = datetime('now') WHERE id = ?").run(id)
     addEvent(id, {
@@ -2106,6 +2121,8 @@ export function failFarmRun(runId, error, reason = null) {
   }
 
   db.prepare("UPDATE work_item SET paused = 1, updated_at = datetime('now') WHERE id = ?").run(id)
+  // HZ-333: a resume re-queues the item rather than reusing this release.
+  if (run.step_index === DEPLOY_STEP_INDEX) deployQueue.endDeployEntry(id, 'failed')
   // Mirrors the `(${reason})` tag already used for the auto-retrying event
   // above — empty when reason is null, so the untagged wording below stays
   // byte-identical to what existing consumers already parse (HZ-94).
@@ -2122,6 +2139,24 @@ export function failFarmRun(runId, error, reason = null) {
   emitStepEnded(id)
   return { ok: true }
 }
+
+// HZ-333: a deploy queue item's step 14 fails outside any farm run (its
+// batch's deploy failed, or it could not join). Recorded as a failed step
+// run so it pauses exactly like one, untagged so it is never auto-retried.
+export function failQueuedDeploy(id, message) {
+  deployQueue.endDeployEntry(id, 'failed')
+  const item = getItem(id)
+  if (!item || item.cursor !== DEPLOY_STEP_INDEX) return
+  const attempt = db
+    .prepare('SELECT COALESCE(MAX(attempt), 0) + 1 AS n FROM step_run WHERE item_id = ? AND step_index = ?')
+    .get(id, DEPLOY_STEP_INDEX).n
+  const runId = db
+    .prepare('INSERT INTO step_run (item_id, step_index, attempt, agent) VALUES (?, ?, ?, ?)')
+    .run(id, DEPLOY_STEP_INDEX, attempt, STEPS[DEPLOY_STEP_INDEX].agent).lastInsertRowid
+  failFarmRun(runId, message)
+}
+
+deployQueue.setDeployQueueHooks({ kick, fail: failQueuedDeploy })
 
 // A run only completes if its own step_run row is still active — cancel/
 // reject/restart flip that row's status, which safely no-ops the in-flight run
@@ -2497,6 +2532,10 @@ export async function init(log) {
   const recovered = recoverRejectedItems()
   if (recovered > 0) log.info(`Requeued ${recovered} rejected item(s) for rework`)
   if (FARM_URL) {
+    // HZ-333: the deploy queue resumes from the database — mid-window,
+    // mid-publish or mid-deploy — then ticks on.
+    deployQueue.resumeOnBoot().catch((err) => log.warn(`deploy queue: ${err.message}`))
+    setInterval(() => deployQueue.tick().catch((err) => log.warn(`deploy queue: ${err.message}`)), deployQueue.TICK_MS).unref()
     // Real farm: don't resume items until the farm reports ready.
     ensureFarm(log)
   } else {

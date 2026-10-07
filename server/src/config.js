@@ -81,6 +81,11 @@ export const FARM_STEP_TIMEOUT_MS = Number(process.env.FARM_STEP_TIMEOUT_MS || 2
 // not a positive number means the default, as the farm reads it too.
 const deployWaitEnvMs = Number(process.env.HORIZON_DEPLOY_WAIT_MS)
 export const DEPLOY_WAIT_MS = deployWaitEnvMs > 0 ? deployWaitEnvMs : 20 * 60 * 1000
+// HZ-333: how long a target's deploy queue collects items after the first
+// joins before it publishes one release of main for all of them. 0 = no
+// window; anything not a number >= 0 means the default.
+const deployBatchEnvS = process.env.HORIZON_DEPLOY_BATCH_S?.trim() ? Number(process.env.HORIZON_DEPLOY_BATCH_S) : NaN
+export const DEPLOY_BATCH_S = deployBatchEnvS >= 0 ? deployBatchEnvS : 900
 // HZ-275 (metric 5): a release deploy that finds another deploy holding
 // the lock waits up to 30 min for it, not the scripts' own 5-min default, so
 // two releases published close together both deploy, in order. Set in this

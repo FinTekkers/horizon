@@ -123,10 +123,16 @@ export const EVALUATORS = {
     facts.review === rule.review && facts.mergeable === rule.mergeable
       ? { reason: 'automated review passed and the PR merges cleanly' }
       : null,
+  // HZ-333: a deploy queue batch went live with this item's merge in it. A
+  // later batch moving last-good-tag does not undo that.
   'g15.approve': (rule, facts) =>
-    facts.releaseTag && facts.releaseTag === facts.lastGoodTag
-      ? { reason: `release ${facts.releaseTag} is the target's last-good deploy` }
-      : null,
+    facts.batch?.live
+      ? {
+          reason: `release ${facts.batch.tag} at ${facts.batch.commit.slice(0, 7)} is live; merge ${facts.batch.mergeSha.slice(0, 7)} is an ancestor of it`,
+        }
+      : facts.releaseTag && facts.releaseTag === facts.lastGoodTag
+        ? { reason: `release ${facts.releaseTag} is the target's last-good deploy` }
+        : null,
   'g15.ping': () => ({ reason: 'no last-good deploy of this release on record' }),
 }
 

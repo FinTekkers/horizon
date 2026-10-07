@@ -936,6 +936,32 @@ function toIsoUtc(ts) {
   return Number.isNaN(Date.parse(iso)) ? null : iso
 }
 
+// HZ-333: the item's place in its deploy target's queue, for the board, or
+// null when it is not queued. Read-only.
+const selectQueuedEntry = db.prepare(`
+  SELECT e.target, e.status, b.status AS batch_status, b.window_closes_at, b.tag
+    FROM deploy_queue_entry e JOIN deploy_batch b ON b.id = e.batch_id
+   WHERE e.item_id = ? AND e.status = 'queued'`)
+
+export function deployQueueStateFor(itemId) {
+  const row = selectQueuedEntry.get(itemId)
+  return row ? { ...row, window_closes_at: toIsoUtc(row.window_closes_at) } : null
+}
+
+// HZ-333: gate 15's evidence for an item a deploy queue batch shipped — its
+// latest entry released by a batch that went live, so a later batch moving
+// last-good-tag never takes it away. Null otherwise. Read-only.
+const selectShippedEntry = db.prepare(`
+  SELECT b.tag, b.commit_sha, e.merge_sha
+    FROM deploy_queue_entry e JOIN deploy_batch b ON b.id = e.batch_id
+   WHERE e.item_id = ? AND e.status IN ('released','passed') AND b.live_at IS NOT NULL
+   ORDER BY e.id DESC LIMIT 1`)
+
+export function deployBatchFactsFor(itemId) {
+  const row = selectShippedEntry.get(itemId)
+  return row ? { tag: row.tag, commit: row.commit_sha, mergeSha: row.merge_sha, live: true } : null
+}
+
 // HZ-228: when the item entered its current state, for the board's elapsed
 // label — ISO UTC, or null when the card shows no timer. Read-only. In order:
 //   1. closed, abandoned, rejected or paused → null (paused has no pause
@@ -975,6 +1001,7 @@ function itemView(row, { stepOutputs: withStepOutputs = true } = {}) {
     pr_mergeable: row.pr_mergeable == null ? null : !!row.pr_mergeable,
     release_tag: row.release_tag,
     release_url: row.release_url,
+    deploy_queue: deployQueueStateFor(row.id),
     personas: personasFromRow(row),
     cursor: row.cursor,
     currentStep: currentStepOf(row),
