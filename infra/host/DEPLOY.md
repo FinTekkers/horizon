@@ -317,6 +317,9 @@ All three levers are config; no code revert is needed.
 - Do **not** raise `FARM_CHECK_TIMEOUT_S` or the e2e `globalTimeout` to
   absorb slow checks. Both are the contention detectors; report the numbers
   from `python -m farm.tools.report_check_metrics` instead.
+  Exception (2026-10-07, owner's call): `globalTimeout` went from 180s to
+  360s because the suite alone reached 174-180s on a quiet host, so the
+  limit no longer measured contention. HZ-327 replaces the fixed number.
 
 Stale slot files under `$FARM_HOME/locks/checks/` need no cleanup — `flock`
 state is held by the kernel, not by the files' contents.

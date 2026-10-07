@@ -75,12 +75,14 @@ export default defineConfig({
   workers: 1,
   retries: 0,
   timeout: 30_000,
-  // Hard ceiling, not the target. The suite should still run in well under
-  // 90s on a quiet host (about 55s today), so keep new specs lean. The ceiling
-  // is 180s because the farm runs several suites at once on a 2-CPU host, and
-  // at 85s a green suite that ran slow under load failed its check and threw
-  // away a finished implement attempt (HZ-157, HZ-178, HZ-187 on 2026-10-01).
-  globalTimeout: 180_000,
+  // Hard ceiling, not the target; keep new specs lean. At 85s a green suite
+  // that ran slow under load failed its check and threw away a finished
+  // implement attempt (HZ-157, HZ-178, HZ-187 on 2026-10-01), so it went to
+  // 180s. By 2026-10-07 the suite itself had grown to 174-180s even at load
+  // ~0.5 (check-metrics.jsonl), so 180s failed all-pass runs on a quiet host
+  // (HZ-304, HZ-319). 360s is 2x that quiet-host time. HZ-327 replaces this
+  // with a rule derived from measured suite time.
+  globalTimeout: 360_000,
   globalSetup: './global-setup.js',
   reporter: [['list']],
   use: {
