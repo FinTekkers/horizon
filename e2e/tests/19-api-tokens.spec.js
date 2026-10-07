@@ -41,3 +41,33 @@ test('create a token in Admin, call the API with it, revoke it, and it stops wor
     await api.dispose()
   }
 })
+
+// HZ-319: "Expires in [90 days]" — the unit sits inside the field's border,
+// and the token form fits a phone with no horizontal scroll.
+test('the days unit sits inside the expiry field, and the form fits at 375px', async ({ page }) => {
+  await page.setViewportSize({ width: 375, height: 667 })
+  await page.goto('/admin')
+  const panel = page.locator('.api-tokens')
+  await expect(panel).toBeVisible({ timeout: 10_000 })
+
+  const field = panel.locator('.api-tokens__days-field')
+  const unit = field.getByText('days', { exact: true })
+  await expect(unit).toBeVisible()
+  await expect(panel.getByText('1 to 365 days')).toBeVisible()
+  const outer = await field.boundingBox()
+  const inner = await unit.boundingBox()
+  expect(inner.x).toBeGreaterThanOrEqual(outer.x)
+  expect(inner.y).toBeGreaterThanOrEqual(outer.y)
+  expect(inner.x + inner.width).toBeLessThanOrEqual(outer.x + outer.width)
+  expect(inner.y + inner.height).toBeLessThanOrEqual(outer.y + outer.height)
+
+  const panelOverflow = await panel.evaluate((el) => el.scrollWidth - el.clientWidth)
+  expect(panelOverflow, 'token panel overflows at 375px').toBeLessThanOrEqual(0)
+  // The Deploy targets rows already overflow at this width (out of scope here),
+  // so hide the other Admin panels before measuring the page itself.
+  const pageOverflow = await page.evaluate(() => {
+    for (const el of document.querySelectorAll('.admin__panel:not(.api-tokens)')) el.style.display = 'none'
+    return document.documentElement.scrollWidth - document.documentElement.clientWidth
+  })
+  expect(pageOverflow, 'page scrolls sideways at 375px').toBeLessThanOrEqual(0)
+})
