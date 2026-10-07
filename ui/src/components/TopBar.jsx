@@ -1,8 +1,8 @@
-import { useState, useSyncExternalStore } from 'react'
+import { useId, useState, useSyncExternalStore } from 'react'
 import { GridIcon, LockIcon, SlidersIcon } from './icons'
 import * as theme from '../theme'
 import { LegalLinks } from './LegalPage'
-import { ALL_PROJECTS, enabledProjects } from '../projectFilter'
+import { ALL_PROJECTS, enabledProjects, projectFilterLabel, repoChipLabel } from '../projectFilter'
 
 // A switch, not a menu item: toggling it shouldn't dismiss the menu the way
 // every other usermenu__item does, since a user very plausibly wants to
@@ -31,14 +31,28 @@ function ThemeToggle() {
 // tracker and approvals show — choosing a project calls onChange and nothing
 // else, so it can never touch the farm or any item. Disabled projects are not
 // offered; Admin is the only place they appear.
-function ProjectFilter({ projects, value, onChange }) {
+// HZ-317: a project with two or more repos also gets one toggle chip per repo.
+// `repos` is the selected allow-list, or null for all; the chips report a
+// new one through onReposChange and, like ThemeToggle, keep the menu open.
+function ProjectFilter({ projects, value, onChange, repos, onReposChange }) {
   const [open, setOpen] = useState(false)
+  const chipsTitleId = useId()
   const options = enabledProjects(projects)
   if (options.length === 0) return null
   const current = options.find((p) => p.id === value)
+  const label = projectFilterLabel(current, repos)
   const choose = (next) => {
     setOpen(false)
     onChange(next)
+  }
+  const projectRepos = current?.repos || []
+  const isOn = (repo) => !repos || repos.includes(repo)
+  const onCount = projectRepos.filter((r) => isOn(r.repo)).length
+  const toggle = (repo) => {
+    // The last selected chip can't be turned off: the filter never hides every repo.
+    if (isOn(repo) && onCount === 1) return
+    const next = projectRepos.map((r) => r.repo).filter((r) => (r === repo ? !isOn(r) : isOn(r)))
+    onReposChange(next.length === projectRepos.length ? null : next)
   }
 
   return (
@@ -48,13 +62,13 @@ function ProjectFilter({ projects, value, onChange }) {
         className="projswitch"
         aria-haspopup="menu"
         aria-expanded={open}
-        aria-label={`Project filter: ${current ? current.name : 'All projects'}`}
+        aria-label={`Project filter: ${label}`}
         onClick={() => setOpen((o) => !o)}
       >
         <span className="projswitch__dot" aria-hidden="true" />
         {/* Visually hidden on a phone (HZ-224); the aria-label stays the name. */}
-        <span className="projswitch__label" title={current ? current.name : undefined}>
-          {current ? current.name : 'All projects'}
+        <span className="projswitch__label" title={current ? label : undefined}>
+          {label}
         </span>
         <span className="projswitch__caret" aria-hidden="true">
           ▾
@@ -63,21 +77,52 @@ function ProjectFilter({ projects, value, onChange }) {
       {open && (
         <>
           <div className="usermenu__scrim" onClick={() => setOpen(false)} />
-          <div className="usermenu__menu usermenu__menu--left" role="menu">
-            <div className="usermenu__header">Show items from</div>
-            {[{ id: ALL_PROJECTS, name: 'All projects' }, ...options].map((p) => (
-              <button
-                key={p.id}
-                type="button"
-                role="menuitemradio"
-                aria-checked={p.id === value}
-                className="usermenu__item"
-                onClick={() => choose(p.id)}
-              >
-                {p.name}
-                {p.id === value && <span style={{ marginLeft: 'auto', color: 'var(--success-ink)' }}>✓</span>}
-              </button>
-            ))}
+          <div className="usermenu__menu usermenu__menu--left">
+            <div role="menu" aria-label="Show items from">
+              <div className="usermenu__header">Show items from</div>
+              {[{ id: ALL_PROJECTS, name: 'All projects' }, ...options].map((p) => (
+                <button
+                  key={p.id}
+                  type="button"
+                  role="menuitemradio"
+                  aria-checked={p.id === value}
+                  className="usermenu__item"
+                  onClick={() => choose(p.id)}
+                >
+                  {p.name}
+                  {p.id === value && <span style={{ marginLeft: 'auto', color: 'var(--success-ink)' }}>✓</span>}
+                </button>
+              ))}
+            </div>
+            {projectRepos.length >= 2 && (
+              <div className="projchips__section">
+                <div className="projchips__head">
+                  <span id={chipsTitleId}>Repos in {current.name}</span>
+                  <button type="button" className="projchips__all" onClick={() => onReposChange(null)}>
+                    Select all
+                  </button>
+                </div>
+                <div role="group" aria-labelledby={chipsTitleId} className="projchips">
+                  {projectRepos.map((r) => {
+                    const on = isOn(r.repo)
+                    const locked = on && onCount === 1
+                    return (
+                      <button
+                        key={r.repo}
+                        type="button"
+                        className="projchip"
+                        aria-pressed={on}
+                        aria-disabled={locked || undefined}
+                        title={locked ? 'At least one repo stays selected' : r.repo}
+                        onClick={() => toggle(r.repo)}
+                      >
+                        {repoChipLabel(r)}
+                      </button>
+                    )
+                  })}
+                </div>
+              </div>
+            )}
           </div>
         </>
       )}
@@ -144,6 +189,8 @@ export default function TopBar({
   projects,
   projectFilter,
   onProjectFilterChange,
+  repoFilter = null,
+  onRepoFilterChange = () => {},
   user,
   onLogout,
   onBoard,
@@ -174,7 +221,13 @@ export default function TopBar({
         </button>
       </div>
 
-      <ProjectFilter projects={projects} value={projectFilter} onChange={onProjectFilterChange} />
+      <ProjectFilter
+        projects={projects}
+        value={projectFilter}
+        onChange={onProjectFilterChange}
+        repos={repoFilter}
+        onReposChange={onRepoFilterChange}
+      />
 
       <div className="topbar__spacer" />
 

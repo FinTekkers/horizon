@@ -74,6 +74,7 @@ afterEach(() => {
   projects = []
   listeners.clear()
   localStorage.removeItem('horizon.projectFilter')
+  localStorage.removeItem('horizon.projectRepos')
   vi.unstubAllGlobals()
 })
 
@@ -275,4 +276,174 @@ test('the New item dialog lists every enabled project and no disabled one', asyn
     (f) => f.querySelector('.field__label')?.textContent === 'Project',
   )
   expect([...projectField.querySelectorAll('button')].map((b) => b.textContent)).toEqual(['Alpha', 'Beta'])
+})
+
+// ---- HZ-317: narrow a project to some of its repos ----
+
+const FIN = {
+  id: 7,
+  name: 'Fintekkers',
+  enabled: true,
+  repos: [
+    { repo: 'FinTekkers/ledger-models', prefix: 'LM' },
+    { repo: 'FinTekkers/ledger-service', prefix: 'LS' },
+    { repo: 'FinTekkers/ui-service', prefix: 'UI' },
+  ],
+}
+const OTHER = { id: 9, name: 'Other', enabled: true, repos: [{ repo: 'Org/a', prefix: 'OA' }, { repo: 'Org/b', prefix: 'OB' }] }
+const repoItem = (id, projectId, repo) => ({ ...projectItem(id, projectId), repo })
+// LM-1 first, so the tracker's fallback item is an LM one until LM is narrowed away.
+const REPO_ITEMS = [
+  repoItem('LM-1', 7, 'FinTekkers/ledger-models'),
+  repoItem('LS-1', 7, 'FinTekkers/ledger-service'),
+  repoItem('UI-1', 7, 'FinTekkers/ui-service'),
+  repoItem('OA-1', 9, 'Org/a'),
+  repoItem('OB-1', 9, 'Org/b'),
+]
+const chipPressed = (getByRole, name) => getByRole('button', { name }).getAttribute('aria-pressed')
+const filterButton = () => document.querySelector('.projswitch')
+
+test('toggling a repo chip narrows the board, tracker and approvals, and keeps the menu open', async () => {
+  projects = [FIN, OTHER]
+  setItems(REPO_ITEMS)
+  const { findByText, getByRole, getByText } = render(<App />)
+  await findByText('Item LM-1')
+  chooseProject(getByRole, 'Fintekkers')
+  fireEvent.click(getByText('Tracker'))
+  expect(document.querySelector('.tracker__id').textContent).toBe('LM-1')
+  fireEvent.click(getByText('Board'))
+
+  fireEvent.click(filterButton())
+  fireEvent.click(getByRole('button', { name: 'LM · ledger-models' }))
+  expect(chipPressed(getByRole, 'LM · ledger-models')).toBe('false')
+  expect(getByRole('group', { name: 'Repos in Fintekkers' })).toBeTruthy()
+  expect(boardIds()).toEqual(['LS-1', 'UI-1'])
+  expect(filterButton().getAttribute('aria-label')).toBe('Project filter: Fintekkers · LS, UI')
+
+  fireEvent.click(getByRole('button', { name: 'Select all' }))
+  expect(getByRole('group', { name: 'Repos in Fintekkers' })).toBeTruthy()
+  expect(boardIds()).toEqual(['LM-1', 'LS-1', 'UI-1'])
+  fireEvent.click(getByRole('button', { name: 'LM · ledger-models' }))
+  fireEvent.click(document.querySelector('.usermenu__scrim'))
+
+  fireEvent.click(document.querySelector('.pending-btn'))
+  const drawer = document.querySelector('.drawer__list').textContent
+  expect(drawer).toContain('LS-1')
+  expect(drawer).not.toContain('LM-1')
+  fireEvent.click(document.querySelector('.drawer__close'))
+  fireEvent.click(getByText('Tracker'))
+  expect(document.querySelector('.tracker__id').textContent).toBe('LS-1')
+})
+
+test('changing repo chips calls no api mutator and sends no write request', async () => {
+  const fetchSpy = vi.fn(async () => ({ ok: true, status: 200, json: async () => ({}) }))
+  vi.stubGlobal('fetch', fetchSpy)
+  projects = [FIN]
+  setItems(REPO_ITEMS)
+  const { findByText, getByRole } = render(<App />)
+  await findByText('Item LM-1')
+  chooseProject(getByRole, 'Fintekkers')
+  fireEvent.click(filterButton())
+  fireEvent.click(getByRole('button', { name: 'LM · ledger-models' }))
+  fireEvent.click(getByRole('button', { name: 'UI · ui-service' }))
+  fireEvent.click(getByRole('button', { name: 'LS · ledger-service' }))
+  fireEvent.click(getByRole('button', { name: 'Select all' }))
+
+  expect(fetchSpy.mock.calls.filter(([, opts]) => (opts?.method || 'GET').toUpperCase() !== 'GET')).toEqual([])
+  for (const action of ['setProjectEnabled', 'togglePause', 'abandonItem', 'restartPhase', 'approveGate', 'requestChanges', 'setPersona']) {
+    expect(api[action], action).not.toHaveBeenCalled()
+  }
+})
+
+test('the last selected chip stays pressed, so some items always stay visible', async () => {
+  projects = [FIN]
+  setItems(REPO_ITEMS)
+  const { findByText, getByRole } = render(<App />)
+  await findByText('Item LM-1')
+  chooseProject(getByRole, 'Fintekkers')
+  fireEvent.click(filterButton())
+  fireEvent.click(getByRole('button', { name: 'LM · ledger-models' }))
+  fireEvent.click(getByRole('button', { name: 'UI · ui-service' }))
+  fireEvent.click(getByRole('button', { name: 'LS · ledger-service' }))
+  expect(chipPressed(getByRole, 'LS · ledger-service')).toBe('true')
+  expect(boardIds()).toEqual(['LS-1'])
+})
+
+test('the repo choice is kept per project and never carried across, even through All projects', async () => {
+  projects = [FIN, OTHER]
+  setItems(REPO_ITEMS)
+  const { findByText, getByRole, queryByRole } = render(<App />)
+  await findByText('Item LM-1')
+  chooseProject(getByRole, 'Fintekkers')
+  fireEvent.click(filterButton())
+  fireEvent.click(getByRole('button', { name: 'LM · ledger-models' }))
+  fireEvent.click(document.querySelector('.usermenu__scrim'))
+
+  chooseProject(getByRole, 'Other')
+  expect(filterButton().getAttribute('aria-label')).toBe('Project filter: Other')
+  expect(boardIds()).toEqual(['OA-1', 'OB-1'])
+  fireEvent.click(filterButton())
+  expect(chipPressed(getByRole, 'OA · a')).toBe('true')
+  expect(chipPressed(getByRole, 'OB · b')).toBe('true')
+  fireEvent.click(document.querySelector('.usermenu__scrim'))
+
+  chooseProject(getByRole, 'All projects')
+  fireEvent.click(filterButton())
+  expect(queryByRole('group')).toBeNull()
+  fireEvent.click(document.querySelector('.usermenu__scrim'))
+  expect(boardIds()).toEqual(['LM-1', 'LS-1', 'OA-1', 'OB-1', 'UI-1'])
+
+  chooseProject(getByRole, 'Fintekkers')
+  expect(filterButton().getAttribute('aria-label')).toBe('Project filter: Fintekkers · LS, UI')
+  expect(boardIds()).toEqual(['LS-1', 'UI-1'])
+})
+
+test('a saved choice naming a disconnected repo falls back to all repos when the project is re-picked', async () => {
+  localStorage.setItem('horizon.projectRepos', JSON.stringify({ 7: ['FinTekkers/ledger-service', 'FinTekkers/gone'] }))
+  projects = [FIN]
+  setItems(REPO_ITEMS)
+  const { findByText, getByRole } = render(<App />)
+  await findByText('Item LM-1')
+  chooseProject(getByRole, 'Fintekkers')
+  expect(filterButton().getAttribute('aria-label')).toBe('Project filter: Fintekkers')
+  expect(filterButton().textContent).toContain('Fintekkers')
+  fireEvent.click(filterButton())
+  for (const name of ['LM · ledger-models', 'LS · ledger-service', 'UI · ui-service']) {
+    expect(chipPressed(getByRole, name), name).toBe('true')
+  }
+  expect(boardIds()).toEqual(['LM-1', 'LS-1', 'UI-1'])
+})
+
+test('the repo choice survives a reload, and horizon.projectFilter keeps its plain id', async () => {
+  projects = [FIN]
+  setItems(REPO_ITEMS)
+  const first = render(<App />)
+  await first.findByText('Item LM-1')
+  chooseProject(first.getByRole, 'Fintekkers')
+  fireEvent.click(filterButton())
+  fireEvent.click(first.getByRole('button', { name: 'LM · ledger-models' }))
+  first.unmount()
+
+  expect(localStorage.getItem('horizon.projectFilter')).toBe('7')
+  const { findByText, getByRole } = render(<App />)
+  await findByText('Item LS-1')
+  expect(filterButton().getAttribute('aria-label')).toBe('Project filter: Fintekkers · LS, UI')
+  expect(boardIds()).toEqual(['LS-1', 'UI-1'])
+  fireEvent.click(filterButton())
+  expect(chipPressed(getByRole, 'LM · ledger-models')).toBe('false')
+})
+
+test('a browser with only the old saved project value sees today\'s view, every repo selected', async () => {
+  localStorage.setItem('horizon.projectFilter', '7')
+  projects = [FIN]
+  setItems(REPO_ITEMS)
+  const { findByText, getByRole } = render(<App />)
+  await findByText('Item LM-1')
+  expect(filterButton().getAttribute('aria-label')).toBe('Project filter: Fintekkers')
+  expect(document.querySelector('.projswitch__label').textContent).toBe('Fintekkers')
+  expect(boardIds()).toEqual(['LM-1', 'LS-1', 'UI-1'])
+  fireEvent.click(filterButton())
+  for (const name of ['LM · ledger-models', 'LS · ledger-service', 'UI · ui-service']) {
+    expect(chipPressed(getByRole, name), name).toBe('true')
+  }
 })

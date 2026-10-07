@@ -237,6 +237,31 @@ button { font-family: var(--font-sans); }
 .usermenu__item--toggle:hover { background: none; }
 .usermenu__item-label { display: flex; align-items: center; gap: 9px; }
 
+/* HZ-317: "Repos in <project>" — one toggle chip per repo, wrapping inside
+   the project menu. The menu's width is capped so a long row of chips wraps
+   instead of pushing it off screen. */
+.usermenu__menu--left { max-width: 360px; }
+.projchips__section { border-top: 1px solid var(--subtle); margin-top: 4px; padding-top: 4px; }
+.projchips__head {
+  display: flex; align-items: baseline; justify-content: space-between; gap: 12px;
+  padding: 8px 12px 6px; font: 500 12px var(--font-sans); color: var(--muted);
+}
+.projchips__head > span { min-width: 0; overflow-wrap: anywhere; }
+.projchips__all {
+  flex: none; border: none; background: none; padding: 0; cursor: pointer;
+  font: 600 12px var(--font-sans); color: var(--primary-ink);
+}
+.projchips__all:hover { text-decoration: underline; }
+.projchips { display: flex; flex-wrap: wrap; gap: 6px; padding: 4px 12px 8px; }
+.projchip {
+  max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  border: 1.5px solid var(--border-strong); background: var(--surface); color: var(--deep);
+  border-radius: 999px; padding: 5px 11px; font: 600 12px var(--font-sans); cursor: pointer;
+}
+.projchip:hover { border-color: var(--hover-border); }
+.projchip[aria-pressed='true'] { background: var(--primary-bg); color: var(--primary-ink); border-color: var(--primary); }
+.projchip[aria-disabled='true'] { cursor: default; }
+
 .theme-switch {
   margin-left: auto; position: relative; width: 34px; height: 20px; flex-shrink: 0;
   border: none; border-radius: 20px; padding: 0; cursor: pointer;
@@ -1045,6 +1070,10 @@ button { font-family: var(--font-sans); }
     overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0;
   }
   .topbar__avatar { width: 44px; height: 44px; }
+  /* The switcher sits 60px in (12px padding, 38px logo, 10px gap): keep its
+     menu 12px clear of the right edge, and the repo chips tappable. */
+  .usermenu__menu--left { max-width: calc(100vw - 72px); }
+  .projchip { min-height: 44px; }
 
   .bottomnav {
     position: fixed; left: 0; right: 0; bottom: 0; z-index: 25;

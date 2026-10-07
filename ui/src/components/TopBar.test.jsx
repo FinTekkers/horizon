@@ -3,6 +3,7 @@
 // literal "AP".
 
 import { expect, test, vi, afterEach, beforeEach } from 'vitest'
+import { useState } from 'react'
 import { render, fireEvent, cleanup, screen } from '@testing-library/react'
 
 import TopBar from './TopBar'
@@ -141,4 +142,112 @@ test('choosing a project only reports the choice', () => {
   fireEvent.click(screen.getByRole('menuitemradio', { name: 'Beta' }))
   expect(onChange).toHaveBeenCalledWith(2)
   expect(screen.queryByRole('menu')).toBeNull()
+})
+
+// ---- HZ-317: narrow a project to some of its repos ----
+
+const FIN = {
+  id: 7,
+  name: 'Fintekkers',
+  enabled: true,
+  repos: [
+    { repo: 'FinTekkers/ledger-service', prefix: 'LS' },
+    { repo: 'FinTekkers/ledger-models', prefix: 'LM' },
+    { repo: 'FinTekkers/ledger-client', prefix: 'LC' },
+  ],
+}
+const [LS, LM, LC] = FIN.repos.map((r) => r.repo)
+const chip = (name) => screen.getByRole('button', { name })
+const pressed = (name) => chip(name).getAttribute('aria-pressed')
+
+// A controlled TopBar, so a chip click is reflected the way App reflects it.
+function NarrowableBar({ onRepoFilterChange, initial = null }) {
+  const [repos, setRepos] = useState(initial)
+  return (
+    <TopBar
+      {...baseProps}
+      projects={[FIN]}
+      projectFilter={7}
+      repoFilter={repos}
+      onRepoFilterChange={(next) => {
+        onRepoFilterChange(next)
+        setRepos(next)
+      }}
+      user={USER}
+      onLogout={noop}
+    />
+  )
+}
+
+test('a narrowed choice names its repos in the button aria-label', () => {
+  render(<TopBar {...baseProps} projects={[FIN]} projectFilter={7} repoFilter={[LS, LM]} user={USER} onLogout={noop} />)
+  expect(screen.getByRole('button', { name: 'Project filter: Fintekkers · LS, LM' })).toBeTruthy()
+})
+
+test('the repo chips are real buttons with aria-pressed, in a "Repos in <project>" group', () => {
+  render(<TopBar {...baseProps} projects={[FIN]} projectFilter={7} repoFilter={[LS]} user={USER} onLogout={noop} />)
+  fireEvent.click(document.querySelector('.projswitch'))
+  const group = screen.getByRole('group', { name: 'Repos in Fintekkers' })
+  const chips = [...group.querySelectorAll('button')]
+  expect(chips.map((b) => b.tagName)).toEqual(['BUTTON', 'BUTTON', 'BUTTON'])
+  expect(chips.map((b) => b.textContent)).toEqual(['LS · ledger-service', 'LM · ledger-models', 'LC · ledger-client'])
+  expect(chips.map((b) => b.getAttribute('aria-pressed'))).toEqual(['true', 'false', 'false'])
+  // The menu role holds only the radio list, never the chips.
+  expect(screen.getByRole('menu').contains(group)).toBe(false)
+})
+
+test('toggling down to the last repo leaves it pressed; clicking it again changes nothing', () => {
+  const onRepos = vi.fn()
+  render(<NarrowableBar onRepoFilterChange={onRepos} />)
+  fireEvent.click(document.querySelector('.projswitch'))
+  expect([pressed('LS · ledger-service'), pressed('LM · ledger-models'), pressed('LC · ledger-client')]).toEqual([
+    'true',
+    'true',
+    'true',
+  ])
+  fireEvent.click(chip('LM · ledger-models'))
+  expect(onRepos).toHaveBeenLastCalledWith([LS, LC])
+  fireEvent.click(chip('LC · ledger-client'))
+  expect(onRepos).toHaveBeenLastCalledWith([LS])
+  expect(onRepos).toHaveBeenCalledTimes(2)
+
+  fireEvent.click(chip('LS · ledger-service'))
+  expect(onRepos).toHaveBeenCalledTimes(2)
+  expect(pressed('LS · ledger-service')).toBe('true')
+  expect(chip('LS · ledger-service').getAttribute('aria-disabled')).toBe('true')
+  expect(screen.getByRole('button', { name: 'Project filter: Fintekkers · LS' })).toBeTruthy()
+})
+
+test('"Select all" presses every chip and reports null (all repos); the menu stays open', () => {
+  const onRepos = vi.fn()
+  render(<NarrowableBar onRepoFilterChange={onRepos} initial={[LM]} />)
+  fireEvent.click(document.querySelector('.projswitch'))
+  fireEvent.click(screen.getByRole('button', { name: 'Select all' }))
+  expect(onRepos).toHaveBeenCalledWith(null)
+  expect([pressed('LS · ledger-service'), pressed('LM · ledger-models'), pressed('LC · ledger-client')]).toEqual([
+    'true',
+    'true',
+    'true',
+  ])
+  expect(screen.getByRole('group', { name: 'Repos in Fintekkers' })).toBeTruthy()
+  expect(screen.getByRole('button', { name: 'Project filter: Fintekkers' })).toBeTruthy()
+})
+
+test('re-selecting the last missing repo reports null rather than a full list', () => {
+  const onRepos = vi.fn()
+  render(<NarrowableBar onRepoFilterChange={onRepos} initial={[LS, LM]} />)
+  fireEvent.click(document.querySelector('.projswitch'))
+  fireEvent.click(chip('LC · ledger-client'))
+  expect(onRepos).toHaveBeenCalledWith(null)
+})
+
+test('no chip group for All projects or a single-repo project', () => {
+  const single = { id: 8, name: 'Solo', enabled: true, repos: [{ repo: 'Org/solo', prefix: 'SO' }] }
+  const { unmount } = render(<TopBar {...baseProps} projects={[FIN, single]} projectFilter="all" user={USER} onLogout={noop} />)
+  fireEvent.click(document.querySelector('.projswitch'))
+  expect(screen.queryByRole('group')).toBeNull()
+  unmount()
+  render(<TopBar {...baseProps} projects={[FIN, single]} projectFilter={8} user={USER} onLogout={noop} />)
+  fireEvent.click(document.querySelector('.projswitch'))
+  expect(screen.queryByRole('group')).toBeNull()
 })

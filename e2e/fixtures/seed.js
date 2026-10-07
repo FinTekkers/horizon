@@ -58,6 +58,14 @@ export function insertProject(db, { name, enabled = true }) {
   return Number(db.prepare('INSERT INTO project (name, enabled) VALUES (?, ?)').run(name, enabled ? 1 : 0).lastInsertRowid)
 }
 
+// HZ-317: a connected repo, written directly like insertProject above
+// (connecting through the API purges the demo items other specs read). Any
+// row left behind is polled for the rest of the suite, so the spec that seeds
+// one deletes it again in afterAll.
+export function insertProjectRepo(db, { projectId, repo, prefix }) {
+  db.prepare('INSERT INTO project_repo (project_id, repo, prefix) VALUES (?, ?, ?)').run(projectId, repo, prefix)
+}
+
 // A Horizon activity-log row, written directly like insertItem above so it
 // never goes through addEvent()/store.js. HZ-94's pause-reason.spec uses this
 // to reproduce the exact pause-event text failFarmRun() writes (see
