@@ -45,6 +45,11 @@ globalThis.fetch = async (url, opts) => {
 // has no other side effect (ensureFarm/rearmFarmRuns both no-op on an empty db).
 orchestrator.init({ info: () => {}, warn: () => {} })
 
+// HZ-304: the implement dispatches below need a repo with check commands.
+// After init(), so its boot still sees no project.
+const { connectReadyRepo } = await import('./helpers/readyRepo.mjs')
+connectReadyRepo(db, 'acme/demo')
+
 // Seeds the LEGACY flat column on purpose — see the header note. Items that
 // carry an agent-scoped map use insertItemWithPersonas below.
 const insertItem = db.prepare(
@@ -737,13 +742,17 @@ test('a step for a repo with stored check commands carries them as check_command
     assert.deepEqual(configured.body.check_commands, { install: 'npm ci', test: 'npm test', lint: null, e2e: null })
     assert.deepEqual(configured.body.check_commands, store.getRepoCheckCommands('acme/configured'))
 
-    insertRepoItem.run('D-CC2', 'Unconfigured repo', 'Medium', 11, 'acme/unconfigured')
+    // HZ-304: an implement on an unconfigured repo never dispatches (see
+    // orchestrator-readiness.test.mjs), so "absent" is checked on the review.
+    const { REVIEW_STEP_INDEX } = await import('../../domain/js/lifecycle.js')
+    insertRepoItem.run('D-CC2', 'Unconfigured repo', 'Medium', REVIEW_STEP_INDEX, 'acme/unconfigured')
     const unconfigured = await dispatchFor('D-CC2')
     assert.equal(Object.hasOwn(unconfigured.body, 'check_commands'), false)
 
     // Clearing every slot is "not configured" again: the key goes away.
     store.setRepoCheckCommands(projectId, 'acme/configured', { install: '', test: '', lint: '', e2e: '' })
     db.prepare("DELETE FROM step_run WHERE item_id = 'D-CC1'").run()
+    db.prepare('UPDATE work_item SET cursor = ? WHERE id = ?').run(REVIEW_STEP_INDEX, 'D-CC1')
     dispatches.length = 0
     const cleared = await dispatchFor('D-CC1')
     assert.equal(Object.hasOwn(cleared.body, 'check_commands'), false)

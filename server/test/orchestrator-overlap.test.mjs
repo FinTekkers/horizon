@@ -29,6 +29,7 @@ const config = await import('../src/config.js')
 const auth = await import('../src/auth.js')
 
 store.purgeDemoItems()
+const { connectReadyRepo } = await import('./helpers/readyRepo.mjs')
 
 const PLAN = requiredStepIndex('Draft implementation plan')
 const SUMMARIZE = requiredStepIndex('Summarize reviews & recommend')
@@ -167,6 +168,7 @@ test('metric 1: the step-9 input names every same-repo, same-project peer at ste
 
 test('metric 3a + 6: depends-on adds the edge, shows on the card, completes step 9 and leaves the peer alone', async () => {
   const repo = 'dep/repo'
+  connectReadyRepo(db, repo) // HZ-304: the peer's implement dispatch needs check commands
   item('DEP-SELF', { cursor: SUMMARIZE, repo, plan: planFor('server/src/app.js', 'snapshot()') })
   item('DEP-PEER', { cursor: IMPLEMENT_STEP_INDEX, repo, plan: planFor('server/src/app.js', 'snapshot()', 'other()') })
   await startRunning('DEP-PEER')
@@ -200,6 +202,7 @@ test('metric 3a + 6: depends-on adds the edge, shows on the card, completes step
 
 test('metric 3b + 6: shared-contract queues the same text on both items and the peer gets it on its next dispatch', async () => {
   const repo = 'sc/repo'
+  connectReadyRepo(db, repo) // HZ-304: the peer's implement dispatch needs check commands
   item('SC-SELF', { cursor: SUMMARIZE, repo, plan: planFor('server/src/store.js', 'addThing()') })
   item('SC-PEER', { cursor: IMPLEMENT_STEP_INDEX, repo, plan: planFor('server/src/store.js', 'removeThing()') })
   await startRunning('SC-PEER')
@@ -228,6 +231,7 @@ test('metric 3b + 6: shared-contract queues the same text on both items and the 
 
 test('metric 5 + 6: disjoint plans decide none — no dependency, no feedback', async () => {
   const repo = 'none/repo'
+  connectReadyRepo(db, repo) // HZ-304: the peer's implement dispatch needs check commands
   item('NO-SELF', { cursor: SUMMARIZE, repo, plan: planFor('ui/src/App.jsx', 'renderBoard()') })
   item('NO-PEER', { cursor: IMPLEMENT_STEP_INDEX, repo, plan: planFor('farm/farmd.py', 'claim_task()') })
   await startRunning('NO-PEER')

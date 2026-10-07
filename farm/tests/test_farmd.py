@@ -242,7 +242,9 @@ def test_conflicts_resolve_end_to_end_over_http_does_a_real_merge_and_push(runni
     )
     push_new_branch(tmp_path, origin, "main", lambda w: (w / "other.txt").write_text("new on main\n"), "main-advance")
 
-    res = client.post("/conflicts/resolve", json={"item": {"id": "HZ-5", "repo": "acme/demo"}})
+    res = client.post(
+        "/conflicts/resolve", json={"item": {"id": "HZ-5", "repo": "acme/demo"}, "checks_waiver": "no_checks"}
+    )
 
     assert res.status_code == 200
     body = res.json()

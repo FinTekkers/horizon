@@ -13,7 +13,7 @@ import { mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { test, expect } from '../fixtures/test-base.js'
-import { openDb, insertItem, insertGateAction, setGatePinDirect } from '../fixtures/seed.js'
+import { openDb, insertItem, insertProject, insertGateAction, setGatePinDirect } from '../fixtures/seed.js'
 import { ACCEPT_GATE_INDEX } from '../../domain/js/lifecycle.js'
 
 const DB_PATH = process.env.HORIZON_E2E_DB
@@ -75,6 +75,10 @@ test.beforeAll(() => {
       pr: PR,
       pr_url: `https://github.com/${REPO}/pull/${PR}`,
     })
+    // HZ-304: the farm runs only commands saved for the repo, never a guess
+    // from package.json. A disabled project, so no board or filter spec sees it.
+    const project = insertProject(db, { name: 'E2E Gate Retry Fixture', enabled: false })
+    db.prepare("INSERT INTO project_repo (project_id, repo, prefix, check_test) VALUES (?, ?, 'EGR', 'npm test')").run(project, REPO)
     insertGateAction(db, { itemId: 'GRT-1', state: 'timed_out', reason: REASON })
     setGatePinDirect(db, ADMIN_EMAIL, GATE_PIN)
   } finally {

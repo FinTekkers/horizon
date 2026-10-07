@@ -30,6 +30,7 @@ export const {
   addRepoToProject,
   disconnectRepo,
   saveRepoChecks,
+  saveRepoMarks,
   getRepoCheckDefaults,
   getRepoWebhooks,
   fixRepoWebhook,

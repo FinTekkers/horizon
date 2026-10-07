@@ -25,6 +25,10 @@ const { deployWaitFor } = await import('../src/deployWait.js')
 const orchestrator = await import('../src/orchestrator.js')
 
 store.purgeDemoItems()
+const { connectReadyRepo } = await import('./helpers/readyRepo.mjs')
+// HZ-304: acme/demo has no deploy target; the 'no deploy' mark keeps today's
+// deploy path, which is what the no-target case below pins.
+connectReadyRepo(db, 'acme/demo', { noDeploy: true })
 
 const insertItem = db.prepare('INSERT INTO work_item (id, title, priority, cursor, repo, issue) VALUES (?, ?, ?, ?, ?, ?)')
 

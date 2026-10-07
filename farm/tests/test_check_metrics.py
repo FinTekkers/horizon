@@ -125,8 +125,14 @@ def test_a_timed_out_run_is_recorded_as_a_timeout(tmp_path, monkeypatch):
 
 def test_a_repo_with_no_checks_records_nothing(tmp_path):
     """No commands means no slot taken and no measurement — a record here
-    would be a zero-duration run inflating the count toward 20."""
-    assert checks.run_checks(tmp_path, log=lambda *_: None) == "no repo checks detected"
+    would be a zero-duration run inflating the count toward 20. HZ-304: that
+    holds both for the waived run and for the "nothing configured" failure."""
+    assert checks.run_checks(tmp_path, log=lambda *_: None, checks_waiver="no_checks") == (
+        "checks waived for this repo: marked 'no checks' in Admin"
+    )
+    assert not check_metrics.metrics_path().exists()
+    with pytest.raises(checks.CheckFailure, match="no check commands configured for this repo"):
+        checks.run_checks(tmp_path, log=lambda *_: None)
     assert not check_metrics.metrics_path().exists()
 
 

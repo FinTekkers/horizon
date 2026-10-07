@@ -21,6 +21,10 @@ const store = await import('../src/store.js')
 const orchestrator = await import('../src/orchestrator.js')
 
 store.purgeDemoItems()
+const { connectReadyRepo } = await import('./helpers/readyRepo.mjs')
+// HZ-304: implement and deploy dispatches need a ready repo; readiness itself
+// is orchestrator-readiness.test.mjs's subject.
+connectReadyRepo(db, 'acme/demo')
 store.registerAgentRunner({ kick: orchestrator.kick, cancel: orchestrator.cancel, pause: orchestrator.pause })
 
 // ---- fake farmd ----

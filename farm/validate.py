@@ -4,6 +4,7 @@ The server's validation (server/src/projectValidate.js) runs
 
     python -m farm.validate <owner/repo> <run-id> <main-sha> --timeout-s N
         --forbid PATH [--forbid PATH ...] [--check-commands JSON] [--reap-only]
+        [--checks-waiver {no_checks,predates_enforcement}]
 
 which makes a fresh scratch worktree off the repo's farm hub at exactly
 <main-sha> and runs farm/checks.py's run_checks() there — under the same
@@ -37,7 +38,7 @@ import time
 from pathlib import Path
 
 from . import workspaces
-from .checks import CheckFailure, run_checks
+from .checks import CHECKS_WAIVERS, CheckFailure, run_checks
 from .config import WORKSPACES_DIR
 from .premerge import DEPLOYED_ROOTS, RESERVE_S, RUNNING_CHECKOUT, _git, _has_commit, _remove_scratch, _within, stderr_event
 
@@ -167,6 +168,7 @@ def validate_checks(
     configured=None,
     log=print,
     on_slot_event=None,
+    checks_waiver=None,
 ) -> dict:
     """Never raises for an expected outcome: returns the CLI's result dict."""
     started = time.monotonic()
@@ -211,13 +213,13 @@ def validate_checks(
                 note = run_checks(
                     ws,
                     log=log,
-                    require_ran=True,
                     deadline=deadline,
                     item_id=run_id,
                     caller="validate",
                     child_env={"FARM_HOME": str(checks_home)},
                     on_slot_event=on_slot_event,
                     configured=configured,
+                    checks_waiver=checks_waiver,
                 )
             except CheckFailure as exc:
                 if exc.reason == "timed_out":
@@ -246,6 +248,9 @@ def main(argv=None) -> int:
     parser.add_argument("--forbid", action="append", default=[], help="a root the run must stay outside of")
     parser.add_argument("--check-commands", default=None, help="JSON {install,test,lint,e2e} configured in Admin")
     parser.add_argument("--reap-only", action="store_true", help="only remove this run's leftovers")
+    parser.add_argument(
+        "--checks-waiver", choices=CHECKS_WAIVERS, default=None, help="HZ-304: the repo is marked 'no checks' in Admin"
+    )
     args = parser.parse_args(argv)
 
     if args.reap_only:
@@ -255,7 +260,7 @@ def main(argv=None) -> int:
 
     configured = None
     if args.check_commands is not None:
-        # Fail closed, as premerge does: never fall back to auto-detect.
+        # Fail closed, as premerge does: never run as "no commands".
         with contextlib.suppress(json.JSONDecodeError):
             configured = json.loads(args.check_commands)
         if not isinstance(configured, dict):
@@ -276,6 +281,7 @@ def main(argv=None) -> int:
             configured=configured,
             log=log,
             on_slot_event=stderr_event,
+            checks_waiver=args.checks_waiver,
         )
     except Exception as exc:  # noqa: BLE001 — stdout must stay one JSON line
         result = {"ok": False, "reason": "crash", "detail": f"{type(exc).__name__}: {exc}"}

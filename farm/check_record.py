@@ -90,9 +90,9 @@ def now_iso() -> str:
 
 
 # run_checks()'s note when at least one check command actually ran and passed.
-# "no repo checks detected" and "check runners unavailable — skipped" are a
-# green with nothing behind it; pre-merge (require_ran=True) blocks on those,
-# so they must never become a record that lets Accept skip it.
+# A waived note (HZ-304: "checks waived for <repo>: ...") is a green with
+# nothing behind it, so it must never become a record that lets Accept skip
+# the pre-merge run.
 _RAN_NOTE = re.compile(r"[1-9][0-9]* repo check\(s\) passed")
 
 

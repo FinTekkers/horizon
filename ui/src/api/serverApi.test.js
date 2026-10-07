@@ -163,6 +163,34 @@ test('saveRepoChecks PUTs {repo, ...checks} with the PIN in x-human-key only, an
   expect(localStorage.length).toBe(0)
 })
 
+// HZ-304: the 'no checks' / 'no deploy' marks — PUT, the PIN in x-human-key only.
+test('saveRepoMarks PUTs {repo, ...marks} with the PIN in x-human-key only, stores nothing, and throws 401s', async () => {
+  localStorage.clear()
+  const serverApi = await import('./serverApi')
+  const reply = { ok: true, repo: 'acme/web', marks: { noChecks: true, noDeploy: false } }
+  const fetchSpy = vi.fn(async () => ({ ok: true, status: 200, json: async () => reply }))
+  vi.stubGlobal('fetch', fetchSpy)
+
+  await expect(serverApi.saveRepoMarks(7, 'acme/web', { noChecks: true }, 'pin-1234')).resolves.toEqual(reply)
+  const [url, opts] = fetchSpy.mock.calls[0]
+  expect(url).toBe(`${serverApi.API_BASE}/projects/7/repos/marks`)
+  expect(String(url)).not.toContain('pin-1234')
+  expect(opts.method).toBe('PUT')
+  expect(opts.headers['x-human-key']).toBe('pin-1234')
+  expect(JSON.parse(opts.body)).toEqual({ repo: 'acme/web', noChecks: true })
+  expect(opts.body).not.toContain('pin-1234')
+  expect(localStorage.length).toBe(0)
+  expect(sessionStorage.length).toBe(0)
+
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(async () => ({ ok: false, status: 401, json: async () => ({ error: 'human_gate_key_required' }) })),
+  )
+  const err = await serverApi.saveRepoMarks(7, 'acme/web', { noDeploy: true }, 'bad').catch((e) => e)
+  expect(err.message).toBe('human_gate_key_required')
+  expect(err.status).toBe(401)
+})
+
 test('dryRunDeployTarget POSTs an empty body with the PIN in x-human-key only, and throws 401s', async () => {
   localStorage.clear()
   const serverApi = await import('./serverApi')

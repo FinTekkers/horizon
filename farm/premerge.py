@@ -7,6 +7,7 @@ The server's Accept handler (server/src/premerge.js) runs
 
     python -m farm.premerge <owner/repo> <item-id> <head-sha> --base <base-sha> --timeout-s N --json
         [--check-commands <JSON object: the repo's install/test/lint/e2e commands>]
+        [--checks-waiver {no_checks,predates_enforcement}]
 
 which makes a scratch worktree off the repo's hub at exactly <base-sha> (the
 tip of the PR's base branch, as GitHub reported it to the server), merges
@@ -14,9 +15,11 @@ tip of the PR's base branch, as GitHub reported it to the server), merges
 run_checks() there — the one definition of which checks a repo has.
 
 stdout is ONE JSON line and nothing else; progress goes to stderr. Exit 0
-only when every check ran green. Every other outcome — red check, conflict,
-timeout, missing hub, crash — is `"ok": false` with a `reason`, and the
-server refuses to merge on any of them: fail closed, never "skip and merge".
+only when every check ran green, or (HZ-304) the repo has no commands and
+the server's --checks-waiver excused it — the note then says so. Every other
+outcome — red check, no commands, conflict, timeout, missing hub, crash — is
+`"ok": false` with a `reason`, and the server refuses to merge on any of
+them: fail closed, never "skip and merge".
 
 The scratch worktree lives at <WORKSPACES_DIR>/<owner>__<repo>__premerge/<item>,
 never in /opt/horizon or the checkout this code is running from — see
@@ -43,7 +46,7 @@ import time
 from pathlib import Path
 
 from . import workspaces
-from .checks import CheckFailure, output_tail, run_checks
+from .checks import CHECKS_WAIVERS, CheckFailure, output_tail, run_checks
 from .config import WORKSPACES_DIR
 
 # farm/validate.py (HZ-248) imports _git, _has_commit, _within and
@@ -174,6 +177,7 @@ def premerge_check(
     log=print,
     on_slot_event=None,
     configured=None,
+    checks_waiver=None,
 ) -> dict:
     """Never raises for an expected outcome: returns the CLI's result dict."""
     started = time.monotonic()
@@ -233,7 +237,6 @@ def premerge_check(
                 note = run_checks(
                     ws,
                     log=log,
-                    require_ran=True,
                     deadline=deadline,
                     item_id=item_id,
                     caller="premerge",
@@ -241,6 +244,7 @@ def premerge_check(
                     on_slot_event=on_slot_event,
                     configured=configured,
                     repo=repo_full,
+                    checks_waiver=checks_waiver,
                 )
             except CheckFailure as exc:
                 if exc.reason == "timed_out":
@@ -271,14 +275,20 @@ def main(argv=None) -> int:
     parser.add_argument(
         "--check-commands",
         default=None,
-        help="HZ-245: JSON {install,test,lint,e2e} configured for the repo in Admin; absent means auto-detect",
+        help="HZ-245: JSON {install,test,lint,e2e} configured for the repo in Admin; absent means none",
+    )
+    parser.add_argument(
+        "--checks-waiver",
+        choices=CHECKS_WAIVERS,
+        default=None,
+        help="HZ-304: why a repo with no check commands may still merge; absent means it may not",
     )
     args = parser.parse_args(argv)
 
     configured = None
     if args.check_commands is not None:
-        # Fail closed: an unreadable config must never fall back to
-        # auto-detect, which would judge the merge by different checks.
+        # Fail closed: an unreadable config must never run as "no commands",
+        # which a waiver would let through.
         with contextlib.suppress(json.JSONDecodeError):
             configured = json.loads(args.check_commands)
         if not isinstance(configured, dict):
@@ -299,6 +309,7 @@ def main(argv=None) -> int:
             log=log,
             on_slot_event=stderr_event,
             configured=configured,
+            checks_waiver=args.checks_waiver,
         )
     except Exception as exc:  # noqa: BLE001 — stdout must stay one JSON line
         result = {"ok": False, "reason": "crash", "detail": f"{type(exc).__name__}: {exc}"}

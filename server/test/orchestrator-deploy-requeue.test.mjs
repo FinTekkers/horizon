@@ -31,6 +31,11 @@ store.purgeDemoItems()
 // init() is what registers the runner and the drain-end resume.
 await orchestrator.init({ info: () => {}, warn: () => {}, error: () => {} })
 const app = buildApp({ logger: false })
+const { connectReadyRepo } = await import('./helpers/readyRepo.mjs')
+// HZ-304: dispatch refuses an unready repo; acme/demo is connected with a
+// test command and the 'no deploy' mark, which keeps today's paths exactly.
+// After init(), so the farm's start never sees the helper's project.
+connectReadyRepo(db, 'acme/demo', { noDeploy: true })
 
 let cancels = []
 let dispatches = []

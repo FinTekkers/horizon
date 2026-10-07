@@ -12,7 +12,7 @@ from pathlib import Path
 
 import pytest
 
-from farm import check_slots, premerge, validate, workspaces
+from farm import check_slots, checks, premerge, validate, workspaces
 from farm.checks import CheckFailure
 from farm.tests.test_workspaces import git, make_repo_hub
 
@@ -233,3 +233,38 @@ def test_hung_checks_end_timed_out_and_release_the_check_slot(hub, tmp_path, mon
             if hold.mode == "held":
                 break
         assert time.monotonic() < deadline, "the check slot was not released"
+
+
+# ---- HZ-304: a marked repo runs nothing; an unmarked one fails by name ----
+
+
+def test_with_no_commands_and_no_waiver_the_run_fails_by_name(hub):
+    result = validate.validate_checks(REPO, "v1-304", head(hub), timeout_s=600, log=lambda *_: None)
+    assert result["ok"] is False
+    assert result["reason"] == "no_checks_detected"
+    assert result["detail"] == "no check commands configured for this repo"
+
+
+def test_cli_no_checks_waiver_runs_nothing_and_reports_the_waiver(hub, monkeypatch, capsys):
+    def no_slot(*_a, **_k):
+        raise AssertionError("a waived run must not take a check slot")
+
+    monkeypatch.setattr(checks.check_slots, "check_slot", no_slot)
+    code = validate.main([REPO, "v1-305", head(hub), "--checks-waiver", "no_checks"])
+    result = json.loads(capsys.readouterr().out.strip())
+    assert code == 0
+    assert result["ok"] is True
+    assert result["detail"] == "checks waived for this repo: marked 'no checks' in Admin"
+
+
+def test_configured_commands_whose_runner_is_missing_fail_none_ran(hub, monkeypatch):
+    def missing(cmd, *_a, **_k):
+        raise FileNotFoundError(cmd[0])
+
+    monkeypatch.setattr(checks, "_run_bounded", missing)
+    result = validate.validate_checks(
+        REPO, "v1-306", head(hub), timeout_s=600, configured={"test": "npm test"}, checks_waiver="no_checks", log=lambda *_: None
+    )
+    assert result["ok"] is False
+    assert result["reason"] == "no_checks_detected"
+    assert "every check runner is missing on this host" in result["detail"]

@@ -950,8 +950,10 @@ export function buildApp({ logger = true, onRoute = null } = {}) {
         baseSha,
         timeoutMs: PREMERGE_CHECK_TIMEOUT_MS,
         // HZ-245: the repo's Admin-configured check commands, read now and
-        // passed as argv, never env (see premerge.js). Null means auto-detect.
+        // passed as argv, never env (see premerge.js). HZ-304: null means none
+        // — the run fails by name unless checksWaiver excuses this item.
         checkCommands: store.getRepoCheckCommands(item.repo),
+        checksWaiver: orchestrator.checksWaiverFor(item),
         // HZ-227: a run queued behind the check-slot limiter (farm/check_slots.py)
         // says so, rather than looking stuck. The token guard in
         // setGateActionDetail drops an event that lands after the row finished.
@@ -2614,6 +2616,46 @@ export function buildApp({ logger = true, onRoute = null } = {}) {
       if (result.error) return reply.code(404).send({ error: 'That repository is not connected to this project' })
       broadcast()
       return { ok: true, repo, checks: result.checks }
+    },
+  )
+
+  // HZ-304: a repo's 'no checks' / 'no deploy' marks — the owner's explicit
+  // "this repo has no tests" / "this repo never deploys". Same protection as
+  // the check commands above, for the same reason: a mark lets items through
+  // with no checks or no deploy, so no API token or agent may set it. The PIN
+  // is checked before the repo lookup and never logged or echoed.
+  fastify.put(
+    '/api/projects/:id/repos/marks',
+    {
+      schema: {
+        security: HUMAN_GATE_SECURITY,
+        params: {
+          type: 'object',
+          required: ['id'],
+          properties: { id: { type: 'integer', minimum: 1 } },
+        },
+        body: {
+          type: 'object',
+          required: ['repo'],
+          // propertyNames, not additionalProperties: false — the latter
+          // silently strips an unknown key; a body carrying one is refused.
+          propertyNames: { enum: ['repo', 'noChecks', 'noDeploy'] },
+          properties: {
+            repo: { type: 'string', minLength: 1, maxLength: 300 },
+            noChecks: { type: 'boolean' },
+            noDeploy: { type: 'boolean' },
+          },
+        },
+        response: { 200: OK_OBJECT, 400: ERROR_OBJECT, 401: ERROR_OBJECT, 404: ERROR_OBJECT },
+      },
+    },
+    (request, reply) => {
+      if (!humanAuthorized(request, reply)) return
+      const { repo, ...marks } = request.body
+      const result = store.setRepoMarks(request.params.id, repo, marks)
+      if (result.error) return reply.code(404).send({ error: 'That repository is not connected to this project' })
+      broadcast()
+      return { ok: true, repo, marks: result.marks }
     },
   )
 

@@ -11,10 +11,13 @@ Detection is intentionally simple and root-level:
     a warning at detection time (a host without Chromium can't run it, and
     installing a browser mid-guardrail is too slow/networked to do silently)
   - pytest.ini / [tool.pytest] in pyproject.toml / tests/test_*.py -> pytest
-A repo with none of these yields no commands: nothing to enforce, the push
-proceeds (the guardrail is "tests must pass", not "tests must exist").
+HZ-304: that detection only builds Admin's suggested commands now
+(default_check_slots). run_checks() runs FARM_CHECK_CMD or the commands saved
+in Admin, nothing else: a repo with neither fails with "no check commands
+configured for <repo>", unless the server sent a checks waiver (CHECKS_WAIVERS).
 A check *runner* that isn't installed on the farm host is skipped with a
-warning; a check that runs and fails raises CheckFailure and fails the step.
+warning; a run where nothing ran, or a check that runs and fails, raises
+CheckFailure and fails the step.
 
 HZ-144 added two things around that, both because this is the one genuinely
 CPU-bound part of a step: a cross-process cap on how many check suites run at
@@ -200,6 +203,20 @@ def _playwright_chromium_installed() -> bool:
     return any(d.is_dir() and any(d.glob("chromium-*")) for d in search_dirs)
 
 
+# HZ-304: why a run with no check commands may still go ahead, as the server
+# sends it (server/src/store.js CHECKS_WAIVER holds the same two strings).
+# "no_checks": the owner marked the repo 'no checks' in Admin, with the PIN.
+# "predates_enforcement": the item's implement ran before the repo was
+# enforced, so its pre-merge and conflict runs are flagged, not blocked.
+WAIVER_NO_CHECKS = "no_checks"
+WAIVER_PREDATES_ENFORCEMENT = "predates_enforcement"
+CHECKS_WAIVERS = (WAIVER_NO_CHECKS, WAIVER_PREDATES_ENFORCEMENT)
+_WAIVER_NOTES = {
+    WAIVER_NO_CHECKS: "marked 'no checks' in Admin",
+    WAIVER_PREDATES_ENFORCEMENT: "item predates readiness enforcement",
+}
+
+
 def detect_check_commands(ws: Path, log=lambda *_: None) -> list[list[str]]:
     override = os.environ.get("FARM_CHECK_CMD")
     if override:
@@ -289,18 +306,20 @@ def _resolve_tagged(ws: Path, configured, log) -> tuple[list[list[str]], int | N
     if slots:
         log(f"checks: using the {len(slots)} command(s) configured for this repo in Admin")
         return [argv for _, argv in slots], next((i for i, (slot, _) in enumerate(slots) if slot == "install"), None)
-    commands = detect_check_commands(ws, log=log)
-    return commands, next((i for i, cmd in enumerate(commands) if cmd[:2] == ["npm", "install"]), None)
+    # HZ-304: no auto-detection here. A guessed command never runs until the
+    # owner saves it in Admin; default_check_slots() is the only caller left.
+    return [], None
 
 
 def resolve_check_commands(ws: Path, configured=None, log=lambda *_: None) -> list[list[str]]:
     """What run_checks() runs: FARM_CHECK_CMD if set, else the repo's
-    configured commands, else today's auto-detection."""
+    configured commands, else nothing (HZ-304)."""
     return _resolve_tagged(ws, configured, log)[0]
 
 
 def default_check_slots(ws: Path) -> dict[str, str | None]:
-    """Auto-detection labelled by slot, as Admin placeholders. Detected on
+    """Auto-detection labelled by slot, as Admin suggestions — the only use
+    of auto-detection left (HZ-304). Detected on
     the hub clone, so it is a hint: a fresh workspace may differ (e.g. the
     install step depends on node_modules being absent). Two detected test
     commands (npm and pytest) share the test slot, joined by " · "."""
@@ -353,7 +372,6 @@ def run_checks(
     ws: Path,
     log=print,
     *,
-    require_ran: bool = False,
     run_id=None,
     item_id=None,
     caller: str = "step_agent",
@@ -363,15 +381,21 @@ def run_checks(
     configured=None,
     cancel=None,
     repo: str | None = None,
+    checks_waiver: str | None = None,
 ) -> str:
     """Returns a short human-readable note; raises CheckFailure on failure.
 
-    require_ran (HZ-154) turns "nothing to enforce" into a failure. The scoped
-    conflict path pushes a merge no human has looked at, so "no green, no
-    push" has to mean an actual green: a repo where zero check runners are
-    detected or installed gives that path no evidence at all, and it escalates
-    instead. Every other caller keeps today's behaviour — the guardrail there
-    is "tests must pass", not "tests must exist".
+    HZ-304: "no green, no push" means an actual green on every path. No
+    commands at all raises "no check commands configured for <repo>", and a
+    run where every runner was missing raises too, both reason "none_ran".
+    (This replaced HZ-154's require_ran, which only some callers set.)
+
+    checks_waiver (HZ-304) is one of CHECKS_WAIVERS, as the server sent it.
+    It matters only when there are no commands: the run then returns a
+    "checks waived for <repo>: ..." note, runs nothing and records nothing.
+    That note is not a pass, so check_record never turns it into evidence.
+    Configured commands always run, waiver or not. Any other value is no
+    waiver.
 
     run_id/item_id/caller only label the metrics record (and the waiting
     marker on /farm/status) — they never change what runs.
@@ -390,8 +414,8 @@ def run_checks(
     when this run queues for a slot and when it gets one.
 
     configured (HZ-245) is the repo's {install,test,lint,e2e} commands as the
-    server sent them; see resolve_check_commands(). None keeps today's
-    behaviour exactly.
+    server sent them; see resolve_check_commands(). None means no commands
+    (HZ-304: see checks_waiver above).
 
     cancel (HZ-256) is passed to check_slots.check_slot(): setting it ends a
     slot wait with check_slots.WaitCancelled. None keeps today's behaviour.
@@ -403,10 +427,14 @@ def run_checks(
     """
     commands, install_at = _resolve_tagged(ws, configured, log)
     if not commands:
-        log("checks: no test/lint commands detected in the repo — nothing to enforce")
-        if require_ran:
-            raise CheckFailure("no repo checks detected — nothing proves this change is safe to push", reason="none_ran")
-        return "no repo checks detected"
+        shown_repo = repo or "this repo"
+        if checks_waiver in CHECKS_WAIVERS:
+            note = f"checks waived for {shown_repo}: {_WAIVER_NOTES[checks_waiver]}"
+            log(f"checks: {note}")
+            return note
+        message = f"no check commands configured for {shown_repo}"
+        log(f"checks: {message} — set them in Admin, or mark the repo 'no checks'")
+        raise CheckFailure(message, reason="none_ran")
 
     # The slot is taken OUTSIDE the timeout read below, which is the whole
     # point: FARM_CHECK_TIMEOUT_S is the budget for *running* the checks, and
@@ -512,8 +540,8 @@ def run_checks(
             record["load_end"] = check_metrics.load_average()
             check_metrics.append_record(record, log=log)
 
-    if not ran and require_ran:
+    if not ran:
         raise CheckFailure(
-            "every detected check runner is missing on this host — no green to push behind", reason="none_ran"
+            "every check runner is missing on this host — no green to push behind", reason="none_ran"
         )
-    return f"{ran} repo check(s) passed" if ran else "check runners unavailable — skipped"
+    return f"{ran} repo check(s) passed"

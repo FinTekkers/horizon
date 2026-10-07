@@ -13,6 +13,7 @@ import {
   setProjectEnabled,
   setProjectAutopilot,
   saveRepoChecks,
+  saveRepoMarks,
   getRepoCheckDefaults,
   getRepoWebhooks,
   fixRepoWebhook,
@@ -456,6 +457,105 @@ const CHECK_SLOTS = [
 const savedChecks = (repoConn) =>
   Object.fromEntries(CHECK_SLOTS.map(({ key }) => [key, repoConn.checks?.[key] ?? '']))
 
+// HZ-304: a repo's 'no checks' or 'no deploy' mark. Every flip asks for the
+// gate PIN, exactly like ProjectEnabledToggle: the PIN lives in this form's
+// state only until the request settles and goes out in a header
+// (saveRepoMarks). The switch shows the server's value from the snapshot, so
+// a refused PIN leaves it as it was.
+function RepoMarkToggle({ projectId, repo, mark, label, on }) {
+  const [asking, setAsking] = useState(false)
+  const [pin, setPin] = useState('')
+  const [error, setError] = useState(null)
+  const [busy, setBusy] = useState(false)
+  const verb = on ? 'Clear' : 'Set'
+
+  const cancel = () => {
+    setAsking(false)
+    setPin('')
+    setError(null)
+  }
+
+  const submit = async (e) => {
+    e.preventDefault()
+    if (!pin || busy) return
+    setBusy(true)
+    setError(null)
+    try {
+      await saveRepoMarks(projectId, repo, { [mark]: !on }, pin)
+      setAsking(false)
+    } catch (err) {
+      setError(err.status === 401 ? 'Gate PIN incorrect' : err.message)
+    } finally {
+      setPin('')
+      setBusy(false)
+    }
+  }
+
+  return (
+    <>
+      <div className="project-enabled">
+        <span>{label}</span>
+        <button
+          type="button"
+          role="switch"
+          aria-checked={!!on}
+          aria-label={`${label} for ${repo}`}
+          className="theme-switch"
+          onClick={() => (asking ? cancel() : setAsking(true))}
+        >
+          <span className="theme-switch__thumb" />
+        </button>
+      </div>
+      {asking && (
+        <form className="project-block__add" style={{ flexBasis: '100%' }} onSubmit={submit}>
+          <input
+            className="field__input"
+            type="password"
+            autoComplete="off"
+            aria-label={`Gate PIN to change ${label.toLowerCase()} for ${repo}`}
+            placeholder={`Gate PIN to ${verb.toLowerCase()} '${label.toLowerCase()}'`}
+            value={pin}
+            onChange={(e) => setPin(e.target.value)}
+            autoFocus
+          />
+          <button type="submit" className="composer__submit" style={{ background: 'var(--primary)' }} disabled={!pin || busy}>
+            {busy ? 'Saving…' : verb}
+          </button>
+          <button type="button" className="composer__cancel" onClick={cancel}>
+            Cancel
+          </button>
+        </form>
+      )}
+      {error && <div className="gh-error" style={{ flexBasis: '100%' }}>{error}</div>}
+    </>
+  )
+}
+
+// HZ-304: the repo's two marks, and a plain-words warning while it has no
+// check commands and no 'no checks' mark. Read from the snapshot, so it shows
+// what the next dispatch will see.
+function RepoMarks({ projectId, repoConn }) {
+  const configured = CHECK_SLOTS.some(({ key }) => repoConn.checks?.[key])
+  const noChecks = !!repoConn.marks?.noChecks
+  return (
+    <div className="repo-marks">
+      <RepoMarkToggle projectId={projectId} repo={repoConn.repo} mark="noChecks" label="No checks" on={noChecks} />
+      <RepoMarkToggle
+        projectId={projectId}
+        repo={repoConn.repo}
+        mark="noDeploy"
+        label="No deploy"
+        on={!!repoConn.marks?.noDeploy}
+      />
+      {!configured && !noChecks && (
+        <div className="gh-error repo-marks__warning" role="status">
+          no checks configured: items in this repo will fail at implement
+        </div>
+      )}
+    </div>
+  )
+}
+
 // HZ-245: the commands the farm's checks run for this repo, in implement and
 // pre-merge. Saving asks for the gate PIN every time (saveRepoChecks sends it
 // in a header only): these commands judge every agent's work. The detected
@@ -506,9 +606,9 @@ function RepoChecks({ projectId, repoConn }) {
       {open && (
         <form className="repo-checks__form" onSubmit={submit}>
           <div className="gh-note">
-            Leave every box empty to auto-detect (the greyed hints, detected on the hub clone — a fresh workspace
-            may differ). Fill in any box and only the filled ones run, in this order; empty ones are skipped, never
-            auto-filled. Each runs as <code>sh -c</code>, so a missing program fails the check rather than being
+            The greyed hints are suggestions detected on the hub clone (a fresh workspace may differ); a hint never
+            runs until you type it in and save. Only the filled boxes run, in this order; empty ones are skipped,
+            never auto-filled. With every box empty, implement fails unless the repo is marked 'no checks'. Each runs as <code>sh -c</code>, so a missing program fails the check rather than being
             skipped. Commands are read when a step starts, so an edit applies from the next run. Do not put tokens
             or secrets in commands.
           </div>
@@ -915,6 +1015,7 @@ function ProjectPanel({ project, syncRepos, deployTargets }) {
             {(webhook?.status === 'missing' || webhook?.status === 'mismatched') && (
               <FixWebhookForm projectId={project.id} repo={r.repo} onFixed={refreshWebhooks} />
             )}
+            <RepoMarks projectId={project.id} repoConn={r} />
             <RepoChecks projectId={project.id} repoConn={r} />
           </Fragment>
         )

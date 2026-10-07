@@ -2,8 +2,9 @@
 
 When a repo has any command configured, run_checks() runs exactly the
 configured ones, in install/test/lint/e2e order, through the same bounded,
-scrubbed, redacted, metered path as auto-detected checks. Nothing configured
-means today's auto-detection, byte for byte; FARM_CHECK_CMD still beats both.
+scrubbed, redacted, metered path as auto-detected checks once did. HZ-304:
+nothing configured means nothing runs (auto-detection only feeds Admin's
+suggestions); FARM_CHECK_CMD still beats both.
 """
 
 import json
@@ -55,20 +56,31 @@ def recorded(monkeypatch):
     return calls
 
 
-# ---- metric 1 / 6: nothing configured is exactly today ----
+# ---- metric 1 / 6 (HZ-304): nothing configured runs nothing ----
 
 
-def test_nothing_configured_on_horizons_own_tree_is_exactly_auto_detection():
-    assert resolve_check_commands(REPO_ROOT, None) == detect_check_commands(REPO_ROOT)
-    assert resolve_check_commands(REPO_ROOT, None) != []
+def test_nothing_configured_on_horizons_own_tree_resolves_to_nothing_though_detection_still_finds_checks():
+    """HZ-304: auto-detection only builds Admin's suggestions now. Horizon's
+    own tree has detectable checks, and resolve_check_commands still runs none
+    of them; default_check_slots still suggests them."""
+    assert detect_check_commands(REPO_ROOT) != []
+    assert resolve_check_commands(REPO_ROOT, None) == []
+    assert any(checks.default_check_slots(REPO_ROOT).values())
 
 
 @pytest.mark.parametrize(
     "configured",
     [None, {}, {"install": None, "test": None, "lint": None, "e2e": None}, {"install": "", "test": "   ", "lint": " \t"}],
 )
-def test_an_all_blank_config_falls_back_to_auto_detection(npm_repo, configured):
-    assert resolve_check_commands(npm_repo, configured) == detect_check_commands(npm_repo)
+def test_an_all_blank_config_never_falls_back_to_auto_detection(npm_repo, configured, recorded):
+    assert detect_check_commands(npm_repo) != []
+    assert checks.default_check_slots(npm_repo)["test"]
+    assert resolve_check_commands(npm_repo, configured) == []
+    with pytest.raises(CheckFailure) as err:
+        run_checks(npm_repo, log=lambda *_: None, configured=configured)
+    assert str(err.value) == "no check commands configured for this repo"
+    assert err.value.reason == "none_ran"
+    assert recorded == []
 
 
 # ---- metric 2: configured commands run exactly, in order ----

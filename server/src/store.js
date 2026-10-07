@@ -330,8 +330,8 @@ function itemGateAction(rows, itemId, cursor) {
 
 // ---- projects & repos ----
 
-// `checks` (HZ-245) adds each repo's check commands; off for consumers with
-// no use for them.
+// `checks` (HZ-245) adds each repo's check commands, and (HZ-304) its
+// 'no checks' / 'no deploy' marks; off for consumers with no use for them.
 export function listProjects({ checks = true } = {}) {
   const projects = db.prepare('SELECT * FROM project ORDER BY name').all()
   const repos = db.prepare('SELECT * FROM project_repo ORDER BY repo').all()
@@ -343,13 +343,14 @@ export function listProjects({ checks = true } = {}) {
     autopilotEvents: selectAutopilotEvents.all(p.id),
     repos: repos
       .filter((r) => r.project_id === p.id)
-      .map((r) => ({ repo: r.repo, prefix: r.prefix, ...(checks ? { checks: repoChecks(r) } : {}) })),
+      .map((r) => ({ repo: r.repo, prefix: r.prefix, ...(checks ? { checks: repoChecks(r), marks: repoMarks(r) } : {}) })),
   }))
 }
 
 // ---- per-repo check commands (HZ-245) ----
 // The four commands farm/checks.py runs for a repo, in this order. A human
-// sets them in Admin; NULL everywhere means "not configured" (auto-detect).
+// sets them in Admin; NULL everywhere means "not configured" — HZ-304: the
+// repo's implement fails until they are set or it is marked 'no checks'.
 
 export const CHECK_SLOTS = ['install', 'test', 'lint', 'e2e']
 
@@ -382,6 +383,57 @@ export function setRepoCheckCommands(projectId, repoFullName, checks) {
   ).run(...values, row.id)
   notify()
   return { ok: true, checks: Object.fromEntries(CHECK_SLOTS.map((slot, i) => [slot, values[i]])) }
+}
+
+// ---- repo readiness (HZ-304) ----
+// Why a repo with no check commands may still run checks, as sent to the farm
+// (task `checks_waiver`, or `--checks-waiver` for farm/premerge.py and
+// farm/validate.py). farm/checks.py CHECKS_WAIVERS holds the same strings.
+export const CHECKS_WAIVER = Object.freeze({
+  NO_CHECKS: 'no_checks',
+  PREDATES_ENFORCEMENT: 'predates_enforcement',
+})
+
+function repoMarks(row) {
+  return { noChecks: row.no_checks === 1, noDeploy: row.no_deploy === 1 }
+}
+
+// Everything dispatch needs to judge a repo's readiness, read fresh each
+// time: the configured commands (null when none), the two marks, and when
+// enforcement began for it (null for a repo connected after HZ-304).
+export function getRepoConfig(repoFullName) {
+  const row = repoFullName ? findRepo(repoFullName) : null
+  if (!row) return null
+  return { checks: getRepoCheckCommands(repoFullName), ...repoMarks(row), enforcedSince: row.enforced_since ?? null }
+}
+
+// The ONLY writer of no_checks / no_deploy, and its only caller is the
+// PIN-gated Admin route in app.js — the same rule as setRepoCheckCommands:
+// no agent may excuse its own repo from checks or deploys. A mark left out
+// of `marks` keeps its stored value.
+export function setRepoMarks(projectId, repoFullName, marks) {
+  const row = db.prepare('SELECT * FROM project_repo WHERE project_id = ? AND repo = ?').get(projectId, repoFullName)
+  if (!row) return { error: 'not_found' }
+  const next = { ...repoMarks(row) }
+  if (typeof marks?.noChecks === 'boolean') next.noChecks = marks.noChecks
+  if (typeof marks?.noDeploy === 'boolean') next.noDeploy = marks.noDeploy
+  db.prepare('UPDATE project_repo SET no_checks = ?, no_deploy = ? WHERE id = ?').run(
+    next.noChecks ? 1 : 0,
+    next.noDeploy ? 1 : 0,
+    row.id,
+  )
+  notify()
+  return { ok: true, marks: next }
+}
+
+// Whether the item's first implement run started before `iso` (a
+// datetime('now') string, the same format step_run.started_at uses).
+export function implementStartedBefore(itemId, iso) {
+  if (!iso) return false
+  const row = db
+    .prepare('SELECT MIN(started_at) AS first FROM step_run WHERE item_id = ? AND step_index = ?')
+    .get(itemId, IMPLEMENT_STEP_INDEX)
+  return row?.first != null && row.first < iso
 }
 
 export function listRepos() {

@@ -27,8 +27,13 @@ from farm.step_agent import (
 )
 
 
-def make_task(step_index, label, repo=None, feedback=None, artifacts=None):
-    return {
+# HZ-304: the explicit "nothing to run" for a repo with no checks configured.
+# Without it, an implement run in these check-less seed repos fails by name.
+NO_CHECKS = "no_checks"
+
+
+def make_task(step_index, label, repo=None, feedback=None, artifacts=None, checks_waiver=None):
+    task = {
         "run_id": 1,
         "attempt": 1,
         "item": {
@@ -45,6 +50,9 @@ def make_task(step_index, label, repo=None, feedback=None, artifacts=None):
         "artifacts": artifacts or [],
         "feedback": feedback or [],
     }
+    if checks_waiver:
+        task["checks_waiver"] = checks_waiver
+    return task
 
 
 def test_build_prompt_renders_feedback_and_artifacts():
@@ -101,7 +109,7 @@ def test_implement_step_pushes_a_branch(tmp_path, monkeypatch):
     ws, origin = make_git_workspace(tmp_path)
     monkeypatch.setattr(step_agent, "ensure_item_worktree", lambda repo, item_id: ws)
 
-    result = execute(make_task(11, "Specialist agent implements", repo="acme/demo"))
+    result = execute(make_task(11, "Specialist agent implements", repo="acme/demo", checks_waiver=NO_CHECKS))
 
     assert result["artifacts"]["branch"] == "horizon/t-1"
     # fake_claude wrote its implementation file; the script committed and pushed it.
@@ -116,8 +124,27 @@ def test_implement_step_pushes_a_branch(tmp_path, monkeypatch):
         check=True,
     ).stdout
     assert "fake implementation" in shown
-    # No checks exist in the seed repo — the run notes that instead of failing.
-    assert "no repo checks detected" in result["summary"]
+    # No checks exist in the seed repo and the task carries the 'no checks'
+    # waiver — the run notes the waiver instead of failing.
+    assert "checks waived for acme/demo: marked 'no checks' in Admin" in result["summary"]
+
+
+def test_implement_step_with_no_check_commands_and_no_waiver_fails_by_name(tmp_path, monkeypatch):
+    """HZ-304: a repo with nothing configured is no longer a silent pass —
+    even with a package.json test script the old auto-detection would run."""
+    ws, origin = make_git_workspace(tmp_path)
+    (ws / "package.json").write_text(json.dumps({"scripts": {"test": "node --test"}}))
+    git(ws, "add", "package.json")
+    git(ws, "commit", "-m", "a detectable test script")
+    git(ws, "push", "--quiet", "origin", "main")
+    monkeypatch.setattr(step_agent, "ensure_item_worktree", lambda repo, item_id: ws)
+    monkeypatch.delenv("FARM_CHECK_CMD", raising=False)
+    assert ["npm", "test", "--silent"] in checks.detect_check_commands(ws)
+
+    with pytest.raises(step_agent.CheckFailure, match="^no check commands configured for acme/demo$") as err:
+        execute(make_task(11, "Specialist agent implements", repo="acme/demo"))
+    assert err.value.reason == "none_ran"
+    assert (ws / "package.json").exists()  # still in the tree the checks saw
 
 
 def test_implement_step_fails_when_checks_fail(tmp_path, monkeypatch):
@@ -380,7 +407,7 @@ def test_implement_step_publishes_screenshots_without_polluting_the_code_branch(
 
     monkeypatch.setattr(step_agent, "run_agent", fake_run_agent)
 
-    execute(make_task(11, "Specialist agent implements", repo="acme/demo"))
+    execute(make_task(11, "Specialist agent implements", repo="acme/demo", checks_waiver=NO_CHECKS))
 
     assert "refs/heads/e2e-artifacts/t-1" in origin_refs(origin)
     code_files = subprocess.run(
@@ -443,7 +470,7 @@ def test_implement_step_composes_the_items_persona(tmp_path, monkeypatch):
     monkeypatch.setattr(step_agent, "ensure_item_worktree", lambda repo, item_id: ws)
     captured = {}
     monkeypatch.setattr(step_agent, "run_agent", capture_run_agent(captured))
-    task = make_task(11, "Specialist agent implements", repo="acme/demo")
+    task = make_task(11, "Specialist agent implements", repo="acme/demo", checks_waiver=NO_CHECKS)
     task["item"]["personas"] = {"eng": "ui"}
     # The captured stub edits no files, so the push step correctly balks —
     # the role had already been composed and passed to the model by then.
@@ -461,7 +488,7 @@ def test_implement_step_still_composes_a_legacy_flat_persona_value(tmp_path, mon
     monkeypatch.setattr(step_agent, "ensure_item_worktree", lambda repo, item_id: ws)
     captured = {}
     monkeypatch.setattr(step_agent, "run_agent", capture_run_agent(captured))
-    task = make_task(11, "Specialist agent implements", repo="acme/demo")
+    task = make_task(11, "Specialist agent implements", repo="acme/demo", checks_waiver=NO_CHECKS)
     task["item"]["persona"] = "python_backend"  # the pre-HZ-125 field, verbatim
     with pytest.raises(RuntimeError, match="no code changes"):
         execute(task)
@@ -648,7 +675,7 @@ def test_muse_smoke_test_persona_never_forces_a_provider_on_implement(tmp_path, 
     monkeypatch.setattr(step_agent, "ensure_item_worktree", lambda repo, item_id: ws)
     captured = {}
     monkeypatch.setattr(step_agent, "run_agent", capture_run_agent(captured))
-    task = make_task(11, "Specialist agent implements", repo="acme/demo")
+    task = make_task(11, "Specialist agent implements", repo="acme/demo", checks_waiver=NO_CHECKS)
     task["item"]["personas"] = muse_smoke_test_personas
     with pytest.raises(RuntimeError, match="no code changes"):
         execute(task)
@@ -1344,7 +1371,7 @@ def test_implement_step_does_not_retry_on_a_malformed_final_reply(tmp_path, monk
 
     monkeypatch.setattr(step_agent, "run_agent", _fake)
 
-    result = execute(make_task(11, "Specialist agent implements", repo="acme/demo"))
+    result = execute(make_task(11, "Specialist agent implements", repo="acme/demo", checks_waiver=NO_CHECKS))
 
     assert len(calls) == 1  # no retry for the implement step
     assert "not valid JSON" in result["summary"]
@@ -1568,7 +1595,7 @@ def test_checks_failure_after_finished_run_pushes_checkpoint_and_next_attempt_re
         return {"result": '{"summary": "fixed the widget"}'}
 
     monkeypatch.setattr(step_agent, "run_agent", attempt_2)
-    result = execute(make_task(11, "Specialist agent implements", repo="acme/demo"))
+    result = execute(make_task(11, "Specialist agent implements", repo="acme/demo", checks_waiver=NO_CHECKS))
 
     assert seen["file"] == "finished work\n"
     assert "not ok 2 - widget renders" in seen["prompt"]
@@ -1692,7 +1719,7 @@ def test_checkpoint_rebases_onto_advanced_main(tmp_path, monkeypatch):
     # lease names exactly the sha prepare_branch checked out.
     monkeypatch.setattr(step_agent, "ensure_item_worktree", lambda repo, item_id: ws)
     monkeypatch.setattr(step_agent, "run_agent", finished_run(ws, "done.txt"))
-    result = execute(make_task(11, "Specialist agent implements", repo="acme/demo"))
+    result = execute(make_task(11, "Specialist agent implements", repo="acme/demo", checks_waiver=NO_CHECKS))
     assert result["artifacts"]["branch"] == "horizon/t-1"
     shown = subprocess.run(
         ["git", "--git-dir", str(origin), "show", "horizon/t-1:main_fix.txt"], capture_output=True, text=True, check=True
@@ -1768,7 +1795,7 @@ def test_fix_pass_hears_the_last_check_failure_without_a_continue_note(tmp_path,
         return {"result": '{"summary": "fixed"}'}
 
     monkeypatch.setattr(step_agent, "run_agent", _fake)
-    task = make_task(11, "Specialist agent implements", repo="acme/demo")
+    task = make_task(11, "Specialist agent implements", repo="acme/demo", checks_waiver=NO_CHECKS)
     task["scope"] = {"mode": "fix", "base_sha": checkpoint, "findings": []}
     execute(task)
 
@@ -1942,7 +1969,7 @@ def test_checkpoint_resume_note_reaches_the_next_attempts_prompt(tmp_path, monke
 
     captured = {}
     monkeypatch.setattr(step_agent, "run_agent", capture_run_agent(captured))
-    execute(make_task(11, "Specialist agent implements", repo="acme/demo"))
+    execute(make_task(11, "Specialist agent implements", repo="acme/demo", checks_waiver=NO_CHECKS))
 
     assert step_agent.CHECKPOINT_MARKER in captured["prompt"]
     assert "fake_implementation.txt" in captured["prompt"]
@@ -2072,11 +2099,11 @@ def test_a_note_reaches_the_implement_path(tmp_path, monkeypatch, injected_note)
     ws, _origin = make_git_workspace(tmp_path)
     monkeypatch.setattr(step_agent, "ensure_item_worktree", lambda repo, item_id: ws)
 
-    result = execute(make_task(11, "Specialist agent implements", repo="acme/demo"))
+    result = execute(make_task(11, "Specialist agent implements", repo="acme/demo", checks_waiver=NO_CHECKS))
 
     # The check note is still there — the parser note is appended after it, and
     # finalize_branch's artifacts carry no artifact_md to stamp.
-    assert "no repo checks detected" in result["summary"]
+    assert "checks waived for acme/demo: marked 'no checks' in Admin" in result["summary"]
     assert "note<" in result["summary"]
 
 
@@ -2314,7 +2341,7 @@ def test_a_reply_with_no_summary_says_so_on_the_implement_path(tmp_path, monkeyp
     fake, calls = _replies(STRAY_LEADING_OBJECT, writes_into=ws)
     monkeypatch.setattr(step_agent, "run_agent", fake)
 
-    result = execute(make_task(11, "Specialist agent implements", repo="acme/demo"))
+    result = execute(make_task(11, "Specialist agent implements", repo="acme/demo", checks_waiver=NO_CHECKS))
 
     assert len(calls) == 1  # still no retry on this path
     assert "implementation finished" in result["summary"]
@@ -2327,7 +2354,7 @@ def test_an_empty_summary_on_the_implement_path_is_reported_too(tmp_path, monkey
     fake, _calls = _replies(json.dumps({"summary": "   "}), writes_into=ws)
     monkeypatch.setattr(step_agent, "run_agent", fake)
 
-    result = execute(make_task(11, "Specialist agent implements", repo="acme/demo"))
+    result = execute(make_task(11, "Specialist agent implements", repo="acme/demo", checks_waiver=NO_CHECKS))
 
     assert "carried no 'summary'" in result["summary"]
 
@@ -2340,7 +2367,7 @@ def test_an_unparseable_implement_reply_still_reports_the_json_fallback(tmp_path
     fake, _calls = _replies("plain prose, no json", writes_into=ws)
     monkeypatch.setattr(step_agent, "run_agent", fake)
 
-    result = execute(make_task(11, "Specialist agent implements", repo="acme/demo"))
+    result = execute(make_task(11, "Specialist agent implements", repo="acme/demo", checks_waiver=NO_CHECKS))
 
     assert "was not valid JSON" in result["summary"]
     assert "carried no 'summary'" not in result["summary"]
@@ -2352,7 +2379,7 @@ def test_a_good_implement_summary_carries_no_note(tmp_path, monkeypatch):
     fake, _calls = _replies(json.dumps({"summary": "built the thing"}), writes_into=ws)
     monkeypatch.setattr(step_agent, "run_agent", fake)
 
-    result = execute(make_task(11, "Specialist agent implements", repo="acme/demo"))
+    result = execute(make_task(11, "Specialist agent implements", repo="acme/demo", checks_waiver=NO_CHECKS))
 
     assert result["summary"].startswith("built the thing · ")
     assert "carried no 'summary'" not in result["summary"]
@@ -2495,7 +2522,7 @@ def test_a_repaired_reply_notes_the_summary_on_the_implement_path(
     fake, calls = _replies(_mangle({"summary": "built it"}, "trailing_comma"), writes_into=ws)
     monkeypatch.setattr(step_agent, "run_agent", fake)
 
-    result = execute(make_task(11, "Specialist agent implements", repo="acme/demo"))
+    result = execute(make_task(11, "Specialist agent implements", repo="acme/demo", checks_waiver=NO_CHECKS))
 
     assert "built it" in result["summary"]
     assert agent_runner.TRAILING_COMMA_NOTE in result["summary"]
@@ -2514,7 +2541,7 @@ def test_a_single_quoted_implement_reply_is_not_repaired(tmp_path, monkeypatch, 
     fake, calls = _replies(_mangle({"summary": "built it"}, "single_quotes"), writes_into=ws)
     monkeypatch.setattr(step_agent, "run_agent", fake)
 
-    result = execute(make_task(11, "Specialist agent implements", repo="acme/demo"))
+    result = execute(make_task(11, "Specialist agent implements", repo="acme/demo", checks_waiver=NO_CHECKS))
 
     assert "not valid JSON" in result["summary"]
     assert "built it" not in result["summary"], "an ambiguous repair fired with no retry spent"
@@ -2629,7 +2656,7 @@ def test_the_implement_call_site_hands_the_resolved_model_to_claude(tmp_path, mo
     recorder = recording_providers('{"summary": "did it"}')
 
     with pytest.raises(RuntimeError, match="no code changes"):
-        execute(make_task(11, "Specialist agent implements", repo="acme/demo"))
+        execute(make_task(11, "Specialist agent implements", repo="acme/demo", checks_waiver=NO_CHECKS))
 
     assert recorder.models() == [STEP_OPUS], "step_agent._execute: implement run_agent call"
 
@@ -2639,7 +2666,7 @@ def test_the_implement_call_passes_the_composed_eng_persona(tmp_path, monkeypatc
     ws, _origin = make_git_workspace(tmp_path)
     monkeypatch.setattr(step_agent, "ensure_item_worktree", lambda repo, item_id: ws)
     recorder = recording_providers('{"summary": "did it"}')
-    task = make_task(11, "Specialist agent implements", repo="acme/demo")
+    task = make_task(11, "Specialist agent implements", repo="acme/demo", checks_waiver=NO_CHECKS)
     task["item"]["personas"] = {"eng": "python"}
 
     with pytest.raises(RuntimeError, match="no code changes"):
@@ -2751,7 +2778,7 @@ def test_a_conflict_send_back_merges_main_before_the_agent_and_lists_the_conflic
         return {"result": '{"summary": "resolved the merge"}'}
 
     monkeypatch.setattr(step_agent, "run_agent", _agent)
-    task = make_task(11, "Specialist agent implements", repo="acme/demo")
+    task = make_task(11, "Specialist agent implements", repo="acme/demo", checks_waiver=NO_CHECKS)
     task["merge_main"] = True
 
     execute(task)
@@ -2784,7 +2811,7 @@ def test_a_clean_merge_of_main_is_committed_before_the_agent_starts(tmp_path, mo
         return {"result": '{"summary": "did it"}'}
 
     monkeypatch.setattr(step_agent, "run_agent", _agent)
-    task = make_task(11, "Specialist agent implements", repo="acme/demo")
+    task = make_task(11, "Specialist agent implements", repo="acme/demo", checks_waiver=NO_CHECKS)
     task["merge_main"] = True
 
     execute(task)
@@ -2808,7 +2835,7 @@ def test_an_implement_run_without_merge_main_leaves_main_unmerged(tmp_path, monk
 
     monkeypatch.setattr(step_agent, "run_agent", _agent)
 
-    execute(make_task(11, "Specialist agent implements", repo="acme/demo"))
+    execute(make_task(11, "Specialist agent implements", repo="acme/demo", checks_waiver=NO_CHECKS))
 
     assert not seen["main_in_head"]
     assert "conflicted with main" not in seen["prompt"]
@@ -2827,7 +2854,7 @@ def test_a_conflicted_merge_resolved_to_the_branchs_own_side_is_still_committed(
         return {"result": '{"summary": "kept ours"}'}
 
     monkeypatch.setattr(step_agent, "run_agent", _agent)
-    task = make_task(11, "Specialist agent implements", repo="acme/demo")
+    task = make_task(11, "Specialist agent implements", repo="acme/demo", checks_waiver=NO_CHECKS)
     task["merge_main"] = True
 
     execute(task)
@@ -2888,7 +2915,7 @@ def test_a_finished_run_that_left_conflict_markers_fails_without_committing_or_p
         return {"result": '{"summary": "done"}'}
 
     monkeypatch.setattr(step_agent, "run_agent", _agent)
-    task = make_task(11, "Specialist agent implements", repo="acme/demo")
+    task = make_task(11, "Specialist agent implements", repo="acme/demo", checks_waiver=NO_CHECKS)
     task["merge_main"] = True
 
     with pytest.raises(RuntimeError, match="conflict markers left unresolved in: shared.txt"):
@@ -2953,7 +2980,7 @@ def test_a_run_with_no_checks_to_run_reports_no_sha(tmp_path, monkeypatch):
     monkeypatch.delenv("FARM_CHECK_CMD", raising=False)
     monkeypatch.setattr(step_agent, "run_agent", finished_run(ws))
 
-    result = execute(make_task(11, "Specialist agent implements", repo="acme/demo"))
+    result = execute(make_task(11, "Specialist agent implements", repo="acme/demo", checks_waiver=NO_CHECKS))
 
     assert "checks_passed_sha" not in result["artifacts"]
 
