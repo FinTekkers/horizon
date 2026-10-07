@@ -47,6 +47,8 @@ import * as definitions from './definitions.js'
 import * as rulesStore from './rulesStore.js'
 import * as runLogView from './runLogView.js'
 import * as split from './split.js'
+import * as checkFlakes from './checkFlakes.js'
+import * as testResults from './testResults.js'
 import {
   API_SECURITY,
   ERROR_OBJECT,
@@ -967,6 +969,13 @@ export function buildApp({ logger = true, onRoute = null } = {}) {
       // a crash blocks — fail closed, as for every other inconclusive result.
       result = { ok: false, reason: 'crash', detail: err.message, head_sha: head.sha, base_sha: baseSha }
     }
+    // HZ-327: the run's flakes and per-test results, whatever its outcome —
+    // recorded here because premerge.js stays database-free, and taken off the
+    // result, which nothing below reads them from.
+    const { flakes, test_runs: testRuns, ...report } = result
+    checkFlakes.recordFlakes({ itemId: id, source: 'premerge', flakes })
+    testResults.recordTestRuns({ itemId: id, source: 'premerge', testRuns })
+    result = report
     if (!result.ok) {
       const error =
         result.reason === 'checks_failed'
@@ -2065,6 +2074,27 @@ export function buildApp({ logger = true, onRoute = null } = {}) {
     targets: deploy.listTargetStatuses(),
   }))
 
+  // ---- Flaky tests and test history (HZ-327) ----
+  // Read-only. Flakes per repo, newest first: { repos: [{ repo, tests: [...] }] }.
+  fastify.get('/api/admin/check-flakes', { schema: { response: { 200: OK_OBJECT } } }, () => checkFlakes.listFlakes())
+
+  // One repo's per-test history: runs, failures, flakes, last seen, median and
+  // p95 duration. HZ-328 picks its blocking test set from this.
+  fastify.get(
+    '/api/admin/test-history',
+    {
+      schema: {
+        querystring: {
+          type: 'object',
+          required: ['repo'],
+          properties: { repo: { type: 'string', minLength: 1, maxLength: 300 } },
+        },
+        response: { 200: OK_OBJECT },
+      },
+    },
+    (request) => testResults.testHistory(request.query.repo),
+  )
+
   // HZ-258: a target's Dry run — five read-only checks (deployDryRun.js). PIN
   // first, before the row is even looked up. The body must be empty: what is
   // probed comes only from the stored row, never from the request.
@@ -2688,6 +2718,12 @@ export function buildApp({ logger = true, onRoute = null } = {}) {
 
   // ---- farm callbacks (farm/ Python daemon reporting step results) ----
 
+  // HZ-327: flakes ride on /complete and /fail. Deliberately loose — every
+  // field is cut to size in checkFlakes.js — so an oversize flake can never
+  // get the step result that carries it refused.
+  const FLAKES_BODY = { type: 'array', items: { type: 'object' } }
+  const TEST_RUNS_BODY_LIMIT = 32 * 1024 * 1024
+
   function farmAuthorized(request, reply) {
     if ((request.headers['x-farm-secret'] || '') !== FARM_SHARED_SECRET) {
       reply.code(401).send({ error: 'bad farm secret' })
@@ -2848,12 +2884,14 @@ export function buildApp({ logger = true, onRoute = null } = {}) {
             summary: { type: 'string', maxLength: 2000 },
             patch: { type: 'object' },
             artifacts: { type: 'object' },
+            flakes: FLAKES_BODY,
           },
         },
       },
     },
     async (request, reply) => {
       if (!farmAuthorized(request, reply)) return
+      checkFlakes.recordRunFlakes(request.params.runId, request.body.flakes, { log: request.log })
       return orchestrator.completeFarmRun(request.params.runId, request.body)
     },
   )
@@ -2866,13 +2904,37 @@ export function buildApp({ logger = true, onRoute = null } = {}) {
         body: {
           type: 'object',
           required: ['error'],
-          properties: { error: { type: 'string', maxLength: 2000 }, reason: { type: 'string', maxLength: 100 } },
+          properties: {
+            error: { type: 'string', maxLength: 2000 },
+            reason: { type: 'string', maxLength: 100 },
+            flakes: FLAKES_BODY,
+          },
         },
       },
     },
     (request, reply) => {
       if (!farmAuthorized(request, reply)) return
+      checkFlakes.recordRunFlakes(request.params.runId, request.body.flakes, { log: request.log })
       return orchestrator.failFarmRun(request.params.runId, request.body.error, request.body.reason || null)
+    },
+  )
+
+  // HZ-327: the implement step's per-test results, posted by farmd after the
+  // result itself. Its own route because a whole suite's rows can outgrow the
+  // default body limit /complete keeps. Best-effort on both sides.
+  fastify.post(
+    '/api/farm/steps/:runId/test-runs',
+    {
+      bodyLimit: TEST_RUNS_BODY_LIMIT,
+      schema: {
+        params: { type: 'object', required: ['runId'], properties: { runId: { type: 'integer' } } },
+        body: { type: 'object', required: ['test_runs'], properties: { test_runs: { type: 'array' } } },
+      },
+    },
+    async (request, reply) => {
+      if (!farmAuthorized(request, reply)) return
+      testResults.recordRunTestRuns(request.params.runId, request.body.test_runs, { log: request.log })
+      return { ok: true }
     },
   )
 

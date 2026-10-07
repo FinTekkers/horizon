@@ -6,6 +6,7 @@ import {
   disconnectRepo,
   regenerateGatePin,
   getDeployTargets,
+  getCheckFlakes,
   dryRunDeployTarget,
   listApiTokens,
   createApiToken,
@@ -457,6 +458,65 @@ function DeployTargetsPanel({ targets, error }) {
       {error && <div className="gh-error">{error}</div>}
       {targets && targets.length === 0 && <div className="gh-note">No deploy targets registered.</div>}
       {targets && targets.map((target) => <DeployTargetRow key={target.key} target={target} />)}
+    </div>
+  )
+}
+
+// HZ-327: "2026-10-07T09:12:00.000Z" -> "2026-10-07 09:12 UTC" — the same in
+// every browser locale.
+const utcMinute = (iso) => (iso ? `${iso.slice(0, 16).replace('T', ' ')} UTC` : '—')
+
+const PING_LABELS = { sent: 'sent', failed: 'send failed', skipped: 'not sent (notifications off)', pending: 'sending' }
+
+// HZ-327: the farm reruns a failing check once; a pass on rerun is a flake,
+// recorded here instead of costing an attempt. Read-only: nothing is skipped
+// or quarantined, so this list is where repeat offenders show up to be fixed.
+// AdminPage owns the fetch, like the deploy targets above.
+function FlakyTestsPanel({ data, error }) {
+  return (
+    <div className="panel admin__panel">
+      <div className="panel__title">Flaky tests</div>
+      <div className="panel__subtitle">
+        Tests that failed and then passed on the same code — on the farm&apos;s one rerun, or across runs. The owner
+        is pinged once when a test flakes 3 times in 7 days.
+      </div>
+
+      {error && <div className="gh-error">{error}</div>}
+      {data && data.repos.length === 0 && <div className="gh-note">No flaky tests recorded.</div>}
+      {data &&
+        data.repos.map(({ repo, tests }) => (
+          <div key={repo} style={{ marginTop: 12 }}>
+            <div style={{ fontWeight: 600, marginBottom: 6 }}>{repo}</div>
+            <table
+              aria-label={`Flaky tests in ${repo}`}
+              style={{ borderCollapse: 'collapse', font: '500 13px var(--font-sans)', width: '100%' }}
+            >
+              <thead>
+                <tr>
+                  <th align="left">Test</th>
+                  <th align="left">Flakes (7 d / total)</th>
+                  <th align="left">Last seen</th>
+                  <th align="left">Last item</th>
+                  <th align="left">Pinged</th>
+                </tr>
+              </thead>
+              <tbody>
+                {tests.map((t) => (
+                  <tr key={t.test}>
+                    <td style={{ wordBreak: 'break-word' }}>
+                      {t.test}
+                      {!t.name_parsed && <span className="gh-note"> (test name not parsed)</span>}
+                    </td>
+                    <td>{`${t.count_7d} / ${t.count}`}</td>
+                    <td>{utcMinute(t.last_seen)}</td>
+                    <td>{t.last_item_id || '—'}</td>
+                    <td>{t.ping_status ? `${PING_LABELS[t.ping_status] || t.ping_status} ${utcMinute(t.pinged_at)}` : '—'}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        ))}
     </div>
   )
 }
@@ -1116,6 +1176,13 @@ export default function AdminPage({ sync, projects, onBack }) {
       .catch((err) => setDeployTargets((prev) => ({ ...prev, error: err.message })))
   }, [deployTargetsVersion])
 
+  const [checkFlakes, setCheckFlakes] = useState({ data: null, error: null })
+  useEffect(() => {
+    getCheckFlakes()
+      .then((data) => setCheckFlakes({ data: { repos: data.repos || [] }, error: null }))
+      .catch((err) => setCheckFlakes({ data: null, error: err.message }))
+  }, [])
+
   return (
     <div className="admin">
       <button className="tracker__back" onClick={onBack}>
@@ -1130,6 +1197,8 @@ export default function AdminPage({ sync, projects, onBack }) {
       <TokenPanel sync={sync} />
       <div style={{ height: 22 }} />
       <DeployTargetsPanel targets={deployTargets.targets} error={deployTargets.error} />
+      <div style={{ height: 22 }} />
+      <FlakyTestsPanel data={checkFlakes.data} error={checkFlakes.error} />
       <div style={{ height: 22 }} />
       <DeployTargetOverrides projects={projects} onChanged={() => setDeployTargetsVersion((v) => v + 1)} />
       <div style={{ height: 22 }} />

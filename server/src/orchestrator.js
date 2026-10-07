@@ -79,6 +79,8 @@ import { deployWaitFor } from './deployWait.js'
 import { findTargetByRepo } from './deployTargets.js'
 import { servedRulesFor } from './rulesStore.js'
 import { OPTIONS_STEP_INDEX, proposeSplit } from './split.js'
+import { recordFlakes } from './checkFlakes.js'
+import { recordTestRuns } from './testResults.js'
 
 // Keyed by step_run.id (HZ-100) — NOT item id. Keying by item used to let a
 // stale callback for a superseded run clear/overwrite the CURRENT run's
@@ -714,6 +716,10 @@ async function runConflictResolution(id, item, actor) {
     requestChanges(id, 'Accept the code', `PR #${item.pr}: ${reason}`, actor)
     return { result: { ok: true, resolved: false, escalated: true, reason }, state: 'escalated', reason }
   }
+
+  // HZ-327: the resolver's flakes and per-test results, resolved or not.
+  recordFlakes({ itemId: id, source: 'conflict_resolver', flakes: result?.flakes })
+  recordTestRuns({ itemId: id, source: 'conflict_resolver', testRuns: result?.test_runs })
 
   if (result.resolved) {
     recordFarmCheckPass(item, result, 'conflict_resolver')

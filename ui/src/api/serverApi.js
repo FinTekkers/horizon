@@ -506,6 +506,11 @@ export function getDeployTargets() {
   return getJson('/admin/deploy-targets')
 }
 
+// HZ-327: flaky tests per repo, newest first — read-only.
+export function getCheckFlakes() {
+  return getJson('/admin/check-flakes')
+}
+
 // HZ-258: a target's Dry run — five read-only checks. Gate-PIN protected like
 // fixRepoWebhook: the PIN goes only in the x-human-key header, never cached.
 // The body is always empty: the server probes only the stored target.

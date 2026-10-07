@@ -413,6 +413,12 @@ export async function listDefinitions() {
   return MOCK_DEFINITIONS
 }
 
+// ---- flaky tests (HZ-327, read-only) ----
+
+export async function getCheckFlakes() {
+  return { repos: [] }
+}
+
 // ---- deploy targets (HZ-41, read-only) ----
 
 export async function getDeployTargets() {

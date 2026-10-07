@@ -24,6 +24,8 @@ vi.mock('../api', () => ({
   createDeployTarget: vi.fn(),
   updateDeployTarget: vi.fn(),
   deleteDeployTarget: vi.fn(),
+  // HZ-327: the Flaky tests panel's read.
+  getCheckFlakes: vi.fn(async () => ({ repos: [] })),
   getDeployTargets: vi.fn(),
   dryRunDeployTarget: vi.fn(),
   saveToken: vi.fn(),

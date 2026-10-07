@@ -24,20 +24,31 @@ CPU-bound part of a step: a cross-process cap on how many check suites run at
 once (farm/check_slots.py), and a JSONL record per run (farm/check_metrics.py)
 so the cap can be measured. It also gave the subprocess an explicit `env=` —
 see _check_env() for the failure that made that necessary.
+
+HZ-327 adds the flake rerun and per-test results: a command that exits
+non-zero is rerun once, at once, on the same tree (see _should_rerun()); a
+pass on rerun is a flake, recorded and not a failure. Every command gets
+HORIZON_TEST_REPORT_DIR, and the JUnit XML written there becomes one row per
+test (a command with no report is one row). Recording never changes a
+check's result.
 """
 
 import contextlib
 import json
 import os
 import re
+import shlex
 import shutil
 import signal
 import subprocess
 import sys
+import tempfile
 import time
+import uuid
+import xml.etree.ElementTree as ET
 from pathlib import Path
 
-from . import check_metrics, check_slots, config, dep_cache
+from . import check_metrics, check_record, check_slots, config, dep_cache
 from .pause import PauseRequested
 
 # HZ-183: how much of a failing command's output a CheckFailure carries. Lines,
@@ -191,6 +202,240 @@ def failure_digest(output: str, max_chars: int = DIGEST_MAX_CHARS) -> str:
     if omitted:
         digest += f"\n… {omitted} more lines omitted"
     return digest
+
+
+# ---- flake rerun + per-test results (HZ-327) ----
+# FARM_CHECK_RERUN=0 is the rollback switch: fail on the first non-zero exit,
+# as before HZ-327. Any other value, or unset, reruns.
+RERUN_ENV = "FARM_CHECK_RERUN"
+TEST_REPORT_DIR_ENV = "HORIZON_TEST_REPORT_DIR"
+# Every field is cut below the server's limits (server/src/checkFlakes.js), so
+# a long output can never get the step result that carries it refused.
+FLAKE_OUTPUT_MAX_CHARS = 4000
+FLAKE_TEST_MAX_CHARS = 300
+FLAKE_COMMAND_MAX_CHARS = 500
+FLAKES_MAX = 20
+TEST_NAME_MAX_CHARS = 500
+TEST_ROWS_MAX = 20000
+REPORT_FILE_MAX_BYTES = 32 * 1024 * 1024
+# The tree snapshot is the only recording step that can take real time; the
+# whole recording overhead must stay under 5 s per run.
+RECORD_SNAPSHOT_TIMEOUT_S = 3
+
+# A shell script with any of these is more than one simple command: appending
+# a flag would land on its last part only, so it reruns unchanged.
+_SHELL_SYNTAX = re.compile(r"[;&|<>`$()\n]")
+
+
+def rerun_command(cmd: list[str]) -> list[str]:
+    """The narrower command that reruns only the failing tests, where the
+    runner can: pytest --lf, playwright test --last-failed. Anything else —
+    a compound script, `npm test`, an unknown runner — reruns unchanged."""
+    if len(cmd) == 3 and cmd[:2] == ["sh", "-c"]:
+        script = cmd[2].strip()
+        if _SHELL_SYNTAX.search(script):
+            return list(cmd)
+        try:
+            tokens = shlex.split(script)
+        except ValueError:
+            return list(cmd)
+        flag = _rerun_flag(tokens)
+        return ["sh", "-c", f"{script} {flag}"] if flag else list(cmd)
+    flag = _rerun_flag(cmd)
+    return [*cmd, flag] if flag else list(cmd)
+
+
+def _rerun_flag(tokens: list[str]) -> str | None:
+    names = [Path(t).name for t in tokens]
+    if "pytest" in names or "py.test" in names:
+        return None if "--lf" in tokens or "--last-failed" in tokens else "--lf"
+    if any(a == "playwright" and b == "test" for a, b in zip(names, names[1:])):
+        return None if "--last-failed" in tokens else "--last-failed"
+    return None
+
+
+# The first failing test a runner names, in the shapes seen on this host:
+# node --test spec (✖ name (12.3ms)) and TAP (not ok 3 - name), pytest
+# (FAILED path::test), Playwright (✘ … › name (1.2s)) and vitest (FAIL file).
+_DURATION = r"(?:\s+\([\d.]+\s*m?s\))?"
+_FLAKY_NAME_PATTERNS = (
+    re.compile(rf"^\s*✖\s+(?!failing tests:)(.+?){_DURATION}\s*$"),
+    re.compile(r"^\s*not ok \d+ - (.+?)\s*(?:#.*)?$"),
+    re.compile(r"^FAILED (\S+)"),
+    re.compile(rf"✘.*›\s+(.+?){_DURATION}\s*$"),
+    re.compile(r"^\s*FAIL\s+(.+?)\s*$"),
+)
+
+
+def flaky_test_name(output: str) -> str | None:
+    """The first failing test named in `output`, or None."""
+    for line in output.splitlines():
+        for pattern in _FLAKY_NAME_PATTERNS:
+            match = pattern.search(line)
+            if match and match.group(1).strip():
+                return match.group(1).strip()[:FLAKE_TEST_MAX_CHARS]
+    return None
+
+
+def _cap_tail(text: str, limit: int) -> str:
+    """The last `limit` characters, marked when cut (HZ-114)."""
+    if len(text) <= limit:
+        return text
+    marker = "[earlier output trimmed]\n"
+    return marker + text[-(limit - len(marker)) :]
+
+
+# sh's "not executable" and "command not found": the check never ran.
+_NEVER_RAN_EXIT_CODES = (126, 127)
+
+
+def _should_rerun(returncode: int, index: int, install_at: int | None, deadline: float | None) -> bool:
+    """Only a test failure is rerun. A command the shell could not find or
+    run never ran; a signal kill (classify_failure's `oom`) is host pressure;
+    an install failure is not a test; a spent deadline leaves no room.
+    Timeouts and a missing `sh` never reach this point."""
+    if os.environ.get(RERUN_ENV) == "0" or returncode < 0 or returncode in _NEVER_RAN_EXIT_CODES:
+        return False
+    if index == install_at:
+        return False
+    return deadline is None or deadline - time.monotonic() > 0
+
+
+def _relative_file(path: str | None, ws: Path) -> str | None:
+    """A report's file path, relative to the workspace when inside it: every
+    item has its own worktree, and an absolute path would split one test's
+    history per item."""
+    if not path:
+        return None
+    if not Path(path).is_absolute():
+        return path
+    try:
+        return str(Path(path).resolve().relative_to(ws.resolve()))
+    except (ValueError, OSError):
+        return path
+
+
+def _case_status(case: ET.Element) -> str:
+    tags = {child.tag for child in case}
+    if tags & {"failure", "error"}:
+        return "fail"
+    return "skip" if "skipped" in tags else "pass"
+
+
+def _duration_ms(value: str | None) -> int | None:
+    try:
+        return max(0, round(float(value) * 1000)) if value is not None else None
+    except ValueError:
+        return None
+
+
+def parse_junit(path: Path, ws: Path) -> list[dict]:
+    """One row per <testcase> in a JUnit XML file. Raises ET.ParseError (or
+    OSError) for a file that is not a readable report."""
+    rows: list[dict] = []
+
+    def walk(element: ET.Element, suite: str | None, file: str | None) -> None:
+        for child in element:
+            if child.tag in ("testsuites", "testsuite"):
+                walk(
+                    child,
+                    child.get("name") if child.tag == "testsuite" else suite,
+                    child.get("file") or child.get("filepath") or file,
+                )
+            elif child.tag == "testcase":
+                case_file = _relative_file(child.get("file") or file, ws)
+                rows.append(
+                    {
+                        "suite": suite[:TEST_NAME_MAX_CHARS] if suite else None,
+                        "file": case_file[:TEST_NAME_MAX_CHARS] if case_file else None,
+                        "test": (child.get("name") or "(unnamed test)")[:TEST_NAME_MAX_CHARS],
+                        "status": _case_status(child),
+                        "duration_ms": _duration_ms(child.get("time")),
+                    }
+                )
+
+    if path.stat().st_size > REPORT_FILE_MAX_BYTES:
+        raise OSError(f"report is over {REPORT_FILE_MAX_BYTES} bytes")
+    # Wrapped, so a root <testsuite> or <testcase> is walked like any child.
+    wrapper = ET.Element("report")
+    wrapper.append(ET.parse(path).getroot())
+    walk(wrapper, None, None)
+    return rows
+
+
+def _report_rows(report_dir: Path, ws: Path, log) -> list[dict]:
+    """Every test row from the JUnit XML under report_dir. A malformed report
+    is logged and skipped; it never changes the check's result."""
+    rows: list[dict] = []
+    for path in sorted(report_dir.rglob("*.xml")):
+        try:
+            rows.extend(parse_junit(path, ws))
+        except (ET.ParseError, OSError, ValueError) as exc:
+            log(
+                f"checks: could not read test report {path.name} ({exc}) — "
+                "recorded without it; the check's result is unchanged"
+            )
+    return rows
+
+
+def _attempt(cmd: list[str], ws: Path, timeout_s: float, env: dict[str, str], log):
+    """One run of one command with its own HORIZON_TEST_REPORT_DIR, outside
+    the workspace and removed afterwards. Returns (proc, junit rows); raises
+    TimeoutExpired / FileNotFoundError like _run_bounded."""
+    report_dir = Path(tempfile.mkdtemp(prefix="horizon-test-report-"))
+    try:
+        proc = _run_bounded(cmd, ws, timeout_s, {**env, TEST_REPORT_DIR_ENV: str(report_dir)})
+        return proc, _report_rows(report_dir, ws, log)
+    finally:
+        shutil.rmtree(report_dir, ignore_errors=True)
+
+
+def _test_rows(junit: list[dict], shown: str, returncode: int, duration_s: float, attempt: int) -> list[dict]:
+    """The rows one attempt stores: its JUnit rows, or one row for the
+    command itself when it wrote none. A signal-killed command with no report
+    stores nothing — host pressure, not a test result."""
+    command = shown[:FLAKE_COMMAND_MAX_CHARS]
+    if junit:
+        return [{**row, "command": command, "attempt": attempt} for row in junit]
+    if returncode < 0:
+        return []
+    status = "pass" if returncode == 0 else "fail"
+    return [
+        {
+            "suite": None,
+            "file": None,
+            "test": command[:TEST_NAME_MAX_CHARS],
+            "status": status,
+            "duration_ms": round(duration_s * 1000),
+            "command": command,
+            "attempt": attempt,
+        }
+    ]
+
+
+def _identity(row: dict) -> tuple:
+    return (row.get("suite"), row.get("file"), row.get("test"))
+
+
+def _flake_records(
+    first: list[dict], second: list[dict], shown: str, first_output: str, rerun_output: str, fallback_name: str | None
+) -> list[dict]:
+    """One record per test the report shows failing first and passing on the
+    rerun; with no named test, one record named fallback_name (parsed from
+    the output) or, failing that, the command."""
+    failed = {_identity(r) for r in first if r["status"] == "fail" and r["test"] != r["command"]}
+    named = []
+    for row in second:
+        if row["status"] == "pass" and _identity(row) in failed and _identity(row) not in {_identity(n) for n in named}:
+            named.append(row)
+    base = {"command": shown[:FLAKE_COMMAND_MAX_CHARS], "first_output": first_output, "rerun_output": rerun_output}
+    if named:
+        return [
+            {**base, "test": row["test"][:FLAKE_TEST_MAX_CHARS], "suite": row["suite"], "file": row["file"]}
+            for row in named
+        ]
+    test = fallback_name or base["command"][:FLAKE_TEST_MAX_CHARS]
+    return [{**base, "test": test, "suite": None, "file": None}]
 
 
 def _playwright_chromium_installed() -> bool:
@@ -382,6 +627,8 @@ def run_checks(
     cancel=None,
     repo: str | None = None,
     checks_waiver: str | None = None,
+    flakes: list | None = None,
+    test_runs: list | None = None,
 ) -> str:
     """Returns a short human-readable note; raises CheckFailure on failure.
 
@@ -424,6 +671,16 @@ def run_checks(
     command may restore from and save to (farm/dep_cache.py). None — or
     FARM_DEP_CACHE=0, or a nested run inside a check — runs the install
     exactly as before, with no cache I/O at all.
+
+    flakes and test_runs (HZ-327) are the caller's lists to record into;
+    None records nothing. A command that exits non-zero is rerun once (see
+    _should_rerun()); when the rerun passes, the check passes and one record
+    per flaky test goes into `flakes` (both outputs redacted and capped). A
+    failed rerun raises CheckFailure exactly as a first failure did. One dict
+    per run goes into `test_runs`: {check_run, commit_sha, tree_sha, tests},
+    tests being one row per test from any JUnit XML the commands wrote to
+    HORIZON_TEST_REPORT_DIR, or one row per command that wrote none. It is
+    appended whether the run passed or failed.
     """
     commands, install_at = _resolve_tagged(ws, configured, log)
     if not commands:
@@ -452,6 +709,19 @@ def run_checks(
         # ru_maxrss, and on the resolution this sampling rate gives up.
         mem_samples = [check_metrics.mem_available_kb()]
         ran = 0
+        recording = flakes is not None or test_runs is not None
+        commit_sha, tree_sha = (
+            check_record.tested_commit(ws, RECORD_SNAPSHOT_TIMEOUT_S, log) if recording else (None, None)
+        )
+        check_run = {"check_run": uuid.uuid4().hex, "commit_sha": commit_sha, "tree_sha": tree_sha, "tests": []}
+        secrets = {**os.environ, **env}
+
+        def keep_rows(rows: list[dict]) -> None:
+            room = TEST_ROWS_MAX - len(check_run["tests"])
+            if len(rows) > room:
+                log(f"checks: over {TEST_ROWS_MAX} test results in one run — the rest are not recorded")
+            check_run["tests"].extend(rows[: max(room, 0)])
+
         try:
             for index, cmd in enumerate(commands):
                 shown = " ".join(cmd)
@@ -477,7 +747,7 @@ def run_checks(
                 log(f"checks: running {shown}")
                 started = time.monotonic()
                 try:
-                    proc = _run_bounded(cmd, ws, budget, env)
+                    proc, junit = _attempt(cmd, ws, budget, env, log)
                 except FileNotFoundError:
                     record["commands"].append({"cmd": shown, "skipped": "runner not installed"})
                     log(f"checks: {cmd[0]} is not installed on the farm host — skipped")
@@ -506,6 +776,9 @@ def run_checks(
                     cache.after(proc.returncode, duration, deadline)
                 elif index == install_at:
                     record["install"]["duration_s"] = round(duration, 1)
+                safe_shown = redact(shown, secrets)
+                first_rows = _test_rows(junit, safe_shown, proc.returncode, duration, attempt=1)
+                keep_rows(first_rows)
                 if proc.returncode != 0:
                     output = ((proc.stdout or "") + "\n" + (proc.stderr or "")).strip()
                     # classify_failure keeps reading the raw last 400 chars, NOT
@@ -513,10 +786,61 @@ def run_checks(
                     # both built on that input, and a different one would shift
                     # the metrics without any real change behind it.
                     record["outcome"] = check_metrics.classify_failure(output[-400:], proc.returncode)
+                    if _should_rerun(proc.returncode, index, install_at, deadline):
+                        # HZ-327: straight away, same command (narrowed where
+                        # the runner allows), same workspace, same tree —
+                        # nothing runs in between.
+                        again = rerun_command(cmd)
+                        log(f"checks: {safe_shown} failed — rerunning it once on the same tree")
+                        rerun_budget = float(timeout_s)
+                        if deadline is not None:
+                            rerun_budget = min(rerun_budget, deadline - time.monotonic())
+                        rerun_started = time.monotonic()
+                        rerun = None
+                        try:
+                            rerun, rerun_junit = _attempt(again, ws, rerun_budget, env, log)
+                        except FileNotFoundError:
+                            record["commands"][-1]["rerun"] = {"skipped": "runner not installed"}
+                        except subprocess.TimeoutExpired:
+                            # Still a real failure: the first run failed, and
+                            # a rerun that never finished proves nothing.
+                            record["commands"][-1]["rerun"] = {
+                                "duration_s": round(time.monotonic() - rerun_started, 1),
+                                "timed_out": True,
+                            }
+                        finally:
+                            mem_samples.append(check_metrics.mem_available_kb())
+                        if rerun is not None:
+                            rerun_duration = time.monotonic() - rerun_started
+                            record["commands"][-1]["rerun"] = {
+                                "duration_s": round(rerun_duration, 1),
+                                "returncode": rerun.returncode,
+                            }
+                            rerun_rows = _test_rows(rerun_junit, safe_shown, rerun.returncode, rerun_duration, attempt=2)
+                            keep_rows(rerun_rows)
+                            rerun_output = ((rerun.stdout or "") + "\n" + (rerun.stderr or "")).strip()
+                            if rerun.returncode == 0:
+                                record["flake"] = True
+                                log(f"checks: {safe_shown} failed then passed on rerun — recorded as flaky")
+                                if flakes is not None:
+                                    first_redacted = redact(output, secrets)
+                                    found = _flake_records(
+                                        first_rows,
+                                        rerun_rows,
+                                        safe_shown,
+                                        _cap_tail(output_tail(first_redacted), FLAKE_OUTPUT_MAX_CHARS),
+                                        _cap_tail(output_tail(redact(rerun_output, secrets)), FLAKE_OUTPUT_MAX_CHARS),
+                                        flaky_test_name(first_redacted),
+                                    )
+                                    where = {"check_run": check_run["check_run"], "commit_sha": commit_sha, "tree_sha": tree_sha}
+                                    flakes.extend({**flake, **where} for flake in found[: max(FLAKES_MAX - len(flakes), 0)])
+                                ran += 1
+                                continue
+                            if rerun_output:
+                                output = rerun_output
                     # Redacted against the farm's own environment too, not just
                     # the scrubbed check env: a test can still print a farm
                     # secret it read some other way.
-                    secrets = {**os.environ, **env}
                     redacted = redact(output, secrets)
                     digest = failure_digest(redacted)
                     shown = redact(shown, secrets)
@@ -539,6 +863,8 @@ def run_checks(
             record["mem_available_low_kb"] = min(measured) if measured else None
             record["load_end"] = check_metrics.load_average()
             check_metrics.append_record(record, log=log)
+            if test_runs is not None:
+                test_runs.append(check_run)
 
     if not ran:
         raise CheckFailure(

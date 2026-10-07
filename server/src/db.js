@@ -330,6 +330,76 @@ db.exec(`
     recorded_at TEXT NOT NULL DEFAULT (datetime('now'))
   );
   CREATE INDEX IF NOT EXISTS idx_check_pass_lookup ON check_pass(repo, item_id, sha, finished_at);
+
+  -- HZ-327: one row per test per check run, from the JUnit XML the run's
+  -- commands wrote (or one row per command that wrote none). tree_sha is the
+  -- tree the run tested — "the same commit" for flake detection, since the
+  -- implement step tests uncommitted work on an unchanged HEAD. check_run
+  -- groups one run_checks() call; attempt 2 is the farm's one rerun. repo is
+  -- always the item row's. Pruned after 90 days (testResults.js).
+  CREATE TABLE IF NOT EXISTS test_result (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    repo          TEXT NOT NULL,
+    commit_sha    TEXT,
+    tree_sha      TEXT,
+    item_id       TEXT REFERENCES work_item(id) ON DELETE SET NULL,
+    run_id        INTEGER,
+    source        TEXT NOT NULL CHECK (source IN ('implement','conflict_resolver','premerge')),
+    check_run     TEXT NOT NULL,
+    command       TEXT NOT NULL,
+    suite         TEXT,
+    file          TEXT,
+    test          TEXT NOT NULL,
+    status        TEXT NOT NULL CHECK (status IN ('pass','fail','skip')),
+    duration_ms   INTEGER,
+    attempt       INTEGER NOT NULL DEFAULT 1 CHECK (attempt IN (1, 2)),
+    created_at_ms INTEGER NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS idx_test_result_tree ON test_result(repo, tree_sha, test);
+  CREATE INDEX IF NOT EXISTS idx_test_result_check_run ON test_result(check_run);
+  CREATE INDEX IF NOT EXISTS idx_test_result_created ON test_result(created_at_ms);
+
+  -- HZ-327: a test that failed and then passed on the same tree. 'rerun': the
+  -- farm's one rerun passed, and both outputs (redacted farm-side) are kept.
+  -- 'history': a pass and a fail in two check runs of the same tree, found in
+  -- test_result; it has no outputs. run_id is NULL for pre-merge and
+  -- conflict-resolver runs, which are not step runs.
+  CREATE TABLE IF NOT EXISTS check_flake (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    repo          TEXT NOT NULL,
+    test          TEXT NOT NULL,
+    suite         TEXT,
+    file          TEXT,
+    command       TEXT NOT NULL,
+    item_id       TEXT REFERENCES work_item(id) ON DELETE SET NULL,
+    run_id        INTEGER,
+    source        TEXT NOT NULL CHECK (source IN ('implement','conflict_resolver','premerge')),
+    detected_by   TEXT NOT NULL CHECK (detected_by IN ('rerun','history')),
+    check_run     TEXT,
+    commit_sha    TEXT,
+    tree_sha      TEXT,
+    first_output  TEXT NOT NULL DEFAULT '',
+    rerun_output  TEXT NOT NULL DEFAULT '',
+    created_at_ms INTEGER NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS idx_check_flake_repo_test ON check_flake(repo, test, created_at_ms);
+  CREATE INDEX IF NOT EXISTS idx_check_flake_tree ON check_flake(repo, tree_sha, test);
+
+  -- HZ-327: the owner's ping for a test that keeps flaking — at most one per
+  -- (repo, test) per rolling 7 days. Never retried: a failed send is a
+  -- 'failed' row, shown in Admin, and still counts as the window's ping.
+  CREATE TABLE IF NOT EXISTS check_flake_ping (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    repo          TEXT NOT NULL,
+    test          TEXT NOT NULL,
+    flake_id      INTEGER NOT NULL REFERENCES check_flake(id) ON DELETE CASCADE,
+    recipient     TEXT,
+    body          TEXT NOT NULL,
+    status        TEXT NOT NULL CHECK (status IN ('pending','sent','failed','skipped')),
+    last_error    TEXT,
+    created_at_ms INTEGER NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS idx_check_flake_ping_window ON check_flake_ping(repo, test, created_at_ms);
 `)
 
 // Additive migrations for databases created before these columns existed.

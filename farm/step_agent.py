@@ -9,6 +9,7 @@ item's branch in the workspace; the *script* owns git (branch, commit, push)
 
 import argparse
 import contextlib
+import contextvars
 import fnmatch
 import json
 import math
@@ -1591,6 +1592,8 @@ def _execute(task: dict, guard: HandoffGuard) -> dict:
                     repo=item.get("repo"),
                     # HZ-304: from the server, like check_commands.
                     checks_waiver=task.get("checks_waiver"),
+                    # HZ-327: flakes and per-test results ride on the result.
+                    **_recording(),
                 )
             checks_finished_at = check_record.now_iso()
         except pause.PauseRequested:
@@ -1885,6 +1888,19 @@ def _execute(task: dict, guard: HandoffGuard) -> dict:
 RESULT_POST_ATTEMPTS = 12
 RESULT_POST_RETRY_S = 10
 
+# HZ-327: what this run's implement-step checks recorded — {"flakes": [],
+# "test_runs": []}, made by main() for its one run, so nothing can leak into
+# another — carried on the result to farmd (farmd._forward_result): flakes on
+# /complete or /fail, test_runs to the server's test-runs route. None (no
+# main(), e.g. a test calling execute()) records nothing.
+_RECORDED: contextvars.ContextVar[dict | None] = contextvars.ContextVar("step_recorded", default=None)
+
+
+def _recording() -> dict:
+    """run_checks()'s flakes/test_runs arguments for this run."""
+    recorded = _RECORDED.get()
+    return {"flakes": None, "test_runs": None} if recorded is None else recorded
+
 
 def post_result(result: dict) -> None:
     for attempt in range(1, RESULT_POST_ATTEMPTS + 1):
@@ -1913,6 +1929,8 @@ def main() -> int:
     pid_path.write_text(str(os.getpid()))
     pause.install_sigterm_handler(outcome_path)
 
+    recorded = {"flakes": [], "test_runs": []}
+    token = _RECORDED.set(recorded)
     try:
         log(f"run {run_id}: {task['step']['label']} for {task['item']['id']}")
         outcome = execute(task)
@@ -1937,6 +1955,10 @@ def main() -> int:
         # and the server pauses for a human exactly as before.
         if isinstance(exc, AgentExhaustedError):
             result["reason"] = reasons.REASON["TURN_CAP"]
+    finally:
+        _RECORDED.reset(token)
+    # A flake on one command survives a real failure on a later one.
+    result.update({key: value for key, value in recorded.items() if value})
 
     if pause.pending() and not pause.reported():
         # The pause landed after the work's last interruptible region (e.g.

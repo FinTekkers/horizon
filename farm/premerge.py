@@ -233,19 +233,27 @@ def premerge_check(
                 return {**out, "reason": "merge_conflict", "detail": output_tail(merge.stdout + "\n" + merge.stderr)}
             out["merge_sha"] = _git(ws, "rev-parse", "HEAD").stdout.strip()
 
+            # HZ-327: flakes and per-test results ride on the JSON line, on
+            # every outcome of the check run; server/src/premerge.js records them.
+            recorded = {"flakes": [], "test_runs": []}
             try:
-                note = run_checks(
-                    ws,
-                    log=log,
-                    deadline=deadline,
-                    item_id=item_id,
-                    caller="premerge",
-                    child_env={"FARM_HOME": str(checks_home)},
-                    on_slot_event=on_slot_event,
-                    configured=configured,
-                    repo=repo_full,
-                    checks_waiver=checks_waiver,
-                )
+                try:
+                    note = run_checks(
+                        ws,
+                        log=log,
+                        deadline=deadline,
+                        item_id=item_id,
+                        caller="premerge",
+                        child_env={"FARM_HOME": str(checks_home)},
+                        on_slot_event=on_slot_event,
+                        configured=configured,
+                        repo=repo_full,
+                        checks_waiver=checks_waiver,
+                        flakes=recorded["flakes"],
+                        test_runs=recorded["test_runs"],
+                    )
+                finally:
+                    out.update({key: value for key, value in recorded.items() if value})
             except CheckFailure as exc:
                 if exc.reason == "timed_out":
                     return {**out, "reason": "timed_out", "failing_check": exc.command, "detail": str(exc)}

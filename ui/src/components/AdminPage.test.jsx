@@ -32,6 +32,8 @@ vi.mock('../api', () => ({
   getRepoWebhooks: vi.fn(async () => ({ webhooks: [] })),
   fixRepoWebhook: vi.fn(async () => ({ ok: true })),
   dryRunDeployTarget: vi.fn(),
+  // HZ-327: the Flaky tests panel's read.
+  getCheckFlakes: vi.fn(async () => ({ repos: [] })),
   getDeployTargets: vi.fn(async () => ({
     targets: [
       {

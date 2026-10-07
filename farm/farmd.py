@@ -390,7 +390,11 @@ def _forward_result(body: dict) -> int | None:
         # for a human, same as before this existed.
         if body.get("reason"):
             payload["reason"] = body["reason"]
+    # HZ-327: the check run's flakes ride on the result itself, either way.
+    if isinstance(body.get("flakes"), list) and body["flakes"]:
+        payload["flakes"] = body["flakes"]
     url = f"{HORIZON_URL}/api/farm/steps/{run_id}/{path}"
+    status = None
     for attempt in (1, 2):
         try:
             res = httpx.post(url, json=payload, headers={"x-farm-secret": SHARED_SECRET}, timeout=15)
@@ -401,8 +405,34 @@ def _forward_result(body: dict) -> int | None:
             continue
         if not 200 <= res.status_code < 300:
             print(f"farmd: server REJECTED run {run_id} {path} ({res.status_code}): {res.text[:300]}", flush=True)
-        return res.status_code
-    return None
+        status = res.status_code
+        break
+    if status is not None and isinstance(body.get("test_runs"), list) and body["test_runs"]:
+        _in_background(_forward_test_runs, run_id, body["test_runs"])
+    return status
+
+
+def _in_background(fn, *args) -> None:
+    """Off the result's request: the step agent is waiting on it (30 s), and
+    a slow test-runs post must never make it retry the result."""
+    threading.Thread(target=fn, args=args, daemon=True).start()
+
+
+def _forward_test_runs(run_id, test_runs: list) -> None:
+    """HZ-327: the per-test results, after the result itself so the server
+    already holds this run's rerun flakes. Separate from /complete because a
+    whole suite's rows can outgrow that route's body limit. One try: a lost
+    history row never changes a check's result."""
+    try:
+        res = httpx.post(
+            f"{HORIZON_URL}/api/farm/steps/{run_id}/test-runs",
+            json={"test_runs": test_runs},
+            headers={"x-farm-secret": SHARED_SECRET},
+            timeout=15,
+        )
+        print(f"farmd: forwarded run {run_id} test-runs -> {res.status_code}", flush=True)
+    except Exception as exc:
+        print(f"farmd: test results for run {run_id} not recorded: {exc}", flush=True)
 
 
 def _report_unusable_task(path: Path, why: str) -> bool:
