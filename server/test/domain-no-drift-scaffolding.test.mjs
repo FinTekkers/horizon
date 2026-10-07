@@ -61,6 +61,11 @@ const PINNED_DEPS = {
       '@testing-library/dom': '^10.4.1',
       '@testing-library/react': '^16.3.2',
       '@vitejs/plugin-react': '^4.3.4',
+      // HZ-328 added `@vitest/coverage-v8` — deliberately: the test inventory
+      // (scripts/tests/inventory.mjs) measures each UI test file's V8 coverage
+      // with it. Same version as vitest; it only loads under --coverage, which
+      // only the inventory passes, never a check.
+      '@vitest/coverage-v8': '^4.1.10',
       jsdom: '^29.1.1',
       vite: '^6.0.7',
       vitest: '^4.1.10',

@@ -10,6 +10,10 @@ export const REPO_ROOT = path.resolve(import.meta.dirname, '../../..')
 
 // Build output, dependencies and VCS internals are not source.
 const SKIP_DIRS = new Set(['node_modules', '.git', 'dist', '__pycache__', '.pytest_cache', '.venv', 'test-results', 'playwright-report', 'blob-report'])
+// HZ-328: the repo root's tests/ holds generated data (the test inventory, its
+// coverage map, the blocking set), which copies every test's name verbatim. Only
+// that top-level dir — farm/tests/ is source.
+const SKIP_ROOT_DIRS = new Set(['tests'])
 
 // The repo has ~450 tracked files. 200 is a floor, not a target: it fails loud
 // if the walk is scoped wrong (wrong root, over-eager skip list) while staying
@@ -22,7 +26,7 @@ export function repoFiles(root = REPO_ROOT) {
   const walk = (dir) => {
     for (const entry of readdirSync(dir, { withFileTypes: true })) {
       if (entry.isDirectory()) {
-        if (SKIP_DIRS.has(entry.name)) continue
+        if (SKIP_DIRS.has(entry.name) || (dir === root && SKIP_ROOT_DIRS.has(entry.name))) continue
         walk(path.join(dir, entry.name))
       } else if (entry.isFile()) {
         out.push(path.join(dir, entry.name))
