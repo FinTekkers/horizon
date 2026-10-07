@@ -49,10 +49,7 @@ def _git(ws: Path, *args: str, env: dict | None = None, timeout: float = SNAPSHO
     return result.stdout.strip()
 
 
-def snapshot_tree(ws: Path, log=print) -> str | None:
-    """The tree id of the working tree as `git add -A` would commit it, or
-    None. Built in a temp index; the real index is never written."""
-    deadline = time.monotonic() + SNAPSHOT_TIMEOUT_S
+def _snapshot(ws: Path, deadline: float) -> str | None:
     tmpdir = None
     try:
         # A path that does not exist yet: git refuses an empty index file.
@@ -61,12 +58,33 @@ def snapshot_tree(ws: Path, log=print) -> str | None:
         _git(ws, "read-tree", "HEAD", env=env, timeout=deadline - time.monotonic())
         _git(ws, "add", "-A", env=env, timeout=deadline - time.monotonic())
         return _git(ws, "write-tree", env=env, timeout=deadline - time.monotonic()) or None
-    except Exception as exc:  # best-effort — never blocks the checks
-        log(f"check_record: no snapshot of the tree before the checks ({exc}) — no check pass will be reported")
-        return None
     finally:
         if tmpdir:
             shutil.rmtree(tmpdir, ignore_errors=True)
+
+
+def snapshot_tree(ws: Path, log=print) -> str | None:
+    """The tree id of the working tree as `git add -A` would commit it, or
+    None. Built in a temp index; the real index is never written."""
+    try:
+        return _snapshot(ws, time.monotonic() + SNAPSHOT_TIMEOUT_S)
+    except Exception as exc:  # best-effort — never blocks the checks
+        log(f"check_record: no snapshot of the tree before the checks ({exc}) — no check pass will be reported")
+        return None
+
+
+def tested_commit(ws: Path, timeout_s: float, log=print) -> tuple[str | None, str | None]:
+    """HZ-327: (HEAD's sha, the snapshot tree) a check run's test results are
+    stored against. The tree is what "the same commit" means for test
+    history: the implement step tests uncommitted work on an unchanged HEAD.
+    (None, None) on any error, within timeout_s; never raises."""
+    deadline = time.monotonic() + timeout_s
+    try:
+        head = _git(ws, "rev-parse", "HEAD", timeout=deadline - time.monotonic()) or None
+        return head, _snapshot(ws, deadline)
+    except Exception as exc:
+        log(f"check_record: test results stored without their commit ({exc})")
+        return None, None
 
 
 def passed_sha(ws: Path, tree: str | None, log=print) -> str | None:

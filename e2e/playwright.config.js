@@ -84,7 +84,11 @@ export default defineConfig({
   // with a rule derived from measured suite time.
   globalTimeout: 360_000,
   globalSetup: './global-setup.js',
-  reporter: [['list']],
+  // HZ-327: under a farm check run, also JUnit XML into the run's report dir —
+  // one row per spec in the repo's test history.
+  reporter: process.env.HORIZON_TEST_REPORT_DIR
+    ? [['list'], ['junit', { outputFile: join(process.env.HORIZON_TEST_REPORT_DIR, 'e2e.xml') }]]
+    : [['list']],
   use: {
     baseURL: BASE_URL,
     storageState: STORAGE_STATE_PATH,

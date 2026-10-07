@@ -58,6 +58,7 @@ export const {
   saveRule,
   restoreRule,
   getDeployTargets,
+  getCheckFlakes,
   dryRunDeployTarget,
   getDeployTargetConfig,
   createDeployTarget,

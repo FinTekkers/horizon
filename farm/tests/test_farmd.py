@@ -313,6 +313,10 @@ def test_conflicts_resolve_end_to_end_over_http_takes_the_scoped_path(running_fa
         assert recorded.pop(key, None) is not None, f"the recorded payload must keep a {key} key for the Node side"
     assert re.fullmatch(r"[0-9a-f]{40}", body.pop("checks_passed_sha"))
     assert isinstance(body.pop("checks_finished_at"), str)
+    # HZ-327: the post-merge check run's per-test rows, under a fresh
+    # check_run id every run; the Node side stores them (testResults.js).
+    [test_run] = body.pop("test_runs")
+    assert test_run["tests"] and all(row["status"] == "pass" for row in test_run["tests"])
     assert body == recorded, f"regenerate {SCOPED_RESOLVE_FIXTURE.name} — farmd's scoped reply shape changed"
 
 

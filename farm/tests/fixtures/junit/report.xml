@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<testsuites>
+  <testsuite name="" file="server/test/item-stream.test.mjs" tests="1">
+    <testcase name="the board stream carries no step output at all" file="server/test/item-stream.test.mjs" time="0.012300"><failure/></testcase>
+  </testsuite>
+  <testsuite name="stream &gt; deltas" file="server/test/item-stream.test.mjs" tests="2">
+    <testcase name="a delta names the changed item" file="server/test/item-stream.test.mjs" time="0.004000"></testcase>
+    <testcase name="a todo case" file="server/test/item-stream.test.mjs" time="0"><skipped/></testcase>
+  </testsuite>
+  <testsuite name="src/components/AdminPage.test.jsx" tests="1">
+    <testcase classname="src/components/AdminPage.test.jsx" name="AdminPage &gt; renders" time="0.25"><error message="boom"/></testcase>
+  </testsuite>
+</testsuites>

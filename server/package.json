@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "node --watch src/server.js",
     "start": "node src/server.js",
-    "test": "node --test \"test/*.test.mjs\"",
+    "test": "node --test ${HORIZON_TEST_REPORT_DIR:+--test-reporter=tap --test-reporter-destination=stdout --test-reporter=./scripts/junit-reporter.mjs --test-reporter-destination=$HORIZON_TEST_REPORT_DIR/server.xml} \"test/*.test.mjs\"",
     "check:required-input-gate": "node scripts/check-required-input-gate.mjs",
     "check:no-leaked-farmd": "node scripts/check-no-leaked-farmd.mjs"
   },

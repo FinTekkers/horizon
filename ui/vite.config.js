@@ -17,6 +17,14 @@ const proxy = {
 // would 403 on it, so the parent directory has to be allowed explicitly.
 const fs = { allow: ['..'] }
 
+// HZ-327: under a farm check run, vitest also writes JUnit XML into the run's
+// report dir, for the repo's test history. Unset, the reporters are vitest's
+// defaults, as before.
+const reportDir = process.env.HORIZON_TEST_REPORT_DIR
+const junitReport = reportDir
+  ? { reporters: ['default', 'junit'], outputFile: { junit: `${reportDir}/ui.xml` } }
+  : {}
+
 // HORIZON_BASE lets the production build mount under a subpath (e.g.
 // HORIZON_BASE=/horizon/ for shoreward.ai/horizon). Dev stays at /.
 export default defineConfig({
@@ -24,5 +32,5 @@ export default defineConfig({
   plugins: [react()],
   server: { proxy, fs },
   preview: { proxy },
-  test: { environment: 'jsdom' },
+  test: { environment: 'jsdom', ...junitReport },
 })

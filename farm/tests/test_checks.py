@@ -24,9 +24,13 @@ def hermetic_check_slots(tmp_path, monkeypatch):
     The sentinel is cleared because under a real farm check run it is set, and
     it would make every acquisition here a no-op — these tests need the real
     limiter. test_check_env_scrub.py sets it back on purpose.
+
+    HZ-327: the rerun is off here, so these failure-path tests see exactly
+    one run as before; test_checks_flake.py covers the rerun.
     """
     monkeypatch.setenv("FARM_HOME", str(tmp_path / "farm-home"))
     monkeypatch.delenv(check_slots.IN_CHECKS_ENV, raising=False)
+    monkeypatch.setenv(checks.RERUN_ENV, "0")
 
 
 def test_no_project_files_means_no_checks_and_the_run_fails(tmp_path):

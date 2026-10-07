@@ -211,9 +211,17 @@ def _push_guarded(ws: Path, pre_merge_sha: str, *args: str) -> None:
     git(ws, "push", *args)
 
 
+# HZ-327: one resolve()'s {"flakes": [], "test_runs": []}, which every
+# check run in it records into and every reply it returns carries.
+_RECORDED: contextvars.ContextVar[dict | None] = contextvars.ContextVar("conflict_recorded", default=None)
+
+
 def _run_checks(ws: Path, pre_merge_sha: str, log, **kwargs) -> str:
     """run_checks(), with this run's cancel event ending a check-slot wait.
     A cancelled wait is a cancel, not a check failure."""
+    recorded = _RECORDED.get()
+    if recorded is not None:
+        kwargs = {**kwargs, "flakes": recorded["flakes"], "test_runs": recorded["test_runs"]}
     ev = _CANCEL.get()
     if ev is None:
         return run_checks(ws, log, **kwargs)
@@ -282,8 +290,15 @@ def resolve(
     HZ-256: raises Cancelled when request_cancel() stopped the run; nothing
     was pushed and the worktree is back at the branch's own tip.
     """
-    with cancel_scope(repo_full, item_id):
-        return _resolve(repo_full, item_id, branch, base_branch, log, configured, checks_waiver)
+    recorded = {"flakes": [], "test_runs": []}
+    token = _RECORDED.set(recorded)
+    try:
+        with cancel_scope(repo_full, item_id):
+            result = _resolve(repo_full, item_id, branch, base_branch, log, configured, checks_waiver)
+    finally:
+        _RECORDED.reset(token)
+    # HZ-327: on every reply, resolved or escalated; the server records them.
+    return {**result, **{key: value for key, value in recorded.items() if value}}
 
 
 def _resolve(repo_full, item_id, branch, base_branch, log, configured, checks_waiver=None) -> dict:
