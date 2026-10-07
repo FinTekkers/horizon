@@ -367,6 +367,7 @@ button { font-family: var(--font-sans); }
 .repo-checks__toggle:hover { color: var(--primary); }
 .repo-checks__form { margin-top: 8px; }
 .repo-checks__form .field__input::placeholder { font-family: var(--font-mono); }
+.repo-checks__form textarea.field__input { display: block; resize: vertical; font-family: var(--font-mono); }
 .repo-webhook { font: 600 11px var(--font-sans); border-radius: 5px; padding: 1px 6px; white-space: nowrap; }
 .repo-webhook--ok { color: var(--success-ink); background: var(--success-bg); }
 .repo-webhook--missing, .repo-webhook--mismatched { color: var(--warning-ink); background: var(--warning-bg); }

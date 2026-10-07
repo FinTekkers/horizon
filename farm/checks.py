@@ -517,17 +517,27 @@ def _auto_detect(ws: Path, log=lambda *_: None) -> list[list[str]]:
 # (pre-merge). Nothing on the farm writes them: an agent must not be able to
 # change the commands that judge its own work. Each one runs exactly as
 # stored via `sh -c`, the same trust level as FARM_CHECK_CMD.
+# HZ-334: a slot holds one command per line. Each non-blank line is its own
+# `sh -c` command with its own FARM_CHECK_TIMEOUT_S, in slot order then line
+# order; nothing splits a line further. Only install line 1 is cached
+# (HZ-249), so the dependency install belongs on that line.
 CHECK_SLOTS = ("install", "test", "lint", "e2e")
 
 
-def _configured_slots(configured) -> list[tuple[str, list[str]]]:
+def _configured_slots(configured) -> list[tuple[str, int, int, list[str]]]:
+    """(slot, line_no, n_lines, argv) per non-blank line. line_no is the
+    physical 1-based line, as the Admin editor shows it; n_lines counts the
+    slot's non-blank lines."""
     if not isinstance(configured, dict):
         return []
-    return [
-        (slot, ["sh", "-c", value])
-        for slot in CHECK_SLOTS
-        if isinstance(value := configured.get(slot), str) and value.strip()
-    ]
+    out = []
+    for slot in CHECK_SLOTS:
+        value = configured.get(slot)
+        if not isinstance(value, str):
+            continue
+        lines = [(n, line) for n, line in enumerate(value.splitlines(), 1) if line.strip()]
+        out.extend((slot, n, len(lines), ["sh", "-c", line]) for n, line in lines)
+    return out
 
 
 def configured_commands(configured) -> list[list[str]] | None:
@@ -535,25 +545,37 @@ def configured_commands(configured) -> list[list[str]] | None:
     nothing is configured. Blank (empty or whitespace-only) and non-string
     slots are skipped — and never back-filled by auto-detection: once any
     slot is set, only the set slots run."""
-    commands = [argv for _, argv in _configured_slots(configured)]
+    commands = [argv for *_, argv in _configured_slots(configured)]
     return commands or None
+
+
+def _resolve_labelled(
+    ws: Path, configured, log
+) -> tuple[list[list[str]], int | None, list[tuple[str, int, int] | None]]:
+    """_resolve_tagged(), plus a (slot, line_no, n_lines) label per command
+    (None for FARM_CHECK_CMD) for run_checks()'s messages and record."""
+    override = os.environ.get("FARM_CHECK_CMD")
+    if override:
+        return [["sh", "-c", override]], None, [None]
+    slots = _configured_slots(configured)
+    if slots:
+        log(f"checks: using the {len(slots)} command(s) configured for this repo in Admin")
+        # HZ-334: install line 1 only — the first install entry.
+        install_at = next((i for i, (slot, *_) in enumerate(slots) if slot == "install"), None)
+        return [argv for *_, argv in slots], install_at, [(slot, n, count) for slot, n, count, _ in slots]
+    # HZ-304: no auto-detection here. A guessed command never runs until the
+    # owner saves it in Admin; default_check_slots() is the only caller left.
+    return [], None, []
 
 
 def _resolve_tagged(ws: Path, configured, log) -> tuple[list[list[str]], int | None]:
     """resolve_check_commands(), plus the index of the install command in it
     (HZ-249: the only command the dependency cache wraps), or None. Tagged
     where the list is built, so a blank install slot can never make the cache
-    wrap the test command. FARM_CHECK_CMD is one opaque command: no install."""
-    override = os.environ.get("FARM_CHECK_CMD")
-    if override:
-        return [["sh", "-c", override]], None
-    slots = _configured_slots(configured)
-    if slots:
-        log(f"checks: using the {len(slots)} command(s) configured for this repo in Admin")
-        return [argv for _, argv in slots], next((i for i, (slot, _) in enumerate(slots) if slot == "install"), None)
-    # HZ-304: no auto-detection here. A guessed command never runs until the
-    # owner saves it in Admin; default_check_slots() is the only caller left.
-    return [], None
+    wrap the test command. FARM_CHECK_CMD is one opaque command: no install.
+    With several install lines, only the first is tagged (HZ-334)."""
+    commands, install_at, _ = _resolve_labelled(ws, configured, log)
+    return commands, install_at
 
 
 def resolve_check_commands(ws: Path, configured=None, log=lambda *_: None) -> list[list[str]]:
@@ -682,7 +704,7 @@ def run_checks(
     HORIZON_TEST_REPORT_DIR, or one row per command that wrote none. It is
     appended whether the run passed or failed.
     """
-    commands, install_at = _resolve_tagged(ws, configured, log)
+    commands, install_at, labels = _resolve_labelled(ws, configured, log)
     if not commands:
         shown_repo = repo or "this repo"
         if checks_waiver in CHECKS_WAIVERS:
@@ -725,6 +747,11 @@ def run_checks(
         try:
             for index, cmd in enumerate(commands):
                 shown = " ".join(cmd)
+                label = labels[index]
+                # HZ-334: "test slot, line 2: " only when the slot has several
+                # lines, so a single-line slot's messages are as before.
+                line_label = f"{label[0]} slot, line {label[1]}: " if label and label[2] > 1 else ""
+                entry = {"slot": label[0], "line": label[1]} if label else {}
                 cache = None
                 if index == install_at:
                     if repo and config.dep_cache_enabled() and not os.environ.get(check_slots.IN_CHECKS_ENV):
@@ -742,23 +769,25 @@ def run_checks(
                     if budget <= 0:
                         record["outcome"] = "timeout"
                         raise CheckFailure(
-                            f"repo checks ran out of time before: {shown}", command=shown, reason="timed_out"
+                            f"repo checks ran out of time before: {line_label}{shown}", command=shown, reason="timed_out"
                         )
                 log(f"checks: running {shown}")
                 started = time.monotonic()
                 try:
                     proc, junit = _attempt(cmd, ws, budget, env, log)
                 except FileNotFoundError:
-                    record["commands"].append({"cmd": shown, "skipped": "runner not installed"})
+                    record["commands"].append({"cmd": shown, **entry, "skipped": "runner not installed"})
                     log(f"checks: {cmd[0]} is not installed on the farm host — skipped")
                     continue
                 except subprocess.TimeoutExpired as exc:
                     record["commands"].append(
-                        {"cmd": shown, "duration_s": round(time.monotonic() - started, 1), "timed_out": True}
+                        {"cmd": shown, **entry, "duration_s": round(time.monotonic() - started, 1), "timed_out": True}
                     )
                     record["outcome"] = "timeout"
                     raise CheckFailure(
-                        f"repo checks timed out after {int(budget)}s: {shown}", command=shown, reason="timed_out"
+                        f"repo checks timed out after {int(budget)}s: {line_label}{shown}",
+                        command=shown,
+                        reason="timed_out",
                     ) from exc
                 finally:
                     mem_samples.append(check_metrics.mem_available_kb())
@@ -766,6 +795,7 @@ def run_checks(
                 record["commands"].append(
                     {
                         "cmd": shown,
+                        **entry,
                         "duration_s": round(duration, 1),
                         "returncode": proc.returncode,
                     }
@@ -845,7 +875,7 @@ def run_checks(
                     digest = failure_digest(redacted)
                     shown = redact(shown, secrets)
                     raise CheckFailure(
-                        f"repo checks failed ({shown}):\n{digest}",
+                        f"repo checks failed ({line_label}{shown}):\n{digest}",
                         digest=digest,
                         command=shown,
                         tail=output_tail(redacted),

@@ -683,16 +683,19 @@ function RepoChecks({ projectId, repoConn }) {
             The greyed hints are suggestions detected on the hub clone (a fresh workspace may differ); a hint never
             runs until you type it in and save. Only the filled boxes run, in this order; empty ones are skipped,
             never auto-filled. With every box empty, implement fails unless the repo is marked 'no checks'. Each runs as <code>sh -c</code>, so a missing program fails the check rather than being
-            skipped. Commands are read when a step starts, so an edit applies from the next run. Do not put tokens
-            or secrets in commands.
+            skipped. One command per line: each line runs and is timed on its own, in order, and the first failure
+            stops the run. Only the first install line is cached, so put the dependency install there. Commands
+            are read when a step starts, so an edit applies from the next run. Do not put tokens or secrets in
+            commands.
           </div>
           {CHECK_SLOTS.map(({ key, label }) => (
             <label className="field" key={key}>
               <span className="field__label">{label}</span>
-              <input
+              <textarea
                 className="field__input"
                 aria-label={`${label} command for ${repoConn.repo}`}
                 placeholder={defaults?.[key] || ''}
+                rows={Math.max(1, values[key].split('\n').length)}
                 maxLength={2000}
                 value={values[key]}
                 onChange={(e) => {
