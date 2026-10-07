@@ -206,8 +206,9 @@ def _teardown() -> None:
         # never reach and nothing else ever cleans.
         for f in (QUEUE_DIR / sub).glob("*.json*"):
             f.unlink(missing_ok=True)
-    # HZ-194: a step agent's pid and pause-outcome files (see _pause_in_flight).
-    for pattern in ("*.pid", "*.paused*"):
+    # HZ-194: a step agent's pid and pause-outcome files (see _pause_in_flight);
+    # HZ-321: and the stop-reason a deploy stop leaves for it.
+    for pattern in ("*.pid", "*.paused*", "*.stop-reason"):
         for f in (QUEUE_DIR / "runs" / "active").glob(pattern):
             f.unlink(missing_ok=True)
     if killed:
@@ -1250,10 +1251,16 @@ async def steps_cancel(request: Request):
     HZ-194: `reason: "pause"` (sent only when an operator pauses the item)
     first lets an in-flight run checkpoint its work — see _pause_in_flight —
     and the response then carries `checkpoint: {outcome, detail}`. Every
-    other cancel (reject, supersede, abandon) still kills at once."""
+    other cancel (reject, supersede, abandon) still kills at once.
+
+    HZ-321: `reason: "deploy"` (a self-deploy's drain ran out of time) is a
+    pause too. `<run_id>.stop-reason` tells the step agent why before the
+    SIGTERM, so it saves a deploy checkpoint (step_agent._deploy_checkpoint)
+    instead of a pause one."""
     body = await request.json()
     run_id = str(body.get("run_id"))
-    pausing = body.get("reason") == "pause"
+    reason = body.get("reason")
+    pausing = reason in ("pause", "deploy")
     checkpoint = None
     removed = False
     killed = None
@@ -1263,17 +1270,24 @@ async def steps_cancel(request: Request):
             continue
         if sub == "runs/active":
             try:
-                name = _run_session_name(json.loads(task_path.read_text()))
+                task = json.loads(task_path.read_text())
+                name = _run_session_name(task)
                 if pausing and tmux_mgr.session_exists(name):
-                    checkpoint = await _pause_in_flight(run_id, name, _pause_timeout(body.get("checkpoint_timeout_s")))
-                    print(f"farmd: pause of run {run_id}: checkpoint {checkpoint['outcome']}", flush=True)
+                    if reason == "deploy" and lane_for_index(steps.STEPS, task["step"]["index"]) == "pm":
+                        # A PM step keeps nothing in a workspace: no agent to ask.
+                        checkpoint = {"outcome": "nothing", "detail": "a PM step keeps no work to save"}
+                    else:
+                        if reason == "deploy":
+                            (QUEUE_DIR / sub / f"{run_id}.stop-reason").write_text("deploy")
+                        checkpoint = await _pause_in_flight(run_id, name, _pause_timeout(body.get("checkpoint_timeout_s")))
+                    print(f"farmd: {reason} of run {run_id}: checkpoint {checkpoint['outcome']}", flush=True)
                 if tmux_mgr.session_exists(name):
                     tmux_mgr.kill_session(name)
                     killed = name
                     print(f"farmd: cancelled in-flight run {run_id} (killed {name})", flush=True)
             except Exception as exc:
                 print(f"farmd: cancel of run {run_id} could not kill its session: {exc}", flush=True)
-            for leftover in (f"{run_id}.pid", f"{run_id}.paused"):
+            for leftover in (f"{run_id}.pid", f"{run_id}.paused", f"{run_id}.stop-reason"):
                 (QUEUE_DIR / sub / leftover).unlink(missing_ok=True)
         task_path.unlink(missing_ok=True)
         removed = True

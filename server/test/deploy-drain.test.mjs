@@ -270,7 +270,8 @@ test('M3: the interrupt marks running premerge and resolve rows interrupted, wit
     assert.ok(row.finished_at, 'finished_at is set')
     assert.ok(Date.parse(row.finished_at) < Date.parse(row.deadline_at), 'ended now, not at its lease')
   }
-  assert.deepEqual((await drain('GET')).json(), { blocked: true, running: [] })
+  // HZ-321 adds `steps` (no agent step runs here); `running` is unchanged.
+  assert.deepEqual((await drain('GET')).json(), { blocked: true, running: [], steps: [] })
 
   // Older clients read a deploy-interrupted resolve as failed, with the new reason.
   const items = (await app.inject({ method: 'GET', url: '/api/items', headers: { cookie } })).json().items

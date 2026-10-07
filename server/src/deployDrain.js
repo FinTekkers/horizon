@@ -23,6 +23,15 @@
 // loopback-only POST /conflicts/cancel stops that item's resolver — its agent
 // and check processes end, it never pushes, and it releases the item's lock —
 // before this server restarts. This is the route's only caller.
+//
+// HZ-321: running agent steps are drained the same way, with their own wait
+// (HORIZON_DEPLOY_DRAIN_STEP_TIMEOUT_S in the helper). beginDrain() and
+// drainStatus() list them in a separate `steps` field, so a helper that knows
+// only `running` behaves exactly as before. While blocked, kick() holds new
+// dispatches (orchestrator.js); a step still going when its wait ends is
+// stopped with a WIP checkpoint by orchestrator.interruptStepsForDeploy(), and
+// redispatched at the same attempt once the drain ends — the restarted server
+// resumes items at boot, and onDrainEnd() covers a deploy that never restarts.
 
 import * as store from './store.js'
 import * as premerge from './premerge.js'
@@ -36,23 +45,45 @@ export const CANCEL_RESOLVE_TIMEOUT_MS = 35_000
 export const DEPLOY_BLOCK_MESSAGE = 'deploy in progress, try again in a few minutes'
 
 let blockedUntil = 0
+let expiryTimer = null
+let drainEnded = () => {}
 
 export function isDeployBlocked(now = Date.now()) {
   return now < blockedUntil
 }
 
+// HZ-321: called once the block lifts — by endDrain() or by the TTL running
+// out — so held dispatches go out. One callback: the orchestrator's.
+export function onDrainEnd(cb) {
+  drainEnded = cb
+}
+
+function fireDrainEnded() {
+  clearTimeout(expiryTimer)
+  expiryTimer = null
+  try {
+    drainEnded()
+  } catch {
+    // a resume failure must never break the drain routes
+  }
+}
+
 // A second call while blocked extends the block, never shortens it.
 export function beginDrain({ ttlS }, now = Date.now()) {
   blockedUntil = Math.max(blockedUntil, now + Math.min(ttlS, DEPLOY_BLOCK_MAX_TTL_S) * 1000)
+  clearTimeout(expiryTimer)
+  expiryTimer = setTimeout(fireDrainEnded, Math.max(blockedUntil - now, 0))
+  expiryTimer.unref?.()
   return {
     blocked: isDeployBlocked(now),
     blockedUntil: new Date(blockedUntil).toISOString(),
     running: store.listRunningGateActions(),
+    steps: store.listRunningAgentSteps(),
   }
 }
 
 export function drainStatus() {
-  return { blocked: isDeployBlocked(), running: store.listRunningGateActions() }
+  return { blocked: isDeployBlocked(), running: store.listRunningGateActions(), steps: store.listRunningAgentSteps() }
 }
 
 // Asks farmd to stop one item's resolver. Returns farmd's reply
@@ -97,5 +128,7 @@ export async function interruptForDeploy(runs, { graceMs } = {}) {
 }
 
 export function endDrain() {
+  const pending = expiryTimer !== null
   blockedUntil = 0
+  if (pending) fireDrainEnded()
 }

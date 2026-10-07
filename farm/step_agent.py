@@ -175,6 +175,12 @@ CAUSE_EXHAUSTED = "exhausted"
 CAUSE_CHECKS_FAILED = "checks-failed"
 # HZ-194: an operator paused the item while this attempt was running.
 CAUSE_PAUSED = "paused"
+# HZ-321: a Horizon self-deploy stopped this attempt (see _deploy_checkpoint).
+CAUSE_DEPLOY = "deploy"
+# HZ-321: a deploy checkpoint committed but not pushed names itself in this
+# file (under the worktree's git dir) as "<branch> <sha>", so the next
+# attempt resumes from it instead of scrubbing it (prepare_branch).
+UNPUSHED_CHECKPOINT = "horizon-unpushed-checkpoint"
 
 # HZ-194: files a checkpoint never commits, matched on the basename at any
 # depth (config/.env, deploy/id_rsa). .gitignore is already honoured by
@@ -380,6 +386,9 @@ def prepare_branch(ws: Path, item: dict, *, rebase_checkpoint: bool = False) -> 
     # serialized against every other item's fetch/push on this repo.
     git(ws, "reset", "--hard")
     git(ws, "clean", "-fd")
+    # HZ-321: a deploy checkpoint whose push failed lives only in this
+    # worktree — resume from it, once, rather than from origin.
+    unpushed = _take_unpushed_checkpoint(ws, branch)
     #
     # HZ-184: the lease sha is read INSIDE the lock. Another item's fetch moves
     # the same shared origin/<branch> ref, so a bare --force-with-lease later
@@ -390,9 +399,32 @@ def prepare_branch(ws: Path, item: dict, *, rebase_checkpoint: bool = False) -> 
         remote_branch = git(ws, "rev-parse", "--verify", f"origin/{branch}", check=False)
     lease_sha = remote_branch.stdout.strip() if remote_branch.returncode == 0 else ""
     default = _default_branch(ws)
-    git(ws, "checkout", "-B", branch, lease_sha or f"origin/{default}")
-    note = _rebase_checkpoint(ws, default, lease_sha) if rebase_checkpoint else ""
+    git(ws, "checkout", "-B", branch, unpushed or lease_sha or f"origin/{default}")
+    note = _rebase_checkpoint(ws, default, unpushed or lease_sha) if rebase_checkpoint else ""
     return PreparedBranch(branch, lease_sha, note)
+
+
+def _git_path(ws: Path, name: str) -> Path:
+    path = Path(git(ws, "rev-parse", "--git-path", name).stdout.strip())
+    return path if path.is_absolute() else ws / path
+
+
+def _take_unpushed_checkpoint(ws: Path, branch: str) -> str:
+    """The sha of an unpushed deploy checkpoint left for `branch` (see
+    _deploy_checkpoint), or "". The marker is removed either way: it is
+    resumed from at most once."""
+    marker = _git_path(ws, UNPUSHED_CHECKPOINT)
+    try:
+        named, _, sha = marker.read_text().strip().partition(" ")
+    except OSError:
+        return ""
+    marker.unlink(missing_ok=True)
+    if named != branch or not sha:
+        return ""
+    if git(ws, "cat-file", "-e", f"{sha}^{{commit}}", check=False).returncode != 0:
+        return ""
+    log(f"resuming the unpushed deploy checkpoint {sha[:12]}")
+    return sha
 
 
 def _rebase_checkpoint(ws: Path, default: str, lease_sha: str) -> str:
@@ -400,7 +432,8 @@ def _rebase_checkpoint(ws: Path, default: str, lease_sha: str) -> str:
     first, so fixes that landed on main since (HZ-125) reach it. A conflicting
     rebase is abandoned and the attempt resumes from the checkpoint as it was —
     the work is never lost to a rebase. Runs only in this item's worktree;
-    nothing is pushed here."""
+    nothing is pushed here. `lease_sha` is the commit the branch was checked
+    out at, which the abort path returns to."""
     subject = git(ws, "log", "-1", "--format=%s", check=False).stdout.strip()
     if CHECKPOINT_MARKER not in subject:
         return ""
@@ -515,6 +548,14 @@ def _checkpoint_resume_note(ws: Path) -> str | None:
             "Fix those failures on top of the checkpoint — read the diff below. Do not discard "
             f"it or restart from scratch.\n\n```\n{stat}\n```"
         )
+    if cause == CAUSE_DEPLOY:
+        return (
+            "\n\nNOTE: this branch already has a WIP checkpoint commit "
+            f'("{subject}") saved when a Horizon deploy stopped the previous attempt mid-run. '
+            "That work is unfinished and was never checked — a file may even have been cut off "
+            "mid-edit. Continue it: read the diff below and pick up where it left off. Do not "
+            f"discard it or restart from scratch.\n\n```\n{stat}\n```"
+        )
     if cause == CAUSE_PAUSED:
         return (
             "\n\nNOTE: this branch already has a WIP checkpoint commit "
@@ -601,6 +642,17 @@ def _last_check_failure(ws: Path) -> str:
     return (
         "\n\nThe previous fix attempt's changes are in the WIP checkpoint at HEAD, but the "
         f"repo's checks failed on them:\n\n```\n{checkpoint[1] or '(no check output was captured)'}\n```"
+    )
+
+
+def _deploy_stop_note(ws: Path) -> str:
+    """HZ-321: a fix pass a deploy stopped resumes on its WIP checkpoint."""
+    checkpoint = _checkpoint_cause(ws)
+    if checkpoint is None or checkpoint[0] != CAUSE_DEPLOY:
+        return ""
+    return (
+        "\n\nThis fix pass was stopped by a Horizon deploy and its unfinished, unchecked changes "
+        "are in the WIP checkpoint at HEAD. Continue from them; do not discard them."
     )
 
 
@@ -817,6 +869,10 @@ def _pause_checkpoint(ws: Path, item: dict, branch: str, conflicted: list[str], 
         if lock_path.exists():
             lock_path.unlink(missing_ok=True)
             log("pause: removed a stale git index.lock left by a stopped git call")
+    if pause.stop_reason() == pause.STOP_DEPLOY:
+        # HZ-321: a deploy is not an operator's choice, so the work is saved
+        # even on an open PR — the item is at implement, nothing can merge it.
+        return _deploy_checkpoint(ws, item, branch, conflicted, lease_sha)
     if scope["mode"] == "fix":
         # Pushing here would add commits to the open PR (and run its CI).
         return pause.SKIPPED, f"a PR is open on {branch} — a checkpoint would update it"
@@ -829,6 +885,73 @@ def _pause_checkpoint(ws: Path, item: dict, branch: str, conflicted: list[str], 
     # the remote URL, which carries the hub's token (workspaces.ensure).
     detail = _URL_CREDENTIALS.sub("://[redacted]@", result.partition(": ")[2] or result)
     return pause.FAILED, redact(detail, os.environ)
+
+
+def _deploy_checkpoint(ws: Path, item: dict, branch: str, conflicted: list[str] | None, lease_sha: str) -> tuple[str, str]:
+    """HZ-321: saves a running attempt a self-deploy is stopping as one WIP
+    commit of its whole tree, pushed to the item's own branch — never forced,
+    never rewriting a commit, so unlike _salvage_checkpoint (whose lease push
+    may replace a rebased branch) it cannot lose anything already pushed.
+
+    The commit's parent is what the remote branch holds when HEAD does not
+    already contain it (a resumed checkpoint rebased onto main locally), so
+    the push is always a fast-forward and its tree is exactly what was on
+    disk. A merge of main in progress keeps MERGE_HEAD as a second parent.
+    .gitignore is honoured and SECRET_PATTERNS are never staged.
+
+    If the push fails, the commit stays in this worktree with a marker, and
+    the next attempt's prepare_branch resumes from it. Never raises.
+    Returns (outcome, detail) in pause's vocabulary."""
+    own = f"horizon/{item['id'].lower()}"
+    try:
+        default = _default_branch(ws)
+        if branch != own or branch in (default, "main", "master"):
+            return pause.SKIPPED, f"refused: {branch} is not this item's own branch"
+        markers = _conflict_markers_left(ws, conflicted or [])
+        if markers:
+            return pause.SKIPPED, f"the merge of main still has conflict markers in {', '.join(markers)}"
+        git(ws, "add", "-A")
+        _unstage_secrets(ws)
+        head = git(ws, "rev-parse", "HEAD").stdout.strip()
+        merging = git(ws, "rev-parse", "-q", "--verify", "MERGE_HEAD", check=False)
+        merge_head = merging.stdout.strip() if merging.returncode == 0 else ""
+        staged = git(ws, "diff", "--cached", "--quiet", check=False).returncode != 0
+        published = lease_sha or f"origin/{default}"
+        pushed_already = git(ws, "merge-base", "--is-ancestor", head, published, check=False).returncode == 0
+        if not staged and not merge_head and pushed_already:
+            return pause.NOTHING, "no changes since the last push"
+        contains_remote = not lease_sha or git(ws, "merge-base", "--is-ancestor", lease_sha, head, check=False).returncode == 0
+        parents = [head if contains_remote else lease_sha] + ([merge_head] if merge_head else [])
+        tree = git(ws, "write-tree").stdout.strip()
+        wip = git(
+            ws,
+            "commit-tree",
+            tree,
+            *[arg for parent in parents for arg in ("-p", parent)],
+            "-m",
+            f"{item['id']}: {CHECKPOINT_MARKER} (Horizon Eng agent)",
+            "-m",
+            f"cause: {CAUSE_DEPLOY}",
+        ).stdout.strip()
+        if merge_head:
+            git(ws, "merge", "--quit")
+        git(ws, "update-ref", "HEAD", wip)
+        marker = _git_path(ws, UNPUSHED_CHECKPOINT)
+        marker.write_text(f"{own} {wip}\n")
+        with hub_lock(item["repo"]):
+            git(ws, "push", "origin", f"{wip}:refs/heads/{own}")
+            remote = git(ws, "ls-remote", "origin", f"refs/heads/{own}").stdout.split()
+        if not remote or remote[0] != wip:
+            raise RuntimeError("the remote branch does not hold the checkpoint after the push")
+        marker.unlink(missing_ok=True)
+        log(f"deploy: pushed WIP checkpoint {wip[:12]} to {own}")
+        return pause.SAVED, f"pushed a WIP checkpoint to {own}"
+    except Exception as exc:
+        log(f"deploy: checkpoint not pushed ({exc}) — kept in the worktree for the next attempt")
+        # The detail reaches the server's activity log; a failed push can
+        # echo the remote URL, which carries the hub's token.
+        detail = _URL_CREDENTIALS.sub("://[redacted]@", str(exc))
+        return pause.FAILED, redact(detail, os.environ)
 
 
 # ---- automated review verdict shaping (HZ-30) ----
@@ -1366,7 +1489,7 @@ def _execute(task: dict, guard: HandoffGuard) -> dict:
             if isinstance(scope.get("timeout_s"), int) and scope["timeout_s"] > 0:
                 timeout_s = min(timeout_s, scope["timeout_s"])
             log(f"fix pass from {scope.get('base_sha')}: {max_turns} turns, {timeout_s}s")
-            extra = fix_pass_section(scope) + _last_check_failure(ws)
+            extra = fix_pass_section(scope) + _last_check_failure(ws) + _deploy_stop_note(ws)
         else:
             extra = _checkpoint_resume_note(ws) or ""
             if extra:

@@ -34,6 +34,11 @@ NOTHING = "nothing"
 SKIPPED = "skipped"
 FAILED = "failed"
 
+# HZ-321: why farmd sent the SIGTERM, read from `<run_id>.stop-reason` next to
+# the outcome file. Absent means an operator's pause, as before.
+STOP_PAUSE = "pause"
+STOP_DEPLOY = "deploy"
+
 
 class PauseRequested(BaseException):
     """Raised by the SIGTERM handler. `at_entry` is True when the pause had
@@ -147,6 +152,19 @@ def report(outcome: str, detail: str = "") -> None:
     no-op when none was (execute() called directly, as in tests)."""
     if _state["outcome_path"] is not None:
         write_outcome(_state["outcome_path"], outcome, detail)
+
+
+def stop_reason() -> str:
+    """STOP_DEPLOY when farmd stopped this run for a self-deploy (it writes
+    the sibling `<run_id>.stop-reason` before the SIGTERM), else STOP_PAUSE."""
+    path = _state["outcome_path"]
+    if path is None:
+        return STOP_PAUSE
+    try:
+        text = Path(path).with_suffix(".stop-reason").read_text().strip()
+    except OSError:
+        return STOP_PAUSE
+    return STOP_DEPLOY if text == STOP_DEPLOY else STOP_PAUSE
 
 
 def reported() -> bool:

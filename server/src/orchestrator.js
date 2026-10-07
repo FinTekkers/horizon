@@ -46,6 +46,7 @@ import {
   recordCheckPass,
   CHECKS_PASSED_SHA_KEY,
   CHECKS_FINISHED_AT_KEY,
+  stepSlug,
 } from './store.js'
 import { createMockPr, createDeployRelease, postIssueComment, syncIssueBodyFields, createPrFromBranch, getPrHeadSha } from './github.js'
 import { PHASES } from '../../domain/js/lifecycle.js'
@@ -70,7 +71,7 @@ import {
 import { PRIMARY_PERSONA_AGENT, isPersona, personaLabel, proposePersona } from './personas.js'
 import { SUMMARIZE_STEP_INDEX, OVERLAP_INPUT_LABEL, computeOverlap, overlapFailure, applyOverlap } from './overlapService.js'
 import { renderOverlapInput, renderOverlapSection, replaceOverlapSection } from './overlap.js'
-import { DEPLOY_BLOCK_MESSAGE, isDeployBlocked } from './deployDrain.js'
+import { DEPLOY_BLOCK_MESSAGE, isDeployBlocked, onDrainEnd } from './deployDrain.js'
 import { deployWaitFor } from './deployWait.js'
 import { servedRulesFor } from './rulesStore.js'
 import { OPTIONS_STEP_INDEX, proposeSplit } from './split.js'
@@ -107,6 +108,12 @@ const forwarding = new Set()
 // read (HZ-185) can run before that push lands. Memory-only, like
 // forwarding: a restart forgets it, and farmd's own bound still ends the save.
 const pausing = new Map()
+
+// HZ-321: item id -> the kick() opts of a dispatch held back while a
+// self-deploy drains (deployDrain.js). Released by releaseDeployHeld() when
+// the drain ends without a restart; a restart forgets it, and boot's
+// resumeActiveItems() dispatches the same items again.
+const heldForDeploy = new Map()
 
 // Execution budget once an agent has actually started (HZ-57): the implement
 // step legitimately runs long (real coding + tests), so its budget must
@@ -963,16 +970,31 @@ export function kick(id, opts = {}) {
   }
   const item = getItem(id)
   if (!runnable(item) || dispatching.has(id) || forwarding.has(id)) return
+  // HZ-321: no new step starts while a self-deploy drains. Held here, after
+  // the runnable check, so failFarmRun's retry decision is unchanged.
+  if (isDeployBlocked()) {
+    heldForDeploy.set(id, opts)
+    return
+  }
   dispatching.add(id)
 
   const stepIndex = item.cursor
   const step = STEPS[stepIndex]
-  const attempt =
-    db.prepare('SELECT COALESCE(MAX(attempt), 0) + 1 AS n FROM step_run WHERE item_id = ? AND step_index = ?').get(
-      id,
-      stepIndex,
-    ).n
-  const autoRetryCount = opts.autoRetryCount || 0
+  // HZ-321: a run a self-deploy stopped was never a finished attempt, so its
+  // redispatch keeps that run's attempt and auto-retry count.
+  const last = db
+    .prepare(
+      'SELECT attempt, auto_retry_count, deploy_interrupted FROM step_run WHERE item_id = ? AND step_index = ? ORDER BY id DESC LIMIT 1',
+    )
+    .get(id, stepIndex)
+  const resumesDeployStop = last?.deploy_interrupted === 1
+  const attempt = resumesDeployStop
+    ? last.attempt
+    : db.prepare('SELECT COALESCE(MAX(attempt), 0) + 1 AS n FROM step_run WHERE item_id = ? AND step_index = ?').get(
+        id,
+        stepIndex,
+      ).n
+  const autoRetryCount = resumesDeployStop ? last.auto_retry_count : opts.autoRetryCount || 0
   const toFarm = FARM_URL && FARM_STEP_INDEXES.has(stepIndex)
   // HZ-182: decided once, here, and stored on the run — completion reads the
   // scope the run was dispatched with, never a recomputation from the item.
@@ -1063,7 +1085,9 @@ async function dispatchToFarm(id, stepIndex, runId, attempt, scope) {
     .prepare('SELECT message, target, created_at FROM feedback WHERE item_id = ? AND delivered_at IS NULL')
     .all(id)
   if (feedback.length > 0) {
-    db.prepare("UPDATE feedback SET delivered_at = datetime('now') WHERE item_id = ? AND delivered_at IS NULL").run(id)
+    db.prepare(
+      "UPDATE feedback SET delivered_at = datetime('now'), delivered_run_id = ? WHERE item_id = ? AND delivered_at IS NULL",
+    ).run(runId, id)
   }
 
   // Prior artifacts (options analysis, impl plan, reviews) give later agents
@@ -2071,7 +2095,9 @@ async function runMockStep(id, stepIndex, runId) {
     .prepare('SELECT id, message FROM feedback WHERE item_id = ? AND delivered_at IS NULL ORDER BY id DESC LIMIT 1')
     .get(id)
   if (pendingFeedback) {
-    db.prepare("UPDATE feedback SET delivered_at = datetime('now') WHERE item_id = ? AND delivered_at IS NULL").run(id)
+    db.prepare(
+      "UPDATE feedback SET delivered_at = datetime('now'), delivered_run_id = ? WHERE item_id = ? AND delivered_at IS NULL",
+    ).run(runId, id)
     summary = `addressed your feedback (“${pendingFeedback.message.slice(0, 80)}”) — ${summary}`
   }
 
@@ -2211,6 +2237,86 @@ export function pendingPause(id) {
   return pausing.get(id)
 }
 
+// ---- HZ-321: agent steps a self-deploy stops ----
+
+// The farm call's own bound, inside deploy-drain.mjs's 60s bound on the whole
+// interrupt request: the checkpoint wait is capped so farmd's answer (wait +
+// 15s slack) always lands first, whatever HZ_PAUSE_CHECKPOINT_TIMEOUT_S says.
+export const DEPLOY_CHECKPOINT_TIMEOUT_S = Math.min(PAUSE_CHECKPOINT_TIMEOUT_S, 40)
+
+const DEPLOY_STOP_OUTPUT = 'stopped for a Horizon deploy — redispatched after it at the same attempt'
+
+function deployStopText(id, checkpoint) {
+  const detail = typeof checkpoint?.detail === 'string' && checkpoint.detail ? `: ${checkpoint.detail}` : ''
+  const tail = 'restarts after the deploy at the same attempt'
+  switch (checkpoint?.outcome) {
+    case 'saved':
+      return `stopped for a Horizon deploy — saved a WIP checkpoint on horizon/${id.toLowerCase()}; ${tail}`
+    case 'nothing':
+    case 'not_running':
+      return `stopped for a Horizon deploy — nothing to save; ${tail}`
+    case 'failed':
+    case 'timed_out':
+    case 'skipped':
+      return `stopped for a Horizon deploy — progress could not be saved${detail}; ${tail}`
+    default:
+      return `stopped for a Horizon deploy — the farm did not say whether the work was saved; ${tail}`
+  }
+}
+
+// Called by the deploy-drain interrupt route (app.js) for the steps still
+// running when the drain's step wait ran out. Each run still active is closed
+// first — `cancelled`, deploy_interrupted = 1 — so a late result or /fail from
+// its dying agent is ignored as stale and costs no attempt; its feedback is
+// handed back undelivered (HZ-184); then farmd checkpoints and stops it
+// (reason "deploy": a WIP commit pushed to the item's own branch, never
+// forced). Nothing is redispatched here: kick() holds dispatch until the drain
+// ends. Never throws. Returns one entry per run id asked about.
+export async function interruptStepsForDeploy(runIds) {
+  const timeoutMs = (DEPLOY_CHECKPOINT_TIMEOUT_S + 15) * 1000
+  return Promise.all(
+    runIds.map(async (runId) => {
+      const run = db.prepare('SELECT id, item_id, step_index, status FROM step_run WHERE id = ?').get(runId)
+      if (!run) return { runId, itemId: null, step: null, interrupted: false }
+      const entry = { runId, itemId: run.item_id, step: stepSlug(run.step_index) }
+      const moved = db
+        .prepare(
+          "UPDATE step_run SET status = 'cancelled', deploy_interrupted = 1, output = ?, ended_at = datetime('now') WHERE id = ? AND status = 'active'",
+        )
+        .run(DEPLOY_STOP_OUTPUT, runId).changes
+      if (moved === 0) return { ...entry, interrupted: false }
+      clearTimeout(timers[runId])
+      delete timers[runId]
+      dispatching.delete(run.item_id)
+      db.prepare('UPDATE feedback SET delivered_at = NULL, delivered_run_id = NULL WHERE delivered_run_id = ?').run(runId)
+      let checkpoint = { outcome: 'not_running', detail: 'no farm' }
+      if (FARM_URL) {
+        checkpoint = await farmFetch(
+          '/steps/cancel',
+          { run_id: runId, reason: 'deploy', checkpoint_timeout_s: DEPLOY_CHECKPOINT_TIMEOUT_S },
+          { timeoutMs },
+        ).then(
+          (res) => (res?.checkpoint && typeof res.checkpoint.outcome === 'string' ? res.checkpoint : { outcome: 'failed', detail: 'the farm did not say' }),
+          () => ({ outcome: 'failed', detail: 'the farm did not answer' }),
+        )
+      }
+      addEvent(run.item_id, { who: 'Horizon', text: deployStopText(run.item_id, checkpoint), color: '#5E4380', initials: 'HZ' })
+      notifyChange()
+      return { ...entry, interrupted: true, checkpoint: { outcome: checkpoint.outcome, detail: String(checkpoint.detail ?? '') } }
+    }),
+  ).catch(() => [])
+}
+
+// The drain ended without this process restarting (deploy-horizon.sh's ERR
+// trap, or the block's TTL): send out what kick() held, then every other
+// runnable item — a deploy-stopped step is among them.
+function releaseDeployHeld() {
+  const held = [...heldForDeploy]
+  heldForDeploy.clear()
+  for (const [id, opts] of held) kick(id, opts)
+  resumeActiveItems()
+}
+
 // ---- durable reconciliation (HZ-100) ----
 // timers[] lives only in this process's memory — a run whose watchdog was
 // somehow lost (the item-keyed clobbering bug fixed above, a future bug, a
@@ -2270,6 +2376,7 @@ export async function reconcileActiveRuns() {
 
 export async function init(log) {
   registerAgentRunner({ kick, cancel, pause })
+  onDrainEnd(releaseDeployHeld)
   // store.js reads this to attach {state, reason} onto activeRun in
   // listItems() — a plain object lookup, never a network call, so
   // snapshot()/listItems() stay synchronous (HZ-54).

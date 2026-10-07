@@ -102,6 +102,11 @@ fi
 # server refuses new ones; whatever is left is interrupted and its checker
 # stopped. Inside the flock, so overlapping deploys still serialize. The
 # helper always exits 0: an unreachable server never stops the deploy.
+# HZ-321: running agent steps are waited for the same way, bounded by
+# HORIZON_DEPLOY_DRAIN_STEP_TIMEOUT_S (default 25 min; 0 = no wait). A step
+# still going then is saved as a WIP checkpoint on its item's branch and
+# stopped, and the server dispatches it again after the restart at the same
+# attempt. A failed checkpoint is logged and the deploy goes on.
 STAGE="drain"
 if [ -n "$DRAIN_URL" ] && [ -f "$SCRIPT_DIR/deploy-drain.mjs" ]; then
   DRAINING=1

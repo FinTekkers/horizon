@@ -2075,3 +2075,50 @@ def test_check_defaults_reads_detection_off_the_hub(tmp_path, monkeypatch):
     (hub / "node_modules").mkdir()
     res = client.post("/repos/check-defaults", json={"repo": "acme/demo"})
     assert res.json()["defaults"] == {"install": None, "test": "npm test --silent", "lint": None, "e2e": None}
+
+
+# ---- HZ-321: a farmd restart re-adopts a live run ----
+
+
+@pytest.mark.real_tmux
+def test_restarted_farmd_readopts_live_run(queue_dirs, tmp_path, monkeypatch):
+    """Metric line 1: a farm-run session started before farmd restarts is
+    still alive after it. The restarted farmd's boot (adopt, then reconcile)
+    keeps the run active — nothing is ever reported, least of all as gone —
+    and the agent's later result reaches the server for the same run_id."""
+    stop_server, url, requests = _serve_fake_horizon(fail_status=200)
+    monkeypatch.setattr(farmd, "HORIZON_URL", url)
+    name = "farm-run-hz-321-s11-a3"
+    tmux_mgr.new_session(name, "sleep 60", cwd="/tmp")
+    task_path = _write_claimed_task(9321, claimed_at=_old_enough(), item_id="hz-321", step_index=11, attempt=3)
+    state_file = tmp_path / "farmd-state.json"
+    state_file.write_text(json.dumps({"project": {"id": 1, "name": "FinTekkers"}, "repos": []}))
+    monkeypatch.setattr(farmd, "STATE_FILE", state_file)
+    monkeypatch.setattr(farmd, "state", dict(farmd.state))
+    # The restart: a fresh farmd process starts with an empty run map.
+    monkeypatch.setattr(farmd, "RUN_SESSIONS", {})
+    try:
+        farmd._adopt_existing()
+        farmd._reconcile_claimed_runs()
+
+        assert tmux_mgr.session_exists(name), "the restart left the session running"
+        assert farmd.RUN_SESSIONS == {"9321": name}, "the restarted farmd re-adopted the run"
+        assert task_path.exists(), "the run is still claimed, not cancelled"
+        assert requests == [], "a live run is never reported, as gone or otherwise"
+        # The server's own reconcile sweep (HZ-100) asks this, and keeps the run.
+        assert client.post("/runs/alive", json={"run_ids": ["9321"]}).json()["alive"] == {"9321": True}
+
+        # The agent finishes: its result is forwarded for the same run.
+        res = client.post("/internal/steps/result", json={"run_id": 9321, "ok": True, "summary": "done after the restart"})
+        assert res.status_code == 200 and res.json()["ok"] is True
+        # step_agent.main removes its task file after reporting, and the session ends.
+        task_path.unlink()
+        tmux_mgr.kill_session(name)
+        farmd._reconcile_claimed_runs()
+    finally:
+        tmux_mgr.kill_session(name)
+        stop_server()
+
+    assert [r["path"] for r in requests] == ["/api/farm/steps/9321/complete"]
+    assert requests[0]["body"]["summary"] == "done after the restart"
+    assert not any(r["path"].endswith("/fail") for r in requests)

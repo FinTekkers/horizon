@@ -67,15 +67,29 @@ chmod +x "$STUBS"/*
 #   hang            accepts every connection and never answers
 #   hang-interrupt  like `one`, but the interrupt request never answers
 #   echo500         every request gets a 500 whose body echoes the headers
+# HZ-321, agent steps (no gate runs; HZ-T3's implement step):
+#   step-clears          HZ-T3 is listed for about 1s after begin, then not
+#   step-forever         HZ-T3 is listed forever; its interrupt saves a checkpoint
+#   step-ckpt-failed     like step-forever, but the checkpoint reports failed
+#   step-hang-interrupt  like step-forever, but the interrupt never answers
 cat >"$WORK/stub-drain.mjs" <<'EOF'
 import http from 'node:http'
 import { appendFileSync, writeFileSync } from 'node:fs'
 const [scenario, logFile, portFile, secret] = process.argv.slice(2)
 const T1 = { itemId: 'HZ-T1', kind: 'premerge', startedAt: '2026-10-02T12:00:00.000Z' }
 const T2 = { itemId: 'HZ-T2', kind: 'resolve', startedAt: '2026-10-02T12:00:01.000Z' }
-const initial = scenario === 'mixed' ? [T1, T2] : [T1]
+const T3 = { runId: 77, itemId: 'HZ-T3', stepIndex: 11, step: 'implement', startedAt: '2026-10-07T00:00:00.000Z' }
+const stepScenario = scenario.startsWith('step-')
+const initial = stepScenario ? [] : scenario === 'mixed' ? [T1, T2] : [T1]
+let beganAt = 0
+const listedSteps = () => {
+  if (!stepScenario) return undefined
+  if (scenario === 'step-clears') return Date.now() - beganAt < 1000 ? [T3] : []
+  return [T3]
+}
 let polls = 0
 const listed = () => {
+  if (stepScenario) return []
   if (scenario === 'clears') return polls <= 2 ? [T1] : []
   if (scenario === 'mixed') return polls <= 1 ? [T1, T2] : [T2]
   return [T1]
@@ -99,18 +113,24 @@ const server = http.createServer((req, res) => {
     }
     if (req.method === 'POST' && req.url.endsWith('/interrupt')) {
       record(req, body)
-      if (scenario === 'hang-interrupt') return
-      return send(200, { interrupted: JSON.parse(body).runs.map((r) => ({ ...r, killed: true })) })
+      if (scenario === 'hang-interrupt' || scenario === 'step-hang-interrupt') return
+      const asked = JSON.parse(body)
+      const outcome = scenario === 'step-ckpt-failed' ? 'failed' : 'saved'
+      const steps = (asked.steps || []).map((s) => ({ ...s, itemId: T3.itemId, step: T3.step, interrupted: true, checkpoint: { outcome, detail: 'x' } }))
+      return send(200, { interrupted: asked.runs.map((r) => ({ ...r, killed: true })), ...(asked.steps ? { steps } : {}) })
     }
     if (req.method === 'POST') {
       record(req, body)
-      return send(200, { blocked: true, blockedUntil: '2026-10-02T13:00:00.000Z', running: initial })
+      beganAt = Date.now()
+      const steps = listedSteps()
+      return send(200, { blocked: true, blockedUntil: '2026-10-02T13:00:00.000Z', running: initial, ...(steps ? { steps } : {}) })
     }
     if (req.method === 'GET') {
       polls++
       const running = listed()
-      record(req, `running=${running.length}`)
-      return send(200, { blocked: true, running })
+      const steps = listedSteps()
+      record(req, `running=${running.length}` + (steps ? ` steps=${steps.length}` : ''))
+      return send(200, { blocked: true, running, ...(steps ? { steps } : {}) })
     }
     record(req)
     return send(200, { blocked: false })
@@ -291,6 +311,93 @@ done
   expect "no drain URL: deploy succeeds" [ "$code" -eq 0 ]
   expect "no drain URL: nothing DRAIN is logged" bash -c "! grep -q 'DRAIN' '$base/state/self-deploy.log'"
 }
+
+# ---- 8. HZ-321 line 3(a): restart waits for a running agent step, and follows it ending ----
+{
+  base="$(mktemp -d -p "$WORK")"
+  setup_repo "$base"
+  start_stub step-clears "$base/drain.log" s3cret
+  run_deploy "$base" "$url" FARM_SHARED_SECRET=s3cret HORIZON_DEPLOY_DRAIN_POLL_S=0.2 HORIZON_DEPLOY_DRAIN_STEP_TIMEOUT_S=30
+  code=$?
+  log="$base/state/self-deploy.log"
+  last_listed="$(awk '$2 == "GET" && /steps=1/ { t = $1 } END { print t }' "$base/drain.log")"
+  cleared="$(awk '$2 == "GET" && /steps=0/ { print $1; exit }' "$base/drain.log")"
+  restarted="$(restart_ts "$base")"
+  expect "S1: deploy succeeds after the step drain" [ "$code" -eq 0 ]
+  expect "S1: the step was listed by at least one poll" [ -n "$last_listed" ]
+  expect "S1: no restart while the step was listed" lt "$last_listed" "$restarted"
+  expect "S1: restart only after the step ended ($cleared -> $restarted)" lt "$cleared" "$restarted"
+  expect "S1: log names the step waited for" grep -q 'DRAIN waiting up to 30s for 1 agent step(s): HZ-T3 implement$' "$log"
+  expect "S1: log says the step finished" grep -q 'DRAIN finished: HZ-T3 implement$' "$log"
+  expect "S1: nothing was interrupted" bash -c "! grep -q '/interrupt' '$base/drain.log'"
+  expect "S1: the deploy still ends DEPLOY OK" grep -q 'DEPLOY OK' "$log"
+}
+
+# ---- 9. HZ-321 line 3(b) + G1/G7: a step outlasting its wait is checkpointed, the restart is bounded ----
+{
+  base="$(mktemp -d -p "$WORK")"
+  setup_repo "$base"
+  start_stub step-forever "$base/drain.log" sekrit-farm-HZ321
+  run_deploy "$base" "$url" HORIZON_DEPLOY_DRAIN_POLL_S=0.2 HORIZON_DEPLOY_DRAIN_STEP_TIMEOUT_S=1 \
+    HORIZON_DEPLOY_DRAIN_REQUEST_TIMEOUT_S=1 HORIZON_DEPLOY_DRAIN_INTERRUPT_TIMEOUT_S=1 \
+    FARM_SHARED_SECRET=sekrit-farm-HZ321 GITHUB_TOKEN=ghp-SENTINEL-HZ321
+  code=$?
+  log="$base/state/self-deploy.log"
+  began="$(awk '$2 == "POST" && $3 !~ /interrupt/ { print $1; exit }' "$base/drain.log")"
+  interrupt_at="$(awk '/\/interrupt/ { print $1; exit }' "$base/drain.log")"
+  restarted="$(restart_ts "$base")"
+  # The wait (1s) + one status request (1s) + the step interrupt (1s), plus 1s of slack for the script.
+  bound="$(awk -v b="$began" 'BEGIN { printf "%.3f", b + 1 + 1 + 1 + 1 }')"
+  expect "S2: deploy succeeds after a timed-out step drain" [ "$code" -eq 0 ]
+  expect "S2: exactly one interrupt call, for the step only" \
+    [ "$(grep -c '/interrupt auth=ok {"runs":\[\],"steps":\[{"runId":77}\]}' "$base/drain.log")" -eq 1 ]
+  expect "S2: only one interrupt call in all" [ "$(grep -c '/interrupt' "$base/drain.log")" -eq 1 ]
+  expect "S2: log says the step timed out and was checkpointed" \
+    grep -q 'DRAIN timed out: HZ-T3 implement — checkpointed, requeued after deploy$' "$log"
+  expect "S2: the checkpoint happens before the restart" lt "$interrupt_at" "$restarted"
+  expect "S2: restart within the wait + request bounds ($began -> $restarted)" lt "$restarted" "$bound"
+  for sentinel in sekrit-farm-HZ321 ghp-SENTINEL-HZ321; do
+    expect "S2: $sentinel never reaches self-deploy.log" bash -c "! grep -qF '$sentinel' '$log'"
+  done
+}
+
+# ---- 10. HZ-321: a step wait of 0 checkpoints before any poll ----
+{
+  base="$(mktemp -d -p "$WORK")"
+  setup_repo "$base"
+  start_stub step-forever "$base/drain.log" s3cret
+  run_deploy "$base" "$url" FARM_SHARED_SECRET=s3cret HORIZON_DEPLOY_DRAIN_POLL_S=30 HORIZON_DEPLOY_DRAIN_STEP_TIMEOUT_S=0
+  code=$?
+  expect "S3 step wait 0: deploy succeeds" [ "$code" -eq 0 ]
+  expect "S3 step wait 0: begin then interrupt, with no poll between" \
+    [ "$(awk '{ printf "%s %s;", $2, ($3 ~ /interrupt/ ? "interrupt" : "drain") }' "$base/drain.log")" = "POST drain;POST interrupt;" ]
+  expect "S3 step wait 0: logged as timed out" grep -q 'DRAIN timed out: HZ-T3 implement' "$base/state/self-deploy.log"
+  interrupt_at="$(awk '/\/interrupt/ { print $1; exit }' "$base/drain.log")"
+  expect "S3 step wait 0: restart follows the checkpoint" lt "$interrupt_at" "$(restart_ts "$base")"
+}
+
+# ---- 11. HZ-321 G2: a checkpoint that fails or never answers is logged, and the deploy goes on ----
+for scenario in step-ckpt-failed step-hang-interrupt; do
+  base="$(mktemp -d -p "$WORK")"
+  setup_repo "$base"
+  start_stub "$scenario" "$base/drain.log" s3cret
+  started=$SECONDS
+  run_deploy "$base" "$url" FARM_SHARED_SECRET=s3cret HORIZON_DEPLOY_DRAIN_POLL_S=0.2 HORIZON_DEPLOY_DRAIN_STEP_TIMEOUT_S=1 \
+    HORIZON_DEPLOY_DRAIN_REQUEST_TIMEOUT_S=1 HORIZON_DEPLOY_DRAIN_INTERRUPT_TIMEOUT_S=1
+  code=$?
+  took=$((SECONDS - started))
+  log="$base/state/self-deploy.log"
+  case "$scenario" in
+    step-ckpt-failed) why='failed' ;;
+    step-hang-interrupt) why='no response within 1s' ;;
+  esac
+  expect "S4 $scenario: deploy succeeds" [ "$code" -eq 0 ]
+  expect "S4 $scenario: logs DRAIN timed out for the step" grep -q 'DRAIN timed out: HZ-T3 implement' "$log"
+  expect "S4 $scenario: logs DRAIN checkpoint failed: HZ-T3 implement ($why)" grep -qF "DRAIN checkpoint failed: HZ-T3 implement ($why)" "$log"
+  expect "S4 $scenario: restart still runs" [ -n "$(restart_ts "$base")" ]
+  expect "S4 $scenario: the deploy still ends DEPLOY OK" grep -q 'DEPLOY OK' "$log"
+  expect "S4 $scenario: bounded (took ${took}s)" [ "$took" -lt 20 ]
+done
 
 echo "1..$((pass + fail))"
 echo "# pass $pass"

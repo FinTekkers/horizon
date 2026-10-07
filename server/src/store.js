@@ -15,6 +15,7 @@ import {
   IMPLEMENT_STEP_INDEX,
   REVIEW_STEP_INDEX,
   ACCEPT_GATE_INDEX,
+  DEPLOY_STEP_INDEX,
   agentStepIndexes,
 } from '../../domain/js/lifecycle.js'
 import { isPriority } from '../../domain/js/priorities.js'
@@ -147,6 +148,23 @@ export function listRunningGateActions() {
     )
     .all()
     .map((row) => ({ itemId: row.item_id, kind: row.kind, startedAt: row.started_at, detail: row.detail }))
+}
+
+// HZ-321: a step label as one log-safe word ("Specialist agent implements"
+// -> "specialist-agent-implements") for the deploy drain's DRAIN lines.
+export function stepSlug(stepIndex) {
+  const label = STEPS[stepIndex]?.label ?? `step-${stepIndex}`
+  return label.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '')
+}
+
+// HZ-321: the agent step runs a self-deploy waits for. The deploy step is left
+// out: its own run published the release this deploy is installing, and it
+// waits for that deploy to go live — draining it would wait on itself.
+export function listRunningAgentSteps() {
+  return db
+    .prepare("SELECT id, item_id, step_index, started_at FROM step_run WHERE status = 'active' AND step_index != ? ORDER BY id")
+    .all(DEPLOY_STEP_INDEX)
+    .map((row) => ({ runId: row.id, itemId: row.item_id, stepIndex: row.step_index, step: stepSlug(row.step_index), startedAt: row.started_at }))
 }
 
 // HZ-250: ends the listed runs as `interrupted` when a deploy's wait ran out.
