@@ -93,9 +93,10 @@ export function getItems() {
   return items
 }
 
-// HZ-318's per-item step outputs. Mock items carry no recorded outputs.
-export function getStepOutputs(id) {
-  return Promise.resolve(items.find((it) => it.id === id)?.stepOutputs ?? {})
+// HZ-318's per-item step outputs stream. Mock items carry no recorded outputs.
+export function subscribeStepOutputs(id, onOutputs) {
+  const timer = setTimeout(() => onOutputs(items.find((it) => it.id === id)?.stepOutputs ?? {}), 0)
+  return () => clearTimeout(timer)
 }
 
 // GitHub sync is a server feature; the mock reports "unavailable" so the UI

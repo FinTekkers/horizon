@@ -288,6 +288,13 @@ function flushFromTimer() {
 export function flushStream() {
   clearTimeout(flushTimer)
   flushTimer = null
+  // Outputs first: a step card that turns done in the board delta then
+  // already has its output link, rather than a moment of "no output recorded".
+  flushItemStreams()
+  flushBoard()
+}
+
+function flushBoard() {
   if (sseClients.size === 0) {
     streamBaseline = null
     return
@@ -304,6 +311,40 @@ export function flushStream() {
   sseClients.forEach((res) => res.write(data))
 }
 
+// HZ-318: step outputs (output summaries and artifacts) reach a tab only
+// through the open item's own stream, GET /api/items/:id/stream — never the
+// board feed. Per item id: its open connections and the JSON last sent to
+// them. An entry lives exactly as long as it has a connection, so the map is
+// bounded by open Tracker pages; a flush is one stepOutputs() query per entry.
+const itemStreams = new Map()
+
+// Open per-item connections for one id — a test seam, like streamClientCount.
+export function itemStreamClientCount(id) {
+  return itemStreams.get(id)?.clients.size ?? 0
+}
+
+function itemStreamFrame(id, stepOutputs) {
+  return `event: outputs\ndata: ${JSON.stringify({ id, stepOutputs })}\n\n`
+}
+
+// Sends each open item its whole stepOutputs map again when it changed. An item
+// that left the board (deleted, or its project disabled) ends its streams; the
+// browser's reconnect then gets the same 404 an unknown id does.
+function flushItemStreams() {
+  for (const [id, stream] of itemStreams) {
+    const stepOutputs = store.itemStepOutputs(id)
+    if (!stepOutputs) {
+      itemStreams.delete(id)
+      stream.clients.forEach((res) => res.end())
+      continue
+    }
+    const frame = itemStreamFrame(id, stepOutputs)
+    if (frame === stream.sent) continue
+    stream.sent = frame
+    stream.clients.forEach((res) => res.write(frame))
+  }
+}
+
 store.onChange(broadcast)
 
 // Heartbeat comment keeps proxies from idle-closing the stream and lets the
@@ -311,6 +352,7 @@ store.onChange(broadcast)
 // delays it.
 setInterval(() => {
   sseClients.forEach((res) => res.write(':ping\n\n'))
+  itemStreams.forEach((stream) => stream.clients.forEach((res) => res.write(':ping\n\n')))
 }, 25_000).unref()
 
 // POST /api/items's body properties, DERIVED from domain/fields.json (HZ-134).
@@ -507,7 +549,7 @@ export function buildApp({ logger = true, onRoute = null } = {}) {
   }
 
   // HZ-318: `?v=2` leaves stepOutputs off, as the v2 stream does; the Tracker
-  // loads them per item from /api/items/:id/step-outputs. Without `v` (a tab
+  // gets them from the open item's /api/items/:id/stream. Without `v` (a tab
   // built before HZ-318) the items keep them.
   fastify.get(
     '/api/items',
@@ -520,16 +562,51 @@ export function buildApp({ logger = true, onRoute = null } = {}) {
     (request) => snapshot({ scope: 'enabled', stepOutputs: request.query.v !== '2' }),
   )
 
-  // HZ-318: one item's stepOutputs, the field the slim board leaves off — the
-  // same store.stepOutputs() data /api/items carried, and the same items: an id
-  // outside the board's 'enabled' scope is a 404 just like an unknown one.
+  // HZ-318: the open item's stepOutputs, the field the board feed leaves off —
+  // the same store.stepOutputs() data /api/items carried, for the same items:
+  // an id outside the board's 'enabled' scope is a 404 just like an unknown
+  // one. The Tracker opens it on mount and closes it on leave. An `outputs`
+  // frame on connect, then again whenever they change (in the board feed's
+  // flush, so at most once a second).
   fastify.get(
-    '/api/items/:id/step-outputs',
-    { schema: { params: idParam, response: { 200: OK_OBJECT, 404: ERROR_OBJECT } } },
+    '/api/items/:id/stream',
+    {
+      schema: {
+        params: idParam,
+        response: {
+          200: textResponse(
+            'text/event-stream',
+            "An `event: outputs` frame carrying `{ id, stepOutputs }` on connect and whenever the item's step outputs " +
+              'change (at most once a second), plus a `:ping` comment every 25s. The stream ends if the item leaves the board.',
+          ),
+          404: ERROR_OBJECT,
+        },
+      },
+    },
     (request, reply) => {
-      const stepOutputs = store.itemStepOutputs(request.params.id)
+      const { id } = request.params
+      const stepOutputs = store.itemStepOutputs(id)
       if (!stepOutputs) return reply.code(404).send({ error: 'not_found' })
-      return { id: request.params.id, stepOutputs }
+      reply.hijack()
+      reply.raw.writeHead(200, {
+        'Content-Type': 'text/event-stream',
+        'Cache-Control': 'no-cache',
+        Connection: 'keep-alive',
+      })
+      const frame = itemStreamFrame(id, stepOutputs)
+      reply.raw.write(frame)
+      // With connections already open, `sent` stays as it is: a change pending
+      // in the window still reaches them, and this one takes it again.
+      let stream = itemStreams.get(id)
+      if (!stream) {
+        stream = { clients: new Set(), sent: frame }
+        itemStreams.set(id, stream)
+      }
+      stream.clients.add(reply.raw)
+      request.raw.on('close', () => {
+        stream.clients.delete(reply.raw)
+        if (stream.clients.size === 0 && itemStreams.get(id) === stream) itemStreams.delete(id)
+      })
     },
   )
 

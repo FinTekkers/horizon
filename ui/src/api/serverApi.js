@@ -124,14 +124,16 @@ export function getSync() {
   return sync
 }
 
-// HZ-318: one item's stepOutputs, which the board feed leaves off. Resolves to
-// the { "<step index>": { output, attempt, artifact, attemptCount, label } }
-// map, or null when the item is not visible or the request failed.
-export async function getStepOutputs(id) {
-  const res = await fetch(`${API_BASE}/items/${encodeURIComponent(id)}/step-outputs`).catch(() => null)
-  if (!res?.ok) return null
-  const data = await res.json().catch(() => null)
-  return data?.stepOutputs ?? null
+// HZ-318: one item's stepOutputs, which the board feed leaves off, over the
+// item's own stream — the only route to them. Calls onOutputs with the
+// { "<step index>": { output, attempt, artifact, attemptCount, label } } map on
+// open and on every change. Returns the close function: the Tracker opens it on
+// mount and closes it on leave. EventSource reconnects by itself after a drop;
+// a 404 (the item is not on the board) closes it for good.
+export function subscribeStepOutputs(id, onOutputs) {
+  const stream = new EventSource(`${API_BASE}/items/${encodeURIComponent(id)}/stream`)
+  stream.addEventListener('outputs', (msg) => onOutputs(JSON.parse(msg.data).stepOutputs))
+  return () => stream.close()
 }
 
 // ---- auth (HZ-21): hardcoded credential OR Google SSO ----

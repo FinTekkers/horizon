@@ -374,16 +374,16 @@ test('a `delta` merges upserts, drops removed ids and keeps unchanged items as t
   expect(seen).toHaveBeenCalledTimes(3)
 })
 
-test('getStepOutputs fetches one item\'s outputs, and resolves null on a 404 or a network error', async () => {
+test('subscribeStepOutputs opens the item\'s own stream, passes each `outputs` frame on, and closes it', async () => {
   const serverApi = await import('./serverApi')
   const outputs = { 4: { output: 'done', attempt: 1, artifact: null, attemptCount: 0, label: 'x' } }
-  const fetchSpy = vi.fn(async () => ({ ok: true, status: 200, json: async () => ({ id: 'X 1', stepOutputs: outputs }) }))
-  vi.stubGlobal('fetch', fetchSpy)
-  await expect(serverApi.getStepOutputs('X 1')).resolves.toEqual(outputs)
-  expect(fetchSpy.mock.calls[0][0]).toBe(`${serverApi.API_BASE}/items/X%201/step-outputs`)
-
-  vi.stubGlobal('fetch', vi.fn(async () => ({ ok: false, status: 404, json: async () => ({ error: 'not_found' }) })))
-  await expect(serverApi.getStepOutputs('X-1')).resolves.toBeNull()
-  vi.stubGlobal('fetch', vi.fn(() => Promise.reject(new Error('network down'))))
-  await expect(serverApi.getStepOutputs('X-1')).resolves.toBeNull()
+  const seen = vi.fn()
+  const close = serverApi.subscribeStepOutputs('X 1', seen)
+  const stream = MockEventSource.instances.at(-1)
+  expect(stream.url).toBe(`${serverApi.API_BASE}/items/X%201/stream`)
+  stream.dispatch('outputs', { id: 'X 1', stepOutputs: outputs })
+  expect(seen).toHaveBeenCalledWith(outputs)
+  stream.close = vi.fn()
+  close()
+  expect(stream.close).toHaveBeenCalled()
 })

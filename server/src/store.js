@@ -758,7 +758,7 @@ function currentStepOf(row) {
 //
 // HZ-318: `stepOutputs: false` leaves each item's stepOutputs off — 79% of the
 // board's bytes. The live feed and GET /api/items?v=2 use it; the Tracker
-// loads one item's outputs on open through itemStepOutputs() below.
+// streams one item's outputs while it is open, through itemStepOutputs() below.
 export function listItems({ scope = 'active', stepOutputs = true } = {}) {
   return selectItems
     .all()
@@ -777,8 +777,10 @@ function scopeFilter(scope) {
 
 // HZ-318: one item's stepOutputs exactly as listItems({ scope: 'enabled' })
 // carries them, or null when the id is unknown or outside that scope.
+// Runs once per open item per stream flush, so the statement is prepared once.
+const selectItemScope = db.prepare('SELECT id, project_id FROM work_item WHERE id = ?')
 export function itemStepOutputs(id) {
-  const row = db.prepare('SELECT id, project_id FROM work_item WHERE id = ?').get(id)
+  const row = selectItemScope.get(id)
   if (!row || !scopeFilter('enabled')(row)) return null
   return stepOutputs(row.id)
 }

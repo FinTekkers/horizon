@@ -17,18 +17,77 @@ const ITEM = {
   metric: 'Success metric long enough to pass validation.',
 }
 
+// Two tests create items through the API, which with a connected repository
+// files a GitHub issue. Earlier specs (28-deploy-target-overrides) leave repos
+// connected, so this file sets them aside and puts them back afterwards.
+let stashedRepos = []
+test.beforeAll(() => {
+  const db = openDb(DB_PATH)
+  try {
+    stashedRepos = db.prepare('SELECT * FROM project_repo').all()
+    db.prepare('DELETE FROM project_repo').run()
+  } finally {
+    db.close()
+  }
+})
+test.afterAll(() => {
+  const db = openDb(DB_PATH)
+  try {
+    for (const row of stashedRepos) {
+      const cols = Object.keys(row)
+      db.prepare(`INSERT INTO project_repo (${cols.join(', ')}) VALUES (${cols.map(() => '?').join(', ')})`).run(
+        ...cols.map((c) => row[c]),
+      )
+    }
+  } finally {
+    db.close()
+  }
+})
+
+// EventSource.readyState values.
+const EVENTSOURCE_OPEN = 1
+const EVENTSOURCE_CLOSED = 2
+
 function stepCard(page, label) {
   return page.locator('.step-card').filter({ has: page.locator('.step-card__label', { hasText: label }) })
 }
 
-test('a deep link straight to an item shows its step outputs, before and after a reload', async ({ page }) => {
+test('a deep link straight to an item opens its own stream and shows its outputs; back to the Board closes it', async ({
+  page,
+}) => {
+  // Records every EventSource the app opens, so the test can read its state.
+  await page.addInitScript(() => {
+    const Native = window.EventSource
+    window.__streams = []
+    window.EventSource = class extends Native {
+      constructor(...args) {
+        super(...args)
+        window.__streams.push(this)
+      }
+    }
+  })
+  const streamStates = (pattern) =>
+    page.evaluate((src) => {
+      const re = new RegExp(src)
+      return window.__streams.filter((s) => re.test(s.url)).map((s) => s.readyState)
+    }, pattern.source)
+  const ITEM_STREAM = /\/items\/[^/]+\/stream$/
+  const BOARD_STREAM = /\/stream\?v=2$/
+
   await page.goto('/e2e-5')
   const card = stepCard(page, 'Plan options & trade-offs (pros / cons)')
   for (let pass = 0; pass < 2; pass++) {
     await expect(card.getByRole('link', { name: 'attempt 2 of 2 ↗' })).toBeVisible()
     await expect(card.getByText('no output recorded', { exact: false })).toHaveCount(0)
+    expect(await streamStates(ITEM_STREAM)).toEqual([EVENTSOURCE_OPEN])
     if (pass === 0) await page.reload()
   }
+
+  await page.getByRole('button', { name: 'Back to board' }).click()
+  await expect(page.locator('.card').first()).toBeVisible()
+  expect(await streamStates(ITEM_STREAM)).toEqual([EVENTSOURCE_CLOSED])
+  // The Board's own feed stays open.
+  expect(await streamStates(BOARD_STREAM)).toEqual([EVENTSOURCE_OPEN])
 })
 
 test('a step that finishes while its item is open shows its output with no reload', async ({ request, page }) => {
@@ -54,7 +113,7 @@ test('a step that finishes while its item is open shows its output with no reloa
   await page.locator('.composer__submit').click()
 
   // The next agent steps run while the page stays open; their outputs arrive
-  // through a delta and the Tracker's per-item fetch.
+  // through the item's own stream.
   await expect(page.locator('.step-card--awaiting')).toContainText('Approve the high-level design', {
     timeout: 10_000,
   })
@@ -73,9 +132,8 @@ test('a new item and a change to an existing row both reach the Board within 2 s
   const card = page.locator('.card').filter({ has: page.locator('.card__id', { hasText: id }) })
   await expect(card).toBeVisible({ timeout: 2000 })
 
-  // Let the new item's mock steps settle at the intake gate, so the only
-  // change left is the one made below.
-  await expect(card.locator('.btn-approve')).toBeVisible({ timeout: 10_000 })
+  // Its mock steps are still running: the priority change has to get through
+  // alongside their changes.
   const priority = PRIORITIES.find((p) => p !== DEFAULT_PRIORITY)
   const changed = await request.post(`/api/items/${id}/priority`, { data: { priority } })
   expect(changed.ok()).toBeTruthy()

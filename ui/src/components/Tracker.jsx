@@ -17,7 +17,7 @@ import { itemStatus } from '../domain/status'
 import { pauseReason } from '../domain/pauseReason'
 import { gateActionOf } from '../domain/gateAction'
 import { resolveEventColor } from '../domain/eventColors'
-import { issueUrl, issueLabel, artifactUrl, outputUrl, runLogViewUrl, getStepOutputs } from '../api'
+import { issueUrl, issueLabel, artifactUrl, outputUrl, runLogViewUrl, subscribeStepOutputs } from '../api'
 import StatusPill from './StatusPill'
 import DependencyBadge from './DependencyBadge'
 import Markdown from './Markdown'
@@ -378,41 +378,34 @@ function buildActivity(item) {
     })
 }
 
-// HZ-318: the board feed leaves stepOutputs off, so the open item loads its
-// own. The feed keeps an unchanged item's object, so this reruns only when the
-// open item changed — a step finishing included. An item that still carries
-// the field (a server from before HZ-318, the mock) is used as it is. A reply
-// for an item no longer open is dropped.
+// HZ-318: the board feed leaves stepOutputs off, so the open item streams its
+// own: opened on mount and when the item changes, closed on leave. The server
+// sends the whole map again whenever it changes, so a step finishing while the
+// item is open shows its output. An item that still carries the field (a
+// server from before HZ-318) is used as it is.
 //
-// { stepOutputs, settled }: until a good reply for this exact item lands,
-// stepOutputs is the last one for the same id (links don't flicker away on a
-// refetch or vanish on a failed one) or null for a different id, and settled
-// is false.
+// { stepOutputs, settled }: settled is false until this item's first frame, so
+// no step reads "no output recorded" while they load. A frame for an item no
+// longer open is dropped.
 function useStepOutputs(item) {
-  const [loaded, setLoaded] = useState({ item: null, stepOutputs: null, ok: false })
+  const [loaded, setLoaded] = useState({ id: null, stepOutputs: null })
   const carried = item.stepOutputs
+  const hasCarried = carried != null
+  const { id } = item
   useEffect(() => {
-    if (carried) return undefined
-    let current = true
-    getStepOutputs(item.id)
-      .catch(() => null)
-      .then((stepOutputs) => {
-        if (!current) return
-        setLoaded((prev) => ({
-          item,
-          stepOutputs: stepOutputs ?? (prev.item?.id === item.id ? prev.stepOutputs : null),
-          ok: stepOutputs != null,
-        }))
-      })
+    if (hasCarried) return undefined
+    let open = true
+    const close = subscribeStepOutputs(id, (stepOutputs) => {
+      if (open) setLoaded({ id, stepOutputs })
+    })
     return () => {
-      current = false
+      open = false
+      close()
     }
-  }, [item, carried])
-  if (carried) return { stepOutputs: carried, settled: true }
-  return {
-    stepOutputs: loaded.item?.id === item.id ? loaded.stepOutputs : null,
-    settled: loaded.item === item && loaded.ok,
-  }
+  }, [id, hasCarried])
+  if (hasCarried) return { stepOutputs: carried, settled: true }
+  const mine = loaded.id === id
+  return { stepOutputs: mine ? loaded.stepOutputs : null, settled: mine }
 }
 
 export default function Tracker({ item, projects, onBack, onApprove, onApproveWithComments, onReject, onResolveConflicts, resolving, gateBusy, onForwardToAccept, onTogglePause, onRestartPhase, onSetPersona, onAbandon, onRemoveDependency }) {
