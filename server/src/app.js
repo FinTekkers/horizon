@@ -2684,6 +2684,9 @@ export function buildApp({ logger = true, onRoute = null } = {}) {
     return deployDrain.drainStatus()
   })
 
+  // HZ-321: `steps` ([{runId}], default []) names the agent step runs whose
+  // wait ran out; they are checkpointed and stopped, and listed back in
+  // `steps`. `runs` and `interrupted` are unchanged for a gate-only caller.
   fastify.post('/api/farm/deploy-drain/interrupt', async (request, reply) => {
     if (!drainAuthorized(request, reply)) return
     const runs = request.body?.runs
@@ -2698,7 +2701,15 @@ export function buildApp({ logger = true, onRoute = null } = {}) {
           DRAIN_KINDS.includes(run.kind),
       )
     if (!valid) return reply.code(400).send({ error: 'runs must be an array of {itemId, kind: premerge|resolve}' })
-    const result = await deployDrain.interruptForDeploy(runs.map(({ itemId, kind }) => ({ itemId, kind })))
+    const steps = request.body?.steps ?? []
+    const validSteps =
+      Array.isArray(steps) &&
+      steps.every((step) => step !== null && typeof step === 'object' && Number.isInteger(step.runId) && step.runId > 0)
+    if (!validSteps) return reply.code(400).send({ error: 'steps must be an array of {runId: positive integer}' })
+    const [result, stopped] = await Promise.all([
+      deployDrain.interruptForDeploy(runs.map(({ itemId, kind }) => ({ itemId, kind }))),
+      orchestrator.interruptStepsForDeploy([...new Set(steps.map(({ runId }) => runId))]),
+    ])
     for (const { itemId, kind, killed } of result.interrupted) {
       const outcome =
         kind === 'resolve'
@@ -2706,7 +2717,10 @@ export function buildApp({ logger = true, onRoute = null } = {}) {
           : killed ? 'checker stopped' : 'no checker process tracked'
       request.log.warn(`self-deploy: interrupted ${kind} run of ${itemId} (${outcome})`)
     }
-    return result
+    for (const { runId, itemId, interrupted, checkpoint } of stopped) {
+      if (interrupted) request.log.warn(`self-deploy: checkpointed step ${runId} of ${itemId} (${checkpoint.outcome})`)
+    }
+    return steps.length > 0 ? { ...result, steps: stopped } : result
   })
 
   fastify.delete('/api/farm/deploy-drain', (request, reply) => {

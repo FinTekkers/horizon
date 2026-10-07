@@ -418,9 +418,25 @@ try {
 } catch {
   // column already exists
 }
+try {
+  // HZ-321: a run a self-deploy stopped (orchestrator.interruptStepsForDeploy).
+  // It is `cancelled` like any other stop, so the status CHECK is untouched;
+  // the next dispatch of its step reuses its attempt and auto_retry_count.
+  db.exec('ALTER TABLE step_run ADD COLUMN deploy_interrupted INTEGER NOT NULL DEFAULT 0')
+} catch {
+  // column already exists
+}
+try {
+  // HZ-321: the run that first carried this feedback, so a deploy-stopped run
+  // can hand its feedback back undelivered (HZ-184: never consumed by a stop).
+  db.exec('ALTER TABLE feedback ADD COLUMN delivered_run_id INTEGER')
+} catch {
+  // column already exists
+}
 db.exec(`
   CREATE UNIQUE INDEX IF NOT EXISTS idx_feedback_gh_comment
     ON feedback(gh_comment_id) WHERE gh_comment_id IS NOT NULL;
+  CREATE INDEX IF NOT EXISTS idx_feedback_delivered_run ON feedback(delivered_run_id);
 `)
 
 // Issue numbers are only unique per repo: two connected repos both have an

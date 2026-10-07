@@ -743,3 +743,90 @@ def test_pid_and_outcome_files_are_ignored_by_every_task_glob_and_removed_by_tea
 
     farmd._teardown()
     assert not any(active.glob("9410.*"))
+
+
+# ---- HZ-321: a deploy stop is a pause that says why ----
+
+
+@pytest.mark.parametrize("reason, expected", [("deploy", "deploy"), ("pause", None)])
+def test_a_deploy_cancel_names_its_reason_before_the_sigterm(fake_tmux, helper_agent, cleanup_queue, monkeypatch, reason, expected):
+    cleanup_queue.append(9421)
+    active, name = _active(9421)
+    fake_tmux.sessions.add(name)
+    helper_agent(9421, outcome="saved")
+    seen = []
+    real_kill = farmd.os.kill
+
+    def recording_kill(pid, sig):
+        if sig == signal.SIGTERM:
+            path = active / "9421.stop-reason"
+            seen.append(path.read_text() if path.exists() else None)
+        return real_kill(pid, sig)
+
+    monkeypatch.setattr(farmd.os, "kill", recording_kill)
+
+    res = client.post("/steps/cancel", json={"run_id": 9421, "reason": reason, "checkpoint_timeout_s": 10})
+
+    assert res.json()["checkpoint"]["outcome"] == "saved"
+    assert seen == [expected]
+    assert name not in fake_tmux.sessions
+    assert not (active / "9421.stop-reason").exists(), "removed with the other control files"
+
+
+def test_a_redispatch_at_the_same_attempt_never_meets_the_old_session(fake_tmux, helper_agent, cleanup_queue, tmp_path):
+    """A deploy-stopped run is redispatched at its own attempt, so with its
+    own session name. The cancel kills that session before it answers, and
+    while one lived the dispatcher would hold the item back anyway."""
+    cleanup_queue.append(9422)
+    _, name = _active(9422)
+    fake_tmux.sessions.add(name)
+    redispatch = tmp_path / "9423.json"
+    redispatch.write_text(json.dumps({"run_id": 9423, "attempt": 1, "item": {"id": "t-1"}, "step": {"index": 11, "label": "x"}}))
+    assert farmd._run_session_name(json.loads(redispatch.read_text())) == name
+    assert farmd._select_dispatchable([redispatch], sessions=[name], slots=4) == []
+
+    helper_agent(9422, outcome="saved")
+    client.post("/steps/cancel", json={"run_id": 9422, "reason": "deploy", "checkpoint_timeout_s": 10})
+
+    assert name not in fake_tmux.sessions
+    assert farmd._select_dispatchable([redispatch], sessions=farmd._ephemeral_sessions(), slots=4) == [redispatch]
+
+
+@linux_only
+def test_farmd_stopping_a_real_implement_agent_for_a_deploy_pushes_a_deploy_checkpoint(tmp_path, fake_tmux, cleanup_queue, child_agents, monkeypatch):
+    """Across the process boundary: /steps/cancel (reason deploy) →
+    stop-reason + SIGTERM → the real step agent's deploy checkpoint → kill."""
+    cleanup_queue.append(9424)
+    ws, origin = make_git_workspace(tmp_path)
+    _, name = _active(9424)
+    fake_tmux.sessions.add(name)
+    child = ChildAgent(tmp_path, ws, run_id=9424, task_dir=QUEUE_DIR / "runs" / "active")
+    child_agents.append(child)
+    child.wait_until(lambda: child.ready.exists() and child.pid_file.exists(), "the agent to start")
+
+    res = client.post("/steps/cancel", json={"run_id": 9424, "reason": "deploy", "checkpoint_timeout_s": 60})
+
+    assert res.json()["checkpoint"] == {"outcome": "saved", "detail": "pushed a WIP checkpoint to horizon/t-1"}
+    assert child.proc.wait(timeout=30) == 0
+    assert not child.posted.exists(), "a deploy-stopped run reports no result"
+    assert origin_body(origin).strip() == "cause: deploy"
+    assert "paused_work.txt" in origin_files(origin)
+    head = subprocess.run(["git", "-C", str(ws), "rev-parse", "HEAD"], capture_output=True, text=True).stdout.strip()
+    assert origin_sha(origin) == head
+    assert subprocess.run(["git", "-C", str(ws), "status", "--porcelain"], capture_output=True, text=True).stdout == ""
+
+
+def test_a_deploy_stop_of_a_pm_step_has_nothing_to_save_and_kills_at_once(fake_tmux, cleanup_queue, monkeypatch):
+    """PM-lane agents keep no work in a workspace (and write no pid file):
+    a deploy stop reports `nothing`, sends no signal and still kills."""
+    cleanup_queue.append(9425)
+    active, name = _active(9425, step_index=0)
+    fake_tmux.sessions.add(name)
+    signals = []
+    monkeypatch.setattr(farmd.os, "kill", lambda *a: signals.append(a))
+
+    res = client.post("/steps/cancel", json={"run_id": 9425, "reason": "deploy", "checkpoint_timeout_s": 30})
+
+    assert res.json()["checkpoint"]["outcome"] == "nothing"
+    assert signals == [] and name not in fake_tmux.sessions
+    assert not (active / "9425.stop-reason").exists()

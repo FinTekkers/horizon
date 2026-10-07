@@ -94,3 +94,64 @@ test('release lifts the block', async () => {
   assert.equal(deployDrain.isDeployBlocked(), false)
   assert.deepEqual(lines, ['DRAIN released: new runs allowed again'])
 })
+
+// ---- HZ-321: agent steps ----
+
+const { STEPS, IMPLEMENT_STEP_INDEX } = await import('../../domain/js/lifecycle.js')
+
+function runningStep() {
+  const id = `HLP-${++seq}`
+  db.prepare('INSERT INTO work_item (id, title, priority, cursor, repo) VALUES (?, ?, ?, ?, ?)').run(id, id, 'Medium', IMPLEMENT_STEP_INDEX, 'acme/demo')
+  const runId = Number(
+    db
+      .prepare("INSERT INTO step_run (item_id, step_index, attempt, agent, status) VALUES (?, ?, 1, ?, 'active')")
+      .run(id, IMPLEMENT_STEP_INDEX, STEPS[IMPLEMENT_STEP_INDEX].agent).lastInsertRowid,
+  )
+  return { id, runId }
+}
+
+test('the step wait defaults to 1500 s; HORIZON_DEPLOY_DRAIN_STEP_TIMEOUT_S overrides it, 0 included', () => {
+  assert.equal(helper.DEFAULT_STEP_TIMEOUT_S, 1500)
+  assert.equal(helper.drainConfig({}).stepTimeoutS, 1500)
+  assert.equal(helper.drainConfig({ HORIZON_DEPLOY_DRAIN_STEP_TIMEOUT_S: '45' }).stepTimeoutS, 45)
+  assert.equal(helper.drainConfig({ HORIZON_DEPLOY_DRAIN_STEP_TIMEOUT_S: '0' }).stepTimeoutS, 0)
+  assert.equal(helper.drainConfig({ HORIZON_DEPLOY_DRAIN_STEP_TIMEOUT_S: 'junk' }).stepTimeoutS, 1500)
+})
+
+test('G1: the block outlasts the longer of the two waits plus both interrupt bounds', async () => {
+  const c = cfg({ HORIZON_DEPLOY_DRAIN_TIMEOUT_S: '1', HORIZON_DEPLOY_DRAIN_STEP_TIMEOUT_S: '20', HORIZON_DEPLOY_DRAIN_INTERRUPT_TIMEOUT_S: '60' })
+  assert.ok(helper.blockTtlS(c) >= 20 + 2 * 60, `ttl ${helper.blockTtlS(c)}`)
+  // Through the real route: the server's block really lasts that long.
+  const started = Date.now()
+  await helper.drain({ ...c, url }, () => {})
+  const until = Date.parse(deployDrain.beginDrain({ ttlS: 0 }).blockedUntil)
+  assert.ok(until - started >= (20 + 2 * 60) * 1000, `blocked for ${until - started}ms`)
+  deployDrain.endDrain()
+})
+
+test('line 3: a step past its wait is checkpointed through the real route and named in the log', async () => {
+  const step = runningStep()
+  const lines = []
+  await helper.drain(cfg({ HORIZON_DEPLOY_DRAIN_STEP_TIMEOUT_S: '0.5', HORIZON_DEPLOY_DRAIN_POLL_S: '0.2' }), (l) => lines.push(l))
+  assert.deepEqual(lines, [
+    `DRAIN waiting up to 0.5s for 1 agent step(s): ${step.id} specialist-agent-implements`,
+    // No farm in this test: nothing was running on it to save.
+    `DRAIN timed out: ${step.id} specialist-agent-implements — nothing to checkpoint, requeued after deploy`,
+  ])
+  const row = db.prepare('SELECT status, deploy_interrupted FROM step_run WHERE id = ?').get(step.runId)
+  assert.deepEqual({ ...row }, { status: 'cancelled', deploy_interrupted: 1 })
+  deployDrain.endDrain()
+})
+
+test('O8: a server older than HZ-321 (no `steps` field) logs only the HZ-250 lines', async () => {
+  const http = await import('node:http')
+  const old = http.createServer((req, res) => {
+    res.writeHead(200, { 'content-type': 'application/json' })
+    res.end(JSON.stringify({ blocked: true, running: [] }))
+  })
+  await new Promise((r) => old.listen(0, '127.0.0.1', r))
+  const lines = []
+  await helper.drain({ ...cfg({}), url: `http://127.0.0.1:${old.address().port}/api/farm/deploy-drain` }, (l) => lines.push(l))
+  old.close()
+  assert.deepEqual(lines, ['DRAIN nothing running'])
+})

@@ -2973,3 +2973,248 @@ def test_a_snapshot_timeout_still_completes_green_with_no_sha(tmp_path, monkeypa
 
     assert result["artifacts"]["branch"] == "horizon/t-1"
     assert "checks_passed_sha" not in result["artifacts"]
+
+
+# ---- HZ-321: the deploy checkpoint ----
+# A self-deploy whose drain ran out of time stops the step: farmd writes
+# `<run_id>.stop-reason` ("deploy") and SIGTERMs the agent, which saves its
+# whole tree as one WIP commit pushed — never forced — to its own branch.
+
+
+def _sh(ws, *args):
+    return subprocess.run(["git", "-C", str(ws), *args], capture_output=True, text=True, check=True).stdout.strip()
+
+
+def _origin_rev(origin, ref="horizon/t-1"):
+    res = subprocess.run(["git", "--git-dir", str(origin), "rev-parse", "--verify", "-q", ref], capture_output=True, text=True)
+    return res.stdout.strip()
+
+
+def _is_ancestor(repo_args, old, new):
+    return subprocess.run(["git", *repo_args, "merge-base", "--is-ancestor", old, new], capture_output=True).returncode == 0
+
+
+@pytest.fixture
+def deploy_stop(tmp_path, monkeypatch, pause_state):
+    """The step agent's pause state, stopped for a deploy: the outcome goes
+    to tmp_path/1.paused and its sibling stop-reason says "deploy". The
+    descendant kill is stubbed — in-process they would be pytest's children."""
+    from farm import pause
+
+    pause_state["outcome_path"] = tmp_path / "1.paused"
+    (tmp_path / "1.stop-reason").write_text("deploy")
+    monkeypatch.setattr(pause, "kill_descendants", lambda sig=None: 0)
+    return pause, tmp_path / "1.paused"
+
+
+def deploy_stopped_run(ws, files):
+    from farm import pause
+
+    def _fake(prompt, **kwargs):
+        for name, text in files.items():
+            (ws / name).parent.mkdir(parents=True, exist_ok=True)
+            (ws / name).write_text(text)
+        raise pause.PauseRequested()
+
+    return _fake
+
+
+def run_deploy_stopped(ws, monkeypatch, files, scope=None):
+    from farm import pause
+
+    monkeypatch.setattr(step_agent, "ensure_item_worktree", lambda repo, item_id: ws)
+    monkeypatch.setattr(step_agent, "run_agent", deploy_stopped_run(ws, files))
+    monkeypatch.setattr(step_agent, "finalize_branch", lambda *a, **k: pytest.fail("a deploy checkpoint reached finalize"))
+    task = make_task(11, "Specialist agent implements", repo="acme/demo")
+    if scope:
+        task["scope"] = scope
+    with pytest.raises(pause.PauseRequested):
+        execute(task)
+
+
+def test_deploy_checkpoint_commits_tracked_and_untracked_work_and_pushes_it(tmp_path, monkeypatch, deploy_stop):
+    pause, outcome_path = deploy_stop
+    ws, origin = make_git_workspace(tmp_path)
+
+    run_deploy_stopped(ws, monkeypatch, {"README.md": "# demo, edited\n", "src/new_module.py": "print('new')\n"})
+
+    assert pause.read_outcome(outcome_path) == {"outcome": "saved", "detail": "pushed a WIP checkpoint to horizon/t-1"}
+    assert _sh(ws, "status", "--porcelain") == "", "the worktree is clean after the checkpoint"
+    wip = _sh(ws, "rev-parse", "HEAD")
+    remote = subprocess.run(["git", "-C", str(ws), "ls-remote", "origin", "refs/heads/horizon/t-1"], capture_output=True, text=True).stdout.split()[0]
+    assert remote == wip, "the remote branch head is the WIP commit"
+    assert origin_log(origin).splitlines()[0] == f"T-1: {step_agent.CHECKPOINT_MARKER} (Horizon Eng agent)"
+    assert origin_body(origin).strip() == "cause: deploy"
+    assert _sh(ws, "rev-list", "--parents", "-n", "1", wip).split()[1:] == [_origin_rev(origin, "main")], "one commit on main"
+    assert set(_sh(ws, "show", "--name-only", "--format=", wip).split()) == {"README.md", "src/new_module.py"}
+    assert _origin_rev(origin, "main") == _sh(ws, "rev-parse", "origin/main"), "main is never pushed to"
+
+
+def test_deploy_checkpoint_on_a_locally_rebased_branch_fast_forwards_and_the_next_attempt_resumes_it(tmp_path, monkeypatch, deploy_stop):
+    """Architecture blocker 1: the resumed checkpoint was rebased onto main
+    locally, so origin/horizon/t-1 is not in HEAD. The WIP commit's one parent
+    is the remote head, so the push is a plain fast-forward — and the next
+    attempt, in a fresh clone with main moved again, holds every file."""
+    pause, outcome_path = deploy_stop
+    ws, origin = make_git_workspace(tmp_path)
+    old = make_checkpoint(ws, origin, cause="paused", path="wip.txt", text="first half\n")
+    advance_main(tmp_path, origin, path="m1.txt")
+
+    run_deploy_stopped(ws, monkeypatch, {"wip.txt": "first half\nsecond half\n", "more.txt": "more\n"})
+
+    assert pause.read_outcome(outcome_path)["outcome"] == "saved"
+    new = _origin_rev(origin)
+    assert new != old and _is_ancestor(["--git-dir", str(origin)], old, new), "no force: the old head is kept"
+    assert _sh(ws, "rev-list", "--parents", "-n", "1", new).split()[1:] == [old], "a single parent, never a merge"
+    assert _sh(ws, "status", "--porcelain") == ""
+    advance_main(tmp_path, origin, path="m2.txt")
+
+    fresh = tmp_path / "fresh"
+    subprocess.run(["git", "clone", "--quiet", str(origin), str(fresh)], check=True, capture_output=True)
+    git(fresh, "config", "user.email", "farm@example.com")
+    git(fresh, "config", "user.name", "Horizon Farm")
+    monkeypatch.setattr(step_agent, "ensure_item_worktree", lambda repo, item_id: fresh)
+    pause._state.update(phase="idle", pending=False)
+    seen = {}
+
+    def attempt_2(prompt, **kwargs):
+        seen.update({p: (fresh / p).read_text() for p in ("wip.txt", "more.txt", "m1.txt", "m2.txt")})
+        seen["prompt"] = prompt
+        return {"result": '{"summary": "continued"}'}
+
+    monkeypatch.setattr(step_agent, "run_agent", attempt_2)
+    monkeypatch.setattr(step_agent, "run_checks", lambda *a, **k: "checks: none")
+    monkeypatch.setattr(step_agent, "finalize_branch", lambda *a, **k: {"branch": "horizon/t-1"})
+    execute(make_task(11, "Specialist agent implements", repo="acme/demo"))
+
+    assert seen["wip.txt"] == "first half\nsecond half\n" and seen["more.txt"] == "more\n"
+    assert seen["m2.txt"] == "fix on main\n", "rebased onto the main that moved since"
+    assert "a Horizon deploy stopped the previous attempt mid-run" in seen["prompt"]
+    assert "more.txt" in seen["prompt"]
+
+
+def test_a_merge_of_main_still_in_progress_is_kept_as_a_merge(tmp_path, monkeypatch, deploy_stop):
+    pause, outcome_path = deploy_stop
+    ws, origin = make_git_workspace(tmp_path)
+    git(ws, "checkout", "-B", "horizon/t-1", "origin/main")
+    (ws / "feature.txt").write_text("feature\n")
+    git(ws, "add", "-A")
+    git(ws, "commit", "-m", "T-1: feature")
+    git(ws, "push", "origin", "horizon/t-1")
+    advance_main(tmp_path, origin, path="m1.txt")
+    git(ws, "fetch", "origin")
+    git(ws, "merge", "--no-commit", "--no-ff", "origin/main")
+    item = {"id": "T-1", "title": "t", "repo": "acme/demo"}
+
+    outcome, _ = step_agent._deploy_checkpoint(ws, item, "horizon/t-1", [], _origin_rev(origin))
+
+    assert outcome == pause.SAVED
+    parents = _sh(ws, "rev-list", "--parents", "-n", "1", "HEAD").split()[1:]
+    assert parents == [_sh(ws, "rev-parse", "origin/horizon/t-1"), _sh(ws, "rev-parse", "origin/main")]
+    assert _sh(ws, "status", "--porcelain") == "" and _origin_rev(origin) == _sh(ws, "rev-parse", "HEAD")
+
+
+def test_a_deploy_checkpoint_whose_push_fails_is_kept_and_resumed_by_the_next_attempt(tmp_path, monkeypatch, deploy_stop):
+    """Guardrail 2: a failed push is reported, never retried with force, and
+    loses nothing — the commit stays in the worktree and the next attempt's
+    prepare_branch starts from it instead of scrubbing it."""
+    pause, outcome_path = deploy_stop
+    ws, origin = make_git_workspace(tmp_path)
+    hook = origin / "hooks" / "pre-receive"
+    hook.write_text("#!/bin/sh\necho 'push refused by the test' >&2\nexit 1\n")
+    hook.chmod(0o755)
+
+    run_deploy_stopped(ws, monkeypatch, {"unsaved.txt": "do not lose me\n"})
+
+    outcome = pause.read_outcome(outcome_path)
+    assert outcome["outcome"] == "failed" and "push" in outcome["detail"]
+    assert _origin_rev(origin) == "", "nothing reached the remote"
+    wip = _sh(ws, "rev-parse", "HEAD")
+    assert (Path(_sh(ws, "rev-parse", "--absolute-git-dir")) / step_agent.UNPUSHED_CHECKPOINT).read_text().split() == ["horizon/t-1", wip]
+
+    hook.unlink()
+    prepared = step_agent.prepare_branch(ws, ITEM, rebase_checkpoint=True)
+    assert _sh(ws, "rev-parse", "HEAD") == wip
+    assert (ws / "unsaved.txt").read_text() == "do not lose me\n"
+    assert prepared.lease_sha == "", "later pushes still lease against what origin holds"
+    assert not (Path(_sh(ws, "rev-parse", "--absolute-git-dir")) / step_agent.UNPUSHED_CHECKPOINT).exists()
+    assert "a Horizon deploy stopped" in step_agent._checkpoint_resume_note(ws)
+
+
+@pytest.mark.parametrize("branch", ["main", "horizon/t-2"])
+def test_a_deploy_checkpoint_pushes_only_to_the_items_own_branch(tmp_path, deploy_stop, branch):
+    pause, _ = deploy_stop
+    ws, origin = make_git_workspace(tmp_path)
+    git(ws, "checkout", "-B", branch)
+    (ws / "x.txt").write_text("x\n")
+    before = _origin_rev(origin, "main")
+
+    outcome, detail = step_agent._deploy_checkpoint(ws, ITEM, branch, [], "")
+
+    assert outcome == pause.SKIPPED and "not this item's own branch" in detail
+    assert _origin_rev(origin, "main") == before and _origin_rev(origin, "horizon/t-2") == ""
+    assert _sh(ws, "status", "--porcelain") == "?? x.txt", "nothing was committed"
+
+
+def test_a_deploy_checkpoint_never_commits_or_reports_a_secret(tmp_path, monkeypatch, deploy_stop):
+    pause, outcome_path = deploy_stop
+    ws, origin = make_git_workspace(tmp_path)
+    files = {
+        ".gitignore": "ignored.txt\n",
+        "ignored.txt": "local only\n",
+        ".env": "API_TOKEN=sekrit-HZ321\n",
+        "config/.env": "API_TOKEN=sekrit-HZ321\n",
+        "deploy/id_rsa": "-----BEGIN KEY-----\n",
+        "src/app.py": "print('work')\n",
+    }
+    run_deploy_stopped(ws, monkeypatch, files)
+
+    assert pause.read_outcome(outcome_path)["outcome"] == "saved"
+    committed = subprocess.run(["git", "--git-dir", str(origin), "ls-tree", "-r", "--name-only", "horizon/t-1"], capture_output=True, text=True).stdout.split()
+    assert "src/app.py" in committed and ".gitignore" in committed
+    for secret in ("ignored.txt", ".env", "config/.env", "deploy/id_rsa"):
+        assert secret not in committed
+    message = subprocess.run(["git", "--git-dir", str(origin), "log", "-1", "--format=%B", "horizon/t-1"], capture_output=True, text=True).stdout
+    assert "sekrit" not in message and "API_TOKEN" not in message
+
+    # A failed push's detail never carries the remote's credentials.
+    token = "ghs_" + "a1B2" * 9
+    real_git = step_agent.git
+
+    def leaky_push(ws_, *args, **kwargs):
+        if args and args[0] == "push":
+            raise RuntimeError(f"git push failed: fatal: unable to access 'https://x-access-token:{token}@github.com/acme/demo/'")
+        return real_git(ws_, *args, **kwargs)
+
+    monkeypatch.setattr(step_agent, "git", leaky_push)
+    (ws / "src/app.py").write_text("print('more work')\n")
+    outcome, detail = step_agent._deploy_checkpoint(ws, ITEM, "horizon/t-1", [], _origin_rev(origin))
+    assert outcome == pause.FAILED
+    assert token not in detail and "x-access-token" not in detail and "[redacted]" in detail
+
+
+def test_a_deploy_checkpoint_in_fix_mode_still_saves_without_force(tmp_path, monkeypatch, deploy_stop):
+    """A pause skips the checkpoint on an open PR; a deploy saves it there
+    (the item is at implement, so nothing can merge it) as a fast-forward."""
+    pause, outcome_path = deploy_stop
+    ws, origin = make_git_workspace(tmp_path)
+    git(ws, "push", "origin", "HEAD:horizon/t-1")
+    before = _origin_rev(origin)
+
+    run_deploy_stopped(ws, monkeypatch, {"fix.txt": "fixing\n"}, scope={"mode": "fix", "base_sha": before, "findings": []})
+
+    assert pause.read_outcome(outcome_path)["outcome"] == "saved"
+    assert _is_ancestor(["--git-dir", str(origin)], before, _origin_rev(origin))
+    assert "fix.txt" in _sh(ws, "show", "--name-only", "--format=", "HEAD").split()
+
+
+def test_without_a_stop_reason_a_pause_is_unchanged(tmp_path, monkeypatch, deploy_stop):
+    """Guardrail 4: no stop-reason file means an operator's pause, as before."""
+    pause, outcome_path = deploy_stop
+    (tmp_path / "1.stop-reason").unlink()
+    ws, origin = make_git_workspace(tmp_path)
+
+    run_deploy_stopped(ws, monkeypatch, {"paused.txt": "x\n"})
+
+    assert pause.read_outcome(outcome_path)["outcome"] == "saved"
+    assert origin_body(origin).startswith("cause: paused")

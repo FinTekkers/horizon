@@ -456,8 +456,9 @@ stage, inside its `flock`, just before `restart`:
 
 The block lives in the server's memory: the restart clears it, a failed
 deploy's `ERR` trap clears it (`DRAIN released`), and it expires by itself
-after the wait + 10 min (never more than `DEPLOY_BLOCK_MAX_TTL_S`, default
-2 h, in `server.env`). No DB edit is ever needed.
+after the longer of the two waits (HZ-321, below) + both interrupt bounds +
+10 min (never more than `DEPLOY_BLOCK_MAX_TTL_S`, default 2 h, in
+`server.env`). No DB edit is ever needed.
 
 The drain never stops a deploy: a server that is down, hung or erroring is
 logged as `DRAIN skipped: …` and the restart goes ahead. Each request has its
@@ -474,6 +475,61 @@ here — it runs inside farmd, which this script restarts right after
 inline in a thread and writes no task file (`farm/farmd.py`
 `conflicts_resolve`), and `_adopt_existing()` only re-adopts step runs from
 `queue/runs/active/*.json`.
+
+### Running agent steps (HZ-321)
+
+The same deploy also restarts the farm (an `extraServices` entry of the
+`horizon` target), which ends every running agent step's tmux session. The
+drain now waits for those steps too, so a deploy no longer throws their work
+away:
+
+1. While the block is on, the server starts no new agent step. A dispatch
+   asked for meanwhile is held, not dropped. This covers every project,
+   including `ui-service` deploy steps.
+2. The drain waits for every running agent step, polling in the same loop as
+   the gate runs, up to `HORIZON_DEPLOY_DRAIN_STEP_TIMEOUT_S` (default
+   **1500** = 25 min; `0` = don't wait). `self-deploy.log` gets
+   `DRAIN waiting up to <n>s for <k> agent step(s): <item> <step>, …`, then per
+   step `DRAIN finished: <item> <step>` or `DRAIN timed out: <item> <step> —
+   checkpointed, requeued after deploy`. `<step>` is the step label as one
+   word, e.g. `specialist-agent-implements`.
+3. A step still going when its wait ends is stopped with a checkpoint. The
+   farm SIGTERMs the step agent, which commits its whole working tree as one
+   WIP commit (`cause: deploy`). `.gitignore` is honoured and secret-looking
+   files are left out. The agent pushes that commit to `horizon/<item>` only,
+   as a plain fast-forward: never forced, never rewriting a commit. The run
+   is closed as deploy-interrupted. Its feedback goes back undelivered, and
+   after the restart the server dispatches the step again **at the same
+   attempt and auto-retry count**. The next attempt starts from the
+   checkpoint commit.
+4. A checkpoint that fails or does not answer in time logs
+   `DRAIN checkpoint failed: <item> <step> (<why>)`, and the restart goes
+   ahead. A failed push leaves the commit in the item's worktree, and the
+   next attempt resumes from it. The checkpoint wait is
+   `min(HZ_PAUSE_CHECKPOINT_TIMEOUT_S, 40)` s, so the server's answer always
+   lands inside the 60 s interrupt bound.
+
+Bound: the drain ends within `max(HORIZON_DEPLOY_DRAIN_TIMEOUT_S,
+HORIZON_DEPLOY_DRAIN_STEP_TIMEOUT_S)` + one begin and one status request +
+two interrupt requests. With the defaults that is 1500 + 10 + 10 + 2 × 60 =
+**1640 s**. Off switch for steps: `HORIZON_DEPLOY_DRAIN_STEP_TIMEOUT_S=0`,
+which checkpoints at once and does not wait.
+
+Notes:
+
+- **The deploy step is not drained.** Its own run published the release
+  being deployed, and it waits for that deploy to go live, so waiting for it
+  would wait on itself. It still ends when the farm restarts, as before.
+- **`drain release` resumes items.** When a deploy fails before the restart,
+  the `ERR` trap's release (or the block's TTL running out) dispatches the
+  held and deploy-stopped steps on the server that is still running.
+- **First rollout.** The deploy that ships HZ-321 runs the new helper
+  against the old server, which lists no `steps`. Steps are drained from the
+  next deploy on.
+- **Re-adopt.** A farm restart on its own (farmd only) already re-adopts a
+  live `farm-run-*` session. `systemctl restart horizon-farm` ends the
+  sessions, which is why the drain checkpoints them first. The systemd units
+  and the sudoers file are unchanged.
 
 ## Deep verification beyond the health check (HZ-22)
 
