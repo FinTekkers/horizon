@@ -3105,12 +3105,14 @@ def test_a_merge_of_main_still_in_progress_is_kept_as_a_merge(tmp_path, monkeypa
     git(ws, "fetch", "origin")
     git(ws, "merge", "--no-commit", "--no-ff", "origin/main")
     item = {"id": "T-1", "title": "t", "repo": "acme/demo"}
+    # Read before the checkpoint: its push moves origin/horizon/t-1 to the WIP.
+    pushed = _sh(ws, "rev-parse", "origin/horizon/t-1")
 
     outcome, _ = step_agent._deploy_checkpoint(ws, item, "horizon/t-1", [], _origin_rev(origin))
 
     assert outcome == pause.SAVED
     parents = _sh(ws, "rev-list", "--parents", "-n", "1", "HEAD").split()[1:]
-    assert parents == [_sh(ws, "rev-parse", "origin/horizon/t-1"), _sh(ws, "rev-parse", "origin/main")]
+    assert parents == [pushed, _sh(ws, "rev-parse", "origin/main")]
     assert _sh(ws, "status", "--porcelain") == "" and _origin_rev(origin) == _sh(ws, "rev-parse", "HEAD")
 
 
