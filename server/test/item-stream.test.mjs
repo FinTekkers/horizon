@@ -150,6 +150,9 @@ test('the board stream carries no step output at all, in its snapshot or its del
     // Drain any flush setup left pending, so the next delta is the write's.
     appModule.flushStream()
     insertRun.run('SO-OPEN', 4, 1, 'fresh board-only output', '# fresh board-only artifact')
+    // The board sees this run only through state_since (its ended_at), which
+    // has 1 s resolution: a run ending in the seed's second changed nothing.
+    db.prepare("UPDATE step_run SET ended_at = datetime('now', '+1 minute') WHERE item_id = 'SO-OPEN' AND step_index = 4").run()
     store.notifyChange()
     appModule.flushStream()
     const delta = await board.nth(0, (f) => f.event === 'delta')
