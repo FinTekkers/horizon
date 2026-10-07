@@ -40,6 +40,9 @@ const EXPECTED_JOURNEYS = [
   'project-autopilot',
   'board-gate-status-running',
   'rules-versions',
+  'board-blocked-light',
+  'board-blocked-dark',
+  'board-blocked-phone',
 ]
 
 const missing = EXPECTED_JOURNEYS.filter((name) => !existsSync(join(SCREENSHOTS_DIR, `${name}.png`)))

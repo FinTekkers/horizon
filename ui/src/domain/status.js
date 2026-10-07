@@ -13,6 +13,19 @@ export function isQueued(item) {
   return !!item.activeRun && item.activeRun.step_index === item.cursor && item.activeRun.state === 'queued'
 }
 
+// HZ-335: an item held up by an open dependency, read from the API's
+// item.blocked as given (HZ-95: no client-side derivation). Nothing runs for
+// it, so it must never look like an agent is working or offer Pause work.
+// False once the item is closed, abandoned, rejected or paused — those states
+// win — and while a run is actually running at the cursor (a dependency added
+// mid-run: real work is happening). A queued run still counts as blocked.
+export function isDependencyBlocked(item) {
+  if (!item.blocked) return false
+  if (isClosed(item) || isAbandoned(item) || item.rejected || item.paused) return false
+  const run = item.activeRun
+  return !(run && run.step_index === item.cursor && run.state === 'running')
+}
+
 // verbose=true gives the tracker-header phrasing; false gives the compact card one.
 export function itemStatus(item, verbose = false) {
   const closed = isClosed(item)
@@ -31,6 +44,10 @@ export function itemStatus(item, verbose = false) {
   if (closed) return { label: 'Closed', color: 'var(--success-ink)', bg: 'var(--success-bg)' }
   if (rejected) return { label: 'Changes requested', color: 'var(--danger-ink)', bg: 'var(--danger-bg)' }
   if (paused) return { label: 'Paused', color: 'var(--muted-strong)', bg: 'var(--chip)' }
+  // Precedence (HZ-335): Abandoned > Closed > Changes requested > Paused >
+  // Blocked > Awaiting > Queued > working. Danger is what "blocked" already
+  // means on the board (.dep-pill--blocked, step__icon--blocked).
+  if (isDependencyBlocked(item)) return { label: 'Blocked', color: 'var(--danger-ink)', bg: 'var(--danger-bg)' }
   if (awaiting) {
     return { label: verbose ? 'Awaiting your approval' : 'Awaiting you', color: 'var(--warning-ink)', bg: 'var(--warning-bg)' }
   }
@@ -66,10 +83,12 @@ export function stepStateLabel(step) {
 // or null for no timer. Paused rule: a paused card shows no timer — there is
 // no pause timestamp to count from, and adding one would be a schema change.
 // Closed, abandoned and rejected cards show none either; the server sends
-// state_since: null for all four.
+// state_since: null for all four. A dependency-blocked card shows none: the
+// API has no blocked-since time (HZ-335).
 export function stateLabel(item) {
   if (!item.state_since) return null
   if (isClosed(item) || isAbandoned(item) || item.rejected || item.paused) return null
+  if (isDependencyBlocked(item)) return null
   const cur = curStep(item)
   if (cur.kind === 'gate') {
     const action = gateActionOf(item)

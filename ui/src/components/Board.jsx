@@ -11,7 +11,7 @@ import {
 import { PHASE_ACCENT, PHASE_ACCENT_BG, priorityColor } from '../domain/lifecycle'
 import { FILTERS, visibleItems, hiddenCounts, matchCounts } from '../domain/filters'
 import { PRIMARY_PERSONA_AGENT, personaFor } from '../domain/personas'
-import { itemStatus, stateLabel } from '../domain/status'
+import { itemStatus, stateLabel, isDependencyBlocked } from '../domain/status'
 import { gateActionOf, gateActionBusy, elapsedText } from '../domain/gateAction'
 import { usualDurationHint } from '../domain/durationHint'
 import { deployQueueLabel } from '../domain/deployQueue'
@@ -47,7 +47,9 @@ function BoardCard({ item, projects, durationEstimates, now, onOpen, onApprove, 
   const paused = !!item.paused && !closed && !abandoned && !rejected
   const awaiting = awaitingGate(item)
   const cur = curStep(item)
-  const isActiveAgent = !closed && !abandoned && !awaiting && !rejected && !paused && cur && cur.kind === 'agent'
+  // HZ-335: a dependency-blocked item has nothing running, so no Pause work.
+  const blocked = isDependencyBlocked(item)
+  const isActiveAgent = !closed && !abandoned && !awaiting && !rejected && !paused && !blocked && cur && cur.kind === 'agent'
   const rejectTarget = awaiting && cur ? cur.label : cur ? cur.label : 'this step'
   // HZ-226: at the Accept gate, the server's in-flight action (pre-merge
   // checks + merge, or conflict resolution) shows here as it does on the

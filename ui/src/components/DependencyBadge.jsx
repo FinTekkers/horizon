@@ -7,7 +7,7 @@
 // an X beside each "Blocked by" entry. Success changes nothing locally — the
 // server's SSE snapshot drops the edge from this badge and the board card.
 
-import { useEffect, useState } from 'react'
+import { Fragment, useEffect, useState } from 'react'
 
 function abandonedSuffix(entry) {
   return entry.abandoned ? ' (abandoned)' : ''
@@ -109,9 +109,18 @@ export default function DependencyBadge({ item, compact = false, onRemove }) {
       <span className="dep-badges">
         {blockedBy.length > 0 && (
           <span className="dep-pill dep-pill--blocked" title={tooltip(blockedBy)}>
-            Blocked by {blockedBy[0].id}
-            {abandonedSuffix(blockedBy[0])}
-            {blockedBy.length > 1 && ` +${blockedBy.length - 1} more`}
+            {/* HZ-335: names every blocker as a link. stopPropagation keeps
+                a link click from also opening the card underneath. */}
+            Blocked by{' '}
+            {blockedBy.map((b, i) => (
+              <Fragment key={b.id}>
+                {i > 0 && ', '}
+                <a className="dep-pill__id" href={itemHref(b.id)} onClick={(e) => e.stopPropagation()}>
+                  {b.id}
+                </a>
+                {abandonedSuffix(b)}
+              </Fragment>
+            ))}
           </span>
         )}
         {dependents.length > 0 && (

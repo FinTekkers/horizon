@@ -6,6 +6,7 @@
 
 import { isClosed, isAbandoned, curStep } from '../../../domain/js/lifecycle.js'
 import { gateActionOf, elapsedText } from './gateAction'
+import { isDependencyBlocked } from './status'
 
 // The gate actions durationEstimates carries an entry for.
 const GATE_ESTIMATE_KINDS = new Set(['premerge', 'resolve'])
@@ -28,6 +29,8 @@ function estimateKey(item) {
 export function usualDurationHint(item, estimates, now) {
   if (!item?.state_since || !estimates || typeof estimates !== 'object') return null
   if (isClosed(item) || isAbandoned(item) || item.rejected || item.paused) return null
+  // HZ-335: nothing runs while a dependency holds the item up.
+  if (isDependencyBlocked(item)) return null
   const since = Date.parse(item.state_since)
   if (Number.isNaN(since)) return null
   const key = estimateKey(item)

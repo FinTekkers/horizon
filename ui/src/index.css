@@ -549,7 +549,13 @@ button { font-family: var(--font-sans); }
   font: 700 11px var(--font-sans); border-radius: 20px; padding: 3px 9px;
   max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
-.dep-pill--blocked { color: var(--danger-ink); background: var(--danger-bg); }
+.dep-pill--blocked {
+  color: var(--danger-ink); background: var(--danger-bg);
+  /* HZ-335: every blocker is named, so several ids wrap rather than clip.
+     Block, not inline-flex, so the text and links flow as one line box. */
+  display: block; white-space: normal; overflow-wrap: anywhere;
+}
+.dep-pill__id { color: inherit; text-decoration: underline; }
 .dep-pill--dependents { color: var(--agent-human-ink); background: var(--agent-human-bg); }
 
 .dep-detail { display: flex; gap: 14px; flex-wrap: wrap; margin-top: 14px; }
