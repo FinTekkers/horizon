@@ -1,0 +1,1520 @@
+{
+  "always_run": [
+    {
+      "command": "sh -c /opt/horizon/farm/.venv/bin/python -m pytest -q",
+      "reason": "no_v8_coverage",
+      "suite": "command"
+    },
+    {
+      "command": "sh -c npm install --no-audit --no-fund",
+      "reason": "no_v8_coverage",
+      "suite": "command"
+    },
+    {
+      "command": "e2e/fixtures/test-base.test.mjs",
+      "reason": "no_v8_coverage",
+      "suite": "node"
+    },
+    {
+      "command": "e2e/smoke/check.test.mjs",
+      "reason": "no_v8_coverage",
+      "suite": "node"
+    },
+    {
+      "command": "ui/scripts/verify-base-build.mjs",
+      "reason": "no_v8_coverage",
+      "suite": "node"
+    },
+    {
+      "command": "farm/tests",
+      "reason": "no_v8_coverage",
+      "suite": "pytest"
+    },
+    {
+      "command": "infra/host/test/*.test.sh",
+      "reason": "no_v8_coverage",
+      "suite": "shell"
+    },
+    {
+      "command": "infra/whatsapp-bridge/run-checks.sh",
+      "reason": "no_v8_coverage",
+      "suite": "shell"
+    }
+  ],
+  "blocking": [],
+  "demoted": [],
+  "excluded": [
+    {
+      "file": "e2e/tests/01-board.spec.js",
+      "reason": "3 of 10 clean runs",
+      "suite": "e2e"
+    },
+    {
+      "file": "e2e/tests/02-create-item.spec.js",
+      "reason": "3 of 10 clean runs",
+      "suite": "e2e"
+    },
+    {
+      "file": "e2e/tests/03-mock-agents.spec.js",
+      "reason": "3 of 10 clean runs",
+      "suite": "e2e"
+    },
+    {
+      "file": "e2e/tests/04-gates.spec.js",
+      "reason": "3 of 10 clean runs",
+      "suite": "e2e"
+    },
+    {
+      "file": "e2e/tests/05-deep-links.spec.js",
+      "reason": "3 of 10 clean runs",
+      "suite": "e2e"
+    },
+    {
+      "file": "e2e/tests/06-approvals-drawer.spec.js",
+      "reason": "3 of 10 clean runs",
+      "suite": "e2e"
+    },
+    {
+      "file": "e2e/tests/07-merge-conflict.spec.js",
+      "reason": "3 of 10 clean runs",
+      "suite": "e2e"
+    },
+    {
+      "file": "e2e/tests/08-full-lifecycle.spec.js",
+      "reason": "3 of 10 clean runs",
+      "suite": "e2e"
+    },
+    {
+      "file": "e2e/tests/09-gate-confirm.spec.js",
+      "reason": "3 of 10 clean runs",
+      "suite": "e2e"
+    },
+    {
+      "file": "e2e/tests/09-queued-work.spec.js",
+      "reason": "3 of 10 clean runs",
+      "suite": "e2e"
+    },
+    {
+      "file": "e2e/tests/10-abandon.spec.js",
+      "reason": "3 of 10 clean runs",
+      "suite": "e2e"
+    },
+    {
+      "file": "e2e/tests/10-artifact-history.spec.js",
+      "reason": "3 of 10 clean runs",
+      "suite": "e2e"
+    },
+    {
+      "file": "e2e/tests/10-gate-key.spec.js",
+      "reason": "3 of 10 clean runs",
+      "suite": "e2e"
+    },
+    {
+      "file": "e2e/tests/10-login-error.spec.js",
+      "reason": "3 of 10 clean runs",
+      "suite": "e2e"
+    },
+    {
+      "file": "e2e/tests/11-theme.spec.js",
+      "reason": "3 of 10 clean runs",
+      "suite": "e2e"
+    },
+    {
+      "file": "e2e/tests/12-stale-filter.spec.js",
+      "reason": "3 of 10 clean runs",
+      "suite": "e2e"
+    },
+    {
+      "file": "e2e/tests/13-dependencies.spec.js",
+      "reason": "3 of 10 clean runs",
+      "suite": "e2e"
+    },
+    {
+      "file": "e2e/tests/13-pause-reason.spec.js",
+      "reason": "3 of 10 clean runs",
+      "suite": "e2e"
+    },
+    {
+      "file": "e2e/tests/14-definitions-preview.spec.js",
+      "reason": "3 of 10 clean runs",
+      "suite": "e2e"
+    },
+    {
+      "file": "e2e/tests/15-closed-filter.spec.js",
+      "reason": "3 of 10 clean runs",
+      "suite": "e2e"
+    },
+    {
+      "file": "e2e/tests/16-markdown.spec.js",
+      "reason": "3 of 10 clean runs",
+      "suite": "e2e"
+    },
+    {
+      "file": "e2e/tests/17-persona-picker.spec.js",
+      "reason": "3 of 10 clean runs",
+      "suite": "e2e"
+    },
+    {
+      "file": "e2e/tests/18-legal-pages.spec.js",
+      "reason": "3 of 10 clean runs",
+      "suite": "e2e"
+    },
+    {
+      "file": "e2e/tests/19-api-tokens.spec.js",
+      "reason": "3 of 10 clean runs",
+      "suite": "e2e"
+    },
+    {
+      "file": "e2e/tests/20-premerge-checks.spec.js",
+      "reason": "3 of 10 clean runs",
+      "suite": "e2e"
+    },
+    {
+      "file": "e2e/tests/21-gate-in-flight.spec.js",
+      "reason": "3 of 10 clean runs",
+      "suite": "e2e"
+    },
+    {
+      "file": "e2e/tests/22-project-filter.spec.js",
+      "reason": "3 of 10 clean runs",
+      "suite": "e2e"
+    },
+    {
+      "file": "e2e/tests/23-project-enabled.spec.js",
+      "reason": "3 of 10 clean runs",
+      "suite": "e2e"
+    },
+    {
+      "file": "e2e/tests/24-mobile-layout.spec.js",
+      "reason": "3 of 10 clean runs",
+      "suite": "e2e"
+    },
+    {
+      "file": "e2e/tests/25-board-gate-status.spec.js",
+      "reason": "3 of 10 clean runs",
+      "suite": "e2e"
+    },
+    {
+      "file": "e2e/tests/26-board-elapsed.spec.js",
+      "reason": "3 of 10 clean runs",
+      "suite": "e2e"
+    },
+    {
+      "file": "e2e/tests/26-project-autopilot.spec.js",
+      "reason": "3 of 10 clean runs",
+      "suite": "e2e"
+    },
+    {
+      "file": "e2e/tests/27-pending-while-running.spec.js",
+      "reason": "3 of 10 clean runs",
+      "suite": "e2e"
+    },
+    {
+      "file": "e2e/tests/27-rules-versions.spec.js",
+      "reason": "3 of 10 clean runs",
+      "suite": "e2e"
+    },
+    {
+      "file": "e2e/tests/28-board-usual.spec.js",
+      "reason": "3 of 10 clean runs",
+      "suite": "e2e"
+    },
+    {
+      "file": "e2e/tests/28-deploy-target-overrides.spec.js",
+      "reason": "3 of 10 clean runs",
+      "suite": "e2e"
+    },
+    {
+      "file": "e2e/tests/29-gate-retry.spec.js",
+      "reason": "3 of 10 clean runs",
+      "suite": "e2e"
+    },
+    {
+      "file": "e2e/tests/30-remove-dependency.spec.js",
+      "reason": "3 of 10 clean runs",
+      "suite": "e2e"
+    },
+    {
+      "file": "e2e/tests/30-repo-marks.spec.js",
+      "reason": "3 of 10 clean runs",
+      "suite": "e2e"
+    },
+    {
+      "file": "e2e/tests/31-live-feed.spec.js",
+      "reason": "3 of 10 clean runs",
+      "suite": "e2e"
+    },
+    {
+      "file": "e2e/tests/32-check-commands-multiline.spec.js",
+      "reason": "2 of 10 clean runs",
+      "suite": "e2e"
+    },
+    {
+      "file": "server/test/admin-deploy-target-crud.test.mjs",
+      "reason": "3 of 10 clean runs",
+      "suite": "server"
+    },
+    {
+      "file": "server/test/admin-deploy-targets.test.mjs",
+      "reason": "3 of 10 clean runs",
+      "suite": "server"
+    },
+    {
+      "file": "server/test/api-field-limits-derived.test.mjs",
+      "reason": "3 of 10 clean runs",
+      "suite": "server"
+    },
+    {
+      "file": "server/test/api-priority-enum-derived.test.mjs",
+      "reason": "3 of 10 clean runs",
+      "suite": "server"
+    },
+    {
+      "file": "server/test/api-tokens.test.mjs",
+      "reason": "3 of 10 clean runs",
+      "suite": "server"
+    },
+    {
+      "file": "server/test/app-auth.test.mjs",
+      "reason": "3 of 10 clean runs",
+      "suite": "server"
+    },
+    {
+      "file": "server/test/app.test.mjs",
+      "reason": "3 of 10 clean runs",
+      "suite": "server"
+    },
+    {
+      "file": "server/test/auth.test.mjs",
+      "reason": "3 of 10 clean runs",
+      "suite": "server"
+    },
+    {
+      "file": "server/test/auto-resolve-boot.test.mjs",
+      "reason": "3 of 10 clean runs",
+      "suite": "server"
+    },
+    {
+      "file": "server/test/auto-resolve-disabled.test.mjs",
+      "reason": "3 of 10 clean runs",
+      "suite": "server"
+    },
+    {
+      "file": "server/test/auto-resolve-escalation.test.mjs",
+      "reason": "3 of 10 clean runs",
+      "suite": "server"
+    },
+    {
+      "file": "server/test/auto-resolve-main-moved.test.mjs",
+      "reason": "3 of 10 clean runs",
+      "suite": "server"
+    },
+    {
+      "file": "server/test/auto-resolve-one-run.test.mjs",
+      "reason": "3 of 10 clean runs",
+      "suite": "server"
+    },
+    {
+      "file": "server/test/auto-resolve-skips.test.mjs",
+      "reason": "3 of 10 clean runs",
+      "suite": "server"
+    },
+    {
+      "file": "server/test/auto-resolve-webhook-unconfigured.test.mjs",
+      "reason": "3 of 10 clean runs",
+      "suite": "server"
+    },
+    {
+      "file": "server/test/autopilot-off-via-whatsapp.test.mjs",
+      "reason": "3 of 10 clean runs",
+      "suite": "server"
+    },
+    {
+      "file": "server/test/blocking-inventory.test.mjs",
+      "reason": "0 of 10 clean runs",
+      "suite": "server"
+    },
+    {
+      "file": "server/test/blocking-select.test.mjs",
+      "reason": "0 of 10 clean runs",
+      "suite": "server"
+    },
+    {
+      "file": "server/test/bot-marker-parity.test.mjs",
+      "reason": "3 of 10 clean runs",
+      "suite": "server"
+    },
+    {
+      "file": "server/test/caretaker-accept-restart.test.mjs",
+      "reason": "3 of 10 clean runs",
+      "suite": "server"
+    },
+    {
+      "file": "server/test/caretaker-accept.test.mjs",
+      "reason": "3 of 10 clean runs",
+      "suite": "server"
+    },
+    {
+      "file": "server/test/caretaker-act-restart.test.mjs",
+      "reason": "3 of 10 clean runs",
+      "suite": "server"
+    },
+    {
+      "file": "server/test/caretaker-act.test.mjs",
+      "reason": "3 of 10 clean runs",
+      "suite": "server"
+    },
+    {
+      "file": "server/test/caretaker-errors.test.mjs",
+      "reason": "3 of 10 clean runs",
+      "suite": "server"
+    },
+    {
+      "file": "server/test/caretaker-gate13-records.test.mjs",
+      "reason": "3 of 10 clean runs",
+      "suite": "server"
+    },
+    {
+      "file": "server/test/caretaker-help-ping.test.mjs",
+      "reason": "3 of 10 clean runs",
+      "suite": "server"
+    },
+    {
+      "file": "server/test/caretaker-repeat-send-back.test.mjs",
+      "reason": "3 of 10 clean runs",
+      "suite": "server"
+    },
+    {
+      "file": "server/test/caretaker-restart.test.mjs",
+      "reason": "3 of 10 clean runs",
+      "suite": "server"
+    },
+    {
+      "file": "server/test/caretaker-rules.test.mjs",
+      "reason": "3 of 10 clean runs",
+      "suite": "server"
+    },
+    {
+      "file": "server/test/caretaker-ruling-rules.test.mjs",
+      "reason": "3 of 10 clean runs",
+      "suite": "server"
+    },
+    {
+      "file": "server/test/caretaker-ruling.test.mjs",
+      "reason": "3 of 10 clean runs",
+      "suite": "server"
+    },
+    {
+      "file": "server/test/caretaker.test.mjs",
+      "reason": "3 of 10 clean runs",
+      "suite": "server"
+    },
+    {
+      "file": "server/test/check-flakes.test.mjs",
+      "reason": "3 of 10 clean runs",
+      "suite": "server"
+    },
+    {
+      "file": "server/test/check-no-leaked-farmd.test.mjs",
+      "reason": "3 of 10 clean runs",
+      "suite": "server"
+    },
+    {
+      "file": "server/test/check-pass.test.mjs",
+      "reason": "3 of 10 clean runs",
+      "suite": "server"
+    },
+    {
+      "file": "server/test/check-required-input-gate.test.mjs",
+      "reason": "3 of 10 clean runs",
+      "suite": "server"
+    },
+    {
+      "file": "server/test/concierge-multi-project.test.mjs",
+      "reason": "3 of 10 clean runs",
+      "suite": "server"
+    },
+    {
+      "file": "server/test/config-caretaker-limit.test.mjs",
+      "reason": "3 of 10 clean runs",
+      "suite": "server"
+    },
+    {
+      "file": "server/test/config-farm-timeouts-override.test.mjs",
+      "reason": "3 of 10 clean runs",
+      "suite": "server"
+    },
+    {
+      "file": "server/test/config-farm-timeouts.test.mjs",
+      "reason": "3 of 10 clean runs",
+      "suite": "server"
+    },
+    {
+      "file": "server/test/config-fix-pass-override.test.mjs",
+      "reason": "3 of 10 clean runs",
+      "suite": "server"
+    },
+    {
+      "file": "server/test/config-reconcile-sweep-generous-override.test.mjs",
+      "reason": "3 of 10 clean runs",
+      "suite": "server"
+    },
+    {
+      "file": "server/test/config-reconcile-sweep-override.test.mjs",
+      "reason": "3 of 10 clean runs",
+      "suite": "server"
+    },
+    {
+      "file": "server/test/config-reconcile-sweep.test.mjs",
+      "reason": "3 of 10 clean runs",
+      "suite": "server"
+    },
+    {
+      "file": "server/test/config-wa-notify-generous-override.test.mjs",
+      "reason": "3 of 10 clean runs",
+      "suite": "server"
+    },
+    {
+      "file": "server/test/config-wa-notify-override.test.mjs",
+      "reason": "3 of 10 clean runs",
+      "suite": "server"
+    },
+    {
+      "file": "server/test/config-wa-notify-zero-attempts.test.mjs",
+      "reason": "3 of 10 clean runs",
+      "suite": "server"
+    },
+    {
+      "file": "server/test/config-wa-notify.test.mjs",
+      "reason": "3 of 10 clean runs",
+      "suite": "server"
+    },
+    {
+      "file": "server/test/config.test.mjs",
+      "reason": "3 of 10 clean runs",
+      "suite": "server"
+    },
+    {
+      "file": "server/test/definitions-parity.test.mjs",
+      "reason": "3 of 10 clean runs",
+      "suite": "server"
+    },
+    {
+      "file": "server/test/definitions.test.mjs",
+      "reason": "3 of 10 clean runs",
+      "suite": "server"
+    },
+    {
+      "file": "server/test/dependency-app.test.mjs",
+      "reason": "3 of 10 clean runs",
+      "suite": "server"
+    },
+    {
+      "file": "server/test/dependency-orchestrator.test.mjs",
+      "reason": "3 of 10 clean runs",
+      "suite": "server"
+    },
+    {
+      "file": "server/test/dependency-store.test.mjs",
+      "reason": "3 of 10 clean runs",
+      "suite": "server"
+    },
+    {
+      "file": "server/test/deploy-drain-auto-resolve.test.mjs",
+      "reason": "3 of 10 clean runs",
+      "suite": "server"
+    },
+    {
+      "file": "server/test/deploy-drain-cancel.test.mjs",
+      "reason": "3 of 10 clean runs",
+      "suite": "server"
+    },
+    {
+      "file": "server/test/deploy-drain-helper.test.mjs",
+      "reason": "3 of 10 clean runs",
+      "suite": "server"
+    },
+    {
+      "file": "server/test/deploy-drain-kill.test.mjs",
+      "reason": "3 of 10 clean runs",
+      "suite": "server"
+    },
+    {
+      "file": "server/test/deploy-drain.test.mjs",
+      "reason": "3 of 10 clean runs",
+      "suite": "server"
+    },
+    {
+      "file": "server/test/deploy-dry-run.test.mjs",
+      "reason": "3 of 10 clean runs",
+      "suite": "server"
+    },
+    {
+      "file": "server/test/deploy-gate.test.mjs",
+      "reason": "3 of 10 clean runs",
+      "suite": "server"
+    },
+    {
+      "file": "server/test/deploy-multi-project.test.mjs",
+      "reason": "3 of 10 clean runs",
+      "suite": "server"
+    },
+    {
+      "file": "server/test/deploy-target-boot.test.mjs",
+      "reason": "3 of 10 clean runs",
+      "suite": "server"
+    },
+    {
+      "file": "server/test/deploy-target-db.test.mjs",
+      "reason": "3 of 10 clean runs",
+      "suite": "server"
+    },
+    {
+      "file": "server/test/deploy-wait-grpc.test.mjs",
+      "reason": "3 of 10 clean runs",
+      "suite": "server"
+    },
+    {
+      "file": "server/test/deploy.test.mjs",
+      "reason": "3 of 10 clean runs",
+      "suite": "server"
+    },
+    {
+      "file": "server/test/domain-binding-hygiene.test.mjs",
+      "reason": "3 of 10 clean runs",
+      "suite": "server"
+    },
+    {
+      "file": "server/test/domain-consumer-imports.test.mjs",
+      "reason": "3 of 10 clean runs",
+      "suite": "server"
+    },
+    {
+      "file": "server/test/domain-fields-cases.test.mjs",
+      "reason": "3 of 10 clean runs",
+      "suite": "server"
+    },
+    {
+      "file": "server/test/domain-fields-consumers.test.mjs",
+      "reason": "3 of 10 clean runs",
+      "suite": "server"
+    },
+    {
+      "file": "server/test/domain-fields-parity.test.mjs",
+      "reason": "3 of 10 clean runs",
+      "suite": "server"
+    },
+    {
+      "file": "server/test/domain-fields-schema.test.mjs",
+      "reason": "3 of 10 clean runs",
+      "suite": "server"
+    },
+    {
+      "file": "server/test/domain-fixture-cases.test.mjs",
+      "reason": "3 of 10 clean runs",
+      "suite": "server"
+    },
+    {
+      "file": "server/test/domain-models.test.mjs",
+      "reason": "3 of 10 clean runs",
+      "suite": "server"
+    },
+    {
+      "file": "server/test/domain-no-drift-scaffolding.test.mjs",
+      "reason": "3 of 10 clean runs",
+      "suite": "server"
+    },
+    {
+      "file": "server/test/domain-no-duplicate-exports.test.mjs",
+      "reason": "3 of 10 clean runs",
+      "suite": "server"
+    },
+    {
+      "file": "server/test/domain-one-declaration.test.mjs",
+      "reason": "3 of 10 clean runs",
+      "suite": "server"
+    },
+    {
+      "file": "server/test/domain-one-field-declaration.test.mjs",
+      "reason": "3 of 10 clean runs",
+      "suite": "server"
+    },
+    {
+      "file": "server/test/domain-one-lookup-name.test.mjs",
+      "reason": "3 of 10 clean runs",
+      "suite": "server"
+    },
+    {
+      "file": "server/test/domain-parity.test.mjs",
+      "reason": "3 of 10 clean runs",
+      "suite": "server"
+    },
+    {
+      "file": "server/test/domain-personas-cases.test.mjs",
+      "reason": "3 of 10 clean runs",
+      "suite": "server"
+    },
+    {
+      "file": "server/test/domain-personas-parity.test.mjs",
+      "reason": "3 of 10 clean runs",
+      "suite": "server"
+    },
+    {
+      "file": "server/test/domain-personas-schema.test.mjs",
+      "reason": "3 of 10 clean runs",
+      "suite": "server"
+    },
+    {
+      "file": "server/test/domain-priorities-cases.test.mjs",
+      "reason": "3 of 10 clean runs",
+      "suite": "server"
+    },
+    {
+      "file": "server/test/domain-priorities-parity.test.mjs",
+      "reason": "3 of 10 clean runs",
+      "suite": "server"
+    },
+    {
+      "file": "server/test/domain-priorities-schema.test.mjs",
+      "reason": "3 of 10 clean runs",
+      "suite": "server"
+    },
+    {
+      "file": "server/test/domain-priority-literals.test.mjs",
+      "reason": "3 of 10 clean runs",
+      "suite": "server"
+    },
+    {
+      "file": "server/test/domain-priority-pins.test.mjs",
+      "reason": "3 of 10 clean runs",
+      "suite": "server"
+    },
+    {
+      "file": "server/test/domain-reason-literals.test.mjs",
+      "reason": "3 of 10 clean runs",
+      "suite": "server"
+    },
+    {
+      "file": "server/test/domain-reason-member-access.test.mjs",
+      "reason": "3 of 10 clean runs",
+      "suite": "server"
+    },
+    {
+      "file": "server/test/domain-reason-pins.test.mjs",
+      "reason": "3 of 10 clean runs",
+      "suite": "server"
+    },
+    {
+      "file": "server/test/domain-reasons-parity.test.mjs",
+      "reason": "3 of 10 clean runs",
+      "suite": "server"
+    },
+    {
+      "file": "server/test/domain-reasons-schema.test.mjs",
+      "reason": "3 of 10 clean runs",
+      "suite": "server"
+    },
+    {
+      "file": "server/test/domain-schema.test.mjs",
+      "reason": "3 of 10 clean runs",
+      "suite": "server"
+    },
+    {
+      "file": "server/test/domain-single-source.test.mjs",
+      "reason": "3 of 10 clean runs",
+      "suite": "server"
+    },
+    {
+      "file": "server/test/domain-step-pins.test.mjs",
+      "reason": "3 of 10 clean runs",
+      "suite": "server"
+    },
+    {
+      "file": "server/test/duration-estimates.test.mjs",
+      "reason": "3 of 10 clean runs",
+      "suite": "server"
+    },
+    {
+      "file": "server/test/farm-fail-output.test.mjs",
+      "reason": "3 of 10 clean runs",
+      "suite": "server"
+    },
+    {
+      "file": "server/test/farm-fetch-long-call.test.mjs",
+      "reason": "3 of 10 clean runs",
+      "suite": "server"
+    },
+    {
+      "file": "server/test/farmd-helper.test.mjs",
+      "reason": "3 of 10 clean runs",
+      "suite": "server"
+    },
+    {
+      "file": "server/test/farmd-spawn-leak.test.mjs",
+      "reason": "3 of 10 clean runs",
+      "suite": "server"
+    },
+    {
+      "file": "server/test/fix-pass-hz125-replay.test.mjs",
+      "reason": "3 of 10 clean runs",
+      "suite": "server"
+    },
+    {
+      "file": "server/test/fix-pass.test.mjs",
+      "reason": "3 of 10 clean runs",
+      "suite": "server"
+    },
+    {
+      "file": "server/test/forward-to-accept-migration.test.mjs",
+      "reason": "3 of 10 clean runs",
+      "suite": "server"
+    },
+    {
+      "file": "server/test/forward-to-accept.test.mjs",
+      "reason": "3 of 10 clean runs",
+      "suite": "server"
+    },
+    {
+      "file": "server/test/gate-action.test.mjs",
+      "reason": "3 of 10 clean runs",
+      "suite": "server"
+    },
+    {
+      "file": "server/test/gate-notifier-baseline.test.mjs",
+      "reason": "3 of 10 clean runs",
+      "suite": "server"
+    },
+    {
+      "file": "server/test/gate-notifier-config.test.mjs",
+      "reason": "3 of 10 clean runs",
+      "suite": "server"
+    },
+    {
+      "file": "server/test/gate-notifier-e2e.test.mjs",
+      "reason": "3 of 10 clean runs",
+      "suite": "server"
+    },
+    {
+      "file": "server/test/gate-notifier-gate-action.test.mjs",
+      "reason": "3 of 10 clean runs",
+      "suite": "server"
+    },
+    {
+      "file": "server/test/gate-notifier-init.test.mjs",
+      "reason": "3 of 10 clean runs",
+      "suite": "server"
+    },
+    {
+      "file": "server/test/gate-notifier-poll-disabled.test.mjs",
+      "reason": "3 of 10 clean runs",
+      "suite": "server"
+    },
+    {
+      "file": "server/test/gate-notifier-poll.test.mjs",
+      "reason": "3 of 10 clean runs",
+      "suite": "server"
+    },
+    {
+      "file": "server/test/gate-notifier-restart.test.mjs",
+      "reason": "3 of 10 clean runs",
+      "suite": "server"
+    },
+    {
+      "file": "server/test/gate-notifier-retry.test.mjs",
+      "reason": "3 of 10 clean runs",
+      "suite": "server"
+    },
+    {
+      "file": "server/test/gate-notifier.test.mjs",
+      "reason": "3 of 10 clean runs",
+      "suite": "server"
+    },
+    {
+      "file": "server/test/github.test.mjs",
+      "reason": "3 of 10 clean runs",
+      "suite": "server"
+    },
+    {
+      "file": "server/test/hz114-no-silent-truncation.test.mjs",
+      "reason": "3 of 10 clean runs",
+      "suite": "server"
+    },
+    {
+      "file": "server/test/hz264-pm-failure-keeps-fields.test.mjs",
+      "reason": "3 of 10 clean runs",
+      "suite": "server"
+    },
+    {
+      "file": "server/test/hz275-deploy-lock-wait.test.mjs",
+      "reason": "3 of 10 clean runs",
+      "suite": "server"
+    },
+    {
+      "file": "server/test/hz275-deploy-wait-dispatch.test.mjs",
+      "reason": "3 of 10 clean runs",
+      "suite": "server"
+    },
+    {
+      "file": "server/test/hz275-deploy-wait-fail.test.mjs",
+      "reason": "3 of 10 clean runs",
+      "suite": "server"
+    },
+    {
+      "file": "server/test/hz275-release-no-workflow.test.mjs",
+      "reason": "3 of 10 clean runs",
+      "suite": "server"
+    },
+    {
+      "file": "server/test/issue-body-sync.test.mjs",
+      "reason": "3 of 10 clean runs",
+      "suite": "server"
+    },
+    {
+      "file": "server/test/item-stream.test.mjs",
+      "reason": "3 of 10 clean runs",
+      "suite": "server"
+    },
+    {
+      "file": "server/test/lifecycle-renamed-label.test.mjs",
+      "reason": "3 of 10 clean runs",
+      "suite": "server"
+    },
+    {
+      "file": "server/test/lifecycle-requires-consistency.test.mjs",
+      "reason": "3 of 10 clean runs",
+      "suite": "server"
+    },
+    {
+      "file": "server/test/lifecycle-step-insertion.test.mjs",
+      "reason": "3 of 10 clean runs",
+      "suite": "server"
+    },
+    {
+      "file": "server/test/loginAllowlist.test.mjs",
+      "reason": "3 of 10 clean runs",
+      "suite": "server"
+    },
+    {
+      "file": "server/test/mock-step-behavior-drift.test.mjs",
+      "reason": "3 of 10 clean runs",
+      "suite": "server"
+    },
+    {
+      "file": "server/test/openapi-generated-not-authored.test.mjs",
+      "reason": "3 of 10 clean runs",
+      "suite": "server"
+    },
+    {
+      "file": "server/test/openapi-no-behaviour-change.test.mjs",
+      "reason": "3 of 10 clean runs",
+      "suite": "server"
+    },
+    {
+      "file": "server/test/openapi-route-coverage-derived.test.mjs",
+      "reason": "3 of 10 clean runs",
+      "suite": "server"
+    },
+    {
+      "file": "server/test/openapi-security-derived.test.mjs",
+      "reason": "3 of 10 clean runs",
+      "suite": "server"
+    },
+    {
+      "file": "server/test/openapi-spec-valid.test.mjs",
+      "reason": "3 of 10 clean runs",
+      "suite": "server"
+    },
+    {
+      "file": "server/test/orchestrator-abandon.test.mjs",
+      "reason": "3 of 10 clean runs",
+      "suite": "server"
+    },
+    {
+      "file": "server/test/orchestrator-auto-retry.test.mjs",
+      "reason": "3 of 10 clean runs",
+      "suite": "server"
+    },
+    {
+      "file": "server/test/orchestrator-conflict-reason-parity.test.mjs",
+      "reason": "3 of 10 clean runs",
+      "suite": "server"
+    },
+    {
+      "file": "server/test/orchestrator-deploy-requeue.test.mjs",
+      "reason": "3 of 10 clean runs",
+      "suite": "server"
+    },
+    {
+      "file": "server/test/orchestrator-farm-recovery.test.mjs",
+      "reason": "3 of 10 clean runs",
+      "suite": "server"
+    },
+    {
+      "file": "server/test/orchestrator-multi-project.test.mjs",
+      "reason": "3 of 10 clean runs",
+      "suite": "server"
+    },
+    {
+      "file": "server/test/orchestrator-overlap.test.mjs",
+      "reason": "3 of 10 clean runs",
+      "suite": "server"
+    },
+    {
+      "file": "server/test/orchestrator-pause-checkpoint.test.mjs",
+      "reason": "3 of 10 clean runs",
+      "suite": "server"
+    },
+    {
+      "file": "server/test/orchestrator-project-context.test.mjs",
+      "reason": "3 of 10 clean runs",
+      "suite": "server"
+    },
+    {
+      "file": "server/test/orchestrator-readiness.test.mjs",
+      "reason": "3 of 10 clean runs",
+      "suite": "server"
+    },
+    {
+      "file": "server/test/orchestrator-reconcile-boot.test.mjs",
+      "reason": "3 of 10 clean runs",
+      "suite": "server"
+    },
+    {
+      "file": "server/test/orchestrator-reconcile-e2e.test.mjs",
+      "reason": "fails_alone",
+      "suite": "server"
+    },
+    {
+      "file": "server/test/orchestrator-reconcile-mock-mode.test.mjs",
+      "reason": "3 of 10 clean runs",
+      "suite": "server"
+    },
+    {
+      "file": "server/test/orchestrator-reconcile.test.mjs",
+      "reason": "3 of 10 clean runs",
+      "suite": "server"
+    },
+    {
+      "file": "server/test/orchestrator-resolve-cancelled.test.mjs",
+      "reason": "3 of 10 clean runs",
+      "suite": "server"
+    },
+    {
+      "file": "server/test/orchestrator-resolve-conflicts-timeout.test.mjs",
+      "reason": "3 of 10 clean runs",
+      "suite": "server"
+    },
+    {
+      "file": "server/test/orchestrator-resolve-conflicts.test.mjs",
+      "reason": "3 of 10 clean runs",
+      "suite": "server"
+    },
+    {
+      "file": "server/test/orchestrator-run-keyed-timers.test.mjs",
+      "reason": "3 of 10 clean runs",
+      "suite": "server"
+    },
+    {
+      "file": "server/test/orchestrator-timeout.test.mjs",
+      "reason": "3 of 10 clean runs",
+      "suite": "server"
+    },
+    {
+      "file": "server/test/orchestrator.test.mjs",
+      "reason": "3 of 10 clean runs",
+      "suite": "server"
+    },
+    {
+      "file": "server/test/output-view.test.mjs",
+      "reason": "3 of 10 clean runs",
+      "suite": "server"
+    },
+    {
+      "file": "server/test/overlap.test.mjs",
+      "reason": "3 of 10 clean runs",
+      "suite": "server"
+    },
+    {
+      "file": "server/test/parent-death-watch.test.mjs",
+      "reason": "3 of 10 clean runs",
+      "suite": "server"
+    },
+    {
+      "file": "server/test/persona-chain.test.mjs",
+      "reason": "3 of 10 clean runs",
+      "suite": "server"
+    },
+    {
+      "file": "server/test/personas.test.mjs",
+      "reason": "3 of 10 clean runs",
+      "suite": "server"
+    },
+    {
+      "file": "server/test/pm-revision-full-length.test.mjs",
+      "reason": "3 of 10 clean runs",
+      "suite": "server"
+    },
+    {
+      "file": "server/test/premerge-gate.test.mjs",
+      "reason": "3 of 10 clean runs",
+      "suite": "server"
+    },
+    {
+      "file": "server/test/premerge-skip-config.test.mjs",
+      "reason": "3 of 10 clean runs",
+      "suite": "server"
+    },
+    {
+      "file": "server/test/premerge-skip.test.mjs",
+      "reason": "3 of 10 clean runs",
+      "suite": "server"
+    },
+    {
+      "file": "server/test/premerge-slot-wait-live.test.mjs",
+      "reason": "3 of 10 clean runs",
+      "suite": "server"
+    },
+    {
+      "file": "server/test/premerge-slot-wait-timeout.test.mjs",
+      "reason": "3 of 10 clean runs",
+      "suite": "server"
+    },
+    {
+      "file": "server/test/premerge-slot-wait.test.mjs",
+      "reason": "3 of 10 clean runs",
+      "suite": "server"
+    },
+    {
+      "file": "server/test/premerge.test.mjs",
+      "reason": "3 of 10 clean runs",
+      "suite": "server"
+    },
+    {
+      "file": "server/test/priority-labels.test.mjs",
+      "reason": "3 of 10 clean runs",
+      "suite": "server"
+    },
+    {
+      "file": "server/test/project-autopilot.test.mjs",
+      "reason": "3 of 10 clean runs",
+      "suite": "server"
+    },
+    {
+      "file": "server/test/project-enabled-migration.test.mjs",
+      "reason": "3 of 10 clean runs",
+      "suite": "server"
+    },
+    {
+      "file": "server/test/project-validate-api.test.mjs",
+      "reason": "3 of 10 clean runs",
+      "suite": "server"
+    },
+    {
+      "file": "server/test/project-validate.test.mjs",
+      "reason": "3 of 10 clean runs",
+      "suite": "server"
+    },
+    {
+      "file": "server/test/projects-ui-scope.test.mjs",
+      "reason": "3 of 10 clean runs",
+      "suite": "server"
+    },
+    {
+      "file": "server/test/repo-checks-api.test.mjs",
+      "reason": "3 of 10 clean runs",
+      "suite": "server"
+    },
+    {
+      "file": "server/test/repo-marks-api.test.mjs",
+      "reason": "3 of 10 clean runs",
+      "suite": "server"
+    },
+    {
+      "file": "server/test/repo-webhooks-no-secret.test.mjs",
+      "reason": "3 of 10 clean runs",
+      "suite": "server"
+    },
+    {
+      "file": "server/test/repo-webhooks-url-guard.test.mjs",
+      "reason": "3 of 10 clean runs",
+      "suite": "server"
+    },
+    {
+      "file": "server/test/repo-webhooks.test.mjs",
+      "reason": "3 of 10 clean runs",
+      "suite": "server"
+    },
+    {
+      "file": "server/test/resolve-conflicts-long-call.test.mjs",
+      "reason": "3 of 10 clean runs",
+      "suite": "server"
+    },
+    {
+      "file": "server/test/resolve-conflicts-one-run.test.mjs",
+      "reason": "3 of 10 clean runs",
+      "suite": "server"
+    },
+    {
+      "file": "server/test/review-mock-loop.test.mjs",
+      "reason": "3 of 10 clean runs",
+      "suite": "server"
+    },
+    {
+      "file": "server/test/review.test.mjs",
+      "reason": "3 of 10 clean runs",
+      "suite": "server"
+    },
+    {
+      "file": "server/test/role-prompt-labels.test.mjs",
+      "reason": "3 of 10 clean runs",
+      "suite": "server"
+    },
+    {
+      "file": "server/test/rule-versions.test.mjs",
+      "reason": "3 of 10 clean runs",
+      "suite": "server"
+    },
+    {
+      "file": "server/test/rules-credential-lint.test.mjs",
+      "reason": "3 of 10 clean runs",
+      "suite": "server"
+    },
+    {
+      "file": "server/test/runLogView.test.mjs",
+      "reason": "3 of 10 clean runs",
+      "suite": "server"
+    },
+    {
+      "file": "server/test/runlog.test.mjs",
+      "reason": "3 of 10 clean runs",
+      "suite": "server"
+    },
+    {
+      "file": "server/test/split-approval.test.mjs",
+      "reason": "3 of 10 clean runs",
+      "suite": "server"
+    },
+    {
+      "file": "server/test/split-plan.test.mjs",
+      "reason": "3 of 10 clean runs",
+      "suite": "server"
+    },
+    {
+      "file": "server/test/store-state-since.test.mjs",
+      "reason": "3 of 10 clean runs",
+      "suite": "server"
+    },
+    {
+      "file": "server/test/store.test.mjs",
+      "reason": "3 of 10 clean runs",
+      "suite": "server"
+    },
+    {
+      "file": "server/test/stream-delta.test.mjs",
+      "reason": "3 of 10 clean runs",
+      "suite": "server"
+    },
+    {
+      "file": "server/test/stream-heartbeat.test.mjs",
+      "reason": "3 of 10 clean runs",
+      "suite": "server"
+    },
+    {
+      "file": "server/test/test-results.test.mjs",
+      "reason": "3 of 10 clean runs",
+      "suite": "server"
+    },
+    {
+      "file": "server/test/wa-approval-auth.test.mjs",
+      "reason": "3 of 10 clean runs",
+      "suite": "server"
+    },
+    {
+      "file": "server/test/wa-approval-unconfigured.test.mjs",
+      "reason": "3 of 10 clean runs",
+      "suite": "server"
+    },
+    {
+      "file": "server/test/wa-poll-no-model.test.mjs",
+      "reason": "3 of 10 clean runs",
+      "suite": "server"
+    },
+    {
+      "file": "server/test/wa-poll-vote-auth.test.mjs",
+      "reason": "3 of 10 clean runs",
+      "suite": "server"
+    },
+    {
+      "file": "server/test/wa-poll-vote-e2e.test.mjs",
+      "reason": "3 of 10 clean runs",
+      "suite": "server"
+    },
+    {
+      "file": "server/test/wa-poll-votes.test.mjs",
+      "reason": "3 of 10 clean runs",
+      "suite": "server"
+    },
+    {
+      "file": "server/test/wa-send-live.test.mjs",
+      "reason": "3 of 10 clean runs",
+      "suite": "server"
+    },
+    {
+      "file": "server/test/waApprovers.test.mjs",
+      "reason": "3 of 10 clean runs",
+      "suite": "server"
+    },
+    {
+      "file": "server/test/webhook-deploy.test.mjs",
+      "reason": "3 of 10 clean runs",
+      "suite": "server"
+    },
+    {
+      "file": "server/test/webhook-issue-ingest.test.mjs",
+      "reason": "3 of 10 clean runs",
+      "suite": "server"
+    },
+    {
+      "file": "ui/src/App.test.jsx",
+      "reason": "3 of 10 clean runs",
+      "suite": "ui"
+    },
+    {
+      "file": "ui/src/GateAction.test.jsx",
+      "reason": "3 of 10 clean runs",
+      "suite": "ui"
+    },
+    {
+      "file": "ui/src/LegalRoutes.test.jsx",
+      "reason": "3 of 10 clean runs",
+      "suite": "ui"
+    },
+    {
+      "file": "ui/src/PendingApprovals.test.jsx",
+      "reason": "3 of 10 clean runs",
+      "suite": "ui"
+    },
+    {
+      "file": "ui/src/ResolveConflicts.test.jsx",
+      "reason": "3 of 10 clean runs",
+      "suite": "ui"
+    },
+    {
+      "file": "ui/src/api/mockApi.offline.test.jsx",
+      "reason": "3 of 10 clean runs",
+      "suite": "ui"
+    },
+    {
+      "file": "ui/src/api/mockApi.test.js",
+      "reason": "3 of 10 clean runs",
+      "suite": "ui"
+    },
+    {
+      "file": "ui/src/api/serverApi.test.js",
+      "reason": "3 of 10 clean runs",
+      "suite": "ui"
+    },
+    {
+      "file": "ui/src/boardFilters.test.js",
+      "reason": "3 of 10 clean runs",
+      "suite": "ui"
+    },
+    {
+      "file": "ui/src/components/AdminPage.flakes.test.jsx",
+      "reason": "3 of 10 clean runs",
+      "suite": "ui"
+    },
+    {
+      "file": "ui/src/components/AdminPage.test.jsx",
+      "reason": "3 of 10 clean runs",
+      "suite": "ui"
+    },
+    {
+      "file": "ui/src/components/AdminPage.webhookImpact.test.jsx",
+      "reason": "3 of 10 clean runs",
+      "suite": "ui"
+    },
+    {
+      "file": "ui/src/components/AgentDefinitionsPage.models.test.jsx",
+      "reason": "3 of 10 clean runs",
+      "suite": "ui"
+    },
+    {
+      "file": "ui/src/components/AgentDefinitionsPage.test.jsx",
+      "reason": "3 of 10 clean runs",
+      "suite": "ui"
+    },
+    {
+      "file": "ui/src/components/Board.elapsed.test.jsx",
+      "reason": "3 of 10 clean runs",
+      "suite": "ui"
+    },
+    {
+      "file": "ui/src/components/Board.filters.test.jsx",
+      "reason": "3 of 10 clean runs",
+      "suite": "ui"
+    },
+    {
+      "file": "ui/src/components/Board.gateAction.test.jsx",
+      "reason": "3 of 10 clean runs",
+      "suite": "ui"
+    },
+    {
+      "file": "ui/src/components/Board.test.jsx",
+      "reason": "3 of 10 clean runs",
+      "suite": "ui"
+    },
+    {
+      "file": "ui/src/components/Board.usual.test.jsx",
+      "reason": "3 of 10 clean runs",
+      "suite": "ui"
+    },
+    {
+      "file": "ui/src/components/BottomNav.test.jsx",
+      "reason": "3 of 10 clean runs",
+      "suite": "ui"
+    },
+    {
+      "file": "ui/src/components/ComposerModal.test.jsx",
+      "reason": "3 of 10 clean runs",
+      "suite": "ui"
+    },
+    {
+      "file": "ui/src/components/ConfirmGateDialog.test.jsx",
+      "reason": "3 of 10 clean runs",
+      "suite": "ui"
+    },
+    {
+      "file": "ui/src/components/DependencyBadge.test.jsx",
+      "reason": "3 of 10 clean runs",
+      "suite": "ui"
+    },
+    {
+      "file": "ui/src/components/DeployTargetOverrides.test.jsx",
+      "reason": "3 of 10 clean runs",
+      "suite": "ui"
+    },
+    {
+      "file": "ui/src/components/GateActionStatus.parity.test.jsx",
+      "reason": "3 of 10 clean runs",
+      "suite": "ui"
+    },
+    {
+      "file": "ui/src/components/GateActionStatus.retry.test.jsx",
+      "reason": "3 of 10 clean runs",
+      "suite": "ui"
+    },
+    {
+      "file": "ui/src/components/LoginPage.test.jsx",
+      "reason": "3 of 10 clean runs",
+      "suite": "ui"
+    },
+    {
+      "file": "ui/src/components/NewItemModal.test.jsx",
+      "reason": "3 of 10 clean runs",
+      "suite": "ui"
+    },
+    {
+      "file": "ui/src/components/TopBar.mobile.test.jsx",
+      "reason": "3 of 10 clean runs",
+      "suite": "ui"
+    },
+    {
+      "file": "ui/src/components/TopBar.test.jsx",
+      "reason": "3 of 10 clean runs",
+      "suite": "ui"
+    },
+    {
+      "file": "ui/src/components/Tracker.test.jsx",
+      "reason": "1 of 10 clean runs",
+      "suite": "ui"
+    },
+    {
+      "file": "ui/src/domain/durationHint.test.js",
+      "reason": "3 of 10 clean runs",
+      "suite": "ui"
+    },
+    {
+      "file": "ui/src/domain/filters.test.js",
+      "reason": "3 of 10 clean runs",
+      "suite": "ui"
+    },
+    {
+      "file": "ui/src/domain/gateAction.test.js",
+      "reason": "3 of 10 clean runs",
+      "suite": "ui"
+    },
+    {
+      "file": "ui/src/domain/lifecycle.test.js",
+      "reason": "3 of 10 clean runs",
+      "suite": "ui"
+    },
+    {
+      "file": "ui/src/domain/pauseReason.test.js",
+      "reason": "3 of 10 clean runs",
+      "suite": "ui"
+    },
+    {
+      "file": "ui/src/domain/personas.test.js",
+      "reason": "3 of 10 clean runs",
+      "suite": "ui"
+    },
+    {
+      "file": "ui/src/domain/status.test.js",
+      "reason": "3 of 10 clean runs",
+      "suite": "ui"
+    },
+    {
+      "file": "ui/src/domain/webhookImpact.test.js",
+      "reason": "3 of 10 clean runs",
+      "suite": "ui"
+    },
+    {
+      "file": "ui/src/mobileCss.test.js",
+      "reason": "3 of 10 clean runs",
+      "suite": "ui"
+    },
+    {
+      "file": "ui/src/projectFilter.test.js",
+      "reason": "3 of 10 clean runs",
+      "suite": "ui"
+    },
+    {
+      "file": "ui/src/theme.contrast.test.jsx",
+      "reason": "3 of 10 clean runs",
+      "suite": "ui"
+    },
+    {
+      "file": "ui/src/useMediaQuery.test.js",
+      "reason": "3 of 10 clean runs",
+      "suite": "ui"
+    }
+  ],
+  "floor": 0.95,
+  "history_through": "2026-10-07T21:43:21.085Z",
+  "inputs_sha256": "0edf2c61d8fa0c9c72a43b9b477f8ddde7212a88ca11a127fd05a47ccd3db4ae",
+  "max_age_days": 14,
+  "min_clean_runs": 10,
+  "repo": "FinTekkers/horizon",
+  "schema_version": 1,
+  "suites": {
+    "e2e": {
+      "covered": 0,
+      "floor_met": false,
+      "ratio": 0,
+      "total": 67
+    },
+    "server": {
+      "covered": 0,
+      "floor_met": false,
+      "ratio": 0,
+      "total": 16328
+    },
+    "ui": {
+      "covered": 0,
+      "floor_met": false,
+      "ratio": 0,
+      "total": 4592
+    }
+  }
+}

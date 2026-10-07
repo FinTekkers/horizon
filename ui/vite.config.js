@@ -25,11 +25,17 @@ const junitReport = reportDir
   ? { reporters: ['default', 'junit'], outputFile: { junit: `${reportDir}/ui.xml` } }
   : {}
 
+// HZ-328: the test inventory's e2e runs map the bundle's JS coverage back to
+// ui/src, which needs sourcemaps. Only those runs set this; every other build
+// is unchanged.
+const sourcemap = Boolean(process.env.HORIZON_E2E_COVERAGE_DIR)
+
 // HORIZON_BASE lets the production build mount under a subpath (e.g.
 // HORIZON_BASE=/horizon/ for shoreward.ai/horizon). Dev stays at /.
 export default defineConfig({
   base: process.env.HORIZON_BASE || '/',
   plugins: [react()],
+  build: { sourcemap },
   server: { proxy, fs },
   preview: { proxy },
   test: { environment: 'jsdom', ...junitReport },

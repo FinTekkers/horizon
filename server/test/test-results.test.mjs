@@ -23,6 +23,7 @@ const store = await import('../src/store.js')
 const orchestrator = await import('../src/orchestrator.js')
 const testResults = await import('../src/testResults.js')
 const checkFlakes = await import('../src/checkFlakes.js')
+const { summarizeTestHistory } = await import('../src/testHistorySummary.js')
 const { STEPS, IMPLEMENT_STEP_INDEX } = await import('../../domain/js/lifecycle.js')
 const { loginFixtureUser } = await import('./helpers/session.mjs')
 
@@ -196,7 +197,9 @@ test('GET /api/admin/test-history gives each test its runs, failures, flakes, la
       file: 'server/test/a.test.mjs',
       test: 'timed',
       runs: 11,
+      passes: 9,
       failures: 1,
+      main_failures: 0,
       skips: 1,
       flakes: 1,
       last_seen: new Date(base + 9 * DAY).toISOString(),
@@ -208,7 +211,9 @@ test('GET /api/admin/test-history gives each test its runs, failures, flakes, la
       file: 'b.test.mjs',
       test: 'other',
       runs: 1,
+      passes: 1,
       failures: 0,
+      main_failures: 0,
       skips: 0,
       flakes: 0,
       last_seen: new Date(base - DAY).toISOString(),
@@ -216,6 +221,25 @@ test('GET /api/admin/test-history gives each test its runs, failures, flakes, la
       p95_ms: 10,
     },
   ])
+})
+
+// HZ-328: the blocking-set rule reads failures on main only. Those rows come
+// from post-merge runs (HZ-328c), which the source CHECK does not allow yet, so
+// the counting rule is checked on the pure summary both callers share.
+test('summarizeTestHistory counts only postmerge failures as main_failures, and keeps every HZ-327 field', () => {
+  const at = Date.UTC(2026, 9, 1)
+  const rows = (source) => [
+    { suite: null, file: 'f.test.mjs', test: 't', status: 'fail', duration_ms: 30, created_at_ms: at, source },
+    { suite: null, file: 'f.test.mjs', test: 't', status: 'pass', duration_ms: 10, created_at_ms: at + DAY, source: 'implement' },
+    { suite: null, file: 'f.test.mjs', test: 't', status: 'skip', duration_ms: 1, created_at_ms: at, source: 'premerge' },
+  ]
+  const hz327 = { suite: null, file: 'f.test.mjs', test: 't', runs: 3, failures: 1, skips: 1, flakes: 2, last_seen: new Date(at + DAY).toISOString(), median_ms: 20, p95_ms: 30 }
+  const flakes = [{ suite: null, file: 'f.test.mjs', test: 't', n: 2 }]
+
+  for (const source of ['implement', 'premerge', 'conflict_resolver']) {
+    assert.deepEqual(summarizeTestHistory('acme/x', rows(source), flakes).tests, [{ ...hz327, passes: 1, main_failures: 0 }], source)
+  }
+  assert.deepEqual(summarizeTestHistory('acme/x', rows('postmerge'), flakes).tests, [{ ...hz327, passes: 1, main_failures: 1 }])
 })
 
 test('GET /api/admin/test-history needs a repo', async () => {

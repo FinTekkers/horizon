@@ -13,6 +13,7 @@
 import { db } from './db.js'
 import { redact } from './caretakerRules.js'
 import { FLAKE_LIMITS, FLAKE_SOURCES, itemRepo, pingRepeatOffenders, runOwner, storeFlakes } from './checkFlakes.js'
+import { FLAKE_ROWS_SQL, RESULT_ROWS_SQL, summarizeTestHistory } from './testHistorySummary.js'
 
 export const TEST_RESULT_RETENTION_MS = 90 * 24 * 3600 * 1000
 export const TEST_STATUSES = ['pass', 'fail', 'skip']
@@ -157,62 +158,8 @@ export function recordRunTestRuns(runId, testRuns, opts = {}) {
   }
 }
 
-// Nearest-rank percentile of an ascending array (p in (0, 1]).
-function percentile(sorted, p) {
-  return sorted.length === 0 ? null : sorted[Math.max(0, Math.ceil(p * sorted.length) - 1)]
-}
-
-function median(sorted) {
-  if (sorted.length === 0) return null
-  const mid = Math.floor(sorted.length / 2)
-  return sorted.length % 2 ? sorted[mid] : Math.round((sorted[mid - 1] + sorted[mid]) / 2)
-}
-
-// For one repo: each test's run count, failures, flake count, last seen, and
-// median and p95 duration (ms, over the rows that have one). A test is
-// (suite, file, test). Newest last_seen first.
+// For one repo: each test's history (see testHistorySummary.js). Newest
+// last_seen first.
 export function testHistory(repo) {
-  const tests = new Map()
-  const rows = db
-    .prepare(
-      `SELECT suite, file, test, status, duration_ms, created_at_ms FROM test_result
-        WHERE repo = ? ORDER BY suite, file, test`,
-    )
-    .iterate(repo)
-  for (const row of rows) {
-    const key = JSON.stringify([row.suite, row.file, row.test])
-    let t = tests.get(key)
-    if (!t) {
-      t = { suite: row.suite, file: row.file, test: row.test, runs: 0, failures: 0, skips: 0, lastMs: 0, durations: [] }
-      tests.set(key, t)
-    }
-    t.runs += 1
-    if (row.status === 'fail') t.failures += 1
-    if (row.status === 'skip') t.skips += 1
-    if (row.created_at_ms > t.lastMs) t.lastMs = row.created_at_ms
-    if (row.duration_ms !== null && row.status !== 'skip') t.durations.push(row.duration_ms)
-  }
-  const flakeCounts = new Map(
-    db
-      .prepare('SELECT suite, file, test, COUNT(*) AS n FROM check_flake WHERE repo = ? GROUP BY suite, file, test')
-      .all(repo)
-      .map((f) => [JSON.stringify([f.suite, f.file, f.test]), f.n]),
-  )
-  const out = [...tests.entries()].map(([key, t]) => {
-    const sorted = t.durations.sort((a, b) => a - b)
-    return {
-      suite: t.suite,
-      file: t.file,
-      test: t.test,
-      runs: t.runs,
-      failures: t.failures,
-      skips: t.skips,
-      flakes: flakeCounts.get(key) ?? 0,
-      last_seen: new Date(t.lastMs).toISOString(),
-      median_ms: median(sorted),
-      p95_ms: percentile(sorted, 0.95),
-    }
-  })
-  out.sort((a, b) => (a.last_seen < b.last_seen ? 1 : a.last_seen > b.last_seen ? -1 : 0))
-  return { repo, tests: out }
+  return summarizeTestHistory(repo, db.prepare(RESULT_ROWS_SQL).iterate(repo), db.prepare(FLAKE_ROWS_SQL).all(repo))
 }

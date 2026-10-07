@@ -1,0 +1,9 @@
+{
+  "name": "horizon-test-inventory",
+  "private": true,
+  "type": "module",
+  "description": "HZ-328: dependencies of the test inventory only (npm run tests:inventory at the repo root). No gating check installs this.",
+  "devDependencies": {
+    "v8-to-istanbul": "^9.3.0"
+  }
+}
