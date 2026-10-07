@@ -12,6 +12,11 @@ ExecStart=/opt/horizon/farm/run.sh
 # run.sh replaces any existing farm-daemon tmux session; agent sessions
 # (farm-pm-*, farm-run-*, farm-concierge-*) are managed by farmd itself.
 ExecStop=/usr/bin/tmux kill-session -t farm-daemon
+# Stop only the main process and ExecStop. The farm-run-* agent sessions share
+# the tmux server in this unit's cgroup; with the default control-group mode a
+# restart killed every running agent step (2026-10-07 deploy loop, HZ-321).
+# The restarted farmd re-adopts the live sessions.
+KillMode=process
 
 [Install]
 WantedBy=multi-user.target
