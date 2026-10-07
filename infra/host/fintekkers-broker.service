@@ -13,7 +13,6 @@ Environment=LEDGER_SERVICE_HOST=127.0.0.1
 Environment=SECURITY_SERVICE_HOST=127.0.0.1
 Environment=PRICE_SERVICE_HOST=127.0.0.1
 Environment=VALUATION_SERVICE_HOST=127.0.0.1
-Environment=VALUATION_SERVICE_PORT=8090
 Environment=RUST_LOG=info
 ExecStart=/opt/fintekkers/broker-service/target/release/broker-service-server
 Restart=always

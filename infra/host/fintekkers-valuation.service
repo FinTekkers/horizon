@@ -1,11 +1,11 @@
 [Unit]
-Description=Fintekkers valuation-service (Rust gRPC, 127.0.0.1:8090)
+Description=Fintekkers valuation-service (Rust gRPC, 127.0.0.1:8080)
 After=network.target
 
 [Service]
 User=ubuntu
 WorkingDirectory=/opt/fintekkers/valuation-service
-Environment=PORT=8090
+Environment=PORT=8080
 Environment=IPV4=127.0.0.1
 Environment=RUST_LOG=info
 ExecStart=/opt/fintekkers/valuation-service/target/release/valuation-service-server

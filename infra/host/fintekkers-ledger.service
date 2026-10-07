@@ -12,7 +12,6 @@ Environment=SUBLEDGER_PORT=8082
 Environment=SUBLEDGER_BIND=127.0.0.1
 Environment=FINTEKKERS_RUNNING_LOCALLY=true
 Environment=VALUATION_SERVICE_HOST=127.0.0.1
-Environment=VALUATION_SERVICE_PORT=8090
 Environment=SUBLEDGER_OPTS=-Xms256m -Xmx1g
 ExecStart=/opt/fintekkers/ledger-service/subledger/build/install/subledger/bin/subledger
 Restart=always
