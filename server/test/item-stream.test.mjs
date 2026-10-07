@@ -141,6 +141,12 @@ test('the board stream carries no step output at all, in its snapshot or its del
   try {
     const snap = await board.nth(0, (f) => f.event === 'snapshot')
     insertRun.run('SO-OPEN', 4, 1, 'fresh board-only output', '# fresh board-only artifact')
+    // A new step output alone does not change the slim board item, so the
+    // board may rightly send no delta for it (the test used to wait for one
+    // and failed about 2 runs in 3). Change something the board does show in
+    // the same tick, so a delta always comes, then check that it still
+    // carries none of the step output.
+    db.prepare('UPDATE work_item SET title = ? WHERE id = ?').run('board-visible change', 'SO-OPEN')
     store.notifyChange()
     const delta = await board.nth(0, (f) => f.event === 'delta')
     assert.deepEqual(
