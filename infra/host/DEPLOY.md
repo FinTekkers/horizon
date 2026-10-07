@@ -89,7 +89,7 @@ enable it.
 | File | Var | Notes |
 |---|---|---|
 | `/etc/horizon/server.env` | `WA_NOTIFY_ENABLED` | `1` turns it on. Anything else ⇒ the sweep never runs |
-| `/etc/horizon/server.env` | `WA_BRIDGE_URL` | whatsapp-mcp bridge base URL. Unset ⇒ `http://localhost:8080`. Same var `farm.env` already sets |
+| `/etc/horizon/server.env` | `WA_BRIDGE_URL` | whatsapp-mcp bridge base URL. Unset ⇒ `http://localhost:8080`. This host sets `http://localhost:8090` here and in `farm.env`: the bridge listens on `WA_BRIDGE_PORT=8090` (since 2026-10-07) so valuation-service keeps its default 8080 |
 
 **Who gets notified is `WA_APPROVER_JIDS` from 2b — there is no separate
 recipient setting.** Whoever can approve a gate is exactly who is told one is
@@ -198,7 +198,7 @@ live paired session and cannot be exercised offline. So do it once, by hand:
 
 ```
 # 1. Send yourself a poll through the forked bridge.
-curl -s localhost:8080/api/send-poll -H 'Content-Type: application/json' \
+curl -s localhost:8090/api/send-poll -H 'Content-Type: application/json' \
   -d '{"recipient":"<your-number>@s.whatsapp.net","name":"probe","options":["✅ Approve","↩️ Send back"]}'
 # -> {"success":true,"messageId":"3EB0…"}   the poll should render as tappable
 
