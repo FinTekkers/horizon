@@ -708,6 +708,36 @@ export async function createDeployRelease(item) {
   return res.json()
 }
 
+// HZ-333: the deploy queue's calls. Errors carry the status only, never a
+// header, so never the token.
+export async function getPrMergeSha(item) {
+  const res = await gh(`/repos/${item.repo}/pulls/${item.pr}`)
+  if (!res.ok) throw new Error(`could not read PR #${item.pr} (GitHub returned ${res.status})`)
+  const data = await res.json().catch(() => ({}))
+  if (data?.merged !== true) throw new Error(`PR #${item.pr} is not merged`)
+  if (!SHA_RE.test(data.merge_commit_sha || '')) throw new Error(`GitHub returned PR #${item.pr} without a merge commit`)
+  return data.merge_commit_sha
+}
+
+// The release for `tag`, or null when there is none.
+export async function findReleaseByTag(repo, tag) {
+  const res = await gh(`/repos/${repo}/releases/tags/${encodeURIComponent(tag)}`)
+  if (res.status === 404) return null
+  if (!res.ok) throw new Error(`could not look up release ${tag} (GitHub returned ${res.status})`)
+  return res.json()
+}
+
+// A batch's one release, its tag pinned to `sha` (main's head when the batch
+// started) — never an item branch.
+export async function createBatchRelease(repo, { tag, sha, name, body }) {
+  const res = await gh(`/repos/${repo}/releases`, {
+    method: 'POST',
+    body: JSON.stringify({ tag_name: tag, target_commitish: sha, name, body }),
+  })
+  if (!res.ok) throw new Error(`could not publish release ${tag} (GitHub returned ${res.status})`)
+  return res.json()
+}
+
 // Agent step results are posted to the issue so GitHub stays the
 // human-readable record of what the bots did.
 // Agent refinements (outcome, metric, guardrails) must reach the issue body,

@@ -19,7 +19,7 @@
 // payload itself.
 
 import { spawn } from 'node:child_process'
-import { readFileSync, existsSync } from 'node:fs'
+import { readFileSync, existsSync, openSync, fstatSync, readSync, closeSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { PORT } from './config.js'
@@ -157,6 +157,38 @@ function readState(stateDir) {
   }
 
   return state
+}
+
+const LOG_TAIL_BYTES = 256 * 1024
+const escapeRegExp = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+
+// HZ-333: where a deploy queue batch's release stands — 'live' once
+// last-good-tag names it (the scripts write that file only after their health
+// check passes), 'failed' once the log records DEPLOY FAILED for it, else
+// 'pending'. Both log tag forms count, `(tag=<tag>)` and
+// `(tag=refs/tags/<tag> commit=…)`, and never a neighbour (-b7 vs -b70).
+export function deployOutcomeFor(target, tag) {
+  const lastGoodFile = join(stateDirFor(target), 'last-good-tag')
+  const ref = existsSync(lastGoodFile) ? readFileSync(lastGoodFile, 'utf8').trim().split(':')[0] : ''
+  if (ref.replace(/^refs\/tags\//, '') === tag) return 'live'
+  const logFile = join(stateDirFor(target), 'self-deploy.log')
+  if (!existsSync(logFile)) return 'pending'
+  const failed = new RegExp(`DEPLOY FAILED: .*\\(tag=(?:refs/tags/)?${escapeRegExp(tag)}[) ]`)
+  return readTail(logFile).split('\n').some((line) => failed.test(line)) ? 'failed' : 'pending'
+}
+
+// The log's last LOG_TAIL_BYTES: polled every few seconds, so never the whole file.
+function readTail(file) {
+  const fd = openSync(file, 'r')
+  try {
+    const size = fstatSync(fd).size
+    const length = Math.min(size, LOG_TAIL_BYTES)
+    const buf = Buffer.alloc(length)
+    readSync(fd, buf, 0, length, size - length)
+    return buf.toString('utf8')
+  } finally {
+    closeSync(fd)
+  }
 }
 
 export function listTargetStatuses() {
