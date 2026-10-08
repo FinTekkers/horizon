@@ -418,9 +418,25 @@ verifies `issues`/`issue_comment`/`pull_request` events with
    health-check ...`) after it — not silence, because the script died
    mid-run.
 
-If a deploy ever fails its health check, the bad code is already live (the
-script does not auto-rollback); redeploy the last good tag by hand, using
-the target's own script and state directory:
+The gRPC targets (`deploy-grpc-service.sh`, run by `deploy-ledger-service.sh`,
+`deploy-valuation-service.sh`, `deploy-broker-service.sh` and
+`deploy-price-service.sh`) roll back automatically: when the health check
+fails after the restart, the script checks out the `last-good-tag` commit
+detached (no fetch), rebuilds, restarts and health-checks it once, with the
+same timeout and still holding the deploy lock. `self-deploy.log` gets the
+`DEPLOY FAILED: health-check ... ; rolling back to <ref>` line, then
+`ROLLBACK OK tag=<last good> after <failed>` or `ROLLBACK FAILED (<stage>)`.
+With no `last-good-tag` (first deploy) it logs `ROLLBACK SKIPPED: no
+last-good-tag`. The deploy still fails (exit 1), `last-good-tag` keeps the old
+tag, and a failure before the restart (fetch, checkout, build) never rolls
+back. A rollback holds the lock for one more build plus one health timeout
+(ledger: a gradle build plus 180s), so a deploy queued behind it can wait out
+its 300s lock timeout and log `DEPLOY FAILED: lock`; publish it again.
+
+Other targets (`horizon`, `ui-service`) still do not auto-rollback: if one
+fails its health check the bad code is already live; redeploy the last good
+tag by hand, using the target's own script and state directory (the same
+command works for a gRPC target whose rollback failed):
 
 ```
 infra/host/deploy-horizon.sh "$(cat ~/.horizon/horizon/last-good-tag | cut -d: -f1 | sed 's#refs/tags/##')"
