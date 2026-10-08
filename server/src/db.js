@@ -585,6 +585,20 @@ for (const column of ['check_install', 'check_test', 'check_lint', 'check_e2e'])
   if (!projectRepoColumns.has(column)) db.exec(`ALTER TABLE project_repo ADD COLUMN ${column} TEXT`)
 }
 
+// HZ-349: which run produced a test_result row — 'main' (the configured
+// commands, which alone decide pass or fail) or 'branch' (the item's own
+// changed scripts/checks/, run after main's) — and how the row's command
+// exited (NULL: unknown, or it never finished). Additive: every existing row
+// came from main's commands, so the default is the truth for them.
+const testResultColumns = new Set(db.prepare('PRAGMA table_info(test_result)').all().map((column) => column.name))
+if (!testResultColumns.has('run_label')) {
+  db.exec(
+    "ALTER TABLE test_result ADD COLUMN run_label TEXT NOT NULL DEFAULT 'main' CHECK (run_label IN ('main','branch'))",
+  )
+}
+if (!testResultColumns.has('exit_code')) db.exec('ALTER TABLE test_result ADD COLUMN exit_code INTEGER')
+db.exec('CREATE INDEX IF NOT EXISTS idx_test_result_run ON test_result(run_id, run_label)')
+
 // HZ-304: repo readiness. no_checks / no_deploy are the owner's PIN-gated
 // marks (store.setRepoMarks is their only writer); every repo starts
 // unmarked, so an unconfigured one is flagged, never waved through.

@@ -75,7 +75,13 @@ export function summarizeTestHistory(repo, resultRows, flakeRows) {
 
 // The two queries both callers run, so the export reads exactly what the
 // endpoint does.
+// HZ-349: main's runs only; a branch run's rows (run_label 'branch') are
+// evidence for one item's review, never the repo's history. A DB from before
+// HZ-349 has no run_label (the export never migrates): every row in it is
+// main's, so it is read whole.
 export const RESULT_ROWS_SQL = `SELECT suite, file, test, status, duration_ms, created_at_ms, source FROM test_result
+  WHERE repo = ? AND run_label = 'main' ORDER BY suite, file, test`
+export const UNLABELLED_RESULT_ROWS_SQL = `SELECT suite, file, test, status, duration_ms, created_at_ms, source FROM test_result
   WHERE repo = ? ORDER BY suite, file, test`
 export const FLAKE_ROWS_SQL =
   'SELECT suite, file, test, COUNT(*) AS n FROM check_flake WHERE repo = ? GROUP BY suite, file, test'

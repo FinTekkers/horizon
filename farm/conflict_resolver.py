@@ -212,7 +212,8 @@ def _push_guarded(ws: Path, pre_merge_sha: str, *args: str) -> None:
 
 
 # HZ-327: one resolve()'s {"flakes": [], "test_runs": []}, which every
-# check run in it records into and every reply it returns carries.
+# check run in it records into and every reply it returns carries. HZ-349:
+# plus "branch_notes", which go into a resolved reply's summary instead.
 _RECORDED: contextvars.ContextVar[dict | None] = contextvars.ContextVar("conflict_recorded", default=None)
 
 
@@ -221,7 +222,12 @@ def _run_checks(ws: Path, pre_merge_sha: str, log, **kwargs) -> str:
     A cancelled wait is a cancel, not a check failure."""
     recorded = _RECORDED.get()
     if recorded is not None:
-        kwargs = {**kwargs, "flakes": recorded["flakes"], "test_runs": recorded["test_runs"]}
+        kwargs = {
+            **kwargs,
+            "flakes": recorded["flakes"],
+            "test_runs": recorded["test_runs"],
+            "branch_notes": recorded["branch_notes"],
+        }
     ev = _CANCEL.get()
     if ev is None:
         return run_checks(ws, log, **kwargs)
@@ -230,6 +236,12 @@ def _run_checks(ws: Path, pre_merge_sha: str, log, **kwargs) -> str:
     except WaitCancelled:
         _check_cancelled(ws, pre_merge_sha)
         raise
+
+
+def _branch_suffix() -> str:
+    """HZ-349: this resolve()'s branch-run lines, for a summary."""
+    recorded = _RECORDED.get()
+    return "".join(f" · {note}" for note in (recorded or {}).get("branch_notes") or [])
 
 
 def git(ws: Path, *args: str, check: bool = True) -> subprocess.CompletedProcess:
@@ -290,7 +302,7 @@ def resolve(
     HZ-256: raises Cancelled when request_cancel() stopped the run; nothing
     was pushed and the worktree is back at the branch's own tip.
     """
-    recorded = {"flakes": [], "test_runs": []}
+    recorded = {"flakes": [], "test_runs": [], "branch_notes": []}
     token = _RECORDED.set(recorded)
     try:
         with cancel_scope(repo_full, item_id):
@@ -298,7 +310,7 @@ def resolve(
     finally:
         _RECORDED.reset(token)
     # HZ-327: on every reply, resolved or escalated; the server records them.
-    return {**result, **{key: value for key, value in recorded.items() if value}}
+    return {**result, **{key: value for key, value in recorded.items() if value and key != "branch_notes"}}
 
 
 def _resolve(repo_full, item_id, branch, base_branch, log, configured, checks_waiver=None) -> dict:
@@ -379,7 +391,7 @@ def _resolve(repo_full, item_id, branch, base_branch, log, configured, checks_wa
     return {
         "resolved": True,
         "files": diffstat,
-        "summary": f"merged origin/{default} into {branch}; {check_note}",
+        "summary": f"merged origin/{default} into {branch}; {check_note}{_branch_suffix()}",
         # HZ-257: the pushed commit the checks passed on, when exactly named.
         **check_record.report_fields(ws, checked_tree, check_note, checks_finished_at, log),
     }
@@ -672,7 +684,7 @@ def _scoped_resolve(ws, repo_full, branch, default, unmerged, pre_merge_sha, log
         # note that did not arrive.
         "summary": _with_notes(
             f"resolved {hunk_count} conflicted hunk(s) in {len(files)} file(s) "
-            f"while merging origin/{default} ({strategy}); {check_note}",
+            f"while merging origin/{default} ({strategy}); {check_note}{_branch_suffix()}",
             resolution_notes,
         ),
         "resolution": {
