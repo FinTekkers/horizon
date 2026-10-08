@@ -5,6 +5,10 @@
 // is the free-text pause event server/src/orchestrator.js's failFarmRun()
 // already writes into `item.events` (newest first). This module is the only
 // place that parses it.
+//
+// HZ-343: the pause event is not always the newest event — a "forward to …
+// refused" event (or anything else) can land on top of it — so the parser
+// scans back from the newest event to the last `resumed work`, never past it.
 
 // HZ-132: the reason IDS are no longer typed here. They are declared once in
 // domain/reasons.json and reach this file through domain/js/reasons.js, which
@@ -29,59 +33,113 @@ const CATEGORY_COPY = {
   },
 }
 
+// Both mirror the event text server/src/store.js:1208 writes on pause/resume.
 const MANUAL_PAUSE_TEXT = 'paused agent work on this item'
+const RESUME_TEXT = 'resumed work'
 
 // Matches failFarmRun's pause-event text exactly (both the exhausted-budget
 // and plain-pause branches); the reason tag is absent whenever no reason was
-// classified, per the frozen wording HZ-94 must not change.
+// classified, per the frozen wording HZ-94 must not change. The cause is
+// `[\s\S]+?`, not `.+?`: a check failure's cause is multi-line command output
+// (HZ-343). No `m` flag, so `$` still pins the frozen suffix to the very end.
 const PAUSE_EVENT_RE =
-  /^agent step failed(?: \(([^)]+)\))?: (.+?) — (?:auto-retry budget \((\d+)\) exhausted; item paused, resume to retry|item paused; resume to retry)$/
+  /^agent step failed(?: \(([^)]+)\))?: ([\s\S]+?) — (?:auto-retry budget \((\d+)\) exhausted; item paused, resume to retry|item paused; resume to retry)$/
 
 // Matches the intermediate auto-retry event failFarmRun writes just before a
 // retry dispatch — used only to count attempts already used, never rendered.
-const RETRY_EVENT_RE = /^transient failure \([^)]+\): .+ — auto-retrying \(\d+\/\d+\)$/
+const RETRY_EVENT_RE = /^transient failure \([^)]+\): [\s\S]+ — auto-retrying \(\d+\/\d+\)$/
+
+// A cause is shown in full up to MAX_CAUSE_LINES. Longer output (a check's
+// whole log) keeps its last line, up to MAX_FLAGGED_LINES lines that name the
+// failure, then as much of the tail as still fits — in original order, with a
+// GAP line wherever lines were dropped. GAP lines count toward the limit. This
+// only shapes what the banner shows; the stored event text is never cut here.
+// (Today failFarmRun already caps the cause at 200 chars, so this guards the
+// day that cap is raised.)
+const MAX_CAUSE_LINES = 20
+const MAX_FLAGGED_LINES = 10
+const FLAGGED_LINE_RE = /FAILED:|No such file|not ok/
+const GAP = '…'
+
+function trimCause(text) {
+  if (text.split('\n').length <= MAX_CAUSE_LINES) return text
+
+  const lines = text.replace(/\s+$/, '').split('\n')
+  const last = lines.length - 1
+  const keep = new Set([last])
+  const render = () => {
+    const out = []
+    let prev = -1
+    for (const i of [...keep].sort((a, b) => a - b)) {
+      if (i !== prev + 1) out.push(GAP)
+      out.push(lines[i])
+      prev = i
+    }
+    return out
+  }
+  // Adds line i only if the rendered cause still fits; reports whether it did.
+  const tryKeep = (i) => {
+    keep.add(i)
+    if (render().length <= MAX_CAUSE_LINES) return true
+    keep.delete(i)
+    return false
+  }
+
+  let flagged = 0
+  for (let i = 0; i < last && flagged < MAX_FLAGGED_LINES; i++) {
+    if (!FLAGGED_LINE_RE.test(lines[i])) continue
+    if (!tryKeep(i)) break
+    flagged++
+  }
+  for (let i = last - 1; i >= 0; i--) {
+    if (!keep.has(i) && !tryKeep(i)) break
+  }
+  return render().join('\n')
+}
+
+const NO_DETAILS = { category: null, label: null, detail: null, cause: null, exhausted: false, attemptsUsed: 0 }
 
 // Returns null when the item isn't paused, or a structured explanation:
-// { category, label, cause, exhausted, attemptsUsed } for a failure pause;
-// { category: 'manual' } for a human-initiated pause (nothing to explain —
-// not a failure); or a category: null fallback that still carries a
-// non-blank message when the paused item's newest event matches neither
-// shape (legacy/corrupted data).
+// { category, label, detail, cause, exhausted, attemptsUsed } for a failure
+// pause; { category: 'manual' } for a human-initiated pause (nothing to
+// explain — not a failure); or a category: null fallback that still carries a
+// non-blank message when no pause event exists since the last resume
+// (legacy/corrupted data, or the pause event fell out of the events window).
 export function pauseReason(item) {
   if (!item?.paused) return null
 
   const events = item.events || []
-  const latest = events[0]
 
-  if (!latest) {
-    return { category: null, label: null, cause: null, exhausted: false, attemptsUsed: 0 }
+  for (let i = 0; i < events.length; i++) {
+    const text = events[i]?.text || ''
+    if (text === RESUME_TEXT) break
+    if (text === MANUAL_PAUSE_TEXT) {
+      return { category: 'manual', label: null, detail: null, cause: null, exhausted: false, attemptsUsed: 0 }
+    }
+
+    const match = text.match(PAUSE_EVENT_RE)
+    if (!match) continue
+
+    const [, reason, cause, cap] = match
+    // Object.hasOwn, not a bare lookup: CATEGORY_COPY is a plain object literal,
+    // so a pause tagged `constructor` or `toString` would resolve a truthy
+    // Object.prototype member and render `undefined` as its title instead of
+    // falling back to the raw cause. Pre-existing bug, fixed here (HZ-132).
+    const known = reason != null && Object.hasOwn(CATEGORY_COPY, reason) ? CATEGORY_COPY[reason] : null
+
+    // The retries that led to THIS pause sit just below it, not below events[0].
+    let attemptsUsed = 0
+    for (let j = i + 1; j < events.length && RETRY_EVENT_RE.test(events[j]?.text || ''); j++) attemptsUsed++
+
+    return {
+      category: reason || null,
+      label: known ? known.label : null,
+      detail: known ? known.detail : null,
+      cause: trimCause(cause),
+      exhausted: cap != null,
+      attemptsUsed,
+    }
   }
 
-  if (latest.text === MANUAL_PAUSE_TEXT) {
-    return { category: 'manual', label: null, cause: null, exhausted: false, attemptsUsed: 0 }
-  }
-
-  const match = (latest.text || '').match(PAUSE_EVENT_RE)
-  if (!match) {
-    return { category: null, label: null, cause: null, exhausted: false, attemptsUsed: 0 }
-  }
-
-  const [, reason, cause, cap] = match
-  // Object.hasOwn, not a bare lookup: CATEGORY_COPY is a plain object literal,
-  // so a pause tagged `constructor` or `toString` would resolve a truthy
-  // Object.prototype member and render `undefined` as its title instead of
-  // falling back to the raw cause. Pre-existing bug, fixed here (HZ-132).
-  const known = reason != null && Object.hasOwn(CATEGORY_COPY, reason) ? CATEGORY_COPY[reason] : null
-
-  let attemptsUsed = 0
-  for (let i = 1; i < events.length && RETRY_EVENT_RE.test(events[i]?.text || ''); i++) attemptsUsed++
-
-  return {
-    category: reason || null,
-    label: known ? known.label : null,
-    detail: known ? known.detail : null,
-    cause,
-    exhausted: cap != null,
-    attemptsUsed,
-  }
+  return { ...NO_DETAILS }
 }

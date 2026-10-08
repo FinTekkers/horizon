@@ -47,6 +47,25 @@ test.beforeAll(() => {
       text:
         'agent step failed (required_input_incomplete): required input incomplete: "Draft implementation plan" needs 40000 chars, only 20034 could be supplied (19966 short) — item paused; resume to retry',
     })
+
+    // HZ-343: LS-98's shape — a multi-line check-failure cause, then two newer
+    // forward-refused events on top of it (insertEvent writes oldest first).
+    insertItem(db, { id: 'PAUSE-4', title: 'E2E fixture — paused under newer forward-refused events', cursor: 0, paused: 1 })
+    insertEvent(db, {
+      itemId: 'PAUSE-4',
+      text: [
+        'agent step failed: repo checks failed: ./gradlew check exited 127',
+        '> Task :test',
+        'bash: scripts/checks/secrets.sh: No such file or directory',
+        'BUILD FAILED in 4s — item paused; resume to retry',
+      ].join('\n'),
+    })
+    for (let i = 0; i < 2; i++) {
+      insertEvent(db, {
+        itemId: 'PAUSE-4',
+        text: 'forward to “Accept the code” refused — the review still has blocking findings; “Specialist agent implements” restarts with the review findings',
+      })
+    }
   } finally {
     db.close()
   }
@@ -100,5 +119,15 @@ test('a required_input_incomplete pause names the artifact, its size, and the sh
   )
   await expect(banner.locator('.pause-banner__meta')).toContainText('Not auto-retried')
 
+  await expect(page.getByRole('button', { name: 'Resume work' })).toBeVisible()
+})
+
+test('a multi-line pause cause under two newer forward-refused events is still shown (LS-98)', async ({ page }) => {
+  await page.goto('/pause-4')
+  await expect(page.locator('.tracker__id')).toHaveText('PAUSE-4')
+
+  const banner = page.locator('.pause-banner')
+  await expect(banner.locator('.pause-banner__detail')).toContainText('bash: scripts/checks/secrets.sh: No such file or directory')
+  await expect(banner).not.toContainText('No failure details were recorded')
   await expect(page.getByRole('button', { name: 'Resume work' })).toBeVisible()
 })
