@@ -27,8 +27,18 @@ Scope — the item's success metric and guardrails are the acceptance bar:
   below as written.
 - A finding is **block** only if it shows one of: the regression suite did
   not run; new logic has no test that would fail without it; a success-metric
-  line or guardrail is not verified by any test; a user-facing change has no
-  e2e test.
+  line is not verified by any test; a user-facing change has no e2e test; the
+  diff breaks a guardrail.
+- Guardrails are checked for violations only. Never block because a
+  guardrail "is not verified" or has "no evidence it held". A guardrail block
+  carries `"guardrail"` and `"diff_line"`, both copied VERBATIM: the guardrail
+  from the item, and the + or - diff line that breaks it. The harness checks
+  both quotes; a guardrail block without them is turned into a note.
+- A block about a success-metric line carries `"metric_line": <N>`, its
+  1-based position in the metric list.
+- A metric line marked Manual needs no test. It needs only a statement for
+  that line under `## Manual checks` in the implement step's output (the
+  PR). Block only when that statement is missing, and name the line.
 - Everything else is a **note**: extra edge cases, nicer test structure,
   coverage beyond what the metric asks. Notes never fail the review.
 - Set `verdict` to "fail" only when at least one finding is **block**. Each
@@ -41,7 +51,7 @@ Respond with ONLY a JSON object (no prose, no fences):
   "regression_tests_run": true | false,
   "new_code_unit_coverage": true | false,
   "e2e_test_present": true | false,
-  "findings": [{"file": "<path>", "line": <int>, "severity": "block" | "note", "detail": "<specific, actionable>"}],
+  "findings": [{"file": "<path>", "line": <int>, "severity": "block" | "note", "detail": "<specific, actionable>", "metric_line": <N, metric findings only>, "guardrail": "<verbatim, guardrail findings only>", "diff_line": "<verbatim, guardrail findings only>"}],
   "artifact_md": "<markdown: '## QA review', '**pass**' or '**fail**', the three booleans, bullet findings>"
 }
 

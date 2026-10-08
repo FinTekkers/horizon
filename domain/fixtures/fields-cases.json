@@ -16,6 +16,7 @@
         "a maxLength of zero rejected",
         "a boolean maxLength rejected",
         "a non-integer minLength rejected",
+        "a non-integer maxLines rejected",
         "a non-boolean settableAtIntake rejected",
         "a non-boolean agentRevisable rejected",
         "a minLength at or above maxLength rejected",
@@ -31,6 +32,23 @@
       "patchLimits": [
         "agent-revisable fields only, keyed by column, in authored order",
         "a non-revisable field is absent even though it declares a limit"
+      ],
+      "lineLimits": [
+        "fields declaring maxLines only, keyed by column, in authored order"
+      ],
+      "criteriaLines": [
+        "plain lines all count, normalised",
+        "list items only when the text has a list",
+        "blank lines and CRLF do not count",
+        "the Deferred line never counts",
+        "a bold Deferred line never counts either",
+        "a decimal or a date is not a list marker"
+      ],
+      "lineBudget": [
+        "5 lines fit a 5-line budget",
+        "6 lines do not fit a 5-line budget",
+        "4 lines fit a 4-line budget",
+        "5 lines do not fit a 4-line budget"
       ]
     },
 
@@ -100,6 +118,11 @@
         "case": "a non-integer minLength rejected",
         "input": { "fields": [{ "name": "alpha", "column": "alpha_col", "minLength": "2", "maxLength": 100, "settableAtIntake": true, "agentRevisable": true }] },
         "expect": { "throws": true, "messageContains": "declares a non-integer or non-positive minLength" }
+      },
+      {
+        "case": "a non-integer maxLines rejected",
+        "input": { "fields": [{ "name": "alpha", "column": "alpha_col", "maxLength": 100, "maxLines": 2.5, "settableAtIntake": true, "agentRevisable": true }] },
+        "expect": { "throws": true, "messageContains": "declares a non-integer or non-positive maxLines" }
       },
       {
         "case": "a non-boolean settableAtIntake rejected",
@@ -197,6 +220,101 @@
         "expect": { "solo_col": 7 },
         "expectOrder": ["solo_col"]
       }
+    ],
+
+    "lineLimits": [
+      {
+        "case": "fields declaring maxLines only, keyed by column, in authored order",
+        "input": {
+          "fields": [
+            { "name": "alpha", "column": "alpha_col", "maxLength": 100, "settableAtIntake": true, "agentRevisable": true },
+            { "name": "beta", "column": "beta_col", "maxLength": 900, "maxLines": 5, "settableAtIntake": true, "agentRevisable": true },
+            { "name": "gamma", "column": "gamma_col", "maxLength": 900, "maxLines": 4, "settableAtIntake": true, "agentRevisable": true }
+          ]
+        },
+        "expect": { "beta_col": 5, "gamma_col": 4 },
+        "expectOrder": ["beta_col", "gamma_col"]
+      }
+    ],
+
+    "criteriaLines": [
+      {
+        "case": "plain lines all count, normalised",
+        "input": "  The export   runs in under a minute.\nEvery row reconciles.",
+        "expect": ["The export runs in under a minute.", "Every row reconciles."]
+      },
+      {
+        "case": "list items only when the text has a list",
+        "input": "Each line is pass/fail unless marked Manual.\n1. First line\n   wrapped onto a second row\n2) Second line\n- Third line\n* Fourth line\n+ Fifth line",
+        "expect": ["First line", "Second line", "Third line", "Fourth line", "Fifth line"]
+      },
+      {
+        "case": "blank lines and CRLF do not count",
+        "input": "- one\r\n\r\n   \r\n- two\r\n",
+        "expect": ["one", "two"]
+      },
+      {
+        "case": "the Deferred line never counts",
+        "input": "1. In scope\nDeferred to a follow-up item (not in scope here): 2. Out of scope",
+        "expect": ["In scope"]
+      },
+      {
+        "case": "a bold Deferred line never counts either",
+        "input": "- In scope\n- **Deferred to a follow-up item (not in scope here):** out of scope",
+        "expect": ["In scope"]
+      },
+      {
+        "case": "a decimal or a date is not a list marker",
+        "input": "1.5 seconds at most\n2026-10-08 is the cut-off",
+        "expect": ["1.5 seconds at most", "2026-10-08 is the cut-off"]
+      }
+    ],
+
+    "lineBudget": [
+      {
+        "case": "5 lines fit a 5-line budget",
+        "fields": [
+            { "name": "alpha", "column": "alpha_col", "maxLength": 100, "settableAtIntake": true, "agentRevisable": true },
+            { "name": "beta", "column": "beta_col", "maxLength": 900, "maxLines": 5, "settableAtIntake": true, "agentRevisable": true },
+            { "name": "gamma", "column": "gamma_col", "maxLength": 900, "maxLines": 4, "settableAtIntake": true, "agentRevisable": true }
+          ],
+        "column": "beta_col",
+        "input": "1. a\n2. b\n3. c\n4. d\n5. e",
+        "expect": { "count": 5, "within": true }
+      },
+      {
+        "case": "6 lines do not fit a 5-line budget",
+        "fields": [
+            { "name": "alpha", "column": "alpha_col", "maxLength": 100, "settableAtIntake": true, "agentRevisable": true },
+            { "name": "beta", "column": "beta_col", "maxLength": 900, "maxLines": 5, "settableAtIntake": true, "agentRevisable": true },
+            { "name": "gamma", "column": "gamma_col", "maxLength": 900, "maxLines": 4, "settableAtIntake": true, "agentRevisable": true }
+          ],
+        "column": "beta_col",
+        "input": "1. a\n2. b\n3. c\n4. d\n5. e\n6. f",
+        "expect": { "count": 6, "within": false }
+      },
+      {
+        "case": "4 lines fit a 4-line budget",
+        "fields": [
+            { "name": "alpha", "column": "alpha_col", "maxLength": 100, "settableAtIntake": true, "agentRevisable": true },
+            { "name": "beta", "column": "beta_col", "maxLength": 900, "maxLines": 5, "settableAtIntake": true, "agentRevisable": true },
+            { "name": "gamma", "column": "gamma_col", "maxLength": 900, "maxLines": 4, "settableAtIntake": true, "agentRevisable": true }
+          ],
+        "column": "gamma_col",
+        "input": "- a\n- b\n- c\n- d",
+        "expect": { "count": 4, "within": true }
+      },
+      {
+        "case": "5 lines do not fit a 4-line budget",
+        "fields": [
+            { "name": "alpha", "column": "alpha_col", "maxLength": 100, "settableAtIntake": true, "agentRevisable": true },
+            { "name": "beta", "column": "beta_col", "maxLength": 900, "maxLines": 5, "settableAtIntake": true, "agentRevisable": true },
+            { "name": "gamma", "column": "gamma_col", "maxLength": 900, "maxLines": 4, "settableAtIntake": true, "agentRevisable": true }
+          ],
+        "column": "gamma_col",
+        "input": "- a\n- b\n- c\n- d\n- e",
+        "expect": { "count": 5, "within": false }
+      }
     ]
   },
 
@@ -218,7 +336,42 @@
         "expectNames": ["alpha", "beta"]
       }
     ],
-    "patchLimits": [{ "case": "driven by shared.patchLimits", "drivenBy": "shared.patchLimits" }]
+    "patchLimits": [{ "case": "driven by shared.patchLimits", "drivenBy": "shared.patchLimits" }],
+    "lineLimits": [{ "case": "driven by shared.lineLimits", "drivenBy": "shared.lineLimits" }],
+    "criteriaLines": [{ "case": "driven by shared.criteriaLines", "drivenBy": "shared.criteriaLines" }],
+    "countCriteriaLines": [{ "case": "driven by shared.lineBudget", "drivenBy": "shared.lineBudget" }],
+    "addedCriteriaLines": [
+      {
+        "case": "an unchanged echo adds nothing",
+        "before": "- one\n- two",
+        "after": "- one\n-   two",
+        "expect": []
+      },
+      {
+        "case": "a new list item is an addition",
+        "before": "- one\n- two",
+        "after": "- one\n- two\n- three",
+        "expect": ["three"]
+      },
+      {
+        "case": "an unmarked continuation line is an addition too",
+        "before": "- one\n- two",
+        "after": "- one\n  and never touch the ledger\n- two",
+        "expect": ["and never touch the ledger"]
+      },
+      {
+        "case": "moving lines into the Deferred line adds nothing",
+        "before": "1. one\n2. two\n3. three",
+        "after": "1. one\nDeferred to a follow-up item (not in scope here): 2. two 3. three",
+        "expect": []
+      },
+      {
+        "case": "removing a line adds nothing",
+        "before": "- one\n- two",
+        "after": "- one",
+        "expect": []
+      }
+    ]
   },
 
   "py": {
@@ -228,6 +381,9 @@
     "BY_COLUMN": [{ "case": "every authored field is reachable by its DB column", "expectKeyedBy": "column" }],
     "field_by_name": [{ "case": "driven by shared.fieldLookup", "drivenBy": "shared.fieldLookup" }],
     "patch_limits": [{ "case": "driven by shared.patchLimits", "drivenBy": "shared.patchLimits" }],
+    "line_limits": [{ "case": "driven by shared.lineLimits", "drivenBy": "shared.lineLimits" }],
+    "criteria_lines": [{ "case": "driven by shared.criteriaLines", "drivenBy": "shared.criteriaLines" }],
+    "count_criteria_lines": [{ "case": "driven by shared.lineBudget", "drivenBy": "shared.lineBudget" }],
     "_validate_source": [{ "case": "driven by shared.validation", "drivenBy": "shared.validation" }]
   }
 }

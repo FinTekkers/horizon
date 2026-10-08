@@ -30,7 +30,7 @@ import httpx
 # `python -m farm.farmd` from there and farm/tests/conftest.py inserts it).
 # HZ-132 put the failure-reason vocabulary there too, so the reason this script
 # reports is a constant the server already knows, never a string typed here.
-from domain.py import reasons, steps
+from domain.py import fields, reasons, steps
 from domain.py.personas import model_agent_for_step
 
 # AgentExhaustedError is this branch's name for main's TurnCapExceeded — the
@@ -991,6 +991,163 @@ def _qa_review_section(parsed: dict) -> dict:
     }
 
 
+# ---- guardrails block on a quoted violation, never on paperwork (HZ-345) ----
+# The review prompts ask for violation-only guardrail findings; this is the
+# check in code. A block finding about a guardrail stays a block only when it
+# quotes the guardrail from the item AND a changed (+/-) line of the diff, both
+# verbatim. Anything else ("no evidence the guardrail held") becomes a note.
+# A block on a metric line marked Manual becomes a note when the implement
+# step's `## Manual checks` holds a statement for that line. Every downgrade is
+# recorded, so a human at "Accept the code" still sees it.
+
+_NO_EVIDENCE = re.compile(r"no evidence|not verified|unverified|not shown|not demonstrated", re.IGNORECASE)
+_MANUAL_LINE = re.compile(r"^manual\b|\(manual\)", re.IGNORECASE)
+_LEADING_MARKER = re.compile(r"^\s*(?:[-*+]|\d+[.)])\s+")
+MANUAL_CHECKS_HEADING = "## Manual checks"
+MANUAL_CHECKS_MAX_CHARS = 3000
+# A diff_line shorter than this must match a whole changed line; a longer one
+# may be part of one. Stops a quote like "}" matching anywhere.
+_MIN_PARTIAL_DIFF_QUOTE = 12
+_QA_FLAGS = ("regression_tests_run", "new_code_unit_coverage", "e2e_test_present")
+
+
+def _squash(text) -> str:
+    return " ".join(str(text or "").split())
+
+
+def _changed_lines(diff: str) -> list[str]:
+    """The content of every added or removed line, whitespace-collapsed."""
+    changed = []
+    for line in (diff or "").splitlines():
+        if line.startswith(("+++ ", "--- ")) or not line.startswith(("+", "-")):
+            continue
+        content = _squash(line[1:])
+        if content:
+            changed.append(content)
+    return changed
+
+
+def _diff_line_found(quote, changed: list[str]) -> bool:
+    if not isinstance(quote, str):
+        return False
+    q = _squash(quote)
+    if q[:1] in ("+", "-"):
+        q = q[1:].strip()
+    if not q:
+        return False
+    return any(q == line or (len(q) >= _MIN_PARTIAL_DIFF_QUOTE and q in line) for line in changed)
+
+
+def _guardrail_found(quote, guardrails: str) -> bool:
+    if not isinstance(quote, str):
+        return False
+    q = _squash(_LEADING_MARKER.sub("", quote))
+    return bool(q) and q in _squash(guardrails)
+
+
+def manual_metric_lines(metric) -> dict[int, str]:
+    """{line number: text} for each metric line marked Manual, numbered the way
+    domain/py/fields.py's criteria_lines() counts them."""
+    return {n: line for n, line in enumerate(fields.criteria_lines(metric), 1) if _MANUAL_LINE.search(line)}
+
+
+def manual_checks_text(artifacts) -> str:
+    """The `## Manual checks` section of the implement step's output — the
+    statements the server also put in the PR body."""
+    for artifact in artifacts or []:
+        if not isinstance(artifact, dict) or artifact.get("label") != IMPLEMENT_LABEL:
+            continue
+        content = str(artifact.get("content") or "")
+        start = content.find(MANUAL_CHECKS_HEADING)
+        if start == -1:
+            return ""
+        body = content[start + len(MANUAL_CHECKS_HEADING) :]
+        following = re.search(r"^## ", body, re.MULTILINE)
+        return body[: following.start()] if following else body
+    return ""
+
+
+def _has_statement(manual_checks: str, line_no: int) -> bool:
+    pattern = rf"^\s*(?:[-*+]\s*)?line\s+{line_no}\s*[:.)—-]\s*\S"
+    return re.search(pattern, manual_checks, re.IGNORECASE | re.MULTILINE) is not None
+
+
+def _metric_line(finding: dict) -> int | None:
+    value = finding.get("metric_line")
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, str) and value.strip().isdigit():
+        return int(value.strip())
+    return None
+
+
+def _is_block(finding) -> bool:
+    # Fail-closed: a finding with no readable severity counts as a block.
+    return not isinstance(finding, dict) or finding.get("severity") != "note"
+
+
+def _judge_finding(finding: dict, *, guardrails: str, changed: list[str], manual: dict, manual_checks: str):
+    """(downgrade reason or None, the finding to keep)."""
+    detail = str(finding.get("detail") or "")
+    line_no = _metric_line(finding)
+    if line_no is not None and "guardrail" not in finding:
+        manual_line = manual.get(line_no)
+        if manual_line is None:
+            return None, finding  # an automated metric line still needs its test
+        if _has_statement(manual_checks, line_no):
+            return f"Manual metric line {line_no} has a statement under `{MANUAL_CHECKS_HEADING}`", finding
+        named = f"Manual line {line_no} has no statement under `{MANUAL_CHECKS_HEADING}`: {manual_line}"
+        return None, finding if named in detail else {**finding, "detail": f"{detail} — {named}".lstrip(" —")}
+    if not isinstance(finding.get("guardrail"), str) and not (line_no is None and "guardrail" in detail.lower()):
+        return None, finding  # not about a guardrail: a defect or plan finding is judged as written
+    quoted = _guardrail_found(finding.get("guardrail"), guardrails)
+    if quoted and _diff_line_found(finding.get("diff_line"), changed):
+        return None, finding  # a quoted violation always blocks
+    if _NO_EVIDENCE.search(detail):
+        return "asks for evidence a guardrail held; only a quoted violation blocks", finding
+    if not quoted:
+        return "does not quote the guardrail verbatim from the item", finding
+    return "`diff_line` is not an added or removed line of the diff", finding
+
+
+def downgrade_unproven_findings(
+    section: dict, *, guardrails: str, metric: str, diff: str, manual_checks: str, qa: bool
+) -> tuple[dict, list[dict]]:
+    """The section with unproven guardrail blocks (and stated Manual lines)
+    turned into notes, plus one record per downgrade. A section left with no
+    block flips to pass — for QA only when all three checks are true. A fail
+    that had no findings to start with stays a fail."""
+    changed = _changed_lines(diff)
+    manual = manual_metric_lines(metric)
+    kept, downgrades = [], []
+    for index, finding in enumerate(section.get("findings") or []):
+        if not _is_block(finding):
+            kept.append(finding)
+            continue
+        reason, finding = _judge_finding(
+            finding, guardrails=guardrails, changed=changed, manual=manual, manual_checks=manual_checks
+        )
+        if reason is None:
+            kept.append(finding)
+            continue
+        kept.append({**finding, "severity": "note", "downgraded": reason})
+        downgrades.append({"index": index, "reason": reason, "detail": str(finding.get("detail") or "")[:300]})
+    result = {**section, "findings": kept}
+    if downgrades and result.get("verdict") == "fail" and not any(_is_block(f) for f in kept):
+        if not qa or all(result.get(flag) is True for flag in _QA_FLAGS):
+            result["verdict"] = "pass"
+    return result, downgrades
+
+
+def _downgrades_md(downgrades: list[dict]) -> str:
+    lines = [f"## Guardrail downgrades\nDowngraded {len(downgrades)} finding(s) to a note:"]
+    for d in downgrades:
+        lines.append(f"- {d['pass']} finding {d['index']}: {d['reason']} — {d['detail']}")
+    return "\n".join(lines)
+
+
 def _review_summary(verdict: dict) -> str:
     parts = [
         f"code review {'passed' if verdict['code_review']['verdict'] == 'pass' else 'failed'}",
@@ -1560,9 +1717,14 @@ def _execute(task: dict, guard: HandoffGuard) -> dict:
         # below is what a malformed final message costs, and that is cheaper
         # than a second full implement run.
         notes: list[str] = []
+        manual_checks = ""
         try:
             parsed, notes = parse_agent_reply(reply["result"])
             summary = str(parsed.get("summary", "")).strip()[:SUMMARY_MAX_CHARS]
+            # HZ-345: one statement per Manual metric line; the server puts it
+            # in the PR body and the review reads it back.
+            if isinstance(parsed.get("manual_checks"), str):
+                manual_checks = parsed["manual_checks"].strip()[:MANUAL_CHECKS_MAX_CHARS]
             if not summary:
                 # Parsed, but carried nothing usable. Without a note the run
                 # would report a bare "implementation finished" — indistinguishable
@@ -1620,6 +1782,8 @@ def _execute(task: dict, guard: HandoffGuard) -> dict:
         artifacts.update(check_record.report_fields(ws, checked_tree, check_note, checks_finished_at, log))
         if scope["mode"] == "fix":
             artifacts.update(fix_diff_report(ws, scope.get("base_sha")))
+        if manual_checks:
+            artifacts["manual_checks"] = manual_checks
         # finalize_branch returns branch/files_changed, not an artifact_md, so
         # the summary is this path's only note surface.
         summary = stamp_notes(f"{summary} · {check_note}"[:SUMMARY_MAX_CHARS], notes, SUMMARY_MAX_CHARS)
@@ -1717,14 +1881,33 @@ def _execute(task: dict, guard: HandoffGuard) -> dict:
             provider_locked=provider_locked,
         )
 
-        verdict = {"code_review": _code_review_section(code_parsed), "qa_review": _qa_review_section(qa_parsed)}
+        evidence = {
+            "guardrails": item.get("guardrails") or "",
+            "metric": item.get("metric") or "",
+            "diff": diff_full,
+            "manual_checks": manual_checks_text(task.get("artifacts")),
+        }
+        code_section, code_downgrades = downgrade_unproven_findings(
+            _code_review_section(code_parsed), qa=False, **evidence
+        )
+        qa_section, qa_downgrades = downgrade_unproven_findings(_qa_review_section(qa_parsed), qa=True, **evidence)
+        verdict = {"code_review": code_section, "qa_review": qa_section}
+        downgrades = [{"pass": "code_review", **d} for d in code_downgrades] + [
+            {"pass": "qa_review", **d} for d in qa_downgrades
+        ]
+        if downgrades:
+            verdict["guardrail_downgrades"] = downgrades
         if review_extra["review_mode"] == "delta":
             verdict["previous_findings"] = _merge_previous_findings(
                 scope.get("previous_findings") or [], [code_parsed, qa_parsed]
             )
         artifact_md = "\n\n".join(
             part.strip()
-            for part in (code_parsed.get("artifact_md"), qa_parsed.get("artifact_md"))
+            for part in (
+                code_parsed.get("artifact_md"),
+                qa_parsed.get("artifact_md"),
+                _downgrades_md(downgrades) if downgrades else None,
+            )
             if isinstance(part, str) and part.strip()
         )
         summary = _review_summary(verdict)

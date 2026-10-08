@@ -475,11 +475,14 @@ test('SHAPE PIN (fields): both bindings expose the authored entries, with exactl
     for (const entry of table) {
       // minLength is OPTIONAL and must stay ABSENT rather than null where a field
       // declares none — a null would read as a limit of zero at a call site.
-      const expected = entry.minLength === undefined ? REQUIRED_KEYS : [...REQUIRED_KEYS, 'minLength'].sort()
+      // maxLines (HZ-345) is optional the same way.
+      const optional = ['minLength', 'maxLines'].filter((key) => entry[key] !== undefined)
+      const expected = [...REQUIRED_KEYS, ...optional].sort()
       assert.deepEqual(Object.keys(entry).sort(), expected, `field "${entry.name}" has the wrong key set`)
     }
   }
   assert.ok(authored.some((f) => f.minLength === undefined), 'every field declares a minLength — the optional case is untested')
+  assert.ok(authored.some((f) => f.maxLines === undefined), 'every field declares a maxLines — the optional case is untested')
 })
 
 // ---- shape pin: the JS binding ships the AUTHORED shape ----

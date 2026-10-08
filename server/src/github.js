@@ -438,7 +438,7 @@ async function deleteArtifactRef(repo, item) {
 // owns the code; this side owns the PR mechanics). Screenshots and the
 // baseline comparison are read from the item's artifact ref, never the code
 // branch — that's what lets two PRs touch the same journey without conflict.
-export async function createPrFromBranch(item, branch) {
+export async function createPrFromBranch(item, branch, { manualChecks = null } = {}) {
   const repo = item.repo
   const repoRes = await gh(`/repos/${repo}`)
   if (!repoRes.ok) throw new Error(`could not read the repository (${repoRes.status})`)
@@ -463,6 +463,8 @@ export async function createPrFromBranch(item, branch) {
         '',
         '## Guardrails',
         item.guardrails || '_(defaults apply)_',
+        // HZ-345: the Eng agent's statement for each Manual metric line.
+        ...(manualChecks ? ['', '## Manual checks', manualChecks] : []),
         ...(screenshots ? [screenshots] : []),
         ...(comparison ? [comparison] : []),
         '',

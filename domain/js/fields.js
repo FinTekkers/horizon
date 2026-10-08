@@ -65,6 +65,9 @@ export function assertFieldsShape(data, source = 'domain/fields.json') {
     if (field.minLength !== undefined && (!Number.isInteger(field.minLength) || field.minLength < 1)) {
       throw new Error(`${source}: fields[${i}] ("${field.name}") declares a non-integer or non-positive minLength`)
     }
+    if (field.maxLines !== undefined && (!Number.isInteger(field.maxLines) || field.maxLines < 1)) {
+      throw new Error(`${source}: fields[${i}] ("${field.name}") declares a non-integer or non-positive maxLines`)
+    }
     for (const flag of ['settableAtIntake', 'agentRevisable']) {
       if (typeof field[flag] !== 'boolean') {
         throw new Error(
@@ -133,4 +136,62 @@ export function intakeFields(fields = FIELDS) {
 // server/test/domain-fields-parity.test.mjs diffs the two, order included.
 export function patchLimits(fields = FIELDS) {
   return Object.fromEntries(fields.filter((f) => f.agentRevisable).map((f) => [f.column, f.maxLength]))
+}
+
+// HZ-345: the line budget for each field that declares `maxLines` — metric and
+// guardrails. Keyed by column, like patchLimits(). farm/pm_agent.py's
+// line_limits() is the same derivation; fields-cases.json drives both.
+export function lineLimits(fields = FIELDS) {
+  return Object.fromEntries(fields.filter((f) => f.maxLines !== undefined).map((f) => [f.column, f.maxLines]))
+}
+
+// ---- criteria lines (HZ-345) ----
+// One rule for "what is a line" of a metric or guardrails, shared with
+// domain/py/fields.py's criteria_lines(). A line is trimmed, loses its list
+// marker (`-`, `*`, `+`, `1.`, `1)`) and has its whitespace collapsed. The
+// split-scope "Deferred to a follow-up item" line never counts: it lists lines
+// that are out of scope, not lines to build.
+const LIST_MARKER = /^(?:[-*+]|\d+[.)])\s+/
+const DEFERRED_PREFIX = 'deferred to a follow-up item'
+
+function normaliseLine(line) {
+  return line.trim().replace(LIST_MARKER, '').replace(/\s+/g, ' ').trim()
+}
+
+function isDeferredLine(normalised) {
+  return normalised.replace(/^[*_]+/, '').toLowerCase().startsWith(DEFERRED_PREFIX)
+}
+
+function nonBlankLines(text) {
+  return String(text ?? '')
+    .split('\n')
+    .map((line) => line.trim())
+    .filter(Boolean)
+}
+
+// The lines a budget counts. When any line is a list item, only list items
+// count, so a preamble ("Each line is pass/fail…") or a wrapped continuation
+// is not a line of its own. Otherwise every non-blank line counts.
+export function criteriaLines(text) {
+  const lines = nonBlankLines(text)
+  const listed = lines.some((line) => LIST_MARKER.test(line))
+  return lines
+    .filter((line) => !listed || LIST_MARKER.test(line))
+    .map(normaliseLine)
+    .filter((line) => line && !isDeferredLine(line))
+}
+
+export function countCriteriaLines(text) {
+  return criteriaLines(text).length
+}
+
+// The lines in `after` that `before` does not have, for the post-gate-3 lock
+// in server/src/orchestrator.js. EVERY non-blank line is compared, list item or
+// not, so a guardrail cannot be slipped in as an unmarked continuation line.
+// The Deferred line is exempt: moving lines into it adds nothing to build.
+export function addedCriteriaLines(before, after) {
+  const known = new Set(nonBlankLines(before).map(normaliseLine))
+  return nonBlankLines(after)
+    .map(normaliseLine)
+    .filter((line) => line && !isDeferredLine(line) && !known.has(line))
 }

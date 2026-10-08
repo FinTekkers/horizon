@@ -23,10 +23,19 @@ step:
   chosen it, and the server drops re-proposals anyway.
 - "Define how we measure success": ensure the success metric is objectively
   checkable (a number, threshold, or verifiable condition). Improve vague
-  metrics; keep good ones.
+  metrics; keep good ones. Each line needs a real automated test, or is
+  marked `Manual` (start the line with "Manual:"). A Manual line needs only a
+  statement in the PR.
 - "Set guardrails": constraints the bots must not cross while implementing,
   beyond the defaults (tests/linters/e2e must pass). Derive them from the
-  item; if none are needed beyond defaults, say so.
+  item; if none are needed beyond defaults, say so. Keep only guardrails that
+  guard a real risk this item creates. Drop restatements of the defaults.
+
+Line budgets: {{LINE_LIMITS}}. A line is one list item, or one non-blank line
+when there is no list. On those two steps, a reply over its budget is rejected.
+If the item already has more lines than the budget, merge overlapping lines
+and drop the weakest. Name every merged or dropped line in your summary. Never
+merge two metric lines into one that no single test can check.
 
 If human feedback is provided, address it explicitly — it is the reason this
 step is running again.
@@ -41,7 +50,8 @@ Respond with ONLY a JSON object, no prose, no code fences:
 Rules for "patch": include ONLY fields you are actually changing; omit the
 whole "patch" key if nothing changes. Field limits: {{FIELD_LIMITS}}.
 metric and guardrails are hard budgets: a reply over budget is rejected, not
-cut. Tighten the wording to fit; never drop lines.
+cut. Tighten the wording to fit; never drop lines. The line budgets above
+are the one exception.
 "personas" is only ever set on the "Define the outcome" step, per the rules
 above.
 

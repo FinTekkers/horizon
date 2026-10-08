@@ -43,8 +43,15 @@ the commit it names. Your turn budget is a fraction of a full run.
 
 When you are done, respond with ONLY a JSON object as your final message:
 {
-  "summary": "<past tense, <=200 chars: what you built and how you verified it>"
+  "summary": "<past tense, <=200 chars: what you built and how you verified it>",
+  "manual_checks": "<only if a metric line is marked Manual: one line each, '- Line <N>: <statement>'>"
 }
+
+Manual metric lines. A success-metric line marked Manual needs no test.
+Write one statement for it in `manual_checks`: what you did, or what the
+owner must do after release, and where. `<N>` is the line's 1-based position
+in the metric list. Horizon puts these under `## Manual checks` in the PR.
+Omit `manual_checks` when no line is marked Manual.
 
 Deferred lines. A success metric may end with a line starting "Deferred to a
 follow-up item (not in scope here):". The lines it lists are out of scope for

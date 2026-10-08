@@ -93,12 +93,14 @@ test('the farm imports the model as domain.py, from the repo root, in both produ
   // HZ-132 added `reasons` alongside `steps` on the same import line, so the
   // match is on the imported NAMES rather than the whole line — both modules
   // must still come from domain.py and from nowhere else.
-  for (const file of ['farm/farmd.py', 'farm/step_agent.py']) {
+  // HZ-345: step_agent.py also reads `fields` for the criteria-line rule.
+  const expected = { 'farm/farmd.py': ['reasons', 'steps'], 'farm/step_agent.py': ['fields', 'reasons', 'steps'] }
+  for (const [file, names] of Object.entries(expected)) {
     const text = readFileSync(path.join(REPO_ROOT, file), 'utf8')
     const line = text.match(/^from domain\.py import (.+)$/m)
     assert.ok(line, `${file} does not import the relocated model`)
     const imported = line[1].split(',').map((name) => name.trim()).sort()
-    assert.deepEqual(imported, ['reasons', 'steps'], `${file} imports ${line[1]} from domain.py`)
+    assert.deepEqual(imported, names, `${file} imports ${line[1]} from domain.py`)
   }
 })
 
