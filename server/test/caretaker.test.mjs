@@ -232,6 +232,52 @@ test('gate 15: a deploy that never reports is judged after the settle window', (
   assert.equal(evals('LQ-15')[0].decision, 'ping_human')
 })
 
+// ---- HZ-358: a 'no deploy' repo with no target shipped nothing ----
+
+const markedItem = (id, repo, autopilot = 'shadow') => {
+  const pid = project(`No deploy ${id}`, autopilot)
+  db.prepare('INSERT INTO project_repo (project_id, repo, prefix) VALUES (?, ?, ?)').run(pid, repo, id.slice(0, 2))
+  store.setRepoMarks(pid, repo, { noDeploy: true })
+  db.prepare("INSERT INTO work_item (id, title, priority, cursor, project_id, repo) VALUES (?, ?, 'High', 15, ?, ?)").run(
+    id,
+    `fixture ${id}`,
+    pid,
+    repo,
+  )
+  return Number(
+    db
+      .prepare("INSERT INTO step_run (item_id, step_index, agent, status, output, artifact) VALUES (?, 14, 'DevOps', 'done', ?, ?)")
+      .run(
+        id,
+        `not deployed: ${repo} is marked no deploy`,
+        `## Verdict\n**pass** — nothing was deployed: ${repo} is marked no deploy and has no deploy target.`,
+      ).lastInsertRowid,
+  )
+}
+
+test('gate 15: a no-deploy item with no target is pinged as "nothing was deployed", naming no release', () => {
+  const runId = markedItem('ND-15', 'Acme/marked')
+  const it = store.getItem('ND-15')
+  const facts = caretaker.gatherFacts(it, 15, { id: runId, artifact: null, output: '' })
+  assert.equal(facts.notDeployed, 'not deployed: Acme/marked is marked no deploy')
+  sweep()
+  const [row] = evals('ND-15')
+  assert.equal(row.decision, 'ping_human')
+  assert.equal(row.rule_id, 'g15.ping')
+  assert.equal(row.reason, 'nothing was deployed — not deployed: Acme/marked is marked no deploy')
+  assert.doesNotMatch(row.reason, /release|live|v20\d\d\./i)
+  const events = caretakerEvents('ND-15')
+  assert.equal(events.length, 1)
+  assert.match(events[0].text, /nothing was deployed/)
+  assert.doesNotMatch(events[0].text, /release|live/i)
+})
+
+test('gate 15: a no-deploy mark on a repo WITH a target is not "not deployed" — the target wins', () => {
+  markedItem('NT-15', 'Acme/quiet', 'off')
+  const facts = caretaker.gatherFacts(store.getItem('NT-15'), 15, null)
+  assert.equal(facts.notDeployed, null)
+})
+
 // ---- metric 3: read-only ----
 
 const TABLES = ['work_item', 'step_run', 'gate_action', 'gate_decision', 'gate_notice', 'gate_poll', 'feedback']

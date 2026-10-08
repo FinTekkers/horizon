@@ -3,7 +3,17 @@
 // else connect their repo ready: a test command, and (noDeploy) the 'no
 // deploy' mark, which keeps today's deploy path exactly. Raw SQL on the db
 // the test opened, so it never imports db.js under another HORIZON_DB.
-export function connectReadyRepo(db, repo, { noDeploy = false } = {}) {
+// HZ-358: a marked repo with no target now skips step 14 (no release), so a
+// test of the release path passes unrunnableTarget instead: a deploy_target
+// row whose script does not exist. Readiness finds the row; re-validation
+// (resolveTarget) rejects it, so there is no deploy_wait and no deploy queue.
+export function connectReadyRepo(db, repo, { noDeploy = false, unrunnableTarget = false } = {}) {
+  if (unrunnableTarget) {
+    db.prepare(
+      `INSERT OR IGNORE INTO deploy_target (key, repo, script, service, repo_dir, state_key, health_url, health_check_type)
+       VALUES (?, ?, 'missing-unrunnable.sh', 'stub-service', '/tmp/fixture', ?, 'http://stub.invalid/', 'json-health')`,
+    ).run(`unrunnable-${repo}`, repo, `unrunnable-${repo.replace(/\W/g, '-')}`)
+  }
   let project = db.prepare("SELECT id FROM project WHERE name = 'Ready repos'").get()?.id
   if (project == null) project = db.prepare("INSERT INTO project (name) VALUES ('Ready repos')").run().lastInsertRowid
   const row = db.prepare('SELECT id FROM project_repo WHERE repo = ?').get(repo)

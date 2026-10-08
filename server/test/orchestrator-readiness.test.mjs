@@ -26,6 +26,7 @@ const { IMPLEMENT_STEP_INDEX, DEPLOY_STEP_INDEX, ACCEPT_GATE_INDEX } = await imp
 const { FARM_QUEUE_TIMEOUT_MS } = await import('../src/config.js')
 const orchestrator = await import('../src/orchestrator.js')
 const premerge = await import('../src/premerge.js')
+const caretaker = await import('../src/caretaker.js')
 const { buildApp } = await import('../src/app.js')
 const config = await import('../src/config.js')
 const auth = await import('../src/auth.js')
@@ -164,13 +165,80 @@ test('a deploy on a repo item with no issue is still held to a target', () => {
   assert.deepEqual(runsOf('RD-5').map((r) => r.output), ['FAILED: no deploy target configured for acme/bare'])
 })
 
-test("a repo marked 'no deploy' takes today's deploy path: release published, dispatched, no deploy_wait", async () => {
+// ---- HZ-358: a 'no deploy' repo with no target ships nothing ----
+
+const NOT_DEPLOYED = 'not deployed: acme/nodeploy is marked no deploy'
+const releasePosts = (since) => calls.slice(since).filter((c) => c.url.includes('api.github.com') && c.url.endsWith('/releases'))
+const farmRuns = (id, since) => calls.slice(since).filter((c) => c.url.includes('/steps/run') && c.body?.item?.id === id)
+const stepRuns14 = (id) => runsOf(id).filter((r) => r.step_index === DEPLOY_STEP_INDEX)
+
+test("a repo marked 'no deploy' with no target publishes no release and completes step 14 as not deployed", async () => {
   insertItem.run('RD-6', 'Marked deploy', 'Medium', DEPLOY_STEP_INDEX, 'acme/nodeploy', 6, projectId)
+  const since = calls.length
+  const armed = kickRecordingTimers('RD-6')
+  await new Promise((r) => setTimeout(r, 30))
+
+  assert.deepEqual(stepRuns14('RD-6'), [{ step_index: DEPLOY_STEP_INDEX, status: 'done', output: NOT_DEPLOYED }])
+  assert.deepEqual(releasePosts(since), [], 'no GitHub release published')
+  assert.deepEqual(farmRuns('RD-6', since), [], 'no /steps/run')
+  assert.deepEqual(armed.filter((t) => t.ms === FARM_QUEUE_TIMEOUT_MS), [], 'the queue watchdog was never armed')
+  const it = store.getItem('RD-6')
+  assert.equal(it.cursor, DEPLOY_STEP_INDEX + 1)
+  assert.equal(Boolean(it.paused), false)
+
+  // A second kick adds no run: the item sits at gate 15.
   orchestrator.kick('RD-6')
-  const body = await settle('RD-6')
-  orchestrator.cancel('RD-6')
-  assert.equal(body.item.release_tag, 'deploy-rd-6')
-  assert.equal(Object.hasOwn(body, 'deploy_wait'), false)
+  await new Promise((r) => setTimeout(r, 30))
+  assert.equal(stepRuns14('RD-6').length, 1)
+
+  // What the board renders after a reload.
+  const res = await app.inject({ method: 'GET', url: '/api/items', headers: { cookie: alice.cookie } })
+  const card = res.json().items.find((i) => i.id === 'RD-6')
+  assert.equal(card.release_tag, null)
+  assert.equal(card.release_url, null)
+  assert.equal(card.cursor, DEPLOY_STEP_INDEX + 1)
+  assert.equal(card.paused, false)
+  const artifact = card.stepOutputs[DEPLOY_STEP_INDEX].artifact
+  assert.match(artifact, /nothing was deployed/)
+  assert.doesNotMatch(artifact, /live/i)
+  assert.doesNotMatch(artifact, /deploy-/)
+  assert.ok(
+    card.events.some((e) => e.text.includes(NOT_DEPLOYED)),
+    JSON.stringify(card.events.map((e) => e.text)),
+  )
+})
+
+test('the MDI-38 shape — paused at step 14 with a cancelled run and a stale tag — resumes to gate 15 with no release', async () => {
+  insertItem.run('RD-11', 'Stuck no-deploy', 'Medium', DEPLOY_STEP_INDEX, 'acme/nodeploy', 8, projectId)
+  db.prepare("UPDATE work_item SET paused = 1, release_tag = 'deploy-rd-11', release_url = 'https://github.com/x/releases/deploy-rd-11' WHERE id = 'RD-11'").run()
+  db.prepare("INSERT INTO step_run (item_id, step_index, attempt, agent, status, output) VALUES ('RD-11', ?, 1, 'devops', 'cancelled', ?)").run(
+    DEPLOY_STEP_INDEX,
+    'FAILED: release deploy-rd-11 cannot be verified: no deploy target',
+  )
+  const since = calls.length
+  // The runner server.js registers via orchestrator.init(), so Resume kicks.
+  store.registerAgentRunner({ kick: orchestrator.kick, cancel: orchestrator.cancel })
+  let res
+  try {
+    res = await app.inject({
+      method: 'POST',
+      url: '/api/items/RD-11/pause',
+      headers: { cookie: alice.cookie },
+      payload: { paused: false },
+    })
+  } finally {
+    store.registerAgentRunner({ kick() {}, cancel() {}, pause() {} })
+  }
+  assert.equal(res.statusCode, 200, res.body)
+  await new Promise((r) => setTimeout(r, 30))
+
+  assert.deepEqual(releasePosts(since), [], 'no GitHub release published')
+  assert.deepEqual(farmRuns('RD-11', since), [], 'no /steps/run')
+  assert.deepEqual(stepRuns14('RD-11').map((r) => r.status), ['cancelled', 'done'])
+  const it = store.getItem('RD-11')
+  assert.equal(it.release_tag, null)
+  assert.equal(it.release_url, null)
+  assert.equal(it.cursor, DEPLOY_STEP_INDEX + 1)
 })
 
 test('a repo with a deploy target needs no mark', () => {
@@ -183,6 +251,36 @@ test("the mock 'Deploy the changes' path refuses an unready repo by name before 
   const result = await orchestrator.MOCK_STEP_BEHAVIOR['Deploy the changes']({ id: 'RD-7', repo: 'acme/bare', issue: 7 })
   assert.deepEqual(result, { failure: 'no deploy target configured for acme/bare' })
   assert.deepEqual(calls.slice(since), [])
+})
+
+test("a repo with a deploy target still publishes and waits at step 14 even when marked 'no deploy' — the target wins", async () => {
+  connect('FinTekkers/horizon', 'HZ')
+  store.setRepoMarks(projectId, 'FinTekkers/horizon', { noDeploy: true })
+  insertItem.run('RD-12', 'Marked with target', 'Medium', DEPLOY_STEP_INDEX, 'FinTekkers/horizon', 9, projectId)
+  const since = calls.length
+  orchestrator.kick('RD-12')
+  const body = await settle('RD-12')
+  orchestrator.cancel('RD-12')
+  assert.equal(releasePosts(since).length, 1, 'a GitHub release was published')
+  assert.equal(body.item.release_tag, 'deploy-rd-12')
+  assert.ok(body.deploy_wait, 'the farm is told to wait for the release to go live')
+  assert.ok(runsOf('RD-12').every((r) => !String(r.output ?? '').includes('not deployed')))
+
+  // At gate 15 the caretaker sees a deploy, not "not deployed".
+  const it = { ...store.getItem('RD-12'), cursor: DEPLOY_STEP_INDEX + 1 }
+  assert.equal(caretaker.gatherFacts(it, DEPLOY_STEP_INDEX + 1, null).notDeployed, null)
+  assert.equal(caretaker.gatherFacts({ ...it, release_tag: null }, DEPLOY_STEP_INDEX + 1, null).notDeployed, null)
+})
+
+test("the mock 'Deploy the changes' path skips a no-deploy repo the same way and clears a stale tag", async () => {
+  insertItem.run('RD-13', 'Mock no-deploy', 'Medium', DEPLOY_STEP_INDEX, 'acme/nodeploy', 10, projectId)
+  db.prepare("UPDATE work_item SET release_tag = 'deploy-rd-13', release_url = 'u' WHERE id = 'RD-13'").run()
+  const since = calls.length
+  const result = await orchestrator.MOCK_STEP_BEHAVIOR['Deploy the changes'](store.getItem('RD-13'))
+  assert.deepEqual(result, { summary: NOT_DEPLOYED })
+  assert.deepEqual(calls.slice(since), [])
+  assert.equal(store.getItem('RD-13').release_tag, null)
+  assert.equal(store.getItem('RD-13').release_url, null)
 })
 
 // ---- guardrail 6: flagged, not blocked; a send-back is enforced ----

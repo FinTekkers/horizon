@@ -34,6 +34,7 @@ import { readFarmFile } from './definitions.js'
 import { gateStepIndexes, requiredStepIndex, ACCEPT_GATE_INDEX } from '../../domain/js/lifecycle.js'
 import { ACTOR, DECISIONS, decide, parsePolicy, redact } from './caretakerRules.js'
 import { MERGEABLE_DEFER_CAP_MS, mergeableProbeState, reviewPassed } from './caretakerMergeable.js'
+import { deploySkipReason } from './deploySkip.js'
 
 // Gate 3 is excluded HERE, in code, before any evaluation in any mode: new
 // work never enters without a human.
@@ -87,6 +88,8 @@ export function gatherFacts(item, gateIndex, sourceRun) {
     facts.lastGoodTag = bareTag(releaseTarget(item)?.lastTag)
     // HZ-333: the deploy queue batch that shipped this item, if one did.
     facts.batch = store.deployBatchFactsFor(item.id)
+    // HZ-358: step 14 shipped nothing for a no-deploy repo with no target.
+    facts.notDeployed = item.release_tag ? null : deploySkipReason(item)
   }
   return facts
 }

@@ -26,9 +26,10 @@ const orchestrator = await import('../src/orchestrator.js')
 
 store.purgeDemoItems()
 const { connectReadyRepo } = await import('./helpers/readyRepo.mjs')
-// HZ-304: acme/demo has no deploy target; the 'no deploy' mark keeps today's
-// deploy path, which is what the no-target case below pins.
-connectReadyRepo(db, 'acme/demo', { noDeploy: true })
+// HZ-304: acme/demo's deploy target never passes re-validation, so it still
+// publishes and dispatches but has no resolved target — the case below pins.
+// (A marked repo with no target at all skips step 14: HZ-358.)
+connectReadyRepo(db, 'acme/demo', { unrunnableTarget: true })
 
 const insertItem = db.prepare('INSERT INTO work_item (id, title, priority, cursor, repo, issue) VALUES (?, ?, ?, ?, ?, ?)')
 
@@ -81,7 +82,7 @@ test('a Deploy dispatch for a repo with a deploy target carries deploy_wait', as
   orchestrator.cancel('HZW-1')
 })
 
-test('a Deploy dispatch for a repo with no deploy target sends no deploy_wait', async () => {
+test('a Deploy dispatch for a repo whose deploy target fails re-validation sends no deploy_wait', async () => {
   const dispatched = captureDispatches()
   insertItem.run('HZW-2', 'Deploy without a target', 'Medium', DEPLOY_STEP_INDEX, 'acme/demo', 2)
   orchestrator.kick('HZW-2')

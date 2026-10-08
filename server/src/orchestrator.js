@@ -78,6 +78,7 @@ import { DEPLOY_BLOCK_MESSAGE, isDeployBlocked, onDrainEnd } from './deployDrain
 import { deployWaitFor } from './deployWait.js'
 import * as deployQueue from './deployQueue.js'
 import { findTargetByRepo } from './deployTargets.js'
+import { deploySkipArtifact, deploySkipReason } from './deploySkip.js'
 import { servedRulesFor } from './rulesStore.js'
 import { OPTIONS_STEP_INDEX, proposeSplit } from './split.js'
 import { recordFlakes } from './checkFlakes.js'
@@ -944,6 +945,12 @@ export const MOCK_STEP_BEHAVIOR = {
     // rule as the farm path. runMockStep fails the run on `failure`.
     const failure = readinessFailure(it, DEPLOY_STEP_INDEX)
     if (failure) return { failure }
+    // HZ-358: the same skip as the farm path, so demo mode matches it.
+    const skip = deploySkipReason(it)
+    if (skip) {
+      clearReleaseFields(it.id)
+      return { summary: skip }
+    }
     try {
       const release = await createDeployRelease(it)
       return {
@@ -1041,6 +1048,11 @@ export function kick(id, opts = {}) {
   }
 }
 
+// HZ-358: a skipped deploy leaves no release on the item.
+function clearReleaseFields(id) {
+  db.prepare("UPDATE work_item SET release_tag = NULL, release_url = NULL, updated_at = datetime('now') WHERE id = ?").run(id)
+}
+
 // ---- farm-dispatched steps ----
 
 async function dispatchToFarm(id, stepIndex, runId, attempt, scope) {
@@ -1052,6 +1064,18 @@ async function dispatchToFarm(id, stepIndex, runId, attempt, scope) {
   // spent. No timer, no poll; the reason is untagged, so never auto-retried.
   const unready = readinessFailure(item, stepIndex)
   if (unready) return failFarmRun(runId, unready)
+
+  // HZ-358: a repo marked 'no deploy' with no target has nothing to ship. No
+  // release, no farm run: step 14 completes here as "not deployed". A tag
+  // left by an earlier attempt is cleared so gate 15 shows none.
+  const skip = stepIndex === DEPLOY_STEP_INDEX ? deploySkipReason(item) : null
+  if (skip) {
+    clearReleaseFields(id)
+    return completeFarmRun(runId, {
+      summary: skip,
+      artifacts: { artifact_md: deploySkipArtifact(item), verdict: { verdict: 'pass' } },
+    })
+  }
 
   // Queue watchdog: bounds how long a step may sit queued behind other work
   // before the farm actually launches an agent on it. Deliberately NOT

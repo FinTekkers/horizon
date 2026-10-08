@@ -133,7 +133,11 @@ export const EVALUATORS = {
       : facts.releaseTag && facts.releaseTag === facts.lastGoodTag
         ? { reason: `release ${facts.releaseTag} is the target's last-good deploy` }
         : null,
-  'g15.ping': () => ({ reason: 'no last-good deploy of this release on record' }),
+  // HZ-358: a no-deploy repo shipped nothing, so there is no release to ask about.
+  'g15.ping': (rule, facts) =>
+    facts.notDeployed
+      ? { reason: `nothing was deployed — ${facts.notDeployed}` }
+      : { reason: 'no last-good deploy of this release on record' },
 }
 
 // Text of the role file -> { rules }. Throws on anything malformed; the

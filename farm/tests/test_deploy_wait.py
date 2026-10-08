@@ -344,6 +344,7 @@ def test_a_release_with_no_deploy_target_fails_closed(tmp_path, monkeypatch):
 
     assert posted[0]["ok"] is False
     assert "no deploy target" in posted[0]["error"]
+    assert "cannot be verified" in posted[0]["error"]
     assert calls.smoke == [] and calls.agent == []
 
 
