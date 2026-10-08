@@ -377,11 +377,17 @@ def _select_pm_dispatchable(task_paths: list, sessions: list[str], now: float | 
 
 
 def _forward_result(body: dict) -> int | None:
-    """Relays an agent's result to the Node server's /complete or /fail.
-    Returns the server's status code, or None if it could not be reached."""
+    """Relays an agent's result to the Node server's /complete, /blocked or
+    /fail. Returns the server's status code, or None if it could not be
+    reached."""
     run_id = body.get("run_id")
     path = "complete" if body.get("ok") else "fail"
-    if body.get("ok"):
+    if body.get("ok") and isinstance(body.get("blocked"), dict):
+        # HZ-346: an implement run stopped by a rule with no code changes —
+        # recorded as blocked server-side, never as a completion or failure.
+        path = "blocked"
+        payload = {"rule": body["blocked"].get("rule", ""), "needs": body["blocked"].get("needs", "")}
+    elif body.get("ok"):
         payload = {"summary": body.get("summary", ""), "patch": body.get("patch") or {}, "artifacts": body.get("artifacts") or {}}
     else:
         payload = {"error": body.get("error", "unknown agent failure")}

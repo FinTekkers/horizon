@@ -3247,3 +3247,126 @@ def test_without_a_stop_reason_a_pause_is_unchanged(tmp_path, monkeypatch, deplo
 
     assert pause.read_outcome(outcome_path)["outcome"] == "saved"
     assert origin_body(origin).startswith("cause: paused")
+
+
+# ---- HZ-346: blocked by a rule ----
+
+BLOCKED_REPLY = {"blocked": {"rule": "guardrail 6: models first: no local workaround", "needs": "a ledger-models release with the fix"}}
+
+
+def blocked_run(monkeypatch, ws, reply, edit=None):
+    """Runs implement with `reply` as the agent's final message, after `edit`
+    (if any) changed the workspace. Returns the calls run_checks and
+    finalize_branch received, so a test can tell whether they ran."""
+    monkeypatch.setattr(step_agent, "ensure_item_worktree", lambda repo, item_id: ws)
+    calls = {"checks": 0, "finalize": 0}
+
+    def fake_run_agent(prompt, **kwargs):
+        if edit:
+            edit(ws)
+        return {"result": json.dumps(reply)}
+
+    real_finalize = step_agent.finalize_branch
+
+    def counting_finalize(*args, **kwargs):
+        calls["finalize"] += 1
+        return real_finalize(*args, **kwargs)
+
+    def counting_checks(*args, **kwargs):
+        calls["checks"] += 1
+        return "checks waived"
+
+    monkeypatch.setattr(step_agent, "run_agent", fake_run_agent)
+    monkeypatch.setattr(step_agent, "run_checks", counting_checks)
+    monkeypatch.setattr(step_agent, "finalize_branch", counting_finalize)
+    return calls
+
+
+def test_a_valid_blocked_report_with_no_changes_is_returned_as_blocked_without_checks_or_finalize(tmp_path, monkeypatch):
+    """Metric 1(a)."""
+    ws, _origin = make_git_workspace(tmp_path)
+    calls = blocked_run(monkeypatch, ws, BLOCKED_REPLY)
+
+    result = execute(make_task(11, "Specialist agent implements", repo="acme/demo", checks_waiver=NO_CHECKS))
+
+    assert result == {"blocked": BLOCKED_REPLY["blocked"]}
+    assert calls == {"checks": 0, "finalize": 0}
+
+
+def test_a_blocked_report_is_stripped_and_capped_to_the_servers_limits(tmp_path, monkeypatch):
+    ws, _origin = make_git_workspace(tmp_path)
+    blocked_run(monkeypatch, ws, {"blocked": {"rule": "  " + "r" * 400 + " ", "needs": "n" * 700}})
+
+    result = execute(make_task(11, "Specialist agent implements", repo="acme/demo", checks_waiver=NO_CHECKS))
+
+    assert result["blocked"]["rule"] == "r" * step_agent.RULE_MAX_CHARS
+    assert result["blocked"]["needs"] == "n" * step_agent.NEEDS_MAX_CHARS
+
+
+def test_no_changes_and_no_blocked_report_still_fails_as_today(tmp_path, monkeypatch):
+    """Metric 1(b)."""
+    ws, _origin = make_git_workspace(tmp_path)
+    calls = blocked_run(monkeypatch, ws, {"summary": "did nothing"})
+
+    with pytest.raises(RuntimeError, match="^the agent made no code changes — nothing to push$"):
+        execute(make_task(11, "Specialist agent implements", repo="acme/demo", checks_waiver=NO_CHECKS))
+    assert calls == {"checks": 1, "finalize": 1}
+
+
+@pytest.mark.parametrize(
+    "blocked",
+    [
+        {"needs": "a ledger-models release"},
+        {"rule": "guardrail 6"},
+        {"rule": "   ", "needs": "a ledger-models release"},
+        {"rule": "guardrail 6", "needs": ""},
+        {"rule": 6, "needs": "a ledger-models release"},
+        "guardrail 6",
+    ],
+    ids=["no-rule", "no-needs", "blank-rule", "empty-needs", "non-string-rule", "not-an-object"],
+)
+def test_a_blocked_report_missing_rule_or_needs_is_treated_as_no_report(tmp_path, monkeypatch, blocked):
+    """Metric 1(c): exactly like 1(b)."""
+    ws, _origin = make_git_workspace(tmp_path)
+    calls = blocked_run(monkeypatch, ws, {"blocked": blocked})
+
+    with pytest.raises(RuntimeError, match="^the agent made no code changes — nothing to push$"):
+        execute(make_task(11, "Specialist agent implements", repo="acme/demo", checks_waiver=NO_CHECKS))
+    assert calls == {"checks": 1, "finalize": 1}
+
+
+def _checkpoint_commit(ws):
+    (ws / "wip.txt").write_text("checkpointed work\n")
+    git(ws, "add", "-A")
+    git(ws, "commit", "-m", "T-1: WIP checkpoint")
+
+
+@pytest.mark.parametrize(
+    "edit",
+    [
+        _checkpoint_commit,
+        lambda ws: (ws / "README.md").write_text("# demo, edited\n"),
+        lambda ws: (ws / "untracked.txt").write_text("new file\n"),
+    ],
+    ids=["checkpoint-commits-ahead", "dirty-workspace", "untracked-only"],
+)
+def test_a_blocked_report_with_any_change_takes_the_normal_checks_and_push_path(tmp_path, monkeypatch, edit):
+    """Guardrail: a blocked report never lets an attempt with changes skip
+    checks or review."""
+    ws, origin = make_git_workspace(tmp_path)
+    calls = blocked_run(monkeypatch, ws, BLOCKED_REPLY, edit=edit)
+
+    result = execute(make_task(11, "Specialist agent implements", repo="acme/demo", checks_waiver=NO_CHECKS))
+
+    assert "blocked" not in result
+    assert result["artifacts"]["branch"] == "horizon/t-1"
+    assert calls == {"checks": 1, "finalize": 1}
+    branches = subprocess.run(
+        ["git", "--git-dir", str(origin), "branch", "--list"], capture_output=True, text=True, check=True
+    ).stdout
+    assert "horizon/t-1" in branches
+
+
+def test_implement_role_documents_the_blocked_report():
+    role = _role_text("eng_implement.md")
+    assert '"blocked": {"rule": "<rule or guardrail, quoted>", "needs": "<what would unblock it>"}' in role

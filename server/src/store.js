@@ -22,6 +22,7 @@ import { isPriority } from '../../domain/js/priorities.js'
 import { isPersona, personaLabel, personasFromRow } from './personas.js'
 import { priorityFromLabels } from './priorityLabels.js'
 import { getActiveProjectId, setSetting } from './settings.js'
+import { parseRuleBlock } from './ruleBlock.js'
 
 const listeners = new Set()
 
@@ -734,7 +735,34 @@ function dependencyFields(id) {
 // sync). kick() itself re-checks runnable() (which re-checks blockersOf), so
 // a dependent with a second still-open blocker safely no-ops here.
 function wakeDependents(id) {
-  for (const row of selectDependentIds.all(id)) agentRunner.kick(row.item_id)
+  for (const row of selectDependentIds.all(id)) {
+    releaseRuleBlockIfSatisfied(row.item_id)
+    agentRunner.kick(row.item_id)
+  }
+}
+
+// HZ-346: a rule-blocked item restarts once a dependency it gained after the
+// block, and every other blocker, has closed. A dependency that predates the
+// block is not why it is waiting, so it never releases it; nor does removing
+// one. Returns whether the block was cleared — the caller kicks.
+export function releaseRuleBlockIfSatisfied(id) {
+  const row = db.prepare('SELECT rule_block_json FROM work_item WHERE id = ?').get(id)
+  const block = parseRuleBlock(row?.rule_block_json)
+  if (!block?.blockedAt) return false
+  const blockers = blockersOf(id)
+  if (blockers.length === 0 || isBlocked(blockers)) return false
+  const added = db
+    .prepare('SELECT 1 FROM work_item_dependency WHERE item_id = ? AND created_at >= ? LIMIT 1')
+    .get(id, block.blockedAt)
+  if (!added) return false
+  db.prepare(`UPDATE work_item SET rule_block_json = NULL, ${touch} WHERE id = ?`).run(id)
+  addEvent(id, {
+    who: 'Horizon',
+    text: 'its dependencies are closed — the rule block is cleared and implement restarts',
+    color: '#5E4380',
+    initials: 'HZ',
+  })
+  return true
 }
 
 // Called from abandonItem: an abandoned blocker can never close, so its
@@ -792,7 +820,11 @@ export function addDependency(id, dependsOnId, actor = 'You') {
 
   db.prepare('INSERT INTO work_item_dependency (item_id, depends_on_id, created_by) VALUES (?, ?, ?)').run(id, dependsOnId, actor)
   addEvent(id, { who: actor, text: `added a dependency on ${dependsOnId} (${blocker.title})`, color: '#5E4380', initials: 'YOU' })
+  // HZ-346: a rule-blocked item that now depends only on closed items is
+  // released at once — the dependency it needed has already shipped.
+  const released = releaseRuleBlockIfSatisfied(id)
   notify()
+  if (released) agentRunner.kick(id)
   return { ok: true, ...dependencyFields(id) }
 }
 
@@ -1021,6 +1053,7 @@ function itemView(row, { stepOutputs: withStepOutputs = true } = {}) {
     reviewRejected: reviewRejected(row),
     forwardedReview: forwardedReview(row),
     ...dependencyFields(row.id),
+    ruleBlock: parseRuleBlock(row.rule_block_json),
   }
 }
 
@@ -1183,7 +1216,10 @@ export function requestChanges(id, target, feedbackText, actor = 'You', targetSt
   // A human-directed rework gets a fresh set of automated review cycles —
   // otherwise a prior automated cap-out could falsely cap this new attempt.
   const resetReview = reworkIdx <= IMPLEMENT_STEP_INDEX ? RESET_REVIEW_STATE : ''
-  db.prepare(`UPDATE work_item SET cursor = ?, rejected = 0, paused = 0${resetReview}, ${touch} WHERE id = ?`).run(reworkIdx, id)
+  // HZ-346: a human send-back is never held by a rule block.
+  db.prepare(
+    `UPDATE work_item SET cursor = ?, rejected = 0, paused = 0, rule_block_json = NULL${resetReview}, ${touch} WHERE id = ?`,
+  ).run(reworkIdx, id)
   addEvent(id, {
     who: actor,
     text: `requested changes on ${target || 'this step'}${feedbackText ? ': ' + feedbackText : ''} — sent back to the ${STEPS[reworkIdx].label.toLowerCase()} step`,
@@ -1202,7 +1238,10 @@ export function setPaused(id, paused) {
   if (isClosed(it)) return { error: 'closed' }
   if (isAbandoned(it)) return { error: 'abandoned' }
 
-  db.prepare(`UPDATE work_item SET paused = ?, ${touch} WHERE id = ?`).run(paused ? 1 : 0, id)
+  // HZ-346: Resume is the owner's retry for a rule-blocked item, so it clears
+  // the block; Pause leaves it.
+  const unblock = paused ? '' : 'rule_block_json = NULL, '
+  db.prepare(`UPDATE work_item SET paused = ?, ${unblock}${touch} WHERE id = ?`).run(paused ? 1 : 0, id)
   addEvent(id, {
     who: 'You',
     text: paused ? 'paused agent work on this item' : 'resumed work',
@@ -1291,7 +1330,10 @@ export function restartPhase(id, phase, reason, actor = 'You') {
     )
   }
   const resetReview = firstIdx <= IMPLEMENT_STEP_INDEX ? RESET_REVIEW_STATE : ''
-  db.prepare(`UPDATE work_item SET cursor = ?, rejected = 0, paused = 0${resetReview}, ${touch} WHERE id = ?`).run(firstIdx, id)
+  // HZ-346: a restart moves the cursor, so a rule block must not hold it.
+  db.prepare(
+    `UPDATE work_item SET cursor = ?, rejected = 0, paused = 0, rule_block_json = NULL${resetReview}, ${touch} WHERE id = ?`,
+  ).run(firstIdx, id)
   addEvent(id, {
     who: actor,
     text: `restarted the ${PHASES[phase]} phase${reason ? ': ' + reason : ''}`,

@@ -425,7 +425,10 @@ db.exec(`
 // with the gate PIN) — which review run the gate shows, who forwarded it, and
 // the commit that review read. NULL = not forwarded, so existing rows render
 // the gate exactly as before.
-for (const column of ['pr INTEGER', 'pr_url TEXT', 'pr_mergeable INTEGER', 'release_tag TEXT', 'release_url TEXT', 'repo TEXT', 'project_id INTEGER', 'persona TEXT', 'personas_json TEXT', 'review_cycle_count INTEGER NOT NULL DEFAULT 0', 'abandoned_at TEXT', 'abandoned_reason TEXT', 'abandoned_by TEXT', 'notified_step INTEGER', 'last_reviewed_sha TEXT', 'fix_pass INTEGER NOT NULL DEFAULT 0', 'fix_findings_json TEXT', 'forwarded_review_run_id INTEGER', 'forwarded_by TEXT', 'forwarded_sha TEXT']) {
+// rule_block_json (HZ-346): {rule, needs, runId, blockedAt} while an implement
+// run that stopped on a rule holds the item. blockedAt is SQLite datetime()
+// text, compared against work_item_dependency.created_at. NULL = not blocked.
+for (const column of ['pr INTEGER', 'pr_url TEXT', 'pr_mergeable INTEGER', 'release_tag TEXT', 'release_url TEXT', 'repo TEXT', 'project_id INTEGER', 'persona TEXT', 'personas_json TEXT', 'review_cycle_count INTEGER NOT NULL DEFAULT 0', 'abandoned_at TEXT', 'abandoned_reason TEXT', 'abandoned_by TEXT', 'notified_step INTEGER', 'last_reviewed_sha TEXT', 'fix_pass INTEGER NOT NULL DEFAULT 0', 'fix_findings_json TEXT', 'forwarded_review_run_id INTEGER', 'forwarded_by TEXT', 'forwarded_sha TEXT', 'rule_block_json TEXT']) {
   try {
     db.exec(`ALTER TABLE work_item ADD COLUMN ${column}`)
   } catch {
@@ -493,6 +496,14 @@ try {
   // It is `cancelled` like any other stop, so the status CHECK is untouched;
   // the next dispatch of its step reuses its attempt and auto_retry_count.
   db.exec('ALTER TABLE step_run ADD COLUMN deploy_interrupted INTEGER NOT NULL DEFAULT 0')
+} catch {
+  // column already exists
+}
+try {
+  // HZ-346: an implement run that stopped on a rule with no code changes
+  // (orchestrator.blockFarmRun). `cancelled` like a deploy stop, so the status
+  // CHECK is untouched; the next dispatch reuses its attempt and auto-retry count.
+  db.exec('ALTER TABLE step_run ADD COLUMN rule_blocked INTEGER NOT NULL DEFAULT 0')
 } catch {
   // column already exists
 }

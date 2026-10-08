@@ -680,6 +680,28 @@ def test_steps_result_forwards_a_reason_on_failure(monkeypatch):
     assert captured["json"] == {"error": "ran out of turns", "reason": "turn_cap"}
 
 
+def test_steps_result_forwards_a_blocked_report_to_the_blocked_route(monkeypatch):
+    """HZ-346: an implement run stopped by a rule goes to /blocked with its
+    rule and needs — never /complete or /fail."""
+    captured = {}
+
+    class FakeResponse:
+        status_code = 200
+
+    def fake_post(url, json=None, headers=None, timeout=None):
+        captured["url"], captured["json"] = url, json
+        return FakeResponse()
+
+    monkeypatch.setattr(farmd.httpx, "post", fake_post)
+    res = client.post(
+        "/internal/steps/result",
+        json={"run_id": 58, "ok": True, "blocked": {"rule": "guardrail 6", "needs": "a ledger-models release"}},
+    )
+    assert res.status_code == 200
+    assert captured["url"].endswith("/api/farm/steps/58/blocked")
+    assert captured["json"] == {"rule": "guardrail 6", "needs": "a ledger-models release"}
+
+
 def test_steps_result_omits_reason_when_the_agent_did_not_report_one(monkeypatch):
     """A checks-failed (or any other unclassified) failure must not carry a
     reason field at all — that's what keeps the server pausing for a human

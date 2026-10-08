@@ -181,3 +181,23 @@ test('a blocked item shows no elapsed label; paused or unblocked rules are uncha
   expect(stateLabel({ ...item, blocked: false })).toBe('Implementing')
   expect(stateLabel({ ...item, cursor: gateStepIndexes()[0] })).toBeNull()
 })
+
+// HZ-346: an implement run stopped on a rule reads Blocked by a rule, above a
+// dependency's Blocked, with no elapsed line. Paused and the terminal states win.
+
+import { isRuleBlocked } from './status'
+
+const RULE_BLOCK = { rule: 'guardrail 6', needs: 'a ledger-models release', runId: 1, blockedAt: '2026-10-08 14:02:11' }
+
+test('a rule-blocked item reads Blocked by a rule, above dependency Blocked, below Paused and the terminal states', () => {
+  const ruleBlocked = { ...base, cursor: 11, ruleBlock: RULE_BLOCK, activeRun: null, state_since: null }
+  expect(isRuleBlocked(ruleBlocked)).toBe(true)
+  expect(itemStatus(ruleBlocked).label).toBe('Blocked by a rule')
+  expect(itemStatus(ruleBlocked, true).label).toBe('Blocked by a rule')
+  expect(itemStatus({ ...ruleBlocked, ...blockedItem, ruleBlock: RULE_BLOCK, cursor: 11 }).label).toBe('Blocked by a rule')
+  expect(itemStatus({ ...ruleBlocked, paused: true }).label).toBe('Paused')
+  expect(itemStatus({ ...ruleBlocked, rejected: true }).label).toBe('Changes requested')
+  expect(itemStatus({ ...ruleBlocked, abandoned_at: '2026-01-01 00:00:00' }).label).toBe('Abandoned')
+  expect(itemStatus({ ...ruleBlocked, ruleBlock: null }).label).toBe('Eng agent')
+  expect(stateLabel({ ...ruleBlocked, state_since: '2026-10-08T14:02:11Z' })).toBeNull()
+})

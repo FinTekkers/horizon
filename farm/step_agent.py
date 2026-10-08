@@ -73,6 +73,11 @@ MAX_PROMPT_ARTIFACT_CHARS = 100_000
 # stamp_notes() reserves room inside exactly this budget, so a cap raised in
 # one place and not the other would silently truncate the notes back off.
 SUMMARY_MAX_CHARS = 600
+# HZ-346: the caps on a blocked report's two fields. server/src/ruleBlock.js
+# holds the same numbers for the /blocked route, so a capped report is never
+# refused there.
+RULE_MAX_CHARS = 300
+NEEDS_MAX_CHARS = 600
 
 # step label -> (role file, needs JSON artifact, tool access, persona agent).
 # HZ-117: keyed by label (the table's own primary key, see domain/steps.json),
@@ -752,14 +757,46 @@ def finalize_branch(
     merging = git(ws, "rev-parse", "-q", "--verify", "MERGE_HEAD", check=False)
     if staged.returncode != 0 or merging.returncode == 0:
         git(ws, "commit", "-m", f"{item['id']}: {item['title']} (Horizon Eng agent)")
-    head = git(ws, "symbolic-ref", "refs/remotes/origin/HEAD", check=False).stdout.strip()
-    default = head.rsplit("/", 1)[-1] if head else "main"
-    ahead = git(ws, "rev-list", "--count", f"origin/{default}..HEAD", check=False).stdout.strip()
-    if ahead == "0":
+    if _no_code_changes(ws):
         raise RuntimeError("the agent made no code changes — nothing to push")
     _push_with_lease(ws, item, branch, lease_sha)
-    stat = git(ws, "diff", "--stat", f"origin/{default}...HEAD", check=False).stdout.strip().splitlines()
+    stat = git(ws, "diff", "--stat", f"origin/{_default_branch(ws)}...HEAD", check=False).stdout.strip().splitlines()
     return {"branch": branch, "files_changed": stat[-1] if stat else ""}
+
+
+def _default_branch(ws: Path) -> str:
+    head = git(ws, "symbolic-ref", "refs/remotes/origin/HEAD", check=False).stdout.strip()
+    return head.rsplit("/", 1)[-1] if head else "main"
+
+
+def _no_code_changes(ws: Path) -> bool:
+    """HZ-346: the one "nothing to push" test. finalize_branch() raises on it
+    after committing; the implement step reads it before checks to decide
+    whether a blocked report may stand. Anything on disk, a merge in progress
+    or a commit ahead of the default branch (a WIP checkpoint included) is a
+    change, so such a run always takes the normal checks-and-review path."""
+    if git(ws, "status", "--porcelain", check=False).stdout.strip():
+        return False
+    if git(ws, "rev-parse", "-q", "--verify", "MERGE_HEAD", check=False).returncode == 0:
+        return False
+    ahead = git(ws, "rev-list", "--count", f"origin/{_default_branch(ws)}..HEAD", check=False).stdout.strip()
+    return ahead == "0"
+
+
+def _blocked_report(parsed) -> dict | None:
+    """HZ-346: the implement role's `{"blocked": {"rule", "needs"}}` reply,
+    stripped and capped, or None when either field is missing or blank —
+    such a reply is treated as no report at all."""
+    block = parsed.get("blocked") if isinstance(parsed, dict) else None
+    if not isinstance(block, dict):
+        return None
+    rule, needs = block.get("rule"), block.get("needs")
+    if not isinstance(rule, str) or not isinstance(needs, str):
+        return None
+    rule, needs = rule.strip()[:RULE_MAX_CHARS].strip(), needs.strip()[:NEEDS_MAX_CHARS].strip()
+    if not rule or not needs:
+        return None
+    return {"rule": rule, "needs": needs}
 
 
 # ---- checkpoint salvage on turn/time exhaustion (HZ-31) ----
@@ -1560,8 +1597,10 @@ def _execute(task: dict, guard: HandoffGuard) -> dict:
         # below is what a malformed final message costs, and that is cheaper
         # than a second full implement run.
         notes: list[str] = []
+        blocked = None
         try:
             parsed, notes = parse_agent_reply(reply["result"])
+            blocked = _blocked_report(parsed)
             summary = str(parsed.get("summary", "")).strip()[:SUMMARY_MAX_CHARS]
             if not summary:
                 # Parsed, but carried nothing usable. Without a note the run
@@ -1573,6 +1612,13 @@ def _execute(task: dict, guard: HandoffGuard) -> dict:
                 notes = [*notes, "agent's final message carried no 'summary' — see session log"]
         except Exception:
             summary = "implementation finished (agent's final message was not valid JSON — see session log)"
+        # HZ-346: the agent stopped on a rule and changed nothing. Nothing is
+        # committed, pushed or reviewed, so no check is skipped by returning
+        # before them; the server records the run as blocked, not failed. Any
+        # change at all ignores the report and takes the normal path below.
+        if blocked is not None and _no_code_changes(ws):
+            log(f"blocked by a rule with no code changes: {blocked['rule'][:120]}")
+            return {"blocked": blocked}
         # Guardrail enforcement: the repo's own tests/linters run here, by the
         # script, before anything is committed or pushed. A failure fails the
         # run (Node pauses the item with the reason) — no green, no push.

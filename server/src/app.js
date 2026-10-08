@@ -49,6 +49,7 @@ import * as runLogView from './runLogView.js'
 import * as split from './split.js'
 import * as checkFlakes from './checkFlakes.js'
 import * as testResults from './testResults.js'
+import { RULE_MAX_CHARS, NEEDS_MAX_CHARS } from './ruleBlock.js'
 import {
   API_SECURITY,
   ERROR_OBJECT,
@@ -2916,6 +2917,31 @@ export function buildApp({ logger = true, onRoute = null } = {}) {
       if (!farmAuthorized(request, reply)) return
       checkFlakes.recordRunFlakes(request.params.runId, request.body.flakes, { log: request.log })
       return orchestrator.failFarmRun(request.params.runId, request.body.error, request.body.reason || null)
+    },
+  )
+
+  // HZ-346: an implement run that stopped on a rule with no code changes.
+  // The caps are the farm's own, so a capped report is never refused.
+  fastify.post(
+    '/api/farm/steps/:runId/blocked',
+    {
+      schema: {
+        params: { type: 'object', required: ['runId'], properties: { runId: { type: 'integer' } } },
+        body: {
+          type: 'object',
+          required: ['rule', 'needs'],
+          properties: {
+            rule: { type: 'string', minLength: 1, maxLength: RULE_MAX_CHARS },
+            needs: { type: 'string', minLength: 1, maxLength: NEEDS_MAX_CHARS },
+            flakes: FLAKES_BODY,
+          },
+        },
+      },
+    },
+    (request, reply) => {
+      if (!farmAuthorized(request, reply)) return
+      checkFlakes.recordRunFlakes(request.params.runId, request.body.flakes, { log: request.log })
+      return orchestrator.blockFarmRun(request.params.runId, request.body)
     },
   )
 
