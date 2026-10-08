@@ -240,6 +240,25 @@ def item_personas(item: dict) -> dict:
     return {"eng": legacy} if isinstance(legacy, str) and legacy.strip() else {}
 
 
+STEP_PROVIDER_CHOICES = ("claude", "muse")
+
+
+def step_provider_choice(item: dict, step_index) -> str | None:
+    """The owner's per-step provider choice for this item (HZ-357), or None.
+
+    The server sends `providerChoices` as {"<step index>": "claude" | "muse"},
+    copied into the task at dispatch, so a choice changed while this step runs
+    reaches only the next dispatch. Anything else — no map (an older server),
+    no key (Default), an unknown value — is None, i.e. today's routing. The
+    caller still gates this on steps.provider_override_eligible().
+    """
+    choices = item.get("providerChoices")
+    if not isinstance(choices, dict) or step_index is None:
+        return None
+    choice = choices.get(str(step_index))
+    return choice if choice in STEP_PROVIDER_CHOICES else None
+
+
 def _persona_line(task: dict) -> str:
     """The prompt's persona line: the persona this step will actually compose,
     named with its agent, or an explicit "generalist" for the steps that
@@ -1688,8 +1707,14 @@ def _execute(task: dict, guard: HandoffGuard) -> dict:
     personas = item_personas(item)
     if persona_agent:
         role = compose_role(role, persona_agent, personas.get(persona_agent))
+    # HZ-357: the owner's per-step choice wins over the persona map, which wins
+    # over FARM_PROVIDER (run_agent's default). Neither applies to a step that
+    # isn't provider_override_eligible, so implement and deploy stay locked.
+    override_eligible = steps.provider_override_eligible(steps.STEPS, label)
     provider_override = (
-        provider_for(personas) if steps.provider_override_eligible(steps.STEPS, label) else None
+        (step_provider_choice(item, task["step"].get("index")) or provider_for(personas))
+        if override_eligible
+        else None
     )
     # HZ-192: who this step's run_agent() calls are; run_agent() resolves the
     # model from these, so it is never chosen here. The agent comes from the
@@ -2126,12 +2151,10 @@ def _execute(task: dict, guard: HandoffGuard) -> dict:
     if feedback:
         summary = f"addressed feedback (“{feedback[0].get('message', '')[:80]}”) — {summary}"[:SUMMARY_MAX_CHARS]
 
-    # HZ-102: when a persona forced a non-default provider for this step
-    # (PERSONA_PROVIDERS ships empty — HZ-121 — so today this only happens
-    # via a test-registered fixture persona), stamp what actually ran into
-    # the run log — visible to a human without inspecting config — and into
-    # the artifact sent to the server, which persists it on
-    # step_run.provider/command_id (server/src/orchestrator.js).
+    # HZ-102: when an override (the owner's per-step choice, HZ-357, or a
+    # persona's provider) picked the provider for this step, stamp what
+    # actually ran into the run log and summary — visible to a human without
+    # inspecting config. An explicit Claude choice is an override too.
     if provider_override:
         note = f"provider={reply_provenance.get('provider')} command_id={reply_provenance.get('command_id')}"
         log(f"HZ-102 provenance: {note}")
@@ -2148,7 +2171,11 @@ def _execute(task: dict, guard: HandoffGuard) -> dict:
                 artifact[:WRITE_ARTIFACT_SANITY_CEILING_CHARS], notes, WRITE_ARTIFACT_SANITY_CEILING_CHARS
             )
         }
-    if provider_override:
+    # HZ-357: every run of an eligible step sends what ran, Default included,
+    # so the server persists it on step_run.provider/command_id
+    # (server/src/orchestrator.js) and the item page can show "Ran on …". Only
+    # when the reply named a provider, so a reply without one adds no keys.
+    if override_eligible and reply_provenance.get("provider"):
         artifacts = result.setdefault("artifacts", {})
         artifacts["provider"] = reply_provenance.get("provider")
         artifacts["command_id"] = reply_provenance.get("command_id")

@@ -707,6 +707,78 @@ def test_muse_smoke_test_persona_never_forces_a_provider_on_implement(tmp_path, 
     assert captured.get("provider") is None
 
 
+# ---- the owner's per-step provider choice (HZ-357) ----
+# The server copies item.providerChoices ({"<step index>": "claude" | "muse"})
+# into the task at dispatch. One test per value: what reaches
+# run_agent(provider=...) and what the result records as the provider that ran.
+
+
+def _provider_reply(captured, ran_on):
+    """A run_agent fake that records its kwargs and replies as `ran_on` did."""
+
+    def _fake(prompt, **kwargs):
+        captured.update(kwargs, prompt=prompt)
+        return {
+            "result": '{"summary": "did the step", "artifact_md": "# out"}',
+            "provider": ran_on,
+            "command_id": f"{ran_on}-cmd-1",
+        }
+
+    return _fake
+
+
+def test_with_no_step_choice_routing_is_default_and_the_provider_that_ran_is_recorded(monkeypatch):
+    captured = {}
+    monkeypatch.setattr(step_agent, "run_agent", _provider_reply(captured, "claude"))
+
+    result = execute(make_task(7, "Architecture review"))
+
+    assert captured["provider"] is None
+    assert result["artifacts"]["provider"] == "claude"
+    assert result["artifacts"]["command_id"] == "claude-cmd-1"
+    assert "[provider=" not in result["summary"]
+
+
+@pytest.mark.parametrize("choice", ["claude", "muse"])
+def test_a_step_choice_reaches_run_agent_and_is_recorded(monkeypatch, choice):
+    captured = {}
+    monkeypatch.setattr(step_agent, "run_agent", _provider_reply(captured, choice))
+    task = make_task(7, "Architecture review")
+    task["item"]["providerChoices"] = {"7": choice}
+
+    result = execute(task)
+
+    assert captured["provider"] == choice
+    assert result["artifacts"]["provider"] == choice
+    assert f"[provider={choice} command_id={choice}-cmd-1]" in result["summary"]
+
+
+def test_a_choice_for_another_step_does_not_apply(monkeypatch):
+    captured = {}
+    monkeypatch.setattr(step_agent, "run_agent", _provider_reply(captured, "claude"))
+    task = make_task(7, "Architecture review")
+    task["item"]["providerChoices"] = {"6": "muse"}
+
+    execute(task)
+
+    assert captured["provider"] is None
+
+
+def test_a_step_choice_never_widens_eligibility_to_implement(tmp_path, monkeypatch):
+    """Guardrail: a stored muse choice keyed to implement (11) is ignored there,
+    and implement still runs provider-locked."""
+    ws, _origin = make_git_workspace(tmp_path)
+    monkeypatch.setattr(step_agent, "ensure_item_worktree", lambda repo, item_id: ws)
+    captured = {}
+    monkeypatch.setattr(step_agent, "run_agent", capture_run_agent(captured))
+    task = make_task(11, "Specialist agent implements", repo="acme/demo", checks_waiver=NO_CHECKS)
+    task["item"]["providerChoices"] = {"11": "muse"}
+    with pytest.raises(RuntimeError, match="no code changes"):
+        execute(task)
+    assert captured.get("provider") is None
+    assert captured.get("provider_locked") is True
+
+
 # ---- provider lock (HZ-117): closes the bare-FARM_PROVIDER hole ----
 # Before HZ-117, the provider guardrail only ever ran on the persona-forced
 # override path (the old PROVIDER_OVERRIDE_ELIGIBLE_STEPS allowlist above) —
@@ -2194,13 +2266,20 @@ def test_a_note_survives_a_max_length_summary_and_artifact(monkeypatch, injected
 
 def test_with_no_notes_the_result_is_byte_identical(monkeypatch):
     """The 'behaviour otherwise unchanged' proof: _notes_for returns [] in this
-    item, so the whole result dict is what it was before the channel existed."""
+    item, so the whole result dict is what it was before the channel existed.
+
+    HZ-357: step 4 is provider-override eligible, so a Default run now also
+    sends the provider that ran — but only when the reply names one. This stub
+    reply names none, so the expected dict is still exactly the one below: no
+    `provider`/`command_id` keys and no `[provider=…]` summary tag."""
     reply = json.dumps({"summary": "did the step", "artifact_md": "# out"})
     monkeypatch.setattr(step_agent, "run_agent", lambda prompt, **kw: {"result": reply})
 
     result = execute(make_task(4, "Plan options & trade-offs (pros / cons)"))
 
     assert result == {"summary": "did the step", "artifacts": {"artifact_md": "# out"}}
+    assert "provider" not in result["artifacts"]
+    assert "[provider=" not in result["summary"]
 
 
 # ---- HZ-156: a stray leading object must still take the lossless retry ----

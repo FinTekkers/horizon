@@ -33,6 +33,7 @@ vi.mock('./api', () => ({
   togglePause: vi.fn(),
   restartPhase: vi.fn(),
   setPersona: vi.fn(),
+  setStepProvider: vi.fn(),
   logout: vi.fn(),
   issueUrl: () => 'https://example.test/issue',
   issueLabel: (item) => `#${item.issue}`,

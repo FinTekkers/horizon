@@ -555,6 +555,7 @@ test('stepOutputs carry the step label for non-UI clients', () => {
   const gate = store.listItems().find((it) => it.id === 'T-GATE')
   assert.deepEqual(gate.stepOutputs['8'], {
     output: 'verdict: pass', attempt: 1, artifact: '# QA review', attemptCount: 1, label: 'QA reviews the test plan',
+    provider: null, // HZ-357: no provider recorded for this run
   })
 })
 

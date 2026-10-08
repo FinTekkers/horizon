@@ -105,7 +105,78 @@ function ForwardedReview({ forwarded }) {
   )
 }
 
-function Step({ item, stepOutputs, outputsSettled, index, deployBlock, viewerName, onApprove, onApproveWithComments, onReject, onResolveConflicts, resolving, gateBusy, onForwardToAccept, onSetPersona }) {
+// HZ-357: which provider runs one agent step of this item. Eligibility is
+// domain/steps.json's providerOverrideEligible, never a list kept here. The
+// choice is saved per item and step and read at the step's next dispatch, so
+// a step that is running (or queued on the farm) shows its provider read-only.
+const PROVIDER_OPTIONS = [
+  { value: 'default', label: 'Default (Claude)' },
+  { value: 'claude', label: 'Claude' },
+  { value: 'muse', label: 'Muse' },
+]
+const PROVIDER_LABELS = { claude: 'Claude', muse: 'Muse' }
+
+const PROVIDER_ERRORS = {
+  provider_not_eligible: 'This step always runs on Claude.',
+  closed: 'This item is closed.',
+  abandoned: 'This item was abandoned.',
+  project_not_active: "This item's project is disabled.",
+}
+
+function StepProviderPicker({ item, index, status, output, onSetStepProvider }) {
+  const saved = item.providerChoices?.[index] ?? 'default'
+  // The value being saved, shown until the item's stream carries it back (or
+  // the save fails), so the select doesn't flick back to the old value.
+  const [pending, setPending] = useState(null)
+  const [error, setError] = useState(null)
+  useEffect(() => {
+    if (pending === saved) setPending(null)
+  }, [pending, saved])
+
+  if (STEPS[index].kind !== 'agent') return null
+  if (!STEPS[index].providerOverrideEligible) return <div className="step-card__provider">Claude only</div>
+  if (status === 'done') {
+    const ran = PROVIDER_LABELS[output?.provider] ?? output?.provider
+    return ran ? <div className="step-card__provider">Ran on {ran}</div> : null
+  }
+  if (item.activeRun?.step_index === index) {
+    return <div className="step-card__provider">Runs on {PROVIDER_LABELS[saved] ?? 'Claude'}</div>
+  }
+  if (isAbandoned(item) || !onSetStepProvider) return null
+
+  const value = pending ?? saved
+  const id = `provider-${index}-${item.id}`
+  const choose = (provider) => {
+    setPending(provider)
+    setError(null)
+    new Promise((resolve) => resolve(onSetStepProvider(item.id, index, provider))).catch((err) => {
+      setPending(null)
+      setError(PROVIDER_ERRORS[err?.message] || 'The choice was not saved — try again.')
+    })
+  }
+  return (
+    <div className="step-card__provider">
+      <label className="step-card__provider-label" htmlFor={id}>
+        Runs on
+      </label>
+      <select
+        id={id}
+        className={`step-card__provider-select${value !== 'default' ? ' step-card__provider-select--override' : ''}`}
+        value={value}
+        onChange={(e) => choose(e.target.value)}
+      >
+        {PROVIDER_OPTIONS.map((o) => (
+          <option key={o.value} value={o.value}>
+            {o.label}
+          </option>
+        ))}
+      </select>
+      {error && <span role="alert">{error}</span>}
+    </div>
+  )
+}
+
+function Step({ item, stepOutputs, outputsSettled, index, deployBlock, viewerName, onApprove, onApproveWithComments, onReject, onResolveConflicts, resolving, gateBusy, onForwardToAccept, onSetPersona, onSetStepProvider }) {
   const st = STEPS[index]
   const status = stepStatus(item, index)
   const isGate = st.kind === 'gate'
@@ -192,6 +263,13 @@ function Step({ item, stepOutputs, outputsSettled, index, deployBlock, viewerNam
                 : 'View full artifact ↗'}
             </a>
           )}
+          <StepProviderPicker
+            item={item}
+            index={index}
+            status={status}
+            output={output}
+            onSetStepProvider={onSetStepProvider}
+          />
           {/* One control per persona agent (HZ-125): personas are agent-scoped,
               so the human confirms the Eng specialization the PM proposed and
               can set the QA, Architect and PM ones in the same place. */}
@@ -429,7 +507,7 @@ function useStepOutputs(item) {
   return { stepOutputs: mine ? loaded.stepOutputs : null, settled: mine }
 }
 
-export default function Tracker({ item, projects, deployBlock = null, viewerName = null, onBack, onApprove, onApproveWithComments, onReject, onResolveConflicts, resolving, gateBusy, onForwardToAccept, onTogglePause, onRestartPhase, onSetPersona, onAbandon, onRemoveDependency }) {
+export default function Tracker({ item, projects, deployBlock = null, viewerName = null, onBack, onApprove, onApproveWithComments, onReject, onResolveConflicts, resolving, gateBusy, onForwardToAccept, onTogglePause, onRestartPhase, onSetPersona, onSetStepProvider, onAbandon, onRemoveDependency }) {
   const status = itemStatus(item, true, { deployBlock })
   const activity = buildActivity(item)
   const closed = isClosed(item)
@@ -573,6 +651,7 @@ export default function Tracker({ item, projects, deployBlock = null, viewerName
                     gateBusy={gateBusy}
                     onForwardToAccept={onForwardToAccept}
                     onSetPersona={onSetPersona}
+                    onSetStepProvider={onSetStepProvider}
                   />
                 ))}
               </div>

@@ -48,6 +48,7 @@ export const {
   togglePause,
   restartPhase,
   setPersona,
+  setStepProvider,
   removeDependency,
   abandonItem,
   listDefinitions,

@@ -387,6 +387,26 @@ export function setPersona(id, agent, persona) {
   })
 }
 
+// Mirrors store.setStepProvider: only a step domain/steps.json marks
+// providerOverrideEligible takes a choice; 'default' clears it.
+export async function setStepProvider(id, stepIndex, provider) {
+  const it = items.find((x) => x.id === id)
+  if (!it) throw new Error('not_found')
+  if (STEPS[stepIndex]?.kind !== 'agent' || !STEPS[stepIndex].providerOverrideEligible) {
+    throw new Error('provider_not_eligible')
+  }
+  const on = { default: 'the default provider', claude: 'Claude', muse: 'Muse' }
+  if (!Object.hasOwn(on, provider)) throw new Error('bad_provider')
+  update(id, (x) => {
+    const providerChoices = { ...x.providerChoices }
+    if (provider === 'default') delete providerChoices[stepIndex]
+    else providerChoices[stepIndex] = provider
+    return { ...x, providerChoices }
+  })
+  pushEvent(id, { who: 'You', text: `set ${STEPS[stepIndex].label} to run on ${on[provider]}`, color: '#5E4380', initials: 'YOU' })
+  return { ok: true }
+}
+
 // ---- agent definitions (HZ-9) ----
 // Demo mode shows the hierarchy read-only; edits need the server (each save
 // is a git commit there).

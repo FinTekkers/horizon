@@ -805,6 +805,21 @@ button { font-family: var(--font-sans); }
   font: 500 12.5px var(--font-sans); color: var(--deep); background: var(--surface);
 }
 
+/* HZ-357: "Runs on" — which provider runs this agent step. */
+.step-card__provider {
+  display: flex; align-items: center; flex-wrap: wrap; gap: 10px; margin-top: 10px;
+  font: 500 12px var(--font-sans); color: var(--muted);
+}
+.step-card__provider-label { font: 700 11px var(--font-sans); color: var(--muted); text-transform: uppercase; letter-spacing: 0.4px; }
+.step-card__provider-select {
+  border: 1px solid var(--border); border-radius: 9px; padding: 7px 10px;
+  font: 500 12.5px var(--font-sans); color: var(--deep); background: var(--surface);
+}
+.step-card__provider-select--override {
+  border-color: var(--warning-ink); color: var(--warning-ink); background: var(--warning-bg); font-weight: 700;
+}
+.step-card__provider [role='alert'] { color: var(--danger-ink); }
+
 .btn-pr-review {
   display: inline-flex; align-items: center; gap: 6px;
   border-radius: 9px; padding: 9px 14px; text-decoration: none;
