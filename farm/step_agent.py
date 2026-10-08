@@ -1535,6 +1535,31 @@ def wait_for_release(
         sleep(min(poll_s, remaining))
 
 
+def _deploy_ok_line(tag: str) -> re.Pattern:
+    """The deploy script's DEPLOY OK line for exactly `tag`: a neighbour such
+    as `<tag>0` never matches. The tag ends at a space or the line's end."""
+    return re.compile(r"DEPLOY OK tag=(?:refs/tags/)?" + re.escape(tag) + r"(?: |$)")
+
+
+def _deploy_log_lines(tag: str, state_dir: str) -> list[str]:
+    """The end of self-deploy.log as lines; empty when unreadable or unnamed."""
+    read = _read_log_end(Path(state_dir) / "self-deploy.log") if tag and state_dir else None
+    return read[0].decode("utf-8", "replace").splitlines() if read is not None else []
+
+
+def _verified_deploy_result(release: str, done: str, summary_tail: str, how: str) -> dict:
+    """The pass result for a target whose deploy script is its own health
+    check: no page or port to load, so the verdict is the script's DEPLOY OK."""
+    smoke_line = f"SMOKE_RESULT=pass: {release} {done}; {how}"
+    return {
+        "summary": f"{release} {done}{summary_tail}"[:SUMMARY_MAX_CHARS],
+        "artifacts": {
+            "artifact_md": f"## Verdict\n**pass** — {release} {done}.\n\n## Machine-checked result\n`{smoke_line}`",
+            "verdict": {"verdict": "pass"},
+        },
+    }
+
+
 def registry_publish_result(tag: str, state_dir: str) -> dict:
     """The Deploy step's result for a library (health check type
     registry-publish). Its deploy script records DEPLOY OK only after the
@@ -1542,21 +1567,39 @@ def registry_publish_result(tag: str, state_dir: str) -> dict:
     has already seen that, so there is no page or port to check: the verdict is
     a pass naming the version from the script's DEPLOY OK line."""
     version = None
-    read = _read_log_end(Path(state_dir) / "self-deploy.log") if tag and state_dir else None
-    if read is not None:
-        ok_line = re.compile(r"DEPLOY OK tag=(?:refs/tags/)?" + re.escape(tag) + r" .*version=(\S+)")
-        for line in read[0].decode("utf-8", "replace").splitlines():
-            match = ok_line.search(line)
-            if match:
-                version = match.group(1)
+    ok_line = _deploy_ok_line(tag)
+    for line in _deploy_log_lines(tag, state_dir):
+        match = ok_line.search(line)
+        if match:
+            found = re.search(r"version=(\S+)", line[match.end() :])
+            if found:
+                version = found.group(1)
     release = f"release {tag}" if tag else "the release"
     published = f"published {version}" if version else "published"
-    smoke_line = f"SMOKE_RESULT=pass: {release} {published}; the deploy script verified the registry workflows"
+    return _verified_deploy_result(
+        release, published, " to the package registries", "the deploy script verified the registry workflows"
+    )
+
+
+def deploy_log_result(tag: str, state_dir: str) -> dict:
+    """HZ-353: the Deploy step's result for a code-only target (health check
+    type deploy-log, e.g. market-data-inputs). Its deploy script checks out the
+    tag, installs and runs the repo's offline tests, and only then records
+    DEPLOY OK for the tag; nothing restarts. Pass only on that line: without
+    it the verdict is a fail with the log tail."""
+    release = f"release {tag}" if tag else "the release"
+    ok_line = _deploy_ok_line(tag)
+    if tag and any(ok_line.search(line) for line in _deploy_log_lines(tag, state_dir)):
+        return _verified_deploy_result(
+            release, "deployed (code only)", "", "the deploy script installed it and its offline tests passed"
+        )
+    tail = deploy_log_tail(state_dir) if state_dir else "--- self-deploy.log: no state dir ---"
+    smoke_line = f"SMOKE_RESULT=fail: no DEPLOY OK for {release} in the deploy log"
     return {
-        "summary": f"{release} {published} to the package registries"[:SUMMARY_MAX_CHARS],
+        "summary": f"{release} not deployed: no DEPLOY OK for it in the deploy log"[:SUMMARY_MAX_CHARS],
         "artifacts": {
-            "artifact_md": f"## Verdict\n**pass** — {release} {published}.\n\n## Machine-checked result\n`{smoke_line}`",
-            "verdict": {"verdict": "pass"},
+            "artifact_md": f"## Verdict\n**fail** — no DEPLOY OK for {release}.\n\n## Machine-checked result\n`{smoke_line}`\n\n```\n{tail}\n```",
+            "verdict": {"verdict": "fail"},
         },
     }
 
@@ -1998,6 +2041,8 @@ def _execute(task: dict, guard: HandoffGuard) -> dict:
         wait = task.get("deploy_wait") if isinstance(task.get("deploy_wait"), dict) else {}
         if wait.get("health_check_type") == "registry-publish":
             return registry_publish_result(item.get("release_tag") or "", str(wait.get("state_dir") or ""))
+        if wait.get("health_check_type") == "deploy-log":
+            return deploy_log_result(item.get("release_tag") or "", str(wait.get("state_dir") or ""))
         grpc_url = wait.get("health_url") if wait.get("health_check_type") == "grpc-health" else None
 
         prompt = (

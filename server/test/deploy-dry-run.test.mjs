@@ -417,3 +417,30 @@ test('checkRunnable keeps its sudoers wording, shared with the Dry run', () => {
   })
   assert.equal(deployTargets.serviceNotAllowedReason('not-allowed'), 'service not-allowed not in horizon-deploy.sudoers')
 })
+
+// ---- HZ-353: no-service targets ----
+
+const resultOf = (results, check) => results.find((r) => r.check === check)
+
+test('registry-publish keeps its Dry run: the health URL is fetched and the service reason is unchanged', async () => {
+  const library = { ...target, service: '', extraServices: undefined, healthCheckType: 'registry-publish' }
+  const results = await dryRun.runDryRun(library)
+  assert.deepEqual(resultOf(results, 'service'), { check: 'service', pass: true, reason: 'no service: this target publishes to package registries' })
+  assert.deepEqual(resultOf(results, 'health'), { check: 'health', pass: true, reason: 'health responded 200' })
+  assert.equal(health.hits, 1)
+
+  health.mode = '500'
+  assert.deepEqual(resultOf(await dryRun.runDryRun(library), 'health'), { check: 'health', pass: false, reason: 'health returned 500' })
+})
+
+test('deploy-log: the Dry run restarts nothing and never fetches the health URL', async () => {
+  const codeOnly = { ...target, service: '', extraServices: undefined, healthCheckType: 'deploy-log' }
+  const fetchImpl = () => assert.fail('a deploy-log target must not fetch its health URL')
+  const results = await dryRun.runDryRun(codeOnly, { fetchImpl })
+  assertShape(results)
+  assert.deepEqual(resultOf(results, 'service'), { check: 'service', pass: true, reason: 'no service: this target restarts nothing' })
+  assert.deepEqual(resultOf(results, 'sudo'), { check: 'sudo', pass: true, reason: 'no service to restart' })
+  assert.deepEqual(resultOf(results, 'health'), { check: 'health', pass: true, reason: 'health is the deploy log (DEPLOY OK)' })
+  assert.equal(health.hits, 0)
+  assert.ok(!stubCalls().some(([cmd]) => cmd === 'systemctl' || cmd === 'sudo'), JSON.stringify(stubCalls()))
+})

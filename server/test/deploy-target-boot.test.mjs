@@ -1,6 +1,7 @@
 // HZ-263 metric 1, "on first start": an upgraded database — real data, no
 // deploy_target table — gains both seeded targets just by the server's own
-// imports, with no direct seedDeployTargets() call.
+// imports, with no direct seedDeployTargets() call. HZ-353: the code-only
+// seed (its own marker) adds market-data-inputs on the same boot.
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
@@ -40,6 +41,7 @@ test('M1: starting the server on an upgraded DB seeds both targets once and keep
   const rows = db.prepare('SELECT key, repo FROM deploy_target ORDER BY key').all()
   assert.deepEqual(rows, [
     { key: 'horizon', repo: 'FinTekkers/horizon' },
+    { key: 'market-data-inputs', repo: 'FinTekkers/market-data-inputs' },
     { key: 'ui-service', repo: 'FinTekkers/ui-service' },
   ])
   assert.equal(db.prepare("SELECT value FROM setting WHERE key = 'deploy_target_seed'").get()?.value, 'done')
@@ -50,5 +52,5 @@ test('M1: starting the server on an upgraded DB seeds both targets once and keep
   const { cookie } = loginFixtureUser(auth, config)
   const res = await app.inject({ method: 'GET', url: '/api/admin/deploy-targets', headers: { cookie } })
   assert.equal(res.statusCode, 200)
-  assert.deepEqual(JSON.parse(res.body).targets.map((t) => t.key), ['horizon', 'ui-service'])
+  assert.deepEqual(JSON.parse(res.body).targets.map((t) => t.key), ['horizon', 'ui-service', 'market-data-inputs'])
 })

@@ -47,6 +47,19 @@ const OLD_REGISTRY = [
   },
 ]
 
+// HZ-353: the code-only seed's row, also an independent copy.
+const MDI_ROW = {
+  key: 'market-data-inputs',
+  repo: 'FinTekkers/market-data-inputs',
+  script: 'deploy-market-data-inputs.sh',
+  service: '',
+  repoDir: '/opt/fintekkers/market-data-inputs',
+  stateKey: 'market-data-inputs',
+  healthUrl: 'https://github.com/FinTekkers/market-data-inputs',
+  healthCheckType: 'deploy-log',
+}
+const isFirstSeedRow = (key) => OLD_REGISTRY.some((entry) => entry.key === key)
+
 const allRows = () => db.prepare('SELECT * FROM deploy_target ORDER BY key').all()
 const marker = () => db.prepare("SELECT value FROM setting WHERE key = 'deploy_target_seed'").get()
 
@@ -85,15 +98,16 @@ function withScriptsDir(dir, fn) {
 // Restores the seeded state after a test that rewrites the table.
 function reseedFresh() {
   db.prepare('DELETE FROM deploy_target').run()
-  db.prepare("DELETE FROM setting WHERE key = 'deploy_target_seed'").run()
+  db.prepare("DELETE FROM setting WHERE key IN ('deploy_target_seed', 'deploy_target_seed_hz353')").run()
   deployTargets.seedDeployTargets()
+  deployTargets.seedCodeOnlyTargets()
 }
 
 // ---- metric 1: the migration ----
 
 test('M1: the first-start seed gives one row per old registry entry, equal field by field', () => {
-  assert.deepEqual(deployTargets.listTargets(), OLD_REGISTRY)
-  const raw = allRows()
+  assert.deepEqual(deployTargets.listTargets().filter((t) => isFirstSeedRow(t.key)), OLD_REGISTRY)
+  const raw = allRows().filter((r) => isFirstSeedRow(r.key))
   assert.equal(raw.length, 2)
   for (const entry of OLD_REGISTRY) {
     const row = raw.find((r) => r.key === entry.key)
@@ -123,7 +137,7 @@ test('M1: a second run changes nothing; an edited row and a human-made row are k
     db.prepare("DELETE FROM setting WHERE key = 'deploy_target_seed'").run()
     assert.deepEqual(deployTargets.seedDeployTargets(), { seeded: 0 })
     assert.deepEqual(allRows(), edited)
-    assert.equal(allRows().length, 3)
+    assert.equal(allRows().length, 4) // the two seeded, market-data-inputs (HZ-353) and the human row
     assert.equal(marker()?.value, 'done')
   } finally {
     reseedFresh()
@@ -352,4 +366,94 @@ test('registry-publish: the Deploy step is told to trust the deploy script, not 
   } finally {
     db.prepare('DELETE FROM deploy_target WHERE key = ?').run(LIBRARY.key)
   }
+})
+
+// ---- HZ-353: deploy-log, a code-only target with no service ----
+
+const codeOnlyMarker = () => db.prepare("SELECT value FROM setting WHERE key = 'deploy_target_seed_hz353'").get()
+
+// A throwaway in-memory DB with the real schema: db.js's DDL, copied.
+async function freshDb() {
+  const { default: Database } = await import('better-sqlite3')
+  const fresh = new Database(':memory:')
+  for (const { sql } of db.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND sql IS NOT NULL AND name NOT LIKE 'sqlite_%'").all()) {
+    fresh.exec(sql)
+  }
+  return fresh
+}
+
+function addRepo(database, repo, noDeploy) {
+  const projectId = database.prepare("INSERT INTO project (name) VALUES ('FinTekkers')").run().lastInsertRowid
+  database.prepare('INSERT INTO project_repo (project_id, repo, prefix, no_deploy) VALUES (?, ?, ?, ?)').run(projectId, repo, 'MDI', noDeploy)
+}
+const noDeployOf = (database, repo) => database.prepare('SELECT no_deploy FROM project_repo WHERE repo = ?').get(repo)?.no_deploy
+
+test('deploy-log: a code-only row with no service is runnable and the Deploy step trusts its deploy log', async () => {
+  assert.equal(deployTargets.restartsNothing(MDI_ROW), true)
+  assert.deepEqual(deployTargets.checkRunnable(MDI_ROW), { ok: true })
+  // A named service is still held to the sudoers allow-list.
+  assert.deepEqual(deployTargets.checkRunnable({ ...MDI_ROW, service: 'sshd' }), {
+    ok: false,
+    reason: 'service sshd not in horizon-deploy.sudoers',
+  })
+  // Pins the rollback note: without deploy-log in the set, the row fails closed.
+  assert.deepEqual(deployTargets.checkRunnable({ ...MDI_ROW, healthCheckType: 'some-other-type' }), { ok: false, reason: 'missing service' })
+  const { deployWaitFor } = await import('../src/deployWait.js')
+  const wait = deployWaitFor('FinTekkers/market-data-inputs')
+  assert.equal(wait.health_check_type, 'deploy-log')
+  assert.equal(Object.hasOwn(wait, 'health_url'), false)
+  assert.equal(deploy.resolveTarget('FinTekkers/market-data-inputs')?.key, 'market-data-inputs')
+})
+
+test('M3: the code-only seed reaches a DB that already ran the first seed, clears no_deploy once, and keeps an Admin row', async () => {
+  const fresh = await freshDb()
+  assert.equal(deployTargets.seedDeployTargets(fresh).seeded, 2)
+  addRepo(fresh, 'FinTekkers/market-data-inputs', 1)
+
+  assert.deepEqual(deployTargets.seedCodeOnlyTargets(fresh), { seeded: 1 })
+  assert.deepEqual(deployTargets.findTargetByRepo('FinTekkers/market-data-inputs', fresh), MDI_ROW)
+  assert.deepEqual(deployTargets.checkRunnable(deployTargets.findTargetByKey('market-data-inputs', fresh)), { ok: true })
+  assert.equal(noDeployOf(fresh, 'FinTekkers/market-data-inputs'), 0)
+
+  // A rerun is a no-op, even after the owner sets no_deploy again.
+  fresh.prepare("UPDATE project_repo SET no_deploy = 1 WHERE repo = 'FinTekkers/market-data-inputs'").run()
+  const rows = fresh.prepare('SELECT * FROM deploy_target ORDER BY key').all()
+  assert.deepEqual(deployTargets.seedCodeOnlyTargets(fresh), { seeded: 0, skipped: 'already_seeded' })
+  assert.deepEqual(fresh.prepare('SELECT * FROM deploy_target ORDER BY key').all(), rows)
+  assert.equal(noDeployOf(fresh, 'FinTekkers/market-data-inputs'), 1)
+
+  // An Admin-made row is never overwritten, and no_deploy stays for the owner's PIN.
+  const admin = await freshDb()
+  addRepo(admin, 'FinTekkers/market-data-inputs', 1)
+  admin.prepare(`INSERT INTO deploy_target (key, repo, script, service, repo_dir, state_key, health_url, health_check_type)
+    VALUES ('mdi', 'FinTekkers/market-data-inputs', 'deploy-horizon.sh', 'horizon-server', '/opt/mdi', 'mdi', 'http://127.0.0.1:9/', 'json-health')`).run()
+  const before = admin.prepare('SELECT * FROM deploy_target').all()
+  assert.deepEqual(deployTargets.seedCodeOnlyTargets(admin), { seeded: 0 })
+  assert.deepEqual(admin.prepare('SELECT * FROM deploy_target').all(), before)
+  assert.equal(noDeployOf(admin, 'FinTekkers/market-data-inputs'), 1)
+  assert.equal(admin.prepare("SELECT value FROM setting WHERE key = 'deploy_target_seed_hz353'").get()?.value, 'done')
+})
+
+test('M3: a fresh DB gets both seeds, with no project_repo row for market-data-inputs', async () => {
+  const fresh = await freshDb()
+  assert.deepEqual(deployTargets.seedDeployTargets(fresh), { seeded: 2 })
+  assert.deepEqual(deployTargets.seedCodeOnlyTargets(fresh), { seeded: 1 })
+  assert.deepEqual(deployTargets.listTargets(fresh).map((t) => t.key), ['horizon', 'ui-service', 'market-data-inputs'])
+  for (const target of deployTargets.listTargets(fresh)) {
+    assert.deepEqual(deployTargets.checkRunnable(target), { ok: true }, target.key)
+  }
+  assert.equal(fresh.prepare('SELECT COUNT(*) AS n FROM project_repo').get().n, 0)
+  // This suite's own DB booted the same way.
+  assert.deepEqual(deployTargets.findTargetByKey('market-data-inputs'), MDI_ROW)
+  assert.equal(codeOnlyMarker()?.value, 'done')
+})
+
+test('M3: a code-only row that fails re-validation is kept but leaves no_deploy set, and is logged', async () => {
+  const fresh = await freshDb()
+  addRepo(fresh, 'Acme/broken', 1)
+  const broken = [{ ...MDI_ROW, key: 'broken', repo: 'Acme/broken', stateKey: 'broken', script: 'no-such-script.sh' }]
+  const { result, lines } = captureConsole('error', () => deployTargets.seedCodeOnlyTargets(fresh, broken))
+  assert.deepEqual(result, { seeded: 1 })
+  assert.equal(noDeployOf(fresh, 'Acme/broken'), 1)
+  assert.ok(lines.some((l) => l.includes('broken is not runnable (script outside infra/host); no_deploy left set')), lines.join('\n'))
 })

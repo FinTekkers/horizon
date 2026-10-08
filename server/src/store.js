@@ -411,7 +411,9 @@ export function getRepoConfig(repoFullName) {
 // The ONLY writer of no_checks / no_deploy, and its only caller is the
 // PIN-gated Admin route in app.js — the same rule as setRepoCheckCommands:
 // no agent may excuse its own repo from checks or deploys. A mark left out
-// of `marks` keeps its stored value.
+// of `marks` keeps its stored value. One exception: the one-time HZ-353 seed
+// (seedCodeOnlyTargets in deployTargets.js) may only CLEAR no_deploy, and
+// only for a code-only row it just inserted that passes checkRunnable.
 export function setRepoMarks(projectId, repoFullName, marks) {
   const row = db.prepare('SELECT * FROM project_repo WHERE project_id = ? AND repo = ?').get(projectId, repoFullName)
   if (!row) return { error: 'not_found' }

@@ -29,6 +29,7 @@ await useDeployTargetRows([
   { key: 'horizon', repo: 'FinTekkers/horizon', stateKey: 'horizon', script: 'h.sh', service: 'horizon-test' },
   { key: 'ui-service', repo: 'FinTekkers/ui-service', stateKey: 'ui-service', script: 'u.sh', service: 'ui-test' },
   { key: 'ledger-models', repo: 'FinTekkers/ledger-models', stateKey: 'ledger-models', script: 'l.sh', service: '', healthCheckType: 'registry-publish' },
+  { key: 'market-data-inputs', repo: 'FinTekkers/market-data-inputs', stateKey: 'market-data-inputs', script: 'm.sh', service: '', healthCheckType: 'deploy-log' },
 ])
 
 // Every console line, so the credential guardrail can read them all.
@@ -440,6 +441,32 @@ test('guardrail 7: a library (registry-publish) target keeps the per-item releas
   assert.equal(releasePosts().length, 1)
   assert.equal(releasePosts()[0].tag_name, `deploy-${lib.toLowerCase()}`)
   assert.equal(smokeDispatch(lib).item.release_tag, `deploy-${lib.toLowerCase()}`)
+})
+
+test('HZ-353: a code-only (deploy-log) target joins the queue, and its batch dispatch carries deploy-log', async () => {
+  const t0 = Math.floor((Date.now() - 1_000_000) / 1000) * 1000
+  const mdi = newItem('FinTekkers/market-data-inputs')
+  assert.equal(deployQueue.queueTargetFor(row(mdi))?.key, 'market-data-inputs')
+  const batchId = await joinAt(mdi, t0)
+  await deployQueue.tick(t0 + DEPLOY_BATCH_S * 1000)
+  const { tag, commit_sha: commit, started_at: startedAt } = batch(batchId)
+  assert.equal(batch(batchId).target, 'market-data-inputs')
+  assert.deepEqual(spawned, [], 'the queue publishes the release; the webhook runs the deploy script')
+
+  goLive('market-data-inputs', tag, commit)
+  logLine('market-data-inputs', `DEPLOY OK tag=refs/tags/${tag} commit=${commit}`)
+  await deployQueue.tick(t0 + DEPLOY_BATCH_S * 1000 + 30_000)
+  assert.equal(batch(batchId).status, 'verifying')
+  await waitFor(() => smokeDispatch(mdi), 'the code-only Deploy dispatch')
+  const body = smokeDispatch(mdi)
+  assert.equal(body.item.release_tag, tag)
+  assert.equal(body.deploy_wait.health_check_type, 'deploy-log')
+  assert.equal(Object.hasOwn(body.deploy_wait, 'health_url'), false)
+  assert.equal(body.deploy_wait.state_dir, stateDir('market-data-inputs'))
+  // The wait counts from the batch's start (startedAt), as for a service target.
+  const expected = (DEPLOY_WAIT_MS - (Date.now() - msOf(startedAt))) / 1000
+  assert.ok(Math.abs(body.deploy_wait.timeout_s - expected) < 5, `timeout_s ${body.deploy_wait.timeout_s} vs ${expected}`)
+  assert.equal(releasePosts().length, 1)
 })
 
 test('metric 6: gate 15 names the release, its commit and the ancestry, and keeps approving after a later batch moves last-good-tag', async () => {

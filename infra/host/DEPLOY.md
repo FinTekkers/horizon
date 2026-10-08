@@ -582,6 +582,47 @@ target's queue (`server/src/deployQueue.js`, rows in `deploy_batch` and
   where it stopped at boot. A Horizon batch is one release, one deploy and one
   drain.
 
+## Code-only targets (HZ-353)
+
+A repo with code on this host but no service, such as
+`FinTekkers/market-data-inputs` (Python loaders), deploys as code only. Its
+row has `health_check_type` `deploy-log` and an empty `service`; nothing
+restarts, so there is no sudoers line. It joins the deploy queue like a
+service target.
+
+- **Script.** `deploy-market-data-inputs.sh` sets `DEPLOY_NAME`,
+  `DEPLOY_REPO_DIR` and `DEPLOY_STRIP_ENV` and execs `deploy-code-only.sh`.
+  Under `~/.horizon/<stateKey>/deploy.lock` it fetches, checks out the tag
+  (detached), runs the repo's `scripts/checks/install.sh` (which updates the
+  venv) and then `scripts/checks/test.sh`, then writes `last-good-tag` and
+  logs `DEPLOY OK tag=refs/tags/<tag> commit=<sha>`. It never runs a loader.
+- **Failure.** If install or the tests fail, it checks out the
+  `last-good-tag` commit again and reruns `install.sh` there, logs
+  `RESTORE OK`, `RESTORE FAILED (<stage>)` or `RESTORE SKIPPED`, and then
+  `DEPLOY FAILED: <install|test> (tag=...)` as the last line.
+  `last-good-tag` never moves to the failed tag.
+- **Step 14.** No agent and no smoke check: the step passes on `DEPLOY OK`
+  for the item's tag ("deployed (code only)") and fails on `DEPLOY FAILED`.
+- **Owner: keep the tests offline.** The deploy only unsets the ledger and
+  price service variables (and `deploy.js` already passes the script an
+  allow-listed env). It cannot stop `test.sh` from loading a `.env` or config
+  file in the checkout that points at the ledger or price service: keep
+  `test.sh` offline and keep such files out of
+  `/opt/fintekkers/market-data-inputs`.
+- **Host prerequisite.** `/opt/fintekkers/market-data-inputs` is a clone of
+  the repo, `origin` set, owned by the deploy user. Without it the deploy
+  logs `DEPLOY FAILED: fetch`.
+- **Seed.** The row is added once per database by `seedCodeOnlyTargets()`
+  (marker `deploy_target_seed_hz353`), which also clears the repo's
+  `no_deploy` flag if it inserted the row and the row passes re-validation.
+  An existing Admin-made row is left alone, and its `no_deploy` stays for the
+  owner to clear with the PIN. A row deleted in Admin is not recreated.
+- **Rollback.** Re-run the script with the tag from `last-good-tag`:
+  `infra/host/deploy-market-data-inputs.sh <tag>`. Reverting HZ-353 fails
+  closed: without `deploy-log` the row's empty `service` fails re-validation
+  and no release deploys. To stop MDI deploys without a revert, delete the
+  row in Admin and set `no_deploy` with the PIN.
+
 ## Deep verification beyond the health check (HZ-22)
 
 Each deploy script's health check proves the process restarted and answered
@@ -625,7 +666,10 @@ item for a human rather than silently advancing (`server/src/orchestrator.js`
    like `deploy-ledger-models.sh` around `deploy-publish-release.sh`: the
    deploy pushes the next patch tag on the release commit and waits for the
    publish workflows. Its row has `health_check_type` `registry-publish` and
-   an empty `service` (nothing restarts, so no sudoers line).
+   an empty `service` (nothing restarts, so no sudoers line). Code with no
+   service gets a wrapper like `deploy-market-data-inputs.sh` around
+   `deploy-code-only.sh` and a `deploy-log` row, also with an empty
+   `service` (see Code-only targets above).
 2. Add a row to the `deploy_target` table: `key`, `repo`, `script`,
    `service`, `repo_dir`, `state_key`, `health_url`, `health_check_type`
    (and `extra_services`, a JSON array).

@@ -49,6 +49,26 @@ export const SEED_DEPLOY_TARGETS = Object.freeze([
 
 const SEED_MARKER = 'deploy_target_seed'
 
+// HZ-353: code-only targets added after the first seed ran. The live DB
+// already carries deploy_target_seed, so a row added to SEED_DEPLOY_TARGETS
+// would never reach it: these rows have their own one-time marker.
+// healthUrl is never fetched (a deploy-log target's health is its deploy
+// log); it is here because checkRunnable requires an http(s) URL.
+export const CODE_ONLY_SEED_TARGETS = Object.freeze([
+  Object.freeze({
+    key: 'market-data-inputs',
+    repo: 'FinTekkers/market-data-inputs',
+    script: 'deploy-market-data-inputs.sh',
+    service: '',
+    repoDir: '/opt/fintekkers/market-data-inputs',
+    stateKey: 'market-data-inputs',
+    healthUrl: 'https://github.com/FinTekkers/market-data-inputs',
+    healthCheckType: 'deploy-log',
+  }),
+])
+
+const CODE_ONLY_SEED_MARKER = 'deploy_target_seed_hz353'
+
 // Read on every call, not at import, so a test can point it at a stub dir
 // whenever it likes. In production nothing sets it: infra/host/.
 export function scriptsDir() {
@@ -83,8 +103,10 @@ function toTarget(row) {
   return target
 }
 
-export function seedDeployTargets(database = db, targets = SEED_DEPLOY_TARGETS) {
-  if (database.prepare('SELECT 1 FROM setting WHERE key = ?').get(SEED_MARKER)) {
+// onInserted(target, database) runs inside the seed's transaction for each
+// row it actually inserted (not one skipped by ON CONFLICT).
+export function seedDeployTargets(database = db, targets = SEED_DEPLOY_TARGETS, { marker = SEED_MARKER, onInserted = null } = {}) {
+  if (database.prepare('SELECT 1 FROM setting WHERE key = ?').get(marker)) {
     return { seeded: 0, skipped: 'already_seeded' }
   }
   const insert = database.prepare(`
@@ -97,20 +119,40 @@ export function seedDeployTargets(database = db, targets = SEED_DEPLOY_TARGETS) 
     let seeded = 0
     database.transaction(() => {
       for (const target of targets) {
-        seeded += insert.run({
+        const { changes } = insert.run({
           ...target,
           extraServices: target.extraServices ? JSON.stringify(target.extraServices) : null,
-        }).changes
+        })
+        seeded += changes
+        if (changes === 1 && onInserted) onInserted(target, database)
       }
       // Last statement, plain INSERT: a racing second boot rolls back on the
       // primary-key collision (same guard as gate_notice_baseline in db.js).
-      database.prepare("INSERT INTO setting (key, value) VALUES (?, 'done')").run(SEED_MARKER)
+      database.prepare("INSERT INTO setting (key, value) VALUES (?, 'done')").run(marker)
     })()
     return { seeded }
   } catch (error) {
-    console.error(`deploy_target seed failed, rolled back: ${error.message}`)
+    const which = marker === SEED_MARKER ? '' : ` (${marker})`
+    console.error(`deploy_target seed failed, rolled back${which}: ${error.message}`)
     return { seeded: 0, error }
   }
+}
+
+// HZ-353: the code-only seed. A row it inserts that passes checkRunnable also
+// clears its repo's no_deploy flag (set while the repo had no deploy type),
+// in the same transaction. Clear-only, once, and never for a row that already
+// existed: an Admin-made row keeps no_deploy for the owner's PIN action.
+export function seedCodeOnlyTargets(database = db, targets = CODE_ONLY_SEED_TARGETS) {
+  // Failures are logged like the first seed's: a rollback by
+  // seedDeployTargets, a non-runnable row here.
+  return seedDeployTargets(database, targets, {
+    marker: CODE_ONLY_SEED_MARKER,
+    onInserted: (target) => {
+      const check = checkRunnable(target)
+      if (check.ok) database.prepare('UPDATE project_repo SET no_deploy = 0 WHERE repo = ?').run(target.repo)
+      else console.error(`${CODE_ONLY_SEED_MARKER}: ${target.key} is not runnable (${check.reason}); no_deploy left set`)
+    },
+  })
 }
 
 export function listTargets(database = db) {
@@ -154,7 +196,10 @@ const REQUIRED_FIELDS = ['key', 'repo', 'script', 'service', 'repoDir', 'stateKe
 // A library's deploy publishes to package registries (deploy-publish-release.sh)
 // and restarts nothing, so its row has no service: service is '' and sudo is
 // never involved. Its script's registry check is its health check.
-export const NO_SERVICE_HEALTH_CHECK_TYPES = new Set(['registry-publish'])
+// HZ-353: a code-only deploy (deploy-code-only.sh, health check type
+// deploy-log) checks out the tag, installs and runs the repo's offline tests;
+// it restarts nothing either, and its DEPLOY OK line is its health check.
+export const NO_SERVICE_HEALTH_CHECK_TYPES = new Set(['registry-publish', 'deploy-log'])
 export function restartsNothing(target) {
   return NO_SERVICE_HEALTH_CHECK_TYPES.has(target?.healthCheckType) && target?.service === ''
 }
@@ -276,7 +321,8 @@ export function deleteTarget(key, database = db) {
   return changes ? { ok: true } : { ok: false, code: 'not_found' }
 }
 
-// The one-time migration, on first import — which is server start, through
+// The one-time migrations, on first import — which is server start, through
 // deploy.js. A failure is logged and rolled back; boot continues and every
 // release resolves to no target (fails closed).
 seedDeployTargets()
+seedCodeOnlyTargets()

@@ -3396,3 +3396,81 @@ def test_a_blocked_report_with_any_change_takes_the_normal_checks_and_push_path(
 def test_implement_role_documents_the_blocked_report():
     role = _role_text("eng_implement.md")
     assert '"blocked": {"rule": "<rule or guardrail, quoted>", "needs": "<what would unblock it>"}' in role
+
+
+# ---- HZ-353: a code-only deploy target (health check type deploy-log) ----
+
+
+def _code_only_deploy_task(monkeypatch, state_dir, tag, *log_lines, last_good=None):
+    """A step-14 task for a deploy-log target, its state dir written the way
+    deploy-code-only.sh writes it. The real wait_until_release_live runs; an
+    agent, a browser smoke check or a gRPC check fails the test."""
+    (state_dir / "self-deploy.log").write_text("".join(f"{line}\n" for line in log_lines))
+    if last_good:
+        (state_dir / "last-good-tag").write_text(f"refs/tags/{last_good}:abc123\n")
+    monkeypatch.setattr(step_agent, "run_agent", lambda *a, **kw: pytest.fail("no agent runs for a code-only deploy"))
+    monkeypatch.setattr(step_agent, "run_smoke_check", lambda *a: pytest.fail("browser smoke check must not run"))
+    monkeypatch.setattr(step_agent, "run_grpc_health_check", lambda *a: pytest.fail("gRPC check must not run"))
+    task = make_task(14, "Deploy the changes", repo="FinTekkers/market-data-inputs")
+    task["item"]["release_tag"] = tag
+    task["deploy_wait"] = {"state_dir": str(state_dir), "timeout_s": 5, "health_check_type": "deploy-log"}
+    return task
+
+
+def test_code_only_deploy_passes_on_deploy_ok_for_the_tag(tmp_path, monkeypatch):
+    task = _code_only_deploy_task(
+        monkeypatch,
+        tmp_path,
+        "deploy-mdi-7",
+        "2026-10-08T10:00:00Z install ok",
+        "2026-10-08T10:01:00Z DEPLOY OK tag=refs/tags/deploy-mdi-7 commit=abc123",
+        last_good="deploy-mdi-7",
+    )
+    result = execute(task)
+    assert result["artifacts"]["verdict"] == {"verdict": "pass"}
+    assert "deployed (code only)" in result["summary"]
+    assert "SMOKE_RESULT=pass" in result["artifacts"]["artifact_md"]
+
+
+def test_code_only_deploy_fails_on_deploy_failed_for_the_tag(tmp_path, monkeypatch):
+    task = _code_only_deploy_task(
+        monkeypatch,
+        tmp_path,
+        "deploy-mdi-7",
+        "2026-10-08T10:00:00Z RESTORE OK tag=refs/tags/deploy-mdi-6 after refs/tags/deploy-mdi-7",
+        "2026-10-08T10:00:01Z DEPLOY FAILED: test (tag=refs/tags/deploy-mdi-7 commit=abc123)",
+        last_good="deploy-mdi-6",
+    )
+    with pytest.raises(step_agent.DeployNotLiveError) as raised:
+        execute(task)
+    assert "DEPLOY FAILED for this tag" in str(raised.value)
+    # The log tail travels with the failure, so step 14 shows why.
+    assert "DEPLOY FAILED: test (tag=refs/tags/deploy-mdi-7 commit=abc123)" in str(raised.value)
+
+
+def test_code_only_deploy_ignores_a_neighbour_tag_s_deploy_failed(tmp_path, monkeypatch):
+    task = _code_only_deploy_task(
+        monkeypatch,
+        tmp_path,
+        "deploy-mdi-7",
+        "2026-10-08T09:00:00Z DEPLOY FAILED: test (tag=refs/tags/deploy-mdi-70 commit=def456)",
+        "2026-10-08T10:01:00Z DEPLOY OK tag=refs/tags/deploy-mdi-7 commit=abc123",
+        last_good="deploy-mdi-7",
+    )
+    result = execute(task)
+    assert result["artifacts"]["verdict"] == {"verdict": "pass"}
+    assert "deployed (code only)" in result["summary"]
+
+
+def test_code_only_deploy_fails_when_only_a_neighbour_tag_logged_deploy_ok(tmp_path, monkeypatch):
+    task = _code_only_deploy_task(
+        monkeypatch,
+        tmp_path,
+        "deploy-mdi-7",
+        "2026-10-08T10:01:00Z DEPLOY OK tag=refs/tags/deploy-mdi-70 commit=abc123",
+        last_good="deploy-mdi-7",
+    )
+    result = execute(task)
+    assert result["artifacts"]["verdict"] == {"verdict": "fail"}
+    assert "deployed (code only)" not in result["summary"]
+    assert "self-deploy.log" in result["artifacts"]["artifact_md"]
