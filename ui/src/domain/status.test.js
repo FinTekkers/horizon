@@ -201,3 +201,59 @@ test('a rule-blocked item reads Blocked by a rule, above dependency Blocked, bel
   expect(itemStatus({ ...ruleBlocked, ruleBlock: null }).label).toBe('Eng agent')
   expect(stateLabel({ ...ruleBlocked, state_since: '2026-10-08T14:02:11Z' })).toBeNull()
 })
+
+// HZ-360: Accept the code while a Horizon self-deploy drains reads Queued to
+// merge, with the drain's latest end as HH:MM in the viewer's time zone and
+// whose Accept is waiting.
+
+import { queuedToMerge, clockTime } from './status'
+
+const LATEST_END = '2026-10-08T19:37:52.000Z'
+const BLOCK = { blocked: true, startedAt: '2026-10-08T19:12:52.000Z', latestEnd: LATEST_END }
+const atAccept = (extra = {}) => ({ ...base, cursor: ACCEPT_GATE_INDEX, pr: 354, acceptWaiting: null, ...extra })
+
+function inTimeZone(tz, fn) {
+  const saved = process.env.TZ
+  process.env.TZ = tz
+  try {
+    return fn()
+  } finally {
+    if (saved === undefined) delete process.env.TZ
+    else process.env.TZ = saved
+  }
+}
+
+test('queuedToMerge names the drain and its latest end as HH:MM in the viewer time zone', () => {
+  inTimeZone('UTC', () => {
+    expect(clockTime(LATEST_END)).toBe('19:37')
+    expect(queuedToMerge(atAccept(), BLOCK).text).toBe('Horizon is deploying, merges resume after it (by about 19:37)')
+  })
+  inTimeZone('Asia/Kolkata', () => {
+    expect(queuedToMerge(atAccept(), BLOCK).text).toBe('Horizon is deploying, merges resume after it (by about 01:07)')
+  })
+})
+
+test('queuedToMerge says who approved: Autopilot, you, someone else, or nobody yet', () => {
+  expect(queuedToMerge(atAccept({ acceptWaiting: { source: 'autopilot' } }), BLOCK, 'Dana').approvedBy).toBe('Approved by Autopilot')
+  expect(queuedToMerge(atAccept({ acceptWaiting: { source: 'human', actor: 'Dana' } }), BLOCK, 'Dana').approvedBy).toBe('Approved by you')
+  expect(queuedToMerge(atAccept({ acceptWaiting: { source: 'human', actor: 'Sam' } }), BLOCK, 'Dana').approvedBy).toBe('Approved by Sam')
+  expect(queuedToMerge(atAccept(), BLOCK, 'Dana').approvedBy).toBeNull()
+})
+
+test('queuedToMerge is null with no block, at another gate, or with no PR', () => {
+  expect(queuedToMerge(atAccept(), null)).toBeNull()
+  expect(queuedToMerge(atAccept(), { ...BLOCK, blocked: false })).toBeNull()
+  expect(queuedToMerge({ ...base, cursor: 3 }, BLOCK)).toBeNull()
+  expect(queuedToMerge(atAccept({ pr: null }), BLOCK)).toBeNull()
+  expect(queuedToMerge(atAccept({ rejected: true }), BLOCK)).toBeNull()
+})
+
+test('itemStatus and stateLabel read Queued to merge at a blocked Accept the code, Awaiting otherwise', () => {
+  const item = atAccept({ state_since: '2026-10-08 19:00:00' })
+  const status = itemStatus(item, true, { deployBlock: BLOCK })
+  expect(status.label).toBe('Queued to merge')
+  expect(status.reason).toBe(queuedToMerge(item, BLOCK).text)
+  expect(stateLabel(item, { deployBlock: BLOCK })).toBe('Queued to merge')
+  expect(itemStatus(item, true).label).toBe('Awaiting your approval')
+  expect(stateLabel(item)).toBe('Waiting on you')
+})

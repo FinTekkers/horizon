@@ -9,6 +9,7 @@ import * as caretaker from './caretaker.js'
 import * as caretakerActor from './caretakerActor.js'
 import * as caretakerRuling from './caretakerRuling.js'
 import * as autoResolve from './autoResolve.js'
+import * as heldAccept from './heldAccept.js'
 import { PORT } from './config.js'
 
 const fastify = buildApp()
@@ -21,6 +22,10 @@ try {
 }
 
 orchestrator.init(fastify.log)
+// HZ-360: after the orchestrator, so its drain-end release runs first; before
+// the caretaker, so an Approve held through the deploy claims its pre-merge
+// before Autopilot looks. Also releases, once, what a deploy's restart held.
+heldAccept.init(fastify.log, { gateActions: fastify.gateActions })
 // After the orchestrator, so boot-time re-dispatches have already settled the
 // cursors this reads. A no-op unless WA_NOTIFY_ENABLED=1 (HZ-141).
 gateNotifier.init(fastify.log)

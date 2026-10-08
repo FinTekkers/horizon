@@ -13,7 +13,7 @@ import {
 import { AGENTS } from '../domain/agentTokens'
 import { PHASE_ACCENT, PHASE_ACCENT_BG, priorityColor } from '../domain/lifecycle'
 import { PERSONAS, PERSONA_AGENT_ROLES, PRIMARY_PERSONA_AGENT, personaFor, personaId } from '../domain/personas'
-import { itemStatus, isDependencyBlocked } from '../domain/status'
+import { itemStatus, isDependencyBlocked, queuedToMerge } from '../domain/status'
 import { pauseReason } from '../domain/pauseReason'
 import { gateActionOf } from '../domain/gateAction'
 import { deployQueueLabel } from '../domain/deployQueue'
@@ -105,7 +105,7 @@ function ForwardedReview({ forwarded }) {
   )
 }
 
-function Step({ item, stepOutputs, outputsSettled, index, onApprove, onApproveWithComments, onReject, onResolveConflicts, resolving, gateBusy, onForwardToAccept, onSetPersona }) {
+function Step({ item, stepOutputs, outputsSettled, index, deployBlock, viewerName, onApprove, onApproveWithComments, onReject, onResolveConflicts, resolving, gateBusy, onForwardToAccept, onSetPersona }) {
   const st = STEPS[index]
   const status = stepStatus(item, index)
   const isGate = st.kind === 'gate'
@@ -120,6 +120,9 @@ function Step({ item, stepOutputs, outputsSettled, index, onApprove, onApproveWi
   const agentLabel = isGate ? (st.gate === 'optional' ? 'Human gate · optional' : 'Human gate') : agent.label
   const gateAction = index === ACCEPT_GATE_INDEX ? gateActionOf(item) : null
   const output = stepOutputs?.[index]
+  // HZ-360: a Horizon deploy holds this gate's merge — say why and who
+  // approved, and offer no Approve, Send back or Resolve conflicts until it ends.
+  const mergeQueued = status === 'awaiting' && index === item.cursor ? queuedToMerge(item, deployBlock, viewerName) : null
 
   return (
     <div className="step">
@@ -144,7 +147,7 @@ function Step({ item, stepOutputs, outputsSettled, index, onApprove, onApproveWi
               than the hardcoded hex it originally shipped — dark mode (HZ-25)
               moved every colour in this file behind a CSS variable. */}
           <div className="step-card__meta" style={{ color: queued ? 'var(--muted)' : STEP_META_COLOR[status] || 'var(--muted)' }}>
-            {queued ? 'Queued' : STEP_META[status](isGate, st.gate)}
+            {queued ? 'Queued' : mergeQueued ? 'Queued to merge' : STEP_META[status](isGate, st.gate)}
             {status === 'active' && item.activeRun?.step_index === index && (
               <span>
                 {' · '}
@@ -220,11 +223,17 @@ function Step({ item, stepOutputs, outputsSettled, index, onApprove, onApproveWi
           {index === IMPLEMENT_STEP_INDEX && item.reviewRejected && onForwardToAccept && !isAbandoned(item) && (
             <ForwardToAcceptButton item={item} onForwardToAccept={onForwardToAccept} disabled={gateBusy} />
           )}
+          {mergeQueued && (
+            <div className="step-card__queued">
+              <div>Queued to merge: {mergeQueued.text}</div>
+              {mergeQueued.approvedBy && <div className="step-card__queued-by">{mergeQueued.approvedBy}</div>}
+            </div>
+          )}
           {gateAction && (status === 'awaiting' || gateAction.state === 'merged') && (
             <GateActionStatus
               action={gateAction}
               pr={item.pr}
-              onRetry={status === 'awaiting' ? () => onApprove(item.id, st.label) : undefined}
+              onRetry={status === 'awaiting' && !mergeQueued ? () => onApprove(item.id, st.label) : undefined}
               retryDisabled={gateBusy}
             />
           )}
@@ -233,15 +242,19 @@ function Step({ item, stepOutputs, outputsSettled, index, onApprove, onApproveWi
               PR #{item.pr} has merge conflicts with main — approving would fail.
               {/* HZ-188: disabled while a run is in progress (here or in any tab —
                   `resolving` comes from the server's conflictRun), so it can't be
-                  started twice; View progress reopens the dialog. */}
-              <button
-                className="btn-gate-reject"
-                disabled={resolving || gateBusy}
-                aria-busy={resolving || undefined}
-                onClick={() => onResolveConflicts(item.id, item.pr)}
-              >
-                {resolving ? 'Resolving conflicts…' : 'Resolve conflicts…'}
-              </button>
+                  started twice; View progress reopens the dialog. HZ-360: not
+                  offered while a Horizon deploy holds the gate — the server
+                  refuses a new resolve run then; View progress stays. */}
+              {!mergeQueued && (
+                <button
+                  className="btn-gate-reject"
+                  disabled={resolving || gateBusy}
+                  aria-busy={resolving || undefined}
+                  onClick={() => onResolveConflicts(item.id, item.pr)}
+                >
+                  {resolving ? 'Resolving conflicts…' : 'Resolve conflicts…'}
+                </button>
+              )}
               {resolving && (
                 <button className="btn-gate-feedback" onClick={() => onResolveConflicts(item.id, item.pr)}>
                   View progress
@@ -259,30 +272,34 @@ function Step({ item, stepOutputs, outputsSettled, index, onApprove, onApproveWi
               )}
               {/* HZ-216: disabled while a gate action runs, whoever started it.
                   The server's 409 stays the real protection. */}
-              <button
-                className="btn-gate-approve"
-                disabled={gateBusy}
-                aria-busy={gateBusy || undefined}
-                onClick={() => onApprove(item.id, st.label)}
-              >
-                Approve
-              </button>
-              <button
-                className="btn-gate-feedback"
-                disabled={gateBusy}
-                aria-busy={gateBusy || undefined}
-                onClick={() => onApproveWithComments(item.id, st.label)}
-              >
-                Approve with comments
-              </button>
-              <button
-                className="btn-gate-reject"
-                disabled={gateBusy}
-                aria-busy={gateBusy || undefined}
-                onClick={() => onReject(item.id, st.label)}
-              >
-                Send back with feedback
-              </button>
+              {!mergeQueued && (
+                <>
+                  <button
+                    className="btn-gate-approve"
+                    disabled={gateBusy}
+                    aria-busy={gateBusy || undefined}
+                    onClick={() => onApprove(item.id, st.label)}
+                  >
+                    Approve
+                  </button>
+                  <button
+                    className="btn-gate-feedback"
+                    disabled={gateBusy}
+                    aria-busy={gateBusy || undefined}
+                    onClick={() => onApproveWithComments(item.id, st.label)}
+                  >
+                    Approve with comments
+                  </button>
+                  <button
+                    className="btn-gate-reject"
+                    disabled={gateBusy}
+                    aria-busy={gateBusy || undefined}
+                    onClick={() => onReject(item.id, st.label)}
+                  >
+                    Send back with feedback
+                  </button>
+                </>
+              )}
             </div>
           )}
           {status === 'active' && item.activeRun?.step_index === index && item.activeRun.id != null && (
@@ -412,8 +429,8 @@ function useStepOutputs(item) {
   return { stepOutputs: mine ? loaded.stepOutputs : null, settled: mine }
 }
 
-export default function Tracker({ item, projects, onBack, onApprove, onApproveWithComments, onReject, onResolveConflicts, resolving, gateBusy, onForwardToAccept, onTogglePause, onRestartPhase, onSetPersona, onAbandon, onRemoveDependency }) {
-  const status = itemStatus(item, true)
+export default function Tracker({ item, projects, deployBlock = null, viewerName = null, onBack, onApprove, onApproveWithComments, onReject, onResolveConflicts, resolving, gateBusy, onForwardToAccept, onTogglePause, onRestartPhase, onSetPersona, onAbandon, onRemoveDependency }) {
+  const status = itemStatus(item, true, { deployBlock })
   const activity = buildActivity(item)
   const closed = isClosed(item)
   const abandoned = isAbandoned(item)
@@ -546,6 +563,8 @@ export default function Tracker({ item, projects, onBack, onApprove, onApproveWi
                     stepOutputs={stepOutputs}
                     outputsSettled={outputsSettled}
                     index={i}
+                    deployBlock={deployBlock}
+                    viewerName={viewerName}
                     onApprove={onApprove}
                     onApproveWithComments={onApproveWithComments}
                     onReject={onReject}

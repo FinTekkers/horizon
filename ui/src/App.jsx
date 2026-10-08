@@ -16,6 +16,7 @@ import NewItemModal from './components/NewItemModal'
 import LoginPage from './components/LoginPage'
 import LegalPage, { LEGAL_DOCS } from './components/LegalPage'
 import { gateActionBusy } from './domain/gateAction'
+import { queuedToMerge } from './domain/status'
 import {
   enabledProjects,
   filterByProject,
@@ -145,6 +146,8 @@ function AuthenticatedApp({ user, onLogout }) {
   const activeProjectId = api.getActiveProjectId()
   const farm = api.getFarm()
   const durationEstimates = api.getDurationEstimates()
+  // HZ-360: a Horizon self-deploy's block — gate 13 shows Queued to merge.
+  const deployBlock = api.getDeployBlock()
   const activeProject = projects.find((p) => p.id === activeProjectId) || null
   // HZ-208: the project filter is view state only. It is re-validated on every
   // render, so a project disabled live (over SSE) while selected falls back to
@@ -180,7 +183,8 @@ function AuthenticatedApp({ user, onLogout }) {
   // or that this tab has an Accept or Resolve request in flight for — is not
   // waiting on anyone, so it leaves the drawer and both counts until the run
   // ends. Both pending sets clear when the request errors, so it comes back.
-  const isPendingApproval = (item) => awaitingGate(item) && !isGateBusy(item)
+  // HZ-360: nor is an item queued to merge behind a Horizon deploy.
+  const isPendingApproval = (item) => awaitingGate(item) && !isGateBusy(item) && !queuedToMerge(item, deployBlock)
   // Every enabled project's pending gates, whatever the filter shows.
   const pendingCount = items.filter(isPendingApproval).length
 
@@ -355,6 +359,8 @@ function AuthenticatedApp({ user, onLogout }) {
           items={visibleItems}
           projects={projects}
           durationEstimates={durationEstimates}
+          deployBlock={deployBlock}
+          viewerName={user?.name ?? null}
           onOpen={openItem}
           onApprove={requestApprove}
           onReject={(id, target) => openComposer('reject', id, { target })}
@@ -374,6 +380,8 @@ function AuthenticatedApp({ user, onLogout }) {
         <Tracker
           item={selected}
           projects={projects}
+          deployBlock={deployBlock}
+          viewerName={user?.name ?? null}
           onBack={toBoard}
           onApprove={requestApprove}
           onApproveWithComments={(id, target) => openComposer('approve', id, { target })}

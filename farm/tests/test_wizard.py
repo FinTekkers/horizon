@@ -391,6 +391,24 @@ def test_gate_choice_resolves_a_numbered_reply_and_approves(monkeypatch):
         stub.close()
 
 
+def test_gate_choice_held_for_a_deploy_says_it_is_queued(monkeypatch):
+    """HZ-360: while a Horizon deploy drains, the server holds the Approve
+    ({held: true}) and merges it when the deploy ends — the reply says so."""
+    monkeypatch.setattr(config, "FARM_WA_SENDER_NAMES", {"15550001111": "David"})
+    t = FakeTransport()
+    state = make_state(t, "choice-held")
+    stub = StubHorizon(items=[{"id": "HZ-7"}], approve_result=(200, {"ok": True, "held": True}))
+    try:
+        offer(state, [("HZ-7", 13, "Accept the code")])
+        msg = t.seed("1", sender=DAVID, chat=DAVID)
+        assert wizard.try_handle_gate_choice(msg, t, state.choice_store, state, stub.url)
+        assert stub.approvals == [("HZ-7", 13, {"sender": "David", "senderJid": DAVID})]
+        assert "Approved HZ-7" in t.sent[-1][1]
+        assert "queued to merge until the deploy ends" in t.sent[-1][1]
+    finally:
+        stub.close()
+
+
 def test_thumbs_up_approves_when_exactly_one_approval_is_pending(monkeypatch):
     """A thumbs-up carries no index, so it only resolves when there is nothing
     to be ambiguous about."""

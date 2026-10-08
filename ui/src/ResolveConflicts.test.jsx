@@ -26,6 +26,7 @@ vi.mock('./api', () => ({
   getActiveProjectId: () => null,
   getFarm: () => null,
   getDurationEstimates: () => null,
+  getDeployBlock: () => null,
   approveGate: vi.fn(),
   requestChanges: vi.fn(),
   resolveConflicts: vi.fn(),

@@ -33,12 +33,17 @@
 // Resolve conflicts on it (stops still ping under their own key). An
 // Accept whose pre-merge row says merged is 'ok' even when GitHub's merge
 // webhook moved the item off the gate before approveGate ran.
+//
+// HZ-360: an Accept skipped for a self-deploy is listed as waiting
+// (heldAccept.setAutopilotWaiting) so the board says "Queued to merge", and an
+// item with a human Approve held through the deploy is left to that hold.
 
 import { db } from './db.js'
 import * as store from './store.js'
 import { STEPS, ACCEPT_GATE_INDEX } from '../../domain/js/lifecycle.js'
 import { redact } from './caretakerRules.js'
 import { isDeployBlocked } from './deployDrain.js'
+import * as heldAccept from './heldAccept.js'
 import { MERGEABLE_PROBE_DELAYS_MS, MERGEABLE_PROBE_ATTEMPTS, reviewPassed as passedReview } from './caretakerMergeable.js'
 
 const HOUR_MS = 60 * 60 * 1000
@@ -288,6 +293,7 @@ function settle(claimId, row, action, call, log) {
 export function actOnAcceptGate({ gateActions, actor, log, now = Date.now, owner = () => null, limit, refreshMergeable } = {}) {
   const counts = { accepted: 0, resolving: 0, stopped: 0, waited: 0, probed: 0 }
   let changed = false
+  const waiting = new Set()
   try {
     for (const row of selectCandidates.all()) {
       try {
@@ -309,8 +315,13 @@ export function actOnAcceptGate({ gateActions, actor, log, now = Date.now, owner
           if (decision.reason === MERGEABLE_UNKNOWN && refreshMergeable && probeMergeable(row, nowMs, refreshMergeable, log)) counts.probed++
           continue
         }
+        // HZ-360: a human Approve held through a deploy owns this merge.
+        if (heldAccept.isHeld(row.item_id)) continue
         // A self-deploy refuses new runs; wait it out rather than spend the claim.
-        if (isDeployBlocked()) continue
+        if (isDeployBlocked()) {
+          if (decision.kind === 'accept') waiting.add(row.item_id)
+          continue
+        }
         if (countWindow.get(row.project_id, nowMs - HOUR_MS).n >= limit) {
           if (recordLimitHit(row, nowMs, owner(), limit)) log?.warn?.(`caretaker: hourly limit (${limit}) hit at step ${ACCEPT_GATE_INDEX} on project ${row.project_id}`)
           continue
@@ -348,6 +359,11 @@ export function actOnAcceptGate({ gateActions, actor, log, now = Date.now, owner
     }
   } catch (err) {
     log?.error?.(`caretaker Accept pass failed: ${redact(err?.message)}`)
+  }
+  try {
+    heldAccept.setAutopilotWaiting(waiting)
+  } catch (err) {
+    log?.error?.(`caretaker: waiting list could not be recorded: ${redact(err?.message)}`)
   }
   if (changed) {
     try {

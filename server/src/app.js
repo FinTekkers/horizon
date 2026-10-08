@@ -15,6 +15,7 @@ import * as premerge from './premerge.js'
 import * as autoResolve from './autoResolve.js'
 import * as webhooks from './webhooks.js'
 import * as deployDrain from './deployDrain.js'
+import * as heldAccept from './heldAccept.js'
 import * as deployDryRun from './deployDryRun.js'
 import * as projectValidate from './projectValidate.js'
 import { createTarget, deleteTarget, findTargetByKey, listTargets, targetFromBody, updateTarget } from './deployTargets.js'
@@ -151,14 +152,21 @@ export function streamClientCount() {
 // leaves those off too — it has no use for them.
 // `stepOutputs: false` (HZ-318) is the slim board: the v2 stream and
 // GET /api/items?v=2. The concierge keeps the field — it quotes step outputs.
+//
+// HZ-360: `deployBlock` is the self-deploy's block ({blocked, startedAt,
+// latestEnd}, or null), and each item's `acceptWaiting` is the Accept that is
+// waiting on it ({source: 'human', actor, heldAt} | {source: 'autopilot'} |
+// null) — heldAccept.js, read once per snapshot.
 export function snapshot({ scope = 'active', estimates = true, checks = true, stepOutputs = true } = {}) {
+  const acceptWaiting = heldAccept.acceptWaitingLookup()
   return {
     repoUrl: getRepoUrl(),
     projects: store.listProjects({ checks }),
     activeProjectId: getActiveProjectId(),
     farm: orchestrator.getFarmState(),
     sync: github.getSyncState(),
-    items: store.listItems({ scope, stepOutputs }),
+    deployBlock: deployDrain.deployBlock(),
+    items: store.listItems({ scope, stepOutputs }).map((item) => ({ ...item, acceptWaiting: acceptWaiting(item) })),
     ...(estimates ? { durationEstimates: store.durationEstimates() } : {}),
   }
 }
@@ -1041,6 +1049,7 @@ export function buildApp({ logger = true, onRoute = null } = {}) {
   // route and the WhatsApp poll vote below — same merge/close/approve
   // sequence, only the actor label and the auth check at the call site
   // differ. Returns either a store.js-shaped result ({ok:true} /
+  // HZ-360's {ok:true, held:true, latestEnd} while a deploy drains /
   // {error:'not_found'|'not_at_gate'|'stale_step'}) or {error, status} for a
   // pre-merge/merge/close failure (502) or a pre-merge check already running
   // (409), which the routes send with that status.
@@ -1062,8 +1071,11 @@ export function buildApp({ logger = true, onRoute = null } = {}) {
       // The same row is what every client shows while the run goes.
       //
       // HZ-250: no new run while a self-deploy drains. Checked in the same
-      // tick as the claim, so a run either is refused or is in the drain's list.
-      if (deployDrain.isDeployBlocked()) return { error: deployDrain.DEPLOY_BLOCK_MESSAGE, status: 409, premerge: true }
+      // tick as the claim, so a run either is held or is in the drain's list.
+      // HZ-360: held, not refused — heldAccept.js presses this Approve once
+      // the block lifts. Its release calls back in here, so this check is
+      // also the backstop that nothing merges while blocked.
+      if (deployDrain.isDeployBlocked()) return heldAccept.hold(item, stepIndex, notes, actor)
       const claim = store.claimGateAction(id, 'premerge', {
         detail: `reading PR #${item.pr}`,
         timeoutMs: PREMERGE_CHECK_TIMEOUT_MS,

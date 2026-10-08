@@ -174,6 +174,11 @@ export function getDurationEstimates() {
   return null
 }
 
+// No self-deploys in mock mode (HZ-360).
+export function getDeployBlock() {
+  return null
+}
+
 export async function setProjectEnabled() {
   throw new Error('Projects are not available in mock mode')
 }

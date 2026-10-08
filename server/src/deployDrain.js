@@ -32,6 +32,11 @@
 // stopped with a WIP checkpoint by orchestrator.interruptStepsForDeploy(), and
 // redispatched at the same attempt once the drain ends — the restarted server
 // resumes items at boot, and onDrainEnd() covers a deploy that never restarts.
+//
+// HZ-360: deployBlock() is the board's read of the block (when it began, its
+// latest end), and a begin or an end notifies, so every tab shows "Queued to
+// merge" and clears it live. onDrainEnd() keeps a list: the orchestrator's
+// release first, then heldAccept.js's release of the Approves it held.
 
 import * as store from './store.js'
 import * as premerge from './premerge.js'
@@ -45,35 +50,54 @@ export const CANCEL_RESOLVE_TIMEOUT_MS = 35_000
 export const DEPLOY_BLOCK_MESSAGE = 'deploy in progress, try again in a few minutes'
 
 let blockedUntil = 0
+let blockedSince = 0
 let expiryTimer = null
-let drainEnded = () => {}
+const drainEnded = []
 
 export function isDeployBlocked(now = Date.now()) {
   return now < blockedUntil
 }
 
+// HZ-360: {blocked, startedAt, latestEnd} (ISO strings) while blocked, else
+// null. latestEnd is blockedUntil: the block can end sooner, never later.
+export function deployBlock(now = Date.now()) {
+  if (!isDeployBlocked(now)) return null
+  return {
+    blocked: true,
+    startedAt: blockedSince ? new Date(blockedSince).toISOString() : null,
+    latestEnd: new Date(blockedUntil).toISOString(),
+  }
+}
+
 // HZ-321: called once the block lifts — by endDrain() or by the TTL running
-// out — so held dispatches go out. One callback: the orchestrator's.
+// out — so held dispatches go out. HZ-360: callbacks run in the order they
+// were added (the orchestrator's first, server.js), each in its own try.
 export function onDrainEnd(cb) {
-  drainEnded = cb
+  drainEnded.push(cb)
 }
 
 function fireDrainEnded() {
   clearTimeout(expiryTimer)
   expiryTimer = null
-  try {
-    drainEnded()
-  } catch {
-    // a resume failure must never break the drain routes
+  blockedSince = 0
+  for (const cb of drainEnded) {
+    try {
+      cb()
+    } catch {
+      // a resume failure must never break the drain routes
+    }
   }
+  store.notifyChange()
 }
 
 // A second call while blocked extends the block, never shortens it.
 export function beginDrain({ ttlS }, now = Date.now()) {
+  if (!isDeployBlocked(now)) blockedSince = now
   blockedUntil = Math.max(blockedUntil, now + Math.min(ttlS, DEPLOY_BLOCK_MAX_TTL_S) * 1000)
   clearTimeout(expiryTimer)
   expiryTimer = setTimeout(fireDrainEnded, Math.max(blockedUntil - now, 0))
   expiryTimer.unref?.()
+  store.notifyChange()
   return {
     blocked: isDeployBlocked(now),
     blockedUntil: new Date(blockedUntil).toISOString(),
@@ -130,5 +154,6 @@ export async function interruptForDeploy(runs, { graceMs } = {}) {
 export function endDrain() {
   const pending = expiryTimer !== null
   blockedUntil = 0
+  blockedSince = 0
   if (pending) fireDrainEnded()
 }

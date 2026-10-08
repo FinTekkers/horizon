@@ -11,7 +11,7 @@ import {
 import { PHASE_ACCENT, PHASE_ACCENT_BG, priorityColor } from '../domain/lifecycle'
 import { FILTERS, visibleItems, hiddenCounts, matchCounts } from '../domain/filters'
 import { PRIMARY_PERSONA_AGENT, personaFor } from '../domain/personas'
-import { itemStatus, stateLabel, isDependencyBlocked } from '../domain/status'
+import { itemStatus, stateLabel, isDependencyBlocked, queuedToMerge } from '../domain/status'
 import { gateActionOf, gateActionBusy, elapsedText } from '../domain/gateAction'
 import { usualDurationHint } from '../domain/durationHint'
 import { deployQueueLabel } from '../domain/deployQueue'
@@ -40,7 +40,7 @@ function progressSegs(item) {
   })
 }
 
-function BoardCard({ item, projects, durationEstimates, now, onOpen, onApprove, onReject, onTogglePause, isGateBusy }) {
+function BoardCard({ item, projects, durationEstimates, deployBlock, viewerName, now, onOpen, onApprove, onReject, onTogglePause, isGateBusy }) {
   const closed = isClosed(item)
   const abandoned = isAbandoned(item)
   const rejected = item.rejected && !closed && !abandoned
@@ -60,9 +60,12 @@ function BoardCard({ item, projects, durationEstimates, now, onOpen, onApprove, 
   const atAccept = awaiting && item.cursor === ACCEPT_GATE_INDEX
   const gateAction = atAccept ? gateActionOf(item) : null
   const gateRunning = atAccept && isGateBusy(item)
+  // HZ-360: a Horizon deploy holds the merge. The gate shows why and who
+  // approved, with no Approve or Send back until the deploy ends.
+  const queued = queuedToMerge(item, deployBlock, viewerName)
   // HZ-228: how long the item has been in its current state, ticked by the
   // Board's one shared clock (`now`).
-  const elapsedLabel = stateLabel(item)
+  const elapsedLabel = stateLabel(item, { deployBlock })
   // HZ-230: 'usually ~20m' (or 'running long') from the snapshot's estimates.
   const hint = usualDurationHint(item, durationEstimates, now)
 
@@ -115,7 +118,7 @@ function BoardCard({ item, projects, durationEstimates, now, onOpen, onApprove, 
         >
           {personaFor(item, PRIMARY_PERSONA_AGENT).label}
         </span>
-        <StatusPill status={itemStatus(item)} />
+        <StatusPill status={itemStatus(item, false, { deployBlock })} />
       </div>
       {elapsedLabel && (
         <div className="card__elapsed">
@@ -137,16 +140,22 @@ function BoardCard({ item, projects, durationEstimates, now, onOpen, onApprove, 
             <LockIcon size={13} strokeWidth={2.4} />
             {cur.label}
           </div>
+          {queued && (
+            <div className="card__queued">
+              <div>Queued to merge: {queued.text}</div>
+              {queued.approvedBy && <div className="card__queued-by">{queued.approvedBy}</div>}
+            </div>
+          )}
           {gateAction && (
             <GateActionStatus
               action={gateAction}
               pr={item.pr}
               showElapsed={false}
-              onRetry={() => onApprove(item.id, cur.label)}
+              onRetry={queued ? undefined : () => onApprove(item.id, cur.label)}
               retryDisabled={gateRunning}
             />
           )}
-          {!gateRunning && (
+          {!gateRunning && !queued && (
             <div className="card__gate-actions">
               <button
                 className="btn-approve"
@@ -202,6 +211,8 @@ export default function Board({
   items,
   projects,
   durationEstimates,
+  deployBlock = null,
+  viewerName = null,
   onOpen,
   onApprove,
   onReject,
@@ -296,6 +307,8 @@ export default function Board({
                       item={item}
                       projects={projects}
                       durationEstimates={durationEstimates}
+                      deployBlock={deployBlock}
+                      viewerName={viewerName}
                       now={now.getTime()}
                       onOpen={onOpen}
                       onApprove={onApprove}

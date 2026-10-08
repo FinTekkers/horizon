@@ -415,3 +415,41 @@ test('subscribeStepOutputs opens the item\'s own stream, passes each `outputs` f
   close()
   expect(stream.close).toHaveBeenCalled()
 })
+
+// ---- HZ-360: the deploy block clears live, and a held Approve shows queued ----
+
+test('getDeployBlock follows the stream, and a delta with deployBlock: null clears it', async () => {
+  vi.stubGlobal('fetch', vi.fn(() => Promise.reject(new Error('no fetch expected'))))
+  const serverApi = await import('./serverApi')
+  serverApi.subscribe(() => {})
+  expect(serverApi.getDeployBlock()).toBeNull()
+
+  const block = { blocked: true, startedAt: '2026-10-08T19:12:52.000Z', latestEnd: '2026-10-08T19:37:52.000Z' }
+  const source = MockEventSource.instances.at(-1)
+  source.dispatch('snapshot', { items: [], deployBlock: block })
+  expect(serverApi.getDeployBlock()).toEqual(block)
+  // A delta about something else keeps the block.
+  source.dispatch('delta', { upserts: [], removed: [], top: { farm: { status: 'running' } } })
+  expect(serverApi.getDeployBlock()).toEqual(block)
+  // The drain ended: the server's null replaces the block, no reload.
+  source.dispatch('delta', { upserts: [], removed: [], top: { deployBlock: null } })
+  expect(serverApi.getDeployBlock()).toBeNull()
+})
+
+test('an Approve the server held for a deploy marks the item queued in this tab at once', async () => {
+  const serverApi = await import('./serverApi')
+  const changed = vi.fn()
+  serverApi.subscribe(changed)
+  seedItem({ id: 'X5', cursor: 13, pr: 360, pr_url: 'https://github.com/org/repo/pull/360', acceptWaiting: null })
+  const latestEnd = '2026-10-08T19:37:52.000Z'
+  const body = { ok: true, held: true, latestEnd, actor: 'Dana' }
+  vi.stubGlobal('fetch', vi.fn(() => Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve(body) })))
+  const openSpy = vi.spyOn(window, 'open').mockImplementation(() => {})
+  changed.mockClear()
+
+  await expect(serverApi.approveGate('X5', '')).resolves.toEqual(body)
+  expect(serverApi.getDeployBlock()).toEqual({ blocked: true, startedAt: null, latestEnd })
+  expect(serverApi.getItems().find((it) => it.id === 'X5').acceptWaiting).toEqual({ source: 'human', actor: 'Dana' })
+  expect(changed).toHaveBeenCalled()
+  expect(openSpy).not.toHaveBeenCalled()
+})
