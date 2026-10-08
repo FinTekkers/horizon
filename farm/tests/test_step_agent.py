@@ -205,6 +205,31 @@ def test_implement_step_passes_the_items_repo_to_run_checks(tmp_path, monkeypatc
     assert seen == ["acme/demo"]
 
 
+def test_a_failing_branch_run_is_in_the_implement_summary_and_the_check_still_passes(tmp_path, monkeypatch):
+    """HZ-349 metric 2: the branch line reaches step_run.output (what step 12
+    reads); the pass note itself is unchanged, so it still counts as checks."""
+    from farm import check_record
+
+    ws, origin = make_git_workspace(tmp_path)
+    monkeypatch.setattr(step_agent, "ensure_item_worktree", lambda repo, item_id: ws)
+    notes = []
+
+    def fake_run_checks(ws, log, **kw):
+        kw["branch_notes"].append("branch: test.sh failed (exit 1), 2/5 tests passed")
+        notes.append("1 repo check(s) passed")
+        return notes[-1]
+
+    monkeypatch.setattr(step_agent, "run_checks", fake_run_checks)
+    token = step_agent._RECORDED.set({"flakes": [], "test_runs": [], "branch_notes": []})
+    try:
+        result = execute(make_task(11, "Specialist agent implements", repo="acme/demo"))
+    finally:
+        step_agent._RECORDED.reset(token)
+
+    assert "1 repo check(s) passed · branch: test.sh failed (exit 1), 2/5 tests passed" in result["summary"]
+    assert check_record.checks_ran(notes[-1]) is True
+
+
 # ---- screenshot publishing (HZ-63) ----
 # Screenshots are gitignored now (no more committed PNGs), published instead
 # to a per-item git ref so two branches touching the same journey never

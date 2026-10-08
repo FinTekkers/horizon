@@ -1611,7 +1611,7 @@ def _execute(task: dict, guard: HandoffGuard) -> dict:
                 branch,
                 conflicted,
                 cause=CAUSE_CHECKS_FAILED,
-                detail=exc.digest or str(exc),
+                detail="\n".join([exc.digest or str(exc), *(_recording()["branch_notes"] or [])]),
                 lease_sha=prepared.lease_sha,
             )
             raise
@@ -1622,7 +1622,12 @@ def _execute(task: dict, guard: HandoffGuard) -> dict:
             artifacts.update(fix_diff_report(ws, scope.get("base_sha")))
         # finalize_branch returns branch/files_changed, not an artifact_md, so
         # the summary is this path's only note surface.
-        summary = stamp_notes(f"{summary} · {check_note}"[:SUMMARY_MAX_CHARS], notes, SUMMARY_MAX_CHARS)
+        # HZ-349: the branch run's lines join the summary (step 12 reads it)
+        # but never check_note, whose exact text check_record reads. The
+        # agent's own text is cut first, so those lines are what survives.
+        checked = " · ".join([check_note, *(_recording()["branch_notes"] or [])])
+        summary = f"{summary[: max(SUMMARY_MAX_CHARS - len(checked) - 3, 0)]} · {checked}"[:SUMMARY_MAX_CHARS]
+        summary = stamp_notes(summary, notes, SUMMARY_MAX_CHARS)
         return {"summary": summary, "artifacts": artifacts}
 
     # Automated review (HZ-30): two independent read-only passes over the
@@ -1892,14 +1897,16 @@ RESULT_POST_RETRY_S = 10
 # "test_runs": []}, made by main() for its one run, so nothing can leak into
 # another — carried on the result to farmd (farmd._forward_result): flakes on
 # /complete or /fail, test_runs to the server's test-runs route. None (no
-# main(), e.g. a test calling execute()) records nothing.
+# main(), e.g. a test calling execute()) records nothing. HZ-349:
+# branch_notes (the branch run's lines) go into the step summary instead and
+# never ride on the result.
 _RECORDED: contextvars.ContextVar[dict | None] = contextvars.ContextVar("step_recorded", default=None)
 
 
 def _recording() -> dict:
-    """run_checks()'s flakes/test_runs arguments for this run."""
+    """run_checks()'s flakes/test_runs/branch_notes arguments for this run."""
     recorded = _RECORDED.get()
-    return {"flakes": None, "test_runs": None} if recorded is None else recorded
+    return {"flakes": None, "test_runs": None, "branch_notes": None} if recorded is None else recorded
 
 
 def post_result(result: dict) -> None:
@@ -1929,7 +1936,7 @@ def main() -> int:
     pid_path.write_text(str(os.getpid()))
     pause.install_sigterm_handler(outcome_path)
 
-    recorded = {"flakes": [], "test_runs": []}
+    recorded = {"flakes": [], "test_runs": [], "branch_notes": []}
     token = _RECORDED.set(recorded)
     try:
         log(f"run {run_id}: {task['step']['label']} for {task['item']['id']}")
@@ -1958,7 +1965,7 @@ def main() -> int:
     finally:
         _RECORDED.reset(token)
     # A flake on one command survives a real failure on a later one.
-    result.update({key: value for key, value in recorded.items() if value})
+    result.update({key: value for key, value in recorded.items() if value and key != "branch_notes"})
 
     if pause.pending() and not pause.reported():
         # The pause landed after the work's last interruptible region (e.g.

@@ -164,6 +164,39 @@ test("a run's own rerun pair is left to the farm's rerun flake, never doubled fr
   assert.equal(db.prepare("SELECT COUNT(*) AS n FROM check_flake WHERE repo = 'acme/rerun'").get().n, 1)
 })
 
+// ---- HZ-349: main and branch runs are stored apart ----
+
+test("a 'branch' entry is stored as run_label 'branch' with its exit codes, and never makes a flake with main", async () => {
+  item('TR-349', 'acme/branch')
+  const main = { ...run('cr-main', [row('ledger posts', 'pass')]), label: 'main', commands: [{ command: 'sh -c npm test', attempt: 1, exit_code: 0 }] }
+  const branch = {
+    ...run('cr-branch', [row('ledger posts', 'fail', { command: 'sh -c cat scripts/checks/test.sh | sh' })]),
+    label: 'branch',
+    commands: [{ command: 'sh -c cat scripts/checks/test.sh | sh', attempt: 1, exit_code: 1 }],
+  }
+  const unlabelled = run('cr-old-farm', [row('older farm', 'pass')])
+
+  const result = await record('TR-349', [main, branch, unlabelled])
+
+  assert.equal(result.flakes, 0)
+  assert.equal(db.prepare("SELECT COUNT(*) AS n FROM check_flake WHERE repo = 'acme/branch'").get().n, 0)
+  const rows = db.prepare("SELECT check_run, run_label, exit_code FROM test_result WHERE item_id = 'TR-349' ORDER BY id").all()
+  assert.deepEqual(rows, [
+    { check_run: 'cr-main', run_label: 'main', exit_code: 0 },
+    { check_run: 'cr-branch', run_label: 'branch', exit_code: 1 },
+    { check_run: 'cr-old-farm', run_label: 'main', exit_code: null },
+  ])
+  // A later main fail on the same tree flips only against main's pass.
+  assert.equal((await record('TR-349', [{ ...run('cr-main-2', [row('ledger posts', 'fail')]), label: 'main' }])).flakes, 1)
+  assert.deepEqual(
+    testResults.testHistory('acme/branch').tests.map((t) => [t.test, t.runs]).sort(),
+    [
+      ['ledger posts', 2],
+      ['older farm', 1],
+    ],
+  )
+})
+
 // ---- metric 6: the history API ----
 
 test('GET /api/admin/test-history gives each test its runs, failures, flakes, last seen, median and p95', async () => {

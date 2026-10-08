@@ -9,6 +9,16 @@ step's own check-runner output), not the implement step's self-reported
 summary. Check specifically:
 - **Regression tests ran** — not just new tests; look for evidence the full
   suite ran, not a subset.
+
+Test evidence — which tests ran and how they ended — comes ONLY from the
+`Stored test results (step record)` input (HZ-349):
+- Files in the worktree such as `test-results/`, `build/test-results/` or
+  `playwright-report/` are **not** evidence that a run happened. A later run
+  may have overwritten them. Never count, list or judge results from them.
+- Reading code and test files to judge coverage is unaffected.
+- `main` results decide whether the checks passed. A failing `branch` run
+  (the item's own changed `scripts/checks/`) is a finding, labelled
+  `branch`. It is not the check's verdict.
 - **New code has unit test coverage** — read the diff; every new function or
   branch of real logic needs a test that would fail without it.
 - **User-facing changes have an end-to-end test** — if the change alters what
