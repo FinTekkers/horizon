@@ -1601,7 +1601,12 @@ export function buildApp({ logger = true, onRoute = null } = {}) {
         body: {
           type: 'object',
           required: ['reason'],
-          properties: { reason: { type: 'string', minLength: 1, maxLength: 2000 } },
+          properties: {
+            reason: { type: 'string', minLength: 1, maxLength: 2000 },
+            // HZ-354: also drop every link where this item is the blocker, in
+            // the same write as the abandon. Optional; absent means keep them.
+            removeDependentLinks: { type: 'boolean' },
+          },
         },
         response: { 200: OK_OBJECT, 401: ERROR_OBJECT, 404: ERROR_OBJECT, 409: ERROR_OBJECT },
         security: HUMAN_GATE_SECURITY,
@@ -1611,7 +1616,9 @@ export function buildApp({ logger = true, onRoute = null } = {}) {
       if (!humanAuthorized(request, reply)) return
       const { id } = request.params
       const item = store.getItem(id)
-      const result = store.abandonItem(id, request.body.reason, actorOf(request))
+      const result = store.abandonItem(id, request.body.reason, actorOf(request), {
+        removeDependentLinks: request.body.removeDependentLinks === true,
+      })
       if (result.error) return send(reply, result)
       if (item?.repo && item.issue != null) {
         try {

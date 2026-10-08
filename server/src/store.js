@@ -1354,7 +1354,13 @@ export function restartPhase(id, phase, reason, actor = 'You') {
 // GitHub close: closing the issue fires Horizon's own issues.closed webhook
 // back at itself, and upsertFromGithub must see abandoned_at already set or
 // it would race to reclassify this item as completed instead.
-export function abandonItem(id, reason, actor = 'You') {
+//
+// HZ-354: removeDependentLinks also drops every link where this item is the
+// blocker, in the same transaction as the abandon — both land or neither
+// does. Only those edges go: this item's own "blocked by" links and every
+// dependent row stay as they are. Each unlinked dependent gets one event
+// naming this item, closed or abandoned dependents included.
+export function abandonItem(id, reason, actor = 'You', { removeDependentLinks = false } = {}) {
   const it = getItem(id)
   if (!it) return { error: 'not_found' }
   if (disabledProject(it)) return { error: 'project_not_active' }
@@ -1366,15 +1372,35 @@ export function abandonItem(id, reason, actor = 'You') {
   // Stop dispatch first: a superseded/cancelled run must not keep burning a
   // farm concurrency slot on work that's about to be marked abandoned.
   agentRunner.cancel(id, 'cancelled')
-  db.prepare(
-    `UPDATE work_item SET abandoned_at = datetime('now'), abandoned_reason = ?, abandoned_by = ?, ${touch} WHERE id = ?`,
-  ).run(trimmed, actor, id)
-  addEvent(id, { who: actor, text: `abandoned this item: ${trimmed}`, color: '#9C333E', initials: 'YOU' })
-  // HZ-78: a dependent can never wait this blocker out — surface it on every
-  // live dependent instead of leaving it silently stuck (see escalateDependents).
-  escalateDependents(id, actor)
+  const removedLinks = db.transaction(() => {
+    db.prepare(
+      `UPDATE work_item SET abandoned_at = datetime('now'), abandoned_reason = ?, abandoned_by = ?, ${touch} WHERE id = ?`,
+    ).run(trimmed, actor, id)
+    addEvent(id, { who: actor, text: `abandoned this item: ${trimmed}`, color: '#9C333E', initials: 'YOU' })
+    if (!removeDependentLinks) {
+      // HZ-78: a dependent can never wait this blocker out — surface it on every
+      // live dependent instead of leaving it silently stuck (see escalateDependents).
+      escalateDependents(id, actor)
+      return []
+    }
+    const dependentIds = selectDependentIds.all(id).map((row) => row.item_id)
+    db.prepare('DELETE FROM work_item_dependency WHERE depends_on_id = ?').run(id)
+    for (const depId of dependentIds) {
+      addEvent(depId, {
+        who: actor,
+        text: `removed the dependency on ${id} (${it.title}): it was abandoned`,
+        color: '#5E4380',
+        initials: 'YOU',
+      })
+    }
+    return dependentIds
+  })()
   notify()
-  return { ok: true }
+  if (!removeDependentLinks) return { ok: true }
+  // Same as removeDependency: a dependent whose last open blocker just went
+  // is runnable again and must start without waiting for another trigger.
+  for (const depId of removedLinks) agentRunner.kick(depId)
+  return { ok: true, removedLinks }
 }
 
 // Standalone feedback (UI form or an ingested GitHub comment). If the item is

@@ -560,13 +560,28 @@ export function restartPhase(id, phase, reason) {
 }
 
 // Soft delete (HZ-59) — mock mirror of store.abandonItem: stops dispatch by
-// clearing the mock agent timer and setting abandoned_at.
-export function abandonItem(id, reason) {
+// clearing the mock agent timer and setting abandoned_at. HZ-354:
+// removeDependentLinks drops every edge where this item is the blocker, on
+// both sides, with one event per dependent.
+export function abandonItem(id, reason, { removeDependentLinks = false } = {}) {
   const it = items.find((x) => x.id === id)
   if (!it || isClosed(it) || it.abandoned_at) return
   clearTimeout(timers[id])
   const trimmed = (reason || '').trim()
   update(id, (x) => ({ ...x, abandoned_at: new Date().toISOString(), abandoned_reason: trimmed, abandoned_by: 'You' }))
   pushEvent(id, { who: 'You', text: `abandoned this item: ${trimmed}`, color: '#9C333E', initials: 'YOU' })
+  if (!removeDependentLinks) return
+  const dependentIds = (it.dependents || []).map((d) => d.id)
+  update(id, (x) => ({ ...x, dependents: [] }))
+  for (const depId of dependentIds) {
+    if (!items.some((x) => x.id === depId)) continue
+    update(depId, (x) => {
+      const blockedBy = (x.blockedBy || []).filter((b) => b.id !== id)
+      return { ...x, blockedBy, blocked: blockedBy.length > 0, blockedByAbandoned: blockedBy.some((b) => b.abandoned) }
+    })
+    pushEvent(depId, { who: 'You', text: `removed the dependency on ${id} (${it.title}): it was abandoned`, color: '#5E4380', initials: 'YOU' })
+    const dep = items.find((x) => x.id === depId)
+    if (!dep.blocked && !dep.abandoned_at) runAgents(depId)
+  }
 }
 

@@ -181,12 +181,6 @@ test('two blockers plus onRemove show exactly two remove controls', () => {
   expect(utils.getByRole('button', { name: 'Remove dependency on X-B2' })).toBeTruthy()
 })
 
-test('the Blocks list renders no remove control', () => {
-  const utils = render(<DependencyBadge item={twoBlockers} onRemove={vi.fn()} />)
-  const blocks = utils.container.querySelector('.dep-detail__section--dependents')
-  expect(blocks.querySelector('button')).toBeNull()
-  expect(utils.queryByRole('button', { name: 'Remove dependency on X-D' })).toBeNull()
-})
 
 test('the compact form renders no remove control even when onRemove is passed', () => {
   const utils = render(<DependencyBadge item={twoBlockers} compact onRemove={vi.fn()} />)
@@ -234,4 +228,56 @@ test('a rejected remove keeps the edge listed and shows the error', async () => 
   expect(alert.textContent).toMatch(/not_found/)
   expect(utils.getByText('X-B1')).toBeTruthy()
   expect(utils.getByRole('button', { name: 'Remove dependency on X-B1' }).disabled).toBe(false)
+})
+
+// ---- HZ-354: an X beside each "Blocks" entry too ----
+
+test('each Blocks entry has an X; clicking it removes that dependent\'s link to this item through the same onRemove', () => {
+  const onRemove = vi.fn().mockResolvedValue({ ok: true })
+  const item = {
+    id: 'X-3',
+    blockedBy: [],
+    dependents: [
+      { id: 'X-D', title: 'The waiting item', abandoned: false },
+      { id: 'X-E', title: 'Another waiting item', abandoned: false },
+    ],
+  }
+  const utils = render(<DependencyBadge item={item} onRemove={onRemove} />)
+  const blocks = utils.container.querySelector('.dep-detail__section--dependents')
+  expect(blocks.querySelectorAll('button')).toHaveLength(2)
+  fireEvent.click(utils.getByRole('button', { name: "Remove X-D's dependency on X-3" }))
+  expect(onRemove).toHaveBeenCalledTimes(1)
+  expect(onRemove).toHaveBeenCalledWith('X-D', 'X-3')
+  expect(utils.getByRole('button', { name: "Remove X-E's dependency on X-3" }).disabled).toBe(false)
+})
+
+test('a rejected Blocks remove keeps the dependent listed and shows the error inline', async () => {
+  // e.g. project_not_active when the dependent's project is disabled.
+  const onRemove = vi.fn().mockRejectedValue(new Error('project_not_active'))
+  const utils = render(<DependencyBadge item={dependentsOnly} onRemove={onRemove} />)
+  fireEvent.click(utils.getByRole('button', { name: "Remove X-D's dependency on X-3" }))
+  const alert = await utils.findByRole('alert')
+  expect(alert.textContent).toBe("Couldn't remove: project_not_active")
+  expect(utils.getByText('X-D')).toBeTruthy()
+  expect(utils.getByRole('button', { name: "Remove X-D's dependency on X-3" }).disabled).toBe(false)
+})
+
+test('the Blocks list renders no remove control without onRemove', () => {
+  const utils = render(<DependencyBadge item={dependentsOnly} />)
+  expect(utils.container.querySelector('.dep-detail__section--dependents button')).toBeNull()
+})
+
+test('a kept link to an abandoned blocker still reads "Blocked by <id> (abandoned)" with its X', () => {
+  const onRemove = vi.fn().mockResolvedValue({ ok: true })
+  const item = { id: 'X-6', blockedBy: [{ id: 'X-GONE', title: 'Abandoned blocker', abandoned: true }], dependents: [] }
+  const full = render(<DependencyBadge item={item} onRemove={onRemove} />)
+  const section = full.container.querySelector('.dep-detail__section--blocked')
+  expect(section.textContent).toContain('Blocked by')
+  expect(section.textContent).toContain('X-GONE')
+  expect(section.textContent).toContain('abandoned')
+  fireEvent.click(full.getByRole('button', { name: 'Remove dependency on X-GONE' }))
+  expect(onRemove).toHaveBeenCalledWith('X-6', 'X-GONE')
+  cleanup()
+  const compact = render(<DependencyBadge item={item} compact />)
+  expect(compact.container.querySelector('.dep-pill--blocked').textContent).toBe('Blocked by X-GONE (abandoned)')
 })
