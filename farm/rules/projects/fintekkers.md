@@ -31,9 +31,16 @@ listening on 127.0.0.1: broker 8085, valuation 8090, price 8083, ledger
   `npm install --ignore-scripts` in Node projects that depend on it.
 - If brew-installed tools aren't on PATH, run
   `eval "$(/opt/homebrew/bin/brew shellenv)"` first.
-- Database credentials are never written down: the local Postgres superuser
-  password comes from the `$POSTGRES_PASSWORD` environment variable, e.g.
-  `DATABASE_URL=postgresql://postgres:$POSTGRES_PASSWORD@localhost:5432/postgres`.
+- Database credentials are never written down: they come from environment
+  variables, never from code or tracked files.
+- **One set of database variables per service, named with that service's
+  prefix** (owner ruling, 2026-10-07). ledger-service uses `LEDGER_DB_URL`
+  (`postgresql://<host>:<port>/<database>`, no credentials in it),
+  `LEDGER_DB_USER` and `LEDGER_DB_PASSWORD`. Another service uses its own
+  prefix the same way. Never `DATABASE_URL` or `POSTGRES_*`, and never two
+  sets for one service. Changing a service's variable names needs a host step
+  (the values live in `/etc/fintekkers/<service>.env`): say so in the item and
+  the PR, and keep the old names working until the host is updated.
 
 ## Architectural constraints
 
@@ -113,9 +120,8 @@ a green health check on one instance never means the whole path is healthy.
   SSR shell rendered and the specific client bundle it references actually
   serves — the reference example for "deep verification" on this project.
 - **RDS / Postgres**: production credentials and endpoint are environment
-  variables on each service's host, never literal values here — reference
-  as `$POSTGRES_PASSWORD` / `$DATABASE_URL`, same convention as the local dev
-  credential below. Do not assume the local dev Postgres (Homebrew, above)
+  variables on each service's host, never literal values here — use the
+  service-prefixed variables above (e.g. `$LEDGER_DB_URL`). Do not assume the local dev Postgres (Homebrew, above)
   and production RDS share an endpoint or credential.
 - Credentials/DNS not captured above (AWS account, GCP project for any
   FinTekkers-side API keys, Route 53 zone) are held outside this repo — if a
