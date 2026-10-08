@@ -151,7 +151,13 @@ function targetServices(target) {
 async function checkService(target, { exec, remaining, helpers }) {
   const services = targetServices(target)
   if (!services) return fail('bad extraServices')
-  if (services.length === 0) return pass('no service: this target publishes to package registries')
+  if (services.length === 0) {
+    return pass(
+      target.healthCheckType === 'deploy-log'
+        ? 'no service: this target restarts nothing'
+        : 'no service: this target publishes to package registries',
+    )
+  }
   for (const service of services) {
     if (!helpers.serviceAllowed(service)) return fail(serviceNotAllowedReason(service))
   }
@@ -177,6 +183,9 @@ async function checkSudo(target, { exec, remaining, helpers }) {
 }
 
 async function checkHealth(target, { fetchImpl, timeoutMs }) {
+  // HZ-353: a code-only target's health is its deploy script's DEPLOY OK
+  // line. Its healthUrl (the repo's page, maybe private) is never fetched.
+  if (target.healthCheckType === 'deploy-log') return pass('health is the deploy log (DEPLOY OK)')
   let url
   try {
     url = new URL(target.healthUrl)

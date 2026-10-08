@@ -27,6 +27,10 @@ export function deployWaitFor(repoFullName, { startedAt = null, now = Date.now()
     // The deploy script only reports DEPLOY OK once the registries published,
     // so the release going live is the whole check.
     wait.health_check_type = 'registry-publish'
+  } else if (target.healthCheckType === 'deploy-log') {
+    // HZ-353: a code-only deploy restarts nothing; its script logs DEPLOY OK
+    // only once the tag is installed and its offline tests passed.
+    wait.health_check_type = 'deploy-log'
   }
   return wait
 }

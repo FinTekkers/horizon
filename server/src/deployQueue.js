@@ -15,7 +15,8 @@
 //
 // The queue decides when to publish and with which tag — never what a deploy
 // does: the scripts, sudoers and webhook are untouched. Library targets
-// (registry-publish) keep the per-item path.
+// (registry-publish) keep the per-item path. Code-only targets (deploy-log,
+// HZ-353) restart nothing but still deploy a checkout, so they queue.
 
 import { db } from './db.js'
 import { DEPLOY_BATCH_S, DEPLOY_WAIT_MS, FARM_STEP_TIMEOUT_MS } from './config.js'
