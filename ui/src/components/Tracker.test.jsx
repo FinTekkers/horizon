@@ -474,6 +474,74 @@ test('an unpaused item shows no pause banner', () => {
   expect(container.querySelector('.pause-banner')).toBeNull()
 })
 
+// ---- HZ-343: the banner finds the pause event under newer events, and a
+// multi-line check-failure cause still renders ----
+
+const FORWARD_REFUSED_EVENT = {
+  created_at: '2026-10-07 10:05:00',
+  text: 'forward to “Accept the code” refused — the review still has blocking findings; “Specialist agent implements” restarts with the review findings',
+}
+const LS98_SECRETS_LINE = 'bash: scripts/checks/secrets.sh: No such file or directory'
+
+function failurePauseEvent(cause) {
+  return { created_at: '2026-10-07 10:00:00', text: `agent step failed: ${cause} — item paused; resume to retry` }
+}
+
+test('an LS-98-shaped item shows its multi-line cause under two newer forward-refused events', () => {
+  const cause = ['repo checks failed: ./gradlew check exited 127', '> Task :test', LS98_SECRETS_LINE, 'BUILD FAILED in 4s'].join('\n')
+  const item = { ...baseItem, paused: true, events: [FORWARD_REFUSED_EVENT, FORWARD_REFUSED_EVENT, failurePauseEvent(cause)] }
+  const { container, queryByText } = renderTracker(item)
+  expect(container.querySelector('.pause-banner__detail').textContent).toContain(LS98_SECRETS_LINE)
+  expect(queryByText(/No failure details were recorded/)).toBeNull()
+})
+
+test('the "No failure details" fallback shows only when no pause event exists since the last resume', () => {
+  const withoutPause = { ...baseItem, paused: true, events: [FORWARD_REFUSED_EVENT, { created_at: '2026-10-07 09:00:00', text: 'resumed work' }, failurePauseEvent('old cause')] }
+  const absent = renderTracker(withoutPause)
+  expect(absent.getByText(/No failure details were recorded for this pause/)).toBeTruthy()
+  expect(absent.container.querySelector('.pause-banner__detail').textContent).not.toContain('old cause')
+  cleanup()
+
+  const withPause = { ...baseItem, paused: true, events: [FORWARD_REFUSED_EVENT, failurePauseEvent('new cause')] }
+  const present = renderTracker(withPause)
+  expect(present.container.querySelector('.pause-banner__detail').textContent).toContain('new cause')
+  expect(present.queryByText(/No failure details were recorded/)).toBeNull()
+})
+
+test('a manual pause under newer events still shows no pause banner', () => {
+  const item = {
+    ...baseItem,
+    paused: true,
+    events: [FORWARD_REFUSED_EVENT, FORWARD_REFUSED_EVENT, { created_at: '2026-10-07 10:00:00', text: 'paused agent work on this item' }],
+  }
+  const { container } = renderTracker(item)
+  expect(container.querySelector('.pause-banner')).toBeNull()
+})
+
+test('a cause containing markup renders as literal text, never as HTML', () => {
+  const item = { ...baseItem, paused: true, events: [failurePauseEvent('<b>x</b>')] }
+  const { container } = renderTracker(item)
+  expect(container.querySelector('.pause-banner__detail').textContent).toContain('<b>x</b>')
+  expect(container.querySelector('.pause-banner b')).toBeNull()
+})
+
+test('the retry count comes from the retries just below a pause that is not the newest event', () => {
+  const cause = `repo checks failed\n${LS98_SECRETS_LINE}`
+  const item = {
+    ...baseItem,
+    paused: true,
+    events: [
+      FORWARD_REFUSED_EVENT,
+      FORWARD_REFUSED_EVENT,
+      failurePauseEvent(cause),
+      { created_at: '2026-10-07 09:59:00', text: `transient failure (${REASON.TIMEOUT}): ${cause} — auto-retrying (2/3)` },
+      { created_at: '2026-10-07 09:58:00', text: `transient failure (${REASON.TIMEOUT}): ${cause} — auto-retrying (1/3)` },
+    ],
+  }
+  const { container } = renderTracker(item)
+  expect(container.querySelector('.pause-banner__meta').textContent).toContain('Auto-retried 2 times')
+})
+
 // ---- HZ-25: real event colors (server-persisted hex) resolve through the theme ----
 
 test('a real event with a legacy server hex color renders the themed token, not the raw hex, under dark mode', () => {

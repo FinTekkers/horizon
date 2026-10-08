@@ -56,8 +56,16 @@ change still needs a reviewed PR, and is never editable outside git.
 
 ## Rollback
 
-Deploys never auto-rollback. A failed health check leaves the bad code live
-and logs `DEPLOY FAILED: health-check ...` to
-`~/.horizon/<stateKey>/self-deploy.log`. Manual rollback: re-run the
-target's own script with the tag from `~/.horizon/<stateKey>/last-good-tag`
-(see `infra/host/DEPLOY.md` for the exact command).
+gRPC targets (`deploy-grpc-service.sh` and its ledger, valuation, broker and
+price wrappers) auto-roll back once: a failed health check logs `DEPLOY
+FAILED: health-check ...`, then the script redeploys the `last-good-tag`
+commit under the same lock and logs `ROLLBACK OK`, `ROLLBACK FAILED (<stage>)`
+or `ROLLBACK SKIPPED` to `~/.horizon/<stateKey>/self-deploy.log`. The deploy
+still counts as failed and `last-good-tag` is never moved to the bad tag.
+
+Other targets (`horizon`, `ui-service`) still never auto-rollback: a failed
+health check leaves the bad code live and logs `DEPLOY FAILED: health-check
+...`. Manual rollback (also for a gRPC target whose rollback failed): re-run
+the target's own script with the tag from
+`~/.horizon/<stateKey>/last-good-tag` (see `infra/host/DEPLOY.md` for the
+exact command).

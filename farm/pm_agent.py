@@ -66,9 +66,16 @@ PERSONA_AGENT_MAX_CHARS = 40
 # only fires on a runaway reply, never on a real one.
 MAX_PERSONA_SLOTS = 8
 
+# HZ-345: the line budgets for metric and guardrails, from domain/fields.json's
+# maxLines. Only the step that owns a field is held to its line budget — the
+# items already past steps 1-2 keep their text whatever its length.
+LINE_LIMITS = fields.line_limits(fields.FIELDS)
+LINE_BUDGETED_STEPS = {"Define how we measure success": "metric", "Set guardrails": "guardrails"}
+
 # The placeholder farm/roles/pm.md carries in place of the numbers. Substituted
 # below so the prompt cannot state a budget validate() no longer enforces.
 FIELD_LIMITS_PLACEHOLDER = "{{FIELD_LIMITS}}"
+LINE_LIMITS_PLACEHOLDER = "{{LINE_LIMITS}}"
 
 
 def render_role_prompt(source: str, limits: dict) -> str:
@@ -86,10 +93,19 @@ def render_role_prompt(source: str, limits: dict) -> str:
             "the PM agent would be given no field limits at all"
         )
     rendered = ", ".join(f"{column} <={limit} chars" for column, limit in limits.items())
-    return source.replace(FIELD_LIMITS_PLACEHOLDER, rendered)
+    # HZ-345: the line budgets, from LINE_LIMITS. pm.md is checked for this
+    # placeholder below, where ROLE_PROMPT is built.
+    lines = ", ".join(f"{column} <={limit} lines" for column, limit in LINE_LIMITS.items())
+    return source.replace(FIELD_LIMITS_PLACEHOLDER, rendered).replace(LINE_LIMITS_PLACEHOLDER, lines)
 
 
-ROLE_PROMPT = render_role_prompt((Path(__file__).parent / "roles" / "pm.md").read_text(), PATCH_FIELDS)
+_ROLE_SOURCE = (Path(__file__).parent / "roles" / "pm.md").read_text()
+if LINE_LIMITS_PLACEHOLDER not in _ROLE_SOURCE:
+    raise RuntimeError(
+        f"farm/roles/pm.md no longer carries {LINE_LIMITS_PLACEHOLDER} — "
+        "the PM agent would be given no line budgets at all"
+    )
+ROLE_PROMPT = render_role_prompt(_ROLE_SOURCE, PATCH_FIELDS)
 FARMD = f"http://127.0.0.1:{FARM_PORT}"
 
 # Write-side: a pathological-payload guard, not a working limit — the agent's
@@ -465,14 +481,20 @@ def validate(parsed: dict) -> tuple[str, dict, str | None]:
     return summary[:SUMMARY_MAX_CHARS], patch, artifact
 
 
-def _reject_over_budget(parsed: dict) -> None:
+def _reject_over_budget(parsed: dict, step_label: str | None = None, current: dict | None = None) -> None:
     """Raise FieldOverBudgetError for the first budgeted field over its limit.
 
     Measured on the stripped value, the same normalisation validate() applies,
-    so whitespace padding never counts against the budget."""
+    so whitespace padding never counts against the budget.
+
+    HZ-345: on the step that owns metric or guardrails (LINE_BUDGETED_STEPS),
+    that field is also held to its line budget. A reply that leaves an
+    over-budget field unpatched is rejected too, or the item would keep every
+    line. Every other step is never line-checked, so items already past steps
+    1-2 keep their text."""
     raw_patch = parsed.get("patch") if isinstance(parsed, dict) else None
     if not isinstance(raw_patch, dict):
-        return
+        raw_patch = {}
     for key in BUDGETED_PATCH_FIELDS:
         value = raw_patch.get(key)
         if not isinstance(value, str):
@@ -483,14 +505,55 @@ def _reject_over_budget(parsed: dict) -> None:
                 f"{key} is {length} chars; budget is {limit} chars (domain/fields.json). "
                 "Tighten the wording to fit; do not drop lines"
             )
+    key = LINE_BUDGETED_STEPS.get(step_label)
+    if key is None:
+        return
+    limit = LINE_LIMITS[key]
+    value = raw_patch.get(key)
+    if isinstance(value, str) and value.strip():
+        lines = fields.count_criteria_lines(value)
+        if lines > limit:
+            raise FieldOverBudgetError(
+                f"{key} has {lines} lines; budget is {limit} lines (domain/fields.json). "
+                "Merge or drop lines and name them in your summary"
+            )
+        return
+    held = fields.count_criteria_lines((current or {}).get(key))
+    if held > limit:
+        raise FieldOverBudgetError(
+            f"{key} has {held} lines in the item and your reply did not patch it; budget is {limit} lines "
+            f"(domain/fields.json). Return a merged or trimmed {key} and name the merged or dropped lines "
+            "in your summary"
+        )
 
 
-def validate_within_budget(parsed: dict) -> tuple[str, dict, str | None]:
+def validate_within_budget(
+    parsed: dict, step_label: str | None = None, current: dict | None = None
+) -> tuple[str, dict, str | None]:
     """validate(), but an over-budget metric or guardrails is rejected rather
     than cut and marked (HZ-264). The budget check runs FIRST: after validate()
     the value would already be cut, and the cut is what this exists to stop."""
-    _reject_over_budget(parsed)
+    _reject_over_budget(parsed, step_label, current)
     return validate(parsed)
+
+
+def stamp_dropped_lines(summary: str, field: str, before, after) -> str:
+    """HZ-345: name, in the summary, the input lines a line-budgeted step did
+    not keep word for word — merged lines are reworded, so they show here too.
+    Written by the script, so the summary names them whatever the model wrote.
+    Only fires when the input was over budget; room is reserved inside
+    SUMMARY_MAX_CHARS, as stamp_notes() does."""
+    before_lines = fields.criteria_lines(before)
+    if len(before_lines) <= LINE_LIMITS[field]:
+        return summary
+    kept = set(fields.criteria_lines(after))
+    dropped = [str(n) for n, line in enumerate(before_lines, 1) if line not in kept]
+    if not dropped:
+        return summary
+    stamp = f" — merged or dropped {field} lines {', '.join(dropped)} of {len(before_lines)}"
+    if len(stamp) >= SUMMARY_MAX_CHARS:
+        return stamp[:SUMMARY_MAX_CHARS]
+    return summary[: SUMMARY_MAX_CHARS - len(stamp)] + stamp
 
 
 def process(task: dict, project_slug: str) -> bool:
@@ -534,7 +597,9 @@ def process(task: dict, project_slug: str) -> bool:
             return retry["result"]
 
         (summary, patch, artifact), notes = parse_agent_reply(
-            reply["result"], retry_once, validate=validate_within_budget
+            reply["result"],
+            retry_once,
+            validate=lambda parsed: validate_within_budget(parsed, step_label, task["item"]),
         )
 
         # Script-stamped feedback trail, same as the ephemeral agents.
@@ -551,6 +616,9 @@ def process(task: dict, project_slug: str) -> bool:
         summary = stamp_notes(summary, notes, SUMMARY_MAX_CHARS)
         if artifact:
             artifact = stamp_notes_artifact(artifact, notes, WRITE_ARTIFACT_SANITY_CEILING_CHARS)
+        budgeted = LINE_BUDGETED_STEPS.get(step_label)
+        if budgeted and budgeted in patch:
+            summary = stamp_dropped_lines(summary, budgeted, task["item"].get(budgeted), patch[budgeted])
 
         result = {"run_id": run_id, "ok": True, "summary": summary, "patch": patch}
         if artifact:

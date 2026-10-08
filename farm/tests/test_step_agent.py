@@ -872,7 +872,8 @@ def test_review_step_merges_two_passes_into_one_structured_verdict(tmp_path, mon
     code_json = {
         "summary": "code review done",
         "verdict": "fail",
-        "findings": [{"file": "app.py", "line": 1, "severity": "block", "detail": "no guardrail check"}],
+        # A defect, not a guardrail: an unquoted guardrail block is downgraded (HZ-345).
+        "findings": [{"file": "app.py", "line": 1, "severity": "block", "detail": "crashes on an empty file"}],
         "artifact_md": "## Code review\n**fail**",
     }
     qa_json = {
@@ -895,7 +896,7 @@ def test_review_step_merges_two_passes_into_one_structured_verdict(tmp_path, mon
     assert verdict["qa_review"]["e2e_test_present"] is True
     assert "code review failed" in result["summary"]
     assert "QA review passed" in result["summary"]
-    assert "no guardrail check" in result["summary"]
+    assert "crashes on an empty file" in result["summary"]
     assert "## Code review" in result["artifacts"]["artifact_md"]
     assert "## QA review" in result["artifacts"]["artifact_md"]
 

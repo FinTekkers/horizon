@@ -25,7 +25,7 @@ import {
   requiredStepIndex,
 } from '../../domain/js/lifecycle.js'
 import { AUTO_RETRY_REASONS, REASON } from '../../domain/js/reasons.js'
-import { patchLimits } from '../../domain/js/fields.js'
+import { patchLimits, addedCriteriaLines } from '../../domain/js/fields.js'
 import {
   getItem,
   addEvent,
@@ -1376,6 +1376,9 @@ export function markFarmRunStarted(runId) {
 // below). That is also why domain/fields.json marks the legacy `persona` column
 // agentRevisable: false — nothing reaches it through this loop any more.
 const FARM_PATCH_FIELDS = Object.keys(patchLimits())
+// The bound on an implement step's `## Manual checks` (HZ-345), the same one
+// farm/step_agent.py applies before sending it.
+const MANUAL_CHECKS_MAX_CHARS = 3000
 // Display copy, deliberately NOT in domain/ (guardrail 5): these are the names a
 // human reads in the GitHub step comment, not part of the field model. A
 // patchable field missing from this map is written to the database but silently
@@ -1402,6 +1405,44 @@ function writeWorkItemPatch(id, item, patch) {
     ...values,
     id,
   )
+}
+
+// HZ-345: after "Review before execution" no agent adds a metric line or a
+// guardrail. Only a human (the GitHub issue, synced by the webhook) or an
+// Autopilot ruling (caretakerRuling.js) can, and neither comes through here:
+// this runs on the two agent-patch paths only, so the actor is the code path,
+// never anything the agent wrote. A field that would gain a line is dropped
+// whole and the rest of the patch still applies. Moving lines into the
+// "Deferred to a follow-up item" line adds none, so the split-scope rewrite
+// still lands. An unchanged echo is never checked, so it logs nothing.
+const EXECUTION_GATE_INDEX = requiredStepIndex('Review before execution')
+const CRITERIA_FIELDS = ['metric', 'guardrails']
+
+function lockCriteriaPatch(item, stepIndex, patch) {
+  if (!patch || stepIndex <= EXECUTION_GATE_INDEX) return { patch, blocked: [] }
+  const blocked = CRITERIA_FIELDS.filter(
+    (field) =>
+      typeof patch[field] === 'string' &&
+      patch[field] !== item[field] &&
+      addedCriteriaLines(item[field], patch[field]).length > 0,
+  )
+  if (blocked.length === 0) return { patch, blocked }
+  const kept = { ...patch }
+  for (const field of blocked) delete kept[field]
+  return { patch: kept, blocked }
+}
+
+function applyCriteriaLock(id, item, stepIndex, patch) {
+  const { patch: kept, blocked } = lockCriteriaPatch(item, stepIndex, patch)
+  for (const field of blocked) {
+    addEvent(id, {
+      who: 'Horizon',
+      text: `Kept ${field} unchanged: “${STEPS[stepIndex].label}” added a line after “${STEPS[EXECUTION_GATE_INDEX].label}”`,
+      color: '#9C333E',
+      initials: 'HZ',
+    })
+  }
+  return kept
 }
 
 // Exported for tests: the comment body is the human-readable record, so its
@@ -1956,7 +1997,7 @@ export async function completeFarmRun(runId, { summary, patch, artifacts }) {
     return { ok: true, stale: true }
   }
 
-  const cleanPatch = {}
+  let cleanPatch = {}
   for (const field of FARM_PATCH_FIELDS) {
     if (typeof patch?.[field] === 'string' && patch[field].trim()) cleanPatch[field] = patch[field].trim()
   }
@@ -1972,6 +2013,7 @@ export async function completeFarmRun(runId, { summary, patch, artifacts }) {
     }
     if (Object.keys(survivors).length > 0) cleanPatch.personas = survivors
   }
+  cleanPatch = applyCriteriaLock(id, item, run.step_index, cleanPatch)
   writeWorkItemPatch(id, item, cleanPatch)
 
   const step = STEPS[run.step_index]
@@ -1980,9 +2022,15 @@ export async function completeFarmRun(runId, { summary, patch, artifacts }) {
 
   // The implement step's artifact is a pushed branch: this side owns turning
   // it into the PR. If that fails, the step fails — no PR, no advance.
+  // HZ-345: the implement step's statements for Manual metric lines go in the
+  // PR body, and in this step's output, which is what the review reads.
+  const manualChecks =
+    typeof artifacts?.manual_checks === 'string' && artifacts.manual_checks.trim()
+      ? artifacts.manual_checks.trim().slice(0, MANUAL_CHECKS_MAX_CHARS)
+      : null
   if (typeof artifacts?.branch === 'string' && item.repo && item.issue != null) {
     try {
-      const pr = await createPrFromBranch(item, artifacts.branch)
+      const pr = await createPrFromBranch(item, artifacts.branch, { manualChecks })
       db.prepare("UPDATE work_item SET pr = ?, pr_url = ?, updated_at = datetime('now') WHERE id = ?").run(
         pr.number,
         pr.html_url,
@@ -1993,6 +2041,7 @@ export async function completeFarmRun(runId, { summary, patch, artifacts }) {
       return failFarmRun(runId, `code pushed to ${artifacts.branch} but the PR could not be opened: ${err.message}`)
     }
   }
+  if (manualChecks) text = `${text}\n\n## Manual checks\n${manualChecks}`
 
   let artifactMd =
     typeof artifacts?.artifact_md === 'string' ? artifacts.artifact_md.slice(0, WRITE_TIME_SANITY_CEILING_CHARS) : null
@@ -2265,6 +2314,7 @@ async function runMockStep(id, stepIndex, runId) {
     return
   }
 
+  if (patch) patch = applyCriteriaLock(id, after, stepIndex, patch)
   if (patch) writeWorkItemPatch(id, after, patch)
 
   if (stepIndex === REVIEW_STEP_INDEX) {

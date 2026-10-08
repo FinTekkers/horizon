@@ -74,13 +74,20 @@ def test_every_public_name_has_a_fixture_case_and_every_fixture_key_is_real():
 def test_no_fixture_section_is_empty():
     for name, cases in PY.items():
         assert cases, f"py.{name} has no cases"
-    for section in ("validation", "fieldLookup", "patchLimits"):
+    for section in ("validation", "fieldLookup", "patchLimits", "lineLimits", "criteriaLines", "lineBudget"):
         assert SHARED[section], f"shared.{section} has no cases"
 
 
 # ---- shared: validation (_validate_source vs JS's assertFieldsShape) ----
 
-_EXECUTED = {"validation": [], "fieldLookup": [], "patchLimits": []}
+_EXECUTED = {
+    "validation": [],
+    "fieldLookup": [],
+    "patchLimits": [],
+    "lineLimits": [],
+    "criteriaLines": [],
+    "lineBudget": [],
+}
 
 
 @pytest.mark.parametrize("case", SHARED["validation"], ids=lambda c: c["case"])
@@ -130,6 +137,31 @@ def test_shared_patch_limits(case):
     assert list(got) == case["expectOrder"], "the derived key order does not match the authored order"
 
 
+# ---- shared: line budgets (HZ-345 — line_limits/criteria_lines/count_criteria_lines vs JS) ----
+
+
+@pytest.mark.parametrize("case", SHARED["lineLimits"], ids=lambda c: c["case"])
+def test_shared_line_limits(case):
+    _EXECUTED["lineLimits"].append(case["case"])
+    got = fields.line_limits(case["input"]["fields"])
+    assert got == case["expect"]
+    assert list(got) == case["expectOrder"]
+
+
+@pytest.mark.parametrize("case", SHARED["criteriaLines"], ids=lambda c: c["case"])
+def test_shared_criteria_lines(case):
+    _EXECUTED["criteriaLines"].append(case["case"])
+    assert fields.criteria_lines(case["input"]) == case["expect"]
+
+
+@pytest.mark.parametrize("case", SHARED["lineBudget"], ids=lambda c: c["case"])
+def test_shared_line_budget(case):
+    _EXECUTED["lineBudget"].append(case["case"])
+    count = fields.count_criteria_lines(case["input"])
+    assert count == case["expect"]["count"]
+    assert (count <= fields.line_limits(case["fields"])[case["column"]]) is case["expect"]["within"]
+
+
 # ---- py-only names ----
 
 
@@ -149,7 +181,7 @@ def test_py_lookup_maps_cover_every_authored_field(key, mapping):
 
 
 def test_py_helpers_are_driven_by_the_shared_section():
-    for name in ("field_by_name", "patch_limits", *REQUIRED_PRIVATE):
+    for name in ("field_by_name", "patch_limits", "line_limits", "criteria_lines", "count_criteria_lines", *REQUIRED_PRIVATE):
         assert PY[name][0]["drivenBy"].startswith("shared."), f"py.{name} claims no shared driver"
 
 
