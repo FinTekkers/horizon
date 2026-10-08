@@ -12,7 +12,9 @@ Environment=SUBLEDGER_PORT=8082
 Environment=SUBLEDGER_BIND=127.0.0.1
 Environment=FINTEKKERS_RUNNING_LOCALLY=true
 Environment=VALUATION_SERVICE_HOST=127.0.0.1
-Environment=SUBLEDGER_OPTS=-Xms256m -Xmx1g
+# Quoted: unquoted, systemd splits at the space and drops -Xmx (the 1g cap
+# never applied, so build.gradle's -Xmx10g did). The later -Xmx here wins.
+Environment="SUBLEDGER_OPTS=-Xms256m -Xmx4g"
 ExecStart=/opt/fintekkers/ledger-service/subledger/build/install/subledger/bin/subledger
 Restart=always
 RestartSec=5
