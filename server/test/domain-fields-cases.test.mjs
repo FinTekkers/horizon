@@ -29,7 +29,7 @@ const cases = JSON.parse(readFileSync(path.join(REPO_ROOT, 'domain/fixtures/fiel
 const { shared, js } = cases
 
 // Ids this run actually executed, checked against shared.manifest at the end.
-const executed = { validation: [], fieldLookup: [], patchLimits: [] }
+const executed = { validation: [], fieldLookup: [], patchLimits: [], lineLimits: [], criteriaLines: [], lineBudget: [] }
 
 // ---- coverage guard ----
 
@@ -51,7 +51,7 @@ test('no fixture section is empty — an empty case list would satisfy the cover
     if (name.startsWith('$')) continue
     assert.ok(Array.isArray(list) && list.length > 0, `js.${name} has no cases`)
   }
-  for (const section of ['validation', 'fieldLookup', 'patchLimits']) {
+  for (const section of ['validation', 'fieldLookup', 'patchLimits', 'lineLimits', 'criteriaLines', 'lineBudget']) {
     assert.ok(shared[section].length > 0, `shared.${section} has no cases`)
   }
 })
@@ -112,7 +112,46 @@ for (const c of shared.patchLimits) {
   })
 }
 
+// ---- shared: line budgets (HZ-345 — lineLimits/criteriaLines/countCriteriaLines vs Python) ----
+
+for (const c of shared.lineLimits) {
+  test(`shared/lineLimits: ${c.case}`, () => {
+    executed.lineLimits.push(c.case)
+    const got = binding.lineLimits(c.input.fields)
+    assert.deepEqual(got, c.expect)
+    assert.deepEqual(Object.keys(got), c.expectOrder)
+  })
+}
+
+for (const c of shared.criteriaLines) {
+  test(`shared/criteriaLines: ${c.case}`, () => {
+    executed.criteriaLines.push(c.case)
+    assert.deepEqual(binding.criteriaLines(c.input), c.expect)
+  })
+}
+
+for (const c of shared.lineBudget) {
+  test(`shared/lineBudget: ${c.case}`, () => {
+    executed.lineBudget.push(c.case)
+    const count = binding.countCriteriaLines(c.input)
+    assert.equal(count, c.expect.count)
+    assert.equal(count <= binding.lineLimits(c.fields)[c.column], c.expect.within)
+  })
+}
+
 // ---- js-only helpers ----
+
+test('js/lineLimits, criteriaLines, countCriteriaLines: covered by the shared sections above', () => {
+  assert.equal(js.lineLimits[0].drivenBy, 'shared.lineLimits')
+  assert.equal(js.criteriaLines[0].drivenBy, 'shared.criteriaLines')
+  assert.equal(js.countCriteriaLines[0].drivenBy, 'shared.lineBudget')
+})
+
+test('js/addedCriteriaLines: every non-blank line is compared, and the Deferred line is exempt', () => {
+  for (const c of js.addedCriteriaLines) {
+    assert.deepEqual(binding.addedCriteriaLines(c.before, c.after), c.expect, c.case)
+  }
+})
 
 test('js/FIELDS: the live table is non-empty', () => {
   for (const c of js.FIELDS) assert.ok(binding.FIELDS.length > 0, `FIELDS: ${c.case}`)

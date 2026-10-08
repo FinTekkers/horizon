@@ -37,6 +37,7 @@ itself. The same convention domain/py/steps.py's budget_for_label uses.
 """
 
 import json
+import re
 from pathlib import Path
 
 _SOURCE_PATH = Path(__file__).resolve().parent.parent / "fields.json"
@@ -84,6 +85,14 @@ def _validate_source(data: object, source: str) -> dict:
             raise RuntimeError(
                 f'domain/py/fields.py: {source}: fields[{i}] ("{name}") declares a '
                 "non-integer or non-positive minLength"
+            )
+        max_lines = field.get("maxLines")
+        if max_lines is not None and (
+            not isinstance(max_lines, int) or isinstance(max_lines, bool) or max_lines < 1
+        ):
+            raise RuntimeError(
+                f'domain/py/fields.py: {source}: fields[{i}] ("{name}") declares a '
+                "non-integer or non-positive maxLines"
             )
         for flag in ("settableAtIntake", "agentRevisable"):
             if not isinstance(field.get(flag), bool):
@@ -165,3 +174,40 @@ def patch_limits(fields: list[dict]) -> dict[str, int]:
     the other side of the wire. Keyed by column because that is what a patch
     payload and the work_item UPDATE both use."""
     return {field["column"]: field["maxLength"] for field in fields if field["agentRevisable"]}
+
+
+def line_limits(fields: list[dict]) -> dict[str, int]:
+    """{column: maxLines} for every field that declares a line budget (HZ-345):
+    metric and guardrails. The same derivation as domain/js/fields.js's
+    lineLimits(); farm/pm_agent.py rejects a step-1/2 reply over it."""
+    return {field["column"]: field["maxLines"] for field in fields if "maxLines" in field}
+
+
+# ---- criteria lines (HZ-345) ----
+# The same rule as domain/js/fields.js's criteriaLines(), driven from both sides
+# by domain/fixtures/fields-cases.json.
+_LIST_MARKER = re.compile(r"^(?:[-*+]|\d+[.)])\s+")
+_DEFERRED_PREFIX = "deferred to a follow-up item"
+
+
+def _normalise_line(line: str) -> str:
+    return " ".join(_LIST_MARKER.sub("", line.strip(), count=1).split())
+
+
+def _is_deferred_line(normalised: str) -> bool:
+    return normalised.lstrip("*_").lower().startswith(_DEFERRED_PREFIX)
+
+
+def criteria_lines(text) -> list[str]:
+    """The lines a metric or guardrails budget counts, normalised: trimmed, list
+    marker stripped, whitespace collapsed. When any line is a list item only
+    list items count; otherwise every non-blank line does. The split-scope
+    "Deferred to a follow-up item" line never counts."""
+    lines = [line.strip() for line in str(text or "").split("\n") if line.strip()]
+    listed = any(_LIST_MARKER.match(line) for line in lines)
+    normalised = [_normalise_line(line) for line in lines if not listed or _LIST_MARKER.match(line)]
+    return [line for line in normalised if line and not _is_deferred_line(line)]
+
+
+def count_criteria_lines(text) -> int:
+    return len(criteria_lines(text))

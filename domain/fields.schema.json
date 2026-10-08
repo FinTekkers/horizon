@@ -24,6 +24,7 @@
         "column": { "type": "string", "minLength": 1 },
         "minLength": { "type": "integer", "minimum": 1 },
         "maxLength": { "type": "integer", "minimum": 1 },
+        "maxLines": { "type": "integer", "minimum": 1 },
         "settableAtIntake": { "type": "boolean" },
         "agentRevisable": { "type": "boolean" }
       }

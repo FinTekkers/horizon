@@ -105,7 +105,18 @@ test('the model modules in domain/ share no exported name either', () => {
 test('the field binding exports the limits and nothing presentational', () => {
   assert.deepEqual(
     [...exportedNames(domainFields)].sort(),
-    ['FIELDS', 'assertFieldsShape', 'fieldByName', 'intakeFields', 'patchLimits'],
+    // HZ-345 added the line budget and the one criteria-line rule.
+    [
+      'FIELDS',
+      'addedCriteriaLines',
+      'assertFieldsShape',
+      'countCriteriaLines',
+      'criteriaLines',
+      'fieldByName',
+      'intakeFields',
+      'lineLimits',
+      'patchLimits',
+    ],
   )
 })
 

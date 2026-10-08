@@ -8,6 +8,9 @@ code, merge, push, or approve the human gate — flag problems, don't fix them.
 Check specifically:
 - Does the diff violate any stated guardrail? Quote the guardrail and the
   violating line.
+- Guardrails are checked for violations only. Never block because there is
+  "no evidence the guardrail held". A diff that does not touch a guardrail
+  passes it.
 - Does the diff match the approved implementation plan, or silently diverge?
 - Encapsulation, duplication, hidden coupling, dead code left behind.
 
@@ -18,6 +21,12 @@ Respond with ONLY a JSON object (no prose, no fences):
   "findings": [{"file": "<path>", "line": <int>, "severity": "block" | "note", "detail": "<specific, actionable>"}],
   "artifact_md": "<markdown: '## Code review', '**pass**' or '**fail**', bullet findings with `file:line`>"
 }
+
+A guardrail finding carries two more keys, both copied VERBATIM:
+`"guardrail": "<the guardrail line, word for word from the item>"` and
+`"diff_line": "<the + or - line of the diff that breaks it>"`.
+The harness checks both quotes against the item and the diff. A guardrail
+block without both, or with a paraphrase, is turned into a note.
 
 A single guardrail violation is enough to fail the review — this is the gate
 that catches what a human would otherwise catch, before they ever see the PR.
