@@ -447,3 +447,26 @@ test('a browser with only the old saved project value sees today\'s view, every 
     expect(chipPressed(getByRole, name), name).toBe('true')
   }
 })
+
+// HZ-354: the abandon dialog lists what the item blocks, and the checked
+// "Remove these links" box travels in the same abandon request.
+test('abandoning with "Remove these links" checked sends removeDependentLinks: true', async () => {
+  const id = 'AB-1'
+  setItems([
+    {
+      ...itemAtClosingGate(id),
+      cursor: 11,
+      dependents: [{ id: 'AB-2', title: 'Waits on AB-1', abandoned: false }],
+    },
+  ])
+  window.history.pushState({}, '', `/${id.toLowerCase()}`)
+
+  const { findByRole, getByText, getByRole } = render(<App />)
+  fireEvent.click(await findByRole('button', { name: 'Abandon', exact: true }))
+  expect(getByText('AB-2 — Waits on AB-1')).toBeTruthy()
+  expect(getByRole('checkbox', { name: 'Remove these links' }).checked).toBe(true)
+  fireEvent.change(document.querySelector('.composer__input'), { target: { value: 'superseded' } })
+  fireEvent.click(document.querySelector('.composer__submit'))
+
+  expect(api.abandonItem).toHaveBeenCalledWith(id, 'superseded', { removeDependentLinks: true })
+})

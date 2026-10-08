@@ -477,8 +477,10 @@ export function restartPhase(id, phase, reason) {
 }
 
 // Soft delete (HZ-59) — same gate PIN as approve/reject, reused via gatePost.
-export function abandonItem(id, reason) {
-  gatePost(`/items/${id}/abandon`, { reason: reason || '' })
+// HZ-354: removeDependentLinks also drops every link where this item is the
+// blocker, in the same request.
+export function abandonItem(id, reason, { removeDependentLinks = false } = {}) {
+  gatePost(`/items/${id}/abandon`, { reason: reason || '', removeDependentLinks })
 }
 
 // Personas are agent-scoped (HZ-125): one slot per composing agent, so the

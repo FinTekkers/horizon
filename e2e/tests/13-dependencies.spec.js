@@ -14,6 +14,24 @@
 // HZ-100 scope creep, it's the pre-existing stale-test gap HZ-106 left.
 
 import { test, expect, captureScreenshot } from '../fixtures/test-base.js'
+import { openDb, insertItem, insertDependency, setGatePinDirect } from '../fixtures/seed.js'
+
+const DB_PATH = process.env.HORIZON_E2E_DB
+const ADMIN_EMAIL = 'admin@example.com'
+// Its own PIN: 10-gate-key.spec.js runs earlier and rotates the admin PIN.
+const GATE_PIN = '354354'
+
+test.beforeAll(() => {
+  const db = openDb(DB_PATH)
+  try {
+    insertItem(db, { id: 'DEPAB-1', title: 'E2E fixture — abandoned blocker', cursor: 3 })
+    insertItem(db, { id: 'DEPAB-2', title: 'E2E fixture — waits on the abandoned blocker', cursor: 3 })
+    insertDependency(db, { itemId: 'DEPAB-2', dependsOnId: 'DEPAB-1' })
+    setGatePinDirect(db, ADMIN_EMAIL, GATE_PIN)
+  } finally {
+    db.close()
+  }
+})
 
 test('one dependency edge renders as "Blocked by" on the dependent and "Blocks" on the blocker', async ({ page }) => {
   await page.goto('/')
@@ -42,4 +60,29 @@ test('one dependency edge renders as "Blocked by" on the dependent and "Blocks" 
   await expect(page.locator('.dep-detail__id')).toHaveAttribute('href', /\/dep-1$/)
 
   await captureScreenshot(page, 'dependencies-tracker')
+})
+
+// HZ-354: abandoning a blocker with "Remove these links" (checked by default)
+// frees what it blocked in the same request — nothing left silently blocked.
+test('abandoning a blocker with "Remove these links" leaves its dependent unblocked, with one event naming it', async ({ page }) => {
+  await page.goto('/depab-1')
+  await page.evaluate((pin) => localStorage.setItem('horizon_gate_pin', pin), GATE_PIN)
+  await expect(page.locator('.tracker__id')).toHaveText('DEPAB-1')
+
+  await page.getByRole('button', { name: 'Abandon', exact: true }).click()
+  const dialog = page.getByRole('dialog')
+  await expect(dialog).toContainText('DEPAB-2 — E2E fixture — waits on the abandoned blocker')
+  await expect(dialog.getByRole('checkbox', { name: 'Remove these links' })).toBeChecked()
+  await page.locator('.composer__input').fill('Superseded — no longer needed.')
+  await page.locator('.composer__submit').click()
+  await expect(page.locator('.tracker__status')).toContainText('Abandoned', { timeout: 10_000 })
+
+  // Reloaded, not optimistic: the abandon request is fire-and-forget.
+  await page.goto('/depab-2')
+  await page.reload()
+  await expect(page.locator('.tracker__id')).toHaveText('DEPAB-2')
+  await expect(page.locator('.dep-detail__label--blocked')).toHaveCount(0)
+  await expect(
+    page.locator('.activity-row__text', { hasText: 'removed the dependency on DEPAB-1' }),
+  ).toHaveCount(1)
 })

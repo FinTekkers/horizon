@@ -96,7 +96,52 @@ test('abandon mode submits the trimmed reason once one is entered', () => {
   )
   fireEvent.change(container.querySelector('.composer__input'), { target: { value: '  duplicate of HZ-12  ' } })
   fireEvent.click(getByText('Abandon'))
-  expect(onSubmit).toHaveBeenCalledWith('duplicate of HZ-12')
+  expect(onSubmit).toHaveBeenCalledWith('duplicate of HZ-12', { removeDependentLinks: false })
+})
+
+// ---- HZ-354: abandon lists what the item blocks, with "Remove these links" ----
+
+const abandonBlocker = {
+  open: true,
+  mode: 'abandon',
+  itemId: 'LS-38',
+  dependents: [
+    { id: 'LS-17', title: 'Waits on LS-38', abandoned: false },
+    { id: 'LS-20', title: 'Also waits', abandoned: false },
+  ],
+}
+
+function abandonWith(composer, onSubmit) {
+  const utils = render(<ComposerModal composer={composer} onSubmit={onSubmit} onCancel={() => {}} />)
+  fireEvent.change(utils.container.querySelector('.composer__input'), { target: { value: 'superseded' } })
+  return utils
+}
+
+test('abandon lists every item this one blocks, with "Remove these links" checked by default', () => {
+  const onSubmit = vi.fn()
+  const { getByText, getByRole } = abandonWith(abandonBlocker, onSubmit)
+  expect(getByText('LS-17 — Waits on LS-38')).toBeTruthy()
+  expect(getByText('LS-20 — Also waits')).toBeTruthy()
+  expect(getByRole('checkbox', { name: 'Remove these links' }).checked).toBe(true)
+  fireEvent.click(getByText('Abandon'))
+  expect(onSubmit).toHaveBeenCalledWith('superseded', { removeDependentLinks: true })
+})
+
+test('unchecking "Remove these links" submits removeDependentLinks: false', () => {
+  const onSubmit = vi.fn()
+  const { getByText, getByRole } = abandonWith(abandonBlocker, onSubmit)
+  fireEvent.click(getByRole('checkbox', { name: 'Remove these links' }))
+  fireEvent.click(getByText('Abandon'))
+  expect(onSubmit).toHaveBeenCalledWith('superseded', { removeDependentLinks: false })
+})
+
+test('abandoning an item that blocks nothing shows no "Remove these links" option', () => {
+  const onSubmit = vi.fn()
+  const { getByText, queryByRole } = abandonWith({ ...abandonBlocker, dependents: [] }, onSubmit)
+  expect(queryByRole('checkbox')).toBeNull()
+  expect(queryByRole('checkbox', { name: 'Remove these links' })).toBeNull()
+  fireEvent.click(getByText('Abandon'))
+  expect(onSubmit).toHaveBeenCalledWith('superseded', { removeDependentLinks: false })
 })
 
 // ---- send-back-to-a-chosen-step picker (HZ-51) ----

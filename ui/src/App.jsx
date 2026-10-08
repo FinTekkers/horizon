@@ -280,12 +280,16 @@ function AuthenticatedApp({ user, onLogout }) {
     const atGate = mode === 'reject' && item && STEPS[item.cursor]?.kind === 'gate'
     const stepOptions = atGate ? reworkTargets(item.cursor) : []
     const defaultTargetLabel = stepOptions.length ? STEPS[defaultReworkTarget(item.cursor)].label : null
-    setComposer({ open: true, mode, itemId, phase: opts.phase ?? null, target: opts.target || '', stepOptions, defaultTargetLabel })
+    // HZ-354: the abandon dialog lists what this item blocks, as of opening.
+    const dependents = mode === 'abandon' ? item?.dependents || [] : []
+    setComposer({ open: true, mode, itemId, phase: opts.phase ?? null, target: opts.target || '', stepOptions, defaultTargetLabel, dependents })
   }
 
   const requestApprove = (itemId, gateLabel) => setConfirmApprove({ itemId, gateLabel })
 
-  const submitComposer = (text, targetStepIndex) => {
+  // The second argument depends on the mode: reject passes the chosen
+  // send-back step index, abandon passes { removeDependentLinks }.
+  const submitComposer = (text, modeArg) => {
     const { mode, itemId, phase, target } = composer
     if (itemId) {
       // Both sides changed this line for unrelated reasons: main routes approve
@@ -293,9 +297,11 @@ function AuthenticatedApp({ user, onLogout }) {
       // closing gate is approved) and this branch adds the chosen send-back
       // step to reject (HZ-51). They compose.
       if (mode === 'approve') approveAndMaybeClose(itemId, text)
-      else if (mode === 'reject') api.requestChanges(itemId, target, text, targetStepIndex ?? null)
+      else if (mode === 'reject') api.requestChanges(itemId, target, text, modeArg ?? null)
       else if (mode === 'restart') api.restartPhase(itemId, phase, text)
-      else if (mode === 'abandon') api.abandonItem(itemId, text)
+      else if (mode === 'abandon') {
+        api.abandonItem(itemId, text, { removeDependentLinks: modeArg?.removeDependentLinks === true })
+      }
     }
     setComposer(CLOSED_COMPOSER)
   }

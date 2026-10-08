@@ -203,6 +203,36 @@ test('the human remedy for an abandoned blocker is removeDependency, which clear
   assert.ok(kicked.includes('D-RESOLVE-DEP'))
 })
 
+// HZ-354: the abandon and its link removal are one transaction.
+test('abandon with removeDependentLinks is all or nothing: a failed write leaves the item and every link unchanged', () => {
+  insertItem.run('D-ATOMIC-BLOCKER', 'Will fail to abandon', 11, null, null)
+  insertItem.run('D-ATOMIC-DEP1', 'Dependent 1', 11, null, null)
+  insertItem.run('D-ATOMIC-DEP2', 'Dependent 2', 11, null, null)
+  store.addDependency('D-ATOMIC-DEP1', 'D-ATOMIC-BLOCKER')
+  store.addDependency('D-ATOMIC-DEP2', 'D-ATOMIC-BLOCKER')
+  const linksTo = () =>
+    db.prepare("SELECT item_id FROM work_item_dependency WHERE depends_on_id = 'D-ATOMIC-BLOCKER' ORDER BY item_id").all()
+  const before = linksTo()
+  const eventCount = () => db.prepare("SELECT COUNT(*) AS n FROM event WHERE item_id LIKE 'D-ATOMIC-%'").get().n
+  const eventsBefore = eventCount()
+
+  // The second dependent's event insert fails, after the abandon and the
+  // DELETE have already run inside the transaction.
+  db.exec(
+    "CREATE TEMP TRIGGER hz354_boom BEFORE INSERT ON event WHEN NEW.item_id = 'D-ATOMIC-DEP2' BEGIN SELECT RAISE(ABORT, 'boom'); END",
+  )
+  try {
+    assert.throws(() => store.abandonItem('D-ATOMIC-BLOCKER', 'superseded', 'You', { removeDependentLinks: true }), /boom/)
+  } finally {
+    db.exec('DROP TRIGGER hz354_boom')
+  }
+
+  assert.equal(store.getItem('D-ATOMIC-BLOCKER').abandoned_at, null)
+  assert.deepEqual(linksTo(), before)
+  assert.equal(before.length, 2)
+  assert.equal(eventCount(), eventsBefore)
+})
+
 test('paused and blocked are independent — neither implies the other', () => {
   insertItem.run('D-INDEP-PAUSED', 'Paused, no deps', 11, null, null)
   store.setPaused('D-INDEP-PAUSED', true)

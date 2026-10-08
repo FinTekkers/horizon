@@ -913,6 +913,8 @@ button { font-family: var(--font-sans); }
 .composer__sub { font: 500 13px var(--font-sans); color: var(--muted); margin-top: 4px; }
 .composer__field { display: flex; flex-direction: column; gap: 6px; margin-top: 14px; }
 .composer__field-label { font: 700 11px var(--font-sans); color: var(--muted); text-transform: uppercase; letter-spacing: 0.4px; }
+.composer__dependents { margin: 0; padding-left: 18px; font: 500 13px var(--font-sans); color: var(--deep); }
+.composer__check { display: flex; align-items: center; gap: 8px; font: 600 13px var(--font-sans); color: var(--deep); cursor: pointer; }
 .composer__select {
   border: 1.5px solid #E4DEEE; border-radius: 10px; padding: 9px 12px;
   font: 500 13px var(--font-sans); color: var(--deep); background: #FAFAFB;

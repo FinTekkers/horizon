@@ -52,6 +52,10 @@ export default function ComposerModal({ composer, onSubmit, onCancel }) {
   // stays empty and the picker doesn't render.
   const stepOptions = composer.mode === 'reject' ? composer.stepOptions || [] : []
   const [targetStepIndex, setTargetStepIndex] = useState('')
+  // HZ-354: abandoning an item that blocks others lists them, with an option
+  // (on by default) to remove their links to it in the same request.
+  const dependents = composer.mode === 'abandon' ? composer.dependents || [] : []
+  const [removeDependentLinks, setRemoveDependentLinks] = useState(true)
   const submit = () => {
     const text = (inputRef.current?.value || '').trim()
     // Abandon (HZ-59) demands a reason — the modes that require text must not
@@ -63,6 +67,8 @@ export default function ComposerModal({ composer, onSubmit, onCancel }) {
     }
     if (composer.mode === 'reject') {
       onSubmit(text, stepOptions.length && targetStepIndex !== '' ? Number(targetStepIndex) : null)
+    } else if (composer.mode === 'abandon') {
+      onSubmit(text, { removeDependentLinks: dependents.length > 0 && removeDependentLinks })
     } else {
       onSubmit(text)
     }
@@ -111,6 +117,26 @@ export default function ComposerModal({ composer, onSubmit, onCancel }) {
                 </option>
               ))}
             </select>
+          </div>
+        )}
+        {dependents.length > 0 && (
+          <div className="composer__field">
+            <div className="composer__field-label">This item blocks</div>
+            <ul className="composer__dependents">
+              {dependents.map((d) => (
+                <li key={d.id}>
+                  {d.id} — {d.title}
+                </li>
+              ))}
+            </ul>
+            <label className="composer__check">
+              <input
+                type="checkbox"
+                checked={removeDependentLinks}
+                onChange={(e) => setRemoveDependentLinks(e.target.checked)}
+              />
+              Remove these links
+            </label>
           </div>
         )}
         <textarea ref={inputRef} className="composer__input" placeholder={copy.placeholder} autoFocus />
