@@ -494,3 +494,37 @@ def test_cli_rejects_an_unknown_waiver(ws_dir, capsys):
     with pytest.raises(SystemExit):
         premerge.main(["acme/demo", "HZ-154", "a" * 40, "--base", "b" * 40, "--checks-waiver", "everything"])
     assert "invalid choice" in capsys.readouterr().err
+
+
+# ---- HZ-349: a PR that changes scripts/checks/ also runs its own version ----
+
+
+def scripts_fixture(tmp_path, main_body, branch_body):
+    """origin/main has scripts/checks/test.sh = main_body; the PR branch
+    changes it to branch_body. Returns (hub, shas)."""
+    hub, origin = make_repo_hub(tmp_path)
+    seed = tmp_path / "seed"
+    main_tip = commit(seed, {"scripts/checks/test.sh": main_body}, "check script")
+    git(seed, "checkout", "-b", "horizon/ls-98")
+    pr_head = commit(seed, {"scripts/checks/test.sh": branch_body}, "LS-98: three more tests")
+    git(seed, "push", "--quiet", str(origin), "main", "horizon/ls-98")
+    git(hub, "fetch", "--quiet", "origin")
+    return hub, {"main": main_tip, "pr_head": pr_head}
+
+
+MAIN_SCRIPT_CHECKS = {"test": "git show origin/main:scripts/checks/test.sh | sh"}
+
+
+@pytest.mark.parametrize("main_exit, branch_exit", [(0, 1), (1, 0)])
+def test_premerge_runs_the_branch_script_after_main_and_only_main_decides(ws_dir, main_exit, branch_exit):
+    hub, s = scripts_fixture(ws_dir, f"exit {main_exit}\n", f"echo branch; exit {branch_exit}\n")
+
+    result = run(hub, s["pr_head"], s["main"], configured=MAIN_SCRIPT_CHECKS)
+
+    assert result["ok"] is (main_exit == 0), result
+    assert [r["label"] for r in result["test_runs"]] == ["main", "branch"]
+    branch = result["test_runs"][1]
+    assert branch["commands"][0]["command"] == "sh -c cat scripts/checks/test.sh | sh"
+    assert [row["status"] for row in branch["tests"]] == ["pass" if branch_exit == 0 else "fail"]
+    outcome = "passed" if branch_exit == 0 else "failed (exit 1)"
+    assert result["branch_notes"] == [f"branch: test.sh {outcome}, no per-test reports"]

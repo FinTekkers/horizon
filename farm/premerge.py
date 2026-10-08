@@ -235,7 +235,8 @@ def premerge_check(
 
             # HZ-327: flakes and per-test results ride on the JSON line, on
             # every outcome of the check run; server/src/premerge.js records them.
-            recorded = {"flakes": [], "test_runs": []}
+            # HZ-349: so do the branch run's lines, when it had one.
+            recorded = {"flakes": [], "test_runs": [], "branch_notes": []}
             try:
                 try:
                     note = run_checks(
@@ -251,6 +252,7 @@ def premerge_check(
                         checks_waiver=checks_waiver,
                         flakes=recorded["flakes"],
                         test_runs=recorded["test_runs"],
+                        branch_notes=recorded["branch_notes"],
                     )
                 finally:
                     out.update({key: value for key, value in recorded.items() if value})

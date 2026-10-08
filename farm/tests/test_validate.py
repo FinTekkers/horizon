@@ -268,3 +268,18 @@ def test_configured_commands_whose_runner_is_missing_fail_none_ran(hub, monkeypa
     assert result["ok"] is False
     assert result["reason"] == "no_checks_detected"
     assert "every check runner is missing on this host" in result["detail"]
+
+
+# ---- HZ-349: validate never records a branch run ----
+
+
+def test_validate_never_runs_or_records_a_branch_run(hub, monkeypatch):
+    """Even when scripts/checks/ looks changed, validate passes no test_runs,
+    so the branch pass is never reached."""
+    monkeypatch.setattr(checks, "branch_script_changes", lambda ws, log: {"scripts/checks/test.sh"})
+    monkeypatch.setattr(checks, "_run_branch_pass", lambda *a, **k: pytest.fail("validate ran a branch run"))
+    result = validate.validate_checks(
+        REPO, "v1-349", head(hub), timeout_s=600, configured={"test": "true"}, log=lambda *_: None
+    )
+    assert result["ok"] is True, result
+    assert "test_runs" not in result and "branch_notes" not in result

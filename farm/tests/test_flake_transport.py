@@ -65,14 +65,14 @@ def test_step_agent_adds_nothing_when_nothing_was_recorded(monkeypatch, tmp_path
 
 
 def test_outside_a_run_nothing_is_recorded_and_nothing_leaks_between_runs(monkeypatch, tmp_path):
-    assert step_agent._recording() == {"flakes": None, "test_runs": None}
+    assert step_agent._recording() == {"flakes": None, "test_runs": None, "branch_notes": None}
 
     def fake_execute(task):
         step_agent._recording()["flakes"].append(FLAKE)
         return {"summary": "done"}
 
     run_main(monkeypatch, tmp_path, fake_execute)
-    assert step_agent._recording() == {"flakes": None, "test_runs": None}
+    assert step_agent._recording() == {"flakes": None, "test_runs": None, "branch_notes": None}
     assert "flakes" not in run_main(monkeypatch, tmp_path, lambda task: {"summary": "done"})
 
 

@@ -7,6 +7,11 @@
 // stores them (test_result), finds flakes across runs, answers the history
 // query HZ-328 picks its blocking test set from, and prunes rows after 90 days.
 //
+// HZ-349: an entry may carry label 'main' or 'branch' (the item's own changed
+// check scripts, run after main's) and commands: [{command, attempt,
+// exit_code}]. Branch rows are stored apart (run_label) and never count as
+// history or a flake: only main's runs judge.
+//
 // Like checkFlakes.js it never throws to its caller: a lost row is a gap in
 // history, never a changed check result. The repo is the item row's.
 
@@ -28,18 +33,31 @@ function text(value, max) {
 
 const insertRow = db.prepare(`
   INSERT INTO test_result (repo, commit_sha, tree_sha, item_id, run_id, source, check_run, command, suite, file,
-                           test, status, duration_ms, attempt, created_at_ms)
+                           test, status, duration_ms, attempt, created_at_ms, run_label, exit_code)
   VALUES (@repo, @commitSha, @treeSha, @itemId, @runId, @source, @checkRun, @command, @suite, @file,
-          @test, @status, @durationMs, @attempt, @createdAtMs)
+          @test, @status, @durationMs, @attempt, @createdAtMs, @runLabel, @exitCode)
 `)
 
+// "command attempt" -> exit code, from an entry's commands list.
+function exitCodes(commands) {
+  const codes = new Map()
+  for (const c of Array.isArray(commands) ? commands : []) {
+    const command = text(c?.command, FLAKE_LIMITS.command)
+    if (command && Number.isInteger(c.exit_code)) codes.set(`${c.attempt === 2 ? 2 : 1} ${command}`, c.exit_code)
+  }
+  return codes
+}
+
 // The rows of one farm entry that can be stored, or [] for an unusable entry.
+// An entry with no label, or an unknown one (an older farm), is main's.
 function rowsOf(run, base) {
   if (run === null || typeof run !== 'object' || !Array.isArray(run.tests)) return []
   const checkRun = text(run.check_run, FLAKE_LIMITS.id)
   if (!checkRun) return []
   const commitSha = typeof run.commit_sha === 'string' && SHA_RE.test(run.commit_sha) ? run.commit_sha : null
   const treeSha = typeof run.tree_sha === 'string' && SHA_RE.test(run.tree_sha) ? run.tree_sha : null
+  const runLabel = run.label === 'branch' ? 'branch' : 'main'
+  const codes = exitCodes(run.commands)
   const rows = []
   for (const t of run.tests) {
     if (t === null || typeof t !== 'object' || !TEST_STATUSES.includes(t.status)) continue
@@ -58,6 +76,8 @@ function rowsOf(run, base) {
       status: t.status,
       durationMs: Number.isInteger(t.duration_ms) && t.duration_ms >= 0 ? t.duration_ms : null,
       attempt: t.attempt === 2 ? 2 : 1,
+      runLabel,
+      exitCode: codes.get(`${t.attempt === 2 ? 2 : 1} ${command}`) ?? null,
     })
   }
   return rows
@@ -66,6 +86,7 @@ function rowsOf(run, base) {
 // Tests in `checkRun` whose status is the opposite of the same test's in
 // another run of the same tree. The run's own rerun pair (attempt 1 fail,
 // attempt 2 pass) is not one: that is the farm's rerun flake, already sent.
+// HZ-349: main's runs only — a branch script's tests are never a flake.
 const crossRunFlips = db.prepare(`
   SELECT DISTINCT n.suite, n.file, n.test, n.command
     FROM test_result n
@@ -73,7 +94,9 @@ const crossRunFlips = db.prepare(`
       ON o.repo = n.repo AND o.tree_sha = n.tree_sha AND o.test = n.test
      AND o.suite IS n.suite AND o.file IS n.file
      AND o.check_run != n.check_run AND o.status IN ('pass','fail') AND o.status != n.status
+     AND o.run_label = 'main'
    WHERE n.check_run = ? AND n.repo = ? AND n.tree_sha IS NOT NULL AND n.status IN ('pass','fail')
+     AND n.run_label = 'main'
 `)
 
 const flakeExists = db.prepare(`

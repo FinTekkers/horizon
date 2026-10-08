@@ -82,6 +82,7 @@ import { servedRulesFor } from './rulesStore.js'
 import { OPTIONS_STEP_INDEX, proposeSplit } from './split.js'
 import { recordFlakes } from './checkFlakes.js'
 import { recordTestRuns } from './testResults.js'
+import { buildStoredResultsInput, storedResultsPending, waitForStoredResults } from './storedTestResults.js'
 
 // Keyed by step_run.id (HZ-100) — NOT item id. Keying by item used to let a
 // stale callback for a superseded run clear/overwrite the CURRENT run's
@@ -1110,6 +1111,17 @@ async function dispatchToFarm(id, stepIndex, runId, attempt, scope) {
     overlapInput = { label: OVERLAP_INPUT_LABEL, content: renderOverlapInput(check) }
   }
 
+  // HZ-349: step 12 reads its test evidence from the stored per-test results,
+  // never from the worktree. Waits only when the implement run's rows are
+  // known to be on their way (farmd posts them just after the result).
+  if (stepIndex === REVIEW_STEP_INDEX) {
+    const pendingRunId = storedResultsPending(id)
+    if (pendingRunId !== null) {
+      await waitForStoredResults(id, pendingRunId)
+      if (!runStillActive(runId)) return
+    }
+  }
+
   // HZ-204: built BEFORE the delivered_at stamp below, so this attempt's own
   // pending feedback rides in `feedback` only, never twice.
   const projectContext = step.runsIn === 'pm' ? buildProjectContext(id) : null
@@ -1170,6 +1182,7 @@ async function dispatchToFarm(id, stepIndex, runId, attempt, scope) {
 
   const artifacts = budgeted.map(({ label, content }) => ({ label, content }))
   if (overlapInput) artifacts.push(overlapInput)
+  if (stepIndex === REVIEW_STEP_INDEX) artifacts.push(buildStoredResultsInput(id))
   // HZ-207: every farm step carries its own project; farmd refuses one
   // without a project or repo and never falls back to a global project.
   const project = item.project_id == null ? null : db.prepare('SELECT id, name FROM project WHERE id = ?').get(item.project_id)

@@ -14,14 +14,16 @@ import { writeFileSync } from 'node:fs'
 import { pathToFileURL } from 'node:url'
 import { parseArgs } from 'node:util'
 import Database from 'better-sqlite3'
-import { FLAKE_ROWS_SQL, RESULT_ROWS_SQL, summarizeTestHistory } from '../src/testHistorySummary.js'
+import { FLAKE_ROWS_SQL, RESULT_ROWS_SQL, UNLABELLED_RESULT_ROWS_SQL, summarizeTestHistory } from '../src/testHistorySummary.js'
 
 const key = (t) => JSON.stringify([t.suite ?? '', t.file ?? '', t.test])
 
 export function exportTestHistory({ dbPath, repo }) {
   const db = new Database(dbPath, { readonly: true, fileMustExist: true })
   try {
-    const history = summarizeTestHistory(repo, db.prepare(RESULT_ROWS_SQL).iterate(repo), db.prepare(FLAKE_ROWS_SQL).all(repo))
+    const labelled = db.prepare('PRAGMA table_info(test_result)').all().some((column) => column.name === 'run_label')
+    const resultRows = db.prepare(labelled ? RESULT_ROWS_SQL : UNLABELLED_RESULT_ROWS_SQL).iterate(repo)
+    const history = summarizeTestHistory(repo, resultRows, db.prepare(FLAKE_ROWS_SQL).all(repo))
     history.tests.sort((a, b) => (key(a) < key(b) ? -1 : key(a) > key(b) ? 1 : 0))
     return history
   } finally {

@@ -14,6 +14,10 @@ Check specifically:
 - Does the diff match the approved implementation plan, or silently diverge?
 - Encapsulation, duplication, hidden coupling, dead code left behind.
 
+Test evidence comes ONLY from the `Stored test results (step record)` input.
+Test-output files in the worktree (`test-results/`, `build/test-results/`)
+are **not** evidence of a run. Reading code is unaffected.
+
 Respond with ONLY a JSON object (no prose, no fences):
 {
   "summary": "<past tense, <=200 chars>",
