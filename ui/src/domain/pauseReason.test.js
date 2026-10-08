@@ -182,3 +182,104 @@ test('attempts used stops counting at the first non-retry event, not the whole h
   }
   expect(pauseReason(item).attemptsUsed).toBe(3)
 })
+
+// ---- HZ-343: the pause event is found under newer events, and a multi-line
+// cause (every check failure) parses ----
+
+const FORWARD_REFUSED =
+  'forward to “Accept the code” refused — the review still has blocking findings; “Specialist agent implements” restarts with the review findings'
+const SECRETS_LINE = 'bash: scripts/checks/secrets.sh: No such file or directory'
+const LS98_CAUSE = [
+  'repo checks failed: ./gradlew check exited 127',
+  '> Task :compileJava UP-TO-DATE',
+  '> Task :test',
+  SECRETS_LINE,
+  'BUILD FAILED in 4s',
+].join('\n')
+
+function failurePause(cause) {
+  return ev(`agent step failed: ${cause} — item paused; resume to retry`)
+}
+
+test('a pause event under two newer forward-refused events still supplies the cause', () => {
+  const item = { paused: true, events: [ev(FORWARD_REFUSED), ev(FORWARD_REFUSED), failurePause('repo checks failed: eslint exited 1')] }
+  const result = pauseReason(item)
+  expect(result.cause).toBe('repo checks failed: eslint exited 1')
+})
+
+test('an LS-98-style multi-line Gradle cause matches the pause event and is returned whole', () => {
+  const result = pauseReason({ paused: true, events: [failurePause(LS98_CAUSE)] })
+  expect(result.cause).toBe(LS98_CAUSE)
+  expect(result.cause).toContain(SECRETS_LINE)
+})
+
+test('a cause that itself contains " — " still parses whole, up to the frozen suffix', () => {
+  const cause = 'repo checks failed — lint step\nline two — with a dash'
+  const item = {
+    paused: true,
+    events: [ev(`agent step failed (${REASON.TURN_CAP}): ${cause} — auto-retry budget (3) exhausted; item paused, resume to retry`)],
+  }
+  const result = pauseReason(item)
+  expect(result.category).toBe(REASON.TURN_CAP)
+  expect(result.cause).toBe(cause)
+  expect(result.exhausted).toBe(true)
+})
+
+test('a 60+ line cause is cut to at most 20 lines, keeps the last line and the "No such file" line near the top', () => {
+  const lines = ['repo checks failed: ./gradlew check exited 127', '> Task :a', SECRETS_LINE]
+  for (let i = 0; i < 60; i++) lines.push(`> Task :module${i}:test UP-TO-DATE`)
+  lines.push('BUILD FAILED in 41s')
+  const result = pauseReason({ paused: true, events: [failurePause(lines.join('\n'))] })
+  const shown = result.cause.split('\n')
+  expect(shown.length).toBeLessThanOrEqual(20)
+  expect(shown.at(-1)).toBe('BUILD FAILED in 41s')
+  expect(result.cause).toContain(SECRETS_LINE)
+})
+
+test('a 60-line cause with 15 FAILED: lines still stays within 20 lines and ends with the last input line', () => {
+  const lines = []
+  for (let i = 0; i < 59; i++) lines.push(i % 4 === 0 ? `FAILED: test ${i}` : `ok ${i}`)
+  lines.push('BUILD FAILED in 9s')
+  expect(lines.filter((l) => l.includes('FAILED:')).length).toBe(15)
+  const result = pauseReason({ paused: true, events: [failurePause(lines.join('\n'))] })
+  const shown = result.cause.split('\n')
+  expect(shown.length).toBeLessThanOrEqual(20)
+  expect(shown.at(-1)).toBe('BUILD FAILED in 9s')
+})
+
+test('a pause event older than the newest "resumed work" is never shown for a later pause', () => {
+  const item = { paused: true, events: [ev('some unrelated event text'), ev('resumed work'), failurePause('old cause')] }
+  const result = pauseReason(item)
+  expect(result.category).toBeNull()
+  expect(result.cause).toBeNull()
+})
+
+test('the cause is present exactly when a pause event exists since the last resume', () => {
+  const withPause = { paused: true, events: [ev(FORWARD_REFUSED), failurePause('new cause'), ev('resumed work'), failurePause('old')] }
+  expect(pauseReason(withPause).cause).toBe('new cause')
+  const withoutPause = { paused: true, events: [ev(FORWARD_REFUSED), ev('resumed work'), failurePause('old')] }
+  expect(pauseReason(withoutPause).cause).toBeNull()
+})
+
+test('a manual pause under newer events is still recognized as manual', () => {
+  const item = { paused: true, events: [ev(FORWARD_REFUSED), ev(FORWARD_REFUSED), ev('paused agent work on this item')] }
+  expect(pauseReason(item).category).toBe('manual')
+})
+
+test('a non-paused item returns null even when its events hold a pause event', () => {
+  expect(pauseReason({ paused: false, events: [failurePause(LS98_CAUSE)] })).toBeNull()
+})
+
+test('attempts used counts the multi-line retry events just below a pause that is not the newest event', () => {
+  const item = {
+    paused: true,
+    events: [
+      ev(FORWARD_REFUSED),
+      ev(FORWARD_REFUSED),
+      failurePause(LS98_CAUSE),
+      ev(`transient failure (${REASON.TIMEOUT}): ${LS98_CAUSE} — auto-retrying (2/3)`),
+      ev(`transient failure (${REASON.TIMEOUT}): ${LS98_CAUSE} — auto-retrying (1/3)`),
+    ],
+  }
+  expect(pauseReason(item).attemptsUsed).toBe(2)
+})
