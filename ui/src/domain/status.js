@@ -1,6 +1,6 @@
 // Shared status presentation for a work item (board card + tracker header).
 
-import { isClosed, isAbandoned, curStep, awaitingGate } from '../../../domain/js/lifecycle.js'
+import { isClosed, isAbandoned, curStep, awaitingGate, ACCEPT_GATE_INDEX } from '../../../domain/js/lifecycle.js'
 import { AGENTS } from './agentTokens'
 import { gateActionOf } from './gateAction'
 
@@ -35,8 +35,35 @@ export function isRuleBlocked(item) {
   return !(isClosed(item) || isAbandoned(item) || item.rejected || item.paused)
 }
 
+// HZ-360: 'HH:MM' in the viewer's own time zone, 24-hour.
+export function clockTime(iso) {
+  const t = new Date(iso)
+  if (Number.isNaN(t.getTime())) return null
+  return `${String(t.getHours()).padStart(2, '0')}:${String(t.getMinutes()).padStart(2, '0')}`
+}
+
+// HZ-360: a gate a Horizon self-deploy holds — today only Accept the code,
+// whose merge waits for the deploy. `deployBlock` is the API's top-level
+// {blocked, startedAt, latestEnd}; item.acceptWaiting says whose Accept is
+// waiting. Returns {text, approvedBy} or null. approvedBy is null when
+// nothing waits; "you" is the viewer's own held Approve (`viewerName`
+// matches its actor), anyone else is named.
+export function queuedToMerge(item, deployBlock, viewerName = null) {
+  if (!deployBlock?.blocked || !awaitingGate(item) || item.cursor !== ACCEPT_GATE_INDEX || item.pr == null) return null
+  const by = deployBlock.latestEnd ? clockTime(deployBlock.latestEnd) : null
+  const text = `Horizon is deploying, merges resume after it${by ? ` (by about ${by})` : ''}`
+  const waiting = item.acceptWaiting
+  let approvedBy = null
+  if (waiting?.source === 'autopilot') approvedBy = 'Approved by Autopilot'
+  else if (waiting?.source === 'human') {
+    approvedBy = !waiting.actor || waiting.actor === viewerName ? 'Approved by you' : `Approved by ${waiting.actor}`
+  }
+  return { text, approvedBy }
+}
+
 // verbose=true gives the tracker-header phrasing; false gives the compact card one.
-export function itemStatus(item, verbose = false) {
+// `deployBlock` (HZ-360) is the API's top-level block, for Queued to merge.
+export function itemStatus(item, verbose = false, { deployBlock = null } = {}) {
   const closed = isClosed(item)
   const abandoned = isAbandoned(item)
   const rejected = item.rejected && !closed && !abandoned
@@ -54,11 +81,14 @@ export function itemStatus(item, verbose = false) {
   if (rejected) return { label: 'Changes requested', color: 'var(--danger-ink)', bg: 'var(--danger-bg)' }
   if (paused) return { label: 'Paused', color: 'var(--muted-strong)', bg: 'var(--chip)' }
   // Precedence (HZ-335): Abandoned > Closed > Changes requested > Paused >
-  // Blocked by a rule (HZ-346) > Blocked > Awaiting > Queued > working.
+  // Blocked by a rule (HZ-346) > Blocked > Queued to merge (HZ-360) >
+  // Awaiting > Queued > working.
   // Danger is what "blocked" already means on the board (.dep-pill--blocked,
   // step__icon--blocked).
   if (isRuleBlocked(item)) return { label: 'Blocked by a rule', color: 'var(--danger-ink)', bg: 'var(--danger-bg)' }
   if (isDependencyBlocked(item)) return { label: 'Blocked', color: 'var(--danger-ink)', bg: 'var(--danger-bg)' }
+  const queuedMerge = queuedToMerge(item, deployBlock)
+  if (queuedMerge) return { label: 'Queued to merge', color: 'var(--primary-ink)', bg: 'var(--primary-bg)', reason: queuedMerge.text }
   if (awaiting) {
     return { label: verbose ? 'Awaiting your approval' : 'Awaiting you', color: 'var(--warning-ink)', bg: 'var(--warning-bg)' }
   }
@@ -95,8 +125,9 @@ export function stepStateLabel(step) {
 // no pause timestamp to count from, and adding one would be a schema change.
 // Closed, abandoned and rejected cards show none either; the server sends
 // state_since: null for all four. A dependency-blocked card shows none: the
-// API has no blocked-since time (HZ-335).
-export function stateLabel(item) {
+// API has no blocked-since time (HZ-335). A gate queued behind a Horizon
+// deploy (HZ-360) is not waiting on anyone.
+export function stateLabel(item, { deployBlock = null } = {}) {
   if (!item.state_since) return null
   if (isClosed(item) || isAbandoned(item) || item.rejected || item.paused) return null
   if (isDependencyBlocked(item) || isRuleBlocked(item)) return null
@@ -104,6 +135,7 @@ export function stateLabel(item) {
   if (cur.kind === 'gate') {
     const action = gateActionOf(item)
     if (action?.state === 'running') return action.kind === 'resolve' ? 'Resolving conflicts' : 'Running checks'
+    if (queuedToMerge(item, deployBlock)) return 'Queued to merge'
     return 'Waiting on you'
   }
   return stepStateLabel(cur)

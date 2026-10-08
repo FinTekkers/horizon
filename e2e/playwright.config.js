@@ -64,6 +64,10 @@ process.env.HORIZON_E2E_PORT = String(SERVER_PORT)
 process.env.HORIZON_E2E_STORAGE_STATE = STORAGE_STATE_PATH
 process.env.HORIZON_E2E_BASE_URL = BASE_URL
 process.env.HORIZON_E2E_FARM_HOME = FARM_HOME
+// HZ-360: 34-queued-to-merge.spec.js starts and ends a deploy drain through
+// the real loopback-only /api/farm/deploy-drain routes, which need this.
+const FARM_SECRET = 'e2e-farm-secret'
+process.env.HORIZON_E2E_FARM_SECRET = FARM_SECRET
 
 export default defineConfig({
   testDir: './tests',
@@ -155,6 +159,8 @@ export default defineConfig({
         // HZ-246: signs saved rules versions. Without it every rules save
         // answers 503 and 27-rules-versions.spec.js cannot run.
         RULES_HMAC_SECRET: 'e2e-rules-hmac-secret',
+        // Set, never inherited from the host's farm.
+        FARM_SHARED_SECRET: FARM_SECRET,
       },
     },
     {

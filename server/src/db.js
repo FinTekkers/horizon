@@ -911,6 +911,24 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_item_split_source ON item_split(source_item_id);
 `)
 
+// HZ-360: a human Approve at Accept the code that arrived while a Horizon
+// deploy drained (server/src/heldAccept.js). In the DB, not memory, because
+// the restart that ends the deploy is exactly when it must merge. One row per
+// item: a second click keeps the first. arrival_run_id and pr are what the
+// Approve was for; the release drops the row instead of merging once either
+// has moved on.
+db.exec(`
+  CREATE TABLE IF NOT EXISTS held_accept (
+    item_id        TEXT    PRIMARY KEY REFERENCES work_item(id) ON DELETE CASCADE,
+    step_index     INTEGER NOT NULL,
+    arrival_run_id INTEGER NOT NULL,
+    pr             INTEGER NOT NULL,
+    actor          TEXT    NOT NULL,
+    notes          TEXT    NOT NULL DEFAULT '',
+    held_at        TEXT    NOT NULL DEFAULT (datetime('now'))
+  );
+`)
+
 // HZ-246: project and repo rules saved in Admin, one row per version. key is
 // the rules file stem (project slug, or owner__repo). Append-only: restore
 // inserts a copy, and the triggers refuse UPDATE/DELETE. hmac signs each row

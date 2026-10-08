@@ -4,6 +4,8 @@
 // block on every Accept path and on Resolve-conflicts, the interrupt (which
 // rows move, the exact reason, late owner writes), the routes' auth and input
 // contract, the TTL cap, the webhook staying fast, and the deploy env scope.
+// HZ-360: an Accept while blocked is held (heldAccept.js), not refused, and
+// merges once the block lifts — M5 and M6 below.
 // The process-tree kill is deploy-drain-kill.test.mjs; auto-resolve is
 // deploy-drain-auto-resolve.test.mjs; the script side is
 // infra/host/test/deploy-drain.test.sh.
@@ -43,6 +45,7 @@ const auth = await import('../src/auth.js')
 const premerge = await import('../src/premerge.js')
 const deploy = await import('../src/deploy.js')
 const deployDrain = await import('../src/deployDrain.js')
+const heldAccept = await import('../src/heldAccept.js')
 const votes = await import('../src/waPollVotes.js')
 const { POLL_APPROVE } = await import('../src/waSend.js')
 const { ACCEPT_GATE_INDEX, STEPS } = await import('../../domain/js/lifecycle.js')
@@ -51,6 +54,8 @@ store.purgeDemoItems()
 store.registerAgentRunner({ kick: () => {}, cancel: () => {} })
 const app = buildApp({ logger: false })
 const { pin, cookie } = loginFixtureUser(auth, config)
+// As server.js wires it, so the end of a drain releases what it held.
+await heldAccept.init(null, { gateActions: app.gateActions })
 
 const FARM = { 'x-farm-secret': 'farm-secret-hz250' }
 const BLOCK_MESSAGE = 'deploy in progress, try again in a few minutes'
@@ -60,11 +65,14 @@ const APPROVER = '15550001111@s.whatsapp.net'
 
 let checkRuns
 let farmResolveCalls
+let mergeCalls
 beforeEach(() => {
+  db.prepare('DELETE FROM held_accept').run()
   deployDrain.endDrain()
   db.prepare('DELETE FROM gate_action').run()
   checkRuns = 0
   farmResolveCalls = 0
+  mergeCalls = 0
   premerge.runner.spawn = async (args) => {
     checkRuns++
     return { code: 0, stdout: JSON.stringify({ ok: true, head_sha: args[4], base_sha: args[6] }), stderr: '', timedOut: false }
@@ -79,7 +87,10 @@ beforeEach(() => {
     }
     if (method === 'GET' && /\/pulls\/\d+$/.test(u.pathname)) return json(200, { head: { sha: HEAD, ref: 'horizon/x' }, base: { ref: 'main' } })
     if (method === 'GET' && u.pathname.endsWith('/git/ref/heads%2Fmain')) return json(200, { object: { sha: BASE } })
-    if (method === 'PUT' && u.pathname.endsWith('/merge')) return json(200, { merged: true })
+    if (method === 'PUT' && u.pathname.endsWith('/merge')) {
+      mergeCalls++
+      return json(200, { merged: true })
+    }
     return json(404, {})
   }
 })
@@ -105,7 +116,7 @@ const rowOf = (id, kind) => db.prepare('SELECT * FROM gate_action WHERE item_id 
 const drain = (method, url = '/api/farm/deploy-drain', { payload, headers = FARM, remoteAddress } = {}) =>
   app.inject({ method, url, payload, headers, ...(remoteAddress ? { remoteAddress } : {}) })
 
-// ---- M5: every path that starts a run is refused while a deploy drains ----
+// ---- M5: no path starts a run while a deploy drains (HZ-360: Accept is held) ----
 
 const acceptPaths = {
   browser: async (id) =>
@@ -129,21 +140,33 @@ const acceptPaths = {
   },
 }
 
+const heldRow = (id) => db.prepare('SELECT * FROM held_accept WHERE item_id = ?').get(id)
+const waitingOf = async (id) =>
+  (await app.inject({ method: 'GET', url: '/api/items', headers: { cookie } })).json().items.find((it) => it.id === id).acceptWaiting
+const until = async (check) => {
+  for (let i = 0; i < 400 && !check(); i++) await new Promise((r) => setTimeout(r, 5))
+}
+
 for (const [name, accept] of Object.entries(acceptPaths)) {
-  test(`M5: Accept via ${name} is refused while a deploy drains, and creates no gate_action row`, async () => {
+  test(`M5 (HZ-360): Accept via ${name} while a deploy drains is held, with no 409 and no gate_action row`, async () => {
     const id = acceptItem()
-    deployDrain.beginDrain({ ttlS: 600 })
+    const { blockedUntil } = deployDrain.beginDrain({ ttlS: 600 })
     const res = await accept(id)
+    assert.equal(res.statusCode, 200)
     if (name === 'poll vote') {
-      // The vote route reports the refused approval in its own envelope.
-      assert.notEqual(res.statusCode, 200)
-      assert.match(res.json().error, /deploy in progress, try again in a few minutes/)
+      // The vote route reports the approval in its own envelope; its ack says it is queued.
+      assert.equal(res.json().outcome, 'applied')
+      const ack = db.prepare('SELECT body FROM gate_notice WHERE item_id = ? ORDER BY id DESC').get(id)
+      assert.match(ack.body, /queued to merge until the deploy ends/)
     } else {
-      assert.equal(res.statusCode, 409)
-      assert.deepEqual(res.json(), { error: BLOCK_MESSAGE, premerge: true })
+      assert.deepEqual(res.json(), { ok: true, held: true, latestEnd: blockedUntil, actor: heldRow(id).actor })
     }
+    assert.doesNotMatch(res.body, /deploy in progress/)
+    assert.equal(heldRow(id).step_index, ACCEPT_GATE_INDEX)
+    assert.equal((await waitingOf(id)).source, 'human')
     assert.equal(gateRows(), 0)
     assert.equal(checkRuns, 0)
+    assert.equal(mergeCalls, 0)
     assert.equal(store.getItem(id).cursor, ACCEPT_GATE_INDEX)
   })
 }
@@ -160,17 +183,27 @@ test('M5: Resolve-conflicts is refused while a deploy drains, and creates no gat
 
 // ---- M6: the block lifts — DELETE, TTL, restart ----
 
-test('M6: after DELETE, Accept starts normally', async () => {
-  const id = acceptItem()
+test('M6 (HZ-360): after DELETE, every held Accept merges once with no second request', async () => {
+  const ids = Object.keys(acceptPaths).map(() => acceptItem())
   assert.equal((await drain('POST', undefined, { payload: { ttl_s: 600 } })).statusCode, 200)
-  assert.equal((await acceptPaths.browser(id)).statusCode, 409)
+  const paths = Object.values(acceptPaths)
+  for (const [i, id] of ids.entries()) assert.equal((await paths[i](id)).statusCode, 200)
+  assert.equal(mergeCalls, 0)
   const del = await drain('DELETE')
   assert.equal(del.statusCode, 200)
   assert.deepEqual(del.json(), { blocked: false })
-  const res = await acceptPaths.browser(id)
-  assert.equal(res.statusCode, 200)
-  assert.equal(checkRuns, 1)
-  assert.equal(rowOf(id, 'premerge').state, 'merged')
+  await until(() => ids.every((id) => store.getItem(id).cursor > ACCEPT_GATE_INDEX))
+  assert.equal(checkRuns, ids.length)
+  assert.equal(mergeCalls, ids.length)
+  for (const id of ids) {
+    assert.equal(rowOf(id, 'premerge').state, 'merged')
+    assert.equal(heldRow(id), undefined)
+    assert.equal(await waitingOf(id), null)
+  }
+  // After the block, Accept starts at once as before.
+  const later = acceptItem()
+  assert.equal((await acceptPaths.browser(later)).statusCode, 200)
+  assert.equal(rowOf(later, 'premerge').state, 'merged')
 })
 
 test('M6: a restarted server starts unblocked, and Accept reaches the claim', () => {

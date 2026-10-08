@@ -400,7 +400,11 @@ def _approve_gate(base_url: str, option: dict, sender: str, sender_jid: str) -> 
     it uses WA_APPROVAL_SECRET — not FARM_SHARED_SECRET, which the server no
     longer accepts here and which no agent session holds any more. The jid
     rides along because the server, not this process, is now the authority on
-    who may approve; sender_allowed() upstream stays as defence in depth."""
+    who may approve; sender_allowed() upstream stays as defence in depth.
+
+    On success the second value is a note for the reply, or "". HZ-360: an
+    Approve that arrives while a Horizon deploy drains is held ({held: true})
+    and merges when the deploy ends, so the reply says it is queued."""
     if not config.WA_APPROVAL_SECRET:
         # Refuse locally rather than send an unauthenticated request the
         # server would answer 401 to — the reason is a misconfigured host.
@@ -415,7 +419,11 @@ def _approve_gate(base_url: str, option: dict, sender: str, sender_jid: str) -> 
     except httpx.HTTPError as exc:
         return False, f"Horizon unreachable ({exc})"
     if res.status_code == 200:
-        return True, ""
+        try:
+            held = res.json().get("held") is True
+        except (AttributeError, ValueError):
+            held = False
+        return True, ("Horizon is deploying, so it is queued to merge until the deploy ends." if held else "")
     # The two HZ-140 rejections get plain replies instead of a raw error code.
     # Neither text ever contains the jid or any credential.
     if res.status_code == 403:
@@ -476,7 +484,8 @@ def try_handle_gate_choice(
     cstore.clear(key)
     ok, err = _approve_gate(base_url, option, sender_label(msg.sender_jid), msg.sender_jid)
     if ok:
-        _reply(transport, msg, f"Approved {option['item_id']} — {option['label']}.")
+        note = f" {err}" if err else ""
+        _reply(transport, msg, f"Approved {option['item_id']} — {option['label']}.{note}")
     else:
         _reply(transport, msg, f"Couldn't approve {option['item_id']}: {err}")
     return True

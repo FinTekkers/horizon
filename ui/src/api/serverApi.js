@@ -17,6 +17,8 @@ let farm = { status: 'running' }
 // HZ-229's per-step typical durations. The concierge snapshot omits them, so
 // a snapshot without the field keeps the last one.
 let durationEstimates = null
+// HZ-360: the self-deploy's block, {blocked, startedAt, latestEnd} or null.
+let deployBlock = null
 let sync = { tokenConfigured: false, repos: [] }
 let started = false
 const listeners = new Set()
@@ -56,6 +58,8 @@ function applyTop(data) {
   activeProjectId = data.activeProjectId ?? activeProjectId
   farm = data.farm || farm
   durationEstimates = data.durationEstimates ?? durationEstimates
+  // HZ-360: null is news here (the block ended), so it is copied as given.
+  if ('deployBlock' in data) deployBlock = data.deployBlock
 }
 
 function refetch() {
@@ -239,6 +243,10 @@ export function getFarm() {
 
 export function getDurationEstimates() {
   return durationEstimates
+}
+
+export function getDeployBlock() {
+  return deployBlock
 }
 
 // HZ-208: flip a project's enabled flag. The PIN is asked for on every flip
@@ -432,6 +440,13 @@ export async function approveGate(id, notes) {
   const data = await res.json().catch(() => ({ ok: false }))
   if (!res.ok && res.status !== 401 && item.pr_url && !data.premerge) {
     window.open(item.pr_url, '_blank', 'noopener')
+  }
+  // HZ-360: held for a Horizon deploy (a tab that had not heard of the block
+  // yet). Show it queued now; the next push carries the server's own fields.
+  if (data.held) {
+    deployBlock = deployBlock ?? { blocked: true, startedAt: null, latestEnd: data.latestEnd ?? null }
+    items = items.map((it) => (it.id === id ? { ...it, acceptWaiting: { source: 'human', actor: data.actor ?? null } } : it))
+    emit()
   }
   return data
 }

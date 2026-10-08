@@ -194,12 +194,16 @@ const insertAck = db.prepare('INSERT INTO gate_notice (item_id, step_index, reci
 // whitelist — so there is no new code and no new path here. It is also not a
 // breach of guardrail 1: the routing decision is already committed and
 // nothing the human types afterwards can change it.
-function enqueueAck(poll, choice, voterJid) {
+//
+// HZ-360: an approve held for a Horizon deploy says so — nothing has merged yet.
+function enqueueAck(poll, choice, voterJid, held = false) {
   try {
     const body =
-      choice === 'approve'
-        ? `${poll.item_id} — approved from your poll. Thanks.`
-        : `${poll.item_id} — sent back from your poll. Reply with any detail and I'll attach it as feedback.`
+      choice !== 'approve'
+        ? `${poll.item_id} — sent back from your poll. Reply with any detail and I'll attach it as feedback.`
+        : held
+          ? `${poll.item_id} — approved from your poll. Horizon is deploying, so it is queued to merge until the deploy ends. Thanks.`
+          : `${poll.item_id} — approved from your poll. Thanks.`
     insertAck.run(poll.item_id, poll.step_index, canonicalRecipient(poll, voterJid), body)
   } catch {
     // Deliberately swallowed. See above.
@@ -268,6 +272,7 @@ export async function applyVote({ voteId, pollMsgId, voterJid, selectedOption },
 
   let outcome = 'applied'
   let error = null
+  let held = false
   try {
     const actor = actorFor(voterJid)
     const res =
@@ -278,12 +283,13 @@ export async function applyVote({ voteId, pollMsgId, voterJid, selectedOption },
       outcome = 'failed'
       error = res.error
     }
+    held = res?.held === true
   } catch (err) {
     outcome = 'failed'
     error = String(err?.message || err)
   }
   setVoteOutcome.run(outcome, voteId)
-  if (outcome === 'applied') enqueueAck(poll, choice, voterJid)
+  if (outcome === 'applied') enqueueAck(poll, choice, voterJid, held)
   if (outcome === 'failed') {
     // Release the claim: the gate did NOT move, so this arrival must stay
     // decidable. A store refusal ('closed', 'project_not_active') is a

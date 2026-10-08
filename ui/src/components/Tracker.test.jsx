@@ -1092,3 +1092,61 @@ test('an item not in a deploy queue shows no queue label', () => {
   expect(container.querySelector('.step-card__deploy-queue')).toBeNull()
   expect(container.textContent).not.toMatch(/waiting for next/)
 })
+
+// ---- HZ-360: Accept the code while a Horizon self-deploy drains ----
+
+import { clockTime } from '../domain/status'
+
+const DRAIN = { blocked: true, startedAt: '2026-10-08T19:12:52.000Z', latestEnd: '2026-10-08T19:37:52.000Z' }
+const QUEUED = `Queued to merge: Horizon is deploying, merges resume after it (by about ${clockTime(DRAIN.latestEnd)})`
+const atAccept = (extra = {}) => ({ ...baseItem, cursor: ACCEPT_GATE_INDEX, pr: 354, pr_url: 'https://example.test/pr/354', acceptWaiting: null, ...extra })
+const renderQueued = (item, deployBlock = DRAIN) =>
+  render(
+    <Tracker
+      item={item}
+      deployBlock={deployBlock}
+      viewerName="Dana"
+      onBack={noop}
+      onApprove={noop}
+      onApproveWithComments={noop}
+      onReject={noop}
+      onResolveConflicts={noop}
+      onTogglePause={noop}
+      onRestartPhase={noop}
+      onSetPersona={noop}
+      onAbandon={noop}
+    />,
+  )
+
+test('HZ-360: the item page reads Queued to merge with the approver, and offers no Approve or Send back', () => {
+  const { container, queryByRole } = renderQueued(atAccept({ acceptWaiting: { source: 'human', actor: 'Dana' } }))
+  expect(container.querySelector('.tracker__status').textContent).toBe('Queued to merge')
+  expect(container.querySelector('.step-card__queued').textContent).toContain(QUEUED)
+  expect(container.querySelector('.step-card__queued-by').textContent).toBe('Approved by you')
+  for (const name of ['Approve', 'Approve with comments', 'Send back with feedback']) {
+    expect(queryByRole('button', { name })).toBeNull()
+  }
+  // The PR stays one click away.
+  expect(container.querySelector('.btn-pr-review')).toBeTruthy()
+})
+
+test('HZ-360: Autopilot waiting reads Approved by Autopilot; with no drain the gate buttons are back', () => {
+  const queued = renderQueued(atAccept({ acceptWaiting: { source: 'autopilot' } }))
+  expect(queued.container.querySelector('.step-card__queued-by').textContent).toBe('Approved by Autopilot')
+  queued.unmount()
+  const { container, getByRole } = renderQueued(atAccept(), null)
+  expect(container.querySelector('.step-card__queued')).toBeNull()
+  expect(getByRole('button', { name: 'Approve' })).toBeTruthy()
+  expect(getByRole('button', { name: 'Send back with feedback' })).toBeTruthy()
+})
+
+// The choice for a conflicted PR at a blocked gate: the same queued status,
+// the conflict line stays, and Resolve conflicts is not offered — the server
+// refuses a new resolve run while the deploy drains.
+test('HZ-360: a conflicted PR at a blocked Accept the code shows the queued status and no Resolve conflicts', () => {
+  const { container, queryByRole, getByText } = renderQueued(atAccept({ pr_mergeable: false }))
+  expect(container.querySelector('.step-card__queued').textContent).toContain(QUEUED)
+  expect(getByText(/has merge conflicts with main/)).toBeTruthy()
+  expect(queryByRole('button', { name: 'Resolve conflicts…' })).toBeNull()
+  expect(queryByRole('button', { name: 'Approve' })).toBeNull()
+})

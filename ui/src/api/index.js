@@ -23,6 +23,7 @@ export const {
   getActiveProjectId,
   getFarm,
   getDurationEstimates,
+  getDeployBlock,
   setProjectEnabled,
   setProjectAutopilot,
   saveToken,
