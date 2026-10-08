@@ -590,7 +590,7 @@ const selectItems = db.prepare(
 )
 const selectEvents = db.prepare('SELECT who, text, color, initials, created_at FROM event WHERE item_id = ? ORDER BY id DESC LIMIT 20')
 const selectOutputs = db.prepare(
-  "SELECT step_index, attempt, output, artifact FROM step_run WHERE item_id = ? AND status = 'done' ORDER BY id",
+  "SELECT step_index, attempt, output, artifact, provider FROM step_run WHERE item_id = ? AND status = 'done' ORDER BY id",
 )
 // Counts done+artifact rows only (a strict subset of the done rows above —
 // some steps mark done without ever setting an artifact), so the board can
@@ -613,6 +613,9 @@ function stepOutputs(itemId) {
       artifact: row.artifact || null,
       attemptCount: attemptCounts[row.step_index] || 0,
       label: STEPS[row.step_index]?.label ?? null,
+      // HZ-357: the provider this attempt ran on, so the item page can show
+      // "Ran on …". NULL for runs before the farm recorded it.
+      provider: row.provider || null,
     }
   }
   return map
@@ -1037,6 +1040,7 @@ function itemView(row, { stepOutputs: withStepOutputs = true } = {}) {
     release_url: row.release_url,
     deploy_queue: deployQueueStateFor(row.id),
     personas: personasFromRow(row),
+    providerChoices: providerChoicesFromRow(row),
     cursor: row.cursor,
     currentStep: currentStepOf(row),
     paused: !!row.paused,
@@ -1095,7 +1099,74 @@ export function getItem(id) {
   // `personas` is derived here, at the one seam every caller reads an item
   // through, so nothing downstream has to know about personas_json or the
   // legacy `persona` column (HZ-125). The raw columns stay on the object.
-  return { ...row, paused: !!row.paused, rejected: !!row.rejected, personas: personasFromRow(row) }
+  return {
+    ...row,
+    paused: !!row.paused,
+    rejected: !!row.rejected,
+    personas: personasFromRow(row),
+    providerChoices: providerChoicesFromRow(row),
+  }
+}
+
+// ---- per-step provider choice (HZ-357) ----
+// The providers an owner may pick for a step. "default" is not stored: it
+// deletes the step's key, so an item with no choices keeps an empty map and
+// runs exactly as before.
+export const STEP_PROVIDERS = ['claude', 'muse']
+const PROVIDER_LABELS = { claude: 'Claude', muse: 'Muse' }
+
+// Only a step domain/steps.json marks providerOverrideEligible takes a choice;
+// the farm applies the same rule, and implement/deploy stay provider-locked.
+function providerOverrideEligible(stepIndex) {
+  return STEPS[stepIndex]?.kind === 'agent' && STEPS[stepIndex].providerOverrideEligible === true
+}
+
+// The item's { "<step index>": provider } map. Anything a reader must not act
+// on — junk JSON, an unknown provider, a step that isn't eligible — is dropped.
+export function providerChoicesFromRow(row) {
+  if (typeof row?.provider_choices_json !== 'string' || !row.provider_choices_json.trim()) return {}
+  let parsed
+  try {
+    parsed = JSON.parse(row.provider_choices_json)
+  } catch {
+    return {}
+  }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {}
+  const choices = {}
+  for (const [step, provider] of Object.entries(parsed)) {
+    if (/^\d+$/.test(step) && providerOverrideEligible(Number(step)) && STEP_PROVIDERS.includes(provider)) {
+      choices[step] = provider
+    }
+  }
+  return choices
+}
+
+// The owner's "Runs on" choice for one step. The farm reads it from the task
+// at the next dispatch of that step, so a run already in progress keeps the
+// provider it started on. Refuses, writing nothing, a step that isn't
+// eligible (provider_not_eligible — the route maps it to 400).
+export function setStepProvider(id, stepIndex, provider, actor = 'You') {
+  const it = getItem(id)
+  if (!it) return { error: 'not_found' }
+  if (disabledProject(it)) return { error: 'project_not_active' }
+  if (isClosed(it)) return { error: 'closed' }
+  if (isAbandoned(it)) return { error: 'abandoned' }
+  if (!providerOverrideEligible(stepIndex)) return { error: 'provider_not_eligible' }
+  if (provider !== 'default' && !STEP_PROVIDERS.includes(provider)) return { error: 'bad_provider' }
+
+  const choices = { ...it.providerChoices }
+  if (provider === 'default') delete choices[stepIndex]
+  else choices[stepIndex] = provider
+  const json = Object.keys(choices).length > 0 ? JSON.stringify(choices) : null
+  db.prepare(`UPDATE work_item SET provider_choices_json = ?, ${touch} WHERE id = ?`).run(json, id)
+  addEvent(id, {
+    who: actor,
+    text: `set ${STEPS[stepIndex].label} to run on ${provider === 'default' ? 'the default provider' : PROVIDER_LABELS[provider]}`,
+    color: '#5E4380',
+    initials: 'YOU',
+  })
+  notify()
+  return { ok: true }
 }
 
 // Human actions are only valid against an enabled project's items (HZ-207;

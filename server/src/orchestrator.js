@@ -1223,6 +1223,9 @@ async function dispatchToFarm(id, stepIndex, runId, attempt, scope) {
       repo: item.repo,
       issue: item.issue,
       personas: item.personas,
+      // HZ-357: copied into the task here, so a choice changed after this
+      // hand-off applies to the next dispatch, never to this run.
+      providerChoices: item.providerChoices,
       ...releaseFields,
     },
     step: { index: stepIndex, label: step.label, agent: step.agent },
@@ -2085,11 +2088,10 @@ export async function completeFarmRun(runId, { summary, patch, artifacts }) {
     return { ok: true }
   }
 
-  // HZ-102 provenance: farm/step_agent.py only sets these two fields when a
-  // persona forced a non-default provider for this step (PERSONA_PROVIDERS
-  // ships empty per HZ-121, so today this only happens via a test-registered
-  // fixture persona) — every other step keeps writing NULL here, unchanged
-  // from before this column existed.
+  // HZ-102 provenance: since HZ-357 farm/step_agent.py sets these two fields
+  // on every run of a providerOverrideEligible step whose reply named the
+  // provider that ran (Default runs included), so the item page can show
+  // "Ran on …". Every other step keeps writing NULL here.
   const provider =
     typeof artifacts?.provider === 'string' && artifacts.provider.trim() ? artifacts.provider.trim() : null
   const commandId =

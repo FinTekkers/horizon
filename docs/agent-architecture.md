@@ -121,10 +121,11 @@ file. This happens on steps 0, 1, 2 and 9: the steps that define an item's
 outcome, success metric and guardrails, and that later summarize every
 review for the human at the "Review before execution" gate — everything
 downstream depends on their output. They are also the least auditable steps
-in the pipeline. `step_agent.py` stamps `provider`/`command_id` into the run
-log and artifact, but only when a persona-forced provider override is in
-play, i.e. only for steps 4, 6 and 7 (the `if provider_override:` branches
-at the end of `execute()` — see [Provider selection](#provider-selection--resolution-order-and-propagation)
+in the pipeline. `step_agent.py` records `provider`/`command_id` in the
+artifact sent to the server (and so on `step_run`) on every run of steps 4, 6
+and 7 whose reply names the provider that ran — Default runs included, since
+HZ-357 — and stamps them into the run log and summary only when an override
+picked the provider (the end of `execute()` — see [Provider selection](#provider-selection--resolution-order-and-propagation)
 below). PM-queued steps never get that treatment: `pm_agent.py`'s
 `run_agent()` call in `process()` takes no `provider=` argument and
 nothing about the PM's run is recorded per-run anywhere. This is documented
@@ -138,13 +139,28 @@ session file is a separate piece of work.
 provider module it dispatches to is resolved in this order:
 
 1. **An explicit `provider=` argument to this one call**, if given
-   (`run_agent()`'s docstring). Only ever set by a persona-forced
-   provider override — see below. It cannot leak into a later call in the
+   (`run_agent()`'s docstring). Only ever set by a step's provider override
+   — the owner's per-step choice, else a persona-forced provider; see below.
+   It cannot leak into a later call in the
    same process, since it's a plain function parameter, not an env var.
 2. **`os.environ.get("FARM_PROVIDER", FARM_PROVIDER)`, read at call time, not
    at import time** (`agent_runner.py`'s module-level provider resolution) — so a process that's been
    running for a while still picks up an env change on its *next* call.
 3. **The `farm/config.py` default, `"claude"`.**
+
+**Per-step choice (HZ-357).** On the item page, each step marked
+`providerOverrideEligible` has a "Runs on" select: Default (Claude), Claude or
+Muse. The choice is stored per item and step (`work_item.provider_choices_json`,
+set through `PUT /api/items/:id/steps/:stepIndex/provider`; any other step is
+a 400) and copied into the farm task as `item.providerChoices` when the step
+is dispatched, so a change never reaches a run already in progress.
+`step_agent.py`'s `step_provider_choice()` reads it, gated on
+`provider_override_eligible()` like the persona override. The full order for
+an eligible step is therefore: **per-step choice, then the persona map, then
+`FARM_PROVIDER`/the default**. A Claude choice is still an override, so its run
+gets the `[provider=… command_id=…]` summary tag; a Default run does not, but
+still records the provider that ran on `step_run.provider`, which the item
+page shows as "Ran on …".
 
 **Persona override.** `farm/personas.py`'s `PERSONA_PROVIDERS` ships
 **empty** (HZ-121) — no shipped persona forces a non-default provider yet.

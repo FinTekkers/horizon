@@ -1543,6 +1543,36 @@ export function buildApp({ logger = true, onRoute = null } = {}) {
     (request, reply) => send(reply, store.setPersona(request.params.id, request.body.agent, request.body.persona)),
   )
 
+  // HZ-357: choose which provider runs one step of this item ("Runs on" on the
+  // item page). `default` clears the choice. Only steps domain/steps.json marks
+  // providerOverrideEligible take one; any other step is a 400 and nothing is
+  // saved. The next dispatch of that step reads the item, never a run already
+  // in progress. PUT because it sets a value idempotently.
+  fastify.put(
+    '/api/items/:id/steps/:stepIndex/provider',
+    {
+      schema: {
+        params: {
+          type: 'object',
+          required: ['id', 'stepIndex'],
+          properties: { id: { type: 'string', minLength: 1 }, stepIndex: { type: 'integer', minimum: 0 } },
+        },
+        body: {
+          type: 'object',
+          required: ['provider'],
+          properties: { provider: { type: 'string', enum: ['default', ...store.STEP_PROVIDERS] } },
+        },
+        response: { 200: OK_OBJECT, 400: ERROR_OBJECT, 404: ERROR_OBJECT, 409: ERROR_OBJECT },
+      },
+    },
+    (request, reply) => {
+      const { id, stepIndex } = request.params
+      const result = store.setStepProvider(id, stepIndex, request.body.provider, actorOf(request))
+      if (result.error === 'provider_not_eligible') return reply.code(400).send(result)
+      return send(reply, result)
+    },
+  )
+
   // Reprioritize (UI or the WhatsApp concierge). Bad enum values 400 at the
   // schema layer; the GitHub label mirror is best-effort and never blocks.
   fastify.post(

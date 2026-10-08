@@ -185,6 +185,7 @@ test("the item stream opens with the item's outputs, sends them again when they 
       artifact: '# first',
       attemptCount: 1,
       label: STEPS[1].label,
+      provider: null, // HZ-357: no provider recorded for this run
     })
     await waitForItemClients('SO-OPEN', 1)
 

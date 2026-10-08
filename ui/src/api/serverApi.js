@@ -335,6 +335,17 @@ async function postJson(path, body) {
   return data
 }
 
+async function putJson(path, body) {
+  const res = await fetch(`${API_BASE}${path}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  })
+  const data = await res.json().catch(() => ({}))
+  if (!res.ok) throw new Error(data.error || data.message || `HTTP ${res.status}`)
+  return data
+}
+
 async function deleteJson(path) {
   const res = await fetch(`${API_BASE}${path}`, { method: 'DELETE' })
   const data = await res.json().catch(() => ({}))
@@ -502,6 +513,13 @@ export function abandonItem(id, reason, { removeDependentLinks = false } = {}) {
 // agent travels with the id and the server merges rather than replaces.
 export function setPersona(id, agent, persona) {
   return post(`/items/${id}/persona`, { agent, persona })
+}
+
+// HZ-357: the "Runs on" choice for one step ('default' | 'claude' | 'muse').
+// Rejects with the server's error code (provider_not_eligible, closed, …) so
+// the picker can say why; the saved choice comes back on the board stream.
+export function setStepProvider(id, stepIndex, provider) {
+  return putJson(`/items/${id}/steps/${stepIndex}/provider`, { provider })
 }
 
 // ---- agent definitions (HZ-9) ----
