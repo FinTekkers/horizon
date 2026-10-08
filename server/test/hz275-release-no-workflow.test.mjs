@@ -15,10 +15,10 @@ process.env.HORIZON_DB = join(mkdtempSync(join(tmpdir(), 'horizon-hz275-release-
 const { db } = await import('../src/db.js')
 const { createDeployRelease } = await import('../src/github.js')
 const { MOCK_STEP_BEHAVIOR } = await import('../src/orchestrator.js')
-// HZ-304: acme/demo has no deploy target; the 'no deploy' mark keeps the mock
-// deploy publishing its release as before.
+// HZ-304: acme/demo's deploy target never passes re-validation; the row keeps
+// the mock deploy publishing its release as before.
 const { connectReadyRepo } = await import('./helpers/readyRepo.mjs')
-connectReadyRepo(db, 'acme/demo', { noDeploy: true })
+connectReadyRepo(db, 'acme/demo', { unrunnableTarget: true })
 
 // A mocked `gh`: every GitHub call goes through fetch. The tag is free, and
 // the release is created.
