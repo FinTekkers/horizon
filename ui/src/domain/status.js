@@ -35,6 +35,17 @@ export function isRuleBlocked(item) {
   return !(isClosed(item) || isAbandoned(item) || item.rejected || item.paused)
 }
 
+// HZ-365: a rule block's `needs` is a one-line summary, a blank line, then the
+// agent's full explanation. The summary is the first non-blank line; text
+// with no line break gives its first sentence. hasMore says whether the full
+// text says more than the summary.
+export function ruleBlockSummary(needs) {
+  const text = String(needs ?? '').trim()
+  let summary = text.split(/\r?\n/).find((line) => line.trim())?.trim() ?? ''
+  if (!/[\r\n]/.test(text)) summary = text.match(/^[\s\S]*?[.!?](?=\s|$)/)?.[0] ?? text
+  return { summary, hasMore: summary.length < text.length }
+}
+
 // HZ-360: 'HH:MM' in the viewer's own time zone, 24-hour.
 export function clockTime(iso) {
   const t = new Date(iso)

@@ -3,7 +3,7 @@
 // state, never collapsing into Closed or any of the other statuses.
 
 import { expect, test } from 'vitest'
-import { itemStatus, stateLabel, stepStateLabel } from './status'
+import { itemStatus, stateLabel, stepStateLabel, ruleBlockSummary } from './status'
 import { STEPS, ACCEPT_GATE_INDEX } from '../../../domain/js/lifecycle.js'
 
 const base = { cursor: 0, paused: false, rejected: false, abandoned_at: null }
@@ -256,4 +256,26 @@ test('itemStatus and stateLabel read Queued to merge at a blocked Accept the cod
   expect(stateLabel(item, { deployBlock: BLOCK })).toBe('Queued to merge')
   expect(itemStatus(item, true).label).toBe('Awaiting your approval')
   expect(stateLabel(item)).toBe('Waiting on you')
+})
+
+// HZ-365: the summary the card and the banner show before the full text.
+test('ruleBlockSummary: the first line of multi-line text, with more to show', () => {
+  expect(ruleBlockSummary('A models release.\n\nCause one.\nCause two.')).toEqual({ summary: 'A models release.', hasMore: true })
+})
+
+test('ruleBlockSummary: a leading blank line is skipped', () => {
+  expect(ruleBlockSummary('\n  \nA models release.\nMore.')).toEqual({ summary: 'A models release.', hasMore: true })
+})
+
+test('ruleBlockSummary: text with no line break gives its first sentence', () => {
+  expect(ruleBlockSummary('Needs ledger-models v1.2 first. Then rerun.')).toEqual({ summary: 'Needs ledger-models v1.2 first.', hasMore: true })
+})
+
+test('ruleBlockSummary: a single short line is the whole summary, with nothing more', () => {
+  expect(ruleBlockSummary('a ledger-models release with the fix')).toEqual({ summary: 'a ledger-models release with the fix', hasMore: false })
+  expect(ruleBlockSummary('One sentence only.')).toEqual({ summary: 'One sentence only.', hasMore: false })
+})
+
+test('ruleBlockSummary: \\r\\n breaks split like \\n', () => {
+  expect(ruleBlockSummary('First line\r\n\r\nSecond line')).toEqual({ summary: 'First line', hasMore: true })
 })

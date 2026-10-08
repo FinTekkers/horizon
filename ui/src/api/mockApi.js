@@ -376,6 +376,26 @@ export async function removeDependency(id, dependsOnId) {
   return { ok: true }
 }
 
+// Mirrors store.addDependency: add the edge on both sides and log it. An
+// open blocker holds the item; a closed one releases a rule block at once,
+// as store.releaseRuleBlockIfSatisfied does.
+export async function addDependency(id, dependsOnId) {
+  const it = items.find((x) => x.id === id)
+  const dep = items.find((x) => x.id === dependsOnId)
+  if (!it || !dep) throw new Error('not_found')
+  if (id === dependsOnId || (it.blockedBy || []).some((b) => b.id === dependsOnId)) throw new Error('conflict')
+  if (isClosed(dep)) {
+    update(id, (x) => ({ ...x, ruleBlock: null }))
+  } else {
+    const entry = { id: dep.id, title: dep.title, abandoned: !!dep.abandoned_at }
+    update(id, (x) => ({ ...x, blockedBy: [...(x.blockedBy || []), entry], blocked: true }))
+    update(dependsOnId, (x) => ({ ...x, dependents: [...(x.dependents || []), { id: it.id, title: it.title, abandoned: false }] }))
+  }
+  pushEvent(id, { who: 'You', text: `added a dependency on ${dependsOnId}`, color: '#5E4380', initials: 'YOU' })
+  if (!items.find((x) => x.id === id).blocked) runAgents(id)
+  return { ok: true }
+}
+
 export function setPersona(id, agent, persona) {
   if (!isPersona(agent, persona)) return
   update(id, (it) => ({ ...it, personas: { ...it.personas, [agent]: persona } }))

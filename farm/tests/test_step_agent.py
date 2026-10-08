@@ -3400,12 +3400,28 @@ def test_a_valid_blocked_report_with_no_changes_is_returned_as_blocked_without_c
 
 def test_a_blocked_report_is_stripped_and_capped_to_the_servers_limits(tmp_path, monkeypatch):
     ws, _origin = make_git_workspace(tmp_path)
-    blocked_run(monkeypatch, ws, {"blocked": {"rule": "  " + "r" * 400 + " ", "needs": "n" * 700}})
+    blocked_run(
+        monkeypatch,
+        ws,
+        {"blocked": {"rule": "  " + "r" * 400 + " ", "needs": "n" * (step_agent.NEEDS_MAX_CHARS + 100)}},
+    )
 
     result = execute(make_task(11, "Specialist agent implements", repo="acme/demo", checks_waiver=NO_CHECKS))
 
     assert result["blocked"]["rule"] == "r" * step_agent.RULE_MAX_CHARS
     assert result["blocked"]["needs"] == "n" * step_agent.NEEDS_MAX_CHARS
+
+
+def test_a_3000_character_needs_with_line_breaks_passes_through_unchanged(tmp_path, monkeypatch):
+    """HZ-365 metric 4: the agent's full explanation reaches the server whole."""
+    ws, _origin = make_git_workspace(tmp_path)
+    needs = ("One-line summary.\n\n" + "cause line\n\n" * 300)[:2999] + "."
+    assert len(needs) == 3000
+    blocked_run(monkeypatch, ws, {"blocked": {"rule": "guardrail 6", "needs": needs}})
+
+    result = execute(make_task(11, "Specialist agent implements", repo="acme/demo", checks_waiver=NO_CHECKS))
+
+    assert result["blocked"]["needs"] == needs
 
 
 def test_no_changes_and_no_blocked_report_still_fails_as_today(tmp_path, monkeypatch):

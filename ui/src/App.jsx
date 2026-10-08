@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, useSyncExternalStore } from 'react'
 import * as api from './api'
-import { STEPS, awaitingGate, reworkTargets, defaultReworkTarget } from '../../domain/js/lifecycle.js'
+import { STEPS, IMPLEMENT_STEP_INDEX, awaitingGate, reworkTargets, defaultReworkTarget } from '../../domain/js/lifecycle.js'
 import TopBar from './components/TopBar'
 import BottomNav from './components/BottomNav'
 import { MOBILE_QUERY, useMediaQuery } from './useMediaQuery'
@@ -13,6 +13,7 @@ import ResolveConflictsDialog from './components/ResolveConflictsDialog'
 import AdminPage from './components/AdminPage'
 import AgentDefinitionsPage from './components/AgentDefinitionsPage'
 import NewItemModal from './components/NewItemModal'
+import AddDependencyDialog from './components/AddDependencyDialog'
 import LoginPage from './components/LoginPage'
 import LegalPage, { LEGAL_DOCS } from './components/LegalPage'
 import { gateActionBusy } from './domain/gateAction'
@@ -125,6 +126,9 @@ function AuthenticatedApp({ user, onLogout }) {
   const [approvalsOpen, setApprovalsOpen] = useState(false)
   const [composer, setComposer] = useState(CLOSED_COMPOSER)
   const [newItemOpen, setNewItemOpen] = useState(false)
+  // HZ-365: the rule-block banner's Add dependency — the item it is for, and
+  // whether "File a new upstream item" swapped the picker for NewItemModal.
+  const [addDependency, setAddDependency] = useState(null)
   // Plain Approve never used to pause for anything — with a cached gate PIN
   // it went straight to the server on click (HZ-38). This is the one gate it
   // must clear first: nothing here calls api.approveGate directly.
@@ -303,7 +307,11 @@ function AuthenticatedApp({ user, onLogout }) {
       if (mode === 'approve') approveAndMaybeClose(itemId, text)
       else if (mode === 'reject') api.requestChanges(itemId, target, text, modeArg ?? null)
       else if (mode === 'restart') api.restartPhase(itemId, phase, text)
-      else if (mode === 'abandon') {
+      // HZ-365: Amend the rule is HZ-346's PIN-gated send-back to implement,
+      // with the owner's ruling as the note. It clears the block.
+      else if (mode === 'amend') {
+        api.requestChanges(itemId, STEPS[IMPLEMENT_STEP_INDEX].label, `Owner's ruling on the blocking rule: ${text}`)
+      } else if (mode === 'abandon') {
         api.abandonItem(itemId, text, { removeDependentLinks: modeArg?.removeDependentLinks === true })
       }
     }
@@ -396,6 +404,8 @@ function AuthenticatedApp({ user, onLogout }) {
           onSetStepProvider={api.setStepProvider}
           onRemoveDependency={(id, dependsOnId) => api.removeDependency(id, dependsOnId)}
           onAbandon={(id) => openComposer('abandon', id)}
+          onAddDependency={(id) => setAddDependency({ itemId: id, fileNew: false })}
+          onAmendRule={(id) => openComposer('amend', id)}
         />
       )}
 
@@ -433,6 +443,32 @@ function AuthenticatedApp({ user, onLogout }) {
             setConfirmApprove(null)
           }}
           onCancel={() => setConfirmApprove(null)}
+        />
+      )}
+
+      {addDependency && !addDependency.fileNew && items.some((it) => it.id === addDependency.itemId) && (
+        <AddDependencyDialog
+          item={items.find((it) => it.id === addDependency.itemId)}
+          items={items}
+          initialError={addDependency.error ?? null}
+          onAdd={api.addDependency}
+          onFileNew={() => setAddDependency({ ...addDependency, fileNew: true })}
+          onClose={() => setAddDependency(null)}
+        />
+      )}
+
+      {addDependency?.fileNew && (
+        <NewItemModal
+          projects={enabledProjects(projects)}
+          defaultProjectId={typeof projectFilter === 'number' ? projectFilter : activeProjectId}
+          onCreated={(created) => {
+            if (!created?.id) return
+            // A refused link reopens the picker with the reason; the new item is listed there.
+            api.addDependency(addDependency.itemId, created.id).catch((err) =>
+              setAddDependency({ itemId: addDependency.itemId, fileNew: false, error: `${created.id}: ${err.message}` }),
+            )
+          }}
+          onClose={() => setAddDependency(null)}
         />
       )}
 

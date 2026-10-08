@@ -16,8 +16,11 @@ import { UI_URL } from './config.js'
 import { ownerJid } from './waApprovers.js'
 
 // The same caps farm/step_agent.py applies before sending a report.
+// HZ-365: `needs` holds the agent's full explanation (a one-line summary
+// first), so it is stored whole; the ping keeps its own shorter cap.
 export const RULE_MAX_CHARS = 300
-export const NEEDS_MAX_CHARS = 600
+export const NEEDS_MAX_CHARS = 4000
+export const PING_NEEDS_MAX_CHARS = 600
 
 const TITLE_MAX_CHARS = 200
 
@@ -42,7 +45,7 @@ export function renderRuleBlockPing(item, block) {
     `${item.id} — ${plainText(item.title, TITLE_MAX_CHARS)}`,
     'Blocked by a rule: the agent stopped without changing any code.',
     `Rule: "${plainText(block.rule, RULE_MAX_CHARS)}"`,
-    `Needs: ${plainText(block.needs, NEEDS_MAX_CHARS)}`,
+    `Needs: ${plainText(block.needs, PING_NEEDS_MAX_CHARS)}`,
     'Add a dependency on the item that delivers it, resume to retry, or abandon.',
     link,
   ].join('\n')

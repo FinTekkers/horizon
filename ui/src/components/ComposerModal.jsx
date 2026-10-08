@@ -27,6 +27,14 @@ const COPY = {
     placeholder: 'Why is this being abandoned? (required)',
     required: true,
   },
+  // HZ-365: the rule-block banner's Amend the rule.
+  amend: {
+    title: 'Amend the rule',
+    submitLabel: 'Send ruling',
+    submitColor: 'var(--primary)',
+    placeholder: 'Your ruling on the blocking rule — e.g. a local workaround is allowed here (required)',
+    required: true,
+  },
 }
 
 function subtitle(composer) {
@@ -41,6 +49,9 @@ function subtitle(composer) {
   }
   if (composer.mode === 'abandon') {
     return 'Stops dispatch, cancels any in-flight run, and closes the GitHub issue as not planned — this is recorded on the activity feed and cannot be undone from here'
+  }
+  if (composer.mode === 'amend') {
+    return "Your ruling goes to the implement agent, the block clears and implement re-runs. The issue's guardrails and metric are not changed. Needs your gate PIN."
   }
   return ''
 }

@@ -75,9 +75,9 @@ MAX_PROMPT_ARTIFACT_CHARS = 100_000
 SUMMARY_MAX_CHARS = 600
 # HZ-346: the caps on a blocked report's two fields. server/src/ruleBlock.js
 # holds the same numbers for the /blocked route, so a capped report is never
-# refused there.
+# refused there. HZ-365: `needs` carries the agent's full explanation.
 RULE_MAX_CHARS = 300
-NEEDS_MAX_CHARS = 600
+NEEDS_MAX_CHARS = 4000
 
 # step label -> (role file, needs JSON artifact, tool access, persona agent).
 # HZ-117: keyed by label (the table's own primary key, see domain/steps.json),

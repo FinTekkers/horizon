@@ -49,6 +49,7 @@ export const {
   restartPhase,
   setPersona,
   setStepProvider,
+  addDependency,
   removeDependency,
   abandonItem,
   listDefinitions,

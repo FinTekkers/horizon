@@ -13,7 +13,7 @@ import {
 import { AGENTS } from '../domain/agentTokens'
 import { PHASE_ACCENT, PHASE_ACCENT_BG, priorityColor } from '../domain/lifecycle'
 import { PERSONAS, PERSONA_AGENT_ROLES, PRIMARY_PERSONA_AGENT, personaFor, personaId } from '../domain/personas'
-import { itemStatus, isDependencyBlocked, queuedToMerge } from '../domain/status'
+import { itemStatus, isDependencyBlocked, isRuleBlocked, ruleBlockSummary, queuedToMerge } from '../domain/status'
 import { pauseReason } from '../domain/pauseReason'
 import { gateActionOf } from '../domain/gateAction'
 import { deployQueueLabel } from '../domain/deployQueue'
@@ -436,6 +436,55 @@ function PauseBanner({ item }) {
   )
 }
 
+// HZ-365: why a rule-blocked item stopped, what would unblock it, and HZ-346's
+// ways to clear it. `rule` and `needs` are the agent's own text, shown as
+// React text only — never Markdown, never HTML — with their line breaks kept.
+// The board card's "See what to do" link lands here as #rule-block; the
+// banner mounts only once the item has loaded, so it scrolls itself in then.
+function RuleBlockBanner({ item, onAddDependency, onAmendRule, onAbandon }) {
+  const ref = useRef(null)
+  const [expanded, setExpanded] = useState(false)
+  const { rule, needs } = item.ruleBlock
+  const { summary, hasMore } = ruleBlockSummary(needs)
+
+  useEffect(() => {
+    if (window.location.hash === '#rule-block') ref.current?.scrollIntoView?.({ block: 'start' })
+  }, [])
+
+  return (
+    <div className="pause-banner" id="rule-block" ref={ref}>
+      <div className="pause-banner__title">Blocked by a rule · {STEPS[item.cursor]?.label}</div>
+      <div className="dep-detail__label dep-detail__label--blocked pause-banner__label">Rule</div>
+      <blockquote className="pause-banner__detail pause-banner__text pause-banner__quote">{rule}</blockquote>
+      <div className="dep-detail__label dep-detail__label--blocked pause-banner__label">What's needed</div>
+      {expanded ? (
+        <div className="pause-banner__detail pause-banner__text" data-testid="rule-block-needs">
+          {needs}
+        </div>
+      ) : (
+        <div className="pause-banner__detail pause-banner__text">{summary}</div>
+      )}
+      {hasMore && (
+        <button type="button" className="pause-banner__toggle" aria-expanded={expanded} onClick={() => setExpanded(!expanded)}>
+          {expanded ? "Hide the agent's full explanation" : "Show the agent's full explanation"}
+        </button>
+      )}
+      <div className="pause-banner__meta">Not a failed attempt · nothing runs until this is cleared</div>
+      <div className="pause-banner__actions">
+        <button type="button" className="btn-resume" onClick={() => onAddDependency(item.id)}>
+          Add dependency
+        </button>
+        <button type="button" className="btn-outline" onClick={() => onAmendRule(item.id)}>
+          Amend the rule
+        </button>
+        <button type="button" className="btn-reject" onClick={() => onAbandon(item.id)}>
+          Abandon
+        </button>
+      </div>
+    </div>
+  )
+}
+
 // Server timestamps are sqlite UTC "YYYY-MM-DD HH:MM:SS".
 function relTime(createdAt) {
   if (!createdAt) return 'just now'
@@ -507,7 +556,7 @@ function useStepOutputs(item) {
   return { stepOutputs: mine ? loaded.stepOutputs : null, settled: mine }
 }
 
-export default function Tracker({ item, projects, deployBlock = null, viewerName = null, onBack, onApprove, onApproveWithComments, onReject, onResolveConflicts, resolving, gateBusy, onForwardToAccept, onTogglePause, onRestartPhase, onSetPersona, onSetStepProvider, onAbandon, onRemoveDependency }) {
+export default function Tracker({ item, projects, deployBlock = null, viewerName = null, onBack, onApprove, onApproveWithComments, onReject, onResolveConflicts, resolving, gateBusy, onForwardToAccept, onTogglePause, onRestartPhase, onSetPersona, onSetStepProvider, onAbandon, onRemoveDependency, onAddDependency, onAmendRule }) {
   const status = itemStatus(item, true, { deployBlock })
   const activity = buildActivity(item)
   const closed = isClosed(item)
@@ -584,6 +633,10 @@ export default function Tracker({ item, projects, deployBlock = null, viewerName
           </div>
         )}
         {!abandoned && item.paused && <PauseBanner item={item} />}
+        {/* HZ-365: isRuleBlocked is false while paused, so never both banners. */}
+        {isRuleBlocked(item) && (
+          <RuleBlockBanner key={item.id} item={item} onAddDependency={onAddDependency} onAmendRule={onAmendRule} onAbandon={onAbandon} />
+        )}
         {abandoned && item.abandoned_reason && (
           <div className="tracker__actions">
             <div className="tile__value" style={{ color: '#5C1F2B' }}>

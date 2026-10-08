@@ -49,7 +49,7 @@ export default function NewItemModal({ projects = [], defaultProjectId = null, o
     setBusy(true)
     setServerError(null)
     try {
-      await createItem({
+      const created = await createItem({
         title: title.trim(),
         outcome: outcome.trim(),
         metric: metric.trim(),
@@ -57,7 +57,7 @@ export default function NewItemModal({ projects = [], defaultProjectId = null, o
         priority,
         ...(repo ? { repo } : {}),
       })
-      onCreated?.()
+      onCreated?.(created)
       onClose()
     } catch (err) {
       setServerError(err.message)

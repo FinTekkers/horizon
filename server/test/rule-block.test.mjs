@@ -272,3 +272,26 @@ test('a human send-back clears the block', () => {
   assert.ok(activeRun('RB-9'))
   orchestrator.cancel('RB-9')
 })
+
+test('HZ-365: a 3,000-character needs with line breaks is stored whole and returned unchanged; the ping stays short', async () => {
+  await drain()
+  insertItem.run('RB-LONG', 'Long explanation', IMPLEMENT_STEP_INDEX)
+  const runId = activeRunRow('RB-LONG')
+  const rule = 'guardrail 6: models first: no local workaround\nquoted across two lines'
+  const needs = ('A ledger-models release with the fix.\n\n' + 'Cause: the proto is missing a field.\r\n\n'.repeat(80)).slice(0, 2999) + '.'
+  assert.equal(needs.length, 3000)
+
+  const res = await farmPost(`/api/farm/steps/${runId}/blocked`, { rule, needs })
+  assert.equal(res.statusCode, 200)
+
+  assert.equal(viewOf('RB-LONG').ruleBlock.rule, rule)
+  assert.equal(viewOf('RB-LONG').ruleBlock.needs, needs)
+  const view = (await inject({ method: 'GET', url: '/api/items?v=2' })).json().items.find((it) => it.id === 'RB-LONG')
+  assert.equal(view.ruleBlock.rule, rule)
+  assert.equal(view.ruleBlock.needs, needs)
+
+  const [[, body]] = await drain('RB-LONG')
+  const needsLine = body.split('\n').find((l) => l.startsWith('Needs: '))
+  assert.ok(needsLine.length - 'Needs: '.length <= ruleBlock.PING_NEEDS_MAX_CHARS, needsLine.length)
+  assert.ok(needsLine.endsWith('…'))
+})

@@ -5,7 +5,7 @@
 
 import { expect, test, vi, afterEach } from 'vitest'
 import { render, fireEvent, cleanup, waitFor, act } from '@testing-library/react'
-import { STEPS } from '../../domain/js/lifecycle.js'
+import { STEPS, IMPLEMENT_STEP_INDEX } from '../../domain/js/lifecycle.js'
 
 const CLOSING_GATE_INDEX = STEPS.length - 1
 const CLOSING_GATE_LABEL = STEPS[CLOSING_GATE_INDEX].label
@@ -34,6 +34,8 @@ vi.mock('./api', () => ({
   setPersona: vi.fn(),
   setStepProvider: vi.fn(),
   abandonItem: vi.fn(),
+  addDependency: vi.fn(async () => ({ ok: true })),
+  createItem: vi.fn(),
   setProjectEnabled: vi.fn(),
   logout: vi.fn(),
   issueUrl: () => 'https://example.test/issue',
@@ -471,4 +473,64 @@ test('abandoning with "Remove these links" checked sends removeDependentLinks: t
   fireEvent.click(document.querySelector('.composer__submit'))
 
   expect(api.abandonItem).toHaveBeenCalledWith(id, 'superseded', { removeDependentLinks: true })
+})
+
+// HZ-365: the rule-block banner's actions, wired through App to HZ-346's
+// existing routes.
+function ruleBlockedItem(id) {
+  return {
+    ...itemAtClosingGate(id),
+    cursor: IMPLEMENT_STEP_INDEX,
+    ruleBlock: { rule: 'guardrail 6', needs: 'A ledger-models release.', runId: 9, blockedAt: '2026-10-08 14:02:11' },
+  }
+}
+
+test('Add dependency picks an existing item and links it with addDependency', async () => {
+  setItems([ruleBlockedItem('RB-1'), { ...itemAtClosingGate('LM-42'), cursor: 2, title: 'Settlement field' }])
+  window.history.pushState({}, '', '/rb-1')
+
+  const { findByRole, getByRole } = render(<App />)
+  fireEvent.click(await findByRole('button', { name: 'Add dependency' }))
+  fireEvent.change(document.querySelector('#add-dependency-item'), { target: { value: 'LM-42' } })
+  fireEvent.click(getByRole('dialog').querySelector('.composer__submit'))
+
+  expect(api.addDependency).toHaveBeenCalledWith('RB-1', 'LM-42')
+  await waitFor(() => expect(document.querySelector('#add-dependency-item')).toBeNull())
+})
+
+test('Add dependency → File a new upstream item creates it, then links the new item', async () => {
+  api.createItem.mockResolvedValue({ id: 'LM-43', issue: 43, url: 'https://example.test/43' })
+  setItems([ruleBlockedItem('RB-2')])
+  window.history.pushState({}, '', '/rb-2')
+
+  const { findByRole, getByRole } = render(<App />)
+  fireEvent.click(await findByRole('button', { name: 'Add dependency' }))
+  fireEvent.click(getByRole('button', { name: 'File a new upstream item' }))
+  fireEvent.change(document.querySelector('.composer__panel input'), { target: { value: 'Add the settlement field' } })
+  for (const textarea of document.querySelectorAll('.composer__panel textarea')) {
+    fireEvent.change(textarea, { target: { value: 'Settlement needs its own proto field.' } })
+  }
+  fireEvent.click(getByRole('button', { name: /create/i }))
+
+  await waitFor(() => expect(api.addDependency).toHaveBeenCalledWith('RB-2', 'LM-43'))
+  expect(api.createItem).toHaveBeenCalledTimes(1)
+})
+
+test("Amend the rule sends the owner's ruling as a send-back to implement through requestChanges", async () => {
+  setItems([ruleBlockedItem('RB-3')])
+  window.history.pushState({}, '', '/rb-3')
+
+  const { findByRole, getByText } = render(<App />)
+  fireEvent.click(await findByRole('button', { name: 'Amend the rule' }))
+  expect(getByText(/not changed\. Needs your gate PIN/)).toBeTruthy()
+  fireEvent.click(document.querySelector('.composer__submit'))
+  expect(api.requestChanges).not.toHaveBeenCalled() // a ruling is required
+
+  fireEvent.change(document.querySelector('.composer__input'), { target: { value: 'a local shim is allowed' } })
+  fireEvent.click(document.querySelector('.composer__submit'))
+  expect(api.requestChanges).toHaveBeenCalledWith(
+    'RB-3',
+    STEPS[IMPLEMENT_STEP_INDEX].label,
+    "Owner's ruling on the blocking rule: a local shim is allowed",
+  )
 })
