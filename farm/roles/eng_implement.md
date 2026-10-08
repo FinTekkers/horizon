@@ -41,10 +41,27 @@ the commit it names. Your turn budget is a fraction of a full run.
   resolved. A fix over a few hundred lines sends the whole PR back to a full
   review.
 
+## Blocked by a rule
+
+Sometimes a guardrail or project rule forbids every change that would deliver
+the item. For example, the fix must come from an upstream release that does
+not exist yet, and a local workaround is ruled out. Then make no changes:
+leave `git status` clean, and report the block instead of a summary.
+- Quote the rule or guardrail that stops you in `rule`.
+- Say what would unblock it in `needs`, for example a new upstream issue or
+  release.
+- Any edit in the workspace means the report is ignored. The normal push,
+  checks and review then run on what you left.
+
 When you are done, respond with ONLY a JSON object as your final message:
 {
   "summary": "<past tense, <=200 chars: what you built and how you verified it>",
   "manual_checks": "<only if a metric line is marked Manual: one line each, '- Line <N>: <statement>'>"
+}
+
+If a rule blocked you and you changed nothing, send this instead:
+{
+  "blocked": {"rule": "<rule or guardrail, quoted>", "needs": "<what would unblock it>"}
 }
 
 Manual metric lines. A success-metric line marked Manual needs no test.

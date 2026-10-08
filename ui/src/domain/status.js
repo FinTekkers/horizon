@@ -26,6 +26,15 @@ export function isDependencyBlocked(item) {
   return !(run && run.step_index === item.cursor && run.state === 'running')
 }
 
+// HZ-346: an implement run stopped on a rule with no code changes, read from
+// the API's item.ruleBlock as given. Nothing runs for it until a dependency
+// it gained closes or a human resumes it. Closed, abandoned, rejected and
+// paused win, as for isDependencyBlocked.
+export function isRuleBlocked(item) {
+  if (!item.ruleBlock) return false
+  return !(isClosed(item) || isAbandoned(item) || item.rejected || item.paused)
+}
+
 // verbose=true gives the tracker-header phrasing; false gives the compact card one.
 export function itemStatus(item, verbose = false) {
   const closed = isClosed(item)
@@ -45,8 +54,10 @@ export function itemStatus(item, verbose = false) {
   if (rejected) return { label: 'Changes requested', color: 'var(--danger-ink)', bg: 'var(--danger-bg)' }
   if (paused) return { label: 'Paused', color: 'var(--muted-strong)', bg: 'var(--chip)' }
   // Precedence (HZ-335): Abandoned > Closed > Changes requested > Paused >
-  // Blocked > Awaiting > Queued > working. Danger is what "blocked" already
-  // means on the board (.dep-pill--blocked, step__icon--blocked).
+  // Blocked by a rule (HZ-346) > Blocked > Awaiting > Queued > working.
+  // Danger is what "blocked" already means on the board (.dep-pill--blocked,
+  // step__icon--blocked).
+  if (isRuleBlocked(item)) return { label: 'Blocked by a rule', color: 'var(--danger-ink)', bg: 'var(--danger-bg)' }
   if (isDependencyBlocked(item)) return { label: 'Blocked', color: 'var(--danger-ink)', bg: 'var(--danger-bg)' }
   if (awaiting) {
     return { label: verbose ? 'Awaiting your approval' : 'Awaiting you', color: 'var(--warning-ink)', bg: 'var(--warning-bg)' }
@@ -88,7 +99,7 @@ export function stepStateLabel(step) {
 export function stateLabel(item) {
   if (!item.state_since) return null
   if (isClosed(item) || isAbandoned(item) || item.rejected || item.paused) return null
-  if (isDependencyBlocked(item)) return null
+  if (isDependencyBlocked(item) || isRuleBlocked(item)) return null
   const cur = curStep(item)
   if (cur.kind === 'gate') {
     const action = gateActionOf(item)

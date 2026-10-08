@@ -229,6 +229,25 @@ test('a live item shows an Abandon button, and clicking it fires onAbandon with 
   expect(spy).toHaveBeenCalledWith('T-1')
 })
 
+// HZ-346: the agent writes a block's rule and needs text, and Part 1 shows it
+// on the item page through the activity feed — as text, never markup or links.
+test('a rule-block event with a script tag and a URL renders as plain text, with no script element or link', () => {
+  const text = 'stopped by a rule: “<script>alert(1)</script>” — needs: https://evil.example/fix — add a dependency on the item that delivers it, resume to retry, or abandon'
+  const item = {
+    ...baseItem,
+    cursor: IMPLEMENT_STEP_INDEX,
+    ruleBlock: { rule: '<script>alert(1)</script>', needs: 'https://evil.example/fix', runId: 9, blockedAt: '2026-10-08 14:02:11' },
+    events: [{ who: 'Horizon', text, color: '#9C333E', initials: 'HZ', created_at: '2026-10-08 14:02:11' }],
+  }
+  const { container, getByText } = renderTracker(item)
+  expect(container.querySelector('script')).toBeNull()
+  expect(container.querySelector('a[href*="evil"]')).toBeNull()
+  expect(getByText(text, { exact: false })).toBeTruthy()
+  expect(container.querySelector('.tracker__status').textContent).toBe('Blocked by a rule')
+  // Resume is the owner's retry: Pause work stays offered on a rule-blocked item.
+  expect(getByText('Pause work')).toBeTruthy()
+})
+
 test('an abandoned item hides Pause/Resume and Abandon, and shows the reason instead', () => {
   const item = { ...baseItem, cursor: 11, abandoned_at: '2026-01-01 00:00:00', abandoned_reason: 'no longer needed', abandoned_by: 'Dana' }
   const { queryByText, getByText } = renderTracker(item)

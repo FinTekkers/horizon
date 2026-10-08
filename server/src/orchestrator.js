@@ -82,6 +82,7 @@ import { servedRulesFor } from './rulesStore.js'
 import { OPTIONS_STEP_INDEX, proposeSplit } from './split.js'
 import { recordFlakes } from './checkFlakes.js'
 import { recordTestRuns } from './testResults.js'
+import { enqueueRuleBlockPing } from './ruleBlock.js'
 import { buildStoredResultsInput, storedResultsPending, waitForStoredResults } from './storedTestResults.js'
 
 // Keyed by step_run.id (HZ-100) — NOT item id. Keying by item used to let a
@@ -971,6 +972,9 @@ function inFlightRunnable(item) {
     !isAbandoned(item) &&
     !item.paused &&
     !item.rejected &&
+    // HZ-346: a run stopped on a rule holds the item until a dependency it
+    // gained closes, or a human resumes or sends it back (store.js).
+    !item.rule_block_json &&
     STEPS[item.cursor].kind === 'agent' &&
     !isBlocked(blockersOf(item.id))
   )
@@ -1004,20 +1008,21 @@ export function kick(id, opts = {}) {
   const stepIndex = item.cursor
   const step = STEPS[stepIndex]
   // HZ-321: a run a self-deploy stopped was never a finished attempt, so its
-  // redispatch keeps that run's attempt and auto-retry count.
+  // redispatch keeps that run's attempt and auto-retry count. HZ-346: nor is
+  // a run a rule blocked — the block does not use up an attempt.
   const last = db
     .prepare(
-      'SELECT attempt, auto_retry_count, deploy_interrupted FROM step_run WHERE item_id = ? AND step_index = ? ORDER BY id DESC LIMIT 1',
+      'SELECT attempt, auto_retry_count, deploy_interrupted, rule_blocked FROM step_run WHERE item_id = ? AND step_index = ? ORDER BY id DESC LIMIT 1',
     )
     .get(id, stepIndex)
-  const resumesDeployStop = last?.deploy_interrupted === 1
-  const attempt = resumesDeployStop
+  const keepsAttempt = last?.deploy_interrupted === 1 || last?.rule_blocked === 1
+  const attempt = keepsAttempt
     ? last.attempt
     : db.prepare('SELECT COALESCE(MAX(attempt), 0) + 1 AS n FROM step_run WHERE item_id = ? AND step_index = ?').get(
         id,
         stepIndex,
       ).n
-  const autoRetryCount = resumesDeployStop ? last.auto_retry_count : opts.autoRetryCount || 0
+  const autoRetryCount = keepsAttempt ? last.auto_retry_count : opts.autoRetryCount || 0
   const toFarm = FARM_URL && FARM_STEP_INDEXES.has(stepIndex)
   // HZ-182: decided once, here, and stored on the run — completion reads the
   // scope the run was dispatched with, never a recomputation from the item.
@@ -2194,6 +2199,56 @@ export function failFarmRun(runId, error, reason = null) {
     text: retryable
       ? `agent step failed${reasonTag}: ${String(error).slice(0, 200)} — auto-retry budget (${AUTO_RETRY_CAP}) exhausted; item paused, resume to retry`
       : `agent step failed${reasonTag}: ${String(error).slice(0, 200)} — item paused; resume to retry`,
+    color: '#9C333E',
+    initials: 'HZ',
+  })
+  notifyChange()
+  emitStepEnded(id)
+  return { ok: true }
+}
+
+// HZ-346: an implement run that stopped on a rule with no code changes. Not
+// a failure: the item is not paused, no attempt is used and nothing is
+// auto-retried. The block, its step_run row and the owner's one ping are
+// written in one transaction; inFlightRunnable then holds dispatch until
+// store.js releases the block. A repeat report for the run finds it closed.
+export function blockFarmRun(runId, { rule, needs }) {
+  const run = db.prepare('SELECT * FROM step_run WHERE id = ?').get(runId)
+  if (!run || run.status !== 'active') return { ok: true, stale: true }
+  const id = run.item_id
+  const item = getItem(id)
+
+  // The stale guard comes first, so a late report from a superseded run is
+  // stale rather than failed below.
+  if (!item || item.cursor !== run.step_index || !inFlightRunnable(item)) {
+    clearTimeout(timers[runId])
+    delete timers[runId]
+    dispatching.delete(id)
+    closeActiveRuns(id, 'superseded')
+    return { ok: true, stale: true }
+  }
+  if (run.step_index !== IMPLEMENT_STEP_INDEX) return failFarmRun(runId, 'blocked report from a non-implement step')
+
+  clearTimeout(timers[runId])
+  delete timers[runId]
+  dispatching.delete(id)
+
+  const block = { rule: String(rule), needs: String(needs) }
+  db.transaction(() => {
+    db.prepare(
+      "UPDATE step_run SET status = 'cancelled', rule_blocked = 1, output = ?, ended_at = datetime('now') WHERE id = ?",
+    ).run(`BLOCKED: stopped by a rule: “${block.rule}” — needs: ${block.needs}`.slice(0, FAILED_OUTPUT_MAX_CHARS), runId)
+    // blockedAt in SQLite's own format: store.js compares it as text with
+    // work_item_dependency.created_at.
+    db.prepare(
+      `UPDATE work_item SET rule_block_json = json_object('rule', ?, 'needs', ?, 'runId', ?, 'blockedAt', datetime('now')),
+              updated_at = datetime('now') WHERE id = ?`,
+    ).run(block.rule, block.needs, runId, id)
+    enqueueRuleBlockPing(item, block)
+  })()
+  addEvent(id, {
+    who: 'Horizon',
+    text: `stopped by a rule: “${block.rule.slice(0, 300)}” — needs: ${block.needs.slice(0, 600)} — add a dependency on the item that delivers it, resume to retry, or abandon`,
     color: '#9C333E',
     initials: 'HZ',
   })
