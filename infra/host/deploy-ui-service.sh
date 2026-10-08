@@ -84,12 +84,15 @@ health_error=""
 deadline=$((SECONDS + HEALTH_TIMEOUT_S))
 while [ "$SECONDS" -lt "$deadline" ]; do
   if body="$(curl -fsS "$HEALTH_URL" 2>&1)"; then
-    if ! printf '%s' "$body" | grep -q '<title>Fintekkers'; then
+    # Here-strings, not `printf | grep -q`: under pipefail, grep -q exiting at
+    # the first match SIGPIPEs printf on a page bigger than a pipe buffer
+    # (~370 KB today), which failed every deploy with a false "no <title>".
+    if ! grep -q '<title>Fintekkers' <<<"$body"; then
       health_error="response body has no <title>Fintekkers — SSR did not render the app shell"
       sleep "$HEALTH_POLL_S"
       continue
     fi
-    asset_path="$(printf '%s' "$body" | grep -oE '/_app/immutable/[A-Za-z0-9_./-]+\.js' | head -n1)"
+    asset_path="$(grep -oE '/_app/immutable/[A-Za-z0-9_./-]+\.js' <<<"$body" | sed -n 1p || true)"
     if [ -z "$asset_path" ]; then
       health_error="response body references no /_app/immutable/*.js client bundle"
       sleep "$HEALTH_POLL_S"
