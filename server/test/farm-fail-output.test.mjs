@@ -103,5 +103,45 @@ test('a farm check failure leads the event with its headline: counts and the fai
   const event = db.prepare("SELECT text FROM event WHERE item_id = 'FO-HZ366' AND text LIKE 'agent step failed%'").get()
   assert.ok(event.text.startsWith('agent step failed: repo checks failed: e2e: 2 failed, 71 passed: '), event.text)
   assert.ok(event.text.includes('31-rule-block.spec.js:131'), event.text)
-  assert.equal(event.text.split('\n')[0], `agent step failed: ${message.split('\n')[0]}`)
+  // HZ-373: the headline line only, not the command or digest under it.
+  assert.equal(event.text, `agent step failed: ${message.split('\n')[0]} — item paused; resume to retry`)
+})
+
+// HZ-373: US-207's e2e check failed with no runner summary the farm could
+// parse. The farm's message for it (the shared fixture
+// farm/tests/test_checks_headline.py builds and compares) now leads with a
+// headline, and the event shows only that line — never the command.
+const US207_MESSAGE = readFileSync(join(REPO_ROOT, 'farm/tests/fixtures/check_output/us207_message.txt'), 'utf8')
+
+test('a check failure event shows the headline only, named by its slot, never the command', async () => {
+  const runId = activeImplementRun('FO-US207')
+
+  const res = await fail(runId, US207_MESSAGE)
+
+  assert.equal(res.statusCode, 200, res.body)
+  const event = db.prepare("SELECT text FROM event WHERE item_id = 'FO-US207' AND text LIKE 'agent step failed%'").get()
+  assert.equal(
+    event.text,
+    'agent step failed: repo checks failed: e2e failed (exit 1): sidebar-links-after-login.spec.ts: 0/1 passed — item paused; resume to retry',
+  )
+  assert.ok(!event.text.includes('sh -c') && !event.text.includes('git show'), event.text)
+})
+
+test('the item API returns the whole failure message as the event detail, unchanged', async () => {
+  const auth = await import('../src/auth.js')
+  const config = await import('../src/config.js')
+  const { loginFixtureUser } = await import('./helpers/session.mjs')
+  const { cookie } = loginFixtureUser(auth, config)
+  const runId = activeImplementRun('FO-DETAIL')
+  await fail(runId, US207_MESSAGE)
+
+  const res = await app.inject({ method: 'GET', url: '/api/items?v=2', headers: { cookie } })
+
+  assert.equal(res.statusCode, 200, res.body)
+  const item = res.json().items.find((it) => it.id === 'FO-DETAIL')
+  const [pause] = item.events
+  assert.equal(pause.detail, US207_MESSAGE)
+  // A digest line the headline leaves out is still there for "Show details".
+  const left = 'screenshot "securities-list" not captured: page.screenshot: Timeout 30000ms exceeded.'
+  assert.ok(pause.detail.includes(left) && !pause.text.includes(left))
 })

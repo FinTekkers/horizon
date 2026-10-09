@@ -589,7 +589,7 @@ const selectItems = db.prepare(
   `SELECT w.*, (SELECT MAX(s.ended_at) FROM step_run s WHERE s.item_id = w.id) AS last_run_ended_at
    FROM work_item w ORDER BY w.id`,
 )
-const selectEvents = db.prepare('SELECT who, text, color, initials, created_at FROM event WHERE item_id = ? ORDER BY id DESC LIMIT 20')
+const selectEvents = db.prepare('SELECT who, text, detail, color, initials, created_at FROM event WHERE item_id = ? ORDER BY id DESC LIMIT 20')
 const selectOutputs = db.prepare(
   "SELECT step_index, attempt, output, artifact, provider FROM step_run WHERE item_id = ? AND status = 'done' ORDER BY id",
 )
@@ -1236,8 +1236,10 @@ const RESET_REVIEW_STATE =
   ', review_cycle_count = 0, fix_pass = 0, fix_findings_json = NULL, last_reviewed_sha = NULL' +
   ', forwarded_review_run_id = NULL, forwarded_by = NULL, forwarded_sha = NULL'
 
-export function addEvent(id, { who, text, color, initials }) {
-  db.prepare('INSERT INTO event (item_id, who, text, color, initials) VALUES (?, ?, ?, ?, ?)').run(id, who, text, color, initials)
+// detail (HZ-373): the full failure message behind a check headline in
+// `text`, for "Show details"; null for every other event.
+export function addEvent(id, { who, text, color, initials, detail = null }) {
+  db.prepare('INSERT INTO event (item_id, who, text, color, initials, detail) VALUES (?, ?, ?, ?, ?, ?)').run(id, who, text, color, initials, detail)
 }
 
 export function approveGate(id, stepIndex, notes, actor = 'You') {

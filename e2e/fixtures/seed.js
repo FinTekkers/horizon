@@ -70,10 +70,12 @@ export function insertProjectRepo(db, { projectId, repo, prefix }) {
 // never goes through addEvent()/store.js. HZ-94's pause-reason.spec uses this
 // to reproduce the exact pause-event text failFarmRun() writes (see
 // server/src/orchestrator.js), without needing a real farm failure to occur.
-export function insertEvent(db, { itemId, who = 'Horizon', text, color = '#9C333E', initials = 'HZ' }) {
+// detail (HZ-373): the full failure message failFarmRun stores beside a
+// check failure's headline; null for every other event.
+export function insertEvent(db, { itemId, who = 'Horizon', text, color = '#9C333E', initials = 'HZ', detail = null }) {
   db.prepare(
-    'INSERT INTO event (item_id, who, text, color, initials) VALUES (@itemId, @who, @text, @color, @initials)',
-  ).run({ itemId, who, text, color, initials })
+    'INSERT INTO event (item_id, who, text, color, initials, detail) VALUES (@itemId, @who, @text, @color, @initials, @detail)',
+  ).run({ itemId, who, text, color, initials, detail })
 }
 
 // A retained-but-superseded artifact version (HZ-46): a done step_run row

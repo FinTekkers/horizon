@@ -97,10 +97,10 @@ function trimCause(text) {
   return render().join('\n')
 }
 
-const NO_DETAILS = { category: null, label: null, detail: null, cause: null, exhausted: false, attemptsUsed: 0 }
+const NO_DETAILS = { category: null, label: null, detail: null, cause: null, fullError: null, exhausted: false, attemptsUsed: 0 }
 
 // Returns null when the item isn't paused, or a structured explanation:
-// { category, label, detail, cause, exhausted, attemptsUsed } for a failure
+// { category, label, detail, cause, fullError, exhausted, attemptsUsed } for a failure
 // pause; { category: 'manual' } for a human-initiated pause (nothing to
 // explain — not a failure); or a category: null fallback that still carries a
 // non-blank message when no pause event exists since the last resume
@@ -114,7 +114,7 @@ export function pauseReason(item) {
     const text = events[i]?.text || ''
     if (text === RESUME_TEXT) break
     if (text === MANUAL_PAUSE_TEXT) {
-      return { category: 'manual', label: null, detail: null, cause: null, exhausted: false, attemptsUsed: 0 }
+      return { category: 'manual', label: null, detail: null, cause: null, fullError: null, exhausted: false, attemptsUsed: 0 }
     }
 
     const match = text.match(PAUSE_EVENT_RE)
@@ -136,6 +136,10 @@ export function pauseReason(item) {
       label: known ? known.label : null,
       detail: known ? known.detail : null,
       cause: trimCause(cause),
+      // HZ-373: the event's `detail` — a check failure's whole message behind
+      // its one-line cause, for "Show details". Null on any other pause and
+      // on events written before it. Not `detail`, the category copy above.
+      fullError: events[i].detail || null,
       exhausted: cap != null,
       attemptsUsed,
     }

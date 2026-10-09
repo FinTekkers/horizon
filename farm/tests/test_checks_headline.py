@@ -7,7 +7,11 @@ fixtures/check_output/hz365_e2e.txt is HZ-365's real check result as the farm
 logged it on 9 Oct (the digest of `npm run test:e2e`, host paths replaced by
 <ws>). hz365_message.txt is the message run_checks builds from it; the server
 tests (fail route, caretaker ping) read that same file, so the wording each
-side expects cannot drift apart."""
+side expects cannot drift apart.
+
+HZ-373: us207_output.txt is the shape of US-207's e2e output on 9 Oct, which
+no runner summary parses; us207_message.txt is the message run_checks builds
+from it, read by the same server tests and the e2e pause-banner spec."""
 
 import os
 from pathlib import Path
@@ -20,6 +24,11 @@ from farm.checks import CheckFailure, failure_digest, failure_headline, run_chec
 FIXTURES = Path(__file__).resolve().parent / "fixtures" / "check_output"
 HZ365_OUTPUT = FIXTURES / "hz365_e2e.txt"
 HZ365_MESSAGE = FIXTURES / "hz365_message.txt"
+US207_OUTPUT = FIXTURES / "us207_output.txt"
+US207_MESSAGE = FIXTURES / "us207_message.txt"
+# US-207's e2e slot: the script comes from main, so the command line says
+# nothing about what failed.
+FROM_MAIN = 's="$(git show origin/main:scripts/checks/{slot}.sh)" && bash -c "$s"'
 
 
 @pytest.fixture(autouse=True)
@@ -101,8 +110,8 @@ def test_a_long_command_synthetic_row_never_counts(ws, monkeypatch):
     rows = test_runs[0]["tests"]
     assert len(rows) == 1 and rows[0]["test"] != f"sh -c {command}"
     assert failure_headline(rows, "boom", f"sh -c {command}") is None
-    assert err.value.headline == ""
-    assert str(err.value) == f"repo checks failed (sh -c {command}):\n{failure_digest('boom')}"
+    assert err.value.headline == "check failed (exit 1)"
+    assert str(err.value) == f"repo checks failed: check failed (exit 1)\n(sh -c {command})\n{failure_digest('boom')}"
 
 
 # ---- metric 2: the runner's own summary ----
@@ -223,16 +232,20 @@ def test_digest_puts_zero_failure_summaries_last():
 # ---- guardrails ----
 
 
-def test_no_headline_keeps_todays_message(ws, monkeypatch):
-    monkeypatch.setenv("FARM_CHECK_CMD", "echo something broke; exit 1")
+def test_no_failure_line_gives_label_and_exit_code(ws, monkeypatch):
+    """HZ-373 metric 1: the first output line, a plain command echo, is never
+    the headline when nothing matches."""
     monkeypatch.setenv(checks.RERUN_ENV, "0")
 
     with pytest.raises(CheckFailure) as err:
-        run_checks(ws, log=lambda *_: None)
+        run_checks(ws, log=lambda *_: None, configured={"lint": "echo '> eslint src --max-warnings 0'; echo all done; exit 3"})
 
-    digest = failure_digest("something broke")
-    assert str(err.value) == f"repo checks failed (sh -c echo something broke; exit 1):\n{digest}"
-    assert err.value.digest == digest and err.value.headline == ""
+    assert err.value.headline == "lint failed (exit 3)"
+    digest = failure_digest("> eslint src --max-warnings 0\nall done")
+    assert str(err.value) == (
+        f"repo checks failed: lint failed (exit 3)\n(sh -c echo '> eslint src --max-warnings 0'; echo all done; exit 3)\n{digest}"
+    )
+    assert err.value.digest == digest
 
 
 def test_no_headline_when_only_zero_failure_summaries():
@@ -292,3 +305,90 @@ def test_a_failed_rerun_takes_the_headline_from_the_rerun(ws, tmp_path, monkeypa
     assert flakes == []
     assert [r["attempt"] for r in test_runs[0]["tests"]] == [1, 1, 1, 2, 2, 2]
     assert err.value.headline == 'sh: 1 failed, 2 passed: e2e/tests/a.spec.js "one"'
+
+
+# ---- HZ-373: a headline for every failed check ----
+
+
+def fake_git(tmp_path: Path, monkeypatch, script: str) -> None:
+    """A `git` on PATH whose `git show` prints `script`, so a slot can run
+    US-207's exact `git show origin/main:…` command line."""
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir(exist_ok=True)
+    body = tmp_path / "from-main.sh"
+    body.write_text(script)
+    git = bin_dir / "git"
+    git.write_text(f"#!/bin/sh\ncat {body}\n")
+    git.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{bin_dir}{os.pathsep}{os.environ['PATH']}")
+
+
+def test_us207_output_names_the_spec_that_failed(ws, tmp_path, monkeypatch):
+    fake_git(tmp_path, monkeypatch, f"cat {US207_OUTPUT}; exit 1\n")
+    monkeypatch.setenv(checks.RERUN_ENV, "0")
+
+    with pytest.raises(CheckFailure) as err:
+        run_checks(ws, log=lambda *_: None, configured={"e2e": FROM_MAIN.format(slot="e2e")})
+
+    assert err.value.headline == "e2e failed (exit 1): sidebar-links-after-login.spec.ts: 0/1 passed"
+    message = str(err.value)
+    assert message.splitlines()[0] == f"repo checks failed: {err.value.headline}"
+    # The shared fixture the server's tests and the e2e pause-banner spec read.
+    assert message == US207_MESSAGE.read_text()
+
+
+@pytest.mark.parametrize("slot", ["install", "test", "lint", "e2e"])
+def test_headline_is_named_by_the_slot(ws, tmp_path, monkeypatch, slot):
+    fake_git(tmp_path, monkeypatch, "echo 'Error: cannot find module x'; exit 1\n")
+    monkeypatch.setenv(checks.RERUN_ENV, "0")
+
+    with pytest.raises(CheckFailure) as err:
+        run_checks(ws, log=lambda *_: None, configured={slot: FROM_MAIN.format(slot=slot)})
+
+    assert err.value.headline == f"{slot} failed (exit 1): Error: cannot find module x"
+    first = str(err.value).splitlines()[0]
+    assert "sh -c" not in first and "git show" not in first
+
+
+@pytest.mark.parametrize(("rerun_prints", "expected"), [(True, "(exit 2)"), (False, "(exit 1)")], ids=["rerun-output", "rerun-silent"])
+def test_exit_code_is_the_one_of_the_output_shown(ws, tmp_path, monkeypatch, rerun_prints, expected):
+    counter = tmp_path / "attempts"
+    second = "echo second run broke" if rerun_prints else "true"
+    script = tmp_path / "check.sh"
+    script.write_text(
+        f"n=$(cat {counter} 2>/dev/null || echo 0); n=$((n+1)); echo $n > {counter}\n"
+        f"if [ $n = 1 ]; then echo first run broke; exit 1; else {second}; exit 2; fi\n"
+    )
+    monkeypatch.setenv("FARM_CHECK_CMD", f"sh {script}")
+
+    with pytest.raises(CheckFailure) as err:
+        run_checks(ws, log=lambda *_: None)
+
+    assert counter.read_text().strip() == "2"
+    assert err.value.headline == f"sh failed {expected}"
+
+
+def test_an_over_long_failure_line_is_cut_at_a_word(ws, monkeypatch):
+    words = [f"word{i:03d}" for i in range(50)]
+    line = "Error: " + " ".join(words)  # over 400 chars
+    monkeypatch.setenv(checks.RERUN_ENV, "0")
+
+    with pytest.raises(CheckFailure) as err:
+        run_checks(ws, log=lambda *_: None, configured={"test": f"echo '{line}'; exit 1"})
+
+    first = str(err.value).splitlines()[0]
+    assert len(line) > 400 and len(first) <= 200
+    assert first.endswith("…")
+    assert first[:-1].split()[-1] in words  # the last word before … is whole
+    assert first.startswith("repo checks failed: test failed (exit 1): Error: word000 ")
+
+
+def test_headline_redacts_a_secret_in_the_failure_line(ws, monkeypatch):
+    monkeypatch.setenv("FAKE_TOKEN", "abcd1234efgh")
+    monkeypatch.setenv(checks.RERUN_ENV, "0")
+
+    with pytest.raises(CheckFailure) as err:
+        run_checks(ws, log=lambda *_: None, configured={"test": 'echo "Error: bad token $FAKE_TOKEN"; exit 1'})
+
+    assert "abcd1234efgh" not in str(err.value)
+    assert err.value.headline == "test failed (exit 1): Error: bad token [redacted]"

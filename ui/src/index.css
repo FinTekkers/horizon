@@ -682,6 +682,11 @@ button { font-family: var(--font-sans); }
   margin-top: 6px; padding: 0; border: none; background: none; cursor: pointer;
   font: 700 12px var(--font-sans); color: var(--danger-ink); text-decoration: underline;
 }
+.pause-banner__full-error {
+  margin: 6px 0 0; padding: 8px; max-height: 320px; overflow: auto;
+  font: 500 12px var(--font-mono); white-space: pre-wrap; overflow-wrap: anywhere;
+  background: var(--surface); border: 1px solid var(--danger-border); border-radius: 6px;
+}
 .pause-banner__actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 10px; }
 .pause-banner__actions > button { flex: 0 0 auto; width: auto; margin-top: 0; padding: 8px 14px; }
 

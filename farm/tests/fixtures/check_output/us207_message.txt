@@ -1,0 +1,12 @@
+repo checks failed: e2e failed (exit 1): sidebar-links-after-login.spec.ts: 0/1 passed
+(sh -c s="$(git show origin/main:scripts/checks/e2e.sh)" && bash -c "$s")
+screenshot "closed-page-selftest" not captured: page.screenshot: Target page, context or browser has been closed
+e2e: running 6 specs against http://127.0.0.1:3000
+screenshot "securities-list" not captured: page.screenshot: Timeout 30000ms exceeded.
+screenshot "securities-detail" not captured: page.screenshot: Timeout 30000ms exceeded.
+e2e: login.spec.ts: 1/1 passed
+e2e: portfolio-overview.spec.ts: 2/2 passed
+e2e: securities.spec.ts: 3/3 passed
+e2e: transactions.spec.ts: 2/2 passed
+e2e: positions.spec.ts: 1/1 passed
+e2e: sidebar-links-after-login.spec.ts: 0/1 passed

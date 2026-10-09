@@ -15,6 +15,10 @@ const DB_PATH = process.env.HORIZON_E2E_DB
 // farm/tests/test_checks_headline.py proves the farm builds it.
 const HZ365_MESSAGE = readFileSync(new URL('../../farm/tests/fixtures/check_output/hz365_message.txt', import.meta.url), 'utf8')
 const HZ365_HEADLINE = HZ365_MESSAGE.split('\n')[0]
+// HZ-373: the farm's message for US-207's failed e2e check, which no runner
+// summary parses — its headline comes from the spec line that failed.
+const US207_MESSAGE = readFileSync(new URL('../../farm/tests/fixtures/check_output/us207_message.txt', import.meta.url), 'utf8')
+const US207_HEADLINE = US207_MESSAGE.split('\n')[0]
 
 test.beforeAll(() => {
   const db = openDb(DB_PATH)
@@ -73,11 +77,21 @@ test.beforeAll(() => {
     }
 
     // HZ-366: failFarmRun's event for a check failure that leads with its
-    // headline — the error cut at 200 characters, exactly as it writes it.
+    // headline — since HZ-373, the headline line only. No detail: an event
+    // written before failFarmRun stored one.
     insertItem(db, { id: 'PAUSE-5', title: 'E2E fixture — paused on a check failure with a headline', cursor: 0, paused: 1 })
     insertEvent(db, {
       itemId: 'PAUSE-5',
-      text: `agent step failed: ${HZ365_MESSAGE.slice(0, 200)} — item paused; resume to retry`,
+      text: `agent step failed: ${HZ365_HEADLINE} — item paused; resume to retry`,
+    })
+
+    // HZ-373: failFarmRun's event for US-207's check failure, exactly as it
+    // writes it — the headline line as text, the whole message as detail.
+    insertItem(db, { id: 'PAUSE-6', title: 'E2E fixture — paused on a check failure with no runner summary', cursor: 0, paused: 1 })
+    insertEvent(db, {
+      itemId: 'PAUSE-6',
+      text: `agent step failed: ${US207_HEADLINE} — item paused; resume to retry`,
+      detail: US207_MESSAGE,
     })
   } finally {
     db.close()
@@ -157,4 +171,33 @@ test('a check failure shows its headline — counts and the failing test — as 
   expect(HZ365_HEADLINE).toContain('31-rule-block.spec.js:131')
   await expect(banner).not.toContainText('No failure details were recorded')
   await expect(page.getByRole('button', { name: 'Resume work' })).toBeVisible()
+  // HZ-373: an event with no stored detail has no toggle to open.
+  await expect(page.getByRole('button', { name: 'Show details' })).toHaveCount(0)
+})
+
+test('a check failure with no runner summary shows its headline, never the command, and Show details opens the rest (HZ-373)', async ({
+  page,
+}) => {
+  await page.goto('/pause-6')
+  await expect(page.locator('.tracker__id')).toHaveText('PAUSE-6')
+
+  const banner = page.locator('.pause-banner')
+  const cause = banner.locator('.pause-banner__cause')
+  await expect(cause).toHaveText('repo checks failed: e2e failed (exit 1): sidebar-links-after-login.spec.ts: 0/1 passed')
+  await expect(banner).not.toContainText('sh -c')
+  await expect(banner).not.toContainText('git show')
+
+  // A digest line the headline leaves out, only behind the toggle.
+  const leftOut = 'screenshot "securities-list" not captured'
+  await expect(banner).not.toContainText(leftOut)
+  await page.getByRole('button', { name: 'Show details' }).click()
+  await expect(banner.locator('.pause-banner__full-error')).toContainText(leftOut)
+  await page.getByRole('button', { name: 'Hide details' }).click()
+  await expect(banner.locator('.pause-banner__full-error')).toHaveCount(0)
+
+  await page.getByRole('button', { name: 'Show details' }).click()
+  await page.reload()
+  await expect(cause).toHaveText(US207_HEADLINE)
+  await expect(banner.locator('.pause-banner__full-error')).toHaveCount(0)
+  await expect(page.getByRole('button', { name: 'Show details' })).toBeVisible()
 })
