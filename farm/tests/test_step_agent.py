@@ -764,19 +764,242 @@ def test_a_choice_for_another_step_does_not_apply(monkeypatch):
     assert captured["provider"] is None
 
 
-def test_a_step_choice_never_widens_eligibility_to_implement(tmp_path, monkeypatch):
-    """Guardrail: a stored muse choice keyed to implement (11) is ignored there,
-    and implement still runs provider-locked."""
-    ws, _origin = make_git_workspace(tmp_path)
-    monkeypatch.setattr(step_agent, "ensure_item_worktree", lambda repo, item_id: ws)
+def test_a_step_choice_never_widens_eligibility_to_deploy(monkeypatch):
+    """Guardrail: a stored muse choice keyed to deploy (14) is ignored there,
+    and deploy still runs provider-locked. HZ-369 replaced the implement
+    version of this test: implement now takes a choice; deploy never does."""
     captured = {}
-    monkeypatch.setattr(step_agent, "run_agent", capture_run_agent(captured))
-    task = make_task(11, "Specialist agent implements", repo="acme/demo", checks_waiver=NO_CHECKS)
-    task["item"]["providerChoices"] = {"11": "muse"}
-    with pytest.raises(RuntimeError, match="no code changes"):
-        execute(task)
+
+    def fake_run_agent(prompt, **kwargs):
+        captured.update(kwargs)
+        return devops_run_agent(
+            {
+                "summary": "verified the deploy",
+                "url": "https://shoreward.ai/horizon/",
+                "expected_text": "Horizon",
+                "artifact_md": "## Deploy target\nHorizon",
+            }
+        )(prompt, **kwargs)
+
+    monkeypatch.setattr(step_agent, "run_agent", fake_run_agent)
+    monkeypatch.setattr(step_agent, "run_smoke_check", lambda url, text: ("pass", 'SMOKE_RESULT=pass — "Horizon" rendered'))
+    task = make_task(14, "Deploy the changes", repo="acme/demo")
+    task["item"]["providerChoices"] = {"14": "muse"}
+    execute(task)
     assert captured.get("provider") is None
     assert captured.get("provider_locked") is True
+
+
+# ---- HZ-369: QA plan review (8), implement (11) and review (12) ----
+# These steps follow ONLY the owner's choice; with none, routing is today's.
+
+IMPLEMENT = "Specialist agent implements"
+REVIEW = "Automated review (code + QA)"
+
+
+def _implement_reply(ws, captured, ran_on="muse"):
+    """A run_agent fake for implement: records each call's kwargs, writes a
+    file so there is something to push, and replies as `ran_on`."""
+
+    def _fake(prompt, **kwargs):
+        captured.append({"prompt": prompt, **kwargs})
+        (ws / f"built-{len(captured)}.txt").write_text("built\n")
+        return {"result": '{"summary": "built it"}', "provider": ran_on, "command_id": f"{ran_on}-cmd-11"}
+
+    return _fake
+
+
+@pytest.mark.parametrize("mode", ["full", "fix", "resume"])
+def test_a_muse_choice_runs_every_implement_mode_on_muse_and_records_it(tmp_path, monkeypatch, mode):
+    ws, origin = make_git_workspace(tmp_path)
+    monkeypatch.setattr(step_agent, "ensure_item_worktree", lambda repo, item_id: ws)
+    captured = []
+    monkeypatch.setattr(step_agent, "run_agent", _implement_reply(ws, captured))
+    task = make_task(11, IMPLEMENT, repo="acme/demo", checks_waiver=NO_CHECKS)
+    task["item"]["providerChoices"] = {"11": "muse"}
+    if mode != "full":
+        checkpoint = make_checkpoint(ws, origin, cause="exhausted", detail="ran out of turns")
+    if mode == "fix":
+        task["scope"] = {"mode": "fix", "base_sha": checkpoint, "findings": []}
+
+    result = execute(task)
+
+    assert len(captured) == 1
+    assert captured[0]["provider"] == "muse"
+    assert captured[0]["provider_locked"] is False
+    if mode == "resume":
+        assert step_agent.CHECKPOINT_MARKER in captured[0]["prompt"]
+    assert result["artifacts"]["provider"] == "muse"
+    assert result["artifacts"]["command_id"] == "muse-cmd-11"
+
+
+def test_an_exhausted_muse_implement_run_hands_off_on_muse_and_is_not_refused(tmp_path, monkeypatch):
+    """The real run_agent() and farm/handoff.py run; only the providers are
+    faked. The handoff resumes the exhausted Muse session, so it must get
+    provider="muse" with no lock — a lock would refuse it."""
+    import types
+
+    from farm import agent_runner, handoff
+
+    ws, _origin = make_git_workspace(tmp_path)
+    monkeypatch.setattr(step_agent, "ensure_item_worktree", lambda repo, item_id: ws)
+    ran = []
+
+    def muse_run(prompt, **kwargs):
+        ran.append(prompt)
+        if len(ran) == 1:
+            (ws / "partial.txt").write_text("partial\n")
+            raise AgentExhaustedError("ran out of turns", partial_text="half done", session_id="muse-sess-1")
+        return {"result": "note written on muse", "session_id": "muse-sess-1"}
+
+    def claude_run(prompt, **kwargs):
+        raise AssertionError("a Muse implement run must never reach Claude")
+
+    for name, run in (("muse", muse_run), ("claude", claude_run)):
+        monkeypatch.setitem(
+            agent_runner._PROVIDERS,
+            name,
+            types.SimpleNamespace(
+                SUPPORTS_RESUME=True, RESUMES_AFTER_EXHAUSTION=True, assert_subscription_auth=lambda: None, run=run
+            ),
+        )
+    handoff_calls = []
+    real_run_agent = handoff.run_agent
+
+    def spy(prompt, **kwargs):
+        handoff_calls.append(kwargs)
+        return real_run_agent(prompt, **kwargs)
+
+    monkeypatch.setattr(handoff, "run_agent", spy)
+    task = make_task(11, IMPLEMENT, repo="acme/demo", checks_waiver=NO_CHECKS)
+    task["item"]["providerChoices"] = {"11": "muse"}
+
+    with pytest.raises(AgentExhaustedError):
+        execute(task)
+
+    assert ran == [ran[0], handoff.HANDOFF_PROMPT]
+    assert [(c["provider"], c["provider_locked"]) for c in handoff_calls] == [("muse", False)]
+    assert "note written on muse" in handoff.read_note("T-1", IMPLEMENT)
+
+
+def test_implement_with_no_choice_still_dispatches_locked_and_records_what_ran(tmp_path, monkeypatch):
+    ws, _origin = make_git_workspace(tmp_path)
+    monkeypatch.setattr(step_agent, "ensure_item_worktree", lambda repo, item_id: ws)
+    captured = []
+    monkeypatch.setattr(step_agent, "run_agent", _implement_reply(ws, captured, ran_on="claude"))
+
+    result = execute(make_task(11, IMPLEMENT, repo="acme/demo", checks_waiver=NO_CHECKS))
+
+    assert captured[0]["provider"] is None
+    assert captured[0]["provider_locked"] is True
+    assert result["artifacts"]["provider"] == "claude"
+
+
+def _review_workspace(tmp_path, monkeypatch):
+    ws, _origin = make_git_workspace(tmp_path)
+    (ws / "app.py").write_text("print('hi')\n")
+    git(ws, "add", "-A")
+    git(ws, "commit", "-m", "add app.py")
+    git(ws, "push", "-u", "origin", "HEAD:horizon/t-1")
+    monkeypatch.setattr(step_agent, "ensure_item_worktree", lambda repo, item_id: ws)
+    return ws
+
+
+def _review_reply(calls, code_provenance, qa_provenance):
+    """Both review passes; each replies with its own provenance keys."""
+    reply = json.dumps({"summary": "reviewed", "verdict": "pass", "findings": []})
+
+    def _fake(prompt, **kwargs):
+        calls.append(kwargs)
+        is_qa = "QA Reviewer agent" in kwargs.get("append_system", "")
+        return {"result": reply, **(qa_provenance if is_qa else code_provenance)}
+
+    return _fake
+
+
+def test_a_muse_choice_runs_both_review_passes_on_muse_and_records_it(tmp_path, monkeypatch):
+    _review_workspace(tmp_path, monkeypatch)
+    calls = []
+    muse = {"provider": "muse", "command_id": "muse-cmd-code"}
+    monkeypatch.setattr(step_agent, "run_agent", _review_reply(calls, muse, {"provider": "muse", "command_id": "muse-cmd-qa"}))
+    task = make_task(12, REVIEW, repo="acme/demo")
+    task["item"]["providerChoices"] = {"12": "muse"}
+
+    result = execute(task)
+
+    assert [c["provider"] for c in calls] == ["muse", "muse"]
+    assert result["artifacts"]["provider"] == "muse"
+    assert result["artifacts"]["command_id"] == "muse-cmd-code"
+
+
+def test_review_passes_that_ran_on_different_providers_fail_the_step(tmp_path, monkeypatch):
+    _review_workspace(tmp_path, monkeypatch)
+    calls = []
+    monkeypatch.setattr(
+        step_agent, "run_agent", _review_reply(calls, {"provider": "muse", "command_id": "m"}, {"provider": "claude"})
+    )
+    task = make_task(12, REVIEW, repo="acme/demo")
+    task["item"]["providerChoices"] = {"12": "muse"}
+
+    with pytest.raises(AgentError, match="different providers"):
+        execute(task)
+
+
+@pytest.mark.parametrize(
+    "code_provenance, qa_provenance",
+    [
+        ({}, {}),  # neither pass names a provider
+        ({"provider": "claude", "command_id": None}, {}),  # a salvaged-shape pass: provider, no command_id
+        ({"provider": "claude", "command_id": None}, {"provider": "claude", "command_id": None}),
+    ],
+    ids=["no-provenance", "salvaged-shape", "both-claude"],
+)
+def test_a_review_with_no_choice_never_trips_the_mismatch_check(tmp_path, monkeypatch, code_provenance, qa_provenance):
+    _review_workspace(tmp_path, monkeypatch)
+    calls = []
+    monkeypatch.setattr(step_agent, "run_agent", _review_reply(calls, code_provenance, qa_provenance))
+
+    result = execute(make_task(12, REVIEW, repo="acme/demo"))
+
+    assert [c["provider"] for c in calls] == [None, None]
+    assert result["artifacts"].get("provider") == code_provenance.get("provider")
+
+
+def test_muse_smoke_test_persona_never_forces_a_provider_on_review(tmp_path, monkeypatch, muse_smoke_test_personas):
+    _review_workspace(tmp_path, monkeypatch)
+    calls = []
+    monkeypatch.setattr(step_agent, "run_agent", _review_reply(calls, {}, {}))
+    task = make_task(12, REVIEW, repo="acme/demo")
+    task["item"]["personas"] = muse_smoke_test_personas
+
+    execute(task)
+
+    assert [c["provider"] for c in calls] == [None, None]
+
+
+def test_a_bare_farm_provider_never_becomes_a_review_choice(tmp_path, monkeypatch):
+    """With no choice, review hands run_agent no provider — so FARM_PROVIDER
+    applies inside _selected_provider() exactly as it did before HZ-369."""
+    monkeypatch.setenv("FARM_PROVIDER", "muse")
+    _review_workspace(tmp_path, monkeypatch)
+    calls = []
+    monkeypatch.setattr(step_agent, "run_agent", _review_reply(calls, {}, {}))
+
+    execute(make_task(12, REVIEW, repo="acme/demo"))
+
+    assert [c["provider"] for c in calls] == [None, None]
+
+
+def test_a_muse_choice_runs_the_qa_test_plan_review_on_muse(monkeypatch):
+    captured = {}
+    monkeypatch.setattr(step_agent, "run_agent", _provider_reply(captured, "muse"))
+    task = make_task(8, "QA reviews the test plan")
+    task["item"]["providerChoices"] = {"8": "muse"}
+
+    result = execute(task)
+
+    assert captured["provider"] == "muse"
+    assert result["artifacts"]["provider"] == "muse"
 
 
 # ---- provider lock (HZ-117): closes the bare-FARM_PROVIDER hole ----

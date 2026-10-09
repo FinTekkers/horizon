@@ -289,3 +289,12 @@ def test_recorded_fixture_missing_terminal_completed_fails_loudly(monkeypatch):
     monkeypatch.setattr(muse.subprocess, "run", fake_run)
     with pytest.raises(AgentError, match="no terminal.completed event"):
         muse.run("hello")
+
+
+def test_the_muse_doc_says_muse_ignores_the_tool_allowlist():
+    """HZ-369: the owner can put implement and review on Muse, whose CLI has
+    no allowlist flag — the doc behind the item page's note must say so."""
+    doc = (Path(__file__).resolve().parents[2] / "docs" / "providers" / "muse-code.md").read_text()
+    section = doc.split("## Tool allowlist", 1)
+    assert len(section) == 2, "docs/providers/muse-code.md has no '## Tool allowlist' section"
+    assert "ignores" in section[1].split("\n## ", 1)[0]

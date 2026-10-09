@@ -1784,7 +1784,7 @@ function mockReviewArtifactMd(verdict) {
 //
 // HZ-182: `review` is { reviewedSha, delta } from the farm's report — null on
 // the mock path, which has no commits, so demo mode stays full by
-// construction. `delta` (validated by the caller) is set only for a review the
+// construction. HZ-369: plus { provider, commandId }, the run's provenance. `delta` (validated by the caller) is set only for a review the
 // farm actually ran as a delta review; it swaps the pass rule for
 // resolveDeltaFindings. Fix-pass cycles count toward the same cap.
 function finalizeReviewStep(id, runId, text, artifactMd, verdict, patch, isMock, review) {
@@ -1799,11 +1799,9 @@ function finalizeReviewStep(id, runId, text, artifactMd, verdict, patch, isMock,
     ? resolveDeltaFindings(verdict, review.delta.deltaFiles, review.delta.previousFindings)
     : null
   if (delta && delta.notes.length > 0) artifactMd = [artifactMd, notesSection(delta.notes)].filter(Boolean).join('\n\n')
-  db.prepare("UPDATE step_run SET status = 'done', output = ?, artifact = ?, ended_at = datetime('now') WHERE id = ?").run(
-    text,
-    artifactMd,
-    runId,
-  )
+  db.prepare(
+    "UPDATE step_run SET status = 'done', output = ?, artifact = ?, provider = ?, command_id = ?, ended_at = datetime('now') WHERE id = ?",
+  ).run(text, artifactMd, review?.provider || null, review?.commandId || null, runId)
   // Written on every completed review, pass or fail: the next delta starts here.
   db.prepare('UPDATE work_item SET last_reviewed_sha = ? WHERE id = ?').run(review?.reviewedSha || null, id)
 
@@ -2086,6 +2084,16 @@ export async function completeFarmRun(runId, { summary, patch, artifacts }) {
   let artifactMd =
     typeof artifacts?.artifact_md === 'string' ? artifacts.artifact_md.slice(0, WRITE_TIME_SANITY_CEILING_CHARS) : null
 
+  // HZ-102 provenance: since HZ-357 farm/step_agent.py sets these two fields
+  // on every run of a providerOverrideEligible step whose reply named the
+  // provider that ran (Default runs included), so the item page can show
+  // "Ran on …". Every other step keeps writing NULL here.
+  // HZ-369: review is eligible too, so this is read before its branch.
+  const provider =
+    typeof artifacts?.provider === 'string' && artifacts.provider.trim() ? artifacts.provider.trim() : null
+  const commandId =
+    typeof artifacts?.command_id === 'string' && artifacts.command_id.trim() ? artifacts.command_id.trim() : null
+
   if (run.step_index === REVIEW_STEP_INDEX) {
     if (!validateVerdict(artifacts?.verdict)) return failFarmRun(runId, 'malformed review verdict JSON')
     // HZ-182: delta rules apply only when the run was DISPATCHED as a delta
@@ -2100,7 +2108,12 @@ export async function completeFarmRun(runId, { summary, patch, artifacts }) {
       delta = { deltaFiles: report.deltaFiles, previousFindings }
     }
     const reviewedSha = typeof artifacts.reviewed_sha === 'string' && artifacts.reviewed_sha.trim() ? artifacts.reviewed_sha.trim() : null
-    finalizeReviewStep(id, runId, text, artifactMd, artifacts.verdict, cleanPatch, false, { reviewedSha, delta })
+    finalizeReviewStep(id, runId, text, artifactMd, artifacts.verdict, cleanPatch, false, {
+      reviewedSha,
+      delta,
+      provider,
+      commandId,
+    })
     emitStepEnded(id)
     return { ok: true }
   }
@@ -2111,15 +2124,6 @@ export async function completeFarmRun(runId, { summary, patch, artifacts }) {
     emitStepEnded(id)
     return { ok: true }
   }
-
-  // HZ-102 provenance: since HZ-357 farm/step_agent.py sets these two fields
-  // on every run of a providerOverrideEligible step whose reply named the
-  // provider that ran (Default runs included), so the item page can show
-  // "Ran on …". Every other step keeps writing NULL here.
-  const provider =
-    typeof artifacts?.provider === 'string' && artifacts.provider.trim() ? artifacts.provider.trim() : null
-  const commandId =
-    typeof artifacts?.command_id === 'string' && artifacts.command_id.trim() ? artifacts.command_id.trim() : null
 
   // HZ-236: the overlap check is recomputed here and this result is the one
   // applied — the dispatch-time copy was context for the model only. The

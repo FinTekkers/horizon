@@ -3,6 +3,7 @@ import {
   PHASES,
   STEPS,
   IMPLEMENT_STEP_INDEX,
+  REVIEW_STEP_INDEX,
   ACCEPT_GATE_INDEX,
   isClosed,
   isAbandoned,
@@ -123,6 +124,10 @@ const PROVIDER_ERRORS = {
   project_not_active: "This item's project is disabled.",
 }
 
+// HZ-369: the two workspace steps whose read-only/edit limits come from the
+// farm's tool allowlist, which Muse ignores (docs/providers/muse-code.md).
+const ALLOWLIST_NOTE_STEPS = new Set([IMPLEMENT_STEP_INDEX, REVIEW_STEP_INDEX])
+
 function StepProviderPicker({ item, index, status, output, onSetStepProvider }) {
   const saved = item.providerChoices?.[index] ?? 'default'
   // The value being saved, shown until the item's stream carries it back (or
@@ -171,6 +176,9 @@ function StepProviderPicker({ item, index, status, output, onSetStepProvider }) 
           </option>
         ))}
       </select>
+      {ALLOWLIST_NOTE_STEPS.has(index) && (
+        <span className="step-card__provider-note">Muse ignores the farm's tool allowlist.</span>
+      )}
       {error && <span role="alert">{error}</span>}
     </div>
   )

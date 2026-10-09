@@ -45,7 +45,8 @@ _PROVIDERS = {"claude": claude, "muse": muse}
 
 # HZ-117: the one non-Claude provider is Muse, reachable either via an
 # explicit provider= override (a persona forcing it) or a bare FARM_PROVIDER
-# env var. provider_locked steps (implement, deploy) must refuse BOTH paths
+# env var. provider_locked steps (deploy, plus implement when no choice is
+# set — HZ-369) must refuse BOTH paths
 # — see run_agent()'s check below, which is the actual enforcement point
 # (this used to be enforced only on the persona-override path, in
 # step_agent.py's PROVIDER_OVERRIDE_ELIGIBLE_STEPS allowlist, which left the
@@ -147,8 +148,8 @@ def run_agent(
     caller keeps.
 
     provider_locked (HZ-117) is the caller's declaration that this step
-    (from domain/steps.json's providerLocked field — today, implement and
-    deploy) must run on DEFAULT_PROVIDER no matter what, refusing BOTH an
+    (from domain/steps.json's providerLocked field — today deploy, plus
+    implement when the owner set no choice, HZ-369) must run on DEFAULT_PROVIDER no matter what, refusing BOTH an
     explicit provider= override and a bare FARM_PROVIDER env var. Checked
     once, at this single dispatch chokepoint, before any provider call is
     made — every caller that omits it (the default) is unaffected.

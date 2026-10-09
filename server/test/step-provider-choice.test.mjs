@@ -28,7 +28,9 @@ const orchestrator = await import('../src/orchestrator.js')
 const appModule = await import('../src/app.js')
 const auth = await import('../src/auth.js')
 const config = await import('../src/config.js')
-const { STEPS, requiredStepIndex, IMPLEMENT_STEP_INDEX, DEPLOY_STEP_INDEX } = await import('../../domain/js/lifecycle.js')
+const { STEPS, requiredStepIndex, IMPLEMENT_STEP_INDEX, REVIEW_STEP_INDEX, DEPLOY_STEP_INDEX } = await import(
+  '../../domain/js/lifecycle.js'
+)
 
 store.purgeDemoItems()
 
@@ -68,8 +70,8 @@ const choicesColumn = (id) => db.prepare('SELECT provider_choices_json AS v FROM
 const eventCount = (id) => db.prepare('SELECT COUNT(*) AS n FROM event WHERE item_id = ?').get(id).n
 
 test('sanity: the indices under test are what the step table says they are', () => {
-  assert.ok(ELIGIBLE.includes(ARCH))
-  for (const i of [QA, GATE, IMPLEMENT_STEP_INDEX, DEPLOY_STEP_INDEX]) assert.ok(INELIGIBLE.includes(i), `step ${i}`)
+  for (const i of [ARCH, QA, IMPLEMENT_STEP_INDEX, REVIEW_STEP_INDEX]) assert.ok(ELIGIBLE.includes(i), `step ${i}`)
+  for (const i of [GATE, DEPLOY_STEP_INDEX]) assert.ok(INELIGIBLE.includes(i), `step ${i}`)
   assert.equal(STEPS[GATE].kind, 'gate')
 })
 
@@ -104,6 +106,23 @@ test('every step that is not providerOverrideEligible is refused 400 and nothing
   assert.equal(eventCount('SP-2'), events)
 })
 
+test('HZ-369: QA plan review, implement and review take a choice; deploy never does', async () => {
+  insertItem.run('SP-7', 'Three more steps', 3)
+  for (const i of [QA, IMPLEMENT_STEP_INDEX, REVIEW_STEP_INDEX]) {
+    const res = await putProvider('SP-7', i, 'muse')
+    assert.equal(res.statusCode, 200, `step ${i} (${STEPS[i].label})`)
+    assert.deepEqual(res.json(), { ok: true })
+  }
+  const deploy = await putProvider('SP-7', DEPLOY_STEP_INDEX, 'muse')
+  assert.equal(deploy.statusCode, 400)
+  assert.deepEqual(deploy.json(), { error: 'provider_not_eligible' })
+  assert.deepEqual(store.getItem('SP-7').providerChoices, {
+    [QA]: 'muse',
+    [IMPLEMENT_STEP_INDEX]: 'muse',
+    [REVIEW_STEP_INDEX]: 'muse',
+  })
+})
+
 test('an unknown provider, an unknown item and a closed item are refused', async () => {
   insertItem.run('SP-3', 'Closed', STEPS.length)
   assert.equal((await putProvider('SP-1', ARCH, 'gpt')).statusCode, 400)
@@ -117,7 +136,7 @@ test('an unknown provider, an unknown item and a closed item are refused', async
 test('a stored choice for an ineligible step or an unknown provider is never read back', () => {
   insertItem.run('SP-4', 'Junk column', 3)
   db.prepare('UPDATE work_item SET provider_choices_json = ? WHERE id = ?').run(
-    JSON.stringify({ [IMPLEMENT_STEP_INDEX]: 'muse', [ARCH]: 'gpt', [ELIGIBLE[0]]: 'muse' }),
+    JSON.stringify({ [DEPLOY_STEP_INDEX]: 'muse', [ARCH]: 'gpt', [ELIGIBLE[0]]: 'muse' }),
     'SP-4',
   )
   assert.deepEqual(store.getItem('SP-4').providerChoices, { [ELIGIBLE[0]]: 'muse' })
@@ -177,4 +196,27 @@ test('a finished step records the provider that ran, in step_run and on the item
   const frame = JSON.parse(text.split('\n').find((line) => line.startsWith('data: ')).slice(6))
   assert.equal(frame.stepOutputs[ARCH].provider, 'muse')
   assert.deepEqual((await itemFrom('SP-6', '?v=2')).providerChoices, { [ARCH]: 'muse' })
+})
+
+test('HZ-369: a finished automated review records the provider that ran in step_run', async () => {
+  insertItem.run('SP-8', 'Review ran on Muse', REVIEW_STEP_INDEX)
+  const runId = db
+    .prepare('INSERT INTO step_run (item_id, step_index, attempt, agent) VALUES (?, ?, 1, ?)')
+    .run('SP-8', REVIEW_STEP_INDEX, STEPS[REVIEW_STEP_INDEX].agent).lastInsertRowid
+  const verdict = {
+    code_review: { verdict: 'pass', findings: [] },
+    qa_review: { verdict: 'pass', findings: [], regression_tests_run: true, new_code_unit_coverage: true, e2e_test_present: true },
+  }
+  const result = await orchestrator.completeFarmRun(runId, {
+    summary: 'reviewed',
+    artifacts: { artifact_md: '# review', verdict, provider: 'muse', command_id: 'cmd-12' },
+  })
+  assert.deepEqual(result, { ok: true })
+  orchestrator.cancel('SP-8')
+  assert.deepEqual(db.prepare('SELECT status, provider, command_id FROM step_run WHERE id = ?').get(runId), {
+    status: 'done',
+    provider: 'muse',
+    command_id: 'cmd-12',
+  })
+  assert.equal((await itemFrom('SP-8')).stepOutputs[REVIEW_STEP_INDEX].provider, 'muse')
 })

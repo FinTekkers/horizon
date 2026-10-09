@@ -24,6 +24,7 @@ afterEach(() => cleanup())
 
 const ARCH = requiredStepIndex('Architecture review')
 const QA = requiredStepIndex('QA reviews the test plan')
+const DEPLOY = requiredStepIndex('Deploy the changes')
 const GATE = requiredStepIndex('Review before execution')
 const INTAKE = requiredStepIndex('Approve & prioritize this work')
 
@@ -71,8 +72,8 @@ function card(container, index) {
 
 test('sanity: the step under test is eligible and the others are not', () => {
   expect(STEPS[ARCH].providerOverrideEligible).toBe(true)
-  expect(STEPS[QA].kind).toBe('agent')
-  expect(STEPS[QA].providerOverrideEligible).toBe(false)
+  expect(STEPS[DEPLOY].kind).toBe('agent')
+  expect(STEPS[DEPLOY].providerOverrideEligible).toBe(false)
   expect(STEPS[GATE].kind).toBe('gate')
 })
 
@@ -143,7 +144,7 @@ test('a step being re-run, at the cursor with an earlier run on record, offers t
 
 test('a step that is not eligible shows "Claude only" and no select', () => {
   const { container } = renderTracker({})
-  const scope = within(card(container, QA))
+  const scope = within(card(container, DEPLOY))
   expect(scope.getByText('Claude only')).toBeTruthy()
   expect(scope.queryByLabelText('Runs on')).toBeNull()
 })
@@ -153,4 +154,32 @@ test('a gate shows no provider at all', () => {
   const gate = card(container, GATE)
   expect(within(gate).queryByLabelText('Runs on')).toBeNull()
   expect(gate.querySelector('.step-card__provider')).toBeNull()
+})
+
+// HZ-369: typed by label on purpose — this pins the metric's exact list, so a
+// flag flipped on any other step fails here instead of passing silently.
+const RUNS_ON_LABELS = [
+  'Plan options & trade-offs (pros / cons)',
+  'Draft implementation plan',
+  'Architecture review',
+  'QA reviews the test plan',
+  'Specialist agent implements',
+  'Automated review (code + QA)',
+]
+
+test('the "Runs on" select renders on exactly steps 4, 6, 7, 8, 11 and 12', () => {
+  const { container } = renderTracker({})
+  const withSelect = STEPS.flatMap((s, i) => (within(card(container, i)).queryByLabelText('Runs on') ? [i] : []))
+  expect(withSelect).toEqual(RUNS_ON_LABELS.map((label) => requiredStepIndex(label)))
+  expect(withSelect).toEqual([4, 6, 7, 8, 11, 12])
+})
+
+test('the tool-allowlist note shows on the implement and review dropdowns only', () => {
+  const { container } = renderTracker({})
+  const note = "Muse ignores the farm's tool allowlist."
+  for (const label of RUNS_ON_LABELS) {
+    const index = requiredStepIndex(label)
+    const shown = within(card(container, index)).queryByText(note) !== null
+    expect([label, shown]).toEqual([label, ['Specialist agent implements', 'Automated review (code + QA)'].includes(label)])
+  }
 })

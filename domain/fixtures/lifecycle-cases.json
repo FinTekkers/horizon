@@ -30,7 +30,7 @@
       {
         "case": "resolves a real farm-dispatched step",
         "label": "Specialist agent implements",
-        "expect": { "found": true, "agent": "Eng", "runsIn": "farm", "providerLocked": true }
+        "expect": { "found": true, "agent": "Eng", "runsIn": "farm", "providerLocked": false }
       },
       {
         "case": "raises, naming the missing label",
