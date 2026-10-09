@@ -89,10 +89,15 @@ const countCaretakerSendBacks = db.prepare(
   "SELECT COUNT(*) AS n FROM caretaker_action WHERE item_id = ? AND gate_index = ? AND action = 'send_back' AND outcome = 'ok'",
 )
 // failFarmRun() records a failure as cancelled + "FAILED: …". Lifetime count
-// for the step that feeds this gate (gate − 1) only.
-const countFailedRuns = db.prepare(
-  "SELECT COUNT(*) AS n FROM step_run WHERE item_id = ? AND step_index = ? AND status = 'cancelled' AND output LIKE 'FAILED:%'",
-)
+// for the step that feeds this gate (gate − 1) only. HZ-366: the ping reads
+// the newest of the same runs; both go through failedRuns().
+const FAILED_RUNS = "FROM step_run WHERE item_id = ? AND step_index = ? AND status = 'cancelled' AND output LIKE 'FAILED:%'"
+const countFailedRuns = db.prepare(`SELECT COUNT(*) AS n ${FAILED_RUNS}`)
+const selectLastFailedOutput = db.prepare(`SELECT output ${FAILED_RUNS} ORDER BY id DESC LIMIT 1`)
+const failedRuns = (c) => {
+  const feeding = [c.item_id, c.gate_index - 1]
+  return { count: () => countFailedRuns.get(...feeding).n, lastOutput: () => selectLastFailedOutput.get(...feeding)?.output }
+}
 const insertAction = db.prepare(`
   INSERT INTO caretaker_action (eval_id, project_id, item_id, gate_index, action, outcome, error, acted_at_ms)
   VALUES (?, ?, ?, ?, ?, ?, ?, ?)
@@ -163,14 +168,33 @@ export function stallReason(c) {
   // The caretaker's own send-backs reset the item's review cycles, so they
   // are counted too — an endless caretaker send-back loop stops at the cap.
   if (countCaretakerSendBacks.get(c.item_id, c.gate_index).n >= REVIEW_CYCLE_CAP) return 'review_cycle_cap'
-  if (countFailedRuns.get(c.item_id, c.gate_index - 1).n >= FAILED_RUNS_STOP) return 'step_failed_twice'
+  if (failedRuns(c).count() >= FAILED_RUNS_STOP) return 'step_failed_twice'
   return null
 }
 
+// farm/checks.py HEADLINE_PREFIX: a failed check's message starts with this,
+// then one line saying what failed (HZ-366). Keep the two in step.
+export const CHECK_HEADLINE_PREFIX = 'repo checks failed: '
+const STALL_HEADLINE_MAX = 200
+
+// The first line of a failed run's stored output ("FAILED: <error>") when it
+// is a check-failure headline, redacted and on one line; otherwise null.
+export function stallHeadline(output) {
+  const first = String(output ?? '').replace(/^FAILED: /, '').split('\n')[0]
+  if (!first.startsWith(CHECK_HEADLINE_PREFIX)) return null
+  const line = redact(first, { oneLine: false }).replace(/\s+/g, ' ').trim()
+  return line.length > STALL_HEADLINE_MAX ? line.slice(0, STALL_HEADLINE_MAX - 1) + '…' : line
+}
+
 // One ping and one event per (arrival, reason); a repeat tick adds nothing.
+// HZ-366: a step that failed twice on its checks names what failed straight
+// after the prefix, outside redact()'s one-line length cap.
 function recordStall(c, reason, nowMs, owner) {
   const label = STEPS[c.gate_index].label
-  const body = redact(`Horizon caretaker stopped on ${c.item_id} at ${label}: ${STALL_TEXT[reason]}. Waiting for you.`)
+  const headline = reason === 'step_failed_twice' ? stallHeadline(failedRuns(c).lastOutput()) : null
+  const body = headline
+    ? `${redact(`Horizon caretaker stopped on ${c.item_id} at ${label}:`)} ${headline} — ${redact(`${STALL_TEXT[reason]}. Waiting for you.`)}`
+    : redact(`Horizon caretaker stopped on ${c.item_id} at ${label}: ${STALL_TEXT[reason]}. Waiting for you.`)
   return db.transaction(() => {
     const key = `stall:${c.item_id}:${c.gate_index}:${c.arrival_run_id}:${reason}`
     const row = insertPing.run(c.project_id, c.item_id, reason, key, owner || '', body, nowMs)

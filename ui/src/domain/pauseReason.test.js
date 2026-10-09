@@ -213,6 +213,17 @@ test('an LS-98-style multi-line Gradle cause matches the pause event and is retu
   expect(result.cause).toContain(SECRETS_LINE)
 })
 
+// HZ-366: a failed check's message starts with one headline line; failFarmRun
+// keeps the first 200 characters of it.
+const HZ366_HEADLINE =
+  'repo checks failed: e2e: 2 failed, 71 passed: tests/31-rule-block.spec.js:131 "HZ-365: the card shows the first line o…", :154 "HZ-365: Amend the rule asks for the gat…"'
+
+test('a check failure with a headline gives a cause whose first line is the headline', () => {
+  const error = `${HZ366_HEADLINE}\n(sh -c npm run test:e2e --silent)\n      47 |      VALUES (@id, @title, @priority, @desc, @metric)`
+  const result = pauseReason({ paused: true, events: [failurePause(error.slice(0, 200))] })
+  expect(result.cause.split('\n')[0]).toBe(HZ366_HEADLINE)
+})
+
 test('a cause that itself contains " — " still parses whole, up to the frozen suffix', () => {
   const cause = 'repo checks failed — lint step\nline two — with a dash'
   const item = {

@@ -130,9 +130,11 @@ def test_failure_digest_reports_a_failure_at_line_900(tmp_path, monkeypatch):
         assert "not ok 900 - the late failure" in text
         assert "# pass 898" in text and "# fail 2" in text
         assert "ok 500 - passing test number 500" not in text
-    # The command stays on the first line, where the check_metrics backfill
-    # parser reads it.
-    assert str(err.value).splitlines()[0] == "repo checks failed (sh -c " + os.environ["FARM_CHECK_CMD"] + "):"
+    # HZ-366: the first line says what failed; the command follows it.
+    assert str(err.value).splitlines()[:2] == [
+        'repo checks failed: echo: 2 failed, 898 passed: "an early failure", "the late failure"',
+        "(sh -c " + os.environ["FARM_CHECK_CMD"] + ")",
+    ]
 
 
 def test_failure_digest_keeps_failures_first_when_over_the_cap():

@@ -7,9 +7,14 @@
 // run — paused = 1 keeps it that way regardless.
 
 import { test, expect, captureScreenshot } from '../fixtures/test-base.js'
+import { readFileSync } from 'node:fs'
 import { openDb, insertItem, insertEvent } from '../fixtures/seed.js'
 
 const DB_PATH = process.env.HORIZON_E2E_DB
+// HZ-366: the farm's message for HZ-365's failed e2e check, as
+// farm/tests/test_checks_headline.py proves the farm builds it.
+const HZ365_MESSAGE = readFileSync(new URL('../../farm/tests/fixtures/check_output/hz365_message.txt', import.meta.url), 'utf8')
+const HZ365_HEADLINE = HZ365_MESSAGE.split('\n')[0]
 
 test.beforeAll(() => {
   const db = openDb(DB_PATH)
@@ -66,6 +71,14 @@ test.beforeAll(() => {
         text: 'forward to “Accept the code” refused — the review still has blocking findings; “Specialist agent implements” restarts with the review findings',
       })
     }
+
+    // HZ-366: failFarmRun's event for a check failure that leads with its
+    // headline — the error cut at 200 characters, exactly as it writes it.
+    insertItem(db, { id: 'PAUSE-5', title: 'E2E fixture — paused on a check failure with a headline', cursor: 0, paused: 1 })
+    insertEvent(db, {
+      itemId: 'PAUSE-5',
+      text: `agent step failed: ${HZ365_MESSAGE.slice(0, 200)} — item paused; resume to retry`,
+    })
   } finally {
     db.close()
   }
@@ -128,6 +141,20 @@ test('a multi-line pause cause under two newer forward-refused events is still s
 
   const banner = page.locator('.pause-banner')
   await expect(banner.locator('.pause-banner__detail')).toContainText('bash: scripts/checks/secrets.sh: No such file or directory')
+  await expect(banner).not.toContainText('No failure details were recorded')
+  await expect(page.getByRole('button', { name: 'Resume work' })).toBeVisible()
+})
+
+test('a check failure shows its headline — counts and the failing test — as the banner\'s first line (HZ-366)', async ({ page }) => {
+  await page.goto('/pause-5')
+  await expect(page.locator('.tracker__id')).toHaveText('PAUSE-5')
+
+  const banner = page.locator('.pause-banner')
+  await expect(banner).toBeVisible()
+  const detail = await banner.locator('.pause-banner__detail').innerText()
+  expect(detail.split('\n')[0]).toBe(HZ365_HEADLINE)
+  expect(HZ365_HEADLINE).toContain('2 failed')
+  expect(HZ365_HEADLINE).toContain('31-rule-block.spec.js:131')
   await expect(banner).not.toContainText('No failure details were recorded')
   await expect(page.getByRole('button', { name: 'Resume work' })).toBeVisible()
 })

@@ -8,7 +8,7 @@
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync } from 'node:fs'
+import { mkdtempSync, readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -23,6 +23,7 @@ const { buildApp } = await import('../src/app.js')
 const { FARM_SHARED_SECRET } = await import('../src/config.js')
 const store = await import('../src/store.js')
 const { STEPS, IMPLEMENT_STEP_INDEX } = await import('../../domain/js/lifecycle.js')
+const { REPO_ROOT } = await import('./helpers/repoFiles.mjs')
 
 store.purgeDemoItems()
 globalThis.fetch = async () => ({ ok: true, json: async () => ({}) })
@@ -87,4 +88,20 @@ test('an error over the route limit is rejected with a 400 and the run stays act
   assert.equal(body.error, 'Bad Request')
   assert.match(body.message, /error/)
   assert.equal(db.prepare('SELECT status FROM step_run WHERE id = ?').get(runId).status, 'active')
+})
+
+// HZ-366 metric 4: the farm's own message for HZ-365's failed e2e check (the
+// shared fixture farm/tests/test_checks_headline.py builds and compares) puts
+// what failed in the event's first 200 characters.
+test('a farm check failure leads the event with its headline: counts and the failing test', async () => {
+  const message = readFileSync(join(REPO_ROOT, 'farm/tests/fixtures/check_output/hz365_message.txt'), 'utf8')
+  const runId = activeImplementRun('FO-HZ366')
+
+  const res = await fail(runId, message)
+
+  assert.equal(res.statusCode, 200, res.body)
+  const event = db.prepare("SELECT text FROM event WHERE item_id = 'FO-HZ366' AND text LIKE 'agent step failed%'").get()
+  assert.ok(event.text.startsWith('agent step failed: repo checks failed: e2e: 2 failed, 71 passed: '), event.text)
+  assert.ok(event.text.includes('31-rule-block.spec.js:131'), event.text)
+  assert.equal(event.text.split('\n')[0], `agent step failed: ${message.split('\n')[0]}`)
 })

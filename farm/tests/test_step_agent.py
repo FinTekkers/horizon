@@ -1960,7 +1960,7 @@ def test_main_reports_a_failure_at_line_900_end_to_end(tmp_path, monkeypatch):
     monkeypatch.setenv(
         "FARM_CHECK_CMD",
         "for i in $(seq 1 899); do echo \"ok $i - passing test number $i\"; done; "
-        "echo 'not ok 900 - x'; echo '# pass 899'; echo '# fail 1'; exit 1",
+        "echo 'not ok 900 - x" + " with a long title" * 20 + "'; echo '# pass 899'; echo '# fail 1'; exit 1",
     )
     monkeypatch.setattr(step_agent, "run_agent", finished_run(ws))
     task = make_task(11, "Specialist agent implements", repo="acme/demo")
@@ -1983,7 +1983,9 @@ def test_main_reports_a_failure_at_line_900_end_to_end(tmp_path, monkeypatch):
 
     error = posted["json"]["error"]
     assert posted["json"]["ok"] is False and "artifacts" not in posted["json"]
-    assert error.startswith("repo checks failed (sh -c ")
+    # HZ-366: a long headline first, then the command, within the same cap.
+    assert error.startswith('repo checks failed: for: 1 failed, 899 passed: "x with a long title')
+    assert error.splitlines()[1].startswith("(sh -c ")
     assert "not ok 900 - x" in error and "# pass 899" in error and "# fail 1" in error
     assert len(error) <= step_agent.ERROR_MAX_CHARS
 

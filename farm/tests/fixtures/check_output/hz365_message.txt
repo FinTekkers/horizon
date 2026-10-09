@@ -1,0 +1,35 @@
+repo checks failed: e2e: 2 failed, 71 passed: tests/31-rule-block.spec.js:131 "HZ-365: the card shows the first line o…", :154 "HZ-365: Amend the rule asks for the gat…"
+(sh -c npm run test:e2e --silent)
+      47 |      VALUES (@id, @title, @priority, @desc, @metric, @guardrails, @cursor, @repo, @pr, @pr_url, @pr_mergeable, @paused, @project_id)`,
+    > 48 |   ).run({ id, title, priority, desc, metric, guardrails, cursor, repo, pr, pr_url, pr_mergeable, paused: paused ? 1 : 0, project_id })
+         |     ^
+      49 |   if (updatedAt) {
+      50 |     db.prepare('UPDATE work_item SET updated_at = ? WHERE id = ?').run(updatedAt, id)
+      51 |   }
+        at insertItem (<ws>/e2e/fixtures/seed.js:48:5)
+        at <ws>/e2e/tests/31-rule-block.spec.js:72:5
+    Error Context: test-results/31-rule-block-HZ-365-Amend-fc697-block-and-re-runs-implement-chromium/error-context.md
+    attachment #2: trace (application/zip) ─────────────────────────────────────────────────────────
+    test-results/31-rule-block-HZ-365-Amend-fc697-block-and-re-runs-implement-chromium/trace.zip
+    Usage:
+        npx playwright show-trace test-results/31-rule-block-HZ-365-Amend-fc697-block-and-re-runs-implement-chromium/trace.zip
+    ────────────────────────────────────────────────────────────────────────────────────────────────
+  2 failed
+    [chromium] › tests/31-rule-block.spec.js:131:1 › HZ-365: the card shows the first line of what is needed and links to the banner, which shows all 3,000 characters
+    [chromium] › tests/31-rule-block.spec.js:154:1 › HZ-365: Amend the rule asks for the gate PIN, then clears the block and re-runs implement
+# tests 4
+# suites 0
+# pass 4
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# tests 3
+# suites 0
+# pass 3
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+  71 passed (2.8m)
+… 1 more lines omitted
