@@ -164,3 +164,32 @@ test('a paused card offers Resume work, whether or not it is also blocked', () =
     expect(buttonNames(card)).not.toContain('Pause work')
   }
 })
+
+// HZ-365: a rule-blocked card shows the pill, the first line of what's needed
+// in a soft-red box with a link to the item page's banner, and any Blocked by
+// line — and no Pause work.
+test('a rule-blocked card shows the first line of needs, a See what to do link to #rule-block, the Blocked by line, and no Pause work', () => {
+  const onOpen = vi.fn()
+  const ruleBlock = {
+    rule: 'guardrail 6',
+    needs: 'A ledger-models release with the fix.\n\nCause: the proto has no settlement field.',
+    runId: 9,
+    blockedAt: '2026-10-08 14:02:11',
+  }
+  const { container, getByRole } = render(board([blocked('LS-17', { ruleBlock })], { onOpen }))
+  const card = cardOf(container, 'LS-17')
+  expect(card.querySelector('.status-pill').textContent).toBe('Blocked by a rule')
+  expect(buttonNames(card)).not.toContain('Pause work')
+
+  const box = card.querySelector('.card__rule-block')
+  expect(box.textContent).toBe('A ledger-models release with the fix.See what to do')
+  expect(box.textContent).not.toContain('Cause:')
+  expect(box.hasAttribute('style')).toBe(false)
+  expect(card.querySelector('.dep-pill--blocked').textContent).toBe('Blocked by HZ-327, HZ-328')
+
+  const link = getByRole('link', { name: 'See what to do' })
+  expect(link.getAttribute('href').endsWith('/ls-17#rule-block')).toBe(true)
+  link.addEventListener('click', (e) => e.preventDefault()) // jsdom cannot navigate
+  fireEvent.click(link)
+  expect(onOpen).not.toHaveBeenCalled()
+})

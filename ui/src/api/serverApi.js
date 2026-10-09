@@ -498,6 +498,12 @@ export function removeDependency(id, dependsOnId) {
   return postJson(`/items/${id}/dependencies/remove`, { dependsOnId })
 }
 
+// HZ-365: the rule-block banner's Add dependency, on HZ-346's route. postJson
+// so a 404 or 409 rejects and the dialog shows it.
+export function addDependency(id, dependsOnId) {
+  return postJson(`/items/${id}/dependencies`, { dependsOnId })
+}
+
 export function restartPhase(id, phase, reason) {
   gatePost(`/items/${id}/phases/${phase}/restart`, { reason: reason || '' })
 }

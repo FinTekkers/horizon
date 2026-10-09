@@ -11,7 +11,7 @@ import {
 import { PHASE_ACCENT, PHASE_ACCENT_BG, priorityColor } from '../domain/lifecycle'
 import { FILTERS, visibleItems, hiddenCounts, matchCounts } from '../domain/filters'
 import { PRIMARY_PERSONA_AGENT, personaFor } from '../domain/personas'
-import { itemStatus, stateLabel, isDependencyBlocked, queuedToMerge } from '../domain/status'
+import { itemStatus, stateLabel, isDependencyBlocked, isRuleBlocked, ruleBlockSummary, queuedToMerge } from '../domain/status'
 import { gateActionOf, gateActionBusy, elapsedText } from '../domain/gateAction'
 import { usualDurationHint } from '../domain/durationHint'
 import { deployQueueLabel } from '../domain/deployQueue'
@@ -19,7 +19,7 @@ import { useClockTick } from '../useClockTick'
 import { issueUrl, issueLabel } from '../api'
 import * as boardFilters from '../boardFilters'
 import StatusPill from './StatusPill'
-import DependencyBadge from './DependencyBadge'
+import DependencyBadge, { itemHref } from './DependencyBadge'
 import GateActionStatus from './GateActionStatus'
 import ProjectBadge from './ProjectBadge'
 import { LinkIcon, LockIcon, PrIcon } from './icons'
@@ -49,7 +49,10 @@ function BoardCard({ item, projects, durationEstimates, deployBlock, viewerName,
   const cur = curStep(item)
   // HZ-335: a dependency-blocked item has nothing running, so no Pause work.
   const blocked = isDependencyBlocked(item)
-  const isActiveAgent = !closed && !abandoned && !awaiting && !rejected && !paused && !blocked && cur && cur.kind === 'agent'
+  // HZ-365: nor does a rule-blocked one.
+  const ruleBlocked = isRuleBlocked(item)
+  const isActiveAgent =
+    !closed && !abandoned && !awaiting && !rejected && !paused && !blocked && !ruleBlocked && cur && cur.kind === 'agent'
   const rejectTarget = awaiting && cur ? cur.label : cur ? cur.label : 'this step'
   // HZ-226: at the Accept gate, the server's in-flight action (pre-merge
   // checks + merge, or conflict resolution) shows here as it does on the
@@ -132,6 +135,20 @@ function BoardCard({ item, projects, durationEstimates, deployBlock, viewerName,
         </div>
       )}
       {deployQueueLabel(item) && <div className="card__deploy-queue">{deployQueueLabel(item)}</div>}
+      {/* HZ-365: the first line of what's needed, as plain text; the link
+          lands on the item page's banner, which holds the rest. */}
+      {ruleBlocked && (
+        <div className="card__rule-block">
+          {ruleBlockSummary(item.ruleBlock.needs).summary}
+          <a
+            className="card__rule-block-link"
+            href={`${itemHref(item.id)}#rule-block`}
+            onClick={(e) => e.stopPropagation()}
+          >
+            See what to do
+          </a>
+        </div>
+      )}
       <DependencyBadge item={item} compact />
 
       {awaiting && (

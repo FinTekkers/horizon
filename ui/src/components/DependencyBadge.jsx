@@ -19,10 +19,11 @@ function abandonedSuffix(entry) {
 // acted on, "blocked by Artifact context: fill the budget..." cannot. The API
 // has always returned it; it was previously used only as a React key.
 // Relative to the vite base, same as App's own routing ('' at the dev root,
-// '/horizon' under the production subpath).
+// '/horizon' under the production subpath). HZ-365: the board card's
+// "See what to do" link uses it too.
 const PREFIX = import.meta.env.BASE_URL.replace(/\/$/, '')
 
-function itemHref(id) {
+export function itemHref(id) {
   return `${PREFIX}/${id.toLowerCase()}`
 }
 

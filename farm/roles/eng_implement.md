@@ -49,7 +49,8 @@ not exist yet, and a local workaround is ruled out. Then make no changes:
 leave `git status` clean, and report the block instead of a summary.
 - Quote the rule or guardrail that stops you in `rule`.
 - Say what would unblock it in `needs`, for example a new upstream issue or
-  release.
+  release. Put a one-line summary first, then a blank line, then the full
+  explanation (up to 4,000 characters). The board shows the first line.
 - Any edit in the workspace means the report is ignored. The normal push,
   checks and review then run on what you left.
 
