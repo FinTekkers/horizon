@@ -631,6 +631,13 @@ if (!db.prepare('PRAGMA table_info(project)').all().some((column) => column.name
   db.exec("ALTER TABLE project ADD COLUMN autopilot TEXT NOT NULL DEFAULT 'off' CHECK (autopilot IN ('off','shadow','on'))")
 }
 
+// HZ-370: per-project "Runs on" defaults, {"<step index>": "claude"|"muse"}.
+// Nullable with no default: every existing project reads NULL, i.e. no
+// default, so routing is unchanged until an owner sets one in Admin.
+if (!db.prepare('PRAGMA table_info(project)').all().some((column) => column.name === 'provider_defaults_json')) {
+  db.exec('ALTER TABLE project ADD COLUMN provider_defaults_json TEXT')
+}
+
 // HZ-270: project_event is the project-level audit trail (event.item_id is
 // NOT NULL, so an Autopilot change cannot live there). caretaker_eval holds one
 // row per gate arrival the caretaker judged; its UNIQUE key is the persisted

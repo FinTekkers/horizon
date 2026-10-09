@@ -163,15 +163,30 @@ const RUNS_ON_LABELS = [
   'Draft implementation plan',
   'Architecture review',
   'QA reviews the test plan',
+  'Summarize reviews & recommend',
   'Specialist agent implements',
   'Automated review (code + QA)',
 ]
 
-test('the "Runs on" select renders on exactly steps 4, 6, 7, 8, 11 and 12', () => {
+test('the "Runs on" select renders on exactly steps 4, 6, 7, 8, 9, 11 and 12', () => {
   const { container } = renderTracker({})
   const withSelect = STEPS.flatMap((s, i) => (within(card(container, i)).queryByLabelText('Runs on') ? [i] : []))
   expect(withSelect).toEqual(RUNS_ON_LABELS.map((label) => requiredStepIndex(label)))
-  expect(withSelect).toEqual([4, 6, 7, 8, 11, 12])
+  expect(withSelect).toEqual([4, 6, 7, 8, 9, 11, 12])
+})
+
+// HZ-370: the PM steps before intake (0-2) take a choice too, while not done.
+test('a re-run of the intake steps offers the select on steps 0, 1 and 2', () => {
+  const { container } = renderTracker({ cursor: 0 })
+  const before = STEPS.slice(0, INTAKE).flatMap((s, i) => (within(card(container, i)).queryByLabelText('Runs on') ? [i] : []))
+  expect(before).toEqual([0, 1, 2])
+})
+
+test('Default names the project default when the project sets one, and stays "Default (Claude)" otherwise', () => {
+  const { container } = renderTracker({ cursor: 0, projectProviderDefaults: { 0: 'muse' } })
+  const option = (i) => within(card(container, i)).getByLabelText('Runs on').querySelector('option[value="default"]')
+  expect(option(0).textContent).toBe('Default (Muse, project)')
+  expect(option(1).textContent).toBe('Default (Claude)')
 })
 
 test('the tool-allowlist note shows on the implement and review dropdowns only', () => {

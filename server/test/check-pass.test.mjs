@@ -107,6 +107,8 @@ test("a resolved conflict reply carrying the sha records a conflict_resolver pas
 test('the recorded scoped farmd reply (fixtures/scoped_resolve_response.json) records a conflict_resolver pass', async () => {
   insertItem.run('CP-4S', 'resolver scoped', 'Medium', ACCEPT_GATE_INDEX, REPO, 41, 0)
   const reply = JSON.parse(readFileSync(join(import.meta.dirname, '../../farm/tests/fixtures/scoped_resolve_response.json'), 'utf8'))
+  // The recorded finish time ages out of the freshness window; keep it recent.
+  reply.checks_finished_at = ago(60_000)
   orchestrator.setConflictReplyForTest(reply)
   const result = await orchestrator.resolveConflicts('CP-4S', 'Alice')
   assert.equal(result.resolved, true)

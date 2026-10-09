@@ -59,7 +59,7 @@
           }
         },
         {
-          "$comment": "Farm-lane steps carry the full budget/provider contract step_agent.py reads; the PM lane uses farm/pm_steps.py's own budget mechanism and must not declare these.",
+          "$comment": "Farm-lane steps carry the full budget/provider contract step_agent.py reads; the PM lane uses farm/pm_steps.py's own budget mechanism and must not declare these, except providerOverrideEligible (HZ-370: a PM step may take the owner's provider choice).",
           "if": { "properties": { "runsIn": { "enum": ["farm"] } }, "required": ["runsIn"] },
           "then": {
             "required": [

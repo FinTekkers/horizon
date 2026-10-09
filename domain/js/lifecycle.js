@@ -84,6 +84,7 @@ export const PHASES = source.phases
 // workspaceMutating/providerOverrideEligible/providerLocked/maxTurns/timeoutS
 // are farm-only fields, declared only on runsIn: 'farm' entries — the PM
 // agent uses its own budget mechanism (farm/pm_steps.py), out of scope here.
+// HZ-370: a PM step may declare providerOverrideEligible, and only that.
 // requires (HZ-105): labels of prior steps whose artifact this step cannot
 // review without in full. Checked by orchestrator.js's dispatchToFarm gate
 // (missingRequiredInputs) before a farm dispatch — if the artifact budget had

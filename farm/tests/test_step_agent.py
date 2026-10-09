@@ -14,7 +14,7 @@ from pathlib import Path
 
 import pytest
 
-from farm import checks, step_agent
+from farm import checks, pm_steps, step_agent
 from farm.agent_runner import AgentError, AgentExhaustedError
 from farm.personas import DEFAULT_PERSONAS, PERSONA_DIR, PERSONAS
 from farm.step_agent import (
@@ -1000,6 +1000,122 @@ def test_a_muse_choice_runs_the_qa_test_plan_review_on_muse(monkeypatch):
 
     assert captured["provider"] == "muse"
     assert result["artifacts"]["provider"] == "muse"
+
+
+# ---- HZ-370: the PM steps (0, 1, 2, 9) take the owner's choice ----
+# The server sends the item's choice merged with the project default as
+# providerChoices; _execute_pm hands it to every run_agent() call, retry
+# included, and records the provider that ran.
+
+PM_FIXTURE_TASK = Path(__file__).resolve().parent / "fixtures" / "pm_prompts" / "task.json"
+# Step 0, read off the table: domain-one-declaration.test.mjs allowlists the
+# files that spell its label out.
+OUTCOME_LABEL = step_agent.steps.STEP_BY_INDEX[0]["label"]
+
+
+def _pm_task(label, choices=None):
+    task = json.loads(PM_FIXTURE_TASK.read_text())
+    task["step"] = {"index": step_agent.steps.by_label(label)["index"], "label": label}
+    task["feedback"] = []
+    if choices is not None:
+        task["item"]["providerChoices"] = choices
+    return task
+
+
+def _pm_replies(calls, replies):
+    """A run_agent fake handing out `replies` in order (the last repeats),
+    replying as the provider it was handed (Claude when none), the way the
+    real run_agent() stamps provenance."""
+
+    def _fake(prompt, **kwargs):
+        calls.append({"prompt": prompt, **kwargs})
+        ran_on = kwargs.get("provider") or "claude"
+        n = len(calls)
+        return {"result": replies[min(n, len(replies)) - 1], "provider": ran_on, "command_id": f"{ran_on}-cmd-{n}"}
+
+    return _fake
+
+
+def test_a_muse_pm_choice_reaches_the_call_and_the_parse_retry(monkeypatch):
+    calls = []
+    good = json.dumps({"summary": "outcome defined", "patch": {"desc": "Done means x."}, "artifact_md": "# Outcome"})
+    monkeypatch.setattr(step_agent, "run_agent", _pm_replies(calls, ["not json at all", good]))
+
+    result = execute(_pm_task(OUTCOME_LABEL, {"0": "muse"}))
+
+    assert [c["provider"] for c in calls] == ["muse", "muse"]
+    # No workspace for a PM step, on Muse as on Claude: cwd stays unset.
+    assert [c.get("cwd") for c in calls] == [None, None]
+    # Provenance is the reply that parsed — the retry's, not the first.
+    assert result["artifacts"]["provider"] == "muse"
+    assert result["artifacts"]["command_id"] == "muse-cmd-2"
+    assert result["artifacts"]["artifact_md"].startswith("# Outcome")
+
+
+@pytest.mark.parametrize("index", [0, 1, 2, 9])
+def test_a_muse_pm_choice_sends_the_unchanged_pm_prompt_and_role_prompt(monkeypatch, index):
+    """Guardrail 1: no change to the PM prompt, role file or budgets. The
+    fixtures pin today's prompt and role prompt (budgets rendered in) byte
+    for byte; a Muse run must be handed exactly those."""
+    fixtures = PM_FIXTURE_TASK.parent
+    task = json.loads(PM_FIXTURE_TASK.read_text())
+    task["step"] = {"index": index, "label": step_agent.steps.STEP_BY_INDEX[index]["label"]}
+    task["item"]["providerChoices"] = {str(index): "muse"}
+    calls = []
+    monkeypatch.setattr(step_agent, "run_agent", _pm_replies(calls, [json.dumps({"summary": "done"})]))
+
+    execute(task)
+
+    assert [c["provider"] for c in calls] == ["muse"]
+    assert calls[0]["prompt"] == (fixtures / f"step_{index}.txt").read_text()
+    assert calls[0]["append_system"] == (fixtures / "role_prompt.txt").read_text()
+
+
+def test_a_muse_pm_reply_with_no_artifact_still_records_the_provider(monkeypatch):
+    calls = []
+    monkeypatch.setattr(step_agent, "run_agent", _pm_replies(calls, [json.dumps({"summary": "done", "artifact_md": ""})]))
+
+    result = execute(_pm_task(OUTCOME_LABEL, {"0": "muse"}))
+
+    assert result["artifacts"] == {"provider": "muse", "command_id": "muse-cmd-1"}
+
+
+@pytest.mark.parametrize("label", [OUTCOME_LABEL, "Summarize reviews & recommend"])
+def test_a_pm_step_with_no_choice_ignores_a_muse_persona(monkeypatch, muse_smoke_test_personas, label):
+    """Guardrail: no choice is today's routing — a persona mapped to Muse
+    never moves a PM step."""
+    assert step_agent.provider_for(muse_smoke_test_personas) == "muse"
+    calls = []
+    monkeypatch.setattr(step_agent, "run_agent", _pm_replies(calls, [json.dumps({"summary": "done"})]))
+    task = _pm_task(label)
+    task["item"]["personas"] = muse_smoke_test_personas
+
+    result = execute(task)
+
+    assert [c["provider"] for c in calls] == [None]
+    assert result["artifacts"]["provider"] == "claude"
+
+
+def test_an_over_budget_pm_reply_fails_the_same_on_muse_as_on_claude(monkeypatch):
+    """Metric 5: one stub harness, run as each provider. A Muse reply goes
+    through the same parse and validate_within_budget as a Claude one."""
+    label = "Define how we measure success"
+    key = pm_steps.LINE_BUDGETED_STEPS[label]
+    over = "\n".join(f"{n}. line {n}" for n in range(1, pm_steps.LINE_LIMITS[key] + 2))
+    reply = json.dumps({"summary": "metric", "patch": {key: over}})
+    failures = {}
+    for choice in ("claude", "muse"):
+        calls = []
+        monkeypatch.setattr(step_agent, "run_agent", _pm_replies(calls, [reply]))
+        with pytest.raises(Exception) as rejected:
+            execute(_pm_task(label, {"1": choice}))
+        assert [c["provider"] for c in calls] == [choice, choice]
+        failures[choice] = (type(rejected.value), str(rejected.value))
+    assert failures["muse"] == failures["claude"]
+    # And it is the budget rejection, not some other failure.
+    with pytest.raises(pm_steps.FieldOverBudgetError) as budget:
+        pm_steps.validate_within_budget(json.loads(reply), label, _pm_task(label)["item"])
+    assert str(budget.value) in failures["claude"][1]
 
 
 # ---- provider lock (HZ-117): closes the bare-FARM_PROVIDER hole ----

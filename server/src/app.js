@@ -2590,6 +2590,44 @@ export function buildApp({ logger = true, onRoute = null } = {}) {
     },
   )
 
+  // HZ-370: the project's default "Runs on" for one step (Admin), used when an
+  // item has no choice of its own — including steps 0-2, which run before
+  // anyone opens the item. PIN-gated like /autopilot, checked before the
+  // lookup. Only steps domain/steps.json marks providerOverrideEligible take
+  // one: deploy and gates are a 400 and nothing is saved. PUT because it sets
+  // a value idempotently, like the item route.
+  fastify.put(
+    '/api/projects/:id/step-providers/:stepIndex',
+    {
+      schema: {
+        security: HUMAN_GATE_SECURITY,
+        params: {
+          type: 'object',
+          required: ['id', 'stepIndex'],
+          properties: { id: { type: 'integer', minimum: 1 }, stepIndex: { type: 'integer', minimum: 0 } },
+        },
+        body: {
+          type: 'object',
+          required: ['provider'],
+          // propertyNames, not additionalProperties: false, which Fastify's
+          // ajv strips silently — an extra key is refused outright.
+          propertyNames: { enum: ['provider'] },
+          properties: { provider: { type: 'string', enum: ['default', ...store.STEP_PROVIDERS] } },
+        },
+        response: { 200: OK_OBJECT, 400: ERROR_OBJECT, 401: ERROR_OBJECT, 404: ERROR_OBJECT },
+      },
+    },
+    (request, reply) => {
+      if (!humanAuthorized(request, reply)) return
+      const { id, stepIndex } = request.params
+      const result = store.setProjectStepProvider(id, stepIndex, request.body.provider, actorOf(request))
+      if (result.error === 'not_found') return reply.code(404).send({ error: 'Project not found' })
+      if (result.error) return reply.code(400).send({ error: result.error })
+      broadcast()
+      return { ok: true, projectId: id, stepIndex, old: result.old, new: result.new, ...(result.unchanged ? { unchanged: true } : {}) }
+    },
+  )
+
   // HZ-274: the WhatsApp kill switch. The concierge forwards
   // 'autopilot off <project>' here; turning Autopilot on or to shadow stays
   // Admin + PIN only. There is no mode field — this route can only write

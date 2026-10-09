@@ -13,12 +13,14 @@ import {
   revokeApiToken,
   setProjectEnabled,
   setProjectAutopilot,
+  setProjectStepProvider,
   saveRepoChecks,
   saveRepoMarks,
   getRepoCheckDefaults,
   getRepoWebhooks,
   fixRepoWebhook,
 } from '../api'
+import { STEPS } from '../../../domain/js/lifecycle.js'
 import { BackIcon, GithubIcon, LockIcon } from './icons'
 import DeployTargetOverrides from './DeployTargetOverrides'
 import { WEBHOOK_IMPACT, repoHasDeployTarget, webhookImpact } from '../domain/webhookImpact'
@@ -1038,6 +1040,97 @@ function ProjectAutopilot({ project }) {
   )
 }
 
+// HZ-370: the project's default "Runs on" per step, for items with no choice
+// of their own — steps 0-2 run before anyone opens a new item. Only steps
+// domain/steps.json marks providerOverrideEligible get a select, so deploy
+// has none (and the server refuses it anyway). Saving asks for the gate PIN
+// like Autopilot; the select shows the server's value, so a refused PIN
+// leaves it as it was.
+const STEP_PROVIDER_OPTIONS = [
+  { value: 'default', label: 'Default' },
+  { value: 'claude', label: 'Claude' },
+  { value: 'muse', label: 'Muse' },
+]
+const PROVIDER_ELIGIBLE_STEPS = STEPS.map((step, index) => ({ ...step, index })).filter(
+  (step) => step.kind === 'agent' && step.providerOverrideEligible,
+)
+
+function ProjectStepProviders({ project }) {
+  const [pending, setPending] = useState(null)
+  const [pin, setPin] = useState('')
+  const [error, setError] = useState(null)
+  const [busy, setBusy] = useState(false)
+  const savedFor = (index) => project.providerDefaults?.[index] ?? 'default'
+
+  const cancel = () => {
+    setPending(null)
+    setPin('')
+    setError(null)
+  }
+
+  const submit = async (e) => {
+    e.preventDefault()
+    if (!pin || busy) return
+    setBusy(true)
+    setError(null)
+    try {
+      await setProjectStepProvider(project.id, pending.index, pending.provider, pin)
+      setPending(null)
+    } catch (err) {
+      setError(err.status === 401 ? 'Gate PIN incorrect' : err.message)
+    } finally {
+      setPin('')
+      setBusy(false)
+    }
+  }
+
+  return (
+    <div className="project-autopilot">
+      <div>Runs on</div>
+      {PROVIDER_ELIGIBLE_STEPS.map((step) => (
+        <label key={step.index} className="project-autopilot__row">
+          <span>{step.label}</span>
+          <select
+            className="field__input"
+            aria-label={`${project.name} ${step.label} Runs on`}
+            value={savedFor(step.index)}
+            onChange={(e) =>
+              e.target.value === savedFor(step.index) ? cancel() : setPending({ index: step.index, provider: e.target.value })
+            }
+          >
+            {STEP_PROVIDER_OPTIONS.map((o) => (
+              <option key={o.value} value={o.value}>
+                {o.label}
+              </option>
+            ))}
+          </select>
+        </label>
+      ))}
+      {pending && (
+        <form className="project-block__add" onSubmit={submit}>
+          <input
+            className="field__input"
+            type="password"
+            autoComplete="off"
+            aria-label={`Gate PIN to set ${project.name} ${STEPS[pending.index].label} to ${pending.provider}`}
+            placeholder={`Gate PIN to set ${STEPS[pending.index].label} to ${pending.provider}`}
+            value={pin}
+            onChange={(e) => setPin(e.target.value)}
+            autoFocus
+          />
+          <button type="submit" className="composer__submit" style={{ background: 'var(--primary)' }} disabled={!pin || busy}>
+            {busy ? 'Saving…' : 'Save'}
+          </button>
+          <button type="button" className="composer__cancel" onClick={cancel}>
+            Cancel
+          </button>
+        </form>
+      )}
+      {error && <div className="gh-error">{error}</div>}
+    </div>
+  )
+}
+
 function ProjectPanel({ project, syncRepos, deployTargets }) {
   const [repo, setRepo] = useState('')
   const [error, setError] = useState(null)
@@ -1083,6 +1176,7 @@ function ProjectPanel({ project, syncRepos, deployTargets }) {
         <ProjectEnabledToggle project={project} />
       </div>
       <ProjectAutopilot project={project} />
+      <ProjectStepProviders project={project} />
       {project.repos.map((r) => {
         const webhook = Object.hasOwn(webhooks, r.repo) ? webhooks[r.repo] : null
         return (

@@ -133,8 +133,11 @@ STEP_CONFIG = {
 
 # HZ-369: these steps follow ONLY the owner's per-step choice. A persona's
 # provider and a bare FARM_PROVIDER never move them off today's routing.
-# Implement with no choice keeps the HZ-117 lock at runtime.
-CHOICE_ONLY_PROVIDER_STEPS = frozenset({QA_PLAN_LABEL, IMPLEMENT_LABEL, REVIEW_LABEL})
+# Implement with no choice keeps the HZ-117 lock at runtime. HZ-370: the PM
+# steps too — the choice (item, else project default) or today's routing.
+CHOICE_ONLY_PROVIDER_STEPS = frozenset(
+    {QA_PLAN_LABEL, IMPLEMENT_LABEL, REVIEW_LABEL} | {step["label"] for step in steps.STEPS if step["runsIn"] == "pm"}
+)
 
 # HZ-158: the ONLY steps whose turn-capped reply may be salvaged — a reply cut
 # off mid-string, with every required key present, is accepted instead of
@@ -1737,16 +1740,30 @@ def _execute_pm(task: dict) -> dict:
     # own domain/steps.json agent (PM, or Architect for "Set guardrails").
     model_agent = model_agent_for_step(steps.by_label(label)["agent"])
     persona = model_persona(STEP_CONFIG[label][3], item_personas(item))
+    # HZ-370: a PM step is in CHOICE_ONLY_PROVIDER_STEPS — the owner's choice
+    # (the server has already merged in the project default) or None, i.e.
+    # today's routing. A persona's provider never moves it. No cwd for either
+    # provider: a PM step has no workspace, Muse included.
+    choice = (
+        step_provider_choice(item, task["step"].get("index"))
+        if steps.provider_override_eligible(steps.STEPS, label)
+        else None
+    )
+    # The reply that parsed, so a retry records its own provenance (HZ-102).
+    produced: dict = {}
 
     def call(text: str) -> dict:
-        return run_agent(
+        nonlocal produced
+        produced = run_agent(
             text,
             agent=model_agent,
             step=label,
             persona=persona,
             session_id=None,
             append_system=pm_steps.ROLE_PROMPT,
+            provider=choice,
         )
+        return produced
 
     reply = call(prompt)
 
@@ -1764,7 +1781,12 @@ def _execute_pm(task: dict) -> dict:
         retry_once,
         validate=lambda parsed: pm_steps.validate_within_budget(parsed, label, item),
     )
-    return pm_steps.finish(task, summary, patch, artifact, notes)
+    outcome = pm_steps.finish(task, summary, patch, artifact, notes)
+    # HZ-370: step_run.provider is recorded from artifacts.provider, so a
+    # reply with no artifact still gets an artifacts dict to carry it.
+    if produced.get("provider"):
+        outcome["artifacts"] = {**outcome.get("artifacts", {}), **_provenance(produced)}
+    return outcome
 
 
 def _execute(task: dict, guard: HandoffGuard) -> dict:
