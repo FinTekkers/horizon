@@ -130,6 +130,8 @@ const ALLOWLIST_NOTE_STEPS = new Set([IMPLEMENT_STEP_INDEX, REVIEW_STEP_INDEX])
 
 function StepProviderPicker({ item, index, status, output, onSetStepProvider }) {
   const saved = item.providerChoices?.[index] ?? 'default'
+  // HZ-370: the project's default for this step, used when the item has none.
+  const projectDefault = item.projectProviderDefaults?.[index]
   // The value being saved, shown until the item's stream carries it back (or
   // the save fails), so the select doesn't flick back to the old value.
   const [pending, setPending] = useState(null)
@@ -145,7 +147,7 @@ function StepProviderPicker({ item, index, status, output, onSetStepProvider }) 
     return ran ? <div className="step-card__provider">Ran on {ran}</div> : null
   }
   if (item.activeRun?.step_index === index) {
-    return <div className="step-card__provider">Runs on {PROVIDER_LABELS[saved] ?? 'Claude'}</div>
+    return <div className="step-card__provider">Runs on {PROVIDER_LABELS[saved] ?? PROVIDER_LABELS[projectDefault] ?? 'Claude'}</div>
   }
   if (isAbandoned(item) || !onSetStepProvider) return null
 
@@ -172,7 +174,7 @@ function StepProviderPicker({ item, index, status, output, onSetStepProvider }) 
       >
         {PROVIDER_OPTIONS.map((o) => (
           <option key={o.value} value={o.value}>
-            {o.label}
+            {o.value === 'default' && PROVIDER_LABELS[projectDefault] ? `Default (${PROVIDER_LABELS[projectDefault]}, project)` : o.label}
           </option>
         ))}
       </select>

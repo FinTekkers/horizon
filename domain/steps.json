@@ -1,9 +1,9 @@
 {
   "phases": ["Plan", "Technical Plan", "Execute", "Deploy", "Review"],
   "steps": [
-    { "phase": 0, "kind": "agent", "agent": "PM", "label": "Define the outcome", "runsIn": "pm" },
-    { "phase": 0, "kind": "agent", "agent": "PM", "label": "Define how we measure success", "runsIn": "pm" },
-    { "phase": 0, "kind": "agent", "agent": "Architect", "label": "Set guardrails", "runsIn": "pm" },
+    { "phase": 0, "kind": "agent", "agent": "PM", "label": "Define the outcome", "runsIn": "pm", "providerOverrideEligible": true },
+    { "phase": 0, "kind": "agent", "agent": "PM", "label": "Define how we measure success", "runsIn": "pm", "providerOverrideEligible": true },
+    { "phase": 0, "kind": "agent", "agent": "Architect", "label": "Set guardrails", "runsIn": "pm", "providerOverrideEligible": true },
     { "phase": 0, "kind": "gate", "gate": "required", "label": "Approve & prioritize this work" },
     {
       "phase": 1,
@@ -56,7 +56,7 @@
       "timeoutS": 1140,
       "requires": ["Draft implementation plan"]
     },
-    { "phase": 1, "kind": "agent", "agent": "PM", "label": "Summarize reviews & recommend", "runsIn": "pm" },
+    { "phase": 1, "kind": "agent", "agent": "PM", "label": "Summarize reviews & recommend", "runsIn": "pm", "providerOverrideEligible": true },
     { "phase": 1, "kind": "gate", "gate": "required", "label": "Review before execution" },
     {
       "phase": 2,

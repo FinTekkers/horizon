@@ -50,6 +50,8 @@ import {
   CHECKS_PASSED_SHA_KEY,
   CHECKS_FINISHED_AT_KEY,
   stepSlug,
+  providerDefaultsFromRow,
+  resolveStepProviders,
 } from './store.js'
 import { createMockPr, createDeployRelease, postIssueComment, syncIssueBodyFields, createPrFromBranch, getPrHeadSha } from './github.js'
 import { PHASES } from '../../domain/js/lifecycle.js'
@@ -1214,7 +1216,10 @@ async function dispatchToFarm(id, stepIndex, runId, attempt, scope) {
   if (stepIndex === REVIEW_STEP_INDEX) artifacts.push(buildStoredResultsInput(id))
   // HZ-207: every farm step carries its own project; farmd refuses one
   // without a project or repo and never falls back to a global project.
-  const project = item.project_id == null ? null : db.prepare('SELECT id, name FROM project WHERE id = ?').get(item.project_id)
+  const project =
+    item.project_id == null
+      ? null
+      : db.prepare('SELECT id, name, provider_defaults_json FROM project WHERE id = ?').get(item.project_id)
   // HZ-188: an implement run on a PR GitHub reports as conflicted (a
   // resolve-conflicts escalation, or any other send-back while main has moved
   // underneath it) must start on a branch that already has origin/main merged
@@ -1248,8 +1253,10 @@ async function dispatchToFarm(id, stepIndex, runId, attempt, scope) {
       issue: item.issue,
       personas: item.personas,
       // HZ-357: copied into the task here, so a choice changed after this
-      // hand-off applies to the next dispatch, never to this run.
-      providerChoices: item.providerChoices,
+      // hand-off applies to the next dispatch, never to this run. HZ-370:
+      // merged with the project's defaults (the item's choice wins), copied
+      // the same way; a step with neither keeps today's routing.
+      providerChoices: resolveStepProviders(item.providerChoices, providerDefaultsFromRow(project)),
       ...releaseFields,
     },
     step: { index: stepIndex, label: step.label, agent: step.agent },

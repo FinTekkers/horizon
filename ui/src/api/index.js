@@ -26,6 +26,7 @@ export const {
   getDeployBlock,
   setProjectEnabled,
   setProjectAutopilot,
+  setProjectStepProvider,
   saveToken,
   createProject,
   addRepoToProject,

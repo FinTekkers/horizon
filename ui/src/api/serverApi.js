@@ -524,6 +524,23 @@ export function setPersona(id, agent, persona) {
 // HZ-357: the "Runs on" choice for one step ('default' | 'claude' | 'muse').
 // Rejects with the server's error code (provider_not_eligible, closed, …) so
 // the picker can say why; the saved choice comes back on the board stream.
+// HZ-370: a project's default "Runs on" for one step; PIN-gated like
+// setProjectAutopilot, so a 401 carries its status for the Admin message.
+export async function setProjectStepProvider(projectId, stepIndex, provider, pin) {
+  const res = await fetch(`${API_BASE}/projects/${encodeURIComponent(projectId)}/step-providers/${stepIndex}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json', 'x-human-key': pin },
+    body: JSON.stringify({ provider }),
+  })
+  const data = await res.json().catch(() => ({}))
+  if (!res.ok) {
+    const err = new Error(data.error || `HTTP ${res.status}`)
+    err.status = res.status
+    throw err
+  }
+  return data
+}
+
 export function setStepProvider(id, stepIndex, provider) {
   return putJson(`/items/${id}/steps/${stepIndex}/provider`, { provider })
 }

@@ -342,6 +342,7 @@ export function listProjects({ checks = true } = {}) {
     enabled: !!p.enabled,
     autopilot: p.autopilot,
     autopilotEvents: selectAutopilotEvents.all(p.id),
+    providerDefaults: providerDefaultsFromRow(p),
     repos: repos
       .filter((r) => r.project_id === p.id)
       .map((r) => ({ repo: r.repo, prefix: r.prefix, ...(checks ? { checks: repoChecks(r), marks: repoMarks(r) } : {}) })),
@@ -1020,6 +1021,8 @@ function stateSince(row, activeRun, gateAction) {
   return toIsoUtc(row.last_run_ended_at ?? row.created_at)
 }
 
+const selectProjectProviderDefaults = db.prepare('SELECT provider_defaults_json FROM project WHERE id = ?')
+
 function itemView(row, { stepOutputs: withStepOutputs = true } = {}) {
   const activeRun = withRunState(selectActiveRun.get(row.id) || null)
   const gateFields = itemGateFields(row)
@@ -1041,6 +1044,9 @@ function itemView(row, { stepOutputs: withStepOutputs = true } = {}) {
     deploy_queue: deployQueueStateFor(row.id),
     personas: personasFromRow(row),
     providerChoices: providerChoicesFromRow(row),
+    // HZ-370: for the item page's "Default" label only; the farm is sent the
+    // merged map (resolveStepProviders) at dispatch instead.
+    projectProviderDefaults: providerDefaultsFromRow(row.project_id == null ? null : selectProjectProviderDefaults.get(row.project_id)),
     cursor: row.cursor,
     currentStep: currentStepOf(row),
     paused: !!row.paused,
@@ -1124,10 +1130,27 @@ function providerOverrideEligible(stepIndex) {
 // The item's { "<step index>": provider } map. Anything a reader must not act
 // on — junk JSON, an unknown provider, a step that isn't eligible — is dropped.
 export function providerChoicesFromRow(row) {
-  if (typeof row?.provider_choices_json !== 'string' || !row.provider_choices_json.trim()) return {}
+  return providerMapFromJson(row?.provider_choices_json)
+}
+
+// HZ-370: the project's per-step default, the same shape and filter as an
+// item's choices — so a stored default for deploy is never acted on.
+export function providerDefaultsFromRow(row) {
+  return providerMapFromJson(row?.provider_defaults_json)
+}
+
+// HZ-370: the providers the farm is sent for an item — per step, the item's
+// choice, else the project's default. A step with neither gets no key, which
+// is today's routing. Pure: the orchestrator calls it at dispatch.
+export function resolveStepProviders(itemChoices, projectDefaults) {
+  return { ...(projectDefaults ?? {}), ...(itemChoices ?? {}) }
+}
+
+function providerMapFromJson(json) {
+  if (typeof json !== 'string' || !json.trim()) return {}
   let parsed
   try {
-    parsed = JSON.parse(row.provider_choices_json)
+    parsed = JSON.parse(json)
   } catch {
     return {}
   }
@@ -1167,6 +1190,34 @@ export function setStepProvider(id, stepIndex, provider, actor = 'You') {
   })
   notify()
   return { ok: true }
+}
+
+// HZ-370: the project's default for one step, set in Admin. The ONLY writer
+// of project.provider_defaults_json; its one caller is the PIN-gated route in
+// app.js. Refuses, writing nothing, a step that isn't eligible — deploy
+// included — so the rule holds on the server, not only in the UI. The value
+// and its audit row land in one transaction; a same-value write records
+// nothing. "default" deletes the key, and an empty map is stored as NULL.
+export function setProjectStepProvider(projectId, stepIndex, provider, who) {
+  if (!providerOverrideEligible(stepIndex)) return { error: 'provider_not_eligible' }
+  if (provider !== 'default' && !STEP_PROVIDERS.includes(provider)) return { error: 'bad_provider' }
+  const result = db.transaction(() => {
+    const row = db.prepare('SELECT provider_defaults_json FROM project WHERE id = ?').get(projectId)
+    if (!row) return { error: 'not_found' }
+    const defaults = providerDefaultsFromRow(row)
+    const old = defaults[stepIndex] ?? 'default'
+    if (old === provider) return { ok: true, old, new: provider, unchanged: true }
+    if (provider === 'default') delete defaults[stepIndex]
+    else defaults[stepIndex] = provider
+    const json = Object.keys(defaults).length > 0 ? JSON.stringify(defaults) : null
+    db.prepare('UPDATE project SET provider_defaults_json = ? WHERE id = ?').run(json, projectId)
+    db.prepare(
+      "INSERT INTO project_event (project_id, kind, old_value, new_value, who) VALUES (?, 'step_provider', ?, ?, ?)",
+    ).run(projectId, `${stepIndex}:${old}`, `${stepIndex}:${provider}`, who)
+    return { ok: true, old, new: provider }
+  })()
+  if (result.ok && !result.unchanged) notify()
+  return result
 }
 
 // Human actions are only valid against an enabled project's items (HZ-207;

@@ -507,13 +507,19 @@ test('SHAPE PIN (JS): agent and gate are ABSENT on the opposite kind, never null
   }
 })
 
-test('SHAPE PIN (JS): farm-only fields ride along on farm-lane steps, and are absent on the PM lane', () => {
+test('SHAPE PIN (JS): farm-only fields ride along on farm-lane steps, and only providerOverrideEligible on the PM lane', () => {
   const FARM_ONLY = ['workspaceMutating', 'providerOverrideEligible', 'providerLocked', 'maxTurns', 'timeoutS']
+  // HZ-370: a PM step takes the owner's provider choice, and nothing else.
+  const PM_ALLOWED = ['providerOverrideEligible']
   for (const step of binding.STEPS) {
     if (step.runsIn === 'farm') {
       for (const field of FARM_ONLY) assert.ok(field in step, `farm step "${step.label}" is missing ${field}`)
     } else if (step.runsIn === 'pm') {
-      for (const field of FARM_ONLY) assert.ok(!(field in step), `PM step "${step.label}" declares ${field}`)
+      for (const field of FARM_ONLY) {
+        if (PM_ALLOWED.includes(field)) continue
+        assert.ok(!(field in step), `PM step "${step.label}" declares ${field}`)
+      }
+      assert.equal(step.providerOverrideEligible, true, `PM step "${step.label}" is not provider-override eligible`)
     }
   }
 })
@@ -553,12 +559,14 @@ test('SHAPE PIN (Python): agent-kind only — no gate ever reaches it', () => {
   assert.equal(pythonSteps.length, binding.STEPS.filter((s) => s.kind === 'agent').length)
 })
 
-test('SHAPE PIN (Python): farm-only fields are None on the PM lane, never absent', () => {
-  const FARM_ONLY = ['workspaceMutating', 'providerOverrideEligible', 'providerLocked', 'maxTurns', 'timeoutS']
+test('SHAPE PIN (Python): farm-only fields are None on the PM lane, never absent — providerOverrideEligible is True', () => {
+  const FARM_ONLY = ['workspaceMutating', 'providerLocked', 'maxTurns', 'timeoutS']
   const pmEntries = pythonSteps.filter((s) => s.runsIn === 'pm')
   assert.ok(pmEntries.length > 0, 'sanity: the farm view should carry PM-lane entries too, for lane routing')
   for (const entry of pmEntries) {
     for (const field of FARM_ONLY) assert.equal(entry[field], null, `${entry.label}.${field} should be None on the PM lane`)
+    // HZ-370: the PM steps take the owner's provider choice.
+    assert.equal(entry.providerOverrideEligible, true, `${entry.label}.providerOverrideEligible should be True`)
   }
 })
 

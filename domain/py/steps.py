@@ -111,8 +111,8 @@ def _project_farm_view(steps: list[dict]) -> list[dict]:
     PM lane and the farm lane — farmd's /steps/run needs runsIn for BOTH to
     route correctly), with every field this module needs to derive lane
     routing, budgets and provider rules. The farm-only fields are None on
-    runsIn 'pm' entries, which never reach step_agent.py's budget/provider
-    lookups. `requires` is deliberately dropped: it gates a server-side
+    runsIn 'pm' entries, which never reach step_agent.py's budget lookups —
+    except providerOverrideEligible, which a PM step may declare (HZ-370). `requires` is deliberately dropped: it gates a server-side
     dispatch decision, never a farm one."""
     return [
         {

@@ -187,6 +187,15 @@ export async function setProjectAutopilot() {
   throw new Error('Projects are not available in mock mode')
 }
 
+// Mirrors store.setProjectStepProvider's eligibility rule, read from
+// domain/steps.json; projects themselves need the server.
+export async function setProjectStepProvider(projectId, stepIndex) {
+  if (STEPS[stepIndex]?.kind !== 'agent' || !STEPS[stepIndex].providerOverrideEligible) {
+    throw new Error('provider_not_eligible')
+  }
+  throw new Error('Projects are not available in mock mode')
+}
+
 export async function saveToken() {
   throw new Error('GitHub sync is not available in mock mode')
 }

@@ -62,6 +62,21 @@ def test_deploy_stays_provider_locked_and_ineligible():
     assert entry["providerOverrideEligible"] is False
 
 
+def test_the_pm_steps_are_exactly_steps_0_1_2_and_9():
+    assert [entry["index"] for entry in steps.STEPS if entry["runsIn"] == "pm"] == [0, 1, 2, 9]
+
+
+@pytest.mark.parametrize("index", [0, 1, 2, 9])
+def test_the_pm_steps_are_provider_override_eligible(index):
+    """HZ-370: the owner may pick Muse for the PM steps; budgets stay pm_steps'."""
+    entry = steps.STEP_BY_INDEX[index]
+    label = entry["label"]
+    assert entry["runsIn"] == "pm"
+    assert entry["providerOverrideEligible"] is True
+    assert entry["providerLocked"] is None
+    assert steps.provider_override_eligible(steps.STEPS, label) is True
+
+
 def test_by_label_raises_key_error_naming_the_missing_label():
     with pytest.raises(KeyError, match="Nonexistent Step"):
         steps.by_label("Nonexistent Step")
