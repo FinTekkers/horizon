@@ -50,7 +50,7 @@
       "label": "QA reviews the test plan",
       "runsIn": "farm",
       "workspaceMutating": false,
-      "providerOverrideEligible": false,
+      "providerOverrideEligible": true,
       "providerLocked": false,
       "maxTurns": 40,
       "timeoutS": 1140,
@@ -65,8 +65,8 @@
       "label": "Specialist agent implements",
       "runsIn": "farm",
       "workspaceMutating": true,
-      "providerOverrideEligible": false,
-      "providerLocked": true,
+      "providerOverrideEligible": true,
+      "providerLocked": false,
       "maxTurns": 160,
       "timeoutS": 2700
     },
@@ -77,7 +77,7 @@
       "label": "Automated review (code + QA)",
       "runsIn": "farm",
       "workspaceMutating": true,
-      "providerOverrideEligible": false,
+      "providerOverrideEligible": true,
       "providerLocked": false,
       "maxTurns": 60,
       "timeoutS": 1800

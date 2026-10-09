@@ -157,6 +157,35 @@ delegation. The farm runs agents in `~/.horizon-farm/workspaces/...`, so this
 must be resolved — via `--trust-workspace`, `--workspace <PATH>`, or
 persistent trust — before the implement step depends on subagents.
 
+## Tool allowlist — ignored
+
+Muse ignores the farm's tool allowlist. `farm/providers/muse.py` accepts
+`allowed_tools` (every provider has the same signature) and drops it: the CLI
+has no `--allowedTools` equivalent (see the flag table above).
+
+Since HZ-369 the owner can pick Muse, per item, for "QA reviews the test
+plan" (step 8), "Specialist agent implements" (step 11) and "Automated review
+(code + QA)" (step 12). On 11 and 12 the farm's limits come from that
+allowlist — `IMPLEMENT_TOOLS` for implement, `PLANNER_TOOLS` for review, which
+is how HZ-30 keeps review read-only. On Muse neither limit applies, so a Muse
+review can edit the workspace. The item page says so under the step 11 and
+step 12 "Runs on" dropdowns.
+
+What still holds for a Muse build, exactly as for a Claude one:
+
+- the repo's checks run after implement, by the script, before any commit;
+- both review passes (code and QA) run, and `downgrade_unproven_findings`
+  judges their findings;
+- every human gate, including "Accept the code", still has to be approved.
+
+Step 12 never calls `finalize_branch`, so a stray edit made during review is
+not committed or pushed by that step; the next run's `prepare_branch` scrubs
+it.
+
+Steps 8, 11 and 12 follow only the owner's choice. A persona's provider or a
+bare `FARM_PROVIDER` never moves them, and implement with no choice stays
+locked to Claude (HZ-117). Deploy (step 14) can never run on Muse.
+
 ## What is still unverified
 
 - subscription tier / remaining budget / concurrent subagent limit

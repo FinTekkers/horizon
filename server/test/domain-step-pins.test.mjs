@@ -83,9 +83,9 @@ test('the farm-lane steps keep their turn budgets and provider rules', () => {
     'Plan options & trade-offs (pros / cons)': [40, 1140, false, true, false],
     'Draft implementation plan': [40, 1140, false, true, false],
     'Architecture review': [40, 1140, false, true, false],
-    'QA reviews the test plan': [40, 1140, false, false, false],
-    'Specialist agent implements': [160, 2700, true, false, true],
-    'Automated review (code + QA)': [60, 1800, true, false, false],
+    'QA reviews the test plan': [40, 1140, false, true, false],
+    'Specialist agent implements': [160, 2700, true, true, false],
+    'Automated review (code + QA)': [60, 1800, true, true, false],
     'Deploy the changes': [40, 900, false, false, true],
   }
   const farmSteps = STEPS.filter((s) => s.runsIn === 'farm')

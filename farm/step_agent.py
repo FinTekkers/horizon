@@ -101,6 +101,7 @@ IMPLEMENT_TOOLS = "Read,Glob,Grep,Edit,Write,Bash"
 # edits code — same read-only rationale as the reviewer, one step below.
 DEVOPS_TOOLS = "Read,Glob,Grep,Bash"
 
+QA_PLAN_LABEL = "QA reviews the test plan"
 IMPLEMENT_LABEL = "Specialist agent implements"
 REVIEW_LABEL = "Automated review (code + QA)"
 DEPLOY_LABEL = "Deploy the changes"
@@ -111,7 +112,7 @@ STEP_CONFIG = {
     "Plan options & trade-offs (pros / cons)": ("ensemble.md", True, PLANNER_TOOLS, None),
     "Draft implementation plan": ("eng_plan.md", True, PLANNER_TOOLS, None),
     "Architecture review": ("architect_review.md", True, PLANNER_TOOLS, None),
-    "QA reviews the test plan": ("qa.md", True, PLANNER_TOOLS, "qa"),
+    QA_PLAN_LABEL: ("qa.md", True, PLANNER_TOOLS, "qa"),
     IMPLEMENT_LABEL: ("eng_implement.md", False, IMPLEMENT_TOOLS, "eng"),
     # code_review.md is loaded here for the first (code) pass and composes the
     # item's ENG persona (it reviews the code as an engineer); qa_review.md is
@@ -125,6 +126,11 @@ STEP_CONFIG = {
     # never gets a persona composed in.
     DEPLOY_LABEL: ("devops.md", True, DEVOPS_TOOLS, None),
 }
+
+# HZ-369: these steps follow ONLY the owner's per-step choice. A persona's
+# provider and a bare FARM_PROVIDER never move them off today's routing.
+# Implement with no choice keeps the HZ-117 lock at runtime.
+CHOICE_ONLY_PROVIDER_STEPS = frozenset({QA_PLAN_LABEL, IMPLEMENT_LABEL, REVIEW_LABEL})
 
 # HZ-158: the ONLY steps whose turn-capped reply may be salvaged — a reply cut
 # off mid-string, with every required key present, is accepted instead of
@@ -1709,13 +1715,17 @@ def _execute(task: dict, guard: HandoffGuard) -> dict:
         role = compose_role(role, persona_agent, personas.get(persona_agent))
     # HZ-357: the owner's per-step choice wins over the persona map, which wins
     # over FARM_PROVIDER (run_agent's default). Neither applies to a step that
-    # isn't provider_override_eligible, so implement and deploy stay locked.
+    # isn't provider_override_eligible, so deploy stays locked. HZ-369: a
+    # CHOICE_ONLY_PROVIDER_STEPS step takes the choice alone, and implement
+    # with no choice is locked exactly as before.
     override_eligible = steps.provider_override_eligible(steps.STEPS, label)
-    provider_override = (
-        (step_provider_choice(item, task["step"].get("index")) or provider_for(personas))
-        if override_eligible
-        else None
-    )
+    choice = step_provider_choice(item, task["step"].get("index")) if override_eligible else None
+    if label in CHOICE_ONLY_PROVIDER_STEPS:
+        provider_override = choice
+        if label == IMPLEMENT_LABEL and choice is None:
+            provider_locked = True
+    else:
+        provider_override = (choice or provider_for(personas)) if override_eligible else None
     # HZ-192: who this step's run_agent() calls are; run_agent() resolves the
     # model from these, so it is never chosen here. The agent comes from the
     # step table, like the budget above, not from the task payload.
@@ -1778,6 +1788,7 @@ def _execute(task: dict, guard: HandoffGuard) -> dict:
                     max_turns=max_turns,
                     timeout_s=timeout_s,
                     allowed_tools=tools,
+                    provider=provider_override,
                     provider_locked=provider_locked,
                 )
         except pause.PauseRequested as exc:
@@ -1898,6 +1909,10 @@ def _execute(task: dict, guard: HandoffGuard) -> dict:
             artifacts.update(fix_diff_report(ws, scope.get("base_sha")))
         if manual_checks:
             artifacts["manual_checks"] = manual_checks
+        # HZ-369: what ran, like the generic path below, so step_run.provider
+        # is set for implement too.
+        if override_eligible and reply.get("provider"):
+            artifacts.update(_provenance(reply))
         # finalize_branch returns branch/files_changed, not an artifact_md, so
         # the summary is this path's only note surface.
         # HZ-349: the branch run's lines join the summary (step 12 reads it)
@@ -1906,6 +1921,8 @@ def _execute(task: dict, guard: HandoffGuard) -> dict:
         checked = " · ".join([check_note, *(_recording()["branch_notes"] or [])])
         summary = f"{summary[: max(SUMMARY_MAX_CHARS - len(checked) - 3, 0)]} · {checked}"[:SUMMARY_MAX_CHARS]
         summary = stamp_notes(summary, notes, SUMMARY_MAX_CHARS)
+        if provider_override:
+            log(f"HZ-102 provenance: provider={reply.get('provider')} command_id={reply.get('command_id')}")
         return {"summary": summary, "artifacts": artifacts}
 
     # Automated review (HZ-30): two independent read-only passes over the
@@ -1963,7 +1980,7 @@ def _execute(task: dict, guard: HandoffGuard) -> dict:
             + "\n\nRespond with ONLY the JSON object described in your role instructions."
         )
 
-        code_parsed, _code_provenance, code_notes = _run_and_parse(
+        code_parsed, code_provenance, code_notes = _run_and_parse(
             prompt,
             agent=model_agent,
             step=label,
@@ -1976,6 +1993,7 @@ def _execute(task: dict, guard: HandoffGuard) -> dict:
             required_keys=("verdict",),
             item_id=item["id"],
             guard=guard,
+            provider=provider_override,
             provider_locked=provider_locked,
         )
 
@@ -1984,7 +2002,7 @@ def _execute(task: dict, guard: HandoffGuard) -> dict:
         # the work as the engineer who wrote it.
         qa_role = (ROLES / "qa_review.md").read_text()
         qa_role = compose_role(qa_role, REVIEW_QA_PERSONA_AGENT, personas.get(REVIEW_QA_PERSONA_AGENT))
-        qa_parsed, _qa_provenance, qa_notes = _run_and_parse(
+        qa_parsed, qa_provenance, qa_notes = _run_and_parse(
             prompt,
             agent=model_agent,
             step=label,
@@ -1997,8 +2015,16 @@ def _execute(task: dict, guard: HandoffGuard) -> dict:
             required_keys=("verdict",),
             item_id=item["id"],
             guard=guard,
+            provider=provider_override,
             provider_locked=provider_locked,
         )
+
+        # HZ-369: one step run records one provider. Passes that name different
+        # ones fail the step rather than record a half-true provenance; a pass
+        # that names none (an older reply) never trips this.
+        code_ran_on, qa_ran_on = code_provenance.get("provider"), qa_provenance.get("provider")
+        if code_ran_on and qa_ran_on and code_ran_on != qa_ran_on:
+            raise AgentError(f"review passes ran on different providers: code={code_ran_on} qa={qa_ran_on}")
 
         evidence = {
             "guardrails": item.get("guardrails") or "",
@@ -2035,16 +2061,18 @@ def _execute(task: dict, guard: HandoffGuard) -> dict:
             summary = f"addressed feedback (“{feedback[0].get('message', '')[:80]}”) — {summary}"[:SUMMARY_MAX_CHARS]
         # Both passes' notes, in the order they ran.
         notes = code_notes + qa_notes
-        return {
-            "summary": stamp_notes(summary, notes, SUMMARY_MAX_CHARS),
-            "artifacts": {
-                "artifact_md": stamp_notes_artifact(
-                    artifact_md[:WRITE_ARTIFACT_SANITY_CEILING_CHARS], notes, WRITE_ARTIFACT_SANITY_CEILING_CHARS
-                ),
-                "verdict": verdict,
-                **review_extra,
-            },
+        review_artifacts = {
+            "artifact_md": stamp_notes_artifact(
+                artifact_md[:WRITE_ARTIFACT_SANITY_CEILING_CHARS], notes, WRITE_ARTIFACT_SANITY_CEILING_CHARS
+            ),
+            "verdict": verdict,
+            **review_extra,
         }
+        # HZ-369: what ran, from the code pass (the QA pass matched it above).
+        if override_eligible and code_ran_on:
+            review_artifacts["provider"] = code_ran_on
+            review_artifacts["command_id"] = code_provenance.get("command_id")
+        return {"summary": stamp_notes(summary, notes, SUMMARY_MAX_CHARS), "artifacts": review_artifacts}
 
     # Deploy (HZ-22): the release is already published by the time this runs
     # (the JS orchestrator holds the GitHub token, not the farm — see

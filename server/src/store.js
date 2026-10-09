@@ -1116,7 +1116,7 @@ export const STEP_PROVIDERS = ['claude', 'muse']
 const PROVIDER_LABELS = { claude: 'Claude', muse: 'Muse' }
 
 // Only a step domain/steps.json marks providerOverrideEligible takes a choice;
-// the farm applies the same rule, and implement/deploy stay provider-locked.
+// the farm applies the same rule, and deploy stays provider-locked.
 function providerOverrideEligible(stepIndex) {
   return STEPS[stepIndex]?.kind === 'agent' && STEPS[stepIndex].providerOverrideEligible === true
 }

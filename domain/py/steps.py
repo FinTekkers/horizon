@@ -168,9 +168,11 @@ def budget_for_label(steps: list[dict], label: str) -> tuple[int, int]:
 def provider_override_eligible(steps: list[dict], label: str) -> bool:
     """Whether a persona-forced provider override (farm/personas.py's
     provider_for()) is honored for this step. HZ-102 guardrail: this must be
-    False for implement/deploy no matter what a persona maps to — enforced
-    here by construction (their table entries carry providerOverrideEligible:
-    false), not by a separate allowlist that could drift from STEPS."""
+    False for deploy no matter what a persona maps to — enforced here by
+    construction (its table entry carries providerOverrideEligible: false),
+    not by a separate allowlist that could drift from STEPS. HZ-369: QA plan
+    review, implement and review are eligible, but follow only the owner's
+    choice (farm/step_agent.py's CHOICE_ONLY_PROVIDER_STEPS)."""
     return bool(_find_by_label(steps, label)["providerOverrideEligible"])
 
 

@@ -51,7 +51,15 @@ def test_real_step_table_has_no_duplicate_labels():
 def test_by_label_resolves_a_real_farm_dispatched_step():
     entry = steps.by_label("Specialist agent implements")
     assert entry["runsIn"] == "farm"
+    # HZ-369: unlocked in the table; with no choice, step_agent locks it at runtime.
+    assert entry["providerLocked"] is False
+    assert entry["providerOverrideEligible"] is True
+
+
+def test_deploy_stays_provider_locked_and_ineligible():
+    entry = steps.by_label("Deploy the changes")
     assert entry["providerLocked"] is True
+    assert entry["providerOverrideEligible"] is False
 
 
 def test_by_label_raises_key_error_naming_the_missing_label():

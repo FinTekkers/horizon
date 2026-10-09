@@ -837,6 +837,7 @@ button { font-family: var(--font-sans); }
 .step-card__provider-select--override {
   border-color: var(--warning-ink); color: var(--warning-ink); background: var(--warning-bg); font-weight: 700;
 }
+.step-card__provider-note { font: 500 11.5px var(--font-sans); color: var(--muted); }
 .step-card__provider [role='alert'] { color: var(--danger-ink); }
 
 .btn-pr-review {
