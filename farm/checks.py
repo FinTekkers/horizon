@@ -150,8 +150,8 @@ def _run_bounded(cmd: list[str], ws: Path, timeout_s: float, env: dict[str, str]
 # passing tests bury the one `not ok`. The digest keeps the lines that say
 # what failed, the counts, and the last few lines for context.
 
-# Must leave room for the "repo checks failed (<cmd>):" prefix under the
-# server's /fail route limit (step_agent.ERROR_MAX_CHARS).
+# Must leave room for the headline line and the "(<cmd>)" line above it
+# under the server's /fail route limit (step_agent.ERROR_MAX_CHARS).
 DIGEST_MAX_CHARS = 1800
 DIGEST_TAIL_LINES = 40
 DIGEST_LINE_MAX_CHARS = 300
@@ -230,8 +230,9 @@ def failure_digest(output: str, max_chars: int = DIGEST_MAX_CHARS) -> str:
 # The step's event, the pause banner and the Autopilot ping show only the
 # start of a failed check's message, so its first line says what failed:
 # `<label>: N failed, M passed: file:line "title", :line "title"`.
-# server/src/caretakerActor.js reads that line back by CHECK_HEADLINE_PREFIX,
-# the same text as HEADLINE_PREFIX — keep the two in step.
+# HZ-373: when nothing parses, `<label> failed (exit N)` instead, so every
+# failed check has one. server/src/checkHeadline.js reads that line back by
+# CHECK_HEADLINE_PREFIX, the same text as HEADLINE_PREFIX — keep the two in step.
 HEADLINE_PREFIX = "repo checks failed: "
 # failFarmRun keeps 200 characters of the error; HEADLINE_PREFIX takes 20.
 HEADLINE_MAX_CHARS = 170
@@ -413,6 +414,44 @@ def _one_line(text: str, cap: int | None) -> str:
     return text if cap is None or len(text) <= cap else text[: cap - 1] + "…"
 
 
+def _cap_words(text: str, cap: int) -> str:
+    """One line of at most `cap` chars, cut at a word boundary and ending in
+    "…" — never mid-word, unless the text has no space to cut at (HZ-373).
+    The same rule as capWords() in server/src/checkHeadline.js."""
+    text = " ".join(str(text).split())
+    if len(text) <= cap:
+        return text
+    cut = text[: cap - 1]
+    space = cut.rfind(" ")
+    if space > 0:
+        cut = cut[:space]
+    return cut.rstrip(" ,;:.-—") + "…"
+
+
+# HZ-373: the most specific failure line, when no runner summary parsed. A
+# spec with nothing passing outranks a failed count, a timed-out line or an
+# Error line; within a tier the last line wins. Never the first line as such.
+_SPEC_NONE_PASSED = re.compile(r"\b0/\d+ passed\b")
+_SPECIFIC_FAILURE = re.compile(r"\b0*[1-9]\d* failed\b|(?i:\btime(?:d ?| )?out\b)|\b\w*Error\b")
+
+
+def fallback_headline(label: str, output: str, exit_code: int | None, shown: str = "") -> str:
+    """`<label> failed (exit N)`, then `: <line>` when a specific failure line
+    is found in `output` (already redacted). A leading `<label>: ` on that line
+    is dropped, and a line echoing the command itself is never picked."""
+    head = f"{label} failed ({'no exit code' if exit_code is None else f'exit {exit_code}'})"
+    lines = [" ".join(_ANSI.sub("", line).split()) for line in output.splitlines()]
+    lines = [line for line in lines if line and not (shown and shown in line)]
+    for pattern in (_SPEC_NONE_PASSED, _SPECIFIC_FAILURE):
+        found = [line for line in lines if pattern.search(line)]
+        if found:
+            line = found[-1]
+            if line.startswith(f"{label}: "):
+                line = line[len(label) + 2 :]
+            return f"{head}: {line}"
+    return head
+
+
 def _render_headline(label: str, summary: dict, count: int, cap: int | None) -> str:
     head = label + ":"
     if summary["failed"] is not None:
@@ -437,25 +476,26 @@ def _render_headline(label: str, summary: dict, count: int, cap: int | None) -> 
     return f"{head}: {', '.join(shown)}" if shown else head
 
 
-def failure_headline(rows: list[dict], output: str, shown: str) -> str | None:
-    """One line saying what failed, or None — then the message is exactly
-    today's (HZ-366). From the stored per-test results when any test failed,
+def failure_headline(rows: list[dict], output: str, shown: str, label: str | None = None) -> str | None:
+    """One line saying what failed, or None — then run_checks uses
+    fallback_headline() (HZ-373). From the stored per-test results when any test failed,
     else from the runner's own summary. Counts appear only when parsed, and a
     headline is never built without at least one failure.
 
     Covers the command that failed — run_checks raises on the first one, so
-    any later command never ran."""
+    any later command never ran. `label` (HZ-373: the check's slot name)
+    replaces the name read off the command."""
     summary = _stored_summary(rows, output) or _runner_summary(output)
     if summary is None:
         return None
-    label = _one_line(_command_label(shown), 40)
+    label = _one_line(label or _command_label(shown), 40)
     tests = len(summary["tests"])
     for count in range(min(tests, HEADLINE_TESTS_MAX), 0, -1):
         for cap in _HEADLINE_TITLE_CAPS:
             headline = _render_headline(label, summary, count, cap)
             if len(headline) <= HEADLINE_MAX_CHARS:
                 return headline
-    return _one_line(_render_headline(label, summary, min(tests, 1), _HEADLINE_TITLE_CAPS[-1]), HEADLINE_MAX_CHARS)
+    return _cap_words(_render_headline(label, summary, min(tests, 1), _HEADLINE_TITLE_CAPS[-1]), HEADLINE_MAX_CHARS)
 
 
 # ---- flake rerun + per-test results (HZ-327) ----
@@ -1302,6 +1342,8 @@ def run_checks(
                 keep_rows(first_rows)
                 if proc.returncode != 0:
                     output = ((proc.stdout or "") + "\n" + (proc.stderr or "")).strip()
+                    # HZ-373: the exit code of the run whose output is shown.
+                    shown_exit = proc.returncode
                     # classify_failure keeps reading the raw last 400 chars, NOT
                     # the digest: its signatures and the backfilled history were
                     # both built on that input, and a different one would shift
@@ -1363,25 +1405,23 @@ def run_checks(
                                 continue
                             if rerun_output:
                                 output = rerun_output
+                                shown_exit = rerun.returncode
                     # Redacted against the farm's own environment too, not just
                     # the scrubbed check env: a test can still print a farm
                     # secret it read some other way.
                     redacted = redact(output, secrets)
                     shown = redact(shown, secrets)
                     # HZ-366: JUnit titles come from the raw report, so the
-                    # headline is redacted again on its own.
+                    # headline is redacted again on its own. HZ-373: named by
+                    # the slot, and never missing — see fallback_headline().
+                    slot = label[0] if label else _command_label(shown)
                     headline = failure_headline(
-                        rerun_rows if rerun_rows is not None else first_rows, redacted, shown
-                    )
-                    headline = _one_line(redact(headline, secrets), HEADLINE_MAX_CHARS) if headline else ""
-                    if headline:
-                        # The headline line plus the command's own line cost
-                        # len(headline) + 1 more than today's first line.
-                        digest = failure_digest(redacted, DIGEST_MAX_CHARS - len(headline) - 1)
-                        message = f"{HEADLINE_PREFIX}{headline}\n({line_label}{shown})\n{digest}"
-                    else:
-                        digest = failure_digest(redacted)
-                        message = f"repo checks failed ({line_label}{shown}):\n{digest}"
+                        rerun_rows if rerun_rows is not None else first_rows, redacted, shown, slot
+                    ) or fallback_headline(slot, redacted, shown_exit, shown)
+                    headline = _cap_words(redact(headline, secrets), HEADLINE_MAX_CHARS)
+                    # The digest's budget leaves room for the headline line.
+                    digest = failure_digest(redacted, DIGEST_MAX_CHARS - len(headline) - 1)
+                    message = f"{HEADLINE_PREFIX}{headline}\n({line_label}{shown})\n{digest}"
                     raise CheckFailure(
                         message,
                         digest=digest,

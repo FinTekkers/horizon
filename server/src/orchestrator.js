@@ -84,6 +84,7 @@ import { deploySkipArtifact, deploySkipReason } from './deploySkip.js'
 import { servedRulesFor } from './rulesStore.js'
 import { OPTIONS_STEP_INDEX, proposeSplit } from './split.js'
 import { recordFlakes } from './checkFlakes.js'
+import { splitCheckError } from './checkHeadline.js'
 import { recordTestRuns } from './testResults.js'
 import { enqueueRuleBlockPing } from './ruleBlock.js'
 import { buildStoredResultsInput, storedResultsPending, waitForStoredResults } from './storedTestResults.js'
@@ -2209,14 +2210,19 @@ export function failFarmRun(runId, error, reason = null) {
   if (FARM_URL) farmFetch('/steps/cancel', { run_id: runId }).catch(() => {})
 
   const retryable = reason != null && AUTO_RETRY_REASONS.has(reason) && runnable(getItem(id))
+  // HZ-373: a check failure's event shows its headline line only; the whole
+  // message is kept as the event's detail.
+  const { cause, detail } = splitCheckError(error)
 
   if (retryable && run.auto_retry_count < AUTO_RETRY_CAP) {
     const nextCount = run.auto_retry_count + 1
     addEvent(id, {
       who: 'Horizon',
-      text: `transient failure (${reason}): ${String(error).slice(0, 200)} — auto-retrying (${nextCount}/${AUTO_RETRY_CAP})`,
+      text: `transient failure (${reason}): ${cause} — auto-retrying (${nextCount}/${AUTO_RETRY_CAP})`,
       color: '#DFA200',
       initials: 'HZ',
+      // Stored, but the UI only shows the pause event's detail.
+      detail,
     })
     notifyChange()
     kick(id, { autoRetryCount: nextCount })
@@ -2234,10 +2240,11 @@ export function failFarmRun(runId, error, reason = null) {
   addEvent(id, {
     who: 'Horizon',
     text: retryable
-      ? `agent step failed${reasonTag}: ${String(error).slice(0, 200)} — auto-retry budget (${AUTO_RETRY_CAP}) exhausted; item paused, resume to retry`
-      : `agent step failed${reasonTag}: ${String(error).slice(0, 200)} — item paused; resume to retry`,
+      ? `agent step failed${reasonTag}: ${cause} — auto-retry budget (${AUTO_RETRY_CAP}) exhausted; item paused, resume to retry`
+      : `agent step failed${reasonTag}: ${cause} — item paused; resume to retry`,
     color: '#9C333E',
     initials: 'HZ',
+    detail,
   })
   notifyChange()
   emitStepEnded(id)

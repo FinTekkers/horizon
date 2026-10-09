@@ -95,11 +95,12 @@ def test_a_long_failure_keeps_its_last_lines_not_its_first(tmp_path, monkeypatch
 
 def test_check_failure_message_still_names_the_command_for_existing_callers(tmp_path, monkeypatch):
     """conflict_resolver and step_agent log str(exc); HZ-183's attributes are
-    additive, the message shape is unchanged."""
+    additive, and the message still names the command — on its second line,
+    under the headline (HZ-373)."""
     monkeypatch.setenv("FARM_CHECK_CMD", "echo boom && exit 1")
     with pytest.raises(CheckFailure) as err:
         run_checks(tmp_path, log=lambda *_: None)
-    assert str(err.value).startswith("repo checks failed (sh -c echo boom && exit 1):")
+    assert str(err.value).startswith("repo checks failed: echo failed (exit 1)\n(sh -c echo boom && exit 1)\n")
     assert "boom" in str(err.value)
     assert err.value.command == "sh -c echo boom && exit 1"
     assert err.value.reason == "failed"

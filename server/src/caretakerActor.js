@@ -31,6 +31,7 @@ import { db } from './db.js'
 import * as store from './store.js'
 import { STEPS, requiredStepIndex, ACCEPT_GATE_INDEX } from '../../domain/js/lifecycle.js'
 import { ACTOR, redact } from './caretakerRules.js'
+import { CHECK_HEADLINE_PREFIX, capWords } from './checkHeadline.js'
 import { loadPolicy, REPEAT_SEND_BACK_RULE } from './caretaker.js'
 import { actOnAcceptGate, failInterruptedAcceptActions } from './caretakerAccept.js'
 import { sendWhatsApp } from './waSend.js'
@@ -173,8 +174,9 @@ export function stallReason(c) {
 }
 
 // farm/checks.py HEADLINE_PREFIX: a failed check's message starts with this,
-// then one line saying what failed (HZ-366). Keep the two in step.
-export const CHECK_HEADLINE_PREFIX = 'repo checks failed: '
+// then one line saying what failed (HZ-366; HZ-373: always). Declared in
+// checkHeadline.js and re-exported here for existing importers.
+export { CHECK_HEADLINE_PREFIX }
 const STALL_HEADLINE_MAX = 200
 
 // The first line of a failed run's stored output ("FAILED: <error>") when it
@@ -183,7 +185,7 @@ export function stallHeadline(output) {
   const first = String(output ?? '').replace(/^FAILED: /, '').split('\n')[0]
   if (!first.startsWith(CHECK_HEADLINE_PREFIX)) return null
   const line = redact(first, { oneLine: false }).replace(/\s+/g, ' ').trim()
-  return line.length > STALL_HEADLINE_MAX ? line.slice(0, STALL_HEADLINE_MAX - 1) + '…' : line
+  return capWords(line, STALL_HEADLINE_MAX)
 }
 
 // One ping and one event per (arrival, reason); a repeat tick adds nothing.

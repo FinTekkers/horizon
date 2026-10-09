@@ -294,3 +294,17 @@ test('attempts used counts the multi-line retry events just below a pause that i
   }
   expect(pauseReason(item).attemptsUsed).toBe(2)
 })
+
+// HZ-373: a check failure's pause event carries the whole message as its
+// `detail`; pauseReason hands it on as `fullError`, never as `detail` (the
+// category copy).
+test('the pause event detail comes back as fullError, and detail stays the category copy', () => {
+  const full = 'repo checks failed: e2e failed (exit 1): a.spec.ts: 0/1 passed\n(sh -c npm run test:e2e)\ne2e: a.spec.ts: 0/1 passed'
+  const tagged = { ...ev(`agent step failed (${REASON.TURN_CAP}): repo checks failed: e2e failed (exit 1): a.spec.ts: 0/1 passed — item paused; resume to retry`), detail: full }
+
+  const result = pauseReason({ paused: true, events: [tagged] })
+
+  expect(result.fullError).toBe(full)
+  expect(result.detail).toBe('The agent hit its turn budget before finishing the step.')
+  expect(pauseReason({ paused: true, events: [ev('agent step failed: boom — item paused; resume to retry')] }).fullError).toBeNull()
+})

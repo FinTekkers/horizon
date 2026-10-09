@@ -505,6 +505,13 @@ try {
   // column already exists
 }
 try {
+  // HZ-373: the full failure message behind a check headline ("Show details").
+  // NULL on every other event, and on events written before this column.
+  db.exec('ALTER TABLE event ADD COLUMN detail TEXT')
+} catch {
+  // column already exists
+}
+try {
   // HZ-346: an implement run that stopped on a rule with no code changes
   // (orchestrator.blockFarmRun). `cancelled` like a deploy stop, so the status
   // CHECK is untouched; the next dispatch reuses its attempt and auto-retry count.

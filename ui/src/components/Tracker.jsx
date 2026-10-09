@@ -426,6 +426,7 @@ function Step({ item, stepOutputs, outputsSettled, index, deployBlock, viewerNam
 // one of its own. A manual human pause has nothing to explain and renders
 // nothing here — the existing Resume control already covers it.
 function PauseBanner({ item }) {
+  const [showFullError, setShowFullError] = useState(false)
   const reason = pauseReason(item)
   if (!reason || reason.category === 'manual') return null
 
@@ -446,6 +447,16 @@ function PauseBanner({ item }) {
           'No failure details were recorded for this pause — check the activity feed below.'
         )}
       </div>
+      {/* HZ-373: the whole failure message behind the headline, as React
+          text only. */}
+      {reason.fullError && (
+        <>
+          <button type="button" className="pause-banner__toggle" aria-expanded={showFullError} onClick={() => setShowFullError(!showFullError)}>
+            {showFullError ? 'Hide details' : 'Show details'}
+          </button>
+          {showFullError && <pre className="pause-banner__full-error">{reason.fullError}</pre>}
+        </>
+      )}
       <div className="pause-banner__meta">{attemptsText} · Resume to retry</div>
     </div>
   )
@@ -647,7 +658,7 @@ export default function Tracker({ item, projects, deployBlock = null, viewerName
             )}
           </div>
         )}
-        {!abandoned && item.paused && <PauseBanner item={item} />}
+        {!abandoned && item.paused && <PauseBanner key={`pause-banner-${item.id}`} item={item} />}
         {/* HZ-365: isRuleBlocked is false while paused, so never both banners.
             The key differs from DependencyBadge's below: duplicate sibling
             keys make React leave a stale second banner behind. */}

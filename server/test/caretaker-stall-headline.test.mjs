@@ -96,3 +96,30 @@ test('stallHeadline reads only a headline-shaped first line', () => {
   assert.equal(actor.stallHeadline('FAILED: repo checks failed (sh -c npm test):\nnot ok 1 - x'), null)
   assert.equal(actor.stallHeadline(null), null)
 })
+
+// HZ-373: US-207's e2e failure had no parseable summary; the farm's message
+// for it (shared fixture) now leads with a headline too, so the ping names
+// what failed and never the command line under it.
+test('a check failure with no runner summary pings its headline, never the command', async () => {
+  sent.length = 0
+  const us207 = readFileSync(join(REPO_ROOT, 'farm/tests/fixtures/check_output/us207_message.txt'), 'utf8')
+  stalledItem('SH-US207', [`FAILED: ${us207}`, `FAILED: ${us207}`])
+
+  await tick()
+
+  assert.equal(sent.length, 1)
+  assert.ok(sent[0].body.includes(': repo checks failed: e2e failed (exit 1): sidebar-links-after-login.spec.ts: 0/1 passed — '), sent[0].body)
+  assert.ok(!sent[0].body.includes('sh -c') && !sent[0].body.includes('git show'), sent[0].body)
+})
+
+test('stallHeadline cuts an over-long headline at a word boundary, never mid-word', () => {
+  const words = Array.from({ length: 40 }, (_, i) => `word${String(i).padStart(3, '0')}`)
+  const line = `${actor.CHECK_HEADLINE_PREFIX}test failed (exit 1): Error: ${words.join(' ')}`
+  assert.ok(line.length > 300)
+
+  const headline = actor.stallHeadline(`FAILED: ${line}\n(sh -c npm test)`)
+
+  assert.ok(headline.length <= 200, headline)
+  assert.ok(headline.endsWith('…'), headline)
+  assert.ok(words.includes(headline.slice(0, -1).split(' ').at(-1)), headline)
+})
