@@ -1,7 +1,7 @@
 """HZ-115 evidence gate: is the PM agent's resumed, cross-item session memory
 load-bearing?
 
-`build_prompt()` in farm/pm_agent.py renders only the CURRENT item's fields,
+`build_prompt()` in farm/pm_steps.py renders only the CURRENT item's fields,
 artifacts and feedback, plus the project rules; the role prompt is appended to
 every call. It never renders another item's desc/metric/guardrails. So an
 8-word phrase in item B's `patch` that first appeared in item A's `patch` can
@@ -92,7 +92,7 @@ def iter_json_objects(text: str):
 
 def extract_patch_values(run: dict) -> dict:
     """{field: value} from every `patch` in the run's body; a later object (a
-    retry) wins, as in pm_agent.py."""
+    retry) wins, as in pm_steps.py."""
     values: dict = {}
     for obj in iter_json_objects(run["body"]):
         patch = obj.get("patch") if isinstance(obj, dict) else None

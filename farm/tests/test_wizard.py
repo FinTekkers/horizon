@@ -1,9 +1,9 @@
 """Unit tests for the WhatsApp item-creation wizard and gate-choice
 resolver (HZ-15) — the deterministic, non-LLM state machines wired into
-concierge_agent.poll_once ahead of any Claude call.
+concierge_agent.poll_messages_once ahead of any Claude call.
 
 Poll-level wiring (wizard turns never reaching Claude, a full
-create-then-approve loop through poll_once) lives in test_concierge.py.
+create-then-approve loop through poll_messages_once) lives in test_concierge.py.
 """
 
 import pytest
@@ -339,7 +339,7 @@ def test_item_wizard_isolates_state_between_two_senders_in_one_group_chat(monkey
 def test_item_wizard_crash_replay_of_the_confirm_message_never_duplicates_the_item():
     """Mirrors test_concierge.test_duplicate_delivery_executes_actions_exactly_once:
     the confirm step's state.claim(msg) happens before POST /api/items, so if the
-    cursor is lost (crash) the processed-msg_id record survives and poll_once's
+    cursor is lost (crash) the processed-msg_id record survives and poll_messages_once's
     dedupe check skips the message before it can reach the wizard again."""
     t = FakeTransport()
     state = make_state(t, "wiz-crash")
@@ -358,7 +358,7 @@ def test_item_wizard_crash_replay_of_the_confirm_message_never_duplicates_the_it
         replay_state = ca.ConciergeState("wiz-crash", t)
         assert replay_state.cursor == 0
         assert replay_state.is_processed(confirm_msg.msg_id)
-        assert ca.poll_once(t, replay_state, stub.url, farmd_url=stub.url) == 0
+        assert ca.poll_messages_once(t, replay_state, stub.url, farmd_url=stub.url) == 0
         assert len(stub.created_items) == 1  # still exactly one item
     finally:
         stub.close()
@@ -510,7 +510,7 @@ def test_expired_choice_falls_through_to_claude(monkeypatch):
 
         msg = t.seed("1", sender=DAVID, chat=DAVID)
         handled = wizard.try_handle_gate_choice(msg, t, state.choice_store, state, stub.url)
-        assert not handled  # poll_once would hand this to Claude next, not treat it as an approval
+        assert not handled  # poll_messages_once would hand this to Claude next, not treat it as an approval
         assert stub.approvals == []
         assert state.choice_store.get(key) is None
         assert not state.is_processed(msg.msg_id)

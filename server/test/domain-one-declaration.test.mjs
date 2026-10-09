@@ -66,6 +66,8 @@ const LABEL_MENTIONS_ALLOWED = {
   'docs/pm-step-ephemeral-evidence/pm-spawn-overhead-20.md': 'generated report (HZ-212) — same tool, same step-label table',
   'farm/tests/test_pm_run_timings.py': 'PM log fixture copied verbatim from a real pm-<slug>.log',
   'farm/tests/test_analyze_pm_context_reliance.py': 'fabricated PM log fixtures',
+  'farm/tests/fixtures/pm_prompts/step_0.txt': 'HZ-371 byte-for-byte snapshot of the step-0 PM prompt',
+  'farm/tests/fixtures/pm_prompts/role_prompt.txt': 'HZ-371 byte-for-byte snapshot of the rendered farm/roles/pm.md',
 }
 
 const STEP_OBJECT = /kind"?:\s*['"](agent|gate)['"]/g

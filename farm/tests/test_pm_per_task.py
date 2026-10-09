@@ -1,7 +1,7 @@
 """HZ-212 (HZ-204 stage 2/3): every PM step runs as its own per-task session.
 
 farmd's dispatcher claims queue/pm tasks into queue/runs/active and launches
-`python -m farm.pm_agent --task <file>` as farm-run-<item>-s<step>-a<attempt>,
+`python -m farm.step_agent --task <file>` as farm-run-<item>-s<step>-a<attempt>,
 with its own log — the same launch path as every other step. The long-lived
 farm-pm-<project> session is retired at boot and never launched again.
 
@@ -14,6 +14,7 @@ import json
 import os
 import statistics
 import subprocess
+import sys
 import threading
 import time
 from pathlib import Path
@@ -24,7 +25,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from domain.py import reasons
-from farm import farmd, pm_agent
+from farm import farmd, pm_steps, step_agent
 from farm import config as farm_config
 from farm.config import LOGS_DIR, PM_MALFORMED_GRACE_S, QUEUE_DIR, STATE_DIR
 
@@ -153,9 +154,9 @@ def posts(monkeypatch):
 
 
 @pytest.fixture
-def pm_run(monkeypatch, tmp_path):
-    """The real pm_agent.process()/run_task() with run_agent and the farmd
-    result post faked. session_file is repointed into tmp_path."""
+def pm_run(monkeypatch):
+    """A real PM step through step_agent.main() with run_agent and the farmd
+    result post faked. `lane.main(path)` runs the task file at `path`."""
     lane = SimpleNamespace(replies=[], calls=[], posted=[], post=None)
 
     def fake_run_agent(prompt, **kw):
@@ -168,22 +169,26 @@ def pm_run(monkeypatch, tmp_path):
             return lane.post()
         return SimpleNamespace(status_code=200, json=lambda: {"ok": True, "forwarded": 200})
 
-    monkeypatch.setattr(pm_agent, "run_agent", fake_run_agent)
-    # A shim, not httpx.post patched: farmd and pm_agent share the httpx
+    monkeypatch.setattr(step_agent, "run_agent", fake_run_agent)
+    # A shim, not httpx.post patched: farmd and step_agent share the httpx
     # module, and `posts` fakes farmd's side of the same call.
-    monkeypatch.setattr(pm_agent, "httpx", SimpleNamespace(post=fake_post))
-    monkeypatch.setattr(pm_agent, "session_file", lambda slug: tmp_path / f"pm-session-{slug}.txt")
+    monkeypatch.setattr(step_agent, "httpx", SimpleNamespace(post=fake_post, TransportError=httpx.TransportError))
+
+    def main(path: Path) -> int:
+        monkeypatch.setattr(sys, "argv", ["step_agent", "--task", str(path)])
+        return step_agent.main()
+
+    lane.main = main
     return lane
 
 
 # ---- metric 1: no PM call resumes a stored session id ----
 
 
-def test_a_stale_session_file_is_never_resumed_by_either_call(pm_run, tmp_path):
-    (tmp_path / "pm-session-proj.txt").write_text("old-sid")
+def test_no_pm_call_resumes_a_session(pm_run, tmp_path):
     pm_run.replies = ["plain prose, no json", json.dumps({"summary": "done"})]
 
-    assert pm_agent.process(make_task(701), "proj") is True
+    pm_run.main(write_json(tmp_path / "701.json", make_task(701)))
 
     assert len(pm_run.calls) == 2, "the invalid first reply must take the retry_once call too"
     assert [call["session_id"] for call in pm_run.calls] == [None, None]
@@ -257,7 +262,7 @@ def test_a_step9_task_launches_its_own_farm_run_session_and_log(farm, fake_tmux)
     claimed = QUEUE_DIR / "runs" / "active" / "702.json"
     assert set(new_sessions(fake_tmux)) == {"farm-run-hz-1-s9-a1"}
     command = new_sessions(fake_tmux)["farm-run-hz-1-s9-a1"]
-    assert command.endswith(f" -m farm.pm_agent --task {claimed}")
+    assert command.endswith(f" -m farm.step_agent --task {claimed}")
     assert pipe_targets(fake_tmux) == {"farm-run-hz-1-s9-a1": f"cat >> '{LOGS_DIR / 'farm-run-hz-1-s9-a1.log'}'"}
     assert claimed.exists()
 
@@ -278,7 +283,7 @@ def test_each_pm_dispatch_is_a_fresh_process_with_the_env_at_dispatch(farm, fake
     launched = new_sessions(fake_tmux)
     first, second = launched["farm-run-hz-2-s9-a1"], launched["farm-run-hz-3-s9-a1"]
     for command in (first, second):
-        assert " -m farm.pm_agent --task " in command
+        assert " -m farm.step_agent --task " in command
     assert "FARM_PM_MALFORMED_GRACE_S=30 " in first
     assert "FARM_PM_MALFORMED_GRACE_S=31 " in second
 
@@ -286,18 +291,18 @@ def test_each_pm_dispatch_is_a_fresh_process_with_the_env_at_dispatch(farm, fake
 # ---- metric 4: the prompt reflects the current farm/roles/pm.md ----
 
 
-def test_replaying_step9_through_run_task_carries_the_test_contract(pm_run, farm):
+def test_replaying_step9_through_step_agent_carries_the_test_contract(pm_run, farm):
     pm_md = (REPO_ROOT / "farm" / "roles" / "pm.md").read_text()
     assert "## Test contract" in pm_md
     path = write_json(QUEUE_DIR / "runs" / "active" / "705.json", make_task(705))
     pm_run.replies = [json.dumps({"summary": "recommend", "artifact_md": "## Test contract\n- kept"})]
 
-    assert pm_agent.run_task(path) == 0
+    assert pm_run.main(path) == 0
 
     system = pm_run.calls[0]["append_system"]
     assert "## Test contract" in system
-    assert system == pm_agent.render_role_prompt(pm_md, pm_agent.PATCH_FIELDS)
-    assert not path.exists()  # released only after farmd accepted the result
+    assert system == pm_steps.render_role_prompt(pm_md, pm_steps.PATCH_FIELDS)
+    assert not path.exists()  # released once the result was posted
 
 
 # ---- metric 5: a claimed PM task is never lost and reported exactly once ----
@@ -337,28 +342,41 @@ def test_a_farmd_restart_kills_only_the_legacy_pm_and_leaves_a_live_pm_run_alone
     assert farmd.RUN_SESSIONS["707"] == "farm-run-hz-1-s9-a1"
 
 
-@pytest.mark.parametrize("failure", ["connect_error", "farmd_502"])
-def test_an_undelivered_result_keeps_the_task_and_reconcile_fails_it_once(pm_run, farm, posts, failure):
-    """QA R3: the result post fails while farmd is down. run_task keeps the
-    claimed file and exits non-zero; reconcile then posts exactly one /fail."""
+def test_an_undelivered_result_keeps_the_task_and_reconcile_fails_it_once(pm_run, farm, posts):
+    """QA R3: the result post fails while farmd is down. step_agent retries,
+    then exits on the error with the claimed file kept; reconcile then posts
+    exactly one /fail."""
     path = _claimed(708)
 
     def broken_post():
-        if failure == "connect_error":
-            raise httpx.ConnectError("farmd is down")
-        return SimpleNamespace(status_code=502, json=lambda: {"error": "could not reach horizon server"})
+        raise httpx.ConnectError("farmd is down")
 
     pm_run.post = broken_post
     pm_run.replies = [json.dumps({"summary": "done"})]
 
-    assert pm_agent.run_task(path) != 0
+    with pytest.raises(httpx.ConnectError):
+        pm_run.main(path)
     assert path.exists()
+    path.with_suffix(".pid").unlink()  # the session has exited
 
-    farmd._reconcile_claimed_runs()  # the session has exited
+    farmd._reconcile_claimed_runs()
     farmd._reconcile_claimed_runs()
     assert [(c["url"], c["json"]["reason"]) for c in posts.calls] == [
         (f"{farmd.HORIZON_URL}/api/farm/steps/708/fail", UNREACHABLE)
     ]
+
+
+def test_a_rejected_result_still_releases_the_task_file(pm_run, farm, posts):
+    """HZ-371: a PM step follows step_agent's delivery rule. farmd answering
+    the post at all (here a 502) releases the claimed file, as it does for
+    every other step; only an unreachable farmd keeps it (above)."""
+    path = _claimed(709)
+    pm_run.post = lambda: SimpleNamespace(status_code=502, json=lambda: {"error": "could not reach horizon server"})
+    pm_run.replies = [json.dumps({"summary": "done"})]
+
+    assert pm_run.main(path) == 0
+    assert not path.exists()
+    assert pm_run.posted[-1]["ok"] is True
 
 
 # ---- metric 6: per-step launch overhead ----
@@ -540,7 +558,7 @@ def test_an_old_shape_queued_pm_task_is_claimed_stamped_and_launched_exactly_onc
     claimed = QUEUE_DIR / "runs" / "active" / "717.json"
     assert not path.exists()
     assert isinstance(json.loads(claimed.read_text())["claimed_at"], float)
-    launches = [c for c in fake_tmux.calls if c[0] == "new-session" and "farm.pm_agent --task" in c[-1]]
+    launches = [c for c in fake_tmux.calls if c[0] == "new-session" and "farm.step_agent --task" in c[-1]]
     assert len(launches) == 1
 
 
@@ -575,7 +593,7 @@ def test_no_secret_reaches_the_pm_steps_output_or_its_log_target(pm_run, farm, f
     path = QUEUE_DIR / "runs" / "active" / "718.json"
     pm_run.replies = [json.dumps({"summary": "done"})]
 
-    assert pm_agent.run_task(path) == 0
+    assert pm_run.main(path) == 0
 
     out = capsys.readouterr()
     assert sentinel not in out.out and sentinel not in out.err

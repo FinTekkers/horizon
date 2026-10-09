@@ -1,47 +1,24 @@
-"""The PM agent: runs one lifecycle step (0/1/2/9) per process.
+"""The PM step kind: the logic specific to lifecycle steps 0, 1, 2 and 9.
 
-HZ-212: farmd's dispatcher claims each PM task into queue/runs/active and
-launches `python -m farm.pm_agent --task <file>` in its own
-farm-run-<item>-s<step>-a<attempt> tmux session, exactly as it launches
-step_agent — so every PM step starts on the code, env and farm/roles/pm.md
-present at dispatch. Nothing is resumed: the HZ-204 project-context block in
-the prompt is the only memory a step has of other items.
+HZ-371: farm/step_agent.py runs every farm agent step, these four included —
+its _execute_pm() builds the prompt here, runs the shared run_agent() and
+parse_agent_reply(), validates through validate_within_budget(), and hands the
+parsed reply to finish(). Logging, result reporting, pause handling and the
+parse retry are step_agent's; this module holds none of them.
 
-A deliberate *script* around the model: it executes exactly one lifecycle
-step per task and reports the result back to farmd. It never decides what
-runs next — the Node orchestrator does. The `--project` polling loop is kept
-for tests and for a rollback build; farmd no longer launches it.
+Each step starts on the code, env and farm/roles/pm.md present at dispatch.
+Nothing is resumed: the HZ-204 project-context block in the prompt is the only
+memory a step has of other items.
 """
 
-import argparse
-import sys
-import time
 from datetime import datetime, timezone
 from pathlib import Path
 
-import httpx
+from domain.py import fields
 
-from domain.py import fields, reasons, steps
-from domain.py.personas import model_agent_for_step
-
-from .agent_runner import (
-    AgentError,
-    AgentExhaustedError,
-    parse_agent_reply,
-    run_agent,
-    stamp_notes,
-    stamp_notes_artifact,
-)
-from .config import (
-    FARM_PORT,
-    PM_MALFORMED_GRACE_S,
-    QUEUE_DIR,
-    STATE_DIR,
-    ensure_dirs,
-    slugify,
-)
+from .agent_runner import AgentError, stamp_notes, stamp_notes_artifact
 from .rules import render_rules_section
-from .task_files import read_task, task_project
+from .task_files import task_project
 
 # The fields a PM revision may patch, and how long each may be — DERIVED from
 # domain/fields.json (HZ-134), which is also where server/src/app.js's POST
@@ -106,7 +83,6 @@ if LINE_LIMITS_PLACEHOLDER not in _ROLE_SOURCE:
         "the PM agent would be given no line budgets at all"
     )
 ROLE_PROMPT = render_role_prompt(_ROLE_SOURCE, PATCH_FIELDS)
-FARMD = f"http://127.0.0.1:{FARM_PORT}"
 
 # Write-side: a pathological-payload guard, not a working limit — the agent's
 # own artifact must reach the server intact (HZ-29). The server budgets the
@@ -124,82 +100,6 @@ MAX_PROMPT_ARTIFACT_CHARS = 100_000
 # stamp_notes() reserves room inside exactly this budget, so a cap raised in
 # validate() and not in the stamp would silently truncate the notes back off.
 SUMMARY_MAX_CHARS = 300
-
-
-def log(msg: str) -> None:
-    print(f"[{datetime.now().strftime('%H:%M:%S')}] {msg}", flush=True)
-
-
-def notify_started(run_id) -> bool:
-    """Tells the server this run's agent actually started (HZ-57) — same
-    queue-watchdog-to-execution-timer handoff the ephemeral dispatcher does
-    via farmd's own _notify_started, routed through farmd (this process only
-    talks to FARMD, never HORIZON_URL directly). Fails open: a farmd/network
-    hiccup here must not strand a legitimate task — the server's own timers
-    are the real backstop."""
-    try:
-        res = httpx.post(f"{FARMD}/internal/steps/started", json={"run_id": run_id}, timeout=15)
-        if res.status_code == 200:
-            return bool(res.json().get("active", True))
-    except Exception as exc:
-        log(f"run {run_id}: started notify failed: {exc}")
-    return True
-
-
-# HZ-130: the reason an unusable task file is reported under. Declared retryable
-# in domain/reasons.json, so the step is auto-retried rather than paused for a
-# human, and no server change is needed to report one — see the test that reads
-# that flag back out of the declaration.
-#
-# Reached through the binding's constant rather than typed as a string. HZ-130
-# added this as a literal, which left farm/pm_agent.py holding the one reason
-# literal HZ-132 had just finished removing from the farm — and
-# server/test/domain-reason-literals.test.mjs failing. Same value, one
-# declaration: reasons.REASON raises KeyError on a typo, a literal does not.
-UNUSABLE_TASK_REASON = reasons.REASON["UNREACHABLE"]
-
-
-def report_failed_task(run_id: str, error: str) -> bool:
-    """HZ-130: reports a task file the PM could never use, over the same farmd
-    channel process() reports every other failure through.
-
-    Returns whether the report was ACCEPTED — i.e. whether the run is now the
-    server's problem and our copy of the file can be released. Anything that
-    leaves us unsure (farmd down, the Node server unreachable, a 5xx) returns
-    False so the file stays on disk and the next poll retries: an unreachable
-    server is not evidence the run was handled, and the same rule
-    _report_run_dead follows on the farmd side (farm/farmd.py).
-
-    notify_started() is deliberately NOT called on this path. The server's own
-    /fail handler owns the transition out of `active`; telling it the agent
-    started, only to immediately fail, would just arm the execution timer.
-    """
-    payload = {"run_id": run_id, "ok": False, "error": error[:300], "reason": UNUSABLE_TASK_REASON}
-    try:
-        res = httpx.post(f"{FARMD}/internal/steps/result", json=payload, timeout=30)
-    except Exception as exc:
-        log(f"run {run_id}: could not report unusable task file: {exc} — keeping it to retry")
-        return False
-    if res.status_code != 200:
-        log(f"run {run_id}: farmd rejected the failure report ({res.status_code}) — keeping it to retry")
-        return False
-    try:
-        forwarded = int(res.json().get("forwarded", 0))
-    except Exception:
-        forwarded = 0
-    if 200 <= forwarded < 300:
-        return True
-    if forwarded == 404:
-        # The run no longer exists server-side; there is nothing left to
-        # report it to, so holding the file would strand it on disk forever.
-        log(f"run {run_id}: unknown server-side (404) — releasing the unusable task file")
-        return True
-    log(f"run {run_id}: failure report not accepted (forwarded {forwarded}) — keeping it to retry")
-    return False
-
-
-def session_file(project_slug: str) -> Path:
-    return STATE_DIR / f"pm-session-{project_slug}.txt"
 
 
 def _render_personas(item: dict) -> str:
@@ -385,7 +285,7 @@ def build_prompt(task: dict) -> str:
 #
 # metric and guardrails stay listed here only for direct callers of validate()
 # (farm/tests/test_hz114_no_silent_truncation.py site 3 pins that path).
-# Production never marks them: process() validates through
+# Production never marks them: step_agent._execute_pm() validates through
 # validate_within_budget(), which rejects an over-budget value before
 # validate() could cut it (HZ-264).
 MARKED_PATCH_FIELDS = {"desc", "metric", "guardrails"}
@@ -402,8 +302,8 @@ class FieldOverBudgetError(AgentError):
 
     An AgentError, so parse_agent_reply() spends its one retry on it with this
     message as the correction, and _repair_ladder() treats it as a failed rung.
-    A second over-budget reply propagates and process() reports the step
-    failed with no patch."""
+    A second over-budget reply propagates and step_agent.main() reports the
+    step failed with no patch."""
 
 
 def _mark_truncated(value: str, limit: int) -> str:
@@ -556,264 +456,29 @@ def stamp_dropped_lines(summary: str, field: str, before, after) -> str:
     return summary[: SUMMARY_MAX_CHARS - len(stamp)] + stamp
 
 
-def process(task: dict, project_slug: str) -> bool:
-    """Runs one PM step and reports it. Returns whether farmd accepted the
-    result; a post that raises (farmd down) propagates to the caller.
-
-    HZ-212: never resumes a session. Any stored session id is ignored — the
-    HZ-204 context block is the only cross-item memory. The returned id is
-    still written to the session file so a rollback build finds one."""
-    run_id = task["run_id"]
-    sid_path = session_file(project_slug)
-
-    try:
-        prompt = build_prompt(task)
-        log(f"run {run_id}: {task['step']['label']} for {task['item']['id']}")
-        # HZ-192: run_agent() resolves the model from who is calling — the
-        # step's own domain/steps.json agent (PM, or Architect for "Set
-        # guardrails") and its label.
-        step_label = task["step"]["label"]
-        model_agent = model_agent_for_step(steps.by_label(step_label)["agent"])
-        reply = run_agent(prompt, agent=model_agent, step=step_label, session_id=None, append_system=ROLE_PROMPT)
-        if reply.get("session_id"):
-            sid_path.write_text(reply["session_id"])
-
-        # One retry, telling the model exactly what was wrong with its reply.
-        # Fresh, like the first call (HZ-212): it used to resume the session
-        # the first call had just written, so the bare correction was enough.
-        # With no resume the task prompt goes first, then the correction.
-        # validate= keeps validation inside the retry envelope, so a reply that
-        # parses but is missing 'summary' takes the retry exactly as it always did,
-        # and so does an over-budget metric or guardrails (HZ-264).
-        def retry_once(retry_prompt: str) -> str:
-            log(f"run {run_id}: invalid reply; retrying once")
-            retry = run_agent(
-                f"{prompt}\n\n{retry_prompt}",
-                agent=model_agent,
-                step=step_label,
-                session_id=None,
-                append_system=ROLE_PROMPT,
-            )
-            return retry["result"]
-
-        (summary, patch, artifact), notes = parse_agent_reply(
-            reply["result"],
-            retry_once,
-            validate=lambda parsed: validate_within_budget(parsed, step_label, task["item"]),
-        )
-
-        # Script-stamped feedback trail, same as the ephemeral agents.
-        feedback = task.get("feedback") or []
-        if feedback:
-            summary = f"addressed feedback (“{feedback[0].get('message', '')[:80]}”) — {summary}"[:SUMMARY_MAX_CHARS]
-            if artifact:
-                header = "\n".join(f"> {fb.get('message', '')}" for fb in feedback)
-                artifact = f"## Human feedback addressed in this revision\n{header}\n\n{artifact}"[:WRITE_ARTIFACT_SANITY_CEILING_CHARS]
-
-        # Parser notes reach the human on both surfaces this step owns: the
-        # run's output line (server/src/orchestrator.js persists `summary` as
-        # step_run.output) and the step's artifact. No-ops when empty.
-        summary = stamp_notes(summary, notes, SUMMARY_MAX_CHARS)
+def finish(task: dict, summary: str, patch: dict, artifact: str | None, notes: list[str]) -> dict:
+    """The PM step's outcome from a validated reply: the feedback stamp, the
+    parser notes and the HZ-345 dropped-line stamp. Returns {"summary",
+    "patch", "artifacts"?} for step_agent.main() to report."""
+    # Script-stamped feedback trail, same as the ephemeral agents.
+    feedback = task.get("feedback") or []
+    if feedback:
+        summary = f"addressed feedback (“{feedback[0].get('message', '')[:80]}”) — {summary}"[:SUMMARY_MAX_CHARS]
         if artifact:
-            artifact = stamp_notes_artifact(artifact, notes, WRITE_ARTIFACT_SANITY_CEILING_CHARS)
-        budgeted = LINE_BUDGETED_STEPS.get(step_label)
-        if budgeted and budgeted in patch:
-            summary = stamp_dropped_lines(summary, budgeted, task["item"].get(budgeted), patch[budgeted])
+            header = "\n".join(f"> {fb.get('message', '')}" for fb in feedback)
+            artifact = f"## Human feedback addressed in this revision\n{header}\n\n{artifact}"[:WRITE_ARTIFACT_SANITY_CEILING_CHARS]
 
-        result = {"run_id": run_id, "ok": True, "summary": summary, "patch": patch}
-        if artifact:
-            result["artifacts"] = {"artifact_md": artifact}
-    except Exception as exc:  # report every failure; farmd forwards to the server
-        log(f"run {run_id}: FAILED — {exc}")
-        result = {"run_id": run_id, "ok": False, "error": str(exc)[:300]}
-        # HZ-156: tag the one failure cause the orchestrator auto-retries from
-        # this side, exactly as the ephemeral step agent already does in
-        # step_agent.main() — a PM step that ran out of turn budget was
-        # pausing for a human where the identical failure on a step agent
-        # retried itself. Anything else still reports no reason and pauses.
-        if isinstance(exc, AgentExhaustedError):
-            result["reason"] = reasons.REASON["TURN_CAP"]
+    # Parser notes reach the human on both surfaces this step owns: the
+    # run's output line (server/src/orchestrator.js persists `summary` as
+    # step_run.output) and the step's artifact. No-ops when empty.
+    summary = stamp_notes(summary, notes, SUMMARY_MAX_CHARS)
+    if artifact:
+        artifact = stamp_notes_artifact(artifact, notes, WRITE_ARTIFACT_SANITY_CEILING_CHARS)
+    budgeted = LINE_BUDGETED_STEPS.get(task["step"]["label"])
+    if budgeted and budgeted in patch:
+        summary = stamp_dropped_lines(summary, budgeted, task["item"].get(budgeted), patch[budgeted])
 
-    res = httpx.post(f"{FARMD}/internal/steps/result", json=result, timeout=30)
-    log(f"run {run_id}: reported {'ok' if result['ok'] else 'failure'}")
-    return 200 <= res.status_code < 300
-
-
-def _queued_tasks(queue: Path) -> list[Path]:
-    """Queued task files, oldest first.
-
-    A file can be unlinked between the glob and the stat — /steps/cancel drops
-    PM-queue files (farm/farmd.py) — and an unhandled FileNotFoundError here
-    would take the whole PM session down mid-poll. A vanished file simply
-    sorts out of this batch instead.
-    """
-    dated = []
-    for path in queue.glob("*.json"):
-        try:
-            dated.append((path.stat().st_mtime, path))
-        except OSError:
-            continue
-    return [path for _mtime, path in sorted(dated, key=lambda pair: pair[0])]
-
-
-def _past_report_bound(path: Path) -> bool:
-    """Whether an unusable file has earned a report instead of another retry.
-
-    Two conditions guard a report, and only the second is checked here.
-
-    At least one failed read in *this* process, so a file caught mid-write is
-    never reported on sight — enforced by the caller, by construction: this is
-    only ever called from poll_once immediately after a read of `path` failed,
-    and the failure counter is incremented before the call. There is
-    deliberately no `attempts` check here; it could never be false.
-
-    And an age past PM_MALFORMED_GRACE_S, checked here, which — unlike an
-    in-memory counter that the watchdog's PM revival resets — a restart cannot
-    rewind. That is the whole reason the bound is measured from mtime.
-    """
-    try:
-        return time.time() - path.stat().st_mtime >= PM_MALFORMED_GRACE_S
-    except OSError:
-        return False  # vanished under us (a cancel): nothing to report
-
-
-def _report_unusable(path: Path, why: str, attempts: int, failures: dict) -> bool:
-    """Reports an unusable task file and releases it only if the report was
-    accepted. The run_id comes from the filename stem — the contents are, by
-    definition, not something we can read one out of.
-
-    This unlink is the ONE case where a file that never parsed is removed, and
-    it happens strictly after the server has acknowledged the failure. Keeping
-    it instead would hold the run alive forever in farmd's /runs/alive, which
-    is the stall this item exists to close.
-    """
-    run_id = path.stem
-    error = f"pm_agent: task file {path.name} was unusable after {attempts} poll(s): {why}"
-    log(f"run {run_id}: {error}")
-    if not report_failed_task(run_id, error):
-        return False
-    path.unlink(missing_ok=True)
-    failures.pop(path.name, None)
-    log(f"run {run_id}: reported the unusable task file and released it")
-    return True
-
-
-def poll_once(queue: Path, project_slug: str, failures: dict) -> str:
-    """One pass over the PM queue. Never sleeps — main() owns the pacing, so
-    tests can drive polls back to back without patching time.
-
-    Returns exactly one of:
-      "processed" — a task parsed, was claimed, and ran
-      "reported"  — an unusable task file was reported to the server
-      "stale"     — a claimed task the server no longer considers active
-      "skipped"   — only unusable files are queued; they stay on disk
-      "idle"      — the queue is empty
-
-    `failures` maps filename -> consecutive failed reads and is owned by the
-    caller so the bound spans polls. Keys for files that are gone (processed,
-    reported, or cancelled out from under us) are pruned every poll — this
-    dict lives as long as the farm does.
-
-    An unusable file is walked PAST, not stopped on: it is no longer deleted,
-    so stopping at the head of the queue would let one corrupt file block
-    every newer task for the whole grace window. Its own bound is checked as
-    we walk past, so a busy queue can never starve the report either.
-
-    A report that is not accepted returns "skipped", so the next poll retries
-    it at main()'s pacing — the file is held, and the attempt is logged, until
-    either the server takes it or a human does.
-    """
-    tasks = _queued_tasks(queue)
-    present = {p.name for p in tasks}
-    for name in [n for n in failures if n not in present]:
-        failures.pop(name, None)
-    if not tasks:
-        return "idle"
-
-    task = None
-    task_path = None
-    for candidate in tasks:
-        parsed, why = read_task(candidate)
-        if parsed is not None:
-            task, task_path = parsed, candidate
-            break
-        attempts = failures.get(candidate.name, 0) + 1
-        failures[candidate.name] = attempts
-        if attempts == 1:  # log once per file, not once per poll
-            log(f"keeping unusable task file {candidate.name} for the next poll: {why}")
-        # The "one failed read in this process" half of the bound is satisfied
-        # right here, by the read above; _past_report_bound only checks age.
-        if _past_report_bound(candidate) and _report_unusable(candidate, why, attempts, failures):
-            return "reported"
-    if task is None:
-        return "skipped"
-
-    failures.pop(task_path.name, None)
-    task_path.unlink(missing_ok=True)  # claim before work: no double-processing
-    run_id = task["run_id"]
-    if not notify_started(run_id):
-        log(f"run {run_id}: no longer active server-side — skipping")
-        return "stale"
-    process(task, project_slug)
-    return "processed"
-
-
-def run_task(path: Path) -> int:
-    """HZ-212: runs the one claimed task farmd launched this process for.
-
-    The file is released only once farmd has accepted the result. Any other
-    ending — an unreadable file, a result post that raised or was rejected —
-    keeps it in queue/runs/active and exits non-zero; farmd's reconcile then
-    finds the session gone and fails the run once with a retryable reason
-    (or releases it quietly if the server already has the result)."""
-    task, why = read_task(path)
-    if task is None:
-        log(f"task file {path.name} is unusable: {why} — keeping it for farmd's reconcile")
-        return 1
-    try:
-        delivered = process(task, slugify(task_project(task)["name"]))
-    except Exception as exc:
-        log(f"run {task['run_id']}: result not delivered ({exc}) — keeping the task file for farmd's reconcile")
-        return 1
-    if not delivered:
-        log(f"run {task['run_id']}: farmd did not accept the result — keeping the task file for farmd's reconcile")
-        return 1
-    path.unlink(missing_ok=True)
-    return 0
-
-
-def main() -> int | None:
-    parser = argparse.ArgumentParser()
-    mode = parser.add_mutually_exclusive_group(required=True)
-    mode.add_argument("--task", help="run this one claimed task file and exit (how farmd launches PM steps)")
-    mode.add_argument("--project", help="legacy polling loop over queue/pm (tests and rollback only)")
-    parser.add_argument("--once", action="store_true", help="process one task and exit (testing)")
-    args = parser.parse_args()
-    if args.task:
-        return run_task(Path(args.task))
-    project_slug = slugify(args.project)
-
-    ensure_dirs()
-    queue = QUEUE_DIR / "pm"
-    log(f"PM agent up for project '{args.project}' (queue: {queue})")
-
-    failures: dict = {}
-    while True:
-        outcome = poll_once(queue, project_slug, failures)
-        if args.once and outcome in ("processed", "reported", "stale"):
-            return
-        if outcome == "idle":
-            time.sleep(1 if args.once else 2)
-        elif outcome == "skipped":
-            # Only unusable files are queued and none has earned a report yet.
-            # Without this the loop would spin at 100% CPU now that the file
-            # survives the poll instead of being deleted.
-            time.sleep(2)
-
-
-if __name__ == "__main__":
-    try:
-        sys.exit(main())
-    except KeyboardInterrupt:
-        log("interrupted — exiting")
-        sys.exit(130)
+    outcome = {"summary": summary, "patch": patch}
+    if artifact:
+        outcome["artifacts"] = {"artifact_md": artifact}
+    return outcome

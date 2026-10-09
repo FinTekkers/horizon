@@ -17,8 +17,8 @@ from types import SimpleNamespace
 import pytest
 
 from domain.py import fields, steps
-from farm import agent_runner, pm_agent
-from farm.pm_agent import PATCH_FIELDS, ROLE_PROMPT, render_role_prompt
+from farm import agent_runner, pm_steps
+from farm.pm_steps import PATCH_FIELDS, ROLE_PROMPT, render_role_prompt
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 PM_MD = REPO_ROOT / "farm" / "roles" / "pm.md"
@@ -56,13 +56,10 @@ def _task(label: str) -> dict:
     }
 
 
-class _Ok:
-    status_code = 200
-
-
 @pytest.fixture
-def pm(tmp_path, monkeypatch):
-    """Runs the real process() with run_agent and httpx.post stubbed."""
+def pm(run_pm_step):
+    """Runs a real PM step through step_agent.main() with run_agent and the
+    result post stubbed (run_pm_step)."""
     lane = SimpleNamespace(replies=[], calls=[], posted=[])
 
     def fake_run_agent(prompt, **kw):
@@ -72,19 +69,11 @@ def pm(tmp_path, monkeypatch):
             nxt = nxt()
         return {"result": nxt, "session_id": "sess-264"}
 
-    def fake_post(url, json=None, timeout=None):
-        lane.posted.append(json)
-        return _Ok()
-
-    monkeypatch.setattr(pm_agent, "run_agent", fake_run_agent)
-    monkeypatch.setattr(pm_agent.httpx, "post", fake_post)
-    monkeypatch.setattr(pm_agent, "session_file", lambda slug: tmp_path / f"pm-session-{slug}.txt")
-
     def run(*replies, label="Set guardrails"):
         lane.replies = list(replies)
         lane.calls.clear()
         lane.posted.clear()
-        pm_agent.process(_task(label), "proj")
+        lane.posted.append(run_pm_step(_task(label), fake_run_agent))
         assert len(lane.posted) == 1
         return lane.posted[0]
 
@@ -127,7 +116,7 @@ def test_no_budget_literal_for_metric_or_guardrails_in_the_agent_or_prompt():
     # Built from PATCH_FIELDS: typing the number here would make this file a
     # field-limit pair site (server/test/domain-one-field-declaration.test.mjs).
     literal = re.compile("|".join(rf"{key}\D{{0,20}}\b{PATCH_FIELDS[key]}\b" for key in BUDGETED))
-    for path in (REPO_ROOT / "farm" / "pm_agent.py", PM_MD):
+    for path in (REPO_ROOT / "farm" / "pm_steps.py", PM_MD):
         assert not literal.search(path.read_text()), path
 
 
@@ -256,7 +245,7 @@ def test_an_over_budget_desc_is_still_cut_and_marked_as_today(pm):
     assert len(pm.calls) == 1
     assert result["ok"] is True
     assert result["patch"]["metric"] == "fits"
-    assert result["patch"]["desc"] == pm_agent._mark_truncated(desc, PATCH_FIELDS["desc"])
+    assert result["patch"]["desc"] == pm_steps._mark_truncated(desc, PATCH_FIELDS["desc"])
     assert "chars omitted" in result["patch"]["desc"]
 
 

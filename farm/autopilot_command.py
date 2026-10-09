@@ -10,7 +10,7 @@ reply.
 with no server call at all: turning Autopilot on stays Admin + PIN only, and
 a reply that never asked the server can say nothing about the project.
 
-Senders outside FARM_WA_ALLOWED_JIDS never get here — poll_once drops them
+Senders outside FARM_WA_ALLOWED_JIDS never get here — poll_messages_once drops them
 silently first, so a stranger learns nothing.
 """
 

@@ -409,7 +409,7 @@ def test_an_exhaustion_from_the_first_attempt_is_never_retried():
 
 
 def test_a_parsed_but_invalid_reply_still_takes_the_lossless_retry():
-    """pm_agent and concierge_agent both validated inside their retry block, so
+    """The PM steps and concierge_agent both validated inside their retry block, so
     a reply that PARSES but is missing a required field takes the retry. Moving
     the parse out without moving the validator in would have silently removed
     that."""
@@ -492,7 +492,7 @@ def test_the_retry_prompt_for_a_scanner_only_parse_is_the_pre_scanner_error():
 
 
 def test_a_validator_rejecting_a_scanned_object_still_sends_the_pre_scanner_prompt():
-    """pm_agent and concierge_agent validate inside the envelope, so on this input
+    """The PM steps and concierge_agent validate inside the envelope, so on this input
     it is the validator that rejects the `{}`. The model must still be asked to
     try again with the parse error it was given before attempt 3 existed."""
     calls = []
@@ -525,7 +525,7 @@ def test_the_scanned_object_is_the_fallback_when_the_retry_will_not_parse_either
 
 def test_the_fallback_is_validated_before_it_is_used():
     """validate()'s return value is what the caller consumes, so an unvalidated
-    fallback would hand pm_agent the wrong shape entirely. A fallback that
+    fallback would hand a PM step the wrong shape entirely. A fallback that
     cannot pass the validator is no fallback: the retry's failure stands."""
     with pytest.raises(AgentError, match="no JSON object"):
         parse_agent_reply(

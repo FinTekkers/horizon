@@ -57,12 +57,11 @@ Tmux layout (observable by attaching at any time):
 
 ### Agent execution
 
-- **PM (long-running):** `farm/pm_agent.py` runs inside its tmux session. It
-  is a *script* (control stays with us) that holds a persistent Claude Agent
-  SDK session primed with the project context (repo READMEs, open items,
-  lifecycle rules). farmd hands it Plan-phase steps over a local queue; it
-  answers with structured JSON. Context persists across items; the session
-  restarts with the farm.
+- **PM steps:** since HZ-371 `farm/step_agent.py` runs them too, one
+  per-task session each (HZ-212), with the PM-specific prompt, budgets and
+  validation in `farm/pm_steps.py`. Nothing is resumed: the project-context
+  block in the prompt (HZ-204) is the only memory of other items. They still
+  queue on their own lane, one at a time.
 - **Ephemeral (Architect / Ensemble / Eng / QA / DevOps):** one headless
   Claude Code invocation per step (`claude -p` via the SDK), system prompt
   from `farm/roles/<role>.md`, cwd = the item's repo workspace, JSON output

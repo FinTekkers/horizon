@@ -3,7 +3,7 @@
 // integers with no relationship: the API accepted outcome 4000 / metric 2000 /
 // guardrails 2000 (server/src/app.js's POST /api/items body schema) while the PM
 // agent's own revision path capped the same three fields at 500 / 400 / 400
-// (farm/pm_agent.py's PATCH_FIELDS). HZ-114 made those cuts marked rather than
+// (farm/pm_steps.py's PATCH_FIELDS). HZ-114 made those cuts marked rather than
 // silent, but a PM revision still could not write what the API accepted. One
 // declaration now, in domain/fields.json, and the PM caps are the API's.
 //
@@ -130,7 +130,7 @@ export function intakeFields(fields = FIELDS) {
 
 // DERIVED, never hand-typed — this is success criterion 3, from the JS side.
 // Keyed by COLUMN, because that is the key a PM patch and the work_item UPDATE
-// both use, and in authored order, because farm/pm_agent.py's validate()
+// both use, and in authored order, because farm/pm_steps.py's validate()
 // iterates it and server/src/orchestrator.js's FARM_PATCH_FIELDS is its key
 // list. domain/py/fields.py's patch_limits() derives the identical mapping;
 // server/test/domain-fields-parity.test.mjs diffs the two, order included.
@@ -139,7 +139,7 @@ export function patchLimits(fields = FIELDS) {
 }
 
 // HZ-345: the line budget for each field that declares `maxLines` — metric and
-// guardrails. Keyed by column, like patchLimits(). farm/pm_agent.py's
+// guardrails. Keyed by column, like patchLimits(). farm/pm_steps.py's
 // line_limits() is the same derivation; fields-cases.json drives both.
 export function lineLimits(fields = FIELDS) {
   return Object.fromEntries(fields.filter((f) => f.maxLines !== undefined).map((f) => [f.column, f.maxLines]))

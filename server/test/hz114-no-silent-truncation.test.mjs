@@ -9,7 +9,7 @@
 // touched, each proven to either carry oversized input through in full, or
 // cut it at a boundary with a marker that says so.
 //
-// The Python-side sites (farm/rules.py, farm/pm_agent.py, farm/step_agent.py)
+// The Python-side sites (farm/rules.py, farm/pm_steps.py, farm/step_agent.py)
 // have the equivalent checklist in farm/tests/test_hz114_no_silent_truncation.py.
 
 import { test } from 'node:test'

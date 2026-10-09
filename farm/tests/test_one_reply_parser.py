@@ -1,6 +1,6 @@
 """HZ-156: farm/agent_runner.py is the ONLY module that parses a model reply.
 
-Before this item, pm_agent, step_agent and concierge_agent each carried their
+Before this item, the PM runner, step_agent and concierge_agent each carried their
 own copy of the parse-then-retry-once path, and they had already drifted. A
 shared helper only stays shared if a test fails when someone stops using it,
 so this module is that test.
@@ -246,7 +246,7 @@ def test_a_file_or_env_read_is_not_flagged(tmp_path, body):
 
 def test_the_scanned_set_names_the_three_known_callers():
     scanned = {p.name for p in farm_modules()}
-    assert {"pm_agent.py", "step_agent.py", "concierge_agent.py"} <= scanned
+    assert {"pm_steps.py", "step_agent.py", "concierge_agent.py"} <= scanned
 
 
 def test_the_walk_reaches_subpackages():
@@ -290,7 +290,7 @@ def test_the_transport_exemption_covers_exactly_two_call_sites():
 # WHAT IT PROVES, precisely: that the notes element is bound to a usable name
 # which is read somewhere else in the module. It does NOT prove the notes reach
 # a human — a `notes` that is reassigned before use would pass. Asserting that
-# end to end is the job of the per-caller tests in test_pm_agent.py,
+# end to end is the job of the per-caller tests in test_pm_steps.py,
 # test_step_agent.py and test_concierge.py; this rule catches the mechanical
 # discard those tests would not notice being added to a fourth call site.
 
@@ -380,7 +380,7 @@ def test_the_notes_rule_flags_a_planted_offender(source, why):
 @pytest.mark.parametrize(
     "source",
     [
-        # pm_agent's real shape
+        # the PM step's real shape
         "(s, p, a), notes = parse_agent_reply(r, retry, validate=v)\nuse(notes)\n",
         # concierge_agent's real shape
         "(r2, ac, nt, go), parse_notes = parse_agent_reply(r, retry, validate=v)\n"
@@ -409,8 +409,7 @@ def test_the_notes_rule_scans_the_modules_that_really_call_the_helper():
         "caretaker_ruling.py": 1,  # HZ-273's ruling proposal
         "concierge_agent.py": 1,
         "conflict_resolver.py": 2,  # the resolution agent and the scoped review
-        "pm_agent.py": 1,
-        "step_agent.py": 2,  # _run_and_parse, plus the implement step's own call
+        "step_agent.py": 3,  # _run_and_parse, the implement step's own call, the PM step kind's
     }
     found: dict[str, int] = {}
     for label, tree in _trees_for(farm_modules()):

@@ -136,7 +136,7 @@ test('the production-code scope is not vacuous', () => {
   assert.ok(inScope.length > 50, `only ${inScope.length} production file(s) in scope`)
   // The file that held three of the four copies must be in scope, or the check
   // below could never have caught the regression it exists for.
-  assert.ok(inScope.includes('farm/pm_agent.py'))
+  assert.ok(inScope.includes('farm/pm_steps.py'))
   assert.ok(inScope.includes('farm/roles/pm.md'))
   assert.ok(inScope.includes('server/src/app.js'))
   assert.ok(inScope.includes('domain/fields.json'))

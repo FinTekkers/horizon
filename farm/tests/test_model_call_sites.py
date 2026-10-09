@@ -8,7 +8,7 @@ seed every bypass to prove the checker actually catches it.
 
 Which model each call site really receives — the half an AST walk cannot
 see — is asserted by the recording-provider tests beside each module's own
-suite (test_pm_agent.py, test_step_agent.py, test_concierge.py,
+suite (test_pm_steps.py, test_step_agent.py, test_concierge.py,
 test_conflict_scoped.py).
 
 The two repo scans pin the env-var and "no model id outside domain/"
@@ -27,17 +27,16 @@ FARM_DIR = REPO_ROOT / "farm"
 THIS_FILE = Path(__file__).resolve()
 
 CALLER_MODULES = (
-    "pm_agent.py",
     "step_agent.py",
     "concierge_agent.py",
     "conflict_resolver.py",
     "handoff.py",
     "caretaker_ruling.py",
 )
-# 2 in pm_agent, 3 in step_agent, 2 in concierge_agent, 2 in conflict_resolver,
-# 1 in handoff (HZ-158's note from an exhausted session), 1 in caretaker_ruling
-# (HZ-273's ruling proposal).
-EXPECTED_CALL_SITES = 11
+# 4 in step_agent (one is the PM step kind's, HZ-371), 2 in concierge_agent,
+# 2 in conflict_resolver, 1 in handoff (HZ-158's note from an exhausted
+# session), 1 in caretaker_ruling (HZ-273's ruling proposal).
+EXPECTED_CALL_SITES = 10
 
 
 def call_site_problems(source: str, filename: str) -> tuple[int, list[str]]:

@@ -1,6 +1,6 @@
 """The WhatsApp concierge loop. Runs inside tmux session farm-concierge-_shared.
 
-A deliberate *script* around the model, same shape as pm_agent.py: it polls
+A deliberate *script* around the model, same shape as step_agent.py: it polls
 the WhatsApp transport, maps each allowed inbound message to one resumed
 Claude call, validates the reply against a two-action whitelist
 (set_priority, feedback), executes the survivors against the Node server's
@@ -462,7 +462,7 @@ def _send_safely(transport: Transport, chat_jid: str, text: str) -> None:
         log(f"send to {chat_jid} failed: {exc}")
 
 
-def poll_once(
+def poll_messages_once(
     transport: Transport, state: ConciergeState, base_url: str = HORIZON_URL, farmd_url: str = FARMD
 ) -> int:
     """One poll pass; returns how many messages went through the agent."""
@@ -548,7 +548,7 @@ def main() -> None:
 
     while True:
         try:
-            poll_once(transport, state)
+            poll_messages_once(transport, state)
         except TransportError as exc:
             log(f"transport error (bridge down or re-pair needed?): {exc}")
         except Exception as exc:

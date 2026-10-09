@@ -58,12 +58,7 @@ const LITERALS_ALLOWED = {
   'farm/tests/test_farmd.py': 'asserts the exact reason value farmd relays on the wire — the no-behaviour-change pin',
   'farm/tests/test_step_agent.py': 'asserts the exact reason value step_agent.py reports for an exhausted turn budget',
   'farm/tests/test_providers_muse.py': 'kwargs.get("timeout") on a subprocess call — an httpx/subprocess option, not a reason',
-  // HZ-130 added a stubbed httpx.post that records its `timeout` kwarg by name.
-  // Same false positive as test_providers_muse.py above, one file over: a
-  // keyword-argument name, not a reason on the wire. Added by HZ-134, which is
-  // when the list was next looked at — this entry was missing and the assertion
-  // below had been failing since.
-  'farm/tests/test_pm_agent.py': 'a stubbed httpx.post recording its "timeout" kwarg — an option name, not a reason',
+  'farm/tests/test_pm_steps.py': 'asserts the exact reason value a PM step reports for an exhausted turn budget',
   // HZ-115's spawn benchmark asserts every subprocess it measures was given a
   // timeout, so the fake runner's recorded kwargs are checked by name. Third
   // instance of the same false positive as the two entries above: a

@@ -1352,7 +1352,7 @@ const PROJECT_CONTEXT_FEEDBACK = 5
 // HZ-204 (HZ-115 Stage 1): the explicit context a PM step gets in place of a
 // resumed session's memory — other recent items in the same project and the
 // latest human feedback already delivered to PM-lane steps. This only SELECTS
-// rows; farm/pm_agent.py's render_project_context() owns all trimming and the
+// rows; farm/pm_steps.py's render_project_context() owns all trimming and the
 // size cap, so there is one owner for the budget.
 //
 // `rejected` is deliberately not filtered on: it means "sent back right now"
@@ -1405,7 +1405,7 @@ export function markFarmRunStarted(runId) {
 }
 
 // Which work_item columns an agent may patch — DERIVED from domain/fields.json
-// (HZ-134), the same document farm/pm_agent.py builds its PATCH_FIELDS from, so
+// (HZ-134), the same document farm/pm_steps.py builds its PATCH_FIELDS from, so
 // the two sides of the wire cannot disagree about which fields exist. Only the
 // key list is needed here: the limits themselves are enforced agent-side, at the
 // point the over-long value is produced, where a marker can still be attached.

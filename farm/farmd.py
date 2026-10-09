@@ -259,10 +259,10 @@ def workspace_mutating_indexes(step_table: list[dict]) -> set[int]:
     return {entry["index"] for entry in step_table if entry.get("workspaceMutating")}
 
 
-# Lane routing: which queue and agent module handle a dispatched step — the
-# PM lane ("pm": queue/pm, farm.pm_agent, capped at PM_LANE_CAP) or the
-# ephemeral lane ("runs": queue/runs, farm.step_agent, MAX_EPHEMERAL). Since
-# HZ-212 both run as per-task farm-run-* sessions; runsIn keeps its name.
+# Lane routing: which queue and cap handle a dispatched step — the PM lane
+# ("pm": queue/pm, capped at PM_LANE_CAP) or the ephemeral lane ("runs":
+# queue/runs, MAX_EPHEMERAL). Since HZ-212 both run as per-task farm-run-*
+# sessions; since HZ-371 both launch farm.step_agent. runsIn keeps its name.
 # HZ-117: derived from steps.STEPS's runsIn field. An index absent
 # from the table (e.g. a gate, which is never dispatched here at all) falls
 # back to `default` — preserves the pre-HZ-117 behavior for an unrecognized
@@ -444,8 +444,8 @@ def _forward_test_runs(run_id, test_runs: list) -> None:
 def _report_unusable_task(path: Path, why: str) -> bool:
     """HZ-130, moved here with the PM inbox (HZ-212): a queue/pm file that
     can never be launched is reported once, under the same retryable reason
-    pm_agent used, and released only once the server took it (or no longer
-    knows the run). Otherwise it stays for the next tick."""
+    the old PM runner used, and released only once the server took it (or no
+    longer knows the run). Otherwise it stays for the next tick."""
     run_id = path.stem
     error = f"farmd: PM task file {path.name} was unusable: {why}"
     print(f"farmd: run {run_id}: {error}", flush=True)
@@ -651,13 +651,12 @@ def _claim_and_launch(task_path, runs_dir: Path, repo_root: Path) -> str | None:
     if _refresh_rules(task):
         _write_task_atomic(claimed, task)
     name = _run_session_name(task)
-    # HZ-212: the step's lane picks the agent module; the launch is otherwise
-    # identical — same session naming, same per-run log, fresh interpreter
-    # and env on every step.
-    module = "farm.pm_agent" if lane_for_index(steps.STEPS, task["step"]["index"]) == "pm" else "farm.step_agent"
+    # HZ-212: same session naming, same per-run log, fresh interpreter and
+    # env on every step. HZ-371: one runner for both lanes — the lane only
+    # decides the queue and the cap.
     tmux_mgr.new_session(
         name,
-        f"{sys.executable} -m {module} --task {claimed}",
+        f"{sys.executable} -m farm.step_agent --task {claimed}",
         cwd=str(repo_root),
         log_file=str(LOGS_DIR / f"{name}.log"),
     )
@@ -680,7 +679,7 @@ def _queued(queue: Path) -> list[Path]:
 
 def _dispatch_pm_lane(runs_dir: Path, repo_root: Path) -> None:
     launch, unusable = _select_pm_dispatchable(_queued(QUEUE_DIR / "pm"), _ephemeral_sessions())
-    # One report per tick, as pm_agent's poll did: a report can block on the
+    # One report per tick, as the old PM poll did: a report can block on the
     # server for up to two timeouts, and this thread also feeds the runs lane.
     for task_path, why in unusable[:1]:
         _report_unusable_task(task_path, why)
@@ -990,9 +989,9 @@ async def steps_run(request: Request):
         return JSONResponse({"error": "missing item.repo"}, status_code=400)
     if not (workspaces.hub_path(item_repo) / ".git").exists():
         _provision_hub(item_repo)
-    # Plan/review-summary steps go to the PM lane (farm.pm_agent, one at a
-    # time); everything else to the ephemeral lane (farm.step_agent, bounded
-    # by FARM_MAX_EPHEMERAL). The dispatcher launches both (HZ-212). HZ-117: which is which
+    # Plan/review-summary steps go to the PM lane (one at a time); everything
+    # else to the ephemeral lane (bounded by FARM_MAX_EPHEMERAL). Both launch
+    # farm.step_agent (HZ-371). The dispatcher launches both (HZ-212). HZ-117: which is which
     # comes from steps.STEPS's runsIn field, not a hardcoded index tuple.
     #
     # Project/repo rules are stamped into the task at enqueue (HZ-9) as a
@@ -1342,17 +1341,6 @@ async def steps_cancel(request: Request):
         # Queued (or already gone): no agent ran, so there is nothing to save.
         response["checkpoint"] = checkpoint or {"outcome": "not_running", "detail": "no agent was running"}
     return response
-
-
-@app.post("/internal/steps/started")
-async def internal_steps_started(request: Request):
-    """The legacy PM polling loop's equivalent of the dispatcher's own
-    _notify_started call (HZ-57). Since HZ-212 farmd claims PM tasks and
-    notifies itself; kept for pm_agent's --project mode (tests, rollback)."""
-    body = await request.json()
-    run_id = str(body.get("run_id"))
-    active = _notify_started(run_id)
-    return {"ok": True, "active": active}
 
 
 @app.get("/internal/snapshot")

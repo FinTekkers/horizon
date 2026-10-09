@@ -1,4 +1,4 @@
-"""HZ-274: the WhatsApp Autopilot kill switch, through poll_once.
+"""HZ-274: the WhatsApp Autopilot kill switch, through poll_messages_once.
 
 The server half (the owner check, the 'off'-only write, the audit row) is
 server/test/autopilot-off-via-whatsapp.test.mjs, which posts the same literal
@@ -46,7 +46,7 @@ def poll(stub, text, sender, slug):
     t = FakeTransport()
     state = ca.ConciergeState(slug, t)  # baselines before the message is seeded
     t.seed(text, sender=sender, chat=sender)
-    ca.poll_once(t, state, base_url=stub.url, farmd_url=stub.url)
+    ca.poll_messages_once(t, state, base_url=stub.url, farmd_url=stub.url)
     return t, state
 
 

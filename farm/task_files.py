@@ -1,8 +1,8 @@
-"""Reading a queued task file — shared by farmd's dispatcher and the PM agent.
+"""Reading a queued task file — shared by farmd's dispatcher and the PM steps.
 
 HZ-212: farmd now claims PM tasks itself, so the boundary check that used to
-live only in pm_agent.py has two callers. It lives here rather than in
-pm_agent.py because importing pm_agent renders farm/roles/pm.md at import
+live only in the PM runner has two callers. It lives here rather than in
+pm_steps.py because importing pm_steps renders farm/roles/pm.md at import
 time, which farmd has no reason to do.
 """
 
