@@ -429,7 +429,12 @@ function PauseBanner({ item }) {
       <div className="pause-banner__title">{reason.label || 'Paused'}</div>
       <div className="pause-banner__detail">
         {reason.detail && <span>{reason.detail} </span>}
-        {reason.cause || 'No failure details were recorded for this pause — check the activity feed below.'}
+        {reason.cause ? (
+          // pre-line: a check failure's first line is its headline (HZ-366).
+          <span className="pause-banner__cause">{reason.cause}</span>
+        ) : (
+          'No failure details were recorded for this pause — check the activity feed below.'
+        )}
       </div>
       <div className="pause-banner__meta">{attemptsText} · Resume to retry</div>
     </div>

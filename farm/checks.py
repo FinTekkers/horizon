@@ -69,13 +69,24 @@ class CheckFailure(RuntimeError):
 
     `digest` is the redacted failure_digest() of the failing command's
     output — empty when there is no output to digest (a timeout, nothing
-    detected). step_agent checkpoints it into the WIP commit body (HZ-184)."""
+    detected). step_agent checkpoints it into the WIP commit body (HZ-184).
+
+    `headline` (HZ-366) is the redacted one-line failure_headline() that
+    starts the message — empty when none could be parsed."""
 
     def __init__(
-        self, message: str, digest: str = "", *, command: str | None = None, tail: str = "", reason: str = "failed"
+        self,
+        message: str,
+        digest: str = "",
+        *,
+        command: str | None = None,
+        tail: str = "",
+        reason: str = "failed",
+        headline: str = "",
     ):
         super().__init__(message)
         self.digest = digest
+        self.headline = headline
         self.command = command
         self.tail = tail
         self.reason = reason
@@ -151,6 +162,7 @@ _SUMMARY_LINE = re.compile(
     r"|^\s*ℹ\s*(tests|suites|pass|fail|cancelled|skipped|todo)\s+\d+"
     r"|^\s*Tests:"
 )
+_NONZERO_FAILURE = re.compile(r"\b0*[1-9]\d* (failed|failing|errors?)\b|^\s*[#ℹ]\s*(fail|cancelled)\s+0*[1-9]")
 
 # Env var names whose values are secrets, and token shapes that are secrets
 # wherever they appear. A denylist: it can miss an unusual shape, which is why
@@ -177,11 +189,21 @@ def redact(text: str, env) -> str:
     return _TOKEN_SHAPES.sub(REDACTED, text)
 
 
+def _zero_failure_summary(line: str) -> bool:
+    """A summary-count line that reports no failure: `# fail 0`, `0 failed`,
+    or one with no failure term at all (`# pass 4`, `71 passed`)."""
+    return bool(_SUMMARY_LINE.search(line)) and not _FAIL_LINE.search(line) and not _NONZERO_FAILURE.search(line)
+
+
 def failure_digest(output: str, max_chars: int = DIGEST_MAX_CHARS) -> str:
     """Every failure line, then every summary-count line, then the last
-    DIGEST_TAIL_LINES lines (newest first), each line kept once and printed in
-    its original order. Over max_chars, the lower-priority lines are the ones
-    dropped, and a marker says how many."""
+    DIGEST_TAIL_LINES lines (newest first), each line kept once. Over
+    max_chars, the lower-priority lines are the ones dropped, and a marker
+    says how many.
+
+    Kept lines print in their original order, except (HZ-366) that summaries
+    reporting 0 failures go last: a compound command's earlier all-pass runs
+    (`# pass 4`, `# fail 0`) must not read as the result."""
     lines = [line.rstrip()[:DIGEST_LINE_MAX_CHARS] for line in output.splitlines()]
     failures = [i for i, line in enumerate(lines) if _FAIL_LINE.search(line)]
     summaries = [i for i, line in enumerate(lines) if _SUMMARY_LINE.search(line)]
@@ -197,11 +219,243 @@ def failure_digest(output: str, max_chars: int = DIGEST_MAX_CHARS) -> str:
         if used + len(lines[i]) + 1 <= budget:
             kept.add(i)
             used += len(lines[i]) + 1
-    digest = "\n".join(lines[i] for i in sorted(kept))
+    digest = "\n".join(lines[i] for i in sorted(kept, key=lambda i: (_zero_failure_summary(lines[i]), i)))
     omitted = len(wanted) - len(kept)
     if omitted:
         digest += f"\n… {omitted} more lines omitted"
     return digest
+
+
+# ---- failure headline (HZ-366) ----
+# The step's event, the pause banner and the Autopilot ping show only the
+# start of a failed check's message, so its first line says what failed:
+# `<label>: N failed, M passed: file:line "title", :line "title"`.
+# server/src/caretakerActor.js reads that line back by CHECK_HEADLINE_PREFIX,
+# the same text as HEADLINE_PREFIX — keep the two in step.
+HEADLINE_PREFIX = "repo checks failed: "
+# failFarmRun keeps 200 characters of the error; HEADLINE_PREFIX takes 20.
+HEADLINE_MAX_CHARS = 170
+HEADLINE_TESTS_MAX = 5
+# Titles are cut through these caps before any whole test is dropped.
+_HEADLINE_TITLE_CAPS = (None, 60, 40, 24, 12)
+_ANSI = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
+_RUN_TIME = r"(?:\s+\([\d.]+\s*m?s\))?"
+# Playwright's list reporter: `  2 failed`, then one `[project] › file:line:col
+# › title` line per test; the same location shape heads each failure's detail.
+_PW_FAILED = re.compile(r"^\s*(\d+) failed\s*$")
+_PW_PASSED = re.compile(r"^\s*(\d+) passed\b")
+_PW_LOCATION = re.compile(r"^\s*(?:\d+\)\s+)?(?:\[[^\]]+\]\s+›\s+)?(\S+?):(\d+):\d+\s+›\s+(.+?)[\s─]*$")
+_NODE_COUNT = re.compile(r"^\s*[#ℹ]\s*(pass|fail)\s+(\d+)\s*$")
+_NODE_NAMES = (
+    re.compile(r"^\s*not ok \d+ - (.+?)\s*(?:#.*)?$"),
+    re.compile(rf"^\s*✖\s+(?!failing tests:)(.+?){_RUN_TIME}\s*$"),
+)
+_NODE_RECAP = re.compile(r"^\s*✖\s+failing tests:")
+_PYTEST_FAILED = re.compile(r"^FAILED (\S+?)(?:\s+-\s.*)?$")
+_PYTEST_SUMMARY = re.compile(r"\b(\d+) failed\b.*\bin [\d.]+s\b")
+_PYTEST_PASSED = re.compile(r"\b(\d+) passed\b")
+_GRADLE_TEST = re.compile(r"^(\S[^>]*?) > (.+?) FAILED\s*$")
+_GRADLE_TASK = re.compile(r"^> Task (\S+) FAILED\s*$")
+_GRADLE_COUNT = re.compile(r"\b(\d+) tests? completed, (\d+) failed(?:, (\d+) skipped)?")
+
+
+def _command_label(shown: str) -> str:
+    """The short name the headline starts with: `npm run test:e2e` → e2e,
+    `npm test` → test, pytest → pytest, gradlew → gradle, anything else the
+    program's name."""
+    script = shown[len("sh -c ") :] if shown.startswith("sh -c ") else shown
+    script = re.split(r"&&|\|\||[;|\n]", script, maxsplit=1)[0]
+    try:
+        tokens = shlex.split(script)
+    except ValueError:
+        tokens = script.split()
+    tokens = [t for t in tokens if not re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", t)]
+    if not tokens:
+        return "check"
+    names = [Path(t).name for t in tokens]
+    if names[0] in ("npm", "pnpm", "yarn"):
+        args = [t for t in tokens[1:] if not t.startswith("-")]
+        if args[:1] == ["run"] and len(args) > 1:
+            return args[1].split(":")[-1] or args[1]
+        return args[0] if args else names[0]
+    if "pytest" in names or "py.test" in names:
+        return "pytest"
+    if names[0] in ("gradlew", "gradle"):
+        return "gradle"
+    return names[0] or "check"
+
+
+def _block(pos: int, failed: int | None, passed: int | None, tests: list[tuple]) -> dict:
+    return {"pos": pos, "failed": failed, "passed": passed, "tests": tests}
+
+
+def _playwright_blocks(lines: list[str]) -> list[dict]:
+    blocks = []
+    for i, line in enumerate(lines):
+        match = _PW_FAILED.match(line)
+        if not match:
+            continue
+        tests, passed = [], None
+        j = i + 1
+        while j < len(lines) and (loc := _PW_LOCATION.match(lines[j])):
+            tests.append((loc.group(1), int(loc.group(2)), loc.group(3).split(" › ")[-1]))
+            j += 1
+        # `N flaky` / `N skipped` / `N passed` follow, before any next run.
+        while j < len(lines) and not _PW_FAILED.match(lines[j]) and j - i < 200:
+            if found := _PW_PASSED.match(lines[j]):
+                passed = int(found.group(1))
+                break
+            j += 1
+        blocks.append(_block(i, int(match.group(1)), passed, tests))
+    return blocks
+
+
+def _node_blocks(lines: list[str]) -> list[dict]:
+    blocks, names, passed, recap = [], [], None, set()
+    for i, line in enumerate(lines):
+        if count := _NODE_COUNT.match(line):
+            if count.group(1) == "pass":
+                passed = int(count.group(2))
+            else:
+                blocks.append(_block(i, int(count.group(2)), passed, [(None, None, n) for n in names]))
+                names, passed, recap = [], None, set()
+            continue
+        if _NODE_RECAP.match(line) and blocks:
+            # The spec reporter lists the failures again after the counts.
+            recap = {test[2] for test in blocks[-1]["tests"]}
+            continue
+        for pattern in _NODE_NAMES:
+            if (found := pattern.match(line)) and found.group(1).strip() not in {*names, *recap}:
+                names.append(found.group(1).strip())
+                break
+    if names:
+        blocks.append(_block(len(lines), None, None, [(None, None, n) for n in names]))
+    return blocks
+
+
+def _pytest_blocks(lines: list[str]) -> list[dict]:
+    blocks, tests = [], []
+    for i, line in enumerate(lines):
+        if found := _PYTEST_FAILED.match(line):
+            path, _, test = found.group(1).partition("::")
+            tests.append((path, None, test) if test else (None, None, path))
+        elif summary := _PYTEST_SUMMARY.search(line):
+            passed = _PYTEST_PASSED.search(line)
+            blocks.append(_block(i, int(summary.group(1)), int(passed.group(1)) if passed else None, tests))
+            tests = []
+    if tests:
+        blocks.append(_block(len(lines), None, None, tests))
+    return blocks
+
+
+def _gradle_blocks(lines: list[str]) -> list[dict]:
+    blocks, tests, tasks = [], [], []
+    for i, line in enumerate(lines):
+        if found := _GRADLE_TEST.match(line):
+            tests.append((found.group(1).strip(), None, found.group(2).strip()))
+        elif found := _GRADLE_TASK.match(line):
+            tasks.append((None, None, found.group(1)))
+        elif count := _GRADLE_COUNT.search(line):
+            completed, failed = int(count.group(1)), int(count.group(2))
+            passed = completed - failed - int(count.group(3) or 0)
+            blocks.append(_block(i, failed, passed if passed >= 0 else None, tests or tasks))
+            tests, tasks = [], []
+    # A `> Task :x FAILED` after the counts belongs to them; tasks name the
+    # failure only when nothing else did.
+    if tests or (tasks and not blocks):
+        blocks.append(_block(len(lines), None, None, tests or tasks))
+    return blocks
+
+
+def _runner_summary(output: str) -> dict | None:
+    """The last block, from any runner, that reports a failure: a failed count
+    above 0, or failing names with no count. A compound command (`sh -c` of
+    unit then e2e) prints several; their all-pass blocks never qualify."""
+    lines = [_ANSI.sub("", line).rstrip() for line in output.splitlines()]
+    blocks = [
+        block
+        for parse in (_playwright_blocks, _node_blocks, _pytest_blocks, _gradle_blocks)
+        for block in parse(lines)
+        if (block["failed"] or 0) > 0 or (block["failed"] is None and block["tests"])
+    ]
+    return max(blocks, key=lambda block: block["pos"]) if blocks else None
+
+
+def _stored_summary(rows: list[dict], output: str) -> dict | None:
+    """Counts and names from the stored per-test results (HZ-327). The one
+    row _test_rows() writes for a command with no report (no file, no suite)
+    is not a test and never counts. A row's line comes only from a Playwright
+    location in the output with the same title; none is ever made up."""
+    real = [row for row in rows if row.get("file") is not None or row.get("suite") is not None]
+    failed = [row for row in real if row.get("status") == "fail"]
+    if not failed:
+        return None
+    where: dict[str, tuple[str, int]] = {}
+    for line in output.splitlines():
+        if loc := _PW_LOCATION.match(_ANSI.sub("", line)):
+            title = loc.group(3)
+            for key in (title, title.split(" › ")[-1]):
+                where.setdefault(key, (loc.group(1), int(loc.group(2))))
+    tests = []
+    for row in failed:
+        title = str(row.get("test") or "")
+        found = where.get(title) or where.get(title.split(" › ")[-1])
+        if found:
+            tests.append((found[0], found[1], title.split(" › ")[-1]))
+        else:
+            tests.append((row.get("file"), None, title))
+    passed = sum(1 for row in real if row.get("status") == "pass")
+    return {"failed": len(failed), "passed": passed, "tests": tests}
+
+
+def _one_line(text: str, cap: int | None) -> str:
+    text = " ".join(str(text).split())
+    return text if cap is None or len(text) <= cap else text[: cap - 1] + "…"
+
+
+def _render_headline(label: str, summary: dict, count: int, cap: int | None) -> str:
+    head = label + ":"
+    if summary["failed"] is not None:
+        head += f" {summary['failed']} failed"
+        if summary["passed"] is not None:
+            head += f", {summary['passed']} passed"
+    else:
+        head += " failed"
+    shown, previous = [], None
+    for file, line, title in summary["tests"][:count]:
+        quoted = f'"{_one_line(title, cap)}"'
+        if file and file == previous:
+            where = f":{line}" if line is not None else ""
+        elif file:
+            where = f"{_one_line(file, None)}:{line}" if line is not None else _one_line(file, None)
+        else:
+            where = ""
+        shown.append(f"{where} {quoted}" if where else quoted)
+        previous = file
+    if len(summary["tests"]) > count:
+        shown.append("…")
+    return f"{head}: {', '.join(shown)}" if shown else head
+
+
+def failure_headline(rows: list[dict], output: str, shown: str) -> str | None:
+    """One line saying what failed, or None — then the message is exactly
+    today's (HZ-366). From the stored per-test results when any test failed,
+    else from the runner's own summary. Counts appear only when parsed, and a
+    headline is never built without at least one failure.
+
+    Covers the command that failed — run_checks raises on the first one, so
+    any later command never ran."""
+    summary = _stored_summary(rows, output) or _runner_summary(output)
+    if summary is None:
+        return None
+    label = _one_line(_command_label(shown), 40)
+    tests = len(summary["tests"])
+    for count in range(min(tests, HEADLINE_TESTS_MAX), 0, -1):
+        for cap in _HEADLINE_TITLE_CAPS:
+            headline = _render_headline(label, summary, count, cap)
+            if len(headline) <= HEADLINE_MAX_CHARS:
+                return headline
+    return _one_line(_render_headline(label, summary, min(tests, 1), _HEADLINE_TITLE_CAPS[-1]), HEADLINE_MAX_CHARS)
 
 
 # ---- flake rerun + per-test results (HZ-327) ----
@@ -1053,6 +1307,9 @@ def run_checks(
                     # both built on that input, and a different one would shift
                     # the metrics without any real change behind it.
                     record["outcome"] = check_metrics.classify_failure(output[-400:], proc.returncode)
+                    # Set only when a rerun ran and failed too: its results
+                    # then name what failed. Else the first run's do.
+                    rerun_rows = None
                     if _should_rerun(proc.returncode, index, install_at, deadline):
                         # HZ-327: straight away, same command (narrowed where
                         # the runner allows), same workspace, same tree —
@@ -1110,13 +1367,27 @@ def run_checks(
                     # the scrubbed check env: a test can still print a farm
                     # secret it read some other way.
                     redacted = redact(output, secrets)
-                    digest = failure_digest(redacted)
                     shown = redact(shown, secrets)
+                    # HZ-366: JUnit titles come from the raw report, so the
+                    # headline is redacted again on its own.
+                    headline = failure_headline(
+                        rerun_rows if rerun_rows is not None else first_rows, redacted, shown
+                    )
+                    headline = _one_line(redact(headline, secrets), HEADLINE_MAX_CHARS) if headline else ""
+                    if headline:
+                        # The headline line plus the command's own line cost
+                        # len(headline) + 1 more than today's first line.
+                        digest = failure_digest(redacted, DIGEST_MAX_CHARS - len(headline) - 1)
+                        message = f"{HEADLINE_PREFIX}{headline}\n({line_label}{shown})\n{digest}"
+                    else:
+                        digest = failure_digest(redacted)
+                        message = f"repo checks failed ({line_label}{shown}):\n{digest}"
                     raise CheckFailure(
-                        f"repo checks failed ({line_label}{shown}):\n{digest}",
+                        message,
                         digest=digest,
                         command=shown,
                         tail=output_tail(redacted),
+                        headline=headline,
                     )
                 ran += 1
             record["outcome"] = "pass"
