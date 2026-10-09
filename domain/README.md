@@ -283,7 +283,7 @@ language:
   `intakeFields()` is what `POST /api/items` builds its body properties from.
   `persona` is deliberately false: it is assigned by an agent or at a gate.
 - **`agentRevisable`** — an agent may patch it later. `patchLimits()` keys by
-  `column` and is what `farm/pm_agent.py`'s `PATCH_FIELDS` and
+  `column` and is what `farm/pm_steps.py`'s `PATCH_FIELDS` and
   `server/src/orchestrator.js`'s `FARM_PATCH_FIELDS` both are, so the two sides
   of the wire cannot disagree about which fields exist. `persona` is false here
   too, as of HZ-125: the specialist routing tag became a `{agent: persona id}`
@@ -306,7 +306,7 @@ Three things adjacent to a field limit are deliberately **not** here:
   `domain-fields-consumers.test.mjs` drives `stepCommentBody` with every patchable
   column set, so a field written to the database but missing from the comment
   fails.
-- **`MARKED_PATCH_FIELDS`** (`farm/pm_agent.py`) — which over-long fields get a
+- **`MARKED_PATCH_FIELDS`** (`farm/pm_steps.py`) — which over-long fields get a
   truncation marker. A marking policy, not a limit.
 
 **`maxLength` is an INTAKE cap, not a database invariant.** HZ-114's truncation
@@ -325,7 +325,7 @@ who trusts it:
   registry-validated routing id, not prose, and a value that overruns its cap
   matches no known persona and is discarded either way — so it is hard-sliced,
   silently. Since HZ-125 it is the `personas` map rather than a `persona`
-  string, so its cap is `farm/pm_agent.py`'s `PERSONA_ID_MAX_CHARS` rather than
+  string, so its cap is `farm/pm_steps.py`'s `PERSONA_ID_MAX_CHARS` rather than
   a `maxLength` in this document.
   `test_the_routing_tag_is_still_hard_cut_with_no_marker_and_that_is_deliberate`
   pins that, reading the cap off the module so it cannot go vacuous.
@@ -359,7 +359,7 @@ The reason vocabulary has two consumers, by the same relative paths:
 `server/src/orchestrator.js` (which classifies a failure) and
 `ui/src/domain/pauseReason.js` (which renders the pause banner). The farm reaches
 it through `reasons.REASON[…]` in `farm/step_agent.py`, `farm/farmd.py` and
-`farm/pm_agent.py`.
+`farm/pm_steps.py`.
 
 The priority vocabulary has the widest consumer list of the four, which is why it
 was the most duplicated: `server/src/db.js` (the `CHECK` constraint),
@@ -485,10 +485,10 @@ here as a known limit, not hidden.
 | Cross-language field fixtures | `fixtures/fields-cases.json` + `domain-fields-cases.test.mjs` + `farm/tests/test_fields_fixtures.py` | The two field validators disagreeing about what a rule *means*, or their messages drifting. Same set-equality / non-empty / pinned-manifest guards as the lifecycle fixture |
 | Cross-language field parity | `domain-fields-parity.test.mjs` | The two field bindings drifting. Compares the authored table AND the derived `patch_limits` **including key order**, which `validate()` and `FARM_PATCH_FIELDS` both depend on |
 | API limits are derived | `api-field-limits-derived.test.mjs` | A stale `maxLength` literal in `POST /api/items`. Posts each field at exactly its limit and one over, **through the real route** — plus a structural diff of the fragment against `fields.json` |
-| PM limits are derived | `farm/tests/test_field_limits.py` | `PATCH_FIELDS` drifting from the declaration (order included), a superseded cap reappearing in `pm_agent.py`, a `pm.md` that lost its `{{FIELD_LIMITS}}` placeholder, and the marker-overshoot behaviour above |
+| PM limits are derived | `farm/tests/test_field_limits.py` | `PATCH_FIELDS` drifting from the declaration (order included), a superseded cap reappearing in `pm_steps.py`, a `pm.md` that lost its `{{FIELD_LIMITS}}` placeholder, and the marker-overshoot behaviour above |
 | One field declaration | `domain-one-field-declaration.test.mjs` | A second copy of a field limit anywhere in the tree — structurally (three or more field/limit pairs in one file) and per-pair (set-equality allowlist) |
 | Every column is real | `domain-fields-consumers.test.mjs` | A typo'd `column` in `fields.json`, which `completeFarmRun`'s `UPDATE work_item SET <column> = ?` would otherwise turn into a runtime SQL error mid-run. Checked against a real database via `PRAGMA table_info` |
-| A PM revision can fill the field | `pm-revision-full-length.test.mjs`, `farm/tests/test_pm_agent.py` | A cap reappearing anywhere on the write path. Drives a 1,999-char `guardrails` revision through the real `POST /api/farm/steps/:runId/complete` and asserts the stored value byte-for-byte |
+| A PM revision can fill the field | `pm-revision-full-length.test.mjs`, `farm/tests/test_pm_steps.py` | A cap reappearing anywhere on the write path. Drives a 1,999-char `guardrails` revision through the real `POST /api/farm/steps/:runId/complete` and asserts the stored value byte-for-byte |
 | Priority schema + load-time rules | `domain-priorities-schema.test.mjs` | An invalid vocabulary: a value that could not be safely interpolated into SQL, a case-only duplicate, a default outside the vocabulary, an empty list — including real subprocess imports, in **both** languages, over a tampered `priorities.json`. Also asserts the schema/load-time split is real by showing the schema passes what only the binding rejects |
 | Cross-language priority fixtures | `fixtures/priorities-cases.json` + `domain-priorities-cases.test.mjs` + `farm/tests/test_priorities_fixtures.py` | The two priority validators disagreeing about what a rule *means*. Same set-equality / non-empty / pinned-manifest guards as the other two fixtures |
 | Cross-language priority parity | `domain-priorities-parity.test.mjs` | The two priority bindings drifting. Compares the vocabulary **as an ordered sequence**, the default, and every `isPriority`/`is_priority` answer — plus that the Python side is a `tuple`, so the farm cannot widen what the server enforces |

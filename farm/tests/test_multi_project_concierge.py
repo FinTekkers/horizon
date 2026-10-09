@@ -110,7 +110,7 @@ def serve(monkeypatch):
 
 def run(t, state, stub, text):
     msg = t.seed(text)
-    ca.poll_once(t, state, stub.url, farmd_url=stub.url)
+    ca.poll_messages_once(t, state, stub.url, farmd_url=stub.url)
     return msg
 
 

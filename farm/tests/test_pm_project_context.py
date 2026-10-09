@@ -7,7 +7,7 @@ import pytest
 
 from domain.py import personas as domain_personas
 from domain.py import steps as domain_steps
-from farm.pm_agent import (
+from farm.pm_steps import (
     PROJECT_CONTEXT_DESC_CHARS,
     PROJECT_CONTEXT_FEEDBACK_CHARS,
     PROJECT_CONTEXT_HEADER,

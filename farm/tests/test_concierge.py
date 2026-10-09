@@ -55,7 +55,7 @@ def test_round_trip_message_to_action_to_reply_to_cursor(stub):
     state = make_state(t, "rt")
     msg = t.seed("set HZ-7 priority to Critical")
 
-    assert ca.poll_once(t, state, stub.url, farmd_url=stub.url) == 1
+    assert ca.poll_messages_once(t, state, stub.url, farmd_url=stub.url) == 1
 
     # action hit the server with the validated enum value
     assert stub.posts("/priority") == [("/api/items/HZ-7/priority", {"priority": "Critical"})]
@@ -74,7 +74,7 @@ def test_question_produces_reply_but_no_actions(stub):
     t = FakeTransport()
     state = make_state(t, "question")
     t.seed("what's the status of HZ-7?")
-    ca.poll_once(t, state, stub.url, farmd_url=stub.url)
+    ca.poll_messages_once(t, state, stub.url, farmd_url=stub.url)
     assert stub.posts() == []
     assert len(t.sent) == 1
 
@@ -83,7 +83,7 @@ def test_first_run_baselines_instead_of_replaying_history(stub):
     t = FakeTransport()
     t.seed("set HZ-7 priority to Low")  # already in the store before we start
     state = make_state(t, "baseline")
-    assert ca.poll_once(t, state, stub.url, farmd_url=stub.url) == 0
+    assert ca.poll_messages_once(t, state, stub.url, farmd_url=stub.url) == 0
     assert stub.posts() == []
     assert t.sent == []
 
@@ -95,7 +95,7 @@ def test_non_allowlisted_sender_is_dropped_silently(stub):
     t = FakeTransport()
     state = make_state(t, "stranger")
     msg = t.seed("set HZ-7 priority to Critical", sender=STRANGER, chat=STRANGER)
-    assert ca.poll_once(t, state, stub.url, farmd_url=stub.url) == 0
+    assert ca.poll_messages_once(t, state, stub.url, farmd_url=stub.url) == 0
     assert stub.requests == []  # not even a snapshot fetch
     assert t.sent == []  # no reply that would confirm the bot exists
     assert state.cursor == msg.cursor  # but the message is consumed
@@ -106,7 +106,7 @@ def test_empty_allowlist_means_deny_all(stub, monkeypatch):
     t = FakeTransport()
     state = make_state(t, "denyall")
     t.seed("set HZ-7 priority to Critical")  # even the usual allowed sender
-    assert ca.poll_once(t, state, stub.url, farmd_url=stub.url) == 0
+    assert ca.poll_messages_once(t, state, stub.url, farmd_url=stub.url) == 0
     assert stub.requests == []
     assert t.sent == []
 
@@ -115,7 +115,7 @@ def test_gate_approval_attempt_is_dropped_before_any_http_call(stub):
     t = FakeTransport()
     state = make_state(t, "gate")
     t.seed("approve the gate on HZ-7")  # fake_claude emits {"type": "approve_gate"}
-    ca.poll_once(t, state, stub.url, farmd_url=stub.url)
+    ca.poll_messages_once(t, state, stub.url, farmd_url=stub.url)
     assert stub.posts() == []  # the action never reached the server
     assert len(t.sent) == 1
     assert "dropped unsupported action" in t.sent[0][1]
@@ -125,7 +125,7 @@ def test_media_only_messages_are_skipped_without_crashing(stub):
     t = FakeTransport()
     state = make_state(t, "media")
     msg = t.seed("")  # media row: no text content
-    assert ca.poll_once(t, state, stub.url, farmd_url=stub.url) == 0
+    assert ca.poll_messages_once(t, state, stub.url, farmd_url=stub.url) == 0
     assert t.sent == []
     assert state.cursor == msg.cursor
 
@@ -141,7 +141,7 @@ def test_new_item_trigger_is_intercepted_by_the_wizard_and_never_reaches_claude(
     t = FakeTransport()
     state = make_state(t, "wizard-no-claude")
     t.seed("[New Item] Something new")
-    assert ca.poll_once(t, state, stub.url, farmd_url=stub.url) == 1
+    assert ca.poll_messages_once(t, state, stub.url, farmd_url=stub.url) == 1
     assert "outcome" in t.sent[-1][1].lower()
 
 
@@ -163,7 +163,7 @@ def test_bare_numeric_reply_with_a_pending_gate_choice_never_reaches_claude(monk
             state.choice_store,
         )
         t.seed("1")
-        assert ca.poll_once(t, state, stub.url, farmd_url=stub.url) == 1
+        assert ca.poll_messages_once(t, state, stub.url, farmd_url=stub.url) == 1
         assert "Approved HZ-7" in t.sent[-1][1]
         assert stub.approvals == [("HZ-7", 12, {"sender": "...1111", "senderJid": "15550001111@s.whatsapp.net"})]
     finally:
@@ -182,17 +182,17 @@ def test_full_create_then_approve_loop_entirely_via_whatsapp(monkeypatch):
 
         # 1) create the item via the wizard — deterministic, no Claude involved.
         t.seed("[New Item] Ship the thing")
-        assert ca.poll_once(t, state, stub.url, farmd_url=stub.url) == 1
+        assert ca.poll_messages_once(t, state, stub.url, farmd_url=stub.url) == 1
         t.seed("users can do X")
-        ca.poll_once(t, state, stub.url, farmd_url=stub.url)
+        ca.poll_messages_once(t, state, stub.url, farmd_url=stub.url)
         t.seed("X happens 95% of the time")
-        ca.poll_once(t, state, stub.url, farmd_url=stub.url)
+        ca.poll_messages_once(t, state, stub.url, farmd_url=stub.url)
         t.seed("skip")
-        ca.poll_once(t, state, stub.url, farmd_url=stub.url)
+        ca.poll_messages_once(t, state, stub.url, farmd_url=stub.url)
         t.seed("2")  # High
-        ca.poll_once(t, state, stub.url, farmd_url=stub.url)
+        ca.poll_messages_once(t, state, stub.url, farmd_url=stub.url)
         t.seed("1")  # create
-        ca.poll_once(t, state, stub.url, farmd_url=stub.url)
+        ca.poll_messages_once(t, state, stub.url, farmd_url=stub.url)
         assert stub.created_items == [
             {"title": "Ship the thing", "outcome": "users can do X", "metric": "X happens 95% of the time",
              "guardrails": "", "priority": "High"}
@@ -210,12 +210,12 @@ def test_full_create_then_approve_loop_entirely_via_whatsapp(monkeypatch):
 
         monkeypatch.setattr(ca, "run_agent", fake_run)
         t.seed("what's pending my approval?")
-        ca.poll_once(t, state, stub.url, farmd_url=stub.url)
+        ca.poll_messages_once(t, state, stub.url, farmd_url=stub.url)
         assert "awaiting approval" in t.sent[-1][1]
 
         # 3) approve it with a bare number — resolved deterministically, not by Claude.
         t.seed("1")
-        ca.poll_once(t, state, stub.url, farmd_url=stub.url)
+        ca.poll_messages_once(t, state, stub.url, farmd_url=stub.url)
         assert stub.approvals == [(created_id, 12, {"sender": "...1111", "senderJid": "15550001111@s.whatsapp.net"})]
         assert f"Approved {created_id}" in t.sent[-1][1]
     finally:
@@ -265,14 +265,14 @@ def test_duplicate_delivery_executes_actions_exactly_once(stub):
     t = FakeTransport()
     state = make_state(t, "dup")
     t.seed("feedback for HZ-7: please add more tests")
-    ca.poll_once(t, state, stub.url, farmd_url=stub.url)
+    ca.poll_messages_once(t, state, stub.url, farmd_url=stub.url)
     assert len(stub.posts("/feedback")) == 1
 
     # simulate the crash-replay window: cursor lost, processed store intact
     state.cursor_path.write_text("0")
     replay_state = ca.ConciergeState("dup", t)
     assert replay_state.cursor == 0
-    assert ca.poll_once(t, replay_state, stub.url, farmd_url=stub.url) == 0
+    assert ca.poll_messages_once(t, replay_state, stub.url, farmd_url=stub.url) == 0
     assert len(stub.posts("/feedback")) == 1  # still exactly one comment
     assert replay_state.cursor > 0  # cursor healed past the old message
 
@@ -282,12 +282,12 @@ def test_send_failure_never_reexecutes_the_action(stub):
     state = make_state(t, "sendfail")
     t.seed("feedback for HZ-7: tighten the seam tests")
     t.fail_send = True
-    ca.poll_once(t, state, stub.url, farmd_url=stub.url)  # action runs, send fails, no raise
+    ca.poll_messages_once(t, state, stub.url, farmd_url=stub.url)  # action runs, send fails, no raise
     assert len(stub.posts("/feedback")) == 1
     assert t.sent == []
 
     t.fail_send = False
-    assert ca.poll_once(t, state, stub.url, farmd_url=stub.url) == 0  # claimed — never replayed
+    assert ca.poll_messages_once(t, state, stub.url, farmd_url=stub.url) == 0  # claimed — never replayed
     assert len(stub.posts("/feedback")) == 1
 
 
@@ -301,7 +301,7 @@ def test_feedback_on_active_item_warns_about_the_rerun():
         t = FakeTransport()
         state = make_state(t, "rerun")
         t.seed("feedback for HZ-7: change the button copy")
-        ca.poll_once(t, state, stub.url, farmd_url=stub.url)
+        ca.poll_messages_once(t, state, stub.url, farmd_url=stub.url)
         assert len(t.sent) == 1
         assert "re-runs with your note" in t.sent[0][1]
     finally:
@@ -312,7 +312,7 @@ def test_unknown_item_becomes_a_friendly_note(stub):
     t = FakeTransport()
     state = make_state(t, "unknown")
     t.seed("set ZZ-99 priority to High")
-    ca.poll_once(t, state, stub.url, farmd_url=stub.url)
+    ca.poll_messages_once(t, state, stub.url, farmd_url=stub.url)
     assert ("/api/items/ZZ-99/priority", {"priority": "High"}) in stub.posts("/priority")
     assert "couldn't find ZZ-99" in t.sent[0][1]
 
@@ -333,7 +333,7 @@ def test_invalid_json_reply_is_retried_once(stub, monkeypatch):
     t = FakeTransport()
     state = make_state(t, "retry")
     t.seed("hello there")
-    ca.poll_once(t, state, stub.url, farmd_url=stub.url)
+    ca.poll_messages_once(t, state, stub.url, farmd_url=stub.url)
     assert len(calls) == 2
     assert "invalid" in calls[1]  # the retry names what was wrong
     assert t.sent[0][1] == "ok after retry"
@@ -344,7 +344,7 @@ def test_persistently_invalid_reply_sends_an_error_and_claims(stub, monkeypatch)
     t = FakeTransport()
     state = make_state(t, "broken")
     msg = t.seed("hello?")
-    ca.poll_once(t, state, stub.url, farmd_url=stub.url)
+    ca.poll_messages_once(t, state, stub.url, farmd_url=stub.url)
     assert stub.posts() == []
     assert "hit an error" in t.sent[0][1]
     assert state.is_processed(msg.msg_id)  # never retried forever
@@ -454,7 +454,7 @@ def test_unlisted_group_messages_are_claimed_silently(stub, monkeypatch):
     t = FakeTransport()
     state = make_state(t, "group-unlisted")
     t.seed("status of HZ-7?", chat="12036300000@g.us")
-    ca.poll_once(t, state, stub.url, farmd_url=stub.url)
+    ca.poll_messages_once(t, state, stub.url, farmd_url=stub.url)
     assert t.sent == []  # never replies into a group it wasn't invited to
 
 
@@ -463,7 +463,7 @@ def test_listed_group_message_from_allowlisted_sender_is_served(stub, monkeypatc
     t = FakeTransport()
     state = make_state(t, "group-listed")
     t.seed("status of HZ-7?", chat="12036300000@g.us")
-    ca.poll_once(t, state, stub.url, farmd_url=stub.url)
+    ca.poll_messages_once(t, state, stub.url, farmd_url=stub.url)
     assert len(t.sent) == 1
     assert t.sent[0][0] == "12036300000@g.us"  # reply lands in the group
 
@@ -478,7 +478,7 @@ def test_the_snapshot_is_read_from_farmd_with_no_credential(stub):
     t = FakeTransport()
     state = make_state(t, "snapshot-via-farmd")
     t.seed("what's the status of HZ-7?")
-    ca.poll_once(t, state, stub.url, farmd_url=stub.url)
+    ca.poll_messages_once(t, state, stub.url, farmd_url=stub.url)
 
     gets = [(method, path) for (method, path, _body) in stub.requests if method == "GET"]
     assert gets == [("GET", "/internal/snapshot")]
@@ -497,7 +497,7 @@ def test_the_unauthenticated_action_posts_are_untouched(stub):
     t = FakeTransport()
     state = make_state(t, "actions-untouched")
     t.seed("set HZ-7 priority to Critical")
-    ca.poll_once(t, state, stub.url, farmd_url=stub.url)
+    ca.poll_messages_once(t, state, stub.url, farmd_url=stub.url)
 
     assert stub.posts("/priority") == [("/api/items/HZ-7/priority", {"priority": "Critical"})]
     assert stub.credential_headers_for("/priority") == [[]]
@@ -544,7 +544,7 @@ def test_a_parsed_but_invalid_reply_still_takes_the_lossless_retry(stub, monkeyp
     t = FakeTransport()
     state = make_state(t, "validretry")
     t.seed("hello there")
-    ca.poll_once(t, state, stub.url, farmd_url=stub.url)
+    ca.poll_messages_once(t, state, stub.url, farmd_url=stub.url)
 
     assert len(calls) == 2
     assert "missing 'reply'" in calls[1]  # the retry names what was actually wrong
@@ -566,7 +566,7 @@ def test_the_retry_still_saves_the_session_it_was_given(stub, monkeypatch):
     t = FakeTransport()
     state = make_state(t, "sess")
     t.seed("hello there")
-    ca.poll_once(t, state, stub.url, farmd_url=stub.url)
+    ca.poll_messages_once(t, state, stub.url, farmd_url=stub.url)
 
     assert calls[1] == "s-first"  # the retry resumed the first call's session
     assert state.session_id() == "s-second"  # and the retry's own id was saved
@@ -580,7 +580,7 @@ def test_an_empty_parse_note_list_leaves_the_whatsapp_text_unchanged(stub, monke
     t = FakeTransport()
     state = make_state(t, "nonotes")
     t.seed("hi")
-    ca.poll_once(t, state, stub.url, farmd_url=stub.url)
+    ca.poll_messages_once(t, state, stub.url, farmd_url=stub.url)
     assert t.sent[0][1] == "hello"
 
 
@@ -591,7 +591,7 @@ def test_a_parse_note_is_appended_after_the_action_notes(stub, monkeypatch):
     t = FakeTransport()
     state = make_state(t, "notes")
     t.seed("set HZ-7 priority to Critical")
-    ca.poll_once(t, state, stub.url, farmd_url=stub.url)
+    ca.poll_messages_once(t, state, stub.url, farmd_url=stub.url)
 
     lines = t.sent[0][1].splitlines()
     assert "fake parse note" == lines[-1], "the parse note must come last, after the action results"
@@ -606,7 +606,7 @@ def test_a_parse_note_is_appended_after_the_action_notes(stub, monkeypatch):
 
 
 # `repair_counter` is the suite-wide autouse fixture in farm/tests/conftest.py,
-# which repoints the counter into tmp_path — poll_once() runs the real parser,
+# which repoints the counter into tmp_path — poll_messages_once() runs the real parser,
 # which ticks a real file. Named in the signatures below so the dependency of a
 # count assertion is visible where it is made.
 
@@ -637,7 +637,7 @@ def test_the_success_metrics_concierge_shape_is_repaired_and_reported(
     t = FakeTransport()
     state = make_state(t, "repaircomma")
     t.seed("what's up")
-    ca.poll_once(t, state, stub.url, farmd_url=stub.url)
+    ca.poll_messages_once(t, state, stub.url, farmd_url=stub.url)
 
     assert len(calls) == 1, "a trailing comma must not cost a second agent run"
     sent = t.sent[0][1]
@@ -666,7 +666,7 @@ def test_a_single_quoted_concierge_reply_is_repaired_after_the_retry(
     t = FakeTransport()
     state = make_state(t, "repairquotes")
     t.seed("what's up")
-    ca.poll_once(t, state, stub.url, farmd_url=stub.url)
+    ca.poll_messages_once(t, state, stub.url, farmd_url=stub.url)
 
     assert len(calls) == 2, "the lossless retry must run before an ambiguous repair"
     sent = t.sent[0][1]
@@ -687,7 +687,7 @@ def test_a_repaired_reply_still_goes_through_validate_reply(stub, monkeypatch, r
     t = FakeTransport()
     state = make_state(t, "repairvalidate")
     t.seed("set HZ-7 priority to Critical")
-    ca.poll_once(t, state, stub.url, farmd_url=stub.url)
+    ca.poll_messages_once(t, state, stub.url, farmd_url=stub.url)
 
     lines = t.sent[0][1].splitlines()
     # The action survived validation and really executed...
@@ -707,7 +707,7 @@ def test_an_unrepairable_concierge_reply_sends_the_error_and_fabricates_nothing(
     t = FakeTransport()
     state = make_state(t, "unrepairable")
     t.seed("hello")
-    ca.poll_once(t, state, stub.url, farmd_url=stub.url)
+    ca.poll_messages_once(t, state, stub.url, farmd_url=stub.url)
 
     sent = t.sent[0][1]
     assert "hit an error" in sent, "an unrepairable reply must not be answered with a guess"
@@ -737,7 +737,7 @@ def test_a_note_that_changed_no_byte_is_not_logged_as_a_repair(
     t = FakeTransport()
     state = make_state(t, "firstobject")
     t.seed("what's up")
-    ca.poll_once(t, state, stub.url, farmd_url=stub.url)
+    ca.poll_messages_once(t, state, stub.url, farmd_url=stub.url)
 
     assert replies == [], "both the first reply and the lossless retry should have run"
     assert agent_runner.FIRST_OBJECT_NOTE in t.sent[0][1]
@@ -772,7 +772,7 @@ def _drive_concierge(stub, monkeypatch, recording_providers, slug):
     t = FakeTransport()
     state = make_state(t, slug)
     t.seed("hello there")
-    ca.poll_once(t, state, stub.url, farmd_url=stub.url)
+    ca.poll_messages_once(t, state, stub.url, farmd_url=stub.url)
     assert t.sent[0][1] == "ok after retry"
     return recorder
 

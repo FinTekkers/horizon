@@ -12,7 +12,7 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
-from farm import check_slots, farmd, pm_agent, step_agent, workspaces
+from farm import check_slots, farmd, pm_steps, step_agent, workspaces
 from farm import config as farm_config
 from farm.config import QUEUE_DIR
 from farm.task_files import task_project
@@ -102,7 +102,7 @@ def test_a_fintekkers_pm_step_gets_fintekkers_context_while_the_farm_project_is_
     task["project_context"] = {"items": [{"id": "US-9", "title": "a FinTekkers sibling"}], "feedback": []}
     assert client.post("/steps/run", json=task).json() == {"ok": True, "queued": "pm"}
 
-    prompt = pm_agent.build_prompt(queued("pm", 203))
+    prompt = pm_steps.build_prompt(queued("pm", 203))
     assert "Project: FinTekkers" in prompt
     assert FINTEKKERS_RULES in prompt and HORIZON_RULES not in prompt
     assert "US-9" in prompt
@@ -146,7 +146,7 @@ def test_a_legacy_task_file_resolves_to_horizon_in_both_agents(farm, fake_tmux, 
     (QUEUE_DIR / "pm" / "205.json").write_text(json.dumps(task))
 
     assert task_project(task) == {"name": "Horizon"}
-    assert "Project: Horizon" in pm_agent.build_prompt(task)
+    assert "Project: Horizon" in pm_steps.build_prompt(task)
     # step_agent reads no project of its own: it uses the rules stamped at
     # enqueue, verbatim, never the farm's state["project"].
     step_prompt = step_agent.build_prompt(task)

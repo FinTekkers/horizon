@@ -63,7 +63,7 @@ test('a PM step that fails over budget leaves metric and guardrails byte-identic
   const run = db.prepare("SELECT id, auto_retry_count FROM step_run WHERE item_id = ? AND status = 'active'").get(id)
   assert.ok(run, `no active run was dispatched for ${id}`)
 
-  // The exact shape farm/pm_agent.py's FieldOverBudgetError produces.
+  // The exact shape farm/pm_steps.py's FieldOverBudgetError produces.
   const length = LIMITS.guardrails + 77
   const error = `guardrails is ${length} chars; budget is ${LIMITS.guardrails} chars (domain/fields.json). Tighten the wording to fit; do not drop lines`
   const res = await app.inject({

@@ -1,7 +1,7 @@
 // HZ-134 success metric 4: "a PM revision can write a field up to the same
 // length the API accepts. Test with a 1,999-char guardrails revision."
 //
-// farm/tests/test_pm_agent.py proves the AGENT side: validate() now returns a
+// farm/tests/test_pm_steps.py proves the AGENT side: validate() now returns a
 // 1,999-char guardrails value byte-for-byte instead of cutting it at 400 and
 // marking it. That is only half the claim. This file is the other half — the
 // whole server-side write path, driven over real HTTP through the real route:
@@ -101,7 +101,7 @@ test('a revision at exactly the declared limit is stored in full', async () => {
 })
 
 test("a MARKED revision longer than the declared limit reaches the database intact — maxLength is an intake cap, not a DB invariant", async () => {
-  // The exact shape farm/pm_agent.py's _mark_truncated produces: content cut to
+  // The exact shape farm/pm_steps.py's _mark_truncated produces: content cut to
   // the budget, then a note appended AFTER it, so the stored string is longer
   // than the API's own declared maximum for the column. Deliberate (HZ-114), and
   // the server must not "help" by re-truncating it — that would eat the marker

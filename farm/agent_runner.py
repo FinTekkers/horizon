@@ -3,7 +3,7 @@ claude_runner.py / run_claude()).
 
 run_agent() picks a provider by FARM_PROVIDER config (default "claude" —
 unchanged behaviour) and dispatches to a module under farm/providers/.
-Everything above this file — pm_agent, step_agent, concierge_agent — talks
+Everything above this file — step_agent, concierge_agent — talks
 only to run_agent(); none of them know or care which provider actually ran.
 """
 
@@ -660,7 +660,7 @@ def _repair_ladder(
 
 # ---- HZ-157: how often each rung actually fires ----
 # A file rather than a process counter because the callers of this helper
-# (pm_agent, step_agent, concierge_agent, and conflict_resolver inside farmd)
+# (step_agent, concierge_agent, and conflict_resolver inside farmd)
 # are SEPARATE PROCESSES — an in-memory tally is unreadable by any script,
 # which is what the success metric asks for.
 REPAIR_COUNTS_PATH = STATE_DIR / "parser-repairs.json"
@@ -735,7 +735,7 @@ def parse_agent_reply(
     module uses it; nothing else calls extract_json() (enforced by
     farm/tests/test_one_reply_parser.py).
 
-    Before HZ-156 pm_agent, step_agent and concierge_agent each kept their own
+    Before HZ-156 the PM runner, step_agent and concierge_agent each kept their own
     copy of this parse-then-retry-once path, and they had already drifted.
 
     `retry` receives the fully formatted retry prompt and returns the model's
@@ -744,9 +744,9 @@ def parse_agent_reply(
 
     `validate` is applied INSIDE the retry envelope, so a reply that parses
     but is missing a required field takes the lossless retry. That is where
-    pm_agent and concierge_agent have always run their validator — both wrapped
-    validate(extract_json(...)) in one try — so they hand it in here. step_agent
-    checks its required fields AFTER this call, as it always has, and hands in
+    the PM steps and concierge_agent have always run their validator — both
+    wrapped validate(extract_json(...)) in one try — so they hand it in here.
+    step_agent's other steps check their required fields AFTER this call, as it always has, and hands in
     no validator: moving its checks in would buy a second full agent run for a
     reply that costs nothing to reject today.
 

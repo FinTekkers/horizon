@@ -2,7 +2,7 @@
 
 This module READS domain/fields.json — the only place a field's limit is
 declared — at import, so the farm never hand-types a cap the API then has to
-agree with. farm/pm_agent.py builds PATCH_FIELDS from patch_limits() and
+agree with. farm/pm_steps.py builds PATCH_FIELDS from patch_limits() and
 farm/tools/measure_text_caps.py reads the same numbers for its report; the
 server derives its POST /api/items body schema from domain/js/fields.js.
 
@@ -168,7 +168,7 @@ def field_by_name(fields: list[dict], name: str) -> dict:
 def patch_limits(fields: list[dict]) -> dict[str, int]:
     """{column: maxLength} for every agent-revisable field, in authored order.
 
-    DERIVED, never hand-typed — this is success criterion 3. farm/pm_agent.py's
+    DERIVED, never hand-typed — this is success criterion 3. farm/pm_steps.py's
     PATCH_FIELDS *is* this dict, so the order matters: validate() iterates it,
     and server/src/orchestrator.js's FARM_PATCH_FIELDS is the same key list on
     the other side of the wire. Keyed by column because that is what a patch
@@ -179,7 +179,7 @@ def patch_limits(fields: list[dict]) -> dict[str, int]:
 def line_limits(fields: list[dict]) -> dict[str, int]:
     """{column: maxLines} for every field that declares a line budget (HZ-345):
     metric and guardrails. The same derivation as domain/js/fields.js's
-    lineLimits(); farm/pm_agent.py rejects a step-1/2 reply over it."""
+    lineLimits(); farm/pm_steps.py rejects a step-1/2 reply over it."""
     return {field["column"]: field["maxLines"] for field in fields if "maxLines" in field}
 
 

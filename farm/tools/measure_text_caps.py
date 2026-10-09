@@ -45,7 +45,7 @@ CAPS = [
     ),
     (
         "work_item.metric (PM patch-revision budget)",
-        "domain/fields.json -> farm/pm_agent.py PATCH_FIELDS['metric']",
+        "domain/fields.json -> farm/pm_steps.py PATCH_FIELDS['metric']",
         "work_item",
         "metric",
         fields.BY_COLUMN["metric"]["maxLength"],
@@ -54,11 +54,11 @@ CAPS = [
         "same length POST /api/items accepts at ingest. So a value at the cap "
         "no longer implies a PM revision: it could equally be a human who "
         "typed exactly that much. A PM revision that ran over is still "
-        "distinguishable by the marker farm/pm_agent.py validate() appends.",
+        "distinguishable by the marker farm/pm_steps.py validate() appends.",
     ),
     (
         "work_item.guardrails (PM patch-revision budget)",
-        "domain/fields.json -> farm/pm_agent.py PATCH_FIELDS['guardrails']",
+        "domain/fields.json -> farm/pm_steps.py PATCH_FIELDS['guardrails']",
         "work_item",
         "guardrails",
         fields.BY_COLUMN["guardrails"]["maxLength"],
@@ -68,18 +68,18 @@ CAPS = [
     ),
     (
         "step_run.output (agent summary)",
-        "farm/step_agent.py / farm/pm_agent.py summary[:600] / summary[:300]",
+        "farm/step_agent.py / farm/pm_steps.py summary[:600] / summary[:300]",
         "step_run",
         "output",
         600,
         "Two different summary caps exist across the codebase (600 in "
-        "step_agent.py, 300 in pm_agent.py) — measured at the looser of the "
-        "two so a pm_agent.py-authored row isn't miscounted as never hitting "
+        "step_agent.py, 300 in pm_steps.py) — measured at the looser of the "
+        "two so a pm_steps.py-authored row isn't miscounted as never hitting "
         "its own, tighter cap. See the 400-cap variant below for that.",
     ),
     (
         "step_run.output (PM agent summary variant)",
-        "farm/pm_agent.py summary[:300]",
+        "farm/pm_steps.py summary[:300]",
         "step_run",
         "output",
         300,
@@ -183,11 +183,11 @@ def render_markdown(rows: list[dict], as_of: str) -> str:
     lines.append("")
     lines.append(
         "## A comment that drifted (architecture review, HZ-114)\n\n"
-        "`farm/pm_agent.py`'s `MAX_PROMPT_ARTIFACT_CHARS` comment used to say it "
+        "`farm/pm_steps.py`'s `MAX_PROMPT_ARTIFACT_CHARS` comment used to say it "
         "\"mirrors farm/rules.py's MAX_PROMPT_RULES_CHARS backstop.\" That's no longer "
         "true: `rules.py` now drops whole rules blocks with a note instead of slicing, "
         "and `MAX_PROMPT_ARTIFACT_CHARS` still does a flat `[:N]` slice on prior-artifact "
-        "content in both `pm_agent.py` and `step_agent.py`. Neither is one of the three "
+        "content in both `pm_steps.py` and `step_agent.py`. Neither is one of the three "
         "sites this item's outcome named for a fix, so both are left as-is — flagged "
         "here (and in the code comment) rather than fixed blind, per this item's own "
         "guardrail against rewriting caps the outcome didn't name."

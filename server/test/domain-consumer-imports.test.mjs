@@ -105,15 +105,15 @@ test('the farm imports the model as domain.py, from the repo root, in both produ
 })
 
 // HZ-134: architecture review asked for the same pin on the new Python import.
-// farm/pm_agent.py's PATCH_FIELDS and farm/tools/measure_text_caps.py's CAPS
+// farm/pm_steps.py's PATCH_FIELDS and farm/tools/measure_text_caps.py's CAPS
 // table both read domain/fields.json, and both must reach it the same way the
 // other farm modules reach domain.py — off the repo root, not by a relative path
 // or a sys.path insert.
 test('the farm modules that carry a field limit import it as domain.py, from the repo root', () => {
-  // Matched on the imported NAMES rather than the whole line: farm/pm_agent.py
-  // reaches for `reasons` on the same line, the way farmd.py and step_agent.py
-  // already do.
-  for (const file of ['farm/pm_agent.py', 'farm/tools/measure_text_caps.py']) {
+  // Matched on the imported NAMES rather than the whole line, so a module that
+  // also reaches for `reasons` on the same line (as farmd.py and step_agent.py
+  // do) still passes.
+  for (const file of ['farm/pm_steps.py', 'farm/tools/measure_text_caps.py']) {
     const text = readFileSync(path.join(REPO_ROOT, file), 'utf8')
     const line = text.match(/^from domain\.py import (.+)$/m)
     assert.ok(line, `${file} does not import anything from domain.py`)

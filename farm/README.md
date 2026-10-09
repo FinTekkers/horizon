@@ -25,9 +25,10 @@ With `FARM_URL` unset the server uses the built-in mock agents (demo mode).
 
 ## Current scope (phases 1–3)
 
-- **PM agent** (`farm/pm_agent.py`, one tmux session per step, one at a
-  time, never resumed — HZ-212): steps 0, 1, 2 and 9. Its only memory of other
-  items is the project-context block in its prompt (HZ-204).
+- **PM steps** (`farm/step_agent.py` with the PM logic in `farm/pm_steps.py`,
+  one tmux session per step, one at a time, never resumed — HZ-212, HZ-371):
+  steps 0, 1, 2 and 9. Their only memory of other items is the
+  project-context block in the prompt (HZ-204).
 - **Ephemeral agents** (one tmux session per step, max `FARM_MAX_EPHEMERAL`
   concurrent — code default 4, set explicitly on this host in
   `/etc/horizon/farm.env`; the number of check suites they may run at once is

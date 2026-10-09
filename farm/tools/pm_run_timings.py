@@ -7,7 +7,7 @@ Measures, from a real `pm-<slug>.log` plus an optional benchmark:
 2. Queue-claim latency — `reported` line to the next run's header. The PM
    loop's `time.sleep(2)` poll is a cost the current design already pays.
 3. Spawn overhead (`--spawn-bench N`) — a cold CPython importing
-   farm.pm_agent, and a tmux new/has/kill round trip, timed separately.
+   farm.pm_steps, and a tmux new/has/kill round trip, timed separately.
 
 Only farm/providers/claude.py prints the `result:` line, so a Muse-routed run
 is a bare header: counted as unmeasured, never dropped.
@@ -109,13 +109,13 @@ def summarize(runs: list[dict]) -> dict:
 
 
 def spawn_overhead(samples: int = 5, *, runner=subprocess.run, clock=time.perf_counter) -> dict:
-    """Time a cold `import farm.pm_agent` and a tmux round trip, separately.
+    """Time a cold `import farm.pm_steps` and a tmux round trip, separately.
     `runner`/`clock` are injected so tests spawn nothing. Every call has a
     timeout, and the kill runs in `finally` so no bench session leaks."""
     import_times, tmux_times = [], []
     for i in range(samples):
         start = clock()
-        runner([sys.executable, "-c", "import farm.pm_agent"], capture_output=True,
+        runner([sys.executable, "-c", "import farm.pm_steps"], capture_output=True,
                cwd=str(Path(__file__).resolve().parent.parent.parent), timeout=120)
         import_times.append(clock() - start)
         name = f"{BENCH_SESSION_PREFIX}{i}"
@@ -159,7 +159,7 @@ def render_markdown(summary: dict, gaps: dict, spawn: dict | None, source: str) 
         f"max {_fmt(overall['max'])} (n={overall['n']}).", "",
         "### Queue-claim latency the PM lane already pays", "",
         f"- **Poll latency (≤{POLL_GAP_CEILING_S}s): n={poll['n']}, median {_fmt(poll['median'])}, "
-        f"p90 {_fmt(poll['p90'])}, max {_fmt(poll['max'])}** — `pm_agent.main()`'s `time.sleep(2)`.",
+        f"p90 {_fmt(poll['p90'])}, max {_fmt(poll['max'])}** — the pre-HZ-212 PM poll loop's `time.sleep(2)`.",
         f"- Idle waits (>{POLL_GAP_CEILING_S}s): n={idle['n']}, median {_fmt(idle['median'])} — not "
         "per-step cost, listed so the split is auditable.",
         "", "The ephemeral dispatcher polls on `time.sleep(3)` (`farm/farmd.py`): 0-3s, mean 1.5s.", "",
@@ -170,7 +170,7 @@ def render_markdown(summary: dict, gaps: dict, spawn: dict | None, source: str) 
     else:
         lines += [f"Measured over {spawn['samples']} samples.", "",
                   "| Component | min | median | p90 | max |", "| --- | ---: | ---: | ---: | ---: |",
-                  _row("Cold CPython + `import farm.pm_agent`", spawn["import_s"]),
+                  _row("Cold CPython + `import farm.pm_steps`", spawn["import_s"]),
                   _row("tmux new/has/kill round trip", spawn["tmux_s"]),
                   _row("**Total added per step**", spawn["total_s"])]
         # HZ-212: the raw totals, one per line, so a reader (or a test) can

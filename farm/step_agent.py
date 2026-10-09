@@ -125,6 +125,10 @@ STEP_CONFIG = {
     # project-scoped via farm/rules/projects/*.md, not stack-scoped, so it
     # never gets a persona composed in.
     DEPLOY_LABEL: ("devops.md", True, DEVOPS_TOOLS, None),
+    # HZ-371: the PM step kind — every runsIn "pm" step in domain/steps.json.
+    # Only [3] and the kind are read: _execute_pm() takes its role prompt
+    # from farm/pm_steps.py's ROLE_PROMPT, which renders roles/pm.md's budgets.
+    **{step["label"]: ("pm.md", True, None, None) for step in steps.STEPS if step["runsIn"] == "pm"},
 }
 
 # HZ-369: these steps follow ONLY the owner's per-step choice. A persona's
@@ -165,8 +169,17 @@ def _assert_step_config_matches_table(config_labels: set[str], table_labels: set
 
 
 _assert_step_config_matches_table(
-    set(STEP_CONFIG), {s["label"] for s in steps.STEPS if s["runsIn"] == "farm"}
+    set(STEP_CONFIG), {s["label"] for s in steps.STEPS if s["runsIn"] in ("farm", "pm")}
 )
+
+
+def _is_pm_step(label: str) -> bool:
+    """HZ-371: whether this step is the PM kind, from domain/steps.json's
+    runsIn — the same field farmd's PM lane is chosen by. An unknown label is
+    not, so it fails in _execute() exactly as it did before."""
+    entry = next((step for step in steps.STEPS if step["label"] == label), None)
+    return entry is not None and entry["runsIn"] == "pm"
+
 
 # Diff shown to both review passes is capped — a defensive bound on prompt
 # size, not a claim that larger diffs can't happen. 20k was below the size of
@@ -1303,7 +1316,7 @@ def _run_and_parse(
     provider_locked: bool = False,
 ) -> tuple[dict, dict, list[str]]:
     """run_agent + the shared reply parser, with one retry-with-feedback on a
-    parse failure (HZ-44) — mirrors pm_agent.process()'s recovery. Asking the
+    parse failure (HZ-44) — the PM steps' recovery (_execute_pm) too. Asking the
     model to re-emit valid JSON is lossless; a genuine second failure still
     propagates so the run cancels and the item pauses, unchanged.
 
@@ -1684,7 +1697,12 @@ def execute(task: dict) -> dict:
     creation can overlap a conflict resolver that owns the item. Every other
     step only reads the workspace and runs unlocked.
 
-    HZ-158: one execute() is one run, so the run's handoff guard is made here."""
+    HZ-158: one execute() is one run, so the run's handoff guard is made here.
+
+    HZ-371: a PM step keeps no workspace and has no turn budget of its own,
+    so it branches off before any of that."""
+    if _is_pm_step(task["step"]["label"]):
+        return _execute_pm(task)
     item = task["item"]
     guard = HandoffGuard()
     if task["step"]["label"] not in (IMPLEMENT_LABEL, REVIEW_LABEL) or not item.get("repo"):
@@ -1701,6 +1719,52 @@ def execute(task: dict) -> dict:
         except ItemBusy:
             raise RuntimeError("workspace busy: conflict resolution still running") from None
         return _execute(task, guard)
+
+
+def _execute_pm(task: dict) -> dict:
+    """HZ-371: one PM step (0, 1, 2 or 9), on the shared runner — PM steps
+    used to have a runner of their own. The prompt, role prompt, validation
+    and field writes are farm/pm_steps.py's; the call and the parse are shared.
+
+    No salvage and no handoff note: no PM step is in SALVAGE_STEPS. main()
+    still clears a handoff note on success, which is a no-op here."""
+    from . import pm_steps  # lazy: ROLE_PROMPT renders roles/pm.md at import
+
+    label = task["step"]["label"]
+    item = task["item"]
+    prompt = pm_steps.build_prompt(task)
+    # HZ-192: run_agent() resolves the model from who is calling — the step's
+    # own domain/steps.json agent (PM, or Architect for "Set guardrails").
+    model_agent = model_agent_for_step(steps.by_label(label)["agent"])
+    persona = model_persona(STEP_CONFIG[label][3], item_personas(item))
+
+    def call(text: str) -> dict:
+        return run_agent(
+            text,
+            agent=model_agent,
+            step=label,
+            persona=persona,
+            session_id=None,
+            append_system=pm_steps.ROLE_PROMPT,
+        )
+
+    reply = call(prompt)
+
+    # One retry, telling the model exactly what was wrong with its reply.
+    # Fresh, like the first call (HZ-212): the task prompt goes first, then
+    # the correction. validate= keeps validation inside the retry envelope,
+    # so a reply missing 'summary' or with an over-budget metric or
+    # guardrails (HZ-264) takes the retry.
+    def retry_once(retry_prompt: str) -> str:
+        log("invalid reply; retrying once")
+        return call(f"{prompt}\n\n{retry_prompt}")["result"]
+
+    (summary, patch, artifact), notes = parse_agent_reply(
+        reply["result"],
+        retry_once,
+        validate=lambda parsed: pm_steps.validate_within_budget(parsed, label, item),
+    )
+    return pm_steps.finish(task, summary, patch, artifact, notes)
 
 
 def _execute(task: dict, guard: HandoffGuard) -> dict:

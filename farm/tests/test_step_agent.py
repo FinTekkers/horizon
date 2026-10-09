@@ -542,7 +542,7 @@ def test_step_config_persona_agents_match_the_design():
     review): it is project-scoped via farm/rules/projects/*.md, not
     stack-scoped, so it never gets a persona composed in — same as the other
     planning steps."""
-    agents = {label: config[3] for label, config in STEP_CONFIG.items()}
+    agents = {label: config[3] for label, config in STEP_CONFIG.items() if not step_agent._is_pm_step(label)}
     assert agents == {
         "Plan options & trade-offs (pros / cons)": None,
         "Draft implementation plan": None,
@@ -601,7 +601,7 @@ def test_the_drift_check_is_actually_wired_to_the_real_relocated_table():
     import."""
     from domain.py import steps as domain_steps
 
-    farm_lane = {entry["label"] for entry in domain_steps.STEPS if entry["runsIn"] == "farm"}
+    farm_lane = {entry["label"] for entry in domain_steps.STEPS if entry["runsIn"] in ("farm", "pm")}
     assert farm_lane, "the relocated table declares no farm-lane steps"
     assert set(STEP_CONFIG) == farm_lane
 
@@ -1584,7 +1584,7 @@ def test_planner_step_reports_back_a_large_artifact_in_full(monkeypatch):
 # quality of its work — e.g. an artifact_md that quotes a JSON example
 # verbatim, leaving raw double quotes inside a JSON string value (the exact
 # shape that discarded a passing Architecture review on HZ-43). One
-# retry-with-feedback, mirroring pm_agent.process()'s recovery, turns that
+# retry-with-feedback, mirroring the PM steps' recovery, turns that
 # into a completed step instead of a cancelled run.
 
 
@@ -1662,7 +1662,7 @@ def test_retry_reuses_session_id_and_the_original_call_budget(monkeypatch):
         assert retry[key] == first[key]  # no budget growth on retry
 
 
-def test_retry_feedback_message_matches_pm_agent_wording(monkeypatch):
+def test_retry_feedback_message_matches_pm_steps_wording(monkeypatch):
     calls = []
     bad = '{"summary": "oops"'
     good = '{"summary": "ok"}'
@@ -2760,7 +2760,7 @@ def test_an_exhaustion_inside_the_retry_propagates_out_of_execute(monkeypatch):
 
 def test_an_exhaustion_inside_the_retry_is_reported_with_reason_turn_cap(tmp_path, monkeypatch):
     """The same case through main(), which is where the tag actually reaches the
-    wire — the mirror of pm_agent's new test."""
+    wire — the mirror of the PM steps' test."""
     task = make_task(7, "Architecture review")
     task["run_id"] = 99
     task_file = tmp_path / "task.json"

@@ -18,7 +18,7 @@ from types import SimpleNamespace
 import pytest
 from fastapi.testclient import TestClient
 
-from farm import farmd, pm_agent, tmux_mgr, workspaces
+from farm import farmd, tmux_mgr, workspaces
 from farm.config import LOGS_DIR, PM_MALFORMED_GRACE_S, QUEUE_DIR
 from farm.tests.conflict_fixtures import (
     HZ157_CONFTEST,
@@ -803,26 +803,6 @@ def test_notify_started_fails_open_on_a_non_2xx_reply(monkeypatch):
 
     monkeypatch.setattr(farmd.httpx, "post", lambda *a, **k: FakeResponse())
     assert farmd._notify_started(80) is True
-
-
-def test_internal_steps_started_forwards_and_returns_the_active_flag(monkeypatch):
-    captured = {}
-
-    class FakeResponse:
-        status_code = 200
-
-        def json(self):
-            return {"active": True}
-
-    def fake_post(url, headers=None, timeout=None):
-        captured["url"] = url
-        return FakeResponse()
-
-    monkeypatch.setattr(farmd.httpx, "post", fake_post)
-    res = client.post("/internal/steps/started", json={"run_id": 81})
-    assert res.status_code == 200
-    assert res.json() == {"ok": True, "active": True}
-    assert captured["url"] == f"{farmd.HORIZON_URL}/api/farm/steps/81/started"
 
 
 def test_claim_and_launch_launches_when_the_run_is_still_active(tmp_path, monkeypatch):
@@ -1909,7 +1889,6 @@ def test_both_lanes_skip_an_unparseable_task_file_without_deleting_it(tmp_path, 
     """The shared input class is a file that does not parse. (Valid JSON that
     is merely unusable is PM-specific — the ephemeral lane's own field
     handling is out of scope under guardrail 4 and is unchanged here.)"""
-    monkeypatch.setattr(pm_agent, "process", lambda *a: pytest.fail("an unusable task must not be processed"))
 
     ephemeral = tmp_path / "runs"
     ephemeral.mkdir()
@@ -1924,7 +1903,7 @@ def test_both_lanes_skip_an_unparseable_task_file_without_deleting_it(tmp_path, 
     assert farmd._select_dispatchable([eph_path], [], 4) == []
     assert eph_path.exists()
     # PM lane: same skip, same keep.
-    assert pm_agent.poll_once(pm_dir, "fintekkers", {}) == "skipped"
+    assert farmd._select_pm_dispatchable([pm_path], []) == ([], [])
     assert pm_path.exists()
 
 
@@ -1938,53 +1917,28 @@ def test_both_lanes_retry_the_file_once_it_becomes_valid(tmp_path, monkeypatch):
     pm_path = pm_dir / "881.json"
     pm_path.write_text(TRUNCATED_TASK)
 
-    pm_failures = {}
     assert farmd._select_dispatchable([eph_path], [], 4) == []
-    assert pm_agent.poll_once(pm_dir, "fintekkers", pm_failures) == "skipped"
+    assert farmd._select_pm_dispatchable([pm_path], []) == ([], [])
 
     valid = json.dumps(make_task(881, item_id="hz-130", step_index=9))
     eph_path.write_text(valid)
     pm_path.write_text(valid)
 
-    processed = []
-    monkeypatch.setattr(pm_agent, "notify_started", lambda run_id: True)
-    monkeypatch.setattr(pm_agent, "process", lambda task, slug: processed.append(task))
-
     assert farmd._select_dispatchable([eph_path], [], 4) == [eph_path]  # dispatchable now
-    assert pm_agent.poll_once(pm_dir, "fintekkers", pm_failures) == "processed"
-    assert [t["run_id"] for t in processed] == [881]
-    assert pm_failures == {}  # the retry cleared the file's failure count
+    assert farmd._select_pm_dispatchable([pm_path], []) == ([pm_path], [])
 
 
 # ---- HZ-130 end to end: enqueue, corrupt, report, stop being alive ----
 # Nothing below is mocked except the far side of the network (a real local
-# HTTP server standing in for the Node horizon server) and the PM's own
-# `process`, which would otherwise spawn a Claude session. The enqueue goes
-# through the real /steps/run route, the report goes through the real
-# /internal/steps/result route, and the liveness answer comes from the real
-# /runs/alive route — the same idiom as the reconcile end-to-end tests above.
+# HTTP server standing in for the Node horizon server). The enqueue goes
+# through the real /steps/run route, the report through farmd's own PM-lane
+# dispatch (HZ-212), and the liveness answer comes from the real /runs/alive
+# route — the same idiom as the reconcile end-to-end tests above.
 
 
 def _age_file(path: Path, seconds: float) -> None:
     when = path.stat().st_mtime - seconds
     os.utime(path, (when, when))
-
-
-def _farmd_over_testclient(monkeypatch):
-    """Points the PM's HTTP calls at the real farmd app instead of stubbing a
-    reply, so the PM's report is parsed out of what farmd actually returns.
-
-    `pm_agent.httpx` is swapped for a shim rather than `httpx.post` patched in
-    place: it is the same module object farmd holds, so patching the attribute
-    would also hijack farmd's own forward to the horizon server — which is the
-    far side this test wants left real."""
-
-    def post(url, json=None, timeout=None):
-        assert timeout, "every network call in the farm is bounded"
-        assert url.startswith(pm_agent.FARMD), f"the PM only ever talks to farmd, not {url}"
-        return client.post(url[len(pm_agent.FARMD) :], json=json)
-
-    monkeypatch.setattr(pm_agent, "httpx", SimpleNamespace(post=post))
 
 
 def test_an_unusable_pm_task_file_is_reported_end_to_end_over_real_http(queue_dirs, running_farm, monkeypatch):
@@ -1998,8 +1952,6 @@ def test_an_unusable_pm_task_file_is_reported_end_to_end_over_real_http(queue_di
     """
     stop_server, url, requests = _serve_fake_horizon(fail_status=200)
     monkeypatch.setattr(farmd, "HORIZON_URL", url)
-    monkeypatch.setattr(pm_agent, "process", lambda *a: pytest.fail("an unusable task must not be processed"))
-    _farmd_over_testclient(monkeypatch)
     try:
         res = client.post("/steps/run", json=make_task(881, item_id="HZ-128", step_index=9))
         assert res.status_code == 200 and res.json()["queued"] == "pm"
@@ -2012,7 +1964,7 @@ def test_an_unusable_pm_task_file_is_reported_end_to_end_over_real_http(queue_di
         _age_file(task_path, PM_MALFORMED_GRACE_S + 1)
         assert client.post("/runs/alive", json={"run_ids": [881]}).json()["alive"]["881"] is True
 
-        assert pm_agent.poll_once(QUEUE_DIR / "pm", "fintekkers", {}) == "reported"
+        farmd._dispatch_pm_lane(QUEUE_DIR / "runs", REPO_ROOT)
     finally:
         stop_server()
 
@@ -2045,20 +1997,18 @@ def test_an_unusable_pm_task_file_stays_alive_and_on_disk_when_the_report_is_not
     daemon threads.)"""
     stop_server, url, requests = _serve_fake_horizon(fail_status=503)
     monkeypatch.setattr(farmd, "HORIZON_URL", url)
-    monkeypatch.setattr(pm_agent, "process", lambda *a: pytest.fail("an unusable task must not be processed"))
-    _farmd_over_testclient(monkeypatch)
     try:
         client.post("/steps/run", json=make_task(882, item_id="HZ-128", step_index=9))
         task_path = QUEUE_DIR / "pm" / "882.json"
         task_path.write_text(TRUNCATED_TASK)
         _age_file(task_path, PM_MALFORMED_GRACE_S + 1)
 
-        assert pm_agent.poll_once(QUEUE_DIR / "pm", "fintekkers", {}) == "skipped"
+        farmd._dispatch_pm_lane(QUEUE_DIR / "runs", REPO_ROOT)
         assert task_path.exists(), "an unacknowledged report must not release the file"
         assert client.post("/runs/alive", json={"run_ids": [882]}).json()["alive"]["882"] is True
 
         # And it is retried rather than abandoned after the refused report.
-        assert pm_agent.poll_once(QUEUE_DIR / "pm", "fintekkers", {}) == "skipped"
+        farmd._dispatch_pm_lane(QUEUE_DIR / "runs", REPO_ROOT)
     finally:
         stop_server()
 

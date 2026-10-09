@@ -129,7 +129,7 @@ def test_a_vote_shaped_row_from_ourselves_is_not_a_command(transport, chat, opti
 
 
 def test_run_agent_is_never_invoked_for_a_poll_the_concierge_sees(transport, monkeypatch, tmp_path):
-    """The literal metric-9 assertion, through the real poll_once().
+    """The literal metric-9 assertion, through the real poll_messages_once().
 
     run_agent is replaced with something that raises, so a single model call
     anywhere on this pass fails the test outright rather than being inferred
@@ -150,7 +150,7 @@ def test_run_agent_is_never_invoked_for_a_poll_the_concierge_sees(transport, mon
     ensure_dirs()
     state = concierge_agent.ConciergeState("poll-nomodel", bridge)
     state.cursor = 0
-    assert concierge_agent.poll_once(bridge, state, base_url="http://127.0.0.1:1") == 0
+    assert concierge_agent.poll_messages_once(bridge, state, base_url="http://127.0.0.1:1") == 0
 
 
 def test_an_ordinary_inbound_message_still_reaches_the_model(transport, monkeypatch, tmp_path):
@@ -174,7 +174,7 @@ def test_an_ordinary_inbound_message_still_reaches_the_model(transport, monkeypa
     ensure_dirs()
     state = concierge_agent.ConciergeState("poll-control", bridge)
     state.cursor = 0
-    concierge_agent.poll_once(bridge, state, base_url="http://127.0.0.1:1")
+    concierge_agent.poll_messages_once(bridge, state, base_url="http://127.0.0.1:1")
     assert called, "a plain human message no longer reaches the concierge's model"
 
 

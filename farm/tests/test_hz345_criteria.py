@@ -1,6 +1,6 @@
 """HZ-345, farm half: line budgets on steps 1-2, and violation-only guardrail review.
 
-Budgets are read off domain/fields.json (pm_agent.LINE_LIMITS), never typed
+Budgets are read off domain/fields.json (pm_steps.LINE_LIMITS), never typed
 here. The review cases run the real review branch of step_agent.execute() over
 a real git diff, with only the two reviewer model calls stubbed.
 """
@@ -12,7 +12,7 @@ from types import SimpleNamespace
 import pytest
 
 from domain.py import fields, steps
-from farm import pm_agent, step_agent
+from farm import pm_steps, step_agent
 from farm.step_agent import execute
 
 MEASURE = "Define how we measure success"
@@ -44,28 +44,22 @@ def _pm_task(label: str, **item) -> dict:
     }
 
 
-class _Ok:
-    status_code = 200
-
-
 @pytest.fixture
-def pm(tmp_path, monkeypatch):
-    """The real process() with run_agent and httpx.post stubbed."""
+def pm(run_pm_step):
+    """A real PM step through step_agent.main(), run_agent and the result
+    post stubbed (run_pm_step)."""
     lane = SimpleNamespace(replies=[], calls=[], posted=[])
 
     def fake_run_agent(prompt, **kw):
         lane.calls.append({"prompt": prompt, **kw})
         return {"result": lane.replies.pop(0), "session_id": "sess-345"}
 
-    monkeypatch.setattr(pm_agent, "run_agent", fake_run_agent)
-    monkeypatch.setattr(pm_agent.httpx, "post", lambda url, json=None, timeout=None: lane.posted.append(json) or _Ok())
-    monkeypatch.setattr(pm_agent, "session_file", lambda slug: tmp_path / f"pm-session-{slug}.txt")
 
     def run(label, item, *replies):
         lane.replies = list(replies)
         lane.calls.clear()
         lane.posted.clear()
-        pm_agent.process(_pm_task(label, **item), "proj")
+        lane.posted.append(run_pm_step(_pm_task(label, **item), fake_run_agent))
         assert len(lane.posted) == 1
         return lane.posted[0]
 
@@ -78,14 +72,14 @@ def _reply(summary="revised", **patch) -> str:
 
 
 def test_the_line_budgets_come_from_fields_json():
-    assert pm_agent.LINE_LIMITS == fields.line_limits(fields.FIELDS)
-    assert set(pm_agent.LINE_LIMITS) == {"metric", "guardrails"}
-    assert f"metric <={pm_agent.LINE_LIMITS['metric']} lines" in pm_agent.ROLE_PROMPT
-    assert f"guardrails <={pm_agent.LINE_LIMITS['guardrails']} lines" in pm_agent.ROLE_PROMPT
+    assert pm_steps.LINE_LIMITS == fields.line_limits(fields.FIELDS)
+    assert set(pm_steps.LINE_LIMITS) == {"metric", "guardrails"}
+    assert f"metric <={pm_steps.LINE_LIMITS['metric']} lines" in pm_steps.ROLE_PROMPT
+    assert f"guardrails <={pm_steps.LINE_LIMITS['guardrails']} lines" in pm_steps.ROLE_PROMPT
 
 
 def test_r1_an_8_line_metric_is_retried_and_the_kept_reply_names_the_dropped_lines(pm):
-    limit = pm_agent.LINE_LIMITS["metric"]
+    limit = pm_steps.LINE_LIMITS["metric"]
     before = numbered("metric", limit + 3)
     lines = before.split("\n")
     kept = "\n".join(lines[:limit])
@@ -101,7 +95,7 @@ def test_r1_an_8_line_metric_is_retried_and_the_kept_reply_names_the_dropped_lin
 
 
 def test_r3_9_guardrails_cut_to_4_in_one_reply_still_name_the_5_dropped_lines(pm):
-    limit = pm_agent.LINE_LIMITS["guardrails"]
+    limit = pm_steps.LINE_LIMITS["guardrails"]
     before = bullets("guardrail", limit + 5)
     kept = "\n".join(before.split("\n")[:limit])
     result = pm.run(GUARDRAILS, {"guardrails": before}, _reply(guardrails=kept))
@@ -114,7 +108,7 @@ def test_r3_9_guardrails_cut_to_4_in_one_reply_still_name_the_5_dropped_lines(pm
 
 
 def test_r2_a_retry_still_over_budget_fails_the_step_with_no_patch(pm):
-    limit = pm_agent.LINE_LIMITS["metric"]
+    limit = pm_steps.LINE_LIMITS["metric"]
     over = numbered("metric", limit + 1)
     result = pm.run(MEASURE, {"metric": numbered("metric", limit + 3)}, _reply(metric=over), _reply(metric=over))
 
@@ -125,14 +119,14 @@ def test_r2_a_retry_still_over_budget_fails_the_step_with_no_patch(pm):
 
 
 def test_a_reply_that_leaves_an_over_budget_field_unpatched_is_rejected(pm):
-    limit = pm_agent.LINE_LIMITS["guardrails"]
+    limit = pm_steps.LINE_LIMITS["guardrails"]
     result = pm.run(GUARDRAILS, {"guardrails": bullets("g", limit + 2)}, _reply(), _reply())
     assert result["ok"] is False
     assert f"guardrails has {limit + 2} lines in the item and your reply did not patch it" in result["error"]
 
 
 def test_g2_a_summarize_reply_with_8_metric_lines_is_not_rejected(pm):
-    metric = numbered("metric", pm_agent.LINE_LIMITS["metric"] + 3)
+    metric = numbered("metric", pm_steps.LINE_LIMITS["metric"] + 3)
     result = pm.run(SUMMARIZE, {"metric": metric}, _reply(metric=metric))
     assert len(pm.calls) == 1
     assert result["ok"] is True
@@ -141,7 +135,7 @@ def test_g2_a_summarize_reply_with_8_metric_lines_is_not_rejected(pm):
 
 
 def test_each_step_line_checks_only_the_field_it_owns(pm):
-    over_metric = numbered("metric", pm_agent.LINE_LIMITS["metric"] + 1)
+    over_metric = numbered("metric", pm_steps.LINE_LIMITS["metric"] + 1)
     result = pm.run(GUARDRAILS, {}, _reply(metric=over_metric, guardrails="- one"))
     assert len(pm.calls) == 1
     assert result["ok"] is True

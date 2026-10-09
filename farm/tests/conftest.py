@@ -12,6 +12,7 @@ and the concierge tests wrote fixture state into the real STATE_DIR. Every
 value below that could reach a real system is hard-assigned instead.
 """
 
+import json
 import os
 import shutil
 import subprocess
@@ -374,3 +375,25 @@ def recording_providers(monkeypatch):
         return recorder
 
     return install
+
+
+@pytest.fixture
+def run_pm_step(tmp_path, monkeypatch):
+    """HZ-371: runs one PM step the way farmd launches it — step_agent.main()
+    on a task file — with run_agent and the result post faked. Call it with
+    the task and the fake run_agent; it returns the posted result, or None
+    when nothing was posted (a paused step)."""
+    from farm import step_agent
+
+    def run(task: dict, fake_run_agent) -> dict | None:
+        posted: list[dict] = []
+        monkeypatch.setattr(step_agent, "run_agent", fake_run_agent)
+        monkeypatch.setattr(step_agent, "post_result", posted.append)
+        task_file = tmp_path / f"pm-task-{task.get('run_id')}.json"
+        task_file.write_text(json.dumps(task))
+        monkeypatch.setattr(sys, "argv", ["step_agent", "--task", str(task_file)])
+        step_agent.main()
+        assert len(posted) <= 1
+        return posted[0] if posted else None
+
+    return run

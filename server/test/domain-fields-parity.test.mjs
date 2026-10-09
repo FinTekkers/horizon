@@ -8,7 +8,7 @@
 // hand-written implementation in a separate language. Do not weaken or skip it.
 //
 // patch_limits()/patchLimits() is compared as an ORDERED key list as well as a
-// mapping. The order is load-bearing on both sides: farm/pm_agent.py's
+// mapping. The order is load-bearing on both sides: farm/pm_steps.py's
 // validate() iterates PATCH_FIELDS, and server/src/orchestrator.js's
 // FARM_PATCH_FIELDS is the same key list on the other side of the wire.
 //

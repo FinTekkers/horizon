@@ -4,7 +4,7 @@ boundary-aligned cut — so a future reintroduction fails CI rather than
 shipping quietly."
 
 The behavior each site must have is already covered, case-by-case, in
-test_rules.py / test_pm_agent.py / test_step_agent.py. This file is the
+test_rules.py / test_pm_steps.py / test_step_agent.py. This file is the
 single checklist the success metric asks for: one entry per site this item
 touched, each proven to either carry oversized input through in full, or cut
 it at a boundary with a marker that says so. If a future change reintroduces
@@ -16,7 +16,7 @@ equivalent checklist in server/test/hz114-no-silent-truncation.test.mjs.
 """
 
 from farm.checks import CHECK_TAIL_LINES, output_tail as checks_tail
-from farm.pm_agent import PATCH_FIELDS, validate
+from farm.pm_steps import PATCH_FIELDS, validate
 from farm.rules import MAX_PROMPT_RULES_CHARS, render_rules_section
 from farm.step_agent import build_prompt as step_agent_build_prompt
 
@@ -68,8 +68,8 @@ def _site_step_agent_build_prompt_oversized_rules():
     return oversized_survived or marked_boundary_cut
 
 
-def _site_pm_agent_validate_guardrails_patch():
-    """Site 3: farm/pm_agent.py validate() — the PM-revision guardrails
+def _site_pm_steps_validate_guardrails_patch():
+    """Site 3: farm/pm_steps.py validate() — the PM-revision guardrails
     patch named directly in the outcome. No real boundary forces this to any
     particular length; when the agent ignores the prompt-level budget, the
     field must be marked, not silently shortened.
@@ -115,7 +115,7 @@ def _site_checks_failure_tail():
 SITES = [
     ("farm/rules.py render_rules_section() — oversized rules block", _site_rules_render_oversized_block),
     ("farm/step_agent.py build_prompt() — oversized rules via the same render path", _site_step_agent_build_prompt_oversized_rules),
-    ("farm/pm_agent.py validate() — oversized guardrails patch field", _site_pm_agent_validate_guardrails_patch),
+    ("farm/pm_steps.py validate() — oversized guardrails patch field", _site_pm_steps_validate_guardrails_patch),
     ("farm/checks.py run_checks() — a failing check's output tail", _site_checks_failure_tail),
 ]
 

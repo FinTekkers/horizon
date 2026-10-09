@@ -1,0 +1,38 @@
+Project: Snapshot Project
+Work item HZ-900: Snapshot the PM prompt
+  repo: FinTekkers/horizon   issue: #900   priority: High
+  outcome/description: Done means the PM prompt is pinned byte for byte.
+  success metric: 1. The snapshot test passes.
+2. The fixture names every section.
+  guardrails: - No change to PM output.
+  personas: eng=python, qa=web
+
+Step to perform now: "Set guardrails" (attempt 2)
+
+Prior artifact — Outcome draft:
+## Outcome
+The prompt is pinned.
+
+Prior artifact — Draft implementation plan:
+## Changes
+- Capture the fixtures first.
+
+Human feedback to address:
+- Keep the role file unchanged.
+- Name the fixture command in the commit.
+
+Project context (other recent items in this project, and recent human feedback on sent-back PM/Architect steps):
+Recent items:
+- HZ-898: A newer item
+- HZ-899: An older item — First line of its outcome.
+Recent human feedback:
+- [HZ-897 · Set guardrails] Too many guardrails; merge them.
+
+## Project rules
+# Project rules
+Deploy to one host.
+
+## Rollback
+Re-run the script.
+
+Respond with ONLY the JSON object described in your role instructions.
