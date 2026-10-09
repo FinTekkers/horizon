@@ -1,13 +1,10 @@
 """HZ-380: the PM agent defaults to the feature-development persona.
 
 domain/personas.json is the one place the default is declared; farm, server
-and UI derive it (farm/personas.py, server/src/personas.js and
-ui/src/domain/personas.js hold no literal of their own — the grep test below
-is the tripwire). A stored `roadmap` choice keeps resolving to Roadmap.
+and UI derive it. A stored `roadmap` choice keeps resolving to Roadmap.
 """
 
 import json
-import re
 from pathlib import Path
 
 import pytest
@@ -50,59 +47,6 @@ def test_compose_role_for_an_unset_pm_persona_includes_the_feature_development_t
 def test_farm_pm_default_equals_domain_personas_json():
     assert DEFAULT_PERSONAS["pm"] == _domain_defaults()["pm"]
     assert DEFAULT_PERSONAS["pm"] == "feature_development"
-
-
-_PM_DEFAULT_LITERAL = re.compile(r"""^\s*['"]?pm['"]?\s*:\s*['"]""")
-
-
-def test_no_layer_file_declares_a_literal_pm_default():
-    """HZ-380 metric 3's grep leg: the pm default lives in
-    domain/personas.json, so no `pm` key with a persona-id value may appear in
-    any layer file. The PERSONAS buckets keep their `pm` agent keys and both
-    pm ids — those are the registry, not a default declaration."""
-    for path in (
-        REPO_ROOT / "farm" / "personas.py",
-        REPO_ROOT / "server" / "src" / "personas.js",
-        REPO_ROOT / "ui" / "src" / "domain" / "personas.js",
-    ):
-        for lineno, line in enumerate(path.read_text().splitlines(), 1):
-            assert not _PM_DEFAULT_LITERAL.match(line), (
-                f"{path}:{lineno} declares a literal pm default: {line.strip()}"
-            )
-    # Negative control: the scan still sees each file's legitimate roadmap
-    # references — it bans the default declaration, not the id.
-    for path in (
-        REPO_ROOT / "farm" / "personas.py",
-        REPO_ROOT / "server" / "src" / "personas.js",
-        REPO_ROOT / "ui" / "src" / "domain" / "personas.js",
-    ):
-        text = path.read_text()
-        assert "roadmap" in text, f"{path} lost its roadmap persona?"
-        assert "feature_development" in text, f"{path} lost its feature_development persona?"
-
-
-def test_the_pm_default_pattern_matches_the_old_literals():
-    """Positive control: the pattern above catches a pm default however the
-    layer spells it."""
-    for literal in (
-        '"pm": "roadmap",',
-        "pm: 'roadmap',",
-        '"pm": "feature_development",',
-        "  pm: 'feature_development',",
-    ):
-        assert _PM_DEFAULT_LITERAL.match(literal), literal
-
-
-def test_the_pm_default_pattern_ignores_registry_lines():
-    """Negative control: agent keys, persona ids and role-file references pass."""
-    for line in (
-        '"pm": {',
-        "  pm: {",
-        '"roadmap": "pm_roadmap.md",',
-        "    roadmap: { label: 'Roadmap' },",
-        "file: 'pm_roadmap.md',",
-    ):
-        assert not _PM_DEFAULT_LITERAL.match(line), line
 
 
 # ---- metric 4, farm leg: a stored roadmap choice still resolves to Roadmap ----

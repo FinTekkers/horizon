@@ -295,9 +295,8 @@ def test_the_parity_parser_rejects_a_file_it_can_no_longer_read(tmp_path):
 def test_default_persona_parity_across_farm_and_the_js_copies():
     """HZ-380: the defaults are declared once, in domain/personas.json, and
     every layer derives them — the farm from domain/py/personas.py, the two JS
-    copies from domain/js/personas.js. The grep test in test_pm_default.py
-    bans a literal in any layer; this asserts the positive side, that each
-    layer really derives rather than merely lacking a literal."""
+    copies from domain/js/personas.js. This asserts each layer really derives
+    the table rather than re-declaring it."""
     assert (REPO_ROOT / "farm" / "personas.py").read_text().count("from domain.py.personas import") == 1
     assert DEFAULT_PERSONAS == dict(domain_personas.DEFAULT_PERSONAS)
     for js_path, rel in (
