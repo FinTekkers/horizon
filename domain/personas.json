@@ -18,7 +18,7 @@
     },
     {
       "agent": "pm",
-      "default": "roadmap",
+      "default": "feature_development",
       "personas": ["roadmap", "feature_development"]
     }
   ],

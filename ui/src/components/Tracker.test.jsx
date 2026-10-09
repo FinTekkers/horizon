@@ -96,7 +96,28 @@ test('an item with no personas defaults every select to that agent’s default',
   expect(getByLabelText(pickerLabel('eng')).value).toBe('fullstack')
   expect(getByLabelText(pickerLabel('qa')).value).toBe('e2e_journey')
   expect(getByLabelText(pickerLabel('architect')).value).toBe('data_modelling')
-  expect(getByLabelText(pickerLabel('pm')).value).toBe('roadmap')
+  expect(getByLabelText(pickerLabel('pm')).value).toBe('feature_development')
+})
+
+// HZ-380: the PM default is the feature-development persona, shown by label.
+test('the PM select on an item with no personas shows Feature development as its visible label', () => {
+  const { getByLabelText } = renderTracker(baseItem)
+  const pmSelect = getByLabelText(pickerLabel('pm'))
+  expect(pmSelect.value).toBe('feature_development')
+  expect(pmSelect.options[pmSelect.selectedIndex].text).toBe('Feature development')
+})
+
+// HZ-380: a stored roadmap choice still renders Roadmap, and a reload — a
+// fresh mount from the stored item — keeps it.
+test('a stored roadmap PM persona shows Roadmap and persists across a reload', () => {
+  const stored = { ...baseItem, personas: { pm: 'roadmap' } }
+  const first = renderTracker(stored)
+  const pmSelect = first.getByLabelText(pickerLabel('pm'))
+  expect(pmSelect.value).toBe('roadmap')
+  expect(pmSelect.options[pmSelect.selectedIndex].text).toBe('Roadmap')
+  cleanup()
+  const reloaded = renderTracker({ ...baseItem, personas: { pm: 'roadmap' } })
+  expect(reloaded.getByLabelText(pickerLabel('pm')).value).toBe('roadmap')
 })
 
 test('changing a select fires setPersona with that agent and the chosen id', () => {

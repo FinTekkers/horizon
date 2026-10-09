@@ -3,8 +3,12 @@
 server/test/domain-personas-parity.test.mjs pins the domain document to the two
 JS registries; this is the farm leg. Without it the JS and Python bindings
 could agree with each other and both be wrong, and repointing farm/personas.py
-at domain/ would then change behaviour with every test green. It is deleted
-together with farm/personas.py's hand-typed data when that file is repointed.
+at domain/ would then change behaviour with every test green.
+
+HZ-380 repointed farm/personas.py's DEFAULT_PERSONAS at the domain binding, so
+the defaults leg that stood here compared the document to itself and was
+deleted; what remains pins the still-hand-typed PERSONAS, legacy and provider
+tables. The document itself is pinned by farm/tests/test_pm_default.py.
 
 Order is compared, not just membership: provider_for() scans PERSONAS in
 registry order, so agent order is behaviour.
@@ -22,11 +26,6 @@ def test_the_domain_agents_and_ids_equal_the_farm_registry_in_order():
     assert list(farm_personas.PERSONAS) == list(domain_personas.PERSONA_AGENTS)
     for agent in domain_personas.PERSONA_AGENTS:
         assert tuple(farm_personas.PERSONAS[agent]) == domain_personas.PERSONA_IDS[agent], agent
-
-
-def test_the_domain_defaults_equal_the_farm_defaults():
-    assert dict(domain_personas.DEFAULT_PERSONAS) == farm_personas.DEFAULT_PERSONAS
-    assert list(domain_personas.DEFAULT_PERSONAS) == list(farm_personas.DEFAULT_PERSONAS)
 
 
 def test_the_domain_legacy_aliases_equal_the_farm_ones_verbatim():

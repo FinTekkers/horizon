@@ -14,6 +14,8 @@
 // farm/roles/personas/ — server-only (definitions.js's effective-prompt
 // preview reads it); the UI copy has no use for it.
 
+import { DEFAULT_PERSONAS as domainDefaults } from '../../domain/js/personas.js'
+
 export const PERSONAS = {
   eng: {
     fullstack: { label: 'Full-stack', initials: 'FS', color: '#0E6E74', file: 'eng_fullstack.md' },
@@ -37,12 +39,10 @@ export const PERSONAS = {
 }
 
 // agent -> the persona an item gets when it carries none for that agent.
-export const DEFAULT_PERSONAS = {
-  eng: 'fullstack',
-  qa: 'e2e_journey',
-  architect: 'data_modelling',
-  pm: 'roadmap',
-}
+// Declared once, in domain/personas.json: this spreads that binding's table
+// into a fresh object, never a second declaration. HZ-380 made the PM entry
+// the feature-development persona.
+export const DEFAULT_PERSONAS = { ...domainDefaults }
 
 // The agent whose persona the PM proposes at intake and the board/tracker show
 // as the item's primary specialization: Eng, because that is the one that

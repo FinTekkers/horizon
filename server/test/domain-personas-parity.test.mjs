@@ -15,8 +15,10 @@
 // registries (server/src/personas.js and ui/src/domain/personas.js here;
 // farm/personas.py in farm/tests/test_personas_domain.py). Without it the two
 // bindings could agree with each other and both be wrong, and repointing the
-// registries at domain/ would then change behaviour with every test green. It
-// is deleted together with those registries' data when they are repointed.
+// registries at domain/ would then change behaviour with every test green.
+// HZ-380 repointed the three DEFAULT_PERSONAS at the domain binding, so the
+// defaults leg compared the document to itself and was deleted; what remains
+// pins the still-hand-typed PERSONAS tables and primary-agent constants.
 //
 // Modeled on domain-priorities-parity.test.mjs.
 
@@ -181,7 +183,8 @@ for (const [name, registry] of [
     for (const agent of PERSONA_AGENTS) {
       assert.deepEqual(Object.keys(registry.PERSONAS[agent]), [...PERSONA_IDS[agent]], agent)
     }
-    assert.deepEqual(registry.DEFAULT_PERSONAS, { ...DEFAULT_PERSONAS })
+    // HZ-380: no DEFAULT_PERSONAS leg — the registries derive it from this
+    // binding now, so comparing them would compare the document to itself.
     assert.equal(registry.PRIMARY_PERSONA_AGENT, PRIMARY_PERSONA_AGENT)
   })
 }
