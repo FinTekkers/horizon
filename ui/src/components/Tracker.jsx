@@ -633,9 +633,11 @@ export default function Tracker({ item, projects, deployBlock = null, viewerName
           </div>
         )}
         {!abandoned && item.paused && <PauseBanner item={item} />}
-        {/* HZ-365: isRuleBlocked is false while paused, so never both banners. */}
-        {isRuleBlocked(item) && (
-          <RuleBlockBanner key={item.id} item={item} onAddDependency={onAddDependency} onAmendRule={onAmendRule} onAbandon={onAbandon} />
+        {/* HZ-365: isRuleBlocked is false while paused, so never both banners.
+            The key differs from DependencyBadge's below: duplicate sibling
+            keys make React leave a stale second banner behind. */}
+        {!abandoned && isRuleBlocked(item) && (
+          <RuleBlockBanner key={`rule-block-${item.id}`} item={item} onAddDependency={onAddDependency} onAmendRule={onAmendRule} onAbandon={onAbandon} />
         )}
         {abandoned && item.abandoned_reason && (
           <div className="tracker__actions">

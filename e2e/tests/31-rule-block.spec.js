@@ -66,37 +66,47 @@ function runCount(itemId, status = null) {
   }
 }
 
+// Playwright re-runs beforeAll in a fresh worker after a failure; the rows
+// from the first run are still there, so seed each fixture only once.
+const seeded = (db, id) => db.prepare('SELECT 1 FROM work_item WHERE id = ?').get(id) != null
+
 test.beforeAll(() => {
   const db = openDb(DB_PATH)
   try {
-    insertItem(db, { id: 'RULE-UP', title: 'E2E fixture — closed upstream', cursor: STEPS.length })
-    for (const id of ['RULE-1', 'RULE-CTRL']) {
-      insertItem(db, { id, title: `E2E fixture — ${id === 'RULE-1' ? 'blocked by a rule' : 'rule-block control'}`, cursor: IMPLEMENT_STEP_INDEX })
-      insertDependency(db, { itemId: id, dependsOnId: 'RULE-UP' })
-      db.prepare("UPDATE work_item_dependency SET created_at = '2020-01-01 00:00:00' WHERE item_id = ?").run(id)
+    if (!seeded(db, 'RULE-UP')) seedRuleOne(db)
+    for (const id of ['RULE-LONG', 'RULE-AMEND']) {
+      if (!seeded(db, id)) seedRuleBlocked(db, id, LONG_NEEDS)
     }
-    const runId = insertStepRun(db, {
-      itemId: 'RULE-1',
-      stepIndex: IMPLEMENT_STEP_INDEX,
-      attempt: 1,
-      agent: STEPS[IMPLEMENT_STEP_INDEX].agent,
-      status: 'cancelled',
-      output: `BLOCKED: stopped by a rule: “${RULE}” — needs: ${NEEDS}`,
-      startedAt: '2026-10-08 14:00:00',
-      endedAt: '2026-10-08 14:02:11',
-    })
-    db.prepare('UPDATE step_run SET rule_blocked = 1 WHERE id = ?').run(runId)
-    db.prepare('UPDATE work_item SET rule_block_json = ? WHERE id = ?').run(
-      JSON.stringify({ rule: RULE, needs: NEEDS, runId, blockedAt: '2026-10-08 14:02:11' }),
-      'RULE-1',
-    )
-    insertEvent(db, { itemId: 'RULE-1', text: EVENT })
-    seedRuleBlocked(db, 'RULE-LONG', LONG_NEEDS)
-    seedRuleBlocked(db, 'RULE-AMEND', LONG_NEEDS)
   } finally {
     db.close()
   }
 })
+
+// HZ-346: RULE-1 is blocked by a rule; RULE-CTRL is its unblocked control.
+function seedRuleOne(db) {
+  insertItem(db, { id: 'RULE-UP', title: 'E2E fixture — closed upstream', cursor: STEPS.length })
+  for (const id of ['RULE-1', 'RULE-CTRL']) {
+    insertItem(db, { id, title: `E2E fixture — ${id === 'RULE-1' ? 'blocked by a rule' : 'rule-block control'}`, cursor: IMPLEMENT_STEP_INDEX })
+    insertDependency(db, { itemId: id, dependsOnId: 'RULE-UP' })
+    db.prepare("UPDATE work_item_dependency SET created_at = '2020-01-01 00:00:00' WHERE item_id = ?").run(id)
+  }
+  const runId = insertStepRun(db, {
+    itemId: 'RULE-1',
+    stepIndex: IMPLEMENT_STEP_INDEX,
+    attempt: 1,
+    agent: STEPS[IMPLEMENT_STEP_INDEX].agent,
+    status: 'cancelled',
+    output: `BLOCKED: stopped by a rule: “${RULE}” — needs: ${NEEDS}`,
+    startedAt: '2026-10-08 14:00:00',
+    endedAt: '2026-10-08 14:02:11',
+  })
+  db.prepare('UPDATE step_run SET rule_blocked = 1 WHERE id = ?').run(runId)
+  db.prepare('UPDATE work_item SET rule_block_json = ? WHERE id = ?').run(
+    JSON.stringify({ rule: RULE, needs: NEEDS, runId, blockedAt: '2026-10-08 14:02:11' }),
+    'RULE-1',
+  )
+  insertEvent(db, { itemId: 'RULE-1', text: EVENT })
+}
 
 test('a rule-blocked item reads Blocked by a rule on the card and item page, survives a reload, and is never dispatched', async ({
   page,

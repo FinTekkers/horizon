@@ -90,6 +90,18 @@ test('the banner names the step and the rule, shows the summary, and the toggle 
   expect(el.textContent).not.toContain('…')
 })
 
+test('exactly one banner renders, also after switching between rule-blocked items', () => {
+  const { container, rerender } = renderTracker(blockedItem())
+  expect(container.querySelectorAll('.pause-banner').length).toBe(1)
+  const other = { ...blockedItem(), id: 'LS-18' }
+  rerender(
+    <Tracker item={other} onBack={noop} onApprove={noop} onApproveWithComments={noop} onReject={noop} onResolveConflicts={noop}
+      onTogglePause={noop} onRestartPhase={noop} onSetPersona={noop} onAbandon={noop} onAddDependency={noop} onAmendRule={noop} />,
+  )
+  expect(container.querySelectorAll('.pause-banner').length).toBe(1)
+  expect(container.querySelectorAll('#rule-block').length).toBe(1)
+})
+
 test('a single short line has no toggle', () => {
   const { container, queryByRole } = renderTracker(blockedItem({ rule: RULE, needs: SUMMARY }))
   expect(banner(container).textContent).toContain(SUMMARY)
