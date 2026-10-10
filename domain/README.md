@@ -133,6 +133,8 @@ enforced rather than remembered.
 | `js/personas.js` | The JS binding: imports `personas.json`, exposes the ids, defaults, legacy aliases and `isPersona` / `personaRoleFile`. No `PERSONA_PROVIDERS` — it has no JS consumer |
 | `py/personas.py` | The Python binding: loads `personas.json`, exposes the same registry plus `PERSONA_PROVIDERS`, as tuples and read-only maps. Both bindings also expose `MODELS` and the one model resolver |
 | `fixtures/personas-cases.json` | The same as the other fixtures, for the persona bindings |
+| `runPlan.schema.json` | An **output contract**, not a data file: the machine-readable block a Task's Run plan step emits (HZ-383) and HZ-378's Execute reads. It pairs with no JSON here |
+| `py/run_plan.py` | Its only binding: `validate`, `render`, `extract`, plus `literal_secrets`. Owns the rule the schema subset cannot express (`env` values are `$NAME` references). No JS binding — only the farm reads the block |
 
 Every file here is authored. Nothing is output.
 

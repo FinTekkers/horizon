@@ -29,7 +29,44 @@ const agentLabels = STEPS.filter((s) => s.kind === 'agent' && s.runsIn !== 'none
 test('sanity: neither set is empty, so set equality below cannot pass vacuously', () => {
   assert.ok(agentLabels.length > 0, 'the step table declares no agent steps')
   assert.ok(Object.keys(MOCK_STEP_BEHAVIOR).length > 0, 'MOCK_STEP_BEHAVIOR is empty')
-  assert.equal(agentLabels.length, 11, 'the number of agent-kind steps changed — check MOCK_STEP_BEHAVIOR deliberately')
+  // HZ-383: 11 change steps plus the task kind's Assess, Run plan and Impact review.
+  assert.equal(agentLabels.length, 14, 'the number of agent-kind steps changed — check MOCK_STEP_BEHAVIOR deliberately')
+})
+
+// HZ-383: the three task behaviours were added without touching any change
+// one — each change step still produces exactly what it produced before.
+test('the 11 change-step mock behaviours are unchanged', async () => {
+  const changeLabels = STEPS.filter((s) => s.kind === 'agent' && (s.itemKind ?? 'change') === 'change').map((s) => s.label)
+  assert.equal(changeLabels.length, 11)
+  const it = { id: 'HZ-0', title: 'a title', desc: 'a desc', metric: 'm', guardrails: 'g', personas: { eng: 'fullstack' } }
+  const summaries = []
+  for (const label of changeLabels) {
+    const result = await MOCK_STEP_BEHAVIOR[label](it)
+    assert.equal(result.artifact_md, undefined, `"${label}" now returns an artifact`)
+    summaries.push(result.summary)
+  }
+  // In table order, one per change step.
+  assert.deepEqual(summaries, [
+    'refined the outcome statement from the issue description',
+    'validated the success metric is measurable',
+    'confirmed guardrails; defaults also apply',
+    'prepared options A/B/C with trade-offs; recommends B (robust, medium effort)',
+    'drafted the implementation plan: components touched, sequencing, test impact',
+    'architecture review passed — no encapsulation or duplication concerns',
+    'test plan covers the success metric; added two edge cases',
+    'review digest unavailable in demo mode — a human must decide at the next gate',
+    'implementation complete on a feature branch; all checks green (no GitHub — PR skipped)',
+    'automated review passed — code and QA both clear (mock)',
+    'deployed to the target environment; smoke checks passed (no GitHub — release skipped)',
+  ])
+})
+
+test('every task-step mock behaviour returns an artifact, so its card shows the artifact link', async () => {
+  for (const label of ['Assess', 'Run plan', 'Impact review']) {
+    const result = await MOCK_STEP_BEHAVIOR[label]({ id: 'HZ-0', title: 'a title' })
+    assert.equal(typeof result.artifact_md, 'string', `"${label}" returns no artifact`)
+    assert.ok(result.artifact_md.length > 0)
+  }
 })
 
 test('MOCK_STEP_BEHAVIOR keys are exactly the agent-kind step labels, in both directions', () => {

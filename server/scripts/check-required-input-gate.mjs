@@ -60,7 +60,7 @@ for (const step of gatedSteps) {
     checked++
     const rows = rowsBefore(run.item_id, run.id)
     const budgeted = budgetArtifacts(rows)
-    const missing = missingRequiredInputs(step, rows, budgeted)
+    const missing = missingRequiredInputs(step, rows, budgeted, step.itemKind ?? 'change')
     if (missing.length > 0) fired.push({ item: run.item_id, step: step.label, runId: run.id, missing })
   }
 }

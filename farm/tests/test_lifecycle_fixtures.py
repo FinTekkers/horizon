@@ -245,6 +245,40 @@ def test_py_first_step_index(case):
         assert steps.first_step_index(case["kind"]) == expect
 
 
+@pytest.mark.parametrize("case", PY["FARM_VIEWS"], ids=lambda c: c["case"])
+def test_py_farm_views(case):
+    view = steps.FARM_VIEWS[case["kind"]]
+    if case.get("expectIsSteps"):
+        assert view is steps.STEPS
+    if "expectLabels" in case:
+        assert [entry["label"] for entry in view] == case["expectLabels"]
+
+
+@pytest.mark.parametrize("case", PY["by_kind_label"], ids=lambda c: c["case"])
+def test_py_by_kind_label(case):
+    expect = case["expect"]
+    if expect.get("throws"):
+        with pytest.raises(KeyError) as exc:
+            steps.by_kind_label(case["kind"], case["label"])
+        assert expect["messageContains"] in str(exc.value)
+        return
+    entry = steps.by_kind_label(case["kind"], case["label"])
+    assert entry["label"] == case["label"]
+    for field, value in expect.items():
+        assert entry[field] == value, f'{case["label"]}.{field}'
+
+
+@pytest.mark.parametrize("case", PY["entry_for_dispatch"], ids=lambda c: c["case"])
+def test_py_entry_for_dispatch(case):
+    index = steps.by_kind_label("task", case["label"])["index"] + case["indexOffset"]
+    if case["expect"].get("throws"):
+        with pytest.raises(KeyError) as exc:
+            steps.entry_for_dispatch(index, case["kind"], case["label"])
+        assert case["expect"]["messageContains"] in str(exc.value)
+    else:
+        assert steps.entry_for_dispatch(index, case["kind"], case["label"])["index"] == index
+
+
 # ---- the manifest: this suite really ran every shared case ----
 # Declared last on purpose: pytest collects and runs in file order, so every
 # parametrized shared case above has already appended its id by the time this

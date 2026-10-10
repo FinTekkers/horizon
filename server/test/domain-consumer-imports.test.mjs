@@ -94,7 +94,11 @@ test('the farm imports the model as domain.py, from the repo root, in both produ
   // match is on the imported NAMES rather than the whole line — both modules
   // must still come from domain.py and from nowhere else.
   // HZ-345: step_agent.py also reads `fields` for the criteria-line rule.
-  const expected = { 'farm/farmd.py': ['reasons', 'steps'], 'farm/step_agent.py': ['fields', 'reasons', 'steps'] }
+  // HZ-383: and `run_plan`, the Task Run plan block's contract.
+  const expected = {
+    'farm/farmd.py': ['reasons', 'steps'],
+    'farm/step_agent.py': ['fields', 'reasons', 'run_plan', 'steps'],
+  }
   for (const [file, names] of Object.entries(expected)) {
     const text = readFileSync(path.join(REPO_ROOT, file), 'utf8')
     const line = text.match(/^from domain\.py import (.+)$/m)

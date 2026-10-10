@@ -155,7 +155,14 @@ def _load_source(path: Path) -> dict:
     return _validate_source(data, str(path))
 
 
-def _project_farm_view(steps: list[dict]) -> list[dict]:
+def _step_kind(step: dict) -> str:
+    """The item kind a step row belongs to. A missing marker means `change`,
+    so the untagged rows stay byte-identical to the one-kind table."""
+    item_kind = step.get("itemKind")
+    return item_kind if item_kind is not None else "change"
+
+
+def _project_farm_view(steps: list[dict], kind: str = "change") -> list[dict]:
     """Farm-shaped view of the authored table: every agent-kind step on a real
     lane (both the PM lane and the farm lane — farmd's /steps/run needs runsIn
     for BOTH to route correctly), with every field this module needs to derive
@@ -164,7 +171,11 @@ def _project_farm_view(steps: list[dict]) -> list[dict]:
     except providerOverrideEligible, which a PM step may declare (HZ-370).
     `requires` is deliberately dropped: it gates a server-side dispatch
     decision, never a farm one. runsIn 'none' rows are dropped too (HZ-377): a
-    step with no runner is dispatched by no lane, so the farm never sees it."""
+    step with no runner is dispatched by no lane, so the farm never sees it.
+
+    HZ-383: one item kind's rows only, `change` by default. Two kinds may share
+    a label, so a view mixing them would let a label lookup resolve to the
+    other kind's row; each kind gets its own view instead (FARM_VIEWS)."""
     return [
         {
             "index": index,
@@ -178,7 +189,7 @@ def _project_farm_view(steps: list[dict]) -> list[dict]:
             "timeoutS": step.get("timeoutS"),
         }
         for index, step in enumerate(steps)
-        if step.get("kind") == "agent" and step.get("runsIn") != "none"
+        if step.get("kind") == "agent" and step.get("runsIn") != "none" and _step_kind(step) == kind
     ]
 
 
@@ -188,13 +199,11 @@ _KINDS: dict = _SOURCE.get("kinds") or {"change": {"phases": _SOURCE["phases"]}}
 
 PHASES: list[str] = _SOURCE["phases"]
 STEPS: list[dict] = _project_farm_view(_SOURCE["steps"])
-
-
-def _step_kind(step: dict) -> str:
-    """The item kind a step row belongs to. A missing marker means `change`,
-    so the untagged rows stay byte-identical to the one-kind table."""
-    item_kind = step.get("itemKind")
-    return item_kind if item_kind is not None else "change"
+# HZ-383: every kind's farm view, STEPS (the `change` one) included. A kind
+# with no farm-run rows gets an empty view, never a missing key.
+FARM_VIEWS: dict[str, list[dict]] = {
+    kind: STEPS if kind == "change" else _project_farm_view(_SOURCE["steps"], kind) for kind in _KINDS
+}
 
 
 def _assert_item_kind(kind: str) -> None:
@@ -273,3 +282,25 @@ def provider_locked_for(steps: list[dict], label: str) -> bool:
     bare FARM_PROVIDER env override — closes the hole a persona-only check
     would miss. Passed into every run_agent() call the step makes."""
     return bool(_find_by_label(steps, label)["providerLocked"])
+
+
+def by_kind_label(kind: str, label: str) -> dict:
+    """HZ-383: the farm-view row with this label in that item kind's own rows.
+    Raises KeyError for an unknown kind, or a label that kind does not run on
+    a lane — a Task label never resolves to a `change` row, or the reverse."""
+    _assert_item_kind(kind)
+    try:
+        return _find_by_label(FARM_VIEWS[kind], label)
+    except KeyError:
+        raise KeyError(f"no step labeled {label!r} for item kind {kind!r} in the step table") from None
+
+
+def entry_for_dispatch(index, kind: str, label: str) -> dict:
+    """HZ-383: the row a dispatched task names, checked three ways. farmd's
+    /steps/run sends `step.index`, `step.label` and `item.kind`; the row at
+    that index must belong to that kind and carry that label, or this raises
+    KeyError rather than routing the task by its index alone."""
+    entry = by_kind_label(kind, label)
+    if entry["index"] != index:
+        raise KeyError(f"step {index!r} is not {label!r} for item kind {kind!r}")
+    return entry

@@ -30,7 +30,7 @@ import httpx
 # `python -m farm.farmd` from there and farm/tests/conftest.py inserts it).
 # HZ-132 put the failure-reason vocabulary there too, so the reason this script
 # reports is a constant the server already knows, never a string typed here.
-from domain.py import fields, reasons, steps
+from domain.py import fields, reasons, run_plan, steps
 from domain.py.personas import model_agent_for_step
 
 # AgentExhaustedError is this branch's name for main's TurnCapExceeded — the
@@ -136,6 +136,25 @@ STEP_CONFIG = {
     **{step["label"]: ("pm.md", True, None, None) for step in steps.STEPS if step["runsIn"] == "pm"},
 }
 
+# HZ-383: a Task item's planning steps (domain/steps.json's itemKind "task"
+# rows on the farm lane). Kept apart from STEP_CONFIG, which stays the change
+# kind's table exactly as it was: two kinds may share a label, so a step's
+# config is looked up by the item's kind first, then its label (_step_config),
+# never by label or index alone. All three are read-only planners — the dry
+# run is described in the artifact, never executed, so no tool that can run
+# or edit anything is granted (no Bash, Edit or Write).
+ASSESS_LABEL = "Assess"
+RUN_PLAN_LABEL = "Run plan"
+IMPACT_REVIEW_LABEL = "Impact review"
+
+TASK_STEP_CONFIG = {
+    ASSESS_LABEL: ("task_assess.md", True, PLANNER_TOOLS, None),
+    RUN_PLAN_LABEL: ("task_run_plan.md", True, PLANNER_TOOLS, None),
+    IMPACT_REVIEW_LABEL: ("task_impact_review.md", True, PLANNER_TOOLS, None),
+}
+
+STEP_CONFIGS = {"change": STEP_CONFIG, "task": TASK_STEP_CONFIG}
+
 # HZ-369: these steps follow ONLY the owner's per-step choice. A persona's
 # provider and a bare FARM_PROVIDER never move them off today's routing.
 # Implement with no choice keeps the HZ-117 lock at runtime. HZ-370: the PM
@@ -150,6 +169,8 @@ CHOICE_ONLY_PROVIDER_STEPS = frozenset(
 # scrubs its worktree first), so its two passes are guarded one by one inside
 # _execute()'s review branch instead.
 READ_ONLY_LABELS = frozenset({OPTIONS_LABEL, ENG_PLAN_LABEL, ARCH_REVIEW_LABEL, QA_PLAN_LABEL})
+# HZ-383: every Task step on the farm lane is held read-only the same way.
+TASK_READ_ONLY_LABELS = frozenset(TASK_STEP_CONFIG)
 
 # HZ-158: the ONLY steps whose turn-capped reply may be salvaged — a reply cut
 # off mid-string, with every required key present, is accepted instead of
@@ -158,6 +179,11 @@ READ_ONLY_LABELS = frozenset({OPTIONS_LABEL, ENG_PLAN_LABEL, ARCH_REVIEW_LABEL, 
 # the verdict), not Architecture review or QA reviews the test plan (they emit
 # one too), and not implement (its checks are a gate, and _salvage_checkpoint()
 # already keeps its code). farm/tests/test_exhaustion_salvage.py pins this set.
+#
+# HZ-383: this set and CHOICE_ONLY_PROVIDER_STEPS are change-kind labels.
+# _execute() consults the latter for change items only; the salvage check
+# matches by label, which is safe while no Task label is in it — key both by
+# kind before a Task step that shares a change label reaches the farm.
 SALVAGE_STEPS = frozenset({"Plan options & trade-offs (pros / cons)", "Draft implementation plan"})
 
 # The agent whose persona the review step's second (QA) pass composes. Named
@@ -183,16 +209,40 @@ def _assert_step_config_matches_table(config_labels: set[str], table_labels: set
     raise RuntimeError("step_agent.STEP_CONFIG has drifted from domain/steps.json — " + "; ".join(problems))
 
 
-_assert_step_config_matches_table(
-    set(STEP_CONFIG), {s["label"] for s in steps.STEPS if s["runsIn"] in ("farm", "pm")}
-)
+# HZ-383: once per item kind, each against that kind's own farm view.
+for _kind, _view in steps.FARM_VIEWS.items():
+    _assert_step_config_matches_table(
+        set(STEP_CONFIGS.get(_kind, {})), {s["label"] for s in _view if s["runsIn"] in ("farm", "pm")}
+    )
 
 
-def _is_pm_step(label: str) -> bool:
+def item_kind(item: dict) -> str:
+    """HZ-383: the item's kind as the server sent it. A missing one is
+    `change`, so a task queued by an older server runs exactly as before."""
+    kind = item.get("kind")
+    return kind if isinstance(kind, str) and kind else "change"
+
+
+def _step_config(kind: str, label: str) -> tuple:
+    """HZ-383: (role file, needs artifact, tools, persona agent) for this
+    kind's step with this label. Raises KeyError for a label that kind does
+    not run on the farm — a Task label sent as a change step, say — rather
+    than borrowing another kind's runner."""
+    steps.by_kind_label(kind, label)
+    return STEP_CONFIGS[kind][label]
+
+
+def _is_read_only(kind: str, label: str) -> bool:
+    """HZ-387/HZ-383: whether the farm holds this step read-only itself."""
+    return label in (TASK_READ_ONLY_LABELS if kind == "task" else READ_ONLY_LABELS)
+
+
+def _is_pm_step(label: str, kind: str = "change") -> bool:
     """HZ-371: whether this step is the PM kind, from domain/steps.json's
     runsIn — the same field farmd's PM lane is chosen by. An unknown label is
-    not, so it fails in _execute() exactly as it did before."""
-    entry = next((step for step in steps.STEPS if step["label"] == label), None)
+    not, so it fails in _execute() exactly as it did before. HZ-383: looked
+    up in that item kind's own rows."""
+    entry = next((step for step in steps.FARM_VIEWS.get(kind, []) if step["label"] == label), None)
     return entry is not None and entry["runsIn"] == "pm"
 
 
@@ -298,7 +348,7 @@ def _persona_line(task: dict) -> str:
     named with its agent, or an explicit "generalist" for the steps that
     compose none. Pre-HZ-125 this printed one resolved id for every step —
     including the generalist planning steps, which never received it."""
-    config = STEP_CONFIG.get(task["step"]["label"])
+    config = STEP_CONFIGS.get(item_kind(task["item"]), {}).get(task["step"]["label"])
     persona_agent = config[3] if config else None
     if not persona_agent:
         return "  persona: (none — this step is generalist)"
@@ -1313,6 +1363,35 @@ def _on_exhaustion(
     raise exc
 
 
+def _task_reply_validator(label: str):
+    """HZ-383: the reply check a Task step runs inside the retry envelope.
+    Run plan's `run_plan` block must satisfy domain/runPlan.schema.json, and
+    no part of any Task reply (summary, artifact, rendered block) may carry
+    what looks like a literal secret. Raises AgentError, which takes the one
+    retry; a second bad reply fails the step. The message and the log name
+    the field or the secret's shape, never the value."""
+
+    def check(parsed):
+        if not isinstance(parsed, dict):
+            return parsed  # the required-field check after the call says so
+        texts = [parsed.get("summary"), parsed.get("artifact_md")]
+        if label == RUN_PLAN_LABEL:
+            try:
+                texts.append(run_plan.render(run_plan.validate(parsed.get("run_plan"))))
+            except ValueError as exc:
+                raise AgentError(f"invalid run plan: {exc}") from None
+        found = sorted({name for text in texts for name in run_plan.literal_secrets(text)})
+        if found:
+            log(f"{label}: reply carries a literal secret ({', '.join(found)}) — rejected")
+            raise AgentError(
+                f"the reply carries what looks like a literal secret ({', '.join(found)}); "
+                "name secrets only as references like $GITHUB_TOKEN"
+            )
+        return parsed
+
+    return check
+
+
 def _run_and_parse(
     prompt: str,
     *,
@@ -1329,6 +1408,7 @@ def _run_and_parse(
     guard: HandoffGuard,
     provider: str | None = None,
     provider_locked: bool = False,
+    validate=None,
 ) -> tuple[dict, dict, list[str]]:
     """run_agent + the shared reply parser, with one retry-with-feedback on a
     parse failure (HZ-44) — the PM steps' recovery (_execute_pm) too. Asking the
@@ -1347,6 +1427,9 @@ def _run_and_parse(
     after this call returns. Moving one inside the retry envelope would buy a
     second full agent run for a reply that costs nothing to reject today, and
     on the review path a retry could flip a deliberately fail-closed gate.
+    HZ-383: a Task step is the exception — it hands in its own validator
+    (_task_reply_validator), so a bad run plan or a literal secret takes the
+    one retry and then fails the step.
 
     HZ-158: required_keys, item_id and guard have no default, so every call
     site must say what its reply needs. They are used only when run_agent
@@ -1403,7 +1486,7 @@ def _run_and_parse(
         return produced["result"]
 
     try:
-        parsed, notes = parse_agent_reply(reply["result"], retry_once)
+        parsed, notes = parse_agent_reply(reply["result"], retry_once, validate=validate)
     except AgentExhaustedError as exc:
         _on_exhaustion(exc, required_keys=required_keys, ctx=ctx, guard=guard, salvage=False)
         raise  # never reached: _on_exhaustion always raises when salvage=False
@@ -1717,12 +1800,13 @@ def execute(task: dict) -> dict:
 
     HZ-371: a PM step keeps no workspace and has no turn budget of its own,
     so it branches off before any of that."""
-    if _is_pm_step(task["step"]["label"]):
-        return _execute_pm(task)
     item = task["item"]
+    kind, label = item_kind(item), task["step"]["label"]
+    if _is_pm_step(label, kind):
+        return _execute_pm(task)
     guard = HandoffGuard()
-    locked = {IMPLEMENT_LABEL, REVIEW_LABEL} | READ_ONLY_LABELS
-    if task["step"]["label"] not in locked or not item.get("repo"):
+    locked = (kind == "change" and label in {IMPLEMENT_LABEL, REVIEW_LABEL}) or _is_read_only(kind, label)
+    if not locked or not item.get("repo"):
         return _execute(task, guard)
     lock = item_lock(
         item["repo"],
@@ -1749,18 +1833,19 @@ def _execute_pm(task: dict) -> dict:
 
     label = task["step"]["label"]
     item = task["item"]
+    kind = item_kind(item)
     prompt = pm_steps.build_prompt(task)
     # HZ-192: run_agent() resolves the model from who is calling — the step's
     # own domain/steps.json agent (PM, or Architect for "Set guardrails").
-    model_agent = model_agent_for_step(steps.by_label(label)["agent"])
-    persona = model_persona(STEP_CONFIG[label][3], item_personas(item))
+    model_agent = model_agent_for_step(steps.by_kind_label(kind, label)["agent"])
+    persona = model_persona(_step_config(kind, label)[3], item_personas(item))
     # HZ-370: a PM step is in CHOICE_ONLY_PROVIDER_STEPS — the owner's choice
     # (the server has already merged in the project default) or None, i.e.
     # today's routing. A persona's provider never moves it. No cwd for either
     # provider: a PM step has no workspace, Muse included.
     choice = (
         step_provider_choice(item, task["step"].get("index"))
-        if steps.provider_override_eligible(steps.STEPS, label)
+        if steps.provider_override_eligible(steps.FARM_VIEWS[kind], label)
         else None
     )
     # The reply that parsed, so a retry records its own provenance (HZ-102).
@@ -1805,11 +1890,15 @@ def _execute_pm(task: dict) -> dict:
 
 def _execute(task: dict, guard: HandoffGuard) -> dict:
     label = task["step"]["label"]
-    role_file, wants_artifact, tools, persona_agent = STEP_CONFIG[label]
-    max_turns, timeout_s = steps.budget_for_label(steps.STEPS, label)
-    provider_locked = steps.provider_locked_for(steps.STEPS, label)
-    role = (ROLES / role_file).read_text()
     item = task["item"]
+    # HZ-383: the item's kind, then the label, picks the runner — never the
+    # label alone, and never the index.
+    kind = item_kind(item)
+    role_file, wants_artifact, tools, persona_agent = _step_config(kind, label)
+    table = steps.FARM_VIEWS[kind]
+    max_turns, timeout_s = steps.budget_for_label(table, label)
+    provider_locked = steps.provider_locked_for(table, label)
+    role = (ROLES / role_file).read_text()
     personas = item_personas(item)
     if persona_agent:
         role = compose_role(role, persona_agent, personas.get(persona_agent))
@@ -1818,9 +1907,9 @@ def _execute(task: dict, guard: HandoffGuard) -> dict:
     # isn't provider_override_eligible, so deploy stays locked. HZ-369: a
     # CHOICE_ONLY_PROVIDER_STEPS step takes the choice alone, and implement
     # with no choice is locked exactly as before.
-    override_eligible = steps.provider_override_eligible(steps.STEPS, label)
+    override_eligible = steps.provider_override_eligible(table, label)
     choice = step_provider_choice(item, task["step"].get("index")) if override_eligible else None
-    if label in CHOICE_ONLY_PROVIDER_STEPS:
+    if kind == "change" and label in CHOICE_ONLY_PROVIDER_STEPS:
         provider_override = choice
         if label == IMPLEMENT_LABEL and choice is None:
             provider_locked = True
@@ -1829,7 +1918,7 @@ def _execute(task: dict, guard: HandoffGuard) -> dict:
     # HZ-192: who this step's run_agent() calls are; run_agent() resolves the
     # model from these, so it is never chosen here. The agent comes from the
     # step table, like the budget above, not from the task payload.
-    model_agent = model_agent_for_step(steps.by_label(label)["agent"])
+    model_agent = model_agent_for_step(steps.by_kind_label(kind, label)["agent"])
     persona = model_persona(persona_agent, personas)
 
     ws = None
@@ -2260,7 +2349,7 @@ def _execute(task: dict, guard: HandoffGuard) -> dict:
         }
 
     # HZ-387: a read-only step must leave the worktree as it found it.
-    read_only_ws = ws if label in READ_ONLY_LABELS else None
+    read_only_ws = ws if _is_read_only(kind, label) else None
     with read_only_guard.guard(read_only_ws, effective_provider(provider_override)) as watch:
         parsed, reply_provenance, notes = _run_and_parse(
             build_prompt(task) + "\n\nRespond with ONLY the JSON object described in your role instructions.",
@@ -2271,12 +2360,15 @@ def _execute(task: dict, guard: HandoffGuard) -> dict:
             cwd=str(ws) if ws else None,
             max_turns=max_turns,
             timeout_s=timeout_s,
-            allowed_tools=tools if ws else None,
+            # HZ-383: a Task step is held to its read-only tools even with no
+            # workspace, where a change step runs with no allowlist at all.
+            allowed_tools=tools if ws or kind == "task" else None,
             required_keys=("summary", "artifact_md") if wants_artifact else ("summary",),
             item_id=item["id"],
             guard=guard,
             provider=provider_override,
             provider_locked=provider_locked,
+            validate=_task_reply_validator(label) if kind == "task" else None,
         )
         watch.provider = reply_provenance.get("provider") or watch.provider
     summary = str(parsed.get("summary", "")).strip()[:SUMMARY_MAX_CHARS]
@@ -2302,6 +2394,10 @@ def _execute(task: dict, guard: HandoffGuard) -> dict:
     result = {"summary": stamp_notes(summary, notes, SUMMARY_MAX_CHARS)}
     if wants_artifact and isinstance(parsed.get("artifact_md"), str) and parsed["artifact_md"].strip():
         artifact = parsed["artifact_md"].strip()
+        # HZ-383: the validated block rides at the end of the artifact, where
+        # HZ-378's Execute reads it back with run_plan.extract().
+        if kind == "task" and label == RUN_PLAN_LABEL:
+            artifact = f"{artifact}\n\n## Run plan block\n{run_plan.render(parsed['run_plan'])}"
         if feedback:
             header = "\n".join(f"> {fb.get('message', '')}" for fb in feedback)
             artifact = f"## Human feedback addressed in this revision\n{header}\n\n{artifact}"

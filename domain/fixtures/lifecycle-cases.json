@@ -534,6 +534,25 @@
       { "case": "true when the entry declares true", "label": "Inserted Farm Step", "expect": true },
       { "case": "false when the entry declares false", "label": "Existing Farm Step", "expect": false },
       { "case": "None on the PM lane coerces to false", "label": "Existing PM Step", "expect": false }
+    ],
+
+    "FARM_VIEWS": [
+      { "case": "the change view is STEPS itself", "kind": "change", "expectIsSteps": true },
+      { "case": "the task view holds only the task rows on a lane", "kind": "task", "expectLabels": ["Assess", "Run plan", "Impact review"] }
+    ],
+
+    "by_kind_label": [
+      { "case": "a task label resolves in the task rows", "kind": "task", "label": "Impact review", "expect": { "agent": "Architect", "runsIn": "farm" } },
+      { "case": "a change label resolves in the change rows", "kind": "change", "label": "Architecture review", "expect": { "agent": "Architect", "runsIn": "farm" } },
+      { "case": "a task label is not a change row", "kind": "change", "label": "Assess", "expect": { "throws": true, "messageContains": "Assess" } },
+      { "case": "a change label is not a task row", "kind": "task", "label": "Architecture review", "expect": { "throws": true, "messageContains": "task" } },
+      { "case": "an unknown kind raises", "kind": "banana", "label": "Assess", "expect": { "throws": true, "messageContains": "banana" } }
+    ],
+
+    "entry_for_dispatch": [
+      { "case": "index, kind and label agree", "kind": "task", "label": "Run plan", "indexOffset": 0, "expect": { "ok": true } },
+      { "case": "the right label at the wrong index raises", "kind": "task", "label": "Run plan", "indexOffset": 1, "expect": { "throws": true, "messageContains": "Run plan" } },
+      { "case": "another kind's label raises", "kind": "change", "label": "Run plan", "indexOffset": 0, "expect": { "throws": true, "messageContains": "change" } }
     ]
   }
 }

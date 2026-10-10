@@ -274,6 +274,23 @@ def lane_for_index(step_table: list[dict], index, default: str = "runs") -> str:
     return "pm" if entry["runsIn"] == "pm" else default
 
 
+# HZ-383: whether a dispatched task's step belongs to its item's kind. A
+# server that sends item.kind is held to the full check — the row at
+# step.index must be that kind's row with that label. A payload with no kind
+# comes from a server that predates item kinds, so it is a change step, and
+# is refused only if its index is another kind's row.
+def step_kind_mismatch(item: dict, step: dict) -> bool:
+    kind = item.get("kind")
+    index = step.get("index")
+    if kind is None:
+        return any(entry["index"] == index for k, view in steps.FARM_VIEWS.items() if k != "change" for entry in view)
+    try:
+        steps.entry_for_dispatch(index, kind, step.get("label"))
+    except KeyError:
+        return True
+    return False
+
+
 WORKSPACE_MUTATING_STEPS = frozenset(workspace_mutating_indexes(steps.STEPS))
 _WORKSPACE_MUTATING_STEP_STRS = frozenset(str(i) for i in WORKSPACE_MUTATING_STEPS)
 
@@ -987,6 +1004,8 @@ async def steps_run(request: Request):
     item_repo = body["item"].get("repo") if isinstance(body["item"], dict) else None
     if not _non_empty_str(item_repo):
         return JSONResponse({"error": "missing item.repo"}, status_code=400)
+    if not isinstance(body["step"], dict) or step_kind_mismatch(body["item"], body["step"]):
+        return JSONResponse({"error": "step kind mismatch"}, status_code=400)
     if not (workspaces.hub_path(item_repo) / ".git").exists():
         _provision_hub(item_repo)
     # Plan/review-summary steps go to the PM lane (one at a time); everything
@@ -1002,7 +1021,9 @@ async def steps_run(request: Request):
     # HZ-246: rules_override is what the server's DB serves for this project
     # and repo at dispatch; _claim_and_launch refreshes it at claim time.
     body["rules"] = rules.resolve_rules(project["name"], item_repo, body.get("rules_override"))
-    queue = lane_for_index(steps.STEPS, body["step"].get("index", 99))
+    # HZ-383: in the item kind's own rows — checked above, so the kind is known.
+    view = steps.FARM_VIEWS[body["item"].get("kind") or "change"]
+    queue = lane_for_index(view, body["step"].get("index", 99))
     (QUEUE_DIR / queue).mkdir(parents=True, exist_ok=True)
     task_path = QUEUE_DIR / queue / f"{body['run_id']}.json"
     # HZ-130: the enqueue write. A poller globbing this directory used to be

@@ -63,8 +63,13 @@ function expectedFarmViewOf(steps) {
     }))
 }
 
+// HZ-383: every item kind's farm view, in table order. STEPS is the change
+// kind's view; the task kind has its own (FARM_VIEWS), and together they are
+// the whole projection the JS rule above implies.
 function spawnedPythonSteps() {
-  const script = 'import json; from domain.py import steps; print(json.dumps(steps.STEPS))'
+  const script =
+    'import json; from domain.py import steps; ' +
+    'print(json.dumps(sorted((e for v in steps.FARM_VIEWS.values() for e in v), key=lambda e: e["index"])))'
   const out = execFileSync('python3', ['-c', script], { cwd: REPO_ROOT, encoding: 'utf8' })
   return JSON.parse(out)
 }
