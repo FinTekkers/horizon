@@ -11,6 +11,7 @@ import types
 
 import pytest
 
+from domain.py import providers as domain_providers
 from farm import agent_runner
 from farm.providers.base import AgentError
 
@@ -71,7 +72,8 @@ def test_resume_incapable_provider_runs_normally_without_a_session_id(register_f
 
     reply = agent_runner.run_agent("prompt", agent="eng")
 
-    assert reply == {"result": "ok", "session_id": "new-session", "provider": "fake", "command_id": None}
+    # "fake" is in no domain/providers.json list, so it has no model to run.
+    assert reply == {"result": "ok", "session_id": "new-session", "provider": "fake", "model": None, "command_id": None}
     assert len(run_calls) == 1
 
 
@@ -346,11 +348,11 @@ def test_an_unknown_agent_fails_before_any_provider_runs_on_every_provider(recor
 
 def test_a_valid_override_beats_even_a_persona_override_on_claude(recorded, monkeypatch):
     calls = recorded(personas={"eng.python": "claude-test-persona"})
-    monkeypatch.setenv("FARM_MODEL_OVERRIDE", "claude-test-emergency")
+    monkeypatch.setenv("FARM_MODEL_OVERRIDE", SONNET)
 
     agent_runner.run_agent("p", agent="eng", step="Build", persona="eng.python")
 
-    assert [kw["model"] for _, kw in calls] == ["claude-test-emergency"]
+    assert [kw["model"] for _, kw in calls] == [SONNET]
 
 
 def test_an_empty_override_counts_as_unset(recorded, monkeypatch):
@@ -362,7 +364,9 @@ def test_an_empty_override_counts_as_unset(recorded, monkeypatch):
     assert [kw["model"] for _, kw in calls] == ["claude-test-eng"]
 
 
-@pytest.mark.parametrize("bad", ["opus", "gpt-4o", " claude-opus-5-5", "claude-opus-5-5\n", "Claude-Opus-5-5"])
+# HZ-398: "claude-opus-9-9" has the old ^claude- shape but is declared nowhere —
+# the catalogue, not a pattern, decides.
+@pytest.mark.parametrize("bad", ["opus", "gpt-4o", " claude-opus-5-5", "claude-opus-5-5\n", "Claude-Opus-5-5", "claude-opus-9-9"])
 def test_a_malformed_override_raises_before_the_provider_runs(recorded, monkeypatch, bad):
     calls = recorded()
     monkeypatch.setenv("FARM_MODEL_OVERRIDE", bad)
@@ -373,16 +377,17 @@ def test_a_malformed_override_raises_before_the_provider_runs(recorded, monkeypa
     assert calls == []
 
 
-@pytest.mark.parametrize("override", [None, "claude-test-emergency"])
+@pytest.mark.parametrize("override", [None, "$sonnet"])
 @pytest.mark.parametrize("route", ["explicit", "env", "both"])
 def test_muse_never_receives_a_claude_model(recorded, monkeypatch, muse_smoke_test_persona, override, route):
     """The runtime guard is the real protection: the load-time rule only sees
     domain/personas.json, and a runtime-registered Muse persona whose model
-    override was injected past it must still reach Muse with no model."""
+    override was injected past it must still reach Muse with its own pinned
+    default (HZ-398), never the Claude one."""
     persona = f"eng.{muse_smoke_test_persona}"
     calls = recorded(personas={persona: "claude-test-persona"}, steps={"Build": "claude-test-step"})
     if override:
-        monkeypatch.setenv("FARM_MODEL_OVERRIDE", override)
+        monkeypatch.setenv("FARM_MODEL_OVERRIDE", SONNET)
     if route in ("env", "both"):
         monkeypatch.setenv("FARM_PROVIDER", "muse")
 
@@ -392,5 +397,106 @@ def test_muse_never_receives_a_claude_model(recorded, monkeypatch, muse_smoke_te
 
     assert len(calls) == 1
     name, kw = calls[0]
-    assert name == "muse" and kw["model"] is None
+    assert name == "muse" and kw["model"] == MUSE_DEFAULT
     assert not [v for v in kw.values() if isinstance(v, str) and v.startswith("claude-")]
+
+
+# ---- HZ-398: the owner's model choice, and the order _model_for() applies ----
+# Every id below is read from domain/providers.json.
+
+CLAUDE_IDS = [m["id"] for m in domain_providers.PROVIDERS["claude"]["models"] if m["selectable"]]
+MUSE_IDS = [m["id"] for m in domain_providers.PROVIDERS["muse"]["models"] if m["selectable"]]
+SONNET = next(i for i in CLAUDE_IDS if "sonnet" in i)
+HAIKU = next(i for i in CLAUDE_IDS if "haiku" in i)
+MUSE_DEFAULT = domain_providers.default_model("muse")
+MUSE_CHOSEN = next(i for i in MUSE_IDS if i != MUSE_DEFAULT)
+
+
+def test_level_1_the_override_beats_a_chosen_model(recorded, monkeypatch):
+    calls = recorded()
+    monkeypatch.setenv("FARM_MODEL_OVERRIDE", SONNET)
+
+    agent_runner.run_agent("p", agent="eng", model_choice=HAIKU)
+
+    assert [kw["model"] for _, kw in calls] == [SONNET]
+
+
+def test_level_2_a_chosen_model_beats_the_models_block(recorded):
+    """The chosen id is the item's choice or, with none, the project default —
+    the server merges the two before dispatch (server/test covers that half)."""
+    calls = recorded(personas={"eng.python": "claude-test-persona"}, steps={"Build": "claude-test-step"})
+
+    reply = agent_runner.run_agent("p", agent="eng", step="Build", persona="eng.python", model_choice=HAIKU)
+
+    assert [kw["model"] for _, kw in calls] == [HAIKU]
+    assert reply["model"] == HAIKU
+
+
+def test_level_3_with_no_choice_the_models_block_runs(recorded):
+    calls = recorded()
+
+    reply = agent_runner.run_agent("p", agent="eng")
+
+    assert [kw["model"] for _, kw in calls] == ["claude-test-eng"]
+    assert reply["provider"] == "claude" and reply["model"] == "claude-test-eng"
+
+
+def test_a_chosen_muse_model_and_muses_default_both_reach_muse(recorded):
+    calls = recorded()
+
+    chosen = agent_runner.run_agent("p", agent="eng", provider="muse", model_choice=MUSE_CHOSEN)
+    default = agent_runner.run_agent("p", agent="eng", provider="muse")
+
+    assert [kw["model"] for _, kw in calls] == [MUSE_CHOSEN, MUSE_DEFAULT]
+    assert (chosen["model"], default["model"]) == (MUSE_CHOSEN, MUSE_DEFAULT)
+
+
+def test_an_undeclared_chosen_model_is_dropped_for_the_default(recorded):
+    """claude-opus-9-9 has the old ^claude- shape; only the catalogue counts."""
+    calls = recorded()
+
+    agent_runner.run_agent("p", agent="eng", model_choice="claude-opus-9-9")
+    agent_runner.run_agent("p", agent="eng", provider="muse", model_choice="muse-spark-9.9")
+
+    assert [kw["model"] for _, kw in calls] == ["claude-test-eng", MUSE_DEFAULT]
+
+
+def test_no_model_crosses_providers_either_way(recorded, monkeypatch):
+    calls = recorded()
+
+    agent_runner.run_agent("p", agent="eng", model_choice=MUSE_CHOSEN)
+    agent_runner.run_agent("p", agent="eng", provider="muse", model_choice=SONNET)
+    monkeypatch.setenv("FARM_MODEL_OVERRIDE", MUSE_CHOSEN)
+    agent_runner.run_agent("p", agent="eng")
+    monkeypatch.setenv("FARM_MODEL_OVERRIDE", SONNET)
+    agent_runner.run_agent("p", agent="eng", provider="muse")
+
+    assert [(name, kw["model"]) for name, kw in calls] == [
+        ("claude", "claude-test-eng"),
+        ("muse", MUSE_DEFAULT),
+        ("claude", "claude-test-eng"),
+        ("muse", MUSE_DEFAULT),
+    ]
+
+
+def test_an_override_for_the_running_provider_still_beats_its_choice_on_muse(recorded, monkeypatch):
+    calls = recorded()
+    monkeypatch.setenv("FARM_MODEL_OVERRIDE", MUSE_CHOSEN)
+
+    agent_runner.run_agent("p", agent="eng", provider="muse", model_choice=MUSE_DEFAULT)
+
+    assert [kw["model"] for _, kw in calls] == [MUSE_CHOSEN]
+
+
+def test_an_exhausted_run_carries_the_model_it_ran_on(recorded):
+    from farm.providers.base import AgentExhaustedError
+
+    recorded()
+
+    def exhausted(prompt, **kw):
+        raise AgentExhaustedError("out of turns", partial_text=None, session_id=None)
+
+    agent_runner._PROVIDERS["claude"].run = exhausted
+    with pytest.raises(AgentExhaustedError) as err:
+        agent_runner.run_agent("p", agent="eng", model_choice=HAIKU)
+    assert (err.value.provider, err.value.model) == ("claude", HAIKU)

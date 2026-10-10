@@ -15,6 +15,7 @@ from types import SimpleNamespace
 import pytest
 
 from domain.py import steps as domain_steps
+from domain.py import providers as domain_providers
 from farm import agent_runner, pm_steps
 from farm.config import PM_MALFORMED_GRACE_S
 from farm.pm_steps import (
@@ -41,6 +42,11 @@ GUARDRAILS_LIMIT = PATCH_FIELDS["guardrails"]
 # The persona cap is NOT read out of PATCH_FIELDS: since HZ-125 the routing tag
 # is a {agent: persona id} map under `personas`, so it has no entry there — its
 # size caps live on pm_steps itself (see PERSONA_ID_MAX_CHARS below).
+
+# HZ-398: ids read from domain/providers.json — Muse's pinned default, and a
+# declared Claude id to stand in for the operator's emergency override.
+MUSE_DEFAULT = domain_providers.default_model("muse")
+EMERGENCY_MODEL = domain_providers.PROVIDERS["claude"]["models"][1]["id"]
 
 
 def _over_by_words(limit: int) -> str:
@@ -747,8 +753,8 @@ def test_both_pm_call_sites_hand_the_steps_model_to_claude(pm_process, monkeypat
     assert recorder.models()[1] == "claude-opus-5-5", "pm_steps.process: retry_once run_agent call"
 
 
-@pytest.mark.parametrize("override", [None, "claude-test-emergency"])
-def test_a_pm_call_on_muse_receives_no_model(pm_process, monkeypatch, recording_providers, override):
+@pytest.mark.parametrize("override", [None, EMERGENCY_MODEL])
+def test_a_pm_call_on_muse_receives_muses_own_default(pm_process, monkeypatch, recording_providers, override):
     """Unguarded before HZ-192: the PM handed its env-selected model to whichever
     provider FARM_PROVIDER selected."""
     monkeypatch.setattr(pm_process, "run_agent", agent_runner.run_agent)
@@ -759,4 +765,5 @@ def test_a_pm_call_on_muse_receives_no_model(pm_process, monkeypatch, recording_
 
     pm_process.run(task=_pm_task(PM_LANE_STEPS[0]))
 
-    assert [(c["provider"], c["model"]) for c in recorder.calls] == [("muse", None), ("muse", None)]
+    # HZ-398: Muse's pinned default, never the Claude override.
+    assert [(c["provider"], c["model"]) for c in recorder.calls] == [("muse", MUSE_DEFAULT), ("muse", MUSE_DEFAULT)]

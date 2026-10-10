@@ -9,11 +9,17 @@ import json
 import pytest
 
 from farm import concierge_agent as ca
+from domain.py import providers as domain_providers
 from farm import config
 from farm.config import ensure_dirs
 from wa_fakes import FakeTransport, StubHorizon
 
 STRANGER = "19998887777@s.whatsapp.net"
+
+# HZ-398: ids read from domain/providers.json — Muse's pinned default, and a
+# declared Claude id to stand in for the operator's emergency override.
+MUSE_DEFAULT = domain_providers.default_model("muse")
+EMERGENCY_MODEL = domain_providers.PROVIDERS["claude"]["models"][1]["id"]
 
 
 @pytest.fixture(autouse=True)
@@ -786,8 +792,8 @@ def test_both_concierge_call_sites_hand_the_concierge_model_to_claude(stub, monk
     assert recorder.models()[1] == "claude-sonnet-5", "concierge_agent.process_message: retry_once run_agent call"
 
 
-@pytest.mark.parametrize("override", [None, "claude-test-emergency"])
-def test_both_concierge_calls_on_muse_receive_no_model(stub, monkeypatch, recording_providers, override):
+@pytest.mark.parametrize("override", [None, EMERGENCY_MODEL])
+def test_both_concierge_calls_on_muse_receive_muses_own_default(stub, monkeypatch, recording_providers, override):
     """Unguarded before HZ-192: the env-selected concierge model went to whichever
     provider FARM_PROVIDER selected."""
     monkeypatch.setenv("FARM_PROVIDER", "muse")
@@ -796,4 +802,5 @@ def test_both_concierge_calls_on_muse_receive_no_model(stub, monkeypatch, record
 
     recorder = _drive_concierge(stub, monkeypatch, recording_providers, f"model-muse-{bool(override)}")
 
-    assert [(c["provider"], c["model"]) for c in recorder.calls] == [("muse", None), ("muse", None)]
+    # HZ-398: Muse's pinned default, never the Claude override.
+    assert [(c["provider"], c["model"]) for c in recorder.calls] == [("muse", MUSE_DEFAULT), ("muse", MUSE_DEFAULT)]

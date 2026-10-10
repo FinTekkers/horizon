@@ -496,6 +496,14 @@ try {
   // column already exists
 }
 try {
+  // HZ-398: the model the provider ran this step on (farm/agent_runner.py's
+  // _model_for), beside `provider`. NULL for rows written before this landed
+  // and from a farm that does not report it — no backfill.
+  db.exec('ALTER TABLE step_run ADD COLUMN model TEXT')
+} catch {
+  // column already exists
+}
+try {
   // HZ-182: the scope an implement or review run was dispatched with
   // ({mode: 'fix'|'delta'|'full', ...}). Completion reads it back rather than
   // recomputing from the item, which may have changed mid-run. NULL = full.

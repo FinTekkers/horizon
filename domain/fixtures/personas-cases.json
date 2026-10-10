@@ -2,6 +2,8 @@
   "$comment": "HZ-133. Input/expected pairs for the persona bindings, asserted by BOTH server/test/domain-personas-cases.test.mjs and farm/tests/test_personas_fixtures.py. The `shared` section is the point of the file: domain/js/personas.js and domain/py/personas.py are two independent hand-written implementations, and without this nothing would prove a validation rule, a membership answer or a declared role filename meant the same thing in both languages. Every case in `shared` runs in both suites, and each suite asserts it executed the exact ids listed in shared.manifest. The `js` and `py` sections cover the exports that exist in only one binding; a coverage guard in each suite asserts SET EQUALITY between that section's keys and the binding's real exports. Every agent and persona id — and every model id — in this file is FABRICATED on purpose (alpha/beta, one/two/three) so the fixture is not a second declaration of the registry.",
 
   "shared": {
+    "$declaredModels": "HZ-398: the ids the validation cases' models blocks may name, passed as the validators' declaredModels / declared_models argument in place of domain/providers.json's default-provider models. Fabricated, like every other id here.",
+    "declaredModels": ["claude-test-1", "claude-test-2", "claude-test-3"],
     "manifest": {
       "validation": [
         "a valid registry is accepted",
@@ -496,7 +498,7 @@
         },
         "expect": {
           "throws": true,
-          "messageContains": "models.agents[\"alpha\"] \"gpt-4o\" is not a Claude model id matching /^claude-[a-z0-9][a-z0-9.-]*$/"
+          "messageContains": "models.agents[\"alpha\"] \"gpt-4o\" is not a model domain/providers.json declares for the default provider"
         }
       },
       {
@@ -513,7 +515,7 @@
         },
         "expect": {
           "throws": true,
-          "messageContains": "models.agents[\"alpha\"] \"muse-large\" is not a Claude model id matching /^claude-[a-z0-9][a-z0-9.-]*$/"
+          "messageContains": "models.agents[\"alpha\"] \"muse-large\" is not a model domain/providers.json declares for the default provider"
         }
       },
       {
@@ -530,7 +532,7 @@
         },
         "expect": {
           "throws": true,
-          "messageContains": "models.agents[\"alpha\"] \"\" is not a Claude model id matching /^claude-[a-z0-9][a-z0-9.-]*$/"
+          "messageContains": "models.agents[\"alpha\"] \"\" is not a model domain/providers.json declares for the default provider"
         }
       },
       {
@@ -547,7 +549,7 @@
         },
         "expect": {
           "throws": true,
-          "messageContains": "models.agents[\"alpha\"] \"Claude-Opus-5-5\" is not a Claude model id matching /^claude-[a-z0-9][a-z0-9.-]*$/"
+          "messageContains": "models.agents[\"alpha\"] \"Claude-Opus-5-5\" is not a model domain/providers.json declares for the default provider"
         }
       },
       {
@@ -564,7 +566,7 @@
         },
         "expect": {
           "throws": true,
-          "messageContains": "models.agents[\"alpha\"] \"claude-\" is not a Claude model id matching /^claude-[a-z0-9][a-z0-9.-]*$/"
+          "messageContains": "models.agents[\"alpha\"] \"claude-\" is not a model domain/providers.json declares for the default provider"
         }
       },
       {
@@ -581,7 +583,7 @@
         },
         "expect": {
           "throws": true,
-          "messageContains": "models.agents[\"alpha\"] 5 is not a Claude model id matching /^claude-[a-z0-9][a-z0-9.-]*$/"
+          "messageContains": "models.agents[\"alpha\"] 5 is not a model domain/providers.json declares for the default provider"
         }
       },
       {
@@ -664,7 +666,7 @@
         },
         "expect": {
           "throws": true,
-          "messageContains": "models.steps[\"Some step label\"] \"gpt-4o\" is not a Claude model id matching /^claude-[a-z0-9][a-z0-9.-]*$/"
+          "messageContains": "models.steps[\"Some step label\"] \"gpt-4o\" is not a model domain/providers.json declares for the default provider"
         }
       },
       {
@@ -779,7 +781,7 @@
         },
         "expect": {
           "throws": true,
-          "messageContains": "models.personas[\"alpha.one\"] \"muse-large\" is not a Claude model id matching /^claude-[a-z0-9][a-z0-9.-]*$/"
+          "messageContains": "models.personas[\"alpha.one\"] \"muse-large\" is not a model domain/providers.json declares for the default provider"
         }
       },
       {

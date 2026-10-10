@@ -55,7 +55,7 @@ sessions; queued work survives on disk.
 | `FARM_SHARED_SECRET` | dev-secret | must match the Node server's value. **farmd only** (HZ-140): `tmux_mgr.py` refuses to forward it into any agent session, and unsets it in the session's own command, so a step/PM/concierge agent can't read it out of its environment |
 | `FARM_HOME` | ~/.horizon-farm | queue/state/logs/workspaces |
 | `FARM_CLAUDE_BIN` | claude | override with tests/fake_claude in tests |
-| `FARM_MODEL_OVERRIDE` | (unset) | **emergency only** (HZ-192): a Claude model id (`claude-<id>`) that replaces the model of EVERY Claude call — PM, steps, conflict resolution and the concierge. Never reaches Muse. A malformed value fails each call rather than reaching the CLI |
+| `FARM_MODEL_OVERRIDE` | (unset) | **emergency only** (HZ-192): a model id declared in `domain/providers.json` that replaces the model of EVERY call on the provider that declares it — PM, steps, conflict resolution and the concierge — over the owner's per-step choice too (HZ-398). A Claude id never reaches Muse, nor the reverse. An id the catalogue does not declare fails each call rather than reaching the CLI |
 | `FARM_STEP_TIMEOUT_S` | 900 | per-claude-invocation timeout |
 | `FARM_CHECK_CMD` | (auto-detect) | guardrail check command run before push (via `sh -c`) |
 | `FARM_CHECK_TIMEOUT_S` | 600 | how long the checks may **run**. Never includes time spent queueing for a check slot — see below |
@@ -70,7 +70,9 @@ sessions; queued work survives on disk.
 
 No env var selects a model. Every agent's default model, and any per-step or
 per-persona override, is declared in `domain/personas.json`'s `models` block
-(HZ-192); `run_agent()` resolves it per call. Edit `/etc/horizon/farm.env` on
+(HZ-192); `run_agent()` resolves it per call. HZ-398: the owner may pick a
+model per step, per item or as a project default, from the models
+`domain/providers.json` declares; Muse's default is pinned there too. Edit `/etc/horizon/farm.env` on
 the host for `FARM_MODEL_OVERRIDE`.
 
 Node side: `FARM_URL`, `FARM_SHARED_SECRET`, `FARM_STEP_INDEXES` (default

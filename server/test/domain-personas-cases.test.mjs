@@ -53,7 +53,7 @@ for (const c of shared.validation) {
     executed.validation.push(c.case)
     if (c.expect.throws) {
       assert.throws(
-        () => binding.assertPersonasShape(c.input, 'domain/personas.json'),
+        () => binding.assertPersonasShape(c.input, 'domain/personas.json', shared.declaredModels),
         (err) => {
           assert.ok(
             err.message.includes(c.expect.messageContains),
@@ -63,7 +63,7 @@ for (const c of shared.validation) {
         },
       )
     } else {
-      assert.equal(binding.assertPersonasShape(c.input, 'domain/personas.json'), c.input)
+      assert.equal(binding.assertPersonasShape(c.input, 'domain/personas.json', shared.declaredModels), c.input)
     }
   })
 }

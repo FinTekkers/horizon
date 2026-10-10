@@ -23,6 +23,7 @@ import pytest
 
 from farm import agent_runner, checks, conflict_hunks, conflict_resolver, workspaces
 from farm.agent_runner import TRAILING_COMMA_NOTE
+from domain.py import providers as domain_providers
 from farm.tests.conflict_fixtures import (
     clone_and_read,
     git,
@@ -41,6 +42,11 @@ HZ124_OURS_SHA = "ce379a3"
 HZ124_THEIRS_SHA = "85cf212"
 HZ124_DIR = Path(__file__).resolve().parent / "fixtures" / "hz124"
 HZ124_FILES = {"claude": "farm/providers/claude.py", "muse": "farm/providers/muse.py"}
+
+# HZ-398: ids read from domain/providers.json — Muse's pinned default, and a
+# declared Claude id to stand in for the operator's emergency override.
+MUSE_DEFAULT = domain_providers.default_model("muse")
+EMERGENCY_MODEL = domain_providers.PROVIDERS["claude"]["models"][1]["id"]
 
 
 def hz124_blob(name: str, side: str) -> str:
@@ -1370,11 +1376,11 @@ def test_both_conflict_call_sites_hand_the_conflict_model_to_claude(isolated_wor
     )
 
 
-@pytest.mark.parametrize("override", [None, "claude-test-emergency"])
-def test_the_unlocked_scoped_review_sends_muse_no_model(tmp_path, monkeypatch, override):
+@pytest.mark.parametrize("override", [None, EMERGENCY_MODEL])
+def test_the_unlocked_scoped_review_sends_muse_its_own_default(tmp_path, monkeypatch, override):
     """The resolution agent is provider-locked, so FARM_PROVIDER=muse never
     reaches it; the scoped review is not locked, so it does reach Muse — and
-    must arrive with no model, emergency override or not."""
+    must arrive with Muse's own default (HZ-398), emergency override or not."""
     if override:
         monkeypatch.setenv("FARM_MODEL_OVERRIDE", override)
     monkeypatch.setenv("FARM_PROVIDER", "muse")
@@ -1384,7 +1390,7 @@ def test_the_unlocked_scoped_review_sends_muse_no_model(tmp_path, monkeypatch, o
     result = conflict_resolver._run_scoped_review(tmp_path, [], "", lambda *_: None)
 
     assert result["verdict"] == "pass"
-    assert [(c["provider_name"], c["model"]) for c in agents.of("review")] == [("muse", None)]
+    assert [(c["provider_name"], c["model"]) for c in agents.of("review")] == [("muse", MUSE_DEFAULT)]
 
 
 def test_the_locked_resolution_agent_is_never_dispatched_to_muse(tmp_path, monkeypatch):

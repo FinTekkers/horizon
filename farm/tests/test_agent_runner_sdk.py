@@ -16,10 +16,17 @@ import pytest
 sdk = pytest.importorskip("claude_agent_sdk", reason="claude-agent-sdk not installed — SDK-path tests need its message types")
 
 from farm.agent_runner import AgentError, run_agent
+from domain.py import providers as domain_providers
+from domain.py.personas import resolve_model
 from farm.providers.base import AgentExhaustedError
 
 # conftest defaults tests to the subprocess runner (fake_claude can't speak
 # the SDK stream protocol); these opt in and mock claude_agent_sdk.query.
+
+# HZ-398: ids read from domain/providers.json — Muse's pinned default, and a
+# declared Claude id to stand in for the operator's emergency override.
+MUSE_DEFAULT = domain_providers.default_model("muse")
+EMERGENCY_MODEL = domain_providers.PROVIDERS["claude"]["models"][1]["id"]
 
 
 @pytest.fixture
@@ -71,6 +78,8 @@ def test_sdk_path_streams_events_and_returns_result(sdk_runner, monkeypatch, cap
         "result": '{"summary": "done"}',
         "session_id": "sdk-session-1",
         "provider": "claude",
+        # HZ-398: the model that ran — eng's domain/personas.json default.
+        "model": resolve_model("eng"),
         "command_id": None,
     }
     # The comma-joined public param must reach the SDK as a list.
@@ -241,7 +250,7 @@ def test_sdk_retry_fresh_false_never_starts_a_fresh_session(sdk_runner, monkeypa
     assert calls == ["dead-session"]
 
 
-@pytest.mark.parametrize(("override", "expected"), [(None, "claude-opus-5-5"), ("claude-test-emergency", "claude-test-emergency")])
+@pytest.mark.parametrize(("override", "expected"), [(None, "claude-opus-5-5"), (EMERGENCY_MODEL, EMERGENCY_MODEL)])
 def test_a_dispatched_step_hands_the_resolved_model_to_claude_agent_options(sdk_runner, monkeypatch, override, expected):
     """HZ-192: the model run_agent() resolves from domain/personas.json — or
     the operator's FARM_MODEL_OVERRIDE — reaches ClaudeAgentOptions."""

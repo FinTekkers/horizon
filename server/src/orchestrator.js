@@ -55,6 +55,7 @@ import {
   stepSlug,
   providerDefaultsFromRow,
   resolveStepProviders,
+  staleStepChoices,
   approvedPlanCheck,
 } from './store.js'
 import { createMockPr, createDeployRelease, postIssueComment, syncIssueBodyFields, createPrFromBranch, getPrHeadSha } from './github.js'
@@ -1306,6 +1307,7 @@ async function dispatchToFarm(id, stepIndex, runId, attempt, scope, checkoutSha 
   // in the prompt; this only says when. pr_mergeable is the raw column here:
   // 0 is "GitHub reports conflicts", null is unknown.
   const mergeMain = stepIndex === IMPLEMENT_STEP_INDEX && item.pr_mergeable === 0
+  warnStaleStepChoice(id, stepIndex, item, project)
   const truncatedLabels = budgeted.filter((a) => a.truncated).map((a) => a.label)
   if (truncatedLabels.length > 0) {
     addEvent(id, {
@@ -1874,7 +1876,7 @@ function mockReviewArtifactMd(verdict) {
 //
 // HZ-182: `review` is { reviewedSha, delta } from the farm's report — null on
 // the mock path, which has no commits, so demo mode stays full by
-// construction. HZ-369: plus { provider, commandId }, the run's provenance. `delta` (validated by the caller) is set only for a review the
+// construction. HZ-369: plus { provider, commandId }, the run's provenance (HZ-398: and model). `delta` (validated by the caller) is set only for a review the
 // farm actually ran as a delta review; it swaps the pass rule for
 // resolveDeltaFindings. Fix-pass cycles count toward the same cap.
 function finalizeReviewStep(id, runId, text, artifactMd, verdict, patch, isMock, review) {
@@ -1890,8 +1892,8 @@ function finalizeReviewStep(id, runId, text, artifactMd, verdict, patch, isMock,
     : null
   if (delta && delta.notes.length > 0) artifactMd = [artifactMd, notesSection(delta.notes)].filter(Boolean).join('\n\n')
   db.prepare(
-    "UPDATE step_run SET status = 'done', output = ?, artifact = ?, provider = ?, command_id = ?, ended_at = datetime('now') WHERE id = ?",
-  ).run(text, artifactMd, review?.provider || null, review?.commandId || null, runId)
+    "UPDATE step_run SET status = 'done', output = ?, artifact = ?, provider = ?, model = ?, command_id = ?, ended_at = datetime('now') WHERE id = ?",
+  ).run(text, artifactMd, review?.provider || null, review?.model || null, review?.commandId || null, runId)
   // Written on every completed review, pass or fail: the next delta starts here.
   db.prepare('UPDATE work_item SET last_reviewed_sha = ? WHERE id = ?').run(review?.reviewedSha || null, id)
 
@@ -2183,6 +2185,8 @@ export async function completeFarmRun(runId, { summary, patch, artifacts }) {
     typeof artifacts?.provider === 'string' && artifacts.provider.trim() ? artifacts.provider.trim() : null
   const commandId =
     typeof artifacts?.command_id === 'string' && artifacts.command_id.trim() ? artifacts.command_id.trim() : null
+  // HZ-398: the model that ran, beside the provider. NULL from an older farm.
+  const model = typeof artifacts?.model === 'string' && artifacts.model.trim() ? artifacts.model.trim() : null
 
   if (run.step_index === REVIEW_STEP_INDEX) {
     if (!validateVerdict(artifacts?.verdict)) return failFarmRun(runId, 'malformed review verdict JSON')
@@ -2202,6 +2206,7 @@ export async function completeFarmRun(runId, { summary, patch, artifacts }) {
       reviewedSha,
       delta,
       provider,
+      model,
       commandId,
     })
     emitStepEnded(id)
@@ -2268,8 +2273,8 @@ export async function completeFarmRun(runId, { summary, patch, artifacts }) {
   }
 
   db.prepare(
-    "UPDATE step_run SET status = 'done', output = ?, artifact = ?, provider = ?, command_id = ?, ended_at = datetime('now') WHERE id = ?",
-  ).run(text, artifactMd, provider, commandId, runId)
+    "UPDATE step_run SET status = 'done', output = ?, artifact = ?, provider = ?, model = ?, command_id = ?, ended_at = datetime('now') WHERE id = ?",
+  ).run(text, artifactMd, provider, model, commandId, runId)
   db.prepare("UPDATE work_item SET cursor = cursor + 1, updated_at = datetime('now') WHERE id = ?").run(id)
   addEvent(id, { who: agent.label, text: `completed “${step.label}” — ${text.slice(0, 300)}`, color: agent.color, initials: agent.initials })
   postStepComment(getItem(id), run.step_index, run.attempt, text, cleanPatch, false, artifactMd)
@@ -2278,6 +2283,27 @@ export async function completeFarmRun(runId, { summary, patch, artifacts }) {
   kick(id)
   emitStepEnded(id)
   return { ok: true }
+}
+
+// HZ-398: a stored item choice or project default for the step being
+// dispatched that names a model domain/providers.json no longer offers. It was
+// already dropped from providerChoices (store.js), so the step runs on Default;
+// this says so on the item. A project default the item's own valid choice
+// overrides is not reported. The stored rows are left as they are.
+function warnStaleStepChoice(id, stepIndex, item, project) {
+  const row = db.prepare('SELECT provider_choices_json FROM work_item WHERE id = ?').get(id)
+  const stale = staleStepChoices(row?.provider_choices_json).filter((c) => c.step === stepIndex)
+  if (stale.length === 0 && item.providerChoices?.[stepIndex] === undefined) {
+    stale.push(...staleStepChoices(project?.provider_defaults_json).filter((c) => c.step === stepIndex).map((c) => ({ ...c, project: true })))
+  }
+  for (const c of stale) {
+    addEvent(id, {
+      who: 'Horizon',
+      text: `stored ${c.project ? 'project default' : 'choice'} “${c.value}” for “${STEPS[stepIndex].label}” is no longer declared in domain/providers.json — running on Default`,
+      color: '#9C333E',
+      initials: 'HZ',
+    })
+  }
 }
 
 // HZ-184: a check failure's digest (every failing line plus the counts) is
