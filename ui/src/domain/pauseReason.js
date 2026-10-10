@@ -35,6 +35,10 @@ const CATEGORY_COPY = {
     label: 'Read-only step changed files',
     detail: 'A planning or review step edited the worktree. Horizon put it back and paused the item.',
   },
+  [REASON.PLAN_CHANGED_SINCE_APPROVAL]: {
+    label: 'Run plan changed since approval',
+    detail: 'The run plan is not the one a human approved. Send it back to Run plan and approve the run again.',
+  },
 }
 
 // Both mirror the event text server/src/store.js:1208 writes on pause/resume.

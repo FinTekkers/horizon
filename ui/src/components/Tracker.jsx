@@ -11,6 +11,7 @@ import {
   phaseStepIndexes,
   phasesFor,
   itemKindOf,
+  isHumanOnlyGate,
 } from '../../../domain/js/lifecycle.js'
 import { AGENTS } from '../domain/agentTokens'
 import { PHASE_ACCENT, PHASE_ACCENT_BG, priorityColor } from '../domain/lifecycle'
@@ -47,6 +48,14 @@ const STEP_META = {
 }
 
 const STEP_META_COLOR = { awaiting: 'var(--warning-ink)', blocked: 'var(--danger-ink)', active: 'var(--primary-ink)' }
+
+// HZ-384: the one line a human-only gate (a Task's Approve the run) adds under
+// its meta — what is being approved, from the server's item.runPlan.
+function runPlanSummary(runPlan) {
+  if (!runPlan) return 'Run plan: not found'
+  const commands = `${runPlan.commands} command${runPlan.commands === 1 ? '' : 's'}`
+  return `Run plan: ${commands} · budget ${runPlan.budgetMinutes} min`
+}
 
 // HZ-185: why a forward to Accept the code didn't go through, keyed by the
 // route's error code. Anything else falls back to a generic line.
@@ -214,6 +223,8 @@ function Step({ item, stepOutputs, outputsSettled, index, deployBlock, viewerNam
   // HZ-360: a Horizon deploy holds this gate's merge — say why and who
   // approved, and offer no Approve, Send back or Resolve conflicts until it ends.
   const mergeQueued = status === 'awaiting' && index === item.cursor ? queuedToMerge(item, deployBlock, viewerName) : null
+  // HZ-384: passes only with the gate PIN, whatever the project's Autopilot.
+  const humanOnly = status === 'awaiting' && isHumanOnlyGate(index)
 
   return (
     <div className="step">
@@ -261,6 +272,14 @@ function Step({ item, stepOutputs, outputsSettled, index, deployBlock, viewerNam
               <span> · no output recorded (step predates this item's run or was skipped)</span>
             )}
           </div>
+          {humanOnly && (
+            <div className="step-card__human-only">
+              <div style={{ color: 'var(--warning-ink)', fontWeight: 600 }}>Always a human · even on Autopilot</div>
+              <div className="step-card__run-plan" style={{ color: 'var(--muted)' }}>
+                {runPlanSummary(item.runPlan)}
+              </div>
+            </div>
+          )}
           {status === 'done' && !isGate && output?.output && (
             <a
               className="step-card__output-link"
@@ -378,7 +397,7 @@ function Step({ item, stepOutputs, outputsSettled, index, deployBlock, viewerNam
                     aria-busy={gateBusy || undefined}
                     onClick={() => onApprove(item.id, st.label)}
                   >
-                    Approve
+                    {humanOnly ? 'Approve the run' : 'Approve'}
                   </button>
                   <button
                     className="btn-gate-feedback"
@@ -394,7 +413,7 @@ function Step({ item, stepOutputs, outputsSettled, index, deployBlock, viewerNam
                     aria-busy={gateBusy || undefined}
                     onClick={() => onReject(item.id, st.label)}
                   >
-                    Send back with feedback
+                    {humanOnly ? 'Reject with feedback' : 'Send back with feedback'}
                   </button>
                 </>
               )}

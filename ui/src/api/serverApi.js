@@ -544,7 +544,10 @@ export async function approveGate(id, notes) {
   // then approves the gate again. A pre-merge check failure (HZ-183) is not
   // GitHub's refusal — the PR page says nothing about it, the item's activity
   // names the failing check — so that one stays on the tracker.
-  const res = await gatePost(`/items/${id}/gates/${item.cursor}/approve`, notes ? { notes } : {})
+  // HZ-384: the run plan this tab showed, so the server refuses the approval
+  // if a newer plan landed since — the human approves the plan they saw.
+  const body = { ...(notes ? { notes } : {}), ...(item.runPlan?.hash ? { planHash: item.runPlan.hash } : {}) }
+  const res = await gatePost(`/items/${id}/gates/${item.cursor}/approve`, body)
   if (!res) return { ok: false }
   const data = await res.json().catch(() => ({ ok: false }))
   if (!res.ok && res.status !== 401 && item.pr_url && !data.premerge) {

@@ -130,6 +130,26 @@ test('a pre-merge check failure stays on the tracker instead of opening the PR (
   expect(openSpy).not.toHaveBeenCalled()
 })
 
+// HZ-384: Approve the run asks for the PIN like every gate, and sends the
+// hash of the run plan the card showed so a newer plan is never approved
+// unseen.
+test("approving a Task prompts for the PIN and sends the shown run plan's hash", async () => {
+  const serverApi = await import('./serverApi')
+  serverApi.subscribe(() => {})
+  seedItem({ id: 'TK-9', kind: 'task', cursor: 23, pr_url: null, runPlan: { commands: 3, budgetMinutes: 20, hash: 'plan-hash-1' } })
+  localStorage.clear()
+  const promptSpy = vi.spyOn(window, 'prompt').mockImplementation(() => '271828')
+  const fetchMock = vi.fn(() => Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({ ok: true, closed: false }) }))
+  vi.stubGlobal('fetch', fetchMock)
+
+  await expect(serverApi.approveGate('TK-9', '')).resolves.toEqual({ ok: true, closed: false })
+  expect(promptSpy).toHaveBeenCalledTimes(1)
+  const [url, init] = fetchMock.mock.calls[0]
+  expect(url).toContain('/items/TK-9/gates/23/approve')
+  expect(init.headers['x-human-key']).toBe('271828')
+  expect(JSON.parse(init.body)).toEqual({ planHash: 'plan-hash-1' })
+})
+
 // HZ-179: the token client hits the server's routes with the right verbs, and
 // createApiToken leaves nothing behind in browser storage.
 test('the API token client calls GET/POST/DELETE /api/tokens and stores nothing', async () => {

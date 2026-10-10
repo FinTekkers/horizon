@@ -1,7 +1,7 @@
 // Domain operations over SQLite. Every mutation notifies subscribers so the
 // HTTP layer can push fresh state to SSE clients.
 
-import { randomUUID } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import { db } from './db.js'
 import { GATE_ACTION_MARGIN_MS, PREMERGE_SKIP_MAX_AGE_MS } from './config.js'
 import {
@@ -22,8 +22,14 @@ import {
   stepsFor,
   firstStepIndex,
   endIndex,
+  isHumanOnlyGate,
+  RUN_PLAN_STEP_INDEX,
+  APPROVE_RUN_GATE_INDEX,
 } from '../../domain/js/lifecycle.js'
 import { isPriority } from '../../domain/js/priorities.js'
+import { REASON } from '../../domain/js/reasons.js'
+import { extractRunPlan } from '../../domain/js/runPlan.js'
+import { isHumanProof } from './humanProof.js'
 import { isPersona, personaLabel, personasFromRow } from './personas.js'
 import { priorityFromLabels } from './priorityLabels.js'
 import { kindFromLabels } from './kindLabels.js'
@@ -642,6 +648,38 @@ export function latestArtifact(itemId, stepIndex) {
   return row ? (row.artifact || row.output || null) : null
 }
 
+// ---- the approved run plan (HZ-384) ----
+// A Task's plan is its newest Run plan artifact. The hash covers the whole
+// artifact, not just the block, so any re-run counts as a new plan.
+const planHashOf = (artifact) => createHash('sha256').update(artifact, 'utf8').digest('hex')
+
+// The current plan, or null when the Run plan step has left no readable block.
+function currentRunPlan(itemId) {
+  const artifact = latestArtifact(itemId, RUN_PLAN_STEP_INDEX)
+  const block = extractRunPlan(artifact)
+  return block ? { block, hash: planHashOf(artifact) } : null
+}
+
+// A kind whose lifecycle has a humanOnly gate approves a run plan there.
+const approvesRunPlan = (kind) => stepsFor(kind).some((step) => isHumanOnlyGate(step.index))
+
+// What the Approve the run card shows, and the hash its Approve sends back.
+function runPlanView(itemId) {
+  const plan = currentRunPlan(itemId)
+  return plan ? { commands: plan.block.commands.length, budgetMinutes: plan.block.budget_minutes, hash: plan.hash } : null
+}
+
+// Whether the plan a human approved is still the plan on record. Execute's
+// dispatch (orchestrator.js refuseUnapprovedRun) refuses to start otherwise.
+export function approvedPlanCheck(itemId) {
+  const approvedHash = db.prepare('SELECT approved_plan_hash FROM work_item WHERE id = ?').get(itemId)?.approved_plan_hash
+  if (!approvedHash) return { error: 'plan_not_approved' }
+  const artifact = latestArtifact(itemId, RUN_PLAN_STEP_INDEX)
+  const currentHash = artifact ? planHashOf(artifact) : null
+  if (currentHash !== approvedHash) return { error: REASON.PLAN_CHANGED_SINCE_APPROVAL, approvedHash, currentHash }
+  return { ok: true, hash: approvedHash }
+}
+
 // ---- artifact version history (HZ-46) ----
 // Every retained done+artifact attempt for a step, oldest first, each
 // labelled (where one exists) with the feedback that drove it: the newest
@@ -1097,6 +1135,8 @@ function itemView(row, { stepOutputs: withStepOutputs = true } = {}) {
     ...dependencyFields(row.id),
     ...spawnFields(row.id),
     ruleBlock: parseRuleBlock(row.rule_block_json),
+    // HZ-384: the plan the Approve the run gate shows, and the one approved.
+    ...(approvesRunPlan(itemKindOf(row)) ? { runPlan: runPlanView(row.id), approvedPlanHash: row.approved_plan_hash ?? null } : {}),
   }
 }
 
@@ -1275,22 +1315,44 @@ export function addEvent(id, { who, text, color, initials, detail = null }) {
   db.prepare('INSERT INTO event (item_id, who, text, color, initials, detail) VALUES (?, ?, ?, ?, ?, ?)').run(id, who, text, color, initials, detail)
 }
 
-export function approveGate(id, stepIndex, notes, actor = 'You') {
+// HZ-384: a humanOnly gate (domain/steps.json) passes only with `proof` —
+// the object app.js's humanAuthorized() mints after a session and a valid gate
+// PIN. Every approver reaches this one function, so a caller without it
+// (WhatsApp, the caretaker, a token, any route added later) is refused here,
+// the gate stays pending and the refusal is logged. `planHash` is the plan
+// the approver was shown: a newer plan since then is refused, not approved.
+export function approveGate(id, stepIndex, notes, actor = 'You', { proof = null, planHash = null } = {}) {
   const it = getItem(id)
   if (!it) return { error: 'not_found' }
   if (disabledProject(it)) return { error: 'project_not_active' }
   if (isClosed(it) || isAbandoned(it) || STEPS[it.cursor].kind !== 'gate') return { error: 'not_at_gate' }
   if (stepIndex !== it.cursor) return { error: 'stale_step' }
 
+  let approvedHash = null
+  if (isHumanOnlyGate(stepIndex)) {
+    if (!isHumanProof(proof)) {
+      addEvent(id, {
+        who: actor,
+        text: `could not approve “${STEPS[stepIndex].label}”: it needs a human with the gate PIN — the gate stays open`,
+        color: '#9C333E',
+        initials: '✕',
+      })
+      notify()
+      return { error: 'human_pin_required' }
+    }
+    const plan = currentRunPlan(id)
+    if (!plan) return { error: 'run_plan_missing' }
+    if (planHash != null && planHash !== plan.hash) return { error: 'run_plan_changed' }
+    approvedHash = plan.hash
+  }
+
   const trimmed = (notes || '').trim()
-  db.prepare(`UPDATE work_item SET cursor = cursor + 1, rejected = 0, ${touch} WHERE id = ?`).run(id)
-  db.prepare('INSERT INTO gate_decision (item_id, step_index, decision, notes, decided_by) VALUES (?, ?, ?, ?, ?)').run(
-    id,
-    stepIndex,
-    'approved',
-    trimmed,
-    actor,
-  )
+  db.prepare(
+    `UPDATE work_item SET cursor = cursor + 1, rejected = 0${approvedHash ? ', approved_plan_hash = ?' : ''}, ${touch} WHERE id = ?`,
+  ).run(...(approvedHash ? [approvedHash, id] : [id]))
+  db.prepare(
+    'INSERT INTO gate_decision (item_id, step_index, decision, notes, decided_by, plan_hash) VALUES (?, ?, ?, ?, ?, ?)',
+  ).run(id, stepIndex, 'approved', trimmed, actor, approvedHash)
   if (trimmed) {
     // Approval notes are direction for whoever runs next — queue as feedback
     // so the next dispatched agent step receives and must address them.
@@ -1364,6 +1426,10 @@ export function requestChanges(id, target, feedbackText, actor = 'You', targetSt
       // nearest agent step would land on Review, which would just re-judge
       // the same unchanged diff. Send the human's rejection to Eng instead.
       reworkIdx = IMPLEMENT_STEP_INDEX
+    } else if (it.cursor === APPROVE_RUN_GATE_INDEX) {
+      // HZ-384: Impact review sits right before this gate, but rejecting the
+      // run means the PLAN is wrong — send it back to Run plan to redo it.
+      reworkIdx = RUN_PLAN_STEP_INDEX
     } else {
       while (reworkIdx > first && STEPS[reworkIdx].kind !== 'agent') reworkIdx--
     }
@@ -1378,9 +1444,11 @@ export function requestChanges(id, target, feedbackText, actor = 'You', targetSt
   // A human-directed rework gets a fresh set of automated review cycles —
   // otherwise a prior automated cap-out could falsely cap this new attempt.
   const resetReview = it.kind === 'change' && reworkIdx <= IMPLEMENT_STEP_INDEX ? RESET_REVIEW_STATE : ''
-  // HZ-346: a human send-back is never held by a rule block.
+  // HZ-346: a human send-back is never held by a rule block. HZ-384: and it
+  // retires any approved run plan — the run must be approved again, against
+  // whatever plan it comes back with (always NULL on a change item).
   db.prepare(
-    `UPDATE work_item SET cursor = ?, rejected = 0, paused = 0, rule_block_json = NULL${resetReview}, ${touch} WHERE id = ?`,
+    `UPDATE work_item SET cursor = ?, rejected = 0, paused = 0, rule_block_json = NULL, approved_plan_hash = NULL${resetReview}, ${touch} WHERE id = ?`,
   ).run(reworkIdx, id)
   addEvent(id, {
     who: actor,

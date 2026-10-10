@@ -5,7 +5,8 @@ where the run happens (`cwd`), what it runs, in order (`commands`), how long
 it may take (`budget_minutes`) and which environment variables it needs
 (`env`). farm/step_agent.py validates it before the step may finish and
 appends it to the artifact as a fenced block; HZ-378's Execute reads it back
-with extract(). There is no JS binding: only the farm reads the block.
+with extract(). The server reads the same block through
+domain/js/runPlan.js (HZ-384) to show it on the Approve the run gate.
 
 The contract is domain/runPlan.schema.json, read here at import so the
 required fields and the field list are never restated. One rule the schema's

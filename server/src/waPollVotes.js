@@ -64,6 +64,8 @@ const STORE_REFUSALS = new Set([
   'closed',
   'abandoned',
   'invalid_target',
+  // HZ-384: a humanOnly gate never passes from WhatsApp — retrying cannot help.
+  'human_pin_required',
 ])
 
 const CHOICES = { [POLL_APPROVE]: 'approve', [POLL_SEND_BACK]: 'send_back' }

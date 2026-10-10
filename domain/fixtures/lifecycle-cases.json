@@ -402,6 +402,16 @@
     "REVIEW_STEP_INDEX": [{ "case": "points at the automated review step", "expectLabel": "Automated review (code + QA)" }],
     "ACCEPT_GATE_INDEX": [{ "case": "points at the accept gate", "expectLabel": "Accept the code" }],
     "DEPLOY_STEP_INDEX": [{ "case": "points at the deploy step", "expectLabel": "Deploy the changes" }],
+    "RUN_PLAN_STEP_INDEX": [{ "case": "points at the task's run plan step", "expectLabel": "Run plan" }],
+    "APPROVE_RUN_GATE_INDEX": [{ "case": "points at the task's approve-the-run gate", "expectLabel": "Approve the run" }],
+    "EXECUTE_STEP_INDEX": [{ "case": "points at the task's execute step", "expectLabel": "Execute" }],
+    "isHumanOnlyGate": [
+      { "case": "the approve-the-run gate is human-only", "label": "Approve the run", "expect": true },
+      { "case": "a change gate is not", "label": "Approve the high-level design", "expect": false },
+      { "case": "an agent step is not", "label": "Run plan", "expect": false },
+      { "case": "an index past the end of the table is not", "index": 9999, "expect": false }
+    ],
+    "humanOnlyGateIndexes": [{ "case": "only the approve-the-run gate today", "expectLabels": ["Approve the run"] }],
 
     "assertLifecycleShape": [{ "case": "driven by shared.validation", "drivenBy": "shared.validation" }],
 
@@ -481,7 +491,8 @@
 
     "defaultReworkTarget": [
       { "case": "the accept gate sends back to the implement step", "gateLabel": "Accept the code", "expectLabel": "Specialist agent implements" },
-      { "case": "any other gate walks back to the nearest earlier agent step", "gateLabel": "Review before execution", "expectLabel": "Summarize reviews & recommend" }
+      { "case": "any other gate walks back to the nearest earlier agent step", "gateLabel": "Review before execution", "expectLabel": "Summarize reviews & recommend" },
+      { "case": "the approve-the-run gate sends back to the run plan, not the impact review", "gateLabel": "Approve the run", "expectLabel": "Run plan" }
     ]
   },
 
