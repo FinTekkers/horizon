@@ -9,13 +9,22 @@
 // Deliberately a SIBLING of AGENTS in agentTokens.js, never merged into it:
 // AGENTS keys are lifecycle roles addressed by STEPS[i].agent; persona ids must
 // never appear there. PERSONA_AGENT_ROLES below is the one bridge between the
-// two axes, and it maps *onto* AGENTS rather than restating its labels. The id
-// set is mirrored in server/src/personas.js and farm/personas.py
-// (parity-tested farm-side) — append-only, change all three copies together.
+// two axes, and it maps *onto* AGENTS rather than restating its labels.
+//
+// HZ-381: persona ids and their agent membership are declared once, in
+// domain/personas.json. PERSONAS below is display data only (label, initials,
+// colour), keyed by those ids — adding or renaming a persona is a one-file
+// edit to that document plus its display entry here.
 
 // HZ-380: the agent defaults come from the same binding — this module holds no
-// literal of its own.
-import { DEFAULT_PERSONAS as domainDefaults } from '../../../domain/js/personas.js'
+// literal of its own. HZ-381: membership, the primary agent and the role files
+// come from it too.
+import {
+  DEFAULT_PERSONAS as domainDefaults,
+  PERSONA_IDS,
+  PRIMARY_PERSONA_AGENT as domainPrimary,
+  personaRoleFile,
+} from '../../../domain/js/personas.js'
 
 // HZ-192: which Claude model each agent call uses is declared once, in
 // domain/personas.json's `models` block. Re-exported for the agent definitions
@@ -68,8 +77,9 @@ export const PERSONA_AGENT_ROLES = {
 
 // The item's primary specialization, shown on the board card and the tracker
 // header: the Eng persona, since that is the one that decides who writes the
-// code. The other buckets are visible in the gate's picker.
-export const PRIMARY_PERSONA_AGENT = 'eng'
+// code. The other buckets are visible in the gate's picker. Declared once, in
+// domain/personas.json.
+export const PRIMARY_PERSONA_AGENT = domainPrimary
 
 // Registry membership, not value truthiness: PERSONAS is a plain object
 // literal, so 'constructor'/'__proto__' would otherwise resolve off
@@ -96,13 +106,16 @@ export function personaFor(item, agent) {
 // agent-prefixed and flat (eng_python, qa_api_contract) — see farm/personas.py
 // for why the directory isn't nested. This maps such a name back to the
 // { agent, persona } slot so the effective-prompt preview composes the persona
-// that was actually selected. Derived from the registry rather than split on
-// '_', which would misread every multi-word id. Returns null for a file with no
-// registry entry.
+// that was actually selected. The browser passes the stem (listKind strips
+// `.md`), while the domain declares full filenames, so each declared file is
+// compared by its stem. Registry-driven rather than split on '_', which would
+// misread every multi-word id. Returns null for a file with no registry entry.
 export function personaSlotForFile(fileName) {
-  for (const [agent, bucket] of Object.entries(PERSONAS)) {
-    for (const persona of Object.keys(bucket)) {
-      if (fileName === `${agent}_${persona}`) return { agent, persona }
+  for (const [agent, ids] of Object.entries(PERSONA_IDS)) {
+    for (const persona of ids) {
+      // Declared files always end in `.md` — the domain validator rejects any
+      // other shape — so slicing three characters is the stem, exactly.
+      if (fileName === personaRoleFile(agent, persona).slice(0, -3)) return { agent, persona }
     }
   }
   return null

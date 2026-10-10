@@ -1,6 +1,6 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
-  "$comment": "HZ-133: the contract for domain/personas.json. Validated by domain/validate.mjs — the same dependency-free Draft-07 subset validator the other domain/ schemas use, so only the keywords listed in its KEYWORDS set are honoured (no `pattern`, no schema-valued `additionalProperties`). Rules the subset cannot express — the id shape ^[a-z][a-z0-9_]*$ on agents and persona ids, unique agents, ids unique WITHIN their agent, `default` being one of its own agent's personas, `primaryAgent` naming a declared agent, every legacyIds value and personaProviders key naming a live <agent>.<persona> pair, and (HZ-192) every models value being a Claude model id matching ^claude-[a-z0-9][a-z0-9.-]*$, models.agents keys having the id shape, models.conflictAgent naming a models.agents key, and every models.personas key naming a live pair that personaProviders does NOT route elsewhere — are asserted at LOAD time by the bindings themselves: see assertPersonasShape() in domain/js/personas.js and _validate_source() in domain/py/personas.py, which domain/fixtures/personas-cases.json drives from both sides so the two cannot drift. `additionalProperties: false` at every object level is what keeps presentation (labels, initials, colours) structurally out of this file rather than out by convention.",
+  "$comment": "HZ-133: the contract for domain/personas.json. Validated by domain/validate.mjs — the same dependency-free Draft-07 subset validator the other domain/ schemas use, so only the keywords listed in its KEYWORDS set are honoured (no `pattern`, no schema-valued `additionalProperties`). Rules the subset cannot express — the id shape ^[a-z][a-z0-9_]*$ on agents and persona ids, unique agents, ids unique WITHIN their agent, `default` being one of its own agent's personas, (HZ-381) `roleFiles` keyed by exactly its own agent's personas with every value a role file matching ^[a-z][a-z0-9_]*\\.md$ and no value shared by two personas, `primaryAgent` naming a declared agent, every legacyIds value and personaProviders key naming a live <agent>.<persona> pair, and (HZ-192) every models value being a Claude model id matching ^claude-[a-z0-9][a-z0-9.-]*$, models.agents keys having the id shape, models.conflictAgent naming a models.agents key, and every models.personas key naming a live pair that personaProviders does NOT route elsewhere — are asserted at LOAD time by the bindings themselves: see assertPersonasShape() in domain/js/personas.js and _validate_source() in domain/py/personas.py, which domain/fixtures/personas-cases.json drives from both sides so the two cannot drift. `additionalProperties: false` at every object level is what keeps presentation (labels, initials, colours) structurally out of this file rather than out by convention.",
   "title": "Horizon specialist personas: ids, agent membership, defaults, persona-to-provider and the model each agent call uses",
   "type": "object",
   "required": ["primaryAgent", "agents", "legacyIds", "personaProviders", "models"],
@@ -17,11 +17,11 @@
       "minItems": 1,
       "items": {
         "type": "object",
-        "required": ["agent", "default", "personas"],
+        "required": ["agent", "default", "personas", "roleFiles"],
         "additionalProperties": false,
         "properties": {
           "agent": {
-            "$comment": "A persona-agent key (lower-case), not a domain/steps.json agent name. The role file is DERIVED as farm/roles/personas/<agent>_<persona>.md, so there is no `file` field.",
+            "$comment": "A persona-agent key (lower-case), not a domain/steps.json agent name.",
             "type": "string",
             "minLength": 1
           },
@@ -36,6 +36,10 @@
             "minItems": 1,
             "uniqueItems": true,
             "items": { "type": "string", "minLength": 1 }
+          },
+          "roleFiles": {
+            "$comment": "HZ-381: persona id -> its role markdown filename in farm/roles/personas/. Keys must equal this entry's `personas` exactly, every value must match ^[a-z][a-z0-9_]*\\.md$ (no slash, no dot-dot — asserted at load time), and no two personas may share a file.",
+            "type": "object"
           }
         }
       }

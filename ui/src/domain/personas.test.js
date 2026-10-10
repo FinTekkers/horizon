@@ -19,6 +19,9 @@ import { AGENTS } from './agentTokens'
 // HZ-380: the declared defaults, straight off the document rather than via
 // the binding ./personas derives from.
 import personasDoc from '../../../domain/personas.json'
+// HZ-381: the declared ids and role files, off the binding — comparing
+// ./personas to itself would prove nothing.
+import { PERSONA_IDS, personaRoleFile } from '../../../domain/js/personas.js'
 
 const domainDefaults = Object.fromEntries(personasDoc.agents.map((entry) => [entry.agent, entry.default]))
 
@@ -128,4 +131,33 @@ test('the UI PM default equals domain/personas.json and is feature_development',
 test('a stored roadmap PM persona still resolves to Roadmap', () => {
   expect(personaId({ personas: { pm: 'roadmap' } }, 'pm')).toBe('roadmap')
   expect(personaFor({ personas: { pm: 'roadmap' } }, 'pm').label).toBe('Roadmap')
+})
+
+// HZ-381: the UI table is display data only (label, initials, colour), keyed
+// by the domain ids — every domain persona needs a display entry, and every
+// display entry needs a domain persona.
+test('the display table covers exactly the domain personas, in both directions', () => {
+  expect(Object.keys(PERSONAS).sort()).toEqual(Object.keys(PERSONA_IDS).sort())
+  for (const agent of Object.keys(PERSONA_IDS)) {
+    expect(Object.keys(PERSONAS[agent]).sort()).toEqual([...PERSONA_IDS[agent]].sort())
+    for (const id of Object.keys(PERSONAS[agent])) {
+      expect(Object.keys(PERSONAS[agent][id]).sort()).toEqual(['color', 'initials', 'label'])
+    }
+  }
+})
+
+test('the display table order is todays order', () => {
+  expect(Object.keys(PERSONAS)).toEqual(['eng', 'qa', 'architect', 'pm'])
+  expect(Object.keys(PERSONAS.eng)).toEqual(['fullstack', 'python', 'ui', 'performance'])
+  expect(Object.keys(PERSONAS.qa)).toEqual(['api_contract', 'e2e_journey', 'data_integrity'])
+  expect(Object.keys(PERSONAS.architect)).toEqual(['data_modelling', 'distributed_systems'])
+  expect(Object.keys(PERSONAS.pm)).toEqual(['roadmap', 'feature_development'])
+})
+
+test('personaSlotForFile matches the stem of every declared role file', () => {
+  for (const [agent, ids] of Object.entries(PERSONA_IDS)) {
+    for (const persona of ids) {
+      expect(personaSlotForFile(personaRoleFile(agent, persona).replace(/\.md$/, ''))).toEqual({ agent, persona })
+    }
+  }
 })

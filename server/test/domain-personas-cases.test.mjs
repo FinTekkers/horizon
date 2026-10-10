@@ -84,14 +84,14 @@ for (const c of shared.roleFile) {
     executed.roleFile.push(c.case)
     if (c.expect.throws) {
       assert.throws(
-        () => binding.personaRoleFile(c.agent, c.id, c.personaIds),
+        () => binding.personaRoleFile(c.agent, c.id, c.roleFiles),
         (err) => {
           assert.ok(err.message.includes(c.expect.throws), `expected "${c.expect.throws}", got: ${err.message}`)
           return true
         },
       )
     } else {
-      assert.equal(binding.personaRoleFile(c.agent, c.id, c.personaIds), c.expect.file)
+      assert.equal(binding.personaRoleFile(c.agent, c.id, c.roleFiles), c.expect.file)
     }
   })
 }
@@ -138,6 +138,20 @@ test('js/PERSONA_IDS: every live agent has a non-empty frozen id list', () => {
   for (const agent of binding.PERSONA_AGENTS) {
     assert.ok(binding.PERSONA_IDS[agent].length > 0, agent)
     assert.ok(Object.isFrozen(binding.PERSONA_IDS[agent]), agent)
+  }
+})
+
+test('js/PERSONA_ROLE_FILES: every live persona has a declared role file, frozen', () => {
+  assert.equal(js.PERSONA_ROLE_FILES.length, 1)
+  assert.deepEqual(Object.keys(binding.PERSONA_ROLE_FILES), [...binding.PERSONA_AGENTS])
+  assert.ok(Object.isFrozen(binding.PERSONA_ROLE_FILES))
+  for (const agent of binding.PERSONA_AGENTS) {
+    assert.deepEqual(Object.keys(binding.PERSONA_ROLE_FILES[agent]).sort(), [...binding.PERSONA_IDS[agent]].sort(), agent)
+    assert.ok(Object.isFrozen(binding.PERSONA_ROLE_FILES[agent]), agent)
+    for (const file of Object.values(binding.PERSONA_ROLE_FILES[agent])) {
+      assert.equal(typeof file, 'string')
+      assert.ok(file.endsWith('.md'), file)
+    }
   }
 })
 

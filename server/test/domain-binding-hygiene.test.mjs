@@ -669,6 +669,7 @@ test('the JS persona binding exports the registry and nothing presentational', (
       'NAMESPACED_PERSONA_IDS',
       'PERSONA_AGENTS',
       'PERSONA_IDS',
+      'PERSONA_ROLE_FILES',
       'PRIMARY_PERSONA_AGENT',
       'assertPersonasShape',
       'isPersona',
@@ -680,7 +681,7 @@ test('the JS persona binding exports the registry and nothing presentational', (
     ],
     'domain/js/personas.js gained or lost an export — presentation stays in the layer registries',
   )
-  for (const forbidden of ['PERSONAS', 'PERSONA_AGENT_ROLES', 'personaLabel', 'personaFor', 'personaSlotForFile', 'PERSONA_PROVIDERS']) {
+  for (const forbidden of ['PERSONAS', 'PERSONA_AGENT_ROLES', 'PERSONA_DISPLAY', 'personaLabel', 'personaFor', 'personaSlotForFile', 'PERSONA_PROVIDERS']) {
     assert.equal(personaBinding[forbidden], undefined, `domain/js/personas.js exports ${forbidden}`)
   }
 })
@@ -710,6 +711,7 @@ test('the Python persona binding owns the registry and nothing else — no label
       'PERSONA_AGENTS',
       'PERSONA_IDS',
       'PERSONA_PROVIDERS',
+      'PERSONA_ROLE_FILES',
       'PRIMARY_PERSONA_AGENT',
       'is_persona',
       'model_agent_for_step',

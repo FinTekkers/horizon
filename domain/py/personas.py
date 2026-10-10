@@ -2,16 +2,16 @@
 belongs to, and which provider a persona forces" (HZ-133).
 
 This module READS domain/personas.json — the one place persona ids, their agent
-membership, each agent's default, the pre-HZ-125 legacy aliases and the
-persona-to-provider map are declared — at import. Before HZ-133 the id set was
-hand-typed three times (farm/personas.py, server/src/personas.js,
-ui/src/domain/personas.js) and held together only by a parity test that parsed
-JavaScript with a regex; PERSONA_PROVIDERS lived in the farm alone.
+membership, each agent's default, each persona's role file, the pre-HZ-125
+legacy aliases and the persona-to-provider map are declared — at import.
+Before HZ-133 the id set was hand-typed three times (farm/personas.py,
+server/src/personas.js, ui/src/domain/personas.js) and held together only by a
+parity test that parsed JavaScript with a regex; PERSONA_PROVIDERS lived in
+the farm alone.
 
-HZ-133 lands in parts. This binding arrives first and additively: the three
-layer registries still hold their copies until they are repointed here, and
-farm/tests/test_personas_domain.py asserts this document equals the farm's
-copy value-for-value in the meantime, so the repoint cannot change behaviour.
+HZ-381 repointed farm/personas.py here: it builds its registry from this
+binding, and farm/tests/test_personas_hz381.py fails on any persona id it
+still declares as a literal.
 
 ORDER IS PART OF THE DECLARATION. Agent order is the picker's group order and
 provider_for()'s scan order; persona order within an agent is the picker's
@@ -21,11 +21,12 @@ Persona ids are unique WITHIN their agent, not globally (HZ-125): `python`
 under one agent and `python` under another are different personas, which is
 why PERSONA_PROVIDERS is keyed by the namespaced "<agent>.<persona>" form.
 
-There is no `file` field. The role markdown's filename is DERIVED as
-"<agent>_<persona>.md" by persona_role_file(). The id shape is pinned at load
-time precisely because that derivation interpolates both halves into a path
-under farm/roles/personas/: an id carrying a slash or ".." would escape the
-directory, so the shape rule is what makes the derived path provably safe.
+Each entry declares its role markdown filenames in `roleFiles` (HZ-381):
+persona id -> file in farm/roles/personas/, returned as declared by
+persona_role_file(). The filename shape (^[a-z][a-z0-9_]*\.md$) is pinned at
+load time precisely because the declared value is interpolated into a path
+under farm/roles/personas/: a value carrying a slash or ".." would escape the
+directory, so the shape rule is what makes the declared path provably safe.
 
 Nothing presentational lives here. Labels, initials, colours and the
 persona-agent -> lifecycle-agent bridge (PERSONA_AGENT_ROLES) stay in the
@@ -63,6 +64,8 @@ _ID_SHAPE = re.compile(r"^[a-z][a-z0-9_]*$")
 # HZ-192, kept in step with domain/js/personas.js's MODEL_SHAPE. Only a Claude
 # id can be declared, so no models value can name another provider's model.
 _MODEL_SHAPE = re.compile(r"^claude-[a-z0-9][a-z0-9.-]*$")
+# HZ-381, kept in step with domain/js/personas.js's ROLE_FILE_SHAPE.
+_ROLE_FILE_SHAPE = re.compile(r"^[a-z][a-z0-9_]*\.md$")
 _MODELS_KEYS = ("agents", "conflictAgent", "steps", "personas")
 
 
@@ -81,6 +84,12 @@ def _is_id(value: object) -> bool:
 
 def _is_model(value: object) -> bool:
     return isinstance(value, str) and _MODEL_SHAPE.fullmatch(value) is not None
+
+
+def _is_role_file(value: object) -> bool:
+    # fullmatch, like _is_id: `$` also matches before a trailing newline, and
+    # a filename smuggling one must not pass.
+    return isinstance(value, str) and _ROLE_FILE_SHAPE.fullmatch(value) is not None
 
 
 def _split_pair(value: object, ids: dict) -> tuple[str, str] | None:
@@ -145,6 +154,40 @@ def _validate_source(data: object, source: str) -> dict:
                 f"{prefix}{source}: agents[{i}].default {_json(default)} is not one of "
                 f"agent {_json(agent)}'s personas {_json(personas)}"
             )
+        # HZ-381: every persona declares its role file. Keys must equal the
+        # entry's own personas exactly — a missing key leaves a persona with no
+        # file, an extra key names a file no persona composes.
+        role_files = entry.get("roleFiles")
+        if not isinstance(role_files, dict):
+            raise RuntimeError(
+                f"{prefix}{source}: agents[{i}].roleFiles must be a JSON object "
+                "mapping every persona id to its role file"
+            )
+        for persona in personas:
+            if persona not in role_files:
+                raise RuntimeError(
+                    f"{prefix}{source}: agents[{i}].roleFiles is missing persona {_json(persona)}"
+                )
+        for key in role_files:
+            if key not in personas:
+                raise RuntimeError(
+                    f"{prefix}{source}: agents[{i}].roleFiles key {_json(key)} is not one of "
+                    f"agent {_json(agent)}'s personas {_json(personas)}"
+                )
+        for key, value in role_files.items():
+            if not _is_role_file(value):
+                raise RuntimeError(
+                    f"{prefix}{source}: agents[{i}].roleFiles[{_json(key)}] {_json(value)} "
+                    f"is not a role file matching /{_ROLE_FILE_SHAPE.pattern}/"
+                )
+        seen_files: dict = {}
+        for key, value in role_files.items():
+            if value in seen_files:
+                raise RuntimeError(
+                    f"{prefix}{source}: agents[{i}].roleFiles declares {_json(value)} for both "
+                    f"{_json(seen_files[value])} and {_json(key)}"
+                )
+            seen_files[value] = key
         ids[agent] = personas
 
     primary = data.get("primaryAgent")
@@ -269,6 +312,12 @@ PERSONA_IDS = types.MappingProxyType(
     {entry["agent"]: tuple(entry["personas"]) for entry in _SOURCE["agents"]}
 )
 
+# HZ-381: agent -> {persona id -> its role markdown filename in
+# farm/roles/personas/}, as declared in the document's `roleFiles`.
+PERSONA_ROLE_FILES = types.MappingProxyType(
+    {entry["agent"]: types.MappingProxyType(dict(entry["roleFiles"])) for entry in _SOURCE["agents"]}
+)
+
 # Every "<agent>.<persona>", agents in order, personas in order within each.
 NAMESPACED_PERSONA_IDS: tuple[str, ...] = tuple(
     f"{agent}.{persona}" for agent in PERSONA_AGENTS for persona in PERSONA_IDS[agent]
@@ -318,13 +367,25 @@ def is_persona(agent: str, persona_id: str, persona_ids=PERSONA_IDS) -> bool:
     return bucket is not None and persona_id in bucket
 
 
-def persona_role_file(agent: str, persona_id: str, persona_ids=PERSONA_IDS) -> str:
-    """The role markdown's filename in farm/roles/personas/, derived as
-    "<agent>_<persona>.md". Raises ValueError for an undeclared pair rather than
-    deriving a path from data nobody validated."""
-    if not is_persona(agent, persona_id, persona_ids):
-        raise ValueError(f"domain/py/personas.py: unknown persona {_json([agent, persona_id])}")
-    return f"{agent}_{persona_id}.md"
+def persona_role_file(agent: str, persona_id: str, role_files=PERSONA_ROLE_FILES) -> str:
+    """The role markdown's filename in farm/roles/personas/, as DECLARED in
+    the document's `roleFiles` (HZ-381). Raises ValueError for an undeclared
+    pair rather than returning a path from data nobody validated.
+
+    `role_files` is a parameter with a default so a fixture can drive it with
+    a fabricated registry — the convention is_persona uses."""
+    unknown = f"domain/py/personas.py: unknown persona {_json([agent, persona_id])}"
+    if not isinstance(agent, str) or not isinstance(persona_id, str):
+        raise ValueError(unknown)
+    try:
+        bucket = role_files[agent]
+    except (KeyError, TypeError):
+        raise ValueError(unknown) from None
+    try:
+        value = bucket[persona_id]
+    except (KeyError, TypeError):
+        raise ValueError(unknown) from None
+    return value
 
 
 def model_agent_for_step(step_agent: str) -> str:

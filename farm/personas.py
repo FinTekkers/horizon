@@ -14,9 +14,11 @@ per work item on the server side (PM proposal, human confirmation at the intake
 gate) and arrives on the task payload; this module only validates ids and
 composes role prompts — it never routes.
 
-The id set is mirrored in server/src/personas.js and ui/src/domain/personas.js
-and parity-tested in tests/test_personas.py, so treat ids as append-only and
-change all three copies together.
+The id set, agent membership and role files are declared once, in
+domain/personas.json (HZ-381): this module builds its registry from the
+domain/py/personas.py binding, as do server/src/personas.js and
+ui/src/domain/personas.js through the JS binding. Treat ids as append-only —
+adding or renaming a persona is a one-file edit to that document.
 
 Persona FILES are a flat directory with an agent-prefixed filename
 (eng_python.md, qa_api_contract.md), not a nested tree: server/src/
@@ -27,7 +29,13 @@ security-relevant code to walk subdirectories would buy nothing here.
 
 from pathlib import Path
 
-from domain.py.personas import DEFAULT_PERSONAS as _DOMAIN_DEFAULT_PERSONAS
+from domain.py.personas import (
+    DEFAULT_PERSONAS as _DOMAIN_DEFAULT_PERSONAS,
+    LEGACY_PERSONA_IDS as _DOMAIN_LEGACY_PERSONA_IDS,
+    PERSONA_AGENTS,
+    PERSONA_IDS,
+    persona_role_file,
+)
 
 PERSONA_DIR = Path(__file__).parent / "roles" / "personas"
 
@@ -50,26 +58,15 @@ PERSONA_DIR = Path(__file__).parent / "roles" / "personas"
 # to repeat eng_python.md. If a language-flavoured persona is ever wanted for a
 # second agent, factor the shared conventions into one file both reference
 # rather than copying them.
+#
+# HZ-381: declared once, in domain/personas.json — this is a MUTABLE dict of
+# dicts built from the domain binding's PERSONA_AGENTS, PERSONA_IDS and
+# persona_role_file() (whose own maps are read-only), never a second
+# declaration. Mutable on purpose: farm/tests/conftest.py registers its
+# muse_smoke_test fixture persona with monkeypatch.setitem on a bucket.
 PERSONAS = {
-    "eng": {
-        "fullstack": "eng_fullstack.md",
-        "python": "eng_python.md",
-        "ui": "eng_ui.md",
-        "performance": "eng_performance.md",
-    },
-    "qa": {
-        "api_contract": "qa_api_contract.md",
-        "e2e_journey": "qa_e2e_journey.md",
-        "data_integrity": "qa_data_integrity.md",
-    },
-    "architect": {
-        "data_modelling": "architect_data_modelling.md",
-        "distributed_systems": "architect_distributed_systems.md",
-    },
-    "pm": {
-        "roadmap": "pm_roadmap.md",
-        "feature_development": "pm_feature_development.md",
-    },
+    agent: {persona_id: persona_role_file(agent, persona_id) for persona_id in PERSONA_IDS[agent]}
+    for agent in PERSONA_AGENTS
 }
 
 # agent -> the persona an item gets when it carries none for that agent (or
@@ -84,12 +81,10 @@ DEFAULT_PERSONAS = dict(_DOMAIN_DEFAULT_PERSONAS)
 # of those values was an Eng specialization. Read-only compatibility, never
 # written: resolve() accepts these so an item mid-flight when this shipped keeps
 # the specialist it was routed to instead of silently falling back to the
-# generalist. Mirrored in server/src/personas.js (LEGACY_PERSONA_IDS).
-LEGACY_PERSONA_IDS = {
-    "fullstack": ("eng", "fullstack"),
-    "python_backend": ("eng", "python"),
-    "frontend_ui": ("eng", "ui"),
-}
+# generalist. Declared once, in domain/personas.json: this is a MUTABLE dict
+# copy of that binding's table (whose own map is read-only), never a second
+# declaration.
+LEGACY_PERSONA_IDS = dict(_DOMAIN_LEGACY_PERSONA_IDS)
 
 # namespaced persona id ("<agent>.<persona>") -> provider name
 # (farm/agent_runner.py's _PROVIDERS), for a persona that must force a
@@ -107,11 +102,12 @@ LEGACY_PERSONA_IDS = {
 # personas and must be able to route differently.
 #
 # Kept separate from PERSONAS rather than an extra field on each entry:
-# PERSONAS's id set is mirrored append-only into server/src/personas.js and
-# ui/src/domain/personas.js (parity-tested), and neither of those has any
-# notion of a farm provider — folding "provider" onto PERSONAS would either
-# leak a farm-only routing concept into that three-way mirror or force the
-# server/UI copies to carry a field they can't act on.
+# the id set in domain/personas.json is shared append-only with
+# server/src/personas.js and ui/src/domain/personas.js (which read the same
+# document through the JS binding), and neither of those has any notion of a
+# farm provider — folding "provider" onto the shared declaration would either
+# leak a farm-only routing concept into it or force the server/UI layers to
+# carry a field they can't act on.
 PERSONA_PROVIDERS = {}
 
 

@@ -156,6 +156,12 @@ test('every legacy alias points at a live persona', () => {
   }
 })
 
+test('legacyPersona resolves the three pre-HZ-125 aliases to their Eng personas', () => {
+  assert.deepEqual(legacyPersona('fullstack'), ['eng', 'fullstack'])
+  assert.deepEqual(legacyPersona('python_backend'), ['eng', 'python'])
+  assert.deepEqual(legacyPersona('frontend_ui'), ['eng', 'ui'])
+})
+
 // ---- demo-mode proposer (the ONLY keyword heuristic) ----
 
 test('a Python-flavored item proposes the eng/python persona', () => {

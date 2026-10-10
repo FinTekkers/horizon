@@ -231,65 +231,12 @@ def test_compose_role_with_no_files_at_all_returns_bare_role(monkeypatch):
 
 
 # ---- registry parity (architecture review note 1) ----
-# The id set lives in three languages. This is the drift tripwire: an id added
-# on one side without the others fails the build here, loudly. HZ-125 nested
-# the registry, so the parser reads agent -> {ids} out of both JS copies rather
-# than one flat level.
-
-
-def _js_persona_ids(js_path: Path) -> dict[str, set[str]]:
-    source = js_path.read_text()
-    match = re.search(r"export const PERSONAS = \{(.*?)\n\}", source, re.DOTALL)
-    assert match, f"could not find the `export const PERSONAS = {{` literal in {js_path}"
-    by_agent: dict[str, set[str]] = {}
-    agent = None
-    for line in match.group(1).splitlines():
-        agent_match = re.match(r"^ {2}(\w+): \{$", line)
-        if agent_match:
-            agent = agent_match.group(1)
-            by_agent[agent] = set()
-            continue
-        persona_match = re.match(r"^ {4}(\w+):", line)
-        if persona_match:
-            assert agent, f"persona {persona_match.group(1)} outside any agent block in {js_path}"
-            by_agent[agent].add(persona_match.group(1))
-    # An empty extraction means the parser broke, not that parity holds.
-    assert by_agent, f"extracted zero persona agents from {js_path} — the regex no longer matches the file"
-    for found_agent, ids in by_agent.items():
-        assert ids, f"extracted zero personas for {found_agent} in {js_path}"
-    return by_agent
-
-
-def _farm_persona_ids() -> dict[str, set[str]]:
-    return {agent: set(bucket) for agent, bucket in PERSONAS.items()}
-
-
-def test_registry_parity_across_farm_server_and_ui():
-    server_ids = _js_persona_ids(REPO_ROOT / "server" / "src" / "personas.js")
-    ui_ids = _js_persona_ids(REPO_ROOT / "ui" / "src" / "domain" / "personas.js")
-    assert _farm_persona_ids() == server_ids == ui_ids
-
-
-def test_the_parity_parser_still_fails_on_drift(tmp_path):
-    """A rewritten parser that silently extracts nothing (or ignores the
-    nesting) would make the test above pass forever. This proves it still
-    catches both an added id and a moved one."""
-    original = (REPO_ROOT / "server" / "src" / "personas.js").read_text()
-
-    added = tmp_path / "added.js"
-    added.write_text(original.replace("  qa: {\n", "  qa: {\n    smuggled_in: { label: 'X' },\n", 1))
-    assert _js_persona_ids(added) != _farm_persona_ids()
-
-    moved = tmp_path / "moved.js"
-    moved.write_text(original.replace("    performance: {", "    moved_away: {", 1))
-    assert _js_persona_ids(moved) != _farm_persona_ids()
-
-
-def test_the_parity_parser_rejects_a_file_it_can_no_longer_read(tmp_path):
-    empty = tmp_path / "empty.js"
-    empty.write_text("export const PERSONAS = {\n}\n")
-    with pytest.raises(AssertionError, match="extracted zero persona agents"):
-        _js_persona_ids(empty)
+# HZ-381 retired the three-way id mirror — and the regex parser that pinned
+# it. Farm, server and UI now read their ids from domain/personas.json, and
+# the drift tripwire moved with the declaration: farm/tests/test_personas_hz381.py
+# fails on any persona id literal in farm/personas.py, with the server and UI
+# legs in server/test/domain-personas-source.test.mjs and
+# ui/src/domain/personas.test.js.
 
 
 def test_default_persona_parity_across_farm_and_the_js_copies():
@@ -305,7 +252,7 @@ def test_default_persona_parity_across_farm_and_the_js_copies():
     ):
         source = js_path.read_text()
         assert re.search(
-            r"import\s*\{\s*DEFAULT_PERSONAS\s+as\s+\w+\s*\}\s*from\s*['\"]"
+            r"import\s*\{[^}]*?DEFAULT_PERSONAS\s+as\s+\w+[^}]*?\}\s*from\s*['\"]"
             + re.escape(rel)
             + r"['\"]",
             source,
