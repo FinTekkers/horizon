@@ -550,7 +550,7 @@
 
     "FARM_VIEWS": [
       { "case": "the change view is STEPS itself", "kind": "change", "expectIsSteps": true },
-      { "case": "the task view holds only the task rows on a lane", "kind": "task", "expectLabels": ["Assess", "Run plan", "Impact review"] }
+      { "case": "the task view holds only the task rows on a lane", "kind": "task", "expectLabels": ["Assess", "Run plan", "Impact review", "Execute", "Verify & report"] }
     ],
 
     "by_kind_label": [
