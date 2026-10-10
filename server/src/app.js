@@ -843,6 +843,86 @@ export function buildApp({ logger = true, onRoute = null } = {}) {
     },
   )
 
+  // HZ-378: a Task Execute job's status and log. The job's session and files
+  // live in farmd; these routes proxy them the way /api/runs/:runId/log does
+  // for agent runs. No active job is a 404, like an unknown run there.
+  fastify.get(
+    '/api/items/:id/job',
+    {
+      schema: {
+        params: idParam,
+        response: { 200: OK_OBJECT, 404: ERROR_OBJECT, 503: ERROR_OBJECT },
+      },
+    },
+    async (request, reply) => {
+      const { id } = request.params
+      if (!store.getItem(id)) return reply.code(404).send({ error: 'not_found' })
+      const run = store.activeJobRun(id)
+      if (!run) return reply.code(404).send({ error: 'no_job' })
+      if (!FARM_URL) return reply.code(503).send({ error: 'farm unavailable' })
+      try {
+        const { status, data } = await orchestrator.fetchJobStatus(run.id)
+        if (status !== 200) return reply.code(status).send(data)
+        let logTail = ''
+        try {
+          const log = await orchestrator.fetchJobLog(run.id, 0)
+          if (log.status === 200 && typeof log.data?.content === 'string') logTail = log.data.content.slice(-2000)
+        } catch {
+          // the status stands without a tail
+        }
+        return { ...data, logTail, logUrl: `/api/items/${id}/job/log` }
+      } catch {
+        return reply.code(503).send({ error: 'farm unavailable' })
+      }
+    },
+  )
+
+  fastify.get(
+    '/api/items/:id/job/log',
+    {
+      schema: {
+        params: idParam,
+        querystring: { type: 'object', properties: { offset: { type: 'integer', minimum: 0, default: 0 } } },
+        response: { 200: OK_OBJECT, 404: ERROR_OBJECT, 503: ERROR_OBJECT },
+      },
+    },
+    async (request, reply) => {
+      const { id } = request.params
+      if (!store.getItem(id)) return reply.code(404).send({ error: 'not_found' })
+      const run = store.activeJobRun(id)
+      if (!run) return reply.code(404).send({ error: 'no_job' })
+      if (!FARM_URL) return reply.code(503).send({ error: 'farm unavailable' })
+      try {
+        const { status, data } = await orchestrator.fetchJobLog(run.id, request.query.offset)
+        return reply.code(status).send(data)
+      } catch {
+        return reply.code(503).send({ error: 'farm unavailable' })
+      }
+    },
+  )
+
+  // HZ-378: Resume re-dispatches Execute from the first unfinished command
+  // (the runner skips passed ones via its state file). A plan edited since
+  // approval is a 409 that sends the item back to Run plan for re-approval.
+  fastify.post(
+    '/api/items/:id/job/resume',
+    {
+      schema: {
+        params: idParam,
+        response: { 200: OK_OBJECT, 404: ERROR_OBJECT, 409: ERROR_OBJECT },
+      },
+    },
+    (request, reply) => {
+      const result = orchestrator.resumeJob(request.params.id)
+      if (result.error === 'plan_changed') {
+        return reply
+          .code(409)
+          .send({ error: 'plan_changed', message: 'the run plan changed since it was approved — send it back to Run plan and approve it again' })
+      }
+      return send(reply, result)
+    },
+  )
+
   // Create a work item. With GitHub connected this creates the issue there
   // (GitHub stays the source of truth) and ingests it; in demo mode it creates
   // a local item. Title, outcome and success metric are the bot farm's minimum

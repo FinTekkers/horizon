@@ -194,6 +194,7 @@ test('route matrix on an Autopilot project: only a session with the right PIN ap
   assert.equal(ok.statusCode, 200)
   assert.deepEqual(ok.json(), { ok: true, closed: false })
   assert.equal(row('T-ROUTES').cursor, EXECUTE_STEP_INDEX)
+  orchestrator.cancel('T-ROUTES') // HZ-378: approving dispatches the Execute job — clear its watchdog so the process can exit
 })
 
 test('a valid PIN with no Run plan artifact is 409 run_plan_missing: the gate stays and no hash is written', async () => {
@@ -254,6 +255,7 @@ test('approving stores the plan hash; approvedPlanCheck passes, then refuses onc
     approvedHash: sha256(PLAN),
     currentHash: sha256(edited),
   })
+  orchestrator.cancel('T-HASH') // HZ-378: the approval dispatched the Execute job — clear its watchdog so the process can exit
 })
 
 test('a send-back clears the approved hash; re-approving records the NEW plan', async () => {
@@ -324,6 +326,7 @@ test("Execute's guard: a matching plan starts, a changed plan fails the run, an 
     error: 'plan_not_approved',
   })
   assert.match(runOf(unapproved).output, /^FAILED: the run plan was never approved/)
+  orchestrator.cancel('T-EXEC') // HZ-378: the approval dispatched the Execute job — clear its watchdog so the process can exit
 })
 
 // ---- metric 4: Reject with feedback goes back to Run plan ----
@@ -393,4 +396,5 @@ test('the PIN appears in no log line, event, gate decision, artifact or caretake
     const text = JSON.stringify(db.prepare(sql).all())
     assert.ok(!text.includes(PIN), `the PIN is in ${table}`)
   }
+  orchestrator.cancel('T-LEAK') // HZ-378: the approval dispatched the Execute job — clear its watchdog so the process can exit
 })

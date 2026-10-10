@@ -201,6 +201,17 @@ const LATEST_ARTIFACT_WEIGHT = 3
 // farm-side WRITE_ARTIFACT_SANITY_CEILING_CHARS. The dispatch-time budget
 // above is what actually bounds the prompt.
 const WRITE_TIME_SANITY_CEILING_CHARS = 200000
+// HZ-378: an Execute (job-lane) artifact's own ceiling — the runner's summary
+// plus its full redacted log, which legitimately dwarfs an agent reply. Over
+// it, the kept head ends with the marker. farm/farmd.py caps the same way
+// before the POST (the route's body limit is 1 MB); this second cap is the
+// backstop, so the two can never disagree about the stored shape.
+export const JOB_LOG_MAX_CHARS = 512 * 1024
+export const JOB_LOG_TRUNCATED_MARKER = '\n\n[...truncated: job log exceeded 512 KB; showing the first 512 KB]'
+export function capJobArtifact(text) {
+  const content = String(text ?? '')
+  return content.length > JOB_LOG_MAX_CHARS ? content.slice(0, JOB_LOG_MAX_CHARS) + JOB_LOG_TRUNCATED_MARKER : content
+}
 
 // Max-min water-filling: every artifact gets its full length if it fits,
 // otherwise a share of the budget proportional to its weight. Artifacts
@@ -2230,6 +2241,16 @@ export async function completeFarmRun(runId, { summary, patch, artifacts }) {
   let artifactMd =
     typeof artifacts?.artifact_md === 'string' ? artifacts.artifact_md.slice(0, WRITE_TIME_SANITY_CEILING_CHARS) : null
 
+  // HZ-378: a job's artifact is the runner's summary plus its full redacted
+  // log — legitimately above an agent reply's ceiling, so it gets its own
+  // cap. A job that reports no artifact still leaves its summary behind, so
+  // Verify & report always has a result to judge.
+  if (STEPS[run.step_index]?.runsIn === 'job') {
+    artifactMd = capJobArtifact(
+      typeof artifacts?.artifact_md === 'string' ? artifacts.artifact_md : String(summary || 'completed the step'),
+    )
+  }
+
   // HZ-102 provenance: since HZ-357 farm/step_agent.py sets these two fields
   // on every run of a providerOverrideEligible step whose reply named the
   // provider that ran (Default runs included), so the item page can show
@@ -2316,6 +2337,15 @@ export async function completeFarmRun(runId, { summary, patch, artifacts }) {
   if (spawnKey) {
     const linked = linkSpawned(id, spawnKey)
     if (linked.error) return failFarmRun(runId, `could not wait for the item it filed: ${linked.error}`)
+  }
+
+  // HZ-378: Verify & report judges the job, so its artifact carries the QA
+  // verdict plus the job's own result — the summary and redacted log the
+  // Execute run stored. The job section goes last, so a truncated log still
+  // ends the artifact with its marker.
+  if (run.step_index === VERIFY_REPORT_STEP_INDEX) {
+    const jobArtifact = latestArtifact(id, EXECUTE_STEP_INDEX)
+    if (jobArtifact) artifactMd = artifactMd ? `${artifactMd}\n\n---\n\n${jobArtifact}` : jobArtifact
   }
 
   if (run.step_index === IMPLEMENT_STEP_INDEX) {
@@ -2801,6 +2831,11 @@ export async function interruptStepsForDeploy(runIds) {
       const run = db.prepare('SELECT id, item_id, step_index, status FROM step_run WHERE id = ?').get(runId)
       if (!run) return { runId, itemId: null, step: null, interrupted: false }
       const entry = { runId, itemId: run.item_id, step: stepSlug(run.step_index) }
+      // HZ-378: a deploy never stops a job. Jobs are not listed for the drain
+      // (store.listRunningAgentSteps leaves them out), and a direct call with
+      // a job's run id still refuses it here — the job outlives the deploy
+      // and reports after it.
+      if (STEPS[run.step_index]?.runsIn === 'job') return { ...entry, interrupted: false }
       const moved = db
         .prepare(
           "UPDATE step_run SET status = 'cancelled', deploy_interrupted = 1, output = ?, ended_at = datetime('now') WHERE id = ? AND status = 'active'",

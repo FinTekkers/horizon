@@ -810,6 +810,28 @@ def launch_job(task: dict) -> str:
     return name
 
 
+# HZ-378: an Execute artifact's own ceiling — the runner's summary plus its
+# full redacted log. Mirrors server/src/orchestrator.js's JOB_LOG_MAX_CHARS:
+# farmd caps before the POST (the route's body limit is 1 MB) and the server
+# caps again on receipt, so the two can never disagree about the marker.
+JOB_LOG_MAX_CHARS = 512 * 1024
+JOB_LOG_TRUNCATED_MARKER = "\n\n[...truncated: job log exceeded 512 KB; showing the first 512 KB]"
+
+
+def cap_job_artifact(text: str) -> str:
+    content = text or ""
+    if len(content) > JOB_LOG_MAX_CHARS:
+        return content[:JOB_LOG_MAX_CHARS] + JOB_LOG_TRUNCATED_MARKER
+    return content
+
+
+def job_artifact_md(summary_text: str, log_text: str) -> str:
+    """The Execute step's artifact: the one-line summary plus the runner's
+    full redacted log, capped with a marker. Pure, so tests cover it without
+    tmux or threads."""
+    return cap_job_artifact(f"## Commands\n{summary_text}\n\n## Log\n{log_text or '(no output)'}\n")
+
+
 def _poll_jobs() -> None:
     """Forwards finished jobs to the server once, then releases their task
     files. Called from _watchdog (no third loop thread) and directly by
@@ -847,7 +869,19 @@ def _poll_jobs() -> None:
                 text = f"{run_n} command(s) run, {passed} passed, {failed} failed"
                 if failing:
                     text += f": {failing}"
-                _forward_result({"run_id": task["run_id"], "ok": True, "summary": text[:600]})
+                log_name = JOB_SESSIONS.get(run_id) or _job_session_name(item_id)
+                try:
+                    log_text = (_LOGS / f"{log_name}.log").read_text()
+                except OSError:
+                    log_text = ""
+                _forward_result(
+                    {
+                        "run_id": task["run_id"],
+                        "ok": True,
+                        "summary": text[:600],
+                        "artifacts": {"artifact_md": job_artifact_md(text, log_text)},
+                    }
+                )
             elif status == "budget_exceeded":
                 _forward_result(
                     {

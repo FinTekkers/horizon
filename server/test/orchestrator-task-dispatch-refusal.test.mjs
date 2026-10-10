@@ -1,7 +1,8 @@
-// HZ-377a metric 3 (server half): no task step is ever sent to the farm by
-// this item. A task parked on a runner-less step waits there — kick() records
-// no run and moves no cursor. Runs in mock mode (FARM_URL unset) so the
-// shared runnable() gate is exercised directly, without a farm process.
+// HZ-377a metric 3 (server half): a task parked on a runner-less step waits
+// there — kick() records no run and moves no cursor. Runs in mock mode
+// (FARM_URL unset) so the shared runnable() gate is exercised directly,
+// without a farm process. HZ-383 gave Assess a runner; HZ-378 gave Execute
+// (the job lane) and Verify & report one, so those dispatch here too.
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
@@ -33,14 +34,16 @@ test('a task at Assess dispatches one run', () => {
   assert.equal(runCount('DT-ASSESS'), 1, 'Assess has a runner now — kick records exactly one run')
 })
 
-test('a task at Execute still waits: it has no runner yet', () => {
+test('a task at Execute runs the mock job and Verify, then waits at the gate', async () => {
   const execute = kindStepIndex('Execute', 'task')
+  const close = kindStepIndex('Review & close', 'task')
   insertItem.run('DT-EXECUTE', 'Task at Execute', 'Medium', execute, 'task')
 
   orchestrator.kick('DT-EXECUTE')
+  await new Promise((r) => setTimeout(r, 200))
 
-  assert.equal(runCount('DT-EXECUTE'), 0, 'a runner-less step must never record a run')
-  assert.equal(store.getItem('DT-EXECUTE').cursor, execute, 'cursor is untouched — nothing was dispatched')
+  assert.equal(runCount('DT-EXECUTE'), 2, 'Execute and Verify each record one mock run')
+  assert.equal(store.getItem('DT-EXECUTE').cursor, close, 'the item waits at Review & close')
 })
 
 test('positive control: a change item at an agent step still dispatches', () => {
