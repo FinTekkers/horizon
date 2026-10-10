@@ -4,22 +4,41 @@
     {
       "agent": "eng",
       "default": "fullstack",
-      "personas": ["fullstack", "python", "ui", "performance"]
+      "personas": ["fullstack", "python", "ui", "performance"],
+      "roleFiles": {
+        "fullstack": "eng_fullstack.md",
+        "python": "eng_python.md",
+        "ui": "eng_ui.md",
+        "performance": "eng_performance.md"
+      }
     },
     {
       "agent": "qa",
       "default": "e2e_journey",
-      "personas": ["api_contract", "e2e_journey", "data_integrity"]
+      "personas": ["api_contract", "e2e_journey", "data_integrity"],
+      "roleFiles": {
+        "api_contract": "qa_api_contract.md",
+        "e2e_journey": "qa_e2e_journey.md",
+        "data_integrity": "qa_data_integrity.md"
+      }
     },
     {
       "agent": "architect",
       "default": "data_modelling",
-      "personas": ["data_modelling", "distributed_systems"]
+      "personas": ["data_modelling", "distributed_systems"],
+      "roleFiles": {
+        "data_modelling": "architect_data_modelling.md",
+        "distributed_systems": "architect_distributed_systems.md"
+      }
     },
     {
       "agent": "pm",
       "default": "feature_development",
-      "personas": ["roadmap", "feature_development"]
+      "personas": ["roadmap", "feature_development"],
+      "roleFiles": {
+        "roadmap": "pm_roadmap.md",
+        "feature_development": "pm_feature_development.md"
+      }
     }
   ],
   "legacyIds": {

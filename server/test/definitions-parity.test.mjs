@@ -33,6 +33,13 @@ const FIXTURES = [
   { role: 'architect_review', agent: 'architect', persona: 'distributed_systems', project: 'Horizon', repo: null },
   { role: 'pm', agent: 'pm', persona: 'feature_development', project: 'Horizon', repo: null },
   { role: 'eng_implement', agent: 'eng', persona: 'ui', project: 'FinTekkers', repo: null }, // planning: no repo yet
+  // HZ-381: every persona needs a prompt-path fixture, so the rebuilt server
+  // PERSONAS[...].file is proven unchanged for all 11, not just 7.
+  { role: 'eng_implement', agent: 'eng', persona: 'python', project: 'FinTekkers', repo: null },
+  { role: 'qa', agent: 'qa', persona: 'api_contract', project: 'FinTekkers', repo: null },
+  { role: 'architect_review', agent: 'architect', persona: 'data_modelling', project: 'Horizon', repo: null },
+  { role: 'pm', agent: 'pm', persona: 'roadmap', project: 'Horizon', repo: null },
+  { role: 'eng_implement', agent: 'eng', persona: 'frontend_ui', project: 'FinTekkers', repo: null }, // legacy flat id
   { role: 'eng_implement', agent: 'eng', persona: 'nonsense-id', project: 'No Such Project', repo: 'acme/none' }, // all fallbacks
   { role: 'qa', agent: 'qa', persona: 'python', project: 'FinTekkers', repo: null }, // wrong bucket -> qa default
   { role: 'eng_implement', agent: 'eng', persona: 'python_backend', project: 'FinTekkers', repo: null }, // legacy flat id

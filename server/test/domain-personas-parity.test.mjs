@@ -11,14 +11,12 @@
 // order and the farm's provider_for() scan order, and persona order is the
 // picker's option order.
 //
-// The second half pins the domain document to TODAY'S three hand-maintained
-// registries (server/src/personas.js and ui/src/domain/personas.js here;
-// farm/personas.py in farm/tests/test_personas_domain.py). Without it the two
-// bindings could agree with each other and both be wrong, and repointing the
-// registries at domain/ would then change behaviour with every test green.
-// HZ-380 repointed the three DEFAULT_PERSONAS at the domain binding, so the
-// defaults leg compared the document to itself and was deleted; what remains
-// pins the still-hand-typed PERSONAS tables and primary-agent constants.
+// The second half pins the domain document to the UI's still-hand-typed
+// display table. The farm and server legs that stood here compared each
+// layer's registry against the binding it is built from after HZ-381
+// repointed them — the document against itself — so they were deleted; the
+// UI table is still hand-typed, so its leg still guards the drift it was
+// written for.
 //
 // Modeled on domain-priorities-parity.test.mjs.
 
@@ -31,6 +29,7 @@ import path from 'node:path'
 import {
   PERSONA_AGENTS,
   PERSONA_IDS,
+  PERSONA_ROLE_FILES,
   NAMESPACED_PERSONA_IDS,
   DEFAULT_PERSONAS,
   PRIMARY_PERSONA_AGENT,
@@ -40,7 +39,6 @@ import {
   legacyPersona,
   personaRoleFile,
 } from '../../domain/js/personas.js'
-import * as serverPersonas from '../src/personas.js'
 import * as uiPersonas from '../../ui/src/domain/personas.js'
 import { REPO_ROOT } from './helpers/repoFiles.mjs'
 
@@ -59,6 +57,7 @@ test('the JS binding exposes domain/personas.json verbatim, in order', () => {
   for (const entry of source.agents) {
     assert.deepEqual([...PERSONA_IDS[entry.agent]], entry.personas, entry.agent)
     assert.equal(DEFAULT_PERSONAS[entry.agent], entry.default, entry.agent)
+    assert.deepEqual({ ...PERSONA_ROLE_FILES[entry.agent] }, entry.roleFiles, entry.agent)
   }
   assert.equal(PRIMARY_PERSONA_AGENT, source.primaryAgent)
   assert.deepEqual(
@@ -118,15 +117,15 @@ test('both bindings answer isPersona/is_persona identically, members, non-member
   assert.ok(probes.some(([a, i]) => !isPersona(a, i)))
 })
 
-// Metric 4: every persona id resolves to a role file. Asserted on the DOMAIN
-// binding in both languages, and against the file on disk.
-test('both bindings derive the same role filename for every persona, and that file exists in farm/roles/personas/', () => {
+// Metric 4: every persona id resolves to a declared role file. Asserted on
+// the DOMAIN binding in both languages, and against the file on disk.
+test('both bindings return the same declared role filename for every persona, and that file exists in farm/roles/personas/', () => {
   const pairs = NAMESPACED_PERSONA_IDS.map((pair) => pair.split('.'))
   const js = pairs.map(([agent, id]) => personaRoleFile(agent, id))
   const python = spawnedPython(`[personas.persona_role_file(a, i) for a, i in ${JSON.stringify(pairs)}]`)
   assert.deepEqual(python, js)
   for (const [i, [agent, id]] of pairs.entries()) {
-    assert.equal(js[i], `${agent}_${id}.md`)
+    assert.equal(js[i], source.agents.find((entry) => entry.agent === agent).roleFiles[id], `${agent}.${id}`)
     assert.ok(existsSync(path.join(REPO_ROOT, 'farm/roles/personas', js[i])), `missing role file ${js[i]}`)
   }
 })
@@ -163,42 +162,21 @@ test('the spawned Python import resolves the committed binding, reading the docu
 test('the Python sequences are TUPLES and the maps read-only, so the farm cannot widen what the server enforces', () => {
   assert.deepEqual(
     spawnedPython(
-      '[type(personas.PERSONA_AGENTS).__name__, sorted({type(v).__name__ for v in personas.PERSONA_IDS.values()}), type(personas.NAMESPACED_PERSONA_IDS).__name__, type(personas.PERSONA_IDS).__name__, type(personas.PERSONA_PROVIDERS).__name__]',
+      '[type(personas.PERSONA_AGENTS).__name__, sorted({type(v).__name__ for v in personas.PERSONA_IDS.values()}), type(personas.NAMESPACED_PERSONA_IDS).__name__, type(personas.PERSONA_IDS).__name__, type(personas.PERSONA_PROVIDERS).__name__, type(personas.PERSONA_ROLE_FILES).__name__, sorted({type(v).__name__ for v in personas.PERSONA_ROLE_FILES.values()})]',
     ),
-    ['tuple', ['tuple'], 'tuple', 'mappingproxy', 'mappingproxy'],
+    ['tuple', ['tuple'], 'tuple', 'mappingproxy', 'mappingproxy', 'mappingproxy', ['mappingproxy']],
   )
 })
 
-// ---- the domain document against TODAY'S hand-maintained registries ----
-// Guardrail 1 (no behaviour change): these are the values the repoint will
-// switch every consumer onto, so they must already be identical — order
-// included, because the picker renders Object.keys() order.
+// ---- the domain document against the UI's hand-typed display table ----
+// The UI table is the one registry HZ-381 did not repoint, so this leg still
+// guards the drift it was written for — order included, because the picker
+// renders Object.keys() order. (The server's display table is pinned the
+// same way in server/test/domain-personas-source.test.mjs.)
 
-for (const [name, registry] of [
-  ['server/src/personas.js', serverPersonas],
-  ['ui/src/domain/personas.js', uiPersonas],
-]) {
-  test(`domain/personas.json declares exactly what ${name} does today, in the same order`, () => {
-    assert.deepEqual(Object.keys(registry.PERSONAS), [...PERSONA_AGENTS])
-    for (const agent of PERSONA_AGENTS) {
-      assert.deepEqual(Object.keys(registry.PERSONAS[agent]), [...PERSONA_IDS[agent]], agent)
-    }
-    // HZ-380: no DEFAULT_PERSONAS leg — the registries derive it from this
-    // binding now, so comparing them would compare the document to itself.
-    assert.equal(registry.PRIMARY_PERSONA_AGENT, PRIMARY_PERSONA_AGENT)
-  })
-}
-
-test('domain/personas.json declares the legacy aliases server/src/personas.js maps today', () => {
-  assert.deepEqual(
-    serverPersonas.LEGACY_PERSONA_IDS,
-    Object.fromEntries(Object.entries(LEGACY_PERSONA_IDS).map(([alias, pair]) => [alias, [...pair]])),
-  )
-})
-
-test("the derived role filename equals server/src/personas.js's hand-typed `file` for every persona", () => {
-  for (const pair of NAMESPACED_PERSONA_IDS) {
-    const [agent, id] = pair.split('.')
-    assert.equal(personaRoleFile(agent, id), serverPersonas.PERSONAS[agent][id].file, pair)
+test('domain/personas.json declares exactly the ids ui/src/domain/personas.js displays, in the same order', () => {
+  assert.deepEqual(Object.keys(uiPersonas.PERSONAS), [...PERSONA_AGENTS])
+  for (const agent of PERSONA_AGENTS) {
+    assert.deepEqual(Object.keys(uiPersonas.PERSONAS[agent]), [...PERSONA_IDS[agent]], agent)
   }
 })

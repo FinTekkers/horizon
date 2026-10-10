@@ -104,10 +104,10 @@ def test_shared_role_file(case):
     expect = case["expect"]
     if "throws" in expect:
         with pytest.raises(ValueError) as exc:
-            personas.persona_role_file(case["agent"], case["id"], case["personaIds"])
+            personas.persona_role_file(case["agent"], case["id"], case["roleFiles"])
         assert expect["throws"] in str(exc.value)
     else:
-        assert personas.persona_role_file(case["agent"], case["id"], case["personaIds"]) == expect["file"]
+        assert personas.persona_role_file(case["agent"], case["id"], case["roleFiles"]) == expect["file"]
 
 
 # ---- shared: resolveModel (resolve_model vs JS's resolveModel) — HZ-192 ----
@@ -141,6 +141,19 @@ def test_py_persona_ids_maps_every_agent_to_a_non_empty_tuple_read_only():
         assert isinstance(ids, tuple) and ids, agent
     with pytest.raises(TypeError):
         personas.PERSONA_IDS["intruder"] = ("x",)
+
+
+def test_py_persona_role_files_maps_every_persona_to_a_file_read_only():
+    assert PY["PERSONA_ROLE_FILES"]
+    assert isinstance(personas.PERSONA_ROLE_FILES, types.MappingProxyType)
+    assert tuple(personas.PERSONA_ROLE_FILES) == personas.PERSONA_AGENTS
+    for agent, files in personas.PERSONA_ROLE_FILES.items():
+        assert isinstance(files, types.MappingProxyType), agent
+        assert set(files) == set(personas.PERSONA_IDS[agent]), agent
+        for filename in files.values():
+            assert isinstance(filename, str) and filename.endswith(".md"), filename
+    with pytest.raises(TypeError):
+        personas.PERSONA_ROLE_FILES["intruder"] = {}
 
 
 def test_py_namespaced_persona_ids_are_ordered_agent_then_persona():

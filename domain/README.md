@@ -58,19 +58,17 @@ navigate them like any other file.
   `domain-priority-pins.test.mjs` fails on all three if you forget.
 
 - **Changing the persona registry** — a new persona, a new persona agent, a
-  different default, a legacy alias, or a persona that forces a farm provider —
-  means editing **`domain/personas.json`**. Persona ids are unique *within* their
-  agent, not globally (HZ-125). There is no `file` field: the role markdown is
-  derived as `farm/roles/personas/<agent>_<persona>.md`, and the id shape
-  (`^[a-z][a-z0-9_]*$`) is enforced at load time because that derivation is a
-  path. `personaProviders` ships empty (HZ-121).
+  different default, a legacy alias, a role file, or a persona that forces a
+  farm provider — means editing **`domain/personas.json`**. Persona ids are
+  unique *within* their agent, not globally (HZ-125). Each entry declares its
+  role markdown filenames in `roleFiles` (HZ-381), and the filename shape
+  (`^[a-z][a-z0-9_]*\.md$`) is enforced at load time because that value is a
+  path under `farm/roles/personas/`. `personaProviders` ships empty (HZ-121).
 
-  **HZ-133 lands in parts.** The bindings arrived first; `farm/personas.py`,
-  `server/src/personas.js` and `ui/src/domain/personas.js` still hold their own
-  copies of the ids until they are repointed here, so until then a new persona
-  is still a four-file edit. `domain-personas-parity.test.mjs` and
-  `farm/tests/test_personas_domain.py` fail if the document and those copies
-  disagree. Labels, initials, colours and `PERSONA_AGENT_ROLES` stay in those
+  `farm/personas.py` and `server/src/personas.js` read their ids from the
+  bindings (HZ-381); `ui/src/domain/personas.js` still holds its display table
+  keyed by the same ids, so a new persona is that document plus its display
+  entries. Labels, initials, colours and `PERSONA_AGENT_ROLES` stay in those
   layer files permanently — they are presentation.
 
 - **Changing which model an agent call uses** (HZ-192) means editing the
@@ -130,7 +128,7 @@ enforced rather than remembered.
 | `fixtures/lifecycle-cases.json` | Input/expected pairs asserted by **both** language suites |
 | `fixtures/fields-cases.json` | The same, for the field bindings |
 | `fixtures/priorities-cases.json` | The same, for the priority bindings |
-| `personas.json` | The only place a persona id, its agent, each agent's default, the pre-HZ-125 legacy aliases, persona-to-provider and (HZ-192) the model each agent call uses are declared |
+| `personas.json` | The only place a persona id, its agent, each agent's default and role file, the pre-HZ-125 legacy aliases, persona-to-provider and (HZ-192) the model each agent call uses are declared |
 | `personas.schema.json` | The contract `personas.json` must satisfy |
 | `js/personas.js` | The JS binding: imports `personas.json`, exposes the ids, defaults, legacy aliases and `isPersona` / `personaRoleFile`. No `PERSONA_PROVIDERS` — it has no JS consumer |
 | `py/personas.py` | The Python binding: loads `personas.json`, exposes the same registry plus `PERSONA_PROVIDERS`, as tuples and read-only maps. Both bindings also expose `MODELS` and the one model resolver |
@@ -502,10 +500,10 @@ here as a known limit, not hidden.
 | The offline mock answers like the route | `ui/src/api/mockApi.test.js` | `createItem`'s `priority = DEFAULT_PRIORITY` drifting from `POST /api/items`' default. mock mode is the UI's stand-in backend with no server, and that default was the one priority-carrying branch of this change with no assertion at all — a drift only offline users would have seen |
 | Persona schema + load-time rules | `domain-personas-schema.test.mjs` | An invalid registry: a path-unsafe id, a duplicate agent, a default from another agent, an undeclared primary agent, a legacy alias or provider key naming a dead pair — including real subprocess imports, in **both** languages, over a tampered `personas.json`. Also asserts the schema passes what only the bindings reject, and rejects a `label`/`initials`/`color`/`file` key |
 | Cross-language persona fixtures | `fixtures/personas-cases.json` + `domain-personas-cases.test.mjs` + `farm/tests/test_personas_fixtures.py` | The two persona validators, `isPersona`/`is_persona` or `personaRoleFile`/`persona_role_file` disagreeing. Same set-equality / non-empty / pinned-manifest guards as the other fixtures |
-| Cross-language persona parity | `domain-personas-parity.test.mjs` | The two persona bindings drifting — agent and id **order**, defaults, legacy aliases, providers, every membership answer and every derived role file (which must exist on disk). Also pins the document to today's server and UI registries, value for value |
+| Cross-language persona parity | `domain-personas-parity.test.mjs` | The two persona bindings drifting — agent and id **order**, defaults, legacy aliases, providers, every membership answer and every declared role file (which must exist on disk). Also pins the document to the UI's hand-typed display table, value for value |
 | Models: pins and coverage | `farm/tests/test_models_domain.py` + `domain-models.test.mjs` | A model changing at merge (the block is pinned to production, and every agent step's EFFECTIVE model is asserted), a steps.json agent with no default model, a step override naming no live step, or the two bindings loading different models |
 | Every call takes its model from the resolver | `farm/tests/test_model_call_sites.py` | A `run_agent` call passing `model=`, omitting `agent=`, splatting `**kwargs`, or aliased past the check — named as `farm/<file>:<line>`. Also: the old `FARM_*_MODEL` vars in any tracked file, and a model id outside `domain/` |
-| Persona document equals the farm registry | `farm/tests/test_personas_domain.py` | The farm leg of the above: `farm/personas.py`'s ids, order, defaults, legacy aliases and providers equal the document's, and every role file on disk is a declared persona |
+| Persona document pins the farm registry | `farm/tests/test_personas_domain.py` | The farm leg of the above: the declared role files exist on disk and cover it exactly, and the farm/domain order plus legacy aliases equal hand-typed values |
 | The wizard's text has not moved | `farm/tests/test_wizard.py` | A renumbered or reworded WhatsApp prompt. Both emitted strings pinned byte-for-byte, because for a bot the emitted string IS the behaviour |
 
 One honest limit remains: `domain-no-drift-scaffolding.test.mjs`'s

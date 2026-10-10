@@ -1,14 +1,13 @@
 // The one JS view of "which specialist personas exist, which agent each belongs
-// to, and what an agent's default is" (HZ-133). Before HZ-133 the id set was
-// hand-typed three times — farm/personas.py, server/src/personas.js and
-// ui/src/domain/personas.js — held together only by a farm-side test that
-// parsed the two JS copies with a regex.
+// to, what an agent's default is, and which role file each composes" (HZ-133).
+// Before HZ-133 the id set was hand-typed three times — farm/personas.py,
+// server/src/personas.js and ui/src/domain/personas.js — held together only by
+// a farm-side test that parsed the two JS copies with a regex.
 //
-// HZ-133 lands in parts. This binding arrives first and additively: the layer
-// registries still hold their copies until they are repointed here, and
-// server/test/domain-personas-parity.test.mjs asserts this document equals both
-// JS registries value-for-value in the meantime, so the repoint cannot change
-// behaviour.
+// HZ-381 repointed the layer registries here: farm/personas.py and
+// server/src/personas.js build from this binding, and only the UI's display
+// table stays hand-typed (pinned value-for-value by
+// server/test/domain-personas-parity.test.mjs).
 //
 // Same pattern as domain/js/priorities.js (HZ-139): hand-written source that
 // reads its DATA from domain/personas.json with a STATIC import attribute — a
@@ -19,11 +18,12 @@
 // persona order within an agent is its option order. Persona ids are unique
 // WITHIN their agent, not globally (HZ-125).
 //
-// There is no `file` field: the role markdown's filename is DERIVED as
-// `<agent>_<persona>.md` by personaRoleFile(). There is no PERSONA_PROVIDERS
-// export either: persona-to-provider is a farm routing concern with no JS
-// consumer, so only domain/py/personas.py exposes it. assertPersonasShape still
-// validates the map, so the document cannot carry a broken entry either way.
+// HZ-381: each entry declares its role markdown filenames in `roleFiles`
+// (persona id -> file in farm/roles/personas/), and personaRoleFile() returns
+// the declared value. There is no PERSONA_PROVIDERS export: persona-to-provider
+// is a farm routing concern with no JS consumer, so only domain/py/personas.py
+// exposes it. assertPersonasShape still validates the map, so the document
+// cannot carry a broken entry either way.
 //
 // HZ-192: the same document declares which Claude model each agent call uses
 // (the `models` block). resolveModel() mirrors domain/py/personas.py's
@@ -46,10 +46,13 @@ import data from '../personas.json' with { type: 'json' }
 // caller. Full schema validation stays in domain/validate.mjs, driven by
 // server/test/domain-personas-schema.test.mjs.
 //
-// ID_SHAPE is LOAD-BEARING, not cosmetic: personaRoleFile() interpolates both
-// halves of a pair into a path under farm/roles/personas/, and an id carrying a
-// slash or `..` would escape that directory. It also keeps every id clear of
-// Object.prototype names like `__proto__`.
+// ID_SHAPE is LOAD-BEARING, not cosmetic: it keeps every id clear of
+// Object.prototype names like `__proto__`, which the lookups below guard
+// against with hasOwnProperty anyway. The path safety it used to carry moved to
+// ROLE_FILE_SHAPE with HZ-381: the role markdown's filename is DECLARED now
+// rather than interpolated from the id, so the filename shape — no slash, no
+// `..`, one trailing `.md` — is what keeps personaRoleFile() inside
+// farm/roles/personas/.
 //
 // The rules and message fragments are kept word-for-word in step with
 // domain/py/personas.py's _validate_source — domain/fixtures/personas-cases.json
@@ -58,10 +61,13 @@ import data from '../personas.json' with { type: 'json' }
 const ID_SHAPE = /^[a-z][a-z0-9_]*$/
 // HZ-192, kept in step with domain/py/personas.py's _MODEL_SHAPE.
 const MODEL_SHAPE = /^claude-[a-z0-9][a-z0-9.-]*$/
+// HZ-381, kept in step with domain/py/personas.py's _ROLE_FILE_SHAPE.
+const ROLE_FILE_SHAPE = /^[a-z][a-z0-9_]*\.md$/
 const MODELS_KEYS = ['agents', 'conflictAgent', 'steps', 'personas']
 
 const isObject = (value) => value !== null && typeof value === 'object' && !Array.isArray(value)
 const isId = (value) => typeof value === 'string' && ID_SHAPE.test(value)
+const isRoleFile = (value) => typeof value === 'string' && ROLE_FILE_SHAPE.test(value)
 const own = (object, key) => Object.prototype.hasOwnProperty.call(object, key)
 const isModel = (value) => typeof value === 'string' && MODEL_SHAPE.test(value)
 
@@ -114,6 +120,43 @@ export function assertPersonasShape(data, source = 'domain/personas.json') {
       throw new Error(
         `${source}: agents[${i}].default ${JSON.stringify(entry.default ?? null)} is not one of agent ${JSON.stringify(agent)}'s personas ${JSON.stringify(personas)}`,
       )
+    }
+    // HZ-381: every persona declares its role file. Keys must equal the
+    // entry's own personas exactly — a missing key leaves a persona with no
+    // file, an extra key names a file no persona composes.
+    const { roleFiles } = entry
+    if (!isObject(roleFiles)) {
+      throw new Error(
+        `${source}: agents[${i}].roleFiles must be a JSON object mapping every persona id to its role file`,
+      )
+    }
+    for (const persona of personas) {
+      if (!own(roleFiles, persona)) {
+        throw new Error(`${source}: agents[${i}].roleFiles is missing persona ${JSON.stringify(persona)}`)
+      }
+    }
+    for (const key of Object.keys(roleFiles)) {
+      if (!personas.includes(key)) {
+        throw new Error(
+          `${source}: agents[${i}].roleFiles key ${JSON.stringify(key)} is not one of agent ${JSON.stringify(agent)}'s personas ${JSON.stringify(personas)}`,
+        )
+      }
+    }
+    for (const [key, value] of Object.entries(roleFiles)) {
+      if (!isRoleFile(value)) {
+        throw new Error(
+          `${source}: agents[${i}].roleFiles[${JSON.stringify(key)}] ${JSON.stringify(value ?? null)} is not a role file matching ${ROLE_FILE_SHAPE}`,
+        )
+      }
+    }
+    const seenFiles = new Map()
+    for (const [key, value] of Object.entries(roleFiles)) {
+      if (seenFiles.has(value)) {
+        throw new Error(
+          `${source}: agents[${i}].roleFiles declares ${JSON.stringify(value)} for both ${JSON.stringify(seenFiles.get(value))} and ${JSON.stringify(key)}`,
+        )
+      }
+      seenFiles.set(value, key)
     }
     ids.set(agent, personas)
   }
@@ -214,6 +257,12 @@ export const PERSONA_IDS = Object.freeze(
   Object.fromEntries(source.agents.map((entry) => [entry.agent, Object.freeze([...entry.personas])])),
 )
 
+// HZ-381: agent -> { persona id -> its role markdown filename in
+// farm/roles/personas/ }, as declared in the document's `roleFiles`.
+export const PERSONA_ROLE_FILES = Object.freeze(
+  Object.fromEntries(source.agents.map((entry) => [entry.agent, Object.freeze({ ...entry.roleFiles })])),
+)
+
 // Every `<agent>.<persona>`, agents in order, personas in order within each.
 export const NAMESPACED_PERSONA_IDS = Object.freeze(
   PERSONA_AGENTS.flatMap((agent) => PERSONA_IDS[agent].map((persona) => `${agent}.${persona}`)),
@@ -252,12 +301,21 @@ export function legacyPersona(id, legacyIds = LEGACY_PERSONA_IDS) {
   return own(legacyIds, id) ? legacyIds[id] : null
 }
 
-// The role markdown's filename in farm/roles/personas/, derived as
-// `<agent>_<persona>.md`. Throws for an undeclared pair rather than deriving a
-// path from data nobody validated.
-export function personaRoleFile(agent, id, personaIds = PERSONA_IDS) {
-  if (!isPersona(agent, id, personaIds)) throw new Error(`unknown persona ${JSON.stringify([agent ?? null, id ?? null])}`)
-  return `${agent}_${id}.md`
+// The role markdown's filename in farm/roles/personas/, as DECLARED in the
+// document's `roleFiles` (HZ-381). Throws for an undeclared pair rather than
+// returning a path from data nobody validated.
+export function personaRoleFile(agent, id, roleFiles = PERSONA_ROLE_FILES) {
+  if (
+    typeof agent !== 'string' ||
+    typeof id !== 'string' ||
+    !isObject(roleFiles) ||
+    !own(roleFiles, agent) ||
+    !isObject(roleFiles[agent]) ||
+    !own(roleFiles[agent], id)
+  ) {
+    throw new Error(`unknown persona ${JSON.stringify([agent ?? null, id ?? null])}`)
+  }
+  return roleFiles[agent][id]
 }
 
 // HZ-192: {agents, steps, personas} -> frozen {key -> Claude model id}. See

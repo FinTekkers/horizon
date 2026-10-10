@@ -1,5 +1,5 @@
 {
-  "$comment": "HZ-133. Input/expected pairs for the persona bindings, asserted by BOTH server/test/domain-personas-cases.test.mjs and farm/tests/test_personas_fixtures.py. The `shared` section is the point of the file: domain/js/personas.js and domain/py/personas.py are two independent hand-written implementations, and without this nothing would prove a validation rule, a membership answer or a derived role filename meant the same thing in both languages. Every case in `shared` runs in both suites, and each suite asserts it executed the exact ids listed in shared.manifest. The `js` and `py` sections cover the exports that exist in only one binding; a coverage guard in each suite asserts SET EQUALITY between that section's keys and the binding's real exports. Every agent and persona id — and every model id — in this file is FABRICATED on purpose (alpha/beta, one/two/three) so the fixture is not a second declaration of the registry.",
+  "$comment": "HZ-133. Input/expected pairs for the persona bindings, asserted by BOTH server/test/domain-personas-cases.test.mjs and farm/tests/test_personas_fixtures.py. The `shared` section is the point of the file: domain/js/personas.js and domain/py/personas.py are two independent hand-written implementations, and without this nothing would prove a validation rule, a membership answer or a declared role filename meant the same thing in both languages. Every case in `shared` runs in both suites, and each suite asserts it executed the exact ids listed in shared.manifest. The `js` and `py` sections cover the exports that exist in only one binding; a coverage guard in each suite asserts SET EQUALITY between that section's keys and the binding's real exports. Every agent and persona id — and every model id — in this file is FABRICATED on purpose (alpha/beta, one/two/three) so the fixture is not a second declaration of the registry.",
 
   "shared": {
     "manifest": {
@@ -68,7 +68,17 @@
         "a bare models.personas key rejected",
         "a prototype-named models.personas key rejected",
         "a models.personas key routed to another provider rejected",
-        "a non-Claude persona model rejected"
+        "a non-Claude persona model rejected",
+        "a missing roleFiles map rejected",
+        "a non-object roleFiles rejected",
+        "a roleFiles map missing a persona rejected",
+        "a roleFiles key outside its agent rejected",
+        "a role file escaping its directory rejected",
+        "a role file with a slash rejected",
+        "a capitalised role file rejected",
+        "a role file without its .md suffix rejected",
+        "a non-string role file rejected",
+        "two personas sharing one role file rejected"
       ],
       "membership": [
         "a declared pair is a persona",
@@ -84,11 +94,12 @@
         "the answer follows the argument, not the live document"
       ],
       "roleFile": [
-        "a declared pair derives <agent>_<persona>.md",
-        "a shared id derives a file per agent",
-        "an id belonging to another agent derives nothing",
-        "a path-traversing id derives nothing",
-        "a prototype-named agent derives nothing"
+        "a declared pair returns its declared file",
+        "a shared id returns a file per agent",
+        "an id belonging to another agent returns nothing",
+        "a path-traversing id returns nothing",
+        "a prototype-named agent returns nothing",
+        "a pair missing from roleFiles returns nothing"
       ],
       "resolveModel": [
         "an agent with no override gets its default",
@@ -116,8 +127,8 @@
         "input": {
           "primaryAgent": "alpha",
           "agents": [
-            { "agent": "alpha", "default": "one", "personas": ["one", "two"] },
-            { "agent": "beta", "default": "three", "personas": ["three", "four"] }
+            { "agent": "alpha", "default": "one", "personas": ["one", "two"], "roleFiles": {"one": "alpha_one.md", "two": "alpha_two.md"} },
+            { "agent": "beta", "default": "three", "personas": ["three", "four"], "roleFiles": {"three": "beta_three.md", "four": "beta_four.md"} }
           ],
           "legacyIds": { "old_one": "alpha.one" },
           "personaProviders": {},
@@ -131,8 +142,8 @@
         "input": {
           "primaryAgent": "alpha",
           "agents": [
-            { "agent": "alpha", "default": "one", "personas": ["one", "two"] },
-            { "agent": "beta", "default": "one", "personas": ["one", "three"] }
+            { "agent": "alpha", "default": "one", "personas": ["one", "two"], "roleFiles": {"one": "alpha_one.md", "two": "alpha_two.md"} },
+            { "agent": "beta", "default": "one", "personas": ["one", "three"], "roleFiles": {"one": "beta_one.md", "three": "beta_three.md"} }
           ],
           "legacyIds": {},
           "personaProviders": { "alpha.one": "prov_a", "beta.one": "prov_b" },
@@ -145,7 +156,7 @@
         "$comment": "\"At least two personas per agent\" is a test in farm/tests/test_personas.py, deliberately NOT a load rule.",
         "input": {
           "primaryAgent": "alpha",
-          "agents": [{ "agent": "alpha", "default": "one", "personas": ["one"] }],
+          "agents": [{ "agent": "alpha", "default": "one", "personas": ["one"], "roleFiles": {"one": "alpha_one.md"} }],
           "legacyIds": {},
           "personaProviders": {},
           "models": { "agents": { "alpha": "claude-test-1", "beta": "claude-test-2" }, "conflictAgent": "alpha", "steps": {}, "personas": {} }
@@ -194,7 +205,7 @@
       },
       {
         "case": "a path-traversing agent name rejected",
-        "$comment": "personaRoleFile/persona_role_file interpolate the agent into a path under farm/roles/personas/.",
+        "$comment": "A hostile agent name must fail here, never reach a registry lookup.",
         "input": { "primaryAgent": "alpha", "agents": [{ "agent": "../x", "default": "one", "personas": ["one"] }], "legacyIds": {}, "personaProviders": {} },
         "expect": { "throws": true, "messageContains": "agents[0].agent declares \"../x\" — expected a lower-case id" }
       },
@@ -208,7 +219,7 @@
         "input": {
           "primaryAgent": "alpha",
           "agents": [
-            { "agent": "alpha", "default": "one", "personas": ["one"] },
+            { "agent": "alpha", "default": "one", "personas": ["one"], "roleFiles": {"one": "alpha_one.md"} },
             { "agent": "alpha", "default": "two", "personas": ["two"] }
           ],
           "legacyIds": {},
@@ -276,7 +287,7 @@
         "input": {
           "primaryAgent": "alpha",
           "agents": [
-            { "agent": "alpha", "default": "one", "personas": ["one"] },
+            { "agent": "alpha", "default": "one", "personas": ["one"], "roleFiles": {"one": "alpha_one.md"} },
             { "agent": "beta", "default": "one", "personas": ["three"] }
           ],
           "legacyIds": {},
@@ -286,78 +297,78 @@
       },
       {
         "case": "a missing primaryAgent rejected",
-        "input": { "agents": [{ "agent": "alpha", "default": "one", "personas": ["one"] }], "legacyIds": {}, "personaProviders": {} },
+        "input": { "agents": [{ "agent": "alpha", "default": "one", "personas": ["one"], "roleFiles": {"one": "alpha_one.md"} }], "legacyIds": {}, "personaProviders": {} },
         "expect": { "throws": true, "messageContains": "primaryAgent null is not a declared agent [\"alpha\"]" }
       },
       {
         "case": "an undeclared primaryAgent rejected",
-        "input": { "primaryAgent": "gamma", "agents": [{ "agent": "alpha", "default": "one", "personas": ["one"] }], "legacyIds": {}, "personaProviders": {} },
+        "input": { "primaryAgent": "gamma", "agents": [{ "agent": "alpha", "default": "one", "personas": ["one"], "roleFiles": {"one": "alpha_one.md"} }], "legacyIds": {}, "personaProviders": {} },
         "expect": { "throws": true, "messageContains": "primaryAgent \"gamma\" is not a declared agent [\"alpha\"]" }
       },
       {
         "case": "a missing legacyIds map rejected",
-        "input": { "primaryAgent": "alpha", "agents": [{ "agent": "alpha", "default": "one", "personas": ["one"] }], "personaProviders": {} },
+        "input": { "primaryAgent": "alpha", "agents": [{ "agent": "alpha", "default": "one", "personas": ["one"], "roleFiles": {"one": "alpha_one.md"} }], "personaProviders": {} },
         "expect": { "throws": true, "messageContains": "legacyIds must be a JSON object" }
       },
       {
         "case": "an array legacyIds rejected",
-        "input": { "primaryAgent": "alpha", "agents": [{ "agent": "alpha", "default": "one", "personas": ["one"] }], "legacyIds": ["alpha.one"], "personaProviders": {} },
+        "input": { "primaryAgent": "alpha", "agents": [{ "agent": "alpha", "default": "one", "personas": ["one"], "roleFiles": {"one": "alpha_one.md"} }], "legacyIds": ["alpha.one"], "personaProviders": {} },
         "expect": { "throws": true, "messageContains": "legacyIds must be a JSON object" }
       },
       {
         "case": "a prototype-named legacy key rejected",
-        "input": { "primaryAgent": "alpha", "agents": [{ "agent": "alpha", "default": "one", "personas": ["one"] }], "legacyIds": { "__proto__": "alpha.one" }, "personaProviders": {} },
+        "input": { "primaryAgent": "alpha", "agents": [{ "agent": "alpha", "default": "one", "personas": ["one"], "roleFiles": {"one": "alpha_one.md"} }], "legacyIds": { "__proto__": "alpha.one" }, "personaProviders": {} },
         "expect": { "throws": true, "messageContains": "legacyIds key \"__proto__\" — expected a lower-case id" }
       },
       {
         "case": "a bare legacy value rejected",
-        "input": { "primaryAgent": "alpha", "agents": [{ "agent": "alpha", "default": "one", "personas": ["one"] }], "legacyIds": { "old_one": "one" }, "personaProviders": {} },
+        "input": { "primaryAgent": "alpha", "agents": [{ "agent": "alpha", "default": "one", "personas": ["one"], "roleFiles": {"one": "alpha_one.md"} }], "legacyIds": { "old_one": "one" }, "personaProviders": {} },
         "expect": { "throws": true, "messageContains": "legacyIds[\"old_one\"] \"one\" does not name a declared <agent>.<persona> pair" }
       },
       {
         "case": "a legacy value naming a dead pair rejected",
-        "input": { "primaryAgent": "alpha", "agents": [{ "agent": "alpha", "default": "one", "personas": ["one"] }], "legacyIds": { "old_one": "alpha.nope" }, "personaProviders": {} },
+        "input": { "primaryAgent": "alpha", "agents": [{ "agent": "alpha", "default": "one", "personas": ["one"], "roleFiles": {"one": "alpha_one.md"} }], "legacyIds": { "old_one": "alpha.nope" }, "personaProviders": {} },
         "expect": { "throws": true, "messageContains": "legacyIds[\"old_one\"] \"alpha.nope\" does not name a declared <agent>.<persona> pair" }
       },
       {
         "case": "a non-string legacy value rejected",
-        "input": { "primaryAgent": "alpha", "agents": [{ "agent": "alpha", "default": "one", "personas": ["one"] }], "legacyIds": { "old_one": 3 }, "personaProviders": {} },
+        "input": { "primaryAgent": "alpha", "agents": [{ "agent": "alpha", "default": "one", "personas": ["one"], "roleFiles": {"one": "alpha_one.md"} }], "legacyIds": { "old_one": 3 }, "personaProviders": {} },
         "expect": { "throws": true, "messageContains": "legacyIds[\"old_one\"] 3 does not name a declared <agent>.<persona> pair" }
       },
       {
         "case": "a missing personaProviders map rejected",
-        "input": { "primaryAgent": "alpha", "agents": [{ "agent": "alpha", "default": "one", "personas": ["one"] }], "legacyIds": {} },
+        "input": { "primaryAgent": "alpha", "agents": [{ "agent": "alpha", "default": "one", "personas": ["one"], "roleFiles": {"one": "alpha_one.md"} }], "legacyIds": {} },
         "expect": { "throws": true, "messageContains": "personaProviders must be a JSON object" }
       },
       {
         "case": "a bare personaProviders key rejected",
         "$comment": "Keys are namespaced because ids are only unique within an agent.",
-        "input": { "primaryAgent": "alpha", "agents": [{ "agent": "alpha", "default": "one", "personas": ["one"] }], "legacyIds": {}, "personaProviders": { "one": "prov_a" } },
+        "input": { "primaryAgent": "alpha", "agents": [{ "agent": "alpha", "default": "one", "personas": ["one"], "roleFiles": {"one": "alpha_one.md"} }], "legacyIds": {}, "personaProviders": { "one": "prov_a" } },
         "expect": { "throws": true, "messageContains": "personaProviders key \"one\" does not name a declared <agent>.<persona> pair" }
       },
       {
         "case": "a personaProviders key naming an undeclared persona rejected",
-        "input": { "primaryAgent": "alpha", "agents": [{ "agent": "alpha", "default": "one", "personas": ["one"] }], "legacyIds": {}, "personaProviders": { "alpha.nope": "prov_a" } },
+        "input": { "primaryAgent": "alpha", "agents": [{ "agent": "alpha", "default": "one", "personas": ["one"], "roleFiles": {"one": "alpha_one.md"} }], "legacyIds": {}, "personaProviders": { "alpha.nope": "prov_a" } },
         "expect": { "throws": true, "messageContains": "personaProviders key \"alpha.nope\" does not name a declared <agent>.<persona> pair" }
       },
       {
         "case": "a personaProviders key naming an undeclared agent rejected",
-        "input": { "primaryAgent": "alpha", "agents": [{ "agent": "alpha", "default": "one", "personas": ["one"] }], "legacyIds": {}, "personaProviders": { "nope.one": "prov_a" } },
+        "input": { "primaryAgent": "alpha", "agents": [{ "agent": "alpha", "default": "one", "personas": ["one"], "roleFiles": {"one": "alpha_one.md"} }], "legacyIds": {}, "personaProviders": { "nope.one": "prov_a" } },
         "expect": { "throws": true, "messageContains": "personaProviders key \"nope.one\" does not name a declared <agent>.<persona> pair" }
       },
       {
         "case": "a prototype-named personaProviders key rejected",
-        "input": { "primaryAgent": "alpha", "agents": [{ "agent": "alpha", "default": "one", "personas": ["one"] }], "legacyIds": {}, "personaProviders": { "__proto__": "prov_a" } },
+        "input": { "primaryAgent": "alpha", "agents": [{ "agent": "alpha", "default": "one", "personas": ["one"], "roleFiles": {"one": "alpha_one.md"} }], "legacyIds": {}, "personaProviders": { "__proto__": "prov_a" } },
         "expect": { "throws": true, "messageContains": "personaProviders key \"__proto__\" does not name a declared <agent>.<persona> pair" }
       },
       {
         "case": "a non-string provider rejected",
-        "input": { "primaryAgent": "alpha", "agents": [{ "agent": "alpha", "default": "one", "personas": ["one"] }], "legacyIds": {}, "personaProviders": { "alpha.one": 1 } },
+        "input": { "primaryAgent": "alpha", "agents": [{ "agent": "alpha", "default": "one", "personas": ["one"], "roleFiles": {"one": "alpha_one.md"} }], "legacyIds": {}, "personaProviders": { "alpha.one": 1 } },
         "expect": { "throws": true, "messageContains": "personaProviders[\"alpha.one\"] 1 must be a non-empty provider id string" }
       },
       {
         "case": "an empty provider rejected",
-        "input": { "primaryAgent": "alpha", "agents": [{ "agent": "alpha", "default": "one", "personas": ["one"] }], "legacyIds": {}, "personaProviders": { "alpha.one": "" } },
+        "input": { "primaryAgent": "alpha", "agents": [{ "agent": "alpha", "default": "one", "personas": ["one"], "roleFiles": {"one": "alpha_one.md"} }], "legacyIds": {}, "personaProviders": { "alpha.one": "" } },
         "expect": { "throws": true, "messageContains": "personaProviders[\"alpha.one\"] \"\" must be a non-empty provider id string" }
       },
       {
@@ -365,8 +376,8 @@
         "input": {
           "primaryAgent": "alpha",
           "agents": [
-            { "agent": "alpha", "default": "one", "personas": ["one", "two"] },
-            { "agent": "beta", "default": "three", "personas": ["three", "four"] }
+            { "agent": "alpha", "default": "one", "personas": ["one", "two"], "roleFiles": {"one": "alpha_one.md", "two": "alpha_two.md"} },
+            { "agent": "beta", "default": "three", "personas": ["three", "four"], "roleFiles": {"three": "beta_three.md", "four": "beta_four.md"} }
           ],
           "legacyIds": { "old_one": "alpha.one" },
           "personaProviders": {},
@@ -384,8 +395,8 @@
         "input": {
           "primaryAgent": "alpha",
           "agents": [
-            { "agent": "alpha", "default": "one", "personas": ["one", "two"] },
-            { "agent": "beta", "default": "three", "personas": ["three", "four"] }
+            { "agent": "alpha", "default": "one", "personas": ["one", "two"], "roleFiles": {"one": "alpha_one.md", "two": "alpha_two.md"} },
+            { "agent": "beta", "default": "three", "personas": ["three", "four"], "roleFiles": {"three": "beta_three.md", "four": "beta_four.md"} }
           ],
           "legacyIds": { "old_one": "alpha.one" },
           "personaProviders": {}
@@ -397,8 +408,8 @@
         "input": {
           "primaryAgent": "alpha",
           "agents": [
-            { "agent": "alpha", "default": "one", "personas": ["one", "two"] },
-            { "agent": "beta", "default": "three", "personas": ["three", "four"] }
+            { "agent": "alpha", "default": "one", "personas": ["one", "two"], "roleFiles": {"one": "alpha_one.md", "two": "alpha_two.md"} },
+            { "agent": "beta", "default": "three", "personas": ["three", "four"], "roleFiles": {"three": "beta_three.md", "four": "beta_four.md"} }
           ],
           "legacyIds": { "old_one": "alpha.one" },
           "personaProviders": {},
@@ -411,8 +422,8 @@
         "input": {
           "primaryAgent": "alpha",
           "agents": [
-            { "agent": "alpha", "default": "one", "personas": ["one", "two"] },
-            { "agent": "beta", "default": "three", "personas": ["three", "four"] }
+            { "agent": "alpha", "default": "one", "personas": ["one", "two"], "roleFiles": {"one": "alpha_one.md", "two": "alpha_two.md"} },
+            { "agent": "beta", "default": "three", "personas": ["three", "four"], "roleFiles": {"three": "beta_three.md", "four": "beta_four.md"} }
           ],
           "legacyIds": { "old_one": "alpha.one" },
           "personaProviders": {},
@@ -434,8 +445,8 @@
         "input": {
           "primaryAgent": "alpha",
           "agents": [
-            { "agent": "alpha", "default": "one", "personas": ["one", "two"] },
-            { "agent": "beta", "default": "three", "personas": ["three", "four"] }
+            { "agent": "alpha", "default": "one", "personas": ["one", "two"], "roleFiles": {"one": "alpha_one.md", "two": "alpha_two.md"} },
+            { "agent": "beta", "default": "three", "personas": ["three", "four"], "roleFiles": {"three": "beta_three.md", "four": "beta_four.md"} }
           ],
           "legacyIds": { "old_one": "alpha.one" },
           "personaProviders": {},
@@ -448,8 +459,8 @@
         "input": {
           "primaryAgent": "alpha",
           "agents": [
-            { "agent": "alpha", "default": "one", "personas": ["one", "two"] },
-            { "agent": "beta", "default": "three", "personas": ["three", "four"] }
+            { "agent": "alpha", "default": "one", "personas": ["one", "two"], "roleFiles": {"one": "alpha_one.md", "two": "alpha_two.md"} },
+            { "agent": "beta", "default": "three", "personas": ["three", "four"], "roleFiles": {"three": "beta_three.md", "four": "beta_four.md"} }
           ],
           "legacyIds": { "old_one": "alpha.one" },
           "personaProviders": {},
@@ -462,8 +473,8 @@
         "input": {
           "primaryAgent": "alpha",
           "agents": [
-            { "agent": "alpha", "default": "one", "personas": ["one", "two"] },
-            { "agent": "beta", "default": "three", "personas": ["three", "four"] }
+            { "agent": "alpha", "default": "one", "personas": ["one", "two"], "roleFiles": {"one": "alpha_one.md", "two": "alpha_two.md"} },
+            { "agent": "beta", "default": "three", "personas": ["three", "four"], "roleFiles": {"three": "beta_three.md", "four": "beta_four.md"} }
           ],
           "legacyIds": { "old_one": "alpha.one" },
           "personaProviders": {},
@@ -476,8 +487,8 @@
         "input": {
           "primaryAgent": "alpha",
           "agents": [
-            { "agent": "alpha", "default": "one", "personas": ["one", "two"] },
-            { "agent": "beta", "default": "three", "personas": ["three", "four"] }
+            { "agent": "alpha", "default": "one", "personas": ["one", "two"], "roleFiles": {"one": "alpha_one.md", "two": "alpha_two.md"} },
+            { "agent": "beta", "default": "three", "personas": ["three", "four"], "roleFiles": {"three": "beta_three.md", "four": "beta_four.md"} }
           ],
           "legacyIds": { "old_one": "alpha.one" },
           "personaProviders": {},
@@ -493,8 +504,8 @@
         "input": {
           "primaryAgent": "alpha",
           "agents": [
-            { "agent": "alpha", "default": "one", "personas": ["one", "two"] },
-            { "agent": "beta", "default": "three", "personas": ["three", "four"] }
+            { "agent": "alpha", "default": "one", "personas": ["one", "two"], "roleFiles": {"one": "alpha_one.md", "two": "alpha_two.md"} },
+            { "agent": "beta", "default": "three", "personas": ["three", "four"], "roleFiles": {"three": "beta_three.md", "four": "beta_four.md"} }
           ],
           "legacyIds": { "old_one": "alpha.one" },
           "personaProviders": {},
@@ -510,8 +521,8 @@
         "input": {
           "primaryAgent": "alpha",
           "agents": [
-            { "agent": "alpha", "default": "one", "personas": ["one", "two"] },
-            { "agent": "beta", "default": "three", "personas": ["three", "four"] }
+            { "agent": "alpha", "default": "one", "personas": ["one", "two"], "roleFiles": {"one": "alpha_one.md", "two": "alpha_two.md"} },
+            { "agent": "beta", "default": "three", "personas": ["three", "four"], "roleFiles": {"three": "beta_three.md", "four": "beta_four.md"} }
           ],
           "legacyIds": { "old_one": "alpha.one" },
           "personaProviders": {},
@@ -527,8 +538,8 @@
         "input": {
           "primaryAgent": "alpha",
           "agents": [
-            { "agent": "alpha", "default": "one", "personas": ["one", "two"] },
-            { "agent": "beta", "default": "three", "personas": ["three", "four"] }
+            { "agent": "alpha", "default": "one", "personas": ["one", "two"], "roleFiles": {"one": "alpha_one.md", "two": "alpha_two.md"} },
+            { "agent": "beta", "default": "three", "personas": ["three", "four"], "roleFiles": {"three": "beta_three.md", "four": "beta_four.md"} }
           ],
           "legacyIds": { "old_one": "alpha.one" },
           "personaProviders": {},
@@ -544,8 +555,8 @@
         "input": {
           "primaryAgent": "alpha",
           "agents": [
-            { "agent": "alpha", "default": "one", "personas": ["one", "two"] },
-            { "agent": "beta", "default": "three", "personas": ["three", "four"] }
+            { "agent": "alpha", "default": "one", "personas": ["one", "two"], "roleFiles": {"one": "alpha_one.md", "two": "alpha_two.md"} },
+            { "agent": "beta", "default": "three", "personas": ["three", "four"], "roleFiles": {"three": "beta_three.md", "four": "beta_four.md"} }
           ],
           "legacyIds": { "old_one": "alpha.one" },
           "personaProviders": {},
@@ -561,8 +572,8 @@
         "input": {
           "primaryAgent": "alpha",
           "agents": [
-            { "agent": "alpha", "default": "one", "personas": ["one", "two"] },
-            { "agent": "beta", "default": "three", "personas": ["three", "four"] }
+            { "agent": "alpha", "default": "one", "personas": ["one", "two"], "roleFiles": {"one": "alpha_one.md", "two": "alpha_two.md"} },
+            { "agent": "beta", "default": "three", "personas": ["three", "four"], "roleFiles": {"three": "beta_three.md", "four": "beta_four.md"} }
           ],
           "legacyIds": { "old_one": "alpha.one" },
           "personaProviders": {},
@@ -578,8 +589,8 @@
         "input": {
           "primaryAgent": "alpha",
           "agents": [
-            { "agent": "alpha", "default": "one", "personas": ["one", "two"] },
-            { "agent": "beta", "default": "three", "personas": ["three", "four"] }
+            { "agent": "alpha", "default": "one", "personas": ["one", "two"], "roleFiles": {"one": "alpha_one.md", "two": "alpha_two.md"} },
+            { "agent": "beta", "default": "three", "personas": ["three", "four"], "roleFiles": {"three": "beta_three.md", "four": "beta_four.md"} }
           ],
           "legacyIds": { "old_one": "alpha.one" },
           "personaProviders": {},
@@ -592,8 +603,8 @@
         "input": {
           "primaryAgent": "alpha",
           "agents": [
-            { "agent": "alpha", "default": "one", "personas": ["one", "two"] },
-            { "agent": "beta", "default": "three", "personas": ["three", "four"] }
+            { "agent": "alpha", "default": "one", "personas": ["one", "two"], "roleFiles": {"one": "alpha_one.md", "two": "alpha_two.md"} },
+            { "agent": "beta", "default": "three", "personas": ["three", "four"], "roleFiles": {"three": "beta_three.md", "four": "beta_four.md"} }
           ],
           "legacyIds": { "old_one": "alpha.one" },
           "personaProviders": {},
@@ -606,8 +617,8 @@
         "input": {
           "primaryAgent": "alpha",
           "agents": [
-            { "agent": "alpha", "default": "one", "personas": ["one", "two"] },
-            { "agent": "beta", "default": "three", "personas": ["three", "four"] }
+            { "agent": "alpha", "default": "one", "personas": ["one", "two"], "roleFiles": {"one": "alpha_one.md", "two": "alpha_two.md"} },
+            { "agent": "beta", "default": "three", "personas": ["three", "four"], "roleFiles": {"three": "beta_three.md", "four": "beta_four.md"} }
           ],
           "legacyIds": { "old_one": "alpha.one" },
           "personaProviders": {},
@@ -620,8 +631,8 @@
         "input": {
           "primaryAgent": "alpha",
           "agents": [
-            { "agent": "alpha", "default": "one", "personas": ["one", "two"] },
-            { "agent": "beta", "default": "three", "personas": ["three", "four"] }
+            { "agent": "alpha", "default": "one", "personas": ["one", "two"], "roleFiles": {"one": "alpha_one.md", "two": "alpha_two.md"} },
+            { "agent": "beta", "default": "three", "personas": ["three", "four"], "roleFiles": {"three": "beta_three.md", "four": "beta_four.md"} }
           ],
           "legacyIds": { "old_one": "alpha.one" },
           "personaProviders": {},
@@ -639,8 +650,8 @@
         "input": {
           "primaryAgent": "alpha",
           "agents": [
-            { "agent": "alpha", "default": "one", "personas": ["one", "two"] },
-            { "agent": "beta", "default": "three", "personas": ["three", "four"] }
+            { "agent": "alpha", "default": "one", "personas": ["one", "two"], "roleFiles": {"one": "alpha_one.md", "two": "alpha_two.md"} },
+            { "agent": "beta", "default": "three", "personas": ["three", "four"], "roleFiles": {"three": "beta_three.md", "four": "beta_four.md"} }
           ],
           "legacyIds": { "old_one": "alpha.one" },
           "personaProviders": {},
@@ -661,8 +672,8 @@
         "input": {
           "primaryAgent": "alpha",
           "agents": [
-            { "agent": "alpha", "default": "one", "personas": ["one", "two"] },
-            { "agent": "beta", "default": "three", "personas": ["three", "four"] }
+            { "agent": "alpha", "default": "one", "personas": ["one", "two"], "roleFiles": {"one": "alpha_one.md", "two": "alpha_two.md"} },
+            { "agent": "beta", "default": "three", "personas": ["three", "four"], "roleFiles": {"three": "beta_three.md", "four": "beta_four.md"} }
           ],
           "legacyIds": { "old_one": "alpha.one" },
           "personaProviders": {},
@@ -675,8 +686,8 @@
         "input": {
           "primaryAgent": "alpha",
           "agents": [
-            { "agent": "alpha", "default": "one", "personas": ["one", "two"] },
-            { "agent": "beta", "default": "three", "personas": ["three", "four"] }
+            { "agent": "alpha", "default": "one", "personas": ["one", "two"], "roleFiles": {"one": "alpha_one.md", "two": "alpha_two.md"} },
+            { "agent": "beta", "default": "three", "personas": ["three", "four"], "roleFiles": {"three": "beta_three.md", "four": "beta_four.md"} }
           ],
           "legacyIds": { "old_one": "alpha.one" },
           "personaProviders": {},
@@ -694,8 +705,8 @@
         "input": {
           "primaryAgent": "alpha",
           "agents": [
-            { "agent": "alpha", "default": "one", "personas": ["one", "two"] },
-            { "agent": "beta", "default": "three", "personas": ["three", "four"] }
+            { "agent": "alpha", "default": "one", "personas": ["one", "two"], "roleFiles": {"one": "alpha_one.md", "two": "alpha_two.md"} },
+            { "agent": "beta", "default": "three", "personas": ["three", "four"], "roleFiles": {"three": "beta_three.md", "four": "beta_four.md"} }
           ],
           "legacyIds": { "old_one": "alpha.one" },
           "personaProviders": {},
@@ -713,8 +724,8 @@
         "input": {
           "primaryAgent": "alpha",
           "agents": [
-            { "agent": "alpha", "default": "one", "personas": ["one", "two"] },
-            { "agent": "beta", "default": "three", "personas": ["three", "four"] }
+            { "agent": "alpha", "default": "one", "personas": ["one", "two"], "roleFiles": {"one": "alpha_one.md", "two": "alpha_two.md"} },
+            { "agent": "beta", "default": "three", "personas": ["three", "four"], "roleFiles": {"three": "beta_three.md", "four": "beta_four.md"} }
           ],
           "legacyIds": { "old_one": "alpha.one" },
           "personaProviders": {},
@@ -732,8 +743,8 @@
         "input": {
           "primaryAgent": "alpha",
           "agents": [
-            { "agent": "alpha", "default": "one", "personas": ["one", "two"] },
-            { "agent": "beta", "default": "three", "personas": ["three", "four"] }
+            { "agent": "alpha", "default": "one", "personas": ["one", "two"], "roleFiles": {"one": "alpha_one.md", "two": "alpha_two.md"} },
+            { "agent": "beta", "default": "three", "personas": ["three", "four"], "roleFiles": {"three": "beta_three.md", "four": "beta_four.md"} }
           ],
           "legacyIds": { "old_one": "alpha.one" },
           "personaProviders": { "alpha.two": "muse" },
@@ -754,8 +765,8 @@
         "input": {
           "primaryAgent": "alpha",
           "agents": [
-            { "agent": "alpha", "default": "one", "personas": ["one", "two"] },
-            { "agent": "beta", "default": "three", "personas": ["three", "four"] }
+            { "agent": "alpha", "default": "one", "personas": ["one", "two"], "roleFiles": {"one": "alpha_one.md", "two": "alpha_two.md"} },
+            { "agent": "beta", "default": "three", "personas": ["three", "four"], "roleFiles": {"three": "beta_three.md", "four": "beta_four.md"} }
           ],
           "legacyIds": { "old_one": "alpha.one" },
           "personaProviders": {},
@@ -770,6 +781,57 @@
           "throws": true,
           "messageContains": "models.personas[\"alpha.one\"] \"muse-large\" is not a Claude model id matching /^claude-[a-z0-9][a-z0-9.-]*$/"
         }
+      },
+      {
+        "case": "a missing roleFiles map rejected",
+        "input": { "primaryAgent": "alpha", "agents": [{ "agent": "alpha", "default": "one", "personas": ["one", "two"] }], "legacyIds": {}, "personaProviders": {} },
+        "expect": { "throws": true, "messageContains": "agents[0].roleFiles must be a JSON object mapping every persona id to its role file" }
+      },
+      {
+        "case": "a non-object roleFiles rejected",
+        "input": { "primaryAgent": "alpha", "agents": [{ "agent": "alpha", "default": "one", "personas": ["one", "two"], "roleFiles": ["alpha_one.md"] }], "legacyIds": {}, "personaProviders": {} },
+        "expect": { "throws": true, "messageContains": "agents[0].roleFiles must be a JSON object mapping every persona id to its role file" }
+      },
+      {
+        "case": "a roleFiles map missing a persona rejected",
+        "input": { "primaryAgent": "alpha", "agents": [{ "agent": "alpha", "default": "one", "personas": ["one", "two"], "roleFiles": {"one": "alpha_one.md"} }], "legacyIds": {}, "personaProviders": {} },
+        "expect": { "throws": true, "messageContains": "agents[0].roleFiles is missing persona \"two\"" }
+      },
+      {
+        "case": "a roleFiles key outside its agent rejected",
+        "input": { "primaryAgent": "alpha", "agents": [{ "agent": "alpha", "default": "one", "personas": ["one", "two"], "roleFiles": {"one": "alpha_one.md", "two": "alpha_two.md", "three": "alpha_three.md"} }], "legacyIds": {}, "personaProviders": {} },
+        "expect": { "throws": true, "messageContains": "agents[0].roleFiles key \"three\" is not one of agent \"alpha\"'s personas [\"one\",\"two\"]" }
+      },
+      {
+        "case": "a role file escaping its directory rejected",
+        "$comment": "personaRoleFile/persona_role_file interpolate the declared value into a path under farm/roles/personas/.",
+        "input": { "primaryAgent": "alpha", "agents": [{ "agent": "alpha", "default": "one", "personas": ["one", "two"], "roleFiles": {"one": "../secret.md", "two": "alpha_two.md"} }], "legacyIds": {}, "personaProviders": {} },
+        "expect": { "throws": true, "messageContains": "agents[0].roleFiles[\"one\"] \"../secret.md\" is not a role file matching /^[a-z][a-z0-9_]*\\.md$/" }
+      },
+      {
+        "case": "a role file with a slash rejected",
+        "input": { "primaryAgent": "alpha", "agents": [{ "agent": "alpha", "default": "one", "personas": ["one", "two"], "roleFiles": {"one": "alpha_one.md", "two": "roles/x.md"} }], "legacyIds": {}, "personaProviders": {} },
+        "expect": { "throws": true, "messageContains": "agents[0].roleFiles[\"two\"] \"roles/x.md\" is not a role file matching /^[a-z][a-z0-9_]*\\.md$/" }
+      },
+      {
+        "case": "a capitalised role file rejected",
+        "input": { "primaryAgent": "alpha", "agents": [{ "agent": "alpha", "default": "one", "personas": ["one", "two"], "roleFiles": {"one": "Alpha_one.md", "two": "alpha_two.md"} }], "legacyIds": {}, "personaProviders": {} },
+        "expect": { "throws": true, "messageContains": "agents[0].roleFiles[\"one\"] \"Alpha_one.md\" is not a role file matching /^[a-z][a-z0-9_]*\\.md$/" }
+      },
+      {
+        "case": "a role file without its .md suffix rejected",
+        "input": { "primaryAgent": "alpha", "agents": [{ "agent": "alpha", "default": "one", "personas": ["one", "two"], "roleFiles": {"one": "alpha_one", "two": "alpha_two.md"} }], "legacyIds": {}, "personaProviders": {} },
+        "expect": { "throws": true, "messageContains": "agents[0].roleFiles[\"one\"] \"alpha_one\" is not a role file matching /^[a-z][a-z0-9_]*\\.md$/" }
+      },
+      {
+        "case": "a non-string role file rejected",
+        "input": { "primaryAgent": "alpha", "agents": [{ "agent": "alpha", "default": "one", "personas": ["one", "two"], "roleFiles": {"one": 7, "two": "alpha_two.md"} }], "legacyIds": {}, "personaProviders": {} },
+        "expect": { "throws": true, "messageContains": "agents[0].roleFiles[\"one\"] 7 is not a role file matching /^[a-z][a-z0-9_]*\\.md$/" }
+      },
+      {
+        "case": "two personas sharing one role file rejected",
+        "input": { "primaryAgent": "alpha", "agents": [{ "agent": "alpha", "default": "one", "personas": ["one", "two"], "roleFiles": {"one": "alpha_shared.md", "two": "alpha_shared.md"} }], "legacyIds": {}, "personaProviders": {} },
+        "expect": { "throws": true, "messageContains": "agents[0].roleFiles declares \"alpha_shared.md\" for both \"one\" and \"two\"" }
       }
     ],
 
@@ -795,11 +857,12 @@
     ],
 
     "roleFile": [
-      { "case": "a declared pair derives <agent>_<persona>.md", "personaIds": { "alpha": ["one", "two"], "beta": ["three", "one"] }, "agent": "alpha", "id": "two", "expect": { "file": "alpha_two.md" } },
-      { "case": "a shared id derives a file per agent", "personaIds": { "alpha": ["one", "two"], "beta": ["three", "one"] }, "agent": "beta", "id": "one", "expect": { "file": "beta_one.md" } },
-      { "case": "an id belonging to another agent derives nothing", "personaIds": { "alpha": ["one", "two"], "beta": ["three", "one"] }, "agent": "alpha", "id": "three", "expect": { "throws": "unknown persona [\"alpha\",\"three\"]" } },
-      { "case": "a path-traversing id derives nothing", "personaIds": { "alpha": ["one", "two"], "beta": ["three", "one"] }, "agent": "alpha", "id": "../one", "expect": { "throws": "unknown persona [\"alpha\",\"../one\"]" } },
-      { "case": "a prototype-named agent derives nothing", "personaIds": { "alpha": ["one", "two"], "beta": ["three", "one"] }, "agent": "__proto__", "id": "one", "expect": { "throws": "unknown persona [\"__proto__\",\"one\"]" } }
+      { "case": "a declared pair returns its declared file", "roleFiles": { "alpha": { "one": "alpha_one.md", "two": "custom_two.md" } }, "agent": "alpha", "id": "two", "expect": { "file": "custom_two.md" } },
+      { "case": "a shared id returns a file per agent", "roleFiles": { "alpha": { "one": "alpha_one.md" }, "beta": { "one": "beta_one.md", "three": "beta_three.md" } }, "agent": "beta", "id": "one", "expect": { "file": "beta_one.md" } },
+      { "case": "an id belonging to another agent returns nothing", "roleFiles": { "alpha": { "one": "alpha_one.md", "two": "alpha_two.md" } }, "agent": "alpha", "id": "three", "expect": { "throws": "unknown persona [\"alpha\",\"three\"]" } },
+      { "case": "a path-traversing id returns nothing", "roleFiles": { "alpha": { "one": "alpha_one.md", "two": "alpha_two.md" } }, "agent": "alpha", "id": "../one", "expect": { "throws": "unknown persona [\"alpha\",\"../one\"]" } },
+      { "case": "a prototype-named agent returns nothing", "roleFiles": { "alpha": { "one": "alpha_one.md", "two": "alpha_two.md" } }, "agent": "__proto__", "id": "one", "expect": { "throws": "unknown persona [\"__proto__\",\"one\"]" } },
+      { "case": "a pair missing from roleFiles returns nothing", "roleFiles": { "alpha": { "one": "alpha_one.md" } }, "agent": "alpha", "id": "two", "expect": { "throws": "unknown persona [\"alpha\",\"two\"]" } }
     ],
 
     "resolveModel": [
@@ -1002,6 +1065,7 @@
     "$comment": "Keys here must equal domain/js/personas.js's exports exactly — set equality, asserted.",
     "PERSONA_AGENTS": [{ "case": "the live agent list is a non-empty frozen array" }],
     "PERSONA_IDS": [{ "case": "every live agent has a non-empty frozen id list" }],
+    "PERSONA_ROLE_FILES": [{ "case": "every live persona has a declared role file, frozen" }],
     "NAMESPACED_PERSONA_IDS": [{ "case": "every <agent>.<persona>, agents in order, personas in order" }],
     "DEFAULT_PERSONAS": [{ "case": "every live agent's default is one of its own personas" }],
     "PRIMARY_PERSONA_AGENT": [{ "case": "the live primary agent is a declared agent" }],
@@ -1041,6 +1105,7 @@
     "$comment": "Keys here must equal domain/py/personas.py's public names (plus the required private ones) exactly — set equality, asserted.",
     "PERSONA_AGENTS": [{ "case": "the live agent list is a non-empty tuple" }],
     "PERSONA_IDS": [{ "case": "every live agent has a non-empty tuple of ids" }],
+    "PERSONA_ROLE_FILES": [{ "case": "every live persona has a declared role file, read-only" }],
     "NAMESPACED_PERSONA_IDS": [{ "case": "every <agent>.<persona>, agents in order, personas in order" }],
     "DEFAULT_PERSONAS": [{ "case": "every live agent's default is one of its own personas" }],
     "PRIMARY_PERSONA_AGENT": [{ "case": "the live primary agent is a declared agent" }],

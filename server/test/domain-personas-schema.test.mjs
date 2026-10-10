@@ -26,7 +26,7 @@ import { REPO_ROOT } from './helpers/repoFiles.mjs'
 const schema = JSON.parse(readFileSync(path.join(REPO_ROOT, 'domain/personas.schema.json'), 'utf8'))
 const source = JSON.parse(readFileSync(path.join(REPO_ROOT, 'domain/personas.json'), 'utf8'))
 
-function doc({ agents = [{ agent: 'alpha', default: 'one', personas: ['one', 'two'] }], ...rest } = {}) {
+function doc({ agents = [{ agent: 'alpha', default: 'one', personas: ['one', 'two'], roleFiles: { one: 'alpha_one.md', two: 'alpha_two.md' } }], ...rest } = {}) {
   return { primaryAgent: 'alpha', agents, legacyIds: {}, personaProviders: {}, models: models(), ...rest }
 }
 
@@ -67,12 +67,17 @@ expectInvalid('a missing legacyIds (required)', { primaryAgent, agents: doc().ag
 expectInvalid('a missing personaProviders (required)', { primaryAgent, agents: doc().agents, legacyIds: {} }, 'personaProviders')
 expectInvalid('an empty agents array (minItems)', doc({ agents: [] }), 'agents')
 expectInvalid('a non-object agents entry (type)', doc({ agents: ['alpha'] }), 'agents[0]')
-expectInvalid('an agents entry with no personas (required)', doc({ agents: [{ agent: 'alpha', default: 'one' }] }), 'personas')
-expectInvalid('an empty personas array (minItems)', doc({ agents: [{ agent: 'alpha', default: 'one', personas: [] }] }), 'personas')
+expectInvalid('an agents entry with no personas (required)', doc({ agents: [{ agent: 'alpha', default: 'one', roleFiles: {} }] }), 'personas')
+expectInvalid('an empty personas array (minItems)', doc({ agents: [{ agent: 'alpha', default: 'one', personas: [], roleFiles: {} }] }), 'personas')
 expectInvalid(
   'a byte-identical duplicate persona (uniqueItems)',
-  doc({ agents: [{ agent: 'alpha', default: 'one', personas: ['one', 'one'] }] }),
+  doc({ agents: [{ agent: 'alpha', default: 'one', personas: ['one', 'one'], roleFiles: { one: 'alpha_one.md' } }] }),
   'unique',
+)
+expectInvalid(
+  'an agents entry with no roleFiles (required)',
+  doc({ agents: [{ agent: 'alpha', default: 'one', personas: ['one'] }] }),
+  'roleFiles',
 )
 expectInvalid('a non-object legacyIds (type)', doc({ legacyIds: ['alpha.one'] }), 'legacyIds')
 expectInvalid('a top-level extra key (additionalProperties)', { ...doc(), version: 2 }, 'version')
@@ -96,7 +101,7 @@ test('POSITIVE CONTROL: step and persona model overrides validate clean', () => 
 for (const key of ['label', 'initials', 'color', 'file']) {
   expectInvalid(
     `a presentation key "${key}" on an agent entry (additionalProperties)`,
-    doc({ agents: [{ agent: 'alpha', default: 'one', personas: ['one'], [key]: 'x' }] }),
+    doc({ agents: [{ agent: 'alpha', default: 'one', personas: ['one'], roleFiles: { one: 'alpha_one.md' }, [key]: 'x' }] }),
     key,
   )
 }
@@ -105,8 +110,18 @@ for (const key of ['label', 'initials', 'color', 'file']) {
 // whole reason to exist. Asserting the schema passes them is what proves the
 // split is real rather than assumed.
 const ONLY_LOAD_TIME = [
-  ['a path-traversing persona id', doc({ agents: [{ agent: 'alpha', default: 'one', personas: ['one', '../x'] }] }), /expected a lower-case id/],
-  ['a default from outside its agent', doc({ agents: [{ agent: 'alpha', default: 'nope', personas: ['one'] }] }), /is not one of agent/],
+  ['a path-traversing persona id', doc({ agents: [{ agent: 'alpha', default: 'one', personas: ['one', '../x'], roleFiles: { one: 'alpha_one.md', '../x': 'alpha_x.md' } }] }), /expected a lower-case id/],
+  ['a default from outside its agent', doc({ agents: [{ agent: 'alpha', default: 'nope', personas: ['one'], roleFiles: { one: 'alpha_one.md' } }] }), /is not one of agent/],
+  [
+    'a role file escaping its directory',
+    doc({ agents: [{ agent: 'alpha', default: 'one', personas: ['one'], roleFiles: { one: '../secret.md' } }] }),
+    /is not a role file matching/,
+  ],
+  [
+    'a roleFiles map missing a persona',
+    doc({ agents: [{ agent: 'alpha', default: 'one', personas: ['one', 'two'], roleFiles: { one: 'alpha_one.md' } }] }),
+    /is missing persona/,
+  ],
   ['an undeclared primaryAgent', doc({ primaryAgent: 'gamma' }), /is not a declared agent/],
   ['a legacy alias naming a dead pair', doc({ legacyIds: { old_one: 'alpha.nope' } }), /does not name a declared <agent>\.<persona> pair/],
   ['a bare personaProviders key', doc({ personaProviders: { one: 'prov' } }), /does not name a declared <agent>\.<persona> pair/],
@@ -118,7 +133,7 @@ const ONLY_LOAD_TIME = [
   ],
   [
     'a duplicate agent',
-    doc({ agents: [{ agent: 'alpha', default: 'one', personas: ['one'] }, { agent: 'alpha', default: 'two', personas: ['two'] }] }),
+    doc({ agents: [{ agent: 'alpha', default: 'one', personas: ['one'], roleFiles: { one: 'alpha_one.md' } }, { agent: 'alpha', default: 'two', personas: ['two'], roleFiles: { two: 'alpha_two.md' } }] }),
     /is declared more than once/,
   ],
 ]
