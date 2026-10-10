@@ -129,7 +129,7 @@ test('a send-back from a task gate walks to that kind\'s nearest agent step', ()
 
 test('a send-back naming a change step from a task gate is an invalid target', () => {
   insertItem.run('K-CROSS', 'Task cross-kind target', 'Medium', kindStepIndex('Approve the run', 'task'), 'task')
-  assert.deepEqual(store.requestChanges('K-CROSS', 'run gate', 'wrong kind', IMPLEMENT_STEP_INDEX), {
+  assert.deepEqual(store.requestChanges('K-CROSS', 'run gate', 'wrong kind', 'You', IMPLEMENT_STEP_INDEX), {
     error: 'invalid_target',
   })
   assert.equal(store.getItem('K-CROSS').cursor, kindStepIndex('Approve the run', 'task'))
