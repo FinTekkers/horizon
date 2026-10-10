@@ -220,6 +220,9 @@ def validate_checks(
                     on_slot_event=on_slot_event,
                     configured=configured,
                     checks_waiver=checks_waiver,
+                    # HZ-406: this is main itself, so there is no branch copy
+                    # to gate on — and the detached worktree may lack origin/main.
+                    branch_gate=False,
                 )
             except CheckFailure as exc:
                 if exc.reason == "timed_out":

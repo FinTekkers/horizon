@@ -998,8 +998,14 @@ def default_check_slots(ws: Path) -> dict[str, str | None]:
 # origin/main:scripts/checks/test.sh | bash`), so an item that changes one
 # never runs its own version. When it did change one, run_checks() runs the
 # branch's version too: after main's run, in the same slot, workspace and env,
-# recorded as a separate "branch" run. Main's run alone decides pass or fail;
-# a branch run never raises, reruns or fails anything.
+# recorded as a separate "branch" run.
+#
+# HZ-406: the branch run is a gate too. SH-4 changed test.sh, every attempt
+# recorded "branch: test.sh failed (exit 1)", the step still passed and the PR
+# merged with failing tests. A failed branch command now fails the check
+# after main's result (main's own failure is raised first), with HZ-327's one
+# rerun. It fails closed: a timeout, a crash, no time left or a git error
+# deciding what changed is a failure, never a pass.
 BRANCH_SCRIPTS_DIR = "scripts/checks/"
 RUN_LABEL_MAIN = "main"
 RUN_LABEL_BRANCH = "branch"
@@ -1019,16 +1025,29 @@ def _git_lines(ws: Path, *args: str) -> list[str]:
 def branch_script_changes(ws: Path, log) -> set[str]:
     """The paths under scripts/checks/ this workspace changed against its
     merge-base with origin/main: committed, uncommitted (the implement step
-    checks unstaged work) and new untracked files. Any git error is logged
-    and is "nothing changed": no branch run, never a failure."""
+    checks unstaged work) and new untracked files. HZ-406: any git error
+    raises CheckFailure — "can't tell" fails closed, it is never "nothing
+    changed"."""
     try:
         base = _git_lines(ws, "merge-base", "origin/main", "HEAD")[0]
         changed = set(_git_lines(ws, "diff", "--name-only", base, "--", BRANCH_SCRIPTS_DIR))
         changed |= set(_git_lines(ws, "ls-files", "--others", "--exclude-standard", "--", BRANCH_SCRIPTS_DIR))
         return changed
-    except Exception as exc:  # noqa: BLE001 — a branch run is extra evidence, never a gate
-        log(f"checks: could not tell whether {BRANCH_SCRIPTS_DIR} changed ({type(exc).__name__}: {exc}) — no branch run")
-        return set()
+    except Exception as exc:  # noqa: BLE001 — any git error, empty output included, is "can't tell"
+        log(f"checks: could not tell whether {BRANCH_SCRIPTS_DIR} changed ({type(exc).__name__}: {exc}) — failing closed")
+        headline = f"could not tell whether {BRANCH_SCRIPTS_DIR} changed: {type(exc).__name__}"
+        raise CheckFailure(
+            f"{HEADLINE_PREFIX}{headline}", command=f"git diff origin/main -- {BRANCH_SCRIPTS_DIR}", tail=headline, headline=headline
+        ) from exc
+
+
+def loads_main_scripts(configured) -> bool:
+    """HZ-406: whether any configured line loads a script with `git show
+    origin/main:scripts/checks/<path>` — the only shape branch_commands()
+    runs a branch copy of. Without one there is no branch run to gate on, so
+    run_checks() never asks git what changed (a repo with no origin/main
+    must not fail closed for a check it does not have)."""
+    return any(_MAIN_SCRIPT_REF.search(argv[2]) for _slot, _n, _count, argv in _configured_slots(configured))
 
 
 def branch_commands(configured, changed: set[str], log=lambda *_: None):
@@ -1063,6 +1082,153 @@ def _branch_note(scripts: list[str], outcome: str) -> str:
     return f"{RUN_LABEL_BRANCH}: {', '.join(scripts)} {outcome}"
 
 
+def _budget_left(timeout_s: int, deadline: float | None) -> float:
+    budget = float(timeout_s)
+    if deadline is not None:
+        budget = min(budget, deadline - time.monotonic())
+    return budget
+
+
+def _branch_failure(
+    label: str,
+    slot: str,
+    shown: str,
+    *,
+    rows: list[dict],
+    output: str,
+    exit_code: int | None,
+    secrets,
+    reason: str = "failed",
+    headline: str | None = None,
+) -> CheckFailure:
+    """HZ-406: a branch command's CheckFailure in main's message format — the
+    HZ-373 headline, named `branch <script>`, then the command and the
+    digest. `command` and `tail` are always set: premerge.py names the
+    failing check from them."""
+    redacted = redact(output, secrets)
+    if headline is None:
+        headline = failure_headline(rows, redacted, shown, label) or fallback_headline(label, redacted, exit_code, shown)
+    headline = _cap_words(redact(headline, secrets), HEADLINE_MAX_CHARS)
+    digest = failure_digest(redacted, DIGEST_MAX_CHARS - len(headline) - 1)
+    return CheckFailure(
+        f"{HEADLINE_PREFIX}{headline}\n({RUN_LABEL_BRANCH} {slot} slot: {shown})\n{digest}".rstrip(),
+        digest=digest,
+        command=shown,
+        tail=output_tail(redacted) or headline,
+        reason=reason,
+        headline=headline,
+    )
+
+
+def _run_branch_command(
+    ws: Path,
+    slot: str,
+    argv: list[str],
+    scripts: list[str],
+    branch_run: dict,
+    *,
+    env: dict[str, str],
+    timeout_s: int,
+    deadline: float | None,
+    secrets,
+    flakes: list | None,
+    log,
+) -> tuple[str, CheckFailure | None]:
+    """One branch command, recorded into branch_run: (its note's outcome,
+    its CheckFailure or None). Never raises for the command's outcome."""
+    shown = redact(" ".join(argv), secrets)
+    label = f"{RUN_LABEL_BRANCH} {', '.join(scripts)}"
+
+    def keep(rows: list[dict]) -> None:
+        room = TEST_ROWS_MAX - len(branch_run["tests"])
+        branch_run["tests"].extend(rows[: max(room, 0)])
+
+    def did_not_finish(outcome: str, reason: str, duration: float, output: str = "") -> tuple[str, CheckFailure]:
+        # Fail closed: a command that did not finish is one failed row and a
+        # failure — never a pass, never skipped.
+        keep(_test_rows([], shown, 1, duration, attempt=1))
+        branch_run["commands"].append(_command_entry(shown, 1, None))
+        failure = _branch_failure(
+            label, slot, shown, rows=[], output=output, exit_code=None, secrets=secrets, reason=reason,
+            headline=f"{label} {outcome}",
+        )
+        return outcome, failure
+
+    budget = _budget_left(timeout_s, deadline)
+    if budget <= 0:
+        return did_not_finish("failed (no time left in the check budget, not run)", "timed_out", 0.0)
+    log(f"checks: running the branch's {slot} script: {shown}")
+    since = time.time()
+    started = time.monotonic()
+    try:
+        proc, junit = _attempt(argv, ws, budget, env, log)
+    except subprocess.TimeoutExpired:
+        return did_not_finish(f"failed (timed out after {int(budget)}s)", "timed_out", time.monotonic() - started)
+    except Exception as exc:  # noqa: BLE001 — could not run is a failure, never a pass
+        detail = f"{type(exc).__name__}: {redact(str(exc), secrets)[:200]}"
+        return did_not_finish(f"failed (could not run: {detail})", "failed", time.monotonic() - started, detail)
+    duration = time.monotonic() - started
+    # Never a silent 0: a signal-killed command with no report is one failed row.
+    rows = _test_rows(junit, shown, proc.returncode, duration, attempt=1) or _test_rows([], shown, 1, duration, attempt=1)
+    keep(rows)
+    branch_run["commands"].append(_command_entry(shown, 1, proc.returncode))
+    verdict = "passed" if proc.returncode == 0 else f"failed (exit {proc.returncode})"
+    if junit:
+        passed = sum(1 for r in junit if r["status"] == "pass")
+        outcome = f"{verdict}, {passed}/{len(junit)} tests passed"
+    elif _workspace_reports(ws, since)[1]:
+        # Gradle's UP-TO-DATE tasks keep main's XML untouched: those
+        # results are main's, so they are never counted as the branch's.
+        outcome = f"{verdict}, no new test reports — results reused from main's run, not counted here"
+    else:
+        outcome = f"{verdict}, no per-test reports"
+    if proc.returncode == 0:
+        return outcome, None
+
+    output = ((proc.stdout or "") + "\n" + (proc.stderr or "")).strip()
+    shown_exit, shown_rows = proc.returncode, rows
+    # HZ-327's one rerun, as for main's commands. _should_rerun() takes
+    # (index, install_at): passing 0 and 0 means "this is the install command",
+    # which is never rerun; None means it is not.
+    if _should_rerun(proc.returncode, 0, 0 if slot == "install" else None, deadline):
+        log(f"checks: {shown} failed — rerunning it once on the same tree")
+        rerun_budget = _budget_left(timeout_s, deadline)
+        rerun_started = time.monotonic()
+        try:
+            rerun, rerun_junit = _attempt(rerun_command(argv), ws, rerun_budget, env, log)
+        except Exception as exc:  # noqa: BLE001 — a rerun that never finished proves nothing
+            log(f"checks: the branch rerun of {shown} did not finish ({type(exc).__name__}) — the first failure stands")
+        else:
+            rerun_duration = time.monotonic() - rerun_started
+            rerun_rows = _test_rows(rerun_junit, shown, rerun.returncode, rerun_duration, attempt=2) or _test_rows(
+                [], shown, 1, rerun_duration, attempt=2
+            )
+            keep(rerun_rows)
+            branch_run["commands"].append(_command_entry(shown, 2, rerun.returncode))
+            rerun_output = ((rerun.stdout or "") + "\n" + (rerun.stderr or "")).strip()
+            if rerun.returncode == 0:
+                log(f"checks: {shown} failed then passed on rerun — recorded as flaky")
+                if flakes is not None:
+                    first_redacted = redact(output, secrets)
+                    found = _flake_records(
+                        rows,
+                        rerun_rows,
+                        shown,
+                        _cap_tail(output_tail(first_redacted), FLAKE_OUTPUT_MAX_CHARS),
+                        _cap_tail(output_tail(redact(rerun_output, secrets)), FLAKE_OUTPUT_MAX_CHARS),
+                        flaky_test_name(first_redacted),
+                    )
+                    where = {key: branch_run[key] for key in ("check_run", "commit_sha", "tree_sha")}
+                    flakes.extend({**flake, **where} for flake in found[: max(FLAKES_MAX - len(flakes), 0)])
+                return f"{outcome}, then passed on rerun (flaky)", None
+            outcome = f"{outcome}, failed again on rerun"
+            shown_rows = rerun_rows
+            if rerun_output:
+                output, shown_exit = rerun_output, rerun.returncode
+    failure = _branch_failure(label, slot, shown, rows=shown_rows, output=output, exit_code=shown_exit, secrets=secrets)
+    return outcome, failure
+
+
 def _run_branch_pass(
     ws: Path,
     configured,
@@ -1076,14 +1242,19 @@ def _run_branch_pass(
     secrets,
     branch_notes: list | None,
     log,
-) -> dict | None:
-    """Runs branch_commands() once each, no rerun, and returns their run as a
-    test_runs entry labelled "branch" with its own check_run id (None when no
-    command qualifies). Never raises: a crash, a timeout or a spent deadline
-    is that command's failed row and note."""
+    flakes: list | None = None,
+) -> tuple[dict | None, CheckFailure | None]:
+    """Runs branch_commands() and returns (their run as a test_runs entry
+    labelled "branch" with its own check_run id, or None when no command
+    qualifies; the first branch CheckFailure, or None).
+
+    HZ-406: each command passes or fails like one of main's — a non-zero exit
+    is rerun once, and a rerun that passes is a flake in `flakes`. A timeout,
+    a crash or a spent deadline is a failure. Every command still runs after
+    the first failure, for evidence; only the first is returned."""
     commands, unchanged = branch_commands(configured, changed, log)
     if not commands:
-        return None
+        return None, None
     branch_run = {
         "check_run": uuid.uuid4().hex,
         "label": RUN_LABEL_BRANCH,
@@ -1093,52 +1264,30 @@ def _run_branch_pass(
         "commands": [],
     }
     notes: list[str] = []
-    for slot, line_no, n_lines, argv, scripts in commands:
-        shown = redact(" ".join(argv), secrets)
-        budget = float(timeout_s)
-        if deadline is not None:
-            budget = min(budget, deadline - time.monotonic())
-        rows: list[dict] = []
-        exit_code = None
-        if budget <= 0:
-            outcome = "failed (no time left in the check budget, not run)"
-        else:
-            log(f"checks: running the branch's {slot} script: {shown}")
-            since = time.time()
-            started = time.monotonic()
-            try:
-                proc, junit = _attempt(argv, ws, budget, env, log)
-            except subprocess.TimeoutExpired:
-                outcome = f"failed (timed out after {int(budget)}s)"
-            except Exception as exc:  # noqa: BLE001 — never fails the check
-                outcome = f"failed (could not run: {type(exc).__name__}: {redact(str(exc), secrets)[:200]})"
-            else:
-                duration = time.monotonic() - started
-                exit_code = proc.returncode
-                rows = _test_rows(junit, shown, proc.returncode, duration, attempt=1)
-                verdict = "passed" if proc.returncode == 0 else f"failed (exit {proc.returncode})"
-                if junit:
-                    passed = sum(1 for r in junit if r["status"] == "pass")
-                    outcome = f"{verdict}, {passed}/{len(junit)} tests passed"
-                elif _workspace_reports(ws, since)[1]:
-                    # Gradle's UP-TO-DATE tasks keep main's XML untouched: those
-                    # results are main's, so they are never counted as the branch's.
-                    outcome = f"{verdict}, no new test reports — results reused from main's run, not counted here"
-                else:
-                    outcome = f"{verdict}, no per-test reports"
-        if not rows:
-            # Never a silent 0: a command that did not finish is one failed row.
-            rows = _test_rows([], shown, 1, time.monotonic() - started if budget > 0 else 0.0, attempt=1)
-        branch_run["commands"].append(_command_entry(shown, 1, exit_code))
-        room = TEST_ROWS_MAX - len(branch_run["tests"])
-        branch_run["tests"].extend(rows[: max(room, 0)])
+    first_failure = None
+    for slot, _line_no, _n_lines, argv, scripts in commands:
+        outcome, failure = _run_branch_command(
+            ws,
+            slot,
+            argv,
+            scripts,
+            branch_run,
+            env=env,
+            timeout_s=timeout_s,
+            deadline=deadline,
+            secrets=secrets,
+            flakes=flakes,
+            log=log,
+        )
+        if first_failure is None:
+            first_failure = failure
         notes.append(_branch_note(scripts, outcome))
         log(f"checks: {notes[-1]}")
     if unchanged:
         notes.append(f"{RUN_LABEL_BRANCH}: not re-run, unchanged on this branch: {', '.join(unchanged)}")
     if branch_notes is not None:
         branch_notes.extend(notes)
-    return branch_run
+    return branch_run, first_failure
 
 
 def _check_env() -> dict[str, str]:
@@ -1188,6 +1337,7 @@ def run_checks(
     flakes: list | None = None,
     test_runs: list | None = None,
     branch_notes: list | None = None,
+    branch_gate: bool = True,
 ) -> str:
     """Returns a short human-readable note; raises CheckFailure on failure.
 
@@ -1242,13 +1392,19 @@ def run_checks(
     appended whether the run passed or failed.
 
     HZ-349: each entry is labelled "main" and also carries `commands`, one
-    {command, attempt, exit_code} per attempt. When test_runs is given and
-    the workspace changed a file under scripts/checks/, the branch's version
-    of the configured commands then runs (_run_branch_pass): after main's
-    run, in this same slot, workspace and env, appended to test_runs as a
-    separate "branch" entry, with one line per command in `branch_notes`. It
-    never changes the result: main's CheckFailure is raised after it, and the
-    note returned is main's alone (check_record.checks_ran() reads it).
+    {command, attempt, exit_code} per attempt. When the workspace changed a
+    file under scripts/checks/, the branch's version of the configured
+    commands then runs (_run_branch_pass): after main's run, in this same
+    slot, workspace and env, appended to test_runs as a separate "branch"
+    entry, with one line per command in `branch_notes`.
+
+    HZ-406: the branch run decides too. Main's CheckFailure is raised first;
+    else a failed branch command raises its own CheckFailure, headlined
+    `branch <script> ...`, and no pass note is returned (so check_record
+    records no pass). It fails closed: a timeout, a crash, no time left or a
+    git error deciding what changed all raise. It runs whether or not
+    test_runs is given. branch_gate=False skips it: validate.py checks main
+    itself, where the branch is main by definition.
     """
     commands, install_at, labels = _resolve_labelled(ws, configured, log)
     if not commands:
@@ -1475,12 +1631,15 @@ def run_checks(
 
         # HZ-349: still inside the slot, after main's run is final. Not for
         # FARM_CHECK_CMD (labels [None]): only Admin's commands load scripts.
-        if test_runs is not None and labels and labels[0] is not None:
-            changed = branch_script_changes(ws, log)
-            branch_run = None
-            if changed:
-                try:
-                    branch_run = _run_branch_pass(
+        # HZ-406: a gate, so it runs whether or not the caller records.
+        branch_failure = None
+        if branch_gate and labels and labels[0] is not None and loads_main_scripts(configured):
+            runs = test_runs if test_runs is not None else []
+            try:
+                changed = branch_script_changes(ws, log)
+                branch_run = None
+                if changed:
+                    branch_run, branch_failure = _run_branch_pass(
                         ws,
                         configured,
                         changed,
@@ -1491,16 +1650,25 @@ def run_checks(
                         tree_sha=tree_sha,
                         secrets=secrets,
                         branch_notes=branch_notes,
+                        flakes=flakes,
                         log=log,
                     )
-                except Exception as exc:  # noqa: BLE001 — a branch run never fails the check
-                    log(f"checks: the branch run crashed ({type(exc).__name__}: {exc}) — main's result stands")
-                    if branch_notes is not None:
-                        branch_notes.append(f"{RUN_LABEL_BRANCH}: crashed before finishing ({type(exc).__name__})")
-            if branch_run is not None:
-                test_runs.append(branch_run)
+                if branch_run is not None:
+                    runs.append(branch_run)
+            except CheckFailure as exc:
+                branch_failure = exc
+            except Exception as exc:  # noqa: BLE001 — fails closed: a crashed branch run is a failed check
+                log(f"checks: the branch run crashed ({type(exc).__name__}: {exc}) — failing the check")
+                if branch_notes is not None:
+                    branch_notes.append(f"{RUN_LABEL_BRANCH}: crashed before finishing ({type(exc).__name__})")
+                headline = f"branch run crashed before finishing: {type(exc).__name__}"
+                branch_failure = CheckFailure(
+                    f"{HEADLINE_PREFIX}{headline}", command=RUN_LABEL_BRANCH, tail=headline, headline=headline
+                )
         if main_failure is not None:
             raise main_failure
+        if branch_failure is not None:
+            raise branch_failure
 
     if not ran:
         raise CheckFailure(

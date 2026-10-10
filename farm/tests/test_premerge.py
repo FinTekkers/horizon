@@ -516,15 +516,32 @@ MAIN_SCRIPT_CHECKS = {"test": "git show origin/main:scripts/checks/test.sh | sh"
 
 
 @pytest.mark.parametrize("main_exit, branch_exit", [(0, 1), (1, 0)])
-def test_premerge_runs_the_branch_script_after_main_and_only_main_decides(ws_dir, main_exit, branch_exit):
+def test_premerge_runs_the_branch_script_after_main_and_either_failing_blocks(ws_dir, main_exit, branch_exit):
     hub, s = scripts_fixture(ws_dir, f"exit {main_exit}\n", f"echo branch; exit {branch_exit}\n")
 
     result = run(hub, s["pr_head"], s["main"], configured=MAIN_SCRIPT_CHECKS)
 
-    assert result["ok"] is (main_exit == 0), result
+    # HZ-406: a failing branch script blocks the merge, like main's.
+    assert result["ok"] is False, result
     assert [r["label"] for r in result["test_runs"]] == ["main", "branch"]
     branch = result["test_runs"][1]
     assert branch["commands"][0]["command"] == "sh -c cat scripts/checks/test.sh | sh"
-    assert [row["status"] for row in branch["tests"]] == ["pass" if branch_exit == 0 else "fail"]
-    outcome = "passed" if branch_exit == 0 else "failed (exit 1)"
-    assert result["branch_notes"] == [f"branch: test.sh {outcome}, no per-test reports"]
+    if branch_exit == 0:
+        assert [row["status"] for row in branch["tests"]] == ["pass"]
+        assert result["branch_notes"] == ["branch: test.sh passed, no per-test reports"]
+        assert "git show origin/main:scripts/checks/test.sh" in result["failing_check"]
+    else:
+        assert [row["status"] for row in branch["tests"]] == ["fail", "fail"]
+        assert result["branch_notes"] == ["branch: test.sh failed (exit 1), no per-test reports, failed again on rerun"]
+
+
+def test_a_failing_branch_script_names_the_branch_command_at_premerge(ws_dir):
+    """HZ-406: Accept's failure message names the branch's script, with its output."""
+    hub, s = scripts_fixture(ws_dir, "exit 0\n", "echo 'not ok 1 - new ledger test'; exit 1\n")
+
+    result = run(hub, s["pr_head"], s["main"], configured=MAIN_SCRIPT_CHECKS)
+
+    assert result["ok"] is False
+    assert result["reason"] == "checks_failed"
+    assert result["failing_check"] == "sh -c cat scripts/checks/test.sh | sh"
+    assert "not ok 1 - new ledger test" in result["tail"]

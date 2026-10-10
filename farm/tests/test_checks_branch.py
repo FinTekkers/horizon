@@ -1,9 +1,10 @@
 """HZ-349: an item that changes scripts/checks/ also gets its own scripts run.
 
 Main's configured commands (`git show origin/main:scripts/checks/<slot>.sh`)
-run first and alone decide pass or fail, as HZ-245 requires. The branch's
-version then runs in the same slot, workspace and env, recorded as a separate
-"branch" test run. Each run's JUnit — including Gradle's build/test-results —
+run first, as HZ-245 requires. The branch's version then runs in the same
+slot, workspace and env, recorded as a separate "branch" test run. HZ-406: a
+failing branch run fails the check too (SH-4 merged with a failing branch
+test.sh), with HZ-327's one rerun, and anything that doesn't finish fails. Each run's JUnit — including Gradle's build/test-results —
 is collected straight after it, before the next run can clean it.
 
 The fixture is a real git clone with origin/main, so the change detection
@@ -125,7 +126,7 @@ def by_label(test_runs):
     return {run["label"]: run for run in test_runs}
 
 
-# ---- metric 1: main decides; the branch run is recorded beside it ----
+# ---- metric 1: main's run, then the branch run recorded beside it ----
 
 
 def test_main_fails_and_branch_passes_so_the_check_fails_after_main_rerun_then_branch(tmp_path, monkeypatch):
@@ -169,33 +170,102 @@ def test_main_fails_and_branch_passes_so_the_check_fails_after_main_rerun_then_b
     assert slots_entered == [1]
 
 
-def test_main_passes_and_branch_fails_so_the_check_passes(tmp_path):
+def test_main_passes_and_branch_fails_so_the_check_fails(tmp_path, monkeypatch):
+    """HZ-406 metric 1 (SH-4): main's test.sh exits 0, the branch's exits 1."""
     ws = make_ws(
         tmp_path,
         {"scripts/checks/test.sh": "exit 0\n"},
-        {"scripts/checks/test.sh": "echo broken; exit 3\n"},
+        {"scripts/checks/test.sh": "echo broken; exit 1\n"},
     )
+    test_runs: list = []
+    branch_notes: list = []
 
-    note, test_runs, branch_notes, _logs = check(ws, {"test": main_cmd("test")})
+    with pytest.raises(CheckFailure) as err:
+        run_checks(ws, log=lambda *_: None, configured={"test": main_cmd("test")}, test_runs=test_runs, branch_notes=branch_notes)
+
+    assert err.value.headline.startswith("branch test.sh failed (exit 1)")
+    assert str(err.value).startswith("repo checks failed: branch test.sh failed (exit 1)\n")
+    assert err.value.reason == "failed"
+    assert err.value.command == "sh -c cat scripts/checks/test.sh | sh"
+    assert "broken" in err.value.tail
+    runs = by_label(test_runs)
+    assert [r["label"] for r in test_runs] == ["main", "branch"]
+    assert [row["status"] for row in runs["main"]["tests"]] == ["pass"]
+    # The rerun failed too: both attempts are stored.
+    assert [(row["status"], row["attempt"]) for row in runs["branch"]["tests"]] == [("fail", 1), ("fail", 2)]
+    assert runs["branch"]["commands"] == [
+        {"command": "sh -c cat scripts/checks/test.sh | sh", "attempt": 1, "exit_code": 1},
+        {"command": "sh -c cat scripts/checks/test.sh | sh", "attempt": 2, "exit_code": 1},
+    ]
+    assert branch_notes == ["branch: test.sh failed (exit 1), no per-test reports, failed again on rerun"]
+
+
+def test_a_branch_command_that_fails_then_passes_is_a_flake_not_a_failure(tmp_path, monkeypatch):
+    """HZ-406 guardrail: HZ-327's rerun and flake record, for branch runs too."""
+    ws = make_ws(
+        tmp_path,
+        {"scripts/checks/test.sh": "exit 0\n"},
+        {"scripts/checks/test.sh": "if [ -f .tried ]; then exit 0; fi; touch .tried; echo 'not ok 1 - wobbly'; exit 1\n"},
+    )
+    spy = Spy(monkeypatch)
+    flakes: list = []
+
+    note, test_runs, branch_notes, _logs = check(ws, {"test": main_cmd("test")}, flakes=flakes)
 
     assert note == "1 repo check(s) passed"
-    assert check_record.checks_ran(note) is True
-    runs = by_label(test_runs)
-    assert [row["status"] for row in runs["branch"]["tests"]] == ["fail"]
-    assert runs["branch"]["commands"] == [
-        {"command": "sh -c cat scripts/checks/test.sh | sh", "attempt": 1, "exit_code": 3}
-    ]
-    assert branch_notes == ["branch: test.sh failed (exit 3), no per-test reports"]
+    branch = by_label(test_runs)["branch"]
+    assert [(row["status"], row["attempt"]) for row in branch["tests"]] == [("fail", 1), ("pass", 2)]
+    assert [c["exit_code"] for c in branch["commands"]] == [1, 0]
+    assert len(flakes) == 1
+    assert flakes[0]["test"] == "wobbly"
+    assert flakes[0]["check_run"] == branch["check_run"]
+    assert branch_notes == ["branch: test.sh failed (exit 1), no per-test reports, then passed on rerun (flaky)"]
+    # Guardrail 1: the rerun is in the same worktree with the same env as main.
+    assert spy.argvs == [main_cmd("test"), "cat scripts/checks/test.sh | sh", "cat scripts/checks/test.sh | sh"]
+    assert len({str(c["ws"]) for c in spy.calls}) == 1
+    envs = [dict(c["env"]) for c in spy.calls]
+    for env in envs:
+        env.pop(checks.TEST_REPORT_DIR_ENV)
+    assert envs[0] == envs[1] == envs[2]
+
+
+def test_a_branch_command_that_fails_on_both_attempts_fails_with_no_flake(tmp_path):
+    ws = make_ws(
+        tmp_path,
+        {"scripts/checks/test.sh": "exit 0\n"},
+        {"scripts/checks/test.sh": "echo 'not ok 1 - always'; exit 1\n"},
+    )
+    flakes: list = []
+
+    with pytest.raises(CheckFailure) as err:
+        check(ws, {"test": main_cmd("test")}, flakes=flakes)
+
+    assert err.value.headline.startswith("branch test.sh")
+    assert flakes == []
 
 
 def test_no_change_under_scripts_checks_records_no_branch_run(tmp_path):
     ws = make_ws(tmp_path, {"scripts/checks/test.sh": "exit 0\n"}, {"src/app.txt": "changed\n"})
+    alone = make_ws(tmp_path / "main-only", {"scripts/checks/test.sh": "exit 0\n"})
 
     note, test_runs, branch_notes, _logs = check(ws, {"test": main_cmd("test")})
 
-    assert note == "1 repo check(s) passed"
+    # HZ-406 metric 3: main's result, exactly as with no change at all.
+    assert note == check(alone, {"test": main_cmd("test")})[0] == "1 repo check(s) passed"
     assert [r["label"] for r in test_runs] == ["main"]
     assert branch_notes == []
+
+
+def test_no_change_under_scripts_checks_and_main_fails_gives_mains_failure(tmp_path):
+    ws = make_ws(tmp_path, {"scripts/checks/test.sh": "echo main-broken; exit 1\n"}, {"src/app.txt": "changed\n"})
+    test_runs: list = []
+
+    with pytest.raises(CheckFailure) as err:
+        run_checks(ws, log=lambda *_: None, configured={"test": main_cmd("test")}, test_runs=test_runs)
+
+    assert err.value.headline.startswith("test failed (exit 1)")
+    assert "branch" not in str(err.value).splitlines()[0]
+    assert [r["label"] for r in test_runs] == ["main"]
 
 
 def test_gradle_results_are_collected_per_run_before_the_branch_cleans_them(tmp_path):
@@ -273,25 +343,30 @@ def test_the_branch_run_leaves_mains_rows_exactly_as_they_were(tmp_path):
     assert by_label(branch_runs)["main"]["label"] == "main"
 
 
-# ---- guardrail 4: a branch run never fails, blocks or retries anything ----
+# ---- guardrail 3: a branch run that doesn't finish fails the check ----
 
 
-def test_a_branch_run_past_the_slot_budget_is_a_failed_branch_run_not_a_failed_check(tmp_path, monkeypatch):
+def test_a_branch_run_past_the_slot_budget_fails_the_check(tmp_path, monkeypatch):
     monkeypatch.setenv("FARM_CHECK_TIMEOUT_S", "1")
     ws = make_ws(tmp_path, {"scripts/checks/test.sh": "exit 0\n"}, {"scripts/checks/test.sh": "sleep 5\n"})
     spy = Spy(monkeypatch)
+    test_runs: list = []
+    branch_notes: list = []
 
-    note, test_runs, branch_notes, _logs = check(ws, {"test": main_cmd("test")})
+    with pytest.raises(CheckFailure) as err:
+        run_checks(ws, log=lambda *_: None, configured={"test": main_cmd("test")}, test_runs=test_runs, branch_notes=branch_notes)
 
-    assert note == "1 repo check(s) passed"
-    assert len(spy.calls) == 2  # no rerun of the branch command
+    assert err.value.reason == "timed_out"
+    assert err.value.headline == "branch test.sh failed (timed out after 1s)"
+    assert err.value.command and err.value.tail
+    assert len(spy.calls) == 2  # a run that never finished is not rerun
     assert spy.calls[1]["budget"] == 1
     assert [row["status"] for row in by_label(test_runs)["branch"]["tests"]] == ["fail"]
     assert by_label(test_runs)["branch"]["commands"][0]["exit_code"] is None
     assert branch_notes == ["branch: test.sh failed (timed out after 1s)"]
 
 
-def test_a_branch_command_that_crashes_is_a_failed_branch_run(tmp_path, monkeypatch):
+def test_a_branch_command_that_crashes_fails_the_check(tmp_path, monkeypatch):
     ws = make_ws(tmp_path, {"scripts/checks/test.sh": "exit 0\n"}, {"scripts/checks/test.sh": "echo branch; exit 0\n"})
     real = checks._run_bounded
 
@@ -301,20 +376,23 @@ def test_a_branch_command_that_crashes_is_a_failed_branch_run(tmp_path, monkeypa
         return real(cmd, cwd, budget, env)
 
     monkeypatch.setattr(checks, "_run_bounded", crash_on_branch)
+    test_runs: list = []
+    branch_notes: list = []
 
-    note, test_runs, branch_notes, _logs = check(ws, {"test": main_cmd("test")})
+    with pytest.raises(CheckFailure) as err:
+        run_checks(ws, log=lambda *_: None, configured={"test": main_cmd("test")}, test_runs=test_runs, branch_notes=branch_notes)
 
-    assert note == "1 repo check(s) passed"
+    assert err.value.headline == "branch test.sh failed (could not run: RuntimeError: fork failed)"
     assert [row["status"] for row in by_label(test_runs)["branch"]["tests"]] == ["fail"]
     assert branch_notes == ["branch: test.sh failed (could not run: RuntimeError: fork failed)"]
 
 
-def test_no_time_left_records_a_failed_branch_run_and_spawns_nothing(tmp_path, monkeypatch):
+def test_no_time_left_fails_the_branch_run_and_spawns_nothing(tmp_path, monkeypatch):
     ws = make_ws(tmp_path, {"scripts/checks/test.sh": "exit 0\n"}, {"scripts/checks/test.sh": "echo branch; exit 0\n"})
     monkeypatch.setattr(checks, "_run_bounded", lambda *a: pytest.fail("nothing may run with no time left"))
     notes: list = []
 
-    branch_run = checks._run_branch_pass(
+    branch_run, failure = checks._run_branch_pass(
         ws,
         {"test": main_cmd("test")},
         {"scripts/checks/test.sh"},
@@ -328,16 +406,59 @@ def test_no_time_left_records_a_failed_branch_run_and_spawns_nothing(tmp_path, m
         log=lambda *_: None,
     )
 
+    assert failure.reason == "timed_out"
+    assert failure.headline == "branch test.sh failed (no time left in the check budget, not run)"
     assert [row["status"] for row in branch_run["tests"]] == ["fail"]
     assert notes == ["branch: test.sh failed (no time left in the check budget, not run)"]
 
 
-def test_without_test_runs_there_is_no_branch_run(tmp_path, monkeypatch):
-    """validate.py's shape: no lists, so nothing is recorded and the branch's
-    scripts never run."""
+def test_a_git_error_deciding_what_changed_fails_the_check(tmp_path, monkeypatch):
+    ws = make_ws(tmp_path, {"scripts/checks/test.sh": "exit 0\n"}, {"scripts/checks/test.sh": "exit 0\n"})
+
+    def broken_git(ws, *args):
+        raise subprocess.CalledProcessError(128, ["git", *args])
+
+    monkeypatch.setattr(checks, "_git_lines", broken_git)
+    test_runs: list = []
+
+    with pytest.raises(CheckFailure) as err:
+        run_checks(ws, log=lambda *_: None, configured={"test": main_cmd("test")}, test_runs=test_runs)
+
+    assert err.value.headline == "could not tell whether scripts/checks/ changed: CalledProcessError"
+    assert err.value.command and err.value.tail
+    assert [r["label"] for r in test_runs] == ["main"]
+
+
+def test_no_line_loading_mains_scripts_never_asks_git_what_changed(tmp_path, monkeypatch):
+    """A repo that runs no `git show origin/main:scripts/checks/` line has no
+    branch run, so a missing origin/main can't fail its checks."""
+    ws = make_ws(tmp_path, {"scripts/checks/test.sh": "exit 0\n"}, {"scripts/checks/test.sh": "exit 1\n"})
+    monkeypatch.setattr(checks, "_git_lines", lambda *a: pytest.fail("git must not be asked"))
+
+    note, test_runs, _notes, _logs = check(ws, {"test": "true"})
+
+    assert note == "1 repo check(s) passed"
+    assert [r["label"] for r in test_runs] == ["main"]
+
+
+def test_without_test_runs_the_branch_run_still_gates(tmp_path, monkeypatch):
+    """HZ-406: a gate must not depend on whether the caller records."""
     ws = make_ws(tmp_path, {"scripts/checks/test.sh": "exit 0\n"}, {"scripts/checks/test.sh": "exit 1\n"})
     spy = Spy(monkeypatch)
-    assert run_checks(ws, log=lambda *_: None, configured={"test": main_cmd("test")}) == "1 repo check(s) passed"
+
+    with pytest.raises(CheckFailure, match="^repo checks failed: branch test.sh failed"):
+        run_checks(ws, log=lambda *_: None, configured={"test": main_cmd("test")})
+
+    assert spy.argvs[0] == main_cmd("test")
+    assert spy.argvs[1:] == ["cat scripts/checks/test.sh | sh"] * 2
+
+
+def test_branch_gate_off_runs_mains_scripts_only(tmp_path, monkeypatch):
+    """validate.py's shape: it checks main itself."""
+    ws = make_ws(tmp_path, {"scripts/checks/test.sh": "exit 0\n"}, {"scripts/checks/test.sh": "exit 1\n"})
+    spy = Spy(monkeypatch)
+
+    assert run_checks(ws, log=lambda *_: None, configured={"test": main_cmd("test")}, branch_gate=False) == "1 repo check(s) passed"
     assert spy.argvs == [main_cmd("test")]
 
 
@@ -362,3 +483,20 @@ def test_a_command_naming_scripts_checks_another_way_is_logged_and_not_run():
     commands, _unchanged = branch_commands({"test": "bash scripts/checks/test.sh"}, {"scripts/checks/test.sh"}, logs.append)
     assert commands == []
     assert any("not as `git show origin/main:<path>`" in line for line in logs)
+
+
+def test_a_branch_failure_with_junit_is_headlined_by_its_counts(tmp_path):
+    report = (
+        '<testsuite name="LedgerTest"><testcase classname="LedgerTest" name="fx"><failure/></testcase>'
+        '<testcase classname="LedgerTest" name="credits"/></testsuite>'
+    )
+    ws = make_ws(
+        tmp_path,
+        {"scripts/checks/test.sh": "exit 0\n"},
+        {"scripts/checks/test.sh": f"echo '{report}' > \"$HORIZON_TEST_REPORT_DIR/r.xml\"; exit 1\n"},
+    )
+
+    with pytest.raises(CheckFailure) as err:
+        check(ws, {"test": main_cmd("test")})
+
+    assert err.value.headline == 'branch test.sh: 1 failed, 1 passed: "fx"'
