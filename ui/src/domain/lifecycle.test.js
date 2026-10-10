@@ -44,9 +44,13 @@ test('reworkTargets offers every agent step strictly earlier than the gate, and 
 })
 
 function expectAllEarlierAgentSteps(options, gateIndex) {
+  // Targets stay inside the gate's own kind: phase numbers and labels repeat
+  // across kinds, so only the gate's kind counts here (HZ-377).
+  const kind = STEPS[gateIndex].itemKind ?? 'change'
   expect(options.every(({ index }) => index < gateIndex)).toBe(true)
   expect(options.every(({ index }) => STEPS[index].kind === 'agent')).toBe(true)
-  const expectedCount = STEPS.filter((s, i) => i < gateIndex && s.kind === 'agent').length
+  expect(options.every(({ index }) => (STEPS[index].itemKind ?? 'change') === kind)).toBe(true)
+  const expectedCount = STEPS.filter((s, i) => i < gateIndex && s.kind === 'agent' && (s.itemKind ?? 'change') === kind).length
   expect(options.length).toBe(expectedCount)
 }
 

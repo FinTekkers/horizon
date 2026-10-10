@@ -39,6 +39,30 @@ export function assertLifecycleShape(data, source = 'domain/steps.json') {
   if (!Array.isArray(steps) || steps.length === 0) {
     throw new Error(`${source}: steps must be a non-empty JSON array of step objects`)
   }
+  // Per-kind phase lists (HZ-377). Optional, so a minimal table without `kinds`
+  // still validates as one kind; when present, the change list must mirror the
+  // top-level one rather than drift from it.
+  const kinds = data.kinds ?? { change: { phases } }
+  if (!kinds || typeof kinds !== 'object' || Array.isArray(kinds)) {
+    throw new Error(`${source}: kinds must be a JSON object mapping each item kind to its phases`)
+  }
+  for (const [kind, entry] of Object.entries(kinds)) {
+    const kindPhases = entry?.phases
+    if (
+      !Array.isArray(kindPhases) ||
+      kindPhases.length === 0 ||
+      !kindPhases.every((p) => typeof p === 'string' && p.length > 0)
+    ) {
+      throw new Error(`${source}: kinds.${kind}.phases must be a non-empty array of non-empty strings`)
+    }
+  }
+  if (
+    Object.prototype.hasOwnProperty.call(kinds, 'change') &&
+    JSON.stringify(kinds.change.phases) !== JSON.stringify(phases)
+  ) {
+    throw new Error(`${source}: kinds.change.phases must equal the top-level phases`)
+  }
+  const knownKind = (kind) => Object.prototype.hasOwnProperty.call(kinds, kind)
   for (const [i, step] of steps.entries()) {
     if (!step || typeof step !== 'object' || Array.isArray(step)) {
       throw new Error(`${source}: steps[${i}] must be a step object`)
@@ -52,21 +76,33 @@ export function assertLifecycleShape(data, source = 'domain/steps.json') {
     if (typeof step.label !== 'string' || step.label.length === 0) {
       throw new Error(`${source}: steps[${i}] has no label`)
     }
+    const itemKind = step.itemKind ?? 'change'
+    if (!knownKind(itemKind)) {
+      throw new Error(`${source}: steps[${i}] ("${step.label}") names unknown item kind "${itemKind}"`)
+    }
   }
 
   // Cross-field rules. Both are real hazards, not hypotheticals: a duplicate
   // label makes requiredStepIndex and steps.py's _find_by_label silently
   // resolve to whichever entry came first, and a phase past the end of `phases`
-  // renders as `undefined` in the UI's phase header.
-  const labels = steps.map((s) => s.label)
-  const dupes = [...new Set(labels.filter((l, i) => labels.indexOf(l) !== i))].sort()
-  if (dupes.length > 0) {
-    throw new Error(`${source} has duplicate step label(s): ${JSON.stringify(dupes)}`)
+  // renders as `undefined` in the UI's phase header. Both are per item kind:
+  // two kinds may open with the same row, and each kind numbers its own phases.
+  const seen = new Set()
+  const dupes = new Set()
+  for (const step of steps) {
+    const key = JSON.stringify([step.itemKind ?? 'change', step.label])
+    if (seen.has(key)) dupes.add(step.label)
+    else seen.add(key)
+  }
+  const dupeList = [...dupes].sort()
+  if (dupeList.length > 0) {
+    throw new Error(`${source} has duplicate step label(s): ${JSON.stringify(dupeList)}`)
   }
   for (const [i, step] of steps.entries()) {
-    if (step.phase >= phases.length) {
+    const kindPhases = kinds[step.itemKind ?? 'change'].phases
+    if (step.phase >= kindPhases.length) {
       throw new Error(
-        `${source}: steps[${i}] ("${step.label}") declares phase ${step.phase}, but only ${phases.length} phase(s) exist`,
+        `${source}: steps[${i}] ("${step.label}") declares phase ${step.phase}, but only ${kindPhases.length} phase(s) exist`,
       )
     }
   }
@@ -92,6 +128,82 @@ export const PHASES = source.phases
 // tolerate a truncated/absent prior artifact.
 export const STEPS = source.steps
 
+// ---- item kinds (HZ-377) ----
+// Every item is a `change` or a `task`, and one table holds both lifecycles:
+// the change rows come first, untagged (a missing `itemKind` means `change`,
+// so those rows stay byte-identical), and each later kind's rows are appended
+// after them, tagged. A cursor is a global index into STEPS, so it can never
+// point at the wrong kind's row — and every helper below resolves whatever it
+// needs from the item's own kind, never from a hardcoded position.
+const KINDS = source.kinds ?? { change: { phases: source.phases } }
+const ITEM_KINDS = Object.keys(KINDS)
+
+function assertItemKind(kind) {
+  if (typeof kind !== 'string' || !Object.prototype.hasOwnProperty.call(KINDS, kind)) {
+    throw new Error(`lifecycle: unknown item kind "${kind}" — expected one of ${ITEM_KINDS.join(', ')}`)
+  }
+}
+
+export function isItemKind(kind) {
+  return typeof kind === 'string' && Object.prototype.hasOwnProperty.call(KINDS, kind)
+}
+
+// Missing or blank reads as `change`, so every stored item and every plain
+// `{ cursor }` object from before kinds existed keeps working untouched.
+export function itemKindOf(item) {
+  const kind = item?.kind
+  if (kind == null || kind === '') return 'change'
+  assertItemKind(kind)
+  return kind
+}
+
+function stepKindOf(step) {
+  return step?.itemKind ?? 'change'
+}
+
+export function phasesFor(kind = 'change') {
+  assertItemKind(kind)
+  return KINDS[kind].phases
+}
+
+// That kind's rows, each carrying its global `index` — the cursor value that
+// points at it. The stepper renders this, not STEPS, so numbering stays
+// relative to the kind the item belongs to.
+export function stepsFor(kind = 'change') {
+  assertItemKind(kind)
+  return STEPS.flatMap((step, index) => (stepKindOf(step) === kind ? [{ ...step, index }] : []))
+}
+
+export function firstStepIndex(kind = 'change') {
+  assertItemKind(kind)
+  const index = STEPS.findIndex((step) => stepKindOf(step) === kind)
+  if (index === -1) throw new Error(`lifecycle: item kind "${kind}" has no steps in domain/steps.json`)
+  return index
+}
+
+// One past that kind's last row: the cursor a closed item of this kind rests
+// at. Change closes at 16 whether or not later kinds exist, so a stored
+// closed cursor from before the second kind keeps reading closed.
+export function endIndex(kind = 'change') {
+  assertItemKind(kind)
+  let end = -1
+  for (let i = 0; i < STEPS.length; i++) {
+    if (stepKindOf(STEPS[i]) === kind) end = i
+  }
+  if (end === -1) throw new Error(`lifecycle: item kind "${kind}" has no steps in domain/steps.json`)
+  return end + 1
+}
+
+// requiredStepIndex scoped to one kind: the row whose label matches within
+// that kind's rows. Global lookups cannot tell the two kinds' same-named
+// opening rows apart, so kind-aware callers resolve through this instead.
+export function kindStepIndex(label, kind = 'change') {
+  assertItemKind(kind)
+  const index = STEPS.findIndex((step) => step.label === label && stepKindOf(step) === kind)
+  if (index === -1) throw new Error(`lifecycle: no step labeled "${label}" for item kind "${kind}" — was it renamed?`)
+  return index
+}
+
 // Derived, never hardcoded elsewhere — a future step insertion only has to
 // change domain/steps.json; every index-dependent call site re-resolves
 // itself. Throws rather than yielding -1 (silently pointing at the wrong
@@ -107,25 +219,29 @@ export const REVIEW_STEP_INDEX = requiredStepIndex('Automated review (code + QA)
 export const ACCEPT_GATE_INDEX = requiredStepIndex('Accept the code')
 export const DEPLOY_STEP_INDEX = requiredStepIndex('Deploy the changes')
 
-// Every agent-kind step index, in order — the derived default for
-// FARM_STEP_INDEXES (server/src/config.js retains the env override on top).
-export function agentStepIndexes(steps = STEPS) {
-  return steps.map((s, i) => (s.kind === 'agent' ? i : -1)).filter((i) => i >= 0)
+// Every agent-kind step index of one item kind, in order — the derived
+// default for FARM_STEP_INDEXES (server/src/config.js retains the env override
+// on top). Defaults to `change`, so every existing caller keeps reading
+// exactly the rows it read before the second kind existed.
+export function agentStepIndexes(steps = STEPS, kind = 'change') {
+  assertItemKind(kind)
+  return steps.map((s, i) => (s.kind === 'agent' && stepKindOf(s) === kind ? i : -1)).filter((i) => i >= 0)
 }
 
-// The mirror of agentStepIndexes: every gate-kind step index, in order. Added
-// by HZ-141, whose gate-arrival notifier needs "is this cursor a gate" in two
-// places that must not disagree — server/src/gateNotifier.js's sweep and
-// server/src/db.js's one-time notified_step baseline. Deriving it twice there
-// would be the kind of second copy domain/ exists to prevent.
-export function gateStepIndexes(steps = STEPS) {
-  return steps.map((s, i) => (s.kind === 'gate' ? i : -1)).filter((i) => i >= 0)
+// The mirror of agentStepIndexes: every gate-kind step index of one item kind,
+// in order. Added by HZ-141, whose gate-arrival notifier needs "is this cursor
+// a gate" in two places that must not disagree — server/src/gateNotifier.js's
+// sweep and server/src/db.js's one-time notified_step baseline. Deriving it
+// twice there would be the kind of second copy domain/ exists to prevent.
+export function gateStepIndexes(steps = STEPS, kind = 'change') {
+  assertItemKind(kind)
+  return steps.map((s, i) => (s.kind === 'gate' && stepKindOf(s) === kind ? i : -1)).filter((i) => i >= 0)
 }
 
 // ---- derived state ----
 
 export function isClosed(item) {
-  return item.cursor >= STEPS.length
+  return item.cursor >= endIndex(itemKindOf(item))
 }
 
 // A human-initiated soft delete (HZ-59) — deliberately independent of cursor
@@ -139,7 +255,7 @@ export function curStep(item) {
 }
 
 export function phaseIdx(item) {
-  return isClosed(item) ? 4 : STEPS[item.cursor].phase
+  return isClosed(item) ? phasesFor(itemKindOf(item)).length - 1 : STEPS[item.cursor].phase
 }
 
 export function awaitingGate(item) {
@@ -156,8 +272,9 @@ export function stepStatus(item, i) {
   return 'pending'
 }
 
-export function phaseStepIndexes(phase) {
-  return STEPS.map((s, i) => (s.phase === phase ? i : -1)).filter((i) => i >= 0)
+export function phaseStepIndexes(phase, kind = 'change') {
+  assertItemKind(kind)
+  return STEPS.map((s, i) => (s.phase === phase && stepKindOf(s) === kind ? i : -1)).filter((i) => i >= 0)
 }
 
 // Dependencies (HZ-78). `blockers` is the array of work_item rows this item
@@ -177,22 +294,25 @@ export function isBlockedByAbandoned(blockers) {
 
 // ---- send-back-to-a-chosen-step (HZ-51) ----
 // Eligible destinations for a send-back from the gate at gateIndex: every
-// agent step strictly earlier than it, derived from STEPS so a pipeline change
-// (insertion/reorder) never needs a hardcoded index here. The server
-// re-derives and enforces the same rule independently — this is for populating
-// the picker, not the source of truth.
-export function reworkTargets(gateIndex) {
+// agent step of the gate's own item kind strictly earlier than it, derived
+// from STEPS so a pipeline change (insertion/reorder) never needs a hardcoded
+// index here. The server re-derives and enforces the same rule independently —
+// this is for populating the picker, not the source of truth.
+export function reworkTargets(gateIndex, kind = stepKindOf(STEPS[gateIndex])) {
+  assertItemKind(kind)
   return STEPS.map((s, i) => ({ index: i, label: s.label })).filter(
-    ({ index }) => index < gateIndex && STEPS[index].kind === 'agent',
+    ({ index }) => index < gateIndex && STEPS[index].kind === 'agent' && stepKindOf(STEPS[index]) === kind,
   )
 }
 
 // Mirrors the server's default (no-target) destination, purely so the picker
 // can show what "default" means — the actual default routing happens
 // server-side when no target is sent.
-export function defaultReworkTarget(gateIndex) {
+export function defaultReworkTarget(gateIndex, kind = stepKindOf(STEPS[gateIndex])) {
+  assertItemKind(kind)
   if (gateIndex === ACCEPT_GATE_INDEX) return IMPLEMENT_STEP_INDEX
+  const first = firstStepIndex(kind)
   let idx = gateIndex
-  while (idx > 0 && STEPS[idx].kind !== 'agent') idx--
+  while (idx > first && STEPS[idx].kind !== 'agent') idx--
   return idx
 }

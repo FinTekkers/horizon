@@ -986,6 +986,9 @@ function inFlightRunnable(item) {
     // gained closes, or a human resumes or sends it back (store.js).
     !item.rule_block_json &&
     STEPS[item.cursor].kind === 'agent' &&
+    // HZ-377: a step with no runner waits where it is — it is never
+    // dispatched, to the farm or to the mock path, so no run is ever recorded.
+    STEPS[item.cursor].runsIn !== 'none' &&
     !isBlocked(blockersOf(item.id))
   )
 }

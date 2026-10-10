@@ -1,12 +1,16 @@
 // HZ-128 guardrail 9: "do not rename, reorder, add or remove a step, or change
 // any step label."
 //
-// PERMANENT. This file is the one place the 16 labels are written out by hand,
+// PERMANENT. This file is the one place the labels are written out by hand,
 // in order, so a change to domain/steps.json that renames or reorders a step
 // fails here rather than propagating silently through a regenerated binding.
 // It replaces the throwaway fidelity check that proved domain/steps.json was
 // byte-equal to the old server/src/lifecycle.js at the moment of the move —
 // that file could only be written once, this one holds forever.
+//
+// HZ-377 is the approved exception to "do not add a step": it appends the 11
+// task rows after the 16 change rows, pinned below in PINNED_TASK with the
+// same hand-written rationale.
 //
 // Every other step test derives what it expects. This one does not, on purpose:
 // a table that derives its own expectations cannot catch a deliberate edit.
@@ -43,13 +47,36 @@ const PINNED = [
   ['Review the work & close', 4, 'gate'],
 ]
 
-test('the pipeline is exactly 16 steps', () => {
-  assert.equal(STEPS.length, 16)
+// HZ-377: the task lifecycle, appended after every change row — same
+// hand-written rationale as PINNED, so a rename or reorder fails here.
+const PINNED_TASK = [
+  ['Define the outcome', 0, 'agent'],
+  ["How we'll verify", 0, 'agent'],
+  ['Guardrails', 0, 'agent'],
+  ['Approve & prioritize', 0, 'gate'],
+  ['Assess', 1, 'agent'],
+  ['Run plan', 1, 'agent'],
+  ['Impact review', 1, 'agent'],
+  ['Approve the run', 1, 'gate'],
+  ['Execute', 2, 'agent'],
+  ['Verify & report', 2, 'agent'],
+  ['Review & close', 3, 'gate'],
+]
+
+test('the pipeline is exactly 16 change steps plus 11 task steps', () => {
   assert.equal(PINNED.length, 16)
+  assert.equal(PINNED_TASK.length, 11)
+  assert.equal(STEPS.length, PINNED.length + PINNED_TASK.length)
 })
 
 test('every step keeps its label, phase and kind, at its own position', () => {
   PINNED.forEach(([label, phase, kind], i) => {
+    assert.equal(STEPS[i].label, label, `step ${i} is "${STEPS[i].label}", pinned as "${label}"`)
+    assert.equal(STEPS[i].phase, phase, `step ${i} ("${label}") moved phase`)
+    assert.equal(STEPS[i].kind, kind, `step ${i} ("${label}") changed kind`)
+  })
+  PINNED_TASK.forEach(([label, phase, kind], j) => {
+    const i = PINNED.length + j
     assert.equal(STEPS[i].label, label, `step ${i} is "${STEPS[i].label}", pinned as "${label}"`)
     assert.equal(STEPS[i].phase, phase, `step ${i} ("${label}") moved phase`)
     assert.equal(STEPS[i].kind, kind, `step ${i} ("${label}") changed kind`)

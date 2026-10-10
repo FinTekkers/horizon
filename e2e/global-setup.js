@@ -3,7 +3,7 @@ import { request } from '@playwright/test'
 import { openDb, insertItem, insertStepRun, insertFeedback, insertDependency } from './fixtures/seed.js'
 // Derived, not hardcoded: a future pipeline step insertion (like HZ-30's own
 // Review step) must not silently break these fixtures' intended positions.
-import { STEPS, ACCEPT_GATE_INDEX } from '../domain/js/lifecycle.js'
+import { ACCEPT_GATE_INDEX, endIndex } from '../domain/js/lifecycle.js'
 
 const PORT = process.env.HORIZON_E2E_PORT
 const DB_PATH = process.env.HORIZON_E2E_DB
@@ -31,8 +31,8 @@ async function waitFor(predicate, { timeoutMs = 30_000, intervalMs = 150, descri
 const FIXTURES = [
   { id: 'E2E-1', title: 'E2E fixture — awaiting intake gate', priority: 'Medium', cursor: 3 },
   { id: 'E2E-2', title: 'E2E fixture — mid technical plan', priority: 'Low', cursor: 8 },
-  { id: 'E2E-3', title: 'E2E fixture — already closed', priority: 'Critical', cursor: STEPS.length },
-  { id: 'E2E-4', title: 'E2E fixture — final review gate', priority: 'Medium', cursor: STEPS.length - 1 },
+  { id: 'E2E-3', title: 'E2E fixture — already closed', priority: 'Critical', cursor: endIndex('change') },
+  { id: 'E2E-4', title: 'E2E fixture — final review gate', priority: 'Medium', cursor: endIndex('change') - 1 },
   { id: 'HZ-102', title: 'E2E fixture — deep link target', priority: 'Medium', cursor: 3 },
   // Past step 4 ("Plan options & trade-offs") with two retained done+artifact
   // attempts seeded below (HZ-46) — exercises the board's "attempt N of Y ↗"

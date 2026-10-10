@@ -22,7 +22,9 @@ delete process.env.FARM_URL
 const { MOCK_STEP_BEHAVIOR } = await import('../src/orchestrator.js')
 const { STEPS } = await import('../../domain/js/lifecycle.js')
 
-const agentLabels = STEPS.filter((s) => s.kind === 'agent').map((s) => s.label)
+// HZ-377: runner-less steps are never dispatched — to the farm or to the mock
+// path — so they need no mock behaviour either.
+const agentLabels = STEPS.filter((s) => s.kind === 'agent' && s.runsIn !== 'none').map((s) => s.label)
 
 test('sanity: neither set is empty, so set equality below cannot pass vacuously', () => {
   assert.ok(agentLabels.length > 0, 'the step table declares no agent steps')

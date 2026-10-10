@@ -19,7 +19,7 @@
 import { expect, test, vi, afterEach } from 'vitest'
 import * as mockApi from './mockApi'
 import { requestChanges, getItems } from './mockApi'
-import { STEPS, ACCEPT_GATE_INDEX, IMPLEMENT_STEP_INDEX } from '../../../domain/js/lifecycle.js'
+import { STEPS, ACCEPT_GATE_INDEX, IMPLEMENT_STEP_INDEX, endIndex } from '../../../domain/js/lifecycle.js'
 import { PRIORITIES, DEFAULT_PRIORITY } from '../../../domain/js/priorities.js'
 
 const findItem = (id) => getItems().find((it) => it.id === id)
@@ -94,13 +94,13 @@ test('approving the closing gate reports closed: true', async () => {
   vi.useFakeTimers()
   // BF-090 seeds at cursor 15 — "Review the work & close", the last gate.
   const before = mockApi.getItems().find((it) => it.id === 'BF-090')
-  expect(before.cursor).toBe(STEPS.length - 1)
+  expect(before.cursor).toBe(endIndex('change') - 1)
   expect(STEPS[before.cursor].label).toBe('Review the work & close')
 
   const result = await mockApi.approveGate('BF-090', '')
 
   expect(result).toEqual({ ok: true, closed: true })
-  expect(mockApi.getItems().find((it) => it.id === 'BF-090').cursor).toBe(STEPS.length)
+  expect(mockApi.getItems().find((it) => it.id === 'BF-090').cursor).toBe(endIndex('change'))
   vi.clearAllTimers()
 })
 

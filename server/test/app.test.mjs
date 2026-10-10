@@ -20,7 +20,7 @@ process.env.WA_APPROVER_JIDS = '15550001111@s.whatsapp.net'
 
 const { db } = await import('../src/db.js')
 const { buildApp } = await import('../src/app.js')
-const { STEPS, ACCEPT_GATE_INDEX } = await import('../../domain/js/lifecycle.js')
+const { STEPS, ACCEPT_GATE_INDEX, endIndex } = await import('../../domain/js/lifecycle.js')
 const config = await import('../src/config.js')
 const { FARM_SHARED_SECRET, WA_APPROVAL_SECRET } = config
 // The one allowlisted approver for this file's WhatsApp cases (HZ-140).
@@ -210,7 +210,7 @@ db.prepare(
 ).run('T-GATE-MERGE', 'Accept gate', 'Medium', ACCEPT_GATE_INDEX, 'acme/demo', 9, 41)
 db.prepare(
   "INSERT INTO work_item (id, title, priority, cursor) VALUES ('T-GATE-FINAL', 'One approval from closed', 'Medium', ?)",
-).run(STEPS.length - 1)
+).run(endIndex('change') - 1)
 
 const approvePost = (id, stepIndex, payload = {}) =>
   inject({ method: 'POST', url: `/api/items/${id}/gates/${stepIndex}/approve`, payload })
@@ -234,10 +234,10 @@ test('session route: approving a gate advances the cursor and attributes the log
 })
 
 test('approving the closing gate reports closed: true and advances the cursor past the last step', async () => {
-  const res = await approvePost('T-GATE-FINAL', STEPS.length - 1)
+  const res = await approvePost('T-GATE-FINAL', endIndex('change') - 1)
   assert.equal(res.statusCode, 200)
   assert.deepEqual(res.json(), { ok: true, closed: true })
-  assert.equal(db.prepare("SELECT cursor FROM work_item WHERE id = 'T-GATE-FINAL'").get().cursor, STEPS.length)
+  assert.equal(db.prepare("SELECT cursor FROM work_item WHERE id = 'T-GATE-FINAL'").get().cursor, endIndex('change'))
 })
 
 test('approving without a session cookie is 401 (HZ-21)', async () => {

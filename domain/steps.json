@@ -1,5 +1,9 @@
 {
   "phases": ["Plan", "Technical Plan", "Execute", "Deploy", "Review"],
+  "kinds": {
+    "change": { "phases": ["Plan", "Technical Plan", "Execute", "Deploy", "Review"] },
+    "task": { "phases": ["Plan", "Plan the run", "Run", "Review"] }
+  },
   "steps": [
     { "phase": 0, "kind": "agent", "agent": "PM", "label": "Define the outcome", "runsIn": "pm", "providerOverrideEligible": true },
     { "phase": 0, "kind": "agent", "agent": "PM", "label": "Define how we measure success", "runsIn": "pm", "providerOverrideEligible": true },
@@ -95,6 +99,17 @@
       "maxTurns": 40,
       "timeoutS": 900
     },
-    { "phase": 4, "kind": "gate", "gate": "required", "label": "Review the work & close" }
+    { "phase": 4, "kind": "gate", "gate": "required", "label": "Review the work & close" },
+    { "phase": 0, "kind": "agent", "agent": "PM", "label": "Define the outcome", "runsIn": "none", "itemKind": "task" },
+    { "phase": 0, "kind": "agent", "agent": "PM", "label": "How we'll verify", "runsIn": "none", "itemKind": "task" },
+    { "phase": 0, "kind": "agent", "agent": "Architect", "label": "Guardrails", "runsIn": "none", "itemKind": "task" },
+    { "phase": 0, "kind": "gate", "gate": "required", "label": "Approve & prioritize", "itemKind": "task" },
+    { "phase": 1, "kind": "agent", "agent": "Eng", "label": "Assess", "runsIn": "none", "itemKind": "task" },
+    { "phase": 1, "kind": "agent", "agent": "Eng", "label": "Run plan", "runsIn": "none", "itemKind": "task" },
+    { "phase": 1, "kind": "agent", "agent": "Architect", "label": "Impact review", "runsIn": "none", "itemKind": "task" },
+    { "phase": 1, "kind": "gate", "gate": "required", "label": "Approve the run", "itemKind": "task" },
+    { "phase": 2, "kind": "agent", "agent": "DevOps", "label": "Execute", "runsIn": "none", "itemKind": "task" },
+    { "phase": 2, "kind": "agent", "agent": "QA", "label": "Verify & report", "runsIn": "none", "itemKind": "task" },
+    { "phase": 3, "kind": "gate", "gate": "required", "label": "Review & close", "itemKind": "task" }
   ]
 }

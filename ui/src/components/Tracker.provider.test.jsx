@@ -170,7 +170,12 @@ const RUNS_ON_LABELS = [
 
 test('the "Runs on" select renders on exactly steps 4, 6, 7, 8, 9, 11 and 12', () => {
   const { container } = renderTracker({})
-  const withSelect = STEPS.flatMap((s, i) => (within(card(container, i)).queryByLabelText('Runs on') ? [i] : []))
+  // Change item renders change-kind steps only: Task rows (itemKind "task")
+  // have no card here, so they must not be iterated (HZ-377).
+  const withSelect = STEPS.flatMap((s, i) => {
+    if ((s.itemKind ?? 'change') !== 'change') return []
+    return within(card(container, i)).queryByLabelText('Runs on') ? [i] : []
+  })
   expect(withSelect).toEqual(RUNS_ON_LABELS.map((label) => requiredStepIndex(label)))
   expect(withSelect).toEqual([4, 6, 7, 8, 9, 11, 12])
 })

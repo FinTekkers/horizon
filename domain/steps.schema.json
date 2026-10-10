@@ -12,6 +12,14 @@
       "uniqueItems": true,
       "items": { "type": "string", "minLength": 1 }
     },
+    "kinds": {
+      "type": "object",
+      "properties": {
+        "change": { "$ref": "#/definitions/kindEntry" },
+        "task": { "$ref": "#/definitions/kindEntry" }
+      },
+      "additionalProperties": false
+    },
     "steps": {
       "type": "array",
       "minItems": 1,
@@ -19,6 +27,19 @@
     }
   },
   "definitions": {
+    "kindEntry": {
+      "type": "object",
+      "required": ["phases"],
+      "additionalProperties": false,
+      "properties": {
+        "phases": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "type": "string", "minLength": 1 }
+        }
+      }
+    },
     "step": {
       "type": "object",
       "required": ["phase", "kind", "label"],
@@ -27,12 +48,13 @@
         "phase": { "type": "integer", "minimum": 0 },
         "kind": { "type": "string", "enum": ["agent", "gate"] },
         "label": { "type": "string", "minLength": 1 },
+        "itemKind": { "type": "string", "enum": ["change", "task"] },
         "agent": {
           "type": "string",
           "enum": ["PM", "QA", "Architect", "Eng", "DevOps", "Ensemble", "Review"]
         },
         "gate": { "type": "string", "enum": ["required"] },
-        "runsIn": { "type": "string", "enum": ["pm", "farm"] },
+        "runsIn": { "type": "string", "enum": ["pm", "farm", "none"] },
         "workspaceMutating": { "type": "boolean" },
         "providerOverrideEligible": { "type": "boolean" },
         "providerLocked": { "type": "boolean" },
@@ -46,9 +68,14 @@
       },
       "allOf": [
         {
-          "$comment": "An agent-kind step always names its agent and its lane; it never carries a gate.",
+          "$comment": "An agent-kind step always names its lane; it never carries a gate. The agent itself is required separately below, because a runsIn 'none' step has no runner yet.",
           "if": { "properties": { "kind": { "enum": ["agent"] } }, "required": ["kind"] },
-          "then": { "required": ["agent", "runsIn"], "not": { "required": ["gate"] } }
+          "then": { "required": ["runsIn"], "not": { "required": ["gate"] } }
+        },
+        {
+          "$comment": "A step on a real lane always names its agent; only a runsIn 'none' step may omit it.",
+          "if": { "properties": { "runsIn": { "enum": ["pm", "farm"] } }, "required": ["runsIn"] },
+          "then": { "required": ["agent"] }
         },
         {
           "$comment": "A gate is human-only: no agent, no lane, no farm budget.",

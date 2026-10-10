@@ -535,8 +535,13 @@ function buildActivity(item) {
   if (events.length > 0) return events.slice(0, 12)
 
   // …otherwise derive placeholders from completed steps (demo/mock items).
+  // Scoped to the item's own kind: another kind's rows would leak into this
+  // feed — and runner-less rows would crash on their missing agent below.
   const times = ['just now', '8 min ago', '40 min ago', '2 hours ago', '5 hours ago', 'yesterday', '2 days ago']
-  const done = STEPS.map((s, i) => ({ s, i })).filter(({ i }) => stepStatus(item, i) === 'done')
+  const itemKind = item.kind ?? 'change'
+  const done = STEPS.map((s, i) => ({ s, i })).filter(
+    ({ s, i }) => stepStatus(item, i) === 'done' && (s.itemKind ?? 'change') === itemKind,
+  )
   return done
     .reverse()
     .slice(0, 6)

@@ -44,10 +44,12 @@ import { REPO_ROOT } from './helpers/repoFiles.mjs'
 // lives once in production code (domain/py/steps.py's _project_farm_view) and
 // once here, in a test whose whole job is to disagree with it. That is what
 // turns this file into a real cross-language check rather than a tautology.
+// HZ-377 extends the rule this reimplementation encodes: runner-less rows
+// reach no lane, so they are out of the farm view alongside the gates.
 function expectedFarmViewOf(steps) {
   return steps
     .map((s, index) => ({ ...s, index }))
-    .filter((s) => s.kind === 'agent')
+    .filter((s) => s.kind === 'agent' && s.runsIn !== 'none')
     .map((s) => ({
       index: s.index,
       label: s.label,
@@ -97,7 +99,7 @@ test('both bindings agree on PHASES', () => {
 })
 
 test('every agent-kind step agrees on index/label/agent across the authored table, the JS binding and the spawned Python import', () => {
-  const jsAgentSteps = jsSteps.filter((s) => s.kind === 'agent')
+  const jsAgentSteps = jsSteps.filter((s) => s.kind === 'agent' && s.runsIn !== 'none')
   assert.equal(
     jsAgentSteps.length,
     pythonFarm.length,
