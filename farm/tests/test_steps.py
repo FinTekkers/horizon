@@ -82,6 +82,49 @@ def test_by_label_raises_key_error_naming_the_missing_label():
         steps.by_label("Nonexistent Step")
 
 
+def test_runs_in_none_rows_never_reach_the_farm_view():
+    # HZ-377 metric 3: a step with no runner is dispatched by no lane. The
+    # live table carries such rows (the task lifecycle), and none of them may
+    # appear here — no entry carries the none lane, and no entry sits at a
+    # runner-less row's index.
+    authored = json.loads(steps._SOURCE_PATH.read_text())["steps"]
+    runnerless = [step for step in authored if step.get("runsIn") == "none"]
+    assert runnerless, "the live table has no runsIn none rows — this test guards nothing"
+    assert all(entry["runsIn"] != "none" for entry in steps.STEPS)
+    runnerless_indexes = {index for index, step in enumerate(authored) if step.get("runsIn") == "none"}
+    assert all(entry["index"] not in runnerless_indexes for entry in steps.STEPS)
+    # A label that exists only on runner-less rows is unresolvable …
+    farm_labels = {entry["label"] for entry in steps.STEPS}
+    only_runnerless = sorted({step["label"] for step in runnerless} - farm_labels)
+    assert only_runnerless, "every runner-less label is shared — this test guards nothing"
+    with pytest.raises(KeyError):
+        steps.by_label(only_runnerless[0])
+    # … and a label shared with a real lane still resolves to that lane's row.
+    for label in sorted({step["label"] for step in runnerless} & farm_labels):
+        assert steps.by_label(label)["runsIn"] != "none"
+
+
+def test_project_farm_view_drops_a_fabricated_none_row_keeping_its_neighbours_indexed():
+    table = [
+        {
+            "phase": 0,
+            "kind": "agent",
+            "agent": "Eng",
+            "label": "Existing Farm Step",
+            "runsIn": "farm",
+            "workspaceMutating": False,
+            "providerOverrideEligible": True,
+            "providerLocked": False,
+            "maxTurns": 10,
+            "timeoutS": 100,
+        },
+        {"phase": 0, "kind": "agent", "label": "Runnerless Step", "runsIn": "none", "itemKind": "task"},
+    ]
+    projected = steps._project_farm_view(table)
+    assert [entry["label"] for entry in projected] == ["Existing Farm Step"]
+    assert projected[0]["index"] == 0
+
+
 # ---- loader failure modes ----
 
 

@@ -190,7 +190,7 @@ test('the models section shows every agent step, the concierge and conflict reso
   const { STEPS } = await import('../../../domain/js/lifecycle.js')
   const { findByText, getByTestId } = render(<AgentDefinitionsPage onBack={() => {}} />)
   await findByText('FinTekkers__ui-service')
-  const agentSteps = STEPS.filter((step) => step.kind === 'agent')
+  const agentSteps = STEPS.filter((step) => step.kind === 'agent' && step.runsIn !== 'none')
   expect(agentSteps.length).toBeGreaterThan(0)
   for (const step of agentSteps) {
     expect(getByTestId(`model-row-${step.label}`).textContent).toContain('claude-opus-5-5')

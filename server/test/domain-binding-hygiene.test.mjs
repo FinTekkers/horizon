@@ -488,7 +488,9 @@ test('SHAPE PIN (fields): both bindings expose the authored entries, with exactl
 // ---- shape pin: the JS binding ships the AUTHORED shape ----
 
 test('SHAPE PIN (JS): authored entries, both kinds, no synthesised index', () => {
-  assert.equal(binding.STEPS.length, 16)
+  // HZ-377: 16 change rows plus 11 appended task rows — the labels and order
+  // are pinned hand-written in domain-step-pins.test.mjs, this is the count.
+  assert.equal(binding.STEPS.length, 27)
   const first = binding.STEPS[0]
   assert.ok('runsIn' in first, 'the JS view must carry runsIn — config.js and farmd lane routing need it')
   assert.ok(!('index' in first), 'the JS view must NOT carry a synthesised index — position IS the index')
@@ -556,7 +558,19 @@ test('SHAPE PIN (Python): agent-kind only — no gate ever reaches it', () => {
   const gateLabels = new Set(binding.STEPS.filter((s) => s.kind === 'gate').map((s) => s.label))
   assert.ok(gateLabels.size > 0)
   for (const entry of pythonSteps) assert.ok(!gateLabels.has(entry.label), `gate "${entry.label}" leaked into the farm view`)
-  assert.equal(pythonSteps.length, binding.STEPS.filter((s) => s.kind === 'agent').length)
+  // HZ-377: runner-less rows reach no lane either, so they are out of the count.
+  assert.equal(pythonSteps.length, binding.STEPS.filter((s) => s.kind === 'agent' && s.runsIn !== 'none').length)
+})
+
+test('SHAPE PIN (Python): no runsIn none row ever reaches the farm view', () => {
+  const noneIndexes = new Set(
+    binding.STEPS.map((s, i) => (s.runsIn === 'none' ? i : -1)).filter((i) => i >= 0),
+  )
+  assert.ok(noneIndexes.size > 0, 'sanity: the authored table declares no runsIn none row')
+  for (const entry of pythonSteps) {
+    assert.notEqual(entry.runsIn, 'none', `"${entry.label}" carries the none lane into the farm view`)
+    assert.ok(!noneIndexes.has(entry.index), `index ${entry.index} is a runner-less row and leaked into the farm view`)
+  }
 })
 
 test('SHAPE PIN (Python): farm-only fields are None on the PM lane, never absent — providerOverrideEligible is True', () => {

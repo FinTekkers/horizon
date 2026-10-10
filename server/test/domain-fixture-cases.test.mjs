@@ -180,17 +180,19 @@ test('js/gateStepIndexes: gate entries only, in order', () => {
   }
 })
 
-// The two index helpers partition the table — no step is both kinds and none is
-// neither. Asserted over the LIVE table, not FABRICATED, because that is where a
-// step added with a typo'd kind would actually land.
-test('js/agentStepIndexes and js/gateStepIndexes partition the live step table', () => {
-  const agents = binding.agentStepIndexes()
-  const gates = binding.gateStepIndexes()
-  assert.ok(agents.length > 0 && gates.length > 0, 'one half is empty — the partition claim is vacuous')
-  assert.deepEqual(
-    [...agents, ...gates].sort((a, b) => a - b),
-    binding.STEPS.map((_, i) => i),
-  )
+// The two index helpers partition each kind's rows — no step is both kinds and
+// none is neither. Asserted over the LIVE table, not FABRICATED, because that
+// is where a step added with a typo'd kind would actually land.
+test('js/agentStepIndexes and js/gateStepIndexes partition every kind\'s rows of the live step table', () => {
+  for (const kind of ['change', 'task']) {
+    const agents = binding.agentStepIndexes(binding.STEPS, kind)
+    const gates = binding.gateStepIndexes(binding.STEPS, kind)
+    assert.ok(agents.length > 0 && gates.length > 0, `${kind}: one half is empty — the partition claim is vacuous`)
+    assert.deepEqual(
+      [...agents, ...gates].sort((a, b) => a - b),
+      binding.stepsFor(kind).map((row) => row.index),
+    )
+  }
 })
 
 for (const name of ['isClosed', 'isAbandoned']) {
@@ -248,6 +250,120 @@ test('js/defaultReworkTarget', () => {
   for (const c of js.defaultReworkTarget) {
     const gateIndex = binding.requiredStepIndex(c.gateLabel)
     assert.equal(binding.STEPS[binding.defaultReworkTarget(gateIndex)].label, c.expectLabel, c.case)
+  }
+})
+
+test('js/isItemKind', () => {
+  for (const c of js.isItemKind) assert.equal(binding.isItemKind(c.kind), c.expect, c.case)
+})
+
+test('js/itemKindOf: stored kinds read back, missing reads as change, unknown throws', () => {
+  for (const c of js.itemKindOf) {
+    if (c.expect?.throws) {
+      assert.throws(
+        () => binding.itemKindOf(c.item),
+        (err) => {
+          assert.ok(err.message.includes(c.expect.messageContains))
+          return true
+        },
+        c.case,
+      )
+    } else {
+      assert.equal(binding.itemKindOf(c.item), c.expect, c.case)
+    }
+  }
+})
+
+test('js/phasesFor', () => {
+  for (const c of js.phasesFor) {
+    if (c.expect?.throws) {
+      assert.throws(
+        () => binding.phasesFor(c.kind),
+        (err) => {
+          assert.ok(err.message.includes(c.expect.messageContains))
+          return true
+        },
+        c.case,
+      )
+    } else {
+      assert.deepEqual(binding.phasesFor(c.kind), c.expect, c.case)
+    }
+  }
+})
+
+test('js/stepsFor: each kind\'s rows with their global indices, contiguous', () => {
+  for (const c of js.stepsFor) {
+    if (c.expect?.throws) {
+      assert.throws(
+        () => binding.stepsFor(c.kind),
+        (err) => {
+          assert.ok(err.message.includes(c.expect.messageContains))
+          return true
+        },
+        c.case,
+      )
+      continue
+    }
+    const rows = binding.stepsFor(c.kind)
+    assert.equal(rows.length, c.expect.count, c.case)
+    assert.deepEqual(
+      rows.map((row) => row.index),
+      rows.map((_, i) => c.expect.firstIndex + i),
+      c.case,
+    )
+    for (const row of rows) assert.equal(binding.STEPS[row.index].label, row.label, c.case)
+  }
+})
+
+test('js/firstStepIndex and js/endIndex', () => {
+  for (const [name, fn] of [
+    ['firstStepIndex', binding.firstStepIndex],
+    ['endIndex', binding.endIndex],
+  ]) {
+    for (const c of js[name]) {
+      if (c.expect?.throws) {
+        assert.throws(
+          () => fn(c.kind),
+          (err) => {
+            assert.ok(err.message.includes(c.expect.messageContains))
+            return true
+          },
+          `${name}: ${c.case}`,
+        )
+      } else {
+        assert.equal(fn(c.kind), c.expect, `${name}: ${c.case}`)
+      }
+    }
+  }
+  // The boundary is shared, not two numbers that can drift: the task rows
+  // start where the change rows end.
+  assert.equal(binding.firstStepIndex('task'), binding.endIndex('change'))
+})
+
+test('js/kindStepIndex resolves within one kind', () => {
+  for (const c of js.kindStepIndex) {
+    if (c.openerAtFirstTaskIndex) {
+      // The two kinds open with the same row — read its label off the table
+      // rather than typing it, then prove each kind resolves its own copy.
+      const opener = binding.STEPS[binding.firstStepIndex('task')].label
+      assert.equal(binding.kindStepIndex(opener, 'change'), binding.firstStepIndex('change'), c.case)
+      assert.equal(binding.kindStepIndex(opener, 'task'), binding.firstStepIndex('task'), c.case)
+      continue
+    }
+    if (c.expect?.throws) {
+      assert.throws(
+        () => binding.kindStepIndex(c.label, c.kind),
+        (err) => {
+          assert.ok(err.message.includes(c.expect.messageContains))
+          return true
+        },
+        c.case,
+      )
+    } else {
+      const index = binding.kindStepIndex(c.label, c.kind)
+      assert.equal(binding.STEPS[index].label, c.expect.label, c.case)
+      assert.equal(binding.STEPS[index].itemKind ?? 'change', c.expect.kind, c.case)
+    }
   }
 })
 

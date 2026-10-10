@@ -24,7 +24,7 @@ delete process.env.GITHUB_WEBHOOK_SECRET
 
 const { db } = await import('../src/db.js')
 const store = await import('../src/store.js')
-const { STEPS, IMPLEMENT_STEP_INDEX } = await import('../../domain/js/lifecycle.js')
+const { STEPS, IMPLEMENT_STEP_INDEX, endIndex } = await import('../../domain/js/lifecycle.js')
 const orchestrator = await import('../src/orchestrator.js')
 const gateNotifier = await import('../src/gateNotifier.js')
 const ruleBlock = await import('../src/ruleBlock.js')
@@ -43,7 +43,7 @@ const farmPost = (url, payload) =>
   app.inject({ method: 'POST', url, payload, headers: { 'x-farm-secret': 'rule-block-secret' } })
 
 const OWNER = '15550001111@s.whatsapp.net'
-const FINAL_GATE = STEPS.length - 1
+const FINAL_GATE = endIndex('change') - 1
 const BLOCK = { rule: 'guardrail 6: models first: no local workaround', needs: 'a ledger-models release with the fix' }
 
 const insertItem = db.prepare("INSERT INTO work_item (id, title, priority, cursor) VALUES (?, ?, 'Medium', ?)")

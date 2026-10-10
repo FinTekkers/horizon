@@ -59,6 +59,28 @@ def _validate_source(data: object, source: str) -> dict:
         raise RuntimeError(
             f"domain/py/steps.py: {source}: steps must be a non-empty JSON array of step objects"
         )
+    # Per-kind phase lists (HZ-377). Optional, so a minimal table without
+    # `kinds` still validates as one kind; when present, the change list must
+    # mirror the top-level one rather than drift from it.
+    kinds = data.get("kinds")
+    if kinds is None:
+        kinds = {"change": {"phases": phases}}
+    if not isinstance(kinds, dict):
+        raise RuntimeError(
+            f"domain/py/steps.py: {source}: kinds must be a JSON object mapping each item kind to its phases"
+        )
+    for kind, entry in kinds.items():
+        kind_phases = entry.get("phases") if isinstance(entry, dict) else None
+        if (
+            not isinstance(kind_phases, list)
+            or not kind_phases
+            or not all(isinstance(p, str) and p for p in kind_phases)
+        ):
+            raise RuntimeError(
+                f"domain/py/steps.py: {source}: kinds.{kind}.phases must be a non-empty array of non-empty strings"
+            )
+    if "change" in kinds and kinds["change"]["phases"] != phases:
+        raise RuntimeError(f"domain/py/steps.py: {source}: kinds.change.phases must equal the top-level phases")
     for i, step in enumerate(steps):
         if not isinstance(step, dict):
             raise RuntimeError(
@@ -78,16 +100,39 @@ def _validate_source(data: object, source: str) -> dict:
             )
         if not isinstance(step.get("label"), str) or not step["label"]:
             raise RuntimeError(f"domain/py/steps.py: {source}: steps[{i}] has no label")
+        item_kind = step.get("itemKind")
+        if item_kind is None:
+            item_kind = "change"
+        if not isinstance(item_kind, str) or item_kind not in kinds:
+            raise RuntimeError(
+                f'domain/py/steps.py: {source}: steps[{i}] ("{step.get("label")}") '
+                f'names unknown item kind "{item_kind}"'
+            )
 
-    labels = [step["label"] for step in steps]
-    dupes = {label for label in labels if labels.count(label) > 1}
+    # Both cross-field rules below are per item kind: two kinds may open with
+    # the same row, and each kind numbers its own phases.
+    seen = set()
+    dupes = set()
+    for step in steps:
+        item_kind = step.get("itemKind")
+        if item_kind is None:
+            item_kind = "change"
+        key = (item_kind, step["label"])
+        if key in seen:
+            dupes.add(step["label"])
+        else:
+            seen.add(key)
     if dupes:
         raise RuntimeError(f"domain/py/steps.py: {source} has duplicate step label(s): {sorted(dupes)}")
     for i, step in enumerate(steps):
-        if step["phase"] >= len(phases):
+        item_kind = step.get("itemKind")
+        if item_kind is None:
+            item_kind = "change"
+        kind_phases = kinds[item_kind]["phases"]
+        if step["phase"] >= len(kind_phases):
             raise RuntimeError(
                 f'domain/py/steps.py: {source}: steps[{i}] ("{step["label"]}") declares phase '
-                f"{step['phase']}, but only {len(phases)} phase(s) exist"
+                f"{step['phase']}, but only {len(kind_phases)} phase(s) exist"
             )
     return data
 
@@ -107,13 +152,15 @@ def _load_source(path: Path) -> dict:
 
 
 def _project_farm_view(steps: list[dict]) -> list[dict]:
-    """Farm-shaped view of the authored table: every agent-kind step (both the
-    PM lane and the farm lane — farmd's /steps/run needs runsIn for BOTH to
-    route correctly), with every field this module needs to derive lane
-    routing, budgets and provider rules. The farm-only fields are None on
+    """Farm-shaped view of the authored table: every agent-kind step on a real
+    lane (both the PM lane and the farm lane — farmd's /steps/run needs runsIn
+    for BOTH to route correctly), with every field this module needs to derive
+    lane routing, budgets and provider rules. The farm-only fields are None on
     runsIn 'pm' entries, which never reach step_agent.py's budget lookups —
-    except providerOverrideEligible, which a PM step may declare (HZ-370). `requires` is deliberately dropped: it gates a server-side
-    dispatch decision, never a farm one."""
+    except providerOverrideEligible, which a PM step may declare (HZ-370).
+    `requires` is deliberately dropped: it gates a server-side dispatch
+    decision, never a farm one. runsIn 'none' rows are dropped too (HZ-377): a
+    step with no runner is dispatched by no lane, so the farm never sees it."""
     return [
         {
             "index": index,
@@ -127,14 +174,55 @@ def _project_farm_view(steps: list[dict]) -> list[dict]:
             "timeoutS": step.get("timeoutS"),
         }
         for index, step in enumerate(steps)
-        if step.get("kind") == "agent"
+        if step.get("kind") == "agent" and step.get("runsIn") != "none"
     ]
 
 
 _SOURCE: dict = _load_source(_SOURCE_PATH)
 
+_KINDS: dict = _SOURCE.get("kinds") or {"change": {"phases": _SOURCE["phases"]}}
+
 PHASES: list[str] = _SOURCE["phases"]
 STEPS: list[dict] = _project_farm_view(_SOURCE["steps"])
+
+
+def _step_kind(step: dict) -> str:
+    """The item kind a step row belongs to. A missing marker means `change`,
+    so the untagged rows stay byte-identical to the one-kind table."""
+    item_kind = step.get("itemKind")
+    return item_kind if item_kind is not None else "change"
+
+
+def _assert_item_kind(kind: str) -> None:
+    if not isinstance(kind, str) or kind not in _KINDS:
+        expected = ", ".join(_KINDS)
+        raise KeyError(f"unknown item kind {kind!r} — expected one of {expected}")
+
+
+def phases_for(kind: str = "change") -> list[str]:
+    """That item kind's phase list, in order."""
+    _assert_item_kind(kind)
+    return _KINDS[kind]["phases"]
+
+
+def steps_for(kind: str = "change") -> list[dict]:
+    """That item kind's authored rows, each carrying its global `index` — the
+    cursor value that points at it."""
+    _assert_item_kind(kind)
+    return [
+        {**step, "index": index}
+        for index, step in enumerate(_SOURCE["steps"])
+        if _step_kind(step) == kind
+    ]
+
+
+def first_step_index(kind: str = "change") -> int:
+    """The global index of that item kind's first row."""
+    _assert_item_kind(kind)
+    for index, step in enumerate(_SOURCE["steps"]):
+        if _step_kind(step) == kind:
+            return index
+    raise KeyError(f"item kind {kind!r} has no steps in domain/steps.json")
 
 # Safe .get()-only lookup — farmd's dispatch loop reads task payloads off the
 # network and must never raise on an unknown/stale index.

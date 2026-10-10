@@ -60,6 +60,12 @@ test('POSITIVE CONTROL: a gate declaring none of the farm fields validates clean
   assert.deepEqual(validate(schema, table(AGENT_STEP, GATE_STEP)), [])
 })
 
+test('POSITIVE CONTROL: a runsIn none agent step without an agent, beside a kinds map, validates clean', () => {
+  const runnerless = { phase: 0, kind: 'agent', label: 'A Runnerless Step', runsIn: 'none', itemKind: 'task' }
+  const kinds = { change: { phases: ['Plan', 'Technical Plan'] }, task: { phases: ['Plan'] } }
+  assert.deepEqual(validate(schema, { ...table(AGENT_STEP, runnerless), kinds }), [])
+})
+
 // ---- negative cases, one per keyword the contract leans on ----
 
 function expectInvalid(name, data, fragment) {
@@ -83,6 +89,7 @@ expectInvalid('an empty label (minLength)', table({ ...GATE_STEP, label: '' }), 
 expectInvalid('an unknown extra property (additionalProperties)', table({ ...GATE_STEP, colour: 'red' }), 'colour')
 expectInvalid('a farm step missing providerLocked (if/then)', table(omit(FARM_STEP, 'providerLocked')), 'providerLocked')
 expectInvalid('an agent step with no runsIn (if/then)', table(omit(AGENT_STEP, 'runsIn')), 'runsIn')
+expectInvalid('a pm-lane step with no agent (if/then)', table(omit(AGENT_STEP, 'agent')), 'agent')
 expectInvalid('a gate that also names an agent (not)', table({ ...GATE_STEP, agent: 'PM' }))
 expectInvalid('an agent step that also declares a gate (not)', table({ ...AGENT_STEP, gate: 'required' }))
 expectInvalid('an unknown agent (enum)', table({ ...AGENT_STEP, agent: 'Wizard' }), 'Wizard')

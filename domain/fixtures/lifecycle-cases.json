@@ -7,12 +7,15 @@
       "farmProjection": [
         "gates are dropped and agent steps keep their own index",
         "farm-only fields are null on the PM lane, never absent",
-        "requires is dropped — it gates a server dispatch, never a farm one"
+        "requires is dropped — it gates a server dispatch, never a farm one",
+        "runsIn none rows are dropped — a step with no runner reaches no lane"
       ],
       "validation": [
         "a valid table is accepted",
         "duplicate labels rejected",
+        "the same label in two kinds is allowed",
         "a phase past the end of phases rejected",
+        "a phase past the end of its own kind's phases is rejected",
         "a root that is not an object rejected",
         "a root that is an array rejected",
         "an empty object rejected",
@@ -150,6 +153,47 @@
             "timeoutS": 1140
           }
         ]
+      },
+      {
+        "case": "runsIn none rows are dropped — a step with no runner reaches no lane",
+        "input": {
+          "phases": ["P"],
+          "steps": [
+            {
+              "phase": 0,
+              "kind": "agent",
+              "agent": "Eng",
+              "label": "A Farm Step",
+              "runsIn": "farm",
+              "workspaceMutating": false,
+              "providerOverrideEligible": true,
+              "providerLocked": false,
+              "maxTurns": 10,
+              "timeoutS": 100
+            },
+            {
+              "phase": 0,
+              "kind": "agent",
+              "label": "A Step With No Runner",
+              "runsIn": "none",
+              "itemKind": "task"
+            },
+            { "phase": 0, "kind": "gate", "gate": "required", "label": "A Gate" }
+          ]
+        },
+        "expect": [
+          {
+            "index": 0,
+            "label": "A Farm Step",
+            "agent": "Eng",
+            "runsIn": "farm",
+            "workspaceMutating": false,
+            "providerOverrideEligible": true,
+            "providerLocked": false,
+            "maxTurns": 10,
+            "timeoutS": 100
+          }
+        ]
       }
     ],
 
@@ -177,12 +221,33 @@
         "expect": { "throws": true, "messageContains": "has duplicate step label(s)" }
       },
       {
+        "case": "the same label in two kinds is allowed",
+        "input": {
+          "phases": ["P"],
+          "kinds": { "change": { "phases": ["P"] }, "task": { "phases": ["P"] } },
+          "steps": [
+            { "phase": 0, "kind": "gate", "gate": "required", "label": "Same Label" },
+            { "phase": 0, "kind": "gate", "gate": "required", "label": "Same Label", "itemKind": "task" }
+          ]
+        },
+        "expect": { "throws": false }
+      },
+      {
         "case": "a phase past the end of phases rejected",
         "input": {
           "phases": ["P"],
           "steps": [{ "phase": 3, "kind": "gate", "gate": "required", "label": "A Gate" }]
         },
         "expect": { "throws": true, "messageContains": "declares phase 3, but only 1 phase(s) exist" }
+      },
+      {
+        "case": "a phase past the end of its own kind's phases is rejected",
+        "input": {
+          "phases": ["P", "Q"],
+          "kinds": { "change": { "phases": ["P", "Q"] }, "task": { "phases": ["P"] } },
+          "steps": [{ "phase": 1, "kind": "gate", "gate": "required", "label": "A Gate", "itemKind": "task" }]
+        },
+        "expect": { "throws": true, "messageContains": "declares phase 1, but only 1 phase(s) exist" }
       },
       {
         "case": "a root that is not an object rejected",
@@ -253,10 +318,55 @@
   },
 
   "js": {
-    "$comment": "Helpers that exist only in domain/js/lifecycle.js. `cursor` indexes the AUTHORED table (16 entries), so a case must never hardcode a real step position — the constants below assert a DERIVED LABEL rather than an integer, so inserting a step does not turn this file into a second copy of domain-step-pins.test.mjs.",
+    "$comment": "Helpers that exist only in domain/js/lifecycle.js. `cursor` indexes the AUTHORED table (27 entries: 16 change rows, then 11 task rows), so a case must never hardcode a real step position — the constants below assert a DERIVED LABEL rather than an integer, so inserting a step does not turn this file into a second copy of domain-step-pins.test.mjs. The kind-boundary cases below pin the one exception: where the change rows end and the task rows begin is itself the contract.",
 
     "PHASES": [{ "case": "the live phase list is non-empty", "expectNonEmpty": true }],
     "STEPS": [{ "case": "the live step table is non-empty", "expectNonEmpty": true }],
+
+    "isItemKind": [
+      { "case": "change is a kind", "kind": "change", "expect": true },
+      { "case": "task is a kind", "kind": "task", "expect": true },
+      { "case": "anything else is not", "kind": "banana", "expect": false },
+      { "case": "a missing value is not a kind", "kind": null, "expect": false }
+    ],
+
+    "itemKindOf": [
+      { "case": "a stored task reads task", "item": { "cursor": 16, "kind": "task" }, "expect": "task" },
+      { "case": "a stored change reads change", "item": { "cursor": 0, "kind": "change" }, "expect": "change" },
+      { "case": "a missing kind reads as change", "item": { "cursor": 0 }, "expect": "change" },
+      { "case": "an unknown kind throws, naming it", "item": { "cursor": 0, "kind": "banana" }, "expect": { "throws": true, "messageContains": "banana" } }
+    ],
+
+    "phasesFor": [
+      { "case": "change keeps the five live phases", "kind": "change", "expect": ["Plan", "Technical Plan", "Execute", "Deploy", "Review"] },
+      { "case": "task has its four phases", "kind": "task", "expect": ["Plan", "Plan the run", "Run", "Review"] },
+      { "case": "an unknown kind throws", "kind": "banana", "expect": { "throws": true, "messageContains": "banana" } }
+    ],
+
+    "stepsFor": [
+      { "case": "change rows keep their global indices", "kind": "change", "expect": { "count": 16, "firstIndex": 0 } },
+      { "case": "task rows come after the change rows", "kind": "task", "expect": { "count": 11, "firstIndex": 16 } },
+      { "case": "an unknown kind throws", "kind": "banana", "expect": { "throws": true, "messageContains": "banana" } }
+    ],
+
+    "firstStepIndex": [
+      { "case": "change starts at the first row", "kind": "change", "expect": 0 },
+      { "case": "task starts after the change rows", "kind": "task", "expect": 16 },
+      { "case": "an unknown kind throws", "kind": "banana", "expect": { "throws": true, "messageContains": "banana" } }
+    ],
+
+    "endIndex": [
+      { "case": "change ends after its last row", "kind": "change", "expect": 16 },
+      { "case": "task ends after its last row", "kind": "task", "expect": 27 },
+      { "case": "an unknown kind throws", "kind": "banana", "expect": { "throws": true, "messageContains": "banana" } }
+    ],
+
+    "kindStepIndex": [
+      { "case": "resolves a change label within change", "label": "Accept the code", "kind": "change", "expect": { "label": "Accept the code", "kind": "change" } },
+      { "case": "resolves a task label within task", "label": "Assess", "kind": "task", "expect": { "label": "Assess", "kind": "task" } },
+      { "case": "the two kinds' same-named opening rows resolve within their own kind", "openerAtFirstTaskIndex": true },
+      { "case": "throws on an unknown label", "label": "Nope", "kind": "change", "expect": { "throws": true, "messageContains": "Nope" } }
+    ],
 
     "IMPLEMENT_STEP_INDEX": [{ "case": "points at the implement step", "expectLabel": "Specialist agent implements" }],
     "REVIEW_STEP_INDEX": [{ "case": "points at the automated review step", "expectLabel": "Automated review (code + QA)" }],
@@ -359,6 +469,24 @@
     "_project_farm_view": [{ "case": "driven by shared.farmProjection", "drivenBy": "shared.farmProjection" }],
     "_find_by_label": [{ "case": "driven by shared.labelLookup", "drivenBy": "shared.labelLookup" }],
     "by_label": [{ "case": "driven by shared.labelLookup", "drivenBy": "shared.labelLookup" }],
+
+    "phases_for": [
+      { "case": "change keeps the five live phases", "kind": "change", "expect": ["Plan", "Technical Plan", "Execute", "Deploy", "Review"] },
+      { "case": "task has its four phases", "kind": "task", "expect": ["Plan", "Plan the run", "Run", "Review"] },
+      { "case": "an unknown kind raises", "kind": "banana", "expect": { "throws": true, "messageContains": "banana" } }
+    ],
+
+    "steps_for": [
+      { "case": "change rows keep their global indices", "kind": "change", "expect": { "count": 16, "firstIndex": 0 } },
+      { "case": "task rows come after the change rows", "kind": "task", "expect": { "count": 11, "firstIndex": 16 } },
+      { "case": "an unknown kind raises", "kind": "banana", "expect": { "throws": true, "messageContains": "banana" } }
+    ],
+
+    "first_step_index": [
+      { "case": "change starts at the first row", "kind": "change", "expect": 0 },
+      { "case": "task starts after the change rows", "kind": "task", "expect": 16 },
+      { "case": "an unknown kind raises", "kind": "banana", "expect": { "throws": true, "messageContains": "banana" } }
+    ],
 
     "budget_for_label": [
       { "case": "reads the fabricated step's own budget", "label": "Inserted Farm Step", "expect": [77, 777] },

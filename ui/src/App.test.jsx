@@ -5,9 +5,9 @@
 
 import { expect, test, vi, afterEach } from 'vitest'
 import { render, fireEvent, cleanup, waitFor, act } from '@testing-library/react'
-import { STEPS, IMPLEMENT_STEP_INDEX } from '../../domain/js/lifecycle.js'
+import { STEPS, IMPLEMENT_STEP_INDEX, endIndex } from '../../domain/js/lifecycle.js'
 
-const CLOSING_GATE_INDEX = STEPS.length - 1
+const CLOSING_GATE_INDEX = endIndex('change') - 1
 const CLOSING_GATE_LABEL = STEPS[CLOSING_GATE_INDEX].label
 
 let items = []

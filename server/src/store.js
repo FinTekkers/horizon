@@ -6,7 +6,6 @@ import { db } from './db.js'
 import { GATE_ACTION_MARGIN_MS, PREMERGE_SKIP_MAX_AGE_MS } from './config.js'
 import {
   STEPS,
-  PHASES,
   isClosed,
   isAbandoned,
   isBlocked,
@@ -17,6 +16,12 @@ import {
   ACCEPT_GATE_INDEX,
   DEPLOY_STEP_INDEX,
   agentStepIndexes,
+  isItemKind,
+  itemKindOf,
+  phasesFor,
+  stepsFor,
+  firstStepIndex,
+  endIndex,
 } from '../../domain/js/lifecycle.js'
 import { isPriority } from '../../domain/js/priorities.js'
 import { isPersona, personaLabel, personasFromRow } from './personas.js'
@@ -851,11 +856,13 @@ export function removeDependency(id, dependsOnId, actor = 'You') {
 }
 
 // Where an item stands, resolved server-side so non-UI clients (the WhatsApp
-// concierge) don't need their own copy of the STEPS table.
+// concierge) don't need their own copy of the STEPS table. The phase name
+// comes from the item's own kind, since each kind numbers its own phases.
 function currentStepOf(row) {
   if (isClosed(row)) return { index: row.cursor, label: 'Closed', kind: 'done', phase: 'Done', gate: false }
   const step = STEPS[row.cursor]
-  return { index: row.cursor, label: step.label, kind: step.kind, phase: PHASES[step.phase], gate: step.kind === 'gate' }
+  const kind = itemKindOf(row)
+  return { index: row.cursor, label: step.label, kind: step.kind, phase: phasesFor(kind)[step.phase], gate: step.kind === 'gate' }
 }
 
 // Which items a snapshot carries. scope 'active' (the default) is the active
@@ -1030,6 +1037,7 @@ function itemView(row, { stepOutputs: withStepOutputs = true } = {}) {
     id: row.id,
     title: row.title,
     priority: row.priority,
+    kind: itemKindOf(row),
     desc: row.desc,
     metric: row.metric,
     guardrails: row.guardrails,
@@ -1105,8 +1113,10 @@ export function getItem(id) {
   // `personas` is derived here, at the one seam every caller reads an item
   // through, so nothing downstream has to know about personas_json or the
   // legacy `persona` column (HZ-125). The raw columns stay on the object.
+  // `kind` normalizes the same way (HZ-377): missing reads as `change`.
   return {
     ...row,
+    kind: itemKindOf(row),
     paused: !!row.paused,
     rejected: !!row.rejected,
     personas: personasFromRow(row),
@@ -1299,11 +1309,14 @@ export function requestChanges(id, target, feedbackText, actor = 'You', targetSt
   if (isClosed(it)) return { error: 'closed' }
   if (isAbandoned(it)) return { error: 'abandoned' }
 
+  // A send-back never crosses into another kind's rows: the walk and any
+  // explicit target both stop at this item's own first step (HZ-377).
+  const first = firstStepIndex(itemKindOf(it))
   if (targetStepIndex != null) {
     const atGate = STEPS[it.cursor]?.kind === 'gate'
     const validTarget =
       Number.isInteger(targetStepIndex) &&
-      targetStepIndex >= 0 &&
+      targetStepIndex >= first &&
       targetStepIndex < it.cursor &&
       STEPS[targetStepIndex]?.kind === 'agent'
     if (!atGate || !validTarget) return { error: 'invalid_target' }
@@ -1329,7 +1342,7 @@ export function requestChanges(id, target, feedbackText, actor = 'You', targetSt
       // the same unchanged diff. Send the human's rejection to Eng instead.
       reworkIdx = IMPLEMENT_STEP_INDEX
     } else {
-      while (reworkIdx > 0 && STEPS[reworkIdx].kind !== 'agent') reworkIdx--
+      while (reworkIdx > first && STEPS[reworkIdx].kind !== 'agent') reworkIdx--
     }
   }
   const reworkAgent = STEPS[reworkIdx].kind === 'agent' ? STEPS[reworkIdx].agent : null
@@ -1341,7 +1354,7 @@ export function requestChanges(id, target, feedbackText, actor = 'You', targetSt
   )
   // A human-directed rework gets a fresh set of automated review cycles —
   // otherwise a prior automated cap-out could falsely cap this new attempt.
-  const resetReview = reworkIdx <= IMPLEMENT_STEP_INDEX ? RESET_REVIEW_STATE : ''
+  const resetReview = it.kind === 'change' && reworkIdx <= IMPLEMENT_STEP_INDEX ? RESET_REVIEW_STATE : ''
   // HZ-346: a human send-back is never held by a rule block.
   db.prepare(
     `UPDATE work_item SET cursor = ?, rejected = 0, paused = 0, rule_block_json = NULL${resetReview}, ${touch} WHERE id = ?`,
@@ -1443,8 +1456,12 @@ export function restartPhase(id, phase, reason, actor = 'You') {
   // Abandonment must not be silently undone by a lever that predates it —
   // reopening an abandoned item is a deliberate act this function doesn't own.
   if (isAbandoned(it)) return { error: 'abandoned' }
-  const firstIdx = STEPS.findIndex((st) => st.phase === phase)
-  if (firstIdx < 0) return { error: 'bad_phase' }
+  // The phase restarts within the item's own kind: phase numbers repeat
+  // across kinds, so an unscoped lookup would land a task on change rows.
+  const kind = itemKindOf(it)
+  const found = stepsFor(kind).find((st) => st.phase === phase)
+  if (!found) return { error: 'bad_phase' }
+  const firstIdx = found.index
 
   agentRunner.cancel(id, 'superseded')
   if (reason) {
@@ -1455,14 +1472,14 @@ export function restartPhase(id, phase, reason, actor = 'You') {
       reason,
     )
   }
-  const resetReview = firstIdx <= IMPLEMENT_STEP_INDEX ? RESET_REVIEW_STATE : ''
+  const resetReview = kind === 'change' && firstIdx <= IMPLEMENT_STEP_INDEX ? RESET_REVIEW_STATE : ''
   // HZ-346: a restart moves the cursor, so a rule block must not hold it.
   db.prepare(
     `UPDATE work_item SET cursor = ?, rejected = 0, paused = 0, rule_block_json = NULL${resetReview}, ${touch} WHERE id = ?`,
   ).run(firstIdx, id)
   addEvent(id, {
     who: actor,
-    text: `restarted the ${PHASES[phase]} phase${reason ? ': ' + reason : ''}`,
+    text: `restarted the ${phasesFor(kind)[phase]} phase${reason ? ': ' + reason : ''}`,
     color: '#DFA200',
     initials: 'YOU',
   })
@@ -1655,15 +1672,19 @@ export function applySplitScope(id, { desc, metric }, actor = 'Horizon') {
 
 // ---- local (demo-mode) item creation ----
 
-export function createLocalItem({ title, outcome, metric, guardrails, priority }) {
+export function createLocalItem({ title, outcome, metric, guardrails, priority, kind }) {
+  // HZ-377: the kind defaults to `change`; anything outside the domain
+  // vocabulary is refused before anything is written.
+  const itemKind = kind ?? 'change'
+  if (!isItemKind(itemKind)) return { error: 'unknown_item_kind' }
   const next =
     db
       .prepare("SELECT COALESCE(MAX(CAST(SUBSTR(id, 5) AS INTEGER)), 0) AS n FROM work_item WHERE id LIKE 'LOC-%'")
       .get().n + 1
   const id = `LOC-${next}`
   db.prepare(
-    'INSERT INTO work_item (id, title, priority, desc, metric, guardrails, cursor) VALUES (?, ?, ?, ?, ?, ?, 0)',
-  ).run(id, title, priority, outcome, metric, guardrails || '')
+    'INSERT INTO work_item (id, title, priority, desc, metric, guardrails, cursor, kind) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+  ).run(id, title, priority, outcome, metric, guardrails || '', firstStepIndex(itemKind), itemKind)
   addEvent(id, { who: 'You', text: 'created this work item', color: '#5E4380', initials: 'YOU' })
   notify()
   agentRunner.kick(id)
@@ -1716,10 +1737,11 @@ export function upsertFromGithub(ghIssue, repoFullName) {
   let changed = false
 
   if (!row) {
+    // GitHub issues are always change items; creating tasks is a later item.
     const id = `${repoRow.prefix}-${number}`
     db.prepare(
       'INSERT INTO work_item (id, title, priority, desc, metric, guardrails, issue, repo, project_id, cursor) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
-    ).run(id, title, priority, desc, metric, guardrails, number, repoFullName, repoRow.project_id, closedOnGithub ? STEPS.length : 0)
+    ).run(id, title, priority, desc, metric, guardrails, number, repoFullName, repoRow.project_id, closedOnGithub ? endIndex('change') : 0)
     addEvent(id, { who: 'GitHub', text: `opened issue #${number}`, color: '#2A2A2E', initials: 'GH' })
     changed = true
     if (!closedOnGithub) agentRunner.kick(id)
@@ -1734,19 +1756,22 @@ export function upsertFromGithub(ghIssue, repoFullName) {
       ).run(title, desc, priority, newMetric, newGuardrails, row.id)
       changed = true
     }
-    const wasClosed = row.cursor >= STEPS.length
+    const wasClosed = isClosed(row)
     // Both branches skip an already-abandoned item: closing the issue is
     // abandonItem's own best-effort side effect (would otherwise race to
     // reclassify the item as completed — see abandonItem above), and a
     // GitHub reopen must never silently resurrect an abandoned item mid-flight.
     if (closedOnGithub && !wasClosed && !row.abandoned_at) {
       agentRunner.cancel(row.id, 'cancelled')
-      db.prepare(`UPDATE work_item SET cursor = ?, ${touch} WHERE id = ?`).run(STEPS.length, row.id)
+      db.prepare(`UPDATE work_item SET cursor = ?, ${touch} WHERE id = ?`).run(endIndex(itemKindOf(row)), row.id)
       addEvent(row.id, { who: 'GitHub', text: `closed issue #${number}`, color: '#2A2A2E', initials: 'GH' })
       changed = true
       wakeDependents(row.id)
     } else if (!closedOnGithub && wasClosed && !row.abandoned_at) {
-      db.prepare(`UPDATE work_item SET cursor = 0, rejected = 0, paused = 0, ${touch} WHERE id = ?`).run(row.id)
+      db.prepare(`UPDATE work_item SET cursor = ?, rejected = 0, paused = 0, ${touch} WHERE id = ?`).run(
+        firstStepIndex(itemKindOf(row)),
+        row.id,
+      )
       addEvent(row.id, { who: 'GitHub', text: `reopened issue #${number}`, color: '#2A2A2E', initials: 'GH' })
       changed = true
       agentRunner.kick(row.id)
@@ -1761,16 +1786,17 @@ export function upsertFromGithub(ghIssue, repoFullName) {
 // before rejection triggered rework) are requeued at the responsible agent
 // step, reusing the rejection notes as the agent's feedback.
 export function recoverRejectedItems() {
-  const rows = db.prepare('SELECT id, cursor FROM work_item WHERE rejected = 1').all()
+  const rows = db.prepare('SELECT id, cursor, kind FROM work_item WHERE rejected = 1').all()
   for (const row of rows) {
-    let reworkIdx = Math.min(row.cursor, STEPS.length - 1)
+    const first = firstStepIndex(itemKindOf(row))
+    let reworkIdx = Math.min(Math.max(row.cursor, first), endIndex(itemKindOf(row)) - 1)
     if (STEPS[reworkIdx].kind === 'gate') {
       // Same Accept-gate special case as requestChanges: don't land on the
       // automated Review step, which would just re-judge unchanged code.
       if (reworkIdx === ACCEPT_GATE_INDEX) {
         reworkIdx = IMPLEMENT_STEP_INDEX
       } else {
-        while (reworkIdx > 0 && STEPS[reworkIdx].kind !== 'agent') reworkIdx--
+        while (reworkIdx > first && STEPS[reworkIdx].kind !== 'agent') reworkIdx--
       }
     }
     const notes = db
@@ -1781,7 +1807,7 @@ export function recoverRejectedItems() {
       STEPS[reworkIdx].agent || '',
       notes || 'changes requested',
     )
-    const resetReview = reworkIdx <= IMPLEMENT_STEP_INDEX ? RESET_REVIEW_STATE : ''
+    const resetReview = itemKindOf(row) === 'change' && reworkIdx <= IMPLEMENT_STEP_INDEX ? RESET_REVIEW_STATE : ''
     db.prepare(`UPDATE work_item SET cursor = ?, rejected = 0${resetReview}, ${touch} WHERE id = ?`).run(reworkIdx, row.id)
     addEvent(row.id, {
       who: 'Horizon',

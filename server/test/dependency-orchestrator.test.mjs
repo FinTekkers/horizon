@@ -17,7 +17,7 @@ delete process.env.FARM_URL
 
 const { db } = await import('../src/db.js')
 const store = await import('../src/store.js')
-const { STEPS } = await import('../../domain/js/lifecycle.js')
+const { STEPS, endIndex } = await import('../../domain/js/lifecycle.js')
 const orchestrator = await import('../src/orchestrator.js')
 
 store.purgeDemoItems()
@@ -27,8 +27,8 @@ const insertItem = db.prepare(
 )
 
 assert.equal(STEPS[11].kind, 'agent')
-const CLOSED = STEPS.length
-const FINAL_GATE = STEPS.length - 1
+const CLOSED = endIndex('change')
+const FINAL_GATE = endIndex('change') - 1
 assert.equal(STEPS[FINAL_GATE].kind, 'gate')
 
 test('kick() on a blocked item parked at a live agent step does not dispatch', () => {

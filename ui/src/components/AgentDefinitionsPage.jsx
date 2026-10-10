@@ -121,7 +121,9 @@ function DefinitionTree({ tree, selected, onSelect }) {
 // reviewed edit to that file, not here.
 function modelRows() {
   return [
-    ...STEPS.filter((step) => step.kind === 'agent').map((step) => {
+    // HZ-377: runner-less rows name no agent and run on no model — they would
+    // crash modelAgentForStep and collide on call keys, so they stay out.
+    ...STEPS.filter((step) => step.kind === 'agent' && step.runsIn !== 'none').map((step) => {
       const agent = modelAgentForStep(step.agent)
       return { key: step.label, call: step.label, agent, model: resolveModel(agent, step.label) }
     }),

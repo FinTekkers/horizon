@@ -14,7 +14,7 @@ process.env.HORIZON_DB = join(mkdtempSync(join(tmpdir(), 'horizon-dep-store-')),
 
 const { db } = await import('../src/db.js')
 const store = await import('../src/store.js')
-const { STEPS } = await import('../../domain/js/lifecycle.js')
+const { STEPS, endIndex } = await import('../../domain/js/lifecycle.js')
 
 const insertItem = db.prepare(
   "INSERT INTO work_item (id, title, priority, cursor, repo, issue) VALUES (?, ?, 'Medium', ?, ?, ?)",
@@ -22,7 +22,7 @@ const insertItem = db.prepare(
 
 assert.equal(STEPS[11].kind, 'agent')
 assert.equal(STEPS[3].kind, 'gate')
-const CLOSED = STEPS.length
+const CLOSED = endIndex('change')
 
 function itemView(id) {
   return store.listItems().find((it) => it.id === id)
@@ -126,7 +126,7 @@ test('wakeDependents wiring: approveGate closing the item wakes its dependents',
   insertItem.run('D-WAKE-APPROVE-BLOCKER', 'Blocker', 15, null, null) // final gate
   insertItem.run('D-WAKE-APPROVE-DEP', 'Dependent', 11, null, null)
   assert.equal(STEPS[15].kind, 'gate')
-  assert.equal(STEPS.length, 16)
+  assert.equal(endIndex('change'), 16)
   store.addDependency('D-WAKE-APPROVE-DEP', 'D-WAKE-APPROVE-BLOCKER')
   assert.equal(itemView('D-WAKE-APPROVE-DEP').blocked, true)
 

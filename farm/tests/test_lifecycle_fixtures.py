@@ -207,6 +207,44 @@ def test_py_private_helpers_are_driven_by_the_shared_section():
         assert PY[name][0]["drivenBy"].startswith("shared."), f"py.{name} claims no shared driver"
 
 
+@pytest.mark.parametrize("case", PY["phases_for"], ids=lambda c: c["case"])
+def test_py_phases_for(case):
+    expect = case["expect"]
+    if isinstance(expect, dict) and expect.get("throws"):
+        with pytest.raises(KeyError) as exc:
+            steps.phases_for(case["kind"])
+        assert expect["messageContains"] in str(exc.value)
+    else:
+        assert steps.phases_for(case["kind"]) == expect
+
+
+@pytest.mark.parametrize("case", PY["steps_for"], ids=lambda c: c["case"])
+def test_py_steps_for(case):
+    expect = case["expect"]
+    if isinstance(expect, dict) and expect.get("throws"):
+        with pytest.raises(KeyError) as exc:
+            steps.steps_for(case["kind"])
+        assert expect["messageContains"] in str(exc.value)
+        return
+    rows = steps.steps_for(case["kind"])
+    assert len(rows) == expect["count"]
+    assert [row["index"] for row in rows] == list(range(expect["firstIndex"], expect["firstIndex"] + len(rows)))
+    authored = json.loads((REPO_ROOT / "domain" / "steps.json").read_text())["steps"]
+    for row in rows:
+        assert authored[row["index"]]["label"] == row["label"]
+
+
+@pytest.mark.parametrize("case", PY["first_step_index"], ids=lambda c: c["case"])
+def test_py_first_step_index(case):
+    expect = case["expect"]
+    if isinstance(expect, dict) and expect.get("throws"):
+        with pytest.raises(KeyError) as exc:
+            steps.first_step_index(case["kind"])
+        assert expect["messageContains"] in str(exc.value)
+    else:
+        assert steps.first_step_index(case["kind"]) == expect
+
+
 # ---- the manifest: this suite really ran every shared case ----
 # Declared last on purpose: pytest collects and runs in file order, so every
 # parametrized shared case above has already appended its id by the time this

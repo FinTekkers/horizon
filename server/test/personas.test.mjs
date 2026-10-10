@@ -242,6 +242,8 @@ test('every lifecycle step agent resolves in AGENTS only', () => {
   const personaIds = new Set(uiPersonaIds())
   for (const step of lifecycle.STEPS) {
     if (step.kind !== 'agent') continue
+    // HZ-377: a runner-less step names no agent yet — there is nothing to resolve.
+    if (step.runsIn === 'none') continue
     assert.ok(uiAgents.AGENTS[step.agent], `step "${step.label}" references unknown agent ${step.agent}`)
     assert.ok(!personaIds.has(step.agent), `step "${step.label}" references a persona, not a role`)
   }

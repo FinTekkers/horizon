@@ -9,7 +9,9 @@ import { expect, test } from 'vitest'
 import { FILTERS, DEFAULT_ACTIVE_FILTERS, STALE_DAYS, daysSince, visibleItems, hiddenCounts, matchCounts } from './filters'
 // Derived, never hardcoded — requiredStepIndex's own comment sets the
 // precedent: a future step insertion must not silently move this boundary.
-import { STEPS } from '../../../domain/js/lifecycle.js'
+import { endIndex } from '../../../domain/js/lifecycle.js'
+
+const CLOSED_CURSOR = endIndex('change')
 
 const NOW = new Date('2026-09-24T00:00:00Z')
 
@@ -103,15 +105,15 @@ test('hiddenCounts is 0 for a filter that is not active, even though items still
 // ---- closed (HZ-143) ----
 
 test('a closed item is hidden by default and reappears once the closed filter is toggled off', () => {
-  const closed = item('C', { cursor: STEPS.length })
+  const closed = item('C', { cursor: CLOSED_CURSOR })
   expect(visibleItems([closed], DEFAULT_ACTIVE_FILTERS, NOW)).toEqual([])
   expect(visibleItems([closed], DEFAULT_ACTIVE_FILTERS.filter((k) => k !== 'closed'), NOW)).toEqual([closed])
 })
 
 test('the final gate is visible; exactly past the last step, and beyond, are hidden', () => {
-  const atFinalGate = item('GATE', { cursor: STEPS.length - 1 })
-  const justClosed = item('CLOSED', { cursor: STEPS.length })
-  const overrun = item('OVER', { cursor: STEPS.length + 3 })
+  const atFinalGate = item('GATE', { cursor: CLOSED_CURSOR - 1 })
+  const justClosed = item('CLOSED', { cursor: CLOSED_CURSOR })
+  const overrun = item('OVER', { cursor: CLOSED_CURSOR + 3 })
 
   expect(visibleItems([atFinalGate], ['closed'], NOW)).toEqual([atFinalGate])
   expect(visibleItems([justClosed], ['closed'], NOW)).toEqual([])
@@ -125,7 +127,7 @@ test('an in-progress item is not hidden by the closed filter', () => {
 })
 
 test('the closed filter counts what it hides, so the header can say "Hiding N closed"', () => {
-  const items = [item('C1', { cursor: STEPS.length }), item('C2', { cursor: STEPS.length }), item('WIP')]
+  const items = [item('C1', { cursor: CLOSED_CURSOR }), item('C2', { cursor: CLOSED_CURSOR }), item('WIP')]
   expect(hiddenCounts(items, DEFAULT_ACTIVE_FILTERS, NOW)).toEqual({ stale: 0, abandoned: 0, closed: 2 })
 })
 
@@ -133,21 +135,21 @@ test('the closed filter counts what it hides, so the header can say "Hiding N cl
 // final gate is abandoned, full stop — never counted in both buckets. Mirrors
 // the precedence in domain/status.js's itemStatus.
 test('an item abandoned at the final gate counts as abandoned only, never closed', () => {
-  const abandonedAtEnd = item('AF', { cursor: STEPS.length, abandoned_at: daysAgo(1) })
+  const abandonedAtEnd = item('AF', { cursor: CLOSED_CURSOR, abandoned_at: daysAgo(1) })
   expect(matchCounts([abandonedAtEnd], NOW)).toEqual({ stale: 0, abandoned: 1, closed: 0 })
   expect(hiddenCounts([abandonedAtEnd], ['closed'], NOW).closed).toBe(0)
   expect(visibleItems([abandonedAtEnd], ['closed'], NOW)).toEqual([abandonedAtEnd])
 })
 
 test('an item both closed and stale counts in both buckets and needs both filters off to reappear', () => {
-  const both = item('CS', { cursor: STEPS.length, last_activity_at: daysAgo(45) })
+  const both = item('CS', { cursor: CLOSED_CURSOR, last_activity_at: daysAgo(45) })
   expect(hiddenCounts([both], DEFAULT_ACTIVE_FILTERS, NOW)).toEqual({ stale: 1, abandoned: 0, closed: 1 })
   expect(visibleItems([both], ['stale'], NOW)).toEqual([])
   expect(visibleItems([both], ['closed'], NOW)).toEqual([])
   expect(visibleItems([both], [], NOW)).toEqual([both])
 })
 
-// isClosed is `item.cursor >= STEPS.length`, so a cursor-less object leans on
+// isClosed is `item.cursor >= endIndex(kind)`, so a cursor-less object leans on
 // `undefined >= N` being false. Load-bearing for every caller that hands this
 // module a partially-hydrated item — make it explicit, not incidental.
 test('an item with no cursor field is not treated as closed and does not throw', () => {
