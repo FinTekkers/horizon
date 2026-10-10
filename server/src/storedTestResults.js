@@ -124,7 +124,7 @@ export function renderStoredResults({ main, branch }, runId) {
     runId == null
       ? 'No finished implement run was found for this item.'
       : `What the farm stored for the implement step's run #${runId}. This is the only evidence of which tests ran and how they ended; test-output files in the worktree (test-results/, build/test-results/, playwright-report/) are not.`,
-    "`main` is the repo's configured check commands, which alone decide pass or fail. `branch` is this item's own changed scripts/checks/, run after main's: a failure there is a finding, not the check's verdict.",
+    "`main` is the repo's configured check commands. `branch` is this item's own changed scripts/checks/, run after main's. Both decide pass or fail: a failure in either fails the check.",
   ].join('\n\n')
   const room = STORED_RESULTS_MAX_CHARS - intro.length - 200
   const sections = []

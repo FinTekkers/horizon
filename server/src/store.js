@@ -324,6 +324,39 @@ export function findCheckPass({ repo, itemId, sha, maxAgeMs, now = Date.now() })
   return row ? { sha: row.sha, finishedAt: row.finished_at, source: row.source } : null
 }
 
+// HZ-406: whether the item's newest branch run (its own changed
+// scripts/checks/, see farm/checks.py) failed. That run is the one holding the
+// item's highest branch test_result id; it is stale, so false, once a main
+// run was stored after it (a later attempt that changed no check script). In
+// it, each command's last attempt decides: it failed if any of its rows is a
+// fail or did not exit 0. A run that timed out, crashed or never started
+// stores a fail row with no exit code, so it reads as failed too (fail
+// closed). Rows stored before HZ-406, when a branch failure was evidence
+// only, are read the same way. May throw; app.js treats a throw as "run
+// pre-merge".
+export function latestBranchRunFailed(itemId) {
+  const branch = db
+    .prepare(
+      `SELECT id, check_run FROM test_result WHERE item_id = ? AND run_label = 'branch' ORDER BY id DESC LIMIT 1`,
+    )
+    .get(itemId)
+  if (!branch) return false
+  const main = db
+    .prepare(`SELECT MAX(id) AS id FROM test_result WHERE item_id = ? AND run_label = 'main'`)
+    .get(itemId)
+  if (main?.id != null && main.id > branch.id) return false
+  const failed = db
+    .prepare(
+      `SELECT 1 FROM test_result t
+       WHERE t.check_run = ?
+         AND t.attempt = (SELECT MAX(u.attempt) FROM test_result u WHERE u.check_run = t.check_run AND u.command = t.command)
+         AND (t.status = 'fail' OR t.exit_code IS NULL OR t.exit_code != 0)
+       LIMIT 1`,
+    )
+    .get(branch.check_run)
+  return !!failed
+}
+
 // The item's gate action for the UI: a running one if any, else the latest
 // finished one from this visit to the gate. A merge is also kept once the
 // gate has advanced past Accept — it is what the done Accept step shows — but

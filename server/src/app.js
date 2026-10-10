@@ -1068,6 +1068,9 @@ export function buildApp({ logger = true, onRoute = null } = {}) {
     try {
       const pass = store.findCheckPass({ repo: item.repo, itemId: item.id, sha: head.sha, maxAgeMs: PREMERGE_SKIP_MAX_AGE_MS })
       if (!pass || pass.sha !== head.sha) return null
+      // HZ-406: a pass recorded beside a failed branch run (before HZ-406
+      // made that a failure, or by any path that missed it) is never used.
+      if (store.latestBranchRunFailed(item.id)) return null
       if ((await github.isAncestor(item.repo, baseSha, head.sha)) !== true) return null
       if ((await github.getBranchSha(item.repo, head.baseRef)) !== baseSha) return null
       return pass

@@ -329,3 +329,116 @@ test('freshness: a record 24h01m old is not used — pre-merge runs', async () =
 test('the default limit is 24h', () => {
   assert.equal(config.PREMERGE_SKIP_MAX_AGE_MS, 24 * HOUR)
 })
+
+// ---- HZ-406: a failed branch run refuses the skip ----
+// The rows are seeded through testResults.recordTestRuns, in the shapes
+// farm/checks.py sends: one entry per run, labelled 'main' or 'branch'.
+
+const testResults = await import('../src/testResults.js')
+const BRANCH_CMD = 'sh -c cat scripts/checks/test.sh | sh'
+const MAIN_CMD = 'sh -c git show origin/main:scripts/checks/test.sh | sh'
+const quiet = { warn() {}, error() {} }
+
+function runEntry(label, command, attempts) {
+  return {
+    check_run: `${label}-run-${++seq}`,
+    label,
+    commit_sha: null,
+    tree_sha: null,
+    tests: attempts.map(({ status, attempt }) => ({ suite: null, file: null, test: command, status, duration_ms: 5, command, attempt })),
+    commands: attempts.map(({ attempt, exit_code }) => ({ command, attempt, exit_code })),
+  }
+}
+const mainRun = () => runEntry('main', MAIN_CMD, [{ status: 'pass', attempt: 1, exit_code: 0 }])
+const BRANCH_SHAPES = {
+  passed: [{ status: 'pass', attempt: 1, exit_code: 0 }],
+  failedTwice: [
+    { status: 'fail', attempt: 1, exit_code: 1 },
+    { status: 'fail', attempt: 2, exit_code: 1 },
+  ],
+  flaky: [
+    { status: 'fail', attempt: 1, exit_code: 1 },
+    { status: 'pass', attempt: 2, exit_code: 0 },
+  ],
+  // A command that did not finish: one fail row and no exit code, whether it
+  // timed out, could not start (a crash) or had no time left in the budget.
+  timedOut: [{ status: 'fail', attempt: 1, exit_code: null }],
+  crashed: [{ status: 'fail', attempt: 1, exit_code: null }],
+  noTimeLeft: [{ status: 'fail', attempt: 1, exit_code: null }],
+}
+const storeRuns = (id, ...runs) => testResults.recordTestRuns({ itemId: id, source: 'implement', testRuns: runs, log: quiet })
+const storeImplementRun = (id, branchShape) =>
+  storeRuns(id, mainRun(), runEntry('branch', BRANCH_CMD, BRANCH_SHAPES[branchShape]))
+
+test('HZ-406: a fresh pass beside a newest failed branch run — the Accept route runs pre-merge, no skip', async () => {
+  const id = acceptItem()
+  pass(id)
+  storeImplementRun(id, 'failedTwice')
+  const res = await approve(id)
+  assert.equal(res.statusCode, 200)
+  assertRanPremerge(id)
+  assert.equal(gateRow(id).state, 'merged')
+})
+
+test('HZ-406: a fresh pass beside an all-pass newest branch run — the skip is taken', async () => {
+  const id = acceptItem()
+  pass(id)
+  storeImplementRun(id, 'passed')
+  await approve(id)
+  assert.equal(runs.length, 0)
+  assert.equal(eventTexts(id).filter((t) => t.includes(SKIP_EVENT)).length, 1)
+})
+
+test('HZ-406: a branch command that failed then passed on its rerun is a flake — the skip is taken', async () => {
+  const id = acceptItem()
+  pass(id)
+  storeImplementRun(id, 'flaky')
+  assert.equal(store.latestBranchRunFailed(id), false)
+  await approve(id)
+  assert.equal(runs.length, 0)
+})
+
+test('HZ-406: a branch run that timed out, crashed or had no time left reads as failed', () => {
+  for (const shape of ['timedOut', 'crashed', 'noTimeLeft']) {
+    const id = acceptItem()
+    storeImplementRun(id, shape)
+    assert.equal(store.latestBranchRunFailed(id), true, shape)
+  }
+  const signalled = acceptItem()
+  storeRuns(signalled, mainRun(), runEntry('branch', BRANCH_CMD, [{ status: 'pass', attempt: 1, exit_code: -9 }]))
+  assert.equal(store.latestBranchRunFailed(signalled), true, 'a non-zero exit fails even beside passing rows')
+})
+
+test('HZ-406: a failed branch run followed by a later main-only run is stale — the skip is taken', async () => {
+  const id = acceptItem()
+  pass(id)
+  storeImplementRun(id, 'failedTwice')
+  // A later attempt reverted its scripts/checks/ change: main's run alone.
+  storeRuns(id, mainRun())
+  assert.equal(store.latestBranchRunFailed(id), false)
+  await approve(id)
+  assert.equal(runs.length, 0)
+  assert.equal(gateRow(id).state, 'merged')
+})
+
+test('HZ-406: a newer branch run decides — an older failure does not refuse a later pass', () => {
+  const id = acceptItem()
+  storeImplementRun(id, 'failedTwice')
+  storeImplementRun(id, 'passed')
+  assert.equal(store.latestBranchRunFailed(id), false)
+  storeImplementRun(id, 'failedTwice')
+  assert.equal(store.latestBranchRunFailed(id), true)
+})
+
+test('HZ-406: the branch-run lookup throws — pre-merge runs', async () => {
+  const id = acceptItem()
+  pass(id)
+  db.exec('ALTER TABLE test_result RENAME TO test_result_hidden')
+  try {
+    const res = await approve(id)
+    assert.equal(res.statusCode, 200)
+    assertRanPremerge(id)
+  } finally {
+    db.exec('ALTER TABLE test_result_hidden RENAME TO test_result')
+  }
+})

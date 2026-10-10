@@ -34,3 +34,11 @@ test('capWords leaves a short line alone and hard-cuts only a line with no space
   const solid = 'x'.repeat(300)
   assert.equal(capWords(solid, 200), `${'x'.repeat(199)}…`)
 })
+
+test("HZ-406: a failed branch check script's headline names the branch script", () => {
+  const plain = `${CHECK_HEADLINE_PREFIX}branch test.sh failed (exit 1)\n(branch test slot: sh -c cat scripts/checks/test.sh | sh)\nbroken`
+  assert.deepEqual(splitCheckError(plain), { cause: `${CHECK_HEADLINE_PREFIX}branch test.sh failed (exit 1)`, detail: plain })
+
+  const junit = `${CHECK_HEADLINE_PREFIX}branch test.sh: 4 failed, 31 passed: "credits", "debits", "fx", "accruals"\n(branch test slot: sh -c cat scripts/checks/test.sh | sh)\ndigest`
+  assert.equal(splitCheckError(junit).cause, `${CHECK_HEADLINE_PREFIX}branch test.sh: 4 failed, 31 passed: "credits", "debits", "fx", "accruals"`)
+})

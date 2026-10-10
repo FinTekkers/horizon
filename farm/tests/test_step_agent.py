@@ -2329,6 +2329,42 @@ def test_main_reports_a_failure_at_line_900_end_to_end(tmp_path, monkeypatch):
     assert len(error) <= step_agent.ERROR_MAX_CHARS
 
 
+def test_a_failing_branch_check_script_fails_the_implement_step_end_to_end(tmp_path, monkeypatch):
+    """HZ-406 metric 1 (SH-4): main's scripts/checks/test.sh exits 0 and the
+    item's own copy exits 1. The step fails, headlined by the branch script,
+    and reports no checks_passed_sha — so Accept has no pass to skip on."""
+    ws, origin = make_git_workspace(tmp_path)
+    (ws / "scripts" / "checks").mkdir(parents=True)
+    (ws / "scripts" / "checks" / "test.sh").write_text("exit 0\n")
+    git(ws, "add", "-A")
+    git(ws, "commit", "-m", "main's check script")
+    git(ws, "push", "--quiet", "origin", "main")
+    monkeypatch.setattr(step_agent, "ensure_item_worktree", lambda repo, item_id: ws)
+    monkeypatch.delenv("FARM_CHECK_CMD", raising=False)
+    monkeypatch.setattr(
+        step_agent, "run_agent", finished_run(ws, "scripts/checks/test.sh", "echo 'not ok 1 - new test'; exit 1\n")
+    )
+    task = make_task(11, "Specialist agent implements", repo="acme/demo")
+    task["check_commands"] = {"test": "git show origin/main:scripts/checks/test.sh | sh"}
+    task_file = tmp_path / "task.json"
+    task_file.write_text(json.dumps(task))
+    monkeypatch.setattr(sys, "argv", ["step_agent", "--task", str(task_file)])
+    posted = {}
+
+    def fake_post(url, json=None, timeout=None):
+        posted["json"] = json
+
+    monkeypatch.setattr(step_agent.httpx, "post", fake_post)
+
+    step_agent.main()
+
+    result = posted["json"]
+    assert result["ok"] is False
+    assert result["error"].startswith("repo checks failed: branch test.sh")
+    assert "artifacts" not in result and "checks_passed_sha" not in json.dumps(result)
+    assert [run["label"] for run in result["test_runs"]] == ["main", "branch"]
+
+
 def test_error_cap_fits_the_servers_fail_route_limit():
     """Over the route's maxLength, Fastify rejects the whole report with a 400
     and the failure is lost to a watchdog timeout."""
