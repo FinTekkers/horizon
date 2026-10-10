@@ -485,10 +485,18 @@ export async function forwardToAccept(id) {
   return res ? await res.json().catch(() => ({ ok: false })) : { ok: false }
 }
 
-export function togglePause(id) {
-  const item = items.find((it) => it.id === id)
-  if (!item) return
-  post(`/items/${id}/pause`, { paused: !item.paused })
+// HZ-385: sends the state the button shows, never a flip of this tab's cached
+// item, which a dead stream can leave stale. postJson so a 404 or 409 rejects
+// and the button shows it. The answer's `paused` is applied at once; the
+// stream's next delta for the item replaces the whole item, so the server
+// always has the last word.
+export async function setPaused(id, paused) {
+  const data = await postJson(`/items/${id}/pause`, { paused })
+  if (typeof data.paused === 'boolean') {
+    items = items.map((it) => (it.id === id ? { ...it, paused: data.paused } : it))
+    emit()
+  }
+  return data
 }
 
 // HZ-310: drops one edge. postJson (not the fire-and-forget post) so a 404 or

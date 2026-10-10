@@ -117,7 +117,7 @@ test('resume clears the block and redispatches implement with the same attempt a
   const runId = activeRunRow('RB-2', { attempt: 3, autoRetryCount: 2 })
   orchestrator.blockFarmRun(runId, BLOCK)
 
-  assert.deepEqual(store.setPaused('RB-2', false), { ok: true })
+  assert.deepEqual(store.setPaused('RB-2', false), { ok: true, paused: false })
 
   assert.equal(rawBlock('RB-2'), null)
   assert.equal(viewOf('RB-2').ruleBlock, null)

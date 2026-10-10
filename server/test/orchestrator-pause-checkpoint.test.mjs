@@ -82,7 +82,7 @@ const runStatus = (runId) => db.prepare('SELECT status FROM step_run WHERE id = 
 const eventTexts = (id) => db.prepare('SELECT text FROM event WHERE item_id = ? ORDER BY id').all(id).map((e) => e.text)
 
 async function pauseAndSettle(id) {
-  assert.deepEqual(store.setPaused(id, true), { ok: true })
+  assert.deepEqual(store.setPaused(id, true), { ok: true, paused: true })
   await orchestrator.pendingPause(id)
   return eventTexts(id)
 }
@@ -96,7 +96,7 @@ test('a pause closes the run at once, asks the farm to checkpoint, and returns b
   const answer = deferred()
   cancelReply = () => answer.promise
 
-  assert.deepEqual(store.setPaused('PC-1', true), { ok: true })
+  assert.deepEqual(store.setPaused('PC-1', true), { ok: true, paused: true })
 
   assert.equal(runStatus(runId), 'cancelled', 'the pause is never held up by the save')
   assert.deepEqual(cancels, [{ run_id: runId, reason: 'pause', checkpoint_timeout_s: 7 }])
@@ -150,7 +150,7 @@ test('the farm call is bounded by the pause bound plus 15s (22s for 7)', async (
     new Promise((_, reject) =>
       opts.signal.addEventListener('abort', () => reject(Object.assign(new Error('aborted'), { name: 'AbortError' }))),
     )
-  assert.deepEqual(store.setPaused('PC-SLOW', true), { ok: true })
+  assert.deepEqual(store.setPaused('PC-SLOW', true), { ok: true, paused: true })
   let settled = false
   orchestrator.pendingPause('PC-SLOW').then(() => (settled = true))
 
@@ -177,7 +177,7 @@ test('a resume while the pause is still saving waits for the save before dispatc
   cancelReply = () => answer.promise
   store.setPaused('PC-RESUME', true)
 
-  assert.deepEqual(store.setPaused('PC-RESUME', false), { ok: true })
+  assert.deepEqual(store.setPaused('PC-RESUME', false), { ok: true, paused: false })
   await new Promise((r) => setImmediate(r))
   assert.equal(dispatches.length, 0, 'the next attempt was dispatched before the checkpoint push landed')
   assert.equal(db.prepare("SELECT COUNT(*) AS n FROM step_run WHERE item_id = 'PC-RESUME' AND status = 'active'").get().n, 0)

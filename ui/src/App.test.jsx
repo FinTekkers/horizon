@@ -29,7 +29,7 @@ vi.mock('./api', () => ({
   getDeployBlock: () => null,
   approveGate: vi.fn(),
   requestChanges: vi.fn(),
-  togglePause: vi.fn(),
+  setPaused: vi.fn(),
   restartPhase: vi.fn(),
   setPersona: vi.fn(),
   setStepProvider: vi.fn(),
@@ -220,7 +220,7 @@ test('switching projects sends no write request, opens no dialog, and calls no i
   const calls = fetchSpy.mock.calls.map(([url, opts]) => ({ url: String(url), method: (opts?.method || 'GET').toUpperCase() }))
   expect(calls.filter((c) => c.method !== 'GET')).toEqual([])
   expect(calls.filter((c) => /\/activate|\/enabled|\/pause|\/abandon|\/phases\/[^/]+\/restart/.test(c.url))).toEqual([])
-  for (const action of ['setProjectEnabled', 'togglePause', 'abandonItem', 'restartPhase', 'approveGate', 'requestChanges']) {
+  for (const action of ['setProjectEnabled', 'setPaused', 'abandonItem', 'restartPhase', 'approveGate', 'requestChanges']) {
     expect(api[action], action).not.toHaveBeenCalled()
   }
   expect(document.body.textContent).not.toMatch(/restart farm|switch bot farm/i)
@@ -354,7 +354,7 @@ test('changing repo chips calls no api mutator and sends no write request', asyn
   fireEvent.click(getByRole('button', { name: 'Select all' }))
 
   expect(fetchSpy.mock.calls.filter(([, opts]) => (opts?.method || 'GET').toUpperCase() !== 'GET')).toEqual([])
-  for (const action of ['setProjectEnabled', 'togglePause', 'abandonItem', 'restartPhase', 'approveGate', 'requestChanges', 'setPersona']) {
+  for (const action of ['setProjectEnabled', 'setPaused', 'abandonItem', 'restartPhase', 'approveGate', 'requestChanges', 'setPersona']) {
     expect(api[action], action).not.toHaveBeenCalled()
   }
 })

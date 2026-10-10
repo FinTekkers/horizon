@@ -1,4 +1,4 @@
-import { useSyncExternalStore } from 'react'
+import { useRef, useState, useSyncExternalStore } from 'react'
 import {
   PHASES,
   ACCEPT_GATE_INDEX,
@@ -54,6 +54,28 @@ function BoardCard({ item, projects, durationEstimates, deployBlock, viewerName,
   const isActiveAgent =
     !closed && !abandoned && !awaiting && !rejected && !paused && !blocked && !ruleBlocked && cur && cur.kind === 'agent'
   const rejectTarget = awaiting && cur ? cur.label : cur ? cur.label : 'this step'
+  // HZ-385: each button sends the state it shows, once at a time, as the
+  // Tracker's does.
+  const pauseInFlight = useRef(false)
+  const [pauseBusy, setPauseBusy] = useState(false)
+  const [pauseFailed, setPauseFailed] = useState(false)
+  const sendPause = (e, wantPaused) => {
+    e.stopPropagation()
+    if (pauseInFlight.current) return
+    pauseInFlight.current = true
+    setPauseBusy(true)
+    setPauseFailed(false)
+    new Promise((resolve) => resolve(onTogglePause(item.id, wantPaused)))
+      .then(
+        () => false,
+        () => true,
+      )
+      .then((failed) => {
+        pauseInFlight.current = false
+        setPauseBusy(false)
+        setPauseFailed(failed)
+      })
+  }
   // HZ-226: at the Accept gate, the server's in-flight action (pre-merge
   // checks + merge, or conflict resolution) shows here as it does on the
   // Tracker. While it runs the line replaces the gate buttons; any finished
@@ -200,10 +222,9 @@ function BoardCard({ item, projects, durationEstimates, deployBlock, viewerName,
       {isActiveAgent && (
         <button
           className="btn-pause"
-          onClick={(e) => {
-            e.stopPropagation()
-            onTogglePause(item.id)
-          }}
+          disabled={pauseBusy}
+          aria-busy={pauseBusy || undefined}
+          onClick={(e) => sendPause(e, true)}
         >
           Pause work
         </button>
@@ -212,14 +233,15 @@ function BoardCard({ item, projects, durationEstimates, deployBlock, viewerName,
       {paused && (
         <button
           className="btn-resume"
-          onClick={(e) => {
-            e.stopPropagation()
-            onTogglePause(item.id)
-          }}
+          disabled={pauseBusy}
+          aria-busy={pauseBusy || undefined}
+          onClick={(e) => sendPause(e, false)}
         >
           Resume work
         </button>
       )}
+
+      {pauseFailed && <span role="alert">That did not go through — try again.</span>}
     </div>
   )
 }

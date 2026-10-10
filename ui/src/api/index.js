@@ -46,7 +46,7 @@ export const {
   requestChanges,
   resolveConflicts,
   forwardToAccept,
-  togglePause,
+  setPaused,
   restartPhase,
   setPersona,
   setStepProvider,
