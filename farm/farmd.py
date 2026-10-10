@@ -268,11 +268,13 @@ def _resolve_job_env(cwd: str, env_refs: dict) -> dict:
         value = dotenv.get(name, os.environ.get(name))
         if isinstance(value, str) and value:
             resolved[name] = value
-    # The two host credentials a job may reference without naming them in env.
-    for name in ("GITHUB_TOKEN", "GITHUB_WEBHOOK_SECRET"):
-        if name not in resolved and os.environ.get(name):
-            resolved[name] = os.environ[name]
     return resolved
+
+
+def _host_redact_values() -> dict:
+    """The two host credentials every job log is scrubbed of. Redaction only:
+    a command gets them in its env only when the plan's env block names them."""
+    return {name: os.environ[name] for name in ("GITHUB_TOKEN", "GITHUB_WEBHOOK_SECRET") if os.environ.get(name)}
 
 
 def _teardown() -> None:
@@ -790,7 +792,7 @@ def launch_job(task: dict) -> str:
     fd, tmp_name = tempfile.mkstemp(dir=str(active), prefix=f"{run_id}.env.", suffix=".json.tmp")
     try:
         with os.fdopen(fd, "w") as f:
-            f.write(json.dumps(env_values))
+            f.write(json.dumps({"env": env_values, "redact": _host_redact_values()}))
         os.chmod(tmp_name, 0o600)
         os.replace(tmp_name, env_path)
     except BaseException:
@@ -849,6 +851,10 @@ def _poll_jobs() -> None:
             try:
                 state = json.loads(state_file.read_text())
             except (OSError, json.JSONDecodeError):
+                state = None
+            # A previous run's state (before a Resume or re-dispatch) stays on
+            # disk until the new runner overwrites it: never report it as this run's.
+            if state and str(state.get("run_id")) != run_id:
                 state = None
             if not state or state.get("status") == "running":
                 name = JOB_SESSIONS.get(run_id) or _job_session_name(item_id)

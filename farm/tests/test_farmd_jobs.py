@@ -45,12 +45,12 @@ def job_payload(run_id, *, cwd="/tmp", commands=("echo hi",)):
     }
 
 
-def _write_finished(item_id, cwd, *, status="finished", summary=None):
+def _write_finished(item_id, cwd, *, status="finished", summary=None, run_id=9131):
     (STATE_DIR / "jobs").mkdir(parents=True, exist_ok=True)
     (STATE_DIR / "jobs" / f"{item_id}.json").write_text(
         json.dumps(
             {
-                "run_id": 9131,
+                "run_id": run_id,
                 "item_id": item_id,
                 "status": status,
                 "commands": [{"command": "echo hi", "cwd": cwd, "status": "done", "exit_code": 0}],
@@ -101,7 +101,7 @@ def test_a_budget_breach_forwards_the_non_retryable_reason(monkeypatch, fake_tmu
     instead of retrying."""
     farmd.JOB_SESSIONS.clear()
     farmd.launch_job(job_payload(9133, cwd=str(tmp_path)))
-    _write_finished("HZ-13", str(tmp_path), status="budget_exceeded")
+    _write_finished("HZ-13", str(tmp_path), status="budget_exceeded", run_id=9133)
     forwarded = []
     monkeypatch.setattr(farmd, "_forward_result", forwarded.append)
     try:
@@ -114,6 +114,44 @@ def test_a_budget_breach_forwards_the_non_retryable_reason(monkeypatch, fake_tmu
     assert len(forwarded) == 1
     assert forwarded[0]["ok"] is False
     assert forwarded[0]["reason"] == reasons.REASON["JOB_BUDGET_EXCEEDED"]
+
+
+def test_a_previous_runs_state_is_never_reported_for_a_new_run(monkeypatch, fake_tmux, tmp_path):
+    """Between a Resume's dispatch and its runner's first write, the item's
+    state file still holds the old run's result: it is not forwarded, and the
+    new run's task file stays claimed."""
+    farmd.JOB_SESSIONS.clear()
+    farmd.launch_job(job_payload(9132, cwd=str(tmp_path)))
+    _write_finished("HZ-13", str(tmp_path))  # run_id 9131
+    forwarded = []
+    monkeypatch.setattr(farmd, "_forward_result", forwarded.append)
+    try:
+        farmd._poll_jobs()
+        assert forwarded == []
+        assert (QUEUE_DIR / "jobs" / "active" / "9132.json").exists()
+    finally:
+        (QUEUE_DIR / "jobs" / "active" / "9132.json").unlink(missing_ok=True)
+        (QUEUE_DIR / "jobs" / "active" / "9132.env.json").unlink(missing_ok=True)
+        (STATE_DIR / "jobs" / "HZ-13.json").unlink(missing_ok=True)
+        farmd.JOB_SESSIONS.pop("9132", None)
+
+
+def test_host_credentials_ride_for_redaction_only(monkeypatch, fake_tmux, tmp_path):
+    """GITHUB_TOKEN and GITHUB_WEBHOOK_SECRET go in the env file's redact set,
+    never its env set, unless the plan's env block names them."""
+    monkeypatch.setenv("GITHUB_TOKEN", "ghtoken-sentinel-1")
+    monkeypatch.setenv("GITHUB_WEBHOOK_SECRET", "whsec-sentinel-1")
+    farmd.JOB_SESSIONS.clear()
+    farmd.launch_job(job_payload(9133, cwd=str(tmp_path)))
+    env_file = QUEUE_DIR / "jobs" / "active" / "9133.env.json"
+    try:
+        data = json.loads(env_file.read_text())
+    finally:
+        (QUEUE_DIR / "jobs" / "active" / "9133.json").unlink(missing_ok=True)
+        env_file.unlink(missing_ok=True)
+        farmd.JOB_SESSIONS.pop("9133", None)
+    assert data["env"] == {}
+    assert data["redact"] == {"GITHUB_TOKEN": "ghtoken-sentinel-1", "GITHUB_WEBHOOK_SECRET": "whsec-sentinel-1"}
 
 
 def test_job_dispatch_reports_started_so_no_agent_timer_bounds_it(running_farm, monkeypatch, fake_tmux, tmp_path):

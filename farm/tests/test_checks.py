@@ -203,6 +203,13 @@ def test_run_checks_hands_redact_secret_named_values_only():
     assert checks.redact("got abcd1234efgh back", checks.secret_values(env)) == "got [redacted] back"
 
 
+def test_secret_values_keeps_the_substring_name_match():
+    """Names the pre-HZ-378 regex masked stay masked: PASSWD, and secret words
+    that are not a whole _-separated part of the name."""
+    env = {"DB_PASSWD": "pw-value-123", "OPENAI_APIKEY": "apikey-value-1", "AUTHTOKEN": "authtok-value-1"}
+    assert checks.secret_values(env) == env
+
+
 def test_a_timeout_carries_no_digest(tmp_path, monkeypatch):
     monkeypatch.setenv("FARM_CHECK_TIMEOUT_S", "1")
     monkeypatch.setenv("FARM_CHECK_CMD", "sleep 5")

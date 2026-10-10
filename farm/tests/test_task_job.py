@@ -138,6 +138,49 @@ def test_budget_breach_kills_the_whole_process_group_fast(tmp_path, monkeypatch)
     assert all(_proc_gone(pid) for pid in pids), pids
 
 
+def test_a_reapproved_plan_reruns_commands_a_prior_run_finished(tmp_path):
+    """Done entries are reused only for the same approved hash: after a
+    re-approval, a command the old plan finished runs again."""
+    cwd = tmp_path / "repo"
+    cwd.mkdir()
+    old = plan_artifact(cwd, ["echo one >> order.txt"])
+    run_in(tmp_path, old)
+    new = plan_artifact(cwd, ["echo one >> order.txt"], budget_minutes=6)
+    summary, _state, _log = run_in(tmp_path, new)
+    assert summary == {"run": 1, "passed": 1, "failed": 0, "failing": []}
+    assert (cwd / "order.txt").read_text().splitlines() == ["one", "one"]
+
+
+def test_host_credentials_are_redacted_but_not_exported(tmp_path):
+    """redact_values mask the log only: a command the plan did not hand
+    GITHUB_TOKEN to cannot read it."""
+    token = "host-token-value-123"
+    _summary, _state, log = run_in_with_redact(
+        tmp_path,
+        plan_artifact(tmp_path, ["echo tok=${GITHUB_TOKEN:-unset}", f"echo {token}"]),
+        redact_values={"GITHUB_TOKEN": token},
+    )
+    assert "tok=unset" in log
+    assert token not in log
+    assert "[redacted]" in log
+
+
+def run_in_with_redact(tmp_path, artifact, redact_values):
+    state_path = tmp_path / "job.json"
+    log_path = tmp_path / "job.log"
+    summary = task_job.run_job(
+        run_id=7,
+        item_id="HZ-1",
+        plan_artifact=artifact,
+        approved_hash=task_job.plan_hash_of(artifact),
+        state_path=state_path,
+        log_path=log_path,
+        env_values={},
+        redact_values=redact_values,
+    )
+    return summary, json.loads(state_path.read_text()), log_path.read_text()
+
+
 DB_URL = "postgres://u:pw@h/db"
 
 

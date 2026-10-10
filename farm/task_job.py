@@ -90,13 +90,17 @@ def run_job(
     state_path,
     log_path,
     env_values: dict | None = None,
+    redact_values: dict | None = None,
 ) -> dict:
     """Runs the approved plan's commands in order. Returns the summary dict
     {run, passed, failed, failing}. Writes the state file and appends to the
     redacted log. Never raises for a command failure or budget breach — those
     are summary outcomes, not crashes. Raises ValueError only for an unreadable
     plan block (a dispatch bug, not a job outcome)."""
-    secrets = dict(env_values or {})
+    # Every value either set is masked in the log; only env_values reach the
+    # commands' environment (redact_values are host credentials the plan did
+    # not name).
+    secrets = {**(redact_values or {}), **(env_values or {})}
     state_path = Path(state_path)
     log_path = Path(log_path)
     log_path.parent.mkdir(parents=True, exist_ok=True)
@@ -109,7 +113,9 @@ def run_job(
     # Resume: keep passed commands done, retry everything else.
     prior = load_state(state_path)
     prior_done: dict[str, dict] = {}
-    if prior and isinstance(prior.get("commands"), list):
+    # Only a prior run of this same approved plan counts: after a re-approval
+    # every command runs again.
+    if prior and prior.get("approved_hash") == approved_hash and isinstance(prior.get("commands"), list):
         for entry in prior["commands"]:
             if (
                 isinstance(entry, dict)
@@ -167,7 +173,7 @@ def run_job(
     }
     save_state(state_path, state)
 
-    child = _child_env(secrets)
+    child = _child_env(env_values or {})
     job_start = time.monotonic()
     failing: list[str] = []
     passed = 0
@@ -263,14 +269,22 @@ def run_job(
     return state["summary"]
 
 
-def _read_env_file(path: str | None) -> dict:
+def _read_env_file(path: str | None) -> tuple[dict, dict]:
+    """(env, redact): the commands' env values, and the host credentials
+    that are only masked in the log."""
     if not path:
-        return {}
+        return {}, {}
     try:
         data = json.loads(Path(path).read_text())
     except (OSError, json.JSONDecodeError):
-        return {}
-    return {str(k): v for k, v in data.items() if isinstance(v, str)} if isinstance(data, dict) else {}
+        return {}, {}
+    if not isinstance(data, dict):
+        return {}, {}
+
+    def _strings(section) -> dict:
+        return {str(k): v for k, v in section.items() if isinstance(v, str)} if isinstance(section, dict) else {}
+
+    return _strings(data.get("env")), _strings(data.get("redact"))
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -292,7 +306,7 @@ def main(argv: list[str] | None = None) -> int:
     state_path = STATE_DIR / "jobs" / f"{item_id}.json"
     log_path = LOGS_DIR / f"farm-job-{str(item_id).lower()}.log"
     env_file = task.get("env_file")
-    secrets = _read_env_file(env_file)
+    secrets, redact_only = _read_env_file(env_file)
     try:
         if env_file:
             Path(env_file).unlink(missing_ok=True)
@@ -307,6 +321,7 @@ def main(argv: list[str] | None = None) -> int:
             state_path=state_path,
             log_path=log_path,
             env_values=secrets,
+            redact_values=redact_only,
         )
     except ValueError as exc:
         print(f"task_job: invalid run plan: {exc}", flush=True)

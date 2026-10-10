@@ -182,9 +182,8 @@ REDACT_MIN_LEN = 4
 # handing them to redact() unfiltered would redact the check command itself
 # (it is the value of FARM_CHECK_CMD) out of every failure. secret_values()
 # is the pre-HZ-378 rule for that path: only secret-NAMED values, of at
-# least _CHECKS_SECRET_MIN_LEN chars. A secret word must be a full
-# _-separated part of the name, so FARM_CHECK_CMD never matches.
-_SECRET_NAME_PARTS = frozenset({"TOKEN", "SECRET", "KEY", "PASSWORD", "CREDENTIAL", "CREDENTIALS"})
+# least _CHECKS_SECRET_MIN_LEN chars.
+_SECRET_NAME = re.compile(r"TOKEN|SECRET|KEY|PASSWORD|PASSWD|CREDENTIAL", re.IGNORECASE)
 _CHECKS_SECRET_MIN_LEN = 8
 
 
@@ -196,7 +195,7 @@ def secret_values(env) -> dict:
         for k, v in env.items()
         if isinstance(v, str)
         and len(v) >= _CHECKS_SECRET_MIN_LEN
-        and any(part in _SECRET_NAME_PARTS for part in str(k).upper().split("_"))
+        and _SECRET_NAME.search(str(k))
     }
 
 
