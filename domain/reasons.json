@@ -5,6 +5,7 @@
     { "id": "unreachable", "retryable": true },
     { "id": "turn_cap", "retryable": true },
     { "id": "required_input_incomplete", "retryable": false },
-    { "id": "read_only_violated", "retryable": false }
+    { "id": "read_only_violated", "retryable": false },
+    { "id": "plan_changed_since_approval", "retryable": false }
   ]
 }

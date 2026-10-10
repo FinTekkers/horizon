@@ -211,12 +211,14 @@ test('neither priority binding inlines a value — every priority, both files, i
 // argument to a requiredStepIndex() lookup for a derived index constant
 // (IMPLEMENT_STEP_INDEX and friends). That is a lookup BY label, which is
 // exactly the pattern this repo wants — the opposite of an inlined table. The
-// Python binding has no such lookup and gets no exemption.
+// Python binding has no such lookup and gets no exemption. HZ-384: a
+// kindStepIndex('label', 'kind') lookup is the same thing, scoped to one kind.
 const LOOKUP_CALL = /requiredStepIndex\((['"])(?:(?!\1)[^\\]|\\.)*\1\)/g
+const KIND_LOOKUP_CALL = /kindStepIndex\((['"])(?:(?!\1)[^\\]|\\.)*\1, '[a-z]+'\)/g
 
 test('neither binding inlines a second copy of the step table — every label, both files', () => {
   assert.ok(binding.STEPS.length > 0, 'sanity: the JS binding exports an empty table')
-  const jsWithoutLookups = jsSource.replace(LOOKUP_CALL, 'requiredStepIndex()')
+  const jsWithoutLookups = jsSource.replace(LOOKUP_CALL, 'requiredStepIndex()').replace(KIND_LOOKUP_CALL, 'kindStepIndex()')
   for (const step of binding.STEPS) {
     assert.ok(!jsWithoutLookups.includes(step.label), `label "${step.label}" is inlined in domain/js/lifecycle.js`)
     assert.ok(!pySource.includes(step.label), `label "${step.label}" is inlined in domain/py/steps.py`)
@@ -228,6 +230,8 @@ test('neither binding inlines a second copy of the step table — every label, b
   // the four derived constants' arguments, not a table.
   const stripped = (jsSource.match(LOOKUP_CALL) || []).length
   assert.equal(stripped, 4, `expected exactly 4 requiredStepIndex() label lookups in the binding, found ${stripped}`)
+  const strippedKind = (jsSource.match(KIND_LOOKUP_CALL) || []).length
+  assert.equal(strippedKind, 3, `expected exactly 3 kindStepIndex() label lookups in the binding, found ${strippedKind}`)
 })
 
 test('neither reason binding inlines a second copy of the vocabulary — every id, both files', () => {

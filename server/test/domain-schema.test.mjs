@@ -99,6 +99,12 @@ expectInvalid('a missing phases array (required)', { steps: [GATE_STEP] }, 'phas
 expectInvalid('a top-level extra key (additionalProperties)', { ...table(GATE_STEP), version: 2 }, 'version')
 expectInvalid('duplicate phase names (uniqueItems)', { phases: ['Plan', 'Plan'], steps: [GATE_STEP] }, 'unique')
 expectInvalid('a negative phase (minimum)', table({ ...GATE_STEP, phase: -1 }), 'phase')
+expectInvalid('humanOnly on an agent step (HZ-384, if/then)', table({ ...AGENT_STEP, humanOnly: true }), 'kind')
+expectInvalid('a non-boolean humanOnly (type)', table({ ...GATE_STEP, humanOnly: 'yes' }), 'humanOnly')
+
+test('POSITIVE CONTROL: a human-only gate validates clean (HZ-384)', () => {
+  assert.deepEqual(validate(schema, table(AGENT_STEP, { ...GATE_STEP, humanOnly: true })), [])
+})
 
 // ---- the validator refuses to fail open ----
 

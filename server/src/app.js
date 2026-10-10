@@ -35,6 +35,7 @@ import { marked } from 'marked'
 import { db } from './db.js'
 import { getActiveProjectId, getRepoUrl, setSetting, getToken } from './settings.js'
 import * as auth from './auth.js'
+import { mintHumanProof } from './humanProof.js'
 import { diffSnapshot, makeBaseline } from './streamDelta.js'
 import { googleAuth } from './googleAuth.js'
 import { isAllowedEmail } from './loginAllowlist.js'
@@ -179,9 +180,13 @@ export function snapshot({ scope = 'active', estimates = true, checks = true, st
 // HZ-179: only a browser session can pass a gate. A personal API token plus
 // a valid PIN is still refused — checked as "not a session" rather than "is a
 // token" so any future credential type is locked out of gates by default.
+//
+// HZ-384: returns a human proof (humanProof.js), not just `true` — still
+// truthy for every `if (!humanAuthorized(...))` caller. The approve route hands
+// it on, and store.approveGate refuses a humanOnly gate without it.
 function humanAuthorized(request, reply) {
   if (request.auth?.via === 'session' && auth.verifyGatePin(request.user.id, request.headers['x-human-key'] || '')) {
-    return true
+    return mintHumanProof({ userId: request.user.id })
   }
   reply.code(401).send({ error: 'human_gate_key_required' })
   return false
@@ -1064,7 +1069,10 @@ export function buildApp({ logger = true, onRoute = null } = {}) {
   // {error:'not_found'|'not_at_gate'|'stale_step'}) or {error, status} for a
   // pre-merge/merge/close failure (502) or a pre-merge check already running
   // (409), which the routes send with that status.
-  async function performGateApproval(id, stepIndex, notes, actor = 'You') {
+  //
+  // HZ-384: `human` is { proof, planHash } from the browser route only. A
+  // humanOnly gate refused for want of the proof comes back as a 403.
+  async function performGateApproval(id, stepIndex, notes, actor = 'You', human = {}) {
     // Accepting the code means merging its PR — the gate does not advance if
     // the pre-merge checks or the merge fail, and the reason is logged to the
     // item's activity.
@@ -1167,7 +1175,8 @@ export function buildApp({ logger = true, onRoute = null } = {}) {
       const filed = await split.fileApprovedSplit(item, actor)
       if (filed.error) return filed
     }
-    const result = store.approveGate(id, stepIndex, notes, actor)
+    const result = store.approveGate(id, stepIndex, notes, actor, human)
+    if (result.error === 'human_pin_required') return { ...result, status: 403 }
     // Approval notes are decisions — mirror them onto the issue thread.
     if (!result.error && notes && item?.repo && item.issue != null) {
       github
@@ -1195,7 +1204,7 @@ export function buildApp({ logger = true, onRoute = null } = {}) {
   // HZ-272: resolveConflicts is the Resolve-conflicts button's run, for the
   // caretaker at Accept the code (caretakerAccept.js).
   const gateActions = {
-    approve: (id, stepIndex, notes, actor) => performGateApproval(id, stepIndex, notes, actor),
+    approve: (id, stepIndex, notes, actor, human) => performGateApproval(id, stepIndex, notes, actor, human),
     sendBack: (id, opts, actor) => performSendBack(id, opts, actor),
     resolveConflicts: (id, actor, opts) => orchestrator.resolveConflicts(id, actor, opts),
   }
@@ -1212,17 +1221,23 @@ export function buildApp({ logger = true, onRoute = null } = {}) {
         },
         body: {
           type: 'object',
-          properties: { notes: { type: 'string', maxLength: 2000 } },
+          properties: {
+            notes: { type: 'string', maxLength: 2000 },
+            // HZ-384: the run plan hash the Approve the run card showed.
+            planHash: { type: 'string', maxLength: 128 },
+          },
         },
-        response: { 200: OK_OBJECT, 401: ERROR_OBJECT, 404: ERROR_OBJECT, 409: ERROR_OBJECT, 502: ERROR_OBJECT },
+        response: { 200: OK_OBJECT, 401: ERROR_OBJECT, 403: ERROR_OBJECT, 404: ERROR_OBJECT, 409: ERROR_OBJECT, 502: ERROR_OBJECT },
         security: HUMAN_GATE_SECURITY,
       },
     },
     async (request, reply) => {
-      if (!humanAuthorized(request, reply)) return
+      const proof = humanAuthorized(request, reply)
+      if (!proof) return
       const { id, stepIndex } = request.params
       const notes = (request.body?.notes || '').trim()
-      const result = await gateActions.approve(id, stepIndex, notes, actorOf(request))
+      const planHash = request.body?.planHash || null
+      const result = await gateActions.approve(id, stepIndex, notes, actorOf(request), { proof, planHash })
       if (result.status) return reply.code(result.status).send(gateFailureBody(result))
       return send(reply, result)
     },

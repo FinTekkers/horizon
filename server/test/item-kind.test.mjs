@@ -121,10 +121,11 @@ test('restartPhase on a task restarts that kind\'s phase, never a change row', (
   assert.equal(store.getItem('K-RESTART').cursor, kindStepIndex('Assess', 'task'))
 })
 
+// HZ-384: Approve the run sends back to Run plan instead (task-approve-run-gate.test.mjs).
 test('a send-back from a task gate walks to that kind\'s nearest agent step', () => {
-  insertItem.run('K-SENDBACK', 'Task send-back', 'Medium', kindStepIndex('Approve the run', 'task'), 'task')
-  assert.deepEqual(store.requestChanges('K-SENDBACK', 'run gate', 'needs work'), { ok: true })
-  assert.equal(store.getItem('K-SENDBACK').cursor, kindStepIndex('Impact review', 'task'))
+  insertItem.run('K-SENDBACK', 'Task send-back', 'Medium', kindStepIndex('Approve & prioritize', 'task'), 'task')
+  assert.deepEqual(store.requestChanges('K-SENDBACK', 'intake gate', 'needs work'), { ok: true })
+  assert.equal(store.getItem('K-SENDBACK').cursor, kindStepIndex('Guardrails', 'task'))
 })
 
 test('a send-back naming a change step from a task gate is an invalid target', () => {
@@ -135,11 +136,12 @@ test('a send-back naming a change step from a task gate is an invalid target', (
   assert.equal(store.getItem('K-CROSS').cursor, kindStepIndex('Approve the run', 'task'))
 })
 
+// HZ-384: Approve the run itself needs a human proof (task-approve-run-gate.test.mjs).
 test('approving a task gate advances within the task rows', () => {
-  const gate = kindStepIndex('Approve the run', 'task')
+  const gate = kindStepIndex('Approve & prioritize', 'task')
   insertItem.run('K-ADVANCE', 'Task advance', 'Medium', gate, 'task')
   assert.deepEqual(store.approveGate('K-ADVANCE', gate, ''), { ok: true, closed: false })
-  assert.equal(store.getItem('K-ADVANCE').cursor, kindStepIndex('Execute', 'task'))
+  assert.equal(store.getItem('K-ADVANCE').cursor, kindStepIndex('Assess', 'task'))
 })
 
 test('a closed task reports its own final phase, not the change one', () => {

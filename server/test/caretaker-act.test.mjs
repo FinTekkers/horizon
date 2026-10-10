@@ -247,7 +247,8 @@ test('one code path: the UI routes and the caretaker call the same gateActions f
     payload: { target: 'Review before execution', feedback: 'redo it' },
   })
   assert.equal(reject.statusCode, 200)
-  assert.deepEqual(callsFor('UI-5').map((c) => [c.fn, c.args.at(-1)]), [['approve', 'Alice Example']])
+  // HZ-384: the route also hands on its human proof, after the actor.
+  assert.deepEqual(callsFor('UI-5').map((c) => [c.fn, c.args[3]]), [['approve', 'Alice Example']])
   assert.deepEqual(callsFor('UI-10').map((c) => [c.fn, c.args.at(-1)]), [['sendBack', 'Alice Example']])
   // ...and the caretaker's calls (previous tests) went through the same spies.
   assert.ok(calls.some((c) => c.fn === 'approve' && c.args.at(-1) === 'Caretaker'))

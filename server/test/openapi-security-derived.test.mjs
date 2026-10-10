@@ -108,8 +108,12 @@ const APP_SOURCE = readFileSync(join(REPO_ROOT, 'server/src/app.js'), 'utf8')
 
 // Anchored on the CALL form. A bare count of "humanAuthorized(request, reply)"
 // returns one more than the number of gates, because the function's own
-// declaration matches the same text.
-const HUMAN_GATE_CALL_SITES = APP_SOURCE.match(/if \(!humanAuthorized\(request, reply\)\) return/g) || []
+// declaration matches the same text. HZ-384: the approve route keeps the
+// proof it returns, then makes the same check on it.
+const HUMAN_GATE_CALL_SITES =
+  APP_SOURCE.match(
+    /if \(!humanAuthorized\(request, reply\)\) return|const proof = humanAuthorized\(request, reply\)\n\s*if \(!proof\) return/g,
+  ) || []
 
 test('the call-site count is a real count, and excludes the declaration', () => {
   assert.ok(HUMAN_GATE_CALL_SITES.length >= 3, `found ${HUMAN_GATE_CALL_SITES.length} humanAuthorized call sites`)

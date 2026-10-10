@@ -444,7 +444,8 @@ test('one code path: the UI routes and the caretaker call the same gateActions.a
   assert.equal(approve.statusCode, 200)
   const resolve = await app.inject({ method: 'POST', url: '/api/items/UI-rs/resolve-conflicts', headers: sessionHeaders })
   assert.equal(resolve.statusCode, 409, 'not conflicted')
-  assert.deepEqual(callsFor('UI-13').map((c) => [c.fn, c.args.at(-1)]), [['approve', 'Alice Example']])
+  // HZ-384: the route also hands on its human proof, after the actor.
+  assert.deepEqual(callsFor('UI-13').map((c) => [c.fn, c.args[3]]), [['approve', 'Alice Example']])
   assert.deepEqual(callsFor('UI-rs').map((c) => [c.fn, c.args[1]]), [['resolveConflicts', 'Alice Example']])
   // ...and the caretaker's calls (previous tests) went through the same spies.
   assert.ok(calls.some((c) => c.fn === 'approve' && c.args[1] === 13 && c.args.at(-1) === 'Caretaker'))

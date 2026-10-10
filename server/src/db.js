@@ -437,7 +437,10 @@ db.exec(`
 // 'change' default, so every existing row backfills to today's behaviour with
 // no data rewrite, and the CHECK pins the vocabulary at the storage layer
 // (store.js's unknown_item_kind refusal is what callers see).
-for (const column of ['pr INTEGER', 'pr_url TEXT', 'pr_mergeable INTEGER', 'release_tag TEXT', 'release_url TEXT', 'repo TEXT', 'project_id INTEGER', 'persona TEXT', 'personas_json TEXT', 'review_cycle_count INTEGER NOT NULL DEFAULT 0', 'abandoned_at TEXT', 'abandoned_reason TEXT', 'abandoned_by TEXT', 'notified_step INTEGER', 'last_reviewed_sha TEXT', 'fix_pass INTEGER NOT NULL DEFAULT 0', 'fix_findings_json TEXT', 'forwarded_review_run_id INTEGER', 'forwarded_by TEXT', 'forwarded_sha TEXT', 'rule_block_json TEXT', 'provider_choices_json TEXT', "kind TEXT NOT NULL DEFAULT 'change' CHECK (kind IN ('change','task'))"]) {
+// approved_plan_hash (HZ-384): sha256 of the Run plan artifact a human approved
+// at a Task's Approve the run gate. NULL = no approved plan; a send-back
+// clears it, and Execute refuses to start unless it matches the current plan.
+for (const column of ['pr INTEGER', 'pr_url TEXT', 'pr_mergeable INTEGER', 'release_tag TEXT', 'release_url TEXT', 'repo TEXT', 'project_id INTEGER', 'persona TEXT', 'personas_json TEXT', 'review_cycle_count INTEGER NOT NULL DEFAULT 0', 'abandoned_at TEXT', 'abandoned_reason TEXT', 'abandoned_by TEXT', 'notified_step INTEGER', 'last_reviewed_sha TEXT', 'fix_pass INTEGER NOT NULL DEFAULT 0', 'fix_findings_json TEXT', 'forwarded_review_run_id INTEGER', 'forwarded_by TEXT', 'forwarded_sha TEXT', 'rule_block_json TEXT', 'provider_choices_json TEXT', "kind TEXT NOT NULL DEFAULT 'change' CHECK (kind IN ('change','task'))", 'approved_plan_hash TEXT']) {
   try {
     db.exec(`ALTER TABLE work_item ADD COLUMN ${column}`)
   } catch {
@@ -590,6 +593,12 @@ if (!db.prepare('PRAGMA table_info(project)').all().some((column) => column.name
 // row from before this column, which only a human could have started.
 if (!db.prepare('PRAGMA table_info(gate_action)').all().some((column) => column.name === 'started_by')) {
   db.exec('ALTER TABLE gate_action ADD COLUMN started_by TEXT')
+}
+
+// HZ-384: the Run plan hash an Approve the run decision approved. NULL on
+// every other decision, and on every row from before this column.
+if (!db.prepare('PRAGMA table_info(gate_decision)').all().some((column) => column.name === 'plan_hash')) {
+  db.exec('ALTER TABLE gate_decision ADD COLUMN plan_hash TEXT')
 }
 
 // HZ-245: per-repo check commands, set by a human in Admin. Additive and

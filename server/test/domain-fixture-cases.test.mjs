@@ -143,10 +143,35 @@ test('js/index constants: each resolves to its own step BY LABEL, never by a pin
   // Deliberately not an integer comparison: domain-step-pins.test.mjs already
   // owns "step 11 is the implement step". Asserting the label here means
   // inserting a step breaks one file, not two.
-  for (const name of ['IMPLEMENT_STEP_INDEX', 'REVIEW_STEP_INDEX', 'ACCEPT_GATE_INDEX', 'DEPLOY_STEP_INDEX']) {
+  for (const name of [
+    'IMPLEMENT_STEP_INDEX',
+    'REVIEW_STEP_INDEX',
+    'ACCEPT_GATE_INDEX',
+    'DEPLOY_STEP_INDEX',
+    'RUN_PLAN_STEP_INDEX',
+    'APPROVE_RUN_GATE_INDEX',
+    'EXECUTE_STEP_INDEX',
+  ]) {
     for (const c of js[name]) {
       assert.equal(binding.STEPS[binding[name]].label, c.expectLabel, `${name}: ${c.case}`)
     }
+  }
+})
+
+test('js/isHumanOnlyGate: only a gate steps.json marks humanOnly', () => {
+  for (const c of js.isHumanOnlyGate) {
+    const index = c.label ? binding.requiredStepIndex(c.label) : c.index
+    assert.equal(binding.isHumanOnlyGate(index), c.expect, c.case)
+  }
+})
+
+test('js/humanOnlyGateIndexes', () => {
+  for (const c of js.humanOnlyGateIndexes) {
+    assert.deepEqual(
+      binding.humanOnlyGateIndexes().map((i) => binding.STEPS[i].label),
+      c.expectLabels,
+      c.case,
+    )
   }
 })
 

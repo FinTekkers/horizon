@@ -29,7 +29,7 @@
 
 import { db } from './db.js'
 import * as store from './store.js'
-import { STEPS, requiredStepIndex, ACCEPT_GATE_INDEX } from '../../domain/js/lifecycle.js'
+import { STEPS, requiredStepIndex, ACCEPT_GATE_INDEX, humanOnlyGateIndexes } from '../../domain/js/lifecycle.js'
 import { ACTOR, redact } from './caretakerRules.js'
 import { CHECK_HEADLINE_PREFIX, capWords } from './checkHeadline.js'
 import { loadPolicy, REPEAT_SEND_BACK_RULE } from './caretaker.js'
@@ -41,9 +41,13 @@ import { CARETAKER_HOURLY_LIMIT, REVIEW_CYCLE_CAP, WA_NOTIFY_ENABLED, WA_NOTIFY_
 export const ACT_GATES = ['Approve the high-level design', 'Review before execution', 'Review the work & close'].map(
   (label) => requiredStepIndex(label),
 )
-const NEVER_ACT = [requiredStepIndex('Approve & prioritize this work'), ACCEPT_GATE_INDEX]
+// HZ-384: a humanOnly gate (a Task's Approve the run) is never acted on
+// either. The approve path would refuse it anyway; refuseHumanOnlyApprovals
+// below logs the decision instead of trying.
+const HUMAN_ONLY_GATES = humanOnlyGateIndexes()
+const NEVER_ACT = [requiredStepIndex('Approve & prioritize this work'), ACCEPT_GATE_INDEX, ...HUMAN_ONLY_GATES]
 if (ACT_GATES.some((g) => NEVER_ACT.includes(g))) {
-  throw new Error(`caretakerActor: ACT_GATES ${JSON.stringify(ACT_GATES)} includes gate 3 or gate 13`)
+  throw new Error(`caretakerActor: ACT_GATES ${JSON.stringify(ACT_GATES)} includes gate 3, gate 13 or a human-only gate`)
 }
 
 export { ACTOR }
@@ -60,14 +64,16 @@ const FAILED_RUNS_STOP = 2
 // second as the evaluation also retires it — the safe side of the tie.
 // HZ-273: exported as the one WHERE fragment (aliases c, w, p) that
 // caretakerRuling.js's query shares, so the safety rules have one copy.
-export const ACTIONABLE_EVAL_SQL = `p.autopilot = 'on' AND p.enabled = 1 AND c.mode = 'on'
-     AND c.gate_index IN (${ACT_GATES.join(',')}) AND w.cursor = c.gate_index
+// HZ-384: the same rules over another gate list, for the human-only refusals.
+const actionableEvalSql = (gates) => `p.autopilot = 'on' AND p.enabled = 1 AND c.mode = 'on'
+     AND c.gate_index IN (${gates.join(',')}) AND w.cursor = c.gate_index
      AND w.abandoned_at IS NULL
      AND c.arrival_run_id = COALESCE((SELECT MAX(s.id) FROM step_run s WHERE s.item_id = w.id
            AND s.step_index = w.cursor - 1 AND s.status = 'done'), 0)
      AND NOT EXISTS (SELECT 1 FROM caretaker_action a WHERE a.eval_id = c.id)
      AND NOT EXISTS (SELECT 1 FROM project_event pe WHERE pe.project_id = p.id AND pe.kind = 'autopilot'
            AND pe.new_value <> 'on' AND pe.created_at >= c.created_at)`
+export const ACTIONABLE_EVAL_SQL = actionableEvalSql(ACT_GATES)
 const CANDIDATE_SQL = `
   SELECT c.id AS eval_id, c.item_id, c.gate_index, c.arrival_run_id, c.decision, c.rule_id, c.reason, c.comment,
          w.project_id, w.review_cycle_count, p.name AS project_name
@@ -111,6 +117,18 @@ const insertPing = db.prepare(`
   INSERT OR IGNORE INTO caretaker_ping (project_id, item_id, reason, dedupe_key, recipient, body, created_at_ms)
   VALUES (?, ?, ?, ?, ?, ?, ?)
 `)
+// HZ-384: 'approve' decisions for the current arrival at a human-only gate.
+// Never claimed for an action — only recorded as skipped, once per arrival.
+const selectHumanOnlyApprovals = HUMAN_ONLY_GATES.length
+  ? db.prepare(`
+  SELECT c.id AS eval_id, c.item_id, c.gate_index, w.project_id
+    FROM caretaker_eval c
+    JOIN work_item w ON w.id = c.item_id
+    JOIN project p ON p.id = w.project_id
+   WHERE ${actionableEvalSql(HUMAN_ONLY_GATES)}
+     AND c.decision = 'approve'
+   ORDER BY c.id`)
+  : null
 const selectRecentLimitPing = db.prepare(
   "SELECT 1 FROM caretaker_ping WHERE project_id = ? AND reason = 'hourly_limit' AND created_at_ms > ? LIMIT 1",
 )
@@ -269,6 +287,27 @@ function sendBackComment(c, log) {
   return c.comment
 }
 
+// HZ-384: the caretaker never approves a human-only gate, whatever it
+// decided. Each such decision becomes one 'skipped' action row — which does
+// not count toward the hourly limit — and one activity event, in one
+// transaction; the row's eval_id UNIQUE makes it once per arrival. Nothing
+// here calls gateActions. Returns how many it refused.
+export function refuseHumanOnlyApprovals({ now = Date.now } = {}) {
+  if (!selectHumanOnlyApprovals) return 0
+  let refused = 0
+  for (const c of selectHumanOnlyApprovals.all()) {
+    db.transaction(() => {
+      insertAction.run(c.eval_id, c.project_id, c.item_id, c.gate_index, 'approve', 'skipped', 'human_pin_required', now())
+      insertEvent.run(
+        c.item_id,
+        `Autopilot did not approve “${STEPS[c.gate_index].label}”: it needs a human with the gate PIN — left for a human`,
+      )
+    })()
+    refused++
+  }
+  return refused
+}
+
 let acting = false
 
 // Exported for the tests; init() below is the only production caller. Never
@@ -295,6 +334,11 @@ export async function actOnDecisions({
       if (queued > 0) log?.info?.(`caretaker: ${queued} item(s) need a human — pinged the owner`)
     } catch (err) {
       log?.error?.(`caretaker: help pings could not be queued: ${redact(err?.message)}`)
+    }
+    try {
+      if (refuseHumanOnlyApprovals({ now }) > 0) changed = true
+    } catch (err) {
+      log?.error?.(`caretaker: human-only refusals could not be recorded: ${redact(err?.message)}`)
     }
     for (const c of selectCandidates.all()) {
       try {

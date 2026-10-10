@@ -236,6 +236,22 @@ export const IMPLEMENT_STEP_INDEX = requiredStepIndex('Specialist agent implemen
 export const REVIEW_STEP_INDEX = requiredStepIndex('Automated review (code + QA)')
 export const ACCEPT_GATE_INDEX = requiredStepIndex('Accept the code')
 export const DEPLOY_STEP_INDEX = requiredStepIndex('Deploy the changes')
+// HZ-384: a Task's run plan, the human-only gate that approves it, and the
+// step that may only start on the plan that gate approved. Looked up within
+// the task kind, the same lookup BY label the constants above use.
+export const RUN_PLAN_STEP_INDEX = kindStepIndex('Run plan', 'task')
+export const APPROVE_RUN_GATE_INDEX = kindStepIndex('Approve the run', 'task')
+export const EXECUTE_STEP_INDEX = kindStepIndex('Execute', 'task')
+
+// HZ-384: a gate steps.json marks `humanOnly` passes only for a human with the
+// gate PIN — server/src/store.js approveGate enforces it for every caller.
+export function isHumanOnlyGate(index) {
+  return STEPS[index]?.kind === 'gate' && STEPS[index].humanOnly === true
+}
+
+export function humanOnlyGateIndexes(steps = STEPS) {
+  return steps.map((s, i) => (s.kind === 'gate' && s.humanOnly === true ? i : -1)).filter((i) => i >= 0)
+}
 
 // Every agent-kind step index of one item kind, in order — the derived
 // default for FARM_STEP_INDEXES (server/src/config.js retains the env override
@@ -329,6 +345,7 @@ export function reworkTargets(gateIndex, kind = stepKindOf(STEPS[gateIndex])) {
 export function defaultReworkTarget(gateIndex, kind = stepKindOf(STEPS[gateIndex])) {
   assertItemKind(kind)
   if (gateIndex === ACCEPT_GATE_INDEX) return IMPLEMENT_STEP_INDEX
+  if (gateIndex === APPROVE_RUN_GATE_INDEX) return RUN_PLAN_STEP_INDEX
   const first = firstStepIndex(kind)
   let idx = gateIndex
   while (idx > first && STEPS[idx].kind !== 'agent') idx--

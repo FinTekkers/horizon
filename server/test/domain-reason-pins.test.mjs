@@ -27,10 +27,19 @@ import { REPO_ROOT } from './helpers/repoFiles.mjs'
 
 // The vocabulary as it stood before HZ-132 moved it, typed out.
 // HZ-387 added read_only_violated, non-retryable: the retryable set is unchanged.
-const PINNED_IDS = ['never_picked_up', 'timeout', 'unreachable', 'turn_cap', 'required_input_incomplete', 'read_only_violated']
+// HZ-384 added plan_changed_since_approval, non-retryable: same again.
+const PINNED_IDS = [
+  'never_picked_up',
+  'timeout',
+  'unreachable',
+  'turn_cap',
+  'required_input_incomplete',
+  'read_only_violated',
+  'plan_changed_since_approval',
+]
 const PINNED_RETRYABLE = ['never_picked_up', 'timeout', 'turn_cap', 'unreachable']
 
-test('PIN: the declared vocabulary is exactly these six reasons', () => {
+test('PIN: the declared vocabulary is exactly these seven reasons', () => {
   assert.deepEqual([...REASON_IDS].sort(), [...PINNED_IDS].sort())
   assert.equal(REASONS.length, PINNED_IDS.length)
 })
@@ -47,6 +56,11 @@ test('PIN: required_input_incomplete is declared but NOT retryable — a capacit
 test('PIN: read_only_violated is declared but NOT retryable — the item pauses on an unrestored or violated worktree', () => {
   assert.equal(isRetryable('read_only_violated'), false)
   assert.equal(REASONS.find((r) => r.id === 'read_only_violated').retryable, false)
+})
+
+test('PIN: plan_changed_since_approval is declared but NOT retryable — a human must approve the run again', () => {
+  assert.equal(isRetryable('plan_changed_since_approval'), false)
+  assert.equal(REASONS.find((r) => r.id === 'plan_changed_since_approval').retryable, false)
 })
 
 test('AUTO_RETRY_REASONS is DERIVED from the retryable flag, not a second list — criterion 2', () => {

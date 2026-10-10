@@ -25,6 +25,7 @@ import {
   requiredStepIndex,
   itemKindOf,
   kindStepIndex,
+  EXECUTE_STEP_INDEX,
 } from '../../domain/js/lifecycle.js'
 import { AUTO_RETRY_REASONS, REASON } from '../../domain/js/reasons.js'
 import { patchLimits, addedCriteriaLines } from '../../domain/js/fields.js'
@@ -54,6 +55,7 @@ import {
   stepSlug,
   providerDefaultsFromRow,
   resolveStepProviders,
+  approvedPlanCheck,
 } from './store.js'
 import { createMockPr, createDeployRelease, postIssueComment, syncIssueBodyFields, createPrFromBranch, getPrHeadSha } from './github.js'
 import { PHASES } from '../../domain/js/lifecycle.js'
@@ -1285,6 +1287,7 @@ async function dispatchToFarm(id, stepIndex, runId, attempt, scope, checkoutSha 
       .join('; ')
     return failFarmRun(runId, `required input incomplete: ${detail}`, REASON.REQUIRED_INPUT_INCOMPLETE)
   }
+  if (refuseUnapprovedRun(runId, id, stepIndex)) return
 
   const artifacts = budgeted.map(({ label, content }) => ({ label, content }))
   if (overlapInput) artifacts.push(overlapInput)
@@ -2349,6 +2352,27 @@ export function failFarmRun(runId, error, reason = null) {
   notifyChange()
   emitStepEnded(id)
   return { ok: true }
+}
+
+// HZ-384: a Task's Execute starts only on the run plan a human approved at
+// Approve the run. Returns null when the run may go ahead (any other step, or
+// a plan that still matches); otherwise fails the run, pausing the item, and
+// returns the store's check result. Execute is runsIn none until HZ-378, so
+// dispatchToFarm cannot reach this for it yet; the tests call it directly.
+export function refuseUnapprovedRun(runId, id, stepIndex) {
+  if (stepIndex !== EXECUTE_STEP_INDEX) return null
+  const check = approvedPlanCheck(id)
+  if (!check.error) return null
+  if (check.error === REASON.PLAN_CHANGED_SINCE_APPROVAL) {
+    failFarmRun(
+      runId,
+      'the run plan changed since it was approved — send it back to Run plan and approve it again',
+      REASON.PLAN_CHANGED_SINCE_APPROVAL,
+    )
+  } else {
+    failFarmRun(runId, 'the run plan was never approved — approve it at Approve the run first')
+  }
+  return check
 }
 
 // HZ-346: an implement run that stopped on a rule with no code changes. Not

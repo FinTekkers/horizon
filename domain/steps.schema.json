@@ -77,9 +77,18 @@
         "awaitsSpawnedCode": {
           "$comment": "HZ-379: this step starts only once every closed spawned dependency's merge is live, and runs on that checkout.",
           "type": "boolean"
+        },
+        "humanOnly": {
+          "$comment": "HZ-384: this gate passes only for a human with the gate PIN — never Autopilot, WhatsApp or a token, whatever the project's Autopilot mode (server/src/store.js approveGate).",
+          "type": "boolean"
         }
       },
       "allOf": [
+        {
+          "$comment": "HZ-384: only a gate can be human-only.",
+          "if": { "required": ["humanOnly"] },
+          "then": { "properties": { "kind": { "enum": ["gate"] } } }
+        },
         {
           "$comment": "HZ-379: a step that spawns says what kind it files.",
           "if": { "required": ["spawnsOn"] },
