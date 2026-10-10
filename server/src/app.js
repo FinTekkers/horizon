@@ -44,6 +44,7 @@ import * as waPollVotes from './waPollVotes.js'
 import { STEPS, isItemKind } from '../../domain/js/lifecycle.js'
 import { intakeFields } from '../../domain/js/fields.js'
 import { PRIORITIES, DEFAULT_PRIORITY } from '../../domain/js/priorities.js'
+import { choiceValues } from '../../domain/js/providers.js'
 import { PERSONAS } from './personas.js'
 import * as definitions from './definitions.js'
 import * as rulesStore from './rulesStore.js'
@@ -1570,7 +1571,9 @@ export function buildApp({ logger = true, onRoute = null } = {}) {
   )
 
   // HZ-357: choose which provider runs one step of this item ("Runs on" on the
-  // item page). `default` clears the choice. Only steps domain/steps.json marks
+  // item page). HZ-398: or which model — the values are domain/providers.json's
+  // choiceValues(), so a provider or model added there needs no change here.
+  // `default` clears the choice. Only steps domain/steps.json marks
   // providerOverrideEligible take one; any other step is a 400 and nothing is
   // saved. The next dispatch of that step reads the item, never a run already
   // in progress. PUT because it sets a value idempotently.
@@ -1586,7 +1589,7 @@ export function buildApp({ logger = true, onRoute = null } = {}) {
         body: {
           type: 'object',
           required: ['provider'],
-          properties: { provider: { type: 'string', enum: ['default', ...store.STEP_PROVIDERS] } },
+          properties: { provider: { type: 'string', enum: ['default', ...choiceValues()] } },
         },
         response: { 200: OK_OBJECT, 400: ERROR_OBJECT, 404: ERROR_OBJECT, 409: ERROR_OBJECT },
       },
@@ -2638,7 +2641,7 @@ export function buildApp({ logger = true, onRoute = null } = {}) {
           // propertyNames, not additionalProperties: false, which Fastify's
           // ajv strips silently — an extra key is refused outright.
           propertyNames: { enum: ['provider'] },
-          properties: { provider: { type: 'string', enum: ['default', ...store.STEP_PROVIDERS] } },
+          properties: { provider: { type: 'string', enum: ['default', ...choiceValues()] } },
         },
         response: { 200: OK_OBJECT, 400: ERROR_OBJECT, 401: ERROR_OBJECT, 404: ERROR_OBJECT },
       },

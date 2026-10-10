@@ -9,10 +9,10 @@ only to run_agent(); none of them know or care which provider actually ran.
 
 import json
 import os
-import re
 from pathlib import Path
 from typing import Any, Callable, Iterator, NamedTuple
 
+from domain.py import providers as domain_providers
 from domain.py.personas import resolve_model
 
 from .config import FARM_PROVIDER, MAX_TURNS, STATE_DIR, STEP_TIMEOUT_S
@@ -50,8 +50,9 @@ _PROVIDERS = {"claude": claude, "muse": muse}
 # — see run_agent()'s check below, which is the actual enforcement point
 # (this used to be enforced only on the persona-override path, in
 # step_agent.py's PROVIDER_OVERRIDE_ELIGIBLE_STEPS allowlist, which left the
-# bare-env path completely unguarded).
-DEFAULT_PROVIDER = "claude"
+# bare-env path completely unguarded). HZ-398: the name is declared in
+# domain/providers.json, not here.
+DEFAULT_PROVIDER = domain_providers.DEFAULT_PROVIDER
 
 
 def _selected_provider_name() -> str:
@@ -67,35 +68,51 @@ def effective_provider(override: str | None) -> str:
     return override or _selected_provider_name()
 
 
-# HZ-192: the one emergency override, for every Claude call at once. Read at
-# call time, like FARM_PROVIDER. Shape-checked against the same pattern as
-# domain/personas.json's model ids (kept in step with domain/py/personas.py's
-# _MODEL_SHAPE), so a typo fails here instead of reaching the CLI.
+# HZ-192: the one emergency override, for every call at once. Read at call
+# time, like FARM_PROVIDER. HZ-398: checked against domain/providers.json, so
+# a typo fails here instead of reaching the CLI, and applied only to calls on
+# the provider that declares it.
 MODEL_OVERRIDE_ENV = "FARM_MODEL_OVERRIDE"
-_MODEL_SHAPE = re.compile(r"^claude-[a-z0-9][a-z0-9.-]*$")
 
 
-def _model_for(name: str, agent: str, step: str | None, persona: str | None) -> str | None:
-    """HZ-192: the model a run_agent() call hands its provider — the one place
-    a farm call's model is chosen, and the one Muse guard.
+def _log(msg: str) -> None:
+    print(f"[agent_runner] {msg}", flush=True)
+
+
+def _model_for(name: str, agent: str, step: str | None, persona: str | None, chosen: str | None = None) -> str | None:
+    """HZ-192: the model a run_agent() call hands its provider — the ONLY place
+    a farm call's model is chosen (farm/tests/test_model_call_sites.py).
+
+    HZ-398 order: FARM_MODEL_OVERRIDE, then `chosen` (the owner's per-item or
+    project-default model, already merged by the server), then the
+    provider's default — domain/personas.json's `models` block for
+    DEFAULT_PROVIDER, the pinned defaultModel in domain/providers.json for any
+    other. Every id is checked against `name`'s own list in
+    domain/providers.json, so a Claude id never reaches Muse or the reverse:
+    an override declared by another provider is skipped, a chosen id `name`
+    does not declare is dropped (both logged), and an override nobody
+    declares raises.
 
     The agent is resolved on every provider, so a misspelt agent fails on Muse
-    too. Any provider but DEFAULT_PROVIDER gets None (its own default): a
-    Claude model id never reaches Muse, whichever path chose Muse — a
-    persona's provider, FARM_PROVIDER, or both, and with or without
-    FARM_MODEL_OVERRIDE."""
+    too."""
     model = resolve_model(agent, step, persona)
-    if name != DEFAULT_PROVIDER:
-        return None
     override = os.environ.get(MODEL_OVERRIDE_ENV, "")
-    if not override:
+    if override:
+        if not any(domain_providers.declares(p, override) for p in domain_providers.provider_names()):
+            raise ValueError(
+                f"{MODEL_OVERRIDE_ENV}={override!r} is not a model domain/providers.json declares — "
+                "unset it or fix it in /etc/horizon/farm.env"
+            )
+        if domain_providers.declares(name, override):
+            return override
+        _log(f"{MODEL_OVERRIDE_ENV}={override!r} is not a {name} model — ignored for this {name} run")
+    if chosen:
+        if domain_providers.declares(name, chosen):
+            return chosen
+        _log(f"chosen model {chosen!r} is not a {name} model — running {name}'s default instead")
+    if name == DEFAULT_PROVIDER:
         return model
-    if _MODEL_SHAPE.fullmatch(override) is None:
-        raise ValueError(
-            f"{MODEL_OVERRIDE_ENV}={override!r} is not a Claude model id matching /{_MODEL_SHAPE.pattern}/ — "
-            "unset it or fix it in /etc/horizon/farm.env"
-        )
-    return override
+    return domain_providers.default_model(name)
 
 
 def _selected_provider(name: str | None = None, *, provider_locked: bool = False):
@@ -135,11 +152,12 @@ def run_agent(
     timeout_s: int = STEP_TIMEOUT_S,
     allowed_tools: str | None = None,
     provider: str | None = None,
+    model_choice: str | None = None,
     provider_locked: bool = False,
     retry_fresh: bool = True,
 ) -> dict:
     """Returns {"result": <final text>, "session_id": <id>, "provider": <name>,
-    "command_id": <id or None>}.
+    "model": <id or None>, "command_id": <id or None>}.
 
     retry_fresh=False (HZ-158) is handed to the provider: a failed resume
     raises instead of quietly starting a fresh session. Every caller but the
@@ -167,9 +185,14 @@ def run_agent(
     pick one any other way (farm/tests/test_model_call_sites.py). agent is a
     models.agents key; step a domain/steps.json label or CONFLICT_STEP_KEY;
     persona a namespaced "<agent>.<persona>".
+
+    model_choice (HZ-398) is the model id the owner picked for this step, as
+    parsed from the stored choice. It is not a model: it only reaches
+    _model_for(), which checks it against the provider that runs and drops
+    it when that provider does not declare it.
     """
     name, provider_module = _selected_provider(provider, provider_locked=provider_locked)
-    model = _model_for(name, agent, step, persona)
+    model = _model_for(name, agent, step, persona, model_choice)
     provider_module.assert_subscription_auth()
     if session_id and not provider_module.SUPPORTS_RESUME:
         # Refuse rather than silently starting fresh — a resume-incapable
@@ -196,10 +219,13 @@ def run_agent(
         # The same provenance a reply carries, so a salvaged reply can record
         # which provider really ran (HZ-158).
         exc.provider = name
+        exc.model = model
         raise
     # Provenance (HZ-102): which provider actually ran, plus its run-level
     # id where one exists (Muse's command_id; Claude has no equivalent).
     result["provider"] = name
+    # HZ-398: the model that ran, recorded on step_run.model by the server.
+    result["model"] = model
     result.setdefault("command_id", None)
     return result
 

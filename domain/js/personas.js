@@ -29,7 +29,9 @@
 // (the `models` block). resolveModel() mirrors domain/py/personas.py's
 // resolve_model — persona override, then step override, then agent default —
 // and its JS consumer is the agent definitions page, which shows each step's
-// effective model. Every declared model id must look like a Claude id.
+// effective model. HZ-398: every declared model id must be one
+// domain/providers.json declares under the default provider — the catalogue,
+// not a ^claude- pattern, says what a model id is.
 //
 // Nothing presentational lives here. Labels, initials, colours and
 // PERSONA_AGENT_ROLES stay in server/src/personas.js and ui/src/domain/personas.js;
@@ -40,6 +42,7 @@
 // its own from these, never aliases them.
 
 import data from '../personas.json' with { type: 'json' }
+import { DEFAULT_PROVIDER, PROVIDERS } from './providers.js'
 
 // Load-time validation: the rules a Draft-07 subset cannot express live here,
 // so a broken domain/personas.json fails at import rather than reaching a
@@ -59,8 +62,10 @@ import data from '../personas.json' with { type: 'json' }
 // drives both. `?? null` wherever an absent value is printed, so it reads `null`
 // like Python's json.dumps(None) rather than the bare word `undefined`.
 const ID_SHAPE = /^[a-z][a-z0-9_]*$/
-// HZ-192, kept in step with domain/py/personas.py's _MODEL_SHAPE.
-const MODEL_SHAPE = /^claude-[a-z0-9][a-z0-9.-]*$/
+// HZ-398: the ids the `models` block may name — every model domain/providers.json
+// declares under the default provider, selectable or not (the concierge's is
+// not). Kept in step with domain/py/personas.py's _DECLARED_MODELS.
+const DECLARED_MODELS = Object.freeze(PROVIDERS.find((p) => p.name === DEFAULT_PROVIDER).models.map((m) => m.id))
 // HZ-381, kept in step with domain/py/personas.py's _ROLE_FILE_SHAPE.
 const ROLE_FILE_SHAPE = /^[a-z][a-z0-9_]*\.md$/
 const MODELS_KEYS = ['agents', 'conflictAgent', 'steps', 'personas']
@@ -69,7 +74,6 @@ const isObject = (value) => value !== null && typeof value === 'object' && !Arra
 const isId = (value) => typeof value === 'string' && ID_SHAPE.test(value)
 const isRoleFile = (value) => typeof value === 'string' && ROLE_FILE_SHAPE.test(value)
 const own = (object, key) => Object.prototype.hasOwnProperty.call(object, key)
-const isModel = (value) => typeof value === 'string' && MODEL_SHAPE.test(value)
 
 // [agent, persona] when `value` is `<agent>.<persona>` naming a live pair in
 // `ids` (a Map, so no prototype key can resolve), else null.
@@ -82,7 +86,10 @@ function splitPair(value, ids) {
   return [agent, persona]
 }
 
-export function assertPersonasShape(data, source = 'domain/personas.json') {
+// `declaredModels` is a parameter with a default so a fixture can drive the
+// models rules with fabricated ids (domain/fixtures/personas-cases.json's
+// shared.declaredModels) rather than a second copy of the catalogue.
+export function assertPersonasShape(data, source = 'domain/personas.json', declaredModels = DECLARED_MODELS) {
   if (!isObject(data)) {
     throw new Error(`${source} must be a JSON object with a non-empty agents array`)
   }
@@ -191,15 +198,16 @@ export function assertPersonasShape(data, source = 'domain/personas.json') {
     }
   }
 
-  assertModelsShape(data.models, ids, data.personaProviders, source)
+  assertModelsShape(data.models, ids, data.personaProviders, source, declaredModels)
   return data
 }
 
 // HZ-192's load-time rules for the `models` block. Same message fragments as
 // domain/py/personas.py's _validate_models.
-function assertModelsShape(models, ids, providers, source) {
+function assertModelsShape(models, ids, providers, source, declaredModels) {
+  const isModel = (value) => typeof value === 'string' && declaredModels.includes(value)
   const modelError = (key, value) =>
-    new Error(`${source}: ${key} ${JSON.stringify(value ?? null)} is not a Claude model id matching ${MODEL_SHAPE}`)
+    new Error(`${source}: ${key} ${JSON.stringify(value ?? null)} is not a model domain/providers.json declares for the default provider`)
 
   if (!isObject(models)) {
     throw new Error(`${source}: models must be a JSON object with agents, conflictAgent, steps and personas`)

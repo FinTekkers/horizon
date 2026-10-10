@@ -25,13 +25,17 @@ import { REPO_ROOT } from './helpers/repoFiles.mjs'
 
 const schema = JSON.parse(readFileSync(path.join(REPO_ROOT, 'domain/personas.schema.json'), 'utf8'))
 const source = JSON.parse(readFileSync(path.join(REPO_ROOT, 'domain/personas.json'), 'utf8'))
+// HZ-398: a `models` id must be one domain/providers.json declares under the
+// default provider, so the documents below name a real one, read from there.
+const catalogue = JSON.parse(readFileSync(path.join(REPO_ROOT, 'domain/providers.json'), 'utf8'))
+const DECLARED = catalogue.providers.find((p) => p.name === catalogue.default).models[0].id
 
 function doc({ agents = [{ agent: 'alpha', default: 'one', personas: ['one', 'two'], roleFiles: { one: 'alpha_one.md', two: 'alpha_two.md' } }], ...rest } = {}) {
   return { primaryAgent: 'alpha', agents, legacyIds: {}, personaProviders: {}, models: models(), ...rest }
 }
 
 function models(rest = {}) {
-  return { agents: { alpha: 'claude-test-1' }, conflictAgent: 'alpha', steps: {}, personas: {}, ...rest }
+  return { agents: { alpha: DECLARED }, conflictAgent: 'alpha', steps: {}, personas: {}, ...rest }
 }
 
 test('the real domain/personas.json satisfies its own schema', () => {
@@ -125,10 +129,10 @@ const ONLY_LOAD_TIME = [
   ['an undeclared primaryAgent', doc({ primaryAgent: 'gamma' }), /is not a declared agent/],
   ['a legacy alias naming a dead pair', doc({ legacyIds: { old_one: 'alpha.nope' } }), /does not name a declared <agent>\.<persona> pair/],
   ['a bare personaProviders key', doc({ personaProviders: { one: 'prov' } }), /does not name a declared <agent>\.<persona> pair/],
-  ['a non-Claude model id', doc({ models: models({ agents: { alpha: 'gpt-4o' } }) }), /is not a Claude model id/],
+  ['a non-Claude model id', doc({ models: models({ agents: { alpha: 'gpt-4o' } }) }), /is not a model domain\/providers\.json declares/],
   [
     'a model on a persona routed to another provider',
-    doc({ personaProviders: { 'alpha.two': 'muse' }, models: models({ personas: { 'alpha.two': 'claude-test-1' } }) }),
+    doc({ personaProviders: { 'alpha.two': 'muse' }, models: models({ personas: { 'alpha.two': DECLARED } }) }),
     /only a Claude-run persona can carry a model/,
   ],
   [

@@ -628,9 +628,12 @@ test('the JS persona binding does no runtime I/O', () => {
   }
 })
 
+// HZ-398: plus the provider catalogue binding, which says which model ids the
+// `models` block may name — still a static, build-time import.
 test('the JS persona binding reads its data from domain/personas.json with one static import', () => {
   assert.match(personasJsCode, /^import data from '\.\.\/personas\.json' with \{ type: 'json' \}$/m)
-  assert.equal((personasJsCode.match(/^import /gm) || []).length, 1, 'domain/js/personas.js imports something besides its JSON')
+  assert.match(personasJsCode, /^import \{ [A-Z_, ]+ \} from '\.\/providers\.js'$/m)
+  assert.equal((personasJsCode.match(/^import /gm) || []).length, 2, 'domain/js/personas.js imports something besides its JSON and the provider catalogue')
 })
 
 // The whole point of HZ-133: ids live in ONE place. An id or agent name typed
