@@ -26,10 +26,11 @@ import { REASONS, REASON_IDS, REASON, AUTO_RETRY_REASONS, isRetryable } from '..
 import { REPO_ROOT } from './helpers/repoFiles.mjs'
 
 // The vocabulary as it stood before HZ-132 moved it, typed out.
-const PINNED_IDS = ['never_picked_up', 'timeout', 'unreachable', 'turn_cap', 'required_input_incomplete']
+// HZ-387 added read_only_violated, non-retryable: the retryable set is unchanged.
+const PINNED_IDS = ['never_picked_up', 'timeout', 'unreachable', 'turn_cap', 'required_input_incomplete', 'read_only_violated']
 const PINNED_RETRYABLE = ['never_picked_up', 'timeout', 'turn_cap', 'unreachable']
 
-test('PIN: the declared vocabulary is exactly these five reasons', () => {
+test('PIN: the declared vocabulary is exactly these six reasons', () => {
   assert.deepEqual([...REASON_IDS].sort(), [...PINNED_IDS].sort())
   assert.equal(REASONS.length, PINNED_IDS.length)
 })
@@ -41,6 +42,11 @@ test('PIN: the retryable set is exactly the four HZ-76 named — criterion 6', (
 test('PIN: required_input_incomplete is declared but NOT retryable — a capacity decision for a human', () => {
   assert.equal(isRetryable('required_input_incomplete'), false)
   assert.equal(REASONS.find((r) => r.id === 'required_input_incomplete').retryable, false)
+})
+
+test('PIN: read_only_violated is declared but NOT retryable — the item pauses on an unrestored or violated worktree', () => {
+  assert.equal(isRetryable('read_only_violated'), false)
+  assert.equal(REASONS.find((r) => r.id === 'read_only_violated').retryable, false)
 })
 
 test('AUTO_RETRY_REASONS is DERIVED from the retryable flag, not a second list — criterion 2', () => {

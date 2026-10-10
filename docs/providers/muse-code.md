@@ -171,6 +171,20 @@ is how HZ-30 keeps review read-only. On Muse neither limit applies, so a Muse
 review can edit the workspace. The item page says so under the step 11 and
 step 12 "Runs on" dropdowns.
 
+Since HZ-387 the farm enforces read-only itself, after the call, for every
+provider: steps 4, 6, 7 and 8, and each of step 12's two review passes
+(`farm/read_only_guard.py`). It records HEAD, the branch, the tracked index
+and worktree content and every untracked file before the call. If any of it
+changed, it puts the worktree back — the branch to the recorded HEAD, earlier
+edits and untracked files as they were, new files deleted by path, no `git
+clean` and no push — and fails the step with reason `read_only_violated`,
+which pauses the item. The pause names the provider; its details list every
+changed file. If the rollback itself fails, the step still fails and the item
+still pauses. Claude's `--allowedTools` is unchanged: this is an extra layer.
+
+Known gaps: gitignored files are not checked, and a branch or tag the agent
+made elsewhere stays (only the item's own branch is moved back).
+
 What still holds for a Muse build, exactly as for a Claude one:
 
 - the repo's checks run after implement, by the script, before any commit;

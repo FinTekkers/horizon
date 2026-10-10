@@ -40,17 +40,19 @@ from domain.py.personas import model_agent_for_step
 from .agent_runner import (
     AgentError,
     AgentExhaustedError,
+    effective_provider,
     parse_agent_reply,
     run_agent,
     salvage_truncated_reply,
     stamp_notes,
     stamp_notes_artifact,
 )
-from . import check_record, handoff, pause
+from . import check_record, handoff, pause, read_only_guard
 from .checks import CheckFailure, redact, run_checks
 from .config import FARM_PORT, ITEM_LOCK_WAIT_S
 from .handoff import HandoffContext, HandoffGuard
 from .personas import compose_role, provider_for, resolve
+from .read_only_guard import ReadOnlyViolation
 from .rules import render_rules_section
 from .workspaces import ItemBusy, ensure_item_worktree, hub_lock, item_lock
 
@@ -101,17 +103,20 @@ IMPLEMENT_TOOLS = "Read,Glob,Grep,Edit,Write,Bash"
 # edits code — same read-only rationale as the reviewer, one step below.
 DEVOPS_TOOLS = "Read,Glob,Grep,Bash"
 
+OPTIONS_LABEL = "Plan options & trade-offs (pros / cons)"
+ENG_PLAN_LABEL = "Draft implementation plan"
+ARCH_REVIEW_LABEL = "Architecture review"
 QA_PLAN_LABEL = "QA reviews the test plan"
 IMPLEMENT_LABEL = "Specialist agent implements"
 REVIEW_LABEL = "Automated review (code + QA)"
 DEPLOY_LABEL = "Deploy the changes"
 # HZ-313: the only step whose reply may carry a cross-repo `split`.
-SPLIT_STEP_LABEL = "Plan options & trade-offs (pros / cons)"
+SPLIT_STEP_LABEL = OPTIONS_LABEL
 
 STEP_CONFIG = {
-    "Plan options & trade-offs (pros / cons)": ("ensemble.md", True, PLANNER_TOOLS, None),
-    "Draft implementation plan": ("eng_plan.md", True, PLANNER_TOOLS, None),
-    "Architecture review": ("architect_review.md", True, PLANNER_TOOLS, None),
+    OPTIONS_LABEL: ("ensemble.md", True, PLANNER_TOOLS, None),
+    ENG_PLAN_LABEL: ("eng_plan.md", True, PLANNER_TOOLS, None),
+    ARCH_REVIEW_LABEL: ("architect_review.md", True, PLANNER_TOOLS, None),
     QA_PLAN_LABEL: ("qa.md", True, PLANNER_TOOLS, "qa"),
     IMPLEMENT_LABEL: ("eng_implement.md", False, IMPLEMENT_TOOLS, "eng"),
     # code_review.md is loaded here for the first (code) pass and composes the
@@ -138,6 +143,13 @@ STEP_CONFIG = {
 CHOICE_ONLY_PROVIDER_STEPS = frozenset(
     {QA_PLAN_LABEL, IMPLEMENT_LABEL, REVIEW_LABEL} | {step["label"] for step in steps.STEPS if step["runsIn"] == "pm"}
 )
+
+# HZ-387: the steps the farm holds read-only itself, whichever provider runs
+# them (read_only_guard). Named, not inferred from PLANNER_TOOLS: the review
+# step uses those tools too, but it is workspaceMutating (prepare_branch
+# scrubs its worktree first), so its two passes are guarded one by one inside
+# _execute()'s review branch instead.
+READ_ONLY_LABELS = frozenset({OPTIONS_LABEL, ENG_PLAN_LABEL, ARCH_REVIEW_LABEL, QA_PLAN_LABEL})
 
 # HZ-158: the ONLY steps whose turn-capped reply may be salvaged — a reply cut
 # off mid-string, with every required key present, is accepted instead of
@@ -1697,8 +1709,9 @@ def execute(task: dict) -> dict:
     """HZ-188: the implement and review steps scrub, check out and (for
     implement) push in the item's worktree, so they hold item_lock for the
     whole step — taken before ensure_item_worktree, so not even the worktree's
-    creation can overlap a conflict resolver that owns the item. Every other
-    step only reads the workspace and runs unlocked.
+    creation can overlap a conflict resolver that owns the item. HZ-387: the
+    read-only steps too, since a read-only violation's rollback writes to the
+    worktree. Every other step runs unlocked.
 
     HZ-158: one execute() is one run, so the run's handoff guard is made here.
 
@@ -1708,7 +1721,8 @@ def execute(task: dict) -> dict:
         return _execute_pm(task)
     item = task["item"]
     guard = HandoffGuard()
-    if task["step"]["label"] not in (IMPLEMENT_LABEL, REVIEW_LABEL) or not item.get("repo"):
+    locked = {IMPLEMENT_LABEL, REVIEW_LABEL} | READ_ONLY_LABELS
+    if task["step"]["label"] not in locked or not item.get("repo"):
         return _execute(task, guard)
     lock = item_lock(
         item["repo"],
@@ -2066,44 +2080,51 @@ def _execute(task: dict, guard: HandoffGuard) -> dict:
             + "\n\nRespond with ONLY the JSON object described in your role instructions."
         )
 
-        code_parsed, code_provenance, code_notes = _run_and_parse(
-            prompt,
-            agent=model_agent,
-            step=label,
-            persona=persona,
-            append_system=role,
-            cwd=str(ws),
-            max_turns=max_turns,
-            timeout_s=timeout_s,
-            allowed_tools=tools,
-            required_keys=("verdict",),
-            item_id=item["id"],
-            guard=guard,
-            provider=provider_override,
-            provider_locked=provider_locked,
-        )
+        # HZ-387: each review pass is read-only, though the step itself is
+        # workspaceMutating — so each is guarded on its own, after
+        # prepare_branch's scrub, not through READ_ONLY_LABELS.
+        with read_only_guard.guard(ws, effective_provider(provider_override)) as watch:
+            code_parsed, code_provenance, code_notes = _run_and_parse(
+                prompt,
+                agent=model_agent,
+                step=label,
+                persona=persona,
+                append_system=role,
+                cwd=str(ws),
+                max_turns=max_turns,
+                timeout_s=timeout_s,
+                allowed_tools=tools,
+                required_keys=("verdict",),
+                item_id=item["id"],
+                guard=guard,
+                provider=provider_override,
+                provider_locked=provider_locked,
+            )
+            watch.provider = code_provenance.get("provider") or watch.provider
 
         # The item's QA persona, never the Eng one the code pass above used
         # (HZ-125): a reviewer wearing the implementer's specialization reviews
         # the work as the engineer who wrote it.
         qa_role = (ROLES / "qa_review.md").read_text()
         qa_role = compose_role(qa_role, REVIEW_QA_PERSONA_AGENT, personas.get(REVIEW_QA_PERSONA_AGENT))
-        qa_parsed, qa_provenance, qa_notes = _run_and_parse(
-            prompt,
-            agent=model_agent,
-            step=label,
-            persona=model_persona(REVIEW_QA_PERSONA_AGENT, personas),
-            append_system=qa_role,
-            cwd=str(ws),
-            max_turns=max_turns,
-            timeout_s=timeout_s,
-            allowed_tools=tools,
-            required_keys=("verdict",),
-            item_id=item["id"],
-            guard=guard,
-            provider=provider_override,
-            provider_locked=provider_locked,
-        )
+        with read_only_guard.guard(ws, effective_provider(provider_override)) as watch:
+            qa_parsed, qa_provenance, qa_notes = _run_and_parse(
+                prompt,
+                agent=model_agent,
+                step=label,
+                persona=model_persona(REVIEW_QA_PERSONA_AGENT, personas),
+                append_system=qa_role,
+                cwd=str(ws),
+                max_turns=max_turns,
+                timeout_s=timeout_s,
+                allowed_tools=tools,
+                required_keys=("verdict",),
+                item_id=item["id"],
+                guard=guard,
+                provider=provider_override,
+                provider_locked=provider_locked,
+            )
+            watch.provider = qa_provenance.get("provider") or watch.provider
 
         # HZ-369: one step run records one provider. Passes that name different
         # ones fail the step rather than record a half-true provenance; a pass
@@ -2238,22 +2259,26 @@ def _execute(task: dict, guard: HandoffGuard) -> dict:
             },
         }
 
-    parsed, reply_provenance, notes = _run_and_parse(
-        build_prompt(task) + "\n\nRespond with ONLY the JSON object described in your role instructions.",
-        agent=model_agent,
-        step=label,
-        persona=persona,
-        append_system=role,
-        cwd=str(ws) if ws else None,
-        max_turns=max_turns,
-        timeout_s=timeout_s,
-        allowed_tools=tools if ws else None,
-        required_keys=("summary", "artifact_md") if wants_artifact else ("summary",),
-        item_id=item["id"],
-        guard=guard,
-        provider=provider_override,
-        provider_locked=provider_locked,
-    )
+    # HZ-387: a read-only step must leave the worktree as it found it.
+    read_only_ws = ws if label in READ_ONLY_LABELS else None
+    with read_only_guard.guard(read_only_ws, effective_provider(provider_override)) as watch:
+        parsed, reply_provenance, notes = _run_and_parse(
+            build_prompt(task) + "\n\nRespond with ONLY the JSON object described in your role instructions.",
+            agent=model_agent,
+            step=label,
+            persona=persona,
+            append_system=role,
+            cwd=str(ws) if ws else None,
+            max_turns=max_turns,
+            timeout_s=timeout_s,
+            allowed_tools=tools if ws else None,
+            required_keys=("summary", "artifact_md") if wants_artifact else ("summary",),
+            item_id=item["id"],
+            guard=guard,
+            provider=provider_override,
+            provider_locked=provider_locked,
+        )
+        watch.provider = reply_provenance.get("provider") or watch.provider
     summary = str(parsed.get("summary", "")).strip()[:SUMMARY_MAX_CHARS]
     if not summary:
         raise AgentError("agent reply missing 'summary'")
@@ -2377,6 +2402,9 @@ def main() -> int:
         # and the server pauses for a human exactly as before.
         if isinstance(exc, AgentExhaustedError):
             result["reason"] = reasons.REASON["TURN_CAP"]
+        # HZ-387: non-retryable, so the item pauses and no next step runs.
+        elif isinstance(exc, ReadOnlyViolation):
+            result["reason"] = reasons.REASON["READ_ONLY_VIOLATED"]
     finally:
         _RECORDED.reset(token)
     # A flake on one command survives a real failure on a later one.

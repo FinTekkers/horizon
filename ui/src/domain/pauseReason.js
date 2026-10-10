@@ -31,6 +31,10 @@ const CATEGORY_COPY = {
     label: 'Required input incomplete',
     detail: 'A required input could not be supplied in full — a capacity limit, not a bug. Resume once it fits, or split the step.',
   },
+  [REASON.READ_ONLY_VIOLATED]: {
+    label: 'Read-only step changed files',
+    detail: 'A planning or review step edited the worktree. Horizon put it back and paused the item.',
+  },
 }
 
 // Both mirror the event text server/src/store.js:1208 writes on pause/resume.

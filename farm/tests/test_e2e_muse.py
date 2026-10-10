@@ -13,12 +13,13 @@ see docs/providers/muse-code.md):
     FARM_MUSE_E2E=1 farm/.venv/bin/python -m pytest farm/tests/test_e2e_muse.py -s
 
 Every test here is read-only / side-effect-free: a planning step (no repo
-attached) and two bare `muse exec` prompts. Nothing here ever exercises
-implement, ship, or deploy.
+attached), a planning step in a throwaway temp git repo, and two bare `muse
+exec` prompts. Nothing here ever exercises implement, ship, or deploy.
 """
 
 import os
 import shutil
+import subprocess
 import time
 import uuid
 
@@ -117,3 +118,47 @@ def test_one_real_planning_step_completes_with_muse_and_records_provenance(muse_
         f"planning step took {elapsed_s:.1f}s against a {step_timeout_s}s budget for step "
         f"{task['step']['index']} — too close to the timeout to call this a healthy run"
     )
+
+
+def test_a_real_muse_planning_step_in_a_git_worktree_leaves_it_unchanged(tmp_path, monkeypatch, muse_smoke_test_personas):
+    """HZ-387 metric 4 on the real provider: a read-only step run by Muse in
+    a real git repo passes the farm's read-only check — Muse writes no state
+    file of its own into the cwd that would fail every Muse planning run."""
+    ws = tmp_path / "ws"
+    ws.mkdir()
+
+    def git(*args):
+        return subprocess.run(["git", "-C", str(ws), *args], check=True, capture_output=True, text=True).stdout
+
+    git("init", "-b", "main")
+    git("config", "user.email", "test@example.com")
+    git("config", "user.name", "Test")
+    (ws / "README.md").write_text("# demo\n\nA tiny repo for a read-only planning smoke test.\n")
+    git("add", "-A")
+    git("commit", "-m", "initial")
+    head, status = git("rev-parse", "HEAD"), git("status", "--porcelain", "--untracked-files=all")
+    monkeypatch.setattr(step_agent, "ensure_item_worktree", lambda repo, item_id: ws)
+    task = {
+        "run_id": 1,
+        "attempt": 1,
+        "item": {
+            "id": "HZ-387-SMOKE",
+            "title": "HZ-387 Muse read-only smoke test (throwaway — not a real deliverable)",
+            "desc": "Read README.md and list two options for improving it. Do not edit any file.",
+            "metric": "The worktree is unchanged.",
+            "guardrails": "Planning step only; never edit, commit or create a file.",
+            "priority": "Low",
+            "repo": "acme/demo",
+            "issue": 1,
+            "personas": muse_smoke_test_personas,
+        },
+        "step": {"index": 4, "label": "Plan options & trade-offs (pros / cons)", "agent": "Ensemble"},
+        "artifacts": [],
+        "feedback": [],
+    }
+
+    result = step_agent.execute(task)  # a read-only violation raises here
+
+    assert result["artifacts"]["provider"] == "muse"
+    assert git("rev-parse", "HEAD") == head
+    assert git("status", "--porcelain", "--untracked-files=all") == status
