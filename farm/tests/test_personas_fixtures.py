@@ -78,12 +78,12 @@ def test_shared_validation(case):
     expect = case["expect"]
     if expect["throws"]:
         with pytest.raises(RuntimeError) as exc:
-            personas._validate_source(case["input"], "domain/personas.json")
+            personas._validate_source(case["input"], "domain/personas.json", SHARED["declaredModels"])
         assert expect["messageContains"] in str(exc.value), (
             f'expected a message containing {expect["messageContains"]!r}, got: {exc.value}'
         )
     else:
-        assert personas._validate_source(case["input"], "domain/personas.json") is case["input"]
+        assert personas._validate_source(case["input"], "domain/personas.json", SHARED["declaredModels"]) is case["input"]
 
 
 # ---- shared: membership (is_persona vs JS's isPersona) ----

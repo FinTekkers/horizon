@@ -1,0 +1,125 @@
+{
+  "$comment": "HZ-398. Input/expected pairs for the provider catalogue bindings, asserted by BOTH server/test/domain-providers.test.mjs and farm/tests/test_providers_domain.py, so domain/js/providers.js and domain/py/providers.py are proved to validate, parse and answer membership the same way. Every provider name and model id here is FABRICATED (alpha, beta, zeta) so the fixture is not a second declaration of the catalogue — and `catalogue` doubles as HZ-398's 'a later provider adds itself in domain/ with no code change' stub: zeta is in no code anywhere.",
+
+  "catalogue": {
+    "default": "alpha",
+    "providers": [
+      {
+        "name": "alpha",
+        "label": "Alpha",
+        "defaultModel": null,
+        "models": [
+          { "id": "alpha-big-1", "label": "Big 1", "selectable": true },
+          { "id": "alpha-small-1.5", "label": "Small 1.5", "selectable": true },
+          { "id": "alpha-hidden", "label": "Hidden", "selectable": false }
+        ]
+      },
+      {
+        "name": "zeta",
+        "label": "Zeta",
+        "defaultModel": "zeta-2",
+        "models": [
+          { "id": "zeta-1", "label": "One", "selectable": true },
+          { "id": "zeta-2", "label": "Two", "selectable": true }
+        ]
+      }
+    ]
+  },
+
+  "choiceValues": ["alpha", "zeta", "alpha:alpha-big-1", "alpha:alpha-small-1.5", "zeta:zeta-1", "zeta:zeta-2"],
+
+  "parseChoice": [
+    { "case": "a bare provider is the pre-HZ-398 form, no model", "value": "alpha", "expect": ["alpha", null] },
+    { "case": "a bare non-default provider", "value": "zeta", "expect": ["zeta", null] },
+    { "case": "a selectable model of its own provider", "value": "alpha:alpha-small-1.5", "expect": ["alpha", "alpha-small-1.5"] },
+    { "case": "a later provider's model", "value": "zeta:zeta-1", "expect": ["zeta", "zeta-1"] },
+    { "case": "a declared but unselectable model is refused", "value": "alpha:alpha-hidden", "expect": null },
+    { "case": "an undeclared model is refused", "value": "alpha:alpha-gone", "expect": null },
+    { "case": "another provider's model is refused", "value": "zeta:alpha-big-1", "expect": null },
+    { "case": "an unknown provider is refused", "value": "gamma", "expect": null },
+    { "case": "an unknown provider with a model is refused", "value": "gamma:alpha-big-1", "expect": null },
+    { "case": "an empty model is refused", "value": "alpha:", "expect": null },
+    { "case": "a second colon is refused", "value": "alpha:alpha-big-1:x", "expect": null },
+    { "case": "a capitalised provider is refused", "value": "Alpha:alpha-big-1", "expect": null },
+    { "case": "a leading space is refused", "value": " alpha", "expect": null },
+    { "case": "an empty string is refused", "value": "", "expect": null },
+    { "case": "a prototype key is refused", "value": "__proto__", "expect": null },
+    { "case": "a non-string is refused", "value": 5, "expect": null },
+    { "case": "null is refused", "value": null, "expect": null }
+  ],
+
+  "declares": [
+    { "case": "a selectable model of its provider", "provider": "alpha", "model": "alpha-big-1", "expect": true },
+    { "case": "an unselectable model is still declared", "provider": "alpha", "model": "alpha-hidden", "expect": true },
+    { "case": "another provider's model is not", "provider": "zeta", "model": "alpha-big-1", "expect": false },
+    { "case": "an undeclared model is not", "provider": "alpha", "model": "alpha-big-9", "expect": false },
+    { "case": "an unknown provider declares nothing", "provider": "gamma", "model": "alpha-big-1", "expect": false },
+    { "case": "a prototype-named provider declares nothing", "provider": "constructor", "model": "alpha-big-1", "expect": false },
+    { "case": "a non-string model is not declared", "provider": "alpha", "model": null, "expect": false }
+  ],
+
+  "validation": [
+    { "case": "the fabricated catalogue is accepted", "input": "$catalogue", "expect": { "throws": false } },
+    { "case": "a root that is not an object rejected", "input": [], "expect": { "throws": true, "messageContains": "must be a JSON object with a non-empty providers array" } },
+    { "case": "an empty providers array rejected", "input": { "default": "alpha", "providers": [] }, "expect": { "throws": true, "messageContains": "must be a JSON object with a non-empty providers array" } },
+    {
+      "case": "a capitalised provider name rejected",
+      "input": { "default": "Alpha", "providers": [{ "name": "Alpha", "label": "A", "defaultModel": null, "models": [{ "id": "a-1", "label": "1", "selectable": true }] }] },
+      "expect": { "throws": true, "messageContains": "providers[0] name \"Alpha\" — expected a lower-case name matching /^[a-z]+$/" }
+    },
+    {
+      "case": "a duplicate provider rejected",
+      "input": { "default": "alpha", "providers": [
+        { "name": "alpha", "label": "A", "defaultModel": null, "models": [{ "id": "a-1", "label": "1", "selectable": true }] },
+        { "name": "alpha", "label": "A", "defaultModel": null, "models": [{ "id": "a-2", "label": "2", "selectable": true }] }
+      ] },
+      "expect": { "throws": true, "messageContains": "provider \"alpha\" is declared twice" }
+    },
+    {
+      "case": "a provider with no label rejected",
+      "input": { "default": "alpha", "providers": [{ "name": "alpha", "label": "", "defaultModel": null, "models": [{ "id": "a-1", "label": "1", "selectable": true }] }] },
+      "expect": { "throws": true, "messageContains": "provider \"alpha\" has no label" }
+    },
+    {
+      "case": "a provider with no models rejected",
+      "input": { "default": "alpha", "providers": [{ "name": "alpha", "label": "A", "defaultModel": null, "models": [] }] },
+      "expect": { "throws": true, "messageContains": "provider \"alpha\" must declare a non-empty models array" }
+    },
+    {
+      "case": "a model id with a colon rejected — it would break the stored choice split",
+      "input": { "default": "alpha", "providers": [{ "name": "alpha", "label": "A", "defaultModel": null, "models": [{ "id": "a:1", "label": "1", "selectable": true }] }] },
+      "expect": { "throws": true, "messageContains": "provider \"alpha\" models[0] id \"a:1\" — expected a model id matching /^[a-z0-9][a-z0-9.-]*$/" }
+    },
+    {
+      "case": "a model id declared by two providers rejected",
+      "input": { "default": "alpha", "providers": [
+        { "name": "alpha", "label": "A", "defaultModel": null, "models": [{ "id": "shared-1", "label": "1", "selectable": true }] },
+        { "name": "beta", "label": "B", "defaultModel": null, "models": [{ "id": "shared-1", "label": "1", "selectable": true }] }
+      ] },
+      "expect": { "throws": true, "messageContains": "model \"shared-1\" is declared by both \"alpha\" and \"beta\"" }
+    },
+    {
+      "case": "a model with no label rejected",
+      "input": { "default": "alpha", "providers": [{ "name": "alpha", "label": "A", "defaultModel": null, "models": [{ "id": "a-1", "selectable": true }] }] },
+      "expect": { "throws": true, "messageContains": "model \"a-1\" has no label" }
+    },
+    {
+      "case": "a non-boolean selectable rejected",
+      "input": { "default": "alpha", "providers": [{ "name": "alpha", "label": "A", "defaultModel": null, "models": [{ "id": "a-1", "label": "1", "selectable": "yes" }] }] },
+      "expect": { "throws": true, "messageContains": "model \"a-1\" selectable must be true or false" }
+    },
+    {
+      "case": "a defaultModel from another provider rejected",
+      "input": { "default": "alpha", "providers": [
+        { "name": "alpha", "label": "A", "defaultModel": "b-1", "models": [{ "id": "a-1", "label": "1", "selectable": true }] },
+        { "name": "beta", "label": "B", "defaultModel": null, "models": [{ "id": "b-1", "label": "1", "selectable": true }] }
+      ] },
+      "expect": { "throws": true, "messageContains": "provider \"alpha\" defaultModel \"b-1\" is not null or one of its own models" }
+    },
+    {
+      "case": "an undeclared default provider rejected",
+      "input": { "default": "gamma", "providers": [{ "name": "alpha", "label": "A", "defaultModel": null, "models": [{ "id": "a-1", "label": "1", "selectable": true }] }] },
+      "expect": { "throws": true, "messageContains": "default \"gamma\" is not a declared provider [\"alpha\"]" }
+    }
+  ]
+}

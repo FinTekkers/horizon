@@ -51,25 +51,25 @@ test('explicit target: a send-back can name a specific earlier agent step direct
   expect(findItem('BF-140').cursor).toBe(draftPlanIdx)
 })
 
-test('invalid target: pointing at a gate instead of an agent step is a no-op', () => {
+test('invalid target: pointing at a gate instead of an agent step is a no-op', async () => {
   const before = findItem('BF-131')
   const gateIdx = before.cursor
   const targetGateIdx = STEPS.findIndex((s, i) => i < gateIdx && s.kind === 'gate')
-  requestChanges('BF-131', 'x', 'y', targetGateIdx)
+  await expect(requestChanges('BF-131', 'x', 'y', targetGateIdx)).rejects.toThrow('invalid_target')
   expect(findItem('BF-131').cursor).toBe(gateIdx) // unchanged
 })
 
-test('invalid target: at or after the current gate is a no-op (no forward moves, no same-gate loops)', () => {
+test('invalid target: at or after the current gate is a no-op (no forward moves, no same-gate loops)', async () => {
   const before = findItem('BF-090')
   const gateIdx = before.cursor
-  requestChanges('BF-090', 'x', 'y', gateIdx)
+  await expect(requestChanges('BF-090', 'x', 'y', gateIdx)).rejects.toThrow('invalid_target')
   expect(findItem('BF-090').cursor).toBe(gateIdx)
 })
 
-test('invalid target: supplied while the item is mid agent-step (not parked at a gate) is a no-op', () => {
+test('invalid target: supplied while the item is mid agent-step (not parked at a gate) is a no-op', async () => {
   const before = findItem('BF-119')
   expect(STEPS[before.cursor].kind).toBe('agent')
-  requestChanges('BF-119', 'x', 'y', 0)
+  await expect(requestChanges('BF-119', 'x', 'y', 0)).rejects.toThrow('invalid_target')
   expect(findItem('BF-119').cursor).toBe(before.cursor)
 })
 

@@ -43,8 +43,9 @@ HZ-192: the same document also declares which Claude model each agent call
 uses (the `models` block). resolve_model() is the one resolver —
 persona override, then step override, then agent default — and
 farm/agent_runner.py is its only farm caller: run_agent() takes agent/step/
-persona, never a model. Every declared model id must look like a Claude id,
-and a persona routed elsewhere by personaProviders cannot carry one.
+persona, never a model. HZ-398: every declared model id must be one
+domain/providers.json declares under the default provider, and a persona
+routed elsewhere by personaProviders cannot carry one.
 
 _SOURCE_PATH is derived from __file__, never from the process's cwd: farm
 agents run inside workspace clones, not from the repo root
@@ -56,14 +57,20 @@ import re
 import types
 from pathlib import Path
 
+from . import providers as _providers
+
 _SOURCE_PATH = Path(__file__).resolve().parent.parent / "personas.json"
 
 # Kept in step with domain/js/personas.js's ID_SHAPE; both validators print it
 # in their messages and domain/fixtures/personas-cases.json compares those.
 _ID_SHAPE = re.compile(r"^[a-z][a-z0-9_]*$")
-# HZ-192, kept in step with domain/js/personas.js's MODEL_SHAPE. Only a Claude
-# id can be declared, so no models value can name another provider's model.
-_MODEL_SHAPE = re.compile(r"^claude-[a-z0-9][a-z0-9.-]*$")
+# HZ-398, kept in step with domain/js/personas.js's DECLARED_MODELS: the ids
+# the `models` block may name — every model domain/providers.json declares
+# under the default provider, selectable or not — so no models value can name
+# another provider's model.
+_DECLARED_MODELS: tuple[str, ...] = tuple(
+    m["id"] for m in _providers.PROVIDERS[_providers.DEFAULT_PROVIDER]["models"]
+)
 # HZ-381, kept in step with domain/js/personas.js's ROLE_FILE_SHAPE.
 _ROLE_FILE_SHAPE = re.compile(r"^[a-z][a-z0-9_]*\.md$")
 _MODELS_KEYS = ("agents", "conflictAgent", "steps", "personas")
@@ -80,10 +87,6 @@ def _is_id(value: object) -> bool:
     # fullmatch, not match: `$` also matches before a trailing newline, and
     # "ui\n" must not pass as an id that is later interpolated into a filename.
     return isinstance(value, str) and _ID_SHAPE.fullmatch(value) is not None
-
-
-def _is_model(value: object) -> bool:
-    return isinstance(value, str) and _MODEL_SHAPE.fullmatch(value) is not None
 
 
 def _is_role_file(value: object) -> bool:
@@ -106,9 +109,13 @@ def _split_pair(value: object, ids: dict) -> tuple[str, str] | None:
     return agent, persona
 
 
-def _validate_source(data: object, source: str) -> dict:
+def _validate_source(data: object, source: str, declared_models=_DECLARED_MODELS) -> dict:
     """Every load-time rule, applied at import AND to anything _load_source
     reads off disk. Raises rather than returning a partly-usable registry.
+
+    `declared_models` is a parameter with a default so a fixture can drive the
+    models rules with fabricated ids (HZ-398) rather than a second copy of
+    domain/providers.json.
 
     The rules and the message fragments are kept word-for-word in step with
     domain/js/personas.js's assertPersonasShape —
@@ -226,17 +233,20 @@ def _validate_source(data: object, source: str) -> dict:
                 "must be a non-empty provider id string"
             )
 
-    _validate_models(data.get("models"), ids, providers, prefix + source)
+    _validate_models(data.get("models"), ids, providers, prefix + source, declared_models)
     return data
 
 
-def _validate_models(models: object, ids: dict, providers: dict, where: str) -> None:
+def _validate_models(models: object, ids: dict, providers: dict, where: str, declared_models) -> None:
     """HZ-192's load-time rules for the `models` block. Same message fragments
     as domain/js/personas.js's assertModelsShape."""
 
+    def _is_model(value: object) -> bool:
+        return isinstance(value, str) and value in declared_models
+
     def model_error(key: str, value: object) -> RuntimeError:
         return RuntimeError(
-            f"{where}: {key} {_json(value)} is not a Claude model id matching /{_MODEL_SHAPE.pattern}/"
+            f"{where}: {key} {_json(value)} is not a model domain/providers.json declares for the default provider"
         )
 
     if not isinstance(models, dict):

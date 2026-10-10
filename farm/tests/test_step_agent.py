@@ -3139,13 +3139,16 @@ def test_the_review_passes_carry_their_own_personas(tmp_path, monkeypatch, recor
     assert recorder.models() == [STEP_OPUS, "claude-test-qa"]
 
 
-@pytest.mark.parametrize("override", [None, "claude-test-emergency"])
+@pytest.mark.parametrize("override", [None, "sonnet"])
 def test_a_muse_routed_persona_step_never_receives_a_claude_model(
     monkeypatch, muse_smoke_test_personas, recording_providers, override
 ):
-    """The item-level provider override (provider_for on an eligible step)."""
+    """The item-level provider override (provider_for on an eligible step).
+    HZ-398: Muse runs its own pinned default from domain/providers.json."""
+    from domain.py import providers as domain_providers
+
     if override:
-        monkeypatch.setenv("FARM_MODEL_OVERRIDE", override)
+        monkeypatch.setenv("FARM_MODEL_OVERRIDE", domain_providers.PROVIDERS["claude"]["models"][1]["id"])
     recorder = recording_providers("not json", '{"summary": "ok"}')
     task = make_task(4, PLAN_LABEL)
     task["item"]["personas"] = muse_smoke_test_personas
@@ -3154,17 +3157,19 @@ def test_a_muse_routed_persona_step_never_receives_a_claude_model(
 
     assert len(recorder.calls) == 2
     for call in recorder.calls:
-        assert call["provider"] == "muse" and call["model"] is None
+        assert call["provider"] == "muse" and call["model"] == domain_providers.default_model("muse")
         assert not [v for v in call.values() if isinstance(v, str) and v.startswith("claude-")]
 
 
-def test_farm_provider_muse_sends_a_step_no_model(monkeypatch, recording_providers):
+def test_farm_provider_muse_sends_a_step_muses_own_default(monkeypatch, recording_providers):
+    from domain.py import providers as domain_providers
+
     monkeypatch.setenv("FARM_PROVIDER", "muse")
     recorder = recording_providers('{"summary": "ok"}')
 
     execute(make_task(4, PLAN_LABEL))
 
-    assert [(c["provider"], c["model"]) for c in recorder.calls] == [("muse", None)]
+    assert [(c["provider"], c["model"]) for c in recorder.calls] == [("muse", domain_providers.default_model("muse"))]
 
 
 # ---- HZ-188: a conflict send-back starts on a branch with main merged ----

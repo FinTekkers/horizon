@@ -146,12 +146,19 @@ def test_run_agent_selects_muse_provider_via_config_end_to_end(monkeypatch):
 
     reply = run_agent("say hi", agent="eng", session_id="fixed-session", max_turns=5, timeout_s=30)
 
+    from domain.py import providers as domain_providers
+
+    # HZ-398: Muse runs its pinned domain/providers.json default, passed as
+    # --model and recorded on the reply.
+    muse_default = domain_providers.default_model("muse")
     assert reply == {
         "result": "muse says hi",
         "session_id": "fixed-session",
         "provider": "muse",
+        "model": muse_default,
         "command_id": "cmd-1",
     }
+    assert captured["cmd"][captured["cmd"].index("--model") + 1] == muse_default
     # Proves the real muse.run() actually built the command (headless-safety
     # flags and all) rather than the dispatcher short-circuiting somewhere.
     assert captured["cmd"][0] == muse.FARM_MUSE_BIN

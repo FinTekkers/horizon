@@ -44,6 +44,7 @@ import * as waPollVotes from './waPollVotes.js'
 import { STEPS, isItemKind } from '../../domain/js/lifecycle.js'
 import { intakeFields } from '../../domain/js/fields.js'
 import { PRIORITIES, DEFAULT_PRIORITY } from '../../domain/js/priorities.js'
+import { choiceValues } from '../../domain/js/providers.js'
 import { PERSONAS } from './personas.js'
 import * as definitions from './definitions.js'
 import * as rulesStore from './rulesStore.js'
@@ -567,6 +568,21 @@ export function buildApp({ logger = true, onRoute = null } = {}) {
     if (result.error === 'not_found') return reply.code(404).send(result)
     if (result.error) return reply.code(409).send(result)
     return reply.send(result)
+  }
+
+  // HZ-389: what a successful pause, resume or send-back adds to its answer —
+  // the item as the v2 stream would upsert it, so the page shows it at once.
+  // With `restart`, a send-back that lands on an agent step also names the
+  // attempt starting there: the run kick() just recorded, else the one its
+  // next dispatch records (a held dispatch, store.nextStepAttempt).
+  function actionState(id, { restart = false } = {}) {
+    const item = store.itemViewById(id)
+    if (!item) return {}
+    const step = STEPS[item.cursor]
+    if (!restart || step?.kind !== 'agent' || step.runsIn === 'none') return { item }
+    const run = item.activeRun?.step_index === item.cursor ? item.activeRun : null
+    const attempt = run ? run.attempt : store.nextStepAttempt(id, item.cursor).attempt
+    return { item, restart: { stepIndex: item.cursor, attempt } }
   }
 
   // HZ-318: `?v=2` leaves stepOutputs off, as the v2 stream does; the Tracker
@@ -1477,18 +1493,17 @@ export function buildApp({ logger = true, onRoute = null } = {}) {
     },
     (request, reply) => {
       if (!humanAuthorized(request, reply)) return
-      return send(
-        reply,
-        gateActions.sendBack(
-          request.params.id,
-          {
-            target: request.body?.target,
-            feedback: request.body?.feedback,
-            targetStepIndex: request.body?.targetStepIndex,
-          },
-          actorOf(request),
-        ),
+      const { id } = request.params
+      const result = gateActions.sendBack(
+        id,
+        {
+          target: request.body?.target,
+          feedback: request.body?.feedback,
+          targetStepIndex: request.body?.targetStepIndex,
+        },
+        actorOf(request),
       )
+      return send(reply, result.error ? result : { ...result, ...actionState(id, { restart: true }) })
     },
   )
 
@@ -1582,7 +1597,10 @@ export function buildApp({ logger = true, onRoute = null } = {}) {
         response: { 200: OK_OBJECT, 404: ERROR_OBJECT, 409: ERROR_OBJECT },
       },
     },
-    (request, reply) => send(reply, store.setPaused(request.params.id, request.body.paused)),
+    (request, reply) => {
+      const result = store.setPaused(request.params.id, request.body.paused)
+      return send(reply, result.error ? result : { ...result, ...actionState(request.params.id) })
+    },
   )
 
   // Dependencies (HZ-78): id is blocked until dependsOnId closes. Cycles and
@@ -1650,7 +1668,9 @@ export function buildApp({ logger = true, onRoute = null } = {}) {
   )
 
   // HZ-357: choose which provider runs one step of this item ("Runs on" on the
-  // item page). `default` clears the choice. Only steps domain/steps.json marks
+  // item page). HZ-398: or which model — the values are domain/providers.json's
+  // choiceValues(), so a provider or model added there needs no change here.
+  // `default` clears the choice. Only steps domain/steps.json marks
   // providerOverrideEligible take one; any other step is a 400 and nothing is
   // saved. The next dispatch of that step reads the item, never a run already
   // in progress. PUT because it sets a value idempotently.
@@ -1666,7 +1686,7 @@ export function buildApp({ logger = true, onRoute = null } = {}) {
         body: {
           type: 'object',
           required: ['provider'],
-          properties: { provider: { type: 'string', enum: ['default', ...store.STEP_PROVIDERS] } },
+          properties: { provider: { type: 'string', enum: ['default', ...choiceValues()] } },
         },
         response: { 200: OK_OBJECT, 400: ERROR_OBJECT, 404: ERROR_OBJECT, 409: ERROR_OBJECT },
       },
@@ -2718,7 +2738,7 @@ export function buildApp({ logger = true, onRoute = null } = {}) {
           // propertyNames, not additionalProperties: false, which Fastify's
           // ajv strips silently — an extra key is refused outright.
           propertyNames: { enum: ['provider'] },
-          properties: { provider: { type: 'string', enum: ['default', ...store.STEP_PROVIDERS] } },
+          properties: { provider: { type: 'string', enum: ['default', ...choiceValues()] } },
         },
         response: { 200: OK_OBJECT, 400: ERROR_OBJECT, 401: ERROR_OBJECT, 404: ERROR_OBJECT },
       },

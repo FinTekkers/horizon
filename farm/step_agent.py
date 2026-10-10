@@ -31,6 +31,7 @@ import httpx
 # HZ-132 put the failure-reason vocabulary there too, so the reason this script
 # reports is a constant the server already knows, never a string typed here.
 from domain.py import fields, reasons, run_plan, steps
+from domain.py import providers as domain_providers
 from domain.py.personas import model_agent_for_step
 
 # AgentExhaustedError is this branch's name for main's TurnCapExceeded — the
@@ -334,23 +335,22 @@ def item_personas(item: dict) -> dict:
     return {"eng": legacy} if isinstance(legacy, str) and legacy.strip() else {}
 
 
-STEP_PROVIDER_CHOICES = ("claude", "muse")
+def step_provider_choice(item: dict, step_index) -> tuple[str, str | None] | None:
+    """The owner's per-step choice for this item (HZ-357), as (provider, model
+    id or None), or None.
 
-
-def step_provider_choice(item: dict, step_index) -> str | None:
-    """The owner's per-step provider choice for this item (HZ-357), or None.
-
-    The server sends `providerChoices` as {"<step index>": "claude" | "muse"},
+    The server sends `providerChoices` as {"<step index>": "<provider>" |
+    "<provider>:<model id>"} (HZ-398; domain/providers.json declares both),
     copied into the task at dispatch, so a choice changed while this step runs
     reaches only the next dispatch. Anything else — no map (an older server),
-    no key (Default), an unknown value — is None, i.e. today's routing. The
-    caller still gates this on steps.provider_override_eligible().
+    no key (Default), an unknown provider or an undeclared model — is None,
+    i.e. today's routing. The caller still gates this on
+    steps.provider_override_eligible().
     """
     choices = item.get("providerChoices")
     if not isinstance(choices, dict) or step_index is None:
         return None
-    choice = choices.get(str(step_index))
-    return choice if choice in STEP_PROVIDER_CHOICES else None
+    return domain_providers.parse_choice(choices.get(str(step_index)))
 
 
 def _persona_line(task: dict) -> str:
@@ -1326,7 +1326,9 @@ def model_persona(persona_agent: str | None, personas: dict) -> str | None:
 
 
 def _provenance(reply: dict) -> dict:
-    return {"provider": reply.get("provider"), "command_id": reply.get("command_id")}
+    # HZ-398: plus the model that ran, when the reply names one.
+    model = {"model": reply["model"]} if reply.get("model") else {}
+    return {"provider": reply.get("provider"), **model, "command_id": reply.get("command_id")}
 
 
 # ---- turn-cap salvage and handoff (HZ-158) ----
@@ -1422,6 +1424,7 @@ def _run_and_parse(
     item_id: str,
     guard: HandoffGuard,
     provider: str | None = None,
+    model_choice: str | None = None,
     provider_locked: bool = False,
     validate=None,
 ) -> tuple[dict, dict, list[str]]:
@@ -1474,11 +1477,13 @@ def _run_and_parse(
             timeout_s=timeout_s,
             allowed_tools=allowed_tools,
             provider=provider,
+            model_choice=model_choice,
             provider_locked=provider_locked,
         )
     except AgentExhaustedError as exc:
         parsed, notes = _on_exhaustion(exc, required_keys=required_keys, ctx=ctx, guard=guard, salvage=True)
-        return parsed, {"provider": exc.provider, "command_id": None}, notes
+        model = {"model": exc.model} if getattr(exc, "model", None) else {}
+        return parsed, {"provider": exc.provider, **model, "command_id": None}, notes
     produced = reply
 
     def retry_once(retry_prompt: str) -> str:
@@ -1496,6 +1501,7 @@ def _run_and_parse(
             timeout_s=timeout_s,
             allowed_tools=allowed_tools,
             provider=provider,
+            model_choice=model_choice,
             provider_locked=provider_locked,
         )
         return produced["result"]
@@ -1863,6 +1869,7 @@ def _execute_pm(task: dict) -> dict:
         if steps.provider_override_eligible(steps.FARM_VIEWS[kind], label)
         else None
     )
+    provider, model_choice = choice or (None, None)
     # The reply that parsed, so a retry records its own provenance (HZ-102).
     produced: dict = {}
 
@@ -1875,7 +1882,8 @@ def _execute_pm(task: dict) -> dict:
             persona=persona,
             session_id=None,
             append_system=pm_steps.ROLE_PROMPT,
-            provider=choice,
+            provider=provider,
+            model_choice=model_choice,
         )
         return produced
 
@@ -1924,12 +1932,16 @@ def _execute(task: dict, guard: HandoffGuard) -> dict:
     # with no choice is locked exactly as before.
     override_eligible = steps.provider_override_eligible(table, label)
     choice = step_provider_choice(item, task["step"].get("index")) if override_eligible else None
+    # HZ-398: the model half of the choice reaches run_agent() as model_choice
+    # and only _model_for() turns it into a model. A persona's provider never
+    # carries one.
+    chosen_provider, model_choice = choice or (None, None)
     if kind == "change" and label in CHOICE_ONLY_PROVIDER_STEPS:
-        provider_override = choice
+        provider_override = chosen_provider
         if label == IMPLEMENT_LABEL and choice is None:
             provider_locked = True
     else:
-        provider_override = (choice or provider_for(personas)) if override_eligible else None
+        provider_override = (chosen_provider or provider_for(personas)) if override_eligible else None
     # HZ-192: who this step's run_agent() calls are; run_agent() resolves the
     # model from these, so it is never chosen here. The agent comes from the
     # step table, like the budget above, not from the task payload.
@@ -2000,6 +2012,7 @@ def _execute(task: dict, guard: HandoffGuard) -> dict:
                     timeout_s=timeout_s,
                     allowed_tools=tools,
                     provider=provider_override,
+                    model_choice=model_choice,
                     provider_locked=provider_locked,
                 )
         except pause.PauseRequested as exc:
@@ -2209,6 +2222,7 @@ def _execute(task: dict, guard: HandoffGuard) -> dict:
                 item_id=item["id"],
                 guard=guard,
                 provider=provider_override,
+                model_choice=model_choice,
                 provider_locked=provider_locked,
             )
             watch.provider = code_provenance.get("provider") or watch.provider
@@ -2233,6 +2247,7 @@ def _execute(task: dict, guard: HandoffGuard) -> dict:
                 item_id=item["id"],
                 guard=guard,
                 provider=provider_override,
+                model_choice=model_choice,
                 provider_locked=provider_locked,
             )
             watch.provider = qa_provenance.get("provider") or watch.provider
@@ -2289,6 +2304,8 @@ def _execute(task: dict, guard: HandoffGuard) -> dict:
         # HZ-369: what ran, from the code pass (the QA pass matched it above).
         if override_eligible and code_ran_on:
             review_artifacts["provider"] = code_ran_on
+            if code_provenance.get("model"):
+                review_artifacts["model"] = code_provenance["model"]
             review_artifacts["command_id"] = code_provenance.get("command_id")
         return {"summary": stamp_notes(summary, notes, SUMMARY_MAX_CHARS), "artifacts": review_artifacts}
 
@@ -2389,6 +2406,7 @@ def _execute(task: dict, guard: HandoffGuard) -> dict:
             item_id=item["id"],
             guard=guard,
             provider=provider_override,
+            model_choice=model_choice,
             provider_locked=provider_locked,
             validate=_task_reply_validator(label) if kind == "task" else None,
         )
@@ -2435,6 +2453,8 @@ def _execute(task: dict, guard: HandoffGuard) -> dict:
     if override_eligible and reply_provenance.get("provider"):
         artifacts = result.setdefault("artifacts", {})
         artifacts["provider"] = reply_provenance.get("provider")
+        if reply_provenance.get("model"):
+            artifacts["model"] = reply_provenance["model"]
         artifacts["command_id"] = reply_provenance.get("command_id")
     # HZ-313: the Ensemble's optional cross-repo split rides through untouched.
     # The server (server/src/split.js) validates it and files nothing until

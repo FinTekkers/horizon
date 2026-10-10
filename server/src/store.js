@@ -28,6 +28,7 @@ import {
   EXECUTE_STEP_INDEX,
 } from '../../domain/js/lifecycle.js'
 import { isPriority } from '../../domain/js/priorities.js'
+import { choiceLabel, choiceValues, parseChoice, providerNames } from '../../domain/js/providers.js'
 import { REASON } from '../../domain/js/reasons.js'
 import { extractRunPlan } from '../../domain/js/runPlan.js'
 import { isHumanProof } from './humanProof.js'
@@ -618,7 +619,7 @@ const selectItems = db.prepare(
 )
 const selectEvents = db.prepare('SELECT who, text, detail, color, initials, created_at FROM event WHERE item_id = ? ORDER BY id DESC LIMIT 20')
 const selectOutputs = db.prepare(
-  "SELECT step_index, attempt, output, artifact, provider FROM step_run WHERE item_id = ? AND status = 'done' ORDER BY id",
+  "SELECT step_index, attempt, output, artifact, provider, model FROM step_run WHERE item_id = ? AND status = 'done' ORDER BY id",
 )
 // Counts done+artifact rows only (a strict subset of the done rows above —
 // some steps mark done without ever setting an artifact), so the board can
@@ -644,6 +645,8 @@ function stepOutputs(itemId) {
       // HZ-357: the provider this attempt ran on, so the item page can show
       // "Ran on …". NULL for runs before the farm recorded it.
       provider: row.provider || null,
+      // HZ-398: the model that attempt ran on. NULL before the farm recorded it.
+      model: row.model || null,
     }
   }
   return map
@@ -723,6 +726,27 @@ export function listStepAttempts(itemId, stepIndex) {
 const selectActiveRun = db.prepare(
   "SELECT id, step_index, attempt, started_at FROM step_run WHERE item_id = ? AND status = 'active' ORDER BY id DESC LIMIT 1",
 )
+
+// The attempt the next dispatch of a step records, moved out of the
+// orchestrator's kick() unchanged (HZ-389) so /reject can name it in its
+// answer and the two never disagree. HZ-321: a run a self-deploy stopped was
+// never a finished attempt, so its redispatch keeps that run's attempt and
+// auto-retry count. HZ-346: nor is a run a rule blocked — the block does not
+// use up an attempt. A pure read: nothing is written.
+const selectLastStepRun = db.prepare(
+  'SELECT attempt, auto_retry_count, deploy_interrupted, rule_blocked FROM step_run WHERE item_id = ? AND step_index = ? ORDER BY id DESC LIMIT 1',
+)
+const selectNextAttempt = db.prepare('SELECT COALESCE(MAX(attempt), 0) + 1 AS n FROM step_run WHERE item_id = ? AND step_index = ?')
+
+export function nextStepAttempt(id, stepIndex) {
+  const last = selectLastStepRun.get(id, stepIndex)
+  const keepsAttempt = last?.deploy_interrupted === 1 || last?.rule_blocked === 1
+  return {
+    attempt: keepsAttempt ? last.attempt : selectNextAttempt.get(id, stepIndex).n,
+    keepsAttempt,
+    autoRetryCount: keepsAttempt ? last.auto_retry_count : null,
+  }
+}
 
 // Folds the farm's cached {state, reason} onto an active run (HZ-54). No
 // entry for this run — mock mode, an old/unreachable farm, or a poll that
@@ -954,6 +978,18 @@ export function listItems({ scope = 'active', stepOutputs = true } = {}) {
     .all()
     .filter(scopeFilter(scope))
     .map((row) => itemView(row, { stepOutputs }))
+}
+
+// HZ-389: one item as the v2 stream upserts it (no stepOutputs), or null — so
+// an action's answer carries the state it just wrote.
+const selectItemRow = db.prepare(
+  `SELECT w.*, (SELECT MAX(s.ended_at) FROM step_run s WHERE s.item_id = w.id) AS last_run_ended_at
+   FROM work_item w WHERE w.id = ?`,
+)
+
+export function itemViewById(id) {
+  const row = selectItemRow.get(id)
+  return row ? itemView(row, { stepOutputs: false }) : null
 }
 
 // The row filter behind listItems' scope, shared with itemStepOutputs so the
@@ -1203,11 +1239,11 @@ export function getItem(id) {
 }
 
 // ---- per-step provider choice (HZ-357) ----
-// The providers an owner may pick for a step. "default" is not stored: it
-// deletes the step's key, so an item with no choices keeps an empty map and
-// runs exactly as before.
-export const STEP_PROVIDERS = ['claude', 'muse']
-const PROVIDER_LABELS = { claude: 'Claude', muse: 'Muse' }
+// What an owner may pick for a step comes from domain/providers.json (HZ-398):
+// a bare provider name (the pre-HZ-398 form, still accepted and never
+// rewritten) or "<provider>:<model id>" for one of its selectable models — see
+// choiceValues(). "default" is not stored: it deletes the step's key, so an
+// item with no choices keeps an empty map and runs exactly as before.
 
 // Only a step domain/steps.json marks providerOverrideEligible takes a choice;
 // the farm applies the same rule, and deploy stays provider-locked.
@@ -1234,22 +1270,36 @@ export function resolveStepProviders(itemChoices, projectDefaults) {
   return { ...(projectDefaults ?? {}), ...(itemChoices ?? {}) }
 }
 
-function providerMapFromJson(json) {
-  if (typeof json !== 'string' || !json.trim()) return {}
+function eligibleEntriesFromJson(json) {
+  if (typeof json !== 'string' || !json.trim()) return []
   let parsed
   try {
     parsed = JSON.parse(json)
   } catch {
-    return {}
+    return []
   }
-  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {}
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return []
+  return Object.entries(parsed).filter(([step]) => /^\d+$/.test(step) && providerOverrideEligible(Number(step)))
+}
+
+function providerMapFromJson(json) {
   const choices = {}
-  for (const [step, provider] of Object.entries(parsed)) {
-    if (/^\d+$/.test(step) && providerOverrideEligible(Number(step)) && STEP_PROVIDERS.includes(provider)) {
-      choices[step] = provider
-    }
+  for (const [step, value] of eligibleEntriesFromJson(json)) {
+    if (parseChoice(value)) choices[step] = value
   }
   return choices
+}
+
+// HZ-398: the stored choices of an item's or project's JSON that name a known
+// provider but a model domain/providers.json no longer offers, as
+// [{ step, value }]. providerMapFromJson already drops them, so they run on
+// Default; the orchestrator says so on the item at dispatch. The stored row is
+// left as it is.
+export function staleStepChoices(json) {
+  const names = providerNames()
+  return eligibleEntriesFromJson(json)
+    .filter(([, value]) => typeof value === 'string' && !parseChoice(value) && names.includes(value.split(':')[0]))
+    .map(([step, value]) => ({ step: Number(step), value }))
 }
 
 // The owner's "Runs on" choice for one step. The farm reads it from the task
@@ -1263,7 +1313,7 @@ export function setStepProvider(id, stepIndex, provider, actor = 'You') {
   if (isClosed(it)) return { error: 'closed' }
   if (isAbandoned(it)) return { error: 'abandoned' }
   if (!providerOverrideEligible(stepIndex)) return { error: 'provider_not_eligible' }
-  if (provider !== 'default' && !STEP_PROVIDERS.includes(provider)) return { error: 'bad_provider' }
+  if (provider !== 'default' && !choiceValues().includes(provider)) return { error: 'bad_provider' }
 
   const choices = { ...it.providerChoices }
   if (provider === 'default') delete choices[stepIndex]
@@ -1272,7 +1322,7 @@ export function setStepProvider(id, stepIndex, provider, actor = 'You') {
   db.prepare(`UPDATE work_item SET provider_choices_json = ?, ${touch} WHERE id = ?`).run(json, id)
   addEvent(id, {
     who: actor,
-    text: `set ${STEPS[stepIndex].label} to run on ${provider === 'default' ? 'the default provider' : PROVIDER_LABELS[provider]}`,
+    text: `set ${STEPS[stepIndex].label} to run on ${provider === 'default' ? 'the default provider' : choiceLabel(provider)}`,
     color: '#5E4380',
     initials: 'YOU',
   })
@@ -1288,7 +1338,7 @@ export function setStepProvider(id, stepIndex, provider, actor = 'You') {
 // nothing. "default" deletes the key, and an empty map is stored as NULL.
 export function setProjectStepProvider(projectId, stepIndex, provider, who) {
   if (!providerOverrideEligible(stepIndex)) return { error: 'provider_not_eligible' }
-  if (provider !== 'default' && !STEP_PROVIDERS.includes(provider)) return { error: 'bad_provider' }
+  if (provider !== 'default' && !choiceValues().includes(provider)) return { error: 'bad_provider' }
   const result = db.transaction(() => {
     const row = db.prepare('SELECT provider_defaults_json FROM project WHERE id = ?').get(projectId)
     if (!row) return { error: 'not_found' }

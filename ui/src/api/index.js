@@ -44,6 +44,7 @@ export const {
   issueLabel,
   approveGate,
   requestChanges,
+  getRestartSent,
   resolveConflicts,
   forwardToAccept,
   setPaused,

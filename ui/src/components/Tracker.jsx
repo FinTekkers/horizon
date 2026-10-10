@@ -205,7 +205,20 @@ function StepProviderPicker({ item, index, status, output, onSetStepProvider }) 
   )
 }
 
-function Step({ item, stepOutputs, outputsSettled, index, deployBlock, viewerName, onApprove, onApproveWithComments, onReject, onResolveConflicts, resolving, gateBusy, onForwardToAccept, onSetPersona, onSetStepProvider }) {
+// HZ-389: "Sent: attempt N starting" on the step a send-back from this tab
+// restarted. N is the server's answer (restart.attempt), never derived here.
+// Shown while the item is still on that step and not paused, until a run for
+// it reaches another attempt or has been going a minute — so the normal path,
+// where the answer already carries the run, shows it too.
+function restartSentLabel(item, index, restartSent) {
+  if (!restartSent || restartSent.stepIndex !== index || item.cursor !== index || item.paused) return null
+  const run = item.activeRun
+  if (run && run.step_index !== index) return null
+  if (run && (run.attempt !== restartSent.attempt || elapsedMinutes(run.started_at) >= 1)) return null
+  return `Sent: attempt ${restartSent.attempt} starting`
+}
+
+function Step({ item, stepOutputs, outputsSettled, index, deployBlock, viewerName, restartSent, onApprove, onApproveWithComments, onReject, onResolveConflicts, resolving, gateBusy, onForwardToAccept, onSetPersona, onSetStepProvider }) {
   const st = STEPS[index]
   const status = stepStatus(item, index)
   const isGate = st.kind === 'gate'
@@ -225,6 +238,7 @@ function Step({ item, stepOutputs, outputsSettled, index, deployBlock, viewerNam
   const mergeQueued = status === 'awaiting' && index === item.cursor ? queuedToMerge(item, deployBlock, viewerName) : null
   // HZ-384: passes only with the gate PIN, whatever the project's Autopilot.
   const humanOnly = status === 'awaiting' && isHumanOnlyGate(index)
+  const sentLabel = restartSentLabel(item, index, restartSent)
 
   return (
     <div className="step">
@@ -260,6 +274,7 @@ function Step({ item, stepOutputs, outputsSettled, index, deployBlock, viewerNam
                 {queued && item.activeRun.reason && ` · ${item.activeRun.reason}`}
               </span>
             )}
+            {sentLabel && <span> · {sentLabel}</span>}
             {index === item.cursor && deployQueueLabel(item) && (
               <span className="step-card__deploy-queue"> · {deployQueueLabel(item)}</span>
             )}
@@ -616,7 +631,7 @@ function useStepOutputs(item) {
   return { stepOutputs: mine ? loaded.stepOutputs : null, settled: mine }
 }
 
-export default function Tracker({ item, projects, deployBlock = null, viewerName = null, onBack, onApprove, onApproveWithComments, onReject, onResolveConflicts, resolving, gateBusy, onForwardToAccept, onTogglePause, onRestartPhase, onSetPersona, onSetStepProvider, onAbandon, onRemoveDependency, onAddDependency, onAmendRule }) {
+export default function Tracker({ item, projects, deployBlock = null, viewerName = null, restartSent = null, onBack, onApprove, onApproveWithComments, onReject, onResolveConflicts, resolving, gateBusy, onForwardToAccept, onTogglePause, onRestartPhase, onSetPersona, onSetStepProvider, onAbandon, onRemoveDependency, onAddDependency, onAmendRule }) {
   const status = itemStatus(item, true, { deployBlock })
   const activity = buildActivity(item)
   const closed = isClosed(item)
@@ -790,6 +805,7 @@ export default function Tracker({ item, projects, deployBlock = null, viewerName
                     index={i}
                     deployBlock={deployBlock}
                     viewerName={viewerName}
+                    restartSent={restartSent}
                     onApprove={onApprove}
                     onApproveWithComments={onApproveWithComments}
                     onReject={onReject}

@@ -49,6 +49,30 @@ function applyDelta({ upserts = [], removed = [], top = {}, order }) {
   emit()
 }
 
+// HZ-389: an action's answer carries the item it just wrote, in the shape a
+// delta upserts, so it replaces the cached item the same way. An answer older
+// than the cached item (a delta landed first) is not applied. `restart` — the
+// attempt a send-back started — is kept apart from the item, per item id, for
+// the step card's "Sent: attempt N starting"; it is recorded even when the
+// item is not swapped, since the newer cached item may not show that run yet.
+const restartsSent = new Map()
+
+function applyActionItem(item, restart) {
+  if (restart) restartsSent.set(item.id, restart)
+  const cached = items.find((it) => it.id === item.id)
+  const stale = cached?.last_activity_at && item.last_activity_at && cached.last_activity_at > item.last_activity_at
+  // A new array either way, so a page reading items re-renders and reads the
+  // restart even when the cached item is kept.
+  items = items.map((it) => (it.id === item.id && !stale ? item : it))
+  emit()
+}
+
+// { stepIndex, attempt } of the last send-back this tab made on the item, or
+// null. The Tracker decides how long it is shown.
+export function getRestartSent(id) {
+  return restartsSent.get(id) ?? null
+}
+
 // The board's top-level keys from a snapshot or a delta's `top`. A key the
 // payload leaves out keeps its last value.
 function applyTop(data) {
@@ -563,10 +587,23 @@ export async function approveGate(id, notes) {
   return data
 }
 
-export function requestChanges(id, target, feedback, targetStepIndex) {
+// HZ-389: awaited, so the composer stays open with the error when it fails.
+// Rejects with Error('network') when no answer came, or Error(<error code>)
+// with `status` on a non-2xx — items are untouched either way. A 2xx answer's
+// item is applied at once, and its `restart` recorded for the step card.
+export async function requestChanges(id, target, feedback, targetStepIndex) {
   const body = { target: target || '', feedback: feedback || '' }
   if (targetStepIndex != null) body.targetStepIndex = targetStepIndex
-  gatePost(`/items/${id}/reject`, body)
+  const res = await gatePost(`/items/${id}/reject`, body)
+  if (!res) throw new Error('network')
+  const data = await res.json().catch(() => ({}))
+  if (!res.ok) {
+    const err = new Error(data.error || `HTTP ${res.status}`)
+    err.status = res.status
+    throw err
+  }
+  if (data.item) applyActionItem(data.item, data.restart)
+  return data
 }
 
 // HZ-92: the fast path — a plain git merge + the repo's own tests, run by
@@ -588,12 +625,13 @@ export async function forwardToAccept(id) {
 
 // HZ-385: sends the state the button shows, never a flip of this tab's cached
 // item, which a dead stream can leave stale. postJson so a 404 or 409 rejects
-// and the button shows it. The answer's `paused` is applied at once; the
-// stream's next delta for the item replaces the whole item, so the server
-// always has the last word.
+// and the button shows it. The answer's item (HZ-389), or else its `paused`,
+// is applied at once; the stream's next delta for the item replaces the whole
+// item, so the server always has the last word.
 export async function setPaused(id, paused) {
   const data = await postJson(`/items/${id}/pause`, { paused })
-  if (typeof data.paused === 'boolean') {
+  if (data.item) applyActionItem(data.item)
+  else if (typeof data.paused === 'boolean') {
     items = items.map((it) => (it.id === id ? { ...it, paused: data.paused } : it))
     emit()
   }

@@ -44,8 +44,9 @@ CLAUDE_BIN = os.environ.get("FARM_CLAUDE_BIN", "claude")
 FARM_RUNNER = os.environ.get("FARM_RUNNER", "sdk")
 # HZ-192: no env var selects a model. Every farm call's model is declared in
 # domain/personas.json's `models` block and resolved inside run_agent(). The
-# one emergency lever, FARM_MODEL_OVERRIDE (a Claude model id for EVERY Claude
-# call; never reaches Muse), is read at call time in farm/agent_runner.py,
+# one emergency lever, FARM_MODEL_OVERRIDE (HZ-398: any model id
+# domain/providers.json declares, applied to EVERY call on the provider that
+# declares it and to no other), is read at call time in farm/agent_runner.py,
 # not here.
 
 # HZ-188: how long an implement/review step waits for the item's workspace

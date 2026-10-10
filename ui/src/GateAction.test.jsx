@@ -28,6 +28,7 @@ vi.mock('./api', () => ({
   getDeployBlock: () => null,
   approveGate: vi.fn(),
   requestChanges: vi.fn(),
+  getRestartSent: () => null,
   resolveConflicts: vi.fn(),
   forwardToAccept: vi.fn(),
   setPaused: vi.fn(),

@@ -1,0 +1,50 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$comment": "HZ-398: the contract for domain/providers.json — every agent provider, its label and the models an owner may pick for a step. Validated by domain/validate.mjs, the same Draft-07 subset validator the other domain/ schemas use (no `pattern`). Rules the subset cannot express — provider names matching ^[a-z]+$ and unique, `default` naming a declared provider, model ids matching ^[a-z0-9][a-z0-9.-]*$ (no colon, so a stored \"<provider>:<model id>\" choice splits unambiguously) and unique across ALL providers, and `defaultModel` being null or one of its own provider's ids — are asserted at LOAD time by assertProvidersShape() in domain/js/providers.js and _validate_source() in domain/py/providers.py, which domain/fixtures/providers-cases.json drives from both sides. The persona bindings check every domain/personas.json models id is declared under the default provider.",
+  "title": "Horizon agent providers and their selectable models",
+  "type": "object",
+  "required": ["default", "providers"],
+  "additionalProperties": false,
+  "properties": {
+    "default": {
+      "$comment": "The provider a step runs on when nobody chose one. Its models come from domain/personas.json's `models` block, so its defaultModel is null.",
+      "type": "string",
+      "minLength": 1
+    },
+    "providers": {
+      "$comment": "ARRAY ORDER IS THE ORDER the picker lists providers in; model order within a provider is the picker's option order.",
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["name", "label", "defaultModel", "models"],
+        "additionalProperties": false,
+        "properties": {
+          "name": { "type": "string", "minLength": 1 },
+          "label": { "type": "string", "minLength": 1 },
+          "defaultModel": {
+            "$comment": "The model this provider runs when nobody chose one — pinned here so a provider CLI update cannot silently change it. null means domain/personas.json's `models` block decides (the default provider only).",
+            "type": ["string", "null"]
+          },
+          "models": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "type": "object",
+              "required": ["id", "label", "selectable"],
+              "additionalProperties": false,
+              "properties": {
+                "id": { "type": "string", "minLength": 1 },
+                "label": { "type": "string", "minLength": 1 },
+                "selectable": {
+                  "$comment": "false: declared so a domain/personas.json `models` entry may name it (the concierge's), but never offered as a step choice.",
+                  "type": "boolean"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}
