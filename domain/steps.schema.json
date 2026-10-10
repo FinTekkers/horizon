@@ -67,9 +67,24 @@
           "type": "array",
           "minItems": 1,
           "items": { "type": "string", "minLength": 1 }
+        },
+        "spawnsOn": {
+          "$comment": "HZ-379: the reply field that, when the step's run returns it, files one item of spawnKind and makes this item wait for it (server/src/spawn.js).",
+          "type": "string",
+          "minLength": 1
+        },
+        "spawnKind": { "type": "string", "enum": ["change", "task"] },
+        "awaitsSpawnedCode": {
+          "$comment": "HZ-379: this step starts only once every closed spawned dependency's merge is live, and runs on that checkout.",
+          "type": "boolean"
         }
       },
       "allOf": [
+        {
+          "$comment": "HZ-379: a step that spawns says what kind it files.",
+          "if": { "required": ["spawnsOn"] },
+          "then": { "required": ["spawnKind"] }
+        },
         {
           "$comment": "An agent-kind step always names its lane; it never carries a gate. The agent itself is required separately below, because a runsIn 'none' step has no runner yet.",
           "if": { "properties": { "kind": { "enum": ["agent"] } }, "required": ["kind"] },

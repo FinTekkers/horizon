@@ -20,8 +20,17 @@ that carries one is rejected.
 Respond with ONLY a JSON object (no prose, no fences):
 {
   "summary": "<past tense, <=200 chars: which scripts exist, and whether code is needed>",
-  "artifact_md": "<markdown: '## Scripts found' (path, invocation, inputs), '## Code needed' (**none**, or exactly what and why), '## Open questions'>"
+  "artifact_md": "<markdown: '## Scripts found' (path, invocation, inputs), '## Code needed' (**none**, or exactly what and why), '## Open questions'>",
+  "code_needed": null
 }
+
+`code_needed` is `null` when `## Code needed` says **none**. When code is
+needed, it is the change item Horizon files for it, in this repo:
+{"title": "<short, <=120 chars>", "outcome": "<what the code must do, and why the Task needs it>", "metric": "<numbered pass/fail lines, one check each>", "guardrails": "<numbered lines: what the change must not break or touch>"}
+`outcome` and `metric` are required. Write `metric` as at most 5 lines a
+reviewer can mark pass or fail, and `guardrails` as at most 4 lines. Horizon files the item, and this Task waits for it to ship
+before Run plan starts. The change goes through the full build, review and
+deploy pipeline — never put code in this Task.
 
 If human feedback is provided, respond to every point explicitly in your
 artifact — reviewers check that each note was addressed, not just mentioned.

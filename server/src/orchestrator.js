@@ -85,6 +85,7 @@ import { findTargetByRepo } from './deployTargets.js'
 import { deploySkipArtifact, deploySkipReason } from './deploySkip.js'
 import { servedRulesFor } from './rulesStore.js'
 import { OPTIONS_STEP_INDEX, proposeSplit } from './split.js'
+import { awaitsSpawnedCode, hasSpawned, linkSpawned, requestKeyFor, spawnItems, spawnRuleOf, spawnedCodeLive, validateSpawnSpec } from './spawn.js'
 import { recordFlakes } from './checkFlakes.js'
 import { splitCheckError } from './checkHeadline.js'
 import { recordTestRuns } from './testResults.js'
@@ -1035,6 +1036,17 @@ export function kick(id, opts = {}) {
     deployQueue.join(item).catch((err) => console.warn(`deploy queue: ${id} could not join: ${err.message}`))
     return
   }
+  // HZ-379: a step that waits for its item's spawned code starts only once
+  // that code is live, and runs on the deployed commit. The check is async;
+  // its answer comes back through kick(), so runnable() — and with it every
+  // blocker — is checked again after the await.
+  if (awaitsSpawnedCode(STEPS[item.cursor]) && !opts.spawnedCode && hasSpawned(id)) {
+    holdForSpawnedCode(id, opts)
+    return
+  }
+  spawnHolds.delete(id)
+  clearTimeout(spawnRechecks.get(id))
+  spawnRechecks.delete(id)
   dispatching.add(id)
 
   const stepIndex = item.cursor
@@ -1067,10 +1079,50 @@ export function kick(id, opts = {}) {
     .run(id, stepIndex, attempt, step.agent, autoRetryCount, scope ? JSON.stringify(scope) : null).lastInsertRowid
 
   if (toFarm) {
-    dispatchToFarm(id, stepIndex, runId, attempt, scope)
+    dispatchToFarm(id, stepIndex, runId, attempt, scope, opts.spawnedCode?.sha || null)
   } else {
     timers[runId] = setTimeout(() => runMockStep(id, stepIndex, runId), latency())
   }
+}
+
+// HZ-379: the hold in kick() above. One check per item at a time; a check
+// that finds the code not live yet logs why once per reason and checks again
+// in SPAWN_RECHECK_MS. A restart drops the timer, and init()'s
+// resumeActiveItems() kicks the item again.
+export const SPAWN_RECHECK_MS = 60 * 1000
+const spawnChecking = new Set()
+const spawnHolds = new Map() // item id -> the last reason logged
+const spawnRechecks = new Map() // item id -> its one re-check timer
+
+function holdForSpawnedCode(id, opts) {
+  if (spawnChecking.has(id)) return
+  spawnChecking.add(id)
+  const item = getItem(id)
+  const label = STEPS[item.cursor].label
+  spawnedCodeLive(item)
+    .then((live) => {
+      spawnChecking.delete(id)
+      if (live.ready) {
+        kick(id, { ...opts, spawnedCode: { sha: live.sha } })
+        return
+      }
+      if (spawnHolds.get(id) !== live.reason) {
+        spawnHolds.set(id, live.reason)
+        addEvent(id, {
+          who: 'Horizon',
+          text: `“${label}” waits for the code it asked for: ${live.reason}`,
+          color: '#DFA200',
+          initials: 'HZ',
+        })
+        notifyChange()
+      }
+      clearTimeout(spawnRechecks.get(id))
+      spawnRechecks.set(id, setTimeout(() => kick(id, opts), SPAWN_RECHECK_MS).unref())
+    })
+    .catch((err) => {
+      spawnChecking.delete(id)
+      console.warn(`spawn: ${id} could not check its spawned code: ${err.message}`)
+    })
 }
 
 // HZ-358: a skipped deploy leaves no release on the item.
@@ -1080,7 +1132,7 @@ function clearReleaseFields(id) {
 
 // ---- farm-dispatched steps ----
 
-async function dispatchToFarm(id, stepIndex, runId, attempt, scope) {
+async function dispatchToFarm(id, stepIndex, runId, attempt, scope, checkoutSha = null) {
   const step = STEPS[stepIndex]
   let item = getItem(id)
 
@@ -1290,6 +1342,8 @@ async function dispatchToFarm(id, stepIndex, runId, attempt, scope) {
     ...(mergeMain ? { merge_main: true } : {}),
     ...(deployWait ? { deploy_wait: deployWait } : {}),
     ...(scope ? { scope } : {}),
+    // HZ-379: the deployed commit a step that waited for spawned code runs on.
+    ...(checkoutSha ? { checkout_sha: checkoutSha } : {}),
     ...(projectContext ? { project_context: projectContext } : {}),
     ...checkCommandsField(item),
     ...rulesOverrideField(project?.name, item.repo),
@@ -2182,6 +2236,27 @@ export async function completeFarmRun(runId, { summary, patch, artifacts }) {
   // is a `## Blockers` bullet, never a failed run.
   if (run.step_index === OPTIONS_STEP_INDEX) {
     artifactMd = proposeSplit(item, runId, artifacts?.split, artifactMd)
+  }
+
+  // HZ-379: a step whose reply asks for items (domain/steps.json's spawnsOn)
+  // files them before it completes. A malformed ask or a failed filing fails
+  // the run, so it never advances without them; a retry asks under the same
+  // key and files nothing twice. The edges are added after the last await, in
+  // the same tick that marks the run done, so kick() below finds the item
+  // blocked and the next step never dispatches while a child is open.
+  const spawnRule = spawnRuleOf(step)
+  let spawnKey = null
+  if (spawnRule && artifacts && Object.hasOwn(artifacts, spawnRule.field) && artifacts[spawnRule.field] != null) {
+    const checked = validateSpawnSpec(artifacts[spawnRule.field])
+    if (checked.error) return failFarmRun(runId, `malformed ${spawnRule.field}: ${checked.error}`)
+    spawnKey = requestKeyFor(id, run.step_index)
+    const filed = await spawnItems(item, [checked.spec], { requestKey: spawnKey, kind: spawnRule.kind, actor: agent.label })
+    if (filed.error) return failFarmRun(runId, `could not file the ${spawnRule.kind} item it asked for: ${filed.error}`)
+    if (!runStillActive(runId)) return { ok: true, stale: true }
+  }
+  if (spawnKey) {
+    const linked = linkSpawned(id, spawnKey)
+    if (linked.error) return failFarmRun(runId, `could not wait for the item it filed: ${linked.error}`)
   }
 
   if (run.step_index === IMPLEMENT_STEP_INDEX) {

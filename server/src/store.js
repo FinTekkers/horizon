@@ -741,6 +741,27 @@ function dependencyFields(id) {
   }
 }
 
+// HZ-379: who filed this item and what this item filed (server/src/spawn.js
+// writes item_spawn). Every filed child is listed, open or closed, so the
+// parent's page keeps the whole record; read here, not in spawn.js, because
+// spawn.js imports this module.
+const selectSpawnedBy = db.prepare(`
+  SELECT w.id, w.title FROM item_spawn s JOIN work_item w ON w.id = s.parent_id
+   WHERE s.child_id = ? AND s.status = 'filed' ORDER BY s.id LIMIT 1`)
+const selectSpawned = db.prepare(`
+  SELECT w.* FROM item_spawn s JOIN work_item w ON w.id = s.child_id
+   WHERE s.parent_id = ? AND s.status = 'filed' ORDER BY s.id`)
+
+export function spawnFields(id) {
+  const parent = selectSpawnedBy.get(id)
+  return {
+    spawnedBy: parent ? { id: parent.id, title: parent.title } : null,
+    spawned: selectSpawned
+      .all(id)
+      .map((c) => ({ id: c.id, title: c.title, closed: isClosed(c), abandoned: isAbandoned(c) })),
+  }
+}
+
 // Wakes every item that names `id` as a blocker — called once `id` has
 // actually closed, from every place isClosed can flip false -> true
 // (approveGate, approveGateFromGithub, and upsertFromGithub's GitHub-close
@@ -1074,6 +1095,7 @@ function itemView(row, { stepOutputs: withStepOutputs = true } = {}) {
     reviewRejected: reviewRejected(row),
     forwardedReview: forwardedReview(row),
     ...dependencyFields(row.id),
+    ...spawnFields(row.id),
     ruleBlock: parseRuleBlock(row.rule_block_json),
   }
 }

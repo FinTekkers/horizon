@@ -934,6 +934,33 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_item_split_source ON item_split(source_item_id);
 `)
 
+// HZ-379: items one parent filed for itself (server/src/spawn.js) — a Task's
+// Assess asking for code today, a list of items from one idea later. One row
+// per item to file: seq is its place in the request's list, and
+// UNIQUE(parent_id, request_key, seq) is the idempotency key, so a retried
+// step or a re-delivered completion files nothing twice. child_id is the
+// child's record of its parent; a parent's children are its rows.
+db.exec(`
+  CREATE TABLE IF NOT EXISTS item_spawn (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    parent_id    TEXT NOT NULL REFERENCES work_item(id),
+    request_key  TEXT NOT NULL,
+    seq          INTEGER NOT NULL,
+    kind         TEXT NOT NULL,
+    payload_json TEXT NOT NULL,
+    target_repo  TEXT,
+    target_issue INTEGER,
+    child_id     TEXT REFERENCES work_item(id),
+    status       TEXT NOT NULL DEFAULT 'filing' CHECK (status IN ('filing','filed','failed')),
+    error        TEXT,
+    created_by   TEXT NOT NULL,
+    created_at   TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at   TEXT NOT NULL DEFAULT (datetime('now')),
+    UNIQUE (parent_id, request_key, seq)
+  );
+  CREATE INDEX IF NOT EXISTS idx_item_spawn_child ON item_spawn(child_id);
+`)
+
 // HZ-360: a human Approve at Accept the code that arrived while a Horizon
 // deploy drained (server/src/heldAccept.js). In the DB, not memory, because
 // the restart that ends the deploy is exactly when it must merge. One row per

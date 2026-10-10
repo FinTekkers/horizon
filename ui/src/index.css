@@ -585,6 +585,10 @@ button { font-family: var(--font-sans); }
 }
 .dep-detail__label--blocked { color: var(--danger-ink); }
 .dep-detail__label--dependents { color: var(--agent-human-ink); }
+/* HZ-379: what this item filed for itself, and who filed it. */
+.dep-detail__section--spawned { background: var(--primary-bg); }
+.dep-detail__label--spawned { color: var(--primary-ink); }
+.dep-detail__closed { color: var(--success-ink); font-weight: 700; }
 .dep-detail__list { margin: 0; padding-left: 18px; font: 500 13px var(--font-sans); color: var(--deep); line-height: 1.5; }
 .dep-detail__abandoned { color: var(--danger-ink); font-weight: 700; }
 /* The id carries the navigation; theme tokens only, so it stays legible in both themes. */
