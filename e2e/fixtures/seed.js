@@ -117,6 +117,16 @@ export function insertDependency(db, { itemId, dependsOnId }) {
   db.prepare('INSERT INTO work_item_dependency (item_id, depends_on_id) VALUES (?, ?)').run(itemId, dependsOnId)
 }
 
+// HZ-379: records that parentId filed childId (server/src/spawn.js's
+// item_spawn row), as a finished filing leaves it. The dependency edge is
+// separate — add it with insertDependency, as the spawn engine does.
+export function insertSpawn(db, { parentId, childId, requestKey = 'step:0:0', seq = 0, kind = 'change' }) {
+  db.prepare(
+    `INSERT INTO item_spawn (parent_id, request_key, seq, kind, payload_json, child_id, status, created_by)
+     VALUES (?, ?, ?, ?, '{}', ?, 'filed', 'Eng')`,
+  ).run(parentId, requestKey, seq, kind, childId)
+}
+
 // Same salted-scrypt scheme as server/src/auth.js's per-account gate PIN.
 // Writing the hash directly (instead of through Admin's "Regenerate my PIN")
 // keeps the plaintext out of the browser's localStorage, so the next gate

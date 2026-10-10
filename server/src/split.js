@@ -52,7 +52,7 @@ const selectLatestPlanRun = db.prepare(
 const inflight = new Set()
 
 // Upstream issue bodies carry plan text only: secrets and host paths go.
-const HOST_PATH = /(?:\/home|\/Users|\/root)\/[^\s`'")\]]*/g
+export const HOST_PATH = /(?:\/home|\/Users|\/root)\/[^\s`'")\]]*/g
 function clean(text, cap) {
   return redact(String(text), { oneLine: false }).replace(HOST_PATH, '[host path removed]').trim().slice(0, cap)
 }

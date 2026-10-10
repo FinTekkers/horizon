@@ -123,7 +123,9 @@
       "providerOverrideEligible": false,
       "providerLocked": true,
       "maxTurns": 40,
-      "timeoutS": 1140
+      "timeoutS": 1140,
+      "spawnsOn": "code_needed",
+      "spawnKind": "change"
     },
     {
       "phase": 1,
@@ -137,7 +139,8 @@
       "providerLocked": true,
       "maxTurns": 40,
       "timeoutS": 1140,
-      "requires": ["Assess"]
+      "requires": ["Assess"],
+      "awaitsSpawnedCode": true
     },
     {
       "phase": 1,

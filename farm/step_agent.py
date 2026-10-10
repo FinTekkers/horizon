@@ -54,7 +54,7 @@ from .handoff import HandoffContext, HandoffGuard
 from .personas import compose_role, provider_for, resolve
 from .read_only_guard import ReadOnlyViolation
 from .rules import render_rules_section
-from .workspaces import ItemBusy, ensure_item_worktree, hub_lock, item_lock
+from .workspaces import ItemBusy, checkout_detached, ensure_item_worktree, hub_lock, item_lock
 
 FARMD = f"http://127.0.0.1:{FARM_PORT}"
 ROLES = Path(__file__).parent / "roles"
@@ -235,6 +235,14 @@ def _step_config(kind: str, label: str) -> tuple:
 def _is_read_only(kind: str, label: str) -> bool:
     """HZ-387/HZ-383: whether the farm holds this step read-only itself."""
     return label in (TASK_READ_ONLY_LABELS if kind == "task" else READ_ONLY_LABELS)
+
+
+def _spawn_field(kind: str, label: str) -> str | None:
+    """HZ-379: the reply field this kind's step may file items with —
+    domain/steps.json's `spawnsOn` on the authored row — or None."""
+    row = next((step for step in steps.steps_for(kind) if step["label"] == label), None)
+    field = row.get("spawnsOn") if row else None
+    return field if isinstance(field, str) and field else None
 
 
 def _is_pm_step(label: str, kind: str = "change") -> bool:
@@ -1375,6 +1383,11 @@ def _task_reply_validator(label: str):
         if not isinstance(parsed, dict):
             return parsed  # the required-field check after the call says so
         texts = [parsed.get("summary"), parsed.get("artifact_md")]
+        # HZ-379: an object field's text is held to the same rule — Assess's
+        # `code_needed` becomes a GitHub issue.
+        for value in parsed.values():
+            if isinstance(value, dict):
+                texts.extend(v for v in value.values() if isinstance(v, str))
         if label == RUN_PLAN_LABEL:
             try:
                 texts.append(run_plan.render(run_plan.validate(parsed.get("run_plan"))))
@@ -1929,6 +1942,13 @@ def _execute(task: dict, guard: HandoffGuard) -> dict:
             # Hub not provisioned for this repo (e.g. farm never started
             # cleanly against it) — same "no workspace" fallback as before.
             ws = None
+    # HZ-379: a step that waited for its spawned code runs on the deployed
+    # commit the server names. Checked out here, before the read-only guard
+    # below takes its baseline, so the checkout is never read as a violation.
+    # execute() already holds item_lock for a read-only step.
+    if ws is not None and isinstance(task.get("checkout_sha"), str) and task["checkout_sha"]:
+        checkout_detached(item["repo"], item["id"], task["checkout_sha"])
+        log(f"workspace {ws} checked out at {task['checkout_sha'][:12]} (the deployed code it waited for)")
 
     # Implement step without a repo/workspace: nothing real to build.
     if label == IMPLEMENT_LABEL:
@@ -2419,6 +2439,12 @@ def _execute(task: dict, guard: HandoffGuard) -> dict:
     # gate 5 is approved; any other step's or shape's `split` is dropped.
     if label == SPLIT_STEP_LABEL and isinstance(parsed.get("split"), dict):
         result.setdefault("artifacts", {})["split"] = parsed["split"]
+    # HZ-379: a step whose row names a `spawnsOn` field passes that field
+    # through untouched; the server (server/src/spawn.js) validates it and
+    # files the item. Any other step's, or a non-object, is dropped.
+    spawn_field = _spawn_field(kind, label)
+    if spawn_field and isinstance(parsed.get(spawn_field), dict):
+        result.setdefault("artifacts", {})[spawn_field] = parsed[spawn_field]
     return result
 
 

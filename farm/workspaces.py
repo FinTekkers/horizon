@@ -271,6 +271,19 @@ def ensure_item_worktree(repo_full: str, item_id: str) -> Path:
     return item_path
 
 
+def checkout_detached(repo_full: str, item_id: str, sha: str) -> None:
+    """HZ-379: puts the item's worktree on `sha`, detached. A Task's worktree
+    is reused untouched between steps (ensure_item_worktree), so without this
+    a step that waited for spawned code would run on the old checkout.
+
+    The caller holds item_lock(). hub_lock is taken here only around the
+    fetch, inside it — the module's lock order — and never the other way."""
+    item_path = workspace_path(repo_full, item_id)
+    with hub_lock(repo_full):
+        _git(hub_path(repo_full), "fetch", "origin", "--prune")
+    _git(item_path, "checkout", "--detach", sha)
+
+
 def reap_item_worktree(repo_full: str, item_id: str) -> None:
     """Removes one item's worktree — called by the bounded-pool eviction and
     available for external cleanup (an item closing out) — so per-repo disk

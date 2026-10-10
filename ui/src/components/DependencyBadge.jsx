@@ -8,6 +8,10 @@
 // entry, which removes that dependent's link to this item. Success changes
 // nothing locally — the server's SSE snapshot drops the edge from this badge
 // and the board card.
+//
+// HZ-379: the full form also lists every item this one filed for itself
+// (item.spawned, open or closed) and links back to the item that filed this
+// one (item.spawnedBy). Read-only: the dependency edges above are what block.
 
 import { Fragment, useEffect, useState } from 'react'
 
@@ -115,11 +119,14 @@ function useRemoveState(entries, request) {
 export default function DependencyBadge({ item, compact = false, onRemove }) {
   const blockedBy = item.blockedBy || []
   const dependents = item.dependents || []
+  const spawned = item.spawned || []
+  const spawnedBy = item.spawnedBy || null
   // Both Xs go through the same onRemove(dependentId, blockerId) request.
   const blockers = useRemoveState(blockedBy, (depId) => onRemove(item.id, depId))
   const waiting = useRemoveState(dependents, (dependentId) => onRemove(dependentId, item.id))
 
-  if (blockedBy.length === 0 && dependents.length === 0) return null
+  const hasSpawnLinks = !compact && (spawned.length > 0 || spawnedBy)
+  if (blockedBy.length === 0 && dependents.length === 0 && !hasSpawnLinks) return null
 
   if (compact) {
     return (
@@ -183,6 +190,36 @@ export default function DependencyBadge({ item, compact = false, onRemove }) {
                 removeLabel={`Remove ${d.id}'s dependency on ${item.id}`}
               />
             ))}
+          </ul>
+        </div>
+      )}
+      {spawned.length > 0 && (
+        <div className="dep-detail__section dep-detail__section--spawned">
+          <div className="dep-detail__label dep-detail__label--spawned">Spawned</div>
+          <ul className="dep-detail__list">
+            {spawned.map((c) => (
+              <li key={c.id}>
+                <a className="dep-detail__id" href={itemHref(c.id)}>
+                  {c.id}
+                </a>{' '}
+                <span className="dep-detail__title">{c.title}</span>
+                {c.closed && <span className="dep-detail__closed"> — closed</span>}
+                {c.abandoned && <span className="dep-detail__abandoned"> — abandoned</span>}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+      {spawnedBy && (
+        <div className="dep-detail__section dep-detail__section--spawned">
+          <div className="dep-detail__label dep-detail__label--spawned">Spawned by</div>
+          <ul className="dep-detail__list">
+            <li>
+              <a className="dep-detail__id" href={itemHref(spawnedBy.id)}>
+                {spawnedBy.id}
+              </a>{' '}
+              <span className="dep-detail__title">{spawnedBy.title}</span>
+            </li>
           </ul>
         </div>
       )}
