@@ -64,6 +64,11 @@ await app.ready()
 orchestrator.init({ info() {}, warn() {}, error() {} })
 
 after(async () => {
+  // HZ-378: the approvals above dispatch the Execute job (and T-REJECT
+  // redispatches Run plan), each arming a queue watchdog. The inline cancels
+  // are skipped when an assertion above them throws, so cancel everything here
+  // too — a leaked watchdog used to wedge this file for the whole timeout.
+  for (const row of db.prepare('SELECT id FROM work_item').all()) orchestrator.cancel(row.id)
   await app.close()
 })
 

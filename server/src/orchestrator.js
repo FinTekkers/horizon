@@ -1192,10 +1192,12 @@ async function dispatchToFarm(id, stepIndex, runId, attempt, scope, checkoutSha 
   // — if the farm never calls back to confirm a launch (POST .../started),
   // this is what catches a step that's stuck in the queue (or a farm that's
   // down, or a lost task file) within a bounded window (HZ-57).
+  // HZ-378: unref'd — a watchdog fires while the server lives but must never
+  // hold a process open for the whole timeout by itself.
   timers[runId] = setTimeout(
     () => failFarmRun(runId, 'step was never picked up by the farm', REASON.NEVER_PICKED_UP),
     FARM_QUEUE_TIMEOUT_MS,
-  )
+  ).unref()
 
   // Deploy's real side effect — publishing the GitHub release that the
   // self-deploy webhook picks up — needs the GitHub token, which only this
@@ -1557,7 +1559,8 @@ export function markFarmRunStarted(runId) {
   db.prepare("UPDATE step_run SET agent_started_at = datetime('now') WHERE id = ?").run(runId)
   const executionMs = executionBudgetFor(run.step_index)
   if (executionMs == null) return { ok: true, active: true }
-  timers[runId] = setTimeout(() => failFarmRun(runId, 'step timed out', REASON.TIMEOUT), executionMs)
+  // HZ-378: unref'd like the queue watchdog above — never the handle that holds the process open.
+  timers[runId] = setTimeout(() => failFarmRun(runId, 'step timed out', REASON.TIMEOUT), executionMs).unref()
   return { ok: true, active: true }
 }
 
@@ -3035,7 +3038,8 @@ export function rearmFarmRuns() {
     const budget = executionBudgetFor(run.step_index)
     if (budget != null) {
       const remainingMs = Math.max(0, budget - elapsedMs)
-      timers[run.id] = setTimeout(() => failFarmRun(run.id, 'step timed out', REASON.TIMEOUT), remainingMs)
+      // HZ-378: unref'd like the dispatch-time watchdogs — never the handle that holds the process open.
+      timers[run.id] = setTimeout(() => failFarmRun(run.id, 'step timed out', REASON.TIMEOUT), remainingMs).unref()
     }
     // Re-key removed the free busy-mutex side effect timers[item_id] used to
     // give kick() — without this, a restart would leave every one of these
