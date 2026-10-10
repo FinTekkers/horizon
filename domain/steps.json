@@ -157,8 +157,20 @@
       "requires": ["Assess", "Run plan"]
     },
     { "phase": 1, "kind": "gate", "gate": "required", "label": "Approve the run", "itemKind": "task", "humanOnly": true },
-    { "phase": 2, "kind": "agent", "agent": "DevOps", "label": "Execute", "runsIn": "none", "itemKind": "task" },
-    { "phase": 2, "kind": "agent", "agent": "QA", "label": "Verify & report", "runsIn": "none", "itemKind": "task" },
+    { "phase": 2, "kind": "agent", "agent": "DevOps", "label": "Execute", "runsIn": "job", "itemKind": "task" },
+    {
+      "phase": 2,
+      "kind": "agent",
+      "agent": "QA",
+      "label": "Verify & report",
+      "runsIn": "farm",
+      "itemKind": "task",
+      "workspaceMutating": false,
+      "providerOverrideEligible": false,
+      "providerLocked": true,
+      "maxTurns": 40,
+      "timeoutS": 1140
+    },
     { "phase": 3, "kind": "gate", "gate": "required", "label": "Review & close", "itemKind": "task" }
   ]
 }

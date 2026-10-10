@@ -23,7 +23,7 @@ from fastapi.responses import JSONResponse
 # off the repo root, which farmd already runs from (`python -m farm.farmd`).
 # HZ-132 put the failure-reason vocabulary there under the same rule, so the
 # tags this daemon relays are the ones the server classifies, by construction.
-from domain.py import reasons, steps
+from domain.py import reasons, run_plan, steps
 from . import caretaker_ruling, check_slots, conflict_cancel, conflict_resolver, pause, rules, tmux_mgr, workspaces
 from . import config as farm_config
 from .checks import CHECK_SLOTS, default_check_slots
@@ -95,6 +95,17 @@ CONCIERGE_SESSION = "farm-concierge-_shared"
 
 # run_id -> tmux session name for launched ephemeral runs (so cancel can kill).
 RUN_SESSIONS: dict = {}
+
+# HZ-378: run_id -> tmux session name for detached shell-command jobs. One
+# active job per item; jobs never use MAX_EPHEMERAL slots and get no agent
+# timer — the run plan's own budget_minutes bounds them instead.
+JOB_SESSIONS: dict = {}
+
+
+def _jobs_enabled() -> bool:
+    """Kill switch: FARM_JOBS_ENABLED=0 refuses every new job dispatch with
+    409, while in-flight jobs finish untouched."""
+    return os.environ.get("FARM_JOBS_ENABLED", "1").strip().lower() not in ("0", "false", "no", "off")
 
 # Farm state survives farmd restarts: on boot we ADOPT live agent sessions
 # instead of requiring a /farm/start (whose teardown would kill them).
@@ -196,10 +207,79 @@ def _adopt_existing() -> None:
     )
 
 
+def _job_session_name(item_id: str) -> str:
+    """One place derives the tmux session name for a job — launch_job creates
+    it, /jobs/stop kills it, _adopt_jobs re-adopts it."""
+    return f"{tmux_mgr.JOB_SESSION_PREFIX}{str(item_id).lower()}"
+
+
+def _adopt_jobs() -> None:
+    """Rebuilds the run->session map for jobs from claimed task files, so a
+    farmd restarted mid-job keeps reporting it. A farm-job-* session with no
+    task file is left alone: its runner finishes and its state file stays for
+    the server to read, but no report is sent twice."""
+    for task_path in (QUEUE_DIR / "jobs" / "active").glob("*.json"):
+        if task_path.name.endswith(".env.json"):
+            continue
+        try:
+            task = json.loads(task_path.read_text())
+            name = _job_session_name(task["item"]["id"])
+            if tmux_mgr.session_exists(name):
+                JOB_SESSIONS[str(task["run_id"])] = name
+        except (json.JSONDecodeError, KeyError):
+            continue
+    if JOB_SESSIONS:
+        print(f"farmd: adopted {len(JOB_SESSIONS)} in-flight job(s)", flush=True)
+
+
+def _read_dotenv(path: Path) -> dict:
+    """KEY=VALUE lines, no export, no quoting rules beyond stripping one pair
+    of matching quotes. Comments (#) and blank lines skipped. Never raises."""
+    values: dict[str, str] = {}
+    try:
+        text = path.read_text()
+    except OSError:
+        return values
+    for line in text.splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        key = key.strip()
+        value = value.strip()
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in ("'", '"'):
+            value = value[1:-1]
+        if key:
+            values[key] = value
+    return values
+
+
+def _resolve_job_env(cwd: str, env_refs: dict) -> dict:
+    """Farm-side secret resolution: every $NAME the plan's env block names is
+    read from <cwd>/.env first, then from this process's own environment. The
+    server sends no values — only the repo and the plan artifact — so dispatch
+    bodies and task files never hold a secret."""
+    dotenv = _read_dotenv(Path(cwd) / ".env") if cwd else {}
+    resolved: dict[str, str] = {}
+    for _local, ref in (env_refs or {}).items():
+        name = ref[1:] if isinstance(ref, str) and ref.startswith("$") else None
+        if not name:
+            continue
+        value = dotenv.get(name, os.environ.get(name))
+        if isinstance(value, str) and value:
+            resolved[name] = value
+    # The two host credentials a job may reference without naming them in env.
+    for name in ("GITHUB_TOKEN", "GITHUB_WEBHOOK_SECRET"):
+        if name not in resolved and os.environ.get(name):
+            resolved[name] = os.environ[name]
+    return resolved
+
+
 def _teardown() -> None:
     killed = tmux_mgr.kill_all_farm_sessions()
     RUN_SESSIONS.clear()
-    for sub in ("pm", "runs", "runs/active"):
+    JOB_SESSIONS.clear()
+    for sub in ("pm", "runs", "runs/active", "jobs", "jobs/active"):
         # HZ-130: `*.json*`, not `*.json` — a farmd killed between
         # _write_task_atomic's temp write and its rename() leaves a
         # `<run_id>.<suffix>.json.tmp` behind, which a `*.json` glob would
@@ -211,6 +291,10 @@ def _teardown() -> None:
     for pattern in ("*.pid", "*.paused*", "*.stop-reason"):
         for f in (QUEUE_DIR / "runs" / "active").glob(pattern):
             f.unlink(missing_ok=True)
+    # HZ-378: a job's 0600 env file is unlinked by the runner at start; a
+    # teardown removes any a killed runner left behind.
+    for f in (QUEUE_DIR / "jobs" / "active").glob("*.env.json"):
+        f.unlink(missing_ok=True)
     if killed:
         print(f"farmd: tore down sessions {killed}", flush=True)
 
@@ -260,8 +344,9 @@ def workspace_mutating_indexes(step_table: list[dict]) -> set[int]:
 
 
 # Lane routing: which queue and cap handle a dispatched step — the PM lane
-# ("pm": queue/pm, capped at PM_LANE_CAP) or the ephemeral lane ("runs":
-# queue/runs, MAX_EPHEMERAL). Since HZ-212 both run as per-task farm-run-*
+# ("pm": queue/pm, capped at PM_LANE_CAP), the ephemeral lane ("runs":
+# queue/runs, MAX_EPHEMERAL) or the job lane ("job": queue/jobs, one active
+# job per item). Since HZ-212 both agent lanes run as per-task farm-run-*
 # sessions; since HZ-371 both launch farm.step_agent. runsIn keeps its name.
 # HZ-117: derived from steps.STEPS's runsIn field. An index absent
 # from the table (e.g. a gate, which is never dispatched here at all) falls
@@ -271,7 +356,11 @@ def lane_for_index(step_table: list[dict], index, default: str = "runs") -> str:
     entry = next((e for e in step_table if e["index"] == index), None)
     if entry is None:
         return default
-    return "pm" if entry["runsIn"] == "pm" else default
+    if entry["runsIn"] == "pm":
+        return "pm"
+    if entry["runsIn"] == "job":
+        return "job"
+    return default
 
 
 # HZ-383: whether a dispatched task's step belongs to its item's kind. A
@@ -682,6 +771,110 @@ def _claim_and_launch(task_path, runs_dir: Path, repo_root: Path) -> str | None:
     return name
 
 
+def launch_job(task: dict) -> str:
+    """Launches one job's detached runner in farm-job-<item>. The task holds
+    the plan artifact and the approved hash — never secret values. Resolves
+    the job's env farm-side into a 0600 file the runner unlinks at start, then
+    launches with no pipe-pane (the runner owns the only log). Returns the
+    tmux session name."""
+    from farm.config import LOGS_DIR as _LOGS, STATE_DIR as _STATE
+
+    run_id = task["run_id"]
+    item_id = task["item"]["id"]
+    artifact = task.get("plan_artifact") or ""
+    block = run_plan.extract(artifact)
+    env_values = _resolve_job_env(block["cwd"], block.get("env", {}))
+    active = QUEUE_DIR / "jobs" / "active"
+    active.mkdir(parents=True, exist_ok=True)
+    env_path = active / f"{run_id}.env.json"
+    fd, tmp_name = tempfile.mkstemp(dir=str(active), prefix=f"{run_id}.env.", suffix=".json.tmp")
+    try:
+        with os.fdopen(fd, "w") as f:
+            f.write(json.dumps(env_values))
+        os.chmod(tmp_name, 0o600)
+        os.replace(tmp_name, env_path)
+    except BaseException:
+        Path(tmp_name).unlink(missing_ok=True)
+        raise
+    task["env_file"] = str(env_path)
+    task["claimed_at"] = time.time()
+    claimed = active / f"{run_id}.json"
+    _write_task_atomic(claimed, task)
+    name = _job_session_name(item_id)
+    repo_root = Path(__file__).resolve().parent.parent
+    tmux_mgr.new_session(name, f"{sys.executable} -m farm.task_job --task {claimed}", cwd=str(repo_root))
+    JOB_SESSIONS[str(run_id)] = name
+    (_STATE / "jobs").mkdir(parents=True, exist_ok=True)
+    _LOGS.mkdir(parents=True, exist_ok=True)
+    print(f"farmd: launched {name} for run {run_id}", flush=True)
+    return name
+
+
+def _poll_jobs() -> None:
+    """Forwards finished jobs to the server once, then releases their task
+    files. Called from _watchdog (no third loop thread) and directly by
+    tests. Each job isolated: one corrupt file never aborts the rest."""
+    from farm.config import LOGS_DIR as _LOGS, STATE_DIR as _STATE
+
+    for task_path in sorted((QUEUE_DIR / "jobs" / "active").glob("*.json")):
+        if task_path.name.endswith(".env.json") or task_path.name.endswith(".json.tmp"):
+            continue
+        try:
+            task = json.loads(task_path.read_text())
+            run_id = str(task["run_id"])
+            item_id = task["item"]["id"]
+            state_file = _STATE / "jobs" / f"{item_id}.json"
+            try:
+                state = json.loads(state_file.read_text())
+            except (OSError, json.JSONDecodeError):
+                state = None
+            if not state or state.get("status") == "running":
+                name = JOB_SESSIONS.get(run_id) or _job_session_name(item_id)
+                if tmux_mgr.session_exists(name):
+                    continue
+                # Session gone with no terminal state: report it dead once.
+                if _report_run_dead(run_id, name):
+                    task_path.unlink(missing_ok=True)
+                    JOB_SESSIONS.pop(run_id, None)
+                continue
+            status = state.get("status")
+            summary = state.get("summary") or {}
+            if status == "finished":
+                run_n = summary.get("run", 0)
+                passed = summary.get("passed", 0)
+                failed = summary.get("failed", 0)
+                failing = ", ".join(summary.get("failing") or [])
+                text = f"{run_n} command(s) run, {passed} passed, {failed} failed"
+                if failing:
+                    text += f": {failing}"
+                _forward_result({"run_id": task["run_id"], "ok": True, "summary": text[:600]})
+            elif status == "budget_exceeded":
+                _forward_result(
+                    {
+                        "run_id": task["run_id"],
+                        "ok": False,
+                        "error": "the job ran past the run plan's time budget and was stopped",
+                        "reason": reasons.REASON["JOB_BUDGET_EXCEEDED"],
+                    }
+                )
+            elif status == "hash_mismatch":
+                _forward_result(
+                    {
+                        "run_id": task["run_id"],
+                        "ok": False,
+                        "error": "the run plan changed since it was approved — send it back to Run plan and approve it again",
+                        "reason": reasons.REASON["PLAN_CHANGED_SINCE_APPROVAL"],
+                    }
+                )
+            else:
+                continue
+            task_path.unlink(missing_ok=True)
+            (task_path.parent / f"{task['run_id']}.env.json").unlink(missing_ok=True)
+            JOB_SESSIONS.pop(run_id, None)
+        except Exception as exc:
+            print(f"farmd: job poll error for {task_path.name}: {exc}", flush=True)
+
+
 def _queued(queue: Path) -> list[Path]:
     """Queued task files, oldest first; a file cancelled between the glob
     and the stat sorts out of this batch."""
@@ -782,7 +975,8 @@ def _maybe_launch_concierge() -> bool:
 def _watchdog() -> None:
     """The concierge dies (a stray Ctrl-C in an attached pane, a crash) —
     revive it. PM steps have no long-lived session to revive (HZ-212): a dead
-    farm-run-* session is reconcile's job."""
+    farm-run-* session is reconcile's job. Finished jobs are forwarded here
+    too (HZ-378) — no third loop thread."""
     while True:
         time.sleep(15)
         with _lock:
@@ -795,6 +989,10 @@ def _watchdog() -> None:
                 _maybe_launch_concierge()
             except Exception as exc:
                 print(f"farmd: watchdog revive failed: {exc}", flush=True)
+        try:
+            _poll_jobs()
+        except Exception as exc:
+            print(f"farmd: job poll failed: {exc}", flush=True)
 
 
 def _non_empty_str(value) -> bool:
@@ -972,7 +1170,14 @@ def _run_alive(run_id: str) -> bool:
         return True  # still queued for a free ephemeral slot
     if (QUEUE_DIR / "pm" / f"{run_id}.json").exists():
         return True  # still queued for the PM lane
-    session = RUN_SESSIONS.get(run_id)
+    job_path = QUEUE_DIR / "jobs" / "active" / f"{run_id}.json"
+    if job_path.exists():
+        try:
+            task = json.loads(job_path.read_text())
+        except (json.JSONDecodeError, OSError):
+            return False
+        return tmux_mgr.session_exists(_job_session_name(task["item"]["id"]))
+    session = RUN_SESSIONS.get(run_id) or JOB_SESSIONS.get(run_id)
     return bool(session and tmux_mgr.session_exists(session))
 
 
@@ -1024,6 +1229,25 @@ async def steps_run(request: Request):
     # HZ-383: in the item kind's own rows — checked above, so the kind is known.
     view = steps.FARM_VIEWS[body["item"].get("kind") or "change"]
     queue = lane_for_index(view, body["step"].get("index", 99))
+    if queue == "job":
+        if not _jobs_enabled():
+            return JSONResponse({"error": "jobs_disabled"}, status_code=409)
+        item_id = body["item"].get("id") or ""
+        for existing in (QUEUE_DIR / "jobs" / "active").glob("*.json"):
+            if existing.name.endswith(".env.json"):
+                continue
+            try:
+                if json.loads(existing.read_text())["item"].get("id") == item_id:
+                    return JSONResponse({"error": "job_already_running"}, status_code=409)
+            except (json.JSONDecodeError, KeyError, OSError):
+                continue
+        if not body.get("plan_artifact") or not body.get("approved_hash"):
+            return JSONResponse({"error": "missing plan_artifact or approved_hash"}, status_code=400)
+        try:
+            name = launch_job(body)
+        except ValueError as exc:
+            return JSONResponse({"error": f"invalid run plan: {exc}"}, status_code=400)
+        return {"ok": True, "queued": queue, "session": name}
     (QUEUE_DIR / queue).mkdir(parents=True, exist_ok=True)
     task_path = QUEUE_DIR / queue / f"{body['run_id']}.json"
     # HZ-130: the enqueue write. A poller globbing this directory used to be
@@ -1176,6 +1400,113 @@ async def conflicts_cancel(request: Request):
     return {"ok": True, "cancelled": True, "killed": killed, "lock_released": released}
 
 
+def _job_task_for_run(run_id: str) -> tuple[Path | None, dict | None]:
+    for task_path in (QUEUE_DIR / "jobs" / "active").glob("*.json"):
+        if task_path.name.endswith(".env.json"):
+            continue
+        try:
+            task = json.loads(task_path.read_text())
+        except (json.JSONDecodeError, OSError):
+            continue
+        if str(task.get("run_id")) == str(run_id):
+            return task_path, task
+    return None, None
+
+
+def _job_view(run_id: str, task: dict) -> dict:
+    """The job's current status for the server's GET /api/items/:id/job: the
+    state file's command entries plus elapsed seconds against the budget."""
+    from farm.config import STATE_DIR as _STATE
+
+    item_id = task["item"]["id"]
+    name = JOB_SESSIONS.get(str(run_id)) or _job_session_name(item_id)
+    try:
+        state = json.loads((_STATE / "jobs" / f"{item_id}.json").read_text())
+    except (OSError, json.JSONDecodeError):
+        state = None
+    commands = state.get("commands", []) if state else []
+    budget_s = state.get("budget_s", 0) if state else 0
+    started_at = state.get("started_at") if state else None
+    try:
+        elapsed = max(0, int(time.time() - datetime.fromisoformat(started_at).timestamp())) if started_at else 0
+    except (ValueError, TypeError, OSError):
+        elapsed = 0
+    status = state.get("status", "running") if state else "running"
+    if status == "running" and not tmux_mgr.session_exists(name):
+        status = "unknown"
+    return {"status": status, "elapsedS": elapsed, "budgetS": budget_s, "commands": commands}
+
+
+@app.post("/jobs/stop")
+async def jobs_stop(request: Request):
+    """Loopback only: the server's Stop run button. Kills the job's tmux
+    session (its runner and its current command group die together); the
+    runner's state file keeps every passed command done so Resume skips them."""
+    host = request.client.host if request.client else None
+    if host not in LOOPBACK_HOSTS:
+        return JSONResponse({"error": "loopback only"}, status_code=403)
+    body = await request.json()
+    run_id = str(body.get("run_id") or "")
+    task_path, task = _job_task_for_run(run_id)
+    if not task_path or not task:
+        return JSONResponse({"error": "unknown job"}, status_code=404)
+    name = JOB_SESSIONS.get(run_id) or _job_session_name(task["item"]["id"])
+    if not tmux_mgr.session_exists(name):
+        return JSONResponse({"error": "job not running"}, status_code=409)
+    tmux_mgr.kill_session(name)
+    JOB_SESSIONS.pop(run_id, None)
+    task_path.unlink(missing_ok=True)
+    (task_path.parent / f"{task['run_id']}.env.json").unlink(missing_ok=True)
+    from farm.config import STATE_DIR as _STATE
+
+    try:
+        state = json.loads((_STATE / "jobs" / f"{task['item']['id']}.json").read_text())
+        done = sum(1 for c in state.get("commands", []) if c.get("status") == "done" and c.get("exit_code") == 0)
+    except (OSError, json.JSONDecodeError):
+        done = 0
+    print(f"farmd: stopped job {run_id} (killed {name})", flush=True)
+    return {"ok": True, "killed": True, "commandsDone": done}
+
+
+@app.get("/jobs/{run_id}")
+def jobs_status(run_id: str, request: Request):
+    """Loopback only: the server polls (and proxies) one job's status."""
+    host = request.client.host if request.client else None
+    if host not in LOOPBACK_HOSTS:
+        return JSONResponse({"error": "loopback only"}, status_code=403)
+    _task_path, task = _job_task_for_run(run_id)
+    if not task:
+        return JSONResponse({"error": "unknown job"}, status_code=404)
+    return _job_view(run_id, task)
+
+
+@app.get("/jobs/{run_id}/log")
+def jobs_log(run_id: str, request: Request, offset: int = 0):
+    """Loopback only: pages the runner's own redacted log file, the same
+    shape as /runs/{run_id}/log so the server proxies it verbatim."""
+    host = request.client.host if request.client else None
+    if host not in LOOPBACK_HOSTS:
+        return JSONResponse({"error": "loopback only"}, status_code=403)
+    _task_path, task = _job_task_for_run(run_id)
+    if not task:
+        return JSONResponse({"error": "unknown job"}, status_code=404)
+    from farm.config import LOGS_DIR as _LOGS
+
+    name = JOB_SESSIONS.get(str(run_id)) or _job_session_name(task["item"]["id"])
+    log_path = _LOGS / f"{name}.log"
+    offset = max(0, offset)
+    content = b""
+    if log_path.exists():
+        with log_path.open("rb") as f:
+            f.seek(offset)
+            content = f.read(LOG_READ_CAP)
+    return {
+        "content": content.decode("utf-8", "replace"),
+        "next_offset": offset + len(content),
+        "active": tmux_mgr.session_exists(name),
+    }
+
+
 # HZ-245: `owner/name`, each part starting with an alphanumeric — so no
 # `.`/`..` segment and no extra `/` can reach hub_path().
 _REPO_NAME_RE = re.compile(r"^[A-Za-z0-9][\w.-]*/[A-Za-z0-9][\w.-]*$")
@@ -1323,10 +1654,22 @@ async def steps_cancel(request: Request):
     checkpoint = None
     removed = False
     killed = None
-    for sub in ("pm", "runs", "runs/active"):
+    for sub in ("pm", "runs", "runs/active", "jobs/active"):
         task_path = QUEUE_DIR / sub / f"{run_id}.json"
         if not task_path.exists():
             continue
+        if sub == "jobs/active":
+            try:
+                task = json.loads(task_path.read_text())
+                name = _job_session_name(task["item"]["id"])
+                if tmux_mgr.session_exists(name):
+                    tmux_mgr.kill_session(name)
+                    killed = name
+                    print(f"farmd: cancelled job {run_id} (killed {name})", flush=True)
+            except Exception as exc:
+                print(f"farmd: cancel of job {run_id} could not kill its session: {exc}", flush=True)
+            (QUEUE_DIR / sub / f"{run_id}.env.json").unlink(missing_ok=True)
+            JOB_SESSIONS.pop(run_id, None)
         if sub == "runs/active":
             try:
                 task = json.loads(task_path.read_text())
@@ -1351,7 +1694,7 @@ async def steps_cancel(request: Request):
         task_path.unlink(missing_ok=True)
         removed = True
     # Fallback: the in-memory map (covers an active task file already consumed).
-    session = RUN_SESSIONS.pop(run_id, None)
+    session = RUN_SESSIONS.pop(run_id, None) or JOB_SESSIONS.pop(run_id, None)
     if killed is None and session and tmux_mgr.session_exists(session):
         tmux_mgr.kill_session(session)
         killed = session
@@ -1421,10 +1764,12 @@ async def steps_result(request: Request):
 
 ensure_dirs()
 (QUEUE_DIR / "runs" / "active").mkdir(parents=True, exist_ok=True)
+(QUEUE_DIR / "jobs" / "active").mkdir(parents=True, exist_ok=True)
 # HZ-5 cost guardrail at boot: covers the adopt path too, which never goes
 # through /farm/start — a farm on API billing must not come up at all.
 assert_provider_auth()
 _adopt_existing()
+_adopt_jobs()
 _reconcile_claimed_runs()
 threading.Thread(target=_watchdog, daemon=True).start()
 threading.Thread(target=_ephemeral_dispatcher, daemon=True).start()

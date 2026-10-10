@@ -146,11 +146,13 @@ STEP_CONFIG = {
 ASSESS_LABEL = "Assess"
 RUN_PLAN_LABEL = "Run plan"
 IMPACT_REVIEW_LABEL = "Impact review"
+VERIFY_REPORT_LABEL = "Verify & report"
 
 TASK_STEP_CONFIG = {
     ASSESS_LABEL: ("task_assess.md", True, PLANNER_TOOLS, None),
     RUN_PLAN_LABEL: ("task_run_plan.md", True, PLANNER_TOOLS, None),
     IMPACT_REVIEW_LABEL: ("task_impact_review.md", True, PLANNER_TOOLS, None),
+    VERIFY_REPORT_LABEL: ("task_verify.md", True, PLANNER_TOOLS, "qa"),
 }
 
 STEP_CONFIGS = {"change": STEP_CONFIG, "task": TASK_STEP_CONFIG}

@@ -26,6 +26,8 @@ import {
   itemKindOf,
   kindStepIndex,
   EXECUTE_STEP_INDEX,
+  RUN_PLAN_STEP_INDEX,
+  VERIFY_REPORT_STEP_INDEX,
 } from '../../domain/js/lifecycle.js'
 import { AUTO_RETRY_REASONS, REASON } from '../../domain/js/reasons.js'
 import { patchLimits, addedCriteriaLines } from '../../domain/js/fields.js'
@@ -56,6 +58,8 @@ import {
   providerDefaultsFromRow,
   resolveStepProviders,
   approvedPlanCheck,
+  latestArtifact,
+  activeJobRun,
 } from './store.js'
 import { createMockPr, createDeployRelease, postIssueComment, syncIssueBodyFields, createPrFromBranch, getPrHeadSha } from './github.js'
 import { PHASES } from '../../domain/js/lifecycle.js'
@@ -140,7 +144,11 @@ const heldForDeploy = new Map()
 // drift apart.
 // HZ-275: the Deploy step first waits up to DEPLOY_WAIT_MS for its release
 // to go live, so its budget is that wait on top of the usual one.
+// HZ-378: a job-lane step gets no agent timer at all — the run plan's own
+// budget_minutes bounds it farm-side, so this returns null and every arming
+// site takes its explicit no-timer path instead of a setTimeout.
 export function executionBudgetFor(stepIndex) {
+  if (STEPS[stepIndex]?.runsIn === 'job') return null
   if (stepIndex === IMPLEMENT_STEP_INDEX) return Math.max(FARM_STEP_TIMEOUT_MS, 50 * 60 * 1000)
   if (stepIndex === DEPLOY_STEP_INDEX) return FARM_STEP_TIMEOUT_MS + DEPLOY_WAIT_MS
   return FARM_STEP_TIMEOUT_MS
@@ -917,6 +925,16 @@ export const MOCK_STEP_BEHAVIOR = {
     summary: 'impact review passed — no load, rate-limit or deploy-overlap concerns (mock)',
     artifact_md: '## Verdict\n**pass** (mock)\n\n## Undo\nNothing to undo in demo mode.',
   }),
+  // HZ-378: Execute runs one mock command; Verify judges it. Both return
+  // artifacts so demo mode shows the same links the farm path does.
+  Execute: () => ({
+    summary: '1 command(s) run, 1 passed, 0 failed (mock)',
+    artifact_md: '## Execute (mock)\nRan `echo demo` — exit 0.',
+  }),
+  'Verify & report': () => ({
+    summary: 'the mock job holds the metric (mock)',
+    artifact_md: '## Verdict\n**pass** (mock)\n\n## Commands\n1 run, 1 passed, 0 failed.',
+  }),
   // Execute: the code change takes the form of a GitHub PR. The mock commits
   // a placeholder file; the PR/branch mechanics are the real integration.
   'Specialist agent implements': async (it) => {
@@ -1234,8 +1252,9 @@ async function dispatchToFarm(id, stepIndex, runId, attempt, scope, checkoutSha 
   // pending feedback rides in `feedback` only, never twice.
   const projectContext = step.runsIn === 'pm' ? buildProjectContext(id) : null
 
-  // Undelivered human feedback rides along and is considered delivered.
-  const feedback = db
+  // Undelivered human feedback rides along and is considered delivered. Jobs
+  // run fixed commands, so feedback stays queued for Verify & report instead.
+  const feedback = step.runsIn === 'job' ? [] : db
     .prepare('SELECT message, target, created_at FROM feedback WHERE item_id = ? AND delivered_at IS NULL')
     .all(id)
   if (feedback.length > 0) {
@@ -1288,6 +1307,7 @@ async function dispatchToFarm(id, stepIndex, runId, attempt, scope, checkoutSha 
     return failFarmRun(runId, `required input incomplete: ${detail}`, REASON.REQUIRED_INPUT_INCOMPLETE)
   }
   if (refuseUnapprovedRun(runId, id, stepIndex)) return
+  if (step.runsIn === 'job') return dispatchJob(id, stepIndex, runId, attempt)
 
   const artifacts = budgeted.map(({ label, content }) => ({ label, content }))
   if (overlapInput) artifacts.push(overlapInput)
@@ -1431,6 +1451,40 @@ const FARM_REFUSALS = {
   'missing project': 'missing project: this item belongs to no project, so the farm cannot run it',
   'missing item.repo': 'missing repo: this item has no repository, so the farm cannot run it',
   'step kind mismatch': "step kind mismatch: this step does not belong to the item's kind",
+  jobs_disabled: 'job runs are disabled on the farm (FARM_JOBS_ENABLED=0)',
+  job_already_running: 'a job is already running for this item',
+}
+
+// HZ-378: hands an Execute step to the farm's job lane. The payload carries
+// the plan artifact and the approved hash — never secret values, which farmd
+// resolves farm-side. The queue watchdog (armed by dispatchToFarm before this
+// runs) still bounds the handoff; no execution timer is ever armed for jobs.
+function dispatchJob(id, stepIndex, runId, attempt) {
+  const step = STEPS[stepIndex]
+  const item = getItem(id)
+  const project =
+    item.project_id == null
+      ? null
+      : db.prepare('SELECT id, name FROM project WHERE id = ?').get(item.project_id)
+  const planArtifact = latestArtifact(id, RUN_PLAN_STEP_INDEX)
+  const approvedHash = db.prepare('SELECT approved_plan_hash FROM work_item WHERE id = ?').get(id)?.approved_plan_hash
+  if (!planArtifact || !approvedHash) return failFarmRun(runId, 'the run plan was never approved — approve it at Approve the run first')
+  farmFetch('/steps/run', {
+    run_id: runId,
+    attempt,
+    item: { id: item.id, kind: itemKindOf(item), repo: item.repo },
+    step: { index: stepIndex, label: step.label, agent: step.agent },
+    ...(project ? { project: { id: project.id, name: project.name } } : {}),
+    plan_artifact: planArtifact,
+    approved_hash: approvedHash,
+  }).catch((err) => {
+    const code = err.code ?? ''
+    if ((err.status === 400 || err.status === 409) && Object.hasOwn(FARM_REFUSALS, code)) {
+      return failFarmRun(runId, FARM_REFUSALS[code])
+    }
+    if (err.status === 400) return failFarmRun(runId, `the farm refused the job: ${code || err.message}`)
+    failFarmRun(runId, `could not hand the step to the farm: ${err.message}`, REASON.UNREACHABLE)
+  })
 }
 
 // Agents whose steps run in the PM lane — derived, so a step moving lanes
@@ -1488,8 +1542,10 @@ export function markFarmRunStarted(runId) {
   if (run.agent_started_at) return { ok: true, active: true }
 
   clearTimeout(timers[runId])
+  delete timers[runId]
   db.prepare("UPDATE step_run SET agent_started_at = datetime('now') WHERE id = ?").run(runId)
   const executionMs = executionBudgetFor(run.step_index)
+  if (executionMs == null) return { ok: true, active: true }
   timers[runId] = setTimeout(() => failFarmRun(runId, 'step timed out', REASON.TIMEOUT), executionMs)
   return { ok: true, active: true }
 }
@@ -2312,7 +2368,11 @@ export function failFarmRun(runId, error, reason = null) {
   // ever reaches that checkpoint needs the task file removed directly.
   if (FARM_URL) farmFetch('/steps/cancel', { run_id: runId }).catch(() => {})
 
-  const retryable = reason != null && AUTO_RETRY_REASONS.has(reason) && runnable(getItem(id))
+  // HZ-378: the job lane never auto-retries — a budget breach or an
+  // unreachable farm pauses for a human, who resumes from the first
+  // unfinished command instead of re-running the whole job silently.
+  const retryable =
+    reason != null && AUTO_RETRY_REASONS.has(reason) && runnable(getItem(id)) && STEPS[run.step_index]?.runsIn !== 'job'
   // HZ-373: a check failure's event shows its headline line only; the whole
   // message is kept as the event's detail.
   const { cause, detail } = splitCheckError(error)
@@ -2357,8 +2417,8 @@ export function failFarmRun(runId, error, reason = null) {
 // HZ-384: a Task's Execute starts only on the run plan a human approved at
 // Approve the run. Returns null when the run may go ahead (any other step, or
 // a plan that still matches); otherwise fails the run, pausing the item, and
-// returns the store's check result. Execute is runsIn none until HZ-378, so
-// dispatchToFarm cannot reach this for it yet; the tests call it directly.
+// returns the store's check result. Runs before dispatch, so a hash mismatch
+// runs zero commands.
 export function refuseUnapprovedRun(runId, id, stepIndex) {
   if (stepIndex !== EXECUTE_STEP_INDEX) return null
   const check = approvedPlanCheck(id)
@@ -2373,6 +2433,80 @@ export function refuseUnapprovedRun(runId, id, stepIndex) {
     failFarmRun(runId, 'the run plan was never approved — approve it at Approve the run first')
   }
   return check
+}
+
+// ---- HZ-378: job control (Stop run / Resume) ----
+
+// The farm's view of one job, via farmd's loopback /jobs/:runId. Returns
+// { status, data } like fetchRunLog so the route passes farmd's own status
+// through; throws when the farm itself is unreachable.
+export async function fetchJobStatus(runId) {
+  const res = await fetch(`${FARM_URL}/jobs/${encodeURIComponent(runId)}`)
+  const data = await res.json().catch(() => ({}))
+  return { status: res.status, data }
+}
+
+// One job's redacted log, paged by byte offset. Farmd serves the runner's
+// own log file (never pipe-pane); the shape matches /api/runs/:runId/log.
+export async function fetchJobLog(runId, offset = 0) {
+  const res = await fetch(`${FARM_URL}/jobs/${encodeURIComponent(runId)}/log?offset=${encodeURIComponent(offset)}`)
+  const data = await res.json().catch(() => ({}))
+  return { status: res.status, data }
+}
+
+// Human stops the job: the farm kills the session, the run closes, and the
+// item pauses with the count done in Activity. A second Stop finds no active
+// job and answers 409 (the route maps null to it).
+export async function stopJob(id) {
+  const run = activeJobRun(id)
+  if (!run) return null
+  let commandsDone = 0
+  if (FARM_URL) {
+    try {
+      const res = await farmFetch('/jobs/stop', { run_id: run.id })
+      commandsDone = Number(res?.commandsDone ?? 0) || 0
+    } catch {
+      // The farm is unreachable: the run still closes below, so the item
+      // never wedges on a dead farm; the orphaned session finishes harmlessly.
+    }
+  }
+  clearTimeout(timers[run.id])
+  delete timers[run.id]
+  dispatching.delete(id)
+  db.prepare("UPDATE step_run SET status = 'cancelled', output = ?, ended_at = datetime('now') WHERE id = ?").run(
+    `STOPPED: the run was stopped with ${commandsDone} command(s) done`,
+    run.id,
+  )
+  db.prepare("UPDATE work_item SET paused = 1, updated_at = datetime('now') WHERE id = ?").run(id)
+  addEvent(id, {
+    who: 'Horizon',
+    text: `the run was stopped with ${commandsDone} command(s) done — item paused; resume to continue from the first unfinished command`,
+    color: '#9C333E',
+    initials: 'HZ',
+  })
+  notifyChange()
+  emitStepEnded(id)
+  return { ok: true, paused: true, commandsDone }
+}
+
+// Human resumes a stopped or paused job: re-dispatches Execute from the first
+// unfinished command (the runner skips passed ones via its state file). A
+// plan edited since approval answers plan_changed and asks for re-approval;
+// an already-running job answers already_running; nothing to resume answers
+// nothing_to_resume. The route maps each to 409.
+export function resumeJob(id) {
+  const item = getItem(id)
+  if (!item) return { error: 'not_found' }
+  if (activeJobRun(id)) return { error: 'already_running' }
+  if (item.cursor !== EXECUTE_STEP_INDEX) return { error: 'nothing_to_resume' }
+  const check = approvedPlanCheck(id)
+  if (check.error) return { error: 'plan_changed' }
+  db.prepare("UPDATE work_item SET paused = 0, updated_at = datetime('now') WHERE id = ?").run(id)
+  addEvent(id, { who: 'Horizon', text: 'the run was resumed from the first unfinished command', color: '#5E4380', initials: 'HZ' })
+  notifyChange()
+  kick(id)
+  const run = activeJobRun(id)
+  return { ok: true, runId: run?.id ?? null }
 }
 
 // HZ-346: an implement run that stopped on a rule with no code changes. Not
@@ -2729,9 +2863,9 @@ export async function reconcileActiveRuns() {
   reconcileInFlight = true
   try {
     const candidates = db
-      .prepare("SELECT id FROM step_run WHERE status = 'active'")
+      .prepare("SELECT id, step_index FROM step_run WHERE status = 'active'")
       .all()
-      .filter((run) => !timers[run.id])
+      .filter((run) => !timers[run.id] && STEPS[run.step_index]?.runsIn !== 'job')
     if (candidates.length === 0) return { checked: 0, failed: 0 }
 
     let alive
@@ -2863,8 +2997,11 @@ export function rearmFarmRuns() {
     // bounded — window than usual on a restart.
     const anchor = run.agent_started_at || run.started_at
     const elapsedMs = Date.now() - new Date(anchor).getTime()
-    const remainingMs = Math.max(0, executionBudgetFor(run.step_index) - elapsedMs)
-    timers[run.id] = setTimeout(() => failFarmRun(run.id, 'step timed out', REASON.TIMEOUT), remainingMs)
+    const budget = executionBudgetFor(run.step_index)
+    if (budget != null) {
+      const remainingMs = Math.max(0, budget - elapsedMs)
+      timers[run.id] = setTimeout(() => failFarmRun(run.id, 'step timed out', REASON.TIMEOUT), remainingMs)
+    }
     // Re-key removed the free busy-mutex side effect timers[item_id] used to
     // give kick() — without this, a restart would leave every one of these
     // items looking idle and resumeActiveItems()/a human resume could

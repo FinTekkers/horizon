@@ -8,6 +8,7 @@ Session naming:
                            project (FARM_WA_ENABLED=1; HZ-209 — farmd retires
                            any older per-project farm-concierge-<slug>)
   farm-run-<...>           per-step agents, PM steps included (HZ-212)
+  farm-job-<item>          detached shell-command jobs (HZ-378, no pipe-pane)
 """
 
 import os
@@ -127,6 +128,8 @@ def _env_prefix(session_name: str) -> str:
 
 
 def new_session(name: str, command: str, cwd: str, log_file: str | None = None) -> None:
+    if name.startswith(JOB_SESSION_PREFIX) and log_file is not None:
+        raise RuntimeError(f"job sessions must not use pipe-pane; the runner owns the only log ({name})")
     if session_exists(name):
         kill_session(name)
     result = _tmux("new-session", "-d", "-s", name, "-c", cwd, _env_prefix(name) + command)
@@ -155,9 +158,19 @@ def list_farm_sessions() -> list[str]:
     return [s for s in result.stdout.splitlines() if s.startswith("farm-")]
 
 
+# HZ-378: detached shell-command jobs, one per Task Execute. The runner owns
+# the only log (a redacted file, never pipe-pane); farmd adopts these sessions
+# after a restart the same way it adopts farm-run-* ones.
+JOB_SESSION_PREFIX = "farm-job-"
+
+
+def is_job_session(name: str) -> bool:
+    return name.startswith(JOB_SESSION_PREFIX)
+
+
 # Only agent sessions are ever torn down — never daemons (positive match, so
 # a differently-named farmd session can't kill itself).
-AGENT_SESSION_PREFIXES = ("farm-pm-", "farm-run-", "farm-concierge-")
+AGENT_SESSION_PREFIXES = ("farm-pm-", "farm-run-", "farm-concierge-", JOB_SESSION_PREFIX)
 
 
 def kill_all_farm_sessions() -> list[str]:

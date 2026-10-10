@@ -57,7 +57,7 @@
           "enum": ["PM", "QA", "Architect", "Eng", "DevOps", "Ensemble", "Review"]
         },
         "gate": { "type": "string", "enum": ["required"] },
-        "runsIn": { "type": "string", "enum": ["pm", "farm", "none"] },
+        "runsIn": { "type": "string", "enum": ["pm", "farm", "job", "none"] },
         "workspaceMutating": { "type": "boolean" },
         "providerOverrideEligible": { "type": "boolean" },
         "providerLocked": { "type": "boolean" },
@@ -101,8 +101,13 @@
         },
         {
           "$comment": "A step on a real lane always names its agent; only a runsIn 'none' step may omit it.",
-          "if": { "properties": { "runsIn": { "enum": ["pm", "farm"] } }, "required": ["runsIn"] },
+          "if": { "properties": { "runsIn": { "enum": ["pm", "farm", "job"] } }, "required": ["runsIn"] },
           "then": { "required": ["agent"] }
+        },
+        {
+          "$comment": "HZ-378: a job-lane step runs shell commands, not an agent — it carries no agent budget.",
+          "if": { "properties": { "runsIn": { "enum": ["job"] } }, "required": ["runsIn"] },
+          "then": { "not": { "anyOf": [{ "required": ["timeoutS"] }, { "required": ["maxTurns"] }] } }
         },
         {
           "$comment": "A gate is human-only: no agent, no lane, no farm budget.",

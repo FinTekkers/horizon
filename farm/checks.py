@@ -164,23 +164,26 @@ _SUMMARY_LINE = re.compile(
 )
 _NONZERO_FAILURE = re.compile(r"\b0*[1-9]\d* (failed|failing|errors?)\b|^\s*[#ℹ]\s*(fail|cancelled)\s+0*[1-9]")
 
-# Env var names whose values are secrets, and token shapes that are secrets
-# wherever they appear. A denylist: it can miss an unusual shape, which is why
-# it runs over everything that leaves run_checks, not just the digest.
-_SECRET_NAME = re.compile(r"TOKEN|SECRET|KEY|PASSWORD|PASSWD|CREDENTIAL", re.IGNORECASE)
-_SECRET_MIN_LEN = 8
+# Token shapes that are secrets wherever they appear. A denylist: it can
+# miss an unusual shape, which is why redaction runs over everything that
+# leaves run_checks (and every job log line), not just the digest.
 _TOKEN_SHAPES = re.compile(
     r"gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|sk-ant-[A-Za-z0-9_\-]{10,}|AKIA[0-9A-Z]{16}"
 )
 REDACTED = "[redacted]"
+# HZ-378: the shortest value redaction masks. Every env-file value is a
+# secret, whatever its name — DATABASE_URL included — so the old
+# secret-name filter is gone. Values under 4 chars are left alone: masking
+# them would redact ordinary words ("a", "to") out of every log line.
+REDACT_MIN_LEN = 4
 
 
 def redact(text: str, env) -> str:
-    """Replaces every secret-named env value (of at least 8 chars) and every
+    """Replaces every env value (of at least REDACT_MIN_LEN chars) and every
     known token shape in `text`. Longest values first, so a secret that
     contains another secret is replaced whole."""
     values = sorted(
-        {v for k, v in env.items() if _SECRET_NAME.search(k) and v and len(v) >= _SECRET_MIN_LEN},
+        {v for v in env.values() if v and len(v) >= REDACT_MIN_LEN},
         key=len,
         reverse=True,
     )

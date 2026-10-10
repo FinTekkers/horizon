@@ -25,6 +25,7 @@ import {
   isHumanOnlyGate,
   RUN_PLAN_STEP_INDEX,
   APPROVE_RUN_GATE_INDEX,
+  EXECUTE_STEP_INDEX,
 } from '../../domain/js/lifecycle.js'
 import { isPriority } from '../../domain/js/priorities.js'
 import { REASON } from '../../domain/js/reasons.js'
@@ -173,11 +174,25 @@ export function stepSlug(stepIndex) {
 // HZ-321: the agent step runs a self-deploy waits for. The deploy step is left
 // out: its own run published the release this deploy is installing, and it
 // waits for that deploy to go live — draining it would wait on itself.
+// HZ-378: job-lane rows are left out too — a deploy never waits for, lists,
+// kills or cancels a job; the job outlives the drain and reports after it.
 export function listRunningAgentSteps() {
   return db
     .prepare("SELECT id, item_id, step_index, started_at FROM step_run WHERE status = 'active' AND step_index != ? ORDER BY id")
     .all(DEPLOY_STEP_INDEX)
+    .filter((row) => STEPS[row.step_index]?.runsIn !== 'job')
     .map((row) => ({ runId: row.id, itemId: row.item_id, stepIndex: row.step_index, step: stepSlug(row.step_index), startedAt: row.started_at }))
+}
+
+// HZ-378: the item's active Execute run, if any — the job Stop and Resume
+// act on. Reads the active step_run at the Execute index; no other step's
+// run is ever a job.
+export function activeJobRun(itemId) {
+  return (
+    db
+      .prepare("SELECT id, item_id, step_index, attempt, started_at FROM step_run WHERE item_id = ? AND step_index = ? AND status = 'active' ORDER BY id DESC LIMIT 1")
+      .get(itemId, EXECUTE_STEP_INDEX) ?? null
+  )
 }
 
 // HZ-250: ends the listed runs as `interrupted` when a deploy's wait ran out.
