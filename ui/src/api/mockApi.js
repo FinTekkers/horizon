@@ -302,9 +302,18 @@ export async function approveGate(id, notes) {
 // agent step and re-runs it instead of freezing the item. targetStepIndex
 // (HZ-51) lets a human pick an earlier agent step explicitly, same
 // validation and Accept-gate exception as store.js's requestChanges.
-export function requestChanges(id, target, feedback, targetStepIndex) {
+//
+// HZ-389: async and answering like serverApi — rejects with the server's error
+// code, resolves with { ok, item, restart } — and numbers the restarted attempt
+// the way the server does: one more than the runs the step already had (here,
+// one run per visit, since mock steps record none).
+const mockAttempts = new Map() // `${id}:${stepIndex}` -> the last attempt started
+const restartsSent = new Map()
+
+export async function requestChanges(id, target, feedback, targetStepIndex) {
   const it = items.find((x) => x.id === id)
-  if (!it || isClosed(it)) return
+  if (!it) throw new Error('not_found')
+  if (isClosed(it)) throw new Error('closed')
   const atGate = STEPS[it.cursor]?.kind === 'gate'
   if (targetStepIndex != null) {
     const validTarget =
@@ -313,7 +322,7 @@ export function requestChanges(id, target, feedback, targetStepIndex) {
       targetStepIndex >= 0 &&
       targetStepIndex < it.cursor &&
       STEPS[targetStepIndex]?.kind === 'agent'
-    if (!validTarget) return
+    if (!validTarget) throw new Error('invalid_target')
   }
   clearTimeout(timers[id])
   let reworkIdx = it.cursor
@@ -335,6 +344,19 @@ export function requestChanges(id, target, feedback, targetStepIndex) {
     initials: 'YOU',
   })
   runAgents(id)
+  const item = items.find((x) => x.id === id)
+  if (STEPS[reworkIdx].kind !== 'agent') return { ok: true, item }
+  const key = `${id}:${reworkIdx}`
+  const restart = { stepIndex: reworkIdx, attempt: (mockAttempts.get(key) ?? 1) + 1 }
+  mockAttempts.set(key, restart.attempt)
+  restartsSent.set(id, restart)
+  emit()
+  return { ok: true, item, restart }
+}
+
+// Mirrors serverApi.getRestartSent.
+export function getRestartSent(id) {
+  return restartsSent.get(id) ?? null
 }
 
 // HZ-92: mock mode never sets pr_mergeable === false (no real GitHub PR to
@@ -355,7 +377,7 @@ export async function forwardToAccept(id) {
   return { error: 'review_not_rejected' }
 }
 
-// Mirrors serverApi.setPaused: the explicit state, {ok, paused} back, and a
+// Mirrors serverApi.setPaused: the explicit state, {ok, paused, item} back, and a
 // rejection the button can show.
 export async function setPaused(id, paused) {
   const it = items.find((x) => x.id === id)
@@ -369,7 +391,7 @@ export async function setPaused(id, paused) {
   })
   if (paused) clearTimeout(timers[id])
   else runAgents(id)
-  return { ok: true, paused }
+  return { ok: true, paused, item: items.find((x) => x.id === id) }
 }
 
 // Mirrors store.removeDependency: drop the edge on both sides, log it, and

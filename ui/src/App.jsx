@@ -60,6 +60,24 @@ function resolveDialogView(dialog, item, pending) {
 
 const CLOSED_COMPOSER = { open: false, mode: null, itemId: null, phase: null, target: '', stepOptions: [], defaultTargetLabel: null }
 
+// HZ-389: why a send-back did not go through, in words. serverApi.requestChanges
+// rejects with Error('network') when no answer came, else the server's error
+// code with the HTTP status (401: the PIN was wrong or not entered).
+const SEND_BACK_ERRORS = {
+  network: 'The server did not answer — nothing was sent. Try again.',
+  not_found: 'This item is no longer on the board.',
+  closed: 'This item is closed.',
+  abandoned: 'This item was abandoned.',
+  project_not_active: "This item's project is not active.",
+  invalid_target: 'That step cannot be sent back to from here.',
+}
+
+function sendBackError(err) {
+  if (Object.hasOwn(SEND_BACK_ERRORS, err?.message)) return SEND_BACK_ERRORS[err.message]
+  if (err?.status === 401) return 'Gate PIN incorrect or not entered — nothing was sent.'
+  return 'That did not go through — try again.'
+}
+
 // Deep links: /  → board, /admin → admin, /definitions → agent definitions,
 // /privacy and /terms → the public legal pages (no login required),
 // /<item-id> → that item's tracker (case-insensitive, e.g. localhost:5173/hz-102).
@@ -299,19 +317,32 @@ function AuthenticatedApp({ user, onLogout }) {
   // send-back step index, abandon passes { removeDependentLinks }.
   const submitComposer = (text, modeArg) => {
     const { mode, itemId, phase, target } = composer
+    // HZ-389: a send-back (reject, or HZ-365's Amend the rule — HZ-346's
+    // PIN-gated send-back to implement, with the owner's ruling as the note)
+    // is awaited: the page shows the answer's state, and a failure keeps the
+    // composer open with the error and the page as it was.
+    if (itemId && (mode === 'reject' || mode === 'amend')) {
+      const sent =
+        mode === 'reject'
+          ? api.requestChanges(itemId, target, text, modeArg ?? null)
+          : api.requestChanges(itemId, STEPS[IMPLEMENT_STEP_INDEX].label, `Owner's ruling on the blocking rule: ${text}`)
+      setComposer((c) => ({ ...c, busy: true, error: null }))
+      // A composer cancelled or reopened meanwhile is left as it is.
+      const same = (c) => c.open && c.itemId === itemId && c.mode === mode
+      Promise.resolve(sent).then(
+        () => setComposer((c) => (same(c) ? CLOSED_COMPOSER : c)),
+        (err) => setComposer((c) => (same(c) ? { ...c, busy: false, error: sendBackError(err) } : c)),
+      )
+      return
+    }
     if (itemId) {
       // Both sides changed this line for unrelated reasons: main routes approve
       // through approveAndMaybeClose (HZ-62, return to the board once the
       // closing gate is approved) and this branch adds the chosen send-back
       // step to reject (HZ-51). They compose.
       if (mode === 'approve') approveAndMaybeClose(itemId, text)
-      else if (mode === 'reject') api.requestChanges(itemId, target, text, modeArg ?? null)
       else if (mode === 'restart') api.restartPhase(itemId, phase, text)
-      // HZ-365: Amend the rule is HZ-346's PIN-gated send-back to implement,
-      // with the owner's ruling as the note. It clears the block.
-      else if (mode === 'amend') {
-        api.requestChanges(itemId, STEPS[IMPLEMENT_STEP_INDEX].label, `Owner's ruling on the blocking rule: ${text}`)
-      } else if (mode === 'abandon') {
+      else if (mode === 'abandon') {
         api.abandonItem(itemId, text, { removeDependentLinks: modeArg?.removeDependentLinks === true })
       }
     }
@@ -390,6 +421,7 @@ function AuthenticatedApp({ user, onLogout }) {
           projects={projects}
           deployBlock={deployBlock}
           viewerName={user?.name ?? null}
+          restartSent={api.getRestartSent(selected.id)}
           onBack={toBoard}
           onApprove={requestApprove}
           onApproveWithComments={(id, target) => openComposer('approve', id, { target })}

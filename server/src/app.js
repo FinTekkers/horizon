@@ -569,6 +569,21 @@ export function buildApp({ logger = true, onRoute = null } = {}) {
     return reply.send(result)
   }
 
+  // HZ-389: what a successful pause, resume or send-back adds to its answer —
+  // the item as the v2 stream would upsert it, so the page shows it at once.
+  // With `restart`, a send-back that lands on an agent step also names the
+  // attempt starting there: the run kick() just recorded, else the one its
+  // next dispatch records (a held dispatch, store.nextStepAttempt).
+  function actionState(id, { restart = false } = {}) {
+    const item = store.itemViewById(id)
+    if (!item) return {}
+    const step = STEPS[item.cursor]
+    if (!restart || step?.kind !== 'agent' || step.runsIn === 'none') return { item }
+    const run = item.activeRun?.step_index === item.cursor ? item.activeRun : null
+    const attempt = run ? run.attempt : store.nextStepAttempt(id, item.cursor).attempt
+    return { item, restart: { stepIndex: item.cursor, attempt } }
+  }
+
   // HZ-318: `?v=2` leaves stepOutputs off, as the v2 stream does; the Tracker
   // gets them from the open item's /api/items/:id/stream. Without `v` (a tab
   // built before HZ-318) the items keep them.
@@ -1397,18 +1412,17 @@ export function buildApp({ logger = true, onRoute = null } = {}) {
     },
     (request, reply) => {
       if (!humanAuthorized(request, reply)) return
-      return send(
-        reply,
-        gateActions.sendBack(
-          request.params.id,
-          {
-            target: request.body?.target,
-            feedback: request.body?.feedback,
-            targetStepIndex: request.body?.targetStepIndex,
-          },
-          actorOf(request),
-        ),
+      const { id } = request.params
+      const result = gateActions.sendBack(
+        id,
+        {
+          target: request.body?.target,
+          feedback: request.body?.feedback,
+          targetStepIndex: request.body?.targetStepIndex,
+        },
+        actorOf(request),
       )
+      return send(reply, result.error ? result : { ...result, ...actionState(id, { restart: true }) })
     },
   )
 
@@ -1502,7 +1516,10 @@ export function buildApp({ logger = true, onRoute = null } = {}) {
         response: { 200: OK_OBJECT, 404: ERROR_OBJECT, 409: ERROR_OBJECT },
       },
     },
-    (request, reply) => send(reply, store.setPaused(request.params.id, request.body.paused)),
+    (request, reply) => {
+      const result = store.setPaused(request.params.id, request.body.paused)
+      return send(reply, result.error ? result : { ...result, ...actionState(request.params.id) })
+    },
   )
 
   // Dependencies (HZ-78): id is blocked until dependsOnId closes. Cycles and

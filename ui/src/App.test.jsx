@@ -29,6 +29,7 @@ vi.mock('./api', () => ({
   getDeployBlock: () => null,
   approveGate: vi.fn(),
   requestChanges: vi.fn(),
+  getRestartSent: () => null,
   setPaused: vi.fn(),
   restartPhase: vi.fn(),
   setPersona: vi.fn(),
@@ -534,3 +535,67 @@ test("Amend the rule sends the owner's ruling as a send-back to implement throug
     "Owner's ruling on the blocking rule: a local shim is allowed",
   )
 })
+
+// ---- HZ-389: a send-back is awaited; a failure keeps the composer open ----
+
+function pausedAtImplement(id) {
+  return { ...itemAtClosingGate(id), cursor: IMPLEMENT_STEP_INDEX, paused: true }
+}
+
+async function sendNote(findByRole, text = 'try X') {
+  fireEvent.click(await findByRole('button', { name: 'Request changes' }))
+  fireEvent.change(document.querySelector('.composer__input'), { target: { value: text } })
+  fireEvent.click(document.querySelector('.composer__submit'))
+}
+
+test('a note that goes through closes the composer once the answer is in', async () => {
+  let answer
+  api.requestChanges.mockImplementation(() => new Promise((resolve) => (answer = resolve)))
+  setItems([pausedAtImplement('SB-1')])
+  window.history.pushState({}, '', '/sb-1')
+
+  const { findByRole } = render(<App />)
+  await sendNote(findByRole)
+  expect(api.requestChanges).toHaveBeenCalledWith('SB-1', STEPS[IMPLEMENT_STEP_INDEX].label, 'try X', null)
+  // Still open, and its submit disabled, while the request is out.
+  expect(document.querySelector('.composer__submit').disabled).toBe(true)
+  await act(async () => answer({ ok: true }))
+  await waitFor(() => expect(document.querySelector('.composer')).toBeNull())
+})
+
+for (const [label, err, message] of [
+  ['a 409', Object.assign(new Error('closed'), { status: 409 }), 'This item is closed.'],
+  ['no answer', new Error('network'), 'The server did not answer — nothing was sent. Try again.'],
+  ['a cancelled PIN retry', Object.assign(new Error('bad_human_gate_key'), { status: 401 }), 'Gate PIN incorrect or not entered — nothing was sent.'],
+]) {
+  test(`a note that fails with ${label} keeps the composer open, its text kept, and shows why`, async () => {
+    api.requestChanges.mockRejectedValue(err)
+    setItems([pausedAtImplement('SB-2')])
+    window.history.pushState({}, '', '/sb-2')
+
+    const { findByRole } = render(<App />)
+    await sendNote(findByRole, 'keep me')
+    const alert = await findByRole('alert')
+    expect(alert.textContent).toBe(message)
+    expect(document.querySelector('.composer__input').value).toBe('keep me')
+    expect(document.querySelector('.composer__submit').disabled).toBe(false)
+    expect(getItemsSnapshot('SB-2').paused).toBe(true)
+  })
+}
+
+test('Amend the rule that fails keeps the composer open with the error', async () => {
+  api.requestChanges.mockRejectedValue(Object.assign(new Error('abandoned'), { status: 409 }))
+  setItems([ruleBlockedItem('RB-9')])
+  window.history.pushState({}, '', '/rb-9')
+
+  const { findByRole } = render(<App />)
+  fireEvent.click(await findByRole('button', { name: 'Amend the rule' }))
+  fireEvent.change(document.querySelector('.composer__input'), { target: { value: 'a local shim is allowed' } })
+  fireEvent.click(document.querySelector('.composer__submit'))
+  expect((await findByRole('alert')).textContent).toBe('This item was abandoned.')
+  expect(document.querySelector('.composer')).not.toBeNull()
+})
+
+function getItemsSnapshot(id) {
+  return api.getItems().find((it) => it.id === id)
+}
