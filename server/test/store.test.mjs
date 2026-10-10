@@ -315,6 +315,24 @@ test('one persona per composing agent round-trips on a single item', () => {
   assert.deepEqual(store.getItem('T-SLOTS').personas, { eng: 'ui', qa: 'data_integrity' })
 })
 
+test('HZ-380: an item with no persona chosen loads and saves with no pm key in personas_json (no rewrite)', () => {
+  db.prepare("INSERT INTO work_item (id, title, priority, cursor) VALUES ('T-NO-PM', 'No persona chosen', 'Medium', 3)").run()
+  assert.deepEqual(store.getItem('T-NO-PM').personas, {})
+  assert.equal(db.prepare("SELECT personas_json FROM work_item WHERE id = 'T-NO-PM'").get().personas_json, null)
+  // A save to another slot must not materialize the pm default into the row.
+  assert.deepEqual(store.setPersona('T-NO-PM', 'eng', 'python'), { ok: true })
+  assert.deepEqual(
+    JSON.parse(db.prepare("SELECT personas_json FROM work_item WHERE id = 'T-NO-PM'").get().personas_json),
+    { eng: 'python' },
+  )
+})
+
+test('HZ-380: a stored roadmap PM persona round-trips through setPersona/getItem', () => {
+  db.prepare("INSERT INTO work_item (id, title, priority, cursor) VALUES ('T-PM-ROADMAP', 'Stored roadmap', 'Medium', 3)").run()
+  assert.deepEqual(store.setPersona('T-PM-ROADMAP', 'pm', 'roadmap'), { ok: true })
+  assert.deepEqual(store.getItem('T-PM-ROADMAP').personas, { pm: 'roadmap' })
+})
+
 test('a legacy flat persona value reads back as an eng persona and migrates on first write', () => {
   // HZ-125 guardrail 3 / success metric 12, with the literal value the metric
   // names. No migration script: the translation happens on read, and the first

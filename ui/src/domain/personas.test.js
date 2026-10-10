@@ -16,6 +16,11 @@ import {
   personaSlotForFile,
 } from './personas'
 import { AGENTS } from './agentTokens'
+// HZ-380: the declared defaults, straight off the document rather than via
+// the binding ./personas derives from.
+import personasDoc from '../../../domain/personas.json'
+
+const domainDefaults = Object.fromEntries(personasDoc.agents.map((entry) => [entry.agent, entry.default]))
 
 test('every agent has at least two personas and a default inside its own bucket', () => {
   for (const agent of ['eng', 'qa', 'architect', 'pm']) {
@@ -110,4 +115,17 @@ test('every registered persona has a file name that round-trips through personaS
       expect(personaSlotForFile(`${agent}_${persona}`)).toEqual({ agent, persona })
     }
   }
+})
+
+// HZ-380: the PM default is feature_development, declared once in
+// domain/personas.json; a stored roadmap choice still resolves to Roadmap.
+test('the UI PM default equals domain/personas.json and is feature_development', () => {
+  expect(DEFAULT_PERSONAS.pm).toBe(domainDefaults.pm)
+  expect(DEFAULT_PERSONAS.pm).toBe('feature_development')
+  expect({ ...DEFAULT_PERSONAS }).toEqual(domainDefaults)
+})
+
+test('a stored roadmap PM persona still resolves to Roadmap', () => {
+  expect(personaId({ personas: { pm: 'roadmap' } }, 'pm')).toBe('roadmap')
+  expect(personaFor({ personas: { pm: 'roadmap' } }, 'pm').label).toBe('Roadmap')
 })

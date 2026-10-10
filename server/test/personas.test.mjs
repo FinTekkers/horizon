@@ -9,7 +9,7 @@
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync } from 'node:fs'
+import { mkdtempSync, readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -34,6 +34,11 @@ const uiPersonas = await import('../../ui/src/domain/personas.js')
 const uiAgents = await import('../../ui/src/domain/agentTokens.js')
 const uiEventColors = await import('../../ui/src/domain/eventColors.js')
 const { MOCK_STEP_BEHAVIOR } = await import('../src/orchestrator.js')
+
+// HZ-380: the declared defaults, straight off domain/personas.json rather than
+// via the binding server/src/personas.js derives from.
+const domainDoc = JSON.parse(readFileSync(new URL('../../domain/personas.json', import.meta.url), 'utf8'))
+const domainDefaults = Object.fromEntries(domainDoc.agents.map((entry) => [entry.agent, entry.default]))
 
 // ---- registry (agent-scoped since HZ-125) ----
 
@@ -191,6 +196,32 @@ test('proposePersona always answers with a persona belonging to the agent it was
 
 test('the primary persona agent is a real bucket', () => {
   assert.ok(PERSONAS[PRIMARY_PERSONA_AGENT])
+})
+
+// ---- HZ-380: the PM default is feature_development, declared once ----
+
+test('the server PM default equals domain/personas.json and is feature_development', () => {
+  assert.equal(DEFAULT_PERSONAS.pm, domainDefaults.pm)
+  assert.equal(DEFAULT_PERSONAS.pm, 'feature_development')
+  assert.deepEqual({ ...DEFAULT_PERSONAS }, domainDefaults)
+})
+
+test('a stored roadmap PM persona still resolves to Roadmap', () => {
+  assert.deepEqual(personasFromRow({ personas_json: JSON.stringify({ pm: 'roadmap' }) }), { pm: 'roadmap' })
+  assert.equal(personaLabel('pm', 'roadmap'), 'Roadmap')
+})
+
+test('the composed role for a stored roadmap PM persona contains pm_roadmap.md, via effectivePrompt', async () => {
+  const { effectivePrompt } = await import('../src/definitions.js')
+  const roadmapMd = readFileSync(new URL('../../farm/roles/personas/pm_roadmap.md', import.meta.url), 'utf8')
+  const featureMd = readFileSync(new URL('../../farm/roles/personas/pm_feature_development.md', import.meta.url), 'utf8')
+  const composed = effectivePrompt({ role: 'pm', agent: 'pm', persona: 'roadmap', project: 'No Such Project', repo: null })
+  assert.ok(composed.includes(roadmapMd))
+  assert.ok(!composed.includes(featureMd))
+})
+
+test('demo-mode proposePersona for pm now proposes feature_development (was roadmap)', () => {
+  assert.equal(proposePersona({ title: 'anything' }, 'pm'), 'feature_development')
 })
 
 // ---- axis separation (architecture note 2) ----

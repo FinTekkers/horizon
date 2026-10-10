@@ -13,6 +13,10 @@
 // set is mirrored in server/src/personas.js and farm/personas.py
 // (parity-tested farm-side) — append-only, change all three copies together.
 
+// HZ-380: the agent defaults come from the same binding — this module holds no
+// literal of its own.
+import { DEFAULT_PERSONAS as domainDefaults } from '../../../domain/js/personas.js'
+
 // HZ-192: which Claude model each agent call uses is declared once, in
 // domain/personas.json's `models` block. Re-exported for the agent definitions
 // page, never copied here.
@@ -47,12 +51,10 @@ export const PERSONAS = {
   },
 }
 
-export const DEFAULT_PERSONAS = {
-  eng: 'fullstack',
-  qa: 'e2e_journey',
-  architect: 'data_modelling',
-  pm: 'roadmap',
-}
+// agent -> the persona an item gets when it carries none for that agent.
+// Declared once, in domain/personas.json: this spreads that binding's table
+// into a fresh object, never a second declaration.
+export const DEFAULT_PERSONAS = { ...domainDefaults }
 
 // Which lifecycle agent (an AGENTS key in agentTokens.js) each persona bucket
 // belongs to, so the picker can label a group with that agent's own name

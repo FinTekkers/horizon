@@ -27,6 +27,8 @@ security-relevant code to walk subdirectories would buy nothing here.
 
 from pathlib import Path
 
+from domain.py.personas import DEFAULT_PERSONAS as _DOMAIN_DEFAULT_PERSONAS
+
 PERSONA_DIR = Path(__file__).parent / "roles" / "personas"
 
 # agent -> {persona id -> markdown file in farm/roles/personas/}
@@ -71,13 +73,11 @@ PERSONAS = {
 }
 
 # agent -> the persona an item gets when it carries none for that agent (or
-# carries one that does not belong to it).
-DEFAULT_PERSONAS = {
-    "eng": "fullstack",
-    "qa": "e2e_journey",
-    "architect": "data_modelling",
-    "pm": "roadmap",
-}
+# carries one that does not belong to it). Declared once, in
+# domain/personas.json: this is a MUTABLE dict copy of that binding's table
+# (whose own maps are read-only), never a second declaration. HZ-380 made the
+# PM entry the feature-development persona.
+DEFAULT_PERSONAS = dict(_DOMAIN_DEFAULT_PERSONAS)
 
 # Flat pre-HZ-125 persona value -> (agent, persona id). Items created before
 # personas were agent-scoped carry a bare string in work_item.persona; every one

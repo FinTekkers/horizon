@@ -18,6 +18,7 @@ from pathlib import Path
 
 import pytest
 
+from domain.py import personas as domain_personas
 from farm import personas
 from farm.personas import (
     DEFAULT_PERSONAS,
@@ -292,17 +293,26 @@ def test_the_parity_parser_rejects_a_file_it_can_no_longer_read(tmp_path):
 
 
 def test_default_persona_parity_across_farm_and_the_js_copies():
-    """The defaults decide what an item with no persona actually runs as, so
-    they drift as consequentially as the ids do."""
-    pattern = re.compile(r"export const DEFAULT_PERSONAS = \{(.*?)\n\}", re.DOTALL)
-    for js_path in (
-        REPO_ROOT / "server" / "src" / "personas.js",
-        REPO_ROOT / "ui" / "src" / "domain" / "personas.js",
+    """HZ-380: the defaults are declared once, in domain/personas.json, and
+    every layer derives them — the farm from domain/py/personas.py, the two JS
+    copies from domain/js/personas.js. This asserts each layer really derives
+    the table rather than re-declaring it."""
+    assert (REPO_ROOT / "farm" / "personas.py").read_text().count("from domain.py.personas import") == 1
+    assert DEFAULT_PERSONAS == dict(domain_personas.DEFAULT_PERSONAS)
+    for js_path, rel in (
+        (REPO_ROOT / "server" / "src" / "personas.js", "../../domain/js/personas.js"),
+        (REPO_ROOT / "ui" / "src" / "domain" / "personas.js", "../../../domain/js/personas.js"),
     ):
-        match = pattern.search(js_path.read_text())
-        assert match, f"could not find DEFAULT_PERSONAS in {js_path}"
-        found = dict(re.findall(r"^ {2}(\w+): '([\w]+)',$", match.group(1), re.MULTILINE))
-        assert found == DEFAULT_PERSONAS, f"DEFAULT_PERSONAS drifted in {js_path}"
+        source = js_path.read_text()
+        assert re.search(
+            r"import\s*\{\s*DEFAULT_PERSONAS\s+as\s+\w+\s*\}\s*from\s*['\"]"
+            + re.escape(rel)
+            + r"['\"]",
+            source,
+        ), f"{js_path} no longer derives DEFAULT_PERSONAS from the domain binding"
+        assert re.search(
+            r"export const DEFAULT_PERSONAS = \{\s*\.\.\.\w+\s*\}", source
+        ), f"{js_path} no longer spreads the domain defaults into a fresh object"
 
 
 # ---- persona -> provider override (HZ-102 / HZ-121) ----
