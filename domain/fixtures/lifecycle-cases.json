@@ -405,6 +405,7 @@
     "RUN_PLAN_STEP_INDEX": [{ "case": "points at the task's run plan step", "expectLabel": "Run plan" }],
     "APPROVE_RUN_GATE_INDEX": [{ "case": "points at the task's approve-the-run gate", "expectLabel": "Approve the run" }],
     "EXECUTE_STEP_INDEX": [{ "case": "points at the task's execute step", "expectLabel": "Execute" }],
+    "VERIFY_REPORT_STEP_INDEX": [{ "case": "points at the task's verify step", "expectLabel": "Verify & report" }],
     "isHumanOnlyGate": [
       { "case": "the approve-the-run gate is human-only", "label": "Approve the run", "expect": true },
       { "case": "a change gate is not", "label": "Approve the high-level design", "expect": false },
@@ -549,7 +550,7 @@
 
     "FARM_VIEWS": [
       { "case": "the change view is STEPS itself", "kind": "change", "expectIsSteps": true },
-      { "case": "the task view holds only the task rows on a lane", "kind": "task", "expectLabels": ["Assess", "Run plan", "Impact review"] }
+      { "case": "the task view holds only the task rows on a lane", "kind": "task", "expectLabels": ["Assess", "Run plan", "Impact review", "Execute", "Verify & report"] }
     ],
 
     "by_kind_label": [

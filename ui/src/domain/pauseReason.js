@@ -39,6 +39,10 @@ const CATEGORY_COPY = {
     label: 'Run plan changed since approval',
     detail: 'The run plan is not the one a human approved. Send it back to Run plan and approve the run again.',
   },
+  [REASON.JOB_BUDGET_EXCEEDED]: {
+    label: 'Run exceeded its time budget',
+    detail: 'The job ran past the run plan’s time budget and was stopped. Resume to retry the remaining commands, or send it back to Run plan.',
+  },
 }
 
 // Both mirror the event text server/src/store.js:1208 writes on pause/resume.

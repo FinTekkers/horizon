@@ -130,14 +130,23 @@ def test_the_real_tables_change_configs_are_untouched_and_task_labels_map_to_tas
     for entry in steps.STEPS:
         assert step_agent._step_config("change", entry["label"]) == step_agent.STEP_CONFIG[entry["label"]]
     expected = {
-        step_agent.ASSESS_LABEL: "task_assess.md",
-        step_agent.RUN_PLAN_LABEL: "task_run_plan.md",
-        step_agent.IMPACT_REVIEW_LABEL: "task_impact_review.md",
+        step_agent.ASSESS_LABEL: ("task_assess.md", None),
+        step_agent.RUN_PLAN_LABEL: ("task_run_plan.md", None),
+        step_agent.IMPACT_REVIEW_LABEL: ("task_impact_review.md", None),
+        # HZ-378: Verify & report, read-only QA with the item's QA persona.
+        step_agent.VERIFY_REPORT_LABEL: ("task_verify.md", "qa"),
     }
-    assert {entry["label"] for entry in steps.FARM_VIEWS["task"]} == set(expected)
-    for label, role_file in expected.items():
-        assert step_agent._step_config("task", label) == (role_file, True, step_agent.PLANNER_TOOLS, None)
+    # The agent lanes only: Execute rides the job lane (below), which has no
+    # agent runner, so it is in the view but not in the step config.
+    assert {entry["label"] for entry in steps.FARM_VIEWS["task"] if entry["runsIn"] in ("farm", "pm")} == set(
+        expected
+    )
+    for label, (role_file, persona) in expected.items():
+        assert step_agent._step_config("task", label) == (role_file, True, step_agent.PLANNER_TOOLS, persona)
         assert (step_agent.ROLES / role_file).read_text().strip()
+    assert steps.by_kind_label("task", "Execute")["runsIn"] == "job"
+    with pytest.raises(KeyError):
+        step_agent._step_config("task", "Execute")
 
 
 # ---- metric 1: farmd refuses a payload whose kind and step disagree ----

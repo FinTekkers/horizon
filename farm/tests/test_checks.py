@@ -192,6 +192,24 @@ def test_redact_replaces_token_shapes_without_an_env_entry():
     assert checks.redact(text, {}) == "key [redacted] and [redacted] end"
 
 
+def test_run_checks_hands_redact_secret_named_values_only():
+    """HZ-378: redact() masks every value it is given, so a whole
+    environment goes through secret_values() first — the check command (the
+    value of FARM_CHECK_CMD) stays readable in failures, while secret-named
+    values are still masked."""
+    env = {"FARM_CHECK_CMD": "echo boom && exit 1", "FAKE_TOKEN": "abcd1234efgh", "DATABASE_URL": "postgres://u:pw@h/db"}
+    assert checks.secret_values(env) == {"FAKE_TOKEN": "abcd1234efgh"}
+    assert checks.redact("sh -c echo boom && exit 1", checks.secret_values(env)) == "sh -c echo boom && exit 1"
+    assert checks.redact("got abcd1234efgh back", checks.secret_values(env)) == "got [redacted] back"
+
+
+def test_secret_values_keeps_the_substring_name_match():
+    """Names the pre-HZ-378 regex masked stay masked: PASSWD, and secret words
+    that are not a whole _-separated part of the name."""
+    env = {"DB_PASSWD": "pw-value-123", "OPENAI_APIKEY": "apikey-value-1", "AUTHTOKEN": "authtok-value-1"}
+    assert checks.secret_values(env) == env
+
+
 def test_a_timeout_carries_no_digest(tmp_path, monkeypatch):
     monkeypatch.setenv("FARM_CHECK_TIMEOUT_S", "1")
     monkeypatch.setenv("FARM_CHECK_CMD", "sleep 5")

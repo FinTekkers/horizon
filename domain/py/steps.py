@@ -164,14 +164,16 @@ def _step_kind(step: dict) -> str:
 
 def _project_farm_view(steps: list[dict], kind: str = "change") -> list[dict]:
     """Farm-shaped view of the authored table: every agent-kind step on a real
-    lane (both the PM lane and the farm lane — farmd's /steps/run needs runsIn
-    for BOTH to route correctly), with every field this module needs to derive
-    lane routing, budgets and provider rules. The farm-only fields are None on
-    runsIn 'pm' entries, which never reach step_agent.py's budget lookups —
-    except providerOverrideEligible, which a PM step may declare (HZ-370).
-    `requires` is deliberately dropped: it gates a server-side dispatch
-    decision, never a farm one. runsIn 'none' rows are dropped too (HZ-377): a
-    step with no runner is dispatched by no lane, so the farm never sees it.
+    lane (the PM lane, the farm lane and the job lane — farmd's /steps/run
+    needs runsIn for all three to route correctly), with every field this
+    module needs to derive lane routing, budgets and provider rules. The
+    farm-only fields are None on runsIn 'pm' entries, which never reach
+    step_agent.py's budget lookups — except providerOverrideEligible, which a
+    PM step may declare (HZ-370). They are None on runsIn 'job' entries too
+    (HZ-378 forbids agent budgets there). `requires` is deliberately dropped:
+    it gates a server-side dispatch decision, never a farm one. runsIn 'none'
+    rows are dropped too (HZ-377): a step with no runner is dispatched by no
+    lane, so the farm never sees it.
 
     HZ-383: one item kind's rows only, `change` by default. Two kinds may share
     a label, so a view mixing them would let a label lookup resolve to the

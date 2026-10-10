@@ -231,7 +231,8 @@ test('neither binding inlines a second copy of the step table — every label, b
   const stripped = (jsSource.match(LOOKUP_CALL) || []).length
   assert.equal(stripped, 4, `expected exactly 4 requiredStepIndex() label lookups in the binding, found ${stripped}`)
   const strippedKind = (jsSource.match(KIND_LOOKUP_CALL) || []).length
-  assert.equal(strippedKind, 3, `expected exactly 3 kindStepIndex() label lookups in the binding, found ${strippedKind}`)
+  // HZ-378: the fourth is VERIFY_REPORT_STEP_INDEX, the same lookup BY label.
+  assert.equal(strippedKind, 4, `expected exactly 4 kindStepIndex() label lookups in the binding, found ${strippedKind}`)
 })
 
 test('neither reason binding inlines a second copy of the vocabulary — every id, both files', () => {

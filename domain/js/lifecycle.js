@@ -121,8 +121,9 @@ const source = assertLifecycleShape(data)
 export const PHASES = source.phases
 
 // runsIn: which long-running process executes the step — 'pm' (the project's
-// persistent PM session) or 'farm' (an ephemeral agent dispatched by farmd's
-// queue). Only meaningful for kind: 'agent' entries.
+// persistent PM session), 'farm' (an ephemeral agent dispatched by farmd's
+// queue) or 'job' (a detached shell-command runner owned by farmd, HZ-378).
+// Only meaningful for kind: 'agent' entries.
 // workspaceMutating/providerOverrideEligible/providerLocked/maxTurns/timeoutS
 // are farm-only fields, declared only on runsIn: 'farm' entries — the PM
 // agent uses its own budget mechanism (farm/pm_steps.py), out of scope here.
@@ -242,6 +243,8 @@ export const DEPLOY_STEP_INDEX = requiredStepIndex('Deploy the changes')
 export const RUN_PLAN_STEP_INDEX = kindStepIndex('Run plan', 'task')
 export const APPROVE_RUN_GATE_INDEX = kindStepIndex('Approve the run', 'task')
 export const EXECUTE_STEP_INDEX = kindStepIndex('Execute', 'task')
+// HZ-378: the read-only QA step that judges a finished job against the metric.
+export const VERIFY_REPORT_STEP_INDEX = kindStepIndex('Verify & report', 'task')
 
 // HZ-384: a gate steps.json marks `humanOnly` passes only for a human with the
 // gate PIN — server/src/store.js approveGate enforces it for every caller.

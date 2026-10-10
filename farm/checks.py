@@ -164,23 +164,48 @@ _SUMMARY_LINE = re.compile(
 )
 _NONZERO_FAILURE = re.compile(r"\b0*[1-9]\d* (failed|failing|errors?)\b|^\s*[#ℹ]\s*(fail|cancelled)\s+0*[1-9]")
 
-# Env var names whose values are secrets, and token shapes that are secrets
-# wherever they appear. A denylist: it can miss an unusual shape, which is why
-# it runs over everything that leaves run_checks, not just the digest.
-_SECRET_NAME = re.compile(r"TOKEN|SECRET|KEY|PASSWORD|PASSWD|CREDENTIAL", re.IGNORECASE)
-_SECRET_MIN_LEN = 8
+# Token shapes that are secrets wherever they appear. A denylist: it can
+# miss an unusual shape, which is why redaction runs over everything that
+# leaves run_checks (and every job log line), not just the digest.
 _TOKEN_SHAPES = re.compile(
     r"gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|sk-ant-[A-Za-z0-9_\-]{10,}|AKIA[0-9A-Z]{16}"
 )
 REDACTED = "[redacted]"
+# HZ-378: the shortest value redaction masks. redact() masks every value it
+# is given — the job path passes a dict that holds secrets only, so every
+# env-file value is a secret there, whatever its name (DATABASE_URL
+# included). Values under 4 chars are left alone: masking them would redact
+# ordinary words ("a", "to") out of every log line.
+REDACT_MIN_LEN = 4
+# The checks path instead passes a whole environment (run_checks' secrets is
+# os.environ plus the check env), where most values are not secrets at all —
+# handing them to redact() unfiltered would redact the check command itself
+# (it is the value of FARM_CHECK_CMD) out of every failure. secret_values()
+# is the pre-HZ-378 rule for that path: only secret-NAMED values, of at
+# least _CHECKS_SECRET_MIN_LEN chars.
+_SECRET_NAME = re.compile(r"TOKEN|SECRET|KEY|PASSWORD|PASSWD|CREDENTIAL", re.IGNORECASE)
+_CHECKS_SECRET_MIN_LEN = 8
+
+
+def secret_values(env) -> dict:
+    """The entries of `env` whose names mark them as secrets — what callers
+    that hold a whole environment pass to redact()."""
+    return {
+        k: v
+        for k, v in env.items()
+        if isinstance(v, str)
+        and len(v) >= _CHECKS_SECRET_MIN_LEN
+        and _SECRET_NAME.search(str(k))
+    }
 
 
 def redact(text: str, env) -> str:
-    """Replaces every secret-named env value (of at least 8 chars) and every
+    """Replaces every env value (of at least REDACT_MIN_LEN chars) and every
     known token shape in `text`. Longest values first, so a secret that
-    contains another secret is replaced whole."""
+    contains another secret is replaced whole. Callers holding a whole
+    environment pass secret_values(env), never env itself."""
     values = sorted(
-        {v for k, v in env.items() if _SECRET_NAME.search(k) and v and len(v) >= _SECRET_MIN_LEN},
+        {v for v in env.values() if v and len(v) >= REDACT_MIN_LEN},
         key=len,
         reverse=True,
     )
@@ -1264,7 +1289,7 @@ def run_checks(
             "tests": [],
             "commands": [],
         }
-        secrets = {**os.environ, **env}
+        secrets = secret_values({**os.environ, **env})
 
         def keep_rows(rows: list[dict]) -> None:
             room = TEST_ROWS_MAX - len(check_run["tests"])

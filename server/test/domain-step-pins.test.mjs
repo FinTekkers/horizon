@@ -118,6 +118,8 @@ test('the farm-lane steps keep their turn budgets and provider rules', () => {
     Assess: [40, 1140, false, false, true],
     'Run plan': [40, 1140, false, false, true],
     'Impact review': [40, 1140, false, false, true],
+    // HZ-378: Verify & report, read-only QA.
+    'Verify & report': [40, 1140, false, false, true],
   }
   const farmSteps = STEPS.filter((s) => s.runsIn === 'farm')
   assert.equal(farmSteps.length, Object.keys(PINNED_BUDGETS).length)

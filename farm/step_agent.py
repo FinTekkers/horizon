@@ -49,7 +49,7 @@ from .agent_runner import (
     stamp_notes_artifact,
 )
 from . import check_record, handoff, pause, read_only_guard
-from .checks import CheckFailure, redact, run_checks
+from .checks import CheckFailure, redact, run_checks, secret_values
 from .config import FARM_PORT, ITEM_LOCK_WAIT_S
 from .handoff import HandoffContext, HandoffGuard
 from .personas import compose_role, provider_for, resolve
@@ -147,11 +147,13 @@ STEP_CONFIG = {
 ASSESS_LABEL = "Assess"
 RUN_PLAN_LABEL = "Run plan"
 IMPACT_REVIEW_LABEL = "Impact review"
+VERIFY_REPORT_LABEL = "Verify & report"
 
 TASK_STEP_CONFIG = {
     ASSESS_LABEL: ("task_assess.md", True, PLANNER_TOOLS, None),
     RUN_PLAN_LABEL: ("task_run_plan.md", True, PLANNER_TOOLS, None),
     IMPACT_REVIEW_LABEL: ("task_impact_review.md", True, PLANNER_TOOLS, None),
+    VERIFY_REPORT_LABEL: ("task_verify.md", True, PLANNER_TOOLS, "qa"),
 }
 
 STEP_CONFIGS = {"change": STEP_CONFIG, "task": TASK_STEP_CONFIG}
@@ -1033,7 +1035,7 @@ def _pause_checkpoint(ws: Path, item: dict, branch: str, conflicted: list[str], 
     # The detail reaches the server's activity log. A failed push can echo
     # the remote URL, which carries the hub's token (workspaces.ensure).
     detail = _URL_CREDENTIALS.sub("://[redacted]@", result.partition(": ")[2] or result)
-    return pause.FAILED, redact(detail, os.environ)
+    return pause.FAILED, redact(detail, secret_values(os.environ))
 
 
 def _deploy_checkpoint(ws: Path, item: dict, branch: str, conflicted: list[str] | None, lease_sha: str) -> tuple[str, str]:
@@ -1100,7 +1102,7 @@ def _deploy_checkpoint(ws: Path, item: dict, branch: str, conflicted: list[str] 
         # The detail reaches the server's activity log; a failed push can
         # echo the remote URL, which carries the hub's token.
         detail = _URL_CREDENTIALS.sub("://[redacted]@", str(exc))
-        return pause.FAILED, redact(detail, os.environ)
+        return pause.FAILED, redact(detail, secret_values(os.environ))
 
 
 # ---- automated review verdict shaping (HZ-30) ----
@@ -1770,7 +1772,7 @@ def deploy_log_tail(state_dir: str) -> str:
     if len(chunk) < size:
         # Read from mid-file: the first line is partial, and could hold half a token.
         chunk = chunk[chunk.find(b"\n") + 1 :]
-    text = redact(chunk.decode("utf-8", "replace"), os.environ)
+    text = redact(chunk.decode("utf-8", "replace"), secret_values(os.environ))
     text = _SECRET_ASSIGNMENT.sub(r"\1=[redacted]", text)
     lines = [line.rstrip()[:DEPLOY_LOG_LINE_MAX_CHARS] for line in text.splitlines() if line.strip()]
     lines = lines[-DEPLOY_LOG_TAIL_LINES:]

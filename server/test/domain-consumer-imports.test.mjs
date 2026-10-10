@@ -95,8 +95,9 @@ test('the farm imports the model as domain.py, from the repo root, in both produ
   // must still come from domain.py and from nowhere else.
   // HZ-345: step_agent.py also reads `fields` for the criteria-line rule.
   // HZ-383: and `run_plan`, the Task Run plan block's contract.
+  // HZ-378: farmd's job lane reads the same contract to run the approved plan.
   const expected = {
-    'farm/farmd.py': ['reasons', 'steps'],
+    'farm/farmd.py': ['reasons', 'run_plan', 'steps'],
     'farm/step_agent.py': ['fields', 'reasons', 'run_plan', 'steps'],
   }
   for (const [file, names] of Object.entries(expected)) {

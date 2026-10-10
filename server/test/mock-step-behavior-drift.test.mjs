@@ -30,7 +30,8 @@ test('sanity: neither set is empty, so set equality below cannot pass vacuously'
   assert.ok(agentLabels.length > 0, 'the step table declares no agent steps')
   assert.ok(Object.keys(MOCK_STEP_BEHAVIOR).length > 0, 'MOCK_STEP_BEHAVIOR is empty')
   // HZ-383: 11 change steps plus the task kind's Assess, Run plan and Impact review.
-  assert.equal(agentLabels.length, 14, 'the number of agent-kind steps changed — check MOCK_STEP_BEHAVIOR deliberately')
+  // HZ-378: plus Execute (job lane) and Verify & report.
+  assert.equal(agentLabels.length, 16, 'the number of agent-kind steps changed — check MOCK_STEP_BEHAVIOR deliberately')
 })
 
 // HZ-383: the three task behaviours were added without touching any change
