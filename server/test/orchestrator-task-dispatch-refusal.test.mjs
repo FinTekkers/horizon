@@ -23,17 +23,17 @@ store.purgeDemoItems()
 const insertItem = db.prepare('INSERT INTO work_item (id, title, priority, cursor, kind) VALUES (?, ?, ?, ?, ?)')
 const runCount = (id) => db.prepare('SELECT COUNT(*) AS n FROM step_run WHERE item_id = ?').get(id).n
 
-test('a task at Assess waits: kick dispatches nothing and the cursor stays', () => {
+// HZ-383: Assess now runs on the farm lane, so it dispatches one run.
+test('a task at Assess dispatches one run', () => {
   const assess = kindStepIndex('Assess', 'task')
   insertItem.run('DT-ASSESS', 'Task at Assess', 'Medium', assess, 'task')
 
   orchestrator.kick('DT-ASSESS')
 
-  assert.equal(runCount('DT-ASSESS'), 0, 'a runner-less step must never record a run')
-  assert.equal(store.getItem('DT-ASSESS').cursor, assess, 'cursor is untouched — nothing was dispatched')
+  assert.equal(runCount('DT-ASSESS'), 1, 'Assess has a runner now — kick records exactly one run')
 })
 
-test('a task at Execute waits the same way', () => {
+test('a task at Execute still waits: it has no runner yet', () => {
   const execute = kindStepIndex('Execute', 'task')
   insertItem.run('DT-EXECUTE', 'Task at Execute', 'Medium', execute, 'task')
 

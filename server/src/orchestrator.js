@@ -23,6 +23,8 @@ import {
   ACCEPT_GATE_INDEX,
   DEPLOY_STEP_INDEX,
   requiredStepIndex,
+  itemKindOf,
+  kindStepIndex,
 } from '../../domain/js/lifecycle.js'
 import { AUTO_RETRY_REASONS, REASON } from '../../domain/js/reasons.js'
 import { patchLimits, addedCriteriaLines } from '../../domain/js/fields.js'
@@ -347,11 +349,12 @@ export function budgetArtifacts(rows) {
 // steps this step cannot review without in full. Returns one entry per
 // required label whose budgeted artifact was truncated — empty when every
 // required input is suppliable whole (including when the step has no
-// `requires` at all, which is most steps).
-export function missingRequiredInputs(step, rows, budgeted) {
+// `requires` at all, which is most steps). HZ-383: each label resolves in the
+// item's own kind, so a Task step's `requires` never names a change row.
+export function missingRequiredInputs(step, rows, budgeted, kind = 'change') {
   return (step.requires || [])
     .map((label) => {
-      const reqIndex = requiredStepIndex(label)
+      const reqIndex = kindStepIndex(label, kind)
       const entry = budgeted.find((b) => b.stepIndex === reqIndex)
       if (!entry?.truncated) return null
       const row = rows.find((r) => r.step_index === reqIndex)
@@ -895,6 +898,22 @@ export const MOCK_STEP_BEHAVIOR = {
   'Summarize reviews & recommend': () => ({
     summary: 'review digest unavailable in demo mode — a human must decide at the next gate',
   }),
+  // HZ-383: a Task's three read-only planning steps. Each returns an artifact,
+  // so demo mode shows the same "View full artifact" link the farm path does.
+  Assess: () => ({
+    summary: 'assessed the task: found the scripts it needs; no new code needed (mock)',
+    artifact_md: '## Scripts found\n- (mock) none — demo mode\n\n## Code needed\n**none**',
+  }),
+  'Run plan': () => ({
+    summary: 'planned 1 command in the repo root with a 5 minute budget (mock)',
+    artifact_md:
+      '## Commands\n1. `echo demo` (mock)\n\n## Dry run\nExpected output: `demo` — described, never executed\n\n' +
+      '## Run plan block\n```json run-plan\n{"cwd": ".", "commands": ["echo demo"], "budget_minutes": 5}\n```',
+  }),
+  'Impact review': () => ({
+    summary: 'impact review passed — no load, rate-limit or deploy-overlap concerns (mock)',
+    artifact_md: '## Verdict\n**pass** (mock)\n\n## Undo\nNothing to undo in demo mode.',
+  }),
   // Execute: the code change takes the form of a GitHub PR. The mock commits
   // a placeholder file; the PR/branch mechanics are the real integration.
   'Specialist agent implements': async (it) => {
@@ -1207,7 +1226,7 @@ async function dispatchToFarm(id, stepIndex, runId, attempt, scope) {
   // no dispatch, no verdict, no artifact. failFarmRun pauses the item and
   // names the artifact, its full size, and the shortfall — a capacity
   // decision for a human, never auto-retried (see AUTO_RETRY_REASONS).
-  const missingRequired = missingRequiredInputs(step, rows, budgeted)
+  const missingRequired = missingRequiredInputs(step, rows, budgeted, itemKindOf(item))
   if (missingRequired.length > 0) {
     const detail = missingRequired
       .map((m) => `"${m.label}" needs ${m.fullLen} chars, only ${m.gotLen} could be supplied (${m.fullLen - m.gotLen} short)`)
@@ -1248,6 +1267,8 @@ async function dispatchToFarm(id, stepIndex, runId, attempt, scope) {
     artifacts,
     item: {
       id: item.id,
+      // HZ-383: farmd and step_agent pick the step's runner by kind and label.
+      kind: itemKindOf(item),
       title: item.title,
       desc: item.desc,
       metric: item.metric,
@@ -1352,6 +1373,7 @@ export async function fetchCheckDefaults(repo) {
 const FARM_REFUSALS = {
   'missing project': 'missing project: this item belongs to no project, so the farm cannot run it',
   'missing item.repo': 'missing repo: this item has no repository, so the farm cannot run it',
+  'step kind mismatch': "step kind mismatch: this step does not belong to the item's kind",
 }
 
 // Agents whose steps run in the PM lane — derived, so a step moving lanes
@@ -2345,7 +2367,7 @@ async function runMockStep(id, stepIndex, runId) {
   const step = STEPS[stepIndex]
   const agent = AGENTS[step.agent]
   const behavior = MOCK_STEP_BEHAVIOR[step.label] || (() => ({ summary: `completed ${step.label.toLowerCase()}` }))
-  let { summary, patch, verdict, failure } = await behavior(item)
+  let { summary, patch, verdict, failure, artifact_md: artifactMd } = await behavior(item)
   // HZ-304: a mock step that refused to run (an unready repo) fails the run
   // the way the farm path does — paused for a human, never auto-retried.
   if (failure) {
@@ -2389,6 +2411,7 @@ async function runMockStep(id, stepIndex, runId) {
     summary,
     runId,
   )
+  if (artifactMd) db.prepare('UPDATE step_run SET artifact = ? WHERE id = ?').run(artifactMd, runId)
   db.prepare("UPDATE work_item SET cursor = cursor + 1, updated_at = datetime('now') WHERE id = ?").run(id)
   addEvent(id, {
     who: agent.label,

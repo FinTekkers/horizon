@@ -1,6 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
 import {
-  PHASES,
   STEPS,
   IMPLEMENT_STEP_INDEX,
   REVIEW_STEP_INDEX,
@@ -10,6 +9,8 @@ import {
   phaseIdx,
   stepStatus,
   phaseStepIndexes,
+  phasesFor,
+  itemKindOf,
 } from '../../../domain/js/lifecycle.js'
 import { AGENTS } from '../domain/agentTokens'
 import { PHASE_ACCENT, PHASE_ACCENT_BG, priorityColor } from '../domain/lifecycle'
@@ -731,8 +732,10 @@ export default function Tracker({ item, projects, deployBlock = null, viewerName
         <div className="panel tracker__stepper">
           <div className="panel__title">Lifecycle</div>
           <div className="panel__subtitle">Five phases · agent-driven steps with human gates</div>
-          {PHASES.map((name, p) => {
-            const idxs = phaseStepIndexes(p)
+          {/* HZ-383: the item's own kind's phases and steps, so a Task's step
+              cards (and their output links) render like a change's. */}
+          {phasesFor(itemKindOf(item)).map((name, p) => {
+            const idxs = phaseStepIndexes(p, itemKindOf(item))
             const allDone = idxs.every((i) => stepStatus(item, i) === 'done')
             const anyActive = idxs.some((i) => ['active', 'awaiting'].includes(stepStatus(item, i)))
             const phaseStatusLabel = allDone ? 'Complete' : anyActive ? 'In progress' : 'Upcoming'

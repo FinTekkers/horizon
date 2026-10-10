@@ -1,0 +1,30 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$comment": "HZ-383: the contract for a Task's Run plan block — the machine-readable part of the Run plan step's artifact, which HZ-378's Execute reads. Unlike the other *.schema.json files here it pairs with no data file in domain/: it is the contract for an agent's OUTPUT, emitted by the Run plan step and checked by domain/py/run_plan.py (the only binding; there is no JS validator, since only the farm reads the block). Written in the same Draft-07 subset domain/validate.mjs honours. Rules the subset cannot express — every `env` value is a string naming a variable as `$NAME`, never a literal value — are asserted by the binding.",
+  "title": "Horizon Task run plan",
+  "type": "object",
+  "required": ["cwd", "commands", "budget_minutes"],
+  "additionalProperties": false,
+  "properties": {
+    "cwd": {
+      "$comment": "The working directory the commands run in, relative to the repository root.",
+      "type": "string",
+      "minLength": 1
+    },
+    "commands": {
+      "$comment": "ARRAY ORDER IS THE ORDER the commands run in.",
+      "type": "array",
+      "minItems": 1,
+      "items": { "type": "string", "minLength": 1 }
+    },
+    "budget_minutes": {
+      "$comment": "The whole run's time budget.",
+      "type": "integer",
+      "minimum": 1
+    },
+    "env": {
+      "$comment": "Environment variables the commands need, each value a `$NAME` reference — never a literal (asserted by the binding).",
+      "type": "object"
+    }
+  }
+}

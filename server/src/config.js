@@ -64,9 +64,11 @@ export const FARM_SHARED_SECRET = process.env.FARM_SHARED_SECRET || 'dev-secret'
 // verification. The release publish itself (needs the GitHub token the farm
 // doesn't have) still happens here in Node, in dispatchToFarm(), before the
 // step is handed to the farm for verification. FARM_STEP_INDEXES remains a
-// deliberate operational override on top of that default.
+// deliberate operational override on top of that default. HZ-383: the task
+// kind's agent steps too — its runner-less rows are never dispatched at all,
+// so only the ones on a real lane ever reach this check.
 export const FARM_STEP_INDEXES = new Set(
-  (process.env.FARM_STEP_INDEXES || agentStepIndexes().join(','))
+  (process.env.FARM_STEP_INDEXES || [...agentStepIndexes(), ...agentStepIndexes(undefined, 'task')].join(','))
     .split(',')
     .map((s) => Number(s.trim()))
     .filter((n) => Number.isInteger(n)),

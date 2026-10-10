@@ -114,6 +114,10 @@ test('the farm-lane steps keep their turn budgets and provider rules', () => {
     'Specialist agent implements': [160, 2700, true, true, false],
     'Automated review (code + QA)': [60, 1800, true, true, false],
     'Deploy the changes': [40, 900, false, false, true],
+    // HZ-383: a Task's three read-only planning steps, provider-locked.
+    Assess: [40, 1140, false, false, true],
+    'Run plan': [40, 1140, false, false, true],
+    'Impact review': [40, 1140, false, false, true],
   }
   const farmSteps = STEPS.filter((s) => s.runsIn === 'farm')
   assert.equal(farmSteps.length, Object.keys(PINNED_BUDGETS).length)
@@ -134,5 +138,8 @@ test('the two review steps keep their declared required inputs', () => {
   assert.deepEqual(requires, {
     'Architecture review': ['Draft implementation plan'],
     'QA reviews the test plan': ['Draft implementation plan'],
+    // HZ-383: each later Task planning step reads the earlier ones whole.
+    'Run plan': ['Assess'],
+    'Impact review': ['Assess', 'Run plan'],
   })
 })

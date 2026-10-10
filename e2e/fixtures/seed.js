@@ -40,12 +40,14 @@ export function insertItem(
     paused = 0,
     // HZ-208: the project the item belongs to; null (a local demo item) by default.
     project_id = null,
+    // HZ-383: the item kind — 'change' (the column's default) or 'task'.
+    kind = 'change',
   },
 ) {
   db.prepare(
-    `INSERT INTO work_item (id, title, priority, desc, metric, guardrails, cursor, repo, pr, pr_url, pr_mergeable, paused, project_id)
-     VALUES (@id, @title, @priority, @desc, @metric, @guardrails, @cursor, @repo, @pr, @pr_url, @pr_mergeable, @paused, @project_id)`,
-  ).run({ id, title, priority, desc, metric, guardrails, cursor, repo, pr, pr_url, pr_mergeable, paused: paused ? 1 : 0, project_id })
+    `INSERT INTO work_item (id, title, priority, desc, metric, guardrails, cursor, repo, pr, pr_url, pr_mergeable, paused, project_id, kind)
+     VALUES (@id, @title, @priority, @desc, @metric, @guardrails, @cursor, @repo, @pr, @pr_url, @pr_mergeable, @paused, @project_id, @kind)`,
+  ).run({ id, title, priority, desc, metric, guardrails, cursor, repo, pr, pr_url, pr_mergeable, paused: paused ? 1 : 0, project_id, kind })
   if (updatedAt) {
     db.prepare('UPDATE work_item SET updated_at = ? WHERE id = ?').run(updatedAt, id)
   }

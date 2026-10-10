@@ -559,7 +559,11 @@ test('SHAPE PIN (Python): agent-kind only — no gate ever reaches it', () => {
   assert.ok(gateLabels.size > 0)
   for (const entry of pythonSteps) assert.ok(!gateLabels.has(entry.label), `gate "${entry.label}" leaked into the farm view`)
   // HZ-377: runner-less rows reach no lane either, so they are out of the count.
-  assert.equal(pythonSteps.length, binding.STEPS.filter((s) => s.kind === 'agent' && s.runsIn !== 'none').length)
+  // HZ-383: STEPS is the change kind's view; each other kind has its own.
+  assert.equal(
+    pythonSteps.length,
+    binding.STEPS.filter((s) => s.kind === 'agent' && s.runsIn !== 'none' && (s.itemKind ?? 'change') === 'change').length,
+  )
 })
 
 test('SHAPE PIN (Python): no runsIn none row ever reaches the farm view', () => {
