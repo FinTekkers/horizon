@@ -22,6 +22,7 @@ import StatusPill from './StatusPill'
 import DependencyBadge, { itemHref } from './DependencyBadge'
 import GateActionStatus from './GateActionStatus'
 import ProjectBadge from './ProjectBadge'
+import TaskBadge from './TaskBadge'
 import { LinkIcon, LockIcon, PrIcon } from './icons'
 
 function progressSegs(item) {
@@ -100,6 +101,7 @@ function BoardCard({ item, projects, durationEstimates, deployBlock, viewerName,
         <span className="card__dot" style={{ background: priorityColor(item.priority) }} />
         <span className="card__id">{item.id}</span>
         <ProjectBadge projectId={item.project_id} projects={projects} />
+        <TaskBadge kind={item.kind} />
         {item.repo && <span className="card__repo">{item.repo.split('/')[1]}</span>}
         {item.issue != null && (
           <a

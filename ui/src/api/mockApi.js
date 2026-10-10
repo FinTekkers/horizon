@@ -13,7 +13,7 @@
 //   POST /items/:id/phases/:phase/restart      → restartPhase(id, phase, reason)
 //   POST /items/:id/feedback                   → sendFeedback(id, target, message)
 
-import { STEPS, PHASES, isClosed, ACCEPT_GATE_INDEX, IMPLEMENT_STEP_INDEX } from '../../../domain/js/lifecycle.js'
+import { STEPS, PHASES, isClosed, firstStepIndex, ACCEPT_GATE_INDEX, IMPLEMENT_STEP_INDEX } from '../../../domain/js/lifecycle.js'
 import { DEFAULT_PRIORITY } from '../../../domain/js/priorities.js'
 import { PERSONAS, isPersona } from '../domain/personas'
 
@@ -236,14 +236,15 @@ let localSeq = 0
 
 // The default mirrors POST /api/items' (HZ-135) rather than restating it, so the
 // offline mock cannot start answering differently from the real route.
-export async function createItem({ title, outcome, metric, guardrails, priority = DEFAULT_PRIORITY }) {
+export async function createItem({ title, outcome, metric, guardrails, priority = DEFAULT_PRIORITY, kind = 'change' }) {
   const id = `LOC-${++localSeq}`
   items = [
     {
       id,
       title,
       priority,
-      cursor: 0,
+      kind,
+      cursor: firstStepIndex(kind),
       issue: null,
       desc: outcome,
       metric,

@@ -15,6 +15,7 @@ import { POLL_INTERVAL_MS, UI_URL } from './config.js'
 import { ACCEPT_GATE_INDEX } from '../../domain/js/lifecycle.js'
 import { PRIORITY } from '../../domain/js/priorities.js'
 import { PRIORITY_LABEL_RE, priorityLabelName } from './priorityLabels.js'
+import { kindLabelName } from './kindLabels.js'
 import { spliceIssueBody } from './caretakerRulingRules.js'
 
 const itemLink = (item) => `[open in Horizon](${UI_URL}/${item.id.toLowerCase()})`
@@ -132,6 +133,22 @@ async function ensurePriorityLabel(repo, token, priority) {
   return name
 }
 
+// HZ-382: the `task` label a Task's issue carries, so whichever of the webhook
+// or the create route imports the issue first reads the same kind off it.
+// Unlike the priority label this one is load-bearing — without it the issue
+// imports as a change, and a kind is never changed after creation — so the
+// caller treats null as a failure, not a nice-to-have.
+async function ensureKindLabel(repo, token, kind) {
+  const name = kindLabelName(kind)
+  const res = await fetch(`https://api.github.com/repos/${repo}/labels`, {
+    method: 'POST',
+    headers: ghHeaders(token),
+    body: JSON.stringify({ name, color: '5E4380' }),
+  })
+  if (!res.ok && res.status !== 422) return null // 422: the label already exists
+  return name
+}
+
 // Mirror a Horizon-side priority change onto the issue's `priority: *` label
 // so the next sync reads the same value back. Best-effort by design: the
 // caller never blocks on it, but a swallowed failure here means a later issue
@@ -165,8 +182,16 @@ export async function setPriorityLabel(item, priority) {
 
 // `bodySuffix` (HZ-313) is appended after the composed sections — the split's
 // back-link and marker. The new-item route sends none.
-export async function createIssue(repo, { title, outcome, metric, guardrails, priority, bodySuffix = '' }) {
+// `kind` (HZ-382): a non-change kind adds its label, and refuses to create the
+// issue at all if that label cannot be ensured — no orphan issue, and never a
+// Task that silently imports as a change.
+export async function createIssue(repo, { title, outcome, metric, guardrails, priority, kind = 'change', bodySuffix = '' }) {
   const token = getToken()
+  let kindLabel = null
+  if (kind !== 'change') {
+    kindLabel = await ensureKindLabel(repo, token, kind)
+    if (!kindLabel) throw new Error(`Could not create the "${kindLabelName(kind)}" label on ${repo}`)
+  }
   const label = await ensurePriorityLabel(repo, token, priority)
   const res = await fetch(`https://api.github.com/repos/${repo}/issues`, {
     method: 'POST',
@@ -174,7 +199,7 @@ export async function createIssue(repo, { title, outcome, metric, guardrails, pr
     body: JSON.stringify({
       title,
       body: composeIssueBody({ outcome, metric, guardrails }) + (bodySuffix ? `\n\n${bodySuffix}` : ''),
-      labels: label ? [label] : [],
+      labels: [label, kindLabel].filter(Boolean),
     }),
   })
   if (!res.ok) {

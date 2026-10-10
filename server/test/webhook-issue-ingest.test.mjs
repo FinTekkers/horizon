@@ -65,3 +65,72 @@ test('a real GitHub "issues" webhook keeps an outcome whose operative detail sit
   )
   assert.equal(item.desc.length, body.length - '## Outcome\n'.length)
 })
+
+// ---- HZ-382: a `task` label imports the issue as a Task, once ----
+
+const { firstStepIndex } = await import('../../domain/js/lifecycle.js')
+const { priorityLabelName } = await import('../src/priorityLabels.js')
+
+let nextKindIssue = 5382
+async function ingestWithLabels(labels) {
+  const number = nextKindIssue++
+  const res = await issuesWebhook(REPO, { number, title: `Kind fixture #${number}`, body: '## Outcome\nA thing.', labels })
+  assert.equal(res.statusCode, 204)
+  return { number, item: store.getItem(`${connected.prefix}-${number}`) }
+}
+
+for (const name of ['task', 'Task']) {
+  test(`an issue labelled "${name}" imports as a Task at the first task step`, async () => {
+    const { item } = await ingestWithLabels([{ name }])
+    assert.equal(item.kind, 'task')
+    assert.equal(item.cursor, firstStepIndex('task'))
+  })
+}
+
+for (const [label, labels] of [
+  ['other labels', [{ name: 'bug' }, { name: 'tasks' }]],
+  ['no labels', []],
+]) {
+  test(`an issue with ${label} imports as a change at cursor 0`, async () => {
+    const { item } = await ingestWithLabels(labels)
+    assert.equal(item.kind, 'change')
+    assert.equal(item.cursor, 0)
+  })
+}
+
+test('an issue labelled `task` plus a priority label imports as a Task and keeps its priority', async () => {
+  const { item } = await ingestWithLabels([{ name: priorityLabelName('Low') }, { name: 'task' }])
+  assert.equal(item.kind, 'task')
+  assert.equal(item.priority, 'Low')
+})
+
+test('re-syncing after the `task` label is added or removed never changes the stored kind', async () => {
+  const change = await ingestWithLabels([])
+  const task = await ingestWithLabels([{ name: 'task' }])
+  for (const [{ number }, labels] of [
+    [change, [{ name: 'task' }]],
+    [task, []],
+  ]) {
+    const body = JSON.stringify({
+      action: 'labeled',
+      repository: { full_name: REPO },
+      issue: { number, title: `Kind fixture #${number} (edited)`, body: '## Outcome\nA thing.', labels },
+    })
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/webhooks/github',
+      headers: { 'content-type': 'application/json', 'x-github-event': 'issues', 'x-hub-signature-256': sign(body) },
+      payload: body,
+    })
+    assert.equal(res.statusCode, 204)
+  }
+  const resyncedChange = store.getItem(`${connected.prefix}-${change.number}`)
+  const resyncedTask = store.getItem(`${connected.prefix}-${task.number}`)
+  // The re-sync really ran: the title change landed.
+  assert.match(resyncedChange.title, /\(edited\)$/)
+  assert.match(resyncedTask.title, /\(edited\)$/)
+  assert.equal(resyncedChange.kind, 'change')
+  assert.equal(resyncedChange.cursor, 0)
+  assert.equal(resyncedTask.kind, 'task')
+  assert.equal(resyncedTask.cursor, firstStepIndex('task'))
+})

@@ -257,6 +257,37 @@ test('js/isItemKind', () => {
   for (const c of js.isItemKind) assert.equal(binding.isItemKind(c.kind), c.expect, c.case)
 })
 
+test('js/ITEM_KINDS', () => {
+  for (const c of js.ITEM_KINDS) assert.deepEqual(binding.ITEM_KINDS, c.expect, c.case)
+})
+
+test('js/itemKindInfo: each kind\'s display copy, unknown throws', () => {
+  for (const c of js.itemKindInfo) {
+    if (c.expect?.throws) {
+      assert.throws(
+        () => binding.itemKindInfo(c.kind),
+        (err) => {
+          assert.ok(err.message.includes(c.expect.messageContains))
+          return true
+        },
+        c.case,
+      )
+    } else {
+      const info = binding.itemKindInfo(c.kind)
+      assert.equal(info.kind, c.kind, c.case)
+      assert.equal(info.label, c.expect.label, c.case)
+      assert.ok(info.description.includes(c.expect.descriptionContains), c.case)
+    }
+  }
+})
+
+test('js/ITEM_KIND_INFO', () => {
+  for (const c of js.ITEM_KIND_INFO) {
+    assert.deepEqual(binding.ITEM_KIND_INFO.map((info) => info.kind), c.expectKinds, c.case)
+    assert.deepEqual(binding.ITEM_KIND_INFO, binding.ITEM_KINDS.map(binding.itemKindInfo), c.case)
+  }
+})
+
 test('js/itemKindOf: stored kinds read back, missing reads as change, unknown throws', () => {
   for (const c of js.itemKindOf) {
     if (c.expect?.throws) {

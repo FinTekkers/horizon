@@ -55,6 +55,12 @@ export function assertLifecycleShape(data, source = 'domain/steps.json') {
     ) {
       throw new Error(`${source}: kinds.${kind}.phases must be a non-empty array of non-empty strings`)
     }
+    // HZ-382: the kind's display copy. Optional, but never blank when present.
+    for (const field of ['label', 'description']) {
+      if (entry[field] !== undefined && (typeof entry[field] !== 'string' || entry[field].length === 0)) {
+        throw new Error(`${source}: kinds.${kind}.${field} must be a non-empty string`)
+      }
+    }
   }
   if (
     Object.prototype.hasOwnProperty.call(kinds, 'change') &&
@@ -136,7 +142,7 @@ export const STEPS = source.steps
 // point at the wrong kind's row — and every helper below resolves whatever it
 // needs from the item's own kind, never from a hardcoded position.
 const KINDS = source.kinds ?? { change: { phases: source.phases } }
-const ITEM_KINDS = Object.keys(KINDS)
+export const ITEM_KINDS = Object.keys(KINDS)
 
 function assertItemKind(kind) {
   if (typeof kind !== 'string' || !Object.prototype.hasOwnProperty.call(KINDS, kind)) {
@@ -156,6 +162,18 @@ export function itemKindOf(item) {
   assertItemKind(kind)
   return kind
 }
+
+// HZ-382: a kind's display copy — the New item radio cards and the Task badge
+// read it here, so the kind names and their wording stay in domain/steps.json.
+// A kind with no authored copy falls back to its key, with no description.
+export function itemKindInfo(kind) {
+  assertItemKind(kind)
+  const { label, description } = KINDS[kind]
+  return { kind, label: label ?? kind, description: description ?? '' }
+}
+
+// Every kind's copy, in the order steps.json declares the kinds.
+export const ITEM_KIND_INFO = ITEM_KINDS.map(itemKindInfo)
 
 function stepKindOf(step) {
   return step?.itemKind ?? 'change'

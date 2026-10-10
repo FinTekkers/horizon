@@ -1,8 +1,16 @@
 {
   "phases": ["Plan", "Technical Plan", "Execute", "Deploy", "Review"],
   "kinds": {
-    "change": { "phases": ["Plan", "Technical Plan", "Execute", "Deploy", "Review"] },
-    "task": { "phases": ["Plan", "Plan the run", "Run", "Review"] }
+    "change": {
+      "label": "Change",
+      "description": "A code change: plan, build, deploy and review.",
+      "phases": ["Plan", "Technical Plan", "Execute", "Deploy", "Review"]
+    },
+    "task": {
+      "label": "Task",
+      "description": "A one-off run that waits for human approval before it acts.",
+      "phases": ["Plan", "Plan the run", "Run", "Review"]
+    }
   },
   "steps": [
     { "phase": 0, "kind": "agent", "agent": "PM", "label": "Define the outcome", "runsIn": "pm", "providerOverrideEligible": true },

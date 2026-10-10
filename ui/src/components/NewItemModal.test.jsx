@@ -24,9 +24,10 @@
 // the e2e spec covers one value through the real inlined JSON.
 
 import { expect, test, afterEach, vi } from 'vitest'
-import { render, cleanup, fireEvent } from '@testing-library/react'
+import { render, cleanup, fireEvent, within } from '@testing-library/react'
 
 import { PRIORITIES, DEFAULT_PRIORITY } from '../../../domain/js/priorities.js'
+import { ITEM_KIND_INFO, itemKindInfo } from '../../../domain/js/lifecycle.js'
 import NewItemModal from './NewItemModal'
 
 vi.mock('../api', () => ({ createItem: vi.fn(async () => ({ ok: true, id: 'HZ-1' })) }))
@@ -148,4 +149,51 @@ test('the project picker lists the given (enabled) projects, and picking one fil
 
   await vi.waitFor(() => expect(createItem.mock.calls.at(-1)?.[0].title).toBe('Cross-project work'))
   expect(createItem.mock.calls.at(-1)[0].repo).toBe('Org/beta')
+})
+
+// ---- HZ-382: the Change / Task choice ----
+
+test('the kind choice is two radio cards, Change checked by default, each with its one-line description', () => {
+  const { getByRole } = renderModal()
+  const group = getByRole('radiogroup', { name: 'Kind' })
+  const change = within(group).getByRole('radio', { name: /Change/ })
+  const task = within(group).getByRole('radio', { name: /Task/ })
+  expect(within(group).getAllByRole('radio')).toHaveLength(2)
+  expect(change.checked).toBe(true)
+  expect(task.checked).toBe(false)
+  for (const info of ITEM_KIND_INFO) {
+    expect(within(group).getByText(info.description)).toBeTruthy()
+  }
+  expect(itemKindInfo('task').description).toContain('human approval')
+  expect(task.closest('label').textContent).toContain('human approval')
+})
+
+test('clicking the Task card text selects Task, and submitting sends kind: task', async () => {
+  const { createItem } = await import('../api')
+  const { container, getByRole, getByText } = renderModal()
+  fireEvent.click(getByText(itemKindInfo('task').label))
+  expect(getByRole('radio', { name: /Task/ }).checked).toBe(true)
+  expect(getByRole('radio', { name: /Change/ }).checked).toBe(false)
+
+  fireEvent.change(container.querySelector('input'), { target: { value: 'A task fixture' } })
+  const textareas = [...container.querySelectorAll('textarea')]
+  fireEvent.change(textareas[0], { target: { value: 'A clear outcome for the farm to plan against.' } })
+  fireEvent.change(textareas[1], { target: { value: 'A measurable success criterion.' } })
+  fireEvent.click(getByText('Create work item'))
+
+  await vi.waitFor(() => expect(createItem.mock.calls.at(-1)?.[0].title).toBe('A task fixture'))
+  expect(createItem.mock.calls.at(-1)[0].kind).toBe('task')
+})
+
+test('submitting without touching the kind sends kind: change', async () => {
+  const { createItem } = await import('../api')
+  const { container, getByText } = renderModal()
+  fireEvent.change(container.querySelector('input'), { target: { value: 'A change fixture' } })
+  const textareas = [...container.querySelectorAll('textarea')]
+  fireEvent.change(textareas[0], { target: { value: 'A clear outcome for the farm to plan against.' } })
+  fireEvent.change(textareas[1], { target: { value: 'A measurable success criterion.' } })
+  fireEvent.click(getByText('Create work item'))
+
+  await vi.waitFor(() => expect(createItem.mock.calls.at(-1)?.[0].title).toBe('A change fixture'))
+  expect(createItem.mock.calls.at(-1)[0].kind).toBe('change')
 })

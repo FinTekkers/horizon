@@ -28,10 +28,13 @@
   },
   "definitions": {
     "kindEntry": {
+      "$comment": "HZ-382: label and description are the kind's display copy (the New item radio cards, the Task badge). Optional, so a minimal table still validates; non-empty when present.",
       "type": "object",
       "required": ["phases"],
       "additionalProperties": false,
       "properties": {
+        "label": { "type": "string", "minLength": 1 },
+        "description": { "type": "string", "minLength": 1 },
         "phases": {
           "type": "array",
           "minItems": 1,

@@ -4,6 +4,8 @@ import { createItem } from '../api'
 // not a fourth hand-typed copy. The ORDER matters and comes from there too — the
 // segmented control renders the array left-to-right, severity first.
 import { PRIORITIES, DEFAULT_PRIORITY } from '../../../domain/js/priorities.js'
+// HZ-382: the kind cards and their copy are domain/steps.json's kinds.
+import { ITEM_KIND_INFO } from '../../../domain/js/lifecycle.js'
 
 // The intake form doubles as the spec for "work the bot farm can process":
 // a clear outcome and a measurable success criterion are required before an
@@ -22,6 +24,7 @@ export default function NewItemModal({ projects = [], defaultProjectId = null, o
   const [metric, setMetric] = useState('')
   const [guardrails, setGuardrails] = useState('')
   const [priority, setPriority] = useState(DEFAULT_PRIORITY)
+  const [kind, setKind] = useState('change')
   const [repo, setRepo] = useState(repos[0]?.repo ?? null)
   const chooseProject = (p) => {
     setProjectId(p.id)
@@ -55,6 +58,7 @@ export default function NewItemModal({ projects = [], defaultProjectId = null, o
         metric: metric.trim(),
         guardrails: guardrails.trim(),
         priority,
+        kind,
         ...(repo ? { repo } : {}),
       })
       onCreated?.(created)
@@ -123,6 +127,27 @@ export default function NewItemModal({ projects = [], defaultProjectId = null, o
             autoFocus
           />
           {errors.title && <div className="field__error">{errors.title}</div>}
+        </div>
+
+        <div className="field">
+          <div className="field__label" id="new-item-kind-label">Kind</div>
+          <div className="kind-cards" role="radiogroup" aria-labelledby="new-item-kind-label">
+            {ITEM_KIND_INFO.map((info) => (
+              <label key={info.kind} className={`kind-card${kind === info.kind ? ' kind-card--on' : ''}`}>
+                <input
+                  type="radio"
+                  name="kind"
+                  value={info.kind}
+                  checked={kind === info.kind}
+                  onChange={() => setKind(info.kind)}
+                />
+                <span>
+                  <span className="kind-card__name">{info.label}</span>
+                  <span className="kind-card__desc">{info.description}</span>
+                </span>
+              </label>
+            ))}
+          </div>
         </div>
 
         <div className="field">
