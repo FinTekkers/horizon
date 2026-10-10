@@ -68,6 +68,7 @@ export default function ComposerModal({ composer, onSubmit, onCancel }) {
   const dependents = composer.mode === 'abandon' ? composer.dependents || [] : []
   const [removeDependentLinks, setRemoveDependentLinks] = useState(true)
   const submit = () => {
+    if (composer.busy) return
     const text = (inputRef.current?.value || '').trim()
     // Abandon (HZ-59) demands a reason — the modes that require text must not
     // submit empty. This guard came from this branch; the reject/step-target
@@ -152,11 +153,20 @@ export default function ComposerModal({ composer, onSubmit, onCancel }) {
         )}
         <textarea ref={inputRef} className="composer__input" placeholder={copy.placeholder} autoFocus />
         <div className="composer__hint">⌘/Ctrl + Enter to submit · Esc to cancel</div>
+        {/* HZ-389: a send-back that did not go through says why; the text
+            stays, so it can be sent again. */}
+        {composer.error && <span role="alert">{composer.error}</span>}
         <div className="composer__actions">
           <button className="composer__cancel" onClick={onCancel}>
             Cancel
           </button>
-          <button className="composer__submit" style={{ background: copy.submitColor }} onClick={submit}>
+          <button
+            className="composer__submit"
+            style={{ background: copy.submitColor }}
+            disabled={composer.busy}
+            aria-busy={composer.busy || undefined}
+            onClick={submit}
+          >
             {copy.submitLabel}
           </button>
         </div>

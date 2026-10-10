@@ -57,6 +57,7 @@ import {
   resolveStepProviders,
   staleStepChoices,
   approvedPlanCheck,
+  nextStepAttempt,
 } from './store.js'
 import { createMockPr, createDeployRelease, postIssueComment, syncIssueBodyFields, createPrFromBranch, getPrHeadSha } from './github.js'
 import { PHASES } from '../../domain/js/lifecycle.js'
@@ -1054,22 +1055,11 @@ export function kick(id, opts = {}) {
 
   const stepIndex = item.cursor
   const step = STEPS[stepIndex]
-  // HZ-321: a run a self-deploy stopped was never a finished attempt, so its
-  // redispatch keeps that run's attempt and auto-retry count. HZ-346: nor is
-  // a run a rule blocked — the block does not use up an attempt.
-  const last = db
-    .prepare(
-      'SELECT attempt, auto_retry_count, deploy_interrupted, rule_blocked FROM step_run WHERE item_id = ? AND step_index = ? ORDER BY id DESC LIMIT 1',
-    )
-    .get(id, stepIndex)
-  const keepsAttempt = last?.deploy_interrupted === 1 || last?.rule_blocked === 1
-  const attempt = keepsAttempt
-    ? last.attempt
-    : db.prepare('SELECT COALESCE(MAX(attempt), 0) + 1 AS n FROM step_run WHERE item_id = ? AND step_index = ?').get(
-        id,
-        stepIndex,
-      ).n
-  const autoRetryCount = keepsAttempt ? last.auto_retry_count : opts.autoRetryCount || 0
+  // HZ-321/HZ-346: a run a self-deploy stopped or a rule blocked keeps its
+  // attempt and auto-retry count (store.nextStepAttempt, shared with /reject).
+  const next = nextStepAttempt(id, stepIndex)
+  const attempt = next.attempt
+  const autoRetryCount = next.keepsAttempt ? next.autoRetryCount : opts.autoRetryCount || 0
   const toFarm = FARM_URL && FARM_STEP_INDEXES.has(stepIndex)
   // HZ-182: decided once, here, and stored on the run — completion reads the
   // scope the run was dispatched with, never a recomputation from the item.

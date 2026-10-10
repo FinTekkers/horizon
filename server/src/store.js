@@ -712,6 +712,27 @@ const selectActiveRun = db.prepare(
   "SELECT id, step_index, attempt, started_at FROM step_run WHERE item_id = ? AND status = 'active' ORDER BY id DESC LIMIT 1",
 )
 
+// The attempt the next dispatch of a step records, moved out of the
+// orchestrator's kick() unchanged (HZ-389) so /reject can name it in its
+// answer and the two never disagree. HZ-321: a run a self-deploy stopped was
+// never a finished attempt, so its redispatch keeps that run's attempt and
+// auto-retry count. HZ-346: nor is a run a rule blocked — the block does not
+// use up an attempt. A pure read: nothing is written.
+const selectLastStepRun = db.prepare(
+  'SELECT attempt, auto_retry_count, deploy_interrupted, rule_blocked FROM step_run WHERE item_id = ? AND step_index = ? ORDER BY id DESC LIMIT 1',
+)
+const selectNextAttempt = db.prepare('SELECT COALESCE(MAX(attempt), 0) + 1 AS n FROM step_run WHERE item_id = ? AND step_index = ?')
+
+export function nextStepAttempt(id, stepIndex) {
+  const last = selectLastStepRun.get(id, stepIndex)
+  const keepsAttempt = last?.deploy_interrupted === 1 || last?.rule_blocked === 1
+  return {
+    attempt: keepsAttempt ? last.attempt : selectNextAttempt.get(id, stepIndex).n,
+    keepsAttempt,
+    autoRetryCount: keepsAttempt ? last.auto_retry_count : null,
+  }
+}
+
 // Folds the farm's cached {state, reason} onto an active run (HZ-54). No
 // entry for this run — mock mode, an old/unreachable farm, or a poll that
 // simply hasn't landed yet — defaults to 'running', i.e. today's behavior.
@@ -942,6 +963,18 @@ export function listItems({ scope = 'active', stepOutputs = true } = {}) {
     .all()
     .filter(scopeFilter(scope))
     .map((row) => itemView(row, { stepOutputs }))
+}
+
+// HZ-389: one item as the v2 stream upserts it (no stepOutputs), or null — so
+// an action's answer carries the state it just wrote.
+const selectItemRow = db.prepare(
+  `SELECT w.*, (SELECT MAX(s.ended_at) FROM step_run s WHERE s.item_id = w.id) AS last_run_ended_at
+   FROM work_item w WHERE w.id = ?`,
+)
+
+export function itemViewById(id) {
+  const row = selectItemRow.get(id)
+  return row ? itemView(row, { stepOutputs: false }) : null
 }
 
 // The row filter behind listItems' scope, shared with itemStepOutputs so the
