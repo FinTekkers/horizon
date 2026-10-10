@@ -1277,6 +1277,16 @@ async def steps_run(request: Request):
                 continue
         if not body.get("plan_artifact") or not body.get("approved_hash"):
             return JSONResponse({"error": "missing plan_artifact or approved_hash"}, status_code=400)
+        # The server armed a queue watchdog at dispatch; a job that never
+        # reports started would be failed as never_picked_up mid-run. This
+        # flips it to the execution budget, which markFarmRunStarted leaves
+        # unarmed for the job lane — so no agent timer ever bounds a job. A
+        # run the server already gave up on is not launched at all, the same
+        # rule _claim_and_launch applies to agent runs. Fails open when the
+        # server cannot be reached.
+        if not _notify_started(body["run_id"]):
+            print(f"farmd: run {body['run_id']} no longer active server-side — not launching", flush=True)
+            return {"ok": True, "queued": queue, "stale": True}
         try:
             name = launch_job(body)
         except ValueError as exc:

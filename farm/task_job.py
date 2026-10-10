@@ -260,7 +260,7 @@ def run_job(
     state["ended_at"] = _now_iso()
     state["summary"] = {"run": attempted, "passed": passed, "failed": len(failing), "failing": list(failing)}
     save_state(state_path, state)
-    return state["summary"
+    return state["summary"]
 
 
 def _read_env_file(path: str | None) -> dict:

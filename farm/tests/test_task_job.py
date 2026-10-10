@@ -10,6 +10,8 @@ import json
 import time
 from pathlib import Path
 
+import pytest
+
 from domain.py import run_plan
 from farm import farmd, task_job, tmux_mgr
 from farm.checks import redact
@@ -104,11 +106,20 @@ def test_budget_breach_kills_the_whole_process_group_fast(tmp_path, monkeypatch)
     pids_file = tmp_path / "pids.txt"
     command = f"echo $$ > {pids_file}; sleep 30 & echo $! >> {pids_file}; sleep 30 & echo $! >> {pids_file}; wait"
 
-    ticks = []
+    # The first two reads are the runner's own clock (job start, then the
+    # budget check before command 1); every later read is real time, so the
+    # communicate() timeout below runs on a live clock however subprocess
+    # looks it up.
+    real_monotonic = time.monotonic
+    calls = []
 
     def _fake_monotonic():
-        ticks.append(1)
-        return 0.0 if len(ticks) == 1 else 59.5
+        calls.append(1)
+        if len(calls) == 1:
+            return 0.0
+        if len(calls) == 2:
+            return 59.5
+        return real_monotonic()
 
     monkeypatch.setattr(time, "monotonic", _fake_monotonic)
     started = time.time()

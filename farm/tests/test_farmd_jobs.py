@@ -116,6 +116,35 @@ def test_a_budget_breach_forwards_the_non_retryable_reason(monkeypatch, fake_tmu
     assert forwarded[0]["reason"] == reasons.REASON["JOB_BUDGET_EXCEEDED"]
 
 
+def test_job_dispatch_reports_started_so_no_agent_timer_bounds_it(running_farm, monkeypatch, fake_tmux, tmp_path):
+    """Metric 2 (queue half): dispatching a job reports it started, flipping
+    the server's watchdog off the queue timer — markFarmRunStarted arms no
+    execution timer for the job lane, so nothing agent-side can kill the job."""
+    notified = []
+    monkeypatch.setattr(farmd, "_notify_started", lambda run_id: notified.append(run_id) or True)
+    try:
+        res = running_farm.post("/steps/run", json=job_payload(9134, cwd=str(tmp_path)))
+        assert res.status_code == 200
+        assert res.json() == {"ok": True, "queued": "job", "session": "farm-job-hz-13"}
+        assert notified == [9134]
+        assert "farm-job-hz-13" in fake_tmux.sessions
+    finally:
+        (QUEUE_DIR / "jobs" / "active" / "9134.json").unlink(missing_ok=True)
+        (QUEUE_DIR / "jobs" / "active" / "9134.env.json").unlink(missing_ok=True)
+        farmd.JOB_SESSIONS.pop("9134", None)
+
+
+def test_a_stale_job_dispatch_launches_nothing(running_farm, monkeypatch, fake_tmux, tmp_path):
+    """A run the server already gave up on is not launched — the same rule
+    _claim_and_launch applies to agent runs."""
+    monkeypatch.setattr(farmd, "_notify_started", lambda run_id: False)
+    res = running_farm.post("/steps/run", json=job_payload(9135, cwd=str(tmp_path)))
+    assert res.status_code == 200
+    assert res.json() == {"ok": True, "queued": "job", "stale": True}
+    assert "farm-job-hz-13" not in fake_tmux.sessions
+    assert not (QUEUE_DIR / "jobs" / "active" / "9135.json").exists()
+
+
 def test_jobs_disabled_refuses_new_dispatches_without_running_anything(running_farm, monkeypatch, fake_tmux):
     """R22 (optional): with the kill switch off, the farm refuses the job —
     nothing is queued and no session starts."""

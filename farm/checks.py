@@ -171,17 +171,40 @@ _TOKEN_SHAPES = re.compile(
     r"gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|sk-ant-[A-Za-z0-9_\-]{10,}|AKIA[0-9A-Z]{16}"
 )
 REDACTED = "[redacted]"
-# HZ-378: the shortest value redaction masks. Every env-file value is a
-# secret, whatever its name — DATABASE_URL included — so the old
-# secret-name filter is gone. Values under 4 chars are left alone: masking
-# them would redact ordinary words ("a", "to") out of every log line.
+# HZ-378: the shortest value redaction masks. redact() masks every value it
+# is given — the job path passes a dict that holds secrets only, so every
+# env-file value is a secret there, whatever its name (DATABASE_URL
+# included). Values under 4 chars are left alone: masking them would redact
+# ordinary words ("a", "to") out of every log line.
 REDACT_MIN_LEN = 4
+# The checks path instead passes a whole environment (run_checks' secrets is
+# os.environ plus the check env), where most values are not secrets at all —
+# handing them to redact() unfiltered would redact the check command itself
+# (it is the value of FARM_CHECK_CMD) out of every failure. secret_values()
+# is the pre-HZ-378 rule for that path: only secret-NAMED values, of at
+# least _CHECKS_SECRET_MIN_LEN chars. A secret word must be a full
+# _-separated part of the name, so FARM_CHECK_CMD never matches.
+_SECRET_NAME_PARTS = frozenset({"TOKEN", "SECRET", "KEY", "PASSWORD", "CREDENTIAL", "CREDENTIALS"})
+_CHECKS_SECRET_MIN_LEN = 8
+
+
+def secret_values(env) -> dict:
+    """The entries of `env` whose names mark them as secrets — what callers
+    that hold a whole environment pass to redact()."""
+    return {
+        k: v
+        for k, v in env.items()
+        if isinstance(v, str)
+        and len(v) >= _CHECKS_SECRET_MIN_LEN
+        and any(part in _SECRET_NAME_PARTS for part in str(k).upper().split("_"))
+    }
 
 
 def redact(text: str, env) -> str:
     """Replaces every env value (of at least REDACT_MIN_LEN chars) and every
     known token shape in `text`. Longest values first, so a secret that
-    contains another secret is replaced whole."""
+    contains another secret is replaced whole. Callers holding a whole
+    environment pass secret_values(env), never env itself."""
     values = sorted(
         {v for v in env.values() if v and len(v) >= REDACT_MIN_LEN},
         key=len,
@@ -1267,7 +1290,7 @@ def run_checks(
             "tests": [],
             "commands": [],
         }
-        secrets = {**os.environ, **env}
+        secrets = secret_values({**os.environ, **env})
 
         def keep_rows(rows: list[dict]) -> None:
             room = TEST_ROWS_MAX - len(check_run["tests"])
