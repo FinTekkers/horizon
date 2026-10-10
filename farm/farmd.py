@@ -277,6 +277,17 @@ def _host_redact_values() -> dict:
     return {name: os.environ[name] for name in ("GITHUB_TOKEN", "GITHUB_WEBHOOK_SECRET") if os.environ.get(name)}
 
 
+def _job_redact_values(cwd: str) -> dict:
+    """Everything a job log is scrubbed of beyond the plan's named env values:
+    the host credentials plus every <cwd>/.env value, named by the plan or not
+    — a command run in cwd can load or print .env itself. The .env keys are
+    namespaced so a same-named host credential never displaces one."""
+    dotenv = _read_dotenv(Path(cwd) / ".env") if cwd else {}
+    values = {f"dotenv:{k}": v for k, v in dotenv.items() if v}
+    values.update(_host_redact_values())
+    return values
+
+
 def _teardown() -> None:
     killed = tmux_mgr.kill_all_farm_sessions()
     RUN_SESSIONS.clear()
@@ -792,7 +803,7 @@ def launch_job(task: dict) -> str:
     fd, tmp_name = tempfile.mkstemp(dir=str(active), prefix=f"{run_id}.env.", suffix=".json.tmp")
     try:
         with os.fdopen(fd, "w") as f:
-            f.write(json.dumps({"env": env_values, "redact": _host_redact_values()}))
+            f.write(json.dumps({"env": env_values, "redact": _job_redact_values(block["cwd"])}))
         os.chmod(tmp_name, 0o600)
         os.replace(tmp_name, env_path)
     except BaseException:

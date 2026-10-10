@@ -259,6 +259,27 @@ def test_secrets_ride_only_in_the_0600_env_file(tmp_path, monkeypatch, fake_tmux
         farmd.JOB_SESSIONS.pop("421", None)
 
 
+def test_a_dotenv_value_the_plan_never_names_is_still_redacted(tmp_path, fake_tmux):
+    """Guardrail 4: every <cwd>/.env value is masked, named by the plan's env
+    block or not — a command run in cwd can print .env itself."""
+    unnamed = "unnamed-api-key-value-9"
+    task, cwd = _job_task(tmp_path, run_id=423, item_id="HZ-21", commands=("cat .env", f"echo key={unnamed}"))
+    (cwd / ".env").write_text(f"OTHER_API_KEY={unnamed}\n")
+    try:
+        farmd.launch_job(task)
+        task_file = QUEUE_DIR / "jobs" / "active" / "423.json"
+        assert task_job.main(["--task", str(task_file)]) == 0
+        log = (LOGS_DIR / "farm-job-hz-21.log").read_text()
+        assert unnamed not in log
+        assert log.count("[redacted]") >= 2
+    finally:
+        (QUEUE_DIR / "jobs" / "active" / "423.json").unlink(missing_ok=True)
+        (QUEUE_DIR / "jobs" / "active" / "423.env.json").unlink(missing_ok=True)
+        (STATE_DIR / "jobs" / "HZ-21.json").unlink(missing_ok=True)
+        (LOGS_DIR / "farm-job-hz-21.log").unlink(missing_ok=True)
+        farmd.JOB_SESSIONS.pop("423", None)
+
+
 def test_job_sessions_never_use_pipe_pane(tmp_path, fake_tmux):
     """R20: pipe-pane would write raw pane output past redact(), so job
     sessions refuse it — and launch_job never asks for one."""

@@ -98,8 +98,8 @@ def run_job(
     are summary outcomes, not crashes. Raises ValueError only for an unreadable
     plan block (a dispatch bug, not a job outcome)."""
     # Every value either set is masked in the log; only env_values reach the
-    # commands' environment (redact_values are host credentials the plan did
-    # not name).
+    # commands' environment (redact_values are host credentials and every
+    # <cwd>/.env value, named by the plan or not).
     secrets = {**(redact_values or {}), **(env_values or {})}
     state_path = Path(state_path)
     log_path = Path(log_path)
