@@ -12,7 +12,9 @@ class MockEventSource {
   constructor(url) {
     this.url = url
     this.listeners = {}
+    this.readyState = MockEventSource.CONNECTING
     MockEventSource.instances.push(this)
+    MockEventSource.log.push(`open ${MockEventSource.instances.length - 1}`)
   }
   // HZ-318: named `snapshot` and `delta` events.
   addEventListener(type, fn) {
@@ -21,9 +23,23 @@ class MockEventSource {
   dispatch(type, data) {
     this.listeners[type]({ data: JSON.stringify(data) })
   }
-  close() {}
+  // HZ-388: the browser's own open, so the stream counts as live.
+  open() {
+    this.readyState = MockEventSource.OPEN
+    this.onopen?.()
+  }
+  close() {
+    this.readyState = MockEventSource.CLOSED
+    MockEventSource.log.push(`close ${MockEventSource.instances.indexOf(this)}`)
+  }
 }
+MockEventSource.CONNECTING = 0
+MockEventSource.OPEN = 1
+MockEventSource.CLOSED = 2
 MockEventSource.instances = []
+// Every construct and close by instance index, in order ('open 0', 'close 0',
+// …) — proves the old stream closed before the new one opened.
+MockEventSource.log = []
 
 // serverApi keeps its `items` cache as module-private state, only ever
 // populated by an SSE snapshot. Simulate the server pushing one down so
@@ -33,13 +49,27 @@ function seedItem(item) {
   source.onmessage({ data: JSON.stringify({ items: [item] }) })
 }
 
+// vi.resetModules() gives each test a fresh serverApi, but its
+// visibilitychange listener would stay on `document` and fire into later
+// tests. Track them so afterEach can take them off.
+let documentListeners = []
+
 beforeEach(() => {
   MockEventSource.instances = []
+  MockEventSource.log = []
   vi.stubGlobal('EventSource', MockEventSource)
   localStorage.setItem('horizon_gate_pin', 'test-pin')
+  const add = document.addEventListener.bind(document)
+  vi.spyOn(document, 'addEventListener').mockImplementation((type, fn, options) => {
+    documentListeners.push([type, fn, options])
+    add(type, fn, options)
+  })
 })
 
 afterEach(() => {
+  documentListeners.forEach(([type, fn, options]) => document.removeEventListener(type, fn, options))
+  documentListeners = []
+  vi.useRealTimers()
   vi.unstubAllGlobals()
   vi.restoreAllMocks()
   localStorage.clear()
@@ -414,6 +444,178 @@ test('subscribeStepOutputs opens the item\'s own stream, passes each `outputs` f
   stream.close = vi.fn()
   close()
   expect(stream.close).toHaveBeenCalled()
+})
+
+// ---- HZ-388: a stalled stream is noticed within 45 s and replaced ----
+
+// 45 s of silence trips the watchdog; the first reconnect waits the 1 s backoff.
+const STALL_MS = 45_000
+
+test('a silent board stream closes after 45 s, exactly one new stream opens after the backoff, and its snapshot applies', async () => {
+  vi.useFakeTimers()
+  const serverApi = await import('./serverApi')
+  serverApi.subscribe(() => {})
+  const [first] = MockEventSource.instances
+  // Never opens: a stall while CONNECTING is replaced too.
+  vi.advanceTimersByTime(STALL_MS - 1)
+  expect(first.readyState).toBe(MockEventSource.CONNECTING)
+  vi.advanceTimersByTime(1)
+  expect(first.readyState).toBe(MockEventSource.CLOSED)
+  expect(MockEventSource.instances).toHaveLength(1)
+
+  vi.advanceTimersByTime(1_000)
+  expect(MockEventSource.instances).toHaveLength(2)
+  const second = MockEventSource.instances[1]
+  expect(second.url).toBe(`${serverApi.API_BASE}/stream?v=2`)
+  expect(MockEventSource.log.indexOf('close 0')).toBeLessThan(MockEventSource.log.indexOf('open 1'))
+  expect(MockEventSource.log.filter((e) => e.startsWith('open'))).toEqual(['open 0', 'open 1'])
+
+  second.open()
+  second.dispatch('snapshot', { items: [{ id: 'NOW', title: 'current' }] })
+  expect(serverApi.getItems()).toEqual([{ id: 'NOW', title: 'current' }])
+
+  vi.advanceTimersByTime(30_000)
+  expect(MockEventSource.instances).toHaveLength(2)
+  expect(first.readyState).toBe(MockEventSource.CLOSED)
+})
+
+test('a silent item stream reopens once after 45 s and passes its outputs frame on', async () => {
+  vi.useFakeTimers()
+  const serverApi = await import('./serverApi')
+  const seen = vi.fn()
+  serverApi.subscribeStepOutputs('X-1', seen)
+  const [first] = MockEventSource.instances
+  first.open()
+  first.dispatch('outputs', { id: 'X-1', stepOutputs: { 0: { output: 'old' } } })
+
+  vi.advanceTimersByTime(STALL_MS)
+  expect(first.readyState).toBe(MockEventSource.CLOSED)
+  vi.advanceTimersByTime(1_000)
+  expect(MockEventSource.instances).toHaveLength(2)
+  const second = MockEventSource.instances[1]
+  expect(second.url).toBe(`${serverApi.API_BASE}/items/X-1/stream`)
+  expect(MockEventSource.log.indexOf('close 0')).toBeLessThan(MockEventSource.log.indexOf('open 1'))
+  expect(MockEventSource.log.filter((e) => e.startsWith('open'))).toEqual(['open 0', 'open 1'])
+
+  second.dispatch('outputs', { id: 'X-1', stepOutputs: { 0: { output: 'new' } } })
+  expect(seen).toHaveBeenLastCalledWith({ 0: { output: 'new' } })
+})
+
+test('the item stream recovers from a second stall after the doubled backoff', async () => {
+  vi.useFakeTimers()
+  const serverApi = await import('./serverApi')
+  const seen = vi.fn()
+  serverApi.subscribeStepOutputs('X-1', seen)
+  vi.advanceTimersByTime(STALL_MS + 1_000)
+  expect(MockEventSource.instances).toHaveLength(2)
+
+  // The second stream stalls as well, before it ever opens.
+  vi.advanceTimersByTime(STALL_MS)
+  expect(MockEventSource.instances[1].readyState).toBe(MockEventSource.CLOSED)
+  vi.advanceTimersByTime(1_999)
+  expect(MockEventSource.instances).toHaveLength(2)
+  vi.advanceTimersByTime(1)
+  expect(MockEventSource.instances).toHaveLength(3)
+  const third = MockEventSource.instances[2]
+  third.dispatch('outputs', { id: 'X-1', stepOutputs: { 1: { output: 'third' } } })
+  expect(seen).toHaveBeenLastCalledWith({ 1: { output: 'third' } })
+})
+
+test('a heartbeat every 15 s for 3 minutes reconnects neither stream and touches no state', async () => {
+  vi.useFakeTimers()
+  const serverApi = await import('./serverApi')
+  const listener = vi.fn()
+  serverApi.subscribe(listener)
+  const board = MockEventSource.instances[0]
+  board.open()
+  board.dispatch('snapshot', { items: [{ id: 'A' }] })
+  const items = serverApi.getItems()
+  const seen = vi.fn()
+  serverApi.subscribeStepOutputs('X-1', seen)
+  const item = MockEventSource.instances[1]
+  item.open()
+  item.dispatch('outputs', { id: 'X-1', stepOutputs: {} })
+  expect(listener).toHaveBeenCalledTimes(1)
+  expect(seen).toHaveBeenCalledTimes(1)
+
+  for (let beat = 0; beat < 12; beat++) {
+    vi.advanceTimersByTime(15_000)
+    board.dispatch('heartbeat', {})
+    item.dispatch('heartbeat', {})
+  }
+  vi.advanceTimersByTime(STALL_MS - 1)
+
+  expect(MockEventSource.instances).toEqual([board, item])
+  expect(board.readyState).toBe(MockEventSource.OPEN)
+  expect(item.readyState).toBe(MockEventSource.OPEN)
+  expect(serverApi.getItems()).toBe(items)
+  expect(listener).toHaveBeenCalledTimes(1)
+  expect(seen).toHaveBeenCalledTimes(1)
+})
+
+test('a tab focus while a watchdog reconnect is pending opens no second stream', async () => {
+  vi.useFakeTimers()
+  vi.stubGlobal('fetch', vi.fn(() => new Promise(() => {})))
+  const serverApi = await import('./serverApi')
+  serverApi.subscribe(() => {})
+  vi.advanceTimersByTime(STALL_MS)
+  expect(MockEventSource.instances[0].readyState).toBe(MockEventSource.CLOSED)
+
+  vi.spyOn(document, 'hidden', 'get').mockReturnValue(false)
+  document.dispatchEvent(new Event('visibilitychange'))
+  expect(MockEventSource.instances).toHaveLength(1)
+
+  vi.advanceTimersByTime(1_000)
+  expect(MockEventSource.instances).toHaveLength(2)
+  const open = MockEventSource.instances.filter((es) => es.readyState !== MockEventSource.CLOSED)
+  expect(open).toEqual([MockEventSource.instances[1]])
+})
+
+test('a board onerror (CLOSED) and a watchdog stall share one reconnect', async () => {
+  vi.useFakeTimers()
+  const serverApi = await import('./serverApi')
+  serverApi.subscribe(() => {})
+  const [first] = MockEventSource.instances
+  first.open()
+  vi.advanceTimersByTime(STALL_MS - 500)
+  first.readyState = MockEventSource.CLOSED
+  first.onerror()
+  // The old stream's watchdog would trip here; it was stopped with the reconnect.
+  vi.advanceTimersByTime(1_000)
+  expect(MockEventSource.instances).toHaveLength(2)
+  const second = MockEventSource.instances[1]
+  second.open()
+  for (let beat = 0; beat < 4; beat++) {
+    vi.advanceTimersByTime(15_000)
+    second.dispatch('heartbeat', {})
+  }
+  // A late error from the replaced stream is ignored.
+  first.onerror()
+  vi.advanceTimersByTime(STALL_MS - 1)
+  expect(MockEventSource.instances).toHaveLength(2)
+  expect(second.readyState).toBe(MockEventSource.OPEN)
+})
+
+test('a closed item subscription never reopens', async () => {
+  vi.useFakeTimers()
+  const serverApi = await import('./serverApi')
+  const close = serverApi.subscribeStepOutputs('X-1', vi.fn())
+  vi.advanceTimersByTime(STALL_MS - 1)
+  close()
+  expect(MockEventSource.instances[0].readyState).toBe(MockEventSource.CLOSED)
+  vi.advanceTimersByTime(5 * 60_000)
+  expect(MockEventSource.instances).toHaveLength(1)
+})
+
+test('an item stream the browser closed for good (a 404) is never reopened', async () => {
+  vi.useFakeTimers()
+  const serverApi = await import('./serverApi')
+  serverApi.subscribeStepOutputs('GONE-1', vi.fn())
+  const [stream] = MockEventSource.instances
+  stream.readyState = MockEventSource.CLOSED
+  stream.onerror()
+  vi.advanceTimersByTime(5 * 60_000)
+  expect(MockEventSource.instances).toHaveLength(1)
 })
 
 // ---- HZ-360: the deploy block clears live, and a held Approve shows queued ----

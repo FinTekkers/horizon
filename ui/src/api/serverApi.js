@@ -73,25 +73,73 @@ function refetch() {
 // mid-restart (proxy returns an error status), so we recreate it with backoff.
 // Every (re)connect receives a full snapshot from the server, which resyncs
 // anything missed while disconnected.
+//
+// HZ-388: a half-dead connection never fires onerror, so the stream also has
+// a watchdog. The server sends a named `heartbeat` event every 15 s; 45 s with
+// no event of any kind means the stream is dead, and it is replaced. Only one
+// reconnect is ever pending, and the old stream is closed before the new one
+// opens, so two streams are never open at once.
+const STALL_MS = 45_000
+
+// A resettable stall timer: kick() on every event, onStall after ms of silence.
+function watchdog(onStall, ms = STALL_MS) {
+  let timer = null
+  return {
+    kick() {
+      clearTimeout(timer)
+      timer = setTimeout(onStall, ms)
+    },
+    stop() {
+      clearTimeout(timer)
+      timer = null
+    },
+  }
+}
+
 let source = null
 let retryMs = 1000
+let reconnectTimer = null
+const boardDog = watchdog(() => scheduleReconnect())
+
+// The board stream's one reconnect path: onerror (CLOSED) and the watchdog
+// both land here, and a pending reconnect makes any later call a no-op.
+function scheduleReconnect() {
+  if (reconnectTimer) return
+  boardDog.stop()
+  source?.close()
+  reconnectTimer = setTimeout(() => {
+    reconnectTimer = null
+    connect()
+  }, retryMs)
+  retryMs = Math.min(retryMs * 2, 15_000)
+}
 
 function connect() {
-  source = new EventSource(`${API_BASE}/stream?v=2`)
-  source.onopen = () => {
-    retryMs = 1000
+  source?.close()
+  const es = new EventSource(`${API_BASE}/stream?v=2`)
+  source = es
+  // Armed before onopen, so a stream that never opens is replaced too.
+  boardDog.kick()
+  // Events from a stream this tab has already replaced are ignored.
+  const live = (fn) => (msg) => {
+    if (es !== source) return
+    boardDog.kick()
+    fn(msg)
   }
-  source.addEventListener('snapshot', (msg) => applySnapshot(JSON.parse(msg.data)))
-  source.addEventListener('delta', (msg) => applyDelta(JSON.parse(msg.data)))
+  es.onopen = live(() => {
+    retryMs = 1000
+  })
+  es.addEventListener('snapshot', live((msg) => applySnapshot(JSON.parse(msg.data))))
+  es.addEventListener('delta', live((msg) => applyDelta(JSON.parse(msg.data))))
+  // Carries no state: it only resets the watchdog.
+  es.addEventListener('heartbeat', live(() => {}))
   // A server from before HZ-318 (a rollback) ignores `v` and sends the whole
   // board as default `message` frames.
-  source.onmessage = (msg) => applySnapshot(JSON.parse(msg.data))
-  source.onerror = () => {
-    if (source.readyState === EventSource.CLOSED) {
-      setTimeout(connect, retryMs)
-      retryMs = Math.min(retryMs * 2, 15_000)
-    }
-    // CONNECTING means the browser is already retrying on its own
+  es.onmessage = live((msg) => applySnapshot(JSON.parse(msg.data)))
+  es.onerror = () => {
+    if (es === source && es.readyState === EventSource.CLOSED) scheduleReconnect()
+    // CONNECTING means the browser is already retrying on its own; the
+    // watchdog replaces the stream if that retry never gets through.
   }
 }
 
@@ -109,7 +157,8 @@ function start() {
   document.addEventListener('visibilitychange', () => {
     if (!document.hidden) {
       refetch()
-      if (source?.readyState === EventSource.CLOSED) connect()
+      // A pending reconnect already owns the next stream.
+      if (source?.readyState === EventSource.CLOSED && !reconnectTimer) connect()
     }
   })
 }
@@ -133,11 +182,60 @@ export function getSync() {
 // { "<step index>": { output, attempt, artifact, attemptCount, label } } map on
 // open and on every change. Returns the close function: the Tracker opens it on
 // mount and closes it on leave. EventSource reconnects by itself after a drop;
-// a 404 (the item is not on the board) closes it for good.
+// a 404 (the item is not on the board) closes it for good. HZ-388: 45 s with no
+// event (the server's `heartbeat` comes every 15 s) replaces the stream, with
+// the same backoff as the board stream; the new one's first `outputs` frame
+// resyncs. A closed subscription never reopens.
 export function subscribeStepOutputs(id, onOutputs) {
-  const stream = new EventSource(`${API_BASE}/items/${encodeURIComponent(id)}/stream`)
-  stream.addEventListener('outputs', (msg) => onOutputs(JSON.parse(msg.data).stepOutputs))
-  return () => stream.close()
+  const url = `${API_BASE}/items/${encodeURIComponent(id)}/stream`
+  let stream = null
+  let timer = null
+  let closed = false
+  let retryMs = 1000
+  const dog = watchdog(reopen)
+
+  function open() {
+    const es = new EventSource(url)
+    stream = es
+    dog.kick()
+    es.onopen = () => {
+      if (es !== stream) return
+      retryMs = 1000
+      dog.kick()
+    }
+    es.addEventListener('outputs', (msg) => {
+      if (es !== stream) return
+      dog.kick()
+      onOutputs(JSON.parse(msg.data).stepOutputs)
+    })
+    // Carries no state: it only resets the watchdog.
+    es.addEventListener('heartbeat', () => {
+      if (es === stream) dog.kick()
+    })
+    es.onerror = () => {
+      // The browser gave up (a 404): the item left the board, so stay closed.
+      if (es === stream && es.readyState === EventSource.CLOSED) dog.stop()
+    }
+  }
+
+  function reopen() {
+    if (closed || timer) return
+    stream.close()
+    timer = setTimeout(() => {
+      timer = null
+      open()
+    }, retryMs)
+    retryMs = Math.min(retryMs * 2, 15_000)
+  }
+
+  open()
+  return () => {
+    closed = true
+    dog.stop()
+    clearTimeout(timer)
+    timer = null
+    stream.close()
+  }
 }
 
 // ---- auth (HZ-21): hardcoded credential OR Google SSO ----
