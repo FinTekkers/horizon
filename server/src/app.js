@@ -40,7 +40,7 @@ import { googleAuth } from './googleAuth.js'
 import { isAllowedEmail } from './loginAllowlist.js'
 import { approvalSecretConfigured, approvalSecretOk, isAllowedApprover, isOwner, normalizeJid } from './waApprovers.js'
 import * as waPollVotes from './waPollVotes.js'
-import { STEPS } from '../../domain/js/lifecycle.js'
+import { STEPS, isItemKind } from '../../domain/js/lifecycle.js'
 import { intakeFields } from '../../domain/js/fields.js'
 import { PRIORITIES, DEFAULT_PRIORITY } from '../../domain/js/priorities.js'
 import { PERSONAS } from './personas.js'
@@ -850,13 +850,19 @@ export function buildApp({ logger = true, onRoute = null } = {}) {
             // HZ-209: the WhatsApp wizard names the project when more than one
             // is enabled, rather than falling back to the active one.
             projectId: { type: 'integer' },
+            // HZ-382: checked against the domain's kinds in the handler, not an
+            // enum here, so there is no second list of kinds.
+            kind: { type: 'string' },
           },
         },
         response: { 200: OK_OBJECT, 400: ERROR_OBJECT, 502: ERROR_OBJECT },
       },
     },
     async (request, reply) => {
-      const { title, outcome, metric, guardrails = '', priority = DEFAULT_PRIORITY, repo, projectId } = request.body
+      const { title, outcome, metric, guardrails = '', priority = DEFAULT_PRIORITY, repo, projectId, kind = 'change' } = request.body
+      // Before any project check or GitHub call, so a bad kind never leaves an
+      // orphan issue behind.
+      if (!isItemKind(kind)) return reply.code(400).send({ error: 'unknown_item_kind' })
       // New work goes into an enabled project's repository (HZ-208); a named
       // project (HZ-209) must exist and be enabled and narrows the choice to
       // its own repositories — a disabled project is never acted on.
@@ -881,7 +887,7 @@ export function buildApp({ logger = true, onRoute = null } = {}) {
         }
         let ghIssue
         try {
-          ghIssue = await github.createIssue(target.repo, { title, outcome, metric, guardrails, priority })
+          ghIssue = await github.createIssue(target.repo, { title, outcome, metric, guardrails, priority, kind })
         } catch (err) {
           return reply.code(502).send({ error: err.message })
         }
@@ -891,7 +897,7 @@ export function buildApp({ logger = true, onRoute = null } = {}) {
       if (store.listRepos().length > 0) {
         return reply.code(400).send({ error: 'No enabled project has a connected repository — add one in Admin' })
       }
-      const id = store.createLocalItem({ title, outcome, metric, guardrails, priority })
+      const id = store.createLocalItem({ title, outcome, metric, guardrails, priority, kind })
       return { ok: true, id }
     },
   )

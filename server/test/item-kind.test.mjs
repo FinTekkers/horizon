@@ -149,3 +149,140 @@ test('a closed task reports its own final phase, not the change one', () => {
   )
   assert.equal(isClosed({ cursor: firstStepIndex('task'), kind: 'task' }), false)
 })
+
+// ---- HZ-382: POST /api/items takes a kind ----
+//
+// Through the real route. No-repo cases first: once a repo is connected below,
+// the route takes the GitHub path for every later request in this file.
+
+const { buildApp } = await import('../src/app.js')
+const config = await import('../src/config.js')
+const auth = await import('../src/auth.js')
+const { setSetting } = await import('../src/settings.js')
+const { loginFixtureUser } = await import('./helpers/session.mjs')
+
+const app = buildApp({ logger: false })
+const { cookie } = loginFixtureUser(auth, config)
+const inject = (opts) => app.inject({ ...opts, headers: { cookie } })
+const NEW_ITEM = { title: 'Rotate the TLS cert', outcome: 'The cert is rotated before expiry.', metric: 'Expiry > 60 days' }
+const storedKind = (id) => db.prepare('SELECT kind FROM work_item WHERE id = ?').get(id)?.kind
+const itemCount = () => db.prepare('SELECT COUNT(*) AS n FROM work_item').get().n
+
+test('POST /api/items, no repo: kind "task" stores a LOC- task at the first task step', async () => {
+  const res = await inject({ method: 'POST', url: '/api/items', payload: { ...NEW_ITEM, kind: 'task' } })
+  assert.equal(res.statusCode, 200, res.body)
+  const { id } = res.json()
+  assert.match(id, /^LOC-/)
+  assert.equal(storedKind(id), 'task')
+  assert.equal(store.getItem(id).cursor, firstStepIndex('task'))
+})
+
+test('POST /api/items, no repo: an unknown kind is 400 unknown_item_kind and stores nothing', async () => {
+  const before = itemCount()
+  const res = await inject({ method: 'POST', url: '/api/items', payload: { ...NEW_ITEM, kind: 'bogus' } })
+  assert.equal(res.statusCode, 400)
+  assert.deepEqual(res.json(), { error: 'unknown_item_kind' })
+  assert.equal(itemCount(), before)
+})
+
+test('POST /api/items/:id/priority with a kind leaves the stored kind unchanged', async () => {
+  const created = await inject({ method: 'POST', url: '/api/items', payload: { ...NEW_ITEM, kind: 'task' } })
+  const { id } = created.json()
+  const res = await inject({ method: 'POST', url: `/api/items/${id}/priority`, payload: { priority: 'Low', kind: 'change' } })
+  assert.equal(res.statusCode, 200, res.body)
+  assert.equal(db.prepare('SELECT priority FROM work_item WHERE id = ?').get(id).priority, 'Low')
+  assert.equal(storedKind(id), 'task')
+})
+
+// ---- the repo path, against a stubbed GitHub ----
+
+const REPO = 'acme/item-kind-repo'
+// Connected lazily by the first repo test: test bodies run after this whole
+// module has loaded, so connecting at top level would flip the no-repo cases
+// above onto the GitHub path too.
+let repoConnected = false
+function connectRepo() {
+  if (repoConnected) return
+  setSetting('github_token', 'test-token')
+  const project = store.createProject('Item kind')
+  const connected = store.addRepoToProject(project.id, REPO)
+  assert.ok(connected.ok, `fixture repo must connect cleanly: ${JSON.stringify(connected)}`)
+  repoConnected = true
+}
+
+let ghCalls = []
+let failKindLabel = false
+let nextIssue = 500
+globalThis.fetch = async (url, opts = {}) => {
+  const { pathname } = new URL(String(url))
+  const method = opts.method || 'GET'
+  const body = opts.body ? JSON.parse(opts.body) : null
+  ghCalls.push({ pathname, method, body })
+  const reply = (status, data) => ({ ok: status < 300, status, json: async () => data, text: async () => '' })
+  if (pathname === `/repos/${REPO}/labels` && method === 'POST') {
+    if (failKindLabel && body.name === 'task') return reply(500, {})
+    return reply(201, {})
+  }
+  if (pathname === `/repos/${REPO}/issues` && method === 'POST') {
+    const number = nextIssue++
+    return reply(201, {
+      number,
+      title: body.title,
+      body: body.body,
+      state: 'open',
+      labels: body.labels.map((name) => ({ name })),
+      html_url: `https://github.com/${REPO}/issues/${number}`,
+    })
+  }
+  return reply(200, [])
+}
+const issuePosts = () => ghCalls.filter((c) => c.pathname === `/repos/${REPO}/issues` && c.method === 'POST')
+
+test('POST /api/items, repo: kind "task" labels the issue `task` and stores a task', async () => {
+  connectRepo()
+  ghCalls = []
+  const res = await inject({ method: 'POST', url: '/api/items', payload: { ...NEW_ITEM, kind: 'task' } })
+  assert.equal(res.statusCode, 200, res.body)
+  const { id } = res.json()
+  assert.equal(storedKind(id), 'task')
+  assert.equal(store.getItem(id).cursor, firstStepIndex('task'))
+  assert.ok(issuePosts()[0].body.labels.includes('task'))
+})
+
+test('POST /api/items, repo: an omitted kind stores a change at cursor 0', async () => {
+  connectRepo()
+  ghCalls = []
+  const res = await inject({ method: 'POST', url: '/api/items', payload: NEW_ITEM })
+  assert.equal(res.statusCode, 200, res.body)
+  const { id } = res.json()
+  assert.equal(storedKind(id), 'change')
+  assert.equal(store.getItem(id).cursor, 0)
+  assert.ok(!issuePosts()[0].body.labels.includes('task'))
+})
+
+test('POST /api/items, repo: an unknown kind is 400 with no GitHub call', async () => {
+  connectRepo()
+  ghCalls = []
+  const before = itemCount()
+  const res = await inject({ method: 'POST', url: '/api/items', payload: { ...NEW_ITEM, kind: 'bogus' } })
+  assert.equal(res.statusCode, 400)
+  assert.deepEqual(res.json(), { error: 'unknown_item_kind' })
+  assert.deepEqual(ghCalls, [])
+  assert.equal(itemCount(), before)
+})
+
+test('POST /api/items, repo: a Task whose `task` label cannot be created is 502, with no issue and no item', async () => {
+  connectRepo()
+  ghCalls = []
+  failKindLabel = true
+  try {
+    const before = itemCount()
+    const res = await inject({ method: 'POST', url: '/api/items', payload: { ...NEW_ITEM, kind: 'task' } })
+    assert.equal(res.statusCode, 502)
+    assert.match(res.json().error, /task/)
+    assert.deepEqual(issuePosts(), [])
+    assert.equal(itemCount(), before)
+  } finally {
+    failKindLabel = false
+  }
+})

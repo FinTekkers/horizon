@@ -247,3 +247,23 @@ test('a 422 on label-create means "already exists" and the mirror proceeds', asy
   const add = calls.find((c) => c.method === 'POST' && c.url.endsWith('/issues/42/labels'))
   assert.deepEqual(JSON.parse(add.body), { labels: [priorityLabelName(target)] })
 })
+
+// ---- HZ-382: createIssue's labels for a Task vs a change ----
+
+function issueCreate() {
+  return calls.find((c) => c.method === 'POST' && c.url.endsWith(`/repos/${REPO}/issues`))
+}
+const labelCreates = () => calls.filter((c) => c.method === 'POST' && c.url.endsWith(`/repos/${REPO}/labels`))
+const ISSUE = { title: 'T', outcome: 'An outcome.', metric: 'A metric.', guardrails: '', priority: DEFAULT_PRIORITY }
+
+test('a change issue is created exactly as before: one priority label, no `task` label call', async () => {
+  await github.createIssue(REPO, ISSUE)
+  assert.deepEqual(labelCreates().map((c) => JSON.parse(c.body).name), [priorityLabelName(DEFAULT_PRIORITY)])
+  assert.deepEqual(JSON.parse(issueCreate().body).labels, [priorityLabelName(DEFAULT_PRIORITY)])
+})
+
+test('a Task issue ensures the `task` label and carries it alongside the priority label', async () => {
+  await github.createIssue(REPO, { ...ISSUE, kind: 'task' })
+  assert.ok(labelCreates().some((c) => JSON.parse(c.body).name === 'task'), 'the task label was never ensured')
+  assert.deepEqual(JSON.parse(issueCreate().body).labels, [priorityLabelName(DEFAULT_PRIORITY), 'task'])
+})

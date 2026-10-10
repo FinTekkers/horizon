@@ -12,6 +12,8 @@ vi.mock('../api', () => ({
 }))
 
 import Board from './Board'
+import TaskBadge from './TaskBadge'
+import { firstStepIndex } from '../../../domain/js/lifecycle.js'
 import { DEFAULT_PERSONAS, PERSONAS, PRIMARY_PERSONA_AGENT } from '../domain/personas'
 
 afterEach(() => {
@@ -216,4 +218,34 @@ test('a card with two blockers renders no remove-dependency control', () => {
     <Board items={items} onOpen={noop} onApprove={noop} onReject={noop} onTogglePause={noop} onNewItem={noop} />,
   )
   expect(queryAllByRole('button', { name: /Remove dependency/ })).toHaveLength(0)
+})
+
+// ---- HZ-382: the Task badge on a board card ----
+
+function kindCard(kindFields) {
+  const item = {
+    ...makeItem('HZ-7', 'running'),
+    activeRun: null,
+    ...kindFields,
+  }
+  const { container } = render(
+    <Board items={[item]} onOpen={noop} onApprove={noop} onReject={noop} onTogglePause={noop} onNewItem={noop} />,
+  )
+  return container.querySelector('.card')
+}
+
+test('a Task card shows the TaskBadge — the same markup the item page renders', () => {
+  const card = kindCard({ kind: 'task', cursor: firstStepIndex('task') })
+  const badge = card.querySelector('.kind-badge')
+  expect(badge.textContent).toBe('Task')
+  const { container } = render(<TaskBadge kind="task" />)
+  expect(badge.outerHTML).toBe(container.innerHTML)
+})
+
+test('a change card, and a card with no kind at all, shows no kind badge', () => {
+  expect(kindCard({ kind: 'change' }).querySelector('.kind-badge')).toBeNull()
+  cleanup()
+  const legacy = kindCard({})
+  expect(legacy.querySelector('.kind-badge')).toBeNull()
+  expect(legacy.textContent).not.toContain('Task')
 })

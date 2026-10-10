@@ -25,7 +25,9 @@
         "a negative phase rejected",
         "a non-integer phase rejected",
         "an unknown kind rejected",
-        "an empty label rejected"
+        "an empty label rejected",
+        "an empty kind label rejected",
+        "an empty kind description rejected"
       ]
     },
 
@@ -313,6 +315,24 @@
           "steps": [{ "phase": 0, "kind": "gate", "gate": "required", "label": "" }]
         },
         "expect": { "throws": true, "messageContains": "has no label" }
+      },
+      {
+        "case": "an empty kind label rejected",
+        "input": {
+          "phases": ["P"],
+          "kinds": { "change": { "phases": ["P"] }, "task": { "label": "", "phases": ["P"] } },
+          "steps": [{ "phase": 0, "kind": "gate", "gate": "required", "label": "A Gate" }]
+        },
+        "expect": { "throws": true, "messageContains": "kinds.task.label must be a non-empty string" }
+      },
+      {
+        "case": "an empty kind description rejected",
+        "input": {
+          "phases": ["P"],
+          "kinds": { "change": { "description": "", "phases": ["P"] } },
+          "steps": [{ "phase": 0, "kind": "gate", "gate": "required", "label": "A Gate" }]
+        },
+        "expect": { "throws": true, "messageContains": "kinds.change.description must be a non-empty string" }
       }
     ]
   },
@@ -329,6 +349,16 @@
       { "case": "anything else is not", "kind": "banana", "expect": false },
       { "case": "a missing value is not a kind", "kind": null, "expect": false }
     ],
+
+    "ITEM_KINDS": [{ "case": "the kinds, in the order steps.json declares them", "expect": ["change", "task"] }],
+
+    "itemKindInfo": [
+      { "case": "task's copy says it waits for human approval", "kind": "task", "expect": { "label": "Task", "descriptionContains": "human approval" } },
+      { "case": "change's copy is its own", "kind": "change", "expect": { "label": "Change", "descriptionContains": "code change" } },
+      { "case": "an unknown kind throws, naming it", "kind": "banana", "expect": { "throws": true, "messageContains": "banana" } }
+    ],
+
+    "ITEM_KIND_INFO": [{ "case": "one entry per kind, in ITEM_KINDS order", "expectKinds": ["change", "task"] }],
 
     "itemKindOf": [
       { "case": "a stored task reads task", "item": { "cursor": 16, "kind": "task" }, "expect": "task" },

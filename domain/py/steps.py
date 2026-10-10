@@ -79,6 +79,10 @@ def _validate_source(data: object, source: str) -> dict:
             raise RuntimeError(
                 f"domain/py/steps.py: {source}: kinds.{kind}.phases must be a non-empty array of non-empty strings"
             )
+        # HZ-382: the kind's display copy. Optional, but never blank when present.
+        for field in ("label", "description"):
+            if field in entry and not (isinstance(entry[field], str) and entry[field]):
+                raise RuntimeError(f"domain/py/steps.py: {source}: kinds.{kind}.{field} must be a non-empty string")
     if "change" in kinds and kinds["change"]["phases"] != phases:
         raise RuntimeError(f"domain/py/steps.py: {source}: kinds.change.phases must equal the top-level phases")
     for i, step in enumerate(steps):

@@ -313,6 +313,16 @@ button { font-family: var(--font-sans); }
   font: 700 12px var(--font-sans); background: transparent; color: var(--muted);
 }
 .prio-seg__btn--on { background: var(--surface); color: var(--deep); box-shadow: 0 2px 6px rgba(var(--shadow-rgb), 0.12); }
+/* HZ-382: the New item form's Change / Task choice — one radio card per kind. */
+.kind-cards { display: flex; gap: 8px; flex-wrap: wrap; }
+.kind-card {
+  flex: 1 1 200px; display: flex; gap: 8px; align-items: flex-start; cursor: pointer;
+  border: 1px solid var(--border-strong); border-radius: 10px; padding: 9px 12px; background: var(--surface);
+}
+.kind-card--on { border-color: var(--primary-ink); background: var(--primary-bg); }
+.kind-card input { margin: 2px 0 0; accent-color: var(--primary-ink); }
+.kind-card__name { display: block; font: 700 13px var(--font-sans); color: var(--deep); }
+.kind-card__desc { display: block; font: 500 12px var(--font-sans); color: var(--muted); line-height: 1.4; }
 .field__label { font: 600 12px var(--font-sans); color: var(--muted); margin-bottom: 6px; }
 .field__label--row { display: flex; align-items: baseline; justify-content: space-between; }
 .field__hint-link { font: 600 12px var(--font-sans); color: var(--primary-ink); text-decoration: none; }
@@ -510,6 +520,11 @@ button { font-family: var(--font-sans); }
 }
 /* HZ-208: the item's project. Clamped and shrinkable so a long project name
    never widens a card or tracker header. */
+/* HZ-382: a Task's kind, beside the project badge on its card and item page. */
+.kind-badge {
+  font: 600 10px var(--font-sans); color: var(--architect-ink);
+  background: var(--accent-bg); border-radius: 5px; padding: 1px 6px; white-space: nowrap;
+}
 .proj-badge {
   font: 600 10px var(--font-sans); color: var(--primary-ink);
   background: var(--primary-bg); border-radius: 5px; padding: 1px 6px;

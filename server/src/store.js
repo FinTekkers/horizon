@@ -26,6 +26,7 @@ import {
 import { isPriority } from '../../domain/js/priorities.js'
 import { isPersona, personaLabel, personasFromRow } from './personas.js'
 import { priorityFromLabels } from './priorityLabels.js'
+import { kindFromLabels } from './kindLabels.js'
 import { getActiveProjectId, setSetting } from './settings.js'
 import { parseRuleBlock } from './ruleBlock.js'
 
@@ -1739,11 +1740,26 @@ export function upsertFromGithub(ghIssue, repoFullName) {
   let changed = false
 
   if (!row) {
-    // GitHub issues are always change items; creating tasks is a later item.
+    // HZ-382: the kind is read off the labels here, on insert only — the update
+    // branch below never touches it, so adding or removing `task` later does
+    // not change an item's kind.
+    const kind = kindFromLabels(ghIssue.labels)
     const id = `${repoRow.prefix}-${number}`
     db.prepare(
-      'INSERT INTO work_item (id, title, priority, desc, metric, guardrails, issue, repo, project_id, cursor) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
-    ).run(id, title, priority, desc, metric, guardrails, number, repoFullName, repoRow.project_id, closedOnGithub ? endIndex('change') : 0)
+      'INSERT INTO work_item (id, title, priority, desc, metric, guardrails, issue, repo, project_id, cursor, kind) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+    ).run(
+      id,
+      title,
+      priority,
+      desc,
+      metric,
+      guardrails,
+      number,
+      repoFullName,
+      repoRow.project_id,
+      closedOnGithub ? endIndex(kind) : firstStepIndex(kind),
+      kind,
+    )
     addEvent(id, { who: 'GitHub', text: `opened issue #${number}`, color: '#2A2A2E', initials: 'GH' })
     changed = true
     if (!closedOnGithub) agentRunner.kick(id)

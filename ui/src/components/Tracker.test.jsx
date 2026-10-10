@@ -24,8 +24,9 @@ vi.mock('../api', () => ({
 }))
 
 import Tracker from './Tracker'
+import TaskBadge from './TaskBadge'
 import { subscribeStepOutputs } from '../api'
-import { ACCEPT_GATE_INDEX, DEPLOY_STEP_INDEX, IMPLEMENT_STEP_INDEX, REVIEW_STEP_INDEX } from '../../../domain/js/lifecycle.js'
+import { ACCEPT_GATE_INDEX, DEPLOY_STEP_INDEX, IMPLEMENT_STEP_INDEX, REVIEW_STEP_INDEX, firstStepIndex } from '../../../domain/js/lifecycle.js'
 // HZ-132: reason ids come from domain/reasons.json via the binding, never typed
 // here — a second hand-copy of the vocabulary inside ui/src is exactly the
 // drift this repo now forbids.
@@ -1237,4 +1238,20 @@ test('serverApi.setPaused posts the explicit state and applies the answer', asyn
   } finally {
     vi.unstubAllGlobals()
   }
+})
+
+// ---- HZ-382: the Task badge in the item page header ----
+
+test('a Task\'s header shows the TaskBadge — the same markup its board card renders', () => {
+  const { container } = renderTracker({ ...baseItem, kind: 'task', cursor: firstStepIndex('task') })
+  const badge = container.querySelector('.tracker__meta .kind-badge')
+  expect(badge.textContent).toBe('Task')
+  const standalone = render(<TaskBadge kind="task" />).container
+  expect(badge.outerHTML).toBe(standalone.innerHTML)
+})
+
+test('a change header, and one with no kind at all, shows no kind badge', () => {
+  expect(renderTracker({ ...baseItem, kind: 'change' }).container.querySelector('.kind-badge')).toBeNull()
+  cleanup()
+  expect(renderTracker(baseItem).container.querySelector('.kind-badge')).toBeNull()
 })

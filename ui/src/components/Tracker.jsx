@@ -25,6 +25,7 @@ import DependencyBadge from './DependencyBadge'
 import Markdown from './Markdown'
 import GateActionStatus from './GateActionStatus'
 import ProjectBadge from './ProjectBadge'
+import TaskBadge from './TaskBadge'
 import { BackIcon, LinkIcon, RestartIcon, PrIcon } from './icons'
 
 const STEP_GLYPHS = { done: '✓', active: '•', awaiting: '!', pending: '', blocked: '✕' }
@@ -638,6 +639,7 @@ export default function Tracker({ item, projects, deployBlock = null, viewerName
             <div className="tracker__meta">
               <span className="tracker__id">{item.id}</span>
               <ProjectBadge projectId={item.project_id} projects={projects} />
+              <TaskBadge kind={item.kind} />
               <span className="tracker__priority" style={{ color: priorityColor(item.priority) }}>
                 <span className="tracker__priority-dot" style={{ background: priorityColor(item.priority) }} />
                 {item.priority} priority
