@@ -9,3 +9,4 @@ ubuntu ALL=(root) NOPASSWD: /bin/systemctl restart fintekkers-valuation
 ubuntu ALL=(root) NOPASSWD: /bin/systemctl restart fintekkers-broker
 ubuntu ALL=(root) NOPASSWD: /bin/systemctl restart fintekkers-ledger
 ubuntu ALL=(root) NOPASSWD: /bin/systemctl restart fintekkers-price
+ubuntu ALL=(root) NOPASSWD: /bin/systemctl restart shoreward-contact

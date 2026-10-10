@@ -623,6 +623,29 @@ service target.
   and no release deploys. To stop MDI deploys without a revert, delete the
   row in Admin and set `no_deploy` with the PIN.
 
+## Static site target: Shoreward
+
+`FinTekkers/shoreward` is the shoreward.ai site: a Vite build that nginx
+serves from `/opt/shoreward/dist`, plus `POST /api/contact`, which nginx
+proxies to `shoreward-contact.service` (the repo's `api/contact.js` run by
+`infra/host/shoreward-contact.mjs`).
+
+- **Script.** `deploy-shoreward.sh` fetches, checks out the tag (detached),
+  runs `npm ci` and `vite build` into `dist.new`, checks that `index.html` and
+  `contact.html` were emitted, swaps `dist.new` in with two renames (so nginx
+  never serves a half-written build), restarts `shoreward-contact`, and
+  health-checks the served page: its `<title>`, the JS bundle it references,
+  and the contact service being active.
+- **Failure.** A bad build swaps nothing and restarts nothing. A failed health
+  check puts the previous `dist` and commit back, restarts the contact
+  service on them, and logs `ROLLED BACK`.
+- **Not the repo's `scripts/deploy.sh`.** That uploads to S3 + CloudFront,
+  which is not where shoreward.ai is served (DNS points at this host).
+- **Row.** key `shoreward`, script `deploy-shoreward.sh`, service
+  `shoreward-contact`, repo dir `/opt/shoreward`, state key `shoreward`,
+  health URL `https://shoreward.ai/`, health check type `static-site`.
+- **Tests.** `infra/host/test/deploy-shoreward.test.sh`.
+
 ## Deep verification beyond the health check (HZ-22)
 
 Each deploy script's health check proves the process restarted and answered
