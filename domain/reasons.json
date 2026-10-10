@@ -4,6 +4,7 @@
     { "id": "timeout", "retryable": true },
     { "id": "unreachable", "retryable": true },
     { "id": "turn_cap", "retryable": true },
-    { "id": "required_input_incomplete", "retryable": false }
+    { "id": "required_input_incomplete", "retryable": false },
+    { "id": "read_only_violated", "retryable": false }
   ]
 }

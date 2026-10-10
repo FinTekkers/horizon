@@ -60,6 +60,13 @@ def _selected_provider_name() -> str:
     return os.environ.get("FARM_PROVIDER", FARM_PROVIDER)
 
 
+def effective_provider(override: str | None) -> str:
+    """The provider run_agent() would pick for this override, by name only.
+    HZ-387: names the provider in a read-only violation when no reply said
+    which one ran."""
+    return override or _selected_provider_name()
+
+
 # HZ-192: the one emergency override, for every Claude call at once. Read at
 # call time, like FARM_PROVIDER. Shape-checked against the same pattern as
 # domain/personas.json's model ids (kept in step with domain/py/personas.py's

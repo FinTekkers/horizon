@@ -6,6 +6,12 @@
 
 // farm/checks.py HEADLINE_PREFIX — keep the two in step.
 export const CHECK_HEADLINE_PREFIX = 'repo checks failed: '
+// HZ-387: farm/read_only_guard.py HEADLINE_PREFIX — a read-only step that
+// changed the worktree. Its first line names the provider; every changed
+// file follows. farm/tests/test_read_only_guard.py compares the two.
+export const READ_ONLY_HEADLINE_PREFIX = 'read-only step changed the worktree'
+// The failures whose first line is a headline and the rest its details.
+const HEADLINE_PREFIXES = [CHECK_HEADLINE_PREFIX, READ_ONLY_HEADLINE_PREFIX]
 const CAUSE_MAX = 200
 
 // One line of at most `max` chars, cut at a word boundary and ending in "…" —
@@ -22,10 +28,11 @@ export function capWords(text, max) {
 
 // What failFarmRun writes for a failure: `cause` goes in the event text,
 // `detail` (the whole error, unchanged) is stored beside it for "Show
-// details". A check failure's cause is its headline line only; any other
-// error keeps today's first 200 chars and has no detail.
+// details". A check failure's (or HZ-387's read-only violation's) cause is
+// its headline line only; any other error keeps today's first 200 chars and
+// has no detail.
 export function splitCheckError(error) {
   const text = String(error)
-  if (!text.startsWith(CHECK_HEADLINE_PREFIX)) return { cause: text.slice(0, CAUSE_MAX), detail: null }
+  if (!HEADLINE_PREFIXES.some((prefix) => text.startsWith(prefix))) return { cause: text.slice(0, CAUSE_MAX), detail: null }
   return { cause: capWords(text.split('\n')[0], CAUSE_MAX), detail: text }
 }
