@@ -358,13 +358,18 @@ function flushItemStreams() {
 
 store.onChange(broadcast)
 
-// Heartbeat comment keeps proxies from idle-closing the stream and lets the
-// browser notice dead connections promptly. Its own timer, so batching never
+// HZ-388: a named heartbeat keeps proxies from idle-closing the stream and
+// lets the page notice a dead one. It must be a named event, not a `:ping`
+// comment: EventSource never surfaces comments to the page, so a client
+// watchdog could not see them. The `data:` line is required too — EventSource
+// drops an event whose data buffer is empty. Its own timer, so batching never
 // delays it.
+const HEARTBEAT_MS = 15_000
+const HEARTBEAT_FRAME = 'event: heartbeat\ndata: {}\n\n'
 setInterval(() => {
-  sseClients.forEach((res) => res.write(':ping\n\n'))
-  itemStreams.forEach((stream) => stream.clients.forEach((res) => res.write(':ping\n\n')))
-}, 25_000).unref()
+  sseClients.forEach((res) => res.write(HEARTBEAT_FRAME))
+  itemStreams.forEach((stream) => stream.clients.forEach((res) => res.write(HEARTBEAT_FRAME)))
+}, HEARTBEAT_MS).unref()
 
 // POST /api/items's body properties, DERIVED from domain/fields.json (HZ-134).
 // Before this, every length here was a literal that had drifted from the PM
@@ -506,8 +511,8 @@ export function buildApp({ logger = true, onRoute = null } = {}) {
   // Remove that legacy branch once old tabs are gone (follow-up to HZ-318).
   const STREAM_DESCRIPTION =
     'With `v=2`: an `event: snapshot` frame carrying the board (no stepOutputs) on connect, then `event: delta` frames ' +
-    '(`upserts`, `removed`, `top`, and `order` when the id list changed) at most once a second, plus a `:ping` comment ' +
-    'every 25s. Without `v`: one `data:` frame carrying the full board, then the stream ends.'
+    '(`upserts`, `removed`, `top`, and `order` when the id list changed) at most once a second, plus a named `heartbeat` ' +
+    'event every 15s. Without `v`: one `data:` frame carrying the full board, then the stream ends.'
   const LEGACY_STREAM_RETRY_MS = 600_000
   fastify.get(
     '/api/stream',
@@ -588,7 +593,7 @@ export function buildApp({ logger = true, onRoute = null } = {}) {
           200: textResponse(
             'text/event-stream',
             "An `event: outputs` frame carrying `{ id, stepOutputs }` on connect and whenever the item's step outputs " +
-              'change (at most once a second), plus a `:ping` comment every 25s. The stream ends if the item leaves the board.',
+              'change (at most once a second), plus a named `heartbeat` event every 15s. The stream ends if the item leaves the board.',
           ),
           404: ERROR_OBJECT,
         },

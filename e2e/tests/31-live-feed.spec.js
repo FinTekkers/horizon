@@ -142,3 +142,68 @@ test('a new item and a change to an existing row both reach the Board within 2 s
   await page.reload()
   await expect(card.locator('.card__priority')).toHaveText(priority)
 })
+
+// HZ-388: a board stream that goes half-dead (the connection stays up but no
+// event gets through) is noticed by the 45 s watchdog and replaced, and the
+// replacement's snapshot shows what changed meanwhile — no reload, no error.
+test('a stalled Board stream is replaced within 45 s and the change made meanwhile shows', async ({
+  request,
+  page,
+}) => {
+  const created = await request.post('/api/items', { data: { title: 'E2E stalled board stream', ...ITEM } })
+  expect(created.ok()).toBeTruthy()
+  const { id } = await created.json()
+
+  // The first board stream delivers its connect snapshot, then nothing: every
+  // later event (delta, heartbeat, error) is swallowed, as on a dead socket.
+  await page.addInitScript(() => {
+    const Native = window.EventSource
+    window.__streams = []
+    let stalled = false
+    window.EventSource = class extends Native {
+      constructor(...args) {
+        super(...args)
+        window.__streams.push(this)
+        if (stalled || !/\/stream\?v=2$/.test(this.url)) return
+        stalled = true
+        let delivered = false
+        const add = this.addEventListener.bind(this)
+        this.addEventListener = (type, fn, options) =>
+          add(
+            type,
+            (event) => {
+              if (type !== 'snapshot' || delivered) return
+              delivered = true
+              fn(event)
+            },
+            options,
+          )
+        for (const prop of ['onmessage', 'onerror']) {
+          Object.defineProperty(this, prop, { set() {}, get: () => null })
+        }
+      }
+    }
+  })
+  const streamStates = (pattern) =>
+    page.evaluate((src) => {
+      const re = new RegExp(src)
+      return window.__streams.filter((s) => re.test(s.url)).map((s) => s.readyState)
+    }, pattern.source)
+  const BOARD_STREAM = /\/stream\?v=2$/
+
+  await page.clock.install()
+  await page.goto('/')
+  const card = page.locator('.card').filter({ has: page.locator('.card__id', { hasText: id }) })
+  await expect(card).toBeVisible({ timeout: 10_000 })
+  const before = await card.locator('.card__priority').textContent()
+
+  const priority = PRIORITIES.find((p) => p !== before)
+  const changed = await request.post(`/api/items/${id}/priority`, { data: { priority } })
+  expect(changed.ok()).toBeTruthy()
+
+  // 45 s of silence trips the watchdog; the reconnect waits the 1 s backoff.
+  await page.clock.runFor('00:47')
+  await expect(card.locator('.card__priority')).toHaveText(priority, { timeout: 5000 })
+  await expect.poll(() => streamStates(BOARD_STREAM)).toEqual([EVENTSOURCE_CLOSED, EVENTSOURCE_OPEN])
+  await expect(page.getByRole('alert')).toHaveCount(0)
+})
