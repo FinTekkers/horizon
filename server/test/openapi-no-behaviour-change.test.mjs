@@ -163,6 +163,40 @@ test('POST /api/items/:id/pause returns the store result unchanged through send(
   assert.deepEqual(missing.json(), { error: 'not_found' })
 })
 
+// HZ-385: the page sends the action it shows and applies the answer, so the
+// body names the state written. That one field is the only change: the event
+// text and the error codes stay as they were.
+test('POST /api/items/:id/pause adds only `paused`, with the same events and error codes', async () => {
+  const { db } = await import('../src/db.js')
+  db.prepare("INSERT INTO work_item (id, title, priority, cursor) VALUES ('T-385', 'Pausable', 'Medium', 3)").run()
+  const lastEvent = () => db.prepare("SELECT text FROM event WHERE item_id = 'T-385' ORDER BY id DESC LIMIT 1").get()?.text
+
+  const paused = await inject({ method: 'POST', url: '/api/items/T-385/pause', payload: { paused: true } })
+  assert.equal(paused.statusCode, 200)
+  assert.deepEqual(paused.json(), { ok: true, paused: true })
+  assert.equal(lastEvent(), 'paused agent work on this item')
+
+  // Sent twice, as a stale tab would: each answers with what it wrote.
+  for (let i = 0; i < 2; i++) {
+    const resumed = await inject({ method: 'POST', url: '/api/items/T-385/pause', payload: { paused: false } })
+    assert.equal(resumed.statusCode, 200)
+    assert.deepEqual(resumed.json(), { ok: true, paused: false })
+    assert.equal(lastEvent(), 'resumed work')
+  }
+
+  const missing = await inject({ method: 'POST', url: '/api/items/NOPE-1/pause', payload: { paused: true } })
+  assert.equal(missing.statusCode, 404)
+  assert.deepEqual(missing.json(), { error: 'not_found' })
+
+  db.prepare("INSERT INTO work_item (id, title, priority, cursor) VALUES ('T-385C', 'Closed', 'Medium', 99)").run()
+  const closed = await inject({ method: 'POST', url: '/api/items/T-385C/pause', payload: { paused: true } })
+  assert.equal(closed.statusCode, 409)
+  assert.deepEqual(closed.json(), { error: 'closed' })
+
+  const invalid = await inject({ method: 'POST', url: '/api/items/T-385/pause', payload: { paused: 'yes' } })
+  assert.equal(invalid.statusCode, 400)
+})
+
 test('POST /api/items/:id/reject carries the 401 body when the PIN is missing', async () => {
   // The human-gate 401 is a handler-sent plain object, unlike Fastify's own
   // validation 400 — both go through ERROR_OBJECT, so both are checked.

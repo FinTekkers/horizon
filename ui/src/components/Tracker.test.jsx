@@ -1171,3 +1171,70 @@ test('HZ-360: a conflicted PR at a blocked Accept the code shows the queued stat
   expect(queryByRole('button', { name: 'Resolve conflicts…' })).toBeNull()
   expect(queryByRole('button', { name: 'Approve' })).toBeNull()
 })
+
+// HZ-385: the Pause/Resume button sends the action it shows, never a flip of
+// the cached item; it is disabled while the request runs, and a refusal shows.
+function renderPause(item, onTogglePause) {
+  return render(
+    <Tracker item={item} onBack={noop} onApprove={noop} onApproveWithComments={noop} onReject={noop} onResolveConflicts={noop} onTogglePause={onTogglePause} onRestartPhase={noop} onSetPersona={noop} onAbandon={noop} />,
+  )
+}
+
+test('Resume work sends (id, false) and Pause work sends (id, true), from a stale cached paused', async () => {
+  const onTogglePause = vi.fn(async (id, paused) => ({ ok: true, paused }))
+  // The cache says paused while the server already runs the item (HZ-380):
+  // the button shows Resume work, so that is what it sends.
+  const view = renderPause({ ...baseItem, paused: true }, onTogglePause)
+  await act(async () => fireEvent.click(view.getByRole('button', { name: 'Resume work' })))
+  expect(onTogglePause).toHaveBeenLastCalledWith('T-1', false)
+
+  view.rerender(
+    <Tracker item={{ ...baseItem, paused: false }} onBack={noop} onApprove={noop} onApproveWithComments={noop} onReject={noop} onResolveConflicts={noop} onTogglePause={onTogglePause} onRestartPhase={noop} onSetPersona={noop} onAbandon={noop} />,
+  )
+  await act(async () => fireEvent.click(view.getByRole('button', { name: 'Pause work' })))
+  expect(onTogglePause).toHaveBeenLastCalledWith('T-1', true)
+  expect(onTogglePause).toHaveBeenCalledTimes(2)
+})
+
+test('a double click on Resume work sends one request, and the button stays disabled until the answer', async () => {
+  let finish
+  const onTogglePause = vi.fn(() => new Promise((resolve) => (finish = resolve)))
+  const view = renderPause({ ...baseItem, paused: true }, onTogglePause)
+  const button = view.getByRole('button', { name: 'Resume work' })
+  fireEvent.click(button)
+  fireEvent.click(button)
+  expect(onTogglePause).toHaveBeenCalledTimes(1)
+  expect(button.disabled).toBe(true)
+  expect(button.getAttribute('aria-busy')).toBe('true')
+  await act(async () => finish({ ok: true, paused: false }))
+  expect(button.disabled).toBe(false)
+  expect(view.queryByRole('alert')).toBeNull()
+})
+
+test('a 409 shows role=alert with the reason and enables the button again', async () => {
+  const onTogglePause = vi.fn(async () => {
+    throw new Error('closed')
+  })
+  const view = renderPause({ ...baseItem, paused: true }, onTogglePause)
+  const button = view.getByRole('button', { name: 'Resume work' })
+  await act(async () => fireEvent.click(button))
+  expect(view.getByRole('alert').textContent).toBe('This item is closed.')
+  expect(button.disabled).toBe(false)
+})
+
+test('serverApi.setPaused posts the explicit state and applies the answer', async () => {
+  const serverApi = await import('../api/serverApi')
+  const fetchMock = vi.fn(async () => ({ ok: true, status: 200, json: async () => ({ ok: true, paused: false }) }))
+  vi.stubGlobal('fetch', fetchMock)
+  try {
+    await expect(serverApi.setPaused('T-1', false)).resolves.toEqual({ ok: true, paused: false })
+    const [url, init] = fetchMock.mock.calls[0]
+    expect(url).toMatch(/\/api\/items\/T-1\/pause$/)
+    expect(JSON.parse(init.body)).toEqual({ paused: false })
+
+    fetchMock.mockImplementationOnce(async () => ({ ok: false, status: 409, json: async () => ({ error: 'closed' }) }))
+    await expect(serverApi.setPaused('T-1', true)).rejects.toThrow('closed')
+  } finally {
+    vi.unstubAllGlobals()
+  }
+})

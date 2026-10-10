@@ -1378,7 +1378,9 @@ export function setPaused(id, paused) {
   // HZ-194: pause, not cancel — a running attempt checkpoints its work first.
   if (paused) agentRunner.pause(id)
   else agentRunner.kick(id)
-  return { ok: true }
+  // HZ-385: the state just written, so the page can show it without waiting
+  // for the stream.
+  return { ok: true, paused: Boolean(paused) }
 }
 
 // The human leg of specialist routing: confirm or override the persona the PM

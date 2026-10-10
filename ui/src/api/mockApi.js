@@ -9,7 +9,7 @@
 //   GET  /items                                → getItems()
 //   POST /items/:id/gates/:stepIndex/approve   → approveGate(id)
 //   POST /items/:id/reject                     → requestChanges(id, target, feedback)
-//   POST /items/:id/pause                      → togglePause(id)
+//   POST /items/:id/pause                      → setPaused(id, paused)
 //   POST /items/:id/phases/:phase/restart      → restartPhase(id, phase, reason)
 //   POST /items/:id/feedback                   → sendFeedback(id, target, message)
 
@@ -354,10 +354,11 @@ export async function forwardToAccept(id) {
   return { error: 'review_not_rejected' }
 }
 
-export function togglePause(id) {
+// Mirrors serverApi.setPaused: the explicit state, {ok, paused} back, and a
+// rejection the button can show.
+export async function setPaused(id, paused) {
   const it = items.find((x) => x.id === id)
-  if (!it) return
-  const paused = !it.paused
+  if (!it) throw new Error('not_found')
   update(id, (x) => ({ ...x, paused }))
   pushEvent(id, {
     who: 'You',
@@ -367,6 +368,7 @@ export function togglePause(id) {
   })
   if (paused) clearTimeout(timers[id])
   else runAgents(id)
+  return { ok: true, paused }
 }
 
 // Mirrors store.removeDependency: drop the edge on both sides, log it, and

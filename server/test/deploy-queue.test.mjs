@@ -385,7 +385,7 @@ test('metric 5: resuming a failed deploy step re-queues the item and never publi
   assert.equal(entry(a).status, 'failed')
   const posts = releasePosts().length
 
-  assert.deepEqual(store.setPaused(a, false), { ok: true })
+  assert.deepEqual(store.setPaused(a, false), { ok: true, paused: false })
   await waitFor(() => entry(a).status === 'queued', 'the re-queued entry')
   assert.equal(entriesOf(a).length, 2)
   assert.notEqual(entry(a).batch_id, batchId)

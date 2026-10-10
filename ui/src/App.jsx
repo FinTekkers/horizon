@@ -372,7 +372,7 @@ function AuthenticatedApp({ user, onLogout }) {
           onOpen={openItem}
           onApprove={requestApprove}
           onReject={(id, target) => openComposer('reject', id, { target })}
-          onTogglePause={api.togglePause}
+          onTogglePause={api.setPaused}
           onNewItem={() => setNewItemOpen(true)}
           isGateBusy={isGateBusy}
         />
@@ -398,7 +398,7 @@ function AuthenticatedApp({ user, onLogout }) {
           resolving={isResolving(selected)}
           gateBusy={isGateBusy(selected)}
           onForwardToAccept={(id) => api.forwardToAccept(id)}
-          onTogglePause={api.togglePause}
+          onTogglePause={api.setPaused}
           onRestartPhase={(id, phase) => openComposer('restart', id, { phase })}
           onSetPersona={api.setPersona}
           onSetStepProvider={api.setStepProvider}

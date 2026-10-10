@@ -152,7 +152,8 @@ test.each([
   const pause = [...card.querySelectorAll('button')].find((b) => b.textContent === 'Pause work')
   expect(pause).toBeTruthy()
   fireEvent.click(pause)
-  expect(onTogglePause).toHaveBeenCalledWith('HZ-336')
+  // HZ-385: the intent the button shows, not a flip of the cached item.
+  expect(onTogglePause).toHaveBeenCalledWith('HZ-336', true)
 })
 
 test('a paused card offers Resume work, whether or not it is also blocked', () => {
@@ -163,6 +164,22 @@ test('a paused card offers Resume work, whether or not it is also blocked', () =
     expect(buttonNames(card)).toContain('Resume work')
     expect(buttonNames(card)).not.toContain('Pause work')
   }
+})
+
+// HZ-385: Resume work sends paused: false, and the button stays disabled until
+// the answer arrives, so a second click sends nothing.
+test('Resume work on a card sends (id, false) once and is disabled while it runs', async () => {
+  let finish
+  const onTogglePause = vi.fn(() => new Promise((resolve) => (finish = resolve)))
+  const { container } = render(board([item('HZ-336', { paused: true })], { onTogglePause }))
+  const resume = () => [...cardOf(container, 'HZ-336').querySelectorAll('button')].find((b) => b.textContent === 'Resume work')
+  fireEvent.click(resume())
+  fireEvent.click(resume())
+  expect(onTogglePause).toHaveBeenCalledTimes(1)
+  expect(onTogglePause).toHaveBeenCalledWith('HZ-336', false)
+  expect(resume().disabled).toBe(true)
+  await act(async () => finish({ ok: true, paused: false }))
+  expect(resume().disabled).toBe(false)
 })
 
 // HZ-365: a rule-blocked card shows the pill, the first line of what's needed

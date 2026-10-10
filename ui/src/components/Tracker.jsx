@@ -56,6 +56,14 @@ const FORWARD_ERRORS = {
   branch_unverified: 'Could not confirm the PR is still at the reviewed commit — implement restarted with the findings instead.',
 }
 
+// HZ-385: why a Pause/Resume request was refused (store.setPaused's codes).
+const PAUSE_ERRORS = {
+  not_found: 'This item is no longer on the board.',
+  closed: 'This item is closed.',
+  abandoned: 'This item was abandoned.',
+  project_not_active: "This item's project is not active.",
+}
+
 // HZ-185: on an item the latest automated review just rejected, sends it to
 // Accept the code with that verdict attached instead of another implement
 // cycle. The ref is the guard (two clicks in one tick both read the same
@@ -588,6 +596,29 @@ export default function Tracker({ item, projects, deployBlock = null, viewerName
   const closed = isClosed(item)
   const abandoned = isAbandoned(item)
   const { stepOutputs, settled: outputsSettled } = useStepOutputs(item)
+  // HZ-385: the button sends the state it shows, once at a time. Busy and the
+  // error are kept with the item id, so opening another item drops them.
+  const pauseInFlight = useRef(false)
+  const [pausePending, setPausePending] = useState(null)
+  const [pauseError, setPauseError] = useState(null)
+  const sendPause = (paused) => {
+    if (pauseInFlight.current) return
+    pauseInFlight.current = true
+    const id = item.id
+    setPausePending(id)
+    setPauseError(null)
+    new Promise((resolve) => resolve(onTogglePause(id, paused)))
+      .then(
+        () => null,
+        (err) => PAUSE_ERRORS[err?.message] || 'That did not go through — try again.',
+      )
+      .then((message) => {
+        pauseInFlight.current = false
+        setPausePending(null)
+        if (message) setPauseError({ id, message })
+      })
+  }
+  const pauseBusy = pausePending === item.id
 
   return (
     <div className="tracker">
@@ -647,10 +678,16 @@ export default function Tracker({ item, projects, deployBlock = null, viewerName
             {/* HZ-335: no Pause work while a dependency blocks the item;
                 a paused item always keeps Resume work. */}
             {(item.paused || !isDependencyBlocked(item)) && (
-              <button className="btn-outline" onClick={() => onTogglePause(item.id)}>
+              <button
+                className="btn-outline"
+                disabled={pauseBusy}
+                aria-busy={pauseBusy || undefined}
+                onClick={() => sendPause(!item.paused)}
+              >
                 {item.paused ? 'Resume work' : 'Pause work'}
               </button>
             )}
+            {pauseError?.id === item.id && <span role="alert">{pauseError.message}</span>}
             {!closed && (
               <button className="btn-outline" style={{ color: '#5C1F2B' }} onClick={() => onAbandon(item.id)}>
                 Abandon
