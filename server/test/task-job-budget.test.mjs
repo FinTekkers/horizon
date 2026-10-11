@@ -57,7 +57,7 @@ const activeRunId = (id) => db.prepare("SELECT id FROM step_run WHERE item_id = 
 const runCount = (id) => db.prepare('SELECT COUNT(*) AS n FROM step_run WHERE item_id = ? AND step_index = ?').get(id, EXECUTE_STEP_INDEX).n
 const lastEvent = (id) => db.prepare('SELECT text FROM event WHERE item_id = ? ORDER BY id DESC LIMIT 1').get(id).text
 
-async function failJob(id, error, reason) {
+async function failJob(id, error, reason, extra = {}) {
   orchestrator.kick(id)
   await wait(10)
   const runId = activeRunId(id)
@@ -65,7 +65,7 @@ async function failJob(id, error, reason) {
     method: 'POST',
     url: `/api/farm/steps/${runId}/fail`,
     headers: farmHeaders,
-    payload: { error, reason },
+    payload: { error, reason, ...extra },
   })
   assert.equal(res.statusCode, 200)
   return runId
@@ -80,6 +80,9 @@ test('R6: a budget breach pauses the item with the reason in Activity, and no re
   const event = lastEvent('T-R6')
   assert.ok(event.startsWith(`agent step failed (${REASON.JOB_BUDGET_EXCEEDED}): the job ran past`), event)
   assert.ok(event.includes('item paused'), event)
+  // HZ-407: the pause reason is one line, and it names the time budget.
+  assert.ok(!event.includes('\n'), event)
+  assert.ok(event.includes('time budget'), event)
 
   // No auto-retry: still one attempt after a kick well past any retry delay.
   assert.equal(runCount('T-R6'), 1)
@@ -96,4 +99,69 @@ test('a retryable-tagged failure on the job lane still pauses without retrying',
   assert.equal(store.getItem('T-R6B').paused, true)
   assert.equal(runCount('T-R6B'), 1)
   assert.ok(lastEvent('T-R6B').startsWith(`agent step failed (${REASON.UNREACHABLE}):`), lastEvent('T-R6B'))
+})
+
+// ---- HZ-407: the final view lands with the close, never lost to a race ----
+
+const jobOf = (id) => store.itemStepOutputs(id)[EXECUTE_STEP_INDEX]?.job
+const jobView = (statuses, status = 'running') => ({
+  status,
+  elapsedS: 1201,
+  budgetS: 1200,
+  commands: statuses.map((s, i) => ({ command: `scripts/${i}.sh`, status: s, exit_code: s === 'done' ? 0 : null })),
+  logTail: ['budget exceeded after 1200s — job stopped'],
+})
+
+test('a budget failure with no prior nudge still stores the view, the cut-off command stopped', async () => {
+  seedTask('T-407-B')
+  await failJob('T-407-B', "the job ran past the run plan's time budget and was stopped", REASON.JOB_BUDGET_EXCEEDED, {
+    job_view: jobView(['done', 'stopped', 'pending'], 'budget_exceeded'),
+  })
+  const job = jobOf('T-407-B')
+  assert.equal(job.status, 'budget_exceeded')
+  assert.deepEqual(
+    job.commands.map((c) => c.status),
+    ['done', 'stopped', 'pending'],
+  )
+})
+
+test('a failure with only a stale running view on record settles it: no command is left running', async () => {
+  seedTask('T-407-B2')
+  orchestrator.kick('T-407-B2')
+  await wait(10)
+  const runId = activeRunId('T-407-B2')
+  await app.inject({ method: 'POST', url: `/api/farm/steps/${runId}/progress`, headers: farmHeaders, payload: jobView(['done', 'running']) })
+  await app.inject({
+    method: 'POST',
+    url: `/api/farm/steps/${runId}/fail`,
+    headers: farmHeaders,
+    payload: { error: "farmd: session 'farm-job-t-407-b2' is gone", reason: REASON.UNREACHABLE },
+  })
+  assert.deepEqual(
+    jobOf('T-407-B2').commands.map((c) => c.status),
+    ['done', 'stopped'],
+  )
+})
+
+test('a result carries the final view; the nudge that loses the race is stale and the last command shows done', async () => {
+  seedTask('T-407-C')
+  orchestrator.kick('T-407-C')
+  await wait(10)
+  const runId = activeRunId('T-407-C')
+  await app.inject({ method: 'POST', url: `/api/farm/steps/${runId}/progress`, headers: farmHeaders, payload: jobView(['done', 'running']) })
+  const done = await app.inject({
+    method: 'POST',
+    url: `/api/farm/steps/${runId}/complete`,
+    headers: farmHeaders,
+    payload: { summary: '2 command(s) run, 2 passed, 0 failed', artifacts: { artifact_md: 'log' }, job_view: jobView(['done', 'done'], 'finished') },
+  })
+  assert.equal(done.statusCode, 200)
+  const late = await app.inject({ method: 'POST', url: `/api/farm/steps/${runId}/progress`, headers: farmHeaders, payload: jobView(['done', 'running']) })
+  assert.deepEqual(late.json(), { ok: true, stale: true })
+  const job = jobOf('T-407-C')
+  assert.equal(job.status, 'finished')
+  assert.deepEqual(
+    job.commands.map((c) => c.status),
+    ['done', 'done'],
+  )
 })

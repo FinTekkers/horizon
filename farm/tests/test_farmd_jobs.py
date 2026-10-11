@@ -245,3 +245,122 @@ def test_teardown_covers_job_sessions(fake_tmux):
     fake_tmux.sessions.add("farm-job-hz-9")
     assert "farm-job-hz-9" in tmux_mgr.kill_all_farm_sessions()
     assert "farm-job-hz-9" not in fake_tmux.sessions
+
+
+# ---- HZ-407: the live Execute card's farm side ----
+
+loopback = TestClient(farmd.app, client=("127.0.0.1", 50000))
+
+
+def _cleanup_job(run_id, item_id):
+    (QUEUE_DIR / "jobs" / "active" / f"{run_id}.json").unlink(missing_ok=True)
+    (QUEUE_DIR / "jobs" / "active" / f"{run_id}.env.json").unlink(missing_ok=True)
+    (STATE_DIR / "jobs" / f"{item_id}.json").unlink(missing_ok=True)
+    (LOGS_DIR / f"farm-job-{item_id.lower()}.log").unlink(missing_ok=True)
+    farmd.JOB_SESSIONS.pop(str(run_id), None)
+
+
+def test_a_seeded_secret_never_reaches_the_forwarded_view_or_the_log_fallback(monkeypatch, fake_tmux, tmp_path):
+    """Guardrail 3: a .env value written into a command's text and printed to
+    the log is absent from the view farmd forwards to the server, and from
+    the log farmd still serves after Stop released the job."""
+    secret = "seeded-env-secret-4071"
+    run_id, item_id = 9471, "HZ-471"
+    cwd = tmp_path / "repo"
+    cwd.mkdir()
+    (cwd / ".env").write_text(f"API_KEY={secret}\n")
+    block = {"cwd": str(cwd), "commands": [f"echo key={secret}"], "budget_minutes": 1}
+    artifact = "## Commands\nplan\n\n## Run plan block\n" + run_plan.render(block) + "\n"
+    task = {"run_id": run_id, "item": {"id": item_id, "repo": "acme/demo"}, "plan_artifact": artifact, "approved_hash": task_job.plan_hash_of(artifact)}
+    forwarded = []
+    monkeypatch.setattr(farmd, "_in_background", lambda fn, *args: fn(*args))
+    monkeypatch.setattr(farmd, "_forward_progress", lambda rid, view: forwarded.append(view))
+    monkeypatch.setattr(task_job, "_notify_progress", lambda rid: None)
+    try:
+        farmd.launch_job(task)
+        assert task_job.main(["--task", str(QUEUE_DIR / "jobs" / "active" / f"{run_id}.json")]) == 0
+        res = loopback.post(f"/jobs/{run_id}/progress")
+        assert res.status_code == 200
+        assert len(forwarded) == 1
+        view = forwarded[0]
+        assert view["commands"][0]["command"] == "echo key=[redacted]"
+        assert any("[redacted]" in line for line in view["logTail"])
+        assert secret not in json.dumps(view)
+        assert set(view["commands"][0]) == {"command", "status", "exit_code", "started_at", "ended_at"}
+
+        # Stop released the task file: the log is still served, by item id.
+        (QUEUE_DIR / "jobs" / "active" / f"{run_id}.json").unlink()
+        assert loopback.get(f"/jobs/{run_id}/log").status_code == 404
+        res = loopback.get(f"/jobs/{run_id}/log", params={"item_id": item_id})
+        assert res.status_code == 200
+        assert "[redacted]" in res.json()["content"]
+        assert secret not in res.text
+        assert loopback.get(f"/jobs/{run_id}/log", params={"item_id": "../../etc"}).status_code == 404
+    finally:
+        _cleanup_job(run_id, item_id)
+
+
+def test_stop_records_the_running_command_stopped_and_returns_the_view(fake_tmux, tmp_path):
+    """Metric 2 / guardrail 2: Stop never leaves the running command half
+    reported — the state file and the view it returns both say `stopped`."""
+    run_id, item_id = 9472, "HZ-13"
+    farmd.JOB_SESSIONS.clear()
+    farmd.launch_job(job_payload(run_id, cwd=str(tmp_path), commands=("echo a", "echo b", "echo c")))
+    (STATE_DIR / "jobs").mkdir(parents=True, exist_ok=True)
+    (STATE_DIR / "jobs" / f"{item_id}.json").write_text(
+        json.dumps(
+            {
+                "run_id": run_id,
+                "item_id": item_id,
+                "status": "running",
+                "budget_s": 60,
+                "commands": [
+                    {"command": "echo a", "status": "done", "exit_code": 0},
+                    {"command": "echo b", "status": "running", "exit_code": None},
+                    {"command": "echo c", "status": "pending", "exit_code": None},
+                ],
+            }
+        )
+    )
+    try:
+        res = loopback.post("/jobs/stop", json={"run_id": run_id})
+        assert res.status_code == 200
+        body = res.json()
+        assert body["commandsDone"] == 1
+        assert [c["status"] for c in body["view"]["commands"]] == ["done", "stopped", "pending"]
+        assert body["view"]["status"] == "stopped"
+        state = json.loads((STATE_DIR / "jobs" / f"{item_id}.json").read_text())
+        assert [c["status"] for c in state["commands"]] == ["done", "stopped", "pending"]
+        assert "farm-job-hz-13" not in fake_tmux.sessions
+    finally:
+        _cleanup_job(run_id, item_id)
+
+
+def test_the_final_view_rides_on_the_result_and_on_the_budget_failure(monkeypatch, fake_tmux, tmp_path):
+    """Guardrail 2: the job's last view goes with its result or failure, so
+    the server stores it in the same write that closes the run — a nudge that
+    loses the race can't leave a command `running` on the card."""
+    payloads = []
+
+    class Res:
+        status_code = 200
+        text = ""
+
+    monkeypatch.setattr(farmd.httpx, "post", lambda url, json=None, **kw: payloads.append((url, json)) or Res())
+    for status, commands, path in (
+        ("finished", [{"command": "echo hi", "status": "done", "exit_code": 0}], "complete"),
+        ("budget_exceeded", [{"command": "echo hi", "status": "stopped", "exit_code": None}], "fail"),
+    ):
+        farmd.JOB_SESSIONS.clear()
+        farmd.launch_job(job_payload(9131, cwd=str(tmp_path)))
+        (STATE_DIR / "jobs").mkdir(parents=True, exist_ok=True)
+        (STATE_DIR / "jobs" / "HZ-13.json").write_text(
+            json.dumps({"run_id": 9131, "item_id": "HZ-13", "status": status, "commands": commands, "summary": {"run": 1, "passed": 1}})
+        )
+        try:
+            farmd._poll_jobs()
+        finally:
+            _cleanup_job(9131, "HZ-13")
+        url, body = payloads[-1]
+        assert url.endswith(f"/api/farm/steps/9131/{path}")
+        assert body["job_view"]["commands"][0]["status"] == commands[0]["status"]

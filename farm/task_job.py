@@ -15,17 +15,25 @@ line passes through checks.redact() before it is written anywhere.
 Stop-or-continue (R16): the job stops on the first non-zero exit. Remaining
 commands stay pending so Resume retries from the first unfinished one without
 re-running a passed command.
+
+HZ-407: output is logged line by line while a command runs, and the runner
+nudges farmd (loopback, no body, no secret) whenever its state or log moves,
+so the Execute card updates live. A command cut off by the budget or by Stop
+ends `stopped`, never `done`; Resume runs it again.
 """
 
 import argparse
 import hashlib
 import json
 import os
+import queue
 import signal
 import subprocess
 import sys
 import tempfile
+import threading
 import time
+import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -81,6 +89,32 @@ def _child_env(env_values: dict) -> dict:
     return env
 
 
+def _notify_progress(run_id) -> None:
+    """HZ-407: tells farmd this job's state or log moved; farmd builds the
+    redacted view and forwards it. Empty body, 1 s timeout, errors ignored —
+    the next nudge resends the whole view."""
+    port = os.environ.get("FARM_PORT", "4100")
+    req = urllib.request.Request(f"http://127.0.0.1:{port}/jobs/{run_id}/progress", data=b"", method="POST")
+    try:
+        urllib.request.urlopen(req, timeout=1).close()
+    except Exception:
+        pass
+
+
+# Log lines nudge at most this often; a status change always nudges at once.
+NUDGE_MIN_INTERVAL_S = 1.0
+
+
+def _read_lines(stream, lines: "queue.Queue") -> None:
+    """Reader thread: every output line, then None at EOF."""
+    try:
+        for line in stream:
+            lines.put(line)
+    except (OSError, ValueError):
+        pass
+    lines.put(None)
+
+
 def run_job(
     *,
     run_id,
@@ -91,12 +125,25 @@ def run_job(
     log_path,
     env_values: dict | None = None,
     redact_values: dict | None = None,
+    notify=None,
 ) -> dict:
     """Runs the approved plan's commands in order. Returns the summary dict
     {run, passed, failed, failing}. Writes the state file and appends to the
     redacted log. Never raises for a command failure or budget breach — those
     are summary outcomes, not crashes. Raises ValueError only for an unreadable
-    plan block (a dispatch bug, not a job outcome)."""
+    plan block (a dispatch bug, not a job outcome). `notify`, when given, is
+    called after each state change and (throttled) after new log lines."""
+    last_nudge = [0.0]
+
+    def nudge(*, force: bool = True) -> None:
+        if notify is None:
+            return
+        now = time.time()
+        if not force and now - last_nudge[0] < NUDGE_MIN_INTERVAL_S:
+            return
+        last_nudge[0] = now
+        notify()
+
     # Every value either set is masked in the log; only env_values reach the
     # commands' environment (redact_values are host credentials and every
     # <cwd>/.env value, named by the plan or not).
@@ -172,6 +219,7 @@ def run_job(
         "commands": entries,
     }
     save_state(state_path, state)
+    nudge()
 
     child = _child_env(env_values or {})
     job_start = time.monotonic()
@@ -197,11 +245,13 @@ def run_job(
             state["summary"] = {"run": attempted, "passed": passed, "failed": len(failing), "failing": list(failing)}
             save_state(state_path, state)
             log_line(f"budget exceeded after {elapsed:.1f}s of {budget_s}s — job stopped\n")
+            nudge()
             return state["summary"]
         entry["status"] = "running"
         entry["started_at"] = _now_iso()
         save_state(state_path, state)
         log_line(f"$ {entry['command']} (cwd={cwd})\n")
+        nudge()
         cmd_start = time.monotonic()
         try:
             proc = subprocess.Popen(
@@ -211,6 +261,7 @@ def run_job(
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 text=True,
+                bufsize=1,
                 start_new_session=True,
             )
         except Exception as exc:
@@ -221,41 +272,79 @@ def run_job(
             failing.append(entry["command"])
             save_state(state_path, state)
             log_line(f"could not start command: {type(exc).__name__}\n")
+            nudge()
             break
-        try:
-            out, _ = proc.communicate(timeout=remaining)
-        except subprocess.TimeoutExpired:
+        # HZ-407: farmd's Stop kills this process group, which outlives the
+        # runner's own tmux session (start_new_session).
+        entry["pgid"] = proc.pid
+        save_state(state_path, state)
+        lines: queue.Queue = queue.Queue()
+        reader = threading.Thread(target=_read_lines, args=(proc.stdout, lines), daemon=True)
+        reader.start()
+        deadline = time.monotonic() + remaining
+        eof = False
+        unsent = False
+        over_budget = False
+        while not eof:
+            if time.monotonic() >= deadline:
+                over_budget = True
+                break
+            try:
+                line = lines.get(timeout=0.2)
+            except queue.Empty:
+                line = ""
+            if line is None:
+                eof = True
+            elif line:
+                log_line(line)
+                unsent = True
+            if unsent:
+                before = last_nudge[0]
+                nudge(force=False)
+                unsent = last_nudge[0] == before
+        if not over_budget:
+            # Output closed; the command itself may still be running.
+            try:
+                proc.wait(timeout=max(0.0, deadline - time.monotonic()))
+            except subprocess.TimeoutExpired:
+                over_budget = True
+        if over_budget:
             try:
                 os.killpg(proc.pid, signal.SIGKILL)
             except (ProcessLookupError, PermissionError, OSError):
                 pass
             try:
-                out, _ = proc.communicate(timeout=5)
+                proc.wait(timeout=5)
             except subprocess.TimeoutExpired:
-                out = ""
-            if out:
-                for line in out.splitlines():
-                    log_line(line + "\n")
-            # The timed-out command stays retryable: Resume re-runs it.
-            entry["status"] = "pending"
-            entry["started_at"] = None
-            entry["ended_at"] = None
+                pass
+            reader.join(timeout=5)
+            while True:
+                try:
+                    line = lines.get_nowait()
+                except queue.Empty:
+                    break
+                if line:
+                    log_line(line)
+            # Cut off mid-command: stopped, never done. Resume re-runs it.
+            entry.pop("pgid", None)
+            entry["status"] = "stopped"
+            entry["ended_at"] = _now_iso()
             entry["exit_code"] = None
             state["status"] = "budget_exceeded"
             state["ended_at"] = _now_iso()
             state["summary"] = {"run": attempted, "passed": passed, "failed": len(failing), "failing": list(failing)}
             save_state(state_path, state)
             log_line(f"budget exceeded after {budget_s}s — job stopped\n")
+            nudge()
             return state["summary"]
-        if out:
-            for line in out.splitlines():
-                log_line(line + "\n")
+        entry.pop("pgid", None)
         entry["status"] = "done"
         entry["ended_at"] = _now_iso()
         entry["exit_code"] = proc.returncode
         attempted += 1
         save_state(state_path, state)
         log_line(f"exit {proc.returncode} in {time.monotonic() - cmd_start:.1f}s\n")
+        nudge()
         if proc.returncode == 0:
             passed += 1
         else:
@@ -266,6 +355,7 @@ def run_job(
     state["ended_at"] = _now_iso()
     state["summary"] = {"run": attempted, "passed": passed, "failed": len(failing), "failing": list(failing)}
     save_state(state_path, state)
+    nudge()
     return state["summary"]
 
 
@@ -322,6 +412,7 @@ def main(argv: list[str] | None = None) -> int:
             log_path=log_path,
             env_values=secrets,
             redact_values=redact_only,
+            notify=lambda: _notify_progress(run_id),
         )
     except ValueError as exc:
         print(f"task_job: invalid run plan: {exc}", flush=True)

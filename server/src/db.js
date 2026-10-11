@@ -535,6 +535,13 @@ try {
   // column already exists
 }
 try {
+  // HZ-407: the latest JSON job view of a runsIn:'job' step (the Execute
+  // card's commands, elapsed time and log tail). NULL for every other run.
+  db.exec('ALTER TABLE step_run ADD COLUMN job_view TEXT')
+} catch {
+  // column already exists
+}
+try {
   // HZ-321: the run that first carried this feedback, so a deploy-stopped run
   // can hand its feedback back undelivered (HZ-184: never consumed by a stop).
   db.exec('ALTER TABLE feedback ADD COLUMN delivered_run_id INTEGER')

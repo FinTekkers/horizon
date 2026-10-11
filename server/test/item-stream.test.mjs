@@ -24,7 +24,7 @@ const store = await import('../src/store.js')
 const appModule = await import('../src/app.js')
 const auth = await import('../src/auth.js')
 const config = await import('../src/config.js')
-const { STEPS } = await import('../../domain/js/lifecycle.js')
+const { STEPS, EXECUTE_STEP_INDEX } = await import('../../domain/js/lifecycle.js')
 
 store.purgeDemoItems()
 store.registerAgentRunner({ kick: () => {}, cancel: () => {} })
@@ -260,4 +260,41 @@ test("an open item whose project is disabled has its stream ended, with nothing 
   } finally {
     client.close()
   }
+})
+
+// HZ-407: a running job's view reaches the open item over this same stream —
+// pushed by farmd's progress callback, no new stream and no poll.
+test("a job progress callback pushes the Execute card's view down the item's stream", async () => {
+  db.prepare("INSERT INTO work_item (id, title, priority, cursor, project_id, kind) VALUES (?, ?, 'Medium', ?, ?, 'task')").run(
+    'SO-JOB',
+    'job',
+    EXECUTE_STEP_INDEX,
+    ON,
+  )
+  const runId = Number(
+    db
+      .prepare("INSERT INTO step_run (item_id, step_index, attempt, agent, status) VALUES ('SO-JOB', ?, 1, ?, 'active')")
+      .run(EXECUTE_STEP_INDEX, STEPS[EXECUTE_STEP_INDEX].agent).lastInsertRowid,
+  )
+  const client = await openStream('/api/items/SO-JOB/stream')
+  try {
+    const first = await client.nth(0, isOutputs)
+    assert.equal(first.data.stepOutputs[EXECUTE_STEP_INDEX], undefined)
+    await waitForItemClients('SO-JOB', 1)
+    const res = await app.inject({
+      method: 'POST',
+      url: `/api/farm/steps/${runId}/progress`,
+      headers: { 'x-farm-secret': config.FARM_SHARED_SECRET },
+      payload: { status: 'running', elapsedS: 3, budgetS: 600, commands: [{ command: 'npm test', status: 'running', exit_code: null }], logTail: ['✓ 12 passed'] },
+    })
+    assert.equal(res.statusCode, 200)
+    const second = await client.nth(1, isOutputs)
+    assert.ok(second, 'no frame followed the progress callback')
+    const job = second.data.stepOutputs[EXECUTE_STEP_INDEX].job
+    assert.deepEqual(job.logTail, ['✓ 12 passed'])
+    assert.deepEqual(job.commands, [{ command: 'npm test', status: 'running', exit_code: null }])
+  } finally {
+    client.close()
+  }
+  await waitForItemClients('SO-JOB', 0)
 })

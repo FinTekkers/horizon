@@ -893,27 +893,68 @@ export function buildApp({ logger = true, onRoute = null } = {}) {
     },
   )
 
+  const JOB_LOG_TEXT_MAX_CHARS = 2 * 1024 * 1024
+
+  // HZ-407: the newest Execute run's log, also after Stop. `?format=text` is
+  // the card's Full log link: the whole redacted log as plain text (capped),
+  // read page by page from farmd — a static response, no viewer page.
   fastify.get(
     '/api/items/:id/job/log',
     {
       schema: {
         params: idParam,
-        querystring: { type: 'object', properties: { offset: { type: 'integer', minimum: 0, default: 0 } } },
+        querystring: {
+          type: 'object',
+          properties: { offset: { type: 'integer', minimum: 0, default: 0 }, format: { type: 'string', enum: ['json', 'text'] } },
+        },
         response: { 200: OK_OBJECT, 404: ERROR_OBJECT, 503: ERROR_OBJECT },
       },
     },
     async (request, reply) => {
       const { id } = request.params
       if (!store.getItem(id)) return reply.code(404).send({ error: 'not_found' })
-      const run = store.activeJobRun(id)
+      const run = store.latestJobRun(id)
       if (!run) return reply.code(404).send({ error: 'no_job' })
       if (!FARM_URL) return reply.code(503).send({ error: 'farm unavailable' })
       try {
-        const { status, data } = await orchestrator.fetchJobLog(run.id, request.query.offset)
-        return reply.code(status).send(data)
+        if (request.query.format !== 'text') {
+          const { status, data } = await orchestrator.fetchJobLog(run.id, request.query.offset, id)
+          return reply.code(status).send(data)
+        }
+        let text = ''
+        let offset = 0
+        while (text.length < JOB_LOG_TEXT_MAX_CHARS) {
+          const { status, data } = await orchestrator.fetchJobLog(run.id, offset, id)
+          if (status !== 200) return reply.code(status).send(data)
+          if (typeof data?.content !== 'string' || !data.content || !(data.next_offset > offset)) break
+          text += data.content
+          offset = data.next_offset
+        }
+        if (text.length > JOB_LOG_TEXT_MAX_CHARS) text = `${text.slice(0, JOB_LOG_TEXT_MAX_CHARS)}\n[...truncated at 2 MB]\n`
+        return reply.type('text/plain; charset=utf-8').send(text)
       } catch {
         return reply.code(503).send({ error: 'farm unavailable' })
       }
+    },
+  )
+
+  // HZ-407: the Execute card's Stop run. Same session gate as pause; the job
+  // ends, its running command is recorded stopped and the item pauses. No job
+  // running (a second Stop included) is 409 no_job.
+  fastify.post(
+    '/api/items/:id/job/stop',
+    {
+      schema: {
+        params: idParam,
+        response: { 200: OK_OBJECT, 404: ERROR_OBJECT, 409: ERROR_OBJECT },
+      },
+    },
+    async (request, reply) => {
+      const { id } = request.params
+      if (!store.getItem(id)) return reply.code(404).send({ error: 'not_found' })
+      const result = await orchestrator.stopJob(id)
+      if (!result) return reply.code(409).send({ error: 'no_job' })
+      return { ...result, ...actionState(id) }
     },
   )
 
@@ -2939,6 +2980,23 @@ export function buildApp({ logger = true, onRoute = null } = {}) {
   // field is cut to size in checkFlakes.js — so an oversize flake can never
   // get the step result that carries it refused.
   const FLAKES_BODY = { type: 'array', items: { type: 'object' } }
+  // HZ-407: a job's view. Loose where it rides on a result, like flakes —
+  // orchestrator.cleanJobView whitelists and caps it — so a view can never
+  // get the result that carries it refused; strict on /progress.
+  const FINAL_JOB_VIEW_BODY = { type: 'object' }
+  const JOB_VIEW_BODY = {
+    type: 'object',
+    required: ['commands'],
+    properties: {
+      status: { type: 'string', maxLength: 40 },
+      elapsedS: { type: 'number' },
+      budgetS: { type: 'number' },
+      startedAt: { type: ['string', 'null'], maxLength: 64 },
+      updatedAt: { type: ['string', 'null'], maxLength: 64 },
+      commands: { type: 'array', maxItems: orchestrator.JOB_VIEW_MAX_COMMANDS, items: { type: 'object' } },
+      logTail: { type: 'array', maxItems: orchestrator.JOB_VIEW_MAX_LOG_LINES, items: { type: 'string', maxLength: 4096 } },
+    },
+  }
   const TEST_RUNS_BODY_LIMIT = 32 * 1024 * 1024
 
   function farmAuthorized(request, reply) {
@@ -3102,6 +3160,7 @@ export function buildApp({ logger = true, onRoute = null } = {}) {
             patch: { type: 'object' },
             artifacts: { type: 'object' },
             flakes: FLAKES_BODY,
+            job_view: FINAL_JOB_VIEW_BODY,
           },
         },
       },
@@ -3125,6 +3184,7 @@ export function buildApp({ logger = true, onRoute = null } = {}) {
             error: { type: 'string', maxLength: 2000 },
             reason: { type: 'string', maxLength: 100 },
             flakes: FLAKES_BODY,
+            job_view: FINAL_JOB_VIEW_BODY,
           },
         },
       },
@@ -3132,7 +3192,24 @@ export function buildApp({ logger = true, onRoute = null } = {}) {
     (request, reply) => {
       if (!farmAuthorized(request, reply)) return
       checkFlakes.recordRunFlakes(request.params.runId, request.body.flakes, { log: request.log })
-      return orchestrator.failFarmRun(request.params.runId, request.body.error, request.body.reason || null)
+      return orchestrator.failFarmRun(request.params.runId, request.body.error, request.body.reason || null, request.body.job_view)
+    },
+  )
+
+  // HZ-407: farmd's forward of a running job's view (the runner's nudge). It
+  // is stored on the run and pushed down the item's own stream; a view for a
+  // run that already closed is answered stale and changes nothing.
+  fastify.post(
+    '/api/farm/steps/:runId/progress',
+    {
+      schema: {
+        params: { type: 'object', required: ['runId'], properties: { runId: { type: 'integer' } } },
+        body: JOB_VIEW_BODY,
+      },
+    },
+    (request, reply) => {
+      if (!farmAuthorized(request, reply)) return
+      return orchestrator.recordJobProgress(request.params.runId, request.body)
     },
   )
 
