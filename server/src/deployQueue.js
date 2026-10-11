@@ -20,16 +20,16 @@
 
 import { db } from './db.js'
 import { DEPLOY_BATCH_S, DEPLOY_WAIT_MS, FARM_STEP_TIMEOUT_MS } from './config.js'
-import { resolveTarget, deployOutcomeFor } from './deploy.js'
+import { resolveTarget, deployOutcomeFor, startDeploy } from './deploy.js'
+import { jobBlocksDeploy, heldMsFor, oldestHolds, lastReleasedHold, releaseHold } from './deployHold.js'
 import { getBranchSha, isAncestor, getPrMergeSha, findReleaseByTag, createBatchRelease } from './github.js'
-import { addEvent, notifyChange } from './store.js'
+import { sqlTime, msOf } from './sqlTime.js'
+import { addEvent, notifyChange, runningJobsIn } from './store.js'
 import { DEPLOY_STEP_INDEX } from '../../domain/js/lifecycle.js'
 
 export const TICK_MS = 5000
 
-// SQLite datetime('now') form: UTC, no zone.
-export const sqlTime = (ms) => new Date(ms).toISOString().replace('T', ' ').slice(0, 19)
-export const msOf = (sql) => Date.parse(`${sql.replace(' ', 'T')}Z`)
+export { sqlTime, msOf }
 const short = (sha) => String(sha || '').slice(0, 7)
 
 // orchestrator.js supplies these, so this module never imports it.
@@ -149,6 +149,7 @@ export const resumeOnBoot = (now = Date.now()) => tick(now)
 
 async function tickTargets(now) {
   dropLeavers()
+  releaseHolds(now)
   const targets = db.prepare("SELECT DISTINCT target FROM deploy_batch WHERE status NOT IN ('done','failed')").all()
   for (const { target } of targets) {
     try {
@@ -166,7 +167,32 @@ async function tickTarget(target, now) {
   if (running) await advance(running, now)
   if (selectRunning.get(target)) return
   const open = selectOpen.get(target)
-  if (open && now >= msOf(open.window_closes_at)) await start(open, now)
+  // HZ-408: a due batch stays open while a job runs in its repo — its
+  // release would only be held, with DEPLOY_WAIT_MS counting from start().
+  if (open && now >= msOf(open.window_closes_at) && !jobBlocksDeploy(open.repo)) await start(open, now)
+}
+
+// HZ-408: spawns each repo's oldest held release (deployHold.js) once no job
+// runs in the repo, or once the hold's deadline passed. The next release of
+// the same repo waits until the one before it is live or failed, or for
+// DEPLOY_WAIT_MS, so held releases deploy one at a time and in order. A row
+// is marked released only after its spawn, so a throw leaves it held for the
+// next tick.
+export function releaseHolds(now = Date.now()) {
+  for (const hold of oldestHolds()) {
+    try {
+      const target = resolveTarget(hold.repo)
+      if (!target) continue
+      const prev = lastReleasedHold(hold.repo)
+      if (prev && now - msOf(prev.released_at) < DEPLOY_WAIT_MS && deployOutcomeFor(target, prev.tag) === 'pending') continue
+      const reason = runningJobsIn(hold.repo).length === 0 ? 'job_ended' : now >= msOf(hold.deadline_at) ? 'deadline' : null
+      if (!reason) continue
+      startDeploy(target, hold.tag, console)
+      releaseHold(hold, reason, now)
+    } catch (err) {
+      console.warn(`deploy queue: held ${hold.tag} of ${hold.repo}: ${err.message}`)
+    }
+  }
 }
 
 async function start(open, now) {
@@ -193,7 +219,8 @@ async function advance(batch, now) {
   return verify(batch, now)
 }
 
-const expired = (batch, now) => now - msOf(batch.started_at) > DEPLOY_WAIT_MS
+// HZ-408: time the batch's release spent held for a running job doesn't count.
+const expired = (batch, now) => now - msOf(batch.started_at) - heldMsFor(batch.repo, batch.tag, now) > DEPLOY_WAIT_MS
 
 async function publish(batch, now) {
   if (expired(batch, now)) return failBatch(batch, `no release was published within ${DEPLOY_WAIT_MS / 1000}s of its start`)
