@@ -24,6 +24,7 @@ vi.mock('../api', () => ({
   createApiToken: vi.fn(),
   revokeApiToken: vi.fn(async () => ({ ok: true })),
   setProjectEnabled: vi.fn(async () => ({ ok: true })),
+  setProjectStepProvider: vi.fn(async () => ({ ok: true })),
   saveRepoChecks: vi.fn(),
   getRepoCheckDefaults: vi.fn(async () => ({
     available: true,
@@ -503,4 +504,30 @@ test('Fix webhook asks for the PIN: none sends nothing, a wrong one shows Gate P
   expect(api.getRepoWebhooks).toHaveBeenCalledTimes(1)
   expect(block.queryByText('Fix webhook')).toBeNull()
   expect(Object.values({ ...localStorage })).not.toContain('right-pin')
+})
+
+// ---- HZ-413: a Task's steps 0-2 take a project default of their own ----
+
+test('Admin shows one select per item kind for the shared first step, and a Task select saves to the Task row', async () => {
+  const { STEPS, firstStepIndex } = await import('../../../domain/js/lifecycle.js')
+  const shared = STEPS[0].label
+  const { container } = render(<AdminPage sync={{}} projects={PROJECTS} onBack={() => {}} />)
+  const alpha = within(projectBlock(container, 'Alpha'))
+  const change = alpha.getByLabelText(`Alpha ${shared} Runs on`)
+  const task = alpha.getByLabelText(`Alpha Task ${shared} Runs on`)
+  expect(change).not.toBe(task)
+  expect(alpha.getByText('Task steps')).toBeTruthy()
+  for (const label of ["How we'll verify", 'Guardrails']) {
+    expect(alpha.getByLabelText(`Alpha Task ${label} Runs on`)).toBeTruthy()
+  }
+
+  fireEvent.change(task, { target: { value: 'muse' } })
+  fireEvent.change(alpha.getByLabelText(`Gate PIN to set Alpha Task ${shared} to muse`), {
+    target: { value: 'right-pin' },
+  })
+  fireEvent.click(alpha.getByRole('button', { name: 'Save' }))
+  const taskOutcome = firstStepIndex('task')
+  expect(STEPS[taskOutcome].label).toBe(shared)
+  expect(STEPS[taskOutcome].itemKind).toBe('task')
+  await waitFor(() => expect(api.setProjectStepProvider).toHaveBeenCalledWith(1, taskOutcome, 'muse', 'right-pin'))
 })

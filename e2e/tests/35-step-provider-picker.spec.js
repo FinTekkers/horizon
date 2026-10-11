@@ -23,7 +23,8 @@ const ARCH = requiredStepIndex('Architecture review')
 const QA = requiredStepIndex('QA reviews the test plan')
 const IMPLEMENT = requiredStepIndex('Specialist agent implements')
 const DEPLOY = requiredStepIndex('Deploy the changes')
-const PM_STEPS = STEPS.flatMap((s, i) => (s.runsIn === 'pm' ? [i] : []))
+// HZ-413: the change item's PM steps — a Task's steps 0-2 are PM steps too.
+const PM_STEPS = STEPS.flatMap((s, i) => (s.runsIn === 'pm' && !s.itemKind ? [i] : []))
 const SUMMARIZE = requiredStepIndex('Summarize reviews & recommend')
 const ALLOWLIST_NOTE = "Muse ignores the farm's tool allowlist."
 

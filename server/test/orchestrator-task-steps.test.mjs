@@ -18,12 +18,13 @@ delete process.env.FARM_STEP_INDEXES
 
 const { db } = await import('../src/db.js')
 const store = await import('../src/store.js')
-const { kindStepIndex, STEPS } = await import('../../domain/js/lifecycle.js')
+const { kindStepIndex, firstStepIndex, STEPS } = await import('../../domain/js/lifecycle.js')
 const orchestrator = await import('../src/orchestrator.js')
 
 store.purgeDemoItems()
 
 const ASSESS = kindStepIndex('Assess', 'task')
+const TASK_OUTCOME = firstStepIndex('task')
 const RUN_PLAN = kindStepIndex('Run plan', 'task')
 const IMPACT_REVIEW = kindStepIndex('Impact review', 'task')
 
@@ -68,6 +69,20 @@ test('Assess is handed to the farm, and the payload names the item kind and the 
   const dispatch = await dispatchFor('T-ASSESS')
   assert.equal(dispatch.body.item.kind, 'task')
   assert.deepEqual(dispatch.body.step, { index: ASSESS, label: 'Assess', agent: 'Eng' })
+})
+
+// HZ-413: a new Task's first step reaches the farm as a PM step at its own
+// global index — never change step 0, which shares its label.
+test("a new Task at its first step is handed to the farm once, as the Task row on the PM lane", async () => {
+  insertTask.run('T-OUTCOME', 'Backfill', TASK_OUTCOME)
+  const dispatch = await dispatchFor('T-OUTCOME')
+  assert.equal(STEPS[TASK_OUTCOME].label, STEPS[0].label, 'the Task shares its first label with change step 0')
+  assert.equal(STEPS[TASK_OUTCOME].runsIn, 'pm')
+  assert.equal(dispatch.body.item.kind, 'task')
+  assert.deepEqual(dispatch.body.step, { index: TASK_OUTCOME, label: STEPS[0].label, agent: 'PM' })
+  // Only a PM-lane step is sent the project context.
+  assert.ok(dispatch.body.project_context, 'a PM-lane dispatch carries project_context')
+  assert.equal(dispatches.filter((d) => d.url.includes('/steps/run') && d.body?.item?.id === 'T-OUTCOME').length, 1)
 })
 
 test('Run plan gets the Assess artifact in full', async () => {

@@ -14,7 +14,7 @@ memory a step has of other items.
 from datetime import datetime, timezone
 from pathlib import Path
 
-from domain.py import fields
+from domain.py import fields, steps
 
 from .agent_runner import AgentError, stamp_notes, stamp_notes_artifact
 from .rules import render_rules_section
@@ -47,7 +47,37 @@ MAX_PERSONA_SLOTS = 8
 # maxLines. Only the step that owns a field is held to its line budget — the
 # items already past steps 1-2 keep their text whatever its length.
 LINE_LIMITS = fields.line_limits(fields.FIELDS)
-LINE_BUDGETED_STEPS = {"Define how we measure success": "metric", "Set guardrails": "guardrails"}
+#
+# HZ-413: keyed by label, across item kinds. A Task's "How we'll verify" and
+# "Guardrails" own the same two fields. That is safe while no label owns a
+# different field in two kinds, which the check below enforces at import.
+LINE_BUDGETED_STEPS = {
+    "Define how we measure success": "metric",
+    "Set guardrails": "guardrails",
+    "How we'll verify": "metric",
+    "Guardrails": "guardrails",
+}
+
+
+def _assert_line_budgets_are_kind_safe(budgeted: dict, rows_by_kind: dict) -> None:
+    """Raise if a LINE_BUDGETED_STEPS label is not a PM step in any kind, or
+    if one label is a PM step in two kinds while the map can only give it one
+    field. Pure, so a test can call it with a fabricated table."""
+    kinds_for = {}
+    for kind, rows in rows_by_kind.items():
+        for row in rows:
+            if row.get("runsIn") == "pm":
+                kinds_for.setdefault(row["label"], set()).add(kind)
+    unknown = sorted(label for label in budgeted if label not in kinds_for)
+    shared = sorted(label for label in budgeted if len(kinds_for.get(label, ())) > 1)
+    if unknown or shared:
+        raise RuntimeError(
+            "pm_steps.LINE_BUDGETED_STEPS is keyed by label alone — "
+            f"not a PM step in any kind: {unknown}; a PM step in more than one kind: {shared}"
+        )
+
+
+_assert_line_budgets_are_kind_safe(LINE_BUDGETED_STEPS, {kind: steps.steps_for(kind) for kind in steps.FARM_VIEWS})
 
 # The placeholder farm/roles/pm.md carries in place of the numbers. Substituted
 # below so the prompt cannot state a budget validate() no longer enforces.
@@ -83,6 +113,21 @@ if LINE_LIMITS_PLACEHOLDER not in _ROLE_SOURCE:
         "the PM agent would be given no line budgets at all"
     )
 ROLE_PROMPT = render_role_prompt(_ROLE_SOURCE, PATCH_FIELDS)
+
+# HZ-413: a Task's steps 0-2 run on this same code, with farm/roles/pm_task.md
+# appended to the role. pm.md itself is untouched, so a change item's role is
+# ROLE_PROMPT byte for byte.
+TASK_ROLE_ADDENDUM = (Path(__file__).parent / "roles" / "pm_task.md").read_text().strip()
+if not TASK_ROLE_ADDENDUM:
+    raise RuntimeError("farm/roles/pm_task.md is empty — a Task's PM steps would get the change role alone")
+ROLE_ADDENDA = {"task": TASK_ROLE_ADDENDUM}
+
+
+def role_prompt_for(kind: str) -> str:
+    """The PM role prompt for an item of this kind: ROLE_PROMPT, plus that
+    kind's addendum (ROLE_ADDENDA). A kind with none gets ROLE_PROMPT as is."""
+    addendum = ROLE_ADDENDA.get(kind)
+    return f"{ROLE_PROMPT}\n\n{addendum}" if addendum else ROLE_PROMPT
 
 # Write-side: a pathological-payload guard, not a working limit — the agent's
 # own artifact must reach the server intact (HZ-29). The server budgets the

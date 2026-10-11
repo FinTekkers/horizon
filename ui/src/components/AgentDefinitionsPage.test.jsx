@@ -193,8 +193,14 @@ test('the models section shows every agent step, the concierge and conflict reso
   const agentSteps = STEPS.filter((step) => step.kind === 'agent' && step.runsIn !== 'none')
   expect(agentSteps.length).toBeGreaterThan(0)
   for (const step of agentSteps) {
-    expect(getByTestId(`model-row-${step.label}`).textContent).toContain('claude-opus-5-5')
+    // HZ-413: a Task row's key carries its kind — both kinds' first steps share a label.
+    const key = step.itemKind ? `${step.itemKind}:${step.label}` : step.label
+    expect(getByTestId(`model-row-${key}`).textContent).toContain('claude-opus-5-5')
   }
+  // HZ-413: both kinds' first steps share a label; each gets its own row.
+  const shared = STEPS[0].label
+  expect(getByTestId(`model-row-task:${shared}`).textContent).toContain(`${shared} (Task)`)
+  expect(getByTestId(`model-row-${shared}`).textContent).not.toContain('(Task)')
   expect(getByTestId('model-row-Set guardrails').textContent).toContain('architect')
   expect(getByTestId('model-row-concierge').textContent).toContain('claude-sonnet-5')
   expect(getByTestId('model-row-concierge').textContent).not.toContain('claude-sonnet-5-5')

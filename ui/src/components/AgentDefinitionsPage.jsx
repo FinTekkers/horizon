@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { STEPS } from '../../../domain/js/lifecycle.js'
+import { STEPS, itemKindInfo } from '../../../domain/js/lifecycle.js'
 import {
   listDefinitions,
   getDefinition,
@@ -125,7 +125,11 @@ function modelRows() {
     // crash modelAgentForStep and collide on call keys, so they stay out.
     ...STEPS.filter((step) => step.kind === 'agent' && step.runsIn !== 'none').map((step) => {
       const agent = modelAgentForStep(step.agent)
-      return { key: step.label, call: step.label, agent, model: resolveModel(agent, step.label) }
+      // HZ-413: a Task row may share a change row's label (both kinds' first
+      // steps do), so its key and call name carry the kind.
+      const key = step.itemKind ? `${step.itemKind}:${step.label}` : step.label
+      const call = step.itemKind ? `${step.label} (${itemKindInfo(step.itemKind).label})` : step.label
+      return { key, call, agent, model: resolveModel(agent, step.label) }
     }),
     { key: 'concierge', call: 'WhatsApp concierge', agent: CONCIERGE_MODEL_AGENT, model: resolveModel(CONCIERGE_MODEL_AGENT) },
     {
