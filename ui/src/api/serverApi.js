@@ -529,6 +529,12 @@ export function runLogViewUrl(runId) {
   return `${API_BASE}/runs/${runId}/log/view`
 }
 
+// HZ-407: the Execute card's Full log link — the job's whole redacted log as
+// plain text, served also after Stop.
+export function jobLogUrl(itemId) {
+  return `${API_BASE}/items/${itemId}/job/log?format=text`
+}
+
 export function issueUrl(item) {
   return item.repo ? `https://github.com/${item.repo}/issues/${item.issue}` : `${repoUrl}/issues/${item.issue}`
 }
@@ -636,6 +642,20 @@ export async function setPaused(id, paused) {
     emit()
   }
   return data
+}
+
+// HZ-407: the Execute card's Stop run and Resume, behind the same login as
+// Pause. postJson so a 409 rejects and the card can say why. Stop's answer
+// carries the paused item, applied at once; the job's own view (command 2
+// `stopped`) arrives on the item's stream.
+export async function stopJob(id) {
+  const data = await postJson(`/items/${id}/job/stop`, {})
+  if (data.item) applyActionItem(data.item)
+  return data
+}
+
+export function resumeJob(id) {
+  return postJson(`/items/${id}/job/resume`, {})
 }
 
 // HZ-310: drops one edge. postJson (not the fire-and-forget post) so a 404 or

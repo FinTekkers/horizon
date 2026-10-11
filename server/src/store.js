@@ -197,6 +197,16 @@ export function activeJobRun(itemId) {
   )
 }
 
+// HZ-407: the item's newest Execute run in any status — whose log the
+// card's Full log link serves, including after Stop.
+export function latestJobRun(itemId) {
+  return (
+    db
+      .prepare('SELECT id, item_id, step_index, attempt, status FROM step_run WHERE item_id = ? AND step_index = ? ORDER BY id DESC LIMIT 1')
+      .get(itemId, EXECUTE_STEP_INDEX) ?? null
+  )
+}
+
 // HZ-408: every active Execute run of an item in `repo` — what holds a deploy
 // of that repo (server/src/deployHold.js). startedMs is when the farm
 // confirmed the runner launched, else the dispatch; budgetMs is the run
@@ -681,6 +691,11 @@ const selectAttemptCounts = db.prepare(
   "SELECT step_index, COUNT(*) AS n FROM step_run WHERE item_id = ? AND status = 'done' AND artifact IS NOT NULL GROUP BY step_index",
 )
 
+const selectJobView = db.prepare(
+  `SELECT r.job_view FROM step_run r JOIN work_item w ON w.id = r.item_id
+    WHERE r.item_id = ? AND r.step_index = ? AND w.cursor >= r.step_index ORDER BY r.id DESC LIMIT 1`,
+)
+
 function stepOutputs(itemId) {
   const map = {}
   const attemptCounts = {}
@@ -699,6 +714,19 @@ function stepOutputs(itemId) {
       provider: row.provider || null,
       // HZ-398: the model that attempt ran on. NULL before the farm recorded it.
       model: row.model || null,
+    }
+  }
+  // HZ-407: the Execute card's job view, from the newest Execute run in any
+  // status — live while it runs, the final view once it stopped or finished.
+  // Not once the item went back before Execute (a send-back): that run's
+  // view is history, not the job the card would act on.
+  const jobRow = selectJobView.get(itemId, EXECUTE_STEP_INDEX)
+  if (jobRow?.job_view) {
+    try {
+      const job = JSON.parse(jobRow.job_view)
+      map[EXECUTE_STEP_INDEX] = { ...(map[EXECUTE_STEP_INDEX] ?? { label: STEPS[EXECUTE_STEP_INDEX]?.label ?? null }), job }
+    } catch {
+      // an unreadable view shows no panel
     }
   }
   return map

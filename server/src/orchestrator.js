@@ -2172,7 +2172,7 @@ function emitStepEnded(id) {
   })
 }
 
-export async function completeFarmRun(runId, { summary, patch, artifacts }) {
+export async function completeFarmRun(runId, { summary, patch, artifacts, job_view: jobView }) {
   const run = db.prepare('SELECT * FROM step_run WHERE id = ?').get(runId)
   if (!run || run.status !== 'active') return { ok: true, stale: true }
   const id = run.item_id
@@ -2351,9 +2351,11 @@ export async function completeFarmRun(runId, { summary, patch, artifacts }) {
     recordFarmCheckPass(item, artifacts, 'implement')
   }
 
+  // HZ-407: a job's final view lands in the same write that closes the run.
+  const finalView = STEPS[run.step_index]?.runsIn === 'job' ? cleanJobView(jobView) : null
   db.prepare(
-    "UPDATE step_run SET status = 'done', output = ?, artifact = ?, provider = ?, model = ?, command_id = ?, ended_at = datetime('now') WHERE id = ?",
-  ).run(text, artifactMd, provider, model, commandId, runId)
+    "UPDATE step_run SET status = 'done', output = ?, artifact = ?, provider = ?, model = ?, command_id = ?, job_view = COALESCE(?, job_view), ended_at = datetime('now') WHERE id = ?",
+  ).run(text, artifactMd, provider, model, commandId, finalView && JSON.stringify(finalView), runId)
   db.prepare("UPDATE work_item SET cursor = cursor + 1, updated_at = datetime('now') WHERE id = ?").run(id)
   addEvent(id, { who: agent.label, text: `completed “${step.label}” — ${text.slice(0, 300)}`, color: agent.color, initials: agent.initials })
   postStepComment(getItem(id), run.step_index, run.attempt, text, cleanPatch, false, artifactMd)
@@ -2395,7 +2397,7 @@ const FAILED_OUTPUT_MAX_CHARS = 2000
 // detected the failure) or null/unrecognized — only a tagged reason, under
 // the cap, on a still-runnable item is ever auto-retried. Everything else
 // pauses for a human exactly as it always has (HZ-76's default-safe rule).
-export function failFarmRun(runId, error, reason = null) {
+export function failFarmRun(runId, error, reason = null, jobView = null) {
   const run = db.prepare('SELECT * FROM step_run WHERE id = ?').get(runId)
   if (!run || run.status !== 'active') return { ok: true, stale: true }
   const id = run.item_id
@@ -2404,11 +2406,14 @@ export function failFarmRun(runId, error, reason = null) {
   delete timers[runId]
   dispatching.delete(id) // this run is now terminal — release before any retry kick() below re-acquires it
 
+  // HZ-407: a job's final view (the farm's, else the last one stored) is
+  // written with the close, and no command in it is left `running`.
+  const finalView = STEPS[run.step_index]?.runsIn === 'job' ? settleJobView(cleanJobView(jobView) ?? parseJobView(run.job_view)) : null
   // No 'failed' status in older DBs' CHECK constraint — record as cancelled
   // with a FAILED-prefixed output, and say why.
   db.prepare(
-    "UPDATE step_run SET status = 'cancelled', output = ?, ended_at = datetime('now') WHERE id = ?",
-  ).run(`FAILED: ${String(error).slice(0, FAILED_OUTPUT_MAX_CHARS)}`, runId)
+    "UPDATE step_run SET status = 'cancelled', output = ?, job_view = COALESCE(?, job_view), ended_at = datetime('now') WHERE id = ?",
+  ).run(`FAILED: ${String(error).slice(0, FAILED_OUTPUT_MAX_CHARS)}`, finalView && JSON.stringify(finalView), runId)
   // Tell the farm too (same call cancel() makes): a step failed here by
   // either watchdog firing (queue or execution) may still be sitting queued
   // or running on the farm side. Without this, farmd can claim and launch a
@@ -2497,35 +2502,114 @@ export async function fetchJobStatus(runId) {
 
 // One job's redacted log, paged by byte offset. Farmd serves the runner's
 // own log file (never pipe-pane); the shape matches /api/runs/:runId/log.
-export async function fetchJobLog(runId, offset = 0) {
-  const res = await fetch(`${FARM_URL}/jobs/${encodeURIComponent(runId)}/log?offset=${encodeURIComponent(offset)}`)
+// HZ-407: the item id lets farmd find the log after Stop released the job.
+export async function fetchJobLog(runId, offset = 0, itemId = null) {
+  const item = itemId ? `&item_id=${encodeURIComponent(itemId)}` : ''
+  const res = await fetch(`${FARM_URL}/jobs/${encodeURIComponent(runId)}/log?offset=${encodeURIComponent(offset)}${item}`)
   const data = await res.json().catch(() => ({}))
   return { status: res.status, data }
 }
 
+// ---- HZ-407: the Execute card's live job view ----
+// farmd builds the view from the runner's state file and redacted log; only
+// these fields are kept, so nothing else a farm body carries reaches the browser.
+const JOB_COMMAND_STATUSES = new Set(['pending', 'running', 'done', 'stopped'])
+export const JOB_VIEW_MAX_COMMANDS = 50
+export const JOB_VIEW_MAX_LOG_LINES = 20
+const JOB_VIEW_MAX_LOG_CHARS = 4096
+const JOB_VIEW_MAX_COMMAND_CHARS = 2000
+const shortString = (v, max = 64) => (typeof v === 'string' ? v.slice(0, max) : null)
+const wholeSeconds = (v) => (Number.isFinite(v) && v >= 0 ? Math.floor(v) : 0)
+
+// The whitelisted, capped copy of a view, or null when it is not one.
+export function cleanJobView(view) {
+  if (!view || typeof view !== 'object' || !Array.isArray(view.commands)) return null
+  const logTail = []
+  let chars = 0
+  for (const line of (Array.isArray(view.logTail) ? view.logTail : []).slice(-JOB_VIEW_MAX_LOG_LINES).reverse()) {
+    if (typeof line !== 'string') continue
+    chars += line.length
+    if (chars > JOB_VIEW_MAX_LOG_CHARS) break
+    logTail.unshift(line)
+  }
+  return {
+    status: shortString(view.status, 40) ?? 'unknown',
+    elapsedS: wholeSeconds(view.elapsedS),
+    budgetS: wholeSeconds(view.budgetS),
+    startedAt: shortString(view.startedAt),
+    updatedAt: shortString(view.updatedAt),
+    commands: view.commands.slice(0, JOB_VIEW_MAX_COMMANDS).map((c) => ({
+      command: typeof c?.command === 'string' ? c.command.slice(0, JOB_VIEW_MAX_COMMAND_CHARS) : '',
+      status: JOB_COMMAND_STATUSES.has(c?.status) ? c.status : 'pending',
+      exit_code: Number.isInteger(c?.exit_code) ? c.exit_code : null,
+    })),
+    logTail,
+  }
+}
+
+export function parseJobView(json) {
+  if (!json) return null
+  try {
+    return cleanJobView(JSON.parse(json))
+  } catch {
+    return null
+  }
+}
+
+// A closed job's view: the command that was running is `stopped` — never
+// left running, never `done` — and a job still marked running is `stopped`.
+function settleJobView(view) {
+  if (!view) return null
+  return {
+    ...view,
+    status: ['running', 'unknown'].includes(view.status) ? 'stopped' : view.status,
+    commands: view.commands.map((c) => (c.status === 'running' ? { ...c, status: 'stopped', exit_code: null } : c)),
+  }
+}
+
+// farmd's forward of a runner nudge. Stored only while the run is active and
+// is a job: a nudge that lands after Stop, a failure or a result is stale and
+// changes nothing, so the view those wrote stands.
+export function recordJobProgress(runId, view) {
+  const run = db.prepare('SELECT id, step_index, status FROM step_run WHERE id = ?').get(runId)
+  if (!run || run.status !== 'active' || STEPS[run.step_index]?.runsIn !== 'job') return { ok: true, stale: true }
+  const clean = cleanJobView(view)
+  if (!clean) return { ok: true, stale: true }
+  db.prepare("UPDATE step_run SET job_view = ? WHERE id = ? AND status = 'active'").run(JSON.stringify(clean), runId)
+  notifyChange()
+  return { ok: true }
+}
+
 // Human stops the job: the farm kills the session, the run closes, and the
 // item pauses with the count done in Activity. A second Stop finds no active
-// job and answers 409 (the route maps null to it).
+// job and answers 409 (the route maps null to it). HZ-407: the farm's final
+// view (else the last one stored) is written with the close.
 export async function stopJob(id) {
   const run = activeJobRun(id)
   if (!run) return null
   let commandsDone = 0
+  let farmView = null
   if (FARM_URL) {
     try {
       const res = await farmFetch('/jobs/stop', { run_id: run.id })
       commandsDone = Number(res?.commandsDone ?? 0) || 0
+      farmView = cleanJobView(res?.view)
     } catch {
       // The farm is unreachable: the run still closes below, so the item
       // never wedges on a dead farm; the orphaned session finishes harmlessly.
     }
   }
+  // A second Stop (or the job's result) closed the run while the farm answered.
+  if (db.prepare('SELECT status FROM step_run WHERE id = ?').get(run.id)?.status !== 'active') return null
+  const stored = parseJobView(db.prepare('SELECT job_view FROM step_run WHERE id = ?').get(run.id)?.job_view)
+  const finalView = settleJobView(farmView ?? stored)
+  if (!farmView && stored) commandsDone = stored.commands.filter((c) => c.status === 'done' && c.exit_code === 0).length
   clearTimeout(timers[run.id])
   delete timers[run.id]
   dispatching.delete(id)
-  db.prepare("UPDATE step_run SET status = 'cancelled', output = ?, ended_at = datetime('now') WHERE id = ?").run(
-    `STOPPED: the run was stopped with ${commandsDone} command(s) done`,
-    run.id,
-  )
+  db.prepare(
+    "UPDATE step_run SET status = 'cancelled', output = ?, job_view = COALESCE(?, job_view), ended_at = datetime('now') WHERE id = ?",
+  ).run(`STOPPED: the run was stopped with ${commandsDone} command(s) done`, finalView && JSON.stringify(finalView), run.id)
   db.prepare("UPDATE work_item SET paused = 1, updated_at = datetime('now') WHERE id = ?").run(id)
   addEvent(id, {
     who: 'Horizon',

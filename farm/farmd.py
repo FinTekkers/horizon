@@ -24,9 +24,9 @@ from fastapi.responses import JSONResponse
 # HZ-132 put the failure-reason vocabulary there under the same rule, so the
 # tags this daemon relays are the ones the server classifies, by construction.
 from domain.py import reasons, run_plan, steps
-from . import caretaker_ruling, check_slots, conflict_cancel, conflict_resolver, pause, rules, tmux_mgr, workspaces
+from . import caretaker_ruling, check_slots, conflict_cancel, conflict_resolver, pause, rules, task_job, tmux_mgr, workspaces
 from . import config as farm_config
-from .checks import CHECK_SLOTS, default_check_slots
+from .checks import CHECK_SLOTS, default_check_slots, redact
 from .task_files import read_launchable_task
 from .agent_runner import AgentError, assert_provider_auth
 from .config import (
@@ -518,6 +518,10 @@ def _forward_result(body: dict) -> int | None:
     # HZ-327: the check run's flakes ride on the result itself, either way.
     if isinstance(body.get("flakes"), list) and body["flakes"]:
         payload["flakes"] = body["flakes"]
+    # HZ-407: a job's final view rides on its result, so the server closes the
+    # run and stores the view in one write — a late nudge can't be lost to it.
+    if isinstance(body.get("job_view"), dict) and path in ("complete", "fail"):
+        payload["job_view"] = body["job_view"]
     url = f"{HORIZON_URL}/api/farm/steps/{run_id}/{path}"
     status = None
     for attempt in (1, 2):
@@ -902,6 +906,7 @@ def _poll_jobs() -> None:
                         "ok": True,
                         "summary": text[:600],
                         "artifacts": {"artifact_md": job_artifact_md(text, log_text)},
+                        "job_view": _job_view(run_id, task),
                     }
                 )
             elif status == "budget_exceeded":
@@ -911,6 +916,7 @@ def _poll_jobs() -> None:
                         "ok": False,
                         "error": "the job ran past the run plan's time budget and was stopped",
                         "reason": reasons.REASON["JOB_BUDGET_EXCEEDED"],
+                        "job_view": _job_view(run_id, task),
                     }
                 )
             elif status == "hash_mismatch":
@@ -1484,9 +1490,45 @@ def _job_task_for_run(run_id: str) -> tuple[Path | None, dict | None]:
     return None, None
 
 
+# HZ-407: how many of the log's last lines ride in a job view.
+JOB_LOG_TAIL_LINES = 20
+# An item id as it may name a log file: no `/`, no `..`.
+_JOB_ITEM_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]*$")
+
+
+def _job_secrets(task: dict) -> dict:
+    """Every value a job's log is scrubbed of — the plan's resolved env values
+    plus the redact set — so command text in a view is scrubbed the same way."""
+    try:
+        block = run_plan.extract(task.get("plan_artifact") or "")
+    except ValueError:
+        return {}
+    return {**_job_redact_values(block["cwd"]), **_resolve_job_env(block["cwd"], block.get("env", {}))}
+
+
+def _job_log_path(run_id, item_id: str) -> Path:
+    from farm.config import LOGS_DIR as _LOGS
+
+    name = JOB_SESSIONS.get(str(run_id)) or _job_session_name(item_id)
+    return _LOGS / f"{name}.log"
+
+
+def _job_log_tail(run_id, item_id: str, lines: int = JOB_LOG_TAIL_LINES) -> list[str]:
+    """The last lines of the runner's own log file, already redacted."""
+    try:
+        with _job_log_path(run_id, item_id).open("rb") as f:
+            f.seek(0, os.SEEK_END)
+            f.seek(max(0, f.tell() - 16 * 1024))
+            text = f.read().decode("utf-8", "replace")
+    except OSError:
+        return []
+    return text.splitlines()[-lines:]
+
+
 def _job_view(run_id: str, task: dict) -> dict:
-    """The job's current status for the server's GET /api/items/:id/job: the
-    state file's command entries plus elapsed seconds against the budget."""
+    """The job's current status for the server's GET /api/items/:id/job and
+    the Execute card (HZ-407): each command (text redacted) with its status,
+    elapsed seconds against the budget, and the log's last redacted lines."""
     from farm.config import STATE_DIR as _STATE
 
     item_id = task["item"]["id"]
@@ -1495,17 +1537,106 @@ def _job_view(run_id: str, task: dict) -> dict:
         state = json.loads((_STATE / "jobs" / f"{item_id}.json").read_text())
     except (OSError, json.JSONDecodeError):
         state = None
-    commands = state.get("commands", []) if state else []
+    # A previous run's state (before a Resume's runner writes) is not this run's.
+    if state and str(state.get("run_id")) != str(run_id):
+        state = None
+    secrets = _job_secrets(task)
+    commands = [
+        {
+            "command": redact(str(c.get("command", "")), secrets),
+            "status": c.get("status"),
+            "exit_code": c.get("exit_code"),
+            "started_at": c.get("started_at"),
+            "ended_at": c.get("ended_at"),
+        }
+        for c in (state.get("commands", []) if state else [])
+        if isinstance(c, dict)
+    ]
     budget_s = state.get("budget_s", 0) if state else 0
     started_at = state.get("started_at") if state else None
+    ended_at = state.get("ended_at") if state else None
     try:
-        elapsed = max(0, int(time.time() - datetime.fromisoformat(started_at).timestamp())) if started_at else 0
+        until = datetime.fromisoformat(ended_at).timestamp() if ended_at else time.time()
+        elapsed = max(0, int(until - datetime.fromisoformat(started_at).timestamp())) if started_at else 0
     except (ValueError, TypeError, OSError):
         elapsed = 0
     status = state.get("status", "running") if state else "running"
     if status == "running" and not tmux_mgr.session_exists(name):
         status = "unknown"
-    return {"status": status, "elapsedS": elapsed, "budgetS": budget_s, "commands": commands}
+    return {
+        "status": status,
+        "elapsedS": elapsed,
+        "budgetS": budget_s,
+        "startedAt": started_at,
+        "updatedAt": datetime.now(timezone.utc).isoformat(),
+        "commands": commands,
+        "logTail": [redact(line, secrets) for line in _job_log_tail(run_id, item_id)],
+    }
+
+
+def _forward_progress(run_id, view: dict) -> None:
+    """HZ-407: the job's latest view to the server, which stores it on the run
+    and pushes it down the item's stream. One try: the next nudge resends the
+    whole view."""
+    try:
+        res = httpx.post(
+            f"{HORIZON_URL}/api/farm/steps/{run_id}/progress",
+            json=view,
+            headers={"x-farm-secret": SHARED_SECRET},
+            timeout=5,
+        )
+        if not 200 <= res.status_code < 300:
+            print(f"farmd: job progress for run {run_id} -> {res.status_code}", flush=True)
+    except Exception as exc:
+        print(f"farmd: job progress for run {run_id} not delivered: {exc}", flush=True)
+
+
+@app.post("/jobs/{run_id}/progress")
+def jobs_progress(run_id: str, request: Request):
+    """Loopback only: the runner's nudge that its state or log moved. The
+    runner sends no body and holds no farm secret; the view is built here."""
+    host = request.client.host if request.client else None
+    if host not in LOOPBACK_HOSTS:
+        return JSONResponse({"error": "loopback only"}, status_code=403)
+    _task_path, task = _job_task_for_run(run_id)
+    if not task:
+        return JSONResponse({"error": "unknown job"}, status_code=404)
+    _in_background(_forward_progress, task["run_id"], _job_view(run_id, task))
+    return {"ok": True}
+
+
+def _mark_job_stopped(run_id, item_id: str) -> None:
+    """HZ-407: after Stop killed the runner, its command's process group
+    (which outlives the tmux session) is killed too, and the command that was
+    running is recorded `stopped` — never left `running`, never `done`."""
+    from farm.config import STATE_DIR as _STATE
+
+    state_path = _STATE / "jobs" / f"{item_id}.json"
+    state = task_job.load_state(state_path)
+    if not state or str(state.get("run_id")) != str(run_id):
+        return
+    now = datetime.now(timezone.utc).isoformat()
+    for entry in state.get("commands", []):
+        if not isinstance(entry, dict) or entry.get("status") != "running":
+            continue
+        pgid = entry.pop("pgid", None)
+        if isinstance(pgid, int) and pgid > 1:
+            try:
+                os.killpg(pgid, signal.SIGKILL)
+            except (ProcessLookupError, PermissionError, OSError):
+                pass
+        entry["status"] = "stopped"
+        entry["ended_at"] = now
+        entry["exit_code"] = None
+    if state.get("status") == "running":
+        state["status"] = "stopped"
+        state["ended_at"] = now
+    task_job.save_state(state_path, state)
+    try:
+        with _job_log_path(run_id, item_id).open("a", encoding="utf-8") as log:
+            log.write("stopped by the owner\n")
+    except OSError:
+        pass
 
 
 @app.post("/jobs/stop")
@@ -1525,18 +1656,15 @@ async def jobs_stop(request: Request):
     if not tmux_mgr.session_exists(name):
         return JSONResponse({"error": "job not running"}, status_code=409)
     tmux_mgr.kill_session(name)
+    _mark_job_stopped(run_id, task["item"]["id"])
+    # Built before the session is forgotten, so the log path still resolves.
+    view = _job_view(run_id, task)
     JOB_SESSIONS.pop(run_id, None)
     task_path.unlink(missing_ok=True)
     (task_path.parent / f"{task['run_id']}.env.json").unlink(missing_ok=True)
-    from farm.config import STATE_DIR as _STATE
-
-    try:
-        state = json.loads((_STATE / "jobs" / f"{task['item']['id']}.json").read_text())
-        done = sum(1 for c in state.get("commands", []) if c.get("status") == "done" and c.get("exit_code") == 0)
-    except (OSError, json.JSONDecodeError):
-        done = 0
+    done = sum(1 for c in view["commands"] if c.get("status") == "done" and c.get("exit_code") == 0)
     print(f"farmd: stopped job {run_id} (killed {name})", flush=True)
-    return {"ok": True, "killed": True, "commandsDone": done}
+    return {"ok": True, "killed": True, "commandsDone": done, "view": view}
 
 
 @app.get("/jobs/{run_id}")
@@ -1552,19 +1680,20 @@ def jobs_status(run_id: str, request: Request):
 
 
 @app.get("/jobs/{run_id}/log")
-def jobs_log(run_id: str, request: Request, offset: int = 0):
+def jobs_log(run_id: str, request: Request, offset: int = 0, item_id: str | None = None):
     """Loopback only: pages the runner's own redacted log file, the same
-    shape as /runs/{run_id}/log so the server proxies it verbatim."""
+    shape as /runs/{run_id}/log so the server proxies it verbatim. HZ-407:
+    once Stop released the task file, `item_id` still finds the log."""
     host = request.client.host if request.client else None
     if host not in LOOPBACK_HOSTS:
         return JSONResponse({"error": "loopback only"}, status_code=403)
     _task_path, task = _job_task_for_run(run_id)
-    if not task:
+    if task:
+        item_id = task["item"]["id"]
+    elif not item_id or not _JOB_ITEM_ID_RE.match(item_id):
         return JSONResponse({"error": "unknown job"}, status_code=404)
-    from farm.config import LOGS_DIR as _LOGS
-
-    name = JOB_SESSIONS.get(str(run_id)) or _job_session_name(task["item"]["id"])
-    log_path = _LOGS / f"{name}.log"
+    name = JOB_SESSIONS.get(str(run_id)) or _job_session_name(item_id)
+    log_path = _job_log_path(run_id, item_id)
     offset = max(0, offset)
     content = b""
     if log_path.exists():

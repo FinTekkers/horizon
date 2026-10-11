@@ -42,6 +42,10 @@ export function runLogViewUrl() {
   return '#'
 }
 
+export function jobLogUrl() {
+  return '#'
+}
+
 export function issueUrl(item) {
   return `${REPO_URL}/issues/${item.issue}`
 }
@@ -392,6 +396,16 @@ export async function setPaused(id, paused) {
   if (paused) clearTimeout(timers[id])
   else runAgents(id)
   return { ok: true, paused, item: items.find((x) => x.id === id) }
+}
+
+// HZ-407: mock items run no Execute job, so there is never one to stop or
+// resume — the same refusals the server gives then.
+export async function stopJob(id) {
+  throw new Error(items.some((x) => x.id === id) ? 'no_job' : 'not_found')
+}
+
+export async function resumeJob(id) {
+  throw new Error(items.some((x) => x.id === id) ? 'nothing_to_resume' : 'not_found')
 }
 
 // Mirrors store.removeDependency: drop the edge on both sides, log it, and

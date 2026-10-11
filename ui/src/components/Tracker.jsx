@@ -21,11 +21,12 @@ import { pauseReason } from '../domain/pauseReason'
 import { gateActionOf } from '../domain/gateAction'
 import { deployQueueLabel } from '../domain/deployQueue'
 import { resolveEventColor } from '../domain/eventColors'
-import { issueUrl, issueLabel, artifactUrl, outputUrl, runLogViewUrl, subscribeStepOutputs } from '../api'
+import { issueUrl, issueLabel, artifactUrl, outputUrl, runLogViewUrl, subscribeStepOutputs, stopJob, resumeJob } from '../api'
 import StatusPill from './StatusPill'
 import DependencyBadge from './DependencyBadge'
 import Markdown from './Markdown'
 import GateActionStatus from './GateActionStatus'
+import JobPanel from './JobPanel'
 import ProjectBadge from './ProjectBadge'
 import TaskBadge from './TaskBadge'
 import { BackIcon, LinkIcon, RestartIcon, PrIcon } from './icons'
@@ -317,6 +318,8 @@ function Step({ item, stepOutputs, outputsSettled, index, deployBlock, viewerNam
                 : 'View full artifact ↗'}
             </a>
           )}
+          {/* HZ-407: a Task's Execute job, live from the item's own stream. */}
+          {st.runsIn === 'job' && output?.job && <JobPanel item={item} job={output.job} onStop={stopJob} onResume={resumeJob} />}
           <StepProviderPicker
             item={item}
             index={index}

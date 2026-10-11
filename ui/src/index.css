@@ -841,6 +841,22 @@ button { font-family: var(--font-sans); }
 }
 .step-card__actions { display: flex; gap: 8px; margin-top: 12px; flex-wrap: wrap; }
 
+/* HZ-407: the Execute card's live job. */
+.job-panel { margin-top: 12px; display: flex; flex-direction: column; gap: 8px; }
+.job-panel .step-card__actions { margin-top: 0; align-items: center; }
+.job-panel__commands { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
+.job-panel__command { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
+.job-panel__command-text { font-size: 12px; overflow-wrap: anywhere; }
+.job-panel__exit { font-size: 12px; color: var(--danger-ink); }
+.job-panel__elapsed { font-size: 12px; color: var(--muted); }
+.job-panel__elapsed--over { color: var(--danger-ink); }
+.job-panel__log { margin: 0; padding: 8px; max-height: 240px; overflow: auto; font-size: 12px; white-space: pre-wrap; overflow-wrap: anywhere; background: var(--surface-alt); border-radius: 6px; }
+.job-chip { flex: none; font-size: 11px; font-weight: 600; padding: 1px 8px; border-radius: 999px; text-transform: uppercase; letter-spacing: 0.02em; }
+.job-chip--done { color: var(--success-ink); background: color-mix(in srgb, var(--success-ink) 12%, transparent); }
+.job-chip--running { color: var(--primary-ink); background: color-mix(in srgb, var(--primary-ink) 12%, transparent); }
+.job-chip--pending { color: var(--muted); background: color-mix(in srgb, var(--muted) 12%, transparent); }
+.job-chip--stopped { color: var(--danger-ink); background: color-mix(in srgb, var(--danger-ink) 12%, transparent); }
+
 .step-card__persona { display: flex; align-items: center; gap: 10px; margin-top: 12px; }
 .step-card__persona-label { font: 700 11px var(--font-sans); color: var(--muted); text-transform: uppercase; letter-spacing: 0.4px; }
 .step-card__persona-select {
