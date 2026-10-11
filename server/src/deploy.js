@@ -24,6 +24,7 @@ import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { PORT } from './config.js'
 import { listTargets, findTargetByRepo, checkRunnable, scriptPath } from './deployTargets.js'
+import { holdIfBusy } from './deployHold.js'
 
 // Hit only on a release webhook or an Admin page load, both rare. A DB error
 // fails closed to no targets rather than throwing and 500ing the webhook.
@@ -122,9 +123,21 @@ export const runner = {
   },
 }
 
-export function runDeploy(repoFullName, tag, log) {
+export function runDeploy(repoFullName, tag, log, now = Date.now()) {
   const target = resolveTarget(repoFullName)
   if (!target) return // isDeployableRelease already gated this; defensive only
+  // HZ-408: a job running in this repo holds the release; the deploy queue's
+  // tick starts it once the job ends (deployHold.js).
+  if (holdIfBusy(target.key, target.repo, tag, now)) {
+    log?.info(`self-deploy: held ${tag} for ${target.key} — a job is running`)
+    return
+  }
+  startDeploy(target, tag, log)
+}
+
+// The one place a deploy script is spawned for a release: runDeploy() and a
+// released hold (deployQueue.js releaseHolds) both go through it.
+export function startDeploy(target, tag, log) {
   runner.spawn(target, tag)
   log?.info(`self-deploy: triggered ${target.script} for ${target.key} release ${tag}`)
 }

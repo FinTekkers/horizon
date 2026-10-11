@@ -88,6 +88,11 @@ export const DEPLOY_WAIT_MS = deployWaitEnvMs > 0 ? deployWaitEnvMs : 20 * 60 * 
 // window; anything not a number >= 0 means the default.
 const deployBatchEnvS = process.env.HORIZON_DEPLOY_BATCH_S?.trim() ? Number(process.env.HORIZON_DEPLOY_BATCH_S) : NaN
 export const DEPLOY_BATCH_S = deployBatchEnvS >= 0 ? deployBatchEnvS : 900
+// HZ-408: a release held for a running Execute job waits at most until the
+// job's budget runs out plus this grace. Anything not a number >= 0 means the
+// default.
+const deployHoldGraceEnvS = process.env.HORIZON_DEPLOY_HOLD_GRACE_S?.trim() ? Number(process.env.HORIZON_DEPLOY_HOLD_GRACE_S) : NaN
+export const DEPLOY_HOLD_GRACE_MS = (deployHoldGraceEnvS >= 0 ? deployHoldGraceEnvS : 300) * 1000
 // HZ-275 (metric 5): a release deploy that finds another deploy holding
 // the lock waits up to 30 min for it, not the scripts' own 5-min default, so
 // two releases published close together both deploy, in order. Set in this

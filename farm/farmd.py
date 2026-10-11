@@ -848,7 +848,12 @@ def job_artifact_md(summary_text: str, log_text: str) -> str:
 def _poll_jobs() -> None:
     """Forwards finished jobs to the server once, then releases their task
     files. Called from _watchdog (no third loop thread) and directly by
-    tests. Each job isolated: one corrupt file never aborts the rest."""
+    tests. Each job isolated: one corrupt file never aborts the rest.
+
+    HZ-408: a task file is released only once the server answered 2xx or 4xx.
+    No answer or a 5xx (the server restarting in a deploy) keeps it for the
+    next poll, so a result is never lost; a resend after a crash between the
+    server's ack and the unlink is answered stale, so the run ends once."""
     from farm.config import LOGS_DIR as _LOGS, STATE_DIR as _STATE
 
     for task_path in sorted((QUEUE_DIR / "jobs" / "active").glob("*.json")):
@@ -891,7 +896,7 @@ def _poll_jobs() -> None:
                     log_text = (_LOGS / f"{log_name}.log").read_text()
                 except OSError:
                     log_text = ""
-                _forward_result(
+                code = _forward_result(
                     {
                         "run_id": task["run_id"],
                         "ok": True,
@@ -900,7 +905,7 @@ def _poll_jobs() -> None:
                     }
                 )
             elif status == "budget_exceeded":
-                _forward_result(
+                code = _forward_result(
                     {
                         "run_id": task["run_id"],
                         "ok": False,
@@ -909,7 +914,7 @@ def _poll_jobs() -> None:
                     }
                 )
             elif status == "hash_mismatch":
-                _forward_result(
+                code = _forward_result(
                     {
                         "run_id": task["run_id"],
                         "ok": False,
@@ -919,6 +924,11 @@ def _poll_jobs() -> None:
                 )
             else:
                 continue
+            if code is None or code >= 500:
+                print(f"farmd: job result for run {run_id} not delivered ({code}) — kept for the next poll", flush=True)
+                continue
+            if code >= 400:
+                print(f"farmd: job result for run {run_id} refused ({code}) — task file released, result not recorded", flush=True)
             task_path.unlink(missing_ok=True)
             (task_path.parent / f"{task['run_id']}.env.json").unlink(missing_ok=True)
             JOB_SESSIONS.pop(run_id, None)

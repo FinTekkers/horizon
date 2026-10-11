@@ -928,6 +928,25 @@ db.exec(`
   CREATE UNIQUE INDEX IF NOT EXISTS idx_deploy_queue_one_live
     ON deploy_queue_entry(item_id) WHERE status IN ('queued','released');
   CREATE INDEX IF NOT EXISTS idx_deploy_queue_batch ON deploy_queue_entry(batch_id);
+
+  -- HZ-408: a published release held while an Execute job runs in its repo
+  -- (server/src/deployHold.js). One row per release, never deleted; the
+  -- deploy queue's tick spawns it once the job ends or deadline_at passes.
+  -- job_run_id has no FOREIGN KEY so deleting an item's runs never fails on it.
+  CREATE TABLE IF NOT EXISTS deploy_hold (
+    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    target         TEXT NOT NULL,
+    repo           TEXT NOT NULL,
+    tag            TEXT NOT NULL,
+    job_run_id     INTEGER NOT NULL,
+    status         TEXT NOT NULL DEFAULT 'held'
+                   CHECK (status IN ('held','released')),
+    release_reason TEXT CHECK (release_reason IN ('job_ended','deadline')),
+    held_at        TEXT NOT NULL,
+    deadline_at    TEXT NOT NULL,
+    released_at    TEXT
+  );
+  CREATE INDEX IF NOT EXISTS idx_deploy_hold_held ON deploy_hold(repo, id) WHERE status = 'held';
 `)
 
 // HZ-313: a plan step's proposal to file part of the fix on another connected

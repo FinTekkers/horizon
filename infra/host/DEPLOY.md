@@ -582,6 +582,49 @@ target's queue (`server/src/deployQueue.js`, rows in `deploy_batch` and
   where it stopped at boot. A Horizon batch is one release, one deploy and one
   drain.
 
+## Deploys wait for a running Execute job (HZ-408)
+
+A Task's Execute job runs for its whole budget, so a deploy of the job's repo
+(the item's `repo`) waits for it instead of cutting it short.
+
+- **Held.** A published release of a repo with a running Execute job is not
+  spawned. `runDeploy()` writes a `deploy_hold` row instead
+  (`server/src/deployHold.js`) and logs `self-deploy: held <tag> for <key>`.
+  The job's item gets a `release <tag> of <repo> is held …` event. A due
+  deploy-queue batch of that repo stays `open` until the job ends.
+- **Released.** The deploy queue's tick (every 5 s) spawns the held release
+  once the job ends (succeeded, failed or stopped), with `release_reason =
+  job_ended`. A hung job is bounded: at `deadline_at` (the job's budget end
+  plus `HORIZON_DEPLOY_HOLD_GRACE_S`, default `300`) the release deploys
+  anyway, with `release_reason = deadline`. The job's item gets an event that
+  names the reason.
+- **Order.** Releases of one repo stay in order. A release behind a held one
+  is held too. Each goes only once the one before it is live or failed, or
+  after `HORIZON_DEPLOY_WAIT_MS`. Rows are never deleted or merged.
+- **Batches.** Time a batch's release spends held does not count toward
+  `HORIZON_DEPLOY_WAIT_MS`.
+- **Other repos** deploy and drain as before. The drain never waits for a job.
+- **Restart.** Holds are rows in the database, so the server releases them
+  after a restart. farmd restarts (a Horizon deploy restarts
+  `horizon-farm`, `KillMode=process`) leave the job's tmux session running.
+  The new farmd re-adopts it and reports its result once. A result the server
+  did not answer, or answered with a 5xx, is kept and retried.
+- **Stop while the farm is down.** Stop still closes the run and releases the
+  hold (`job_ended`), but the tmux session may still be running.
+- **Manual script runs bypass holds.** Running a `deploy-*.sh` by hand on the
+  host deploys at once, as before.
+
+Read the held releases on the host:
+
+```bash
+sqlite3 /opt/horizon/server/data/horizon.db \
+  "SELECT id, target, tag, job_run_id, held_at, deadline_at FROM deploy_hold WHERE status='held'"
+```
+
+To deploy one now, re-run the target's script with the row's `tag`, as for a
+manual rollback. The row then stays `held` until its job ends, and the tick
+deploys the tag again.
+
 ## Code-only targets (HZ-353)
 
 A repo with code on this host but no service, such as

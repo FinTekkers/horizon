@@ -116,6 +116,38 @@ def test_a_budget_breach_forwards_the_non_retryable_reason(monkeypatch, fake_tmu
     assert forwarded[0]["reason"] == reasons.REASON["JOB_BUDGET_EXCEEDED"]
 
 
+def test_an_undelivered_result_keeps_the_task_file_and_the_next_poll_forwards_it_once(monkeypatch, fake_tmux, tmp_path):
+    """HZ-408: the server unreachable (it restarts in a deploy) must not lose
+    a finished job's report — the task file stays for the next poll, which
+    forwards it once and only then releases it."""
+    farmd.JOB_SESSIONS.clear()
+    farmd.launch_job(job_payload(9131, cwd=str(tmp_path)))
+    _write_finished("HZ-13", str(tmp_path))
+    task_file = QUEUE_DIR / "jobs" / "active" / "9131.json"
+    forwarded = []
+    answers = iter([None, 200, 200])
+
+    def forward(body):
+        forwarded.append(body)
+        return next(answers)
+
+    monkeypatch.setattr(farmd, "_forward_result", forward)
+    try:
+        farmd._poll_jobs()
+        assert len(forwarded) == 1
+        assert task_file.exists(), "no answer: the task file is kept"
+        farmd._poll_jobs()
+        assert len(forwarded) == 2
+        assert not task_file.exists(), "delivered: the task file is released"
+        farmd._poll_jobs()
+        assert len(forwarded) == 2, "a delivered result is never forwarded again"
+    finally:
+        task_file.unlink(missing_ok=True)
+        (QUEUE_DIR / "jobs" / "active" / "9131.env.json").unlink(missing_ok=True)
+        (STATE_DIR / "jobs" / "HZ-13.json").unlink(missing_ok=True)
+        farmd.JOB_SESSIONS.pop("9131", None)
+
+
 def test_a_previous_runs_state_is_never_reported_for_a_new_run(monkeypatch, fake_tmux, tmp_path):
     """Between a Resume's dispatch and its runner's first write, the item's
     state file still holds the old run's result: it is not forwarded, and the

@@ -37,6 +37,7 @@ import { priorityFromLabels } from './priorityLabels.js'
 import { kindFromLabels } from './kindLabels.js'
 import { getActiveProjectId, setSetting } from './settings.js'
 import { parseRuleBlock } from './ruleBlock.js'
+import { msOf } from './sqlTime.js'
 
 const listeners = new Set()
 
@@ -194,6 +195,24 @@ export function activeJobRun(itemId) {
       .prepare("SELECT id, item_id, step_index, attempt, started_at FROM step_run WHERE item_id = ? AND step_index = ? AND status = 'active' ORDER BY id DESC LIMIT 1")
       .get(itemId, EXECUTE_STEP_INDEX) ?? null
   )
+}
+
+// HZ-408: every active Execute run of an item in `repo` — what holds a deploy
+// of that repo (server/src/deployHold.js). startedMs is when the farm
+// confirmed the runner launched, else the dispatch; budgetMs is the run
+// plan's budget, or null when the plan is unreadable.
+export function runningJobsIn(repo) {
+  return db
+    .prepare(
+      `SELECT r.id, r.item_id, COALESCE(r.agent_started_at, r.started_at) AS started_at
+         FROM step_run r JOIN work_item w ON w.id = r.item_id
+        WHERE w.repo = ? AND r.step_index = ? AND r.status = 'active' ORDER BY r.id`,
+    )
+    .all(repo, EXECUTE_STEP_INDEX)
+    .map((row) => {
+      const minutes = currentRunPlan(row.item_id)?.block.budget_minutes
+      return { runId: row.id, itemId: row.item_id, startedMs: msOf(row.started_at), budgetMs: minutes ? minutes * 60000 : null }
+    })
 }
 
 // HZ-250: ends the listed runs as `interrupted` when a deploy's wait ran out.
