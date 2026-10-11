@@ -108,9 +108,9 @@
       "timeoutS": 900
     },
     { "phase": 4, "kind": "gate", "gate": "required", "label": "Review the work & close" },
-    { "phase": 0, "kind": "agent", "agent": "PM", "label": "Define the outcome", "runsIn": "none", "itemKind": "task" },
-    { "phase": 0, "kind": "agent", "agent": "PM", "label": "How we'll verify", "runsIn": "none", "itemKind": "task" },
-    { "phase": 0, "kind": "agent", "agent": "Architect", "label": "Guardrails", "runsIn": "none", "itemKind": "task" },
+    { "phase": 0, "kind": "agent", "agent": "PM", "label": "Define the outcome", "runsIn": "pm", "itemKind": "task", "providerOverrideEligible": true },
+    { "phase": 0, "kind": "agent", "agent": "PM", "label": "How we'll verify", "runsIn": "pm", "itemKind": "task", "providerOverrideEligible": true },
+    { "phase": 0, "kind": "agent", "agent": "Architect", "label": "Guardrails", "runsIn": "pm", "itemKind": "task", "providerOverrideEligible": true },
     { "phase": 0, "kind": "gate", "gate": "required", "label": "Approve & prioritize", "itemKind": "task" },
     {
       "phase": 1,

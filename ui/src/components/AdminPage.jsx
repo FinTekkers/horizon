@@ -20,7 +20,7 @@ import {
   getRepoWebhooks,
   fixRepoWebhook,
 } from '../api'
-import { STEPS } from '../../../domain/js/lifecycle.js'
+import { ITEM_KINDS, STEPS, itemKindInfo } from '../../../domain/js/lifecycle.js'
 import { BackIcon, GithubIcon, LockIcon } from './icons'
 import DeployTargetOverrides from './DeployTargetOverrides'
 import { WEBHOOK_IMPACT, repoHasDeployTarget, webhookImpact } from '../domain/webhookImpact'
@@ -1054,6 +1054,15 @@ const STEP_PROVIDER_OPTIONS = [
 const PROVIDER_ELIGIBLE_STEPS = STEPS.map((step, index) => ({ ...step, index })).filter(
   (step) => step.kind === 'agent' && step.providerOverrideEligible,
 )
+// HZ-413: a Task's steps 0-2 take a default too, under their own heading. The
+// two kinds' first steps share a label, so a Task select's label names the kind;
+// the change selects keep their labels as they were.
+const PROVIDER_STEP_GROUPS = ITEM_KINDS.map((kind) => ({
+  kind,
+  steps: PROVIDER_ELIGIBLE_STEPS.filter((step) => (step.itemKind ?? 'change') === kind),
+})).filter((group) => group.steps.length > 0)
+const providerSelectName = (project, step) =>
+  step.itemKind ? `${project.name} ${itemKindInfo(step.itemKind).label} ${step.label}` : `${project.name} ${step.label}`
 
 function ProjectStepProviders({ project }) {
   const [pending, setPending] = useState(null)
@@ -1087,24 +1096,29 @@ function ProjectStepProviders({ project }) {
   return (
     <div className="project-autopilot">
       <div>Runs on</div>
-      {PROVIDER_ELIGIBLE_STEPS.map((step) => (
-        <label key={step.index} className="project-autopilot__row">
-          <span>{step.label}</span>
-          <select
-            className="field__input"
-            aria-label={`${project.name} ${step.label} Runs on`}
-            value={savedFor(step.index)}
-            onChange={(e) =>
-              e.target.value === savedFor(step.index) ? cancel() : setPending({ index: step.index, provider: e.target.value })
-            }
-          >
-            {STEP_PROVIDER_OPTIONS.map((o) => (
-              <option key={o.value} value={o.value}>
-                {o.label}
-              </option>
-            ))}
-          </select>
-        </label>
+      {PROVIDER_STEP_GROUPS.map((group) => (
+        <Fragment key={group.kind}>
+          {group.steps[0].itemKind && <div>{itemKindInfo(group.kind).label} steps</div>}
+          {group.steps.map((step) => (
+            <label key={step.index} className="project-autopilot__row">
+              <span>{step.label}</span>
+              <select
+                className="field__input"
+                aria-label={`${providerSelectName(project, step)} Runs on`}
+                value={savedFor(step.index)}
+                onChange={(e) =>
+                  e.target.value === savedFor(step.index) ? cancel() : setPending({ index: step.index, provider: e.target.value })
+                }
+              >
+                {STEP_PROVIDER_OPTIONS.map((o) => (
+                  <option key={o.value} value={o.value}>
+                    {o.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+          ))}
+        </Fragment>
       ))}
       {pending && (
         <form className="project-block__add" onSubmit={submit}>
@@ -1112,7 +1126,7 @@ function ProjectStepProviders({ project }) {
             className="field__input"
             type="password"
             autoComplete="off"
-            aria-label={`Gate PIN to set ${project.name} ${STEPS[pending.index].label} to ${pending.provider}`}
+            aria-label={`Gate PIN to set ${providerSelectName(project, STEPS[pending.index])} to ${pending.provider}`}
             placeholder={`Gate PIN to set ${STEPS[pending.index].label} to ${pending.provider}`}
             value={pin}
             onChange={(e) => setPin(e.target.value)}

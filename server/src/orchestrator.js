@@ -28,6 +28,7 @@ import {
   EXECUTE_STEP_INDEX,
   RUN_PLAN_STEP_INDEX,
   VERIFY_REPORT_STEP_INDEX,
+  APPROVE_RUN_GATE_INDEX,
 } from '../../domain/js/lifecycle.js'
 import { AUTO_RETRY_REASONS, REASON } from '../../domain/js/reasons.js'
 import { patchLimits, addedCriteriaLines } from '../../domain/js/fields.js'
@@ -922,6 +923,27 @@ export const MOCK_STEP_BEHAVIOR = {
   'Summarize reviews & recommend': () => ({
     summary: 'review digest unavailable in demo mode — a human must decide at the next gate',
   }),
+  // HZ-413: a Task's How we'll verify and Guardrails, on the PM lane like the
+  // change steps above. A Task's "Define the outcome" shares that change
+  // step's mock by label.
+  "How we'll verify": (it) =>
+    it.metric
+      ? { summary: 'validated the run checks are measurable (mock)' }
+      : {
+          summary: 'drafted checks on the run result for gate review (mock)',
+          patch: {
+            metric: `Draft — count what the run of “${it.title}” wrote, spot-check a sample and report every failure (confirm at the gate)`,
+          },
+        },
+  Guardrails: (it) =>
+    it.guardrails
+      ? { summary: 'confirmed the run safety guardrails (mock)' }
+      : {
+          summary: 'set draft run safety guardrails (mock)',
+          patch: {
+            guardrails: 'Draft — run safety: write only the records this run names, keep to rate limits, and stay safe to re-run.',
+          },
+        },
   // HZ-383: a Task's three read-only planning steps. Each returns an artifact,
   // so demo mode shows the same "View full artifact" link the farm path does.
   Assess: () => ({
@@ -1609,9 +1631,15 @@ function writeWorkItemPatch(id, item, patch) {
 // still lands. An unchanged echo is never checked, so it logs nothing.
 const EXECUTION_GATE_INDEX = requiredStepIndex('Review before execution')
 const CRITERIA_FIELDS = ['metric', 'guardrails']
+// HZ-413: each item kind locks after its own gate. A Task's rows sit after
+// every change row, so the change gate's index alone would lock a Task's
+// steps 0-2 out of the metric and guardrails they exist to write. A Task
+// locks after "Approve the run", where a human approves the plan its metric
+// judges.
+const CRITERIA_LOCK_GATES = { change: EXECUTION_GATE_INDEX, task: APPROVE_RUN_GATE_INDEX }
 
 function lockCriteriaPatch(item, stepIndex, patch) {
-  if (!patch || stepIndex <= EXECUTION_GATE_INDEX) return { patch, blocked: [] }
+  if (!patch || stepIndex <= CRITERIA_LOCK_GATES[itemKindOf(item)]) return { patch, blocked: [] }
   const blocked = CRITERIA_FIELDS.filter(
     (field) =>
       typeof patch[field] === 'string' &&
@@ -1629,7 +1657,7 @@ function applyCriteriaLock(id, item, stepIndex, patch) {
   for (const field of blocked) {
     addEvent(id, {
       who: 'Horizon',
-      text: `Kept ${field} unchanged: “${STEPS[stepIndex].label}” added a line after “${STEPS[EXECUTION_GATE_INDEX].label}”`,
+      text: `Kept ${field} unchanged: “${STEPS[stepIndex].label}” added a line after “${STEPS[CRITERIA_LOCK_GATES[itemKindOf(item)]].label}”`,
       color: '#9C333E',
       initials: 'HZ',
     })

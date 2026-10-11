@@ -16,13 +16,16 @@ from fastapi.testclient import TestClient
 
 from domain.py import run_plan, steps
 from domain.py.personas import model_agent_for_step
-from farm import farmd, step_agent
+from farm import farmd, pm_steps, step_agent
 from farm.agent_runner import AgentError
 from farm.config import QUEUE_DIR
 from farm.providers import claude
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 TASK_LABELS = [step_agent.ASSESS_LABEL, step_agent.RUN_PLAN_LABEL, step_agent.IMPACT_REVIEW_LABEL]
+# HZ-413: a Task's steps 0-2, the PM kind like the change ones.
+TASK_PM_LABELS = [row["label"] for row in steps.steps_for("task")[:3]]
+CHANGE_PM_LABELS = [row["label"] for row in steps.steps_for("change")[:3]]
 WRITE_TOOLS = ("Edit", "Write", "Bash")
 # A literal token shape, built so this file never holds one whole.
 FAKE_TOKEN = "ghp_" + "A1b2C3d4E5f6G7h8I9j0K1l2M3n4"
@@ -96,16 +99,15 @@ def test_a_task_step_and_a_change_step_at_the_same_index_each_get_their_own_runn
 
 def test_a_shared_label_resolves_to_its_own_kinds_row():
     """Both kinds open with a row of the same label. Each kind sees only its
-    own: the change row runs on the PM lane, the Task row has no runner yet,
-    so it is not in the Task farm view at all."""
+    own: both run on the PM lane (HZ-413), each at its own index."""
     shared = {row["label"] for row in steps.steps_for("change")} & {row["label"] for row in steps.steps_for("task")}
     assert len(shared) == 1, "the test needs exactly one label both kinds share"
     label = shared.pop()
-    assert steps.by_kind_label("change", label)["runsIn"] == "pm"
-    with pytest.raises(KeyError):
-        steps.by_kind_label("task", label)
-    with pytest.raises(KeyError):
-        step_agent._step_config("task", label)
+    change, task = steps.by_kind_label("change", label), steps.by_kind_label("task", label)
+    assert change["runsIn"] == task["runsIn"] == "pm"
+    assert change["index"] == 0
+    assert task["index"] == steps.first_step_index("task")
+    assert step_agent._step_config("task", label) == step_agent._step_config("change", label)
 
 
 @pytest.mark.parametrize("kind,label", [("change", step_agent.ASSESS_LABEL), ("task", step_agent.ARCH_REVIEW_LABEL)])
@@ -137,13 +139,18 @@ def test_the_real_tables_change_configs_are_untouched_and_task_labels_map_to_tas
         step_agent.VERIFY_REPORT_LABEL: ("task_verify.md", "qa"),
     }
     # The agent lanes only: Execute rides the job lane (below), which has no
-    # agent runner, so it is in the view but not in the step config.
+    # agent runner, so it is in the view but not in the step config. HZ-413:
+    # steps 0-2 are the PM kind, checked apart, as they get no tools here.
     assert {entry["label"] for entry in steps.FARM_VIEWS["task"] if entry["runsIn"] in ("farm", "pm")} == set(
         expected
-    )
+    ) | set(TASK_PM_LABELS)
     for label, (role_file, persona) in expected.items():
         assert step_agent._step_config("task", label) == (role_file, True, step_agent.PLANNER_TOOLS, persona)
         assert (step_agent.ROLES / role_file).read_text().strip()
+    for label in TASK_PM_LABELS:
+        assert step_agent._step_config("task", label) == ("pm.md", True, None, None)
+        assert step_agent._is_pm_step(label, "task")
+        assert not step_agent._is_read_only("task", label)
     assert steps.by_kind_label("task", "Execute")["runsIn"] == "job"
     with pytest.raises(KeyError):
         step_agent._step_config("task", "Execute")
@@ -368,3 +375,146 @@ def test_a_literal_token_fails_the_step_and_is_never_logged(monkeypatch, capsys,
 def test_a_secret_reference_is_not_a_literal():
     assert run_plan.literal_secrets("export GITHUB_TOKEN=$GITHUB_TOKEN; uses sk-learn") == []
     assert run_plan.literal_secrets(f"GITHUB_TOKEN={FAKE_TOKEN}") == ["github-token", "secret-assignment"]
+
+
+# ---- HZ-413: a Task's steps 0-2 run on the shared PM step code ----
+
+
+def _metric_lines(count: int) -> str:
+    return "\n".join(f"{n}. rows written {n}" for n in range(1, count + 1))
+
+
+def test_a_task_how_we_verify_over_its_line_budget_takes_the_retry_then_patches_metric(monkeypatch):
+    """Metric 1, farm half: the same line budget and retry as the change PM
+    steps. The first reply is over budget, so the step asks once more."""
+    limit = pm_steps.LINE_LIMITS["metric"]
+    calls = stub_agent(
+        monkeypatch,
+        [
+            {"summary": "too long", "patch": {"metric": _metric_lines(limit + 1)}},
+            {"summary": "wrote the run checks", "patch": {"metric": _metric_lines(limit)}},
+        ],
+    )
+    result = step_agent.execute(make_task("How we'll verify"))
+    assert len(calls) == 2
+    assert f"metric has {limit + 1} lines" in calls[1]["prompt"]
+    assert result["patch"] == {"metric": _metric_lines(limit)}
+
+
+def test_a_task_how_we_verify_rejected_twice_fails_with_no_patch(monkeypatch):
+    over = {"summary": "too long", "patch": {"metric": _metric_lines(pm_steps.LINE_LIMITS["metric"] + 1)}}
+    calls = stub_agent(monkeypatch, [over])
+    with pytest.raises(pm_steps.FieldOverBudgetError):
+        step_agent.execute(make_task("How we'll verify"))
+    assert len(calls) == 2
+
+
+@pytest.mark.parametrize(
+    "label,field,value",
+    [
+        (TASK_PM_LABELS[0], "desc", "The ledger is backfilled for 2025."),
+        ("How we'll verify", "metric", "1. 12,000 rows written\n2. A 20-row spot check matches the source"),
+        ("Guardrails", "guardrails", "- Writes only the 2025 ledger rows\n- At most 5 requests a second"),
+    ],
+)
+def test_each_task_pm_step_writes_its_field(monkeypatch, label, field, value):
+    calls = stub_agent(monkeypatch, [{"summary": f"did {label}", "patch": {field: value}}])
+    result = step_agent.execute(make_task(label))
+    assert len(calls) == 1
+    assert calls[0]["step"] == label
+    assert calls[0]["agent"] == model_agent_for_step(steps.by_kind_label("task", label)["agent"])
+    assert result["patch"] == {field: value}
+    assert result["summary"] == f"did {label}"
+
+
+def test_the_composed_role_frames_a_task_and_leaves_the_change_role_byte_identical(monkeypatch):
+    """Metric 2: the role each of the six PM steps 0-2 is given."""
+    roles = {}
+    for kind, labels in (("task", TASK_PM_LABELS), ("change", CHANGE_PM_LABELS)):
+        for label in labels:
+            calls = stub_agent(monkeypatch, [{"summary": "ok"}])
+            task = make_task(label, kind=kind, index=steps.by_kind_label(kind, label)["index"])
+            step_agent.execute(task)
+            roles[(kind, label)] = calls[0]["append_system"]
+
+    task_phrases = [
+        # A Task: an operational run of existing tooling, with no code change.
+        "A Task is an operational run of existing tooling",
+        "It makes no code change.",
+        # The metric: checks on the run's result.
+        "write the metric as checks on the run's result",
+        "Use counts",
+        "spot checks",
+        "failures reported",
+        # The guardrails: run safety.
+        "write guardrails as run safety",
+        "what the run may write",
+        "rate limits",
+        "safe to re-run",
+        # The override of pm.md's three change-only rules, and no personas.
+        "For a Task, these rules replace three rules above: a metric line needs no automated test, "
+        "guardrails are not rules for implementing, and you propose no eng persona.",
+        'Leave "personas" out of your patch on every Task step.',
+    ]
+    for label in TASK_PM_LABELS:
+        role = roles[("task", label)]
+        assert role.startswith(pm_steps.ROLE_PROMPT)
+        assert pm_steps.TASK_ROLE_ADDENDUM in role
+        flat = " ".join(role.split())  # the role file wraps its lines
+        for phrase in task_phrases:
+            assert phrase in flat, f"{label}: missing {phrase!r}"
+    addendum_lines = [line for line in pm_steps.TASK_ROLE_ADDENDUM.splitlines() if line.strip()]
+    for label in CHANGE_PM_LABELS:
+        role = roles[("change", label)]
+        assert role == pm_steps.ROLE_PROMPT
+        assert not any(line in role for line in addendum_lines), label
+        assert "Task" not in role.replace("Test contract", "")
+
+
+@pytest.mark.parametrize("label", TASK_PM_LABELS)
+def test_a_task_pm_step_runs_on_the_dispatched_provider_choice(monkeypatch, label):
+    """Metric 3, farm half: the server sends the item choice, else the project
+    default, under the step's index; with no key it is today's routing."""
+    index = task_index(label)
+    calls = stub_agent(monkeypatch, [{"summary": "ok"}])
+    step_agent.execute(make_task(label, provider_choices={str(index): "muse:muse-spark-1.3"}))
+    assert (calls[0]["provider"], calls[0]["model_choice"]) == ("muse", "muse-spark-1.3")
+
+    calls = stub_agent(monkeypatch, [{"summary": "ok"}])
+    # A choice for change step 0 must not reach the Task's step at its own index.
+    step_agent.execute(make_task(label, provider_choices={"0": "muse"}))
+    assert (calls[0]["provider"], calls[0]["model_choice"]) == (None, None)
+
+
+def test_farmd_queues_a_tasks_first_step_on_the_pm_lane(running_farm):
+    index = task_index(TASK_PM_LABELS[0])
+    res = running_farm.post("/steps/run", json=farmd_task(38304, index=index, label=TASK_PM_LABELS[0]))
+    assert res.status_code == 200
+    assert res.json() == {"ok": True, "queued": "pm"}
+    assert json.loads((QUEUE_DIR / "pm" / "38304.json").read_text())["step"]["index"] == index
+
+
+def test_lane_accounting_counts_each_task_row_in_its_own_lane():
+    """Architect concern 2: farmd counts live sessions per lane by step index
+    alone. Every Task row lands in the lane its own row names, so a Task's PM
+    step holds the PM lane, not a runs slot."""
+    task_rows = steps.FARM_VIEWS["task"]
+    assert {row["label"] for row in task_rows if row["runsIn"] == "pm"} == set(TASK_PM_LABELS)
+    for row in task_rows:
+        assert farmd.lane_for_index(farmd.LANE_ROWS, row["index"]) == farmd.lane_for_index(task_rows, row["index"])
+    for row in steps.STEPS:
+        assert farmd.lane_for_index(farmd.LANE_ROWS, row["index"]) == farmd.lane_for_index(steps.STEPS, row["index"])
+    sessions = [f"farm-run-t-413-s{task_index(label)}-a1" for label in TASK_PM_LABELS]
+    assert farmd._lane_busy(sessions) == {"pm": 3, "runs": 0}
+
+
+def test_line_budgets_refuse_a_label_two_kinds_share():
+    table = {
+        "change": [{"label": "Shared", "runsIn": "pm"}],
+        "task": [{"label": "Shared", "runsIn": "pm"}],
+    }
+    with pytest.raises(RuntimeError, match="more than one kind: \\['Shared'\\]"):
+        pm_steps._assert_line_budgets_are_kind_safe({"Shared": "metric"}, table)
+    with pytest.raises(RuntimeError, match="not a PM step in any kind: \\['Gone'\\]"):
+        pm_steps._assert_line_budgets_are_kind_safe({"Gone": "metric"}, table)
+    pm_steps._assert_line_budgets_are_kind_safe({"Shared": "metric"}, {"change": table["change"]})

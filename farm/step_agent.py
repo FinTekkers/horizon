@@ -154,6 +154,10 @@ TASK_STEP_CONFIG = {
     RUN_PLAN_LABEL: ("task_run_plan.md", True, PLANNER_TOOLS, None),
     IMPACT_REVIEW_LABEL: ("task_impact_review.md", True, PLANNER_TOOLS, None),
     VERIFY_REPORT_LABEL: ("task_verify.md", True, PLANNER_TOOLS, "qa"),
+    # HZ-413: a Task's steps 0-2 are the PM kind, like the change ones. Only
+    # [3] and the kind are read: _execute_pm() takes its role prompt from
+    # farm/pm_steps.py's role_prompt_for(), which appends roles/pm_task.md.
+    **{step["label"]: ("pm.md", True, None, None) for step in steps.FARM_VIEWS["task"] if step["runsIn"] == "pm"},
 }
 
 STEP_CONFIGS = {"change": STEP_CONFIG, "task": TASK_STEP_CONFIG}
@@ -173,7 +177,8 @@ CHOICE_ONLY_PROVIDER_STEPS = frozenset(
 # _execute()'s review branch instead.
 READ_ONLY_LABELS = frozenset({OPTIONS_LABEL, ENG_PLAN_LABEL, ARCH_REVIEW_LABEL, QA_PLAN_LABEL})
 # HZ-383: every Task step on the farm lane is held read-only the same way.
-TASK_READ_ONLY_LABELS = frozenset(TASK_STEP_CONFIG)
+# HZ-413: the Task's PM steps keep no workspace, so they are not listed.
+TASK_READ_ONLY_LABELS = frozenset({ASSESS_LABEL, RUN_PLAN_LABEL, IMPACT_REVIEW_LABEL, VERIFY_REPORT_LABEL})
 
 # HZ-158: the ONLY steps whose turn-capped reply may be salvaged — a reply cut
 # off mid-string, with every required key present, is accepted instead of
@@ -183,10 +188,14 @@ TASK_READ_ONLY_LABELS = frozenset(TASK_STEP_CONFIG)
 # one too), and not implement (its checks are a gate, and _salvage_checkpoint()
 # already keeps its code). farm/tests/test_exhaustion_salvage.py pins this set.
 #
-# HZ-383: this set and CHOICE_ONLY_PROVIDER_STEPS are change-kind labels.
-# _execute() consults the latter for change items only; the salvage check
-# matches by label, which is safe while no Task label is in it — key both by
-# kind before a Task step that shares a change label reaches the farm.
+# HZ-383: this set and CHOICE_ONLY_PROVIDER_STEPS are change-kind labels,
+# matched by label alone. HZ-413: a Task's first step now shares its label
+# with change step 0 and reaches the farm, and neither set needs a
+# kind key for it. Both are read only by _execute(), and execute() sends every
+# PM step, of any kind, to _execute_pm() before _execute() runs. _execute_pm()
+# takes its provider from the kind's own row (providerOverrideEligible), so it
+# is choice-only for every PM step, and it never salvages. Key a set by kind
+# before a label in it is shared by a step that _execute() runs.
 SALVAGE_STEPS = frozenset({"Plan options & trade-offs (pros / cons)", "Draft implementation plan"})
 
 # The agent whose persona the review step's second (QA) pass composes. Named
@@ -1881,7 +1890,7 @@ def _execute_pm(task: dict) -> dict:
             step=label,
             persona=persona,
             session_id=None,
-            append_system=pm_steps.ROLE_PROMPT,
+            append_system=pm_steps.role_prompt_for(kind),
             provider=provider,
             model_choice=model_choice,
         )

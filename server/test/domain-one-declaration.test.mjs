@@ -51,6 +51,7 @@ const LABEL_MENTIONS_ALLOWED = {
   // domain/steps.json, so neither mentions a label at all. Set equality below
   // means leaving them here would fail as a stale entry.
   'domain/steps.json': 'the authored source — the only declaration',
+  'domain/fixtures/lifecycle-cases.json': "HZ-413: the Task farm view's expected labels, a shared JS/Python fixture",
   'server/src/orchestrator.js': "MOCK_STEP_BEHAVIOR key — guarded by mock-step-behavior-drift.test.mjs",
   'server/test/domain-step-pins.test.mjs': 'the permanent hand-written label pin (guardrail 9)',
   'server/test/lifecycle-renamed-label.test.mjs': 'fabricated 2-step fixture',
@@ -59,6 +60,7 @@ const LABEL_MENTIONS_ALLOWED = {
   'ui/src/domain/lifecycle.test.js': 'fabricated 2-step fixture',
   'e2e/tests/03-mock-agents.spec.js': 'comment naming the step the spec drives',
   'farm/roles/pm.md': 'role prompt — guarded by role-prompt-labels.test.mjs',
+  'farm/roles/pm_task.md': "HZ-413: the Task addendum to pm.md's role prompt — guarded by role-prompt-labels.test.mjs",
   'docs/workflow.md': 'prose',
   'docs/agent-architecture.md': 'prose',
   'docs/pm-step-ephemeral-recommendation.md': 'prose — HZ-115, names the four PM steps it recommends making ephemeral',

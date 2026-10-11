@@ -338,7 +338,7 @@ def _lane_busy(sessions: list[str]) -> dict[str, int]:
     busy = {"pm": 0, "runs": 0}
     for name in sessions:
         index = _session_step_index(name)
-        busy["pm" if index is not None and lane_for_index(steps.STEPS, index) == "pm" else "runs"] += 1
+        busy["pm" if index is not None and lane_for_index(LANE_ROWS, index) == "pm" else "runs"] += 1
     return busy
 
 
@@ -374,6 +374,13 @@ def lane_for_index(step_table: list[dict], index, default: str = "runs") -> str:
     if entry["runsIn"] == "job":
         return "job"
     return default
+
+
+# HZ-413: every kind's farm rows, for lane accounting by a session's step
+# index alone (_lane_busy, the deploy pause). An index is global across kinds,
+# so no two rows share one, and a Task's PM step counts against the PM lane
+# rather than falling back to "runs" as an index absent from steps.STEPS would.
+LANE_ROWS = [entry for view in steps.FARM_VIEWS.values() for entry in view]
 
 
 # HZ-383: whether a dispatched task's step belongs to its item's kind. A
@@ -1875,7 +1882,7 @@ async def steps_cancel(request: Request):
                 task = json.loads(task_path.read_text())
                 name = _run_session_name(task)
                 if pausing and tmux_mgr.session_exists(name):
-                    if reason == "deploy" and lane_for_index(steps.STEPS, task["step"]["index"]) == "pm":
+                    if reason == "deploy" and lane_for_index(LANE_ROWS, task["step"]["index"]) == "pm":
                         # A PM step keeps nothing in a workspace: no agent to ask.
                         checkpoint = {"outcome": "nothing", "detail": "a PM step keeps no work to save"}
                     else:

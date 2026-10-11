@@ -571,12 +571,37 @@ test('SHAPE PIN (Python): agent-kind only — no gate ever reaches it', () => {
   )
 })
 
-test('SHAPE PIN (Python): no runsIn none row ever reaches the farm view', () => {
-  const noneIndexes = new Set(
-    binding.STEPS.map((s, i) => (s.runsIn === 'none' ? i : -1)).filter((i) => i >= 0),
+// HZ-413: the Task's steps 0-2 were the table's only runsIn none rows. They run
+// on the PM lane now, so this pins them there and pins the row count (no new
+// rows). The none lane stays in the schema for a later kind: no such row may
+// reach a farm view, and farm/tests/test_steps.py drops a fabricated one.
+const pythonTaskSteps = JSON.parse(
+  execFileSync('python3', ['-c', 'import json; from domain.py import steps; print(json.dumps(steps.FARM_VIEWS["task"]))'], {
+    cwd: REPO_ROOT,
+    encoding: 'utf8',
+  }),
+)
+
+test('SHAPE PIN (Python): the Task steps 0-2 reach the Task farm view on the PM lane, and no runsIn none row does', () => {
+  const taskRows = binding.STEPS.map((s, index) => ({ ...s, index })).filter((s) => s.itemKind === 'task')
+  const firstThree = taskRows.slice(0, 3)
+  assert.deepEqual(
+    firstThree.map((s) => [s.kind, s.runsIn, s.providerOverrideEligible]),
+    [
+      ['agent', 'pm', true],
+      ['agent', 'pm', true],
+      ['agent', 'pm', true],
+    ],
   )
-  assert.ok(noneIndexes.size > 0, 'sanity: the authored table declares no runsIn none row')
-  for (const entry of pythonSteps) {
+  assert.equal(taskRows[3].label, 'Approve & prioritize')
+  assert.equal(binding.STEPS.length, 27, 'the step table gained or lost a row')
+  for (const row of firstThree) {
+    const entry = pythonTaskSteps.find((e) => e.index === row.index)
+    assert.ok(entry, `"${row.label}" is missing from the Task farm view`)
+    assert.equal(entry.runsIn, 'pm')
+  }
+  const noneIndexes = new Set(binding.STEPS.map((s, i) => (s.runsIn === 'none' ? i : -1)).filter((i) => i >= 0))
+  for (const entry of [...pythonSteps, ...pythonTaskSteps]) {
     assert.notEqual(entry.runsIn, 'none', `"${entry.label}" carries the none lane into the farm view`)
     assert.ok(!noneIndexes.has(entry.index), `index ${entry.index} is a runner-less row and leaked into the farm view`)
   }

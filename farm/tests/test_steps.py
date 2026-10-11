@@ -83,25 +83,26 @@ def test_by_label_raises_key_error_naming_the_missing_label():
 
 
 def test_runs_in_none_rows_never_reach_the_farm_view():
-    # HZ-377 metric 3: a step with no runner is dispatched by no lane. The
-    # live table carries such rows (the task lifecycle), and none of them may
-    # appear here — no entry carries the none lane, and no entry sits at a
-    # runner-less row's index.
+    # HZ-377 metric 3: a step with no runner is dispatched by no lane. HZ-413:
+    # the Task's steps 0-2 were the live table's only runsIn none rows and now
+    # run on the PM lane, so they are pinned there, in the Task's own view, and
+    # the row count is pinned too (no new rows). The none lane stays in the
+    # schema; the fabricated-row test below proves a view still drops one.
     authored = json.loads(steps._SOURCE_PATH.read_text())["steps"]
-    runnerless = [step for step in authored if step.get("runsIn") == "none"]
-    assert runnerless, "the live table has no runsIn none rows — this test guards nothing"
-    assert all(entry["runsIn"] != "none" for entry in steps.STEPS)
+    assert len(authored) == 27, "the step table gained or lost a row"
+    task_rows = [(index, step) for index, step in enumerate(authored) if step.get("itemKind") == "task"]
+    assert [step["runsIn"] for _, step in task_rows[:3]] == ["pm", "pm", "pm"]
+    assert task_rows[3][1]["kind"] == "gate"
+    task_view = {entry["index"]: entry for entry in steps.FARM_VIEWS["task"]}
+    for index, step in task_rows[:3]:
+        assert task_view[index]["label"] == step["label"]
+        assert task_view[index]["runsIn"] == "pm"
     runnerless_indexes = {index for index, step in enumerate(authored) if step.get("runsIn") == "none"}
-    assert all(entry["index"] not in runnerless_indexes for entry in steps.STEPS)
-    # A label that exists only on runner-less rows is unresolvable …
-    farm_labels = {entry["label"] for entry in steps.STEPS}
-    only_runnerless = sorted({step["label"] for step in runnerless} - farm_labels)
-    assert only_runnerless, "every runner-less label is shared — this test guards nothing"
-    with pytest.raises(KeyError):
-        steps.by_label(only_runnerless[0])
-    # … and a label shared with a real lane still resolves to that lane's row.
-    for label in sorted({step["label"] for step in runnerless} & farm_labels):
-        assert steps.by_label(label)["runsIn"] != "none"
+    for view in steps.FARM_VIEWS.values():
+        assert all(entry["runsIn"] != "none" for entry in view)
+        assert all(entry["index"] not in runnerless_indexes for entry in view)
+    # A label shared by both kinds resolves to the change row by label alone.
+    assert steps.by_label(task_rows[0][1]["label"])["index"] == 0
 
 
 def test_project_farm_view_drops_a_fabricated_none_row_keeping_its_neighbours_indexed():

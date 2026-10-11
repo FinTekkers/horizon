@@ -35,7 +35,8 @@ const orchestrator = await import('../src/orchestrator.js')
 const { buildApp } = await import('../src/app.js')
 const auth = await import('../src/auth.js')
 const config = await import('../src/config.js')
-const { STEPS, requiredStepIndex, DEPLOY_STEP_INDEX } = await import('../../domain/js/lifecycle.js')
+const { STEPS, requiredStepIndex, kindStepIndex, stepsFor, DEPLOY_STEP_INDEX } = await import('../../domain/js/lifecycle.js')
+const { choiceValues } = await import('../../domain/js/providers.js')
 
 store.purgeDemoItems()
 
@@ -201,3 +202,83 @@ test('a newly filed item in a project whose step 0 default is Muse dispatches st
   assert.deepEqual(sentFor()[0].body.item.providerChoices, { [OUTCOME]: 'muse' })
   orchestrator.cancel(id)
 })
+
+// ---- HZ-413: a Task's steps 0-2 take an item choice and a project default too ----
+
+const TASK_STEPS = stepsFor('task')
+  .slice(0, 3)
+  .map((row) => row.index)
+const TASK_GATE = kindStepIndex('Approve & prioritize', 'task')
+// A model-pinned choice (HZ-398), so the model half is carried as well.
+const MUSE_MODEL = choiceValues().find((value) => value.startsWith('muse:'))
+const putItemProvider = (id, stepIndex, provider) =>
+  app.inject({
+    method: 'PUT',
+    url: `/api/items/${id}/steps/${stepIndex}/provider`,
+    payload: { provider },
+    headers: asSession(),
+  })
+const insertTaskAt = db.prepare(
+  "INSERT INTO work_item (id, title, priority, cursor, kind, repo, project_id) VALUES (?, 'Task provider', 'Medium', ?, 'task', 'Org/task-repo', ?)",
+)
+
+async function dispatchedChoices(id) {
+  const sentFor = () => dispatches.filter((d) => d.url.endsWith('/steps/run') && d.body?.item?.id === id)
+  orchestrator.kick(id)
+  for (let i = 0; i < 200 && sentFor().length === 0; i++) await sleep(10)
+  assert.equal(sentFor().length, 1, `one dispatch for ${id}`)
+  orchestrator.cancel(id)
+  return sentFor()[0].body
+}
+
+test('sanity: the Task steps 0-2 are eligible PM rows, distinct from the change rows', () => {
+  assert.ok(MUSE_MODEL, 'domain/providers.json offers no Muse model to pin')
+  for (const i of TASK_STEPS) {
+    assert.equal(STEPS[i].itemKind, 'task')
+    assert.equal(STEPS[i].runsIn, 'pm')
+    assert.equal(STEPS[i].providerOverrideEligible, true)
+    assert.ok(i > GATE, `Task step ${i} is not a change row`)
+  }
+})
+
+test('the Task gate is still 400 provider_not_eligible on both routes', async () => {
+  const project = store.createProject('Task Gate')
+  store.setProjectEnabled(project.id, true)
+  insertTaskAt.run('T-GATE-PROVIDER', TASK_GATE, project.id)
+  const item = await putItemProvider('T-GATE-PROVIDER', TASK_GATE, 'muse')
+  assert.equal(item.statusCode, 400)
+  assert.deepEqual(item.json(), { error: 'provider_not_eligible' })
+  const projectDefault = await put(project.id, TASK_GATE, { provider: 'muse' })
+  assert.equal(projectDefault.statusCode, 400)
+  assert.deepEqual(projectDefault.json(), { error: 'provider_not_eligible' })
+})
+
+for (const [n, stepIndex] of TASK_STEPS.entries()) {
+  const label = STEPS[stepIndex].label
+  test(`Task "${label}": the item choice alone, the project default alone, and both — the item choice wins`, async () => {
+    const noDefault = store.createProject(`Task No Default ${n}`)
+    store.setProjectEnabled(noDefault.id, true)
+    const withDefault = store.createProject(`Task Default ${n}`)
+    store.setProjectEnabled(withDefault.id, true)
+    const saved = await put(withDefault.id, stepIndex, { provider: 'muse' })
+    assert.equal(saved.statusCode, 200, saved.body)
+    assert.deepEqual(providerDefaultsOf(withDefault.id), { [stepIndex]: 'muse' })
+
+    // Override only.
+    insertTaskAt.run(`T-OVR-${n}`, stepIndex, noDefault.id)
+    const override = await putItemProvider(`T-OVR-${n}`, stepIndex, MUSE_MODEL)
+    assert.equal(override.statusCode, 200, override.body)
+    const overrideBody = await dispatchedChoices(`T-OVR-${n}`)
+    assert.deepEqual(overrideBody.step, { index: stepIndex, label, agent: STEPS[stepIndex].agent })
+    assert.deepEqual(overrideBody.item.providerChoices, { [stepIndex]: MUSE_MODEL })
+
+    // Default only.
+    insertTaskAt.run(`T-DEF-${n}`, stepIndex, withDefault.id)
+    assert.deepEqual((await dispatchedChoices(`T-DEF-${n}`)).item.providerChoices, { [stepIndex]: 'muse' })
+
+    // Both: the item's choice wins over the project default.
+    insertTaskAt.run(`T-BOTH-${n}`, stepIndex, withDefault.id)
+    assert.equal((await putItemProvider(`T-BOTH-${n}`, stepIndex, 'claude')).statusCode, 200)
+    assert.deepEqual((await dispatchedChoices(`T-BOTH-${n}`)).item.providerChoices, { [stepIndex]: 'claude' })
+  })
+}
