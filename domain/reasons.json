@@ -7,6 +7,7 @@
     { "id": "required_input_incomplete", "retryable": false },
     { "id": "read_only_violated", "retryable": false },
     { "id": "plan_changed_since_approval", "retryable": false },
-    { "id": "job_budget_exceeded", "retryable": false }
+    { "id": "job_budget_exceeded", "retryable": false },
+    { "id": "job_cwd_refused", "retryable": false }
   ]
 }

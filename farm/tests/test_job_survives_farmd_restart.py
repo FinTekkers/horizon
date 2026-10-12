@@ -162,7 +162,7 @@ class Farm:
         return httpx.post(f"{self.url}{path}", json=body, timeout=20)
 
     def dispatch(self, run_id, commands, budget_minutes=1):
-        block = {"cwd": str(self.home), "commands": list(commands), "budget_minutes": budget_minutes}
+        block = {"cwd": ".", "commands": list(commands), "budget_minutes": budget_minutes}
         artifact = "## Commands\nplan\n\n## Run plan block\n" + run_plan.render(block) + "\n"
         res = self.post(
             "/steps/run",
@@ -173,6 +173,7 @@ class Farm:
                 "step": {"index": EXECUTE_INDEX, "label": "Execute"},
                 "plan_artifact": artifact,
                 "approved_hash": task_job.plan_hash_of(artifact),
+                "repo_dir": str(self.home),
             },
         )
         assert res.status_code == 200, res.text

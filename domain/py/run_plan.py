@@ -19,8 +19,9 @@ log or report a hit without leaking the secret it found.
 """
 
 import json
+import os
 import re
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 _SCHEMA_PATH = Path(__file__).resolve().parent.parent / "runPlan.schema.json"
 _SCHEMA: dict = json.loads(_SCHEMA_PATH.read_text())
@@ -69,6 +70,7 @@ def validate(block: object) -> dict:
     cwd = block["cwd"]
     if not isinstance(cwd, str) or not cwd.strip():
         raise ValueError("run_plan 'cwd' must be a non-empty string")
+    _check_relative(cwd, ValueError)
     commands = block["commands"]
     if not isinstance(commands, list) or not commands:
         raise ValueError("run_plan 'commands' must be a non-empty list")
@@ -86,6 +88,59 @@ def validate(block: object) -> dict:
         if not isinstance(value, str) or not ENV_REFERENCE.match(value):
             raise ValueError(f"run_plan 'env'.{name} must name a variable like $NAME, never a literal value")
     return block
+
+
+CWD_ABSOLUTE = "run_plan 'cwd' must be relative to the repo root, not an absolute path"
+CWD_PARENT = "run_plan 'cwd' must not contain '..'"
+
+
+class CwdRefused(ValueError):
+    """Execute must not start: the plan's cwd does not resolve to a directory
+    inside the Task repo's checkout. The message is one line, safe to show."""
+
+
+def _check_relative(cwd: str, error: type) -> None:
+    # HZ-415: `cwd` names a directory inside the repo root, never outside it.
+    if os.path.isabs(cwd):
+        raise error(CWD_ABSOLUTE)
+    if ".." in PurePosixPath(cwd).parts:
+        raise error(CWD_PARENT)
+
+
+def _inside(path: str, root: str) -> bool:
+    return os.path.commonpath([path, root]) == root
+
+
+def resolve_cwd(repo_dir: str | None, cwd: str, *, forbid: str | None = None) -> str:
+    """HZ-415: the real absolute directory Execute's commands run in — the
+    plan's `cwd` resolved inside the Task repo's deploy-target `repo_dir`.
+    Fails closed: raises CwdRefused (one line) on any problem, including an
+    error from the check itself, and never returns a fallback path. `forbid`
+    is Horizon's own checkout: a directory inside it, or one that contains
+    it, is refused too."""
+    try:
+        if not isinstance(repo_dir, str) or not repo_dir or not os.path.isabs(repo_dir):
+            raise CwdRefused("this repo has no deploy target directory")
+        real_repo = os.path.realpath(repo_dir)
+        if not os.path.isdir(real_repo) or not os.access(real_repo, os.R_OK | os.X_OK):
+            raise CwdRefused("the repo directory is missing or unreadable")
+        if not isinstance(cwd, str) or not cwd.strip():
+            raise CwdRefused("run_plan 'cwd' must be a non-empty string")
+        _check_relative(cwd, CwdRefused)
+        target = os.path.realpath(os.path.join(real_repo, cwd))
+        if not _inside(target, real_repo):
+            raise CwdRefused("cwd resolves outside the repo directory")
+        if not os.path.isdir(target):
+            raise CwdRefused("cwd is not a directory in the repo")
+        if forbid:
+            real_forbid = os.path.realpath(forbid)
+            if _inside(target, real_forbid) or _inside(real_forbid, real_repo):
+                raise CwdRefused("cwd is inside Horizon's own checkout")
+        return target
+    except CwdRefused:
+        raise
+    except (OSError, TypeError, ValueError) as exc:
+        raise CwdRefused(f"the cwd check failed ({type(exc).__name__})") from None
 
 
 def render(block: dict) -> str:

@@ -1,11 +1,12 @@
 """Detached shell-command jobs for a Task's Execute step (HZ-378).
 
 Execute never improvises: it runs exactly the commands in the approved Run
-plan's fenced block (domain/py/run_plan.py), in order, with cwd set to the
-plan's cwd. farmd launches this module in a farm-job-<item> tmux session (no
-pipe-pane — this runner owns the only log); the runner writes a redacted log
-and a JSON state file, and farmd polls the state file to report progress to
-the server.
+plan's fenced block (domain/py/run_plan.py), in order, in the plan's cwd
+resolved inside the Task repo's deploy-target directory (HZ-415) — never in
+Horizon's own checkout, where this runner itself starts. farmd launches this
+module in a farm-job-<item> tmux session (no pipe-pane — this runner owns the
+only log); the runner writes a redacted log and a JSON state file, and farmd
+polls the state file to report progress to the server.
 
 Secrets never ride in argv or task files: farmd resolves the repo's env files
 plus the named values farm-side, writes them to a 0600 env file, and this
@@ -39,6 +40,10 @@ from pathlib import Path
 
 from domain.py import run_plan
 from farm.checks import redact
+
+# HZ-415: Horizon's own checkout, the same rule farmd.py uses. A Task's
+# commands never run inside it.
+HORIZON_ROOT = Path(__file__).resolve().parent.parent
 
 
 def plan_hash_of(artifact_md: str) -> str:
@@ -123,6 +128,7 @@ def run_job(
     approved_hash: str,
     state_path,
     log_path,
+    repo_dir: str | None,
     env_values: dict | None = None,
     redact_values: dict | None = None,
     notify=None,
@@ -132,7 +138,12 @@ def run_job(
     redacted log. Never raises for a command failure or budget breach — those
     are summary outcomes, not crashes. Raises ValueError only for an unreadable
     plan block (a dispatch bug, not a job outcome). `notify`, when given, is
-    called after each state change and (throttled) after new log lines."""
+    called after each state change and (throttled) after new log lines.
+
+    HZ-415: `repo_dir` is the Task repo's deploy-target checkout, required
+    with no default. The plan's cwd is resolved inside it on every start —
+    Resume included — before the first command; a cwd that leaves it ends
+    the job `cwd_refused` with zero commands run."""
     last_nudge = [0.0]
 
     def nudge(*, force: bool = True) -> None:
@@ -153,7 +164,7 @@ def run_job(
     log_path.parent.mkdir(parents=True, exist_ok=True)
 
     block = run_plan.extract(plan_artifact or "")
-    cwd = block["cwd"]
+    plan_cwd = block["cwd"]
     commands = list(block["commands"])
     budget_s = int(block["budget_minutes"]) * 60
 
@@ -184,7 +195,7 @@ def run_job(
             "budget_s": budget_s,
             "approved_hash": approved_hash,
             "commands": [
-                {"command": c, "cwd": cwd, "status": "pending", "started_at": None, "ended_at": None, "exit_code": None}
+                {"command": c, "cwd": plan_cwd, "status": "pending", "started_at": None, "ended_at": None, "exit_code": None}
                 for c in commands
             ],
             "summary": {"run": 0, "passed": 0, "failed": 0, "failing": []},
@@ -193,6 +204,37 @@ def run_job(
         with log_path.open("a", encoding="utf-8") as log:
             log.write(redact("the run plan changed since it was approved — zero commands run\n", secrets))
             log.flush()
+        return state["summary"]
+
+    # HZ-415: checked on every start, never cached. Fails closed: no command
+    # runs, and nothing falls back to this runner's own cwd. Commands a prior
+    # run passed stay recorded so a later Resume still skips them.
+    try:
+        cwd = run_plan.resolve_cwd(repo_dir, plan_cwd, forbid=str(HORIZON_ROOT))
+    except run_plan.CwdRefused as exc:
+        refusal = str(exc).splitlines()[0] if str(exc) else "cwd refused"
+        state = {
+            "run_id": run_id,
+            "item_id": item_id,
+            "status": "cwd_refused",
+            "refusal": refusal,
+            "started_at": _now_iso(),
+            "ended_at": _now_iso(),
+            "budget_s": budget_s,
+            "approved_hash": approved_hash,
+            "commands": [
+                dict(prior_done[c])
+                if c in prior_done
+                else {"command": c, "cwd": plan_cwd, "status": "pending", "started_at": None, "ended_at": None, "exit_code": None}
+                for c in commands
+            ],
+            "summary": {"run": 0, "passed": 0, "failed": 0, "failing": []},
+        }
+        save_state(state_path, state)
+        with log_path.open("a", encoding="utf-8") as log:
+            log.write(redact(f"Execute refused: {refusal} — zero commands run\n", secrets))
+            log.flush()
+        nudge()
         return state["summary"]
 
     # Fresh run truncates the log; a resume appends to it.
@@ -390,6 +432,9 @@ def main(argv: list[str] | None = None) -> int:
     item_id = (task.get("item") or {}).get("id") or ""
     artifact = task.get("plan_artifact") or ""
     approved_hash = task.get("approved_hash") or ""
+    # HZ-415: a task file written before this field existed has none, and is
+    # refused at start.
+    repo_dir = task.get("repo_dir")
     # Imported here so unit tests can import this module without a FARM_HOME.
     from farm.config import LOGS_DIR, STATE_DIR
 
@@ -410,6 +455,7 @@ def main(argv: list[str] | None = None) -> int:
             approved_hash=approved_hash,
             state_path=state_path,
             log_path=log_path,
+            repo_dir=repo_dir,
             env_values=secrets,
             redact_values=redact_only,
             notify=lambda: _notify_progress(run_id),

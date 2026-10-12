@@ -1504,6 +1504,9 @@ function dispatchJob(id, stepIndex, runId, attempt) {
     ...(project ? { project: { id: project.id, name: project.name } } : {}),
     plan_artifact: planArtifact,
     approved_hash: approvedHash,
+    // HZ-415: the deploy-target checkout the plan's cwd resolves inside. Read
+    // on every dispatch (Resume included); farmd refuses a null one.
+    repo_dir: findTargetByRepo(item.repo)?.repoDir ?? null,
   }).catch((err) => {
     const code = err.code ?? ''
     if ((err.status === 400 || err.status === 409) && Object.hasOwn(FARM_REFUSALS, code)) {

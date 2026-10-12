@@ -16,8 +16,13 @@ process.env.FARM_RUN_STATE_POLL_MS = String(60 * 60 * 1000)
 for (const key of ['GITHUB_WEBHOOK_SECRET', 'FARM_STEP_INDEXES', 'WA_POLL_ENABLED']) delete process.env[key]
 
 const dispatches = []
+// HZ-415: item ids whose job dispatch farmd answers with this 400 body.
+const farmRefusals = {}
 globalThis.fetch = async (url, opts) => {
-  dispatches.push({ url: String(url), body: opts?.body ? JSON.parse(opts.body) : null })
+  const body = opts?.body ? JSON.parse(opts.body) : null
+  dispatches.push({ url: String(url), body })
+  const refusal = String(url).includes('/steps/run') && Object.hasOwn(farmRefusals, body?.item?.id ?? '') && farmRefusals[body.item.id]
+  if (refusal) return { ok: false, status: 400, json: async () => refusal }
   return { ok: true, status: 200, json: async () => ({}) }
 }
 
@@ -57,10 +62,10 @@ const doneRun = (itemId, stepIndex, artifact) =>
     .run(itemId, stepIndex, STEPS[stepIndex].agent, artifact)
 
 // A Task stopped at Execute with the plan approved.
-function seedStoppedTask(id) {
+function seedStoppedTask(id, repo = null) {
   db.prepare(
-    "INSERT INTO work_item (id, title, priority, cursor, kind, project_id, paused, approved_plan_hash) VALUES (?, ?, 'High', ?, 'task', ?, 1, ?)",
-  ).run(id, `Task ${id}`, EXECUTE_STEP_INDEX, projectId, sha256(PLAN))
+    "INSERT INTO work_item (id, title, priority, cursor, kind, project_id, paused, approved_plan_hash, repo) VALUES (?, ?, 'High', ?, 'task', ?, 1, ?, ?)",
+  ).run(id, `Task ${id}`, EXECUTE_STEP_INDEX, projectId, sha256(PLAN), repo)
   doneRun(id, RUN_PLAN_STEP_INDEX, PLAN)
 }
 
@@ -98,4 +103,39 @@ test('Resume with the approved plan dispatches the Execute job again', async () 
   assert.equal(dispatch.body.step.index, EXECUTE_STEP_INDEX)
   assert.equal(store.getItem('T-R3-OK').paused, false)
   orchestrator.cancel('T-R3-OK')
+})
+
+// HZ-415: the plan's cwd resolves inside the Task repo's deploy-target
+// checkout, so every dispatch (Resume included) carries that directory.
+test('HZ-415: the job dispatch carries the repo deploy target repo_dir, and null for a repo with none', async () => {
+  seedStoppedTask('T-415-MDI', 'FinTekkers/market-data-inputs')
+  seedStoppedTask('T-415-NONE')
+  for (const id of ['T-415-MDI', 'T-415-NONE']) {
+    const res = await app.inject({ method: 'POST', url: `/api/items/${id}/job/resume`, headers: cookie, payload: {} })
+    assert.equal(res.statusCode, 200)
+  }
+  await new Promise((r) => setTimeout(r, 30))
+  assert.equal(jobDispatchesFor('T-415-MDI')[0].body.repo_dir, '/opt/fintekkers/market-data-inputs')
+  const none = jobDispatchesFor('T-415-NONE')[0].body
+  assert.ok(Object.hasOwn(none, 'repo_dir'))
+  assert.equal(none.repo_dir, null)
+  orchestrator.cancel('T-415-MDI')
+  orchestrator.cancel('T-415-NONE')
+})
+
+test("HZ-415: farmd's cwd refusal is stored on the run, and the item does not stay running", async () => {
+  const line = 'cwd refused: cwd resolves outside the repo directory'
+  farmRefusals['T-415-OUT'] = { error: line }
+  seedStoppedTask('T-415-OUT', 'FinTekkers/market-data-inputs')
+  const res = await app.inject({ method: 'POST', url: '/api/items/T-415-OUT/job/resume', headers: cookie, payload: {} })
+  assert.equal(res.statusCode, 200)
+  const runId = res.json().runId
+  await new Promise((r) => setTimeout(r, 50))
+  assert.equal(jobDispatchesFor('T-415-OUT').length, 1)
+  const run = db.prepare('SELECT status, output FROM step_run WHERE id = ?').get(runId)
+  assert.equal(run.status, 'cancelled')
+  assert.equal(run.output, `FAILED: the farm refused the job: ${line}`)
+  const item = store.getItem('T-415-OUT')
+  assert.equal(item.activeRun ?? null, null)
+  assert.equal(item.paused, true)
 })

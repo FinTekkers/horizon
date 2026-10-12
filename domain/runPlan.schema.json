@@ -7,7 +7,7 @@
   "additionalProperties": false,
   "properties": {
     "cwd": {
-      "$comment": "The working directory the commands run in, relative to the repository root.",
+      "$comment": "The working directory the commands run in, relative to the repository root. Never absolute, never `..` (asserted by the binding, HZ-415); Execute resolves it inside the repo's deploy-target checkout.",
       "type": "string",
       "minLength": 1
     },

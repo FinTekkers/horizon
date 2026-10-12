@@ -29,6 +29,7 @@ import { REPO_ROOT } from './helpers/repoFiles.mjs'
 // HZ-387 added read_only_violated, non-retryable: the retryable set is unchanged.
 // HZ-384 added plan_changed_since_approval, non-retryable: same again.
 // HZ-378 added job_budget_exceeded, non-retryable: same again.
+// HZ-415 added job_cwd_refused, non-retryable: same again.
 const PINNED_IDS = [
   'never_picked_up',
   'timeout',
@@ -38,10 +39,11 @@ const PINNED_IDS = [
   'read_only_violated',
   'plan_changed_since_approval',
   'job_budget_exceeded',
+  'job_cwd_refused',
 ]
 const PINNED_RETRYABLE = ['never_picked_up', 'timeout', 'turn_cap', 'unreachable']
 
-test('PIN: the declared vocabulary is exactly these eight reasons', () => {
+test('PIN: the declared vocabulary is exactly these nine reasons', () => {
   assert.deepEqual([...REASON_IDS].sort(), [...PINNED_IDS].sort())
   assert.equal(REASONS.length, PINNED_IDS.length)
 })
@@ -68,6 +70,11 @@ test('PIN: plan_changed_since_approval is declared but NOT retryable — a human
 test('PIN: job_budget_exceeded is declared but NOT retryable — the item pauses for a human, never auto-retries', () => {
   assert.equal(isRetryable('job_budget_exceeded'), false)
   assert.equal(REASONS.find((r) => r.id === 'job_budget_exceeded').retryable, false)
+})
+
+test('PIN: job_cwd_refused is declared but NOT retryable — the deploy target or the run plan needs a human', () => {
+  assert.equal(isRetryable('job_cwd_refused'), false)
+  assert.equal(REASONS.find((r) => r.id === 'job_cwd_refused').retryable, false)
 })
 
 test('AUTO_RETRY_REASONS is DERIVED from the retryable flag, not a second list — criterion 2', () => {
