@@ -24,6 +24,7 @@ const { db } = await import('../src/db.js')
 const store = await import('../src/store.js')
 const { STEPS, IMPLEMENT_STEP_INDEX } = await import('../../domain/js/lifecycle.js')
 const orchestrator = await import('../src/orchestrator.js')
+const { REASON } = await import('../../domain/js/reasons.js')
 
 store.purgeDemoItems()
 
@@ -82,6 +83,26 @@ test('a retryable reason under the cap auto-retries: item stays unpaused, a fres
   )
 
   orchestrator.cancel('AR-1') // clear the retried run's own (real) watchdog timer so the process can exit
+})
+
+// HZ-424: a Claude step whose SDK reader overflowed reports this reason; the
+// first hit must retry, not page a human.
+test('an sdk_message_too_large failure under the cap auto-retries instead of pausing', async () => {
+  insertItem.run('AR-424', 'Oversized SDK message', 'Medium', IMPLEMENT_STEP_INDEX)
+  const runId = activeStepRunRow('AR-424', IMPLEMENT_STEP_INDEX)
+
+  const msg = `${REASON.SDK_MESSAGE_TOO_LARGE}: an SDK message exceeded the 16777216-byte reader limit (FARM_SDK_MAX_BUFFER_BYTES)`
+  const result = orchestrator.failFarmRun(runId, msg, REASON.SDK_MESSAGE_TOO_LARGE)
+  await wait(10)
+
+  assert.deepEqual(result, { ok: true, retried: true })
+  assert.equal(store.getItem('AR-424').paused, false, 'the first overflow must not pause the item')
+  const retried = activeRun('AR-424')
+  assert.ok(retried, 'a fresh run must be dispatched automatically')
+  assert.equal(retried.auto_retry_count, 1)
+  assert.ok(eventTexts('AR-424').some((t) => /auto-retrying \(1\/3\)/.test(t)))
+
+  orchestrator.cancel('AR-424')
 })
 
 test('the auto-retry budget is a hard, DB-persisted cap: driving a step past it pauses rather than looping forever', async () => {

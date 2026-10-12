@@ -17,11 +17,12 @@ from domain.py.personas import resolve_model
 
 from .config import FARM_PROVIDER, MAX_TURNS, STATE_DIR, STEP_TIMEOUT_S
 from .providers import claude, muse
-from .providers.base import AgentError, AgentExhaustedError
+from .providers.base import AgentError, AgentExhaustedError, AgentMessageTooLargeError
 
 __all__ = [
     "AgentError",
     "AgentExhaustedError",
+    "AgentMessageTooLargeError",
     "FIRST_OBJECT_NOTE",
     "REPAIRS",
     "REPAIR_COUNTS_PATH",

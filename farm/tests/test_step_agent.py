@@ -14,8 +14,9 @@ from pathlib import Path
 
 import pytest
 
+from domain.py import reasons
 from farm import checks, pm_steps, step_agent
-from farm.agent_runner import AgentError, AgentExhaustedError
+from farm.agent_runner import AgentError, AgentExhaustedError, AgentMessageTooLargeError
 from farm.personas import DEFAULT_PERSONAS, PERSONA_DIR, PERSONAS
 from farm.step_agent import (
     STEP_CONFIG,
@@ -328,6 +329,13 @@ def test_implement_role_treats_test_contract_as_binding():
     assert "It overrides the Required list in QA's plan review." in text
     assert "Optional cases are allowed only if cheap." in text
     assert "each Test contract case needs a test that would fail without your change." in text
+
+
+def test_implement_role_tells_agents_to_shrink_screenshots_before_reading_them():
+    """HZ-424: a full-page screenshot overflowed the SDK's message buffer."""
+    role = (step_agent.ROLES / "eng_implement.md").read_text()
+    text = " ".join(step_agent.compose_role(role, "eng", None).split())
+    assert "screenshot only the area you need, or downscale the image to 1280 px wide or less, before you `Read` it." in text
 
 
 def test_qa_review_role_checks_coverage_against_the_test_contract():
@@ -2540,6 +2548,48 @@ def test_main_does_not_tag_a_reason_for_an_ordinary_failure(tmp_path, monkeypatc
 
     assert posted["json"]["ok"] is False
     assert "reason" not in posted["json"]
+
+
+def test_main_tags_an_sdk_message_overflow_as_retryable_without_its_payload(tmp_path, monkeypatch, capsys):
+    """HZ-424: run_agent's AgentMessageTooLargeError crosses into the payload
+    as the retryable reason, and neither the payload nor the log line carries
+    anything but the one-line message."""
+    task = {
+        "run_id": 44,
+        "attempt": 1,
+        "item": {"id": "T-1", "title": "t", "desc": "d", "metric": "m", "guardrails": "", "priority": "Medium", "repo": None},
+        "step": {"index": 1, "label": "Draft implementation plan", "agent": "Eng"},
+        "artifacts": [],
+        "feedback": [],
+    }
+    task_file = tmp_path / "task.json"
+    task_file.write_text(json.dumps(task))
+    message = (
+        f"{reasons.REASON['SDK_MESSAGE_TOO_LARGE']}: an SDK message exceeded the 16777216-byte reader limit "
+        "(FARM_SDK_MAX_BUFFER_BYTES)"
+    )
+
+    def _overflow(prompt, **kwargs):
+        try:
+            raise ValueError("Failed to decode JSON: iVBORw0KGgo")
+        except ValueError:
+            raise AgentMessageTooLargeError(message) from None
+
+    monkeypatch.setattr(step_agent, "run_agent", _overflow)
+    monkeypatch.setattr(sys, "argv", ["step_agent", "--task", str(task_file)])
+    posted = {}
+    monkeypatch.setattr(step_agent.httpx, "post", lambda url, json=None, timeout=None: posted.update(json=json))
+
+    step_agent.main()
+
+    assert posted["json"]["ok"] is False
+    assert posted["json"]["reason"] == reasons.REASON["SDK_MESSAGE_TOO_LARGE"]
+    assert reasons.is_retryable(posted["json"]["reason"])
+    assert posted["json"]["error"] == message
+    out = capsys.readouterr().out
+    failed = [line for line in out.splitlines() if "FAILED" in line]
+    assert failed == [failed[0]] and failed[0].endswith(f"FAILED — {message}")
+    assert "iVBORw0KGgo" not in out
 
 
 # ---- HZ-156: the shared parser's notes channel, on every path ----

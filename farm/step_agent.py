@@ -41,6 +41,7 @@ from domain.py.personas import model_agent_for_step
 from .agent_runner import (
     AgentError,
     AgentExhaustedError,
+    AgentMessageTooLargeError,
     effective_provider,
     parse_agent_reply,
     run_agent,
@@ -2615,6 +2616,9 @@ def main() -> int:
         # HZ-387: non-retryable, so the item pauses and no next step runs.
         elif isinstance(exc, ReadOnlyViolation):
             result["reason"] = reasons.REASON["READ_ONLY_VIOLATED"]
+        # HZ-424: retryable — the next attempt runs with the same higher cap.
+        elif isinstance(exc, AgentMessageTooLargeError):
+            result["reason"] = reasons.REASON["SDK_MESSAGE_TOO_LARGE"]
     finally:
         _RECORDED.reset(token)
     # A flake on one command survives a real failure on a later one.
