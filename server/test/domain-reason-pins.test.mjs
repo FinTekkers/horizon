@@ -51,7 +51,7 @@ test('PIN: the declared vocabulary is exactly these ten reasons', () => {
   assert.equal(REASONS.length, PINNED_IDS.length)
 })
 
-test('PIN: the retryable set is exactly the four HZ-76 named plus HZ-424's — criterion 6', () => {
+test('PIN: the retryable set is exactly the four HZ-76 named plus the HZ-424 one — criterion 6', () => {
   assert.deepEqual([...AUTO_RETRY_REASONS].sort(), PINNED_RETRYABLE)
 })
 
