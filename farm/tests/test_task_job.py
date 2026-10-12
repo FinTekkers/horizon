@@ -32,7 +32,7 @@ def plan_artifact(cwd, commands, budget_minutes=5, env=None):
     return "## Commands\nA plan.\n\n## Run plan block\n" + run_plan.render(block) + "\n"
 
 
-def run_in(tmp_path, artifact, approved_hash=None, env_values=None):
+def run_in(tmp_path, artifact, approved_hash=None, env_values=None, repo_dir=None):
     state_path = tmp_path / "job.json"
     log_path = tmp_path / "job.log"
     summary = task_job.run_job(
@@ -42,6 +42,7 @@ def run_in(tmp_path, artifact, approved_hash=None, env_values=None):
         approved_hash=approved_hash if approved_hash is not None else task_job.plan_hash_of(artifact),
         state_path=state_path,
         log_path=log_path,
+        repo_dir=str(repo_dir or tmp_path),
         env_values=env_values or {},
     )
     return summary, json.loads(state_path.read_text()), log_path.read_text()
@@ -55,7 +56,7 @@ def test_hash_mismatch_spawns_zero_subprocesses(tmp_path, monkeypatch):
         raise AssertionError("run_job must not spawn when the hash mismatches")
 
     monkeypatch.setattr(task_job.subprocess, "Popen", _boom)
-    summary, state, log = run_in(tmp_path, plan_artifact(tmp_path, COMMANDS), approved_hash="0" * 64)
+    summary, state, log = run_in(tmp_path, plan_artifact(".", COMMANDS), approved_hash="0" * 64)
     assert summary == {"run": 0, "passed": 0, "failed": 0, "failing": []}
     assert state["status"] == "hash_mismatch"
     assert [c["status"] for c in state["commands"]] == ["pending", "pending"]
@@ -71,10 +72,10 @@ def test_only_the_blocks_commands_run_in_order_with_plan_cwd(tmp_path):
         "## Commands\nRun `touch prose-inline.txt` first.\n\n"
         "```sh\necho PROSE > prose-fence.txt\n```\n\n"
         "## Run plan block\n"
-        + run_plan.render({"cwd": str(cwd), "commands": COMMANDS, "budget_minutes": 5})
+        + run_plan.render({"cwd": ".", "commands": COMMANDS, "budget_minutes": 5})
         + "\n"
     )
-    summary, state, _log = run_in(tmp_path, artifact)
+    summary, state, _log = run_in(tmp_path, artifact, repo_dir=cwd)
     assert summary == {"run": 2, "passed": 2, "failed": 0, "failing": []}
     assert (cwd / "order.txt").read_text().splitlines() == ["one", "two"]
     assert not (cwd / "prose-inline.txt").exists()
@@ -87,7 +88,7 @@ def test_the_first_failure_stops_the_job_with_exact_counts(tmp_path):
     """R16: stop-on-first-failure — later commands stay pending so Resume
     retries them, and the summary names the failing command."""
     summary, state, _log = run_in(
-        tmp_path, plan_artifact(tmp_path, ["echo ran1 >> markers.txt", "exit 3", "echo ran3 >> markers.txt"])
+        tmp_path, plan_artifact(".", ["echo ran1 >> markers.txt", "exit 3", "echo ran3 >> markers.txt"])
     )
     assert summary == {"run": 2, "passed": 1, "failed": 1, "failing": ["exit 3"]}
     assert [(c["status"], c["exit_code"]) for c in state["commands"]] == [("done", 0), ("done", 3), ("pending", None)]
@@ -128,7 +129,7 @@ def test_budget_breach_kills_the_whole_process_group_fast(tmp_path, monkeypatch)
 
     monkeypatch.setattr(time, "monotonic", _fake_monotonic)
     started = time.time()
-    summary, state, _log = run_in(tmp_path, plan_artifact(tmp_path, [command], budget_minutes=1))
+    summary, state, _log = run_in(tmp_path, plan_artifact(".", [command], budget_minutes=1))
     elapsed = time.time() - started
     assert summary == {"run": 0, "passed": 0, "failed": 0, "failing": []}
     assert state["status"] == "budget_exceeded"
@@ -150,10 +151,10 @@ def test_a_reapproved_plan_reruns_commands_a_prior_run_finished(tmp_path):
     re-approval, a command the old plan finished runs again."""
     cwd = tmp_path / "repo"
     cwd.mkdir()
-    old = plan_artifact(cwd, ["echo one >> order.txt"])
-    run_in(tmp_path, old)
-    new = plan_artifact(cwd, ["echo one >> order.txt"], budget_minutes=6)
-    summary, _state, _log = run_in(tmp_path, new)
+    old = plan_artifact(".", ["echo one >> order.txt"])
+    run_in(tmp_path, old, repo_dir=cwd)
+    new = plan_artifact(".", ["echo one >> order.txt"], budget_minutes=6)
+    summary, _state, _log = run_in(tmp_path, new, repo_dir=cwd)
     assert summary == {"run": 1, "passed": 1, "failed": 0, "failing": []}
     assert (cwd / "order.txt").read_text().splitlines() == ["one", "one"]
 
@@ -164,7 +165,7 @@ def test_host_credentials_are_redacted_but_not_exported(tmp_path):
     token = "host-token-value-123"
     _summary, _state, log = run_in_with_redact(
         tmp_path,
-        plan_artifact(tmp_path, ["echo tok=${GITHUB_TOKEN:-unset}", f"echo {token}"]),
+        plan_artifact(".", ["echo tok=${GITHUB_TOKEN:-unset}", f"echo {token}"]),
         redact_values={"GITHUB_TOKEN": token},
     )
     assert "tok=unset" in log
@@ -182,6 +183,7 @@ def run_in_with_redact(tmp_path, artifact, redact_values):
         approved_hash=task_job.plan_hash_of(artifact),
         state_path=state_path,
         log_path=log_path,
+        repo_dir=str(tmp_path),
         env_values={},
         redact_values=redact_values,
     )
@@ -198,7 +200,7 @@ def test_env_values_and_token_shapes_never_reach_the_job_log(tmp_path):
     literal = "sk-ant-" + "y" * 12
     _summary, _state, log = run_in(
         tmp_path,
-        plan_artifact(tmp_path, ["echo db=$DATABASE_URL", f"echo {literal}"]),
+        plan_artifact(".", ["echo db=$DATABASE_URL", f"echo {literal}"]),
         env_values={"DATABASE_URL": DB_URL},
     )
     assert DB_URL not in log
@@ -216,7 +218,7 @@ def test_redaction_masks_every_value_of_four_or_more_chars():
 def _job_task(tmp_path, *, run_id=421, item_id="HZ-19", commands=("echo hi",), env=None):
     cwd = tmp_path / "repo"
     cwd.mkdir(exist_ok=True)
-    block = {"cwd": str(cwd), "commands": list(commands), "budget_minutes": 1}
+    block = {"cwd": ".", "commands": list(commands), "budget_minutes": 1}
     if env is not None:
         block["env"] = env
     artifact = "## Commands\nplan\n\n## Run plan block\n" + run_plan.render(block) + "\n"
@@ -225,6 +227,7 @@ def _job_task(tmp_path, *, run_id=421, item_id="HZ-19", commands=("echo hi",), e
         "item": {"id": item_id, "repo": "acme/demo"},
         "plan_artifact": artifact,
         "approved_hash": task_job.plan_hash_of(artifact),
+        "repo_dir": str(cwd),
     }, cwd
 
 
@@ -327,7 +330,7 @@ def test_output_is_logged_and_nudged_while_the_command_still_runs(tmp_path):
     state_path = tmp_path / "job.json"
     log_path = tmp_path / "job.log"
     release = tmp_path / "release"
-    artifact = plan_artifact(tmp_path, [f"echo first; while [ ! -f {release} ]; do sleep 0.05; done"])
+    artifact = plan_artifact(".", [f"echo first; while [ ! -f {release} ]; do sleep 0.05; done"])
     nudges = []
 
     def notify():
@@ -344,6 +347,7 @@ def test_output_is_logged_and_nudged_while_the_command_still_runs(tmp_path):
             approved_hash=task_job.plan_hash_of(artifact),
             state_path=state_path,
             log_path=log_path,
+            repo_dir=str(tmp_path),
             notify=notify,
         ),
         daemon=True,
@@ -359,7 +363,7 @@ def test_output_is_logged_and_nudged_while_the_command_still_runs(tmp_path):
     assert _state_of(state_path)["commands"][0]["status"] == "done"
 
 
-def _task_file(tmp_path, run_id, item_id, artifact):
+def _task_file(tmp_path, run_id, item_id, artifact, repo_dir):
     path = tmp_path / f"{run_id}.task.json"
     path.write_text(
         json.dumps(
@@ -368,6 +372,7 @@ def _task_file(tmp_path, run_id, item_id, artifact):
                 "item": {"id": item_id},
                 "plan_artifact": artifact,
                 "approved_hash": task_job.plan_hash_of(artifact),
+                "repo_dir": str(repo_dir),
             }
         )
     )
@@ -389,11 +394,11 @@ def test_stop_during_command_two_then_resume_runs_each_command_once(tmp_path, mo
         f"while [ ! -f {release} ]; do sleep 0.05; done; echo two >> runs.txt",
         "echo three >> runs.txt",
     ]
-    artifact = plan_artifact(cwd, commands)
+    artifact = plan_artifact(".", commands)
     run_id, item_id = 9407, "HZ-9407"
     state_path = STATE_DIR / "jobs" / f"{item_id}.json"
     log_path = LOGS_DIR / f"farm-job-{item_id.lower()}.log"
-    task = _task_file(tmp_path, run_id, item_id, artifact)
+    task = _task_file(tmp_path, run_id, item_id, artifact, cwd)
     repo_root = Path(__file__).resolve().parents[2]
     # FARM_PORT 9 (discard): the runner's nudges never reach a real farmd.
     env = {**os.environ, "FARM_PORT": "9", "PYTHONPATH": str(repo_root)}
@@ -466,7 +471,7 @@ def test_past_the_budget_the_running_command_stops_and_no_later_one_starts(tmp_p
     cwd = tmp_path / "repo"
     cwd.mkdir()
     commands = ["echo one >> c1.txt", "sleep 30", "echo three >> c3.txt"]
-    artifact = plan_artifact(cwd, commands, budget_minutes=1)
+    artifact = plan_artifact(".", commands, budget_minutes=1)
     state_path = tmp_path / "job.json"
     real_monotonic = time.monotonic
     jump = {"s": 0.0}
@@ -491,6 +496,7 @@ def test_past_the_budget_the_running_command_stops_and_no_later_one_starts(tmp_p
         approved_hash=task_job.plan_hash_of(artifact),
         state_path=state_path,
         log_path=tmp_path / "job.log",
+        repo_dir=str(cwd),
     )
     clock.join(5)
     assert time.time() - started < 10
@@ -501,3 +507,188 @@ def test_past_the_budget_the_running_command_stops_and_no_later_one_starts(tmp_p
     assert summary == {"run": 1, "passed": 1, "failed": 0, "failing": []}
     assert (cwd / "c1.txt").exists()
     assert not (cwd / "c3.txt").exists()
+
+
+# ---- HZ-415: commands run inside the Task repo's checkout, never Horizon's ----
+
+
+def _no_spawn(monkeypatch):
+    def _boom(*args, **kwargs):
+        raise AssertionError("run_job must not spawn when the cwd is refused")
+
+    monkeypatch.setattr(task_job.subprocess, "Popen", _boom)
+
+
+def test_cwd_resolves_inside_repo_dir_never_horizons_own_checkout(tmp_path):
+    """Metric 1: `pwd` with cwd "." reports repo_dir, with cwd "sub" reports
+    repo_dir/sub — in the log and in each state entry. Neither is Horizon's
+    directory, which is where this runner (and pytest) start."""
+    repo = tmp_path / "repo"
+    (repo / "sub").mkdir(parents=True)
+    horizon = str(task_job.HORIZON_ROOT)
+    for cwd, expected in ((".", repo), ("sub", repo / "sub")):
+        runs = tmp_path / f"run-{len(cwd)}-{expected.name}"
+        runs.mkdir()
+        _summary, state, log = run_in(runs, plan_artifact(cwd, ["pwd"]), repo_dir=repo)
+        assert state["status"] == "finished"
+        assert state["commands"][0]["cwd"] == str(expected)
+        printed = [line for line in log.splitlines() if line.startswith("/")]
+        assert printed == [str(expected)]
+        assert horizon not in log
+        assert os.getcwd() != str(expected)
+
+
+def _refused(tmp_path, artifact, repo_dir):
+    state_path = tmp_path / "job.json"
+    log_path = tmp_path / "job.log"
+    summary = task_job.run_job(
+        run_id=7,
+        item_id="HZ-1",
+        plan_artifact=artifact,
+        approved_hash=task_job.plan_hash_of(artifact),
+        state_path=state_path,
+        log_path=log_path,
+        repo_dir=repo_dir,
+    )
+    return summary, json.loads(state_path.read_text()), log_path.read_text()
+
+
+def _assert_one_line_refusal(state, log, reason):
+    assert state["status"] == "cwd_refused"
+    assert state["refusal"] == reason
+    assert state["refusal"] and "\n" not in state["refusal"]
+    assert [c["status"] for c in state["commands"]] == ["pending"]
+    assert state["summary"] == {"run": 0, "passed": 0, "failed": 0, "failing": []}
+    assert f"Execute refused: {reason} — zero commands run" in log
+
+
+@pytest.mark.parametrize(
+    "case,reason",
+    [
+        ("symlink out", "cwd resolves outside the repo directory"),
+        ("no repo_dir", "this repo has no deploy target directory"),
+        ("relative repo_dir", "this repo has no deploy target directory"),
+        ("missing repo_dir", "the repo directory is missing or unreadable"),
+        ("unreadable repo_dir", "the repo directory is missing or unreadable"),
+        ("cwd is a file", "cwd is not a directory in the repo"),
+    ],
+)
+def test_a_cwd_that_does_not_resolve_inside_repo_dir_runs_zero_commands(tmp_path, monkeypatch, case, reason):
+    """Metric 2 and guardrail 3: every refusal ends `cwd_refused` with a
+    one-line reason before any subprocess starts — nothing falls back to the
+    runner's own cwd."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    cwd, repo_dir = ".", str(repo)
+    if case == "symlink out":
+        (repo / "link").symlink_to("/")
+        cwd = "link"
+    elif case == "no repo_dir":
+        repo_dir = None
+    elif case == "relative repo_dir":
+        repo_dir = "repo"
+    elif case == "missing repo_dir":
+        repo_dir = str(tmp_path / "gone")
+    elif case == "unreadable repo_dir":
+        if os.geteuid() == 0:
+            pytest.skip("root reads a mode-000 directory")
+        repo.chmod(0)
+    elif case == "cwd is a file":
+        (repo / "sub").write_text("")
+        cwd = "sub"
+    _no_spawn(monkeypatch)
+    try:
+        summary, state, log = _refused(tmp_path, plan_artifact(cwd, ["pwd"]), repo_dir)
+    finally:
+        repo.chmod(0o755)
+    assert summary == {"run": 0, "passed": 0, "failed": 0, "failing": []}
+    _assert_one_line_refusal(state, log, reason)
+
+
+@pytest.mark.parametrize("cwd", ["/tmp", "../x"])
+def test_an_absolute_or_dotdot_cwd_is_refused_before_any_command(tmp_path, monkeypatch, cwd):
+    """Metric 2: the binding refuses these (one line), and the runner never
+    gets as far as a command — the plan block itself fails to read."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    with pytest.raises(run_plan.CwdRefused) as refused:
+        run_plan.resolve_cwd(str(repo), cwd)
+    assert str(refused.value) and "\n" not in str(refused.value)
+    block = {"cwd": cwd, "commands": ["pwd"], "budget_minutes": 1}
+    artifact = "## Run plan block\n" + "```json run-plan\n" + json.dumps(block) + "\n```\n"
+    _no_spawn(monkeypatch)
+    with pytest.raises(ValueError, match="'cwd'"):
+        _refused(tmp_path, artifact, str(repo))
+
+
+@pytest.mark.parametrize("case", ["horizon root", "symlink to horizon", "ancestor of horizon"])
+def test_horizons_own_checkout_is_refused_as_a_repo_dir(tmp_path, monkeypatch, case):
+    """R1: a Task whose repo_dir is Horizon's own checkout — directly, via a
+    symlink, or as an ancestor the cwd walks into — runs nothing."""
+    horizon = task_job.HORIZON_ROOT
+    cwd = "."
+    if case == "horizon root":
+        repo_dir = str(horizon)
+    elif case == "symlink to horizon":
+        (tmp_path / "alias").symlink_to(horizon)
+        repo_dir = str(tmp_path / "alias")
+    else:
+        repo_dir = str(horizon.parent)
+        cwd = horizon.name
+    _no_spawn(monkeypatch)
+    _summary, state, log = _refused(tmp_path, plan_artifact(cwd, ["pwd"]), repo_dir)
+    _assert_one_line_refusal(state, log, "cwd is inside Horizon's own checkout")
+
+
+def test_an_error_inside_the_cwd_check_refuses_and_never_falls_back(tmp_path, monkeypatch):
+    """Guardrail 3: the check erroring is a refusal, never a fallback path."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+
+    def _broken(path, *args, **kwargs):
+        raise OSError("disk gone")
+
+    monkeypatch.setattr(run_plan.os.path, "realpath", _broken)
+    try:
+        with pytest.raises(run_plan.CwdRefused) as refused:
+            run_plan.resolve_cwd(str(repo), ".")
+    finally:
+        monkeypatch.undo()
+    assert str(refused.value) == "the cwd check failed (OSError)"
+
+
+def test_resume_rechecks_the_cwd_and_keeps_finished_commands(tmp_path):
+    """Guardrails 2 and 4: run 1 finishes command 1, then command 2 fails.
+    The `sub` symlink is swapped to point out: Resume re-checks and is
+    refused, command 1 stays done and the log is kept. Restored, Resume skips
+    command 1 and runs command 2."""
+    repo = tmp_path / "repo"
+    (repo / "real").mkdir(parents=True)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    sub = repo / "sub"
+    sub.symlink_to(repo / "real")
+    marks = tmp_path / "marks.txt"
+    go = tmp_path / "go"
+    artifact = plan_artifact("sub", [f"echo one >> {marks}", f"test -f {go} && echo two >> {marks}"])
+
+    _summary, first, _log = run_in(tmp_path, artifact, repo_dir=repo)
+    assert [c["status"] for c in first["commands"]] == ["done", "done"]
+    assert [c["exit_code"] for c in first["commands"]] == [0, 1]
+
+    sub.unlink()
+    sub.symlink_to(outside)
+    _summary, refused, log = run_in(tmp_path, artifact, repo_dir=repo)
+    assert refused["status"] == "cwd_refused"
+    assert refused["refusal"] == "cwd resolves outside the repo directory"
+    assert (refused["commands"][0]["status"], refused["commands"][0]["exit_code"]) == ("done", 0)
+    assert refused["commands"][1]["status"] == "pending"
+    assert f"$ echo one >> {marks}" in log  # run 1's log was not truncated
+
+    sub.unlink()
+    sub.symlink_to(repo / "real")
+    go.touch()
+    summary, final, _log = run_in(tmp_path, artifact, repo_dir=repo)
+    assert summary == {"run": 2, "passed": 2, "failed": 0, "failing": []}
+    assert final["commands"][1]["cwd"] == str(repo / "real")
+    assert marks.read_text().splitlines() == ["one", "two"]

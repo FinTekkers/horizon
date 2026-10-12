@@ -277,7 +277,7 @@ def _host_redact_values() -> dict:
     return {name: os.environ[name] for name in ("GITHUB_TOKEN", "GITHUB_WEBHOOK_SECRET") if os.environ.get(name)}
 
 
-def _job_redact_values(cwd: str) -> dict:
+def _job_redact_values(cwd: str | None) -> dict:
     """Everything a job log is scrubbed of beyond the plan's named env values:
     the host credentials plus every <cwd>/.env value, named by the plan or not
     — a command run in cwd can load or print .env itself. The .env keys are
@@ -800,21 +800,28 @@ def launch_job(task: dict) -> str:
     the plan artifact and the approved hash — never secret values. Resolves
     the job's env farm-side into a 0600 file the runner unlinks at start, then
     launches with no pipe-pane (the runner owns the only log). Returns the
-    tmux session name."""
+    tmux session name.
+
+    HZ-415: the plan's cwd is resolved inside the task's repo_dir (the Task
+    repo's deploy-target checkout) before anything else, and the job's .env
+    is read from there — never from Horizon's own checkout. Raises
+    run_plan.CwdRefused, with no file written and no session started, when it
+    does not resolve; the runner checks again on its own start."""
     from farm.config import LOGS_DIR as _LOGS, STATE_DIR as _STATE
 
     run_id = task["run_id"]
     item_id = task["item"]["id"]
     artifact = task.get("plan_artifact") or ""
     block = run_plan.extract(artifact)
-    env_values = _resolve_job_env(block["cwd"], block.get("env", {}))
+    cwd = run_plan.resolve_cwd(task.get("repo_dir"), block["cwd"], forbid=str(task_job.HORIZON_ROOT))
+    env_values = _resolve_job_env(cwd, block.get("env", {}))
     active = QUEUE_DIR / "jobs" / "active"
     active.mkdir(parents=True, exist_ok=True)
     env_path = active / f"{run_id}.env.json"
     fd, tmp_name = tempfile.mkstemp(dir=str(active), prefix=f"{run_id}.env.", suffix=".json.tmp")
     try:
         with os.fdopen(fd, "w") as f:
-            f.write(json.dumps({"env": env_values, "redact": _job_redact_values(block["cwd"])}))
+            f.write(json.dumps({"env": env_values, "redact": _job_redact_values(cwd)}))
         os.chmod(tmp_name, 0o600)
         os.replace(tmp_name, env_path)
     except BaseException:
@@ -825,8 +832,8 @@ def launch_job(task: dict) -> str:
     claimed = active / f"{run_id}.json"
     _write_task_atomic(claimed, task)
     name = _job_session_name(item_id)
-    repo_root = Path(__file__).resolve().parent.parent
-    tmux_mgr.new_session(name, f"{sys.executable} -m farm.task_job --task {claimed}", cwd=str(repo_root))
+    # The runner itself starts in Horizon's checkout; only its commands move.
+    tmux_mgr.new_session(name, f"{sys.executable} -m farm.task_job --task {claimed}", cwd=str(task_job.HORIZON_ROOT))
     JOB_SESSIONS[str(run_id)] = name
     (_STATE / "jobs").mkdir(parents=True, exist_ok=True)
     _LOGS.mkdir(parents=True, exist_ok=True)
@@ -933,6 +940,16 @@ def _poll_jobs() -> None:
                         "ok": False,
                         "error": "the run plan changed since it was approved — send it back to Run plan and approve it again",
                         "reason": reasons.REASON["PLAN_CHANGED_SINCE_APPROVAL"],
+                    }
+                )
+            elif status == "cwd_refused":
+                code = _forward_result(
+                    {
+                        "run_id": task["run_id"],
+                        "ok": False,
+                        "error": f"Execute refused: {state.get('refusal') or 'cwd refused'}"[:300],
+                        "reason": reasons.REASON["JOB_CWD_REFUSED"],
+                        "job_view": _job_view(run_id, task),
                     }
                 )
             else:
@@ -1329,6 +1346,8 @@ async def steps_run(request: Request):
             return {"ok": True, "queued": queue, "stale": True}
         try:
             name = launch_job(body)
+        except run_plan.CwdRefused as exc:
+            return JSONResponse({"error": f"cwd refused: {exc}"}, status_code=400)
         except ValueError as exc:
             return JSONResponse({"error": f"invalid run plan: {exc}"}, status_code=400)
         return {"ok": True, "queued": queue, "session": name}
@@ -1505,12 +1524,18 @@ _JOB_ITEM_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]*$")
 
 def _job_secrets(task: dict) -> dict:
     """Every value a job's log is scrubbed of — the plan's resolved env values
-    plus the redact set — so command text in a view is scrubbed the same way."""
+    plus the redact set — so command text in a view is scrubbed the same way.
+    HZ-415: the .env is the one in the resolved repo cwd; a cwd that does not
+    resolve gets the host credentials only, and no .env is read."""
     try:
         block = run_plan.extract(task.get("plan_artifact") or "")
     except ValueError:
         return {}
-    return {**_job_redact_values(block["cwd"]), **_resolve_job_env(block["cwd"], block.get("env", {}))}
+    try:
+        cwd = run_plan.resolve_cwd(task.get("repo_dir"), block["cwd"], forbid=str(task_job.HORIZON_ROOT))
+    except run_plan.CwdRefused:
+        return _job_redact_values(None)
+    return {**_job_redact_values(cwd), **_resolve_job_env(cwd, block.get("env", {}))}
 
 
 def _job_log_path(run_id, item_id: str) -> Path:

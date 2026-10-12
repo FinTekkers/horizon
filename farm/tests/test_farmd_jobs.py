@@ -3,6 +3,7 @@ restart, forwarding its finish with the Execute artifact, the kill switch,
 and teardown."""
 
 import json
+from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
@@ -32,7 +33,7 @@ def running_farm(monkeypatch):
             farmd.JOB_SESSIONS.pop(run_id, None)
 
 
-def job_payload(run_id, *, cwd="/tmp", commands=("echo hi",)):
+def job_payload(run_id, *, repo_dir="/tmp", cwd=".", commands=("echo hi",)):
     block = {"cwd": cwd, "commands": list(commands), "budget_minutes": 1}
     artifact = "## Commands\nplan\n\n## Run plan block\n" + run_plan.render(block) + "\n"
     return {
@@ -42,6 +43,7 @@ def job_payload(run_id, *, cwd="/tmp", commands=("echo hi",)):
         "step": {"index": EXECUTE_INDEX, "label": "Execute"},
         "plan_artifact": artifact,
         "approved_hash": task_job.plan_hash_of(artifact),
+        "repo_dir": repo_dir,
     }
 
 
@@ -65,7 +67,7 @@ def test_reboot_adopts_the_job_and_reports_it_finished(monkeypatch, fake_tmux, t
     the claimed task file; when the runner finishes, the stub server gets the
     completion once, with the summary and the redacted log."""
     farmd.JOB_SESSIONS.clear()
-    name = farmd.launch_job(job_payload(9131, cwd=str(tmp_path)))
+    name = farmd.launch_job(job_payload(9131, repo_dir=str(tmp_path)))
     assert name == "farm-job-hz-13"
     assert name in fake_tmux.sessions
 
@@ -74,7 +76,7 @@ def test_reboot_adopts_the_job_and_reports_it_finished(monkeypatch, fake_tmux, t
     farmd._adopt_jobs()
     assert farmd.JOB_SESSIONS == {"9131": name}
 
-    _write_finished("HZ-13", str(tmp_path))
+    _write_finished("HZ-13", ".")
     (LOGS_DIR / "farm-job-hz-13.log").write_text("$ echo hi\nhi\nexit 0\n")
     forwarded = []
     monkeypatch.setattr(farmd, "_forward_result", forwarded.append)
@@ -100,8 +102,8 @@ def test_a_budget_breach_forwards_the_non_retryable_reason(monkeypatch, fake_tmu
     failure path as an agent step, tagged so the server pauses for a human
     instead of retrying."""
     farmd.JOB_SESSIONS.clear()
-    farmd.launch_job(job_payload(9133, cwd=str(tmp_path)))
-    _write_finished("HZ-13", str(tmp_path), status="budget_exceeded", run_id=9133)
+    farmd.launch_job(job_payload(9133, repo_dir=str(tmp_path)))
+    _write_finished("HZ-13", ".", status="budget_exceeded", run_id=9133)
     forwarded = []
     monkeypatch.setattr(farmd, "_forward_result", forwarded.append)
     try:
@@ -121,8 +123,8 @@ def test_an_undelivered_result_keeps_the_task_file_and_the_next_poll_forwards_it
     a finished job's report — the task file stays for the next poll, which
     forwards it once and only then releases it."""
     farmd.JOB_SESSIONS.clear()
-    farmd.launch_job(job_payload(9131, cwd=str(tmp_path)))
-    _write_finished("HZ-13", str(tmp_path))
+    farmd.launch_job(job_payload(9131, repo_dir=str(tmp_path)))
+    _write_finished("HZ-13", ".")
     task_file = QUEUE_DIR / "jobs" / "active" / "9131.json"
     forwarded = []
     answers = iter([None, 200, 200])
@@ -153,8 +155,8 @@ def test_a_previous_runs_state_is_never_reported_for_a_new_run(monkeypatch, fake
     state file still holds the old run's result: it is not forwarded, and the
     new run's task file stays claimed."""
     farmd.JOB_SESSIONS.clear()
-    farmd.launch_job(job_payload(9132, cwd=str(tmp_path)))
-    _write_finished("HZ-13", str(tmp_path))  # run_id 9131
+    farmd.launch_job(job_payload(9132, repo_dir=str(tmp_path)))
+    _write_finished("HZ-13", ".")  # run_id 9131
     forwarded = []
     monkeypatch.setattr(farmd, "_forward_result", forwarded.append)
     try:
@@ -174,7 +176,7 @@ def test_host_credentials_ride_for_redaction_only(monkeypatch, fake_tmux, tmp_pa
     monkeypatch.setenv("GITHUB_TOKEN", "ghtoken-sentinel-1")
     monkeypatch.setenv("GITHUB_WEBHOOK_SECRET", "whsec-sentinel-1")
     farmd.JOB_SESSIONS.clear()
-    farmd.launch_job(job_payload(9133, cwd=str(tmp_path)))
+    farmd.launch_job(job_payload(9133, repo_dir=str(tmp_path)))
     env_file = QUEUE_DIR / "jobs" / "active" / "9133.env.json"
     try:
         data = json.loads(env_file.read_text())
@@ -193,7 +195,7 @@ def test_job_dispatch_reports_started_so_no_agent_timer_bounds_it(running_farm, 
     notified = []
     monkeypatch.setattr(farmd, "_notify_started", lambda run_id: notified.append(run_id) or True)
     try:
-        res = running_farm.post("/steps/run", json=job_payload(9134, cwd=str(tmp_path)))
+        res = running_farm.post("/steps/run", json=job_payload(9134, repo_dir=str(tmp_path)))
         assert res.status_code == 200
         assert res.json() == {"ok": True, "queued": "job", "session": "farm-job-hz-13"}
         assert notified == [9134]
@@ -208,7 +210,7 @@ def test_a_stale_job_dispatch_launches_nothing(running_farm, monkeypatch, fake_t
     """A run the server already gave up on is not launched — the same rule
     _claim_and_launch applies to agent runs."""
     monkeypatch.setattr(farmd, "_notify_started", lambda run_id: False)
-    res = running_farm.post("/steps/run", json=job_payload(9135, cwd=str(tmp_path)))
+    res = running_farm.post("/steps/run", json=job_payload(9135, repo_dir=str(tmp_path)))
     assert res.status_code == 200
     assert res.json() == {"ok": True, "queued": "job", "stale": True}
     assert "farm-job-hz-13" not in fake_tmux.sessions
@@ -269,9 +271,15 @@ def test_a_seeded_secret_never_reaches_the_forwarded_view_or_the_log_fallback(mo
     cwd = tmp_path / "repo"
     cwd.mkdir()
     (cwd / ".env").write_text(f"API_KEY={secret}\n")
-    block = {"cwd": str(cwd), "commands": [f"echo key={secret}"], "budget_minutes": 1}
+    block = {"cwd": ".", "commands": [f"echo key={secret}"], "budget_minutes": 1}
     artifact = "## Commands\nplan\n\n## Run plan block\n" + run_plan.render(block) + "\n"
-    task = {"run_id": run_id, "item": {"id": item_id, "repo": "acme/demo"}, "plan_artifact": artifact, "approved_hash": task_job.plan_hash_of(artifact)}
+    task = {
+        "run_id": run_id,
+        "item": {"id": item_id, "repo": "acme/demo"},
+        "plan_artifact": artifact,
+        "approved_hash": task_job.plan_hash_of(artifact),
+        "repo_dir": str(cwd),
+    }
     forwarded = []
     monkeypatch.setattr(farmd, "_in_background", lambda fn, *args: fn(*args))
     monkeypatch.setattr(farmd, "_forward_progress", lambda rid, view: forwarded.append(view))
@@ -305,7 +313,7 @@ def test_stop_records_the_running_command_stopped_and_returns_the_view(fake_tmux
     reported — the state file and the view it returns both say `stopped`."""
     run_id, item_id = 9472, "HZ-13"
     farmd.JOB_SESSIONS.clear()
-    farmd.launch_job(job_payload(run_id, cwd=str(tmp_path), commands=("echo a", "echo b", "echo c")))
+    farmd.launch_job(job_payload(run_id, repo_dir=str(tmp_path), commands=("echo a", "echo b", "echo c")))
     (STATE_DIR / "jobs").mkdir(parents=True, exist_ok=True)
     (STATE_DIR / "jobs" / f"{item_id}.json").write_text(
         json.dumps(
@@ -352,7 +360,7 @@ def test_the_final_view_rides_on_the_result_and_on_the_budget_failure(monkeypatc
         ("budget_exceeded", [{"command": "echo hi", "status": "stopped", "exit_code": None}], "fail"),
     ):
         farmd.JOB_SESSIONS.clear()
-        farmd.launch_job(job_payload(9131, cwd=str(tmp_path)))
+        farmd.launch_job(job_payload(9131, repo_dir=str(tmp_path)))
         (STATE_DIR / "jobs").mkdir(parents=True, exist_ok=True)
         (STATE_DIR / "jobs" / "HZ-13.json").write_text(
             json.dumps({"run_id": 9131, "item_id": "HZ-13", "status": status, "commands": commands, "summary": {"run": 1, "passed": 1}})
@@ -364,3 +372,99 @@ def test_the_final_view_rides_on_the_result_and_on_the_budget_failure(monkeypatc
         url, body = payloads[-1]
         assert url.endswith(f"/api/farm/steps/9131/{path}")
         assert body["job_view"]["commands"][0]["status"] == commands[0]["status"]
+
+
+# ---- HZ-415: the plan's cwd resolves inside the Task repo's checkout ----
+
+
+@pytest.mark.parametrize("case", ["no repo_dir", "symlink out", "absolute cwd"])
+def test_a_cwd_outside_the_repo_is_refused_with_no_session_and_no_env_file(running_farm, monkeypatch, fake_tmux, tmp_path, case):
+    """Metric 2 (farmd leg): the refusal comes before any .env read, env file
+    or tmux session — a 400 the server records as the run's error."""
+    monkeypatch.setattr(farmd, "_notify_started", lambda run_id: True)
+    if case == "no repo_dir":
+        payload = job_payload(9136, repo_dir=None)
+        expected = "cwd refused: this repo has no deploy target directory"
+    elif case == "symlink out":
+        (tmp_path / "link").symlink_to("/")
+        payload = job_payload(9136, repo_dir=str(tmp_path), cwd="link")
+        expected = "cwd refused: cwd resolves outside the repo directory"
+    else:
+        payload = job_payload(9136, repo_dir=str(tmp_path))
+        block = {"cwd": "/tmp", "commands": ["echo hi"], "budget_minutes": 1}
+        payload["plan_artifact"] = "## Run plan block\n```json run-plan\n" + json.dumps(block) + "\n```\n"
+        payload["approved_hash"] = task_job.plan_hash_of(payload["plan_artifact"])
+        expected = "invalid run plan: run_plan 'cwd' must be relative to the repo root, not an absolute path"
+    try:
+        res = running_farm.post("/steps/run", json=payload)
+        assert res.status_code == 400
+        assert res.json() == {"error": expected}
+        assert "farm-job-hz-13" not in fake_tmux.sessions
+        assert not (QUEUE_DIR / "jobs" / "active" / "9136.json").exists()
+        assert not (QUEUE_DIR / "jobs" / "active" / "9136.env.json").exists()
+        assert list((QUEUE_DIR / "jobs" / "active").glob("9136.env.*")) == []
+    finally:
+        (QUEUE_DIR / "jobs" / "active" / "9136.json").unlink(missing_ok=True)
+        (QUEUE_DIR / "jobs" / "active" / "9136.env.json").unlink(missing_ok=True)
+        farmd.JOB_SESSIONS.pop("9136", None)
+
+
+def test_a_refused_cwd_forwards_a_failure_with_its_reason(monkeypatch, fake_tmux, tmp_path):
+    """R3: a runner that refused its cwd (on a Resume, say) reports a failure
+    with the refusal line and a reason from the domain vocabulary."""
+    farmd.JOB_SESSIONS.clear()
+    farmd.launch_job(job_payload(9133, repo_dir=str(tmp_path)))
+    (STATE_DIR / "jobs").mkdir(parents=True, exist_ok=True)
+    (STATE_DIR / "jobs" / "HZ-13.json").write_text(
+        json.dumps(
+            {
+                "run_id": 9133,
+                "item_id": "HZ-13",
+                "status": "cwd_refused",
+                "refusal": "cwd resolves outside the repo directory",
+                "commands": [{"command": "echo hi", "cwd": ".", "status": "pending", "exit_code": None}],
+                "summary": {"run": 0, "passed": 0, "failed": 0, "failing": []},
+            }
+        )
+    )
+    forwarded = []
+    monkeypatch.setattr(farmd, "_forward_result", lambda body: forwarded.append(body) or 200)
+    try:
+        farmd._poll_jobs()
+        assert not (QUEUE_DIR / "jobs" / "active" / "9133.json").exists()
+    finally:
+        _cleanup_job(9133, "HZ-13")
+    assert len(forwarded) == 1
+    body = forwarded[0]
+    assert body["ok"] is False
+    assert body["error"] == "Execute refused: cwd resolves outside the repo directory"
+    assert body["reason"] == reasons.REASON["JOB_CWD_REFUSED"]
+    assert body["job_view"]["commands"][0]["status"] == "pending"
+
+
+def test_the_job_env_comes_from_the_repo_never_from_horizons_own_dotenv(monkeypatch, fake_tmux, tmp_path):
+    """Guardrail 3 and the .env leak: launch_job and _job_secrets read only
+    <repo_dir>/.env; a cwd that does not resolve gets host credentials only
+    and no .env is read at all."""
+    monkeypatch.setenv("GITHUB_TOKEN", "ghtoken-sentinel-2")
+    (tmp_path / ".env").write_text("REPO_KEY=repo-dotenv-value-1\n")
+    read = []
+    real_read = farmd._read_dotenv
+    monkeypatch.setattr(farmd, "_read_dotenv", lambda path: read.append(Path(path)) or real_read(path))
+    horizon_env = task_job.HORIZON_ROOT / ".env"
+    farmd.JOB_SESSIONS.clear()
+    task = job_payload(9132, repo_dir=str(tmp_path))
+    try:
+        farmd.launch_job(task)
+        data = json.loads((QUEUE_DIR / "jobs" / "active" / "9132.env.json").read_text())
+        assert data["redact"]["dotenv:REPO_KEY"] == "repo-dotenv-value-1"
+        assert farmd._job_secrets(task)["dotenv:REPO_KEY"] == "repo-dotenv-value-1"
+    finally:
+        _cleanup_job(9132, "HZ-13")
+    assert read and set(read) == {tmp_path.resolve() / ".env"}
+    assert horizon_env not in read
+
+    read.clear()
+    assert farmd._job_secrets(job_payload(9132, repo_dir=None)) == {"GITHUB_TOKEN": "ghtoken-sentinel-2"}
+    assert farmd._job_secrets(job_payload(9132, repo_dir=str(task_job.HORIZON_ROOT))) == {"GITHUB_TOKEN": "ghtoken-sentinel-2"}
+    assert read == []

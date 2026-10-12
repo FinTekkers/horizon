@@ -7,6 +7,7 @@ claude CLI's subprocess call — so the real allowlist reaches the argv.
 """
 
 import json
+import re
 import subprocess
 from pathlib import Path
 from types import SimpleNamespace
@@ -304,14 +305,46 @@ def test_a_valid_run_plan_is_appended_to_the_artifact(monkeypatch):
         {**VALID_PLAN, "commands": []},
         {k: v for k, v in VALID_PLAN.items() if k != "budget_minutes"},
         {**VALID_PLAN, "budget_minutes": 0},
+        {**VALID_PLAN, "cwd": "/opt/x"},
+        {**VALID_PLAN, "cwd": "a/../b"},
     ],
-    ids=["missing cwd", "empty commands", "missing budget_minutes", "zero budget_minutes"],
+    ids=["missing cwd", "empty commands", "missing budget_minutes", "zero budget_minutes", "absolute cwd", "cwd with .."],
 )
 def test_a_bad_run_plan_fails_the_step_after_one_retry(monkeypatch, plan):
     calls = stub_agent(monkeypatch, [reply_for(step_agent.RUN_PLAN_LABEL, run_plan=plan)])
-    with pytest.raises(AgentError, match="invalid run plan"):
+    with pytest.raises(AgentError, match="invalid run plan") as raised:
         step_agent.execute(make_task(step_agent.RUN_PLAN_LABEL))
     assert len(calls) == 2
+    if plan.get("cwd") in ("/opt/x", "a/../b"):
+        assert "'cwd'" in str(raised.value)
+
+
+# ---- HZ-415 metric 3: cwd is relative to the repo root ----
+
+
+@pytest.mark.parametrize(
+    "cwd,reason",
+    [
+        ("/abs", "must be relative to the repo root, not an absolute path"),
+        ("/opt/fintekkers/market-data-inputs", "must be relative to the repo root, not an absolute path"),
+        ("a/../b", "must not contain '..'"),
+        ("..", "must not contain '..'"),
+    ],
+)
+def test_validate_rejects_an_absolute_cwd_or_one_with_dotdot(cwd, reason):
+    with pytest.raises(ValueError, match=re.escape(reason)):
+        run_plan.validate({**VALID_PLAN, "cwd": cwd})
+
+
+@pytest.mark.parametrize("cwd", [".", "sub", "./sub", "sub/dir/", "a..b"])
+def test_validate_accepts_a_relative_cwd(cwd):
+    assert run_plan.validate({**VALID_PLAN, "cwd": cwd})["cwd"] == cwd
+
+
+def test_the_run_plan_prompt_says_cwd_is_relative_to_the_repo_root():
+    prompt = (REPO_ROOT / "farm" / "roles" / "task_run_plan.md").read_text()
+    assert "`cwd` is relative to the repo root" in prompt
+    assert "An absolute path or a `..` in `cwd` fails the step." in prompt
 
 
 def test_a_bad_run_plan_fixed_on_the_retry_passes(monkeypatch):

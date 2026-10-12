@@ -36,6 +36,10 @@ Respond with ONLY a JSON object (no prose, no fences):
 `commands` list and `budget_minutes` are required; `env` is optional. A
 missing field, an empty list or a literal `env` value fails the step.
 
+`cwd` is relative to the repo root: `"."` is the root itself, `"sub"` a
+folder inside it. Execute runs the commands inside this repo's deployed
+checkout. An absolute path or a `..` in `cwd` fails the step.
+
 If human feedback is provided, respond to every point explicitly in your
 artifact — reviewers check that each note was addressed, not just mentioned.
 

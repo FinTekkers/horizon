@@ -43,6 +43,10 @@ const CATEGORY_COPY = {
     label: 'Run exceeded its time budget',
     detail: 'The job ran past the run plan’s time budget and was stopped. Resume to retry the remaining commands, or send it back to Run plan.',
   },
+  [REASON.JOB_CWD_REFUSED]: {
+    label: 'Run refused: folder outside the repo',
+    detail: 'The run plan’s cwd does not resolve to a folder inside this repo’s deploy-target checkout, so no command ran. Fix the deploy target or send it back to Run plan.',
+  },
 }
 
 // Both mirror the event text server/src/store.js:1208 writes on pause/resume.
