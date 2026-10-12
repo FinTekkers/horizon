@@ -7,6 +7,6 @@ export DEPLOY_NAME=price-service
 export DEPLOY_REPO_DIR=/opt/fintekkers/price-service-rust
 export DEPLOY_SERVICE=fintekkers-price
 export DEPLOY_HEALTH_URL=http://127.0.0.1:8083/
-export DEPLOY_DEFAULT_REF=origin/master
+export DEPLOY_DEFAULT_REF=origin/main
 export DEPLOY_BUILD='cargo build --release --bin price-service-rust'
 exec "$(dirname "${BASH_SOURCE[0]}")/deploy-grpc-service.sh" "$@"
