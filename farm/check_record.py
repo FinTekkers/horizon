@@ -40,6 +40,8 @@ def _git(ws: Path, *args: str, env: dict | None = None, timeout: float = SNAPSHO
         ["git", "-C", str(ws), *args],
         capture_output=True,
         text=True,
+        encoding="utf-8",
+        errors="replace",
         timeout=max(timeout, 0.1),
         env=run_env,
         stdin=subprocess.DEVNULL,

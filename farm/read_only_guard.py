@@ -138,10 +138,9 @@ def snapshot(ws: Path, *, store: bool = True) -> Snapshot:
     the object store so restore() can bring it back; a snapshot taken only to
     compare against skips that."""
     head = _git(ws, "rev-parse", "--verify", "HEAD").decode().strip()
-    ref = subprocess.run(
-        ["git", "-C", str(ws), "symbolic-ref", "-q", "HEAD"], capture_output=True, text=True, timeout=GIT_TIMEOUT_S
-    )
-    branch = ref.stdout.strip() if ref.returncode == 0 else None
+    # Bytes (HZ-420): the branch name goes back to `git checkout` in restore().
+    ref = subprocess.run(["git", "-C", str(ws), "symbolic-ref", "-q", "HEAD"], capture_output=True, timeout=GIT_TIMEOUT_S)
+    branch = ref.stdout.decode(errors="surrogateescape").strip() if ref.returncode == 0 else None
     head_tree = _git(ws, "rev-parse", f"{head}^{{tree}}").decode().strip()
     entries = _status(ws)
     stash = _git(ws, "stash", "create").decode().strip() if any(code != "??" for code, _ in entries) else ""
@@ -159,7 +158,7 @@ def changed_paths(ws: Path, before: Snapshot, after: Snapshot) -> list[str]:
     every path whose tracked or untracked content differs."""
     lines: list[str] = []
     if before.branch != after.branch:
-        lines.append(f"branch switched: {_short_ref(before.branch)} -> {_short_ref(after.branch)}")
+        lines.append(f"branch switched: {_shown(_short_ref(before.branch))} -> {_shown(_short_ref(after.branch))}")
     if before.head != after.head:
         made = _git(ws, "rev-list", "--reverse", f"{before.head}..{after.head}").decode().split()
         lines += [f"commit {sha[:9]} (discarded)" for sha in made]
@@ -168,12 +167,19 @@ def changed_paths(ws: Path, before: Snapshot, after: Snapshot) -> list[str]:
     paths: set[str] = set()
     for old, new in ((before.worktree_tree, after.worktree_tree), (before.index_tree, after.index_tree)):
         if old != new:
-            paths.update(_git(ws, "diff", "--name-only", "-z", "--no-renames", old, new).decode().split("\0"))
+            listed = _git(ws, "diff", "--name-only", "-z", "--no-renames", old, new)
+            paths.update(listed.decode(errors="surrogateescape").split("\0"))
     for path in before.untracked.keys() | after.untracked.keys():
         if before.untracked.get(path) != after.untracked.get(path):
             paths.add(path)
     paths.discard("")
-    return lines + sorted(paths)
+    return lines + sorted(_shown(path) for path in paths)
+
+
+def _shown(path: str) -> str:
+    """A surrogateescape'd path as message text (HZ-420): a byte that isn't
+    UTF-8 shows as U+FFFD. Display only — never handed back to git."""
+    return path.encode(errors="surrogateescape").decode(errors="replace")
 
 
 def _short_ref(ref: str | None) -> str:

@@ -107,6 +107,8 @@ def mechanical_note(partial_text: str | None, ws: Path | None) -> str:
                 ["git", "-C", str(ws), "diff", "--stat", "HEAD"],
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
                 timeout=GIT_TIMEOUT_S,
             ).stdout.strip()
         except (OSError, subprocess.SubprocessError) as exc:

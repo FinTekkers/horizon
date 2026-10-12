@@ -48,7 +48,7 @@ from .agent_runner import (
     stamp_notes,
     stamp_notes_artifact,
 )
-from . import check_record, handoff, pause, read_only_guard
+from . import check_record, handoff, pause, read_only_guard, review_diff
 from .checks import CheckFailure, redact, run_checks, secret_values
 from .config import FARM_PORT, ITEM_LOCK_WAIT_S
 from .handoff import HandoffContext, HandoffGuard
@@ -314,6 +314,9 @@ _URL_CREDENTIALS = re.compile(r"://[^/@\s]+@")
 # report and the run sits active until the step watchdog times it out, losing
 # the failure (HZ-184). farm/tests/test_step_agent.py pins the two together.
 ERROR_MAX_CHARS = 2000
+# The review prompt's `## Commits under review` block (HZ-420): enough to
+# read the branch's story, capped so a long branch can't crowd out the diff.
+REVIEW_COMMITS_MAX = 100
 
 
 def log(msg: str) -> None:
@@ -322,10 +325,35 @@ def log(msg: str) -> None:
 
 def git(ws: Path, *args: str, check: bool = True, env: dict | None = None) -> subprocess.CompletedProcess:
     run_env = {**os.environ, **env} if env else None
-    result = subprocess.run(["git", "-C", str(ws), *args], capture_output=True, text=True, timeout=300, env=run_env)
+    result = subprocess.run(
+        ["git", "-C", str(ws), *args],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=300,
+        env=run_env,
+    )
     if check and result.returncode != 0:
         raise RuntimeError(f"git {' '.join(args)} failed: {result.stderr.strip()[:200]}")
     return result
+
+
+def git_bytes(ws: Path, *args: str, check: bool = True, input: bytes | None = None) -> bytes:
+    """git's raw stdout (HZ-420). For output that goes back into git or onto
+    disk — a path decoded with errors="replace" names a different file — and
+    for the review diff, which decides per file how to show bytes."""
+    result = subprocess.run(["git", "-C", str(ws), *args], input=input, capture_output=True, timeout=300)
+    if check and result.returncode != 0:
+        err = result.stderr.decode("utf-8", "replace").strip()[:200]
+        raise RuntimeError(f"git {' '.join(args)} failed: {err}")
+    return result.stdout
+
+
+def _shown(path: str) -> str:
+    """A path from git_bytes (os.fsdecode'd) as prompt or log text: a byte
+    that isn't UTF-8 shows as U+FFFD. Never hand the result back to git."""
+    return path.encode("utf-8", "surrogateescape").decode("utf-8", "replace")
 
 
 def item_personas(item: dict) -> dict:
@@ -602,7 +630,10 @@ def merge_default_branch(ws: Path) -> list[str]:
     merged = git(ws, "merge", "--no-edit", f"origin/{default}", check=False)
     if merged.returncode == 0:
         return []
-    conflicted = git(ws, "diff", "--name-only", "--diff-filter=U", check=False).stdout.split()
+    # -z and raw bytes (HZ-420): these paths are opened on disk, so a byte
+    # that isn't UTF-8 must survive, and a space must not split a path.
+    listed = git_bytes(ws, "diff", "--name-only", "-z", "--diff-filter=U", check=False)
+    conflicted = [os.fsdecode(raw) for raw in listed.split(b"\0") if raw]
     if not conflicted:
         raise RuntimeError(f"merging origin/{default} failed: {(merged.stderr or merged.stdout).strip()[:300]}")
     return conflicted
@@ -620,7 +651,7 @@ def _conflict_markers_left(ws: Path, paths: list[str]) -> list[str]:
         except (FileNotFoundError, IsADirectoryError):
             continue  # the agent resolved it by deleting the file
         if any(line.startswith(("<<<<<<<", ">>>>>>>")) for line in text.splitlines()):
-            left.append(path)
+            left.append(_shown(path))
     return left
 
 
@@ -630,7 +661,7 @@ def _merge_main_note(conflicted: list[str]) -> str:
             "\n\nNOTE: this branch's PR conflicted with main. origin/main has already "
             "been merged into it cleanly — build on the merged code as it is now."
         )
-    files = "\n".join(f"- {path}" for path in conflicted)
+    files = "\n".join(f"- {_shown(path)}" for path in conflicted)
     return (
         "\n\nNOTE: this branch's PR conflicted with main. origin/main has been merged "
         "into it and the merge is still in progress: these files have conflict markers "
@@ -1005,11 +1036,14 @@ def _unstage_secrets(ws: Path) -> list[str]:
     """Unstages every staged path that looks like a secret (HZ-194), so a
     checkpoint can never push one. Deletions are left staged: removing a
     secret from the branch is never a leak."""
-    staged = git(ws, "diff", "--cached", "--name-only", "--diff-filter=d", "-z", check=False).stdout
-    secrets = [path for path in staged.split("\0") if path and _is_secret_path(path)]
+    # Raw bytes (HZ-420): each path goes back to `git reset` exactly as git
+    # listed it; os.fsdecode round-trips a byte that isn't UTF-8.
+    staged = git_bytes(ws, "diff", "--cached", "--name-only", "--diff-filter=d", "-z", check=False)
+    paths = [os.fsdecode(raw) for raw in staged.split(b"\0") if raw]
+    secrets = [path for path in paths if _is_secret_path(path)]
     if secrets:
         git(ws, "reset", "-q", "--", *secrets)
-        log(f"salvage: left out of the checkpoint (secret-looking files): {', '.join(secrets)}")
+        log(f"salvage: left out of the checkpoint (secret-looking files): {', '.join(map(_shown, secrets))}")
     return secrets
 
 
@@ -2201,10 +2235,21 @@ def _execute(task: dict, guard: HandoffGuard) -> dict:
                 delta_files = _names(ws, rev_range)
                 review_extra.update(review_mode="delta", delta_files=delta_files)
                 delta_section = delta_review_section(scope, base, delta_files) + "\n\n"
-        diff_stat = git(ws, "diff", "--stat", rev_range, check=False).stdout.strip()
-        diff_full = git(ws, "diff", rev_range, check=False).stdout
+        # HZ-420: display-only calls, so core.quotePath=false shows a file
+        # name's bytes (U+FFFD where they aren't UTF-8) rather than octal.
+        # Never on a call whose output goes back to git.
+        commits = git(
+            ws, "log", "-n", str(REVIEW_COMMITS_MAX), "--format=%h %s", review_diff.commit_range(rev_range), check=False
+        ).stdout.strip()
+        diff_stat = git(ws, "-c", "core.quotePath=false", "diff", "--stat", rev_range, check=False).stdout.strip()
+        # Bytes, decided per file: a file that is binary to git, or whose own
+        # diff isn't UTF-8, becomes one `binary file changed` line.
+        diff_full = review_diff.build(ws, rev_range, git_bytes, log=log)
         diff_text, diff_note = truncate_diff(diff_full)
-        diff_section = f"## Code diff under review\n\n```\n{diff_stat}\n```\n\n```diff\n{diff_text}\n```{diff_note}"
+        diff_section = (
+            f"## Commits under review\n\n```\n{commits}\n```\n\n"
+            f"## Code diff under review\n\n```\n{diff_stat}\n```\n\n```diff\n{diff_text}\n```{diff_note}"
+        )
         prompt = (
             build_prompt(task)
             + "\n\n"
@@ -2514,6 +2559,13 @@ def post_result(result: dict) -> None:
             time.sleep(RESULT_POST_RETRY_S)
 
 
+def _bad_byte(exc: UnicodeDecodeError) -> str:
+    data = exc.object
+    if isinstance(data, (bytes, bytearray)) and 0 <= exc.start < len(data):
+        return f"byte 0x{data[exc.start]:02x} at position {exc.start}"
+    return f"position {exc.start}"
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--task", required=True)
@@ -2547,8 +2599,13 @@ def main() -> int:
         log(f"run {run_id}: paused by an operator — not reporting a result")
         return 0
     except Exception as exc:
-        log(f"run {run_id}: FAILED — {exc}")
-        result = {"run_id": run_id, "ok": False, "error": str(exc)[:ERROR_MAX_CHARS]}
+        error = str(exc)
+        if isinstance(exc, UnicodeDecodeError):
+            # HZ-420: the last resort for output nobody decoded safely — name
+            # the step and the byte, never Python's bare codec message.
+            error = f"{task['step'].get('label', 'step')}: output isn't valid UTF-8 ({_bad_byte(exc)})"
+        log(f"run {run_id}: FAILED — {error}")
+        result = {"run_id": run_id, "ok": False, "error": error[:ERROR_MAX_CHARS]}
         # HZ-76: tag the one failure cause the orchestrator is willing to
         # auto-retry from this side (running out of turn budget) — anything
         # else (a checks failure, a malformed reply, ...) reports no reason
