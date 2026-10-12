@@ -62,6 +62,15 @@ class AgentExhaustedError(AgentError):
         self.provider: str | None = None
 
 
+class AgentMessageTooLargeError(AgentError):
+    """HZ-424: one SDK message was bigger than the SDK reader's buffer (see
+    providers/claude.py's sdk_max_buffer_bytes). Its message is one line that
+    names the limit, never the message itself; step_agent tags it with the
+    retryable SDK_MESSAGE_TOO_LARGE reason. Not an AgentExhaustedError: no
+    budget ran out, so there is nothing to salvage or hand off. Only the
+    Claude SDK path raises it."""
+
+
 def decode_partial(output: bytes | str | None) -> str | None:
     """The text a subprocess.TimeoutExpired captured, or None. Its .stdout is
     bytes even under text=True, per the subprocess docs."""

@@ -10,14 +10,17 @@ regardless — they live SDK-free in test_agent_runner.py.
 import subprocess
 import sys
 import time
+from pathlib import Path
 
 import pytest
 
 sdk = pytest.importorskip("claude_agent_sdk", reason="claude-agent-sdk not installed — SDK-path tests need its message types")
 
-from farm.agent_runner import AgentError, run_agent
+from farm.agent_runner import AgentError, AgentMessageTooLargeError, run_agent
 from domain.py import providers as domain_providers
+from domain.py import reasons
 from domain.py.personas import resolve_model
+from farm.providers import claude as claude_provider
 from farm.providers.base import AgentExhaustedError
 
 # conftest defaults tests to the subprocess runner (fake_claude can't speak
@@ -291,3 +294,144 @@ def test_a_dispatched_step_hands_the_resolved_model_to_claude_agent_options(sdk_
     )
 
     assert seen and seen[0].get("model") == expected
+
+
+# ---- HZ-424: the SDK reader's per-message buffer ----
+# The SDK caps each CLI message at 1 MB by default; one Read of a full-page
+# screenshot overflowed it and the reader died. These pin the raised cap, its
+# bounded env override, and the one-line retryable error an overflow becomes.
+
+SIXTEEN_MB = 16777216
+# The start of a base64 PNG: stands in for image data the SDK error carries.
+PNG_MARKER = "iVBORw0KGgo"
+OVERFLOW_TEXT = f"JSON message exceeded maximum buffer size of {SIXTEEN_MB} bytes"
+
+
+def _raising_query(exc, calls=None):
+    def fake_query(*, prompt, options=None, **kwargs):
+        if calls is not None:
+            calls.append(options.resume)
+
+        async def gen():
+            raise exc
+            yield  # pragma: no cover
+
+        return gen()
+
+    return fake_query
+
+
+def _sdk_overflow_error():
+    """The overflow as claude-agent-sdk's transport raises it."""
+    return sdk.CLIJSONDecodeError(OVERFLOW_TEXT + " " + PNG_MARKER, ValueError(f"Buffer size 20000000 exceeds limit {SIXTEEN_MB}"))
+
+
+def test_sdk_max_buffer_defaults_to_16_mb(monkeypatch):
+    monkeypatch.delenv(claude_provider.SDK_MAX_BUFFER_ENV, raising=False)
+    assert claude_provider.SDK_MAX_BUFFER_DEFAULT_BYTES == SIXTEEN_MB
+    assert claude_provider.sdk_max_buffer_bytes() == SIXTEEN_MB
+
+
+def test_the_env_var_overrides_the_buffer_and_reaches_claude_agent_options(sdk_runner, monkeypatch):
+    monkeypatch.setenv("FARM_SDK_MAX_BUFFER_BYTES", "33554432")
+    assert claude_provider.sdk_max_buffer_bytes() == 33554432
+    seen = []
+    real_options = sdk.ClaudeAgentOptions
+
+    def recording_options(**kwargs):
+        seen.append(kwargs)
+        return real_options(**kwargs)
+
+    def fake_query(*, prompt, options=None, **kwargs):
+        async def gen():
+            yield _result_message()
+
+        return gen()
+
+    monkeypatch.setattr(sdk, "ClaudeAgentOptions", recording_options)
+    monkeypatch.setattr(sdk, "query", fake_query)
+    run_agent("hello", agent="eng", timeout_s=10)
+    assert seen[0]["max_buffer_size"] == 33554432
+
+
+def test_the_real_sdk_options_accept_the_buffer_size(monkeypatch):
+    monkeypatch.delenv(claude_provider.SDK_MAX_BUFFER_ENV, raising=False)
+    options = sdk.ClaudeAgentOptions(max_buffer_size=claude_provider.sdk_max_buffer_bytes())
+    assert options.max_buffer_size == SIXTEEN_MB
+
+
+@pytest.mark.parametrize("raw", ["abc", "0", "-1", "67108865", "x" * 200])
+def test_a_bad_buffer_override_falls_back_to_16_mb_with_one_warning(monkeypatch, capsys, raw):
+    monkeypatch.setenv("FARM_SDK_MAX_BUFFER_BYTES", raw)
+    assert claude_provider.sdk_max_buffer_bytes() == SIXTEEN_MB
+    err = capsys.readouterr().err
+    warnings = [line for line in err.splitlines() if "FARM_SDK_MAX_BUFFER_BYTES" in line]
+    assert len(warnings) == 1
+    assert str(SIXTEEN_MB) in warnings[0]
+    assert "x" * 33 not in err, "a long bad value must not be echoed in full"
+
+
+def test_the_installed_sdk_still_words_the_overflow_as_detection_expects():
+    """Detection matches the SDK's text; an SDK upgrade that rewords it must
+    fail here, not silently stop tagging overflows."""
+    package = Path(sdk.__file__).parent
+    source = "\n".join(path.read_text(encoding="utf-8") for path in package.rglob("*.py"))
+    assert claude_provider._BUFFER_OVERFLOW_PHRASE in source
+
+
+@pytest.mark.parametrize(
+    "make_exc",
+    [_sdk_overflow_error, lambda: Exception(f"Fatal error in message reader: Failed to decode JSON: {OVERFLOW_TEXT} {PNG_MARKER}")],
+    ids=["cli-json-decode-error", "plain-exception"],
+)
+def test_an_overflow_raises_one_line_too_large_error_without_a_fresh_retry(sdk_runner, monkeypatch, make_exc):
+    monkeypatch.delenv(claude_provider.SDK_MAX_BUFFER_ENV, raising=False)
+    calls = []
+    monkeypatch.setattr(sdk, "query", _raising_query(make_exc(), calls))
+    with pytest.raises(AgentMessageTooLargeError) as exc_info:
+        run_agent("hello", agent="eng", session_id="resumed-1", timeout_s=10)
+    message = str(exc_info.value)
+    assert reasons.REASON["SDK_MESSAGE_TOO_LARGE"] in message
+    assert str(SIXTEEN_MB) in message
+    assert "\n" not in message
+    assert PNG_MARKER not in message
+    assert exc_info.value.__cause__ is None
+    assert exc_info.value.__suppress_context__ is True
+    # The stale-resume fallback must not swallow it into a fresh run.
+    assert calls == ["resumed-1"]
+
+
+def test_the_message_size_is_named_when_the_sdk_reports_it(sdk_runner, monkeypatch):
+    monkeypatch.setattr(sdk, "query", _raising_query(_sdk_overflow_error()))
+    with pytest.raises(AgentMessageTooLargeError, match=r"\(20000000 bytes\)"):
+        run_agent("hello", agent="eng", timeout_s=10)
+
+
+@pytest.mark.parametrize("case", ["resumed-sdk-error", "malformed-line", "plain-exception"])
+def test_other_errors_keep_their_classification(sdk_runner, monkeypatch, case):
+    calls = []
+    if case == "resumed-sdk-error":
+        def fake_query(*, prompt, options=None, **kwargs):
+            calls.append(options.resume)
+
+            async def gen():
+                if options.resume is not None:
+                    raise sdk.ProcessError("stale session", exit_code=1)
+                yield _result_message(session_id="fresh-1")
+
+            return gen()
+
+        monkeypatch.setattr(sdk, "query", fake_query)
+        assert run_agent("hello", agent="eng", session_id="dead", timeout_s=10)["session_id"] == "fresh-1"
+        assert calls == ["dead", None]
+    elif case == "malformed-line":
+        monkeypatch.setattr(sdk, "query", _raising_query(sdk.CLIJSONDecodeError("{not json", ValueError("bad"))))
+        with pytest.raises(AgentError, match=r"^claude \(sdk\) failed: ") as exc_info:
+            run_agent("hello", agent="eng", timeout_s=10)
+        assert not isinstance(exc_info.value, AgentMessageTooLargeError)
+    else:
+        boom = Exception("boom")
+        monkeypatch.setattr(sdk, "query", _raising_query(boom))
+        with pytest.raises(Exception) as exc_info:
+            run_agent("hello", agent="eng", timeout_s=10)
+        assert exc_info.value is boom

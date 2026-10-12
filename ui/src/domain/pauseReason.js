@@ -47,6 +47,10 @@ const CATEGORY_COPY = {
     label: 'Run refused: folder outside the repo',
     detail: 'The run plan’s cwd does not resolve to a folder inside this repo’s deploy-target checkout, so no command ran. Fix the deploy target or send it back to Run plan.',
   },
+  [REASON.SDK_MESSAGE_TOO_LARGE]: {
+    label: 'Agent message too large',
+    detail: 'One message from the agent, such as a screenshot it read, was bigger than the SDK reader allows. Resume to retry.',
+  },
 }
 
 // Both mirror the event text server/src/store.js:1208 writes on pause/resume.

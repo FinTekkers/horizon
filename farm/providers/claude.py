@@ -20,14 +20,19 @@ logged-in `claude` subscription, never API billing.
 import asyncio
 import json
 import os
+import re
 import subprocess
+import sys
 from datetime import datetime
+
+from domain.py import reasons
 
 from ..config import CLAUDE_BIN, FARM_RUNNER, MAX_TURNS, STEP_TIMEOUT_S
 from ..credentials import without_gate_credentials
 from .base import (
     AgentError,
     AgentExhaustedError,
+    AgentMessageTooLargeError,
     assert_metered_billing_authorized,
     decode_partial,
     metered_billing_opted_in,
@@ -36,6 +41,63 @@ from .base import (
 SUPPORTS_RESUME = True
 # HZ-158: yes — see AgentExhaustedError's docstring in providers/base.py.
 RESUMES_AFTER_EXHAUSTION = True
+
+# HZ-424: the SDK reads each CLI message into a buffer capped at 1 MB by
+# default; one Read of a full-page screenshot overflows it and the reader dies.
+# 16 MB fits those, and the env override is bounded so a typo can't remove the cap.
+SDK_MAX_BUFFER_DEFAULT_BYTES = 16 * 1024 * 1024
+SDK_MAX_BUFFER_CEILING_BYTES = 64 * 1024 * 1024
+SDK_MAX_BUFFER_ENV = "FARM_SDK_MAX_BUFFER_BYTES"
+# The SDK's own wording for the overflow (claude-agent-sdk's subprocess
+# transport). The only error that maps to sdk_message_too_large.
+_BUFFER_OVERFLOW_PHRASE = "exceeded maximum buffer size"
+_BUFFER_SIZE_RE = re.compile(r"Buffer size (\d+) exceeds limit")
+
+
+def sdk_max_buffer_bytes() -> int:
+    """The SDK reader's per-message cap in bytes. Read at call time, like
+    _selected_runner(). A value that isn't an integer in 1..64 MB falls back to
+    the 16 MB default with one warning on stderr."""
+    raw = os.environ.get(SDK_MAX_BUFFER_ENV)
+    if raw is None or not raw.strip():
+        return SDK_MAX_BUFFER_DEFAULT_BYTES
+    try:
+        value = int(raw.strip())
+    except ValueError:
+        value = None
+    if value is None or not 0 < value <= SDK_MAX_BUFFER_CEILING_BYTES:
+        shown = raw if len(raw) <= 32 else raw[:32] + "…"
+        print(
+            f"warning: {SDK_MAX_BUFFER_ENV}={shown!r} is not an integer in 1..{SDK_MAX_BUFFER_CEILING_BYTES}; "
+            f"using the default {SDK_MAX_BUFFER_DEFAULT_BYTES} bytes",
+            file=sys.stderr,
+            flush=True,
+        )
+        return SDK_MAX_BUFFER_DEFAULT_BYTES
+    return value
+
+
+def _is_buffer_overflow(exc: BaseException) -> bool:
+    """Whether exc is the SDK reader's buffer overflow. The SDK raises it as
+    CLIJSONDecodeError, or as a plain Exception when it flattens the reader's
+    error; only the wording tells it apart from a malformed line."""
+    return _BUFFER_OVERFLOW_PHRASE in str(exc)
+
+
+def _too_large(exc: BaseException, limit: int) -> AgentMessageTooLargeError:
+    """A one-line error built from scratch: the SDK's text can carry the start
+    of the oversized line (image data), so none of it is copied — only the
+    sizes, which the SDK reports as numbers."""
+    size = None
+    original = getattr(exc, "original_error", None)
+    match = _BUFFER_SIZE_RE.search(str(original)) if original is not None else None
+    if match:
+        size = int(match.group(1))
+    sized = f" ({size} bytes)" if size is not None else ""
+    return AgentMessageTooLargeError(
+        f"{reasons.REASON['SDK_MESSAGE_TOO_LARGE']}: an SDK message{sized} exceeded the {limit}-byte reader limit "
+        f"({SDK_MAX_BUFFER_ENV})"
+    )
 
 
 def assert_subscription_auth() -> None:
@@ -107,6 +169,7 @@ def run(
     # What the stream saw before it stopped — the only record a timeout
     # leaves, since wait_for cancels _stream_query before it can return.
     seen: dict = {"session_id": None, "text": None}
+    buffer_limit = sdk_max_buffer_bytes()
     try:
         return asyncio.run(
             asyncio.wait_for(
@@ -119,6 +182,7 @@ def run(
                     max_turns=max_turns,
                     allowed_tools=allowed_tools,
                     seen=seen,
+                    max_buffer_size=buffer_limit,
                 ),
                 timeout_s,
             )
@@ -130,6 +194,11 @@ def run(
             session_id=seen["session_id"] or session_id,
         ) from exc
     except ClaudeSDKError as exc:
+        # HZ-424: checked before the stale-resume fallback, so an overflow on
+        # a resumed session reports its reason instead of re-running fresh.
+        # `from None`: the SDK error's text can hold the oversized line.
+        if _is_buffer_overflow(exc):
+            raise _too_large(exc, buffer_limit) from None
         # A stale `resume` session is the common recoverable failure: retry fresh.
         if session_id and retry_fresh:
             return run(
@@ -143,6 +212,12 @@ def run(
                 allowed_tools=allowed_tools,
             )
         raise AgentError(f"claude (sdk) failed: {str(exc)[:300]}") from exc
+    except Exception as exc:
+        # The SDK may flatten the reader's error to a bare Exception; anything
+        # but the overflow (our own AgentErrors included) passes through untouched.
+        if not isinstance(exc, AgentError) and _is_buffer_overflow(exc):
+            raise _too_large(exc, buffer_limit) from None
+        raise
 
 
 async def _stream_query(
@@ -155,6 +230,7 @@ async def _stream_query(
     max_turns: int,
     allowed_tools: str | None,
     seen: dict | None = None,
+    max_buffer_size: int | None = None,
 ) -> dict:
     import claude_agent_sdk as sdk
 
@@ -176,6 +252,7 @@ async def _stream_query(
         # etc.) from the global Claude config.
         strict_mcp_config=True,
         cli_path=CLAUDE_BIN if CLAUDE_BIN != "claude" else None,
+        max_buffer_size=max_buffer_size if max_buffer_size is not None else sdk_max_buffer_bytes(),
     )
 
     result_text, new_session_id = "", None

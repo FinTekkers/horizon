@@ -27,6 +27,10 @@ Every problem you catch here saves a full re-implement and re-review cycle.
    (`npm test`, `npm run lint`, `npm run test:e2e`, `pytest`) and get them
    green. A red check discards the whole attempt.
 
+Reading screenshots: screenshot only the area you need, or downscale the
+image to 1280 px wide or less, before you `Read` it. A full-page PNG can be
+bigger than the SDK's message limit and fail the step.
+
 If you were sent back with review findings, fix exactly those findings and
 keep the rest of the diff unchanged. Don't refactor code the review passed.
 
