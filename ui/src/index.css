@@ -798,6 +798,10 @@ button { font-family: var(--font-sans); }
 .step__icon--awaiting { background: var(--warning); color: #fff; }
 .step__icon--pending { background: var(--surface); border: 2px solid var(--pending-border); color: transparent; }
 .step__icon--blocked { background: var(--danger); color: #fff; }
+/* HZ-429: a done Verify & report's verdict — after --done so it wins. */
+.step__icon--verdict-fail { background: var(--danger); color: #fff; }
+.step__icon--verdict-unknown,
+.step__icon--verdict-loading { background: var(--surface); border: 2px solid var(--muted); color: var(--muted); }
 .step__line { width: 2px; flex: 1; min-height: 14px; background: var(--border-strong); margin: 2px 0; }
 .step__line--done { background: var(--primary); }
 .step__body { flex: 1; padding-bottom: 14px; }
@@ -821,6 +825,10 @@ button { font-family: var(--font-sans); }
 .step-card__agent-dot { width: 7px; height: 7px; border-radius: 2px; }
 .step-card__meta { font: 500 12px var(--font-sans); margin-top: 5px; }
 .step-card__attempt { color: var(--warning-ink); }
+.step-card__verdict {
+  margin-top: 6px; font: 600 12px var(--font-sans); line-height: 1.4; color: var(--danger-ink);
+  white-space: pre-line; overflow-wrap: anywhere;
+}
 .step-card__output-link,
 .step-card__artifact-link {
   display: inline-block; margin-top: 8px;
@@ -921,6 +929,15 @@ button { font-family: var(--font-sans); }
   font: 700 10px var(--font-sans); color: #fff; flex-shrink: 0;
 }
 .activity-row__text { font: 500 13px var(--font-sans); color: var(--deep); line-height: 1.4; white-space: pre-line; overflow-wrap: anywhere; }
+.activity-row__verdict-badge {
+  display: inline-flex; align-items: center; justify-content: center; vertical-align: -3px;
+  width: 16px; height: 16px; margin-right: 6px; border-radius: 50%;
+  background: var(--danger); color: #fff;
+}
+.activity-row__verdict {
+  margin-top: 3px; font: 600 12px var(--font-sans); line-height: 1.4; color: var(--danger-ink);
+  white-space: pre-line; overflow-wrap: anywhere;
+}
 .activity-row__time { font: 500 11px var(--font-sans); color: var(--muted); margin-top: 2px; }
 .activity-empty { font: 500 13px var(--font-sans); color: var(--muted); }
 

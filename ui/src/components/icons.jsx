@@ -125,3 +125,17 @@ export function ChatIcon({ size = 15 }) {
     </svg>
   )
 }
+
+// HZ-429: a failed Verify & report. Unlike the decorative icons above it is
+// the only signal of the failure, so with a `label` it is named for screen
+// readers instead of hidden.
+export function CircleXIcon({ size = 14, label = null }) {
+  const a11y = label ? { 'aria-hidden': undefined, role: 'img', 'aria-label': label } : {}
+  return (
+    <svg {...iconProps(size, 2.4)} {...a11y}>
+      <circle cx="12" cy="12" r="10" />
+      <path d="m15 9-6 6" />
+      <path d="m9 9 6 6" />
+    </svg>
+  )
+}

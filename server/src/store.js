@@ -679,9 +679,11 @@ const selectItems = db.prepare(
   `SELECT w.*, (SELECT MAX(s.ended_at) FROM step_run s WHERE s.item_id = w.id) AS last_run_ended_at
    FROM work_item w ORDER BY w.id`,
 )
-const selectEvents = db.prepare('SELECT who, text, detail, color, initials, created_at FROM event WHERE item_id = ? ORDER BY id DESC LIMIT 20')
+const selectEvents = db.prepare(
+  'SELECT who, text, detail, verdict, color, initials, created_at FROM event WHERE item_id = ? ORDER BY id DESC LIMIT 20',
+)
 const selectOutputs = db.prepare(
-  "SELECT step_index, attempt, output, artifact, provider, model FROM step_run WHERE item_id = ? AND status = 'done' ORDER BY id",
+  "SELECT step_index, attempt, output, artifact, provider, model, verdict, verdict_summary FROM step_run WHERE item_id = ? AND status = 'done' ORDER BY id",
 )
 // Counts done+artifact rows only (a strict subset of the done rows above —
 // some steps mark done without ever setting an artifact), so the board can
@@ -714,6 +716,10 @@ function stepOutputs(itemId) {
       provider: row.provider || null,
       // HZ-398: the model that attempt ran on. NULL before the farm recorded it.
       model: row.model || null,
+      // HZ-429: Verify & report's verdict ('pass'|'fail') and its 1-3 line
+      // summary. NULL on every other step and on runs before it was recorded.
+      verdict: row.verdict ?? null,
+      verdictSummary: row.verdict_summary ?? null,
     }
   }
   // HZ-407: the Execute card's job view, from the newest Execute run in any
@@ -1456,8 +1462,16 @@ const RESET_REVIEW_STATE =
 
 // detail (HZ-373): the full failure message behind a check headline in
 // `text`, for "Show details"; null for every other event.
-export function addEvent(id, { who, text, color, initials, detail = null }) {
-  db.prepare('INSERT INTO event (item_id, who, text, color, initials, detail) VALUES (?, ?, ?, ?, ?, ?)').run(id, who, text, color, initials, detail)
+export function addEvent(id, { who, text, color, initials, detail = null, verdict = null }) {
+  db.prepare('INSERT INTO event (item_id, who, text, color, initials, detail, verdict) VALUES (?, ?, ?, ?, ?, ?, ?)').run(
+    id,
+    who,
+    text,
+    color,
+    initials,
+    detail,
+    verdict,
+  )
 }
 
 // HZ-384: a humanOnly gate (domain/steps.json) passes only with `proof` —

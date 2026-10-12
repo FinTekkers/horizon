@@ -73,11 +73,12 @@ export function insertProjectRepo(db, { projectId, repo, prefix }) {
 // to reproduce the exact pause-event text failFarmRun() writes (see
 // server/src/orchestrator.js), without needing a real farm failure to occur.
 // detail (HZ-373): the full failure message failFarmRun stores beside a
-// check failure's headline; null for every other event.
-export function insertEvent(db, { itemId, who = 'Horizon', text, color = '#9C333E', initials = 'HZ', detail = null }) {
+// check failure's headline; null for every other event. verdict (HZ-429): a
+// Verify & report completion's 'pass'/'fail'; null for every other event.
+export function insertEvent(db, { itemId, who = 'Horizon', text, color = '#9C333E', initials = 'HZ', detail = null, verdict = null }) {
   db.prepare(
-    'INSERT INTO event (item_id, who, text, color, initials, detail) VALUES (@itemId, @who, @text, @color, @initials, @detail)',
-  ).run({ itemId, who, text, color, initials, detail })
+    'INSERT INTO event (item_id, who, text, color, initials, detail, verdict) VALUES (@itemId, @who, @text, @color, @initials, @detail, @verdict)',
+  ).run({ itemId, who, text, color, initials, detail, verdict })
 }
 
 // A retained-but-superseded artifact version (HZ-46): a done step_run row
@@ -87,16 +88,16 @@ export function insertEvent(db, { itemId, who = 'Horizon', text, color = '#9C333
 // above, so it never goes through store.js and never gets kicked.
 export function insertStepRun(
   db,
-  { itemId, stepIndex, attempt, agent, status = 'done', output = null, artifact = null, startedAt, endedAt = null },
+  { itemId, stepIndex, attempt, agent, status = 'done', output = null, artifact = null, startedAt, endedAt = null, verdict = null, verdictSummary = null },
 ) {
   // Returns lastInsertRowid: HZ-54's queued-work spec needs the run id to
   // attach farm state to a specific run. main's own callers ignore it.
   return db
     .prepare(
-      `INSERT INTO step_run (item_id, step_index, attempt, agent, status, output, artifact, started_at, ended_at)
-       VALUES (@itemId, @stepIndex, @attempt, @agent, @status, @output, @artifact, @startedAt, @endedAt)`,
+      `INSERT INTO step_run (item_id, step_index, attempt, agent, status, output, artifact, started_at, ended_at, verdict, verdict_summary)
+       VALUES (@itemId, @stepIndex, @attempt, @agent, @status, @output, @artifact, @startedAt, @endedAt, @verdict, @verdictSummary)`,
     )
-    .run({ itemId, stepIndex, attempt, agent, status, output, artifact, startedAt, endedAt }).lastInsertRowid
+    .run({ itemId, stepIndex, attempt, agent, status, output, artifact, startedAt, endedAt, verdict, verdictSummary }).lastInsertRowid
 }
 
 // A feedback row with an explicit created_at, so it can be placed inside the

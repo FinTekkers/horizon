@@ -14,11 +14,13 @@ Respond with ONLY a JSON object (no prose, no fences):
 {
   "summary": "<past tense, <=200 chars: what the job ran and whether the metric holds>",
   "artifact_md": "<markdown: '## Verdict' (**pass** or **fail**, one line why), '## Commands' (run/passed/failed counts plus each failing command), '## Metric check' (each metric line, pass or fail, with evidence)>",
-  "verdict": {"verdict": "pass"}
+  "verdict": {"verdict": "pass", "summary": "<1-3 short lines: why it passed or failed>"}
 }
 
 `verdict.verdict` is `pass` only when every metric line holds on the job's
-evidence; otherwise `fail`. A command that exited non-zero fails unless the
+evidence; otherwise `fail`. `verdict.summary` is 1-3 short lines, one per
+line, saying why. The item page shows it beside the step; it does not replace
+`## Verdict`. A command that exited non-zero fails unless the
 metric explicitly tolerates it. If the log is truncated, judge only what is
 shown and say the rest was not reviewed.
 

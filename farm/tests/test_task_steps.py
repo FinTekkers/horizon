@@ -289,6 +289,21 @@ def test_each_task_step_posts_its_summary_and_artifact(monkeypatch, tmp_path, la
     assert posted[0]["artifacts"]["artifact_md"].startswith(f"## {label}\nbody")
 
 
+# ---- HZ-429: Verify & report's verdict reaches the server ----
+
+
+def test_verify_and_report_passes_its_verdict_through_and_run_plan_does_not(monkeypatch):
+    verdict = {"verdict": "fail", "summary": "Command 1 crashed on import.\nNone of the 5 metric lines hold."}
+    stub_agent(monkeypatch, [reply_for(step_agent.VERIFY_REPORT_LABEL, verdict=verdict)])
+    result = step_agent.execute(make_task(step_agent.VERIFY_REPORT_LABEL))
+    assert result["artifacts"]["verdict"] == verdict
+    assert result["artifacts"]["artifact_md"].startswith(f"## {step_agent.VERIFY_REPORT_LABEL}\nbody")
+
+    stub_agent(monkeypatch, [reply_for(step_agent.RUN_PLAN_LABEL, verdict=verdict)])
+    result = step_agent.execute(make_task(step_agent.RUN_PLAN_LABEL))
+    assert "verdict" not in result["artifacts"]
+
+
 # ---- metric 5: the Run plan block ----
 
 

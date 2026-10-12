@@ -4,6 +4,7 @@ import {
   IMPLEMENT_STEP_INDEX,
   REVIEW_STEP_INDEX,
   ACCEPT_GATE_INDEX,
+  VERIFY_REPORT_STEP_INDEX,
   isClosed,
   isAbandoned,
   phaseIdx,
@@ -29,9 +30,21 @@ import GateActionStatus from './GateActionStatus'
 import JobPanel from './JobPanel'
 import ProjectBadge from './ProjectBadge'
 import TaskBadge from './TaskBadge'
-import { BackIcon, LinkIcon, RestartIcon, PrIcon } from './icons'
+import { BackIcon, LinkIcon, RestartIcon, PrIcon, CircleXIcon } from './icons'
 
 const STEP_GLYPHS = { done: '✓', active: '•', awaiting: '!', pending: '', blocked: '✕' }
+
+// HZ-429: a done Task Verify & report shows its stored verdict, not just that
+// it ran: 'pass' keeps the tick, 'fail' a red circle-X, and a run with no
+// stored verdict (before it was recorded) a neutral '?'. 'loading' until the
+// outputs land, so a failed run never flashes a tick. null for every other
+// step, which keeps its STEP_GLYPHS icon.
+function verifyVerdictOf(index, status, output, settled) {
+  if (index !== VERIFY_REPORT_STEP_INDEX || status !== 'done') return null
+  if (!settled) return 'loading'
+  return output?.verdict === 'pass' || output?.verdict === 'fail' ? output.verdict : 'unknown'
+}
+const VERIFY_FAILED_LABEL = 'Verify & report failed'
 
 function elapsedMinutes(startedAt) {
   if (!startedAt) return null
@@ -240,12 +253,26 @@ function Step({ item, stepOutputs, outputsSettled, index, deployBlock, viewerNam
   // HZ-384: passes only with the gate PIN, whatever the project's Autopilot.
   const humanOnly = status === 'awaiting' && isHumanOnlyGate(index)
   const sentLabel = restartSentLabel(item, index, restartSent)
+  const verdict = verifyVerdictOf(index, status, output, outputsSettled)
+  const verdictIcon = { fail: 'verdict-fail', unknown: 'verdict-unknown', loading: 'verdict-loading' }[verdict]
 
   return (
     <div className="step">
       <div className="step__rail">
-        <div className={`step__icon step__icon--${status}${queued ? ' step__icon--queued' : ''}`}>
-          {queued ? '⋯' : STEP_GLYPHS[status]}
+        <div
+          className={`step__icon step__icon--${status}${queued ? ' step__icon--queued' : ''}${verdictIcon ? ` step__icon--${verdictIcon}` : ''}`}
+          data-testid={verdict === 'fail' ? 'verify-verdict-fail' : undefined}
+          title={verdict === 'unknown' ? 'No verdict recorded for this run' : undefined}
+        >
+          {queued ? '⋯' : verdict === 'fail' ? (
+            <CircleXIcon size={18} label={VERIFY_FAILED_LABEL} />
+          ) : verdict === 'unknown' ? (
+            '?'
+          ) : verdict === 'loading' ? (
+            ''
+          ) : (
+            STEP_GLYPHS[status]
+          )}
         </div>
         <div className={`step__line${status === 'done' ? ' step__line--done' : ''}`} />
       </div>
@@ -288,6 +315,11 @@ function Step({ item, stepOutputs, outputsSettled, index, deployBlock, viewerNam
               <span> · no output recorded (step predates this item's run or was skipped)</span>
             )}
           </div>
+          {verdict === 'fail' && output?.verdictSummary && (
+            <div className="step-card__verdict" data-testid="verify-verdict-summary">
+              {output.verdictSummary}
+            </div>
+          )}
           {humanOnly && (
             <div className="step-card__human-only">
               <div style={{ color: 'var(--warning-ink)', fontWeight: 600 }}>Always a human · even on Autopilot</div>
@@ -836,8 +868,20 @@ export default function Tracker({ item, projects, deployBlock = null, viewerName
               </span>
               <div style={{ flex: 1 }}>
                 <div className="activity-row__text">
+                  {ac.verdict === 'fail' && (
+                    <span className="activity-row__verdict-badge" data-testid="activity-verdict-fail">
+                      <CircleXIcon size={12} label={VERIFY_FAILED_LABEL} />
+                    </span>
+                  )}
                   <strong>{ac.who}</strong> {ac.text}
                 </div>
+                {/* HZ-429: a failed Verify & report's 1-3 line summary. A pass
+                    event stores its summary in detail too; it stays hidden. */}
+                {ac.verdict === 'fail' && ac.detail && (
+                  <div className="activity-row__verdict" data-testid="activity-verdict-summary">
+                    {ac.detail}
+                  </div>
+                )}
                 <div className="activity-row__time">{ac.time}</div>
               </div>
             </div>

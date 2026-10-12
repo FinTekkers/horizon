@@ -541,6 +541,21 @@ try {
 } catch {
   // column already exists
 }
+// HZ-429: a Task's Verify & report verdict and its 1-3 line summary, so the
+// item page shows a failed run as failed without parsing the markdown. NULL
+// on every other run and on runs before this column — no backfill: those
+// render neutral, never as `fail`.
+for (const sql of [
+  "ALTER TABLE step_run ADD COLUMN verdict TEXT CHECK (verdict IN ('pass','fail'))",
+  'ALTER TABLE step_run ADD COLUMN verdict_summary TEXT',
+  "ALTER TABLE event ADD COLUMN verdict TEXT CHECK (verdict IN ('pass','fail'))",
+]) {
+  try {
+    db.exec(sql)
+  } catch {
+    // column already exists
+  }
+}
 try {
   // HZ-321: the run that first carried this feedback, so a deploy-stopped run
   // can hand its feedback back undelivered (HZ-184: never consumed by a stop).

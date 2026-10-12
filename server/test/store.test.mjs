@@ -575,6 +575,8 @@ test('stepOutputs carry the step label for non-UI clients', () => {
     output: 'verdict: pass', attempt: 1, artifact: '# QA review', attemptCount: 1, label: 'QA reviews the test plan',
     provider: null, // HZ-357: no provider recorded for this run
     model: null, // HZ-398: nor a model
+    verdict: null, // HZ-429: only Verify & report records one
+    verdictSummary: null,
   })
 })
 
