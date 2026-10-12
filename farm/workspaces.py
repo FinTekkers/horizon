@@ -155,7 +155,9 @@ def item_lock_held(repo_full: str, item_id: str) -> bool:
 
 
 def _git(path: Path, *args: str, check: bool = True) -> subprocess.CompletedProcess:
-    result = subprocess.run(["git", "-C", str(path), *args], capture_output=True, text=True, timeout=300)
+    result = subprocess.run(
+        ["git", "-C", str(path), *args], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=300
+    )
     if check and result.returncode != 0:
         raise RuntimeError(f"git {' '.join(args)} failed: {result.stderr.strip()[:200]}")
     return result
@@ -184,7 +186,7 @@ def ensure(repo_full: str, token: str | None) -> Path:
     else:
         result = subprocess.run(
             ["git", "clone", url, str(path)],
-            capture_output=True, text=True, timeout=600,
+            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=600,
         )
         if result.returncode != 0:
             raise RuntimeError(f"clone of {repo_full} failed: {result.stderr.strip()[:200]}")

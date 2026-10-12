@@ -107,7 +107,12 @@ def assert_scratch_path(ws: Path) -> None:
 
 def _git(path: Path, *args: str, check: bool = True, timeout: float = 300) -> subprocess.CompletedProcess:
     result = subprocess.run(
-        ["git", "-C", str(path), *args], capture_output=True, text=True, timeout=max(timeout, 1)
+        ["git", "-C", str(path), *args],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=max(timeout, 1),
     )
     if check and result.returncode != 0:
         raise RuntimeError(f"git {' '.join(args)} failed: {result.stderr.strip()[-300:]}")

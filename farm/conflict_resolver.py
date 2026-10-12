@@ -246,7 +246,12 @@ def _branch_suffix() -> str:
 
 def git(ws: Path, *args: str, check: bool = True) -> subprocess.CompletedProcess:
     result = subprocess.run(
-        ["git", "-C", str(ws), *args], capture_output=True, text=True, timeout=GIT_TIMEOUT_S
+        ["git", "-C", str(ws), *args],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=GIT_TIMEOUT_S,
     )
     if check and result.returncode != 0:
         raise RuntimeError(f"git {' '.join(args)} failed: {result.stderr.strip()[:200]}")
@@ -486,6 +491,11 @@ def _conflict_files(ws: Path, unmerged: list[str]) -> list[conflict_hunks.Confli
     Raises UnsupportedConflict for anything this path must not touch."""
     files = []
     for path in sorted(unmerged):
+        # HZ-420: git() decodes with errors="replace", so a U+FFFD may stand
+        # for bytes that aren't UTF-8 (a host with core.quotePath=false).
+        # That name is not the file's: refuse before anything is written.
+        if "\ufffd" in path:
+            raise UnsupportedConflict(f"git status: {path} isn't valid UTF-8")
         conflict_hunks.check_attr(git, ws, path)
         files.append(conflict_hunks.build_conflict_file(git, ws, path))
     return files

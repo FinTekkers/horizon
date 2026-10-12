@@ -1017,7 +1017,13 @@ _SCRIPT_PATH = re.compile(r"scripts/checks/[\w./-]+")
 
 def _git_lines(ws: Path, *args: str) -> list[str]:
     proc = subprocess.run(
-        ["git", "-C", str(ws), *args], capture_output=True, text=True, timeout=BRANCH_GIT_TIMEOUT_S, check=True
+        ["git", "-C", str(ws), *args],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=BRANCH_GIT_TIMEOUT_S,
+        check=True,
     )
     return [line.strip() for line in proc.stdout.splitlines() if line.strip()]
 
