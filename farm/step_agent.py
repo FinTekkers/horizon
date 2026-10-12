@@ -2522,6 +2522,11 @@ def _execute(task: dict, guard: HandoffGuard) -> dict:
     spawn_field = _spawn_field(kind, label)
     if spawn_field and isinstance(parsed.get(spawn_field), dict):
         result.setdefault("artifacts", {})[spawn_field] = parsed[spawn_field]
+    # HZ-429: Verify & report's verdict ({verdict, summary}) rides through so
+    # the server can record it (orchestrator.normalizeVerifyVerdict). Any
+    # other Task step's `verdict` is dropped.
+    if label == VERIFY_REPORT_LABEL and isinstance(parsed.get("verdict"), dict):
+        result.setdefault("artifacts", {})["verdict"] = parsed["verdict"]
     return result
 
 

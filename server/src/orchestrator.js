@@ -969,6 +969,7 @@ export const MOCK_STEP_BEHAVIOR = {
   'Verify & report': () => ({
     summary: 'the mock job holds the metric (mock)',
     artifact_md: '## Verdict\n**pass** (mock)\n\n## Commands\n1 run, 1 passed, 0 failed.',
+    verdict: { verdict: 'pass', summary: 'the mock job holds the metric (mock)' },
   }),
   // Execute: the code change takes the form of a GitHub PR. The mock commits
   // a placeholder file; the PR/branch mechanics are the real integration.
@@ -2146,6 +2147,30 @@ export function validateDeployVerdict(v) {
   return !!v && typeof v === 'object' && VERDICT_VALUES.has(v.verdict)
 }
 
+// ---- Verify & report verdict (HZ-429) ----
+// Recorded and shown only: a `fail` never changes what the Task does next —
+// Review & close still decides. So a missing or malformed verdict is not a
+// failed run, unlike Review and Deploy: it is stored as `fail`, because a run
+// that cannot say it passed has not shown that it did.
+const VERIFY_SUMMARY_MAX_LINES = 3
+const VERIFY_SUMMARY_MAX_LINE_CHARS = 200
+const VERIFY_NO_VERDICT_SUMMARY = 'No parseable verdict was returned.'
+const VERIFY_NO_SUMMARY = 'No summary was returned.'
+
+export function normalizeVerifyVerdict(raw, fallbackText) {
+  if (!raw || typeof raw !== 'object' || !VERDICT_VALUES.has(raw.verdict)) {
+    return { verdict: 'fail', summary: VERIFY_NO_VERDICT_SUMMARY }
+  }
+  const source = typeof raw.summary === 'string' ? raw.summary : typeof fallbackText === 'string' ? fallbackText : ''
+  const lines = source
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .slice(0, VERIFY_SUMMARY_MAX_LINES)
+    .map((line) => line.slice(0, VERIFY_SUMMARY_MAX_LINE_CHARS))
+  return { verdict: raw.verdict, summary: lines.length > 0 ? lines.join('\n') : VERIFY_NO_SUMMARY }
+}
+
 // A failing deploy verdict has no analogous "retry loop" the way code review
 // does (redeploying isn't re-implementing) — it just pauses the item for a
 // human to decide (rollback, redeploy, investigate), same as failFarmRun,
@@ -2372,9 +2397,13 @@ export async function completeFarmRun(runId, { summary, patch, artifacts, job_vi
   // verdict plus the job's own result — the summary and redacted log the
   // Execute run stored. The job section goes last, so a truncated log still
   // ends the artifact with its marker.
+  // HZ-429: its verdict and 1-3 line summary are stored beside the artifact,
+  // which stays whole. Display only — the cursor advances either way.
+  let verify = null
   if (run.step_index === VERIFY_REPORT_STEP_INDEX) {
     const jobArtifact = latestArtifact(id, EXECUTE_STEP_INDEX)
     if (jobArtifact) artifactMd = artifactMd ? `${artifactMd}\n\n---\n\n${jobArtifact}` : jobArtifact
+    verify = normalizeVerifyVerdict(artifacts?.verdict, text)
   }
 
   if (run.step_index === IMPLEMENT_STEP_INDEX) {
@@ -2385,10 +2414,27 @@ export async function completeFarmRun(runId, { summary, patch, artifacts, job_vi
   // HZ-407: a job's final view lands in the same write that closes the run.
   const finalView = STEPS[run.step_index]?.runsIn === 'job' ? cleanJobView(jobView) : null
   db.prepare(
-    "UPDATE step_run SET status = 'done', output = ?, artifact = ?, provider = ?, model = ?, command_id = ?, job_view = COALESCE(?, job_view), ended_at = datetime('now') WHERE id = ?",
-  ).run(text, artifactMd, provider, model, commandId, finalView && JSON.stringify(finalView), runId)
+    "UPDATE step_run SET status = 'done', output = ?, artifact = ?, provider = ?, model = ?, command_id = ?, job_view = COALESCE(?, job_view), verdict = ?, verdict_summary = ?, ended_at = datetime('now') WHERE id = ?",
+  ).run(
+    text,
+    artifactMd,
+    provider,
+    model,
+    commandId,
+    finalView && JSON.stringify(finalView),
+    verify?.verdict ?? null,
+    verify?.summary ?? null,
+    runId,
+  )
   db.prepare("UPDATE work_item SET cursor = cursor + 1, updated_at = datetime('now') WHERE id = ?").run(id)
-  addEvent(id, { who: agent.label, text: `completed “${step.label}” — ${text.slice(0, 300)}`, color: agent.color, initials: agent.initials })
+  addEvent(id, {
+    who: agent.label,
+    text: `completed “${step.label}” — ${text.slice(0, 300)}`,
+    color: agent.color,
+    initials: agent.initials,
+    detail: verify?.summary ?? null,
+    verdict: verify?.verdict ?? null,
+  })
   postStepComment(getItem(id), run.step_index, run.attempt, text, cleanPatch, false, artifactMd)
   notifyChange()
   dispatching.delete(id)
@@ -2804,10 +2850,11 @@ async function runMockStep(id, stepIndex, runId) {
 
   // A mock implement is never a scoped fix: its review must be full.
   if (stepIndex === IMPLEMENT_STEP_INDEX) settleFixPass(id, { scope_json: null }, null)
-  db.prepare("UPDATE step_run SET status = 'done', output = ?, ended_at = datetime('now') WHERE id = ?").run(
-    summary,
-    runId,
-  )
+  // HZ-429: the same verdict record the farm path writes.
+  const verify = stepIndex === VERIFY_REPORT_STEP_INDEX ? normalizeVerifyVerdict(verdict, summary) : null
+  db.prepare(
+    "UPDATE step_run SET status = 'done', output = ?, verdict = ?, verdict_summary = ?, ended_at = datetime('now') WHERE id = ?",
+  ).run(summary, verify?.verdict ?? null, verify?.summary ?? null, runId)
   if (artifactMd) db.prepare('UPDATE step_run SET artifact = ? WHERE id = ?').run(artifactMd, runId)
   db.prepare("UPDATE work_item SET cursor = cursor + 1, updated_at = datetime('now') WHERE id = ?").run(id)
   addEvent(id, {
@@ -2815,6 +2862,8 @@ async function runMockStep(id, stepIndex, runId) {
     text: `completed “${step.label}” — ${summary}`,
     color: agent.color,
     initials: agent.initials,
+    detail: verify?.summary ?? null,
+    verdict: verify?.verdict ?? null,
   })
   const attempt = db.prepare('SELECT attempt FROM step_run WHERE id = ?').get(runId)?.attempt || 1
   postStepComment(getItem(id), stepIndex, attempt, summary, patch, true)

@@ -187,6 +187,8 @@ test("the item stream opens with the item's outputs, sends them again when they 
       label: STEPS[1].label,
       provider: null, // HZ-357: no provider recorded for this run
       model: null, // HZ-398: nor a model
+      verdict: null, // HZ-429: only Verify & report records one
+      verdictSummary: null,
     })
     await waitForItemClients('SO-OPEN', 1)
 

@@ -43,6 +43,7 @@ const EXPECTED_JOURNEYS = [
   'board-blocked-light',
   'board-blocked-dark',
   'board-blocked-phone',
+  'task-verify-verdict-fail',
 ]
 
 const missing = EXPECTED_JOURNEYS.filter((name) => !existsSync(join(SCREENSHOTS_DIR, `${name}.png`)))
