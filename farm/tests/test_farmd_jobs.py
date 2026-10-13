@@ -377,7 +377,7 @@ def test_the_final_view_rides_on_the_result_and_on_the_budget_failure(monkeypatc
 # ---- HZ-415: the plan's cwd resolves inside the Task repo's checkout ----
 
 
-@pytest.mark.parametrize("case", ["no repo_dir", "symlink out", "absolute cwd"])
+@pytest.mark.parametrize("case", ["no repo_dir", "symlink out", "absolute cwd", "venv outside"])
 def test_a_cwd_outside_the_repo_is_refused_with_no_session_and_no_env_file(running_farm, monkeypatch, fake_tmux, tmp_path, case):
     """Metric 2 (farmd leg): the refusal comes before any .env read, env file
     or tmux session — a 400 the server records as the run's error."""
@@ -389,6 +389,14 @@ def test_a_cwd_outside_the_repo_is_refused_with_no_session_and_no_env_file(runni
         (tmp_path / "link").symlink_to("/")
         payload = job_payload(9136, repo_dir=str(tmp_path), cwd="link")
         expected = "cwd refused: cwd resolves outside the repo directory"
+    elif case == "venv outside":
+        # HZ-431: the checkout's .venv resolves outside it.
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        (tmp_path / "elsewhere" / "bin").mkdir(parents=True)
+        (repo / ".venv").symlink_to(tmp_path / "elsewhere")
+        payload = job_payload(9136, repo_dir=str(repo))
+        expected = "cwd refused: venv resolves outside the repo directory"
     else:
         payload = job_payload(9136, repo_dir=str(tmp_path))
         block = {"cwd": "/tmp", "commands": ["echo hi"], "budget_minutes": 1}

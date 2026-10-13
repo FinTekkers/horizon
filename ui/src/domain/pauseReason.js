@@ -44,8 +44,8 @@ const CATEGORY_COPY = {
     detail: 'The job ran past the run plan’s time budget and was stopped. Resume to retry the remaining commands, or send it back to Run plan.',
   },
   [REASON.JOB_CWD_REFUSED]: {
-    label: 'Run refused: folder outside the repo',
-    detail: 'The run plan’s cwd does not resolve to a folder inside this repo’s deploy-target checkout, so no command ran. Fix the deploy target or send it back to Run plan.',
+    label: 'Run refused: path outside the repo',
+    detail: 'The run plan’s cwd or the repo’s virtualenv does not resolve inside this repo’s deploy-target checkout, so no command ran. Fix the deploy target or send it back to Run plan.',
   },
   [REASON.SDK_MESSAGE_TOO_LARGE]: {
     label: 'Agent message too large',

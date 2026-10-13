@@ -91,6 +91,8 @@ function toTarget(row) {
     healthUrl: row.health_url,
     healthCheckType: row.health_check_type,
   }
+  // HZ-431: absent when unset (the farm then uses <repoDir>/.venv if it exists).
+  if (row.venv_dir != null) target.venvDir = row.venv_dir
   if (row.extra_services !== null) {
     let extras
     try {
@@ -111,8 +113,8 @@ export function seedDeployTargets(database = db, targets = SEED_DEPLOY_TARGETS, 
   }
   const insert = database.prepare(`
     INSERT INTO deploy_target
-      (key, repo, script, service, repo_dir, state_key, health_url, health_check_type, extra_services)
-    VALUES (@key, @repo, @script, @service, @repoDir, @stateKey, @healthUrl, @healthCheckType, @extraServices)
+      (key, repo, script, service, repo_dir, state_key, health_url, health_check_type, extra_services, venv_dir)
+    VALUES (@key, @repo, @script, @service, @repoDir, @stateKey, @healthUrl, @healthCheckType, @extraServices, @venvDir)
     ON CONFLICT DO NOTHING
   `)
   try {
@@ -122,6 +124,7 @@ export function seedDeployTargets(database = db, targets = SEED_DEPLOY_TARGETS, 
         const { changes } = insert.run({
           ...target,
           extraServices: target.extraServices ? JSON.stringify(target.extraServices) : null,
+          venvDir: target.venvDir ?? null,
         })
         seeded += changes
         if (changes === 1 && onInserted) onInserted(target, database)
@@ -207,6 +210,9 @@ const SLUG = /^[a-z0-9][a-z0-9-]{0,63}$/
 const SERVICE = /^[A-Za-z0-9@_.-]+$/
 const SCRIPT = /^[A-Za-z0-9_-][A-Za-z0-9_.-]*(\/[A-Za-z0-9_-][A-Za-z0-9_.-]*)*$/
 const REPO_DIR = /^\/[A-Za-z0-9_./-]*$/
+// HZ-431: relative to repoDir, format only — the farm resolves symlinks and
+// bounds it inside the checkout (domain/py/run_plan.py resolve_venv).
+const VENV_DIR = /^[A-Za-z0-9_.-][A-Za-z0-9_./-]{0,299}$/
 
 export function scriptInsideScriptsDir(script) {
   if (typeof script !== 'string' || !SCRIPT.test(script)) return false
@@ -246,6 +252,10 @@ export function checkRunnable(target) {
   }
   if (url.protocol !== 'http:' && url.protocol !== 'https:') return { ok: false, reason: 'bad healthUrl' }
   if (!SLUG.test(target.healthCheckType)) return { ok: false, reason: 'bad healthCheckType' }
+  const venvDir = target.venvDir === '' ? null : (target.venvDir ?? null)
+  if (venvDir !== null && (typeof venvDir !== 'string' || !VENV_DIR.test(venvDir) || venvDir.split('/').includes('..'))) {
+    return { ok: false, reason: 'bad venvDir' }
+  }
   const extras = target.extraServices ?? []
   if (!Array.isArray(extras) || !extras.every((s) => typeof s === 'string')) {
     return { ok: false, reason: 'bad extraServices' }
@@ -264,7 +274,7 @@ export function checkRunnable(target) {
 // Results are { ok: true, target } or { ok: false, code, reason? } with code
 // 'invalid' | 'conflict' | 'not_found'.
 
-const TARGET_BODY_FIELDS = ['repo', 'script', 'service', 'repoDir', 'stateKey', 'healthUrl', 'healthCheckType']
+const TARGET_BODY_FIELDS = ['repo', 'script', 'service', 'repoDir', 'stateKey', 'healthUrl', 'healthCheckType', 'venvDir']
 
 // The target shape from a request body: only the known fields, key from the path.
 export function targetFromBody(key, body) {
@@ -278,6 +288,7 @@ function rowParams(target) {
   return {
     ...target,
     extraServices: target.extraServices?.length ? JSON.stringify(target.extraServices) : null,
+    venvDir: target.venvDir || null,
   }
 }
 
@@ -297,8 +308,8 @@ function writeTarget(target, statement) {
 export function createTarget(target, database = db) {
   const result = writeTarget(target, database.prepare(`
     INSERT INTO deploy_target
-      (key, repo, script, service, repo_dir, state_key, health_url, health_check_type, extra_services)
-    VALUES (@key, @repo, @script, @service, @repoDir, @stateKey, @healthUrl, @healthCheckType, @extraServices)
+      (key, repo, script, service, repo_dir, state_key, health_url, health_check_type, extra_services, venv_dir)
+    VALUES (@key, @repo, @script, @service, @repoDir, @stateKey, @healthUrl, @healthCheckType, @extraServices, @venvDir)
   `))
   return result.ok ? { ok: true, target: findTargetByKey(target.key, database) } : result
 }
@@ -310,7 +321,7 @@ export function updateTarget(key, fields, database = db) {
     UPDATE deploy_target SET
       repo = @repo, script = @script, service = @service, repo_dir = @repoDir, state_key = @stateKey,
       health_url = @healthUrl, health_check_type = @healthCheckType, extra_services = @extraServices,
-      updated_at = datetime('now')
+      venv_dir = @venvDir, updated_at = datetime('now')
     WHERE key = @key
   `))
   return result.ok ? { ok: true, target: findTargetByKey(key, database) } : result

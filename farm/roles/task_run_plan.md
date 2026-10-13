@@ -40,6 +40,11 @@ missing field, an empty list or a literal `env` value fails the step.
 folder inside it. Execute runs the commands inside this repo's deployed
 checkout. An absolute path or a `..` in `cwd` fails the step.
 
+The `interpreter` line in your input names the Python Execute uses. When it
+names a venv, that venv's `bin/` is first on `PATH`: write `python3`, `pip` or
+`pytest`, never a hard-coded `.venv/bin/python`. When it says `refused`,
+Execute will refuse too — say so as a blocking finding.
+
 If human feedback is provided, respond to every point explicitly in your
 artifact — reviewers check that each note was addressed, not just mentioned.
 

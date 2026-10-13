@@ -183,6 +183,29 @@ test('unknown keys are 404 and a duplicate key or repo is 409', async () => {
   assert.equal(findTargetByKey('ui-service').repo, 'FinTekkers/ui-service')
 })
 
+// HZ-431: venvDir is relative to repoDir; the farm bounds it inside the
+// checkout, and the server refuses a parent hop or an absolute path outright.
+test('venvDir survives a PUT then GET; a .. or absolute venvDir is 400 bad venvDir and writes nothing', async () => {
+  const put = await request('PUT', '/api/admin/deploy-targets/ui-service', {
+    payload: { ...DOCS_FIELDS, repo: 'FinTekkers/ui-service', service: 'fintekkers-ui-test', venvDir: 'envs/prod' },
+    pin,
+  })
+  assert.equal(put.statusCode, 200)
+  assert.equal(put.json().target.venvDir, 'envs/prod')
+  const got = (await request('GET', '/api/admin/deploy-targets/config')).json()
+  assert.equal(got.targets.find((t) => t.key === 'ui-service').venvDir, 'envs/prod')
+
+  for (const venvDir of ['../elsewhere/.venv', '/opt/horizon/.venv']) {
+    const res = await request('PUT', '/api/admin/deploy-targets/ui-service', {
+      payload: { ...DOCS_FIELDS, repo: 'FinTekkers/ui-service', service: 'fintekkers-ui-test', venvDir },
+      pin,
+    })
+    assert.equal(res.statusCode, 400, venvDir)
+    assert.deepEqual(res.json(), { error: 'deploy_target_invalid', reason: 'bad venvDir' })
+    assert.equal(findTargetByKey('ui-service').venvDir, 'envs/prod')
+  }
+})
+
 test('GET /api/admin/deploy-targets/config returns the stored rows and no secrets', async () => {
   const res = await request('GET', '/api/admin/deploy-targets/config')
   assert.equal(res.statusCode, 200)

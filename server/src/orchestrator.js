@@ -1398,6 +1398,9 @@ async function dispatchToFarm(id, stepIndex, runId, attempt, scope, checkoutSha 
     ...(projectContext ? { project_context: projectContext } : {}),
     ...checkCommandsField(item),
     ...rulesOverrideField(project?.name, item.repo),
+    // HZ-431: Run plan's prompt names the interpreter Execute will use, so it
+    // gets the same checkout and venv setting the Execute dispatch carries.
+    ...(stepIndex === RUN_PLAN_STEP_INDEX ? jobEnvFields(item.repo) : {}),
   }).catch((err) => {
     // A refused task is not an unreachable farm: say why, and don't retry.
     if (err.status === 400 && Object.hasOwn(FARM_REFUSALS, err.code ?? '')) return failFarmRun(runId, FARM_REFUSALS[err.code])
@@ -1483,6 +1486,15 @@ const FARM_REFUSALS = {
   job_already_running: 'a job is already running for this item',
 }
 
+// HZ-415: the deploy-target checkout the plan's cwd resolves inside. Read on
+// every dispatch (Resume included); farmd refuses a null one. HZ-431: plus the
+// target's venv setting (null: `<repo_dir>/.venv` if it exists), which the
+// farm bounds inside that checkout.
+function jobEnvFields(repo) {
+  const target = findTargetByRepo(repo)
+  return { repo_dir: target?.repoDir ?? null, venv_dir: target?.venvDir ?? null }
+}
+
 // HZ-378: hands an Execute step to the farm's job lane. The payload carries
 // the plan artifact and the approved hash — never secret values, which farmd
 // resolves farm-side. The queue watchdog (armed by dispatchToFarm before this
@@ -1505,9 +1517,7 @@ function dispatchJob(id, stepIndex, runId, attempt) {
     ...(project ? { project: { id: project.id, name: project.name } } : {}),
     plan_artifact: planArtifact,
     approved_hash: approvedHash,
-    // HZ-415: the deploy-target checkout the plan's cwd resolves inside. Read
-    // on every dispatch (Resume included); farmd refuses a null one.
-    repo_dir: findTargetByRepo(item.repo)?.repoDir ?? null,
+    ...jobEnvFields(item.repo),
   }).catch((err) => {
     const code = err.code ?? ''
     if ((err.status === 400 || err.status === 409) && Object.hasOwn(FARM_REFUSALS, code)) {

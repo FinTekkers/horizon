@@ -81,16 +81,23 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def _child_env(env_values: dict) -> dict:
+def _child_env(env_values: dict, venv: str | None = None) -> dict:
     """Minimal base plus the job's secrets. The base is the small set a shell
     command needs (PATH, HOME, etc); everything else from the farm process
-    stays out, so a `env` dump in the log cannot leak farm tuning."""
+    stays out, so a `env` dump in the log cannot leak farm tuning.
+
+    HZ-431: with a venv, its bin/ goes first on PATH and VIRTUAL_ENV names
+    it — applied last, so a plan's env cannot swap the interpreter. A fresh
+    dict every time: the farm's own os.environ is never touched."""
     base_keys = ("PATH", "HOME", "USER", "LOGNAME", "SHELL", "LANG", "LC_ALL", "TZ", "TMPDIR")
     env = {k: v for k, v in os.environ.items() if k in base_keys}
     env.setdefault("PATH", "/usr/bin:/bin")
     for k, v in (env_values or {}).items():
         if isinstance(v, str):
             env[str(k)] = v
+    if venv:
+        env["PATH"] = os.pathsep.join([os.path.join(venv, "bin"), env.get("PATH") or "/usr/bin:/bin"])
+        env["VIRTUAL_ENV"] = venv
     return env
 
 
@@ -129,6 +136,7 @@ def run_job(
     state_path,
     log_path,
     repo_dir: str | None,
+    venv_dir: str | None = None,
     env_values: dict | None = None,
     redact_values: dict | None = None,
     notify=None,
@@ -143,7 +151,13 @@ def run_job(
     HZ-415: `repo_dir` is the Task repo's deploy-target checkout, required
     with no default. The plan's cwd is resolved inside it on every start —
     Resume included — before the first command; a cwd that leaves it ends
-    the job `cwd_refused` with zero commands run."""
+    the job `cwd_refused` with zero commands run.
+
+    HZ-431: `venv_dir` is the deploy target's optional venv setting (None:
+    `<repo_dir>/.venv` if it exists). It is resolved right after the cwd, on
+    every start; a venv outside the checkout is refused the same way. The
+    log's first line of each start names the env: `env: <venv>` or
+    `env: system`."""
     last_nudge = [0.0]
 
     def nudge(*, force: bool = True) -> None:
@@ -211,6 +225,7 @@ def run_job(
     # run passed stay recorded so a later Resume still skips them.
     try:
         cwd = run_plan.resolve_cwd(repo_dir, plan_cwd, forbid=str(HORIZON_ROOT))
+        venv = run_plan.resolve_venv(repo_dir, venv_dir, forbid=str(HORIZON_ROOT))
     except run_plan.CwdRefused as exc:
         refusal = str(exc).splitlines()[0] if str(exc) else "cwd refused"
         state = {
@@ -241,6 +256,9 @@ def run_job(
     fresh = prior is None or prior.get("status") in (None, "hash_mismatch")
     if fresh:
         log_path.write_text("", encoding="utf-8")
+    # HZ-431: only the venv path or `system` — never PATH or another value.
+    with log_path.open("a", encoding="utf-8") as log:
+        log.write(redact(f"env: {venv or 'system'}\n", secrets))
     # State entries, preserving passed commands across resumes.
     entries: list[dict] = []
     for c in commands:
@@ -263,7 +281,7 @@ def run_job(
     save_state(state_path, state)
     nudge()
 
-    child = _child_env(env_values or {})
+    child = _child_env(env_values or {}, venv)
     job_start = time.monotonic()
     failing: list[str] = []
     passed = 0
@@ -456,6 +474,7 @@ def main(argv: list[str] | None = None) -> int:
             state_path=state_path,
             log_path=log_path,
             repo_dir=repo_dir,
+            venv_dir=task.get("venv_dir"),
             env_values=secrets,
             redact_values=redact_only,
             notify=lambda: _notify_progress(run_id),

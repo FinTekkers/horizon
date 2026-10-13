@@ -4001,3 +4001,64 @@ def test_code_only_deploy_fails_when_only_a_neighbour_tag_logged_deploy_ok(tmp_p
     assert result["artifacts"]["verdict"] == {"verdict": "fail"}
     assert "deployed (code only)" not in result["summary"]
     assert "self-deploy.log" in result["artifacts"]["artifact_md"]
+
+
+# ---- HZ-431: Run plan's prompt names the interpreter Execute will use ----
+
+
+def _run_plan_task(repo_dir, label="Run plan"):
+    task = make_task(3, label, repo="acme/demo")
+    task["repo_dir"] = str(repo_dir)
+    task["venv_dir"] = None
+    return task
+
+
+@pytest.mark.parametrize("with_venv", [True, False], ids=["venv", "system"])
+def test_run_plan_prompt_names_the_interpreter(tmp_path, with_venv):
+    """Metric 3 and guardrail 4: Run plan's prompt names the same env the
+    Execute job's first log line does, for the same checkout — and shows no
+    PATH."""
+    from domain.py import run_plan
+    from farm import task_job
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    if with_venv:
+        (repo / ".venv" / "bin").mkdir(parents=True)
+        (repo / ".venv" / "bin" / "python").write_text("#!/bin/sh\n")
+        (repo / ".venv" / "bin" / "python").chmod(0o755)
+    block = {"cwd": ".", "commands": ["true"], "budget_minutes": 1}
+    artifact = "## Run plan block\n" + run_plan.render(block) + "\n"
+    task_job.run_job(
+        run_id=1,
+        item_id="T-1",
+        plan_artifact=artifact,
+        approved_hash=task_job.plan_hash_of(artifact),
+        state_path=tmp_path / "job.json",
+        log_path=tmp_path / "job.log",
+        repo_dir=str(repo),
+    )
+    env = (tmp_path / "job.log").read_text().splitlines()[0].removeprefix("env: ")
+    prompt = build_prompt(_run_plan_task(repo))
+    if with_venv:
+        assert env == os.path.realpath(repo / ".venv")
+        assert f"  interpreter: {env}/bin/python (env: {env})" in prompt
+    else:
+        assert env == "system"
+        assert "  interpreter: system python3 (env: system)" in prompt
+    assert os.environ["PATH"] not in prompt
+
+
+def test_a_refused_venv_is_named_in_the_run_plan_prompt(tmp_path):
+    """The prompt renders a refusal line instead of raising."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / ".venv").symlink_to(tmp_path)
+    prompt = build_prompt(_run_plan_task(repo))
+    assert "  interpreter: refused — venv resolves outside the repo directory." in prompt
+
+
+def test_a_change_items_prompt_gets_no_interpreter_line(tmp_path):
+    """Guardrail 2: only Run plan reads the venv — a change item's step with
+    a repo_dir in its task gets no interpreter line."""
+    assert "interpreter:" not in build_prompt(_run_plan_task(tmp_path, label="Specialist agent implements"))

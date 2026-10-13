@@ -404,6 +404,21 @@ def _persona_line(task: dict) -> str:
     return f"  persona: {persona_agent}/{resolved}"
 
 
+def _interpreter_line(task: dict) -> str:
+    """HZ-431: the interpreter Execute will run the plan's commands with —
+    the same resolve_venv() check task_job.py makes at start. Shows only the
+    venv path or `system`, never PATH or another env value."""
+    try:
+        run_plan.resolve_cwd(task.get("repo_dir"), ".", forbid=str(REPO_ROOT))
+        venv = run_plan.resolve_venv(task.get("repo_dir"), task.get("venv_dir"), forbid=str(REPO_ROOT))
+    except run_plan.CwdRefused as exc:
+        reason = str(exc).splitlines()[0] if str(exc) else "refused"
+        return f"  interpreter: refused — {reason}. Execute will refuse until the deploy target is fixed"
+    if venv:
+        return f"  interpreter: {venv}/bin/python (env: {venv})"
+    return "  interpreter: system python3 (env: system)"
+
+
 def build_prompt(task: dict) -> str:
     item, step = task["item"], task["step"]
     lines = [
@@ -414,6 +429,8 @@ def build_prompt(task: dict) -> str:
         f"  guardrails: {item.get('guardrails') or '(defaults only)'}",
         _persona_line(task),
     ]
+    if step.get("label") == RUN_PLAN_LABEL and "repo_dir" in task:
+        lines.append(_interpreter_line(task))
     if item.get("release_tag"):
         lines.append(f"  release: {item['release_tag']}  ({item.get('release_url') or 'no url'}) — already published")
     lines += [
