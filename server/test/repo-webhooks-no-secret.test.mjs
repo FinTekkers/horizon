@@ -68,3 +68,25 @@ test('connect, status and Fix make no hooks call when the webhook secret is unse
   assert.deepEqual(calls.filter((c) => c.includes('/hooks')), [])
   assert.ok(calls.length >= 1, 'the connect never reached the stub')
 })
+
+// HZ-425 guardrail 4: with no secret nothing can be verified, so a
+// `repository` event never changes the cached default branch.
+test('a repository event is refused with 503 and leaves the cached default branch alone when the secret is unset', async () => {
+  const app = buildApp({ logger: false })
+  const { id } = store.createProject('HZ-425 no secret')
+  assert.ok(store.addRepoToProject(id, 'FinTekkers/unsigned-branch').ok)
+  assert.ok(store.setDefaultBranch('FinTekkers/unsigned-branch', 'master'))
+  const before = store.getDefaultBranch('FinTekkers/unsigned-branch')
+  const res = await app.inject({
+    method: 'POST',
+    url: '/api/webhooks/github',
+    headers: { 'content-type': 'application/json', 'x-github-event': 'repository', 'x-hub-signature-256': 'sha256=whatever' },
+    payload: JSON.stringify({
+      action: 'edited',
+      changes: { default_branch: { from: 'master' } },
+      repository: { full_name: 'FinTekkers/unsigned-branch', default_branch: 'main' },
+    }),
+  })
+  assert.equal(res.statusCode, 503)
+  assert.deepEqual(store.getDefaultBranch('FinTekkers/unsigned-branch'), before)
+})

@@ -5,7 +5,8 @@
 // remote ends are faked, through one globalThis.fetch:
 //   - GitHub (api.github.com): mergeability per PR, main's head sha and the
 //     PRs behind a commit come from `gh`; every request is recorded, so a
-//     test can assert nothing but reads went out.
+//     test can assert nothing but reads went out. HZ-425: `gh.defaultBranch`
+//     is every repo's GitHub default branch, and the only branch with a head.
 //   - farmd (farm.test): each /conflicts/resolve call is parked until the
 //     test replies — so a run can be held open — unless a reply was queued
 //     with farmReplyNext(). Other farm routes answer {ok:true} at once.
@@ -50,7 +51,7 @@ export async function setupAutoResolve(name, { webhookSecret = WEBHOOK_SECRET } 
   const { id: projectId } = store.createProject(`${name} project`)
   assert.ok(store.addRepoToProject(projectId, REPO).ok)
 
-  const gh = { mergeable: new Map(), mainSha: MAIN_SHA_1, commitPrs: new Map(), calls: [], onPrRead: null }
+  const gh = { mergeable: new Map(), mainSha: MAIN_SHA_1, defaultBranch: 'main', commitPrs: new Map(), calls: [], onPrRead: null }
   let farmCalls = []
   const farmReplies = []
   const replyOk = (body) => ({ ok: true, status: 200, json: async () => body, text: async () => JSON.stringify(body), headers: new Headers() })
@@ -76,12 +77,15 @@ export async function setupAutoResolve(name, { webhookSecret = WEBHOOK_SECRET } 
       const mergeable = gh.mergeable.has(n) ? gh.mergeable.get(n) : true
       return replyOk({ number: n, state: 'open', merged: false, mergeable })
     }
-    if (/\/git\/ref\/heads%2Fmain$/.test(path)) return replyOk({ object: { sha: gh.mainSha } })
+    if (path.endsWith(`/git/ref/heads%2F${gh.defaultBranch}`)) return replyOk({ object: { sha: gh.mainSha } })
     m = path.match(/\/commits\/([0-9a-f]{40})\/pulls$/)
     if (m) {
-      const prs = gh.commitPrs.get(m[1]) || []
-      return replyOk(prs.map((number) => ({ number, merged_at: '2026-10-02T00:00:00Z', base: { ref: 'main' } })))
+      // A PR is its number (merged into the default branch) or { number, base }.
+      const prs = (gh.commitPrs.get(m[1]) || []).map((pr) => (typeof pr === 'number' ? { number: pr, base: gh.defaultBranch } : pr))
+      return replyOk(prs.map(({ number, base }) => ({ number, merged_at: '2026-10-02T00:00:00Z', base: { ref: base } })))
     }
+    m = path.match(/^\/repos\/([^/]+\/[^/]+)$/)
+    if (m) return replyOk({ full_name: m[1], default_branch: gh.defaultBranch })
     return replyStatus(404)
   }
 
@@ -173,6 +177,7 @@ export async function setupAutoResolve(name, { webhookSecret = WEBHOOK_SECRET } 
     gh.commitPrs.clear()
     gh.onPrRead = null
     gh.mainSha = MAIN_SHA_1
+    gh.defaultBranch = 'main'
   }
 
   return {
@@ -188,6 +193,7 @@ export async function setupAutoResolve(name, { webhookSecret = WEBHOOK_SECRET } 
     lines,
     allLines,
     projectId,
+    cookie,
     get farmCalls() {
       return farmCalls
     },

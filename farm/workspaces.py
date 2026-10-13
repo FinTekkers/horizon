@@ -154,18 +154,38 @@ def item_lock_held(repo_full: str, item_id: str) -> bool:
         return False
 
 
-def _git(path: Path, *args: str, check: bool = True) -> subprocess.CompletedProcess:
+def _git(path: Path, *args: str, check: bool = True, timeout: int = 300) -> subprocess.CompletedProcess:
     result = subprocess.run(
-        ["git", "-C", str(path), *args], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=300
+        ["git", "-C", str(path), *args], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=timeout
     )
     if check and result.returncode != 0:
         raise RuntimeError(f"git {' '.join(args)} failed: {result.stderr.strip()[:200]}")
     return result
 
 
-def _default_branch(hub: Path) -> str:
-    head = _git(hub, "symbolic-ref", "refs/remotes/origin/HEAD", check=False).stdout.strip()
-    return head.rsplit("/", 1)[-1] if head else "main"
+SET_HEAD_TIMEOUT_S = 10
+_ORIGIN_PREFIX = "refs/remotes/origin/"
+
+
+def _origin_head(path: Path) -> str:
+    head = _git(path, "symbolic-ref", "--quiet", "refs/remotes/origin/HEAD", check=False).stdout.strip()
+    return head.removeprefix(_ORIGIN_PREFIX) if head.startswith(_ORIGIN_PREFIX) else ""
+
+
+def default_branch(path: Path) -> str:
+    """HZ-425: the repo's real default branch, for the hub or any item
+    worktree (they share the hub's refs and config). Read from origin/HEAD;
+    when that is unset, ask the remote once with `git remote set-head origin
+    --auto`, which also records it in the hub's shared .git so later calls
+    stay local. "main" only when the remote can't say either."""
+    branch = _origin_head(path)
+    if branch:
+        return branch
+    try:
+        _git(path, "remote", "set-head", "origin", "--auto", check=False, timeout=SET_HEAD_TIMEOUT_S)
+    except (OSError, subprocess.TimeoutExpired):
+        return "main"
+    return _origin_head(path) or "main"
 
 
 def ensure(repo_full: str, token: str | None) -> Path:
@@ -179,7 +199,7 @@ def ensure(repo_full: str, token: str | None) -> Path:
             # agent runs. (Agents work in per-item worktrees, not the hub, so
             # this reset only ever touches the hub's own tree.)
             _git(path, "fetch", "--all", "--prune")
-            default = _default_branch(path)
+            default = default_branch(path)
             _git(path, "checkout", "-f", default)
             _git(path, "reset", "--hard", f"origin/{default}")
             _git(path, "clean", "-fd")
@@ -267,7 +287,7 @@ def ensure_item_worktree(repo_full: str, item_id: str) -> Path:
             # worktree add refuses to reuse a non-empty, unregistered path.
             shutil.rmtree(item_path)
         _git(hub, "fetch", "origin", "--prune")
-        default = _default_branch(hub)
+        default = default_branch(hub)
         item_path.parent.mkdir(parents=True, exist_ok=True)
         _git(hub, "worktree", "add", "--detach", str(item_path), f"origin/{default}")
     return item_path

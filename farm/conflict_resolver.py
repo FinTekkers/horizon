@@ -70,7 +70,7 @@ from .config import CONFLICT_AGENT_TIMEOUT_S, CONFLICT_REVIEW_TIMEOUT_S, CONFLIC
 # in this codebase. step_agent does not import this module, so the dependency
 # stays one-directional; nothing in it is modified by this file.
 from .step_agent import ROLES, _code_review_section as _review_section
-from .workspaces import ensure_item_worktree, hub_lock
+from .workspaces import default_branch, ensure_item_worktree, hub_lock
 
 # Bounded like every other git subprocess in this codebase (step_agent.py,
 # workspaces.py) — a hung git process must not hang the resolution forever.
@@ -258,11 +258,6 @@ def git(ws: Path, *args: str, check: bool = True) -> subprocess.CompletedProcess
     return result
 
 
-def _default_branch(ws: Path) -> str:
-    head = git(ws, "symbolic-ref", "refs/remotes/origin/HEAD", check=False).stdout.strip()
-    return head.rsplit("/", 1)[-1] if head else "main"
-
-
 def _unmerged_paths(ws: Path) -> list[str]:
     """Conflict detection via git's own index state, not marker text — see
     module docstring. Returns the list of still-conflicted paths (empty if
@@ -337,7 +332,7 @@ def _resolve(repo_full, item_id, branch, base_branch, log, configured, checks_wa
     git(ws, "checkout", "-B", branch, f"origin/{branch}")
     pre_merge_sha = git(ws, "rev-parse", "HEAD").stdout.strip()
 
-    default = base_branch or _default_branch(ws)
+    default = base_branch or default_branch(ws)
     log(f"conflict_resolver: merging origin/{default} into {branch}")
     git(ws, "merge", "--no-edit", f"origin/{default}", check=False)
     _check_cancelled(ws, pre_merge_sha)

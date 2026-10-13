@@ -17,6 +17,7 @@ import { PRIORITY } from '../../domain/js/priorities.js'
 import { PRIORITY_LABEL_RE, priorityLabelName } from './priorityLabels.js'
 import { kindLabelName } from './kindLabels.js'
 import { spliceIssueBody } from './caretakerRulingRules.js'
+import { msOf } from './sqlTime.js'
 
 const itemLink = (item) => `[open in Horizon](${UI_URL}/${item.id.toLowerCase()})`
 
@@ -70,10 +71,14 @@ export async function validateToken(token) {
 }
 
 // Used when connecting a repo to a project. Returns GitHub's canonical
-// full_name so case variants can't be connected twice.
+// full_name so case variants can't be connected twice, and (HZ-425) its
+// default branch from the same response.
 export async function validateRepo(repo, token) {
   const res = await fetch(`https://api.github.com/repos/${repo}`, { headers: ghHeaders(token) })
-  if (res.ok) return { ok: true, fullName: (await res.json()).full_name }
+  if (res.ok) {
+    const body = await res.json()
+    return { ok: true, fullName: body.full_name, defaultBranch: typeof body.default_branch === 'string' ? body.default_branch : null }
+  }
   const error =
     res.status === 404
       ? 'Repository not found — check the name, or the token lacks access to it'
@@ -1075,11 +1080,46 @@ export async function refreshPrMergeable(itemId, repo, prNumber) {
 
 // HZ-235: the PRs merged into main by `sha`, so a main move the poll noticed
 // (no webhook) can still name the merges behind it. [] when GitHub can't say.
+// HZ-425: "main" is the repo's default branch.
 export async function prsForCommit(repo, sha) {
   const res = await gh(`/repos/${repo}/commits/${encodeURIComponent(sha)}/pulls`)
   if (!res.ok) return []
   const prs = await res.json().catch(() => [])
-  return Array.isArray(prs) ? prs.filter((pr) => pr?.merged_at && pr?.base?.ref === 'main').map((pr) => pr.number) : []
+  const branch = defaultBranchOf(repo)
+  return Array.isArray(prs) ? prs.filter((pr) => pr?.merged_at && pr?.base?.ref === branch).map((pr) => pr.number) : []
+}
+
+// ---- default branch (HZ-425) ----
+// Each connected repo's GitHub default branch lives in project_repo (store.js):
+// read on connect, set by a signed `repository` webhook, and re-read by the
+// poll once the last read is DEFAULT_BRANCH_TTL_MS old.
+export const DEFAULT_BRANCH_TTL_MS = 24 * 60 * 60_000
+
+// The branch to read for `repo`, from the cache only — never a GitHub call.
+// 'main', as before HZ-425, for a repo not connected or not read yet.
+export function defaultBranchOf(repo) {
+  return store.getDefaultBranch(repo)?.branch ?? 'main'
+}
+
+// Whether a read at `at` (datetime('now') form, or null) is due again.
+export function defaultBranchStale(at, now = Date.now()) {
+  return !at || now - msOf(at) > DEFAULT_BRANCH_TTL_MS
+}
+
+// One GET /repos/:r per connected repo whose branch is unread or stale. A
+// failed read logs and keeps the old value; the next poll tries again.
+export async function refreshDefaultBranches(log, now = Date.now()) {
+  for (const { repo } of store.listRepos()) {
+    if (!defaultBranchStale(store.getDefaultBranch(repo)?.at, now)) continue
+    try {
+      const res = await gh(`/repos/${repo}`)
+      if (!res.ok) throw new Error(`GitHub returned ${res.status}`)
+      const branch = (await res.json().catch(() => null))?.default_branch
+      if (!store.setDefaultBranch(repo, branch, now)) throw new Error('GitHub returned no default branch')
+    } catch (err) {
+      log?.warn(`could not read the default branch of ${repo}: ${err.message}`)
+    }
+  }
 }
 
 // HZ-235: called with (repo, mainSha) for every connected repo at the end of
@@ -1113,6 +1153,7 @@ async function pollPrStates(log) {
 
 export async function pollOnce(log) {
   let changed = 0
+  await refreshDefaultBranches(log)
   for (const { repo } of store.listRepos()) {
     try {
       const result = await pollRepo(repo, log)
@@ -1127,7 +1168,7 @@ export async function pollOnce(log) {
   changed += await pollPrStates(log) // PRs merged/closed directly on GitHub
   if (mainHeadListener) {
     for (const { repo } of store.listRepos()) {
-      const sha = await getBranchSha(repo, 'main').catch(() => null)
+      const sha = await getBranchSha(repo, defaultBranchOf(repo)).catch(() => null)
       if (sha) mainHeadListener(repo, sha)
     }
   }

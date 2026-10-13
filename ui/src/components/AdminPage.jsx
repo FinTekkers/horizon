@@ -735,6 +735,7 @@ const WEBHOOK_REASON = {
   secret_not_configured: 'secret not configured',
   webhook_url_not_public: 'webhook URL not public',
   github_unreachable: 'GitHub unreachable',
+  legacy_events: 'no repository events',
 }
 
 function WebhookStatus({ webhook }) {
@@ -864,6 +865,9 @@ function RepoRow({ projectId, repoConn, syncRepos, webhook }) {
         {repoConn.repo}
       </a>
       <span className="repo-row__prefix">{repoConn.prefix}-*</span>
+      <span className="repo-row__branch">
+        default branch: {repoConn.defaultBranch ?? 'not read yet'}
+      </span>
       {webhook && <WebhookStatus webhook={webhook} />}
       <span className="repo-row__status">
         {failing ? failing : lastAt ? `checked ${lastAt}` : 'waiting for first poll'}
@@ -1197,7 +1201,7 @@ function ProjectPanel({ project, syncRepos, deployTargets }) {
           <Fragment key={r.repo}>
             <RepoRow projectId={project.id} repoConn={r} syncRepos={syncRepos} webhook={webhook} />
             <WebhookImpact status={webhook?.status} hasDeployTarget={repoHasDeployTarget(deployTargets, r.repo)} />
-            {(webhook?.status === 'missing' || webhook?.status === 'mismatched') && (
+            {(webhook?.status === 'missing' || webhook?.status === 'mismatched' || webhook?.reason === 'legacy_events') && (
               <FixWebhookForm projectId={project.id} repo={r.repo} onFixed={refreshWebhooks} />
             )}
             <RepoMarks projectId={project.id} repoConn={r} />

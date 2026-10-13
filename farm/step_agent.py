@@ -56,7 +56,7 @@ from .handoff import HandoffContext, HandoffGuard
 from .personas import compose_role, provider_for, resolve
 from .read_only_guard import ReadOnlyViolation
 from .rules import render_rules_section
-from .workspaces import ItemBusy, checkout_detached, ensure_item_worktree, hub_lock, item_lock
+from .workspaces import ItemBusy, checkout_detached, default_branch, ensure_item_worktree, hub_lock, item_lock
 
 FARMD = f"http://127.0.0.1:{FARM_PORT}"
 ROLES = Path(__file__).parent / "roles"
@@ -555,7 +555,7 @@ def prepare_branch(ws: Path, item: dict, *, rebase_checkpoint: bool = False) -> 
         git(ws, "fetch", "origin", "--prune")
         remote_branch = git(ws, "rev-parse", "--verify", f"origin/{branch}", check=False)
     lease_sha = remote_branch.stdout.strip() if remote_branch.returncode == 0 else ""
-    default = _default_branch(ws)
+    default = default_branch(ws)
     git(ws, "checkout", "-B", branch, unpushed or lease_sha or f"origin/{default}")
     note = _rebase_checkpoint(ws, default, unpushed or lease_sha) if rebase_checkpoint else ""
     return PreparedBranch(branch, lease_sha, note)
@@ -626,8 +626,7 @@ def merge_default_branch(ws: Path) -> list[str]:
     commit then records it as the merge commit. Returns the conflicted paths
     (empty for a clean merge). Any other merge failure raises: the agent must
     not start on a half-merged tree it was never told about."""
-    head = git(ws, "symbolic-ref", "refs/remotes/origin/HEAD", check=False).stdout.strip()
-    default = head.rsplit("/", 1)[-1] if head else "main"
+    default = default_branch(ws)
     merged = git(ws, "merge", "--no-edit", f"origin/{default}", check=False)
     if merged.returncode == 0:
         return []
@@ -698,7 +697,7 @@ def _checkpoint_resume_note(ws: Path) -> str | None:
         return None
     cause, detail = checkpoint
     subject = git(ws, "log", "-1", "--format=%s", check=False).stdout.strip()
-    stat = git(ws, "diff", "--stat", f"origin/{_default_branch(ws)}...HEAD", check=False).stdout.strip()
+    stat = git(ws, "diff", "--stat", f"origin/{default_branch(ws)}...HEAD", check=False).stdout.strip()
     if cause == CAUSE_CHECKS_FAILED:
         return (
             "\n\nNOTE: this branch already has a WIP checkpoint commit "
@@ -745,11 +744,6 @@ def scope_of(task: dict) -> dict:
     return scope if isinstance(scope, dict) and scope.get("mode") in ("fix", "delta") else {"mode": "full"}
 
 
-def _default_branch(ws: Path) -> str:
-    head = git(ws, "symbolic-ref", "refs/remotes/origin/HEAD", check=False).stdout.strip()
-    return head.rsplit("/", 1)[-1] if head else "main"
-
-
 def _names(ws: Path, rev_range: str) -> list[str]:
     out = git(ws, "diff", "--name-only", rev_range, check=False).stdout
     return [line for line in out.splitlines() if line.strip()]
@@ -782,7 +776,7 @@ def delta_base_problem(ws: Path, base: str | None, default: str) -> str | None:
 def fix_diff_report(ws: Path, base: str | None) -> dict:
     """The fix pass's size, for the server's full-review threshold — or why
     it could not be measured, which the server treats as oversize."""
-    problem = delta_base_problem(ws, base, _default_branch(ws))
+    problem = delta_base_problem(ws, base, default_branch(ws))
     if problem:
         return {"scope_fallback": problem}
     lines = 0
@@ -914,13 +908,8 @@ def finalize_branch(
     if _no_code_changes(ws):
         raise RuntimeError("the agent made no code changes — nothing to push")
     _push_with_lease(ws, item, branch, lease_sha)
-    stat = git(ws, "diff", "--stat", f"origin/{_default_branch(ws)}...HEAD", check=False).stdout.strip().splitlines()
+    stat = git(ws, "diff", "--stat", f"origin/{default_branch(ws)}...HEAD", check=False).stdout.strip().splitlines()
     return {"branch": branch, "files_changed": stat[-1] if stat else ""}
-
-
-def _default_branch(ws: Path) -> str:
-    head = git(ws, "symbolic-ref", "refs/remotes/origin/HEAD", check=False).stdout.strip()
-    return head.rsplit("/", 1)[-1] if head else "main"
 
 
 def _no_code_changes(ws: Path) -> bool:
@@ -933,7 +922,7 @@ def _no_code_changes(ws: Path) -> bool:
         return False
     if git(ws, "rev-parse", "-q", "--verify", "MERGE_HEAD", check=False).returncode == 0:
         return False
-    ahead = git(ws, "rev-list", "--count", f"origin/{_default_branch(ws)}..HEAD", check=False).stdout.strip()
+    ahead = git(ws, "rev-list", "--count", f"origin/{default_branch(ws)}..HEAD", check=False).stdout.strip()
     return ahead == "0"
 
 
@@ -1099,7 +1088,7 @@ def _deploy_checkpoint(ws: Path, item: dict, branch: str, conflicted: list[str] 
     Returns (outcome, detail) in pause's vocabulary."""
     own = f"horizon/{item['id'].lower()}"
     try:
-        default = _default_branch(ws)
+        default = default_branch(ws)
         if branch != own or branch in (default, "main", "master"):
             return pause.SKIPPED, f"refused: {branch} is not this item's own branch"
         markers = _conflict_markers_left(ws, conflicted or [])
@@ -2217,7 +2206,7 @@ def _execute(task: dict, guard: HandoffGuard) -> dict:
         # uncommitted leftovers in it — scrub before reading the diff.
         branch = prepare_branch(ws, item).branch
         log(f"workspace {ws} on branch {branch} — reviewing diff")
-        default = _default_branch(ws)
+        default = default_branch(ws)
         # HZ-182: a delta review reads only base..HEAD — unless the base is
         # gone, no longer an ancestor, or main was merged over the PR's files,
         # in which case it falls back to the full PR and says so.

@@ -971,6 +971,17 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_deploy_hold_held ON deploy_hold(repo, id) WHERE status = 'held';
 `)
 
+// HZ-425: each connected repo's GitHub default branch, read on connect, by a
+// `repository` webhook and by the poll once the read is 24h old. NULL is "not
+// read yet" — the value can only come from GitHub, so there is no backfill
+// here. start_attempts counts a due batch's failed reads of that branch in a
+// row; deployQueue.start() fails the batch once it reaches the bound.
+if (!projectRepoColumns.has('default_branch')) db.exec('ALTER TABLE project_repo ADD COLUMN default_branch TEXT')
+if (!projectRepoColumns.has('default_branch_at')) db.exec('ALTER TABLE project_repo ADD COLUMN default_branch_at TEXT')
+if (!db.prepare('PRAGMA table_info(deploy_batch)').all().some((column) => column.name === 'start_attempts')) {
+  db.exec('ALTER TABLE deploy_batch ADD COLUMN start_attempts INTEGER NOT NULL DEFAULT 0')
+}
+
 // HZ-313: a plan step's proposal to file part of the fix on another connected
 // repo of the same project (server/src/split.js). UNIQUE(source_item_id,
 // target_repo) is the durable "file at most one issue per split" key: a

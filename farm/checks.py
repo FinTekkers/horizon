@@ -50,6 +50,7 @@ from pathlib import Path
 
 from . import check_metrics, check_record, check_slots, config, dep_cache
 from .pause import PauseRequested
+from .workspaces import default_branch
 
 # HZ-183: how much of a failing command's output a CheckFailure carries. Lines,
 # not characters: the failing test names sit at the END of a test run's output
@@ -996,7 +997,9 @@ def default_check_slots(ws: Path) -> dict[str, str | None]:
 # ---- the branch's own check scripts (HZ-349) ----
 # HZ-245's commands load the scripts from main (`git show
 # origin/main:scripts/checks/test.sh | bash`), so an item that changes one
-# never runs its own version. When it did change one, run_checks() runs the
+# never runs its own version. HZ-425: "main" is the repo's default branch
+# (workspaces.default_branch) — `origin/master:` on a repo whose default is
+# master. When it did change one, run_checks() runs the
 # branch's version too: after main's run, in the same slot, workspace and env,
 # recorded as a separate "branch" run.
 #
@@ -1010,9 +1013,14 @@ BRANCH_SCRIPTS_DIR = "scripts/checks/"
 RUN_LABEL_MAIN = "main"
 RUN_LABEL_BRANCH = "branch"
 BRANCH_GIT_TIMEOUT_S = 10
-# Tight on purpose: the exact shape owners write in Admin, and nothing else.
-_MAIN_SCRIPT_REF = re.compile(r"\bgit\s+show\s+origin/main:(scripts/checks/[\w./-]+)")
+_SCRIPT_REF_SHAPE = r"\bgit\s+show\s+origin/{branch}:(scripts/checks/[\w./-]+)"
 _SCRIPT_PATH = re.compile(r"scripts/checks/[\w./-]+")
+
+
+def _main_script_ref(branch: str) -> re.Pattern:
+    """`git show origin/<branch>:scripts/checks/<path>`. Tight on purpose: the
+    exact shape owners write in Admin, and nothing else."""
+    return re.compile(_SCRIPT_REF_SHAPE.format(branch=re.escape(branch)))
 
 
 def _git_lines(ws: Path, *args: str) -> list[str]:
@@ -1030,12 +1038,13 @@ def _git_lines(ws: Path, *args: str) -> list[str]:
 
 def branch_script_changes(ws: Path, log) -> set[str]:
     """The paths under scripts/checks/ this workspace changed against its
-    merge-base with origin/main: committed, uncommitted (the implement step
-    checks unstaged work) and new untracked files. HZ-406: any git error
-    raises CheckFailure — "can't tell" fails closed, it is never "nothing
-    changed"."""
+    merge-base with origin/<default branch>: committed, uncommitted (the
+    implement step checks unstaged work) and new untracked files. HZ-406: any
+    git error raises CheckFailure — "can't tell" fails closed, it is never
+    "nothing changed"."""
+    default = default_branch(ws)
     try:
-        base = _git_lines(ws, "merge-base", "origin/main", "HEAD")[0]
+        base = _git_lines(ws, "merge-base", f"origin/{default}", "HEAD")[0]
         changed = set(_git_lines(ws, "diff", "--name-only", base, "--", BRANCH_SCRIPTS_DIR))
         changed |= set(_git_lines(ws, "ls-files", "--others", "--exclude-standard", "--", BRANCH_SCRIPTS_DIR))
         return changed
@@ -1043,26 +1052,28 @@ def branch_script_changes(ws: Path, log) -> set[str]:
         log(f"checks: could not tell whether {BRANCH_SCRIPTS_DIR} changed ({type(exc).__name__}: {exc}) — failing closed")
         headline = f"could not tell whether {BRANCH_SCRIPTS_DIR} changed: {type(exc).__name__}"
         raise CheckFailure(
-            f"{HEADLINE_PREFIX}{headline}", command=f"git diff origin/main -- {BRANCH_SCRIPTS_DIR}", tail=headline, headline=headline
+            f"{HEADLINE_PREFIX}{headline}", command=f"git diff origin/{default} -- {BRANCH_SCRIPTS_DIR}", tail=headline, headline=headline
         ) from exc
 
 
-def loads_main_scripts(configured) -> bool:
+def loads_main_scripts(configured, branch: str = "main") -> bool:
     """HZ-406: whether any configured line loads a script with `git show
-    origin/main:scripts/checks/<path>` — the only shape branch_commands()
+    origin/<branch>:scripts/checks/<path>` — the only shape branch_commands()
     runs a branch copy of. Without one there is no branch run to gate on, so
-    run_checks() never asks git what changed (a repo with no origin/main
+    run_checks() never asks git what changed (a repo with no origin/<branch>
     must not fail closed for a check it does not have)."""
-    return any(_MAIN_SCRIPT_REF.search(argv[2]) for _slot, _n, _count, argv in _configured_slots(configured))
+    ref = _main_script_ref(branch)
+    return any(ref.search(argv[2]) for _slot, _n, _count, argv in _configured_slots(configured))
 
 
-def branch_commands(configured, changed: set[str], log=lambda *_: None):
+def branch_commands(configured, changed: set[str], log=lambda *_: None, branch: str = "main"):
     """(commands, unchanged): commands is (slot, line_no, n_lines, argv,
-    scripts) per configured line that loads a changed script from main, in
-    CHECK_SLOTS order, with each `git show origin/main:<path>` rewritten to
-    `cat <path>` (the worktree's copy) and everything else left as written.
-    unchanged names the scripts other lines load that this branch did not
-    change; those lines are not run again."""
+    scripts) per configured line that loads a changed script from the default
+    branch `branch`, in CHECK_SLOTS order, with each `git show
+    origin/<branch>:<path>` rewritten to `cat <path>` (the worktree's copy) and
+    everything else left as written. unchanged names the scripts other lines
+    load that this branch did not change; those lines are not run again."""
+    ref = _main_script_ref(branch)
     commands = []
     unchanged: list[str] = []
     for slot, line_no, n_lines, argv in _configured_slots(configured):
@@ -1073,10 +1084,10 @@ def branch_commands(configured, changed: set[str], log=lambda *_: None):
         if not changed.intersection(scripts):
             unchanged.extend(Path(s).name for s in scripts if Path(s).name not in unchanged)
             continue
-        rewritten, count = _MAIN_SCRIPT_REF.subn(r"cat \1", line)
+        rewritten, count = ref.subn(r"cat \1", line)
         if not count:
             log(
-                f"checks: the {slot} command names {BRANCH_SCRIPTS_DIR} but not as `git show origin/main:<path>` — "
+                f"checks: the {slot} command names {BRANCH_SCRIPTS_DIR} but not as `git show origin/{branch}:<path>` — "
                 "its branch version is not run separately"
             )
             continue
@@ -1249,6 +1260,7 @@ def _run_branch_pass(
     branch_notes: list | None,
     log,
     flakes: list | None = None,
+    branch: str = "main",
 ) -> tuple[dict | None, CheckFailure | None]:
     """Runs branch_commands() and returns (their run as a test_runs entry
     labelled "branch" with its own check_run id, or None when no command
@@ -1258,7 +1270,7 @@ def _run_branch_pass(
     is rerun once, and a rerun that passes is a flake in `flakes`. A timeout,
     a crash or a spent deadline is a failure. Every command still runs after
     the first failure, for evidence; only the first is returned."""
-    commands, unchanged = branch_commands(configured, changed, log)
+    commands, unchanged = branch_commands(configured, changed, log, branch)
     if not commands:
         return None, None
     branch_run = {
@@ -1639,7 +1651,9 @@ def run_checks(
         # FARM_CHECK_CMD (labels [None]): only Admin's commands load scripts.
         # HZ-406: a gate, so it runs whether or not the caller records.
         branch_failure = None
-        if branch_gate and labels and labels[0] is not None and loads_main_scripts(configured):
+        gated = branch_gate and labels and labels[0] is not None
+        default = default_branch(ws) if gated else "main"
+        if gated and loads_main_scripts(configured, default):
             runs = test_runs if test_runs is not None else []
             try:
                 changed = branch_script_changes(ws, log)
@@ -1658,6 +1672,7 @@ def run_checks(
                         branch_notes=branch_notes,
                         flakes=flakes,
                         log=log,
+                        branch=default,
                     )
                 if branch_run is not None:
                     runs.append(branch_run)

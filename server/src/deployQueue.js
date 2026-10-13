@@ -22,12 +22,15 @@ import { db } from './db.js'
 import { DEPLOY_BATCH_S, DEPLOY_WAIT_MS, FARM_STEP_TIMEOUT_MS } from './config.js'
 import { resolveTarget, deployOutcomeFor, startDeploy } from './deploy.js'
 import { jobBlocksDeploy, heldMsFor, oldestHolds, lastReleasedHold, releaseHold } from './deployHold.js'
-import { getBranchSha, isAncestor, getPrMergeSha, findReleaseByTag, createBatchRelease } from './github.js'
+import { getBranchSha, isAncestor, getPrMergeSha, findReleaseByTag, createBatchRelease, defaultBranchStale } from './github.js'
 import { sqlTime, msOf } from './sqlTime.js'
-import { addEvent, notifyChange, runningJobsIn } from './store.js'
+import { addEvent, getDefaultBranch, notifyChange, runningJobsIn } from './store.js'
 import { DEPLOY_STEP_INDEX } from '../../domain/js/lifecycle.js'
 
 export const TICK_MS = 5000
+// HZ-425: failed reads of the branch a due batch releases, in a row, before
+// the batch fails — about 5 minutes at TICK_MS. Never retried silently forever.
+export const DEFAULT_BRANCH_MAX_ATTEMPTS = 60
 
 export { sqlTime, msOf }
 const short = (sha) => String(sha || '').slice(0, 7)
@@ -201,7 +204,21 @@ async function start(open, now) {
     return
   }
   // Fetched first: no await may sit inside the transaction below.
-  const sha = await getBranchSha(open.repo, 'main')
+  const branch = releaseBranch(open.repo, now)
+  let sha
+  try {
+    if (!branch) throw new Error('its default branch has not been read from GitHub in the last 24h')
+    sha = await getBranchSha(open.repo, branch)
+  } catch (err) {
+    const attempts = open.start_attempts + 1
+    if (attempts >= DEFAULT_BRANCH_MAX_ATTEMPTS) {
+      const why = `cannot read branch '${branch ?? 'unknown'}' of ${open.repo} after ${attempts} attempts: ${err.message}`
+      return failBatch(open, why.replace(/\s+/g, ' '))
+    }
+    db.prepare('UPDATE deploy_batch SET start_attempts = ? WHERE id = ?').run(attempts, open.id)
+    throw err
+  }
+  if (open.start_attempts > 0) db.prepare('UPDATE deploy_batch SET start_attempts = 0 WHERE id = ?').run(open.id)
   const started = db.transaction(() => {
     if (selectRunning.get(open.target)) return false
     return (
@@ -211,6 +228,17 @@ async function start(open, now) {
     )
   })()
   if (started) await advance(selectBatch.get(open.id), now)
+}
+
+// HZ-425: the branch a batch releases — the repo's default branch, from the
+// cache only (no GitHub call per tick), while its last read is under a day
+// old. null while it is unread or stale: the poll re-reads it within
+// POLL_INTERVAL_MS. A repo that isn't connected has nothing to read it from,
+// so it keeps 'main', as before.
+function releaseBranch(repo, now) {
+  const cached = getDefaultBranch(repo)
+  if (!cached) return 'main'
+  return cached.branch && !defaultBranchStale(cached.at, now) ? cached.branch : null
 }
 
 async function advance(batch, now) {
@@ -324,7 +352,7 @@ function deferEntry(entry, batch, now) {
 // tags only — never a log body or an env value.
 function failBatch(batch, why) {
   const entries = selectQueuedIn.all(batch.id)
-  const message = `deploy ${batch.tag} failed (${why}) — batch: ${entries.map((e) => e.item_id).join(', ') || 'none'}`
+  const message = `deploy ${batch.tag ?? batch.target} failed (${why}) — batch: ${entries.map((e) => e.item_id).join(', ') || 'none'}`
   db.prepare("UPDATE deploy_batch SET status = 'failed', failure = ?, ended_at = datetime('now') WHERE id = ?").run(message, batch.id)
   console.warn(`deploy queue: ${message}`)
   for (const e of entries) hooks.fail(e.item_id, message)

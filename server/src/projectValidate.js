@@ -276,7 +276,7 @@ export async function validateProject(
     runId: `v${project?.id}-${startedMs}`,
     // Fetched once per repo, shared by check_commands and drift.
     mainSha: (repo) => {
-      if (!shas.has(repo)) shas.set(repo, Promise.resolve().then(() => deps.getBranchSha(repo, 'main')))
+      if (!shas.has(repo)) shas.set(repo, Promise.resolve().then(() => deps.getBranchSha(repo, github.defaultBranchOf(repo))))
       return shas.get(repo)
     },
   }

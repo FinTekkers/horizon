@@ -295,7 +295,7 @@ const short = (sha) => String(sha).slice(0, 7)
 // branch's head. { sha } or { reason }.
 async function deployedHead(repo) {
   const target = git.resolveTarget(repo)
-  if (!target) return { sha: await git.getBranchSha(repo, 'main') }
+  if (!target) return { sha: await git.getBranchSha(repo, github.defaultBranchOf(repo)) }
   const live = selectLiveBatch.get(target.key)
   return live ? { sha: live.commit_sha } : { reason: `nothing is live on ${target.key} yet` }
 }
