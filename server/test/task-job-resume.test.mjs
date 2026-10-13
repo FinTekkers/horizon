@@ -177,3 +177,41 @@ test('HZ-431: the Run plan and Execute dispatches carry venv_dir; a change item 
     for (const id of ['T-431-PLAN', 'C-431', 'T-431-EXEC']) orchestrator.cancel(id)
   }
 })
+
+// HZ-440: a target's taskDir replaces repoDir in both dispatches, with
+// task_clone set; with no taskDir the payload is exactly as before.
+test('HZ-440: a taskDir is dispatched as repo_dir with task_clone; without one repo_dir is repoDir and task_clone is absent', async () => {
+  const mdi = 'FinTekkers/market-data-inputs'
+  const dispatchesFor = async (suffix) => {
+    const planId = `T-440-PLAN-${suffix}`
+    const execId = `T-440-EXEC-${suffix}`
+    db.prepare(
+      "INSERT INTO work_item (id, title, priority, cursor, kind, project_id, repo) VALUES (?, 'Plan', 'High', ?, 'task', ?, ?)",
+    ).run(planId, RUN_PLAN_STEP_INDEX, projectId, mdi)
+    seedStoppedTask(execId, mdi)
+    orchestrator.kick(planId)
+    const res = await app.inject({ method: 'POST', url: `/api/items/${execId}/job/resume`, headers: cookie, payload: {} })
+    assert.equal(res.statusCode, 200)
+    await new Promise((r) => setTimeout(r, 30))
+    const plan = jobDispatchesFor(planId).find((d) => d.body.step.index === RUN_PLAN_STEP_INDEX)
+    assert.ok(plan, 'Run plan was dispatched')
+    const [execute] = jobDispatchesFor(execId)
+    assert.equal(execute.body.step.index, EXECUTE_STEP_INDEX)
+    orchestrator.cancel(planId)
+    orchestrator.cancel(execId)
+    return [plan.body, execute.body]
+  }
+  db.prepare("UPDATE deploy_target SET task_dir = '/opt/fintekkers/market-data-inputs-tasks' WHERE repo = ?").run(mdi)
+  try {
+    for (const body of await dispatchesFor('SET')) {
+      assert.equal(body.repo_dir, '/opt/fintekkers/market-data-inputs-tasks')
+      assert.equal(body.task_clone, true)
+    }
+  } finally {
+    db.prepare('UPDATE deploy_target SET task_dir = NULL WHERE repo = ?').run(mdi)
+  }
+  for (const body of await dispatchesFor('UNSET')) {
+    assert.equal(body.repo_dir, '/opt/fintekkers/market-data-inputs')
+    assert.equal(Object.hasOwn(body, 'task_clone'), false)
+  }
+})

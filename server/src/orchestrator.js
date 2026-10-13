@@ -1678,9 +1678,17 @@ const FARM_REFUSALS = {
 // every dispatch (Resume included); farmd refuses a null one. HZ-431: plus the
 // target's venv setting (null: `<repo_dir>/.venv` if it exists), which the
 // farm bounds inside that checkout.
+// HZ-440: a target's taskDir, when set, replaces repoDir here — a separate
+// clone, never the deploy checkout — and task_clone tells the Execute runner
+// to fast-forward it first. Run plan gets the same fields for its prompt but
+// only reads them: it must never fast-forward the clone.
 function jobEnvFields(repo) {
   const target = findTargetByRepo(repo)
-  return { repo_dir: target?.repoDir ?? null, venv_dir: target?.venvDir ?? null }
+  return {
+    repo_dir: target?.taskDir ?? target?.repoDir ?? null,
+    venv_dir: target?.venvDir ?? null,
+    ...(target?.taskDir ? { task_clone: true } : {}),
+  }
 }
 
 // HZ-378: hands an Execute step to the farm's job lane. The payload carries

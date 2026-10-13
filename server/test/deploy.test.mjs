@@ -7,7 +7,7 @@
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync, writeFileSync, mkdirSync, rmSync } from 'node:fs'
+import { mkdtempSync, writeFileSync, mkdirSync, rmSync, readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { useDeployTargetRows } from './helpers/deployTargetRows.mjs'
@@ -211,5 +211,22 @@ test('a deploy_target row failing validation fails closed: no throw, no targets 
     assert.deepEqual(deploy.listTargetStatuses(), [])
   } finally {
     await useDeployTargetRows(FIXTURE_TARGETS)
+  }
+})
+
+// HZ-440: a taskDir is where Task jobs run, never a deploy source. The deploy
+// script is still handed repoDir, and the deploy path never names taskDir.
+test('HZ-440: spawnEnv passes repoDir, not taskDir, as HORIZON_REPO_DIR', () => {
+  const target = { ...FIXTURE_TARGETS[0], taskDir: '/opt/horizon-tasks' }
+  const env = deploy.spawnEnv(target)
+  assert.equal(env.HORIZON_REPO_DIR, target.repoDir)
+  assert.equal(Object.values(env).includes(target.taskDir), false)
+})
+
+test('HZ-440: deploy.js, deploy-horizon.sh and horizon-deploy.sudoers never read taskDir', () => {
+  const root = join(import.meta.dirname, '..', '..')
+  for (const file of ['server/src/deploy.js', 'infra/host/deploy-horizon.sh', 'infra/host/horizon-deploy.sudoers']) {
+    const text = readFileSync(join(root, file), 'utf8')
+    assert.equal(/taskDir|task_dir/i.test(text), false, file)
   }
 })

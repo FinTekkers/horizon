@@ -920,6 +920,13 @@ if (!db.prepare('PRAGMA table_info(deploy_target)').all().some((column) => colum
   db.exec('ALTER TABLE deploy_target ADD COLUMN venv_dir TEXT')
 }
 
+// HZ-440: where a Task's Execute commands run, when it is not repo_dir — a
+// separate clone the farm fast-forwards before each job. Additive and
+// nullable: NULL is "use repo_dir". Never a deploy source; no backfill.
+if (!db.prepare('PRAGMA table_info(deploy_target)').all().some((column) => column.name === 'task_dir')) {
+  db.exec('ALTER TABLE deploy_target ADD COLUMN task_dir TEXT')
+}
+
 // HZ-333: the deploy queue (server/src/deployQueue.js). Step 14 joins its
 // target's open batch instead of publishing; one batch publishes one release
 // of main and deploys once. tag is saved before any GitHub call, so a resumed
