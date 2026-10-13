@@ -251,14 +251,39 @@ function allocateCaps(lengths, weights, budget) {
   return caps
 }
 
+// HZ-434: farm/job_reports.py heads each Execute report file with this. A
+// section so headed is kept whole or omitted whole — never cut mid-file.
+export const REPORT_HEADING_PREFIX = 'Report: '
+
+// Heading matches outside fenced code: a `# comment` line inside a fenced
+// block (a script, a report file's body) is content, not a heading. A fence
+// closes only on a line of at least as many backticks as opened it.
+function headingMatches(content) {
+  const LINE_RE = /^(`{3,})?.*$/gm
+  const matches = []
+  let fence = 0
+  let m
+  while ((m = LINE_RE.exec(content))) {
+    const line = m[0]
+    if (fence > 0) {
+      if (/^`+\s*$/.test(line) && line.trim().length >= fence) fence = 0
+    } else if (m[1]) {
+      fence = m[1].length
+    } else if (/^#{1,6}[ \t]+/.test(line)) {
+      matches.push(m)
+    }
+    if (LINE_RE.lastIndex === m.index) LINE_RE.lastIndex++
+  }
+  return matches
+}
+
 // Splits markdown into ordered {heading, text} sections so a digest can drop
 // or shrink whole sections instead of cutting raw characters. `text` for
 // each section includes its own heading line. No headings found → a single
 // section with heading: null, so plain (non-markdown) artifacts still digest
 // sanely instead of crashing.
 function splitSections(content) {
-  const HEADING_RE = /^#{1,6}[ \t]+.*$/gm
-  const matches = [...content.matchAll(HEADING_RE)]
+  const matches = headingMatches(content)
   if (matches.length === 0) return [{ heading: null, text: content }]
   const sections = []
   if (matches[0].index > 0) sections.push({ heading: null, text: content.slice(0, matches[0].index) })
@@ -301,6 +326,12 @@ function describeOmission(o) {
 // better-shaped than a flat truncation count.
 export function digestToFit(content, cap) {
   if (cap >= content.length) return content
+  const { kept, marker } = digestParts(content, cap)
+  return `${kept}\n\n${marker}`
+}
+
+// The kept text and its marker, apart, so a caller can size what was cut.
+function digestParts(content, cap) {
   const boundedCap = Math.max(cap, 0)
   const sections = splitSections(content)
   let kept = ''
@@ -315,6 +346,10 @@ export function digestToFit(content, cap) {
       kept += section.text
       continue
     }
+    if (section.heading?.startsWith(REPORT_HEADING_PREFIX)) {
+      omitted.push({ heading: section.heading, chars: section.text.length })
+      continue
+    }
     const cutAt = findCutPoint(section.text, remaining)
     kept += section.text.slice(0, cutAt)
     const omittedChars = section.text.length - cutAt
@@ -324,7 +359,7 @@ export function digestToFit(content, cap) {
     omitted.length > 0
       ? `[...reduced: kept ${kept.length} of ${content.length} chars; omitted ${omitted.map(describeOmission).join(', ')}...]`
       : `[...reduced: kept ${kept.length} of ${content.length} chars...]`
-  return `${kept}\n\n${marker}`
+  return { kept, marker }
 }
 
 // How often the 60,000 budget actually binds is an open question this item
@@ -351,13 +386,22 @@ function logArtifactBudgetUsage(totalChars, truncated) {
 // budget does anything get reduced, via water-filling (latest artifact
 // weighted to win ties) plus a heading/sentence-aware digest instead of a
 // raw slice.
-export function budgetArtifacts(rows) {
+//
+// HZ-434: `reserveChars` comes off the budget only when the total does not
+// fit — room for the Truncation notice Verify & report gets. The budget
+// itself is never raised. A truncated entry carries the bytes of its full
+// and kept text, so the notice can say how many bytes were cut.
+export function budgetArtifacts(rows, { reserveChars = 0 } = {}) {
   if (rows.length === 0) return []
+  const totalChars = rows.reduce((sum, r) => sum + r.artifact.length, 0)
+  logArtifactBudgetUsage(totalChars, totalChars > TOTAL_ARTIFACT_BUDGET_CHARS)
+  return allocateBudget(rows, reserveChars)
+}
+
+function allocateBudget(rows, reserveChars) {
   const lengths = rows.map((r) => r.artifact.length)
   const totalChars = lengths.reduce((sum, len) => sum + len, 0)
-  const fits = totalChars <= TOTAL_ARTIFACT_BUDGET_CHARS
-  logArtifactBudgetUsage(totalChars, !fits)
-  if (fits) {
+  if (totalChars <= TOTAL_ARTIFACT_BUDGET_CHARS) {
     return rows.map((row) => ({
       label: STEPS[row.step_index]?.label || `step ${row.step_index}`,
       content: row.artifact,
@@ -366,14 +410,78 @@ export function budgetArtifacts(rows) {
     }))
   }
   const weights = rows.map((_, i) => (i === rows.length - 1 ? LATEST_ARTIFACT_WEIGHT : 1))
-  const caps = allocateCaps(lengths, weights, TOTAL_ARTIFACT_BUDGET_CHARS)
+  const caps = allocateCaps(lengths, weights, Math.max(TOTAL_ARTIFACT_BUDGET_CHARS - reserveChars, 0))
   return rows.map((row, i) => {
     const full = row.artifact
     const cap = caps[i]
     const truncated = full.length > cap
-    const content = truncated ? digestToFit(full, cap) : full
-    return { label: STEPS[row.step_index]?.label || `step ${row.step_index}`, content, truncated, stepIndex: row.step_index }
+    const label = STEPS[row.step_index]?.label || `step ${row.step_index}`
+    if (!truncated) return { label, content: full, truncated, stepIndex: row.step_index }
+    const { kept, marker } = digestParts(full, cap)
+    return {
+      label,
+      content: `${kept}\n\n${marker}`,
+      truncated,
+      stepIndex: row.step_index,
+      fullBytes: Buffer.byteLength(full, 'utf8'),
+      keptBytes: Buffer.byteLength(kept, 'utf8'),
+    }
   })
+}
+
+// HZ-434: Verify & report is told when its evidence was cut — which section,
+// how many bytes, and where the whole text is — and to say so in its summary.
+export const TRUNCATION_NOTICE_LABEL = 'Truncation notice'
+export const TRUNCATION_NOTICE_MAX_CHARS = 1500
+export const TRUNCATION_NOTICE_INSTRUCTION =
+  'Say in your summary that this input was truncated, and name the section.'
+
+// The notice for the cut entries of `budgeted`, or null when nothing was cut.
+// Never longer than TRUNCATION_NOTICE_MAX_CHARS: past it, the remaining
+// sections are counted, not listed.
+export function buildTruncationNotice(itemId, budgeted) {
+  const cut = budgeted.filter((b) => b.truncated)
+  if (cut.length === 0) return null
+  const head =
+    `## ${TRUNCATION_NOTICE_LABEL}\n` +
+    `Some of your input was cut to fit the ${TOTAL_ARTIFACT_BUDGET_CHARS}-char context budget. ` +
+    'Judge only what is shown.\n'
+  const tail = `\n${TRUNCATION_NOTICE_INSTRUCTION}\n`
+  const fmt = (n) => n.toLocaleString('en-US')
+  const bullets = cut.map((b) => {
+    const where =
+      b.stepIndex === EXECUTE_STEP_INDEX
+        ? `the whole log is \`GET /api/items/${itemId}/job/log?format=text\` and the farm file on its \`Full log:\` line`
+        : `the whole artifact is \`GET /api/items/${itemId}/artifacts/${b.stepIndex}\``
+    return `- **${b.label}**: cut ${fmt(b.fullBytes - b.keptBytes)} of ${fmt(b.fullBytes)} bytes; ${where}.`
+  })
+  let body = ''
+  const more = (n) => (n > 0 ? `- ...and ${n} more section(s) cut.\n` : '')
+  for (let i = 0; i < bullets.length; i++) {
+    // Room for this bullet and, should the next not fit, the count line.
+    if ((head + body + bullets[i] + '\n' + more(bullets.length - i - 1) + tail).length > TRUNCATION_NOTICE_MAX_CHARS) {
+      body += more(bullets.length - i)
+      break
+    }
+    body += `${bullets[i]}\n`
+  }
+  return { label: TRUNCATION_NOTICE_LABEL, content: `${head}${body}${tail}` }
+}
+
+// Verify & report's inputs: the budgeted artifacts, with the notice first when
+// anything was cut. The notice plus every artifact (markers included) fits
+// TOTAL_ARTIFACT_BUDGET_CHARS: the reserve grows until it does.
+export function budgetVerifyInputs(itemId, rows) {
+  let reserveChars = TRUNCATION_NOTICE_MAX_CHARS
+  let budgeted = budgetArtifacts(rows, { reserveChars })
+  for (;;) {
+    const notice = buildTruncationNotice(itemId, budgeted)
+    if (!notice) return { budgeted, notice }
+    const total = notice.content.length + budgeted.reduce((sum, b) => sum + b.content.length, 0)
+    if (total <= TOTAL_ARTIFACT_BUDGET_CHARS || reserveChars >= TOTAL_ARTIFACT_BUDGET_CHARS) return { budgeted, notice }
+    reserveChars += total - TOTAL_ARTIFACT_BUDGET_CHARS
+    budgeted = allocateBudget(rows, reserveChars)
+  }
 }
 
 // Exported for tests. `step.requires` (domain/steps.json) names prior
@@ -1392,7 +1500,9 @@ async function dispatchToFarm(id, stepIndex, runId, attempt, scope, checkoutSha 
     )
     .all(id, IMPLEMENT_STEP_INDEX, stepIndex, id, IMPLEMENT_STEP_INDEX)
     .map((row) => ({ step_index: row.step_index, artifact: row.artifact ?? row.output ?? '' }))
-  const budgeted = budgetArtifacts(rows)
+  // HZ-434: Verify & report gets a notice of anything cut, read first.
+  const { budgeted, notice: truncationNotice } =
+    stepIndex === VERIFY_REPORT_STEP_INDEX ? budgetVerifyInputs(id, rows) : { budgeted: budgetArtifacts(rows), notice: null }
 
   // HZ-105: a step whose `requires` names a prior artifact must never review
   // it half-shown — the exact HZ-102 failure shape was a reviewer judging a
@@ -1412,6 +1522,7 @@ async function dispatchToFarm(id, stepIndex, runId, attempt, scope, checkoutSha 
   if (step.runsIn === 'job') return dispatchJob(id, stepIndex, runId, attempt)
 
   const artifacts = budgeted.map(({ label, content }) => ({ label, content }))
+  if (truncationNotice) artifacts.unshift(truncationNotice)
   if (overlapInput) artifacts.push(overlapInput)
   if (stepIndex === REVIEW_STEP_INDEX) artifacts.push(buildStoredResultsInput(id))
   // HZ-207: every farm step carries its own project; farmd refuses one

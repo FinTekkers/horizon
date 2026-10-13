@@ -27,5 +27,13 @@ export function extractRunPlan(artifact) {
   if (!Array.isArray(commands) || commands.length === 0) return null
   if (!commands.every((c) => typeof c === 'string' && c.trim())) return null
   if (!Number.isInteger(budgetMinutes) || budgetMinutes < 1) return null
+  if (block.reports !== undefined && !validReports(block.reports)) return null
   return block
+}
+
+// HZ-434: the same shape-only rule as run_plan.validate() — non-empty paths,
+// none with a `..` part. Execute's realpath check owns where a report may be.
+function validReports(reports) {
+  if (!Array.isArray(reports)) return false
+  return reports.every((p) => typeof p === 'string' && p.trim() && !p.split('/').includes('..'))
 }

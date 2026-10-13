@@ -39,6 +39,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from domain.py import run_plan
+from farm import job_reports
 from farm.checks import redact
 
 # HZ-415: Horizon's own checkout, the same rule farmd.py uses. A Task's
@@ -256,6 +257,13 @@ def run_job(
     fresh = prior is None or prior.get("status") in (None, "hash_mismatch")
     if fresh:
         log_path.write_text("", encoding="utf-8")
+    # HZ-434: where this start's output begins in the append-only log, in
+    # bytes. farmd forwards only log[log_offset:], so Verify never judges an
+    # earlier attempt's output; the log itself stays whole on disk.
+    try:
+        log_offset = log_path.stat().st_size
+    except OSError:
+        log_offset = 0
     # HZ-431: only the venv path or `system` — never PATH or another value.
     with log_path.open("a", encoding="utf-8") as log:
         log.write(redact(f"env: {venv or 'system'}\n", secrets))
@@ -263,7 +271,8 @@ def run_job(
     entries: list[dict] = []
     for c in commands:
         if c in prior_done:
-            entries.append(dict(prior_done[c]))
+            # HZ-434: passed in an earlier attempt and skipped in this one.
+            entries.append({**prior_done[c], "resumed": True})
         else:
             entries.append(
                 {"command": c, "cwd": cwd, "status": "pending", "started_at": None, "ended_at": None, "exit_code": None}
@@ -276,6 +285,7 @@ def run_job(
         "ended_at": None,
         "budget_s": budget_s,
         "approved_hash": approved_hash,
+        "log_offset": log_offset,
         "commands": entries,
     }
     save_state(state_path, state)
@@ -411,6 +421,15 @@ def run_job(
             failing.append(entry["command"])
             break
 
+    # HZ-434: the plan's own report files, read here while the job's secrets
+    # are still in hand for redact(). Also after a failed command: a partial
+    # report is still evidence. Reading them never keeps the job from ending.
+    try:
+        state["reports"] = job_reports.collect_reports(
+            commands, block.get("reports", []), cwd, secrets, forbid=str(HORIZON_ROOT)
+        )
+    except Exception as exc:
+        state["reports"] = [{"path": "(reports)", "status": "refused", "bytes": 0, "text": f"could not be read ({type(exc).__name__})"}]
     state["status"] = "finished"
     state["ended_at"] = _now_iso()
     state["summary"] = {"run": attempted, "passed": passed, "failed": len(failing), "failing": list(failing)}

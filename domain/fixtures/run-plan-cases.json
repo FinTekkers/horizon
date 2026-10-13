@@ -1,0 +1,21 @@
+{
+  "$comment": "HZ-434. Run plan blocks with and without a `reports` list, asserted by BOTH server/test/run-plan-reports-cases.test.mjs (domain/js/runPlan.js extractRunPlan) and farm/tests/test_job_reports.py (domain/py/run_plan.py validate), so a plan the Approve the run card accepts is one Execute accepts too. Both bindings check shape only plus no `..` part; where a report may live is Execute's realpath check.",
+  "reports": [
+    { "case": "no reports list", "block": { "cwd": ".", "commands": ["echo hi"], "budget_minutes": 1 }, "valid": true },
+    { "case": "an empty reports list", "block": { "cwd": ".", "commands": ["echo hi"], "budget_minutes": 1, "reports": [] }, "valid": true },
+    {
+      "case": "a relative path and an absolute /tmp path",
+      "block": { "cwd": ".", "commands": ["echo hi"], "budget_minutes": 1, "reports": ["out/run.json", "/tmp/mdi-51-run1.json"] },
+      "valid": true
+    },
+    { "case": "reports is a string, not a list", "block": { "cwd": ".", "commands": ["echo hi"], "budget_minutes": 1, "reports": "out/run.json" }, "valid": false },
+    { "case": "an empty path", "block": { "cwd": ".", "commands": ["echo hi"], "budget_minutes": 1, "reports": [""] }, "valid": false },
+    { "case": "a path that is not a string", "block": { "cwd": ".", "commands": ["echo hi"], "budget_minutes": 1, "reports": [7] }, "valid": false },
+    { "case": "a relative path with ..", "block": { "cwd": ".", "commands": ["echo hi"], "budget_minutes": 1, "reports": ["../secrets.json"] }, "valid": false },
+    {
+      "case": "an absolute path with ..",
+      "block": { "cwd": ".", "commands": ["echo hi"], "budget_minutes": 1, "reports": ["/tmp/../opt/horizon/x.json"] },
+      "valid": false
+    }
+  ]
+}

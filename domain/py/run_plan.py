@@ -87,7 +87,20 @@ def validate(block: object) -> dict:
     for name, value in env.items():
         if not isinstance(value, str) or not ENV_REFERENCE.match(value):
             raise ValueError(f"run_plan 'env'.{name} must name a variable like $NAME, never a literal value")
+    # HZ-434: shape only; Execute's realpath check owns where a report may be.
+    reports = block.get("reports", [])
+    if not isinstance(reports, list):
+        raise ValueError(REPORTS_SHAPE)
+    for path in reports:
+        if not isinstance(path, str) or not path.strip():
+            raise ValueError(REPORTS_SHAPE)
+        if ".." in PurePosixPath(path).parts:
+            raise ValueError(REPORTS_PARENT)
     return block
+
+
+REPORTS_SHAPE = "run_plan 'reports' must be a list of non-empty file paths"
+REPORTS_PARENT = "run_plan 'reports' paths must not contain '..'"
 
 
 CWD_ABSOLUTE = "run_plan 'cwd' must be relative to the repo root, not an absolute path"

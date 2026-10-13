@@ -4130,3 +4130,35 @@ def test_lane_overrides_only_re_point_change_steps():
             assert (ROLES_DIR / config[0]).is_file(), config[0]
             # Tools and persona are the full step's; only the role file differs.
             assert config[1:] == STEP_CONFIG[label][1:], label
+
+
+def test_verify_prompt_reads_the_truncation_notice_first_and_a_report_verbatim():
+    """HZ-434 R6: the notice the server puts first is the first input in
+    Verify & report's prompt, and an inlined report is not clipped."""
+    from farm import job_reports
+
+    report = json.dumps({"securities": 21, "prices": 3551, "rows": ["r" * 60] * 200})
+    assert len(report) <= job_reports.REPORT_INLINE_MAX_BYTES
+    execute = farmd_like_execute_artifact(report)
+    assert len(execute) < step_agent.MAX_PROMPT_ARTIFACT_CHARS
+    notice = (
+        "## Truncation notice\nSome of your input was cut to fit.\n"
+        "- **Execute**: cut 9,000 of 70,000 bytes.\n\n"
+        "Say in your summary that this input was truncated, and name the section.\n"
+    )
+    task = make_task(
+        steps.by_kind_label("task", step_agent.VERIFY_REPORT_LABEL)["index"],
+        step_agent.VERIFY_REPORT_LABEL,
+        artifacts=[{"label": "Truncation notice", "content": notice}, {"label": "Execute", "content": execute}],
+    )
+    prompt = build_prompt(task)
+    assert notice in prompt and execute in prompt
+    assert prompt.index("Say in your summary that this input was truncated") < prompt.index("## Reports")
+    assert report in prompt
+
+
+def farmd_like_execute_artifact(report: str) -> str:
+    from farm import farmd, job_reports
+
+    reports_md = job_reports.reports_md([{"path": "/tmp/mdi-51-run1.json", "status": "inlined", "bytes": len(report), "text": report}])
+    return farmd.job_artifact_md("1 command(s) run, 1 passed, 0 failed", "$ load\nok\n", commands=["- exit 0 — `load`"], reports_md=reports_md)
