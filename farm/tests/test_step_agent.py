@@ -3499,8 +3499,11 @@ def test_a_failing_implement_run_reports_no_sha(tmp_path, monkeypatch):
     assert reported == [], "a red run never reaches the report"
 
 
-def test_a_check_that_leaves_a_file_behind_reports_no_sha(tmp_path, monkeypatch):
-    ws, _origin = make_git_workspace(tmp_path)
+def test_a_file_a_check_leaves_behind_is_not_pushed(tmp_path, monkeypatch, capsys):
+    """HZ-438: the work is committed before the checks, so a file a check
+    writes was never checked — it stays on disk, and the pushed commit is
+    still the one the checks passed on."""
+    ws, origin = make_git_workspace(tmp_path)
     monkeypatch.setattr(step_agent, "ensure_item_worktree", lambda repo, item_id: ws)
     monkeypatch.setenv("FARM_CHECK_CMD", "echo generated > generated.txt")
     monkeypatch.setattr(step_agent, "run_agent", finished_run(ws))
@@ -3508,7 +3511,9 @@ def test_a_check_that_leaves_a_file_behind_reports_no_sha(tmp_path, monkeypatch)
     result = execute(make_task(11, "Specialist agent implements", repo="acme/demo"))
 
     assert result["artifacts"]["branch"] == "horizon/t-1"
-    assert "checks_passed_sha" not in result["artifacts"]
+    assert "generated.txt" not in _origin_files(origin)
+    assert result["artifacts"]["checks_passed_sha"] == _origin_sha(origin, "horizon/t-1")
+    assert "finalize: the checks left changes on disk — not pushed: generated.txt" in capsys.readouterr().out
 
 
 def test_a_run_with_no_checks_to_run_reports_no_sha(tmp_path, monkeypatch):
@@ -3537,6 +3542,190 @@ def test_a_snapshot_timeout_still_completes_green_with_no_sha(tmp_path, monkeypa
 
     assert result["artifacts"]["branch"] == "horizon/t-1"
     assert "checks_passed_sha" not in result["artifacts"]
+
+
+# ---- HZ-438: the checks run on the agent's work committed locally ----
+
+
+def _origin_files(origin, ref="horizon/t-1"):
+    return subprocess.run(
+        ["git", "--git-dir", str(origin), "ls-tree", "-r", "--name-only", ref], capture_output=True, text=True, check=True
+    ).stdout.split()
+
+
+def _commits_over(origin, base, ref="horizon/t-1"):
+    return int(
+        subprocess.run(
+            ["git", "--git-dir", str(origin), "rev-list", "--first-parent", "--count", f"{base}..{ref}"],
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout
+    )
+
+
+def _salvage_outcomes(monkeypatch):
+    outcomes = []
+    real = step_agent._salvage_checkpoint
+
+    def spy(*a, **k):
+        outcomes.append(real(*a, **k))
+        return outcomes[-1]
+
+    monkeypatch.setattr(step_agent, "_salvage_checkpoint", spy)
+    return outcomes
+
+
+def test_a_git_status_check_passes_because_the_farm_committed_first(tmp_path, monkeypatch):
+    ws, origin = make_git_workspace(tmp_path)
+    monkeypatch.setattr(step_agent, "ensure_item_worktree", lambda repo, item_id: ws)
+    # Clean tree, the agent's file in the checked commit, nothing pushed yet.
+    monkeypatch.setenv(
+        "FARM_CHECK_CMD",
+        'test -z "$(git status --porcelain)" && git cat-file -e HEAD:fake_implementation.txt'
+        " && ! git ls-remote --exit-code origin refs/heads/horizon/t-1",
+    )
+    monkeypatch.setattr(step_agent, "run_agent", finished_run(ws))
+
+    result = execute(make_task(11, "Specialist agent implements", repo="acme/demo"))
+
+    assert result["artifacts"]["branch"] == "horizon/t-1"
+    assert _commits_over(origin, "main") == 1
+    assert origin_log(origin).splitlines()[0] == "T-1: Test item (Horizon Eng agent)"
+    assert "fake_implementation.txt" in _origin_files(origin)
+
+
+def test_failing_checks_push_only_the_amended_checkpoint(tmp_path, monkeypatch):
+    ws, origin = make_git_workspace(tmp_path)
+    monkeypatch.setattr(step_agent, "ensure_item_worktree", lambda repo, item_id: ws)
+    monkeypatch.setenv("FARM_CHECK_CMD", "exit 1")
+    monkeypatch.setattr(step_agent, "run_agent", finished_run(ws))
+    finalized = []
+    monkeypatch.setattr(step_agent, "finalize_branch", lambda *a, **k: finalized.append(a))
+    outcomes = _salvage_outcomes(monkeypatch)
+
+    with pytest.raises(step_agent.CheckFailure):
+        execute(make_task(11, "Specialist agent implements", repo="acme/demo"))
+
+    assert finalized == []
+    assert outcomes == ["saved"]
+    assert _commits_over(origin, "main") == 1
+    assert origin_log(origin).splitlines()[0] == f"T-1: {step_agent.CHECKPOINT_MARKER} (Horizon Eng agent)"
+    assert origin_body(origin).startswith("cause: checks-failed")
+    assert "fake_implementation.txt" in _origin_files(origin)
+
+
+def test_a_checks_failed_checkpoint_still_leaves_out_secrets(tmp_path, monkeypatch):
+    ws, origin = make_git_workspace(tmp_path)
+    monkeypatch.setattr(step_agent, "ensure_item_worktree", lambda repo, item_id: ws)
+    monkeypatch.setenv("FARM_CHECK_CMD", "exit 1")
+
+    def _agent(prompt, **kwargs):
+        (ws / ".env").write_text("API_TOKEN=abc\n")
+        (ws / "work.txt").write_text("work\n")
+        return {"result": '{"summary": "built it"}'}
+
+    monkeypatch.setattr(step_agent, "run_agent", _agent)
+
+    with pytest.raises(step_agent.CheckFailure):
+        execute(make_task(11, "Specialist agent implements", repo="acme/demo"))
+
+    files = _origin_files(origin)
+    assert "work.txt" in files and ".env" not in files
+    assert _commits_over(origin, "main") == 1
+
+
+def test_the_pushed_commit_is_the_one_the_checks_ran_on(tmp_path, monkeypatch):
+    ws, origin = make_git_workspace(tmp_path)
+    seen = tmp_path / "seen_head"
+    monkeypatch.setattr(step_agent, "ensure_item_worktree", lambda repo, item_id: ws)
+    monkeypatch.setenv("FARM_CHECK_CMD", f"git rev-parse HEAD > {seen}")
+    monkeypatch.setattr(step_agent, "run_agent", finished_run(ws))
+
+    result = execute(make_task(11, "Specialist agent implements", repo="acme/demo"))
+
+    tip = _origin_sha(origin, "horizon/t-1")
+    assert seen.read_text().strip() == tip
+    assert result["artifacts"]["checks_passed_sha"] == tip
+    assert _commits_over(origin, "main") == 1
+
+
+def test_a_check_that_moves_head_pushes_nothing(tmp_path, monkeypatch):
+    ws, origin = make_git_workspace(tmp_path)
+    monkeypatch.setattr(step_agent, "ensure_item_worktree", lambda repo, item_id: ws)
+    monkeypatch.setenv("FARM_CHECK_CMD", "git commit -q --allow-empty -m drift")
+    monkeypatch.setattr(step_agent, "run_agent", finished_run(ws))
+
+    with pytest.raises(RuntimeError, match="HEAD moved during the checks"):
+        execute(make_task(11, "Specialist agent implements", repo="acme/demo"))
+
+    assert _origin_rev(origin) == ""
+
+
+def test_a_checks_failed_checkpoint_of_a_merge_keeps_main_as_a_parent(tmp_path, monkeypatch):
+    """The farm's commit is the merge of main; the checkpoint amends it, so
+    main stays a parent. A secret-looking file main itself added is main's,
+    not the agent's — it stays; the agent's .env does not."""
+    ws, origin = make_diverged_workspace(tmp_path, conflict=True)
+    (ws / "main.pem").write_text("main's pem\n")
+    git(ws, "add", "-A")
+    git(ws, "commit", "-m", "main adds a pem")
+    git(ws, "push", "-q", "origin", "main")
+    main_sha = rev(ws, "origin/main")
+    lease = rev(origin, "horizon/t-1")
+    monkeypatch.setattr(step_agent, "ensure_item_worktree", lambda repo, item_id: ws)
+    monkeypatch.setenv("FARM_CHECK_CMD", "exit 1")
+
+    def _agent(prompt, **kwargs):
+        (ws / "shared.txt").write_text("item side\nmain side\n")
+        (ws / ".env").write_text("API_TOKEN=abc\n")
+        (ws / "agent.txt").write_text("work\n")
+        return {"result": '{"summary": "resolved"}'}
+
+    monkeypatch.setattr(step_agent, "run_agent", _agent)
+    task = make_task(11, "Specialist agent implements", repo="acme/demo")
+    task["merge_main"] = True
+
+    with pytest.raises(step_agent.CheckFailure):
+        execute(task)
+
+    tip = rev(origin, "horizon/t-1")
+    assert _sh(origin, "rev-list", "--parents", "-n", "1", tip).split()[1:] == [lease, main_sha]
+    assert step_agent.CHECKPOINT_MARKER in origin_log(origin).splitlines()[0]
+    files = _origin_files(origin)
+    assert "main.pem" in files and "agent.txt" in files and "main_only.txt" in files
+    assert ".env" not in files
+    assert _commits_over(origin, lease) == 1
+
+
+def test_a_deploy_stop_during_checks_replaces_the_farm_commit(tmp_path, monkeypatch, deploy_stop):
+    pause, outcome_path = deploy_stop
+    ws, origin = make_git_workspace(tmp_path)
+    monkeypatch.setattr(step_agent, "ensure_item_worktree", lambda repo, item_id: ws)
+    monkeypatch.setenv("FARM_CHECK_CMD", "true")
+
+    def _agent(prompt, **kwargs):
+        (ws / ".env").write_text("API_TOKEN=abc\n")
+        (ws / "work.txt").write_text("finished, unchecked\n")
+        return {"result": '{"summary": "built it"}'}
+
+    def stopped_mid_check(*a, **k):
+        raise pause.PauseRequested()
+
+    monkeypatch.setattr(step_agent, "run_agent", _agent)
+    monkeypatch.setattr(checks, "_run_bounded", stopped_mid_check)
+    monkeypatch.setattr(step_agent, "finalize_branch", lambda *a, **k: pytest.fail("a deploy checkpoint reached finalize"))
+
+    with pytest.raises(pause.PauseRequested):
+        execute(make_task(11, "Specialist agent implements", repo="acme/demo"))
+
+    assert pause.read_outcome(outcome_path)["outcome"] == "saved"
+    tip = _origin_rev(origin)
+    assert tip == _sh(ws, "rev-parse", "HEAD")
+    assert _sh(ws, "rev-list", "--parents", "-n", "1", tip).split()[1:] == [_origin_rev(origin, "main")]
+    assert origin_body(origin).strip() == f"cause: {step_agent.CAUSE_DEPLOY}"
+    files = _origin_files(origin)
+    assert "work.txt" in files and ".env" not in files
 
 
 # ---- HZ-321: the deploy checkpoint ----

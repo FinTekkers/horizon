@@ -164,6 +164,32 @@ def test_pause_during_checks_checkpoints_the_code_and_is_not_a_check_failure(tmp
     assert records[-1]["outcome"] == "paused"
 
 
+def test_a_pause_during_checks_amends_the_farms_commit_into_one_checkpoint(ws_origin, monkeypatch):
+    """HZ-438: the work was committed locally before the checks. The pause
+    checkpoint replaces that commit — never a second commit on top of it."""
+    ws, origin, outcome_path = ws_origin
+    monkeypatch.setenv("FARM_CHECK_CMD", "true")
+    monkeypatch.setattr(step_agent, "run_agent", finished_run(ws, text="finished, unchecked\n"))
+
+    def paused_mid_check(*a, **k):
+        raise pause.PauseRequested()
+
+    monkeypatch.setattr(checks, "_run_bounded", paused_mid_check)
+    forbid_pr_paths(monkeypatch)
+
+    with pytest.raises(pause.PauseRequested):
+        execute_implement()
+
+    assert pause.read_outcome(outcome_path)["outcome"] == "saved"
+    over_main = subprocess.run(
+        ["git", "--git-dir", str(origin), "rev-list", "--count", "main..horizon/t-1"], capture_output=True, text=True, check=True
+    ).stdout.strip()
+    assert over_main == "1"
+    assert origin_log(origin).splitlines()[0] == f"T-1: {step_agent.CHECKPOINT_MARKER} (Horizon Eng agent)"
+    assert origin_body(origin).startswith("cause: paused")
+    assert "fake_implementation.txt" in origin_files(origin)
+
+
 def main_harness(tmp_path, monkeypatch, task=None):
     active = tmp_path / "active"
     active.mkdir(exist_ok=True)
