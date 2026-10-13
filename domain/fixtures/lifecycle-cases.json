@@ -27,7 +27,14 @@
         "an unknown kind rejected",
         "an empty label rejected",
         "an empty kind label rejected",
-        "an empty kind description rejected"
+        "an empty kind description rejected",
+        "a lane that skips only rows nobody notices is accepted",
+        "a lane that skips a gate whose step still runs is rejected",
+        "a lane that skips a workspace-mutating step is rejected",
+        "a lane that skips the kind's last step is rejected",
+        "a lane that checks a gate is rejected",
+        "a lane naming an unknown step is rejected",
+        "a lane of an unknown item kind is rejected"
       ]
     },
 
@@ -333,6 +340,195 @@
           "steps": [{ "phase": 0, "kind": "gate", "gate": "required", "label": "A Gate" }]
         },
         "expect": { "throws": true, "messageContains": "kinds.change.description must be a non-empty string" }
+      },
+      {
+        "case": "a lane that skips only rows nobody notices is accepted",
+        "input": {
+          "phases": ["P"],
+          "lanes": { "short": { "itemKind": "change", "check": ["Write"], "skip": ["Explore", "Design gate"] } },
+          "steps": [
+            { "phase": 0, "kind": "agent", "agent": "PM", "label": "Write", "runsIn": "pm" },
+            { "phase": 0, "kind": "gate", "gate": "required", "label": "Approve" },
+            { "phase": 0, "kind": "agent", "agent": "Eng", "label": "Explore", "runsIn": "pm" },
+            { "phase": 0, "kind": "gate", "gate": "required", "label": "Design gate" },
+            {
+              "phase": 0,
+              "kind": "agent",
+              "agent": "Eng",
+              "label": "Build",
+              "runsIn": "farm",
+              "workspaceMutating": true,
+              "providerOverrideEligible": true,
+              "providerLocked": false,
+              "maxTurns": 10,
+              "timeoutS": 100
+            },
+            { "phase": 0, "kind": "gate", "gate": "required", "label": "Close" }
+          ]
+        },
+        "expect": { "throws": false }
+      },
+      {
+        "case": "a lane that skips a gate whose step still runs is rejected",
+        "input": {
+          "phases": ["P"],
+          "lanes": { "short": { "itemKind": "change", "check": ["Write"], "skip": ["Design gate"] } },
+          "steps": [
+            { "phase": 0, "kind": "agent", "agent": "PM", "label": "Write", "runsIn": "pm" },
+            { "phase": 0, "kind": "gate", "gate": "required", "label": "Approve" },
+            { "phase": 0, "kind": "agent", "agent": "Eng", "label": "Explore", "runsIn": "pm" },
+            { "phase": 0, "kind": "gate", "gate": "required", "label": "Design gate" },
+            {
+              "phase": 0,
+              "kind": "agent",
+              "agent": "Eng",
+              "label": "Build",
+              "runsIn": "farm",
+              "workspaceMutating": true,
+              "providerOverrideEligible": true,
+              "providerLocked": false,
+              "maxTurns": 10,
+              "timeoutS": 100
+            },
+            { "phase": 0, "kind": "gate", "gate": "required", "label": "Close" }
+          ]
+        },
+        "expect": { "throws": true, "messageContains": "lanes.short may not skip the gate \"Design gate\": a step it gates still runs" }
+      },
+      {
+        "case": "a lane that skips a workspace-mutating step is rejected",
+        "input": {
+          "phases": ["P"],
+          "lanes": { "short": { "itemKind": "change", "check": ["Write"], "skip": ["Build"] } },
+          "steps": [
+            { "phase": 0, "kind": "agent", "agent": "PM", "label": "Write", "runsIn": "pm" },
+            { "phase": 0, "kind": "gate", "gate": "required", "label": "Approve" },
+            { "phase": 0, "kind": "agent", "agent": "Eng", "label": "Explore", "runsIn": "pm" },
+            { "phase": 0, "kind": "gate", "gate": "required", "label": "Design gate" },
+            {
+              "phase": 0,
+              "kind": "agent",
+              "agent": "Eng",
+              "label": "Build",
+              "runsIn": "farm",
+              "workspaceMutating": true,
+              "providerOverrideEligible": true,
+              "providerLocked": false,
+              "maxTurns": 10,
+              "timeoutS": 100
+            },
+            { "phase": 0, "kind": "gate", "gate": "required", "label": "Close" }
+          ]
+        },
+        "expect": { "throws": true, "messageContains": "lanes.short may not skip \"Build\": it changes the workspace" }
+      },
+      {
+        "case": "a lane that skips the kind's last step is rejected",
+        "input": {
+          "phases": ["P"],
+          "lanes": { "short": { "itemKind": "change", "check": ["Write"], "skip": ["Close"] } },
+          "steps": [
+            { "phase": 0, "kind": "agent", "agent": "PM", "label": "Write", "runsIn": "pm" },
+            { "phase": 0, "kind": "gate", "gate": "required", "label": "Approve" },
+            { "phase": 0, "kind": "agent", "agent": "Eng", "label": "Explore", "runsIn": "pm" },
+            { "phase": 0, "kind": "gate", "gate": "required", "label": "Design gate" },
+            {
+              "phase": 0,
+              "kind": "agent",
+              "agent": "Eng",
+              "label": "Build",
+              "runsIn": "farm",
+              "workspaceMutating": true,
+              "providerOverrideEligible": true,
+              "providerLocked": false,
+              "maxTurns": 10,
+              "timeoutS": 100
+            },
+            { "phase": 0, "kind": "gate", "gate": "required", "label": "Close" }
+          ]
+        },
+        "expect": { "throws": true, "messageContains": "lanes.short may not skip \"Close\": it is the item kind's last step" }
+      },
+      {
+        "case": "a lane that checks a gate is rejected",
+        "input": {
+          "phases": ["P"],
+          "lanes": { "short": { "itemKind": "change", "check": ["Approve"], "skip": ["Explore"] } },
+          "steps": [
+            { "phase": 0, "kind": "agent", "agent": "PM", "label": "Write", "runsIn": "pm" },
+            { "phase": 0, "kind": "gate", "gate": "required", "label": "Approve" },
+            { "phase": 0, "kind": "agent", "agent": "Eng", "label": "Explore", "runsIn": "pm" },
+            { "phase": 0, "kind": "gate", "gate": "required", "label": "Design gate" },
+            {
+              "phase": 0,
+              "kind": "agent",
+              "agent": "Eng",
+              "label": "Build",
+              "runsIn": "farm",
+              "workspaceMutating": true,
+              "providerOverrideEligible": true,
+              "providerLocked": false,
+              "maxTurns": 10,
+              "timeoutS": 100
+            },
+            { "phase": 0, "kind": "gate", "gate": "required", "label": "Close" }
+          ]
+        },
+        "expect": { "throws": true, "messageContains": "lanes.short.check lists \"Approve\", which is not an agent step" }
+      },
+      {
+        "case": "a lane naming an unknown step is rejected",
+        "input": {
+          "phases": ["P"],
+          "lanes": { "short": { "itemKind": "change", "check": ["Write"], "skip": ["No Such Row"] } },
+          "steps": [
+            { "phase": 0, "kind": "agent", "agent": "PM", "label": "Write", "runsIn": "pm" },
+            { "phase": 0, "kind": "gate", "gate": "required", "label": "Approve" },
+            { "phase": 0, "kind": "agent", "agent": "Eng", "label": "Explore", "runsIn": "pm" },
+            { "phase": 0, "kind": "gate", "gate": "required", "label": "Design gate" },
+            {
+              "phase": 0,
+              "kind": "agent",
+              "agent": "Eng",
+              "label": "Build",
+              "runsIn": "farm",
+              "workspaceMutating": true,
+              "providerOverrideEligible": true,
+              "providerLocked": false,
+              "maxTurns": 10,
+              "timeoutS": 100
+            },
+            { "phase": 0, "kind": "gate", "gate": "required", "label": "Close" }
+          ]
+        },
+        "expect": { "throws": true, "messageContains": "lanes.short names unknown step \"No Such Row\" for item kind \"change\"" }
+      },
+      {
+        "case": "a lane of an unknown item kind is rejected",
+        "input": {
+          "phases": ["P"],
+          "lanes": { "short": { "itemKind": "banana", "check": ["Write"], "skip": ["Explore"] } },
+          "steps": [
+            { "phase": 0, "kind": "agent", "agent": "PM", "label": "Write", "runsIn": "pm" },
+            { "phase": 0, "kind": "gate", "gate": "required", "label": "Approve" },
+            { "phase": 0, "kind": "agent", "agent": "Eng", "label": "Explore", "runsIn": "pm" },
+            { "phase": 0, "kind": "gate", "gate": "required", "label": "Design gate" },
+            {
+              "phase": 0,
+              "kind": "agent",
+              "agent": "Eng",
+              "label": "Build",
+              "runsIn": "farm",
+              "workspaceMutating": true,
+              "providerOverrideEligible": true,
+              "providerLocked": false,
+              "maxTurns": 10,
+              "timeoutS": 100
+            },
+            { "phase": 0, "kind": "gate", "gate": "required", "label": "Close" }
+          ]
+        },
+        "expect": { "throws": true, "messageContains": "lanes.short.itemKind names unknown item kind \"banana\"" }
       }
     ]
   },
@@ -464,7 +660,11 @@
       { "case": "steps before the cursor are done", "item": { "cursor": 4 }, "i": 0, "expect": "done" },
       { "case": "steps after the cursor are pending", "item": { "cursor": 4 }, "i": 5, "expect": "pending" },
       { "case": "an agent step at the cursor is active", "item": { "cursor": 0 }, "i": 0, "expect": "active" },
-      { "case": "a gate at the cursor is awaiting", "item": { "cursor": 3 }, "i": 3, "expect": "awaiting" }
+      { "case": "a gate at the cursor is awaiting", "item": { "cursor": 3 }, "i": 3, "expect": "awaiting" },
+      { "case": "HZ-435: a row the item's lane skips is skipped, ahead of the cursor", "item": { "cursor": 3, "lane": "trivial" }, "i": 4, "expect": "skipped" },
+      { "case": "HZ-435: a skipped row stays skipped once the item is closed", "item": { "cursor": 16, "lane": "trivial" }, "i": 9, "expect": "skipped" },
+      { "case": "HZ-435: an unskipped row of a closed lane item is done", "item": { "cursor": 16, "lane": "trivial" }, "i": 6, "expect": "done" },
+      { "case": "HZ-435: a lane of another kind changes nothing", "item": { "cursor": 3, "kind": "change", "lane": "unknown" }, "i": 4, "expect": "pending" }
     ],
 
     "phaseStepIndexes": [
@@ -493,7 +693,35 @@
     "defaultReworkTarget": [
       { "case": "the accept gate sends back to the implement step", "gateLabel": "Accept the code", "expectLabel": "Specialist agent implements" },
       { "case": "any other gate walks back to the nearest earlier agent step", "gateLabel": "Review before execution", "expectLabel": "Summarize reviews & recommend" },
-      { "case": "the approve-the-run gate sends back to the run plan, not the impact review", "gateLabel": "Approve the run", "expectLabel": "Run plan" }
+      { "case": "the approve-the-run gate sends back to the run plan, not the impact review", "gateLabel": "Approve the run", "expectLabel": "Run plan" },
+      { "case": "HZ-435: a trivial item walks past the skipped summary to the QA review", "gateLabel": "Review before execution", "item": { "lane": "trivial" }, "expectLabel": "QA reviews the test plan" }
+    ],
+
+    "LANES": [{ "case": "the lanes, in the order steps.json declares them", "expect": ["trivial"] }],
+
+    "laneOf": [
+      { "case": "a change item with the trivial lane", "item": { "kind": "change", "lane": "trivial" }, "expect": "trivial" },
+      { "case": "no lane stored", "item": { "kind": "change", "lane": null }, "expect": null },
+      { "case": "a lane the table does not declare", "item": { "kind": "change", "lane": "banana" }, "expect": null },
+      { "case": "an inherited key is not a lane", "item": { "kind": "change", "lane": "constructor" }, "expect": null },
+      { "case": "a Task never takes a change lane", "item": { "kind": "task", "lane": "trivial" }, "expect": null }
+    ],
+
+    "laneSkips": [
+      { "case": "the trivial lane skips the options, design gate, architecture and summary rows", "item": { "lane": "trivial" }, "expectLabels": ["Plan options & trade-offs (pros / cons)", "Approve the high-level design", "Architecture review", "Summarize reviews & recommend"] },
+      { "case": "an item with no lane skips nothing", "item": {}, "expectLabels": [] }
+    ],
+
+    "laneCheckIndexes": [
+      { "case": "the trivial lane checks the three plan rows", "item": { "lane": "trivial" }, "expectLabels": ["Define the outcome", "Define how we measure success", "Set guardrails"] },
+      { "case": "an item with no lane checks nothing", "item": {}, "expectLabels": [] }
+    ],
+
+    "nextCursor": [
+      { "case": "the gate before a skipped row moves past it", "item": { "cursor": 3, "lane": "trivial" }, "expectLabel": "Draft implementation plan" },
+      { "case": "the plan moves past the skipped architecture review", "item": { "cursor": 6, "lane": "trivial" }, "expectLabel": "QA reviews the test plan" },
+      { "case": "the QA review moves past the skipped summary", "item": { "cursor": 8, "lane": "trivial" }, "expectLabel": "Review before execution" },
+      { "case": "with no lane it is the next row", "item": { "cursor": 3 }, "expectLabel": "Plan options & trade-offs (pros / cons)" }
     ]
   },
 

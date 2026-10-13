@@ -13,6 +13,7 @@ import {
   phasesFor,
   itemKindOf,
   isHumanOnlyGate,
+  laneOf,
 } from '../../../domain/js/lifecycle.js'
 import { AGENTS } from '../domain/agentTokens'
 import { PHASE_ACCENT, PHASE_ACCENT_BG, priorityColor } from '../domain/lifecycle'
@@ -32,7 +33,7 @@ import ProjectBadge from './ProjectBadge'
 import TaskBadge from './TaskBadge'
 import { BackIcon, LinkIcon, RestartIcon, PrIcon, CircleXIcon } from './icons'
 
-const STEP_GLYPHS = { done: '✓', active: '•', awaiting: '!', pending: '', blocked: '✕' }
+const STEP_GLYPHS = { done: '✓', active: '•', awaiting: '!', pending: '', blocked: '✕', skipped: '–' }
 
 // HZ-429: a done Task Verify & report shows its stored verdict, not just that
 // it ran: 'pass' keeps the tick, 'fail' a red circle-X, and a run with no
@@ -59,6 +60,8 @@ const STEP_META = {
   awaiting: (isGate, gate) => (isGate && gate === 'optional' ? 'Optional gate · awaiting you' : 'Awaiting your approval'),
   pending: () => 'Queued',
   blocked: () => 'Changes requested',
+  // HZ-435: a row the item's lane never runs.
+  skipped: (isGate, gate, lane) => `Skipped — ${lane} lane`,
 }
 
 const STEP_META_COLOR = { awaiting: 'var(--warning-ink)', blocked: 'var(--danger-ink)', active: 'var(--primary-ink)' }
@@ -173,7 +176,7 @@ function StepProviderPicker({ item, index, status, output, onSetStepProvider }) 
     if (pending === saved) setPending(null)
   }, [pending, saved])
 
-  if (STEPS[index].kind !== 'agent') return null
+  if (STEPS[index].kind !== 'agent' || status === 'skipped') return null
   if (!STEPS[index].providerOverrideEligible) return <div className="step-card__provider">Claude only</div>
   if (status === 'done') {
     const ran = PROVIDER_LABELS[output?.provider] ?? output?.provider
@@ -279,6 +282,8 @@ function Step({ item, stepOutputs, outputsSettled, index, deployBlock, viewerNam
       <div className="step__body">
         <div
           className={`step-card${['awaiting', 'active', 'blocked'].includes(status) ? ` step-card--${status}` : ''}${queued ? ' step-card--queued' : ''}`}
+          style={status === 'skipped' ? { opacity: 0.6 } : undefined}
+          data-testid={status === 'skipped' ? 'step-skipped' : undefined}
         >
           <div className="step-card__head">
             <div className="step-card__label">{st.label}</div>
@@ -291,7 +296,7 @@ function Step({ item, stepOutputs, outputsSettled, index, deployBlock, viewerNam
               than the hardcoded hex it originally shipped — dark mode (HZ-25)
               moved every colour in this file behind a CSS variable. */}
           <div className="step-card__meta" style={{ color: queued ? 'var(--muted)' : STEP_META_COLOR[status] || 'var(--muted)' }}>
-            {queued ? 'Queued' : mergeQueued ? 'Queued to merge' : STEP_META[status](isGate, st.gate)}
+            {queued ? 'Queued' : mergeQueued ? 'Queued to merge' : STEP_META[status](isGate, st.gate, laneOf(item))}
             {status === 'active' && item.activeRun?.step_index === index && (
               <span>
                 {' · '}
@@ -709,7 +714,7 @@ export default function Tracker({ item, projects, deployBlock = null, viewerName
             <div className="tracker__meta">
               <span className="tracker__id">{item.id}</span>
               <ProjectBadge projectId={item.project_id} projects={projects} />
-              <TaskBadge kind={item.kind} />
+              <TaskBadge kind={item.kind} lane={laneOf(item)} />
               <span className="tracker__priority" style={{ color: priorityColor(item.priority) }}>
                 <span className="tracker__priority-dot" style={{ background: priorityColor(item.priority) }} />
                 {item.priority} priority
@@ -807,7 +812,8 @@ export default function Tracker({ item, projects, deployBlock = null, viewerName
               cards (and their output links) render like a change's. */}
           {phasesFor(itemKindOf(item)).map((name, p) => {
             const idxs = phaseStepIndexes(p, itemKindOf(item))
-            const allDone = idxs.every((i) => stepStatus(item, i) === 'done')
+            // HZ-435: a row the lane skips never runs, so it never holds a phase open.
+            const allDone = idxs.every((i) => ['done', 'skipped'].includes(stepStatus(item, i)))
             const anyActive = idxs.some((i) => ['active', 'awaiting'].includes(stepStatus(item, i)))
             const phaseStatusLabel = allDone ? 'Complete' : anyActive ? 'In progress' : 'Upcoming'
             const phaseStatusColor = allDone ? 'var(--success-ink)' : anyActive ? 'var(--primary-ink)' : 'var(--muted)'

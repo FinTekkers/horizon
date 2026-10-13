@@ -26,6 +26,10 @@ import {
   RUN_PLAN_STEP_INDEX,
   APPROVE_RUN_GATE_INDEX,
   EXECUTE_STEP_INDEX,
+  gateStepIndexes,
+  laneOf,
+  laneSkips,
+  nextCursor,
 } from '../../domain/js/lifecycle.js'
 import { isPriority } from '../../domain/js/priorities.js'
 import { choiceLabel, choiceValues, parseChoice, providerNames } from '../../domain/js/providers.js'
@@ -34,7 +38,7 @@ import { extractRunPlan } from '../../domain/js/runPlan.js'
 import { isHumanProof } from './humanProof.js'
 import { isPersona, personaLabel, personasFromRow } from './personas.js'
 import { priorityFromLabels } from './priorityLabels.js'
-import { kindFromLabels } from './kindLabels.js'
+import { kindFromLabels, laneFromLabels } from './kindLabels.js'
 import { getActiveProjectId, setSetting } from './settings.js'
 import { parseRuleBlock } from './ruleBlock.js'
 import { msOf, sqlTime } from './sqlTime.js'
@@ -1262,6 +1266,8 @@ function itemView(row, { stepOutputs: withStepOutputs = true } = {}) {
     title: row.title,
     priority: row.priority,
     kind: itemKindOf(row),
+    // HZ-435: the lane overlay, or null for the full pipeline.
+    lane: laneOf(row),
     desc: row.desc,
     metric: row.metric,
     guardrails: row.guardrails,
@@ -1344,6 +1350,7 @@ export function getItem(id) {
   return {
     ...row,
     kind: itemKindOf(row),
+    lane: laneOf(row),
     paused: !!row.paused,
     rejected: !!row.rejected,
     personas: personasFromRow(row),
@@ -1533,9 +1540,10 @@ export function approveGate(id, stepIndex, notes, actor = 'You', { proof = null,
   }
 
   const trimmed = (notes || '').trim()
+  const next = nextCursor(it)
   db.prepare(
-    `UPDATE work_item SET cursor = cursor + 1, rejected = 0${approvedHash ? ', approved_plan_hash = ?' : ''}, ${touch} WHERE id = ?`,
-  ).run(...(approvedHash ? [approvedHash, id] : [id]))
+    `UPDATE work_item SET cursor = ?, rejected = 0${approvedHash ? ', approved_plan_hash = ?' : ''}, ${touch} WHERE id = ?`,
+  ).run(...(approvedHash ? [next, approvedHash, id] : [next, id]))
   db.prepare(
     'INSERT INTO gate_decision (item_id, step_index, decision, notes, decided_by, plan_hash) VALUES (?, ?, ?, ?, ?, ?)',
   ).run(id, stepIndex, 'approved', trimmed, actor, approvedHash)
@@ -1544,7 +1552,7 @@ export function approveGate(id, stepIndex, notes, actor = 'You', { proof = null,
     // so the next dispatched agent step receives and must address them.
     db.prepare('INSERT INTO feedback (item_id, target, message) VALUES (?, ?, ?)').run(
       id,
-      STEPS[stepIndex + 1]?.agent || '',
+      STEPS[next]?.agent || '',
       trimmed,
     )
   }
@@ -1589,7 +1597,8 @@ export function requestChanges(id, target, feedbackText, actor = 'You', targetSt
       Number.isInteger(targetStepIndex) &&
       targetStepIndex >= first &&
       targetStepIndex < it.cursor &&
-      STEPS[targetStepIndex]?.kind === 'agent'
+      STEPS[targetStepIndex]?.kind === 'agent' &&
+      !laneSkips(it).has(targetStepIndex)
     if (!atGate || !validTarget) return { error: 'invalid_target' }
   }
 
@@ -1617,7 +1626,9 @@ export function requestChanges(id, target, feedbackText, actor = 'You', targetSt
       // run means the PLAN is wrong — send it back to Run plan to redo it.
       reworkIdx = RUN_PLAN_STEP_INDEX
     } else {
-      while (reworkIdx > first && STEPS[reworkIdx].kind !== 'agent') reworkIdx--
+      // HZ-435: never onto a row the item's lane skips.
+      const skips = laneSkips(it)
+      while (reworkIdx > first && (STEPS[reworkIdx].kind !== 'agent' || skips.has(reworkIdx))) reworkIdx--
     }
   }
   const reworkAgent = STEPS[reworkIdx].kind === 'agent' ? STEPS[reworkIdx].agent : null
@@ -1738,7 +1749,9 @@ export function restartPhase(id, phase, reason, actor = 'You') {
   // The phase restarts within the item's own kind: phase numbers repeat
   // across kinds, so an unscoped lookup would land a task on change rows.
   const kind = itemKindOf(it)
-  const found = stepsFor(kind).find((st) => st.phase === phase)
+  // HZ-435: the phase's first row the item's lane does not skip.
+  const skips = laneSkips(it)
+  const found = stepsFor(kind).find((st) => st.phase === phase && !skips.has(st.index))
   if (!found) return { error: 'bad_phase' }
   const firstIdx = found.index
 
@@ -1926,6 +1939,22 @@ export function parseIssueBody(body) {
   return result
 }
 
+// HZ-435: which of the three plan sections an issue body lacks, in order. A
+// heading with nothing under it counts as missing. parseIssueBody cannot
+// answer this: it copies a heading-less body into desc. Read-only.
+export const PLAN_SECTIONS = ['Outcome', 'Success metric', 'Guardrails']
+
+export function missingPlanSections(body) {
+  const text = (body || '').replace(/\r\n/g, '\n').trim()
+  const present = new Set()
+  for (const part of text.split(/^##\s+/m).slice(1)) {
+    const newline = part.indexOf('\n')
+    const heading = (newline === -1 ? part : part.slice(0, newline)).trim().toLowerCase()
+    if (newline !== -1 && part.slice(newline + 1).trim()) present.add(heading)
+  }
+  return PLAN_SECTIONS.filter((name) => !present.has(name.toLowerCase()))
+}
+
 // The item synced from this repo's issue, or null.
 export function findItemByIssue(repoFullName, issue) {
   const row = db.prepare('SELECT id FROM work_item WHERE repo = ? AND issue = ?').get(repoFullName, issue)
@@ -1978,7 +2007,7 @@ export function approveGateFromGithub(id) {
   const stepIndex = it.cursor
   if (isClosed(it) || isAbandoned(it) || STEPS[stepIndex]?.label !== 'Accept the code') return { error: 'not_at_accept_gate' }
 
-  db.prepare(`UPDATE work_item SET cursor = cursor + 1, rejected = 0, ${touch} WHERE id = ?`).run(id)
+  db.prepare(`UPDATE work_item SET cursor = ?, rejected = 0, ${touch} WHERE id = ?`).run(nextCursor(it), id)
   db.prepare(
     "INSERT INTO gate_decision (item_id, step_index, decision, decided_by) VALUES (?, ?, 'approved', 'GitHub')",
   ).run(id, stepIndex)
@@ -2022,7 +2051,7 @@ export function upsertFromGithub(ghIssue, repoFullName) {
     const kind = kindFromLabels(ghIssue.labels)
     const id = `${repoRow.prefix}-${number}`
     db.prepare(
-      'INSERT INTO work_item (id, title, priority, desc, metric, guardrails, issue, repo, project_id, cursor, kind) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+      'INSERT INTO work_item (id, title, priority, desc, metric, guardrails, issue, repo, project_id, cursor, kind, lane) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
     ).run(
       id,
       title,
@@ -2035,6 +2064,7 @@ export function upsertFromGithub(ghIssue, repoFullName) {
       repoRow.project_id,
       closedOnGithub ? endIndex(kind) : firstStepIndex(kind),
       kind,
+      laneFromLabels(ghIssue.labels, kind),
     )
     addEvent(id, { who: 'GitHub', text: `opened issue #${number}`, color: '#2A2A2E', initials: 'GH' })
     changed = true
@@ -2049,6 +2079,18 @@ export function upsertFromGithub(ghIssue, repoFullName) {
         `UPDATE work_item SET title = ?, desc = ?, priority = ?, metric = ?, guardrails = ?, ${touch} WHERE id = ?`,
       ).run(title, desc, priority, newMetric, newGuardrails, row.id)
       changed = true
+    }
+    // HZ-435: unlike the kind, the lane follows the label until the item
+    // passes its first gate (Approve & prioritize); from then on it is frozen,
+    // so a label change never reroutes an item mid-plan.
+    const kind = itemKindOf(row)
+    if (row.cursor <= gateStepIndexes(STEPS, kind)[0]) {
+      const lane = laneFromLabels(ghIssue.labels, kind)
+      if (lane !== laneOf(row)) {
+        db.prepare(`UPDATE work_item SET lane = ?, ${touch} WHERE id = ?`).run(lane, row.id)
+        addEvent(row.id, { who: 'GitHub', text: `lane: ${lane ?? 'full'}`, color: '#2A2A2E', initials: 'GH' })
+        changed = true
+      }
     }
     const wasClosed = isClosed(row)
     // Both branches skip an already-abandoned item: closing the issue is
@@ -2080,7 +2122,7 @@ export function upsertFromGithub(ghIssue, repoFullName) {
 // before rejection triggered rework) are requeued at the responsible agent
 // step, reusing the rejection notes as the agent's feedback.
 export function recoverRejectedItems() {
-  const rows = db.prepare('SELECT id, cursor, kind FROM work_item WHERE rejected = 1').all()
+  const rows = db.prepare('SELECT id, cursor, kind, lane FROM work_item WHERE rejected = 1').all()
   for (const row of rows) {
     const first = firstStepIndex(itemKindOf(row))
     let reworkIdx = Math.min(Math.max(row.cursor, first), endIndex(itemKindOf(row)) - 1)
@@ -2090,7 +2132,8 @@ export function recoverRejectedItems() {
       if (reworkIdx === ACCEPT_GATE_INDEX) {
         reworkIdx = IMPLEMENT_STEP_INDEX
       } else {
-        while (reworkIdx > first && STEPS[reworkIdx].kind !== 'agent') reworkIdx--
+        const skips = laneSkips(row)
+        while (reworkIdx > first && (STEPS[reworkIdx].kind !== 'agent' || skips.has(reworkIdx))) reworkIdx--
       }
     }
     const notes = db

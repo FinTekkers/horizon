@@ -113,7 +113,68 @@ export function assertLifecycleShape(data, source = 'domain/steps.json') {
     }
   }
 
+  assertLanes(data.lanes, steps, kinds, source)
   return data
+}
+
+// Lanes (HZ-435): an opt-in overlay on one kind's rows. A lane may only skip
+// rows whose absence no later step can notice: never a step that changes the
+// workspace (implement, review), never a gate that still has a step of its
+// own to approve, and never the kind's last row. Gates 3, 10, 13 and 15 and
+// the automated review are therefore unskippable by construction, not by an
+// allowlist of today's labels.
+function assertLanes(lanes, steps, kinds, source) {
+  if (lanes === undefined) return
+  if (!lanes || typeof lanes !== 'object' || Array.isArray(lanes)) {
+    throw new Error(`${source}: lanes must be a JSON object mapping each lane to its rows`)
+  }
+  for (const [lane, entry] of Object.entries(lanes)) {
+    const kind = entry?.itemKind
+    if (typeof kind !== 'string' || !Object.prototype.hasOwnProperty.call(kinds, kind)) {
+      throw new Error(`${source}: lanes.${lane}.itemKind names unknown item kind "${kind}"`)
+    }
+    const rows = steps.flatMap((step, index) => ((step.itemKind ?? 'change') === kind ? [{ step, index }] : []))
+    const indexOf = (label) => {
+      const row = rows.find(({ step }) => step.label === label)
+      if (!row) throw new Error(`${source}: lanes.${lane} names unknown step "${label}" for item kind "${kind}"`)
+      return row.index
+    }
+    for (const field of ['check', 'skip']) {
+      const list = entry[field]
+      if (!Array.isArray(list) || list.length === 0 || !list.every((l) => typeof l === 'string' && l.length > 0)) {
+        throw new Error(`${source}: lanes.${lane}.${field} must be a non-empty array of step labels`)
+      }
+    }
+    const check = entry.check.map(indexOf).sort((a, b) => a - b)
+    const skip = new Set(entry.skip.map(indexOf))
+    for (const [n, index] of check.entries()) {
+      if (steps[index].kind !== 'agent') {
+        throw new Error(`${source}: lanes.${lane}.check lists "${steps[index].label}", which is not an agent step`)
+      }
+      if (n > 0 && index !== check[n - 1] + 1) {
+        throw new Error(`${source}: lanes.${lane}.check must list consecutive steps`)
+      }
+      if (skip.has(index)) throw new Error(`${source}: lanes.${lane} both checks and skips "${steps[index].label}"`)
+    }
+    for (const index of [...skip].sort((a, b) => a - b)) {
+      const step = steps[index]
+      if (step.workspaceMutating === true) {
+        throw new Error(`${source}: lanes.${lane} may not skip "${step.label}": it changes the workspace`)
+      }
+      if (index === rows.at(-1).index) {
+        throw new Error(`${source}: lanes.${lane} may not skip "${step.label}": it is the item kind's last step`)
+      }
+      if (step.kind === 'gate') {
+        const at = rows.findIndex((row) => row.index === index)
+        let from = at
+        while (from > 0 && rows[from - 1].step.kind !== 'gate') from--
+        const gated = rows.slice(from, at)
+        if (gated.length === 0 || !gated.every((row) => skip.has(row.index))) {
+          throw new Error(`${source}: lanes.${lane} may not skip the gate "${step.label}": a step it gates still runs`)
+        }
+      }
+    }
+  }
 }
 
 const source = assertLifecycleShape(data)
@@ -275,6 +336,55 @@ export function gateStepIndexes(steps = STEPS, kind = 'change') {
   return steps.map((s, i) => (s.kind === 'gate' && stepKindOf(s) === kind ? i : -1)).filter((i) => i >= 0)
 }
 
+// ---- lanes (HZ-435) ----
+// A lane is an overlay on one kind's rows, selected only by its issue label
+// (server/src/kindLabels.js). Numbering never changes: a skipped row keeps its
+// index and renders as skipped, and the cursor simply steps over it. An item
+// with no lane — every Task, every unlabelled change — reads an empty set
+// everywhere below, so its pipeline is exactly what it was.
+const LANE_ROWS = new Map(
+  Object.entries(source.lanes ?? {}).map(([lane, entry]) => [
+    lane,
+    {
+      kind: entry.itemKind,
+      check: new Set(entry.check.map((label) => kindStepIndex(label, entry.itemKind))),
+      skip: new Set(entry.skip.map((label) => kindStepIndex(label, entry.itemKind))),
+    },
+  ]),
+)
+const NO_ROWS = new Set()
+
+export const LANES = [...LANE_ROWS.keys()]
+
+// The item's lane, or null. A stored value the table no longer declares, or a
+// lane of another kind, reads as no lane — never as an error.
+export function laneOf(item) {
+  const lane = item?.lane
+  if (typeof lane !== 'string' || !LANE_ROWS.has(lane)) return null
+  return LANE_ROWS.get(lane).kind === itemKindOf(item) ? lane : null
+}
+
+// The global indexes the item's lane never runs. Shared Sets: read, never mutate.
+export function laneSkips(item) {
+  const lane = laneOf(item)
+  return lane ? LANE_ROWS.get(lane).skip : NO_ROWS
+}
+
+// The global indexes a server-side check confirms instead of an agent.
+export function laneCheckIndexes(item) {
+  const lane = laneOf(item)
+  return lane ? LANE_ROWS.get(lane).check : NO_ROWS
+}
+
+// The row an item moves to when its current one is done: the next row its
+// lane does not skip. Every forward cursor move goes through here.
+export function nextCursor(item) {
+  const skips = laneSkips(item)
+  let next = item.cursor + 1
+  while (skips.has(next)) next++
+  return next
+}
+
 // ---- derived state ----
 
 export function isClosed(item) {
@@ -301,7 +411,10 @@ export function awaitingGate(item) {
   return !!c && c.kind === 'gate' && !item.rejected
 }
 
+// A row the item's lane skips reads 'skipped' first — before 'done', so a
+// closed trivial item still shows which rows never ran.
 export function stepStatus(item, i) {
+  if (laneSkips(item).has(i)) return 'skipped'
   if (isClosed(item)) return 'done'
   if (item.rejected && i === item.cursor) return 'blocked'
   if (i < item.cursor) return 'done'
@@ -334,23 +447,27 @@ export function isBlockedByAbandoned(blockers) {
 // agent step of the gate's own item kind strictly earlier than it, derived
 // from STEPS so a pipeline change (insertion/reorder) never needs a hardcoded
 // index here. The server re-derives and enforces the same rule independently —
-// this is for populating the picker, not the source of truth.
-export function reworkTargets(gateIndex, kind = stepKindOf(STEPS[gateIndex])) {
+// this is for populating the picker, not the source of truth. With `item`,
+// a row its lane skips is never offered (HZ-435).
+export function reworkTargets(gateIndex, kind = stepKindOf(STEPS[gateIndex]), item = null) {
   assertItemKind(kind)
+  const skips = laneSkips(item)
   return STEPS.map((s, i) => ({ index: i, label: s.label })).filter(
-    ({ index }) => index < gateIndex && STEPS[index].kind === 'agent' && stepKindOf(STEPS[index]) === kind,
+    ({ index }) =>
+      index < gateIndex && STEPS[index].kind === 'agent' && stepKindOf(STEPS[index]) === kind && !skips.has(index),
   )
 }
 
 // Mirrors the server's default (no-target) destination, purely so the picker
 // can show what "default" means — the actual default routing happens
 // server-side when no target is sent.
-export function defaultReworkTarget(gateIndex, kind = stepKindOf(STEPS[gateIndex])) {
+export function defaultReworkTarget(gateIndex, kind = stepKindOf(STEPS[gateIndex]), item = null) {
   assertItemKind(kind)
   if (gateIndex === ACCEPT_GATE_INDEX) return IMPLEMENT_STEP_INDEX
   if (gateIndex === APPROVE_RUN_GATE_INDEX) return RUN_PLAN_STEP_INDEX
   const first = firstStepIndex(kind)
+  const skips = laneSkips(item)
   let idx = gateIndex
-  while (idx > first && STEPS[idx].kind !== 'agent') idx--
+  while (idx > first && (STEPS[idx].kind !== 'agent' || skips.has(idx))) idx--
   return idx
 }

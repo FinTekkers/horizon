@@ -138,7 +138,64 @@ def _validate_source(data: object, source: str) -> dict:
                 f'domain/py/steps.py: {source}: steps[{i}] ("{step["label"]}") declares phase '
                 f"{step['phase']}, but only {len(kind_phases)} phase(s) exist"
             )
+    _validate_lanes(data.get("lanes"), steps, kinds, source)
     return data
+
+
+def _validate_lanes(lanes: object, steps: list, kinds: dict, source: str) -> None:
+    """HZ-435: the lane rules, word-for-word with domain/js/lifecycle.js's
+    assertLanes. A lane never skips a workspace-mutating step, a gate that
+    still has a step of its own to approve, or its kind's last row."""
+    if lanes is None:
+        return
+    prefix = f"domain/py/steps.py: {source}"
+    if not isinstance(lanes, dict):
+        raise RuntimeError(f"{prefix}: lanes must be a JSON object mapping each lane to its rows")
+    for lane, entry in lanes.items():
+        kind = entry.get("itemKind") if isinstance(entry, dict) else None
+        if not isinstance(kind, str) or kind not in kinds:
+            raise RuntimeError(f'{prefix}: lanes.{lane}.itemKind names unknown item kind "{kind}"')
+        rows = [(index, step) for index, step in enumerate(steps) if _step_kind(step) == kind]
+
+        def index_of(label: str) -> int:
+            for index, step in rows:
+                if step["label"] == label:
+                    return index
+            raise RuntimeError(f'{prefix}: lanes.{lane} names unknown step "{label}" for item kind "{kind}"')
+
+        for field in ("check", "skip"):
+            values = entry.get(field)
+            if not isinstance(values, list) or not values or not all(isinstance(v, str) and v for v in values):
+                raise RuntimeError(f"{prefix}: lanes.{lane}.{field} must be a non-empty array of step labels")
+        check = sorted(index_of(label) for label in entry["check"])
+        skip = {index_of(label) for label in entry["skip"]}
+        for n, index in enumerate(check):
+            if steps[index]["kind"] != "agent":
+                raise RuntimeError(
+                    f'{prefix}: lanes.{lane}.check lists "{steps[index]["label"]}", which is not an agent step'
+                )
+            if n > 0 and index != check[n - 1] + 1:
+                raise RuntimeError(f"{prefix}: lanes.{lane}.check must list consecutive steps")
+            if index in skip:
+                raise RuntimeError(f'{prefix}: lanes.{lane} both checks and skips "{steps[index]["label"]}"')
+        for index in sorted(skip):
+            step = steps[index]
+            if step.get("workspaceMutating") is True:
+                raise RuntimeError(f'{prefix}: lanes.{lane} may not skip "{step["label"]}": it changes the workspace')
+            if index == rows[-1][0]:
+                raise RuntimeError(
+                    f'{prefix}: lanes.{lane} may not skip "{step["label"]}": it is the item kind\'s last step'
+                )
+            if step["kind"] == "gate":
+                at = next(n for n, (i, _) in enumerate(rows) if i == index)
+                start = at
+                while start > 0 and rows[start - 1][1]["kind"] != "gate":
+                    start -= 1
+                gated = rows[start:at]
+                if not gated or not all(i in skip for i, _ in gated):
+                    raise RuntimeError(
+                        f'{prefix}: lanes.{lane} may not skip the gate "{step["label"]}": a step it gates still runs'
+                    )
 
 
 def _load_source(path: Path) -> dict:

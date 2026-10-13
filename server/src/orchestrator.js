@@ -29,6 +29,10 @@ import {
   RUN_PLAN_STEP_INDEX,
   VERIFY_REPORT_STEP_INDEX,
   APPROVE_RUN_GATE_INDEX,
+  laneOf,
+  laneSkips,
+  laneCheckIndexes,
+  nextCursor,
 } from '../../domain/js/lifecycle.js'
 import { AUTO_RETRY_REASONS, REASON } from '../../domain/js/reasons.js'
 import { patchLimits, addedCriteriaLines } from '../../domain/js/fields.js'
@@ -63,8 +67,10 @@ import {
   latestArtifact,
   activeJobRun,
   nextStepAttempt,
+  missingPlanSections,
+  PLAN_SECTIONS,
 } from './store.js'
-import { createMockPr, createDeployRelease, postIssueComment, syncIssueBodyFields, createPrFromBranch, getPrHeadSha } from './github.js'
+import { createMockPr, createDeployRelease, postIssueComment, syncIssueBodyFields, createPrFromBranch, getPrHeadSha, getIssueBody } from './github.js'
 import { PHASES } from '../../domain/js/lifecycle.js'
 import { getActiveProjectId, getFarmProjectId, getSetting, setSetting, getToken } from './settings.js'
 import {
@@ -1105,6 +1111,12 @@ export function kick(id, opts = {}) {
   spawnRechecks.delete(id)
   dispatching.add(id)
 
+  // HZ-435: a lane's plan rows are checked, not run — no step_run, no agent.
+  if (laneCheckIndexes(item).has(item.cursor)) {
+    runLaneCheck(id, item.cursor)
+    return
+  }
+
   const stepIndex = item.cursor
   const step = STEPS[stepIndex]
   // HZ-321/HZ-346: a run a self-deploy stopped or a rule blocked keeps its
@@ -1128,6 +1140,69 @@ export function kick(id, opts = {}) {
   } else {
     timers[runId] = setTimeout(() => runMockStep(id, stepIndex, runId), latency())
   }
+}
+
+// HZ-435: steps 0-2 of a lane item. Confirms the issue already carries an
+// Outcome, a Success metric and Guardrails, and never writes them: the body is
+// read with one GET and nothing is sent back. All present moves the cursor
+// past the checked rows in one step; anything missing pauses the item with a
+// one-line note naming it. Holds the dispatching mutex until it settles.
+const LOCAL_PLAN_FIELDS = { Outcome: 'desc', 'Success metric': 'metric', Guardrails: 'guardrails' }
+
+async function runLaneCheck(id, stepIndex) {
+  const item = getItem(id)
+  let missing
+  try {
+    missing =
+      item.repo && item.issue != null
+        ? missingPlanSections(await getIssueBody(item))
+        : PLAN_SECTIONS.filter((name) => !String(item[LOCAL_PLAN_FIELDS[name]] || '').trim())
+  } catch (err) {
+    console.warn(`lane check: ${id} could not read its issue: ${err.message}`)
+    missing = null
+  }
+  const now = getItem(id)
+  if (!inFlightRunnable(now) || now.cursor !== stepIndex) {
+    dispatching.delete(id)
+    return
+  }
+  // The label came off while the body was read: the row runs as a full one.
+  if (!laneCheckIndexes(now).has(stepIndex)) {
+    dispatching.delete(id)
+    kick(id)
+    return
+  }
+  if (missing === null || missing.length > 0) {
+    const note = missing === null ? 'could not read the issue to check plan sections' : `Missing: ${missing.join(', ')}`
+    db.prepare("UPDATE work_item SET paused = 1, updated_at = datetime('now') WHERE id = ?").run(id)
+    addEvent(id, { who: 'Horizon', text: `paused: ${note}`, color: '#9C333E', initials: 'HZ' })
+    dispatching.delete(id)
+    notifyChange()
+    return
+  }
+  // From the last checked row, not from here: the checked rows are confirmed
+  // together, so the cursor crosses them in one move. nextCursor still decides
+  // where it lands, so a skipped row is never landed on.
+  const last = Math.max(...laneCheckIndexes(now))
+  db.prepare("UPDATE work_item SET cursor = ?, updated_at = datetime('now') WHERE id = ?").run(nextCursor({ ...now, cursor: last }), id)
+  addEvent(id, {
+    who: 'Horizon',
+    text: `plan sections checked — ${PLAN_SECTIONS.join(', ')} present`,
+    color: '#5E4380',
+    initials: 'HZ',
+  })
+  dispatching.delete(id)
+  notifyChange()
+  kick(id)
+}
+
+// HZ-435: the step whose run carries the HZ-236 overlap check — Summarize,
+// or for a lane that skips it, the nearest earlier agent row the lane runs.
+function overlapStepIndex(item) {
+  const skips = laneSkips(item)
+  let index = SUMMARIZE_STEP_INDEX
+  while (skips.has(index) || STEPS[index].kind !== 'agent') index--
+  return index
 }
 
 // HZ-379: the hold in kick() above. One check per item at a time; a check
@@ -1253,7 +1328,7 @@ async function dispatchToFarm(id, stepIndex, runId, attempt, scope, checkoutSha 
   // and applies. Awaited before the feedback stamp below, so a run cancelled
   // meanwhile never marks feedback delivered that it did not send.
   let overlapInput = null
-  if (stepIndex === SUMMARIZE_STEP_INDEX) {
+  if (stepIndex === overlapStepIndex(item)) {
     let check
     try {
       check = await computeOverlap(id)
@@ -1372,6 +1447,8 @@ async function dispatchToFarm(id, stepIndex, runId, attempt, scope, checkoutSha 
       id: item.id,
       // HZ-383: farmd and step_agent pick the step's runner by kind and label.
       kind: itemKindOf(item),
+      // HZ-435: the lane picks step 6's and step 8's narrower prompts.
+      lane: laneOf(item),
       title: item.title,
       desc: item.desc,
       metric: item.metric,
@@ -2002,8 +2079,8 @@ function finalizeReviewStep(id, runId, text, artifactMd, verdict, patch, isMock,
   const passed = delta ? delta.passed : verdict.code_review.verdict === 'pass' && verdict.qa_review.verdict === 'pass'
   if (passed) {
     db.prepare(
-      "UPDATE work_item SET cursor = cursor + 1, fix_pass = 0, fix_findings_json = NULL, updated_at = datetime('now') WHERE id = ?",
-    ).run(id)
+      "UPDATE work_item SET cursor = ?, fix_pass = 0, fix_findings_json = NULL, updated_at = datetime('now') WHERE id = ?",
+    ).run(nextCursor(getItem(id)), id)
     addEvent(id, { who: agent.label, text: `completed “${step.label}” — ${text.slice(0, 300)}`, color: agent.color, initials: agent.initials })
     postStepComment(getItem(id), REVIEW_STEP_INDEX, attempt, text, patch, isMock, artifactMd)
     notifyChange()
@@ -2210,7 +2287,7 @@ function finalizeDeployStep(id, runId, text, artifactMd, verdict, patch) {
     return
   }
 
-  db.prepare("UPDATE work_item SET cursor = cursor + 1, updated_at = datetime('now') WHERE id = ?").run(id)
+  db.prepare("UPDATE work_item SET cursor = ?, updated_at = datetime('now') WHERE id = ?").run(nextCursor(getItem(id)), id)
   addEvent(id, { who: agent.label, text: `completed “${step.label}” — ${text.slice(0, 300)}`, color: agent.color, initials: agent.initials })
   postStepComment(getItem(id), DEPLOY_STEP_INDEX, attempt, text, patch, false, artifactMd)
   notifyChange()
@@ -2364,7 +2441,7 @@ export async function completeFarmRun(runId, { summary, patch, artifacts, job_vi
   // re-check on there is none, because the dependency edge applyOverlap may
   // add blocks this item, and the run must be marked done before anything
   // could see a blocked item holding an active run.
-  if (run.step_index === SUMMARIZE_STEP_INDEX) {
+  if (run.step_index === overlapStepIndex(item)) {
     let check
     try {
       check = await computeOverlap(id)
@@ -2436,7 +2513,7 @@ export async function completeFarmRun(runId, { summary, patch, artifacts, job_vi
     verify?.summary ?? null,
     runId,
   )
-  db.prepare("UPDATE work_item SET cursor = cursor + 1, updated_at = datetime('now') WHERE id = ?").run(id)
+  db.prepare("UPDATE work_item SET cursor = ?, updated_at = datetime('now') WHERE id = ?").run(nextCursor(getItem(id)), id)
   addEvent(id, {
     who: agent.label,
     text: `completed “${step.label}” — ${text.slice(0, 300)}`,
@@ -2866,7 +2943,7 @@ async function runMockStep(id, stepIndex, runId) {
     "UPDATE step_run SET status = 'done', output = ?, verdict = ?, verdict_summary = ?, ended_at = datetime('now') WHERE id = ?",
   ).run(summary, verify?.verdict ?? null, verify?.summary ?? null, runId)
   if (artifactMd) db.prepare('UPDATE step_run SET artifact = ? WHERE id = ?').run(artifactMd, runId)
-  db.prepare("UPDATE work_item SET cursor = cursor + 1, updated_at = datetime('now') WHERE id = ?").run(id)
+  db.prepare("UPDATE work_item SET cursor = ?, updated_at = datetime('now') WHERE id = ?").run(nextCursor(after), id)
   addEvent(id, {
     who: agent.label,
     text: `completed “${step.label}” — ${summary}`,

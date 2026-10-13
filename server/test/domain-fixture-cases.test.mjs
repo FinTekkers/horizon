@@ -275,7 +275,33 @@ test('js/reworkTargets: every target is an agent step strictly earlier than the 
 test('js/defaultReworkTarget', () => {
   for (const c of js.defaultReworkTarget) {
     const gateIndex = binding.requiredStepIndex(c.gateLabel)
-    assert.equal(binding.STEPS[binding.defaultReworkTarget(gateIndex)].label, c.expectLabel, c.case)
+    const target = binding.defaultReworkTarget(gateIndex, undefined, c.item ?? null)
+    assert.equal(binding.STEPS[target].label, c.expectLabel, c.case)
+  }
+})
+
+// ---- lanes (HZ-435) ----
+
+test('js/LANES', () => {
+  for (const c of js.LANES) assert.deepEqual(binding.LANES, c.expect, c.case)
+})
+
+test('js/laneOf: only a declared lane of the item\'s own kind', () => {
+  for (const c of js.laneOf) assert.equal(binding.laneOf(c.item), c.expect, c.case)
+})
+
+for (const name of ['laneSkips', 'laneCheckIndexes']) {
+  test(`js/${name}: the lane's rows, by label`, () => {
+    for (const c of js[name]) {
+      const labels = [...binding[name](c.item)].sort((a, b) => a - b).map((i) => binding.STEPS[i].label)
+      assert.deepEqual(labels, c.expectLabels, c.case)
+    }
+  })
+}
+
+test('js/nextCursor: steps over every row the lane skips', () => {
+  for (const c of js.nextCursor) {
+    assert.equal(binding.STEPS[binding.nextCursor(c.item)].label, c.expectLabel, c.case)
   }
 })
 

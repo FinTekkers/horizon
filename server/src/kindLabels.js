@@ -10,7 +10,7 @@
 // Direction of dependency: store.js imports this, and github.js imports this.
 // Neither is imported BY this.
 
-import { ITEM_KINDS } from '../../domain/js/lifecycle.js'
+import { ITEM_KINDS, LANES, laneOf } from '../../domain/js/lifecycle.js'
 
 // The label is the kind key itself: a Task's issue carries `task`.
 export function kindLabelName(kind) {
@@ -23,4 +23,12 @@ export function kindLabelName(kind) {
 export function kindFromLabels(labels) {
   const names = new Set((labels || []).map((label) => String(label?.name || '').toLowerCase()))
   return ITEM_KINDS.find((kind) => kind !== 'change' && names.has(kindLabelName(kind).toLowerCase())) ?? 'change'
+}
+
+// HZ-435: the lane label on the issue, matched case-insensitively, else null.
+// Only the label selects a lane — never the item's size or content — and only
+// a lane declared for this kind: a Task labelled `trivial` gets null.
+export function laneFromLabels(labels, kind) {
+  const names = new Set((labels || []).map((label) => String(label?.name || '').toLowerCase()))
+  return LANES.find((lane) => names.has(lane.toLowerCase()) && laneOf({ kind, lane }) === lane) ?? null
 }
