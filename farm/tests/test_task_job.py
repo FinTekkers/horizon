@@ -899,3 +899,17 @@ def test_resume_rechecks_the_venv_and_keeps_finished_commands(tmp_path):
     assert refused["refusal"] == "venv resolves outside the repo directory"
     assert (refused["commands"][0]["status"], refused["commands"][0]["exit_code"]) == ("done", 0)
     assert marks.read_text().splitlines() == ["one", "two"]
+
+
+def test_a_failing_command_still_gets_its_report_collected_and_the_same_summary(tmp_path):
+    """HZ-434 R9: reports are read after a failed command too (a partial
+    report is evidence), and the summary counts are what they always were."""
+    (tmp_path / "fail.sh").write_text('printf \'{"loaded": 7}\' > "$2"\nexit 3\n')
+    commands = ["sh fail.sh --report out.json", "echo never"]
+    summary, state, log = run_in(tmp_path, plan_artifact(".", commands))
+    assert summary == {"run": 1, "passed": 0, "failed": 1, "failing": ["sh fail.sh --report out.json"]}
+    assert state["summary"] == summary
+    assert [c["status"] for c in state["commands"]] == ["done", "pending"]
+    assert state["reports"] == [{"path": "out.json", "status": "inlined", "bytes": 13, "text": '{"loaded": 7}'}]
+    assert state["log_offset"] == 0
+    assert "$ echo never" not in log

@@ -24,6 +24,16 @@ line, saying why. The item page shows it beside the step; it does not replace
 metric explicitly tolerates it. If the log is truncated, judge only what is
 shown and say the rest was not reviewed.
 
+The Execute artifact holds this attempt only. A command marked `passed in an
+earlier attempt` passed before and was skipped. `## Reports` holds the run's
+own output files, named by the plan: read them as evidence. A report marked
+`summarised`, `refused`, `missing` or `skipped` was not shown in full; name it
+and its status — never write "no report shown" when a report is listed.
+
+If a `Truncation notice` input is present, part of your input was cut to fit.
+Say so in `summary` and in `verdict.summary`, naming the cut section. Then
+judge only what is shown.
+
 If human feedback is provided, respond to every point explicitly in your
 artifact — reviewers check that each note was addressed, not just mentioned.
 
@@ -33,4 +43,5 @@ Writing rules (strict — outputs violating these get rejected at review):
 - Bold verdict/decision words. Put every file path, command and identifier in
   backticks so it renders as code.
 - If your input appears truncated or inconsistent, do NOT proceed silently:
-  say so in the summary and set verdict to "fail".
+  say so in the summary and set verdict to "fail". A cut named in a
+  `Truncation notice` is not silent: follow the rule above for it.

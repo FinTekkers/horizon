@@ -232,6 +232,20 @@ def test_the_execute_artifact_carries_the_summary_and_the_capped_log():
     md = farmd.job_artifact_md("1 command(s) run, 1 passed, 0 failed", "$ echo hi\nhi\n")
     assert "1 command(s) run, 1 passed, 0 failed" in md
     assert "$ echo hi\nhi" in md
+    # HZ-434: with the command list it is this attempt's evidence, reports
+    # ahead of the log so a head-first digest keeps them.
+    md = farmd.job_artifact_md(
+        "1 command(s) run, 1 passed, 0 failed",
+        "$ echo hi\nhi\n",
+        commands=["- exit 0 — `echo hi`"],
+        reports_md="## Reports\n\n### Report: r.json\n\nmissing: no such file\n",
+        full_log="Full log: `x.log`",
+    )
+    assert md == (
+        "## Commands\n1 command(s) run, 1 passed, 0 failed\n- exit 0 — `echo hi`\n\nFull log: `x.log`\n\n"
+        "## Reports\n\n### Report: r.json\n\nmissing: no such file\n\n"
+        "## Log (this attempt)\n$ echo hi\nhi\n\n"
+    )
     big = "x" * (farmd.JOB_LOG_MAX_CHARS + 100)
     capped = farmd.job_artifact_md("s", big)
     assert capped.endswith(farmd.JOB_LOG_TRUNCATED_MARKER)
@@ -476,3 +490,137 @@ def test_the_job_env_comes_from_the_repo_never_from_horizons_own_dotenv(monkeypa
     assert farmd._job_secrets(job_payload(9132, repo_dir=None)) == {"GITHUB_TOKEN": "ghtoken-sentinel-2"}
     assert farmd._job_secrets(job_payload(9132, repo_dir=str(task_job.HORIZON_ROOT))) == {"GITHUB_TOKEN": "ghtoken-sentinel-2"}
     assert read == []
+
+
+# ---- HZ-434: Verify judges this attempt's log and the plan's report files ----
+
+LOAD_SH = """if [ -f fixed ]; then
+  echo "loaded 21 securities, 3551 prices, 0 errors"
+else
+  echo "café — ünïcode before the offset"
+  echo "UNKNOWN_OPERATOR: price feed"
+  exit 1
+fi
+"""
+
+
+def _attempt(task):
+    """One Execute attempt through the real runner, on farmd's own state and
+    log paths, the way task_job.main runs it."""
+    item_id = task["item"]["id"]
+    return task_job.run_job(
+        run_id=task["run_id"],
+        item_id=item_id,
+        plan_artifact=task["plan_artifact"],
+        approved_hash=task["approved_hash"],
+        state_path=STATE_DIR / "jobs" / f"{item_id}.json",
+        log_path=LOGS_DIR / f"farm-job-{item_id.lower()}.log",
+        repo_dir=task["repo_dir"],
+    )
+
+
+def _forwarded_artifact(monkeypatch, task):
+    forwarded = []
+    monkeypatch.setattr(farmd, "_forward_result", forwarded.append)
+    farmd._poll_jobs()
+    assert len(forwarded) == 1
+    return forwarded[0]["artifacts"]["artifact_md"]
+
+
+@pytest.fixture
+def two_attempts(monkeypatch, fake_tmux, tmp_path):
+    """Attempt 1 fails with UNKNOWN_OPERATOR; attempt 2 (a Resume of the same
+    approved plan, its input fixed) passes. Yields the artifact farmd
+    forwards after attempt 2, and the on-disk log."""
+    run_id, item_id = 9434, "HZ-434"
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "load.sh").write_text(LOAD_SH)
+    task = job_payload(run_id, repo_dir=str(repo), commands=("echo prepared", "sh load.sh"))
+    task["item"]["id"] = item_id
+    farmd.JOB_SESSIONS.clear()
+    try:
+        farmd.launch_job(task)
+        assert _attempt(task)["failed"] == 1
+        (repo / "fixed").write_text("")
+        assert _attempt(task) == {"run": 2, "passed": 2, "failed": 0, "failing": []}
+        artifact = _forwarded_artifact(monkeypatch, task)
+        log = (LOGS_DIR / f"farm-job-{item_id.lower()}.log").read_text(encoding="utf-8")
+        yield artifact, log
+    finally:
+        _cleanup_job(run_id, item_id)
+
+
+def test_the_forwarded_artifact_holds_only_this_attempts_output(two_attempts):
+    """Metric 1 (R1): attempt 2's commands and output reach Verify; none of
+    attempt 1's output does. Guardrail 4: the log on disk keeps both."""
+    artifact, log = two_attempts
+    assert "$ sh load.sh" in artifact
+    assert "loaded 21 securities, 3551 prices, 0 errors" in artifact
+    assert "- exit 0 — `echo prepared` (passed in an earlier attempt)" in artifact
+    assert "- exit 0 — `sh load.sh`" in artifact
+    assert "UNKNOWN_OPERATOR" not in artifact
+    assert "UNKNOWN_OPERATOR" in log, "the stored log stays whole on disk"
+    assert "/api/items/HZ-434/job/log?format=text" in artifact
+
+
+def test_the_attempt_slice_starts_at_its_own_first_line_after_multibyte_text(two_attempts):
+    """R11: log_offset counts bytes, so multi-byte text before it never
+    shifts the slice: it starts exactly at attempt 2's first line."""
+    artifact, log = two_attempts
+    assert "café — ünïcode" in log
+    attempt_log = artifact.split("## Log (this attempt)\n", 1)[1]
+    assert attempt_log.startswith("env: system\n$ sh load.sh")
+    assert "\ufffd" not in artifact
+    assert "café" not in artifact
+
+
+@pytest.mark.parametrize("size", ["under", "over"])
+def test_a_report_named_by_the_plan_reaches_the_forwarded_artifact(monkeypatch, fake_tmux, tmp_path, size):
+    """Metric 2 (R2): under the cap the report rides byte-for-byte; over it,
+    a key/count summary with no raw slice of the file."""
+    from farm import job_reports
+
+    run_id, item_id = 9435, "HZ-435"
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    report = tmp_path / "mdi-51-run1.json"
+    if size == "under":
+        content = json.dumps({"securities": 21, "prices": 3551, "errors": []}, indent=2)
+    else:
+        content = json.dumps({"securities": 21, "prices": [{"price_id": i} for i in range(3000)], "errors": []})
+        assert len(content.encode()) > job_reports.REPORT_INLINE_MAX_BYTES
+    (tmp_path / "src.json").write_text(content)
+    (repo / "write.sh").write_text(f'cp {tmp_path / "src.json"} "$2"\necho wrote "$2"\n')
+    task = job_payload(run_id, repo_dir=str(repo), commands=(f"sh write.sh --report {report}",))
+    task["item"]["id"] = item_id
+    farmd.JOB_SESSIONS.clear()
+    try:
+        farmd.launch_job(task)
+        assert _attempt(task)["passed"] == 1
+        artifact = _forwarded_artifact(monkeypatch, task)
+    finally:
+        _cleanup_job(run_id, item_id)
+    assert f"### Report: {report}" in artifact
+    assert artifact.index("## Reports") < artifact.index("## Log (this attempt)")
+    if size == "under":
+        assert f"inlined, {len(content.encode()):,} bytes" in artifact
+        assert content in artifact
+    else:
+        assert "summarised" in artifact
+        assert "securities: 21\nprices: list (3000 items)\nerrors: list (0 items)" in artifact
+        assert '"price_id"' not in artifact
+
+
+def test_a_state_from_before_the_offset_forwards_todays_artifact(monkeypatch, fake_tmux, tmp_path):
+    """R10: a runner from before HZ-434 wrote no log_offset and no reports;
+    farmd forwards the whole log in today's shape, with no exception."""
+    farmd.JOB_SESSIONS.clear()
+    farmd.launch_job(job_payload(9131, repo_dir=str(tmp_path)))
+    _write_finished("HZ-13", ".")
+    (LOGS_DIR / "farm-job-hz-13.log").write_text("$ echo hi\nhi\nexit 0\n")
+    try:
+        artifact = _forwarded_artifact(monkeypatch, None)
+    finally:
+        _cleanup_job(9131, "HZ-13")
+    assert artifact == "## Commands\n1 command(s) run, 1 passed, 0 failed\n\n## Log\n$ echo hi\nhi\nexit 0\n\n"

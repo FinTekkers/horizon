@@ -28,7 +28,8 @@ Respond with ONLY a JSON object (no prose, no fences):
     "cwd": "<working directory, relative to the repository root>",
     "commands": ["<first command>", "<second command>"],
     "budget_minutes": <whole minutes, at least 1>,
-    "env": {"<NAME>": "$<NAME>"}
+    "env": {"<NAME>": "$<NAME>"},
+    "reports": ["<optional: a file the run writes as its result>"]
   }
 }
 
@@ -39,6 +40,10 @@ missing field, an empty list or a literal `env` value fails the step.
 `cwd` is relative to the repo root: `"."` is the root itself, `"sub"` a
 folder inside it. Execute runs the commands inside this repo's deployed
 checkout. An absolute path or a `..` in `cwd` fails the step.
+
+`reports` is optional. List each file the run writes as its result, such
+as a JSON summary, relative to `cwd` or under `/tmp`. Verify & report reads
+them beside the log. A command's `--report <path>` is found without it.
 
 The `interpreter` line in your input names the Python Execute uses. When it
 names a venv, that venv's `bin/` is first on `PATH`: write `python3`, `pip` or

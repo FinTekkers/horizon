@@ -24,7 +24,7 @@ from fastapi.responses import JSONResponse
 # HZ-132 put the failure-reason vocabulary there under the same rule, so the
 # tags this daemon relays are the ones the server classifies, by construction.
 from domain.py import reasons, run_plan, steps
-from . import caretaker_ruling, check_slots, conflict_cancel, conflict_resolver, pause, rules, task_job, tmux_mgr, workspaces
+from . import caretaker_ruling, check_slots, conflict_cancel, conflict_resolver, job_reports, pause, rules, task_job, tmux_mgr, workspaces
 from . import config as farm_config
 from .checks import CHECK_SLOTS, default_check_slots, redact
 from .task_files import read_launchable_task
@@ -858,11 +858,58 @@ def cap_job_artifact(text: str) -> str:
     return content
 
 
-def job_artifact_md(summary_text: str, log_text: str) -> str:
+def job_artifact_md(
+    summary_text: str,
+    log_text: str,
+    *,
+    commands: list[str] | None = None,
+    reports_md: str = "",
+    full_log: str = "",
+) -> str:
     """The Execute step's artifact: the one-line summary plus the runner's
-    full redacted log, capped with a marker. Pure, so tests cover it without
-    tmux or threads."""
-    return cap_job_artifact(f"## Commands\n{summary_text}\n\n## Log\n{log_text or '(no output)'}\n")
+    redacted log, capped with a marker. Pure, so tests cover it without
+    tmux or threads.
+
+    HZ-434: with `commands` it is this attempt's evidence — each command's
+    outcome, the plan's report files, then only this attempt's log. The
+    server's digest keeps sections head-first, so the reports come before
+    the log and the `Full log:` pointer sits in the first section."""
+    if commands is None:
+        return cap_job_artifact(f"## Commands\n{summary_text}\n\n## Log\n{log_text or '(no output)'}\n")
+    head = "\n".join([summary_text, *commands] + ([f"\n{full_log}"] if full_log else []))
+    reports = f"{reports_md}\n" if reports_md else ""
+    return cap_job_artifact(f"## Commands\n{head}\n\n{reports}## Log (this attempt)\n{log_text or '(no output)'}\n")
+
+
+def _command_lines(entries, secrets: dict) -> list[str]:
+    """One line per state command: its outcome, then its redacted text."""
+    lines = []
+    for c in entries or []:
+        if not isinstance(c, dict):
+            continue
+        command = redact(str(c.get("command", "")), secrets)
+        if c.get("status") == "done" and c.get("exit_code") is not None:
+            outcome = f"exit {c['exit_code']}"
+        else:
+            outcome = "not run" if c.get("status") == "pending" else str(c.get("status") or "not run")
+        earlier = " (passed in an earlier attempt)" if c.get("resumed") else ""
+        lines.append(f"- {outcome} — `{command}`{earlier}")
+    return lines
+
+
+def _read_attempt_log(log_path: Path, offset) -> tuple[str, int, int]:
+    """(text, start, end): the log from byte `offset` on, decoded. An offset
+    past the end (a log replaced since) reads from the start. Reads no more
+    than the artifact cap can hold."""
+    try:
+        with log_path.open("rb") as f:
+            end = os.fstat(f.fileno()).st_size
+            start = offset if isinstance(offset, int) and not isinstance(offset, bool) and 0 <= offset <= end else 0
+            f.seek(start)
+            data = f.read(JOB_LOG_MAX_CHARS * 4 + 1)
+    except OSError:
+        return "", 0, 0
+    return data.decode("utf-8", "replace"), start, end
 
 
 def _poll_jobs() -> None:
@@ -912,16 +959,33 @@ def _poll_jobs() -> None:
                 if failing:
                     text += f": {failing}"
                 log_name = JOB_SESSIONS.get(run_id) or _job_session_name(item_id)
-                try:
-                    log_text = (_LOGS / f"{log_name}.log").read_text()
-                except OSError:
-                    log_text = ""
+                log_path = _LOGS / f"{log_name}.log"
+                if "log_offset" in state:
+                    # HZ-434: this attempt's slice of the append-only log.
+                    log_text, start, end = _read_attempt_log(log_path, state.get("log_offset"))
+                    artifact_md = job_artifact_md(
+                        text,
+                        log_text,
+                        commands=_command_lines(state.get("commands"), _job_secrets(task)),
+                        reports_md=job_reports.reports_md(state.get("reports") or []),
+                        full_log=(
+                            f"Full log: `{log_path}` (this attempt is bytes {start:,}–{end:,}); "
+                            f"also `GET /api/items/{item_id}/job/log?format=text`."
+                        ),
+                    )
+                else:
+                    # A runner from before HZ-434 wrote no offset: today's shape.
+                    try:
+                        log_text = log_path.read_text()
+                    except OSError:
+                        log_text = ""
+                    artifact_md = job_artifact_md(text, log_text)
                 code = _forward_result(
                     {
                         "run_id": task["run_id"],
                         "ok": True,
                         "summary": text[:600],
-                        "artifacts": {"artifact_md": job_artifact_md(text, log_text)},
+                        "artifacts": {"artifact_md": artifact_md},
                         "job_view": _job_view(run_id, task),
                     }
                 )
