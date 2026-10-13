@@ -40,6 +40,7 @@ from pathlib import Path
 
 from domain.py import run_plan
 from farm import job_reports
+from farm import task_clone as task_clone_mod
 from farm.checks import redact
 
 # HZ-415: Horizon's own checkout, the same rule farmd.py uses. A Task's
@@ -141,6 +142,7 @@ def run_job(
     env_values: dict | None = None,
     redact_values: dict | None = None,
     notify=None,
+    task_clone: bool = False,
 ) -> dict:
     """Runs the approved plan's commands in order. Returns the summary dict
     {run, passed, failed, failing}. Writes the state file and appends to the
@@ -158,7 +160,15 @@ def run_job(
     `<repo_dir>/.venv` if it exists). It is resolved right after the cwd, on
     every start; a venv outside the checkout is refused the same way. The
     log's first line of each start names the env: `env: <venv>` or
-    `env: system`."""
+    `env: system`.
+
+    HZ-440: with `task_clone`, `repo_dir` is the target's separate task
+    clone (taskDir), never the deploy checkout. It is fast-forwarded to
+    origin/main before the cwd is resolved, on a fresh start, a re-approved
+    plan, or a Resume that has passed nothing or was refused — a Resume after
+    a pass keeps HEAD where it was. A clone that cannot fast-forward ends the
+    job `cwd_refused` with zero commands run. Each start logs
+    `task clone HEAD: <sha>` after the env line."""
     last_nudge = [0.0]
 
     def nudge(*, force: bool = True) -> None:
@@ -221,10 +231,18 @@ def run_job(
             log.flush()
         return state["summary"]
 
+    # HZ-440: a Resume of the same plan after a pass runs the rest of the
+    # commands on the commit the earlier ones ran on.
+    refresh = task_clone and (not prior_done or (prior or {}).get("status") == "cwd_refused")
+
     # HZ-415: checked on every start, never cached. Fails closed: no command
     # runs, and nothing falls back to this runner's own cwd. Commands a prior
     # run passed stay recorded so a later Resume still skips them.
     try:
+        if refresh:
+            # The clone itself must pass the HZ-415 guard before git runs in it.
+            run_plan.resolve_cwd(repo_dir, ".", forbid=str(HORIZON_ROOT))
+            task_clone_mod.fast_forward(repo_dir)
         cwd = run_plan.resolve_cwd(repo_dir, plan_cwd, forbid=str(HORIZON_ROOT))
         venv = run_plan.resolve_venv(repo_dir, venv_dir, forbid=str(HORIZON_ROOT))
     except run_plan.CwdRefused as exc:
@@ -267,6 +285,8 @@ def run_job(
     # HZ-431: only the venv path or `system` — never PATH or another value.
     with log_path.open("a", encoding="utf-8") as log:
         log.write(redact(f"env: {venv or 'system'}\n", secrets))
+        if task_clone:
+            log.write(redact(f"task clone HEAD: {task_clone_mod.head(repo_dir)}\n", secrets))
     # State entries, preserving passed commands across resumes.
     entries: list[dict] = []
     for c in commands:
@@ -497,6 +517,7 @@ def main(argv: list[str] | None = None) -> int:
             env_values=secrets,
             redact_values=redact_only,
             notify=lambda: _notify_progress(run_id),
+            task_clone=bool(task.get("task_clone")),
         )
     except ValueError as exc:
         print(f"task_job: invalid run plan: {exc}", flush=True)

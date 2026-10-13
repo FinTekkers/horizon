@@ -14,6 +14,8 @@ const FIELDS = [
   { name: 'service', label: 'Service' },
   { name: 'extraServices', label: 'Extra services (comma-separated)' },
   { name: 'repoDir', label: 'Repo dir' },
+  // HZ-440: where a Task's commands run, when not the deploy checkout.
+  { name: 'taskDir', label: 'Task dir (optional)' },
   { name: 'stateKey', label: 'State key' },
   { name: 'healthUrl', label: 'Health URL' },
   { name: 'healthCheckType', label: 'Health check type' },
@@ -35,14 +37,16 @@ const slugOf = (repo) => repo.split('/').pop().toLowerCase().replace(/[^a-z0-9-]
 
 function formValues(repo, target) {
   if (!target) return { ...Object.fromEntries(FIELDS.map((f) => [f.name, ''])), key: slugOf(repo), stateKey: slugOf(repo) }
-  return { ...target, extraServices: (target.extraServices ?? []).join(', ') }
+  return { ...target, taskDir: target.taskDir ?? '', extraServices: (target.extraServices ?? []).join(', ') }
 }
 
 function bodyOf(repo, values) {
   const { key: _key, extraServices, ...fields } = values
   const extras = extraServices.split(',').map((s) => s.trim()).filter(Boolean)
   const body = { repo }
-  for (const { name } of FIELDS) if (name !== 'key' && name !== 'extraServices') body[name] = fields[name].trim()
+  for (const { name } of FIELDS) if (name !== 'key' && name !== 'extraServices') body[name] = (fields[name] ?? '').trim()
+  // Optional: an empty task dir is "none" (the schema refuses '').
+  body.taskDir = body.taskDir || null
   if (extras.length) body.extraServices = extras
   return body
 }

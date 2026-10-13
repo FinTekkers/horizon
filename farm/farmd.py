@@ -806,7 +806,11 @@ def launch_job(task: dict) -> str:
     repo's deploy-target checkout) before anything else, and the job's .env
     is read from there — never from Horizon's own checkout. Raises
     run_plan.CwdRefused, with no file written and no session started, when it
-    does not resolve; the runner checks again on its own start."""
+    does not resolve; the runner checks again on its own start.
+
+    HZ-440: with `task_clone`, repo_dir is the target's separate task clone;
+    the runner fast-forwards it after this check, so a cwd or .env that
+    exists only on the new origin/main is not seen here."""
     from farm.config import LOGS_DIR as _LOGS, STATE_DIR as _STATE
 
     run_id = task["run_id"]

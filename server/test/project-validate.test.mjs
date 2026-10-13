@@ -344,5 +344,7 @@ test('G4: the deploy_target table schema is unchanged', () => {
     'updated_at',
     // HZ-431: the Task venv setting, added by its own migration.
     'venv_dir',
+    // HZ-440: the Task clone directory, added by its own migration.
+    'task_dir',
   ])
 })

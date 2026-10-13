@@ -206,6 +206,63 @@ test('venvDir survives a PUT then GET; a .. or absolute venvDir is 400 bad venvD
   }
 })
 
+// HZ-440: taskDir uses repoDir's format rules, and never equals or sits
+// inside any target's repoDir, or another target's taskDir — checked both
+// ways on POST and PUT. A sibling of the deploy checkout is accepted.
+test('taskDir: a sibling of repoDir round-trips; containment, format and duplicates are 400 and write nothing', async () => {
+  const UI = { ...DOCS_FIELDS, repo: 'FinTekkers/ui-service', service: 'fintekkers-ui-test', repoDir: '/opt/horizon' }
+  const put = (fields) => request('PUT', '/api/admin/deploy-targets/ui-service', { payload: { ...UI, ...fields }, pin })
+
+  const ok = await put({ taskDir: '/opt/horizon-tasks' })
+  assert.equal(ok.statusCode, 200, ok.body)
+  assert.equal(ok.json().target.taskDir, '/opt/horizon-tasks')
+  assert.equal(ok.json().target.repoDir, '/opt/horizon')
+  const got = (await request('GET', '/api/admin/deploy-targets/config')).json()
+  assert.equal(got.targets.find((t) => t.key === 'ui-service').taskDir, '/opt/horizon-tasks')
+  const kept = () => {
+    const row = findTargetByKey('ui-service')
+    assert.equal(row.taskDir, '/opt/horizon-tasks')
+    assert.equal(row.repoDir, '/opt/horizon')
+  }
+
+  const cases = [
+    [{ taskDir: '/opt/horizon' }, 'taskDir is inside repoDir'],
+    [{ taskDir: '/opt/horizon/' }, 'taskDir is inside repoDir'],
+    [{ taskDir: '/opt/horizon/sub' }, 'taskDir is inside repoDir'],
+    [{ taskDir: '/tmp/fixture/tasks' }, 'taskDir is inside repoDir of horizon'],
+    [{ taskDir: 'opt/horizon-tasks' }, 'bad taskDir'],
+    [{ taskDir: '/opt/../opt/horizon-tasks' }, 'bad taskDir'],
+  ]
+  for (const [fields, reason] of cases) {
+    const res = await put(fields)
+    assert.equal(res.statusCode, 400, JSON.stringify(fields))
+    assert.deepEqual(res.json(), { error: 'deploy_target_invalid', reason })
+    kept()
+  }
+  // The other direction: horizon's repoDir must not swallow ui-service's
+  // taskDir, and horizon may not reuse it.
+  const horizon = { ...DOCS_FIELDS, repo: 'FinTekkers/horizon', script: 'stub-horizon.sh', service: 'horizon-server-test' }
+  for (const [fields, reason] of [
+    [{ repoDir: '/opt' }, 'repoDir contains taskDir of ui-service'],
+    [{ repoDir: '/opt/horizon-tasks' }, 'repoDir contains taskDir of ui-service'],
+    [{ repoDir: '/srv/horizon', taskDir: '/opt/horizon-tasks/' }, 'taskDir is already used by ui-service'],
+  ]) {
+    const res = await request('PUT', '/api/admin/deploy-targets/horizon', { payload: { ...horizon, ...fields }, pin })
+    assert.equal(res.statusCode, 400, JSON.stringify(fields))
+    assert.deepEqual(res.json(), { error: 'deploy_target_invalid', reason })
+    assert.equal(findTargetByKey('horizon').repoDir, '/tmp/fixture')
+    assert.equal(findTargetByKey('horizon').taskDir, undefined)
+  }
+  const posted = await request('POST', '/api/admin/deploy-targets', { payload: { ...DOCS, taskDir: '/opt/horizon/tasks' }, pin })
+  assert.equal(posted.statusCode, 400)
+  assert.deepEqual(posted.json(), { error: 'deploy_target_invalid', reason: 'taskDir is inside repoDir of ui-service' })
+  assert.equal(findTargetByKey('docs'), null)
+
+  const cleared = await put({ taskDir: null, repoDir: '/tmp/fixture' })
+  assert.equal(cleared.statusCode, 200, cleared.body)
+  assert.equal(Object.hasOwn(cleared.json().target, 'taskDir'), false)
+})
+
 test('GET /api/admin/deploy-targets/config returns the stored rows and no secrets', async () => {
   const res = await request('GET', '/api/admin/deploy-targets/config')
   assert.equal(res.statusCode, 200)

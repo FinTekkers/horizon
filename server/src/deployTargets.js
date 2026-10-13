@@ -20,7 +20,7 @@
 
 import { realpathSync, readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
-import { isAbsolute, join, sep } from 'node:path'
+import { isAbsolute, join, posix, sep } from 'node:path'
 import { db } from './db.js'
 
 export const SEED_DEPLOY_TARGETS = Object.freeze([
@@ -93,6 +93,8 @@ function toTarget(row) {
   }
   // HZ-431: absent when unset (the farm then uses <repoDir>/.venv if it exists).
   if (row.venv_dir != null) target.venvDir = row.venv_dir
+  // HZ-440: absent when unset (Task jobs then run in repoDir).
+  if (row.task_dir != null) target.taskDir = row.task_dir
   if (row.extra_services !== null) {
     let extras
     try {
@@ -214,6 +216,11 @@ const REPO_DIR = /^\/[A-Za-z0-9_./-]*$/
 // bounds it inside the checkout (domain/py/run_plan.py resolve_venv).
 const VENV_DIR = /^[A-Za-z0-9_.-][A-Za-z0-9_./-]{0,299}$/
 
+// The repoDir format rules, shared by taskDir (HZ-440).
+function absoluteDirOk(dir) {
+  return typeof dir === 'string' && isAbsolute(dir) && REPO_DIR.test(dir) && !dir.split('/').includes('..')
+}
+
 export function scriptInsideScriptsDir(script) {
   if (typeof script !== 'string' || !SCRIPT.test(script)) return false
   try {
@@ -241,9 +248,7 @@ export function checkRunnable(target) {
   if (!SLUG.test(target.key)) return { ok: false, reason: 'bad key' }
   if (!SLUG.test(target.stateKey)) return { ok: false, reason: 'bad stateKey' }
   if (!scriptInsideScriptsDir(target.script)) return { ok: false, reason: 'script outside infra/host' }
-  if (!isAbsolute(target.repoDir) || !REPO_DIR.test(target.repoDir) || target.repoDir.split('/').includes('..')) {
-    return { ok: false, reason: 'bad repoDir' }
-  }
+  if (!absoluteDirOk(target.repoDir)) return { ok: false, reason: 'bad repoDir' }
   let url
   try {
     url = new URL(target.healthUrl)
@@ -256,6 +261,8 @@ export function checkRunnable(target) {
   if (venvDir !== null && (typeof venvDir !== 'string' || !VENV_DIR.test(venvDir) || venvDir.split('/').includes('..'))) {
     return { ok: false, reason: 'bad venvDir' }
   }
+  const taskDir = target.taskDir === '' ? null : (target.taskDir ?? null)
+  if (taskDir !== null && !absoluteDirOk(taskDir)) return { ok: false, reason: 'bad taskDir' }
   const extras = target.extraServices ?? []
   if (!Array.isArray(extras) || !extras.every((s) => typeof s === 'string')) {
     return { ok: false, reason: 'bad extraServices' }
@@ -274,7 +281,7 @@ export function checkRunnable(target) {
 // Results are { ok: true, target } or { ok: false, code, reason? } with code
 // 'invalid' | 'conflict' | 'not_found'.
 
-const TARGET_BODY_FIELDS = ['repo', 'script', 'service', 'repoDir', 'stateKey', 'healthUrl', 'healthCheckType', 'venvDir']
+const TARGET_BODY_FIELDS = ['repo', 'script', 'service', 'repoDir', 'stateKey', 'healthUrl', 'healthCheckType', 'venvDir', 'taskDir']
 
 // The target shape from a request body: only the known fields, key from the path.
 export function targetFromBody(key, body) {
@@ -289,12 +296,38 @@ function rowParams(target) {
     ...target,
     extraServices: target.extraServices?.length ? JSON.stringify(target.extraServices) : null,
     venvDir: target.venvDir || null,
+    taskDir: target.taskDir || null,
   }
 }
 
-function writeTarget(target, statement) {
+// HZ-440: a task dir is where Task commands run, so it must never be (or sit
+// inside) a deploy checkout, and two targets never share one. Checked both
+// ways on every write, so a later repoDir edit cannot create a conflict
+// either. `others` is every other target. Text-only compare; the farm still
+// realpath-checks against Horizon's own checkout. A reason, or null.
+function normalDir(dir) {
+  return typeof dir === 'string' && dir !== '' ? posix.normalize(dir).replace(/\/+$/, '') || '/' : null
+}
+function dirWithin(child, parent) {
+  return child !== null && parent !== null && (child === parent || child.startsWith(parent === '/' ? '/' : parent + '/'))
+}
+export function taskDirConflict(target, others) {
+  const taskDir = normalDir(target.taskDir)
+  const repoDir = normalDir(target.repoDir)
+  if (dirWithin(taskDir, repoDir)) return 'taskDir is inside repoDir'
+  for (const other of others) {
+    if (dirWithin(taskDir, normalDir(other.repoDir))) return `taskDir is inside repoDir of ${other.key}`
+    if (dirWithin(normalDir(other.taskDir), repoDir)) return `repoDir contains taskDir of ${other.key}`
+    if (taskDir !== null && taskDir === normalDir(other.taskDir)) return `taskDir is already used by ${other.key}`
+  }
+  return null
+}
+
+function writeTarget(target, statement, database) {
   const check = checkRunnable(target)
   if (!check.ok) return { ok: false, code: 'invalid', reason: check.reason }
+  const conflict = taskDirConflict(target, listTargets(database).filter((other) => other.key !== target.key))
+  if (conflict) return { ok: false, code: 'invalid', reason: conflict }
   let changes
   try {
     changes = statement.run(rowParams(target)).changes
@@ -308,9 +341,9 @@ function writeTarget(target, statement) {
 export function createTarget(target, database = db) {
   const result = writeTarget(target, database.prepare(`
     INSERT INTO deploy_target
-      (key, repo, script, service, repo_dir, state_key, health_url, health_check_type, extra_services, venv_dir)
-    VALUES (@key, @repo, @script, @service, @repoDir, @stateKey, @healthUrl, @healthCheckType, @extraServices, @venvDir)
-  `))
+      (key, repo, script, service, repo_dir, state_key, health_url, health_check_type, extra_services, venv_dir, task_dir)
+    VALUES (@key, @repo, @script, @service, @repoDir, @stateKey, @healthUrl, @healthCheckType, @extraServices, @venvDir, @taskDir)
+  `), database)
   return result.ok ? { ok: true, target: findTargetByKey(target.key, database) } : result
 }
 
@@ -321,9 +354,9 @@ export function updateTarget(key, fields, database = db) {
     UPDATE deploy_target SET
       repo = @repo, script = @script, service = @service, repo_dir = @repoDir, state_key = @stateKey,
       health_url = @healthUrl, health_check_type = @healthCheckType, extra_services = @extraServices,
-      venv_dir = @venvDir, updated_at = datetime('now')
+      venv_dir = @venvDir, task_dir = @taskDir, updated_at = datetime('now')
     WHERE key = @key
-  `))
+  `), database)
   return result.ok ? { ok: true, target: findTargetByKey(key, database) } : result
 }
 

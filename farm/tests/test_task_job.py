@@ -913,3 +913,240 @@ def test_a_failing_command_still_gets_its_report_collected_and_the_same_summary(
     assert state["reports"] == [{"path": "out.json", "status": "inlined", "bytes": 13, "text": '{"loaded": 7}'}]
     assert state["log_offset"] == 0
     assert "$ echo never" not in log
+
+
+# ---- HZ-440: the separate task clone a target's taskDir names ----
+# Real local git throughout: a bare origin, an upstream working copy that
+# pushes to it, and the task clone the runner fast-forwards.
+
+from farm import task_clone  # noqa: E402
+
+
+def _git(cwd, *args):
+    env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_") and k != "FARM_HOME"}
+    proc = subprocess.run(
+        ["git", "-c", "user.name=HZ Test", "-c", "user.email=hz@example.invalid", "-c", "commit.gpgsign=false", "-C", str(cwd), *args],
+        capture_output=True,
+        text=True,
+        env=env,
+        check=True,
+    )
+    return proc.stdout.strip()
+
+
+def _push_commit(upstream, name):
+    (upstream / name).write_text(name + "\n")
+    _git(upstream, "add", name)
+    _git(upstream, "commit", "-q", "-m", name)
+    _git(upstream, "push", "-q", "origin", "main")
+    return _git(upstream, "rev-parse", "HEAD")
+
+
+def _origin_and_clone(tmp_path):
+    """(upstream, clone): the clone is on main, one commit behind origin."""
+    origin = tmp_path / "origin.git"
+    _git(tmp_path, "init", "-q", "--bare", "-b", "main", str(origin))
+    upstream = tmp_path / "upstream"
+    _git(tmp_path, "init", "-q", "-b", "main", str(upstream))
+    _git(upstream, "remote", "add", "origin", str(origin))
+    _push_commit(upstream, "one.txt")
+    clone = tmp_path / "horizon-tasks"
+    _git(tmp_path, "clone", "-q", str(origin), str(clone))
+    _push_commit(upstream, "two.txt")
+    return upstream, clone
+
+
+def _origin_main(clone):
+    return _git(clone, "ls-remote", "origin", "refs/heads/main").split()[0]
+
+
+def run_clone(tmp_path, artifact, clone, task_clone_flag=True):
+    state_path = tmp_path / "job.json"
+    log_path = tmp_path / "job.log"
+    summary = task_job.run_job(
+        run_id=7,
+        item_id="HZ-1",
+        plan_artifact=artifact,
+        approved_hash=task_job.plan_hash_of(artifact),
+        state_path=state_path,
+        log_path=log_path,
+        repo_dir=str(clone),
+        task_clone=task_clone_flag,
+    )
+    return summary, json.loads(state_path.read_text()), log_path.read_text()
+
+
+def _main_task_file(tmp_path, item_id, artifact, clone, **extra):
+    path = tmp_path / f"{item_id}.task.json"
+    path.write_text(
+        json.dumps(
+            {
+                "run_id": 9440,
+                "item": {"id": item_id},
+                "plan_artifact": artifact,
+                "approved_hash": task_job.plan_hash_of(artifact),
+                "repo_dir": str(clone),
+                **extra,
+            }
+        )
+    )
+    return path
+
+
+def test_task_clone_from_the_task_file_is_fast_forwarded_and_cwd_dot_runs_in_it(tmp_path, monkeypatch):
+    """Metric 1: the dispatch's task_clone flag reaches the runner through
+    main(). The clone is brought to origin/main and `pwd` with cwd "." is
+    the clone — not repoDir, not Horizon's own checkout."""
+    _upstream, clone = _origin_and_clone(tmp_path)
+    item_id = "HZ-9440"
+    state_path = STATE_DIR / "jobs" / f"{item_id}.json"
+    log_path = LOGS_DIR / f"farm-job-{item_id.lower()}.log"
+    monkeypatch.setattr(task_job, "_notify_progress", lambda run_id: None)
+    task = _main_task_file(tmp_path, item_id, plan_artifact(".", ["pwd"]), clone, task_clone=True)
+    try:
+        assert task_job.main(["--task", str(task)]) == 0
+        state = _state_of(state_path)
+        log = log_path.read_text()
+    finally:
+        state_path.unlink(missing_ok=True)
+        log_path.unlink(missing_ok=True)
+    real_clone = os.path.realpath(clone)
+    assert state["status"] == "finished"
+    assert state["commands"][0]["cwd"] == real_clone
+    assert [line for line in log.splitlines() if line.startswith("/")] == [real_clone]
+    assert _git(clone, "rev-parse", "HEAD") == _origin_main(clone)
+    assert str(task_job.HORIZON_ROOT) not in log
+
+
+def test_a_task_file_without_task_clone_never_touches_git(tmp_path, monkeypatch):
+    """Metric 2: no taskDir, no task_clone key — the runner never fetches or
+    fast-forwards, logs no clone line, and runs in repo_dir as before."""
+    _upstream, clone = _origin_and_clone(tmp_path)
+    before = _git(clone, "rev-parse", "HEAD")
+
+    def _boom(*args, **kwargs):
+        raise AssertionError("no task_clone: git must not run")
+
+    monkeypatch.setattr(task_clone, "fast_forward", _boom)
+    monkeypatch.setattr(task_clone, "head", _boom)
+    monkeypatch.setattr(task_job, "_notify_progress", lambda run_id: None)
+    item_id = "HZ-9441"
+    state_path = STATE_DIR / "jobs" / f"{item_id}.json"
+    log_path = LOGS_DIR / f"farm-job-{item_id.lower()}.log"
+    task = _main_task_file(tmp_path, item_id, plan_artifact(".", ["pwd"]), clone)
+    try:
+        assert task_job.main(["--task", str(task)]) == 0
+        state = _state_of(state_path)
+        log = log_path.read_text()
+    finally:
+        state_path.unlink(missing_ok=True)
+        log_path.unlink(missing_ok=True)
+    assert state["status"] == "finished"
+    assert state["commands"][0]["cwd"] == os.path.realpath(clone)
+    assert "task clone HEAD" not in log
+    assert _git(clone, "rev-parse", "HEAD") == before
+
+
+def test_a_cwd_into_the_forbidden_checkout_is_still_refused_with_a_task_clone(tmp_path, monkeypatch):
+    """Guardrail 1: HZ-415's guard still runs, with the same forbid root, when
+    repo_dir is a task clone. A cwd resolving into Horizon's checkout is
+    refused and zero commands run."""
+    _upstream, clone = _origin_and_clone(tmp_path)
+    (clone / "nested").mkdir()
+    forbidden = clone / "nested"
+    monkeypatch.setattr(task_job, "HORIZON_ROOT", forbidden)
+    seen = []
+    real_resolve = run_plan.resolve_cwd
+
+    def _spy(repo_dir, cwd, *, forbid=None):
+        seen.append(forbid)
+        return real_resolve(repo_dir, cwd, forbid=forbid)
+
+    monkeypatch.setattr(run_plan, "resolve_cwd", _spy)
+    marker = tmp_path / "ran.txt"
+    summary, state, log = run_clone(tmp_path, plan_artifact("nested", [f"touch {marker}"]), clone)
+    _assert_one_line_refusal(state, log, "cwd is inside Horizon's own checkout")
+    assert summary == {"run": 0, "passed": 0, "failed": 0, "failing": []}
+    assert not marker.exists()
+    assert seen and set(seen) == {str(forbidden)}
+
+
+def test_task_clone_is_fast_forwarded_before_the_first_command(tmp_path):
+    """Metric 4: a clone one commit behind origin/main is at origin/main
+    before the first command runs, and the log names that HEAD first."""
+    _upstream, clone = _origin_and_clone(tmp_path)
+    target = _origin_main(clone)
+    assert _git(clone, "rev-parse", "HEAD") != target
+    _summary, state, log = run_clone(tmp_path, plan_artifact(".", ["git rev-parse HEAD"]), clone)
+    assert state["status"] == "finished"
+    lines = log.splitlines()
+    head_line = lines.index(f"task clone HEAD: {target}")
+    command_line = next(i for i, line in enumerate(lines) if line.startswith("$ git rev-parse HEAD"))
+    assert head_line < command_line
+    assert lines[command_line + 1] == target
+
+
+def test_resume_keeps_the_clone_after_a_pass_and_fast_forwards_after_a_refusal(tmp_path):
+    """A Resume of the same plan after a pass runs the rest on the same commit;
+    a Resume after a refused fast-forward, once a human fixed the clone,
+    fast-forwards before the first command."""
+    upstream, clone = _origin_and_clone(tmp_path)
+    flag = tmp_path / "flag"
+    artifact = plan_artifact(".", ["git rev-parse HEAD", f"test -f {flag}"])
+    _summary, first, _log = run_clone(tmp_path, artifact, clone)
+    assert [c["exit_code"] for c in first["commands"]] == [0, 1]
+    ran_on = _git(clone, "rev-parse", "HEAD")
+    _push_commit(upstream, "three.txt")
+    flag.touch()
+    _summary, resumed, log = run_clone(tmp_path, artifact, clone)
+    assert [c["exit_code"] for c in resumed["commands"]] == [0, 0]
+    assert _git(clone, "rev-parse", "HEAD") == ran_on != _origin_main(clone)
+    assert f"task clone HEAD: {ran_on}" in log
+
+    # A refusal: the clone has a local commit origin does not.
+    runs = tmp_path / "second"
+    runs.mkdir()
+    (clone / "local.txt").write_text("local\n")
+    _git(clone, "add", "local.txt")
+    _git(clone, "commit", "-q", "-m", "local")
+    _summary, refused, _log = run_clone(runs, artifact, clone)
+    assert refused["status"] == "cwd_refused"
+    _git(clone, "reset", "-q", "--hard", "origin/main")  # the human's fix, not the runner's
+    target = _push_commit(upstream, "four.txt")
+    _summary, after, log = run_clone(runs, artifact, clone)
+    assert after["status"] == "finished"
+    lines = log.splitlines()
+    head_line = lines.index(f"task clone HEAD: {target}")
+    command_line = next(i for i, line in enumerate(lines) if line.startswith("$ git rev-parse HEAD") and i > head_line)
+    assert lines[command_line + 1] == target
+
+
+def test_a_task_clone_that_cannot_fast_forward_runs_zero_commands_and_keeps_its_files(tmp_path):
+    """Guardrail 3: a diverged clone is never reset or cleaned. The job ends
+    cwd_refused with the reason farmd forwards, HEAD is unchanged and an
+    untracked file is still there."""
+    _upstream, clone = _origin_and_clone(tmp_path)
+    (clone / "local.txt").write_text("local\n")
+    _git(clone, "add", "local.txt")
+    _git(clone, "commit", "-q", "-m", "local")
+    (clone / "untracked.txt").write_text("keep me\n")
+    before = _git(clone, "rev-parse", "HEAD")
+    marker = tmp_path / "ran.txt"
+    summary, state, log = run_clone(tmp_path, plan_artifact(".", [f"touch {marker}"]), clone)
+    _assert_one_line_refusal(state, log, "task clone cannot fast-forward")
+    assert summary == {"run": 0, "passed": 0, "failed": 0, "failing": []}
+    assert not marker.exists()
+    assert _git(clone, "rev-parse", "HEAD") == before
+    assert (clone / "untracked.txt").read_text() == "keep me\n"
+
+
+def test_a_task_clone_off_main_is_refused_and_left_on_its_branch(tmp_path):
+    """Guardrail 3: the runner never checks out main for the human."""
+    _upstream, clone = _origin_and_clone(tmp_path)
+    _git(clone, "checkout", "-q", "-b", "elsewhere")
+    marker = tmp_path / "ran.txt"
+    summary, state, log = run_clone(tmp_path, plan_artifact(".", [f"touch {marker}"]), clone)
+    _assert_one_line_refusal(state, log, "task clone is not on main")
+    assert summary == {"run": 0, "passed": 0, "failed": 0, "failing": []}
+    assert not marker.exists()
+    assert _git(clone, "symbolic-ref", "--short", "HEAD") == "elsewhere"

@@ -625,6 +625,45 @@ To deploy one now, re-run the target's script with the row's `tag`, as for a
 manual rollback. The row then stays `held` until its job ends, and the tick
 deploys the tag again.
 
+## Task clone for Horizon Tasks (HZ-440)
+
+A Task's Execute commands run in its repo's deploy-target `repoDir`, and
+never inside `/opt/horizon`, the live checkout (HZ-415). So a Task on
+`FinTekkers/horizon` needs its own clone, named by the target's optional
+**Task dir** (`taskDir`). Task jobs (Run plan and Execute) use `taskDir` when
+it is set; deploys always use `repoDir`. `deploy.js`, `deploy-horizon.sh` and
+the sudoers file never read `taskDir`.
+
+One-time setup, as the farm user (the user `horizon-farm` runs as):
+
+```bash
+sudo install -d -o "$USER" -g "$USER" /opt/horizon-tasks
+git clone https://github.com/FinTekkers/horizon.git /opt/horizon-tasks   # on main
+python3 -m venv /opt/horizon-tasks/.venv   # only if plans need Python deps
+```
+
+Then, in Admin → Deploy target overrides, edit `horizon`, set **Task dir
+(optional)** to `/opt/horizon-tasks` and save with the gate PIN. A task dir
+equal to or inside any target's repo dir, or already used by another target,
+is refused. `venvDir` is relative to the task dir when one is set.
+
+- **Fast-forward only.** Before each Execute job's first command, the runner
+  runs `git fetch origin main` and `git merge --ff-only origin/main` in the
+  clone and logs `task clone HEAD: <sha>`. It never resets, cleans or checks
+  out. A Resume after a passed command keeps the same `HEAD`.
+- **When it can't.** A clone off `main`, with local commits or with changes
+  that block the merge refuses the job with zero commands run (`task clone is
+  not on main`, `task clone cannot fast-forward`, `task clone fetch failed`
+  or `task clone has commits that are not on origin/main`). Fix the clone by
+  hand (for example `git -C /opt/horizon-tasks checkout main` and
+  `git -C /opt/horizon-tasks reset --hard origin/main` once you've kept
+  anything worth keeping), then Resume.
+- **Keep plans on `cwd: "."`.** farmd checks the plan's cwd and reads its
+  `.env` before the runner fast-forwards, so a cwd or `.env` that exists
+  only on the new `origin/main` is not seen on that first start.
+- **Roll back** by clearing Task dir on the target: Task jobs go back to
+  `repoDir`.
+
 ## Code-only targets (HZ-353)
 
 A repo with code on this host but no service, such as

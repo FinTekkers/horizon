@@ -2,7 +2,8 @@
 // API and DB. A disabled project's repo gets no row; a repo with no target
 // shows "none". A wrong PIN and a service horizon-deploy.sudoers does not
 // permit each store nothing; a valid save survives a reload and gets its Dry
-// run; edit and delete need the PIN too. The server uses the real infra/host
+// run; edit and delete need the PIN too. HZ-440: the optional Task dir is
+// refused inside the repo dir, survives a reload, and clears to none. The server uses the real infra/host
 // scripts and sudoers. The seeded horizon and ui-service rows are never
 // touched. Repos are inserted directly (connecting through the API purges the
 // demo items other specs read); this spec runs last.
@@ -101,6 +102,29 @@ test('the owner creates, edits and deletes a deploy target in Admin, each behind
   await confirmSave(page, GATE_PIN)
   await expect(row(page, REPO).getByRole('button', { name: 'Edit' })).toBeVisible()
   await row(page, REPO).getByRole('button', { name: 'Edit' }).click()
+  await expect(row(page, REPO).getByLabel('Health check type', { exact: true })).toHaveValue('json-health')
+  await row(page, REPO).getByRole('button', { name: 'Cancel' }).click()
+
+  // HZ-440: the optional Task dir. Inside the repo dir is refused; a sibling
+  // path survives a reload; clearing it stores none (null, never '').
+  const taskDir = () => row(page, REPO).getByLabel('Task dir (optional)', { exact: true })
+  await row(page, REPO).getByRole('button', { name: 'Edit' }).click()
+  await taskDir().fill('/tmp/e2e-deploy-site/tasks')
+  await confirmSave(page, GATE_PIN)
+  await expect(row(page, REPO).getByText('Not saved — taskDir is inside repoDir.')).toBeVisible()
+  await row(page, REPO).getByRole('button', { name: 'Cancel' }).last().click()
+  await taskDir().fill('/tmp/e2e-deploy-site-tasks')
+  await confirmSave(page, GATE_PIN)
+  await expect(row(page, REPO).getByRole('button', { name: 'Edit' })).toBeVisible()
+  await page.reload()
+  await row(page, REPO).getByRole('button', { name: 'Edit' }).click({ timeout: 10_000 })
+  await expect(taskDir()).toHaveValue('/tmp/e2e-deploy-site-tasks')
+  await taskDir().fill('')
+  await confirmSave(page, GATE_PIN)
+  await expect(row(page, REPO).getByRole('button', { name: 'Edit' })).toBeVisible()
+  await page.reload()
+  await row(page, REPO).getByRole('button', { name: 'Edit' }).click({ timeout: 10_000 })
+  await expect(taskDir()).toHaveValue('')
   await expect(row(page, REPO).getByLabel('Health check type', { exact: true })).toHaveValue('json-health')
   await row(page, REPO).getByRole('button', { name: 'Cancel' }).click()
 
