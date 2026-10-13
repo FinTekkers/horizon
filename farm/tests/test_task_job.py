@@ -8,6 +8,7 @@ the shell actually did, not what a stub recorded.
 
 import json
 import os
+import shutil
 import signal
 import subprocess
 import sys
@@ -691,4 +692,210 @@ def test_resume_rechecks_the_cwd_and_keeps_finished_commands(tmp_path):
     summary, final, _log = run_in(tmp_path, artifact, repo_dir=repo)
     assert summary == {"run": 2, "passed": 2, "failed": 0, "failing": []}
     assert final["commands"][1]["cwd"] == str(repo / "real")
+    assert marks.read_text().splitlines() == ["one", "two"]
+
+
+# ---- HZ-431: commands run with the checkout's virtualenv, never another ----
+
+PROBE = 'echo "VE=${VIRTUAL_ENV:--}"; echo "PATH=$PATH"'
+
+
+def _real_venv(path: Path) -> Path:
+    """A working venv at `path` holding a `marker` module. Built with the venv
+    module, or by hand where that is missing — never skipped: an unproven
+    metric must not read as a green run."""
+    try:
+        subprocess.run([sys.executable, "-m", "venv", "--without-pip", str(path)], check=True, capture_output=True)
+    except (OSError, subprocess.CalledProcessError):
+        (path / "bin").mkdir(parents=True, exist_ok=True)
+        home = os.path.dirname(os.path.realpath(sys.executable))
+        (path / "pyvenv.cfg").write_text(f"home = {home}\ninclude-system-site-packages = false\n")
+        for name in ("python", "python3"):
+            if not (path / "bin" / name).exists():
+                (path / "bin" / name).symlink_to(os.path.realpath(sys.executable))
+    site = path / "lib" / f"python{sys.version_info.major}.{sys.version_info.minor}" / "site-packages"
+    site.mkdir(parents=True, exist_ok=True)
+    (site / "marker.py").write_text("MARKED = True\n")
+    assert (path / "bin" / "python").exists(), "could not build a venv for the metric-1 test"
+    return path
+
+
+def _fake_venv(path: Path) -> Path:
+    """Enough of a venv for resolve_venv: an executable bin/python."""
+    (path / "bin").mkdir(parents=True, exist_ok=True)
+    python = path / "bin" / "python"
+    python.write_text("#!/bin/sh\nexit 0\n")
+    python.chmod(0o755)
+    return path
+
+
+def _probe_values(log: str) -> dict:
+    return {line.split("=", 1)[0]: line.split("=", 1)[1] for line in log.splitlines() if line[:3] in ("VE=", "PAT", "PRE")}
+
+
+def test_checkout_venv_is_used_automatically(tmp_path):
+    """Metric 1 and guardrail 2: with `<checkout>/.venv` holding `marker`
+    (absent from the system Python), `python3` and `python` both import it.
+    VIRTUAL_ENV, PATH and sys.prefix come from the real child's output, and
+    the farm's own os.environ is unchanged."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    venv = _real_venv(repo / ".venv")
+    real_venv = os.path.realpath(venv)
+    absent = subprocess.run([sys.executable, "-c", "import marker"], cwd=str(tmp_path), capture_output=True)
+    assert absent.returncode != 0, "marker must be absent from the system Python"
+    before = dict(os.environ)
+    commands = [
+        'python3 -c "import marker"',
+        'python -c "import marker"',
+        PROBE,
+        "python3 -c \"import sys; print('PREFIX=' + sys.prefix)\"",
+    ]
+    summary, state, log = run_in(tmp_path, plan_artifact(".", commands), repo_dir=repo)
+    assert dict(os.environ) == before
+    assert summary == {"run": 4, "passed": 4, "failed": 0, "failing": []}, log
+    assert [c["exit_code"] for c in state["commands"]] == [0, 0, 0, 0]
+    seen = _probe_values(log)
+    assert seen["VE"] == real_venv
+    assert seen["PATH"].split(os.pathsep)[0] == os.path.join(real_venv, "bin")
+    assert os.path.realpath(seen["PREFIX"]) == real_venv
+
+
+def test_no_venv_leaves_path_and_virtual_env_untouched(tmp_path):
+    """Metric 2: no `.venv` and no setting — the child's PATH is the
+    parent's, and no VIRTUAL_ENV is added."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _summary, state, log = run_in(tmp_path, plan_artifact(".", [PROBE]), repo_dir=repo)
+    assert state["status"] == "finished"
+    seen = _probe_values(log)
+    assert seen["PATH"] == os.environ["PATH"]
+    assert seen["VE"] == "-"
+
+
+@pytest.mark.parametrize("with_venv", [True, False], ids=["venv", "system"])
+def test_execute_log_first_line_names_the_env(tmp_path, with_venv):
+    """Metric 3 and guardrail 4: the log's first line is exactly
+    `env: <real venv path>` or `env: system` — never PATH or an env value."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    if with_venv:
+        _fake_venv(repo / ".venv")
+    env_values = {"DATABASE_URL": "postgres://u:pw@h/db"}
+    _summary, _state, log = run_in(tmp_path, plan_artifact(".", ["true"]), repo_dir=repo, env_values=env_values)
+    first = log.splitlines()[0]
+    assert first == (f"env: {os.path.realpath(repo / '.venv')}" if with_venv else "env: system")
+    assert os.environ["PATH"] not in first
+    assert all(v not in first for v in env_values.values())
+
+
+def test_plan_env_cannot_override_the_interpreter(tmp_path):
+    """Guardrail 1: a plan's PATH or VIRTUAL_ENV never replaces the venv —
+    its bin/ stays first and VIRTUAL_ENV names it."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    venv = os.path.realpath(_fake_venv(repo / ".venv"))
+    _summary, _state, log = run_in(
+        tmp_path,
+        plan_artifact(".", [PROBE]),
+        repo_dir=repo,
+        env_values={"PATH": "/usr/bin:/bin", "VIRTUAL_ENV": "/elsewhere"},
+    )
+    seen = _probe_values(log)
+    assert seen["VE"] == venv
+    assert seen["PATH"].split(os.pathsep)[0] == os.path.join(venv, "bin")
+
+
+def test_configured_venv_dir_inside_checkout_is_used(tmp_path, monkeypatch):
+    """Metric 4 (honoured): a task file's `venv_dir: "envs/prod"` reaches the
+    runner through main() and wins over the default `.venv`."""
+    monkeypatch.setattr(task_job, "_notify_progress", lambda run_id: None)
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _fake_venv(repo / ".venv")
+    prod = os.path.realpath(_fake_venv(repo / "envs" / "prod"))
+    run_id, item_id = 9431, "HZ-9431"
+    task = _task_file(tmp_path, run_id, item_id, plan_artifact(".", [PROBE]), repo)
+    task.write_text(json.dumps({**json.loads(task.read_text()), "venv_dir": "envs/prod"}))
+    state_path = STATE_DIR / "jobs" / f"{item_id}.json"
+    log_path = LOGS_DIR / f"farm-job-{item_id.lower()}.log"
+    try:
+        assert task_job.main(["--task", str(task)]) == 0
+        log = log_path.read_text()
+        assert log.splitlines()[0] == f"env: {prod}"
+        assert _probe_values(log)["VE"] == prod
+        assert _state_of(state_path)["status"] == "finished"
+    finally:
+        state_path.unlink(missing_ok=True)
+        log_path.unlink(missing_ok=True)
+
+
+@pytest.mark.parametrize(
+    "case,reason",
+    [
+        ("absolute outside", "venv resolves outside the repo directory"),
+        ("under horizon", "venv is inside Horizon's own checkout"),
+        (".venv symlink out", "venv resolves outside the repo directory"),
+        (".venv/bin into horizon", "venv is inside Horizon's own checkout"),
+    ],
+)
+def test_venv_outside_checkout_or_under_horizon_runs_zero_commands(tmp_path, monkeypatch, case, reason):
+    """Metric 4 (bounded) and guardrail 1: symlinks are resolved first, and
+    a venv outside the checkout or under Horizon's own (a fake root here)
+    ends `cwd_refused` before any subprocess starts."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    horizon = tmp_path / "horizon"
+    horizon_venv = _fake_venv(horizon / ".venv")
+    outside = _fake_venv(tmp_path / "outside-venv")
+    monkeypatch.setattr(task_job, "HORIZON_ROOT", horizon)
+    venv_dir = None
+    if case == "absolute outside":
+        venv_dir = str(outside)
+    elif case == "under horizon":
+        venv_dir = str(horizon_venv)
+    elif case == ".venv symlink out":
+        (repo / ".venv").symlink_to(outside)
+    else:
+        (repo / ".venv").mkdir()
+        (repo / ".venv" / "bin").symlink_to(horizon_venv / "bin")
+    _no_spawn(monkeypatch)
+    artifact = plan_artifact(".", ["pwd"])
+    state_path = tmp_path / "job.json"
+    log_path = tmp_path / "job.log"
+    summary = task_job.run_job(
+        run_id=7,
+        item_id="HZ-1",
+        plan_artifact=artifact,
+        approved_hash=task_job.plan_hash_of(artifact),
+        state_path=state_path,
+        log_path=log_path,
+        repo_dir=str(repo),
+        venv_dir=venv_dir,
+    )
+    assert summary == {"run": 0, "passed": 0, "failed": 0, "failing": []}
+    _assert_one_line_refusal(json.loads(state_path.read_text()), log_path.read_text(), reason)
+
+
+def test_resume_rechecks_the_venv_and_keeps_finished_commands(tmp_path):
+    """Guardrail 1: run 1 passes command 1 and fails command 2. `.venv` is
+    swapped for a symlink out of the checkout: Resume re-checks it, ends
+    `cwd_refused` and runs no new command."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _fake_venv(repo / ".venv")
+    outside = _fake_venv(tmp_path / "outside-venv")
+    marks = tmp_path / "marks.txt"
+    artifact = plan_artifact(".", [f"echo one >> {marks}", f"echo two >> {marks}; exit 1"])
+
+    _summary, first, _log = run_in(tmp_path, artifact, repo_dir=repo)
+    assert [c["exit_code"] for c in first["commands"]] == [0, 1]
+
+    shutil.rmtree(repo / ".venv")
+    (repo / ".venv").symlink_to(outside)
+    summary, refused, _log = run_in(tmp_path, artifact, repo_dir=repo)
+    assert summary == {"run": 0, "passed": 0, "failed": 0, "failing": []}
+    assert refused["status"] == "cwd_refused"
+    assert refused["refusal"] == "venv resolves outside the repo directory"
+    assert (refused["commands"][0]["status"], refused["commands"][0]["exit_code"]) == ("done", 0)
     assert marks.read_text().splitlines() == ["one", "two"]

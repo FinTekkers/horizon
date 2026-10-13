@@ -342,5 +342,7 @@ test('G4: the deploy_target table schema is unchanged', () => {
     'extra_services',
     'created_at',
     'updated_at',
+    // HZ-431: the Task venv setting, added by its own migration.
+    'venv_dir',
   ])
 })

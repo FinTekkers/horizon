@@ -814,6 +814,8 @@ def launch_job(task: dict) -> str:
     artifact = task.get("plan_artifact") or ""
     block = run_plan.extract(artifact)
     cwd = run_plan.resolve_cwd(task.get("repo_dir"), block["cwd"], forbid=str(task_job.HORIZON_ROOT))
+    # HZ-431: a venv outside the checkout is refused here too (a CwdRefused).
+    run_plan.resolve_venv(task.get("repo_dir"), task.get("venv_dir"), forbid=str(task_job.HORIZON_ROOT))
     env_values = _resolve_job_env(cwd, block.get("env", {}))
     active = QUEUE_DIR / "jobs" / "active"
     active.mkdir(parents=True, exist_ok=True)

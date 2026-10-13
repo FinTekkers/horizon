@@ -2368,6 +2368,7 @@ export function buildApp({ logger = true, onRoute = null } = {}) {
       healthUrl: { type: 'string', minLength: 1, maxLength: 300 },
       healthCheckType: { type: 'string', minLength: 1, maxLength: 300 },
       extraServices: { type: 'array', maxItems: 10, items: { type: 'string', maxLength: 300 } },
+      venvDir: { type: ['string', 'null'], minLength: 1, maxLength: 300 },
     },
   }
   const DEPLOY_TARGET_WRITE_RESPONSES = {

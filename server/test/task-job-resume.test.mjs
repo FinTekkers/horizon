@@ -32,8 +32,9 @@ const auth = await import('../src/auth.js')
 const store = await import('../src/store.js')
 const orchestrator = await import('../src/orchestrator.js')
 const { buildApp } = await import('../src/app.js')
-const { STEPS, EXECUTE_STEP_INDEX, RUN_PLAN_STEP_INDEX } = await import('../../domain/js/lifecycle.js')
+const { STEPS, EXECUTE_STEP_INDEX, RUN_PLAN_STEP_INDEX, requiredStepIndex } = await import('../../domain/js/lifecycle.js')
 const { REASON } = await import('../../domain/js/reasons.js')
+const DRAFT_PLAN_STEP_INDEX = requiredStepIndex('Draft implementation plan')
 
 store.purgeDemoItems()
 
@@ -138,4 +139,41 @@ test("HZ-415: farmd's cwd refusal is stored on the run, and the item does not st
   const item = store.getItem('T-415-OUT')
   assert.equal(item.activeRun ?? null, null)
   assert.equal(item.paused, true)
+})
+
+// HZ-431: Run plan's prompt and Execute's runner both read the deploy
+// target's venv setting, so both dispatches carry it; a change item's has
+// neither key.
+test('HZ-431: the Run plan and Execute dispatches carry venv_dir; a change item dispatch carries neither key', async () => {
+  const mdi = 'FinTekkers/market-data-inputs'
+  db.prepare("UPDATE deploy_target SET venv_dir = '.venv-prod' WHERE repo = ?").run(mdi)
+  try {
+    db.prepare(
+      "INSERT INTO work_item (id, title, priority, cursor, kind, project_id, repo) VALUES ('T-431-PLAN', 'Plan', 'High', ?, 'task', ?, ?)",
+    ).run(RUN_PLAN_STEP_INDEX, projectId, mdi)
+    db.prepare(
+      "INSERT INTO work_item (id, title, priority, cursor, kind, project_id, repo) VALUES ('C-431', 'Change', 'High', ?, 'change', ?, ?)",
+    ).run(DRAFT_PLAN_STEP_INDEX, projectId, mdi)
+    seedStoppedTask('T-431-EXEC', mdi)
+    orchestrator.kick('T-431-PLAN')
+    orchestrator.kick('C-431')
+    const res = await app.inject({ method: 'POST', url: '/api/items/T-431-EXEC/job/resume', headers: cookie, payload: {} })
+    assert.equal(res.statusCode, 200)
+    await new Promise((r) => setTimeout(r, 30))
+
+    const plan = jobDispatchesFor('T-431-PLAN').find((d) => d.body.step.index === RUN_PLAN_STEP_INDEX)
+    assert.ok(plan, 'Run plan was dispatched')
+    assert.equal(plan.body.repo_dir, '/opt/fintekkers/market-data-inputs')
+    assert.equal(plan.body.venv_dir, '.venv-prod')
+    const [execute] = jobDispatchesFor('T-431-EXEC')
+    assert.equal(execute.body.step.index, EXECUTE_STEP_INDEX)
+    assert.equal(execute.body.venv_dir, '.venv-prod')
+    const [change] = jobDispatchesFor('C-431')
+    assert.ok(change, 'the change step was dispatched')
+    assert.equal(Object.hasOwn(change.body, 'repo_dir'), false)
+    assert.equal(Object.hasOwn(change.body, 'venv_dir'), false)
+  } finally {
+    db.prepare('UPDATE deploy_target SET venv_dir = NULL WHERE repo = ?').run(mdi)
+    for (const id of ['T-431-PLAN', 'C-431', 'T-431-EXEC']) orchestrator.cancel(id)
+  }
 })

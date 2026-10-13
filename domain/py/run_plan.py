@@ -143,6 +143,51 @@ def resolve_cwd(repo_dir: str | None, cwd: str, *, forbid: str | None = None) ->
         raise CwdRefused(f"the cwd check failed ({type(exc).__name__})") from None
 
 
+DEFAULT_VENV = ".venv"
+
+
+class VenvRefused(CwdRefused):
+    """Execute must not start: the repo's virtualenv does not resolve inside
+    the Task repo's checkout. A CwdRefused, so every HZ-415 refusal path
+    (state, 400, forward) carries it unchanged. One line, safe to show."""
+
+
+def resolve_venv(repo_dir: str, setting: str | None, *, forbid: str | None = None) -> str | None:
+    """HZ-431: the real absolute virtualenv a Task's commands run with, or
+    None for the system interpreter. Call only after resolve_cwd() passed.
+
+    `setting` is the deploy target's venv_dir: empty or None means
+    `<repo>/.venv` when it holds a bin/python, otherwise system. The venv
+    directory's realpath — never bin/python's, which a real venv symlinks to
+    /usr/bin — and its bin/'s realpath must both sit inside the repo and
+    never inside (or around) `forbid`. Fails closed like resolve_cwd: a
+    default .venv that resolves outside the repo is refused, not ignored."""
+    try:
+        real_repo = os.path.realpath(repo_dir)
+        configured = isinstance(setting, str) and bool(setting.strip())
+        candidate = os.path.join(real_repo, setting if configured else DEFAULT_VENV)
+        if not configured and not os.path.lexists(candidate):
+            return None
+        venv = os.path.realpath(candidate)
+        venv_bin = os.path.realpath(os.path.join(venv, "bin"))
+        if forbid:
+            real_forbid = os.path.realpath(forbid)
+            if _inside(venv, real_forbid) or _inside(venv_bin, real_forbid) or _inside(real_forbid, real_repo):
+                raise VenvRefused("venv is inside Horizon's own checkout")
+        if not _inside(venv, real_repo) or not _inside(venv_bin, venv):
+            raise VenvRefused("venv resolves outside the repo directory")
+        python = os.path.join(venv_bin, "python")
+        if not (os.path.isfile(python) and os.access(python, os.X_OK)):
+            if configured:
+                raise VenvRefused("venv has no bin/python")
+            return None
+        return venv
+    except CwdRefused:
+        raise
+    except (OSError, TypeError, ValueError) as exc:
+        raise VenvRefused(f"the venv check failed ({type(exc).__name__})") from None
+
+
 def render(block: dict) -> str:
     """The block as the fenced section appended to the Run plan artifact."""
     return f"```{FENCE_INFO}\n{json.dumps(block, indent=2)}\n```"
