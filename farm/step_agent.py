@@ -936,9 +936,13 @@ def _push_with_lease(ws: Path, item: dict, branch: str, lease_sha: str) -> None:
         git(ws, "push", f"--force-with-lease=refs/heads/{branch}:{lease_sha}", "-u", "origin", branch)
 
 
-def finalize_branch(
-    ws: Path, item: dict, branch: str, conflicted: list[str] | None = None, *, lease_sha: str = ""
-) -> dict:
+def commit_work(ws: Path, item: dict, conflicted: list[str] | None = None) -> str:
+    """Commits the agent's work locally — never pushes. Returns the new
+    commit's sha, or "" when there was nothing to commit.
+
+    HZ-438: the implement step calls this before the repo checks, so a check
+    that inspects `git status` sees committed work, and the commit the checks
+    ran on is the one finalize_branch() pushes."""
     # A merge of main still carrying conflict markers must never be committed:
     # GitHub would then call the PR mergeable with the markers in it, and no
     # later send-back would be told which files still hold them.
@@ -951,22 +955,53 @@ def finalize_branch(
     # even when its resolution kept this branch's side verbatim — otherwise
     # the push leaves main unmerged and the conflict survives.
     merging = git(ws, "rev-parse", "-q", "--verify", "MERGE_HEAD", check=False)
-    if staged.returncode != 0 or merging.returncode == 0:
-        git(ws, "commit", "-m", f"{item['id']}: {item['title']} (Horizon Eng agent)")
-    if _no_code_changes(ws):
-        raise RuntimeError("the agent made no code changes — nothing to push")
+    if staged.returncode == 0 and merging.returncode != 0:
+        return ""
+    git(ws, "commit", "-m", f"{item['id']}: {item['title']} (Horizon Eng agent)")
+    return git(ws, "rev-parse", "HEAD").stdout.strip()
+
+
+def finalize_branch(
+    ws: Path,
+    item: dict,
+    branch: str,
+    conflicted: list[str] | None = None,
+    *,
+    lease_sha: str = "",
+    checked_sha: str | None = None,
+) -> dict:
+    """Pushes the branch. With checked_sha (HZ-438) the work was committed
+    before the checks: nothing is added or committed here, and HEAD must
+    still be that commit — what was checked is exactly what is pushed."""
+    if checked_sha is None:
+        commit_work(ws, item, conflicted)
+        if _no_code_changes(ws):
+            raise RuntimeError("the agent made no code changes — nothing to push")
+    else:
+        head = git(ws, "rev-parse", "HEAD").stdout.strip()
+        if head != checked_sha:
+            raise RuntimeError("HEAD moved during the checks — nothing pushed")
+        # A file a check left on disk was never checked, so it is not a change.
+        if _no_code_changes(ws, ignore_worktree=True):
+            raise RuntimeError("the agent made no code changes — nothing to push")
+        left = git(ws, "status", "--porcelain", check=False).stdout.rstrip()
+        if left:
+            paths = ", ".join(line[3:] for line in left.splitlines())
+            log(f"finalize: the checks left changes on disk — not pushed: {paths}")
     _push_with_lease(ws, item, branch, lease_sha)
     stat = git(ws, "diff", "--stat", f"origin/{default_branch(ws)}...HEAD", check=False).stdout.strip().splitlines()
     return {"branch": branch, "files_changed": stat[-1] if stat else ""}
 
 
-def _no_code_changes(ws: Path) -> bool:
+def _no_code_changes(ws: Path, *, ignore_worktree: bool = False) -> bool:
     """HZ-346: the one "nothing to push" test. finalize_branch() raises on it
     after committing; the implement step reads it before checks to decide
     whether a blocked report may stand. Anything on disk, a merge in progress
     or a commit ahead of the default branch (a WIP checkpoint included) is a
-    change, so such a run always takes the normal checks-and-review path."""
-    if git(ws, "status", "--porcelain", check=False).stdout.strip():
+    change, so such a run always takes the normal checks-and-review path.
+    ignore_worktree (HZ-438): only commits count — used once the work was
+    committed before the checks, when anything on disk came from a check."""
+    if not ignore_worktree and git(ws, "status", "--porcelain", check=False).stdout.strip():
         return False
     if git(ws, "rev-parse", "-q", "--verify", "MERGE_HEAD", check=False).returncode == 0:
         return False
@@ -1015,6 +1050,7 @@ def _salvage_checkpoint(
     cause: str = CAUSE_EXHAUSTED,
     detail: str = "",
     lease_sha: str = "",
+    farm_commit: str = "",
 ) -> str:
     """Best-effort: never raises. A salvage failure (e.g. a concurrent push
     winning the --force-with-lease race) just means this attempt's partial
@@ -1031,16 +1067,22 @@ def _salvage_checkpoint(
     Dropping it is safe: that send-back merges main again from scratch.
 
     A checks-failed checkpoint is committed even with no changes: a failure
-    caused by main alone (HZ-157) must still carry its digest forward."""
+    caused by main alone (HZ-157) must still carry its digest forward.
+
+    HZ-438: farm_commit is the commit the implement step made before its
+    checks. While HEAD is still that commit, the checkpoint amends it — one
+    commit per run, a merge keeps both parents — rather than stacking on it;
+    it always holds unpushed work, so the outcome is never "nothing"."""
     try:
         markers = _conflict_markers_left(ws, conflicted or [])
         if markers:
             log(f"salvage: skipped — the merge of main still has conflict markers in {', '.join(markers)}")
             return f"skipped: the merge of main still has conflict markers in {', '.join(markers)}"
+        amend = _head_is(ws, farm_commit)
         git(ws, "add", "-A")
-        _unstage_secrets(ws)
+        _unstage_secrets(ws, *(_parents(ws, "HEAD") if amend else ()))
         staged = git(ws, "diff", "--cached", "--quiet", check=False)
-        allow_empty = cause == CAUSE_CHECKS_FAILED
+        allow_empty = amend or cause == CAUSE_CHECKS_FAILED
         if staged.returncode == 0 and not allow_empty:
             log("salvage: no uncommitted changes to checkpoint")
             return "nothing"
@@ -1048,6 +1090,7 @@ def _salvage_checkpoint(
         git(
             ws,
             "commit",
+            *(["--amend"] if amend else []),
             *(["--allow-empty"] if allow_empty else []),
             "--cleanup=verbatim",
             "-m",
@@ -1070,28 +1113,48 @@ def _is_secret_path(path: str) -> bool:
     return any(fnmatch.fnmatch(name, pattern) for pattern in SECRET_PATTERNS)
 
 
-def _unstage_secrets(ws: Path) -> list[str]:
+def _head_is(ws: Path, sha: str) -> bool:
+    return bool(sha) and git(ws, "rev-parse", "HEAD", check=False).stdout.strip() == sha
+
+
+def _parents(ws: Path, rev: str) -> list[str]:
+    """rev's parents' shas, first parent first."""
+    return git(ws, "rev-list", "--parents", "-n", "1", rev).stdout.split()[1:]
+
+
+def _unstage_secrets(ws: Path, *bases: str) -> list[str]:
     """Unstages every staged path that looks like a secret (HZ-194), so a
     checkpoint can never push one. Deletions are left staged: removing a
-    secret from the branch is never a leak."""
-    # Raw bytes (HZ-420): each path goes back to `git reset` exactly as git
-    # listed it; os.fsdecode round-trips a byte that isn't UTF-8.
-    staged = git_bytes(ws, "diff", "--cached", "--name-only", "--diff-filter=d", "-z", check=False)
-    paths = [os.fsdecode(raw) for raw in staged.split(b"\0") if raw]
-    secrets = [path for path in paths if _is_secret_path(path)]
+    secret from the branch is never a leak.
+
+    bases (default HEAD) are what the checkpoint's commit will sit on. HZ-438:
+    replacing the farm's own commit, they are that commit's parents — a path
+    counts as staged only when it differs from every one, so a file a merged
+    main brought in is kept; an unstaged path goes back to the first base."""
+    secrets: list[str] | None = None
+    for base in bases or ("",):
+        # Raw bytes (HZ-420): each path goes back to `git reset` exactly as git
+        # listed it; os.fsdecode round-trips a byte that isn't UTF-8.
+        staged = git_bytes(ws, "diff", "--cached", "--name-only", "--diff-filter=d", "-z", *([base] if base else []), check=False)
+        paths = [os.fsdecode(raw) for raw in staged.split(b"\0") if raw]
+        found = [path for path in paths if _is_secret_path(path)]
+        secrets = found if secrets is None else [path for path in secrets if path in found]
     if secrets:
-        git(ws, "reset", "-q", "--", *secrets)
+        git(ws, "reset", "-q", *bases[:1], "--", *secrets)
         log(f"salvage: left out of the checkpoint (secret-looking files): {', '.join(map(_shown, secrets))}")
     return secrets
 
 
-def _pause_checkpoint(ws: Path, item: dict, branch: str, conflicted: list[str], lease_sha: str, scope: dict) -> tuple[str, str]:
+def _pause_checkpoint(
+    ws: Path, item: dict, branch: str, conflicted: list[str], lease_sha: str, scope: dict, farm_commit: str = ""
+) -> tuple[str, str]:
     """HZ-194: what a pause saves of a running implement attempt. Every child
     (the claude CLI, check commands) is stopped first so nothing writes while
     the tree is committed, and a git lock a killed git call left behind is
     cleared. Reuses HZ-184's salvage — one checkpoint implementation. Never
     opens or updates a PR through the API, and the run is never reported as
-    passed. Returns (outcome, detail) in pause's vocabulary."""
+    passed. Returns (outcome, detail) in pause's vocabulary. farm_commit:
+    see _salvage_checkpoint (HZ-438)."""
     stopped = pause.kill_descendants()
     if stopped:
         log(f"pause: stopped {stopped} child process(es)")
@@ -1104,11 +1167,11 @@ def _pause_checkpoint(ws: Path, item: dict, branch: str, conflicted: list[str], 
     if pause.stop_reason() == pause.STOP_DEPLOY:
         # HZ-321: a deploy is not an operator's choice, so the work is saved
         # even on an open PR — the item is at implement, nothing can merge it.
-        return _deploy_checkpoint(ws, item, branch, conflicted, lease_sha)
+        return _deploy_checkpoint(ws, item, branch, conflicted, lease_sha, farm_commit)
     if scope["mode"] == "fix":
         # Pushing here would add commits to the open PR (and run its CI).
         return pause.SKIPPED, f"a PR is open on {branch} — a checkpoint would update it"
-    result = _salvage_checkpoint(ws, item, branch, conflicted, cause=CAUSE_PAUSED, lease_sha=lease_sha)
+    result = _salvage_checkpoint(ws, item, branch, conflicted, cause=CAUSE_PAUSED, lease_sha=lease_sha, farm_commit=farm_commit)
     if result == "saved":
         return pause.SAVED, f"pushed a WIP checkpoint to {branch}"
     if result == "nothing":
@@ -1119,7 +1182,9 @@ def _pause_checkpoint(ws: Path, item: dict, branch: str, conflicted: list[str], 
     return pause.FAILED, redact(detail, secret_values(os.environ))
 
 
-def _deploy_checkpoint(ws: Path, item: dict, branch: str, conflicted: list[str] | None, lease_sha: str) -> tuple[str, str]:
+def _deploy_checkpoint(
+    ws: Path, item: dict, branch: str, conflicted: list[str] | None, lease_sha: str, farm_commit: str = ""
+) -> tuple[str, str]:
     """HZ-321: saves a running attempt a self-deploy is stopping as one WIP
     commit of its whole tree, pushed to the item's own branch — never forced,
     never rewriting a commit, so unlike _salvage_checkpoint (whose lease push
@@ -1130,6 +1195,10 @@ def _deploy_checkpoint(ws: Path, item: dict, branch: str, conflicted: list[str] 
     the push is always a fast-forward and its tree is exactly what was on
     disk. A merge of main in progress keeps MERGE_HEAD as a second parent.
     .gitignore is honoured and SECRET_PATTERNS are never staged.
+
+    HZ-438: while HEAD is farm_commit (the implement step's commit made
+    before its checks, never pushed), the WIP commit replaces it: it sits on
+    that commit's parents, so the run still pushes one commit.
 
     If the push fails, the commit stays in this worktree with a marker, and
     the next attempt's prepare_branch resumes from it. Never raises.
@@ -1142,16 +1211,22 @@ def _deploy_checkpoint(ws: Path, item: dict, branch: str, conflicted: list[str] 
         markers = _conflict_markers_left(ws, conflicted or [])
         if markers:
             return pause.SKIPPED, f"the merge of main still has conflict markers in {', '.join(markers)}"
+        replace = _head_is(ws, farm_commit)
         git(ws, "add", "-A")
-        _unstage_secrets(ws)
-        head = git(ws, "rev-parse", "HEAD").stdout.strip()
-        merging = git(ws, "rev-parse", "-q", "--verify", "MERGE_HEAD", check=False)
-        merge_head = merging.stdout.strip() if merging.returncode == 0 else ""
-        staged = git(ws, "diff", "--cached", "--quiet", check=False).returncode != 0
-        published = lease_sha or f"origin/{default}"
-        pushed_already = git(ws, "merge-base", "--is-ancestor", head, published, check=False).returncode == 0
-        if not staged and not merge_head and pushed_already:
-            return pause.NOTHING, "no changes since the last push"
+        if replace:
+            head, *merged = _parents(ws, "HEAD")
+            merge_head = merged[0] if merged else ""
+            _unstage_secrets(ws, head, *merged)
+        else:
+            _unstage_secrets(ws)
+            head = git(ws, "rev-parse", "HEAD").stdout.strip()
+            merging = git(ws, "rev-parse", "-q", "--verify", "MERGE_HEAD", check=False)
+            merge_head = merging.stdout.strip() if merging.returncode == 0 else ""
+            staged = git(ws, "diff", "--cached", "--quiet", check=False).returncode != 0
+            published = lease_sha or f"origin/{default}"
+            pushed_already = git(ws, "merge-base", "--is-ancestor", head, published, check=False).returncode == 0
+            if not staged and not merge_head and pushed_already:
+                return pause.NOTHING, "no changes since the last push"
         contains_remote = not lease_sha or git(ws, "merge-base", "--is-ancestor", lease_sha, head, check=False).returncode == 0
         parents = [head if contains_remote else lease_sha] + ([merge_head] if merge_head else [])
         tree = git(ws, "write-tree").stdout.strip()
@@ -1165,7 +1240,7 @@ def _deploy_checkpoint(ws: Path, item: dict, branch: str, conflicted: list[str] 
             "-m",
             f"cause: {CAUSE_DEPLOY}",
         ).stdout.strip()
-        if merge_head:
+        if merge_head and not replace:
             git(ws, "merge", "--quit")
         git(ws, "update-ref", "HEAD", wip)
         marker = _git_path(ws, UNPUSHED_CHECKPOINT)
@@ -2166,10 +2241,13 @@ def _execute(task: dict, guard: HandoffGuard) -> dict:
             log(f"blocked by a rule with no code changes: {blocked['rule'][:120]}")
             return {"blocked": blocked}
         # Guardrail enforcement: the repo's own tests/linters run here, by the
-        # script, before anything is committed or pushed. A failure fails the
-        # run (Node pauses the item with the reason) — no green, no push.
-        # HZ-257: the tree the checks are about to test, so the commit made
-        # after them can be named as the sha that passed — only if identical.
+        # script, on the agent's work committed locally (HZ-438: a check may
+        # read `git status`) and before anything is pushed. A failure fails
+        # the run (Node pauses the item with the reason) — no green, no push.
+        farm_commit = commit_work(ws, item, conflicted)
+        checked_sha = git(ws, "rev-parse", "HEAD").stdout.strip()
+        # HZ-257: the tree the checks are about to test, so the pushed commit
+        # can be named as the sha that passed — only if identical.
         checked_tree = check_record.snapshot_tree(ws, log)
         try:
             with pause.interruptible():
@@ -2191,7 +2269,7 @@ def _execute(task: dict, guard: HandoffGuard) -> dict:
         except pause.PauseRequested:
             # HZ-194: the agent's work is finished but unchecked. The checks
             # are stopped and never count as a failure; the code is saved.
-            pause.report(*_pause_checkpoint(ws, item, branch, conflicted, prepared.lease_sha, scope))
+            pause.report(*_pause_checkpoint(ws, item, branch, conflicted, prepared.lease_sha, scope, farm_commit))
             raise
         except CheckFailure as exc:
             # HZ-184: the finished work is checkpointed with what failed, so
@@ -2205,10 +2283,11 @@ def _execute(task: dict, guard: HandoffGuard) -> dict:
                 cause=CAUSE_CHECKS_FAILED,
                 detail="\n".join([exc.digest or str(exc), *(_recording()["branch_notes"] or [])]),
                 lease_sha=prepared.lease_sha,
+                farm_commit=farm_commit,
             )
             raise
         publish_screenshots(ws, item)
-        artifacts = finalize_branch(ws, item, branch, conflicted, lease_sha=prepared.lease_sha)
+        artifacts = finalize_branch(ws, item, branch, conflicted, lease_sha=prepared.lease_sha, checked_sha=checked_sha)
         artifacts.update(check_record.report_fields(ws, checked_tree, check_note, checks_finished_at, log))
         if scope["mode"] == "fix":
             artifacts.update(fix_diff_report(ws, scope.get("base_sha")))

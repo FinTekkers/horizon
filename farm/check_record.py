@@ -1,13 +1,13 @@
 """HZ-257: name the exact commit a passing repo-check run tested.
 
-The implement step runs its checks on the uncommitted working tree and only
-commits afterwards (finalize_branch), so "the sha that passed" exists only
-once that commit is made. snapshot_tree() records the tree the checks are
-about to see — in a throwaway index, so the real index and working tree are
-untouched — and passed_sha() names HEAD only when HEAD's tree is exactly that
-snapshot. Any difference (a check that rewrote a file, an untracked file left
-behind, a git error) means no sha is reported, which only means the next
-Accept runs its pre-merge checks.
+The implement step commits the agent's work locally, runs its checks on that
+commit and pushes it only if they pass (HZ-438). snapshot_tree() records the
+tree the checks are about to see — in a throwaway index, so the real index
+and working tree are untouched — and passed_sha() names HEAD only when HEAD's
+tree is exactly that snapshot. Any difference (a commit made during the
+checks, a git error) means no sha is reported, which only means the next
+Accept runs its pre-merge checks. A file a check leaves on disk is never
+pushed, so it does not stop the sha being named.
 
 The two report keys are read by the server's orchestrator.js
 (store.js CHECKS_PASSED_SHA_KEY / CHECKS_FINISHED_AT_KEY), which records them
@@ -78,7 +78,7 @@ def snapshot_tree(ws: Path, log=print) -> str | None:
 def tested_commit(ws: Path, timeout_s: float, log=print) -> tuple[str | None, str | None]:
     """HZ-327: (HEAD's sha, the snapshot tree) a check run's test results are
     stored against. The tree is what "the same commit" means for test
-    history: the implement step tests uncommitted work on an unchanged HEAD.
+    history; in the implement step HEAD is the tested commit itself (HZ-438).
     (None, None) on any error, within timeout_s; never raises."""
     deadline = time.monotonic() + timeout_s
     try:
