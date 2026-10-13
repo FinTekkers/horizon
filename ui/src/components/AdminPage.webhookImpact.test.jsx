@@ -177,3 +177,27 @@ test('when deploy targets fail to load, a missing row shows only the sync line a
   expect(block.queryByText(RELEASES_BLOCKED)).toBeNull()
   expect(block.queryByText(SYNC_DELAY_ONLY)).toBeNull()
 })
+
+// HZ-425: a hook on the four events from before `repository` was added still
+// delivers, so it reads ok — but Fix webhook is offered, as it is the only
+// way the hook starts sending default-branch changes.
+test('an ok webhook on the legacy event set shows Fix webhook and no impact text', async () => {
+  const legacy = { ...hook('FinTekkers/ui-service', 'ok'), reason: 'legacy_events' }
+  const { container } = renderWith({ repos: ['FinTekkers/ui-service'], webhooks: [legacy] })
+  const block = within(projectBlock(container, 'Hooks'))
+  expect(await block.findByText('Webhook: ok (no repository events)')).toBeTruthy()
+  fireEvent.click(block.getByRole('button', { name: 'Fix webhook' }))
+  fireEvent.change(block.getByLabelText('Gate PIN to fix the FinTekkers/ui-service webhook'), { target: { value: 'right-pin' } })
+  fireEvent.click(block.getByRole('button', { name: 'Fix' }))
+  await waitFor(() => expect(api.fixRepoWebhook).toHaveBeenCalledWith(7, 'FinTekkers/ui-service', 'right-pin'))
+  for (const text of [WEBHOOK_IMPACT.RELEASES_BLOCKED, WEBHOOK_IMPACT.SYNC_CONTINUES, WEBHOOK_IMPACT.SYNC_DELAY_ONLY]) {
+    expect(block.queryByText(text)).toBeNull()
+  }
+})
+
+test('a plain ok webhook offers no Fix webhook', async () => {
+  const { container } = renderWith({ repos: ['FinTekkers/ui-service'], webhooks: [hook('FinTekkers/ui-service', 'ok')] })
+  const block = within(projectBlock(container, 'Hooks'))
+  await block.findByText('Webhook: ok')
+  expect(block.queryByRole('button', { name: 'Fix webhook' })).toBeNull()
+})

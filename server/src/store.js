@@ -37,7 +37,7 @@ import { priorityFromLabels } from './priorityLabels.js'
 import { kindFromLabels } from './kindLabels.js'
 import { getActiveProjectId, setSetting } from './settings.js'
 import { parseRuleBlock } from './ruleBlock.js'
-import { msOf } from './sqlTime.js'
+import { msOf, sqlTime } from './sqlTime.js'
 
 const listeners = new Set()
 
@@ -421,8 +421,9 @@ function itemGateAction(rows, itemId, cursor) {
 
 // ---- projects & repos ----
 
-// `checks` (HZ-245) adds each repo's check commands, and (HZ-304) its
-// 'no checks' / 'no deploy' marks; off for consumers with no use for them.
+// `checks` (HZ-245) adds each repo's check commands, (HZ-304) its
+// 'no checks' / 'no deploy' marks and (HZ-425) its default branch; off for
+// consumers with no use for them.
 export function listProjects({ checks = true } = {}) {
   const projects = db.prepare('SELECT * FROM project ORDER BY name').all()
   const repos = db.prepare('SELECT * FROM project_repo ORDER BY repo').all()
@@ -435,7 +436,11 @@ export function listProjects({ checks = true } = {}) {
     providerDefaults: providerDefaultsFromRow(p),
     repos: repos
       .filter((r) => r.project_id === p.id)
-      .map((r) => ({ repo: r.repo, prefix: r.prefix, ...(checks ? { checks: repoChecks(r), marks: repoMarks(r) } : {}) })),
+      .map((r) => ({
+        repo: r.repo,
+        prefix: r.prefix,
+        ...(checks ? { checks: repoChecks(r), marks: repoMarks(r), defaultBranch: r.default_branch ?? null } : {}),
+      })),
   }))
 }
 
@@ -536,6 +541,28 @@ export function listRepos() {
 
 export function findRepo(repoFullName) {
   return db.prepare('SELECT * FROM project_repo WHERE repo = ?').get(repoFullName) || null
+}
+
+// ---- default branch (HZ-425) ----
+// The repo's GitHub default branch as last read: { branch, at } (both null
+// when not read yet), or null for a repo that isn't connected. A DB read only.
+export function getDefaultBranch(repoFullName) {
+  const row = repoFullName
+    ? db.prepare('SELECT default_branch, default_branch_at FROM project_repo WHERE repo = ?').get(repoFullName)
+    : null
+  return row ? { branch: row.default_branch ?? null, at: row.default_branch_at ?? null } : null
+}
+
+// Records a read of the repo's default branch at `now`. A no-op returning
+// false for an unconnected repo or a value that isn't a branch name.
+export function setDefaultBranch(repoFullName, branch, now = Date.now()) {
+  if (typeof branch !== 'string' || !branch.trim() || /\s/.test(branch)) return false
+  const changed =
+    db
+      .prepare('UPDATE project_repo SET default_branch = ?, default_branch_at = ? WHERE repo = ?')
+      .run(branch, sqlTime(now), repoFullName).changes > 0
+  if (changed) notify()
+  return changed
 }
 
 export function createProject(name) {

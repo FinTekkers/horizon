@@ -1,5 +1,6 @@
 // HZ-244: each connected repo's GitHub webhook — the one that delivers issues,
-// comments, PRs and releases to POST /api/webhooks/github.
+// comments, PRs, releases and (HZ-425) repository edits to
+// POST /api/webhooks/github.
 //
 // The only module that touches $GITHUB_WEBHOOK_SECRET on the way out or reads a
 // hook's raw `config`. Everything it returns is a Status:
@@ -18,7 +19,11 @@ import { getToken } from './settings.js'
 import { ghHeaders } from './github.js'
 
 // Sorted, so a hook's events compare as a set by joining.
-export const HOOK_EVENTS = ['issue_comment', 'issues', 'pull_request', 'release']
+export const HOOK_EVENTS = ['issue_comment', 'issues', 'pull_request', 'release', 'repository']
+// HZ-425: the set before `repository` was added. Such a hook still delivers
+// everything else, so it reads as ok (reason legacy_events), and Fix webhook
+// PATCHes it to HOOK_EVENTS. Until then the poll re-reads the default branch.
+export const LEGACY_HOOK_EVENTS = ['issue_comment', 'issues', 'pull_request', 'release']
 
 // Paths a Horizon webhook lives at: bare, and under nginx's /horizon/ prefix.
 const HOOK_PATHS = new Set(['/api/webhooks/github', '/horizon/api/webhooks/github'])
@@ -57,9 +62,9 @@ const githubError = (httpStatus) => ({ ...status('error', null, httpStatus ? 'gi
 
 const lastCode = (hook) => (Number.isInteger(hook?.last_response?.code) ? hook.last_response.code : null)
 
-function matches(hook) {
+function matches(hook, wanted) {
   const events = Array.isArray(hook.events) ? [...hook.events].sort().join(',') : ''
-  return hook.active === true && hook.config?.content_type === 'json' && events === HOOK_EVENTS.join(',')
+  return hook.active === true && hook.config?.content_type === 'json' && events === wanted.join(',')
 }
 
 // A Horizon-shaped hook on another host (say, an old hostname). Reported as
@@ -88,8 +93,10 @@ async function classify(repo) {
   if (!Array.isArray(hooks)) return { result: githubError(res.status) }
 
   const ours = hooks.filter((h) => h?.config?.url === webhookUrl()).sort((a, b) => a.id - b.id)
-  const good = ours.find(matches)
+  const good = ours.find((h) => matches(h, HOOK_EVENTS))
   if (good) return { result: status('ok', lastCode(good)) }
+  const legacy = ours.find((h) => matches(h, LEGACY_HOOK_EVENTS))
+  if (legacy) return { result: status('ok', lastCode(legacy), 'legacy_events'), hookId: legacy.id }
   if (ours.length) return { result: status('mismatched', lastCode(ours[0])), hookId: ours[0].id }
   const foreign = hooks.find((h) => h && isForeignHorizonHook(h))
   if (foreign) return { result: status('mismatched', lastCode(foreign), 'foreign_url') }
@@ -137,13 +144,15 @@ export async function ensure(repo) {
 }
 
 // PIN-gated Fix webhook: POST when missing (or only a foreign-host hook
-// exists), PATCH our own hook by id when it is mismatched.
+// exists), PATCH our own hook by id when it is mismatched or (HZ-425) on the
+// legacy event set.
 export async function fix(repo) {
   const refused = writeRefusal()
   if (refused) return { action: 'none', ...refused }
   const { result, hookId } = await classify(repo)
-  if (result.status === 'ok' || result.status === 'error') return { action: 'none', ...result }
-  if (result.status === 'mismatched' && hookId != null) {
+  const legacy = result.status === 'ok' && result.reason === 'legacy_events'
+  if ((result.status === 'ok' && !legacy) || result.status === 'error') return { action: 'none', ...result }
+  if ((result.status === 'mismatched' || legacy) && hookId != null) {
     const failed = await write('PATCH', `${repo}/hooks/${encodeURIComponent(hookId)}`)
     return failed ? { action: 'none', ...failed } : { action: 'repaired', ...status('ok', result.lastResponseCode) }
   }

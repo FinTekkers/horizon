@@ -531,3 +531,24 @@ test('Admin shows one select per item kind for the shared first step, and a Task
   expect(STEPS[taskOutcome].itemKind).toBe('task')
   await waitFor(() => expect(api.setProjectStepProvider).toHaveBeenCalledWith(1, taskOutcome, 'muse', 'right-pin'))
 })
+
+// ---- HZ-425: each connected repo shows its GitHub default branch ----
+
+test('each repo row shows its default branch, or that it has not been read yet', () => {
+  const projects = [
+    {
+      id: 1,
+      name: 'Alpha',
+      enabled: true,
+      repos: [
+        { repo: 'FinTekkers/price-service-rust', prefix: 'PSR', defaultBranch: 'master' },
+        { repo: 'FinTekkers/fresh', prefix: 'FR', defaultBranch: null },
+      ],
+    },
+  ]
+  const { container } = render(<AdminPage sync={{}} projects={projects} onBack={() => {}} />)
+  const rows = [...container.querySelectorAll('.repo-row')]
+  const rowOf = (repo) => within(rows.find((r) => r.textContent.includes(repo)))
+  expect(rowOf('FinTekkers/price-service-rust').getByText('default branch: master')).toBeTruthy()
+  expect(rowOf('FinTekkers/fresh').getByText('default branch: not read yet')).toBeTruthy()
+})

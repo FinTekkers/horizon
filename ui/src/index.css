@@ -363,6 +363,7 @@ button { font-family: var(--font-sans); }
 .repo-row__name { color: var(--deep); font-weight: 600; text-decoration: none; }
 .repo-row__name:hover { color: var(--primary); }
 .repo-row__prefix { font: 500 11px var(--font-mono); color: var(--muted); background: var(--subtle); border-radius: 5px; padding: 1px 6px; }
+.repo-row__branch { font: 500 11px var(--font-mono); color: var(--muted); }
 .repo-row__status { font: 500 11px var(--font-sans); color: var(--muted); margin-left: auto; text-align: right; }
 .repo-row__disconnect {
   border: none; background: none; cursor: pointer; color: var(--muted);

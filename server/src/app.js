@@ -2534,12 +2534,14 @@ export function buildApp({ logger = true, onRoute = null } = {}) {
       if (result.error === 'repo_already_connected') {
         return reply.code(409).send({ error: 'That repository is already connected' })
       }
+      // HZ-425: the default branch came with validateRepo's read.
+      store.setDefaultBranch(canonical, check.defaultBranch)
       await github.pollRepo(repo, request.log).catch(() => {})
       // HZ-244: set up the repo's GitHub webhook. Never fails the connect — the
       // outcome rides along as `webhook` for Admin to show.
       const webhook = await webhooks.ensure(canonical).catch(() => ({ status: 'error', lastResponseCode: null, reason: null }))
       broadcast()
-      return { ...result, webhook }
+      return { ...result, defaultBranch: store.getDefaultBranch(canonical)?.branch ?? null, webhook }
     },
   )
 
@@ -3287,10 +3289,17 @@ export function buildApp({ logger = true, onRoute = null } = {}) {
       github.handlePrStateChange(repoFullName, pr.number, { merged: !!pr.merged, state: pr.state }, request.log)
       // HZ-235: a merge into main may leave other items' PRs conflicted —
       // queue the auto-resolve scan (autoResolve.js). Only merges into main
-      // on a connected repo; it never scans inline.
-      if (pr.merged && pr.base?.ref === 'main' && store.listRepos().some((r) => r.repo === repoFullName)) {
+      // (HZ-425: the repo's default branch) on a connected repo; it never
+      // scans inline.
+      const intoDefault = pr.base?.ref === github.defaultBranchOf(repoFullName)
+      if (pr.merged && intoDefault && store.listRepos().some((r) => r.repo === repoFullName)) {
         autoResolve.noteMainMoved(repoFullName, { prs: [pr.number], sha: pr.merge_commit_sha ?? null })
       }
+    }
+    // HZ-425: the repo's default branch changed on GitHub. Only an edit that
+    // names the change, and only past the signature check above.
+    if (event === 'repository' && request.body?.action === 'edited' && request.body?.changes?.default_branch && repoFullName) {
+      store.setDefaultBranch(repoFullName, request.body.repository?.default_branch) // no-op for unconnected repos
     }
     // A published release on a registered repo self-deploys: pull the tag to
     // the host and restart, no SSH/push access needed. Which repos are

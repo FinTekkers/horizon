@@ -42,7 +42,7 @@ const FOREIGN_URL = 'https://old-host.example/horizon/api/webhooks/github'
 const EXPECTED_BODY = {
   name: 'web',
   active: true,
-  events: ['issue_comment', 'issues', 'pull_request', 'release'],
+  events: ['issue_comment', 'issues', 'pull_request', 'release', 'repository'],
   config: { url: HOOK_URL, content_type: 'json', secret: SECRET, insecure_ssl: '0' },
 }
 
@@ -146,7 +146,9 @@ for (const [name, hooks, expected] of [
   ['a hook with an extra push event', [hook(5, { events: [...HOOK_EVENTS, 'push'] })], { status: 'mismatched', lastResponseCode: 200, reason: null }],
   ['a form-encoded hook', [hook(5, { config: { url: HOOK_URL, content_type: 'form' } })], { status: 'mismatched', lastResponseCode: 200, reason: null }],
   ['an inactive hook', [hook(5, { active: false })], { status: 'mismatched', lastResponseCode: 200, reason: null }],
-  ['a hook with the four events reordered', [hook(5, { events: ['release', 'pull_request', 'issues', 'issue_comment'] })], { status: 'ok', lastResponseCode: 200, reason: null }],
+  ['a hook with the five events reordered', [hook(5, { events: ['repository', 'release', 'pull_request', 'issues', 'issue_comment'] })], { status: 'ok', lastResponseCode: 200, reason: null }],
+  // HZ-425: the set from before `repository` still delivers everything else.
+  ['a hook on the legacy four events', [hook(5, { events: ['release', 'pull_request', 'issues', 'issue_comment'] })], { status: 'ok', lastResponseCode: 200, reason: 'legacy_events' }],
   ['a Horizon hook on another host', [hook(5, { config: { url: FOREIGN_URL, content_type: 'json' } })], { status: 'mismatched', lastResponseCode: 200, reason: 'foreign_url' }],
 ]) {
   test(`connect with ${name}: webhook.status ${expected.status}, no POST/PATCH/DELETE`, async () => {
@@ -272,6 +274,24 @@ test('Fix webhook PATCHes Horizon\'s own mismatched hook by id with the full bod
   const m = calls.length
   assert.equal(rowFor(await statusList(), repo).status, 'ok')
   assert.deepEqual(writes(since(m)), [])
+})
+
+// HZ-425: Fix webhook is how an existing hook starts sending `repository`.
+test('Fix webhook PATCHes a hook on the legacy four events to the full five, and it then reads plain ok', async () => {
+  const repo = 'FinTekkers/legacy-events'
+  store.addRepoToProject(projectId, repo)
+  hooksByRepo[repo] = [hook(33, { events: ['issue_comment', 'issues', 'pull_request', 'release'] })]
+  assert.equal(rowFor(await statusList(), repo).reason, 'legacy_events')
+  const n = calls.length
+  const res = await fixRepo(repo)
+  assert.equal(res.statusCode, 200, res.body)
+  assert.deepEqual(res.json(), { ok: true, repo, action: 'repaired', webhook: { status: 'ok', lastResponseCode: 200, reason: null } })
+  const w = writes(since(n))
+  assert.deepEqual(w.map((c) => `${c.method} ${c.url}`), [`PATCH ${GH}/repos/${repo}/hooks/33`])
+  assert.deepEqual(w[0].body.events, ['issue_comment', 'issues', 'pull_request', 'release', 'repository'])
+
+  hooksByRepo[repo] = [hook(33)]
+  assert.deepEqual(rowFor(await statusList(), repo), { repo, status: 'ok', lastResponseCode: 200, reason: null })
 })
 
 test('Fix webhook with only a foreign-host hook POSTs a new hook and does not PATCH', async () => {

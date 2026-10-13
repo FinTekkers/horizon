@@ -198,7 +198,7 @@ function triggerText({ prs, sha, boot }) {
 }
 
 async function scanRepo(repo, trigger, decided) {
-  const head = await github.getBranchSha(repo, 'main').catch(() => null)
+  const head = await github.getBranchSha(repo, github.defaultBranchOf(repo)).catch(() => null)
   const sha = head || trigger.sha
   if (sha) {
     lastScannedSha.set(repo, sha)
