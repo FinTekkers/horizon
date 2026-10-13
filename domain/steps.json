@@ -12,6 +12,13 @@
       "phases": ["Plan", "Plan the run", "Run", "Review"]
     }
   },
+  "lanes": {
+    "trivial": {
+      "itemKind": "change",
+      "check": ["Define the outcome", "Define how we measure success", "Set guardrails"],
+      "skip": ["Plan options & trade-offs (pros / cons)", "Approve the high-level design", "Architecture review", "Summarize reviews & recommend"]
+    }
+  },
   "steps": [
     { "phase": 0, "kind": "agent", "agent": "PM", "label": "Define the outcome", "runsIn": "pm", "providerOverrideEligible": true },
     { "phase": 0, "kind": "agent", "agent": "PM", "label": "Define how we measure success", "runsIn": "pm", "providerOverrideEligible": true },

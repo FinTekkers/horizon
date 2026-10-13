@@ -14,7 +14,7 @@ from pathlib import Path
 
 import pytest
 
-from domain.py import reasons
+from domain.py import reasons, steps
 from farm import checks, pm_steps, step_agent
 from farm.agent_runner import AgentError, AgentExhaustedError, AgentMessageTooLargeError
 from farm.personas import DEFAULT_PERSONAS, PERSONA_DIR, PERSONAS
@@ -4062,3 +4062,71 @@ def test_a_change_items_prompt_gets_no_interpreter_line(tmp_path):
     """Guardrail 2: only Run plan reads the venv — a change item's step with
     a repo_dir in its task gets no interpreter line."""
     assert "interpreter:" not in build_prompt(_run_plan_task(tmp_path, label="Specialist agent implements"))
+
+
+# ---- HZ-435: the trivial lane's prompts ----
+# Step 8 of a trivial item reviews the short plan only for negative impacts;
+# with no lane every step's config, role and persona line are today's.
+
+ROLES_DIR = Path(step_agent.__file__).resolve().parent / "roles"
+
+
+def _captured_role(monkeypatch, index, label, lane="absent"):
+    captured = {}
+    monkeypatch.setattr(step_agent, "run_agent", capture_run_agent(captured))
+    task = make_task(index, label)
+    if lane != "absent":
+        task["item"]["lane"] = lane
+    execute(task)
+    return captured
+
+
+def test_a_trivial_items_qa_step_asks_only_about_negative_impacts(monkeypatch):
+    captured = _captured_role(monkeypatch, 8, "QA reviews the test plan", lane="trivial")
+    role = captured["append_system"]
+    assert role.startswith((ROLES_DIR / "qa_trivial.md").read_text())
+    assert "only for potential negative impacts" in role
+    assert "**What could break**" in role
+    assert "**What depends on it**" in role
+    # None of the full review's coverage asks reach the narrow one.
+    assert "does planned testing actually verify the success metric" not in role
+    assert "### Required" not in role
+    # Same persona as the full QA review: only the role file differs.
+    assert persona_md("qa", DEFAULT_PERSONAS["qa"]) in role
+
+
+def test_a_non_trivial_qa_step_prompt_is_unchanged(monkeypatch):
+    without_lane = _captured_role(monkeypatch, 8, "QA reviews the test plan")
+    null_lane = _captured_role(monkeypatch, 8, "QA reviews the test plan", lane=None)
+    unknown_lane = _captured_role(monkeypatch, 8, "QA reviews the test plan", lane="banana")
+    assert without_lane["append_system"].startswith((ROLES_DIR / "qa.md").read_text())
+    for other in (null_lane, unknown_lane):
+        assert other["append_system"] == without_lane["append_system"]
+        assert other["prompt"] == without_lane["prompt"]
+
+
+def test_a_trivial_items_plan_step_drafts_the_short_plan(monkeypatch):
+    captured = _captured_role(monkeypatch, 6, "Draft implementation plan", lane="trivial")
+    assert captured["append_system"] == (ROLES_DIR / "eng_plan_trivial.md").read_text()
+
+
+def test_with_no_lane_every_step_config_and_persona_line_is_unchanged():
+    for kind, table in step_agent.STEP_CONFIGS.items():
+        for label in table:
+            assert step_agent._step_config(kind, label, None) == step_agent._step_config(kind, label), (kind, label)
+            assert step_agent._step_config(kind, label, None) == table[label], (kind, label)
+            index = steps.by_kind_label(kind, label)["index"]
+            task = make_task(index, label)
+            task["item"]["kind"] = kind
+            plain = step_agent._persona_line(task)
+            task["item"]["lane"] = None
+            assert step_agent._persona_line(task) == plain, (kind, label)
+
+
+def test_lane_overrides_only_re_point_change_steps():
+    for lane, overrides in step_agent.LANE_STEP_CONFIGS.items():
+        assert set(overrides) <= set(STEP_CONFIG), lane
+        for label, config in overrides.items():
+            assert (ROLES_DIR / config[0]).is_file(), config[0]
+            # Tools and persona are the full step's; only the role file differs.
+            assert config[1:] == STEP_CONFIG[label][1:], label

@@ -4,7 +4,17 @@ import { isItemKind, itemKindInfo } from '../../../domain/js/lifecycle.js'
 // including an item stored before kinds existed, with no kind at all — shows
 // nothing, so change cards render as before. Any other kind shows its label
 // from domain/steps.json; today that is only Task, hence the name.
-export default function TaskBadge({ kind }) {
-  if (!isItemKind(kind) || kind === 'change') return null
-  return <span className="kind-badge">{itemKindInfo(kind).label}</span>
+// HZ-435: `lane` (laneOf(item)) adds the lane's own badge, e.g. `trivial`;
+// null, the full pipeline, adds nothing.
+export default function TaskBadge({ kind, lane = null }) {
+  const kindBadge = isItemKind(kind) && kind !== 'change' ? <span className="kind-badge">{itemKindInfo(kind).label}</span> : null
+  if (!lane) return kindBadge
+  return (
+    <>
+      {kindBadge}
+      <span className="kind-badge lane-badge" data-testid="lane-badge">
+        {lane}
+      </span>
+    </>
+  )
 }

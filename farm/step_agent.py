@@ -163,6 +163,17 @@ TASK_STEP_CONFIG = {
 
 STEP_CONFIGS = {"change": STEP_CONFIG, "task": TASK_STEP_CONFIG}
 
+# HZ-435: a lane's narrower prompts, keyed by the lane the server sends
+# (domain/steps.json's `lanes`). Each entry overrides one step its kind
+# already runs, with the same tools and persona — only the role file differs.
+# A step with no entry here, and every item with no lane, keeps STEP_CONFIGS.
+LANE_STEP_CONFIGS = {
+    "trivial": {
+        ENG_PLAN_LABEL: ("eng_plan_trivial.md", True, PLANNER_TOOLS, None),
+        QA_PLAN_LABEL: ("qa_trivial.md", True, PLANNER_TOOLS, "qa"),
+    },
+}
+
 # HZ-369: these steps follow ONLY the owner's per-step choice. A persona's
 # provider and a bare FARM_PROVIDER never move them off today's routing.
 # Implement with no choice keeps the HZ-117 lock at runtime. HZ-370: the PM
@@ -227,6 +238,13 @@ for _kind, _view in steps.FARM_VIEWS.items():
     _assert_step_config_matches_table(
         set(STEP_CONFIGS.get(_kind, {})), {s["label"] for s in _view if s["runsIn"] in ("farm", "pm")}
     )
+# HZ-435: a lane only re-points steps the change table already runs.
+for _lane, _overrides in LANE_STEP_CONFIGS.items():
+    if not set(_overrides) <= set(STEP_CONFIG):
+        raise RuntimeError(
+            f"step_agent.LANE_STEP_CONFIGS[{_lane!r}] names steps STEP_CONFIG does not run: "
+            f"{sorted(set(_overrides) - set(STEP_CONFIG))}"
+        )
 
 
 def item_kind(item: dict) -> str:
@@ -236,13 +254,22 @@ def item_kind(item: dict) -> str:
     return kind if isinstance(kind, str) and kind else "change"
 
 
-def _step_config(kind: str, label: str) -> tuple:
+def item_lane(item: dict) -> str | None:
+    """HZ-435: the item's lane as the server sent it, or None. An unknown lane,
+    or none at all (an older server), runs the kind's own prompts."""
+    lane = item.get("lane")
+    return lane if isinstance(lane, str) and lane in LANE_STEP_CONFIGS else None
+
+
+def _step_config(kind: str, label: str, lane: str | None = None) -> tuple:
     """HZ-383: (role file, needs artifact, tools, persona agent) for this
     kind's step with this label. Raises KeyError for a label that kind does
     not run on the farm — a Task label sent as a change step, say — rather
-    than borrowing another kind's runner."""
+    than borrowing another kind's runner. HZ-435: a lane's override wins only
+    for a step it names; with no lane the result is exactly as before."""
     steps.by_kind_label(kind, label)
-    return STEP_CONFIGS[kind][label]
+    override = LANE_STEP_CONFIGS.get(lane, {}).get(label) if lane is not None else None
+    return override or STEP_CONFIGS[kind][label]
 
 
 def _is_read_only(kind: str, label: str) -> bool:
@@ -396,7 +423,11 @@ def _persona_line(task: dict) -> str:
     named with its agent, or an explicit "generalist" for the steps that
     compose none. Pre-HZ-125 this printed one resolved id for every step —
     including the generalist planning steps, which never received it."""
-    config = STEP_CONFIGS.get(item_kind(task["item"]), {}).get(task["step"]["label"])
+    item = task["item"]
+    try:
+        config = _step_config(item_kind(item), task["step"]["label"], item_lane(item))
+    except KeyError:
+        config = None
     persona_agent = config[3] if config else None
     if not persona_agent:
         return "  persona: (none — this step is generalist)"
@@ -1967,7 +1998,7 @@ def _execute(task: dict, guard: HandoffGuard) -> dict:
     # HZ-383: the item's kind, then the label, picks the runner — never the
     # label alone, and never the index.
     kind = item_kind(item)
-    role_file, wants_artifact, tools, persona_agent = _step_config(kind, label)
+    role_file, wants_artifact, tools, persona_agent = _step_config(kind, label, item_lane(item))
     table = steps.FARM_VIEWS[kind]
     max_turns, timeout_s = steps.budget_for_label(table, label)
     provider_locked = steps.provider_locked_for(table, label)

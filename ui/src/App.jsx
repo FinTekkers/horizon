@@ -304,8 +304,9 @@ function AuthenticatedApp({ user, onLogout }) {
   const openComposer = (mode, itemId, opts = {}) => {
     const item = items.find((it) => it.id === itemId)
     const atGate = mode === 'reject' && item && STEPS[item.cursor]?.kind === 'gate'
-    const stepOptions = atGate ? reworkTargets(item.cursor) : []
-    const defaultTargetLabel = stepOptions.length ? STEPS[defaultReworkTarget(item.cursor)].label : null
+    // HZ-435: with the item, a row its lane skips is never offered.
+    const stepOptions = atGate ? reworkTargets(item.cursor, undefined, item) : []
+    const defaultTargetLabel = stepOptions.length ? STEPS[defaultReworkTarget(item.cursor, undefined, item)].label : null
     // HZ-354: the abandon dialog lists what this item blocks, as of opening.
     const dependents = mode === 'abandon' ? item?.dependents || [] : []
     setComposer({ open: true, mode, itemId, phase: opts.phase ?? null, target: opts.target || '', stepOptions, defaultTargetLabel, dependents })
