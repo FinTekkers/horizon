@@ -151,6 +151,8 @@ def test_implement_step_with_no_check_commands_and_no_waiver_fails_by_name(tmp_p
 def test_implement_step_fails_when_checks_fail(tmp_path, monkeypatch):
     ws, origin = make_git_workspace(tmp_path)
     monkeypatch.setattr(step_agent, "ensure_item_worktree", lambda repo, item_id: ws)
+    # HZ-458: today's single check run; the fix loop has its own tests.
+    monkeypatch.setenv("FARM_FIX_LOOP_CAP", "0")
     monkeypatch.setenv("FARM_CHECK_CMD", "exit 1")
 
     with pytest.raises(RuntimeError, match="repo checks failed"):
@@ -328,6 +330,26 @@ def test_implement_role_treats_test_contract_as_binding():
     assert "It overrides the Required list in QA's plan review." in text
     assert "Optional cases are allowed only if cheap." in text
     assert "each Test contract case needs a test that would fail without your change." in text
+
+
+def test_implement_role_asks_for_targeted_tests_only():
+    """HZ-458 metric 1: the agent runs the tests for what it changed; the
+    farm's checks run the full suites, once."""
+    text = _role_text("eng_implement.md")
+    # No instruction to run the full suites, or to get them green itself.
+    assert "run every check the harness will run" not in text
+    assert "A red check discards the whole attempt." not in text
+    for suite in ("npm test", "npm run lint", "npm run test:e2e", "pytest"):
+        for sentence in re.split(r"(?<=[.:])\s", text):
+            if f"`{suite}`" in sentence or f"`{suite}` with no path" in sentence:
+                assert sentence.startswith("Do not run the full suites"), sentence
+    assert (
+        "run only your new tests and the test files for the files you touched, for example "
+        "`node --test server/test/<file>.test.mjs` or `pytest farm/tests/test_<x>.py`, and get them green."
+    ) in text
+    assert "Do not run the full suites (`npm test`, `npm run lint`, `npm run test:e2e`, or `pytest` with no path)" in text
+    assert "If a farm check fails, its failure output comes back to you in this same session. Fix only that failure." in text
+    assert "do not delete, skip or loosen a test, lint rule or check config to turn a check green." in text
 
 
 def test_implement_role_tells_agents_to_shrink_screenshots_before_reading_them():
@@ -2014,6 +2036,8 @@ def test_checks_failure_after_finished_run_pushes_checkpoint_and_next_attempt_re
     with the failure in its prompt."""
     ws, origin = make_git_workspace(tmp_path)
     monkeypatch.setattr(step_agent, "ensure_item_worktree", lambda repo, item_id: ws)
+    # HZ-458: today's single check run; the fix loop has its own tests.
+    monkeypatch.setenv("FARM_FIX_LOOP_CAP", "0")
     monkeypatch.setenv("FARM_CHECK_CMD", "echo 'ok 1 - fine'; echo 'not ok 2 - widget renders'; echo '# fail 1'; exit 1")
     monkeypatch.setattr(step_agent, "run_agent", finished_run(ws))
     spies = []
@@ -2059,6 +2083,8 @@ def test_checks_failure_with_no_edits_still_checkpoints_the_failure(tmp_path, mo
     must still learn what failed — so the checkpoint is committed empty."""
     ws, origin = make_git_workspace(tmp_path)
     monkeypatch.setattr(step_agent, "ensure_item_worktree", lambda repo, item_id: ws)
+    # HZ-458: today's single check run; the fix loop has its own tests.
+    monkeypatch.setenv("FARM_FIX_LOOP_CAP", "0")
     monkeypatch.setenv("FARM_CHECK_CMD", "echo 'FAILED tests/test_main.py::test_broken_on_main'; exit 1")
     monkeypatch.setattr(step_agent, "run_agent", finished_run(ws, filename=None))
 
@@ -2103,6 +2129,8 @@ def test_check_output_secrets_never_reach_the_commit_body_or_log(tmp_path, monke
     monkeypatch.setattr(step_agent, "ensure_item_worktree", lambda repo, item_id: ws)
     monkeypatch.setenv("GITHUB_TOKEN", secret)
     monkeypatch.setattr(checks, "_check_env", lambda: {k: v for k, v in os.environ.items() if k != "GITHUB_TOKEN"})
+    # HZ-458: today's single check run; the fix loop has its own tests.
+    monkeypatch.setenv("FARM_FIX_LOOP_CAP", "0")
     monkeypatch.setenv("FARM_CHECK_CMD", f"echo \"not ok 1 - auth with $(cat {secret_file})\"; exit 1")
     monkeypatch.setattr(step_agent, "run_agent", finished_run(ws))
 

@@ -159,7 +159,9 @@ def run_agent(
     disallowed_tools: str | None = None,
 ) -> dict:
     """Returns {"result": <final text>, "session_id": <id>, "provider": <name>,
-    "model": <id or None>, "command_id": <id or None>}.
+    "model": <id or None>, "command_id": <id or None>}, plus "num_turns" (HZ-458)
+    when the provider reports the turns it used — Claude does; it may be
+    missing or None, and a caller must then not assume any count.
 
     retry_fresh=False (HZ-158) is handed to the provider: a failed resume
     raises instead of quietly starting a fresh session. Every caller but the

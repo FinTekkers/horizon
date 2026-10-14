@@ -610,6 +610,20 @@ try {
 } catch {
   // column already exists
 }
+// HZ-458: the time an implement run spent in the farm's repo checks, which
+// the step clock does not count, and when its open check window began (NULL
+// while no checks run). Additive: 0 / NULL on every earlier row, whose timer
+// maths is then unchanged.
+for (const sql of [
+  'ALTER TABLE step_run ADD COLUMN checks_ms INTEGER NOT NULL DEFAULT 0',
+  'ALTER TABLE step_run ADD COLUMN checks_started_at TEXT',
+]) {
+  try {
+    db.exec(sql)
+  } catch {
+    // column already exists
+  }
+}
 // HZ-429: a Task's Verify & report verdict and its 1-3 line summary, so the
 // item page shows a failed run as failed without parsing the markdown. NULL
 // on every other run and on runs before this column — no backfill: those

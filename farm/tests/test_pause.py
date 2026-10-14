@@ -360,6 +360,8 @@ def post(url, json=None, timeout=None):
     Path(cfg["posted"]).write_text(__import__("json").dumps(json))
 
 step_agent.httpx.post = post
+# HZ-458: the checks start/end notify is not the result this file captures.
+step_agent._notify_checks = lambda run_id, phase: None
 
 def run_agent(prompt, **kwargs):
     if cfg["step"] == "implement":

@@ -2049,6 +2049,34 @@ def internal_snapshot():
         return JSONResponse({"error": "could not reach horizon server"}, status_code=502)
 
 
+def _notify_checks(run_id, phase: str) -> None:
+    """HZ-458: relays an implement run's "checks started/ended" to the server,
+    which pauses the run's step clock in between. Fails OPEN like
+    _notify_started: a lost call leaves the server's clock running, which is
+    how a run was timed before."""
+    url = f"{HORIZON_URL}/api/farm/steps/{run_id}/checks"
+    for attempt in (1, 2):
+        try:
+            res = httpx.post(url, json={"phase": phase}, headers={"x-farm-secret": SHARED_SECRET}, timeout=15)
+            if res.status_code != 200:
+                print(f"farmd: checks {phase} notify for run {run_id} -> {res.status_code}", flush=True)
+            return
+        except Exception as exc:
+            print(f"farmd: checks {phase} notify attempt {attempt} for run {run_id} failed: {exc}", flush=True)
+            time.sleep(2)
+
+
+@app.post("/internal/steps/checks")
+async def steps_checks(request: Request):
+    """The implement step reports its checks starting and ending here; we
+    forward to the Node server with the secret. Always ok: see _notify_checks."""
+    body = await request.json()
+    run_id, phase = body.get("run_id"), body.get("phase")
+    if isinstance(run_id, int) and phase in ("start", "end"):
+        await asyncio.to_thread(_notify_checks, run_id, phase)
+    return {"ok": True}
+
+
 @app.post("/internal/steps/result")
 async def steps_result(request: Request):
     """Agents report here; we forward to the Node server with the secret."""

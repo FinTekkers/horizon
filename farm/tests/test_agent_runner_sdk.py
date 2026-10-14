@@ -84,6 +84,8 @@ def test_sdk_path_streams_events_and_returns_result(sdk_runner, monkeypatch, cap
         # HZ-398: the model that ran — eng's domain/personas.json default.
         "model": resolve_model("eng"),
         "command_id": None,
+        # HZ-458: the turns the run used, from the ResultMessage.
+        "num_turns": 2,
     }
     # The comma-joined public param must reach the SDK as a list.
     assert seen_options["options"].allowed_tools == ["Read", "Glob", "Grep"]
