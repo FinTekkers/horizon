@@ -81,6 +81,25 @@ def test_ensure_item_worktree_is_idempotent_and_reuses_the_same_worktree(isolate
     assert (ws_second / "scratch.txt").exists()  # reused untouched, not recreated
 
 
+def test_ensure_item_worktree_matches_by_exact_path_not_prefix(isolated_workspaces_dir):
+    # HZ-452: `…/x-11` is a prefix of `…/x-110`; a substring check treated
+    # x-11 as already registered and never created its folder.
+    tmp_path = isolated_workspaces_dir
+    make_repo_hub(tmp_path)
+    workspaces.ensure_item_worktree("acme/demo", "x-110")
+    workspaces.ensure_item_worktree("acme/demo", "x-112")
+
+    ws = workspaces.ensure_item_worktree("acme/demo", "x-11")
+
+    assert ws.exists()
+    assert subprocess.run(
+        ["git", "-C", str(ws), "rev-parse", "--is-inside-work-tree"], capture_output=True, text=True
+    ).stdout.strip() == "true"
+    (ws / "scratch.txt").write_text("in progress\n")
+    assert workspaces.ensure_item_worktree("acme/demo", "x-11") == ws
+    assert (ws / "scratch.txt").exists()  # reused untouched, not recreated
+
+
 def test_ensure_item_worktree_raises_when_the_hub_is_not_provisioned(isolated_workspaces_dir):
     with pytest.raises(RuntimeError, match="not provisioned"):
         workspaces.ensure_item_worktree("acme/never-started", "T-1")

@@ -272,7 +272,14 @@ def ensure_item_worktree(repo_full: str, item_id: str) -> Path:
 
     with hub_lock(repo_full):
         _git(hub, "worktree", "prune")
-        registered = str(item_path) in _git(hub, "worktree", "list", "--porcelain").stdout
+        # HZ-452: exact (resolved) path match per `worktree <path>` line — a
+        # substring test let `…/ls-110` count as `…/ls-11` already existing.
+        porcelain = _git(hub, "worktree", "list", "--porcelain").stdout
+        registered = any(
+            Path(line[len("worktree "):]).resolve() == item_path.resolve()
+            for line in porcelain.splitlines()
+            if line.startswith("worktree ")
+        )
     if registered:
         return item_path
 
