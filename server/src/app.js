@@ -2370,6 +2370,7 @@ export function buildApp({ logger = true, onRoute = null } = {}) {
       extraServices: { type: 'array', maxItems: 10, items: { type: 'string', maxLength: 300 } },
       venvDir: { type: ['string', 'null'], minLength: 1, maxLength: 300 },
       taskDir: { type: ['string', 'null'], minLength: 1, maxLength: 300 },
+      buildCommand: { type: ['string', 'null'], minLength: 1, maxLength: 500 },
     },
   }
   const DEPLOY_TARGET_WRITE_RESPONSES = {

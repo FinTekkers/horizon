@@ -991,6 +991,13 @@ if (!db.prepare('PRAGMA table_info(deploy_target)').all().some((column) => colum
   db.exec('ALTER TABLE deploy_target ADD COLUMN task_dir TEXT')
 }
 
+// HZ-442: the command a service deploy runs in its checkout instead of the
+// wrapper's own build (deploy.js passes it as HORIZON_BUILD_COMMAND).
+// Additive and nullable: NULL is "run the wrapper's build"; no backfill.
+if (!db.prepare('PRAGMA table_info(deploy_target)').all().some((column) => column.name === 'build_command')) {
+  db.exec('ALTER TABLE deploy_target ADD COLUMN build_command TEXT')
+}
+
 // HZ-333: the deploy queue (server/src/deployQueue.js). Step 14 joins its
 // target's open batch instead of publishing; one batch publishes one release
 // of main and deploys once. tag is saved before any GitHub call, so a resumed

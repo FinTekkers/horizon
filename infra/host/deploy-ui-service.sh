@@ -10,6 +10,10 @@
 # appended to $STATE_DIR/self-deploy.log; a failed health-check after restart
 # exits non-zero and leaves the failure in the log rather than retrying
 # forever or rolling back silently.
+#
+# HORIZON_BUILD_COMMAND (HZ-442, the target's Admin-set build command), when
+# non-empty, runs with bash -c in the checkout instead of npm ci and npm run
+# build. The build stage logs which one ran: build: <command>.
 set -euo pipefail
 
 TAG="${1:-}"
@@ -60,8 +64,14 @@ git checkout --detach "$REF"
 COMMIT="$(git rev-parse HEAD)"
 
 STAGE="build"
-npm ci
-npm run build
+if [ -n "${HORIZON_BUILD_COMMAND:-}" ]; then
+  log "build: $HORIZON_BUILD_COMMAND"
+  bash -c "$HORIZON_BUILD_COMMAND"
+else
+  log "build: npm ci && npm run build"
+  npm ci
+  npm run build
+fi
 
 STAGE="restart"
 sudo systemctl restart "$SERVICE_NAME"
