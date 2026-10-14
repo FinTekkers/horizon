@@ -1848,7 +1848,6 @@ def _run_and_parse(
         deadline=time.monotonic() + timeout_s,
         provider_locked=provider_locked,
     )
-    deny = {"disallowed_tools": disallowed_tools} if disallowed_tools else {}
     try:
         reply = run_agent(
             prompt,
@@ -1863,7 +1862,7 @@ def _run_and_parse(
             provider=provider,
             model_choice=model_choice,
             provider_locked=provider_locked,
-            **deny,
+            disallowed_tools=disallowed_tools,
         )
     except AgentExhaustedError as exc:
         parsed, notes = _on_exhaustion(exc, required_keys=required_keys, ctx=ctx, guard=guard, salvage=True)
@@ -1888,7 +1887,7 @@ def _run_and_parse(
             provider=provider,
             model_choice=model_choice,
             provider_locked=provider_locked,
-            **deny,
+            disallowed_tools=disallowed_tools,
         )
         return produced["result"]
 
