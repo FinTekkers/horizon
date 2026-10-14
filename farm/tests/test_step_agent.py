@@ -156,17 +156,16 @@ def test_implement_step_fails_when_checks_fail(tmp_path, monkeypatch):
     with pytest.raises(RuntimeError, match="repo checks failed"):
         execute(make_task(11, "Specialist agent implements", repo="acme/demo"))
 
-    # Guardrails are enforced before the finalize push, not after: the only
-    # thing pushed is a WIP checkpoint of the work (HZ-184), never the
-    # finished commit a PR is opened from.
+    # Guardrails are enforced before the finalize step, not after: the work
+    # is pushed to the item's own branch as a checkpoint before the checks
+    # (HZ-456), the run raises, and no PR is opened from it.
     log_text = subprocess.run(
-        ["git", "--git-dir", str(origin), "log", "--format=%s", "horizon/t-1"],
+        ["git", "--git-dir", str(origin), "log", "--format=%s", "main..horizon/t-1"],
         capture_output=True,
         text=True,
         check=True,
     ).stdout
-    assert log_text.splitlines()[0] == f"T-1: {step_agent.CHECKPOINT_MARKER} (Horizon Eng agent)"
-    assert "T-1: Test item (Horizon Eng agent)" not in log_text
+    assert log_text.splitlines() == ["T-1: Test item (Horizon Eng agent)"]
 
 
 def test_implement_step_runs_exactly_the_tasks_configured_check_commands(tmp_path, monkeypatch):
@@ -1992,6 +1991,11 @@ def origin_body(origin, ref="horizon/t-1"):
     ).stdout
 
 
+def precheck_state_text(ws):
+    """HZ-456: the git-dir file naming the commit pushed before the checks."""
+    return step_agent._git_path(ws, step_agent.PRECHECK_CHECKPOINT).read_text()
+
+
 def finished_run(ws, filename="fake_implementation.txt", text="finished work\n"):
     """A run_agent that completes normally after writing one file."""
 
@@ -2020,11 +2024,13 @@ def test_checks_failure_after_finished_run_pushes_checkpoint_and_next_attempt_re
         execute(make_task(11, "Specialist agent implements", repo="acme/demo"))
 
     assert spies == []
-    assert origin_log(origin).splitlines()[0] == f"T-1: {step_agent.CHECKPOINT_MARKER} (Horizon Eng agent)"
-    body = origin_body(origin)
-    assert body.startswith("cause: checks-failed")
-    assert "not ok 2 - widget renders" in body
-    assert "# fail 1" in body  # a '#' line survives the commit message cleanup
+    # HZ-456: the farm commit was pushed before the checks; the failure is
+    # recorded beside it, never amended into it.
+    assert origin_log(origin).splitlines()[0] == "T-1: Test item (Horizon Eng agent)"
+    state = precheck_state_text(ws)
+    assert state.splitlines()[:2] == [rev(ws, "HEAD"), "checks-failed"]
+    assert "not ok 2 - widget renders" in state
+    assert "# fail 1" in state
 
     # Attempt 2: checks now pass. Leftovers in the worktree are scrubbed, but
     # attempt 1's work is there before the agent starts — from the checkpoint.
@@ -2105,7 +2111,8 @@ def test_check_output_secrets_never_reach_the_commit_body_or_log(tmp_path, monke
 
     assert secret not in str(err.value) and "not ok 1 - auth with [redacted]" in str(err.value)
     assert secret not in err.value.digest
-    assert secret not in origin_body(origin) and "[redacted]" in origin_body(origin)
+    assert secret not in precheck_state_text(ws) and "[redacted]" in precheck_state_text(ws)
+    assert secret not in origin_body(origin)
     assert secret not in capsys.readouterr().out
 
 
@@ -3579,11 +3586,12 @@ def _salvage_outcomes(monkeypatch):
 def test_a_git_status_check_passes_because_the_farm_committed_first(tmp_path, monkeypatch):
     ws, origin = make_git_workspace(tmp_path)
     monkeypatch.setattr(step_agent, "ensure_item_worktree", lambda repo, item_id: ws)
-    # Clean tree, the agent's file in the checked commit, nothing pushed yet.
+    # Clean tree, the agent's file in the checked commit, and (HZ-456) that
+    # commit already pushed to the item's branch while the checks run.
     monkeypatch.setenv(
         "FARM_CHECK_CMD",
         'test -z "$(git status --porcelain)" && git cat-file -e HEAD:fake_implementation.txt'
-        " && ! git ls-remote --exit-code origin refs/heads/horizon/t-1",
+        ' && test "$(git ls-remote origin refs/heads/horizon/t-1 | cut -f1)" = "$(git rev-parse HEAD)"',
     )
     monkeypatch.setattr(step_agent, "run_agent", finished_run(ws))
 
@@ -3595,7 +3603,7 @@ def test_a_git_status_check_passes_because_the_farm_committed_first(tmp_path, mo
     assert "fake_implementation.txt" in _origin_files(origin)
 
 
-def test_failing_checks_push_only_the_amended_checkpoint(tmp_path, monkeypatch):
+def test_failing_checks_keep_the_pushed_farm_commit(tmp_path, monkeypatch):
     ws, origin = make_git_workspace(tmp_path)
     monkeypatch.setattr(step_agent, "ensure_item_worktree", lambda repo, item_id: ws)
     monkeypatch.setenv("FARM_CHECK_CMD", "exit 1")
@@ -3610,8 +3618,8 @@ def test_failing_checks_push_only_the_amended_checkpoint(tmp_path, monkeypatch):
     assert finalized == []
     assert outcomes == ["saved"]
     assert _commits_over(origin, "main") == 1
-    assert origin_log(origin).splitlines()[0] == f"T-1: {step_agent.CHECKPOINT_MARKER} (Horizon Eng agent)"
-    assert origin_body(origin).startswith("cause: checks-failed")
+    assert origin_log(origin).splitlines()[0] == "T-1: Test item (Horizon Eng agent)"
+    assert precheck_state_text(ws).splitlines()[1] == "checks-failed"
     assert "fake_implementation.txt" in _origin_files(origin)
 
 
@@ -3659,7 +3667,9 @@ def test_a_check_that_moves_head_pushes_nothing(tmp_path, monkeypatch):
     with pytest.raises(RuntimeError, match="HEAD moved during the checks"):
         execute(make_task(11, "Specialist agent implements", repo="acme/demo"))
 
-    assert _origin_rev(origin) == ""
+    # HZ-456: only the farm commit pushed before the checks — never `drift`.
+    assert origin_log(origin).splitlines()[0] == "T-1: Test item (Horizon Eng agent)"
+    assert _origin_rev(origin) == _sh(ws, "rev-parse", "HEAD~1")
 
 
 def test_a_checks_failed_checkpoint_of_a_merge_keeps_main_as_a_parent(tmp_path, monkeypatch):

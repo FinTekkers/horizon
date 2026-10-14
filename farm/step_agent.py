@@ -315,10 +315,18 @@ CAUSE_CHECKS_FAILED = "checks-failed"
 CAUSE_PAUSED = "paused"
 # HZ-321: a Horizon self-deploy stopped this attempt (see _deploy_checkpoint).
 CAUSE_DEPLOY = "deploy"
+# HZ-456: the work was committed and pushed before the checks, and the
+# attempt stopped (time limit, farm restart) before they finished.
+CAUSE_UNCHECKED = "unchecked"
 # HZ-321: a deploy checkpoint committed but not pushed names itself in this
 # file (under the worktree's git dir) as "<branch> <sha>", so the next
 # attempt resumes from it instead of scrubbing it (prepare_branch).
 UNPUSHED_CHECKPOINT = "horizon-unpushed-checkpoint"
+# HZ-456: the farm commit pushed before the checks names itself in this file
+# (under the worktree's git dir) as "<sha>\n<cause>\n<digest>". The cause is
+# CAUSE_UNCHECKED until the checks fail, then CAUSE_CHECKS_FAILED with their
+# digest — the pushed commit is never amended to carry it.
+PRECHECK_CHECKPOINT = "horizon-precheck-checkpoint"
 
 # HZ-194: files a checkpoint never commits, matched on the basename at any
 # depth (config/.env, deploy/id_rsa). .gitignore is already honoured by
@@ -579,6 +587,9 @@ class PreparedBranch(NamedTuple):
     lease_sha: str
     # Prompt text describing a checkpoint rebase, or "".
     note: str
+    # HZ-456: HEAD is the remote checkpoint rebased onto main, so it no longer
+    # contains lease_sha — and may replace it. State, never read from `note`.
+    rebased: bool = False
 
 
 def prepare_branch(ws: Path, item: dict, *, rebase_checkpoint: bool = False) -> PreparedBranch:
@@ -605,8 +616,8 @@ def prepare_branch(ws: Path, item: dict, *, rebase_checkpoint: bool = False) -> 
     lease_sha = remote_branch.stdout.strip() if remote_branch.returncode == 0 else ""
     default = default_branch(ws)
     git(ws, "checkout", "-B", branch, unpushed or lease_sha or f"origin/{default}")
-    note = _rebase_checkpoint(ws, default, unpushed or lease_sha) if rebase_checkpoint else ""
-    return PreparedBranch(branch, lease_sha, note)
+    note, rebased = _rebase_checkpoint(ws, default, unpushed or lease_sha) if rebase_checkpoint else ("", False)
+    return PreparedBranch(branch, lease_sha, note, rebased)
 
 
 def _git_path(ws: Path, name: str) -> Path:
@@ -632,29 +643,30 @@ def _take_unpushed_checkpoint(ws: Path, branch: str) -> str:
     return sha
 
 
-def _rebase_checkpoint(ws: Path, default: str, lease_sha: str) -> str:
+def _rebase_checkpoint(ws: Path, default: str, lease_sha: str) -> tuple[str, bool]:
     """HZ-184: a resumed checkpoint is rebased onto current origin/<default>
     first, so fixes that landed on main since (HZ-125) reach it. A conflicting
     rebase is abandoned and the attempt resumes from the checkpoint as it was —
     the work is never lost to a rebase. Runs only in this item's worktree;
     nothing is pushed here. `lease_sha` is the commit the branch was checked
-    out at, which the abort path returns to."""
+    out at, which the abort path returns to. Returns (prompt note, whether
+    HEAD was rebased)."""
     subject = git(ws, "log", "-1", "--format=%s", check=False).stdout.strip()
     if CHECKPOINT_MARKER not in subject:
-        return ""
+        return "", False
     if not lease_sha:
         # HEAD came from origin/<default>, so it is no checkpoint of this
         # item's — and the abort path below must never `reset --hard ''`.
-        return ""
+        return "", False
     if git(ws, "merge-base", "--is-ancestor", f"origin/{default}", "HEAD", check=False).returncode == 0:
-        return ""  # already on current main
+        return "", False  # already on current main
     rebased = git(ws, "rebase", f"origin/{default}", check=False)
     if rebased.returncode == 0:
         log(f"rebased the WIP checkpoint onto origin/{default}")
         return (
             f"\n\nNOTE: the checkpoint was rebased onto current origin/{default} before this attempt "
             "started, so fixes that landed on main since the previous attempt are included."
-        )
+        ), True
     git(ws, "rebase", "--abort", check=False)
     git(ws, "reset", "--hard", lease_sha)
     log(f"rebasing the WIP checkpoint onto origin/{default} conflicted — resuming it unrebased")
@@ -662,7 +674,7 @@ def _rebase_checkpoint(ws: Path, default: str, lease_sha: str) -> str:
         f"\n\nNOTE: the checkpoint could not be rebased onto current origin/{default} (the rebase "
         f"conflicted), so this attempt resumes it unrebased, on an older origin/{default}. Fixes that "
         "landed on main since are NOT in this tree."
-    )
+    ), False
 
 
 def merge_default_branch(ws: Path) -> list[str]:
@@ -720,13 +732,36 @@ def _merge_main_note(conflicted: list[str]) -> str:
     )
 
 
-def _checkpoint_cause(ws: Path) -> tuple[str, str] | None:
+def _precheck_state(ws: Path) -> tuple[str, str] | None:
+    """HZ-456: (cause, digest) of the farm commit pushed before the checks,
+    while HEAD is still that commit (see PRECHECK_CHECKPOINT), else None."""
+    try:
+        sha, _, rest = _git_path(ws, PRECHECK_CHECKPOINT).read_text().partition("\n")
+    except OSError:
+        return None
+    if not _head_is(ws, sha.strip()):
+        return None
+    cause, _, digest = rest.partition("\n")
+    if cause.strip() == CAUSE_CHECKS_FAILED:
+        return CAUSE_CHECKS_FAILED, digest.strip()
+    return CAUSE_UNCHECKED, ""
+
+
+def _write_precheck_state(ws: Path, sha: str, cause: str, digest: str = "") -> None:
+    _git_path(ws, PRECHECK_CHECKPOINT).write_text(f"{sha}\n{cause}\n{digest}")
+
+
+def _checkpoint_cause(ws: Path, *, precheck: bool = True) -> tuple[str, str] | None:
     """(cause, detail) of the checkpoint at HEAD, or None when HEAD is not a
     checkpoint. A checkpoint written before HZ-184 has no body and reads as
-    (CAUSE_EXHAUSTED, "") — the only cause that existed then."""
+    (CAUSE_EXHAUSTED, "") — the only cause that existed then.
+
+    HZ-456: a plain farm commit pushed before the checks counts too, read from
+    PRECHECK_CHECKPOINT — unless precheck is False (a fix pass, which never
+    pushes before its checks, so such a file is another attempt's)."""
     subject = git(ws, "log", "-1", "--format=%s", check=False).stdout.strip()
     if CHECKPOINT_MARKER not in subject:
-        return None
+        return _precheck_state(ws) if precheck else None
     body = git(ws, "log", "-1", "--format=%b", check=False).stdout.strip()
     first, _, detail = body.partition("\n")
     if not first.startswith("cause: "):
@@ -754,6 +789,14 @@ def _checkpoint_resume_note(ws: Path) -> str | None:
             f"```\n{detail or '(no check output was captured)'}\n```\n\n"
             "Fix those failures on top of the checkpoint — read the diff below. Do not discard "
             f"it or restart from scratch.\n\n```\n{stat}\n```"
+        )
+    if cause == CAUSE_UNCHECKED:
+        return (
+            f'\n\nNOTE: this branch\'s last commit ("{subject}") holds the previous attempt\'s '
+            "complete work. That attempt finished and committed it, but stopped while the repo's "
+            "checks were still running, so they never reported. Re-check the work, fix only what "
+            "fails, and do not discard it or restart from scratch — read the diff below."
+            f"\n\n```\n{stat}\n```"
         )
     if cause == CAUSE_DEPLOY:
         return (
@@ -838,7 +881,7 @@ def fix_diff_report(ws: Path, base: str | None) -> dict:
 def _last_check_failure(ws: Path) -> str:
     """Fix-scope counterpart of _checkpoint_resume_note: only what failed, as
     no "continue the WIP" text may contradict the fix-only instruction."""
-    checkpoint = _checkpoint_cause(ws)
+    checkpoint = _checkpoint_cause(ws, precheck=False)
     if checkpoint is None or checkpoint[0] != CAUSE_CHECKS_FAILED:
         return ""
     return (
@@ -849,7 +892,7 @@ def _last_check_failure(ws: Path) -> str:
 
 def _deploy_stop_note(ws: Path) -> str:
     """HZ-321: a fix pass a deploy stopped resumes on its WIP checkpoint."""
-    checkpoint = _checkpoint_cause(ws)
+    checkpoint = _checkpoint_cause(ws, precheck=False)
     if checkpoint is None or checkpoint[0] != CAUSE_DEPLOY:
         return ""
     return (
@@ -988,7 +1031,9 @@ def finalize_branch(
         if left:
             paths = ", ".join(line[3:] for line in left.splitlines())
             log(f"finalize: the checks left changes on disk — not pushed: {paths}")
+    # HZ-456: after a pre-check push, lease_sha is that same commit — a no-op.
     _push_with_lease(ws, item, branch, lease_sha)
+    _git_path(ws, PRECHECK_CHECKPOINT).unlink(missing_ok=True)
     stat = git(ws, "diff", "--stat", f"origin/{default_branch(ws)}...HEAD", check=False).stdout.strip().splitlines()
     return {"branch": branch, "files_changed": stat[-1] if stat else ""}
 
@@ -1051,6 +1096,7 @@ def _salvage_checkpoint(
     detail: str = "",
     lease_sha: str = "",
     farm_commit: str = "",
+    pushed: str = "",
 ) -> str:
     """Best-effort: never raises. A salvage failure (e.g. a concurrent push
     winning the --force-with-lease race) just means this attempt's partial
@@ -1072,17 +1118,27 @@ def _salvage_checkpoint(
     HZ-438: farm_commit is the commit the implement step made before its
     checks. While HEAD is still that commit, the checkpoint amends it — one
     commit per run, a merge keeps both parents — rather than stacking on it;
-    it always holds unpushed work, so the outcome is never "nothing"."""
+    it always holds unpushed work, so the outcome is never "nothing".
+
+    HZ-456: pushed is the farm commit already pushed before the checks (its
+    failure digest lives in PRECHECK_CHECKPOINT, not in a commit). While HEAD
+    is still that commit and nothing new is on disk, the branch already holds
+    the work: no commit is made and nothing is pushed. Files a check left on
+    disk are stacked on it as one checkpoint commit, never amended into it."""
     try:
         markers = _conflict_markers_left(ws, conflicted or [])
         if markers:
             log(f"salvage: skipped — the merge of main still has conflict markers in {', '.join(markers)}")
             return f"skipped: the merge of main still has conflict markers in {', '.join(markers)}"
         amend = _head_is(ws, farm_commit)
+        on_pushed = _head_is(ws, pushed)
         git(ws, "add", "-A")
         _unstage_secrets(ws, *(_parents(ws, "HEAD") if amend else ()))
         staged = git(ws, "diff", "--cached", "--quiet", check=False)
-        allow_empty = amend or cause == CAUSE_CHECKS_FAILED
+        if staged.returncode == 0 and on_pushed and not amend:
+            log(f"salvage: the pre-check checkpoint {pushed[:12]} already holds the work — no commit made, nothing pushed")
+            return "saved"
+        allow_empty = amend or (cause == CAUSE_CHECKS_FAILED and not on_pushed)
         if staged.returncode == 0 and not allow_empty:
             log("salvage: no uncommitted changes to checkpoint")
             return "nothing"
@@ -1145,6 +1201,76 @@ def _unstage_secrets(ws: Path, *bases: str) -> list[str]:
     return secrets
 
 
+def _secret_paths(ws: Path, rev: str) -> list[str]:
+    """HZ-456: the secret-looking paths rev adds or changes — those that
+    differ from every parent, the same rule as _unstage_secrets, so a file a
+    merged main brought in is not counted."""
+    found: list[str] | None = None
+    for parent in _parents(ws, rev) or [""]:
+        if parent:
+            listed = git_bytes(ws, "diff", "--name-only", "--diff-filter=d", "-z", parent, rev)
+        else:
+            listed = git_bytes(ws, "ls-tree", "-r", "--name-only", "-z", rev)
+        paths = [path for path in (os.fsdecode(raw) for raw in listed.split(b"\0") if raw) if _is_secret_path(path)]
+        found = paths if found is None else [path for path in found if path in paths]
+    return found or []
+
+
+def _push_precheck_checkpoint(ws: Path, item: dict, branch: str, prepared: PreparedBranch, scope: dict) -> str:
+    """HZ-456: pushes the implement step's committed work to the item's own
+    branch before the checks run. A step killed during its checks (its time
+    limit, a farm restart) runs no handler at all, so only a push made here
+    lets the retry's prepare_branch resume from the work.
+
+    The push is lease-protected against what prepare_branch fetched: a commit
+    pushed by anyone since fails the lease and is kept. It is skipped when a
+    PR is open (fix pass), when origin holds commits HEAD does not contain and
+    HEAD is no rebase of them, and when a commit to push adds a secret-looking
+    file. Returns the sha the remote now holds for this run (HEAD), or "" when
+    nothing was pushed. Never raises: a failed push is logged, and the checks
+    run anyway."""
+    try:
+        if scope["mode"] == "fix":
+            # Pushing here would put unchecked code on the open PR (and run its CI).
+            log(f"checkpoint: skipped — a PR is open on {branch}, nothing pushed before the checks")
+            return ""
+        own = f"horizon/{item['id'].lower()}"
+        default = default_branch(ws)
+        if branch != own or branch in (default, "main", "master"):
+            log(f"checkpoint: refused — {branch} is not this item's own branch")
+            return ""
+        if _no_code_changes(ws, ignore_worktree=True):
+            log(f"checkpoint: skipped — no commit ahead of origin/{default}")
+            return ""
+        head = git(ws, "rev-parse", "HEAD").stdout.strip()
+        lease = prepared.lease_sha
+        if head != lease:
+            if lease and not prepared.rebased:
+                if git(ws, "merge-base", "--is-ancestor", lease, head, check=False).returncode != 0:
+                    log(f"checkpoint: skipped — origin/{branch} holds commits HEAD does not contain")
+                    return ""
+            excluded = [f"^origin/{default}", *([f"^{lease}"] if lease else [])]
+            unpublished = git(ws, "rev-list", head, *excluded).stdout.split()
+            secrets = sorted({path for commit in unpublished for path in _secret_paths(ws, commit)})
+            if secrets:
+                log(f"checkpoint: skipped — a secret-looking file would be pushed: {', '.join(map(_shown, secrets))}")
+                return ""
+            _push_with_lease(ws, item, branch, lease)
+            log(f"checkpoint: pushed {head[:12]} to {branch} before the checks")
+        else:
+            log(f"checkpoint: {branch} already holds {head[:12]} — nothing to push before the checks")
+    except Exception as exc:
+        # A failed push can echo the remote URL, which carries the hub's token.
+        detail = redact(_URL_CREDENTIALS.sub("://[redacted]@", str(exc)), secret_values(os.environ))
+        log(f"checkpoint: push failed ({detail}) — running the checks anyway")
+        return ""
+    try:
+        _write_precheck_state(ws, head, CAUSE_UNCHECKED)
+    except OSError as exc:
+        log(f"checkpoint: could not record the pushed commit ({exc}) — a retry resumes from it without a note")
+    return head
+
+
 def _pause_checkpoint(
     ws: Path, item: dict, branch: str, conflicted: list[str], lease_sha: str, scope: dict, farm_commit: str = ""
 ) -> tuple[str, str]:
@@ -1198,7 +1324,9 @@ def _deploy_checkpoint(
 
     HZ-438: while HEAD is farm_commit (the implement step's commit made
     before its checks, never pushed), the WIP commit replaces it: it sits on
-    that commit's parents, so the run still pushes one commit.
+    that commit's parents, so the run still pushes one commit. HZ-456: once
+    the farm commit was pushed before the checks, the caller passes no
+    farm_commit and lease_sha is that commit, so it is stacked on, not replaced.
 
     If the push fails, the commit stays in this worktree with a marker, and
     the next attempt's prepare_branch resumes from it. Never raises.
@@ -2249,6 +2377,13 @@ def _execute(task: dict, guard: HandoffGuard) -> dict:
         # HZ-257: the tree the checks are about to test, so the pushed commit
         # can be named as the sha that passed — only if identical.
         checked_tree = check_record.snapshot_tree(ws, log)
+        # HZ-456: a step killed mid-check (time limit, farm restart) runs no
+        # handler, so the work is pushed to the item's branch first. Once it
+        # is, every later push of this run leases against it, and the farm
+        # commit is published — never amended or replaced.
+        checkpoint = _push_precheck_checkpoint(ws, item, branch, prepared, scope)
+        lease = checkpoint or prepared.lease_sha
+        unpushed = "" if checkpoint else farm_commit
         try:
             with pause.interruptible():
                 # HZ-245: the repo's Admin-configured commands, from the task dict
@@ -2269,25 +2404,33 @@ def _execute(task: dict, guard: HandoffGuard) -> dict:
         except pause.PauseRequested:
             # HZ-194: the agent's work is finished but unchecked. The checks
             # are stopped and never count as a failure; the code is saved.
-            pause.report(*_pause_checkpoint(ws, item, branch, conflicted, prepared.lease_sha, scope, farm_commit))
+            pause.report(*_pause_checkpoint(ws, item, branch, conflicted, lease, scope, unpushed))
             raise
         except CheckFailure as exc:
             # HZ-184: the finished work is checkpointed with what failed, so
             # the next attempt fixes it instead of rebuilding it. Re-raised:
             # the run still fails, nothing below runs, no PR opens.
+            detail = "\n".join([exc.digest or str(exc), *(_recording()["branch_notes"] or [])])
+            if checkpoint:
+                # HZ-456: the digest sits beside the pushed commit, not in it.
+                try:
+                    _write_precheck_state(ws, checkpoint, CAUSE_CHECKS_FAILED, detail)
+                except OSError as err:
+                    log(f"checkpoint: could not record the check failure ({err})")
             _salvage_checkpoint(
                 ws,
                 item,
                 branch,
                 conflicted,
                 cause=CAUSE_CHECKS_FAILED,
-                detail="\n".join([exc.digest or str(exc), *(_recording()["branch_notes"] or [])]),
-                lease_sha=prepared.lease_sha,
-                farm_commit=farm_commit,
+                detail=detail,
+                lease_sha=lease,
+                farm_commit=unpushed,
+                pushed=checkpoint,
             )
             raise
         publish_screenshots(ws, item)
-        artifacts = finalize_branch(ws, item, branch, conflicted, lease_sha=prepared.lease_sha, checked_sha=checked_sha)
+        artifacts = finalize_branch(ws, item, branch, conflicted, lease_sha=lease, checked_sha=checked_sha)
         artifacts.update(check_record.report_fields(ws, checked_tree, check_note, checks_finished_at, log))
         if scope["mode"] == "fix":
             artifacts.update(fix_diff_report(ws, scope.get("base_sha")))
