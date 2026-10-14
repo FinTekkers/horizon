@@ -1,0 +1,110 @@
+{
+  "$comment": "HZ-448. Plan drafts asserted by BOTH server/test/plan-draft-schema.test.mjs (domain/js/planDraft.js validatePlanDraft) and farm/tests/test_plan_draft.py (domain/py/plan_draft.py validate), so a draft the farm accepts is one the server's shape and dependency checks accept too. Each case edits `base`: `set` replaces the value at a dotted path (numeric parts are list indexes) and `drop` removes one. `expect` is the first error, or null for a valid draft. A `serverOnly` case breaks a rule only the server can check — whether a real key or repo exists — so the JS binding, given `context`, reports it, and the Python binding, which has no database, passes it.",
+  "context": {
+    "knownRepos": ["FinTekkers/horizon", "FinTekkers/ui-service"],
+    "keyPrefixes": ["HZ", "UI"],
+    "existingKeys": ["HZ-446", "HZ-100"]
+  },
+  "base": {
+    "items": [
+      {
+        "id": "#1",
+        "repo": "FinTekkers/horizon",
+        "title": "Plan kind: the draft contract",
+        "outcome": "A Plan's Draft step produces structured item drafts that the server checks.",
+        "metric": [
+          "A test validates Draft output against the schema.",
+          "A cycle in the dependencies fails the step and names it.",
+          "An owner edit is saved and re-validated."
+        ],
+        "guardrails": ["Nothing is filed here.", "Drafts name new items only by #n.", "Only the owner edits drafts."],
+        "depends_on": ["HZ-446"],
+        "must_also_cover": ["parity fixtures"]
+      },
+      {
+        "id": "#2",
+        "repo": "FinTekkers/horizon",
+        "title": "Plan kind: the review flags",
+        "outcome": "The Review steps flag uncovered gaps, overlaps and oversized drafts.",
+        "metric": [
+          "An uncovered gap is flagged.",
+          "An overlap with an open item is flagged.",
+          "A clean draft set passes with no flags."
+        ],
+        "guardrails": ["Review files nothing.", "A model cannot clear a computed flag.", "Flags name the draft."],
+        "depends_on": ["#1"],
+        "must_also_cover": []
+      },
+      {
+        "id": "#3",
+        "repo": "FinTekkers/ui-service",
+        "title": "Plan kind: the drafts table",
+        "outcome": "The item page shows the drafts as an editable table, encoded as UTF-8.",
+        "metric": [
+          "The table lists every draft.",
+          "An edit is saved through the API.",
+          "A rejected edit shows its error inline."
+        ],
+        "guardrails": ["Styling only on existing pages.", "No new dependency.", "Works with no JavaScript errors."],
+        "depends_on": ["#1"],
+        "must_also_cover": []
+      }
+    ],
+    "shared_guardrails": ["Nothing is filed before Approve & file."],
+    "open_questions": [{ "question": "Is a closed key a valid dependency?", "recommended_answer": "Yes: it names shipped work." }]
+  },
+  "cases": [
+    { "case": "a valid draft", "expect": null },
+    { "case": "a dependency on an existing closed item", "set": { "items.1.depends_on": ["#1", "HZ-100"] }, "expect": null },
+    { "case": "a key-shaped token whose prefix is no repo's (UTF-8) is not a key", "set": { "items.2.title": "Plan kind: UTF-8 drafts table" }, "expect": null },
+    { "case": "no shared guardrails and no open questions", "set": { "shared_guardrails": [], "open_questions": [] }, "expect": null },
+    {
+      "case": "an open question without a recommended answer",
+      "drop": ["open_questions.0.recommended_answer"],
+      "expect": { "code": "invalid_shape", "contains": "open_questions[0].recommended_answer" }
+    },
+    {
+      "case": "an open question with a blank recommended answer",
+      "set": { "open_questions.0.recommended_answer": "   " },
+      "expect": { "code": "invalid_shape", "contains": "open_questions[0].recommended_answer must not be blank" }
+    },
+    {
+      "case": "six metric lines",
+      "set": { "items.0.metric": ["one line", "two line", "three line", "four line", "five line", "six line"] },
+      "expect": { "code": "invalid_shape", "contains": "items[0].metric must have at most 5 entries" }
+    },
+    {
+      "case": "two guardrails",
+      "set": { "items.1.guardrails": ["Review files nothing.", "Flags name the draft."] },
+      "expect": { "code": "invalid_shape", "contains": "items[1].guardrails must have at least 3 entries" }
+    },
+    { "case": "an id with no #", "set": { "items.0.id": "1" }, "expect": { "code": "invalid_shape", "contains": "items[0].id" } },
+    { "case": "a missing outcome", "drop": ["items.2.outcome"], "expect": { "code": "invalid_shape", "contains": "items[2].outcome is missing" } },
+    { "case": "an unknown field", "set": { "items.0.priority": "High" }, "expect": { "code": "invalid_shape", "contains": "unknown field(s): priority" } },
+    { "case": "no items", "set": { "items": [] }, "expect": { "code": "invalid_shape", "contains": "items must have at least 1 entries" } },
+    { "case": "a dependency that is neither #n nor a key", "set": { "items.1.depends_on": ["the first one"] }, "expect": { "code": "invalid_shape", "contains": "items[1].depends_on[0]" } },
+    { "case": "a cycle #1 → #2 → #1", "set": { "items.0.depends_on": ["#2"] }, "expect": { "code": "cycle", "contains": "#1 → #2 → #1" } },
+    { "case": "a three-draft cycle", "set": { "items.0.depends_on": ["#3"], "items.2.depends_on": ["#2"] }, "expect": { "code": "cycle", "contains": "#1 → #3 → #2 → #1" } },
+    { "case": "a dependency on an unknown #7", "set": { "items.1.depends_on": ["#7"] }, "expect": { "code": "unknown_dep", "contains": "#7" } },
+    { "case": "a draft that depends on itself", "set": { "items.1.depends_on": ["#2"] }, "expect": { "code": "self_dep", "contains": "#2 depends on itself" } },
+    { "case": "two drafts with one id", "set": { "items.2.id": "#2" }, "expect": { "code": "duplicate_id", "contains": "#2 is used by more than one draft" } },
+    {
+      "case": "a guessed key HZ-999 in depends_on",
+      "set": { "items.1.depends_on": ["#1", "HZ-999"] },
+      "serverOnly": true,
+      "expect": { "code": "unknown_key", "contains": "HZ-999" }
+    },
+    {
+      "case": "a guessed key HZ-999 in an outcome",
+      "set": { "items.2.outcome": "Builds on HZ-999 to show the drafts as a table." },
+      "serverOnly": true,
+      "expect": { "code": "unknown_key", "contains": "HZ-999" }
+    },
+    {
+      "case": "a repo the plan cannot file in",
+      "set": { "items.2.repo": "Elsewhere/other" },
+      "serverOnly": true,
+      "expect": { "code": "unknown_repo", "contains": "Elsewhere/other" }
+    }
+  ]
+}

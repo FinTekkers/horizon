@@ -1,11 +1,12 @@
-"""HZ-446: a Plan's steps on the farm. Its farm-lane steps run read-only
-with the planner's read-only tools, workspace or not, so a Plan never edits
-code in any repo. Its PM steps run on the PM step kind. "File items" is
+"""HZ-446: a Plan's steps on the farm. Its five farm-lane steps run read-only
+roles with the planner's read-only tools, workspace or not, so a Plan never
+edits code in any repo. Its PM steps run on the PM step kind. "File items" is
 Horizon's own server step: it never reaches a farm view.
 
 HZ-447: Inventory and Design read every in-scope repo from a read-only
 bundle (farm/plan_bundle.py). Their tests run against local hubs cloned from
-bare origins under tmp_path; the other three rows still run the placeholder.
+bare origins under tmp_path. Draft items (HZ-448) runs plan_draft.md; the two
+review rows still run the placeholder.
 
 Every agent run is stubbed: run_agent is monkeypatched at step_agent's import.
 """
@@ -13,6 +14,7 @@ Every agent run is stubbed: run_agent is monkeypatched at step_agent's import.
 import json
 import os
 import subprocess
+from pathlib import Path
 
 import pytest
 
@@ -29,10 +31,13 @@ PLAN_FARM_LABELS = [
     "Review drafts: coverage & overlap",
     "Review drafts: metrics & size",
 ]
-PLACEHOLDER_LABELS = PLAN_FARM_LABELS[2:]
+NON_BUNDLE_LABELS = PLAN_FARM_LABELS[2:]
 INVENTORY, DESIGN = PLAN_FARM_LABELS[:2]
 PLAN_PM_LABELS = ["Define the question", "Set guardrails"]
 WRITE_TOOLS = ("Edit", "Write", "Bash")
+VALID_DRAFT = json.loads(
+    (Path(__file__).resolve().parents[2] / "domain" / "fixtures" / "plan-draft-cases.json").read_text()
+)["base"]
 
 
 def make_task(label: str) -> dict:
@@ -55,10 +60,11 @@ def test_the_plan_farm_view_holds_its_agent_steps_and_never_file_items():
         steps.by_kind_label("plan", "File items")
 
 
-def test_each_plan_farm_step_runs_the_read_only_placeholder_with_the_planner_tools():
-    for label in PLACEHOLDER_LABELS:
+def test_each_plan_farm_step_runs_a_read_only_role_with_the_planner_tools():
+    for label in NON_BUNDLE_LABELS:
         role, wants_artifact, tools, persona = step_agent._step_config("plan", label)
-        assert (role, wants_artifact, tools, persona) == ("plan_placeholder.md", True, "Read,Glob,Grep", None)
+        expected = "plan_draft.md" if label == "Draft items" else "plan_placeholder.md"
+        assert (role, wants_artifact, tools, persona) == (expected, True, "Read,Glob,Grep", None)
         assert not any(tool in tools.split(",") for tool in WRITE_TOOLS)
         assert step_agent._is_read_only("plan", label)
         assert steps.by_kind_label("plan", label)["workspaceMutating"] is False
@@ -77,16 +83,16 @@ def test_inventory_and_design_run_their_own_roles_and_read_the_bundle():
     assert step_agent._step_config("plan", DESIGN) == ("plan_design.md", True, "Read,Glob,Grep", None)
     for label in (INVENTORY, DESIGN):
         assert step_agent._reads_bundle("plan", label) and step_agent._is_read_only("plan", label)
-    assert not any(step_agent._reads_bundle("plan", label) for label in PLACEHOLDER_LABELS)
+    assert not any(step_agent._reads_bundle("plan", label) for label in NON_BUNDLE_LABELS)
 
 
-@pytest.mark.parametrize("label", PLACEHOLDER_LABELS)
+@pytest.mark.parametrize("label", NON_BUNDLE_LABELS)
 def test_a_plan_step_with_no_workspace_is_still_held_to_the_read_only_tools(monkeypatch, label):
     calls = []
 
     def fake(prompt, **kwargs):
         calls.append(kwargs)
-        body = {"summary": "placeholder", "artifact_md": "## Not built yet"}
+        body = {"summary": "placeholder", "artifact_md": "## Not built yet", "plan_draft": VALID_DRAFT}
         return {"result": json.dumps(body), "session_id": "s", "provider": "claude", "command_id": None}
 
     monkeypatch.setattr(step_agent, "run_agent", fake)

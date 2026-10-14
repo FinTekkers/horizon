@@ -137,6 +137,9 @@ enforced rather than remembered.
 | `py/run_plan.py` | Its only binding: `validate`, `render`, `extract`, plus `literal_secrets`. Owns the rule the schema subset cannot express (`env` values are `$NAME` references). No JS binding — only the farm reads the block |
 | `planInventory.schema.json` | An **output contract** too: the block a Plan's Inventory step emits (HZ-447) — a has/gaps/evidence row per in-scope repo, plus key facts — which the Design step must cite |
 | `py/plan_inventory.py` | Its only binding for now: `validate`, `check_citations`, `render`, `extract`. Owns the one-row-per-in-scope-repo rule. `fixtures/plan-inventory-cases.json` holds the samples both the schema test and the binding's test assert |
+| `planDraft.schema.json` | An **output contract**: a Plan's item drafts, emitted by the Draft items step and saved by an owner's edit (HZ-448). Holds no work-item field limit — both bindings add those from `fields.json` at load |
+| `py/plan_draft.py` | The farm binding: `validate` checks shape and the dependency DAG inside the step's retry envelope |
+| `js/planDraft.js` | The server binding: `validatePlanDraft` runs the same rules in the same order, plus the two only the server can answer (`unknown_key`, `unknown_repo`); `realKeysIn`, `renderPlanDraftMd`, `PLAN_DRAFT_SCHEMA`. Both are run over `fixtures/plan-draft-cases.json` |
 
 Every file here is authored. Nothing is output.
 

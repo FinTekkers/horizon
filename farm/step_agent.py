@@ -30,7 +30,7 @@ import httpx
 # `python -m farm.farmd` from there and farm/tests/conftest.py inserts it).
 # HZ-132 put the failure-reason vocabulary there too, so the reason this script
 # reports is a constant the server already knows, never a string typed here.
-from domain.py import fields, plan_inventory, reasons, run_plan, steps
+from domain.py import fields, plan_draft, plan_inventory, reasons, run_plan, steps
 from domain.py import providers as domain_providers
 from domain.py.personas import model_agent_for_step
 
@@ -161,11 +161,12 @@ TASK_STEP_CONFIG = {
     **{step["label"]: ("pm.md", True, None, None) for step in steps.FARM_VIEWS["task"] if step["runsIn"] == "pm"},
 }
 
-# HZ-446: a Plan's steps. HZ-447 gives Inventory and Design their prompts;
-# the other farm-lane rows run one read-only placeholder role until HZ-448,
-# with the planner's read-only tools, so a Plan never edits code in any repo.
-# Its PM rows run on the PM step kind like every other kind's. "File items"
-# is runsIn "server" — Horizon's own code, never the farm — so it is not here.
+# HZ-446: a Plan's steps. HZ-447 gives Inventory and Design their prompts and
+# HZ-448 gives Draft items its; the two review rows run one read-only
+# placeholder role, with the planner's read-only tools, so a Plan never edits
+# code in any repo. Its PM rows run on the PM step kind like every other kind's.
+# "File items" is runsIn "server" — Horizon's own code, never the farm — so it
+# is not here.
 PLAN_INVENTORY_LABEL = "Inventory current state"
 PLAN_DESIGN_LABEL = "Design options & recommendation"
 PLAN_DRAFT_LABEL = "Draft items"
@@ -183,6 +184,8 @@ PLAN_STEP_CONFIG = {
     **{label: ("plan_placeholder.md", True, PLANNER_TOOLS, None) for label in PLAN_FARM_LABELS},
     PLAN_INVENTORY_LABEL: ("plan_inventory.md", True, PLANNER_TOOLS, None),
     PLAN_DESIGN_LABEL: ("plan_design.md", True, PLANNER_TOOLS, None),
+    # HZ-448: Draft items writes the Plan's item drafts (domain/planDraft.schema.json).
+    PLAN_DRAFT_LABEL: ("plan_draft.md", True, PLANNER_TOOLS, None),
     **{step["label"]: ("pm.md", True, None, None) for step in steps.FARM_VIEWS["plan"] if step["runsIn"] == "pm"},
 }
 
@@ -1746,18 +1749,27 @@ def _prior_inventory(task: dict, scope: list[str]) -> dict:
 
 
 def _plan_reply_validator(label: str, task: dict, scope: list[str]):
-    """HZ-447: the reply check a Plan step runs inside the retry envelope,
-    like _task_reply_validator. Inventory's `inventory` block must satisfy
-    domain/planInventory.schema.json with one row per in-scope repo; Design's
-    `design` must cite an Inventory evidence ref for every repo it changes;
-    no part of any Plan reply may carry a literal secret. HZ-448 extends this
-    by label. Design's Inventory block is read here, before any call, so a
-    missing one fails the step without spending a run."""
+    """The reply check a Plan step runs inside the retry envelope, extended
+    by label. HZ-448: Draft items' `plan_draft` block must satisfy
+    domain/planDraft.schema.json and form a DAG (domain/py/plan_draft.py);
+    whether a real key exists is the server's check, on ingest. HZ-447:
+    Inventory's `inventory` block must satisfy domain/planInventory.schema.json
+    with one row per in-scope repo; Design's `design` must cite an Inventory
+    evidence ref for every repo it changes; no part of either reply may carry
+    a literal secret. Design's Inventory block is read here, before any call,
+    so a missing one fails the step without spending a run. Raises
+    AgentError, which takes the one retry; a second bad reply fails the step."""
     inventory = _prior_inventory(task, scope) if label == PLAN_DESIGN_LABEL else None
 
     def check(parsed):
         if not isinstance(parsed, dict):
             return parsed  # the required-field check after the call says so
+        if label == PLAN_DRAFT_LABEL:
+            try:
+                plan_draft.validate(parsed.get("plan_draft"))
+            except ValueError as exc:
+                raise AgentError(f"invalid plan draft: {exc}") from None
+            return parsed
         texts = [parsed.get("summary"), parsed.get("artifact_md")]
         try:
             if label == PLAN_INVENTORY_LABEL:
@@ -1781,12 +1793,19 @@ def _plan_reply_validator(label: str, task: dict, scope: list[str]):
     return check
 
 
-# HZ-447: each kind's reply check, called as (label, task, scope) — looked up
-# by kind, so no kind is compared by name at the call site.
-REPLY_VALIDATORS = {
-    "task": lambda label, task, scope: _task_reply_validator(label),
-    "plan": _plan_reply_validator,
-}
+# The Plan steps that carry a reply check; the review rows carry none yet.
+PLAN_VALIDATED_LABELS = frozenset({PLAN_INVENTORY_LABEL, PLAN_DESIGN_LABEL, PLAN_DRAFT_LABEL})
+
+
+def _reply_validator(kind: str, label: str, task: dict | None = None, scope: list[str] | None = None):
+    """The reply check a step runs inside the retry envelope, or None. A
+    Plan step is picked by its label (HZ-447, HZ-448); every Task step by
+    its kind's table (HZ-383). The kind is matched by its table, never by
+    name."""
+    config = STEP_CONFIGS.get(kind)
+    if config is PLAN_STEP_CONFIG and label in PLAN_VALIDATED_LABELS:
+        return _plan_reply_validator(label, task or {}, scope or [])
+    return _task_reply_validator(label) if config is TASK_STEP_CONFIG else None
 
 
 def _run_and_parse(
@@ -2816,7 +2835,7 @@ def _execute(task: dict, guard: HandoffGuard) -> dict:
                 entries, out_of_scope = plan_bundle.parse_scope(task.get("plan_scope"))
                 scope = [entry["repo"] for entry in entries]
                 stack.enter_context(plan_bundle.scrubbed_stdout(out_of_scope))
-            validate = REPLY_VALIDATORS[kind](label, task, scope) if kind in REPLY_VALIDATORS else None
+            validate = _reply_validator(kind, label, task, scope)
             if bundle_step:
                 bundle = plan_bundle.build(item["id"], task.get("plan_scope"))
                 (allowed_tools, disallowed_tools), cwd = plan_bundle.tool_rules(bundle), str(bundle.root)
@@ -2923,6 +2942,10 @@ def _execute(task: dict, guard: HandoffGuard) -> dict:
     # other Task step's `verdict` is dropped.
     if label == VERIFY_REPORT_LABEL and isinstance(parsed.get("verdict"), dict):
         result.setdefault("artifacts", {})["verdict"] = parsed["verdict"]
+    # HZ-448: the validated drafts ride through; the server re-checks them,
+    # saves them as the Plan's draft and files nothing.
+    if label == PLAN_DRAFT_LABEL:
+        result.setdefault("artifacts", {})["plan_draft"] = parsed["plan_draft"]
     return result
 
 
