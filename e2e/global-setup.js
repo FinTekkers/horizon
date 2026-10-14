@@ -3,7 +3,7 @@ import { request } from '@playwright/test'
 import { openDb, insertItem, insertStepRun, insertFeedback, insertDependency } from './fixtures/seed.js'
 // Derived, not hardcoded: a future pipeline step insertion (like HZ-30's own
 // Review step) must not silently break these fixtures' intended positions.
-import { ACCEPT_GATE_INDEX, endIndex } from '../domain/js/lifecycle.js'
+import { ACCEPT_GATE_INDEX, IMPLEMENT_STEP_INDEX, endIndex } from '../domain/js/lifecycle.js'
 
 const PORT = process.env.HORIZON_E2E_PORT
 const DB_PATH = process.env.HORIZON_E2E_DB
@@ -70,18 +70,20 @@ const FIXTURES = [
   },
   // HZ-95: DEP-2 depends on DEP-1, so the board must show DEP-2 as "Blocked
   // by DEP-1" and DEP-1 as "Blocks 1" — the two directions of one edge.
+  // HZ-467: a change item is held only from implement on, so the dependents
+  // below sit at the implement step to read Blocked.
   { id: 'DEP-1', title: 'E2E fixture — dependency blocker', priority: 'Medium', cursor: 6 },
-  { id: 'DEP-2', title: 'E2E fixture — dependency dependent', priority: 'Medium', cursor: 6 },
+  { id: 'DEP-2', title: 'E2E fixture — dependency dependent', priority: 'Medium', cursor: IMPLEMENT_STEP_INDEX },
   // HZ-310: removing a dependency from the item view. DEP-RM-3 depends on
-  // DEP-RM-1 and DEP-RM-2 and sits at a gate, so nothing runs when an edge
-  // goes. DEP-RM-5 sits at an agent step blocked only by DEP-RM-4, so
-  // removing that edge must start its next step. Separate from DEP-1/DEP-2,
+  // DEP-RM-1 and DEP-RM-2, so removing one edge leaves it held and nothing
+  // runs. DEP-RM-5 is blocked only by DEP-RM-4, so removing that edge must
+  // start its implement step. Separate from DEP-1/DEP-2,
   // which 13-dependencies.spec.js asserts unchanged.
   { id: 'DEP-RM-1', title: 'E2E fixture — removable blocker one', priority: 'Medium', cursor: 5 },
   { id: 'DEP-RM-2', title: 'E2E fixture — removable blocker two', priority: 'Medium', cursor: 5 },
-  { id: 'DEP-RM-3', title: 'E2E fixture — two removable blockers', priority: 'Medium', cursor: 5 },
+  { id: 'DEP-RM-3', title: 'E2E fixture — two removable blockers', priority: 'Medium', cursor: IMPLEMENT_STEP_INDEX },
   { id: 'DEP-RM-4', title: 'E2E fixture — only blocker', priority: 'Medium', cursor: 5 },
-  { id: 'DEP-RM-5', title: 'E2E fixture — waiting on its only blocker', priority: 'Medium', cursor: 0 },
+  { id: 'DEP-RM-5', title: 'E2E fixture — waiting on its only blocker', priority: 'Medium', cursor: IMPLEMENT_STEP_INDEX },
 ]
 
 export default async function globalSetup() {

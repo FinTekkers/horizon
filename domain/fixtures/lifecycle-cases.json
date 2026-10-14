@@ -696,6 +696,26 @@
       { "case": "an ordinary open blocker is not abandoned", "blockers": [{ "cursor": 0 }], "expect": false }
     ],
 
+    "isImplementBlocked": [
+      { "case": "no blockers means implement may start", "blockers": [], "expect": false },
+      { "case": "an open, unmerged blocker holds implement", "blockers": [{ "cursor": 13 }], "expect": true },
+      { "case": "a merged blocker releases implement before it closes", "blockers": [{ "cursor": 14, "merged_at": "2026-10-14 00:00:00" }], "expect": false },
+      { "case": "a merged but abandoned blocker still holds implement", "blockers": [{ "cursor": 14, "merged_at": "2026-10-14 00:00:00", "abandoned_at": "2026-10-14 01:00:00" }], "expect": true },
+      { "case": "a closed blocker releases implement", "blockers": [{ "cursor": 16 }], "expect": false },
+      { "case": "one merged and one unmerged blocker still holds implement", "blockers": [{ "cursor": 14, "merged_at": "2026-10-14 00:00:00" }, { "cursor": 13 }], "expect": true }
+    ],
+
+    "IMPLEMENT_ITEM_KIND": [{ "case": "the kind that owns the implement step", "expect": "change" }],
+
+    "holdingBlockers": [
+      { "case": "a change item before implement is held by nothing", "item": { "cursor": 7 }, "blockers": [{ "id": "B", "cursor": 13 }], "expectIds": [] },
+      { "case": "a change item at implement is held by an unmerged blocker", "item": { "cursor": 11 }, "blockers": [{ "id": "B", "cursor": 13 }], "expectIds": ["B"] },
+      { "case": "a change item at implement is not held by a merged blocker", "item": { "cursor": 11, "kind": "change" }, "blockers": [{ "id": "B", "cursor": 14, "merged_at": "2026-10-14 00:00:00" }], "expectIds": [] },
+      { "case": "a change item past implement is still held by a merged but abandoned blocker", "item": { "cursor": 12 }, "blockers": [{ "id": "B", "cursor": 14, "merged_at": "2026-10-14 00:00:00", "abandoned_at": "2026-10-14 01:00:00" }], "expectIds": ["B"] },
+      { "case": "a task item is held on an early step until its blocker closes", "item": { "cursor": 17, "kind": "task" }, "blockers": [{ "id": "B", "cursor": 14, "merged_at": "2026-10-14 00:00:00" }, { "id": "C", "cursor": 16 }], "expectIds": ["B"] },
+      { "case": "a plan item is held on an early step until its blocker closes", "item": { "cursor": 28, "kind": "plan" }, "blockers": [{ "id": "B", "cursor": 13 }], "expectIds": ["B"] }
+    ],
+
     "reworkTargets": [
       { "case": "only agent steps strictly earlier than the gate", "gateLabel": "Accept the code", "expectAllAgentKindBeforeGate": true },
       { "case": "the first gate has no earlier agent step beyond the opening ones", "gateLabel": "Approve & prioritize this work", "expectAllAgentKindBeforeGate": true }

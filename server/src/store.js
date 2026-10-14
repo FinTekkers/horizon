@@ -8,8 +8,9 @@ import {
   STEPS,
   isClosed,
   isAbandoned,
-  isBlocked,
   isBlockedByAbandoned,
+  isImplementBlocked,
+  holdingBlockers,
   curStep,
   IMPLEMENT_STEP_INDEX,
   REVIEW_STEP_INDEX,
@@ -917,11 +918,13 @@ function withRunState(activeRun) {
 }
 
 // ---- dependencies (HZ-78) ----
-// item_id is blocked until every depends_on_id row it names has closed (see
-// domain/js/lifecycle.js isBlocked). Enforced at dispatch time in orchestrator.js's
-// runnable() — the same gate that already decides dispatch — via blockersOf
-// below; the API-facing blocked/blockedBy fields here are read-only
-// reporting of that same derived state, not a second source of truth.
+// item_id is held by the depends_on_id rows it names (see domain/js/lifecycle.js
+// holdingBlockers). HZ-467: a change item plans freely and waits only from
+// implement on, until each blocker has merged (merged_at) or closed; other
+// kinds wait on every step until each blocker closes. Enforced at dispatch
+// time in orchestrator.js's runnable() — the same gate that already decides
+// dispatch — via blockersOf below; the API-facing `blocked` field here is
+// read-only reporting of that same derived state, not a second source of truth.
 
 const selectBlockers = db.prepare(
   `SELECT w.* FROM work_item_dependency d JOIN work_item w ON w.id = d.depends_on_id WHERE d.item_id = ? ORDER BY d.depends_on_id`,
@@ -931,6 +934,7 @@ const selectDependents = db.prepare(
 )
 const selectDependentIds = db.prepare('SELECT item_id FROM work_item_dependency WHERE depends_on_id = ?')
 const selectDependsOnIds = db.prepare('SELECT depends_on_id FROM work_item_dependency WHERE item_id = ?')
+const selectCursorKind = db.prepare('SELECT cursor, kind FROM work_item WHERE id = ?')
 
 // Exported so the orchestrator can gate dispatch on the same derived state
 // this module reports through listItems() — never two separate checks.
@@ -962,15 +966,19 @@ export function wouldCycleBetween(id, dependsOnId) {
   return wouldCycle(id, dependsOnId)
 }
 
-function dependencyFields(id) {
+// `blocked` says whether the item is held at its current step. `blockedBy`
+// lists every edge to a blocker that has not closed, held or not, so each one
+// can still be seen and removed; `merged` marks a blocker whose PR is on main.
+// `row` (cursor, kind) saves a read when the caller already has it.
+function dependencyFields(id, row = selectCursorKind.get(id)) {
   const blockers = blockersOf(id)
   const dependents = selectDependents.all(id)
   return {
-    blocked: isBlocked(blockers),
+    blocked: row ? holdingBlockers(row, blockers).length > 0 : false,
     blockedByAbandoned: isBlockedByAbandoned(blockers),
     blockedBy: blockers
       .filter((b) => !isClosed(b))
-      .map((b) => ({ id: b.id, title: b.title, abandoned: isAbandoned(b) })),
+      .map((b) => ({ id: b.id, title: b.title, abandoned: isAbandoned(b), merged: !!b.merged_at })),
     dependents: dependents
       .filter((d) => !isClosed(d))
       .map((d) => ({ id: d.id, title: d.title, abandoned: isAbandoned(d) })),
@@ -999,10 +1007,11 @@ export function spawnFields(id) {
 }
 
 // Wakes every item that names `id` as a blocker — called once `id` has
-// actually closed, from every place isClosed can flip false -> true
-// (approveGate, approveGateFromGithub, and upsertFromGithub's GitHub-close
-// sync). kick() itself re-checks runnable() (which re-checks blockersOf), so
-// a dependent with a second still-open blocker safely no-ops here.
+// merged (markMerged) or actually closed, from every place isClosed can flip
+// false -> true (approveGate, approveGateFromGithub, and upsertFromGithub's
+// GitHub-close sync). kick() itself re-checks runnable() (which re-checks
+// blockersOf), so a dependent with a second still-open blocker safely no-ops
+// here, and a second wake for the same blocker is harmless.
 function wakeDependents(id) {
   for (const row of selectDependentIds.all(id)) {
     releaseRuleBlockIfSatisfied(row.item_id)
@@ -1011,7 +1020,8 @@ function wakeDependents(id) {
 }
 
 // HZ-346: a rule-blocked item restarts once a dependency it gained after the
-// block, and every other blocker, has closed. A dependency that predates the
+// block, and every other blocker, has merged or closed (HZ-467: a rule block
+// only ever stops implement, so it lifts at merge too). A dependency that predates the
 // block is not why it is waiting, so it never releases it; nor does removing
 // one. Returns whether the block was cleared — the caller kicks.
 export function releaseRuleBlockIfSatisfied(id) {
@@ -1019,7 +1029,7 @@ export function releaseRuleBlockIfSatisfied(id) {
   const block = parseRuleBlock(row?.rule_block_json)
   if (!block?.blockedAt) return false
   const blockers = blockersOf(id)
-  if (blockers.length === 0 || isBlocked(blockers)) return false
+  if (blockers.length === 0 || isImplementBlocked(blockers)) return false
   const added = db
     .prepare('SELECT 1 FROM work_item_dependency WHERE item_id = ? AND created_at >= ? LIMIT 1')
     .get(id, block.blockedAt)
@@ -1027,7 +1037,7 @@ export function releaseRuleBlockIfSatisfied(id) {
   db.prepare(`UPDATE work_item SET rule_block_json = NULL, ${touch} WHERE id = ?`).run(id)
   addEvent(id, {
     who: 'Horizon',
-    text: 'its dependencies are closed — the rule block is cleared and implement restarts',
+    text: 'its dependencies are merged or closed — the rule block is cleared and implement restarts',
     color: '#5E4380',
     initials: 'HZ',
   })
@@ -1057,7 +1067,7 @@ function escalateDependents(blockerId, actor) {
   }
 }
 
-// Declares that `id` cannot proceed until `dependsOnId` closes. Validated,
+// Declares that `id` waits on `dependsOnId` (see holdingBlockers). Validated,
 // in order, before any write: both items exist, no self-dependency, the
 // dependent isn't already closed/abandoned, the blocker isn't abandoned
 // (an abandoned blocker can never satisfy a dependency, so declaring one is
@@ -1372,7 +1382,7 @@ function itemView(row, { stepOutputs: withStepOutputs = true } = {}) {
     state_since: stateSince(row, activeRun, gateFields.gateAction),
     reviewRejected: reviewRejected(row),
     forwardedReview: forwardedReview(row),
-    ...dependencyFields(row.id),
+    ...dependencyFields(row.id, row),
     ...spawnFields(row.id),
     ruleBlock,
     // HZ-443: the board's "Waiting on me" filter and sort.
@@ -2102,8 +2112,22 @@ export function approveGateFromGithub(id) {
   })
   notify()
   agentRunner.kick(id)
+  markMerged(id)
   if (isClosed(getItem(id))) wakeDependents(id)
   return { ok: true }
+}
+
+// HZ-467: records that the item's PR merged to main, then wakes its
+// dependents — their implement may start now, before the deploy and close.
+// Called only after a merge succeeded: app.js after github.mergePr, and
+// approveGateFromGithub for a PR merged on GitHub. A second call, or an
+// unknown id, is a no-op: the first merge time stands.
+export function markMerged(id) {
+  const result = db.prepare(`UPDATE work_item SET merged_at = datetime('now'), ${touch} WHERE id = ? AND merged_at IS NULL`).run(id)
+  if (result.changes === 0) return false
+  notify()
+  wakeDependents(id)
+  return true
 }
 
 // ---- GitHub sync ----
@@ -2187,7 +2211,8 @@ export function upsertFromGithub(ghIssue, repoFullName) {
       changed = true
       wakeDependents(row.id)
     } else if (!closedOnGithub && wasClosed && !row.abandoned_at) {
-      db.prepare(`UPDATE work_item SET cursor = ?, rejected = 0, paused = 0, ${touch} WHERE id = ?`).run(
+      // HZ-467: a reopened item starts over, so its old merge no longer counts.
+      db.prepare(`UPDATE work_item SET cursor = ?, rejected = 0, paused = 0, merged_at = NULL, ${touch} WHERE id = ?`).run(
         firstStepIndex(itemKindOf(row)),
         row.id,
       )

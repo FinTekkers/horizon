@@ -9,6 +9,10 @@
 // nothing locally — the server's SSE snapshot drops the edge from this badge
 // and the board card.
 //
+// HZ-467: a "Blocked by" entry in the full form reads "merged" once that blocker's
+// PR has merged (entry.merged). A change item's implement waits only for the
+// merge, so a merged blocker stays listed — removable — until it closes.
+//
 // HZ-379: the full form also lists every item this one filed for itself
 // (item.spawned, open or closed) and links back to the item that filed this
 // one (item.spawnedBy). Read-only: the dependency edges above are what block.
@@ -48,6 +52,7 @@ function DepEntry({ entry, abandonedNote, onRemove, pending, error, removeLabel 
       </a>{' '}
       <span className="dep-detail__title">{entry.title}</span>
       {entry.abandoned && <span className="dep-detail__abandoned">{abandonedNote}</span>}
+      {entry.merged && !entry.abandoned && <span className="dep-detail__merged"> — merged</span>}
       {onRemove && (
         <button
           type="button"

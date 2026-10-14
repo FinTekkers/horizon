@@ -186,12 +186,13 @@ test('metric 3a + 6: depends-on adds the edge, shows on the card, completes step
   await orchestrator.reconcileActiveRuns()
   assert.equal(db.prepare('SELECT status FROM step_run WHERE id = ?').get(runId).status, 'done')
 
+  // HZ-467: at gate 10 the item is not held yet — its implement waits for the merge.
   const card = await cardOf('DEP-SELF')
-  assert.equal(card.blocked, true)
+  assert.equal(card.blocked, false)
   assert.equal(card.blockedBy[0].id, 'DEP-PEER')
   const gateDigest = card.stepOutputs[SUMMARIZE].artifact
   assert.ok(gateDigest.includes('- **DEP-PEER** — decision: **depends-on**'))
-  assert.ok(gateDigest.includes('Effect: added dependency DEP-SELF → DEP-PEER; blocked until DEP-PEER closes'))
+  assert.ok(gateDigest.includes('Effect: added dependency DEP-SELF → DEP-PEER; implement waits until DEP-PEER merges'))
   assert.deepEqual(feedbackOf('DEP-SELF'), [])
   assert.deepEqual(feedbackOf('DEP-PEER'), [])
 
@@ -281,7 +282,7 @@ test('guardrail 7: applying from A, then B, then A leaves one edge and one feedb
   const apply = async (id) => overlapService.applyOverlap(id, await overlapService.computeOverlap(id)).results[0]
 
   const first = await apply('ID-A')
-  assert.equal(first.effect, 'added dependency ID-A → ID-B; blocked until ID-B closes (shown on the card)')
+  assert.equal(first.effect, 'added dependency ID-A → ID-B; implement waits until ID-B merges (shown on the card)')
   const fromB = await apply('ID-B')
   assert.equal(fromB.decision, 'shared-contract')
   assert.ok(fromB.why.includes('cycle'))

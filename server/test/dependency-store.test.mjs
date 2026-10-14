@@ -55,7 +55,7 @@ test('addDependency rejects self-dependency', () => {
 test('addDependency rejects a direct two-node cycle with a clear error', () => {
   insertItem.run('D-CYCLE-A', 'A', 11, null, null)
   insertItem.run('D-CYCLE-B', 'B', 11, null, null)
-  assert.deepEqual(store.addDependency('D-CYCLE-A', 'D-CYCLE-B'), { ok: true, blocked: true, blockedByAbandoned: false, blockedBy: [{ id: 'D-CYCLE-B', title: 'B', abandoned: false }], dependents: [] })
+  assert.deepEqual(store.addDependency('D-CYCLE-A', 'D-CYCLE-B'), { ok: true, blocked: true, blockedByAbandoned: false, blockedBy: [{ id: 'D-CYCLE-B', title: 'B', abandoned: false, merged: false }], dependents: [] })
   const result = store.addDependency('D-CYCLE-B', 'D-CYCLE-A')
   assert.equal(result.error, 'cycle')
   assert.match(result.message, /D-CYCLE-A/)
@@ -139,25 +139,24 @@ test('wakeDependents wiring: approveGate closing the item wakes its dependents',
 
 // approveGateFromGithub only ever advances cursor from ACCEPT_GATE_INDEX
 // (13) to the Deploy step (14) — Deploy and the final "Review the work &
-// close" gate (15) still follow it in this pipeline, so it can never
-// actually close an item today. It is still wired the same way as
-// approveGate and the upsertFromGithub close-sync branch (see
-// store.js:approveGateFromGithub), matching the other two isClosed
-// transition points for whenever the pipeline shortens. This test pins the
-// reachable half of that: merging the PR must NOT wake dependents when it
-// only advances the item without closing it — proving the wake call is
-// correctly conditioned on isClosed, not unconditional on every approval.
-test('approveGateFromGithub does not wake dependents when the merge only advances the item, not closes it', () => {
+// close" gate (15) still follow it, so it never closes an item. HZ-467
+// inverted this test: the merge itself releases a dependent's implement, so
+// it wakes dependents before the blocker closes.
+test('approveGateFromGithub wakes dependents at merge, before close', () => {
   insertItem.run('D-WAKE-GH-BLOCKER', 'Blocker via PR merge', STEPS.findIndex((s) => s.label === 'Accept the code'), 'acme/repo', 900)
   insertItem.run('D-WAKE-GH-DEP', 'Dependent', 11, null, null)
   db.prepare("UPDATE work_item SET pr = 42 WHERE id = 'D-WAKE-GH-BLOCKER'").run()
   store.addDependency('D-WAKE-GH-DEP', 'D-WAKE-GH-BLOCKER')
+  assert.equal(itemView('D-WAKE-GH-DEP').blocked, true)
 
   const kicked = spyRunner()
   store.approveGateFromGithub('D-WAKE-GH-BLOCKER')
   assert.notEqual(store.getItem('D-WAKE-GH-BLOCKER').cursor, CLOSED, 'sanity: Deploy + the final gate still follow Accept-the-code')
-  assert.ok(!kicked.includes('D-WAKE-GH-DEP'), 'still blocked — the blocker has not actually closed yet')
-  assert.equal(itemView('D-WAKE-GH-DEP').blocked, true)
+  assert.ok(store.getItem('D-WAKE-GH-BLOCKER').merged_at, 'the merge is recorded')
+  assert.ok(kicked.includes('D-WAKE-GH-DEP'), 'the merge wakes the dependent, with no deploy or close')
+  const dep = itemView('D-WAKE-GH-DEP')
+  assert.equal(dep.blocked, false)
+  assert.deepEqual(dep.blockedBy, [{ id: 'D-WAKE-GH-BLOCKER', title: 'Blocker via PR merge', abandoned: false, merged: true }])
 })
 
 test('wakeDependents wiring: upsertFromGithub closing the issue wakes dependents', () => {
@@ -248,6 +247,8 @@ test('paused and blocked are independent — neither implies the other', () => {
   assert.equal(blockedOnly.paused, false)
 })
 
+// HZ-467: `blocked` is whether the item is held at its current step — a
+// change item at an early gate is not — while blockedBy lists the edge either way.
 test('API payload shape: blocked/blockedBy/blockedByAbandoned are present for both agent-step and gate-step dependents', () => {
   insertItem.run('D-SHAPE-BLOCKER', 'Blocker', 11, null, null)
   insertItem.run('D-SHAPE-AGENT-DEP', 'Agent-step dependent', 11, null, null)
@@ -255,11 +256,11 @@ test('API payload shape: blocked/blockedBy/blockedByAbandoned are present for bo
   store.addDependency('D-SHAPE-AGENT-DEP', 'D-SHAPE-BLOCKER')
   store.addDependency('D-SHAPE-GATE-DEP', 'D-SHAPE-BLOCKER')
 
-  for (const id of ['D-SHAPE-AGENT-DEP', 'D-SHAPE-GATE-DEP']) {
+  for (const [id, blocked] of [['D-SHAPE-AGENT-DEP', true], ['D-SHAPE-GATE-DEP', false]]) {
     const item = itemView(id)
-    assert.equal(item.blocked, true)
+    assert.equal(item.blocked, blocked, id)
     assert.equal(item.blockedByAbandoned, false)
-    assert.deepEqual(item.blockedBy, [{ id: 'D-SHAPE-BLOCKER', title: 'Blocker', abandoned: false }])
+    assert.deepEqual(item.blockedBy, [{ id: 'D-SHAPE-BLOCKER', title: 'Blocker', abandoned: false, merged: false }])
   }
 })
 
@@ -273,7 +274,7 @@ test('one dependency edge (A depends on B) is reported as a dependent on B and a
 
   const a = itemView('D-MIRROR-A')
   const b = itemView('D-MIRROR-B')
-  assert.deepEqual(a.blockedBy, [{ id: 'D-MIRROR-B', title: 'B blocks A', abandoned: false }])
+  assert.deepEqual(a.blockedBy, [{ id: 'D-MIRROR-B', title: 'B blocks A', abandoned: false, merged: false }])
   assert.deepEqual(b.dependents, [{ id: 'D-MIRROR-A', title: 'A depends on B', abandoned: false }])
 })
 

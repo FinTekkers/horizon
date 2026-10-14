@@ -127,28 +127,34 @@ A work item can declare that it depends on one or more other work items —
 e.g. HZ-77 (the pause banner) depends on HZ-76 (failure classification),
 because HZ-77 has nothing to render until HZ-76's categories exist.
 
-* **What satisfies a dependency.** Only the blocker *closing* — its cursor
-  reaching the final "Review the work & close" gate, via a human approving
-  that gate or the underlying GitHub issue closing. Nothing short of that
-  counts: a blocker that is paused, mid-flight on any step, sitting at an
-  earlier gate, or even abandoned still blocks. This is a deliberate,
-  narrow definition — "the work is fully accepted and done," not "someone
-  stopped touching it."
-* **What scope it blocks.** The whole item, at the same point that decides
-  every dispatch: `runnable()` in `server/src/orchestrator.js`. A blocked
-  item's agent steps never get picked up — not "queued behind" the blocker,
-  simply never dispatched — until every blocker it names has closed. This
+* **What satisfies a dependency (HZ-467).** For a change item, the blocker's
+  PR *merging to main* — `merged_at`, set only after a merge succeeded (the
+  Accept the code approve in Horizon, or the PR merged on GitHub) — or the
+  blocker closing. An approved, accepted or merging PR does not count, and
+  an abandoned blocker still blocks even if it merged. A GitHub reopen
+  clears `merged_at`. Task and Plan items keep the stricter rule: only the
+  blocker *closing* counts.
+* **What scope it blocks.** For a change item, implement and every later
+  step: steps 0–10 (planning and its gates) run while a blocker is open, so
+  the item reaches "Review before execution" and waits there or at
+  implement. Task and Plan items are held on every step. Both are enforced
+  at the same point that decides every dispatch: `runnable()` in
+  `server/src/orchestrator.js`, via `holdingBlockers` in
+  `domain/js/lifecycle.js`. A held step is never dispatched — not "queued
+  behind" the blocker — and the blocker's merge (or close) wakes it. This
   is enforced server-side regardless of which client (UI, WhatsApp
   concierge, GitHub) is looking at the item; there is no code path that
   honours a dependency only in one place.
 * **Blocked is not paused.** Paused is a human action with a Resume button.
-  Blocked is a derived fact computed from the dependency graph (`isBlocked`
-  in `domain/js/lifecycle.js`) — it is never written to a "paused" column,
+  Blocked is a derived fact computed from the dependency graph
+  (`holdingBlockers` in `domain/js/lifecycle.js`) — it is never written to a "paused" column,
   and clearing it is never "hit Resume." The two are fully independent: an
   item can be paused and unblocked, blocked and not paused, or any other
   combination, and the API reports both flags separately
   (`paused`, `blocked`, `blockedBy`, `blockedByAbandoned` in each item's
-  `GET /api/items` payload).
+  `GET /api/items` payload). `blocked` means held at the current step;
+  `blockedBy` lists every blocker that has not closed, held or not, each
+  with `merged`, so an edge can always be seen and removed.
 * **Cycles are rejected at write time.** Declaring a dependency that would
   create a cycle (directly, or through a longer chain) fails closed with a
   clear error — the graph a dependency is added to is walked before the
@@ -165,7 +171,7 @@ because HZ-77 has nothing to render until HZ-76's categories exist.
   for a human instead of reading as an ordinary in-progress blocker. The
   remedy is explicit: remove the dependency, or add a replacement one.
 * **Multiple blockers are supported.** An item can depend on more than one
-  other item; it stays blocked until every one of them has closed.
+  other item; it stays held until every one of them has merged or closed.
 
 Implementation: `work_item_dependency` (server/src/db.js) is an additive
 table, not a column — no `CHECK` constraint on `work_item` or `step_run` is

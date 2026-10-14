@@ -1351,6 +1351,8 @@ export function buildApp({ logger = true, onRoute = null } = {}) {
             color: '#0E6E74',
             initials: 'HZ',
           })
+          // HZ-467: the code is on main — dependents' implement may start.
+          store.markMerged(id)
         } catch (err) {
           store.addEvent(id, {
             who: 'Horizon',
@@ -1733,7 +1735,7 @@ export function buildApp({ logger = true, onRoute = null } = {}) {
     },
   )
 
-  // Dependencies (HZ-78): id is blocked until dependsOnId closes. Cycles and
+  // Dependencies (HZ-78): id is held until dependsOnId merges or closes (HZ-467). Cycles and
   // self-dependencies are rejected here (store.addDependency, fail-closed —
   // see lifecycle.js/store.js), so a malformed graph never reaches the
   // orchestrator's dispatch gate at all.

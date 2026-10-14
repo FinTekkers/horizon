@@ -17,7 +17,7 @@ import {
   STEPS,
   isClosed,
   isAbandoned,
-  isBlocked,
+  holdingBlockers,
   IMPLEMENT_STEP_INDEX,
   REVIEW_STEP_INDEX,
   ACCEPT_GATE_INDEX,
@@ -1214,13 +1214,15 @@ function inFlightRunnable(item) {
     !item.paused &&
     !item.rejected &&
     // HZ-346: a run stopped on a rule holds the item until a dependency it
-    // gained closes, or a human resumes or sends it back (store.js).
+    // gained merges or closes, or a human resumes or sends it back (store.js).
     !item.rule_block_json &&
     STEPS[item.cursor].kind === 'agent' &&
     // HZ-377: a step with no runner waits where it is — it is never
     // dispatched, to the farm or to the mock path, so no run is ever recorded.
     STEPS[item.cursor].runsIn !== 'none' &&
-    !isBlocked(blockersOf(item.id))
+    // HZ-467: a change item plans past open dependencies; implement and later
+    // wait until each blocker has merged or closed (domain/js/lifecycle.js).
+    holdingBlockers(item, blockersOf(item.id)).length === 0
   )
 }
 
