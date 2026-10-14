@@ -24,7 +24,7 @@ import { resolveTarget, deployOutcomeFor, startDeploy } from './deploy.js'
 import { jobBlocksDeploy, heldMsFor, oldestHolds, lastReleasedHold, releaseHold } from './deployHold.js'
 import { getBranchSha, isAncestor, getPrMergeSha, findReleaseByTag, createBatchRelease, defaultBranchStale } from './github.js'
 import { sqlTime, msOf } from './sqlTime.js'
-import { addEvent, getDefaultBranch, notifyChange, runningJobsIn } from './store.js'
+import { addEvent, getDefaultBranch, notifyChange, openDependentsOfAny, runningJobsIn } from './store.js'
 import { DEPLOY_STEP_INDEX } from '../../domain/js/lifecycle.js'
 
 export const TICK_MS = 5000
@@ -169,10 +169,32 @@ async function tickTarget(target, now) {
   const running = selectRunning.get(target)
   if (running) await advance(running, now)
   if (selectRunning.get(target)) return
-  const open = selectOpen.get(target)
+  let open = selectOpen.get(target)
+  if (open && now < msOf(open.window_closes_at)) open = closeWindowIfWaitedOn(open, now)
   // HZ-408: a due batch stays open while a job runs in its repo — its
   // release would only be held, with DEPLOY_WAIT_MS counting from start().
   if (open && now >= msOf(open.window_closes_at) && !jobBlocksDeploy(open.repo)) await start(open, now)
+}
+
+// HZ-469: an open item that depends on a queued member is waiting for this
+// batch to go live, so the window closes now instead of at its set time. The
+// close time is rewritten (the board and a restarted server read it from the
+// row), and the member's history keeps the time it replaced.
+function closeWindowIfWaitedOn(open, now) {
+  const queued = selectQueuedIn.all(open.id)
+  const waiting = openDependentsOfAny(queued.map((e) => e.item_id))[0]
+  if (!waiting) return open
+  const closed = sqlTime(now)
+  const changed = db.prepare("UPDATE deploy_batch SET window_closes_at = ? WHERE id = ? AND status = 'open'").run(closed, open.id).changes
+  if (changed !== 1) return open
+  addEvent(waiting.dependsOn, {
+    who: 'Horizon',
+    text: `deploy window closed early — ${waiting.id} is waiting on it (it was due to close ${open.window_closes_at} UTC)`,
+    color: '#DFA200',
+    initials: 'HZ',
+  })
+  notifyChange()
+  return selectBatch.get(open.id)
 }
 
 // HZ-408: spawns each repo's oldest held release (deployHold.js) once no job

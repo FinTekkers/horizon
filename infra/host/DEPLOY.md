@@ -550,6 +550,35 @@ Notes:
   sessions, which is why the drain checkpoints them first. The systemd units
   and the sudoers file are unchanged.
 
+### Steps that survive a restart (HZ-469)
+
+The drain waits only for steps a restart would lose. `RESTART_SURVIVAL` in
+`server/src/deployDrain.js` says, for each step kind (`runsIn`), whether a
+running step of that kind still finishes and reports after the server and
+the farm restart. `farm/tests/test_step_survives_restart.py` decides it: it
+holds one step of each kind on a throwaway instance (its own DB, `FARM_HOME`
+and tmux server, never `systemctl`), kills and reboots the server and
+farmd, and fails if the result differs from the table.
+
+| Kind | Restart result | Drained |
+| --- | --- | --- |
+| `job` | survives: farmd keeps the result until the server takes it (HZ-408) | no, and never listed |
+| `farm` | lost: a result that comes back while the server is down is dropped, and the step runs again | yes |
+| `pm` | lost, the same way as `farm` | yes |
+| `server` | lost: it runs inside the server process | yes |
+
+A kind not in the table counts as lost and is drained. Each step the drain
+routes list carries `kind` and `survives`. The helper waits for every step
+whose `survives` is not `true`, so an older server's steps are all waited
+for. A surviving step is logged once as `DRAIN not waiting for <k> step(s)
+that survive a restart: <item> <step>, …`, and it is never checkpointed. The
+waits, the checkpoint, rollback and health checks are unchanged.
+
+**Today this narrows nothing.** Only `job` survives, and the drain already
+left jobs out. Once a `farm` or `pm` result survives the server being down,
+the restart test fails, and flipping that kind's row in the table stops the
+drain waiting for it.
+
 ## Deploy queue: one release per batch (HZ-333)
 
 Step 14 no longer publishes a release per item. An item joins its deploy
@@ -562,6 +591,11 @@ target's queue (`server/src/deployQueue.js`, rows in `deploy_batch` and
   is deploying on that target, Horizon reads main's head and publishes **one**
   release pinned to it. The webhook deploys it as before. Targets are
   independent; one target runs one deploy at a time.
+- **Express (HZ-469).** When an open item (not closed, not abandoned)
+  depends on an item queued in the open batch, the window closes on the next
+  queue tick and the batch publishes then. The batch's `window_closes_at` is
+  set to that moment, and the queued item's history records the time it
+  replaced. A running job in the repo still holds the batch, as before.
 - **Tag.** `deploy-<target>-<yyyymmdd>-b<batch id>`, e.g.
   `deploy-horizon-20261007-b7`. It is saved before the GitHub call and looked
   up first on every retry or restart, so a batch never publishes a second

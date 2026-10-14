@@ -37,6 +37,8 @@
 //   DRAIN timed out: <item> <step> — <what happened>, requeued after deploy
 //   DRAIN checkpoint failed: <item> <step> (<why>)
 // A server without `steps` (one older than this helper) has none to wait for.
+// HZ-469: a step listed with `survives: true` is not waited for or stopped:
+//   DRAIN not waiting for <k> step(s) that survive a restart: <item> <step>, ...
 // The whole drain ends within max(both waits) + the request bounds + two
 // interrupt bounds (one for runs, one for steps).
 
@@ -98,6 +100,10 @@ async function call(cfg, method, path, body, timeoutS) {
 const runsOf = (reply) => (Array.isArray(reply?.running) ? reply.running : [])
 const keyOf = (run) => `${run.itemId}\u0000${run.kind}`
 const stepsOf = (reply) => (Array.isArray(reply?.steps) ? reply.steps.filter((step) => Number.isInteger(step?.runId)) : [])
+// HZ-469: a step the server marks `survives: true` outlives the restart, so the
+// drain neither waits for it nor stops it. Anything else, including a step with
+// no `survives` field (a server older than this helper), is waited for.
+const survives = (step) => step.survives === true
 
 // The block must outlast both waits and both interrupt calls, or new runs
 // could start while the drain is still waiting.
@@ -124,7 +130,11 @@ export async function drain(cfg, print = console.log) {
     return
   }
   const pending = new Map(runsOf(begin).map((run) => [keyOf(run), run]))
-  const steps = new Map(stepsOf(begin).map((step) => [step.runId, step]))
+  const steps = new Map(stepsOf(begin).filter((step) => !survives(step)).map((step) => [step.runId, step]))
+  const skipped = stepsOf(begin).filter(survives)
+  if (skipped.length > 0) {
+    print(`DRAIN not waiting for ${skipped.length} step(s) that survive a restart: ${skipped.map(stepLabel).join(', ')}`)
+  }
   if (pending.size === 0 && steps.size === 0) {
     print('DRAIN nothing running')
     return

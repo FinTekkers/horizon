@@ -72,6 +72,11 @@ chmod +x "$STUBS"/*
 #   step-forever         HZ-T3 is listed forever; its interrupt saves a checkpoint
 #   step-ckpt-failed     like step-forever, but the checkpoint reports failed
 #   step-hang-interrupt  like step-forever, but the interrupt never answers
+# HZ-469, a surviving step (US-225, FinTekkers, survives: true, listed forever)
+# next to one that is lost (HZ-T4, Horizon):
+#   step-mixed           HZ-T4 (survives: false) is listed for about 2s, then not
+#   step-mixed-forever   HZ-T4 (survives: false) is listed forever
+#   step-nofield         HZ-T4 has no `survives` field, listed for about 2s
 cat >"$WORK/stub-drain.mjs" <<'EOF'
 import http from 'node:http'
 import { appendFileSync, writeFileSync } from 'node:fs'
@@ -79,11 +84,19 @@ const [scenario, logFile, portFile, secret] = process.argv.slice(2)
 const T1 = { itemId: 'HZ-T1', kind: 'premerge', startedAt: '2026-10-02T12:00:00.000Z' }
 const T2 = { itemId: 'HZ-T2', kind: 'resolve', startedAt: '2026-10-02T12:00:01.000Z' }
 const T3 = { runId: 77, itemId: 'HZ-T3', stepIndex: 11, step: 'implement', startedAt: '2026-10-07T00:00:00.000Z' }
+const A = { runId: 81, itemId: 'US-225', stepIndex: 11, step: 'implement', startedAt: '2026-10-14T09:02:11.000Z', kind: 'farm', survives: true }
+const B = { runId: 82, itemId: 'HZ-T4', stepIndex: 11, step: 'implement', startedAt: '2026-10-14T09:05:40.000Z', kind: 'farm', survives: false }
+const { survives: _, ...BNoField } = B
+const mixedScenario = scenario.startsWith('step-mixed') || scenario === 'step-nofield'
 const stepScenario = scenario.startsWith('step-')
 const initial = stepScenario ? [] : scenario === 'mixed' ? [T1, T2] : [T1]
 let beganAt = 0
 const listedSteps = () => {
   if (!stepScenario) return undefined
+  if (mixedScenario) {
+    const b = scenario === 'step-nofield' ? BNoField : B
+    return scenario !== 'step-mixed-forever' && Date.now() - beganAt >= 2000 ? [A] : [A, b]
+  }
   if (scenario === 'step-clears') return Date.now() - beganAt < 1000 ? [T3] : []
   return [T3]
 }
@@ -116,7 +129,8 @@ const server = http.createServer((req, res) => {
       if (scenario === 'hang-interrupt' || scenario === 'step-hang-interrupt') return
       const asked = JSON.parse(body)
       const outcome = scenario === 'step-ckpt-failed' ? 'failed' : 'saved'
-      const steps = (asked.steps || []).map((s) => ({ ...s, itemId: T3.itemId, step: T3.step, interrupted: true, checkpoint: { outcome, detail: 'x' } }))
+      const named = mixedScenario ? B : T3
+      const steps = (asked.steps || []).map((s) => ({ ...s, itemId: named.itemId, step: named.step, interrupted: true, checkpoint: { outcome, detail: 'x' } }))
       return send(200, { interrupted: asked.runs.map((r) => ({ ...r, killed: true })), ...(asked.steps ? { steps } : {}) })
     }
     if (req.method === 'POST') {
@@ -129,7 +143,7 @@ const server = http.createServer((req, res) => {
       polls++
       const running = listed()
       const steps = listedSteps()
-      record(req, `running=${running.length}` + (steps ? ` steps=${steps.length}` : ''))
+      record(req, `running=${running.length}` + (steps ? ` steps=${steps.length} ids=${steps.map((s) => s.runId).join(',')}` : ''))
       return send(200, { blocked: true, running, ...(steps ? { steps } : {}) })
     }
     record(req)
@@ -398,6 +412,69 @@ for scenario in step-ckpt-failed step-hang-interrupt; do
   expect "S4 $scenario: the deploy still ends DEPLOY OK" grep -q 'DEPLOY OK' "$log"
   expect "S4 $scenario: bounded (took ${took}s)" [ "$took" -lt 20 ]
 done
+
+# ---- 12. HZ-469 metric 2: the drain waits for the lost step only; the surviving one keeps running ----
+for scenario in step-mixed step-nofield; do
+  base="$(mktemp -d -p "$WORK")"
+  setup_repo "$base"
+  start_stub "$scenario" "$base/drain.log" s3cret
+  run_deploy "$base" "$url" FARM_SHARED_SECRET=s3cret HORIZON_DEPLOY_DRAIN_POLL_S=0.2 HORIZON_DEPLOY_DRAIN_STEP_TIMEOUT_S=30
+  code=$?
+  log="$base/state/self-deploy.log"
+  last_lost="$(awk '$2 == "GET" && /ids=81,82/ { t = $1 } END { print t }' "$base/drain.log")"
+  lost_gone="$(awk '$2 == "GET" && / ids=81$/ { print $1; exit }' "$base/drain.log")"
+  last_poll="$(awk '$2 == "GET" { t = $0 } END { print t }' "$base/drain.log")"
+  restarted="$(restart_ts "$base")"
+  expect "V1 $scenario: deploy succeeds" [ "$code" -eq 0 ]
+  expect "V1 $scenario: HZ-T4 was listed by at least one poll" [ -n "$last_lost" ]
+  expect "V1 $scenario: no restart while HZ-T4 was running" lt "$last_lost" "$restarted"
+  expect "V1 $scenario: restart only after HZ-T4 ended ($lost_gone -> $restarted)" lt "$lost_gone" "$restarted"
+  expect "V1 $scenario: US-225 was still running at the last poll before the restart" bash -c "echo '$last_poll' | grep -q ' ids=81'"
+  expect "V1 $scenario: log says US-225 is not waited for" \
+    grep -q 'DRAIN not waiting for 1 step(s) that survive a restart: US-225 implement$' "$log"
+  expect "V1 $scenario: log waits for HZ-T4 only" grep -q 'DRAIN waiting up to 30s for 1 agent step(s): HZ-T4 implement$' "$log"
+  expect "V1 $scenario: log says HZ-T4 finished" grep -q 'DRAIN finished: HZ-T4 implement$' "$log"
+  expect "V1 $scenario: US-225 is never said to finish" bash -c "! grep -q 'DRAIN finished: US-225' '$log'"
+  expect "V1 $scenario: nothing was interrupted" bash -c "! grep -q '/interrupt' '$base/drain.log'"
+  expect "V1 $scenario: the deploy still ends DEPLOY OK" grep -q 'DEPLOY OK' "$log"
+done
+
+# ---- 13. HZ-469 guardrail 3: past the step wait, only the lost step is stopped, and the restart still happens ----
+{
+  base="$(mktemp -d -p "$WORK")"
+  setup_repo "$base"
+  start_stub step-mixed-forever "$base/drain.log" s3cret
+  run_deploy "$base" "$url" FARM_SHARED_SECRET=s3cret HORIZON_DEPLOY_DRAIN_POLL_S=0.2 HORIZON_DEPLOY_DRAIN_STEP_TIMEOUT_S=1 \
+    HORIZON_DEPLOY_DRAIN_REQUEST_TIMEOUT_S=1 HORIZON_DEPLOY_DRAIN_INTERRUPT_TIMEOUT_S=1
+  code=$?
+  log="$base/state/self-deploy.log"
+  interrupt_at="$(awk '/\/interrupt/ { print $1; exit }' "$base/drain.log")"
+  expect "V2: deploy succeeds" [ "$code" -eq 0 ]
+  expect "V2: one interrupt call, for HZ-T4 only" \
+    [ "$(grep -c '/interrupt auth=ok {"runs":\[\],"steps":\[{"runId":82}\]}' "$base/drain.log")" -eq 1 ]
+  expect "V2: only one interrupt call in all" [ "$(grep -c '/interrupt' "$base/drain.log")" -eq 1 ]
+  expect "V2: log says HZ-T4 was checkpointed" grep -q 'DRAIN timed out: HZ-T4 implement — checkpointed, requeued after deploy$' "$log"
+  expect "V2: US-225 is never timed out" bash -c "! grep -q 'DRAIN timed out: US-225' '$log'"
+  expect "V2: the restart follows the interrupt" lt "$interrupt_at" "$(restart_ts "$base")"
+  expect "V2: the deploy still ends DEPLOY OK" grep -q 'DEPLOY OK' "$log"
+}
+
+# ---- 14. HZ-469 guardrails 3 and 4: the drain change leaves every deploy script byte-identical ----
+# Pinned on purpose: HZ-469 changes only the drain helper and the server, never
+# a deploy script's rollback, health check or drain timeout. A later item that
+# changes one of these files on purpose updates its hash here in the same PR.
+while read -r sum file; do
+  expect "G: infra/host/$file is unchanged" bash -c "echo '$sum  $HERE/../$file' | sha256sum --check --status"
+done <<'SUMS'
+a1a5a9ed0d182c93835870144d586da3ebc50a59f9091b18646ccefe7b06fa2d deploy-horizon.sh
+5057744c15e8e0157d1c5cd2ccf22b15b730839b566d10daf5d9f3d5f634c78a deploy-ui-service.sh
+9e5b8cccfaadb93e0f1c14ad8a7437d1a372843dfe937c5a821d18bc1f3232b7 deploy-shoreward.sh
+bddc30bc9fa09dc8533383b3859c00758b37668ca77833f3b491faa9167f7162 deploy-grpc-service.sh
+c0229c3932d77912ac5dff0df53d50fa1f0cbcd40c1811c787803a494f2357b4 deploy-ledger-service.sh
+8beb45f6c6fc4f9ec7516bec75ec451199d1fca603a385a9732ef8ca07abc223 deploy-valuation-service.sh
+7bdba31167d0db3743435d094d6701d4796e5f6e125b640149b3e6780a1cb67f deploy-broker-service.sh
+c5a6550be1d6cd74890149dd290fe72aeddb175b321922a6302dcf5f896e1bbf deploy-price-service.sh
+SUMS
 
 echo "1..$((pass + fail))"
 echo "# pass $pass"
