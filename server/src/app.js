@@ -1151,24 +1151,27 @@ export function buildApp({ logger = true, onRoute = null } = {}) {
     }
     // HZ-257: the test-merge would be the head itself, and the farm's own
     // checks already passed on exactly that head — no run, same merge pin.
+    // A skip saves the whole 10–15 minute pre-merge run (HZ-468).
     const skip = await tryPreMergeSkip(item, head, baseSha)
-    if (skip) {
-      store.setGateActionDetail(id, 'premerge', token, `checks already passed on ${skip.sha}, main unchanged`)
+    if (skip.pass) {
+      const { pass } = skip
+      store.setGateActionDetail(id, 'premerge', token, `checks already passed on ${pass.sha}, main unchanged`)
       store.addEvent(id, {
         who: 'Horizon',
-        text: `pre-merge checks skipped for PR #${item.pr}: the repo's checks already passed on ${skip.sha} (${skip.source}, finished ${skip.finishedAt}) and ${head.baseRef} ${baseSha.slice(0, 12)} is already in that head, so a test-merge would re-test the same commit`,
+        text: `pre-merge skipped: ${head.baseRef} unchanged since checks at ${pass.sha}. PR #${item.pr}'s checks passed on that head (${pass.source}, finished ${pass.finishedAt}) and ${head.baseRef} ${baseSha.slice(0, 12)} is already in it, so a test-merge would re-test the same commit`,
         color: '#0E6E74',
         initials: 'HZ',
       })
       store.notifyChange()
-      return { headSha: skip.sha, skipped: true }
+      return { headSha: pass.sha, skipped: true }
     }
     store.setGateActionDetail(id, 'premerge', token, `running checks on ${head.baseRef} + PR #${item.pr}`)
     // Logged and pushed BEFORE the run: it takes minutes, and the human must
-    // see that something is happening rather than click Accept again.
+    // see that something is happening rather than click Accept again. HZ-468:
+    // a refused skip says why, so the runs that still happen can be explained.
     store.addEvent(id, {
       who: 'Horizon',
-      text: `running the repo's checks on a test-merge of ${head.baseRef} + PR #${item.pr} before merging — this takes a few minutes, don't click Accept again`,
+      text: `running the repo's checks on a test-merge of ${head.baseRef} + PR #${item.pr} before merging — this takes a few minutes, don't click Accept again${skip.reason ? ` (no skip: ${skip.reason})` : ''}`,
       color: '#DFA200',
       initials: 'HZ',
     })
@@ -1244,26 +1247,43 @@ export function buildApp({ logger = true, onRoute = null } = {}) {
     return { headSha: result.head_sha }
   }
 
-  // HZ-257: { sha, finishedAt, source } when pre-merge may be skipped — a
-  // fresh check_pass row for exactly this repo, item and head sha, the base tip
-  // already an ancestor of that head, and the base still there on a re-read.
-  // Null otherwise. Never throws: any doubt (no row, a git or API error, a
-  // moved base) is null, which runs pre-merge exactly as before. The local
-  // lookup goes first, so an item with no record never calls GitHub here.
+  // HZ-257: { pass: { sha, finishedAt, source } } when pre-merge may be
+  // skipped — a fresh check_pass row for exactly this repo, item and head sha,
+  // the base tip already an ancestor of that head, and the base still there on
+  // a re-read. Otherwise { reason } (HZ-468), a fixed phrase plus at most a
+  // sha, empty when skipping is switched off. Never throws: any doubt (no row,
+  // a malformed row, a git or API error, a moved base) refuses, which runs
+  // pre-merge exactly as before. The local lookup goes first, so an item with
+  // no record never calls GitHub here.
   async function tryPreMergeSkip(item, head, baseSha) {
-    if (!PREMERGE_SKIP_ENABLED) return null
+    if (!PREMERGE_SKIP_ENABLED) return { reason: '' }
     try {
-      const pass = store.findCheckPass({ repo: item.repo, itemId: item.id, sha: head.sha, maxAgeMs: PREMERGE_SKIP_MAX_AGE_MS })
-      if (!pass || pass.sha !== head.sha) return null
+      const lookup = { repo: item.repo, itemId: item.id, sha: head.sha }
+      const pass = store.findCheckPass({ ...lookup, maxAgeMs: PREMERGE_SKIP_MAX_AGE_MS })
+      if (!pass) {
+        // Only on a miss: one more indexed row read, with no age limit, to tell
+        // the 24h cap apart from no record at all.
+        const stale = store.findCheckPass({ ...lookup, maxAgeMs: Date.now() })
+        return stale
+          ? { reason: `check record older than ${PREMERGE_SKIP_MAX_AGE_MS / (60 * 60 * 1000)}h` }
+          : { reason: `no green check record for head ${head.sha.slice(0, 12)}` }
+      }
+      if (pass.sha !== head.sha) return { reason: `no green check record for head ${head.sha.slice(0, 12)}` }
+      if (!/^[0-9a-f]{40}$/.test(head.sha) || !Number.isFinite(Date.parse(pass.finishedAt))) {
+        return { reason: 'malformed check record' }
+      }
       // HZ-406: a pass recorded beside a failed branch run (before HZ-406
       // made that a failure, or by any path that missed it) is never used.
-      if (store.latestBranchRunFailed(item.id)) return null
-      if ((await github.isAncestor(item.repo, baseSha, head.sha)) !== true) return null
-      if ((await github.getBranchSha(item.repo, head.baseRef)) !== baseSha) return null
-      return pass
+      if (store.latestBranchRunFailed(item.id)) return { reason: 'newest branch run failed' }
+      if ((await github.isAncestor(item.repo, baseSha, head.sha)) !== true) return { reason: `${head.baseRef} moved since checks` }
+      if ((await github.getBranchSha(item.repo, head.baseRef)) !== baseSha) {
+        return { reason: `${head.baseRef} moved during the skip check` }
+      }
+      return { pass }
     } catch (err) {
+      // The error's text goes to the server log only, never into the event.
       fastify.log.warn(`pre-merge skip not used for ${item.id}: ${err.message}`)
-      return null
+      return { reason: 'skip check errored' }
     }
   }
 

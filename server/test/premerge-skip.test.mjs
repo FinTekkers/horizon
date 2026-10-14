@@ -47,7 +47,7 @@ const BASE = 'b'.repeat(40)
 const MOVED = 'c'.repeat(40)
 const OTHER = 'e'.repeat(40)
 const HOUR = 60 * 60 * 1000
-const SKIP_EVENT = 'pre-merge checks skipped'
+const SKIP_EVENT = 'pre-merge skipped: main unchanged since checks at'
 const SKIP_DETAIL = 'checks already passed'
 
 // Dispatched runs hold queue watchdogs open; stop them so the process exits.
@@ -105,6 +105,7 @@ function resetFetch() {
     return json(404, {})
   }
 }
+const mainReads = () => gh.calls.filter((c) => c.method === 'GET' && c.path.endsWith('/git/ref/heads%2Fmain'))
 const mergeCalls = () => gh.calls.filter((c) => c.method === 'PUT' && c.path.endsWith('/merge'))
 const compareCalls = () => gh.calls.filter((c) => c.path.includes('/compare/'))
 
@@ -144,6 +145,14 @@ function assertRanPremerge(id) {
   assert.ok(!(gateRow(id)?.detail || '').includes(SKIP_DETAIL), 'no skip detail when pre-merge runs')
 }
 
+// HZ-468: the run-start event names why the skip was refused.
+const runStartEvent = (id) => eventTexts(id).find((t) => t.startsWith("running the repo's checks"))
+function assertNoSkipReason(id, reason) {
+  const text = runStartEvent(id)
+  assert.ok(text, 'a run-start event was logged')
+  assert.ok(text.includes(`(no skip: ${reason}`), `run-start event gives the reason "${reason}": ${text}`)
+}
+
 // ---- metric 2 + 5: the skip path ----
 
 test('skip: main is in the head and the head passed — no pre-merge run, merged, pinned to that sha, one skip event', async () => {
@@ -158,11 +167,16 @@ test('skip: main is in the head and the head passed — no pre-merge run, merged
   assert.equal(cursorOf(id), ACCEPT_GATE_INDEX + 1)
   const skips = eventTexts(id).filter((t) => t.includes(SKIP_EVENT))
   assert.equal(skips.length, 1)
-  assert.ok(skips[0].includes(HEAD), 'the skip event names the full sha')
-  assert.match(skips[0], /already in that head/)
+  // HZ-468 metric 1: the first sentence is exactly the required line, with the
+  // full 40-character checked sha — a 12-character one fails this.
+  assert.equal(skips[0].split('. ')[0], `pre-merge skipped: main unchanged since checks at ${HEAD}`)
+  assert.match(skips[0], /main bbbbbbbbbbbb is already in it/)
   assert.ok(!eventTexts(id).some((t) => t.startsWith('running the repo')), 'no "running checks" event on a skip')
   assert.ok(eventTexts(id).some((t) => t.startsWith('merged PR #')))
   assert.deepEqual(compareCalls()[0].path, `/repos/${REPO}/compare/${BASE}...${HEAD}`)
+  // HZ-468 guardrail 2: main was read live from GitHub on this Accept — once
+  // for the test-merge base, once more as the skip's re-read.
+  assert.equal(mainReads().length, 2)
 })
 
 test('real-route join: a farm-authenticated step-complete carrying checks_passed_sha lets the later Accept skip pre-merge; a payload repo is ignored', async () => {
@@ -250,6 +264,37 @@ test('3(a): main is not an ancestor of the head (diverged) — pre-merge runs', 
   assert.equal(res.statusCode, 200)
   assertRanPremerge(id)
   assert.deepEqual(mergeCalls()[0].body, { merge_method: 'squash', sha: HEAD })
+  assertNoSkipReason(id, 'main moved since checks')
+})
+
+test('HZ-468 metric 2: main gained a commit and the pre-merge run is red — the merge is blocked', async () => {
+  const id = acceptItem()
+  pass(id)
+  gh.ancestry = 'diverged'
+  premerge.runner.spawn = async (args) => {
+    runs.push(args)
+    return {
+      code: 1,
+      stdout: JSON.stringify({ ok: false, reason: 'checks_failed', failing_check: 'npm test', head_sha: args[4], base_sha: args[6] }) + '\n',
+      stderr: '',
+      timedOut: false,
+    }
+  }
+  const res = await approve(id)
+  assert.equal(res.statusCode, 502)
+  assert.equal(res.json().error, 'pre-merge checks failed: npm test')
+  assert.equal(runs.length, 1)
+  // The same checks run as before HZ-468: the PR head and the fetched main.
+  assert.equal(runs[0][4], HEAD)
+  assert.equal(runs[0][6], BASE)
+  assert.equal(mergeCalls().length, 0)
+  assert.equal(cursorOf(id), ACCEPT_GATE_INDEX)
+  // A red check finishes the gate row as blocked (the checks answered no).
+  assert.equal(gateRow(id).state, 'blocked')
+  assert.ok(eventTexts(id).some((t) => t.includes('is not merged and the gate stays open') && t.includes('npm test')))
+  assert.ok(!eventTexts(id).some((t) => t.startsWith('merged PR #')))
+  assert.ok(!eventTexts(id).some((t) => t.includes(SKIP_EVENT)))
+  assertNoSkipReason(id, 'main moved since checks')
 })
 
 test('3(a): the head is behind main — pre-merge runs', async () => {
@@ -258,6 +303,7 @@ test('3(a): the head is behind main — pre-merge runs', async () => {
   gh.ancestry = 'behind'
   await approve(id)
   assertRanPremerge(id)
+  assertNoSkipReason(id, 'main moved since checks')
 })
 
 test('3(b): the passing record is for a different sha than the PR head — pre-merge runs, and GitHub is never asked about ancestry', async () => {
@@ -266,6 +312,7 @@ test('3(b): the passing record is for a different sha than the PR head — pre-m
   await approve(id)
   assertRanPremerge(id)
   assert.equal(compareCalls().length, 0)
+  assertNoSkipReason(id, `no green check record for head ${HEAD.slice(0, 12)}`)
 })
 
 test('3(c): no record exists — pre-merge runs', async () => {
@@ -273,6 +320,58 @@ test('3(c): no record exists — pre-merge runs', async () => {
   await approve(id)
   assertRanPremerge(id)
   assert.equal(compareCalls().length, 0)
+  assertNoSkipReason(id, `no green check record for head ${HEAD.slice(0, 12)}`)
+})
+
+// ---- HZ-468 guardrail 3: fail safe ----
+
+test('a malformed check record (unreadable finish time) runs pre-merge', async () => {
+  const id = acceptItem()
+  // The SQL age filter compares strings, so this row gets past it.
+  db.prepare('INSERT INTO check_pass (repo, item_id, sha, finished_at, source) VALUES (?, ?, ?, ?, ?)').run(
+    REPO,
+    id,
+    HEAD,
+    'not-a-date',
+    'implement',
+  )
+  const res = await approve(id)
+  assert.equal(res.statusCode, 200)
+  assertRanPremerge(id)
+  assert.equal(compareCalls().length, 0)
+  assertNoSkipReason(id, 'malformed check record')
+})
+
+test('the re-read of main returns no commit sha — pre-merge runs, the error text stays out of the event', async () => {
+  const id = acceptItem()
+  pass(id)
+  gh.baseTips = [BASE, 'not-a-sha']
+  const res = await approve(id)
+  assertRanPremerge(id)
+  assertNoSkipReason(id, 'skip check errored')
+  assert.ok(!runStartEvent(id).includes('without a commit sha'))
+  // The run itself reads main again after the checks and finds it unreadable.
+  assert.equal(res.statusCode, 502)
+  assert.equal(mergeCalls().length, 0)
+})
+
+test('the first read of main fails — no skip, no run, no merge, the gate stays open', async () => {
+  const id = acceptItem()
+  pass(id)
+  const fetchOk = globalThis.fetch
+  globalThis.fetch = async (url, options = {}) => {
+    if (new URL(url).pathname.endsWith('/git/ref/heads%2Fmain')) {
+      gh.calls.push({ method: options.method || 'GET', path: new URL(url).pathname })
+      return { ok: false, status: 500, json: async () => ({}), text: async () => '' }
+    }
+    return fetchOk(url, options)
+  }
+  const res = await approve(id)
+  assert.equal(res.statusCode, 502)
+  assert.equal(mergeCalls().length, 0)
+  assert.equal(runs.length, 0)
+  assert.ok(!eventTexts(id).some((t) => t.includes(SKIP_EVENT)))
+  assert.equal(cursorOf(id), ACCEPT_GATE_INDEX)
 })
 
 test('3(d): the ancestry check errors — pre-merge runs', async () => {
@@ -324,6 +423,7 @@ test('freshness: a record 24h01m old is not used — pre-merge runs', async () =
   pass(id, { ageMs: 24 * HOUR + 60_000 })
   await approve(id)
   assertRanPremerge(id)
+  assertNoSkipReason(id, 'check record older than 24h')
 })
 
 test('the default limit is 24h', () => {
@@ -378,6 +478,7 @@ test('HZ-406: a fresh pass beside a newest failed branch run — the Accept rout
   assert.equal(res.statusCode, 200)
   assertRanPremerge(id)
   assert.equal(gateRow(id).state, 'merged')
+  assertNoSkipReason(id, 'newest branch run failed')
 })
 
 test('HZ-406: a fresh pass beside an all-pass newest branch run — the skip is taken', async () => {
