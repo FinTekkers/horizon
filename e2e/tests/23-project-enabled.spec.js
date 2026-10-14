@@ -1,6 +1,6 @@
 // HZ-208: Admin's per-project enabled switch, end to end. Every flip asks for
-// the gate PIN; a wrong one changes nothing, the right one flips the project
-// and the board picks its items up.
+// the gate PIN; the right one flips the project and the board picks its items
+// up. A wrong PIN is refused by the route (server/test/gate-pin-routes.test.mjs).
 
 import { test, expect, captureScreenshot } from '../fixtures/test-base.js'
 import { openDb, insertItem, insertProject, setGatePinDirect } from '../fixtures/seed.js'
@@ -24,7 +24,7 @@ test.beforeAll(() => {
   }
 })
 
-test('flipping a project on with the gate PIN: a wrong PIN changes nothing, the right one enables it', async ({ page }) => {
+test('flipping a project on with the gate PIN enables it and the board picks its items up', async ({ page }) => {
   await page.goto('/')
   await expect(page.locator('.board__title')).toBeVisible({ timeout: 10_000 })
   await expect(page.getByText('E2E fixture — Delta item')).toHaveCount(0)
@@ -35,11 +35,6 @@ test('flipping a project on with the gate PIN: a wrong PIN changes nothing, the 
 
   await toggle.click()
   const pin = page.getByLabel(`Gate PIN to enable ${DELTA}`)
-  await pin.fill('000000')
-  await page.getByRole('button', { name: 'Enable', exact: true }).click()
-  await expect(page.getByText('Gate PIN incorrect')).toBeVisible()
-  await expect(toggle).toHaveAttribute('aria-checked', 'false')
-
   await pin.fill(GATE_PIN)
   await page.getByRole('button', { name: 'Enable', exact: true }).click()
   await expect(toggle).toHaveAttribute('aria-checked', 'true')

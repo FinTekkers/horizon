@@ -1,7 +1,8 @@
 // HZ-270: Admin's per-project Autopilot setting, end to end. It starts off,
-// offers exactly off/shadow/on, asks for the gate PIN on every change — a
-// wrong PIN changes nothing — and the saved value survives a reload, with the
-// change listed in the project's Autopilot history.
+// offers exactly off/shadow/on, asks for the gate PIN on every change, and the
+// saved value survives a reload, with the change listed in the project's
+// Autopilot history. A wrong PIN is refused by the route
+// (server/test/gate-pin-routes.test.mjs).
 
 import { test, expect, captureScreenshot } from '../fixtures/test-base.js'
 import { openDb, insertProject, setGatePinDirect } from '../fixtures/seed.js'
@@ -21,7 +22,7 @@ test.beforeAll(() => {
   }
 })
 
-test('Autopilot defaults to off; a wrong PIN changes nothing; the right one saves and survives a reload', async ({ page }) => {
+test('Autopilot defaults to off; the right PIN saves it and it survives a reload', async ({ page }) => {
   await page.goto('/admin')
   const select = page.getByLabel(`${PROJECT} Autopilot`, { exact: true })
   await expect(select).toHaveValue('off')
@@ -29,11 +30,6 @@ test('Autopilot defaults to off; a wrong PIN changes nothing; the right one save
 
   await select.selectOption('shadow')
   const pin = page.getByLabel(`Gate PIN to set ${PROJECT} Autopilot to shadow`)
-  await pin.fill('000000')
-  await page.getByRole('button', { name: 'Save', exact: true }).click()
-  await expect(page.getByText('Gate PIN incorrect')).toBeVisible()
-  await expect(select).toHaveValue('off')
-
   await pin.fill(GATE_PIN)
   await page.getByRole('button', { name: 'Save', exact: true }).click()
   await expect(select).toHaveValue('shadow')

@@ -3,22 +3,20 @@
 // `11-`) so it sorts and runs BEFORE 10-gate-key.spec.js: that file rewrites
 // the admin account's gate_pin_hash directly in the DB and never restores
 // the storageState-cached PIN afterwards, so any spec after it that relies
-// on the cached PIN (like this file's first test) would 401 on every gated
-// call. This file also mutates the admin PIN itself (for its own wrong-PIN
-// test), but does so only in its own last test, after its cached-PIN test
-// has already run.
+// on the cached PIN (like this file's test) would 401 on every gated call.
+// A missing or wrong PIN is refused by the route (server/test/app.test.mjs
+// and server/test/gate-pin-routes.test.mjs); 10-gate-key.spec.js walks the
+// wrong / cancelled / right prompt flow once, on a gate.
 
 import { test, expect, captureScreenshot } from '../fixtures/test-base.js'
-import { openDb, insertItem, setGatePinDirect } from '../fixtures/seed.js'
+import { openDb, insertItem } from '../fixtures/seed.js'
 
 const DB_PATH = process.env.HORIZON_E2E_DB
-const ADMIN_EMAIL = 'admin@example.com'
 
 test.beforeAll(() => {
   const db = openDb(DB_PATH)
   try {
     insertItem(db, { id: 'ABANDON-1', title: 'E2E fixture — abandon me', cursor: 3 })
-    insertItem(db, { id: 'ABANDON-2', title: 'E2E fixture — wrong PIN blocks abandon', cursor: 3 })
   } finally {
     db.close()
   }
@@ -76,36 +74,4 @@ test('abandoning an item requires a reason, closes it out distinctly from comple
   // One click reveals it again — still findable, nothing lost.
   await page.locator('.board__show-all').click()
   await expect(card).toBeVisible()
-})
-
-test('a wrong then cancelled gate PIN blocks abandonment, leaving the item untouched', async ({ page }) => {
-  const db = openDb(DB_PATH)
-  try {
-    setGatePinDirect(db, ADMIN_EMAIL, '773311')
-  } finally {
-    db.close()
-  }
-  await page.goto('/abandon-2')
-  await expect(page.locator('.tracker__id')).toHaveText('ABANDON-2')
-
-  // Without clearing this, gatePost()'s one built-in retry would spend
-  // itself on the now-stale cached PIN from storageState instead of
-  // prompting fresh — see the identical note in 10-gate-key.spec.js.
-  await page.evaluate(() => localStorage.removeItem('horizon_gate_pin'))
-
-  let dialogCount = 0
-  page.on('dialog', (dialog) => {
-    dialogCount += 1
-    if (dialogCount === 1) dialog.accept('totally-wrong-key')
-    else dialog.dismiss()
-  })
-
-  await page.getByRole('button', { name: 'Abandon', exact: true }).click()
-  await expect(page.locator('.composer__title')).toHaveText('Abandon this item · ABANDON-2')
-  await page.locator('.composer__input').fill('This should never take effect.')
-  await page.locator('.composer__submit').click()
-
-  await expect.poll(() => dialogCount, { timeout: 10_000 }).toBe(2)
-  await expect(page.locator('.tracker__status')).not.toContainText('Abandoned')
-  await expect(page.getByRole('button', { name: 'Abandon', exact: true })).toBeVisible()
 })
