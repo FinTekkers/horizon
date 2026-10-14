@@ -1,7 +1,8 @@
 // HZ-370: Admin's per-project "Runs on" default for each eligible step, end
 // to end. Each select starts at Default and offers Default / Claude / Muse; a
-// change asks for the gate PIN — a wrong PIN changes nothing — and the saved
-// value survives a reload. Deploy has no select.
+// change asks for the gate PIN and the saved value survives a reload. Deploy
+// has no select. A wrong PIN is refused by the route
+// (server/test/gate-pin-routes.test.mjs).
 //
 // Its own project with no repo and no items, so no mock agent ever runs a PM
 // step against it. Sets its own PIN: earlier specs rotate it.
@@ -28,7 +29,7 @@ test.beforeAll(() => {
   }
 })
 
-test('a project step default starts at Default; a wrong PIN changes nothing; the right one saves Muse and survives a reload', async ({
+test('a project step default starts at Default; the right PIN saves Muse and it survives a reload', async ({
   page,
   request,
 }) => {
@@ -41,11 +42,6 @@ test('a project step default starts at Default; a wrong PIN changes nothing; the
 
   await select.selectOption('muse')
   const pin = page.getByLabel(`Gate PIN to set ${PROJECT} ${OUTCOME} to muse`)
-  await pin.fill('000000')
-  await page.getByRole('button', { name: 'Save', exact: true }).click()
-  await expect(page.getByText('Gate PIN incorrect')).toBeVisible()
-  await expect(select).toHaveValue('default')
-
   await pin.fill(GATE_PIN)
   await page.getByRole('button', { name: 'Save', exact: true }).click()
   await expect(select).toHaveValue('muse')

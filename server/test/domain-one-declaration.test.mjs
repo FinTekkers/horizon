@@ -58,7 +58,6 @@ const LABEL_MENTIONS_ALLOWED = {
   'server/test/personas.test.mjs': 'MOCK_STEP_BEHAVIOR lookup key',
   'server/test/store.test.mjs': 'expected label in an item payload assertion',
   'ui/src/domain/lifecycle.test.js': 'fabricated 2-step fixture',
-  'e2e/tests/03-mock-agents.spec.js': 'comment naming the step the spec drives',
   'farm/roles/pm.md': 'role prompt — guarded by role-prompt-labels.test.mjs',
   'farm/roles/pm_task.md': "HZ-413: the Task addendum to pm.md's role prompt — guarded by role-prompt-labels.test.mjs",
   'docs/workflow.md': 'prose',

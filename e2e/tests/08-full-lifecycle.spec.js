@@ -21,12 +21,19 @@ test('one item travels the full lifecycle from creation to closed', async ({ req
       metric: 'Success metric long enough to pass validation.',
     },
   })
+  expect(res.ok()).toBeTruthy()
   const { id } = await res.json()
 
   await page.goto(`/${id.toLowerCase()}`)
 
   for (const label of GATES) {
     await expect(page.locator('.step-card--awaiting')).toContainText(label, { timeout: 15_000 })
+    if (label === GATES[0]) {
+      // The mock agents ran the three steps before the first gate unattended —
+      // MOCK_STEP_LATENCY_MS keeps each one fast — and the pipeline stopped there.
+      await expect(page.locator('.step__icon--done')).toHaveCount(3)
+      await captureScreenshot(page, 'mock-agents')
+    }
     await page.locator('.btn-gate-approve').click()
     // Each approve now pauses on the explicit confirm dialog (HZ-38) before
     // the request fires — it must name this exact gate, not a generic one.
