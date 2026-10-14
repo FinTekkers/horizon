@@ -5,20 +5,16 @@
 // DB like every other seed fixture in this suite (see fixtures/seed.js) so
 // the item never gets kicked by the mock-agent farm before the assertions
 // run — paused = 1 keeps it that way regardless.
+//
+// HZ-454: the other banner variants (unknown reason, required input
+// incomplete, LS-98, HZ-366, HZ-373) only checked how the banner renders one
+// event, so they live in ui/src/components/Tracker.pauseBanner.test.jsx. This
+// spec keeps the one journey through the real server: banner, then Resume.
 
 import { test, expect, captureScreenshot } from '../fixtures/test-base.js'
-import { readFileSync } from 'node:fs'
 import { openDb, insertItem, insertEvent } from '../fixtures/seed.js'
 
 const DB_PATH = process.env.HORIZON_E2E_DB
-// HZ-366: the farm's message for HZ-365's failed e2e check, as
-// farm/tests/test_checks_headline.py proves the farm builds it.
-const HZ365_MESSAGE = readFileSync(new URL('../../farm/tests/fixtures/check_output/hz365_message.txt', import.meta.url), 'utf8')
-const HZ365_HEADLINE = HZ365_MESSAGE.split('\n')[0]
-// HZ-373: the farm's message for US-207's failed e2e check, which no runner
-// summary parses — its headline comes from the spec line that failed.
-const US207_MESSAGE = readFileSync(new URL('../../farm/tests/fixtures/check_output/us207_message.txt', import.meta.url), 'utf8')
-const US207_HEADLINE = US207_MESSAGE.split('\n')[0]
 
 test.beforeAll(() => {
   const db = openDb(DB_PATH)
@@ -39,59 +35,6 @@ test.beforeAll(() => {
     insertEvent(db, {
       itemId: 'PAUSE-1',
       text: 'agent step failed (turn_cap): agent ran out of turns mid-step — auto-retry budget (3) exhausted; item paused, resume to retry',
-    })
-
-    insertItem(db, { id: 'PAUSE-2', title: 'E2E fixture — paused with unrecognized reason', cursor: 0, paused: 1 })
-    insertEvent(db, {
-      itemId: 'PAUSE-2',
-      text: 'agent step failed (some_future_reason): repo checks failed: eslint exited 1 — item paused; resume to retry',
-    })
-
-    // HZ-105: a required artifact the budget allocator had to truncate stops
-    // the step from ever dispatching — mirrors the exact cause text
-    // orchestrator.js's missingRequiredInputs/failFarmRun writes.
-    insertItem(db, { id: 'PAUSE-3', title: 'E2E fixture — paused on required input incomplete', cursor: 0, paused: 1 })
-    insertEvent(db, {
-      itemId: 'PAUSE-3',
-      text:
-        'agent step failed (required_input_incomplete): required input incomplete: "Draft implementation plan" needs 40000 chars, only 20034 could be supplied (19966 short) — item paused; resume to retry',
-    })
-
-    // HZ-343: LS-98's shape — a multi-line check-failure cause, then two newer
-    // forward-refused events on top of it (insertEvent writes oldest first).
-    insertItem(db, { id: 'PAUSE-4', title: 'E2E fixture — paused under newer forward-refused events', cursor: 0, paused: 1 })
-    insertEvent(db, {
-      itemId: 'PAUSE-4',
-      text: [
-        'agent step failed: repo checks failed: ./gradlew check exited 127',
-        '> Task :test',
-        'bash: scripts/checks/secrets.sh: No such file or directory',
-        'BUILD FAILED in 4s — item paused; resume to retry',
-      ].join('\n'),
-    })
-    for (let i = 0; i < 2; i++) {
-      insertEvent(db, {
-        itemId: 'PAUSE-4',
-        text: 'forward to “Accept the code” refused — the review still has blocking findings; “Specialist agent implements” restarts with the review findings',
-      })
-    }
-
-    // HZ-366: failFarmRun's event for a check failure that leads with its
-    // headline — since HZ-373, the headline line only. No detail: an event
-    // written before failFarmRun stored one.
-    insertItem(db, { id: 'PAUSE-5', title: 'E2E fixture — paused on a check failure with a headline', cursor: 0, paused: 1 })
-    insertEvent(db, {
-      itemId: 'PAUSE-5',
-      text: `agent step failed: ${HZ365_HEADLINE} — item paused; resume to retry`,
-    })
-
-    // HZ-373: failFarmRun's event for US-207's check failure, exactly as it
-    // writes it — the headline line as text, the whole message as detail.
-    insertItem(db, { id: 'PAUSE-6', title: 'E2E fixture — paused on a check failure with no runner summary', cursor: 0, paused: 1 })
-    insertEvent(db, {
-      itemId: 'PAUSE-6',
-      text: `agent step failed: ${US207_HEADLINE} — item paused; resume to retry`,
-      detail: US207_MESSAGE,
     })
   } finally {
     db.close()
@@ -120,84 +63,4 @@ test('a turn_cap pause states its category, cause and attempts used, alongside R
   await page.getByRole('button', { name: 'Resume work' }).click()
   await expect(page.getByRole('button', { name: 'Pause work' })).toBeVisible({ timeout: 10_000 })
   await expect(page.locator('.pause-banner')).toHaveCount(0)
-})
-
-test('a pause reason the UI does not recognize still shows the raw cause, never a blank banner', async ({ page }) => {
-  await page.goto('/pause-2')
-  await expect(page.locator('.tracker__id')).toHaveText('PAUSE-2')
-
-  const banner = page.locator('.pause-banner')
-  await expect(banner).toBeVisible()
-  await expect(banner).not.toHaveText('Paused')
-  await expect(banner.locator('.pause-banner__detail')).toContainText('repo checks failed: eslint exited 1')
-})
-
-test('a required_input_incomplete pause names the artifact, its size, and the shortfall, and is never auto-retried', async ({
-  page,
-}) => {
-  await page.goto('/pause-3')
-  await expect(page.locator('.tracker__id')).toHaveText('PAUSE-3')
-
-  const banner = page.locator('.pause-banner')
-  await expect(banner.locator('.pause-banner__title')).toHaveText('Required input incomplete')
-  await expect(banner.locator('.pause-banner__detail')).toContainText('a capacity limit, not a bug')
-  await expect(banner.locator('.pause-banner__detail')).toContainText(
-    '"Draft implementation plan" needs 40000 chars, only 20034 could be supplied (19966 short)',
-  )
-  await expect(banner.locator('.pause-banner__meta')).toContainText('Not auto-retried')
-
-  await expect(page.getByRole('button', { name: 'Resume work' })).toBeVisible()
-})
-
-test('a multi-line pause cause under two newer forward-refused events is still shown (LS-98)', async ({ page }) => {
-  await page.goto('/pause-4')
-  await expect(page.locator('.tracker__id')).toHaveText('PAUSE-4')
-
-  const banner = page.locator('.pause-banner')
-  await expect(banner.locator('.pause-banner__detail')).toContainText('bash: scripts/checks/secrets.sh: No such file or directory')
-  await expect(banner).not.toContainText('No failure details were recorded')
-  await expect(page.getByRole('button', { name: 'Resume work' })).toBeVisible()
-})
-
-test('a check failure shows its headline — counts and the failing test — as the banner\'s first line (HZ-366)', async ({ page }) => {
-  await page.goto('/pause-5')
-  await expect(page.locator('.tracker__id')).toHaveText('PAUSE-5')
-
-  const banner = page.locator('.pause-banner')
-  await expect(banner).toBeVisible()
-  const detail = await banner.locator('.pause-banner__detail').innerText()
-  expect(detail.split('\n')[0]).toBe(HZ365_HEADLINE)
-  expect(HZ365_HEADLINE).toContain('2 failed')
-  expect(HZ365_HEADLINE).toContain('31-rule-block.spec.js:131')
-  await expect(banner).not.toContainText('No failure details were recorded')
-  await expect(page.getByRole('button', { name: 'Resume work' })).toBeVisible()
-  // HZ-373: an event with no stored detail has no toggle to open.
-  await expect(page.getByRole('button', { name: 'Show details' })).toHaveCount(0)
-})
-
-test('a check failure with no runner summary shows its headline, never the command, and Show details opens the rest (HZ-373)', async ({
-  page,
-}) => {
-  await page.goto('/pause-6')
-  await expect(page.locator('.tracker__id')).toHaveText('PAUSE-6')
-
-  const banner = page.locator('.pause-banner')
-  const cause = banner.locator('.pause-banner__cause')
-  await expect(cause).toHaveText('repo checks failed: e2e failed (exit 1): sidebar-links-after-login.spec.ts: 0/1 passed')
-  await expect(banner).not.toContainText('sh -c')
-  await expect(banner).not.toContainText('git show')
-
-  // A digest line the headline leaves out, only behind the toggle.
-  const leftOut = 'screenshot "securities-list" not captured'
-  await expect(banner).not.toContainText(leftOut)
-  await page.getByRole('button', { name: 'Show details' }).click()
-  await expect(banner.locator('.pause-banner__full-error')).toContainText(leftOut)
-  await page.getByRole('button', { name: 'Hide details' }).click()
-  await expect(banner.locator('.pause-banner__full-error')).toHaveCount(0)
-
-  await page.getByRole('button', { name: 'Show details' }).click()
-  await page.reload()
-  await expect(cause).toHaveText(US207_HEADLINE)
-  await expect(banner.locator('.pause-banner__full-error')).toHaveCount(0)
-  await expect(page.getByRole('button', { name: 'Show details' })).toBeVisible()
 })

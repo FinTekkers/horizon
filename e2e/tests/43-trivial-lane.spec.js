@@ -1,7 +1,8 @@
 // HZ-435 metric 4: a trivial item's page shows its lane, and the rows its lane
 // skips read "Skipped — trivial lane", through the real server: the lane comes
 // from the stored column via GET /api/items, not from a hand-built item. An
-// unlabelled item beside it shows no badge and skips nothing.
+// unlabelled item beside it stores no lane; that it shows no badge and skips
+// nothing is ui/src/components/Tracker.noLane.test.jsx's job (HZ-454).
 //
 // Both are seeded paused at Draft implementation plan, so nothing runs them.
 
@@ -69,11 +70,4 @@ test('a trivial item shows its lane and its skipped rows, before and after a rel
 
   await page.reload()
   await expectTrivialLane(page)
-})
-
-test('an unlabelled item shows no lane badge and skips nothing', async ({ page }) => {
-  await page.goto(`/${FULL.toLowerCase()}`)
-  await expect(stepCard(page, SKIPPED[0])).toBeVisible({ timeout: 15_000 })
-  await expect(page.getByTestId('lane-badge')).toHaveCount(0)
-  await expect(page.getByText('Skipped — trivial lane')).toHaveCount(0)
 })

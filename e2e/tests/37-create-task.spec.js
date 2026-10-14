@@ -4,9 +4,10 @@ import { openDb } from '../fixtures/seed.js'
 
 // HZ-382 metric 2: the New item form's Change / Task choice, end to end. Picking
 // Task stores `kind: task` and shows the Task badge on the board card and the
-// item page, across a reload; leaving the default stores `kind: change` and
-// shows no badge. The e2e server has no GitHub token, so this is the local
-// (no-repo) path — the repo path's `task` label is server/test's job.
+// item page, across a reload. That the default kind shows no badge is
+// ui/src/components/Board.kindBadge.test.jsx's job (HZ-454). The e2e server
+// has no GitHub token, so this is the local (no-repo) path — the repo path's
+// `task` label is server/test's job.
 
 const TASK_LABEL = itemKindInfo('task').label
 const DB_PATH = process.env.HORIZON_E2E_DB
@@ -74,15 +75,4 @@ test('creating a Task shows the Task badge on its card and item page, and stores
 
   expect(await storedKind(request, title)).toBe('task')
   await captureScreenshot(page, 'create-task')
-})
-
-test('creating with the default kind shows no badge and stores kind: change', async ({ page, request }) => {
-  await page.goto('/')
-  const title = `E2E change ${Date.now()}`
-  await fillAndSubmit(page, title, false)
-
-  const card = page.locator('.card').filter({ hasText: title })
-  await expect(card).toHaveCount(1)
-  await expect(card.locator('.kind-badge')).toHaveCount(0)
-  expect(await storedKind(request, title)).toBe('change')
 })
