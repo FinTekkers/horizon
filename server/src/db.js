@@ -3,7 +3,7 @@ import { mkdirSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { reconcileGoogleUsers } from './loginAllowlist.js'
-import { gateStepIndexes } from '../../domain/js/lifecycle.js'
+import { gateStepIndexes, ITEM_KINDS } from '../../domain/js/lifecycle.js'
 import { PRIORITIES } from '../../domain/js/priorities.js'
 
 const DB_PATH =
@@ -433,10 +433,11 @@ db.exec(`
 // A key exists only for a non-Default choice; NULL/absent = Default on every
 // step, so existing rows run exactly as before. A JSON column for the same
 // reason as personas_json: nothing queries across items by choice.
-// kind (HZ-377): the item's lifecycle — 'change' or 'task'. NOT NULL with a
-// 'change' default, so every existing row backfills to today's behaviour with
-// no data rewrite, and the CHECK pins the vocabulary at the storage layer
-// (store.js's unknown_item_kind refusal is what callers see).
+// kind (HZ-377): the item's lifecycle — one of domain/steps.json's kinds
+// (KIND_CHECK below). NOT NULL with a 'change' default, so every existing row
+// backfills to today's behaviour with no data rewrite, and the CHECK pins the
+// vocabulary at the storage layer (store.js's unknown_item_kind refusal is
+// what callers see).
 // approved_plan_hash (HZ-384): sha256 of the Run plan artifact a human approved
 // at a Task's Approve the run gate. NULL = no approved plan; a send-back
 // clears it, and Execute refuses to start unless it matches the current plan.
@@ -445,11 +446,61 @@ db.exec(`
 // need no backfill. No CHECK: laneOf() reads an undeclared value as no lane.
 // paused_at (HZ-443): when the current pause began, for the board's "waiting"
 // sort. Read only while paused = 1, so a resume leaves it alone.
-for (const column of ['pr INTEGER', 'pr_url TEXT', 'pr_mergeable INTEGER', 'release_tag TEXT', 'release_url TEXT', 'repo TEXT', 'project_id INTEGER', 'persona TEXT', 'personas_json TEXT', 'review_cycle_count INTEGER NOT NULL DEFAULT 0', 'abandoned_at TEXT', 'abandoned_reason TEXT', 'abandoned_by TEXT', 'notified_step INTEGER', 'last_reviewed_sha TEXT', 'fix_pass INTEGER NOT NULL DEFAULT 0', 'fix_findings_json TEXT', 'forwarded_review_run_id INTEGER', 'forwarded_by TEXT', 'forwarded_sha TEXT', 'rule_block_json TEXT', 'provider_choices_json TEXT', "kind TEXT NOT NULL DEFAULT 'change' CHECK (kind IN ('change','task'))", 'approved_plan_hash TEXT', 'lane TEXT', 'paused_at TEXT']) {
+//
+// HZ-446: the kind constraint, built from ITEM_KINDS like PRIORITY_CHECK is
+// from PRIORITIES. Interpolating is safe because every kind is checked against
+// /^[a-z]+$/ first — a kind that fails it stops the boot, never reaches SQL.
+for (const kind of ITEM_KINDS) {
+  if (!/^[a-z]+$/.test(kind)) throw new Error(`db: item kind ${JSON.stringify(kind)} is not lowercase letters only`)
+}
+const KIND_CHECK = `CHECK (kind IN (${ITEM_KINDS.map((kind) => `'${kind}'`).join(',')}))`
+for (const column of ['pr INTEGER', 'pr_url TEXT', 'pr_mergeable INTEGER', 'release_tag TEXT', 'release_url TEXT', 'repo TEXT', 'project_id INTEGER', 'persona TEXT', 'personas_json TEXT', 'review_cycle_count INTEGER NOT NULL DEFAULT 0', 'abandoned_at TEXT', 'abandoned_reason TEXT', 'abandoned_by TEXT', 'notified_step INTEGER', 'last_reviewed_sha TEXT', 'fix_pass INTEGER NOT NULL DEFAULT 0', 'fix_findings_json TEXT', 'forwarded_review_run_id INTEGER', 'forwarded_by TEXT', 'forwarded_sha TEXT', 'rule_block_json TEXT', 'provider_choices_json TEXT', `kind TEXT NOT NULL DEFAULT 'change' ${KIND_CHECK}`, 'approved_plan_hash TEXT', 'lane TEXT', 'paused_at TEXT']) {
   try {
     db.exec(`ALTER TABLE work_item ADD COLUMN ${column}`)
   } catch {
     // column already exists
+  }
+}
+// HZ-446: SQLite cannot widen a CHECK in place, so a work_item whose stored
+// kind CHECK is not KIND_CHECK (a database from before the plan kind) is
+// rebuilt once, by SQLite's 12-step procedure: the new table's DDL is the
+// stored one with only that CHECK replaced, so every column — including any a
+// later migration added — is copied in the same order. Foreign keys are off
+// for the rebuild (a pragma SQLite ignores inside a transaction), or DROP
+// TABLE would cascade-delete every child row. The rebuild throws, rolls back
+// and stops the boot if the old CHECK is not found exactly once, if the
+// column count changes, or if it adds a foreign-key violation.
+const workItemSql = () => db.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'work_item'").get().sql
+if (!workItemSql().includes(KIND_CHECK)) {
+  const stored = workItemSql()
+  const checks = stored.match(/CHECK \(kind IN \([^)]*\)\)/g) ?? []
+  if (checks.length !== 1) throw new Error(`db: expected one kind CHECK on work_item, found ${checks.length}`)
+  const head = /^CREATE TABLE\s+(?:IF NOT EXISTS\s+)?["`]?work_item["`]?\s*\(/i
+  if (!head.test(stored)) throw new Error('db: unexpected work_item DDL — will not rebuild it')
+  const ddl = stored.replace(head, 'CREATE TABLE work_item_v2 (').replace(checks[0], KIND_CHECK)
+  // Every index on the old table (DROP TABLE drops them), re-created as stored.
+  const indexes = db
+    .prepare("SELECT sql FROM sqlite_master WHERE type = 'index' AND tbl_name = 'work_item' AND sql IS NOT NULL")
+    .all()
+    .map((row) => row.sql)
+  const violations = () => db.pragma('foreign_key_check').length
+  const before = violations()
+  db.pragma('foreign_keys = OFF')
+  try {
+    db.transaction(() => {
+      db.exec(ddl)
+      const columns = (table) => db.prepare(`SELECT COUNT(*) AS n FROM pragma_table_info('${table}')`).get().n
+      if (columns('work_item_v2') !== columns('work_item')) throw new Error('db: work_item rebuild changed the column count')
+      db.exec(`
+        INSERT INTO work_item_v2 SELECT * FROM work_item;
+        DROP TABLE work_item;
+        ALTER TABLE work_item_v2 RENAME TO work_item;
+      `)
+      for (const sql of indexes) db.exec(sql)
+      if (violations() > before) throw new Error('db: work_item rebuild left a foreign-key violation')
+    })()
+  } finally {
+    db.pragma('foreign_keys = ON')
   }
 }
 // HZ-443: one-time backfill for items paused before paused_at existed — the

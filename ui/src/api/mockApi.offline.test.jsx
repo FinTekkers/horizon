@@ -42,7 +42,8 @@ const noop = () => {}
 
 test('the model resolves from domain/ with no server and no fetch', () => {
   // HZ-377: 16 change rows plus 11 appended task rows; PHASES stays the change phases.
-  expect(STEPS).toHaveLength(27)
+  // HZ-446: plus 12 appended plan rows.
+  expect(STEPS).toHaveLength(39)
   expect(PHASES).toHaveLength(5)
   expect(fetchCalls).toBe(0)
 })

@@ -232,7 +232,8 @@ test('neither binding inlines a second copy of the step table — every label, b
   assert.equal(stripped, 4, `expected exactly 4 requiredStepIndex() label lookups in the binding, found ${stripped}`)
   const strippedKind = (jsSource.match(KIND_LOOKUP_CALL) || []).length
   // HZ-378: the fourth is VERIFY_REPORT_STEP_INDEX, the same lookup BY label.
-  assert.equal(strippedKind, 4, `expected exactly 4 kindStepIndex() label lookups in the binding, found ${strippedKind}`)
+  // HZ-446: the fifth is APPROVE_FILE_GATE_INDEX, a Plan's human-only gate.
+  assert.equal(strippedKind, 5, `expected exactly 5 kindStepIndex() label lookups in the binding, found ${strippedKind}`)
 })
 
 test('neither reason binding inlines a second copy of the vocabulary — every id, both files', () => {
@@ -495,7 +496,8 @@ test('SHAPE PIN (fields): both bindings expose the authored entries, with exactl
 test('SHAPE PIN (JS): authored entries, both kinds, no synthesised index', () => {
   // HZ-377: 16 change rows plus 11 appended task rows — the labels and order
   // are pinned hand-written in domain-step-pins.test.mjs, this is the count.
-  assert.equal(binding.STEPS.length, 27)
+  // HZ-446: plus 12 appended plan rows.
+  assert.equal(binding.STEPS.length, 39)
   const first = binding.STEPS[0]
   assert.ok('runsIn' in first, 'the JS view must carry runsIn — config.js and farmd lane routing need it')
   assert.ok(!('index' in first), 'the JS view must NOT carry a synthesised index — position IS the index')
@@ -506,7 +508,9 @@ test('SHAPE PIN (JS): agent and gate are ABSENT on the opposite kind, never null
   for (const step of binding.STEPS) {
     if (step.kind === 'agent') {
       assert.ok(!('gate' in step), `agent step "${step.label}" carries a gate key`)
-      assert.equal(typeof step.agent, 'string')
+      // HZ-446: a server step is Horizon's own code — it names no agent.
+      if (step.runsIn === 'server') assert.ok(!('agent' in step), `server step "${step.label}" carries an agent key`)
+      else assert.equal(typeof step.agent, 'string')
     } else {
       assert.ok(!('agent' in step), `gate "${step.label}" carries an agent key`)
       assert.equal(typeof step.gate, 'string')
@@ -594,7 +598,7 @@ test('SHAPE PIN (Python): the Task steps 0-2 reach the Task farm view on the PM 
     ],
   )
   assert.equal(taskRows[3].label, 'Approve & prioritize')
-  assert.equal(binding.STEPS.length, 27, 'the step table gained or lost a row')
+  assert.equal(binding.STEPS.length, 39, 'the step table gained or lost a row')
   for (const row of firstThree) {
     const entry = pythonTaskSteps.find((e) => e.index === row.index)
     assert.ok(entry, `"${row.label}" is missing from the Task farm view`)

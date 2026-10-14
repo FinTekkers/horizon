@@ -43,7 +43,7 @@
 //                           default 10, whole numbers >= 1 only)
 //   HORIZON_DRY_RUN_TIMEOUT_MS  per-check bound on a deploy-target Dry run (HZ-258; default 5s)
 
-import { agentStepIndexes } from '../../domain/js/lifecycle.js'
+import { ITEM_KINDS, agentStepIndexes, isServerStep } from '../../domain/js/lifecycle.js'
 
 export const WEBHOOK_SECRET = process.env.GITHUB_WEBHOOK_SECRET || null
 
@@ -66,9 +66,15 @@ export const FARM_SHARED_SECRET = process.env.FARM_SHARED_SECRET || 'dev-secret'
 // step is handed to the farm for verification. FARM_STEP_INDEXES remains a
 // deliberate operational override on top of that default. HZ-383: the task
 // kind's agent steps too — its runner-less rows are never dispatched at all,
-// so only the ones on a real lane ever reach this check.
+// so only the ones on a real lane ever reach this check. HZ-446: every kind's,
+// except a server step — Horizon runs that itself and never sends it out.
 export const FARM_STEP_INDEXES = new Set(
-  (process.env.FARM_STEP_INDEXES || [...agentStepIndexes(), ...agentStepIndexes(undefined, 'task')].join(','))
+  (
+    process.env.FARM_STEP_INDEXES ||
+    ITEM_KINDS.flatMap((kind) => agentStepIndexes(undefined, kind))
+      .filter((index) => !isServerStep(index))
+      .join(',')
+  )
     .split(',')
     .map((s) => Number(s.trim()))
     .filter((n) => Number.isInteger(n)),

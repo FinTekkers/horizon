@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { STEPS, itemKindInfo } from '../../../domain/js/lifecycle.js'
+import { STEPS, itemKindInfo, isServerStep } from '../../../domain/js/lifecycle.js'
 import {
   listDefinitions,
   getDefinition,
@@ -123,7 +123,8 @@ function modelRows() {
   return [
     // HZ-377: runner-less rows name no agent and run on no model — they would
     // crash modelAgentForStep and collide on call keys, so they stay out.
-    ...STEPS.filter((step) => step.kind === 'agent' && step.runsIn !== 'none').map((step) => {
+    // HZ-446: so do server steps — Horizon's own code, no agent, no model.
+    ...STEPS.filter((step, index) => step.kind === 'agent' && step.runsIn !== 'none' && !isServerStep(index)).map((step) => {
       const agent = modelAgentForStep(step.agent)
       // HZ-413: a Task row may share a change row's label (both kinds' first
       // steps do), so its key and call name carry the kind.

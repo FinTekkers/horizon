@@ -10,6 +10,11 @@
       "label": "Task",
       "description": "A one-off run that waits for human approval before it acts.",
       "phases": ["Plan", "Plan the run", "Run", "Review"]
+    },
+    "plan": {
+      "label": "Plan",
+      "description": "A roadmap question turned into a reviewed, filed set of items across a project's repos.",
+      "phases": ["Scope", "Inventory", "Design", "Draft", "File"]
     }
   },
   "lanes": {
@@ -178,6 +183,78 @@
       "maxTurns": 40,
       "timeoutS": 1140
     },
-    { "phase": 3, "kind": "gate", "gate": "required", "label": "Review & close", "itemKind": "task" }
+    { "phase": 3, "kind": "gate", "gate": "required", "label": "Review & close", "itemKind": "task" },
+    { "phase": 0, "kind": "agent", "agent": "PM", "label": "Define the question", "runsIn": "pm", "itemKind": "plan", "providerOverrideEligible": true },
+    { "phase": 0, "kind": "agent", "agent": "Architect", "label": "Set guardrails", "runsIn": "pm", "itemKind": "plan", "providerOverrideEligible": true },
+    { "phase": 0, "kind": "gate", "gate": "required", "label": "Approve & prioritize", "itemKind": "plan" },
+    {
+      "phase": 1,
+      "kind": "agent",
+      "agent": "Architect",
+      "label": "Inventory current state",
+      "runsIn": "farm",
+      "itemKind": "plan",
+      "workspaceMutating": false,
+      "providerOverrideEligible": false,
+      "providerLocked": true,
+      "maxTurns": 40,
+      "timeoutS": 1140
+    },
+    {
+      "phase": 2,
+      "kind": "agent",
+      "agent": "Ensemble",
+      "label": "Design options & recommendation",
+      "runsIn": "farm",
+      "itemKind": "plan",
+      "workspaceMutating": false,
+      "providerOverrideEligible": false,
+      "providerLocked": true,
+      "maxTurns": 40,
+      "timeoutS": 1140
+    },
+    { "phase": 2, "kind": "gate", "gate": "required", "label": "Approve the design", "itemKind": "plan" },
+    {
+      "phase": 3,
+      "kind": "agent",
+      "agent": "PM",
+      "label": "Draft items",
+      "runsIn": "farm",
+      "itemKind": "plan",
+      "workspaceMutating": false,
+      "providerOverrideEligible": false,
+      "providerLocked": true,
+      "maxTurns": 40,
+      "timeoutS": 1140
+    },
+    {
+      "phase": 3,
+      "kind": "agent",
+      "agent": "Architect",
+      "label": "Review drafts: coverage & overlap",
+      "runsIn": "farm",
+      "itemKind": "plan",
+      "workspaceMutating": false,
+      "providerOverrideEligible": false,
+      "providerLocked": true,
+      "maxTurns": 40,
+      "timeoutS": 1140
+    },
+    {
+      "phase": 3,
+      "kind": "agent",
+      "agent": "QA",
+      "label": "Review drafts: metrics & size",
+      "runsIn": "farm",
+      "itemKind": "plan",
+      "workspaceMutating": false,
+      "providerOverrideEligible": false,
+      "providerLocked": true,
+      "maxTurns": 40,
+      "timeoutS": 1140
+    },
+    { "phase": 3, "kind": "gate", "gate": "required", "label": "Approve & file", "itemKind": "plan", "humanOnly": true },
+    { "phase": 4, "kind": "agent", "label": "File items", "runsIn": "server", "itemKind": "plan" },
+    { "phase": 4, "kind": "gate", "gate": "required", "label": "Review & close", "itemKind": "plan" }
   ]
 }

@@ -16,7 +16,8 @@
       "type": "object",
       "properties": {
         "change": { "$ref": "#/definitions/kindEntry" },
-        "task": { "$ref": "#/definitions/kindEntry" }
+        "task": { "$ref": "#/definitions/kindEntry" },
+        "plan": { "$ref": "#/definitions/kindEntry" }
       },
       "additionalProperties": false
     },
@@ -40,7 +41,7 @@
       "required": ["itemKind", "check", "skip"],
       "additionalProperties": false,
       "properties": {
-        "itemKind": { "type": "string", "enum": ["change", "task"] },
+        "itemKind": { "type": "string", "enum": ["change", "task", "plan"] },
         "check": {
           "type": "array",
           "minItems": 1,
@@ -79,13 +80,17 @@
         "phase": { "type": "integer", "minimum": 0 },
         "kind": { "type": "string", "enum": ["agent", "gate"] },
         "label": { "type": "string", "minLength": 1 },
-        "itemKind": { "type": "string", "enum": ["change", "task"] },
+        "itemKind": { "type": "string", "enum": ["change", "task", "plan"] },
         "agent": {
           "type": "string",
           "enum": ["PM", "QA", "Architect", "Eng", "DevOps", "Ensemble", "Review"]
         },
         "gate": { "type": "string", "enum": ["required"] },
-        "runsIn": { "type": "string", "enum": ["pm", "farm", "job", "none"] },
+        "runsIn": {
+          "$comment": "HZ-446: 'server' is Horizon's own code in the server process — no LLM, no farm, no agent (server/src/orchestrator.js runServerStep).",
+          "type": "string",
+          "enum": ["pm", "farm", "job", "server", "none"]
+        },
         "workspaceMutating": { "type": "boolean" },
         "providerOverrideEligible": { "type": "boolean" },
         "providerLocked": { "type": "boolean" },
@@ -128,7 +133,7 @@
           "then": { "required": ["runsIn"], "not": { "required": ["gate"] } }
         },
         {
-          "$comment": "A step on a real lane always names its agent; only a runsIn 'none' step may omit it.",
+          "$comment": "A step on a real lane always names its agent; only a runsIn 'none' or 'server' step may omit it.",
           "if": { "properties": { "runsIn": { "enum": ["pm", "farm", "job"] } }, "required": ["runsIn"] },
           "then": { "required": ["agent"] }
         },
@@ -136,6 +141,20 @@
           "$comment": "HZ-378: a job-lane step runs shell commands, not an agent — it carries no agent budget.",
           "if": { "properties": { "runsIn": { "enum": ["job"] } }, "required": ["runsIn"] },
           "then": { "not": { "anyOf": [{ "required": ["timeoutS"] }, { "required": ["maxTurns"] }] } }
+        },
+        {
+          "$comment": "HZ-446: a server-lane step is Horizon's own code — it names no agent and carries no agent budget or workspace.",
+          "if": { "properties": { "runsIn": { "enum": ["server"] } }, "required": ["runsIn"] },
+          "then": {
+            "not": {
+              "anyOf": [
+                { "required": ["agent"] },
+                { "required": ["maxTurns"] },
+                { "required": ["timeoutS"] },
+                { "required": ["workspaceMutating"] }
+              ]
+            }
+          }
         },
         {
           "$comment": "A gate is human-only: no agent, no lane, no farm budget.",

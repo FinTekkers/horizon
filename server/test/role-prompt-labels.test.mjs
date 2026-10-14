@@ -43,7 +43,9 @@ function roleFiles() {
 test('sanity: there are role prompts to check, and the label set is populated', () => {
   assert.ok(roleFiles().length > 0, 'no role prompts found')
   // HZ-377: 16 change labels plus 11 task labels, minus the shared opener.
-  assert.equal(labels.size, 26)
+  // HZ-446: plus 12 plan labels, minus the three it shares ("Set guardrails"
+  // with change; "Approve & prioritize" and "Review & close" with task).
+  assert.equal(labels.size, 35)
 })
 
 test('every step-label-shaped quoted phrase in a role prompt names a real step', () => {

@@ -89,7 +89,8 @@ def test_runs_in_none_rows_never_reach_the_farm_view():
     # the row count is pinned too (no new rows). The none lane stays in the
     # schema; the fabricated-row test below proves a view still drops one.
     authored = json.loads(steps._SOURCE_PATH.read_text())["steps"]
-    assert len(authored) == 27, "the step table gained or lost a row"
+    # HZ-446: 27 rows plus a Plan's 12.
+    assert len(authored) == 39, "the step table gained or lost a row"
     task_rows = [(index, step) for index, step in enumerate(authored) if step.get("itemKind") == "task"]
     assert [step["runsIn"] for _, step in task_rows[:3]] == ["pm", "pm", "pm"]
     assert task_rows[3][1]["kind"] == "gate"
@@ -97,9 +98,10 @@ def test_runs_in_none_rows_never_reach_the_farm_view():
     for index, step in task_rows[:3]:
         assert task_view[index]["label"] == step["label"]
         assert task_view[index]["runsIn"] == "pm"
-    runnerless_indexes = {index for index, step in enumerate(authored) if step.get("runsIn") == "none"}
+    # HZ-446: a server step is Horizon's own code — it never reaches a farm view either.
+    runnerless_indexes = {index for index, step in enumerate(authored) if step.get("runsIn") in ("none", "server")}
     for view in steps.FARM_VIEWS.values():
-        assert all(entry["runsIn"] != "none" for entry in view)
+        assert all(entry["runsIn"] not in ("none", "server") for entry in view)
         assert all(entry["index"] not in runnerless_indexes for entry in view)
     # A label shared by both kinds resolves to the change row by label alone.
     assert steps.by_label(task_rows[0][1]["label"])["index"] == 0

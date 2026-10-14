@@ -18,7 +18,8 @@ import {
   resolveModel,
 } from '../../domain/js/personas.js'
 
-const agentSteps = STEPS.filter((step) => step.kind === 'agent')
+// HZ-446: a server step names no agent and runs on no model.
+const agentSteps = STEPS.filter((step) => step.kind === 'agent' && step.runsIn !== 'server')
 
 test('every lifecycle agent, the concierge and conflict resolution have a default model', () => {
   assert.ok(agentSteps.length > 0)

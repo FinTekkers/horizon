@@ -12,7 +12,7 @@
 
 import { ITEM_KINDS, LANES, laneOf } from '../../domain/js/lifecycle.js'
 
-// The label is the kind key itself: a Task's issue carries `task`.
+// The label is the kind key itself: a Task's issue carries `task`, a Plan's `plan`.
 export function kindLabelName(kind) {
   return kind
 }

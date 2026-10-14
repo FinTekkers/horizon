@@ -19,20 +19,28 @@ import { join } from 'node:path'
 process.env.HORIZON_DB = join(mkdtempSync(join(tmpdir(), 'horizon-mockdrift-')), 'test.db')
 delete process.env.FARM_URL
 
-const { MOCK_STEP_BEHAVIOR } = await import('../src/orchestrator.js')
+const { MOCK_STEP_BEHAVIOR, SERVER_STEP_BEHAVIOR } = await import('../src/orchestrator.js')
 const { STEPS } = await import('../../domain/js/lifecycle.js')
 
 // HZ-377: runner-less steps are never dispatched — to the farm or to the mock
-// path — so they need no mock behaviour either.
-const agentLabels = STEPS.filter((s) => s.kind === 'agent' && s.runsIn !== 'none').map((s) => s.label)
+// path — so they need no mock behaviour either. HZ-446: nor do server steps,
+// which always run SERVER_STEP_BEHAVIOR, in demo mode too.
+const agentLabels = STEPS.filter((s) => s.kind === 'agent' && s.runsIn !== 'none' && s.runsIn !== 'server').map((s) => s.label)
+const serverLabels = STEPS.filter((s) => s.kind === 'agent' && s.runsIn === 'server').map((s) => s.label)
 
 test('sanity: neither set is empty, so set equality below cannot pass vacuously', () => {
   assert.ok(agentLabels.length > 0, 'the step table declares no agent steps')
   assert.ok(Object.keys(MOCK_STEP_BEHAVIOR).length > 0, 'MOCK_STEP_BEHAVIOR is empty')
   // HZ-383: 11 change steps plus the task kind's Assess, Run plan and Impact review.
   // HZ-378: plus Execute (job lane) and Verify & report. HZ-413: plus the Task's
-  // first three steps (PM lane).
-  assert.equal(agentLabels.length, 19, 'the number of agent-kind steps changed — check MOCK_STEP_BEHAVIOR deliberately')
+  // first three steps (PM lane). HZ-446: plus a Plan's seven agent steps.
+  assert.equal(agentLabels.length, 26, 'the number of agent-kind steps changed — check MOCK_STEP_BEHAVIOR deliberately')
+})
+
+test('HZ-446: SERVER_STEP_BEHAVIOR keys are exactly the server-step labels, and no mock names one', () => {
+  assert.deepEqual(serverLabels, ['File items'])
+  assert.deepEqual(Object.keys(SERVER_STEP_BEHAVIOR).sort(), [...serverLabels].sort())
+  for (const label of serverLabels) assert.equal(MOCK_STEP_BEHAVIOR[label], undefined, label)
 })
 
 // HZ-383: the three task behaviours were added without touching any change

@@ -546,15 +546,16 @@
       { "case": "a missing value is not a kind", "kind": null, "expect": false }
     ],
 
-    "ITEM_KINDS": [{ "case": "the kinds, in the order steps.json declares them", "expect": ["change", "task"] }],
+    "ITEM_KINDS": [{ "case": "the kinds, in the order steps.json declares them", "expect": ["change", "task", "plan"] }],
 
     "itemKindInfo": [
       { "case": "task's copy says it waits for human approval", "kind": "task", "expect": { "label": "Task", "descriptionContains": "human approval" } },
       { "case": "change's copy is its own", "kind": "change", "expect": { "label": "Change", "descriptionContains": "code change" } },
+      { "case": "plan's copy names the filed items", "kind": "plan", "expect": { "label": "Plan", "descriptionContains": "filed set of items" } },
       { "case": "an unknown kind throws, naming it", "kind": "banana", "expect": { "throws": true, "messageContains": "banana" } }
     ],
 
-    "ITEM_KIND_INFO": [{ "case": "one entry per kind, in ITEM_KINDS order", "expectKinds": ["change", "task"] }],
+    "ITEM_KIND_INFO": [{ "case": "one entry per kind, in ITEM_KINDS order", "expectKinds": ["change", "task", "plan"] }],
 
     "itemKindOf": [
       { "case": "a stored task reads task", "item": { "cursor": 16, "kind": "task" }, "expect": "task" },
@@ -566,6 +567,7 @@
     "phasesFor": [
       { "case": "change keeps the five live phases", "kind": "change", "expect": ["Plan", "Technical Plan", "Execute", "Deploy", "Review"] },
       { "case": "task has its four phases", "kind": "task", "expect": ["Plan", "Plan the run", "Run", "Review"] },
+      { "case": "plan has its five phases", "kind": "plan", "expect": ["Scope", "Inventory", "Design", "Draft", "File"] },
       { "case": "an unknown kind throws", "kind": "banana", "expect": { "throws": true, "messageContains": "banana" } }
     ],
 
@@ -602,13 +604,21 @@
     "APPROVE_RUN_GATE_INDEX": [{ "case": "points at the task's approve-the-run gate", "expectLabel": "Approve the run" }],
     "EXECUTE_STEP_INDEX": [{ "case": "points at the task's execute step", "expectLabel": "Execute" }],
     "VERIFY_REPORT_STEP_INDEX": [{ "case": "points at the task's verify step", "expectLabel": "Verify & report" }],
+    "APPROVE_FILE_GATE_INDEX": [{ "case": "points at the plan's approve-and-file gate", "expectLabel": "Approve & file" }],
+    "isServerStep": [
+      { "case": "the plan's file-items step runs on the server", "label": "File items", "expect": true },
+      { "case": "a job-lane step does not", "label": "Execute", "expect": false },
+      { "case": "a gate does not", "label": "Approve & file", "expect": false },
+      { "case": "an index past the end of the table does not", "index": 9999, "expect": false }
+    ],
     "isHumanOnlyGate": [
       { "case": "the approve-the-run gate is human-only", "label": "Approve the run", "expect": true },
+      { "case": "the approve-and-file gate is human-only", "label": "Approve & file", "expect": true },
       { "case": "a change gate is not", "label": "Approve the high-level design", "expect": false },
       { "case": "an agent step is not", "label": "Run plan", "expect": false },
       { "case": "an index past the end of the table is not", "index": 9999, "expect": false }
     ],
-    "humanOnlyGateIndexes": [{ "case": "only the approve-the-run gate today", "expectLabels": ["Approve the run"] }],
+    "humanOnlyGateIndexes": [{ "case": "the approve-the-run and approve-and-file gates", "expectLabels": ["Approve the run", "Approve & file"] }],
 
     "assertLifecycleShape": [{ "case": "driven by shared.validation", "drivenBy": "shared.validation" }],
 
@@ -743,6 +753,7 @@
     "phases_for": [
       { "case": "change keeps the five live phases", "kind": "change", "expect": ["Plan", "Technical Plan", "Execute", "Deploy", "Review"] },
       { "case": "task has its four phases", "kind": "task", "expect": ["Plan", "Plan the run", "Run", "Review"] },
+      { "case": "plan has its five phases", "kind": "plan", "expect": ["Scope", "Inventory", "Design", "Draft", "File"] },
       { "case": "an unknown kind raises", "kind": "banana", "expect": { "throws": true, "messageContains": "banana" } }
     ],
 

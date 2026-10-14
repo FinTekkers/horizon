@@ -29,10 +29,12 @@ import {
   RUN_PLAN_STEP_INDEX,
   VERIFY_REPORT_STEP_INDEX,
   APPROVE_RUN_GATE_INDEX,
+  APPROVE_FILE_GATE_INDEX,
   laneOf,
   laneSkips,
   laneCheckIndexes,
   nextCursor,
+  isServerStep,
 } from '../../domain/js/lifecycle.js'
 import { AUTO_RETRY_REASONS, REASON } from '../../domain/js/reasons.js'
 import { patchLimits, addedCriteriaLines } from '../../domain/js/fields.js'
@@ -1086,6 +1088,15 @@ export const MOCK_STEP_BEHAVIOR = {
     artifact_md: '## Verdict\n**pass** (mock)\n\n## Commands\n1 run, 1 passed, 0 failed.',
     verdict: { verdict: 'pass', summary: 'the mock job holds the metric (mock)' },
   }),
+  // HZ-446: a Plan's agent steps. Their real prompts and outputs are HZ-447
+  // and HZ-448; the mock only walks the lifecycle. A Plan's "Set guardrails"
+  // shares the change step's mock by label.
+  'Define the question': () => ({ summary: 'drafted the roadmap question and the repos in scope (mock)' }),
+  'Inventory current state': () => ({ summary: 'inventoried the current state of the repos in scope (mock)' }),
+  'Design options & recommendation': () => ({ summary: 'prepared design options with a recommendation (mock)' }),
+  'Draft items': () => ({ summary: 'drafted the items this plan would file (mock)' }),
+  'Review drafts: coverage & overlap': () => ({ summary: 'reviewed the drafts for coverage and overlap (mock)' }),
+  'Review drafts: metrics & size': () => ({ summary: 'reviewed the drafts for metrics and size (mock)' }),
   // Execute: the code change takes the form of a GitHub PR. The mock commits
   // a placeholder file; the PR/branch mechanics are the real integration.
   'Specialist agent implements': async (it) => {
@@ -1225,6 +1236,11 @@ export function kick(id, opts = {}) {
     runLaneCheck(id, item.cursor)
     return
   }
+  // HZ-446: a server step is Horizon's own code — never the farm, never a mock.
+  if (isServerStep(item.cursor)) {
+    runServerStep(id, item.cursor)
+    return
+  }
 
   const stepIndex = item.cursor
   const step = STEPS[stepIndex]
@@ -1302,6 +1318,46 @@ async function runLaneCheck(id, stepIndex) {
   })
   dispatching.delete(id)
   notifyChange()
+  kick(id)
+}
+
+// HZ-446: what each server step (runsIn 'server') does, keyed by label like
+// MOCK_STEP_BEHAVIOR. Synchronous, with no network call: it returns
+// { summary }. "File items" files nothing yet — HZ-449 replaces this body with
+// the filing logic. Until then approving Approve & file creates no issue and
+// no item.
+export const SERVER_STEP_BEHAVIOR = {
+  'File items': () => ({ summary: 'filing is not built yet (HZ-449): no issues or items were created' }),
+}
+
+// HZ-446: one server step, run to completion in this call — so no run is ever
+// left active across a restart, and a restart at this cursor just runs it
+// again. Records a step_run (agent 'Horizon', as the row names none), moves
+// the cursor on and kicks the next step. Holds the dispatching mutex, taken by
+// kick(), until it returns.
+function runServerStep(id, stepIndex) {
+  const step = STEPS[stepIndex]
+  const behavior = SERVER_STEP_BEHAVIOR[step.label]
+  const runId = db
+    .prepare('INSERT INTO step_run (item_id, step_index, attempt, agent) VALUES (?, ?, ?, ?)')
+    .run(id, stepIndex, nextStepAttempt(id, stepIndex).attempt, 'Horizon').lastInsertRowid
+  let summary
+  try {
+    if (!behavior) throw new Error(`no server behaviour for “${step.label}”`)
+    summary = behavior(getItem(id)).summary
+  } catch (err) {
+    db.prepare("UPDATE step_run SET status = 'cancelled', output = ?, ended_at = datetime('now') WHERE id = ?").run(err.message, runId)
+    db.prepare(`UPDATE work_item SET ${PAUSE_SET}, updated_at = datetime('now') WHERE id = ?`).run(id)
+    addEvent(id, { who: 'Horizon', text: `paused: “${step.label}” failed — ${err.message}`, color: '#9C333E', initials: 'HZ' })
+    dispatching.delete(id)
+    notifyChange()
+    return
+  }
+  db.prepare("UPDATE step_run SET status = 'done', output = ?, ended_at = datetime('now') WHERE id = ?").run(summary, runId)
+  db.prepare("UPDATE work_item SET cursor = ?, updated_at = datetime('now') WHERE id = ?").run(nextCursor(getItem(id)), id)
+  addEvent(id, { who: 'Horizon', text: `completed “${step.label}” — ${summary}`, color: '#5E4380', initials: 'HZ' })
+  notifyChange()
+  dispatching.delete(id)
   kick(id)
 }
 
@@ -1846,8 +1902,12 @@ const CRITERIA_FIELDS = ['metric', 'guardrails']
 // every change row, so the change gate's index alone would lock a Task's
 // steps 0-2 out of the metric and guardrails they exist to write. A Task
 // locks after "Approve the run", where a human approves the plan its metric
-// judges.
-const CRITERIA_LOCK_GATES = { change: EXECUTION_GATE_INDEX, task: APPROVE_RUN_GATE_INDEX }
+// judges. HZ-446: a Plan locks after "Approve & file", its human-only gate.
+const CRITERIA_LOCK_GATES = {
+  change: EXECUTION_GATE_INDEX,
+  task: APPROVE_RUN_GATE_INDEX,
+  plan: APPROVE_FILE_GATE_INDEX,
+}
 
 function lockCriteriaPatch(item, stepIndex, patch) {
   if (!patch || stepIndex <= CRITERIA_LOCK_GATES[itemKindOf(item)]) return { patch, blocked: [] }

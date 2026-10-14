@@ -23,6 +23,7 @@ import {
   firstStepIndex,
   endIndex,
   isHumanOnlyGate,
+  isServerStep,
   RUN_PLAN_STEP_INDEX,
   APPROVE_RUN_GATE_INDEX,
   EXECUTE_STEP_INDEX,
@@ -795,8 +796,10 @@ function currentRunPlan(itemId) {
   return block ? { block, hash: planHashOf(artifact) } : null
 }
 
-// A kind whose lifecycle has a humanOnly gate approves a run plan there.
-const approvesRunPlan = (kind) => stepsFor(kind).some((step) => isHumanOnlyGate(step.index))
+// A kind whose lifecycle has the Approve the run gate approves a run plan
+// there. HZ-446: keyed on that gate, not on any humanOnly gate — a Plan's
+// Approve & file is human-only too, but it approves no run plan.
+const approvesRunPlan = (kind) => stepsFor(kind).some((step) => step.index === APPROVE_RUN_GATE_INDEX)
 
 // What the Approve the run card shows, and the hash its Approve sends back.
 function runPlanView(itemId) {
@@ -1545,6 +1548,8 @@ export function addEvent(id, { who, text, color, initials, detail = null, verdic
 // (WhatsApp, the caretaker, a token, any route added later) is refused here,
 // the gate stays pending and the refusal is logged. `planHash` is the plan
 // the approver was shown: a newer plan since then is refused, not approved.
+// HZ-446: the PIN applies to every humanOnly gate; the run plan checks only to
+// Approve the run, the one gate that approves a run plan.
 export function approveGate(id, stepIndex, notes, actor = 'You', { proof = null, planHash = null } = {}) {
   const it = getItem(id)
   if (!it) return { error: 'not_found' }
@@ -1564,6 +1569,8 @@ export function approveGate(id, stepIndex, notes, actor = 'You', { proof = null,
       notify()
       return { error: 'human_pin_required' }
     }
+  }
+  if (stepIndex === APPROVE_RUN_GATE_INDEX) {
     const plan = currentRunPlan(id)
     if (!plan) return { error: 'run_plan_missing' }
     if (planHash != null && planHash !== plan.hash) return { error: 'run_plan_changed' }
@@ -1629,6 +1636,7 @@ export function requestChanges(id, target, feedbackText, actor = 'You', targetSt
       targetStepIndex >= first &&
       targetStepIndex < it.cursor &&
       STEPS[targetStepIndex]?.kind === 'agent' &&
+      !isServerStep(targetStepIndex) &&
       !laneSkips(it).has(targetStepIndex)
     if (!atGate || !validTarget) return { error: 'invalid_target' }
   }
@@ -1657,9 +1665,13 @@ export function requestChanges(id, target, feedbackText, actor = 'You', targetSt
       // run means the PLAN is wrong — send it back to Run plan to redo it.
       reworkIdx = RUN_PLAN_STEP_INDEX
     } else {
-      // HZ-435: never onto a row the item's lane skips.
+      // HZ-435: never onto a row the item's lane skips. HZ-446: nor onto a
+      // server step — it has no agent to take the feedback, and HZ-449's File
+      // items files real issues, so a send-back must never re-run it.
       const skips = laneSkips(it)
-      while (reworkIdx > first && (STEPS[reworkIdx].kind !== 'agent' || skips.has(reworkIdx))) reworkIdx--
+      while (reworkIdx > first && (STEPS[reworkIdx].kind !== 'agent' || isServerStep(reworkIdx) || skips.has(reworkIdx))) {
+        reworkIdx--
+      }
     }
   }
   const reworkAgent = STEPS[reworkIdx].kind === 'agent' ? STEPS[reworkIdx].agent : null
@@ -1890,7 +1902,7 @@ export function addFeedback(id, { message, target = '', source = 'ui', ghComment
   const step = STEPS[it.cursor]
   db.prepare('INSERT INTO feedback (item_id, target, message, source, gh_comment_id) VALUES (?, ?, ?, ?, ?)').run(
     id,
-    target || (step?.kind === 'agent' ? step.agent : ''),
+    target || (step?.kind === 'agent' ? (step.agent ?? '') : ''),
     text,
     source,
     ghCommentId,
@@ -2165,7 +2177,9 @@ export function recoverRejectedItems() {
         reworkIdx = IMPLEMENT_STEP_INDEX
       } else {
         const skips = laneSkips(row)
-        while (reworkIdx > first && (STEPS[reworkIdx].kind !== 'agent' || skips.has(reworkIdx))) reworkIdx--
+        while (reworkIdx > first && (STEPS[reworkIdx].kind !== 'agent' || isServerStep(reworkIdx) || skips.has(reworkIdx))) {
+          reworkIdx--
+        }
       }
     }
     const notes = db

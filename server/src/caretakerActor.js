@@ -29,7 +29,7 @@
 
 import { db } from './db.js'
 import * as store from './store.js'
-import { STEPS, requiredStepIndex, ACCEPT_GATE_INDEX, humanOnlyGateIndexes } from '../../domain/js/lifecycle.js'
+import { STEPS, requiredStepIndex, ACCEPT_GATE_INDEX, humanOnlyGateIndexes, gateStepIndexes } from '../../domain/js/lifecycle.js'
 import { ACTOR, redact } from './caretakerRules.js'
 import { CHECK_HEADLINE_PREFIX, capWords } from './checkHeadline.js'
 import { loadPolicy, REPEAT_SEND_BACK_RULE } from './caretaker.js'
@@ -45,9 +45,11 @@ export const ACT_GATES = ['Approve the high-level design', 'Review before execut
 // either. The approve path would refuse it anyway; refuseHumanOnlyApprovals
 // below logs the decision instead of trying.
 const HUMAN_ONLY_GATES = humanOnlyGateIndexes()
-const NEVER_ACT = [requiredStepIndex('Approve & prioritize this work'), ACCEPT_GATE_INDEX, ...HUMAN_ONLY_GATES]
+// HZ-446: every Plan gate is a human gate — Autopilot approves none of them.
+export const PLAN_GATES = gateStepIndexes(STEPS, 'plan')
+export const NEVER_ACT = [requiredStepIndex('Approve & prioritize this work'), ACCEPT_GATE_INDEX, ...HUMAN_ONLY_GATES, ...PLAN_GATES]
 if (ACT_GATES.some((g) => NEVER_ACT.includes(g))) {
-  throw new Error(`caretakerActor: ACT_GATES ${JSON.stringify(ACT_GATES)} includes gate 3, gate 13 or a human-only gate`)
+  throw new Error(`caretakerActor: ACT_GATES ${JSON.stringify(ACT_GATES)} includes gate 3, gate 13, a human-only gate or a Plan gate`)
 }
 
 export { ACTOR }

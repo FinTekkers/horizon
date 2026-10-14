@@ -13,9 +13,10 @@ import {
   phasesFor,
   itemKindOf,
   isHumanOnlyGate,
+  APPROVE_RUN_GATE_INDEX,
   laneOf,
 } from '../../../domain/js/lifecycle.js'
-import { AGENTS } from '../domain/agentTokens'
+import { AGENTS, stepAgentToken } from '../domain/agentTokens'
 import { PHASE_ACCENT, PHASE_ACCENT_BG, priorityColor } from '../domain/lifecycle'
 import { PERSONAS, PERSONA_AGENT_ROLES, PRIMARY_PERSONA_AGENT, personaFor, personaId } from '../domain/personas'
 import { itemStatus, isDependencyBlocked, isRuleBlocked, ruleBlockSummary, queuedToMerge } from '../domain/status'
@@ -246,7 +247,7 @@ function Step({ item, stepOutputs, outputsSettled, index, deployBlock, viewerNam
   // The intake gate doubles as the human confirmation of the PM-proposed
   // specialist persona: approving with the select's value confirms it.
   const showsPersonaPicker = status === 'awaiting' && st.label === 'Approve & prioritize this work'
-  const agent = isGate ? AGENTS.Human : AGENTS[st.agent]
+  const agent = stepAgentToken(st)
   const agentLabel = isGate ? (st.gate === 'optional' ? 'Human gate · optional' : 'Human gate') : agent.label
   const gateAction = index === ACCEPT_GATE_INDEX ? gateActionOf(item) : null
   const output = stepOutputs?.[index]
@@ -328,9 +329,12 @@ function Step({ item, stepOutputs, outputsSettled, index, deployBlock, viewerNam
           {humanOnly && (
             <div className="step-card__human-only">
               <div style={{ color: 'var(--warning-ink)', fontWeight: 600 }}>Always a human · even on Autopilot</div>
-              <div className="step-card__run-plan" style={{ color: 'var(--muted)' }}>
-                {runPlanSummary(item.runPlan)}
-              </div>
+              {/* HZ-446: only Approve the run approves a run plan. */}
+              {index === APPROVE_RUN_GATE_INDEX && (
+                <div className="step-card__run-plan" style={{ color: 'var(--muted)' }}>
+                  {runPlanSummary(item.runPlan)}
+                </div>
+              )}
             </div>
           )}
           {status === 'done' && !isGate && output?.output && (
@@ -452,7 +456,7 @@ function Step({ item, stepOutputs, outputsSettled, index, deployBlock, viewerNam
                     aria-busy={gateBusy || undefined}
                     onClick={() => onApprove(item.id, st.label)}
                   >
-                    {humanOnly ? 'Approve the run' : 'Approve'}
+                    {humanOnly ? st.label : 'Approve'}
                   </button>
                   <button
                     className="btn-gate-feedback"
@@ -630,7 +634,7 @@ function buildActivity(item) {
     .reverse()
     .slice(0, 6)
     .map(({ s }, k) => {
-      const a = s.kind === 'gate' ? AGENTS.Human : AGENTS[s.agent]
+      const a = stepAgentToken(s)
       return {
         who: s.kind === 'gate' ? 'You' : a.label,
         text: s.kind === 'gate' ? `approved: ${s.label.toLowerCase()}` : `completed ${s.label.toLowerCase()}`,

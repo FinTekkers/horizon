@@ -22,4 +22,13 @@ export const AGENTS = {
   Ensemble: { label: 'PM · QA · Architect', initials: 'EN', color: 'var(--primary-ink)', avatarBg: 'var(--primary)' },
   Review: { label: 'Code · QA review (automated)', initials: 'RV', color: 'var(--agent-human-ink)', avatarBg: 'var(--agent-human)' },
   Human: { label: 'Human gate', initials: 'YOU', color: 'var(--agent-human-ink)', avatarBg: 'var(--agent-human)' },
+  // HZ-446: a server step (runsIn 'server') names no agent — Horizon runs it.
+  Horizon: { label: 'Horizon', initials: 'HZ', color: 'var(--agent-human-ink)', avatarBg: 'var(--agent-human)' },
+}
+
+// The token a step renders with: Human for a gate, Horizon for a step that
+// names no agent (HZ-446), else the step's own agent.
+export function stepAgentToken(step) {
+  if (step.kind === 'gate') return AGENTS.Human
+  return AGENTS[step.agent] ?? AGENTS.Horizon
 }

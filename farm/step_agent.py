@@ -161,7 +161,30 @@ TASK_STEP_CONFIG = {
     **{step["label"]: ("pm.md", True, None, None) for step in steps.FARM_VIEWS["task"] if step["runsIn"] == "pm"},
 }
 
-STEP_CONFIGS = {"change": STEP_CONFIG, "task": TASK_STEP_CONFIG}
+# HZ-446: a Plan's steps. Their real prompts land with HZ-447 and HZ-448;
+# until then every farm-lane row runs one read-only placeholder role, with the
+# planner's read-only tools, so a Plan never edits code in any repo. Its PM
+# rows run on the PM step kind like every other kind's. "File items" is
+# runsIn "server" — Horizon's own code, never the farm — so it is not here.
+PLAN_INVENTORY_LABEL = "Inventory current state"
+PLAN_DESIGN_LABEL = "Design options & recommendation"
+PLAN_DRAFT_LABEL = "Draft items"
+PLAN_COVERAGE_REVIEW_LABEL = "Review drafts: coverage & overlap"
+PLAN_METRICS_REVIEW_LABEL = "Review drafts: metrics & size"
+PLAN_FARM_LABELS = (
+    PLAN_INVENTORY_LABEL,
+    PLAN_DESIGN_LABEL,
+    PLAN_DRAFT_LABEL,
+    PLAN_COVERAGE_REVIEW_LABEL,
+    PLAN_METRICS_REVIEW_LABEL,
+)
+
+PLAN_STEP_CONFIG = {
+    **{label: ("plan_placeholder.md", True, PLANNER_TOOLS, None) for label in PLAN_FARM_LABELS},
+    **{step["label"]: ("pm.md", True, None, None) for step in steps.FARM_VIEWS["plan"] if step["runsIn"] == "pm"},
+}
+
+STEP_CONFIGS = {"change": STEP_CONFIG, "task": TASK_STEP_CONFIG, "plan": PLAN_STEP_CONFIG}
 
 # HZ-435: a lane's narrower prompts, keyed by the lane the server sends
 # (domain/steps.json's `lanes`). Each entry overrides one step its kind
@@ -191,6 +214,13 @@ READ_ONLY_LABELS = frozenset({OPTIONS_LABEL, ENG_PLAN_LABEL, ARCH_REVIEW_LABEL, 
 # HZ-383: every Task step on the farm lane is held read-only the same way.
 # HZ-413: the Task's PM steps keep no workspace, so they are not listed.
 TASK_READ_ONLY_LABELS = frozenset({ASSESS_LABEL, RUN_PLAN_LABEL, IMPACT_REVIEW_LABEL, VERIFY_REPORT_LABEL})
+# HZ-446: every Plan step on the farm lane too.
+PLAN_READ_ONLY_LABELS = frozenset(PLAN_FARM_LABELS)
+# Keyed by kind; a kind with no entry reads the change set, as before.
+READ_ONLY_LABELS_BY_KIND = {"change": READ_ONLY_LABELS, "task": TASK_READ_ONLY_LABELS, "plan": PLAN_READ_ONLY_LABELS}
+# HZ-383/HZ-446: kinds whose farm steps are held to their tools even with no
+# workspace, where a change step runs with no allowlist at all.
+TOOLS_WITHOUT_WORKSPACE_KINDS = frozenset({"task", "plan"})
 
 # HZ-158: the ONLY steps whose turn-capped reply may be salvaged — a reply cut
 # off mid-string, with every required key present, is accepted instead of
@@ -274,7 +304,7 @@ def _step_config(kind: str, label: str, lane: str | None = None) -> tuple:
 
 def _is_read_only(kind: str, label: str) -> bool:
     """HZ-387/HZ-383: whether the farm holds this step read-only itself."""
-    return label in (TASK_READ_ONLY_LABELS if kind == "task" else READ_ONLY_LABELS)
+    return label in READ_ONLY_LABELS_BY_KIND.get(kind, READ_ONLY_LABELS)
 
 
 def _spawn_field(kind: str, label: str) -> str | None:
@@ -2570,9 +2600,10 @@ def _execute(task: dict, guard: HandoffGuard) -> dict:
             cwd=str(ws) if ws else None,
             max_turns=max_turns,
             timeout_s=timeout_s,
-            # HZ-383: a Task step is held to its read-only tools even with no
-            # workspace, where a change step runs with no allowlist at all.
-            allowed_tools=tools if ws or kind == "task" else None,
+            # HZ-383: a Task step (HZ-446: and a Plan step) is held to its
+            # read-only tools even with no workspace, where a change step runs
+            # with no allowlist at all.
+            allowed_tools=tools if ws or kind in TOOLS_WITHOUT_WORKSPACE_KINDS else None,
             required_keys=("summary", "artifact_md") if wants_artifact else ("summary",),
             item_id=item["id"],
             guard=guard,

@@ -11,7 +11,7 @@ vi.mock('../api', () => ({
 }))
 
 import Board from './Board'
-import { ACCEPT_GATE_INDEX, IMPLEMENT_STEP_INDEX, STEPS, firstStepIndex } from '../../../domain/js/lifecycle.js'
+import { ACCEPT_GATE_INDEX, IMPLEMENT_STEP_INDEX, STEPS, firstStepIndex, kindStepIndex } from '../../../domain/js/lifecycle.js'
 import { PRIORITIES, PRIORITY } from '../../../domain/js/priorities.js'
 import * as boardFilters from '../boardFilters'
 import * as boardNarrowing from '../boardNarrowing'
@@ -133,6 +133,26 @@ test('each Kind chip alone: Trivial is a change with the trivial label, Change i
     expect(cardIds(container).sort()).toEqual([...ids].sort())
     fireEvent.click(chipIn(getByRole, 'Kind', name))
   }
+})
+
+// HZ-446: a Plan is a third kind — its own badge, its own Kind chip and its
+// own phase names on the card.
+test('a Plan card reads Plan with its own phase name, and the Kind chip Plan shows only Plans', () => {
+  const inventory = kindStepIndex('Inventory current state', 'plan')
+  const items = [...KIND_FIXTURE, item('K-PLAN', { kind: 'plan', cursor: inventory, priority: PRIORITY.HIGH })]
+  const { container, getByRole } = renderBoard(items)
+  const chips = within(getByRole('group', { name: 'Kind' })).getAllByRole('button').map((b) => b.textContent)
+  expect(chips).toEqual(['Change', 'Task', 'Plan', 'Trivial'])
+
+  const plan = cardOf(container, 'K-PLAN')
+  expect(plan.querySelector('.kind-badge').textContent).toBe('Plan')
+  expect(plan.querySelector('.card__phase').textContent).toBe('Inventory')
+  expect(cardOf(container, 'K-TASK').querySelector('.kind-badge').textContent).toBe('Task')
+
+  fireEvent.click(chipIn(getByRole, 'Kind', 'Plan'))
+  expect(cardIds(container)).toEqual(['K-PLAN'])
+  fireEvent.click(chipIn(getByRole, 'Kind', 'Plan'))
+  expect(cardIds(container)).toHaveLength(items.length)
 })
 
 test('Priority and Kind combine; Clear in the empty state and Show all each restore the full board with nothing pressed', () => {
