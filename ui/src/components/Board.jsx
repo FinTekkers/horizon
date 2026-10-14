@@ -7,6 +7,8 @@ import {
   curStep,
   phaseIdx,
   awaitingGate,
+  phasesFor,
+  itemKindOf,
 } from '../../../domain/js/lifecycle.js'
 import { PHASE_ACCENT, PHASE_ACCENT_BG, priorityColor } from '../domain/lifecycle'
 import { FILTERS, visibleItems, hiddenCounts, matchCounts } from '../domain/filters'
@@ -140,7 +142,7 @@ function BoardCard({ item, projects, durationEstimates, deployBlock, viewerName,
         ))}
       </div>
       <div className="card__status-row">
-        <span className="card__phase">{PHASES[phaseIdx(item)]}</span>
+        <span className="card__phase">{phasesFor(itemKindOf(item))[phaseIdx(item)]}</span>
         <span
           className="card__persona"
           style={{ color: personaFor(item, PRIMARY_PERSONA_AGENT).color }}

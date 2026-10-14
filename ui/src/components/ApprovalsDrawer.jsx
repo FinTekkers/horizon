@@ -1,4 +1,4 @@
-import { PHASES, curStep, phaseIdx, awaitingGate } from '../../../domain/js/lifecycle.js'
+import { phasesFor, itemKindOf, curStep, phaseIdx, awaitingGate } from '../../../domain/js/lifecycle.js'
 import { LockIcon } from './icons'
 
 export default function ApprovalsDrawer({ items, onClose, onOpenItem, onApprove, onReject }) {
@@ -35,7 +35,7 @@ export default function ApprovalsDrawer({ items, onClose, onOpenItem, onApprove,
                     {optional ? 'optional' : 'required'}
                   </span>
                   <span style={{ flex: 1 }} />
-                  <span className="approval__phase">{PHASES[phaseIdx(item)]}</span>
+                  <span className="approval__phase">{phasesFor(itemKindOf(item))[phaseIdx(item)]}</span>
                 </div>
                 <div className="approval__title" onClick={() => onOpenItem(item.id)}>
                   {item.title}
