@@ -329,3 +329,33 @@ test('an issue labelled `plan` in a non-Horizon project imports as a Plan at its
   assert.equal(row.cursor, firstStepIndex('plan'))
   assert.equal(store.getItem(row.id).kind, 'plan')
 })
+
+// ---- HZ-447: a Plan's repo scope, set at creation ----
+
+test('POST /api/items, repo: a Plan stores its scopeRepos', async () => {
+  connectRepo()
+  const res = await inject({ method: 'POST', url: '/api/items', payload: { ...NEW_ITEM, kind: 'plan', scopeRepos: [REPO] } })
+  assert.equal(res.statusCode, 200, res.body)
+  const row = db.prepare('SELECT scope_repos_json FROM work_item WHERE id = ?').get(res.json().id)
+  assert.deepEqual(JSON.parse(row.scope_repos_json), [REPO])
+})
+
+test('POST /api/items: scopeRepos on a kind other than Plan is 400 scope_repos_plan_only, with no GitHub call', async () => {
+  connectRepo()
+  ghCalls = []
+  const res = await inject({ method: 'POST', url: '/api/items', payload: { ...NEW_ITEM, scopeRepos: [REPO] } })
+  assert.equal(res.statusCode, 400)
+  assert.deepEqual(res.json(), { error: 'scope_repos_plan_only' })
+  assert.deepEqual(ghCalls, [])
+})
+
+test('POST /api/items: a scope repo outside the target project is 400 scope_repo_not_in_project, with no GitHub call', async () => {
+  connectRepo()
+  ghCalls = []
+  const before = itemCount()
+  const res = await inject({ method: 'POST', url: '/api/items', payload: { ...NEW_ITEM, kind: 'plan', scopeRepos: [REPO, 'acme/elsewhere'] } })
+  assert.equal(res.statusCode, 400)
+  assert.deepEqual(res.json(), { error: 'scope_repo_not_in_project', repo: 'acme/elsewhere' })
+  assert.deepEqual(ghCalls, [])
+  assert.equal(itemCount(), before)
+})

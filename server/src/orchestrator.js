@@ -59,6 +59,7 @@ import {
   setProjectEnabled as writeProjectEnabled,
   getRepoCheckCommands,
   getRepoConfig,
+  getPlanScope,
   implementStartedBefore,
   CHECKS_WAIVER,
   recordCheckPass,
@@ -1670,6 +1671,7 @@ async function dispatchToFarm(id, stepIndex, runId, attempt, scope, checkoutSha 
     ...(checkoutSha ? { checkout_sha: checkoutSha } : {}),
     ...(projectContext ? { project_context: projectContext } : {}),
     ...checkCommandsField(item),
+    ...planScopeField(item),
     ...rulesOverrideField(project?.name, item.repo),
     // HZ-431: Run plan's prompt names the interpreter Execute will use, so it
     // gets the same checkout and venv setting the Execute dispatch carries.
@@ -1689,6 +1691,15 @@ function checkCommandsField(item) {
   if (checkCommands) return { check_commands: checkCommands }
   const waiver = checksWaiverFor(item)
   return waiver ? { checks_waiver: waiver } : {}
+}
+
+// HZ-447: a Plan's farm steps carry its repo scope — the repos Inventory and
+// Design may read, each with its latest check, and every other connected
+// repo, which the farm only masks. Absent for every other kind.
+export function planScopeField(item) {
+  if (itemKindOf(item) !== 'plan') return {}
+  const { repos, outOfScope } = getPlanScope(item.id)
+  return { plan_scope: { repos, out_of_scope: outOfScope } }
 }
 
 // ---- repo readiness (HZ-304) ----

@@ -446,6 +446,8 @@ db.exec(`
 // need no backfill. No CHECK: laneOf() reads an undeclared value as no lane.
 // paused_at (HZ-443): when the current pause began, for the board's "waiting"
 // sort. Read only while paused = 1, so a resume leaves it alone.
+// scope_repos_json (HZ-447): a Plan's repo scope, a JSON array of owner/name.
+// NULL = every repo in the item's project, so existing rows need no backfill.
 //
 // HZ-446: the kind constraint, built from ITEM_KINDS like PRIORITY_CHECK is
 // from PRIORITIES. Interpolating is safe because every kind is checked against
@@ -454,7 +456,7 @@ for (const kind of ITEM_KINDS) {
   if (!/^[a-z]+$/.test(kind)) throw new Error(`db: item kind ${JSON.stringify(kind)} is not lowercase letters only`)
 }
 const KIND_CHECK = `CHECK (kind IN (${ITEM_KINDS.map((kind) => `'${kind}'`).join(',')}))`
-for (const column of ['pr INTEGER', 'pr_url TEXT', 'pr_mergeable INTEGER', 'release_tag TEXT', 'release_url TEXT', 'repo TEXT', 'project_id INTEGER', 'persona TEXT', 'personas_json TEXT', 'review_cycle_count INTEGER NOT NULL DEFAULT 0', 'abandoned_at TEXT', 'abandoned_reason TEXT', 'abandoned_by TEXT', 'notified_step INTEGER', 'last_reviewed_sha TEXT', 'fix_pass INTEGER NOT NULL DEFAULT 0', 'fix_findings_json TEXT', 'forwarded_review_run_id INTEGER', 'forwarded_by TEXT', 'forwarded_sha TEXT', 'rule_block_json TEXT', 'provider_choices_json TEXT', `kind TEXT NOT NULL DEFAULT 'change' ${KIND_CHECK}`, 'approved_plan_hash TEXT', 'lane TEXT', 'paused_at TEXT']) {
+for (const column of ['pr INTEGER', 'pr_url TEXT', 'pr_mergeable INTEGER', 'release_tag TEXT', 'release_url TEXT', 'repo TEXT', 'project_id INTEGER', 'persona TEXT', 'personas_json TEXT', 'review_cycle_count INTEGER NOT NULL DEFAULT 0', 'abandoned_at TEXT', 'abandoned_reason TEXT', 'abandoned_by TEXT', 'notified_step INTEGER', 'last_reviewed_sha TEXT', 'fix_pass INTEGER NOT NULL DEFAULT 0', 'fix_findings_json TEXT', 'forwarded_review_run_id INTEGER', 'forwarded_by TEXT', 'forwarded_sha TEXT', 'rule_block_json TEXT', 'provider_choices_json TEXT', `kind TEXT NOT NULL DEFAULT 'change' ${KIND_CHECK}`, 'approved_plan_hash TEXT', 'lane TEXT', 'paused_at TEXT', 'scope_repos_json TEXT']) {
   try {
     db.exec(`ALTER TABLE work_item ADD COLUMN ${column}`)
   } catch {

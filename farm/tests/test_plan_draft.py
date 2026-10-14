@@ -131,6 +131,8 @@ def test_a_bad_draft_then_a_good_one_succeeds(monkeypatch):
 
 
 def test_other_plan_steps_and_task_steps_keep_their_reply_checks():
-    assert step_agent._reply_validator("plan", step_agent.PLAN_INVENTORY_LABEL) is None
+    # HZ-447 extends the Plan check by label: Inventory has one, a review row none.
+    assert step_agent._reply_validator("plan", step_agent.PLAN_INVENTORY_LABEL) is not None
+    assert step_agent._reply_validator("plan", step_agent.PLAN_COVERAGE_REVIEW_LABEL) is None
     assert step_agent._reply_validator("change", step_agent.ENG_PLAN_LABEL) is None
     assert step_agent._reply_validator("task", step_agent.RUN_PLAN_LABEL) is not None

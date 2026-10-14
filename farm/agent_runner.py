@@ -156,6 +156,7 @@ def run_agent(
     model_choice: str | None = None,
     provider_locked: bool = False,
     retry_fresh: bool = True,
+    disallowed_tools: str | None = None,
 ) -> dict:
     """Returns {"result": <final text>, "session_id": <id>, "provider": <name>,
     "model": <id or None>, "command_id": <id or None>}.
@@ -191,8 +192,15 @@ def run_agent(
     parsed from the stored choice. It is not a model: it only reaches
     _model_for(), which checks it against the provider that runs and drops
     it when that provider does not declare it.
+
+    disallowed_tools (HZ-447) are deny rules only a provider declaring
+    ENFORCES_DENY_RULES (Claude) can enforce, so any other provider is refused
+    before it is called. They reach the provider only when set, so no other
+    provider's signature changes.
     """
     name, provider_module = _selected_provider(provider, provider_locked=provider_locked)
+    if disallowed_tools and not getattr(provider_module, "ENFORCES_DENY_RULES", False):
+        raise AgentError(f"provider '{name}' cannot enforce deny rules (disallowed_tools) — refusing this call")
     model = _model_for(name, agent, step, persona, model_choice)
     provider_module.assert_subscription_auth()
     if session_id and not provider_module.SUPPORTS_RESUME:
@@ -215,6 +223,7 @@ def run_agent(
             timeout_s=timeout_s,
             allowed_tools=allowed_tools,
             retry_fresh=retry_fresh,
+            **({"disallowed_tools": disallowed_tools} if disallowed_tools else {}),
         )
     except AgentExhaustedError as exc:
         # The same provenance a reply carries, so a salvaged reply can record

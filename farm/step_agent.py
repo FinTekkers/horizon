@@ -30,7 +30,7 @@ import httpx
 # `python -m farm.farmd` from there and farm/tests/conftest.py inserts it).
 # HZ-132 put the failure-reason vocabulary there too, so the reason this script
 # reports is a constant the server already knows, never a string typed here.
-from domain.py import fields, plan_draft, reasons, run_plan, steps
+from domain.py import fields, plan_draft, plan_inventory, reasons, run_plan, steps
 from domain.py import providers as domain_providers
 from domain.py.personas import model_agent_for_step
 
@@ -49,8 +49,8 @@ from .agent_runner import (
     stamp_notes,
     stamp_notes_artifact,
 )
-from . import check_record, handoff, pause, read_only_guard, review_diff
-from .checks import CheckFailure, redact, run_checks, secret_values
+from . import check_record, handoff, pause, plan_bundle, read_only_guard, review_diff
+from .checks import CheckFailure, redact, run_checks, scrub, secret_values
 from .config import FARM_PORT, ITEM_LOCK_WAIT_S
 from .handoff import HandoffContext, HandoffGuard
 from .personas import compose_role, provider_for, resolve
@@ -161,11 +161,12 @@ TASK_STEP_CONFIG = {
     **{step["label"]: ("pm.md", True, None, None) for step in steps.FARM_VIEWS["task"] if step["runsIn"] == "pm"},
 }
 
-# HZ-446: a Plan's steps. Their real prompts land with HZ-447 and HZ-448;
-# until then every other farm-lane row runs one read-only placeholder role, with the
-# planner's read-only tools, so a Plan never edits code in any repo. Its PM
-# rows run on the PM step kind like every other kind's. "File items" is
-# runsIn "server" — Horizon's own code, never the farm — so it is not here.
+# HZ-446: a Plan's steps. HZ-447 gives Inventory and Design their prompts and
+# HZ-448 gives Draft items its; the two review rows run one read-only
+# placeholder role, with the planner's read-only tools, so a Plan never edits
+# code in any repo. Its PM rows run on the PM step kind like every other kind's.
+# "File items" is runsIn "server" — Horizon's own code, never the farm — so it
+# is not here.
 PLAN_INVENTORY_LABEL = "Inventory current state"
 PLAN_DESIGN_LABEL = "Design options & recommendation"
 PLAN_DRAFT_LABEL = "Draft items"
@@ -181,6 +182,8 @@ PLAN_FARM_LABELS = (
 
 PLAN_STEP_CONFIG = {
     **{label: ("plan_placeholder.md", True, PLANNER_TOOLS, None) for label in PLAN_FARM_LABELS},
+    PLAN_INVENTORY_LABEL: ("plan_inventory.md", True, PLANNER_TOOLS, None),
+    PLAN_DESIGN_LABEL: ("plan_design.md", True, PLANNER_TOOLS, None),
     # HZ-448: Draft items writes the Plan's item drafts (domain/planDraft.schema.json).
     PLAN_DRAFT_LABEL: ("plan_draft.md", True, PLANNER_TOOLS, None),
     **{step["label"]: ("pm.md", True, None, None) for step in steps.FARM_VIEWS["plan"] if step["runsIn"] == "pm"},
@@ -223,6 +226,10 @@ READ_ONLY_LABELS_BY_KIND = {"change": READ_ONLY_LABELS, "task": TASK_READ_ONLY_L
 # HZ-383/HZ-446: kinds whose farm steps are held to their tools even with no
 # workspace, where a change step runs with no allowlist at all.
 TOOLS_WITHOUT_WORKSPACE_KINDS = frozenset({"task", "plan"})
+# HZ-447: steps that read every repo in the item's scope from a read-only
+# bundle (farm/plan_bundle.py) instead of the item's worktree: no worktree,
+# run plan or venv is set up for them, and their tools are the bundle's rules.
+BUNDLE_LABELS_BY_KIND = {"plan": frozenset({PLAN_INVENTORY_LABEL, PLAN_DESIGN_LABEL})}
 
 # HZ-158: the ONLY steps whose turn-capped reply may be salvaged — a reply cut
 # off mid-string, with every required key present, is accepted instead of
@@ -307,6 +314,11 @@ def _step_config(kind: str, label: str, lane: str | None = None) -> tuple:
 def _is_read_only(kind: str, label: str) -> bool:
     """HZ-387/HZ-383: whether the farm holds this step read-only itself."""
     return label in READ_ONLY_LABELS_BY_KIND.get(kind, READ_ONLY_LABELS)
+
+
+def _reads_bundle(kind: str, label: str) -> bool:
+    """HZ-447: whether this step reads the item's repo bundle."""
+    return label in BUNDLE_LABELS_BY_KIND.get(kind, frozenset())
 
 
 def _spawn_field(kind: str, label: str) -> str | None:
@@ -1725,32 +1737,75 @@ def _task_reply_validator(label: str):
     return check
 
 
-def _plan_reply_validator():
-    """HZ-448: the reply check the Draft items step runs inside the retry
-    envelope. Its `plan_draft` block must satisfy domain/planDraft.schema.json
-    and form a DAG (domain/py/plan_draft.py). Raises AgentError, which takes
-    the one retry; a second bad reply fails the step. Whether a real key
-    exists is the server's check, on ingest."""
+def _prior_inventory(task: dict, scope: list[str]) -> dict:
+    """HZ-447: the validated Inventory block among the prior artifacts."""
+    for artifact in reversed(task.get("artifacts") or []):
+        if artifact.get("label") == PLAN_INVENTORY_LABEL:
+            try:
+                return plan_inventory.extract(artifact.get("content", ""), scope)
+            except ValueError as exc:
+                raise AgentError(f"Design needs the Inventory block: {exc}") from None
+    raise AgentError("Design needs the Inventory artifact, and the task carries none")
+
+
+def _plan_reply_validator(label: str, task: dict, scope: list[str]):
+    """The reply check a Plan step runs inside the retry envelope, extended
+    by label. HZ-448: Draft items' `plan_draft` block must satisfy
+    domain/planDraft.schema.json and form a DAG (domain/py/plan_draft.py);
+    whether a real key exists is the server's check, on ingest. HZ-447:
+    Inventory's `inventory` block must satisfy domain/planInventory.schema.json
+    with one row per in-scope repo; Design's `design` must cite an Inventory
+    evidence ref for every repo it changes; no part of either reply may carry
+    a literal secret. Design's Inventory block is read here, before any call,
+    so a missing one fails the step without spending a run. Raises
+    AgentError, which takes the one retry; a second bad reply fails the step."""
+    inventory = _prior_inventory(task, scope) if label == PLAN_DESIGN_LABEL else None
 
     def check(parsed):
         if not isinstance(parsed, dict):
             return parsed  # the required-field check after the call says so
+        if label == PLAN_DRAFT_LABEL:
+            try:
+                plan_draft.validate(parsed.get("plan_draft"))
+            except ValueError as exc:
+                raise AgentError(f"invalid plan draft: {exc}") from None
+            return parsed
+        texts = [parsed.get("summary"), parsed.get("artifact_md")]
         try:
-            plan_draft.validate(parsed.get("plan_draft"))
+            if label == PLAN_INVENTORY_LABEL:
+                texts.append(plan_inventory.render(plan_inventory.validate(parsed.get("inventory"), scope)))
+            elif inventory is not None:
+                uncited = plan_inventory.check_citations(parsed.get("design"), inventory)
+                if uncited:
+                    raise ValueError(f"the recommendation changes {uncited} but cites no Inventory evidence ref for them")
+                texts.append(json.dumps(parsed["design"]))
         except ValueError as exc:
-            raise AgentError(f"invalid plan draft: {exc}") from None
+            raise AgentError(f"invalid {label} reply: {exc}") from None
+        found = sorted({name for text in texts for name in run_plan.literal_secrets(text)})
+        if found:
+            log(f"{label}: reply carries a literal secret ({', '.join(found)}) — rejected")
+            raise AgentError(
+                f"the reply carries what looks like a literal secret ({', '.join(found)}); "
+                "name secrets only as references like $GITHUB_TOKEN"
+            )
         return parsed
 
     return check
 
 
-def _reply_validator(kind: str, label: str):
+# The Plan steps that carry a reply check; the review rows carry none yet.
+PLAN_VALIDATED_LABELS = frozenset({PLAN_INVENTORY_LABEL, PLAN_DESIGN_LABEL, PLAN_DRAFT_LABEL})
+
+
+def _reply_validator(kind: str, label: str, task: dict | None = None, scope: list[str] | None = None):
     """The reply check a step runs inside the retry envelope, or None. A
-    Plan's Draft items step is picked by its label; every Task step by its
-    kind's table (HZ-383)."""
-    if label == PLAN_DRAFT_LABEL:
-        return _plan_reply_validator()
-    return _task_reply_validator(label) if STEP_CONFIGS.get(kind) is TASK_STEP_CONFIG else None
+    Plan step is picked by its label (HZ-447, HZ-448); every Task step by
+    its kind's table (HZ-383). The kind is matched by its table, never by
+    name."""
+    config = STEP_CONFIGS.get(kind)
+    if config is PLAN_STEP_CONFIG and label in PLAN_VALIDATED_LABELS:
+        return _plan_reply_validator(label, task or {}, scope or [])
+    return _task_reply_validator(label) if config is TASK_STEP_CONFIG else None
 
 
 def _run_and_parse(
@@ -1771,6 +1826,7 @@ def _run_and_parse(
     model_choice: str | None = None,
     provider_locked: bool = False,
     validate=None,
+    disallowed_tools: str | None = None,
 ) -> tuple[dict, dict, list[str]]:
     """run_agent + the shared reply parser, with one retry-with-feedback on a
     parse failure (HZ-44) — the PM steps' recovery (_execute_pm) too. Asking the
@@ -1791,7 +1847,9 @@ def _run_and_parse(
     on the review path a retry could flip a deliberately fail-closed gate.
     HZ-383: a Task step is the exception — it hands in its own validator
     (_task_reply_validator), so a bad run plan or a literal secret takes the
-    one retry and then fails the step.
+    one retry and then fails the step. HZ-447: a Plan step too
+    (_plan_reply_validator), and disallowed_tools reach run_agent only when
+    set.
 
     HZ-158: required_keys, item_id and guard have no default, so every call
     site must say what its reply needs. They are used only when run_agent
@@ -1823,6 +1881,7 @@ def _run_and_parse(
             provider=provider,
             model_choice=model_choice,
             provider_locked=provider_locked,
+            disallowed_tools=disallowed_tools,
         )
     except AgentExhaustedError as exc:
         parsed, notes = _on_exhaustion(exc, required_keys=required_keys, ctx=ctx, guard=guard, salvage=True)
@@ -1847,6 +1906,7 @@ def _run_and_parse(
             provider=provider,
             model_choice=model_choice,
             provider_locked=provider_locked,
+            disallowed_tools=disallowed_tools,
         )
         return produced["result"]
 
@@ -1940,11 +2000,6 @@ DEPLOY_LOG_TAIL_LINES = 20
 DEPLOY_LOG_LINE_MAX_CHARS = 160
 # Fits inside ERROR_MAX_CHARS with the reason in front of it.
 DEPLOY_LOG_TAIL_MAX_CHARS = 1500
-# `NAME=value` for a secret-looking NAME, even one this process's env lacks
-# (the farm never holds $GITHUB_WEBHOOK_SECRET, so redact() can't know it).
-_SECRET_ASSIGNMENT = re.compile(
-    r"\b([A-Za-z_][A-Za-z0-9_]*(?:TOKEN|SECRET|KEY|PASSWORD|PASSWD|CREDENTIAL)[A-Za-z0-9_]*)=(\S+)", re.IGNORECASE
-)
 
 
 class ReleaseWait(NamedTuple):
@@ -2116,8 +2171,7 @@ def deploy_log_tail(state_dir: str) -> str:
     if len(chunk) < size:
         # Read from mid-file: the first line is partial, and could hold half a token.
         chunk = chunk[chunk.find(b"\n") + 1 :]
-    text = redact(chunk.decode("utf-8", "replace"), secret_values(os.environ))
-    text = _SECRET_ASSIGNMENT.sub(r"\1=[redacted]", text)
+    text = scrub(chunk.decode("utf-8", "replace"))
     lines = [line.rstrip()[:DEPLOY_LOG_LINE_MAX_CHARS] for line in text.splitlines() if line.strip()]
     lines = lines[-DEPLOY_LOG_TAIL_LINES:]
     while lines and sum(len(line) + 1 for line in lines) > DEPLOY_LOG_TAIL_MAX_CHARS:
@@ -2292,8 +2346,10 @@ def _execute(task: dict, guard: HandoffGuard) -> dict:
     model_agent = model_agent_for_step(steps.by_kind_label(kind, label)["agent"])
     persona = model_persona(persona_agent, personas)
 
+    # HZ-447: a bundle step reads no worktree, so none is set up for it.
+    bundle_step = _reads_bundle(kind, label)
     ws = None
-    if item.get("repo"):
+    if item.get("repo") and not bundle_step:
         try:
             ws = ensure_item_worktree(item["repo"], item["id"])
         except RuntimeError:
@@ -2763,30 +2819,64 @@ def _execute(task: dict, guard: HandoffGuard) -> dict:
 
     # HZ-387: a read-only step must leave the worktree as it found it.
     read_only_ws = ws if _is_read_only(kind, label) else None
-    with read_only_guard.guard(read_only_ws, effective_provider(provider_override)) as watch:
-        parsed, reply_provenance, notes = _run_and_parse(
-            build_prompt(task) + "\n\nRespond with ONLY the JSON object described in your role instructions.",
-            agent=model_agent,
-            step=label,
-            persona=persona,
-            append_system=role,
-            cwd=str(ws) if ws else None,
-            max_turns=max_turns,
-            timeout_s=timeout_s,
-            # HZ-383: a Task step (HZ-446: and a Plan step) is held to its
-            # read-only tools even with no workspace, where a change step runs
-            # with no allowlist at all.
-            allowed_tools=tools if ws or kind in TOOLS_WITHOUT_WORKSPACE_KINDS else None,
-            required_keys=("summary", "artifact_md") if wants_artifact else ("summary",),
-            item_id=item["id"],
-            guard=guard,
-            provider=provider_override,
-            model_choice=model_choice,
-            provider_locked=provider_locked,
-            validate=_reply_validator(kind, label),
-        )
-        watch.provider = reply_provenance.get("provider") or watch.provider
-    summary = str(parsed.get("summary", "")).strip()[:SUMMARY_MAX_CHARS]
+    # HZ-383: a Task step (HZ-446: and a Plan step) is held to its read-only
+    # tools even with no workspace, where a change step runs with no
+    # allowlist at all.
+    allowed_tools = tools if ws or kind in TOOLS_WITHOUT_WORKSPACE_KINDS else None
+    disallowed_tools, cwd, prompt_extra = None, str(ws) if ws else None, ""
+    # HZ-447: a bundle step reads every in-scope repo from a read-only copy,
+    # held to the copy's tool rules, guarded over the copy and every hub, with
+    # its run log scrubbed. Its errors are scrubbed too, and the copy is
+    # always removed.
+    bundle, out_of_scope, scope = None, [], []
+    try:
+        with contextlib.ExitStack() as stack:
+            if bundle_step:
+                entries, out_of_scope = plan_bundle.parse_scope(task.get("plan_scope"))
+                scope = [entry["repo"] for entry in entries]
+                stack.enter_context(plan_bundle.scrubbed_stdout(out_of_scope))
+            validate = _reply_validator(kind, label, task, scope)
+            if bundle_step:
+                bundle = plan_bundle.build(item["id"], task.get("plan_scope"))
+                (allowed_tools, disallowed_tools), cwd = plan_bundle.tool_rules(bundle), str(bundle.root)
+                prompt_extra = _bundle_section(bundle)
+                watch = stack.enter_context(plan_bundle.guard(bundle, effective_provider(provider_override)))
+            else:
+                watch = stack.enter_context(read_only_guard.guard(read_only_ws, effective_provider(provider_override)))
+            parsed, reply_provenance, notes = _run_and_parse(
+                build_prompt(task) + prompt_extra + "\n\nRespond with ONLY the JSON object described in your role instructions.",
+                agent=model_agent,
+                step=label,
+                persona=persona,
+                append_system=role,
+                cwd=cwd,
+                max_turns=max_turns,
+                timeout_s=timeout_s,
+                allowed_tools=allowed_tools,
+                required_keys=("summary", "artifact_md") if wants_artifact else ("summary",),
+                item_id=item["id"],
+                guard=guard,
+                provider=provider_override,
+                model_choice=model_choice,
+                provider_locked=provider_locked,
+                validate=validate,
+                disallowed_tools=disallowed_tools,
+            )
+            watch.provider = reply_provenance.get("provider") or watch.provider
+        leaks = plan_bundle.leaked_paths(json.dumps(parsed, ensure_ascii=False), bundle) if bundle else []
+        if leaks:
+            raise ReadOnlyViolation(
+                f"Plan scope violated: the reply names {', '.join(leaks)} — nothing was stored", rolled_back=True
+            )
+    except Exception as exc:
+        if bundle_step:
+            exc.args = (plan_bundle.scrub(str(exc), out_of_scope),)
+        raise
+    finally:
+        if bundle:
+            plan_bundle.remove(bundle)
+    summary = str(parsed.get("summary", "")).strip()
+    summary = (plan_bundle.scrub(summary, out_of_scope) if bundle_step else summary)[:SUMMARY_MAX_CHARS]
     if not summary:
         raise AgentError("agent reply missing 'summary'")
 
@@ -2813,6 +2903,11 @@ def _execute(task: dict, guard: HandoffGuard) -> dict:
         # HZ-378's Execute reads it back with run_plan.extract().
         if kind == "task" and label == RUN_PLAN_LABEL:
             artifact = f"{artifact}\n\n## Run plan block\n{run_plan.render(parsed['run_plan'])}"
+        # HZ-447: Design reads the validated Inventory block back from here.
+        if bundle_step and label == PLAN_INVENTORY_LABEL:
+            artifact = f"{artifact}\n\n## Inventory block\n{plan_inventory.render(parsed['inventory'])}"
+        if bundle_step:
+            artifact = plan_bundle.scrub(artifact, out_of_scope)
         if feedback:
             header = "\n".join(f"> {fb.get('message', '')}" for fb in feedback)
             artifact = f"## Human feedback addressed in this revision\n{header}\n\n{artifact}"
@@ -2852,6 +2947,20 @@ def _execute(task: dict, guard: HandoffGuard) -> dict:
     if label == PLAN_DRAFT_LABEL:
         result.setdefault("artifacts", {})["plan_draft"] = parsed["plan_draft"]
     return result
+
+
+def _bundle_section(bundle: plan_bundle.Bundle) -> str:
+    """HZ-447: where each in-scope repo is in the bundle."""
+    lines = [
+        "",
+        "",
+        "## Repos in this Plan's scope",
+        f"Your working directory is `{bundle.root}`. You may read only inside it.",
+    ]
+    for repo, branch in bundle.branches.items():
+        folder = repo.replace("/", "__")
+        lines.append(f"- `{repo}`: files at `{folder}/` ({branch}); branches, tags and its last check in `_refs/{folder}`")
+    return "\n".join(lines)
 
 
 # HZ-275: a Horizon self-deploy restarts farmd just before last-good-tag is

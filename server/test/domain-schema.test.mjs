@@ -189,6 +189,27 @@ test('importing the JS binding over malformed JSON fails — the one case a .jso
   assert.notEqual(result.status, 0, 'the JS binding imported malformed JSON')
 })
 
+// ---- HZ-447: the Plan Inventory block's output contract (metric 2) ----
+// The samples are domain/fixtures/plan-inventory-cases.json, which
+// farm/tests/test_plan_inventory_domain.py runs through the Python binding.
+
+const inventorySchema = JSON.parse(readFileSync(path.join(REPO_ROOT, 'domain/planInventory.schema.json'), 'utf8'))
+const inventoryCases = JSON.parse(readFileSync(path.join(REPO_ROOT, 'domain/fixtures/plan-inventory-cases.json'), 'utf8'))
+
+for (const { case: name, block, schemaValid } of inventoryCases.cases) {
+  test(`planInventory.schema.json ${schemaValid ? 'accepts' : 'rejects'} ${name}`, () => {
+    const errors = validate(inventorySchema, block)
+    assert.equal(errors.length === 0, schemaValid, errors.join('\n'))
+  })
+}
+
+test('planInventory.schema.json: the 2-repo sample passes and the one missing evidence fails on evidence', () => {
+  const byName = Object.fromEntries(inventoryCases.cases.map((c) => [c.case, c]))
+  assert.deepEqual(validate(inventorySchema, byName['a 2-repo sample with key facts'].block), [])
+  const errors = validate(inventorySchema, byName['a row with no evidence'].block)
+  assert.ok(errors.some((e) => e.includes('evidence')), errors.join('\n'))
+})
+
 function omit(obj, key) {
   const { [key]: _dropped, ...rest } = obj
   return rest

@@ -41,6 +41,8 @@ from .base import (
 SUPPORTS_RESUME = True
 # HZ-158: yes — see AgentExhaustedError's docstring in providers/base.py.
 RESUMES_AFTER_EXHAUSTION = True
+# HZ-447: --disallowedTools / disallowed_tools are passed through on both paths.
+ENFORCES_DENY_RULES = True
 
 # HZ-424: the SDK reads each CLI message into a buffer capped at 1 MB by
 # default; one Read of a full-page screenshot overflows it and the reader dies.
@@ -134,6 +136,7 @@ def run(
     timeout_s: int = STEP_TIMEOUT_S,
     allowed_tools: str | None = None,
     retry_fresh: bool = True,
+    disallowed_tools: str | None = None,
 ) -> dict:
     """Returns {"result": <final text>, "session_id": <id>}.
 
@@ -152,6 +155,7 @@ def run(
             timeout_s=timeout_s,
             allowed_tools=allowed_tools,
             retry_fresh=retry_fresh,
+            disallowed_tools=disallowed_tools,
         )
 
     # This runs inside the agent process (tmux pane), whose environment is
@@ -181,6 +185,7 @@ def run(
                     model=model,
                     max_turns=max_turns,
                     allowed_tools=allowed_tools,
+                    disallowed_tools=disallowed_tools,
                     seen=seen,
                     max_buffer_size=buffer_limit,
                 ),
@@ -210,6 +215,7 @@ def run(
                 max_turns=max_turns,
                 timeout_s=timeout_s,
                 allowed_tools=allowed_tools,
+                disallowed_tools=disallowed_tools,
             )
         raise AgentError(f"claude (sdk) failed: {str(exc)[:300]}") from exc
     except Exception as exc:
@@ -229,6 +235,7 @@ async def _stream_query(
     model: str | None,
     max_turns: int,
     allowed_tools: str | None,
+    disallowed_tools: str | None = None,
     seen: dict | None = None,
     max_buffer_size: int | None = None,
 ) -> dict:
@@ -246,6 +253,8 @@ async def _stream_query(
         max_turns=max_turns,
         # Public signature keeps the CLI's comma-joined string; the SDK wants a list.
         allowed_tools=[t.strip() for t in allowed_tools.split(",") if t.strip()] if allowed_tools else [],
+        # HZ-447: deny rules win over allow rules; no bypass permission mode is set.
+        disallowed_tools=[t.strip() for t in disallowed_tools.split(",") if t.strip()] if disallowed_tools else [],
         resume=session_id,
         # Same isolation as the subprocess path's --strict-mcp-config: farm
         # agents must NOT inherit the human's personal MCP servers (WhatsApp
@@ -333,6 +342,7 @@ def _run_subprocess(
     timeout_s: int = STEP_TIMEOUT_S,
     allowed_tools: str | None = None,
     retry_fresh: bool = True,
+    disallowed_tools: str | None = None,
 ) -> dict:
     """The pre-HZ-5 path: silent `claude -p --output-format json` subprocess."""
     # --strict-mcp-config: farm agents must NOT inherit the human's personal
@@ -347,6 +357,8 @@ def _run_subprocess(
         cmd += ["--model", model]
     if allowed_tools:
         cmd += ["--allowedTools", allowed_tools]
+    if disallowed_tools:
+        cmd += ["--disallowedTools", disallowed_tools]
 
     try:
         # HZ-140: the model never gets a gate-approving credential, whichever
@@ -384,6 +396,7 @@ def _run_subprocess(
                 max_turns=max_turns,
                 timeout_s=timeout_s,
                 allowed_tools=allowed_tools,
+                disallowed_tools=disallowed_tools,
             )
         raise AgentError(f"claude exited {proc.returncode}: {proc.stderr.strip()[:300]}")
 

@@ -1052,16 +1052,26 @@ export function buildApp({ logger = true, onRoute = null } = {}) {
             // HZ-382: checked against the domain's kinds in the handler, not an
             // enum here, so there is no second list of kinds.
             kind: { type: 'string' },
+            // HZ-447: a Plan's repo scope, all in the target repo's project.
+            // Omitted means every repo in that project.
+            scopeRepos: {
+              type: 'array',
+              minItems: 1,
+              maxItems: 20,
+              uniqueItems: true,
+              items: { type: 'string', pattern: '^[\\w.-]+/[\\w.-]+$' },
+            },
           },
         },
         response: { 200: OK_OBJECT, 400: ERROR_OBJECT, 502: ERROR_OBJECT },
       },
     },
     async (request, reply) => {
-      const { title, outcome, metric, guardrails = '', priority = DEFAULT_PRIORITY, repo, projectId, kind = 'change' } = request.body
+      const { title, outcome, metric, guardrails = '', priority = DEFAULT_PRIORITY, repo, projectId, kind = 'change', scopeRepos } = request.body
       // Before any project check or GitHub call, so a bad kind never leaves an
       // orphan issue behind.
       if (!isItemKind(kind)) return reply.code(400).send({ error: 'unknown_item_kind' })
+      if (scopeRepos !== undefined && kind !== 'plan') return reply.code(400).send({ error: 'scope_repos_plan_only' })
       // New work goes into an enabled project's repository (HZ-208); a named
       // project (HZ-209) must exist and be enabled and narrows the choice to
       // its own repositories — a disabled project is never acted on.
@@ -1084,6 +1094,8 @@ export function buildApp({ logger = true, onRoute = null } = {}) {
         if (!target) {
           return reply.code(400).send({ error: 'Pick which of the enabled projects’ repositories this work item belongs to' })
         }
+        const strayRepo = scopeRepos?.find((r) => !connected.some((c) => c.repo === r && c.project_id === target.project_id))
+        if (strayRepo) return reply.code(400).send({ error: 'scope_repo_not_in_project', repo: strayRepo })
         let ghIssue
         try {
           ghIssue = await github.createIssue(target.repo, { title, outcome, metric, guardrails, priority, kind })
@@ -1091,8 +1103,10 @@ export function buildApp({ logger = true, onRoute = null } = {}) {
           return reply.code(502).send({ error: err.message })
         }
         store.upsertFromGithub(ghIssue, target.repo)
+        if (scopeRepos) store.setScopeRepos(`${target.prefix}-${ghIssue.number}`, scopeRepos)
         return { ok: true, id: `${target.prefix}-${ghIssue.number}`, issue: ghIssue.number, url: ghIssue.html_url }
       }
+      if (scopeRepos) return reply.code(400).send({ error: 'scope_repo_not_in_project', repo: scopeRepos[0] })
       if (store.listRepos().length > 0) {
         return reply.code(400).send({ error: 'No enabled project has a connected repository — add one in Admin' })
       }

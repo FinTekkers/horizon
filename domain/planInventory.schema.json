@@ -1,0 +1,61 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$comment": "HZ-447: the contract for a Plan's Inventory block — the machine-readable part of the Inventory step's artifact, which the Design step cites. Like runPlan.schema.json it is the contract for an agent's OUTPUT and pairs with no data file in domain/. It is checked by domain/py/plan_inventory.py (the only binding for now; HZ-462 adds the JS one to render the tables). Written in the same Draft-07 subset domain/validate.mjs honours. Rules the subset cannot express — one row per in-scope repo and no other — are asserted by the binding.",
+  "title": "Horizon Plan inventory",
+  "type": "object",
+  "required": ["repos", "key_facts"],
+  "additionalProperties": false,
+  "definitions": {
+    "lines": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 }
+    },
+    "evidence": {
+      "$comment": "Where a claim comes from. `ref` is a file:line (`server/src/db.js:129`), a branch, a ref, or a check line from the bundle's _refs file.",
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["kind", "ref", "note"],
+        "additionalProperties": false,
+        "properties": {
+          "kind": { "enum": ["file", "branch", "ref", "check"] },
+          "ref": { "type": "string", "minLength": 1 },
+          "note": { "type": "string", "minLength": 1 }
+        }
+      }
+    }
+  },
+  "properties": {
+    "repos": {
+      "$comment": "(a) the current-state table: one row per repo in the Plan's scope.",
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["repo", "has", "gaps", "evidence"],
+        "additionalProperties": false,
+        "properties": {
+          "repo": { "type": "string", "minLength": 1 },
+          "has": { "$ref": "#/definitions/lines" },
+          "gaps": { "$ref": "#/definitions/lines" },
+          "evidence": { "$ref": "#/definitions/evidence" }
+        }
+      }
+    },
+    "key_facts": {
+      "$comment": "(b) facts that cut across the repos: where data is stored, how it flows, what runs it.",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["topic", "fact", "evidence"],
+        "additionalProperties": false,
+        "properties": {
+          "topic": { "enum": ["storage", "data_flow", "infrastructure", "other"] },
+          "fact": { "type": "string", "minLength": 1 },
+          "evidence": { "$ref": "#/definitions/evidence" }
+        }
+      }
+    }
+  }
+}
