@@ -95,6 +95,12 @@ function toTarget(row) {
   if (row.venv_dir != null) target.venvDir = row.venv_dir
   // HZ-440: absent when unset (Task jobs then run in repoDir).
   if (row.task_dir != null) target.taskDir = row.task_dir
+  // HZ-416: absent when unset — an omitted field keeps every seeded and admin
+  // row reading back exactly as before. The farm fails a container job closed
+  // with no image, and uses its own CPU/memory defaults with no limits.
+  if (row.container_image != null) target.containerImage = row.container_image
+  if (row.cpu_limit != null) target.cpuLimit = row.cpu_limit
+  if (row.memory_limit != null) target.memoryLimit = row.memory_limit
   if (row.extra_services !== null) {
     let extras
     try {
@@ -263,6 +269,21 @@ export function checkRunnable(target) {
   }
   const taskDir = target.taskDir === '' ? null : (target.taskDir ?? null)
   if (taskDir !== null && !absoluteDirOk(taskDir)) return { ok: false, reason: 'bad taskDir' }
+  // HZ-416: format only, and only when set — an unset image or limit never
+  // stops a deploy. checkRunnable() stays a deploy gate; the farm refuses a
+  // container job with no image at dispatch/Execute instead.
+  const containerImage = target.containerImage === '' ? null : (target.containerImage ?? null)
+  if (containerImage !== null && (typeof containerImage !== 'string' || containerImage.length > 500 || /\s/.test(containerImage))) {
+    return { ok: false, reason: 'bad containerImage' }
+  }
+  const cpuLimit = target.cpuLimit === '' ? null : (target.cpuLimit ?? null)
+  if (cpuLimit !== null && (typeof cpuLimit !== 'string' || !/^\d+(\.\d+)?$/.test(cpuLimit))) {
+    return { ok: false, reason: 'bad cpuLimit' }
+  }
+  const memoryLimit = target.memoryLimit === '' ? null : (target.memoryLimit ?? null)
+  if (memoryLimit !== null && (typeof memoryLimit !== 'string' || !/^\d+[mMgG]$/.test(memoryLimit))) {
+    return { ok: false, reason: 'bad memoryLimit' }
+  }
   const extras = target.extraServices ?? []
   if (!Array.isArray(extras) || !extras.every((s) => typeof s === 'string')) {
     return { ok: false, reason: 'bad extraServices' }
@@ -281,7 +302,7 @@ export function checkRunnable(target) {
 // Results are { ok: true, target } or { ok: false, code, reason? } with code
 // 'invalid' | 'conflict' | 'not_found'.
 
-const TARGET_BODY_FIELDS = ['repo', 'script', 'service', 'repoDir', 'stateKey', 'healthUrl', 'healthCheckType', 'venvDir', 'taskDir']
+const TARGET_BODY_FIELDS = ['repo', 'script', 'service', 'repoDir', 'stateKey', 'healthUrl', 'healthCheckType', 'venvDir', 'taskDir', 'containerImage', 'cpuLimit', 'memoryLimit']
 
 // The target shape from a request body: only the known fields, key from the path.
 export function targetFromBody(key, body) {
@@ -297,6 +318,9 @@ function rowParams(target) {
     extraServices: target.extraServices?.length ? JSON.stringify(target.extraServices) : null,
     venvDir: target.venvDir || null,
     taskDir: target.taskDir || null,
+    containerImage: target.containerImage || null,
+    cpuLimit: target.cpuLimit || null,
+    memoryLimit: target.memoryLimit || null,
   }
 }
 
@@ -341,8 +365,10 @@ function writeTarget(target, statement, database) {
 export function createTarget(target, database = db) {
   const result = writeTarget(target, database.prepare(`
     INSERT INTO deploy_target
-      (key, repo, script, service, repo_dir, state_key, health_url, health_check_type, extra_services, venv_dir, task_dir)
-    VALUES (@key, @repo, @script, @service, @repoDir, @stateKey, @healthUrl, @healthCheckType, @extraServices, @venvDir, @taskDir)
+      (key, repo, script, service, repo_dir, state_key, health_url, health_check_type, extra_services, venv_dir, task_dir,
+       container_image, cpu_limit, memory_limit)
+    VALUES (@key, @repo, @script, @service, @repoDir, @stateKey, @healthUrl, @healthCheckType, @extraServices, @venvDir, @taskDir,
+       @containerImage, @cpuLimit, @memoryLimit)
   `), database)
   return result.ok ? { ok: true, target: findTargetByKey(target.key, database) } : result
 }
@@ -354,7 +380,9 @@ export function updateTarget(key, fields, database = db) {
     UPDATE deploy_target SET
       repo = @repo, script = @script, service = @service, repo_dir = @repoDir, state_key = @stateKey,
       health_url = @healthUrl, health_check_type = @healthCheckType, extra_services = @extraServices,
-      venv_dir = @venvDir, task_dir = @taskDir, updated_at = datetime('now')
+      venv_dir = @venvDir, task_dir = @taskDir,
+      container_image = @containerImage, cpu_limit = @cpuLimit, memory_limit = @memoryLimit,
+      updated_at = datetime('now')
     WHERE key = @key
   `), database)
   return result.ok ? { ok: true, target: findTargetByKey(key, database) } : result

@@ -28,6 +28,9 @@ export function extractRunPlan(artifact) {
   if (!commands.every((c) => typeof c === 'string' && c.trim())) return null
   if (!Number.isInteger(budgetMinutes) || budgetMinutes < 1) return null
   if (block.reports !== undefined && !validReports(block.reports)) return null
+  // HZ-416: optional; absent means the container. Unknown values read as no
+  // plan, the same as any other malformed block.
+  if (block.runner !== undefined && block.runner !== 'container' && block.runner !== 'host') return null
   return block
 }
 

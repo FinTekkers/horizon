@@ -799,9 +799,18 @@ function currentRunPlan(itemId) {
 const approvesRunPlan = (kind) => stepsFor(kind).some((step) => isHumanOnlyGate(step.index))
 
 // What the Approve the run card shows, and the hash its Approve sends back.
+// HZ-416: `runner` is the plan's own field, defaulting to the container —
+// the card's host banner reads it on every load, so a reload shows the same
+// warning the approver saw.
 function runPlanView(itemId) {
   const plan = currentRunPlan(itemId)
-  return plan ? { commands: plan.block.commands.length, budgetMinutes: plan.block.budget_minutes, hash: plan.hash } : null
+  if (!plan) return null
+  return {
+    commands: plan.block.commands.length,
+    budgetMinutes: plan.block.budget_minutes,
+    hash: plan.hash,
+    runner: plan.block.runner ?? 'container',
+  }
 }
 
 // Whether the plan a human approved is still the plan on record. Execute's

@@ -28,6 +28,7 @@ import hashlib
 import json
 import os
 import queue
+import shutil
 import signal
 import subprocess
 import sys
@@ -36,10 +37,10 @@ import threading
 import time
 import urllib.request
 from datetime import datetime, timezone
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 from domain.py import run_plan
-from farm import job_reports
+from farm import container_runner, job_reports
 from farm import task_clone as task_clone_mod
 from farm.checks import redact
 
@@ -129,6 +130,38 @@ def _read_lines(stream, lines: "queue.Queue") -> None:
     lines.put(None)
 
 
+def _prepare_scratch(state_path: Path, item_id: str) -> Path:
+    """A fresh per-start scratch dir inside the job's state dir — the only
+    place a container run may leave new files besides state and logs. Wiped
+    on every start (Resume included), so one start never reads another's
+    leftovers; run reports are already captured in the state file."""
+    scratch = Path(state_path).parent / "scratch" / str(item_id)
+    shutil.rmtree(scratch, ignore_errors=True)
+    scratch.mkdir(parents=True, exist_ok=True)
+    return scratch
+
+
+def _container_report_mounts(commands: list, declared: list, scratch: Path) -> list:
+    """(host_file, container_path) binds for `--report /tmp/<name>` files.
+    Each host file is pre-created empty under scratch (a missing host path
+    would make Podman mount a directory instead). Only direct children of
+    /tmp qualify — nested and relative report paths stay on read-only mounts
+    and fail closed at write time."""
+    mounts = []
+    for path in job_reports.report_paths(commands, declared or []):
+        if not os.path.isabs(path):
+            continue
+        parts = PurePosixPath(path).parts
+        if len(parts) != 3 or parts[0] != "/" or parts[1] != "tmp":
+            continue
+        if parts[2] in (".", ".."):
+            continue
+        host_file = scratch / parts[2]
+        host_file.touch(exist_ok=True)
+        mounts.append((str(host_file), path))
+    return mounts
+
+
 def run_job(
     *,
     run_id,
@@ -143,6 +176,9 @@ def run_job(
     redact_values: dict | None = None,
     notify=None,
     task_clone: bool = False,
+    container_image: str | None = None,
+    cpu_limit: str | None = None,
+    memory_limit: str | None = None,
 ) -> dict:
     """Runs the approved plan's commands in order. Returns the summary dict
     {run, passed, failed, failing}. Writes the state file and appends to the
@@ -168,7 +204,17 @@ def run_job(
     plan, or a Resume that has passed nothing or was refused — a Resume after
     a pass keeps HEAD where it was. A clone that cannot fast-forward ends the
     job `cwd_refused` with zero commands run. Each start logs
-    `task clone HEAD: <sha>` after the env line."""
+    `task clone HEAD: <sha>` after the env line.
+
+    HZ-416: `block["runner"]` selects where the commands run — `container`
+    (the default when absent) or an explicit `host`. The container path runs
+    one throwaway `podman run --rm` per command (farm/container_runner.py):
+    the checkout mounted read-only at /repo, a fresh scratch dir plus the
+    state and log dirs writable, host networking, only the plan's env, and
+    the target's CPU/memory limits. `venv_dir` is ignored there — a host
+    virtualenv's binaries do not run in the image; the log names `system`.
+    Missing Podman or no pinned `container_image` ends the job
+    `container_unavailable` with zero commands run — never a host run."""
     last_nudge = [0.0]
 
     def nudge(*, force: bool = True) -> None:
@@ -192,6 +238,9 @@ def run_job(
     plan_cwd = block["cwd"]
     commands = list(block["commands"])
     budget_s = int(block["budget_minutes"]) * 60
+    # HZ-416: absent means the container; only an explicit `host` runs on the
+    # host. validate() already refused any other value.
+    runner = block.get("runner") or "container"
 
     # Resume: keep passed commands done, retry everything else.
     prior = load_state(state_path)
@@ -244,7 +293,9 @@ def run_job(
             run_plan.resolve_cwd(repo_dir, ".", forbid=str(HORIZON_ROOT))
             task_clone_mod.fast_forward(repo_dir)
         cwd = run_plan.resolve_cwd(repo_dir, plan_cwd, forbid=str(HORIZON_ROOT))
-        venv = run_plan.resolve_venv(repo_dir, venv_dir, forbid=str(HORIZON_ROOT))
+        # HZ-416: a container run ignores the host venv — its binaries do not
+        # run in the image — so there is nothing to resolve or refuse here.
+        venv = None if runner == "container" else run_plan.resolve_venv(repo_dir, venv_dir, forbid=str(HORIZON_ROOT))
     except run_plan.CwdRefused as exc:
         refusal = str(exc).splitlines()[0] if str(exc) else "cwd refused"
         state = {
@@ -271,6 +322,42 @@ def run_job(
         nudge()
         return state["summary"]
 
+    # HZ-416: fail closed before the first log line or command — a missing
+    # Podman or pinned image ends the job here, never as a silent host run.
+    if runner == "container":
+        if not container_runner.podman_available():
+            container_refusal = "podman is not installed"
+        elif not container_image:
+            container_refusal = "this repo has no pinned container image"
+        elif not container_runner.image_present(container_image):
+            container_refusal = f"the container image is not available: {container_image}"
+        else:
+            container_refusal = None
+        if container_refusal:
+            state = {
+                "run_id": run_id,
+                "item_id": item_id,
+                "status": "container_unavailable",
+                "refusal": container_refusal,
+                "started_at": _now_iso(),
+                "ended_at": _now_iso(),
+                "budget_s": budget_s,
+                "approved_hash": approved_hash,
+                "commands": [
+                    dict(prior_done[c])
+                    if c in prior_done
+                    else {"command": c, "cwd": plan_cwd, "status": "pending", "started_at": None, "ended_at": None, "exit_code": None}
+                    for c in commands
+                ],
+                "summary": {"run": 0, "passed": 0, "failed": 0, "failing": []},
+            }
+            save_state(state_path, state)
+            with log_path.open("a", encoding="utf-8") as log:
+                log.write(redact(f"Execute refused: {container_refusal} — zero commands run\n", secrets))
+                log.flush()
+            nudge()
+            return state["summary"]
+
     # Fresh run truncates the log; a resume appends to it.
     fresh = prior is None or prior.get("status") in (None, "hash_mismatch")
     if fresh:
@@ -283,8 +370,12 @@ def run_job(
     except OSError:
         log_offset = 0
     # HZ-431: only the venv path or `system` — never PATH or another value.
+    # HZ-416: a container run ignores the host venv, so it always names
+    # `system` here, then the image its commands ran in.
     with log_path.open("a", encoding="utf-8") as log:
         log.write(redact(f"env: {venv or 'system'}\n", secrets))
+        if runner == "container":
+            log.write(redact(f"container: {container_image}\n", secrets))
         if task_clone:
             log.write(redact(f"task clone HEAD: {task_clone_mod.head(repo_dir)}\n", secrets))
     # State entries, preserving passed commands across resumes.
@@ -305,6 +396,7 @@ def run_job(
         "ended_at": None,
         "budget_s": budget_s,
         "approved_hash": approved_hash,
+        "runner": runner,
         "log_offset": log_offset,
         "commands": entries,
     }

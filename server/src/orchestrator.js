@@ -1683,12 +1683,19 @@ const FARM_REFUSALS = {
 // clone, never the deploy checkout — and task_clone tells the Execute runner
 // to fast-forward it first. Run plan gets the same fields for its prompt but
 // only reads them: it must never fast-forward the clone.
+// HZ-416: plus the throwaway container's pinned image and CPU/memory limits.
+// A repo with no image pinned dispatches anyway — the farm refuses the job
+// closed at Execute (never a silent host run), so a missing value here is a
+// missing value in the task, never a fallback.
 function jobEnvFields(repo) {
   const target = findTargetByRepo(repo)
   return {
     repo_dir: target?.taskDir ?? target?.repoDir ?? null,
     venv_dir: target?.venvDir ?? null,
     ...(target?.taskDir ? { task_clone: true } : {}),
+    container_image: target?.containerImage ?? null,
+    cpu_limit: target?.cpuLimit ?? null,
+    memory_limit: target?.memoryLimit ?? null,
   }
 }
 

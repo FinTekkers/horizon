@@ -17,5 +17,13 @@
       "block": { "cwd": ".", "commands": ["echo hi"], "budget_minutes": 1, "reports": ["/tmp/../opt/horizon/x.json"] },
       "valid": false
     }
+  ],
+  "$comment2": "HZ-416. Where Execute runs the plan: absent means the container. Asserted by BOTH server/test/task-runner-field.test.mjs (domain/js/runPlan.js extractRunPlan) and farm/tests/test_container_runner.py (domain/py/run_plan.py validate).",
+  "runner": [
+    { "case": "no runner defaults to the container", "block": { "cwd": ".", "commands": ["echo hi"], "budget_minutes": 1 }, "valid": true, "runner": "container" },
+    { "case": "an explicit container runner", "block": { "cwd": ".", "commands": ["echo hi"], "budget_minutes": 1, "runner": "container" }, "valid": true, "runner": "container" },
+    { "case": "an explicit host runner", "block": { "cwd": ".", "commands": ["echo hi"], "budget_minutes": 1, "runner": "host" }, "valid": true, "runner": "host" },
+    { "case": "an unknown runner", "block": { "cwd": ".", "commands": ["echo hi"], "budget_minutes": 1, "runner": "docker" }, "valid": false },
+    { "case": "a non-string runner", "block": { "cwd": ".", "commands": ["echo hi"], "budget_minutes": 1, "runner": 7 }, "valid": false }
   ]
 }

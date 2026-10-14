@@ -2370,6 +2370,9 @@ export function buildApp({ logger = true, onRoute = null } = {}) {
       extraServices: { type: 'array', maxItems: 10, items: { type: 'string', maxLength: 300 } },
       venvDir: { type: ['string', 'null'], minLength: 1, maxLength: 300 },
       taskDir: { type: ['string', 'null'], minLength: 1, maxLength: 300 },
+      containerImage: { type: ['string', 'null'], minLength: 1, maxLength: 500 },
+      cpuLimit: { type: ['string', 'null'], minLength: 1, maxLength: 32 },
+      memoryLimit: { type: ['string', 'null'], minLength: 1, maxLength: 32 },
     },
   }
   const DEPLOY_TARGET_WRITE_RESPONSES = {

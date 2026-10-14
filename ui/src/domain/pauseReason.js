@@ -47,6 +47,10 @@ const CATEGORY_COPY = {
     label: 'Run refused: path outside the repo',
     detail: 'The run plan’s cwd or the repo’s virtualenv does not resolve inside this repo’s deploy-target checkout, so no command ran. Fix the deploy target or send it back to Run plan.',
   },
+  [REASON.JOB_CONTAINER_UNAVAILABLE]: {
+    label: 'Run refused: no container to run in',
+    detail: 'Podman or the repo’s pinned container image was unavailable, so no command ran — Horizon never falls back to the host. Set the image on the deploy target and resume.',
+  },
   [REASON.SDK_MESSAGE_TOO_LARGE]: {
     label: 'Agent message too large',
     detail: 'One message from the agent, such as a screenshot it read, was bigger than the SDK reader allows. Resume to retry.',

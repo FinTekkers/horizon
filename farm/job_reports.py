@@ -60,15 +60,28 @@ def _inside(path: str, root: str) -> bool:
     return os.path.commonpath([path, root]) == root
 
 
-def resolve_report(path: str, cwd: str, *, forbid: str | None) -> tuple[str | None, str | None, str]:
+def resolve_report(
+    path: str,
+    cwd: str,
+    *,
+    forbid: str | None,
+    tmp_root: str | None = None,
+    extra_roots: list | None = None,
+) -> tuple[str | None, str | None, str]:
     """(real_path, None, "") for a readable report, else (None, reason,
-    status) with status `refused` or `missing`. Never opens the file."""
+    status) with status `refused` or `missing`. Never opens the file.
+
+    HZ-416: a container job reads /tmp reports from its scratch dir
+    (`tmp_root`) and accepts the mounted scratch/state/log dirs
+    (`extra_roots`) — the host default is the plan's cwd and /tmp."""
     try:
         candidate = path if os.path.isabs(path) else os.path.join(cwd, path)
         real = os.path.realpath(candidate)
         if forbid and _inside(real, os.path.realpath(forbid)):
             return None, "inside Horizon's own checkout", "refused"
-        if not (_inside(real, os.path.realpath(cwd)) or _inside(real, os.path.realpath(REPORT_TMP_ROOT))):
+        roots = [os.path.realpath(cwd), os.path.realpath(tmp_root or REPORT_TMP_ROOT)]
+        roots += [os.path.realpath(root) for root in (extra_roots or [])]
+        if not any(_inside(real, root) for root in roots):
             return None, "outside the plan's cwd and /tmp", "refused"
         if not os.path.lexists(real):
             return None, "no such file", "missing"
@@ -138,7 +151,16 @@ def read_report(real_path: str, secrets: dict, *, inline_left: int = REPORT_INLI
     return entry
 
 
-def collect_reports(commands, declared, cwd: str, secrets: dict, *, forbid: str | None) -> list[dict]:
+def collect_reports(
+    commands,
+    declared,
+    cwd: str,
+    secrets: dict,
+    *,
+    forbid: str | None,
+    tmp_root: str | None = None,
+    extra_roots: list | None = None,
+) -> list[dict]:
     """Every named report, read under the per-file and section caps."""
     reports: list[dict] = []
     inline_left = REPORT_SECTION_MAX_BYTES
@@ -147,7 +169,7 @@ def collect_reports(commands, declared, cwd: str, secrets: dict, *, forbid: str 
         if i >= REPORT_MAX_FILES:
             reports.append({"path": shown, "status": "skipped", "bytes": 0, "text": f"over {REPORT_MAX_FILES} report files"})
             continue
-        real, reason, status = resolve_report(path, cwd, forbid=forbid)
+        real, reason, status = resolve_report(path, cwd, forbid=forbid, tmp_root=tmp_root, extra_roots=extra_roots)
         if real is None:
             reports.append({"path": shown, "status": status, "bytes": 0, "text": reason})
             continue
