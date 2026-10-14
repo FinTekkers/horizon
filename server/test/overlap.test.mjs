@@ -5,11 +5,13 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
+import { IMPLEMENT_STEP_INDEX, REVIEW_STEP_INDEX, ACCEPT_GATE_INDEX, DEPLOY_STEP_INDEX, requiredStepIndex } from '../../domain/js/lifecycle.js'
 
 import {
   extractPlanFootprint,
   footprintFromPrFiles,
   decideOverlap,
+  peerStateOf,
   contractText,
   renderOverlapSection,
   replaceOverlapSection,
@@ -28,9 +30,10 @@ const HZ_208_PLAN = `## Changes
 `
 const HZ_209_PLAN = `## Changes
 **1. \`server/src/app.js\` — EDIT (~30 lines).**
-- \`snapshot()\` returns every enabled project's items for the concierge.
+- \`snapshot()\` changes to return every enabled project's items for the concierge.
 **2. \`farm/whatsapp_concierge.py\` — EDIT.** Reads the wider snapshot.
 `
+const HZ_209_CALLS_PLAN = HZ_209_PLAN.replace('changes to return', 'is called to return')
 
 test('metric 4: the HZ-208/HZ-209 plans overlap on snapshot() in server/src/app.js, never none', () => {
   const a = extractPlanFootprint(HZ_208_PLAN)
@@ -40,6 +43,13 @@ test('metric 4: the HZ-208/HZ-209 plans overlap on snapshot() in server/src/app.
   assert.equal(result.decision, 'depends-on')
   assert.ok(result.sharedSymbols.includes('snapshot()'))
   assert.ok(result.sharedFiles.includes('server/src/app.js'))
+})
+
+test('HZ-466: the same HZ-209 plan that only calls snapshot() is a shared-contract with a why', () => {
+  const result = decideOverlap(extractPlanFootprint(HZ_208_PLAN), extractPlanFootprint(HZ_209_CALLS_PLAN), { id: 'HZ-209', linkable: true, state: 'implementing' })
+  assert.equal(result.decision, 'shared-contract')
+  assert.deepEqual(result.sharedSymbols, ['snapshot()'])
+  assert.equal(result.why, 'HZ-209 only calls `snapshot()`')
 })
 
 test('metric 4: a plan that writes `snapshot` without parens still lands on shared-contract', () => {
@@ -67,7 +77,7 @@ test('plan footprint: files need a slash and an extension; endpoints and calls a
 
 test('a shared endpoint alone decides depends-on', () => {
   const a = extractPlanFootprint('`POST /api/items/:id/dependencies` in `server/src/app.js`')
-  const b = extractPlanFootprint('`POST /api/items/:id/dependencies/` in `server/src/routes.js`')
+  const b = extractPlanFootprint('Add `POST /api/items/:id/dependencies/` in `server/src/routes.js`')
   assert.equal(decideOverlap(a, b).decision, 'depends-on')
 })
 
@@ -79,6 +89,7 @@ test('metric 1: a real hunk header yields the function name; definitions on chan
   ])
   assert.deepEqual(fp.files, ['farm/farmd.py', 'server/src/app.js', 'server/src/x.js'])
   assert.deepEqual(fp.symbols, ['claim_task()', 'snapshot()'])
+  assert.deepEqual(fp.changed, { 'claim_task()': ['farm/farmd.py'], 'snapshot()': ['server/src/app.js'] })
 })
 
 test('guardrail 10: a secret in a PR patch never reaches the footprint, the section or the contract', () => {
@@ -185,4 +196,76 @@ test('guardrails 4 and 5: a model-written Overlap before Actions that says none 
 
 test('no peers: the section says so', () => {
   assert.equal(renderOverlapSection({ repo: 'r/r', results: [] }), '## Overlap\nNo other in-flight items in `r/r`.')
+})
+
+// HZ-466 metric 2: only a symbol the other item defines or changes links.
+test('metric 2 (HZ-466): a peer plan that calls foo() is a note; one that changes foo() links', () => {
+  const self = extractPlanFootprint('**1. `server/src/a.js` — EDIT.**\n- `foo()` changes.\n')
+  const calls = extractPlanFootprint('**1. `server/src/b.js` — EDIT.**\n- The new view calls `foo()` to read items.\n')
+  const changes = extractPlanFootprint('**1. `server/src/b.js` — EDIT.**\n- Change `foo()` to take a scope.\n')
+  assert.deepEqual(calls.changed, {})
+  assert.deepEqual(changes.changed, { 'foo()': ['server/src/b.js'] })
+  const noted = decideOverlap(self, calls, { id: 'HZ-2', linkable: true, state: 'implementing' })
+  assert.deepEqual(noted, { decision: 'shared-contract', sharedFiles: [], sharedSymbols: ['foo()'], why: 'HZ-2 only calls `foo()`' })
+  assert.equal(decideOverlap(self, changes, { id: 'HZ-2', linkable: true, state: 'implementing' }).decision, 'depends-on')
+})
+
+test('metric 2 (HZ-466): a PR patch that only calls foo() names nothing; one that redefines it links', () => {
+  const self = extractPlanFootprint('**1. `server/src/a.js` — EDIT.**\n- `foo()` changes.\n')
+  const calls = footprintFromPrFiles([{ filename: 'server/src/a.js', patch: '@@ -1,2 +1,3 @@\n const x = 1\n+  foo()' }])
+  const redefines = footprintFromPrFiles([{ filename: 'server/src/b.js', patch: '@@ -1,2 +1,3 @@\n+export function foo(scope) {' }])
+  assert.deepEqual(calls.symbols, [])
+  assert.equal(decideOverlap(self, calls).decision, 'shared-contract')
+  assert.deepEqual(redefines.changed, { 'foo()': ['server/src/b.js'] })
+  assert.equal(decideOverlap(self, redefines).decision, 'depends-on')
+})
+
+test('HZ-466: a change verb inside a backticked name is not a verb, and a call verb wins on a mixed line', () => {
+  assert.deepEqual(extractPlanFootprint('- `removeThing()` is read here.').changed, {})
+  assert.deepEqual(extractPlanFootprint('- Add a guard that calls `foo()`.').changed, {})
+  assert.deepEqual(extractPlanFootprint('- `foo()` is new in `server/src/a.js`.').changed, { 'foo()': ['server/src/a.js'] })
+})
+
+// HZ-466 metric 3: render()/validate() collide by coincidence unless the files match.
+test('metric 3 (HZ-466): generic render()/validate() in different files is a note; in the same file it links', () => {
+  const peer = { id: 'HZ-2', linkable: true, state: 'implementing' }
+  for (const fn of ['render()', 'validate()']) {
+    const self = extractPlanFootprint(`**1. \`ui/src/Board.jsx\` — EDIT.**\n- \`${fn}\` changes.\n`)
+    const elsewhere = extractPlanFootprint(`**1. \`ui/src/Admin.jsx\` — EDIT.**\n- \`${fn}\` changes.\n`)
+    const same = extractPlanFootprint(`**1. \`ui/src/Board.jsx\` — EDIT.**\n- Rewrite \`${fn}\`.\n`)
+    const noted = decideOverlap(self, elsewhere, peer)
+    assert.equal(noted.decision, 'shared-contract', fn)
+    assert.deepEqual(noted.sharedSymbols, [fn])
+    assert.equal(noted.why, `\`${fn}\` is a generic name and the two items do not change it in the same file`)
+    assert.equal(decideOverlap(self, same, peer).decision, 'depends-on', fn)
+  }
+  // The file rule is for generic names only: a specific name in different files still links.
+  const a = extractPlanFootprint('**1. `ui/src/Board.jsx` — EDIT.**\n- `renderBoard()` changes.\n')
+  const b = extractPlanFootprint('**1. `ui/src/Admin.jsx` — EDIT.**\n- `renderBoard()` changes.\n')
+  assert.equal(decideOverlap(a, b, peer).decision, 'depends-on')
+})
+
+test('HZ-466: peerStateOf links only to items implementing, in review or merged but not deployed', () => {
+  const PLAN = requiredStepIndex('Draft implementation plan')
+  const REVIEW_GATE = requiredStepIndex('Review before execution')
+  const cases = [
+    [{ cursor: PLAN }, false, 'still planning'],
+    [{ cursor: REVIEW_GATE - 1 }, false, 'still planning'],
+    [{ cursor: REVIEW_GATE }, false, 'waiting at the Review before execution gate'],
+    [{ cursor: IMPLEMENT_STEP_INDEX }, true, 'implementing'],
+    [{ cursor: REVIEW_STEP_INDEX }, true, 'in review'],
+    [{ cursor: ACCEPT_GATE_INDEX }, true, 'in review'],
+    [{ cursor: DEPLOY_STEP_INDEX }, true, 'merged, not deployed'],
+    [{ cursor: IMPLEMENT_STEP_INDEX, paused: 1 }, false, 'paused'],
+    [{ cursor: IMPLEMENT_STEP_INDEX, paused: 1, rule_block_json: '{"rule":"x"}' }, false, 'rule-blocked'],
+    [{ cursor: IMPLEMENT_STEP_INDEX, paused: 0, rule_block_json: '{"rule":"stale"}' }, true, 'implementing'],
+  ]
+  for (const [row, linkable, state] of cases) assert.deepEqual(peerStateOf(row), { linkable, state }, JSON.stringify(row))
+})
+
+test('HZ-466: a peer that cannot be linked to turns a changed shared symbol into a note naming its state', () => {
+  const fp = extractPlanFootprint('**1. `server/src/a.js` — EDIT.**\n- `foo()` changes.\n')
+  const result = decideOverlap(fp, fp, { id: 'HZ-2', linkable: false, state: 'paused' })
+  assert.equal(result.decision, 'shared-contract')
+  assert.equal(result.why, 'HZ-2 is paused; links go only to items implementing, in review or merged but not deployed')
 })
