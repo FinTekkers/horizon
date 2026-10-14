@@ -664,6 +664,42 @@ is refused. `venvDir` is relative to the task dir when one is set.
 - **Roll back** by clearing Task dir on the target: Task jobs go back to
   `repoDir`.
 
+## Build command (HZ-442)
+
+Each deploy target can name its own build in Admin → Deploy target
+overrides: **Build command (optional)** (`buildCommand`, column
+`build_command`), for example `python build.py --local`. Each repo owns how
+it is built; Horizon only knows the command to call.
+
+- **Where it applies.** `deploy.js` passes it to the script as
+  `HORIZON_BUILD_COMMAND`, and these scripts run it with `bash -c` in the
+  deployed checkout instead of their own build:
+  - `deploy-grpc-service.sh` (valuation, price, broker, ledger) — instead of
+    the wrapper's `DEPLOY_BUILD`, at both `build` and `rollback-build`;
+  - `deploy-ui-service.sh` — instead of `npm ci` and `npm run build`;
+  - `deploy-code-only.sh` (market-data-inputs) — instead of
+    `scripts/checks/install.sh`, at install and in the restore.
+    `DEPLOY_STRIP_ENV` still applies and `test.sh` still runs.
+
+  `deploy-horizon.sh`, `deploy-shoreward.sh` and `deploy-publish-release.sh`
+  ignore it, so a build command on those targets does nothing, and nothing
+  ever runs in `/opt/horizon`.
+- **Empty means unchanged.** With the field empty, `deploy.js` drops any
+  `HORIZON_BUILD_COMMAND` from the script's environment and the script runs
+  its usual build.
+- **The log names what ran.** Before building, each script logs
+  `build: <command>` to `~/.horizon/<stateKey>/self-deploy.log`, or its
+  default (`build: <DEPLOY_BUILD>`, `build: npm ci && npm run build`,
+  `build: scripts/checks/install.sh`).
+- **Failure.** A failing command fails the deploy exactly like a failing
+  build: `DEPLOY FAILED: build` (or `install` for code-only), with the same
+  rollback or restore. A gRPC rollback runs the current command at the
+  last-good commit, so the command must work there too.
+- **Validation.** One line, no control characters, at most 500 characters,
+  not just spaces. It is shown in Admin and written to the deploy log, so it
+  must never hold a secret.
+- **Roll back** by clearing the field: the next deploy runs the usual build.
+
 ## Code-only targets (HZ-353)
 
 A repo with code on this host but no service, such as

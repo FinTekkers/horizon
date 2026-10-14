@@ -108,6 +108,11 @@ export function spawnEnv(target) {
   } else {
     delete env.HORIZON_DEPLOY_DRAIN_URL
   }
+  // HZ-442: the target's own build command, run by the service deploy
+  // scripts in place of their built-in build. Deleted when unset so a stray
+  // HORIZON_BUILD_COMMAND in this server's environment never applies.
+  if (target.buildCommand) env.HORIZON_BUILD_COMMAND = target.buildCommand
+  else delete env.HORIZON_BUILD_COMMAND
   return env
 }
 

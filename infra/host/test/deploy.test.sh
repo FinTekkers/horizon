@@ -106,7 +106,15 @@ fi
 exit 22
 EOF
 
-chmod +x "$STUBS"/sudo "$STUBS"/sudo-denied "$STUBS"/systemctl "$STUBS"/npm "$STUBS"/curl
+# HZ-442: stands in for a target's own build command (HORIZON_BUILD_COMMAND).
+# Logs "<physical cwd> <args>" to OVERRIDE_LOG; OVERRIDE_FAIL=1 fails it.
+cat >"$STUBS/repo-build" <<'EOF'
+#!/usr/bin/env bash
+printf '%s %s\n' "$(pwd -P)" "$*" >>"${OVERRIDE_LOG:-/dev/null}"
+[ -z "${OVERRIDE_FAIL:-}" ]
+EOF
+
+chmod +x "$STUBS"/sudo "$STUBS"/sudo-denied "$STUBS"/systemctl "$STUBS"/npm "$STUBS"/curl "$STUBS"/repo-build
 
 # A second stub dir identical to $STUBS except `sudo` is the denying variant
 # — used only by the sudoers-missing test below.
@@ -162,7 +170,7 @@ run_deploy() {
   # run_deploy REPO_DIR STATE_DIR TAG [extra env assignments...]
   local repo="$1" state="$2" tag="$3"
   shift 3
-  env PATH="$STUBS:$PATH" \
+  env -u HORIZON_BUILD_COMMAND PATH="$STUBS:$PATH" \
     HORIZON_REPO_DIR="$repo" \
     HORIZON_STATE_DIR="$state" \
     HORIZON_SERVICE_NAME="horizon-server-test" \
@@ -186,7 +194,8 @@ run_deploy_ui() {
   # than the timeout, keeping each scenario's queue lines unambiguous.
   local repo="$1" state="$2" tag="$3"
   shift 3
-  env PATH="$STUBS:$PATH" \
+  # -u: a stray HORIZON_BUILD_COMMAND here would replace the npm build.
+  env -u HORIZON_BUILD_COMMAND PATH="$STUBS:$PATH" \
     HORIZON_REPO_DIR="$repo" \
     HORIZON_STATE_DIR="$state" \
     HORIZON_SERVICE_NAME="fintekkers-ui-test" \
@@ -497,6 +506,8 @@ run_deploy_ui() {
     || not_ok "ui-service health-check: DEPLOY OK logged"
   grep -q "restart fintekkers-ui-test" "$systemctl_log" 2>/dev/null && \
     ok "ui-service health-check: service is restarted" || not_ok "ui-service health-check: service is restarted"
+  grep -qE "^[^ ]+ build: npm ci && npm run build$" "$state/self-deploy.log" 2>/dev/null && \
+    ok "ui-service build: logs the default build line" || not_ok "ui-service build: logs the default build line"
   rm -rf "$base"
 }
 
@@ -686,6 +697,96 @@ no_extra_services_test() {
   rm -rf "$base"
 }
 no_extra_services_test
+
+# ---- 17d. HZ-442: ui-service runs the target's build command instead of npm ----
+{
+  base="$(mktemp -d)"
+  repo="$(setup_repo "$base")"
+  state="$base/state"
+  curl_q="$base/curl.queue"
+  success_queue_ui "$curl_q"
+  systemctl_log="$base/systemctl.log"
+
+  run_deploy_ui "$repo" "$state" v1 \
+    CURL_QUEUE_FILE="$curl_q" CURL_STATE_FILE="$base/curl1.state" \
+    SYSTEMCTL_LOG="$systemctl_log" NPM_LOG="$base/npm.log" OVERRIDE_LOG="$base/override.log" \
+    HORIZON_BUILD_COMMAND='repo-build --local' >/dev/null 2>&1
+  code=$?
+  [ "$code" -eq 0 ] && ok "ui-service build command: exits 0" || not_ok "ui-service build command: exits 0 (exit $code)"
+  [ "$(cat "$base/override.log" 2>/dev/null)" = "$(cd "$repo" && pwd -P) --local" ] && \
+    ok "ui-service build command: ran once in the checkout" || not_ok "ui-service build command: ran once in the checkout"
+  [ ! -e "$base/npm.log" ] && ok "ui-service build command: npm never ran" || not_ok "ui-service build command: npm never ran"
+  grep -qE "^[^ ]+ build: repo-build --local$" "$state/self-deploy.log" 2>/dev/null && \
+    ok "ui-service build command: logs build: <command>" || not_ok "ui-service build command: logs build: <command>"
+  grep -q "restart fintekkers-ui-test" "$systemctl_log" 2>/dev/null && \
+    ok "ui-service build command: service is restarted" || not_ok "ui-service build command: service is restarted"
+  rm -rf "$base"
+}
+{
+  base="$(mktemp -d)"
+  repo="$(setup_repo "$base")"
+  state="$base/state"
+  curl_q="$base/curl.queue"
+  success_queue_ui "$curl_q"
+  systemctl_log="$base/systemctl.log"
+
+  run_deploy_ui "$repo" "$state" v1 \
+    CURL_QUEUE_FILE="$curl_q" CURL_STATE_FILE="$base/curl1.state" \
+    SYSTEMCTL_LOG="$systemctl_log" NPM_LOG="$base/npm.log" OVERRIDE_LOG="$base/override.log" \
+    HORIZON_BUILD_COMMAND='repo-build --local' OVERRIDE_FAIL=1 >/dev/null 2>&1
+  code=$?
+  [ "$code" -ne 0 ] && ok "ui-service build command fails: exits non-zero" || not_ok "ui-service build command fails: exits non-zero"
+  grep -q "DEPLOY FAILED: build" "$state/self-deploy.log" 2>/dev/null && \
+    ok "ui-service build command fails: logs DEPLOY FAILED: build" || not_ok "ui-service build command fails: logs DEPLOY FAILED: build"
+  [ ! -s "$systemctl_log" ] && ok "ui-service build command fails: no restart" || not_ok "ui-service build command fails: no restart"
+  [ ! -e "$base/npm.log" ] && ok "ui-service build command fails: npm never ran" || not_ok "ui-service build command fails: npm never ran"
+  [ ! -e "$state/last-good-tag" ] && ok "ui-service build command fails: no last-good-tag" \
+    || not_ok "ui-service build command fails: no last-good-tag"
+  rm -rf "$base"
+}
+# Set but empty is the same as unset: npm ci and npm run build.
+{
+  base="$(mktemp -d)"
+  repo="$(setup_repo "$base")"
+  state="$base/state"
+  curl_q="$base/curl.queue"
+  success_queue_ui "$curl_q"
+
+  run_deploy_ui "$repo" "$state" v1 \
+    CURL_QUEUE_FILE="$curl_q" CURL_STATE_FILE="$base/curl1.state" \
+    NPM_LOG="$base/npm.log" OVERRIDE_LOG="$base/override.log" HORIZON_BUILD_COMMAND= >/dev/null 2>&1
+  code=$?
+  [ "$code" -eq 0 ] && ok "ui-service empty build command: exits 0" || not_ok "ui-service empty build command: exits 0"
+  [ "$(cut -d' ' -f2- "$base/npm.log" 2>/dev/null)" = "$(printf 'ci\nrun build')" ] && \
+    ok "ui-service empty build command: npm ci then npm run build" || not_ok "ui-service empty build command: npm ci then npm run build"
+  grep -qE "^[^ ]+ build: npm ci && npm run build$" "$state/self-deploy.log" 2>/dev/null && \
+    ok "ui-service empty build command: logs the default build line" || not_ok "ui-service empty build command: logs the default build line"
+  [ ! -e "$base/override.log" ] && ok "ui-service empty build command: override never ran" \
+    || not_ok "ui-service empty build command: override never ran"
+  rm -rf "$base"
+}
+
+# ---- 17e. HZ-442: deploy-horizon.sh never runs a build command ----
+# The build command must never run in /opt/horizon: Horizon's own deploy
+# ignores HORIZON_BUILD_COMMAND and runs its usual build.
+{
+  base="$(mktemp -d)"
+  repo="$(setup_repo "$base")"
+  state="$base/state"
+  curl_q="$base/curl.queue"
+  success_queue "$curl_q"
+
+  run_deploy "$repo" "$state" v1 \
+    CURL_QUEUE_FILE="$curl_q" CURL_STATE_FILE="$base/curl1.state" \
+    NPM_LOG="$base/npm.log" OVERRIDE_LOG="$base/override.log" \
+    HORIZON_BUILD_COMMAND='repo-build --local' >/dev/null 2>&1
+  code=$?
+  [ "$code" -eq 0 ] && ok "horizon build command: deploy succeeds" || not_ok "horizon build command: deploy succeeds (exit $code)"
+  [ ! -e "$base/override.log" ] && ok "horizon build command: never runs" || not_ok "horizon build command: never runs"
+  grep -q "/ui run build$" "$base/npm.log" 2>/dev/null && \
+    ok "horizon build command: today's ui build still ran" || not_ok "horizon build command: today's ui build still ran"
+  rm -rf "$base"
+}
 
 # ---- 18. farm isolation, by construction: neither deploy script references the farm ----
 if ! grep -Eiq 'horizon-farm|\.horizon-farm|(^|[^a-z])farm/' "$HORIZON_DEPLOY_SH" "$UI_DEPLOY_SH"; then

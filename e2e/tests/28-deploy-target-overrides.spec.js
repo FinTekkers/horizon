@@ -3,7 +3,8 @@
 // shows "none". A wrong PIN and a service horizon-deploy.sudoers does not
 // permit each store nothing; a valid save survives a reload and gets its Dry
 // run; edit and delete need the PIN too. HZ-440: the optional Task dir is
-// refused inside the repo dir, survives a reload, and clears to none. The server uses the real infra/host
+// refused inside the repo dir, survives a reload, and clears to none. HZ-442:
+// the optional Build command survives a reload and clears to none. The server uses the real infra/host
 // scripts and sudoers. The seeded horizon and ui-service rows are never
 // touched. Repos are inserted directly (connecting through the API purges the
 // demo items other specs read); this spec runs last.
@@ -126,6 +127,23 @@ test('the owner creates, edits and deletes a deploy target in Admin, each behind
   await row(page, REPO).getByRole('button', { name: 'Edit' }).click({ timeout: 10_000 })
   await expect(taskDir()).toHaveValue('')
   await expect(row(page, REPO).getByLabel('Health check type', { exact: true })).toHaveValue('json-health')
+  await row(page, REPO).getByRole('button', { name: 'Cancel' }).click()
+
+  // HZ-442: the optional Build command survives a reload; clearing it stores none.
+  const buildCommand = () => row(page, REPO).getByLabel('Build command (optional)', { exact: true })
+  await row(page, REPO).getByRole('button', { name: 'Edit' }).click()
+  await buildCommand().fill('python build.py --local')
+  await confirmSave(page, GATE_PIN)
+  await expect(row(page, REPO).getByRole('button', { name: 'Edit' })).toBeVisible()
+  await page.reload()
+  await row(page, REPO).getByRole('button', { name: 'Edit' }).click({ timeout: 10_000 })
+  await expect(buildCommand()).toHaveValue('python build.py --local')
+  await buildCommand().fill('')
+  await confirmSave(page, GATE_PIN)
+  await expect(row(page, REPO).getByRole('button', { name: 'Edit' })).toBeVisible()
+  await page.reload()
+  await row(page, REPO).getByRole('button', { name: 'Edit' }).click({ timeout: 10_000 })
+  await expect(buildCommand()).toHaveValue('')
   await row(page, REPO).getByRole('button', { name: 'Cancel' }).click()
 
   await row(page, REPO).getByRole('button', { name: 'Delete', exact: true }).click()

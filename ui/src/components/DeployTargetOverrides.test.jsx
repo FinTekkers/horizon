@@ -135,6 +135,7 @@ test('create asks for the PIN before any request, sends it as the last argument 
       service: 'fintekkers-docs',
       extraServices: ['a', 'b'],
       repoDir: '/opt/fintekkers/docs',
+      buildCommand: null,
       taskDir: null,
       stateKey: 'docs',
       healthUrl: 'https://docs.example/',
@@ -157,6 +158,7 @@ test('edit sends the key from the row and the edited fields; the key field is re
   expect(row.getByLabelText('Key').readOnly).toBe(true)
   fireEvent.change(row.getByLabelText('Service'), { target: { value: 'horizon-server-2' } })
   fireEvent.change(row.getByLabelText('Task dir (optional)'), { target: { value: ' /opt/horizon-tasks ' } })
+  fireEvent.change(row.getByLabelText('Build command (optional)'), { target: { value: ' python build.py --local ' } })
   fireEvent.click(row.getByRole('button', { name: 'Save' }))
   expect(api.updateDeployTarget).not.toHaveBeenCalled()
 
@@ -168,6 +170,7 @@ test('edit sends the key from the row and the edited fields; the key field is re
   expect(key).toBe('horizon')
   expect(fields.service).toBe('horizon-server-2')
   expect(fields.taskDir).toBe('/opt/horizon-tasks')
+  expect(fields.buildCommand).toBe('python build.py --local')
   expect(fields.extraServices).toEqual(['horizon-farm'])
   expect(fields).not.toHaveProperty('key')
   expect(pin).toBe('9')

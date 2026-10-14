@@ -14,6 +14,10 @@
 #   DEPLOY_DEFAULT_REF ref to deploy when the tag is unknown (origin/main)
 #   DEPLOY_HEALTH_TIMEOUT_S  how long the server may take to report SERVING
 #
+# HORIZON_BUILD_COMMAND (HZ-442, the target's Admin-set build command), when
+# non-empty, replaces DEPLOY_BUILD at both build and rollback-build, run the
+# same way. The build stage logs which one ran: build: <command>.
+#
 # Rollback: when the health check fails after the restart, the script checks
 # out the last-good-tag commit (detached, no fetch), rebuilds, restarts and
 # health-checks it once with the same timeout, still under the deploy lock.
@@ -35,6 +39,7 @@ TAG="${1:-}"
 : "${DEPLOY_SERVICE:?set by the deploy-<service>.sh wrapper}"
 : "${DEPLOY_HEALTH_URL:?set by the deploy-<service>.sh wrapper}"
 : "${DEPLOY_BUILD:?set by the deploy-<service>.sh wrapper}"
+BUILD="${HORIZON_BUILD_COMMAND:-$DEPLOY_BUILD}"
 
 # Overridable for the test harness (infra/host/test/deploy-grpc-service.test.sh),
 # which points these at a throwaway repo and stubbed commands.
@@ -82,7 +87,8 @@ git checkout --detach "$REF"
 COMMIT="$(git rev-parse HEAD)"
 
 STAGE="build"
-bash -c "$DEPLOY_BUILD"
+log "build: $BUILD"
+bash -c "$BUILD"
 
 STAGE="restart"
 sudo systemctl restart "$SERVICE_NAME"
@@ -149,7 +155,7 @@ rollback() {
     return 1
   fi
   STAGE="rollback-build"
-  if ! bash -c "$DEPLOY_BUILD"; then
+  if ! bash -c "$BUILD"; then
     rollback_failed "$STAGE"
     return 1
   fi

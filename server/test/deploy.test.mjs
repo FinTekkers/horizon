@@ -223,6 +223,23 @@ test('HZ-440: spawnEnv passes repoDir, not taskDir, as HORIZON_REPO_DIR', () => 
   assert.equal(Object.values(env).includes(target.taskDir), false)
 })
 
+// HZ-442: a target's buildCommand reaches the deploy script as
+// HORIZON_BUILD_COMMAND; without one, an inherited value is dropped so it
+// never replaces a wrapper's own build.
+test('HZ-442: spawnEnv sets HORIZON_BUILD_COMMAND from buildCommand and drops an inherited one', () => {
+  const saved = process.env.HORIZON_BUILD_COMMAND
+  process.env.HORIZON_BUILD_COMMAND = 'stray-build --from-server-env'
+  try {
+    const withCommand = deploy.spawnEnv({ ...FIXTURE_TARGETS[1], buildCommand: 'python build.py --local' })
+    assert.equal(withCommand.HORIZON_BUILD_COMMAND, 'python build.py --local')
+    const without = deploy.spawnEnv(FIXTURE_TARGETS[1])
+    assert.equal(Object.hasOwn(without, 'HORIZON_BUILD_COMMAND'), false)
+  } finally {
+    if (saved === undefined) delete process.env.HORIZON_BUILD_COMMAND
+    else process.env.HORIZON_BUILD_COMMAND = saved
+  }
+})
+
 test('HZ-440: deploy.js, deploy-horizon.sh and horizon-deploy.sudoers never read taskDir', () => {
   const root = join(import.meta.dirname, '..', '..')
   for (const file of ['server/src/deploy.js', 'infra/host/deploy-horizon.sh', 'infra/host/horizon-deploy.sudoers']) {

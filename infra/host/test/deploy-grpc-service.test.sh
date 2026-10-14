@@ -52,6 +52,14 @@ if at "${CARGO_FAIL_REF:-}"; then exit 1; fi
 [ -z "${CARGO_FAIL:-}" ]
 EOF
 
+# HZ-442: stands in for a target's own build command (HORIZON_BUILD_COMMAND).
+# Logs "<physical cwd> <commit> <args>"; OVERRIDE_FAIL=1 fails it.
+cat >"$STUBS/repo-build" <<'EOF'
+#!/usr/bin/env bash
+printf '%s %s %s\n' "$(pwd -P)" "$(git rev-parse HEAD)" "$*" >>"${OVERRIDE_LOG:-/dev/null}"
+[ -z "${OVERRIDE_FAIL:-}" ]
+EOF
+
 # Replies with a gRPC HealthCheckResponse frame: SERVING (status 1) unless
 # HEALTH_STATUS says otherwise (for every commit); HEALTH_BAD_REF=<tag>
 # replies NOT_SERVING only while the repo is at that tag; HEALTH_DOWN=1 is
@@ -113,7 +121,8 @@ run_wrapper() {
   # run_wrapper SCRIPT BASE TAG [extra env assignments...]
   local script="$1" base="$2" tag="$3"
   shift 3
-  env PATH="$STUBS:$PATH" HOME="$base/home" \
+  # -u: a stray HORIZON_BUILD_COMMAND here would replace the cargo stub.
+  env -u HORIZON_BUILD_COMMAND PATH="$STUBS:$PATH" HOME="$base/home" \
     HORIZON_REPO_DIR="$base/repo" \
     HORIZON_STATE_DIR="$base/state" \
     HORIZON_SERVICE_NAME="grpc-test" \
@@ -121,6 +130,7 @@ run_wrapper() {
     HORIZON_HEALTH_POLL_S=0.1 \
     HORIZON_DEPLOY_LOCK_TIMEOUT_S=5 \
     BUILD_LOG="$base/build.log" SYSTEMCTL_LOG="$base/systemctl.log" CURL_LOG="$base/curl.log" \
+    OVERRIDE_LOG="$base/override.log" \
     "$@" \
     timeout 30 "$HOST_DIR/$script" "$tag" >/dev/null 2>&1
 }
@@ -164,6 +174,7 @@ count() { grep -c -- "$1" "$2" 2>/dev/null || true; }
   expect "ok: exits 0" test "$code" -eq 0
   expect "ok: checks out the release tag" test "$(git -C "$base/repo" rev-parse HEAD)" = "$sha"
   expect "ok: builds the broker server binary" grep -qx "build --release --bin broker-service-server" "$base/build.log"
+  expect "ok: logs the default build line" grep -qE "^[^ ]+ build: cargo build --release --bin broker-service-server$" "$base/state/self-deploy.log"
   expect "ok: restarts the unit" grep -qx "restart grpc-test" "$base/systemctl.log"
   expect "ok: probes grpc.health.v1.Health/Check on the HEALTH_URL" grep -q "/grpc.health.v1.Health/Check" "$base/curl.log"
   expect "ok: logs DEPLOY OK" grep -q "DEPLOY OK tag=refs/tags/v1 commit=$sha" "$base/state/self-deploy.log"
@@ -370,6 +381,47 @@ for name in deploy-ledger-service.sh deploy-valuation-service.sh deploy-broker-s
   expect "$name: exists" test -f "$HOST_DIR/$name"
   expect "$name: execs deploy-grpc-service.sh" grep -qE '^exec .*/deploy-grpc-service\.sh" "\$@"$' "$HOST_DIR/$name"
 done
+
+# ---- 14. HZ-442: the target's build command replaces DEPLOY_BUILD ----
+{
+  base="$(new_base)"
+  run_wrapper deploy-broker-service.sh "$base" v1 HORIZON_BUILD_COMMAND='repo-build --local'
+  code=$?
+  sha="$(git -C "$base/seed" rev-parse v1)"
+  expect "build command: exits 0" test "$code" -eq 0
+  expect "build command: ran once in the checkout at the tag" test "$(cat "$base/override.log")" = "$(cd "$base/repo" && pwd -P) $sha --local"
+  expect "build command: cargo never ran" test ! -s "$base/build.log"
+  expect "build command: logs build: <command>" grep -qE "^[^ ]+ build: repo-build --local$" "$base/state/self-deploy.log"
+  expect "build command: no default build line" bash -c "! grep -q 'build: cargo' '$base/state/self-deploy.log'"
+  expect "build command: restarts and logs DEPLOY OK" grep -q "DEPLOY OK tag=refs/tags/v1 commit=$sha" "$base/state/self-deploy.log"
+}
+# A failing build command fails the deploy like a failing cargo build.
+base="$(new_base)"; seed_last_good "$base" v1
+pre_restart_case "build command fails" build deploy-broker-service.sh v2 HORIZON_BUILD_COMMAND='repo-build --local' OVERRIDE_FAIL=1
+expect "build command fails: cargo never ran" test ! -s "$base/build.log"
+# A failed health check rolls back by running the build command at last-good.
+{
+  base="$(new_base)"
+  seed_last_good "$base" v1
+  run_wrapper deploy-broker-service.sh "$base" v2 HEALTH_BAD_REF=v2 HORIZON_BUILD_COMMAND='repo-build --local'
+  code=$?
+  v1="$(git -C "$base/seed" rev-parse v1)"
+  expect "build command rollback: exits non-zero" test "$code" -ne 0 -a "$code" -ne 124
+  expect "build command rollback: logs ROLLBACK OK" grep -q "ROLLBACK OK tag=refs/tags/v1 after refs/tags/v2$" "$base/state/self-deploy.log"
+  expect "build command rollback: rollback-build ran it at v1" test "$(sed -n 2p "$base/override.log")" = "$(cd "$base/repo" && pwd -P) $v1 --local"
+  expect "build command rollback: cargo never ran" test ! -s "$base/build.log"
+  expect "build command rollback: last-good-tag unchanged" cmp "$base/state/last-good-tag" "$base/last-good-tag.seeded"
+}
+# Set but empty is the same as unset: the wrapper's DEPLOY_BUILD.
+{
+  base="$(new_base)"
+  run_wrapper deploy-broker-service.sh "$base" v1 HORIZON_BUILD_COMMAND=
+  code=$?
+  expect "empty build command: exits 0" test "$code" -eq 0
+  expect "empty build command: cargo built" grep -qx "build --release --bin broker-service-server" "$base/build.log"
+  expect "empty build command: logs the default build line" grep -qE "^[^ ]+ build: cargo build --release --bin broker-service-server$" "$base/state/self-deploy.log"
+  expect "empty build command: override never ran" test ! -e "$base/override.log"
+}
 
 echo "# deploy-grpc-service: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]
