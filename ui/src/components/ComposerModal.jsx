@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { PHASES } from '../../../domain/js/lifecycle.js'
+import { phasesFor, itemKindOf } from '../../../domain/js/lifecycle.js'
 
 const COPY = {
   approve: {
@@ -37,7 +37,8 @@ const COPY = {
   },
 }
 
-function subtitle(composer) {
+// The restart phase index is relative to the item's own kind (HZ-445).
+function subtitle(composer, item) {
   if (composer.mode === 'approve') {
     return `Approves ${composer.target || 'the gate'}; your notes are delivered to the next agent and recorded on the issue`
   }
@@ -45,7 +46,7 @@ function subtitle(composer) {
     return `The responsible agent re-runs the step and must address your notes${composer.target ? ' · ' + composer.target : ''}`
   }
   if (composer.mode === 'restart' && composer.phase != null) {
-    return `${PHASES[composer.phase]} phase will re-run from the start`
+    return `${phasesFor(itemKindOf(item))[composer.phase]} phase will re-run from the start`
   }
   if (composer.mode === 'abandon') {
     return 'Stops dispatch, cancels any in-flight run, and closes the GitHub issue as not planned — this is recorded on the activity feed and cannot be undone from here'
@@ -56,7 +57,7 @@ function subtitle(composer) {
   return ''
 }
 
-export default function ComposerModal({ composer, onSubmit, onCancel }) {
+export default function ComposerModal({ composer, item, onSubmit, onCancel }) {
   const inputRef = useRef(null)
   const copy = COPY[composer.mode] || COPY.reject
   // Only a reject from a gate offers a destination — everywhere else this
@@ -110,7 +111,7 @@ export default function ComposerModal({ composer, onSubmit, onCancel }) {
         <div className="composer__title" id="composer-title">
           {copy.title} · {composer.itemId}
         </div>
-        <div className="composer__sub">{subtitle(composer)}</div>
+        <div className="composer__sub">{subtitle(composer, item)}</div>
         {stepOptions.length > 0 && (
           <div className="composer__field">
             <label htmlFor="composer-target-step" className="composer__field-label">

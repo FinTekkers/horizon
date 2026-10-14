@@ -464,7 +464,12 @@ function AuthenticatedApp({ user, onLogout }) {
       )}
 
       {composer.open && (
-        <ComposerModal composer={composer} onSubmit={submitComposer} onCancel={() => setComposer(CLOSED_COMPOSER)} />
+        <ComposerModal
+          composer={composer}
+          item={items.find((it) => it.id === composer.itemId)}
+          onSubmit={submitComposer}
+          onCancel={() => setComposer(CLOSED_COMPOSER)}
+        />
       )}
 
       {confirmApprove && (
