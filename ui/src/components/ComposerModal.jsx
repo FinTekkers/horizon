@@ -68,6 +68,13 @@ export default function ComposerModal({ composer, item, onSubmit, onCancel }) {
   // (on by default) to remove their links to it in the same request.
   const dependents = composer.mode === 'abandon' ? composer.dependents || [] : []
   const [removeDependentLinks, setRemoveDependentLinks] = useState(true)
+  // HZ-470: Kill and Restart phase stay open until their request settles —
+  // Cancel, Esc and the scrim do nothing meanwhile. A send-back keeps its
+  // Cancel.
+  const locked = composer.busy === true && (composer.mode === 'restart' || composer.mode === 'abandon')
+  const cancel = () => {
+    if (!locked) onCancel()
+  }
   const submit = () => {
     if (composer.busy) return
     const text = (inputRef.current?.value || '').trim()
@@ -94,7 +101,7 @@ export default function ComposerModal({ composer, item, onSubmit, onCancel }) {
     const onKeyDown = (e) => {
       if (e.key === 'Escape') {
         e.preventDefault()
-        onCancel()
+        cancel()
       } else if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
         e.preventDefault()
         submit()
@@ -106,7 +113,7 @@ export default function ComposerModal({ composer, item, onSubmit, onCancel }) {
 
   return (
     <div className="composer">
-      <div className="composer__scrim" onClick={onCancel} />
+      <div className="composer__scrim" onClick={cancel} />
       <div className="composer__panel" role="dialog" aria-modal="true" aria-labelledby="composer-title">
         <div className="composer__title" id="composer-title">
           {copy.title} · {composer.itemId}
@@ -158,7 +165,7 @@ export default function ComposerModal({ composer, item, onSubmit, onCancel }) {
             stays, so it can be sent again. */}
         {composer.error && <span role="alert">{composer.error}</span>}
         <div className="composer__actions">
-          <button className="composer__cancel" onClick={onCancel}>
+          <button className="composer__cancel" disabled={locked} onClick={cancel}>
             Cancel
           </button>
           <button

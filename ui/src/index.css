@@ -1046,6 +1046,8 @@ button { font-family: var(--font-sans); }
 /* HZ-365: the Add dependency dialog's submit. */
 .composer__submit--primary { background: var(--primary); }
 .composer__submit--primary:disabled { opacity: 0.5; cursor: default; }
+/* HZ-470: Kill and Restart phase lock both buttons while their request is out. */
+.composer__cancel:disabled, .composer__submit:disabled { opacity: 0.5; cursor: default; }
 
 /* ===== Agent definitions (HZ-9) ===== */
 .defs { max-width: 1080px; }

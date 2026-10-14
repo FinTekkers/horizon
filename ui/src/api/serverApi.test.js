@@ -675,3 +675,121 @@ test('an Approve the server held for a deploy marks the item queued in this tab 
   expect(changed).toHaveBeenCalled()
   expect(openSpy).not.toHaveBeenCalled()
 })
+
+// ---- HZ-470: Kill and Restart phase reject when they did not go through ----
+
+const GATE_PIN = '4729'
+const GATE_ACTIONS = [
+  ['abandonItem', (api) => api.abandonItem('K-1', 'why', { removeDependentLinks: true }), '/items/K-1/abandon'],
+  ['restartPhase', (api) => api.restartPhase('K-1', 2, 'why'), '/items/K-1/phases/2/restart'],
+]
+
+function gateAnswer(status, body) {
+  return () => Promise.resolve({ ok: status >= 200 && status < 300, status, json: () => Promise.resolve(body) })
+}
+
+for (const [name, call, path] of GATE_ACTIONS) {
+  test(`${name} resolves with the body on a 2xx, sending the PIN once`, async () => {
+    localStorage.setItem('horizon_gate_pin', GATE_PIN)
+    const serverApi = await import('./serverApi')
+    const fetchSpy = vi.fn(gateAnswer(200, { ok: true }))
+    vi.stubGlobal('fetch', fetchSpy)
+
+    await expect(call(serverApi)).resolves.toEqual({ ok: true })
+    expect(fetchSpy).toHaveBeenCalledTimes(1)
+    const [url, opts] = fetchSpy.mock.calls[0]
+    expect(url).toBe(`${serverApi.API_BASE}${path}`)
+    expect(opts.headers['x-human-key']).toBe(GATE_PIN)
+  })
+
+  test(`${name} rejects with 'network' when fetch rejects, after exactly one request`, async () => {
+    localStorage.setItem('horizon_gate_pin', GATE_PIN)
+    const serverApi = await import('./serverApi')
+    const fetchSpy = vi.fn(() => Promise.reject(new Error('network down')))
+    vi.stubGlobal('fetch', fetchSpy)
+
+    const err = await call(serverApi).catch((e) => e)
+    expect(err).toBeInstanceOf(Error)
+    expect(err.message).toBe('network')
+    expect(err.message).not.toContain(GATE_PIN)
+    expect(fetchSpy).toHaveBeenCalledTimes(1)
+  })
+
+  for (const [status, body, message] of [
+    [404, { error: 'not_found' }, 'not_found'],
+    [409, { error: 'closed' }, 'closed'],
+    [500, {}, 'HTTP 500'],
+  ]) {
+    test(`${name} rejects with '${message}' and status ${status} on a ${status}, after exactly one request`, async () => {
+      localStorage.setItem('horizon_gate_pin', GATE_PIN)
+      const serverApi = await import('./serverApi')
+      const fetchSpy = vi.fn(gateAnswer(status, body))
+      vi.stubGlobal('fetch', fetchSpy)
+
+      const err = await call(serverApi).catch((e) => e)
+      expect(err.message).toBe(message)
+      expect(err.status).toBe(status)
+      expect(err.message).not.toContain(GATE_PIN)
+      expect(fetchSpy).toHaveBeenCalledTimes(1)
+    })
+  }
+
+  test(`${name} rejects with status 401 when the PIN retry prompt is cancelled, after exactly one request`, async () => {
+    localStorage.setItem('horizon_gate_pin', GATE_PIN)
+    const serverApi = await import('./serverApi')
+    const promptSpy = vi.spyOn(window, 'prompt').mockImplementation(() => null)
+    const fetchSpy = vi.fn(gateAnswer(401, { error: 'bad_human_gate_key' }))
+    vi.stubGlobal('fetch', fetchSpy)
+
+    const err = await call(serverApi).catch((e) => e)
+    expect(err.status).toBe(401)
+    expect(err.message).toBe('bad_human_gate_key')
+    expect(err.message).not.toContain(GATE_PIN)
+    expect(promptSpy).toHaveBeenCalledTimes(1)
+    // The one 401 re-prompt was cancelled, so nothing was re-sent.
+    expect(fetchSpy).toHaveBeenCalledTimes(1)
+  })
+
+  test(`${name} retries once with the re-entered PIN after a 401, and rejects if that fails too`, async () => {
+    localStorage.setItem('horizon_gate_pin', 'stale')
+    const serverApi = await import('./serverApi')
+    vi.spyOn(window, 'prompt').mockImplementation(() => GATE_PIN)
+    const fetchSpy = vi.fn(gateAnswer(401, { error: 'bad_human_gate_key' }))
+    vi.stubGlobal('fetch', fetchSpy)
+
+    const err = await call(serverApi).catch((e) => e)
+    expect(err.status).toBe(401)
+    expect(err.message).not.toContain(GATE_PIN)
+    expect(fetchSpy).toHaveBeenCalledTimes(2)
+  })
+
+  for (const [label, entered] of [
+    ['cancelled', null],
+    ['empty', ''],
+  ]) {
+    test(`${name} with no stored PIN and a ${label} prompt rejects with 'pin_needed' and sends nothing`, async () => {
+      localStorage.removeItem('horizon_gate_pin')
+      const serverApi = await import('./serverApi')
+      const promptSpy = vi.spyOn(window, 'prompt').mockImplementation(() => entered)
+      const fetchSpy = vi.fn(gateAnswer(200, { ok: true }))
+      vi.stubGlobal('fetch', fetchSpy)
+
+      await expect(call(serverApi)).rejects.toThrow('pin_needed')
+      expect(promptSpy).toHaveBeenCalledTimes(1)
+      expect(fetchSpy).not.toHaveBeenCalled()
+    })
+  }
+
+  test(`${name} with no stored PIN prompts once, then sends the entered PIN`, async () => {
+    localStorage.removeItem('horizon_gate_pin')
+    const serverApi = await import('./serverApi')
+    const promptSpy = vi.spyOn(window, 'prompt').mockImplementation(() => GATE_PIN)
+    const fetchSpy = vi.fn(gateAnswer(200, { ok: true }))
+    vi.stubGlobal('fetch', fetchSpy)
+
+    await expect(call(serverApi)).resolves.toEqual({ ok: true })
+    expect(promptSpy).toHaveBeenCalledTimes(1)
+    expect(fetchSpy).toHaveBeenCalledTimes(1)
+    expect(fetchSpy.mock.calls[0][1].headers['x-human-key']).toBe(GATE_PIN)
+  })
+}
