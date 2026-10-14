@@ -15,6 +15,8 @@ from farm.config import LOGS_DIR, QUEUE_DIR, STATE_DIR
 client = TestClient(farmd.app)
 
 EXECUTE_INDEX = steps.by_kind_label("task", "Execute")["index"]
+# HZ-416: the container path, run through conftest's fake_podman.
+FAKE_IMAGE = "localhost/horizon-task:fake"
 
 
 @pytest.fixture
@@ -33,8 +35,10 @@ def running_farm(monkeypatch):
             farmd.JOB_SESSIONS.pop(run_id, None)
 
 
-def job_payload(run_id, *, repo_dir="/tmp", cwd=".", commands=("echo hi",)):
+def job_payload(run_id, *, repo_dir="/tmp", cwd=".", commands=("echo hi",), runner=None):
     block = {"cwd": cwd, "commands": list(commands), "budget_minutes": 1}
+    if runner is not None:
+        block["runner"] = runner
     artifact = "## Commands\nplan\n\n## Run plan block\n" + run_plan.render(block) + "\n"
     return {
         "run_id": run_id,
@@ -44,6 +48,7 @@ def job_payload(run_id, *, repo_dir="/tmp", cwd=".", commands=("echo hi",)):
         "plan_artifact": artifact,
         "approved_hash": task_job.plan_hash_of(artifact),
         "repo_dir": repo_dir,
+        "container_image": FAKE_IMAGE,
     }
 
 
@@ -293,6 +298,7 @@ def test_a_seeded_secret_never_reaches_the_forwarded_view_or_the_log_fallback(mo
         "plan_artifact": artifact,
         "approved_hash": task_job.plan_hash_of(artifact),
         "repo_dir": str(cwd),
+        "container_image": FAKE_IMAGE,
     }
     forwarded = []
     monkeypatch.setattr(farmd, "_in_background", lambda fn, *args: fn(*args))
@@ -409,7 +415,8 @@ def test_a_cwd_outside_the_repo_is_refused_with_no_session_and_no_env_file(runni
         repo.mkdir()
         (tmp_path / "elsewhere" / "bin").mkdir(parents=True)
         (repo / ".venv").symlink_to(tmp_path / "elsewhere")
-        payload = job_payload(9136, repo_dir=str(repo))
+        # HZ-416: only a host run uses (and so checks) the venv.
+        payload = job_payload(9136, repo_dir=str(repo), runner="host")
         expected = "cwd refused: venv resolves outside the repo directory"
     else:
         payload = job_payload(9136, repo_dir=str(tmp_path))
@@ -516,6 +523,7 @@ def _attempt(task):
         state_path=STATE_DIR / "jobs" / f"{item_id}.json",
         log_path=LOGS_DIR / f"farm-job-{item_id.lower()}.log",
         repo_dir=task["repo_dir"],
+        container_image=FAKE_IMAGE,
     )
 
 
@@ -570,7 +578,7 @@ def test_the_attempt_slice_starts_at_its_own_first_line_after_multibyte_text(two
     artifact, log = two_attempts
     assert "café — ünïcode" in log
     attempt_log = artifact.split("## Log (this attempt)\n", 1)[1]
-    assert attempt_log.startswith("env: system\n$ sh load.sh")
+    assert attempt_log.startswith(f"env: system\ncontainer: {FAKE_IMAGE}\n$ sh load.sh")
     assert "\ufffd" not in artifact
     assert "café" not in artifact
 
@@ -592,7 +600,9 @@ def test_a_report_named_by_the_plan_reaches_the_forwarded_artifact(monkeypatch, 
         assert len(content.encode()) > job_reports.REPORT_INLINE_MAX_BYTES
     (tmp_path / "src.json").write_text(content)
     (repo / "write.sh").write_text(f'cp {tmp_path / "src.json"} "$2"\necho wrote "$2"\n')
-    task = job_payload(run_id, repo_dir=str(repo), commands=(f"sh write.sh --report {report}",))
+    # HZ-434's host semantics: a nested /tmp report path (a container's /tmp
+    # is read-only past `/tmp/<name>`; see test_container_runner.py).
+    task = job_payload(run_id, repo_dir=str(repo), commands=(f"sh write.sh --report {report}",), runner="host")
     task["item"]["id"] = item_id
     farmd.JOB_SESSIONS.clear()
     try:

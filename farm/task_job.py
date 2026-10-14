@@ -130,36 +130,46 @@ def _read_lines(stream, lines: "queue.Queue") -> None:
     lines.put(None)
 
 
-def _prepare_scratch(state_path: Path, item_id: str) -> Path:
-    """A fresh per-start scratch dir inside the job's state dir — the only
-    place a container run may leave new files besides state and logs. Wiped
-    on every start (Resume included), so one start never reads another's
-    leftovers; run reports are already captured in the state file."""
-    scratch = Path(state_path).parent / "scratch" / str(item_id)
-    shutil.rmtree(scratch, ignore_errors=True)
-    scratch.mkdir(parents=True, exist_ok=True)
-    return scratch
+def container_dirs(state_path: Path, log_path: Path) -> dict:
+    """HZ-416: the host dirs a container job mounts. `state` and `logs` are
+    the job's own (never the farm's whole state or log dir) and persist
+    across Stop, Resume and a farmd restart; `scratch` and `tmp` (shown
+    read-only at /tmp) are throwaway — wiped here on every start and again
+    when the run ends. All of them live under the job's state and log
+    paths, so nothing a run writes lands anywhere else."""
+    job_dir = Path(state_path).with_suffix(".d")
+    dirs = {
+        "state": job_dir / "state",
+        "scratch": job_dir / "scratch",
+        "tmp": job_dir / "tmp",
+        "logs": Path(log_path).with_suffix(".d"),
+    }
+    for key in ("scratch", "tmp"):
+        shutil.rmtree(dirs[key], ignore_errors=True)
+    for path in dirs.values():
+        path.mkdir(parents=True, exist_ok=True)
+    return dirs
 
 
-def _container_report_mounts(commands: list, declared: list, scratch: Path) -> list:
-    """(host_file, container_path) binds for `--report /tmp/<name>` files.
-    Each host file is pre-created empty under scratch (a missing host path
-    would make Podman mount a directory instead). Only direct children of
-    /tmp qualify — nested and relative report paths stay on read-only mounts
-    and fail closed at write time."""
-    mounts = []
+def _wipe_throwaway(dirs: dict | None) -> None:
+    for key in ("scratch", "tmp"):
+        if dirs:
+            shutil.rmtree(dirs[key], ignore_errors=True)
+
+
+def _tmp_report_files(commands: list, declared: list, tmp_dir: Path) -> list:
+    """HZ-416: names of `--report /tmp/<name>` files, each pre-created empty
+    in the job's tmp dir so Podman binds a file (a missing host path would
+    become a directory). Only direct children of /tmp qualify — any other
+    /tmp path stays on the read-only mount and fails at write time."""
+    names = []
     for path in job_reports.report_paths(commands, declared or []):
-        if not os.path.isabs(path):
-            continue
         parts = PurePosixPath(path).parts
-        if len(parts) != 3 or parts[0] != "/" or parts[1] != "tmp":
+        if len(parts) != 3 or parts[:2] != ("/", "tmp") or parts[2] in (".", ".."):
             continue
-        if parts[2] in (".", ".."):
-            continue
-        host_file = scratch / parts[2]
-        host_file.touch(exist_ok=True)
-        mounts.append((str(host_file), path))
-    return mounts
+        (tmp_dir / parts[2]).touch(exist_ok=True)
+        names.append(parts[2])
+    return names
 
 
 def run_job(
@@ -404,6 +414,30 @@ def run_job(
     nudge()
 
     child = _child_env(env_values or {}, venv)
+    # HZ-416: a container job runs `podman run ... sh -c <command>` instead;
+    # the podman client gets the plan's values, the container only their names.
+    dirs = None
+    podman_argv: list = []
+    if runner == "container":
+        dirs = container_dirs(state_path, log_path)
+        podman_argv = container_runner.build_command(
+            image=container_image,
+            item_id=item_id,
+            repo_dir=str(Path(repo_dir).resolve()),
+            plan_cwd=plan_cwd,
+            scratch_dir=str(dirs["scratch"]),
+            tmp_dir=str(dirs["tmp"]),
+            state_dir=str(dirs["state"]),
+            log_dir=str(dirs["logs"]),
+            # The plan's declared names, as farmd resolved them.
+            env_names=sorted(env_values or {}),
+            cpu=cpu_limit,
+            memory=memory_limit,
+            report_files=_tmp_report_files(commands, block.get("reports", []), dirs["tmp"]),
+        )
+        child = container_runner.client_env(env_values or {})
+        # A container a crashed start left behind would hold the name.
+        container_runner.stop_and_remove(container_runner.container_name(item_id))
     job_start = time.monotonic()
     failing: list[str] = []
     passed = 0
@@ -427,6 +461,7 @@ def run_job(
             state["summary"] = {"run": attempted, "passed": passed, "failed": len(failing), "failing": list(failing)}
             save_state(state_path, state)
             log_line(f"budget exceeded after {elapsed:.1f}s of {budget_s}s — job stopped\n")
+            _wipe_throwaway(dirs)
             nudge()
             return state["summary"]
         entry["status"] = "running"
@@ -437,8 +472,8 @@ def run_job(
         cmd_start = time.monotonic()
         try:
             proc = subprocess.Popen(
-                ["sh", "-c", entry["command"]],
-                cwd=cwd,
+                [*podman_argv, "sh", "-c", entry["command"]] if podman_argv else ["sh", "-c", entry["command"]],
+                cwd=dirs["scratch"] if podman_argv else cwd,
                 env=child,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
@@ -459,6 +494,9 @@ def run_job(
         # HZ-407: farmd's Stop kills this process group, which outlives the
         # runner's own tmux session (start_new_session).
         entry["pgid"] = proc.pid
+        # HZ-416: and removes this container, which can outlive its client.
+        if podman_argv:
+            entry["container"] = container_runner.container_name(item_id)
         save_state(state_path, state)
         lines: queue.Queue = queue.Queue()
         reader = threading.Thread(target=_read_lines, args=(proc.stdout, lines), daemon=True)
@@ -495,6 +533,8 @@ def run_job(
                 os.killpg(proc.pid, signal.SIGKILL)
             except (ProcessLookupError, PermissionError, OSError):
                 pass
+            if podman_argv:
+                container_runner.stop_and_remove(container_runner.container_name(item_id))
             try:
                 proc.wait(timeout=5)
             except subprocess.TimeoutExpired:
@@ -509,6 +549,8 @@ def run_job(
                     log_line(line)
             # Cut off mid-command: stopped, never done. Resume re-runs it.
             entry.pop("pgid", None)
+            entry.pop("container", None)
+            _wipe_throwaway(dirs)
             entry["status"] = "stopped"
             entry["ended_at"] = _now_iso()
             entry["exit_code"] = None
@@ -520,6 +562,7 @@ def run_job(
             nudge()
             return state["summary"]
         entry.pop("pgid", None)
+        entry.pop("container", None)
         entry["status"] = "done"
         entry["ended_at"] = _now_iso()
         entry["exit_code"] = proc.returncode
@@ -538,10 +581,16 @@ def run_job(
     # report is still evidence. Reading them never keeps the job from ending.
     try:
         state["reports"] = job_reports.collect_reports(
-            commands, block.get("reports", []), cwd, secrets, forbid=str(HORIZON_ROOT)
+            commands,
+            block.get("reports", []),
+            cwd,
+            secrets,
+            forbid=str(HORIZON_ROOT),
+            tmp_root=str(dirs["tmp"]) if dirs else None,
         )
     except Exception as exc:
         state["reports"] = [{"path": "(reports)", "status": "refused", "bytes": 0, "text": f"could not be read ({type(exc).__name__})"}]
+    _wipe_throwaway(dirs)
     state["status"] = "finished"
     state["ended_at"] = _now_iso()
     state["summary"] = {"run": attempted, "passed": passed, "failed": len(failing), "failing": list(failing)}
@@ -610,6 +659,9 @@ def main(argv: list[str] | None = None) -> int:
             redact_values=redact_only,
             notify=lambda: _notify_progress(run_id),
             task_clone=bool(task.get("task_clone")),
+            container_image=task.get("container_image"),
+            cpu_limit=task.get("cpu_limit"),
+            memory_limit=task.get("memory_limit"),
         )
     except ValueError as exc:
         print(f"task_job: invalid run plan: {exc}", flush=True)

@@ -462,6 +462,13 @@ def build_prompt(task: dict) -> str:
     ]
     if step.get("label") == RUN_PLAN_LABEL and "repo_dir" in task:
         lines.append(_interpreter_line(task))
+        # HZ-416: where a default (container) plan runs.
+        image = task.get("container_image")
+        lines.append(
+            f"  container: {image} (repo read-only at /repo)"
+            if image
+            else "  container: none pinned — Execute refuses a container plan until the deploy target has an image"
+        )
     if item.get("release_tag"):
         lines.append(f"  release: {item['release_tag']}  ({item.get('release_url') or 'no url'}) — already published")
     lines += [

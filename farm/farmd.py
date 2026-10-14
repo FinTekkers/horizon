@@ -24,7 +24,7 @@ from fastapi.responses import JSONResponse
 # HZ-132 put the failure-reason vocabulary there under the same rule, so the
 # tags this daemon relays are the ones the server classifies, by construction.
 from domain.py import reasons, run_plan, steps
-from . import caretaker_ruling, check_slots, conflict_cancel, conflict_resolver, job_reports, pause, rules, task_job, tmux_mgr, workspaces
+from . import caretaker_ruling, check_slots, conflict_cancel, conflict_resolver, container_runner, job_reports, pause, rules, task_job, tmux_mgr, workspaces
 from . import config as farm_config
 from .checks import CHECK_SLOTS, default_check_slots, redact
 from .task_files import read_launchable_task
@@ -819,7 +819,9 @@ def launch_job(task: dict) -> str:
     block = run_plan.extract(artifact)
     cwd = run_plan.resolve_cwd(task.get("repo_dir"), block["cwd"], forbid=str(task_job.HORIZON_ROOT))
     # HZ-431: a venv outside the checkout is refused here too (a CwdRefused).
-    run_plan.resolve_venv(task.get("repo_dir"), task.get("venv_dir"), forbid=str(task_job.HORIZON_ROOT))
+    # HZ-416: only a host run uses the venv; a container run ignores it.
+    if block.get("runner") == "host":
+        run_plan.resolve_venv(task.get("repo_dir"), task.get("venv_dir"), forbid=str(task_job.HORIZON_ROOT))
     env_values = _resolve_job_env(cwd, block.get("env", {}))
     active = QUEUE_DIR / "jobs" / "active"
     active.mkdir(parents=True, exist_ok=True)
@@ -1019,6 +1021,16 @@ def _poll_jobs() -> None:
                         "ok": False,
                         "error": f"Execute refused: {state.get('refusal') or 'cwd refused'}"[:300],
                         "reason": reasons.REASON["JOB_CWD_REFUSED"],
+                        "job_view": _job_view(run_id, task),
+                    }
+                )
+            elif status == "container_unavailable":
+                code = _forward_result(
+                    {
+                        "run_id": task["run_id"],
+                        "ok": False,
+                        "error": f"Execute refused: {state.get('refusal') or 'no container to run in'}"[:300],
+                        "reason": reasons.REASON["JOB_CONTAINER_UNAVAILABLE"],
                         "job_view": _job_view(run_id, task),
                     }
                 )
@@ -1710,7 +1722,10 @@ def jobs_progress(run_id: str, request: Request):
 def _mark_job_stopped(run_id, item_id: str) -> None:
     """HZ-407: after Stop killed the runner, its command's process group
     (which outlives the tmux session) is killed too, and the command that was
-    running is recorded `stopped` — never left `running`, never `done`."""
+    running is recorded `stopped` — never left `running`, never `done`.
+
+    HZ-416: a container command's container is then killed and removed —
+    after the process group, since rootless conmon outlives its client."""
     from farm.config import STATE_DIR as _STATE
 
     state_path = _STATE / "jobs" / f"{item_id}.json"
@@ -1727,6 +1742,9 @@ def _mark_job_stopped(run_id, item_id: str) -> None:
                 os.killpg(pgid, signal.SIGKILL)
             except (ProcessLookupError, PermissionError, OSError):
                 pass
+        container = entry.pop("container", None)
+        if isinstance(container, str) and container:
+            container_runner.stop_and_remove(container)
         entry["status"] = "stopped"
         entry["ended_at"] = now
         entry["exit_code"] = None

@@ -26,3 +26,14 @@ for (const c of cases.reports) {
     else assert.equal(block, null)
   })
 }
+
+// HZ-416: the same fixture's `runner` cases (farm/tests/test_container_runner.py
+// is the Python half). Absent reads as the container.
+for (const c of cases.runner) {
+  test(`runner: ${c.case}`, () => {
+    const block = extractRunPlan(artifactOf(c.block))
+    if (!c.valid) return assert.equal(block, null)
+    assert.deepEqual(block, c.block)
+    assert.equal(block.runner ?? 'container', c.runner)
+  })
+}

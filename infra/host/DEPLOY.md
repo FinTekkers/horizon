@@ -664,6 +664,83 @@ is refused. `venvDir` is relative to the task dir when one is set.
 - **Roll back** by clearing Task dir on the target: Task jobs go back to
   `repoDir`.
 
+## Task containers: rootless Podman (HZ-416)
+
+A Task's Execute runs each approved command in a throwaway rootless Podman
+container (`podman run --rm`, one per command), as the farm user. Rootless
+Podman has no daemon. Never install Docker or add the farm user to a
+`docker` group: Docker's daemon runs as root, so that group is root. No
+sudoers entry, no `--privileged`, no added capability and no Podman socket
+mount is used or needed.
+
+What the container gets (`farm/container_runner.py`):
+
+| Inside | From the host | Access |
+| --- | --- | --- |
+| `/repo` | the target's `taskDir`, else `repoDir` | read-only; the plan's `cwd` is the workdir (`/repo/<cwd>`) |
+| `/scratch` | `<farm state>/jobs/<item>.d/scratch` | writable; wiped at every start and when the run ends |
+| `/state` | `<farm state>/jobs/<item>.d/state` | writable; kept across Stop, Resume and restarts |
+| `/logs` | `<farm logs>/farm-job-<item>.d` | writable; kept |
+| `/tmp` | `<farm state>/jobs/<item>.d/tmp` | read-only, except each `--report /tmp/<name>` file |
+
+The image's own filesystem is read-only. Networking is the host's
+(`--network=host`), because the services listen on 127.0.0.1 only. The
+container sees only the env names the plan declares (`--env NAME`; the value
+never appears in argv), and no env file is mounted. `venv_dir` is ignored:
+the image's own Python runs.
+
+One-time setup, as the farm user:
+
+```bash
+sudo apt-get install -y podman uidmap slirp4netns fuse-overlayfs
+grep "^$USER:" /etc/subuid /etc/subgid   # both must list a range; if not:
+sudo usermod --add-subuids 100000-165535 --add-subgids 100000-165535 "$USER"
+sudo loginctl enable-linger "$USER"       # /run/user/<uid> outlives logins
+# CPU limits need the cpu controller delegated to user sessions:
+sudo mkdir -p /etc/systemd/system/user@.service.d
+printf '[Service]\nDelegate=cpu cpuset io memory pids\n' | sudo tee /etc/systemd/system/user@.service.d/delegate.conf
+sudo systemctl daemon-reload
+podman info --format '{{.Host.Security.Rootless}}'   # -> true
+cat "/sys/fs/cgroup/user.slice/user-$(id -u).slice/user@$(id -u).service/cgroup.controllers"   # lists cpu and memory
+```
+
+farmd's unit must carry `Environment=XDG_RUNTIME_DIR=/run/user/<farm uid>`
+if it is a system unit; the runner hands only that, `PATH`, `HOME` and the
+locale to the podman client.
+
+Pin an image per repo. Execute never pulls, so pre-pull it, then pin its
+digest:
+
+```bash
+podman pull docker.io/library/python:3.12-slim
+podman image inspect --format '{{.Digest}}' docker.io/library/python:3.12-slim
+```
+
+In Admin → Deploy target overrides, set **Container image (optional)** to
+`docker.io/library/python@sha256:<digest>` (for example on
+`market-data-inputs`), and optionally **Container CPUs** (default `2`) and
+**Container memory** (default `4g`, such as `512m` or `8g`). These never
+affect a deploy.
+
+Confirm the confinement on this host — every test must pass with none
+skipped (they skip only when Podman or the image is missing):
+
+```bash
+cd /opt/horizon
+HORIZON_TEST_PODMAN_IMAGE=docker.io/library/python@sha256:<digest> \
+  python3 -m pytest -q -rs farm/tests/test_container_runner.py
+```
+
+- **Fails closed.** No `podman`, no pinned image, or an image not pulled ends
+  the job `job_container_unavailable` with zero commands run. It never falls
+  back to the host. Fix the host or the target, then Resume.
+- **Opting out.** A plan with `"runner": "host"` runs on the host exactly as
+  before HZ-416. Approve the run then says "runs on the host, not in a
+  container".
+- **Stop.** farmd kills the runner's command group, then `podman kill` and
+  `podman rm -f` the item's `horizon-job-<item>` container. `podman ps -a`
+  lists none afterwards.
+
 ## Code-only targets (HZ-353)
 
 A repo with code on this host but no service, such as

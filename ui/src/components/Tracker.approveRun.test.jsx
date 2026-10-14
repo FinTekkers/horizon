@@ -93,6 +93,18 @@ test('one command reads singular; no plan block reads "not found"', () => {
   expect(container.querySelector('.step-card__run-plan').textContent).toBe('Run plan: not found')
 })
 
+// HZ-416: a `runner: host` plan says so on the card; a container plan (the
+// default) adds nothing.
+test('a host plan shows "runs on the host, not in a container"; a container plan does not', () => {
+  const host = { commands: 2, budgetMinutes: 10, hash: 'h', runner: 'host' }
+  const { container, rerender } = render(<Harness item={{ ...taskItem, runPlan: host }} onReject={noop} />)
+  const line = () => awaitingCard(container).querySelector('.step-card__run-plan').textContent
+  expect(line()).toBe('Run plan: 2 commands · budget 10 min · runs on the host, not in a container')
+  rerender(<Harness item={{ ...taskItem, runPlan: { ...host, runner: 'container' } }} onReject={noop} />)
+  expect(line()).toBe('Run plan: 2 commands · budget 10 min')
+  expect(container.textContent).not.toContain('runs on the host')
+})
+
 test("a change item's gate card is unchanged: no human-only line, the usual button names", () => {
   const changeItem = { ...taskItem, id: 'CH-1', kind: 'change', cursor: requiredStepIndex('Approve the high-level design') }
   delete changeItem.runPlan

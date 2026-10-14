@@ -286,7 +286,7 @@ test('race: a newer plan lands after the card loaded — approving the old one i
   const shown = (await app.inject({ method: 'GET', url: '/api/items', headers: { cookie: alice.cookie } }))
     .json()
     .items.find((it) => it.id === 'T-RACE')
-  assert.deepEqual(shown.runPlan, { commands: 3, budgetMinutes: 20, hash: sha256(PLAN) })
+  assert.deepEqual(shown.runPlan, { commands: 3, budgetMinutes: 20, hash: sha256(PLAN), runner: 'container' })
   assert.equal(shown.approvedPlanHash, null)
 
   doneRun('T-RACE', RUN_PLAN_STEP_INDEX, planArtifact(['scripts/z.sh']))
@@ -294,6 +294,25 @@ test('race: a newer plan lands after the card loaded — approving the old one i
   assert.equal(res.statusCode, 409)
   assert.deepEqual(res.json(), { error: 'run_plan_changed' })
   assert.deepEqual(row('T-RACE'), { cursor: APPROVE_RUN_GATE_INDEX, approved_plan_hash: null })
+})
+
+// HZ-416: the card's runner comes from the plan on every load — a reload
+// after approving still says host — and absent means the container.
+test('HZ-416: item.runPlan.runner is host only for a runner: host plan, on every load and after approving', async () => {
+  const hostPlan =
+    '## Commands\n1. backfill\n\n## Run plan block\n```json run-plan\n' +
+    JSON.stringify({ cwd: '.', commands: ['scripts/a.sh'], budget_minutes: 5, runner: 'host' }, null, 2) +
+    '\n```'
+  seedTask('T-HOST', { plan: hostPlan })
+  seedTask('T-CONTAINER')
+  const load = async (id) =>
+    (await app.inject({ method: 'GET', url: '/api/items', headers: { cookie: alice.cookie } })).json().items.find((it) => it.id === id)
+  assert.deepEqual((await load('T-HOST')).runPlan, { commands: 1, budgetMinutes: 5, hash: sha256(hostPlan), runner: 'host' })
+  assert.equal((await load('T-CONTAINER')).runPlan.runner, 'container')
+
+  assert.equal((await approveAs('T-HOST', withSession(PIN), { planHash: sha256(hostPlan) })).statusCode, 200)
+  orchestrator.cancel('T-HOST')
+  assert.equal((await load('T-HOST')).runPlan.runner, 'host', 'a reload after approving still shows the host plan')
 })
 
 test("Execute's guard: a matching plan starts, a changed plan fails the run, an unapproved item is refused", async () => {

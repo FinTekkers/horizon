@@ -83,6 +83,9 @@ os.environ.setdefault("FARM_CLAUDE_BIN", str(TESTS_DIR / "fake_claude"))
 # the subprocess path. SDK-path tests opt in with FARM_RUNNER=sdk and mock
 # claude_agent_sdk.query directly.
 os.environ.setdefault("FARM_RUNNER", "subprocess")
+# HZ-416: a Task job runs in a container by default, so the job suites go
+# through fake_podman (the confinement tests find a real podman themselves).
+os.environ["HORIZON_PODMAN_BIN"] = str(TESTS_DIR / "fake_podman")
 # The host may carry an API key; the HZ-5 subscription guardrail would (by
 # design) refuse to import farmd with it set. Tests set it back explicitly
 # where the guardrail itself is under test.

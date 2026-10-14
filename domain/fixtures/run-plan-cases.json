@@ -18,7 +18,7 @@
       "valid": false
     }
   ],
-  "$comment2": "HZ-416. Where Execute runs the plan: absent means the container. Asserted by BOTH server/test/task-runner-field.test.mjs (domain/js/runPlan.js extractRunPlan) and farm/tests/test_container_runner.py (domain/py/run_plan.py validate).",
+  "$comment2": "HZ-416. Where Execute runs the plan: absent means the container. Asserted by BOTH server/test/run-plan-reports-cases.test.mjs (domain/js/runPlan.js extractRunPlan) and farm/tests/test_container_runner.py (domain/py/run_plan.py validate).",
   "runner": [
     { "case": "no runner defaults to the container", "block": { "cwd": ".", "commands": ["echo hi"], "budget_minutes": 1 }, "valid": true, "runner": "container" },
     { "case": "an explicit container runner", "block": { "cwd": ".", "commands": ["echo hi"], "budget_minutes": 1, "runner": "container" }, "valid": true, "runner": "container" },

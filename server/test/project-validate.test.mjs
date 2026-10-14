@@ -346,5 +346,9 @@ test('G4: the deploy_target table schema is unchanged', () => {
     'venv_dir',
     // HZ-440: the Task clone directory, added by its own migration.
     'task_dir',
+    // HZ-416: the Task container's pinned image and limits, added by their own migration.
+    'container_image',
+    'cpu_limit',
+    'memory_limit',
   ])
 })

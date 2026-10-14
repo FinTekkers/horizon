@@ -1,0 +1,151 @@
+#!/usr/bin/env python3
+"""A stand-in for rootless `podman`, for hosts without it (HZ-416).
+
+Only what farm/container_runner.py calls: `run`, `kill`, `rm -f`, `ps -a`,
+`inspect` and `image exists`. `run` executes `sh -c <command>` on the host,
+in the host dir mounted at the `-w` path, with only Podman's base variables
+plus each `--env NAME` taken from its own env — so the HZ-407/408 suites
+exercise the container code path. It does NOT confine anything: mounts,
+read-only flags and limits are recorded, never enforced. The confinement
+tests in test_container_runner.py need a real Podman and skip without one.
+
+Like rootless conmon, the command runs in its own session and outlives a
+killed client: only `kill`/`rm -f` end it, and `ps -a` lists it until then.
+Containers are recorded under $TMPDIR/fake-podman/<name>.json. An image
+whose name contains "missing" does not exist.
+"""
+
+import json
+import os
+import signal
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
+
+STATE = Path(os.environ.get("TMPDIR") or tempfile.gettempdir()) / "fake-podman"
+BASE_ENV = {
+    "PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+    "TERM": "xterm",
+    "container": "podman",
+}
+SIZES = {"k": 1024, "m": 1024**2, "g": 1024**3}
+
+
+def _record(name):
+    try:
+        return json.loads((STATE / f"{name}.json").read_text())
+    except (OSError, json.JSONDecodeError):
+        return None
+
+
+def _forget(name):
+    """Drops the record, and the registry dir once it is empty — so the
+    suite's tmp leak guard names any container a test left behind."""
+    (STATE / f"{name}.json").unlink(missing_ok=True)
+    try:
+        STATE.rmdir()
+    except OSError:
+        pass
+
+
+def _kill(name):
+    rec = _record(name)
+    if not rec:
+        return False
+    try:
+        os.killpg(rec["pid"], signal.SIGKILL)
+    except (ProcessLookupError, PermissionError):
+        pass
+    return True
+
+
+def _run(args):
+    opts = {"rm": False, "name": None, "mounts": [], "workdir": "/", "env": [], "flags": []}
+    i = 0
+    while i < len(args):
+        a = args[i]
+        if not a.startswith("-"):
+            break
+        if a == "--rm":
+            opts["rm"] = True
+        elif a in ("--name", "--user", "--cpus", "--memory", "-v", "-w", "--env"):
+            value = args[i + 1]
+            i += 1
+            if a == "--name":
+                opts["name"] = value
+            elif a == "-v":
+                src, dst, mode = (value.split(":") + ["rw"])[:3]
+                opts["mounts"].append({"src": src, "dst": dst, "mode": mode})
+            elif a == "-w":
+                opts["workdir"] = value
+            elif a == "--env":
+                opts["env"].append(value)
+            else:
+                opts[a.lstrip("-")] = value
+        else:
+            opts["flags"].append(a)
+        i += 1
+    image, command = args[i], args[i + 1 :]
+    name = opts["name"] or f"fake-{os.getpid()}"
+    if _record(name):
+        print(f"Error: the container name \"{name}\" is already in use", file=sys.stderr)
+        return 125
+    host_cwd = None
+    for m in sorted(opts["mounts"], key=lambda m: len(m["dst"]), reverse=True):
+        if opts["workdir"] == m["dst"] or opts["workdir"].startswith(m["dst"] + "/"):
+            host_cwd = m["src"] + opts["workdir"][len(m["dst"]) :]
+            break
+    env = dict(BASE_ENV, HOSTNAME=name, HOME="/")
+    for key in opts["env"]:
+        if key in os.environ:
+            env[key] = os.environ[key]
+    proc = subprocess.Popen(command, cwd=host_cwd or "/", env=env, start_new_session=True)
+    STATE.mkdir(parents=True, exist_ok=True)
+    (STATE / f"{name}.json").write_text(json.dumps({**opts, "name": name, "image": image, "pid": proc.pid}))
+    code = proc.wait()
+    if opts["rm"]:
+        _forget(name)
+    return 128 - code if code < 0 else code
+
+
+def _inspect(name):
+    rec = _record(name)
+    if not rec:
+        print(f"Error: no such object: \"{name}\"", file=sys.stderr)
+        return 125
+    memory = rec.get("memory", "0")
+    mem_bytes = int(memory[:-1]) * SIZES[memory[-1].lower()] if memory[-1:].lower() in SIZES else int(memory)
+    print(json.dumps([{
+        "Name": name,
+        "ImageName": rec["image"],
+        "HostConfig": {"NanoCpus": int(float(rec.get("cpus", "0")) * 1e9), "Memory": mem_bytes},
+        "Mounts": [{"Source": m["src"], "Destination": m["dst"], "RW": m["mode"] != "ro"} for m in rec["mounts"]],
+        "Config": {"Env": rec["env"]},
+    }]))
+    return 0
+
+
+def main(argv):
+    if argv[:2] == ["image", "exists"]:
+        return 1 if "missing" in argv[2] else 0
+    if argv[:1] == ["run"]:
+        return _run(argv[1:])
+    if argv[:1] == ["kill"]:
+        return 0 if _kill(argv[1]) else 125
+    if argv[:2] == ["rm", "-f"]:
+        _kill(argv[2])
+        _forget(argv[2])
+        return 0
+    if argv[:2] == ["ps", "-a"]:
+        for path in sorted(STATE.glob("*.json")) if STATE.is_dir() else []:
+            print(path.stem)
+        return 0
+    if argv[:1] == ["inspect"]:
+        return _inspect(argv[1])
+    print(f"fake_podman: unsupported: {argv}", file=sys.stderr)
+    return 125
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

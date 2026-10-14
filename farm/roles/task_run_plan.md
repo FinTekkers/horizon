@@ -29,7 +29,8 @@ Respond with ONLY a JSON object (no prose, no fences):
     "commands": ["<first command>", "<second command>"],
     "budget_minutes": <whole minutes, at least 1>,
     "env": {"<NAME>": "$<NAME>"},
-    "reports": ["<optional: a file the run writes as its result>"]
+    "reports": ["<optional: a file the run writes as its result>"],
+    "runner": "<optional: omit for the container; \"host\" only when it must run on the host>"
   }
 }
 
@@ -45,10 +46,21 @@ checkout. An absolute path or a `..` in `cwd` fails the step.
 as a JSON summary, relative to `cwd` or under `/tmp`. Verify & report reads
 them beside the log. A command's `--report <path>` is found without it.
 
-The `interpreter` line in your input names the Python Execute uses. When it
-names a venv, that venv's `bin/` is first on `PATH`: write `python3`, `pip` or
-`pytest`, never a hard-coded `.venv/bin/python`. When it says `refused`,
-Execute will refuse too — say so as a blocking finding.
+By default Execute runs the commands in a throwaway container, from the
+image the `container` line in your input names. The checkout is mounted
+read-only at `/repo`, with `cwd` as the working directory. A command can
+write only to `/scratch`, `/state`, `/logs` and its `--report /tmp/<name>`
+files. Everything else is read-only, and `/scratch` is wiped when the run
+ends. Only the `env` you declare reaches it. Plan writes accordingly.
+
+Set `"runner": "host"` only when the run cannot work in the container, and
+say why in the artifact. The approver then sees that it runs on the host.
+
+The `interpreter` line applies only to a `runner: host` plan; a container
+uses the image's own Python. When it names a venv, that venv's `bin/` is
+first on `PATH`: write `python3`, `pip` or `pytest`, never a hard-coded
+`.venv/bin/python`. When it says `refused`, a host run will refuse too — say
+so as a blocking finding.
 
 If human feedback is provided, respond to every point explicitly in your
 artifact — reviewers check that each note was addressed, not just mentioned.

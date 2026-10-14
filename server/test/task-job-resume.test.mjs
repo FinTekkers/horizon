@@ -215,3 +215,48 @@ test('HZ-440: a taskDir is dispatched as repo_dir with task_clone; without one r
     assert.equal(Object.hasOwn(body, 'task_clone'), false)
   }
 })
+
+// HZ-416: the target's pinned image and limits ride in both Task dispatches —
+// Run plan names the image, Execute runs in it. Unset, they are null: the
+// farm refuses a container job closed rather than guess. A change item's
+// dispatch carries none of them.
+test('HZ-416: the Run plan and Execute dispatches carry the container image and limits; a change item dispatch carries none', async () => {
+  const mdi = 'FinTekkers/market-data-inputs'
+  const image = `docker.io/library/python@sha256:${'c'.repeat(64)}`
+  db.prepare("UPDATE deploy_target SET container_image = ?, cpu_limit = '1.5', memory_limit = '2g' WHERE repo = ?").run(image, mdi)
+  try {
+    db.prepare(
+      "INSERT INTO work_item (id, title, priority, cursor, kind, project_id, repo) VALUES ('T-416-PLAN', 'Plan', 'High', ?, 'task', ?, ?)",
+    ).run(RUN_PLAN_STEP_INDEX, projectId, mdi)
+    db.prepare(
+      "INSERT INTO work_item (id, title, priority, cursor, kind, project_id, repo) VALUES ('C-416', 'Change', 'High', ?, 'change', ?, ?)",
+    ).run(DRAFT_PLAN_STEP_INDEX, projectId, mdi)
+    seedStoppedTask('T-416-EXEC', mdi)
+    orchestrator.kick('T-416-PLAN')
+    orchestrator.kick('C-416')
+    const res = await app.inject({ method: 'POST', url: '/api/items/T-416-EXEC/job/resume', headers: cookie, payload: {} })
+    assert.equal(res.statusCode, 200)
+    await new Promise((r) => setTimeout(r, 30))
+
+    const plan = jobDispatchesFor('T-416-PLAN').find((d) => d.body.step.index === RUN_PLAN_STEP_INDEX)
+    const [execute] = jobDispatchesFor('T-416-EXEC')
+    for (const body of [plan.body, execute.body]) {
+      assert.equal(body.container_image, image)
+      assert.equal(body.cpu_limit, '1.5')
+      assert.equal(body.memory_limit, '2g')
+    }
+    const [change] = jobDispatchesFor('C-416')
+    for (const key of ['container_image', 'cpu_limit', 'memory_limit']) assert.equal(Object.hasOwn(change.body, key), false)
+  } finally {
+    db.prepare('UPDATE deploy_target SET container_image = NULL, cpu_limit = NULL, memory_limit = NULL WHERE repo = ?').run(mdi)
+    for (const id of ['T-416-PLAN', 'C-416', 'T-416-EXEC']) orchestrator.cancel(id)
+  }
+  const id = 'T-416-UNSET'
+  seedStoppedTask(id, mdi)
+  const res = await app.inject({ method: 'POST', url: `/api/items/${id}/job/resume`, headers: cookie, payload: {} })
+  assert.equal(res.statusCode, 200)
+  await new Promise((r) => setTimeout(r, 30))
+  const [execute] = jobDispatchesFor(id)
+  orchestrator.cancel(id)
+  assert.equal(execute.body.container_image, null, 'no image pinned: the farm refuses, never a host run')
+})

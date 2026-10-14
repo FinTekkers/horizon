@@ -66,21 +66,20 @@ def resolve_report(
     *,
     forbid: str | None,
     tmp_root: str | None = None,
-    extra_roots: list | None = None,
 ) -> tuple[str | None, str | None, str]:
     """(real_path, None, "") for a readable report, else (None, reason,
     status) with status `refused` or `missing`. Never opens the file.
 
-    HZ-416: a container job reads /tmp reports from its scratch dir
-    (`tmp_root`) and accepts the mounted scratch/state/log dirs
-    (`extra_roots`) — the host default is the plan's cwd and /tmp."""
+    HZ-416: a container job's /tmp is the host dir `tmp_root`, so a
+    `/tmp/<path>` report is read from there instead, and only there."""
     try:
         candidate = path if os.path.isabs(path) else os.path.join(cwd, path)
+        if tmp_root and os.path.isabs(path) and _inside(os.path.normpath(path), REPORT_TMP_ROOT):
+            candidate = os.path.join(tmp_root, os.path.relpath(os.path.normpath(path), REPORT_TMP_ROOT))
         real = os.path.realpath(candidate)
         if forbid and _inside(real, os.path.realpath(forbid)):
             return None, "inside Horizon's own checkout", "refused"
         roots = [os.path.realpath(cwd), os.path.realpath(tmp_root or REPORT_TMP_ROOT)]
-        roots += [os.path.realpath(root) for root in (extra_roots or [])]
         if not any(_inside(real, root) for root in roots):
             return None, "outside the plan's cwd and /tmp", "refused"
         if not os.path.lexists(real):
@@ -159,7 +158,6 @@ def collect_reports(
     *,
     forbid: str | None,
     tmp_root: str | None = None,
-    extra_roots: list | None = None,
 ) -> list[dict]:
     """Every named report, read under the per-file and section caps."""
     reports: list[dict] = []
@@ -169,7 +167,7 @@ def collect_reports(
         if i >= REPORT_MAX_FILES:
             reports.append({"path": shown, "status": "skipped", "bytes": 0, "text": f"over {REPORT_MAX_FILES} report files"})
             continue
-        real, reason, status = resolve_report(path, cwd, forbid=forbid, tmp_root=tmp_root, extra_roots=extra_roots)
+        real, reason, status = resolve_report(path, cwd, forbid=forbid, tmp_root=tmp_root)
         if real is None:
             reports.append({"path": shown, "status": status, "bytes": 0, "text": reason})
             continue

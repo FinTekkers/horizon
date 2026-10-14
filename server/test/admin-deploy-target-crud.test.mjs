@@ -272,3 +272,34 @@ test('GET /api/admin/deploy-targets/config returns the stored rows and no secret
   assert.equal(body.targets[0].healthCheckType, 'json-health')
   for (const secret of [SECRET_TOKEN, SECRET_WEBHOOK, pin]) assert.equal(res.body.includes(secret), false)
 })
+
+// HZ-416: the Task container's image and limits are optional — set, they
+// round-trip; null clears them; a malformed value is a 400 that writes
+// nothing. None of them is ever required for a deploy.
+test('container fields: image and limits round-trip and clear; malformed values are 400 and write nothing', async () => {
+  const UI = { ...DOCS_FIELDS, repo: 'FinTekkers/ui-service', service: 'fintekkers-ui-test' }
+  const put = (fields) => request('PUT', '/api/admin/deploy-targets/ui-service', { payload: { ...UI, ...fields }, pin })
+  const image = `docker.io/library/python@sha256:${'d'.repeat(64)}`
+
+  const ok = await put({ containerImage: image, cpuLimit: '1.5', memoryLimit: '512m' })
+  assert.equal(ok.statusCode, 200, ok.body)
+  assert.equal(ok.json().target.containerImage, image)
+  const got = (await request('GET', '/api/admin/deploy-targets/config')).json().targets.find((t) => t.key === 'ui-service')
+  assert.deepEqual([got.containerImage, got.cpuLimit, got.memoryLimit], [image, '1.5', '512m'])
+
+  for (const [fields, reason] of [
+    [{ containerImage: 'python 3.12' }, 'bad containerImage'],
+    [{ cpuLimit: 'two' }, 'bad cpuLimit'],
+    [{ memoryLimit: '4 gigs' }, 'bad memoryLimit'],
+  ]) {
+    const res = await put({ containerImage: image, cpuLimit: '1.5', memoryLimit: '512m', ...fields })
+    assert.equal(res.statusCode, 400, JSON.stringify(fields))
+    assert.deepEqual(res.json(), { error: 'deploy_target_invalid', reason })
+    assert.equal(findTargetByKey('ui-service').containerImage, image)
+  }
+
+  const cleared = await put({ containerImage: null, cpuLimit: null, memoryLimit: null })
+  assert.equal(cleared.statusCode, 200, cleared.body)
+  const row = findTargetByKey('ui-service')
+  assert.deepEqual([row.containerImage, row.cpuLimit, row.memoryLimit], [undefined, undefined, undefined])
+})
