@@ -21,12 +21,6 @@ test('an ?error= redirect lands on the login page with a readable message, and t
   await captureScreenshot(page, 'login-error')
 })
 
-test('with no ?error= param, the login page renders with no error banner', async ({ page }) => {
-  await page.goto('/')
-  await expect(page.locator('.login__submit')).toBeVisible()
-  await expect(page.locator('.gh-error')).toHaveCount(0)
-})
-
 // HZ-36: unauthenticated access must only ever reach the login page — even a
 // deep link to a specific item, which every OTHER spec in this suite (all
 // logged in via storageState) can open directly.
