@@ -98,7 +98,8 @@ test('the farm imports the model as domain.py, from the repo root, in both produ
   // HZ-378: farmd's job lane reads the same contract to run the approved plan.
   const expected = {
     'farm/farmd.py': ['reasons', 'run_plan', 'steps'],
-    'farm/step_agent.py': ['fields', 'reasons', 'run_plan', 'steps'],
+    // HZ-447: and `plan_inventory`, the Plan Inventory block's contract.
+    'farm/step_agent.py': ['fields', 'plan_inventory', 'reasons', 'run_plan', 'steps'],
   }
   for (const [file, names] of Object.entries(expected)) {
     const text = readFileSync(path.join(REPO_ROOT, file), 'utf8')

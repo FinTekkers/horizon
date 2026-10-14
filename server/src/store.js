@@ -544,6 +544,45 @@ export function listRepos() {
   return db.prepare('SELECT repo, prefix, project_id FROM project_repo ORDER BY repo').all()
 }
 
+// ---- HZ-447: a Plan's repo scope ----
+
+export function setScopeRepos(itemId, repos) {
+  db.prepare('UPDATE work_item SET scope_repos_json = ? WHERE id = ?').run(JSON.stringify(repos), itemId)
+}
+
+// The newest check pass recorded for any item in the repo. check_pass keeps
+// passes only, pruned after CHECK_PASS_KEEP_MS, so 'none' can also mean the
+// last pass was pruned.
+export function latestCheckPass(repo) {
+  const row = db
+    .prepare('SELECT sha, finished_at, source FROM check_pass WHERE repo = ? ORDER BY finished_at DESC LIMIT 1')
+    .get(repo)
+  return row ? { status: 'pass', sha: row.sha, finished_at: row.finished_at, source: row.source } : { status: 'none' }
+}
+
+// { repos, outOfScope } for a Plan: the stored scope's repos within the
+// item's project — every project repo when none is stored — plus the item's
+// own repo, so its prompt never names a repo the Plan cannot read. Every
+// other connected repo is out of scope: the farm masks those, never reads them.
+export function getPlanScope(itemId) {
+  const item = db.prepare('SELECT repo, project_id, scope_repos_json FROM work_item WHERE id = ?').get(itemId)
+  let chosen = null
+  try {
+    chosen = item?.scope_repos_json ? JSON.parse(item.scope_repos_json) : null
+  } catch {
+    chosen = null
+  }
+  const inScope = (r) =>
+    r.project_id === item?.project_id && (!Array.isArray(chosen) || chosen.includes(r.repo) || r.repo === item.repo)
+  const repos = listRepos()
+  return {
+    repos: repos
+      .filter(inScope)
+      .map((r) => ({ repo: r.repo, default_branch: getDefaultBranch(r.repo)?.branch ?? null, last_check: latestCheckPass(r.repo) })),
+    outOfScope: repos.filter((r) => !inScope(r)).map((r) => r.repo),
+  }
+}
+
 export function findRepo(repoFullName) {
   return db.prepare('SELECT * FROM project_repo WHERE repo = ?').get(repoFullName) || null
 }

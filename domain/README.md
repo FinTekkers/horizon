@@ -135,6 +135,8 @@ enforced rather than remembered.
 | `fixtures/personas-cases.json` | The same as the other fixtures, for the persona bindings |
 | `runPlan.schema.json` | An **output contract**, not a data file: the machine-readable block a Task's Run plan step emits (HZ-383) and HZ-378's Execute reads. It pairs with no JSON here |
 | `py/run_plan.py` | Its only binding: `validate`, `render`, `extract`, plus `literal_secrets`. Owns the rule the schema subset cannot express (`env` values are `$NAME` references). No JS binding — only the farm reads the block |
+| `planInventory.schema.json` | An **output contract** too: the block a Plan's Inventory step emits (HZ-447) — a has/gaps/evidence row per in-scope repo, plus key facts — which the Design step must cite |
+| `py/plan_inventory.py` | Its only binding for now: `validate`, `check_citations`, `render`, `extract`. Owns the one-row-per-in-scope-repo rule. `fixtures/plan-inventory-cases.json` holds the samples both the schema test and the binding's test assert |
 
 Every file here is authored. Nothing is output.
 
