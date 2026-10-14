@@ -1253,7 +1253,34 @@ function stateSince(row, activeRun, gateAction) {
   if (activeRun) return toIsoUtc(activeRun.started_at)
   if (STEPS[row.cursor]?.kind !== 'gate') return null
   if (gateAction?.state === 'running') return toIsoUtc(gateAction.since)
+  return gateReachedAt(row)
+}
+
+// When the item reached the gate its cursor is on — rule 4 above. Shared by
+// stateSince and waitingSince so the two never disagree on it.
+function gateReachedAt(row) {
   return toIsoUtc(row.last_run_ended_at ?? row.created_at)
+}
+
+// HZ-443: the SET clause every pause path writes. A repeat pause keeps the
+// first paused_at, so the wait counts from when the pause began.
+export const PAUSE_SET = "paused = 1, paused_at = CASE WHEN paused = 1 AND paused_at IS NOT NULL THEN paused_at ELSE datetime('now') END"
+
+// HZ-443: when the item started waiting on a human — the board's "Waiting on
+// me" filter and sort — ISO UTC, or null when it is not waiting. In order:
+//   1. closed, abandoned or rejected → null;
+//   2. paused → when the pause began (paused_at, set by PAUSE_SET);
+//   3. rule-blocked → the block's blockedAt;
+//   4. at a gate → when it reached the gate. Unlike stateSince, a running gate
+//      action does not restart the wait;
+//   5. anything else (an agent working) → null.
+// A new pause path must write PAUSE_SET, or its items show no wait.
+function waitingSince(row, ruleBlock) {
+  if (isClosed(row) || row.abandoned_at || row.rejected) return null
+  if (row.paused) return toIsoUtc(row.paused_at)
+  if (ruleBlock) return toIsoUtc(ruleBlock.blockedAt)
+  if (STEPS[row.cursor]?.kind === 'gate') return gateReachedAt(row)
+  return null
 }
 
 const selectProjectProviderDefaults = db.prepare('SELECT provider_defaults_json FROM project WHERE id = ?')
@@ -1261,6 +1288,7 @@ const selectProjectProviderDefaults = db.prepare('SELECT provider_defaults_json 
 function itemView(row, { stepOutputs: withStepOutputs = true } = {}) {
   const activeRun = withRunState(selectActiveRun.get(row.id) || null)
   const gateFields = itemGateFields(row)
+  const ruleBlock = parseRuleBlock(row.rule_block_json)
   return {
     id: row.id,
     title: row.title,
@@ -1304,7 +1332,10 @@ function itemView(row, { stepOutputs: withStepOutputs = true } = {}) {
     forwardedReview: forwardedReview(row),
     ...dependencyFields(row.id),
     ...spawnFields(row.id),
-    ruleBlock: parseRuleBlock(row.rule_block_json),
+    ruleBlock,
+    // HZ-443: the board's "Waiting on me" filter and sort.
+    paused_at: row.paused ? toIsoUtc(row.paused_at) : null,
+    waiting_since: waitingSince(row, ruleBlock),
     // HZ-384: the plan the Approve the run gate shows, and the one approved.
     ...(approvesRunPlan(itemKindOf(row)) ? { runPlan: runPlanView(row.id), approvedPlanHash: row.approved_plan_hash ?? null } : {}),
   }
@@ -1668,7 +1699,8 @@ export function setPaused(id, paused) {
   // HZ-346: Resume is the owner's retry for a rule-blocked item, so it clears
   // the block; Pause leaves it.
   const unblock = paused ? '' : 'rule_block_json = NULL, '
-  db.prepare(`UPDATE work_item SET paused = ?, ${unblock}${touch} WHERE id = ?`).run(paused ? 1 : 0, id)
+  const pausedSet = paused ? PAUSE_SET : 'paused = 0'
+  db.prepare(`UPDATE work_item SET ${pausedSet}, ${unblock}${touch} WHERE id = ?`).run(id)
   addEvent(id, {
     who: 'You',
     text: paused ? 'paused agent work on this item' : 'resumed work',

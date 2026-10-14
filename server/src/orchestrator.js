@@ -69,6 +69,7 @@ import {
   nextStepAttempt,
   missingPlanSections,
   PLAN_SECTIONS,
+  PAUSE_SET,
 } from './store.js'
 import { createMockPr, createDeployRelease, postIssueComment, syncIssueBodyFields, createPrFromBranch, getPrHeadSha, getIssueBody } from './github.js'
 import { PHASES } from '../../domain/js/lifecycle.js'
@@ -1282,7 +1283,7 @@ async function runLaneCheck(id, stepIndex) {
   }
   if (missing === null || missing.length > 0) {
     const note = missing === null ? 'could not read the issue to check plan sections' : `Missing: ${missing.join(', ')}`
-    db.prepare("UPDATE work_item SET paused = 1, updated_at = datetime('now') WHERE id = ?").run(id)
+    db.prepare(`UPDATE work_item SET ${PAUSE_SET}, updated_at = datetime('now') WHERE id = ?`).run(id)
     addEvent(id, { who: 'Horizon', text: `paused: ${note}`, color: '#9C333E', initials: 'HZ' })
     dispatching.delete(id)
     notifyChange()
@@ -2394,7 +2395,7 @@ function finalizeDeployStep(id, runId, text, artifactMd, verdict, patch) {
 
   deployQueue.endDeployEntry(id, verdict.verdict === 'pass' ? 'passed' : 'failed')
   if (verdict.verdict !== 'pass') {
-    db.prepare("UPDATE work_item SET paused = 1, updated_at = datetime('now') WHERE id = ?").run(id)
+    db.prepare(`UPDATE work_item SET ${PAUSE_SET}, updated_at = datetime('now') WHERE id = ?`).run(id)
     addEvent(id, {
       who: agent.label,
       text: `deploy verification failed — ${text.slice(0, 300)} — item paused; resume to redeploy`,
@@ -2730,7 +2731,7 @@ export function failFarmRun(runId, error, reason = null, jobView = null) {
     return { ok: true, retried: true }
   }
 
-  db.prepare("UPDATE work_item SET paused = 1, updated_at = datetime('now') WHERE id = ?").run(id)
+  db.prepare(`UPDATE work_item SET ${PAUSE_SET}, updated_at = datetime('now') WHERE id = ?`).run(id)
   // HZ-333: a resume re-queues the item rather than reusing this release.
   if (run.step_index === DEPLOY_STEP_INDEX) deployQueue.endDeployEntry(id, 'failed')
   // Mirrors the `(${reason})` tag already used for the auto-retrying event
@@ -2893,7 +2894,7 @@ export async function stopJob(id) {
   db.prepare(
     "UPDATE step_run SET status = 'cancelled', output = ?, job_view = COALESCE(?, job_view), ended_at = datetime('now') WHERE id = ?",
   ).run(`STOPPED: the run was stopped with ${commandsDone} command(s) done`, finalView && JSON.stringify(finalView), run.id)
-  db.prepare("UPDATE work_item SET paused = 1, updated_at = datetime('now') WHERE id = ?").run(id)
+  db.prepare(`UPDATE work_item SET ${PAUSE_SET}, updated_at = datetime('now') WHERE id = ?`).run(id)
   addEvent(id, {
     who: 'Horizon',
     text: `the run was stopped with ${commandsDone} command(s) done — item paused; resume to continue from the first unfinished command`,

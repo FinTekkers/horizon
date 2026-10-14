@@ -443,13 +443,26 @@ db.exec(`
 // lane (HZ-435): the lane overlay its issue label selects (domain/steps.json's
 // `lanes`), e.g. 'trivial'. NULL = the kind's full pipeline, so existing rows
 // need no backfill. No CHECK: laneOf() reads an undeclared value as no lane.
-for (const column of ['pr INTEGER', 'pr_url TEXT', 'pr_mergeable INTEGER', 'release_tag TEXT', 'release_url TEXT', 'repo TEXT', 'project_id INTEGER', 'persona TEXT', 'personas_json TEXT', 'review_cycle_count INTEGER NOT NULL DEFAULT 0', 'abandoned_at TEXT', 'abandoned_reason TEXT', 'abandoned_by TEXT', 'notified_step INTEGER', 'last_reviewed_sha TEXT', 'fix_pass INTEGER NOT NULL DEFAULT 0', 'fix_findings_json TEXT', 'forwarded_review_run_id INTEGER', 'forwarded_by TEXT', 'forwarded_sha TEXT', 'rule_block_json TEXT', 'provider_choices_json TEXT', "kind TEXT NOT NULL DEFAULT 'change' CHECK (kind IN ('change','task'))", 'approved_plan_hash TEXT', 'lane TEXT']) {
+// paused_at (HZ-443): when the current pause began, for the board's "waiting"
+// sort. Read only while paused = 1, so a resume leaves it alone.
+for (const column of ['pr INTEGER', 'pr_url TEXT', 'pr_mergeable INTEGER', 'release_tag TEXT', 'release_url TEXT', 'repo TEXT', 'project_id INTEGER', 'persona TEXT', 'personas_json TEXT', 'review_cycle_count INTEGER NOT NULL DEFAULT 0', 'abandoned_at TEXT', 'abandoned_reason TEXT', 'abandoned_by TEXT', 'notified_step INTEGER', 'last_reviewed_sha TEXT', 'fix_pass INTEGER NOT NULL DEFAULT 0', 'fix_findings_json TEXT', 'forwarded_review_run_id INTEGER', 'forwarded_by TEXT', 'forwarded_sha TEXT', 'rule_block_json TEXT', 'provider_choices_json TEXT', "kind TEXT NOT NULL DEFAULT 'change' CHECK (kind IN ('change','task'))", 'approved_plan_hash TEXT', 'lane TEXT', 'paused_at TEXT']) {
   try {
     db.exec(`ALTER TABLE work_item ADD COLUMN ${column}`)
   } catch {
     // column already exists
   }
 }
+// HZ-443: one-time backfill for items paused before paused_at existed — the
+// newest event mentioning "paused" (every pause path's event text does), else
+// updated_at, which can only understate the wait. Idempotent: it touches only
+// paused rows still without a value. Known limit: an unrelated later event
+// that happens to mention "paused" would win; it runs once, so that is accepted.
+db.exec(`
+  UPDATE work_item
+     SET paused_at = COALESCE(
+           (SELECT MAX(e.created_at) FROM event e WHERE e.item_id = work_item.id AND e.text LIKE '%paused%'),
+           updated_at)
+   WHERE paused = 1 AND paused_at IS NULL`)
 try {
   db.exec('ALTER TABLE step_run ADD COLUMN artifact TEXT') // full agent artifact (markdown), separate from the summary
 } catch {
