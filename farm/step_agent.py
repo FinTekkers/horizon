@@ -30,7 +30,7 @@ import httpx
 # `python -m farm.farmd` from there and farm/tests/conftest.py inserts it).
 # HZ-132 put the failure-reason vocabulary there too, so the reason this script
 # reports is a constant the server already knows, never a string typed here.
-from domain.py import fields, reasons, run_plan, steps
+from domain.py import fields, plan_draft, reasons, run_plan, steps
 from domain.py import providers as domain_providers
 from domain.py.personas import model_agent_for_step
 
@@ -162,7 +162,7 @@ TASK_STEP_CONFIG = {
 }
 
 # HZ-446: a Plan's steps. Their real prompts land with HZ-447 and HZ-448;
-# until then every farm-lane row runs one read-only placeholder role, with the
+# until then every other farm-lane row runs one read-only placeholder role, with the
 # planner's read-only tools, so a Plan never edits code in any repo. Its PM
 # rows run on the PM step kind like every other kind's. "File items" is
 # runsIn "server" — Horizon's own code, never the farm — so it is not here.
@@ -181,6 +181,8 @@ PLAN_FARM_LABELS = (
 
 PLAN_STEP_CONFIG = {
     **{label: ("plan_placeholder.md", True, PLANNER_TOOLS, None) for label in PLAN_FARM_LABELS},
+    # HZ-448: Draft items writes the Plan's item drafts (domain/planDraft.schema.json).
+    PLAN_DRAFT_LABEL: ("plan_draft.md", True, PLANNER_TOOLS, None),
     **{step["label"]: ("pm.md", True, None, None) for step in steps.FARM_VIEWS["plan"] if step["runsIn"] == "pm"},
 }
 
@@ -1723,6 +1725,34 @@ def _task_reply_validator(label: str):
     return check
 
 
+def _plan_reply_validator():
+    """HZ-448: the reply check the Draft items step runs inside the retry
+    envelope. Its `plan_draft` block must satisfy domain/planDraft.schema.json
+    and form a DAG (domain/py/plan_draft.py). Raises AgentError, which takes
+    the one retry; a second bad reply fails the step. Whether a real key
+    exists is the server's check, on ingest."""
+
+    def check(parsed):
+        if not isinstance(parsed, dict):
+            return parsed  # the required-field check after the call says so
+        try:
+            plan_draft.validate(parsed.get("plan_draft"))
+        except ValueError as exc:
+            raise AgentError(f"invalid plan draft: {exc}") from None
+        return parsed
+
+    return check
+
+
+def _reply_validator(kind: str, label: str):
+    """The reply check a step runs inside the retry envelope, or None. A
+    Plan's Draft items step is picked by its label; every Task step by its
+    kind's table (HZ-383)."""
+    if label == PLAN_DRAFT_LABEL:
+        return _plan_reply_validator()
+    return _task_reply_validator(label) if STEP_CONFIGS.get(kind) is TASK_STEP_CONFIG else None
+
+
 def _run_and_parse(
     prompt: str,
     *,
@@ -2753,7 +2783,7 @@ def _execute(task: dict, guard: HandoffGuard) -> dict:
             provider=provider_override,
             model_choice=model_choice,
             provider_locked=provider_locked,
-            validate=_task_reply_validator(label) if kind == "task" else None,
+            validate=_reply_validator(kind, label),
         )
         watch.provider = reply_provenance.get("provider") or watch.provider
     summary = str(parsed.get("summary", "")).strip()[:SUMMARY_MAX_CHARS]
@@ -2817,6 +2847,10 @@ def _execute(task: dict, guard: HandoffGuard) -> dict:
     # other Task step's `verdict` is dropped.
     if label == VERIFY_REPORT_LABEL and isinstance(parsed.get("verdict"), dict):
         result.setdefault("artifacts", {})["verdict"] = parsed["verdict"]
+    # HZ-448: the validated drafts ride through; the server re-checks them,
+    # saves them as the Plan's draft and files nothing.
+    if label == PLAN_DRAFT_LABEL:
+        result.setdefault("artifacts", {})["plan_draft"] = parsed["plan_draft"]
     return result
 
 

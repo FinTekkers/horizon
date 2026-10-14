@@ -135,6 +135,9 @@ enforced rather than remembered.
 | `fixtures/personas-cases.json` | The same as the other fixtures, for the persona bindings |
 | `runPlan.schema.json` | An **output contract**, not a data file: the machine-readable block a Task's Run plan step emits (HZ-383) and HZ-378's Execute reads. It pairs with no JSON here |
 | `py/run_plan.py` | Its only binding: `validate`, `render`, `extract`, plus `literal_secrets`. Owns the rule the schema subset cannot express (`env` values are `$NAME` references). No JS binding — only the farm reads the block |
+| `planDraft.schema.json` | An **output contract**: a Plan's item drafts, emitted by the Draft items step and saved by an owner's edit (HZ-448). Holds no work-item field limit — both bindings add those from `fields.json` at load |
+| `py/plan_draft.py` | The farm binding: `validate` checks shape and the dependency DAG inside the step's retry envelope |
+| `js/planDraft.js` | The server binding: `validatePlanDraft` runs the same rules in the same order, plus the two only the server can answer (`unknown_key`, `unknown_repo`); `realKeysIn`, `renderPlanDraftMd`, `PLAN_DRAFT_SCHEMA`. Both are run over `fixtures/plan-draft-cases.json` |
 
 Every file here is authored. Nothing is output.
 

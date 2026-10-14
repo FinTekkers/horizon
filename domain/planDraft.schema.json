@@ -1,0 +1,68 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$comment": "HZ-448: the contract for a Plan's item drafts — the `plan_draft` object the Draft items step replies with, and the whole document an owner saves through PUT /api/items/:id/plan-draft. Like runPlan.schema.json it pairs with no data file: it is the contract for an agent's OUTPUT. Both bindings interpret this file directly — domain/py/plan_draft.py on the farm, domain/js/planDraft.js on the server — so a shape rule lives here once. The work-item field limits are NOT restated here: each binding adds them at load from domain/fields.json — title and outcome lengths, repo's maximum, and metric's and guardrails' line caps as maxItems (PLAN_DRAFT_SCHEMA / SCHEMA). Rules a schema cannot express — no blank text, unique plan-local ids, every `#n` dependency names a draft in the set, no cycle — are the bindings'. Only the server knows which real keys and repos exist (unknown_key, unknown_repo).",
+  "title": "Horizon Plan item drafts",
+  "type": "object",
+  "required": ["items", "shared_guardrails", "open_questions"],
+  "additionalProperties": false,
+  "properties": {
+    "items": {
+      "$comment": "The items the Plan would file, in display order. New items are named only by plan-local id (#1, #2, …); a real key is assigned at filing, in Approve & file (HZ-449).",
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 15,
+      "items": {
+        "type": "object",
+        "required": ["id", "repo", "title", "outcome", "metric", "guardrails", "depends_on", "must_also_cover"],
+        "additionalProperties": false,
+        "properties": {
+          "id": { "type": "string", "pattern": "^#[1-9][0-9]*$" },
+          "repo": { "type": "string", "minLength": 3, "pattern": "^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$" },
+          "title": { "type": "string" },
+          "outcome": { "type": "string" },
+          "metric": {
+            "type": "array",
+            "minItems": 3,
+            "items": { "type": "string", "minLength": 1, "maxLength": 500 }
+          },
+          "guardrails": {
+            "type": "array",
+            "minItems": 3,
+            "items": { "type": "string", "minLength": 1, "maxLength": 500 }
+          },
+          "depends_on": {
+            "$comment": "A plan-local id (#n) of another draft here, or the real key of an EXISTING item — open or closed.",
+            "type": "array",
+            "maxItems": 15,
+            "uniqueItems": true,
+            "items": { "type": "string", "pattern": "^(#[1-9][0-9]*|[A-Z][A-Z0-9]*-[0-9]+)$" }
+          },
+          "must_also_cover": {
+            "type": "array",
+            "maxItems": 5,
+            "items": { "type": "string", "minLength": 1, "maxLength": 500 }
+          }
+        }
+      }
+    },
+    "shared_guardrails": {
+      "$comment": "Guardrails every drafted item carries, on top of its own.",
+      "type": "array",
+      "maxItems": 6,
+      "items": { "type": "string", "minLength": 1, "maxLength": 500 }
+    },
+    "open_questions": {
+      "type": "array",
+      "maxItems": 10,
+      "items": {
+        "type": "object",
+        "required": ["question", "recommended_answer"],
+        "additionalProperties": false,
+        "properties": {
+          "question": { "type": "string", "minLength": 1, "maxLength": 1000 },
+          "recommended_answer": { "type": "string", "minLength": 1, "maxLength": 2000 }
+        }
+      }
+    }
+  }
+}
