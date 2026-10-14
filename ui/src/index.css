@@ -463,11 +463,17 @@ button { font-family: var(--font-sans); }
   font: 700 13px var(--font-sans); color: var(--primary-ink); text-decoration: underline;
 }
 .board__filters { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
-.board__filter-chip {
+.board__filter-chip, .board__narrow-chip {
   border: 1.5px solid var(--border-strong); cursor: pointer; border-radius: 20px; padding: 6px 12px;
   font: 700 12px var(--font-sans); background: var(--surface); color: var(--muted);
 }
-.board__filter-chip--active { background: var(--primary-bg); color: var(--primary-ink); border-color: var(--primary-bg); }
+.board__filter-chip--active, .board__narrow-chip--active { background: var(--primary-bg); color: var(--primary-ink); border-color: var(--primary-bg); }
+/* HZ-443: the narrowing controls, on their own row so the header never crowds;
+   every group wraps on a narrow screen. Same chip look as the hide filters. */
+.board__narrow { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 18px; margin: -6px 0 18px; }
+.board__narrow-group { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; }
+.board__narrow-label { font: 600 12px var(--font-sans); color: var(--muted); }
+.board__sort-toggle { border-style: dashed; }
 .board__empty {
   margin-top: 8px; padding: 40px 20px; text-align: center;
   font: 500 14px var(--font-sans); color: var(--muted);
@@ -541,6 +547,11 @@ button { font-family: var(--font-sans); }
 /* HZ-228: time in the current state, on its own line below the already-full status row. */
 .card__elapsed {
   font: 500 12px var(--font-sans); color: var(--muted);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-top: 4px;
+}
+/* HZ-443: how long a Waiting on me card has waited; replaces .card__elapsed. */
+.card__waiting {
+  font: 600 12px var(--font-sans); color: var(--warning-ink);
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-top: 4px;
 }
 /* HZ-333: waiting in its deploy target's queue. */

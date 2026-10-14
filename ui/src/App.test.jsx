@@ -4,8 +4,10 @@
 // are covered, plus the guardrail that a failed approval never navigates.
 
 import { expect, test, vi, afterEach } from 'vitest'
-import { render, fireEvent, cleanup, waitFor, act } from '@testing-library/react'
+import { render, fireEvent, cleanup, waitFor, act, within } from '@testing-library/react'
 import { STEPS, IMPLEMENT_STEP_INDEX, endIndex } from '../../domain/js/lifecycle.js'
+import { PRIORITY } from '../../domain/js/priorities.js'
+import * as boardNarrowing from './boardNarrowing'
 
 const CLOSING_GATE_INDEX = endIndex('change') - 1
 const CLOSING_GATE_LABEL = STEPS[CLOSING_GATE_INDEX].label
@@ -267,6 +269,27 @@ test('disabling the selected project live resets the filter to All projects', as
   expect(boardIds()).toEqual(['AL-1', 'AL-2', 'AL-3'])
 })
 
+// HZ-443: the board's Priority narrowing composes with the real project filter.
+test('a project choice and a Priority chip together show only items matching both', async () => {
+  projects = [ALPHA, BETA]
+  setItems([
+    { ...projectItem('AL-1', 1), priority: PRIORITY.HIGH },
+    { ...projectItem('AL-2', 1), priority: PRIORITY.LOW },
+    { ...projectItem('BE-1', 2), priority: PRIORITY.HIGH },
+  ])
+  try {
+    const { findByText, getByRole } = render(<App />)
+    await findByText('Item AL-1')
+    chooseProject(getByRole, 'Alpha')
+    fireEvent.click(within(getByRole('group', { name: 'Priority' })).getByRole('button', { name: PRIORITY.HIGH }))
+    expect(boardIds()).toEqual(['AL-1'])
+    chooseProject(getByRole, 'All projects')
+    expect(boardIds()).toEqual(['AL-1', 'BE-1'])
+  } finally {
+    boardNarrowing._resetForTests()
+  }
+})
+
 test('the New item dialog lists every enabled project and no disabled one', async () => {
   projects = [
     { ...ALPHA, repos: [{ repo: 'Org/alpha' }] },
@@ -394,7 +417,7 @@ test('the repo choice is kept per project and never carried across, even through
 
   chooseProject(getByRole, 'All projects')
   fireEvent.click(filterButton())
-  expect(queryByRole('group')).toBeNull()
+  expect(queryByRole('group', { name: /^Repos in/ })).toBeNull()
   fireEvent.click(document.querySelector('.usermenu__scrim'))
   expect(boardIds()).toEqual(['LM-1', 'LS-1', 'OA-1', 'OB-1', 'UI-1'])
 

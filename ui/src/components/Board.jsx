@@ -10,6 +10,8 @@ import {
 } from '../../../domain/js/lifecycle.js'
 import { PHASE_ACCENT, PHASE_ACCENT_BG, priorityColor } from '../domain/lifecycle'
 import { FILTERS, visibleItems, hiddenCounts, matchCounts } from '../domain/filters'
+import { KIND_OPTIONS, SORT_LABELS, narrowItems, sortByWait, waitText } from '../domain/narrowing'
+import { PRIORITIES } from '../../../domain/js/priorities.js'
 import { PRIMARY_PERSONA_AGENT, personaFor } from '../domain/personas'
 import { itemStatus, stateLabel, isDependencyBlocked, isRuleBlocked, ruleBlockSummary, queuedToMerge } from '../domain/status'
 import { gateActionOf, gateActionBusy, elapsedText } from '../domain/gateAction'
@@ -18,6 +20,7 @@ import { deployQueueLabel } from '../domain/deployQueue'
 import { useClockTick } from '../useClockTick'
 import { issueUrl, issueLabel } from '../api'
 import * as boardFilters from '../boardFilters'
+import * as boardNarrowing from '../boardNarrowing'
 import StatusPill from './StatusPill'
 import DependencyBadge, { itemHref } from './DependencyBadge'
 import GateActionStatus from './GateActionStatus'
@@ -41,7 +44,7 @@ function progressSegs(item) {
   })
 }
 
-function BoardCard({ item, projects, durationEstimates, deployBlock, viewerName, now, onOpen, onApprove, onReject, onTogglePause, isGateBusy }) {
+function BoardCard({ item, projects, durationEstimates, deployBlock, viewerName, now, showWait, onOpen, onApprove, onReject, onTogglePause, isGateBusy }) {
   const closed = isClosed(item)
   const abandoned = isAbandoned(item)
   const rejected = item.rejected && !closed && !abandoned
@@ -147,7 +150,10 @@ function BoardCard({ item, projects, durationEstimates, deployBlock, viewerName,
         </span>
         <StatusPill status={itemStatus(item, false, { deployBlock })} />
       </div>
-      {elapsedLabel && (
+      {/* HZ-443: under Waiting on me, one wait per card — from when it began
+          waiting, so it replaces the state's elapsed line. */}
+      {showWait && <div className="card__waiting">{waitText(item.waiting_since, now)}</div>}
+      {!showWait && elapsedLabel && (
         <div className="card__elapsed">
           {elapsedLabel} · {elapsedText(item.state_since, now, { seconds: false })}
           {hint && (
@@ -262,32 +268,52 @@ export default function Board({
   isGateBusy = gateActionBusy,
 }) {
   const activeFilterKeys = useSyncExternalStore(boardFilters.subscribe, boardFilters.getActiveFilters)
+  const view = useSyncExternalStore(boardNarrowing.subscribe, boardNarrowing.getBoardView)
   // HZ-228: one clock tick for the whole Board, once a minute while any card
   // shows an elapsed label — cards start no timers of their own.
-  useClockTick(60_000, items.some((it) => it.state_since))
+  useClockTick(60_000, items.some((it) => it.state_since || (view.waiting && it.waiting_since)))
   const now = new Date()
   // Filtering is a view concern only — it narrows what's rendered here, and
   // never touches an item or what the farm dispatches (HZ-80).
   const shown = visibleItems(items, activeFilterKeys, now)
+  // HZ-443: then the narrowing controls, over what the hide filters left.
+  const narrowed = narrowItems(shown, view)
+  const filtered = shown.length - narrowed.length
   const hidden = hiddenCounts(items, activeFilterKeys, now)
   const matches = matchCounts(items, now)
-  const totalHidden = Object.values(hidden).reduce((sum, n) => sum + n, 0)
-  const hiddenSummary = FILTERS.filter((f) => hidden[f.key] > 0)
-    .map((f) => `${hidden[f.key]} ${f.noun}`)
-    .join(', ')
+  const totalHidden = Object.values(hidden).reduce((sum, n) => sum + n, 0) + filtered
+  const hiddenSummary = [
+    ...FILTERS.filter((f) => hidden[f.key] > 0).map((f) => `${hidden[f.key]} ${f.noun}`),
+    ...(filtered > 0 ? [`${filtered} filtered`] : []),
+  ].join(', ')
   // Abandoned items that are still shown (their filter toggled off) don't
   // count as active work: they've stopped being dispatched.
-  const activeCount = shown.filter((it) => !isAbandoned(it)).length
+  const activeCount = narrowed.filter((it) => !isAbandoned(it)).length
+  const showAll = () => {
+    boardFilters.setActiveFilters([])
+    boardNarrowing.clearBoardView()
+  }
+  const chip = (on, label, onClick) => (
+    <button
+      key={label}
+      type="button"
+      className={`board__narrow-chip${on ? ' board__narrow-chip--active' : ''}`}
+      aria-pressed={on}
+      onClick={onClick}
+    >
+      {label}
+    </button>
+  )
 
   return (
     <div className="board">
       <div className="board__head">
         <div className="board__title">Work in flight</div>
         <div className="board__meta">{activeCount} items across the lifecycle</div>
-        {totalHidden > 0 && shown.length > 0 && (
+        {totalHidden > 0 && narrowed.length > 0 && (
           <div className="board__hidden-note">
             Hiding {hiddenSummary}
-            <button className="board__show-all" onClick={() => boardFilters.setActiveFilters([])}>
+            <button className="board__show-all" onClick={showAll}>
               Show all
             </button>
           </div>
@@ -313,21 +339,59 @@ export default function Board({
         </button>
       </div>
 
+      <div className="board__narrow">
+        <div className="board__narrow-group">
+          {chip(view.waiting, 'Waiting on me', () => boardNarrowing.setBoardView({ waiting: !view.waiting }))}
+          {view.waiting && (
+            <button
+              type="button"
+              className="board__narrow-chip board__sort-toggle"
+              title="Sort order — click to flip"
+              onClick={() => boardNarrowing.setBoardView({ sortDir: view.sortDir === 'newest' ? 'oldest' : 'newest' })}
+            >
+              {SORT_LABELS[view.sortDir]}
+            </button>
+          )}
+        </div>
+        <div className="board__narrow-group" role="group" aria-label="Priority">
+          <span className="board__narrow-label" aria-hidden="true">
+            Priority
+          </span>
+          {PRIORITIES.map((p) => chip(view.priorities.includes(p), p, () => boardNarrowing.toggleIn('priorities', p)))}
+        </div>
+        <div className="board__narrow-group" role="group" aria-label="Kind">
+          <span className="board__narrow-label" aria-hidden="true">
+            Kind
+          </span>
+          {KIND_OPTIONS.map((k) => chip(view.kinds.includes(k.key), k.label, () => boardNarrowing.toggleIn('kinds', k.key)))}
+        </div>
+      </div>
+
       {items.length === 0 && <div className="board__empty">No work items yet.</div>}
 
       {items.length > 0 && shown.length === 0 && (
         <div className="board__empty">
           All {items.length} items are hidden by the active filters.{' '}
-          <button className="board__show-all" onClick={() => boardFilters.setActiveFilters([])}>
+          <button className="board__show-all" onClick={showAll}>
             Show all
           </button>
         </div>
       )}
 
-      {shown.length > 0 && (
+      {shown.length > 0 && narrowed.length === 0 && (
+        <div className="board__empty">
+          No items match the selected filters.{' '}
+          <button className="board__show-all" onClick={boardNarrowing.clearBoardView}>
+            Clear
+          </button>
+        </div>
+      )}
+
+      {narrowed.length > 0 && (
         <div className="board__cols">
           {PHASES.map((name, p) => {
-            const colItems = shown.filter((it) => phaseIdx(it) === p)
+            const inCol = narrowed.filter((it) => phaseIdx(it) === p)
+            const colItems = view.waiting ? sortByWait(inCol, view.sortDir) : inCol
             const colActiveCount = colItems.filter((it) => !isAbandoned(it)).length
             return (
               <div key={name} className="col">
@@ -351,6 +415,7 @@ export default function Board({
                       deployBlock={deployBlock}
                       viewerName={viewerName}
                       now={now.getTime()}
+                      showWait={view.waiting}
                       onOpen={onOpen}
                       onApprove={onApprove}
                       onReject={onReject}
