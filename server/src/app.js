@@ -42,6 +42,7 @@ import { isAllowedEmail } from './loginAllowlist.js'
 import { approvalSecretConfigured, approvalSecretOk, isAllowedApprover, isOwner, normalizeJid } from './waApprovers.js'
 import * as waPollVotes from './waPollVotes.js'
 import { STEPS, isItemKind } from '../../domain/js/lifecycle.js'
+import { REASON } from '../../domain/js/reasons.js'
 import { intakeFields } from '../../domain/js/fields.js'
 import { PRIORITIES, DEFAULT_PRIORITY } from '../../domain/js/priorities.js'
 import { choiceValues } from '../../domain/js/providers.js'
@@ -50,6 +51,8 @@ import * as definitions from './definitions.js'
 import * as rulesStore from './rulesStore.js'
 import * as runLogView from './runLogView.js'
 import * as split from './split.js'
+import * as planDraft from './planDraft.js'
+import { PLAN_DRAFT_SCHEMA } from '../../domain/js/planDraft.js'
 import * as checkFlakes from './checkFlakes.js'
 import * as testResults from './testResults.js'
 import { RULE_MAX_CHARS, NEEDS_MAX_CHARS } from './ruleBlock.js'
@@ -890,6 +893,55 @@ export function buildApp({ logger = true, onRoute = null } = {}) {
       } catch {
         return reply.code(503).send({ error: 'farm unavailable' })
       }
+    },
+  )
+
+  // HZ-448: a Plan's current item drafts (server/src/planDraft.js), and an
+  // owner's edit of them. An edit sends the whole document plus the version it
+  // was made on; the server re-validates all of it (planDraft.saveOwnerEdit)
+  // and saves it as the next version. "Owner" is whoever may approve Approve &
+  // file: a browser session plus the gate PIN (humanAuthorized). Nothing here
+  // files an item, an issue or a dependency link.
+  fastify.get(
+    '/api/items/:id/plan-draft',
+    { schema: { params: idParam, response: { 200: OK_OBJECT, 404: ERROR_OBJECT } } },
+    (request, reply) => {
+      const item = store.getItem(request.params.id)
+      if (!item) return reply.code(404).send({ error: 'not_found' })
+      const current = planDraft.currentDraft(item.id)
+      if (!current) return reply.code(404).send({ error: 'no_plan_draft' })
+      return { ...current, editable: planDraft.isEditable(item) }
+    },
+  )
+
+  const { $schema: _draftDialect, ...planDraftBody } = PLAN_DRAFT_SCHEMA
+  const PLAN_DRAFT_EDIT_STATUS = { not_found: 404, no_plan_draft: 404, [REASON.INVALID_PLAN_DRAFT]: 422 }
+  fastify.put(
+    '/api/items/:id/plan-draft',
+    {
+      schema: {
+        params: idParam,
+        body: {
+          type: 'object',
+          required: ['base_version', 'doc'],
+          additionalProperties: false,
+          properties: { base_version: { type: 'integer', minimum: 1 }, doc: planDraftBody },
+        },
+        response: { 200: OK_OBJECT, 400: ERROR_OBJECT, 401: ERROR_OBJECT, 404: ERROR_OBJECT, 409: ERROR_OBJECT, 422: ERROR_OBJECT },
+        security: HUMAN_GATE_SECURITY,
+      },
+    },
+    (request, reply) => {
+      if (!humanAuthorized(request, reply)) return
+      const result = planDraft.saveOwnerEdit(request.params.id, {
+        baseVersion: request.body.base_version,
+        doc: request.body.doc,
+        actor: actorOf(request),
+      })
+      if (result.error) {
+        return reply.code(Object.hasOwn(PLAN_DRAFT_EDIT_STATUS, result.error) ? PLAN_DRAFT_EDIT_STATUS[result.error] : 409).send(result)
+      }
+      return { version: result.version, doc: result.doc }
     },
   )
 

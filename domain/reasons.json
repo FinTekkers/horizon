@@ -9,6 +9,7 @@
     { "id": "plan_changed_since_approval", "retryable": false },
     { "id": "job_budget_exceeded", "retryable": false },
     { "id": "job_cwd_refused", "retryable": false },
-    { "id": "sdk_message_too_large", "retryable": true }
+    { "id": "sdk_message_too_large", "retryable": true },
+    { "id": "invalid_plan_draft", "retryable": false }
   ]
 }

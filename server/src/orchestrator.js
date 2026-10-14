@@ -30,6 +30,7 @@ import {
   VERIFY_REPORT_STEP_INDEX,
   APPROVE_RUN_GATE_INDEX,
   APPROVE_FILE_GATE_INDEX,
+  PLAN_DRAFT_STEP_INDEX,
   laneOf,
   laneSkips,
   laneCheckIndexes,
@@ -38,6 +39,8 @@ import {
 } from '../../domain/js/lifecycle.js'
 import { AUTO_RETRY_REASONS, REASON } from '../../domain/js/reasons.js'
 import { patchLimits, addedCriteriaLines } from '../../domain/js/fields.js'
+import { renderPlanDraftMd } from '../../domain/js/planDraft.js'
+import { ingestDraft } from './planDraft.js'
 import {
   getItem,
   addEvent,
@@ -992,6 +995,25 @@ const MOCK_REVIEW_FAIL_COUNT = Number(process.env.MOCK_REVIEW_FAIL_COUNT) || 0
 
 const MOCK_QA_PASS = { verdict: 'pass', regression_tests_run: true, new_code_unit_coverage: true, e2e_test_present: true, findings: [] }
 
+// HZ-448: the mock Draft items reply — a valid two-item draft in `repo`.
+function mockPlanDraft(repo) {
+  const draft = (id, title, dependsOn) => ({
+    id,
+    repo,
+    title,
+    outcome: `${title} (mock), so the plan's question is answered.`,
+    metric: ['A test covers the change (mock).', 'The change ships behind no flag (mock).', 'The docs name the change (mock).'],
+    guardrails: ['Nothing else changes (mock).', 'No new dependency (mock).', 'Every step is reversible (mock).'],
+    depends_on: dependsOn,
+    must_also_cover: [],
+  })
+  return {
+    items: [draft('#1', 'Lay the groundwork', []), draft('#2', 'Build on the groundwork', ['#1'])],
+    shared_guardrails: ['Nothing is filed before Approve & file (mock).'],
+    open_questions: [{ question: 'Ship both items together? (mock)', recommended_answer: 'No: #2 waits for #1.' }],
+  }
+}
+
 // Mock behavior per step label (HZ-117: keyed by label, not index — the
 // pipeline's step identities are fixed, see domain/steps.json; an insertion
 // elsewhere in STEPS must never repoint one of these at the wrong step).
@@ -1094,7 +1116,13 @@ export const MOCK_STEP_BEHAVIOR = {
   'Define the question': () => ({ summary: 'drafted the roadmap question and the repos in scope (mock)' }),
   'Inventory current state': () => ({ summary: 'inventoried the current state of the repos in scope (mock)' }),
   'Design options & recommendation': () => ({ summary: 'prepared design options with a recommendation (mock)' }),
-  'Draft items': () => ({ summary: 'drafted the items this plan would file (mock)' }),
+  // HZ-448: a valid two-item draft in the item's own repo, so a demo Plan
+  // reaches Approve & file with a draft to edit. An item with no repo gets
+  // none: no repo is one it could file in.
+  'Draft items': (it) => ({
+    summary: 'drafted the items this plan would file (mock)',
+    ...(it.repo ? { plan_draft: mockPlanDraft(it.repo) } : {}),
+  }),
   'Review drafts: coverage & overlap': () => ({ summary: 'reviewed the drafts for coverage and overlap (mock)' }),
   'Review drafts: metrics & size': () => ({ summary: 'reviewed the drafts for metrics and size (mock)' }),
   // Execute: the code change takes the form of a GitHub PR. The mock commits
@@ -2639,6 +2667,19 @@ export async function completeFarmRun(runId, { summary, patch, artifacts, job_vi
     artifactMd = proposeSplit(item, runId, artifacts?.split, artifactMd)
   }
 
+  // HZ-448: the Draft items reply's plan_draft is checked with the server's
+  // own context (planDraft.js) and saved as the Plan's next draft version; its
+  // items table is appended to the artifact for the gate card. A missing or
+  // invalid draft fails the run and saves nothing. Nothing is filed either way.
+  if (run.step_index === PLAN_DRAFT_STEP_INDEX) {
+    const drafted = ingestDraft(item, runId, artifacts?.plan_draft, agent.label)
+    if (drafted.error) {
+      const why = drafted.errors.map((e) => `${e.message} (at ${e.path})`).join('; ')
+      return failFarmRun(runId, `invalid plan draft: ${why}`, REASON.INVALID_PLAN_DRAFT)
+    }
+    artifactMd = [artifactMd, renderPlanDraftMd(artifacts.plan_draft)].filter(Boolean).join('\n\n')
+  }
+
   // HZ-379: a step whose reply asks for items (domain/steps.json's spawnsOn)
   // files them before it completes. A malformed ask or a failed filing fails
   // the run, so it never advances without them; a retry asks under the same
@@ -3077,7 +3118,7 @@ async function runMockStep(id, stepIndex, runId) {
   const step = STEPS[stepIndex]
   const agent = AGENTS[step.agent]
   const behavior = MOCK_STEP_BEHAVIOR[step.label] || (() => ({ summary: `completed ${step.label.toLowerCase()}` }))
-  let { summary, patch, verdict, failure, artifact_md: artifactMd } = await behavior(item)
+  let { summary, patch, verdict, failure, artifact_md: artifactMd, plan_draft: planDraft } = await behavior(item)
   // HZ-304: a mock step that refused to run (an unready repo) fails the run
   // the way the farm path does — paused for a human, never auto-retried.
   if (failure) {
@@ -3108,6 +3149,13 @@ async function runMockStep(id, stepIndex, runId) {
 
   if (patch) patch = applyCriteriaLock(id, after, stepIndex, patch)
   if (patch) writeWorkItemPatch(id, after, patch)
+
+  // HZ-448: the mock Draft's draft is saved the way the farm path saves one.
+  if (stepIndex === PLAN_DRAFT_STEP_INDEX && planDraft) {
+    const drafted = ingestDraft(after, runId, planDraft, agent.label)
+    if (drafted.error) return failFarmRun(runId, `invalid plan draft: ${drafted.errors[0].message}`, REASON.INVALID_PLAN_DRAFT)
+    artifactMd = renderPlanDraftMd(planDraft)
+  }
 
   if (stepIndex === REVIEW_STEP_INDEX) {
     // finalizeReviewStep releases the busy mutex itself before it calls kick().

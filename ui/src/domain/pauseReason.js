@@ -51,6 +51,10 @@ const CATEGORY_COPY = {
     label: 'Agent message too large',
     detail: 'One message from the agent, such as a screenshot it read, was bigger than the SDK reader allows. Resume to retry.',
   },
+  [REASON.INVALID_PLAN_DRAFT]: {
+    label: 'Plan draft rejected',
+    detail: 'The Draft items reply broke the draft contract, such as a guessed key, an unknown repo or a missing draft. Nothing was saved or filed. Resume to draft again.',
+  },
 }
 
 // Both mirror the event text server/src/store.js:1208 writes on pause/resume.

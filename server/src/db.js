@@ -1155,6 +1155,24 @@ db.exec(`
     BEGIN SELECT RAISE(ABORT, 'rule_version is append-only'); END;
 `)
 
+// HZ-448: a Plan's item drafts (server/src/planDraft.js), one row per saved
+// version of the whole document — the Draft items step's reply ('agent') or an
+// owner's edit ('owner'). The highest version is the current draft; older ones
+// are the history. UNIQUE(item_id, version) is also the lookup index.
+db.exec(`
+  CREATE TABLE IF NOT EXISTS plan_draft (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    item_id     TEXT    NOT NULL REFERENCES work_item(id),
+    version     INTEGER NOT NULL,
+    doc_json    TEXT    NOT NULL,
+    source      TEXT    NOT NULL CHECK (source IN ('agent','owner')),
+    step_run_id INTEGER REFERENCES step_run(id),
+    created_by  TEXT    NOT NULL,
+    created_at  TEXT    NOT NULL DEFAULT (datetime('now')),
+    UNIQUE (item_id, version)
+  );
+`)
+
 const SEED_ITEMS = [
   { id: 'BF-145', title: 'Risk-limit breach dashboard', priority: 'Low', cursor: 1, issue: 412, desc: 'Give risk managers a live view of limit utilization across every desk.', metric: 'Limit breaches acknowledged in < 2 min (from 14 min).', guardrails: 'Read-only — no position mutation. No PII in telemetry.' },
   { id: 'BF-128', title: 'Real-time P&L attribution service', priority: 'High', cursor: 3, issue: 398, desc: 'Attribute intraday P&L to factors, trades and fees in real time.', metric: 'Attribution available < 5s after fill; 99.9% coverage.', guardrails: 'No client identifiers in logs. Must reconcile to EOD books.' },
