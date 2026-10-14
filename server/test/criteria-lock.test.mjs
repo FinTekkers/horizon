@@ -57,7 +57,7 @@ const store = await import('../src/store.js')
 const { buildApp } = await import('../src/app.js')
 const orchestrator = await import('../src/orchestrator.js')
 const ruling = await import('../src/caretakerRuling.js')
-const { STEPS, requiredStepIndex } = await import('../../domain/js/lifecycle.js')
+const { STEPS, requiredStepIndex, kindStepIndex, APPROVE_FILE_GATE_INDEX } = await import('../../domain/js/lifecycle.js')
 const { addedCriteriaLines } = await import('../../domain/js/fields.js')
 
 const app = buildApp({ logger: false })
@@ -181,6 +181,22 @@ test('before gate 3 the same added line applies — the lock starts after “Rev
   await orchestrator.completeFarmRun(runId, { summary: 'recommend', patch: { guardrails: added }, artifacts: {} })
   assert.equal(store.getItem(id).guardrails, added)
   assert.equal(lockEvents(id).length, 0)
+})
+
+// HZ-446: a Plan locks after its own human-only gate, Approve & file. Its
+// "Set guardrails" runs long before that, so its added line applies — the
+// kind used to have no lock gate at all, and the lock path threw.
+test('a Plan’s Set guardrails adds a guardrail line: the lock starts after “Approve & file”', async () => {
+  const setGuardrails = kindStepIndex('Set guardrails', 'plan')
+  const { id } = newItem({ cursor: setGuardrails })
+  db.prepare("UPDATE work_item SET kind = 'plan' WHERE id = ?").run(id)
+  const runId = activeRun(id, setGuardrails)
+  const added = `${GUARDRAILS}\n- Never file an item outside the repos in scope.`
+  const res = await orchestrator.completeFarmRun(runId, { summary: 'set guardrails', patch: { guardrails: added }, artifacts: {} })
+  assert.equal(res.ok, true)
+  assert.equal(store.getItem(id).guardrails, added)
+  assert.equal(lockEvents(id).length, 0)
+  assert.ok(setGuardrails < APPROVE_FILE_GATE_INDEX)
 })
 
 // ---- R15: a human edit and an Autopilot ruling still land ----

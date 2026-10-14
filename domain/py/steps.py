@@ -230,7 +230,8 @@ def _project_farm_view(steps: list[dict], kind: str = "change") -> list[dict]:
     (HZ-378 forbids agent budgets there). `requires` is deliberately dropped:
     it gates a server-side dispatch decision, never a farm one. runsIn 'none'
     rows are dropped too (HZ-377): a step with no runner is dispatched by no
-    lane, so the farm never sees it.
+    lane, so the farm never sees it. So are runsIn 'server' rows (HZ-446):
+    Horizon runs them in its own process, with no agent.
 
     HZ-383: one item kind's rows only, `change` by default. Two kinds may share
     a label, so a view mixing them would let a label lookup resolve to the
@@ -248,7 +249,7 @@ def _project_farm_view(steps: list[dict], kind: str = "change") -> list[dict]:
             "timeoutS": step.get("timeoutS"),
         }
         for index, step in enumerate(steps)
-        if step.get("kind") == "agent" and step.get("runsIn") != "none" and _step_kind(step) == kind
+        if step.get("kind") == "agent" and step.get("runsIn") not in ("none", "server") and _step_kind(step) == kind
     ]
 
 

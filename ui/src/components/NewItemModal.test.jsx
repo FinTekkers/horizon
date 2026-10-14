@@ -151,16 +151,19 @@ test('the project picker lists the given (enabled) projects, and picking one fil
   expect(createItem.mock.calls.at(-1)[0].repo).toBe('Org/beta')
 })
 
-// ---- HZ-382: the Change / Task choice ----
+// ---- HZ-382: the Change / Task choice; HZ-446: and Plan ----
 
-test('the kind choice is two radio cards, Change checked by default, each with its one-line description', () => {
+test('the kind choice is three radio cards — Change, Task and Plan — Change checked by default, each with its one-line description', () => {
   const { getByRole } = renderModal()
   const group = getByRole('radiogroup', { name: 'Kind' })
   const change = within(group).getByRole('radio', { name: /Change/ })
   const task = within(group).getByRole('radio', { name: /Task/ })
-  expect(within(group).getAllByRole('radio')).toHaveLength(2)
+  const plan = within(group).getByRole('radio', { name: /Plan/ })
+  expect(within(group).getAllByRole('radio')).toHaveLength(3)
+  expect(within(group).getAllByRole('radio').map((radio) => radio.value)).toEqual(['change', 'task', 'plan'])
   expect(change.checked).toBe(true)
   expect(task.checked).toBe(false)
+  expect(plan.checked).toBe(false)
   for (const info of ITEM_KIND_INFO) {
     expect(within(group).getByText(info.description)).toBeTruthy()
   }
@@ -183,6 +186,24 @@ test('clicking the Task card text selects Task, and submitting sends kind: task'
 
   await vi.waitFor(() => expect(createItem.mock.calls.at(-1)?.[0].title).toBe('A task fixture'))
   expect(createItem.mock.calls.at(-1)[0].kind).toBe('task')
+})
+
+test('choosing the Plan card and submitting sends kind: plan', async () => {
+  const { createItem } = await import('../api')
+  const { container, getByRole, getByText } = renderModal()
+  fireEvent.click(getByRole('radio', { name: /Plan/ }))
+  expect(getByRole('radio', { name: /Plan/ }).checked).toBe(true)
+  expect(getByRole('radio', { name: /Change/ }).checked).toBe(false)
+  expect(getByRole('radio', { name: /Plan/ }).closest('label').textContent).toContain(itemKindInfo('plan').description)
+
+  fireEvent.change(container.querySelector('input'), { target: { value: 'A plan fixture' } })
+  const textareas = [...container.querySelectorAll('textarea')]
+  fireEvent.change(textareas[0], { target: { value: 'A roadmap question for the farm to plan against.' } })
+  fireEvent.change(textareas[1], { target: { value: 'A measurable success criterion.' } })
+  fireEvent.click(getByText('Create work item'))
+
+  await vi.waitFor(() => expect(createItem.mock.calls.at(-1)?.[0].title).toBe('A plan fixture'))
+  expect(createItem.mock.calls.at(-1)[0].kind).toBe('plan')
 })
 
 test('submitting without touching the kind sends kind: change', async () => {

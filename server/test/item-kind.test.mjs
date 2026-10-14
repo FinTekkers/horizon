@@ -102,7 +102,9 @@ test('index stability: every task row sits after every change row', () => {
     assert.equal(kindStepIndex(row.label, 'task'), row.index)
   }
   assert.equal(firstStepIndex('task'), endIndex('change'))
-  assert.equal(endIndex('task'), STEPS.length)
+  // HZ-446: the plan rows follow the task rows and close the table.
+  assert.equal(firstStepIndex('plan'), endIndex('task'))
+  assert.equal(endIndex('plan'), STEPS.length)
 })
 
 test('a change item stored with the old closed cursor still reads closed', () => {
@@ -287,4 +289,43 @@ test('POST /api/items, repo: a Task whose `task` label cannot be created is 502,
   } finally {
     failKindLabel = false
   }
+})
+
+// ---- HZ-446: a Plan is created and imported like a Task, in any project ----
+// The repo above belongs to the "Item kind" project, not Horizon.
+
+test('POST /api/items, repo: kind "plan" in a non-Horizon project labels the issue `plan` and stores and returns a Plan', async () => {
+  connectRepo()
+  ghCalls = []
+  const res = await inject({ method: 'POST', url: '/api/items', payload: { ...NEW_ITEM, title: 'Retire the FIX gateway', kind: 'plan' } })
+  assert.equal(res.statusCode, 200, res.body)
+  const { id } = res.json()
+  assert.equal(storedKind(id), 'plan')
+  const item = store.getItem(id)
+  assert.equal(item.cursor, firstStepIndex('plan'))
+  assert.equal(item.repo, REPO)
+  assert.notEqual(db.prepare('SELECT name FROM project WHERE id = ?').get(item.project_id).name, 'Horizon')
+  const labels = issuePosts()[0].body.labels
+  assert.ok(labels.includes('plan'), JSON.stringify(labels))
+  assert.ok(!labels.includes('task'), JSON.stringify(labels))
+  // The list payload returns it as a Plan, at its own first step, with no run plan.
+  const listed = (await inject({ method: 'GET', url: '/api/items' })).json()
+  const view = (Array.isArray(listed) ? listed : listed.items).find((it) => it.id === id)
+  assert.equal(view.kind, 'plan')
+  assert.equal(view.currentStep.label, 'Define the question')
+  assert.equal(view.currentStep.phase, 'Scope')
+  assert.ok(!('runPlan' in view), 'a Plan carries no run plan')
+})
+
+test('an issue labelled `plan` in a non-Horizon project imports as a Plan at its first step', () => {
+  connectRepo()
+  const imported = store.upsertFromGithub(
+    { number: 9001, title: 'Plan the data-platform move', body: '', state: 'open', labels: [{ name: 'Plan' }] },
+    REPO,
+  )
+  assert.equal(imported, true)
+  const row = db.prepare('SELECT id, kind, cursor FROM work_item WHERE repo = ? AND issue = ?').get(REPO, 9001)
+  assert.equal(row.kind, 'plan')
+  assert.equal(row.cursor, firstStepIndex('plan'))
+  assert.equal(store.getItem(row.id).kind, 'plan')
 })

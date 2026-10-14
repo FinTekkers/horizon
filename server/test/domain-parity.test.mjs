@@ -46,10 +46,12 @@ import { REPO_ROOT } from './helpers/repoFiles.mjs'
 // turns this file into a real cross-language check rather than a tautology.
 // HZ-377 extends the rule this reimplementation encodes: runner-less rows
 // reach no lane, so they are out of the farm view alongside the gates.
+// HZ-446: so are server-lane rows — Horizon runs them, the farm never does.
+const OFF_FARM_LANES = ['none', 'server']
 function expectedFarmViewOf(steps) {
   return steps
     .map((s, index) => ({ ...s, index }))
-    .filter((s) => s.kind === 'agent' && s.runsIn !== 'none')
+    .filter((s) => s.kind === 'agent' && !OFF_FARM_LANES.includes(s.runsIn))
     .map((s) => ({
       index: s.index,
       label: s.label,
@@ -104,7 +106,7 @@ test('both bindings agree on PHASES', () => {
 })
 
 test('every agent-kind step agrees on index/label/agent across the authored table, the JS binding and the spawned Python import', () => {
-  const jsAgentSteps = jsSteps.filter((s) => s.kind === 'agent' && s.runsIn !== 'none')
+  const jsAgentSteps = jsSteps.filter((s) => s.kind === 'agent' && !OFF_FARM_LANES.includes(s.runsIn))
   assert.equal(
     jsAgentSteps.length,
     pythonFarm.length,
