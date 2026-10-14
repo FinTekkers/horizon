@@ -60,11 +60,15 @@ function resolveDialogView(dialog, item, pending) {
 
 const CLOSED_COMPOSER = { open: false, mode: null, itemId: null, phase: null, target: '', stepOptions: [], defaultTargetLabel: null }
 
-// HZ-389: why a send-back did not go through, in words. serverApi.requestChanges
-// rejects with Error('network') when no answer came, else the server's error
-// code with the HTTP status (401: the PIN was wrong or not entered).
+// HZ-389: why a send-back did not go through, in words. HZ-470: Kill (abandon)
+// and Restart phase use the same map. serverApi.requestChanges, abandonItem
+// and restartPhase reject with Error('network') when no answer came, else the
+// server's error code with the HTTP status (401: the PIN was wrong or not
+// entered). abandonItem and restartPhase also reject with Error('pin_needed')
+// when the PIN prompt was cancelled or left empty, before anything is sent.
 const SEND_BACK_ERRORS = {
   network: 'The server did not answer — nothing was sent. Try again.',
+  pin_needed: 'Gate PIN needed',
   not_found: 'This item is no longer on the board.',
   closed: 'This item is closed.',
   abandoned: 'This item was abandoned.',
@@ -322,11 +326,17 @@ function AuthenticatedApp({ user, onLogout }) {
     // PIN-gated send-back to implement, with the owner's ruling as the note)
     // is awaited: the page shows the answer's state, and a failure keeps the
     // composer open with the error and the page as it was.
-    if (itemId && (mode === 'reject' || mode === 'amend')) {
+    // HZ-470: Kill (abandon) and Restart phase are awaited the same way, so
+    // neither can fail silently.
+    if (itemId && (mode === 'reject' || mode === 'amend' || mode === 'restart' || mode === 'abandon')) {
       const sent =
         mode === 'reject'
           ? api.requestChanges(itemId, target, text, modeArg ?? null)
-          : api.requestChanges(itemId, STEPS[IMPLEMENT_STEP_INDEX].label, `Owner's ruling on the blocking rule: ${text}`)
+          : mode === 'amend'
+            ? api.requestChanges(itemId, STEPS[IMPLEMENT_STEP_INDEX].label, `Owner's ruling on the blocking rule: ${text}`)
+            : mode === 'restart'
+              ? api.restartPhase(itemId, phase, text)
+              : api.abandonItem(itemId, text, { removeDependentLinks: modeArg?.removeDependentLinks === true })
       setComposer((c) => ({ ...c, busy: true, error: null }))
       // A composer cancelled or reopened meanwhile is left as it is.
       const same = (c) => c.open && c.itemId === itemId && c.mode === mode
@@ -342,10 +352,6 @@ function AuthenticatedApp({ user, onLogout }) {
       // closing gate is approved) and this branch adds the chosen send-back
       // step to reject (HZ-51). They compose.
       if (mode === 'approve') approveAndMaybeClose(itemId, text)
-      else if (mode === 'restart') api.restartPhase(itemId, phase, text)
-      else if (mode === 'abandon') {
-        api.abandonItem(itemId, text, { removeDependentLinks: modeArg?.removeDependentLinks === true })
-      }
     }
     setComposer(CLOSED_COMPOSER)
   }

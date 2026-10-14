@@ -206,3 +206,40 @@ test('approve mode calls onSubmit with a single argument, unaffected by the reje
   fireEvent.click(getByText('Approve'))
   expect(onSubmit).toHaveBeenCalledWith('')
 })
+
+// HZ-470: Kill and Restart phase stay open while their request is out — no
+// Cancel, Esc or scrim. A send-back keeps its Cancel.
+for (const mode of ['restart', 'abandon']) {
+  test(`${mode}: while busy, Cancel is disabled and Esc and the scrim do not cancel`, () => {
+    const onCancel = vi.fn()
+    const { container } = render(
+      <ComposerModal composer={{ open: true, mode, itemId: 'HZ-470', phase: 0, busy: true }} onSubmit={() => {}} onCancel={onCancel} />,
+    )
+    expect(container.querySelector('.composer__cancel').disabled).toBe(true)
+    expect(container.querySelector('.composer__submit').disabled).toBe(true)
+    fireEvent.click(container.querySelector('.composer__cancel'))
+    fireEvent.keyDown(window, { key: 'Escape' })
+    fireEvent.click(container.querySelector('.composer__scrim'))
+    expect(onCancel).not.toHaveBeenCalled()
+  })
+
+  test(`${mode}: once no longer busy, Esc cancels again`, () => {
+    const onCancel = vi.fn()
+    const { container } = render(
+      <ComposerModal composer={{ open: true, mode, itemId: 'HZ-470', phase: 0, busy: false }} onSubmit={() => {}} onCancel={onCancel} />,
+    )
+    expect(container.querySelector('.composer__cancel').disabled).toBe(false)
+    fireEvent.keyDown(window, { key: 'Escape' })
+    expect(onCancel).toHaveBeenCalledTimes(1)
+  })
+}
+
+test('reject: while busy, Cancel stays enabled and Esc still cancels', () => {
+  const onCancel = vi.fn()
+  const { container } = render(
+    <ComposerModal composer={{ open: true, mode: 'reject', itemId: 'HZ-470', busy: true }} onSubmit={() => {}} onCancel={onCancel} />,
+  )
+  expect(container.querySelector('.composer__cancel').disabled).toBe(false)
+  fireEvent.keyDown(window, { key: 'Escape' })
+  expect(onCancel).toHaveBeenCalledTimes(1)
+})

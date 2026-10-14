@@ -326,6 +326,28 @@ async function gatePost(path, body, method = 'POST') {
   return res
 }
 
+// HZ-470: an awaited gate action (Kill, Restart phase). Rejects with
+// Error('pin_needed') when no PIN is stored and the prompt is cancelled or
+// empty — nothing is sent; Error('network') when no answer came; else
+// Error(<error code>) with `status` on a non-2xx. Never retries on its own
+// beyond gatePost's single 401 re-prompt.
+async function gateAction(path, body) {
+  // promptForPin stores the PIN it gets, so gatePost reads it back from
+  // storage and does not prompt a second time.
+  if (!gatePin() && !promptForPin('Enter your gate PIN (shown when it was last generated — regenerate it in Admin if lost):')) {
+    throw new Error('pin_needed')
+  }
+  const res = await gatePost(path, body)
+  if (!res) throw new Error('network')
+  const data = await res.json().catch(() => ({}))
+  if (!res.ok) {
+    const err = new Error(data.error || `HTTP ${res.status}`)
+    err.status = res.status
+    throw err
+  }
+  return data
+}
+
 // Regenerating replaces the old PIN outright — returns the new plaintext,
 // shown once, same as account creation.
 export async function regenerateGatePin() {
@@ -671,15 +693,17 @@ export function addDependency(id, dependsOnId) {
   return postJson(`/items/${id}/dependencies`, { dependsOnId })
 }
 
-export function restartPhase(id, phase, reason) {
-  gatePost(`/items/${id}/phases/${phase}/restart`, { reason: reason || '' })
+// HZ-470: awaited through gateAction, so the dialog that sent it can show a
+// failure instead of closing on it.
+export async function restartPhase(id, phase, reason) {
+  return gateAction(`/items/${id}/phases/${phase}/restart`, { reason: reason || '' })
 }
 
 // Soft delete (HZ-59) — same gate PIN as approve/reject, reused via gatePost.
 // HZ-354: removeDependentLinks also drops every link where this item is the
-// blocker, in the same request.
-export function abandonItem(id, reason, { removeDependentLinks = false } = {}) {
-  gatePost(`/items/${id}/abandon`, { reason: reason || '', removeDependentLinks })
+// blocker, in the same request. HZ-470: awaited, like restartPhase.
+export async function abandonItem(id, reason, { removeDependentLinks = false } = {}) {
+  return gateAction(`/items/${id}/abandon`, { reason: reason || '', removeDependentLinks })
 }
 
 // Personas are agent-scoped (HZ-125): one slot per composing agent, so the
