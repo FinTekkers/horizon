@@ -133,7 +133,7 @@ test('a changed dependency sends the new depends_on', async () => {
 
 test('a refused edit (a cycle) shows the message and leaves every row as it was', async () => {
   getPlanDraft.mockResolvedValue(served())
-  const refused = Object.assign(new Error('invalid_plan_draft'), {
+  const refused = Object.assign(new Error('refused'), {
     status: 422,
     errors: [{ path: 'items[1].depends_on[0]', code: 'cycle', message: 'cycle: #1 → #2 → #1' }],
   })
