@@ -37,7 +37,7 @@ writeFileSync(
 const { buildApp } = await import('../src/app.js')
 const auth = await import('../src/auth.js')
 const config = await import('../src/config.js')
-const { listTargets, findTargetByKey } = await import('../src/deployTargets.js')
+const { listTargets, findTargetByKey, checkRunnable, checkTaskContainer } = await import('../src/deployTargets.js')
 
 const app = buildApp({ logger: false })
 const { pin, cookie } = loginFixtureUser(auth, config)
@@ -302,4 +302,18 @@ test('container fields: image and limits round-trip and clear; malformed values 
   assert.equal(cleared.statusCode, 200, cleared.body)
   const row = findTargetByKey('ui-service')
   assert.deepEqual([row.containerImage, row.cpuLimit, row.memoryLimit], [undefined, undefined, undefined])
+})
+
+// HZ-416 guardrail 4: checkRunnable() — the deploy gate — never reads the
+// container fields, so a missing or malformed image or limit cannot block a
+// deploy or other farm work; only the admin write path checks their format.
+test('container fields: checkRunnable ignores them; checkTaskContainer judges their format', () => {
+  const target = findTargetByKey('market-data-inputs')
+  const bad = { ...target, containerImage: 'python 3.12', cpuLimit: 'two', memoryLimit: '0g' }
+  assert.deepEqual(checkRunnable(bad), checkRunnable({ ...target, containerImage: undefined, cpuLimit: undefined, memoryLimit: undefined }))
+  assert.deepEqual(checkTaskContainer(bad), { ok: false, reason: 'bad containerImage' })
+  assert.deepEqual(checkTaskContainer({ cpuLimit: '0' }), { ok: false, reason: 'bad cpuLimit' })
+  assert.deepEqual(checkTaskContainer({ memoryLimit: '0g' }), { ok: false, reason: 'bad memoryLimit' })
+  assert.deepEqual(checkTaskContainer({ containerImage: 'docker.io/library/python:3.12-slim', cpuLimit: '0.5', memoryLimit: '512m' }), { ok: true })
+  assert.deepEqual(checkTaskContainer({}), { ok: true })
 })

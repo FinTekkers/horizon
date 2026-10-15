@@ -85,7 +85,10 @@ os.environ.setdefault("FARM_CLAUDE_BIN", str(TESTS_DIR / "fake_claude"))
 os.environ.setdefault("FARM_RUNNER", "subprocess")
 # HZ-416: a Task job runs in a container by default, so the job suites go
 # through fake_podman (the confinement tests find a real podman themselves).
-os.environ["HORIZON_PODMAN_BIN"] = str(TESTS_DIR / "fake_podman")
+# FARM_* names reach a job's tmux session (tmux_mgr.agent_env); TMPDIR does
+# not, so the fake's registry is named explicitly, inside this run's sandbox.
+os.environ["FARM_PODMAN_BIN"] = str(TESTS_DIR / "fake_podman")
+os.environ["FARM_FAKE_PODMAN_DIR"] = os.path.join(RUN_TMP, "fake-podman")
 # The host may carry an API key; the HZ-5 subscription guardrail would (by
 # design) refuse to import farmd with it set. Tests set it back explicitly
 # where the guardrail itself is under test.

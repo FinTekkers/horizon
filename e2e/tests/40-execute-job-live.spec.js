@@ -10,6 +10,12 @@
 // with the suite's farm secret, and Stop takes the farm-unreachable path,
 // settling the last stored view. Resume running commands needs a farm, so the
 // 1/1/1 rerun is proven in farm/tests/test_task_job.py instead.
+//
+// HZ-416: the backend is the default `runner: container` — the fixtures have
+// no Run plan with a `runner` — and this spec needs no Podman, because with
+// no farm no command ever runs. The same Stop and Resume in a container are
+// proven in farm/tests/test_container_runner.py (fake_podman, and real
+// rootless Podman where installed).
 
 import { test, expect } from '../fixtures/test-base.js'
 import { openDb, insertItem, insertStepRun, setGatePinDirect } from '../fixtures/seed.js'

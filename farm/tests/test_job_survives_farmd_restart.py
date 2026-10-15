@@ -213,7 +213,7 @@ def _job_sessions():
 def _containers():
     """HZ-416: `podman ps -a` — conftest's fake_podman on a host without it."""
     out = subprocess.run(
-        [os.environ["HORIZON_PODMAN_BIN"], "ps", "-a", "--format", "{{.Names}}"], capture_output=True, text=True
+        [os.environ["FARM_PODMAN_BIN"], "ps", "-a", "--format", "{{.Names}}"], capture_output=True, text=True
     ).stdout
     return out.split()
 
@@ -261,10 +261,11 @@ def test_a_job_that_ends_while_farmd_is_down_is_reported_once_by_the_next_farmd(
 def test_stop_still_ends_the_job_after_a_farmd_restart(farm):
     run_id = 40803
     farm.dispatch(run_id, ["sleep 600"])
-    _wait_for("the job's container", lambda: _containers() == [SESSION.replace("farm-job-", "horizon-job-")], 20)
+    _wait_for("the job's container", lambda: _containers() == [SESSION], 20)
 
     _restart_and_readopt(farm)
     assert _job_sessions() == [SESSION]
+    assert _containers() == [SESSION], "the boot-time reaper spared the live job's container"
 
     res = farm.post("/jobs/stop", {"run_id": run_id})
     assert res.status_code == 200, res.text

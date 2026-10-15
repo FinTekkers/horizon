@@ -46,12 +46,14 @@ checkout. An absolute path or a `..` in `cwd` fails the step.
 as a JSON summary, relative to `cwd` or under `/tmp`. Verify & report reads
 them beside the log. A command's `--report <path>` is found without it.
 
-By default Execute runs the commands in a throwaway container, from the
-image the `container` line in your input names. The checkout is mounted
-read-only at `/repo`, with `cwd` as the working directory. A command can
-write only to `/scratch`, `/state`, `/logs` and its `--report /tmp/<name>`
-files. Everything else is read-only, and `/scratch` is wiped when the run
-ends. Only the `env` you declare reaches it. Plan writes accordingly.
+By default Execute runs the commands, one after another, in one throwaway
+container from the image the `container` line in your input names. The
+checkout is mounted read-only at its usual path, with `cwd` as the working
+directory. A command can write only to `/scratch`, `/tmp` (also `$HOME`),
+`/state` and `/logs`; everything else is read-only. `/scratch` and `/tmp`
+are wiped when the run ends, after Execute has read any report under `/tmp`
+— so write reports there, never into the checkout. Only the `env` you
+declare reaches it. Plan writes accordingly.
 
 Set `"runner": "host"` only when the run cannot work in the container, and
 say why in the artifact. The approver then sees that it runs on the host.

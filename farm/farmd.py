@@ -217,7 +217,11 @@ def _adopt_jobs() -> None:
     """Rebuilds the run->session map for jobs from claimed task files, so a
     farmd restarted mid-job keeps reporting it. A farm-job-* session with no
     task file is left alone: its runner finishes and its state file stays for
-    the server to read, but no report is sent twice."""
+    the server to read, but no report is sent twice.
+
+    HZ-416: then every farm-job-* container with no live farm-job-* tmux
+    session of the same name — what a killed runner or a reboot left — is
+    removed. A container whose runner is still up keeps running."""
     for task_path in (QUEUE_DIR / "jobs" / "active").glob("*.json"):
         if task_path.name.endswith(".env.json"):
             continue
@@ -230,6 +234,9 @@ def _adopt_jobs() -> None:
             continue
     if JOB_SESSIONS:
         print(f"farmd: adopted {len(JOB_SESSIONS)} in-flight job(s)", flush=True)
+    reaped = container_runner.reap_orphans(tmux_mgr.session_exists) if container_runner.available() else []
+    if reaped:
+        print(f"farmd: removed {len(reaped)} orphaned job container(s): {', '.join(reaped)}", flush=True)
 
 
 def _read_dotenv(path: Path) -> dict:
@@ -899,7 +906,9 @@ def _command_lines(entries, secrets: dict) -> list[str]:
         else:
             outcome = "not run" if c.get("status") == "pending" else str(c.get("status") or "not run")
         earlier = " (passed in an earlier attempt)" if c.get("resumed") else ""
-        lines.append(f"- {outcome} — `{command}`{earlier}")
+        # HZ-416: e.g. the container's memory limit killed it.
+        why = f" — {c['failure_reason']}" if isinstance(c.get("failure_reason"), str) else ""
+        lines.append(f"- {outcome} — `{command}`{earlier}{why}")
     return lines
 
 
@@ -1724,8 +1733,9 @@ def _mark_job_stopped(run_id, item_id: str) -> None:
     (which outlives the tmux session) is killed too, and the command that was
     running is recorded `stopped` — never left `running`, never `done`.
 
-    HZ-416: a container command's container is then killed and removed —
-    after the process group, since rootless conmon outlives its client."""
+    HZ-416: a container run's container is then killed and removed — after
+    the process group, since rootless conmon outlives its client — and its
+    scratch and /tmp dirs are wiped, as the runner itself would have."""
     from farm.config import STATE_DIR as _STATE
 
     state_path = _STATE / "jobs" / f"{item_id}.json"
@@ -1742,12 +1752,12 @@ def _mark_job_stopped(run_id, item_id: str) -> None:
                 os.killpg(pgid, signal.SIGKILL)
             except (ProcessLookupError, PermissionError, OSError):
                 pass
-        container = entry.pop("container", None)
-        if isinstance(container, str) and container:
-            container_runner.stop_and_remove(container)
         entry["status"] = "stopped"
         entry["ended_at"] = now
         entry["exit_code"] = None
+    if state.get("runner") == "container":
+        container_runner.stop_and_remove(container_runner.container_name(item_id))
+        task_job.wipe_throwaway(state_path, _job_log_path(run_id, item_id))
     if state.get("status") == "running":
         state["status"] = "stopped"
         state["ended_at"] = now

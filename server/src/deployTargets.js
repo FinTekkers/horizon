@@ -269,21 +269,6 @@ export function checkRunnable(target) {
   }
   const taskDir = target.taskDir === '' ? null : (target.taskDir ?? null)
   if (taskDir !== null && !absoluteDirOk(taskDir)) return { ok: false, reason: 'bad taskDir' }
-  // HZ-416: format only, and only when set — an unset image or limit never
-  // stops a deploy. checkRunnable() stays a deploy gate; the farm refuses a
-  // container job with no image at dispatch/Execute instead.
-  const containerImage = target.containerImage === '' ? null : (target.containerImage ?? null)
-  if (containerImage !== null && (typeof containerImage !== 'string' || containerImage.length > 500 || /\s/.test(containerImage))) {
-    return { ok: false, reason: 'bad containerImage' }
-  }
-  const cpuLimit = target.cpuLimit === '' ? null : (target.cpuLimit ?? null)
-  if (cpuLimit !== null && (typeof cpuLimit !== 'string' || !/^\d+(\.\d+)?$/.test(cpuLimit))) {
-    return { ok: false, reason: 'bad cpuLimit' }
-  }
-  const memoryLimit = target.memoryLimit === '' ? null : (target.memoryLimit ?? null)
-  if (memoryLimit !== null && (typeof memoryLimit !== 'string' || !/^\d+[mMgG]$/.test(memoryLimit))) {
-    return { ok: false, reason: 'bad memoryLimit' }
-  }
   const extras = target.extraServices ?? []
   if (!Array.isArray(extras) || !extras.every((s) => typeof s === 'string')) {
     return { ok: false, reason: 'bad extraServices' }
@@ -347,9 +332,31 @@ export function taskDirConflict(target, others) {
   return null
 }
 
+// HZ-416: the Task container's fields, format only and only when set. Kept
+// out of checkRunnable() on purpose — an image or limit never gates a deploy
+// or any other farm work; the farm checks and pulls the image when a Task's
+// Execute starts, and refuses the job closed if it cannot.
+export function checkTaskContainer(target) {
+  const containerImage = target.containerImage === '' ? null : (target.containerImage ?? null)
+  if (containerImage !== null && (typeof containerImage !== 'string' || containerImage.length > 500 || /\s/.test(containerImage))) {
+    return { ok: false, reason: 'bad containerImage' }
+  }
+  const cpuLimit = target.cpuLimit === '' ? null : (target.cpuLimit ?? null)
+  if (cpuLimit !== null && (typeof cpuLimit !== 'string' || !/^\d+(\.\d+)?$/.test(cpuLimit) || Number(cpuLimit) <= 0)) {
+    return { ok: false, reason: 'bad cpuLimit' }
+  }
+  const memoryLimit = target.memoryLimit === '' ? null : (target.memoryLimit ?? null)
+  if (memoryLimit !== null && (typeof memoryLimit !== 'string' || !/^[1-9]\d*[mMgG]$/.test(memoryLimit))) {
+    return { ok: false, reason: 'bad memoryLimit' }
+  }
+  return { ok: true }
+}
+
 function writeTarget(target, statement, database) {
   const check = checkRunnable(target)
   if (!check.ok) return { ok: false, code: 'invalid', reason: check.reason }
+  const container = checkTaskContainer(target)
+  if (!container.ok) return { ok: false, code: 'invalid', reason: container.reason }
   const conflict = taskDirConflict(target, listTargets(database).filter((other) => other.key !== target.key))
   if (conflict) return { ok: false, code: 'invalid', reason: conflict }
   let changes

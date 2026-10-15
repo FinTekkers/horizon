@@ -465,7 +465,7 @@ def build_prompt(task: dict) -> str:
         # HZ-416: where a default (container) plan runs.
         image = task.get("container_image")
         lines.append(
-            f"  container: {image} (repo read-only at /repo)"
+            f"  container: {image} (repo read-only, writable: /scratch, /tmp, /state, /logs)"
             if image
             else "  container: none pinned — Execute refuses a container plan until the deploy target has an image"
         )

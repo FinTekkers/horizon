@@ -3,13 +3,15 @@ restart, forwarding its finish with the Execute artifact, the kill switch,
 and teardown."""
 
 import json
+import os
+import subprocess
 from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
 
 from domain.py import reasons, run_plan, steps
-from farm import farmd, task_job, tmux_mgr
+from farm import container_runner, farmd, task_job, tmux_mgr
 from farm.config import LOGS_DIR, QUEUE_DIR, STATE_DIR
 
 client = TestClient(farmd.app)
@@ -100,6 +102,24 @@ def test_reboot_adopts_the_job_and_reports_it_finished(monkeypatch, fake_tmux, t
     artifact = body["artifacts"]["artifact_md"]
     assert "1 command(s) run, 1 passed, 0 failed" in artifact
     assert "hi\nexit 0" in artifact
+
+
+def test_reboot_reaps_orphaned_job_containers_and_spares_live_ones(monkeypatch, fake_tmux):
+    """HZ-416, metric 3: a farm-job-* container whose runner's tmux session
+    is gone (a killed runner, a reboot) is removed at boot; one whose runner
+    still runs (HZ-408: only farmd restarted) keeps running."""
+    podman = os.environ["FARM_PODMAN_BIN"]
+    for name in ("farm-job-hz-live", "farm-job-hz-orphan"):
+        started = subprocess.run([podman, "run", "-d", "--name", name, FAKE_IMAGE, "sleep", "infinity"], capture_output=True)
+        assert started.returncode == 0, started.stderr
+    fake_tmux.sessions.add("farm-job-hz-live")
+    try:
+        farmd._adopt_jobs()
+        assert container_runner.list_job_containers() == ["farm-job-hz-live"]
+    finally:
+        for name in ("farm-job-hz-live", "farm-job-hz-orphan"):
+            container_runner.stop_and_remove(name)
+    assert container_runner.list_job_containers() == []
 
 
 def test_a_budget_breach_forwards_the_non_retryable_reason(monkeypatch, fake_tmux, tmp_path):
@@ -600,8 +620,9 @@ def test_a_report_named_by_the_plan_reaches_the_forwarded_artifact(monkeypatch, 
         assert len(content.encode()) > job_reports.REPORT_INLINE_MAX_BYTES
     (tmp_path / "src.json").write_text(content)
     (repo / "write.sh").write_text(f'cp {tmp_path / "src.json"} "$2"\necho wrote "$2"\n')
-    # HZ-434's host semantics: a nested /tmp report path (a container's /tmp
-    # is read-only past `/tmp/<name>`; see test_container_runner.py).
+    # HZ-434's host semantics: the report is under the host's /tmp, which a
+    # container run sees as its own throwaway dir instead (fake_podman runs
+    # commands on the host, so see test_container_runner.py for that case).
     task = job_payload(run_id, repo_dir=str(repo), commands=(f"sh write.sh --report {report}",), runner="host")
     task["item"]["id"] = item_id
     farmd.JOB_SESSIONS.clear()

@@ -2,13 +2,14 @@
 
 Two tiers. Everything not marked `real_podman` runs everywhere, through
 conftest's fake_podman (farm/tests/fake_podman): it proves the argv, the
-lifecycle (nothing left in `podman ps -a`), the fail-closed refusals, the
-env hand-off and the `runner: host` opt-out. fake_podman confines nothing,
-so the confinement itself (metric lines 1, 2 and 5) is proven by the
-`real_podman` tests, which need `podman` on PATH and the image named by
-HORIZON_TEST_PODMAN_IMAGE already pulled — they skip otherwise, and
-infra/host/DEPLOY.md makes running them on the host part of installing
-Podman.
+lifecycle (one container per run, nothing left in `podman ps -a`), the
+fail-closed refusals, the env hand-off, the OOM reason and the
+`runner: host` opt-out. fake_podman confines nothing, so the confinement
+itself (metric lines 1, 2 and 5) is proven by the `real_podman` tests, which
+need `podman` on PATH and the image named by HORIZON_TEST_PODMAN_IMAGE
+(pulled on first use). Without Podman they skip with the reason, and a skip
+there is NOT a pass: infra/host/DEPLOY.md makes running them with zero skips
+part of installing Podman on the farm host.
 """
 
 import json
@@ -46,7 +47,7 @@ def _artifact(commands, *, cwd=".", env=None, runner=None, reports=None, budget_
     return "## Commands\nplan\n\n## Run plan block\n" + run_plan.render(block) + "\n"
 
 
-def _run(tmp_path, artifact, *, repo, image=FAKE_IMAGE, env_values=None, cpu=None, memory=None, item_id="HZ-416"):
+def _run(tmp_path, artifact, *, repo, image=FAKE_IMAGE, env_values=None, cpu=None, memory=None, item_id="HZ-416", notify=None):
     state_path = tmp_path / "state" / f"{item_id}.json"
     log_path = tmp_path / "logs" / f"farm-job-{item_id.lower()}.log"
     state_path.parent.mkdir(exist_ok=True)
@@ -63,17 +64,18 @@ def _run(tmp_path, artifact, *, repo, image=FAKE_IMAGE, env_values=None, cpu=Non
         container_image=image,
         cpu_limit=cpu,
         memory_limit=memory,
+        notify=notify,
     )
     return summary, json.loads(state_path.read_text()), log_path.read_text()
 
 
 def _containers(podman=None):
     out = subprocess.run(
-        [podman or os.environ["HORIZON_PODMAN_BIN"], "ps", "-a", "--format", "{{.Names}}"],
+        [podman or os.environ["FARM_PODMAN_BIN"], "ps", "-a", "--format", "{{.Names}}"],
         capture_output=True,
         text=True,
     ).stdout
-    return [name for name in out.split() if name.startswith("horizon-job-")]
+    return [name for name in out.split() if name.startswith(container_runner.NAME_PREFIX)]
 
 
 def _wait_for(predicate, what, limit_s=20.0):
@@ -116,75 +118,80 @@ def test_the_runner_field_matches_the_shared_fixture(case):
 def _argv(**overrides):
     kwargs = dict(
         image="registry.example/py@sha256:" + "a" * 64,
-        item_id="HZ-416",
+        name="farm-job-hz-416",
         repo_dir="/srv/checkout",
-        plan_cwd="pipelines",
+        workdir="/srv/checkout/pipelines",
         scratch_dir="/state/HZ-416.d/scratch",
         tmp_dir="/state/HZ-416.d/tmp",
         state_dir="/state/HZ-416.d/state",
-        log_dir="/logs/farm-job-hz-416.d",
+        logs_dir="/logs/farm-job-hz-416.d",
         env_names=["DATA_API_KEY"],
-        cpu="1.5",
+        cpus="1.5",
         memory="2g",
-        report_files=["out.json"],
     )
     kwargs.update(overrides)
-    return container_runner.build_command(**kwargs)
+    return container_runner.build_run_argv(**kwargs)
 
 
 def test_the_argv_never_escalates_and_mounts_only_what_it_should():
     """Guardrail 1: no --privileged, no capability, no socket, no env file;
-    host networking, the farm user, a read-only image filesystem, the repo
-    read-only at /repo with the plan's cwd as workdir."""
+    host networking, the farm user mapped to itself, a read-only image
+    filesystem, the repo read-only at its own path with the plan's cwd as
+    workdir, and only the job's own state and log dirs."""
     argv = _argv()
     joined = " ".join(argv)
     for banned in ("--privileged", "--cap-add", "podman.sock", "docker.sock", "--env-file", "--security-opt", "--device"):
         assert banned not in joined
-    assert argv[:3] == [os.environ["HORIZON_PODMAN_BIN"], "run", "--rm"]
+    assert argv[:3] == [os.environ["FARM_PODMAN_BIN"], "run", "-d"]
     assert "--network=host" in argv
     assert "--userns=keep-id" in argv
     assert argv[argv.index("--user") + 1] == f"{os.getuid()}:{os.getgid()}"
     assert "--read-only" in argv and "--read-only-tmpfs=false" in argv
-    assert argv[argv.index("--name") + 1] == "horizon-job-hz-416"
+    assert argv[argv.index("--name") + 1] == "farm-job-hz-416"
     assert argv[argv.index("--cpus") + 1] == "1.5"
     assert argv[argv.index("--memory") + 1] == "2g"
+    assert argv[argv.index("--memory-swap") + 1] == "2g"
     mounts = [argv[i + 1] for i, a in enumerate(argv) if a == "-v"]
     assert mounts == [
-        "/srv/checkout:/repo:ro",
+        "/srv/checkout:/srv/checkout:ro",
         "/state/HZ-416.d/scratch:/scratch:rw",
+        "/state/HZ-416.d/tmp:/tmp:rw",
         "/state/HZ-416.d/state:/state:rw",
         "/logs/farm-job-hz-416.d:/logs:rw",
-        "/state/HZ-416.d/tmp:/tmp:ro",
-        "/state/HZ-416.d/tmp/out.json:/tmp/out.json:rw",
     ]
-    assert argv[argv.index("-w") + 1] == "/repo/pipelines"
-    assert argv[-1] == "registry.example/py@sha256:" + "a" * 64
+    assert argv[argv.index("-w") + 1] == "/srv/checkout/pipelines"
+    assert argv[-3:] == ["registry.example/py@sha256:" + "a" * 64, "sleep", "infinity"]
 
 
 def test_secrets_are_passed_by_name_never_by_value():
     """Guardrail 2: `--env NAME` only — Podman inherits the value from its
-    own env, so nothing after --env holds an `=`."""
+    own env. The one `=` is HOME, pointed at the throwaway /tmp."""
     argv = _argv(env_names=["DATA_API_KEY", "DATABASE_URL"])
-    assert [argv[i + 1] for i, a in enumerate(argv) if a == "--env"] == ["DATA_API_KEY", "DATABASE_URL"]
+    assert [argv[i + 1] for i, a in enumerate(argv) if a == "--env"] == ["HOME=/tmp", "DATA_API_KEY", "DATABASE_URL"]
 
 
 def test_the_default_limits_apply_when_the_target_sets_none():
-    argv = _argv(cpu=None, memory=None, plan_cwd=".")
+    argv = _argv(cpus=None, memory=None)
     assert argv[argv.index("--cpus") + 1] == container_runner.DEFAULT_CPUS
     assert argv[argv.index("--memory") + 1] == container_runner.DEFAULT_MEMORY
-    assert argv[argv.index("-w") + 1] == "/repo"
+
+
+def test_each_command_is_a_podman_exec_in_the_plans_cwd():
+    assert container_runner.exec_argv("farm-job-hz-416", "make test", "/srv/checkout/sub") == [
+        os.environ["FARM_PODMAN_BIN"], "exec", "-w", "/srv/checkout/sub", "farm-job-hz-416", "sh", "-c", "make test",
+    ]
 
 
 # ---- Fail closed: never a silent host run ----
 
 
 def _no_spawn(monkeypatch):
-    """Lets the `podman image exists` probe through; any shell or `podman
-    run` fails the test."""
+    """Lets podman's own probes (image exists, pull, run -d) through; a
+    command — `podman exec` or a host shell — fails the test."""
     real_popen = subprocess.Popen
 
     def _guard(argv, *args, **kwargs):
-        if "sh" in argv or "run" in argv:
+        if "exec" in argv or argv[0] == "sh":
             raise AssertionError(f"no command may start when the container is unavailable: {argv}")
         return real_popen(argv, *args, **kwargs)
 
@@ -196,27 +203,102 @@ def _no_spawn(monkeypatch):
     [
         ("no podman", "podman is not installed"),
         ("no image pinned", "this repo has no pinned container image"),
-        ("image not pulled", "the container image is not available: localhost/missing:1"),
+        ("image cannot be pulled", "the container image could not be pulled: localhost/missing:1 (Error: initializing source"),
+        ("bad cpu limit", "the container did not start: Error: invalid argument for --cpus or --memory"),
+        ("bad memory limit", "the container did not start: Error: invalid argument for --cpus or --memory"),
     ],
 )
-def test_missing_podman_or_image_runs_zero_commands(tmp_path, repo, monkeypatch, case, refusal):
+def test_missing_podman_image_or_limits_run_zero_commands(tmp_path, repo, monkeypatch, case, refusal):
     """Guardrail 3: the job ends `container_unavailable` with every command
-    pending and no process started — never on the host."""
-    image = FAKE_IMAGE
+    pending and no command started — never on the host — and leaves no
+    container behind."""
+    image, cpu, memory = FAKE_IMAGE, None, None
     if case == "no podman":
-        monkeypatch.setenv("HORIZON_PODMAN_BIN", str(tmp_path / "no-such-podman"))
+        monkeypatch.setenv("FARM_PODMAN_BIN", str(tmp_path / "no-such-podman"))
     elif case == "no image pinned":
         image = None
-    else:
+    elif case == "image cannot be pulled":
         image = "localhost/missing:1"
+    elif case == "bad cpu limit":
+        cpu = "-2"
+    else:
+        memory = "lots"
     _no_spawn(monkeypatch)
-    summary, state, log = _run(tmp_path, _artifact(["touch ran.txt"]), repo=repo, image=image)
+    summary, state, log = _run(tmp_path, _artifact(["touch ran.txt"]), repo=repo, image=image, cpu=cpu, memory=memory)
     assert summary == {"run": 0, "passed": 0, "failed": 0, "failing": []}
     assert state["status"] == "container_unavailable"
-    assert state["refusal"] == refusal
+    assert state["refusal"].startswith(refusal), state["refusal"]
     assert [c["status"] for c in state["commands"]] == ["pending"]
-    assert f"Execute refused: {refusal} — zero commands run" in log
+    assert f"Execute refused: {refusal}" in log and "zero commands run" in log
     assert not (repo / "ran.txt").exists()
+    monkeypatch.undo()
+    assert _containers() == []
+    assert not (tmp_path / "state" / "HZ-416.d" / "scratch").exists()
+
+
+def test_a_missing_image_is_pulled_at_execute_start(tmp_path, repo, monkeypatch):
+    """Guardrail 4: the pull happens in the runner (its own tmux session),
+    not in checkRunnable or farmd's dispatch."""
+    calls = []
+    real_run = subprocess.run
+
+    def spy(argv, *args, **kwargs):
+        calls.append(list(argv[1:3]))
+        return real_run(argv, *args, **kwargs)
+
+    monkeypatch.setattr(subprocess, "run", spy)
+    summary, _state, _log = _run(tmp_path, _artifact(["true"]), repo=repo, image="localhost/pull-me:1")
+    assert summary["passed"] == 1
+    assert ["image", "exists"] in calls and ["pull", "--quiet"] in calls
+    assert calls.index(["pull", "--quiet"]) < next(i for i, c in enumerate(calls) if c[0] == "run")
+
+
+def test_farmd_dispatch_never_touches_podman(tmp_path, repo, monkeypatch):
+    """Guardrail 4: launch_job writes the task and starts the runner's tmux
+    session — no image check or pull there, so a slow pull holds up only
+    its own runner and never the next job's dispatch."""
+    monkeypatch.setattr(container_runner, "_podman", lambda *a, **k: (_ for _ in ()).throw(AssertionError("podman at dispatch")))
+    monkeypatch.setattr(container_runner, "ensure_image", lambda *a, **k: (_ for _ in ()).throw(AssertionError("pull at dispatch")))
+    launched = []
+    monkeypatch.setattr(farmd.tmux_mgr, "new_session", lambda name, command, cwd: launched.append(name))
+    run_id = 9418
+    task = {
+        "run_id": run_id,
+        "item": {"id": "HZ-9418"},
+        "plan_artifact": _artifact(["true"]),
+        "repo_dir": str(repo),
+        "container_image": "localhost/pull-me:1",
+    }
+    try:
+        assert farmd.launch_job(task) == "farm-job-hz-9418"
+    finally:
+        farmd.JOB_SESSIONS.pop(str(run_id), None)
+        for suffix in (".json", ".env.json"):
+            (QUEUE_DIR / "jobs" / "active" / f"{run_id}{suffix}").unlink(missing_ok=True)
+    assert launched == ["farm-job-hz-9418"]
+
+
+def test_a_slow_pull_never_blocks_a_second_job(tmp_path, repo, monkeypatch):
+    """Guardrail 4: two runners at once — one stuck in a slow pull — and the
+    other still runs its commands to the end meanwhile."""
+    monkeypatch.setenv("FAKE_PODMAN_PULL_DELAY", "8")
+    slow = threading.Thread(
+        target=_run,
+        args=(tmp_path / "a", _artifact(["true"])),
+        kwargs={"repo": repo, "image": "localhost/pull-me:slow", "item_id": "HZ-SLOW"},
+        daemon=True,
+    )
+    (tmp_path / "a").mkdir()
+    (tmp_path / "b").mkdir()
+    started = time.monotonic()
+    slow.start()
+    try:
+        summary, _state, _log = _run(tmp_path / "b", _artifact(["echo fast"]), repo=repo, item_id="HZ-FAST")
+        assert summary["passed"] == 1
+        assert time.monotonic() - started < 8, "the second job waited for the first one's pull"
+        assert slow.is_alive()
+    finally:
+        slow.join(20)
 
 
 def test_farmd_forwards_container_unavailable_with_its_reason(monkeypatch, tmp_path):
@@ -253,21 +335,45 @@ def test_farmd_forwards_container_unavailable_with_its_reason(monkeypatch, tmp_p
 # ---- The container path, through fake_podman ----
 
 
-def test_a_container_run_goes_through_podman_and_leaves_nothing(tmp_path, repo):
-    """Metric 2 (lifecycle leg): success and failure both leave no container
-    and wipe the throwaway scratch and tmp dirs."""
-    summary, state, log = _run(tmp_path, _artifact(["echo ok", "pwd"], cwd="sub"), repo=repo)
-    assert summary == {"run": 2, "passed": 2, "failed": 0, "failing": []}
+def test_one_container_runs_every_command_and_leaves_nothing(tmp_path, repo):
+    """Metric 2 (lifecycle leg): one container for the whole run — a file
+    command 1 leaves in its cwd is there for command 2 — and success and
+    failure both leave no container and wipe scratch and /tmp."""
+    seen = []
+    summary, state, log = _run(
+        tmp_path,
+        _artifact(["echo one > made.txt", "cat made.txt; rm made.txt", "pwd"], cwd="sub"),
+        repo=repo,
+        notify=lambda: seen.append(tuple(_containers())),
+    )
+    assert summary == {"run": 3, "passed": 3, "failed": 0, "failing": []}, log
     assert state["runner"] == "container"
     assert log.splitlines()[:2] == ["env: system", f"container: {FAKE_IMAGE}"]
-    assert str(repo / "sub") in log  # fake_podman maps -w /repo/sub back to the host dir
+    assert f"$ pwd (cwd={repo / 'sub'})" in log
+    assert set(seen) <= {(), ("farm-job-hz-416",)} and ("farm-job-hz-416",) in seen
     assert _containers() == []
     job_dir = tmp_path / "state" / "HZ-416.d"
     assert not (job_dir / "scratch").exists() and not (job_dir / "tmp").exists()
+    assert (job_dir / "state").is_dir() and (tmp_path / "logs" / "farm-job-hz-416.d").is_dir()
 
     summary, _state, _log = _run(tmp_path, _artifact(["exit 3"]), repo=repo)
     assert summary["failing"] == ["exit 3"]
     assert _containers() == []
+    assert not (job_dir / "scratch").exists()
+
+
+def test_a_host_venv_is_ignored_in_the_container(tmp_path, repo):
+    """Contract case: a checkout's .venv — even one that would be refused —
+    does not reach a container run; the log names `env: system` and the
+    image."""
+    outside = tmp_path / "elsewhere"
+    (outside / "bin").mkdir(parents=True)
+    (repo / ".venv").symlink_to(outside)
+    summary, _state, log = _run(tmp_path, _artifact(['echo "VE=${VIRTUAL_ENV:--}"']), repo=repo)
+    assert summary["passed"] == 1, log
+    assert log.splitlines()[:2] == ["env: system", f"container: {FAKE_IMAGE}"]
+    assert "VE=-" in log
+    assert str(outside) not in log
 
 
 def test_the_container_gets_only_the_plans_env_by_name(tmp_path, repo):
@@ -276,11 +382,12 @@ def test_the_container_gets_only_the_plans_env_by_name(tmp_path, repo):
     holds the secret while it runs."""
     secret = "container-secret-value-416"
     release = tmp_path / "release"
+    log_file = tmp_path / "logs" / "farm-job-hz-416.log"
     os.environ["HZ416_UNDECLARED"] = "host-only-value"
     seen_in_argv = []
 
     def scan_argv():
-        _wait_for(lambda: (tmp_path / "logs" / "farm-job-hz-416.log").exists() and "waiting" in (tmp_path / "logs" / "farm-job-hz-416.log").read_text(), "the command to start")
+        _wait_for(lambda: log_file.exists() and "waiting" in log_file.read_text(), "the command to start")
         for proc in Path("/proc").iterdir():
             try:
                 if secret.encode() in (proc / "cmdline").read_bytes():
@@ -308,7 +415,7 @@ def test_the_container_gets_only_the_plans_env_by_name(tmp_path, repo):
     names = {line.split("=", 1)[0] for line in log.splitlines() if "=" in line and not line.startswith(("$", "env:"))}
     assert "DATA_API_KEY" in names
     assert "HZ416_UNDECLARED" not in names
-    assert "FARM_HOME" not in names and "HORIZON_PODMAN_BIN" not in names
+    assert "FARM_HOME" not in names and "FARM_PODMAN_BIN" not in names
 
 
 def test_inspect_shows_the_targets_cpu_and_memory_limits(tmp_path, repo):
@@ -317,8 +424,8 @@ def test_inspect_shows_the_targets_cpu_and_memory_limits(tmp_path, repo):
     inspected = {}
 
     def inspect():
-        _wait_for(lambda: _containers() == ["horizon-job-hz-416"], "the container")
-        out = subprocess.run([os.environ["HORIZON_PODMAN_BIN"], "inspect", "horizon-job-hz-416"], capture_output=True, text=True).stdout
+        _wait_for(lambda: _containers() == ["farm-job-hz-416"], "the container")
+        out = subprocess.run([os.environ["FARM_PODMAN_BIN"], "inspect", "farm-job-hz-416"], capture_output=True, text=True).stdout
         inspected.update(json.loads(out)[0])
         release.touch()
 
@@ -334,14 +441,48 @@ def test_inspect_shows_the_targets_cpu_and_memory_limits(tmp_path, repo):
     assert not any(".env" in m["Source"] for m in inspected["Mounts"]), "no host env file is mounted"
 
 
+def _fake_oom(name):
+    """A command that, under fake_podman, bumps the container's oom_kill
+    count and dies of SIGKILL — what the kernel's OOM killer does."""
+    return f"echo 1 > {os.environ['FARM_FAKE_PODMAN_DIR']}/{name}.oom; kill -9 $$"
+
+
+def test_an_oom_kill_fails_the_run_with_a_reason_naming_the_limit(tmp_path, repo):
+    """Metric 5 (fake leg): memory.events' oom_kill rose, so the failed
+    command records why, in the state, the log and the forwarded artifact's
+    command lines — which the server keeps, so a reload shows it."""
+    summary, state, log = _run(tmp_path, _artifact([_fake_oom("farm-job-hz-416"), "echo never"]), repo=repo, memory="512m")
+    assert summary["failed"] == 1 and summary["run"] == 1
+    reason = "killed: out of memory — over the container's 512m memory limit"
+    assert state["commands"][0]["exit_code"] == 137
+    assert state["commands"][0]["failure_reason"] == reason
+    assert reason in log
+    assert farmd._command_lines(state["commands"], {})[0].endswith(f"— {reason}")
+    assert state["commands"][1]["status"] == "pending"
+    assert _containers() == []
+
+
+@pytest.mark.parametrize(
+    "before,after,code,oom",
+    [(0, 1, 137, True), (0, 0, 137, False), (None, None, 137, True), (None, None, 1, False), (0, 1, 1, True)],
+)
+def test_oom_is_judged_by_the_cgroup_counter_then_by_sigkill(tmp_path, repo, monkeypatch, before, after, code, oom):
+    """Contract case: a readable oom_kill count decides; only when it cannot
+    be read does a SIGKILL exit (137) count as the memory limit."""
+    counts = iter([before, after])
+    monkeypatch.setattr(container_runner, "oom_kills", lambda name: next(counts))
+    _summary, state, _log = _run(tmp_path, _artifact([f"exit {code}"]), repo=repo)
+    assert ("failure_reason" in state["commands"][0]) is oom
+
+
 def test_stop_removes_the_container_and_resume_starts_a_fresh_one(tmp_path, repo, monkeypatch):
     """Metric 2 (Stop leg) and metric 3: farmd's Stop after the runner dies
-    leaves no container; Resume remounts the same state dir in a new one and
-    skips the passed command."""
+    leaves no container and no scratch dir; Resume starts a new container
+    with the same state dir and skips the passed command."""
     run_id, item_id = 9417, "HZ-9417"
     release = tmp_path / "release"
     artifact = _artifact(
-        ["echo kept > /dev/null; echo one >> runs.txt", f"while [ ! -f {release} ]; do sleep 0.05; done; echo two >> runs.txt"]
+        ["echo one >> runs.txt", f"while [ ! -f {release} ]; do sleep 0.05; done; echo two >> runs.txt"]
     )
     task = tmp_path / "task.json"
     task.write_text(
@@ -358,24 +499,25 @@ def test_stop_removes_the_container_and_resume_starts_a_fresh_one(tmp_path, repo
     )
     state_path = STATE_DIR / "jobs" / f"{item_id}.json"
     log_path = LOGS_DIR / f"farm-job-{item_id.lower()}.log"
+    job_dir = state_path.with_suffix(".d")
     env = {**os.environ, "FARM_PORT": "9", "PYTHONPATH": str(REPO_ROOT)}
     runner = subprocess.Popen([sys.executable, "-m", "farm.task_job", "--task", str(task)], cwd=str(REPO_ROOT), env=env)
     try:
         _wait_for(
             lambda: [c["status"] for c in (task_job.load_state(state_path) or {}).get("commands", [])] == ["done", "running"]
-            and _containers() == ["horizon-job-hz-9417"],
-            "command 2 running in its container",
+            and _containers() == ["farm-job-hz-9417"],
+            "command 2 running in the job's container",
         )
-        assert task_job.load_state(state_path)["commands"][1]["container"] == "horizon-job-hz-9417"
-        (state_path.with_suffix(".d") / "state" / "kept.txt").write_text("survives Stop\n")
+        (job_dir / "state" / "kept.txt").write_text("survives Stop\n")
+        (job_dir / "scratch" / "gone.txt").write_text("throwaway\n")
         os.kill(runner.pid, signal.SIGKILL)  # what tmux kill-session does
         runner.wait(5)
-        assert _containers() == ["horizon-job-hz-9417"], "the container outlives its killed client"
+        assert _containers() == ["farm-job-hz-9417"], "the container outlives its killed runner"
         farmd._mark_job_stopped(run_id, item_id)
         assert _containers() == []
+        assert not (job_dir / "scratch").exists() and not (job_dir / "tmp").exists()
         stopped = task_job.load_state(state_path)
         assert [c["status"] for c in stopped["commands"]] == ["done", "stopped"]
-        assert "container" not in stopped["commands"][1]
 
         release.touch()
         monkeypatch.setattr(task_job, "_notify_progress", lambda run_id: None)
@@ -383,35 +525,29 @@ def test_stop_removes_the_container_and_resume_starts_a_fresh_one(tmp_path, repo
         final = task_job.load_state(state_path)
         assert [c["status"] for c in final["commands"]] == ["done", "done"]
         assert (repo / "runs.txt").read_text().splitlines() == ["one", "two"]
-        assert (state_path.with_suffix(".d") / "state" / "kept.txt").read_text() == "survives Stop\n"
+        assert (job_dir / "state" / "kept.txt").read_text() == "survives Stop\n"
         assert _containers() == []
     finally:
         if runner.poll() is None:
             runner.kill()
         release.touch()
-        container_runner.stop_and_remove("horizon-job-hz-9417")
+        container_runner.stop_and_remove("farm-job-hz-9417")
         state_path.unlink(missing_ok=True)
         log_path.unlink(missing_ok=True)
-        shutil.rmtree(state_path.with_suffix(".d"), ignore_errors=True)
+        shutil.rmtree(job_dir, ignore_errors=True)
         shutil.rmtree(log_path.with_suffix(".d"), ignore_errors=True)
 
 
 def test_a_tmp_report_is_read_from_the_jobs_own_tmp_dir(tmp_path):
-    """Contract case: a `--report /tmp/<name>` file is pre-created in the
-    job's tmp dir (bound at /tmp/<name>), read from there — never from the
-    host's /tmp — and nested /tmp paths are not bound."""
+    """Contract case: a container's /tmp is the job's tmp dir, so a
+    `--report /tmp/<path>` is read from there — never from the host's /tmp."""
     tmp_dir = tmp_path / "tmp"
-    tmp_dir.mkdir()
-    names = task_job._tmp_report_files(
-        ["run --report /tmp/out.json", "run --report /tmp/a/b.json", "run --report rel.json"], ["/tmp/declared.json"], tmp_dir
-    )
-    assert names == ["out.json", "declared.json"]
-    assert sorted(p.name for p in tmp_dir.iterdir()) == ["declared.json", "out.json"]
-    (tmp_dir / "out.json").write_text('{"ok": true}')
-    host_tmp = Path("/tmp/out.json")
+    (tmp_dir / "nested").mkdir(parents=True)
+    (tmp_dir / "nested" / "out.json").write_text('{"ok": true}')
+    host_tmp = Path("/tmp/nested/out.json")
     host_had = host_tmp.exists()
     reports = job_reports.collect_reports(
-        ["run --report /tmp/out.json"], [], str(tmp_path), {}, forbid=None, tmp_root=str(tmp_dir)
+        ["run --report /tmp/nested/out.json"], [], str(tmp_path), {}, forbid=None, tmp_root=str(tmp_dir)
     )
     assert reports[0]["status"] == "inlined" and '{"ok": true}' in reports[0]["text"]
     assert host_tmp.exists() == host_had
@@ -424,7 +560,7 @@ def test_a_host_plan_runs_on_the_host_with_the_same_cwd_env_and_log(tmp_path, re
     """Metric 4 (farm leg): no podman is involved — a missing binary does not
     matter — the cwd is the host checkout, the env is the host child env, and
     the log has no container line."""
-    monkeypatch.setenv("HORIZON_PODMAN_BIN", str(tmp_path / "no-such-podman"))
+    monkeypatch.setenv("FARM_PODMAN_BIN", str(tmp_path / "no-such-podman"))
     artifact = _artifact(['pwd; echo "KEY=$DATA_API_KEY"; echo marker > made.txt'], cwd="sub", runner="host")
     summary, state, log = _run(tmp_path, artifact, repo=repo, image=None, env_values={"DATA_API_KEY": "host-plan-value-1"})
     assert summary == {"run": 1, "passed": 1, "failed": 0, "failing": []}
@@ -444,75 +580,141 @@ def test_a_host_plan_runs_on_the_host_with_the_same_cwd_env_and_log(tmp_path, re
 
 def _real_ready():
     if not REAL_PODMAN:
-        return "podman is not installed on this host (see infra/host/DEPLOY.md)"
-    exists = subprocess.run([REAL_PODMAN, "image", "exists", REAL_IMAGE], capture_output=True)
-    if exists.returncode != 0:
-        return f"image {REAL_IMAGE} is not pulled (podman pull it, or set HORIZON_TEST_PODMAN_IMAGE)"
+        return "podman is not installed on this host (see infra/host/DEPLOY.md) — NOT verified"
+    pulled = subprocess.run([REAL_PODMAN, "image", "exists", REAL_IMAGE], capture_output=True)
+    if pulled.returncode != 0:
+        pulled = subprocess.run([REAL_PODMAN, "pull", "--quiet", REAL_IMAGE], capture_output=True, timeout=600)
+    if pulled.returncode != 0:
+        return f"image {REAL_IMAGE} could not be pulled (set HORIZON_TEST_PODMAN_IMAGE) — NOT verified"
     return None
 
 
-real_podman = pytest.mark.skipif(_real_ready() is not None, reason=_real_ready() or "")
+_REAL_SKIP = _real_ready()
+real_podman = pytest.mark.skipif(_REAL_SKIP is not None, reason=_REAL_SKIP or "")
 
 
 @pytest.fixture
 def real(monkeypatch):
-    monkeypatch.setenv("HORIZON_PODMAN_BIN", REAL_PODMAN)
+    monkeypatch.setenv("FARM_PODMAN_BIN", REAL_PODMAN)
     return REAL_PODMAN
 
 
-CONFINEMENT = (
-    "for p in /repo/x /repo/sub/x /opt/horizon/x /tmp/x /var/tmp/x /etc/x /x; do "
-    '(mkdir -p "$(dirname $p)" && echo hi > "$p") 2>/dev/null && echo "WROTE $p" || echo "DENIED $p"; done; '
-    'echo hi > /scratch/x && echo "WROTE /scratch/x"; '
-    'echo hi > /state/x && echo "WROTE /state/x"; echo hi > /logs/x && echo "WROTE /logs/x"; '
-    'echo "UID=$(id -u)"; echo "PWD=$(pwd)"'
-)
+def _confinement(repo: Path, sibling: Path) -> str:
+    denied = [f"{repo}/x", f"{repo}/sub/x", "/opt/horizon/x", "/var/tmp/x", "/etc/x", "/x", f"{sibling}/x"]
+    allowed = ["/scratch/x", "/state/x", "/logs/x", "/tmp/x", "$HOME/x"]
+    return (
+        f"for p in {' '.join(denied)}; do "
+        '(mkdir -p "$(dirname $p)" && echo hi > "$p") 2>/dev/null && echo "WROTE $p" || echo "DENIED $p"; done; '
+        f"for p in {' '.join(allowed)}; do "
+        'echo hi > "$p" && echo "WROTE $p" || echo "DENIED $p"; done; '
+        'echo "UID=$(id -u)"; echo "PWD=$(pwd)"'
+    )
 
 
 @real_podman
-def test_real_the_container_can_write_only_scratch_state_and_logs(tmp_path, repo, real):
-    """Metric 1: pinned image, the farm user, the repo read-only at /repo with
-    the plan's cwd as workdir; writes fail everywhere but scratch, state and
-    logs. Metric 2: none of it is left behind."""
+def test_real_the_container_can_write_only_scratch_tmp_state_and_logs(tmp_path, repo, real):
+    """Metric 1: the pinned image, the non-root farm user, the repo read-only
+    at its own path with the plan's cwd as workdir; writes fail in the repo,
+    /opt/horizon, a sibling job's state dir and everywhere else but scratch,
+    /tmp ($HOME), the job's state and its logs. Metric 2: none of the
+    throwaway writes is left behind, and no container is."""
+    sibling = tmp_path / "state" / "HZ-OTHER.d" / "state"
+    sibling.mkdir(parents=True)
     before_repo = _files_under(repo)
     host_x_before = Path("/tmp/x").exists()
-    summary, _state, log = _run(tmp_path, _artifact([CONFINEMENT], cwd="sub"), repo=repo, image=REAL_IMAGE)
+    summary, _state, log = _run(tmp_path, _artifact([_confinement(repo, sibling)], cwd="sub"), repo=repo, image=REAL_IMAGE)
     assert summary["passed"] == 1, log
-    for path in ("/repo/x", "/repo/sub/x", "/opt/horizon/x", "/tmp/x", "/var/tmp/x", "/etc/x", "/x"):
+    for path in (f"{repo}/x", f"{repo}/sub/x", "/opt/horizon/x", "/var/tmp/x", "/etc/x", "/x", f"{sibling}/x"):
         assert f"DENIED {path}" in log, log
-    for path in ("/scratch/x", "/state/x", "/logs/x"):
-        assert f"WROTE {path}" in log, log
+    for path in ("/scratch/x", "/state/x", "/logs/x", "/tmp/x", "/x"):
+        assert f"WROTE {path}" in log or f"WROTE /tmp{path}" in log, log
     assert f"UID={os.getuid()}" in log and os.getuid() != 0
-    assert "PWD=/repo/sub" in log
+    assert f"PWD={repo / 'sub'}" in log
     assert f"container: {REAL_IMAGE}" in log
     assert _files_under(repo) == before_repo
+    assert list(sibling.iterdir()) == []
     assert Path("/tmp/x").exists() == host_x_before, "the container's /tmp is never the host's"
     assert _containers(real) == []
     job_dir = tmp_path / "state" / "HZ-416.d"
     assert (job_dir / "state" / "x").exists() and (tmp_path / "logs" / "farm-job-hz-416.d" / "x").exists()
-    assert not (job_dir / "scratch").exists(), "scratch is throwaway"
+    assert not (job_dir / "scratch").exists() and not (job_dir / "tmp").exists()
+
+
+MARKERS = 'echo m > /scratch/marker-416; echo m > "$HOME/home-marker-416"; echo m > /tmp/tmp-marker-416'
+
+
+def _no_markers_anywhere(tmp_path):
+    for root in (tmp_path, Path("/tmp"), Path.home()):
+        found = [p for p in root.rglob("*marker-416") if p.is_file()] if root == tmp_path else [
+            p for p in (root / "marker-416", root / "home-marker-416", root / "tmp-marker-416") if p.exists()
+        ]
+        assert found == [], found
 
 
 @real_podman
-def test_real_no_container_is_left_after_failure_or_budget_kill(tmp_path, repo, real, monkeypatch):
-    """Metric 2: a failing run and a run killed mid-command both leave
-    `podman ps -a` clean."""
-    _run(tmp_path, _artifact(["exit 4"]), repo=repo, image=REAL_IMAGE)
-    assert _containers(real) == []
-    clock = {"t": time.monotonic()}
-    real_monotonic = time.monotonic
+@pytest.mark.parametrize("ending", ["success", "failure", "budget"])
+def test_real_no_container_or_marker_is_left_after_any_ending(tmp_path, repo, real, monkeypatch, ending):
+    """Metric 2: markers written to scratch, $HOME and /tmp, then the run
+    succeeds, fails or is cut off — and `podman ps -a` is clean, scratch is
+    gone and no marker exists on the host."""
+    command = {"success": MARKERS, "failure": MARKERS + "; exit 4", "budget": MARKERS + "; sleep 600"}[ending]
+    if ending == "budget":
+        skew = {}
+        real_monotonic = time.monotonic
 
-    def jump():
-        _wait_for(lambda: _containers(real) == ["horizon-job-hz-416"], "the container", 60)
-        clock["skew"] = 120.0
+        def jump():
+            _wait_for(lambda: _containers(real) == ["farm-job-hz-416"], "the container", 60)
+            time.sleep(1)
+            skew["s"] = 120.0
 
-    monkeypatch.setattr(task_job.time, "monotonic", lambda: real_monotonic() + clock.get("skew", 0.0))
-    killer = threading.Thread(target=jump, daemon=True)
-    killer.start()
-    summary, state, _log = _run(tmp_path, _artifact(["sleep 600"]), repo=repo, image=REAL_IMAGE)
-    killer.join(10)
-    assert state["status"] == "budget_exceeded"
+        monkeypatch.setattr(task_job.time, "monotonic", lambda: real_monotonic() + skew.get("s", 0.0))
+        threading.Thread(target=jump, daemon=True).start()
+    summary, state, log = _run(tmp_path, _artifact([command]), repo=repo, image=REAL_IMAGE)
+    expected = {"success": "finished", "failure": "finished", "budget": "budget_exceeded"}[ending]
+    assert state["status"] == expected, log
     assert _containers(real) == []
+    assert not (tmp_path / "state" / "HZ-416.d" / "scratch").exists()
+    _no_markers_anywhere(tmp_path)
+
+
+@real_podman
+def test_real_stop_leaves_no_container_or_marker(tmp_path, repo, real):
+    """Metric 2 (Stop) and metric 3 (HZ-407 Stop in a container): the runner
+    is killed mid-command, farmd's Stop removes the container and the
+    throwaway dirs, and Resume finishes in a fresh container."""
+    run_id, item_id = 9419, "HZ-9419"
+    artifact = _artifact([MARKERS, "sleep 600", "true"], budget_minutes=15)
+    task = tmp_path / "task.json"
+    task.write_text(json.dumps({
+        "run_id": run_id, "item": {"id": item_id}, "plan_artifact": artifact,
+        "approved_hash": task_job.plan_hash_of(artifact), "repo_dir": str(repo), "container_image": REAL_IMAGE,
+    }))
+    state_path = STATE_DIR / "jobs" / f"{item_id}.json"
+    log_path = LOGS_DIR / f"farm-job-{item_id.lower()}.log"
+    env = {**os.environ, "FARM_PORT": "9", "PYTHONPATH": str(REPO_ROOT)}
+    runner = subprocess.Popen([sys.executable, "-m", "farm.task_job", "--task", str(task)], cwd=str(REPO_ROOT), env=env)
+    try:
+        _wait_for(
+            lambda: [c["status"] for c in (task_job.load_state(state_path) or {}).get("commands", [])] == ["done", "running", "pending"],
+            "command 2 running",
+            60,
+        )
+        os.kill(runner.pid, signal.SIGKILL)
+        runner.wait(5)
+        farmd._mark_job_stopped(run_id, item_id)
+        assert _containers(real) == []
+        assert not (state_path.with_suffix(".d") / "scratch").exists()
+        _no_markers_anywhere(STATE_DIR)
+        _no_markers_anywhere(tmp_path)
+        assert [c["status"] for c in task_job.load_state(state_path)["commands"]] == ["done", "stopped", "pending"]
+    finally:
+        if runner.poll() is None:
+            runner.kill()
+        container_runner.stop_and_remove(container_runner.container_name(item_id))
+        state_path.unlink(missing_ok=True)
+        log_path.unlink(missing_ok=True)
+        shutil.rmtree(state_path.with_suffix(".d"), ignore_errors=True)
+        shutil.rmtree(log_path.with_suffix(".d"), ignore_errors=True)
 
 
 @real_podman
@@ -527,8 +729,8 @@ def test_real_env_holds_only_declared_and_base_variables_and_limits_apply(tmp_pa
     inspected = {}
 
     def inspect():
-        _wait_for(lambda: _containers(real) == ["horizon-job-hz-416"], "the container", 60)
-        out = subprocess.run([real, "inspect", "horizon-job-hz-416"], capture_output=True, text=True).stdout
+        _wait_for(lambda: _containers(real) == ["farm-job-hz-416"], "the container", 60)
+        out = subprocess.run([real, "inspect", "farm-job-hz-416"], capture_output=True, text=True).stdout
         inspected.update(json.loads(out)[0])
         argvs = [p / "cmdline" for p in Path("/proc").iterdir() if p.name.isdigit()]
         inspected["argv_has_secret"] = any(b"real-secret-416" in _read(p) for p in argvs)
@@ -554,14 +756,27 @@ def test_real_env_holds_only_declared_and_base_variables_and_limits_apply(tmp_pa
 
 
 @real_podman
+def test_real_over_the_memory_limit_is_killed_with_a_reason_naming_it(tmp_path, repo, real):
+    """Metric 5: allocating past the limit is killed, and the run fails with
+    a reason naming the limit — from memory.events, since pid 1 lives on."""
+    hog = "python3 -c \"b = bytearray(512 * 1024 * 1024); print(len(b))\""
+    summary, state, log = _run(tmp_path, _artifact([hog]), repo=repo, image=REAL_IMAGE, memory="128m")
+    assert summary["failed"] == 1, log
+    assert state["commands"][0]["failure_reason"] == "killed: out of memory — over the container's 128m memory limit"
+    assert "over the container's 128m memory limit" in log
+    assert _containers(real) == []
+
+
+@real_podman
 def test_real_a_tmp_report_survives_the_container(tmp_path, repo, real):
-    """Contract case: a report written to /tmp/<name> inside the container is
-    read back into the run's reports after the container is gone."""
+    """Contract case: a report written to /tmp inside the container is read
+    back into the run's reports before the container and /tmp are gone."""
     artifact = _artifact(['sh -c \'echo "{\\"rows\\": 3}" > "$1"\' _ /tmp/out.json --report /tmp/out.json'])
     summary, state, log = _run(tmp_path, artifact, repo=repo, image=REAL_IMAGE)
     assert summary["passed"] == 1, log
     assert state["reports"][0]["status"] == "inlined"
     assert '"rows": 3' in state["reports"][0]["text"]
+    assert not (tmp_path / "state" / "HZ-416.d" / "tmp").exists()
 
 
 def _read(path):

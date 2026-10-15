@@ -456,7 +456,7 @@ def test_stop_during_command_two_then_resume_runs_each_command_once(tmp_path, mo
 def _containers():
     """HZ-416: `podman ps -a` (conftest's fake_podman)."""
     return subprocess.run(
-        [os.environ["HORIZON_PODMAN_BIN"], "ps", "-a"], capture_output=True, text=True
+        [os.environ["FARM_PODMAN_BIN"], "ps", "-a"], capture_output=True, text=True
     ).stdout.split()
 
 

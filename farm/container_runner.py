@@ -1,64 +1,72 @@
 """A Task's Execute commands inside a throwaway rootless Podman container (HZ-416).
 
-One `podman run --rm` per command, never reused: Stop kills the one running
-now, Resume starts new ones remounting the same state dir, and a reboot
-leaves nothing behind. The repo's checkout is mounted read-only at /repo
-(the plan's `cwd` selects the workdir under it, so `-w /repo/<cwd>`); a
-writable scratch dir, the job's state dir and the log dir are the only
-writable mounts. The image's own filesystem is mounted read-only with no
-tmpfs, and /tmp is a read-only dir from scratch, so a stray write fails
-instead of vanishing — the one exception is a `--report /tmp/<name>` file,
-pre-created in that dir and bind-mounted writable (see task_job). Secrets
-ride in the podman client's environment via `--env NAME`, never in argv, so
-`ps` shows no value.
+One container per job run: `podman run -d ... sleep infinity` once, then one
+`podman exec` per command, so an install or a /tmp file from command 1 is
+still there for command 2 — the same sequential semantics as a host run.
+The container is killed and removed when the run ends (finished, failed,
+over budget or stopped); Resume always starts a fresh one. farmd's Stop and
+its boot-time reaper remove a container a killed runner left behind.
+
+Mounts, and nothing else is writable (`--read-only` image filesystem):
+- the repo's checkout, read-only, at its own host path — so the plan's
+  resolved `cwd` (HZ-415) is the workdir unchanged;
+- a throwaway scratch dir at /scratch and a throwaway dir at /tmp (also
+  $HOME), wiped when the run ends — so nothing the run makes there survives;
+- the job's own state dir at /state and its own log dir at /logs — never the
+  farm's whole state or log dir, and never the runner's own state file.
 
 Guardrails, asserted by farm/tests/test_container_runner.py: no
 --privileged, no --cap-add, no Podman socket mount, no --env-file, host
-networking only (--network=host, because services listen on 127.0.0.1).
-`venv_dir` is ignored here on purpose: a host virtualenv's binaries do not
-run in the image — the image's own interpreter is used.
+networking only (--network=host, because services listen on 127.0.0.1), and
+`--userns=keep-id --user <uid>:<gid>` so files land owned by the farm user.
+Secrets ride in the podman client's environment via `--env NAME` on
+`podman run`, never in argv, so `ps` shows no value.
 
-HORIZON_PODMAN_BIN overrides the podman binary (tests point it at
-farm/tests/fake_podman). Missing Podman or a missing image is reported,
-never worked around: task_job ends the job `container_unavailable` with zero
-commands run.
+FARM_PODMAN_BIN overrides the podman binary (tests point it at
+farm/tests/fake_podman). Missing Podman or an image that cannot be pulled is
+reported, never worked around: task_job ends the job `container_unavailable`
+with zero commands run.
 """
 
 import os
 import shutil
 import subprocess
 
-# Fixed paths inside the container.
-REPO_MOUNT = "/repo"
 SCRATCH_MOUNT = "/scratch"
 STATE_MOUNT = "/state"
 LOGS_MOUNT = "/logs"
 TMP_MOUNT = "/tmp"
 
 # Used when the deploy target sets no limit.
-DEFAULT_CPUS = "2"
-DEFAULT_MEMORY = "4g"
+DEFAULT_CPUS = "1"
+DEFAULT_MEMORY = "1g"
+
+# One name per item, the same as its runner's tmux session (farm-job-<item>),
+# so the reaper spares exactly the containers whose runner is still alive.
+NAME_PREFIX = "farm-job-"
 
 # What the podman client itself needs from the farm's env (rootless Podman
 # finds its runtime dir through XDG_RUNTIME_DIR). None of it reaches the
 # container: only `--env NAME` does.
 CLIENT_ENV_KEYS = ("PATH", "HOME", "USER", "LOGNAME", "LANG", "TZ", "TMPDIR", "XDG_RUNTIME_DIR")
 
+# Exit status of a process ended by SIGKILL — what the kernel's OOM killer
+# sends — as `podman exec` reports it.
+SIGKILL_EXIT = 137
+
+
+class Unavailable(Exception):
+    """Podman, the image or the container itself cannot be had. The message
+    is the job's refusal, shown to the owner as is."""
+
 
 def podman_bin() -> str:
-    """The podman binary — HORIZON_PODMAN_BIN in tests, `podman` on the host."""
-    return os.environ.get("HORIZON_PODMAN_BIN", "podman")
+    """The podman binary — FARM_PODMAN_BIN in tests, `podman` on the host."""
+    return os.environ.get("FARM_PODMAN_BIN", "podman")
 
 
 def container_name(item_id: str) -> str:
-    """The container's --name: one per item, so Stop finds the run that is up
-    now without tracking per-command state."""
-    return f"horizon-job-{str(item_id).lower()}"
-
-
-def container_workdir(plan_cwd: str) -> str:
-    cwd = (plan_cwd or ".").strip().strip("/") or "."
-    return REPO_MOUNT if cwd == "." else f"{REPO_MOUNT}/{cwd}"
+    return f"{NAME_PREFIX}{str(item_id).lower()}"
 
 
 def client_env(env_values: dict) -> dict:
@@ -72,33 +80,72 @@ def client_env(env_values: dict) -> dict:
     return env
 
 
-def build_command(
+def _podman(*args, timeout: float = 60, env: dict | None = None) -> subprocess.CompletedProcess:
+    return subprocess.run(
+        [podman_bin(), *args],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        timeout=timeout,
+        env=env,
+    )
+
+
+def _first_line(text: str) -> str:
+    lines = [line.strip() for line in (text or "").splitlines() if line.strip()]
+    return lines[0][:200] if lines else ""
+
+
+def available() -> bool:
+    """Whether the podman binary resolves at all."""
+    return shutil.which(podman_bin()) is not None
+
+
+def ensure_image(image: str, timeout_s: int = 600) -> None:
+    """Pulls the pinned image unless it is already present. Runs in the job's
+    own runner (its own tmux session), so a slow pull holds up only this job.
+    Raises Unavailable with the reason; never falls back."""
+    if not available():
+        raise Unavailable("podman is not installed")
+    if not image:
+        raise Unavailable("this repo has no pinned container image")
+    try:
+        if _podman("image", "exists", image).returncode == 0:
+            return
+        pulled = _podman("pull", "--quiet", image, timeout=timeout_s)
+    except subprocess.TimeoutExpired:
+        raise Unavailable(f"the container image could not be pulled in {timeout_s}s: {image}") from None
+    except OSError as exc:
+        raise Unavailable(f"podman could not run ({type(exc).__name__})") from None
+    if pulled.returncode != 0:
+        detail = _first_line(pulled.stderr)
+        raise Unavailable(f"the container image could not be pulled: {image}" + (f" ({detail})" if detail else ""))
+
+
+def build_run_argv(
     *,
     image: str,
-    item_id: str,
+    name: str,
     repo_dir: str,
-    plan_cwd: str,
+    workdir: str,
     scratch_dir: str,
     tmp_dir: str,
     state_dir: str,
-    log_dir: str,
+    logs_dir: str,
     env_names: list,
-    cpu: str | None = None,
+    cpus: str | None = None,
     memory: str | None = None,
-    report_files: list | None = None,
 ) -> list:
-    """The `podman run` argv for one command (the caller appends
-    ["sh", "-c", command]). `env_names` are passed as `--env NAME` — Podman
-    inherits each value from its own environment, so no value ever appears in
-    argv. `tmp_dir` is the host dir shown read-only at /tmp; `report_files`
-    are names already created in it, each bind-mounted writable at
-    /tmp/<name>."""
+    """The `podman run -d` argv that starts the job's container. `env_names`
+    are passed as `--env NAME`: Podman inherits each value from its own
+    environment, so no value ever appears in argv. HOME is the throwaway
+    /tmp, so a `$HOME` write lands there and vanishes with the run."""
     argv = [
         podman_bin(),
         "run",
-        "--rm",
+        "-d",
         "--name",
-        container_name(item_id),
+        name,
         "--network=host",
         "--userns=keep-id",
         "--user",
@@ -106,67 +153,105 @@ def build_command(
         "--read-only",
         "--read-only-tmpfs=false",
         "--cpus",
-        cpu or DEFAULT_CPUS,
+        cpus or DEFAULT_CPUS,
         "--memory",
         memory or DEFAULT_MEMORY,
+        # No swap on top: the limit is the limit, so going past it is an
+        # OOM kill rather than a slow crawl.
+        "--memory-swap",
+        memory or DEFAULT_MEMORY,
         "-v",
-        f"{repo_dir}:{REPO_MOUNT}:ro",
+        f"{repo_dir}:{repo_dir}:ro",
         "-v",
         f"{scratch_dir}:{SCRATCH_MOUNT}:rw",
         "-v",
+        f"{tmp_dir}:{TMP_MOUNT}:rw",
+        "-v",
         f"{state_dir}:{STATE_MOUNT}:rw",
         "-v",
-        f"{log_dir}:{LOGS_MOUNT}:rw",
-        "-v",
-        f"{tmp_dir}:{TMP_MOUNT}:ro",
+        f"{logs_dir}:{LOGS_MOUNT}:rw",
+        "--env",
+        f"HOME={TMP_MOUNT}",
+        "-w",
+        workdir,
     ]
-    for name in report_files or []:
-        argv += ["-v", f"{os.path.join(tmp_dir, name)}:{TMP_MOUNT}/{name}:rw"]
-    argv += ["-w", container_workdir(plan_cwd)]
     for env_name in env_names or []:
         argv += ["--env", str(env_name)]
-    argv += [image]
+    argv += [image, "sleep", "infinity"]
     return argv
 
 
-def podman_available() -> bool:
-    """Whether the podman binary resolves at all."""
-    return shutil.which(podman_bin()) is not None
-
-
-def image_present(image: str) -> bool:
-    """Whether the pinned image is already pulled. Never pulls: a missing
-    image fails the job closed instead of fetching at run time."""
-    if not image:
-        return False
+def start_container(argv: list, env: dict) -> None:
+    """Runs the `podman run -d` argv. Raises Unavailable when the container
+    does not come up (a bad limit, a broken image, no cgroup delegation)."""
     try:
-        return (
-            subprocess.run(
-                [podman_bin(), "image", "exists", image],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                timeout=60,
-            ).returncode
-            == 0
-        )
+        started = subprocess.run(argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=120, env=env)
+    except subprocess.TimeoutExpired:
+        raise Unavailable("the container did not start in 120s") from None
+    except OSError as exc:
+        raise Unavailable(f"podman could not run ({type(exc).__name__})") from None
+    if started.returncode != 0:
+        detail = _first_line(started.stderr)
+        raise Unavailable("the container did not start" + (f": {detail}" if detail else ""))
+
+
+def exec_argv(name: str, command: str, workdir: str) -> list:
+    """One command in the job's container, as `sh -c`, in the plan's cwd."""
+    return [podman_bin(), "exec", "-w", workdir, name, "sh", "-c", command]
+
+
+def oom_kills(name: str) -> int | None:
+    """The container cgroup's `oom_kill` count (cgroup v2 memory.events),
+    or None when it cannot be read. A `podman exec`'d process killed by the
+    OOM killer leaves pid 1 alive, so State.OOMKilled never says so — this
+    counter does."""
+    try:
+        res = _podman("exec", name, "cat", "/sys/fs/cgroup/memory.events", timeout=30)
     except (OSError, subprocess.SubprocessError):
-        return False
+        return None
+    if res.returncode != 0:
+        return None
+    for line in res.stdout.splitlines():
+        key, _, value = line.partition(" ")
+        if key == "oom_kill" and value.strip().isdigit():
+            return int(value.strip())
+    return None
 
 
 def stop_and_remove(name: str) -> None:
     """Kills the named container and removes it. Never raises — Stop must not
-    fail because the container already exited on its own. Rootless `conmon`
-    can outlive a killed podman client, so this, not the client's process
-    group, is what ends the container."""
-    for argv in (["kill", name], ["rm", "-f", name]):
+    fail because the container is already gone. Rootless `conmon` outlives a
+    killed podman client, so this, not the client's process group, is what
+    ends the container."""
+    for args in (["kill", name], ["rm", "-f", name]):
         try:
-            subprocess.run(
-                [podman_bin(), *argv],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                timeout=30,
-            )
+            _podman(*args, timeout=30)
         except OSError:
             return
         except subprocess.SubprocessError:
             continue
+
+
+def list_job_containers() -> list:
+    """Names of every farm-job-* container, running or not (`podman ps -a`)."""
+    try:
+        res = _podman("ps", "-a", "--format", "{{.Names}}", timeout=30)
+    except (OSError, subprocess.SubprocessError):
+        return []
+    if res.returncode != 0:
+        return []
+    return [n for n in res.stdout.split() if n.startswith(NAME_PREFIX)]
+
+
+def reap_orphans(alive) -> list:
+    """Removes every farm-job-* container whose name `alive(name)` says has
+    no live runner — what a SIGKILLed runner or a reboot left behind. A
+    container whose runner is still up (HZ-408: farmd restarted mid-job) is
+    spared. Returns the names removed."""
+    reaped = []
+    for name in list_job_containers():
+        if alive(name):
+            continue
+        stop_and_remove(name)
+        reaped.append(name)
+    return reaped
