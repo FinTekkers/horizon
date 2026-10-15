@@ -116,7 +116,9 @@ def test_each_muse_event_reaches_the_log_within_2s_while_muse_is_still_running(t
     sends one event a second; each line is looked for in the log file the
     child's stdout writes to, timed against the moment fake_muse flushed it."""
     steps = [{"pause_s": PAUSE_S, "event": event} for event, _ in STREAM]
-    child, log, emit_log = _run_child(tmp_path, steps, linger_s=PAUSE_S, stderr_bytes=200_000)
+    # fake_muse lingers past the full lag window after its last event, so the
+    # result line can take all of MAX_LAG_S and still land before muse exits.
+    child, log, emit_log = _run_child(tmp_path, steps, linger_s=MAX_LAG_S + 1, stderr_bytes=200_000)
 
     seen = {}
     deadline = time.time() + 60
@@ -162,9 +164,12 @@ def test_a_half_line_then_silence_past_the_budget_kills_muse_and_logs_the_half_l
     """Architecture concern 1: a delta with no newline, then nothing. The step
     still ends at its budget, muse is killed, and the half line is logged."""
     steps = [{"event": _model_turn()}, {"event": _delta("Still thinking about the build")}]
-    child, log, emit_log = _run_child(tmp_path, steps, linger_s=60, budget_s=2)
+    # The budget also covers fake_muse's interpreter start, so it is wide
+    # enough for a loaded host to reach the half line; linger_s still dwarfs it.
+    child, log, emit_log = _run_child(tmp_path, steps, linger_s=60, budget_s=10)
 
-    _, stderr = child.communicate(timeout=30)
+    _, stderr = child.communicate(timeout=40)
+    assert 1 in _emits(emit_log)[0], "fake muse never sent the half line before its budget ran out"
     assert child.returncode == 3, stderr[-500:]
     assert "EXHAUSTED" in stderr and "run.output.delta" in stderr  # partial_text is the raw stream so far
     assert re.match(STAMP + "Still thinking about the build$", log.read_text().splitlines()[-1])
