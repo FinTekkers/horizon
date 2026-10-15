@@ -13,7 +13,9 @@ Mounts, and nothing else is writable (`--read-only` image filesystem):
 - a throwaway scratch dir at /scratch and a throwaway dir at /tmp (also
   $HOME), wiped when the run ends — so nothing the run makes there survives;
 - the job's own state dir at /state and its own log dir at /logs — never the
-  farm's whole state or log dir, and never the runner's own state file.
+  farm's whole state or log dir, and never the runner's own state file;
+- an unreadable empty file over each `.env` in the checkout, so the secrets
+  farmd reads from it reach a command only when the plan declares them.
 
 Guardrails, asserted by farm/tests/test_container_runner.py: no
 --privileged, no --cap-add, no Podman socket mount, no --env-file, host
@@ -175,17 +177,67 @@ def build_run_argv(
         "-w",
         workdir,
     ]
+    # farmd reads job secrets from <cwd>/.env, and the checkout is mounted
+    # whole: hide each .env behind an unreadable empty file, so a command can
+    # only see the env the plan declared.
+    env_files = checkout_env_files(repo_dir)
+    if env_files:
+        mask = env_mask_file(scratch_dir)
+        for env_file in env_files:
+            argv += ["-v", f"{mask}:{env_file}:ro"]
     for env_name in env_names or []:
         argv += ["--env", str(env_name)]
     argv += [image, "sleep", "infinity"]
     return argv
 
 
+# Not walked for .env files: nothing farmd reads lives there, and they can
+# be huge.
+_ENV_WALK_SKIP = {".git", "node_modules"}
+
+
+def checkout_env_files(repo_dir: str) -> list:
+    """Every `.env` in the checkout, as the real path a read of it reaches —
+    a symlinked .env is masked at its target, and one whose target is outside
+    the checkout is unreadable inside anyway (nothing else is mounted)."""
+    root = os.path.realpath(repo_dir)
+    found = set()
+    for dirpath, dirnames, filenames in os.walk(root):
+        dirnames[:] = [d for d in dirnames if d not in _ENV_WALK_SKIP]
+        if ".env" not in filenames:
+            continue
+        target = os.path.realpath(os.path.join(dirpath, ".env"))
+        if os.path.isfile(target) and os.path.commonpath([root, target]) == root:
+            found.add(target)
+    return sorted(found)
+
+
+def env_mask_file(scratch_dir: str) -> str:
+    """An empty mode-000 file in the job's dir, beside (never inside) the
+    mounted dirs. Bound read-only over a .env, it makes `cat .env` fail with
+    Permission denied: the farm user has no capability to override it, and
+    the read-only bind stops a chmod. A Resume reuses the one already there."""
+    mask = os.path.join(os.path.dirname(os.path.normpath(scratch_dir)), "env-mask")
+    try:
+        if os.path.lexists(mask) and (not os.path.isfile(mask) or os.path.islink(mask) or os.path.getsize(mask)):
+            os.unlink(mask)
+        if not os.path.lexists(mask):
+            os.close(os.open(mask, os.O_RDONLY | os.O_CREAT | os.O_EXCL, 0o000))
+        os.chmod(mask, 0o000)
+    except OSError as exc:
+        raise Unavailable(f"the checkout's .env could not be hidden ({type(exc).__name__})") from None
+    return mask
+
+
 def start_container(argv: list, env: dict) -> None:
     """Runs the `podman run -d` argv. Raises Unavailable when the container
     does not come up (a bad limit, a broken image, no cgroup delegation)."""
     try:
-        started = subprocess.run(argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=120, env=env)
+        # cwd "/": the container's conmon inherits it and drops an `oom` file
+        # there after an OOM kill — never in the runner's cwd or a checkout.
+        started = subprocess.run(
+            argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=120, env=env, cwd="/"
+        )
     except subprocess.TimeoutExpired:
         raise Unavailable("the container did not start in 120s") from None
     except OSError as exc:

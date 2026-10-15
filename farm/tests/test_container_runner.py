@@ -18,6 +18,7 @@ import shutil
 import signal
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 from pathlib import Path
@@ -92,8 +93,18 @@ def _files_under(root: Path) -> set:
 
 
 @pytest.fixture
-def repo(tmp_path):
-    path = tmp_path / "repo"
+def repo(request, tmp_path):
+    """The checkout. A real container mounts it at its own path, and its /tmp
+    is the run's throwaway dir, so a checkout under the host's /tmp would
+    make Podman create subuid-owned mount points inside that dir — real
+    Podman tests keep it under $HOME instead, as /opt/... is on the farm."""
+    if "real" not in request.fixturenames:
+        path = tmp_path / "repo"
+    else:
+        cache = Path.home() / ".cache"
+        cache.mkdir(exist_ok=True)
+        path = Path(tempfile.mkdtemp(prefix="hz416-repo-", dir=cache)) / "repo"
+        request.addfinalizer(lambda: shutil.rmtree(path.parent, ignore_errors=True))
     (path / "sub").mkdir(parents=True)
     (path / "README").write_text("checkout\n")
     return path
@@ -174,6 +185,35 @@ def test_the_default_limits_apply_when_the_target_sets_none():
     argv = _argv(cpus=None, memory=None)
     assert argv[argv.index("--cpus") + 1] == container_runner.DEFAULT_CPUS
     assert argv[argv.index("--memory") + 1] == container_runner.DEFAULT_MEMORY
+
+
+def test_each_checkout_env_file_is_masked_by_an_unreadable_empty_file(tmp_path, repo):
+    """farmd reads job secrets from <cwd>/.env and the checkout is mounted
+    whole, so every .env (a symlinked one at its target) is bound over with
+    an empty mode-000 file from the job dir — never a mounted dir — while
+    .git and node_modules are not walked."""
+    (repo / ".env").write_text("A=1\n")
+    (repo / "sub" / "real.env").write_text("B=2\n")
+    (repo / "sub" / ".env").symlink_to("real.env")
+    (repo / "node_modules" / "x").mkdir(parents=True)
+    (repo / "node_modules" / "x" / ".env").write_text("C=3\n")
+    job_dir = tmp_path / "state" / "HZ-416.d"
+    (job_dir / "scratch").mkdir(parents=True)
+    argv = _argv(repo_dir=str(repo), workdir=str(repo), scratch_dir=str(job_dir / "scratch"))
+    mounts = [argv[i + 1] for i, a in enumerate(argv) if a == "-v"]
+    mask = job_dir / "env-mask"
+    assert mounts[5:] == [f"{mask}:{repo / '.env'}:ro", f"{mask}:{repo / 'sub' / 'real.env'}:ro"]
+    assert mask.stat().st_size == 0 and (mask.stat().st_mode & 0o777) == 0
+    # A Resume builds the argv again over the mask the first start left.
+    assert _argv(repo_dir=str(repo), workdir=str(repo), scratch_dir=str(job_dir / "scratch")) == argv
+    assert argv[-3:] == ["registry.example/py@sha256:" + "a" * 64, "sleep", "infinity"]
+
+
+def test_a_checkout_without_env_files_gets_no_mask(tmp_path, repo):
+    job_dir = tmp_path / "state" / "HZ-416.d"
+    argv = _argv(repo_dir=str(repo), workdir=str(repo), scratch_dir=str(job_dir / "scratch"))
+    assert len([a for a in argv if a == "-v"]) == 5
+    assert not (job_dir / "env-mask").exists()
 
 
 def test_each_command_is_a_podman_exec_in_the_plans_cwd():
@@ -578,12 +618,20 @@ def test_a_host_plan_runs_on_the_host_with_the_same_cwd_env_and_log(tmp_path, re
 # ---- Real rootless Podman: the confinement itself ----
 
 
+# Rootless Podman keeps its runtime dir in XDG_RUNTIME_DIR, else under
+# $TMPDIR — which here is the suite's leak-guarded sandbox.
+_RUNTIME_DIR = os.environ.get("XDG_RUNTIME_DIR") or (
+    f"/run/user/{os.getuid()}" if os.path.isdir(f"/run/user/{os.getuid()}") else None
+)
+_REAL_ENV = {**os.environ, **({"XDG_RUNTIME_DIR": _RUNTIME_DIR} if _RUNTIME_DIR else {})}
+
+
 def _real_ready():
     if not REAL_PODMAN:
         return "podman is not installed on this host (see infra/host/DEPLOY.md) — NOT verified"
-    pulled = subprocess.run([REAL_PODMAN, "image", "exists", REAL_IMAGE], capture_output=True)
+    pulled = subprocess.run([REAL_PODMAN, "image", "exists", REAL_IMAGE], capture_output=True, env=_REAL_ENV)
     if pulled.returncode != 0:
-        pulled = subprocess.run([REAL_PODMAN, "pull", "--quiet", REAL_IMAGE], capture_output=True, timeout=600)
+        pulled = subprocess.run([REAL_PODMAN, "pull", "--quiet", REAL_IMAGE], capture_output=True, timeout=600, env=_REAL_ENV)
     if pulled.returncode != 0:
         return f"image {REAL_IMAGE} could not be pulled (set HORIZON_TEST_PODMAN_IMAGE) — NOT verified"
     return None
@@ -596,6 +644,8 @@ real_podman = pytest.mark.skipif(_REAL_SKIP is not None, reason=_REAL_SKIP or ""
 @pytest.fixture
 def real(monkeypatch):
     monkeypatch.setenv("FARM_PODMAN_BIN", REAL_PODMAN)
+    if _RUNTIME_DIR:
+        monkeypatch.setenv("XDG_RUNTIME_DIR", _RUNTIME_DIR)
     return REAL_PODMAN
 
 
@@ -618,7 +668,9 @@ def test_real_the_container_can_write_only_scratch_tmp_state_and_logs(tmp_path, 
     /opt/horizon, a sibling job's state dir and everywhere else but scratch,
     /tmp ($HOME), the job's state and its logs. Metric 2: none of the
     throwaway writes is left behind, and no container is."""
-    sibling = tmp_path / "state" / "HZ-OTHER.d" / "state"
+    # Beside the repo, not under the host's /tmp: inside, /tmp is the run's
+    # own throwaway dir, so a /tmp sibling would prove nothing.
+    sibling = repo.parent / "state" / "HZ-OTHER.d" / "state"
     sibling.mkdir(parents=True)
     before_repo = _files_under(repo)
     host_x_before = Path("/tmp/x").exists()
@@ -748,11 +800,26 @@ def test_real_env_holds_only_declared_and_base_variables_and_limits_apply(tmp_pa
     assert summary["passed"] == 1, log
     names = {line.split("=", 1)[0] for line in log.splitlines() if "=" in line and not line.startswith(("$", "env:"))}
     assert "DATA_API_KEY" in names
-    assert names - {"DATA_API_KEY"} <= image_names | {"PATH", "HOME", "HOSTNAME", "TERM", "container", "USER"}
+    assert names - {"DATA_API_KEY"} <= image_names | {"PATH", "HOME", "HOSTNAME", "TERM", "container", "USER", "PWD"}
     assert inspected["HostConfig"]["NanoCpus"] == 1_000_000_000
     assert inspected["HostConfig"]["Memory"] == 256 * 1024 * 1024
     assert not any(str(m.get("Source", "")).endswith(".env") for m in inspected["Mounts"])
     assert inspected["argv_has_secret"] is False
+
+
+@real_podman
+def test_real_a_checkout_env_file_cannot_be_read_inside(tmp_path, repo, real):
+    """The checkout's .env holds the secrets farmd resolves job env from; a
+    plan that declares none cannot read them through the repo mount."""
+    (repo / ".env").write_text("DATA_API_KEY=dotenv-secret-416\n")
+    (repo / "sub" / ".env").write_text("OTHER_KEY=dotenv-secret-416\n")
+    probe = 'for f in .env sub/.env; do cat "$f" && echo "READ $f" || echo "BLOCKED $f"; done'
+    summary, _state, log = _run(tmp_path, _artifact([probe]), repo=repo, image=REAL_IMAGE)
+    assert summary["passed"] == 1, log
+    assert "BLOCKED .env" in log and "BLOCKED sub/.env" in log, log
+    assert "READ .env" not in log and "READ sub/.env" not in log and "dotenv-secret-416" not in log
+    assert (repo / ".env").read_text() == "DATA_API_KEY=dotenv-secret-416\n"
+    assert _containers(real) == []
 
 
 @real_podman
@@ -765,6 +832,7 @@ def test_real_over_the_memory_limit_is_killed_with_a_reason_naming_it(tmp_path, 
     assert state["commands"][0]["failure_reason"] == "killed: out of memory — over the container's 128m memory limit"
     assert "over the container's 128m memory limit" in log
     assert _containers(real) == []
+    assert not (Path.cwd() / "oom").exists() and not (repo / "oom").exists(), "conmon's oom file lands in no checkout"
 
 
 @real_podman
