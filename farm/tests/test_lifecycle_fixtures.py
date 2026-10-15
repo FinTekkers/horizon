@@ -254,6 +254,14 @@ def test_py_farm_views(case):
         assert [entry["label"] for entry in view] == case["expectLabels"]
 
 
+@pytest.mark.parametrize("case", PY["LANE_KINDS"], ids=lambda c: c["case"])
+def test_py_lane_kinds(case):
+    if case.get("expectMissing"):
+        assert case["lane"] not in steps.LANE_KINDS
+    else:
+        assert steps.LANE_KINDS[case["lane"]] == case["expect"]
+
+
 @pytest.mark.parametrize("case", PY["by_kind_label"], ids=lambda c: c["case"])
 def test_py_by_kind_label(case):
     expect = case["expect"]

@@ -815,6 +815,11 @@
       { "case": "the task view holds only the task rows on a lane", "kind": "task", "expectLabels": ["Define the outcome", "How we'll verify", "Guardrails", "Assess", "Run plan", "Impact review", "Execute", "Verify & report"] }
     ],
 
+    "LANE_KINDS": [
+      { "case": "the trivial lane belongs to change items", "lane": "trivial", "expect": "change" },
+      { "case": "an undeclared lane is absent", "lane": "banana", "expectMissing": true }
+    ],
+
     "by_kind_label": [
       { "case": "a task label resolves in the task rows", "kind": "task", "label": "Impact review", "expect": { "agent": "Architect", "runsIn": "farm" } },
       { "case": "a change label resolves in the change rows", "kind": "change", "label": "Architecture review", "expect": { "agent": "Architect", "runsIn": "farm" } },
