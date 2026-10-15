@@ -180,7 +180,7 @@ def test_the_renderer_turns_the_recorded_muse_stream_into_the_golden_log():
     this host (paths scrubbed) must render to exactly the .log the agent output
     view e2e spec serves."""
     ticks = iter([0.0, 19.0])
-    renderer = LineRenderer(stamp=lambda: "12:00:00", monotonic=lambda: next(ticks))
+    renderer = LineRenderer(decode=muse._decode_json, stamp=lambda: "12:00:00", monotonic=lambda: next(ticks))
     lines = []
     for raw in (FIXTURES_DIR / "muse_stream_recorded.jsonl").read_text().splitlines():
         lines += renderer.feed(json.loads(raw))

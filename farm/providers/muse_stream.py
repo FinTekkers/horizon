@@ -17,7 +17,6 @@ not sent before it runs; tool.result names the tool and carries the text the
 input is read back from, so a tool line prints when the tool finishes.
 """
 
-import json
 import re
 import time
 from datetime import datetime
@@ -49,7 +48,9 @@ class LineRenderer:
     """Feed it each event in order; it returns the finished lines to print.
     Keeps the partial agent text between events."""
 
-    def __init__(self, *, stamp=_stamp, monotonic=time.monotonic):
+    def __init__(self, *, decode, stamp=_stamp, monotonic=time.monotonic):
+        # decode: muse._decode_json, which reads the JSON a bash result carries.
+        self._decode = decode
         self._stamp = stamp
         self._monotonic = monotonic
         self._started = monotonic()
@@ -93,17 +94,14 @@ class LineRenderer:
         facts = payload.get("correlation_facts") if isinstance(payload.get("correlation_facts"), dict) else {}
         tool = facts.get("tool_name") if isinstance(facts.get("tool_name"), str) else "tool"
         text = payload.get("text") if isinstance(payload.get("text"), str) else ""
-        return self._line(f"⏺ {TOOL_NAMES.get(tool, tool)}({brief(_tool_input(tool, text))})")
+        return self._line(f"⏺ {TOOL_NAMES.get(tool, tool)}({brief(_tool_input(tool, text, self._decode))})")
 
 
-def _tool_input(tool: str, text: str) -> dict:
+def _tool_input(tool: str, text: str, decode) -> dict:
     """The tool's input, read back from its result text. Muse's search result
     holds only the hits, not the query, so Search shows the first hit."""
     if tool == "bash":
-        try:
-            shell = json.loads(text)
-        except json.JSONDecodeError:
-            shell = None
+        shell = decode(text)
         if isinstance(shell, dict) and isinstance(shell.get("command"), str):
             return {k: shell[k] for k in ("command", "description") if isinstance(shell.get(k), str)}
     if tool == "read_file" and (m := _READ_RE.match(text)):

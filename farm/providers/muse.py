@@ -163,7 +163,7 @@ def _stream(cmd: list[str], *, timeout: int, cwd: str | None, env: dict) -> subp
     for reader in readers:
         reader.start()
 
-    renderer = LineRenderer()
+    renderer = LineRenderer(decode=_decode_json)
     stdout: list[str] = []
     deadline = time.monotonic() + timeout
     try:
@@ -178,11 +178,9 @@ def _stream(cmd: list[str], *, timeout: int, cwd: str | None, env: dict) -> subp
             if line is None:
                 break
             stdout.append(line)
-            try:
-                event = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            _print_lines(renderer.feed(event))
+            event = _decode_json(line)
+            if event is not None:
+                _print_lines(renderer.feed(event))
         proc.wait(timeout=max(deadline - time.monotonic(), 0))
     except subprocess.TimeoutExpired:
         proc.kill()
@@ -197,6 +195,17 @@ def _stream(cmd: list[str], *, timeout: int, cwd: str | None, env: dict) -> subp
             reader.join(_READER_GRACE_S)
     _print_lines(renderer.flush())
     return subprocess.CompletedProcess(cmd, proc.returncode, "".join(stdout), "".join(stderr))
+
+
+def _decode_json(text: str):
+    """One piece of Muse's own JSON framing (an event line, or the JSON a
+    bash tool result carries), or None if it isn't JSON. The one place this
+    provider decodes JSON: none of it is the agent's reply, which
+    _parse_events hands up as a plain string."""
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        return None
 
 
 def _read_lines(pipe, lines: queue.Queue) -> None:
@@ -235,10 +244,9 @@ def _parse_events(proc: subprocess.CompletedProcess, session_id: str) -> dict:
         line = line.strip()
         if not line:
             continue
-        try:
-            events.append(json.loads(line))
-        except json.JSONDecodeError:
-            continue
+        event = _decode_json(line)
+        if isinstance(event, dict):
+            events.append(event)
 
     terminal = next((e for e in events if e.get("payload_type") == "run.terminal.completed"), None)
     if terminal is not None:
