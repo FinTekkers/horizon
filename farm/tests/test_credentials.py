@@ -153,7 +153,7 @@ def test_the_muse_subprocess_runner_scrubs_both_credentials(monkeypatch):
     monkeypatch.setattr(muse_provider, "_parse_events", lambda proc, sid: {"result": "ok", "session_id": sid})
 
     def run_it(fake_run):
-        monkeypatch.setattr(muse_provider.subprocess, "run", fake_run)
+        monkeypatch.setattr(muse_provider, "_stream", fake_run)
         muse_provider.run("hello")
 
     env = _spawn_env(monkeypatch, run_it)

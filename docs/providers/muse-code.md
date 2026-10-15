@@ -200,6 +200,102 @@ Steps 8, 11 and 12 follow only the owner's choice. A persona's provider or a
 bare `FARM_PROVIDER` never moves them, and implement with no choice stays
 locked to Claude (HZ-117). Deploy (step 14) can never run on Muse.
 
+## HZ-489: live agent output
+
+`farm/providers/muse.py` reads `muse exec --json` stdout line by line
+(`_stream`) and prints each event the moment it arrives, as Claude steps do.
+tmux pipe-pane copies the lines into `farm-run-<item>-s<n>-a<n>.log`, so the
+item page's **See agent output ↗** view shows a Muse run as it happens.
+`farm/providers/muse_stream.py` renders the lines:
+
+| Muse 1.4.9 event | Log line |
+| --- | --- |
+| `run.output.delta` | `[HH:MM:SS] <text>`, one per finished line (fragments are buffered) |
+| `tool.result`, tool `bash` | `[HH:MM:SS] ⏺ Bash({"command": …, "description": …})` |
+| `tool.result`, tool `read_file` | `[HH:MM:SS] ⏺ Read({"file_path": …})` |
+| `tool.result`, tool `search` | `[HH:MM:SS] ⏺ Search({"result": <first hit>})` |
+| `run.terminal.*` | `[HH:MM:SS] ── result: <n> turn(s) in <s>s ──` |
+
+Differences from a Claude step:
+
+- **A tool line prints when the tool finishes, not when it starts.** Muse's
+  stream doesn't send a tool's input before the tool runs. `tool.result` is
+  the first event that names the tool and carries the text the input is read
+  back from.
+- **Search shows its first hit, not its query.** Muse's search result holds
+  only the hits.
+- **Muse has one search tool, logged as `Search`.** A Claude step logs `Grep`
+  or `Glob`.
+- A turn is one model call (`task_kind` `model.*`), the unit
+  `--max-model-steps` counts.
+
+Text still waiting for a newline is logged when a tool line or the result
+line prints, and when the run fails or is killed at its time budget.
+`_stream` returns the whole stdout and stderr, so `_parse_events`, the HZ-422
+usage-limit check and the time-budget salvage work as before.
+
+## HZ-489: the sandbox can't run a shell on this host
+
+LM-337's implement ran on Muse three times on 15 Oct. It never ran
+`./compile.sh` and reported a "shell outage". The outage is real, and it hits
+**every** sandboxed shell command Muse runs here, not only `compile.sh`.
+
+Observed with Muse 1.4.9 on 15 Oct, using the farm's own flags:
+
+- Every `bash` tool call fails before the command starts, with
+  `bwrap: loopback: Failed RTM_NEWADDR: Operation not permitted`. Muse's
+  session logs on this host show this error in most Muse runs from 14–15 Oct.
+  Not one shell call in those runs exited 0.
+- Muse's trace shows the sandbox it prepared: `filesystem_policy="restricted"`
+  `network_policy="restricted"` (or `"proxy_only"`), backend `linux_embedded`
+  (an embedded bubblewrap).
+- The kernel log shows the cause. The host sets
+  `kernel.apparmor_restrict_unprivileged_userns=1` (the Ubuntu default), so
+  the user namespace that `muse-bin-*` creates is moved to AppArmor's
+  `unprivileged_userns` profile. That profile denies `net_admin` and
+  `setpcap`, so bubblewrap can't bring up loopback in its network namespace:
+
+  ```
+  apparmor="DENIED" operation="capable" profile="unprivileged_userns" comm="exe" capname="net_admin"
+  ```
+
+What Muse's own settings can and can't change:
+
+| Setting tried | Result |
+| --- | --- |
+| default (network `restricted`) | every shell call fails: `RTM_NEWADDR` |
+| `--sandbox-network proxy-only` | same failure |
+| `--sandbox-network enabled` (unrestricted, forbidden; tried once in a scratch dir to locate the fault) | fails earlier: `bwrap: setting up uid map: Permission denied`, then `tool denied: unsandboxed execution requires human approval` |
+| `-c permissions=…` named profiles (`filesystem` path→`read`/`write`/`deny` map, `network.targets` host map, parents `:read-only`, `:ask-me`, `:auto-review`) | read and network grants exist, but they apply inside the same bubblewrap, which can't start |
+
+So no Muse sandbox setting gives the agent a working shell on this host.
+Only `--disable-sandbox` or `--yolo` would, and the farm never passes either
+(HZ-102). Path and registry-host grants for `compile.sh` are therefore
+**not added**: they would sit inside a sandbox that can't run, and nothing
+here could test them. The farm's Muse command is unchanged, and
+`farm/tests/test_providers_muse_stream.py` pins it: no sandbox flag, no `-c`
+setting, no permission profile.
+
+What would unblock it is a host change. It needs a human decision and is
+not made here:
+
+- **Option 1.** An AppArmor profile that allows `userns` for the Muse binary.
+  This is how Ubuntu ships profiles for its own userns tools, such as
+  `/etc/apparmor.d/podman` and `/etc/apparmor.d/chrome`. The sandbox stays
+  on and starts working. But the binary lives in user-writable
+  `~/.local/bin/muse-bin-*`, and it is replaced on every Muse update, so the
+  profile would grant `userns` to whatever sits at that path.
+- **Option 2.** A Muse release whose sandbox works without a network
+  namespace under this AppArmor restriction.
+
+Once the shell works, the toolchain paths and hosts `compile.sh` needs can be
+measured and granted through a `permissions` profile. Those are `~/.cargo/bin`
+and `~/.cargo/registry`, `~/.rustup`, `~/.gradle/caches`, `~/.gradle/wrapper`,
+`~/.m2/repository`, `~/.npm`, `~/.cache/pip`, and the crates.io, Maven,
+Gradle, npm and PyPI hosts. The grants must exclude credential files:
+`~/.cargo/credentials*`, `~/.npmrc`, `~/.m2/settings.xml` and
+`~/.gradle/gradle.properties`.
+
 ## What is still unverified
 
 - subscription tier / remaining budget / concurrent subagent limit

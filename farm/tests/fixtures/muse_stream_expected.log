@@ -1,0 +1,6 @@
+[12:00:00] ⏺ Read({"file_path": "README.md"})
+[12:00:00] ⏺ Search({"result": "src/calc.py:2:    return a + b"})
+[12:00:00] ⏺ Bash({"command": "echo hello", "description": "Echo hello"})
+[12:00:00] README.md says "# Calc / A tiny adder."; search found "return a + b" in [calc.py](/work/demo/src/calc.py:2).
+[12:00:00] The `echo hello` shell command failed in the sandbox (loopback setup error), so it produced no "hello" output.
+[12:00:00] ── result: 4 turn(s) in 19s ──

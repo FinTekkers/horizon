@@ -124,7 +124,7 @@ def test_run_agent_selects_muse_provider_via_config_end_to_end(monkeypatch):
     selected by configuration' — needs a test that actually crosses the
     seam. Sets FARM_PROVIDER=muse and drives a real call through
     agent_runner.run_agent() into the real farm.providers.muse module, down
-    to muse.subprocess.run — the same boundary test_providers_muse.py mocks
+    to muse._stream — the same boundary test_providers_muse.py mocks
     in isolation — rather than a fake in-process provider standing in for
     it (as test_agent_runner_dispatch.py does for the dispatcher contract)."""
     from farm.providers import muse
@@ -141,7 +141,7 @@ def test_run_agent_selects_muse_provider_via_config_end_to_end(monkeypatch):
         )
         return subprocess.CompletedProcess(args=cmd, returncode=0, stdout=payload, stderr="")
 
-    monkeypatch.setattr(muse.subprocess, "run", fake_subprocess_run)
+    monkeypatch.setattr(muse, "_stream", fake_subprocess_run)
     monkeypatch.setenv("FARM_PROVIDER", "muse")
 
     reply = run_agent("say hi", agent="eng", session_id="fixed-session", max_turns=5, timeout_s=30)

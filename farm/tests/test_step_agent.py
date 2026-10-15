@@ -1202,7 +1202,7 @@ def test_muse_smoke_test_dispatch_goes_through_the_real_muse_provider_module(mon
     OS-level `muse` subprocess is faked (the same boundary
     test_providers_muse.py mocks at) — execute() -> run_agent() ->
     agent_runner._PROVIDERS['muse'] -> farm.providers.muse.run() -> a real
-    (mocked) subprocess.run call with the real headless-safety argv."""
+    (mocked) muse._stream call with the real headless-safety argv."""
     from farm.providers import muse as muse_provider
 
     captured_cmd = {}
@@ -1221,7 +1221,7 @@ def test_muse_smoke_test_dispatch_goes_through_the_real_muse_provider_module(mon
         )
         return subprocess.CompletedProcess(args=cmd, returncode=0, stdout=line, stderr="")
 
-    monkeypatch.setattr(muse_provider.subprocess, "run", fake_subprocess_run)
+    monkeypatch.setattr(muse_provider, "_stream", fake_subprocess_run)
 
     task = make_task(4, "Plan options & trade-offs (pros / cons)")
     task["item"]["personas"] = muse_smoke_test_personas

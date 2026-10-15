@@ -9,15 +9,19 @@ behaviour is unverified, this module says so too instead of guessing.
 
 import json
 import os
+import queue
 import re
 import subprocess
 import tempfile
+import threading
+import time
 import uuid
 from pathlib import Path
 
 from ..config import FARM_MUSE_BIN, MAX_TURNS, STEP_TIMEOUT_S
 from ..credentials import without_gate_credentials
 from .base import AgentError, AgentExhaustedError, AgentUsageLimitedError, decode_partial, reset_from_text
+from .muse_stream import LineRenderer
 
 # `muse exec --session-id <UUID>` genuinely carries context across calls
 # (verified: two separate processes sharing one id, see the vendor doc) —
@@ -107,14 +111,7 @@ def run(
         try:
             # HZ-140: same scrub as the claude provider — no model subprocess
             # is ever handed a credential that could approve a gate.
-            proc = subprocess.run(
-                cmd,
-                capture_output=True,
-                text=True,
-                timeout=timeout_s,
-                cwd=cwd,
-                env=without_gate_credentials(),
-            )
+            proc = _stream(cmd, timeout=timeout_s, cwd=cwd, env=without_gate_credentials())
         except subprocess.TimeoutExpired as exc:
             # The captured stdout is the JSONL event stream so far, not prose —
             # carried raw; a salvage of it fails closed.
@@ -127,6 +124,93 @@ def run(
         Path(prompt_path).unlink(missing_ok=True)
 
     return _parse_events(proc, sid)
+
+
+# How long to wait for the stdout/stderr readers once muse has exited or been
+# killed. A grandchild that kept a pipe open must not hang the step.
+_READER_GRACE_S = 5
+
+
+def _stream(cmd: list[str], *, timeout: int, cwd: str | None, env: dict) -> subprocess.CompletedProcess:
+    """HZ-489: runs muse as subprocess.run with capture_output and text would,
+    and prints each event as a farm log line the moment it arrives (stdout is
+    the tmux pane; pipe-pane copies it into the run's log file). Returns the
+    whole stdout and stderr, so _parse_events reads the run as before. Once
+    its time budget is spent it kills muse and raises
+    subprocess.TimeoutExpired with the stdout so far as .output, as
+    subprocess.run does.
+
+    Both pipes are read on their own threads: stdout into a queue the loop
+    waits on with a deadline, so a silent muse or a half-written line can't
+    stall the deadline, and stderr into a buffer, so a full stderr pipe can't
+    block muse."""
+    proc = subprocess.Popen(
+        cmd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        cwd=cwd,
+        env=env,
+    )
+    lines: queue.Queue = queue.Queue()
+    stderr: list[str] = []
+    readers = [
+        threading.Thread(target=_read_lines, args=(proc.stdout, lines), daemon=True),
+        threading.Thread(target=lambda: stderr.append(proc.stderr.read()), daemon=True),
+    ]
+    for reader in readers:
+        reader.start()
+
+    renderer = LineRenderer()
+    stdout: list[str] = []
+    deadline = time.monotonic() + timeout
+    try:
+        while True:
+            left = deadline - time.monotonic()
+            if left <= 0:
+                raise subprocess.TimeoutExpired(cmd, timeout)
+            try:
+                line = lines.get(timeout=left)
+            except queue.Empty:
+                continue
+            if line is None:
+                break
+            stdout.append(line)
+            try:
+                event = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            _print_lines(renderer.feed(event))
+        proc.wait(timeout=max(deadline - time.monotonic(), 0))
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        proc.wait()
+        _print_lines(renderer.flush())
+        raise subprocess.TimeoutExpired(cmd, timeout, output="".join(stdout)) from None
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait()
+        for reader in readers:
+            reader.join(_READER_GRACE_S)
+    _print_lines(renderer.flush())
+    return subprocess.CompletedProcess(cmd, proc.returncode, "".join(stdout), "".join(stderr))
+
+
+def _read_lines(pipe, lines: queue.Queue) -> None:
+    """Every line of `pipe` onto `lines`, then None at end of file."""
+    try:
+        for line in pipe:
+            lines.put(line)
+    finally:
+        lines.put(None)
+
+
+def _print_lines(lines: list[str]) -> None:
+    for line in lines:
+        print(line, flush=True)
 
 
 # HZ-422: Muse's usage-limit refusal, e.g. "429 Subscription quota exhausted.

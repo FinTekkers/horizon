@@ -191,7 +191,7 @@ def test_run_agent_tags_the_exhaustion_with_the_provider_that_ran(monkeypatch):
         line = json.dumps({"payload_type": "run.terminal.exhausted", "payload": {}})
         return subprocess.CompletedProcess(cmd, 0, line + "\n", "")
 
-    monkeypatch.setattr(muse.subprocess, "run", fake_run)
+    monkeypatch.setattr(muse, "_stream", fake_run)
     with pytest.raises(AgentExhaustedError) as exc_info:
         agent_runner.run_agent("p", agent="eng", provider="muse")
     assert exc_info.value.provider == "muse"
