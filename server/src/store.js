@@ -960,6 +960,19 @@ function wouldCycle(id, dependsOnId) {
   return false
 }
 
+// HZ-469: the open items (not closed, not abandoned) that depend on any of
+// `itemIds`, as {id, dependsOn}. The deploy queue closes a batch's window
+// early when one is waiting on a member.
+export function openDependentsOfAny(itemIds) {
+  const found = []
+  for (const dependsOn of itemIds) {
+    for (const row of selectDependents.all(dependsOn)) {
+      if (!isClosed(row) && !isAbandoned(row)) found.push({ id: row.id, dependsOn })
+    }
+  }
+  return found
+}
+
 // HZ-313: the same check addDependency runs, for split.js to refuse a plan
 // whose already-filed upstream item now depends on this one.
 export function wouldCycleBetween(id, dependsOnId) {
