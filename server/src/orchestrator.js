@@ -49,6 +49,7 @@ import {
   notifyChange,
   registerAgentRunner,
   registerRunStateProvider,
+  registerDeployDrainProvider,
   claimGateAction,
   finishGateAction,
   getConflictRun as conflictRunOf,
@@ -103,7 +104,7 @@ import {
 import { PRIMARY_PERSONA_AGENT, isPersona, personaLabel, proposePersona } from './personas.js'
 import { SUMMARIZE_STEP_INDEX, OVERLAP_INPUT_LABEL, computeOverlap, overlapFailure, applyOverlap } from './overlapService.js'
 import { renderOverlapInput, renderOverlapSection, replaceOverlapSection } from './overlap.js'
-import { DEPLOY_BLOCK_MESSAGE, isDeployBlocked, onDrainEnd } from './deployDrain.js'
+import { DEPLOY_BLOCK_MESSAGE, deployBlock, isDeployBlocked, onDrainEnd, survivesRestart } from './deployDrain.js'
 import { deployWaitFor } from './deployWait.js'
 import * as deployQueue from './deployQueue.js'
 import { findTargetByRepo } from './deployTargets.js'
@@ -3547,6 +3548,8 @@ export async function init(log) {
   // listItems() — a plain object lookup, never a network call, so
   // snapshot()/listItems() stay synchronous (HZ-54).
   registerRunStateProvider(() => farm.runStates || {})
+  // HZ-481: the card's deploy line reads the drain block and its steps.
+  registerDeployDrainProvider({ block: deployBlock, survives: survivesRestart })
   // Default the active project to the first one if never chosen.
   if (!getSetting('active_project_id')) {
     const first = db.prepare('SELECT id FROM project ORDER BY id LIMIT 1').get()

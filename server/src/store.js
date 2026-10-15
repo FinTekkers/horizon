@@ -79,6 +79,17 @@ export function registerRunStateProvider(provider) {
   runStateProvider = provider
 }
 
+// HZ-481: the orchestrator registers the deploy drain's read side here at
+// init (deployDrain.js imports this module, so importing it back would be a
+// cycle): block(now) is deployDrain.deployBlock, survives(stepIndex) is
+// deployDrain.survivesRestart. Until then (mock mode, tests without init())
+// there is no drain to show.
+let deployDrainProvider = { block: () => null, survives: () => false }
+
+export function registerDeployDrainProvider(provider) {
+  deployDrainProvider = { ...deployDrainProvider, ...provider }
+}
+
 // ---- HZ-216: long gate actions (pre-merge checks + merge, conflict resolution) ----
 //
 // One persisted gate_action row per (item, kind) — see db.js. It is both the
@@ -1298,14 +1309,83 @@ function toIsoUtc(ts) {
 
 // HZ-333: the item's place in its deploy target's queue, for the board, or
 // null when it is not queued. Read-only.
+// HZ-481: also the entry a batch released while it is `verifying` (live, smoke
+// check running), and the facts each stage of the card's line needs. Every
+// HZ-333 key keeps its name and meaning; the new ones are added beside them.
 const selectQueuedEntry = db.prepare(`
-  SELECT e.target, e.status, b.status AS batch_status, b.window_closes_at, b.tag
+  SELECT e.target, e.status, b.status AS batch_status, b.window_closes_at, b.tag,
+         b.id AS batch_id, b.started_at, b.live_at
     FROM deploy_queue_entry e JOIN deploy_batch b ON b.id = e.batch_id
-   WHERE e.item_id = ? AND e.status = 'queued'`)
+   WHERE e.item_id = ?
+     AND (e.status = 'queued' OR (e.status = 'released' AND b.status = 'verifying' AND b.live_at IS NOT NULL))`)
 
-export function deployQueueStateFor(itemId) {
+// HZ-481: how long the target's last 5 deploys took, publish start to live,
+// in seconds — the history "live about" is estimated from.
+const selectRecentDeploySeconds = db.prepare(`
+  SELECT (julianday(live_at) - julianday(started_at)) * 86400 AS s FROM deploy_batch
+   WHERE target = ? AND live_at IS NOT NULL AND started_at IS NOT NULL
+   ORDER BY id DESC LIMIT 5`)
+
+// HZ-481: when a deploy of `target` should be live, as ISO UTC, or null with
+// no usable history: the drain's end (else now) plus the median of the last
+// 5 durations. The median counts publish, deploy-hold (HZ-408) and drain
+// time too, so a run of long waits moves the estimate later.
+export function liveEtaFor(target, { drainEndMs = null, nowMs = Date.now() } = {}) {
+  const durations = selectRecentDeploySeconds
+    .all(target)
+    .map((row) => row.s)
+    .filter((s) => Number.isFinite(s) && s >= 0)
+    .sort((a, b) => a - b)
+  if (durations.length === 0) return null
+  const mid = Math.floor(durations.length / 2)
+  const median = durations.length % 2 ? durations[mid] : (durations[mid - 1] + durations[mid]) / 2
+  const base = Number.isFinite(drainEndMs) ? drainEndMs : nowMs
+  return new Date(base + Math.round(median * 1000)).toISOString()
+}
+
+// HZ-481: short step names for the drain line; any other step reads as its
+// stepSlug(). Keyed by step index, so a relabel cannot unhook them.
+const DRAIN_STEP_NAMES = new Map([
+  [IMPLEMENT_STEP_INDEX, 'implement'],
+  [REVIEW_STEP_INDEX, 'review'],
+])
+
+// HZ-481: what a Horizon self-deploy's drain is waiting on — the agent steps
+// a restart would break (HZ-469: deployDrain's survivesRestart) and the
+// running premerge/resolve gate actions — as [{item_id, step}].
+function drainWaiting() {
+  const steps = listRunningAgentSteps()
+    .filter((run) => !deployDrainProvider.survives(run.stepIndex))
+    .map((run) => ({ item_id: run.itemId, step: DRAIN_STEP_NAMES.get(run.stepIndex) ?? run.step }))
+  const gateActions = listRunningGateActions().map((run) => ({ item_id: run.itemId, step: run.kind }))
+  return [...steps, ...gateActions].sort((a, b) => a.item_id.localeCompare(b.item_id, 'en', { numeric: true }))
+}
+
+export function deployQueueStateFor(itemId, now = Date.now()) {
   const row = selectQueuedEntry.get(itemId)
-  return row ? { ...row, window_closes_at: toIsoUtc(row.window_closes_at) } : null
+  if (!row) return null
+  const state = {
+    ...row,
+    window_closes_at: toIsoUtc(row.window_closes_at),
+    started_at: toIsoUtc(row.started_at),
+    live_at: toIsoUtc(row.live_at),
+  }
+  if (row.batch_status !== 'deploying') return state
+  // The drain block is process-wide; only a Horizon self-deploy drains.
+  let drainEndMs = null
+  const block = row.target === 'horizon' ? deployDrainProvider.block(now) : null
+  if (block) {
+    state.drain_started_at = block.startedAt
+    state.drain_deadline = block.latestEnd
+    state.drain_waiting = drainWaiting()
+    drainEndMs = Date.parse(block.latestEnd)
+  }
+  // The drain's end is never stored (a restart ends it), so this is when
+  // the batch started publishing.
+  state.deploying_since = state.started_at
+  const eta = liveEtaFor(row.target, { drainEndMs, nowMs: now })
+  if (eta) state.live_eta = eta
+  return state
 }
 
 // HZ-333: gate 15's evidence for an item a deploy queue batch shipped — its
