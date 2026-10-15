@@ -69,7 +69,7 @@ export function formatResetTime(iso) {
   return `${text.slice(0, 10)} ${text.slice(11, 16)} UTC`
 }
 
-// "Muse · Spark 1.3" for "muse:muse-spark-1.3"; the raw key for anything undeclared.
+// "<provider label> · <model label>" for a "<provider>:<model id>" key; the raw key for anything undeclared.
 export function entryLabel(key) {
   const at = typeof key === 'string' ? key.indexOf(':') : -1
   if (at === -1) return String(key)
