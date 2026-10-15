@@ -154,6 +154,19 @@ async function ensureKindLabel(repo, token, kind) {
   return name
 }
 
+// HZ-449: the lane label (`trivial`) a Plan files a draft with. Like the kind
+// label it is load-bearing — it is what selects the lane when the issue
+// imports (kindLabels.laneFromLabels) — so the caller treats null as a failure.
+async function ensureLaneLabel(repo, token, lane) {
+  const res = await fetch(`https://api.github.com/repos/${repo}/labels`, {
+    method: 'POST',
+    headers: ghHeaders(token),
+    body: JSON.stringify({ name: lane, color: '0E6E74' }),
+  })
+  if (!res.ok && res.status !== 422) return null // 422: the label already exists
+  return lane
+}
+
 // Mirror a Horizon-side priority change onto the issue's `priority: *` label
 // so the next sync reads the same value back. Best-effort by design: the
 // caller never blocks on it, but a swallowed failure here means a later issue
@@ -189,14 +202,17 @@ export async function setPriorityLabel(item, priority) {
 // back-link and marker. The new-item route sends none.
 // `kind` (HZ-382): a non-change kind adds its label, and refuses to create the
 // issue at all if that label cannot be ensured — no orphan issue, and never a
-// Task that silently imports as a change.
-export async function createIssue(repo, { title, outcome, metric, guardrails, priority, kind = 'change', bodySuffix = '' }) {
+// Task that silently imports as a change. `lane` (HZ-449) is the same: its
+// label, or no issue.
+export async function createIssue(repo, { title, outcome, metric, guardrails, priority, kind = 'change', lane = null, bodySuffix = '' }) {
   const token = getToken()
   let kindLabel = null
   if (kind !== 'change') {
     kindLabel = await ensureKindLabel(repo, token, kind)
     if (!kindLabel) throw new Error(`Could not create the "${kindLabelName(kind)}" label on ${repo}`)
   }
+  const laneLabel = lane ? await ensureLaneLabel(repo, token, lane) : null
+  if (lane && !laneLabel) throw new Error(`Could not create the "${lane}" label on ${repo}`)
   const label = await ensurePriorityLabel(repo, token, priority)
   const res = await fetch(`https://api.github.com/repos/${repo}/issues`, {
     method: 'POST',
@@ -204,7 +220,7 @@ export async function createIssue(repo, { title, outcome, metric, guardrails, pr
     body: JSON.stringify({
       title,
       body: composeIssueBody({ outcome, metric, guardrails }) + (bodySuffix ? `\n\n${bodySuffix}` : ''),
-      labels: [label, kindLabel].filter(Boolean),
+      labels: [label, kindLabel, laneLabel].filter(Boolean),
     }),
   })
   if (!res.ok) {

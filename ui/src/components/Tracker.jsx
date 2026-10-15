@@ -14,6 +14,10 @@ import {
   itemKindOf,
   isHumanOnlyGate,
   APPROVE_RUN_GATE_INDEX,
+  APPROVE_FILE_GATE_INDEX,
+  PLAN_DRAFT_STEP_INDEX,
+  FILE_ITEMS_STEP_INDEX,
+  REVIEW_CLOSE_GATE_INDEX,
   laneOf,
 } from '../../../domain/js/lifecycle.js'
 import { AGENTS, stepAgentToken } from '../domain/agentTokens'
@@ -32,6 +36,7 @@ import GateActionStatus from './GateActionStatus'
 import JobPanel from './JobPanel'
 import ProjectBadge from './ProjectBadge'
 import TaskBadge from './TaskBadge'
+import PlanItemsTable from './PlanItemsTable'
 import { BackIcon, LinkIcon, RestartIcon, PrIcon, CircleXIcon } from './icons'
 
 const STEP_GLYPHS = { done: '✓', active: '•', awaiting: '!', pending: '', blocked: '✕', skipped: '–' }
@@ -393,6 +398,13 @@ function Step({ item, stepOutputs, outputsSettled, index, deployBlock, viewerNam
                 </select>
               </div>
             ))}
+          {/* HZ-449: the Plan's one items table — editable at the gate, then
+              read-only with what each draft was filed as. */}
+          {index === APPROVE_FILE_GATE_INDEX && item.cursor > PLAN_DRAFT_STEP_INDEX && <PlanItemsTable item={item} />}
+          {/* HZ-449: the Close card links every item File items filed. */}
+          {index === REVIEW_CLOSE_GATE_INDEX && status !== 'pending' && (
+            <Markdown className="md-body--tile" text={stepOutputs?.[FILE_ITEMS_STEP_INDEX]?.output} />
+          )}
           {status === 'awaiting' && index === ACCEPT_GATE_INDEX && item.forwardedReview && (
             <ForwardedReview forwarded={item.forwardedReview} />
           )}

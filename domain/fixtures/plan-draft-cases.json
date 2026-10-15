@@ -1,5 +1,5 @@
 {
-  "$comment": "HZ-448. Plan drafts asserted by BOTH server/test/plan-draft-schema.test.mjs (domain/js/planDraft.js validatePlanDraft) and farm/tests/test_plan_draft.py (domain/py/plan_draft.py validate), so a draft the farm accepts is one the server's shape and dependency checks accept too. Each case edits `base`: `set` replaces the value at a dotted path (numeric parts are list indexes) and `drop` removes one. `expect` is the first error, or null for a valid draft. A `serverOnly` case breaks a rule only the server can check — whether a real key or repo exists — so the JS binding, given `context`, reports it, and the Python binding, which has no database, passes it.",
+  "$comment": "HZ-448. Plan drafts asserted by BOTH server/test/plan-draft-schema.test.mjs (domain/js/planDraft.js validatePlanDraft) and farm/tests/test_plan_draft.py (domain/py/plan_draft.py validate), so a draft the farm accepts is one the server's shape and dependency checks accept too. Each case edits `base`: `set` replaces the value at a dotted path (numeric parts are list indexes) and `drop` removes one. `expect` is the first error, or null for a valid draft. A `serverOnly` case breaks a rule only the server can check — whether a real key or repo exists — so the JS binding, given `context`, reports it, and the Python binding, which has no database, passes it. HZ-449 adds the optional priority, kind and lane, and the filing rules: lane_kind_mismatch, unknown_ref, ref_cycle and over_limit.",
   "context": {
     "knownRepos": ["FinTekkers/horizon", "FinTekkers/ui-service"],
     "keyPrefixes": ["HZ", "UI"],
@@ -80,7 +80,7 @@
     },
     { "case": "an id with no #", "set": { "items.0.id": "1" }, "expect": { "code": "invalid_shape", "contains": "items[0].id" } },
     { "case": "a missing outcome", "drop": ["items.2.outcome"], "expect": { "code": "invalid_shape", "contains": "items[2].outcome is missing" } },
-    { "case": "an unknown field", "set": { "items.0.priority": "High" }, "expect": { "code": "invalid_shape", "contains": "unknown field(s): priority" } },
+    { "case": "an unknown field", "set": { "items.0.estimate": "3 days" }, "expect": { "code": "invalid_shape", "contains": "unknown field(s): estimate" } },
     { "case": "no items", "set": { "items": [] }, "expect": { "code": "invalid_shape", "contains": "items must have at least 1 entries" } },
     { "case": "a dependency that is neither #n nor a key", "set": { "items.1.depends_on": ["the first one"] }, "expect": { "code": "invalid_shape", "contains": "items[1].depends_on[0]" } },
     { "case": "a cycle #1 → #2 → #1", "set": { "items.0.depends_on": ["#2"] }, "expect": { "code": "cycle", "contains": "#1 → #2 → #1" } },
@@ -105,6 +105,76 @@
       "set": { "items.2.repo": "Elsewhere/other" },
       "serverOnly": true,
       "expect": { "code": "unknown_repo", "contains": "Elsewhere/other" }
+    },
+    {
+      "case": "a draft with a priority, a kind and a lane",
+      "set": { "items.0.priority": "Critical", "items.0.kind": "change", "items.0.lane": "trivial", "items.1.kind": "task" },
+      "expect": null
+    },
+    {
+      "case": "a priority outside priorities.json",
+      "set": { "items.0.priority": "Urgent" },
+      "expect": { "code": "invalid_shape", "contains": "items[0].priority must be one of" }
+    },
+    {
+      "case": "a kind outside steps.json",
+      "set": { "items.1.kind": "epic" },
+      "expect": { "code": "invalid_shape", "contains": "items[1].kind must be one of" }
+    },
+    {
+      "case": "a lane outside steps.json",
+      "set": { "items.1.lane": "fast" },
+      "expect": { "code": "invalid_shape", "contains": "items[1].lane must be one of" }
+    },
+    {
+      "case": "a lane of another kind",
+      "set": { "items.1.kind": "task", "items.1.lane": "trivial" },
+      "expect": { "code": "lane_kind_mismatch", "contains": "#2's lane trivial is not a lane of a task item" }
+    },
+    {
+      "case": "text that names an earlier draft",
+      "set": { "items.2.outcome": "Shows #1's drafts as an editable table." },
+      "expect": null
+    },
+    {
+      "case": "owner/repo#12 and a#1 in text are not plan-local ids",
+      "set": { "items.2.outcome": "Mirrors FinTekkers/horizon#12 and issue a#1 as a table." },
+      "expect": null
+    },
+    {
+      "case": "text that names a missing #7",
+      "set": { "items.2.outcome": "Shows the drafts as a table, after #7." },
+      "expect": { "code": "unknown_ref", "contains": "#3 names #7, which is not a draft in this plan" }
+    },
+    {
+      "case": "a must-also-cover line that names a dropped #4",
+      "set": { "items.0.must_also_cover": ["what #4 left out"] },
+      "expect": { "code": "unknown_ref", "contains": "#1 names #4" }
+    },
+    {
+      "case": "text that names a draft depending on it",
+      "set": { "items.0.outcome": "The contract #2 reviews against." },
+      "expect": { "code": "ref_cycle", "contains": "#1 → #2 → #1" }
+    },
+    {
+      "case": "a draft that names itself",
+      "set": { "items.0.title": "Plan kind: #1, the draft contract" },
+      "expect": { "code": "ref_cycle", "contains": "#1 → #1" }
+    },
+    {
+      "case": "a shared guardrail that names a draft",
+      "set": { "shared_guardrails": ["Nothing ships before #1."] },
+      "expect": { "code": "ref_cycle", "contains": "a shared guardrail names #1" }
+    },
+    {
+      "case": "too many guardrails with the shared ones",
+      "set": { "shared_guardrails": ["Nothing is filed before Approve & file.", "No new dependency."] },
+      "expect": { "code": "over_limit", "contains": "#1 would carry 5 guardrails with the shared ones, over the 4 limit" }
+    },
+    {
+      "case": "a metric too long once numbered",
+      "set": { "items.1.metric": ["Metric line 1: mmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmm", "Metric line 2: mmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmm", "Metric line 3: mmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmm", "Metric line 4: mmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmm", "Metric line 5: mmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmm"] },
+      "expect": { "code": "over_limit", "contains": "#2's metric would be" }
     }
   ]
 }

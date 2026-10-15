@@ -2095,7 +2095,9 @@ export function applySplitScope(id, { desc, metric }, actor = 'Horizon') {
 
 // ---- local (demo-mode) item creation ----
 
-export function createLocalItem({ title, outcome, metric, guardrails, priority, kind }) {
+// HZ-449: `lane` is the lane a Plan's draft asked for; one the kind does not
+// have is stored as no lane.
+export function createLocalItem({ title, outcome, metric, guardrails, priority, kind, lane = null }) {
   // HZ-377: the kind defaults to `change`; anything outside the domain
   // vocabulary is refused before anything is written.
   const itemKind = kind ?? 'change'
@@ -2106,8 +2108,8 @@ export function createLocalItem({ title, outcome, metric, guardrails, priority, 
       .get().n + 1
   const id = `LOC-${next}`
   db.prepare(
-    'INSERT INTO work_item (id, title, priority, desc, metric, guardrails, cursor, kind) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
-  ).run(id, title, priority, outcome, metric, guardrails || '', firstStepIndex(itemKind), itemKind)
+    'INSERT INTO work_item (id, title, priority, desc, metric, guardrails, cursor, kind, lane) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+  ).run(id, title, priority, outcome, metric, guardrails || '', firstStepIndex(itemKind), itemKind, laneOf({ kind: itemKind, lane }))
   addEvent(id, { who: 'You', text: 'created this work item', color: '#5E4380', initials: 'YOU' })
   notify()
   agentRunner.kick(id)

@@ -11,6 +11,7 @@ export function splitGithubStub() {
     patchStatus: {}, // repo -> HTTP status to fail PATCHes with
     beforeCreate: null, // async (repo) => void, awaited before the issue exists
     afterCreate: null, // (repo, issue) => void
+    keepLabels: false, // HZ-449: a created issue carries the labels its POST asked for
   }
   let nextNumber = 500
 
@@ -33,7 +34,7 @@ export function splitGithubStub() {
       title: fields.title || `Issue ${number}`,
       body: fields.body || '',
       state: fields.state || 'open',
-      labels: [],
+      labels: (fields.labels || []).map((name) => ({ name })),
       html_url: `https://github.com/${repo}/issues/${number}`,
       updated_at: new Date().toISOString(),
     }
@@ -57,7 +58,7 @@ export function splitGithubStub() {
     if (method === 'POST' && !number) {
       if (hooks.beforeCreate) await hooks.beforeCreate(repo)
       if (hooks.createStatus[repo]) return respond(hooks.createStatus[repo], { message: 'nope' })
-      const issue = addIssue(repo, { title: body.title, body: body.body })
+      const issue = addIssue(repo, { title: body.title, body: body.body, ...(hooks.keepLabels ? { labels: body.labels } : {}) })
       hooks.afterCreate?.(repo, issue)
       return respond(201, issue)
     }

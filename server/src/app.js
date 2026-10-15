@@ -52,6 +52,7 @@ import * as rulesStore from './rulesStore.js'
 import * as runLogView from './runLogView.js'
 import * as split from './split.js'
 import * as planDraft from './planDraft.js'
+import { filedMap } from './planFiling.js'
 import { PLAN_DRAFT_SCHEMA } from '../../domain/js/planDraft.js'
 import * as checkFlakes from './checkFlakes.js'
 import * as testResults from './testResults.js'
@@ -910,7 +911,8 @@ export function buildApp({ logger = true, onRoute = null } = {}) {
       if (!item) return reply.code(404).send({ error: 'not_found' })
       const current = planDraft.currentDraft(item.id)
       if (!current) return reply.code(404).send({ error: 'no_plan_draft' })
-      return { ...current, editable: planDraft.isEditable(item) }
+      // HZ-449: `filed` maps each draft a filing reached to its real key.
+      return { ...current, editable: planDraft.isEditable(item), filed: filedMap(item.id) }
     },
   )
 

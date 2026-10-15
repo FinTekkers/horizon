@@ -1,8 +1,9 @@
 // HZ-446: a Plan's four gates are human gates. Approve & file passes only for
-// a human with the gate PIN, even on Autopilot, and approving it files
-// nothing yet: the File items step after it is Horizon's own no-op (HZ-449
-// builds the filing), so it makes no GitHub call, writes no item and never
-// reaches the farm. A send-back from Review & close never re-runs File items.
+// a human with the gate PIN, even on Autopilot. The File items step after it
+// is Horizon's own (HZ-449 files the drafts; server/test/plan-filing.test.mjs
+// covers that): it never reaches the farm, and with no drafts it files
+// nothing and pauses the Plan. A send-back from Review & close never re-runs
+// File items.
 //
 // Driven through the real Fastify app on an Autopilot 'on' project, with a
 // stubbed fetch recording every outbound call. Its own file because config.js
@@ -105,7 +106,7 @@ test('Autopilot acts on no Plan gate: every one is in NEVER_ACT, none in ACT_GAT
   }
 })
 
-test('Approve & file with the PIN advances; File items files nothing, writes no item and never reaches the farm', async () => {
+test('Approve & file with the PIN advances; File items with no drafts files nothing, pauses the Plan and never reaches the farm', async () => {
   seedPlan('P-FILE', APPROVE_FILE_GATE_INDEX)
   const items = itemCount()
   calls.length = 0
@@ -113,14 +114,16 @@ test('Approve & file with the PIN advances; File items files nothing, writes no 
   assert.equal(ok.statusCode, 200, ok.body)
   assert.deepEqual(ok.json(), { ok: true, closed: false })
 
-  // File items ran in-process, to completion, and the item waits at Review & close.
-  assert.equal(cursorOf('P-FILE'), REVIEW_CLOSE)
+  // File items ran in-process and, with nothing to file, paused at its own row.
+  await new Promise((r) => setTimeout(r, 20))
+  assert.equal(cursorOf('P-FILE'), FILE_ITEMS)
+  assert.equal(store.getItem('P-FILE').paused, true)
   const runs = db.prepare('SELECT step_index, agent, status, output FROM step_run WHERE item_id = ?').all('P-FILE')
   assert.deepEqual(
     runs.map((r) => [r.step_index, r.agent, r.status]),
-    [[FILE_ITEMS, 'Horizon', 'done']],
+    [[FILE_ITEMS, 'Horizon', 'cancelled']],
   )
-  assert.match(runs[0].output, /no issues or items were created/)
+  assert.match(runs[0].output, /no item drafts to file/)
 
   assert.deepEqual(calls.filter((c) => c.url.includes('api.github.com')), [], 'File items called GitHub')
   assert.deepEqual(calls.filter((c) => c.url.includes('/steps/run')), [], 'File items was dispatched to the farm')

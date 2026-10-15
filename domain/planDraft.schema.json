@@ -1,6 +1,6 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
-  "$comment": "HZ-448: the contract for a Plan's item drafts — the `plan_draft` object the Draft items step replies with, and the whole document an owner saves through PUT /api/items/:id/plan-draft. Like runPlan.schema.json it pairs with no data file: it is the contract for an agent's OUTPUT. Both bindings interpret this file directly — domain/py/plan_draft.py on the farm, domain/js/planDraft.js on the server — so a shape rule lives here once. The work-item field limits are NOT restated here: each binding adds them at load from domain/fields.json — title and outcome lengths, repo's maximum, and metric's and guardrails' line caps as maxItems (PLAN_DRAFT_SCHEMA / SCHEMA). Rules a schema cannot express — no blank text, unique plan-local ids, every `#n` dependency names a draft in the set, no cycle — are the bindings'. Only the server knows which real keys and repos exist (unknown_key, unknown_repo).",
+  "$comment": "HZ-448: the contract for a Plan's item drafts — the `plan_draft` object the Draft items step replies with, and the whole document an owner saves through PUT /api/items/:id/plan-draft. Like runPlan.schema.json it pairs with no data file: it is the contract for an agent's OUTPUT. Both bindings interpret this file directly — domain/py/plan_draft.py on the farm, domain/js/planDraft.js on the server — so a shape rule lives here once. The work-item field limits are NOT restated here: each binding adds them at load from domain/fields.json — title and outcome lengths, repo's maximum, and metric's and guardrails' line caps as maxItems (PLAN_DRAFT_SCHEMA / SCHEMA). Rules a schema cannot express — no blank text, unique plan-local ids, every `#n` dependency names a draft in the set, no cycle — are the bindings'. Only the server knows which real keys and repos exist (unknown_key, unknown_repo). HZ-449: the optional priority, kind and lane of each draft have their enums added at load too (priorities.json, steps.json), and the bindings also refuse a `#n` in filed text that names no draft (unknown_ref), a text `#n` that cannot be filed first (ref_cycle: a draft naming itself, a shared guardrail naming any draft, or a loop through depends_on and text), and a draft too long to file once its must-also-cover lines and the shared guardrails are added (over_limit).",
   "title": "Horizon Plan item drafts",
   "type": "object",
   "required": ["items", "shared_guardrails", "open_questions"],
@@ -41,6 +41,18 @@
             "type": "array",
             "maxItems": 5,
             "items": { "type": "string", "minLength": 1, "maxLength": 500 }
+          },
+          "priority": {
+            "$comment": "HZ-449: the filed item's priority; the Plan's own when absent. Each binding adds the enum at load from domain/priorities.json.",
+            "type": "string"
+          },
+          "kind": {
+            "$comment": "HZ-449: the filed item's kind; `change` when absent. Each binding adds the enum at load from domain/steps.json's kinds.",
+            "type": "string"
+          },
+          "lane": {
+            "$comment": "HZ-449: the filed item's lane (its issue label, e.g. `trivial`); the full pipeline when absent. Each binding adds the enum at load from domain/steps.json's lanes, and checks the lane is one of the item's kind (lane_kind_mismatch).",
+            "type": "string"
           }
         }
       }

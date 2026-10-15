@@ -259,6 +259,9 @@ _KINDS: dict = _SOURCE.get("kinds") or {"change": {"phases": _SOURCE["phases"]}}
 
 PHASES: list[str] = _SOURCE["phases"]
 STEPS: list[dict] = _project_farm_view(_SOURCE["steps"])
+# HZ-449: each declared lane and the item kind it belongs to, in declaration
+# order — domain/py/plan_draft.py checks a draft's lane against its kind.
+LANE_KINDS: dict[str, str] = {lane: entry["itemKind"] for lane, entry in (_SOURCE.get("lanes") or {}).items()}
 # HZ-383: every kind's farm view, STEPS (the `change` one) included. A kind
 # with no farm-run rows gets an empty view, never a missing key.
 FARM_VIEWS: dict[str, list[dict]] = {

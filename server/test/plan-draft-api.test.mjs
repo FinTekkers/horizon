@@ -251,6 +251,21 @@ test('an edit that makes a cycle, or adds a guessed key, is refused with 422 and
   }
 })
 
+test('HZ-449: dropping a row whose #n another draft still names in its text is refused with 422 unknown_ref', async () => {
+  const id = await draftedPlan()
+  assert.deepEqual((await getDraft(id)).json().filed, {})
+  const named = structuredClone(BASE)
+  named.items[1].outcome = 'Flags gaps in what #3 shows.'
+  assert.equal((await putDraft(id, { base_version: 1, doc: named })).statusCode, 200)
+  const dropped = structuredClone(named)
+  dropped.items.splice(2, 1)
+  const res = await filesNothing(() => putDraft(id, { base_version: 2, doc: dropped }))
+  assert.equal(res.statusCode, 422, res.body)
+  assert.equal(res.json().errors[0].code, 'unknown_ref')
+  assert.match(res.json().errors[0].message, /#2 names #3, which is not a draft in this plan/)
+  assert.deepEqual((await getDraft(id)).json().doc, named)
+})
+
 test('PUT refuses a caller with no session, or a session with a wrong PIN, with 401', async () => {
   const id = await draftedPlan()
   const noSession = await putDraft(id, { base_version: 1, doc: BASE }, { cookie: null })

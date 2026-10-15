@@ -44,6 +44,8 @@ export const {
   issueUrl,
   issueLabel,
   approveGate,
+  getPlanDraft,
+  savePlanDraft,
   requestChanges,
   getRestartSent,
   resolveConflicts,

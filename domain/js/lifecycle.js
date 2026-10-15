@@ -314,6 +314,10 @@ export const VERIFY_REPORT_STEP_INDEX = kindStepIndex('Verify & report', 'task')
 export const APPROVE_FILE_GATE_INDEX = kindStepIndex('Approve & file', 'plan')
 // HZ-448: the Plan step whose reply is the item drafts (server/src/planDraft.js).
 export const PLAN_DRAFT_STEP_INDEX = kindStepIndex('Draft items', 'plan')
+// HZ-449: the server step that files the drafts, and the gate after it whose
+// card shows what was filed.
+export const FILE_ITEMS_STEP_INDEX = kindStepIndex('File items', 'plan')
+export const REVIEW_CLOSE_GATE_INDEX = kindStepIndex('Review & close', 'plan')
 
 // HZ-446: a step Horizon runs itself, in the server process (runsIn 'server').
 // It names no agent, so it is never dispatched, never a send-back target and

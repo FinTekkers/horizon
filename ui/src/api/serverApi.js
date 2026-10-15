@@ -326,6 +326,37 @@ async function gatePost(path, body, method = 'POST') {
   return res
 }
 
+// HZ-449: a Plan's current item drafts and what has been filed from them
+// ({ version, doc, editable, filed }), or null when it has none yet.
+export async function getPlanDraft(id) {
+  const res = await fetch(`${API_BASE}/items/${encodeURIComponent(id)}/plan-draft`)
+  if (res.status === 404) return null
+  const data = await res.json().catch(() => ({}))
+  if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`)
+  return data
+}
+
+// HZ-449: saves an owner's edit of the whole draft, made on `baseVersion`.
+// The gate PIN goes in the x-human-key header, as gatePost sends it. Rejects
+// like gateAction, with the server's `errors` (a 422) and `currentVersion`
+// (a 409 stale_version) on the error.
+export async function savePlanDraft(id, baseVersion, doc) {
+  if (!gatePin() && !promptForPin('Enter your gate PIN (shown when it was last generated — regenerate it in Admin if lost):')) {
+    throw new Error('pin_needed')
+  }
+  const res = await gatePost(`/items/${encodeURIComponent(id)}/plan-draft`, { base_version: baseVersion, doc }, 'PUT')
+  if (!res) throw new Error('network')
+  const data = await res.json().catch(() => ({}))
+  if (!res.ok) {
+    const err = new Error(data.error || `HTTP ${res.status}`)
+    err.status = res.status
+    err.errors = data.errors ?? []
+    err.currentVersion = data.currentVersion ?? null
+    throw err
+  }
+  return data
+}
+
 // HZ-470: an awaited gate action (Kill, Restart phase). Rejects with
 // Error('pin_needed') when no PIN is stored and the prompt is cancelled or
 // empty — nothing is sent; Error('network') when no answer came; else

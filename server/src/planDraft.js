@@ -10,7 +10,9 @@
 //
 // Nothing here files anything: no GitHub call, and no write to work_item,
 // work_item_dependency or item_spawn. Filing is Approve & file's (HZ-449),
-// which reads its input through currentDraft() below and adds no store.
+// which reads its input through currentDraft() below and adds no store: its
+// `#n` -> key map is the Plan's item_spawn rows under PLAN_FILE_KEY, and once
+// any draft is filed the draft is never editable again.
 
 import { db } from './db.js'
 import { validatePlanDraft } from '../../domain/js/planDraft.js'
@@ -45,11 +47,20 @@ function insertVersion(itemId, doc, source, stepRunId, createdBy) {
   return n
 }
 
+// HZ-449: the request key a Plan's filing rows carry in item_spawn
+// (server/src/planFiling.js).
+export const PLAN_FILE_KEY = 'plan-file'
+
 // Why an owner may not edit the item's draft now, or null. The window runs
-// from just after Draft items up to and including the Approve & file gate.
+// from just after Draft items up to and including the Approve & file gate,
+// and closes for good once any draft is filed (HZ-449) — even if a send-back
+// moves the cursor back into it.
 function editBlock(item) {
   if (isClosed(item) || isAbandoned(item)) return 'not_editable'
   if (item.cursor <= PLAN_DRAFT_STEP_INDEX || item.cursor > APPROVE_FILE_GATE_INDEX) return 'not_editable'
+  if (db.prepare("SELECT 1 FROM item_spawn WHERE parent_id = ? AND request_key = ? AND status = 'filed'").get(item.id, PLAN_FILE_KEY)) {
+    return 'not_editable'
+  }
   if (db.prepare("SELECT 1 FROM step_run WHERE item_id = ? AND status = 'active'").get(item.id)) return 'run_active'
   return null
 }

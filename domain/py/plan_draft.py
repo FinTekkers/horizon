@@ -14,6 +14,13 @@ in the same order as the JS binding, so both report the same first error:
 no blank text, unique ids, every `#n` dependency names a draft in the set,
 and the dependencies form a DAG. Whether a real key or repo exists is the
 server's to check (unknown_key, unknown_repo): the farm has no database.
+
+HZ-449 adds what filing needs, in the same order as the JS binding: each
+draft's optional priority, kind and lane (enums added at load from
+priorities.json and steps.json; a lane must be one of the kind's,
+lane_kind_mismatch), every text `#n` names a draft (unknown_ref), each can be
+filed after the drafts it names (ref_cycle), and the filed text fits the
+work-item limits (over_limit).
 """
 
 import json
@@ -21,6 +28,8 @@ import re
 from pathlib import Path
 
 from . import fields as _fields
+from . import priorities as _priorities
+from . import steps as _steps
 
 _SCHEMA_PATH = Path(__file__).resolve().parent.parent / "planDraft.schema.json"
 
@@ -35,9 +44,23 @@ def _with_field_limits(schema: dict) -> dict:
     return schema
 
 
-SCHEMA: dict = _with_field_limits(json.loads(_SCHEMA_PATH.read_text()))
+def _with_enums(schema: dict) -> dict:
+    item = schema["properties"]["items"]["items"]["properties"]
+    item["priority"]["enum"] = list(_priorities.PRIORITIES)
+    item["kind"]["enum"] = list(_steps.FARM_VIEWS)
+    item["lane"]["enum"] = list(_steps.LANE_KINDS)
+    return schema
+
+
+SCHEMA: dict = _with_enums(_with_field_limits(json.loads(_SCHEMA_PATH.read_text())))
 
 LOCAL_ID = re.compile(r"^#[1-9][0-9]*$")
+# A plan-local id in free text: `#3`, never `owner/repo#3` or `a-#3`. ASCII,
+# like the JS binding's \w and \b.
+LOCAL_REF = re.compile(r"(?<![\w/.-])#([1-9][0-9]*)\b", re.ASCII)
+# The room over_limit keeps for each `#n` (and the Plan's own key) to become a
+# real key once filed — the JS binding's KEY_ROOM.
+KEY_ROOM = 20
 
 
 class PlanDraftError(ValueError):
@@ -100,6 +123,8 @@ def _shape(schema: dict, value, path: str) -> tuple[str, str] | None:
             return path, f"must be at most {schema['maxLength']} characters"
         if "pattern" in schema and not re.fullmatch(schema["pattern"], value):
             return path, f"{json.dumps(value)} is not in the expected form"
+        if "enum" in schema and value not in schema["enum"]:
+            return path, f"must be one of {', '.join(schema['enum'])}"
     return None
 
 
@@ -145,6 +170,116 @@ def _graph(items: list[dict]) -> tuple[str, str, str] | None:
     return None
 
 
+def local_refs_in(text: str) -> list[str]:
+    """The plan-local ids `text` names, in order, each once."""
+    return list(dict.fromkeys(f"#{m.group(1)}" for m in LOCAL_REF.finditer(text)))
+
+
+def filed_text(item: dict, shared_guardrails: list[str], plan_key: str) -> dict:
+    """The text one draft is filed with — the JS binding's filedText."""
+    cover = item["must_also_cover"]
+    cover_text = "\n\n**Must also cover**\n" + "\n".join(f"- {c}" for c in cover) if cover else ""
+    return {
+        "title": item["title"],
+        "outcome": f"{item['outcome']}{cover_text}\n\nFiled by Plan {plan_key}.",
+        "metric": "\n".join(f"{i + 1}. {m}" for i, m in enumerate(item["metric"])),
+        "guardrails": "\n".join(f"- {g}" for g in [*item["guardrails"], *shared_guardrails]),
+    }
+
+
+def _filed_fields(item: dict, i: int):
+    yield f"items[{i}].title", item["title"]
+    yield f"items[{i}].outcome", item["outcome"]
+    for name in ("metric", "guardrails", "must_also_cover"):
+        for j, text in enumerate(item[name]):
+            yield f"items[{i}].{name}[{j}]", text
+
+
+def _filing_edges(items: list[dict]) -> list[list[tuple[str, str]]]:
+    out = []
+    for i, item in enumerate(items):
+        edges: dict[str, str] = {}
+        for j, dep in enumerate(item["depends_on"]):
+            if LOCAL_ID.match(dep) and dep not in edges:
+                edges[dep] = f"items[{i}].depends_on[{j}]"
+        for path, text in _filed_fields(item, i):
+            for ref in local_refs_in(text):
+                edges.setdefault(ref, path)
+        out.append(list(edges.items()))
+    return out
+
+
+def _references(doc: dict) -> tuple[str, str, str] | None:
+    """The first problem with the drafts' text references, or None."""
+    items = doc["items"]
+    ids = {item["id"] for item in items}
+    for i, item in enumerate(items):
+        for path, text in _filed_fields(item, i):
+            unknown = next((ref for ref in local_refs_in(text) if ref not in ids), None)
+            if unknown:
+                return "unknown_ref", path, f"{item['id']} names {unknown}, which is not a draft in this plan"
+    for j, text in enumerate(doc["shared_guardrails"]):
+        refs = local_refs_in(text)
+        if refs and refs[0] not in ids:
+            return "unknown_ref", f"shared_guardrails[{j}]", f"a shared guardrail names {refs[0]}, which is not a draft in this plan"
+        if refs:
+            return (
+                "ref_cycle",
+                f"shared_guardrails[{j}]",
+                f"a shared guardrail names {refs[0]}, but every draft carries it — name {refs[0]} in a draft's own text",
+            )
+    edges = _filing_edges(items)
+    index = {item["id"]: i for i, item in enumerate(items)}
+    state: dict[str, str] = {}
+
+    def visit(node: str, stack: list[str]):
+        state[node] = "open"
+        stack.append(node)
+        for to, path in edges[index[node]]:
+            if state.get(to) == "open":
+                loop = stack[stack.index(to) :] + [to]
+                return "ref_cycle", path, f"{' → '.join(loop)}: a draft's text may name only a draft filed before it"
+            if to not in state:
+                found = visit(to, stack)
+                if found:
+                    return found
+        stack.pop()
+        state[node] = "done"
+        return None
+
+    for item in items:
+        if item["id"] not in state:
+            found = visit(item["id"], [])
+            if found:
+                return found
+    return None
+
+
+def _over_limit(doc: dict) -> tuple[str, str, str] | None:
+    """The first draft too long to file, or None."""
+    cap = _fields.field_by_name(_fields.FIELDS, "guardrails")["maxLines"]
+    shared = doc["shared_guardrails"]
+    for i, item in enumerate(doc["items"]):
+        count = len(item["guardrails"]) + len(shared)
+        if count > cap:
+            return "over_limit", f"items[{i}].guardrails", f"{item['id']} would carry {count} guardrails with the shared ones, over the {cap} limit"
+        text = filed_text(item, shared, "X" * KEY_ROOM)
+        for name in ("title", "outcome", "metric", "guardrails"):
+            max_length = _fields.field_by_name(_fields.FIELDS, name)["maxLength"]
+            length = len(text[name]) + KEY_ROOM * len(local_refs_in(text[name]))
+            if length > max_length:
+                return "over_limit", f"items[{i}].{name}", f"{item['id']}'s {name} would be {length} characters once filed, over the {max_length} limit"
+    return None
+
+
+def _lane_mismatch(items: list[dict]) -> tuple[str, str, str] | None:
+    for i, item in enumerate(items):
+        if "lane" in item and _steps.LANE_KINDS.get(item["lane"]) != item.get("kind", "change"):
+            kind = item.get("kind", "change")
+            return "lane_kind_mismatch", f"items[{i}].lane", f"{item['id']}'s lane {item['lane']} is not a lane of a {kind} item"
+    return None
+
+
 def validate(doc: object) -> dict:
     """The draft itself when it satisfies the contract. Raises PlanDraftError
     (a ValueError) naming the first rule it breaks."""
@@ -152,7 +287,7 @@ def validate(doc: object) -> dict:
     if found:
         path, detail = found
         raise PlanDraftError("invalid_shape", path or "plan_draft", f"{path or 'plan_draft'} {detail}")
-    problem = _graph(doc["items"])
+    problem = _graph(doc["items"]) or _lane_mismatch(doc["items"]) or _references(doc) or _over_limit(doc)
     if problem:
         raise PlanDraftError(*problem)
     return doc

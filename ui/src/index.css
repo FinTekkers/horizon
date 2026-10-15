@@ -689,6 +689,22 @@ button { font-family: var(--font-sans); }
 .tracker__status-dot { width: 8px; height: 8px; border-radius: 50%; }
 .tracker__actions { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 18px; }
 
+/* HZ-449: the shared data table (HZ-462 moves the Admin tables onto it). A
+   plain bordered table: small upper-case headers, a divider between rows. */
+.data-table {
+  width: 100%; border-collapse: separate; border-spacing: 0;
+  border: 1px solid var(--border); border-radius: 10px; background: var(--surface);
+  font: 500 13px var(--font-sans); color: var(--deep);
+}
+.data-table th {
+  text-align: left; padding: 10px 12px; border-bottom: 1px solid var(--border);
+  font: 700 11px var(--font-sans); color: var(--muted); text-transform: uppercase; letter-spacing: 0.4px;
+}
+.data-table td { padding: 10px 12px; vertical-align: top; line-height: 1.4; border-bottom: 1px solid var(--border); }
+.data-table tbody tr:last-child td { border-bottom: none; }
+.data-table code { font: 500 12px var(--font-mono); color: var(--muted-strong); }
+.data-table a { color: var(--primary-ink); white-space: nowrap; }
+
 .btn-outline {
   display: inline-flex; align-items: center; gap: 7px; cursor: pointer;
   border: 1.5px solid var(--border-strong); background: var(--surface); color: var(--deep);
