@@ -188,7 +188,18 @@ function StepProviderPicker({ item, index, status, output, onSetStepProvider }) 
   if (!STEPS[index].providerOverrideEligible) return <div className="step-card__provider">Claude only</div>
   if (status === 'done') {
     const ran = PROVIDER_LABELS[output?.provider] ?? output?.provider
-    return ran ? <div className="step-card__provider">Ran on {ran}</div> : null
+    if (!ran) return null
+    // HZ-422: a run on a fallback model names that model and what it fell back from.
+    if (!output.fallbackNote) return <div className="step-card__provider">Ran on {ran}</div>
+    return (
+      <div className="step-card__provider">
+        <div>
+          Ran on {ran}
+          {output.model ? ` (${output.model})` : ''}
+        </div>
+        <div className="step-card__fallback">{output.fallbackNote}</div>
+      </div>
+    )
   }
   if (item.activeRun?.step_index === index) {
     return <div className="step-card__provider">Runs on {PROVIDER_LABELS[saved] ?? PROVIDER_LABELS[projectDefault] ?? 'Claude'}</div>
@@ -798,6 +809,12 @@ export default function Tracker({ item, projects, deployBlock = null, viewerName
           </div>
         )}
         {!abandoned && item.paused && <PauseBanner key={`pause-banner-${item.id}`} item={item} />}
+        {/* HZ-422: the server builds the text, so every client shows the same time. */}
+        {!abandoned && !item.paused && item.usageWait && (
+          <div className="pause-banner" role="status">
+            <div className="pause-banner__title">{item.usageWait.text}</div>
+          </div>
+        )}
         {/* HZ-365: isRuleBlocked is false while paused, so never both banners.
             The key differs from DependencyBadge's below: duplicate sibling
             keys make React leave a stale second banner behind. */}

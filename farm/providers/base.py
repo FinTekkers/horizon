@@ -8,7 +8,9 @@ through agent_runner.
 """
 
 import os
+import re
 import threading
+from datetime import datetime, timezone
 from typing import Protocol
 
 
@@ -69,6 +71,54 @@ class AgentMessageTooLargeError(AgentError):
     retryable SDK_MESSAGE_TOO_LARGE reason. Not an AgentExhaustedError: no
     budget ran out, so there is nothing to salvage or hand off. Only the
     Claude SDK path raises it."""
+
+
+class AgentUsageLimitedError(AgentError):
+    """HZ-422: the provider refused the run because a usage limit is spent — a
+    subscription window, a quota or a rate limit. step_agent tags it with the
+    retryable USAGE_LIMITED reason, and the server re-runs the step on the next
+    model in domain/providers.json's fallbackChain without using an attempt.
+
+    * reset_at — when the limit lifts, as an ISO-8601 UTC string, or None when
+      the provider gave no time this module could parse. Set by the provider.
+    * provider, model — what ran into the limit. Set by agent_runner.run_agent(),
+      the dispatcher, never by a provider module."""
+
+    def __init__(self, msg: str, *, reset_at: str | None = None) -> None:
+        super().__init__(msg)
+        self.reset_at = reset_at
+        self.provider: str | None = None
+        self.model: str | None = None
+
+
+def iso_utc(moment: datetime) -> str:
+    """A reset time as the ISO-8601 UTC string AgentUsageLimitedError carries.
+    A naive time is taken as UTC already."""
+    if moment.tzinfo is None:
+        moment = moment.replace(tzinfo=timezone.utc)
+    return moment.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+# "resets at 2026-10-12T14:00:00Z", "resets 2026-10-12 14:00 +02:00", ...
+_RESET_ISO_RE = re.compile(
+    r"resets?\s+(?:at\s+)?(\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:\s?(?:Z|[+-]\d{2}:?\d{2}))?)",
+    re.IGNORECASE,
+)
+
+
+def reset_from_text(text: str) -> str | None:
+    """The ISO-8601 reset time a limit message names after "resets (at)", as
+    UTC, or None when it names none this can parse — a clock time with no
+    date ("resets 3pm") included, since its day is a guess."""
+    match = _RESET_ISO_RE.search(text or "")
+    if not match:
+        return None
+    raw = match.group(1).replace(" Z", "Z")
+    raw = re.sub(r"\s([+-]\d)", r"\1", raw)
+    try:
+        return iso_utc(datetime.fromisoformat(raw))
+    except ValueError:
+        return None
 
 
 def decode_partial(output: bytes | str | None) -> str | None:

@@ -42,6 +42,7 @@ from .agent_runner import (
     AgentError,
     AgentExhaustedError,
     AgentMessageTooLargeError,
+    AgentUsageLimitedError,
     effective_provider,
     parse_agent_reply,
     run_agent,
@@ -3317,6 +3318,11 @@ def main() -> int:
         # HZ-424: retryable — the next attempt runs with the same higher cap.
         elif isinstance(exc, AgentMessageTooLargeError):
             result["reason"] = reasons.REASON["SDK_MESSAGE_TOO_LARGE"]
+        # HZ-422: retryable without using an attempt — the server re-runs the
+        # step on the next model in the fallback chain, or waits for the reset.
+        elif isinstance(exc, AgentUsageLimitedError):
+            result["reason"] = reasons.REASON["USAGE_LIMITED"]
+            result.update({key: getattr(exc, key) for key in ("reset_at", "provider", "model") if getattr(exc, key)})
     finally:
         _RECORDED.reset(token)
     # A flake on one command survives a real failure on a later one.

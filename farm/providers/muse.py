@@ -9,6 +9,7 @@ behaviour is unverified, this module says so too instead of guessing.
 
 import json
 import os
+import re
 import subprocess
 import tempfile
 import uuid
@@ -16,7 +17,7 @@ from pathlib import Path
 
 from ..config import FARM_MUSE_BIN, MAX_TURNS, STEP_TIMEOUT_S
 from ..credentials import without_gate_credentials
-from .base import AgentError, AgentExhaustedError, decode_partial
+from .base import AgentError, AgentExhaustedError, AgentUsageLimitedError, decode_partial, reset_from_text
 
 # `muse exec --session-id <UUID>` genuinely carries context across calls
 # (verified: two separate processes sharing one id, see the vendor doc) —
@@ -128,6 +129,22 @@ def run(
     return _parse_events(proc, sid)
 
 
+# HZ-422: Muse's usage-limit refusal, e.g. "429 Subscription quota exhausted.
+# Your usage window resets at <time>" (SH-3, 12 Oct; its time was cut off).
+_LIMIT_STATUS_RE = re.compile(r"\b429\b")
+_LIMIT_WORDS_RE = re.compile(r"quota|rate[ _-]?limit", re.IGNORECASE)
+
+
+def _usage_limit(text: str) -> AgentUsageLimitedError | None:
+    """The usage-limit error `text` reports, or None. Called on the whole
+    stderr and stdout, before anything is cut to 300 chars, so the reset time
+    survives. A reset time that is missing or unparseable is None."""
+    if not text or not _LIMIT_STATUS_RE.search(text) or not _LIMIT_WORDS_RE.search(text):
+        return None
+    line = next((ln.strip() for ln in text.splitlines() if _LIMIT_STATUS_RE.search(ln)), text.strip())
+    return AgentUsageLimitedError(f"muse usage limit: {line[:300]}", reset_at=reset_from_text(text))
+
+
 def _parse_events(proc: subprocess.CompletedProcess, session_id: str) -> dict:
     events = []
     for line in proc.stdout.splitlines():
@@ -156,6 +173,10 @@ def _parse_events(proc: subprocess.CompletedProcess, session_id: str) -> dict:
             )
         return {"result": payload.get("text", ""), "session_id": session_id, "command_id": command_id}
 
+    limited = _usage_limit(proc.stderr)
+    if limited is not None:
+        raise limited
+
     # ASSUMPTION — unverified per docs/providers/muse-code.md ("how
     # exhaustion is reported... unverified... no exhausting run was
     # observed"): treat any terminal payload_type naming exhaustion as the
@@ -172,6 +193,11 @@ def _parse_events(proc: subprocess.CompletedProcess, session_id: str) -> dict:
             session_id=session_id,
         )
 
+    # The event stream is read only once no exhaustion explains the stop: an
+    # agent's own text may mention a 429.
+    limited = _usage_limit(proc.stdout)
+    if limited is not None:
+        raise limited
     if proc.returncode != 0:
         raise AgentError(f"muse exited {proc.returncode}: {proc.stderr.strip()[:300]}")
     raise AgentError(f"muse produced no terminal.completed event: {proc.stdout[:300]}")

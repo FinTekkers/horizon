@@ -23,7 +23,7 @@ import os
 import re
 import subprocess
 import sys
-from datetime import datetime
+from datetime import datetime, timezone
 
 from domain.py import reasons
 
@@ -33,9 +33,12 @@ from .base import (
     AgentError,
     AgentExhaustedError,
     AgentMessageTooLargeError,
+    AgentUsageLimitedError,
     assert_metered_billing_authorized,
     decode_partial,
+    iso_utc,
     metered_billing_opted_in,
+    reset_from_text,
 )
 
 SUPPORTS_RESUME = True
@@ -100,6 +103,31 @@ def _too_large(exc: BaseException, limit: int) -> AgentMessageTooLargeError:
         f"{reasons.REASON['SDK_MESSAGE_TOO_LARGE']}: an SDK message{sized} exceeded the {limit}-byte reader limit "
         f"({SDK_MAX_BUFFER_ENV})"
     )
+
+
+# HZ-422: Claude's usage-limit refusals. The CLI's subscription message is
+# "Claude AI usage limit reached|<epoch seconds>"; an API rate limit names
+# rate_limit_error or a 429; newer CLIs say "... limit reached ∙ resets <time>".
+_USAGE_LIMIT_EPOCH_RE = re.compile(r"usage limit reached\|(\d{9,11})", re.IGNORECASE)
+_RATE_LIMIT_RE = re.compile(r"rate_limit_error|\b429\b[^\n]*(?:rate|limit|too many requests)", re.IGNORECASE)
+_LIMIT_RESETS_RE = re.compile(r"(?:limit reached|hit your (?:usage )?limit)[^\n]*\bresets?\b", re.IGNORECASE)
+
+
+def _usage_limit(text: str | None) -> AgentUsageLimitedError | None:
+    """The usage-limit error `text` reports, or None for any other failure.
+    Read before anything is cut to 300 chars. A reset time that is missing or
+    unparseable is None."""
+    if not text:
+        return None
+    epoch = _USAGE_LIMIT_EPOCH_RE.search(text)
+    if epoch:
+        reset = iso_utc(datetime.fromtimestamp(int(epoch.group(1)), tz=timezone.utc))
+        return AgentUsageLimitedError(f"claude usage limit reached (resets {reset})", reset_at=reset)
+    if _RATE_LIMIT_RE.search(text):
+        return AgentUsageLimitedError(f"claude rate limited: {text.strip()[:300]}", reset_at=reset_from_text(text))
+    if _LIMIT_RESETS_RE.search(text):
+        return AgentUsageLimitedError(f"claude usage limit: {text.strip()[:300]}", reset_at=reset_from_text(text))
+    return None
 
 
 def assert_subscription_auth() -> None:
@@ -204,6 +232,10 @@ def run(
         # `from None`: the SDK error's text can hold the oversized line.
         if _is_buffer_overflow(exc):
             raise _too_large(exc, buffer_limit) from None
+        # HZ-422: a usage limit is never retried fresh — the server falls back.
+        limited = _usage_limit(str(exc))
+        if limited is not None:
+            raise limited from exc
         # A stale `resume` session is the common recoverable failure: retry fresh.
         if session_id and retry_fresh:
             return run(
@@ -296,6 +328,9 @@ async def _stream_query(
                             partial_text=result_text or seen.get("text"),
                             session_id=new_session_id or seen.get("session_id"),
                         )
+                    limited = _usage_limit(result_text)
+                    if limited is not None:
+                        raise limited
                     raise AgentError(f"claude reported an error result [{subtype}]: {detail}")
     finally:
         # Cancellation (asyncio.wait_for timeout) lands here too: closing the
@@ -387,6 +422,10 @@ def _run_subprocess(
         raise AgentError(f"claude binary not found: {CLAUDE_BIN}") from exc
 
     if proc.returncode != 0:
+        # HZ-422: checked first — a usage limit is never retried fresh.
+        limited = _usage_limit(proc.stderr) or _usage_limit(proc.stdout)
+        if limited is not None:
+            raise limited
         # A stale --resume session is the common recoverable failure: retry fresh.
         if session_id and retry_fresh:
             return _run_subprocess(

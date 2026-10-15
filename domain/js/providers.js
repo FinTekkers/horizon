@@ -80,6 +80,20 @@ export function assertProvidersShape(data, source = 'domain/providers.json') {
   if (typeof data.default !== 'string' || !names.includes(data.default)) {
     throw new Error(`${source}: default ${JSON.stringify(data.default ?? null)} is not a declared provider ${JSON.stringify(names)}`)
   }
+  // HZ-422: every fallback chain entry names a selectable model, once.
+  if (data.fallbackChain !== undefined) {
+    if (!Array.isArray(data.fallbackChain) || data.fallbackChain.length === 0) {
+      throw new Error(`${source}: fallbackChain must be a non-empty array of "<provider>:<model id>" entries`)
+    }
+    const seen = new Set()
+    for (const [i, value] of data.fallbackChain.entries()) {
+      if (!parseChainEntry(value, providers)) {
+        throw new Error(`${source}: fallbackChain[${i}] ${JSON.stringify(value ?? null)} is not a declared, selectable "<provider>:<model id>"`)
+      }
+      if (seen.has(value)) throw new Error(`${source}: fallbackChain names ${JSON.stringify(value)} twice`)
+      seen.add(value)
+    }
+  }
   return data
 }
 
@@ -94,6 +108,11 @@ export const PROVIDERS = Object.freeze(
 
 // The provider a step runs on when nobody chose one.
 export const DEFAULT_PROVIDER = source.default
+
+// HZ-422: the models a step falls back through when the one it runs on hits a
+// usage limit, as frozen { provider, model } in declared order. Empty when
+// domain/providers.json declares no chain.
+export const FALLBACK_CHAIN = Object.freeze((source.fallbackChain ?? []).map((value) => Object.freeze(parseChainEntry(value))))
 
 // Every helper below takes `providers` as a parameter with a default, the
 // convention isPriority uses, so a fixture can drive it with a fabricated
@@ -130,6 +149,14 @@ export function parseChoice(value, providers = PROVIDERS) {
   if (at === -1) return { provider: name, model: null }
   const id = value.slice(at + 1)
   return entry.models.some((m) => m.id === id && m.selectable) ? { provider: name, model: id } : null
+}
+
+// HZ-422: one fallback chain entry, "<provider>:<model id>", as { provider,
+// model }, or null. Unlike parseChoice, the bare provider form is refused: a
+// chain entry always names the model it runs.
+export function parseChainEntry(value, providers = PROVIDERS) {
+  const choice = parseChoice(value, providers)
+  return choice?.model ? choice : null
 }
 
 // Every value an owner may store for a step besides "default": each bare

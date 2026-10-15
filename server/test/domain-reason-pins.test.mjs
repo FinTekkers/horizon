@@ -33,6 +33,9 @@ import { REPO_ROOT } from './helpers/repoFiles.mjs'
 // HZ-424 (2026-10-12) added sdk_message_too_large, RETRYABLE: the retryable set
 // was deliberately widened by one, still bounded by the unchanged AUTO_RETRY_CAP.
 // HZ-448 added invalid_plan_draft, non-retryable: the retryable set is unchanged.
+// HZ-422 (2026-10-15) added usage_limited, RETRYABLE: a usage limit re-runs the
+// step on the next fallback model without using an attempt; a report with no
+// model takes the generic retry, still bounded by the unchanged AUTO_RETRY_CAP.
 const PINNED_IDS = [
   'never_picked_up',
   'timeout',
@@ -45,15 +48,16 @@ const PINNED_IDS = [
   'job_cwd_refused',
   'sdk_message_too_large',
   'invalid_plan_draft',
+  'usage_limited',
 ]
-const PINNED_RETRYABLE = ['never_picked_up', 'sdk_message_too_large', 'timeout', 'turn_cap', 'unreachable']
+const PINNED_RETRYABLE = ['never_picked_up', 'sdk_message_too_large', 'timeout', 'turn_cap', 'unreachable', 'usage_limited']
 
-test('PIN: the declared vocabulary is exactly these eleven reasons', () => {
+test('PIN: the declared vocabulary is exactly these twelve reasons', () => {
   assert.deepEqual([...REASON_IDS].sort(), [...PINNED_IDS].sort())
   assert.equal(REASONS.length, PINNED_IDS.length)
 })
 
-test('PIN: the retryable set is exactly the four HZ-76 named plus the HZ-424 one — criterion 6', () => {
+test('PIN: the retryable set is exactly the four HZ-76 named plus the HZ-424 and HZ-422 ones — criterion 6', () => {
   assert.deepEqual([...AUTO_RETRY_REASONS].sort(), PINNED_RETRYABLE)
 })
 

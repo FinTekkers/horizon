@@ -589,6 +589,11 @@ def _forward_result(body: dict) -> int | None:
         # for a human, same as before this existed.
         if body.get("reason"):
             payload["reason"] = body["reason"]
+        # HZ-422: a usage limit names what hit it and when it lifts, so the
+        # server can fall back to the next model or wait for the reset.
+        for key in ("reset_at", "provider", "model"):
+            if isinstance(body.get(key), str) and body[key]:
+                payload[key] = body[key][:100]
     # HZ-327: the check run's flakes ride on the result itself, either way.
     if isinstance(body.get("flakes"), list) and body["flakes"]:
         payload["flakes"] = body["flakes"]

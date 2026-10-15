@@ -1,5 +1,6 @@
 {
   "default": "claude",
+  "fallbackChain": ["muse:muse-spark-1.3", "claude:claude-opus-5-5", "claude:claude-sonnet-5-5"],
   "providers": [
     {
       "name": "claude",

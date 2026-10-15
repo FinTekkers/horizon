@@ -10,6 +10,7 @@
     { "id": "job_budget_exceeded", "retryable": false },
     { "id": "job_cwd_refused", "retryable": false },
     { "id": "sdk_message_too_large", "retryable": true },
-    { "id": "invalid_plan_draft", "retryable": false }
+    { "id": "invalid_plan_draft", "retryable": false },
+    { "id": "usage_limited", "retryable": true }
   ]
 }

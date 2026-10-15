@@ -665,6 +665,39 @@ for (const sql of [
     // column already exists
   }
 }
+// HZ-422: usage limits. A run that hit one (usage_limit_hit) is `cancelled` like
+// a deploy stop and keeps its attempt; the run that replaced it on the next
+// chain model names the one it fell back from and when that lifts. An item
+// whose every chain model is limited waits until usage_wait_until (ISO-8601
+// UTC). runs_on is the "<provider>:<model>" the server dispatched a run for, so
+// a limit on some other model (a host override) never falls back for free.
+// Additive: 0 / NULL on every earlier row, which renders as today.
+for (const sql of [
+  'ALTER TABLE step_run ADD COLUMN usage_limit_hit INTEGER NOT NULL DEFAULT 0',
+  'ALTER TABLE step_run ADD COLUMN runs_on TEXT',
+  'ALTER TABLE step_run ADD COLUMN fallback_from TEXT',
+  'ALTER TABLE step_run ADD COLUMN fallback_reset_at TEXT',
+  'ALTER TABLE work_item ADD COLUMN usage_wait_until TEXT',
+]) {
+  try {
+    db.exec(sql)
+  } catch {
+    // column already exists
+  }
+}
+// HZ-422: one row per model last seen limited, and when it lifts (ISO-8601
+// UTC, compared in JS so a test's fake clock drives it). A row whose reset
+// has passed is simply ignored, then overwritten by the next limit.
+db.exec(`
+  CREATE TABLE IF NOT EXISTS model_limit (
+    model      TEXT PRIMARY KEY,
+    provider   TEXT NOT NULL,
+    reset_at   TEXT NOT NULL,
+    note       TEXT,
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+  CREATE INDEX IF NOT EXISTS idx_work_item_usage_wait ON work_item(usage_wait_until) WHERE usage_wait_until IS NOT NULL;
+`)
 try {
   // HZ-321: the run that first carried this feedback, so a deploy-stopped run
   // can hand its feedback back undelivered (HZ-184: never consumed by a stop).

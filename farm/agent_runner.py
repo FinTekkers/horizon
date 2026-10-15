@@ -17,12 +17,13 @@ from domain.py.personas import resolve_model
 
 from .config import FARM_PROVIDER, MAX_TURNS, STATE_DIR, STEP_TIMEOUT_S
 from .providers import claude, muse
-from .providers.base import AgentError, AgentExhaustedError, AgentMessageTooLargeError
+from .providers.base import AgentError, AgentExhaustedError, AgentMessageTooLargeError, AgentUsageLimitedError
 
 __all__ = [
     "AgentError",
     "AgentExhaustedError",
     "AgentMessageTooLargeError",
+    "AgentUsageLimitedError",
     "FIRST_OBJECT_NOTE",
     "REPAIRS",
     "REPAIR_COUNTS_PATH",
@@ -166,7 +167,8 @@ def run_agent(
     retry_fresh=False (HZ-158) is handed to the provider: a failed resume
     raises instead of quietly starting a fresh session. Every caller but the
     handoff note keeps the default. An AgentExhaustedError leaves here with
-    .provider set to the provider that ran.
+    .provider set to the provider that ran, and an AgentUsageLimitedError
+    (HZ-422) with .provider and .model.
 
     provider names which entry in _PROVIDERS to dispatch to for this one
     call, overriding FARM_PROVIDER (HZ-102 — e.g. a persona mapped to Muse
@@ -230,6 +232,11 @@ def run_agent(
     except AgentExhaustedError as exc:
         # The same provenance a reply carries, so a salvaged reply can record
         # which provider really ran (HZ-158).
+        exc.provider = name
+        exc.model = model
+        raise
+    except AgentUsageLimitedError as exc:
+        # HZ-422: the server marks this model limited and falls back from it.
         exc.provider = name
         exc.model = model
         raise

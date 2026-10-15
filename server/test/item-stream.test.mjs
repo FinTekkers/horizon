@@ -189,6 +189,7 @@ test("the item stream opens with the item's outputs, sends them again when they 
       model: null, // HZ-398: nor a model
       verdict: null, // HZ-429: only Verify & report records one
       verdictSummary: null,
+      fallbackNote: null, // HZ-422: only a run on a fallback model has one
     })
     await waitForItemClients('SO-OPEN', 1)
 
