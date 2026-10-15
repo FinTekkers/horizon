@@ -79,6 +79,10 @@ import {
   missingPlanSections,
   PLAN_SECTIONS,
   PAUSE_SET,
+  markModelLimited,
+  activeModelLimits,
+  setUsageWait,
+  listUsageWaits,
 } from './store.js'
 import { createMockPr, createDeployRelease, postIssueComment, syncIssueBodyFields, createPrFromBranch, getPrHeadSha, getIssueBody } from './github.js'
 import { PHASES } from '../../domain/js/lifecycle.js'
@@ -117,6 +121,8 @@ import { splitCheckError } from './checkHeadline.js'
 import { recordTestRuns } from './testResults.js'
 import { enqueueRuleBlockPing } from './ruleBlock.js'
 import { buildStoredResultsInput, storedResultsPending, waitForStoredResults } from './storedTestResults.js'
+import { declares } from '../../domain/js/providers.js'
+import { chainHead, effectiveChain, entryKey, entryLabel, formatResetTime, pickModel, resetMs } from './usageLimits.js'
 
 // Keyed by step_run.id (HZ-100) — NOT item id. Keying by item used to let a
 // stale callback for a superseded run clear/overwrite the CURRENT run's
@@ -156,6 +162,10 @@ const pausing = new Map()
 // the drain ends without a restart; a restart forgets it, and boot's
 // resumeActiveItems() dispatches the same items again.
 const heldForDeploy = new Map()
+
+// HZ-422: item id -> the timer that kicks it once its usage-limit wait ends.
+// Memory-only: boot's rearmUsageWaits() arms them again from the column.
+const usageWaitTimers = new Map()
 
 // Execution budget once an agent has actually started (HZ-57): the implement
 // step legitimately runs long (real coding + tests), so its budget must
@@ -1251,6 +1261,16 @@ export function kick(id, opts = {}) {
     heldForDeploy.set(id, opts)
     return
   }
+  // HZ-422: every model this item's step may run on is usage-limited — hold
+  // it until the earliest reset; a wait that has passed is cleared.
+  if (item.usage_wait_until) {
+    const until = Date.parse(item.usage_wait_until)
+    if (until > Date.now()) {
+      armUsageWait(id, until)
+      return
+    }
+    setUsageWait(id, null)
+  }
   // HZ-333: Deploy joins its target's queue and publishes nothing; the queue
   // kicks it again once a batch containing its merge is live. Farm mode only:
   // the mock Deploy step keeps today's per-item release.
@@ -1294,17 +1314,95 @@ export function kick(id, opts = {}) {
   // scope the run was dispatched with, never a recomputation from the item.
   // Mock runs stay full: demo mode has no commits to scope a review to.
   const scope = toFarm ? scopeFor(item, stepIndex) : null
+  // HZ-422: the first model in the step's chain with no usage limit active.
+  // None free: the item waits for the earliest reset, and no run is written,
+  // so no attempt is used.
+  const pick = toFarm && step.runsIn !== 'job' ? pickRunsOn(item, stepIndex) : null
+  if (pick?.waitUntilMs != null) {
+    dispatching.delete(id)
+    waitForUsageReset(id, step, pick.waitUntilMs)
+    return
+  }
   const runId = db
     .prepare(
-      'INSERT INTO step_run (item_id, step_index, attempt, agent, auto_retry_count, scope_json) VALUES (?, ?, ?, ?, ?, ?)',
+      'INSERT INTO step_run (item_id, step_index, attempt, agent, auto_retry_count, scope_json, runs_on, fallback_from, fallback_reset_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
     )
-    .run(id, stepIndex, attempt, step.agent, autoRetryCount, scope ? JSON.stringify(scope) : null).lastInsertRowid
+    .run(
+      id,
+      stepIndex,
+      attempt,
+      step.agent,
+      autoRetryCount,
+      scope ? JSON.stringify(scope) : null,
+      pick ? entryKey(pick.entry) : null,
+      pick?.fallbackFrom ? entryKey(pick.fallbackFrom) : null,
+      pick?.fallbackFrom ? new Date(pick.fallbackResetMs).toISOString() : null,
+    ).lastInsertRowid
 
   if (toFarm) {
-    dispatchToFarm(id, stepIndex, runId, attempt, scope, opts.spawnedCode?.sha || null)
+    // Only a fallback pins the task's choice; the head runs on today's routing.
+    dispatchToFarm(id, stepIndex, runId, attempt, scope, opts.spawnedCode?.sha || null, pick?.fallbackFrom ? pick.entry : null)
   } else {
     timers[runId] = setTimeout(() => runMockStep(id, stepIndex, runId), latency())
   }
+}
+
+// HZ-422: the step's "Runs on" choices as the farm is sent them — the item's,
+// else the project's default.
+function stepChoicesFor(item) {
+  const project = item.project_id == null ? null : db.prepare('SELECT provider_defaults_json FROM project WHERE id = ?').get(item.project_id)
+  return resolveStepProviders(item.providerChoices, providerDefaultsFromRow(project))
+}
+
+// HZ-422: pickModel() over this step's chain — its "Runs on" choice first,
+// then domain/providers.json's fallbackChain — against the limits active now.
+// null (today's routing, no fallback) if the chain cannot be built, so a bad
+// model table never strands the item mid-dispatch.
+function pickRunsOn(item, stepIndex) {
+  const step = STEPS[stepIndex]
+  try {
+    const chain = effectiveChain(chainHead(stepChoicesFor(item)[stepIndex], step), step)
+    return pickModel(chain, activeModelLimits(Date.now()), Date.now())
+  } catch (err) {
+    console.warn(`usage limits: no fallback chain for ${item.id} step ${stepIndex}: ${err.message}`)
+    return null
+  }
+}
+
+function waitForUsageReset(id, step, untilMs) {
+  const until = new Date(untilMs).toISOString()
+  setUsageWait(id, until)
+  addEvent(id, {
+    who: 'Horizon',
+    text: `every model “${step.label}” can run on is usage-limited — waiting until ${formatResetTime(until)}, then it runs again at the same attempt`,
+    color: '#DFA200',
+    initials: 'HZ',
+  })
+  notifyChange()
+  armUsageWait(id, untilMs)
+}
+
+// setTimeout's ceiling is 2^31-1 ms (~24.8 days); a longer wait re-arms from kick().
+const MAX_TIMER_MS = 2 ** 31 - 1
+function armUsageWait(id, untilMs) {
+  clearTimeout(usageWaitTimers.get(id))
+  const ms = Math.min(Math.max(untilMs - Date.now(), 0), MAX_TIMER_MS)
+  usageWaitTimers.set(
+    id,
+    setTimeout(() => {
+      usageWaitTimers.delete(id)
+      kick(id)
+    }, ms).unref(),
+  )
+}
+
+// Boot: every item still waiting on a usage limit gets its timer back. A wait
+// that already passed is left to the farm-ready resume, whose kick() clears
+// it. Exported for tests.
+export function rearmUsageWaits() {
+  const waits = listUsageWaits().filter((row) => Date.parse(row.usage_wait_until) > Date.now())
+  for (const row of waits) armUsageWait(row.id, Date.parse(row.usage_wait_until))
+  return waits.length
 }
 
 // HZ-435: steps 0-2 of a lane item. Confirms the issue already carries an
@@ -1479,7 +1577,7 @@ function clearReleaseFields(id) {
 
 // ---- farm-dispatched steps ----
 
-async function dispatchToFarm(id, stepIndex, runId, attempt, scope, checkoutSha = null) {
+async function dispatchToFarm(id, stepIndex, runId, attempt, scope, checkoutSha = null, runsOn = null) {
   const step = STEPS[stepIndex]
   let item = getItem(id)
 
@@ -1693,8 +1791,13 @@ async function dispatchToFarm(id, stepIndex, runId, attempt, scope, checkoutSha 
       // HZ-357: copied into the task here, so a choice changed after this
       // hand-off applies to the next dispatch, never to this run. HZ-370:
       // merged with the project's defaults (the item's choice wins), copied
-      // the same way; a step with neither keeps today's routing.
-      providerChoices: resolveStepProviders(item.providerChoices, providerDefaultsFromRow(project)),
+      // the same way; a step with neither keeps today's routing. HZ-422: a
+      // usage-limit fallback overrides this task's copy only — the stored
+      // choice is never rewritten.
+      providerChoices: {
+        ...resolveStepProviders(item.providerChoices, providerDefaultsFromRow(project)),
+        ...(runsOn ? { [stepIndex]: entryKey(runsOn) } : {}),
+      },
       ...releaseFields,
     },
     step: { index: stepIndex, label: step.label, agent: step.agent },
@@ -2892,7 +2995,7 @@ const FAILED_OUTPUT_MAX_CHARS = 2000
 // detected the failure) or null/unrecognized — only a tagged reason, under
 // the cap, on a still-runnable item is ever auto-retried. Everything else
 // pauses for a human exactly as it always has (HZ-76's default-safe rule).
-export function failFarmRun(runId, error, reason = null, jobView = null) {
+export function failFarmRun(runId, error, reason = null, jobView = null, limit = null) {
   const run = db.prepare('SELECT * FROM step_run WHERE id = ?').get(runId)
   if (!run || run.status !== 'active') return { ok: true, stale: true }
   const id = run.item_id
@@ -2900,6 +3003,39 @@ export function failFarmRun(runId, error, reason = null, jobView = null) {
   clearTimeout(timers[runId])
   delete timers[runId]
   dispatching.delete(id) // this run is now terminal — release before any retry kick() below re-acquires it
+
+  // HZ-422: a usage limit names the model that hit it. That model is skipped
+  // until its reset, and the step re-runs on the next one in its chain at the
+  // same attempt. Written "USAGE LIMITED:", not "FAILED:", so the caretaker
+  // never counts it as a failure. Without a model (an older farm), or when
+  // the farm ran another model than the one dispatched, it falls through to
+  // the generic retry below, which counts.
+  if (reason === REASON.USAGE_LIMITED && declares(limit?.provider, limit?.model)) {
+    const nowMs = Date.now()
+    const resetIso = new Date(resetMs(limit.reset_at, nowMs)).toISOString()
+    markModelLimited(limit.provider, limit.model, resetIso, String(error).slice(0, 300))
+    const key = entryKey(limit)
+    if (
+      STEPS[run.step_index]?.runsIn !== 'job' &&
+      runnable(getItem(id)) &&
+      (run.runs_on == null || run.runs_on === key)
+    ) {
+      db.prepare(
+        "UPDATE step_run SET status = 'cancelled', usage_limit_hit = 1, provider = ?, model = ?, output = ?, ended_at = datetime('now') WHERE id = ?",
+      ).run(limit.provider, limit.model, `USAGE LIMITED: ${String(error).slice(0, FAILED_OUTPUT_MAX_CHARS)}`, runId)
+      if (FARM_URL) farmFetch('/steps/cancel', { run_id: runId }).catch(() => {})
+      addEvent(id, {
+        who: 'Horizon',
+        text: `${entryLabel(key)} hit a usage limit until ${formatResetTime(resetIso)} — running “${STEPS[run.step_index].label}” on the next model, same attempt`,
+        color: '#DFA200',
+        initials: 'HZ',
+      })
+      notifyChange()
+      kick(id)
+      emitStepEnded(id)
+      return { ok: true, fellBack: true }
+    }
+  }
 
   // HZ-407: a job's final view (the farm's, else the last one stored) is
   // written with the close, and no command in it is left `running`.
@@ -3584,6 +3720,9 @@ export async function init(log) {
     // queue watchdog a freshly-dispatched run actually needs.
     const rearmed = rearmFarmRuns()
     if (rearmed > 0) log.info(`Re-armed watchdogs for ${rearmed} in-flight farm run(s)`)
+    // HZ-422: items waiting for a usage limit to reset get their timers back.
+    const waiting = rearmUsageWaits()
+    if (waiting > 0) log.info(`Re-armed usage-limit waits for ${waiting} item(s)`)
     setInterval(pollRunStates, RUN_STATE_POLL_MS).unref()
     // Re-probe a farm we've lost contact with. startRealFarm() pins
     // status:'error' when it can't reach farmd, and runnable() refuses to

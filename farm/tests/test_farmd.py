@@ -701,6 +701,21 @@ def test_steps_result_forwards_a_reason_on_failure(monkeypatch):
     assert captured["json"] == {"error": "ran out of turns", "reason": "turn_cap"}
 
 
+def test_steps_result_forwards_a_usage_limit_with_its_reset_provider_and_model(monkeypatch):
+    """HZ-422: the server needs all three to fall back or wait for the reset."""
+    captured = {}
+
+    class FakeResponse:
+        status_code = 200
+
+    monkeypatch.setattr(farmd.httpx, "post", lambda url, json=None, headers=None, timeout=None: captured.update(json=json) or FakeResponse())
+    reason = farmd.reasons.REASON["USAGE_LIMITED"]
+    body = {"error": "429 quota", "reason": reason, "reset_at": "2026-10-12T14:00:00Z", "provider": "muse", "model": "muse-spark-1.3"}
+    res = client.post("/internal/steps/result", json={"run_id": 57, "ok": False, **body})
+    assert res.status_code == 200
+    assert captured["json"] == body
+
+
 def test_steps_result_forwards_a_blocked_report_to_the_blocked_route(monkeypatch):
     """HZ-346: an implement run stopped by a rule goes to /blocked with its
     rule and needs — never /complete or /fail."""

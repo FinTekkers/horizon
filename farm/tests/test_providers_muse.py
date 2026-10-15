@@ -298,3 +298,53 @@ def test_the_muse_doc_says_muse_ignores_the_tool_allowlist():
     section = doc.split("## Tool allowlist", 1)
     assert len(section) == 2, "docs/providers/muse-code.md has no '## Tool allowlist' section"
     assert "ignores" in section[1].split("\n## ", 1)[0]
+
+
+# ---- HZ-422: Muse's usage-limit refusal ----
+# SH-3 (12 Oct) saw "429 Subscription quota exhausted. Your usage window resets
+# at …" with the reset time cut off by the 300-char stderr truncation.
+
+
+def test_a_429_quota_message_is_a_usage_limit_with_its_full_reset_time(monkeypatch):
+    from farm.providers.base import AgentUsageLimitedError
+
+    stderr = "warn: " + "x" * 400 + "\nError: 429 Subscription quota exhausted. Your usage window resets at 2026-10-12T16:00:00+02:00\n"
+    assert len(stderr) > 300
+    monkeypatch.setattr(muse.subprocess, "run", lambda cmd, **kw: _completed("", returncode=1, stderr=stderr))
+
+    with pytest.raises(AgentUsageLimitedError) as err:
+        muse.run("hello")
+
+    assert err.value.reset_at == "2026-10-12T14:00:00Z"
+    assert isinstance(err.value, AgentError)
+
+
+def test_a_429_quota_message_with_no_parseable_reset_has_none(monkeypatch):
+    from farm.providers.base import AgentUsageLimitedError
+
+    stderr = "429 Subscription quota exhausted. Your usage window resets at"
+    monkeypatch.setattr(muse.subprocess, "run", lambda cmd, **kw: _completed("", returncode=1, stderr=stderr))
+
+    with pytest.raises(AgentUsageLimitedError) as err:
+        muse.run("hello")
+
+    assert err.value.reset_at is None
+
+
+def test_any_other_nonzero_exit_is_still_a_plain_agent_error(monkeypatch):
+    from farm.providers.base import AgentUsageLimitedError
+
+    monkeypatch.setattr(muse.subprocess, "run", lambda cmd, **kw: _completed("", returncode=2, stderr="model unavailable"))
+
+    with pytest.raises(AgentError) as err:
+        muse.run("hello")
+
+    assert not isinstance(err.value, AgentUsageLimitedError)
+    assert str(err.value) == "muse exited 2: model unavailable"
+
+
+def test_a_completed_run_whose_reply_mentions_a_429_quota_is_not_a_usage_limit(monkeypatch):
+    stdout = _terminal_completed_jsonl("fixed the 429 quota handling")
+    monkeypatch.setattr(muse.subprocess, "run", lambda cmd, **kw: _completed(stdout, stderr="429 quota exhausted"))
+
+    assert muse.run("hello")["result"] == "fixed the 429 quota handling"

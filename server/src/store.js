@@ -43,6 +43,7 @@ import { priorityFromLabels } from './priorityLabels.js'
 import { kindFromLabels, laneFromLabels } from './kindLabels.js'
 import { getActiveProjectId, setSetting } from './settings.js'
 import { parseRuleBlock } from './ruleBlock.js'
+import { fallbackNoteText, usageWaitText } from './usageLimits.js'
 import { msOf, sqlTime } from './sqlTime.js'
 
 const listeners = new Set()
@@ -766,7 +767,7 @@ const selectEvents = db.prepare(
   'SELECT who, text, detail, verdict, color, initials, created_at FROM event WHERE item_id = ? ORDER BY id DESC LIMIT 20',
 )
 const selectOutputs = db.prepare(
-  "SELECT step_index, attempt, output, artifact, provider, model, verdict, verdict_summary FROM step_run WHERE item_id = ? AND status = 'done' ORDER BY id",
+  "SELECT step_index, attempt, output, artifact, provider, model, verdict, verdict_summary, fallback_from, fallback_reset_at FROM step_run WHERE item_id = ? AND status = 'done' ORDER BY id",
 )
 // Counts done+artifact rows only (a strict subset of the done rows above —
 // some steps mark done without ever setting an artifact), so the board can
@@ -803,6 +804,9 @@ function stepOutputs(itemId) {
       // summary. NULL on every other step and on runs before it was recorded.
       verdict: row.verdict ?? null,
       verdictSummary: row.verdict_summary ?? null,
+      // HZ-422: "fell back from X: usage limit until <time>" when this attempt
+      // ran on a fallback model, else null.
+      fallbackNote: row.fallback_from ? fallbackNoteText(row.fallback_from, row.fallback_reset_at) : null,
     }
   }
   // HZ-407: the Execute card's job view, from the newest Execute run in any
@@ -905,18 +909,52 @@ const selectActiveRun = db.prepare(
 // auto-retry count. HZ-346: nor is a run a rule blocked — the block does not
 // use up an attempt. A pure read: nothing is written.
 const selectLastStepRun = db.prepare(
-  'SELECT attempt, auto_retry_count, deploy_interrupted, rule_blocked FROM step_run WHERE item_id = ? AND step_index = ? ORDER BY id DESC LIMIT 1',
+  'SELECT attempt, auto_retry_count, deploy_interrupted, rule_blocked, usage_limit_hit FROM step_run WHERE item_id = ? AND step_index = ? ORDER BY id DESC LIMIT 1',
 )
 const selectNextAttempt = db.prepare('SELECT COALESCE(MAX(attempt), 0) + 1 AS n FROM step_run WHERE item_id = ? AND step_index = ?')
 
 export function nextStepAttempt(id, stepIndex) {
   const last = selectLastStepRun.get(id, stepIndex)
-  const keepsAttempt = last?.deploy_interrupted === 1 || last?.rule_blocked === 1
+  // HZ-422: nor is a run a usage limit stopped — it re-runs on the next model.
+  const keepsAttempt = last?.deploy_interrupted === 1 || last?.rule_blocked === 1 || last?.usage_limit_hit === 1
   return {
     attempt: keepsAttempt ? last.attempt : selectNextAttempt.get(id, stepIndex).n,
     keepsAttempt,
     autoRetryCount: keepsAttempt ? last.auto_retry_count : null,
   }
+}
+
+// ---- usage limits (HZ-422) ----
+// The ledger of models seen usage-limited (model_limit) and the item-level
+// wait for when every model a step may run on is limited. Times are ISO-8601
+// UTC strings, compared in JS with Date.parse so a test's fake clock drives them.
+
+const upsertModelLimit = db.prepare(
+  `INSERT INTO model_limit (model, provider, reset_at, note, updated_at) VALUES (?, ?, ?, ?, datetime('now'))
+   ON CONFLICT(model) DO UPDATE SET provider = excluded.provider, reset_at = excluded.reset_at, note = excluded.note, updated_at = excluded.updated_at`,
+)
+const selectModelLimits = db.prepare('SELECT model, reset_at FROM model_limit')
+
+export function markModelLimited(provider, model, resetAtIso, note = null) {
+  upsertModelLimit.run(model, provider, resetAtIso, note)
+}
+
+// model id -> reset in epoch ms, for every limit still active at nowMs.
+export function activeModelLimits(nowMs) {
+  const limits = new Map()
+  for (const row of selectModelLimits.all()) {
+    const at = Date.parse(row.reset_at)
+    if (at > nowMs) limits.set(row.model, at)
+  }
+  return limits
+}
+
+export function setUsageWait(id, untilIso) {
+  db.prepare(`UPDATE work_item SET usage_wait_until = ?, ${touch} WHERE id = ?`).run(untilIso, id)
+}
+
+export function listUsageWaits() {
+  return db.prepare('SELECT id, usage_wait_until FROM work_item WHERE usage_wait_until IS NOT NULL').all()
 }
 
 // Folds the farm's cached {state, reason} onto an active run (HZ-54). No
@@ -1452,6 +1490,13 @@ function waitingSince(row, ruleBlock) {
 
 const selectProjectProviderDefaults = db.prepare('SELECT provider_defaults_json FROM project WHERE id = ?')
 
+// HZ-422: null once the wait has passed, even before kick() clears the column.
+function usageWaitView(row) {
+  const until = row.usage_wait_until
+  if (!until || !(Date.parse(until) > Date.now())) return null
+  return { until, text: usageWaitText(until) }
+}
+
 function itemView(row, { stepOutputs: withStepOutputs = true } = {}) {
   const activeRun = withRunState(selectActiveRun.get(row.id) || null)
   const gateFields = itemGateFields(row)
@@ -1500,6 +1545,8 @@ function itemView(row, { stepOutputs: withStepOutputs = true } = {}) {
     ...dependencyFields(row.id, row),
     ...spawnFields(row.id),
     ruleBlock,
+    // HZ-422: every model this step may run on is usage-limited until `until`.
+    usageWait: usageWaitView(row),
     // HZ-443: the board's "Waiting on me" filter and sort.
     paused_at: row.paused ? toIsoUtc(row.paused_at) : null,
     waiting_since: waitingSince(row, ruleBlock),

@@ -2627,6 +2627,34 @@ def test_main_tags_an_sdk_message_overflow_as_retryable_without_its_payload(tmp_
     assert "iVBORw0KGgo" not in out
 
 
+def test_main_tags_a_usage_limit_with_its_reset_provider_and_model(tmp_path, monkeypatch):
+    """HZ-422: the fail body carries the retryable reason plus what hit the
+    limit and when it lifts, so the server can fall back to the next model."""
+    from farm.agent_runner import AgentUsageLimitedError
+
+    task = {"run_id": 45, "step": {"index": 4, "label": "Plan options & trade-offs (pros / cons)"}, "item": {"id": "T-1"}}
+    task_file = tmp_path / "task.json"
+    task_file.write_text(json.dumps(task))
+
+    def _limited(t):
+        exc = AgentUsageLimitedError("muse usage limit: 429 quota exhausted", reset_at="2026-10-12T14:00:00Z")
+        exc.provider, exc.model = "muse", "muse-spark-1.3"
+        raise exc
+
+    monkeypatch.setattr(step_agent, "execute", _limited)
+    monkeypatch.setattr(sys, "argv", ["step_agent", "--task", str(task_file)])
+    posted = {}
+    monkeypatch.setattr(step_agent.httpx, "post", lambda url, json=None, timeout=None: posted.update(json=json))
+
+    step_agent.main()
+
+    body = posted["json"]
+    assert body["ok"] is False
+    assert body["reason"] == reasons.REASON["USAGE_LIMITED"]
+    assert reasons.is_retryable(body["reason"])
+    assert (body["reset_at"], body["provider"], body["model"]) == ("2026-10-12T14:00:00Z", "muse", "muse-spark-1.3")
+
+
 # ---- HZ-156: the shared parser's notes channel, on every path ----
 # step_agent has five places a reply is parsed (implement, the code-review and
 # QA-review passes, deploy, and the generic planner tail). Surfacing notes on

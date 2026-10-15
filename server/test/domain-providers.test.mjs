@@ -106,3 +106,31 @@ test('the exported catalogue is frozen', () => {
   assert.ok(Object.isFrozen(binding.PROVIDERS[0].models))
   assert.ok(Object.isFrozen(binding.PROVIDERS[0].models[0]))
 })
+
+// HZ-422 metric 2: the default fallback chain a usage-limited step walks.
+test('FALLBACK_CHAIN is Muse Spark 1.3, then Claude Opus 5.5, then Claude Sonnet 5.5', () => {
+  assert.deepEqual(
+    binding.FALLBACK_CHAIN.map((e) => ({ ...e })),
+    [
+      { provider: 'muse', model: 'muse-spark-1.3' },
+      { provider: 'claude', model: 'claude-opus-5-5' },
+      { provider: 'claude', model: 'claude-sonnet-5-5' },
+    ],
+  )
+  assert.ok(Object.isFrozen(binding.FALLBACK_CHAIN) && binding.FALLBACK_CHAIN.every(Object.isFrozen))
+})
+
+test('a fallback chain naming an undeclared, unselectable, bare or repeated entry is refused at load', () => {
+  const withChain = (fallbackChain) => ({ ...source, fallbackChain })
+  for (const [chain, message] of [
+    [['claude:claude-opus-9'], 'fallbackChain[0]'],
+    [['claude:claude-sonnet-5'], 'fallbackChain[0]'],
+    [['claude'], 'fallbackChain[0]'],
+    [['muse:muse-spark-1.3', 'muse:muse-spark-1.3'], 'twice'],
+    [[], 'non-empty'],
+  ]) {
+    assert.throws(() => binding.assertProvidersShape(withChain(chain)), (err) => err.message.includes(message) || assert.fail(`got: ${err.message}`))
+  }
+  assert.equal(binding.parseChainEntry('muse:muse-spark-1.3').model, 'muse-spark-1.3')
+  assert.equal(binding.parseChainEntry('muse'), null)
+})

@@ -11,6 +11,12 @@
       "type": "string",
       "minLength": 1
     },
+    "fallbackChain": {
+      "$comment": "HZ-422: the models a step falls back through, in order, when the one it runs on hits a usage limit. Each entry is \"<provider>:<model id>\" naming a selectable model, with no duplicates — asserted at load time by assertProvidersShape() in domain/js/providers.js. Optional: absent means no fallback.",
+      "type": "array",
+      "minItems": 1,
+      "items": { "type": "string", "minLength": 1 }
+    },
     "providers": {
       "$comment": "ARRAY ORDER IS THE ORDER the picker lists providers in; model order within a provider is the picker's option order.",
       "type": "array",

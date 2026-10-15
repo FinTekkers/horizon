@@ -3300,6 +3300,11 @@ export function buildApp({ logger = true, onRoute = null } = {}) {
             reason: { type: 'string', maxLength: 100 },
             flakes: FLAKES_BODY,
             job_view: FINAL_JOB_VIEW_BODY,
+            // HZ-422: a usage-limit failure names the model that hit the
+            // limit and, when the provider said, when it resets (ISO-8601).
+            reset_at: { type: 'string', maxLength: 100 },
+            provider: { type: 'string', maxLength: 100 },
+            model: { type: 'string', maxLength: 100 },
           },
         },
       },
@@ -3307,7 +3312,9 @@ export function buildApp({ logger = true, onRoute = null } = {}) {
     (request, reply) => {
       if (!farmAuthorized(request, reply)) return
       checkFlakes.recordRunFlakes(request.params.runId, request.body.flakes, { log: request.log })
-      return orchestrator.failFarmRun(request.params.runId, request.body.error, request.body.reason || null, request.body.job_view)
+      const { reset_at: resetAt, provider, model } = request.body
+      const limit = provider && model ? { provider, model, reset_at: resetAt ?? null } : null
+      return orchestrator.failFarmRun(request.params.runId, request.body.error, request.body.reason || null, request.body.job_view, limit)
     },
   )
 

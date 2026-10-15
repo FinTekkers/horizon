@@ -577,6 +577,7 @@ test('stepOutputs carry the step label for non-UI clients', () => {
     model: null, // HZ-398: nor a model
     verdict: null, // HZ-429: only Verify & report records one
     verdictSummary: null,
+    fallbackNote: null, // HZ-422: only a run on a fallback model has one
   })
 })
 
