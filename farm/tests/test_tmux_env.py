@@ -118,13 +118,16 @@ def test_an_empty_environment_still_unsets_the_credentials(monkeypatch):
 
     HZ-144 added FARM_MAX_EPHEMERAL to the same `env -u` list for a
     non-credential reason (the tmux server is usually started by farmd, the
-    one process that holds it), so the exact list grew — the property under
+    one process that holds it), so the exact list grew, as it did again for
+    HZ-477's FARM_EXPRESS_SLOTS — the property under
     test is unchanged. The two sets stay separate; see
     farm/tests/test_check_env_scrub.py.
     """
     monkeypatch.setattr(tmux_mgr.os, "environ", {})
     assert shlex.split(tmux_mgr._env_prefix(STEP_SESSION)) == [
         "env",
+        "-u",
+        "FARM_EXPRESS_SLOTS",
         "-u",
         "FARM_MAX_EPHEMERAL",
         "-u",

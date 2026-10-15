@@ -96,6 +96,10 @@
         "providerLocked": { "type": "boolean" },
         "maxTurns": { "type": "integer", "minimum": 1 },
         "timeoutS": { "type": "integer", "minimum": 1 },
+        "short": {
+          "$comment": "HZ-477: a short farm step — it may take the farm's express slot (farm/farmd.py FARM_EXPRESS_SLOTS) when every general agent slot is busy.",
+          "type": "boolean"
+        },
         "requires": {
           "type": "array",
           "minItems": 1,
@@ -126,6 +130,11 @@
           "$comment": "HZ-379: a step that spawns says what kind it files.",
           "if": { "required": ["spawnsOn"] },
           "then": { "required": ["spawnKind"] }
+        },
+        {
+          "$comment": "HZ-477: only a farm-lane step can take the express slot.",
+          "if": { "required": ["short"] },
+          "then": { "required": ["runsIn"], "properties": { "runsIn": { "enum": ["farm"] } } }
         },
         {
           "$comment": "An agent-kind step always names its lane; it never carries a gate. The agent itself is required separately below, because a runsIn 'none' step has no runner yet.",

@@ -79,7 +79,7 @@ MAX_TURNS = int(os.environ.get("FARM_MAX_TURNS", "8"))
 
 # Stripped at the tmux seam (farm/tmux_mgr.py). An agent has no use for the
 # farm's own agent-concurrency cap.
-AGENT_NEVER_NEEDS = frozenset({"FARM_MAX_EPHEMERAL"})
+AGENT_NEVER_NEEDS = frozenset({"FARM_MAX_EPHEMERAL", "FARM_EXPRESS_SLOTS"})
 
 # Stripped one layer deeper, at the subprocess that runs the checked repo's
 # tests (farm/checks.py). FARM_MAX_CONCURRENT_CHECKS deliberately is NOT in
@@ -89,6 +89,7 @@ AGENT_NEVER_NEEDS = frozenset({"FARM_MAX_EPHEMERAL"})
 CHECK_SUBPROCESS_SCRUB = frozenset(
     {
         "FARM_MAX_EPHEMERAL",
+        "FARM_EXPRESS_SLOTS",  # HZ-477: farmd's express slot count
         "FARM_MAX_CONCURRENT_CHECKS",
         # HZ-249: the dependency cache's settings, for the same reason — the
         # checked repo's own suite asserts their defaults.
