@@ -599,7 +599,7 @@ def test_runs_status_reports_queued_for_an_ephemeral_queued_task_with_the_busy_c
     (QUEUE_DIR / "runs" / "202.json").write_text(json.dumps(make_task(202)))
     res = client.post("/runs/status", json={"run_ids": ["202"]})
     assert res.json() == {
-        "states": {"202": {"state": "queued", "reason": f"waiting for a free agent slot (2/{farmd.MAX_EPHEMERAL} in use)"}}
+        "states": {"202": {"state": "queued", "reason": f"waiting for a free agent slot (2/{farmd.MAX_EPHEMERAL + farmd.FARM_EXPRESS_SLOTS} in use)"}}
     }
 
 
@@ -1191,6 +1191,188 @@ def test_a_crashed_sessions_slot_is_freed_by_recounting_live_tmux_sessions(monke
 
     live.pop()  # simulate one session crashing out from under farmd
     assert farmd.MAX_EPHEMERAL - len(farmd._ephemeral_sessions()) == farmd.MAX_EPHEMERAL - 1
+
+
+# ---- HZ-477: one express slot for short steps, and later-stage steps first ----
+# Every case drives _dispatch_runs_lane itself, with _ephemeral_sessions and
+# _claim_and_launch patched, so the wiring (_queued -> _by_stage ->
+# _select_dispatchable with _runs_lane_slots' caps) is what is proven.
+
+
+def _queue_runs(runs_dir, specs):
+    """Writes one queued task per (item_id, step_index), oldest first: each
+    file's mtime is a second later than the one before."""
+    paths = []
+    for n, (item_id, step_index) in enumerate(specs):
+        path = _write_task(runs_dir / f"{500 + n}.json", 500 + n, item_id=item_id, step_index=step_index)
+        os.utime(path, (1_000_000 + n, 1_000_000 + n))
+        paths.append(path)
+    return paths
+
+
+@pytest.fixture
+def runs_lane(tmp_path, monkeypatch):
+    """A live session list the dispatcher reads, and the task files it
+    launches, in order. A launch adds its session, as tmux would."""
+    monkeypatch.setattr(farmd, "MAX_EPHEMERAL", 4)
+    monkeypatch.setattr(farmd, "FARM_EXPRESS_SLOTS", 1)
+    lane = SimpleNamespace(sessions=[], launched=[], runs_dir=tmp_path / "runs")
+    lane.runs_dir.mkdir()
+    monkeypatch.setattr(farmd, "_ephemeral_sessions", lambda: list(lane.sessions))
+
+    def launch(task_path, runs_dir, repo_root):
+        lane.launched.append(task_path)
+        task = json.loads(task_path.read_text())
+        if isinstance(task["step"].get("index"), int):
+            lane.sessions.append(farmd._run_session_name(task))
+        task_path.unlink()
+
+    monkeypatch.setattr(farmd, "_claim_and_launch", launch)
+    lane.tick = lambda: farmd._dispatch_runs_lane(lane.runs_dir, REPO_ROOT)
+    return lane
+
+
+def _implements(n, prefix="hz-9"):
+    return [f"farm-run-{prefix}{i}-s11-a1" for i in range(n)]
+
+
+def test_dispatch_runs_lane_uses_express_for_a_short_step_only(runs_lane):
+    """Metric 1: four implements fill the general slots; the queued step 4
+    starts at once in the express slot, the queued implement waits."""
+    runs_lane.sessions = _implements(4)
+    implement, plan_options = _queue_runs(runs_lane.runs_dir, [("hz-1", 11), ("hz-2", 4)])
+
+    runs_lane.tick()
+
+    assert runs_lane.launched == [plan_options]
+    assert implement.exists()
+
+
+def test_runs_lane_starts_furthest_stage_first(runs_lane):
+    """Metric 2: 14 queued first and 4 last, with 11 queued before 12 so
+    oldest-first order alone would get it wrong; one general slot frees per
+    tick, and they start 14, 12, 11, 4. A short step keeps express busy, or
+    12 and 4 would both start at once there."""
+    original_longs = _implements(4)
+    runs_lane.sessions = [*original_longs, "farm-run-hz-80-s6-a1"]
+    _queue_runs(runs_lane.runs_dir, [("hz-1", 14), ("hz-3", 11), ("hz-2", 12), ("hz-4", 4)])
+
+    runs_lane.tick()
+    assert runs_lane.launched == []  # 4 long + 1 short: every slot busy
+    for freed in original_longs:
+        runs_lane.sessions.remove(freed)
+        runs_lane.tick()
+
+    assert [farmd._session_step_index(s) for s in runs_lane.sessions[-4:]] == [14, 12, 11, 4]
+
+
+def test_equal_stages_start_oldest_first(runs_lane):
+    """Metric 2: a tie on stage goes to the oldest file by mtime, not by name."""
+    runs_lane.sessions = _implements(3) + ["farm-run-hz-80-s6-a1"]
+    newer = _write_task(runs_lane.runs_dir / "100.json", 100, item_id="hz-1", step_index=11)
+    older = _write_task(runs_lane.runs_dir / "200.json", 200, item_id="hz-2", step_index=11)
+    os.utime(newer, (2_000_000, 2_000_000))
+    os.utime(older, (1_000_000, 1_000_000))
+
+    runs_lane.tick()
+
+    assert runs_lane.launched == [older]
+
+
+def test_one_tick_from_empty_starts_four_long_and_one_short(runs_lane):
+    """Metric 3: from an empty farm, one tick starts at most 4 long + 1
+    short. The long steps past the general cap are skipped, not stopped at,
+    so the short step queued behind them still starts."""
+    _queue_runs(runs_lane.runs_dir, [(f"hz-{i}", 11) for i in range(6)] + [("hz-20", 6), ("hz-21", 6)])
+
+    runs_lane.tick()
+
+    started = [farmd._session_step_index(s) for s in runs_lane.sessions]
+    assert sorted(started) == [6, 11, 11, 11, 11]
+    assert len(list(runs_lane.runs_dir.glob("*.json"))) == 3
+
+
+def test_slot_caps_total_five_long_four_and_zero_express_restores_today(runs_lane, monkeypatch):
+    """Metric 3: the caps are 4 general + 1 express; FARM_EXPRESS_SLOTS=0
+    gives back today's MAX_EPHEMERAL - runs, and a short step then waits."""
+    assert farmd._runs_lane_slots([]) == (5, 4)
+    assert farmd._runs_lane_slots(_implements(4)) == (1, 0)
+    assert farmd._runs_lane_slots(_implements(4) + ["farm-run-hz-80-s6-a1"]) == (0, 0)
+    # A PM-lane session holds neither the general nor the express slot.
+    assert farmd._runs_lane_slots(["farm-run-hz-1-s9-a1"]) == (5, 4)
+
+    monkeypatch.setattr(farmd, "FARM_EXPRESS_SLOTS", 0)
+    for sessions in ([], _implements(2), _implements(3) + ["farm-run-hz-80-s6-a1"], _implements(4)):
+        slots, _long_slots = farmd._runs_lane_slots(sessions)
+        assert slots == farmd.MAX_EPHEMERAL - farmd._lane_busy(sessions)["runs"]
+
+    runs_lane.sessions = _implements(4)
+    _queue_runs(runs_lane.runs_dir, [("hz-1", 4)])
+    runs_lane.tick()
+    assert runs_lane.launched == []
+
+
+def test_over_cap_sessions_are_left_running_and_nothing_starts(runs_lane, monkeypatch):
+    """Guardrail: never pre-empt. Five runs live after a rollback to
+    FARM_EXPRESS_SLOTS=0: nothing is killed, and nothing new starts."""
+    monkeypatch.setattr(farmd, "FARM_EXPRESS_SLOTS", 0)
+
+    def no_kill(*args, **kwargs):
+        raise AssertionError("the dispatcher must never stop a running step")
+
+    monkeypatch.setattr(tmux_mgr, "kill_session", no_kill)
+    monkeypatch.setattr(tmux_mgr, "kill_all_farm_sessions", no_kill)
+    live = _implements(4) + ["farm-run-hz-80-s6-a1"]
+    runs_lane.sessions = list(live)
+    _queue_runs(runs_lane.runs_dir, [("hz-1", 4)])
+
+    runs_lane.tick()
+
+    assert runs_lane.launched == []
+    assert runs_lane.sessions == live
+
+
+def test_dispatch_ranks_by_stage_within_kind_not_raw_index(runs_lane):
+    """Guardrail: a Task's Verify & report (index 25, stage 9) queued first
+    loses to a change implement (index 11, stage 11). Ranking on the raw
+    index would start 25."""
+    runs_lane.sessions = _implements(3) + ["farm-run-hz-80-s6-a1"]
+    task_verify, change_implement = _queue_runs(runs_lane.runs_dir, [("hz-1", 25), ("hz-2", 11)])
+
+    runs_lane.tick()
+
+    assert runs_lane.launched == [change_implement]
+    assert task_verify.exists()
+
+
+def test_express_never_runs_a_long_step_even_with_no_short_queued(runs_lane):
+    """Guardrail: the express slot is free, but only long steps are queued."""
+    runs_lane.sessions = _implements(4)
+    _queue_runs(runs_lane.runs_dir, [("hz-1", 11), ("hz-2", 14), ("hz-3", 21)])
+
+    runs_lane.tick()
+
+    assert runs_lane.launched == []
+
+
+def test_a_task_without_a_known_index_ranks_last_counts_long_and_still_runs(runs_lane):
+    """Guardrail: a task the step table cannot place (an unknown index, or
+    no index at all) ranks behind every known step, needs a general slot,
+    and still runs. So does a live session whose name has no index."""
+    no_index = runs_lane.runs_dir / "600.json"
+    no_index.write_text(json.dumps({**make_task(600, item_id="hz-1"), "step": {"label": "x"}}))
+    os.utime(no_index, (1, 1))
+    unknown, plan_options = _queue_runs(runs_lane.runs_dir, [("hz-2", 99), ("hz-3", 4)])
+
+    runs_lane.sessions = _implements(4)
+    runs_lane.tick()
+    assert runs_lane.launched == [plan_options]  # only the short step took express
+
+    assert farmd._runs_lane_slots(["farm-run-oddname"]) == (4, 3)
+
+    runs_lane.sessions = []
+    runs_lane.tick()
+    assert runs_lane.launched == [plan_options, no_index, unknown]  # equal stages: oldest first
 
 
 # ---- HZ-101: reconcile claimed runs against live tmux sessions ----

@@ -272,6 +272,7 @@ unset on this host, so the code default of 4 is in force.
 | File | Var | Value to set | Notes |
 |---|---|---|---|
 | `/etc/horizon/farm.env` | `FARM_MAX_EPHEMERAL` | `6` | how many agent steps run at once. The code default in `farm/farmd.py` stays **4** on purpose: raising the default would silently re-raise the cap on every other host |
+| `/etc/horizon/farm.env` | `FARM_EXPRESS_SLOTS` | (unset ⇒ 1) | HZ-477: extra agent slots that only short steps (planning and reviews, `"short": true` in `domain/steps.json`) may use, next to the `FARM_MAX_EPHEMERAL` general ones. `0` turns the express slot off; the queue still starts the furthest-along step first |
 | `/etc/horizon/farm.env` | `FARM_MAX_CONCURRENT_CHECKS` | `2` | how many check suites run at once. **Set this before raising the line above** |
 | `/etc/horizon/farm.env` | `FARM_CHECK_SLOT_WAIT_MAX_S` | (unset ⇒ 1200) | how long a run waits for a check slot before proceeding **without** one. Sized above the worst legitimate queue (2 waves × the measured p95 suite) and below the step watchdog — do not lower it to "fail faster", that disables the cap under load |
 | `/etc/horizon/farm.env` | `FARM_CHECK_METRICS_PHASE` | measurement only | tags records during a measurement window; remove it afterwards |
@@ -296,8 +297,8 @@ the failure this pairing exists to prevent — it was observed live on 30 Sept
 Confirm afterwards:
 
 ```
-curl -s localhost:4100/farm/status | python3 -m json.tool   # agents.limit, checks.limit
-tmux list-sessions | grep -c farm-run-                      # never exceeds agents.limit
+curl -s localhost:4100/farm/status | python3 -m json.tool   # agents.limit, express.limit, checks.limit
+tmux list-sessions | grep -c farm-run-                      # never exceeds agents.limit + express.limit + pm_agents.limit
 farm/.venv/bin/python -m farm.tools.check_session_env       # no INFO line about FARM_MAX_EPHEMERAL
 ```
 

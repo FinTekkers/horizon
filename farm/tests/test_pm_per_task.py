@@ -422,6 +422,7 @@ def test_farm_status_counts_the_pm_lane_separately(farm, fake_tmux, monkeypatch,
     assert sorted(body["sessions"]) == sorted(fake_tmux.sessions)
     assert body["agents"] == {"limit": farmd.MAX_EPHEMERAL, "busy": 2}
     assert body["pm_agents"] == {"limit": 1, "busy": 1}
+    assert body["express"] == {"limit": farmd.FARM_EXPRESS_SLOTS, "busy": 0}
 
 
 # ---- guardrail: rejected PM inputs at the farmd boundary (QA R4) ----
