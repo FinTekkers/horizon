@@ -283,6 +283,21 @@ db.exec(`
   );
   CREATE INDEX IF NOT EXISTS idx_gate_poll_vote_poll ON gate_poll_vote(poll_id);
 
+  -- HZ-466: overlap links an owner removed. One row per unordered item pair
+  -- (item_a < item_b), so removing A → B also keeps step 9 from adding B → A.
+  -- step 9 reads it before adding an overlap depends-on edge and queues the
+  -- shared-contract note instead. The primary key is the only lookup.
+  --
+  -- ON DELETE CASCADE for the same reason gate_notice has it.
+  CREATE TABLE IF NOT EXISTS overlap_link_removal (
+    item_a     TEXT NOT NULL REFERENCES work_item(id) ON DELETE CASCADE,
+    item_b     TEXT NOT NULL REFERENCES work_item(id) ON DELETE CASCADE,
+    removed_by TEXT NOT NULL,
+    removed_at TEXT NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY (item_a, item_b),
+    CHECK (item_a < item_b)
+  );
+
   -- HZ-216: the long gate actions — pre-merge checks + merge (HZ-183) and
   -- conflict resolution (HZ-188). One row per (item, kind). It replaces the
   -- memory-only premergeInFlight Set and conflictRuns Map: the same row is the

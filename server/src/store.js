@@ -1111,16 +1111,38 @@ export function addDependency(id, dependsOnId, actor = 'You') {
 // (see escalateDependents), or simply undoing a mistaken declaration. Always
 // re-kicks: if this was the last open blocker, the item is runnable again
 // and must start automatically, not wait for an unrelated dispatch trigger.
+//
+// HZ-466: when someone other than Horizon removes an edge Horizon created, the
+// pair is recorded in overlap_link_removal so step 9 does not re-add it. That
+// also covers Horizon edges from spawn.js and split.js, not only overlap ones:
+// the record only ever stops an overlap link for that exact pair, so it is
+// harmless. split.js's own cleanups pass actor 'Horizon' and record nothing.
 export function removeDependency(id, dependsOnId, actor = 'You') {
   const it = getItem(id)
   if (!it) return { error: 'not_found' }
   if (disabledProject(it)) return { error: 'project_not_active' }
-  const result = db.prepare('DELETE FROM work_item_dependency WHERE item_id = ? AND depends_on_id = ?').run(id, dependsOnId)
-  if (result.changes === 0) return { error: 'not_found' }
+  const removed = db.transaction(() => {
+    const edge = db.prepare('SELECT created_by FROM work_item_dependency WHERE item_id = ? AND depends_on_id = ?').get(id, dependsOnId)
+    if (!edge) return false
+    db.prepare('DELETE FROM work_item_dependency WHERE item_id = ? AND depends_on_id = ?').run(id, dependsOnId)
+    if (edge.created_by === 'Horizon' && actor !== 'Horizon') {
+      const [a, b] = [id, dependsOnId].sort()
+      db.prepare('INSERT OR IGNORE INTO overlap_link_removal (item_a, item_b, removed_by) VALUES (?, ?, ?)').run(a, b, actor)
+    }
+    return true
+  })()
+  if (!removed) return { error: 'not_found' }
   addEvent(id, { who: actor, text: `removed the dependency on ${dependsOnId}`, color: '#5E4380', initials: 'YOU' })
   notify()
   agentRunner.kick(id)
   return { ok: true, ...dependencyFields(id) }
+}
+
+// HZ-466: the owner removal recorded for this item pair, in either order, or
+// null. overlapService.applyOverlap reads it before adding an overlap link.
+export function overlapLinkRemoval(a, b) {
+  const [itemA, itemB] = [a, b].sort()
+  return db.prepare('SELECT removed_by, removed_at FROM overlap_link_removal WHERE item_a = ? AND item_b = ?').get(itemA, itemB) || null
 }
 
 // Where an item stands, resolved server-side so non-UI clients (the WhatsApp
