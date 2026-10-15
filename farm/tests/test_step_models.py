@@ -53,6 +53,8 @@ def argv(monkeypatch):
         return subprocess.CompletedProcess(args=cmd, returncode=0, stdout=out, stderr="")
 
     monkeypatch.setattr(subprocess, "run", fake_run)
+    # HZ-489: muse streams through its own _stream seam, not subprocess.run.
+    monkeypatch.setattr(muse, "_stream", fake_run)
     monkeypatch.setenv("FARM_RUNNER", "subprocess")
     for name in ("FARM_PROVIDER", "FARM_MODEL_OVERRIDE", "ANTHROPIC_API_KEY"):
         monkeypatch.delenv(name, raising=False)

@@ -1,4 +1,4 @@
-"""The Muse Code provider (HZ-83) — unit tests against a mocked subprocess,
+"""The Muse Code provider (HZ-83) — unit tests against a mocked muse._stream,
 per docs/providers/muse-code.md (the verified interface spec for this
 provider). Muse's exhaustion signal is explicitly marked unverified there;
 tests that exercise it say so in their docstring rather than presenting it
@@ -37,7 +37,7 @@ def test_run_returns_result_from_terminal_completed_event(monkeypatch):
         captured["cmd"] = cmd
         return _completed(_terminal_completed_jsonl("horizon"))
 
-    monkeypatch.setattr(muse.subprocess, "run", fake_run)
+    monkeypatch.setattr(muse, "_stream", fake_run)
     reply = muse.run("reply with exactly the word: horizon", session_id="fixed-session")
 
     assert reply == {"result": "horizon", "session_id": "fixed-session", "command_id": "cmd-1"}
@@ -47,7 +47,7 @@ def test_run_mints_a_session_id_when_caller_supplies_none(monkeypatch):
     def fake_run(cmd, **kwargs):
         return _completed(_terminal_completed_jsonl("ok"))
 
-    monkeypatch.setattr(muse.subprocess, "run", fake_run)
+    monkeypatch.setattr(muse, "_stream", fake_run)
     reply = muse.run("hello")
 
     assert reply["session_id"]  # caller-supplied ownership model: we mint a UUID
@@ -66,7 +66,7 @@ def test_run_passes_headless_safety_flags(monkeypatch):
         captured["cmd"] = cmd
         return _completed(_terminal_completed_jsonl("ok"))
 
-    monkeypatch.setattr(muse.subprocess, "run", fake_run)
+    monkeypatch.setattr(muse, "_stream", fake_run)
     muse.run("hello", session_id="sess-1", max_turns=12, timeout_s=30)
 
     cmd = captured["cmd"]
@@ -89,7 +89,7 @@ def test_run_writes_the_prompt_to_a_file_not_argv(monkeypatch, tmp_path):
         captured["prompt_file_contents"] = open(cmd[idx + 1]).read()
         return _completed(_terminal_completed_jsonl("ok"))
 
-    monkeypatch.setattr(muse.subprocess, "run", fake_run)
+    monkeypatch.setattr(muse, "_stream", fake_run)
     muse.run("a very particular prompt marker XYZZY", append_system="be terse")
 
     assert "XYZZY" not in captured["cmd"]
@@ -108,7 +108,7 @@ def test_run_never_passes_a_metered_credential_flag(monkeypatch):
         captured["cmd"] = cmd
         return _completed(_terminal_completed_jsonl("ok"))
 
-    monkeypatch.setattr(muse.subprocess, "run", fake_run)
+    monkeypatch.setattr(muse, "_stream", fake_run)
     monkeypatch.setenv("FARM_ALLOW_METERED_BILLING", "1")
     monkeypatch.setenv("FARM_METERED_SPEND_CAP_USD", "5.00")
     muse.run("hello")
@@ -129,7 +129,7 @@ def test_run_times_out_raises_agent_exhausted_error(monkeypatch):
     def fake_run(cmd, **kwargs):
         raise subprocess.TimeoutExpired(cmd=cmd, timeout=kwargs.get("timeout"))
 
-    monkeypatch.setattr(muse.subprocess, "run", fake_run)
+    monkeypatch.setattr(muse, "_stream", fake_run)
     with pytest.raises(AgentExhaustedError, match="timed out"):
         muse.run("hang forever", timeout_s=5)
 
@@ -138,7 +138,7 @@ def test_run_no_terminal_event_and_nonzero_exit_raises_agent_error(monkeypatch):
     def fake_run(cmd, **kwargs):
         return _completed(stdout="", returncode=1, stderr="boom")
 
-    monkeypatch.setattr(muse.subprocess, "run", fake_run)
+    monkeypatch.setattr(muse, "_stream", fake_run)
     with pytest.raises(AgentError, match="muse exited 1"):
         muse.run("hello")
 
@@ -155,7 +155,7 @@ def test_run_exhaustion_event_raises_agent_exhausted_error(monkeypatch):
         line = json.dumps({"payload_type": "run.terminal.exhausted", "payload": {}})
         return _completed(stdout=line, returncode=0)
 
-    monkeypatch.setattr(muse.subprocess, "run", fake_run)
+    monkeypatch.setattr(muse, "_stream", fake_run)
     with pytest.raises(AgentExhaustedError, match="exhaust"):
         muse.run("hello")
 
@@ -168,7 +168,7 @@ def test_the_exhaustion_event_carries_the_session_id_and_its_partial_text(monkey
         line = json.dumps({"payload_type": "run.terminal.exhausted", "payload": {}})
         return _completed(stdout=line, returncode=0)
 
-    monkeypatch.setattr(muse.subprocess, "run", fake_run)
+    monkeypatch.setattr(muse, "_stream", fake_run)
     with pytest.raises(AgentExhaustedError) as exc_info:
         muse.run("hello", session_id="sid-1")
     assert exc_info.value.session_id == "sid-1"
@@ -182,7 +182,7 @@ def test_a_timeout_carries_the_minted_session_id_and_the_captured_output(monkeyp
         captured["sid"] = cmd[cmd.index("--session-id") + 1]
         raise subprocess.TimeoutExpired(cmd=cmd, timeout=kwargs.get("timeout"), output=b'{"payload_type": "run.output.delta"}')
 
-    monkeypatch.setattr(muse.subprocess, "run", fake_run)
+    monkeypatch.setattr(muse, "_stream", fake_run)
     with pytest.raises(AgentExhaustedError, match="timed out") as exc_info:
         muse.run("hang forever", timeout_s=5)
     assert exc_info.value.session_id == captured["sid"]
@@ -193,7 +193,7 @@ def test_binary_not_found_raises_agent_error(monkeypatch):
     def fake_run(cmd, **kwargs):
         raise FileNotFoundError()
 
-    monkeypatch.setattr(muse.subprocess, "run", fake_run)
+    monkeypatch.setattr(muse, "_stream", fake_run)
     with pytest.raises(AgentError, match="muse binary not found"):
         muse.run("hello")
 
@@ -206,7 +206,7 @@ def test_run_no_terminal_event_and_zero_exit_raises_agent_error(monkeypatch):
     def fake_run(cmd, **kwargs):
         return _completed(stdout="", returncode=0)
 
-    monkeypatch.setattr(muse.subprocess, "run", fake_run)
+    monkeypatch.setattr(muse, "_stream", fake_run)
     with pytest.raises(AgentError, match="no terminal.completed event"):
         muse.run("hello")
 
@@ -218,7 +218,7 @@ def test_run_returns_command_id_from_terminal_completed_event(monkeypatch):
     def fake_run(cmd, **kwargs):
         return _completed(_terminal_completed_jsonl("ok", command_id="a-real-run-id"))
 
-    monkeypatch.setattr(muse.subprocess, "run", fake_run)
+    monkeypatch.setattr(muse, "_stream", fake_run)
     reply = muse.run("hello")
 
     assert reply["command_id"] == "a-real-run-id"
@@ -239,7 +239,7 @@ def test_run_raises_when_terminal_completed_is_missing_command_id(monkeypatch, b
         )
         return _completed(stdout=line)
 
-    monkeypatch.setattr(muse.subprocess, "run", fake_run)
+    monkeypatch.setattr(muse, "_stream", fake_run)
     with pytest.raises(AgentError, match="command_id"):
         muse.run("hello")
 
@@ -249,7 +249,7 @@ def test_run_raises_when_terminal_completed_has_no_command_id_field_at_all(monke
         line = json.dumps({"payload_type": "run.terminal.completed", "payload": {"text": "ok"}})
         return _completed(stdout=line)
 
-    monkeypatch.setattr(muse.subprocess, "run", fake_run)
+    monkeypatch.setattr(muse, "_stream", fake_run)
     with pytest.raises(AgentError, match="command_id"):
         muse.run("hello")
 
@@ -268,7 +268,7 @@ def test_parses_a_recorded_terminal_completed_fixture(monkeypatch):
     def fake_run(cmd, **kwargs):
         return _completed(stdout=stdout)
 
-    monkeypatch.setattr(muse.subprocess, "run", fake_run)
+    monkeypatch.setattr(muse, "_stream", fake_run)
     reply = muse.run("Reply with exactly the word: horizon", session_id="fixed-session")
 
     assert reply == {
@@ -286,7 +286,7 @@ def test_recorded_fixture_missing_terminal_completed_fails_loudly(monkeypatch):
     def fake_run(cmd, **kwargs):
         return _completed(stdout=stdout)
 
-    monkeypatch.setattr(muse.subprocess, "run", fake_run)
+    monkeypatch.setattr(muse, "_stream", fake_run)
     with pytest.raises(AgentError, match="no terminal.completed event"):
         muse.run("hello")
 
@@ -310,7 +310,7 @@ def test_a_429_quota_message_is_a_usage_limit_with_its_full_reset_time(monkeypat
 
     stderr = "warn: " + "x" * 400 + "\nError: 429 Subscription quota exhausted. Your usage window resets at 2026-10-12T16:00:00+02:00\n"
     assert len(stderr) > 300
-    monkeypatch.setattr(muse.subprocess, "run", lambda cmd, **kw: _completed("", returncode=1, stderr=stderr))
+    monkeypatch.setattr(muse, "_stream", lambda cmd, **kw: _completed("", returncode=1, stderr=stderr))
 
     with pytest.raises(AgentUsageLimitedError) as err:
         muse.run("hello")
@@ -323,7 +323,7 @@ def test_a_429_quota_message_with_no_parseable_reset_has_none(monkeypatch):
     from farm.providers.base import AgentUsageLimitedError
 
     stderr = "429 Subscription quota exhausted. Your usage window resets at"
-    monkeypatch.setattr(muse.subprocess, "run", lambda cmd, **kw: _completed("", returncode=1, stderr=stderr))
+    monkeypatch.setattr(muse, "_stream", lambda cmd, **kw: _completed("", returncode=1, stderr=stderr))
 
     with pytest.raises(AgentUsageLimitedError) as err:
         muse.run("hello")
@@ -334,7 +334,7 @@ def test_a_429_quota_message_with_no_parseable_reset_has_none(monkeypatch):
 def test_any_other_nonzero_exit_is_still_a_plain_agent_error(monkeypatch):
     from farm.providers.base import AgentUsageLimitedError
 
-    monkeypatch.setattr(muse.subprocess, "run", lambda cmd, **kw: _completed("", returncode=2, stderr="model unavailable"))
+    monkeypatch.setattr(muse, "_stream", lambda cmd, **kw: _completed("", returncode=2, stderr="model unavailable"))
 
     with pytest.raises(AgentError) as err:
         muse.run("hello")
@@ -345,6 +345,6 @@ def test_any_other_nonzero_exit_is_still_a_plain_agent_error(monkeypatch):
 
 def test_a_completed_run_whose_reply_mentions_a_429_quota_is_not_a_usage_limit(monkeypatch):
     stdout = _terminal_completed_jsonl("fixed the 429 quota handling")
-    monkeypatch.setattr(muse.subprocess, "run", lambda cmd, **kw: _completed(stdout, stderr="429 quota exhausted"))
+    monkeypatch.setattr(muse, "_stream", lambda cmd, **kw: _completed(stdout, stderr="429 quota exhausted"))
 
     assert muse.run("hello")["result"] == "fixed the 429 quota handling"

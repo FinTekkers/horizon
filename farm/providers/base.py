@@ -7,6 +7,7 @@ becoming a circular import: it recurses into its own run(), not back
 through agent_runner.
 """
 
+import json
 import os
 import re
 import threading
@@ -128,6 +129,16 @@ def decode_partial(output: bytes | str | None) -> str | None:
         return None
     text = output.decode("utf-8", errors="replace") if isinstance(output, bytes) else output
     return text or None
+
+
+def brief(tool_input) -> str:
+    """A tool call's input as one log-line fragment: JSON, cut to 160 chars.
+    Claude's and Muse's farm log lines both use it (HZ-489)."""
+    try:
+        text = json.dumps(tool_input, ensure_ascii=False)
+    except (TypeError, ValueError):
+        text = str(tool_input)
+    return text if len(text) <= 160 else text[:157] + "…"
 
 
 class AgentProvider(Protocol):

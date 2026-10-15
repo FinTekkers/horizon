@@ -35,6 +35,7 @@ from .base import (
     AgentMessageTooLargeError,
     AgentUsageLimitedError,
     assert_metered_billing_authorized,
+    brief,
     decode_partial,
     iso_utc,
     metered_billing_opted_in,
@@ -352,20 +353,12 @@ def _print_event(message) -> None:
             if isinstance(block, sdk.TextBlock) and block.text.strip():
                 print(f"[{stamp}] {block.text.strip()}", flush=True)
             elif isinstance(block, sdk.ToolUseBlock):
-                print(f"[{stamp}] ⏺ {block.name}({_brief(block.input)})", flush=True)
+                print(f"[{stamp}] ⏺ {block.name}({brief(block.input)})", flush=True)
     elif isinstance(message, sdk.ResultMessage):
         print(
             f"[{stamp}] ── result: {message.num_turns} turn(s) in {message.duration_ms / 1000:.0f}s ──",
             flush=True,
         )
-
-
-def _brief(tool_input) -> str:
-    try:
-        text = json.dumps(tool_input, ensure_ascii=False)
-    except (TypeError, ValueError):
-        text = str(tool_input)
-    return text if len(text) <= 160 else text[:157] + "…"
 
 
 def _run_subprocess(

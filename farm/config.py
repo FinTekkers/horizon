@@ -178,10 +178,10 @@ CONFLICT_SCOPED_ENABLED = os.environ.get("FARM_CONFLICT_SCOPED_ENABLED", "1").st
 # when nothing is configured. See docs/providers/muse-code.md for "muse".
 FARM_PROVIDER = os.environ.get("FARM_PROVIDER", "claude")
 # The real binary resolves as a bare "muse" under the farm's PATH via the
-# /usr/local/bin/muse symlink — see docs/providers/muse-code.md. Tests mock
-# subprocess.run directly (farm/tests/test_providers_muse.py) rather than
-# using a fake binary, since the CLI's output is a JSONL event stream, not
-# fake_claude's simple `-p` envelope.
+# /usr/local/bin/muse symlink — see docs/providers/muse-code.md. Most tests
+# mock farm/providers/muse.py's _stream (farm/tests/test_providers_muse.py);
+# the streaming tests point this at farm/tests/fake_muse, which plays a
+# scripted JSONL event stream (HZ-489).
 FARM_MUSE_BIN = os.environ.get("FARM_MUSE_BIN", "muse")
 
 # ---- WhatsApp concierge (HZ-7) ----
