@@ -77,7 +77,7 @@ def _now() -> str:
 MAX_EPHEMERAL = int(__import__("os").environ.get("FARM_MAX_EPHEMERAL", "4"))
 
 # HZ-477: extra runs-lane slots, next to the MAX_EPHEMERAL general ones, that
-# only a short step (steps.SHORT_STEPS: planning and review steps) may use. On
+# only a short step (SHORT_STEPS: planning and review steps) may use. On
 # 14 Oct a 1-minute planning step waited 27 minutes behind four 40-minute
 # implements. Slots are counted, not pinned: a short step takes a general slot
 # while one is free, and a long step starts only while fewer than MAX_EPHEMERAL
@@ -354,7 +354,7 @@ def _lane_busy(sessions: list[str]) -> dict[str, int]:
 def _runs_lane_slots(sessions: list[str]) -> tuple[int, int]:
     """HZ-477: (free runs-lane slots, how many of them a long step may use).
     Every runs-lane step counts against MAX_EPHEMERAL + FARM_EXPRESS_SLOTS; a
-    long step (any not in steps.SHORT_STEPS, an unparseable name included)
+    long step (any not in SHORT_STEPS, an unparseable name included)
     also counts against MAX_EPHEMERAL alone, so the express slot never runs
     one. Reads both caps at call time, so a test can patch them."""
     runs = long_runs = 0
@@ -363,13 +363,13 @@ def _runs_lane_slots(sessions: list[str]) -> tuple[int, int]:
         if index is not None and lane_for_index(LANE_ROWS, index) == "pm":
             continue
         runs += 1
-        long_runs += index not in steps.SHORT_STEPS
+        long_runs += index not in SHORT_STEPS
     return MAX_EPHEMERAL + FARM_EXPRESS_SLOTS - runs, MAX_EPHEMERAL - long_runs
 
 
 def _by_stage(task_paths: list[Path]) -> list[Path]:
     """HZ-477: queued runs-lane tasks, furthest along their own kind's flow
-    first (steps.stage_for_index). The sort is stable and the input is oldest
+    first (stage_for_index). The sort is stable and the input is oldest
     first, so equal stages keep oldest first. A task whose file cannot be read
     or names no known step ranks last, but stays in the list and still runs."""
     def stage(task_path: Path) -> int:
@@ -378,7 +378,7 @@ def _by_stage(task_paths: list[Path]) -> list[Path]:
         except (json.JSONDecodeError, OSError):
             return -1
         step = task.get("step") if isinstance(task, dict) else None
-        return steps.stage_for_index(step.get("index") if isinstance(step, dict) else None)
+        return stage_for_index(step.get("index") if isinstance(step, dict) else None)
 
     return sorted(task_paths, key=lambda task_path: -stage(task_path))
 
@@ -422,6 +422,25 @@ def lane_for_index(step_table: list[dict], index, default: str = "runs") -> str:
 # so no two rows share one, and a Task's PM step counts against the PM lane
 # rather than falling back to "runs" as an index absent from steps.STEPS would.
 LANE_ROWS = [entry for view in steps.FARM_VIEWS.values() for entry in view]
+
+# HZ-477: the step indexes the express slot may take (`"short": true` in
+# domain/steps.json), and each row's stage: its position within its own item
+# kind's rows, never the raw global index, so a Task or Plan step never
+# outranks a change step just by sitting later in the table.
+SHORT_STEPS = frozenset(
+    row["index"] for kind in steps.FARM_VIEWS for row in steps.steps_for(kind) if row.get("short") is True
+)
+STAGE_BY_INDEX = {
+    row["index"]: row["index"] - steps.first_step_index(kind) for kind in steps.FARM_VIEWS for row in steps.steps_for(kind)
+}
+
+
+def stage_for_index(index) -> int:
+    """A step index's stage, or -1 for a non-int or an index no row has: such
+    a task ranks last."""
+    if not isinstance(index, int) or isinstance(index, bool):
+        return -1
+    return STAGE_BY_INDEX.get(index, -1)
 
 
 # HZ-383: whether a dispatched task's step belongs to its item's kind. A
@@ -516,7 +535,7 @@ def _select_dispatchable(task_paths: list, sessions: list[str], slots: int, long
             continue
         if _provisioning(task.get("item", {}).get("repo")):
             continue  # HZ-207: its hub is still cloning; stays queued
-        is_long = step_idx not in steps.SHORT_STEPS
+        is_long = step_idx not in SHORT_STEPS
         if is_long and long_slots is not None and long_selected >= long_slots:
             continue  # HZ-477: general slots full; only a short step may start
         selected.append(task_path)

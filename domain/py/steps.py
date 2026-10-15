@@ -300,24 +300,6 @@ def first_step_index(kind: str = "change") -> int:
             return index
     raise KeyError(f"item kind {kind!r} has no steps in domain/steps.json")
 
-
-# HZ-477: the global indexes of the short farm steps, the only ones farmd's
-# express slot may take. Read from the authored rows, not the farm view, so the
-# view's pinned key set (server/test/domain-binding-hygiene.test.mjs) is unchanged.
-SHORT_STEPS: frozenset[int] = frozenset(
-    index for index, step in enumerate(_SOURCE["steps"]) if step.get("short") is True
-)
-
-
-def stage_for_index(index) -> int:
-    """HZ-477: how far along its own item kind's flow the row at `index` is —
-    its position among that kind's rows, never the raw global index, so a Task
-    or Plan step never outranks a change step just by sitting later in the
-    table. -1 for a non-int or an index no row has: such a task ranks last."""
-    if not isinstance(index, int) or isinstance(index, bool) or not 0 <= index < len(_SOURCE["steps"]):
-        return -1
-    return index - first_step_index(_step_kind(_SOURCE["steps"][index]))
-
 # Safe .get()-only lookup — farmd's dispatch loop reads task payloads off the
 # network and must never raise on an unknown/stale index.
 STEP_BY_INDEX: dict[int, dict] = {entry["index"]: entry for entry in STEPS}
