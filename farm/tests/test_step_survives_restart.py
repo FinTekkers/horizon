@@ -400,6 +400,11 @@ def test_each_step_kind_survives_a_restart_exactly_as_the_drain_table_says(insta
     _wait_for("the held agents to finish", lambda: not _our_sessions(tmux_mgr.list_farm_sessions()), 90)
     _wait_for("the job to finish", lambda: instance.job_status() == "finished", 30)
     instance.boot_server()
+    # /api/health answers before the server's init() has asked farmd which
+    # runs are alive; killing farmd inside that window left the boot sweep
+    # with "fetch failed" and runs 1 and 2 under 600 s timers. Its last boot
+    # step, the farm handshake, says the sweep is done.
+    _wait_for("the server's boot to reach farmd", lambda: "Farm up for project" in instance.log("server"), 30)
     instance.kill_farmd()
     instance.boot_farmd()
 
