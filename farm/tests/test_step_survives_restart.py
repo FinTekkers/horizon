@@ -285,7 +285,9 @@ console.log(JSON.stringify(RESTART_SURVIVAL))
     def dispatch_job(self, run_id: int):
         item_id, _, index = CASES["job"]
         wait = f'i=0; while [ ! -e "{self.hold}" ] && [ $i -lt 1800 ]; do sleep 0.1; i=$((i+1)); done; echo ok'
-        block = {"cwd": ".", "commands": [wait], "budget_minutes": 10}
+        # HZ-416: no image is pinned for this repo, so the job opts out of the
+        # container explicitly (a container job would fail closed instead).
+        block = {"cwd": ".", "commands": [wait], "budget_minutes": 10, "runner": "host"}
         artifact = "## Commands\nplan\n\n## Run plan block\n" + run_plan.render(block) + "\n"
         res = httpx.post(
             f"{self.farm_url}/steps/run",
