@@ -3,6 +3,7 @@
 // closes. The queue lives in the database (deploy_batch/deploy_queue_entry),
 // so the label survives a reload. Rows are seeded directly, so the
 // orchestrator never kicks the item; nothing here needs a gate PIN.
+// HZ-481: the open window names its batch and how long until it closes.
 
 import { test, expect } from '../fixtures/test-base.js'
 import { openDb, insertItem } from '../fixtures/seed.js'
@@ -15,6 +16,8 @@ const TITLE = 'E2E fixture — waiting in the deploy queue'
 const closes = new Date(Math.ceil((Date.now() + 20 * 60_000) / 60_000) * 60_000)
 const closesSql = closes.toISOString().replace('T', ' ').slice(0, 19)
 const closesHHMM = closes.toISOString().slice(11, 16)
+// The minutes left drift between runs, so they are matched, not fixed.
+const openLine = new RegExp(`^next horizon deploy \\(b\\d+\\) · window closes ${closesHHMM} \\(in \\d+ min\\)$`)
 
 test.use({ timezoneId: 'UTC' })
 
@@ -37,13 +40,13 @@ test.beforeAll(() => {
   }
 })
 
-test('a queued item reads "waiting for next <target> deploy" with the window close time, before and after a reload', async ({ page }) => {
+test('a queued item reads "next <target> deploy (b<N>)" with the window close time, before and after a reload', async ({ page }) => {
   await page.goto('/')
   const card = page.locator('.card', { has: page.locator('.card__title', { hasText: TITLE }) })
   const label = card.locator('.card__deploy-queue')
-  await expect(label).toHaveText(`waiting for next horizon deploy · window closes ${closesHHMM}`, { timeout: 10_000 })
+  await expect(label).toHaveText(openLine, { timeout: 10_000 })
   await expect(label).toBeVisible()
 
   await page.reload()
-  await expect(label).toHaveText(`waiting for next horizon deploy · window closes ${closesHHMM}`, { timeout: 10_000 })
+  await expect(label).toHaveText(openLine, { timeout: 10_000 })
 })
