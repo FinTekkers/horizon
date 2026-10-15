@@ -41,6 +41,7 @@ import { AUTO_RETRY_REASONS, REASON } from '../../domain/js/reasons.js'
 import { patchLimits, addedCriteriaLines } from '../../domain/js/fields.js'
 import { renderPlanDraftMd } from '../../domain/js/planDraft.js'
 import { ingestDraft } from './planDraft.js'
+import { isPlanReviewStep, planReviewInput, reviewStep } from './planReview.js'
 import { fileDrafts } from './planFiling.js'
 import {
   getItem,
@@ -1125,7 +1126,12 @@ export const MOCK_STEP_BEHAVIOR = {
     summary: 'drafted the items this plan would file (mock)',
     ...(it.repo ? { plan_draft: mockPlanDraft(it.repo) } : {}),
   }),
-  'Review drafts: coverage & overlap': () => ({ summary: 'reviewed the drafts for coverage and overlap (mock)' }),
+  // HZ-463: the mock coverage review claims nothing, so the server's own
+  // checks (planReview.js) decide what the gate card shows.
+  'Review drafts: coverage & overlap': () => ({
+    summary: 'reviewed the drafts for coverage and overlap (mock)',
+    plan_review: { coverage: [], overlaps: [] },
+  }),
   'Review drafts: metrics & size': () => ({ summary: 'reviewed the drafts for metrics and size (mock)' }),
   // Execute: the code change takes the form of a GitHub PR. The mock commits
   // a placeholder file; the PR/branch mechanics are the real integration.
@@ -1636,6 +1642,9 @@ async function dispatchToFarm(id, stepIndex, runId, attempt, scope, checkoutSha 
   if (truncationNotice) artifacts.unshift(truncationNotice)
   if (overlapInput) artifacts.push(overlapInput)
   if (stepIndex === REVIEW_STEP_INDEX) artifacts.push(buildStoredResultsInput(id))
+  // HZ-463: a Plan's review steps read the current draft, the Inventory's
+  // gaps and the open items in scope. Context only: completeFarmRun decides.
+  if (isPlanReviewStep(stepIndex)) artifacts.push(planReviewInput(item))
   // HZ-207: every farm step carries its own project; farmd refuses one
   // without a project or repo and never falls back to a global project.
   const project =
@@ -2716,6 +2725,13 @@ export async function completeFarmRun(runId, { summary, patch, artifacts, job_vi
     artifactMd = [artifactMd, renderPlanDraftMd(artifacts.plan_draft)].filter(Boolean).join('\n\n')
   }
 
+  // HZ-463: a Plan review step's findings are decided here, from the current
+  // draft and the agent's plan_review, and appended for the Approve & file
+  // gate. A finding never fails the step, and nothing is written but the run.
+  if (isPlanReviewStep(run.step_index)) {
+    artifactMd = [artifactMd, reviewStep(item, run.step_index, artifacts?.plan_review).md].filter(Boolean).join('\n\n')
+  }
+
   // HZ-379: a step whose reply asks for items (domain/steps.json's spawnsOn)
   // files them before it completes. A malformed ask or a failed filing fails
   // the run, so it never advances without them; a retry asks under the same
@@ -3154,7 +3170,7 @@ async function runMockStep(id, stepIndex, runId) {
   const step = STEPS[stepIndex]
   const agent = AGENTS[step.agent]
   const behavior = MOCK_STEP_BEHAVIOR[step.label] || (() => ({ summary: `completed ${step.label.toLowerCase()}` }))
-  let { summary, patch, verdict, failure, artifact_md: artifactMd, plan_draft: planDraft } = await behavior(item)
+  let { summary, patch, verdict, failure, artifact_md: artifactMd, plan_draft: planDraft, plan_review: planReview } = await behavior(item)
   // HZ-304: a mock step that refused to run (an unready repo) fails the run
   // the way the farm path does — paused for a human, never auto-retried.
   if (failure) {
@@ -3192,6 +3208,8 @@ async function runMockStep(id, stepIndex, runId) {
     if (drafted.error) return failFarmRun(runId, `invalid plan draft: ${drafted.errors[0].message}`, REASON.INVALID_PLAN_DRAFT)
     artifactMd = renderPlanDraftMd(planDraft)
   }
+  // HZ-463: the mock review's findings are decided the way the farm path's are.
+  if (isPlanReviewStep(stepIndex)) artifactMd = [artifactMd, reviewStep(after, stepIndex, planReview).md].filter(Boolean).join('\n\n')
 
   if (stepIndex === REVIEW_STEP_INDEX) {
     // finalizeReviewStep releases the busy mutex itself before it calls kick().

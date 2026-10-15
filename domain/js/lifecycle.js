@@ -314,6 +314,9 @@ export const VERIFY_REPORT_STEP_INDEX = kindStepIndex('Verify & report', 'task')
 export const APPROVE_FILE_GATE_INDEX = kindStepIndex('Approve & file', 'plan')
 // HZ-448: the Plan step whose reply is the item drafts (server/src/planDraft.js).
 export const PLAN_DRAFT_STEP_INDEX = kindStepIndex('Draft items', 'plan')
+// HZ-463: the two steps that review the drafts (server/src/planReview.js).
+export const PLAN_COVERAGE_REVIEW_STEP_INDEX = kindStepIndex('Review drafts: coverage & overlap', 'plan')
+export const PLAN_METRICS_REVIEW_STEP_INDEX = kindStepIndex('Review drafts: metrics & size', 'plan')
 // HZ-449: the server step that files the drafts, and the gate after it whose
 // card shows what was filed.
 export const FILE_ITEMS_STEP_INDEX = kindStepIndex('File items', 'plan')

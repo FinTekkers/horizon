@@ -140,6 +140,8 @@ enforced rather than remembered.
 | `planDraft.schema.json` | An **output contract**: a Plan's item drafts, emitted by the Draft items step and saved by an owner's edit (HZ-448). Holds no work-item field limit — both bindings add those from `fields.json` at load |
 | `py/plan_draft.py` | The farm binding: `validate` checks shape and the dependency DAG inside the step's retry envelope |
 | `js/planDraft.js` | The server binding: `validatePlanDraft` runs the same rules in the same order, plus the two only the server can answer (`unknown_key`, `unknown_repo`); `realKeysIn`, `renderPlanDraftMd`, `PLAN_DRAFT_SCHEMA`. Both are run over `fixtures/plan-draft-cases.json` |
+| `planReview.schema.json` | An **output contract**: the `plan_review` a Plan's coverage review replies with (HZ-463) — each Inventory gap mapped to a draft or marked out of scope, plus overlap claims |
+| `py/plan_review.py` / `js/planReview.js` | The farm binding checks the reply; the server binding re-checks it and decides every finding (`reviewPlanDraft`: uncovered gap, overlap, size, unknown key). Run over `fixtures/plan-review-cases.json` |
 
 Every file here is authored. Nothing is output.
 
