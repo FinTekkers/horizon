@@ -3,7 +3,7 @@ import { mkdirSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { reconcileGoogleUsers } from './loginAllowlist.js'
-import { gateStepIndexes, ITEM_KINDS } from '../../domain/js/lifecycle.js'
+import { ACCEPT_GATE_INDEX, endIndex, gateStepIndexes, IMPLEMENT_ITEM_KIND, ITEM_KINDS, itemKindOf } from '../../domain/js/lifecycle.js'
 import { PRIORITIES } from '../../domain/js/priorities.js'
 
 const DB_PATH =
@@ -531,6 +531,17 @@ db.exec(`
            (SELECT MAX(e.created_at) FROM event e WHERE e.item_id = work_item.id AND e.text LIKE '%paused%'),
            updated_at)
    WHERE paused = 1 AND paused_at IS NULL`)
+// HZ-467: when the item's PR merged to main (store.markMerged). A dependent's
+// implement waits for it, not for the close. A reopen clears it. The backfill
+// runs once, when the column is first added.
+let mergedAtAdded = false
+try {
+  db.exec('ALTER TABLE work_item ADD COLUMN merged_at TEXT')
+  mergedAtAdded = true
+} catch {
+  // column already exists
+}
+if (mergedAtAdded) backfillMergedAt(db)
 try {
   db.exec('ALTER TABLE step_run ADD COLUMN artifact TEXT') // full agent artifact (markdown), separate from the summary
 } catch {
@@ -1274,6 +1285,21 @@ export function baselineNotifiedStep(database = db) {
     database.prepare(`UPDATE work_item SET notified_step = cursor WHERE cursor IN (${placeholders})`).run(...gates)
     database.prepare(`UPDATE work_item SET notified_step = NULL WHERE cursor NOT IN (${placeholders})`).run(...gates)
   })
+}
+
+// HZ-467: an open item of the implement step's kind that sits past Accept the
+// code (at Deploy or the final gate) has had its PR merged, so it gets
+// merged_at. A missing or blank kind reads as the default kind, as
+// itemKindOf does. No PR means nothing merged: such a row waits for its close.
+// Exported so its test can run it on a legacy-shaped table.
+export function backfillMergedAt(database = db) {
+  return database
+    .prepare(
+      `UPDATE work_item SET merged_at = datetime('now')
+        WHERE merged_at IS NULL AND COALESCE(NULLIF(kind, ''), ?) = ? AND pr IS NOT NULL AND abandoned_at IS NULL
+          AND cursor > ? AND cursor < ?`,
+    )
+    .run(itemKindOf({}), IMPLEMENT_ITEM_KIND, ACCEPT_GATE_INDEX, endIndex(IMPLEMENT_ITEM_KIND)).changes
 }
 
 // One-time on first boot after HZ-141 ships, and placed LAST on purpose: it

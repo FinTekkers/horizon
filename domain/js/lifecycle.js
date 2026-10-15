@@ -296,6 +296,8 @@ export function requiredStepIndex(label, steps = STEPS) {
 }
 
 export const IMPLEMENT_STEP_INDEX = requiredStepIndex('Specialist agent implements')
+// HZ-467: the kind whose items have an implement step and a PR to merge.
+export const IMPLEMENT_ITEM_KIND = stepKindOf(STEPS[IMPLEMENT_STEP_INDEX])
 export const REVIEW_STEP_INDEX = requiredStepIndex('Automated review (code + QA)')
 export const ACCEPT_GATE_INDEX = requiredStepIndex('Accept the code')
 export const DEPLOY_STEP_INDEX = requiredStepIndex('Deploy the changes')
@@ -453,6 +455,28 @@ export function isBlocked(blockers) {
 
 export function isBlockedByAbandoned(blockers) {
   return blockers.some((b) => isAbandoned(b))
+}
+
+// HZ-467: a blocker stops holding implement once its code is on main —
+// merged_at is set only after its PR actually merged (store.markMerged). An
+// abandoned blocker keeps blocking even if it merged, so its escalation is
+// unchanged.
+function isMergeReleased(blocker) {
+  return isClosed(blocker) || (!!blocker.merged_at && !isAbandoned(blocker))
+}
+
+export function isImplementBlocked(blockers) {
+  return blockers.some((b) => !isMergeReleased(b))
+}
+
+// The blockers that hold `item` at its current step. An item of the kind that
+// owns the implement step plans freely and waits only from implement on, for
+// each blocker to merge or close. Every other kind keeps the HZ-78 rule: held
+// on every step until each blocker closes.
+export function holdingBlockers(item, blockers) {
+  if (itemKindOf(item) !== IMPLEMENT_ITEM_KIND) return blockers.filter((b) => !isClosed(b))
+  if (item.cursor < IMPLEMENT_STEP_INDEX) return []
+  return blockers.filter((b) => !isMergeReleased(b))
 }
 
 // ---- send-back-to-a-chosen-step (HZ-51) ----

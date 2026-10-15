@@ -122,7 +122,7 @@ function queueContract(selfId, peerId, contract) {
 
 // Synchronous on purpose: completeFarmRun calls it after its last await and
 // before marking step 9 done, with nothing in between — the dependency edge
-// it adds blocks this item, and no re-check may see that mid-completion.
+// it adds holds this item's implement, and no re-check may see that mid-completion.
 // Returns the results with an `effect` (and `contract`/`why`) on each entry.
 // HZ-466: every overlap queues the contract, a depends-on one included, and a
 // pair whose overlap link an owner removed gets the contract instead of the
@@ -152,7 +152,8 @@ export function applyOverlap(itemId, check) {
         const res = addDependency(itemId, r.id, 'Horizon')
         if (res.ok) {
           const what = res.unchanged ? `dependency ${itemId} → ${r.id} already present` : `added dependency ${itemId} → ${r.id}`
-          return { ...r, contract, effect: `${what}; blocked until ${r.id} closes (shown on the card); ${queueContract(itemId, r.id, contract)}` }
+          // HZ-467: the item plans on; only its implement waits for the merge.
+          return { ...r, contract, effect: `${what}; implement waits until ${r.id} merges (shown on the card); ${queueContract(itemId, r.id, contract)}` }
         }
         if (res.error !== 'cycle') return notChecked(r, `could not add the dependency (${res.error})`)
         return {

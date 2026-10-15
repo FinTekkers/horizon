@@ -125,7 +125,7 @@ async function items() {
 
 let journey = null // the source item the full journey filed, reused below
 
-test('journey: approving gate 5 files one issue upstream, the source waits on it, and starts once it closes', async () => {
+test('journey: approving gate 5 files one issue upstream, and the source plans on while it is open', async () => {
   const { id, issue: sourceIssue } = newSource('journey')
   const artifact = await runPlan(id, { ...SPLIT, description: `${SPLIT.description} See /home/ubuntu/notes.txt for context.` })
   assert.match(artifact, /## Proposed split/)
@@ -154,15 +154,16 @@ test('journey: approving gate 5 files one issue upstream, the source waits on it
   assert.equal(target.id, `${LIB_PREFIX}-${filed.number}`)
   assert.ok(!target.desc.includes('horizon-split-of') && !target.guardrails.includes('Split from'), 'back-link kept out of its fields')
 
-  // Metric 2: the dependency the card renders, and no dispatch while it is open.
+  // Metric 2: the dependency the card renders. HZ-467: the source plans on
+  // while the upstream item is open; only its implement waits for the merge.
   const source = board.find((i) => i.id === id)
-  assert.equal(source.blocked, true)
+  assert.equal(source.blocked, false)
   assert.deepEqual(source.blockedBy.map((b) => b.id), [target.id])
   assert.deepEqual(deps(id), [target.id])
   assert.equal(store.getItem(id).cursor, DRAFT_PLAN)
   await tick()
-  assert.equal(activeRun(id, DRAFT_PLAN), undefined, 'the source does not start while the upstream item is open')
-  assert.equal(dispatchedAt(id, DRAFT_PLAN).length, 0)
+  assert.ok(activeRun(id, DRAFT_PLAN), 'the source plans on while the upstream item is open')
+  assert.equal(dispatchedAt(id, DRAFT_PLAN).length, 1)
 
   // Metric 3: the remaining scope, pushed to the source's issue first, so a sync keeps it.
   assert.equal(store.getItem(id).desc, SPLIT.remaining_description)
@@ -178,10 +179,10 @@ test('journey: approving gate 5 files one issue upstream, the source waits on it
     assert.ok(allowed, `unexpected upstream call ${c.method} ${c.path}`)
   }
 
-  // The upstream item closes: the source starts by itself.
+  // The upstream item closes: nothing new dispatches — the draft is already running.
   store.upsertFromGithub({ ...filed, state: 'closed' }, LIB)
   await tick()
-  assert.ok(activeRun(id, DRAFT_PLAN), 'the source dispatches once the upstream item closes')
+  assert.ok(activeRun(id, DRAFT_PLAN))
   assert.equal(dispatchedAt(id, DRAFT_PLAN).length, 1)
   journey = { id, target: target.id }
 })

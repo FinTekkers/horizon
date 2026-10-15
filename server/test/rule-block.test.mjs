@@ -1,7 +1,7 @@
 // HZ-346: an implement run that stops on a rule with no code changes is
 // recorded as blocked, not failed. No attempt is used, nothing auto-retries,
 // the owner gets one ping per block, and the item restarts once a dependency
-// it gained closes (or a human resumes it).
+// it gained merges or closes (or a human resumes it).
 //
 // Farm mode with a stubbed fetch, like orchestrator-auto-retry.test.mjs, so a
 // kick inserts a real farm step_run row and nothing ever runs a mock step.
@@ -167,6 +167,24 @@ test('adding a dependency on an item that is already closed releases the block a
   assert.equal(rawBlock('RB-4'), null)
   assert.equal(activeRun('RB-4')?.attempt, 2)
   orchestrator.cancel('RB-4')
+})
+
+// HZ-467: a rule block only ever stops implement, so it lifts at the
+// dependency's merge, before its deploy and close.
+test('the dependency it gained merging clears the block and restarts implement', async () => {
+  insertItem.run('RB-MERGING', 'Upstream, PR about to merge', STEPS.findIndex((s) => s.label === 'Accept the code'))
+  blockedItem('RB-MERGE-DEP')
+  assert.equal((await inject({ method: 'POST', url: '/api/items/RB-MERGE-DEP/dependencies', payload: { dependsOnId: 'RB-MERGING' } })).statusCode, 200)
+  assert.notEqual(rawBlock('RB-MERGE-DEP'), null, 'an unmerged dependency keeps the block')
+  assert.equal(runCount('RB-MERGE-DEP'), 1)
+
+  assert.equal(store.markMerged('RB-MERGING'), true)
+  assert.equal(rawBlock('RB-MERGE-DEP'), null)
+  assert.ok(events('RB-MERGE-DEP').includes('its dependencies are merged or closed — the rule block is cleared and implement restarts'))
+  const next = activeRun('RB-MERGE-DEP')
+  assert.equal(next?.step_index, IMPLEMENT_STEP_INDEX)
+  assert.equal(next.attempt, 2)
+  orchestrator.cancel('RB-MERGE-DEP')
 })
 
 test('a dependency that predates the block, or removing one, never releases it', async () => {

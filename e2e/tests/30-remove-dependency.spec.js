@@ -1,8 +1,10 @@
 // HZ-310: removing a dependency from the item view, end to end against the
 // real server. global-setup.js seeds DEP-RM-3 depending on DEP-RM-1 and
-// DEP-RM-2, and DEP-RM-5 depending only on DEP-RM-4 (at an agent step).
+// DEP-RM-2, and DEP-RM-5 depending only on DEP-RM-4. HZ-467: both dependents
+// sit at the implement step, the first step a dependency holds.
 
 import { test, expect } from '../fixtures/test-base.js'
+import { ACCEPT_GATE_INDEX, IMPLEMENT_STEP_INDEX, STEPS } from '../../domain/js/lifecycle.js'
 
 const REMOVE_X = { name: /^Remove dependency on / }
 
@@ -18,7 +20,7 @@ test('X removes one edge: one request, the badge, the event log and the board ca
   await page.goto('/')
   const card = page.locator('.card', { hasText: 'E2E fixture — two removable blockers' })
   await expect(card.locator('.dep-pill--blocked')).toContainText('Blocked by DEP-RM-1')
-  // HZ-335: blocked at a gate still reads Blocked.
+  // HZ-335: a held item reads Blocked.
   await expect(card.locator('.status-pill')).toHaveText('Blocked')
   // The compact board badge stays display-only.
   await expect(page.getByRole('button', REMOVE_X)).toHaveCount(0)
@@ -53,7 +55,7 @@ test('X removes one edge: one request, the badge, the event log and the board ca
   expect(await page.evaluate(() => window.__noReload)).toBe(1)
 })
 
-test('removing the only blocker starts the item’s next agent step with no restart', async ({ page }) => {
+test('removing the only blocker starts the item’s implement step with no restart', async ({ page }) => {
   await page.goto('/')
   const card = page.locator('.card', { hasText: 'E2E fixture — waiting on its only blocker' })
   // HZ-335: blocked at an agent step reads Blocked, never an agent working,
@@ -69,8 +71,8 @@ test('removing the only blocker starts the item’s next agent step with no rest
   await expect(page.locator('.dep-detail')).toContainText('DEP-RM-4')
   await expect(page.locator('.tracker__status')).toHaveText('Blocked')
   await expect(page.getByRole('button', { name: 'Pause work' })).toHaveCount(0)
-  // Inert while blocked: no step has run.
-  await expect(page.locator('.step__icon--done')).toHaveCount(0)
+  // Inert while blocked: implement has not run, so only the steps before it are done.
+  await expect(page.locator('.step__icon--done')).toHaveCount(IMPLEMENT_STEP_INDEX)
 
   await page.evaluate(() => {
     window.__noReload = 1
@@ -80,11 +82,11 @@ test('removing the only blocker starts the item’s next agent step with no rest
   await expect(page.locator('.dep-detail')).toHaveCount(0)
   // The live snapshot clears Blocked with no reload.
   await expect(page.locator('.tracker__status')).not.toHaveText('Blocked')
-  // The mock agents run the three PM/Architect steps up to the first gate.
-  await expect(page.locator('.step-card--awaiting')).toContainText('Approve & prioritize this work', {
+  // The mock agents run implement and the automated review up to Accept the code.
+  await expect(page.locator('.step-card--awaiting')).toContainText(STEPS[ACCEPT_GATE_INDEX].label, {
     timeout: 10_000,
   })
-  await expect(page.locator('.step__icon--done')).toHaveCount(3)
+  await expect(page.locator('.step__icon--done')).toHaveCount(ACCEPT_GATE_INDEX)
 
   await page.getByRole('button', { name: 'Back to board' }).click()
   await expect(card.locator('.status-pill')).toBeVisible()
