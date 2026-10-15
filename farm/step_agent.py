@@ -1260,7 +1260,9 @@ def _secret_paths(ws: Path, rev: str) -> list[str]:
     return found or []
 
 
-def _push_precheck_checkpoint(ws: Path, item: dict, branch: str, prepared: PreparedBranch, scope: dict) -> str:
+def _push_precheck_checkpoint(
+    ws: Path, item: dict, branch: str, prepared: PreparedBranch, scope: dict, *, lease_sha: str | None = None
+) -> str:
     """HZ-456: pushes the implement step's committed work to the item's own
     branch before the checks run. A step killed during its checks (its time
     limit, a farm restart) runs no handler at all, so only a push made here
@@ -1272,7 +1274,11 @@ def _push_precheck_checkpoint(ws: Path, item: dict, branch: str, prepared: Prepa
     HEAD is no rebase of them, and when a commit to push adds a secret-looking
     file. Returns the sha the remote now holds for this run (HEAD), or "" when
     nothing was pushed. Never raises: a failed push is logged, and the checks
-    run anyway."""
+    run anyway.
+
+    HZ-458: lease_sha is what an earlier check round of this run left on the
+    remote (its pushed farm commit, or prepared.lease_sha when nothing was
+    pushed). A fix round's commit sits on top of it, so it is the lease."""
     try:
         if scope["mode"] == "fix":
             # Pushing here would put unchecked code on the open PR (and run its CI).
@@ -1287,9 +1293,11 @@ def _push_precheck_checkpoint(ws: Path, item: dict, branch: str, prepared: Prepa
             log(f"checkpoint: skipped — no commit ahead of origin/{default}")
             return ""
         head = git(ws, "rev-parse", "HEAD").stdout.strip()
-        lease = prepared.lease_sha
+        lease = prepared.lease_sha if lease_sha is None else lease_sha
+        # Only prepare_branch's own lease can be the checkpoint it rebased.
+        rebased = prepared.rebased and lease == prepared.lease_sha
         if head != lease:
-            if lease and not prepared.rebased:
+            if lease and not rebased:
                 if git(ws, "merge-base", "--is-ancestor", lease, head, check=False).returncode != 0:
                     log(f"checkpoint: skipped — origin/{branch} holds commits HEAD does not contain")
                     return ""
@@ -2309,6 +2317,278 @@ def _execute_pm(task: dict) -> dict:
     return outcome
 
 
+# ---- fix loop on a red check (HZ-458) ----
+# A red repo check used to discard the attempt. Now its failure digest goes
+# back to the same agent session, with the work intact, to fix just that
+# failure; then the checks re-run. FARM_FIX_LOOP_CAP bounds the fix turns
+# (0 restores the single check run). Every fix turn draws on the step's turn
+# cap and the agent time left — check time is never counted as agent time —
+# and the loop ends only on green or through the same failure path as before.
+
+FIX_TURN_MIN_S = 120
+# Added lines that skip a test or silence a check. A fix turn adding one
+# fails the attempt; the role and the fix prompt both forbid it.
+_LOOSENING_LINE = re.compile(r"\.(skip|only)\(|\bxfail\b|\bskipif\b|eslint-disable|pytest\.mark\.skip\b")
+_TEST_PATH = re.compile(r"(^|/)(tests?|__tests__)/|\.(test|spec)\.[^/]+$|(^|/)test_[^/]*\.py$|_test\.py$")
+_CHECK_CONFIG_FILES = ("eslint.config.*", ".eslintrc*", "playwright.config.*", "pytest.ini")
+_PYPROJECT_CHECK_SECTION = re.compile(r"tool\.(pytest|ruff)")
+_HUNK = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@")
+
+
+class CheckedWork(NamedTuple):
+    checked_sha: str
+    checked_tree: object
+    check_note: str
+    checks_finished_at: str
+    # What the remote branch holds for this run, for finalize_branch's lease.
+    lease: str
+    fix_loops: int
+
+
+def _fix_loop_cap() -> int:
+    raw = os.environ.get("FARM_FIX_LOOP_CAP", "").strip()
+    return max(int(raw), 0) if raw.isdigit() else 2
+
+
+def _notify_checks(run_id, phase: str) -> None:
+    """Tells the server (through farmd) the checks started or ended, so it
+    pauses this run's step clock for them. Fails open: a lost call leaves the
+    server's clock running, which is how it was before HZ-458."""
+    if run_id is None:
+        return
+    try:
+        httpx.post(f"{FARMD}/internal/steps/checks", json={"run_id": run_id, "phase": phase}, timeout=40)
+    except Exception as exc:
+        log(f"checks clock: the server was not told the checks {phase} ({exc}) — its step clock keeps running")
+
+
+def _fix_turn_prompt(item: dict, detail: str) -> str:
+    return (
+        f"The farm committed your work on {item['id']} and ran the repo's checks. A check failed:\n\n"
+        f"```\n{detail}\n```\n\n"
+        "Fix only this failure, in the code. Do not delete, skip or loosen a test, lint rule or check "
+        "config to turn the check green — the farm rejects a fix that does. Run only the tests for "
+        "what you change; the farm re-runs every check after you finish. Then reply with the same "
+        "final JSON object as before."
+    )
+
+
+def _section_at(lines: list[str], lineno: int) -> str:
+    """The TOML table heading in force at 1-based line `lineno`, or ""."""
+    for line in reversed(lines[: max(lineno, 0)]):
+        heading = re.match(r"\s*\[+([^\]]+)\]+", line)
+        if heading:
+            return heading.group(1).strip()
+    return ""
+
+
+def _loosened_checks(ws: Path, base: str) -> list[str]:
+    """What base..HEAD (one fix turn's work) does to loosen the checks: a
+    deleted test file, an added skip/only/xfail/eslint-disable line, a changed
+    lint, Playwright or pytest config, a conftest.py that adds collect_ignore,
+    or a pyproject.toml change inside [tool.pytest*] or [tool.ruff*]. Empty
+    when it does none of these."""
+    found: list[str] = []
+    for path in _names(ws, f"{base}..HEAD"):
+        name = path.rsplit("/", 1)[-1]
+        if any(fnmatch.fnmatch(name, pattern) for pattern in _CHECK_CONFIG_FILES):
+            found.append(f"changed check config {path}")
+    deleted = git(ws, "diff", "--name-only", "--diff-filter=D", "--no-renames", base, "HEAD", check=False).stdout
+    found += [f"deleted test file {path}" for path in deleted.splitlines() if _TEST_PATH.search(path)]
+    diff = git(
+        ws, "-c", "core.quotepath=off", "diff", "-U0", "--no-color", "--no-ext-diff", "--no-renames", base, "HEAD", check=False
+    ).stdout
+    path, at, toml, header = "", 0, None, False
+    for line in diff.splitlines():
+        if line.startswith("diff --git "):
+            path, toml, header = "", None, True
+            continue
+        hunk = _HUNK.match(line)
+        if hunk:
+            at, header = int(hunk.group(1)), False
+            continue
+        if header:
+            # Only a file header names the path: a content line can start with "+++" too.
+            if line.startswith("+++ "):
+                path = line[6:] if line.startswith("+++ b/") else ""
+            continue
+        if not path or line[:1] not in ("+", "-"):
+            continue
+        name = path.rsplit("/", 1)[-1]
+        if name == "pyproject.toml":
+            if toml is None:
+                toml = git(ws, "show", f"HEAD:{path}", check=False).stdout.splitlines()
+            section = _section_at(toml, at)
+            if _PYPROJECT_CHECK_SECTION.match(section):
+                found.append(f"changed [{section}] in {path}")
+        elif line.startswith("+") and (
+            _LOOSENING_LINE.search(line) or (name == "conftest.py" and "collect_ignore" in line)
+        ):
+            found.append(f"{path}: added `{line[1:].strip()[:120]}`")
+        if line.startswith("+"):
+            at += 1
+    return list(dict.fromkeys(found))[:20]
+
+
+def _fail_on_checks(ws, item, branch, conflicted, exc: CheckFailure, *, checkpoint: str, lease: str, unpushed: str) -> None:
+    """HZ-184: the finished work is checkpointed with what failed, so the
+    next attempt fixes it instead of rebuilding it. The caller re-raises: the
+    run still fails, nothing after the checks runs, no PR opens."""
+    detail = "\n".join([exc.digest or str(exc), *(_recording()["branch_notes"] or [])])
+    if checkpoint:
+        # HZ-456: the digest sits beside the pushed commit, not in it.
+        try:
+            _write_precheck_state(ws, checkpoint, CAUSE_CHECKS_FAILED, detail)
+        except OSError as err:
+            log(f"checkpoint: could not record the check failure ({err})")
+    _salvage_checkpoint(
+        ws,
+        item,
+        branch,
+        conflicted,
+        cause=CAUSE_CHECKS_FAILED,
+        detail=detail,
+        lease_sha=lease,
+        farm_commit=unpushed,
+        pushed=checkpoint,
+    )
+
+
+def _no_fix_reason(exc: CheckFailure, rounds: int, turns_used, max_turns: int, deadline: float) -> str:
+    """Why a red check gets no fix turn, or "" when it gets one."""
+    cap = _fix_loop_cap()
+    if rounds >= cap:
+        return f"{rounds} of {cap} fix turn(s) used"
+    if exc.reason != "failed":
+        return f"the check did not run to a result ({exc.reason})"
+    if not isinstance(turns_used, int):
+        # Muse reports no turns: a fix turn could overrun the step's turn cap.
+        return "the provider reported no turn count, so the turn cap cannot be kept"
+    if max_turns - turns_used <= 0:
+        return f"all {max_turns} turns used"
+    if deadline - time.monotonic() < FIX_TURN_MIN_S:
+        return "too little agent time left"
+    return ""
+
+
+def _check_until_green(
+    ws: Path,
+    task: dict,
+    branch: str,
+    conflicted: list[str],
+    prepared: PreparedBranch,
+    scope: dict,
+    reply: dict,
+    *,
+    deadline: float,
+    max_turns: int,
+    call_agent,
+) -> CheckedWork:
+    """Commits the agent's work, pushes it (HZ-456) and runs the repo checks;
+    on a red check, hands its digest to the same session for a fix turn and
+    goes round again. call_agent is the step's own run_agent call, taking
+    (prompt, session_id=, max_turns=, timeout_s=). Returns once the checks pass. Raises the CheckFailure,
+    after today's salvage, once no fix turn is left — or when a fix turn
+    stops or loosens the checks."""
+    item = task["item"]
+    turns_used = reply.get("num_turns")
+    lease, unpushed, rounds = prepared.lease_sha, "", 0
+    fix_base: str | None = None
+    failure: CheckFailure | None = None
+    while True:
+        farm_commit = commit_work(ws, item, conflicted)
+        checked_sha = git(ws, "rev-parse", "HEAD").stdout.strip()
+        if fix_base is not None and failure is not None:
+            loosened = _loosened_checks(ws, fix_base)
+            if loosened:
+                log(f"fix loop: the fix turn loosened the checks — {'; '.join(loosened)}")
+                failure = CheckFailure(
+                    str(failure),
+                    "\n".join(
+                        [failure.digest or str(failure), "", "The fix turn loosened the checks, so it was not checked:", *loosened]
+                    ),
+                    command=failure.command,
+                    tail=failure.tail,
+                    reason=failure.reason,
+                    headline=failure.headline,
+                )
+                _fail_on_checks(
+                    ws, item, branch, conflicted, failure, checkpoint="", lease=lease, unpushed=farm_commit or unpushed
+                )
+                raise failure
+        # HZ-257: the tree the checks are about to test, so the pushed commit
+        # can be named as the sha that passed — only if identical.
+        checked_tree = check_record.snapshot_tree(ws, log)
+        # HZ-456: a step killed mid-check (time limit, farm restart) runs no
+        # handler, so the work is pushed to the item's branch first. Once it
+        # is, every later push of this run leases against it, and the farm
+        # commit is published — never amended or replaced.
+        checkpoint = _push_precheck_checkpoint(ws, item, branch, prepared, scope, lease_sha=lease)
+        lease = checkpoint or lease
+        unpushed = "" if checkpoint else (farm_commit or unpushed)
+        # The server pauses the step clock for exactly this window, slot wait
+        # included, and the farm's own agent deadline moves by the same span.
+        _notify_checks(task.get("run_id"), "start")
+        began = time.monotonic()
+        try:
+            with pause.interruptible():
+                # HZ-245: the repo's Admin-configured commands, from the task dict
+                # parsed at startup — never re-read after the agent has run.
+                check_note = run_checks(
+                    ws,
+                    log,
+                    run_id=task.get("run_id"),
+                    item_id=item["id"],
+                    configured=task.get("check_commands"),
+                    repo=item.get("repo"),
+                    # HZ-304: from the server, like check_commands.
+                    checks_waiver=task.get("checks_waiver"),
+                    # HZ-327: flakes and per-test results ride on the result.
+                    **_recording(),
+                )
+            return CheckedWork(checked_sha, checked_tree, check_note, check_record.now_iso(), lease, rounds)
+        except pause.PauseRequested:
+            # HZ-194: the agent's work is finished but unchecked. The checks
+            # are stopped and never count as a failure; the code is saved.
+            pause.report(*_pause_checkpoint(ws, item, branch, conflicted, lease, scope, unpushed))
+            raise
+        except CheckFailure as exc:
+            failure = exc
+        finally:
+            deadline += time.monotonic() - began
+            _notify_checks(task.get("run_id"), "end")
+        why_not = _no_fix_reason(failure, rounds, turns_used, max_turns, deadline)
+        if why_not:
+            log(f"fix loop: no fix turn — {why_not}")
+            _fail_on_checks(ws, item, branch, conflicted, failure, checkpoint=checkpoint, lease=lease, unpushed=unpushed)
+            raise failure
+        detail = "\n".join([failure.digest or str(failure), *(_recording()["branch_notes"] or [])])
+        fix_base = checked_sha
+        log(f"fix loop: fix turn {rounds + 1} of {_fix_loop_cap()} — handing the check failure back to the agent")
+        try:
+            with pause.interruptible():
+                fixed = call_agent(
+                    _fix_turn_prompt(item, detail),
+                    session_id=reply.get("session_id"),
+                    max_turns=max_turns - turns_used,
+                    timeout_s=int(deadline - time.monotonic()),
+                )
+        except pause.PauseRequested as exc:
+            if not exc.at_entry:
+                pause.report(*_pause_checkpoint(ws, item, branch, conflicted, lease, scope, unpushed))
+            raise
+        except Exception as exc:
+            # The fix turn ran out of turns or time, or crashed: the attempt
+            # fails on the check it was fixing, its work checkpointed.
+            log(f"fix loop: the fix turn stopped ({exc}) — failing on the check")
+            _fail_on_checks(ws, item, branch, conflicted, failure, checkpoint=checkpoint, lease=lease, unpushed=unpushed)
+            raise failure from exc
+        rounds += 1
+        reply = {**reply, "session_id": fixed.get("session_id") or reply.get("session_id")}
+        used = fixed.get("num_turns")
+        turns_used = turns_used + used if isinstance(used, int) else None
+
+
 def _execute(task: dict, guard: HandoffGuard) -> dict:
     label = task["step"]["label"]
     item = task["item"]
@@ -2399,22 +2679,28 @@ def _execute(task: dict, guard: HandoffGuard) -> dict:
             log(f"merged origin/main into {branch}" + (f" — {len(conflicted)} conflicted file(s) left for the agent" if conflicted else " cleanly"))
             extra += _merge_main_note(conflicted)
         deadline = time.monotonic() + timeout_s
+
+        # HZ-458: a fix turn after a red check is the same call, resumed.
+        def call_agent(prompt: str, *, session_id: str | None, max_turns: int, timeout_s: int) -> dict:
+            return run_agent(
+                prompt,
+                agent=model_agent,
+                step=label,
+                persona=persona,
+                session_id=session_id,
+                append_system=role,
+                cwd=str(ws),
+                max_turns=max_turns,
+                timeout_s=timeout_s,
+                allowed_tools=tools,
+                provider=provider_override,
+                model_choice=model_choice,
+                provider_locked=provider_locked,
+            )
+
         try:
             with pause.interruptible():
-                reply = run_agent(
-                    build_prompt(task) + extra,
-                    agent=model_agent,
-                    step=label,
-                    persona=persona,
-                    append_system=role,
-                    cwd=str(ws),
-                    max_turns=max_turns,
-                    timeout_s=timeout_s,
-                    allowed_tools=tools,
-                    provider=provider_override,
-                    model_choice=model_choice,
-                    provider_locked=provider_locked,
-                )
+                reply = call_agent(build_prompt(task) + extra, session_id=None, max_turns=max_turns, timeout_s=timeout_s)
         except pause.PauseRequested as exc:
             # HZ-194: an operator paused the item mid-run. Save the work as a
             # checkpoint BEFORE farmd kills the session. at_entry: the pause
@@ -2488,63 +2774,20 @@ def _execute(task: dict, guard: HandoffGuard) -> dict:
         # script, on the agent's work committed locally (HZ-438: a check may
         # read `git status`) and before anything is pushed. A failure fails
         # the run (Node pauses the item with the reason) — no green, no push.
-        farm_commit = commit_work(ws, item, conflicted)
-        checked_sha = git(ws, "rev-parse", "HEAD").stdout.strip()
-        # HZ-257: the tree the checks are about to test, so the pushed commit
-        # can be named as the sha that passed — only if identical.
-        checked_tree = check_record.snapshot_tree(ws, log)
-        # HZ-456: a step killed mid-check (time limit, farm restart) runs no
-        # handler, so the work is pushed to the item's branch first. Once it
-        # is, every later push of this run leases against it, and the farm
-        # commit is published — never amended or replaced.
-        checkpoint = _push_precheck_checkpoint(ws, item, branch, prepared, scope)
-        lease = checkpoint or prepared.lease_sha
-        unpushed = "" if checkpoint else farm_commit
-        try:
-            with pause.interruptible():
-                # HZ-245: the repo's Admin-configured commands, from the task dict
-                # parsed at startup — never re-read after the agent has run.
-                check_note = run_checks(
-                    ws,
-                    log,
-                    run_id=task.get("run_id"),
-                    item_id=item["id"],
-                    configured=task.get("check_commands"),
-                    repo=item.get("repo"),
-                    # HZ-304: from the server, like check_commands.
-                    checks_waiver=task.get("checks_waiver"),
-                    # HZ-327: flakes and per-test results ride on the result.
-                    **_recording(),
-                )
-            checks_finished_at = check_record.now_iso()
-        except pause.PauseRequested:
-            # HZ-194: the agent's work is finished but unchecked. The checks
-            # are stopped and never count as a failure; the code is saved.
-            pause.report(*_pause_checkpoint(ws, item, branch, conflicted, lease, scope, unpushed))
-            raise
-        except CheckFailure as exc:
-            # HZ-184: the finished work is checkpointed with what failed, so
-            # the next attempt fixes it instead of rebuilding it. Re-raised:
-            # the run still fails, nothing below runs, no PR opens.
-            detail = "\n".join([exc.digest or str(exc), *(_recording()["branch_notes"] or [])])
-            if checkpoint:
-                # HZ-456: the digest sits beside the pushed commit, not in it.
-                try:
-                    _write_precheck_state(ws, checkpoint, CAUSE_CHECKS_FAILED, detail)
-                except OSError as err:
-                    log(f"checkpoint: could not record the check failure ({err})")
-            _salvage_checkpoint(
-                ws,
-                item,
-                branch,
-                conflicted,
-                cause=CAUSE_CHECKS_FAILED,
-                detail=detail,
-                lease_sha=lease,
-                farm_commit=unpushed,
-                pushed=checkpoint,
-            )
-            raise
+        # HZ-458: a red check first goes back to the same agent session, up to
+        # FARM_FIX_LOOP_CAP times, and the checks re-run on its fix.
+        checked_sha, checked_tree, check_note, checks_finished_at, lease, fix_loops = _check_until_green(
+            ws,
+            task,
+            branch,
+            conflicted,
+            prepared,
+            scope,
+            reply,
+            deadline=deadline,
+            max_turns=max_turns,
+            call_agent=call_agent,
+        )
         publish_screenshots(ws, item)
         artifacts = finalize_branch(ws, item, branch, conflicted, lease_sha=lease, checked_sha=checked_sha)
         artifacts.update(check_record.report_fields(ws, checked_tree, check_note, checks_finished_at, log))
@@ -2561,7 +2804,8 @@ def _execute(task: dict, guard: HandoffGuard) -> dict:
         # HZ-349: the branch run's lines join the summary (step 12 reads it)
         # but never check_note, whose exact text check_record reads. The
         # agent's own text is cut first, so those lines are what survives.
-        checked = " · ".join([check_note, *(_recording()["branch_notes"] or [])])
+        loops = [f"fix loops: {fix_loops}"] if fix_loops else []
+        checked = " · ".join([check_note, *(_recording()["branch_notes"] or []), *loops])
         summary = f"{summary[: max(SUMMARY_MAX_CHARS - len(checked) - 3, 0)]} · {checked}"[:SUMMARY_MAX_CHARS]
         summary = stamp_notes(summary, notes, SUMMARY_MAX_CHARS)
         if provider_override:

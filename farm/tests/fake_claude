@@ -56,6 +56,26 @@ if "HZ44_QUOTE_BUG" in prompt:
     print(json.dumps({"type": "result", "result": bad, "session_id": HZ44_QUOTE_BUG_SESSION}))
     sys.exit(0)
 
+# HZ-458 fix loop: opt-in via a marker in the item text. The implement run
+# writes a seeded bug the test's check command fails on; resumed in the same
+# session (the farm's fix turn), it removes the bug.
+HZ458_SESSION = "fake-session-hz458"
+if "--resume" in args and args[args.index("--resume") + 1] == HZ458_SESSION:
+    import pathlib
+
+    pathlib.Path("seeded_bug.txt").unlink(missing_ok=True)
+    inner = {"summary": "[fake-claude] fixed the seeded bug"}
+    print(json.dumps({"type": "result", "result": json.dumps(inner), "session_id": HZ458_SESSION, "num_turns": 2}))
+    sys.exit(0)
+if "HZ458_SEEDED_BUG" in prompt and "implementing an approved work item" in sys_prompt:
+    import pathlib
+
+    pathlib.Path("fake_implementation.txt").write_text("fake implementation with a seeded bug\n")
+    pathlib.Path("seeded_bug.txt").write_text("BUG\n")
+    inner = {"summary": "[fake-claude] implemented, bug and all"}
+    print(json.dumps({"type": "result", "result": json.dumps(inner), "session_id": HZ458_SESSION, "num_turns": 7}))
+    sys.exit(0)
+
 patch = {}
 if "guardrails: (empty)" in prompt and "Set guardrails" in prompt:
     patch["guardrails"] = "[fake] defaults apply; no destructive data changes"
@@ -76,4 +96,5 @@ if "implementing an approved work item" in sys_prompt:
     import pathlib
     pathlib.Path("fake_implementation.txt").write_text(f"fake implementation for: {step}\n")
 
-print(json.dumps({"type": "result", "result": json.dumps(inner), "session_id": "fake-session-001"}))
+# num_turns, like the real CLI's envelope (HZ-458 reads it for the turn cap).
+print(json.dumps({"type": "result", "result": json.dumps(inner), "session_id": "fake-session-001", "num_turns": 3}))

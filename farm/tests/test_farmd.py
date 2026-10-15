@@ -805,6 +805,50 @@ def test_notify_started_fails_open_on_a_non_2xx_reply(monkeypatch):
     assert farmd._notify_started(80) is True
 
 
+# ---- HZ-458: the implement step's checks pause the server's step clock ----
+
+
+def test_steps_checks_relays_the_phase_to_the_server_with_the_secret(monkeypatch):
+    captured = []
+
+    class FakeResponse:
+        status_code = 200
+
+    def fake_post(url, json=None, headers=None, timeout=None):
+        captured.append((url, json, headers["x-farm-secret"]))
+        return FakeResponse()
+
+    monkeypatch.setattr(farmd.httpx, "post", fake_post)
+    for phase in ("start", "end"):
+        res = client.post("/internal/steps/checks", json={"run_id": 81, "phase": phase})
+        assert res.status_code == 200 and res.json() == {"ok": True}
+    url = f"{farmd.HORIZON_URL}/api/farm/steps/81/checks"
+    assert captured == [(url, {"phase": "start"}, farmd.SHARED_SECRET), (url, {"phase": "end"}, farmd.SHARED_SECRET)]
+
+
+def test_steps_checks_fails_open_when_the_server_is_unreachable_or_refuses(monkeypatch):
+    """A lost notify leaves the server's step clock running — how a run was
+    timed before HZ-458 — so the implement step must never fail on it."""
+    attempts = []
+    monkeypatch.setattr(farmd.time, "sleep", lambda s: None)
+
+    def raising_post(*a, **k):
+        attempts.append(1)
+        raise ConnectionError("farm can't reach horizon-server")
+
+    monkeypatch.setattr(farmd.httpx, "post", raising_post)
+    res = client.post("/internal/steps/checks", json={"run_id": 82, "phase": "start"})
+    assert res.status_code == 200 and res.json() == {"ok": True}
+    assert len(attempts) == 2
+
+    monkeypatch.setattr(farmd.httpx, "post", lambda *a, **k: SimpleNamespace(status_code=500))
+    assert client.post("/internal/steps/checks", json={"run_id": 82, "phase": "end"}).json() == {"ok": True}
+    # Nothing to relay without a run id and a known phase.
+    monkeypatch.setattr(farmd.httpx, "post", lambda *a, **k: pytest.fail("nothing to relay"))
+    assert client.post("/internal/steps/checks", json={"phase": "start"}).json() == {"ok": True}
+    assert client.post("/internal/steps/checks", json={"run_id": 82, "phase": "pause"}).json() == {"ok": True}
+
+
 def test_claim_and_launch_launches_when_the_run_is_still_active(tmp_path, monkeypatch):
     launched = []
     monkeypatch.setattr(farmd, "_notify_started", lambda run_id: True)

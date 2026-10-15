@@ -87,6 +87,7 @@ import {
   FARM_STEP_TIMEOUT_MS,
   DEPLOY_WAIT_MS,
   FARM_QUEUE_TIMEOUT_MS,
+  FARM_CHECKS_PAUSE_MAX_MS,
   FARM_START_TIMEOUT_MS,
   FARM_CONFLICT_RESOLVE_TIMEOUT_MS,
   PAUSE_CHECKPOINT_TIMEOUT_S,
@@ -1909,6 +1910,62 @@ export function markFarmRunStarted(runId) {
   return { ok: true, active: true }
 }
 
+// HZ-458: the execution budget a run has left. Time it spent in the farm's
+// repo checks (checks_ms) is not agent time and is not counted. Shared by the
+// /checks callback and restart re-arming so the two can't drift apart.
+function remainingExecutionMs(run, budget, checksMs = run.checks_ms || 0) {
+  const anchor = run.agent_started_at || run.started_at
+  const elapsedMs = Date.now() - new Date(anchor).getTime() - checksMs
+  return Math.max(0, budget - elapsedMs)
+}
+
+// What is left of the FARM_CHECKS_PAUSE_MAX_MS backstop for a check window
+// opened at checksStartedAt.
+function remainingChecksPauseMs(checksStartedAt) {
+  return Math.max(0, FARM_CHECKS_PAUSE_MAX_MS - (Date.now() - new Date(checksStartedAt).getTime()))
+}
+
+function armStepTimer(runId, ms) {
+  // HZ-378: unref'd like every other run watchdog.
+  timers[runId] = setTimeout(() => failFarmRun(runId, 'step timed out', REASON.TIMEOUT), ms).unref()
+}
+
+// Called from POST /api/farm/steps/:runId/checks, relayed by farmd from the
+// implement step around each run of the repo checks (farm/step_agent.py's
+// _notify_checks, HZ-458). `start` pauses the step clock: only the
+// FARM_CHECKS_PAUSE_MAX_MS backstop runs, so a farm that dies mid-check still
+// fails the run. `end` adds the window to checks_ms and re-arms what is left
+// of the execution budget. A red check sent back to the agent for a fix can
+// therefore never push a good attempt into a timeout; agent time alone still can.
+//
+// Idempotent: a repeated `start` keeps the open window, and an `end` with no
+// open window changes nothing. An inactive run reports `active: false` and is
+// never written.
+export function markFarmRunChecks(runId, phase) {
+  const run = db.prepare('SELECT * FROM step_run WHERE id = ?').get(runId)
+  if (!run || run.status !== 'active') return { ok: true, active: false }
+  const budget = executionBudgetFor(run.step_index)
+  const checksMs = run.checks_ms || 0
+  if (phase === 'start') {
+    if (run.checks_started_at) return { ok: true, active: true, checks_ms: checksMs }
+    const startedAt = new Date().toISOString()
+    db.prepare('UPDATE step_run SET checks_started_at = ? WHERE id = ?').run(startedAt, runId)
+    if (budget != null) {
+      clearTimeout(timers[runId])
+      armStepTimer(runId, remainingChecksPauseMs(startedAt))
+    }
+    return { ok: true, active: true, checks_ms: checksMs }
+  }
+  if (!run.checks_started_at) return { ok: true, active: true, checks_ms: checksMs }
+  const total = checksMs + Math.max(0, Date.now() - new Date(run.checks_started_at).getTime())
+  db.prepare('UPDATE step_run SET checks_ms = ?, checks_started_at = NULL WHERE id = ?').run(total, runId)
+  if (budget != null) {
+    clearTimeout(timers[runId])
+    armStepTimer(runId, remainingExecutionMs(run, budget, total))
+  }
+  return { ok: true, active: true, checks_ms: total }
+}
+
 // Which work_item columns an agent may patch — DERIVED from domain/fields.json
 // (HZ-134), the same document farm/pm_steps.py builds its PATCH_FIELDS from, so
 // the two sides of the wire cannot disagree about which fields exist. Only the
@@ -3544,7 +3601,9 @@ export async function init(log) {
 // to get subtly wrong — see the two cases commented inline below).
 export function rearmFarmRuns() {
   const active = db
-    .prepare("SELECT id, item_id, step_index, agent_started_at, started_at FROM step_run WHERE status = 'active'")
+    .prepare(
+      "SELECT id, item_id, step_index, agent_started_at, started_at, checks_ms, checks_started_at FROM step_run WHERE status = 'active'",
+    )
     .all()
     // A row that already has a timer was just (re-)dispatched by something
     // else already running in this process — most notably, init()'s reconcile
@@ -3568,13 +3627,12 @@ export function rearmFarmRuns() {
     // right after the very deploy meant to stop premature cancellation. The
     // cost is a genuinely-still-queued step gets a more generous — but still
     // bounded — window than usual on a restart.
-    const anchor = run.agent_started_at || run.started_at
-    const elapsedMs = Date.now() - new Date(anchor).getTime()
+    //
+    // HZ-458: time spent in the farm's checks (checks_ms) is not counted, and
+    // a run restarted mid-check stays paused: only the backstop is armed.
     const budget = executionBudgetFor(run.step_index)
     if (budget != null) {
-      const remainingMs = Math.max(0, budget - elapsedMs)
-      // HZ-378: unref'd like the dispatch-time watchdogs — never the handle that holds the process open.
-      timers[run.id] = setTimeout(() => failFarmRun(run.id, 'step timed out', REASON.TIMEOUT), remainingMs).unref()
+      armStepTimer(run.id, run.checks_started_at ? remainingChecksPauseMs(run.checks_started_at) : remainingExecutionMs(run, budget))
     }
     // Re-key removed the free busy-mutex side effect timers[item_id] used to
     // give kick() — without this, a restart would leave every one of these

@@ -3242,6 +3242,26 @@ export function buildApp({ logger = true, onRoute = null } = {}) {
     },
   )
 
+  // HZ-458: farmd relays the implement step's "checks started/ended" here;
+  // the run's step clock is paused in between (orchestrator.markFarmRunChecks).
+  fastify.post(
+    '/api/farm/steps/:runId/checks',
+    {
+      schema: {
+        params: { type: 'object', required: ['runId'], properties: { runId: { type: 'integer' } } },
+        body: {
+          type: 'object',
+          required: ['phase'],
+          properties: { phase: { type: 'string', enum: ['start', 'end'] } },
+        },
+      },
+    },
+    (request, reply) => {
+      if (!farmAuthorized(request, reply)) return
+      return orchestrator.markFarmRunChecks(request.params.runId, request.body.phase)
+    },
+  )
+
   fastify.post(
     '/api/farm/steps/:runId/complete',
     {

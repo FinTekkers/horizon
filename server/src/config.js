@@ -118,6 +118,16 @@ process.env.HORIZON_DEPLOY_LOCK_TIMEOUT_S = DEPLOY_LOCK_TIMEOUT_S
 // still fails in a bounded window instead of silently burning its full
 // execution budget before ever running.
 export const FARM_QUEUE_TIMEOUT_MS = Number(process.env.FARM_QUEUE_TIMEOUT_MS || 10 * 60 * 1000)
+// HZ-458: the farm pauses a run's step clock while its repo checks run (POST
+// .../checks). This backstop bounds one paused window, so a farm that dies
+// mid-check still fails the run. Derived from the four configurable check
+// commands (install, test, lint, e2e), each bounded by the farm's
+// FARM_CHECK_TIMEOUT_S (600 s default), plus 30 min for check-slot queue wait,
+// which no per-command limit covers. An explicit FARM_CHECKS_PAUSE_MAX_MS wins.
+const checkTimeoutEnvS = Number(process.env.FARM_CHECK_TIMEOUT_S)
+const checkTimeoutMs = (checkTimeoutEnvS > 0 ? checkTimeoutEnvS : 600) * 1000
+const checksPauseEnvMs = Number(process.env.FARM_CHECKS_PAUSE_MAX_MS)
+export const FARM_CHECKS_PAUSE_MAX_MS = checksPauseEnvMs > 0 ? checksPauseEnvMs : 4 * checkTimeoutMs + 30 * 60 * 1000
 export const FARM_START_TIMEOUT_MS = Number(process.env.FARM_START_TIMEOUT_MS || 5 * 60 * 1000)
 // HZ-100: how often the durable reconciliation sweep re-checks `step_run`
 // rows left `active` with no local watchdog timer (see orchestrator.js's

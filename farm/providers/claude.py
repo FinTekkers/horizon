@@ -264,7 +264,7 @@ async def _stream_query(
         max_buffer_size=max_buffer_size if max_buffer_size is not None else sdk_max_buffer_bytes(),
     )
 
-    result_text, new_session_id = "", None
+    result_text, new_session_id, num_turns = "", None, None
     stream = sdk.query(prompt=prompt, options=options)
     try:
         async for message in stream:
@@ -281,6 +281,7 @@ async def _stream_query(
             if isinstance(message, sdk.ResultMessage):
                 result_text = message.result or ""
                 new_session_id = message.session_id
+                num_turns = getattr(message, "num_turns", None)
                 if message.is_error:
                     # subtype names the cause (e.g. error_max_turns) — the
                     # result text is often empty on these, so without it the
@@ -301,7 +302,8 @@ async def _stream_query(
         # generator tears down the SDK's transport, killing the spawned
         # `claude` process rather than orphaning it in the tmux session.
         await stream.aclose()
-    return {"result": result_text, "session_id": new_session_id}
+    # HZ-458: the turns this run used, so a follow-up turn stays inside the step's cap.
+    return {"result": result_text, "session_id": new_session_id, "num_turns": num_turns}
 
 
 def _print_event(message) -> None:
@@ -405,4 +407,4 @@ def _run_subprocess(
     except json.JSONDecodeError as exc:
         raise AgentError(f"claude produced non-JSON output: {proc.stdout[:200]}") from exc
 
-    return {"result": data.get("result", ""), "session_id": data.get("session_id")}
+    return {"result": data.get("result", ""), "session_id": data.get("session_id"), "num_turns": data.get("num_turns")}
