@@ -702,9 +702,36 @@ function useStepOutputs(item) {
   return { stepOutputs: mine ? loaded.stepOutputs : null, settled: mine }
 }
 
+// HZ-488: the Activity column's minimized choice, remembered in this browser
+// across items and reloads. A blocked localStorage falls back to expanded
+// and skips the write, so the page still works in private browsing.
+const ACTIVITY_MIN_KEY = 'horizon_activity_minimized'
+
+function readActivityMin() {
+  try {
+    return localStorage.getItem(ACTIVITY_MIN_KEY) === '1'
+  } catch {
+    return false
+  }
+}
+
+function writeActivityMin(v) {
+  try {
+    localStorage.setItem(ACTIVITY_MIN_KEY, v ? '1' : '0')
+  } catch {
+    // ignore — private browsing; the choice lasts for this page only
+  }
+}
+
 export default function Tracker({ item, projects, deployBlock = null, viewerName = null, restartSent = null, onBack, onApprove, onApproveWithComments, onReject, onResolveConflicts, resolving, gateBusy, onForwardToAccept, onTogglePause, onRestartPhase, onSetPersona, onSetStepProvider, onAbandon, onRemoveDependency, onAddDependency, onAmendRule }) {
   const status = itemStatus(item, true, { deployBlock })
   const activity = buildActivity(item)
+  const [activityMin, setActivityMin] = useState(readActivityMin)
+  const toggleActivityMin = () => {
+    const next = !activityMin
+    setActivityMin(next)
+    writeActivityMin(next)
+  }
   const closed = isClosed(item)
   const abandoned = isAbandoned(item)
   const { stepOutputs, settled: outputsSettled } = useStepOutputs(item)
@@ -841,7 +868,7 @@ export default function Tracker({ item, projects, deployBlock = null, viewerName
         <DependencyBadge key={item.id} item={item} onRemove={onRemoveDependency} />
       </div>
 
-      <div className="tracker__body">
+      <div className={`tracker__body${activityMin ? ' tracker__body--activity-min' : ''}`}>
         <div className="panel tracker__stepper">
           <div className="panel__title">Lifecycle</div>
           <div className="panel__subtitle">Five phases · agent-driven steps with human gates</div>
@@ -900,37 +927,49 @@ export default function Tracker({ item, projects, deployBlock = null, viewerName
           })}
         </div>
 
-        <div className="panel tracker__activity">
-          <div className="panel__title" style={{ marginBottom: 20 }}>
-            Activity
-          </div>
-          {activity.map((ac, i) => (
-            <div key={i} className="activity-row">
-              <span className="activity-row__avatar" style={{ background: ac.color }}>
-                {ac.initials}
-              </span>
-              <div style={{ flex: 1 }}>
-                <div className="activity-row__text">
-                  {ac.verdict === 'fail' && (
-                    <span className="activity-row__verdict-badge" data-testid="activity-verdict-fail">
-                      <CircleXIcon size={12} label={VERIFY_FAILED_LABEL} />
-                    </span>
-                  )}
-                  <strong>{ac.who}</strong> {ac.text}
-                </div>
-                {/* HZ-429: a failed Verify & report's 1-3 line summary. A pass
-                    event stores its summary in detail too; it stays hidden. */}
-                {ac.verdict === 'fail' && ac.detail && (
-                  <div className="activity-row__verdict" data-testid="activity-verdict-summary">
-                    {ac.detail}
-                  </div>
-                )}
-                <div className="activity-row__time">{ac.time}</div>
+        <div className={`panel tracker__activity${activityMin ? ' tracker__activity--min' : ''}`}>
+          {activityMin ? (
+            <button type="button" className="tracker__activity-expand" aria-expanded={false} aria-label="Expand Activity" onClick={toggleActivityMin}>
+              <span className="tracker__activity-expand-icon" aria-hidden="true">+</span>
+              <span className="tracker__activity-expand-label">Activity</span>
+            </button>
+          ) : (
+            <>
+              <div className="panel__title tracker__activity-title" style={{ marginBottom: 20 }}>
+                <span>Activity</span>
+                <button type="button" className="tracker__activity-toggle" aria-expanded={true} aria-label="Minimize Activity" onClick={toggleActivityMin}>
+                  −
+                </button>
               </div>
-            </div>
-          ))}
-          {activity.length === 0 && (
-            <div className="activity-empty">No activity yet — this work is still being planned.</div>
+              {activity.map((ac, i) => (
+                <div key={i} className="activity-row">
+                  <span className="activity-row__avatar" style={{ background: ac.color }}>
+                    {ac.initials}
+                  </span>
+                  <div style={{ flex: 1 }}>
+                    <div className="activity-row__text">
+                      {ac.verdict === 'fail' && (
+                        <span className="activity-row__verdict-badge" data-testid="activity-verdict-fail">
+                          <CircleXIcon size={12} label={VERIFY_FAILED_LABEL} />
+                        </span>
+                      )}
+                      <strong>{ac.who}</strong> {ac.text}
+                    </div>
+                    {/* HZ-429: a failed Verify & report's 1-3 line summary. A pass
+                        event stores its summary in detail too; it stays hidden. */}
+                    {ac.verdict === 'fail' && ac.detail && (
+                      <div className="activity-row__verdict" data-testid="activity-verdict-summary">
+                        {ac.detail}
+                      </div>
+                    )}
+                    <div className="activity-row__time">{ac.time}</div>
+                  </div>
+                </div>
+              ))}
+              {activity.length === 0 && (
+                <div className="activity-empty">No activity yet — this work is still being planned.</div>
+              )}
+            </>
           )}
         </div>
       </div>
