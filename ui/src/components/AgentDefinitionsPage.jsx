@@ -147,26 +147,28 @@ function ModelsSection() {
   return (
     <details className="defs__models">
       <summary className="defs__group-title">Models — which Claude model each agent call uses</summary>
-      <table aria-label="Effective model per step" style={{ borderCollapse: 'collapse', font: '500 13px var(--font-sans)' }}>
-        <thead>
-          <tr>
-            <th align="left">Step</th>
-            <th align="left">Agent</th>
-            <th align="left">Model</th>
-          </tr>
-        </thead>
-        <tbody>
-          {modelRows().map((row) => (
-            <tr key={row.key} data-testid={`model-row-${row.key}`}>
-              <td>{row.call}</td>
-              <td>{row.agent}</td>
-              <td>
-                <code>{row.model}</code>
-              </td>
+      <div className="data-table-wrap">
+        <table className="data-table" aria-label="Effective model per step">
+          <thead>
+            <tr>
+              <th align="left">Step</th>
+              <th align="left">Agent</th>
+              <th align="left">Model</th>
             </tr>
-          ))}
-        </tbody>
-      </table>
+          </thead>
+          <tbody>
+            {modelRows().map((row) => (
+              <tr key={row.key} data-testid={`model-row-${row.key}`}>
+                <td>{row.call}</td>
+                <td>{row.agent}</td>
+                <td>
+                  <code>{row.model}</code>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
       <div className="defs__group-title">Persona overrides</div>
       {personaOverrides.length === 0 ? (
         <div className="defs__empty">None — every persona runs on its step's model.</div>

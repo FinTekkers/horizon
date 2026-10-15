@@ -606,6 +606,7 @@
     "VERIFY_REPORT_STEP_INDEX": [{ "case": "points at the task's verify step", "expectLabel": "Verify & report" }],
     "APPROVE_FILE_GATE_INDEX": [{ "case": "points at the plan's approve-and-file gate", "expectLabel": "Approve & file" }],
     "PLAN_DRAFT_STEP_INDEX": [{ "case": "points at the plan's draft items step", "expectLabel": "Draft items" }],
+    "PLAN_INVENTORY_STEP_INDEX": [{ "case": "points at the plan's inventory step", "expectLabel": "Inventory current state" }],
     "isServerStep": [
       { "case": "the plan's file-items step runs on the server", "label": "File items", "expect": true },
       { "case": "a job-lane step does not", "label": "Execute", "expect": false },
