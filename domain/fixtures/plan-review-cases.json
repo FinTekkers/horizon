@@ -1,0 +1,117 @@
+{
+  "$comment": "HZ-463. Draft review cases for domain/js/planReview.js's reviewPlanDraft (server/test/plan-review.test.mjs) and the plan_review reply for domain/py/plan_review.py (farm/tests/test_plan_review.py). `base` is a clean set: every gap is covered or out of scope, #1 depends on closed HZ-1, #2 on #1, and the agent's overlap claims name only a closed key (HZ-1) and an open key outside the Plan's repos (HZ-20), so both are dropped. `keys` says which keys exist; `openItems` is the open items in the Plan's repos. Each `bad` case sets the paths in `set` over a copy of `base` and expects exactly one finding. `inventory` is rendered by plan_inventory.render() into plan-inventory-rendered.md, whose gaps are `base.gaps`.",
+  "inventory": {
+    "repos": [
+      {
+        "repo": "acme/api",
+        "has": ["A REST API over SQLite"],
+        "gaps": ["No retention job", "No audit log"],
+        "evidence": [{ "kind": "file", "ref": "server/src/db.js:129", "note": "the work_item table" }]
+      },
+      {
+        "repo": "acme/web",
+        "has": ["A React board"],
+        "gaps": ["No export button"],
+        "evidence": [{ "kind": "file", "ref": "ui/src/Board.jsx:12", "note": "the board" }]
+      }
+    ],
+    "key_facts": []
+  },
+  "base": {
+    "keyPrefixes": ["HZ"],
+    "keys": { "HZ-1": "closed", "HZ-10": "open", "HZ-20": "open" },
+    "openItems": [{ "key": "HZ-10", "title": "Speed up the board", "repo": "acme/api" }],
+    "gaps": [
+      { "repo": "acme/api", "gap": "No retention job" },
+      { "repo": "acme/api", "gap": "No audit log" },
+      { "repo": "acme/web", "gap": "No export button" }
+    ],
+    "coverage": [
+      { "repo": "acme/api", "gap": "No retention job", "draft": "#1" },
+      { "repo": "acme/api", "gap": "No audit log", "draft": "#2" },
+      { "repo": "acme/web", "gap": "No export button", "draft": null, "out_of_scope_reason": "Exports wait for the next roadmap." }
+    ],
+    "overlaps": [
+      { "draft": "#1", "key": "HZ-1", "reason": "HZ-1 shipped the first retention sweep." },
+      { "draft": "#2", "key": "HZ-20", "reason": "HZ-20 logs events in another repo." }
+    ],
+    "doc": {
+      "items": [
+        {
+          "id": "#1",
+          "repo": "acme/api",
+          "title": "Add a nightly retention job",
+          "outcome": "Rows older than the retention window are deleted each night, building on HZ-1.",
+          "metric": ["A test seeds old rows and the job deletes them.", "New rows survive the job.", "The job logs how many rows it deleted."],
+          "guardrails": ["Never delete an open item.", "No new dependency.", "The job can be turned off."],
+          "depends_on": ["HZ-1"],
+          "must_also_cover": []
+        },
+        {
+          "id": "#2",
+          "repo": "acme/api",
+          "title": "Write the audit log",
+          "outcome": "Every deletion the job makes is written to an audit log.",
+          "metric": ["A deletion writes one audit row.", "The audit row names the item.", "The audit log is read-only through the API."],
+          "guardrails": ["The audit log is never pruned.", "No new table outside the migration.", "No secret is logged."],
+          "depends_on": ["#1"],
+          "must_also_cover": []
+        }
+      ],
+      "shared_guardrails": [],
+      "open_questions": []
+    }
+  },
+  "bad": [
+    {
+      "case": "an Inventory gap with no coverage entry",
+      "set": {
+        "coverage": [
+          { "repo": "acme/api", "gap": "No retention job", "draft": "#1" },
+          { "repo": "acme/web", "gap": "No export button", "draft": null, "out_of_scope_reason": "Exports wait for the next roadmap." }
+        ]
+      },
+      "expect": { "type": "uncovered_gap", "draft": null, "repo": "acme/api", "gap": "No audit log" }
+    },
+    {
+      "case": "a draft whose title equals an open item's in a scope repo",
+      "set": { "doc.items.1.title": "Speed up the board" },
+      "expect": { "type": "overlap", "draft": "#2", "key": "HZ-10" }
+    },
+    {
+      "case": "an agent's overlap claim against an open item in a scope repo, titles differing",
+      "set": {
+        "overlaps": [
+          { "draft": "#1", "key": "HZ-1", "reason": "HZ-1 shipped the first retention sweep." },
+          { "draft": "#1", "key": "HZ-10", "reason": "HZ-10 already plans a nightly job." }
+        ]
+      },
+      "expect": { "type": "overlap", "draft": "#1", "key": "HZ-10" }
+    },
+    {
+      "case": "an agent's claim and a title match on the same pair",
+      "set": {
+        "doc.items.1.title": "Speed up the board.",
+        "overlaps": [{ "draft": "#2", "key": "HZ-10", "reason": "Same work." }]
+      },
+      "expect": { "type": "overlap", "draft": "#2", "key": "HZ-10" }
+    },
+    {
+      "case": "a draft with 6 metric lines",
+      "set": {
+        "doc.items.1.metric": ["one", "two", "three", "four", "five", "six"]
+      },
+      "expect": { "type": "size", "draft": "#2" }
+    },
+    {
+      "case": "a draft with 2 guardrails",
+      "set": { "doc.items.0.guardrails": ["Never delete an open item.", "No new dependency."] },
+      "expect": { "type": "size", "draft": "#1" }
+    },
+    {
+      "case": "a draft naming a key that does not exist (HZ-999)",
+      "set": { "doc.items.1.outcome": "Every deletion is written to an audit log, as HZ-999 asked." },
+      "expect": { "type": "unknown_key", "draft": "#2", "key": "HZ-999" }
+    }
+  ]
+}

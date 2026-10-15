@@ -26,8 +26,9 @@ const latestRow = (itemId) =>
 
 // The server's context for the real-key and repo rules. A Plan may file in
 // any repo its project connects, plus its own; a real key counts in free text
-// only if its prefix is a connected repo's.
-function contextFor(item) {
+// only if its prefix is a connected repo's. HZ-463's review reads the same
+// context (server/src/planReview.js).
+export function draftKeyContext(item) {
   const projectRepos = item.project_id
     ? db.prepare('SELECT repo FROM project_repo WHERE project_id = ?').all(item.project_id).map((r) => r.repo)
     : []
@@ -88,7 +89,7 @@ export function ingestDraft(item, runId, doc, actor) {
     const message = 'invalid_shape: the reply carries no plan_draft'
     return { error: REASON.INVALID_PLAN_DRAFT, errors: [{ path: 'plan_draft', code: 'invalid_shape', message }] }
   }
-  const checked = validatePlanDraft(doc, contextFor(item))
+  const checked = validatePlanDraft(doc, draftKeyContext(item))
   if (!checked.ok) return { error: REASON.INVALID_PLAN_DRAFT, errors: checked.errors }
   return { ok: true, version: db.transaction(() => insertVersion(item.id, doc, 'agent', runId, actor))() }
 }
@@ -105,7 +106,7 @@ export function saveOwnerEdit(itemId, { baseVersion, doc, actor }) {
     const blocked = editBlock(item)
     if (blocked) return { error: blocked }
     if (baseVersion !== current.version) return { error: 'stale_version', currentVersion: current.version }
-    const checked = validatePlanDraft(doc, contextFor(item))
+    const checked = validatePlanDraft(doc, draftKeyContext(item))
     if (!checked.ok) return { error: REASON.INVALID_PLAN_DRAFT, errors: checked.errors }
     return { ok: true, version: insertVersion(itemId, doc, 'owner', null, actor), doc }
   })()

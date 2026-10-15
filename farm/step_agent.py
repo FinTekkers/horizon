@@ -30,7 +30,7 @@ import httpx
 # `python -m farm.farmd` from there and farm/tests/conftest.py inserts it).
 # HZ-132 put the failure-reason vocabulary there too, so the reason this script
 # reports is a constant the server already knows, never a string typed here.
-from domain.py import fields, plan_draft, plan_inventory, reasons, run_plan, steps
+from domain.py import fields, plan_draft, plan_inventory, plan_review, reasons, run_plan, steps
 from domain.py import providers as domain_providers
 from domain.py.personas import model_agent_for_step
 
@@ -162,9 +162,9 @@ TASK_STEP_CONFIG = {
 }
 
 # HZ-446: a Plan's steps. HZ-447 gives Inventory and Design their prompts and
-# HZ-448 gives Draft items its; the two review rows run one read-only
-# placeholder role, with the planner's read-only tools, so a Plan never edits
-# code in any repo. Its PM rows run on the PM step kind like every other kind's.
+# HZ-448 gives Draft items its, and HZ-463 the two review rows theirs. Each
+# runs with the planner's read-only tools, so a Plan never edits code in any
+# repo. Its PM rows run on the PM step kind like every other kind's.
 # "File items" is runsIn "server" — Horizon's own code, never the farm — so it
 # is not here.
 PLAN_INVENTORY_LABEL = "Inventory current state"
@@ -186,6 +186,9 @@ PLAN_STEP_CONFIG = {
     PLAN_DESIGN_LABEL: ("plan_design.md", True, PLANNER_TOOLS, None),
     # HZ-448: Draft items writes the Plan's item drafts (domain/planDraft.schema.json).
     PLAN_DRAFT_LABEL: ("plan_draft.md", True, PLANNER_TOOLS, None),
+    # HZ-463: the reviews read the server's `Plan review input` artifact.
+    PLAN_COVERAGE_REVIEW_LABEL: ("plan_review_coverage.md", True, PLANNER_TOOLS, None),
+    PLAN_METRICS_REVIEW_LABEL: ("plan_review_metrics.md", True, PLANNER_TOOLS, None),
     **{step["label"]: ("pm.md", True, None, None) for step in steps.FARM_VIEWS["plan"] if step["runsIn"] == "pm"},
 }
 
@@ -1760,7 +1763,9 @@ def _plan_reply_validator(label: str, task: dict, scope: list[str]):
     """The reply check a Plan step runs inside the retry envelope, extended
     by label. HZ-448: Draft items' `plan_draft` block must satisfy
     domain/planDraft.schema.json and form a DAG (domain/py/plan_draft.py);
-    whether a real key exists is the server's check, on ingest. HZ-447:
+    whether a real key exists is the server's check, on ingest. HZ-463: the
+    coverage review's `plan_review` must satisfy domain/planReview.schema.json
+    (domain/py/plan_review.py); the server decides its findings. HZ-447:
     Inventory's `inventory` block must satisfy domain/planInventory.schema.json
     with one row per in-scope repo; Design's `design` must cite an Inventory
     evidence ref for every repo it changes; no part of either reply may carry
@@ -1777,6 +1782,12 @@ def _plan_reply_validator(label: str, task: dict, scope: list[str]):
                 plan_draft.validate(parsed.get("plan_draft"))
             except ValueError as exc:
                 raise AgentError(f"invalid plan draft: {exc}") from None
+            return parsed
+        if label == PLAN_COVERAGE_REVIEW_LABEL:
+            try:
+                plan_review.validate(parsed.get("plan_review"))
+            except ValueError as exc:
+                raise AgentError(f"invalid plan review: {exc}") from None
             return parsed
         texts = [parsed.get("summary"), parsed.get("artifact_md")]
         try:
@@ -1801,8 +1812,9 @@ def _plan_reply_validator(label: str, task: dict, scope: list[str]):
     return check
 
 
-# The Plan steps that carry a reply check; the review rows carry none yet.
-PLAN_VALIDATED_LABELS = frozenset({PLAN_INVENTORY_LABEL, PLAN_DESIGN_LABEL, PLAN_DRAFT_LABEL})
+# The Plan steps that carry a reply check. HZ-463: the metrics review has
+# none — its findings are the server's own.
+PLAN_VALIDATED_LABELS = frozenset({PLAN_INVENTORY_LABEL, PLAN_DESIGN_LABEL, PLAN_DRAFT_LABEL, PLAN_COVERAGE_REVIEW_LABEL})
 
 
 def _reply_validator(kind: str, label: str, task: dict | None = None, scope: list[str] | None = None):
@@ -3190,6 +3202,10 @@ def _execute(task: dict, guard: HandoffGuard) -> dict:
     # saves them as the Plan's draft and files nothing.
     if label == PLAN_DRAFT_LABEL:
         result.setdefault("artifacts", {})["plan_draft"] = parsed["plan_draft"]
+    # HZ-463: the validated coverage review rides through; the server
+    # re-checks every claim and decides the findings.
+    if label == PLAN_COVERAGE_REVIEW_LABEL:
+        result.setdefault("artifacts", {})["plan_review"] = parsed["plan_review"]
     return result
 
 

@@ -6,7 +6,7 @@ Horizon's own server step: it never reaches a farm view.
 HZ-447: Inventory and Design read every in-scope repo from a read-only
 bundle (farm/plan_bundle.py). Their tests run against local hubs cloned from
 bare origins under tmp_path. Draft items (HZ-448) runs plan_draft.md; the two
-review rows still run the placeholder.
+review rows (HZ-463) run plan_review_coverage.md and plan_review_metrics.md.
 
 Every agent run is stubbed: run_agent is monkeypatched at step_agent's import.
 """
@@ -34,6 +34,11 @@ PLAN_FARM_LABELS = [
 NON_BUNDLE_LABELS = PLAN_FARM_LABELS[2:]
 INVENTORY, DESIGN = PLAN_FARM_LABELS[:2]
 PLAN_PM_LABELS = ["Define the question", "Set guardrails"]
+ROLE_FILES = {
+    "Draft items": "plan_draft.md",
+    "Review drafts: coverage & overlap": "plan_review_coverage.md",
+    "Review drafts: metrics & size": "plan_review_metrics.md",
+}
 WRITE_TOOLS = ("Edit", "Write", "Bash")
 VALID_DRAFT = json.loads(
     (Path(__file__).resolve().parents[2] / "domain" / "fixtures" / "plan-draft-cases.json").read_text()
@@ -63,12 +68,11 @@ def test_the_plan_farm_view_holds_its_agent_steps_and_never_file_items():
 def test_each_plan_farm_step_runs_a_read_only_role_with_the_planner_tools():
     for label in NON_BUNDLE_LABELS:
         role, wants_artifact, tools, persona = step_agent._step_config("plan", label)
-        expected = "plan_draft.md" if label == "Draft items" else "plan_placeholder.md"
-        assert (role, wants_artifact, tools, persona) == (expected, True, "Read,Glob,Grep", None)
+        assert (role, wants_artifact, tools, persona) == (ROLE_FILES[label], True, "Read,Glob,Grep", None)
+        assert (step_agent.ROLES / role).read_text().strip()
         assert not any(tool in tools.split(",") for tool in WRITE_TOOLS)
         assert step_agent._is_read_only("plan", label)
         assert steps.by_kind_label("plan", label)["workspaceMutating"] is False
-    assert (step_agent.ROLES / "plan_placeholder.md").read_text().strip()
 
 
 def test_each_plan_pm_step_runs_on_the_pm_step_kind():
@@ -92,7 +96,12 @@ def test_a_plan_step_with_no_workspace_is_still_held_to_the_read_only_tools(monk
 
     def fake(prompt, **kwargs):
         calls.append(kwargs)
-        body = {"summary": "placeholder", "artifact_md": "## Not built yet", "plan_draft": VALID_DRAFT}
+        body = {
+            "summary": "placeholder",
+            "artifact_md": "## Not built yet",
+            "plan_draft": VALID_DRAFT,
+            "plan_review": {"coverage": [], "overlaps": []},
+        }
         return {"result": json.dumps(body), "session_id": "s", "provider": "claude", "command_id": None}
 
     monkeypatch.setattr(step_agent, "run_agent", fake)

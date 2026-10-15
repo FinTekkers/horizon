@@ -100,7 +100,8 @@ test('the farm imports the model as domain.py, from the repo root, in both produ
   const expected = {
     'farm/farmd.py': ['reasons', 'run_plan', 'steps'],
     // HZ-447: and `plan_inventory`, the Plan Inventory block's contract.
-    'farm/step_agent.py': ['fields', 'plan_draft', 'plan_inventory', 'reasons', 'run_plan', 'steps'],
+    // HZ-463: and `plan_review`, the Plan coverage review's contract.
+    'farm/step_agent.py': ['fields', 'plan_draft', 'plan_inventory', 'plan_review', 'reasons', 'run_plan', 'steps'],
   }
   for (const [file, names] of Object.entries(expected)) {
     const text = readFileSync(path.join(REPO_ROOT, file), 'utf8')
