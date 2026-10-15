@@ -489,34 +489,33 @@ function FlakyTestsPanel({ data, error }) {
         data.repos.map(({ repo, tests }) => (
           <div key={repo} style={{ marginTop: 12 }}>
             <div style={{ fontWeight: 600, marginBottom: 6 }}>{repo}</div>
-            <table
-              aria-label={`Flaky tests in ${repo}`}
-              style={{ borderCollapse: 'collapse', font: '500 13px var(--font-sans)', width: '100%' }}
-            >
-              <thead>
-                <tr>
-                  <th align="left">Test</th>
-                  <th align="left">Flakes (7 d / total)</th>
-                  <th align="left">Last seen</th>
-                  <th align="left">Last item</th>
-                  <th align="left">Pinged</th>
-                </tr>
-              </thead>
-              <tbody>
-                {tests.map((t) => (
-                  <tr key={t.test}>
-                    <td style={{ wordBreak: 'break-word' }}>
-                      {t.test}
-                      {!t.name_parsed && <span className="gh-note"> (test name not parsed)</span>}
-                    </td>
-                    <td>{`${t.count_7d} / ${t.count}`}</td>
-                    <td>{utcMinute(t.last_seen)}</td>
-                    <td>{t.last_item_id || '—'}</td>
-                    <td>{t.ping_status ? `${PING_LABELS[t.ping_status] || t.ping_status} ${utcMinute(t.pinged_at)}` : '—'}</td>
+            <div className="data-table-wrap">
+              <table className="data-table" aria-label={`Flaky tests in ${repo}`}>
+                <thead>
+                  <tr>
+                    <th align="left">Test</th>
+                    <th align="left">Flakes (7 d / total)</th>
+                    <th align="left">Last seen</th>
+                    <th align="left">Last item</th>
+                    <th align="left">Pinged</th>
                   </tr>
-                ))}
-              </tbody>
-            </table>
+                </thead>
+                <tbody>
+                  {tests.map((t) => (
+                    <tr key={t.test}>
+                      <td style={{ wordBreak: 'break-word' }}>
+                        {t.test}
+                        {!t.name_parsed && <span className="gh-note"> (test name not parsed)</span>}
+                      </td>
+                      <td>{`${t.count_7d} / ${t.count}`}</td>
+                      <td>{utcMinute(t.last_seen)}</td>
+                      <td>{t.last_item_id || '—'}</td>
+                      <td>{t.ping_status ? `${PING_LABELS[t.ping_status] || t.ping_status} ${utcMinute(t.pinged_at)}` : '—'}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
           </div>
         ))}
     </div>

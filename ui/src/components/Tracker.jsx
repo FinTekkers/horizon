@@ -18,6 +18,7 @@ import {
   PLAN_DRAFT_STEP_INDEX,
   FILE_ITEMS_STEP_INDEX,
   REVIEW_CLOSE_GATE_INDEX,
+  PLAN_INVENTORY_STEP_INDEX,
   laneOf,
 } from '../../../domain/js/lifecycle.js'
 import { AGENTS, stepAgentToken } from '../domain/agentTokens'
@@ -34,6 +35,7 @@ import DependencyBadge from './DependencyBadge'
 import Markdown from './Markdown'
 import GateActionStatus from './GateActionStatus'
 import JobPanel from './JobPanel'
+import PlanInventoryTables from './PlanInventoryTables'
 import ProjectBadge from './ProjectBadge'
 import TaskBadge from './TaskBadge'
 import PlanItemsTable from './PlanItemsTable'
@@ -342,6 +344,8 @@ function Step({ item, stepOutputs, outputsSettled, index, deployBlock, viewerNam
               )}
             </div>
           )}
+          {/* HZ-462: a Plan's Inventory as tables; the artifact link stays below. */}
+          {status === 'done' && index === PLAN_INVENTORY_STEP_INDEX && output?.artifact && <PlanInventoryTables artifact={output.artifact} />}
           {status === 'done' && !isGate && output?.output && (
             <a
               className="step-card__output-link"

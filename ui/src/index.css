@@ -1267,3 +1267,16 @@ button { font-family: var(--font-sans); }
   .tracker__header-main, .tracker__stepper, .tracker__activity { min-width: 0; flex-basis: 100%; }
   .tracker__stepper, .tracker__activity { padding: 20px 16px; }
 }
+
+/* HZ-462: the shared table style — a Plan's Inventory tables, Admin's flaky
+   tests and Agent Definitions' models. The wrapper scrolls a wide table
+   sideways instead of widening the page. Existing tokens only. */
+.data-table-wrap { overflow-x: auto; max-width: 100%; margin-top: 8px; }
+.data-table { border-collapse: collapse; font: 500 13px var(--font-sans); color: var(--ink); width: 100%; }
+.data-table th { text-align: left; font-weight: 600; color: var(--muted); background: var(--subtle); }
+.data-table th, .data-table td { padding: 6px 10px; border-bottom: 1px solid var(--border); vertical-align: top; }
+.data-table ul { margin: 0; padding-left: 16px; }
+.data-table__ref { font: 500 12px var(--font-mono); color: var(--muted); white-space: nowrap; }
+/* A step body is a flex item, so it would grow to the table's width and widen
+   the page; letting it shrink is what makes the wrapper scroll instead. */
+.step__body:has(.data-table-wrap) { min-width: 0; }

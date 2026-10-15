@@ -608,6 +608,7 @@
     "PLAN_DRAFT_STEP_INDEX": [{ "case": "points at the plan's draft items step", "expectLabel": "Draft items" }],
     "FILE_ITEMS_STEP_INDEX": [{ "case": "points at the plan's file items step", "expectLabel": "File items" }],
     "REVIEW_CLOSE_GATE_INDEX": [{ "case": "points at the plan's review-and-close gate", "expectLabel": "Review & close" }],
+    "PLAN_INVENTORY_STEP_INDEX": [{ "case": "points at the plan's inventory step", "expectLabel": "Inventory current state" }],
     "isServerStep": [
       { "case": "the plan's file-items step runs on the server", "label": "File items", "expect": true },
       { "case": "a job-lane step does not", "label": "Execute", "expect": false },

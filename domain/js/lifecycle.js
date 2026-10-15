@@ -318,6 +318,9 @@ export const PLAN_DRAFT_STEP_INDEX = kindStepIndex('Draft items', 'plan')
 // card shows what was filed.
 export const FILE_ITEMS_STEP_INDEX = kindStepIndex('File items', 'plan')
 export const REVIEW_CLOSE_GATE_INDEX = kindStepIndex('Review & close', 'plan')
+// HZ-462: the Plan step whose artifact carries the Inventory block
+// (domain/js/planInventory.js), rendered as tables on the item page.
+export const PLAN_INVENTORY_STEP_INDEX = kindStepIndex('Inventory current state', 'plan')
 
 // HZ-446: a step Horizon runs itself, in the server process (runsIn 'server').
 // It names no agent, so it is never dispatched, never a send-back target and
