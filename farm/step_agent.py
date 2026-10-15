@@ -30,7 +30,7 @@ import httpx
 # `python -m farm.farmd` from there and farm/tests/conftest.py inserts it).
 # HZ-132 put the failure-reason vocabulary there too, so the reason this script
 # reports is a constant the server already knows, never a string typed here.
-from domain.py import fields, reasons, run_plan, steps
+from domain.py import fields, plan_draft, plan_inventory, plan_review, reasons, run_plan, steps
 from domain.py import providers as domain_providers
 from domain.py.personas import model_agent_for_step
 
@@ -42,6 +42,7 @@ from .agent_runner import (
     AgentError,
     AgentExhaustedError,
     AgentMessageTooLargeError,
+    AgentUsageLimitedError,
     effective_provider,
     parse_agent_reply,
     run_agent,
@@ -49,8 +50,8 @@ from .agent_runner import (
     stamp_notes,
     stamp_notes_artifact,
 )
-from . import check_record, handoff, pause, read_only_guard, review_diff
-from .checks import CheckFailure, redact, run_checks, secret_values
+from . import check_record, handoff, pause, plan_bundle, read_only_guard, review_diff
+from .checks import CheckFailure, redact, run_checks, scrub, secret_values
 from .config import FARM_PORT, ITEM_LOCK_WAIT_S
 from .handoff import HandoffContext, HandoffGuard
 from .personas import compose_role, provider_for, resolve
@@ -161,7 +162,38 @@ TASK_STEP_CONFIG = {
     **{step["label"]: ("pm.md", True, None, None) for step in steps.FARM_VIEWS["task"] if step["runsIn"] == "pm"},
 }
 
-STEP_CONFIGS = {"change": STEP_CONFIG, "task": TASK_STEP_CONFIG}
+# HZ-446: a Plan's steps. HZ-447 gives Inventory and Design their prompts and
+# HZ-448 gives Draft items its, and HZ-463 the two review rows theirs. Each
+# runs with the planner's read-only tools, so a Plan never edits code in any
+# repo. Its PM rows run on the PM step kind like every other kind's.
+# "File items" is runsIn "server" — Horizon's own code, never the farm — so it
+# is not here.
+PLAN_INVENTORY_LABEL = "Inventory current state"
+PLAN_DESIGN_LABEL = "Design options & recommendation"
+PLAN_DRAFT_LABEL = "Draft items"
+PLAN_COVERAGE_REVIEW_LABEL = "Review drafts: coverage & overlap"
+PLAN_METRICS_REVIEW_LABEL = "Review drafts: metrics & size"
+PLAN_FARM_LABELS = (
+    PLAN_INVENTORY_LABEL,
+    PLAN_DESIGN_LABEL,
+    PLAN_DRAFT_LABEL,
+    PLAN_COVERAGE_REVIEW_LABEL,
+    PLAN_METRICS_REVIEW_LABEL,
+)
+
+PLAN_STEP_CONFIG = {
+    **{label: ("plan_placeholder.md", True, PLANNER_TOOLS, None) for label in PLAN_FARM_LABELS},
+    PLAN_INVENTORY_LABEL: ("plan_inventory.md", True, PLANNER_TOOLS, None),
+    PLAN_DESIGN_LABEL: ("plan_design.md", True, PLANNER_TOOLS, None),
+    # HZ-448: Draft items writes the Plan's item drafts (domain/planDraft.schema.json).
+    PLAN_DRAFT_LABEL: ("plan_draft.md", True, PLANNER_TOOLS, None),
+    # HZ-463: the reviews read the server's `Plan review input` artifact.
+    PLAN_COVERAGE_REVIEW_LABEL: ("plan_review_coverage.md", True, PLANNER_TOOLS, None),
+    PLAN_METRICS_REVIEW_LABEL: ("plan_review_metrics.md", True, PLANNER_TOOLS, None),
+    **{step["label"]: ("pm.md", True, None, None) for step in steps.FARM_VIEWS["plan"] if step["runsIn"] == "pm"},
+}
+
+STEP_CONFIGS = {"change": STEP_CONFIG, "task": TASK_STEP_CONFIG, "plan": PLAN_STEP_CONFIG}
 
 # HZ-435: a lane's narrower prompts, keyed by the lane the server sends
 # (domain/steps.json's `lanes`). Each entry overrides one step its kind
@@ -191,6 +223,17 @@ READ_ONLY_LABELS = frozenset({OPTIONS_LABEL, ENG_PLAN_LABEL, ARCH_REVIEW_LABEL, 
 # HZ-383: every Task step on the farm lane is held read-only the same way.
 # HZ-413: the Task's PM steps keep no workspace, so they are not listed.
 TASK_READ_ONLY_LABELS = frozenset({ASSESS_LABEL, RUN_PLAN_LABEL, IMPACT_REVIEW_LABEL, VERIFY_REPORT_LABEL})
+# HZ-446: every Plan step on the farm lane too.
+PLAN_READ_ONLY_LABELS = frozenset(PLAN_FARM_LABELS)
+# Keyed by kind; a kind with no entry reads the change set, as before.
+READ_ONLY_LABELS_BY_KIND = {"change": READ_ONLY_LABELS, "task": TASK_READ_ONLY_LABELS, "plan": PLAN_READ_ONLY_LABELS}
+# HZ-383/HZ-446: kinds whose farm steps are held to their tools even with no
+# workspace, where a change step runs with no allowlist at all.
+TOOLS_WITHOUT_WORKSPACE_KINDS = frozenset({"task", "plan"})
+# HZ-447: steps that read every repo in the item's scope from a read-only
+# bundle (farm/plan_bundle.py) instead of the item's worktree: no worktree,
+# run plan or venv is set up for them, and their tools are the bundle's rules.
+BUNDLE_LABELS_BY_KIND = {"plan": frozenset({PLAN_INVENTORY_LABEL, PLAN_DESIGN_LABEL})}
 
 # HZ-158: the ONLY steps whose turn-capped reply may be salvaged — a reply cut
 # off mid-string, with every required key present, is accepted instead of
@@ -274,7 +317,12 @@ def _step_config(kind: str, label: str, lane: str | None = None) -> tuple:
 
 def _is_read_only(kind: str, label: str) -> bool:
     """HZ-387/HZ-383: whether the farm holds this step read-only itself."""
-    return label in (TASK_READ_ONLY_LABELS if kind == "task" else READ_ONLY_LABELS)
+    return label in READ_ONLY_LABELS_BY_KIND.get(kind, READ_ONLY_LABELS)
+
+
+def _reads_bundle(kind: str, label: str) -> bool:
+    """HZ-447: whether this step reads the item's repo bundle."""
+    return label in BUNDLE_LABELS_BY_KIND.get(kind, frozenset())
 
 
 def _spawn_field(kind: str, label: str) -> str | None:
@@ -315,10 +363,18 @@ CAUSE_CHECKS_FAILED = "checks-failed"
 CAUSE_PAUSED = "paused"
 # HZ-321: a Horizon self-deploy stopped this attempt (see _deploy_checkpoint).
 CAUSE_DEPLOY = "deploy"
+# HZ-456: the work was committed and pushed before the checks, and the
+# attempt stopped (time limit, farm restart) before they finished.
+CAUSE_UNCHECKED = "unchecked"
 # HZ-321: a deploy checkpoint committed but not pushed names itself in this
 # file (under the worktree's git dir) as "<branch> <sha>", so the next
 # attempt resumes from it instead of scrubbing it (prepare_branch).
 UNPUSHED_CHECKPOINT = "horizon-unpushed-checkpoint"
+# HZ-456: the farm commit pushed before the checks names itself in this file
+# (under the worktree's git dir) as "<sha>\n<cause>\n<digest>". The cause is
+# CAUSE_UNCHECKED until the checks fail, then CAUSE_CHECKS_FAILED with their
+# digest — the pushed commit is never amended to carry it.
+PRECHECK_CHECKPOINT = "horizon-precheck-checkpoint"
 
 # HZ-194: files a checkpoint never commits, matched on the basename at any
 # depth (config/.env, deploy/id_rsa). .gitignore is already honoured by
@@ -586,6 +642,9 @@ class PreparedBranch(NamedTuple):
     lease_sha: str
     # Prompt text describing a checkpoint rebase, or "".
     note: str
+    # HZ-456: HEAD is the remote checkpoint rebased onto main, so it no longer
+    # contains lease_sha — and may replace it. State, never read from `note`.
+    rebased: bool = False
 
 
 def prepare_branch(ws: Path, item: dict, *, rebase_checkpoint: bool = False) -> PreparedBranch:
@@ -612,8 +671,8 @@ def prepare_branch(ws: Path, item: dict, *, rebase_checkpoint: bool = False) -> 
     lease_sha = remote_branch.stdout.strip() if remote_branch.returncode == 0 else ""
     default = default_branch(ws)
     git(ws, "checkout", "-B", branch, unpushed or lease_sha or f"origin/{default}")
-    note = _rebase_checkpoint(ws, default, unpushed or lease_sha) if rebase_checkpoint else ""
-    return PreparedBranch(branch, lease_sha, note)
+    note, rebased = _rebase_checkpoint(ws, default, unpushed or lease_sha) if rebase_checkpoint else ("", False)
+    return PreparedBranch(branch, lease_sha, note, rebased)
 
 
 def _git_path(ws: Path, name: str) -> Path:
@@ -639,29 +698,30 @@ def _take_unpushed_checkpoint(ws: Path, branch: str) -> str:
     return sha
 
 
-def _rebase_checkpoint(ws: Path, default: str, lease_sha: str) -> str:
+def _rebase_checkpoint(ws: Path, default: str, lease_sha: str) -> tuple[str, bool]:
     """HZ-184: a resumed checkpoint is rebased onto current origin/<default>
     first, so fixes that landed on main since (HZ-125) reach it. A conflicting
     rebase is abandoned and the attempt resumes from the checkpoint as it was —
     the work is never lost to a rebase. Runs only in this item's worktree;
     nothing is pushed here. `lease_sha` is the commit the branch was checked
-    out at, which the abort path returns to."""
+    out at, which the abort path returns to. Returns (prompt note, whether
+    HEAD was rebased)."""
     subject = git(ws, "log", "-1", "--format=%s", check=False).stdout.strip()
     if CHECKPOINT_MARKER not in subject:
-        return ""
+        return "", False
     if not lease_sha:
         # HEAD came from origin/<default>, so it is no checkpoint of this
         # item's — and the abort path below must never `reset --hard ''`.
-        return ""
+        return "", False
     if git(ws, "merge-base", "--is-ancestor", f"origin/{default}", "HEAD", check=False).returncode == 0:
-        return ""  # already on current main
+        return "", False  # already on current main
     rebased = git(ws, "rebase", f"origin/{default}", check=False)
     if rebased.returncode == 0:
         log(f"rebased the WIP checkpoint onto origin/{default}")
         return (
             f"\n\nNOTE: the checkpoint was rebased onto current origin/{default} before this attempt "
             "started, so fixes that landed on main since the previous attempt are included."
-        )
+        ), True
     git(ws, "rebase", "--abort", check=False)
     git(ws, "reset", "--hard", lease_sha)
     log(f"rebasing the WIP checkpoint onto origin/{default} conflicted — resuming it unrebased")
@@ -669,7 +729,7 @@ def _rebase_checkpoint(ws: Path, default: str, lease_sha: str) -> str:
         f"\n\nNOTE: the checkpoint could not be rebased onto current origin/{default} (the rebase "
         f"conflicted), so this attempt resumes it unrebased, on an older origin/{default}. Fixes that "
         "landed on main since are NOT in this tree."
-    )
+    ), False
 
 
 def merge_default_branch(ws: Path) -> list[str]:
@@ -727,13 +787,36 @@ def _merge_main_note(conflicted: list[str]) -> str:
     )
 
 
-def _checkpoint_cause(ws: Path) -> tuple[str, str] | None:
+def _precheck_state(ws: Path) -> tuple[str, str] | None:
+    """HZ-456: (cause, digest) of the farm commit pushed before the checks,
+    while HEAD is still that commit (see PRECHECK_CHECKPOINT), else None."""
+    try:
+        sha, _, rest = _git_path(ws, PRECHECK_CHECKPOINT).read_text().partition("\n")
+    except OSError:
+        return None
+    if not _head_is(ws, sha.strip()):
+        return None
+    cause, _, digest = rest.partition("\n")
+    if cause.strip() == CAUSE_CHECKS_FAILED:
+        return CAUSE_CHECKS_FAILED, digest.strip()
+    return CAUSE_UNCHECKED, ""
+
+
+def _write_precheck_state(ws: Path, sha: str, cause: str, digest: str = "") -> None:
+    _git_path(ws, PRECHECK_CHECKPOINT).write_text(f"{sha}\n{cause}\n{digest}")
+
+
+def _checkpoint_cause(ws: Path, *, precheck: bool = True) -> tuple[str, str] | None:
     """(cause, detail) of the checkpoint at HEAD, or None when HEAD is not a
     checkpoint. A checkpoint written before HZ-184 has no body and reads as
-    (CAUSE_EXHAUSTED, "") — the only cause that existed then."""
+    (CAUSE_EXHAUSTED, "") — the only cause that existed then.
+
+    HZ-456: a plain farm commit pushed before the checks counts too, read from
+    PRECHECK_CHECKPOINT — unless precheck is False (a fix pass, which never
+    pushes before its checks, so such a file is another attempt's)."""
     subject = git(ws, "log", "-1", "--format=%s", check=False).stdout.strip()
     if CHECKPOINT_MARKER not in subject:
-        return None
+        return _precheck_state(ws) if precheck else None
     body = git(ws, "log", "-1", "--format=%b", check=False).stdout.strip()
     first, _, detail = body.partition("\n")
     if not first.startswith("cause: "):
@@ -761,6 +844,14 @@ def _checkpoint_resume_note(ws: Path) -> str | None:
             f"```\n{detail or '(no check output was captured)'}\n```\n\n"
             "Fix those failures on top of the checkpoint — read the diff below. Do not discard "
             f"it or restart from scratch.\n\n```\n{stat}\n```"
+        )
+    if cause == CAUSE_UNCHECKED:
+        return (
+            f'\n\nNOTE: this branch\'s last commit ("{subject}") holds the previous attempt\'s '
+            "complete work. That attempt finished and committed it, but stopped while the repo's "
+            "checks were still running, so they never reported. Re-check the work, fix only what "
+            "fails, and do not discard it or restart from scratch — read the diff below."
+            f"\n\n```\n{stat}\n```"
         )
     if cause == CAUSE_DEPLOY:
         return (
@@ -845,7 +936,7 @@ def fix_diff_report(ws: Path, base: str | None) -> dict:
 def _last_check_failure(ws: Path) -> str:
     """Fix-scope counterpart of _checkpoint_resume_note: only what failed, as
     no "continue the WIP" text may contradict the fix-only instruction."""
-    checkpoint = _checkpoint_cause(ws)
+    checkpoint = _checkpoint_cause(ws, precheck=False)
     if checkpoint is None or checkpoint[0] != CAUSE_CHECKS_FAILED:
         return ""
     return (
@@ -856,7 +947,7 @@ def _last_check_failure(ws: Path) -> str:
 
 def _deploy_stop_note(ws: Path) -> str:
     """HZ-321: a fix pass a deploy stopped resumes on its WIP checkpoint."""
-    checkpoint = _checkpoint_cause(ws)
+    checkpoint = _checkpoint_cause(ws, precheck=False)
     if checkpoint is None or checkpoint[0] != CAUSE_DEPLOY:
         return ""
     return (
@@ -995,7 +1086,9 @@ def finalize_branch(
         if left:
             paths = ", ".join(line[3:] for line in left.splitlines())
             log(f"finalize: the checks left changes on disk — not pushed: {paths}")
+    # HZ-456: after a pre-check push, lease_sha is that same commit — a no-op.
     _push_with_lease(ws, item, branch, lease_sha)
+    _git_path(ws, PRECHECK_CHECKPOINT).unlink(missing_ok=True)
     stat = git(ws, "diff", "--stat", f"origin/{default_branch(ws)}...HEAD", check=False).stdout.strip().splitlines()
     return {"branch": branch, "files_changed": stat[-1] if stat else ""}
 
@@ -1058,6 +1151,7 @@ def _salvage_checkpoint(
     detail: str = "",
     lease_sha: str = "",
     farm_commit: str = "",
+    pushed: str = "",
 ) -> str:
     """Best-effort: never raises. A salvage failure (e.g. a concurrent push
     winning the --force-with-lease race) just means this attempt's partial
@@ -1079,17 +1173,27 @@ def _salvage_checkpoint(
     HZ-438: farm_commit is the commit the implement step made before its
     checks. While HEAD is still that commit, the checkpoint amends it — one
     commit per run, a merge keeps both parents — rather than stacking on it;
-    it always holds unpushed work, so the outcome is never "nothing"."""
+    it always holds unpushed work, so the outcome is never "nothing".
+
+    HZ-456: pushed is the farm commit already pushed before the checks (its
+    failure digest lives in PRECHECK_CHECKPOINT, not in a commit). While HEAD
+    is still that commit and nothing new is on disk, the branch already holds
+    the work: no commit is made and nothing is pushed. Files a check left on
+    disk are stacked on it as one checkpoint commit, never amended into it."""
     try:
         markers = _conflict_markers_left(ws, conflicted or [])
         if markers:
             log(f"salvage: skipped — the merge of main still has conflict markers in {', '.join(markers)}")
             return f"skipped: the merge of main still has conflict markers in {', '.join(markers)}"
         amend = _head_is(ws, farm_commit)
+        on_pushed = _head_is(ws, pushed)
         git(ws, "add", "-A")
         _unstage_secrets(ws, *(_parents(ws, "HEAD") if amend else ()))
         staged = git(ws, "diff", "--cached", "--quiet", check=False)
-        allow_empty = amend or cause == CAUSE_CHECKS_FAILED
+        if staged.returncode == 0 and on_pushed and not amend:
+            log(f"salvage: the pre-check checkpoint {pushed[:12]} already holds the work — no commit made, nothing pushed")
+            return "saved"
+        allow_empty = amend or (cause == CAUSE_CHECKS_FAILED and not on_pushed)
         if staged.returncode == 0 and not allow_empty:
             log("salvage: no uncommitted changes to checkpoint")
             return "nothing"
@@ -1152,6 +1256,84 @@ def _unstage_secrets(ws: Path, *bases: str) -> list[str]:
     return secrets
 
 
+def _secret_paths(ws: Path, rev: str) -> list[str]:
+    """HZ-456: the secret-looking paths rev adds or changes — those that
+    differ from every parent, the same rule as _unstage_secrets, so a file a
+    merged main brought in is not counted."""
+    found: list[str] | None = None
+    for parent in _parents(ws, rev) or [""]:
+        if parent:
+            listed = git_bytes(ws, "diff", "--name-only", "--diff-filter=d", "-z", parent, rev)
+        else:
+            listed = git_bytes(ws, "ls-tree", "-r", "--name-only", "-z", rev)
+        paths = [path for path in (os.fsdecode(raw) for raw in listed.split(b"\0") if raw) if _is_secret_path(path)]
+        found = paths if found is None else [path for path in found if path in paths]
+    return found or []
+
+
+def _push_precheck_checkpoint(
+    ws: Path, item: dict, branch: str, prepared: PreparedBranch, scope: dict, *, lease_sha: str | None = None
+) -> str:
+    """HZ-456: pushes the implement step's committed work to the item's own
+    branch before the checks run. A step killed during its checks (its time
+    limit, a farm restart) runs no handler at all, so only a push made here
+    lets the retry's prepare_branch resume from the work.
+
+    The push is lease-protected against what prepare_branch fetched: a commit
+    pushed by anyone since fails the lease and is kept. It is skipped when a
+    PR is open (fix pass), when origin holds commits HEAD does not contain and
+    HEAD is no rebase of them, and when a commit to push adds a secret-looking
+    file. Returns the sha the remote now holds for this run (HEAD), or "" when
+    nothing was pushed. Never raises: a failed push is logged, and the checks
+    run anyway.
+
+    HZ-458: lease_sha is what an earlier check round of this run left on the
+    remote (its pushed farm commit, or prepared.lease_sha when nothing was
+    pushed). A fix round's commit sits on top of it, so it is the lease."""
+    try:
+        if scope["mode"] == "fix":
+            # Pushing here would put unchecked code on the open PR (and run its CI).
+            log(f"checkpoint: skipped — a PR is open on {branch}, nothing pushed before the checks")
+            return ""
+        own = f"horizon/{item['id'].lower()}"
+        default = default_branch(ws)
+        if branch != own or branch in (default, "main", "master"):
+            log(f"checkpoint: refused — {branch} is not this item's own branch")
+            return ""
+        if _no_code_changes(ws, ignore_worktree=True):
+            log(f"checkpoint: skipped — no commit ahead of origin/{default}")
+            return ""
+        head = git(ws, "rev-parse", "HEAD").stdout.strip()
+        lease = prepared.lease_sha if lease_sha is None else lease_sha
+        # Only prepare_branch's own lease can be the checkpoint it rebased.
+        rebased = prepared.rebased and lease == prepared.lease_sha
+        if head != lease:
+            if lease and not rebased:
+                if git(ws, "merge-base", "--is-ancestor", lease, head, check=False).returncode != 0:
+                    log(f"checkpoint: skipped — origin/{branch} holds commits HEAD does not contain")
+                    return ""
+            excluded = [f"^origin/{default}", *([f"^{lease}"] if lease else [])]
+            unpublished = git(ws, "rev-list", head, *excluded).stdout.split()
+            secrets = sorted({path for commit in unpublished for path in _secret_paths(ws, commit)})
+            if secrets:
+                log(f"checkpoint: skipped — a secret-looking file would be pushed: {', '.join(map(_shown, secrets))}")
+                return ""
+            _push_with_lease(ws, item, branch, lease)
+            log(f"checkpoint: pushed {head[:12]} to {branch} before the checks")
+        else:
+            log(f"checkpoint: {branch} already holds {head[:12]} — nothing to push before the checks")
+    except Exception as exc:
+        # A failed push can echo the remote URL, which carries the hub's token.
+        detail = redact(_URL_CREDENTIALS.sub("://[redacted]@", str(exc)), secret_values(os.environ))
+        log(f"checkpoint: push failed ({detail}) — running the checks anyway")
+        return ""
+    try:
+        _write_precheck_state(ws, head, CAUSE_UNCHECKED)
+    except OSError as exc:
+        log(f"checkpoint: could not record the pushed commit ({exc}) — a retry resumes from it without a note")
+    return head
+
+
 def _pause_checkpoint(
     ws: Path, item: dict, branch: str, conflicted: list[str], lease_sha: str, scope: dict, farm_commit: str = ""
 ) -> tuple[str, str]:
@@ -1205,7 +1387,9 @@ def _deploy_checkpoint(
 
     HZ-438: while HEAD is farm_commit (the implement step's commit made
     before its checks, never pushed), the WIP commit replaces it: it sits on
-    that commit's parents, so the run still pushes one commit.
+    that commit's parents, so the run still pushes one commit. HZ-456: once
+    the farm commit was pushed before the checks, the caller passes no
+    farm_commit and lease_sha is that commit, so it is stacked on, not replaced.
 
     If the push fails, the commit stays in this worktree with a marker, and
     the next attempt's prepare_branch resumes from it. Never raises.
@@ -1572,6 +1756,86 @@ def _task_reply_validator(label: str):
     return check
 
 
+def _prior_inventory(task: dict, scope: list[str]) -> dict:
+    """HZ-447: the validated Inventory block among the prior artifacts."""
+    for artifact in reversed(task.get("artifacts") or []):
+        if artifact.get("label") == PLAN_INVENTORY_LABEL:
+            try:
+                return plan_inventory.extract(artifact.get("content", ""), scope)
+            except ValueError as exc:
+                raise AgentError(f"Design needs the Inventory block: {exc}") from None
+    raise AgentError("Design needs the Inventory artifact, and the task carries none")
+
+
+def _plan_reply_validator(label: str, task: dict, scope: list[str]):
+    """The reply check a Plan step runs inside the retry envelope, extended
+    by label. HZ-448: Draft items' `plan_draft` block must satisfy
+    domain/planDraft.schema.json and form a DAG (domain/py/plan_draft.py);
+    whether a real key exists is the server's check, on ingest. HZ-463: the
+    coverage review's `plan_review` must satisfy domain/planReview.schema.json
+    (domain/py/plan_review.py); the server decides its findings. HZ-447:
+    Inventory's `inventory` block must satisfy domain/planInventory.schema.json
+    with one row per in-scope repo; Design's `design` must cite an Inventory
+    evidence ref for every repo it changes; no part of either reply may carry
+    a literal secret. Design's Inventory block is read here, before any call,
+    so a missing one fails the step without spending a run. Raises
+    AgentError, which takes the one retry; a second bad reply fails the step."""
+    inventory = _prior_inventory(task, scope) if label == PLAN_DESIGN_LABEL else None
+
+    def check(parsed):
+        if not isinstance(parsed, dict):
+            return parsed  # the required-field check after the call says so
+        if label == PLAN_DRAFT_LABEL:
+            try:
+                plan_draft.validate(parsed.get("plan_draft"))
+            except ValueError as exc:
+                raise AgentError(f"invalid plan draft: {exc}") from None
+            return parsed
+        if label == PLAN_COVERAGE_REVIEW_LABEL:
+            try:
+                plan_review.validate(parsed.get("plan_review"))
+            except ValueError as exc:
+                raise AgentError(f"invalid plan review: {exc}") from None
+            return parsed
+        texts = [parsed.get("summary"), parsed.get("artifact_md")]
+        try:
+            if label == PLAN_INVENTORY_LABEL:
+                texts.append(plan_inventory.render(plan_inventory.validate(parsed.get("inventory"), scope)))
+            elif inventory is not None:
+                uncited = plan_inventory.check_citations(parsed.get("design"), inventory)
+                if uncited:
+                    raise ValueError(f"the recommendation changes {uncited} but cites no Inventory evidence ref for them")
+                texts.append(json.dumps(parsed["design"]))
+        except ValueError as exc:
+            raise AgentError(f"invalid {label} reply: {exc}") from None
+        found = sorted({name for text in texts for name in run_plan.literal_secrets(text)})
+        if found:
+            log(f"{label}: reply carries a literal secret ({', '.join(found)}) — rejected")
+            raise AgentError(
+                f"the reply carries what looks like a literal secret ({', '.join(found)}); "
+                "name secrets only as references like $GITHUB_TOKEN"
+            )
+        return parsed
+
+    return check
+
+
+# The Plan steps that carry a reply check. HZ-463: the metrics review has
+# none — its findings are the server's own.
+PLAN_VALIDATED_LABELS = frozenset({PLAN_INVENTORY_LABEL, PLAN_DESIGN_LABEL, PLAN_DRAFT_LABEL, PLAN_COVERAGE_REVIEW_LABEL})
+
+
+def _reply_validator(kind: str, label: str, task: dict | None = None, scope: list[str] | None = None):
+    """The reply check a step runs inside the retry envelope, or None. A
+    Plan step is picked by its label (HZ-447, HZ-448); every Task step by
+    its kind's table (HZ-383). The kind is matched by its table, never by
+    name."""
+    config = STEP_CONFIGS.get(kind)
+    if config is PLAN_STEP_CONFIG and label in PLAN_VALIDATED_LABELS:
+        return _plan_reply_validator(label, task or {}, scope or [])
+    return _task_reply_validator(label) if config is TASK_STEP_CONFIG else None
+
+
 def _run_and_parse(
     prompt: str,
     *,
@@ -1590,6 +1854,7 @@ def _run_and_parse(
     model_choice: str | None = None,
     provider_locked: bool = False,
     validate=None,
+    disallowed_tools: str | None = None,
 ) -> tuple[dict, dict, list[str]]:
     """run_agent + the shared reply parser, with one retry-with-feedback on a
     parse failure (HZ-44) — the PM steps' recovery (_execute_pm) too. Asking the
@@ -1610,7 +1875,9 @@ def _run_and_parse(
     on the review path a retry could flip a deliberately fail-closed gate.
     HZ-383: a Task step is the exception — it hands in its own validator
     (_task_reply_validator), so a bad run plan or a literal secret takes the
-    one retry and then fails the step.
+    one retry and then fails the step. HZ-447: a Plan step too
+    (_plan_reply_validator), and disallowed_tools reach run_agent only when
+    set.
 
     HZ-158: required_keys, item_id and guard have no default, so every call
     site must say what its reply needs. They are used only when run_agent
@@ -1642,6 +1909,7 @@ def _run_and_parse(
             provider=provider,
             model_choice=model_choice,
             provider_locked=provider_locked,
+            disallowed_tools=disallowed_tools,
         )
     except AgentExhaustedError as exc:
         parsed, notes = _on_exhaustion(exc, required_keys=required_keys, ctx=ctx, guard=guard, salvage=True)
@@ -1666,6 +1934,7 @@ def _run_and_parse(
             provider=provider,
             model_choice=model_choice,
             provider_locked=provider_locked,
+            disallowed_tools=disallowed_tools,
         )
         return produced["result"]
 
@@ -1759,11 +2028,6 @@ DEPLOY_LOG_TAIL_LINES = 20
 DEPLOY_LOG_LINE_MAX_CHARS = 160
 # Fits inside ERROR_MAX_CHARS with the reason in front of it.
 DEPLOY_LOG_TAIL_MAX_CHARS = 1500
-# `NAME=value` for a secret-looking NAME, even one this process's env lacks
-# (the farm never holds $GITHUB_WEBHOOK_SECRET, so redact() can't know it).
-_SECRET_ASSIGNMENT = re.compile(
-    r"\b([A-Za-z_][A-Za-z0-9_]*(?:TOKEN|SECRET|KEY|PASSWORD|PASSWD|CREDENTIAL)[A-Za-z0-9_]*)=(\S+)", re.IGNORECASE
-)
 
 
 class ReleaseWait(NamedTuple):
@@ -1935,8 +2199,7 @@ def deploy_log_tail(state_dir: str) -> str:
     if len(chunk) < size:
         # Read from mid-file: the first line is partial, and could hold half a token.
         chunk = chunk[chunk.find(b"\n") + 1 :]
-    text = redact(chunk.decode("utf-8", "replace"), secret_values(os.environ))
-    text = _SECRET_ASSIGNMENT.sub(r"\1=[redacted]", text)
+    text = scrub(chunk.decode("utf-8", "replace"))
     lines = [line.rstrip()[:DEPLOY_LOG_LINE_MAX_CHARS] for line in text.splitlines() if line.strip()]
     lines = lines[-DEPLOY_LOG_TAIL_LINES:]
     while lines and sum(len(line) + 1 for line in lines) > DEPLOY_LOG_TAIL_MAX_CHARS:
@@ -2074,6 +2337,278 @@ def _execute_pm(task: dict) -> dict:
     return outcome
 
 
+# ---- fix loop on a red check (HZ-458) ----
+# A red repo check used to discard the attempt. Now its failure digest goes
+# back to the same agent session, with the work intact, to fix just that
+# failure; then the checks re-run. FARM_FIX_LOOP_CAP bounds the fix turns
+# (0 restores the single check run). Every fix turn draws on the step's turn
+# cap and the agent time left — check time is never counted as agent time —
+# and the loop ends only on green or through the same failure path as before.
+
+FIX_TURN_MIN_S = 120
+# Added lines that skip a test or silence a check. A fix turn adding one
+# fails the attempt; the role and the fix prompt both forbid it.
+_LOOSENING_LINE = re.compile(r"\.(skip|only)\(|\bxfail\b|\bskipif\b|eslint-disable|pytest\.mark\.skip\b")
+_TEST_PATH = re.compile(r"(^|/)(tests?|__tests__)/|\.(test|spec)\.[^/]+$|(^|/)test_[^/]*\.py$|_test\.py$")
+_CHECK_CONFIG_FILES = ("eslint.config.*", ".eslintrc*", "playwright.config.*", "pytest.ini")
+_PYPROJECT_CHECK_SECTION = re.compile(r"tool\.(pytest|ruff)")
+_HUNK = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@")
+
+
+class CheckedWork(NamedTuple):
+    checked_sha: str
+    checked_tree: object
+    check_note: str
+    checks_finished_at: str
+    # What the remote branch holds for this run, for finalize_branch's lease.
+    lease: str
+    fix_loops: int
+
+
+def _fix_loop_cap() -> int:
+    raw = os.environ.get("FARM_FIX_LOOP_CAP", "").strip()
+    return max(int(raw), 0) if raw.isdigit() else 2
+
+
+def _notify_checks(run_id, phase: str) -> None:
+    """Tells the server (through farmd) the checks started or ended, so it
+    pauses this run's step clock for them. Fails open: a lost call leaves the
+    server's clock running, which is how it was before HZ-458."""
+    if run_id is None:
+        return
+    try:
+        httpx.post(f"{FARMD}/internal/steps/checks", json={"run_id": run_id, "phase": phase}, timeout=40)
+    except Exception as exc:
+        log(f"checks clock: the server was not told the checks {phase} ({exc}) — its step clock keeps running")
+
+
+def _fix_turn_prompt(item: dict, detail: str) -> str:
+    return (
+        f"The farm committed your work on {item['id']} and ran the repo's checks. A check failed:\n\n"
+        f"```\n{detail}\n```\n\n"
+        "Fix only this failure, in the code. Do not delete, skip or loosen a test, lint rule or check "
+        "config to turn the check green — the farm rejects a fix that does. Run only the tests for "
+        "what you change; the farm re-runs every check after you finish. Then reply with the same "
+        "final JSON object as before."
+    )
+
+
+def _section_at(lines: list[str], lineno: int) -> str:
+    """The TOML table heading in force at 1-based line `lineno`, or ""."""
+    for line in reversed(lines[: max(lineno, 0)]):
+        heading = re.match(r"\s*\[+([^\]]+)\]+", line)
+        if heading:
+            return heading.group(1).strip()
+    return ""
+
+
+def _loosened_checks(ws: Path, base: str) -> list[str]:
+    """What base..HEAD (one fix turn's work) does to loosen the checks: a
+    deleted test file, an added skip/only/xfail/eslint-disable line, a changed
+    lint, Playwright or pytest config, a conftest.py that adds collect_ignore,
+    or a pyproject.toml change inside [tool.pytest*] or [tool.ruff*]. Empty
+    when it does none of these."""
+    found: list[str] = []
+    for path in _names(ws, f"{base}..HEAD"):
+        name = path.rsplit("/", 1)[-1]
+        if any(fnmatch.fnmatch(name, pattern) for pattern in _CHECK_CONFIG_FILES):
+            found.append(f"changed check config {path}")
+    deleted = git(ws, "diff", "--name-only", "--diff-filter=D", "--no-renames", base, "HEAD", check=False).stdout
+    found += [f"deleted test file {path}" for path in deleted.splitlines() if _TEST_PATH.search(path)]
+    diff = git(
+        ws, "-c", "core.quotepath=off", "diff", "-U0", "--no-color", "--no-ext-diff", "--no-renames", base, "HEAD", check=False
+    ).stdout
+    path, at, toml, header = "", 0, None, False
+    for line in diff.splitlines():
+        if line.startswith("diff --git "):
+            path, toml, header = "", None, True
+            continue
+        hunk = _HUNK.match(line)
+        if hunk:
+            at, header = int(hunk.group(1)), False
+            continue
+        if header:
+            # Only a file header names the path: a content line can start with "+++" too.
+            if line.startswith("+++ "):
+                path = line[6:] if line.startswith("+++ b/") else ""
+            continue
+        if not path or line[:1] not in ("+", "-"):
+            continue
+        name = path.rsplit("/", 1)[-1]
+        if name == "pyproject.toml":
+            if toml is None:
+                toml = git(ws, "show", f"HEAD:{path}", check=False).stdout.splitlines()
+            section = _section_at(toml, at)
+            if _PYPROJECT_CHECK_SECTION.match(section):
+                found.append(f"changed [{section}] in {path}")
+        elif line.startswith("+") and (
+            _LOOSENING_LINE.search(line) or (name == "conftest.py" and "collect_ignore" in line)
+        ):
+            found.append(f"{path}: added `{line[1:].strip()[:120]}`")
+        if line.startswith("+"):
+            at += 1
+    return list(dict.fromkeys(found))[:20]
+
+
+def _fail_on_checks(ws, item, branch, conflicted, exc: CheckFailure, *, checkpoint: str, lease: str, unpushed: str) -> None:
+    """HZ-184: the finished work is checkpointed with what failed, so the
+    next attempt fixes it instead of rebuilding it. The caller re-raises: the
+    run still fails, nothing after the checks runs, no PR opens."""
+    detail = "\n".join([exc.digest or str(exc), *(_recording()["branch_notes"] or [])])
+    if checkpoint:
+        # HZ-456: the digest sits beside the pushed commit, not in it.
+        try:
+            _write_precheck_state(ws, checkpoint, CAUSE_CHECKS_FAILED, detail)
+        except OSError as err:
+            log(f"checkpoint: could not record the check failure ({err})")
+    _salvage_checkpoint(
+        ws,
+        item,
+        branch,
+        conflicted,
+        cause=CAUSE_CHECKS_FAILED,
+        detail=detail,
+        lease_sha=lease,
+        farm_commit=unpushed,
+        pushed=checkpoint,
+    )
+
+
+def _no_fix_reason(exc: CheckFailure, rounds: int, turns_used, max_turns: int, deadline: float) -> str:
+    """Why a red check gets no fix turn, or "" when it gets one."""
+    cap = _fix_loop_cap()
+    if rounds >= cap:
+        return f"{rounds} of {cap} fix turn(s) used"
+    if exc.reason != "failed":
+        return f"the check did not run to a result ({exc.reason})"
+    if not isinstance(turns_used, int):
+        # Muse reports no turns: a fix turn could overrun the step's turn cap.
+        return "the provider reported no turn count, so the turn cap cannot be kept"
+    if max_turns - turns_used <= 0:
+        return f"all {max_turns} turns used"
+    if deadline - time.monotonic() < FIX_TURN_MIN_S:
+        return "too little agent time left"
+    return ""
+
+
+def _check_until_green(
+    ws: Path,
+    task: dict,
+    branch: str,
+    conflicted: list[str],
+    prepared: PreparedBranch,
+    scope: dict,
+    reply: dict,
+    *,
+    deadline: float,
+    max_turns: int,
+    call_agent,
+) -> CheckedWork:
+    """Commits the agent's work, pushes it (HZ-456) and runs the repo checks;
+    on a red check, hands its digest to the same session for a fix turn and
+    goes round again. call_agent is the step's own run_agent call, taking
+    (prompt, session_id=, max_turns=, timeout_s=). Returns once the checks pass. Raises the CheckFailure,
+    after today's salvage, once no fix turn is left — or when a fix turn
+    stops or loosens the checks."""
+    item = task["item"]
+    turns_used = reply.get("num_turns")
+    lease, unpushed, rounds = prepared.lease_sha, "", 0
+    fix_base: str | None = None
+    failure: CheckFailure | None = None
+    while True:
+        farm_commit = commit_work(ws, item, conflicted)
+        checked_sha = git(ws, "rev-parse", "HEAD").stdout.strip()
+        if fix_base is not None and failure is not None:
+            loosened = _loosened_checks(ws, fix_base)
+            if loosened:
+                log(f"fix loop: the fix turn loosened the checks — {'; '.join(loosened)}")
+                failure = CheckFailure(
+                    str(failure),
+                    "\n".join(
+                        [failure.digest or str(failure), "", "The fix turn loosened the checks, so it was not checked:", *loosened]
+                    ),
+                    command=failure.command,
+                    tail=failure.tail,
+                    reason=failure.reason,
+                    headline=failure.headline,
+                )
+                _fail_on_checks(
+                    ws, item, branch, conflicted, failure, checkpoint="", lease=lease, unpushed=farm_commit or unpushed
+                )
+                raise failure
+        # HZ-257: the tree the checks are about to test, so the pushed commit
+        # can be named as the sha that passed — only if identical.
+        checked_tree = check_record.snapshot_tree(ws, log)
+        # HZ-456: a step killed mid-check (time limit, farm restart) runs no
+        # handler, so the work is pushed to the item's branch first. Once it
+        # is, every later push of this run leases against it, and the farm
+        # commit is published — never amended or replaced.
+        checkpoint = _push_precheck_checkpoint(ws, item, branch, prepared, scope, lease_sha=lease)
+        lease = checkpoint or lease
+        unpushed = "" if checkpoint else (farm_commit or unpushed)
+        # The server pauses the step clock for exactly this window, slot wait
+        # included, and the farm's own agent deadline moves by the same span.
+        _notify_checks(task.get("run_id"), "start")
+        began = time.monotonic()
+        try:
+            with pause.interruptible():
+                # HZ-245: the repo's Admin-configured commands, from the task dict
+                # parsed at startup — never re-read after the agent has run.
+                check_note = run_checks(
+                    ws,
+                    log,
+                    run_id=task.get("run_id"),
+                    item_id=item["id"],
+                    configured=task.get("check_commands"),
+                    repo=item.get("repo"),
+                    # HZ-304: from the server, like check_commands.
+                    checks_waiver=task.get("checks_waiver"),
+                    # HZ-327: flakes and per-test results ride on the result.
+                    **_recording(),
+                )
+            return CheckedWork(checked_sha, checked_tree, check_note, check_record.now_iso(), lease, rounds)
+        except pause.PauseRequested:
+            # HZ-194: the agent's work is finished but unchecked. The checks
+            # are stopped and never count as a failure; the code is saved.
+            pause.report(*_pause_checkpoint(ws, item, branch, conflicted, lease, scope, unpushed))
+            raise
+        except CheckFailure as exc:
+            failure = exc
+        finally:
+            deadline += time.monotonic() - began
+            _notify_checks(task.get("run_id"), "end")
+        why_not = _no_fix_reason(failure, rounds, turns_used, max_turns, deadline)
+        if why_not:
+            log(f"fix loop: no fix turn — {why_not}")
+            _fail_on_checks(ws, item, branch, conflicted, failure, checkpoint=checkpoint, lease=lease, unpushed=unpushed)
+            raise failure
+        detail = "\n".join([failure.digest or str(failure), *(_recording()["branch_notes"] or [])])
+        fix_base = checked_sha
+        log(f"fix loop: fix turn {rounds + 1} of {_fix_loop_cap()} — handing the check failure back to the agent")
+        try:
+            with pause.interruptible():
+                fixed = call_agent(
+                    _fix_turn_prompt(item, detail),
+                    session_id=reply.get("session_id"),
+                    max_turns=max_turns - turns_used,
+                    timeout_s=int(deadline - time.monotonic()),
+                )
+        except pause.PauseRequested as exc:
+            if not exc.at_entry:
+                pause.report(*_pause_checkpoint(ws, item, branch, conflicted, lease, scope, unpushed))
+            raise
+        except Exception as exc:
+            # The fix turn ran out of turns or time, or crashed: the attempt
+            # fails on the check it was fixing, its work checkpointed.
+            log(f"fix loop: the fix turn stopped ({exc}) — failing on the check")
+            _fail_on_checks(ws, item, branch, conflicted, failure, checkpoint=checkpoint, lease=lease, unpushed=unpushed)
+            raise failure from exc
+        rounds += 1
+        reply = {**reply, "session_id": fixed.get("session_id") or reply.get("session_id")}
+        used = fixed.get("num_turns")
+        turns_used = turns_used + used if isinstance(used, int) else None
+
+
 def _execute(task: dict, guard: HandoffGuard) -> dict:
     label = task["step"]["label"]
     item = task["item"]
@@ -2111,8 +2646,10 @@ def _execute(task: dict, guard: HandoffGuard) -> dict:
     model_agent = model_agent_for_step(steps.by_kind_label(kind, label)["agent"])
     persona = model_persona(persona_agent, personas)
 
+    # HZ-447: a bundle step reads no worktree, so none is set up for it.
+    bundle_step = _reads_bundle(kind, label)
     ws = None
-    if item.get("repo"):
+    if item.get("repo") and not bundle_step:
         try:
             ws = ensure_item_worktree(item["repo"], item["id"])
         except RuntimeError:
@@ -2162,22 +2699,28 @@ def _execute(task: dict, guard: HandoffGuard) -> dict:
             log(f"merged origin/main into {branch}" + (f" — {len(conflicted)} conflicted file(s) left for the agent" if conflicted else " cleanly"))
             extra += _merge_main_note(conflicted)
         deadline = time.monotonic() + timeout_s
+
+        # HZ-458: a fix turn after a red check is the same call, resumed.
+        def call_agent(prompt: str, *, session_id: str | None, max_turns: int, timeout_s: int) -> dict:
+            return run_agent(
+                prompt,
+                agent=model_agent,
+                step=label,
+                persona=persona,
+                session_id=session_id,
+                append_system=role,
+                cwd=str(ws),
+                max_turns=max_turns,
+                timeout_s=timeout_s,
+                allowed_tools=tools,
+                provider=provider_override,
+                model_choice=model_choice,
+                provider_locked=provider_locked,
+            )
+
         try:
             with pause.interruptible():
-                reply = run_agent(
-                    build_prompt(task) + extra,
-                    agent=model_agent,
-                    step=label,
-                    persona=persona,
-                    append_system=role,
-                    cwd=str(ws),
-                    max_turns=max_turns,
-                    timeout_s=timeout_s,
-                    allowed_tools=tools,
-                    provider=provider_override,
-                    model_choice=model_choice,
-                    provider_locked=provider_locked,
-                )
+                reply = call_agent(build_prompt(task) + extra, session_id=None, max_turns=max_turns, timeout_s=timeout_s)
         except pause.PauseRequested as exc:
             # HZ-194: an operator paused the item mid-run. Save the work as a
             # checkpoint BEFORE farmd kills the session. at_entry: the pause
@@ -2251,50 +2794,22 @@ def _execute(task: dict, guard: HandoffGuard) -> dict:
         # script, on the agent's work committed locally (HZ-438: a check may
         # read `git status`) and before anything is pushed. A failure fails
         # the run (Node pauses the item with the reason) — no green, no push.
-        farm_commit = commit_work(ws, item, conflicted)
-        checked_sha = git(ws, "rev-parse", "HEAD").stdout.strip()
-        # HZ-257: the tree the checks are about to test, so the pushed commit
-        # can be named as the sha that passed — only if identical.
-        checked_tree = check_record.snapshot_tree(ws, log)
-        try:
-            with pause.interruptible():
-                # HZ-245: the repo's Admin-configured commands, from the task dict
-                # parsed at startup — never re-read after the agent has run.
-                check_note = run_checks(
-                    ws,
-                    log,
-                    run_id=task.get("run_id"),
-                    item_id=item["id"],
-                    configured=task.get("check_commands"),
-                    repo=item.get("repo"),
-                    # HZ-304: from the server, like check_commands.
-                    checks_waiver=task.get("checks_waiver"),
-                    # HZ-327: flakes and per-test results ride on the result.
-                    **_recording(),
-                )
-            checks_finished_at = check_record.now_iso()
-        except pause.PauseRequested:
-            # HZ-194: the agent's work is finished but unchecked. The checks
-            # are stopped and never count as a failure; the code is saved.
-            pause.report(*_pause_checkpoint(ws, item, branch, conflicted, prepared.lease_sha, scope, farm_commit))
-            raise
-        except CheckFailure as exc:
-            # HZ-184: the finished work is checkpointed with what failed, so
-            # the next attempt fixes it instead of rebuilding it. Re-raised:
-            # the run still fails, nothing below runs, no PR opens.
-            _salvage_checkpoint(
-                ws,
-                item,
-                branch,
-                conflicted,
-                cause=CAUSE_CHECKS_FAILED,
-                detail="\n".join([exc.digest or str(exc), *(_recording()["branch_notes"] or [])]),
-                lease_sha=prepared.lease_sha,
-                farm_commit=farm_commit,
-            )
-            raise
+        # HZ-458: a red check first goes back to the same agent session, up to
+        # FARM_FIX_LOOP_CAP times, and the checks re-run on its fix.
+        checked_sha, checked_tree, check_note, checks_finished_at, lease, fix_loops = _check_until_green(
+            ws,
+            task,
+            branch,
+            conflicted,
+            prepared,
+            scope,
+            reply,
+            deadline=deadline,
+            max_turns=max_turns,
+            call_agent=call_agent,
+        )
         publish_screenshots(ws, item)
-        artifacts = finalize_branch(ws, item, branch, conflicted, lease_sha=prepared.lease_sha, checked_sha=checked_sha)
+        artifacts = finalize_branch(ws, item, branch, conflicted, lease_sha=lease, checked_sha=checked_sha)
         artifacts.update(check_record.report_fields(ws, checked_tree, check_note, checks_finished_at, log))
         if scope["mode"] == "fix":
             artifacts.update(fix_diff_report(ws, scope.get("base_sha")))
@@ -2309,7 +2824,8 @@ def _execute(task: dict, guard: HandoffGuard) -> dict:
         # HZ-349: the branch run's lines join the summary (step 12 reads it)
         # but never check_note, whose exact text check_record reads. The
         # agent's own text is cut first, so those lines are what survives.
-        checked = " · ".join([check_note, *(_recording()["branch_notes"] or [])])
+        loops = [f"fix loops: {fix_loops}"] if fix_loops else []
+        checked = " · ".join([check_note, *(_recording()["branch_notes"] or []), *loops])
         summary = f"{summary[: max(SUMMARY_MAX_CHARS - len(checked) - 3, 0)]} · {checked}"[:SUMMARY_MAX_CHARS]
         summary = stamp_notes(summary, notes, SUMMARY_MAX_CHARS)
         if provider_override:
@@ -2567,29 +3083,64 @@ def _execute(task: dict, guard: HandoffGuard) -> dict:
 
     # HZ-387: a read-only step must leave the worktree as it found it.
     read_only_ws = ws if _is_read_only(kind, label) else None
-    with read_only_guard.guard(read_only_ws, effective_provider(provider_override)) as watch:
-        parsed, reply_provenance, notes = _run_and_parse(
-            build_prompt(task) + "\n\nRespond with ONLY the JSON object described in your role instructions.",
-            agent=model_agent,
-            step=label,
-            persona=persona,
-            append_system=role,
-            cwd=str(ws) if ws else None,
-            max_turns=max_turns,
-            timeout_s=timeout_s,
-            # HZ-383: a Task step is held to its read-only tools even with no
-            # workspace, where a change step runs with no allowlist at all.
-            allowed_tools=tools if ws or kind == "task" else None,
-            required_keys=("summary", "artifact_md") if wants_artifact else ("summary",),
-            item_id=item["id"],
-            guard=guard,
-            provider=provider_override,
-            model_choice=model_choice,
-            provider_locked=provider_locked,
-            validate=_task_reply_validator(label) if kind == "task" else None,
-        )
-        watch.provider = reply_provenance.get("provider") or watch.provider
-    summary = str(parsed.get("summary", "")).strip()[:SUMMARY_MAX_CHARS]
+    # HZ-383: a Task step (HZ-446: and a Plan step) is held to its read-only
+    # tools even with no workspace, where a change step runs with no
+    # allowlist at all.
+    allowed_tools = tools if ws or kind in TOOLS_WITHOUT_WORKSPACE_KINDS else None
+    disallowed_tools, cwd, prompt_extra = None, str(ws) if ws else None, ""
+    # HZ-447: a bundle step reads every in-scope repo from a read-only copy,
+    # held to the copy's tool rules, guarded over the copy and every hub, with
+    # its run log scrubbed. Its errors are scrubbed too, and the copy is
+    # always removed.
+    bundle, out_of_scope, scope = None, [], []
+    try:
+        with contextlib.ExitStack() as stack:
+            if bundle_step:
+                entries, out_of_scope = plan_bundle.parse_scope(task.get("plan_scope"))
+                scope = [entry["repo"] for entry in entries]
+                stack.enter_context(plan_bundle.scrubbed_stdout(out_of_scope))
+            validate = _reply_validator(kind, label, task, scope)
+            if bundle_step:
+                bundle = plan_bundle.build(item["id"], task.get("plan_scope"))
+                (allowed_tools, disallowed_tools), cwd = plan_bundle.tool_rules(bundle), str(bundle.root)
+                prompt_extra = _bundle_section(bundle)
+                watch = stack.enter_context(plan_bundle.guard(bundle, effective_provider(provider_override)))
+            else:
+                watch = stack.enter_context(read_only_guard.guard(read_only_ws, effective_provider(provider_override)))
+            parsed, reply_provenance, notes = _run_and_parse(
+                build_prompt(task) + prompt_extra + "\n\nRespond with ONLY the JSON object described in your role instructions.",
+                agent=model_agent,
+                step=label,
+                persona=persona,
+                append_system=role,
+                cwd=cwd,
+                max_turns=max_turns,
+                timeout_s=timeout_s,
+                allowed_tools=allowed_tools,
+                required_keys=("summary", "artifact_md") if wants_artifact else ("summary",),
+                item_id=item["id"],
+                guard=guard,
+                provider=provider_override,
+                model_choice=model_choice,
+                provider_locked=provider_locked,
+                validate=validate,
+                disallowed_tools=disallowed_tools,
+            )
+            watch.provider = reply_provenance.get("provider") or watch.provider
+        leaks = plan_bundle.leaked_paths(json.dumps(parsed, ensure_ascii=False), bundle) if bundle else []
+        if leaks:
+            raise ReadOnlyViolation(
+                f"Plan scope violated: the reply names {', '.join(leaks)} — nothing was stored", rolled_back=True
+            )
+    except Exception as exc:
+        if bundle_step:
+            exc.args = (plan_bundle.scrub(str(exc), out_of_scope),)
+        raise
+    finally:
+        if bundle:
+            plan_bundle.remove(bundle)
+    summary = str(parsed.get("summary", "")).strip()
+    summary = (plan_bundle.scrub(summary, out_of_scope) if bundle_step else summary)[:SUMMARY_MAX_CHARS]
     if not summary:
         raise AgentError("agent reply missing 'summary'")
 
@@ -2616,6 +3167,11 @@ def _execute(task: dict, guard: HandoffGuard) -> dict:
         # HZ-378's Execute reads it back with run_plan.extract().
         if kind == "task" and label == RUN_PLAN_LABEL:
             artifact = f"{artifact}\n\n## Run plan block\n{run_plan.render(parsed['run_plan'])}"
+        # HZ-447: Design reads the validated Inventory block back from here.
+        if bundle_step and label == PLAN_INVENTORY_LABEL:
+            artifact = f"{artifact}\n\n## Inventory block\n{plan_inventory.render(parsed['inventory'])}"
+        if bundle_step:
+            artifact = plan_bundle.scrub(artifact, out_of_scope)
         if feedback:
             header = "\n".join(f"> {fb.get('message', '')}" for fb in feedback)
             artifact = f"## Human feedback addressed in this revision\n{header}\n\n{artifact}"
@@ -2650,7 +3206,29 @@ def _execute(task: dict, guard: HandoffGuard) -> dict:
     # other Task step's `verdict` is dropped.
     if label == VERIFY_REPORT_LABEL and isinstance(parsed.get("verdict"), dict):
         result.setdefault("artifacts", {})["verdict"] = parsed["verdict"]
+    # HZ-448: the validated drafts ride through; the server re-checks them,
+    # saves them as the Plan's draft and files nothing.
+    if label == PLAN_DRAFT_LABEL:
+        result.setdefault("artifacts", {})["plan_draft"] = parsed["plan_draft"]
+    # HZ-463: the validated coverage review rides through; the server
+    # re-checks every claim and decides the findings.
+    if label == PLAN_COVERAGE_REVIEW_LABEL:
+        result.setdefault("artifacts", {})["plan_review"] = parsed["plan_review"]
     return result
+
+
+def _bundle_section(bundle: plan_bundle.Bundle) -> str:
+    """HZ-447: where each in-scope repo is in the bundle."""
+    lines = [
+        "",
+        "",
+        "## Repos in this Plan's scope",
+        f"Your working directory is `{bundle.root}`. You may read only inside it.",
+    ]
+    for repo, branch in bundle.branches.items():
+        folder = repo.replace("/", "__")
+        lines.append(f"- `{repo}`: files at `{folder}/` ({branch}); branches, tags and its last check in `_refs/{folder}`")
+    return "\n".join(lines)
 
 
 # HZ-275: a Horizon self-deploy restarts farmd just before last-good-tag is
@@ -2747,6 +3325,11 @@ def main() -> int:
         # HZ-424: retryable — the next attempt runs with the same higher cap.
         elif isinstance(exc, AgentMessageTooLargeError):
             result["reason"] = reasons.REASON["SDK_MESSAGE_TOO_LARGE"]
+        # HZ-422: retryable without using an attempt — the server re-runs the
+        # step on the next model in the fallback chain, or waits for the reset.
+        elif isinstance(exc, AgentUsageLimitedError):
+            result["reason"] = reasons.REASON["USAGE_LIMITED"]
+            result.update({key: getattr(exc, key) for key in ("reset_at", "provider", "model") if getattr(exc, key)})
     finally:
         _RECORDED.reset(token)
     # A flake on one command survives a real failure on a later one.

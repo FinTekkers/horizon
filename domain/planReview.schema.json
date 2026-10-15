@@ -1,0 +1,37 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$comment": "HZ-463: the contract for a Plan's coverage review — the `plan_review` object the `Review drafts: coverage & overlap` step replies with. Like planDraft.schema.json it is the contract for an agent's OUTPUT and pairs with no data file. domain/py/plan_review.py checks it on the farm, inside the step's retry envelope; domain/js/planReview.js checks it again on the server, which re-derives every finding from it and never trusts the farm's. `coverage` maps each Inventory gap to the draft (#n) that covers it, or to null with an `out_of_scope_reason`; the bindings assert that draft is null exactly when a reason is given, which this subset cannot express. `overlaps` claims a draft duplicates an existing item; the server keeps only claims against open items in the Plan's scope.",
+  "title": "Horizon Plan draft review",
+  "type": "object",
+  "required": ["coverage", "overlaps"],
+  "additionalProperties": false,
+  "properties": {
+    "coverage": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["repo", "gap", "draft"],
+        "additionalProperties": false,
+        "properties": {
+          "repo": { "type": "string", "minLength": 1 },
+          "gap": { "type": "string", "minLength": 1 },
+          "draft": { "type": ["string", "null"], "pattern": "^#[1-9][0-9]*$" },
+          "out_of_scope_reason": { "type": "string", "minLength": 1 }
+        }
+      }
+    },
+    "overlaps": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["draft", "key", "reason"],
+        "additionalProperties": false,
+        "properties": {
+          "draft": { "type": "string", "pattern": "^#[1-9][0-9]*$" },
+          "key": { "type": "string", "pattern": "^[A-Z][A-Z0-9]*-[0-9]+$" },
+          "reason": { "type": "string", "minLength": 1 }
+        }
+      }
+    }
+  }
+}

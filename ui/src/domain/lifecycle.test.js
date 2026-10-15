@@ -50,7 +50,11 @@ function expectAllEarlierAgentSteps(options, gateIndex) {
   expect(options.every(({ index }) => index < gateIndex)).toBe(true)
   expect(options.every(({ index }) => STEPS[index].kind === 'agent')).toBe(true)
   expect(options.every(({ index }) => (STEPS[index].itemKind ?? 'change') === kind)).toBe(true)
-  const expectedCount = STEPS.filter((s, i) => i < gateIndex && s.kind === 'agent' && (s.itemKind ?? 'change') === kind).length
+  // HZ-446: never a server step — it has no agent to take the feedback.
+  expect(options.some(({ index }) => STEPS[index].runsIn === 'server')).toBe(false)
+  const expectedCount = STEPS.filter(
+    (s, i) => i < gateIndex && s.kind === 'agent' && s.runsIn !== 'server' && (s.itemKind ?? 'change') === kind,
+  ).length
   expect(options.length).toBe(expectedCount)
 }
 

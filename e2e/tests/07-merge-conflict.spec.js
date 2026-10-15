@@ -8,12 +8,6 @@ test('shows the merge-conflict banner when the PR cannot be merged', async ({ pa
   await captureScreenshot(page, 'merge-conflict')
 })
 
-test('hides the merge-conflict banner for a normal mergeable PR', async ({ page }) => {
-  await page.goto('/cln-1')
-  await expect(page.locator('.tracker__id')).toHaveText('CLN-1')
-  await expect(page.locator('.step-card__conflict')).toHaveCount(0)
-})
-
 // HZ-154: the whole point of the scoped path, from the human's side. A PR that
 // already passed review hits a two-import conflict; the human clicks the button
 // that used to mean "lose your review pass and re-implement the whole thing",

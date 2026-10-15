@@ -150,11 +150,13 @@ change, the cursor.
   separately from `cursor`). A paused item's steps simply don't get
   dispatched until resumed.
 - **Blocked (dependencies, see `README.md`'s Dependencies section).** A work
-  item can declare it depends on another. `isBlocked`
-  (`domain/js/lifecycle.js`)
-  checks whether *any* declared blocker has not yet closed; if so, the
-  orchestrator's `runnable()` refuses to dispatch this item's steps at all,
-  regardless of `cursor`. A blocker that is abandoned (soft-deleted, not
+  item can declare it depends on another. `holdingBlockers`
+  (`domain/js/lifecycle.js`) returns the blockers that hold the item at its
+  current step, and the orchestrator's `runnable()` refuses to dispatch
+  while any do. HZ-467: a change item runs steps 0–10 freely; from implement
+  on, it waits until each blocker has merged to main (`merged_at`) or
+  closed. Task and Plan items wait on every step until each blocker has
+  closed. A blocker that is abandoned (soft-deleted, not
   closed) still blocks — `isBlockedByAbandoned` flags this case distinctly
   so it doesn't silently look like ordinary in-progress work.
 

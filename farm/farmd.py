@@ -76,6 +76,15 @@ def _now() -> str:
 # instead would silently re-raise the cap on every other host too.
 MAX_EPHEMERAL = int(__import__("os").environ.get("FARM_MAX_EPHEMERAL", "4"))
 
+# HZ-477: extra runs-lane slots, next to the MAX_EPHEMERAL general ones, that
+# only a short step (SHORT_STEPS: planning and review steps) may use. On
+# 14 Oct a 1-minute planning step waited 27 minutes behind four 40-minute
+# implements. Slots are counted, not pinned: a short step takes a general slot
+# while one is free, and a long step starts only while fewer than MAX_EPHEMERAL
+# long steps run. 0 restores the pre-HZ-477 slot behaviour (the queue keeps its
+# stage order). Read once at import, like MAX_EPHEMERAL.
+FARM_EXPRESS_SLOTS = max(0, int(__import__("os").environ.get("FARM_EXPRESS_SLOTS", "1")))
+
 # HZ-212: PM steps (0/1/2/9) run as their own farm-run-* sessions now, but
 # keep the PM lane's limit — one at a time, as when a single long-lived
 # farm-pm-<project> session ran them serially. They do not use MAX_EPHEMERAL
@@ -349,6 +358,38 @@ def _lane_busy(sessions: list[str]) -> dict[str, int]:
     return busy
 
 
+def _runs_lane_slots(sessions: list[str]) -> tuple[int, int]:
+    """HZ-477: (free runs-lane slots, how many of them a long step may use).
+    Every runs-lane step counts against MAX_EPHEMERAL + FARM_EXPRESS_SLOTS; a
+    long step (any not in SHORT_STEPS, an unparseable name included)
+    also counts against MAX_EPHEMERAL alone, so the express slot never runs
+    one. Reads both caps at call time, so a test can patch them."""
+    runs = long_runs = 0
+    for name in sessions:
+        index = _session_step_index(name)
+        if index is not None and lane_for_index(LANE_ROWS, index) == "pm":
+            continue
+        runs += 1
+        long_runs += index not in SHORT_STEPS
+    return MAX_EPHEMERAL + FARM_EXPRESS_SLOTS - runs, MAX_EPHEMERAL - long_runs
+
+
+def _by_stage(task_paths: list[Path]) -> list[Path]:
+    """HZ-477: queued runs-lane tasks, furthest along their own kind's flow
+    first (stage_for_index). The sort is stable and the input is oldest
+    first, so equal stages keep oldest first. A task whose file cannot be read
+    or names no known step ranks last, but stays in the list and still runs."""
+    def stage(task_path: Path) -> int:
+        try:
+            task = json.loads(task_path.read_text())
+        except (json.JSONDecodeError, OSError):
+            return -1
+        step = task.get("step") if isinstance(task, dict) else None
+        return stage_for_index(step.get("index") if isinstance(step, dict) else None)
+
+    return sorted(task_paths, key=lambda task_path: -stage(task_path))
+
+
 # Workspace-mutating steps: implement and the automated review, both of
 # which call prepare_branch() (reset --hard / clean -fd) on the item's own
 # worktree. Since HZ-50 gave every item its own git worktree, different
@@ -388,6 +429,25 @@ def lane_for_index(step_table: list[dict], index, default: str = "runs") -> str:
 # so no two rows share one, and a Task's PM step counts against the PM lane
 # rather than falling back to "runs" as an index absent from steps.STEPS would.
 LANE_ROWS = [entry for view in steps.FARM_VIEWS.values() for entry in view]
+
+# HZ-477: the step indexes the express slot may take (`"short": true` in
+# domain/steps.json), and each row's stage: its position within its own item
+# kind's rows, never the raw global index, so a Task or Plan step never
+# outranks a change step just by sitting later in the table.
+SHORT_STEPS = frozenset(
+    row["index"] for kind in steps.FARM_VIEWS for row in steps.steps_for(kind) if row.get("short") is True
+)
+STAGE_BY_INDEX = {
+    row["index"]: row["index"] - steps.first_step_index(kind) for kind in steps.FARM_VIEWS for row in steps.steps_for(kind)
+}
+
+
+def stage_for_index(index) -> int:
+    """A step index's stage, or -1 for a non-int or an index no row has: such
+    a task ranks last."""
+    if not isinstance(index, int) or isinstance(index, bool):
+        return -1
+    return STAGE_BY_INDEX.get(index, -1)
 
 
 # HZ-383: whether a dispatched task's step belongs to its item's kind. A
@@ -459,12 +519,15 @@ def _write_task_atomic(path: Path, body: dict) -> None:
         raise
 
 
-def _select_dispatchable(task_paths: list, sessions: list[str], slots: int) -> list:
+def _select_dispatchable(task_paths: list, sessions: list[str], slots: int, long_slots: int | None = None) -> list:
     """Pure selection logic, factored out of the dispatcher loop so it's
     testable without tmux/threads: given queued task files (oldest first),
     the currently live ephemeral session names, and free slots, returns
-    which task files to launch this tick."""
+    which task files to launch this tick. HZ-477: `long_slots`, when given,
+    caps how many of them may be long steps; a long step past it is skipped,
+    not stopped at, so a short step behind it can still take the express slot."""
     selected = []
+    long_selected = 0
     busy = list(sessions)
     for task_path in task_paths:
         if len(selected) >= slots:
@@ -479,7 +542,11 @@ def _select_dispatchable(task_paths: list, sessions: list[str], slots: int) -> l
             continue
         if _provisioning(task.get("item", {}).get("repo")):
             continue  # HZ-207: its hub is still cloning; stays queued
+        is_long = step_idx not in SHORT_STEPS
+        if is_long and long_slots is not None and long_selected >= long_slots:
+            continue  # HZ-477: general slots full; only a short step may start
         selected.append(task_path)
+        long_selected += is_long
         if step_idx in WORKSPACE_MUTATING_STEPS:
             busy.append(_run_session_name(task))
     return selected
@@ -529,6 +596,11 @@ def _forward_result(body: dict) -> int | None:
         # for a human, same as before this existed.
         if body.get("reason"):
             payload["reason"] = body["reason"]
+        # HZ-422: a usage limit names what hit it and when it lifts, so the
+        # server can fall back to the next model or wait for the reset.
+        for key in ("reset_at", "provider", "model"):
+            if isinstance(body.get(key), str) and body[key]:
+                payload[key] = body[key][:100]
     # HZ-327: the check run's flakes ride on the result itself, either way.
     if isinstance(body.get("flakes"), list) and body["flakes"]:
         payload["flakes"] = body["flakes"]
@@ -1081,10 +1153,10 @@ def _dispatch_pm_lane(runs_dir: Path, repo_root: Path) -> None:
 
 def _dispatch_runs_lane(runs_dir: Path, repo_root: Path) -> None:
     sessions = _ephemeral_sessions()
-    slots = MAX_EPHEMERAL - _lane_busy(sessions)["runs"]
+    slots, long_slots = _runs_lane_slots(sessions)
     if slots <= 0:
         return
-    for task_path in _select_dispatchable(_queued(runs_dir), sessions, slots):
+    for task_path in _select_dispatchable(_by_stage(_queued(runs_dir)), sessions, slots, long_slots):
         _claim_and_launch(task_path, runs_dir, repo_root)
 
 
@@ -1102,7 +1174,8 @@ def _dispatch_tick() -> None:
 
 def _ephemeral_dispatcher() -> None:
     """Launches queued steps: PM steps at most PM_LANE_CAP at once, every
-    other step at most MAX_EPHEMERAL at once."""
+    other step at most MAX_EPHEMERAL at once, plus FARM_EXPRESS_SLOTS more
+    for short steps only (HZ-477), furthest-along stage first."""
     while True:
         time.sleep(3)
         if state["status"] != "running":
@@ -1262,15 +1335,17 @@ def farm_status():
     # `agents` / `checks` / `pm_agents` are additive (HZ-144, HZ-212): the
     # Node server's waitForFarmRunning reads only `status` and `error` from
     # this route, so new keys can't break it. `agents.busy` counts the runs
-    # lane only, the slots MAX_EPHEMERAL bounds. They exist because the check limiter is
-    # otherwise invisible — a run blocked on a check slot looks identical to
+    # lane only, the slots MAX_EPHEMERAL bounds; `express` (HZ-477) counts the
+    # runs beyond them, in the FARM_EXPRESS_SLOTS only short steps may use.
+    # They exist because the check limiter is otherwise invisible — a run blocked on a check slot looks identical to
     # a run that is simply slow, and "who is waiting" was the one thing the
     # file-lock design gave up versus a farmd-brokered lease.
     busy = _lane_busy(_ephemeral_sessions())
     return {
         **state,
         "sessions": tmux_mgr.list_farm_sessions(),
-        "agents": {"limit": MAX_EPHEMERAL, "busy": busy["runs"]},
+        "agents": {"limit": MAX_EPHEMERAL, "busy": min(busy["runs"], MAX_EPHEMERAL)},
+        "express": {"limit": FARM_EXPRESS_SLOTS, "busy": max(0, busy["runs"] - MAX_EPHEMERAL)},
         "pm_agents": {"limit": PM_LANE_CAP, "busy": busy["pm"]},
         "checks": check_slots.status(),
     }
@@ -1309,16 +1384,37 @@ def farm_stop():
     return {"ok": True}
 
 
-def _run_state(run_id: str, pm_queue: list, runs_queue: list, busy: int) -> dict:
+def _run_state(run_id: str, pm_queue: list, runs_queue: list, busy: int, general_full: bool = False) -> dict:
     """A run's semantic state, never its tmux session name (HZ-54): queued
     while its task file sits in the PM or ephemeral-runs queue, running once
     the dispatcher has claimed it (moved it into runs/active — matched by
-    neither glob here, so it falls through to "running")."""
+    neither glob here, so it falls through to "running"). HZ-477: with every
+    general slot held by a long step, a queued long step names that wait, not
+    a free express slot it can never use."""
     if any(p.stem == run_id for p in pm_queue):
         return {"state": "queued", "reason": "waiting for the PM agent"}
-    if any(p.stem == run_id for p in runs_queue):
-        return {"state": "queued", "reason": f"waiting for a free agent slot ({busy}/{MAX_EPHEMERAL} in use)"}
+    for p in runs_queue:
+        if p.stem != run_id:
+            continue
+        if general_full and not _queued_short(p):
+            return {
+                "state": "queued",
+                "reason": f"waiting for a free general agent slot ({MAX_EPHEMERAL}/{MAX_EPHEMERAL} running long steps; the express slot takes short steps only)",
+            }
+        return {"state": "queued", "reason": f"waiting for a free agent slot ({busy}/{MAX_EPHEMERAL + FARM_EXPRESS_SLOTS} in use)"}
     return {"state": "running"}
+
+
+def _queued_short(task_path: Path) -> bool:
+    """HZ-477: whether a queued task file is a short step. An unreadable file
+    or one with no known index counts as long, as the dispatcher treats it."""
+    try:
+        task = json.loads(task_path.read_text())
+    except (json.JSONDecodeError, OSError):
+        return False
+    step = task.get("step") if isinstance(task, dict) else None
+    index = step.get("index") if isinstance(step, dict) else None
+    return isinstance(index, int) and index in SHORT_STEPS
 
 
 @app.post("/runs/status")
@@ -1329,8 +1425,10 @@ async def runs_status(request: Request):
     run_ids = [str(r) for r in body.get("run_ids", [])]
     pm_queue = list((QUEUE_DIR / "pm").glob("*.json"))
     runs_queue = list((QUEUE_DIR / "runs").glob("*.json"))
-    busy = _lane_busy(_ephemeral_sessions())["runs"]
-    return {"states": {rid: _run_state(rid, pm_queue, runs_queue, busy) for rid in run_ids}}
+    sessions = _ephemeral_sessions()
+    busy = _lane_busy(sessions)["runs"]
+    general_full = _runs_lane_slots(sessions)[1] <= 0
+    return {"states": {rid: _run_state(rid, pm_queue, runs_queue, busy, general_full) for rid in run_ids}}
 
 
 def _run_alive(run_id: str) -> bool:
@@ -2075,6 +2173,34 @@ def internal_snapshot():
     except Exception as exc:
         print(f"farmd: snapshot fetch failed: {exc}", flush=True)
         return JSONResponse({"error": "could not reach horizon server"}, status_code=502)
+
+
+def _notify_checks(run_id, phase: str) -> None:
+    """HZ-458: relays an implement run's "checks started/ended" to the server,
+    which pauses the run's step clock in between. Fails OPEN like
+    _notify_started: a lost call leaves the server's clock running, which is
+    how a run was timed before."""
+    url = f"{HORIZON_URL}/api/farm/steps/{run_id}/checks"
+    for attempt in (1, 2):
+        try:
+            res = httpx.post(url, json={"phase": phase}, headers={"x-farm-secret": SHARED_SECRET}, timeout=15)
+            if res.status_code != 200:
+                print(f"farmd: checks {phase} notify for run {run_id} -> {res.status_code}", flush=True)
+            return
+        except Exception as exc:
+            print(f"farmd: checks {phase} notify attempt {attempt} for run {run_id} failed: {exc}", flush=True)
+            time.sleep(2)
+
+
+@app.post("/internal/steps/checks")
+async def steps_checks(request: Request):
+    """The implement step reports its checks starting and ending here; we
+    forward to the Node server with the secret. Always ok: see _notify_checks."""
+    body = await request.json()
+    run_id, phase = body.get("run_id"), body.get("phase")
+    if isinstance(run_id, int) and phase in ("start", "end"):
+        await asyncio.to_thread(_notify_checks, run_id, phase)
+    return {"ok": True}
 
 
 @app.post("/internal/steps/result")

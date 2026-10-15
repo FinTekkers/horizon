@@ -1,0 +1,81 @@
+{
+  "$comment": "HZ-447. Plan Inventory blocks, asserted by BOTH server/test/domain-schema.test.mjs (domain/planInventory.schema.json through domain/validate.mjs: `schemaValid`) and farm/tests/test_plan_inventory_domain.py (domain/py/plan_inventory.py validate() against `scope`: `valid`), so the schema and the farm's binding cannot drift apart. A row for a repo outside the scope is schema-valid; only the binding knows the scope.",
+  "scope": ["acme/api", "acme/web"],
+  "cases": [
+    {
+      "case": "a 2-repo sample with key facts",
+      "schemaValid": true,
+      "valid": true,
+      "block": {
+        "repos": [
+          {
+            "repo": "acme/api",
+            "has": ["A REST API over SQLite"],
+            "gaps": ["No retention job"],
+            "evidence": [{ "kind": "file", "ref": "server/src/db.js:129", "note": "the work_item table" }]
+          },
+          {
+            "repo": "acme/web",
+            "has": ["A React board"],
+            "gaps": [],
+            "evidence": [{ "kind": "branch", "ref": "origin/e2e-baseline", "note": "the screenshot baselines" }]
+          }
+        ],
+        "key_facts": [
+          {
+            "topic": "storage",
+            "fact": "Screenshots live on the e2e-artifacts/<id> and e2e-baseline branches",
+            "evidence": [{ "kind": "branch", "ref": "origin/e2e-baseline", "note": "baseline images" }]
+          }
+        ]
+      }
+    },
+    {
+      "case": "a check evidence row",
+      "schemaValid": true,
+      "valid": true,
+      "block": {
+        "repos": [
+          {
+            "repo": "acme/api",
+            "has": ["Green checks on main"],
+            "gaps": [],
+            "evidence": [{ "kind": "check", "ref": "last_check: pass 0123456789abcdef0123456789abcdef01234567", "note": "from _refs" }]
+          },
+          {
+            "repo": "acme/web",
+            "has": [],
+            "gaps": ["No check recorded"],
+            "evidence": [{ "kind": "check", "ref": "last_check: none", "note": "from _refs" }]
+          }
+        ],
+        "key_facts": []
+      }
+    },
+    {
+      "case": "a row with no evidence",
+      "schemaValid": false,
+      "valid": false,
+      "block": {
+        "repos": [
+          { "repo": "acme/api", "has": ["A REST API"], "gaps": [] },
+          { "repo": "acme/web", "has": [], "gaps": [], "evidence": [{ "kind": "file", "ref": "src/App.jsx:1", "note": "the app" }] }
+        ],
+        "key_facts": []
+      }
+    },
+    {
+      "case": "a row for a repo outside the scope",
+      "schemaValid": true,
+      "valid": false,
+      "block": {
+        "repos": [
+          { "repo": "acme/api", "has": [], "gaps": [], "evidence": [{ "kind": "file", "ref": "a.js:1", "note": "n" }] },
+          { "repo": "acme/web", "has": [], "gaps": [], "evidence": [{ "kind": "file", "ref": "b.js:1", "note": "n" }] },
+          { "repo": "acme/billing", "has": [], "gaps": [], "evidence": [{ "kind": "file", "ref": "c.js:1", "note": "n" }] }
+        ],
+        "key_facts": []
+      }
+    }
+  ]
+}

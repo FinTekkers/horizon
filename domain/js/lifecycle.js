@@ -183,8 +183,9 @@ export const PHASES = source.phases
 
 // runsIn: which long-running process executes the step — 'pm' (the project's
 // persistent PM session), 'farm' (an ephemeral agent dispatched by farmd's
-// queue) or 'job' (a detached shell-command runner owned by farmd, HZ-378).
-// Only meaningful for kind: 'agent' entries.
+// queue), 'job' (a detached shell-command runner owned by farmd, HZ-378) or
+// 'server' (Horizon's own code in the server process — no agent, no LLM, never
+// dispatched to the farm; HZ-446). Only meaningful for kind: 'agent' entries.
 // workspaceMutating/providerOverrideEligible/providerLocked/maxTurns/timeoutS
 // are farm-only fields, declared only on runsIn: 'farm' entries — the PM
 // agent uses its own budget mechanism (farm/pm_steps.py), out of scope here.
@@ -197,7 +198,7 @@ export const PHASES = source.phases
 export const STEPS = source.steps
 
 // ---- item kinds (HZ-377) ----
-// Every item is a `change` or a `task`, and one table holds both lifecycles:
+// Every item is a `change`, a `task` or a `plan` (HZ-446), and one table holds every lifecycle:
 // the change rows come first, untagged (a missing `itemKind` means `change`,
 // so those rows stay byte-identical), and each later kind's rows are appended
 // after them, tagged. A cursor is a global index into STEPS, so it can never
@@ -295,6 +296,8 @@ export function requiredStepIndex(label, steps = STEPS) {
 }
 
 export const IMPLEMENT_STEP_INDEX = requiredStepIndex('Specialist agent implements')
+// HZ-467: the kind whose items have an implement step and a PR to merge.
+export const IMPLEMENT_ITEM_KIND = stepKindOf(STEPS[IMPLEMENT_STEP_INDEX])
 export const REVIEW_STEP_INDEX = requiredStepIndex('Automated review (code + QA)')
 export const ACCEPT_GATE_INDEX = requiredStepIndex('Accept the code')
 export const DEPLOY_STEP_INDEX = requiredStepIndex('Deploy the changes')
@@ -306,6 +309,28 @@ export const APPROVE_RUN_GATE_INDEX = kindStepIndex('Approve the run', 'task')
 export const EXECUTE_STEP_INDEX = kindStepIndex('Execute', 'task')
 // HZ-378: the read-only QA step that judges a finished job against the metric.
 export const VERIFY_REPORT_STEP_INDEX = kindStepIndex('Verify & report', 'task')
+// HZ-446: a Plan's human-only gate. Approving it files the drafted items
+// (HZ-449); until then the server step after it is a no-op.
+export const APPROVE_FILE_GATE_INDEX = kindStepIndex('Approve & file', 'plan')
+// HZ-448: the Plan step whose reply is the item drafts (server/src/planDraft.js).
+export const PLAN_DRAFT_STEP_INDEX = kindStepIndex('Draft items', 'plan')
+// HZ-463: the two steps that review the drafts (server/src/planReview.js).
+export const PLAN_COVERAGE_REVIEW_STEP_INDEX = kindStepIndex('Review drafts: coverage & overlap', 'plan')
+export const PLAN_METRICS_REVIEW_STEP_INDEX = kindStepIndex('Review drafts: metrics & size', 'plan')
+// HZ-449: the server step that files the drafts, and the gate after it whose
+// card shows what was filed.
+export const FILE_ITEMS_STEP_INDEX = kindStepIndex('File items', 'plan')
+export const REVIEW_CLOSE_GATE_INDEX = kindStepIndex('Review & close', 'plan')
+// HZ-462: the Plan step whose artifact carries the Inventory block
+// (domain/js/planInventory.js), rendered as tables on the item page.
+export const PLAN_INVENTORY_STEP_INDEX = kindStepIndex('Inventory current state', 'plan')
+
+// HZ-446: a step Horizon runs itself, in the server process (runsIn 'server').
+// It names no agent, so it is never dispatched, never a send-back target and
+// never shown with an agent's avatar.
+export function isServerStep(index) {
+  return STEPS[index]?.kind === 'agent' && STEPS[index].runsIn === 'server'
+}
 
 // HZ-384: a gate steps.json marks `humanOnly` passes only for a human with the
 // gate PIN — server/src/store.js approveGate enforces it for every caller.
@@ -442,9 +467,32 @@ export function isBlockedByAbandoned(blockers) {
   return blockers.some((b) => isAbandoned(b))
 }
 
+// HZ-467: a blocker stops holding implement once its code is on main —
+// merged_at is set only after its PR actually merged (store.markMerged). An
+// abandoned blocker keeps blocking even if it merged, so its escalation is
+// unchanged.
+function isMergeReleased(blocker) {
+  return isClosed(blocker) || (!!blocker.merged_at && !isAbandoned(blocker))
+}
+
+export function isImplementBlocked(blockers) {
+  return blockers.some((b) => !isMergeReleased(b))
+}
+
+// The blockers that hold `item` at its current step. An item of the kind that
+// owns the implement step plans freely and waits only from implement on, for
+// each blocker to merge or close. Every other kind keeps the HZ-78 rule: held
+// on every step until each blocker closes.
+export function holdingBlockers(item, blockers) {
+  if (itemKindOf(item) !== IMPLEMENT_ITEM_KIND) return blockers.filter((b) => !isClosed(b))
+  if (item.cursor < IMPLEMENT_STEP_INDEX) return []
+  return blockers.filter((b) => !isMergeReleased(b))
+}
+
 // ---- send-back-to-a-chosen-step (HZ-51) ----
 // Eligible destinations for a send-back from the gate at gateIndex: every
-// agent step of the gate's own item kind strictly earlier than it, derived
+// agent step of the gate's own item kind strictly earlier than it (never a
+// server step, which has no agent to send feedback to — HZ-446), derived
 // from STEPS so a pipeline change (insertion/reorder) never needs a hardcoded
 // index here. The server re-derives and enforces the same rule independently —
 // this is for populating the picker, not the source of truth. With `item`,
@@ -454,7 +502,11 @@ export function reworkTargets(gateIndex, kind = stepKindOf(STEPS[gateIndex]), it
   const skips = laneSkips(item)
   return STEPS.map((s, i) => ({ index: i, label: s.label })).filter(
     ({ index }) =>
-      index < gateIndex && STEPS[index].kind === 'agent' && stepKindOf(STEPS[index]) === kind && !skips.has(index),
+      index < gateIndex &&
+      STEPS[index].kind === 'agent' &&
+      !isServerStep(index) &&
+      stepKindOf(STEPS[index]) === kind &&
+      !skips.has(index),
   )
 }
 
@@ -468,6 +520,6 @@ export function defaultReworkTarget(gateIndex, kind = stepKindOf(STEPS[gateIndex
   const first = firstStepIndex(kind)
   const skips = laneSkips(item)
   let idx = gateIndex
-  while (idx > first && (STEPS[idx].kind !== 'agent' || skips.has(idx))) idx--
+  while (idx > first && (STEPS[idx].kind !== 'agent' || isServerStep(idx) || skips.has(idx))) idx--
   return idx
 }

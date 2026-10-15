@@ -251,11 +251,21 @@ test('js/phaseStepIndexes', () => {
   for (const c of js.phaseStepIndexes) assert.deepEqual(binding.phaseStepIndexes(c.phase), c.expect, c.case)
 })
 
-for (const name of ['isBlocked', 'isBlockedByAbandoned']) {
+for (const name of ['isBlocked', 'isBlockedByAbandoned', 'isImplementBlocked']) {
   test(`js/${name}`, () => {
     for (const c of js[name]) assert.equal(binding[name](c.blockers), c.expect, c.case)
   })
 }
+
+test('js/IMPLEMENT_ITEM_KIND', () => {
+  for (const c of js.IMPLEMENT_ITEM_KIND) assert.equal(binding.IMPLEMENT_ITEM_KIND, c.expect, c.case)
+})
+
+test('js/holdingBlockers', () => {
+  for (const c of js.holdingBlockers) {
+    assert.deepEqual(binding.holdingBlockers(c.item, c.blockers).map((b) => b.id), c.expectIds, c.case)
+  }
+})
 
 test('js/reworkTargets: every target is an agent step strictly earlier than the gate', () => {
   for (const c of js.reworkTargets) {

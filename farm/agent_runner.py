@@ -17,12 +17,13 @@ from domain.py.personas import resolve_model
 
 from .config import FARM_PROVIDER, MAX_TURNS, STATE_DIR, STEP_TIMEOUT_S
 from .providers import claude, muse
-from .providers.base import AgentError, AgentExhaustedError, AgentMessageTooLargeError
+from .providers.base import AgentError, AgentExhaustedError, AgentMessageTooLargeError, AgentUsageLimitedError
 
 __all__ = [
     "AgentError",
     "AgentExhaustedError",
     "AgentMessageTooLargeError",
+    "AgentUsageLimitedError",
     "FIRST_OBJECT_NOTE",
     "REPAIRS",
     "REPAIR_COUNTS_PATH",
@@ -156,14 +157,18 @@ def run_agent(
     model_choice: str | None = None,
     provider_locked: bool = False,
     retry_fresh: bool = True,
+    disallowed_tools: str | None = None,
 ) -> dict:
     """Returns {"result": <final text>, "session_id": <id>, "provider": <name>,
-    "model": <id or None>, "command_id": <id or None>}.
+    "model": <id or None>, "command_id": <id or None>}, plus "num_turns" (HZ-458)
+    when the provider reports the turns it used — Claude does; it may be
+    missing or None, and a caller must then not assume any count.
 
     retry_fresh=False (HZ-158) is handed to the provider: a failed resume
     raises instead of quietly starting a fresh session. Every caller but the
     handoff note keeps the default. An AgentExhaustedError leaves here with
-    .provider set to the provider that ran.
+    .provider set to the provider that ran, and an AgentUsageLimitedError
+    (HZ-422) with .provider and .model.
 
     provider names which entry in _PROVIDERS to dispatch to for this one
     call, overriding FARM_PROVIDER (HZ-102 — e.g. a persona mapped to Muse
@@ -191,8 +196,15 @@ def run_agent(
     parsed from the stored choice. It is not a model: it only reaches
     _model_for(), which checks it against the provider that runs and drops
     it when that provider does not declare it.
+
+    disallowed_tools (HZ-447) are deny rules only a provider declaring
+    ENFORCES_DENY_RULES (Claude) can enforce, so any other provider is refused
+    before it is called. They reach the provider only when set, so no other
+    provider's signature changes.
     """
     name, provider_module = _selected_provider(provider, provider_locked=provider_locked)
+    if disallowed_tools and not getattr(provider_module, "ENFORCES_DENY_RULES", False):
+        raise AgentError(f"provider '{name}' cannot enforce deny rules (disallowed_tools) — refusing this call")
     model = _model_for(name, agent, step, persona, model_choice)
     provider_module.assert_subscription_auth()
     if session_id and not provider_module.SUPPORTS_RESUME:
@@ -215,10 +227,16 @@ def run_agent(
             timeout_s=timeout_s,
             allowed_tools=allowed_tools,
             retry_fresh=retry_fresh,
+            **({"disallowed_tools": disallowed_tools} if disallowed_tools else {}),
         )
     except AgentExhaustedError as exc:
         # The same provenance a reply carries, so a salvaged reply can record
         # which provider really ran (HZ-158).
+        exc.provider = name
+        exc.model = model
+        raise
+    except AgentUsageLimitedError as exc:
+        # HZ-422: the server marks this model limited and falls back from it.
         exc.provider = name
         exc.model = model
         raise

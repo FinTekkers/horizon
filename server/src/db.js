@@ -3,7 +3,7 @@ import { mkdirSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { reconcileGoogleUsers } from './loginAllowlist.js'
-import { gateStepIndexes } from '../../domain/js/lifecycle.js'
+import { ACCEPT_GATE_INDEX, endIndex, gateStepIndexes, IMPLEMENT_ITEM_KIND, ITEM_KINDS, itemKindOf } from '../../domain/js/lifecycle.js'
 import { PRIORITIES } from '../../domain/js/priorities.js'
 
 const DB_PATH =
@@ -283,6 +283,21 @@ db.exec(`
   );
   CREATE INDEX IF NOT EXISTS idx_gate_poll_vote_poll ON gate_poll_vote(poll_id);
 
+  -- HZ-466: overlap links an owner removed. One row per unordered item pair
+  -- (item_a < item_b), so removing A → B also keeps step 9 from adding B → A.
+  -- step 9 reads it before adding an overlap depends-on edge and queues the
+  -- shared-contract note instead. The primary key is the only lookup.
+  --
+  -- ON DELETE CASCADE for the same reason gate_notice has it.
+  CREATE TABLE IF NOT EXISTS overlap_link_removal (
+    item_a     TEXT NOT NULL REFERENCES work_item(id) ON DELETE CASCADE,
+    item_b     TEXT NOT NULL REFERENCES work_item(id) ON DELETE CASCADE,
+    removed_by TEXT NOT NULL,
+    removed_at TEXT NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY (item_a, item_b),
+    CHECK (item_a < item_b)
+  );
+
   -- HZ-216: the long gate actions — pre-merge checks + merge (HZ-183) and
   -- conflict resolution (HZ-188). One row per (item, kind). It replaces the
   -- memory-only premergeInFlight Set and conflictRuns Map: the same row is the
@@ -433,10 +448,11 @@ db.exec(`
 // A key exists only for a non-Default choice; NULL/absent = Default on every
 // step, so existing rows run exactly as before. A JSON column for the same
 // reason as personas_json: nothing queries across items by choice.
-// kind (HZ-377): the item's lifecycle — 'change' or 'task'. NOT NULL with a
-// 'change' default, so every existing row backfills to today's behaviour with
-// no data rewrite, and the CHECK pins the vocabulary at the storage layer
-// (store.js's unknown_item_kind refusal is what callers see).
+// kind (HZ-377): the item's lifecycle — one of domain/steps.json's kinds
+// (KIND_CHECK below). NOT NULL with a 'change' default, so every existing row
+// backfills to today's behaviour with no data rewrite, and the CHECK pins the
+// vocabulary at the storage layer (store.js's unknown_item_kind refusal is
+// what callers see).
 // approved_plan_hash (HZ-384): sha256 of the Run plan artifact a human approved
 // at a Task's Approve the run gate. NULL = no approved plan; a send-back
 // clears it, and Execute refuses to start unless it matches the current plan.
@@ -445,11 +461,63 @@ db.exec(`
 // need no backfill. No CHECK: laneOf() reads an undeclared value as no lane.
 // paused_at (HZ-443): when the current pause began, for the board's "waiting"
 // sort. Read only while paused = 1, so a resume leaves it alone.
-for (const column of ['pr INTEGER', 'pr_url TEXT', 'pr_mergeable INTEGER', 'release_tag TEXT', 'release_url TEXT', 'repo TEXT', 'project_id INTEGER', 'persona TEXT', 'personas_json TEXT', 'review_cycle_count INTEGER NOT NULL DEFAULT 0', 'abandoned_at TEXT', 'abandoned_reason TEXT', 'abandoned_by TEXT', 'notified_step INTEGER', 'last_reviewed_sha TEXT', 'fix_pass INTEGER NOT NULL DEFAULT 0', 'fix_findings_json TEXT', 'forwarded_review_run_id INTEGER', 'forwarded_by TEXT', 'forwarded_sha TEXT', 'rule_block_json TEXT', 'provider_choices_json TEXT', "kind TEXT NOT NULL DEFAULT 'change' CHECK (kind IN ('change','task'))", 'approved_plan_hash TEXT', 'lane TEXT', 'paused_at TEXT']) {
+// scope_repos_json (HZ-447): a Plan's repo scope, a JSON array of owner/name.
+// NULL = every repo in the item's project, so existing rows need no backfill.
+//
+// HZ-446: the kind constraint, built from ITEM_KINDS like PRIORITY_CHECK is
+// from PRIORITIES. Interpolating is safe because every kind is checked against
+// /^[a-z]+$/ first — a kind that fails it stops the boot, never reaches SQL.
+for (const kind of ITEM_KINDS) {
+  if (!/^[a-z]+$/.test(kind)) throw new Error(`db: item kind ${JSON.stringify(kind)} is not lowercase letters only`)
+}
+const KIND_CHECK = `CHECK (kind IN (${ITEM_KINDS.map((kind) => `'${kind}'`).join(',')}))`
+for (const column of ['pr INTEGER', 'pr_url TEXT', 'pr_mergeable INTEGER', 'release_tag TEXT', 'release_url TEXT', 'repo TEXT', 'project_id INTEGER', 'persona TEXT', 'personas_json TEXT', 'review_cycle_count INTEGER NOT NULL DEFAULT 0', 'abandoned_at TEXT', 'abandoned_reason TEXT', 'abandoned_by TEXT', 'notified_step INTEGER', 'last_reviewed_sha TEXT', 'fix_pass INTEGER NOT NULL DEFAULT 0', 'fix_findings_json TEXT', 'forwarded_review_run_id INTEGER', 'forwarded_by TEXT', 'forwarded_sha TEXT', 'rule_block_json TEXT', 'provider_choices_json TEXT', `kind TEXT NOT NULL DEFAULT 'change' ${KIND_CHECK}`, 'approved_plan_hash TEXT', 'lane TEXT', 'paused_at TEXT', 'scope_repos_json TEXT']) {
   try {
     db.exec(`ALTER TABLE work_item ADD COLUMN ${column}`)
   } catch {
     // column already exists
+  }
+}
+// HZ-446: SQLite cannot widen a CHECK in place, so a work_item whose stored
+// kind CHECK is not KIND_CHECK (a database from before the plan kind) is
+// rebuilt once, by SQLite's 12-step procedure: the new table's DDL is the
+// stored one with only that CHECK replaced, so every column — including any a
+// later migration added — is copied in the same order. Foreign keys are off
+// for the rebuild (a pragma SQLite ignores inside a transaction), or DROP
+// TABLE would cascade-delete every child row. The rebuild throws, rolls back
+// and stops the boot if the old CHECK is not found exactly once, if the
+// column count changes, or if it adds a foreign-key violation.
+const workItemSql = () => db.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'work_item'").get().sql
+if (!workItemSql().includes(KIND_CHECK)) {
+  const stored = workItemSql()
+  const checks = stored.match(/CHECK \(kind IN \([^)]*\)\)/g) ?? []
+  if (checks.length !== 1) throw new Error(`db: expected one kind CHECK on work_item, found ${checks.length}`)
+  const head = /^CREATE TABLE\s+(?:IF NOT EXISTS\s+)?["`]?work_item["`]?\s*\(/i
+  if (!head.test(stored)) throw new Error('db: unexpected work_item DDL — will not rebuild it')
+  const ddl = stored.replace(head, 'CREATE TABLE work_item_v2 (').replace(checks[0], KIND_CHECK)
+  // Every index on the old table (DROP TABLE drops them), re-created as stored.
+  const indexes = db
+    .prepare("SELECT sql FROM sqlite_master WHERE type = 'index' AND tbl_name = 'work_item' AND sql IS NOT NULL")
+    .all()
+    .map((row) => row.sql)
+  const violations = () => db.pragma('foreign_key_check').length
+  const before = violations()
+  db.pragma('foreign_keys = OFF')
+  try {
+    db.transaction(() => {
+      db.exec(ddl)
+      const columns = (table) => db.prepare(`SELECT COUNT(*) AS n FROM pragma_table_info('${table}')`).get().n
+      if (columns('work_item_v2') !== columns('work_item')) throw new Error('db: work_item rebuild changed the column count')
+      db.exec(`
+        INSERT INTO work_item_v2 SELECT * FROM work_item;
+        DROP TABLE work_item;
+        ALTER TABLE work_item_v2 RENAME TO work_item;
+      `)
+      for (const sql of indexes) db.exec(sql)
+      if (violations() > before) throw new Error('db: work_item rebuild left a foreign-key violation')
+    })()
+  } finally {
+    db.pragma('foreign_keys = ON')
   }
 }
 // HZ-443: one-time backfill for items paused before paused_at existed — the
@@ -463,6 +531,17 @@ db.exec(`
            (SELECT MAX(e.created_at) FROM event e WHERE e.item_id = work_item.id AND e.text LIKE '%paused%'),
            updated_at)
    WHERE paused = 1 AND paused_at IS NULL`)
+// HZ-467: when the item's PR merged to main (store.markMerged). A dependent's
+// implement waits for it, not for the close. A reopen clears it. The backfill
+// runs once, when the column is first added.
+let mergedAtAdded = false
+try {
+  db.exec('ALTER TABLE work_item ADD COLUMN merged_at TEXT')
+  mergedAtAdded = true
+} catch {
+  // column already exists
+}
+if (mergedAtAdded) backfillMergedAt(db)
 try {
   db.exec('ALTER TABLE step_run ADD COLUMN artifact TEXT') // full agent artifact (markdown), separate from the summary
 } catch {
@@ -557,6 +636,20 @@ try {
 } catch {
   // column already exists
 }
+// HZ-458: the time an implement run spent in the farm's repo checks, which
+// the step clock does not count, and when its open check window began (NULL
+// while no checks run). Additive: 0 / NULL on every earlier row, whose timer
+// maths is then unchanged.
+for (const sql of [
+  'ALTER TABLE step_run ADD COLUMN checks_ms INTEGER NOT NULL DEFAULT 0',
+  'ALTER TABLE step_run ADD COLUMN checks_started_at TEXT',
+]) {
+  try {
+    db.exec(sql)
+  } catch {
+    // column already exists
+  }
+}
 // HZ-429: a Task's Verify & report verdict and its 1-3 line summary, so the
 // item page shows a failed run as failed without parsing the markdown. NULL
 // on every other run and on runs before this column — no backfill: those
@@ -572,6 +665,39 @@ for (const sql of [
     // column already exists
   }
 }
+// HZ-422: usage limits. A run that hit one (usage_limit_hit) is `cancelled` like
+// a deploy stop and keeps its attempt; the run that replaced it on the next
+// chain model names the one it fell back from and when that lifts. An item
+// whose every chain model is limited waits until usage_wait_until (ISO-8601
+// UTC). runs_on is the "<provider>:<model>" the server dispatched a run for, so
+// a limit on some other model (a host override) never falls back for free.
+// Additive: 0 / NULL on every earlier row, which renders as today.
+for (const sql of [
+  'ALTER TABLE step_run ADD COLUMN usage_limit_hit INTEGER NOT NULL DEFAULT 0',
+  'ALTER TABLE step_run ADD COLUMN runs_on TEXT',
+  'ALTER TABLE step_run ADD COLUMN fallback_from TEXT',
+  'ALTER TABLE step_run ADD COLUMN fallback_reset_at TEXT',
+  'ALTER TABLE work_item ADD COLUMN usage_wait_until TEXT',
+]) {
+  try {
+    db.exec(sql)
+  } catch {
+    // column already exists
+  }
+}
+// HZ-422: one row per model last seen limited, and when it lifts (ISO-8601
+// UTC, compared in JS so a test's fake clock drives it). A row whose reset
+// has passed is simply ignored, then overwritten by the next limit.
+db.exec(`
+  CREATE TABLE IF NOT EXISTS model_limit (
+    model      TEXT PRIMARY KEY,
+    provider   TEXT NOT NULL,
+    reset_at   TEXT NOT NULL,
+    note       TEXT,
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+  CREATE INDEX IF NOT EXISTS idx_work_item_usage_wait ON work_item(usage_wait_until) WHERE usage_wait_until IS NOT NULL;
+`)
 try {
   // HZ-321: the run that first carried this feedback, so a deploy-stopped run
   // can hand its feedback back undelivered (HZ-184: never consumed by a stop).
@@ -940,6 +1066,13 @@ if (!db.prepare('PRAGMA table_info(deploy_target)').all().some((column) => colum
   db.exec('ALTER TABLE deploy_target ADD COLUMN task_dir TEXT')
 }
 
+// HZ-442: the command a service deploy runs in its checkout instead of the
+// wrapper's own build (deploy.js passes it as HORIZON_BUILD_COMMAND).
+// Additive and nullable: NULL is "run the wrapper's build"; no backfill.
+if (!db.prepare('PRAGMA table_info(deploy_target)').all().some((column) => column.name === 'build_command')) {
+  db.exec('ALTER TABLE deploy_target ADD COLUMN build_command TEXT')
+}
+
 // HZ-416: the throwaway container an Execute job runs in. `container_image`
 // is the pinned image (NULL: no image pinned — a container job for this repo
 // fails closed until an admin sets one). `cpu_limit`/`memory_limit` are the
@@ -1127,6 +1260,24 @@ db.exec(`
     BEGIN SELECT RAISE(ABORT, 'rule_version is append-only'); END;
 `)
 
+// HZ-448: a Plan's item drafts (server/src/planDraft.js), one row per saved
+// version of the whole document — the Draft items step's reply ('agent') or an
+// owner's edit ('owner'). The highest version is the current draft; older ones
+// are the history. UNIQUE(item_id, version) is also the lookup index.
+db.exec(`
+  CREATE TABLE IF NOT EXISTS plan_draft (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    item_id     TEXT    NOT NULL REFERENCES work_item(id),
+    version     INTEGER NOT NULL,
+    doc_json    TEXT    NOT NULL,
+    source      TEXT    NOT NULL CHECK (source IN ('agent','owner')),
+    step_run_id INTEGER REFERENCES step_run(id),
+    created_by  TEXT    NOT NULL,
+    created_at  TEXT    NOT NULL DEFAULT (datetime('now')),
+    UNIQUE (item_id, version)
+  );
+`)
+
 const SEED_ITEMS = [
   { id: 'BF-145', title: 'Risk-limit breach dashboard', priority: 'Low', cursor: 1, issue: 412, desc: 'Give risk managers a live view of limit utilization across every desk.', metric: 'Limit breaches acknowledged in < 2 min (from 14 min).', guardrails: 'Read-only — no position mutation. No PII in telemetry.' },
   { id: 'BF-128', title: 'Real-time P&L attribution service', priority: 'High', cursor: 3, issue: 398, desc: 'Attribute intraday P&L to factors, trades and fees in real time.', metric: 'Attribution available < 5s after fill; 99.9% coverage.', guardrails: 'No client identifiers in logs. Must reconcile to EOD books.' },
@@ -1204,6 +1355,21 @@ export function baselineNotifiedStep(database = db) {
     database.prepare(`UPDATE work_item SET notified_step = cursor WHERE cursor IN (${placeholders})`).run(...gates)
     database.prepare(`UPDATE work_item SET notified_step = NULL WHERE cursor NOT IN (${placeholders})`).run(...gates)
   })
+}
+
+// HZ-467: an open item of the implement step's kind that sits past Accept the
+// code (at Deploy or the final gate) has had its PR merged, so it gets
+// merged_at. A missing or blank kind reads as the default kind, as
+// itemKindOf does. No PR means nothing merged: such a row waits for its close.
+// Exported so its test can run it on a legacy-shaped table.
+export function backfillMergedAt(database = db) {
+  return database
+    .prepare(
+      `UPDATE work_item SET merged_at = datetime('now')
+        WHERE merged_at IS NULL AND COALESCE(NULLIF(kind, ''), ?) = ? AND pr IS NOT NULL AND abandoned_at IS NULL
+          AND cursor > ? AND cursor < ?`,
+    )
+    .run(itemKindOf({}), IMPLEMENT_ITEM_KIND, ACCEPT_GATE_INDEX, endIndex(IMPLEMENT_ITEM_KIND)).changes
 }
 
 // One-time on first boot after HZ-141 ships, and placed LAST on purpose: it

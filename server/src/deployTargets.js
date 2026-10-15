@@ -95,6 +95,8 @@ function toTarget(row) {
   if (row.venv_dir != null) target.venvDir = row.venv_dir
   // HZ-440: absent when unset (Task jobs then run in repoDir).
   if (row.task_dir != null) target.taskDir = row.task_dir
+  // HZ-442: absent when unset (the deploy script runs its own build).
+  if (row.build_command != null) target.buildCommand = row.build_command
   // HZ-416: absent when unset — an omitted field keeps every seeded and admin
   // row reading back exactly as before. The farm fails a container job closed
   // with no image, and uses its own CPU/memory defaults with no limits.
@@ -221,6 +223,9 @@ const REPO_DIR = /^\/[A-Za-z0-9_./-]*$/
 // HZ-431: relative to repoDir, format only — the farm resolves symlinks and
 // bounds it inside the checkout (domain/py/run_plan.py resolve_venv).
 const VENV_DIR = /^[A-Za-z0-9_.-][A-Za-z0-9_./-]{0,299}$/
+// HZ-442: one line, no control characters, at most 500 chars (the same cap
+// as app.js). Shape only: it runs as `bash -c` in the deployed checkout.
+const BUILD_COMMAND = /^[^\x00-\x1f\x7f]{1,500}$/
 
 // The repoDir format rules, shared by taskDir (HZ-440).
 function absoluteDirOk(dir) {
@@ -269,6 +274,10 @@ export function checkRunnable(target) {
   }
   const taskDir = target.taskDir === '' ? null : (target.taskDir ?? null)
   if (taskDir !== null && !absoluteDirOk(taskDir)) return { ok: false, reason: 'bad taskDir' }
+  const buildCommand = target.buildCommand === '' ? null : (target.buildCommand ?? null)
+  if (buildCommand !== null && (typeof buildCommand !== 'string' || !BUILD_COMMAND.test(buildCommand) || buildCommand.trim() === '')) {
+    return { ok: false, reason: 'bad buildCommand' }
+  }
   const extras = target.extraServices ?? []
   if (!Array.isArray(extras) || !extras.every((s) => typeof s === 'string')) {
     return { ok: false, reason: 'bad extraServices' }
@@ -287,7 +296,10 @@ export function checkRunnable(target) {
 // Results are { ok: true, target } or { ok: false, code, reason? } with code
 // 'invalid' | 'conflict' | 'not_found'.
 
-const TARGET_BODY_FIELDS = ['repo', 'script', 'service', 'repoDir', 'stateKey', 'healthUrl', 'healthCheckType', 'venvDir', 'taskDir', 'containerImage', 'cpuLimit', 'memoryLimit']
+const TARGET_BODY_FIELDS = [
+  'repo', 'script', 'service', 'repoDir', 'stateKey', 'healthUrl', 'healthCheckType', 'venvDir', 'taskDir', 'buildCommand',
+  'containerImage', 'cpuLimit', 'memoryLimit',
+]
 
 // The target shape from a request body: only the known fields, key from the path.
 export function targetFromBody(key, body) {
@@ -303,6 +315,7 @@ function rowParams(target) {
     extraServices: target.extraServices?.length ? JSON.stringify(target.extraServices) : null,
     venvDir: target.venvDir || null,
     taskDir: target.taskDir || null,
+    buildCommand: target.buildCommand?.trim() || null,
     containerImage: target.containerImage || null,
     cpuLimit: target.cpuLimit || null,
     memoryLimit: target.memoryLimit || null,
@@ -372,9 +385,9 @@ function writeTarget(target, statement, database) {
 export function createTarget(target, database = db) {
   const result = writeTarget(target, database.prepare(`
     INSERT INTO deploy_target
-      (key, repo, script, service, repo_dir, state_key, health_url, health_check_type, extra_services, venv_dir, task_dir,
+      (key, repo, script, service, repo_dir, state_key, health_url, health_check_type, extra_services, venv_dir, task_dir, build_command,
        container_image, cpu_limit, memory_limit)
-    VALUES (@key, @repo, @script, @service, @repoDir, @stateKey, @healthUrl, @healthCheckType, @extraServices, @venvDir, @taskDir,
+    VALUES (@key, @repo, @script, @service, @repoDir, @stateKey, @healthUrl, @healthCheckType, @extraServices, @venvDir, @taskDir, @buildCommand,
        @containerImage, @cpuLimit, @memoryLimit)
   `), database)
   return result.ok ? { ok: true, target: findTargetByKey(target.key, database) } : result
@@ -387,7 +400,7 @@ export function updateTarget(key, fields, database = db) {
     UPDATE deploy_target SET
       repo = @repo, script = @script, service = @service, repo_dir = @repoDir, state_key = @stateKey,
       health_url = @healthUrl, health_check_type = @healthCheckType, extra_services = @extraServices,
-      venv_dir = @venvDir, task_dir = @taskDir,
+      venv_dir = @venvDir, task_dir = @taskDir, build_command = @buildCommand,
       container_image = @containerImage, cpu_limit = @cpuLimit, memory_limit = @memoryLimit,
       updated_at = datetime('now')
     WHERE key = @key

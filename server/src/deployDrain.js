@@ -37,11 +37,44 @@
 // latest end), and a begin or an end notifies, so every tab shows "Queued to
 // merge" and clears it live. onDrainEnd() keeps a list: the orchestrator's
 // release first, then heldAccept.js's release of the Approves it held.
+//
+// HZ-469: not every running step is lost when the server and farm restart.
+// RESTART_SURVIVAL says, per runsIn kind, whether a step of that kind still
+// finishes and reports after a restart. It is filled from the restart test
+// (farm/tests/test_step_survives_restart.py), which fails if the
+// two disagree. beginDrain() and drainStatus() tag each listed step with its
+// `kind` and `survives`, and deploy-drain.mjs waits only for steps whose
+// `survives` is not true. A kind missing from the table counts as lost.
 
 import * as store from './store.js'
 import * as premerge from './premerge.js'
 import { DEPLOY_BLOCK_MAX_TTL_S, FARM_URL } from './config.js'
 import { REASON } from '../../domain/js/reasons.js'
+import { STEPS } from '../../domain/js/lifecycle.js'
+
+// HZ-469: what the restart test observed for each runsIn kind.
+//   job     the farmd job poll keeps a result until the server takes it (HZ-408)
+//   farm    a result that comes back while the server is down is dropped, and
+//   pm      the step runs again from the start after the restart
+//   server  runs inside the server process itself
+export const RESTART_SURVIVAL = Object.freeze({
+  job: 'survives',
+  farm: 'lost',
+  pm: 'lost',
+  server: 'lost',
+})
+
+// True only for a step whose kind is known to survive a restart.
+export function survivesRestart(stepIndex) {
+  const kind = STEPS[stepIndex]?.runsIn
+  return typeof kind === 'string' && Object.hasOwn(RESTART_SURVIVAL, kind) && RESTART_SURVIVAL[kind] === 'survives'
+}
+
+function drainSteps() {
+  return store
+    .listRunningAgentSteps()
+    .map((step) => ({ ...step, kind: STEPS[step.stepIndex]?.runsIn ?? null, survives: survivesRestart(step.stepIndex) }))
+}
 
 // farmd's own wait (FARM_CONFLICT_CANCEL_WAIT_S, 30s) plus slack, inside
 // deploy-drain.mjs's 60s bound on the whole interrupt request.
@@ -102,12 +135,12 @@ export function beginDrain({ ttlS }, now = Date.now()) {
     blocked: isDeployBlocked(now),
     blockedUntil: new Date(blockedUntil).toISOString(),
     running: store.listRunningGateActions(),
-    steps: store.listRunningAgentSteps(),
+    steps: drainSteps(),
   }
 }
 
 export function drainStatus() {
-  return { blocked: isDeployBlocked(), running: store.listRunningGateActions(), steps: store.listRunningAgentSteps() }
+  return { blocked: isDeployBlocked(), running: store.listRunningGateActions(), steps: drainSteps() }
 }
 
 // Asks farmd to stop one item's resolver. Returns farmd's reply

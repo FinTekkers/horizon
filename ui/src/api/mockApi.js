@@ -640,6 +640,15 @@ export async function restoreRule() {
   throw new Error('Rules are read-only in mock mode — run the server to edit them')
 }
 
+// HZ-449: the mock has no Plan drafts, so the items table stays hidden.
+export async function getPlanDraft() {
+  return null
+}
+
+export async function savePlanDraft() {
+  throw new Error('Plan drafts are read-only in mock mode — run the server to edit them')
+}
+
 export function restartPhase(id, phase, reason) {
   const firstIdx = STEPS.findIndex((st) => st.phase === phase)
   update(id, (x) => ({ ...x, cursor: firstIdx, rejected: false, paused: false }))

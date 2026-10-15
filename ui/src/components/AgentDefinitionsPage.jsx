@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { STEPS, itemKindInfo } from '../../../domain/js/lifecycle.js'
+import { STEPS, itemKindInfo, isServerStep } from '../../../domain/js/lifecycle.js'
 import {
   listDefinitions,
   getDefinition,
@@ -123,7 +123,8 @@ function modelRows() {
   return [
     // HZ-377: runner-less rows name no agent and run on no model — they would
     // crash modelAgentForStep and collide on call keys, so they stay out.
-    ...STEPS.filter((step) => step.kind === 'agent' && step.runsIn !== 'none').map((step) => {
+    // HZ-446: so do server steps — Horizon's own code, no agent, no model.
+    ...STEPS.filter((step, index) => step.kind === 'agent' && step.runsIn !== 'none' && !isServerStep(index)).map((step) => {
       const agent = modelAgentForStep(step.agent)
       // HZ-413: a Task row may share a change row's label (both kinds' first
       // steps do), so its key and call name carry the kind.
@@ -146,26 +147,28 @@ function ModelsSection() {
   return (
     <details className="defs__models">
       <summary className="defs__group-title">Models — which Claude model each agent call uses</summary>
-      <table aria-label="Effective model per step" style={{ borderCollapse: 'collapse', font: '500 13px var(--font-sans)' }}>
-        <thead>
-          <tr>
-            <th align="left">Step</th>
-            <th align="left">Agent</th>
-            <th align="left">Model</th>
-          </tr>
-        </thead>
-        <tbody>
-          {modelRows().map((row) => (
-            <tr key={row.key} data-testid={`model-row-${row.key}`}>
-              <td>{row.call}</td>
-              <td>{row.agent}</td>
-              <td>
-                <code>{row.model}</code>
-              </td>
+      <div className="data-table-wrap">
+        <table className="data-table" aria-label="Effective model per step">
+          <thead>
+            <tr>
+              <th align="left">Step</th>
+              <th align="left">Agent</th>
+              <th align="left">Model</th>
             </tr>
-          ))}
-        </tbody>
-      </table>
+          </thead>
+          <tbody>
+            {modelRows().map((row) => (
+              <tr key={row.key} data-testid={`model-row-${row.key}`}>
+                <td>{row.call}</td>
+                <td>{row.agent}</td>
+                <td>
+                  <code>{row.model}</code>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
       <div className="defs__group-title">Persona overrides</div>
       {personaOverrides.length === 0 ? (
         <div className="defs__empty">None — every persona runs on its step's model.</div>

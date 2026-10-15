@@ -30,6 +30,19 @@ EOF
   chmod +x "$STUBS/$cmd"
 done
 
+# HZ-442: stands in for a target's own build command (HORIZON_BUILD_COMMAND).
+# Logs like install.sh and fails the same way: at a commit with fail-install
+# (deploy-mdi-2), or everywhere with OVERRIDE_FAIL_ALWAYS=1. OVERRIDE_LOG
+# gets "<physical cwd> <args>".
+cat >"$STUBS/repo-build" <<'EOF'
+#!/usr/bin/env bash
+echo "build $(git rev-parse HEAD)" >>"$CHECK_LOG"
+printf '%s %s\n' "$(pwd -P)" "$*" >>"$OVERRIDE_LOG"
+env | grep -E '^(LEDGER|PRICE|VALUATION)_' >>"$ENV_LOG"
+if [ -n "${OVERRIDE_FAIL_ALWAYS:-}" ] || [ -e fail-install ]; then exit 1; fi
+EOF
+chmod +x "$STUBS/repo-build"
+
 setup_repo() {
   # setup_repo BASE — upstream with three release tags: deploy-mdi-1 (good),
   # deploy-mdi-2 (install fails), deploy-mdi-3 (tests fail); a clone to deploy.
@@ -73,12 +86,14 @@ run_deploy() {
   # run_deploy BASE TAG [extra env assignments...]
   local base="$1" tag="$2"
   shift 2
-  env PATH="$STUBS:$PATH" HOME="$base/home" \
+  # -u: a stray HORIZON_BUILD_COMMAND here would replace install.sh.
+  env -u HORIZON_BUILD_COMMAND PATH="$STUBS:$PATH" HOME="$base/home" \
     HORIZON_REPO_DIR="$base/repo" \
     HORIZON_STATE_DIR="$base/state" \
     HORIZON_DEPLOY_LOCK_TIMEOUT_S=5 \
     LEDGER_SERVICE_HOST=ledger.invalid PRICE_SERVICE_HOST=price.invalid \
     CHECK_LOG="$base/checks.log" ENV_LOG="$base/env.log" FORBIDDEN_LOG="$base/forbidden.log" \
+    OVERRIDE_LOG="$base/override.log" \
     "$@" \
     "$HOST_DIR/deploy-market-data-inputs.sh" "$tag" >/dev/null 2>&1
 }
@@ -109,6 +124,7 @@ last_line() { tail -n1 "$1/state/self-deploy.log"; }
   expect "ok: install then test ran at the tag" test "$(cat "$base/checks.log")" = "$(printf 'install %s\ntest %s' "$sha1" "$sha1")"
   expect "ok: the venv was installed for the tag" test "$(cat "$base/repo/.venv/installed-for")" = "$sha1"
   expect "ok: records last-good-tag" grep -qx "refs/tags/deploy-mdi-1:$sha1" "$base/state/last-good-tag"
+  expect "ok: logs the default build line" grep -qE "^[^ ]+ build: scripts/checks/install.sh$" "$base/state/self-deploy.log"
   expect "ok: DEPLOY OK is the last line" bash -c "tail -n1 '$base/state/self-deploy.log' | grep -q 'DEPLOY OK tag=refs/tags/deploy-mdi-1 commit=$sha1\$'"
   expect "guardrail: install and tests never see ledger or price env" test ! -s "$base/env.log"
   expect "guardrail: no sudo, no systemctl, no loader" test ! -s "$base/forbidden.log"
@@ -199,6 +215,51 @@ last_line() { tail -n1 "$1/state/self-deploy.log"; }
   expect "unknown tag: logs DEPLOY FAILED: resolve" grep -q "DEPLOY FAILED: resolve (tag=no-such-tag)" "$base/state/self-deploy.log"
   expect "unknown tag: HEAD did not move" test "$(head_of "$base")" = "$before"
   expect "unknown tag: install and tests never ran" test ! -s "$base/checks.log"
+}
+
+# ---- 8. HZ-442: the target's build command replaces install.sh ----
+{
+  base="$(new_base)"
+  run_deploy "$base" deploy-mdi-1 HORIZON_BUILD_COMMAND='repo-build --local'
+  code=$?
+  sha1="$(sha_of "$base" deploy-mdi-1)"
+  expect "build command: exits 0" test "$code" -eq 0
+  expect "build command: it ran instead of install.sh, then test.sh" test "$(cat "$base/checks.log")" = "$(printf 'build %s\ntest %s' "$sha1" "$sha1")"
+  expect "build command: ran in the checkout" test "$(cat "$base/override.log")" = "$(cd "$base/repo" && pwd -P) --local"
+  expect "build command: logs build: <command>" grep -qE "^[^ ]+ build: repo-build --local$" "$base/state/self-deploy.log"
+  expect "build command: DEPLOY OK is the last line" bash -c "tail -n1 '$base/state/self-deploy.log' | grep -q 'DEPLOY OK tag=refs/tags/deploy-mdi-1 commit=$sha1\$'"
+  expect "build command: still never sees ledger or price env" test ! -s "$base/env.log"
+
+  # It fails only at deploy-mdi-2, so the restore at deploy-mdi-1 passes.
+  : >"$base/checks.log"
+  run_deploy "$base" deploy-mdi-2 HORIZON_BUILD_COMMAND='repo-build --local'
+  code=$?
+  sha2="$(sha_of "$base" deploy-mdi-2)"
+  log="$base/state/self-deploy.log"
+  expect "build command fails: exits non-zero" test "$code" -ne 0
+  expect "build command fails: the restore ran it at the last good commit" test "$(cat "$base/checks.log")" = "$(printf 'build %s\nbuild %s' "$sha2" "$sha1")"
+  expect "build command fails: HEAD is back on the last good commit" test "$(head_of "$base")" = "$sha1"
+  expect "build command fails: RESTORE OK, then DEPLOY FAILED: install last" bash -c \
+    "tail -n2 '$log' | head -n1 | grep -q 'RESTORE OK tag=refs/tags/deploy-mdi-1 after refs/tags/deploy-mdi-2' && tail -n1 '$log' | grep -q 'DEPLOY FAILED: install (tag=refs/tags/deploy-mdi-2 commit=$sha2)'"
+  expect "build command fails: last-good-tag unchanged" grep -qx "refs/tags/deploy-mdi-1:$sha1" "$base/state/last-good-tag"
+
+  # It fails everywhere, so the restore fails too.
+  run_deploy "$base" deploy-mdi-2 HORIZON_BUILD_COMMAND='repo-build --local' OVERRIDE_FAIL_ALWAYS=1
+  code=$?
+  expect "build command restore fails: exits non-zero" test "$code" -ne 0
+  expect "build command restore fails: RESTORE FAILED (install), then DEPLOY FAILED: install last" bash -c \
+    "tail -n2 '$log' | head -n1 | grep -q 'RESTORE FAILED (install) tag=refs/tags/deploy-mdi-1 after refs/tags/deploy-mdi-2' && tail -n1 '$log' | grep -q 'DEPLOY FAILED: install (tag=refs/tags/deploy-mdi-2'"
+  expect "build command restore fails: last-good-tag unchanged" grep -qx "refs/tags/deploy-mdi-1:$sha1" "$base/state/last-good-tag"
+}
+# Set but empty is the same as unset: install.sh.
+{
+  base="$(new_base)"
+  run_deploy "$base" deploy-mdi-1 HORIZON_BUILD_COMMAND=
+  code=$?
+  sha1="$(sha_of "$base" deploy-mdi-1)"
+  expect "empty build command: exits 0" test "$code" -eq 0
+  expect "empty build command: install then test ran" test "$(cat "$base/checks.log")" = "$(printf 'install %s\ntest %s' "$sha1" "$sha1")"
+  expect "empty build command: logs the default build line" grep -qE "^[^ ]+ build: scripts/checks/install.sh$" "$base/state/self-deploy.log"
 }
 
 echo "# deploy-code-only: $pass passed, $fail failed"

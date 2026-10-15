@@ -17,7 +17,7 @@ import {
   STEPS,
   isClosed,
   isAbandoned,
-  isBlocked,
+  holdingBlockers,
   IMPLEMENT_STEP_INDEX,
   REVIEW_STEP_INDEX,
   ACCEPT_GATE_INDEX,
@@ -29,19 +29,27 @@ import {
   RUN_PLAN_STEP_INDEX,
   VERIFY_REPORT_STEP_INDEX,
   APPROVE_RUN_GATE_INDEX,
+  APPROVE_FILE_GATE_INDEX,
+  PLAN_DRAFT_STEP_INDEX,
   laneOf,
   laneSkips,
   laneCheckIndexes,
   nextCursor,
+  isServerStep,
 } from '../../domain/js/lifecycle.js'
 import { AUTO_RETRY_REASONS, REASON } from '../../domain/js/reasons.js'
 import { patchLimits, addedCriteriaLines } from '../../domain/js/fields.js'
+import { renderPlanDraftMd } from '../../domain/js/planDraft.js'
+import { ingestDraft } from './planDraft.js'
+import { isPlanReviewStep, planReviewInput, reviewStep } from './planReview.js'
+import { fileDrafts } from './planFiling.js'
 import {
   getItem,
   addEvent,
   notifyChange,
   registerAgentRunner,
   registerRunStateProvider,
+  registerDeployDrainProvider,
   claimGateAction,
   finishGateAction,
   getConflictRun as conflictRunOf,
@@ -54,6 +62,7 @@ import {
   setProjectEnabled as writeProjectEnabled,
   getRepoCheckCommands,
   getRepoConfig,
+  getPlanScope,
   implementStartedBefore,
   CHECKS_WAIVER,
   recordCheckPass,
@@ -70,6 +79,10 @@ import {
   missingPlanSections,
   PLAN_SECTIONS,
   PAUSE_SET,
+  markModelLimited,
+  activeModelLimits,
+  setUsageWait,
+  listUsageWaits,
 } from './store.js'
 import { createMockPr, createDeployRelease, postIssueComment, syncIssueBodyFields, createPrFromBranch, getPrHeadSha, getIssueBody } from './github.js'
 import { PHASES } from '../../domain/js/lifecycle.js'
@@ -80,6 +93,7 @@ import {
   FARM_STEP_TIMEOUT_MS,
   DEPLOY_WAIT_MS,
   FARM_QUEUE_TIMEOUT_MS,
+  FARM_CHECKS_PAUSE_MAX_MS,
   FARM_START_TIMEOUT_MS,
   FARM_CONFLICT_RESOLVE_TIMEOUT_MS,
   PAUSE_CHECKPOINT_TIMEOUT_S,
@@ -94,7 +108,7 @@ import {
 import { PRIMARY_PERSONA_AGENT, isPersona, personaLabel, proposePersona } from './personas.js'
 import { SUMMARIZE_STEP_INDEX, OVERLAP_INPUT_LABEL, computeOverlap, overlapFailure, applyOverlap } from './overlapService.js'
 import { renderOverlapInput, renderOverlapSection, replaceOverlapSection } from './overlap.js'
-import { DEPLOY_BLOCK_MESSAGE, isDeployBlocked, onDrainEnd } from './deployDrain.js'
+import { DEPLOY_BLOCK_MESSAGE, deployBlock, isDeployBlocked, onDrainEnd, survivesRestart } from './deployDrain.js'
 import { deployWaitFor } from './deployWait.js'
 import * as deployQueue from './deployQueue.js'
 import { findTargetByRepo } from './deployTargets.js'
@@ -107,6 +121,8 @@ import { splitCheckError } from './checkHeadline.js'
 import { recordTestRuns } from './testResults.js'
 import { enqueueRuleBlockPing } from './ruleBlock.js'
 import { buildStoredResultsInput, storedResultsPending, waitForStoredResults } from './storedTestResults.js'
+import { declares } from '../../domain/js/providers.js'
+import { chainHead, effectiveChain, entryKey, entryLabel, formatResetTime, pickModel, resetMs } from './usageLimits.js'
 
 // Keyed by step_run.id (HZ-100) — NOT item id. Keying by item used to let a
 // stale callback for a superseded run clear/overwrite the CURRENT run's
@@ -146,6 +162,10 @@ const pausing = new Map()
 // the drain ends without a restart; a restart forgets it, and boot's
 // resumeActiveItems() dispatches the same items again.
 const heldForDeploy = new Map()
+
+// HZ-422: item id -> the timer that kicks it once its usage-limit wait ends.
+// Memory-only: boot's rearmUsageWaits() arms them again from the column.
+const usageWaitTimers = new Map()
 
 // Execution budget once an agent has actually started (HZ-57): the implement
 // step legitimately runs long (real coding + tests), so its budget must
@@ -990,6 +1010,25 @@ const MOCK_REVIEW_FAIL_COUNT = Number(process.env.MOCK_REVIEW_FAIL_COUNT) || 0
 
 const MOCK_QA_PASS = { verdict: 'pass', regression_tests_run: true, new_code_unit_coverage: true, e2e_test_present: true, findings: [] }
 
+// HZ-448: the mock Draft items reply — a valid two-item draft in `repo`.
+function mockPlanDraft(repo) {
+  const draft = (id, title, dependsOn) => ({
+    id,
+    repo,
+    title,
+    outcome: `${title} (mock), so the plan's question is answered.`,
+    metric: ['A test covers the change (mock).', 'The change ships behind no flag (mock).', 'The docs name the change (mock).'],
+    guardrails: ['Nothing else changes (mock).', 'No new dependency (mock).', 'Every step is reversible (mock).'],
+    depends_on: dependsOn,
+    must_also_cover: [],
+  })
+  return {
+    items: [draft('#1', 'Lay the groundwork', []), draft('#2', 'Build on the groundwork', ['#1'])],
+    shared_guardrails: ['Nothing is filed before Approve & file (mock).'],
+    open_questions: [{ question: 'Ship both items together? (mock)', recommended_answer: 'No: #2 waits for #1.' }],
+  }
+}
+
 // Mock behavior per step label (HZ-117: keyed by label, not index — the
 // pipeline's step identities are fixed, see domain/steps.json; an insertion
 // elsewhere in STEPS must never repoint one of these at the wrong step).
@@ -1086,6 +1125,26 @@ export const MOCK_STEP_BEHAVIOR = {
     artifact_md: '## Verdict\n**pass** (mock)\n\n## Commands\n1 run, 1 passed, 0 failed.',
     verdict: { verdict: 'pass', summary: 'the mock job holds the metric (mock)' },
   }),
+  // HZ-446: a Plan's agent steps. Their real prompts and outputs are HZ-447
+  // and HZ-448; the mock only walks the lifecycle. A Plan's "Set guardrails"
+  // shares the change step's mock by label.
+  'Define the question': () => ({ summary: 'drafted the roadmap question and the repos in scope (mock)' }),
+  'Inventory current state': () => ({ summary: 'inventoried the current state of the repos in scope (mock)' }),
+  'Design options & recommendation': () => ({ summary: 'prepared design options with a recommendation (mock)' }),
+  // HZ-448: a valid two-item draft in the item's own repo, so a demo Plan
+  // reaches Approve & file with a draft to edit. An item with no repo gets
+  // none: no repo is one it could file in.
+  'Draft items': (it) => ({
+    summary: 'drafted the items this plan would file (mock)',
+    ...(it.repo ? { plan_draft: mockPlanDraft(it.repo) } : {}),
+  }),
+  // HZ-463: the mock coverage review claims nothing, so the server's own
+  // checks (planReview.js) decide what the gate card shows.
+  'Review drafts: coverage & overlap': () => ({
+    summary: 'reviewed the drafts for coverage and overlap (mock)',
+    plan_review: { coverage: [], overlaps: [] },
+  }),
+  'Review drafts: metrics & size': () => ({ summary: 'reviewed the drafts for metrics and size (mock)' }),
   // Execute: the code change takes the form of a GitHub PR. The mock commits
   // a placeholder file; the PR/branch mechanics are the real integration.
   'Specialist agent implements': async (it) => {
@@ -1174,13 +1233,15 @@ function inFlightRunnable(item) {
     !item.paused &&
     !item.rejected &&
     // HZ-346: a run stopped on a rule holds the item until a dependency it
-    // gained closes, or a human resumes or sends it back (store.js).
+    // gained merges or closes, or a human resumes or sends it back (store.js).
     !item.rule_block_json &&
     STEPS[item.cursor].kind === 'agent' &&
     // HZ-377: a step with no runner waits where it is — it is never
     // dispatched, to the farm or to the mock path, so no run is ever recorded.
     STEPS[item.cursor].runsIn !== 'none' &&
-    !isBlocked(blockersOf(item.id))
+    // HZ-467: a change item plans past open dependencies; implement and later
+    // wait until each blocker has merged or closed (domain/js/lifecycle.js).
+    holdingBlockers(item, blockersOf(item.id)).length === 0
   )
 }
 
@@ -1199,6 +1260,16 @@ export function kick(id, opts = {}) {
   if (isDeployBlocked()) {
     heldForDeploy.set(id, opts)
     return
+  }
+  // HZ-422: every model this item's step may run on is usage-limited — hold
+  // it until the earliest reset; a wait that has passed is cleared.
+  if (item.usage_wait_until) {
+    const until = Date.parse(item.usage_wait_until)
+    if (until > Date.now()) {
+      armUsageWait(id, until)
+      return
+    }
+    setUsageWait(id, null)
   }
   // HZ-333: Deploy joins its target's queue and publishes nothing; the queue
   // kicks it again once a batch containing its merge is live. Farm mode only:
@@ -1225,6 +1296,11 @@ export function kick(id, opts = {}) {
     runLaneCheck(id, item.cursor)
     return
   }
+  // HZ-446: a server step is Horizon's own code — never the farm, never a mock.
+  if (isServerStep(item.cursor)) {
+    runServerStep(id, item.cursor).catch((err) => console.warn(`server step: ${id} failed outside its run: ${err.message}`))
+    return
+  }
 
   const stepIndex = item.cursor
   const step = STEPS[stepIndex]
@@ -1238,17 +1314,95 @@ export function kick(id, opts = {}) {
   // scope the run was dispatched with, never a recomputation from the item.
   // Mock runs stay full: demo mode has no commits to scope a review to.
   const scope = toFarm ? scopeFor(item, stepIndex) : null
+  // HZ-422: the first model in the step's chain with no usage limit active.
+  // None free: the item waits for the earliest reset, and no run is written,
+  // so no attempt is used.
+  const pick = toFarm && step.runsIn !== 'job' ? pickRunsOn(item, stepIndex) : null
+  if (pick?.waitUntilMs != null) {
+    dispatching.delete(id)
+    waitForUsageReset(id, step, pick.waitUntilMs)
+    return
+  }
   const runId = db
     .prepare(
-      'INSERT INTO step_run (item_id, step_index, attempt, agent, auto_retry_count, scope_json) VALUES (?, ?, ?, ?, ?, ?)',
+      'INSERT INTO step_run (item_id, step_index, attempt, agent, auto_retry_count, scope_json, runs_on, fallback_from, fallback_reset_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
     )
-    .run(id, stepIndex, attempt, step.agent, autoRetryCount, scope ? JSON.stringify(scope) : null).lastInsertRowid
+    .run(
+      id,
+      stepIndex,
+      attempt,
+      step.agent,
+      autoRetryCount,
+      scope ? JSON.stringify(scope) : null,
+      pick ? entryKey(pick.entry) : null,
+      pick?.fallbackFrom ? entryKey(pick.fallbackFrom) : null,
+      pick?.fallbackFrom ? new Date(pick.fallbackResetMs).toISOString() : null,
+    ).lastInsertRowid
 
   if (toFarm) {
-    dispatchToFarm(id, stepIndex, runId, attempt, scope, opts.spawnedCode?.sha || null)
+    // Only a fallback pins the task's choice; the head runs on today's routing.
+    dispatchToFarm(id, stepIndex, runId, attempt, scope, opts.spawnedCode?.sha || null, pick?.fallbackFrom ? pick.entry : null)
   } else {
     timers[runId] = setTimeout(() => runMockStep(id, stepIndex, runId), latency())
   }
+}
+
+// HZ-422: the step's "Runs on" choices as the farm is sent them — the item's,
+// else the project's default.
+function stepChoicesFor(item) {
+  const project = item.project_id == null ? null : db.prepare('SELECT provider_defaults_json FROM project WHERE id = ?').get(item.project_id)
+  return resolveStepProviders(item.providerChoices, providerDefaultsFromRow(project))
+}
+
+// HZ-422: pickModel() over this step's chain — its "Runs on" choice first,
+// then domain/providers.json's fallbackChain — against the limits active now.
+// null (today's routing, no fallback) if the chain cannot be built, so a bad
+// model table never strands the item mid-dispatch.
+function pickRunsOn(item, stepIndex) {
+  const step = STEPS[stepIndex]
+  try {
+    const chain = effectiveChain(chainHead(stepChoicesFor(item)[stepIndex], step), step)
+    return pickModel(chain, activeModelLimits(Date.now()), Date.now())
+  } catch (err) {
+    console.warn(`usage limits: no fallback chain for ${item.id} step ${stepIndex}: ${err.message}`)
+    return null
+  }
+}
+
+function waitForUsageReset(id, step, untilMs) {
+  const until = new Date(untilMs).toISOString()
+  setUsageWait(id, until)
+  addEvent(id, {
+    who: 'Horizon',
+    text: `every model “${step.label}” can run on is usage-limited — waiting until ${formatResetTime(until)}, then it runs again at the same attempt`,
+    color: '#DFA200',
+    initials: 'HZ',
+  })
+  notifyChange()
+  armUsageWait(id, untilMs)
+}
+
+// setTimeout's ceiling is 2^31-1 ms (~24.8 days); a longer wait re-arms from kick().
+const MAX_TIMER_MS = 2 ** 31 - 1
+function armUsageWait(id, untilMs) {
+  clearTimeout(usageWaitTimers.get(id))
+  const ms = Math.min(Math.max(untilMs - Date.now(), 0), MAX_TIMER_MS)
+  usageWaitTimers.set(
+    id,
+    setTimeout(() => {
+      usageWaitTimers.delete(id)
+      kick(id)
+    }, ms).unref(),
+  )
+}
+
+// Boot: every item still waiting on a usage limit gets its timer back. A wait
+// that already passed is left to the farm-ready resume, whose kick() clears
+// it. Exported for tests.
+export function rearmUsageWaits() {
+  const waits = listUsageWaits().filter((row) => Date.parse(row.usage_wait_until) > Date.now())
+  for (const row of waits) armUsageWait(row.id, Date.parse(row.usage_wait_until))
+  return waits.length
 }
 
 // HZ-435: steps 0-2 of a lane item. Confirms the issue already carries an
@@ -1302,6 +1456,68 @@ async function runLaneCheck(id, stepIndex) {
   })
   dispatching.delete(id)
   notifyChange()
+  kick(id)
+}
+
+// HZ-446: what each server step (runsIn 'server') does, keyed by label like
+// MOCK_STEP_BEHAVIOR. It may be async (HZ-449): it returns or resolves
+// { summary, output? } — output, when given, is the run's recorded output in
+// place of the summary — or { stopped: true } when `stopped()` said the run
+// was stopped under it. A throw pauses the item.
+export const SERVER_STEP_BEHAVIOR = {
+  // HZ-449: files the Plan's approved drafts (server/src/planFiling.js).
+  'File items': (item, { stopped }) => fileDrafts(item, { stopped }),
+}
+
+const selectRunStatus = db.prepare('SELECT status FROM step_run WHERE id = ?')
+
+// HZ-446: one server step. Records a step_run (agent 'Horizon', as the row
+// names none), awaits the behaviour, moves the cursor on and kicks the next
+// step. Holds the dispatching mutex, taken by kick(), until it settles — so a
+// second kick() while it awaits is a no-op.
+//
+// HZ-449: the behaviour may await (File items calls GitHub), so its run can
+// be active across a restart; init() closes such a run and the restart runs
+// the step again from the top. After the await the run is checked again: a
+// pause, abandon or cancel closed it (and released the mutex, which a newer
+// run may hold), so a stale run never moves the cursor or touches the mutex.
+async function runServerStep(id, stepIndex) {
+  const step = STEPS[stepIndex]
+  const behavior = SERVER_STEP_BEHAVIOR[step.label]
+  const runId = db
+    .prepare('INSERT INTO step_run (item_id, step_index, attempt, agent) VALUES (?, ?, ?, ?)')
+    .run(id, stepIndex, nextStepAttempt(id, stepIndex).attempt, 'Horizon').lastInsertRowid
+  const stillActive = () => selectRunStatus.get(runId)?.status === 'active'
+  let result
+  try {
+    if (!behavior) throw new Error(`no server behaviour for “${step.label}”`)
+    result = await behavior(getItem(id), { stopped: () => !stillActive() })
+  } catch (err) {
+    if (!stillActive()) return
+    db.prepare("UPDATE step_run SET status = 'cancelled', output = ?, ended_at = datetime('now') WHERE id = ?").run(err.message, runId)
+    db.prepare(`UPDATE work_item SET ${PAUSE_SET}, updated_at = datetime('now') WHERE id = ?`).run(id)
+    addEvent(id, { who: 'Horizon', text: `paused: “${step.label}” failed — ${err.message}`, color: '#9C333E', initials: 'HZ' })
+    dispatching.delete(id)
+    notifyChange()
+    return
+  }
+  if (!stillActive()) return
+  const now = getItem(id)
+  if (result.stopped || !inFlightRunnable(now) || now.cursor !== stepIndex) {
+    db.prepare("UPDATE step_run SET status = 'cancelled', output = ?, ended_at = datetime('now') WHERE id = ?").run(
+      result.summary ?? 'stopped before it finished',
+      runId,
+    )
+    dispatching.delete(id)
+    notifyChange()
+    return
+  }
+  const { summary } = result
+  db.prepare("UPDATE step_run SET status = 'done', output = ?, ended_at = datetime('now') WHERE id = ?").run(result.output ?? summary, runId)
+  db.prepare("UPDATE work_item SET cursor = ?, updated_at = datetime('now') WHERE id = ?").run(nextCursor(getItem(id)), id)
+  addEvent(id, { who: 'Horizon', text: `completed “${step.label}” — ${summary}`, color: '#5E4380', initials: 'HZ' })
+  notifyChange()
+  dispatching.delete(id)
   kick(id)
 }
 
@@ -1361,7 +1577,7 @@ function clearReleaseFields(id) {
 
 // ---- farm-dispatched steps ----
 
-async function dispatchToFarm(id, stepIndex, runId, attempt, scope, checkoutSha = null) {
+async function dispatchToFarm(id, stepIndex, runId, attempt, scope, checkoutSha = null, runsOn = null) {
   const step = STEPS[stepIndex]
   let item = getItem(id)
 
@@ -1526,6 +1742,9 @@ async function dispatchToFarm(id, stepIndex, runId, attempt, scope, checkoutSha 
   if (truncationNotice) artifacts.unshift(truncationNotice)
   if (overlapInput) artifacts.push(overlapInput)
   if (stepIndex === REVIEW_STEP_INDEX) artifacts.push(buildStoredResultsInput(id))
+  // HZ-463: a Plan's review steps read the current draft, the Inventory's
+  // gaps and the open items in scope. Context only: completeFarmRun decides.
+  if (isPlanReviewStep(stepIndex)) artifacts.push(planReviewInput(item))
   // HZ-207: every farm step carries its own project; farmd refuses one
   // without a project or repo and never falls back to a global project.
   const project =
@@ -1572,8 +1791,13 @@ async function dispatchToFarm(id, stepIndex, runId, attempt, scope, checkoutSha 
       // HZ-357: copied into the task here, so a choice changed after this
       // hand-off applies to the next dispatch, never to this run. HZ-370:
       // merged with the project's defaults (the item's choice wins), copied
-      // the same way; a step with neither keeps today's routing.
-      providerChoices: resolveStepProviders(item.providerChoices, providerDefaultsFromRow(project)),
+      // the same way; a step with neither keeps today's routing. HZ-422: a
+      // usage-limit fallback overrides this task's copy only — the stored
+      // choice is never rewritten.
+      providerChoices: {
+        ...resolveStepProviders(item.providerChoices, providerDefaultsFromRow(project)),
+        ...(runsOn ? { [stepIndex]: entryKey(runsOn) } : {}),
+      },
       ...releaseFields,
     },
     step: { index: stepIndex, label: step.label, agent: step.agent },
@@ -1586,6 +1810,7 @@ async function dispatchToFarm(id, stepIndex, runId, attempt, scope, checkoutSha 
     ...(checkoutSha ? { checkout_sha: checkoutSha } : {}),
     ...(projectContext ? { project_context: projectContext } : {}),
     ...checkCommandsField(item),
+    ...planScopeField(item),
     ...rulesOverrideField(project?.name, item.repo),
     // HZ-431: Run plan's prompt names the interpreter Execute will use, so it
     // gets the same checkout and venv setting the Execute dispatch carries.
@@ -1605,6 +1830,15 @@ function checkCommandsField(item) {
   if (checkCommands) return { check_commands: checkCommands }
   const waiver = checksWaiverFor(item)
   return waiver ? { checks_waiver: waiver } : {}
+}
+
+// HZ-447: a Plan's farm steps carry its repo scope — the repos Inventory and
+// Design may read, each with its latest check, and every other connected
+// repo, which the farm only masks. Absent for every other kind.
+export function planScopeField(item) {
+  if (itemKindOf(item) !== 'plan') return {}
+  const { repos, outOfScope } = getPlanScope(item.id)
+  return { plan_scope: { repos, out_of_scope: outOfScope } }
 }
 
 // ---- repo readiness (HZ-304) ----
@@ -1796,6 +2030,62 @@ export function markFarmRunStarted(runId) {
   return { ok: true, active: true }
 }
 
+// HZ-458: the execution budget a run has left. Time it spent in the farm's
+// repo checks (checks_ms) is not agent time and is not counted. Shared by the
+// /checks callback and restart re-arming so the two can't drift apart.
+function remainingExecutionMs(run, budget, checksMs = run.checks_ms || 0) {
+  const anchor = run.agent_started_at || run.started_at
+  const elapsedMs = Date.now() - new Date(anchor).getTime() - checksMs
+  return Math.max(0, budget - elapsedMs)
+}
+
+// What is left of the FARM_CHECKS_PAUSE_MAX_MS backstop for a check window
+// opened at checksStartedAt.
+function remainingChecksPauseMs(checksStartedAt) {
+  return Math.max(0, FARM_CHECKS_PAUSE_MAX_MS - (Date.now() - new Date(checksStartedAt).getTime()))
+}
+
+function armStepTimer(runId, ms) {
+  // HZ-378: unref'd like every other run watchdog.
+  timers[runId] = setTimeout(() => failFarmRun(runId, 'step timed out', REASON.TIMEOUT), ms).unref()
+}
+
+// Called from POST /api/farm/steps/:runId/checks, relayed by farmd from the
+// implement step around each run of the repo checks (farm/step_agent.py's
+// _notify_checks, HZ-458). `start` pauses the step clock: only the
+// FARM_CHECKS_PAUSE_MAX_MS backstop runs, so a farm that dies mid-check still
+// fails the run. `end` adds the window to checks_ms and re-arms what is left
+// of the execution budget. A red check sent back to the agent for a fix can
+// therefore never push a good attempt into a timeout; agent time alone still can.
+//
+// Idempotent: a repeated `start` keeps the open window, and an `end` with no
+// open window changes nothing. An inactive run reports `active: false` and is
+// never written.
+export function markFarmRunChecks(runId, phase) {
+  const run = db.prepare('SELECT * FROM step_run WHERE id = ?').get(runId)
+  if (!run || run.status !== 'active') return { ok: true, active: false }
+  const budget = executionBudgetFor(run.step_index)
+  const checksMs = run.checks_ms || 0
+  if (phase === 'start') {
+    if (run.checks_started_at) return { ok: true, active: true, checks_ms: checksMs }
+    const startedAt = new Date().toISOString()
+    db.prepare('UPDATE step_run SET checks_started_at = ? WHERE id = ?').run(startedAt, runId)
+    if (budget != null) {
+      clearTimeout(timers[runId])
+      armStepTimer(runId, remainingChecksPauseMs(startedAt))
+    }
+    return { ok: true, active: true, checks_ms: checksMs }
+  }
+  if (!run.checks_started_at) return { ok: true, active: true, checks_ms: checksMs }
+  const total = checksMs + Math.max(0, Date.now() - new Date(run.checks_started_at).getTime())
+  db.prepare('UPDATE step_run SET checks_ms = ?, checks_started_at = NULL WHERE id = ?').run(total, runId)
+  if (budget != null) {
+    clearTimeout(timers[runId])
+    armStepTimer(runId, remainingExecutionMs(run, budget, total))
+  }
+  return { ok: true, active: true, checks_ms: total }
+}
+
 // Which work_item columns an agent may patch — DERIVED from domain/fields.json
 // (HZ-134), the same document farm/pm_steps.py builds its PATCH_FIELDS from, so
 // the two sides of the wire cannot disagree about which fields exist. Only the
@@ -1853,8 +2143,12 @@ const CRITERIA_FIELDS = ['metric', 'guardrails']
 // every change row, so the change gate's index alone would lock a Task's
 // steps 0-2 out of the metric and guardrails they exist to write. A Task
 // locks after "Approve the run", where a human approves the plan its metric
-// judges.
-const CRITERIA_LOCK_GATES = { change: EXECUTION_GATE_INDEX, task: APPROVE_RUN_GATE_INDEX }
+// judges. HZ-446: a Plan locks after "Approve & file", its human-only gate.
+const CRITERIA_LOCK_GATES = {
+  change: EXECUTION_GATE_INDEX,
+  task: APPROVE_RUN_GATE_INDEX,
+  plan: APPROVE_FILE_GATE_INDEX,
+}
 
 function lockCriteriaPatch(item, stepIndex, patch) {
   if (!patch || stepIndex <= CRITERIA_LOCK_GATES[itemKindOf(item)]) return { patch, blocked: [] }
@@ -2586,6 +2880,26 @@ export async function completeFarmRun(runId, { summary, patch, artifacts, job_vi
     artifactMd = proposeSplit(item, runId, artifacts?.split, artifactMd)
   }
 
+  // HZ-448: the Draft items reply's plan_draft is checked with the server's
+  // own context (planDraft.js) and saved as the Plan's next draft version; its
+  // items table is appended to the artifact for the gate card. A missing or
+  // invalid draft fails the run and saves nothing. Nothing is filed either way.
+  if (run.step_index === PLAN_DRAFT_STEP_INDEX) {
+    const drafted = ingestDraft(item, runId, artifacts?.plan_draft, agent.label)
+    if (drafted.error) {
+      const why = drafted.errors.map((e) => `${e.message} (at ${e.path})`).join('; ')
+      return failFarmRun(runId, `invalid plan draft: ${why}`, REASON.INVALID_PLAN_DRAFT)
+    }
+    artifactMd = [artifactMd, renderPlanDraftMd(artifacts.plan_draft)].filter(Boolean).join('\n\n')
+  }
+
+  // HZ-463: a Plan review step's findings are decided here, from the current
+  // draft and the agent's plan_review, and appended for the Approve & file
+  // gate. A finding never fails the step, and nothing is written but the run.
+  if (isPlanReviewStep(run.step_index)) {
+    artifactMd = [artifactMd, reviewStep(item, run.step_index, artifacts?.plan_review).md].filter(Boolean).join('\n\n')
+  }
+
   // HZ-379: a step whose reply asks for items (domain/steps.json's spawnsOn)
   // files them before it completes. A malformed ask or a failed filing fails
   // the run, so it never advances without them; a retry asks under the same
@@ -2688,7 +3002,7 @@ const FAILED_OUTPUT_MAX_CHARS = 2000
 // detected the failure) or null/unrecognized — only a tagged reason, under
 // the cap, on a still-runnable item is ever auto-retried. Everything else
 // pauses for a human exactly as it always has (HZ-76's default-safe rule).
-export function failFarmRun(runId, error, reason = null, jobView = null) {
+export function failFarmRun(runId, error, reason = null, jobView = null, limit = null) {
   const run = db.prepare('SELECT * FROM step_run WHERE id = ?').get(runId)
   if (!run || run.status !== 'active') return { ok: true, stale: true }
   const id = run.item_id
@@ -2696,6 +3010,39 @@ export function failFarmRun(runId, error, reason = null, jobView = null) {
   clearTimeout(timers[runId])
   delete timers[runId]
   dispatching.delete(id) // this run is now terminal — release before any retry kick() below re-acquires it
+
+  // HZ-422: a usage limit names the model that hit it. That model is skipped
+  // until its reset, and the step re-runs on the next one in its chain at the
+  // same attempt. Written "USAGE LIMITED:", not "FAILED:", so the caretaker
+  // never counts it as a failure. Without a model (an older farm), or when
+  // the farm ran another model than the one dispatched, it falls through to
+  // the generic retry below, which counts.
+  if (reason === REASON.USAGE_LIMITED && declares(limit?.provider, limit?.model)) {
+    const nowMs = Date.now()
+    const resetIso = new Date(resetMs(limit.reset_at, nowMs)).toISOString()
+    markModelLimited(limit.provider, limit.model, resetIso, String(error).slice(0, 300))
+    const key = entryKey(limit)
+    if (
+      STEPS[run.step_index]?.runsIn !== 'job' &&
+      runnable(getItem(id)) &&
+      (run.runs_on == null || run.runs_on === key)
+    ) {
+      db.prepare(
+        "UPDATE step_run SET status = 'cancelled', usage_limit_hit = 1, provider = ?, model = ?, output = ?, ended_at = datetime('now') WHERE id = ?",
+      ).run(limit.provider, limit.model, `USAGE LIMITED: ${String(error).slice(0, FAILED_OUTPUT_MAX_CHARS)}`, runId)
+      if (FARM_URL) farmFetch('/steps/cancel', { run_id: runId }).catch(() => {})
+      addEvent(id, {
+        who: 'Horizon',
+        text: `${entryLabel(key)} hit a usage limit until ${formatResetTime(resetIso)} — running “${STEPS[run.step_index].label}” on the next model, same attempt`,
+        color: '#DFA200',
+        initials: 'HZ',
+      })
+      notifyChange()
+      kick(id)
+      emitStepEnded(id)
+      return { ok: true, fellBack: true }
+    }
+  }
 
   // HZ-407: a job's final view (the farm's, else the last one stored) is
   // written with the close, and no command in it is left `running`.
@@ -3024,7 +3371,7 @@ async function runMockStep(id, stepIndex, runId) {
   const step = STEPS[stepIndex]
   const agent = AGENTS[step.agent]
   const behavior = MOCK_STEP_BEHAVIOR[step.label] || (() => ({ summary: `completed ${step.label.toLowerCase()}` }))
-  let { summary, patch, verdict, failure, artifact_md: artifactMd } = await behavior(item)
+  let { summary, patch, verdict, failure, artifact_md: artifactMd, plan_draft: planDraft, plan_review: planReview } = await behavior(item)
   // HZ-304: a mock step that refused to run (an unready repo) fails the run
   // the way the farm path does — paused for a human, never auto-retried.
   if (failure) {
@@ -3055,6 +3402,15 @@ async function runMockStep(id, stepIndex, runId) {
 
   if (patch) patch = applyCriteriaLock(id, after, stepIndex, patch)
   if (patch) writeWorkItemPatch(id, after, patch)
+
+  // HZ-448: the mock Draft's draft is saved the way the farm path saves one.
+  if (stepIndex === PLAN_DRAFT_STEP_INDEX && planDraft) {
+    const drafted = ingestDraft(after, runId, planDraft, agent.label)
+    if (drafted.error) return failFarmRun(runId, `invalid plan draft: ${drafted.errors[0].message}`, REASON.INVALID_PLAN_DRAFT)
+    artifactMd = renderPlanDraftMd(planDraft)
+  }
+  // HZ-463: the mock review's findings are decided the way the farm path's are.
+  if (isPlanReviewStep(stepIndex)) artifactMd = [artifactMd, reviewStep(after, stepIndex, planReview).md].filter(Boolean).join('\n\n')
 
   if (stepIndex === REVIEW_STEP_INDEX) {
     // finalizeReviewStep releases the busy mutex itself before it calls kick().
@@ -3335,11 +3691,17 @@ export async function init(log) {
   // listItems() — a plain object lookup, never a network call, so
   // snapshot()/listItems() stay synchronous (HZ-54).
   registerRunStateProvider(() => farm.runStates || {})
+  // HZ-481: the card's deploy line reads the drain block and its steps.
+  registerDeployDrainProvider({ block: deployBlock, survives: survivesRestart })
   // Default the active project to the first one if never chosen.
   if (!getSetting('active_project_id')) {
     const first = db.prepare('SELECT id FROM project ORDER BY id LIMIT 1').get()
     if (first) setSetting('active_project_id', String(first.id))
   }
+  // HZ-449: a server step's run is in this process's memory only — one a
+  // restart left active is closed here, before the farm re-arm below would
+  // take it for a farm run and hold its item. Resume runs the step again.
+  closeOrphanedServerRuns()
   // HZ-216: end gate actions whose lease ran out — one a restart orphaned
   // becomes `interrupted` and its gate re-opens — now and every minute.
   sweepGateActions()
@@ -3365,6 +3727,9 @@ export async function init(log) {
     // queue watchdog a freshly-dispatched run actually needs.
     const rearmed = rearmFarmRuns()
     if (rearmed > 0) log.info(`Re-armed watchdogs for ${rearmed} in-flight farm run(s)`)
+    // HZ-422: items waiting for a usage limit to reset get their timers back.
+    const waiting = rearmUsageWaits()
+    if (waiting > 0) log.info(`Re-armed usage-limit waits for ${waiting} item(s)`)
     setInterval(pollRunStates, RUN_STATE_POLL_MS).unref()
     // Re-probe a farm we've lost contact with. startRealFarm() pins
     // status:'error' when it can't reach farmd, and runnable() refuses to
@@ -3403,7 +3768,9 @@ export async function init(log) {
 // to get subtly wrong — see the two cases commented inline below).
 export function rearmFarmRuns() {
   const active = db
-    .prepare("SELECT id, item_id, step_index, agent_started_at, started_at FROM step_run WHERE status = 'active'")
+    .prepare(
+      "SELECT id, item_id, step_index, agent_started_at, started_at, checks_ms, checks_started_at FROM step_run WHERE status = 'active'",
+    )
     .all()
     // A row that already has a timer was just (re-)dispatched by something
     // else already running in this process — most notably, init()'s reconcile
@@ -3427,13 +3794,12 @@ export function rearmFarmRuns() {
     // right after the very deploy meant to stop premature cancellation. The
     // cost is a genuinely-still-queued step gets a more generous — but still
     // bounded — window than usual on a restart.
-    const anchor = run.agent_started_at || run.started_at
-    const elapsedMs = Date.now() - new Date(anchor).getTime()
+    //
+    // HZ-458: time spent in the farm's checks (checks_ms) is not counted, and
+    // a run restarted mid-check stays paused: only the backstop is armed.
     const budget = executionBudgetFor(run.step_index)
     if (budget != null) {
-      const remainingMs = Math.max(0, budget - elapsedMs)
-      // HZ-378: unref'd like the dispatch-time watchdogs — never the handle that holds the process open.
-      timers[run.id] = setTimeout(() => failFarmRun(run.id, 'step timed out', REASON.TIMEOUT), remainingMs).unref()
+      armStepTimer(run.id, run.checks_started_at ? remainingChecksPauseMs(run.checks_started_at) : remainingExecutionMs(run, budget))
     }
     // Re-key removed the free busy-mutex side effect timers[item_id] used to
     // give kick() — without this, a restart would leave every one of these
@@ -3442,6 +3808,18 @@ export function rearmFarmRuns() {
     dispatching.add(run.item_id)
   }
   return active.length
+}
+
+// Closes every active run at a server step (isServerStep). Exported for tests.
+export function closeOrphanedServerRuns() {
+  const indexes = STEPS.map((_, i) => i).filter(isServerStep)
+  if (indexes.length === 0) return 0
+  return db
+    .prepare(
+      `UPDATE step_run SET status = 'cancelled', output = COALESCE(output, 'stopped by a server restart'), ended_at = datetime('now')
+       WHERE status = 'active' AND step_index IN (${indexes.map(() => '?').join(', ')})`,
+    )
+    .run(...indexes).changes
 }
 
 function closeAllOrphanedRuns() {

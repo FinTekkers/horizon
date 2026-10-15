@@ -58,18 +58,30 @@ LINE_BUDGETED_STEPS = {
     "Guardrails": "guardrails",
 }
 
+# HZ-446: a label that is a PM step in more than one kind, and owns the SAME
+# field in each, mapped to exactly those kinds. A Plan's "Set guardrails"
+# writes guardrails, as the change step of that name does. Any other shared
+# label, or this one in another kind, still fails the check below.
+SHARED_LINE_BUDGETS = {"Set guardrails": frozenset({"change", "plan"})}
 
-def _assert_line_budgets_are_kind_safe(budgeted: dict, rows_by_kind: dict) -> None:
+
+def _assert_line_budgets_are_kind_safe(budgeted: dict, rows_by_kind: dict, shared_ok: dict | None = None) -> None:
     """Raise if a LINE_BUDGETED_STEPS label is not a PM step in any kind, or
     if one label is a PM step in two kinds while the map can only give it one
-    field. Pure, so a test can call it with a fabricated table."""
+    field — unless `shared_ok` names that label with exactly those kinds.
+    Pure, so a test can call it with a fabricated table."""
+    shared_ok = shared_ok or {}
     kinds_for = {}
     for kind, rows in rows_by_kind.items():
         for row in rows:
             if row.get("runsIn") == "pm":
                 kinds_for.setdefault(row["label"], set()).add(kind)
     unknown = sorted(label for label in budgeted if label not in kinds_for)
-    shared = sorted(label for label in budgeted if len(kinds_for.get(label, ())) > 1)
+    shared = sorted(
+        label
+        for label in budgeted
+        if len(kinds_for.get(label, ())) > 1 and kinds_for[label] != set(shared_ok.get(label, ()))
+    )
     if unknown or shared:
         raise RuntimeError(
             "pm_steps.LINE_BUDGETED_STEPS is keyed by label alone — "
@@ -77,7 +89,9 @@ def _assert_line_budgets_are_kind_safe(budgeted: dict, rows_by_kind: dict) -> No
         )
 
 
-_assert_line_budgets_are_kind_safe(LINE_BUDGETED_STEPS, {kind: steps.steps_for(kind) for kind in steps.FARM_VIEWS})
+_assert_line_budgets_are_kind_safe(
+    LINE_BUDGETED_STEPS, {kind: steps.steps_for(kind) for kind in steps.FARM_VIEWS}, SHARED_LINE_BUDGETS
+)
 
 # The placeholder farm/roles/pm.md carries in place of the numbers. Substituted
 # below so the prompt cannot state a budget validate() no longer enforces.

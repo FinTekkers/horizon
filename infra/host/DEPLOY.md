@@ -272,6 +272,7 @@ unset on this host, so the code default of 4 is in force.
 | File | Var | Value to set | Notes |
 |---|---|---|---|
 | `/etc/horizon/farm.env` | `FARM_MAX_EPHEMERAL` | `6` | how many agent steps run at once. The code default in `farm/farmd.py` stays **4** on purpose: raising the default would silently re-raise the cap on every other host |
+| `/etc/horizon/farm.env` | `FARM_EXPRESS_SLOTS` | (unset ⇒ 1) | HZ-477: extra agent slots that only short steps (planning and reviews, `"short": true` in `domain/steps.json`) may use, next to the `FARM_MAX_EPHEMERAL` general ones. `0` turns the express slot off; the queue still starts the furthest-along step first |
 | `/etc/horizon/farm.env` | `FARM_MAX_CONCURRENT_CHECKS` | `2` | how many check suites run at once. **Set this before raising the line above** |
 | `/etc/horizon/farm.env` | `FARM_CHECK_SLOT_WAIT_MAX_S` | (unset ⇒ 1200) | how long a run waits for a check slot before proceeding **without** one. Sized above the worst legitimate queue (2 waves × the measured p95 suite) and below the step watchdog — do not lower it to "fail faster", that disables the cap under load |
 | `/etc/horizon/farm.env` | `FARM_CHECK_METRICS_PHASE` | measurement only | tags records during a measurement window; remove it afterwards |
@@ -296,8 +297,8 @@ the failure this pairing exists to prevent — it was observed live on 30 Sept
 Confirm afterwards:
 
 ```
-curl -s localhost:4100/farm/status | python3 -m json.tool   # agents.limit, checks.limit
-tmux list-sessions | grep -c farm-run-                      # never exceeds agents.limit
+curl -s localhost:4100/farm/status | python3 -m json.tool   # agents.limit, express.limit, checks.limit
+tmux list-sessions | grep -c farm-run-                      # never exceeds agents.limit + express.limit + pm_agents.limit
 farm/.venv/bin/python -m farm.tools.check_session_env       # no INFO line about FARM_MAX_EPHEMERAL
 ```
 
@@ -550,6 +551,35 @@ Notes:
   sessions, which is why the drain checkpoints them first. The systemd units
   and the sudoers file are unchanged.
 
+### Steps that survive a restart (HZ-469)
+
+The drain waits only for steps a restart would lose. `RESTART_SURVIVAL` in
+`server/src/deployDrain.js` says, for each step kind (`runsIn`), whether a
+running step of that kind still finishes and reports after the server and
+the farm restart. `farm/tests/test_step_survives_restart.py` decides it: it
+holds one step of each kind on a throwaway instance (its own DB, `FARM_HOME`
+and tmux server, never `systemctl`), kills and reboots the server and
+farmd, and fails if the result differs from the table.
+
+| Kind | Restart result | Drained |
+| --- | --- | --- |
+| `job` | survives: farmd keeps the result until the server takes it (HZ-408) | no, and never listed |
+| `farm` | lost: a result that comes back while the server is down is dropped, and the step runs again | yes |
+| `pm` | lost, the same way as `farm` | yes |
+| `server` | lost: it runs inside the server process | yes |
+
+A kind not in the table counts as lost and is drained. Each step the drain
+routes list carries `kind` and `survives`. The helper waits for every step
+whose `survives` is not `true`, so an older server's steps are all waited
+for. A surviving step is logged once as `DRAIN not waiting for <k> step(s)
+that survive a restart: <item> <step>, …`, and it is never checkpointed. The
+waits, the checkpoint, rollback and health checks are unchanged.
+
+**Today this narrows nothing.** Only `job` survives, and the drain already
+left jobs out. Once a `farm` or `pm` result survives the server being down,
+the restart test fails, and flipping that kind's row in the table stops the
+drain waiting for it.
+
 ## Deploy queue: one release per batch (HZ-333)
 
 Step 14 no longer publishes a release per item. An item joins its deploy
@@ -562,6 +592,11 @@ target's queue (`server/src/deployQueue.js`, rows in `deploy_batch` and
   is deploying on that target, Horizon reads main's head and publishes **one**
   release pinned to it. The webhook deploys it as before. Targets are
   independent; one target runs one deploy at a time.
+- **Express (HZ-469).** When an open item (not closed, not abandoned)
+  depends on an item queued in the open batch, the window closes on the next
+  queue tick and the batch publishes then. The batch's `window_closes_at` is
+  set to that moment, and the queued item's history records the time it
+  replaced. A running job in the repo still holds the batch, as before.
 - **Tag.** `deploy-<target>-<yyyymmdd>-b<batch id>`, e.g.
   `deploy-horizon-20261007-b7`. It is saved before the GitHub call and looked
   up first on every retry or restart, so a batch never publishes a second
@@ -762,6 +797,42 @@ HORIZON_TEST_PODMAN_IMAGE=docker.io/library/python:3.12-slim \
 - **Roll back** by reverting the release and restarting `horizon-farm`; the
   three nullable `deploy_target` columns stay harmless. A single plan can
   opt out with `runner: host` without a deploy.
+
+## Build command (HZ-442)
+
+Each deploy target can name its own build in Admin → Deploy target
+overrides: **Build command (optional)** (`buildCommand`, column
+`build_command`), for example `python build.py --local`. Each repo owns how
+it is built; Horizon only knows the command to call.
+
+- **Where it applies.** `deploy.js` passes it to the script as
+  `HORIZON_BUILD_COMMAND`, and these scripts run it with `bash -c` in the
+  deployed checkout instead of their own build:
+  - `deploy-grpc-service.sh` (valuation, price, broker, ledger) — instead of
+    the wrapper's `DEPLOY_BUILD`, at both `build` and `rollback-build`;
+  - `deploy-ui-service.sh` — instead of `npm ci` and `npm run build`;
+  - `deploy-code-only.sh` (market-data-inputs) — instead of
+    `scripts/checks/install.sh`, at install and in the restore.
+    `DEPLOY_STRIP_ENV` still applies and `test.sh` still runs.
+
+  `deploy-horizon.sh`, `deploy-shoreward.sh` and `deploy-publish-release.sh`
+  ignore it, so a build command on those targets does nothing, and nothing
+  ever runs in `/opt/horizon`.
+- **Empty means unchanged.** With the field empty, `deploy.js` drops any
+  `HORIZON_BUILD_COMMAND` from the script's environment and the script runs
+  its usual build.
+- **The log names what ran.** Before building, each script logs
+  `build: <command>` to `~/.horizon/<stateKey>/self-deploy.log`, or its
+  default (`build: <DEPLOY_BUILD>`, `build: npm ci && npm run build`,
+  `build: scripts/checks/install.sh`).
+- **Failure.** A failing command fails the deploy exactly like a failing
+  build: `DEPLOY FAILED: build` (or `install` for code-only), with the same
+  rollback or restore. A gRPC rollback runs the current command at the
+  last-good commit, so the command must work there too.
+- **Validation.** One line, no control characters, at most 500 characters,
+  not just spaces. It is shown in Admin and written to the deploy log, so it
+  must never hold a secret.
+- **Roll back** by clearing the field: the next deploy runs the usual build.
 
 ## Code-only targets (HZ-353)
 

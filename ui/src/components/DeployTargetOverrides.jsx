@@ -14,6 +14,8 @@ const FIELDS = [
   { name: 'service', label: 'Service' },
   { name: 'extraServices', label: 'Extra services (comma-separated)' },
   { name: 'repoDir', label: 'Repo dir' },
+  // HZ-442: run in the checkout instead of the deploy script's own build.
+  { name: 'buildCommand', label: 'Build command (optional)', maxLength: 500 },
   // HZ-440: where a Task's commands run, when not the deploy checkout.
   { name: 'taskDir', label: 'Task dir (optional)' },
   // HZ-416: the throwaway container an Execute job runs in — empty is none.
@@ -44,6 +46,7 @@ function formValues(repo, target) {
   return {
     ...target,
     taskDir: target.taskDir ?? '',
+    buildCommand: target.buildCommand ?? '',
     containerImage: target.containerImage ?? '',
     cpuLimit: target.cpuLimit ?? '',
     memoryLimit: target.memoryLimit ?? '',
@@ -58,6 +61,7 @@ function bodyOf(repo, values) {
   for (const { name } of FIELDS) if (name !== 'key' && name !== 'extraServices') body[name] = (fields[name] ?? '').trim()
   // Optional: an empty task dir or container field is "none" (the schema refuses '').
   body.taskDir = body.taskDir || null
+  body.buildCommand = body.buildCommand || null
   body.containerImage = body.containerImage || null
   body.cpuLimit = body.cpuLimit || null
   body.memoryLimit = body.memoryLimit || null
@@ -155,18 +159,24 @@ function OverrideRow({ repo, target, onChanged }) {
             setPrompting(true)
           }}
         >
-          {FIELDS.map(({ name, label }) => (
+          {FIELDS.map(({ name, label, maxLength = 300 }) => (
             <Fragment key={name}>
               <label className="field">
                 <span className="field__label">{label}</span>
                 <input
                   className="field__input"
-                  maxLength={300}
+                  maxLength={maxLength}
                   readOnly={name === 'key' && !!target}
                   value={values[name]}
                   onChange={(e) => setValues({ ...values, [name]: e.target.value })}
                 />
               </label>
+              {name === 'buildCommand' && (
+                <div className="gh-note">
+                  Runs in the deployed checkout instead of the script's own build. Only the gRPC service, UI service and
+                  code-only deploy scripts use it; empty runs their usual build.
+                </div>
+              )}
               {name === 'healthCheckType' && (
                 <div className="gh-note">
                   Informational only — it does not change how real deploys run. The target's script decides how

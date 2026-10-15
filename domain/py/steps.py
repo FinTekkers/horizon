@@ -230,7 +230,8 @@ def _project_farm_view(steps: list[dict], kind: str = "change") -> list[dict]:
     (HZ-378 forbids agent budgets there). `requires` is deliberately dropped:
     it gates a server-side dispatch decision, never a farm one. runsIn 'none'
     rows are dropped too (HZ-377): a step with no runner is dispatched by no
-    lane, so the farm never sees it.
+    lane, so the farm never sees it. So are runsIn 'server' rows (HZ-446):
+    Horizon runs them in its own process, with no agent.
 
     HZ-383: one item kind's rows only, `change` by default. Two kinds may share
     a label, so a view mixing them would let a label lookup resolve to the
@@ -248,7 +249,7 @@ def _project_farm_view(steps: list[dict], kind: str = "change") -> list[dict]:
             "timeoutS": step.get("timeoutS"),
         }
         for index, step in enumerate(steps)
-        if step.get("kind") == "agent" and step.get("runsIn") != "none" and _step_kind(step) == kind
+        if step.get("kind") == "agent" and step.get("runsIn") not in ("none", "server") and _step_kind(step) == kind
     ]
 
 
@@ -258,6 +259,9 @@ _KINDS: dict = _SOURCE.get("kinds") or {"change": {"phases": _SOURCE["phases"]}}
 
 PHASES: list[str] = _SOURCE["phases"]
 STEPS: list[dict] = _project_farm_view(_SOURCE["steps"])
+# HZ-449: each declared lane and the item kind it belongs to, in declaration
+# order — domain/py/plan_draft.py checks a draft's lane against its kind.
+LANE_KINDS: dict[str, str] = {lane: entry["itemKind"] for lane, entry in (_SOURCE.get("lanes") or {}).items()}
 # HZ-383: every kind's farm view, STEPS (the `change` one) included. A kind
 # with no farm-run rows gets an empty view, never a missing key.
 FARM_VIEWS: dict[str, list[dict]] = {

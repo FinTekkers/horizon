@@ -151,22 +151,23 @@ def test_implement_step_with_no_check_commands_and_no_waiver_fails_by_name(tmp_p
 def test_implement_step_fails_when_checks_fail(tmp_path, monkeypatch):
     ws, origin = make_git_workspace(tmp_path)
     monkeypatch.setattr(step_agent, "ensure_item_worktree", lambda repo, item_id: ws)
+    # HZ-458: today's single check run; the fix loop has its own tests.
+    monkeypatch.setenv("FARM_FIX_LOOP_CAP", "0")
     monkeypatch.setenv("FARM_CHECK_CMD", "exit 1")
 
     with pytest.raises(RuntimeError, match="repo checks failed"):
         execute(make_task(11, "Specialist agent implements", repo="acme/demo"))
 
-    # Guardrails are enforced before the finalize push, not after: the only
-    # thing pushed is a WIP checkpoint of the work (HZ-184), never the
-    # finished commit a PR is opened from.
+    # Guardrails are enforced before the finalize step, not after: the work
+    # is pushed to the item's own branch as a checkpoint before the checks
+    # (HZ-456), the run raises, and no PR is opened from it.
     log_text = subprocess.run(
-        ["git", "--git-dir", str(origin), "log", "--format=%s", "horizon/t-1"],
+        ["git", "--git-dir", str(origin), "log", "--format=%s", "main..horizon/t-1"],
         capture_output=True,
         text=True,
         check=True,
     ).stdout
-    assert log_text.splitlines()[0] == f"T-1: {step_agent.CHECKPOINT_MARKER} (Horizon Eng agent)"
-    assert "T-1: Test item (Horizon Eng agent)" not in log_text
+    assert log_text.splitlines() == ["T-1: Test item (Horizon Eng agent)"]
 
 
 def test_implement_step_runs_exactly_the_tasks_configured_check_commands(tmp_path, monkeypatch):
@@ -329,6 +330,26 @@ def test_implement_role_treats_test_contract_as_binding():
     assert "It overrides the Required list in QA's plan review." in text
     assert "Optional cases are allowed only if cheap." in text
     assert "each Test contract case needs a test that would fail without your change." in text
+
+
+def test_implement_role_asks_for_targeted_tests_only():
+    """HZ-458 metric 1: the agent runs the tests for what it changed; the
+    farm's checks run the full suites, once."""
+    text = _role_text("eng_implement.md")
+    # No instruction to run the full suites, or to get them green itself.
+    assert "run every check the harness will run" not in text
+    assert "A red check discards the whole attempt." not in text
+    for suite in ("npm test", "npm run lint", "npm run test:e2e", "pytest"):
+        for sentence in re.split(r"(?<=[.:])\s", text):
+            if f"`{suite}`" in sentence or f"`{suite}` with no path" in sentence:
+                assert sentence.startswith("Do not run the full suites"), sentence
+    assert (
+        "run only your new tests and the test files for the files you touched, for example "
+        "`node --test server/test/<file>.test.mjs` or `pytest farm/tests/test_<x>.py`, and get them green."
+    ) in text
+    assert "Do not run the full suites (`npm test`, `npm run lint`, `npm run test:e2e`, or `pytest` with no path)" in text
+    assert "If a farm check fails, its failure output comes back to you in this same session. Fix only that failure." in text
+    assert "do not delete, skip or loosen a test, lint rule or check config to turn a check green." in text
 
 
 def test_implement_role_tells_agents_to_shrink_screenshots_before_reading_them():
@@ -1992,6 +2013,11 @@ def origin_body(origin, ref="horizon/t-1"):
     ).stdout
 
 
+def precheck_state_text(ws):
+    """HZ-456: the git-dir file naming the commit pushed before the checks."""
+    return step_agent._git_path(ws, step_agent.PRECHECK_CHECKPOINT).read_text()
+
+
 def finished_run(ws, filename="fake_implementation.txt", text="finished work\n"):
     """A run_agent that completes normally after writing one file."""
 
@@ -2010,6 +2036,8 @@ def test_checks_failure_after_finished_run_pushes_checkpoint_and_next_attempt_re
     with the failure in its prompt."""
     ws, origin = make_git_workspace(tmp_path)
     monkeypatch.setattr(step_agent, "ensure_item_worktree", lambda repo, item_id: ws)
+    # HZ-458: today's single check run; the fix loop has its own tests.
+    monkeypatch.setenv("FARM_FIX_LOOP_CAP", "0")
     monkeypatch.setenv("FARM_CHECK_CMD", "echo 'ok 1 - fine'; echo 'not ok 2 - widget renders'; echo '# fail 1'; exit 1")
     monkeypatch.setattr(step_agent, "run_agent", finished_run(ws))
     spies = []
@@ -2020,11 +2048,13 @@ def test_checks_failure_after_finished_run_pushes_checkpoint_and_next_attempt_re
         execute(make_task(11, "Specialist agent implements", repo="acme/demo"))
 
     assert spies == []
-    assert origin_log(origin).splitlines()[0] == f"T-1: {step_agent.CHECKPOINT_MARKER} (Horizon Eng agent)"
-    body = origin_body(origin)
-    assert body.startswith("cause: checks-failed")
-    assert "not ok 2 - widget renders" in body
-    assert "# fail 1" in body  # a '#' line survives the commit message cleanup
+    # HZ-456: the farm commit was pushed before the checks; the failure is
+    # recorded beside it, never amended into it.
+    assert origin_log(origin).splitlines()[0] == "T-1: Test item (Horizon Eng agent)"
+    state = precheck_state_text(ws)
+    assert state.splitlines()[:2] == [rev(ws, "HEAD"), "checks-failed"]
+    assert "not ok 2 - widget renders" in state
+    assert "# fail 1" in state
 
     # Attempt 2: checks now pass. Leftovers in the worktree are scrubbed, but
     # attempt 1's work is there before the agent starts — from the checkpoint.
@@ -2053,6 +2083,8 @@ def test_checks_failure_with_no_edits_still_checkpoints_the_failure(tmp_path, mo
     must still learn what failed — so the checkpoint is committed empty."""
     ws, origin = make_git_workspace(tmp_path)
     monkeypatch.setattr(step_agent, "ensure_item_worktree", lambda repo, item_id: ws)
+    # HZ-458: today's single check run; the fix loop has its own tests.
+    monkeypatch.setenv("FARM_FIX_LOOP_CAP", "0")
     monkeypatch.setenv("FARM_CHECK_CMD", "echo 'FAILED tests/test_main.py::test_broken_on_main'; exit 1")
     monkeypatch.setattr(step_agent, "run_agent", finished_run(ws, filename=None))
 
@@ -2097,6 +2129,8 @@ def test_check_output_secrets_never_reach_the_commit_body_or_log(tmp_path, monke
     monkeypatch.setattr(step_agent, "ensure_item_worktree", lambda repo, item_id: ws)
     monkeypatch.setenv("GITHUB_TOKEN", secret)
     monkeypatch.setattr(checks, "_check_env", lambda: {k: v for k, v in os.environ.items() if k != "GITHUB_TOKEN"})
+    # HZ-458: today's single check run; the fix loop has its own tests.
+    monkeypatch.setenv("FARM_FIX_LOOP_CAP", "0")
     monkeypatch.setenv("FARM_CHECK_CMD", f"echo \"not ok 1 - auth with $(cat {secret_file})\"; exit 1")
     monkeypatch.setattr(step_agent, "run_agent", finished_run(ws))
 
@@ -2105,7 +2139,8 @@ def test_check_output_secrets_never_reach_the_commit_body_or_log(tmp_path, monke
 
     assert secret not in str(err.value) and "not ok 1 - auth with [redacted]" in str(err.value)
     assert secret not in err.value.digest
-    assert secret not in origin_body(origin) and "[redacted]" in origin_body(origin)
+    assert secret not in precheck_state_text(ws) and "[redacted]" in precheck_state_text(ws)
+    assert secret not in origin_body(origin)
     assert secret not in capsys.readouterr().out
 
 
@@ -2590,6 +2625,34 @@ def test_main_tags_an_sdk_message_overflow_as_retryable_without_its_payload(tmp_
     failed = [line for line in out.splitlines() if "FAILED" in line]
     assert failed == [failed[0]] and failed[0].endswith(f"FAILED — {message}")
     assert "iVBORw0KGgo" not in out
+
+
+def test_main_tags_a_usage_limit_with_its_reset_provider_and_model(tmp_path, monkeypatch):
+    """HZ-422: the fail body carries the retryable reason plus what hit the
+    limit and when it lifts, so the server can fall back to the next model."""
+    from farm.agent_runner import AgentUsageLimitedError
+
+    task = {"run_id": 45, "step": {"index": 4, "label": "Plan options & trade-offs (pros / cons)"}, "item": {"id": "T-1"}}
+    task_file = tmp_path / "task.json"
+    task_file.write_text(json.dumps(task))
+
+    def _limited(t):
+        exc = AgentUsageLimitedError("muse usage limit: 429 quota exhausted", reset_at="2026-10-12T14:00:00Z")
+        exc.provider, exc.model = "muse", "muse-spark-1.3"
+        raise exc
+
+    monkeypatch.setattr(step_agent, "execute", _limited)
+    monkeypatch.setattr(sys, "argv", ["step_agent", "--task", str(task_file)])
+    posted = {}
+    monkeypatch.setattr(step_agent.httpx, "post", lambda url, json=None, timeout=None: posted.update(json=json))
+
+    step_agent.main()
+
+    body = posted["json"]
+    assert body["ok"] is False
+    assert body["reason"] == reasons.REASON["USAGE_LIMITED"]
+    assert reasons.is_retryable(body["reason"])
+    assert (body["reset_at"], body["provider"], body["model"]) == ("2026-10-12T14:00:00Z", "muse", "muse-spark-1.3")
 
 
 # ---- HZ-156: the shared parser's notes channel, on every path ----
@@ -3579,11 +3642,12 @@ def _salvage_outcomes(monkeypatch):
 def test_a_git_status_check_passes_because_the_farm_committed_first(tmp_path, monkeypatch):
     ws, origin = make_git_workspace(tmp_path)
     monkeypatch.setattr(step_agent, "ensure_item_worktree", lambda repo, item_id: ws)
-    # Clean tree, the agent's file in the checked commit, nothing pushed yet.
+    # Clean tree, the agent's file in the checked commit, and (HZ-456) that
+    # commit already pushed to the item's branch while the checks run.
     monkeypatch.setenv(
         "FARM_CHECK_CMD",
         'test -z "$(git status --porcelain)" && git cat-file -e HEAD:fake_implementation.txt'
-        " && ! git ls-remote --exit-code origin refs/heads/horizon/t-1",
+        ' && test "$(git ls-remote origin refs/heads/horizon/t-1 | cut -f1)" = "$(git rev-parse HEAD)"',
     )
     monkeypatch.setattr(step_agent, "run_agent", finished_run(ws))
 
@@ -3595,7 +3659,7 @@ def test_a_git_status_check_passes_because_the_farm_committed_first(tmp_path, mo
     assert "fake_implementation.txt" in _origin_files(origin)
 
 
-def test_failing_checks_push_only_the_amended_checkpoint(tmp_path, monkeypatch):
+def test_failing_checks_keep_the_pushed_farm_commit(tmp_path, monkeypatch):
     ws, origin = make_git_workspace(tmp_path)
     monkeypatch.setattr(step_agent, "ensure_item_worktree", lambda repo, item_id: ws)
     monkeypatch.setenv("FARM_CHECK_CMD", "exit 1")
@@ -3610,8 +3674,8 @@ def test_failing_checks_push_only_the_amended_checkpoint(tmp_path, monkeypatch):
     assert finalized == []
     assert outcomes == ["saved"]
     assert _commits_over(origin, "main") == 1
-    assert origin_log(origin).splitlines()[0] == f"T-1: {step_agent.CHECKPOINT_MARKER} (Horizon Eng agent)"
-    assert origin_body(origin).startswith("cause: checks-failed")
+    assert origin_log(origin).splitlines()[0] == "T-1: Test item (Horizon Eng agent)"
+    assert precheck_state_text(ws).splitlines()[1] == "checks-failed"
     assert "fake_implementation.txt" in _origin_files(origin)
 
 
@@ -3659,7 +3723,9 @@ def test_a_check_that_moves_head_pushes_nothing(tmp_path, monkeypatch):
     with pytest.raises(RuntimeError, match="HEAD moved during the checks"):
         execute(make_task(11, "Specialist agent implements", repo="acme/demo"))
 
-    assert _origin_rev(origin) == ""
+    # HZ-456: only the farm commit pushed before the checks — never `drift`.
+    assert origin_log(origin).splitlines()[0] == "T-1: Test item (Horizon Eng agent)"
+    assert _origin_rev(origin) == _sh(ws, "rev-parse", "HEAD~1")
 
 
 def test_a_checks_failed_checkpoint_of_a_merge_keeps_main_as_a_parent(tmp_path, monkeypatch):

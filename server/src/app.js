@@ -42,6 +42,7 @@ import { isAllowedEmail } from './loginAllowlist.js'
 import { approvalSecretConfigured, approvalSecretOk, isAllowedApprover, isOwner, normalizeJid } from './waApprovers.js'
 import * as waPollVotes from './waPollVotes.js'
 import { STEPS, isItemKind } from '../../domain/js/lifecycle.js'
+import { REASON } from '../../domain/js/reasons.js'
 import { intakeFields } from '../../domain/js/fields.js'
 import { PRIORITIES, DEFAULT_PRIORITY } from '../../domain/js/priorities.js'
 import { choiceValues } from '../../domain/js/providers.js'
@@ -50,6 +51,9 @@ import * as definitions from './definitions.js'
 import * as rulesStore from './rulesStore.js'
 import * as runLogView from './runLogView.js'
 import * as split from './split.js'
+import * as planDraft from './planDraft.js'
+import { filedMap } from './planFiling.js'
+import { PLAN_DRAFT_SCHEMA } from '../../domain/js/planDraft.js'
 import * as checkFlakes from './checkFlakes.js'
 import * as testResults from './testResults.js'
 import { RULE_MAX_CHARS, NEEDS_MAX_CHARS } from './ruleBlock.js'
@@ -893,6 +897,56 @@ export function buildApp({ logger = true, onRoute = null } = {}) {
     },
   )
 
+  // HZ-448: a Plan's current item drafts (server/src/planDraft.js), and an
+  // owner's edit of them. An edit sends the whole document plus the version it
+  // was made on; the server re-validates all of it (planDraft.saveOwnerEdit)
+  // and saves it as the next version. "Owner" is whoever may approve Approve &
+  // file: a browser session plus the gate PIN (humanAuthorized). Nothing here
+  // files an item, an issue or a dependency link.
+  fastify.get(
+    '/api/items/:id/plan-draft',
+    { schema: { params: idParam, response: { 200: OK_OBJECT, 404: ERROR_OBJECT } } },
+    (request, reply) => {
+      const item = store.getItem(request.params.id)
+      if (!item) return reply.code(404).send({ error: 'not_found' })
+      const current = planDraft.currentDraft(item.id)
+      if (!current) return reply.code(404).send({ error: 'no_plan_draft' })
+      // HZ-449: `filed` maps each draft a filing reached to its real key.
+      return { ...current, editable: planDraft.isEditable(item), filed: filedMap(item.id) }
+    },
+  )
+
+  const { $schema: _draftDialect, ...planDraftBody } = PLAN_DRAFT_SCHEMA
+  const PLAN_DRAFT_EDIT_STATUS = { not_found: 404, no_plan_draft: 404, [REASON.INVALID_PLAN_DRAFT]: 422 }
+  fastify.put(
+    '/api/items/:id/plan-draft',
+    {
+      schema: {
+        params: idParam,
+        body: {
+          type: 'object',
+          required: ['base_version', 'doc'],
+          additionalProperties: false,
+          properties: { base_version: { type: 'integer', minimum: 1 }, doc: planDraftBody },
+        },
+        response: { 200: OK_OBJECT, 400: ERROR_OBJECT, 401: ERROR_OBJECT, 404: ERROR_OBJECT, 409: ERROR_OBJECT, 422: ERROR_OBJECT },
+        security: HUMAN_GATE_SECURITY,
+      },
+    },
+    (request, reply) => {
+      if (!humanAuthorized(request, reply)) return
+      const result = planDraft.saveOwnerEdit(request.params.id, {
+        baseVersion: request.body.base_version,
+        doc: request.body.doc,
+        actor: actorOf(request),
+      })
+      if (result.error) {
+        return reply.code(Object.hasOwn(PLAN_DRAFT_EDIT_STATUS, result.error) ? PLAN_DRAFT_EDIT_STATUS[result.error] : 409).send(result)
+      }
+      return { version: result.version, doc: result.doc }
+    },
+  )
+
   const JOB_LOG_TEXT_MAX_CHARS = 2 * 1024 * 1024
 
   // HZ-407: the newest Execute run's log, also after Stop. `?format=text` is
@@ -1000,16 +1054,26 @@ export function buildApp({ logger = true, onRoute = null } = {}) {
             // HZ-382: checked against the domain's kinds in the handler, not an
             // enum here, so there is no second list of kinds.
             kind: { type: 'string' },
+            // HZ-447: a Plan's repo scope, all in the target repo's project.
+            // Omitted means every repo in that project.
+            scopeRepos: {
+              type: 'array',
+              minItems: 1,
+              maxItems: 20,
+              uniqueItems: true,
+              items: { type: 'string', pattern: '^[\\w.-]+/[\\w.-]+$' },
+            },
           },
         },
         response: { 200: OK_OBJECT, 400: ERROR_OBJECT, 502: ERROR_OBJECT },
       },
     },
     async (request, reply) => {
-      const { title, outcome, metric, guardrails = '', priority = DEFAULT_PRIORITY, repo, projectId, kind = 'change' } = request.body
+      const { title, outcome, metric, guardrails = '', priority = DEFAULT_PRIORITY, repo, projectId, kind = 'change', scopeRepos } = request.body
       // Before any project check or GitHub call, so a bad kind never leaves an
       // orphan issue behind.
       if (!isItemKind(kind)) return reply.code(400).send({ error: 'unknown_item_kind' })
+      if (scopeRepos !== undefined && kind !== 'plan') return reply.code(400).send({ error: 'scope_repos_plan_only' })
       // New work goes into an enabled project's repository (HZ-208); a named
       // project (HZ-209) must exist and be enabled and narrows the choice to
       // its own repositories — a disabled project is never acted on.
@@ -1032,6 +1096,8 @@ export function buildApp({ logger = true, onRoute = null } = {}) {
         if (!target) {
           return reply.code(400).send({ error: 'Pick which of the enabled projects’ repositories this work item belongs to' })
         }
+        const strayRepo = scopeRepos?.find((r) => !connected.some((c) => c.repo === r && c.project_id === target.project_id))
+        if (strayRepo) return reply.code(400).send({ error: 'scope_repo_not_in_project', repo: strayRepo })
         let ghIssue
         try {
           ghIssue = await github.createIssue(target.repo, { title, outcome, metric, guardrails, priority, kind })
@@ -1039,8 +1105,10 @@ export function buildApp({ logger = true, onRoute = null } = {}) {
           return reply.code(502).send({ error: err.message })
         }
         store.upsertFromGithub(ghIssue, target.repo)
+        if (scopeRepos) store.setScopeRepos(`${target.prefix}-${ghIssue.number}`, scopeRepos)
         return { ok: true, id: `${target.prefix}-${ghIssue.number}`, issue: ghIssue.number, url: ghIssue.html_url }
       }
+      if (scopeRepos) return reply.code(400).send({ error: 'scope_repo_not_in_project', repo: scopeRepos[0] })
       if (store.listRepos().length > 0) {
         return reply.code(400).send({ error: 'No enabled project has a connected repository — add one in Admin' })
       }
@@ -1085,24 +1153,27 @@ export function buildApp({ logger = true, onRoute = null } = {}) {
     }
     // HZ-257: the test-merge would be the head itself, and the farm's own
     // checks already passed on exactly that head — no run, same merge pin.
+    // A skip saves the whole 10–15 minute pre-merge run (HZ-468).
     const skip = await tryPreMergeSkip(item, head, baseSha)
-    if (skip) {
-      store.setGateActionDetail(id, 'premerge', token, `checks already passed on ${skip.sha}, main unchanged`)
+    if (skip.pass) {
+      const { pass } = skip
+      store.setGateActionDetail(id, 'premerge', token, `checks already passed on ${pass.sha}, main unchanged`)
       store.addEvent(id, {
         who: 'Horizon',
-        text: `pre-merge checks skipped for PR #${item.pr}: the repo's checks already passed on ${skip.sha} (${skip.source}, finished ${skip.finishedAt}) and ${head.baseRef} ${baseSha.slice(0, 12)} is already in that head, so a test-merge would re-test the same commit`,
+        text: `pre-merge skipped: ${head.baseRef} unchanged since checks at ${pass.sha}. PR #${item.pr}'s checks passed on that head (${pass.source}, finished ${pass.finishedAt}) and ${head.baseRef} ${baseSha.slice(0, 12)} is already in it, so a test-merge would re-test the same commit`,
         color: '#0E6E74',
         initials: 'HZ',
       })
       store.notifyChange()
-      return { headSha: skip.sha, skipped: true }
+      return { headSha: pass.sha, skipped: true }
     }
     store.setGateActionDetail(id, 'premerge', token, `running checks on ${head.baseRef} + PR #${item.pr}`)
     // Logged and pushed BEFORE the run: it takes minutes, and the human must
-    // see that something is happening rather than click Accept again.
+    // see that something is happening rather than click Accept again. HZ-468:
+    // a refused skip says why, so the runs that still happen can be explained.
     store.addEvent(id, {
       who: 'Horizon',
-      text: `running the repo's checks on a test-merge of ${head.baseRef} + PR #${item.pr} before merging — this takes a few minutes, don't click Accept again`,
+      text: `running the repo's checks on a test-merge of ${head.baseRef} + PR #${item.pr} before merging — this takes a few minutes, don't click Accept again${skip.reason ? ` (no skip: ${skip.reason})` : ''}`,
       color: '#DFA200',
       initials: 'HZ',
     })
@@ -1178,26 +1249,43 @@ export function buildApp({ logger = true, onRoute = null } = {}) {
     return { headSha: result.head_sha }
   }
 
-  // HZ-257: { sha, finishedAt, source } when pre-merge may be skipped — a
-  // fresh check_pass row for exactly this repo, item and head sha, the base tip
-  // already an ancestor of that head, and the base still there on a re-read.
-  // Null otherwise. Never throws: any doubt (no row, a git or API error, a
-  // moved base) is null, which runs pre-merge exactly as before. The local
-  // lookup goes first, so an item with no record never calls GitHub here.
+  // HZ-257: { pass: { sha, finishedAt, source } } when pre-merge may be
+  // skipped — a fresh check_pass row for exactly this repo, item and head sha,
+  // the base tip already an ancestor of that head, and the base still there on
+  // a re-read. Otherwise { reason } (HZ-468), a fixed phrase plus at most a
+  // sha, empty when skipping is switched off. Never throws: any doubt (no row,
+  // a malformed row, a git or API error, a moved base) refuses, which runs
+  // pre-merge exactly as before. The local lookup goes first, so an item with
+  // no record never calls GitHub here.
   async function tryPreMergeSkip(item, head, baseSha) {
-    if (!PREMERGE_SKIP_ENABLED) return null
+    if (!PREMERGE_SKIP_ENABLED) return { reason: '' }
     try {
-      const pass = store.findCheckPass({ repo: item.repo, itemId: item.id, sha: head.sha, maxAgeMs: PREMERGE_SKIP_MAX_AGE_MS })
-      if (!pass || pass.sha !== head.sha) return null
+      const lookup = { repo: item.repo, itemId: item.id, sha: head.sha }
+      const pass = store.findCheckPass({ ...lookup, maxAgeMs: PREMERGE_SKIP_MAX_AGE_MS })
+      if (!pass) {
+        // Only on a miss: one more indexed row read, with no age limit, to tell
+        // the 24h cap apart from no record at all.
+        const stale = store.findCheckPass({ ...lookup, maxAgeMs: Date.now() })
+        return stale
+          ? { reason: `check record older than ${PREMERGE_SKIP_MAX_AGE_MS / (60 * 60 * 1000)}h` }
+          : { reason: `no green check record for head ${head.sha.slice(0, 12)}` }
+      }
+      if (pass.sha !== head.sha) return { reason: `no green check record for head ${head.sha.slice(0, 12)}` }
+      if (!/^[0-9a-f]{40}$/.test(head.sha) || !Number.isFinite(Date.parse(pass.finishedAt))) {
+        return { reason: 'malformed check record' }
+      }
       // HZ-406: a pass recorded beside a failed branch run (before HZ-406
       // made that a failure, or by any path that missed it) is never used.
-      if (store.latestBranchRunFailed(item.id)) return null
-      if ((await github.isAncestor(item.repo, baseSha, head.sha)) !== true) return null
-      if ((await github.getBranchSha(item.repo, head.baseRef)) !== baseSha) return null
-      return pass
+      if (store.latestBranchRunFailed(item.id)) return { reason: 'newest branch run failed' }
+      if ((await github.isAncestor(item.repo, baseSha, head.sha)) !== true) return { reason: `${head.baseRef} moved since checks` }
+      if ((await github.getBranchSha(item.repo, head.baseRef)) !== baseSha) {
+        return { reason: `${head.baseRef} moved during the skip check` }
+      }
+      return { pass }
     } catch (err) {
+      // The error's text goes to the server log only, never into the event.
       fastify.log.warn(`pre-merge skip not used for ${item.id}: ${err.message}`)
-      return null
+      return { reason: 'skip check errored' }
     }
   }
 
@@ -1265,6 +1353,8 @@ export function buildApp({ logger = true, onRoute = null } = {}) {
             color: '#0E6E74',
             initials: 'HZ',
           })
+          // HZ-467: the code is on main — dependents' implement may start.
+          store.markMerged(id)
         } catch (err) {
           store.addEvent(id, {
             who: 'Horizon',
@@ -1647,7 +1737,7 @@ export function buildApp({ logger = true, onRoute = null } = {}) {
     },
   )
 
-  // Dependencies (HZ-78): id is blocked until dependsOnId closes. Cycles and
+  // Dependencies (HZ-78): id is held until dependsOnId merges or closes (HZ-467). Cycles and
   // self-dependencies are rejected here (store.addDependency, fail-closed —
   // see lifecycle.js/store.js), so a malformed graph never reaches the
   // orchestrator's dispatch gate at all.
@@ -2370,6 +2460,7 @@ export function buildApp({ logger = true, onRoute = null } = {}) {
       extraServices: { type: 'array', maxItems: 10, items: { type: 'string', maxLength: 300 } },
       venvDir: { type: ['string', 'null'], minLength: 1, maxLength: 300 },
       taskDir: { type: ['string', 'null'], minLength: 1, maxLength: 300 },
+      buildCommand: { type: ['string', 'null'], minLength: 1, maxLength: 500 },
       containerImage: { type: ['string', 'null'], minLength: 1, maxLength: 500 },
       cpuLimit: { type: ['string', 'null'], minLength: 1, maxLength: 32 },
       memoryLimit: { type: ['string', 'null'], minLength: 1, maxLength: 32 },
@@ -3154,6 +3245,26 @@ export function buildApp({ logger = true, onRoute = null } = {}) {
     },
   )
 
+  // HZ-458: farmd relays the implement step's "checks started/ended" here;
+  // the run's step clock is paused in between (orchestrator.markFarmRunChecks).
+  fastify.post(
+    '/api/farm/steps/:runId/checks',
+    {
+      schema: {
+        params: { type: 'object', required: ['runId'], properties: { runId: { type: 'integer' } } },
+        body: {
+          type: 'object',
+          required: ['phase'],
+          properties: { phase: { type: 'string', enum: ['start', 'end'] } },
+        },
+      },
+    },
+    (request, reply) => {
+      if (!farmAuthorized(request, reply)) return
+      return orchestrator.markFarmRunChecks(request.params.runId, request.body.phase)
+    },
+  )
+
   fastify.post(
     '/api/farm/steps/:runId/complete',
     {
@@ -3192,6 +3303,11 @@ export function buildApp({ logger = true, onRoute = null } = {}) {
             reason: { type: 'string', maxLength: 100 },
             flakes: FLAKES_BODY,
             job_view: FINAL_JOB_VIEW_BODY,
+            // HZ-422: a usage-limit failure names the model that hit the
+            // limit and, when the provider said, when it resets (ISO-8601).
+            reset_at: { type: 'string', maxLength: 100 },
+            provider: { type: 'string', maxLength: 100 },
+            model: { type: 'string', maxLength: 100 },
           },
         },
       },
@@ -3199,7 +3315,9 @@ export function buildApp({ logger = true, onRoute = null } = {}) {
     (request, reply) => {
       if (!farmAuthorized(request, reply)) return
       checkFlakes.recordRunFlakes(request.params.runId, request.body.flakes, { log: request.log })
-      return orchestrator.failFarmRun(request.params.runId, request.body.error, request.body.reason || null, request.body.job_view)
+      const { reset_at: resetAt, provider, model } = request.body
+      const limit = provider && model ? { provider, model, reset_at: resetAt ?? null } : null
+      return orchestrator.failFarmRun(request.params.runId, request.body.error, request.body.reason || null, request.body.job_view, limit)
     },
   )
 

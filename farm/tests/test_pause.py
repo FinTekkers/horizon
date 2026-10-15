@@ -136,10 +136,11 @@ def test_pause_with_a_clean_tree_makes_no_checkpoint(ws_origin, monkeypatch):
     assert origin_sha(origin) == before
 
 
-def test_pause_during_checks_checkpoints_the_code_and_is_not_a_check_failure(tmp_path, ws_origin, monkeypatch):
-    """Through main(): no result is posted, the checkpoint's cause is
-    `paused` (never checks-failed), and the real run_checks records the run
-    as paused in the metrics."""
+def test_pause_during_checks_keeps_the_pushed_code_and_is_not_a_check_failure(tmp_path, ws_origin, monkeypatch):
+    """Through main(): no result is posted, the work is the commit pushed
+    before the checks (HZ-456) with nothing more to save, never a
+    checks-failed checkpoint, and the real run_checks records the run as
+    paused in the metrics."""
     ws, origin, _ = ws_origin
     monkeypatch.setenv("FARM_HOME", str(tmp_path / "farmhome"))
     monkeypatch.setenv("FARM_CHECK_CMD", "true")
@@ -157,16 +158,17 @@ def test_pause_during_checks_checkpoints_the_code_and_is_not_a_check_failure(tmp
     assert step_agent.main() == 0
 
     assert posted == []
-    assert pause.read_outcome(task_file.with_suffix(".paused"))["outcome"] == "saved"
-    body = origin_body(origin)
-    assert body.startswith("cause: paused") and "checks-failed" not in body
+    assert pause.read_outcome(task_file.with_suffix(".paused"))["outcome"] == "nothing"
+    assert origin_log(origin).splitlines()[0] == "T-1: Test item (Horizon Eng agent)"
+    assert "checks-failed" not in origin_body(origin)
     records, _ = check_metrics.read_records(check_metrics.metrics_path())
     assert records[-1]["outcome"] == "paused"
 
 
-def test_a_pause_during_checks_amends_the_farms_commit_into_one_checkpoint(ws_origin, monkeypatch):
-    """HZ-438: the work was committed locally before the checks. The pause
-    checkpoint replaces that commit — never a second commit on top of it."""
+def test_a_pause_during_checks_adds_no_commit_to_the_pushed_farm_commit(ws_origin, monkeypatch):
+    """HZ-438: the work was committed locally before the checks; HZ-456: and
+    pushed. A pause with nothing new on disk saves nothing more — never a
+    second commit on top of it, never a rewrite of it."""
     ws, origin, outcome_path = ws_origin
     monkeypatch.setenv("FARM_CHECK_CMD", "true")
     monkeypatch.setattr(step_agent, "run_agent", finished_run(ws, text="finished, unchecked\n"))
@@ -180,13 +182,13 @@ def test_a_pause_during_checks_amends_the_farms_commit_into_one_checkpoint(ws_or
     with pytest.raises(pause.PauseRequested):
         execute_implement()
 
-    assert pause.read_outcome(outcome_path)["outcome"] == "saved"
+    assert pause.read_outcome(outcome_path)["outcome"] == "nothing"
     over_main = subprocess.run(
         ["git", "--git-dir", str(origin), "rev-list", "--count", "main..horizon/t-1"], capture_output=True, text=True, check=True
     ).stdout.strip()
     assert over_main == "1"
-    assert origin_log(origin).splitlines()[0] == f"T-1: {step_agent.CHECKPOINT_MARKER} (Horizon Eng agent)"
-    assert origin_body(origin).startswith("cause: paused")
+    assert origin_sha(origin) == subprocess.run(["git", "-C", str(ws), "rev-parse", "HEAD"], capture_output=True, text=True).stdout.strip()
+    assert origin_log(origin).splitlines()[0] == "T-1: Test item (Horizon Eng agent)"
     assert "fake_implementation.txt" in origin_files(origin)
 
 
@@ -358,6 +360,8 @@ def post(url, json=None, timeout=None):
     Path(cfg["posted"]).write_text(__import__("json").dumps(json))
 
 step_agent.httpx.post = post
+# HZ-458: the checks start/end notify is not the result this file captures.
+step_agent._notify_checks = lambda run_id, phase: None
 
 def run_agent(prompt, **kwargs):
     if cfg["step"] == "implement":
@@ -491,10 +495,11 @@ def test_a_real_sigterm_mid_checks_stops_every_check_process_and_is_not_a_failur
     assert child.proc.wait(timeout=60) == 0
 
     assert _wait_for(lambda: not any(_alive(pid) for pid in grandchildren), 5), "a check process outlived the pause"
-    assert child.outcome["outcome"] == "saved"
+    # HZ-456: the work was pushed before the checks, so nothing more to save.
+    assert child.outcome["outcome"] == "nothing"
     assert not child.posted.exists()
-    body = origin_body(origin)
-    assert body.startswith("cause: paused") and "checks-failed" not in body
+    assert origin_log(origin).splitlines()[0] == "T-1: Test item (Horizon Eng agent)"
+    assert "checks-failed" not in origin_body(origin)
     records, _ = check_metrics.read_records(tmp_path / "farmhome" / "logs" / "check-metrics.jsonl")
     assert records[-1]["outcome"] == "paused"
 

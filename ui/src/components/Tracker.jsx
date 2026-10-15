@@ -13,9 +13,15 @@ import {
   phasesFor,
   itemKindOf,
   isHumanOnlyGate,
+  APPROVE_RUN_GATE_INDEX,
+  APPROVE_FILE_GATE_INDEX,
+  PLAN_DRAFT_STEP_INDEX,
+  FILE_ITEMS_STEP_INDEX,
+  REVIEW_CLOSE_GATE_INDEX,
+  PLAN_INVENTORY_STEP_INDEX,
   laneOf,
 } from '../../../domain/js/lifecycle.js'
-import { AGENTS } from '../domain/agentTokens'
+import { AGENTS, stepAgentToken } from '../domain/agentTokens'
 import { PHASE_ACCENT, PHASE_ACCENT_BG, priorityColor } from '../domain/lifecycle'
 import { PERSONAS, PERSONA_AGENT_ROLES, PRIMARY_PERSONA_AGENT, personaFor, personaId } from '../domain/personas'
 import { itemStatus, isDependencyBlocked, isRuleBlocked, ruleBlockSummary, queuedToMerge } from '../domain/status'
@@ -29,8 +35,10 @@ import DependencyBadge from './DependencyBadge'
 import Markdown from './Markdown'
 import GateActionStatus from './GateActionStatus'
 import JobPanel from './JobPanel'
+import PlanInventoryTables from './PlanInventoryTables'
 import ProjectBadge from './ProjectBadge'
 import TaskBadge from './TaskBadge'
+import PlanItemsTable from './PlanItemsTable'
 import { BackIcon, LinkIcon, RestartIcon, PrIcon, CircleXIcon } from './icons'
 
 const STEP_GLYPHS = { done: '✓', active: '•', awaiting: '!', pending: '', blocked: '✕', skipped: '–' }
@@ -183,7 +191,18 @@ function StepProviderPicker({ item, index, status, output, onSetStepProvider }) 
   if (!STEPS[index].providerOverrideEligible) return <div className="step-card__provider">Claude only</div>
   if (status === 'done') {
     const ran = PROVIDER_LABELS[output?.provider] ?? output?.provider
-    return ran ? <div className="step-card__provider">Ran on {ran}</div> : null
+    if (!ran) return null
+    // HZ-422: a run on a fallback model names that model and what it fell back from.
+    if (!output.fallbackNote) return <div className="step-card__provider">Ran on {ran}</div>
+    return (
+      <div className="step-card__provider">
+        <div>
+          Ran on {ran}
+          {output.model ? ` (${output.model})` : ''}
+        </div>
+        <div className="step-card__fallback">{output.fallbackNote}</div>
+      </div>
+    )
   }
   if (item.activeRun?.step_index === index) {
     return <div className="step-card__provider">Runs on {PROVIDER_LABELS[saved] ?? PROVIDER_LABELS[projectDefault] ?? 'Claude'}</div>
@@ -249,7 +268,7 @@ function Step({ item, stepOutputs, outputsSettled, index, deployBlock, viewerNam
   // The intake gate doubles as the human confirmation of the PM-proposed
   // specialist persona: approving with the select's value confirms it.
   const showsPersonaPicker = status === 'awaiting' && st.label === 'Approve & prioritize this work'
-  const agent = isGate ? AGENTS.Human : AGENTS[st.agent]
+  const agent = stepAgentToken(st)
   const agentLabel = isGate ? (st.gate === 'optional' ? 'Human gate · optional' : 'Human gate') : agent.label
   const gateAction = index === ACCEPT_GATE_INDEX ? gateActionOf(item) : null
   const output = stepOutputs?.[index]
@@ -331,11 +350,16 @@ function Step({ item, stepOutputs, outputsSettled, index, deployBlock, viewerNam
           {humanOnly && (
             <div className="step-card__human-only">
               <div style={{ color: 'var(--warning-ink)', fontWeight: 600 }}>Always a human · even on Autopilot</div>
-              <div className="step-card__run-plan" style={{ color: 'var(--muted)' }}>
-                {runPlanSummary(item.runPlan)}
-              </div>
+              {/* HZ-446: only Approve the run approves a run plan. */}
+              {index === APPROVE_RUN_GATE_INDEX && (
+                <div className="step-card__run-plan" style={{ color: 'var(--muted)' }}>
+                  {runPlanSummary(item.runPlan)}
+                </div>
+              )}
             </div>
           )}
+          {/* HZ-462: a Plan's Inventory as tables; the artifact link stays below. */}
+          {status === 'done' && index === PLAN_INVENTORY_STEP_INDEX && output?.artifact && <PlanInventoryTables artifact={output.artifact} />}
           {status === 'done' && !isGate && output?.output && (
             <a
               className="step-card__output-link"
@@ -392,6 +416,13 @@ function Step({ item, stepOutputs, outputsSettled, index, deployBlock, viewerNam
                 </select>
               </div>
             ))}
+          {/* HZ-449: the Plan's one items table — editable at the gate, then
+              read-only with what each draft was filed as. */}
+          {index === APPROVE_FILE_GATE_INDEX && item.cursor > PLAN_DRAFT_STEP_INDEX && <PlanItemsTable item={item} />}
+          {/* HZ-449: the Close card links every item File items filed. */}
+          {index === REVIEW_CLOSE_GATE_INDEX && status !== 'pending' && (
+            <Markdown className="md-body--tile" text={stepOutputs?.[FILE_ITEMS_STEP_INDEX]?.output} />
+          )}
           {status === 'awaiting' && index === ACCEPT_GATE_INDEX && item.forwardedReview && (
             <ForwardedReview forwarded={item.forwardedReview} />
           )}
@@ -455,7 +486,7 @@ function Step({ item, stepOutputs, outputsSettled, index, deployBlock, viewerNam
                     aria-busy={gateBusy || undefined}
                     onClick={() => onApprove(item.id, st.label)}
                   >
-                    {humanOnly ? 'Approve the run' : 'Approve'}
+                    {humanOnly ? st.label : 'Approve'}
                   </button>
                   <button
                     className="btn-gate-feedback"
@@ -633,7 +664,7 @@ function buildActivity(item) {
     .reverse()
     .slice(0, 6)
     .map(({ s }, k) => {
-      const a = s.kind === 'gate' ? AGENTS.Human : AGENTS[s.agent]
+      const a = stepAgentToken(s)
       return {
         who: s.kind === 'gate' ? 'You' : a.label,
         text: s.kind === 'gate' ? `approved: ${s.label.toLowerCase()}` : `completed ${s.label.toLowerCase()}`,
@@ -781,6 +812,12 @@ export default function Tracker({ item, projects, deployBlock = null, viewerName
           </div>
         )}
         {!abandoned && item.paused && <PauseBanner key={`pause-banner-${item.id}`} item={item} />}
+        {/* HZ-422: the server builds the text, so every client shows the same time. */}
+        {!abandoned && !item.paused && item.usageWait && (
+          <div className="pause-banner" role="status">
+            <div className="pause-banner__title">{item.usageWait.text}</div>
+          </div>
+        )}
         {/* HZ-365: isRuleBlocked is false while paused, so never both banners.
             The key differs from DependencyBadge's below: duplicate sibling
             keys make React leave a stale second banner behind. */}

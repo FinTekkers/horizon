@@ -306,6 +306,20 @@ def handoff_dir(tmp_path, monkeypatch):
     return path
 
 
+@pytest.fixture(autouse=True)
+def checks_notify(monkeypatch):
+    """HZ-458: the implement step tells farmd when its checks start and end.
+    FARMD is the host's real farmd port, test tasks carry real-looking run
+    ids, and many tests stub httpx.post to capture the one result post — so
+    every test records the (run_id, phase) calls here instead. Returns that
+    list. Lazy import, as above."""
+    from farm import step_agent
+
+    calls: list[tuple] = []
+    monkeypatch.setattr(step_agent, "_notify_checks", lambda run_id, phase: calls.append((run_id, phase)))
+    return calls
+
+
 @pytest.fixture
 def muse_smoke_test_persona(monkeypatch):
     """Registers a test-only persona mapped to the Muse provider.

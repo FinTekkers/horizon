@@ -186,6 +186,11 @@ REDACT_MIN_LEN = 4
 # least _CHECKS_SECRET_MIN_LEN chars.
 _SECRET_NAME = re.compile(r"TOKEN|SECRET|KEY|PASSWORD|PASSWD|CREDENTIAL", re.IGNORECASE)
 _CHECKS_SECRET_MIN_LEN = 8
+# `NAME=value` for a secret-looking NAME, even one this process's env lacks
+# (the farm never holds $GITHUB_WEBHOOK_SECRET, so redact() can't know it).
+SECRET_ASSIGNMENT = re.compile(
+    r"\b([A-Za-z_][A-Za-z0-9_]*(?:TOKEN|SECRET|KEY|PASSWORD|PASSWD|CREDENTIAL)[A-Za-z0-9_]*)=(\S+)", re.IGNORECASE
+)
 
 
 def secret_values(env) -> dict:
@@ -213,6 +218,13 @@ def redact(text: str, env) -> str:
     for value in values:
         text = text.replace(value, REDACTED)
     return _TOKEN_SHAPES.sub(REDACTED, text)
+
+
+def scrub(text: str) -> str:
+    """HZ-447: text quoted from a log or a repo, before it is stored: this
+    process's secret-named env values, the known token shapes, and every
+    secret-named `NAME=value`."""
+    return SECRET_ASSIGNMENT.sub(rf"\1={REDACTED}", redact(text, secret_values(os.environ)))
 
 
 def _zero_failure_summary(line: str) -> bool:

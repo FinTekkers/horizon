@@ -2,7 +2,7 @@
 // Pins the two claims in the work item's success metric that no other spec
 // asserts directly: (1) the confirm dialog names the real item + gate
 // *before* any request reaches the server, and (2) Cancel sends nothing.
-// Each test creates its own item (same pattern as 03-mock-agents.spec.js)
+// Each test creates its own item (same pattern as 08-full-lifecycle.spec.js)
 // so the two tests can't race each other's gate state.
 
 import { test, expect, captureScreenshot } from '../fixtures/test-base.js'

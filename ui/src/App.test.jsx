@@ -622,3 +622,99 @@ test('Amend the rule that fails keeps the composer open with the error', async (
 function getItemsSnapshot(id) {
   return api.getItems().find((it) => it.id === id)
 }
+
+// ---- HZ-470: Kill and Restart phase are awaited; a failure keeps the dialog open ----
+
+const KILL_RESTART = [
+  {
+    name: 'Abandon',
+    apiFn: 'abandonItem',
+    open: async (findByRole) => fireEvent.click(await findByRole('button', { name: 'Abandon', exact: true })),
+    calledWith: (id, text) => [id, text, { removeDependentLinks: false }],
+  },
+  {
+    name: 'Restart phase',
+    apiFn: 'restartPhase',
+    open: async (findByRole, findAllByRole) => {
+      await findByRole('button', { name: 'Abandon', exact: true })
+      fireEvent.click((await findAllByRole('button', { name: 'Restart phase' }))[0])
+    },
+    calledWith: (id, text) => [id, 0, text],
+  },
+]
+
+function submitDialog(text) {
+  fireEvent.change(document.querySelector('.composer__input'), { target: { value: text } })
+  fireEvent.click(document.querySelector('.composer__submit'))
+}
+
+for (const dialog of KILL_RESTART) {
+  test(`${dialog.name}: the dialog stays open with both buttons disabled until the request settles, then closes`, async () => {
+    let answer
+    api[dialog.apiFn].mockImplementation(() => new Promise((resolve) => (answer = resolve)))
+    const id = 'KR-1'
+    setItems([{ ...itemAtClosingGate(id), cursor: 11 }])
+    window.history.pushState({}, '', `/${id.toLowerCase()}`)
+
+    const { findByRole, findAllByRole } = render(<App />)
+    await dialog.open(findByRole, findAllByRole)
+    submitDialog('superseded')
+    expect(api[dialog.apiFn]).toHaveBeenCalledWith(...dialog.calledWith(id, 'superseded'))
+
+    expect(document.querySelector('.composer')).not.toBeNull()
+    expect(document.querySelector('.composer__submit').disabled).toBe(true)
+    expect(document.querySelector('.composer__cancel').disabled).toBe(true)
+    await act(async () => answer({ ok: true }))
+    await waitFor(() => expect(document.querySelector('.composer')).toBeNull())
+  })
+
+  test(`${dialog.name}: a failed request shows why, keeps the text, and lets the owner send it again`, async () => {
+    localStorage.setItem('horizon_gate_pin', '4729')
+    api[dialog.apiFn].mockRejectedValue(Object.assign(new Error('HTTP 500'), { status: 500 }))
+    const id = 'KR-2'
+    setItems([{ ...itemAtClosingGate(id), cursor: 11 }])
+    window.history.pushState({}, '', `/${id.toLowerCase()}`)
+
+    const { findByRole, findAllByRole } = render(<App />)
+    await dialog.open(findByRole, findAllByRole)
+    submitDialog('keep me')
+    const alert = await findByRole('alert')
+    expect(alert.textContent).toBe('That did not go through — try again.')
+    expect(alert.textContent).not.toContain('4729')
+    expect(document.querySelector('.composer__input').value).toBe('keep me')
+    expect(document.querySelector('.composer__submit').disabled).toBe(false)
+    expect(document.querySelector('.composer__cancel').disabled).toBe(false)
+    expect(api[dialog.apiFn]).toHaveBeenCalledTimes(1)
+
+    fireEvent.click(document.querySelector('.composer__submit'))
+    await waitFor(() => expect(api[dialog.apiFn]).toHaveBeenCalledTimes(2))
+    localStorage.removeItem('horizon_gate_pin')
+  })
+
+  // Through the real serverApi: no stored PIN and a cancelled or empty prompt
+  // sends nothing and says so.
+  for (const [label, entered] of [
+    ['cancelled', null],
+    ['empty', ''],
+  ]) {
+    test(`${dialog.name}: a ${label} PIN prompt sends no request and shows "Gate PIN needed"`, async () => {
+      const real = await vi.importActual('./api/serverApi')
+      api[dialog.apiFn].mockImplementation(real[dialog.apiFn])
+      localStorage.removeItem('horizon_gate_pin')
+      vi.spyOn(window, 'prompt').mockImplementation(() => entered)
+      const fetchSpy = vi.fn(() => Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({ ok: true }) }))
+      vi.stubGlobal('fetch', fetchSpy)
+      const id = 'KR-3'
+      setItems([{ ...itemAtClosingGate(id), cursor: 11 }])
+      window.history.pushState({}, '', `/${id.toLowerCase()}`)
+
+      const { findByRole, findAllByRole } = render(<App />)
+      await dialog.open(findByRole, findAllByRole)
+      submitDialog('superseded')
+      expect((await findByRole('alert')).textContent).toBe('Gate PIN needed')
+      expect(fetchSpy).not.toHaveBeenCalled()
+      expect(document.querySelector('.composer')).not.toBeNull()
+      window.prompt.mockRestore()
+    })
+  }
+}

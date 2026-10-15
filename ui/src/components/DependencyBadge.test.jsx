@@ -281,3 +281,25 @@ test('a kept link to an abandoned blocker still reads "Blocked by <id> (abandone
   const compact = render(<DependencyBadge item={item} compact />)
   expect(compact.container.querySelector('.dep-pill--blocked').textContent).toBe('Blocked by X-GONE (abandoned)')
 })
+
+// HZ-467: a blocker whose PR merged stays listed, marked merged, with its X —
+// the edge is still there until the blocker closes or a human removes it.
+test('a merged blocker still renders with its remove control and reads merged; an unmerged one does not', () => {
+  const onRemove = vi.fn().mockResolvedValue({ ok: true })
+  const item = {
+    id: 'X-8',
+    blocked: false,
+    blockedBy: [
+      { id: 'X-MERGED', title: 'Merged upstream', abandoned: false, merged: true },
+      { id: 'X-OPEN', title: 'Open upstream', abandoned: false, merged: false },
+    ],
+    dependents: [],
+  }
+  const utils = render(<DependencyBadge item={item} onRemove={onRemove} />)
+  const [merged, open] = utils.container.querySelectorAll('.dep-detail__section--blocked li')
+  expect(merged.textContent).toContain('— merged')
+  expect(open.textContent).not.toContain('merged')
+  fireEvent.click(utils.getByRole('button', { name: 'Remove dependency on X-MERGED' }))
+  expect(onRemove).toHaveBeenCalledWith('X-8', 'X-MERGED')
+  expect(utils.getByRole('button', { name: 'Remove dependency on X-OPEN' })).toBeTruthy()
+})

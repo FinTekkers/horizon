@@ -11,13 +11,16 @@ import { loginFixtureUser } from './helpers/session.mjs'
 process.env.HORIZON_DB = join(mkdtempSync(join(tmpdir(), 'horizon-dep-app-')), 'test.db')
 delete process.env.GITHUB_WEBHOOK_SECRET
 delete process.env.FARM_URL
+process.env.MOCK_STEP_LATENCY_MS = '5'
 
 const { db } = await import('../src/db.js')
 const { buildApp } = await import('../src/app.js')
-const { STEPS } = await import('../../domain/js/lifecycle.js')
+const { STEPS, ACCEPT_GATE_INDEX, IMPLEMENT_STEP_INDEX } = await import('../../domain/js/lifecycle.js')
 const config = await import('../src/config.js')
 const store = await import('../src/store.js')
 const auth = await import('../src/auth.js')
+const orchestrator = await import('../src/orchestrator.js')
+const premerge = await import('../src/premerge.js')
 
 store.purgeDemoItems()
 
@@ -65,7 +68,7 @@ test('a blocked item reads as blocked, naming its blocker, in GET /api/items', a
   const snapshot = (await inject({ method: 'GET', url: '/api/items' })).json()
   const dep = snapshot.items.find((it) => it.id === 'DA-DEP')
   assert.equal(dep.blocked, true)
-  assert.deepEqual(dep.blockedBy, [{ id: 'DA-BLOCKER', title: 'Blocker', abandoned: false }])
+  assert.deepEqual(dep.blockedBy, [{ id: 'DA-BLOCKER', title: 'Blocker', abandoned: false, merged: false }])
 })
 
 test('removing the dependency unblocks it, reflected immediately in GET /api/items', async () => {
@@ -168,7 +171,7 @@ test('abandon without removeDependentLinks keeps every link and writes no remova
   const snapshot = (await inject({ method: 'GET', url: '/api/items' })).json()
   const dep = snapshot.items.find((it) => it.id === 'DA-KEEP-DEP')
   assert.equal(dep.blockedByAbandoned, true)
-  assert.deepEqual(dep.blockedBy, [{ id: 'DA-KEEP-BLOCKER', title: 'Kept blocker', abandoned: true }])
+  assert.deepEqual(dep.blockedBy, [{ id: 'DA-KEEP-BLOCKER', title: 'Kept blocker', abandoned: true, merged: false }])
 })
 
 test('abandon with removeDependentLinks: false behaves like the flag absent', async () => {
@@ -180,4 +183,86 @@ test('abandon with removeDependentLinks: false behaves like the flag absent', as
   assert.deepEqual(res.json(), { ok: true })
   assert.ok(links().includes('DA-FALSE-DEP->DA-FALSE-BLOCKER'))
   assert.equal(removalEvents('DA-FALSE-DEP', 'DA-FALSE-BLOCKER').length, 0)
+})
+
+// ---- HZ-467: a change dependent plans freely; implement waits for the merge ----
+
+test('a planning-stage dependent is not blocked, and still lists its blocker with merged: false', async () => {
+  insertItem.run('DA-PLAN-BLOCKER', 'Open blocker', ACCEPT_GATE_INDEX)
+  insertItem.run('DA-PLAN-DEP', 'Planning dependent', 3)
+  assert.equal((await addDep('DA-PLAN-DEP', 'DA-PLAN-BLOCKER')).statusCode, 200)
+  const snapshot = (await inject({ method: 'GET', url: '/api/items' })).json()
+  const dep = snapshot.items.find((it) => it.id === 'DA-PLAN-DEP')
+  assert.equal(dep.blocked, false)
+  assert.equal(dep.blockedByAbandoned, false)
+  assert.deepEqual(dep.blockedBy, [{ id: 'DA-PLAN-BLOCKER', title: 'Open blocker', abandoned: false, merged: false }])
+})
+
+// Accept the code through the real gate route: GitHub is a fetch stub and
+// farm/premerge.py's runner reports green, as in premerge-gate.test.mjs.
+const HEAD = 'a'.repeat(40)
+let mergeStatus = 200
+globalThis.fetch = async (url, options = {}) => {
+  const path = new URL(url).pathname
+  const method = options.method || 'GET'
+  const json = (status, body) => ({ ok: status < 300, status, json: async () => body, text: async () => '' })
+  if (method === 'GET' && /\/pulls\/\d+$/.test(path)) return json(200, { head: { sha: HEAD, ref: 'horizon/x' }, base: { ref: 'main' } })
+  if (method === 'GET' && path.endsWith('/git/ref/heads%2Fmain')) return json(200, { object: { sha: 'b'.repeat(40) } })
+  if (method === 'PUT' && path.endsWith('/merge')) return json(mergeStatus, mergeStatus === 200 ? { merged: true } : { message: 'nope' })
+  return json(404, {})
+}
+premerge.runner.spawn = async (args) => ({
+  code: 0,
+  stdout: JSON.stringify({ head_sha: args[4], base_sha: args[6], ok: true, merge_sha: 'd'.repeat(40), note: 'checks passed' }) + '\n',
+  stderr: '',
+  timedOut: false,
+})
+
+const implementRuns = (id) =>
+  db.prepare('SELECT COUNT(*) AS n FROM step_run WHERE item_id = ? AND step_index = ?').get(id, IMPLEMENT_STEP_INDEX).n
+const mergedAt = (id) => db.prepare('SELECT merged_at FROM work_item WHERE id = ?').get(id).merged_at
+const acceptPair = async (blocker, pr) => {
+  insertItem.run(blocker, 'Blocker at Accept', ACCEPT_GATE_INDEX)
+  db.prepare("UPDATE work_item SET repo = 'acme/dep-merge', issue = ?, pr = ? WHERE id = ?").run(pr, pr, blocker)
+  const dep = `${blocker}-DEP`
+  insertItem.run(dep, 'Waits at implement', IMPLEMENT_STEP_INDEX)
+  assert.equal((await addDep(dep, blocker)).statusCode, 200)
+  return dep
+}
+const approveAccept = (id) =>
+  inject({ method: 'POST', url: `/api/items/${id}/gates/${ACCEPT_GATE_INDEX}/approve`, payload: {}, headers: { 'x-human-key': pin } })
+// Only the dependents are dispatched for real; the merged blocker's own
+// Deploy is not part of these tests.
+const dispatchDependents = () =>
+  store.registerAgentRunner({ kick: (id) => id.endsWith('-DEP') && orchestrator.kick(id), cancel: orchestrator.cancel })
+
+test('Accept in the UI merges the PR, records merged_at and dispatches the dependent at implement', async () => {
+  mergeStatus = 200
+  dispatchDependents()
+  const dep = await acceptPair('DA-MERGE', 9101)
+  assert.equal(implementRuns(dep), 0)
+
+  const res = await approveAccept('DA-MERGE')
+  assert.equal(res.statusCode, 200, res.body)
+  assert.ok(mergedAt('DA-MERGE'))
+  assert.equal(implementRuns(dep), 1, 'implement dispatched at the merge')
+
+  const first = mergedAt('DA-MERGE')
+  assert.equal(store.markMerged('DA-MERGE'), false, 'a second markMerged is a no-op')
+  assert.equal(mergedAt('DA-MERGE'), first)
+  assert.equal(implementRuns(dep), 1)
+  orchestrator.cancel(dep)
+})
+
+test('a failed merge leaves merged_at unset, the gate open and implement held', async () => {
+  mergeStatus = 405
+  dispatchDependents()
+  const dep = await acceptPair('DA-NOMERGE', 9102)
+
+  const res = await approveAccept('DA-NOMERGE')
+  assert.equal(res.statusCode, 502)
+  assert.equal(mergedAt('DA-NOMERGE'), null)
+  assert.equal(store.getItem('DA-NOMERGE').cursor, ACCEPT_GATE_INDEX)
+  assert.equal(implementRuns(dep), 0)
+  store.registerAgentRunner({ kick: () => {}, cancel: () => {} })
 })

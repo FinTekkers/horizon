@@ -500,3 +500,18 @@ def test_an_exhausted_run_carries_the_model_it_ran_on(recorded):
     with pytest.raises(AgentExhaustedError) as err:
         agent_runner.run_agent("p", agent="eng", model_choice=HAIKU)
     assert (err.value.provider, err.value.model) == ("claude", HAIKU)
+
+
+def test_a_usage_limited_run_carries_the_provider_and_model_it_ran_on(recorded):
+    """HZ-422: the server marks exactly this model limited and falls back from it."""
+    from farm.providers.base import AgentUsageLimitedError
+
+    recorded()
+
+    def limited(prompt, **kw):
+        raise AgentUsageLimitedError("429 quota", reset_at="2026-10-12T14:00:00Z")
+
+    agent_runner._PROVIDERS["muse"].run = limited
+    with pytest.raises(AgentUsageLimitedError) as err:
+        agent_runner.run_agent("p", agent="eng", provider="muse", model_choice=MUSE_CHOSEN)
+    assert (err.value.provider, err.value.model, err.value.reset_at) == ("muse", MUSE_CHOSEN, "2026-10-12T14:00:00Z")

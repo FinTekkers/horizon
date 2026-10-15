@@ -1,7 +1,8 @@
 // HZ-246: project rules saved in Admin as DB versions, end to end through the
-// real UI, API and DB. A wrong PIN stores nothing; the right one stores v1,
-// which survives a reload; restoring v1 after a v2 adds v3 with v1's text, and
-// the effective-prompt preview serves it. Uses its own seeded project — never
+// real UI, API and DB. The right PIN stores v1, which survives a reload;
+// restoring v1 after a v2 adds v3 with v1's text, and the effective-prompt
+// preview serves it. A wrong PIN is refused by the route
+// (server/test/gate-pin-routes.test.mjs). Uses its own seeded project — never
 // fintekkers, whose file text 14-definitions-preview.spec.js asserts.
 
 import { test, expect, captureScreenshot } from '../fixtures/test-base.js'
@@ -37,17 +38,15 @@ async function saveWith(page, pin) {
   await page.getByRole('button', { name: 'Save new version' }).click()
 }
 
-test('saving project rules needs the right PIN, lists every version, and restore adds a copy the preview serves', async ({ page }) => {
+test('saving project rules with the PIN lists every version, and restore adds a copy the preview serves', async ({ page }) => {
   await page.goto('/definitions')
   await target(page).click()
   await expect(page.getByText('No rules — no file and no saved version.')).toBeVisible({ timeout: 10_000 })
 
-  const editor = page.getByLabel('Definition content')
-  await editor.fill(V1)
-  await saveWith(page, '000000')
-  await expect(page.getByText('Gate PIN incorrect')).toBeVisible()
   await expect(page.getByText('No saved versions yet.')).toBeVisible()
 
+  const editor = page.getByLabel('Definition content')
+  await editor.fill(V1)
   await saveWith(page, GATE_PIN)
   await expect(page.getByText('Saved as version 1')).toBeVisible()
   await expect(page.getByTestId('rule-version-1')).toContainText('serving')

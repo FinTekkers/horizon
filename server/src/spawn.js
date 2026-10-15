@@ -3,7 +3,10 @@
 // a normal change item in the Task's repo, the Task depends on it, and the
 // Task's Run plan starts only once that change's merge is live. The engine
 // takes a LIST of items from one parent, so a later "plan mode" can file
-// several at once through the same calls.
+// several at once through the same calls. HZ-449: a Plan's File items step
+// (server/src/planFiling.js) is that second caller. Its specs carry their own
+// seq, repo, priority and lane, and it files with `waits: false` — the Plan
+// does not wait on what it files.
 //
 // Which step spawns, what reply field triggers it and what kind it files are
 // read from domain/steps.json (spawnsOn, spawnKind, awaitsSpawnedCode) —
@@ -122,11 +125,11 @@ export const spawnMarker = (parentId, requestKey, seq) =>
 // The child issue's body after its Outcome / Success metric / Guardrails: a
 // back-link and the marker. Its own heading, so parseIssueBody keeps both out
 // of the child's guardrails.
-function spawnBodySuffix(parent, requestKey, seq) {
+function spawnBodySuffix(parent, requestKey, seq, waits) {
   const issueRef = parent.repo && parent.issue != null ? ` · \`${parent.repo}#${parent.issue}\`` : ''
   return [
     '## Spawned by',
-    `[${parent.id}](${UI_URL}/${parent.id.toLowerCase()})${issueRef} — that item waits for this one to close.`,
+    `[${parent.id}](${UI_URL}/${parent.id.toLowerCase()})${issueRef}${waits ? ' — that item waits for this one to close.' : ' — filed by that Plan.'}`,
     '',
     spawnMarker(parent.id, requestKey, seq),
   ].join('\n')
@@ -154,8 +157,9 @@ const setTargetIssue = db.prepare("UPDATE item_spawn SET target_issue = ?, updat
 // left by a restart, and the next call may take it over.
 const inflight = new Set()
 
-async function fileOne(parent, row, spec) {
+async function fileOne(parent, row, spec, waits) {
   const title = spec.title || `Code for ${parent.id}`
+  const priority = spec.priority ?? parent.priority
   if (!row.target_repo) {
     // Demo mode: a local item, written in the same transaction as the row
     // that records it, so a restart can never leave one without the other.
@@ -165,8 +169,9 @@ async function fileOne(parent, row, spec) {
         outcome: spec.outcome,
         metric: spec.metric,
         guardrails: spec.guardrails,
-        priority: parent.priority,
+        priority,
         kind: row.kind,
+        lane: spec.lane,
       })
       if (typeof childId !== 'string') throw new Error(`could not create the item (${childId?.error || 'unknown error'})`)
       finish.run('filed', null, childId, row.id)
@@ -180,9 +185,10 @@ async function fileOne(parent, row, spec) {
       outcome: spec.outcome,
       metric: spec.metric,
       guardrails: spec.guardrails,
-      priority: parent.priority,
+      priority,
       kind: row.kind,
-      bodySuffix: spawnBodySuffix(parent, row.request_key, row.seq),
+      lane: spec.lane,
+      bodySuffix: spawnBodySuffix(parent, row.request_key, row.seq, waits),
     })
   }
   setTargetIssue.run(ghIssue.number, row.id)
@@ -200,13 +206,20 @@ async function fileOne(parent, row, spec) {
 // at the first failure: the rows filed before it stay filed, so a retry files
 // only what is left. { ok, children } (the child ids, in spec order) or
 // { error, status }.
-export async function spawnItems(parent, specs, { requestKey, kind, actor = 'Horizon' }) {
+//
+// HZ-449: a spec may also carry `seq` (its row's place under the key; its
+// index by default), `repo` (where to file it when the parent files on
+// GitHub; the parent's repo by default), `priority` (the parent's by default)
+// and `lane`. `waits: false` words the events and the issue's back-link for a
+// parent that does not wait on the child.
+export async function spawnItems(parent, specs, { requestKey, kind, actor = 'Horizon', waits = true }) {
   if (!parent?.id || !Array.isArray(specs) || specs.length === 0) return { error: 'nothing to file', status: 400 }
   if (typeof requestKey !== 'string' || !requestKey) return { error: 'a request key is required', status: 400 }
   if (!isItemKind(kind)) return { error: `unknown item kind "${kind}"`, status: 400 }
   const children = []
-  for (const [seq, spec] of specs.entries()) {
-    insertRow.run(parent.id, requestKey, seq, kind, JSON.stringify(spec), parent.repo || null, actor)
+  for (const [index, spec] of specs.entries()) {
+    const seq = spec.seq ?? index
+    insertRow.run(parent.id, requestKey, seq, kind, JSON.stringify(spec), parent.repo ? (spec.repo ?? parent.repo) : null, actor)
     let row = selectKeyRows.all(parent.id, requestKey).find((r) => r.seq === seq)
     if (row.status === 'filed') {
       children.push(row.child_id)
@@ -218,17 +231,17 @@ export async function spawnItems(parent, specs, { requestKey, kind, actor = 'Hor
     row = selectRow.get(row.id)
     try {
       // The row's own payload, so a retry files what was first asked for.
-      const childId = await fileOne(parent, row, JSON.parse(row.payload_json))
+      const childId = await fileOne(parent, row, JSON.parse(row.payload_json), waits)
       children.push(childId)
       store.addEvent(childId, {
         who: 'Horizon',
-        text: `filed for ${parent.id} (${parent.title}) — that item waits for this one to close`,
+        text: `filed for ${parent.id} (${parent.title})${waits ? ' — that item waits for this one to close' : ''}`,
         color: '#0E6E74',
         initials: 'HZ',
       })
       store.addEvent(parent.id, {
         who: 'Horizon',
-        text: `filed ${childId}${row.target_repo ? ` (\`${row.target_repo}\`)` : ''} — this item waits for it to close`,
+        text: `filed ${childId}${row.target_repo ? ` (\`${row.target_repo}\`)` : ''}${waits ? ' — this item waits for it to close' : ''}`,
         color: '#0E6E74',
         initials: 'HZ',
       })

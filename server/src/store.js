@@ -8,8 +8,9 @@ import {
   STEPS,
   isClosed,
   isAbandoned,
-  isBlocked,
   isBlockedByAbandoned,
+  isImplementBlocked,
+  holdingBlockers,
   curStep,
   IMPLEMENT_STEP_INDEX,
   REVIEW_STEP_INDEX,
@@ -23,6 +24,7 @@ import {
   firstStepIndex,
   endIndex,
   isHumanOnlyGate,
+  isServerStep,
   RUN_PLAN_STEP_INDEX,
   APPROVE_RUN_GATE_INDEX,
   EXECUTE_STEP_INDEX,
@@ -41,6 +43,7 @@ import { priorityFromLabels } from './priorityLabels.js'
 import { kindFromLabels, laneFromLabels } from './kindLabels.js'
 import { getActiveProjectId, setSetting } from './settings.js'
 import { parseRuleBlock } from './ruleBlock.js'
+import { fallbackNoteText, usageWaitText } from './usageLimits.js'
 import { msOf, sqlTime } from './sqlTime.js'
 
 const listeners = new Set()
@@ -75,6 +78,17 @@ let runStateProvider = () => ({})
 
 export function registerRunStateProvider(provider) {
   runStateProvider = provider
+}
+
+// HZ-481: the orchestrator registers the deploy drain's read side here at
+// init (deployDrain.js imports this module, so importing it back would be a
+// cycle): block(now) is deployDrain.deployBlock, survives(stepIndex) is
+// deployDrain.survivesRestart. Until then (mock mode, tests without init())
+// there is no drain to show.
+let deployDrainProvider = { block: () => null, survives: () => false }
+
+export function registerDeployDrainProvider(provider) {
+  deployDrainProvider = { ...deployDrainProvider, ...provider }
 }
 
 // ---- HZ-216: long gate actions (pre-merge checks + merge, conflict resolution) ----
@@ -543,6 +557,45 @@ export function listRepos() {
   return db.prepare('SELECT repo, prefix, project_id FROM project_repo ORDER BY repo').all()
 }
 
+// ---- HZ-447: a Plan's repo scope ----
+
+export function setScopeRepos(itemId, repos) {
+  db.prepare('UPDATE work_item SET scope_repos_json = ? WHERE id = ?').run(JSON.stringify(repos), itemId)
+}
+
+// The newest check pass recorded for any item in the repo. check_pass keeps
+// passes only, pruned after CHECK_PASS_KEEP_MS, so 'none' can also mean the
+// last pass was pruned.
+export function latestCheckPass(repo) {
+  const row = db
+    .prepare('SELECT sha, finished_at, source FROM check_pass WHERE repo = ? ORDER BY finished_at DESC LIMIT 1')
+    .get(repo)
+  return row ? { status: 'pass', sha: row.sha, finished_at: row.finished_at, source: row.source } : { status: 'none' }
+}
+
+// { repos, outOfScope } for a Plan: the stored scope's repos within the
+// item's project — every project repo when none is stored — plus the item's
+// own repo, so its prompt never names a repo the Plan cannot read. Every
+// other connected repo is out of scope: the farm masks those, never reads them.
+export function getPlanScope(itemId) {
+  const item = db.prepare('SELECT repo, project_id, scope_repos_json FROM work_item WHERE id = ?').get(itemId)
+  let chosen = null
+  try {
+    chosen = item?.scope_repos_json ? JSON.parse(item.scope_repos_json) : null
+  } catch {
+    chosen = null
+  }
+  const inScope = (r) =>
+    r.project_id === item?.project_id && (!Array.isArray(chosen) || chosen.includes(r.repo) || r.repo === item.repo)
+  const repos = listRepos()
+  return {
+    repos: repos
+      .filter(inScope)
+      .map((r) => ({ repo: r.repo, default_branch: getDefaultBranch(r.repo)?.branch ?? null, last_check: latestCheckPass(r.repo) })),
+    outOfScope: repos.filter((r) => !inScope(r)).map((r) => r.repo),
+  }
+}
+
 export function findRepo(repoFullName) {
   return db.prepare('SELECT * FROM project_repo WHERE repo = ?').get(repoFullName) || null
 }
@@ -714,7 +767,7 @@ const selectEvents = db.prepare(
   'SELECT who, text, detail, verdict, color, initials, created_at FROM event WHERE item_id = ? ORDER BY id DESC LIMIT 20',
 )
 const selectOutputs = db.prepare(
-  "SELECT step_index, attempt, output, artifact, provider, model, verdict, verdict_summary FROM step_run WHERE item_id = ? AND status = 'done' ORDER BY id",
+  "SELECT step_index, attempt, output, artifact, provider, model, verdict, verdict_summary, fallback_from, fallback_reset_at FROM step_run WHERE item_id = ? AND status = 'done' ORDER BY id",
 )
 // Counts done+artifact rows only (a strict subset of the done rows above —
 // some steps mark done without ever setting an artifact), so the board can
@@ -751,6 +804,9 @@ function stepOutputs(itemId) {
       // summary. NULL on every other step and on runs before it was recorded.
       verdict: row.verdict ?? null,
       verdictSummary: row.verdict_summary ?? null,
+      // HZ-422: "fell back from X: usage limit until <time>" when this attempt
+      // ran on a fallback model, else null.
+      fallbackNote: row.fallback_from ? fallbackNoteText(row.fallback_from, row.fallback_reset_at) : null,
     }
   }
   // HZ-407: the Execute card's job view, from the newest Execute run in any
@@ -795,8 +851,10 @@ function currentRunPlan(itemId) {
   return block ? { block, hash: planHashOf(artifact) } : null
 }
 
-// A kind whose lifecycle has a humanOnly gate approves a run plan there.
-const approvesRunPlan = (kind) => stepsFor(kind).some((step) => isHumanOnlyGate(step.index))
+// A kind whose lifecycle has the Approve the run gate approves a run plan
+// there. HZ-446: keyed on that gate, not on any humanOnly gate — a Plan's
+// Approve & file is human-only too, but it approves no run plan.
+const approvesRunPlan = (kind) => stepsFor(kind).some((step) => step.index === APPROVE_RUN_GATE_INDEX)
 
 // What the Approve the run card shows, and the hash its Approve sends back.
 // HZ-416: `runner` is the plan's own field, defaulting to the container —
@@ -860,18 +918,52 @@ const selectActiveRun = db.prepare(
 // auto-retry count. HZ-346: nor is a run a rule blocked — the block does not
 // use up an attempt. A pure read: nothing is written.
 const selectLastStepRun = db.prepare(
-  'SELECT attempt, auto_retry_count, deploy_interrupted, rule_blocked FROM step_run WHERE item_id = ? AND step_index = ? ORDER BY id DESC LIMIT 1',
+  'SELECT attempt, auto_retry_count, deploy_interrupted, rule_blocked, usage_limit_hit FROM step_run WHERE item_id = ? AND step_index = ? ORDER BY id DESC LIMIT 1',
 )
 const selectNextAttempt = db.prepare('SELECT COALESCE(MAX(attempt), 0) + 1 AS n FROM step_run WHERE item_id = ? AND step_index = ?')
 
 export function nextStepAttempt(id, stepIndex) {
   const last = selectLastStepRun.get(id, stepIndex)
-  const keepsAttempt = last?.deploy_interrupted === 1 || last?.rule_blocked === 1
+  // HZ-422: nor is a run a usage limit stopped — it re-runs on the next model.
+  const keepsAttempt = last?.deploy_interrupted === 1 || last?.rule_blocked === 1 || last?.usage_limit_hit === 1
   return {
     attempt: keepsAttempt ? last.attempt : selectNextAttempt.get(id, stepIndex).n,
     keepsAttempt,
     autoRetryCount: keepsAttempt ? last.auto_retry_count : null,
   }
+}
+
+// ---- usage limits (HZ-422) ----
+// The ledger of models seen usage-limited (model_limit) and the item-level
+// wait for when every model a step may run on is limited. Times are ISO-8601
+// UTC strings, compared in JS with Date.parse so a test's fake clock drives them.
+
+const upsertModelLimit = db.prepare(
+  `INSERT INTO model_limit (model, provider, reset_at, note, updated_at) VALUES (?, ?, ?, ?, datetime('now'))
+   ON CONFLICT(model) DO UPDATE SET provider = excluded.provider, reset_at = excluded.reset_at, note = excluded.note, updated_at = excluded.updated_at`,
+)
+const selectModelLimits = db.prepare('SELECT model, reset_at FROM model_limit')
+
+export function markModelLimited(provider, model, resetAtIso, note = null) {
+  upsertModelLimit.run(model, provider, resetAtIso, note)
+}
+
+// model id -> reset in epoch ms, for every limit still active at nowMs.
+export function activeModelLimits(nowMs) {
+  const limits = new Map()
+  for (const row of selectModelLimits.all()) {
+    const at = Date.parse(row.reset_at)
+    if (at > nowMs) limits.set(row.model, at)
+  }
+  return limits
+}
+
+export function setUsageWait(id, untilIso) {
+  db.prepare(`UPDATE work_item SET usage_wait_until = ?, ${touch} WHERE id = ?`).run(untilIso, id)
+}
+
+export function listUsageWaits() {
+  return db.prepare('SELECT id, usage_wait_until FROM work_item WHERE usage_wait_until IS NOT NULL').all()
 }
 
 // Folds the farm's cached {state, reason} onto an active run (HZ-54). No
@@ -884,11 +976,13 @@ function withRunState(activeRun) {
 }
 
 // ---- dependencies (HZ-78) ----
-// item_id is blocked until every depends_on_id row it names has closed (see
-// domain/js/lifecycle.js isBlocked). Enforced at dispatch time in orchestrator.js's
-// runnable() — the same gate that already decides dispatch — via blockersOf
-// below; the API-facing blocked/blockedBy fields here are read-only
-// reporting of that same derived state, not a second source of truth.
+// item_id is held by the depends_on_id rows it names (see domain/js/lifecycle.js
+// holdingBlockers). HZ-467: a change item plans freely and waits only from
+// implement on, until each blocker has merged (merged_at) or closed; other
+// kinds wait on every step until each blocker closes. Enforced at dispatch
+// time in orchestrator.js's runnable() — the same gate that already decides
+// dispatch — via blockersOf below; the API-facing `blocked` field here is
+// read-only reporting of that same derived state, not a second source of truth.
 
 const selectBlockers = db.prepare(
   `SELECT w.* FROM work_item_dependency d JOIN work_item w ON w.id = d.depends_on_id WHERE d.item_id = ? ORDER BY d.depends_on_id`,
@@ -898,6 +992,7 @@ const selectDependents = db.prepare(
 )
 const selectDependentIds = db.prepare('SELECT item_id FROM work_item_dependency WHERE depends_on_id = ?')
 const selectDependsOnIds = db.prepare('SELECT depends_on_id FROM work_item_dependency WHERE item_id = ?')
+const selectCursorKind = db.prepare('SELECT cursor, kind FROM work_item WHERE id = ?')
 
 // Exported so the orchestrator can gate dispatch on the same derived state
 // this module reports through listItems() — never two separate checks.
@@ -923,21 +1018,38 @@ function wouldCycle(id, dependsOnId) {
   return false
 }
 
+// HZ-469: the open items (not closed, not abandoned) that depend on any of
+// `itemIds`, as {id, dependsOn}. The deploy queue closes a batch's window
+// early when one is waiting on a member.
+export function openDependentsOfAny(itemIds) {
+  const found = []
+  for (const dependsOn of itemIds) {
+    for (const row of selectDependents.all(dependsOn)) {
+      if (!isClosed(row) && !isAbandoned(row)) found.push({ id: row.id, dependsOn })
+    }
+  }
+  return found
+}
+
 // HZ-313: the same check addDependency runs, for split.js to refuse a plan
 // whose already-filed upstream item now depends on this one.
 export function wouldCycleBetween(id, dependsOnId) {
   return wouldCycle(id, dependsOnId)
 }
 
-function dependencyFields(id) {
+// `blocked` says whether the item is held at its current step. `blockedBy`
+// lists every edge to a blocker that has not closed, held or not, so each one
+// can still be seen and removed; `merged` marks a blocker whose PR is on main.
+// `row` (cursor, kind) saves a read when the caller already has it.
+function dependencyFields(id, row = selectCursorKind.get(id)) {
   const blockers = blockersOf(id)
   const dependents = selectDependents.all(id)
   return {
-    blocked: isBlocked(blockers),
+    blocked: row ? holdingBlockers(row, blockers).length > 0 : false,
     blockedByAbandoned: isBlockedByAbandoned(blockers),
     blockedBy: blockers
       .filter((b) => !isClosed(b))
-      .map((b) => ({ id: b.id, title: b.title, abandoned: isAbandoned(b) })),
+      .map((b) => ({ id: b.id, title: b.title, abandoned: isAbandoned(b), merged: !!b.merged_at })),
     dependents: dependents
       .filter((d) => !isClosed(d))
       .map((d) => ({ id: d.id, title: d.title, abandoned: isAbandoned(d) })),
@@ -966,10 +1078,11 @@ export function spawnFields(id) {
 }
 
 // Wakes every item that names `id` as a blocker — called once `id` has
-// actually closed, from every place isClosed can flip false -> true
-// (approveGate, approveGateFromGithub, and upsertFromGithub's GitHub-close
-// sync). kick() itself re-checks runnable() (which re-checks blockersOf), so
-// a dependent with a second still-open blocker safely no-ops here.
+// merged (markMerged) or actually closed, from every place isClosed can flip
+// false -> true (approveGate, approveGateFromGithub, and upsertFromGithub's
+// GitHub-close sync). kick() itself re-checks runnable() (which re-checks
+// blockersOf), so a dependent with a second still-open blocker safely no-ops
+// here, and a second wake for the same blocker is harmless.
 function wakeDependents(id) {
   for (const row of selectDependentIds.all(id)) {
     releaseRuleBlockIfSatisfied(row.item_id)
@@ -978,7 +1091,8 @@ function wakeDependents(id) {
 }
 
 // HZ-346: a rule-blocked item restarts once a dependency it gained after the
-// block, and every other blocker, has closed. A dependency that predates the
+// block, and every other blocker, has merged or closed (HZ-467: a rule block
+// only ever stops implement, so it lifts at merge too). A dependency that predates the
 // block is not why it is waiting, so it never releases it; nor does removing
 // one. Returns whether the block was cleared — the caller kicks.
 export function releaseRuleBlockIfSatisfied(id) {
@@ -986,7 +1100,7 @@ export function releaseRuleBlockIfSatisfied(id) {
   const block = parseRuleBlock(row?.rule_block_json)
   if (!block?.blockedAt) return false
   const blockers = blockersOf(id)
-  if (blockers.length === 0 || isBlocked(blockers)) return false
+  if (blockers.length === 0 || isImplementBlocked(blockers)) return false
   const added = db
     .prepare('SELECT 1 FROM work_item_dependency WHERE item_id = ? AND created_at >= ? LIMIT 1')
     .get(id, block.blockedAt)
@@ -994,7 +1108,7 @@ export function releaseRuleBlockIfSatisfied(id) {
   db.prepare(`UPDATE work_item SET rule_block_json = NULL, ${touch} WHERE id = ?`).run(id)
   addEvent(id, {
     who: 'Horizon',
-    text: 'its dependencies are closed — the rule block is cleared and implement restarts',
+    text: 'its dependencies are merged or closed — the rule block is cleared and implement restarts',
     color: '#5E4380',
     initials: 'HZ',
   })
@@ -1024,7 +1138,7 @@ function escalateDependents(blockerId, actor) {
   }
 }
 
-// Declares that `id` cannot proceed until `dependsOnId` closes. Validated,
+// Declares that `id` waits on `dependsOnId` (see holdingBlockers). Validated,
 // in order, before any write: both items exist, no self-dependency, the
 // dependent isn't already closed/abandoned, the blocker isn't abandoned
 // (an abandoned blocker can never satisfy a dependency, so declaring one is
@@ -1068,16 +1182,38 @@ export function addDependency(id, dependsOnId, actor = 'You') {
 // (see escalateDependents), or simply undoing a mistaken declaration. Always
 // re-kicks: if this was the last open blocker, the item is runnable again
 // and must start automatically, not wait for an unrelated dispatch trigger.
+//
+// HZ-466: when someone other than Horizon removes an edge Horizon created, the
+// pair is recorded in overlap_link_removal so step 9 does not re-add it. That
+// also covers Horizon edges from spawn.js and split.js, not only overlap ones:
+// the record only ever stops an overlap link for that exact pair, so it is
+// harmless. split.js's own cleanups pass actor 'Horizon' and record nothing.
 export function removeDependency(id, dependsOnId, actor = 'You') {
   const it = getItem(id)
   if (!it) return { error: 'not_found' }
   if (disabledProject(it)) return { error: 'project_not_active' }
-  const result = db.prepare('DELETE FROM work_item_dependency WHERE item_id = ? AND depends_on_id = ?').run(id, dependsOnId)
-  if (result.changes === 0) return { error: 'not_found' }
+  const removed = db.transaction(() => {
+    const edge = db.prepare('SELECT created_by FROM work_item_dependency WHERE item_id = ? AND depends_on_id = ?').get(id, dependsOnId)
+    if (!edge) return false
+    db.prepare('DELETE FROM work_item_dependency WHERE item_id = ? AND depends_on_id = ?').run(id, dependsOnId)
+    if (edge.created_by === 'Horizon' && actor !== 'Horizon') {
+      const [a, b] = [id, dependsOnId].sort()
+      db.prepare('INSERT OR IGNORE INTO overlap_link_removal (item_a, item_b, removed_by) VALUES (?, ?, ?)').run(a, b, actor)
+    }
+    return true
+  })()
+  if (!removed) return { error: 'not_found' }
   addEvent(id, { who: actor, text: `removed the dependency on ${dependsOnId}`, color: '#5E4380', initials: 'YOU' })
   notify()
   agentRunner.kick(id)
   return { ok: true, ...dependencyFields(id) }
+}
+
+// HZ-466: the owner removal recorded for this item pair, in either order, or
+// null. overlapService.applyOverlap reads it before adding an overlap link.
+export function overlapLinkRemoval(a, b) {
+  const [itemA, itemB] = [a, b].sort()
+  return db.prepare('SELECT removed_by, removed_at FROM overlap_link_removal WHERE item_a = ? AND item_b = ?').get(itemA, itemB) || null
 }
 
 // Where an item stands, resolved server-side so non-UI clients (the WhatsApp
@@ -1220,14 +1356,83 @@ function toIsoUtc(ts) {
 
 // HZ-333: the item's place in its deploy target's queue, for the board, or
 // null when it is not queued. Read-only.
+// HZ-481: also the entry a batch released while it is `verifying` (live, smoke
+// check running), and the facts each stage of the card's line needs. Every
+// HZ-333 key keeps its name and meaning; the new ones are added beside them.
 const selectQueuedEntry = db.prepare(`
-  SELECT e.target, e.status, b.status AS batch_status, b.window_closes_at, b.tag
+  SELECT e.target, e.status, b.status AS batch_status, b.window_closes_at, b.tag,
+         b.id AS batch_id, b.started_at, b.live_at
     FROM deploy_queue_entry e JOIN deploy_batch b ON b.id = e.batch_id
-   WHERE e.item_id = ? AND e.status = 'queued'`)
+   WHERE e.item_id = ?
+     AND (e.status = 'queued' OR (e.status = 'released' AND b.status = 'verifying' AND b.live_at IS NOT NULL))`)
 
-export function deployQueueStateFor(itemId) {
+// HZ-481: how long the target's last 5 deploys took, publish start to live,
+// in seconds — the history "live about" is estimated from.
+const selectRecentDeploySeconds = db.prepare(`
+  SELECT (julianday(live_at) - julianday(started_at)) * 86400 AS s FROM deploy_batch
+   WHERE target = ? AND live_at IS NOT NULL AND started_at IS NOT NULL
+   ORDER BY id DESC LIMIT 5`)
+
+// HZ-481: when a deploy of `target` should be live, as ISO UTC, or null with
+// no usable history: the drain's end (else now) plus the median of the last
+// 5 durations. The median counts publish, deploy-hold (HZ-408) and drain
+// time too, so a run of long waits moves the estimate later.
+export function liveEtaFor(target, { drainEndMs = null, nowMs = Date.now() } = {}) {
+  const durations = selectRecentDeploySeconds
+    .all(target)
+    .map((row) => row.s)
+    .filter((s) => Number.isFinite(s) && s >= 0)
+    .sort((a, b) => a - b)
+  if (durations.length === 0) return null
+  const mid = Math.floor(durations.length / 2)
+  const median = durations.length % 2 ? durations[mid] : (durations[mid - 1] + durations[mid]) / 2
+  const base = Number.isFinite(drainEndMs) ? drainEndMs : nowMs
+  return new Date(base + Math.round(median * 1000)).toISOString()
+}
+
+// HZ-481: short step names for the drain line; any other step reads as its
+// stepSlug(). Keyed by step index, so a relabel cannot unhook them.
+const DRAIN_STEP_NAMES = new Map([
+  [IMPLEMENT_STEP_INDEX, 'implement'],
+  [REVIEW_STEP_INDEX, 'review'],
+])
+
+// HZ-481: what a Horizon self-deploy's drain is waiting on — the agent steps
+// a restart would break (HZ-469: deployDrain's survivesRestart) and the
+// running premerge/resolve gate actions — as [{item_id, step}].
+function drainWaiting() {
+  const steps = listRunningAgentSteps()
+    .filter((run) => !deployDrainProvider.survives(run.stepIndex))
+    .map((run) => ({ item_id: run.itemId, step: DRAIN_STEP_NAMES.get(run.stepIndex) ?? run.step }))
+  const gateActions = listRunningGateActions().map((run) => ({ item_id: run.itemId, step: run.kind }))
+  return [...steps, ...gateActions].sort((a, b) => a.item_id.localeCompare(b.item_id, 'en', { numeric: true }))
+}
+
+export function deployQueueStateFor(itemId, now = Date.now()) {
   const row = selectQueuedEntry.get(itemId)
-  return row ? { ...row, window_closes_at: toIsoUtc(row.window_closes_at) } : null
+  if (!row) return null
+  const state = {
+    ...row,
+    window_closes_at: toIsoUtc(row.window_closes_at),
+    started_at: toIsoUtc(row.started_at),
+    live_at: toIsoUtc(row.live_at),
+  }
+  if (row.batch_status !== 'deploying') return state
+  // The drain block is process-wide; only a Horizon self-deploy drains.
+  let drainEndMs = null
+  const block = row.target === 'horizon' ? deployDrainProvider.block(now) : null
+  if (block) {
+    state.drain_started_at = block.startedAt
+    state.drain_deadline = block.latestEnd
+    state.drain_waiting = drainWaiting()
+    drainEndMs = Date.parse(block.latestEnd)
+  }
+  // The drain's end is never stored (a restart ends it), so this is when
+  // the batch started publishing.
+  state.deploying_since = state.started_at
+  const eta = liveEtaFor(row.target, { drainEndMs, nowMs: now })
+  if (eta) state.live_eta = eta
+  return state
 }
 
 // HZ-333: gate 15's evidence for an item a deploy queue batch shipped — its
@@ -1294,6 +1499,13 @@ function waitingSince(row, ruleBlock) {
 
 const selectProjectProviderDefaults = db.prepare('SELECT provider_defaults_json FROM project WHERE id = ?')
 
+// HZ-422: null once the wait has passed, even before kick() clears the column.
+function usageWaitView(row) {
+  const until = row.usage_wait_until
+  if (!until || !(Date.parse(until) > Date.now())) return null
+  return { until, text: usageWaitText(until) }
+}
+
 function itemView(row, { stepOutputs: withStepOutputs = true } = {}) {
   const activeRun = withRunState(selectActiveRun.get(row.id) || null)
   const gateFields = itemGateFields(row)
@@ -1339,9 +1551,11 @@ function itemView(row, { stepOutputs: withStepOutputs = true } = {}) {
     state_since: stateSince(row, activeRun, gateFields.gateAction),
     reviewRejected: reviewRejected(row),
     forwardedReview: forwardedReview(row),
-    ...dependencyFields(row.id),
+    ...dependencyFields(row.id, row),
     ...spawnFields(row.id),
     ruleBlock,
+    // HZ-422: every model this step may run on is usage-limited until `until`.
+    usageWait: usageWaitView(row),
     // HZ-443: the board's "Waiting on me" filter and sort.
     paused_at: row.paused ? toIsoUtc(row.paused_at) : null,
     waiting_since: waitingSince(row, ruleBlock),
@@ -1554,6 +1768,8 @@ export function addEvent(id, { who, text, color, initials, detail = null, verdic
 // (WhatsApp, the caretaker, a token, any route added later) is refused here,
 // the gate stays pending and the refusal is logged. `planHash` is the plan
 // the approver was shown: a newer plan since then is refused, not approved.
+// HZ-446: the PIN applies to every humanOnly gate; the run plan checks only to
+// Approve the run, the one gate that approves a run plan.
 export function approveGate(id, stepIndex, notes, actor = 'You', { proof = null, planHash = null } = {}) {
   const it = getItem(id)
   if (!it) return { error: 'not_found' }
@@ -1573,6 +1789,8 @@ export function approveGate(id, stepIndex, notes, actor = 'You', { proof = null,
       notify()
       return { error: 'human_pin_required' }
     }
+  }
+  if (stepIndex === APPROVE_RUN_GATE_INDEX) {
     const plan = currentRunPlan(id)
     if (!plan) return { error: 'run_plan_missing' }
     if (planHash != null && planHash !== plan.hash) return { error: 'run_plan_changed' }
@@ -1638,6 +1856,7 @@ export function requestChanges(id, target, feedbackText, actor = 'You', targetSt
       targetStepIndex >= first &&
       targetStepIndex < it.cursor &&
       STEPS[targetStepIndex]?.kind === 'agent' &&
+      !isServerStep(targetStepIndex) &&
       !laneSkips(it).has(targetStepIndex)
     if (!atGate || !validTarget) return { error: 'invalid_target' }
   }
@@ -1666,9 +1885,13 @@ export function requestChanges(id, target, feedbackText, actor = 'You', targetSt
       // run means the PLAN is wrong — send it back to Run plan to redo it.
       reworkIdx = RUN_PLAN_STEP_INDEX
     } else {
-      // HZ-435: never onto a row the item's lane skips.
+      // HZ-435: never onto a row the item's lane skips. HZ-446: nor onto a
+      // server step — it has no agent to take the feedback, and HZ-449's File
+      // items files real issues, so a send-back must never re-run it.
       const skips = laneSkips(it)
-      while (reworkIdx > first && (STEPS[reworkIdx].kind !== 'agent' || skips.has(reworkIdx))) reworkIdx--
+      while (reworkIdx > first && (STEPS[reworkIdx].kind !== 'agent' || isServerStep(reworkIdx) || skips.has(reworkIdx))) {
+        reworkIdx--
+      }
     }
   }
   const reworkAgent = STEPS[reworkIdx].kind === 'agent' ? STEPS[reworkIdx].agent : null
@@ -1899,7 +2122,7 @@ export function addFeedback(id, { message, target = '', source = 'ui', ghComment
   const step = STEPS[it.cursor]
   db.prepare('INSERT INTO feedback (item_id, target, message, source, gh_comment_id) VALUES (?, ?, ?, ?, ?)').run(
     id,
-    target || (step?.kind === 'agent' ? step.agent : ''),
+    target || (step?.kind === 'agent' ? (step.agent ?? '') : ''),
     text,
     source,
     ghCommentId,
@@ -2021,7 +2244,9 @@ export function applySplitScope(id, { desc, metric }, actor = 'Horizon') {
 
 // ---- local (demo-mode) item creation ----
 
-export function createLocalItem({ title, outcome, metric, guardrails, priority, kind }) {
+// HZ-449: `lane` is the lane a Plan's draft asked for; one the kind does not
+// have is stored as no lane.
+export function createLocalItem({ title, outcome, metric, guardrails, priority, kind, lane = null }) {
   // HZ-377: the kind defaults to `change`; anything outside the domain
   // vocabulary is refused before anything is written.
   const itemKind = kind ?? 'change'
@@ -2032,8 +2257,8 @@ export function createLocalItem({ title, outcome, metric, guardrails, priority, 
       .get().n + 1
   const id = `LOC-${next}`
   db.prepare(
-    'INSERT INTO work_item (id, title, priority, desc, metric, guardrails, cursor, kind) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
-  ).run(id, title, priority, outcome, metric, guardrails || '', firstStepIndex(itemKind), itemKind)
+    'INSERT INTO work_item (id, title, priority, desc, metric, guardrails, cursor, kind, lane) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+  ).run(id, title, priority, outcome, metric, guardrails || '', firstStepIndex(itemKind), itemKind, laneOf({ kind: itemKind, lane }))
   addEvent(id, { who: 'You', text: 'created this work item', color: '#5E4380', initials: 'YOU' })
   notify()
   agentRunner.kick(id)
@@ -2060,8 +2285,22 @@ export function approveGateFromGithub(id) {
   })
   notify()
   agentRunner.kick(id)
+  markMerged(id)
   if (isClosed(getItem(id))) wakeDependents(id)
   return { ok: true }
+}
+
+// HZ-467: records that the item's PR merged to main, then wakes its
+// dependents — their implement may start now, before the deploy and close.
+// Called only after a merge succeeded: app.js after github.mergePr, and
+// approveGateFromGithub for a PR merged on GitHub. A second call, or an
+// unknown id, is a no-op: the first merge time stands.
+export function markMerged(id) {
+  const result = db.prepare(`UPDATE work_item SET merged_at = datetime('now'), ${touch} WHERE id = ? AND merged_at IS NULL`).run(id)
+  if (result.changes === 0) return false
+  notify()
+  wakeDependents(id)
+  return true
 }
 
 // ---- GitHub sync ----
@@ -2145,7 +2384,8 @@ export function upsertFromGithub(ghIssue, repoFullName) {
       changed = true
       wakeDependents(row.id)
     } else if (!closedOnGithub && wasClosed && !row.abandoned_at) {
-      db.prepare(`UPDATE work_item SET cursor = ?, rejected = 0, paused = 0, ${touch} WHERE id = ?`).run(
+      // HZ-467: a reopened item starts over, so its old merge no longer counts.
+      db.prepare(`UPDATE work_item SET cursor = ?, rejected = 0, paused = 0, merged_at = NULL, ${touch} WHERE id = ?`).run(
         firstStepIndex(itemKindOf(row)),
         row.id,
       )
@@ -2174,7 +2414,9 @@ export function recoverRejectedItems() {
         reworkIdx = IMPLEMENT_STEP_INDEX
       } else {
         const skips = laneSkips(row)
-        while (reworkIdx > first && (STEPS[reworkIdx].kind !== 'agent' || skips.has(reworkIdx))) reworkIdx--
+        while (reworkIdx > first && (STEPS[reworkIdx].kind !== 'agent' || isServerStep(reworkIdx) || skips.has(reworkIdx))) {
+          reworkIdx--
+        }
       }
     }
     const notes = db

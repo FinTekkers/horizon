@@ -36,8 +36,8 @@ export default function AddDependencyDialog({ item, items = [], initialError = n
           Add dependency · {item.id}
         </div>
         <div className="composer__sub">
-          {item.id} waits for the item you pick and restarts implement once it closes. Picking an item that is
-          already closed restarts it now.
+          {item.id} waits for the item you pick and restarts implement once it merges or closes. Picking an item
+          that is already merged or closed restarts it now.
         </div>
         <div className="composer__field">
           <label htmlFor="add-dependency-item" className="composer__field-label">

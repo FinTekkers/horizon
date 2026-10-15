@@ -23,7 +23,7 @@ import os
 import re
 import subprocess
 import sys
-from datetime import datetime
+from datetime import datetime, timezone
 
 from domain.py import reasons
 
@@ -33,14 +33,19 @@ from .base import (
     AgentError,
     AgentExhaustedError,
     AgentMessageTooLargeError,
+    AgentUsageLimitedError,
     assert_metered_billing_authorized,
     decode_partial,
+    iso_utc,
     metered_billing_opted_in,
+    reset_from_text,
 )
 
 SUPPORTS_RESUME = True
 # HZ-158: yes — see AgentExhaustedError's docstring in providers/base.py.
 RESUMES_AFTER_EXHAUSTION = True
+# HZ-447: --disallowedTools / disallowed_tools are passed through on both paths.
+ENFORCES_DENY_RULES = True
 
 # HZ-424: the SDK reads each CLI message into a buffer capped at 1 MB by
 # default; one Read of a full-page screenshot overflows it and the reader dies.
@@ -100,6 +105,31 @@ def _too_large(exc: BaseException, limit: int) -> AgentMessageTooLargeError:
     )
 
 
+# HZ-422: Claude's usage-limit refusals. The CLI's subscription message is
+# "Claude AI usage limit reached|<epoch seconds>"; an API rate limit names
+# rate_limit_error or a 429; newer CLIs say "... limit reached ∙ resets <time>".
+_USAGE_LIMIT_EPOCH_RE = re.compile(r"usage limit reached\|(\d{9,11})", re.IGNORECASE)
+_RATE_LIMIT_RE = re.compile(r"rate_limit_error|\b429\b[^\n]*(?:rate|limit|too many requests)", re.IGNORECASE)
+_LIMIT_RESETS_RE = re.compile(r"(?:limit reached|hit your (?:usage )?limit)[^\n]*\bresets?\b", re.IGNORECASE)
+
+
+def _usage_limit(text: str | None) -> AgentUsageLimitedError | None:
+    """The usage-limit error `text` reports, or None for any other failure.
+    Read before anything is cut to 300 chars. A reset time that is missing or
+    unparseable is None."""
+    if not text:
+        return None
+    epoch = _USAGE_LIMIT_EPOCH_RE.search(text)
+    if epoch:
+        reset = iso_utc(datetime.fromtimestamp(int(epoch.group(1)), tz=timezone.utc))
+        return AgentUsageLimitedError(f"claude usage limit reached (resets {reset})", reset_at=reset)
+    if _RATE_LIMIT_RE.search(text):
+        return AgentUsageLimitedError(f"claude rate limited: {text.strip()[:300]}", reset_at=reset_from_text(text))
+    if _LIMIT_RESETS_RE.search(text):
+        return AgentUsageLimitedError(f"claude usage limit: {text.strip()[:300]}", reset_at=reset_from_text(text))
+    return None
+
+
 def assert_subscription_auth() -> None:
     """Refuse to run with ANTHROPIC_API_KEY present — the farm must use the
     logged-in `claude` subscription, never metered API billing (HZ-5) —
@@ -134,6 +164,7 @@ def run(
     timeout_s: int = STEP_TIMEOUT_S,
     allowed_tools: str | None = None,
     retry_fresh: bool = True,
+    disallowed_tools: str | None = None,
 ) -> dict:
     """Returns {"result": <final text>, "session_id": <id>}.
 
@@ -152,6 +183,7 @@ def run(
             timeout_s=timeout_s,
             allowed_tools=allowed_tools,
             retry_fresh=retry_fresh,
+            disallowed_tools=disallowed_tools,
         )
 
     # This runs inside the agent process (tmux pane), whose environment is
@@ -181,6 +213,7 @@ def run(
                     model=model,
                     max_turns=max_turns,
                     allowed_tools=allowed_tools,
+                    disallowed_tools=disallowed_tools,
                     seen=seen,
                     max_buffer_size=buffer_limit,
                 ),
@@ -199,6 +232,10 @@ def run(
         # `from None`: the SDK error's text can hold the oversized line.
         if _is_buffer_overflow(exc):
             raise _too_large(exc, buffer_limit) from None
+        # HZ-422: a usage limit is never retried fresh — the server falls back.
+        limited = _usage_limit(str(exc))
+        if limited is not None:
+            raise limited from exc
         # A stale `resume` session is the common recoverable failure: retry fresh.
         if session_id and retry_fresh:
             return run(
@@ -210,6 +247,7 @@ def run(
                 max_turns=max_turns,
                 timeout_s=timeout_s,
                 allowed_tools=allowed_tools,
+                disallowed_tools=disallowed_tools,
             )
         raise AgentError(f"claude (sdk) failed: {str(exc)[:300]}") from exc
     except Exception as exc:
@@ -229,6 +267,7 @@ async def _stream_query(
     model: str | None,
     max_turns: int,
     allowed_tools: str | None,
+    disallowed_tools: str | None = None,
     seen: dict | None = None,
     max_buffer_size: int | None = None,
 ) -> dict:
@@ -246,6 +285,8 @@ async def _stream_query(
         max_turns=max_turns,
         # Public signature keeps the CLI's comma-joined string; the SDK wants a list.
         allowed_tools=[t.strip() for t in allowed_tools.split(",") if t.strip()] if allowed_tools else [],
+        # HZ-447: deny rules win over allow rules; no bypass permission mode is set.
+        disallowed_tools=[t.strip() for t in disallowed_tools.split(",") if t.strip()] if disallowed_tools else [],
         resume=session_id,
         # Same isolation as the subprocess path's --strict-mcp-config: farm
         # agents must NOT inherit the human's personal MCP servers (WhatsApp
@@ -255,7 +296,7 @@ async def _stream_query(
         max_buffer_size=max_buffer_size if max_buffer_size is not None else sdk_max_buffer_bytes(),
     )
 
-    result_text, new_session_id = "", None
+    result_text, new_session_id, num_turns = "", None, None
     stream = sdk.query(prompt=prompt, options=options)
     try:
         async for message in stream:
@@ -272,6 +313,7 @@ async def _stream_query(
             if isinstance(message, sdk.ResultMessage):
                 result_text = message.result or ""
                 new_session_id = message.session_id
+                num_turns = getattr(message, "num_turns", None)
                 if message.is_error:
                     # subtype names the cause (e.g. error_max_turns) — the
                     # result text is often empty on these, so without it the
@@ -286,13 +328,17 @@ async def _stream_query(
                             partial_text=result_text or seen.get("text"),
                             session_id=new_session_id or seen.get("session_id"),
                         )
+                    limited = _usage_limit(result_text)
+                    if limited is not None:
+                        raise limited
                     raise AgentError(f"claude reported an error result [{subtype}]: {detail}")
     finally:
         # Cancellation (asyncio.wait_for timeout) lands here too: closing the
         # generator tears down the SDK's transport, killing the spawned
         # `claude` process rather than orphaning it in the tmux session.
         await stream.aclose()
-    return {"result": result_text, "session_id": new_session_id}
+    # HZ-458: the turns this run used, so a follow-up turn stays inside the step's cap.
+    return {"result": result_text, "session_id": new_session_id, "num_turns": num_turns}
 
 
 def _print_event(message) -> None:
@@ -333,6 +379,7 @@ def _run_subprocess(
     timeout_s: int = STEP_TIMEOUT_S,
     allowed_tools: str | None = None,
     retry_fresh: bool = True,
+    disallowed_tools: str | None = None,
 ) -> dict:
     """The pre-HZ-5 path: silent `claude -p --output-format json` subprocess."""
     # --strict-mcp-config: farm agents must NOT inherit the human's personal
@@ -347,6 +394,8 @@ def _run_subprocess(
         cmd += ["--model", model]
     if allowed_tools:
         cmd += ["--allowedTools", allowed_tools]
+    if disallowed_tools:
+        cmd += ["--disallowedTools", disallowed_tools]
 
     try:
         # HZ-140: the model never gets a gate-approving credential, whichever
@@ -373,6 +422,10 @@ def _run_subprocess(
         raise AgentError(f"claude binary not found: {CLAUDE_BIN}") from exc
 
     if proc.returncode != 0:
+        # HZ-422: checked first — a usage limit is never retried fresh.
+        limited = _usage_limit(proc.stderr) or _usage_limit(proc.stdout)
+        if limited is not None:
+            raise limited
         # A stale --resume session is the common recoverable failure: retry fresh.
         if session_id and retry_fresh:
             return _run_subprocess(
@@ -384,6 +437,7 @@ def _run_subprocess(
                 max_turns=max_turns,
                 timeout_s=timeout_s,
                 allowed_tools=allowed_tools,
+                disallowed_tools=disallowed_tools,
             )
         raise AgentError(f"claude exited {proc.returncode}: {proc.stderr.strip()[:300]}")
 
@@ -392,4 +446,4 @@ def _run_subprocess(
     except json.JSONDecodeError as exc:
         raise AgentError(f"claude produced non-JSON output: {proc.stdout[:200]}") from exc
 
-    return {"result": data.get("result", ""), "session_id": data.get("session_id")}
+    return {"result": data.get("result", ""), "session_id": data.get("session_id"), "num_turns": data.get("num_turns")}

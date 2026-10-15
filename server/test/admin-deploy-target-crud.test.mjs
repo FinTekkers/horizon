@@ -263,6 +263,45 @@ test('taskDir: a sibling of repoDir round-trips; containment, format and duplica
   assert.equal(Object.hasOwn(cleared.json().target, 'taskDir'), false)
 })
 
+// HZ-442: the build command a service deploy runs instead of its own build.
+// One line, no control characters, at most 500 chars; null clears it.
+test('buildCommand round-trips through POST, GET config and PUT; null clears it; bad shapes are 400 and write nothing', async () => {
+  const posted = await request('POST', '/api/admin/deploy-targets', {
+    payload: { ...DOCS, key: 'docs-build', repo: 'FinTekkers/docs-build', stateKey: 'docs-build', buildCommand: 'python build.py --local' },
+    pin,
+  })
+  assert.equal(posted.statusCode, 201, posted.body)
+  assert.equal(posted.json().target.buildCommand, 'python build.py --local')
+  const got = (await request('GET', '/api/admin/deploy-targets/config')).json()
+  assert.equal(got.targets.find((t) => t.key === 'docs-build').buildCommand, 'python build.py --local')
+
+  const fields = { ...DOCS_FIELDS, repo: 'FinTekkers/docs-build', stateKey: 'docs-build' }
+  const put = (buildCommand) =>
+    request('PUT', '/api/admin/deploy-targets/docs-build', { payload: { ...fields, buildCommand }, pin })
+  const edited = await put('make build')
+  assert.equal(edited.statusCode, 200, edited.body)
+  assert.equal(findTargetByKey('docs-build').buildCommand, 'make build')
+
+  for (const bad of ['make\nbuild', 'make\tbuild', '   ']) {
+    const res = await put(bad)
+    assert.equal(res.statusCode, 400, JSON.stringify(bad))
+    assert.deepEqual(res.json(), { error: 'deploy_target_invalid', reason: 'bad buildCommand' })
+    assert.equal(findTargetByKey('docs-build').buildCommand, 'make build')
+  }
+  for (const bad of ['', 'x'.repeat(501), { cmd: 'make' }]) {
+    const res = await put(bad)
+    assert.equal(res.statusCode, 400, JSON.stringify(bad))
+    assert.equal(res.json().code, 'FST_ERR_VALIDATION')
+    assert.equal(findTargetByKey('docs-build').buildCommand, 'make build')
+  }
+
+  const cleared = await put(null)
+  assert.equal(cleared.statusCode, 200, cleared.body)
+  assert.equal(Object.hasOwn(cleared.json().target, 'buildCommand'), false)
+  assert.equal(Object.hasOwn(findTargetByKey('docs-build'), 'buildCommand'), false)
+  assert.equal((await request('DELETE', '/api/admin/deploy-targets/docs-build', { pin })).statusCode, 200)
+})
+
 test('GET /api/admin/deploy-targets/config returns the stored rows and no secrets', async () => {
   const res = await request('GET', '/api/admin/deploy-targets/config')
   assert.equal(res.statusCode, 200)

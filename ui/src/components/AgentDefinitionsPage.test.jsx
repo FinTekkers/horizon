@@ -188,9 +188,11 @@ test('previewing a selected persona file sends that persona and its agent', asyn
 // values that ship.
 test('the models section shows every agent step, the concierge and conflict resolution with their models', async () => {
   const { STEPS } = await import('../../../domain/js/lifecycle.js')
-  const { findByText, getByTestId } = render(<AgentDefinitionsPage onBack={() => {}} />)
+  const { findByText, getByTestId, queryByTestId } = render(<AgentDefinitionsPage onBack={() => {}} />)
   await findByText('FinTekkers__ui-service')
-  const agentSteps = STEPS.filter((step) => step.kind === 'agent' && step.runsIn !== 'none')
+  // HZ-446: a server step names no agent and runs on no model — it has no row.
+  const agentSteps = STEPS.filter((step) => step.kind === 'agent' && step.runsIn !== 'none' && step.runsIn !== 'server')
+  expect(queryByTestId('model-row-plan:File items')).toBeNull()
   expect(agentSteps.length).toBeGreaterThan(0)
   for (const step of agentSteps) {
     // HZ-413: a Task row's key carries its kind — both kinds' first steps share a label.

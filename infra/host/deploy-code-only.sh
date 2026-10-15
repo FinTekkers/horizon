@@ -19,6 +19,11 @@
 #   DEPLOY_NAME       state dir name under ~/.horizon/
 #   DEPLOY_REPO_DIR   the checkout the code runs from
 #   DEPLOY_STRIP_ENV  variables unset for install.sh and test.sh (space separated)
+#
+# HORIZON_BUILD_COMMAND (HZ-442, the target's Admin-set build command), when
+# non-empty, runs with bash -c in the checkout in place of install.sh, both
+# at install and in the restore; DEPLOY_STRIP_ENV still applies and test.sh
+# still runs. The install stage logs which one ran: build: <command>.
 set -euo pipefail
 
 TAG="${1:-}"
@@ -77,6 +82,18 @@ run_check() {
   env "${unset_args[@]}" bash "scripts/checks/$1.sh"
 }
 
+# run_install — the target's build command when set, else install.sh. Same
+# environment and calling rule as run_check.
+run_install() {
+  if [ -z "${HORIZON_BUILD_COMMAND:-}" ]; then
+    run_check install
+    return
+  fi
+  local unset_args=() name
+  for name in ${DEPLOY_STRIP_ENV:-}; do unset_args+=(-u "$name"); done
+  env "${unset_args[@]}" bash -c "$HORIZON_BUILD_COMMAND"
+}
+
 # read_last_good — splits last-good-tag (<ref>:<commit>) into LAST_GOOD_REF
 # and LAST_GOOD_COMMIT. Returns 1 when the file is missing or malformed.
 LAST_GOOD_REF=""
@@ -101,7 +118,7 @@ fail_and_restore() {
   elif ! git cat-file -e "${LAST_GOOD_COMMIT}^{commit}" 2>/dev/null \
       || ! git checkout --quiet --detach "$LAST_GOOD_COMMIT"; then
     restore_msg="RESTORE FAILED (checkout) tag=${LAST_GOOD_REF} after ${REF}"
-  elif ! run_check install; then
+  elif ! run_install; then
     restore_msg="RESTORE FAILED (install) tag=${LAST_GOOD_REF} after ${REF}"
   else
     restore_msg="RESTORE OK tag=${LAST_GOOD_REF} after ${REF}"
@@ -113,7 +130,8 @@ fail_and_restore() {
 }
 
 STAGE="install"
-if ! run_check install; then
+log "build: ${HORIZON_BUILD_COMMAND:-scripts/checks/install.sh}"
+if ! run_install; then
   fail_and_restore install
 fi
 

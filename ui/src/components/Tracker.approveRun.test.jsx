@@ -15,11 +15,14 @@ vi.mock('../api', () => ({
   outputUrl: () => 'https://example.test/output',
   runLogViewUrl: () => 'https://example.test/log',
   subscribeStepOutputs: vi.fn(),
+  // HZ-449: the Approve & file card's items table; no draft here.
+  getPlanDraft: vi.fn(async () => null),
+  savePlanDraft: vi.fn(),
 }))
 
 import Tracker from './Tracker'
 import ConfirmGateDialog from './ConfirmGateDialog'
-import { APPROVE_RUN_GATE_INDEX, requiredStepIndex } from '../../../domain/js/lifecycle.js'
+import { APPROVE_FILE_GATE_INDEX, APPROVE_RUN_GATE_INDEX, kindStepIndex, requiredStepIndex } from '../../../domain/js/lifecycle.js'
 
 afterEach(() => {
   cleanup()
@@ -120,4 +123,29 @@ test("a change item's gate card is unchanged: no human-only line, the usual butt
   expect(card.querySelector('.step-card__run-plan')).toBeNull()
   expect(getByRole('button', { name: 'Approve' })).toBeTruthy()
   expect(getByRole('button', { name: 'Send back with feedback' })).toBeTruthy()
+})
+
+// HZ-446: a Plan's Approve & file is human-only too — the same Autopilot line
+// and a button named for the gate, but it approves no run plan, so none shows.
+// Its File items row names no agent and renders as Horizon's.
+test("a Plan's Approve & file card shows the human-only line, no run plan, and buttons named for the gate", () => {
+  const planItem = { ...taskItem, id: 'PL-1', title: 'Retire the FIX gateway', kind: 'plan', cursor: APPROVE_FILE_GATE_INDEX }
+  delete planItem.runPlan
+  delete planItem.approvedPlanHash
+  const onReject = vi.fn()
+  const { container, getByRole, getByText } = render(<Harness item={planItem} onReject={onReject} />)
+  const card = awaitingCard(container)
+  expect(card.querySelector('.step-card__label').textContent).toBe('Approve & file')
+  expect(card.textContent).toContain('Always a human · even on Autopilot')
+  expect(card.querySelector('.step-card__run-plan')).toBeNull()
+  expect(card.textContent).not.toContain('Run plan')
+
+  fireEvent.click(getByRole('button', { name: 'Reject with feedback' }))
+  expect(onReject).toHaveBeenCalledWith('PL-1', 'Approve & file')
+  fireEvent.click(getByRole('button', { name: 'Approve & file' }))
+  expect(getByRole('alertdialog').textContent).toContain('PL-1 · Approve & file')
+
+  const fileItems = getByText('File items').closest('.step-card')
+  expect(fileItems.textContent).toContain('Horizon')
+  expect(kindStepIndex('File items', 'plan')).toBe(APPROVE_FILE_GATE_INDEX + 1)
 })

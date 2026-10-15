@@ -1,7 +1,7 @@
 // Shared status presentation for a work item (board card + tracker header).
 
 import { isClosed, isAbandoned, curStep, awaitingGate, ACCEPT_GATE_INDEX } from '../../../domain/js/lifecycle.js'
-import { AGENTS } from './agentTokens'
+import { stepAgentToken } from './agentTokens'
 import { gateActionOf } from './gateAction'
 
 // A dispatched step whose run the farm currently reports as queued rather
@@ -106,14 +106,16 @@ export function itemStatus(item, verbose = false, { deployBlock = null } = {}) {
   if (isQueued(item)) {
     return { label: 'Queued', color: '#8C8C8E', bg: '#EDEDEF', reason: item.activeRun.reason || undefined }
   }
-  const agent = AGENTS[cur.agent]
+  const agent = stepAgentToken(cur)
   return { label: verbose ? `${agent.label} working` : agent.label, color: 'var(--primary-ink)', bg: 'var(--primary-bg)' }
 }
 
 // HZ-228: a short name for each agent step, so the card's elapsed line fits
 // one line at the Board's card width. Keyed by `agent:phase` from
 // domain/steps.json, never by label text; a step with no entry shows its own
-// label (status.test.js checks every agent step has one).
+// label (status.test.js checks every agent step has one). HZ-446: a kind
+// whose rows would read wrong under the change keys has its own, prefixed
+// with the kind; a step with no agent keys as Horizon.
 const STEP_STATE_LABEL = {
   'PM:0': 'Defining the outcome',
   'Architect:0': 'Setting guardrails',
@@ -125,10 +127,19 @@ const STEP_STATE_LABEL = {
   'Eng:2': 'Implementing',
   'Review:2': 'Automated review',
   'DevOps:3': 'Deploying',
+  'plan:PM:0': 'Defining question',
+  'plan:Architect:0': 'Setting guardrails',
+  'plan:Architect:1': 'Taking inventory',
+  'plan:Ensemble:2': 'Designing options',
+  'plan:PM:3': 'Drafting items',
+  'plan:Architect:3': 'Reviewing coverage',
+  'plan:QA:3': 'Reviewing metrics',
+  'plan:Horizon:4': 'Filing items',
 }
 
 export function stepStateLabel(step) {
-  return STEP_STATE_LABEL[`${step.agent}:${step.phase}`] ?? step.label
+  const key = `${step.agent ?? 'Horizon'}:${step.phase}`
+  return STEP_STATE_LABEL[`${step.itemKind}:${key}`] ?? STEP_STATE_LABEL[key] ?? step.label
 }
 
 // What the card's elapsed line names, e.g. 'Implementing' or 'Waiting on you',
