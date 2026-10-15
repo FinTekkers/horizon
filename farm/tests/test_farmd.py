@@ -603,6 +603,27 @@ def test_runs_status_reports_queued_for_an_ephemeral_queued_task_with_the_busy_c
     }
 
 
+def test_runs_status_says_a_long_step_waits_for_a_general_slot_while_express_is_free(queue_dirs, monkeypatch):
+    """HZ-477: four implements hold every general slot. A queued implement
+    names that wait, not a free slot it can never take; a queued short step
+    keeps the plain slot count."""
+    monkeypatch.setattr(farmd, "MAX_EPHEMERAL", 4)
+    monkeypatch.setattr(farmd, "FARM_EXPRESS_SLOTS", 1)
+    monkeypatch.setattr(farmd, "_ephemeral_sessions", lambda: [f"farm-run-hz-9{i}-s11-a1" for i in range(4)])
+    (QUEUE_DIR / "runs" / "203.json").write_text(json.dumps(make_task(203, step_index=11)))
+    (QUEUE_DIR / "runs" / "204.json").write_text(json.dumps(make_task(204, step_index=4)))
+    res = client.post("/runs/status", json={"run_ids": ["203", "204"]})
+    assert res.json() == {
+        "states": {
+            "203": {
+                "state": "queued",
+                "reason": "waiting for a free general agent slot (4/4 running long steps; the express slot takes short steps only)",
+            },
+            "204": {"state": "queued", "reason": "waiting for a free agent slot (4/5 in use)"},
+        }
+    }
+
+
 def test_runs_status_reports_running_for_a_claimed_task_not_in_either_queue(queue_dirs):
     # Claimed tasks live in runs/active/, which /runs/status never globs —
     # they fall through to "running" without needing to know about tmux.

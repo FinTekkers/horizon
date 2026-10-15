@@ -1358,16 +1358,37 @@ def farm_stop():
     return {"ok": True}
 
 
-def _run_state(run_id: str, pm_queue: list, runs_queue: list, busy: int) -> dict:
+def _run_state(run_id: str, pm_queue: list, runs_queue: list, busy: int, general_full: bool = False) -> dict:
     """A run's semantic state, never its tmux session name (HZ-54): queued
     while its task file sits in the PM or ephemeral-runs queue, running once
     the dispatcher has claimed it (moved it into runs/active — matched by
-    neither glob here, so it falls through to "running")."""
+    neither glob here, so it falls through to "running"). HZ-477: with every
+    general slot held by a long step, a queued long step names that wait, not
+    a free express slot it can never use."""
     if any(p.stem == run_id for p in pm_queue):
         return {"state": "queued", "reason": "waiting for the PM agent"}
-    if any(p.stem == run_id for p in runs_queue):
+    for p in runs_queue:
+        if p.stem != run_id:
+            continue
+        if general_full and not _queued_short(p):
+            return {
+                "state": "queued",
+                "reason": f"waiting for a free general agent slot ({MAX_EPHEMERAL}/{MAX_EPHEMERAL} running long steps; the express slot takes short steps only)",
+            }
         return {"state": "queued", "reason": f"waiting for a free agent slot ({busy}/{MAX_EPHEMERAL + FARM_EXPRESS_SLOTS} in use)"}
     return {"state": "running"}
+
+
+def _queued_short(task_path: Path) -> bool:
+    """HZ-477: whether a queued task file is a short step. An unreadable file
+    or one with no known index counts as long, as the dispatcher treats it."""
+    try:
+        task = json.loads(task_path.read_text())
+    except (json.JSONDecodeError, OSError):
+        return False
+    step = task.get("step") if isinstance(task, dict) else None
+    index = step.get("index") if isinstance(step, dict) else None
+    return isinstance(index, int) and index in SHORT_STEPS
 
 
 @app.post("/runs/status")
@@ -1378,8 +1399,10 @@ async def runs_status(request: Request):
     run_ids = [str(r) for r in body.get("run_ids", [])]
     pm_queue = list((QUEUE_DIR / "pm").glob("*.json"))
     runs_queue = list((QUEUE_DIR / "runs").glob("*.json"))
-    busy = _lane_busy(_ephemeral_sessions())["runs"]
-    return {"states": {rid: _run_state(rid, pm_queue, runs_queue, busy) for rid in run_ids}}
+    sessions = _ephemeral_sessions()
+    busy = _lane_busy(sessions)["runs"]
+    general_full = _runs_lane_slots(sessions)[1] <= 0
+    return {"states": {rid: _run_state(rid, pm_queue, runs_queue, busy, general_full) for rid in run_ids}}
 
 
 def _run_alive(run_id: str) -> bool:
