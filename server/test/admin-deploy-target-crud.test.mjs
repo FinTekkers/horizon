@@ -37,7 +37,7 @@ writeFileSync(
 const { buildApp } = await import('../src/app.js')
 const auth = await import('../src/auth.js')
 const config = await import('../src/config.js')
-const { listTargets, findTargetByKey } = await import('../src/deployTargets.js')
+const { listTargets, findTargetByKey, checkRunnable, checkTaskContainer } = await import('../src/deployTargets.js')
 
 const app = buildApp({ logger: false })
 const { pin, cookie } = loginFixtureUser(auth, config)
@@ -310,4 +310,49 @@ test('GET /api/admin/deploy-targets/config returns the stored rows and no secret
   assert.equal(body.targets[0].script, 'stub-horizon.sh')
   assert.equal(body.targets[0].healthCheckType, 'json-health')
   for (const secret of [SECRET_TOKEN, SECRET_WEBHOOK, pin]) assert.equal(res.body.includes(secret), false)
+})
+
+// HZ-416: the Task container's image and limits are optional — set, they
+// round-trip; null clears them; a malformed value is a 400 that writes
+// nothing. None of them is ever required for a deploy.
+test('container fields: image and limits round-trip and clear; malformed values are 400 and write nothing', async () => {
+  const UI = { ...DOCS_FIELDS, repo: 'FinTekkers/ui-service', service: 'fintekkers-ui-test' }
+  const put = (fields) => request('PUT', '/api/admin/deploy-targets/ui-service', { payload: { ...UI, ...fields }, pin })
+  const image = `docker.io/library/python@sha256:${'d'.repeat(64)}`
+
+  const ok = await put({ containerImage: image, cpuLimit: '1.5', memoryLimit: '512m' })
+  assert.equal(ok.statusCode, 200, ok.body)
+  assert.equal(ok.json().target.containerImage, image)
+  const got = (await request('GET', '/api/admin/deploy-targets/config')).json().targets.find((t) => t.key === 'ui-service')
+  assert.deepEqual([got.containerImage, got.cpuLimit, got.memoryLimit], [image, '1.5', '512m'])
+
+  for (const [fields, reason] of [
+    [{ containerImage: 'python 3.12' }, 'bad containerImage'],
+    [{ cpuLimit: 'two' }, 'bad cpuLimit'],
+    [{ memoryLimit: '4 gigs' }, 'bad memoryLimit'],
+  ]) {
+    const res = await put({ containerImage: image, cpuLimit: '1.5', memoryLimit: '512m', ...fields })
+    assert.equal(res.statusCode, 400, JSON.stringify(fields))
+    assert.deepEqual(res.json(), { error: 'deploy_target_invalid', reason })
+    assert.equal(findTargetByKey('ui-service').containerImage, image)
+  }
+
+  const cleared = await put({ containerImage: null, cpuLimit: null, memoryLimit: null })
+  assert.equal(cleared.statusCode, 200, cleared.body)
+  const row = findTargetByKey('ui-service')
+  assert.deepEqual([row.containerImage, row.cpuLimit, row.memoryLimit], [undefined, undefined, undefined])
+})
+
+// HZ-416 guardrail 4: checkRunnable() — the deploy gate — never reads the
+// container fields, so a missing or malformed image or limit cannot block a
+// deploy or other farm work; only the admin write path checks their format.
+test('container fields: checkRunnable ignores them; checkTaskContainer judges their format', () => {
+  const target = findTargetByKey('market-data-inputs')
+  const bad = { ...target, containerImage: 'python 3.12', cpuLimit: 'two', memoryLimit: '0g' }
+  assert.deepEqual(checkRunnable(bad), checkRunnable({ ...target, containerImage: undefined, cpuLimit: undefined, memoryLimit: undefined }))
+  assert.deepEqual(checkTaskContainer(bad), { ok: false, reason: 'bad containerImage' })
+  assert.deepEqual(checkTaskContainer({ cpuLimit: '0' }), { ok: false, reason: 'bad cpuLimit' })
+  assert.deepEqual(checkTaskContainer({ memoryLimit: '0g' }), { ok: false, reason: 'bad memoryLimit' })
+  assert.deepEqual(checkTaskContainer({ containerImage: 'docker.io/library/python:3.12-slim', cpuLimit: '0.5', memoryLimit: '512m' }), { ok: true })
+  assert.deepEqual(checkTaskContainer({}), { ok: true })
 })

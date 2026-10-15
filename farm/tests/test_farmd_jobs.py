@@ -3,18 +3,22 @@ restart, forwarding its finish with the Execute artifact, the kill switch,
 and teardown."""
 
 import json
+import os
+import subprocess
 from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
 
 from domain.py import reasons, run_plan, steps
-from farm import farmd, task_job, tmux_mgr
+from farm import container_runner, farmd, task_job, tmux_mgr
 from farm.config import LOGS_DIR, QUEUE_DIR, STATE_DIR
 
 client = TestClient(farmd.app)
 
 EXECUTE_INDEX = steps.by_kind_label("task", "Execute")["index"]
+# HZ-416: the container path, run through conftest's fake_podman.
+FAKE_IMAGE = "localhost/horizon-task:fake"
 
 
 @pytest.fixture
@@ -33,8 +37,10 @@ def running_farm(monkeypatch):
             farmd.JOB_SESSIONS.pop(run_id, None)
 
 
-def job_payload(run_id, *, repo_dir="/tmp", cwd=".", commands=("echo hi",)):
+def job_payload(run_id, *, repo_dir="/tmp", cwd=".", commands=("echo hi",), runner=None):
     block = {"cwd": cwd, "commands": list(commands), "budget_minutes": 1}
+    if runner is not None:
+        block["runner"] = runner
     artifact = "## Commands\nplan\n\n## Run plan block\n" + run_plan.render(block) + "\n"
     return {
         "run_id": run_id,
@@ -44,6 +50,7 @@ def job_payload(run_id, *, repo_dir="/tmp", cwd=".", commands=("echo hi",)):
         "plan_artifact": artifact,
         "approved_hash": task_job.plan_hash_of(artifact),
         "repo_dir": repo_dir,
+        "container_image": FAKE_IMAGE,
     }
 
 
@@ -95,6 +102,37 @@ def test_reboot_adopts_the_job_and_reports_it_finished(monkeypatch, fake_tmux, t
     artifact = body["artifacts"]["artifact_md"]
     assert "1 command(s) run, 1 passed, 0 failed" in artifact
     assert "hi\nexit 0" in artifact
+
+
+def test_reboot_reaps_orphaned_job_containers_and_spares_live_ones(monkeypatch, fake_tmux):
+    """HZ-416, metric 3: a farm-job-* container whose runner's tmux session
+    is gone (a killed runner, a reboot) is removed at boot; one whose runner
+    still runs (HZ-408: only farmd restarted) keeps running. Another farm's
+    container on the same host (its own FARM_HOME label) is never reaped."""
+    podman = os.environ["FARM_PODMAN_BIN"]
+    other_farm = f"{container_runner.OWNER_LABEL_KEY}=/elsewhere/other-farm"
+    starts = {
+        "farm-job-hz-live": container_runner.owner_label(),
+        "farm-job-hz-orphan": container_runner.owner_label(),
+        "farm-job-hz-other-farm": other_farm,
+    }
+    for name, label in starts.items():
+        started = subprocess.run(
+            [podman, "run", "-d", "--name", name, "--label", label, FAKE_IMAGE, "sleep", "infinity"], capture_output=True
+        )
+        assert started.returncode == 0, started.stderr
+    fake_tmux.sessions.add("farm-job-hz-live")
+    try:
+        farmd._adopt_jobs()
+        assert container_runner.list_job_containers() == ["farm-job-hz-live"]
+        others = subprocess.run(
+            [podman, "ps", "-a", "--filter", f"label={other_farm}", "--format", "{{.Names}}"], capture_output=True, text=True
+        )
+        assert others.stdout.split() == ["farm-job-hz-other-farm"]
+    finally:
+        for name in starts:
+            container_runner.stop_and_remove(name)
+    assert container_runner.list_job_containers() == []
 
 
 def test_a_budget_breach_forwards_the_non_retryable_reason(monkeypatch, fake_tmux, tmp_path):
@@ -293,6 +331,7 @@ def test_a_seeded_secret_never_reaches_the_forwarded_view_or_the_log_fallback(mo
         "plan_artifact": artifact,
         "approved_hash": task_job.plan_hash_of(artifact),
         "repo_dir": str(cwd),
+        "container_image": FAKE_IMAGE,
     }
     forwarded = []
     monkeypatch.setattr(farmd, "_in_background", lambda fn, *args: fn(*args))
@@ -409,7 +448,8 @@ def test_a_cwd_outside_the_repo_is_refused_with_no_session_and_no_env_file(runni
         repo.mkdir()
         (tmp_path / "elsewhere" / "bin").mkdir(parents=True)
         (repo / ".venv").symlink_to(tmp_path / "elsewhere")
-        payload = job_payload(9136, repo_dir=str(repo))
+        # HZ-416: only a host run uses (and so checks) the venv.
+        payload = job_payload(9136, repo_dir=str(repo), runner="host")
         expected = "cwd refused: venv resolves outside the repo directory"
     else:
         payload = job_payload(9136, repo_dir=str(tmp_path))
@@ -516,6 +556,7 @@ def _attempt(task):
         state_path=STATE_DIR / "jobs" / f"{item_id}.json",
         log_path=LOGS_DIR / f"farm-job-{item_id.lower()}.log",
         repo_dir=task["repo_dir"],
+        container_image=FAKE_IMAGE,
     )
 
 
@@ -570,7 +611,7 @@ def test_the_attempt_slice_starts_at_its_own_first_line_after_multibyte_text(two
     artifact, log = two_attempts
     assert "café — ünïcode" in log
     attempt_log = artifact.split("## Log (this attempt)\n", 1)[1]
-    assert attempt_log.startswith("env: system\n$ sh load.sh")
+    assert attempt_log.startswith(f"env: system\ncontainer: {FAKE_IMAGE}\n$ sh load.sh")
     assert "\ufffd" not in artifact
     assert "café" not in artifact
 
@@ -592,7 +633,10 @@ def test_a_report_named_by_the_plan_reaches_the_forwarded_artifact(monkeypatch, 
         assert len(content.encode()) > job_reports.REPORT_INLINE_MAX_BYTES
     (tmp_path / "src.json").write_text(content)
     (repo / "write.sh").write_text(f'cp {tmp_path / "src.json"} "$2"\necho wrote "$2"\n')
-    task = job_payload(run_id, repo_dir=str(repo), commands=(f"sh write.sh --report {report}",))
+    # HZ-434's host semantics: the report is under the host's /tmp, which a
+    # container run sees as its own throwaway dir instead (fake_podman runs
+    # commands on the host, so see test_container_runner.py for that case).
+    task = job_payload(run_id, repo_dir=str(repo), commands=(f"sh write.sh --report {report}",), runner="host")
     task["item"]["id"] = item_id
     farmd.JOB_SESSIONS.clear()
     try:

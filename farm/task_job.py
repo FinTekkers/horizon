@@ -28,6 +28,7 @@ import hashlib
 import json
 import os
 import queue
+import shutil
 import signal
 import subprocess
 import sys
@@ -39,7 +40,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from domain.py import run_plan
-from farm import job_reports
+from farm import container_runner, job_reports
 from farm import task_clone as task_clone_mod
 from farm.checks import redact
 
@@ -129,8 +130,52 @@ def _read_lines(stream, lines: "queue.Queue") -> None:
     lines.put(None)
 
 
-def run_job(
+def container_dirs(state_path: Path, log_path: Path) -> dict:
+    """HZ-416: the host dirs a container job mounts. `state` and `logs` are
+    the job's own (never the farm's whole state or log dir, and never this
+    runner's own state file or log) and persist across Stop, Resume and a
+    farmd restart; `scratch` and `tmp` (/tmp and $HOME inside) are
+    throwaway — wiped on every start and again when the run ends."""
+    job_dir = Path(state_path).with_suffix(".d")
+    return {
+        "state": job_dir / "state",
+        "scratch": job_dir / "scratch",
+        "tmp": job_dir / "tmp",
+        "logs": Path(log_path).with_suffix(".d"),
+    }
+
+
+THROWAWAY_DIRS = ("scratch", "tmp")
+
+
+def wipe_throwaway(state_path: Path, log_path: Path) -> None:
+    """Removes the run's scratch and /tmp dirs — after a run of any outcome,
+    and from farmd's Stop when the runner was killed first."""
+    dirs = container_dirs(state_path, log_path)
+    for key in THROWAWAY_DIRS:
+        shutil.rmtree(dirs[key], ignore_errors=True)
+
+
+def _oom_reason(memory_limit: str | None) -> str:
+    return f"killed: out of memory — over the container's {memory_limit or container_runner.DEFAULT_MEMORY} memory limit"
+
+
+def run_job(**kwargs) -> dict:
+    """Runs the approved plan's commands in order (see _run_job). HZ-416: a
+    container run's container is killed and removed, and its scratch and
+    /tmp dirs wiped, however _run_job ends — the reports were read first."""
+    started: list = []
+    try:
+        return _run_job(started=started, **kwargs)
+    finally:
+        if started:
+            container_runner.stop_and_remove(started[0])
+            wipe_throwaway(kwargs["state_path"], kwargs["log_path"])
+
+
+def _run_job(
     *,
+    started: list,
     run_id,
     item_id: str,
     plan_artifact: str,
@@ -143,6 +188,9 @@ def run_job(
     redact_values: dict | None = None,
     notify=None,
     task_clone: bool = False,
+    container_image: str | None = None,
+    cpu_limit: str | None = None,
+    memory_limit: str | None = None,
 ) -> dict:
     """Runs the approved plan's commands in order. Returns the summary dict
     {run, passed, failed, failing}. Writes the state file and appends to the
@@ -168,7 +216,22 @@ def run_job(
     plan, or a Resume that has passed nothing or was refused — a Resume after
     a pass keeps HEAD where it was. A clone that cannot fast-forward ends the
     job `cwd_refused` with zero commands run. Each start logs
-    `task clone HEAD: <sha>` after the env line."""
+    `task clone HEAD: <sha>` after the env line.
+
+    HZ-416: `block["runner"]` selects where the commands run — `container`
+    (the default when absent) or an explicit `host`. The container path
+    (farm/container_runner.py) pulls `container_image` if needed, starts one
+    container for this run and `podman exec`s each command in it: the
+    checkout read-only at its own path with the resolved cwd as workdir, a
+    fresh scratch dir and /tmp plus the job's own state and log dirs
+    writable, host networking, only the plan's env, and the target's CPU
+    and memory limits. Its name is appended to `started` so run_job tears it
+    down. `venv_dir` is ignored there — a host virtualenv's binaries do not
+    run in the image; the log names `system`. Missing Podman, no pinned or
+    pullable image, or a container that will not start ends the job
+    `container_unavailable` with zero commands run — never a host run. A
+    command the OOM killer ended fails with `failure_reason` naming the
+    memory limit."""
     last_nudge = [0.0]
 
     def nudge(*, force: bool = True) -> None:
@@ -192,6 +255,9 @@ def run_job(
     plan_cwd = block["cwd"]
     commands = list(block["commands"])
     budget_s = int(block["budget_minutes"]) * 60
+    # HZ-416: absent means the container; only an explicit `host` runs on the
+    # host. validate() already refused any other value.
+    runner = block.get("runner") or "container"
 
     # Resume: keep passed commands done, retry everything else.
     prior = load_state(state_path)
@@ -244,7 +310,9 @@ def run_job(
             run_plan.resolve_cwd(repo_dir, ".", forbid=str(HORIZON_ROOT))
             task_clone_mod.fast_forward(repo_dir)
         cwd = run_plan.resolve_cwd(repo_dir, plan_cwd, forbid=str(HORIZON_ROOT))
-        venv = run_plan.resolve_venv(repo_dir, venv_dir, forbid=str(HORIZON_ROOT))
+        # HZ-416: a container run ignores the host venv — its binaries do not
+        # run in the image — so there is nothing to resolve or refuse here.
+        venv = None if runner == "container" else run_plan.resolve_venv(repo_dir, venv_dir, forbid=str(HORIZON_ROOT))
     except run_plan.CwdRefused as exc:
         refusal = str(exc).splitlines()[0] if str(exc) else "cwd refused"
         state = {
@@ -271,6 +339,64 @@ def run_job(
         nudge()
         return state["summary"]
 
+    # HZ-416: fail closed before the first log line or command — no Podman,
+    # no image or no container ends the job here, never as a silent host run.
+    name = container_runner.container_name(item_id)
+    if runner == "container":
+        try:
+            container_runner.ensure_image(container_image)
+            dirs = container_dirs(state_path, log_path)
+            for key, path in dirs.items():
+                if key in THROWAWAY_DIRS:
+                    shutil.rmtree(path, ignore_errors=True)
+                path.mkdir(parents=True, exist_ok=True)
+            # A container a killed runner left behind would hold the name.
+            container_runner.stop_and_remove(name)
+            started.append(name)
+            container_runner.start_container(
+                container_runner.build_run_argv(
+                    image=container_image,
+                    name=name,
+                    repo_dir=os.path.realpath(repo_dir),
+                    workdir=cwd,
+                    scratch_dir=str(dirs["scratch"]),
+                    tmp_dir=str(dirs["tmp"]),
+                    state_dir=str(dirs["state"]),
+                    logs_dir=str(dirs["logs"]),
+                    # The plan's declared names, as farmd resolved them.
+                    env_names=sorted(env_values or {}),
+                    cpus=cpu_limit,
+                    memory=memory_limit,
+                ),
+                # The podman client gets the plan's values, the container
+                # only their names.
+                container_runner.client_env(env_values or {}),
+            )
+        except container_runner.Unavailable as exc:
+            state = {
+                "run_id": run_id,
+                "item_id": item_id,
+                "status": "container_unavailable",
+                "refusal": str(exc),
+                "started_at": _now_iso(),
+                "ended_at": _now_iso(),
+                "budget_s": budget_s,
+                "approved_hash": approved_hash,
+                "commands": [
+                    dict(prior_done[c])
+                    if c in prior_done
+                    else {"command": c, "cwd": plan_cwd, "status": "pending", "started_at": None, "ended_at": None, "exit_code": None}
+                    for c in commands
+                ],
+                "summary": {"run": 0, "passed": 0, "failed": 0, "failing": []},
+            }
+            save_state(state_path, state)
+            with log_path.open("a", encoding="utf-8") as log:
+                log.write(redact(f"Execute refused: {exc} — zero commands run\n", secrets))
+                log.flush()
+            nudge()
+            return state["summary"]
+
     # Fresh run truncates the log; a resume appends to it.
     fresh = prior is None or prior.get("status") in (None, "hash_mismatch")
     if fresh:
@@ -283,8 +409,12 @@ def run_job(
     except OSError:
         log_offset = 0
     # HZ-431: only the venv path or `system` — never PATH or another value.
+    # HZ-416: a container run ignores the host venv, so it always names
+    # `system` here, then the image its commands ran in.
     with log_path.open("a", encoding="utf-8") as log:
         log.write(redact(f"env: {venv or 'system'}\n", secrets))
+        if runner == "container":
+            log.write(redact(f"container: {container_image}\n", secrets))
         if task_clone:
             log.write(redact(f"task clone HEAD: {task_clone_mod.head(repo_dir)}\n", secrets))
     # State entries, preserving passed commands across resumes.
@@ -305,6 +435,7 @@ def run_job(
         "ended_at": None,
         "budget_s": budget_s,
         "approved_hash": approved_hash,
+        "runner": runner,
         "log_offset": log_offset,
         "commands": entries,
     }
@@ -312,6 +443,12 @@ def run_job(
     nudge()
 
     child = _child_env(env_values or {}, venv)
+    if started:
+        # HZ-416: `podman exec` needs only the client's own env — the
+        # container got the plan's values when it started.
+        child = container_runner.client_env({})
+        # A fresh container has no OOM kill yet; compared after a failure.
+        oom_seen = container_runner.oom_kills(name)
     job_start = time.monotonic()
     failing: list[str] = []
     passed = 0
@@ -345,7 +482,7 @@ def run_job(
         cmd_start = time.monotonic()
         try:
             proc = subprocess.Popen(
-                ["sh", "-c", entry["command"]],
+                container_runner.exec_argv(name, entry["command"], cwd) if started else ["sh", "-c", entry["command"]],
                 cwd=cwd,
                 env=child,
                 stdout=subprocess.PIPE,
@@ -403,6 +540,9 @@ def run_job(
                 os.killpg(proc.pid, signal.SIGKILL)
             except (ProcessLookupError, PermissionError, OSError):
                 pass
+            if started:
+                # HZ-416: the exec'd process outlives its killed client.
+                container_runner.stop_and_remove(name)
             try:
                 proc.wait(timeout=5)
             except subprocess.TimeoutExpired:
@@ -432,8 +572,19 @@ def run_job(
         entry["ended_at"] = _now_iso()
         entry["exit_code"] = proc.returncode
         attempted += 1
+        if started and proc.returncode != 0:
+            # HZ-416: the cgroup's oom_kill count rose, or (unreadable) the
+            # command died of SIGKILL — the memory limit ended it.
+            oom_now = container_runner.oom_kills(name)
+            if (oom_now is not None and oom_seen is not None and oom_now > oom_seen) or (
+                oom_now is None and proc.returncode == container_runner.SIGKILL_EXIT
+            ):
+                entry["failure_reason"] = _oom_reason(memory_limit)
+            oom_seen = oom_now
         save_state(state_path, state)
         log_line(f"exit {proc.returncode} in {time.monotonic() - cmd_start:.1f}s\n")
+        if entry.get("failure_reason"):
+            log_line(entry["failure_reason"] + "\n")
         nudge()
         if proc.returncode == 0:
             passed += 1
@@ -446,7 +597,12 @@ def run_job(
     # report is still evidence. Reading them never keeps the job from ending.
     try:
         state["reports"] = job_reports.collect_reports(
-            commands, block.get("reports", []), cwd, secrets, forbid=str(HORIZON_ROOT)
+            commands,
+            block.get("reports", []),
+            cwd,
+            secrets,
+            forbid=str(HORIZON_ROOT),
+            tmp_root=str(container_dirs(state_path, log_path)["tmp"]) if started else None,
         )
     except Exception as exc:
         state["reports"] = [{"path": "(reports)", "status": "refused", "bytes": 0, "text": f"could not be read ({type(exc).__name__})"}]
@@ -518,6 +674,9 @@ def main(argv: list[str] | None = None) -> int:
             redact_values=redact_only,
             notify=lambda: _notify_progress(run_id),
             task_clone=bool(task.get("task_clone")),
+            container_image=task.get("container_image"),
+            cpu_limit=task.get("cpu_limit"),
+            memory_limit=task.get("memory_limit"),
         )
     except ValueError as exc:
         print(f"task_job: invalid run plan: {exc}", flush=True)

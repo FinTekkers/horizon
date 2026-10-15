@@ -699,6 +699,105 @@ is refused. `venvDir` is relative to the task dir when one is set.
 - **Roll back** by clearing Task dir on the target: Task jobs go back to
   `repoDir`.
 
+## Task containers: rootless Podman (HZ-416)
+
+A Task's Execute runs its approved commands in a throwaway rootless Podman
+container, as the farm user: one container per run (`podman run -d`), each
+command a `podman exec` in it, so an install or a `/tmp` file from one
+command is still there for the next. The container is killed and removed
+when the run ends, whatever the ending. Rootless Podman has no daemon. Never
+install Docker or add the farm user to a `docker` group: Docker's daemon
+runs as root, so that group is root. No sudoers entry, no `--privileged`,
+no added capability and no Podman socket mount is used or needed.
+
+What the container gets (`farm/container_runner.py`):
+
+| Inside | From the host | Access |
+| --- | --- | --- |
+| the checkout's own path | the target's `taskDir`, else `repoDir` | read-only; the plan's `cwd` is the workdir |
+| `/scratch` | `<farm state>/jobs/<item>.d/scratch` | writable; wiped at every start and when the run ends |
+| `/tmp` (also `$HOME`) | `<farm state>/jobs/<item>.d/tmp` | writable; wiped at every start and when the run ends |
+| `/state` | `<farm state>/jobs/<item>.d/state` | writable; this job's only, kept across Stop, Resume and restarts |
+| `/logs` | `<farm logs>/farm-job-<item>.d` | writable; this job's only, kept |
+
+Everything else, the image's own filesystem and `/opt/horizon` included, is
+read-only or absent. The runner's own state file and log are not mounted, so
+a command cannot rewrite its own result. Networking is the host's
+(`--network=host`), because the services listen on 127.0.0.1 only. The
+container sees only the env names the plan declares (`--env NAME` on
+`podman run`; the value never appears in argv), and no env file is mounted.
+`--userns=keep-id --user <uid>:<gid>` keeps every file it writes owned by
+the farm user. The target's `venvDir` is ignored: the image's own Python
+runs, and the log's first lines read `env: system` and `container: <image>`.
+
+One-time setup, as the farm user:
+
+```bash
+sudo apt-get install -y podman uidmap slirp4netns fuse-overlayfs
+grep "^$USER:" /etc/subuid /etc/subgid   # both must list a range; if not:
+sudo usermod --add-subuids 100000-165535 --add-subgids 100000-165535 "$USER"
+sudo loginctl enable-linger "$USER"       # /run/user/<uid> outlives logins
+# CPU and memory limits need those controllers delegated to user sessions:
+sudo mkdir -p /etc/systemd/system/user@.service.d
+printf '[Service]\nDelegate=cpu cpuset io memory pids\n' | sudo tee /etc/systemd/system/user@.service.d/delegate.conf
+sudo systemctl daemon-reload
+podman info --format '{{.Host.Security.Rootless}}'   # -> true
+cat "/sys/fs/cgroup/user.slice/user-$(id -u).slice/user@$(id -u).service/cgroup.controllers"   # lists cpu and memory
+```
+
+farmd's unit must carry `Environment=XDG_RUNTIME_DIR=/run/user/<farm uid>`
+if it is a system unit; the runner hands only that, `PATH`, `HOME` and the
+locale to the podman client.
+
+**Image and limits.** Each repo pins its image on its deploy target. The
+migration pins `market-data-inputs` to
+`docker.io/library/python:3.12-slim@sha256:<digest>` (Python 3.12, like its
+venv). To pin another repo, or move to a new digest:
+
+```bash
+podman pull docker.io/library/python:3.12-slim
+podman image inspect --format '{{.Digest}}' docker.io/library/python:3.12-slim
+```
+
+Then, in Admin → Deploy target overrides, set **Container image (optional)**
+to `docker.io/library/python@sha256:<digest>`, and optionally **Container
+CPUs** (default `1`) and **Container memory** (default `1g`, such as `512m`
+or `8g`; swap is not added on top). These never affect a deploy:
+`checkRunnable()` does not read them. The runner pulls a missing image
+itself when Execute starts, in the job's own tmux session, so a slow pull
+holds up only that job.
+
+Confirm the confinement on this host — every test must pass with none
+skipped (they skip only when Podman is missing or the image cannot be
+pulled, and a skip there means NOT verified):
+
+```bash
+cd /opt/horizon
+HORIZON_TEST_PODMAN_IMAGE=docker.io/library/python:3.12-slim \
+  python3 -m pytest -q -rs farm/tests/test_container_runner.py
+```
+
+- **Fails closed.** No `podman`, no pinned image, an image that cannot be
+  pulled, or a container that will not start (a bad limit, no cgroup
+  delegation) ends the job `job_container_unavailable` with zero commands
+  run. It never falls back to the host. Fix the host or the target, then
+  Resume.
+- **Memory.** A command the OOM killer ends fails the run with
+  `killed: out of memory — over the container's <limit> memory limit` in
+  the log and the Execute artifact.
+- **Opting out.** A plan with `"runner": "host"` runs on the host exactly as
+  before HZ-416. Approve the run then says "runs on the host, not in a
+  container".
+- **Stop, restart, reboot.** The container is named after the job's tmux
+  session, `farm-job-<item>`. Stop kills the runner's command group, then
+  `podman kill` and `podman rm -f` that container and wipes scratch and
+  `/tmp`. A farmd restart leaves a running job's container alone (HZ-408);
+  at boot farmd removes every `farm-job-*` container whose tmux session is
+  gone. `podman ps -a` lists none once a job has ended.
+- **Roll back** by reverting the release and restarting `horizon-farm`; the
+  three nullable `deploy_target` columns stay harmless. A single plan can
+  opt out with `runner: host` without a deploy.
+
 ## Build command (HZ-442)
 
 Each deploy target can name its own build in Admin → Deploy target

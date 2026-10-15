@@ -6,7 +6,7 @@
 
 import { useState } from 'react'
 import { afterEach, expect, test, vi } from 'vitest'
-import { render, fireEvent, cleanup } from '@testing-library/react'
+import { render, fireEvent, cleanup, screen } from '@testing-library/react'
 
 vi.mock('../api', () => ({
   issueUrl: () => 'https://example.test/issue',
@@ -94,6 +94,24 @@ test('one command reads singular; no plan block reads "not found"', () => {
   expect(container.querySelector('.step-card__run-plan').textContent).toBe('Run plan: 1 command · budget 5 min')
   rerender(<Harness item={{ ...taskItem, runPlan: null }} onReject={noop} />)
   expect(container.querySelector('.step-card__run-plan').textContent).toBe('Run plan: not found')
+})
+
+// HZ-416: a `runner: host` plan says so on the card; a container plan (the
+// default) adds nothing. Found by its visible text, and again after a fresh
+// mount from the same server item — what a page reload renders.
+test('a host plan shows "runs on the host, not in a container"; a container plan does not', () => {
+  const host = { commands: 2, budgetMinutes: 10, hash: 'h', runner: 'host' }
+  const { container, rerender, unmount } = render(<Harness item={{ ...taskItem, runPlan: host }} onReject={noop} />)
+  expect(screen.getByText(/runs on the host, not in a container/)).toBeTruthy()
+  const line = () => awaitingCard(container).querySelector('.step-card__run-plan').textContent
+  expect(line()).toBe('Run plan: 2 commands · budget 10 min · runs on the host, not in a container')
+  rerender(<Harness item={{ ...taskItem, runPlan: { ...host, runner: 'container' } }} onReject={noop} />)
+  expect(line()).toBe('Run plan: 2 commands · budget 10 min')
+  expect(screen.queryByText(/runs on the host/)).toBeNull()
+
+  unmount()
+  render(<Harness item={{ ...taskItem, runPlan: host }} onReject={noop} />)
+  expect(screen.getByText(/runs on the host, not in a container/)).toBeTruthy()
 })
 
 test("a change item's gate card is unchanged: no human-only line, the usual button names", () => {

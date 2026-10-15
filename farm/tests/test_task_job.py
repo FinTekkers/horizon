@@ -24,12 +24,17 @@ from farm.checks import redact
 from farm.config import LOGS_DIR, QUEUE_DIR, STATE_DIR
 
 COMMANDS = ["echo one >> order.txt", "echo two >> order.txt"]
+# HZ-416: jobs run in a container by default; conftest points them at
+# fake_podman, which runs each command on the host in the mounted workdir.
+FAKE_IMAGE = "localhost/horizon-task:fake"
 
 
-def plan_artifact(cwd, commands, budget_minutes=5, env=None):
+def plan_artifact(cwd, commands, budget_minutes=5, env=None, runner=None):
     block = {"cwd": str(cwd), "commands": list(commands), "budget_minutes": budget_minutes}
     if env is not None:
         block["env"] = env
+    if runner is not None:
+        block["runner"] = runner
     return "## Commands\nA plan.\n\n## Run plan block\n" + run_plan.render(block) + "\n"
 
 
@@ -44,6 +49,7 @@ def run_in(tmp_path, artifact, approved_hash=None, env_values=None, repo_dir=Non
         state_path=state_path,
         log_path=log_path,
         repo_dir=str(repo_dir or tmp_path),
+        container_image=FAKE_IMAGE,
         env_values=env_values or {},
     )
     return summary, json.loads(state_path.read_text()), log_path.read_text()
@@ -185,6 +191,7 @@ def run_in_with_redact(tmp_path, artifact, redact_values):
         state_path=state_path,
         log_path=log_path,
         repo_dir=str(tmp_path),
+        container_image=FAKE_IMAGE,
         env_values={},
         redact_values=redact_values,
     )
@@ -229,6 +236,7 @@ def _job_task(tmp_path, *, run_id=421, item_id="HZ-19", commands=("echo hi",), e
         "plan_artifact": artifact,
         "approved_hash": task_job.plan_hash_of(artifact),
         "repo_dir": str(cwd),
+        "container_image": FAKE_IMAGE,
     }, cwd
 
 
@@ -349,6 +357,7 @@ def test_output_is_logged_and_nudged_while_the_command_still_runs(tmp_path):
             state_path=state_path,
             log_path=log_path,
             repo_dir=str(tmp_path),
+            container_image=FAKE_IMAGE,
             notify=notify,
         ),
         daemon=True,
@@ -374,6 +383,7 @@ def _task_file(tmp_path, run_id, item_id, artifact, repo_dir):
                 "plan_artifact": artifact,
                 "approved_hash": task_job.plan_hash_of(artifact),
                 "repo_dir": str(repo_dir),
+                "container_image": FAKE_IMAGE,
             }
         )
     )
@@ -422,6 +432,8 @@ def test_stop_during_command_two_then_resume_runs_each_command_once(tmp_path, mo
         assert stopped["status"] == "stopped"
         assert "stopped by the owner" in log_path.read_text()
         _wait_for(lambda: _pgid_gone(pgid), "command 2's process group to die")
+        # HZ-416: command 2 ran in a container; Stop removed it.
+        assert _containers() == []
 
         # Resume: the same approved plan, run again by a fresh runner.
         release.touch()
@@ -432,12 +444,20 @@ def test_stop_during_command_two_then_resume_runs_each_command_once(tmp_path, mo
         assert [c["exit_code"] for c in final["commands"]] == [0, 0, 0]
         time.sleep(0.3)  # an orphaned command 2 would have written by now
         assert (cwd / "runs.txt").read_text().splitlines() == ["one", "two", "three"]
+        assert _containers() == []
     finally:
         if runner.poll() is None:
             runner.kill()
         release.touch()
         state_path.unlink(missing_ok=True)
         log_path.unlink(missing_ok=True)
+
+
+def _containers():
+    """HZ-416: `podman ps -a` (conftest's fake_podman)."""
+    return subprocess.run(
+        [os.environ["FARM_PODMAN_BIN"], "ps", "-a"], capture_output=True, text=True
+    ).stdout.split()
 
 
 def _pgid_gone(pgid):
@@ -498,6 +518,7 @@ def test_past_the_budget_the_running_command_stops_and_no_later_one_starts(tmp_p
         state_path=state_path,
         log_path=tmp_path / "job.log",
         repo_dir=str(cwd),
+        container_image=FAKE_IMAGE,
     )
     clock.join(5)
     assert time.time() - started < 10
@@ -550,6 +571,7 @@ def _refused(tmp_path, artifact, repo_dir):
         state_path=state_path,
         log_path=log_path,
         repo_dir=repo_dir,
+        container_image=FAKE_IMAGE,
     )
     return summary, json.loads(state_path.read_text()), log_path.read_text()
 
@@ -696,6 +718,7 @@ def test_resume_rechecks_the_cwd_and_keeps_finished_commands(tmp_path):
 
 
 # ---- HZ-431: commands run with the checkout's virtualenv, never another ----
+# HZ-416: only a `runner: host` plan uses the venv; a container ignores it.
 
 PROBE = 'echo "VE=${VIRTUAL_ENV:--}"; echo "PATH=$PATH"'
 
@@ -751,7 +774,7 @@ def test_checkout_venv_is_used_automatically(tmp_path):
         PROBE,
         "python3 -c \"import sys; print('PREFIX=' + sys.prefix)\"",
     ]
-    summary, state, log = run_in(tmp_path, plan_artifact(".", commands), repo_dir=repo)
+    summary, state, log = run_in(tmp_path, plan_artifact(".", commands, runner="host"), repo_dir=repo)
     assert dict(os.environ) == before
     assert summary == {"run": 4, "passed": 4, "failed": 0, "failing": []}, log
     assert [c["exit_code"] for c in state["commands"]] == [0, 0, 0, 0]
@@ -766,7 +789,7 @@ def test_no_venv_leaves_path_and_virtual_env_untouched(tmp_path):
     parent's, and no VIRTUAL_ENV is added."""
     repo = tmp_path / "repo"
     repo.mkdir()
-    _summary, state, log = run_in(tmp_path, plan_artifact(".", [PROBE]), repo_dir=repo)
+    _summary, state, log = run_in(tmp_path, plan_artifact(".", [PROBE], runner="host"), repo_dir=repo)
     assert state["status"] == "finished"
     seen = _probe_values(log)
     assert seen["PATH"] == os.environ["PATH"]
@@ -782,7 +805,7 @@ def test_execute_log_first_line_names_the_env(tmp_path, with_venv):
     if with_venv:
         _fake_venv(repo / ".venv")
     env_values = {"DATABASE_URL": "postgres://u:pw@h/db"}
-    _summary, _state, log = run_in(tmp_path, plan_artifact(".", ["true"]), repo_dir=repo, env_values=env_values)
+    _summary, _state, log = run_in(tmp_path, plan_artifact(".", ["true"], runner="host"), repo_dir=repo, env_values=env_values)
     first = log.splitlines()[0]
     assert first == (f"env: {os.path.realpath(repo / '.venv')}" if with_venv else "env: system")
     assert os.environ["PATH"] not in first
@@ -797,7 +820,7 @@ def test_plan_env_cannot_override_the_interpreter(tmp_path):
     venv = os.path.realpath(_fake_venv(repo / ".venv"))
     _summary, _state, log = run_in(
         tmp_path,
-        plan_artifact(".", [PROBE]),
+        plan_artifact(".", [PROBE], runner="host"),
         repo_dir=repo,
         env_values={"PATH": "/usr/bin:/bin", "VIRTUAL_ENV": "/elsewhere"},
     )
@@ -815,7 +838,7 @@ def test_configured_venv_dir_inside_checkout_is_used(tmp_path, monkeypatch):
     _fake_venv(repo / ".venv")
     prod = os.path.realpath(_fake_venv(repo / "envs" / "prod"))
     run_id, item_id = 9431, "HZ-9431"
-    task = _task_file(tmp_path, run_id, item_id, plan_artifact(".", [PROBE]), repo)
+    task = _task_file(tmp_path, run_id, item_id, plan_artifact(".", [PROBE], runner="host"), repo)
     task.write_text(json.dumps({**json.loads(task.read_text()), "venv_dir": "envs/prod"}))
     state_path = STATE_DIR / "jobs" / f"{item_id}.json"
     log_path = LOGS_DIR / f"farm-job-{item_id.lower()}.log"
@@ -860,7 +883,7 @@ def test_venv_outside_checkout_or_under_horizon_runs_zero_commands(tmp_path, mon
         (repo / ".venv").mkdir()
         (repo / ".venv" / "bin").symlink_to(horizon_venv / "bin")
     _no_spawn(monkeypatch)
-    artifact = plan_artifact(".", ["pwd"])
+    artifact = plan_artifact(".", ["pwd"], runner="host")
     state_path = tmp_path / "job.json"
     log_path = tmp_path / "job.log"
     summary = task_job.run_job(
@@ -871,6 +894,7 @@ def test_venv_outside_checkout_or_under_horizon_runs_zero_commands(tmp_path, mon
         state_path=state_path,
         log_path=log_path,
         repo_dir=str(repo),
+        container_image=FAKE_IMAGE,
         venv_dir=venv_dir,
     )
     assert summary == {"run": 0, "passed": 0, "failed": 0, "failing": []}
@@ -886,7 +910,7 @@ def test_resume_rechecks_the_venv_and_keeps_finished_commands(tmp_path):
     _fake_venv(repo / ".venv")
     outside = _fake_venv(tmp_path / "outside-venv")
     marks = tmp_path / "marks.txt"
-    artifact = plan_artifact(".", [f"echo one >> {marks}", f"echo two >> {marks}; exit 1"])
+    artifact = plan_artifact(".", [f"echo one >> {marks}", f"echo two >> {marks}; exit 1"], runner="host")
 
     _summary, first, _log = run_in(tmp_path, artifact, repo_dir=repo)
     assert [c["exit_code"] for c in first["commands"]] == [0, 1]
@@ -971,6 +995,7 @@ def run_clone(tmp_path, artifact, clone, task_clone_flag=True):
         state_path=state_path,
         log_path=log_path,
         repo_dir=str(clone),
+        container_image=FAKE_IMAGE,
         task_clone=task_clone_flag,
     )
     return summary, json.loads(state_path.read_text()), log_path.read_text()
@@ -986,6 +1011,7 @@ def _main_task_file(tmp_path, item_id, artifact, clone, **extra):
                 "plan_artifact": artifact,
                 "approved_hash": task_job.plan_hash_of(artifact),
                 "repo_dir": str(clone),
+                "container_image": FAKE_IMAGE,
                 **extra,
             }
         )

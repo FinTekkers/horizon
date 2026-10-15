@@ -174,6 +174,8 @@ class Farm:
                 "plan_artifact": artifact,
                 "approved_hash": task_job.plan_hash_of(artifact),
                 "repo_dir": str(self.home),
+                # HZ-416: the job runs in a container (conftest's fake_podman).
+                "container_image": "localhost/horizon-task:fake",
             },
         )
         assert res.status_code == 200, res.text
@@ -206,6 +208,14 @@ def farm(tmp_path):
 
 def _job_sessions():
     return [s for s in tmux_mgr.list_farm_sessions() if s.startswith(tmux_mgr.JOB_SESSION_PREFIX)]
+
+
+def _containers():
+    """HZ-416: `podman ps -a` — conftest's fake_podman on a host without it."""
+    out = subprocess.run(
+        [os.environ["FARM_PODMAN_BIN"], "ps", "-a", "--format", "{{.Names}}"], capture_output=True, text=True
+    ).stdout
+    return out.split()
 
 
 def _restart_and_readopt(farm):
@@ -251,9 +261,11 @@ def test_a_job_that_ends_while_farmd_is_down_is_reported_once_by_the_next_farmd(
 def test_stop_still_ends_the_job_after_a_farmd_restart(farm):
     run_id = 40803
     farm.dispatch(run_id, ["sleep 600"])
+    _wait_for("the job's container", lambda: _containers() == [SESSION], 20)
 
     _restart_and_readopt(farm)
     assert _job_sessions() == [SESSION]
+    assert _containers() == [SESSION], "the boot-time reaper spared the live job's container"
 
     res = farm.post("/jobs/stop", {"run_id": run_id})
     assert res.status_code == 200, res.text
@@ -262,6 +274,7 @@ def test_stop_still_ends_the_job_after_a_farmd_restart(farm):
     assert not (farm.task_file / f"{run_id}.json").exists()
     assert farm.stub.reports(run_id, "complete") == []
     assert farm.stub.reports(run_id, "fail") == []
+    assert _containers() == [], "Stop removed the job's container"
 
 
 def test_a_job_past_its_budget_is_still_ended_after_a_farmd_restart(farm):
@@ -281,3 +294,4 @@ def test_a_job_past_its_budget_is_still_ended_after_a_farmd_restart(farm):
     assert fails[0]["reason"] == reasons.REASON["JOB_BUDGET_EXCEEDED"]
     assert farm.stub.reports(run_id, "complete") == []
     assert not tmux_mgr.session_exists(SESSION)
+    assert _containers() == [], "the budget kill removed the job's container"

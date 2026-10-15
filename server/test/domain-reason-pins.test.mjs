@@ -30,6 +30,7 @@ import { REPO_ROOT } from './helpers/repoFiles.mjs'
 // HZ-384 added plan_changed_since_approval, non-retryable: same again.
 // HZ-378 added job_budget_exceeded, non-retryable: same again.
 // HZ-415 added job_cwd_refused, non-retryable: same again.
+// HZ-416 added job_container_unavailable, non-retryable: same again.
 // HZ-424 (2026-10-12) added sdk_message_too_large, RETRYABLE: the retryable set
 // was deliberately widened by one, still bounded by the unchanged AUTO_RETRY_CAP.
 // HZ-448 added invalid_plan_draft, non-retryable: the retryable set is unchanged.
@@ -46,13 +47,14 @@ const PINNED_IDS = [
   'plan_changed_since_approval',
   'job_budget_exceeded',
   'job_cwd_refused',
+  'job_container_unavailable',
   'sdk_message_too_large',
   'invalid_plan_draft',
   'usage_limited',
 ]
 const PINNED_RETRYABLE = ['never_picked_up', 'sdk_message_too_large', 'timeout', 'turn_cap', 'unreachable', 'usage_limited']
 
-test('PIN: the declared vocabulary is exactly these twelve reasons', () => {
+test('PIN: the declared vocabulary is exactly these thirteen reasons', () => {
   assert.deepEqual([...REASON_IDS].sort(), [...PINNED_IDS].sort())
   assert.equal(REASONS.length, PINNED_IDS.length)
 })
@@ -84,6 +86,11 @@ test('PIN: job_budget_exceeded is declared but NOT retryable — the item pauses
 test('PIN: job_cwd_refused is declared but NOT retryable — the deploy target or the run plan needs a human', () => {
   assert.equal(isRetryable('job_cwd_refused'), false)
   assert.equal(REASONS.find((r) => r.id === 'job_cwd_refused').retryable, false)
+})
+
+test('PIN: job_container_unavailable is declared but NOT retryable — Podman or the pinned image needs a human, never a host run', () => {
+  assert.equal(isRetryable('job_container_unavailable'), false)
+  assert.equal(REASONS.find((r) => r.id === 'job_container_unavailable').retryable, false)
 })
 
 test('PIN: invalid_plan_draft is declared but NOT retryable — the Draft must be re-run or edited by a human', () => {

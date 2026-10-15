@@ -4282,7 +4282,8 @@ def test_run_plan_prompt_names_the_interpreter(tmp_path, with_venv):
         (repo / ".venv" / "bin").mkdir(parents=True)
         (repo / ".venv" / "bin" / "python").write_text("#!/bin/sh\n")
         (repo / ".venv" / "bin" / "python").chmod(0o755)
-    block = {"cwd": ".", "commands": ["true"], "budget_minutes": 1}
+    # HZ-416: only a `runner: host` run uses the checkout's venv.
+    block = {"cwd": ".", "commands": ["true"], "budget_minutes": 1, "runner": "host"}
     artifact = "## Run plan block\n" + run_plan.render(block) + "\n"
     task_job.run_job(
         run_id=1,
@@ -4311,6 +4312,15 @@ def test_a_refused_venv_is_named_in_the_run_plan_prompt(tmp_path):
     (repo / ".venv").symlink_to(tmp_path)
     prompt = build_prompt(_run_plan_task(repo))
     assert "  interpreter: refused — venv resolves outside the repo directory." in prompt
+
+
+def test_the_run_plan_prompt_names_the_container_image_or_its_absence(tmp_path):
+    """HZ-416: Run plan learns where a default plan runs, and that no pinned
+    image means Execute refuses it."""
+    task = _run_plan_task(tmp_path)
+    assert "  container: none pinned — Execute refuses a container plan" in build_prompt(task)
+    task["container_image"] = "docker.io/library/python@sha256:" + "b" * 64
+    assert f"  container: {task['container_image']} (repo read-only, writable: /scratch, /tmp, /state, /logs)" in build_prompt(task)
 
 
 def test_a_change_items_prompt_gets_no_interpreter_line(tmp_path):

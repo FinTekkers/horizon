@@ -97,6 +97,12 @@ function toTarget(row) {
   if (row.task_dir != null) target.taskDir = row.task_dir
   // HZ-442: absent when unset (the deploy script runs its own build).
   if (row.build_command != null) target.buildCommand = row.build_command
+  // HZ-416: absent when unset — an omitted field keeps every seeded and admin
+  // row reading back exactly as before. The farm fails a container job closed
+  // with no image, and uses its own CPU/memory defaults with no limits.
+  if (row.container_image != null) target.containerImage = row.container_image
+  if (row.cpu_limit != null) target.cpuLimit = row.cpu_limit
+  if (row.memory_limit != null) target.memoryLimit = row.memory_limit
   if (row.extra_services !== null) {
     let extras
     try {
@@ -290,7 +296,10 @@ export function checkRunnable(target) {
 // Results are { ok: true, target } or { ok: false, code, reason? } with code
 // 'invalid' | 'conflict' | 'not_found'.
 
-const TARGET_BODY_FIELDS = ['repo', 'script', 'service', 'repoDir', 'stateKey', 'healthUrl', 'healthCheckType', 'venvDir', 'taskDir', 'buildCommand']
+const TARGET_BODY_FIELDS = [
+  'repo', 'script', 'service', 'repoDir', 'stateKey', 'healthUrl', 'healthCheckType', 'venvDir', 'taskDir', 'buildCommand',
+  'containerImage', 'cpuLimit', 'memoryLimit',
+]
 
 // The target shape from a request body: only the known fields, key from the path.
 export function targetFromBody(key, body) {
@@ -307,6 +316,9 @@ function rowParams(target) {
     venvDir: target.venvDir || null,
     taskDir: target.taskDir || null,
     buildCommand: target.buildCommand?.trim() || null,
+    containerImage: target.containerImage || null,
+    cpuLimit: target.cpuLimit || null,
+    memoryLimit: target.memoryLimit || null,
   }
 }
 
@@ -333,9 +345,31 @@ export function taskDirConflict(target, others) {
   return null
 }
 
+// HZ-416: the Task container's fields, format only and only when set. Kept
+// out of checkRunnable() on purpose — an image or limit never gates a deploy
+// or any other farm work; the farm checks and pulls the image when a Task's
+// Execute starts, and refuses the job closed if it cannot.
+export function checkTaskContainer(target) {
+  const containerImage = target.containerImage === '' ? null : (target.containerImage ?? null)
+  if (containerImage !== null && (typeof containerImage !== 'string' || containerImage.length > 500 || /\s/.test(containerImage))) {
+    return { ok: false, reason: 'bad containerImage' }
+  }
+  const cpuLimit = target.cpuLimit === '' ? null : (target.cpuLimit ?? null)
+  if (cpuLimit !== null && (typeof cpuLimit !== 'string' || !/^\d+(\.\d+)?$/.test(cpuLimit) || Number(cpuLimit) <= 0)) {
+    return { ok: false, reason: 'bad cpuLimit' }
+  }
+  const memoryLimit = target.memoryLimit === '' ? null : (target.memoryLimit ?? null)
+  if (memoryLimit !== null && (typeof memoryLimit !== 'string' || !/^[1-9]\d*[mMgG]$/.test(memoryLimit))) {
+    return { ok: false, reason: 'bad memoryLimit' }
+  }
+  return { ok: true }
+}
+
 function writeTarget(target, statement, database) {
   const check = checkRunnable(target)
   if (!check.ok) return { ok: false, code: 'invalid', reason: check.reason }
+  const container = checkTaskContainer(target)
+  if (!container.ok) return { ok: false, code: 'invalid', reason: container.reason }
   const conflict = taskDirConflict(target, listTargets(database).filter((other) => other.key !== target.key))
   if (conflict) return { ok: false, code: 'invalid', reason: conflict }
   let changes
@@ -351,8 +385,10 @@ function writeTarget(target, statement, database) {
 export function createTarget(target, database = db) {
   const result = writeTarget(target, database.prepare(`
     INSERT INTO deploy_target
-      (key, repo, script, service, repo_dir, state_key, health_url, health_check_type, extra_services, venv_dir, task_dir, build_command)
-    VALUES (@key, @repo, @script, @service, @repoDir, @stateKey, @healthUrl, @healthCheckType, @extraServices, @venvDir, @taskDir, @buildCommand)
+      (key, repo, script, service, repo_dir, state_key, health_url, health_check_type, extra_services, venv_dir, task_dir, build_command,
+       container_image, cpu_limit, memory_limit)
+    VALUES (@key, @repo, @script, @service, @repoDir, @stateKey, @healthUrl, @healthCheckType, @extraServices, @venvDir, @taskDir, @buildCommand,
+       @containerImage, @cpuLimit, @memoryLimit)
   `), database)
   return result.ok ? { ok: true, target: findTargetByKey(target.key, database) } : result
 }
@@ -364,7 +400,9 @@ export function updateTarget(key, fields, database = db) {
     UPDATE deploy_target SET
       repo = @repo, script = @script, service = @service, repo_dir = @repoDir, state_key = @stateKey,
       health_url = @healthUrl, health_check_type = @healthCheckType, extra_services = @extraServices,
-      venv_dir = @venvDir, task_dir = @taskDir, build_command = @buildCommand, updated_at = datetime('now')
+      venv_dir = @venvDir, task_dir = @taskDir, build_command = @buildCommand,
+      container_image = @containerImage, cpu_limit = @cpuLimit, memory_limit = @memoryLimit,
+      updated_at = datetime('now')
     WHERE key = @key
   `), database)
   return result.ok ? { ok: true, target: findTargetByKey(key, database) } : result

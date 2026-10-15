@@ -26,6 +26,11 @@
       "$comment": "Environment variables the commands need, each value a `$NAME` reference — never a literal (asserted by the binding).",
       "type": "object"
     },
+    "runner": {
+      "$comment": "HZ-416: where Execute runs the commands. `container` (the default when absent) is a throwaway rootless Podman container; `host` runs on the host exactly as before HZ-416 and needs an explicit opt-out.",
+      "type": "string",
+      "enum": ["container", "host"]
+    },
     "reports": {
       "$comment": "HZ-434: files the run writes as its own result, shown to Verify & report beside the log. A path is relative to `cwd` or absolute, never with a `..` part (asserted by both bindings). A command's `--report <path>` is found without this list. Execute reads a file only if its realpath is inside the resolved cwd or /tmp.",
       "type": "array",

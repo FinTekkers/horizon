@@ -87,6 +87,10 @@ def validate(block: object) -> dict:
     for name, value in env.items():
         if not isinstance(value, str) or not ENV_REFERENCE.match(value):
             raise ValueError(f"run_plan 'env'.{name} must name a variable like $NAME, never a literal value")
+    # HZ-416: optional; absent means the container. Unknown values fail here,
+    # never at Execute, so a bad plan is refused before anything runs.
+    if "runner" in block and block["runner"] not in RUNNER_VALUES:
+        raise ValueError("run_plan 'runner' must be 'container' or 'host'")
     # HZ-434: shape only; Execute's realpath check owns where a report may be.
     reports = block.get("reports", [])
     if not isinstance(reports, list):
@@ -101,6 +105,10 @@ def validate(block: object) -> dict:
 
 REPORTS_SHAPE = "run_plan 'reports' must be a list of non-empty file paths"
 REPORTS_PARENT = "run_plan 'reports' paths must not contain '..'"
+
+# HZ-416: where Execute runs the plan. Absent means the container; only an
+# explicit `host` runs on the host.
+RUNNER_VALUES = ("container", "host")
 
 
 CWD_ABSOLUTE = "run_plan 'cwd' must be relative to the repo root, not an absolute path"

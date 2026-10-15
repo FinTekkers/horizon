@@ -76,10 +76,13 @@ const STEP_META_COLOR = { awaiting: 'var(--warning-ink)', blocked: 'var(--danger
 
 // HZ-384: the one line a human-only gate (a Task's Approve the run) adds under
 // its meta — what is being approved, from the server's item.runPlan.
+// HZ-416: a plan that opts out of the container with `runner: host` says so
+// here, on every load — a container plan shows nothing extra.
 function runPlanSummary(runPlan) {
   if (!runPlan) return 'Run plan: not found'
   const commands = `${runPlan.commands} command${runPlan.commands === 1 ? '' : 's'}`
-  return `Run plan: ${commands} · budget ${runPlan.budgetMinutes} min`
+  const base = `Run plan: ${commands} · budget ${runPlan.budgetMinutes} min`
+  return runPlan.runner === 'host' ? `${base} · runs on the host, not in a container` : base
 }
 
 // HZ-185: why a forward to Accept the code didn't go through, keyed by the

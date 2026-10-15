@@ -1073,6 +1073,29 @@ if (!db.prepare('PRAGMA table_info(deploy_target)').all().some((column) => colum
   db.exec('ALTER TABLE deploy_target ADD COLUMN build_command TEXT')
 }
 
+// HZ-416: the throwaway container an Execute job runs in. `container_image`
+// is the pinned image (NULL: no image pinned — a container job for this repo
+// fails closed until an admin sets one). `cpu_limit`/`memory_limit` are the
+// `--cpus`/`--memory` values (NULL: the farm's defaults). Additive and
+// nullable like venv_dir above, so seeded and admin rows read back unchanged.
+// checkRunnable() never reads them: an image or limit never gates a deploy.
+// The pinned image for market-data-inputs (Python 3.12, like its host venv)
+// is seeded once, with the column — an admin's later change or clear sticks.
+export const MDI_CONTAINER_IMAGE =
+  'docker.io/library/python:3.12-slim@sha256:a6e34c598f2467ed0e9a8d349809fcd8b5c603269512df273a0bb1784edc11b1'
+if (!db.prepare('PRAGMA table_info(deploy_target)').all().some((column) => column.name === 'container_image')) {
+  db.exec('ALTER TABLE deploy_target ADD COLUMN container_image TEXT')
+  db.prepare("UPDATE deploy_target SET container_image = ? WHERE key = 'market-data-inputs' AND container_image IS NULL").run(
+    MDI_CONTAINER_IMAGE,
+  )
+}
+if (!db.prepare('PRAGMA table_info(deploy_target)').all().some((column) => column.name === 'cpu_limit')) {
+  db.exec('ALTER TABLE deploy_target ADD COLUMN cpu_limit TEXT')
+}
+if (!db.prepare('PRAGMA table_info(deploy_target)').all().some((column) => column.name === 'memory_limit')) {
+  db.exec('ALTER TABLE deploy_target ADD COLUMN memory_limit TEXT')
+}
+
 // HZ-333: the deploy queue (server/src/deployQueue.js). Step 14 joins its
 // target's open batch instead of publishing; one batch publishes one release
 // of main and deploys once. tag is saved before any GitHub call, so a resumed

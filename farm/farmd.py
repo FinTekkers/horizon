@@ -24,7 +24,7 @@ from fastapi.responses import JSONResponse
 # HZ-132 put the failure-reason vocabulary there under the same rule, so the
 # tags this daemon relays are the ones the server classifies, by construction.
 from domain.py import reasons, run_plan, steps
-from . import caretaker_ruling, check_slots, conflict_cancel, conflict_resolver, job_reports, pause, rules, task_job, tmux_mgr, workspaces
+from . import caretaker_ruling, check_slots, conflict_cancel, conflict_resolver, container_runner, job_reports, pause, rules, task_job, tmux_mgr, workspaces
 from . import config as farm_config
 from .checks import CHECK_SLOTS, default_check_slots, redact
 from .task_files import read_launchable_task
@@ -226,7 +226,11 @@ def _adopt_jobs() -> None:
     """Rebuilds the run->session map for jobs from claimed task files, so a
     farmd restarted mid-job keeps reporting it. A farm-job-* session with no
     task file is left alone: its runner finishes and its state file stays for
-    the server to read, but no report is sent twice."""
+    the server to read, but no report is sent twice.
+
+    HZ-416: then every farm-job-* container with no live farm-job-* tmux
+    session of the same name — what a killed runner or a reboot left — is
+    removed. A container whose runner is still up keeps running."""
     for task_path in (QUEUE_DIR / "jobs" / "active").glob("*.json"):
         if task_path.name.endswith(".env.json"):
             continue
@@ -239,6 +243,9 @@ def _adopt_jobs() -> None:
             continue
     if JOB_SESSIONS:
         print(f"farmd: adopted {len(JOB_SESSIONS)} in-flight job(s)", flush=True)
+    reaped = container_runner.reap_orphans(tmux_mgr.session_exists) if container_runner.available() else []
+    if reaped:
+        print(f"farmd: removed {len(reaped)} orphaned job container(s): {', '.join(reaped)}", flush=True)
 
 
 def _read_dotenv(path: Path) -> dict:
@@ -891,7 +898,9 @@ def launch_job(task: dict) -> str:
     block = run_plan.extract(artifact)
     cwd = run_plan.resolve_cwd(task.get("repo_dir"), block["cwd"], forbid=str(task_job.HORIZON_ROOT))
     # HZ-431: a venv outside the checkout is refused here too (a CwdRefused).
-    run_plan.resolve_venv(task.get("repo_dir"), task.get("venv_dir"), forbid=str(task_job.HORIZON_ROOT))
+    # HZ-416: only a host run uses the venv; a container run ignores it.
+    if block.get("runner") == "host":
+        run_plan.resolve_venv(task.get("repo_dir"), task.get("venv_dir"), forbid=str(task_job.HORIZON_ROOT))
     env_values = _resolve_job_env(cwd, block.get("env", {}))
     active = QUEUE_DIR / "jobs" / "active"
     active.mkdir(parents=True, exist_ok=True)
@@ -969,7 +978,9 @@ def _command_lines(entries, secrets: dict) -> list[str]:
         else:
             outcome = "not run" if c.get("status") == "pending" else str(c.get("status") or "not run")
         earlier = " (passed in an earlier attempt)" if c.get("resumed") else ""
-        lines.append(f"- {outcome} — `{command}`{earlier}")
+        # HZ-416: e.g. the container's memory limit killed it.
+        why = f" — {c['failure_reason']}" if isinstance(c.get("failure_reason"), str) else ""
+        lines.append(f"- {outcome} — `{command}`{earlier}{why}")
     return lines
 
 
@@ -1091,6 +1102,16 @@ def _poll_jobs() -> None:
                         "ok": False,
                         "error": f"Execute refused: {state.get('refusal') or 'cwd refused'}"[:300],
                         "reason": reasons.REASON["JOB_CWD_REFUSED"],
+                        "job_view": _job_view(run_id, task),
+                    }
+                )
+            elif status == "container_unavailable":
+                code = _forward_result(
+                    {
+                        "run_id": task["run_id"],
+                        "ok": False,
+                        "error": f"Execute refused: {state.get('refusal') or 'no container to run in'}"[:300],
+                        "reason": reasons.REASON["JOB_CONTAINER_UNAVAILABLE"],
                         "job_view": _job_view(run_id, task),
                     }
                 )
@@ -1808,7 +1829,11 @@ def jobs_progress(run_id: str, request: Request):
 def _mark_job_stopped(run_id, item_id: str) -> None:
     """HZ-407: after Stop killed the runner, its command's process group
     (which outlives the tmux session) is killed too, and the command that was
-    running is recorded `stopped` — never left `running`, never `done`."""
+    running is recorded `stopped` — never left `running`, never `done`.
+
+    HZ-416: a container run's container is then killed and removed — after
+    the process group, since rootless conmon outlives its client — and its
+    scratch and /tmp dirs are wiped, as the runner itself would have."""
     from farm.config import STATE_DIR as _STATE
 
     state_path = _STATE / "jobs" / f"{item_id}.json"
@@ -1828,6 +1853,9 @@ def _mark_job_stopped(run_id, item_id: str) -> None:
         entry["status"] = "stopped"
         entry["ended_at"] = now
         entry["exit_code"] = None
+    if state.get("runner") == "container":
+        container_runner.stop_and_remove(container_runner.container_name(item_id))
+        task_job.wipe_throwaway(state_path, _job_log_path(run_id, item_id))
     if state.get("status") == "running":
         state["status"] = "stopped"
         state["ended_at"] = now

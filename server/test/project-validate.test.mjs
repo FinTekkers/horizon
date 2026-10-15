@@ -348,5 +348,9 @@ test('G4: the deploy_target table schema is unchanged', () => {
     'task_dir',
     // HZ-442: the target's build command, added by its own migration.
     'build_command',
+    // HZ-416: the Task container's pinned image and limits, added by their own migration.
+    'container_image',
+    'cpu_limit',
+    'memory_limit',
   ])
 })
