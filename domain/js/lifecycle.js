@@ -314,6 +314,9 @@ export const VERIFY_REPORT_STEP_INDEX = kindStepIndex('Verify & report', 'task')
 export const APPROVE_FILE_GATE_INDEX = kindStepIndex('Approve & file', 'plan')
 // HZ-448: the Plan step whose reply is the item drafts (server/src/planDraft.js).
 export const PLAN_DRAFT_STEP_INDEX = kindStepIndex('Draft items', 'plan')
+// HZ-462: the Plan step whose artifact carries the Inventory block
+// (domain/js/planInventory.js), rendered as tables on the item page.
+export const PLAN_INVENTORY_STEP_INDEX = kindStepIndex('Inventory current state', 'plan')
 
 // HZ-446: a step Horizon runs itself, in the server process (runsIn 'server').
 // It names no agent, so it is never dispatched, never a send-back target and

@@ -234,7 +234,8 @@ test('neither binding inlines a second copy of the step table — every label, b
   // HZ-378: the fourth is VERIFY_REPORT_STEP_INDEX, the same lookup BY label.
   // HZ-446: the fifth is APPROVE_FILE_GATE_INDEX, a Plan's human-only gate.
   // HZ-448: the sixth is PLAN_DRAFT_STEP_INDEX, the Plan's Draft items step.
-  assert.equal(strippedKind, 6, `expected exactly 6 kindStepIndex() label lookups in the binding, found ${strippedKind}`)
+  // HZ-462: the seventh is PLAN_INVENTORY_STEP_INDEX, its Inventory step.
+  assert.equal(strippedKind, 7, `expected exactly 7 kindStepIndex() label lookups in the binding, found ${strippedKind}`)
 })
 
 test('neither reason binding inlines a second copy of the vocabulary — every id, both files', () => {
