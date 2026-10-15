@@ -34,6 +34,8 @@ import os
 import shutil
 import subprocess
 
+from .config import farm_home
+
 SCRATCH_MOUNT = "/scratch"
 STATE_MOUNT = "/state"
 LOGS_MOUNT = "/logs"
@@ -46,6 +48,12 @@ DEFAULT_MEMORY = "1g"
 # One name per item, the same as its runner's tmux session (farm-job-<item>),
 # so the reaper spares exactly the containers whose runner is still alive.
 NAME_PREFIX = "farm-job-"
+
+# Every job container carries `horizon.farm-home=<FARM_HOME>`, and the reaper
+# lists only its own farm's: another farm on the same host (a test farmd, a
+# second checkout) shares the user's rootless Podman, and its farm-job-*
+# containers are never this farm's orphans.
+OWNER_LABEL_KEY = "horizon.farm-home"
 
 # What the podman client itself needs from the farm's env (rootless Podman
 # finds its runtime dir through XDG_RUNTIME_DIR). None of it reaches the
@@ -69,6 +77,12 @@ def podman_bin() -> str:
 
 def container_name(item_id: str) -> str:
     return f"{NAME_PREFIX}{str(item_id).lower()}"
+
+
+def owner_label() -> str:
+    """This farm's `key=value` label — FARM_HOME read at call time, so the
+    runner and farmd agree on it whatever imported first."""
+    return f"{OWNER_LABEL_KEY}={farm_home()}"
 
 
 def client_env(env_values: dict) -> dict:
@@ -148,6 +162,8 @@ def build_run_argv(
         "-d",
         "--name",
         name,
+        "--label",
+        owner_label(),
         "--network=host",
         "--userns=keep-id",
         "--user",
@@ -285,9 +301,10 @@ def stop_and_remove(name: str) -> None:
 
 
 def list_job_containers() -> list:
-    """Names of every farm-job-* container, running or not (`podman ps -a`)."""
+    """Names of this farm's farm-job-* containers, running or not (`podman
+    ps -a`) — only those labelled with its own FARM_HOME."""
     try:
-        res = _podman("ps", "-a", "--format", "{{.Names}}", timeout=30)
+        res = _podman("ps", "-a", "--filter", f"label={owner_label()}", "--format", "{{.Names}}", timeout=30)
     except (OSError, subprocess.SubprocessError):
         return []
     if res.returncode != 0:
@@ -296,7 +313,7 @@ def list_job_containers() -> list:
 
 
 def reap_orphans(alive) -> list:
-    """Removes every farm-job-* container whose name `alive(name)` says has
+    """Removes each of this farm's farm-job-* containers whose name `alive(name)` says has
     no live runner — what a SIGKILLed runner or a reboot left behind. A
     container whose runner is still up (HZ-408: farmd restarted mid-job) is
     spared. Returns the names removed."""

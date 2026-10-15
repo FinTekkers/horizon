@@ -107,17 +107,30 @@ def test_reboot_adopts_the_job_and_reports_it_finished(monkeypatch, fake_tmux, t
 def test_reboot_reaps_orphaned_job_containers_and_spares_live_ones(monkeypatch, fake_tmux):
     """HZ-416, metric 3: a farm-job-* container whose runner's tmux session
     is gone (a killed runner, a reboot) is removed at boot; one whose runner
-    still runs (HZ-408: only farmd restarted) keeps running."""
+    still runs (HZ-408: only farmd restarted) keeps running. Another farm's
+    container on the same host (its own FARM_HOME label) is never reaped."""
     podman = os.environ["FARM_PODMAN_BIN"]
-    for name in ("farm-job-hz-live", "farm-job-hz-orphan"):
-        started = subprocess.run([podman, "run", "-d", "--name", name, FAKE_IMAGE, "sleep", "infinity"], capture_output=True)
+    other_farm = f"{container_runner.OWNER_LABEL_KEY}=/elsewhere/other-farm"
+    starts = {
+        "farm-job-hz-live": container_runner.owner_label(),
+        "farm-job-hz-orphan": container_runner.owner_label(),
+        "farm-job-hz-other-farm": other_farm,
+    }
+    for name, label in starts.items():
+        started = subprocess.run(
+            [podman, "run", "-d", "--name", name, "--label", label, FAKE_IMAGE, "sleep", "infinity"], capture_output=True
+        )
         assert started.returncode == 0, started.stderr
     fake_tmux.sessions.add("farm-job-hz-live")
     try:
         farmd._adopt_jobs()
         assert container_runner.list_job_containers() == ["farm-job-hz-live"]
+        others = subprocess.run(
+            [podman, "ps", "-a", "--filter", f"label={other_farm}", "--format", "{{.Names}}"], capture_output=True, text=True
+        )
+        assert others.stdout.split() == ["farm-job-hz-other-farm"]
     finally:
-        for name in ("farm-job-hz-live", "farm-job-hz-orphan"):
+        for name in starts:
             container_runner.stop_and_remove(name)
     assert container_runner.list_job_containers() == []
 
