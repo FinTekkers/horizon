@@ -15,6 +15,9 @@ vi.mock('../api', () => ({
   outputUrl: () => 'https://example.test/output',
   runLogViewUrl: () => 'https://example.test/log',
   subscribeStepOutputs: vi.fn(),
+  // HZ-449: the Approve & file card's items table; no draft here.
+  getPlanDraft: vi.fn(async () => null),
+  savePlanDraft: vi.fn(),
 }))
 
 import Tracker from './Tracker'

@@ -10,19 +10,35 @@
 // the two only the server can answer, from the context it passes in: every
 // repo is one the Plan may file in (unknown_repo) and every real key names an
 // existing item, open or closed (unknown_key).
+//
+// HZ-449 adds what filing needs: each draft's optional priority, kind and lane
+// (their enums added at load from priorities.json and steps.json), and the
+// rules that keep a filed item's text sound once `#n` becomes a real key —
+// every text `#n` names a draft (unknown_ref), each can be filed after the
+// drafts it names (ref_cycle), and the filed text fits the work-item limits
+// (over_limit). filedText, filingOrder and rewriteLocalRefs are the filing's
+// own helpers (server/src/planFiling.js), here so the rules and the filing
+// compose the text the same way.
 
 import source from '../planDraft.schema.json' with { type: 'json' }
 import { fieldByName } from './fields.js'
+import { PRIORITIES } from './priorities.js'
+import { ITEM_KINDS, LANES, laneOf } from './lifecycle.js'
 
 const LOCAL_ID = /^#[1-9][0-9]*$/
 const REAL_KEY = /^[A-Z][A-Z0-9]*-[0-9]+$/
 const KEY_IN_TEXT = /\b([A-Z][A-Z0-9]*)-(\d+)\b/g
+// A plan-local id in free text: `#3`, never `owner/repo#3` or `a-#3`.
+const LOCAL_REF = /(?<![\w/.-])#([1-9][0-9]*)\b/g
+// The room over_limit keeps for each `#n` (and the Plan's own key) to become a
+// real key once filed.
+export const KEY_ROOM = 20
 
 // The contract with the work-item field limits added from domain/fields.json,
 // the one place they are declared: title and outcome lengths, repo's maximum,
 // and metric's and guardrails' line caps as their maximum entries. The body
 // schema of PUT /api/items/:id/plan-draft.
-export const PLAN_DRAFT_SCHEMA = withFieldLimits(structuredClone(source))
+export const PLAN_DRAFT_SCHEMA = withEnums(withFieldLimits(structuredClone(source)))
 
 function withFieldLimits(schema) {
   const item = schema.properties.items.items.properties
@@ -31,6 +47,16 @@ function withFieldLimits(schema) {
     Object.assign(item[name], minLength === undefined ? {} : { minLength }, { maxLength })
   }
   for (const name of ['metric', 'guardrails']) item[name].maxItems = fieldByName(name).maxLines
+  return schema
+}
+
+// HZ-449: a draft's priority, kind and lane, each one of the vocabularies
+// declared elsewhere in domain/.
+function withEnums(schema) {
+  const item = schema.properties.items.items.properties
+  item.priority.enum = [...PRIORITIES]
+  item.kind.enum = [...ITEM_KINDS]
+  item.lane.enum = [...LANES]
   return schema
 }
 
@@ -67,6 +93,7 @@ function shape(node, value, path) {
     if (value.length < (node.minLength ?? 0)) return [path, `must be at least ${node.minLength} characters`]
     if (value.length > (node.maxLength ?? value.length)) return [path, `must be at most ${node.maxLength} characters`]
     if (node.pattern && !new RegExp(node.pattern).test(value)) return [path, `${JSON.stringify(value)} is not in the expected form`]
+    if (node.enum && !node.enum.includes(value)) return [path, `must be one of ${node.enum.join(', ')}`]
   }
   return null
 }
@@ -145,6 +172,129 @@ export function realKeysIn(doc, keyPrefixes = []) {
   return [...keyRefs(doc, keyPrefixes).keys()]
 }
 
+// ---- HZ-449: filing ----
+
+// The plan-local ids `text` names, in order, each once.
+export function localRefsIn(text) {
+  return [...new Set([...String(text).matchAll(LOCAL_REF)].map((m) => `#${m[1]}`))]
+}
+
+// `text` with every `#n` that `keys` maps replaced by its real key. A `#n` it
+// does not map, `owner/repo#n` and a real key such as US-216 are left alone.
+export function rewriteLocalRefs(text, keys) {
+  return String(text).replace(LOCAL_REF, (ref) => (Object.hasOwn(keys, ref) ? keys[ref] : ref))
+}
+
+// The text one draft is filed with: its must-also-cover lines under the
+// outcome, followed by the Plan that filed it; its metric numbered; its
+// guardrails and the shared ones as one list. `#n` is not rewritten here.
+export function filedText(item, sharedGuardrails, planKey) {
+  const cover = item.must_also_cover.length ? `\n\n**Must also cover**\n${item.must_also_cover.map((c) => `- ${c}`).join('\n')}` : ''
+  return {
+    title: item.title,
+    outcome: `${item.outcome}${cover}\n\nFiled by Plan ${planKey}.`,
+    metric: item.metric.map((m, i) => `${i + 1}. ${m}`).join('\n'),
+    guardrails: [...item.guardrails, ...sharedGuardrails].map((g) => `- ${g}`).join('\n'),
+  }
+}
+
+// Every filed text field of a draft, with its path, in a fixed order.
+function* filedFields(item, i) {
+  yield [`items[${i}].title`, item.title]
+  yield [`items[${i}].outcome`, item.outcome]
+  for (const name of ['metric', 'guardrails', 'must_also_cover']) {
+    for (const [j, text] of item[name].entries()) yield [`items[${i}].${name}[${j}]`, text]
+  }
+}
+
+// Each draft's edges to the drafts that must be filed before it, in order:
+// its `#n` dependencies, then the `#n`s its text names. [{ to, path }].
+function filingEdges(items) {
+  return items.map((item, i) => {
+    const edges = new Map()
+    for (const [j, dep] of item.depends_on.entries()) if (LOCAL_ID.test(dep) && !edges.has(dep)) edges.set(dep, `items[${i}].depends_on[${j}]`)
+    for (const [path, text] of filedFields(item, i)) for (const ref of localRefsIn(text)) if (!edges.has(ref)) edges.set(ref, path)
+    return [...edges].map(([to, path]) => ({ to, path }))
+  })
+}
+
+// The first problem with the drafts' text references, as [code, path,
+// detail], or null: a `#n` naming no draft, a shared guardrail naming any (all
+// drafts carry it, so one would name itself), or a loop.
+function references(doc) {
+  const ids = new Set(doc.items.map((item) => item.id))
+  for (const [i, item] of doc.items.entries()) {
+    for (const [path, text] of filedFields(item, i)) {
+      const unknown = localRefsIn(text).find((ref) => !ids.has(ref))
+      if (unknown) return ['unknown_ref', path, `${item.id} names ${unknown}, which is not a draft in this plan`]
+    }
+  }
+  for (const [j, text] of doc.shared_guardrails.entries()) {
+    const [ref] = localRefsIn(text)
+    if (ref && !ids.has(ref)) return ['unknown_ref', `shared_guardrails[${j}]`, `a shared guardrail names ${ref}, which is not a draft in this plan`]
+    if (ref) return ['ref_cycle', `shared_guardrails[${j}]`, `a shared guardrail names ${ref}, but every draft carries it — name ${ref} in a draft's own text`]
+  }
+  const edges = filingEdges(doc.items)
+  const index = new Map(doc.items.map((item, i) => [item.id, i]))
+  const state = new Map()
+  const visit = (node, stack) => {
+    state.set(node, 'open')
+    stack.push(node)
+    for (const { to, path } of edges[index.get(node)]) {
+      if (state.get(to) === 'open') {
+        const loop = [...stack.slice(stack.indexOf(to)), to]
+        return ['ref_cycle', path, `${loop.join(' → ')}: a draft's text may name only a draft filed before it`]
+      }
+      if (!state.has(to)) {
+        const found = visit(to, stack)
+        if (found) return found
+      }
+    }
+    stack.pop()
+    state.set(node, 'done')
+    return null
+  }
+  for (const item of doc.items) {
+    if (state.has(item.id)) continue
+    const found = visit(item.id, [])
+    if (found) return found
+  }
+  return null
+}
+
+// The first draft too long to file, as [code, path, detail], or null. Each
+// `#n` and the Plan's key get KEY_ROOM characters, as a real key may be longer.
+function overLimit(doc) {
+  const cap = fieldByName('guardrails').maxLines
+  const room = (text) => text.length + KEY_ROOM * localRefsIn(text).length
+  for (const [i, item] of doc.items.entries()) {
+    const count = item.guardrails.length + doc.shared_guardrails.length
+    if (count > cap) return ['over_limit', `items[${i}].guardrails`, `${item.id} would carry ${count} guardrails with the shared ones, over the ${cap} limit`]
+    const text = filedText(item, doc.shared_guardrails, 'X'.repeat(KEY_ROOM))
+    for (const name of ['title', 'outcome', 'metric', 'guardrails']) {
+      const { maxLength } = fieldByName(name)
+      const length = room(text[name])
+      if (length > maxLength) return ['over_limit', `items[${i}].${name}`, `${item.id}'s ${name} would be ${length} characters once filed, over the ${maxLength} limit`]
+    }
+  }
+  return null
+}
+
+// The drafts' ids in the order to file them: each after every draft it
+// depends on or names, ties kept in display order. Only for a valid draft.
+export function filingOrder(doc) {
+  const edges = filingEdges(doc.items)
+  const order = []
+  const placed = new Set()
+  while (order.length < doc.items.length) {
+    const i = doc.items.findIndex((item, k) => !placed.has(item.id) && edges[k].every(({ to }) => placed.has(to)))
+    if (i < 0) throw new Error('filingOrder: the drafts reference each other in a loop')
+    placed.add(doc.items[i].id)
+    order.push(doc.items[i].id)
+  }
+  return order
+}
+
 // { ok: true } or { ok: false, errors: [{ path, code, message }] } — the first
 // rule the draft breaks. With no `keyExists`, real keys go unchecked; with no
 // `knownRepos`, repos do — the farm-side view the shared fixtures compare.
@@ -153,6 +303,13 @@ export function validatePlanDraft(doc, { knownRepos = null, keyExists = null, ke
   if (found) return fail('invalid_shape', found[0] || 'plan_draft', `${found[0] || 'plan_draft'} ${found[1]}`)
   const problem = graph(doc.items)
   if (problem) return fail(...problem)
+  const mismatch = doc.items.findIndex((item) => item.lane !== undefined && laneOf({ kind: item.kind ?? 'change', lane: item.lane }) === null)
+  if (mismatch >= 0) {
+    const item = doc.items[mismatch]
+    return fail('lane_kind_mismatch', `items[${mismatch}].lane`, `${item.id}'s lane ${item.lane} is not a lane of a ${item.kind ?? 'change'} item`)
+  }
+  const textProblem = references(doc) || overLimit(doc)
+  if (textProblem) return fail(...textProblem)
   if (knownRepos) {
     const repos = new Set(knownRepos.map((r) => r.toLowerCase()))
     const i = doc.items.findIndex((item) => !repos.has(item.repo.toLowerCase()))

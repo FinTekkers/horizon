@@ -11,7 +11,16 @@ import { execFileSync } from 'node:child_process'
 import { readFileSync } from 'node:fs'
 import path from 'node:path'
 
-import { PLAN_DRAFT_SCHEMA, validatePlanDraft, realKeysIn, renderPlanDraftMd } from '../../domain/js/planDraft.js'
+import {
+  KEY_ROOM,
+  PLAN_DRAFT_SCHEMA,
+  filedText,
+  filingOrder,
+  realKeysIn,
+  renderPlanDraftMd,
+  rewriteLocalRefs,
+  validatePlanDraft,
+} from '../../domain/js/planDraft.js'
 import { fieldByName } from '../../domain/js/fields.js'
 import { REPO_ROOT } from './helpers/repoFiles.mjs'
 
@@ -61,7 +70,8 @@ for (const c of fixtures.cases) {
 
 test('the fixtures cover every error code both bindings share, and the server-only ones', () => {
   const codes = new Set(fixtures.cases.filter((c) => c.expect).map((c) => c.expect.code))
-  for (const code of ['invalid_shape', 'duplicate_id', 'self_dep', 'unknown_dep', 'cycle', 'unknown_key', 'unknown_repo']) {
+  const shared = ['invalid_shape', 'duplicate_id', 'self_dep', 'unknown_dep', 'cycle', 'lane_kind_mismatch', 'unknown_ref', 'ref_cycle', 'over_limit']
+  for (const code of [...shared, 'unknown_key', 'unknown_repo']) {
     assert.ok(codes.has(code), `no case expects ${code}`)
   }
 })
@@ -96,7 +106,7 @@ test('the Python binding derives the same schema', () => {
 
 test('the schema uses only the keywords both bindings interpret', () => {
   const supported = new Set(['$schema', '$comment', 'title', 'type', 'required', 'additionalProperties', 'properties', 'items'])
-  for (const k of ['minItems', 'maxItems', 'uniqueItems', 'minLength', 'maxLength', 'pattern']) supported.add(k)
+  for (const k of ['minItems', 'maxItems', 'uniqueItems', 'minLength', 'maxLength', 'pattern', 'enum']) supported.add(k)
   const walk = (node, where) => {
     for (const key of Object.keys(node)) assert.ok(supported.has(key), `${where} uses "${key}"`)
     assert.ok(['object', 'array', 'string'].includes(node.type), `${where} has type ${node.type}`)
@@ -144,4 +154,43 @@ print(json.dumps(out))
   const output = execFileSync('python3', ['-c', script], { cwd: REPO_ROOT, input: JSON.stringify(docs), encoding: 'utf8' })
   const expected = fixtures.cases.map((c) => (c.expect === null || c.serverOnly ? null : c.expect.code))
   assert.deepEqual(JSON.parse(output), expected)
+})
+
+// ---- HZ-449: filing helpers ----
+
+test('rewriteLocalRefs replaces only the #n it maps, never a real key or owner/repo#n', () => {
+  const text = 'After #1 and #12, beside US-216, acme/alpha#1 and a#1; #3 is not mapped.'
+  assert.equal(
+    rewriteLocalRefs(text, { '#1': 'HZ-480', '#12': 'UI-9' }),
+    'After HZ-480 and UI-9, beside US-216, acme/alpha#1 and a#1; #3 is not mapped.',
+  )
+  // An own-property lookup: a prototype key is no mapping.
+  assert.equal(rewriteLocalRefs('#1', Object.create({ '#1': 'HZ-1' })), '#1')
+})
+
+test('filingOrder puts each draft after the drafts it depends on or names, ties in display order', () => {
+  const doc = build({ set: { 'items.1.outcome': 'Flags gaps in #3.', 'items.2.depends_on': ['#1'] } })
+  assert.deepEqual(validatePlanDraft(doc), { ok: true })
+  assert.deepEqual(filingOrder(doc), ['#1', '#3', '#2'])
+  assert.deepEqual(filingOrder(fixtures.base), ['#1', '#2', '#3'])
+})
+
+test('the Python binding composes the same filed text and keeps the same key room', () => {
+  const doc = build({ set: { 'items.0.must_also_cover': ['parity fixtures', 'a second line'] } })
+  const script = `
+import json, sys
+from domain.py import plan_draft
+doc = json.load(sys.stdin)
+print(json.dumps({"room": plan_draft.KEY_ROOM, "text": [plan_draft.filed_text(i, doc["shared_guardrails"], "HZ-1") for i in doc["items"]]}))
+`
+  const out = JSON.parse(execFileSync('python3', ['-c', script], { cwd: REPO_ROOT, input: JSON.stringify(doc), encoding: 'utf8' }))
+  assert.equal(out.room, KEY_ROOM)
+  assert.deepEqual(
+    out.text,
+    doc.items.map((item) => filedText(item, doc.shared_guardrails, 'HZ-1')),
+  )
+  assert.equal(
+    out.text[0].outcome,
+    `${doc.items[0].outcome}\n\n**Must also cover**\n- parity fixtures\n- a second line\n\nFiled by Plan HZ-1.`,
+  )
 })

@@ -17,6 +17,9 @@ Naming rules (strict — a reply that breaks them is rejected):
 - `depends_on` lists `#n` ids of other drafts here, or real keys of
   existing items. No draft depends on itself, and there is no cycle.
 - `repo` is one of the Plan's repos, written `owner/name`.
+- Text may name another draft by `#n` only if that draft can be filed
+  first: never the draft itself, never a draft that depends on it, and
+  never in `shared_guardrails`. Every `#n` in text names a draft here.
 
 Lean drafts:
 - `outcome`: one short paragraph — what is true when the item is done.
@@ -26,6 +29,10 @@ Lean drafts:
 - `shared_guardrails`: up to 6 lines every item carries. Do not repeat them
   in each item.
 - `open_questions`: up to 10. Every question has a `recommended_answer`.
+- Optional per item: `priority` (one of the Plan's priorities; the Plan's own
+  when left out), `kind` (`change`, `task` or `plan`; `change` when left out)
+  and `lane` (`trivial` for a small `change` that needs no design steps).
+- An item's guardrails plus the shared ones are at most 4 lines.
 
 Keep each item small enough for one pull request. Split a large item into
 several drafts with `depends_on` between them.
@@ -44,7 +51,10 @@ Respond with ONLY a JSON object (no prose, no fences):
         "metric": ["<testable line>", "<testable line>", "<testable line>"],
         "guardrails": ["<rule>", "<rule>", "<rule>"],
         "depends_on": ["<#n or an existing key>"],
-        "must_also_cover": ["<short note>"]
+        "must_also_cover": ["<short note>"],
+        "priority": "<optional: an item priority>",
+        "kind": "<optional: change | task | plan>",
+        "lane": "<optional: trivial>"
       }
     ],
     "shared_guardrails": ["<rule every item carries>"],
@@ -54,7 +64,8 @@ Respond with ONLY a JSON object (no prose, no fences):
 
 `plan_draft` is checked before the step can finish. A missing field, the
 wrong number of metric or guardrail lines, an id that is not `#n`, an
-unknown `#n` dependency or a cycle fails the step. Horizon renders the items
+unknown `#n` dependency or a cycle fails the step. So does a text `#n` that
+names no draft or loops back, or a draft too long to file. Horizon renders the items
 table itself from `plan_draft`, so do not repeat it in `artifact_md`.
 
 If human feedback is provided, respond to every point explicitly in your

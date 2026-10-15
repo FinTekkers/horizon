@@ -41,6 +41,7 @@ import { AUTO_RETRY_REASONS, REASON } from '../../domain/js/reasons.js'
 import { patchLimits, addedCriteriaLines } from '../../domain/js/fields.js'
 import { renderPlanDraftMd } from '../../domain/js/planDraft.js'
 import { ingestDraft } from './planDraft.js'
+import { fileDrafts } from './planFiling.js'
 import {
   getItem,
   addEvent,
@@ -1269,7 +1270,7 @@ export function kick(id, opts = {}) {
   }
   // HZ-446: a server step is Horizon's own code — never the farm, never a mock.
   if (isServerStep(item.cursor)) {
-    runServerStep(id, item.cursor)
+    runServerStep(id, item.cursor).catch((err) => console.warn(`server step: ${id} failed outside its run: ${err.message}`))
     return
   }
 
@@ -1353,30 +1354,40 @@ async function runLaneCheck(id, stepIndex) {
 }
 
 // HZ-446: what each server step (runsIn 'server') does, keyed by label like
-// MOCK_STEP_BEHAVIOR. Synchronous, with no network call: it returns
-// { summary }. "File items" files nothing yet — HZ-449 replaces this body with
-// the filing logic. Until then approving Approve & file creates no issue and
-// no item.
+// MOCK_STEP_BEHAVIOR. It may be async (HZ-449): it returns or resolves
+// { summary, output? } — output, when given, is the run's recorded output in
+// place of the summary — or { stopped: true } when `stopped()` said the run
+// was stopped under it. A throw pauses the item.
 export const SERVER_STEP_BEHAVIOR = {
-  'File items': () => ({ summary: 'filing is not built yet (HZ-449): no issues or items were created' }),
+  // HZ-449: files the Plan's approved drafts (server/src/planFiling.js).
+  'File items': (item, { stopped }) => fileDrafts(item, { stopped }),
 }
 
-// HZ-446: one server step, run to completion in this call — so no run is ever
-// left active across a restart, and a restart at this cursor just runs it
-// again. Records a step_run (agent 'Horizon', as the row names none), moves
-// the cursor on and kicks the next step. Holds the dispatching mutex, taken by
-// kick(), until it returns.
-function runServerStep(id, stepIndex) {
+const selectRunStatus = db.prepare('SELECT status FROM step_run WHERE id = ?')
+
+// HZ-446: one server step. Records a step_run (agent 'Horizon', as the row
+// names none), awaits the behaviour, moves the cursor on and kicks the next
+// step. Holds the dispatching mutex, taken by kick(), until it settles — so a
+// second kick() while it awaits is a no-op.
+//
+// HZ-449: the behaviour may await (File items calls GitHub), so its run can
+// be active across a restart; init() closes such a run and the restart runs
+// the step again from the top. After the await the run is checked again: a
+// pause, abandon or cancel closed it (and released the mutex, which a newer
+// run may hold), so a stale run never moves the cursor or touches the mutex.
+async function runServerStep(id, stepIndex) {
   const step = STEPS[stepIndex]
   const behavior = SERVER_STEP_BEHAVIOR[step.label]
   const runId = db
     .prepare('INSERT INTO step_run (item_id, step_index, attempt, agent) VALUES (?, ?, ?, ?)')
     .run(id, stepIndex, nextStepAttempt(id, stepIndex).attempt, 'Horizon').lastInsertRowid
-  let summary
+  const stillActive = () => selectRunStatus.get(runId)?.status === 'active'
+  let result
   try {
     if (!behavior) throw new Error(`no server behaviour for “${step.label}”`)
-    summary = behavior(getItem(id)).summary
+    result = await behavior(getItem(id), { stopped: () => !stillActive() })
   } catch (err) {
+    if (!stillActive()) return
     db.prepare("UPDATE step_run SET status = 'cancelled', output = ?, ended_at = datetime('now') WHERE id = ?").run(err.message, runId)
     db.prepare(`UPDATE work_item SET ${PAUSE_SET}, updated_at = datetime('now') WHERE id = ?`).run(id)
     addEvent(id, { who: 'Horizon', text: `paused: “${step.label}” failed — ${err.message}`, color: '#9C333E', initials: 'HZ' })
@@ -1384,7 +1395,19 @@ function runServerStep(id, stepIndex) {
     notifyChange()
     return
   }
-  db.prepare("UPDATE step_run SET status = 'done', output = ?, ended_at = datetime('now') WHERE id = ?").run(summary, runId)
+  if (!stillActive()) return
+  const now = getItem(id)
+  if (result.stopped || !inFlightRunnable(now) || now.cursor !== stepIndex) {
+    db.prepare("UPDATE step_run SET status = 'cancelled', output = ?, ended_at = datetime('now') WHERE id = ?").run(
+      result.summary ?? 'stopped before it finished',
+      runId,
+    )
+    dispatching.delete(id)
+    notifyChange()
+    return
+  }
+  const { summary } = result
+  db.prepare("UPDATE step_run SET status = 'done', output = ?, ended_at = datetime('now') WHERE id = ?").run(result.output ?? summary, runId)
   db.prepare("UPDATE work_item SET cursor = ?, updated_at = datetime('now') WHERE id = ?").run(nextCursor(getItem(id)), id)
   addEvent(id, { who: 'Horizon', text: `completed “${step.label}” — ${summary}`, color: '#5E4380', initials: 'HZ' })
   notifyChange()
@@ -3454,6 +3477,10 @@ export async function init(log) {
     const first = db.prepare('SELECT id FROM project ORDER BY id LIMIT 1').get()
     if (first) setSetting('active_project_id', String(first.id))
   }
+  // HZ-449: a server step's run is in this process's memory only — one a
+  // restart left active is closed here, before the farm re-arm below would
+  // take it for a farm run and hold its item. Resume runs the step again.
+  closeOrphanedServerRuns()
   // HZ-216: end gate actions whose lease ran out — one a restart orphaned
   // becomes `interrupted` and its gate re-opens — now and every minute.
   sweepGateActions()
@@ -3556,6 +3583,18 @@ export function rearmFarmRuns() {
     dispatching.add(run.item_id)
   }
   return active.length
+}
+
+// Closes every active run at a server step (isServerStep). Exported for tests.
+export function closeOrphanedServerRuns() {
+  const indexes = STEPS.map((_, i) => i).filter(isServerStep)
+  if (indexes.length === 0) return 0
+  return db
+    .prepare(
+      `UPDATE step_run SET status = 'cancelled', output = COALESCE(output, 'stopped by a server restart'), ended_at = datetime('now')
+       WHERE status = 'active' AND step_index IN (${indexes.map(() => '?').join(', ')})`,
+    )
+    .run(...indexes).changes
 }
 
 function closeAllOrphanedRuns() {
