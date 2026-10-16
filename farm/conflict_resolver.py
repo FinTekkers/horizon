@@ -281,6 +281,7 @@ def resolve(
     log=print,
     configured=None,
     checks_waiver=None,
+    test_env_file=None,
 ) -> dict:
     """Attempt a mechanical merge-conflict resolution for one item's PR
     branch, in that item's existing worktree.
@@ -306,14 +307,14 @@ def resolve(
     token = _RECORDED.set(recorded)
     try:
         with cancel_scope(repo_full, item_id):
-            result = _resolve(repo_full, item_id, branch, base_branch, log, configured, checks_waiver)
+            result = _resolve(repo_full, item_id, branch, base_branch, log, configured, checks_waiver, test_env_file)
     finally:
         _RECORDED.reset(token)
     # HZ-327: on every reply, resolved or escalated; the server records them.
     return {**result, **{key: value for key, value in recorded.items() if value and key != "branch_notes"}}
 
 
-def _resolve(repo_full, item_id, branch, base_branch, log, configured, checks_waiver=None) -> dict:
+def _resolve(repo_full, item_id, branch, base_branch, log, configured, checks_waiver=None, test_env_file=None) -> dict:
     branch = branch or f"horizon/{item_id.lower()}"
     ws = ensure_item_worktree(repo_full, item_id)
 
@@ -344,7 +345,8 @@ def _resolve(repo_full, item_id, branch, base_branch, log, configured, checks_wa
             # a fully-formed result either way — resolved, or escalated with a
             # reason naming exactly why it refused.
             return _scoped_resolve(
-                ws, repo_full, branch, default, unmerged, pre_merge_sha, log, configured=configured, checks_waiver=checks_waiver
+                ws, repo_full, branch, default, unmerged, pre_merge_sha, log, configured=configured, checks_waiver=checks_waiver,
+                test_env_file=test_env_file,
             )
         log(f"conflict_resolver: {len(unmerged)} unmerged path(s) — escalating, aborting merge")
         return _escalate(
@@ -367,7 +369,7 @@ def _resolve(repo_full, item_id, branch, base_branch, log, configured, checks_wa
         checked_tree = check_record.snapshot_tree(ws, log)
         check_note = _run_checks(
             ws, pre_merge_sha, log, item_id=item_id, caller="conflict_resolver", configured=configured, repo=repo_full,
-            checks_waiver=checks_waiver,
+            checks_waiver=checks_waiver, test_env_file=test_env_file,
         )
         checks_finished_at = check_record.now_iso()
     except CheckFailure as exc:
@@ -496,7 +498,9 @@ def _conflict_files(ws: Path, unmerged: list[str]) -> list[conflict_hunks.Confli
     return files
 
 
-def _scoped_resolve(ws, repo_full, branch, default, unmerged, pre_merge_sha, log, configured=None, checks_waiver=None) -> dict:
+def _scoped_resolve(
+    ws, repo_full, branch, default, unmerged, pre_merge_sha, log, configured=None, checks_waiver=None, test_env_file=None
+) -> dict:
     """Resolve only the conflicted hunks, review only what the resolution
     changed, and push only behind a green check suite.
 
@@ -644,7 +648,7 @@ def _scoped_resolve(ws, repo_full, branch, default, unmerged, pre_merge_sha, log
         checked_tree = check_record.snapshot_tree(ws, log)
         check_note = _run_checks(
             ws, pre_merge_sha, log, caller="conflict_resolver", configured=configured, repo=repo_full,
-            checks_waiver=checks_waiver,
+            checks_waiver=checks_waiver, test_env_file=test_env_file,
         )
         checks_finished_at = check_record.now_iso()
     except CheckFailure as exc:

@@ -1587,6 +1587,9 @@ async def conflicts_resolve(request: Request):
             extra = {"configured": body["check_commands"]} if body.get("check_commands") else {}
             if body.get("checks_waiver"):
                 extra["checks_waiver"] = body["checks_waiver"]
+            # HZ-494: the repo's test-login env file — a path; read at check time.
+            if isinstance(body.get("test_env_file"), str) and body["test_env_file"]:
+                extra["test_env_file"] = body["test_env_file"]
             result = await asyncio.to_thread(
                 conflict_resolver.resolve, repo, item_id, body.get("branch"), body.get("base_branch"), **extra
             )

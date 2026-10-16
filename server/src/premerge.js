@@ -185,7 +185,13 @@ export const runner = {
 // checksWaiver (HZ-304) is store.CHECKS_WAIVER's value excusing a repo with no
 // commands (orchestrator.checksWaiverFor), or null: then a repo with no
 // commands fails no_checks_detected.
-export async function runPreMergeChecks(item, { headSha, baseSha, timeoutMs, onSlot, checkCommands = null, checksWaiver = null }) {
+//
+// testEnvFile (HZ-494) is the host path of the repo's test-login env file, or
+// null. Only the path goes on argv; farm/login_env.py reads the file.
+export async function runPreMergeChecks(
+  item,
+  { headSha, baseSha, timeoutMs, onSlot, checkCommands = null, checksWaiver = null, testEnvFile = null },
+) {
   const shas = { head_sha: headSha, base_sha: baseSha }
   if (!SHA_RE.test(headSha || '') || !SHA_RE.test(baseSha || '')) {
     return { ok: false, reason: 'bad_input', detail: 'GitHub did not return full commit shas', ...shas }
@@ -198,6 +204,7 @@ export async function runPreMergeChecks(item, { headSha, baseSha, timeoutMs, onS
   ]
   if (checkCommands) args.push('--check-commands', JSON.stringify(checkCommands))
   if (checksWaiver) args.push('--checks-waiver', checksWaiver)
+  if (testEnvFile) args.push('--test-env-file', testEnvFile)
   const spawnOpts = { cwd: path.dirname(FARM_DIR), timeoutMs, env: childEnv(timeoutMs), itemId: item.id }
   if (onSlot) {
     spawnOpts.onStderrLine = (line) => {

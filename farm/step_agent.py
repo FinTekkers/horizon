@@ -50,7 +50,7 @@ from .agent_runner import (
     stamp_notes,
     stamp_notes_artifact,
 )
-from . import check_record, handoff, pause, plan_bundle, read_only_guard, review_diff
+from . import check_record, handoff, login_env, pause, plan_bundle, read_only_guard, review_diff
 from .checks import CheckFailure, redact, run_checks, scrub, secret_values
 from .config import FARM_PORT, ITEM_LOCK_WAIT_S
 from .handoff import HandoffContext, HandoffGuard
@@ -506,6 +506,21 @@ def _interpreter_line(task: dict) -> str:
     return "  interpreter: system python3 (env: system)"
 
 
+def _login_env_line(path) -> str:
+    """HZ-494: the repo's test-login variables, by NAME only — the agent
+    never sees a value. "" when the repo has no test credentials env file."""
+    if not isinstance(path, str) or not path:
+        return ""
+    names = login_env.login_env_names(path)
+    if names is None:
+        return (
+            f"  test login: the {login_env.COMMAND_LABEL} {path} could not be read on the farm host — "
+            "this repo's checks and smoke check will fail until a human fixes it; you cannot fix it"
+        )
+    shown = ", ".join(names) or "(none)"
+    return f"  test login: checks and the smoke check get these variables from a host file: {shown}. You never see the values."
+
+
 def build_prompt(task: dict) -> str:
     item, step = task["item"], task["step"]
     lines = [
@@ -527,6 +542,9 @@ def build_prompt(task: dict) -> str:
         )
     if item.get("release_tag"):
         lines.append(f"  release: {item['release_tag']}  ({item.get('release_url') or 'no url'}) — already published")
+    login_line = _login_env_line(task.get("test_env_file"))
+    if login_line:
+        lines.append(login_line)
     lines += [
         "",
         f"Step to perform now: \"{step['label']}\" (attempt {task.get('attempt', 1)})",
@@ -1955,7 +1973,17 @@ def _run_and_parse(
 # deploy gate trusts.
 
 
-def run_smoke_check(url: str, expected_text: str) -> tuple[str, str]:
+def run_smoke_check(url: str, expected_text: str, test_env_file: str | None = None) -> tuple[str, str]:
+    """HZ-494: test_env_file is the repo's test-login env file. Its values
+    reach check.mjs's environment only, and are redacted from the line this
+    returns; a file that cannot be loaded fails the check, naming the path."""
+    values: dict[str, str] = {}
+    if test_env_file:
+        try:
+            values = login_env.load_login_env(test_env_file)
+        except login_env.LoginEnvError as exc:
+            return "fail", f"SMOKE_RESULT=fail: {exc}"
+    secrets = {f"login_env:{k}": v for k, v in values.items()}
     try:
         result = subprocess.run(
             ["node", str(SMOKE_CHECK_SCRIPT), url, expected_text],
@@ -1963,18 +1991,22 @@ def run_smoke_check(url: str, expected_text: str) -> tuple[str, str]:
             text=True,
             timeout=SMOKE_CHECK_TIMEOUT_S,
             cwd=str(REPO_ROOT),
+            **({"env": {**os.environ, **values}} if values else {}),
         )
     except subprocess.TimeoutExpired:
         return "fail", f"SMOKE_RESULT=fail: check.mjs timed out after {SMOKE_CHECK_TIMEOUT_S}s ({url})"
     except OSError as exc:
-        return "fail", f"SMOKE_RESULT=fail: could not run check.mjs: {exc}"
+        return "fail", redact(f"SMOKE_RESULT=fail: could not run check.mjs: {exc}", secrets)
 
     line = next((l for l in result.stdout.splitlines() if l.startswith("SMOKE_RESULT=")), None)
+    if line:
+        line = redact(line, secrets)
     if result.returncode == 0 and line and line.startswith("SMOKE_RESULT=pass"):
         return "pass", line
     if line:
         return "fail", line
-    return "fail", f"SMOKE_RESULT=fail: check.mjs exited {result.returncode} with no result line ({result.stderr.strip()[:200]})"
+    stderr = redact(result.stderr.strip(), secrets)[:200]
+    return "fail", f"SMOKE_RESULT=fail: check.mjs exited {result.returncode} with no result line ({stderr})"
 
 
 # A grpc-health deploy target serves gRPC only, so the browser check above
@@ -2477,6 +2509,9 @@ def _fail_on_checks(ws, item, branch, conflicted, exc: CheckFailure, *, checkpoi
 def _no_fix_reason(exc: CheckFailure, rounds: int, turns_used, max_turns: int, deadline: float) -> str:
     """Why a red check gets no fix turn, or "" when it gets one."""
     cap = _fix_loop_cap()
+    if exc.command == login_env.COMMAND_LABEL:
+        # HZ-494: the file lives on the farm host; no code change fixes it.
+        return f"the {login_env.COMMAND_LABEL} is a host problem the agent cannot fix"
     if rounds >= cap:
         return f"{rounds} of {cap} fix turn(s) used"
     if exc.reason != "failed":
@@ -2563,6 +2598,8 @@ def _check_until_green(
                     repo=item.get("repo"),
                     # HZ-304: from the server, like check_commands.
                     checks_waiver=task.get("checks_waiver"),
+                    # HZ-494: a path from the server; the file is read now.
+                    test_env_file=task.get("test_env_file"),
                     # HZ-327: flakes and per-test results ride on the result.
                     **_recording(),
                 )
@@ -3065,7 +3102,9 @@ def _execute(task: dict, guard: HandoffGuard) -> dict:
             url, expected_text = parsed.get("url"), parsed.get("expected_text")
             if not isinstance(url, str) or not url.strip() or not isinstance(expected_text, str) or not expected_text.strip():
                 raise AgentError("devops reply missing 'url'/'expected_text' needed for deep verification")
-            verdict, smoke_line = run_smoke_check(url.strip(), expected_text.strip())
+            # HZ-494: the repo's test-login env file, only when one is set.
+            login = {"test_env_file": task["test_env_file"]} if task.get("test_env_file") else {}
+            verdict, smoke_line = run_smoke_check(url.strip(), expected_text.strip(), **login)
         artifact_md = f"{artifact_md}\n\n## Machine-checked result\n`{smoke_line}`".strip()
         return {
             "summary": stamp_notes(f"{summary} · {smoke_line}"[:SUMMARY_MAX_CHARS], notes, SUMMARY_MAX_CHARS),

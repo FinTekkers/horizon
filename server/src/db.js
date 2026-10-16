@@ -781,6 +781,10 @@ const projectRepoColumns = new Set(db.prepare('PRAGMA table_info(project_repo)')
 for (const column of ['check_install', 'check_test', 'check_lint', 'check_e2e']) {
   if (!projectRepoColumns.has(column)) db.exec(`ALTER TABLE project_repo ADD COLUMN ${column} TEXT`)
 }
+// HZ-494: the host path of the repo's test-login env file. The PATH only —
+// the farm reads the file at run time; no value is ever stored. NULL is "not
+// configured". No seed: an admin sets it once the host file exists.
+if (!projectRepoColumns.has('test_env_file')) db.exec('ALTER TABLE project_repo ADD COLUMN test_env_file TEXT')
 
 // HZ-349: which run produced a test_result row — 'main' (the configured
 // commands) or 'branch' (the item's own changed scripts/checks/, run after

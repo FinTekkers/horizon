@@ -2,6 +2,9 @@
 // HTTP layer can push fresh state to SSE clients.
 
 import { createHash, randomUUID } from 'node:crypto'
+import fs from 'node:fs'
+import os from 'node:os'
+import path from 'node:path'
 import { db } from './db.js'
 import { GATE_ACTION_MARGIN_MS, PREMERGE_SKIP_MAX_AGE_MS } from './config.js'
 import {
@@ -457,7 +460,15 @@ export function listProjects({ checks = true } = {}) {
       .map((r) => ({
         repo: r.repo,
         prefix: r.prefix,
-        ...(checks ? { checks: repoChecks(r), marks: repoMarks(r), defaultBranch: r.default_branch ?? null } : {}),
+        ...(checks
+          ? {
+              checks: repoChecks(r),
+              marks: repoMarks(r),
+              defaultBranch: r.default_branch ?? null,
+              // HZ-494: the path only — the server never opens the file.
+              testEnvFile: r.test_env_file ?? null,
+            }
+          : {}),
       })),
   }))
 }
@@ -498,6 +509,86 @@ export function setRepoCheckCommands(projectId, repoFullName, checks) {
   ).run(...values, row.id)
   notify()
   return { ok: true, checks: Object.fromEntries(CHECK_SLOTS.map((slot, i) => [slot, values[i]])) }
+}
+
+// ---- per-repo test-login env file (HZ-494) ----
+// The host path of a file of NAME=value lines (e.g. /etc/fintekkers/ui-e2e.env)
+// that the farm loads into this repo's test/e2e checks and deploy smoke check
+// at run time. Only the path is stored, sent or shown; the server never reads
+// the file, so no value can reach the DB, GitHub, the UI or a prompt.
+
+export const TEST_ENV_FILE_MAX_CHARS = 500
+
+// What the farm is sent with a task or premerge run, or null.
+export function getRepoTestEnvFile(repoFullName) {
+  const row = repoFullName ? findRepo(repoFullName) : null
+  return row?.test_env_file ?? null
+}
+
+// Where the file may never live: the farm's state and workspaces, which an
+// agent can read, commit or publish. Mirrors farm/login_env.py, which checks
+// again at load time.
+function farmHome() {
+  return path.resolve(process.env.FARM_HOME || path.join(os.homedir(), '.horizon-farm'))
+}
+
+function within(child, root) {
+  const rel = path.relative(root, child)
+  return rel === '' || (!rel.startsWith('..') && !path.isAbsolute(rel))
+}
+
+// A symlink is followed when the server can resolve it — a dangling one too,
+// since the file may not exist yet. Resolving reads directory entries and
+// links only, never the file. Unresolvable: the literal path.
+function resolvedPath(p, depth = 0) {
+  try {
+    return fs.realpathSync(p)
+  } catch {
+    // fall through: missing, dangling or unreadable
+  }
+  try {
+    if (depth < 8 && fs.lstatSync(p).isSymbolicLink()) {
+      return resolvedPath(path.resolve(path.dirname(p), fs.readlinkSync(p)), depth + 1)
+    }
+  } catch {
+    // fall through
+  }
+  try {
+    return path.join(fs.realpathSync(path.dirname(p)), path.basename(p))
+  } catch {
+    return p
+  }
+}
+
+// null when `value` is a storable path, else the 400 message.
+export function testEnvFileError(value) {
+  if (typeof value !== 'string' || value.length > TEST_ENV_FILE_MAX_CHARS || /[\0\r\n]/.test(value)) {
+    return `Path must be an absolute file path of at most ${TEST_ENV_FILE_MAX_CHARS} characters`
+  }
+  if (!path.posix.isAbsolute(value) || path.posix.normalize(value) !== value || value.endsWith('/')) {
+    return 'Path must be absolute and normalised'
+  }
+  const roots = [farmHome(), path.join(farmHome(), 'workspaces')]
+  if ([value, resolvedPath(value)].some((p) => roots.some((root) => within(p, root)))) {
+    return "Path must be outside the farm's state and workspaces"
+  }
+  return null
+}
+
+// The ONLY writer of test_env_file, and its only caller is the PIN-gated
+// Admin route in app.js, like setRepoCheckCommands. Blank clears it.
+export function setRepoTestEnvFile(projectId, repoFullName, value) {
+  const row = db.prepare('SELECT id FROM project_repo WHERE project_id = ? AND repo = ?').get(projectId, repoFullName)
+  if (!row) return { error: 'not_found' }
+  const trimmed = typeof value === 'string' ? value.trim() : ''
+  if (trimmed) {
+    const invalid = testEnvFileError(trimmed)
+    if (invalid) return { error: 'invalid', message: invalid }
+  }
+  const stored = trimmed || null
+  db.prepare('UPDATE project_repo SET test_env_file = ? WHERE id = ?').run(stored, row.id)
+  notify()
+  return { ok: true, testEnvFile: stored }
 }
 
 // ---- repo readiness (HZ-304) ----
