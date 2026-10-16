@@ -53,10 +53,14 @@ directory. A command can write only to `/scratch`, `/tmp` (also `$HOME`),
 `/state` and `/logs`; everything else is read-only. `/scratch` and `/tmp`
 are wiped when the run ends, after Execute has read any report under `/tmp`
 — so write reports there, never into the checkout. Only the `env` you
-declare reaches it. Plan writes accordingly.
+declare reaches it. Plan writes accordingly. Each container command runs
+under `bash -c` when the image has bash, otherwise under `sh -c`. If you
+are not sure the image has bash, write POSIX `sh`; the run log's `shell:`
+line shows which shell ran.
 
 Set `"runner": "host"` only when the run cannot work in the container, and
 say why in the artifact. The approver then sees that it runs on the host.
+A `runner: host` command always runs under `bash -c`.
 
 The `interpreter` line applies only to a `runner: host` plan; a container
 uses the image's own Python. When it names a venv, that venv's `bin/` is

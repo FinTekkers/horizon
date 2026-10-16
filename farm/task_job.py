@@ -342,6 +342,8 @@ def _run_job(
     # HZ-416: fail closed before the first log line or command — no Podman,
     # no image or no container ends the job here, never as a silent host run.
     name = container_runner.container_name(item_id)
+    # HZ-496: host runs are always bash; a container's is probed once it is up.
+    shell = "bash"
     if runner == "container":
         try:
             container_runner.ensure_image(container_image)
@@ -372,6 +374,7 @@ def _run_job(
                 # only their names.
                 container_runner.client_env(env_values or {}),
             )
+            shell = container_runner.container_shell(name)
         except container_runner.Unavailable as exc:
             state = {
                 "run_id": run_id,
@@ -415,6 +418,7 @@ def _run_job(
         log.write(redact(f"env: {venv or 'system'}\n", secrets))
         if runner == "container":
             log.write(redact(f"container: {container_image}\n", secrets))
+            log.write(redact(f"shell: {shell}\n", secrets))
         if task_clone:
             log.write(redact(f"task clone HEAD: {task_clone_mod.head(repo_dir)}\n", secrets))
     # State entries, preserving passed commands across resumes.
@@ -482,7 +486,7 @@ def _run_job(
         cmd_start = time.monotonic()
         try:
             proc = subprocess.Popen(
-                container_runner.exec_argv(name, entry["command"], cwd) if started else ["sh", "-c", entry["command"]],
+                container_runner.exec_argv(name, entry["command"], cwd, shell) if started else ["bash", "-c", entry["command"]],
                 cwd=cwd,
                 env=child,
                 stdout=subprocess.PIPE,

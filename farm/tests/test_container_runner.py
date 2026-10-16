@@ -231,7 +231,7 @@ def _no_spawn(monkeypatch):
     real_popen = subprocess.Popen
 
     def _guard(argv, *args, **kwargs):
-        if "exec" in argv or argv[0] == "sh":
+        if "exec" in argv or argv[0] in ("sh", "bash"):
             raise AssertionError(f"no command may start when the container is unavailable: {argv}")
         return real_popen(argv, *args, **kwargs)
 
@@ -593,6 +593,52 @@ def test_a_tmp_report_is_read_from_the_jobs_own_tmp_dir(tmp_path):
     assert host_tmp.exists() == host_had
 
 
+def _recording_popen(monkeypatch):
+    """Records every argv subprocess.Popen is given, then runs it."""
+    seen = []
+    real_popen = subprocess.Popen
+
+    def _record(argv, *args, **kwargs):
+        seen.append(list(argv))
+        return real_popen(argv, *args, **kwargs)
+
+    monkeypatch.setattr(subprocess, "Popen", _record)
+    return seen
+
+
+BASH_ONLY = 'set -euo pipefail; a=(x y); [[ ${#a[@]} -eq 2 ]]; echo "BASH=${BASH_VERSION:+yes}"'
+
+
+def test_a_container_command_runs_under_bash_when_the_image_has_it(tmp_path, repo, monkeypatch):
+    """HZ-496 metric 2: the image has bash, so each `podman exec` is
+    `bash -c`, the log names it, and bash-only syntax passes."""
+    seen = _recording_popen(monkeypatch)
+    summary, _state, log = _run(tmp_path, _artifact([BASH_ONLY]), repo=repo)
+    assert summary == {"run": 1, "passed": 1, "failed": 0, "failing": []}, log
+    execs = [argv for argv in seen if argv[1:2] == ["exec"] and argv[-1] == BASH_ONLY]
+    assert [argv[-3:] for argv in execs] == [["bash", "-c", BASH_ONLY]]
+    assert "shell: bash" in log.splitlines()
+    assert "BASH=yes" in log
+
+
+def test_an_image_without_bash_runs_commands_under_sh_and_says_so(tmp_path, repo, monkeypatch):
+    """HZ-496 metric 2: no bash in the image, so the run falls back to
+    `sh -c`, the log names `sh`, and a POSIX command still passes."""
+    seen = _recording_popen(monkeypatch)
+    posix = 'test "$(echo ok)" = ok && echo POSIX-OK'
+    summary, _state, log = _run(tmp_path, _artifact([posix]), repo=repo, image="localhost/horizon-task:nobash")
+    assert summary == {"run": 1, "passed": 1, "failed": 0, "failing": []}, log
+    execs = [argv for argv in seen if argv[1:2] == ["exec"] and argv[-1] == posix]
+    assert [argv[-3:] for argv in execs] == [["sh", "-c", posix]]
+    assert "shell: sh" in log.splitlines()
+    assert "POSIX-OK" in log
+
+
+def test_the_shell_probe_says_sh_when_podman_cannot_run(monkeypatch, tmp_path):
+    monkeypatch.setenv("FARM_PODMAN_BIN", str(tmp_path / "no-such-podman"))
+    assert container_runner.container_shell("farm-job-hz-496") == "sh"
+
+
 # ---- `runner: host`: exactly as before HZ-416 ----
 
 
@@ -690,6 +736,17 @@ def test_real_the_container_can_write_only_scratch_tmp_state_and_logs(tmp_path, 
     job_dir = tmp_path / "state" / "HZ-416.d"
     assert (job_dir / "state" / "x").exists() and (tmp_path / "logs" / "farm-job-hz-416.d" / "x").exists()
     assert not (job_dir / "scratch").exists() and not (job_dir / "tmp").exists()
+
+
+@real_podman
+def test_real_a_bash_command_runs_in_an_image_with_bash(tmp_path, repo, real):
+    """HZ-496 metric 2 (real leg): REAL_IMAGE has bash, so bash-only syntax
+    passes and the log names it."""
+    summary, _state, log = _run(tmp_path, _artifact([BASH_ONLY]), repo=repo, image=REAL_IMAGE)
+    assert summary["passed"] == 1, log
+    assert "shell: bash" in log.splitlines()
+    assert "BASH=yes" in log
+    assert _containers(real) == []
 
 
 MARKERS = 'echo m > /scratch/marker-416; echo m > "$HOME/home-marker-416"; echo m > /tmp/tmp-marker-416'
@@ -800,7 +857,11 @@ def test_real_env_holds_only_declared_and_base_variables_and_limits_apply(tmp_pa
     assert summary["passed"] == 1, log
     names = {line.split("=", 1)[0] for line in log.splitlines() if "=" in line and not line.startswith(("$", "env:"))}
     assert "DATA_API_KEY" in names
-    assert names - {"DATA_API_KEY"} <= image_names | {"PATH", "HOME", "HOSTNAME", "TERM", "container", "USER", "PWD"}
+    # HZ-496: commands run under bash in this image, and bash itself exports
+    # SHLVL and `_` — a fresh shell's own values, never the host's.
+    lines = log.splitlines()
+    assert {"SHLVL=0", "SHLVL=1"} & set(lines) and "_=/usr/bin/env" in lines, log
+    assert names - {"DATA_API_KEY", "SHLVL", "_"} <= image_names | {"PATH", "HOME", "HOSTNAME", "TERM", "container", "USER", "PWD"}
     assert inspected["HostConfig"]["NanoCpus"] == 1_000_000_000
     assert inspected["HostConfig"]["Memory"] == 256 * 1024 * 1024
     assert not any(str(m.get("Source", "")).endswith(".env") for m in inspected["Mounts"])

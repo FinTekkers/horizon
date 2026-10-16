@@ -17,6 +17,7 @@ $FARM_FAKE_PODMAN_DIR/<name>.json. An image whose name contains "missing"
 cannot be pulled; `pull` sleeps FAKE_PODMAN_PULL_DELAY seconds first.
 `cat /sys/fs/cgroup/memory.events` prints `oom_kill <n>`, n read from
 $FARM_FAKE_PODMAN_DIR/<name>.oom (0 when absent).
+In an image whose name contains "nobash", `sh -c "command -v bash"` exits 1.
 """
 
 import json
@@ -173,6 +174,8 @@ def _exec(args):
             count = 0
         print(f"low 0\nhigh 0\nmax 0\noom {count}\noom_kill {count}")
         return 0
+    if command == ["sh", "-c", "command -v bash"] and "nobash" in rec["image"]:
+        return 1
     proc = subprocess.Popen(
         command, cwd=_host_dir(rec, workdir or rec["workdir"]), env=rec["container_env"], start_new_session=True
     )
