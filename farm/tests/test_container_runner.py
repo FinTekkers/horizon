@@ -48,6 +48,12 @@ def _artifact(commands, *, cwd=".", env=None, runner=None, reports=None, budget_
     return "## Commands\nplan\n\n## Run plan block\n" + run_plan.render(block) + "\n"
 
 
+def server_runner(artifact):
+    """HZ-491: the effective runner the server sends with a job in a repo
+    with a pinned image — the plan's own `runner`, else the container."""
+    return run_plan.extract(artifact).get("runner") or "container"
+
+
 def _run(tmp_path, artifact, *, repo, image=FAKE_IMAGE, env_values=None, cpu=None, memory=None, item_id="HZ-416", notify=None):
     state_path = tmp_path / "state" / f"{item_id}.json"
     log_path = tmp_path / "logs" / f"farm-job-{item_id.lower()}.log"
@@ -58,6 +64,7 @@ def _run(tmp_path, artifact, *, repo, image=FAKE_IMAGE, env_values=None, cpu=Non
         item_id=item_id,
         plan_artifact=artifact,
         approved_hash=task_job.plan_hash_of(artifact),
+        runner=server_runner(artifact),
         state_path=state_path,
         log_path=log_path,
         repo_dir=str(repo),
@@ -117,7 +124,8 @@ def repo(request, tmp_path):
 def test_the_runner_field_matches_the_shared_fixture(case):
     if case["valid"]:
         block = run_plan.validate(case["block"])
-        assert (block.get("runner") or "container") == case["runner"]
+        # HZ-491: the farm reads the block's own field and adds no default.
+        assert block.get("runner") == case["runner"]
     else:
         with pytest.raises(ValueError, match="'runner'"):
             run_plan.validate(case["block"])
@@ -306,6 +314,7 @@ def test_farmd_dispatch_never_touches_podman(tmp_path, repo, monkeypatch):
         "run_id": run_id,
         "item": {"id": "HZ-9418"},
         "plan_artifact": _artifact(["true"]),
+        "runner": "container",
         "repo_dir": str(repo),
         "container_image": "localhost/pull-me:1",
     }
@@ -532,6 +541,7 @@ def test_stop_removes_the_container_and_resume_starts_a_fresh_one(tmp_path, repo
                 "item": {"id": item_id},
                 "plan_artifact": artifact,
                 "approved_hash": task_job.plan_hash_of(artifact),
+                "runner": server_runner(artifact),
                 "repo_dir": str(repo),
                 "container_image": FAKE_IMAGE,
             }
@@ -613,6 +623,43 @@ def test_a_host_plan_runs_on_the_host_with_the_same_cwd_env_and_log(tmp_path, re
     assert "KEY=[redacted]" in log
     assert (repo / "sub" / "made.txt").read_text() == "marker\n"
     assert not (tmp_path / "state" / "HZ-416.d").exists(), "a host run makes no container dirs"
+
+
+# ---- HZ-491: the job's runner, not the block's, decides ----
+
+
+def test_the_jobs_runner_wins_over_the_blocks_and_there_is_no_default(tmp_path, repo, monkeypatch):
+    """HZ-491 metric 4: run_job runs where the server said. A block that asks
+    for the container, sent as host, never touches Podman; a job with no
+    runner raises before any command runs."""
+    monkeypatch.setenv("FARM_PODMAN_BIN", str(tmp_path / "no-such-podman"))
+    monkeypatch.setattr(container_runner, "ensure_image", lambda *a, **k: (_ for _ in ()).throw(AssertionError("podman on a host run")))
+    artifact = _artifact(["echo marker > made.txt"], runner="container")
+    state_path, log_path = tmp_path / "job.json", tmp_path / "job.log"
+    common = dict(run_id=491, item_id="HZ-491", plan_artifact=artifact, approved_hash=task_job.plan_hash_of(artifact),
+                  state_path=state_path, log_path=log_path, repo_dir=str(repo), container_image=None)
+    summary = task_job.run_job(runner="host", **common)
+    assert summary["passed"] == 1
+    assert json.loads(state_path.read_text())["runner"] == "host"
+    assert (repo / "made.txt").read_text() == "marker\n"
+    (repo / "made.txt").unlink()
+    state_path.unlink()
+    for runner in (None, "", "docker"):
+        with pytest.raises(ValueError, match="job runner must be one of host, container"):
+            task_job.run_job(runner=runner, **common)
+    assert not (repo / "made.txt").exists()
+    assert not state_path.exists()
+
+
+def test_a_no_runner_block_sent_as_container_still_fails_closed_with_no_image(tmp_path, repo, monkeypatch):
+    """HZ-491 guardrail 2: the container is never swapped for the host on the
+    farm — a container job with no image ends container_unavailable."""
+    _no_spawn(monkeypatch)
+    artifact = _artifact(["touch ran.txt"])
+    summary, state, _log = _run(tmp_path, artifact, repo=repo, image=None)
+    assert summary["run"] == 0
+    assert state["status"] == "container_unavailable"
+    assert not (repo / "ran.txt").exists()
 
 
 # ---- Real rootless Podman: the confinement itself ----
@@ -739,7 +786,7 @@ def test_real_stop_leaves_no_container_or_marker(tmp_path, repo, real):
     task = tmp_path / "task.json"
     task.write_text(json.dumps({
         "run_id": run_id, "item": {"id": item_id}, "plan_artifact": artifact,
-        "approved_hash": task_job.plan_hash_of(artifact), "repo_dir": str(repo), "container_image": REAL_IMAGE,
+        "approved_hash": task_job.plan_hash_of(artifact), "runner": "container", "repo_dir": str(repo), "container_image": REAL_IMAGE,
     }))
     state_path = STATE_DIR / "jobs" / f"{item_id}.json"
     log_path = LOGS_DIR / f"farm-job-{item_id.lower()}.log"

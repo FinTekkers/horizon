@@ -49,6 +49,7 @@ def job_payload(run_id, *, repo_dir="/tmp", cwd=".", commands=("echo hi",), runn
         "step": {"index": EXECUTE_INDEX, "label": "Execute"},
         "plan_artifact": artifact,
         "approved_hash": task_job.plan_hash_of(artifact),
+        "runner": runner or "container",
         "repo_dir": repo_dir,
         "container_image": FAKE_IMAGE,
     }
@@ -255,6 +256,42 @@ def test_a_stale_job_dispatch_launches_nothing(running_farm, monkeypatch, fake_t
     assert not (QUEUE_DIR / "jobs" / "active" / "9135.json").exists()
 
 
+@pytest.mark.parametrize("runner", [None, "", "docker"], ids=["absent", "empty", "unknown"])
+def test_a_job_with_no_runner_is_refused_and_launches_nothing(running_farm, monkeypatch, fake_tmux, tmp_path, runner):
+    """HZ-491 metric 4: the server sends the effective runner with every job;
+    farmd applies no default, so a job without a valid one is refused."""
+    monkeypatch.setattr(farmd, "_notify_started", lambda run_id: True)
+    payload = job_payload(9137, repo_dir=str(tmp_path))
+    if runner is None:
+        del payload["runner"]
+    else:
+        payload["runner"] = runner
+    res = running_farm.post("/steps/run", json=payload)
+    assert res.status_code == 400
+    assert res.json() == {"error": "job_runner_missing"}
+    assert not (QUEUE_DIR / "jobs" / "active" / "9137.json").exists()
+    assert "farm-job-hz-13" not in fake_tmux.sessions
+
+
+def test_the_jobs_runner_not_the_blocks_decides_the_venv_check(fake_tmux, tmp_path):
+    """HZ-491: launch_job reads the job's runner — a block with no `runner`
+    sent as host checks the venv; the same block sent as container skips it."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / ".venv").symlink_to(tmp_path / "elsewhere")
+    payload = job_payload(9138, repo_dir=str(repo))
+    payload["runner"] = "host"
+    with pytest.raises(run_plan.CwdRefused, match="venv resolves outside"):
+        farmd.launch_job(payload)
+    payload["runner"] = "container"
+    try:
+        assert farmd.launch_job(payload) == "farm-job-hz-13"
+    finally:
+        (QUEUE_DIR / "jobs" / "active" / "9138.json").unlink(missing_ok=True)
+        (QUEUE_DIR / "jobs" / "active" / "9138.env.json").unlink(missing_ok=True)
+        farmd.JOB_SESSIONS.pop("9138", None)
+
+
 def test_jobs_disabled_refuses_new_dispatches_without_running_anything(running_farm, monkeypatch, fake_tmux):
     """R22 (optional): with the kill switch off, the farm refuses the job —
     nothing is queued and no session starts."""
@@ -330,6 +367,7 @@ def test_a_seeded_secret_never_reaches_the_forwarded_view_or_the_log_fallback(mo
         "item": {"id": item_id, "repo": "acme/demo"},
         "plan_artifact": artifact,
         "approved_hash": task_job.plan_hash_of(artifact),
+        "runner": "container",
         "repo_dir": str(cwd),
         "container_image": FAKE_IMAGE,
     }
@@ -553,6 +591,7 @@ def _attempt(task):
         item_id=item_id,
         plan_artifact=task["plan_artifact"],
         approved_hash=task["approved_hash"],
+        runner=task["runner"],
         state_path=STATE_DIR / "jobs" / f"{item_id}.json",
         log_path=LOGS_DIR / f"farm-job-{item_id.lower()}.log",
         repo_dir=task["repo_dir"],

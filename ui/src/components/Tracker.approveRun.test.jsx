@@ -44,7 +44,7 @@ const taskItem = {
   events: [],
   stepOutputs: {},
   activeRun: null,
-  runPlan: { commands: 3, budgetMinutes: 20, hash: 'abc123' },
+  runPlan: { commands: 3, budgetMinutes: 20, hash: 'abc123', runner: 'container', imagePinned: true, runnerWarning: null },
   approvedPlanHash: null,
 }
 
@@ -78,7 +78,7 @@ test("the Task's awaiting card shows the human-only line, the plan's size, and b
   const card = awaitingCard(container)
   expect(card.querySelector('.step-card__label').textContent).toBe('Approve the run')
   expect(card.textContent).toContain('Always a human · even on Autopilot')
-  expect(card.querySelector('.step-card__run-plan').textContent).toBe('Run plan: 3 commands · budget 20 min')
+  expect(card.querySelector('.step-card__run-plan').textContent).toBe('Run plan: 3 commands · budget 20 min · Container')
 
   fireEvent.click(getByRole('button', { name: 'Reject with feedback' }))
   expect(onReject).toHaveBeenCalledWith('TK-1', 'Approve the run')
@@ -90,28 +90,42 @@ test("the Task's awaiting card shows the human-only line, the plan's size, and b
 })
 
 test('one command reads singular; no plan block reads "not found"', () => {
-  const { container, rerender } = render(<Harness item={{ ...taskItem, runPlan: { commands: 1, budgetMinutes: 5, hash: 'h' } }} onReject={noop} />)
-  expect(container.querySelector('.step-card__run-plan').textContent).toBe('Run plan: 1 command · budget 5 min')
+  const { container, rerender } = render(<Harness item={{ ...taskItem, runPlan: { commands: 1, budgetMinutes: 5, hash: 'h', runner: 'container', imagePinned: true } }} onReject={noop} />)
+  expect(container.querySelector('.step-card__run-plan').textContent).toBe('Run plan: 1 command · budget 5 min · Container')
   rerender(<Harness item={{ ...taskItem, runPlan: null }} onReject={noop} />)
   expect(container.querySelector('.step-card__run-plan').textContent).toBe('Run plan: not found')
 })
 
-// HZ-416: a `runner: host` plan says so on the card; a container plan (the
-// default) adds nothing. Found by its visible text, and again after a fresh
-// mount from the same server item — what a page reload renders.
-test('a host plan shows "runs on the host, not in a container"; a container plan does not', () => {
-  const host = { commands: 2, budgetMinutes: 10, hash: 'h', runner: 'host' }
+// HZ-491: the card names the effective runner the server sent — Container,
+// or Host with why. Found by its visible text, and again after a fresh mount
+// from the same server item — what a page reload renders.
+test('the card shows the effective runner: "Container" or "Host — no container image for this repo"', () => {
+  const host = { commands: 2, budgetMinutes: 10, hash: 'h', runner: 'host', imagePinned: false, runnerWarning: null }
   const { container, rerender, unmount } = render(<Harness item={{ ...taskItem, runPlan: host }} onReject={noop} />)
-  expect(screen.getByText(/runs on the host, not in a container/)).toBeTruthy()
+  expect(screen.getByText(/Host — no container image for this repo/)).toBeTruthy()
   const line = () => awaitingCard(container).querySelector('.step-card__run-plan').textContent
-  expect(line()).toBe('Run plan: 2 commands · budget 10 min · runs on the host, not in a container')
-  rerender(<Harness item={{ ...taskItem, runPlan: { ...host, runner: 'container' } }} onReject={noop} />)
-  expect(line()).toBe('Run plan: 2 commands · budget 10 min')
-  expect(screen.queryByText(/runs on the host/)).toBeNull()
+  expect(line()).toBe('Run plan: 2 commands · budget 10 min · Host — no container image for this repo')
+  rerender(<Harness item={{ ...taskItem, runPlan: { ...host, runner: 'container', imagePinned: true } }} onReject={noop} />)
+  expect(line()).toBe('Run plan: 2 commands · budget 10 min · Container')
+  expect(screen.queryByText(/Host —/)).toBeNull()
+  // An explicit `runner: host` in a repo with an image.
+  rerender(<Harness item={{ ...taskItem, runPlan: { ...host, imagePinned: true } }} onReject={noop} />)
+  expect(line()).toBe('Run plan: 2 commands · budget 10 min · Host — the plan asks for the host')
 
   unmount()
   render(<Harness item={{ ...taskItem, runPlan: host }} onReject={noop} />)
-  expect(screen.getByText(/runs on the host, not in a container/)).toBeTruthy()
+  expect(screen.getByText(/Host — no container image for this repo/)).toBeTruthy()
+})
+
+// HZ-491: an explicit container plan in a repo with no image is warned about
+// on the card, before approval; any other plan shows no warning.
+test('an explicit container plan with no image shows the "no container image for this repo" warning', () => {
+  const plan = { commands: 1, budgetMinutes: 5, hash: 'h', runner: 'container', imagePinned: false, runnerWarning: 'no container image for this repo' }
+  const { container, rerender } = render(<Harness item={{ ...taskItem, runPlan: plan }} onReject={noop} />)
+  const warning = () => awaitingCard(container).querySelector('[data-testid="run-plan-runner-warning"]')
+  expect(warning().textContent).toContain('no container image for this repo')
+  rerender(<Harness item={{ ...taskItem, runPlan: { ...plan, imagePinned: true, runnerWarning: null } }} onReject={noop} />)
+  expect(warning()).toBeNull()
 })
 
 test("a change item's gate card is unchanged: no human-only line, the usual button names", () => {

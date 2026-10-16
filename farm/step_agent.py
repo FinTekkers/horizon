@@ -506,6 +506,18 @@ def _interpreter_line(task: dict) -> str:
     return "  interpreter: system python3 (env: system)"
 
 
+def _runner_line(task: dict) -> str:
+    """HZ-491: where a plan that sets no `runner` runs, as the server sent it
+    (store.js defaultRunnerFor): the container only when the repo pins an
+    image, else the host."""
+    runner = task.get("runner")
+    if runner == "container":
+        return f"  runner: container ({task.get('container_image')}) — a plan with no `runner` runs in it"
+    if runner == "host":
+        return "  runner: host (no container image for this repo) — a plan with no `runner` runs on the host"
+    return "  runner: unknown — the server sent none; Execute will refuse the job"
+
+
 def _login_env_line(path) -> str:
     """HZ-494: the repo's test-login variables, by NAME only — the agent
     never sees a value. "" when the repo has no test credentials env file."""
@@ -533,7 +545,8 @@ def build_prompt(task: dict) -> str:
     ]
     if step.get("label") == RUN_PLAN_LABEL and "repo_dir" in task:
         lines.append(_interpreter_line(task))
-        # HZ-416: where a default (container) plan runs.
+        lines.append(_runner_line(task))
+        # HZ-416: the image a container plan runs in.
         image = task.get("container_image")
         lines.append(
             f"  container: {image} (repo read-only, writable: /scratch, /tmp, /state, /logs)"

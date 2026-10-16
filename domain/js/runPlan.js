@@ -28,10 +28,17 @@ export function extractRunPlan(artifact) {
   if (!commands.every((c) => typeof c === 'string' && c.trim())) return null
   if (!Number.isInteger(budgetMinutes) || budgetMinutes < 1) return null
   if (block.reports !== undefined && !validReports(block.reports)) return null
-  // HZ-416: optional; absent means the container. Unknown values read as no
-  // plan, the same as any other malformed block.
+  // HZ-416: optional; absent leaves it to effectiveRunner(). Unknown values
+  // read as no plan, the same as any other malformed block.
   if (block.runner !== undefined && block.runner !== 'container' && block.runner !== 'host') return null
   return block
+}
+
+// HZ-491: where Execute runs a plan. The plan's own `runner` wins; with none,
+// the container only when the repo pins an image, else the host. The server
+// works this out (store.js currentRunPlan) and the farm takes it as sent.
+export function effectiveRunner(block, imagePinned) {
+  return block.runner ?? (imagePinned ? 'container' : 'host')
 }
 
 // HZ-434: the same shape-only rule as run_plan.validate() — non-empty paths,

@@ -27,7 +27,7 @@
       "type": "object"
     },
     "runner": {
-      "$comment": "HZ-416: where Execute runs the commands. `container` (the default when absent) is a throwaway rootless Podman container; `host` runs on the host exactly as before HZ-416 and needs an explicit opt-out.",
+      "$comment": "HZ-416: where Execute runs the commands. `container` is a throwaway rootless Podman container; `host` runs on the host exactly as before HZ-416. HZ-491: when absent, the server picks `container` only if the repo's deploy target pins a container image, else `host` (domain/js/runPlan.js effectiveRunner); the farm takes the server's value and applies no default.",
       "type": "string",
       "enum": ["container", "host"]
     },

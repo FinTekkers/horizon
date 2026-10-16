@@ -7,7 +7,7 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import path from 'node:path'
 
-import { extractRunPlan } from '../../domain/js/runPlan.js'
+import { effectiveRunner, extractRunPlan } from '../../domain/js/runPlan.js'
 import { REPO_ROOT } from './helpers/repoFiles.mjs'
 
 const cases = JSON.parse(readFileSync(path.join(REPO_ROOT, 'domain/fixtures/run-plan-cases.json'), 'utf8'))
@@ -28,12 +28,14 @@ for (const c of cases.reports) {
 }
 
 // HZ-416: the same fixture's `runner` cases (farm/tests/test_container_runner.py
-// is the Python half). Absent reads as the container.
+// is the Python half). HZ-491: absent follows the repo's pinned image.
 for (const c of cases.runner) {
   test(`runner: ${c.case}`, () => {
     const block = extractRunPlan(artifactOf(c.block))
     if (!c.valid) return assert.equal(block, null)
     assert.deepEqual(block, c.block)
-    assert.equal(block.runner ?? 'container', c.runner)
+    assert.equal(block.runner ?? null, c.runner)
+    assert.equal(effectiveRunner(block, true), c.withImage)
+    assert.equal(effectiveRunner(block, false), c.withoutImage)
   })
 }

@@ -55,10 +55,13 @@ const CONTAINER_PLAN = planOf({})
 
 const projectId = Number(db.prepare("INSERT INTO project (name, enabled) VALUES ('Runner project', 1)").run().lastInsertRowid)
 
+// HZ-491: approved with the effective runner — the plan's own, else MDI's
+// default at seed time.
 function seedStoppedTask(id, plan) {
+  const runner = plan === HOST_PLAN ? 'host' : store.defaultRunnerFor(MDI)
   db.prepare(
-    "INSERT INTO work_item (id, title, priority, cursor, kind, project_id, paused, approved_plan_hash, repo) VALUES (?, ?, 'High', ?, 'task', ?, 1, ?, ?)",
-  ).run(id, `Task ${id}`, EXECUTE_STEP_INDEX, projectId, sha256(plan), MDI)
+    "INSERT INTO work_item (id, title, priority, cursor, kind, project_id, paused, approved_plan_hash, approved_runner, repo) VALUES (?, ?, 'High', ?, 'task', ?, 1, ?, ?, ?)",
+  ).run(id, `Task ${id}`, EXECUTE_STEP_INDEX, projectId, sha256(plan), runner, MDI)
   db.prepare(
     "INSERT INTO step_run (item_id, step_index, attempt, agent, status, output, artifact, ended_at) VALUES (?, ?, 1, ?, 'done', 'ok', ?, datetime('now'))",
   ).run(id, RUN_PLAN_STEP_INDEX, STEPS[RUN_PLAN_STEP_INDEX].agent, plan)
@@ -89,7 +92,10 @@ test('a runner: host plan dispatches with the same repo_dir, venv_dir and step a
     assert.match(host.plan_artifact, /"runner": "host"/)
     assert.equal(Object.hasOwn(host, 'env'), false, 'the server sends no env values; the farm resolves them as before')
 
-    const sameKeys = Object.keys(host).filter((k) => !['item', 'plan_artifact', 'approved_hash', 'run_id', 'attempt'].includes(k))
+    // HZ-491: the effective runner rides in the job; the image stays pinned.
+    assert.equal(host.runner, 'host')
+    assert.equal(container.runner, 'container')
+    const sameKeys = Object.keys(host).filter((k) => !['item', 'plan_artifact', 'approved_hash', 'run_id', 'attempt', 'runner'].includes(k))
     for (const key of sameKeys) assert.deepEqual(container[key], host[key], key)
     assert.doesNotMatch(container.plan_artifact, /"runner"/)
   } finally {
@@ -97,11 +103,20 @@ test('a runner: host plan dispatches with the same repo_dir, venv_dir and step a
   }
 })
 
-test('item.runPlan.runner is host for the host plan and container otherwise, on every load', async () => {
+// HZ-491: a plan with no runner follows the repo's image — container while
+// one is pinned, host once it is cleared. `runner: host` stays host.
+test('item.runPlan.runner is host for the host plan and follows the image otherwise, on every load', async () => {
   const load = async (id) =>
     (await app.inject({ method: 'GET', url: '/api/items', headers: cookie })).json().items.find((it) => it.id === id)
-  for (let i = 0; i < 2; i += 1) {
-    assert.equal((await load('T-HOST-416')).runPlan.runner, 'host')
-    assert.equal((await load('T-CONT-416')).runPlan.runner, 'container')
+  db.prepare('UPDATE deploy_target SET container_image = ? WHERE repo = ?').run(IMAGE, MDI)
+  try {
+    for (let i = 0; i < 2; i += 1) {
+      assert.equal((await load('T-HOST-416')).runPlan.runner, 'host')
+      assert.equal((await load('T-CONT-416')).runPlan.runner, 'container')
+    }
+  } finally {
+    db.prepare('UPDATE deploy_target SET container_image = NULL WHERE repo = ?').run(MDI)
   }
+  assert.equal((await load('T-HOST-416')).runPlan.runner, 'host')
+  assert.equal((await load('T-CONT-416')).runPlan.runner, 'host')
 })

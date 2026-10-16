@@ -74,6 +74,7 @@ import {
   resolveStepProviders,
   staleStepChoices,
   approvedPlanCheck,
+  defaultRunnerFor,
   latestArtifact,
   activeJobRun,
   nextStepAttempt,
@@ -1815,7 +1816,8 @@ async function dispatchToFarm(id, stepIndex, runId, attempt, scope, checkoutSha 
     ...rulesOverrideField(project?.name, item.repo),
     // HZ-431: Run plan's prompt names the interpreter Execute will use, so it
     // gets the same checkout and venv setting the Execute dispatch carries.
-    ...(stepIndex === RUN_PLAN_STEP_INDEX ? jobEnvFields(item.repo) : {}),
+    // HZ-491: plus where a plan that sets no runner will run.
+    ...(stepIndex === RUN_PLAN_STEP_INDEX ? { ...jobEnvFields(item.repo), runner: defaultRunnerFor(item.repo) } : {}),
   }).catch((err) => {
     // A refused task is not an unreachable farm: say why, and don't retry.
     if (err.status === 400 && Object.hasOwn(FARM_REFUSALS, err.code ?? '')) return failFarmRun(runId, FARM_REFUSALS[err.code])
@@ -1912,6 +1914,7 @@ const FARM_REFUSALS = {
   'step kind mismatch': "step kind mismatch: this step does not belong to the item's kind",
   jobs_disabled: 'job runs are disabled on the farm (FARM_JOBS_ENABLED=0)',
   job_already_running: 'a job is already running for this item',
+  job_runner_missing: 'the job named no runner (host or container), so the farm refused it',
 }
 
 // HZ-415: the deploy-target checkout the plan's cwd resolves inside. Read on
@@ -1923,9 +1926,9 @@ const FARM_REFUSALS = {
 // to fast-forward it first. Run plan gets the same fields for its prompt but
 // only reads them: it must never fast-forward the clone.
 // HZ-416: plus the throwaway container's pinned image and CPU/memory limits.
-// A repo with no image pinned dispatches anyway — the farm refuses the job
-// closed at Execute (never a silent host run), so a missing value here is a
-// missing value in the task, never a fallback.
+// HZ-491: a repo with no image pinned runs a plan that sets no runner on the
+// host (store.js defaultRunnerFor). Only a plan that asks for the container
+// explicitly reaches the farm with no image, and the farm refuses it closed.
 function jobEnvFields(repo) {
   const target = findTargetByRepo(repo)
   return {
@@ -1950,8 +1953,12 @@ function dispatchJob(id, stepIndex, runId, attempt) {
       ? null
       : db.prepare('SELECT id, name FROM project WHERE id = ?').get(item.project_id)
   const planArtifact = latestArtifact(id, RUN_PLAN_STEP_INDEX)
-  const approvedHash = db.prepare('SELECT approved_plan_hash FROM work_item WHERE id = ?').get(id)?.approved_plan_hash
-  if (!planArtifact || !approvedHash) return failFarmRun(runId, 'the run plan was never approved — approve it at Approve the run first')
+  const approved = db.prepare('SELECT approved_plan_hash, approved_runner FROM work_item WHERE id = ?').get(id)
+  const approvedHash = approved?.approved_plan_hash
+  // HZ-491: the effective runner approved with the plan; refuseUnapprovedRun
+  // already checked it still matches the repo's image setting.
+  const runner = approved?.approved_runner
+  if (!planArtifact || !approvedHash || !runner) return failFarmRun(runId, 'the run plan was never approved — approve it at Approve the run first')
   farmFetch('/steps/run', {
     run_id: runId,
     attempt,
@@ -1960,6 +1967,7 @@ function dispatchJob(id, stepIndex, runId, attempt) {
     ...(project ? { project: { id: project.id, name: project.name } } : {}),
     plan_artifact: planArtifact,
     approved_hash: approvedHash,
+    runner,
     ...jobEnvFields(item.repo),
   }).catch((err) => {
     const code = err.code ?? ''

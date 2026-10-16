@@ -49,11 +49,12 @@ const PLAN =
   '\n```'
 
 function seedTaskRow(id, cursor, approvedHash = null) {
-  db.prepare("INSERT INTO work_item (id, title, priority, cursor, kind, approved_plan_hash) VALUES (?, ?, 'High', ?, 'task', ?)").run(
+  db.prepare("INSERT INTO work_item (id, title, priority, cursor, kind, approved_plan_hash, approved_runner) VALUES (?, ?, 'High', ?, 'task', ?, ?)").run(
     id,
     `Task ${id}`,
     cursor,
     approvedHash,
+    approvedHash ? 'host' : null,
   )
 }
 
