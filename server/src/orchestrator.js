@@ -61,6 +61,7 @@ import {
   isProjectEnabled,
   setProjectEnabled as writeProjectEnabled,
   getRepoCheckCommands,
+  getRepoTestEnvFile,
   getRepoConfig,
   getPlanScope,
   implementStartedBefore,
@@ -1825,11 +1826,15 @@ async function dispatchToFarm(id, stepIndex, runId, attempt, scope, checkoutSha 
 // HZ-245: the repo's Admin-configured check commands ride with the task, read
 // from the DB at dispatch. Absent (never null) when nothing is configured.
 // HZ-304: then the farm's checks fail by name, unless checks_waiver rides too.
-function checkCommandsField(item) {
+// HZ-494: the repo's test-login env file path rides beside them, whenever set
+// — on implement, deploy and conflict-resolve alike. Never its values.
+export function checkCommandsField(item) {
+  const testEnvFile = getRepoTestEnvFile(item.repo)
+  const envField = testEnvFile ? { test_env_file: testEnvFile } : {}
   const checkCommands = getRepoCheckCommands(item.repo)
-  if (checkCommands) return { check_commands: checkCommands }
+  if (checkCommands) return { check_commands: checkCommands, ...envField }
   const waiver = checksWaiverFor(item)
-  return waiver ? { checks_waiver: waiver } : {}
+  return { ...(waiver ? { checks_waiver: waiver } : {}), ...envField }
 }
 
 // HZ-447: a Plan's farm steps carry its repo scope — the repos Inventory and

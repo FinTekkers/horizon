@@ -513,3 +513,31 @@ test('HZ-245: Accept passes the stored check commands as --check-commands; an un
     db.prepare('DELETE FROM project WHERE id = ?').run(projectId)
   }
 })
+
+// ---- HZ-494: the repo's test-login env file path reaches the CLI ----
+
+test('HZ-494: Accept passes the stored test env file as --test-env-file; another repo gets no flag', async () => {
+  const projectId = db.prepare("INSERT INTO project (name, enabled) VALUES ('HZ-494 login env', 1)").run().lastInsertRowid
+  db.prepare("INSERT INTO project_repo (project_id, repo, prefix) VALUES (?, ?, 'AD')").run(projectId, REPO)
+  db.prepare("INSERT INTO project_repo (project_id, repo, prefix) VALUES (?, 'acme/plain', 'AP')").run(projectId)
+  try {
+    store.setRepoCheckCommands(projectId, REPO, { test: 'npm test' })
+    store.setRepoCheckCommands(projectId, 'acme/plain', { test: 'npm test' })
+    assert.equal(store.setRepoTestEnvFile(projectId, REPO, '/etc/acme/e2e.env').ok, true)
+
+    const id = acceptItem()
+    assert.equal((await approve(id)).statusCode, 200)
+    const { args } = runs.at(-1)
+    const at = args.indexOf('--test-env-file')
+    assert.deepEqual(args.slice(at, at + 2), ['--test-env-file', '/etc/acme/e2e.env'])
+
+    const plain = acceptItem()
+    db.prepare("UPDATE work_item SET repo = 'acme/plain' WHERE id = ?").run(plain)
+    stubRunner(greenRun)
+    assert.equal((await approve(plain)).statusCode, 200)
+    assert.equal(runs.at(-1).args.includes('--test-env-file'), false)
+  } finally {
+    db.prepare('DELETE FROM project_repo WHERE project_id = ?').run(projectId)
+    db.prepare('DELETE FROM project WHERE id = ?').run(projectId)
+  }
+})

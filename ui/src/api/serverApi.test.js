@@ -241,6 +241,31 @@ test('saveRepoMarks PUTs {repo, ...marks} with the PIN in x-human-key only, stor
   expect(err.status).toBe(401)
 })
 
+// HZ-494: the test-login env file — a path only, the PIN in x-human-key only.
+test('saveRepoTestEnvFile PUTs {repo, path} with the PIN in x-human-key only, and throws 400s', async () => {
+  localStorage.clear()
+  const serverApi = await import('./serverApi')
+  const reply = { ok: true, repo: 'acme/web', testEnvFile: '/etc/acme/e2e.env' }
+  const fetchSpy = vi.fn(async () => ({ ok: true, status: 200, json: async () => reply }))
+  vi.stubGlobal('fetch', fetchSpy)
+
+  await expect(serverApi.saveRepoTestEnvFile(7, 'acme/web', '/etc/acme/e2e.env', 'pin-1234')).resolves.toEqual(reply)
+  const [url, opts] = fetchSpy.mock.calls[0]
+  expect(url).toBe(`${serverApi.API_BASE}/projects/7/repos/test-env`)
+  expect(opts.method).toBe('PUT')
+  expect(opts.headers['x-human-key']).toBe('pin-1234')
+  expect(JSON.parse(opts.body)).toEqual({ repo: 'acme/web', path: '/etc/acme/e2e.env' })
+  expect(localStorage.length).toBe(0)
+
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(async () => ({ ok: false, status: 400, json: async () => ({ error: 'Path must be absolute and normalised' }) })),
+  )
+  const err = await serverApi.saveRepoTestEnvFile(7, 'acme/web', 'relative.env', 'pin-1234').catch((e) => e)
+  expect(err.message).toBe('Path must be absolute and normalised')
+  expect(err.status).toBe(400)
+})
+
 test('dryRunDeployTarget POSTs an empty body with the PIN in x-human-key only, and throws 401s', async () => {
   localStorage.clear()
   const serverApi = await import('./serverApi')

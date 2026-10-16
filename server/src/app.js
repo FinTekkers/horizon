@@ -1189,6 +1189,8 @@ export function buildApp({ logger = true, onRoute = null } = {}) {
         // — the run fails by name unless checksWaiver excuses this item.
         checkCommands: store.getRepoCheckCommands(item.repo),
         checksWaiver: orchestrator.checksWaiverFor(item),
+        // HZ-494: this repo's test-login env file — a path; the farm reads it.
+        testEnvFile: store.getRepoTestEnvFile(item.repo),
         // HZ-227: a run queued behind the check-slot limiter (farm/check_slots.py)
         // says so, rather than looking stuck. The token guard in
         // setGateActionDetail drops an event that lands after the row finished.
@@ -3002,6 +3004,43 @@ export function buildApp({ logger = true, onRoute = null } = {}) {
       if (result.error) return reply.code(404).send({ error: 'That repository is not connected to this project' })
       broadcast()
       return { ok: true, repo, checks: result.checks }
+    },
+  )
+
+  // HZ-494: a repo's test-login env file — the HOST PATH of a NAME=value
+  // file the farm loads into the repo's test/e2e checks and deploy smoke
+  // check. Same protection as the check commands: it decides what those
+  // checks see. Only the path is stored; the server never opens the file.
+  fastify.put(
+    '/api/projects/:id/repos/test-env',
+    {
+      schema: {
+        security: HUMAN_GATE_SECURITY,
+        params: {
+          type: 'object',
+          required: ['id'],
+          properties: { id: { type: 'integer', minimum: 1 } },
+        },
+        body: {
+          type: 'object',
+          required: ['repo', 'path'],
+          propertyNames: { enum: ['repo', 'path'] },
+          properties: {
+            repo: { type: 'string', minLength: 1, maxLength: 300 },
+            path: { type: 'string', maxLength: store.TEST_ENV_FILE_MAX_CHARS },
+          },
+        },
+        response: { 200: OK_OBJECT, 400: ERROR_OBJECT, 401: ERROR_OBJECT, 404: ERROR_OBJECT },
+      },
+    },
+    (request, reply) => {
+      if (!humanAuthorized(request, reply)) return
+      const { repo, path: filePath } = request.body
+      const result = store.setRepoTestEnvFile(request.params.id, repo, filePath)
+      if (result.error === 'invalid') return reply.code(400).send({ error: result.message })
+      if (result.error) return reply.code(404).send({ error: 'That repository is not connected to this project' })
+      broadcast()
+      return { ok: true, repo, testEnvFile: result.testEnvFile }
     },
   )
 

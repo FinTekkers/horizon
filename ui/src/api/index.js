@@ -33,6 +33,7 @@ export const {
   disconnectRepo,
   saveRepoChecks,
   saveRepoMarks,
+  saveRepoTestEnvFile,
   getRepoCheckDefaults,
   getRepoWebhooks,
   fixRepoWebhook,

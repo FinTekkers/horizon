@@ -16,6 +16,7 @@ import {
   setProjectStepProvider,
   saveRepoChecks,
   saveRepoMarks,
+  saveRepoTestEnvFile,
   getRepoCheckDefaults,
   getRepoWebhooks,
   fixRepoWebhook,
@@ -724,7 +725,81 @@ function RepoChecks({ projectId, repoConn }) {
           {error && <div className="gh-error">{error}</div>}
         </form>
       )}
+      {open && <RepoTestEnvFile projectId={projectId} repoConn={repoConn} />}
     </div>
+  )
+}
+
+// HZ-494: the host path of a file of test-login variables that the farm loads
+// into this repo's test/e2e checks and deploy smoke check. Saving asks for
+// the gate PIN every time, like the commands above. Horizon stores the path
+// only; the farm reads the file at run time, so no value reaches this page.
+function RepoTestEnvFile({ projectId, repoConn }) {
+  const [value, setValue] = useState(repoConn.testEnvFile ?? '')
+  const [pin, setPin] = useState('')
+  const [error, setError] = useState(null)
+  const [saved, setSaved] = useState(false)
+  const [busy, setBusy] = useState(false)
+
+  const submit = async (e) => {
+    e.preventDefault()
+    if (!pin || busy) return
+    setBusy(true)
+    setError(null)
+    setSaved(false)
+    try {
+      const result = await saveRepoTestEnvFile(projectId, repoConn.repo, value.trim(), pin)
+      setValue(result.testEnvFile ?? '')
+      setSaved(true)
+    } catch (err) {
+      setError(err.status === 401 ? 'Gate PIN incorrect' : err.message)
+    } finally {
+      setPin('')
+      setBusy(false)
+    }
+  }
+
+  return (
+    <form className="repo-checks__form" onSubmit={submit}>
+      <label className="field">
+        <span className="field__label">Test credentials env file</span>
+        <input
+          className="field__input"
+          aria-label={`Test credentials env file for ${repoConn.repo}`}
+          placeholder="/etc/fintekkers/ui-e2e.env"
+          maxLength={500}
+          value={value}
+          onChange={(e) => {
+            setSaved(false)
+            setValue(e.target.value)
+          }}
+        />
+      </label>
+      <div className="gh-note">
+        Optional. An absolute path on the farm host to a file of <code>NAME=value</code> lines, e.g. a test
+        login. Horizon stores the path only; the farm reads the file each time this repo's test and e2e checks
+        and its deploy smoke check run, and passes the values to those commands only. Agents see the variable
+        names, never the values. Every value is masked as <code>[redacted]</code> in logs and reports, so a
+        common word used as a value is masked everywhere too. A missing or unreadable file fails the checks.
+        Validate does not use this file yet, so a green Validate says nothing about logged-in coverage.
+      </div>
+      <div className="project-block__add">
+        <input
+          className="field__input"
+          type="password"
+          autoComplete="off"
+          aria-label={`Gate PIN to save the test credentials env file for ${repoConn.repo}`}
+          placeholder="Gate PIN to save"
+          value={pin}
+          onChange={(e) => setPin(e.target.value)}
+        />
+        <button type="submit" className="composer__submit" style={{ background: 'var(--primary)' }} disabled={!pin || busy}>
+          {busy ? 'Saving…' : 'Save env file path'}
+        </button>
+      </div>
+      {saved && <div className="gh-success">Test credentials env file saved.</div>}
+      {error && <div className="gh-error">{error}</div>}
+    </form>
   )
 }
 

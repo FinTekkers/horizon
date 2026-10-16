@@ -8,6 +8,7 @@ The server's Accept handler (server/src/premerge.js) runs
     python -m farm.premerge <owner/repo> <item-id> <head-sha> --base <base-sha> --timeout-s N --json
         [--check-commands <JSON object: the repo's install/test/lint/e2e commands>]
         [--checks-waiver {no_checks,predates_enforcement}]
+        [--test-env-file <host path of the repo's test-login env file>]
 
 which makes a scratch worktree off the repo's hub at exactly <base-sha> (the
 tip of the PR's base branch, as GitHub reported it to the server), merges
@@ -183,6 +184,7 @@ def premerge_check(
     on_slot_event=None,
     configured=None,
     checks_waiver=None,
+    test_env_file=None,
 ) -> dict:
     """Never raises for an expected outcome: returns the CLI's result dict."""
     started = time.monotonic()
@@ -255,6 +257,7 @@ def premerge_check(
                         configured=configured,
                         repo=repo_full,
                         checks_waiver=checks_waiver,
+                        test_env_file=test_env_file,
                         flakes=recorded["flakes"],
                         test_runs=recorded["test_runs"],
                         branch_notes=recorded["branch_notes"],
@@ -298,6 +301,11 @@ def main(argv=None) -> int:
         default=None,
         help="HZ-304: why a repo with no check commands may still merge; absent means it may not",
     )
+    parser.add_argument(
+        "--test-env-file",
+        default=None,
+        help="HZ-494: host path of the repo's test-login env file; read at check time, values redacted",
+    )
     args = parser.parse_args(argv)
 
     configured = None
@@ -325,6 +333,7 @@ def main(argv=None) -> int:
             on_slot_event=stderr_event,
             configured=configured,
             checks_waiver=args.checks_waiver,
+            test_env_file=args.test_env_file,
         )
     except Exception as exc:  # noqa: BLE001 — stdout must stay one JSON line
         result = {"ok": False, "reason": "crash", "detail": f"{type(exc).__name__}: {exc}"}

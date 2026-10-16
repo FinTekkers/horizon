@@ -48,7 +48,7 @@ import uuid
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
-from . import check_metrics, check_record, check_slots, config, dep_cache
+from . import check_metrics, check_record, check_slots, config, dep_cache, login_env
 from .pause import PauseRequested
 from .workspaces import default_branch
 
@@ -1273,6 +1273,7 @@ def _run_branch_pass(
     log,
     flakes: list | None = None,
     branch: str = "main",
+    login_env_for=None,
 ) -> tuple[dict | None, CheckFailure | None]:
     """Runs branch_commands() and returns (their run as a test_runs entry
     labelled "branch" with its own check_run id, or None when no command
@@ -1302,7 +1303,7 @@ def _run_branch_pass(
             argv,
             scripts,
             branch_run,
-            env=env,
+            env=login_env_for(slot) if login_env_for else env,
             timeout_s=timeout_s,
             deadline=deadline,
             secrets=secrets,
@@ -1318,6 +1319,23 @@ def _run_branch_pass(
     if branch_notes is not None:
         branch_notes.extend(notes)
     return branch_run, first_failure
+
+
+# HZ-494: the slots whose commands get the repo's test-login values. Not
+# install (every dependency's lifecycle script would see them) and not lint.
+LOGIN_ENV_SLOTS = frozenset({"test", "e2e"})
+
+
+def _login_env_for(env: dict[str, str], login_values: dict[str, str]):
+    """slot -> the env a command in that slot runs under. FARM_CHECK_CMD
+    (slot None) is one opaque command standing in for all of them, so it
+    gets the values too."""
+    with_login = {**env, **login_values}
+
+    def env_for(slot: str | None) -> dict[str, str]:
+        return with_login if login_values and (slot is None or slot in LOGIN_ENV_SLOTS) else env
+
+    return env_for
 
 
 def _check_env() -> dict[str, str]:
@@ -1368,6 +1386,7 @@ def run_checks(
     test_runs: list | None = None,
     branch_notes: list | None = None,
     branch_gate: bool = True,
+    test_env_file: str | None = None,
 ) -> str:
     """Returns a short human-readable note; raises CheckFailure on failure.
 
@@ -1435,6 +1454,13 @@ def run_checks(
     git error deciding what changed all raise. It runs whether or not
     test_runs is given. branch_gate=False skips it: validate.py checks main
     itself, where the branch is main by definition.
+
+    test_env_file (HZ-494) is the host path of the repo's test-login env
+    file, as the server sent it. It is read now, before the slot wait; a
+    missing, unreadable or malformed file raises a CheckFailure naming the
+    path, and nothing runs. Its values reach the test and e2e commands only
+    (never install or lint, never os.environ), and every value is redacted
+    from every output, whatever its name. None runs exactly as before.
     """
     commands, install_at, labels = _resolve_labelled(ws, configured, log)
     if not commands:
@@ -1446,6 +1472,18 @@ def run_checks(
         message = f"no check commands configured for {shown_repo}"
         log(f"checks: {message} — set them in Admin, or mark the repo 'no checks'")
         raise CheckFailure(message, reason="none_ran")
+
+    login_values: dict[str, str] = {}
+    if test_env_file:
+        try:
+            login_values = login_env.load_login_env(test_env_file, workspace=ws)
+        except login_env.LoginEnvError as exc:
+            message = str(exc)
+            log(f"checks: {message} — failing the check; logged-in coverage is never skipped")
+            raise CheckFailure(
+                message, message, command=login_env.COMMAND_LABEL, tail=message, headline=message
+            ) from None
+        log(f"checks: loaded {len(login_values)} variable(s) from {login_env.COMMAND_LABEL} {test_env_file}")
 
     # The slot is taken OUTSIDE the timeout read below, which is the whole
     # point: FARM_CHECK_TIMEOUT_S is the budget for *running* the checks, and
@@ -1475,7 +1513,9 @@ def run_checks(
             "tests": [],
             "commands": [],
         }
-        secrets = secret_values({**os.environ, **env})
+        # HZ-494: every login value is a secret, whatever its name.
+        secrets = {**secret_values({**os.environ, **env}), **{f"login_env:{k}": v for k, v in login_values.items()}}
+        login_env_for = _login_env_for(env, login_values)
 
         def keep_rows(rows: list[dict]) -> None:
             room = TEST_ROWS_MAX - len(check_run["tests"])
@@ -1486,7 +1526,10 @@ def run_checks(
         main_failure = None
         try:
             for index, cmd in enumerate(commands):
-                shown = " ".join(cmd)
+                # HZ-494: redacted from the start — a command line may carry
+                # a login value, and `shown` reaches the log and every message.
+                raw_shown = " ".join(cmd)
+                shown = redact(raw_shown, secrets)
                 label = labels[index]
                 # HZ-334: "test slot, line 2: " only when the slot has several
                 # lines, so a single-line slot's messages are as before.
@@ -1495,7 +1538,7 @@ def run_checks(
                 cache = None
                 if index == install_at:
                     if repo and config.dep_cache_enabled() and not os.environ.get(check_slots.IN_CHECKS_ENV):
-                        cache = dep_cache.InstallRun(repo, ws, shown, env, log)
+                        cache = dep_cache.InstallRun(repo, ws, raw_shown, env, log)
                         record["install"] = cache.info
                         # Before the budget below is computed, so restore
                         # time comes out of this command's share.
@@ -1514,7 +1557,7 @@ def run_checks(
                 log(f"checks: running {shown}")
                 started = time.monotonic()
                 try:
-                    proc, junit = _attempt(cmd, ws, budget, env, log)
+                    proc, junit = _attempt(cmd, ws, budget, login_env_for(label[0] if label else None), log)
                 except FileNotFoundError:
                     record["commands"].append({"cmd": shown, **entry, "skipped": "runner not installed"})
                     log(f"checks: {cmd[0]} is not installed on the farm host — skipped")
@@ -1575,7 +1618,9 @@ def run_checks(
                         rerun_started = time.monotonic()
                         rerun = None
                         try:
-                            rerun, rerun_junit = _attempt(again, ws, rerun_budget, env, log)
+                            rerun, rerun_junit = _attempt(
+                                again, ws, rerun_budget, login_env_for(label[0] if label else None), log
+                            )
                         except FileNotFoundError:
                             record["commands"][-1]["rerun"] = {"skipped": "runner not installed"}
                         except subprocess.TimeoutExpired:
@@ -1676,6 +1721,7 @@ def run_checks(
                         configured,
                         changed,
                         env=env,
+                        login_env_for=login_env_for,
                         timeout_s=timeout_s,
                         deadline=deadline,
                         commit_sha=commit_sha,
