@@ -873,8 +873,8 @@ export async function postIssueComment(item, body) {
 }
 
 // ---- issue status sync (UI → GitHub) ----
-// Approving the final "Review the work & close" gate closes the issue with a
-// summary comment. (GitHub → UI sync lives in store.upsertFromGithub.)
+// Approving the final gate of any kind (its last step row) closes the issue
+// with a summary comment. (GitHub → UI sync lives in store.upsertFromGithub.)
 
 export async function closeIssueWithSummary(item) {
   const repo = item.repo

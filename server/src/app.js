@@ -41,7 +41,7 @@ import { googleAuth } from './googleAuth.js'
 import { isAllowedEmail } from './loginAllowlist.js'
 import { approvalSecretConfigured, approvalSecretOk, isAllowedApprover, isOwner, normalizeJid } from './waApprovers.js'
 import * as waPollVotes from './waPollVotes.js'
-import { STEPS, isItemKind } from '../../domain/js/lifecycle.js'
+import { STEPS, endIndex, isItemKind, itemKindOf } from '../../domain/js/lifecycle.js'
 import { REASON } from '../../domain/js/reasons.js'
 import { intakeFields } from '../../domain/js/fields.js'
 import { PRIORITIES, DEFAULT_PRIORITY } from '../../domain/js/priorities.js'
@@ -1372,10 +1372,12 @@ export function buildApp({ logger = true, onRoute = null } = {}) {
     }
     // The final gate closes the GitHub issue (with a summary comment) so the
     // issue state and the board state can't drift. No close, no gate.
+    // HZ-493: "final" is the item kind's own last step row, never a label —
+    // an open issue on a closed item makes the sync reopen it from step 0.
     if (
       item &&
       item.cursor === stepIndex &&
-      STEPS[stepIndex]?.label === 'Review the work & close' &&
+      stepIndex === endIndex(itemKindOf(item)) - 1 &&
       item.issue != null &&
       item.repo
     ) {
