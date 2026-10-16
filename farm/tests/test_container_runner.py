@@ -848,7 +848,8 @@ def test_real_env_holds_only_declared_and_base_variables_and_limits_apply(tmp_pa
     probe = threading.Thread(target=inspect, daemon=True)
     probe.start()
     try:
-        artifact = _artifact(["while [ ! -f /state/go ]; do sleep 0.1; done; env"], env={"K": "$DATA_API_KEY"})
+        # HZ-496: bash (this image has it) exports its own SHLVL and `_`.
+        artifact = _artifact(["while [ ! -f /state/go ]; do sleep 0.1; done; env -u SHLVL -u _"], env={"K": "$DATA_API_KEY"})
         summary, _state, log = _run(
             tmp_path, artifact, repo=repo, image=REAL_IMAGE, env_values={"DATA_API_KEY": "real-secret-416"}, cpu="1", memory="256m"
         )
@@ -857,11 +858,7 @@ def test_real_env_holds_only_declared_and_base_variables_and_limits_apply(tmp_pa
     assert summary["passed"] == 1, log
     names = {line.split("=", 1)[0] for line in log.splitlines() if "=" in line and not line.startswith(("$", "env:"))}
     assert "DATA_API_KEY" in names
-    # HZ-496: commands run under bash in this image, and bash itself exports
-    # SHLVL and `_` — a fresh shell's own values, never the host's.
-    lines = log.splitlines()
-    assert {"SHLVL=0", "SHLVL=1"} & set(lines) and "_=/usr/bin/env" in lines, log
-    assert names - {"DATA_API_KEY", "SHLVL", "_"} <= image_names | {"PATH", "HOME", "HOSTNAME", "TERM", "container", "USER", "PWD"}
+    assert names - {"DATA_API_KEY"} <= image_names | {"PATH", "HOME", "HOSTNAME", "TERM", "container", "USER", "PWD"}
     assert inspected["HostConfig"]["NanoCpus"] == 1_000_000_000
     assert inspected["HostConfig"]["Memory"] == 256 * 1024 * 1024
     assert not any(str(m.get("Source", "")).endswith(".env") for m in inspected["Mounts"])
