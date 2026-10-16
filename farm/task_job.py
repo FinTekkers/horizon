@@ -418,7 +418,9 @@ def _run_job(
         log.write(redact(f"env: {venv or 'system'}\n", secrets))
         if runner == "container":
             log.write(redact(f"container: {container_image}\n", secrets))
-            log.write(redact(f"shell: {shell}\n", secrets))
+            # HZ-496: bash is the default; only the fallback is named.
+            if shell != "bash":
+                log.write(redact(f"shell: {shell}\n", secrets))
         if task_clone:
             log.write(redact(f"task clone HEAD: {task_clone_mod.head(repo_dir)}\n", secrets))
     # State entries, preserving passed commands across resumes.

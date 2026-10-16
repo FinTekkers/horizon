@@ -55,8 +55,8 @@ are wiped when the run ends, after Execute has read any report under `/tmp`
 — so write reports there, never into the checkout. Only the `env` you
 declare reaches it. Plan writes accordingly. Each container command runs
 under `bash -c` when the image has bash, otherwise under `sh -c`. If you
-are not sure the image has bash, write POSIX `sh`; the run log's `shell:`
-line shows which shell ran.
+are not sure the image has bash, write POSIX `sh`; a `shell: sh` line in
+the run log means the image had no bash.
 
 Set `"runner": "host"` only when the run cannot work in the container, and
 say why in the artifact. The approver then sees that it runs on the host.

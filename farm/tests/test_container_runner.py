@@ -611,13 +611,13 @@ BASH_ONLY = 'set -euo pipefail; a=(x y); [[ ${#a[@]} -eq 2 ]]; echo "BASH=${BASH
 
 def test_a_container_command_runs_under_bash_when_the_image_has_it(tmp_path, repo, monkeypatch):
     """HZ-496 metric 2: the image has bash, so each `podman exec` is
-    `bash -c`, the log names it, and bash-only syntax passes."""
+    `bash -c`, the log names no fallback, and bash-only syntax passes."""
     seen = _recording_popen(monkeypatch)
     summary, _state, log = _run(tmp_path, _artifact([BASH_ONLY]), repo=repo)
     assert summary == {"run": 1, "passed": 1, "failed": 0, "failing": []}, log
     execs = [argv for argv in seen if argv[1:2] == ["exec"] and argv[-1] == BASH_ONLY]
     assert [argv[-3:] for argv in execs] == [["bash", "-c", BASH_ONLY]]
-    assert "shell: bash" in log.splitlines()
+    assert not any(line.startswith("shell:") for line in log.splitlines())
     assert "BASH=yes" in log
 
 
@@ -741,10 +741,10 @@ def test_real_the_container_can_write_only_scratch_tmp_state_and_logs(tmp_path, 
 @real_podman
 def test_real_a_bash_command_runs_in_an_image_with_bash(tmp_path, repo, real):
     """HZ-496 metric 2 (real leg): REAL_IMAGE has bash, so bash-only syntax
-    passes and the log names it."""
+    passes and the log names no fallback."""
     summary, _state, log = _run(tmp_path, _artifact([BASH_ONLY]), repo=repo, image=REAL_IMAGE)
     assert summary["passed"] == 1, log
-    assert "shell: bash" in log.splitlines()
+    assert not any(line.startswith("shell:") for line in log.splitlines())
     assert "BASH=yes" in log
     assert _containers(real) == []
 
