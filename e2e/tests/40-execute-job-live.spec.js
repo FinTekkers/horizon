@@ -11,9 +11,9 @@
 // settling the last stored view. Resume running commands needs a farm, so the
 // 1/1/1 rerun is proven in farm/tests/test_task_job.py instead.
 //
-// HZ-416: the backend is the default `runner: container` — the fixtures have
-// no Run plan with a `runner` — and this spec needs no Podman, because with
-// no farm no command ever runs. The same Stop and Resume in a container are
+// HZ-416: the fixtures have no Run plan with a `runner` and no repo image,
+// so (HZ-491) the effective runner is the host — and this spec needs no
+// Podman, because with no farm no command ever runs. The same Stop and Resume in a container are
 // proven in farm/tests/test_container_runner.py (fake_podman, and real
 // rootless Podman where installed).
 

@@ -87,7 +87,7 @@ def validate(block: object) -> dict:
     for name, value in env.items():
         if not isinstance(value, str) or not ENV_REFERENCE.match(value):
             raise ValueError(f"run_plan 'env'.{name} must name a variable like $NAME, never a literal value")
-    # HZ-416: optional; absent means the container. Unknown values fail here,
+    # HZ-416: optional; absent leaves it to the server (HZ-491). Unknown values fail here,
     # never at Execute, so a bad plan is refused before anything runs.
     if "runner" in block and block["runner"] not in RUNNER_VALUES:
         raise ValueError("run_plan 'runner' must be 'container' or 'host'")

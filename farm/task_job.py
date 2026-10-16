@@ -48,6 +48,10 @@ from farm.checks import redact
 # commands never run inside it.
 HORIZON_ROOT = Path(__file__).resolve().parent.parent
 
+# HZ-491: where a job's commands may run. The server sends one with every
+# job (store.js currentRunPlan); this module applies no default of its own.
+RUNNERS = ("host", "container")
+
 
 def plan_hash_of(artifact_md: str) -> str:
     """sha256 hex of the whole Run plan artifact, byte-identical to
@@ -180,6 +184,7 @@ def _run_job(
     item_id: str,
     plan_artifact: str,
     approved_hash: str,
+    runner: str | None,
     state_path,
     log_path,
     repo_dir: str | None,
@@ -218,8 +223,10 @@ def _run_job(
     job `cwd_refused` with zero commands run. Each start logs
     `task clone HEAD: <sha>` after the env line.
 
-    HZ-416: `block["runner"]` selects where the commands run — `container`
-    (the default when absent) or an explicit `host`. The container path
+    HZ-416/HZ-491: `runner` selects where the commands run — `container` or
+    `host`, the effective runner the server approved and sent with the job.
+    The plan block's own `runner` is not read here, and there is no default:
+    any other value raises ValueError with zero commands run. The container path
     (farm/container_runner.py) pulls `container_image` if needed, starts one
     container for this run and `podman exec`s each command in it: the
     checkout read-only at its own path with the resolved cwd as workdir, a
@@ -255,9 +262,9 @@ def _run_job(
     plan_cwd = block["cwd"]
     commands = list(block["commands"])
     budget_s = int(block["budget_minutes"]) * 60
-    # HZ-416: absent means the container; only an explicit `host` runs on the
-    # host. validate() already refused any other value.
-    runner = block.get("runner") or "container"
+    # HZ-491: the server's effective runner, required — never a default here.
+    if runner not in RUNNERS:
+        raise ValueError(f"job runner must be one of {', '.join(RUNNERS)}, got {runner!r}")
 
     # Resume: keep passed commands done, retry everything else.
     prior = load_state(state_path)
@@ -672,6 +679,7 @@ def main(argv: list[str] | None = None) -> int:
             item_id=item_id,
             plan_artifact=artifact,
             approved_hash=approved_hash,
+            runner=task.get("runner"),
             state_path=state_path,
             log_path=log_path,
             repo_dir=repo_dir,

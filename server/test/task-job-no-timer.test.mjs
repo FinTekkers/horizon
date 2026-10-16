@@ -32,7 +32,7 @@ const PLAN =
   JSON.stringify({ cwd: '/tmp', commands: ['scripts/a.sh'], budget_minutes: 20 }, null, 2) +
   '\n```'
 
-db.prepare("INSERT INTO work_item (id, title, priority, cursor, kind, approved_plan_hash) VALUES ('T-R4', 'No timer job', 'High', ?, 'task', ?)").run(
+db.prepare("INSERT INTO work_item (id, title, priority, cursor, kind, approved_plan_hash, approved_runner) VALUES ('T-R4', 'No timer job', 'High', ?, 'task', ?, 'host')").run(
   EXECUTE_STEP_INDEX,
   sha256(PLAN),
 )

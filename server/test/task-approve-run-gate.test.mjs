@@ -109,12 +109,13 @@ const doneRun = (itemId, stepIndex, artifact) =>
 
 // A Task parked at Approve the run, with the planning steps' artifacts on
 // record — or none for the Run plan when `plan` is null.
-function seedTask(id, { plan = PLAN } = {}) {
-  db.prepare("INSERT INTO work_item (id, title, priority, cursor, kind, project_id) VALUES (?, ?, 'High', ?, 'task', ?)").run(
+function seedTask(id, { plan = PLAN, repo = null } = {}) {
+  db.prepare("INSERT INTO work_item (id, title, priority, cursor, kind, project_id, repo) VALUES (?, ?, 'High', ?, 'task', ?, ?)").run(
     id,
     `Task fixture ${id}`,
     APPROVE_RUN_GATE_INDEX,
     projectId,
+    repo,
   )
   doneRun(id, ASSESS, '## Scripts found\n- scripts/a.sh')
   if (plan !== null) doneRun(id, RUN_PLAN_STEP_INDEX, plan)
@@ -251,7 +252,7 @@ test('approving stores the plan hash; approvedPlanCheck passes, then refuses onc
     db.prepare("SELECT plan_hash FROM gate_decision WHERE item_id = 'T-HASH' AND decision = 'approved'").get().plan_hash,
     sha256(PLAN),
   )
-  assert.deepEqual(store.approvedPlanCheck('T-HASH'), { ok: true, hash: sha256(PLAN) })
+  assert.deepEqual(store.approvedPlanCheck('T-HASH'), { ok: true, hash: sha256(PLAN), runner: 'host' })
 
   const edited = planArtifact(['scripts/a.sh', 'rm -rf /tmp/x'])
   doneRun('T-HASH', RUN_PLAN_STEP_INDEX, edited)
@@ -259,6 +260,8 @@ test('approving stores the plan hash; approvedPlanCheck passes, then refuses onc
     error: REASON.PLAN_CHANGED_SINCE_APPROVAL,
     approvedHash: sha256(PLAN),
     currentHash: sha256(edited),
+    approvedRunner: 'host',
+    runner: 'host',
   })
   orchestrator.cancel('T-HASH') // HZ-378: the approval dispatched the Execute job — clear its watchdog so the process can exit
 })
@@ -277,7 +280,7 @@ test('a send-back clears the approved hash; re-approving records the NEW plan', 
   db.prepare('UPDATE work_item SET cursor = ? WHERE id = ?').run(APPROVE_RUN_GATE_INDEX, 'T-RESET')
   assert.equal((await approveAs('T-RESET', withSession(PIN))).statusCode, 200)
   assert.equal(row('T-RESET').approved_plan_hash, sha256(second))
-  assert.deepEqual(store.approvedPlanCheck('T-RESET'), { ok: true, hash: sha256(second) })
+  assert.deepEqual(store.approvedPlanCheck('T-RESET'), { ok: true, hash: sha256(second), runner: 'host' })
   orchestrator.cancel('T-RESET')
 })
 
@@ -286,7 +289,7 @@ test('race: a newer plan lands after the card loaded — approving the old one i
   const shown = (await app.inject({ method: 'GET', url: '/api/items', headers: { cookie: alice.cookie } }))
     .json()
     .items.find((it) => it.id === 'T-RACE')
-  assert.deepEqual(shown.runPlan, { commands: 3, budgetMinutes: 20, hash: sha256(PLAN), runner: 'container' })
+  assert.deepEqual(shown.runPlan, { commands: 3, budgetMinutes: 20, hash: sha256(PLAN), runner: 'host', imagePinned: false, runnerWarning: null })
   assert.equal(shown.approvedPlanHash, null)
 
   doneRun('T-RACE', RUN_PLAN_STEP_INDEX, planArtifact(['scripts/z.sh']))
@@ -296,23 +299,109 @@ test('race: a newer plan lands after the card loaded — approving the old one i
   assert.deepEqual(row('T-RACE'), { cursor: APPROVE_RUN_GATE_INDEX, approved_plan_hash: null })
 })
 
-// HZ-416: the card's runner comes from the plan on every load — a reload
-// after approving still says host — and absent means the container.
-test('HZ-416: item.runPlan.runner is host only for a runner: host plan, on every load and after approving', async () => {
-  const hostPlan =
-    '## Commands\n1. backfill\n\n## Run plan block\n```json run-plan\n' +
-    JSON.stringify({ cwd: '.', commands: ['scripts/a.sh'], budget_minutes: 5, runner: 'host' }, null, 2) +
-    '\n```'
-  seedTask('T-HOST', { plan: hostPlan })
-  seedTask('T-CONTAINER')
-  const load = async (id) =>
-    (await app.inject({ method: 'GET', url: '/api/items', headers: { cookie: alice.cookie } })).json().items.find((it) => it.id === id)
-  assert.deepEqual((await load('T-HOST')).runPlan, { commands: 1, budgetMinutes: 5, hash: sha256(hostPlan), runner: 'host' })
-  assert.equal((await load('T-CONTAINER')).runPlan.runner, 'container')
+// ---- HZ-491: the effective runner — the plan's own, else the repo's image ----
 
-  assert.equal((await approveAs('T-HOST', withSession(PIN), { planHash: sha256(hostPlan) })).statusCode, 200)
-  orchestrator.cancel('T-HOST')
-  assert.equal((await load('T-HOST')).runPlan.runner, 'host', 'a reload after approving still shows the host plan')
+const IMAGE_REPO = 'acme/imaged'
+const BARE_REPO = 'acme/bare'
+const IMAGE = `docker.io/library/python@sha256:${'d'.repeat(64)}`
+const runnerPlan = (runner) =>
+  '## Commands\n1. backfill\n\n## Run plan block\n```json run-plan\n' +
+  JSON.stringify({ cwd: '.', commands: ['scripts/a.sh'], budget_minutes: 5, ...(runner ? { runner } : {}) }, null, 2) +
+  '\n```'
+const pinImage = (image) => db.prepare('UPDATE deploy_target SET container_image = ? WHERE repo = ?').run(image, IMAGE_REPO)
+for (const [key, repo] of [['hz491-imaged', IMAGE_REPO], ['hz491-bare', BARE_REPO]]) {
+  db.prepare(
+    `INSERT INTO deploy_target (key, repo, script, service, repo_dir, state_key, health_url, health_check_type)
+      VALUES (?, ?, 'deploy-horizon.sh', 'horizon-server', ?, ?, 'http://127.0.0.1:9/', 'json-health')`,
+  ).run(key, repo, `/opt/${key}`, key)
+}
+pinImage(IMAGE)
+const loadItem = async (id) =>
+  (await app.inject({ method: 'GET', url: '/api/items', headers: { cookie: alice.cookie } })).json().items.find((it) => it.id === id)
+const executeDispatch = async (id) => {
+  await new Promise((r) => setTimeout(r, 30))
+  return dispatches.filter((d) => d.url.includes('/steps/run') && d.body?.item?.id === id && d.body?.step?.index === EXECUTE_STEP_INDEX).at(-1)
+}
+
+test('HZ-491: with no runner, a repo with no image runs on the host and one with an image in the container', async () => {
+  seedTask('T-491-BARE', { plan: runnerPlan(null), repo: BARE_REPO })
+  seedTask('T-491-IMG', { plan: runnerPlan(null), repo: IMAGE_REPO })
+  for (let i = 0; i < 2; i += 1) {
+    assert.deepEqual((await loadItem('T-491-BARE')).runPlan, {
+      commands: 1, budgetMinutes: 5, hash: sha256(runnerPlan(null)), runner: 'host', imagePinned: false, runnerWarning: null,
+    })
+    assert.deepEqual((await loadItem('T-491-IMG')).runPlan, {
+      commands: 1, budgetMinutes: 5, hash: sha256(runnerPlan(null)), runner: 'container', imagePinned: true, runnerWarning: null,
+    })
+  }
+  for (const [id, runner] of [['T-491-BARE', 'host'], ['T-491-IMG', 'container']]) {
+    assert.equal((await approveAs(id, withSession(PIN), { planHash: sha256(runnerPlan(null)), runner })).statusCode, 200)
+    assert.equal(db.prepare('SELECT approved_runner FROM work_item WHERE id = ?').get(id).approved_runner, runner)
+    const dispatch = await executeDispatch(id)
+    orchestrator.cancel(id)
+    assert.equal(dispatch.body.runner, runner, `${id}: the job carries the effective runner`)
+    assert.equal((await loadItem(id)).runPlan.runner, runner, 'a reload after approving shows the same runner')
+  }
+  const bare = await executeDispatch('T-491-BARE')
+  assert.equal(bare.body.container_image, null)
+  assert.ok(!eventsOf('T-491-BARE').some((e) => e.text.includes('job_container_unavailable')))
+})
+
+test('HZ-491: an explicit runner wins — host with an image, and container with none is warned about before approval', async () => {
+  seedTask('T-491-HOST', { plan: runnerPlan('host'), repo: IMAGE_REPO })
+  seedTask('T-491-CONT', { plan: runnerPlan('container'), repo: BARE_REPO })
+  const host = (await loadItem('T-491-HOST')).runPlan
+  assert.equal(host.runner, 'host')
+  assert.equal(host.imagePinned, true)
+  assert.equal(host.runnerWarning, null)
+  const container = (await loadItem('T-491-CONT')).runPlan
+  assert.equal(container.runner, 'container')
+  assert.equal(container.runnerWarning, 'no container image for this repo')
+
+  assert.equal((await approveAs('T-491-HOST', withSession(PIN), { runner: 'host' })).statusCode, 200)
+  const dispatch = await executeDispatch('T-491-HOST')
+  orchestrator.cancel('T-491-HOST')
+  assert.equal(dispatch.body.runner, 'host')
+  assert.equal(dispatch.body.container_image, IMAGE, 'the image is still sent; the runner says not to use it')
+})
+
+test('HZ-491: approving binds the effective runner — pinning or clearing an image after approval refuses Execute', async () => {
+  const activeRun = (id) =>
+    Number(
+      db
+        .prepare("INSERT INTO step_run (item_id, step_index, attempt, agent, status) VALUES (?, ?, 1, 'DevOps', 'active')")
+        .run(id, EXECUTE_STEP_INDEX).lastInsertRowid,
+    )
+  seedTask('T-491-BIND', { plan: runnerPlan(null), repo: IMAGE_REPO })
+  assert.equal((await approveAs('T-491-BIND', withSession(PIN), { runner: 'container' })).statusCode, 200)
+  orchestrator.cancel('T-491-BIND')
+  assert.deepEqual(store.approvedPlanCheck('T-491-BIND'), { ok: true, hash: sha256(runnerPlan(null)), runner: 'container' })
+  pinImage(null)
+  try {
+    const check = store.approvedPlanCheck('T-491-BIND')
+    assert.equal(check.error, REASON.PLAN_CHANGED_SINCE_APPROVAL)
+    assert.equal(check.approvedRunner, 'container')
+    assert.equal(check.runner, 'host')
+    const run = activeRun('T-491-BIND')
+    assert.equal(orchestrator.refuseUnapprovedRun(run, 'T-491-BIND', EXECUTE_STEP_INDEX).error, REASON.PLAN_CHANGED_SINCE_APPROVAL)
+    assert.match(db.prepare('SELECT output FROM step_run WHERE id = ?').get(run).output, /^FAILED: the run plan changed since it was approved/)
+  } finally {
+    pinImage(IMAGE)
+  }
+  assert.equal(store.approvedPlanCheck('T-491-BIND').ok, true, 'the approved runner holds again once the image is back')
+
+  // A card loaded before the image changed: its runner no longer matches, so
+  // the approval is refused and nothing is recorded.
+  seedTask('T-491-STALE', { plan: runnerPlan(null), repo: IMAGE_REPO })
+  const res = await approveAs('T-491-STALE', withSession(PIN), { planHash: sha256(runnerPlan(null)), runner: 'host' })
+  assert.equal(res.statusCode, 409)
+  assert.deepEqual(res.json(), { error: 'run_plan_changed' })
+  assert.deepEqual(row('T-491-STALE'), { cursor: APPROVE_RUN_GATE_INDEX, approved_plan_hash: null })
+
+  // A plan approved before the runner was stored has none: re-approval needed.
+  seedTask('T-491-LEGACY', { plan: runnerPlan(null), repo: BARE_REPO })
+  db.prepare('UPDATE work_item SET cursor = ?, approved_plan_hash = ? WHERE id = ?').run(EXECUTE_STEP_INDEX, sha256(runnerPlan(null)), 'T-491-LEGACY')
+  assert.equal(store.approvedPlanCheck('T-491-LEGACY').error, REASON.PLAN_CHANGED_SINCE_APPROVAL)
 })
 
 test("Execute's guard: a matching plan starts, a changed plan fails the run, an unapproved item is refused", async () => {

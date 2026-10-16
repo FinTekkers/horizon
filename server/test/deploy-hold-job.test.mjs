@@ -70,12 +70,13 @@ const sha256 = (text) => crypto.createHash('sha256').update(text, 'utf8').digest
 // budgetMinutes null leaves no readable run plan.
 function seedJob(id, repo, { startedMs = NOW - MIN, budgetMinutes = 20 } = {}) {
   const plan = budgetMinutes == null ? null : planOf(budgetMinutes)
-  db.prepare("INSERT INTO work_item (id, title, priority, cursor, kind, repo, approved_plan_hash) VALUES (?, ?, 'High', ?, 'task', ?, ?)").run(
+  db.prepare("INSERT INTO work_item (id, title, priority, cursor, kind, repo, approved_plan_hash, approved_runner) VALUES (?, ?, 'High', ?, 'task', ?, ?, ?)").run(
     id,
     `Task ${id}`,
     EXECUTE_STEP_INDEX,
     repo,
     plan ? sha256(plan) : null,
+    plan ? store.defaultRunnerFor(repo) : null,
   )
   if (plan) {
     db.prepare(

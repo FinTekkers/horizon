@@ -38,6 +38,12 @@ def plan_artifact(cwd, commands, budget_minutes=5, env=None, runner=None):
     return "## Commands\nA plan.\n\n## Run plan block\n" + run_plan.render(block) + "\n"
 
 
+def server_runner(artifact):
+    """HZ-491: the effective runner the server sends with a job in a repo
+    with a pinned image — the plan's own `runner`, else the container."""
+    return run_plan.extract(artifact).get("runner") or "container"
+
+
 def run_in(tmp_path, artifact, approved_hash=None, env_values=None, repo_dir=None):
     state_path = tmp_path / "job.json"
     log_path = tmp_path / "job.log"
@@ -46,6 +52,7 @@ def run_in(tmp_path, artifact, approved_hash=None, env_values=None, repo_dir=Non
         item_id="HZ-1",
         plan_artifact=artifact,
         approved_hash=approved_hash if approved_hash is not None else task_job.plan_hash_of(artifact),
+        runner=server_runner(artifact),
         state_path=state_path,
         log_path=log_path,
         repo_dir=str(repo_dir or tmp_path),
@@ -198,6 +205,7 @@ def run_in_with_redact(tmp_path, artifact, redact_values):
         item_id="HZ-1",
         plan_artifact=artifact,
         approved_hash=task_job.plan_hash_of(artifact),
+        runner=server_runner(artifact),
         state_path=state_path,
         log_path=log_path,
         repo_dir=str(tmp_path),
@@ -245,6 +253,7 @@ def _job_task(tmp_path, *, run_id=421, item_id="HZ-19", commands=("echo hi",), e
         "item": {"id": item_id, "repo": "acme/demo"},
         "plan_artifact": artifact,
         "approved_hash": task_job.plan_hash_of(artifact),
+        "runner": server_runner(artifact),
         "repo_dir": str(cwd),
         "container_image": FAKE_IMAGE,
     }, cwd
@@ -364,6 +373,7 @@ def test_output_is_logged_and_nudged_while_the_command_still_runs(tmp_path):
             item_id="HZ-1",
             plan_artifact=artifact,
             approved_hash=task_job.plan_hash_of(artifact),
+            runner=server_runner(artifact),
             state_path=state_path,
             log_path=log_path,
             repo_dir=str(tmp_path),
@@ -392,6 +402,7 @@ def _task_file(tmp_path, run_id, item_id, artifact, repo_dir):
                 "item": {"id": item_id},
                 "plan_artifact": artifact,
                 "approved_hash": task_job.plan_hash_of(artifact),
+                "runner": server_runner(artifact),
                 "repo_dir": str(repo_dir),
                 "container_image": FAKE_IMAGE,
             }
@@ -525,6 +536,7 @@ def test_past_the_budget_the_running_command_stops_and_no_later_one_starts(tmp_p
         item_id="HZ-2",
         plan_artifact=artifact,
         approved_hash=task_job.plan_hash_of(artifact),
+        runner=server_runner(artifact),
         state_path=state_path,
         log_path=tmp_path / "job.log",
         repo_dir=str(cwd),
@@ -578,6 +590,7 @@ def _refused(tmp_path, artifact, repo_dir):
         item_id="HZ-1",
         plan_artifact=artifact,
         approved_hash=task_job.plan_hash_of(artifact),
+        runner=server_runner(artifact),
         state_path=state_path,
         log_path=log_path,
         repo_dir=repo_dir,
@@ -901,6 +914,7 @@ def test_venv_outside_checkout_or_under_horizon_runs_zero_commands(tmp_path, mon
         item_id="HZ-1",
         plan_artifact=artifact,
         approved_hash=task_job.plan_hash_of(artifact),
+        runner=server_runner(artifact),
         state_path=state_path,
         log_path=log_path,
         repo_dir=str(repo),
@@ -1002,6 +1016,7 @@ def run_clone(tmp_path, artifact, clone, task_clone_flag=True):
         item_id="HZ-1",
         plan_artifact=artifact,
         approved_hash=task_job.plan_hash_of(artifact),
+        runner=server_runner(artifact),
         state_path=state_path,
         log_path=log_path,
         repo_dir=str(clone),
@@ -1020,6 +1035,7 @@ def _main_task_file(tmp_path, item_id, artifact, clone, **extra):
                 "item": {"id": item_id},
                 "plan_artifact": artifact,
                 "approved_hash": task_job.plan_hash_of(artifact),
+                "runner": server_runner(artifact),
                 "repo_dir": str(clone),
                 "container_image": FAKE_IMAGE,
                 **extra,

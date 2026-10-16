@@ -76,13 +76,17 @@ const STEP_META_COLOR = { awaiting: 'var(--warning-ink)', blocked: 'var(--danger
 
 // HZ-384: the one line a human-only gate (a Task's Approve the run) adds under
 // its meta — what is being approved, from the server's item.runPlan.
-// HZ-416: a plan that opts out of the container with `runner: host` says so
-// here, on every load — a container plan shows nothing extra.
+// HZ-491: plus the effective runner the server worked out (runPlan.runner),
+// so a reload shows the same label the approver saw.
+function runnerLabel(runPlan) {
+  if (runPlan.runner === 'container') return 'Container'
+  return runPlan.imagePinned ? 'Host — the plan asks for the host' : 'Host — no container image for this repo'
+}
+
 function runPlanSummary(runPlan) {
   if (!runPlan) return 'Run plan: not found'
   const commands = `${runPlan.commands} command${runPlan.commands === 1 ? '' : 's'}`
-  const base = `Run plan: ${commands} · budget ${runPlan.budgetMinutes} min`
-  return runPlan.runner === 'host' ? `${base} · runs on the host, not in a container` : base
+  return `Run plan: ${commands} · budget ${runPlan.budgetMinutes} min · ${runnerLabel(runPlan)}`
 }
 
 // HZ-185: why a forward to Accept the code didn't go through, keyed by the
@@ -354,6 +358,12 @@ function Step({ item, stepOutputs, outputsSettled, index, deployBlock, viewerNam
               {index === APPROVE_RUN_GATE_INDEX && (
                 <div className="step-card__run-plan" style={{ color: 'var(--muted)' }}>
                   {runPlanSummary(item.runPlan)}
+                </div>
+              )}
+              {/* HZ-491: an explicit container plan in a repo with no image, before approval. */}
+              {index === APPROVE_RUN_GATE_INDEX && item.runPlan?.runnerWarning && (
+                <div className="step-card__run-plan-warning" data-testid="run-plan-runner-warning" style={{ color: 'var(--danger-ink)' }}>
+                  ⚠ {item.runPlan.runnerWarning} — Execute will refuse this container plan
                 </div>
               )}
             </div>

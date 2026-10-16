@@ -173,6 +173,7 @@ class Farm:
                 "step": {"index": EXECUTE_INDEX, "label": "Execute"},
                 "plan_artifact": artifact,
                 "approved_hash": task_job.plan_hash_of(artifact),
+                "runner": "container",
                 "repo_dir": str(self.home),
                 # HZ-416: the job runs in a container (conftest's fake_podman).
                 "container_image": "localhost/horizon-task:fake",

@@ -4290,6 +4290,7 @@ def test_run_plan_prompt_names_the_interpreter(tmp_path, with_venv):
         item_id="T-1",
         plan_artifact=artifact,
         approved_hash=task_job.plan_hash_of(artifact),
+        runner="host",
         state_path=tmp_path / "job.json",
         log_path=tmp_path / "job.log",
         repo_dir=str(repo),
@@ -4321,6 +4322,22 @@ def test_the_run_plan_prompt_names_the_container_image_or_its_absence(tmp_path):
     assert "  container: none pinned — Execute refuses a container plan" in build_prompt(task)
     task["container_image"] = "docker.io/library/python@sha256:" + "b" * 64
     assert f"  container: {task['container_image']} (repo read-only, writable: /scratch, /tmp, /state, /logs)" in build_prompt(task)
+
+
+def test_the_run_plan_prompt_states_the_runner_the_server_sent(tmp_path):
+    """HZ-491 metric 5: a repo with no image tells Run plan its runner is the
+    host; a repo with an image, the container. The role file explains the
+    line."""
+    task = _run_plan_task(tmp_path)
+    task["runner"] = "host"
+    assert "  runner: host (no container image for this repo)" in build_prompt(task)
+    task["runner"] = "container"
+    task["container_image"] = "docker.io/library/python@sha256:" + "c" * 64
+    prompt = build_prompt(task)
+    assert f"  runner: container ({task['container_image']})" in prompt
+    assert "runner: host" not in prompt
+    role = (Path(__file__).resolve().parent.parent / "roles" / "task_run_plan.md").read_text()
+    assert "The `runner` line in your input says where a plan with no `runner` runs" in role
 
 
 def test_a_change_items_prompt_gets_no_interpreter_line(tmp_path):

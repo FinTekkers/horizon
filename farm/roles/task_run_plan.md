@@ -30,7 +30,7 @@ Respond with ONLY a JSON object (no prose, no fences):
     "budget_minutes": <whole minutes, at least 1>,
     "env": {"<NAME>": "$<NAME>"},
     "reports": ["<optional: a file the run writes as its result>"],
-    "runner": "<optional: omit for the container; \"host\" only when it must run on the host>"
+    "runner": "<optional: omit it and the `runner` line in your input decides; set \"host\" or \"container\" only to override it>"
   }
 }
 
@@ -46,7 +46,11 @@ checkout. An absolute path or a `..` in `cwd` fails the step.
 as a JSON summary, relative to `cwd` or under `/tmp`. Verify & report reads
 them beside the log. A command's `--report <path>` is found without it.
 
-By default Execute runs the commands, one after another, in one throwaway
+The `runner` line in your input says where a plan with no `runner` runs:
+`container` when this repo has a pinned container image, `host` when it has
+none. Usually leave `runner` out.
+
+In a container, Execute runs the commands, one after another, in one throwaway
 container from the image the `container` line in your input names. The
 checkout is mounted read-only at its usual path, with `cwd` as the working
 directory. A command can write only to `/scratch`, `/tmp` (also `$HOME`),
@@ -61,6 +65,9 @@ the run log means the image had no bash.
 Set `"runner": "host"` only when the run cannot work in the container, and
 say why in the artifact. The approver then sees that it runs on the host.
 A `runner: host` command always runs under `bash -c`.
+Set `"runner": "container"` only when the run must not touch the host. With
+no image pinned, the approver sees a "no container image for this repo"
+warning and Execute refuses the run.
 
 The `interpreter` line applies only to a `runner: host` plan; a container
 uses the image's own Python. When it names a venv, that venv's `bin/` is

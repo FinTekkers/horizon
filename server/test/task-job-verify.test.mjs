@@ -66,7 +66,8 @@ const PLAN =
   '\n```'
 
 function seedTask(id) {
-  db.prepare("INSERT INTO work_item (id, title, priority, cursor, kind, approved_plan_hash) VALUES (?, ?, 'High', ?, 'task', ?)").run(
+  // HZ-491: no repo, so no image — the approved runner is the host.
+  db.prepare("INSERT INTO work_item (id, title, priority, cursor, kind, approved_plan_hash, approved_runner) VALUES (?, ?, 'High', ?, 'task', ?, 'host')").run(
     id,
     `Task ${id}`,
     EXECUTE_STEP_INDEX,
