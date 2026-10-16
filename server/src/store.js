@@ -39,7 +39,7 @@ import {
 import { isPriority } from '../../domain/js/priorities.js'
 import { choiceLabel, choiceValues, parseChoice, providerNames } from '../../domain/js/providers.js'
 import { REASON } from '../../domain/js/reasons.js'
-import { extractRunPlan } from '../../domain/js/runPlan.js'
+import { effectiveRunner, extractRunPlan } from '../../domain/js/runPlan.js'
 import { isHumanProof } from './humanProof.js'
 import { isPersona, personaLabel, personasFromRow } from './personas.js'
 import { priorityFromLabels } from './priorityLabels.js'
@@ -48,6 +48,7 @@ import { getActiveProjectId, setSetting } from './settings.js'
 import { parseRuleBlock } from './ruleBlock.js'
 import { fallbackNoteText, usageWaitText } from './usageLimits.js'
 import { msOf, sqlTime } from './sqlTime.js'
+import { findTargetByRepo } from './deployTargets.js'
 
 const listeners = new Set()
 
@@ -935,11 +936,24 @@ export function latestArtifact(itemId, stepIndex) {
 // artifact, not just the block, so any re-run counts as a new plan.
 const planHashOf = (artifact) => createHash('sha256').update(artifact, 'utf8').digest('hex')
 
+// HZ-491: where a plan that sets no `runner` runs — the container only when
+// the repo's deploy target pins an image (Admin → Deploy targets), else the
+// host. Read on every call, so pinning or clearing an image moves it at once.
+export function defaultRunnerFor(repo) {
+  return repo && findTargetByRepo(repo)?.containerImage ? 'container' : 'host'
+}
+
 // The current plan, or null when the Run plan step has left no readable block.
+// HZ-491: `runner` is the effective runner, worked out here once: the plan's
+// own `runner` wins, else defaultRunnerFor(). Approve the run stores it, and
+// Execute sends it to the farm, which applies no default of its own.
 function currentRunPlan(itemId) {
   const artifact = latestArtifact(itemId, RUN_PLAN_STEP_INDEX)
   const block = extractRunPlan(artifact)
-  return block ? { block, hash: planHashOf(artifact) } : null
+  if (!block) return null
+  const repo = db.prepare('SELECT repo FROM work_item WHERE id = ?').get(itemId)?.repo ?? null
+  const imagePinned = defaultRunnerFor(repo) === 'container'
+  return { block, hash: planHashOf(artifact), runner: effectiveRunner(block, imagePinned), imagePinned }
 }
 
 // A kind whose lifecycle has the Approve the run gate approves a run plan
@@ -947,10 +961,14 @@ function currentRunPlan(itemId) {
 // Approve & file is human-only too, but it approves no run plan.
 const approvesRunPlan = (kind) => stepsFor(kind).some((step) => step.index === APPROVE_RUN_GATE_INDEX)
 
-// What the Approve the run card shows, and the hash its Approve sends back.
-// HZ-416: `runner` is the plan's own field, defaulting to the container —
-// the card's host banner reads it on every load, so a reload shows the same
-// warning the approver saw.
+// HZ-491: the warning an explicit container plan gets, before approval, when
+// the repo has no image to run it in.
+const NO_IMAGE_WARNING = 'no container image for this repo'
+
+// What the Approve the run card shows, and the hash and runner its Approve
+// sends back. HZ-491: `runner` is the effective runner, so a reload shows the
+// same label the approver saw; `imagePinned` tells the card why a host run is
+// on the host.
 function runPlanView(itemId) {
   const plan = currentRunPlan(itemId)
   if (!plan) return null
@@ -958,19 +976,33 @@ function runPlanView(itemId) {
     commands: plan.block.commands.length,
     budgetMinutes: plan.block.budget_minutes,
     hash: plan.hash,
-    runner: plan.block.runner ?? 'container',
+    runner: plan.runner,
+    imagePinned: plan.imagePinned,
+    runnerWarning: plan.runner === 'container' && !plan.imagePinned ? NO_IMAGE_WARNING : null,
   }
 }
 
 // Whether the plan a human approved is still the plan on record. Execute's
 // dispatch (orchestrator.js refuseUnapprovedRun) refuses to start otherwise.
+// HZ-491: the approval also binds the effective runner — an image pinned or
+// cleared since then changes it, and Execute refuses until re-approval. A
+// row approved before the runner was stored has none, and must be re-approved.
 export function approvedPlanCheck(itemId) {
-  const approvedHash = db.prepare('SELECT approved_plan_hash FROM work_item WHERE id = ?').get(itemId)?.approved_plan_hash
+  const row = db.prepare('SELECT approved_plan_hash, approved_runner FROM work_item WHERE id = ?').get(itemId)
+  const approvedHash = row?.approved_plan_hash
   if (!approvedHash) return { error: 'plan_not_approved' }
-  const artifact = latestArtifact(itemId, RUN_PLAN_STEP_INDEX)
-  const currentHash = artifact ? planHashOf(artifact) : null
-  if (currentHash !== approvedHash) return { error: REASON.PLAN_CHANGED_SINCE_APPROVAL, approvedHash, currentHash }
-  return { ok: true, hash: approvedHash }
+  const plan = currentRunPlan(itemId)
+  const currentHash = plan?.hash ?? null
+  if (currentHash !== approvedHash || plan.runner !== row.approved_runner) {
+    return {
+      error: REASON.PLAN_CHANGED_SINCE_APPROVAL,
+      approvedHash,
+      currentHash,
+      approvedRunner: row.approved_runner ?? null,
+      runner: plan?.runner ?? null,
+    }
+  }
+  return { ok: true, hash: approvedHash, runner: plan.runner }
 }
 
 // ---- artifact version history (HZ-46) ----
@@ -1861,7 +1893,7 @@ export function addEvent(id, { who, text, color, initials, detail = null, verdic
 // the approver was shown: a newer plan since then is refused, not approved.
 // HZ-446: the PIN applies to every humanOnly gate; the run plan checks only to
 // Approve the run, the one gate that approves a run plan.
-export function approveGate(id, stepIndex, notes, actor = 'You', { proof = null, planHash = null } = {}) {
+export function approveGate(id, stepIndex, notes, actor = 'You', { proof = null, planHash = null, runner = null } = {}) {
   const it = getItem(id)
   if (!it) return { error: 'not_found' }
   if (disabledProject(it)) return { error: 'project_not_active' }
@@ -1869,6 +1901,7 @@ export function approveGate(id, stepIndex, notes, actor = 'You', { proof = null,
   if (stepIndex !== it.cursor) return { error: 'stale_step' }
 
   let approvedHash = null
+  let approvedRunner = null
   if (isHumanOnlyGate(stepIndex)) {
     if (!isHumanProof(proof)) {
       addEvent(id, {
@@ -1885,14 +1918,18 @@ export function approveGate(id, stepIndex, notes, actor = 'You', { proof = null,
     const plan = currentRunPlan(id)
     if (!plan) return { error: 'run_plan_missing' }
     if (planHash != null && planHash !== plan.hash) return { error: 'run_plan_changed' }
+    // HZ-491: the runner the card showed, so an image pinned or cleared
+    // since the load is not approved unseen.
+    if (runner != null && runner !== plan.runner) return { error: 'run_plan_changed' }
     approvedHash = plan.hash
+    approvedRunner = plan.runner
   }
 
   const trimmed = (notes || '').trim()
   const next = nextCursor(it)
   db.prepare(
-    `UPDATE work_item SET cursor = ?, rejected = 0${approvedHash ? ', approved_plan_hash = ?' : ''}, ${touch} WHERE id = ?`,
-  ).run(...(approvedHash ? [next, approvedHash, id] : [next, id]))
+    `UPDATE work_item SET cursor = ?, rejected = 0${approvedHash ? ', approved_plan_hash = ?, approved_runner = ?' : ''}, ${touch} WHERE id = ?`,
+  ).run(...(approvedHash ? [next, approvedHash, approvedRunner, id] : [next, id]))
   db.prepare(
     'INSERT INTO gate_decision (item_id, step_index, decision, notes, decided_by, plan_hash) VALUES (?, ?, ?, ?, ?, ?)',
   ).run(id, stepIndex, 'approved', trimmed, actor, approvedHash)
@@ -1999,7 +2036,7 @@ export function requestChanges(id, target, feedbackText, actor = 'You', targetSt
   // retires any approved run plan — the run must be approved again, against
   // whatever plan it comes back with (always NULL on a change item).
   db.prepare(
-    `UPDATE work_item SET cursor = ?, rejected = 0, paused = 0, rule_block_json = NULL, approved_plan_hash = NULL${resetReview}, ${touch} WHERE id = ?`,
+    `UPDATE work_item SET cursor = ?, rejected = 0, paused = 0, rule_block_json = NULL, approved_plan_hash = NULL, approved_runner = NULL${resetReview}, ${touch} WHERE id = ?`,
   ).run(reworkIdx, id)
   addEvent(id, {
     who: actor,

@@ -899,7 +899,8 @@ def launch_job(task: dict) -> str:
     cwd = run_plan.resolve_cwd(task.get("repo_dir"), block["cwd"], forbid=str(task_job.HORIZON_ROOT))
     # HZ-431: a venv outside the checkout is refused here too (a CwdRefused).
     # HZ-416: only a host run uses the venv; a container run ignores it.
-    if block.get("runner") == "host":
+    # HZ-491: the server's effective runner, never the block's own field.
+    if task["runner"] == "host":
         run_plan.resolve_venv(task.get("repo_dir"), task.get("venv_dir"), forbid=str(task_job.HORIZON_ROOT))
     env_values = _resolve_job_env(cwd, block.get("env", {}))
     active = QUEUE_DIR / "jobs" / "active"
@@ -1523,6 +1524,10 @@ async def steps_run(request: Request):
                 continue
         if not body.get("plan_artifact") or not body.get("approved_hash"):
             return JSONResponse({"error": "missing plan_artifact or approved_hash"}, status_code=400)
+        # HZ-491: the server works out where the job runs and sends it; the
+        # farm applies no default, so a job naming no runner is refused.
+        if body.get("runner") not in task_job.RUNNERS:
+            return JSONResponse({"error": "job_runner_missing"}, status_code=400)
         # The server armed a queue watchdog at dispatch; a job that never
         # reports started would be failed as never_picked_up mid-run. This
         # flips it to the execution budget, which markFarmRunStarted leaves

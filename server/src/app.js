@@ -1300,7 +1300,7 @@ export function buildApp({ logger = true, onRoute = null } = {}) {
   // pre-merge/merge/close failure (502) or a pre-merge check already running
   // (409), which the routes send with that status.
   //
-  // HZ-384: `human` is { proof, planHash } from the browser route only. A
+  // HZ-384: `human` is { proof, planHash, runner } from the browser route only. A
   // humanOnly gate refused for want of the proof comes back as a 403.
   async function performGateApproval(id, stepIndex, notes, actor = 'You', human = {}) {
     // Accepting the code means merging its PR — the gate does not advance if
@@ -1459,6 +1459,8 @@ export function buildApp({ logger = true, onRoute = null } = {}) {
             notes: { type: 'string', maxLength: 2000 },
             // HZ-384: the run plan hash the Approve the run card showed.
             planHash: { type: 'string', maxLength: 128 },
+            // HZ-491: the effective runner the same card showed.
+            runner: { type: 'string', enum: ['container', 'host'] },
           },
         },
         response: { 200: OK_OBJECT, 401: ERROR_OBJECT, 403: ERROR_OBJECT, 404: ERROR_OBJECT, 409: ERROR_OBJECT, 502: ERROR_OBJECT },
@@ -1471,7 +1473,8 @@ export function buildApp({ logger = true, onRoute = null } = {}) {
       const { id, stepIndex } = request.params
       const notes = (request.body?.notes || '').trim()
       const planHash = request.body?.planHash || null
-      const result = await gateActions.approve(id, stepIndex, notes, actorOf(request), { proof, planHash })
+      const runner = request.body?.runner || null
+      const result = await gateActions.approve(id, stepIndex, notes, actorOf(request), { proof, planHash, runner })
       if (result.status) return reply.code(result.status).send(gateFailureBody(result))
       return send(reply, result)
     },

@@ -62,11 +62,12 @@ const doneRun = (itemId, stepIndex, artifact) =>
     )
     .run(itemId, stepIndex, STEPS[stepIndex].agent, artifact)
 
-// A Task stopped at Execute with the plan approved.
+// A Task stopped at Execute with the plan approved. HZ-491: PLAN sets no
+// runner, so the approved one is the repo's default at seed time.
 function seedStoppedTask(id, repo = null) {
   db.prepare(
-    "INSERT INTO work_item (id, title, priority, cursor, kind, project_id, paused, approved_plan_hash, repo) VALUES (?, ?, 'High', ?, 'task', ?, 1, ?, ?)",
-  ).run(id, `Task ${id}`, EXECUTE_STEP_INDEX, projectId, sha256(PLAN), repo)
+    "INSERT INTO work_item (id, title, priority, cursor, kind, project_id, paused, approved_plan_hash, approved_runner, repo) VALUES (?, ?, 'High', ?, 'task', ?, 1, ?, ?, ?)",
+  ).run(id, `Task ${id}`, EXECUTE_STEP_INDEX, projectId, sha256(PLAN), store.defaultRunnerFor(repo), repo)
   doneRun(id, RUN_PLAN_STEP_INDEX, PLAN)
 }
 
@@ -139,6 +140,21 @@ test("HZ-415: farmd's cwd refusal is stored on the run, and the item does not st
   const item = store.getItem('T-415-OUT')
   assert.equal(item.activeRun ?? null, null)
   assert.equal(item.paused, true)
+})
+
+// HZ-491: the farm applies no runner default — a job it refuses for want of
+// one is named on the run, not left running.
+test("HZ-491: farmd's job_runner_missing refusal is named on the run", async () => {
+  farmRefusals['T-491-NORUNNER'] = { error: 'job_runner_missing' }
+  seedStoppedTask('T-491-NORUNNER')
+  const res = await app.inject({ method: 'POST', url: '/api/items/T-491-NORUNNER/job/resume', headers: cookie, payload: {} })
+  assert.equal(res.statusCode, 200)
+  const runId = res.json().runId
+  await new Promise((r) => setTimeout(r, 50))
+  assert.equal(jobDispatchesFor('T-491-NORUNNER')[0].body.runner, 'host')
+  const run = db.prepare('SELECT status, output FROM step_run WHERE id = ?').get(runId)
+  assert.equal(run.status, 'cancelled')
+  assert.equal(run.output, 'FAILED: the job named no runner (host or container), so the farm refused it')
 })
 
 // HZ-431: Run plan's prompt and Execute's runner both read the deploy
@@ -217,9 +233,9 @@ test('HZ-440: a taskDir is dispatched as repo_dir with task_clone; without one r
 })
 
 // HZ-416: the target's pinned image and limits ride in both Task dispatches —
-// Run plan names the image, Execute runs in it. Unset, they are null: the
-// farm refuses a container job closed rather than guess. A change item's
-// dispatch carries none of them.
+// Run plan names the image, Execute runs in it. Unset, they are null and
+// (HZ-491) a plan with no runner runs on the host. A change item's dispatch
+// carries none of them.
 test('HZ-416: the Run plan and Execute dispatches carry the container image and limits; a change item dispatch carries none', async () => {
   const mdi = 'FinTekkers/market-data-inputs'
   const image = `docker.io/library/python@sha256:${'c'.repeat(64)}`
@@ -241,12 +257,13 @@ test('HZ-416: the Run plan and Execute dispatches carry the container image and 
     const plan = jobDispatchesFor('T-416-PLAN').find((d) => d.body.step.index === RUN_PLAN_STEP_INDEX)
     const [execute] = jobDispatchesFor('T-416-EXEC')
     for (const body of [plan.body, execute.body]) {
+      assert.equal(body.runner, 'container')
       assert.equal(body.container_image, image)
       assert.equal(body.cpu_limit, '1.5')
       assert.equal(body.memory_limit, '2g')
     }
     const [change] = jobDispatchesFor('C-416')
-    for (const key of ['container_image', 'cpu_limit', 'memory_limit']) assert.equal(Object.hasOwn(change.body, key), false)
+    for (const key of ['container_image', 'cpu_limit', 'memory_limit', 'runner']) assert.equal(Object.hasOwn(change.body, key), false)
   } finally {
     db.prepare('UPDATE deploy_target SET container_image = NULL, cpu_limit = NULL, memory_limit = NULL WHERE repo = ?').run(mdi)
     for (const id of ['T-416-PLAN', 'C-416', 'T-416-EXEC']) orchestrator.cancel(id)
@@ -258,5 +275,6 @@ test('HZ-416: the Run plan and Execute dispatches carry the container image and 
   await new Promise((r) => setTimeout(r, 30))
   const [execute] = jobDispatchesFor(id)
   orchestrator.cancel(id)
-  assert.equal(execute.body.container_image, null, 'no image pinned: the farm refuses, never a host run')
+  assert.equal(execute.body.container_image, null)
+  assert.equal(execute.body.runner, 'host', 'no image pinned: a plan with no runner runs on the host')
 })

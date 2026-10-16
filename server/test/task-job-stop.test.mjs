@@ -83,7 +83,7 @@ const view = (statuses, extra = {}) => ({
 // A Task running Execute: plan approved, the job dispatched.
 async function seedRunningTask(id) {
   db.prepare(
-    "INSERT INTO work_item (id, title, priority, cursor, kind, project_id, approved_plan_hash) VALUES (?, ?, 'High', ?, 'task', ?, ?)",
+    "INSERT INTO work_item (id, title, priority, cursor, kind, project_id, approved_plan_hash, approved_runner) VALUES (?, ?, 'High', ?, 'task', ?, ?, 'host')",
   ).run(id, `Task ${id}`, EXECUTE_STEP_INDEX, projectId, sha256(PLAN))
   db.prepare(
     "INSERT INTO step_run (item_id, step_index, attempt, agent, status, output, artifact, ended_at) VALUES (?, ?, 1, ?, 'done', 'ok', ?, datetime('now'))",

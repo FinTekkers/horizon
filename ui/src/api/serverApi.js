@@ -646,7 +646,13 @@ export async function approveGate(id, notes) {
   // names the failing check — so that one stays on the tracker.
   // HZ-384: the run plan this tab showed, so the server refuses the approval
   // if a newer plan landed since — the human approves the plan they saw.
-  const body = { ...(notes ? { notes } : {}), ...(item.runPlan?.hash ? { planHash: item.runPlan.hash } : {}) }
+  // HZ-491: and the runner it showed, so a newly pinned or cleared image is
+  // not approved unseen.
+  const body = {
+    ...(notes ? { notes } : {}),
+    ...(item.runPlan?.hash ? { planHash: item.runPlan.hash } : {}),
+    ...(item.runPlan?.runner ? { runner: item.runPlan.runner } : {}),
+  }
   const res = await gatePost(`/items/${id}/gates/${item.cursor}/approve`, body)
   if (!res) return { ok: false }
   const data = await res.json().catch(() => ({ ok: false }))
