@@ -263,9 +263,19 @@ def start_container(argv: list, env: dict) -> None:
         raise Unavailable("the container did not start" + (f": {detail}" if detail else ""))
 
 
-def exec_argv(name: str, command: str, workdir: str) -> list:
-    """One command in the job's container, as `sh -c`, in the plan's cwd."""
-    return [podman_bin(), "exec", "-w", workdir, name, "sh", "-c", command]
+def exec_argv(name: str, command: str, workdir: str, shell: str = "sh") -> list:
+    """One command in the job's container, as `<shell> -c`, in the plan's cwd."""
+    return [podman_bin(), "exec", "-w", workdir, name, shell, "-c", command]
+
+
+def container_shell(name: str) -> str:
+    """HZ-496: `bash` when the running container's image has it, else `sh`.
+    A probe that cannot run says `sh` — every image has that."""
+    try:
+        res = _podman("exec", name, "sh", "-c", "command -v bash", timeout=30)
+    except (OSError, subprocess.SubprocessError):
+        return "sh"
+    return "bash" if res.returncode == 0 else "sh"
 
 
 def oom_kills(name: str) -> int | None:

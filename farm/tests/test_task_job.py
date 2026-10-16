@@ -109,6 +109,16 @@ def test_the_first_failure_stops_the_job_with_exact_counts(tmp_path):
     assert (tmp_path / "markers.txt").read_text().splitlines() == ["ran1"]
 
 
+def test_a_host_command_runs_under_bash(tmp_path):
+    """HZ-496 metric 1: a `runner: host` command gets bash, so
+    `set -euo pipefail` and an array work and it exits 0."""
+    command = 'set -euo pipefail; a=(x y); [[ ${#a[@]} -eq 2 ]]; echo "n=${#a[@]}"'
+    summary, state, log = run_in(tmp_path, plan_artifact(".", [command], runner="host"))
+    assert summary == {"run": 1, "passed": 1, "failed": 0, "failing": []}, log
+    assert state["commands"][0]["exit_code"] == 0
+    assert "n=2" in log
+
+
 def _proc_gone(pid):
     """True once SIGKILL has landed: reaped, or a zombie awaiting its reaper."""
     try:

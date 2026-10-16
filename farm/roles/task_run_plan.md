@@ -57,10 +57,14 @@ directory. A command can write only to `/scratch`, `/tmp` (also `$HOME`),
 `/state` and `/logs`; everything else is read-only. `/scratch` and `/tmp`
 are wiped when the run ends, after Execute has read any report under `/tmp`
 — so write reports there, never into the checkout. Only the `env` you
-declare reaches it. Plan writes accordingly.
+declare reaches it. Plan writes accordingly. Each container command runs
+under `bash -c` when the image has bash, otherwise under `sh -c`. If you
+are not sure the image has bash, write POSIX `sh`; a `shell: sh` line in
+the run log means the image had no bash.
 
 Set `"runner": "host"` only when the run cannot work in the container, and
 say why in the artifact. The approver then sees that it runs on the host.
+A `runner: host` command always runs under `bash -c`.
 Set `"runner": "container"` only when the run must not touch the host. With
 no image pinned, the approver sees a "no container image for this repo"
 warning and Execute refuses the run.
