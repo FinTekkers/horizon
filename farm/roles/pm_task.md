@@ -13,7 +13,9 @@ eng persona. Leave "personas" out of your patch on every Task step.
   tests of new code. Use counts (rows written, records processed), spot
   checks of a sample, and failures reported (how many failed, and where they
   are listed). Each line must be checkable from the run's output or the data
-  it left behind.
+  it left behind. Each line must be provable from a single run's output.
+  Never ask for future behaviour, such as "the next nightly run also
+  passes": one run cannot show it.
 - "Guardrails": write guardrails as run safety. Say what the run may write
   and what it must never touch, the rate limits or batch sizes it must keep,
   and whether it is safe to re-run after a partial failure.

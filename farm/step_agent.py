@@ -1757,13 +1757,15 @@ def _on_exhaustion(
     raise exc
 
 
-def _task_reply_validator(label: str):
+def _task_reply_validator(label: str, metric: str | None = None):
     """HZ-383: the reply check a Task step runs inside the retry envelope.
     Run plan's `run_plan` block must satisfy domain/runPlan.schema.json, and
     no part of any Task reply (summary, artifact, rendered block) may carry
     what looks like a literal secret. Raises AgentError, which takes the one
     retry; a second bad reply fails the step. The message and the log name
-    the field or the secret's shape, never the value."""
+    the field or the secret's shape, never the value. HZ-503: the block's
+    `proof` must name each line of the item's `metric` exactly once; the
+    reason names every missing, doubled or out-of-range line."""
 
     def check(parsed):
         if not isinstance(parsed, dict):
@@ -1776,7 +1778,11 @@ def _task_reply_validator(label: str):
                 texts.extend(v for v in value.values() if isinstance(v, str))
         if label == RUN_PLAN_LABEL:
             try:
-                texts.append(run_plan.render(run_plan.validate(parsed.get("run_plan"))))
+                block = run_plan.validate(parsed.get("run_plan"))
+                gaps = run_plan.unproven(block, metric)
+                if gaps:
+                    raise ValueError(gaps)
+                texts.append(run_plan.render(block))
             except ValueError as exc:
                 raise AgentError(f"invalid run plan: {exc}") from None
         found = sorted({name for text in texts for name in run_plan.literal_secrets(text)})
@@ -1895,7 +1901,9 @@ def _reply_validator(kind: str, label: str, task: dict | None = None, scope: lis
     config = STEP_CONFIGS.get(kind)
     if config is PLAN_STEP_CONFIG and label in PLAN_VALIDATED_LABELS:
         return _plan_reply_validator(label, task or {}, scope or [])
-    return _task_reply_validator(label) if config is TASK_STEP_CONFIG else None
+    if config is not TASK_STEP_CONFIG:
+        return None
+    return _task_reply_validator(label, ((task or {}).get("item") or {}).get("metric"))
 
 
 def _run_and_parse(

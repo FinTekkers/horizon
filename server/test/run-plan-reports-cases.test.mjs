@@ -55,3 +55,19 @@ for (const c of cases.requires) {
     else assert.equal(block, null)
   })
 }
+
+// HZ-503: the same fixture's `proof` cases (farm/tests/test_job_reports.py
+// is the Python half). Shape only: coverage of the metric is the farm's check.
+test('the fixture has a proof case with none, a valid list and invalid ones', () => {
+  assert.ok(cases.proof.some((c) => c.valid && c.block.proof === undefined))
+  assert.ok(cases.proof.some((c) => c.valid && c.block.proof?.length))
+  assert.ok(cases.proof.some((c) => !c.valid))
+})
+
+for (const c of cases.proof) {
+  test(`proof: ${c.case}`, () => {
+    const block = extractRunPlan(artifactOf(c.block))
+    if (c.valid) assert.deepEqual(block, c.block)
+    else assert.equal(block, null)
+  })
+}

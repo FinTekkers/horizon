@@ -386,6 +386,76 @@ def test_the_run_plan_binding_takes_its_required_fields_from_the_schema():
     assert run_plan.validate(dict(VALID_PLAN)) == VALID_PLAN
 
 
+# ---- HZ-503: the plan names the proof for every metric line ----
+
+PROOF_METRIC = "1. rows written match the count\n2. no row failed\n3. the report lists every batch"
+
+
+def proof_task() -> dict:
+    task = make_task(step_agent.RUN_PLAN_LABEL)
+    task["item"]["metric"] = PROOF_METRIC
+    return task
+
+
+def proof_plan(*lines) -> dict:
+    return {**VALID_PLAN, "proof": [{"line": n, "command": 1} for n in lines]}
+
+
+@pytest.mark.parametrize(
+    "lines,named",
+    [((1, 2), "metric line 3"), ((1, 2, 2, 3), "metric line 2 more than once"), ((1, 2, 3, 6), "metric line 6")],
+    ids=["a line with no proof", "a line named twice", "a line the metric does not have"],
+)
+def test_a_plan_with_a_proof_gap_is_sent_back_naming_the_line(monkeypatch, lines, named):
+    calls = stub_agent(monkeypatch, [reply_for(step_agent.RUN_PLAN_LABEL, run_plan=proof_plan(*lines))])
+    with pytest.raises(AgentError, match="invalid run plan") as raised:
+        step_agent.execute(proof_task())
+    assert len(calls) == 2
+    assert named in str(raised.value)
+    # The retry sends the plan back to Run plan with the line named.
+    assert calls[1]["step"] == step_agent.RUN_PLAN_LABEL
+    assert named in calls[1]["prompt"]
+
+
+def test_a_plan_proving_every_line_once_finishes_with_its_proof(monkeypatch):
+    plan = proof_plan(1, 2, 3)
+    calls = stub_agent(monkeypatch, [reply_for(step_agent.RUN_PLAN_LABEL, run_plan=plan)])
+    result = step_agent.execute(proof_task())
+    assert len(calls) == 1
+    assert result["summary"] == f"did {step_agent.RUN_PLAN_LABEL}"
+    assert run_plan.extract(result["artifacts"]["artifact_md"])["proof"] == plan["proof"]
+
+
+def test_impact_review_follows_run_plan_for_a_task():
+    labels = [row["label"] for row in steps.FARM_VIEWS["task"]]
+    assert labels[labels.index(step_agent.RUN_PLAN_LABEL) + 1] == step_agent.IMPACT_REVIEW_LABEL
+
+
+def test_a_change_step_labelled_run_plan_gets_no_task_check():
+    assert step_agent._reply_validator("change", step_agent.RUN_PLAN_LABEL, proof_task()) is None
+
+
+def test_the_task_roles_name_the_proof_map_and_the_single_run_rule():
+    roles = REPO_ROOT / "farm" / "roles"
+    run_plan_prompt = (roles / "task_run_plan.md").read_text()
+    assert '"proof": [{"line": 1, "command": 2}' in run_plan_prompt
+    assert "Give one entry per metric" in run_plan_prompt
+    impact = (roles / "task_impact_review.md").read_text()
+    assert "'## Proof'" in impact
+    assert "the plan's `proof` map" in impact
+    verify = (roles / "task_verify.md").read_text()
+    assert "Judge each metric line against its named proof." in verify
+    assert "The plan's `proof` map" in verify
+    pm = (roles / "pm_task.md").read_text()
+    assert "Each line must be provable from a single run's output." in pm
+
+
+def test_verify_still_judges_a_plan_approved_before_the_proof_map():
+    verify = (REPO_ROOT / "farm" / "roles" / "task_verify.md").read_text()
+    assert "A plan with no\n`proof` map was approved before it existed" in verify
+    assert "judge each line on the job's\nevidence as a whole." in verify
+
+
 # ---- guardrail 4: secrets are references only ----
 
 

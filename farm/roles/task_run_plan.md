@@ -23,7 +23,7 @@ password anywhere in the reply — a reply that carries one is rejected.
 Respond with ONLY a JSON object (no prose, no fences):
 {
   "summary": "<past tense, <=200 chars: how many commands, where, and the budget>",
-  "artifact_md": "<markdown: '## Commands' (numbered, in order), '## Working directory', '## Environment', '## Dry run' (command and expected output), '## Expected output', '## Time budget'>",
+  "artifact_md": "<markdown: '## Commands' (numbered, in order), '## Working directory', '## Environment', '## Dry run' (command and expected output), '## Expected output', '## Proof' (each metric line and what proves it), '## Time budget'>",
   "run_plan": {
     "cwd": "<working directory, relative to the repository root>",
     "commands": ["<first command>", "<second command>"],
@@ -31,6 +31,7 @@ Respond with ONLY a JSON object (no prose, no fences):
     "env": {"<NAME>": "$<NAME>"},
     "reports": ["<optional: a file the run writes as its result>"],
     "requires": [{"tool": "<a tool the commands call>"}, {"path": "<a file or folder they read, relative to the repo root>"}],
+    "proof": [{"line": 1, "command": 2}, {"line": 2, "report": "<a path in reports>#<field>"}],
     "runner": "<optional: omit it and the `runner` line in your input decides; set \"host\" or \"container\" only to override it>"
   }
 }
@@ -46,6 +47,18 @@ checkout. An absolute path or a `..` in `cwd` fails the step.
 `reports` is optional. List each file the run writes as its result, such
 as a JSON summary, relative to `cwd` or under `/tmp`. Verify & report reads
 them beside the log. A command's `--report <path>` is found without it.
+
+`proof` names what proves each metric line. Give one entry per metric
+line, numbered as the metric lists them, starting at 1:
+- `{"line": <n>, "command": <k>}` when command `k` (1-based, in
+  `commands` order) prints the evidence;
+- `{"line": <n>, "report": "<path>#<field>"}` when a report field holds
+  it. The path must be listed in `reports`.
+
+Each line must be provable from this one run's output. A metric line with
+no entry, a line named twice, or a line the metric does not have fails the
+step, and the reason names the line. If a line cannot be proved by one run,
+say so in `## Proof` as a blocking finding.
 
 `requires` lists every tool and file the commands need. Fill it in for
 every plan:

@@ -66,5 +66,71 @@
     { "case": "a path with ..", "block": { "cwd": ".", "commands": ["echo hi"], "budget_minutes": 1, "requires": [{ "path": "../secrets.json" }] }, "valid": false },
     { "case": "a path with a newline", "block": { "cwd": ".", "commands": ["echo hi"], "budget_minutes": 1, "requires": [{ "path": "ok\nmissing" }] }, "valid": false },
     { "case": "a path that is not a string", "block": { "cwd": ".", "commands": ["echo hi"], "budget_minutes": 1, "requires": [{ "path": 7 }] }, "valid": false }
+  ],
+  "$comment4": "HZ-503. `proof`: what proves each metric line, asserted by BOTH server/test/run-plan-reports-cases.test.mjs (domain/js/runPlan.js extractRunPlan) and farm/tests/test_job_reports.py (domain/py/run_plan.py validate). Shape only: a whole `line`, and exactly one of `command` (a 1-based index into `commands`) or `report` (`<path>#<field>`, both non-empty, the path listed in `reports`).",
+  "proof": [
+    { "case": "no proof list", "block": { "cwd": ".", "commands": ["echo hi", "./count.sh"], "budget_minutes": 1 }, "valid": true },
+    { "case": "an empty proof list", "block": { "cwd": ".", "commands": ["echo hi", "./count.sh"], "budget_minutes": 1, "proof": [] }, "valid": true },
+    {
+      "case": "a command proof and a report proof",
+      "block": { "cwd": ".", "commands": ["echo hi", "./count.sh"], "budget_minutes": 1, "reports": ["/tmp/r.json"], "proof": [{ "line": 1, "command": 1 }, { "line": 2, "report": "/tmp/r.json#rows_written" }] },
+      "valid": true
+    },
+    { "case": "a command proof naming the last command", "block": { "cwd": ".", "commands": ["echo hi", "./count.sh"], "budget_minutes": 1, "proof": [{ "line": 1, "command": 2 }] }, "valid": true },
+    { "case": "proof is an object, not a list", "block": { "cwd": ".", "commands": ["echo hi", "./count.sh"], "budget_minutes": 1, "proof": { "line": 1, "command": 1 } }, "valid": false },
+    {
+      "case": "an entry with both sources",
+      "block": { "cwd": ".", "commands": ["echo hi", "./count.sh"], "budget_minutes": 1, "reports": ["/tmp/r.json"], "proof": [{ "line": 1, "command": 1, "report": "/tmp/r.json#rows" }] },
+      "valid": false
+    },
+    { "case": "an entry with neither source", "block": { "cwd": ".", "commands": ["echo hi", "./count.sh"], "budget_minutes": 1, "proof": [{ "line": 1 }] }, "valid": false },
+    { "case": "an entry with no line", "block": { "cwd": ".", "commands": ["echo hi", "./count.sh"], "budget_minutes": 1, "proof": [{ "command": 1 }] }, "valid": false },
+    { "case": "line 0", "block": { "cwd": ".", "commands": ["echo hi", "./count.sh"], "budget_minutes": 1, "proof": [{ "line": 0, "command": 1 }] }, "valid": false },
+    { "case": "a line sent as a string", "block": { "cwd": ".", "commands": ["echo hi", "./count.sh"], "budget_minutes": 1, "proof": [{ "line": "2", "command": 1 }] }, "valid": false },
+    { "case": "a line sent as a bool", "block": { "cwd": ".", "commands": ["echo hi", "./count.sh"], "budget_minutes": 1, "proof": [{ "line": true, "command": 1 }] }, "valid": false },
+    { "case": "an unknown key", "block": { "cwd": ".", "commands": ["echo hi", "./count.sh"], "budget_minutes": 1, "proof": [{ "line": 1, "command": 1, "note": "x" }] }, "valid": false },
+    { "case": "command index 0", "block": { "cwd": ".", "commands": ["echo hi", "./count.sh"], "budget_minutes": 1, "proof": [{ "line": 1, "command": 0 }] }, "valid": false },
+    { "case": "a command index past the end", "block": { "cwd": ".", "commands": ["echo hi", "./count.sh"], "budget_minutes": 1, "proof": [{ "line": 1, "command": 3 }] }, "valid": false },
+    {
+      "case": "a report with an empty field",
+      "block": { "cwd": ".", "commands": ["echo hi", "./count.sh"], "budget_minutes": 1, "reports": ["/tmp/r.json"], "proof": [{ "line": 1, "report": "/tmp/r.json#" }] },
+      "valid": false
+    },
+    {
+      "case": "a report with an empty path",
+      "block": { "cwd": ".", "commands": ["echo hi", "./count.sh"], "budget_minutes": 1, "reports": ["/tmp/r.json"], "proof": [{ "line": 1, "report": "#rows" }] },
+      "valid": false
+    },
+    {
+      "case": "a report with no field part",
+      "block": { "cwd": ".", "commands": ["echo hi", "./count.sh"], "budget_minutes": 1, "reports": ["/tmp/r.json"], "proof": [{ "line": 1, "report": "/tmp/r.json" }] },
+      "valid": false
+    },
+    {
+      "case": "a report path not listed in reports",
+      "block": { "cwd": ".", "commands": ["echo hi", "./count.sh"], "budget_minutes": 1, "reports": ["/tmp/r.json"], "proof": [{ "line": 1, "report": "/tmp/other.json#rows" }] },
+      "valid": false
+    }
+  ],
+  "$comment5": "HZ-503. PY-ONLY: read by farm/tests/test_job_reports.py (domain/py/run_plan.py unproven) alone. Coverage of the metric is the farm's check when a Run plan reply is written; the JS reader checks shape only and has no parity case here. `names` lists every line number the reason must name; empty means the proof covers the metric.",
+  "proof_coverage": [
+    { "case": "every line once", "metric": "1. rows written\n2. failures listed", "proof": [{ "line": 1, "command": 1 }, { "line": 2, "command": 2 }], "names": [] },
+    { "case": "no metric and no proof", "metric": "", "proof": [], "names": [] },
+    { "case": "a line with no proof", "metric": "1. a\n2. b\n3. c", "proof": [{ "line": 1, "command": 1 }, { "line": 2, "command": 1 }], "names": [3] },
+    { "case": "a line named twice", "metric": "1. a\n2. b", "proof": [{ "line": 1, "command": 1 }, { "line": 2, "command": 1 }, { "line": 2, "command": 2 }], "names": [2] },
+    { "case": "a line past the metric", "metric": "1. a", "proof": [{ "line": 1, "command": 1 }, { "line": 6, "command": 1 }], "names": [6] },
+    { "case": "proof for an empty metric", "metric": "", "proof": [{ "line": 1, "command": 1 }], "names": [1] },
+    {
+      "case": "a missing line and a doubled one",
+      "metric": "1. a\n2. b\n3. c",
+      "proof": [{ "line": 1, "command": 1 }, { "line": 1, "command": 2 }, { "line": 2, "command": 1 }],
+      "names": [3, 1]
+    },
+    {
+      "case": "a deferred line is not numbered",
+      "metric": "1. a\n2. b\nDeferred to a follow-up item (not in scope here): c",
+      "proof": [{ "line": 1, "command": 1 }, { "line": 2, "command": 1 }, { "line": 3, "command": 1 }],
+      "names": [3]
+    }
   ]
 }

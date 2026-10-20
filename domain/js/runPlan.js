@@ -29,6 +29,7 @@ export function extractRunPlan(artifact) {
   if (!Number.isInteger(budgetMinutes) || budgetMinutes < 1) return null
   if (block.reports !== undefined && !validReports(block.reports)) return null
   if (block.requires !== undefined && !validRequires(block.requires)) return null
+  if (block.proof !== undefined && !validProof(block.proof, commands.length, block.reports ?? [])) return null
   // HZ-416: optional; absent leaves it to effectiveRunner(). Unknown values
   // read as no plan, the same as any other malformed block.
   if (block.runner !== undefined && block.runner !== 'container' && block.runner !== 'host') return null
@@ -67,5 +68,28 @@ function validRequires(requires) {
     if (key === 'tool') return TOOL_NAME.test(value)
     if (key === 'path') return value.trim() !== '' && !value.startsWith('/') && !value.split('/').includes('..') && !CONTROL.test(value)
     return false
+  })
+}
+
+// HZ-503: the same shape rule as run_plan.validate()'s `proof` check — a
+// whole `line` and exactly one source: `command`, a 1-based index into
+// `commands`, or `report`, `<path>#<field>` with both parts non-empty and the
+// path listed in `reports`. Coverage of the metric is the farm's check alone.
+const PROOF_KEYS = new Set(['line', 'command', 'report'])
+const whole = (n) => Number.isInteger(n) && n >= 1
+
+function validProof(proof, commandCount, reports) {
+  if (!Array.isArray(proof)) return false
+  return proof.every((entry) => {
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return false
+    if (!Object.keys(entry).every((key) => PROOF_KEYS.has(key)) || !whole(entry.line)) return false
+    const hasCommand = Object.hasOwn(entry, 'command')
+    if (hasCommand === Object.hasOwn(entry, 'report')) return false
+    if (hasCommand) return whole(entry.command) && entry.command <= commandCount
+    if (typeof entry.report !== 'string') return false
+    const at = entry.report.indexOf('#')
+    if (at < 0) return false
+    const reportPath = entry.report.slice(0, at)
+    return reportPath.trim() !== '' && entry.report.slice(at + 1).trim() !== '' && reports.includes(reportPath)
   })
 }
