@@ -506,6 +506,54 @@ test('abandon still returns 200 {ok:true} when the GitHub close fails — best-e
   }
 })
 
+// HZ-513: abandon frees the item's e2e-artifacts ref, best-effort.
+test('abandon deletes the item e2e-artifacts ref on GitHub', async () => {
+  db.prepare(
+    "INSERT INTO work_item (id, title, priority, cursor, repo, issue) VALUES ('T-ABANDON-REF', 'Frees its ref', 'Medium', 4, 'acme/demo', 14)",
+  ).run()
+  const realFetch = globalThis.fetch
+  const calls = []
+  globalThis.fetch = async (url, opts) => {
+    calls.push({ url: String(url), method: opts?.method || 'GET' })
+    return { ok: true, status: 200, json: async () => ({}), text: async () => '' }
+  }
+  try {
+    const res = await abandonPost('T-ABANDON-REF', { reason: 'not needed' })
+    assert.equal(res.statusCode, 200)
+    const del = calls.find((c) => c.method === 'DELETE')
+    assert.ok(del, 'expected a DELETE of the artifacts ref')
+    assert.ok(del.url.endsWith('/repos/acme/demo/git/refs/heads%2Fe2e-artifacts%2Ft-abandon-ref'), del.url)
+  } finally {
+    globalThis.fetch = realFetch
+  }
+})
+
+for (const [label, id, fail] of [
+  ['returns 404 (no ref)', 'T-ABANDON-REF-404', async () => ({ ok: false, status: 404, json: async () => ({}), text: async () => '' })],
+  ['throws', 'T-ABANDON-REF-THROW', async () => { throw new Error('network down') }],
+]) {
+  test(`abandon still returns 200 when the artifacts ref DELETE ${label}`, async () => {
+    db.prepare(
+      "INSERT INTO work_item (id, title, priority, cursor, repo) VALUES (?, 'Ref delete fails', 'Medium', 4, 'acme/demo')",
+    ).run(id)
+    const realFetch = globalThis.fetch
+    let deletes = 0
+    globalThis.fetch = async (url, opts) => {
+      if (opts?.method === 'DELETE') deletes++
+      return fail()
+    }
+    try {
+      const res = await abandonPost(id, { reason: 'stopping this' })
+      assert.equal(res.statusCode, 200)
+      assert.deepEqual(res.json(), { ok: true })
+      assert.equal(deletes, 1)
+      assert.ok(db.prepare('SELECT abandoned_at FROM work_item WHERE id = ?').get(id).abandoned_at)
+    } finally {
+      globalThis.fetch = realFetch
+    }
+  })
+}
+
 // ---- HZ-92: /api/items/:id/resolve-conflicts — HTTP contract ----
 // The fast path is still an Accept-gate action: same session + gate-PIN
 // requirement as /reject, verified here without a real farm (FARM_URL is

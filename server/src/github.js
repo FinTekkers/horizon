@@ -12,7 +12,7 @@ import { db } from './db.js'
 import * as store from './store.js'
 import { getToken, getSetting, setSetting } from './settings.js'
 import { POLL_INTERVAL_MS, UI_URL } from './config.js'
-import { ACCEPT_GATE_INDEX } from '../../domain/js/lifecycle.js'
+import { ACCEPT_GATE_INDEX, endIndex, itemKindOf } from '../../domain/js/lifecycle.js'
 import { PRIORITY } from '../../domain/js/priorities.js'
 import { PRIORITY_LABEL_RE, priorityLabelName } from './priorityLabels.js'
 import { kindLabelName } from './kindLabels.js'
@@ -472,12 +472,89 @@ export async function compareScreenshotsMarkdown(repo, item) {
 }
 
 // Best-effort: deletes an item's artifact ref once it's no longer needed
-// (merged into the baseline, or the PR closed unmerged) — bounds storage to
-// one ref per currently-open PR plus the one baseline ref.
-async function deleteArtifactRef(repo, item) {
+// (merged into the baseline, the PR closed unmerged, or the item abandoned) —
+// bounds storage to one ref per currently-open PR plus the one baseline ref.
+// Never throws: a missing ref (404) or a network error is ignored.
+export async function deleteArtifactRef(repo, item) {
   await gh(`/repos/${repo}/git/refs/${encodeURIComponent(`heads/${artifactsRef(item)}`)}`, { method: 'DELETE' }).catch(
     () => {},
   )
+}
+
+// HZ-513: the daily sweep behind deleteArtifactRef — catches refs whose item
+// closed some way that never called it (merged on GitHub, closed as an issue,
+// deleted). Only ever touches refs under ARTIFACTS_PREFIX, so BASELINE_REF and
+// code branches are out of reach. Runs at most once per ARTIFACTS_PRUNE_MS,
+// remembered in sync_cursor so a restart doesn't re-run it. Best-effort: a
+// failed list or delete logs a warning and moves on.
+const ARTIFACTS_PREFIX = 'refs/heads/e2e-artifacts/'
+const ARTIFACTS_PRUNE_KEY = 'artifacts-prune'
+export const ARTIFACTS_PRUNE_MS = 24 * 60 * 60 * 1000
+const getCursorSyncedAt = db.prepare('SELECT last_synced_at FROM sync_cursor WHERE key = ?')
+const artifactItem = db.prepare(
+  'SELECT id, kind, cursor, abandoned_at, merged_at FROM work_item WHERE repo = ? AND lower(id) = ?',
+)
+
+// Why an artifacts ref's item no longer needs it, or null to keep the ref.
+function artifactPruneReason(row) {
+  if (!row) return 'unknown item'
+  if (row.abandoned_at) return 'abandoned'
+  if (row.merged_at) return 'merged'
+  let end
+  try {
+    end = endIndex(itemKindOf(row))
+  } catch {
+    return null // an unrecognised kind: keep rather than guess
+  }
+  return row.cursor >= end ? 'closed' : null
+}
+
+async function listArtifactRefs(repo) {
+  const refs = []
+  for (let page = 1; ; page++) {
+    const res = await gh(`/repos/${repo}/git/matching-refs/heads/e2e-artifacts/?per_page=100&page=${page}`)
+    if (!res.ok) throw new Error(`GitHub returned ${res.status}`)
+    const batch = await res.json()
+    if (!Array.isArray(batch)) throw new Error('GitHub returned no ref list')
+    refs.push(...batch)
+    if (batch.length < 100) return refs
+  }
+}
+
+export async function pruneArtifactRefs(log, now = Date.now()) {
+  const last = getCursorSyncedAt.get(ARTIFACTS_PRUNE_KEY)?.last_synced_at
+  if (last && now - msOf(last) < ARTIFACTS_PRUNE_MS) return null
+  if (store.listRepos().length === 0) return null
+  setCursor.run(ARTIFACTS_PRUNE_KEY, null)
+  let deleted = 0
+  for (const { repo } of store.listRepos()) {
+    let refs
+    try {
+      refs = await listArtifactRefs(repo)
+    } catch (err) {
+      log?.warn(`could not list e2e-artifacts refs in ${repo}: ${err.message}`)
+      continue
+    }
+    for (const { ref } of refs) {
+      if (typeof ref !== 'string' || !ref.startsWith(ARTIFACTS_PREFIX)) continue
+      const suffix = ref.slice(ARTIFACTS_PREFIX.length)
+      if (!suffix || suffix.includes('/')) continue
+      const why = artifactPruneReason(artifactItem.get(repo, suffix.toLowerCase()))
+      if (!why) continue
+      try {
+        const res = await gh(`/repos/${repo}/git/refs/${encodeURIComponent(`heads/e2e-artifacts/${suffix}`)}`, {
+          method: 'DELETE',
+        })
+        if (!res.ok && res.status !== 404) throw new Error(`GitHub returned ${res.status}`)
+        deleted++
+        log?.info(`deleted e2e-artifacts/${suffix} in ${repo} (${why})`)
+      } catch (err) {
+        log?.warn(`could not delete e2e-artifacts/${suffix} in ${repo}: ${err.message}`)
+      }
+    }
+  }
+  log?.info(`artifacts prune: ${deleted} ref(s) deleted`)
+  return { deleted }
 }
 
 // Open the PR for a branch a real agent already pushed (the farm's Eng agent
@@ -1208,6 +1285,9 @@ export function startPolling(log) {
   }
   tick()
   setInterval(tick, POLL_INTERVAL_MS).unref()
+  const prune = () => pruneArtifactRefs(log).catch((err) => log.warn(`artifacts prune failed: ${err.message}`))
+  prune()
+  setInterval(prune, ARTIFACTS_PRUNE_MS).unref()
 }
 
 export function verifySignature(secret, rawBody, signatureHeader) {

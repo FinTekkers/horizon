@@ -1929,6 +1929,9 @@ export function buildApp({ logger = true, onRoute = null } = {}) {
         removeDependentLinks: request.body.removeDependentLinks === true,
       })
       if (result.error) return send(reply, result)
+      // HZ-513: free the item's screenshots ref, as a PR closed unmerged does.
+      // Not awaited and never throws, so it can't block or fail the abandon.
+      if (item?.repo) github.deleteArtifactRef(item.repo, item).catch(() => {})
       if (item?.repo && item.issue != null) {
         try {
           await github.closeIssueAsAbandoned(item, request.body.reason.trim())
