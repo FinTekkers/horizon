@@ -138,6 +138,46 @@ def ensure_image(image: str, timeout_s: int = 600) -> None:
         raise Unavailable(f"the container image could not be pulled: {image}" + (f" ({detail})" if detail else ""))
 
 
+def _user_flags() -> list:
+    """The farm user mapped to itself, so files read and written in the
+    container have the farm user's own permissions."""
+    return ["--userns=keep-id", "--user", f"{os.getuid()}:{os.getgid()}"]
+
+
+def _repo_mount(repo_dir: str) -> list:
+    """The checkout, read-only, at its own host path."""
+    return ["-v", f"{repo_dir}:{repo_dir}:ro"]
+
+
+def probe_argv(*, image: str, repo_dir: str, workdir: str, script: str, args: list) -> list:
+    """HZ-502: one throwaway `podman run --rm` of the job's image that runs
+    `sh -c <script> _ <args...>` — the Run plan step's check of what the plan
+    needs. The same user, read-only checkout mount, workdir and HOME as
+    build_run_argv, so it sees the image's PATH and the checkout as a job's
+    `podman exec` does. No network, no writable mount, no `exec` into a job
+    container; each arg is its own argv item, never part of the script."""
+    return [
+        podman_bin(),
+        "run",
+        "--rm",
+        "--network=none",
+        *_user_flags(),
+        "--read-only",
+        "--read-only-tmpfs=false",
+        *_repo_mount(repo_dir),
+        "--env",
+        f"HOME={TMP_MOUNT}",
+        "-w",
+        workdir,
+        image,
+        "sh",
+        "-c",
+        script,
+        "_",
+        *args,
+    ]
+
+
 def build_run_argv(
     *,
     image: str,
@@ -165,9 +205,7 @@ def build_run_argv(
         "--label",
         owner_label(),
         "--network=host",
-        "--userns=keep-id",
-        "--user",
-        f"{os.getuid()}:{os.getgid()}",
+        *_user_flags(),
         "--read-only",
         "--read-only-tmpfs=false",
         "--cpus",
@@ -178,8 +216,7 @@ def build_run_argv(
         # OOM kill rather than a slow crawl.
         "--memory-swap",
         memory or DEFAULT_MEMORY,
-        "-v",
-        f"{repo_dir}:{repo_dir}:ro",
+        *_repo_mount(repo_dir),
         "-v",
         f"{scratch_dir}:{SCRATCH_MOUNT}:rw",
         "-v",

@@ -30,6 +30,7 @@ Respond with ONLY a JSON object (no prose, no fences):
     "budget_minutes": <whole minutes, at least 1>,
     "env": {"<NAME>": "$<NAME>"},
     "reports": ["<optional: a file the run writes as its result>"],
+    "requires": [{"tool": "<a tool the commands call>"}, {"path": "<a file or folder they read, relative to the repo root>"}],
     "runner": "<optional: omit it and the `runner` line in your input decides; set \"host\" or \"container\" only to override it>"
   }
 }
@@ -45,6 +46,24 @@ checkout. An absolute path or a `..` in `cwd` fails the step.
 `reports` is optional. List each file the run writes as its result, such
 as a JSON summary, relative to `cwd` or under `/tmp`. Verify & report reads
 them beside the log. A command's `--report <path>` is found without it.
+
+`requires` lists every tool and file the commands need. Fill it in for
+every plan:
+- each tool a command calls, such as `gh`, `grpcurl`, `cargo`, `python3`
+  or `pip`, as `{"tool": "<name>"}`;
+- each file or folder a command reads, such as `requirements.txt`, as
+  `{"path": "<path>"}`, relative to the repo root (not to `cwd`).
+
+List only what must exist before the run starts, not what an earlier
+command installs or writes. Before Impact review, the farm checks each one
+on the runner the plan will use: tools with `command -v` under the same
+`PATH` as Execute (the venv `bin/` first), paths with `test -e`. Anything
+missing comes back to you, named, to fix the plan. A path that is absolute,
+has a `..` or resolves outside the checkout is rejected.
+
+Horizon dependencies already guarantee a blocker has merged or closed
+before this Task runs. Do not add a `gh` command, or a `gh` tool, to check
+that.
 
 The `runner` line in your input says where a plan with no `runner` runs:
 `container` when this repo has a pinned container image, `host` when it has

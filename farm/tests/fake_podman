@@ -1,12 +1,14 @@
 #!/usr/bin/env python3
 """A stand-in for rootless `podman`, for hosts without it (HZ-416).
 
-Only what farm/container_runner.py calls: `run -d`, `exec`, `kill`, `rm -f`,
-`ps -a`, `inspect`, `image exists` and `pull`. `run -d` starts the given
-command (`sleep infinity`) on the host in its own session; `exec` runs
-`sh -c <command>` on the host, in the host dir mounted at the `-w` path,
-with only Podman's base variables plus the `--env` given to `run` — so the
-HZ-407/408 suites exercise the container code path. It does NOT confine
+Only what farm/container_runner.py calls: `run -d`, `run --rm`, `exec`,
+`kill`, `rm -f`, `ps -a`, `inspect`, `image exists` and `pull`. `run -d`
+starts the given command (`sleep infinity`) on the host in its own session;
+`exec` runs `sh -c <command>` on the host, in the host dir mounted at the
+`-w` path, with only Podman's base variables plus the `--env` given to
+`run` — so the HZ-407/408 suites exercise the container code path. `run
+--rm` (HZ-502) runs its command the same way in the foreground and records
+nothing. It does NOT confine
 anything: mounts, read-only flags and limits are recorded, never enforced.
 The confinement tests in test_container_runner.py need a real Podman.
 
@@ -134,6 +136,15 @@ def _run(args):
     if "missing" in image:
         print(f"Error: {image}: image not known", file=sys.stderr)
         return 125
+    if "--rm" in opts["flags"] and not opts["detach"]:
+        # HZ-502: a one-shot `run --rm` (the Run plan requires check): runs
+        # the command in the foreground and leaves no record behind.
+        env = dict(BASE_ENV)
+        for entry in opts["env"]:
+            key, sep, value = entry.partition("=")
+            if sep:
+                env[key] = value
+        return subprocess.run(command, cwd=_host_dir(opts, opts["workdir"]), env=env, stdin=subprocess.DEVNULL).returncode
     name = opts["name"] or f"fake-{os.getpid()}"
     if _record(name):
         print(f"Error: the container name \"{name}\" is already in use", file=sys.stderr)

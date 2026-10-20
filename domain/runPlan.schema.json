@@ -1,6 +1,6 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
-  "$comment": "HZ-383: the contract for a Task's Run plan block — the machine-readable part of the Run plan step's artifact, which HZ-378's Execute reads. Unlike the other *.schema.json files here it pairs with no data file in domain/: it is the contract for an agent's OUTPUT, emitted by the Run plan step and checked by domain/py/run_plan.py (the only binding; there is no JS validator, since only the farm reads the block). Written in the same Draft-07 subset domain/validate.mjs honours. Rules the subset cannot express — every `env` value is a string naming a variable as `$NAME`, never a literal value — are asserted by the binding.",
+  "$comment": "HZ-383: the contract for a Task's Run plan block — the machine-readable part of the Run plan step's artifact, which HZ-378's Execute reads. Unlike the other *.schema.json files here it pairs with no data file in domain/: it is the contract for an agent's OUTPUT, emitted by the Run plan step and checked by domain/py/run_plan.py for the farm and read by domain/js/runPlan.js for the server's Approve the run card. Written in the same Draft-07 subset domain/validate.mjs honours. Rules the subset cannot express — every `env` value is a string naming a variable as `$NAME`, never a literal value — are asserted by the binding.",
   "title": "Horizon Task run plan",
   "type": "object",
   "required": ["cwd", "commands", "budget_minutes"],
@@ -35,6 +35,18 @@
       "$comment": "HZ-434: files the run writes as its own result, shown to Verify & report beside the log. A path is relative to `cwd` or absolute, never with a `..` part (asserted by both bindings). A command's `--report <path>` is found without this list. Execute reads a file only if its realpath is inside the resolved cwd or /tmp.",
       "type": "array",
       "items": { "type": "string", "minLength": 1 }
+    },
+    "requires": {
+      "$comment": "HZ-502: every tool and file the commands need, checked on the runner before Impact review (farm/run_plan_requires.py). Each item has exactly one key. A `tool` name matches ^[A-Za-z0-9][A-Za-z0-9._+-]*$ (so it never reads as an option). A `path` is relative to the checkout root, never absolute, never with a `..` part, and holds no control character. Asserted by both bindings.",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "tool": { "type": "string", "minLength": 1 },
+          "path": { "type": "string", "minLength": 1 }
+        }
+      }
     }
   }
 }

@@ -181,3 +181,21 @@ def test_shared_reports_cases(case):
     else:
         with pytest.raises(ValueError, match="'reports'"):
             run_plan.validate(dict(case["block"]))
+
+
+# ---- HZ-502: the same `requires` rule as domain/js/runPlan.js ----
+
+
+def test_the_requires_fixture_has_none_a_valid_list_and_invalid_cases():
+    assert any(c["valid"] and "requires" not in c["block"] for c in CASES["requires"])
+    assert any(c["valid"] and c["block"].get("requires") for c in CASES["requires"])
+    assert any(not c["valid"] for c in CASES["requires"])
+
+
+@pytest.mark.parametrize("case", CASES["requires"], ids=lambda c: c["case"])
+def test_shared_requires_cases(case):
+    if case["valid"]:
+        assert run_plan.validate(dict(case["block"])) == case["block"]
+    else:
+        with pytest.raises(ValueError, match="'requires'"):
+            run_plan.validate(dict(case["block"]))

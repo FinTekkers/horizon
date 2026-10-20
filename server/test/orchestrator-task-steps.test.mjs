@@ -129,6 +129,36 @@ test('a farm that refuses the step as the wrong kind fails the run with that rea
   assert.ok(event.text.includes("this step does not belong to the item's kind"), event.text)
 })
 
+// HZ-502: a Run plan whose `requires` gaps outlast the re-prompts fails on
+// the farm, naming each gap. The item stays on Run plan: Impact review is
+// never dispatched and no Approve the run gate opens.
+test('a Run plan failed for missing requirements stays on Run plan and shows both gaps', async () => {
+  insertTask.run('T-REQUIRES', 'Backfill', RUN_PLAN)
+  const runId = db
+    .prepare('INSERT INTO step_run (item_id, step_index, attempt, agent) VALUES (?, ?, 1, ?)')
+    .run('T-REQUIRES', RUN_PLAN, STEPS[RUN_PLAN].agent).lastInsertRowid
+  const reason =
+    "the run plan needs what the runner lacks: tool `hz502-missing` is not on the runner's PATH; " +
+    'path `nope/requirements.txt` does not exist in the checkout'
+  assert.deepEqual(orchestrator.failFarmRun(runId, reason), { ok: true })
+  await wait(20)
+
+  const item = store.getItem('T-REQUIRES')
+  assert.equal(item.cursor, RUN_PLAN, 'the cursor stays on Run plan')
+  assert.equal(item.paused, true)
+  const sent = dispatches.filter((d) => d.url.includes('/steps/run') && d.body?.item?.id === 'T-REQUIRES')
+  assert.equal(sent.length, 0, 'neither Impact review nor anything else is dispatched')
+  const later = db.prepare('SELECT step_index FROM step_run WHERE item_id = ? AND step_index > ?').all('T-REQUIRES', RUN_PLAN)
+  assert.deepEqual(later, [], 'no Impact review or Approve the run step is opened')
+  const row = db.prepare('SELECT output FROM step_run WHERE id = ?').get(runId)
+  const event = db.prepare("SELECT text FROM event WHERE item_id = 'T-REQUIRES' ORDER BY id DESC LIMIT 1").get()
+  for (const text of [row.output, event.text]) {
+    assert.ok(text.includes('`hz502-missing`'), text)
+    assert.ok(text.includes('`nope/requirements.txt`'), text)
+  }
+  orchestrator.cancel('T-REQUIRES')
+})
+
 for (const [label, index] of [
   ['Assess', ASSESS],
   ['Run plan', RUN_PLAN],
