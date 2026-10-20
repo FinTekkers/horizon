@@ -11,6 +11,9 @@ Cover each of these, with specifics:
   halfway through, is safe.
 - **Deploy overlap**: whether it can clash with a deploy or another run.
 - **Undo**: how to reverse it, or why it cannot be reversed.
+- **Proof**: the plan's `proof` map names a command or a report field for
+  each metric line. For each line, judge whether that proof can really show
+  it in one run. A weak or unprovable proof is **concerns**; name the line.
 
 You have read-only access. Never run a script or command, against live
 systems or anywhere else. Nothing you write here is executed.
@@ -21,7 +24,7 @@ literal token, key or password — a reply that carries one is rejected.
 Respond with ONLY a JSON object (no prose, no fences):
 {
   "summary": "<past tense, <=200 chars: the verdict and the biggest risk>",
-  "artifact_md": "<markdown: '## Verdict' (pass | pass-with-notes | concerns), then '## Load', '## Duration', '## Rate limits', '## Re-run safety', '## Deploy overlap', '## Undo'>"
+  "artifact_md": "<markdown: '## Verdict' (pass | pass-with-notes | concerns), then '## Load', '## Duration', '## Rate limits', '## Re-run safety', '## Deploy overlap', '## Undo', '## Proof'>"
 }
 
 If human feedback is provided, respond to every point explicitly in your

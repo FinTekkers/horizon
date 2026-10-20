@@ -1110,7 +1110,7 @@ export const MOCK_STEP_BEHAVIOR = {
     summary: 'planned 1 command in the repo root with a 5 minute budget (mock)',
     artifact_md:
       '## Commands\n1. `echo demo` (mock)\n\n## Dry run\nExpected output: `demo` — described, never executed\n\n' +
-      '## Run plan block\n```json run-plan\n{"cwd": ".", "commands": ["echo demo"], "budget_minutes": 5}\n```',
+      '## Run plan block\n```json run-plan\n{"cwd": ".", "commands": ["echo demo"], "budget_minutes": 5, "proof": [{"line": 1, "command": 1}]}\n```',
   }),
   'Impact review': () => ({
     summary: 'impact review passed — no load, rate-limit or deploy-overlap concerns (mock)',

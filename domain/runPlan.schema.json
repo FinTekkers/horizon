@@ -47,6 +47,20 @@
           "path": { "type": "string", "minLength": 1 }
         }
       }
+    },
+    "proof": {
+      "$comment": "HZ-503: what proves each metric line, one entry per line, numbered as domain/py/fields.py criteria_lines() numbers the metric. Each entry names exactly one source: `command`, a 1-based index into `commands`, or `report`, `<path>#<field>` with both parts non-empty and the path listed in `reports`. Optional here, so a plan approved before HZ-503 still runs; farm/step_agent.py requires one entry per metric line when a Run plan reply is written. Exactly-one-source, the command range and the report rule are asserted by both bindings.",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["line"],
+        "additionalProperties": false,
+        "properties": {
+          "line": { "type": "integer", "minimum": 1 },
+          "command": { "type": "integer", "minimum": 1 },
+          "report": { "type": "string", "minLength": 1 }
+        }
+      }
     }
   }
 }

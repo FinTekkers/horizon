@@ -23,6 +23,8 @@ import os
 import re
 from pathlib import Path, PurePosixPath
 
+from domain.py import fields
+
 _SCHEMA_PATH = Path(__file__).resolve().parent.parent / "runPlan.schema.json"
 _SCHEMA: dict = json.loads(_SCHEMA_PATH.read_text())
 REQUIRED: tuple[str, ...] = tuple(_SCHEMA["required"])
@@ -101,6 +103,7 @@ def validate(block: object) -> dict:
         if ".." in PurePosixPath(path).parts:
             raise ValueError(REPORTS_PARENT)
     _check_requires(block.get("requires", []))
+    _check_proof(block.get("proof", []), len(commands), reports)
     return block
 
 
@@ -133,6 +136,62 @@ def _check_requires(requires: object) -> None:
             os.path.isabs(value) or ".." in PurePosixPath(value).parts or _CONTROL.search(value) or not value.strip()
         ):
             raise ValueError(REQUIRES_PATH)
+
+# HZ-503: what proves each metric line. validate() checks the shape only, so
+# a plan approved before HZ-503 (no `proof`) still passes extract() at
+# Execute; unproven() checks coverage, and only when a Run plan reply is
+# written (farm/step_agent.py).
+PROOF_SHAPE = "run_plan 'proof' must be a list of {\"line\": <n>, \"command\": <n>} or {\"line\": <n>, \"report\": \"<path>#<field>\"} objects"
+PROOF_SOURCE = "run_plan 'proof' entries must name exactly one of 'command' or 'report'"
+PROOF_COMMAND_RANGE = "run_plan 'proof' command must be a 1-based index into 'commands'"
+PROOF_REPORT = "run_plan 'proof' report must be '<path>#<field>', both non-empty, with the path listed in 'reports'"
+
+
+def _whole(value: object) -> bool:
+    # bool is an int subclass in Python; `"line": true` must not pass.
+    return isinstance(value, int) and not isinstance(value, bool) and value >= 1
+
+
+def _check_proof(proof: object, command_count: int, reports: list) -> None:
+    if not isinstance(proof, list):
+        raise ValueError(PROOF_SHAPE)
+    for entry in proof:
+        if not isinstance(entry, dict) or not _whole(entry.get("line")) or set(entry) - {"line", "command", "report"}:
+            raise ValueError(PROOF_SHAPE)
+        if ("command" in entry) == ("report" in entry):
+            raise ValueError(PROOF_SOURCE)
+        if "command" in entry and not (_whole(entry["command"]) and entry["command"] <= command_count):
+            raise ValueError(PROOF_COMMAND_RANGE)
+        if "report" in entry:
+            report = entry["report"]
+            path, _, field = report.partition("#") if isinstance(report, str) else ("", "", "")
+            if not path.strip() or not field.strip() or path not in reports:
+                raise ValueError(PROOF_REPORT)
+
+
+def _numbers(lines: list[int]) -> str:
+    return ("line " if len(lines) == 1 else "lines ") + ", ".join(map(str, lines))
+
+
+def unproven(block: dict, metric: str | None) -> str | None:
+    """HZ-503: why a validated block's `proof` does not cover the metric —
+    one entry per metric line, numbered as fields.criteria_lines() numbers
+    them — or None when it does. Names every missing, doubled and
+    out-of-range line number."""
+    total = len(fields.criteria_lines(metric))
+    named = [entry["line"] for entry in block.get("proof", [])]
+    missing = [n for n in range(1, total + 1) if n not in named]
+    doubled = sorted({n for n in named if named.count(n) > 1})
+    beyond = sorted({n for n in named if n > total})
+    gaps = []
+    if missing:
+        gaps.append(f"proof has no entry for metric {_numbers(missing)}")
+    if doubled:
+        gaps.append(f"proof names metric {_numbers(doubled)} more than once")
+    if beyond:
+        gaps.append(f"proof names metric {_numbers(beyond)}, but the metric has {total} line{'' if total == 1 else 's'}")
+    return "; ".join(gaps) or None
+
 
 # HZ-416: where Execute runs the plan. Absent means the container; only an
 # explicit `host` runs on the host.

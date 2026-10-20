@@ -17,6 +17,13 @@ Respond with ONLY a JSON object (no prose, no fences):
   "verdict": {"verdict": "pass", "summary": "<1-3 short lines: why it passed or failed>"}
 }
 
+Judge each metric line against its named proof. The plan's `proof` map,
+in the `## Run plan block`, names the command or the `<path>#<field>`
+report field that proves each line. If that command did not run, or the
+report field is absent, the line **fails**; name the proof. A plan with no
+`proof` map was approved before it existed: judge each line on the job's
+evidence as a whole.
+
 `verdict.verdict` is `pass` only when every metric line holds on the job's
 evidence; otherwise `fail`. `verdict.summary` is 1-3 short lines, one per
 line, saying why. The item page shows it beside the step; it does not replace

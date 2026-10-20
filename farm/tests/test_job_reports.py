@@ -7,6 +7,7 @@ Also the Python half of domain/fixtures/run-plan-cases.json
 
 import json
 import os
+import re
 import time
 from pathlib import Path
 
@@ -199,3 +200,50 @@ def test_shared_requires_cases(case):
     else:
         with pytest.raises(ValueError, match="'requires'"):
             run_plan.validate(dict(case["block"]))
+
+
+# ---- HZ-503: the same `proof` rule as domain/js/runPlan.js ----
+
+
+def test_the_schema_declares_proof_and_the_binding_reads_it():
+    schema = json.loads((REPO_ROOT / "domain/runPlan.schema.json").read_text())
+    assert "proof" in schema["properties"]
+    assert "proof" not in schema["required"]
+    assert "proof" in run_plan.FIELDS
+
+
+def test_the_proof_fixture_has_none_a_valid_list_and_invalid_cases():
+    assert any(c["valid"] and "proof" not in c["block"] for c in CASES["proof"])
+    assert any(c["valid"] and c["block"].get("proof") for c in CASES["proof"])
+    assert any(not c["valid"] for c in CASES["proof"])
+
+
+@pytest.mark.parametrize("case", CASES["proof"], ids=lambda c: c["case"])
+def test_shared_proof_cases(case):
+    if case["valid"]:
+        assert run_plan.validate(dict(case["block"])) == case["block"]
+    else:
+        with pytest.raises(ValueError, match="'proof'"):
+            run_plan.validate(dict(case["block"]))
+
+
+@pytest.mark.parametrize("case", CASES["proof_coverage"], ids=lambda c: c["case"])
+def test_proof_coverage_cases(case):
+    block = {"cwd": ".", "commands": ["echo hi", "./count.sh"], "budget_minutes": 1, "proof": case["proof"]}
+    reason = run_plan.unproven(run_plan.validate(block), case["metric"])
+    if not case["names"]:
+        assert reason is None
+    else:
+        for line in case["names"]:
+            assert re.search(rf"\bline[s]? (?:\d+, )*{line}\b", reason), reason
+
+
+def test_unproven_counts_a_numbered_test_metric_as_one_line_each():
+    """HZ-503 R6: a metric written like an item's — `1. Test: …` lines — is
+    5 lines, not 1, so proof for 1-5 covers it and line 5 alone is missing
+    without it."""
+    metric = "\n".join(f"{n}. Test: the run shows check {n}." for n in range(1, 6))
+    full = [{"line": n, "command": 1} for n in range(1, 6)]
+    block = {"cwd": ".", "commands": ["echo hi"], "budget_minutes": 1}
+    assert run_plan.unproven({**block, "proof": full}, metric) is None
+    assert run_plan.unproven({**block, "proof": full[:4]}, metric) == "proof has no entry for metric line 5"
