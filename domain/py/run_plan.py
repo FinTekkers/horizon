@@ -100,11 +100,39 @@ def validate(block: object) -> dict:
             raise ValueError(REPORTS_SHAPE)
         if ".." in PurePosixPath(path).parts:
             raise ValueError(REPORTS_PARENT)
+    _check_requires(block.get("requires", []))
     return block
 
 
 REPORTS_SHAPE = "run_plan 'reports' must be a list of non-empty file paths"
 REPORTS_PARENT = "run_plan 'reports' paths must not contain '..'"
+
+# HZ-502: what the commands need on the runner, checked there before Impact
+# review (farm/run_plan_requires.py). A tool name never starts with `-`, so
+# it can never read as an option; a path never holds a control character, so
+# it reaches the check as exactly the path the plan named.
+TOOL_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+-]*$")
+_CONTROL = re.compile(r"[\x00-\x1f\x7f]")
+REQUIRES_SHAPE = "run_plan 'requires' must be a list of {\"tool\": ...} or {\"path\": ...} objects, one key each"
+REQUIRES_TOOL = "run_plan 'requires' tool names must be letters, digits and . _ + -, not starting with -"
+REQUIRES_PATH = "run_plan 'requires' paths must be relative to the repo root, with no '..' and no control characters"
+
+
+def _check_requires(requires: object) -> None:
+    if not isinstance(requires, list):
+        raise ValueError(REQUIRES_SHAPE)
+    for entry in requires:
+        if not isinstance(entry, dict) or len(entry) != 1:
+            raise ValueError(REQUIRES_SHAPE)
+        ((key, value),) = entry.items()
+        if key not in ("tool", "path") or not isinstance(value, str) or not value:
+            raise ValueError(REQUIRES_SHAPE)
+        if key == "tool" and not TOOL_NAME.fullmatch(value):
+            raise ValueError(REQUIRES_TOOL)
+        if key == "path" and (
+            os.path.isabs(value) or ".." in PurePosixPath(value).parts or _CONTROL.search(value) or not value.strip()
+        ):
+            raise ValueError(REQUIRES_PATH)
 
 # HZ-416: where Execute runs the plan. Absent means the container; only an
 # explicit `host` runs on the host.

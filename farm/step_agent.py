@@ -50,7 +50,7 @@ from .agent_runner import (
     stamp_notes,
     stamp_notes_artifact,
 )
-from . import check_record, handoff, login_env, pause, plan_bundle, read_only_guard, review_diff
+from . import check_record, handoff, login_env, pause, plan_bundle, read_only_guard, review_diff, run_plan_requires, task_job
 from .checks import CheckFailure, redact, run_checks, scrub, secret_values
 from .config import FARM_PORT, ITEM_LOCK_WAIT_S
 from .handoff import HandoffContext, HandoffGuard
@@ -148,6 +148,10 @@ STEP_CONFIG = {
 # or edit anything is granted (no Bash, Edit or Write).
 ASSESS_LABEL = "Assess"
 RUN_PLAN_LABEL = "Run plan"
+# HZ-502: how many times a Run plan's `requires` gaps go back to the agent
+# before the step fails, and how that failure's reason starts.
+REQUIRES_REPROMPTS = 2
+REQUIRES_GAP_PREFIX = "the run plan needs what the runner lacks: "
 IMPACT_REVIEW_LABEL = "Impact review"
 VERIFY_REPORT_LABEL = "Verify & report"
 
@@ -1787,6 +1791,33 @@ def _task_reply_validator(label: str):
     return check
 
 
+def _requires_recheck(kind: str, label: str, task: dict):
+    """HZ-502: Run plan's check of its plan's `requires` on the runner
+    Execute will use (farm/run_plan_requires.py), or None for every other
+    step. A check that cannot run fails the step at once — the agent cannot
+    fix a missing Podman — and a plan never passes unchecked. The kind is
+    matched by its table, never by name."""
+    if STEP_CONFIGS.get(kind) is not TASK_STEP_CONFIG or label != RUN_PLAN_LABEL:
+        return None
+
+    def recheck(parsed: dict, deadline: float) -> list[str]:
+        try:
+            return run_plan_requires.check(
+                parsed.get("run_plan"),
+                repo_dir=task.get("repo_dir"),
+                venv_dir=task.get("venv_dir"),
+                runner=task.get("runner"),
+                container_image=task.get("container_image"),
+                forbid=str(task_job.HORIZON_ROOT),  # Execute's own refusal root
+                deadline=deadline,
+            )
+        except run_plan_requires.Unavailable as exc:
+            log(f"{label}: {exc}")
+            raise AgentError(str(exc)) from None
+
+    return recheck
+
+
 def _prior_inventory(task: dict, scope: list[str]) -> dict:
     """HZ-447: the validated Inventory block among the prior artifacts."""
     for artifact in reversed(task.get("artifacts") or []):
@@ -1886,6 +1917,7 @@ def _run_and_parse(
     provider_locked: bool = False,
     validate=None,
     disallowed_tools: str | None = None,
+    recheck=None,
 ) -> tuple[dict, dict, list[str]]:
     """run_agent + the shared reply parser, with one retry-with-feedback on a
     parse failure (HZ-44) — the PM steps' recovery (_execute_pm) too. Asking the
@@ -1915,6 +1947,12 @@ def _run_and_parse(
     raises AgentExhaustedError — see _on_exhaustion(). Only the first call may
     be salvaged; an exhaustion inside the retry is handed off and re-raised.
     A salvaged reply's provenance is the provider that ran, no command_id.
+
+    HZ-502: `recheck(parsed, deadline)` returns the gaps in a reply that
+    parsed and validated (Run plan's `requires` check). Each gap list goes
+    back to the same session, up to REQUIRES_REPROMPTS times, and the new
+    reply is parsed and validated again; gaps that remain fail the step,
+    naming every one. Every re-prompt shares the first call's deadline.
     """
     ctx = HandoffContext(
         item_id=item_id,
@@ -1948,19 +1986,18 @@ def _run_and_parse(
         return parsed, {"provider": exc.provider, **model, "command_id": None}, notes
     produced = reply
 
-    def retry_once(retry_prompt: str) -> str:
+    def resume(next_prompt: str, limit_s: int) -> str:
         nonlocal produced
-        log("invalid reply; retrying once")
         produced = run_agent(
-            retry_prompt,
+            next_prompt,
             agent=agent,
             step=step,
             persona=persona,
-            session_id=reply.get("session_id"),
+            session_id=produced.get("session_id"),
             append_system=append_system,
             cwd=cwd,
             max_turns=max_turns,
-            timeout_s=timeout_s,
+            timeout_s=limit_s,
             allowed_tools=allowed_tools,
             provider=provider,
             model_choice=model_choice,
@@ -1969,8 +2006,25 @@ def _run_and_parse(
         )
         return produced["result"]
 
+    def retry_once(retry_prompt: str) -> str:
+        log("invalid reply; retrying once")
+        return resume(retry_prompt, timeout_s)
+
     try:
-        parsed, notes = parse_agent_reply(reply["result"], retry_once, validate=validate)
+        text, notes = reply["result"], []
+        for reprompt in range(REQUIRES_REPROMPTS + 1):
+            parsed, more = parse_agent_reply(text, retry_once, validate=validate)
+            notes = [*notes, *more]
+            gaps = recheck(parsed, ctx.deadline) if recheck else []
+            if not gaps:
+                break
+            for gap in gaps:
+                log(f"{step}: the runner lacks what the plan requires: {gap}")
+            remaining = int(ctx.deadline - time.monotonic())
+            if reprompt == REQUIRES_REPROMPTS or remaining < 1:
+                raise AgentError(REQUIRES_GAP_PREFIX + "; ".join(gaps))
+            log(f"{step}: sending the gaps back to the agent ({reprompt + 1}/{REQUIRES_REPROMPTS})")
+            text = resume(run_plan_requires.feedback(gaps), min(timeout_s, remaining))
     except AgentExhaustedError as exc:
         _on_exhaustion(exc, required_keys=required_keys, ctx=ctx, guard=guard, salvage=False)
         raise  # never reached: _on_exhaustion always raises when salvage=False
@@ -3177,6 +3231,7 @@ def _execute(task: dict, guard: HandoffGuard) -> dict:
                 provider_locked=provider_locked,
                 validate=validate,
                 disallowed_tools=disallowed_tools,
+                recheck=_requires_recheck(kind, label, task),
             )
             watch.provider = reply_provenance.get("provider") or watch.provider
         leaks = plan_bundle.leaked_paths(json.dumps(parsed, ensure_ascii=False), bundle) if bundle else []

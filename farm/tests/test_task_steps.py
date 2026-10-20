@@ -362,6 +362,16 @@ def test_the_run_plan_prompt_says_cwd_is_relative_to_the_repo_root():
     assert "An absolute path or a `..` in `cwd` fails the step." in prompt
 
 
+def test_the_run_plan_prompt_asks_for_every_tool_and_file_and_no_gh_blocker_check():
+    """HZ-502 metric 4: the role fills in `requires`, and never checks a
+    blocker with `gh` — Horizon dependencies already did."""
+    prompt = (REPO_ROOT / "farm" / "roles" / "task_run_plan.md").read_text()
+    assert '"requires": [{"tool": ' in prompt
+    assert "`requires` lists every tool and file the commands need." in prompt
+    assert "Horizon dependencies already guarantee a blocker has merged or closed" in prompt
+    assert "Do not add a `gh` command, or a `gh` tool, to check" in prompt
+
+
 def test_a_bad_run_plan_fixed_on_the_retry_passes(monkeypatch):
     bad = reply_for(step_agent.RUN_PLAN_LABEL, run_plan={**VALID_PLAN, "commands": []})
     calls = stub_agent(monkeypatch, [bad, reply_for(step_agent.RUN_PLAN_LABEL)])

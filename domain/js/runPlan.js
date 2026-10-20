@@ -28,6 +28,7 @@ export function extractRunPlan(artifact) {
   if (!commands.every((c) => typeof c === 'string' && c.trim())) return null
   if (!Number.isInteger(budgetMinutes) || budgetMinutes < 1) return null
   if (block.reports !== undefined && !validReports(block.reports)) return null
+  if (block.requires !== undefined && !validRequires(block.requires)) return null
   // HZ-416: optional; absent leaves it to effectiveRunner(). Unknown values
   // read as no plan, the same as any other malformed block.
   if (block.runner !== undefined && block.runner !== 'container' && block.runner !== 'host') return null
@@ -46,4 +47,25 @@ export function effectiveRunner(block, imagePinned) {
 function validReports(reports) {
   if (!Array.isArray(reports)) return false
   return reports.every((p) => typeof p === 'string' && p.trim() && !p.split('/').includes('..'))
+}
+
+// HZ-502: the same rule as run_plan.validate()'s `requires` check — one
+// `tool` or `path` key per item; a tool name never starts with `-`; a path is
+// relative, with no `..` part and no control character.
+const TOOL_NAME = /^[A-Za-z0-9][A-Za-z0-9._+-]*$/
+const CONTROL = /[\x00-\x1f\x7f]/
+
+function validRequires(requires) {
+  if (!Array.isArray(requires)) return false
+  return requires.every((entry) => {
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return false
+    const keys = Object.keys(entry)
+    if (keys.length !== 1) return false
+    const [key] = keys
+    const value = entry[key]
+    if (typeof value !== 'string' || !value) return false
+    if (key === 'tool') return TOOL_NAME.test(value)
+    if (key === 'path') return value.trim() !== '' && !value.startsWith('/') && !value.split('/').includes('..') && !CONTROL.test(value)
+    return false
+  })
 }

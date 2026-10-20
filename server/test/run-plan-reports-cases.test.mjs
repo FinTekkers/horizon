@@ -39,3 +39,19 @@ for (const c of cases.runner) {
     assert.equal(effectiveRunner(block, false), c.withoutImage)
   })
 }
+
+// HZ-502: the same fixture's `requires` cases (farm/tests/test_job_reports.py
+// is the Python half), so a plan the card shows is one the farm can check.
+test('the fixture has a requires case with none, a valid list and invalid ones', () => {
+  assert.ok(cases.requires.some((c) => c.valid && c.block.requires === undefined))
+  assert.ok(cases.requires.some((c) => c.valid && c.block.requires?.length))
+  assert.ok(cases.requires.some((c) => !c.valid))
+})
+
+for (const c of cases.requires) {
+  test(`requires: ${c.case}`, () => {
+    const block = extractRunPlan(artifactOf(c.block))
+    if (c.valid) assert.deepEqual(block, c.block)
+    else assert.equal(block, null)
+  })
+}

@@ -46,5 +46,25 @@
     },
     { "case": "an unknown runner", "block": { "cwd": ".", "commands": ["echo hi"], "budget_minutes": 1, "runner": "docker" }, "valid": false },
     { "case": "a non-string runner", "block": { "cwd": ".", "commands": ["echo hi"], "budget_minutes": 1, "runner": 7 }, "valid": false }
+  ],
+  "$comment3": "HZ-502. `requires`: the tools and checkout-relative paths a plan needs on its runner, asserted by BOTH server/test/run-plan-reports-cases.test.mjs (domain/js/runPlan.js extractRunPlan) and farm/tests/test_job_reports.py (domain/py/run_plan.py validate). A tool name never starts with `-`; a path is relative, with no `..` part and no control character.",
+  "requires": [
+    { "case": "no requires list", "block": { "cwd": ".", "commands": ["echo hi"], "budget_minutes": 1 }, "valid": true },
+    { "case": "an empty requires list", "block": { "cwd": ".", "commands": ["echo hi"], "budget_minutes": 1, "requires": [] }, "valid": true },
+    { "case": "a tool and a root file", "block": { "cwd": ".", "commands": ["echo hi"], "budget_minutes": 1, "requires": [{ "tool": "grpcurl" }, { "path": "requirements.txt" }] }, "valid": true },
+    { "case": "a tool with dots and plus, and a nested path", "block": { "cwd": ".", "commands": ["echo hi"], "budget_minutes": 1, "requires": [{ "tool": "python3.12" }, { "tool": "g++" }, { "path": "src/app/config.yaml" }] }, "valid": true },
+    { "case": "requires is a string, not a list", "block": { "cwd": ".", "commands": ["echo hi"], "budget_minutes": 1, "requires": "gh" }, "valid": false },
+    { "case": "an item with both keys", "block": { "cwd": ".", "commands": ["echo hi"], "budget_minutes": 1, "requires": [{ "tool": "gh", "path": "x" }] }, "valid": false },
+    { "case": "an empty item", "block": { "cwd": ".", "commands": ["echo hi"], "budget_minutes": 1, "requires": [{}] }, "valid": false },
+    { "case": "an unknown key", "block": { "cwd": ".", "commands": ["echo hi"], "budget_minutes": 1, "requires": [{ "file": "x" }] }, "valid": false },
+    { "case": "an empty tool name", "block": { "cwd": ".", "commands": ["echo hi"], "budget_minutes": 1, "requires": [{ "tool": "" }] }, "valid": false },
+    { "case": "a tool name with shell characters", "block": { "cwd": ".", "commands": ["echo hi"], "budget_minutes": 1, "requires": [{ "tool": "x;rm -rf /" }] }, "valid": false },
+    { "case": "a tool name that reads as an option", "block": { "cwd": ".", "commands": ["echo hi"], "budget_minutes": 1, "requires": [{ "tool": "-v" }] }, "valid": false },
+    { "case": "the paths marker as a tool name", "block": { "cwd": ".", "commands": ["echo hi"], "budget_minutes": 1, "requires": [{ "tool": "--paths" }] }, "valid": false },
+    { "case": "a tool name with a trailing newline", "block": { "cwd": ".", "commands": ["echo hi"], "budget_minutes": 1, "requires": [{ "tool": "gh\n" }] }, "valid": false },
+    { "case": "an absolute path", "block": { "cwd": ".", "commands": ["echo hi"], "budget_minutes": 1, "requires": [{ "path": "/etc/passwd" }] }, "valid": false },
+    { "case": "a path with ..", "block": { "cwd": ".", "commands": ["echo hi"], "budget_minutes": 1, "requires": [{ "path": "../secrets.json" }] }, "valid": false },
+    { "case": "a path with a newline", "block": { "cwd": ".", "commands": ["echo hi"], "budget_minutes": 1, "requires": [{ "path": "ok\nmissing" }] }, "valid": false },
+    { "case": "a path that is not a string", "block": { "cwd": ".", "commands": ["echo hi"], "budget_minutes": 1, "requires": [{ "path": 7 }] }, "valid": false }
   ]
 }
