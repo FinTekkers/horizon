@@ -500,3 +500,20 @@ def test_a_branch_failure_with_junit_is_headlined_by_its_counts(tmp_path):
         check(ws, {"test": main_cmd("test")})
 
     assert err.value.headline == 'branch test.sh: 1 failed, 1 passed: "fx"'
+
+
+# ---- HZ-505 guardrail 1: the screenshot config comes from the branch only ----
+
+
+def test_the_screenshots_config_is_read_from_the_item_branch_never_origin_main(tmp_path, monkeypatch):
+    """origin/main has a config (an invalid one, so reading it would fail the
+    check); the item's branch deleted it, so the slot is skipped."""
+    monkeypatch.setattr(checks, "_run_bounded", lambda cmd, ws, t, env: subprocess.CompletedProcess(cmd, 0, "", ""))
+    ws = make_ws(tmp_path, {".horizon/screenshots.json": '{"version": 2}'})
+    git(ws, "rm", "-q", ".horizon/screenshots.json")
+    git(ws, "commit", "-qm", "no screenshot config on this branch")
+    assert git(ws, "show", "origin/main:.horizon/screenshots.json")
+    summary_notes = []
+
+    assert run_checks(ws, log=lambda *_: None, configured={"test": "true"}, summary_notes=summary_notes) == "1 repo check(s) passed"
+    assert summary_notes == ["screenshots: skipped (no .horizon/screenshots.json)"]

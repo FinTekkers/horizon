@@ -159,7 +159,7 @@ test('the configured repo’s implement task carries test_env_file; the other re
 
 test('every dispatch that uses checkCommandsField (implement, deploy, conflict resolve) follows the repo', () => {
   assert.deepEqual(orchestrator.checkCommandsField({ id: 'AU-2', repo: 'acme/ui' }), {
-    check_commands: { install: null, test: 'npm test', lint: null, e2e: null },
+    check_commands: { install: null, test: 'npm test', lint: null, e2e: null, screenshots: null },
     test_env_file: HOST_FILE,
   })
   assert.equal(Object.hasOwn(orchestrator.checkCommandsField({ id: 'AA-2', repo: 'acme/api' }), 'test_env_file'), false)

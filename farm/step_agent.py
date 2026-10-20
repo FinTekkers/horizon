@@ -2937,7 +2937,10 @@ def _execute(task: dict, guard: HandoffGuard) -> dict:
         # but never check_note, whose exact text check_record reads. The
         # agent's own text is cut first, so those lines are what survives.
         loops = [f"fix loops: {fix_loops}"] if fix_loops else []
-        checked = " · ".join([check_note, *(_recording()["branch_notes"] or []), *loops])
+        # HZ-505: the screenshots slot's line (summary_notes) joins it too.
+        recording = _recording()
+        notes_after = [*(recording["branch_notes"] or []), *(recording.get("summary_notes") or [])]
+        checked = " · ".join([check_note, *notes_after, *loops])
         summary = f"{summary[: max(SUMMARY_MAX_CHARS - len(checked) - 3, 0)]} · {checked}"[:SUMMARY_MAX_CHARS]
         summary = stamp_notes(summary, notes, SUMMARY_MAX_CHARS)
         if provider_override:
@@ -3359,12 +3362,13 @@ RESULT_POST_RETRY_S = 10
 # /complete or /fail, test_runs to the server's test-runs route. None (no
 # main(), e.g. a test calling execute()) records nothing. HZ-349:
 # branch_notes (the branch run's lines) go into the step summary instead and
-# never ride on the result.
+# never ride on the result; so do HZ-505's summary_notes.
 _RECORDED: contextvars.ContextVar[dict | None] = contextvars.ContextVar("step_recorded", default=None)
 
 
 def _recording() -> dict:
-    """run_checks()'s flakes/test_runs/branch_notes arguments for this run."""
+    """run_checks()'s flakes/test_runs/branch_notes (and, from main(),
+    summary_notes) arguments for this run."""
     recorded = _RECORDED.get()
     return {"flakes": None, "test_runs": None, "branch_notes": None} if recorded is None else recorded
 
@@ -3403,7 +3407,7 @@ def main() -> int:
     pid_path.write_text(str(os.getpid()))
     pause.install_sigterm_handler(outcome_path)
 
-    recorded = {"flakes": [], "test_runs": [], "branch_notes": []}
+    recorded = {"flakes": [], "test_runs": [], "branch_notes": [], "summary_notes": []}
     token = _RECORDED.set(recorded)
     try:
         log(f"run {run_id}: {task['step']['label']} for {task['item']['id']}")
@@ -3448,7 +3452,7 @@ def main() -> int:
     finally:
         _RECORDED.reset(token)
     # A flake on one command survives a real failure on a later one.
-    result.update({key: value for key, value in recorded.items() if value and key != "branch_notes"})
+    result.update({key: value for key, value in recorded.items() if value and key not in ("branch_notes", "summary_notes")})
 
     if pause.pending() and not pause.reported():
         # The pause landed after the work's last interruptible region (e.g.

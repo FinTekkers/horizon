@@ -475,23 +475,26 @@ export function listProjects({ checks = true } = {}) {
 }
 
 // ---- per-repo check commands (HZ-245) ----
-// The four commands farm/checks.py runs for a repo, in this order. A human
-// sets them in Admin; NULL everywhere means "not configured" — HZ-304: the
-// repo's implement fails until they are set or it is marked 'no checks'.
+// The commands farm/checks.py runs for a repo, one slot each, in this order.
+// A human sets them in Admin; NULL everywhere means "not configured" — HZ-304:
+// the repo's implement fails until they are set or it is marked 'no checks'.
+// HZ-505: `screenshots` comes last and never counts as configured on its own.
 
-export const CHECK_SLOTS = ['install', 'test', 'lint', 'e2e']
+export const SCREENSHOTS_SLOT = 'screenshots'
+export const CHECK_SLOTS = ['install', 'test', 'lint', 'e2e', SCREENSHOTS_SLOT]
 
 function repoChecks(row) {
   return Object.fromEntries(CHECK_SLOTS.map((slot) => [slot, row[`check_${slot}`] ?? null]))
 }
 
 // What the farm is sent with a task: the stored slots, or null when the repo
-// is unknown or has nothing configured (the caller then sends nothing).
+// is unknown or has nothing configured (the caller then sends nothing). A
+// screenshots command alone is not a check suite, so it counts as nothing.
 export function getRepoCheckCommands(repoFullName) {
   const row = repoFullName ? findRepo(repoFullName) : null
   if (!row) return null
   const checks = repoChecks(row)
-  return CHECK_SLOTS.some((slot) => checks[slot] != null) ? checks : null
+  return CHECK_SLOTS.some((slot) => slot !== SCREENSHOTS_SLOT && checks[slot] != null) ? checks : null
 }
 
 // The ONLY writer of the check columns, and its only caller is the
@@ -506,7 +509,7 @@ export function setRepoCheckCommands(projectId, repoFullName, checks) {
     return typeof value === 'string' && value.trim() ? value : null
   })
   db.prepare(
-    'UPDATE project_repo SET check_install = ?, check_test = ?, check_lint = ?, check_e2e = ? WHERE id = ?',
+    'UPDATE project_repo SET check_install = ?, check_test = ?, check_lint = ?, check_e2e = ?, check_screenshots = ? WHERE id = ?',
   ).run(...values, row.id)
   notify()
   return { ok: true, checks: Object.fromEntries(CHECK_SLOTS.map((slot, i) => [slot, values[i]])) }

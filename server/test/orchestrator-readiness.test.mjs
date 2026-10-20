@@ -128,7 +128,7 @@ test("configured commands beat the 'no checks' mark: no waiver, and the commands
   orchestrator.kick('RD-3')
   const body = await settle('RD-3')
   orchestrator.cancel('RD-3')
-  assert.deepEqual(body.check_commands, { install: null, test: 'npm test', lint: null, e2e: null })
+  assert.deepEqual(body.check_commands, { install: null, test: 'npm test', lint: null, e2e: null, screenshots: null })
   assert.equal(Object.hasOwn(body, 'checks_waiver'), false)
 })
 

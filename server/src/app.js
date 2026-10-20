@@ -2997,6 +2997,7 @@ export function buildApp({ logger = true, onRoute = null } = {}) {
             test: CHECK_COMMAND_SCHEMA,
             lint: CHECK_COMMAND_SCHEMA,
             e2e: CHECK_COMMAND_SCHEMA,
+            screenshots: CHECK_COMMAND_SCHEMA,
           },
         },
         response: { 200: OK_OBJECT, 400: ERROR_OBJECT, 401: ERROR_OBJECT, 404: ERROR_OBJECT },

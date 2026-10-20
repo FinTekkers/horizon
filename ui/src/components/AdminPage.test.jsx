@@ -419,7 +419,7 @@ test('saving check commands needs the PIN and sends the edited slots with it', a
   api.saveRepoChecks.mockResolvedValueOnce({
     ok: true,
     repo: 'acme/web',
-    checks: { install: 'npm install --ignore-scripts', test: 'npm test', lint: 'npm run lint', e2e: null },
+    checks: { install: 'npm install --ignore-scripts', test: 'npm test', lint: 'npm run lint', e2e: null, screenshots: null },
   })
   fireEvent.change(fin.getByLabelText('Gate PIN to save check commands for acme/web'), { target: { value: 'right-pin' } })
   fireEvent.click(fin.getByRole('button', { name: 'Save commands' }))
@@ -427,11 +427,50 @@ test('saving check commands needs the PIN and sends the edited slots with it', a
   expect(api.saveRepoChecks).toHaveBeenLastCalledWith(
     3,
     'acme/web',
-    { install: 'npm install --ignore-scripts', test: 'npm test', lint: 'npm run lint', e2e: '' },
+    { install: 'npm install --ignore-scripts', test: 'npm test', lint: 'npm run lint', e2e: '', screenshots: '' },
     'right-pin',
   )
   expect(fin.getByLabelText('Gate PIN to save check commands for acme/web').value).toBe('')
   expect(Object.values({ ...localStorage })).not.toContain('right-pin')
+})
+
+// ---- HZ-505: the screenshots slot ----
+
+test('the Screenshots slot is a fifth command box, saved with the PIN like the others', async () => {
+  api.saveRepoChecks.mockResolvedValueOnce({ ok: true, repo: 'acme/web', checks: {} })
+  const { container } = render(<AdminPage sync={{}} projects={CHECK_PROJECTS} onBack={() => {}} />)
+  const fin = within(projectBlock(container, 'Fin'))
+  fireEvent.click(fin.getAllByRole('button', { name: /Check commands/ })[0])
+  fireEvent.change(fin.getByLabelText('Screenshots command for acme/web'), { target: { value: 'node scripts/shots.mjs' } })
+  fireEvent.change(fin.getByLabelText('Gate PIN to save check commands for acme/web'), { target: { value: 'right-pin' } })
+  fireEvent.click(fin.getByRole('button', { name: 'Save commands' }))
+  await fin.findByText('Check commands saved.')
+  expect(api.saveRepoChecks).toHaveBeenLastCalledWith(
+    3,
+    'acme/web',
+    { install: 'npm install --ignore-scripts', test: 'npm test', lint: '', e2e: '', screenshots: 'node scripts/shots.mjs' },
+    'right-pin',
+  )
+})
+
+test('a repo with only a Screenshots command still warns that it has no checks', () => {
+  const projects = [
+    {
+      id: 3,
+      name: 'Fin',
+      enabled: true,
+      repos: [
+        { repo: 'acme/shots', prefix: 'AS', checks: { install: null, test: null, lint: null, e2e: null, screenshots: 'node shots.mjs' } },
+        { repo: 'acme/web', prefix: 'AW', checks: { install: null, test: 'npm test', lint: null, e2e: null, screenshots: null } },
+      ],
+    },
+  ]
+  const { container } = render(<AdminPage sync={{}} projects={projects} onBack={() => {}} />)
+  const warnings = within(projectBlock(container, 'Fin')).getAllByText(
+    'no checks configured: items in this repo will fail at implement',
+  )
+  expect(warnings).toHaveLength(1)
+  expect(within(warnings[0].closest('.repo-marks')).getByLabelText('No checks for acme/shots')).toBeTruthy()
 })
 
 // ---- HZ-244: each repo row's webhook status and the Fix webhook action ----

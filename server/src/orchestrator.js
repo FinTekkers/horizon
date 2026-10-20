@@ -1898,7 +1898,7 @@ function rulesOverrideField(projectName, repo) {
 // repo on its hub clone. Read-only, short timeout; a farm that is off or
 // unreachable yields available:false and the UI shows empty placeholders.
 export async function fetchCheckDefaults(repo) {
-  const empty = { available: false, defaults: { install: null, test: null, lint: null, e2e: null } }
+  const empty = { available: false, defaults: { install: null, test: null, lint: null, e2e: null, screenshots: null } }
   if (!FARM_URL) return empty
   try {
     const data = await farmFetch('/repos/check-defaults', { repo }, { timeoutMs: 5000 })

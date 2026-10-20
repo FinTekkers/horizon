@@ -178,9 +178,9 @@ export const runner = {
 // 'granted' when it gets one; a run that never waits calls it not at all.
 // Fire-and-forget: it is never awaited and anything it throws is ignored.
 //
-// checkCommands (HZ-245) is the repo's Admin-configured {install,test,lint,e2e},
-// or null for none. It goes to the CLI as argv, never env, so it can't
-// reach the check processes' environment.
+// checkCommands (HZ-245) is the repo's Admin-configured
+// {install,test,lint,e2e,screenshots}, or null for none. It goes to the CLI
+// as argv, never env, so it can't reach the check processes' environment.
 //
 // checksWaiver (HZ-304) is store.CHECKS_WAIVER's value excusing a repo with no
 // commands (orchestrator.checksWaiverFor), or null: then a repo with no

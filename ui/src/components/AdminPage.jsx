@@ -528,6 +528,9 @@ const CHECK_SLOTS = [
   { key: 'test', label: 'Test' },
   { key: 'lint', label: 'Lint' },
   { key: 'e2e', label: 'E2E' },
+  // HZ-505: runs only when the branch's .horizon/screenshots.json is valid,
+  // and never counts as "checks configured" on its own.
+  { key: 'screenshots', label: 'Screenshots' },
 ]
 
 const savedChecks = (repoConn) =>
@@ -611,7 +614,7 @@ function RepoMarkToggle({ projectId, repo, mark, label, on }) {
 // check commands and no 'no checks' mark. Read from the snapshot, so it shows
 // what the next dispatch will see.
 function RepoMarks({ projectId, repoConn }) {
-  const configured = CHECK_SLOTS.some(({ key }) => repoConn.checks?.[key])
+  const configured = CHECK_SLOTS.some(({ key }) => key !== 'screenshots' && repoConn.checks?.[key])
   const noChecks = !!repoConn.marks?.noChecks
   return (
     <div className="repo-marks">
