@@ -50,7 +50,7 @@ from .agent_runner import (
     stamp_notes,
     stamp_notes_artifact,
 )
-from . import check_record, handoff, login_env, pause, plan_bundle, read_only_guard, review_diff, run_plan_requires
+from . import check_record, handoff, login_env, pause, plan_bundle, read_only_guard, review_diff, run_plan_requires, task_job
 from .checks import CheckFailure, redact, run_checks, scrub, secret_values
 from .config import FARM_PORT, ITEM_LOCK_WAIT_S
 from .handoff import HandoffContext, HandoffGuard
@@ -1808,7 +1808,7 @@ def _requires_recheck(kind: str, label: str, task: dict):
                 venv_dir=task.get("venv_dir"),
                 runner=task.get("runner"),
                 container_image=task.get("container_image"),
-                forbid=str(REPO_ROOT),
+                forbid=str(task_job.HORIZON_ROOT),  # Execute's own refusal root
                 deadline=deadline,
             )
         except run_plan_requires.Unavailable as exc:
