@@ -119,12 +119,18 @@ def test_a_wrong_password_fails_the_check(ws, tmp_path):
 
 
 def test_only_test_and_e2e_commands_get_the_values_never_install_or_lint(ws, host_file, tmp_path):
+    # HZ-505: the screenshots slot runs only beside a valid config.
+    (ws / ".horizon").mkdir(exist_ok=True)
+    (ws / ".horizon" / "screenshots.json").write_text(
+        (Path(__file__).parent / "fixtures" / "screenshots" / "valid.json").read_text()
+    )
     dumps = {slot: tmp_path / f"{slot}.env" for slot in checks.CHECK_SLOTS}
     configured = {slot: f"env > {dumps[slot]}" for slot in checks.CHECK_SLOTS}
     run_checks(ws, lambda *_: None, configured=configured, test_env_file=str(host_file))
     seen = {slot: dumps[slot].read_text() for slot in checks.CHECK_SLOTS}
     assert f"FT_E2E_PASSWORD={PASSWORD}" in seen["test"] and f"FT_E2E_PASSWORD={PASSWORD}" in seen["e2e"]
     assert "FT_E2E_PASSWORD" not in seen["install"] and "FT_E2E_PASSWORD" not in seen["lint"]
+    assert "FT_E2E_PASSWORD" not in seen["screenshots"]
 
 
 # ---- metric 1: the implement step's output ----

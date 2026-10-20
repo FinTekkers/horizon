@@ -1,6 +1,6 @@
 """HZ-505: .horizon/screenshots.json and the `screenshots` check slot.
 
-parse() turns the committed config into the exact shot list, each shot with
+load() and parse() turn the committed config into the exact shot list, each shot with
 its resolved timeout and height cap. A bad file fails the check with one
 headline naming the bad field's path, before any command runs, on every path
 (configured, waived and FARM_CHECK_CMD). Nothing in the file is ever run."""
@@ -61,7 +61,7 @@ def test_fixture_resolves_exact_shot_list():
     # defaults (45000, 12000) differ from the built-ins (30000, 10000), so
     # home's shots prove defaults beat built-ins and admin's prove the
     # screen's own override beats defaults.
-    assert parse(VALID) == [
+    assert parse(json.loads(VALID)) == [
         Shot("home", "/", "desktop", 1280, 800, "light", False, 45000, 12000),
         Shot("home", "/", "desktop", 1280, 800, "dark", False, 45000, 12000),
         Shot("home", "/", "mobile", 390, 844, "light", False, 45000, 12000),
@@ -71,7 +71,7 @@ def test_fixture_resolves_exact_shot_list():
 
 
 def test_with_no_defaults_the_built_in_values_apply():
-    shots = parse(edited(lambda d: d.pop("defaults")))
+    shots = parse(json.loads(edited(lambda d: d.pop("defaults"))))
     assert {(s.login, s.timeout_ms, s.max_height_px) for s in shots if s.screen == "home"} == {
         (screenshots_config.DEFAULT_LOGIN, screenshots_config.DEFAULT_TIMEOUT_MS, screenshots_config.DEFAULT_MAX_HEIGHT_PX)
     }
@@ -113,7 +113,7 @@ def test_an_invalid_fixture_fails_the_slot_with_one_headline_and_runs_nothing(tm
 )
 def test_a_missing_or_non_integer_version_fails_at_version_with_no_fallback(change):
     with pytest.raises(ConfigError) as err:
-        parse(edited(change))
+        parse(json.loads(edited(change)))
     assert err.value.path == "version"
 
 
@@ -133,13 +133,13 @@ def test_a_missing_or_non_integer_version_fails_at_version_with_no_fallback(chan
 )
 def test_each_bad_field_is_named_by_its_path(change, path):
     with pytest.raises(ConfigError) as err:
-        parse(edited(change))
+        parse(json.loads(edited(change)))
     assert err.value.path == path
 
 
-def test_a_file_that_is_not_json_fails_at_the_root():
+def test_a_file_that_is_not_json_fails_at_the_root(tmp_path):
     with pytest.raises(ConfigError) as err:
-        parse("{ nope")
+        screenshots_config.load(workspace(tmp_path, "{ nope"))
     assert err.value.path == "$"
 
 
@@ -228,4 +228,4 @@ def test_parse_spawns_no_process(monkeypatch):
 
     monkeypatch.setattr(checks.subprocess, "Popen", boom)
     monkeypatch.setattr(checks.subprocess, "run", boom)
-    assert len(parse(VALID)) == 5
+    assert len(parse(json.loads(VALID))) == 5

@@ -1,6 +1,6 @@
 """HZ-505: the screenshot config a repo commits at .horizon/screenshots.json.
 
-parse() validates the file against schema v1 and expands it into the exact
+load() reads the file and parse() validates it against schema v1 and expands it into the exact
 list of shots: screens in file order, then each screen's viewports, then its
 themes. Settings merge built-in values, then `defaults`, then the screen's own
 override, so every Shot carries its resolved timeout_ms and max_height_px.
@@ -82,19 +82,18 @@ def load(ws: Path) -> list[Shot] | None:
     if not path.exists() and not path.is_symlink():
         return None
     try:
-        text = path.read_text(encoding="utf-8")
+        doc = json.loads(path.read_text(encoding="utf-8"))
     except UnicodeDecodeError:
         raise ConfigError(ROOT_PATH, "must be UTF-8 text") from None
-    except OSError:
-        raise ConfigError(ROOT_PATH, "could not be read as a file") from None
-    return parse(text)
-
-
-def parse(text: str) -> list[Shot]:
-    try:
-        doc = json.loads(text)
     except json.JSONDecodeError as exc:
         raise ConfigError(ROOT_PATH, f"is not valid JSON (line {exc.lineno}, column {exc.colno})") from None
+    except OSError:
+        raise ConfigError(ROOT_PATH, "could not be read as a file") from None
+    return parse(doc)
+
+
+def parse(doc) -> list[Shot]:
+    """The shots in a decoded config document (what load() read)."""
     if not isinstance(doc, dict):
         raise ConfigError(ROOT_PATH, "must be a JSON object")
     # First, so a file written for another version is never read as v1.
