@@ -1986,11 +1986,10 @@ def _run_and_parse(
         return parsed, {"provider": exc.provider, **model, "command_id": None}, notes
     produced = reply
 
-    def retry_once(retry_prompt: str) -> str:
+    def resume(next_prompt: str, limit_s: int) -> str:
         nonlocal produced
-        log("invalid reply; retrying once")
         produced = run_agent(
-            retry_prompt,
+            next_prompt,
             agent=agent,
             step=step,
             persona=persona,
@@ -1998,7 +1997,7 @@ def _run_and_parse(
             append_system=append_system,
             cwd=cwd,
             max_turns=max_turns,
-            timeout_s=timeout_s,
+            timeout_s=limit_s,
             allowed_tools=allowed_tools,
             provider=provider,
             model_choice=model_choice,
@@ -2007,9 +2006,15 @@ def _run_and_parse(
         )
         return produced["result"]
 
+    def retry_once(retry_prompt: str) -> str:
+        log("invalid reply; retrying once")
+        return resume(retry_prompt, timeout_s)
+
     try:
-        parsed, notes = parse_agent_reply(reply["result"], retry_once, validate=validate)
+        text, notes = reply["result"], []
         for reprompt in range(REQUIRES_REPROMPTS + 1):
+            parsed, more = parse_agent_reply(text, retry_once, validate=validate)
+            notes = [*notes, *more]
             gaps = recheck(parsed, ctx.deadline) if recheck else []
             if not gaps:
                 break
@@ -2019,24 +2024,7 @@ def _run_and_parse(
             if reprompt == REQUIRES_REPROMPTS or remaining < 1:
                 raise AgentError(REQUIRES_GAP_PREFIX + "; ".join(gaps))
             log(f"{step}: sending the gaps back to the agent ({reprompt + 1}/{REQUIRES_REPROMPTS})")
-            produced = run_agent(
-                run_plan_requires.feedback(gaps),
-                agent=agent,
-                step=step,
-                persona=persona,
-                session_id=produced.get("session_id"),
-                append_system=append_system,
-                cwd=cwd,
-                max_turns=max_turns,
-                timeout_s=min(timeout_s, remaining),
-                allowed_tools=allowed_tools,
-                provider=provider,
-                model_choice=model_choice,
-                provider_locked=provider_locked,
-                disallowed_tools=disallowed_tools,
-            )
-            parsed, more = parse_agent_reply(produced["result"], retry_once, validate=validate)
-            notes = [*notes, *more]
+            text = resume(run_plan_requires.feedback(gaps), min(timeout_s, remaining))
     except AgentExhaustedError as exc:
         _on_exhaustion(exc, required_keys=required_keys, ctx=ctx, guard=guard, salvage=False)
         raise  # never reached: _on_exhaustion always raises when salvage=False
