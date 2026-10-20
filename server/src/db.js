@@ -777,11 +777,12 @@ if (!db.prepare('PRAGMA table_info(gate_decision)').all().some((column) => colum
 }
 
 // HZ-245: per-repo check commands, set by a human in Admin. Additive and
-// nullable: NULL in all four is "not configured", so the farm auto-detects
+// nullable: NULL in every slot is "not configured", so the farm auto-detects
 // exactly as before. Deliberately no seed — not for FinTekkers/horizon, not
-// for anything else; a human enters them after deploy.
+// for anything else; a human enters them after deploy. HZ-505 added
+// check_screenshots, the same way.
 const projectRepoColumns = new Set(db.prepare('PRAGMA table_info(project_repo)').all().map((column) => column.name))
-for (const column of ['check_install', 'check_test', 'check_lint', 'check_e2e']) {
+for (const column of ['check_install', 'check_test', 'check_lint', 'check_e2e', 'check_screenshots']) {
   if (!projectRepoColumns.has(column)) db.exec(`ALTER TABLE project_repo ADD COLUMN ${column} TEXT`)
 }
 // HZ-494: the host path of the repo's test-login env file. The PATH only —

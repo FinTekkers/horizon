@@ -459,7 +459,7 @@ export async function setProjectAutopilot(projectId, mode, pin) {
   return data
 }
 
-// HZ-245: a repo's check commands (install, test, lint, e2e). Same PIN
+// HZ-245: a repo's check commands (install, test, lint, e2e, screenshots). Same PIN
 // handling as setProjectEnabled: asked for on every save, sent only in the
 // x-human-key header, never cached.
 export async function saveRepoChecks(projectId, repo, checks, pin) {

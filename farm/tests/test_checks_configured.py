@@ -181,6 +181,7 @@ def test_default_check_slots_labels_auto_detection_by_slot(tmp_path):
         "test": "npm test --silent · python -m pytest -q",
         "lint": "npm run lint --silent",
         "e2e": None,
+        "screenshots": None,
     }
     assert checks.default_check_slots(tmp_path / "empty-or-missing") == dict.fromkeys(checks.CHECK_SLOTS)
 

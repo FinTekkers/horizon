@@ -739,7 +739,7 @@ test('a step for a repo with stored check commands carries them as check_command
     assert.equal(result.ok, true)
     insertRepoItem.run('D-CC1', 'Configured repo', 'Medium', 11, 'acme/configured')
     const configured = await dispatchFor('D-CC1')
-    assert.deepEqual(configured.body.check_commands, { install: 'npm ci', test: 'npm test', lint: null, e2e: null })
+    assert.deepEqual(configured.body.check_commands, { install: 'npm ci', test: 'npm test', lint: null, e2e: null, screenshots: null })
     assert.deepEqual(configured.body.check_commands, store.getRepoCheckCommands('acme/configured'))
 
     // HZ-304: an implement on an unconfigured repo never dispatches (see

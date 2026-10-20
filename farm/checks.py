@@ -48,7 +48,7 @@ import uuid
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
-from . import check_metrics, check_record, check_slots, config, dep_cache, login_env
+from . import check_metrics, check_record, check_slots, config, dep_cache, login_env, screenshots_config
 from .pause import PauseRequested
 from .workspaces import default_branch
 
@@ -913,7 +913,7 @@ def _auto_detect(ws: Path, log=lambda *_: None) -> list[list[str]]:
 
 
 # ---- per-repo configured commands (HZ-245) ----
-# A human sets up to four commands per repo in Admin; the server stores them
+# A human sets a command per slot per repo in Admin; the server stores them
 # and sends them with the task (implement, conflicts) or as --check-commands
 # (pre-merge). Nothing on the farm writes them: an agent must not be able to
 # change the commands that judge its own work. Each one runs exactly as
@@ -922,7 +922,11 @@ def _auto_detect(ws: Path, log=lambda *_: None) -> list[list[str]]:
 # `sh -c` command with its own FARM_CHECK_TIMEOUT_S, in slot order then line
 # order; nothing splits a line further. Only install line 1 is cached
 # (HZ-249), so the dependency install belongs on that line.
-CHECK_SLOTS = ("install", "test", "lint", "e2e")
+# HZ-505: `screenshots` comes last, so the other slots keep their order. It
+# never counts as "checks configured" on its own (HZ-304), and its lines run
+# only when the workspace's .horizon/screenshots.json is valid.
+SCREENSHOTS_SLOT = "screenshots"
+CHECK_SLOTS = ("install", "test", "lint", "e2e", SCREENSHOTS_SLOT)
 
 
 def _configured_slots(configured) -> list[tuple[str, int, int, list[str]]]:
@@ -959,7 +963,8 @@ def _resolve_labelled(
     if override:
         return [["sh", "-c", override]], None, [None]
     slots = _configured_slots(configured)
-    if slots:
+    # HZ-505: a screenshots command alone is not a check suite (HZ-304).
+    if any(slot != SCREENSHOTS_SLOT for slot, *_ in slots):
         log(f"checks: using the {len(slots)} command(s) configured for this repo in Admin")
         # HZ-334: install line 1 only — the first install entry.
         install_at = next((i for i, (slot, *_) in enumerate(slots) if slot == "install"), None)
@@ -1368,6 +1373,28 @@ def _check_env() -> dict[str, str]:
     return env
 
 
+def _screenshots_preflight(ws: Path, log) -> tuple[dict, str]:
+    """HZ-505: validate the workspace's own .horizon/screenshots.json before
+    anything runs. Returns (the metrics record's entry, the summary line).
+    A bad file raises CheckFailure with one headline naming the bad field.
+    Nothing from the file runs here: validation only reads it."""
+    try:
+        shots = screenshots_config.load(ws)
+    except screenshots_config.ConfigError as exc:
+        headline = screenshots_config.headline(exc)
+        log(f"checks: {headline} — failing the check; nothing runs")
+        raise CheckFailure(
+            f"{HEADLINE_PREFIX}{headline}", command=screenshots_config.CONFIG_PATH, tail=headline, headline=headline
+        ) from None
+    if shots is None:
+        note = f"{SCREENSHOTS_SLOT}: skipped (no {screenshots_config.CONFIG_PATH})"
+        log(f"checks: {SCREENSHOTS_SLOT} slot — no {screenshots_config.CONFIG_PATH} — skipped")
+        return {"skipped": "no config"}, note
+    note = f"{SCREENSHOTS_SLOT}: {len(shots)} shot(s) in {screenshots_config.CONFIG_PATH}"
+    log(f"checks: {SCREENSHOTS_SLOT} slot — {len(shots)} shot(s) in {screenshots_config.CONFIG_PATH}")
+    return {"shots": len(shots)}, note
+
+
 def run_checks(
     ws: Path,
     log=print,
@@ -1387,6 +1414,7 @@ def run_checks(
     branch_notes: list | None = None,
     branch_gate: bool = True,
     test_env_file: str | None = None,
+    summary_notes: list | None = None,
 ) -> str:
     """Returns a short human-readable note; raises CheckFailure on failure.
 
@@ -1418,9 +1446,9 @@ def run_checks(
     on_slot_event (HZ-227) is check_slots.check_slot()'s on_event: it hears
     when this run queues for a slot and when it gets one.
 
-    configured (HZ-245) is the repo's {install,test,lint,e2e} commands as the
-    server sent them; see resolve_check_commands(). None means no commands
-    (HZ-304: see checks_waiver above).
+    configured (HZ-245) is the repo's {install,test,lint,e2e,screenshots}
+    commands as the server sent them; see resolve_check_commands(). None
+    means no commands (HZ-304: see checks_waiver above).
 
     cancel (HZ-256) is passed to check_slots.check_slot(): setting it ends a
     slot wait with check_slots.WaitCancelled. None keeps today's behaviour.
@@ -1461,7 +1489,19 @@ def run_checks(
     path, and nothing runs. Its values reach the test and e2e commands only
     (never install or lint, never os.environ), and every value is redacted
     from every output, whatever its name. None runs exactly as before.
+
+    HZ-505: first of all, on every path (waived and FARM_CHECK_CMD too), the
+    workspace's own .horizon/screenshots.json is validated. A bad file raises
+    a CheckFailure whose headline names the bad field, and nothing runs. With
+    no file the screenshots slot is skipped: its saved lines do not run. Its
+    outcome goes into the metrics record under "screenshots", and its line
+    into summary_notes (the caller's list; None records nothing), once.
     """
+    screenshots, screenshots_note = _screenshots_preflight(ws, log)
+    if summary_notes is not None and screenshots_note not in summary_notes:
+        summary_notes.append(screenshots_note)
+    if "skipped" in screenshots and isinstance(configured, dict):
+        configured = {slot: value for slot, value in configured.items() if slot != SCREENSHOTS_SLOT}
     commands, install_at, labels = _resolve_labelled(ws, configured, log)
     if not commands:
         shown_repo = repo or "this repo"
@@ -1495,6 +1535,7 @@ def run_checks(
     ) as slot:
         timeout_s = int(os.environ.get("FARM_CHECK_TIMEOUT_S", "600"))
         record = check_metrics.new_record(run_id=run_id, item_id=item_id, caller=caller, slot=slot, repo=repo)
+        record[SCREENSHOTS_SLOT] = screenshots
         env = {**_check_env(), **(child_env or {})}
         # Host-wide free memory at each command boundary; the minimum is what
         # the record keeps. See farm/check_metrics.py on why this and not

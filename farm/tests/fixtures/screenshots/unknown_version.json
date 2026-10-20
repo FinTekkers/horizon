@@ -1,0 +1,46 @@
+{
+  "version": 2,
+  "serve": "npm run preview -- --port 4173",
+  "ready": "http://127.0.0.1:4173/",
+  "outputDir": "screenshots",
+  "themes": [
+    "light",
+    "dark"
+  ],
+  "viewports": [
+    {
+      "name": "desktop",
+      "width": 1280,
+      "height": 800
+    },
+    {
+      "name": "mobile",
+      "width": 390,
+      "height": 844
+    }
+  ],
+  "defaults": {
+    "login": false,
+    "timeoutMs": 45000,
+    "maxHeightPx": 12000
+  },
+  "screens": [
+    {
+      "name": "home",
+      "path": "/"
+    },
+    {
+      "name": "admin",
+      "path": "/admin",
+      "login": true,
+      "viewports": [
+        "desktop"
+      ],
+      "themes": [
+        "dark"
+      ],
+      "timeoutMs": 60000,
+      "maxHeightPx": 8000
+    }
+  ]
+}

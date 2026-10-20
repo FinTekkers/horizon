@@ -2304,7 +2304,10 @@ def test_check_defaults_with_no_hub_is_all_null(tmp_path, monkeypatch):
     monkeypatch.setattr(farmd.workspaces, "WORKSPACES_DIR", tmp_path / "workspaces")
     res = client.post("/repos/check-defaults", json={"repo": "acme/demo"})
     assert res.status_code == 200
-    assert res.json() == {"repo": "acme/demo", "defaults": {"install": None, "test": None, "lint": None, "e2e": None}}
+    assert res.json() == {
+        "repo": "acme/demo",
+        "defaults": {"install": None, "test": None, "lint": None, "e2e": None, "screenshots": None},
+    }
 
 
 def test_check_defaults_reads_detection_off_the_hub(tmp_path, monkeypatch):
@@ -2314,7 +2317,13 @@ def test_check_defaults_reads_detection_off_the_hub(tmp_path, monkeypatch):
     (hub / "package.json").write_text('{"scripts": {"test": "node --test"}}')
     (hub / "node_modules").mkdir()
     res = client.post("/repos/check-defaults", json={"repo": "acme/demo"})
-    assert res.json()["defaults"] == {"install": None, "test": "npm test --silent", "lint": None, "e2e": None}
+    assert res.json()["defaults"] == {
+        "install": None,
+        "test": "npm test --silent",
+        "lint": None,
+        "e2e": None,
+        "screenshots": None,
+    }
 
 
 # ---- HZ-321: a farmd restart re-adopts a live run ----

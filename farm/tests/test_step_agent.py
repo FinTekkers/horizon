@@ -232,6 +232,31 @@ def test_a_failing_branch_run_is_in_the_implement_summary_and_the_check_still_pa
     assert check_record.checks_ran(notes[-1]) is True
 
 
+def test_the_screenshots_slot_line_is_in_the_implement_summary_and_the_check_note_is_unchanged(tmp_path, monkeypatch):
+    """HZ-505 metric 3: run_checks()'s summary_notes reach step_run.output
+    after the pass note, which still counts as checks."""
+    from farm import check_record
+
+    ws, origin = make_git_workspace(tmp_path)
+    monkeypatch.setattr(step_agent, "ensure_item_worktree", lambda repo, item_id: ws)
+    notes = []
+
+    def fake_run_checks(ws, log, **kw):
+        kw["summary_notes"].append("screenshots: skipped (no .horizon/screenshots.json)")
+        notes.append("1 repo check(s) passed")
+        return notes[-1]
+
+    monkeypatch.setattr(step_agent, "run_checks", fake_run_checks)
+    token = step_agent._RECORDED.set({"flakes": [], "test_runs": [], "branch_notes": [], "summary_notes": []})
+    try:
+        result = execute(make_task(11, "Specialist agent implements", repo="acme/demo"))
+    finally:
+        step_agent._RECORDED.reset(token)
+
+    assert "1 repo check(s) passed · screenshots: skipped (no .horizon/screenshots.json)" in result["summary"]
+    assert check_record.checks_ran(notes[-1]) is True
+
+
 # ---- screenshot publishing (HZ-63) ----
 # Screenshots are gitignored now (no more committed PNGs), published instead
 # to a per-item git ref so two branches touching the same journey never

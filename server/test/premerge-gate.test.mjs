@@ -498,7 +498,13 @@ test('HZ-245: Accept passes the stored check commands as --check-commands; an un
     const { args } = runs.at(-1)
     const at = args.indexOf('--check-commands')
     assert.ok(at > 0, `no --check-commands in ${JSON.stringify(args)}`)
-    assert.deepEqual(JSON.parse(args[at + 1]), { install: 'npm install --ignore-scripts', test: ' npm test ', lint: null, e2e: null })
+    assert.deepEqual(JSON.parse(args[at + 1]), {
+      install: 'npm install --ignore-scripts',
+      test: ' npm test ',
+      lint: null,
+      e2e: null,
+      screenshots: null,
+    })
     assert.equal(at + 2, args.length, 'one flag, one JSON value')
     const envValues = Object.values(runs.at(-1).opts.env ?? {})
     assert.ok(!envValues.some((v) => String(v).includes('--ignore-scripts')), 'argv only, never env')

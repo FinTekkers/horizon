@@ -229,7 +229,7 @@ export async function saveRepoTestEnvFile() {
 }
 
 export async function getRepoCheckDefaults() {
-  return { available: false, defaults: { install: null, test: null, lint: null, e2e: null } }
+  return { available: false, defaults: { install: null, test: null, lint: null, e2e: null, screenshots: null } }
 }
 
 export async function getRepoWebhooks() {
