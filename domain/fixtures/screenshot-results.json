@@ -1,0 +1,13 @@
+{
+  "version": 1,
+  "baseline": "0123456789abcdef0123456789abcdef01234567",
+  "threshold": 0.1,
+  "ratioTolerance": 0.01,
+  "shots": [
+    { "name": "board", "status": "changed", "diffRatio": 0.042, "diff": "e2e/__screenshots__/diff/board.png", "error": null },
+    { "name": "broken", "status": "changed", "diffRatio": null, "diff": null, "error": "Invalid file signature" },
+    { "name": "gates", "status": "new", "diffRatio": null, "diff": null, "error": null },
+    { "name": "home", "status": "same", "diffRatio": 0.005, "diff": null, "error": null },
+    { "name": "old", "status": "removed", "diffRatio": null, "diff": null, "error": null }
+  ]
+}

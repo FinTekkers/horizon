@@ -3,10 +3,9 @@
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync } from 'node:fs'
+import { mkdtempSync, readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { PNG } from 'pngjs'
 
 process.env.HORIZON_DB = join(mkdtempSync(join(tmpdir(), 'horizon-github-')), 'test.db')
 
@@ -174,158 +173,138 @@ test('fetchScreenshotsMarkdown filters directories out of a mixed contents listi
 // per-item ref ("e2e-artifacts/<item-id>") and compared against
 // "e2e-baseline", which only mergePr() ever moves.
 
-// Alpha must be opaque (255) — a transparent pixel's RGB is invisible to
-// pixelmatch regardless of value, which would make every "different" image
-// below compare as identical.
-function png(width, height, fillByte = 0) {
-  const p = new PNG({ width, height })
-  for (let i = 0; i < p.data.length; i += 4) p.data.set([fillByte, fillByte, fillByte, 255], i)
-  return PNG.sync.write(p)
-}
+// HZ-508: the comparison is computed on the farm at every publish and stored
+// as e2e/__screenshots__/results.json on the artifact ref. Both sides use
+// domain/fixtures/screenshot-results.json, so a shape change on either side
+// fails a test, not a PR body.
+const RESULTS_FIXTURE = JSON.parse(
+  readFileSync(new URL('../../domain/fixtures/screenshot-results.json', import.meta.url), 'utf8'),
+)
+const ITEM = { id: 'HZ-63', repo: REPO }
+const RESULTS_PATH = '/contents/e2e/__screenshots__/results.json'
 
-function pngWithChangedPixels(width, height, count) {
-  const p = new PNG({ width, height })
-  for (let i = 0; i < p.data.length; i += 4) p.data.set([0, 0, 0, 255], i)
-  for (let i = 0; i < count; i++) p.data[i * 4] = 255 // flip the red channel of the first `count` pixels
-  return PNG.sync.write(p)
-}
-
-function githubMock({ dirs = {}, files = {} } = {}) {
-  return async (url) => {
+// A GitHub stand-in for createPrFromBranch: `results` is served as the
+// artifact ref's results.json (a string is served raw, null is a 404),
+// `openPr` makes POST /pulls answer 422 with that PR already open.
+function prMock({ results = RESULTS_FIXTURE, openPr = null, patchStatus = 200 } = {}) {
+  const calls = []
+  const fetch = async (url, options = {}) => {
     const u = new URL(url)
-    if (u.pathname.endsWith('/contents/e2e/__screenshots__')) {
-      const list = dirs[u.searchParams.get('ref')]
-      return list ? { ok: true, status: 200, json: async () => list } : { ok: false, status: 404 }
+    const method = options.method || 'GET'
+    calls.push({ url: String(url), path: u.pathname, ref: u.searchParams.get('ref'), method, body: options.body })
+    if (u.pathname === `/repos/${REPO}`) return { ok: true, status: 200, json: async () => ({ default_branch: 'main' }) }
+    if (u.pathname.endsWith(RESULTS_PATH)) {
+      if (results === null) return { ok: false, status: 404 }
+      const text = typeof results === 'string' ? results : JSON.stringify(results)
+      return { ok: true, status: 200, json: async () => ({ content: Buffer.from(text).toString('base64') }) }
     }
-    const fileMatch = u.pathname.match(/\/contents\/(e2e\/__screenshots__\/[^/]+\.png)$/)
-    if (fileMatch) {
-      const content = files[`${u.searchParams.get('ref')}:${fileMatch[1]}`]
-      return content
-        ? { ok: true, status: 200, json: async () => ({ content: content.toString('base64') }) }
-        : { ok: false, status: 404 }
+    if (u.pathname.endsWith('/pulls') && method === 'POST') {
+      return openPr
+        ? { ok: false, status: 422, json: async () => ({}) }
+        : { ok: true, status: 201, json: async () => ({ number: 99 }) }
+    }
+    if (u.pathname.endsWith('/pulls') && openPr) return { ok: true, status: 200, json: async () => [openPr] }
+    if (openPr && u.pathname.endsWith(`/pulls/${openPr.number}`)) {
+      if (method === 'PATCH') {
+        openPr.body = JSON.parse(options.body).body
+        return { ok: patchStatus < 300, status: patchStatus, json: async () => openPr }
+      }
+      return { ok: true, status: 200, json: async () => ({ ...openPr }) }
     }
     return { ok: false, status: 404 }
   }
+  return { fetch, calls }
 }
 
-const entry = (name, sha) => ({ type: 'file', name, sha, path: `e2e/__screenshots__/${name}` })
-const ITEM = { id: 'HZ-63', repo: REPO }
+const section = (body) => {
+  const start = body.indexOf(github.SCREENSHOTS_START)
+  const end = body.indexOf(github.SCREENSHOTS_END)
+  assert.ok(start !== -1 && end > start, 'the body holds one marked screenshots section')
+  return body.slice(start + github.SCREENSHOTS_START.length, end)
+}
+const markerCount = (body) => body.split(github.SCREENSHOTS_START).length - 1
 
-test('diffPngBuffers: identical images are unchanged', () => {
-  const buf = png(10, 10)
-  assert.deepEqual(github.diffPngBuffers(buf, buf), { changed: false, diffRatio: 0 })
-})
-
-test('diffPngBuffers: a few stray pixels stay within tolerance', () => {
-  const a = pngWithChangedPixels(20, 20, 0) // 400 px total
-  const b = pngWithChangedPixels(20, 20, 2) // 0.5% differ
-  const { changed } = github.diffPngBuffers(a, b)
-  assert.equal(changed, false)
-})
-
-test('diffPngBuffers: a large change is flagged', () => {
-  const a = pngWithChangedPixels(20, 20, 0)
-  const b = pngWithChangedPixels(20, 20, 200) // 50% differ
-  const { changed, diffRatio } = github.diffPngBuffers(a, b)
-  assert.equal(changed, true)
-  assert.ok(diffRatio > 0.4)
-})
-
-test('diffPngBuffers: mismatched dimensions are always a change', () => {
-  assert.deepEqual(github.diffPngBuffers(png(4, 4), png(4, 8)), { changed: true, diffRatio: 1 })
-})
-
-test('compareScreenshotsMarkdown: no baseline ref renders "new, please review", never throws', async (t) => {
-  t.mock.method(globalThis, 'fetch', githubMock({ dirs: { 'e2e-artifacts/hz-63': [entry('board.png', 'sha-a')] } }))
-  const md = await github.compareScreenshotsMarkdown(REPO, ITEM)
+test('screenshotResultsMarkdown renders each stored status, and nothing for no results', () => {
+  const md = github.screenshotResultsMarkdown(RESULTS_FIXTURE)
   assert.match(md, /## Screenshot comparison vs\. baseline/)
-  assert.match(md, /board.*🆕 new — please review/)
+  assert.match(md, /\| board \| ⚠️ changed \(4\.2% of pixels differ\) — `diff\/board\.png` \|/)
+  assert.match(md, /\| broken \| ⚠️ changed \(could not compute a diff\) \|/)
+  assert.match(md, /\| gates \| 🆕 new — please review \|/)
+  assert.match(md, /\| home \| ✅ unchanged \|/)
+  assert.match(md, /\| old \| 🗑️ removed — not captured \|/)
+  assert.equal(github.screenshotResultsMarkdown(null), '')
+  assert.equal(github.screenshotResultsMarkdown({ ...RESULTS_FIXTURE, shots: [] }), '')
 })
 
-test('compareScreenshotsMarkdown: no current screenshots omits the section entirely', async (t) => {
-  t.mock.method(globalThis, 'fetch', githubMock({ dirs: { 'e2e-baseline': [entry('board.png', 'sha-a')] } }))
-  assert.equal(await github.compareScreenshotsMarkdown(REPO, ITEM), '')
-})
-
-test('compareScreenshotsMarkdown: matching sha short-circuits to unchanged without downloading content', async (t) => {
-  t.mock.method(
-    globalThis,
-    'fetch',
-    githubMock({
-      dirs: {
-        'e2e-artifacts/hz-63': [entry('board.png', 'sha-a')],
-        'e2e-baseline': [entry('board.png', 'sha-a')],
-      },
-      // deliberately no `files` entries — a same-sha comparison must never fetch content
-    }),
-  )
-  const md = await github.compareScreenshotsMarkdown(REPO, ITEM)
-  assert.match(md, /board.*✅ unchanged\s*\|/)
-})
-
-test('compareScreenshotsMarkdown: different sha but pixels within tolerance reads as unchanged', async (t) => {
-  const buf = png(10, 10)
-  t.mock.method(
-    globalThis,
-    'fetch',
-    githubMock({
-      dirs: {
-        'e2e-artifacts/hz-63': [entry('board.png', 'sha-new')],
-        'e2e-baseline': [entry('board.png', 'sha-old')],
-      },
-      files: {
-        'e2e-artifacts/hz-63:e2e/__screenshots__/board.png': buf,
-        'e2e-baseline:e2e/__screenshots__/board.png': buf,
-      },
-    }),
-  )
-  const md = await github.compareScreenshotsMarkdown(REPO, ITEM)
-  assert.match(md, /board.*✅ unchanged \(within tolerance\)/)
-})
-
-test('compareScreenshotsMarkdown: a real visual change is flagged with a percentage', async (t) => {
-  t.mock.method(
-    globalThis,
-    'fetch',
-    githubMock({
-      dirs: {
-        'e2e-artifacts/hz-63': [entry('board.png', 'sha-new')],
-        'e2e-baseline': [entry('board.png', 'sha-old')],
-      },
-      files: {
-        'e2e-artifacts/hz-63:e2e/__screenshots__/board.png': pngWithChangedPixels(20, 20, 0),
-        'e2e-baseline:e2e/__screenshots__/board.png': pngWithChangedPixels(20, 20, 200),
-      },
-    }),
-  )
-  const md = await github.compareScreenshotsMarkdown(REPO, ITEM)
-  assert.match(md, /board.*⚠️ changed \(\d+\.\d% of pixels differ\)/)
-})
-
-test('compareScreenshotsMarkdown never throws on a network error', async (t) => {
-  t.mock.method(globalThis, 'fetch', async () => {
-    throw new Error('ECONNRESET')
-  })
-  assert.equal(await github.compareScreenshotsMarkdown(REPO, ITEM), '')
-})
-
-test('createPrFromBranch reads screenshots from the item artifact ref, never the code branch', async (t) => {
-  const seenRefs = []
-  t.mock.method(globalThis, 'fetch', async (url, options) => {
-    const u = new URL(url)
-    if (u.pathname === `/repos/${REPO}`) return { ok: true, status: 200, json: async () => ({ default_branch: 'main' }) }
-    if (u.pathname.endsWith('/contents/e2e/__screenshots__')) {
-      seenRefs.push(u.searchParams.get('ref'))
-      return { ok: false, status: 404 }
-    }
-    if (u.pathname.endsWith('/pulls') && options?.method === 'POST') {
-      return { ok: true, status: 201, json: async () => ({ number: 99 }) }
-    }
-    return { ok: false, status: 404 }
-  })
+test('createPrFromBranch builds the table from the stored results and never reads the baseline', async (t) => {
+  const mock = prMock()
+  t.mock.method(globalThis, 'fetch', mock.fetch)
   await github.createPrFromBranch(ITEM, 'horizon/hz-63')
-  assert.deepEqual([...new Set(seenRefs)].sort(), ['e2e-artifacts/hz-63', 'e2e-baseline'].sort())
-  assert.ok(!seenRefs.includes('horizon/hz-63'), 'must never read screenshots from the PR branch itself')
+  const post = mock.calls.find((c) => c.path.endsWith('/pulls') && c.method === 'POST')
+  const body = JSON.parse(post.body).body
+  assert.ok(section(body).includes(github.screenshotResultsMarkdown(RESULTS_FIXTURE)))
+  assert.ok(mock.calls.some((c) => c.path.endsWith(RESULTS_PATH) && c.ref === 'e2e-artifacts/hz-63'))
+  assert.ok(!mock.calls.some((c) => c.url.includes('ref=e2e-baseline')), 'no separate compare against e2e-baseline')
+  assert.ok(!mock.calls.some((c) => c.ref === 'horizon/hz-63'), 'must never read screenshots from the PR branch itself')
+})
+
+test('a rework with an open PR refreshes only its marked screenshot section', async (t) => {
+  const before = 'Relates to #63.\n\n## Success metric\nhand-edited text stays'
+  const after = '\n\n_footer the reviewer wrote_'
+  const openPr = { number: 7, body: `${before}${github.SCREENSHOTS_START}\nold table\n${github.SCREENSHOTS_END}${after}` }
+  const mock = prMock({ openPr })
+  t.mock.method(globalThis, 'fetch', mock.fetch)
+
+  const pr = await github.createPrFromBranch(ITEM, 'horizon/hz-63')
+  assert.equal(pr.number, 7)
+  const patches = mock.calls.filter((c) => c.method === 'PATCH' && c.path.endsWith('/pulls/7'))
+  assert.equal(patches.length, 1)
+  assert.ok(section(openPr.body).includes(github.screenshotResultsMarkdown(RESULTS_FIXTURE)))
+  assert.ok(!openPr.body.includes('old table'))
+  assert.ok(openPr.body.startsWith(before))
+  assert.ok(openPr.body.endsWith(after))
+
+  // A second refresh with new results replaces the section again, still one pair.
+  const next = { ...RESULTS_FIXTURE, shots: [{ name: 'only', status: 'new', diffRatio: null, diff: null, error: null }] }
+  t.mock.method(globalThis, 'fetch', prMock({ results: next, openPr }).fetch)
+  await github.createPrFromBranch(ITEM, 'horizon/hz-63')
+  assert.equal(markerCount(openPr.body), 1)
+  assert.ok(section(openPr.body).includes(github.screenshotResultsMarkdown(next)))
+  assert.ok(!openPr.body.includes('| board |'))
+  assert.ok(openPr.body.startsWith(before) && openPr.body.endsWith(after))
+})
+
+test('a PR body with no markers gets the screenshot section appended once', async (t) => {
+  const openPr = { number: 8, body: 'an older PR body' }
+  t.mock.method(globalThis, 'fetch', prMock({ openPr }).fetch)
+  await github.createPrFromBranch(ITEM, 'horizon/hz-63')
+  await github.createPrFromBranch(ITEM, 'horizon/hz-63')
+  assert.ok(openPr.body.startsWith('an older PR body\n\n'))
+  assert.equal(markerCount(openPr.body), 1)
+  assert.ok(section(openPr.body).includes(github.screenshotResultsMarkdown(RESULTS_FIXTURE)))
+})
+
+for (const [name, opts] of [
+  ['results.json is missing (404)', { results: null }],
+  ['results.json is not JSON', { results: '{ nope' }],
+  ['results.json has the wrong shape', { results: { shots: [{ name: 'a', status: 'bogus' }] } }],
+]) {
+  test(`createPrFromBranch still opens the PR, without a table, when ${name}`, async (t) => {
+    const mock = prMock(opts)
+    t.mock.method(globalThis, 'fetch', mock.fetch)
+    const pr = await github.createPrFromBranch(ITEM, 'horizon/hz-63')
+    assert.equal(pr.number, 99)
+    const body = JSON.parse(mock.calls.find((c) => c.method === 'POST' && c.path.endsWith('/pulls')).body).body
+    assert.doesNotMatch(body, /Screenshot comparison/)
+    assert.equal(section(body).trim(), '')
+  })
+}
+
+test('a failed PATCH of the screenshot section never fails createPrFromBranch', async (t) => {
+  const openPr = { number: 9, body: 'body' }
+  t.mock.method(globalThis, 'fetch', prMock({ openPr, patchStatus: 500 }).fetch)
+  const pr = await github.createPrFromBranch(ITEM, 'horizon/hz-63')
+  assert.equal(pr.number, 9)
 })
 
 test('mergePr promotes the merged item screenshots to the baseline and frees the artifact ref', async (t) => {

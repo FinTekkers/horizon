@@ -84,13 +84,15 @@ class ServeFailed(CaptureFailed):
     """`serve` exited, or `ready` never answered."""
 
 
-def worker_installed() -> bool:
-    """farm/capture's node_modules exists and is not older than its lockfile
-    (npm ci writes node_modules/.package-lock.json)."""
+def worker_installed(packages: tuple[str, ...] = ("playwright",)) -> bool:
+    """farm/capture's node_modules holds `packages` and is not older than its
+    lockfile (npm ci writes node_modules/.package-lock.json). HZ-508's diff
+    step asks for pixelmatch and pngjs instead."""
     stamp = CAPTURE_DIR / "node_modules" / ".package-lock.json"
     lock = CAPTURE_DIR / "package-lock.json"
     try:
-        return (CAPTURE_DIR / "node_modules" / "playwright").is_dir() and stamp.stat().st_mtime >= lock.stat().st_mtime
+        installed = all((CAPTURE_DIR / "node_modules" / package).is_dir() for package in packages)
+        return installed and stamp.stat().st_mtime >= lock.stat().st_mtime
     except OSError:
         return False
 

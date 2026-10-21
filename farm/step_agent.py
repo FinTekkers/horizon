@@ -15,6 +15,7 @@ import json
 import math
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -618,6 +619,130 @@ def build_prompt(task: dict) -> str:
 # outputDir instead — the farm runner's PNGs plus its manifest.json — under the
 # same e2e/__screenshots__/ tree path, so server/src/github.js is unchanged.
 # A repo without one keeps the e2e/__screenshots__ source until HZ-511.
+# HZ-508: every publish also diffs each shot against e2e-baseline (fetched,
+# never pushed) and adds results.json plus diff/<name>.png per changed shot to
+# the SAME orphan commit, so the force-push replaces every result of the
+# previous publish. server/src/github.js renders the PR body's table from
+# results.json. A diff failure only drops results.json; the shots still go.
+
+SHOTS_TREE = "e2e/__screenshots__"
+BASELINE_REF = "e2e-baseline"
+RESULTS_NAME = "results.json"
+RESULTS_VERSION = 1
+CHANGED, NEW, REMOVED, SAME = "changed", "new", "removed", "same"
+DIFF_CMD = ["node", str(screenshot_runner.CAPTURE_DIR / "diff.mjs")]
+DIFF_PACKAGES = ("pixelmatch", "pngjs")
+DIFF_TIMEOUT_S = 120
+
+
+def _baseline_pngs(ws: Path, repo: str) -> tuple[str, dict[str, str]] | None:
+    """(commit sha, {shot name: blob sha}) for the top-level PNGs on
+    e2e-baseline, or None when the ref does not exist. Only fetches. Not
+    recursive, so a promoted ref's diff/ never reads as a baseline shot."""
+    with hub_lock(repo):
+        probe = git(ws, "ls-remote", "--exit-code", "origin", f"refs/heads/{BASELINE_REF}", check=False)
+        if probe.returncode == 2:
+            return None
+        if probe.returncode != 0:
+            raise RuntimeError(f"could not read {BASELINE_REF}: {probe.stderr.strip()[:200]}")
+        git(ws, "fetch", "-q", "origin", f"+refs/heads/{BASELINE_REF}:refs/remotes/origin/{BASELINE_REF}")
+        sha = git(ws, "rev-parse", f"refs/remotes/origin/{BASELINE_REF}^{{commit}}").stdout.strip()
+    pngs: dict[str, str] = {}
+    for entry in git_bytes(ws, "ls-tree", "-z", sha, f"{SHOTS_TREE}/").split(b"\0"):
+        if not entry:
+            continue
+        meta, _, path = entry.partition(b"\t")
+        _mode, obj_type, blob = meta.decode().split()
+        name = os.fsdecode(path).rsplit("/", 1)[-1]
+        if obj_type == "blob" and name.endswith(".png"):
+            pngs[name[: -len(".png")]] = blob
+    return sha, pngs
+
+
+def _run_diff(pairs: list[dict], out_dir: Path, cfg) -> dict[str, dict]:
+    """farm/capture/diff.mjs's result per pair name, checked before use: any
+    missing, extra or malformed entry raises. The helper writes its result to
+    a file, never stdout, so a stray log line can't corrupt it."""
+    if not screenshot_runner.worker_installed(DIFF_PACKAGES):
+        raise RuntimeError(f"farm/capture is not installed ({screenshot_runner.INSTALL_HINT})")
+    result_file = out_dir.parent / "diff-result.json"
+    request = {
+        "pairs": pairs,
+        "outDir": str(out_dir),
+        "resultFile": str(result_file),
+        "threshold": cfg["threshold"],
+        "ratioTolerance": cfg["ratioTolerance"],
+    }
+    proc = subprocess.run(
+        DIFF_CMD, input=json.dumps(request), capture_output=True, text=True, timeout=DIFF_TIMEOUT_S
+    )
+    if proc.returncode != 0:
+        raise RuntimeError(f"diff helper exited {proc.returncode}: {proc.stderr.strip()[-200:]}")
+    if not result_file.is_file():
+        raise RuntimeError("diff helper wrote no result")
+    shots = json.loads(result_file.read_text(encoding="utf-8")).get("shots")
+    if not isinstance(shots, list):
+        raise RuntimeError("diff helper returned no shots")
+    wanted = {pair["name"] for pair in pairs}
+    out: dict[str, dict] = {}
+    for shot in shots:
+        name = shot.get("name") if isinstance(shot, dict) else None
+        if name not in wanted or name in out:
+            raise RuntimeError("diff helper returned an unknown or repeated shot")
+        status, ratio, error = shot.get("status"), shot.get("diffRatio"), shot.get("error")
+        if status not in (CHANGED, SAME) or not (error is None or isinstance(error, str)):
+            raise RuntimeError(f"diff helper returned a bad result for {name}")
+        if ratio is not None and (isinstance(ratio, bool) or not isinstance(ratio, (int, float))):
+            raise RuntimeError(f"diff helper returned a bad ratio for {name}")
+        if (status == CHANGED and error is None) != (out_dir / f"{name}.png").is_file():
+            raise RuntimeError(f"diff helper's diff PNG for {name} does not match its status")
+        out[name] = {"status": status, "diffRatio": ratio, "error": error}
+    if set(out) != wanted:
+        raise RuntimeError("diff helper skipped a shot")
+    return out
+
+
+def _compute_results(ws: Path, item: dict, shots: dict[str, str], cfg, tmp: Path) -> tuple[dict, dict[str, Path]]:
+    """results.json's document and {name: diff PNG on disk} for one publish.
+    `shots` maps each published shot's name to its blob sha."""
+    baseline = _baseline_pngs(ws, item["repo"])
+    base_sha, base_pngs = baseline if baseline else (None, {})
+    entries: dict[str, dict] = {}
+    pairs: list[dict] = []
+    for name in sorted({*shots, *base_pngs}):
+        if name not in base_pngs:
+            entries[name] = {"status": NEW, "diffRatio": None, "error": None}
+        elif name not in shots:
+            entries[name] = {"status": REMOVED, "diffRatio": None, "error": None}
+        elif shots[name] == base_pngs[name]:
+            entries[name] = {"status": SAME, "diffRatio": 0, "error": None}
+        else:
+            current, base = tmp / "current" / f"{name}.png", tmp / "baseline" / f"{name}.png"
+            for path, blob in ((current, shots[name]), (base, base_pngs[name])):
+                path.parent.mkdir(exist_ok=True)
+                path.write_bytes(git_bytes(ws, "cat-file", "blob", blob))
+            pairs.append({"name": name, "current": str(current), "baseline": str(base)})
+    out_dir = tmp / "diff"
+    out_dir.mkdir()
+    if pairs:
+        entries.update(_run_diff(pairs, out_dir, cfg))
+    diffs: dict[str, Path] = {}
+    rows = []
+    for name in sorted(entries):
+        entry = entries[name]
+        diff = None
+        if entry["status"] == CHANGED and entry["error"] is None:
+            diffs[name] = out_dir / f"{name}.png"
+            diff = f"{SHOTS_TREE}/diff/{name}.png"
+        rows.append({"name": name, "status": entry["status"], "diffRatio": entry["diffRatio"], "diff": diff, "error": entry["error"]})
+    doc = {
+        "version": RESULTS_VERSION,
+        "baseline": base_sha,
+        "threshold": cfg["threshold"],
+        "ratioTolerance": cfg["ratioTolerance"],
+        "shots": rows,
+    }
+    return doc, diffs
 
 
 def publish_screenshots(ws: Path, item: dict, log=log) -> None:
@@ -632,6 +757,10 @@ def publish_screenshots(ws: Path, item: dict, log=log) -> None:
     if not pngs:
         log("publish_screenshots: no screenshots to publish — skipped")
         return
+    diff_cfg = {
+        "threshold": cfg.diff_threshold if cfg is not None else screenshots_config.DEFAULT_DIFF_THRESHOLD,
+        "ratioTolerance": cfg.diff_ratio_tolerance if cfg is not None else screenshots_config.DEFAULT_DIFF_RATIO_TOLERANCE,
+    }
     # NOT ws/".git": per-item worktrees (HZ-50) have a .git FILE containing
     # "gitdir: ...", not a directory, so writing an index inside it raises
     # ENOTDIR. GIT_INDEX_FILE may live anywhere, so use a temp path that is
@@ -640,12 +769,31 @@ def publish_screenshots(ws: Path, item: dict, log=log) -> None:
     os.close(index_fd)
     index_file = Path(index_path)
     env = {"GIT_INDEX_FILE": str(index_file)}
+    tmp = None
     try:
         index_file.unlink(missing_ok=True)
+
+        def add(path: Path, tree_path: str) -> str:
+            sha = git(ws, "hash-object", "-w", str(path), env=env).stdout.strip()
+            git(ws, "update-index", "--add", "--cacheinfo", f"100644,{sha},{tree_path}", env=env)
+            return sha
+
         files = [*pngs, manifest] if cfg is not None and manifest.is_file() else pngs
+        shots = {}
         for png in files:
-            sha = git(ws, "hash-object", "-w", str(png), env=env).stdout.strip()
-            git(ws, "update-index", "--add", "--cacheinfo", f"100644,{sha},e2e/__screenshots__/{png.name}", env=env)
+            sha = add(png, f"{SHOTS_TREE}/{png.name}")
+            if png.suffix == ".png":
+                shots[png.stem] = sha
+        tmp = Path(tempfile.mkdtemp(prefix="horizon-artifacts-diff-"))
+        try:
+            results, diffs = _compute_results(ws, item, shots, diff_cfg, tmp)
+        except Exception as exc:  # best-effort — the shots still publish
+            log(f"publish_screenshots: diffs skipped — {exc}")
+        else:
+            for name, path in diffs.items():
+                add(path, f"{SHOTS_TREE}/diff/{name}.png")
+            (tmp / RESULTS_NAME).write_text(json.dumps(results, indent=2) + "\n", encoding="utf-8")
+            add(tmp / RESULTS_NAME, f"{SHOTS_TREE}/{RESULTS_NAME}")
         tree = git(ws, "write-tree", env=env).stdout.strip()
         commit = git(ws, "commit-tree", tree, "-m", f"{item['id']}: e2e screenshots").stdout.strip()
         ref = f"e2e-artifacts/{item['id'].lower()}"
@@ -661,6 +809,8 @@ def publish_screenshots(ws: Path, item: dict, log=log) -> None:
         # documented as never blocking the step.
         try:
             index_file.unlink(missing_ok=True)
+            if tmp is not None:
+                shutil.rmtree(tmp, ignore_errors=True)
         except OSError as exc:
             log(f"publish_screenshots: could not remove temp index — {exc}")
 

@@ -26,6 +26,9 @@ Schema v1:
   defaults    optional {login, timeoutMs, maxHeightPx}
   screens     non-empty list of {name, path, login?, viewports?, themes?,
               timeoutMs?, maxHeightPx?}, unique names, required
+  diff        optional {threshold, ratioTolerance}, each a number in [0, 1]
+              (HZ-508: pixelmatch's per-pixel threshold and the share of
+              pixels that may differ before a shot reads as changed)
 A screen's viewports and themes are names from the top-level lists. Unknown
 keys fail at their own path.
 """
@@ -40,15 +43,18 @@ SUPPORTED_VERSION = 1
 DEFAULT_LOGIN = False
 DEFAULT_TIMEOUT_MS = 30000
 DEFAULT_MAX_HEIGHT_PX = 10000
+DEFAULT_DIFF_THRESHOLD = 0.1
+DEFAULT_DIFF_RATIO_TOLERANCE = 0.01
 
 ROOT_PATH = "$"
-TOP_KEYS = ("version", "serve", "ready", "outputDir", "themes", "viewports", "defaults", "screens")
+TOP_KEYS = ("version", "serve", "ready", "outputDir", "themes", "viewports", "defaults", "screens", "diff")
 TOP_REQUIRED = ("version", "serve", "ready", "outputDir", "themes", "viewports", "screens")
 READY_HOSTS = ("127.0.0.1", "localhost")
 VIEWPORT_KEYS = ("name", "width", "height")
 SETTING_KEYS = ("login", "timeoutMs", "maxHeightPx")
 SCREEN_KEYS = ("name", "path", "viewports", "themes", *SETTING_KEYS)
 SCREEN_REQUIRED = ("name", "path")
+DIFF_KEYS = ("threshold", "ratioTolerance")
 
 
 class ConfigError(ValueError):
@@ -82,6 +88,8 @@ class Config:
     ready: str
     output_dir: str
     shots: list[Shot]
+    diff_threshold: float = DEFAULT_DIFF_THRESHOLD
+    diff_ratio_tolerance: float = DEFAULT_DIFF_RATIO_TOLERANCE
 
 
 def headline(err: ConfigError) -> str:
@@ -111,7 +119,15 @@ def load_config(ws: Path) -> Config | None:
     except OSError:
         raise ConfigError(ROOT_PATH, "could not be read as a file") from None
     shots = parse(doc)
-    return Config(serve=doc["serve"], ready=doc["ready"], output_dir=doc["outputDir"], shots=shots)
+    diff = _diff(doc["diff"]) if "diff" in doc else {}
+    return Config(
+        serve=doc["serve"],
+        ready=doc["ready"],
+        output_dir=doc["outputDir"],
+        shots=shots,
+        diff_threshold=diff.get("threshold", DEFAULT_DIFF_THRESHOLD),
+        diff_ratio_tolerance=diff.get("ratioTolerance", DEFAULT_DIFF_RATIO_TOLERANCE),
+    )
 
 
 def parse(doc) -> list[Shot]:
@@ -166,6 +182,8 @@ def parse(doc) -> list[Shot]:
                 )
                 for theme in shown_themes
             )
+    if "diff" in doc:
+        _diff(doc["diff"])
     return shots
 
 
@@ -261,6 +279,16 @@ def _settings(obj: dict, path: str) -> dict:
     for key in ("timeoutMs", "maxHeightPx"):
         if key in obj:
             out[key] = _positive(obj[key], _at(path, key))
+    return out
+
+
+def _diff(value) -> dict:
+    """HZ-508: the `diff` overrides, each a number in [0, 1]."""
+    out = {}
+    for key, num in _keys(value, "diff", DIFF_KEYS, ()).items():
+        if isinstance(num, bool) or not isinstance(num, (int, float)) or not 0 <= num <= 1:
+            raise ConfigError(f"diff.{key}", "must be a number from 0 to 1")
+        out[key] = float(num)
     return out
 
 

@@ -128,6 +128,7 @@ enforced rather than remembered.
 | `fixtures/lifecycle-cases.json` | Input/expected pairs asserted by **both** language suites |
 | `fixtures/fields-cases.json` | The same, for the field bindings |
 | `fixtures/priorities-cases.json` | The same, for the priority bindings |
+| `fixtures/screenshot-results.json` | HZ-508: a sample `results.json` that `farm/step_agent.py` writes to `e2e-artifacts/<id>` and `server/src/github.js` renders. The farm test checks what it writes has the same keys and types; the server test renders this file |
 | `personas.json` | The only place a persona id, its agent, each agent's default and role file, the pre-HZ-125 legacy aliases, persona-to-provider and (HZ-192) the model each agent call uses are declared |
 | `personas.schema.json` | The contract `personas.json` must satisfy |
 | `js/personas.js` | The JS binding: imports `personas.json`, exposes the ids, defaults, legacy aliases and `isPersona` / `personaRoleFile`. No `PERSONA_PROVIDERS` — it has no JS consumer |
