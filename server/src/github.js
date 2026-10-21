@@ -716,32 +716,119 @@ export async function createPrFromBranch(item, branch, { manualChecks = null } =
   throw new Error(`could not open the pull request (${prRes.status})`)
 }
 
-// Promotes a merged item's artifact ref to be the new baseline. This is a
-// plain overwrite of e2e-baseline with a value that's a pure function of the
-// item being merged — not a read-modify-write of the baseline's prior
-// contents — so two merges landing close together are still safe: each sets
-// the baseline to *its own* screenshots, and last-writer-wins is an
-// acceptable outcome for "what does the baseline show right now" (unlike a
-// counter or list, there's no lost-update to corrupt). Best-effort: a
-// promotion failure never fails the merge, since the merge itself is what
-// matters — the baseline just stays one revision stale until the next merge.
-async function promoteBaseline(item) {
+// HZ-510: promotes a merged item's approved screenshots into e2e-baseline,
+// screen by screen. One commit on the current baseline head (base_tree, so
+// every other path keeps its blob) holds only the shots the owner approved at
+// Accept the code: an approved changed/new shot points at the artifacts blob
+// (reused by sha, never re-uploaded), an approved removed shot is deleted, and
+// anything unapproved is left as it was. The ref moves with force: false; a
+// rejected (non-fast-forward) move rebuilds on the new head, so two merges
+// landing together keep each other's shots. With no e2e-baseline yet, the
+// first promotion seeds it with only the approved shots.
+//
+// `approvals` is a Set of approved screen names (screenshots.mergeApprovals);
+// null means they could not be read, which fails closed. Only top-level shot
+// PNGs are ever promoted — never results.json or diff/*. Writes only
+// e2e-baseline, and deletes only this item's artifacts ref, after success. On
+// a failure that ref is kept until the daily prune (pruneArtifactRefs) drops
+// it as merged.
+const PROMOTE_ATTEMPTS = 3
+const SHOT_NAME_RE = /^[A-Za-z0-9._-]{1,100}$/
+
+async function ghJson(step, path, options) {
+  const res = await gh(path, options)
+  if (!res.ok) throw new Error(`${step} returned ${res.status}`)
+  return res.json()
+}
+
+// Pure: the tree entries promoting `approvals` from `results`. `artifactFiles`
+// and `baselineFiles` are path → { sha } maps (baselineFiles null when there
+// is no baseline yet). Returns { entries, skipped }: skipped names an approved
+// changed/new shot whose image is missing from the publish — it keeps its
+// prior baseline blob rather than failing every other shot's promotion.
+function promotionEntries(results, approvals, artifactFiles, baselineFiles) {
+  const entries = []
+  const skipped = []
+  const seen = new Set()
+  for (const shot of results.shots) {
+    if (!approvals.has(shot.name) || seen.has(shot.name) || !SHOT_NAME_RE.test(shot.name)) continue
+    seen.add(shot.name)
+    const path = `${SCREENSHOT_DIR}/${shot.name}.png`
+    if (shot.status === 'changed' || shot.status === 'new') {
+      const blob = artifactFiles.get(path)?.sha
+      if (blob) entries.push({ path, mode: '100644', type: 'blob', sha: blob })
+      else skipped.push(shot.name)
+    } else if (shot.status === 'removed' && baselineFiles?.has(path)) {
+      entries.push({ path, mode: '100644', type: 'blob', sha: null })
+    }
+  }
+  return { entries, skipped }
+}
+
+async function promoteBaseline(item, approvals, log) {
   const repo = item.repo
   const refRes = await gh(`/repos/${repo}/git/ref/${encodeURIComponent(`heads/${artifactsRef(item)}`)}`)
-  if (!refRes.ok) return // this item never published screenshots — nothing to promote
-  const sha = (await refRes.json()).object.sha
-  const update = await gh(`/repos/${repo}/git/refs/${encodeURIComponent(`heads/${BASELINE_REF}`)}`, {
-    method: 'PATCH',
-    body: JSON.stringify({ sha, force: true }),
-  })
-  if (!update.ok) {
-    // Baseline ref doesn't exist yet (first-ever merge on this repo) — create it.
-    await gh(`/repos/${repo}/git/refs`, {
+  if (refRes.status === 404) return null // this item never published screenshots — nothing to promote
+  if (!refRes.ok) throw new Error(`reading ${artifactsRef(item)} returned ${refRes.status}`)
+  if (!approvals) throw new Error('approvals unavailable')
+  const artifactSha = (await refRes.json())?.object?.sha
+  const artifactFiles = SHA_RE.test(artifactSha || '') ? await fetchCommitFiles(repo, artifactSha) : null
+  if (!artifactFiles) throw new Error(`${artifactsRef(item)} has no readable commit`)
+  const resultsEntry = artifactFiles.get(`${SCREENSHOT_DIR}/results.json`)
+  if (!resultsEntry) throw new Error('no results.json')
+  const results = JSON.parse((await fetchBlob(repo, resultsEntry.sha)).toString('utf8'))
+  if (!isScreenshotResults(results)) throw new Error('results.json has the wrong shape')
+
+  const baselinePath = `/repos/${repo}/git/refs/${encodeURIComponent(`heads/${BASELINE_REF}`)}`
+  let lastRefusal = ''
+  for (let attempt = 0; attempt < PROMOTE_ATTEMPTS; attempt++) {
+    const headRes = await gh(`/repos/${repo}/git/ref/${encodeURIComponent(`heads/${BASELINE_REF}`)}`)
+    if (!headRes.ok && headRes.status !== 404) throw new Error(`reading ${BASELINE_REF} returned ${headRes.status}`)
+    const head = headRes.ok ? (await headRes.json())?.object?.sha : null
+    if (headRes.ok && !SHA_RE.test(head || '')) throw new Error(`GitHub returned ${BASELINE_REF} without a commit sha`)
+    let baseTree = null
+    let baselineFiles = null
+    if (head) {
+      baseTree = (await ghJson('reading the baseline commit', `/repos/${repo}/git/commits/${head}`))?.tree?.sha
+      if (!SHA_RE.test(baseTree || '')) throw new Error(`GitHub returned commit ${head} without a tree`)
+      baselineFiles = await fetchCommitFiles(repo, head)
+      if (!baselineFiles) throw new Error(`could not read commit ${head}`)
+    }
+    const { entries, skipped } = promotionEntries(results, approvals, artifactFiles, baselineFiles)
+    if (attempt === 0) {
+      for (const name of skipped) log?.warn(`${item.id}: approved screenshot ${name} has no image on ${artifactsRef(item)} — its baseline is kept`)
+    }
+    if (entries.length === 0) break // nothing approved to promote — no commit
+    const tree = await ghJson('creating the baseline tree', `/repos/${repo}/git/trees`, {
       method: 'POST',
-      body: JSON.stringify({ ref: `refs/heads/${BASELINE_REF}`, sha }),
-    }).catch(() => {})
+      body: JSON.stringify(head ? { base_tree: baseTree, tree: entries } : { tree: entries }),
+    })
+    const commit = await ghJson('creating the baseline commit', `/repos/${repo}/git/commits`, {
+      method: 'POST',
+      body: JSON.stringify({
+        message: `${item.id}: promote ${entries.length} approved screenshot(s)`,
+        tree: tree.sha,
+        parents: head ? [head] : [],
+      }),
+    })
+    const moved = head
+      ? await gh(baselinePath, { method: 'PATCH', body: JSON.stringify({ sha: commit.sha, force: false }) })
+      : await gh(`/repos/${repo}/git/refs`, {
+          method: 'POST',
+          body: JSON.stringify({ ref: `refs/heads/${BASELINE_REF}`, sha: commit.sha }),
+        })
+    if (moved.ok) {
+      log?.info(`${item.id}: promoted ${entries.length} approved screenshot(s) into ${BASELINE_REF}`)
+      await deleteArtifactRef(repo, item)
+      return { promoted: entries.length, seeded: !head }
+    }
+    // 422: the head moved (or a concurrent seed won) — rebuild on the new head.
+    if (moved.status !== 422) throw new Error(`moving ${BASELINE_REF} returned ${moved.status}`)
+    lastRefusal = (await moved.json().catch(() => ({})))?.message || 'no message'
+    if (attempt === PROMOTE_ATTEMPTS - 1) throw new Error(`${BASELINE_REF} moved ${PROMOTE_ATTEMPTS} times (last: ${lastRefusal})`)
   }
   await deleteArtifactRef(repo, item)
+  return { promoted: 0, seeded: false }
 }
 
 const SHA_RE = /^[0-9a-f]{40}$/
@@ -832,14 +919,16 @@ export async function isAncestor(repo, baseSha, headSha) {
 }
 
 // Accepting the code merges its PR (squash), removes the work branch, and —
-// only here, never from a PR branch — promotes this item's screenshots to be
-// the new baseline that future PRs compare against.
+// only here, never from a PR branch — promotes this item's approved
+// screenshots (`approvals`, see promoteBaseline) into the baseline that
+// future PRs compare against. A failed promotion is logged with the item id
+// and never fails the merge.
 //
 // `sha` (HZ-183) pins the merge to the PR head the pre-merge check tested:
 // GitHub refuses with 409 if the head moved since. A squash builds its own
 // commit, so the tested merge commit itself is never pushed; the head pin plus
 // app.js's base re-check together are what make the squash the tested tree.
-export async function mergePr(item, { sha } = {}) {
+export async function mergePr(item, { sha, approvals = null, log } = {}) {
   const repo = item.repo
   const res = await gh(`/repos/${repo}/pulls/${item.pr}/merge`, {
     method: 'PUT',
@@ -850,7 +939,9 @@ export async function mergePr(item, { sha } = {}) {
     await gh(`/repos/${repo}/git/refs/${encodeURIComponent(`heads/horizon/${item.id.toLowerCase()}`)}`, {
       method: 'DELETE',
     }).catch(() => {})
-    await promoteBaseline(item).catch(() => {})
+    await promoteBaseline(item, approvals, log).catch((err) =>
+      log?.warn(`baseline promotion failed for ${item.id}: ${err.message} — ${artifactsRef(item)} is kept`),
+    )
     return res.json()
   }
   const data = await res.json().catch(() => ({}))
