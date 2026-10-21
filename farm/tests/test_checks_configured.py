@@ -9,12 +9,16 @@ suggestions); FARM_CHECK_CMD still beats both.
 
 import json
 import re
+import socket
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
 
-from farm import check_metrics, check_slots, checks
+from farm import check_metrics, check_slots, checks, screenshot_runner
 from farm.checks import CheckFailure, detect_check_commands, resolve_check_commands, run_checks
+from farm.step_agent import publish_screenshots
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 FULL = {
@@ -302,3 +306,95 @@ def test_a_line_starting_after_the_deadline_is_named_by_slot_and_line(tmp_path, 
         run_checks(ws, log=lambda *_: None, configured={"test": "true\ntrue"}, deadline=deadline)
     assert err.value.reason == "timed_out"
     assert "ran out of time before: test slot, line 2: sh -c true" in str(err.value)
+
+
+# ---- HZ-506: the implement step's checks capture, then publish pushes ----
+
+
+def free_port() -> int:
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        return sock.getsockname()[1]
+
+
+def test_run_checks_captures_and_publish_pushes_manifest(tmp_path, monkeypatch):
+    fixtures = Path(__file__).parent / "fixtures" / "screenshots"
+    monkeypatch.setattr(screenshot_runner, "WORKER_CMD", [sys.executable, str(fixtures / "fake_worker.py")])
+    monkeypatch.setattr(screenshot_runner, "worker_installed", lambda: True)
+    monkeypatch.setattr(checks, "_playwright_chromium_installed", lambda: True)
+    monkeypatch.setenv("FAKE_WORKER_LOG", str(tmp_path / "worker.log"))
+
+    def git(cwd, *args):
+        subprocess.run(["git", "-C", str(cwd), *args], check=True, capture_output=True)
+
+    origin = tmp_path / "origin.git"
+    subprocess.run(["git", "init", "-q", "--bare", "-b", "main", str(origin)], check=True)
+    ws = tmp_path / "ws"
+    subprocess.run(["git", "init", "-q", "-b", "main", str(ws)], check=True)
+    git(ws, "remote", "add", "origin", str(origin))
+    (ws / ".gitignore").write_text("shots/\n")
+    port = free_port()
+    (ws / ".horizon").mkdir()
+    (ws / ".horizon" / "screenshots.json").write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "serve": f"exec {sys.executable} {fixtures / 'serve_app.py'} {port} {tmp_path / 'serve.json'}",
+                "ready": f"http://127.0.0.1:{port}/",
+                "outputDir": "shots",
+                "themes": ["light"],
+                "viewports": [{"name": "desktop", "width": 800, "height": 600}],
+                "screens": [
+                    {"name": "one", "path": "/one"},
+                    {"name": "two", "path": "/slow", "timeoutMs": 1000},
+                    {"name": "three", "path": "/three"},
+                ],
+            }
+        )
+    )
+    summary_notes: list[str] = []
+
+    note = run_checks(
+        ws,
+        log=lambda *_: None,
+        configured={"test": "true", "screenshots": "node my-own-runner.mjs"},
+        summary_notes=summary_notes,
+        capture_screenshots=True,
+    )
+
+    assert note == "1 repo check(s) passed"
+    [record] = [json.loads(line) for line in check_metrics.metrics_path().read_text().splitlines()]
+    assert record["screenshots"] == {
+        "shots": 3,
+        screenshot_runner.OK: 2,
+        screenshot_runner.TIMEOUT: 1,
+        screenshot_runner.ERROR: 0,
+        screenshot_runner.SKIPPED: 0,
+    }
+    assert summary_notes == ["screenshots: 2 ok, 1 timeout"]
+
+    publish_screenshots(ws, {"id": "T-1", "repo": "acme/demo"}, log=lambda *_: None)
+    pushed = subprocess.run(
+        ["git", "--git-dir", str(origin), "ls-tree", "-r", "--name-only", "e2e-artifacts/t-1"],
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.split()
+    assert pushed == [
+        "e2e/__screenshots__/manifest.json",
+        "e2e/__screenshots__/one--desktop--light.png",
+        "e2e/__screenshots__/three--desktop--light.png",
+    ]
+
+
+def test_run_checks_without_the_flag_never_captures(tmp_path, recorded):
+    ws = tmp_path / "ws"
+    (ws / ".horizon").mkdir(parents=True)
+    (ws / ".horizon" / "screenshots.json").write_text(
+        (Path(__file__).parent / "fixtures" / "screenshots" / "valid.json").read_text()
+    )
+    summary_notes: list[str] = []
+    assert run_checks(ws, log=lambda *_: None, configured={"test": "true"}, summary_notes=summary_notes) == "1 repo check(s) passed"
+    assert not (ws / "screenshots").exists()
+    assert summary_notes == ["screenshots: 5 shot(s) in .horizon/screenshots.json"]
+

@@ -79,6 +79,10 @@ const LITERALS_ALLOWED = {
   'farm/tests/test_check_slots.py': 'a spy recording subprocess.run\'s "timeout" kwarg, plus never_picked_up in docstrings — not a reason',
   'farm/tools/backfill_check_metrics.py': 'classifies historical check runs into the check-metrics outcome "timeout" — not a failure reason',
   'farm/tools/report_check_metrics.py': 'tallies the check-metrics outcome "timeout" — a check outcome, not a failure reason',
+  // HZ-506: the screenshot runner's manifest marks each shot ok/timeout/error/
+  // skipped. That status is written to <outputDir>/manifest.json and the
+  // check-metrics record, never relayed to the server as a failure reason.
+  'farm/screenshot_runner.py': 'declares the screenshot manifest status "timeout" — a per-shot status, not a failure reason',
 }
 
 function patternFor(id) {

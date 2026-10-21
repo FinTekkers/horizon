@@ -465,6 +465,60 @@ def test_publish_screenshots_never_raises_on_push_failure(tmp_path):
     publish_screenshots(ws, {"id": "T-1", "repo": "acme/demo"})  # must not raise
 
 
+def write_screenshots_config(ws, output_dir="shots"):
+    (ws / ".horizon").mkdir(exist_ok=True)
+    doc = json.loads((Path(__file__).parent / "fixtures" / "screenshots" / "valid.json").read_text())
+    doc["outputDir"] = output_dir
+    (ws / ".horizon" / "screenshots.json").write_text(json.dumps(doc))
+
+
+def artifact_files(origin, ref="e2e-artifacts/t-1"):
+    return subprocess.run(
+        ["git", "--git-dir", str(origin), "ls-tree", "-r", "--name-only", ref], capture_output=True, text=True, check=True
+    ).stdout.split()
+
+
+def test_publish_uses_configured_output_dir(tmp_path):
+    # HZ-506: a configured repo publishes its outputDir — PNGs and the
+    # manifest — never the hard-coded e2e/__screenshots__.
+    ws, origin = make_git_workspace(tmp_path)
+    write_screenshots_config(ws)
+    shots = ws / "shots"
+    shots.mkdir()
+    (shots / "home--desktop--light.png").write_bytes(b"\x89PNG\r\n\x1a\nhome")
+    (shots / "manifest.json").write_text('{"version": 1, "shots": []}')
+    (shots / "notes.txt").write_text("not a screenshot")
+    write_fake_screenshot(ws, "stray")
+
+    publish_screenshots(ws, {"id": "T-1", "repo": "acme/demo"})
+
+    assert artifact_files(origin) == [
+        "e2e/__screenshots__/home--desktop--light.png",
+        "e2e/__screenshots__/manifest.json",
+    ]
+
+
+def test_publish_without_config_keeps_e2e_screenshots(tmp_path):
+    # HZ-506 guardrail: no config, today's source — until HZ-511's cutover.
+    ws, origin = make_git_workspace(tmp_path)
+    write_fake_screenshot(ws, "board")
+    (ws / "shots").mkdir()
+    (ws / "shots" / "other.png").write_bytes(b"\x89PNG\r\n\x1a\nother")
+    publish_screenshots(ws, {"id": "T-1", "repo": "acme/demo"})
+    assert artifact_files(origin) == ["e2e/__screenshots__/board.png"]
+
+
+def test_publish_with_an_invalid_config_skips_and_never_raises(tmp_path):
+    ws, origin = make_git_workspace(tmp_path)
+    (ws / ".horizon").mkdir()
+    (ws / ".horizon" / "screenshots.json").write_text("{ nope")
+    write_fake_screenshot(ws, "board")
+    lines = []
+    publish_screenshots(ws, {"id": "T-1", "repo": "acme/demo"}, log=lines.append)
+    assert lines == ["publish_screenshots: skipped — invalid config"]
+    assert "e2e-artifacts" not in origin_refs(origin)
+
+
 def test_implement_step_publishes_screenshots_without_polluting_the_code_branch(tmp_path, monkeypatch):
     ws, origin = make_git_workspace(tmp_path)
     # A repo that has adopted HZ-63 already ignores the screenshots dir —

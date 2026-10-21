@@ -115,6 +115,67 @@ never from a PR branch.
 If the PR is **closed unmerged** on GitHub, the item is sent back and
 `e2e-artifacts/<id>` is deleted. The next implement attempt republishes it.
 
+## Repos with `.horizon/screenshots.json`: the farm's capture runner (HZ-506)
+
+A repo can instead commit a screenshot config (`.horizon/screenshots.json`,
+schema in `farm/screenshots_config.py`, HZ-505). It commits **no capture
+code**: one Horizon-owned runner, `farm/screenshot_runner.py` plus the
+Playwright worker in `farm/capture/`, captures every repo's screens. It is
+versioned with the config schema (the manifest's `runner` field names the
+schema version) and is never copied into a repo.
+
+At the implement step, after every check command passes, `run_checks()` (in
+the same check slot) runs it:
+
+1. Starts `serve` with bash, in its own process group.
+2. Polls `ready` until it answers. `ready` must be an `http://` URL on
+   `127.0.0.1` or `localhost`; its origin is the base for every screen's
+   `path`.
+3. Captures each shot (screen × viewport × theme) under **that shot's own**
+   `timeoutMs`. An overrun kills the worker, marks the shot `timeout`, and
+   the next shot gets a fresh worker. A page taller than `maxHeightPx` is cut
+   at that height and marked `clipped`. Shots that would start after the
+   run's budget (`FARM_CHECK_TIMEOUT_S`) are `skipped`.
+4. Writes `<outputDir>/manifest.json`:
+
+   ```json
+   {"version": 1, "runner": "farm/screenshot_runner.py@schema-1", "shots": [
+     {"screen": "home", "viewport": "desktop", "theme": "light", "status": "ok",
+      "durationMs": 812, "png": "home--desktop--light.png", "clipped": false}
+   ]}
+   ```
+
+   `status` is `ok`, `timeout`, `error` or `skipped`. `png` is relative to
+   `outputDir` and `null` unless the shot is `ok`. An `error` entry carries a
+   redacted `error` message.
+5. Stops `serve`'s whole process group (SIGTERM, then SIGKILL after 5 s) and
+   the worker, however the run ended.
+
+A slow or failing shot does **not** fail the check; the summary says e.g.
+`screenshots: 5 ok, 1 timeout`. The slot fails only when nothing can be
+captured: `outputDir` is not gitignored (no PNG may reach `main`), the worker
+or Chromium is not installed, or `serve` never became ready. The slot's saved
+command lines in Admin never run — a repo can not swap in its own runner.
+
+`publish_screenshots()` then pushes the PNGs **and `manifest.json`** from the
+configured `outputDir`, under the same `e2e/__screenshots__/` tree path on
+`e2e-artifacts/<id>`. `server/src/github.js` lists `.png` files only, so the
+manifest rides along without showing in the PR. Repos without a config keep
+publishing from `e2e/__screenshots__` until the HZ-511 cutover.
+
+**Login.** Captures never log in: only each screen's `path` is visited. The
+key mechanism is HZ-494 (PR #498): the repo's `test_env_file` values. A
+`login: true` shot sends each value as a request header named
+`X-Horizon-Test-Env-<NAME>` (`_` becomes `-`), to the app's own origin only;
+a `login: false` shot sends none. `serve` gets the values in its env when any
+shot is `login: true`, so the app can check the header it receives. Every
+value is redacted from the log, the manifest and the check output.
+
+**Host setup.** `farm/run.sh` runs `npm ci` in `farm/capture` when its
+`node_modules` is missing or older than its lockfile. `farm/capture` pins
+`playwright` to the exact version `e2e/package-lock.json` resolves, so both
+share one Chromium build in `~/.cache/ms-playwright` — bump them together.
+
 ## Pitfall: a tracked screenshot defeats `.gitignore`
 
 `.gitignore` only affects untracked files. If a PNG under
@@ -147,4 +208,5 @@ prints anything, untrack those files the same way.
 | Presence check | `e2e/verify-screenshots.mjs` (`EXPECTED_JOURNEYS`) |
 | Ignore rule | `.gitignore` (`e2e/__screenshots__/`) |
 | Publish + commit order | `farm/step_agent.py` (`publish_screenshots`, `finalize_branch`) |
+| Config-driven capture (HZ-506) | `farm/screenshot_runner.py`, `farm/capture/worker.mjs`, `farm/checks.py` (`_capture_screenshots`) |
 | PR body, diff, promotion, cleanup | `server/src/github.js` (`screenshotsMarkdown`, `compareScreenshotsMarkdown`, `createPrFromBranch`, `promoteBaseline`, `mergePr`) |

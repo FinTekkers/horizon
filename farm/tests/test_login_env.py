@@ -127,10 +127,17 @@ def test_only_test_and_e2e_commands_get_the_values_never_install_or_lint(ws, hos
     dumps = {slot: tmp_path / f"{slot}.env" for slot in checks.CHECK_SLOTS}
     configured = {slot: f"env > {dumps[slot]}" for slot in checks.CHECK_SLOTS}
     run_checks(ws, lambda *_: None, configured=configured, test_env_file=str(host_file))
-    seen = {slot: dumps[slot].read_text() for slot in checks.CHECK_SLOTS}
+    # HZ-506: the screenshots slot's saved line never runs; its runner gets
+    # the values instead (test_screenshot_runner.py).
+    assert not dumps[checks.SCREENSHOTS_SLOT].exists()
+    seen = {slot: dumps[slot].read_text() for slot in ("install", "test", "lint", "e2e")}
     assert f"FT_E2E_PASSWORD={PASSWORD}" in seen["test"] and f"FT_E2E_PASSWORD={PASSWORD}" in seen["e2e"]
     assert "FT_E2E_PASSWORD" not in seen["install"] and "FT_E2E_PASSWORD" not in seen["lint"]
-    assert "FT_E2E_PASSWORD" not in seen["screenshots"]
+
+
+def test_the_screenshots_slot_gets_the_values():
+    # HZ-506: the capture runner sends them on `login: true` shots only.
+    assert checks.LOGIN_ENV_SLOTS == {"test", "e2e", checks.SCREENSHOTS_SLOT}
 
 
 # ---- metric 1: the implement step's output ----
