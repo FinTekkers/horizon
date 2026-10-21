@@ -141,7 +141,14 @@ export function verifyPassword(email, password) {
     touchLastLogin(existing.id)
     return existing
   }
-  return createUser({ email, name: 'Admin', authMethod: 'password' }).user
+  return adminUser()
+}
+
+// The ADMIN_EMAIL account, created on first use. Shared by the password path
+// above and the screenshot test-env login (testEnvLogin.js, HZ-511), which
+// does not count as a login and so leaves last_login_at alone.
+export function adminUser() {
+  return findUserByEmail(ADMIN_EMAIL) || createUser({ email: ADMIN_EMAIL, name: 'Admin', authMethod: 'password' }).user
 }
 
 // ---- sessions ----

@@ -30,6 +30,8 @@
 //                          WA_NOTIFY_ENABLED is — rollback tier 1, no deploy.
 //   SESSION_SECRET         unused placeholder — session tokens are random, not signed
 //   HORIZON_TEST_HOOKS     "1" registers e2e-only routes (see app.js) — never set in production
+//   SCREENSHOT_LOGIN_KEY   screenshot capture's login key (HZ-511, testEnvLogin.js). Honoured
+//                          only with HORIZON_TEST_HOOKS=1; never logged
 //   FIX_PASS_ENABLED       "0" turns off HZ-182's fix-only implement + delta review after a rejection
 //   FIX_PASS_TURN_DIVISOR  fix-pass budget = implement budget / this (default 3)
 //   FIX_PASS_MAX_LINES     fix diffs larger than this get a full review (default 200)
@@ -320,3 +322,8 @@ export const WA_POLL_MAX_ATTEMPTS = WA_NOTIFY_MAX_ATTEMPTS
 // pollRunStates() would have cached from a real farm reply. Unset (the
 // default) means the route is never even registered.
 export const TEST_HOOKS_ENABLED = process.env.HORIZON_TEST_HOOKS === '1'
+
+// HZ-511: the value the farm's screenshot runner sends from the repo's
+// test_env_file as X-Horizon-Test-Env-SCREENSHOT-LOGIN-KEY. Read raw here; the
+// one TEST_HOOKS_ENABLED guard lives in testEnvUser() (testEnvLogin.js).
+export const SCREENSHOT_LOGIN_KEY = process.env.SCREENSHOT_LOGIN_KEY || ''

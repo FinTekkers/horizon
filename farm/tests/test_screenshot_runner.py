@@ -197,6 +197,17 @@ def test_login_screen_gets_test_env_values_and_no_login_request(tmp_path):
     assert logged_in_paths(app.requests()) == []
 
 
+def test_login_header_name_matches_the_one_horizons_server_reads():
+    # HZ-511: Horizon's own test_env_file holds SCREENSHOT_LOGIN_KEY. If the
+    # runner's header and server/src/testEnvLogin.js drift, every logged-in
+    # shot gets a 401, so pin them to each other.
+    source = (Path(__file__).resolve().parents[2] / "server" / "src" / "testEnvLogin.js").read_text()
+    match = re.search(r"export const TEST_ENV_LOGIN_HEADER = '([^']+)'", source)
+    assert match, "TEST_ENV_LOGIN_HEADER not found in server/src/testEnvLogin.js"
+    sent = screenshot_runner.login_headers({"SCREENSHOT_LOGIN_KEY": "k"})
+    assert [name.lower() for name in sent] == [match.group(1)]
+
+
 def test_the_login_path_check_does_fire(tmp_path):
     # The positive control for the assertion above: a screen at /login is
     # caught, so an empty list there means no login request was made.
