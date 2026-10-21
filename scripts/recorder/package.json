@@ -1,0 +1,12 @@
+{
+  "name": "horizon-recorder",
+  "private": true,
+  "type": "module",
+  "description": "HZ-518: the time-lapse recorder (node scripts/record-item.mjs). Its own package so playwright stays out of the root package.json. playwright is pinned to the exact version e2e/package-lock.json resolves, so both share one cached Chromium build.",
+  "scripts": {
+    "test": "playwright install chromium && node --test test/*.test.mjs"
+  },
+  "dependencies": {
+    "playwright": "1.62.1"
+  }
+}

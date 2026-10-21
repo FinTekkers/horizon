@@ -1,0 +1,29 @@
+<!doctype html>
+<html>
+<head><meta charset="utf-8"><title>Stub board</title></head>
+<!-- Every element the tests measure is absolutely positioned, so its box is
+     the same whatever the step label or the clock say. -->
+<body style="margin:0;width:1280px;height:720px;background:#f4f5f7;font-family:sans-serif;overflow:hidden">
+  <div id="banner" style="position:absolute;left:0;top:0;width:1280px;height:60px;background:#2a7de1"></div>
+  <div id="step" style="position:absolute;left:100px;top:100px;font-size:32px">loading</div>
+  <div id="clock" style="position:absolute;left:900px;top:100px;font-size:24px"></div>
+  <input type="password" aria-label="Gate PIN" value="123456" style="position:absolute;left:100px;top:200px;width:200px;height:30px;box-sizing:border-box">
+  <p id="contact" style="position:absolute;left:100px;top:300px;margin:0;font-size:20px;line-height:24px">Contact ops@example.com today</p>
+  <form id="gate" method="post" action="/horizon/api/items/stub/gate"><input type="hidden" name="approve" value="1"></form>
+  <script>
+    // A live timer, like the real board's: no two frames ever hash equal.
+    setInterval(() => { document.getElementById('clock').textContent = String(Date.now()) }, 100)
+    fetch('/horizon/api/auth/me').then((res) => {
+      if (res.status === 401) {
+        document.body.insertAdjacentHTML('beforeend', '<button style="position:absolute;left:600px;top:400px">Sign in</button>')
+        return
+      }
+      const es = new EventSource('/horizon/api/stream?v=2')
+      es.addEventListener('snapshot', (msg) => { document.getElementById('step').textContent = JSON.parse(msg.data).label })
+    })
+    // Writes the recorder must stop before they reach the server.
+    fetch('/horizon/api/items/stub/advance', { method: 'POST', body: '{}' }).catch(() => {})
+    setTimeout(() => document.getElementById('gate').submit(), 50)
+  </script>
+</body>
+</html>
