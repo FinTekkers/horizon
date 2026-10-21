@@ -39,6 +39,7 @@ import PlanInventoryTables from './PlanInventoryTables'
 import ProjectBadge from './ProjectBadge'
 import TaskBadge from './TaskBadge'
 import PlanItemsTable from './PlanItemsTable'
+import ScreenshotPanel from './ScreenshotPanel'
 import { BackIcon, LinkIcon, RestartIcon, PrIcon, CircleXIcon } from './icons'
 
 const STEP_GLYPHS = { done: '✓', active: '•', awaiting: '!', pending: '', blocked: '✕', skipped: '–' }
@@ -478,6 +479,9 @@ function Step({ item, stepOutputs, outputsSettled, index, deployBlock, viewerNam
               )}
             </div>
           )}
+          {/* HZ-509: the latest publish's changed, new and removed shots, each
+              approvable — informational; the gate's own Approve is unchanged. */}
+          {status === 'awaiting' && st.label === 'Accept the code' && item.repo && <ScreenshotPanel item={item} />}
           {status === 'awaiting' && (
             <div className="step-card__actions">
               {item.pr != null && st.label === 'Accept the code' && (

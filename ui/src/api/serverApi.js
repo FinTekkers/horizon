@@ -306,17 +306,25 @@ function promptForPin(message) {
   return pin || ''
 }
 
+// HZ-509: whether this browser holds a gate PIN, so a panel can wait for a
+// click before a request would prompt for one.
+export function hasGatePin() {
+  return !!gatePin()
+}
+
+// A GET carries no body: fetch refuses one, and the caller would only see null.
 async function gatePost(path, body, method = 'POST') {
   let pin = gatePin()
   if (!pin) {
     pin = promptForPin('Enter your gate PIN (shown when it was last generated — regenerate it in Admin if lost):')
   }
   const doFetch = (p) =>
-    fetch(`${API_BASE}${path}`, {
-      method,
-      headers: { 'Content-Type': 'application/json', 'x-human-key': p },
-      body: JSON.stringify(body ?? {}),
-    })
+    fetch(
+      `${API_BASE}${path}`,
+      method === 'GET'
+        ? { method, headers: { 'x-human-key': p } }
+        : { method, headers: { 'Content-Type': 'application/json', 'x-human-key': p }, body: JSON.stringify(body ?? {}) },
+    )
   let res = await doFetch(pin).catch(() => null)
   if (res && res.status === 401) {
     localStorage.removeItem(PIN_STORAGE)
@@ -377,6 +385,42 @@ async function gateAction(path, body) {
     throw err
   }
   return data
+}
+
+// ---- screenshots at Accept the code (HZ-509) ----
+
+// { commit, shots } — the item's changed, new and removed shots and whether
+// each is approved. Rejects with Error(<error code>) and `status` on a non-2xx.
+export async function getScreenshots(id) {
+  const res = await fetch(`${API_BASE}/items/${encodeURIComponent(id)}/screenshots`)
+  const data = await res.json().catch(() => ({}))
+  if (!res.ok) {
+    const err = new Error(data.error || `HTTP ${res.status}`)
+    err.status = res.status
+    throw err
+  }
+  return data
+}
+
+// One image as an object URL (the caller revokes it). An <img> cannot send
+// the PIN header, so the bytes are fetched here. Rejects like gateAction.
+export async function getScreenshotImage(id, screen, kind) {
+  const path = `/items/${encodeURIComponent(id)}/screenshots/${encodeURIComponent(screen)}/${encodeURIComponent(kind)}`
+  const res = await gatePost(path, null, 'GET')
+  if (!res) throw new Error('network')
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({}))
+    const err = new Error(data.error || `HTTP ${res.status}`)
+    err.status = res.status
+    throw err
+  }
+  return URL.createObjectURL(await res.blob())
+}
+
+// Approves `screens` (or every listed shot, with { all: true }) of the publish
+// `commit` names. Resolves to the new { commit, shots }. Never approves the gate.
+export function approveScreenshots(id, commit, { screens, all } = {}) {
+  return gateAction(`/items/${encodeURIComponent(id)}/screenshots/approve`, all ? { commit, all: true } : { commit, screens })
 }
 
 // Regenerating replaces the old PIN outright — returns the new plaintext,

@@ -818,3 +818,39 @@ for (const [name, call, path] of GATE_ACTIONS) {
     expect(fetchSpy.mock.calls[0][1].headers['x-human-key']).toBe(GATE_PIN)
   })
 }
+
+// ---- HZ-509: screenshot images need the PIN, and a GET carries no body ----
+
+const pngResponse = () => ({ ok: true, status: 200, blob: () => Promise.resolve(new Blob(['png'])) })
+
+test('getScreenshotImage sends a GET with the stored PIN and no body, and returns an object URL', async () => {
+  const serverApi = await import('./serverApi')
+  const fetchSpy = vi.fn(() => Promise.resolve(pngResponse()))
+  vi.stubGlobal('fetch', fetchSpy)
+  vi.stubGlobal('URL', { ...URL, createObjectURL: vi.fn(() => 'blob:shot') })
+
+  await expect(serverApi.getScreenshotImage('HZ-1', 'board', 'diff')).resolves.toBe('blob:shot')
+  expect(fetchSpy).toHaveBeenCalledTimes(1)
+  const [url, init] = fetchSpy.mock.calls[0]
+  expect(url).toMatch(/\/items\/HZ-1\/screenshots\/board\/diff$/)
+  expect(init.method).toBe('GET')
+  expect(init.headers).toEqual({ 'x-human-key': 'test-pin' })
+  expect(init).not.toHaveProperty('body')
+})
+
+test('getScreenshotImage re-prompts once on a 401 and retries with the new PIN', async () => {
+  const serverApi = await import('./serverApi')
+  const fetchSpy = vi
+    .fn()
+    .mockResolvedValueOnce({ ok: false, status: 401, json: () => Promise.resolve({ error: 'human_gate_key_required' }) })
+    .mockResolvedValueOnce(pngResponse())
+  vi.stubGlobal('fetch', fetchSpy)
+  vi.stubGlobal('URL', { ...URL, createObjectURL: vi.fn(() => 'blob:shot') })
+  const promptSpy = vi.spyOn(window, 'prompt').mockImplementation(() => '271828')
+
+  await expect(serverApi.getScreenshotImage('HZ-1', 'board', 'new')).resolves.toBe('blob:shot')
+  expect(promptSpy).toHaveBeenCalledTimes(1)
+  expect(fetchSpy).toHaveBeenCalledTimes(2)
+  expect(fetchSpy.mock.calls[1][1].headers).toEqual({ 'x-human-key': '271828' })
+  expect(fetchSpy.mock.calls[1][1]).not.toHaveProperty('body')
+})

@@ -52,6 +52,7 @@ import * as rulesStore from './rulesStore.js'
 import * as runLogView from './runLogView.js'
 import * as split from './split.js'
 import * as planDraft from './planDraft.js'
+import * as screenshots from './screenshots.js'
 import { filedMap } from './planFiling.js'
 import { PLAN_DRAFT_SCHEMA } from '../../domain/js/planDraft.js'
 import * as checkFlakes from './checkFlakes.js'
@@ -944,6 +945,124 @@ export function buildApp({ logger = true, onRoute = null } = {}) {
         return reply.code(Object.hasOwn(PLAN_DRAFT_EDIT_STATUS, result.error) ? PLAN_DRAFT_EDIT_STATUS[result.error] : 409).send(result)
       }
       return { version: result.version, doc: result.doc }
+    },
+  )
+
+  // HZ-509: the Accept gate's screenshot panel (server/src/screenshots.js).
+  // The list carries names and statuses only, so it needs just the session,
+  // like every item read; the images and the approve need the gate PIN, as
+  // the gate itself does. A screen is found only among the item's listed
+  // shots, by exact name. Approving never approves the gate or merges.
+  const SCREENSHOT_IMAGE_MAX_BYTES = 10 * 1024 * 1024
+
+  // The item's listed shots at Accept the code, or { status, error } to send.
+  async function acceptScreenshots(id) {
+    const item = store.getItem(id)
+    if (!item) return { status: 404, error: 'not_found' }
+    if (STEPS[item.cursor]?.label !== 'Accept the code') return { status: 409, error: 'not_at_accept_gate' }
+    try {
+      const snapshot = item.repo ? await github.fetchScreenshotSnapshot(item.repo, item) : null
+      return { repo: item.repo, snapshot, shots: screenshots.listedShots(snapshot) }
+    } catch (err) {
+      fastify.log.warn(`screenshots for ${id} unavailable: ${err.message}`)
+      return { status: 502, error: 'github_unavailable' }
+    }
+  }
+
+  const screenshotsBody = (id, found) => ({
+    commit: found.snapshot?.commit ?? null,
+    shots: screenshots.approvalState(id, found.shots),
+  })
+
+  fastify.get(
+    '/api/items/:id/screenshots',
+    { schema: { params: idParam, response: { 200: OK_OBJECT, 404: ERROR_OBJECT, 409: ERROR_OBJECT, 502: ERROR_OBJECT } } },
+    async (request, reply) => {
+      const found = await acceptScreenshots(request.params.id)
+      if (found.error) return reply.code(found.status).send({ error: found.error })
+      return screenshotsBody(request.params.id, found)
+    },
+  )
+
+  fastify.get(
+    '/api/items/:id/screenshots/:screen/:kind',
+    {
+      schema: {
+        params: {
+          type: 'object',
+          required: ['id', 'screen', 'kind'],
+          properties: { id: { type: 'string', minLength: 1 }, screen: { type: 'string' }, kind: { type: 'string', enum: screenshots.IMAGE_KINDS } },
+        },
+        response: {
+          200: { content: { 'image/png': { schema: { type: 'string', format: 'binary', description: 'The PNG, read from the artifacts ref' } } } },
+          401: ERROR_OBJECT,
+          404: ERROR_OBJECT,
+          409: ERROR_OBJECT,
+          502: ERROR_OBJECT,
+        },
+        security: HUMAN_GATE_SECURITY,
+      },
+    },
+    async (request, reply) => {
+      if (!humanAuthorized(request, reply)) return
+      const { id, screen, kind } = request.params
+      if (!screenshots.SCREEN_RE.test(screen)) return reply.code(404).send({ error: 'unknown_screen' })
+      const found = await acceptScreenshots(id)
+      if (found.error) return reply.code(found.status).send({ error: found.error })
+      const shot = found.shots.find((s) => s.screen === screen)
+      if (!shot) return reply.code(404).send({ error: 'unknown_screen' })
+      const image = Object.hasOwn(shot.images, kind) ? shot.images[kind] : null
+      if (!image) return reply.code(404).send({ error: 'image_not_available' })
+      if (image.size > SCREENSHOT_IMAGE_MAX_BYTES) return reply.code(502).send({ error: 'image_too_large' })
+      const etag = `"${image.sha}"`
+      reply.header('ETag', etag).header('Cache-Control', 'private, no-cache')
+      if (request.headers['if-none-match'] === etag) return reply.code(304).send()
+      let bytes
+      try {
+        bytes = await github.fetchBlob(found.repo, image.sha)
+      } catch (err) {
+        fastify.log.warn(`screenshot ${screen}/${kind} for ${id} unavailable: ${err.message}`)
+        return reply.code(502).send({ error: 'github_unavailable' })
+      }
+      return reply.type('image/png').send(bytes)
+    },
+  )
+
+  fastify.post(
+    '/api/items/:id/screenshots/approve',
+    {
+      schema: {
+        params: idParam,
+        body: {
+          type: 'object',
+          required: ['commit'],
+          properties: {
+            commit: { type: 'string', maxLength: 64 },
+            screens: { type: 'array', minItems: 1, maxItems: 200, items: { type: 'string', maxLength: 200 } },
+            all: { type: 'boolean' },
+          },
+        },
+        response: { 200: OK_OBJECT, 400: ERROR_OBJECT, 401: ERROR_OBJECT, 404: ERROR_OBJECT, 409: ERROR_OBJECT, 502: ERROR_OBJECT },
+        security: HUMAN_GATE_SECURITY,
+      },
+    },
+    async (request, reply) => {
+      if (!humanAuthorized(request, reply)) return
+      const { id } = request.params
+      const { commit, screens, all } = request.body
+      if ((screens === undefined) === (all !== true)) return reply.code(400).send({ error: 'screens_or_all' })
+      const found = await acceptScreenshots(id)
+      if (found.error) return reply.code(found.status).send({ error: found.error })
+      // The owner approves exactly the publish they saw, never a newer one.
+      if (!found.snapshot || found.snapshot.commit !== commit) return reply.code(409).send({ error: 'stale_snapshot' })
+      let chosen = found.shots
+      if (!all) {
+        const byScreen = new Map(found.shots.map((s) => [s.screen, s]))
+        if (!screens.every((s) => byScreen.has(s))) return reply.code(404).send({ error: 'unknown_screen' })
+        chosen = [...new Set(screens)].map((s) => byScreen.get(s))
+      }
+      screenshots.recordApprovals(id, chosen, actorOf(request))
+      return screenshotsBody(id, found)
     },
   )
 
@@ -3517,6 +3636,19 @@ export function buildApp({ logger = true, onRoute = null } = {}) {
     // server's own throwaway FARM_HOME (playwright.config.js).
     fastify.post('/api/test/github-pr', async (request) => {
       github.setPrStateForTest(request.body?.pr ?? null)
+      return { ok: true }
+    })
+
+    // e2e only (HZ-509), same reasoning: with no GitHub token, nothing can
+    // answer the Accept gate's screenshot panel. `snapshots` is keyed
+    // "<repo>#<item id>" (see github.setScreenshotSnapshotForTest); `blobs`
+    // maps a blob sha to its base64 bytes. Either may be null to clear it.
+    fastify.post('/api/test/screenshot-snapshot', async (request) => {
+      const { snapshots = null, blobs = null } = request.body || {}
+      github.setScreenshotSnapshotForTest(snapshots)
+      github.setBlobsForTest(
+        blobs && Object.fromEntries(Object.entries(blobs).map(([sha, b64]) => [sha, Buffer.from(String(b64), 'base64')])),
+      )
       return { ok: true }
     })
   }

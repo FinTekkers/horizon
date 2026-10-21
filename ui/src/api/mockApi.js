@@ -653,6 +653,23 @@ export async function savePlanDraft() {
   throw new Error('Plan drafts are read-only in mock mode — run the server to edit them')
 }
 
+// HZ-509: mock mode has no published screenshots, so no panel shows.
+export function hasGatePin() {
+  return true
+}
+
+export async function getScreenshots() {
+  return { commit: null, shots: [] }
+}
+
+export async function getScreenshotImage() {
+  throw new Error('not_found')
+}
+
+export async function approveScreenshots() {
+  throw new Error('not_found')
+}
+
 export function restartPhase(id, phase, reason) {
   const firstIdx = STEPS.findIndex((st) => st.phase === phase)
   update(id, (x) => ({ ...x, cursor: firstIdx, rejected: false, paused: false }))
