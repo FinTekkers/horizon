@@ -13,7 +13,7 @@ process.env.HORIZON_DB = join(mkdtempSync(join(tmpdir(), 'horizon-github-')), 't
 const { db } = await import('../src/db.js')
 const github = await import('../src/github.js')
 const { setSetting } = await import('../src/settings.js')
-const { ACCEPT_GATE_INDEX, IMPLEMENT_STEP_INDEX } = await import('../../domain/js/lifecycle.js')
+const { ACCEPT_GATE_INDEX, IMPLEMENT_STEP_INDEX, endIndex } = await import('../../domain/js/lifecycle.js')
 
 const REPO = 'FinTekkers/horizon'
 db.prepare(
@@ -514,4 +514,93 @@ test('handlePrStateChange on a PR closed without merging sends the item back to 
   const changed = github.handlePrStateChange(REPO, 57, { merged: false, state: 'closed' })
   assert.equal(changed, true)
   assert.equal(db.prepare("SELECT cursor FROM work_item WHERE id = 'HZ-30-C'").get().cursor, IMPLEMENT_STEP_INDEX)
+})
+
+// HZ-513: the daily e2e-artifacts prune.
+test('pruneArtifactRefs deletes refs for closed, abandoned and unknown items, keeps open ones, never touches other refs, and runs once a day', async (t) => {
+  const PRUNE_REPO = 'acme/prune'
+  const pid = db.prepare("INSERT INTO project (name) VALUES ('Prune')").run().lastInsertRowid
+  db.prepare('INSERT INTO project_repo (project_id, repo, prefix) VALUES (?, ?, ?)').run(pid, PRUNE_REPO, 'PR')
+  const item = db.prepare('INSERT INTO work_item (id, title, priority, cursor, repo, kind, abandoned_at, merged_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
+  item.run('PR-1', 'open', 'Medium', 3, PRUNE_REPO, 'change', null, null)
+  item.run('PR-2', 'abandoned', 'Medium', 3, PRUNE_REPO, 'change', '2026-01-01 00:00:00', null)
+  item.run('PR-3', 'closed', 'Medium', endIndex('change'), PRUNE_REPO, 'change', null, null)
+  item.run('PR-4', 'merged', 'Medium', ACCEPT_GATE_INDEX, PRUNE_REPO, 'change', null, '2026-01-01 00:00:00')
+  // Same id, other repo, closed: must not make the open PR-5 in acme/prune look closed.
+  item.run('PR-5', 'open here', 'Medium', 3, PRUNE_REPO, 'change', null, null)
+  item.run('pr-5', 'closed elsewhere', 'Medium', endIndex('change'), 'acme/other', 'change', null, null)
+  t.after(() => {
+    db.prepare("DELETE FROM work_item WHERE repo IN ('acme/prune', 'acme/other')").run()
+    db.prepare('DELETE FROM project_repo WHERE project_id = ?').run(pid)
+    db.prepare('DELETE FROM project WHERE id = ?').run(pid)
+    db.prepare("DELETE FROM sync_cursor WHERE key = 'artifacts-prune'").run()
+  })
+
+  const listing = [
+    'refs/heads/e2e-artifacts/pr-1',
+    'refs/heads/e2e-artifacts/pr-2',
+    'refs/heads/e2e-artifacts/pr-3',
+    'refs/heads/e2e-artifacts/pr-4',
+    'refs/heads/e2e-artifacts/pr-5',
+    'refs/heads/e2e-artifacts/zz-99',
+    // A misbehaving listing must still never reach these.
+    'refs/heads/e2e-baseline',
+    'refs/heads/main',
+    'refs/heads/horizon/pr-2',
+  ].map((ref) => ({ ref }))
+  const calls = []
+  t.mock.method(globalThis, 'fetch', async (url, options) => {
+    const u = new URL(url)
+    const method = options?.method || 'GET'
+    calls.push({ path: u.pathname, method })
+    if (method === 'GET' && u.pathname === `/repos/${PRUNE_REPO}/git/matching-refs/heads/e2e-artifacts/`) {
+      return { ok: true, status: 200, json: async () => listing }
+    }
+    if (method === 'DELETE' && u.pathname.endsWith('heads%2Fe2e-artifacts%2Fpr-4')) return { ok: false, status: 404 }
+    if (method === 'DELETE' && u.pathname.endsWith('heads%2Fe2e-artifacts%2Fzz-99')) throw new Error('network down')
+    if (method === 'DELETE') return { ok: true, status: 204 }
+    return { ok: false, status: 404 }
+  })
+  const logs = { info: [], warn: [] }
+  const log = { info: (m) => logs.info.push(m), warn: (m) => logs.warn.push(m) }
+
+  const result = await github.pruneArtifactRefs(log)
+  const deleted = calls.filter((c) => c.method === 'DELETE').map((c) => decodeURIComponent(c.path.split('/git/refs/')[1]))
+  assert.deepEqual(deleted.sort(), [
+    'heads/e2e-artifacts/pr-2',
+    'heads/e2e-artifacts/pr-3',
+    'heads/e2e-artifacts/pr-4',
+    'heads/e2e-artifacts/zz-99',
+  ])
+  assert.ok(calls.every((c) => c.path.startsWith(`/repos/${PRUNE_REPO}/`)), 'only the connected repo is touched')
+  assert.deepEqual(result, { deleted: 3 })
+  assert.ok(logs.info.includes('deleted e2e-artifacts/pr-2 in acme/prune (abandoned)'), logs.info.join('\n'))
+  assert.ok(logs.info.includes('deleted e2e-artifacts/pr-3 in acme/prune (closed)'))
+  assert.ok(logs.info.includes('deleted e2e-artifacts/pr-4 in acme/prune (merged)'))
+  assert.equal(logs.info.at(-1), 'artifacts prune: 3 ref(s) deleted')
+  assert.ok(logs.warn.some((m) => /could not delete e2e-artifacts\/zz-99/.test(m)), 'a failed delete warns, not throws')
+
+  // Once a day: a second run within 24h makes no GitHub call; a day later it runs again.
+  calls.length = 0
+  assert.equal(await github.pruneArtifactRefs(log), null)
+  assert.equal(calls.length, 0)
+  assert.ok(await github.pruneArtifactRefs(log, Date.now() + github.ARTIFACTS_PRUNE_MS + 1000))
+  assert.ok(calls.length > 0)
+})
+
+test('pruneArtifactRefs logs and moves on when the ref listing fails', async (t) => {
+  const pid = db.prepare("INSERT INTO project (name) VALUES ('Prune fail')").run().lastInsertRowid
+  db.prepare('INSERT INTO project_repo (project_id, repo, prefix) VALUES (?, ?, ?)').run(pid, 'acme/prune-fail', 'PF')
+  t.after(() => {
+    db.prepare('DELETE FROM project_repo WHERE project_id = ?').run(pid)
+    db.prepare('DELETE FROM project WHERE id = ?').run(pid)
+    db.prepare("DELETE FROM sync_cursor WHERE key = 'artifacts-prune'").run()
+  })
+  t.mock.method(globalThis, 'fetch', async () => ({ ok: false, status: 500, json: async () => ({}) }))
+  const warn = []
+  const info = []
+  const result = await github.pruneArtifactRefs({ info: (m) => info.push(m), warn: (m) => warn.push(m) })
+  assert.deepEqual(result, { deleted: 0 })
+  assert.match(warn[0], /could not list e2e-artifacts refs in acme\/prune-fail: GitHub returned 500/)
+  assert.equal(info.at(-1), 'artifacts prune: 0 ref(s) deleted')
 })
