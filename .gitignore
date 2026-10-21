@@ -13,3 +13,5 @@ e2e/blob-report/
 # binary files have no merge strategy, so tracking them made every branch
 # that touched the same journey conflict with every other.
 e2e/__screenshots__/
+# HZ-518: node scripts/record-item.mjs writes here by default (--out).
+recordings/
