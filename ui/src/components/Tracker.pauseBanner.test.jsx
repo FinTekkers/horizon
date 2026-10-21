@@ -152,8 +152,14 @@ test('a check failure with no runner summary shows its headline, never the comma
   const leftOut = 'screenshot "securities-list" not captured'
   expect(US207_MESSAGE).toContain(leftOut)
   expect(banner.textContent).not.toContain(leftOut)
+  // HZ-507: the self-test noise stays in the collapsed log too.
+  const leftOut2 = 'closed-page-selftest'
+  expect(US207_MESSAGE).toContain(leftOut2)
+  expect(banner.querySelector('.pause-banner__cause').textContent).not.toContain(leftOut2)
+  expect(banner.textContent).not.toContain(leftOut2)
   fireEvent.click(getByRole('button', { name: 'Show details' }))
   expect(banner.querySelector('.pause-banner__full-error').textContent).toContain(leftOut)
+  expect(banner.querySelector('.pause-banner__full-error').textContent).toContain(leftOut2)
   fireEvent.click(getByRole('button', { name: 'Hide details' }))
   expect(banner.querySelector('.pause-banner__full-error')).toBeNull()
   expect(banner.textContent).not.toContain(leftOut)

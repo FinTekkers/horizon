@@ -277,6 +277,11 @@ HEADLINE_MAX_CHARS = 170
 HEADLINE_TESTS_MAX = 5
 # Titles are cut through these caps before any whole test is dropped.
 _HEADLINE_TITLE_CAPS = (None, 60, 40, 24, 12)
+# HZ-507: a failed shot's line — its error reason and each name are cut to
+# these; step_agent joins summary_notes with SUMMARY_NOTE_SEP.
+SCREENSHOT_ERROR_REASON_MAX = 60
+SCREENSHOT_FIELD_MAX = 40
+SUMMARY_NOTE_SEP = " · "
 _ANSI = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
 _RUN_TIME = r"(?:\s+\([\d.]+\s*m?s\))?"
 # Playwright's list reporter: `  2 failed`, then one `[project] › file:line:col
@@ -534,6 +539,47 @@ def failure_headline(rows: list[dict], output: str, shown: str, label: str | Non
             if len(headline) <= HEADLINE_MAX_CHARS:
                 return headline
     return _cap_words(_render_headline(label, summary, min(tests, 1), _HEADLINE_TITLE_CAPS[-1]), HEADLINE_MAX_CHARS)
+
+
+def _screenshot_reason(entry: dict, timeouts: dict[tuple, int]) -> str:
+    status = entry.get("status")
+    if status == screenshot_runner.TIMEOUT:
+        key = (entry.get("screen"), entry.get("viewport"), entry.get("theme"))
+        if key in timeouts:
+            return f"{screenshot_runner.TIMEOUT} {timeouts[key] / 1000:g}s"
+        return screenshot_runner.TIMEOUT
+    if status == screenshot_runner.ERROR:
+        return _one_line(entry.get("error") or screenshot_runner.ERROR, SCREENSHOT_ERROR_REASON_MAX)
+    return _one_line(status, SCREENSHOT_FIELD_MAX)
+
+
+def screenshots_failure_lines(manifest: dict, shots: list) -> list[str]:
+    """HZ-507: one `screenshots: <screen> <viewport>/<theme>: <reason>` line
+    per manifest entry that is not ok, in manifest order; [] when all are.
+    Built from the HZ-506 manifest only, never from the runner's log. A
+    timed-out shot's reason names its configured limit (`timeout 10s`), taken
+    from the config Shot with the same (screen, viewport, theme), or plain
+    `timeout` when none matches. The lines joined with " · " stay within
+    HEADLINE_MAX_CHARS: the ones that do not fit become `screenshots: +N more`."""
+    timeouts = {(s.screen, s.viewport, s.theme): s.timeout_ms for s in shots}
+    lines = []
+    for entry in manifest.get("shots") or []:
+        if not isinstance(entry, dict) or entry.get("status") == screenshot_runner.OK:
+            continue
+        screen, viewport, theme = (
+            _one_line(entry.get(field) or "?", SCREENSHOT_FIELD_MAX) for field in ("screen", "viewport", "theme")
+        )
+        lines.append(f"{SCREENSHOTS_SLOT}: {screen} {viewport}/{theme}: {_screenshot_reason(entry, timeouts)}")
+    if not lines:
+        return []
+    for count in range(len(lines), 0, -1):
+        shown = lines[:count] + ([f"{SCREENSHOTS_SLOT}: +{len(lines) - count} more"] if count < len(lines) else [])
+        if len(SUMMARY_NOTE_SEP.join(shown)) <= HEADLINE_MAX_CHARS:
+            return shown
+    # Not even one whole line fits: cut the first at a word.
+    more = [f"{SCREENSHOTS_SLOT}: +{len(lines) - 1} more"] if len(lines) > 1 else []
+    budget = HEADLINE_MAX_CHARS - sum(len(SUMMARY_NOTE_SEP) + len(m) for m in more)
+    return [_cap_words(lines[0], budget), *more]
 
 
 # ---- flake rerun + per-test results (HZ-327) ----
@@ -1398,13 +1444,13 @@ def _screenshots_preflight(ws: Path, log) -> tuple[dict, str, "screenshots_confi
     return {"shots": len(shots)}, note, cfg
 
 
-def _set_screenshots_note(summary_notes: list | None, note: str) -> None:
-    """The slot's one line in summary_notes: a later line replaces an earlier
-    one (a fix loop runs the checks again into the same list)."""
+def _set_screenshots_notes(summary_notes: list | None, notes: list[str]) -> None:
+    """The slot's lines in summary_notes: later lines replace earlier ones (a
+    fix loop runs the checks again into the same list)."""
     if summary_notes is None:
         return
     summary_notes[:] = [n for n in summary_notes if not n.startswith(f"{SCREENSHOTS_SLOT}: ")]
-    summary_notes.append(note)
+    summary_notes.extend(notes)
 
 
 def _capture_screenshots(ws: Path, cfg, *, env, login_values, secrets, deadline, log) -> dict:
@@ -1538,9 +1584,12 @@ def run_checks(
     preflight one. A shot that timed out or failed is marked in the manifest
     and does not fail the check; a missing worker or browser, an outputDir
     git does not ignore, or a `serve` that never became ready does.
+
+    HZ-507: when any shot is not ok, its summary line is instead one line per
+    such shot (screenshots_failure_lines); the counts stay in the runner log.
     """
     screenshots, screenshots_note, screenshots_cfg = _screenshots_preflight(ws, log)
-    _set_screenshots_note(summary_notes, screenshots_note)
+    _set_screenshots_notes(summary_notes, [screenshots_note])
     if isinstance(configured, dict):
         saved = configured.get(SCREENSHOTS_SLOT)
         if isinstance(saved, str) and saved.strip():
@@ -1789,7 +1838,8 @@ def run_checks(
                     record["outcome"] = "other"
                     raise
                 record[SCREENSHOTS_SLOT] = screenshot_runner.counts(manifest)
-                _set_screenshots_note(summary_notes, screenshot_runner.note(manifest))
+                failed_shots = screenshots_failure_lines(manifest, screenshots_cfg.shots)
+                _set_screenshots_notes(summary_notes, failed_shots or [screenshot_runner.note(manifest)])
             record["outcome"] = "pass"
         except PauseRequested:
             # HZ-194: an operator paused the item mid-check. Not a failure:

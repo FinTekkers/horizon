@@ -13,12 +13,14 @@ HZ-373: us207_output.txt is the shape of US-207's e2e output on 9 Oct, which
 no runner summary parses; us207_message.txt is the message run_checks builds
 from it, read by the same server tests and the e2e pause-banner spec."""
 
+import json
 import os
+import re
 from pathlib import Path
 
 import pytest
 
-from farm import check_slots, checks
+from farm import check_slots, checks, screenshot_runner, screenshots_config
 from farm.checks import CheckFailure, failure_digest, failure_headline, run_checks
 
 FIXTURES = Path(__file__).resolve().parent / "fixtures" / "check_output"
@@ -392,3 +394,185 @@ def test_headline_redacts_a_secret_in_the_failure_line(ws, monkeypatch):
 
     assert "abcd1234efgh" not in str(err.value)
     assert err.value.headline == "test failed (exit 1): Error: bad token [redacted]"
+
+
+# ---- HZ-507: one failure line per failed shot, from the runner manifest ----
+
+FAILURE_LINE = re.compile(r"^screenshots: (\S+) (\S+)/(\S+): (.+)$")
+MORE_LINE = re.compile(r"^screenshots: \+(\d+) more$")
+OK, TIMEOUT, ERROR, SKIPPED = screenshot_runner.OK, screenshot_runner.TIMEOUT, screenshot_runner.ERROR, screenshot_runner.SKIPPED
+
+
+def shot(screen: str, viewport: str = "desktop", theme: str = "light", timeout_ms: int = 10000):
+    return screenshots_config.Shot(
+        screen=screen,
+        path=f"/{screen}",
+        viewport=viewport,
+        width=1280,
+        height=800,
+        theme=theme,
+        login=False,
+        timeout_ms=timeout_ms,
+        max_height_px=12000,
+    )
+
+
+def entry(screen: str, status: str, viewport: str = "desktop", theme: str = "light", **extra) -> dict:
+    """A v1 manifest entry, as screenshot_runner.capture writes it."""
+    return {
+        "screen": screen,
+        "viewport": viewport,
+        "theme": theme,
+        "status": status,
+        "durationMs": 1234,
+        "png": f"{screen}--{viewport}--{theme}.png" if status == OK else None,
+        "clipped": False,
+        **extra,
+    }
+
+
+def manifest(*entries: dict) -> dict:
+    return {"version": 1, "shots": list(entries)}
+
+
+def parsed(lines: list[str]) -> list[tuple[str, ...]]:
+    out = []
+    for line in lines:
+        match = FAILURE_LINE.match(line)
+        assert match and not MORE_LINE.match(line), line
+        out.append(match.groups())
+    return out
+
+
+def failure_lines(notes: list[str]) -> list[str]:
+    return [n for n in notes if FAILURE_LINE.match(n) and not MORE_LINE.match(n)]
+
+
+def test_two_timed_out_shots_give_two_lines_naming_each_shot():
+    shots = [shot("home"), shot("admin", "mobile", "dark"), shot("list")]
+    found = checks.screenshots_failure_lines(
+        manifest(entry("home", TIMEOUT), entry("admin", TIMEOUT, "mobile", "dark"), entry("list", OK)), shots
+    )
+    assert parsed(found) == [
+        ("home", "desktop", "light", f"{TIMEOUT} 10s"),
+        ("admin", "mobile", "dark", f"{TIMEOUT} 10s"),
+    ]
+
+
+def test_a_timeout_reason_names_the_matching_shots_configured_limit():
+    shots = [shot("home", timeout_ms=10000), shot("slow", timeout_ms=1500)]
+    found = checks.screenshots_failure_lines(manifest(entry("home", TIMEOUT), entry("slow", TIMEOUT)), shots)
+    assert [reason for *_, reason in parsed(found)] == [f"{TIMEOUT} 10s", f"{TIMEOUT} 1.5s"]
+
+
+def test_a_timeout_with_no_matching_config_shot_never_guesses_a_number():
+    found = checks.screenshots_failure_lines(manifest(entry("gone", TIMEOUT)), [shot("home")])
+    assert parsed(found) == [("gone", "desktop", "light", TIMEOUT)]
+
+
+def test_error_and_skipped_shots_get_their_own_reasons():
+    error = "page.screenshot: Target closed\n    at line 3\n" + "x" * 300
+    found = checks.screenshots_failure_lines(
+        manifest(entry("home", ERROR, error=error), entry("list", SKIPPED)), [shot("home"), shot("list")]
+    )
+    (screen, _, _, reason), skipped = parsed(found)
+    assert screen == "home" and reason.startswith("page.screenshot: Target closed at line 3")
+    assert "\n" not in reason and len(reason) <= checks.SCREENSHOT_ERROR_REASON_MAX
+    assert skipped == ("list", "desktop", "light", SKIPPED)
+
+
+def test_every_shot_ok_gives_no_lines():
+    assert checks.screenshots_failure_lines(manifest(entry("home", OK), entry("list", OK)), [shot("home")]) == []
+
+
+def test_many_failed_shots_stay_within_the_headline_cap():
+    names = [f"a-rather-long-screen-name-number-{i:02d}" for i in range(30)]
+    found = checks.screenshots_failure_lines(manifest(*(entry(n, TIMEOUT) for n in names)), [shot(n) for n in names])
+    assert len(checks.SUMMARY_NOTE_SEP.join(found)) <= checks.HEADLINE_MAX_CHARS
+    *shown, more = found
+    hidden = MORE_LINE.match(more)
+    assert hidden and shown
+    assert [screen for screen, *_ in parsed(shown)] == names[: len(shown)]
+    assert len(shown) + int(hidden.group(1)) == 30
+
+
+def test_us207_message_keeps_the_selftest_out_of_the_headline():
+    """Metric 2: the self-test noise is only in the collapsed detail."""
+    headline, *detail = US207_MESSAGE.read_text().splitlines()
+    assert "closed-page-selftest" not in headline
+    assert any("closed-page-selftest" in line for line in detail)
+
+
+SCREENSHOTS_JSON = {
+    "version": 1,
+    "serve": "npm run preview",
+    "ready": "http://127.0.0.1:4173/",
+    "outputDir": "screenshots",
+    "themes": ["light"],
+    "viewports": [{"name": "desktop", "width": 1280, "height": 800}],
+    "defaults": {"timeoutMs": 10000},
+    "screens": [{"name": n, "path": f"/{n}"} for n in ("home", "admin", "list")],
+}
+
+
+@pytest.fixture
+def capture(ws, monkeypatch):
+    """run_checks with capture on; the runner is replaced by one that logs
+    timeout noise and returns the next queued manifest."""
+    (ws / ".horizon").mkdir()
+    (ws / ".horizon" / "screenshots.json").write_text(json.dumps(SCREENSHOTS_JSON))
+    monkeypatch.setattr(
+        checks, "_run_bounded", lambda cmd, ws, timeout_s, env: checks.subprocess.CompletedProcess(cmd, 0, "", "")
+    )
+    queued: list[dict] = []
+
+    def fake_capture(ws, cfg, *, log, **_):
+        for _ in range(5):
+            log(f"home / desktop / light: {TIMEOUT} in 10000 ms — {TIMEOUT} {TIMEOUT} exceeded")
+        return queued.pop(0)
+
+    monkeypatch.setattr(checks, "_capture_screenshots", fake_capture)
+
+    def run(notes: list[str], result: dict) -> None:
+        queued.append(result)
+        run_checks(ws, log=lambda *_: None, configured={"test": "true"}, summary_notes=notes, capture_screenshots=True)
+
+    return run
+
+
+def test_run_checks_lists_only_the_manifests_failed_shots(capture):
+    notes: list[str] = []
+    capture(notes, manifest(entry("home", TIMEOUT), entry("admin", OK), entry("list", TIMEOUT)))
+    assert parsed(notes) == [
+        ("home", "desktop", "light", f"{TIMEOUT} 10s"),
+        ("list", "desktop", "light", f"{TIMEOUT} 10s"),
+    ]
+
+
+def test_run_checks_keeps_the_count_note_when_every_shot_is_ok(capture):
+    notes: list[str] = []
+    all_ok = manifest(entry("home", OK), entry("admin", OK), entry("list", OK))
+    capture(notes, all_ok)
+    assert failure_lines(notes) == []
+    assert notes == [screenshot_runner.note(all_ok)]
+
+
+def test_a_fix_loop_drops_the_earlier_runs_failure_lines(capture):
+    notes = ["fix loops: 1"]
+    capture(notes, manifest(entry("home", TIMEOUT), entry("admin", OK), entry("list", TIMEOUT)))
+    assert len(failure_lines(notes)) == 2
+    all_ok = manifest(entry("home", OK), entry("admin", OK), entry("list", OK))
+    capture(notes, all_ok)
+    assert failure_lines(notes) == []
+    assert notes == ["fix loops: 1", screenshot_runner.note(all_ok)]
+
+
+def test_a_fix_loop_drops_an_earlier_more_line(capture, monkeypatch):
+    monkeypatch.setattr(checks, "HEADLINE_MAX_CHARS", 60)
+    notes: list[str] = []
+    capture(notes, manifest(entry("home", TIMEOUT), entry("admin", TIMEOUT), entry("list", TIMEOUT)))
+    assert any(MORE_LINE.match(n) for n in notes)
+    all_ok = manifest(entry("home", OK), entry("admin", OK), entry("list", OK))
+    capture(notes, all_ok)
+    assert not any(MORE_LINE.match(n) for n in notes)
+    assert notes == [screenshot_runner.note(all_ok)]

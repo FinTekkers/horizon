@@ -371,7 +371,10 @@ def test_run_checks_captures_and_publish_pushes_manifest(tmp_path, monkeypatch):
         screenshot_runner.ERROR: 0,
         screenshot_runner.SKIPPED: 0,
     }
-    assert summary_notes == ["screenshots: 2 ok, 1 timeout"]
+    # HZ-507: the timed-out shot's own line replaces the counts note.
+    [failed] = summary_notes
+    match = re.match(r"^screenshots: (\S+) (\S+)/(\S+): (.+)$", failed)
+    assert match and match.groups() == ("two", "desktop", "light", f"{screenshot_runner.TIMEOUT} 1s")
 
     publish_screenshots(ws, {"id": "T-1", "repo": "acme/demo"}, log=lambda *_: None)
     pushed = subprocess.run(
