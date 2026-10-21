@@ -50,7 +50,19 @@ from .agent_runner import (
     stamp_notes,
     stamp_notes_artifact,
 )
-from . import check_record, handoff, login_env, pause, plan_bundle, read_only_guard, review_diff, run_plan_requires, task_job
+from . import (
+    check_record,
+    handoff,
+    login_env,
+    pause,
+    plan_bundle,
+    read_only_guard,
+    review_diff,
+    run_plan_requires,
+    screenshot_runner,
+    screenshots_config,
+    task_job,
+)
 from .checks import CheckFailure, redact, run_checks, scrub, secret_values
 from .config import FARM_PORT, ITEM_LOCK_WAIT_S
 from .handoff import HandoffContext, HandoffGuard
@@ -602,11 +614,21 @@ def build_prompt(task: dict) -> str:
 # must match artifactsRef() there). Best-effort: a publish failure never fails
 # the implement step, mirroring captureScreenshot's own warn-and-continue
 # philosophy in e2e/fixtures/test-base.js.
+# HZ-506: a repo with .horizon/screenshots.json publishes its configured
+# outputDir instead — the farm runner's PNGs plus its manifest.json — under the
+# same e2e/__screenshots__/ tree path, so server/src/github.js is unchanged.
+# A repo without one keeps the e2e/__screenshots__ source until HZ-511.
 
 
 def publish_screenshots(ws: Path, item: dict, log=log) -> None:
-    shots_dir = ws / "e2e" / "__screenshots__"
+    try:
+        cfg = screenshots_config.load_config(ws)
+    except screenshots_config.ConfigError:
+        log("publish_screenshots: skipped — invalid config")
+        return
+    shots_dir = ws / cfg.output_dir if cfg is not None else ws / "e2e" / "__screenshots__"
     pngs = sorted(shots_dir.glob("*.png")) if shots_dir.is_dir() else []
+    manifest = shots_dir / screenshot_runner.MANIFEST_NAME
     if not pngs:
         log("publish_screenshots: no screenshots to publish — skipped")
         return
@@ -620,7 +642,8 @@ def publish_screenshots(ws: Path, item: dict, log=log) -> None:
     env = {"GIT_INDEX_FILE": str(index_file)}
     try:
         index_file.unlink(missing_ok=True)
-        for png in pngs:
+        files = [*pngs, manifest] if cfg is not None and manifest.is_file() else pngs
+        for png in files:
             sha = git(ws, "hash-object", "-w", str(png), env=env).stdout.strip()
             git(ws, "update-index", "--add", "--cacheinfo", f"100644,{sha},e2e/__screenshots__/{png.name}", env=env)
         tree = git(ws, "write-tree", env=env).stdout.strip()
@@ -2675,6 +2698,9 @@ def _check_until_green(
                     checks_waiver=task.get("checks_waiver"),
                     # HZ-494: a path from the server; the file is read now.
                     test_env_file=task.get("test_env_file"),
+                    # HZ-506: the farm's runner captures a configured repo's
+                    # screens here only (never pre-merge, validate or conflicts).
+                    capture_screenshots=True,
                     # HZ-327: flakes and per-test results ride on the result.
                     **_recording(),
                 )

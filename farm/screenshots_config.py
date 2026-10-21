@@ -5,8 +5,9 @@ list of shots: screens in file order, then each screen's viewports, then its
 themes. Settings merge built-in values, then `defaults`, then the screen's own
 override, so every Shot carries its resolved timeout_ms and max_height_px.
 
-Validation is pure: it reads one file and spawns nothing. `serve` and `ready`
-are kept as opaque strings and never run here; capture is HZ-506's job.
+Validation is pure: it reads one file and spawns nothing. `serve` is kept as
+an opaque string and never run here; capture is farm/screenshot_runner.py's
+job (HZ-506). load_config() also returns serve, ready and outputDir for it.
 
 A bad file raises ConfigError for the first problem found: the top-level
 fields in schema order (version always first), and inside a list, items in
@@ -17,7 +18,8 @@ echo anything the file holds.
 Schema v1:
   version     1, required, and the only accepted value — nothing falls back
   serve       non-empty string, required
-  ready       non-empty string, required
+  ready       an http:// URL on 127.0.0.1 or localhost, required (HZ-506:
+              its origin is the base every screen's path is captured from)
   outputDir   relative path inside the repo (no `..`), required
   themes      non-empty list of unique non-empty strings, required
   viewports   non-empty list of {name, width, height}, unique names, required
@@ -31,6 +33,7 @@ keys fail at their own path.
 import json
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
+from urllib.parse import urlsplit
 
 CONFIG_PATH = ".horizon/screenshots.json"
 SUPPORTED_VERSION = 1
@@ -41,6 +44,7 @@ DEFAULT_MAX_HEIGHT_PX = 10000
 ROOT_PATH = "$"
 TOP_KEYS = ("version", "serve", "ready", "outputDir", "themes", "viewports", "defaults", "screens")
 TOP_REQUIRED = ("version", "serve", "ready", "outputDir", "themes", "viewports", "screens")
+READY_HOSTS = ("127.0.0.1", "localhost")
 VIEWPORT_KEYS = ("name", "width", "height")
 SETTING_KEYS = ("login", "timeoutMs", "maxHeightPx")
 SCREEN_KEYS = ("name", "path", "viewports", "themes", *SETTING_KEYS)
@@ -70,6 +74,16 @@ class Shot:
     max_height_px: int
 
 
+@dataclass(frozen=True)
+class Config:
+    """HZ-506: what the capture runner needs besides the shots."""
+
+    serve: str
+    ready: str
+    output_dir: str
+    shots: list[Shot]
+
+
 def headline(err: ConfigError) -> str:
     """The one line a failed screenshots slot shows."""
     return f"screenshots: {CONFIG_PATH} {err.path}: {err.problem}"
@@ -78,6 +92,13 @@ def headline(err: ConfigError) -> str:
 def load(ws: Path) -> list[Shot] | None:
     """The shots in the workspace's own config, or None when it has none.
     `ws` is the item's checked-out tree; nothing else is ever read."""
+    cfg = load_config(ws)
+    return None if cfg is None else cfg.shots
+
+
+def load_config(ws: Path) -> Config | None:
+    """load(), with serve, ready and outputDir too. Raises ConfigError the
+    same way."""
     path = Path(ws) / CONFIG_PATH
     if not path.exists() and not path.is_symlink():
         return None
@@ -89,7 +110,8 @@ def load(ws: Path) -> list[Shot] | None:
         raise ConfigError(ROOT_PATH, f"is not valid JSON (line {exc.lineno}, column {exc.colno})") from None
     except OSError:
         raise ConfigError(ROOT_PATH, "could not be read as a file") from None
-    return parse(doc)
+    shots = parse(doc)
+    return Config(serve=doc["serve"], ready=doc["ready"], output_dir=doc["outputDir"], shots=shots)
 
 
 def parse(doc) -> list[Shot]:
@@ -104,7 +126,7 @@ def parse(doc) -> list[Shot]:
     _keys(doc, "", TOP_KEYS, TOP_REQUIRED)
 
     _text(doc["serve"], "serve")
-    _text(doc["ready"], "ready")
+    _ready(doc["ready"], "ready")
     _output_dir(doc["outputDir"], "outputDir")
     themes = _names(doc["themes"], "themes", "theme")
     viewports = _viewports(doc["viewports"])
@@ -177,6 +199,19 @@ def _text(value, path: str) -> str:
 def _positive(value, path: str) -> int:
     if not _is_int(value) or value <= 0:
         raise ConfigError(path, "must be a positive integer")
+    return value
+
+
+def _ready(value, path: str) -> str:
+    _text(value, path)
+    try:
+        url = urlsplit(value)
+        url.port  # noqa: B018 — raises ValueError on a bad port
+        ok = url.scheme == "http" and url.hostname in READY_HOSTS
+    except ValueError:
+        ok = False
+    if not ok:
+        raise ConfigError(path, "must be an http:// URL on 127.0.0.1 or localhost")
     return value
 
 

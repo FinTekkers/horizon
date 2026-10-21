@@ -1,0 +1,9 @@
+{
+  "name": "horizon-farm-capture",
+  "private": true,
+  "description": "HZ-506: the farm's screenshot capture worker. Keep playwright pinned to the version e2e/package-lock.json resolves, so both share one Chromium build.",
+  "type": "module",
+  "dependencies": {
+    "playwright": "1.62.1"
+  }
+}

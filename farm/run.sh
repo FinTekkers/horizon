@@ -15,6 +15,15 @@ if [ ! -x "$VENV/bin/python" ]; then
 fi
 "$VENV/bin/pip" install --quiet -r "$FARM_DIR/requirements.txt"
 
+# HZ-506: the screenshot capture worker's pinned Playwright. Reinstalled when
+# missing or older than its lockfile; a failure only warns — the screenshots
+# slot then fails with "farm capture worker not installed".
+CAPTURE_DIR="$FARM_DIR/capture"
+if [ ! -d "$CAPTURE_DIR/node_modules/playwright" ] || [ "$CAPTURE_DIR/package-lock.json" -nt "$CAPTURE_DIR/node_modules/.package-lock.json" ]; then
+  echo "Installing the screenshot capture worker…"
+  npm --prefix "$CAPTURE_DIR" ci --no-audit --no-fund --silent || echo "warning: npm ci in $CAPTURE_DIR failed — screenshots cannot be captured" >&2
+fi
+
 # tmux sessions inherit the tmux *server's* env, not this shell's — embed the
 # farm-relevant vars into the command so `FARM_WA_ENABLED=1 ./run.sh` works.
 ENV_VARS=""

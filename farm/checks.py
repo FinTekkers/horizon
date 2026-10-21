@@ -48,7 +48,7 @@ import uuid
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
-from . import check_metrics, check_record, check_slots, config, dep_cache, login_env, screenshots_config
+from . import check_metrics, check_record, check_slots, config, dep_cache, login_env, screenshot_runner, screenshots_config
 from .pause import PauseRequested
 from .workspaces import default_branch
 
@@ -923,8 +923,9 @@ def _auto_detect(ws: Path, log=lambda *_: None) -> list[list[str]]:
 # order; nothing splits a line further. Only install line 1 is cached
 # (HZ-249), so the dependency install belongs on that line.
 # HZ-505: `screenshots` comes last, so the other slots keep their order. It
-# never counts as "checks configured" on its own (HZ-304), and its lines run
-# only when the workspace's .horizon/screenshots.json is valid.
+# never counts as "checks configured" on its own (HZ-304). HZ-506: its saved
+# lines never run at all — the farm's own runner (farm/screenshot_runner.py)
+# captures, so a repo can not swap in a runner of its own.
 SCREENSHOTS_SLOT = "screenshots"
 CHECK_SLOTS = ("install", "test", "lint", "e2e", SCREENSHOTS_SLOT)
 
@@ -1328,7 +1329,8 @@ def _run_branch_pass(
 
 # HZ-494: the slots whose commands get the repo's test-login values. Not
 # install (every dependency's lifecycle script would see them) and not lint.
-LOGIN_ENV_SLOTS = frozenset({"test", "e2e"})
+# HZ-506: screenshots, whose runner sends them on `login: true` shots only.
+LOGIN_ENV_SLOTS = frozenset({"test", "e2e", SCREENSHOTS_SLOT})
 
 
 def _login_env_for(env: dict[str, str], login_values: dict[str, str]):
@@ -1373,26 +1375,56 @@ def _check_env() -> dict[str, str]:
     return env
 
 
-def _screenshots_preflight(ws: Path, log) -> tuple[dict, str]:
+def _screenshots_preflight(ws: Path, log) -> tuple[dict, str, "screenshots_config.Config | None"]:
     """HZ-505: validate the workspace's own .horizon/screenshots.json before
-    anything runs. Returns (the metrics record's entry, the summary line).
-    A bad file raises CheckFailure with one headline naming the bad field.
-    Nothing from the file runs here: validation only reads it."""
+    anything runs. Returns (the metrics record's entry, the summary line, the
+    config or None). A bad file raises CheckFailure with one headline naming
+    the bad field. Nothing from the file runs here: validation only reads it."""
     try:
-        shots = screenshots_config.load(ws)
+        cfg = screenshots_config.load_config(ws)
     except screenshots_config.ConfigError as exc:
         headline = screenshots_config.headline(exc)
         log(f"checks: {headline} — failing the check; nothing runs")
         raise CheckFailure(
             f"{HEADLINE_PREFIX}{headline}", command=screenshots_config.CONFIG_PATH, tail=headline, headline=headline
         ) from None
-    if shots is None:
+    if cfg is None:
         note = f"{SCREENSHOTS_SLOT}: skipped (no {screenshots_config.CONFIG_PATH})"
         log(f"checks: {SCREENSHOTS_SLOT} slot — no {screenshots_config.CONFIG_PATH} — skipped")
-        return {"skipped": "no config"}, note
+        return {"skipped": "no config"}, note, None
+    shots = cfg.shots
     note = f"{SCREENSHOTS_SLOT}: {len(shots)} shot(s) in {screenshots_config.CONFIG_PATH}"
     log(f"checks: {SCREENSHOTS_SLOT} slot — {len(shots)} shot(s) in {screenshots_config.CONFIG_PATH}")
-    return {"shots": len(shots)}, note
+    return {"shots": len(shots)}, note, cfg
+
+
+def _set_screenshots_note(summary_notes: list | None, note: str) -> None:
+    """The slot's one line in summary_notes: a later line replaces an earlier
+    one (a fix loop runs the checks again into the same list)."""
+    if summary_notes is None:
+        return
+    summary_notes[:] = [n for n in summary_notes if not n.startswith(f"{SCREENSHOTS_SLOT}: ")]
+    summary_notes.append(note)
+
+
+def _capture_screenshots(ws: Path, cfg, *, env, login_values, secrets, deadline, log) -> dict:
+    """HZ-506: run the farm's capture runner for the workspace's config.
+    Returns the manifest; raises CheckFailure when the run as a whole could
+    not capture. A shot that timed out or failed does not fail the check."""
+    try:
+        why = screenshot_runner.preflight(ws, cfg)
+        if why:
+            raise screenshot_runner.CaptureFailed(why)
+        return screenshot_runner.capture(
+            ws, cfg, env=env, login_values=login_values, secrets=secrets, deadline=deadline, log=log
+        )
+    except screenshot_runner.CaptureFailed as exc:
+        headline, tail = redact(f"{SCREENSHOTS_SLOT}: {exc.headline}", secrets), redact(exc.tail, secrets)
+    except Exception as exc:  # noqa: BLE001 — fails closed, like the branch run
+        headline, tail = f"{SCREENSHOTS_SLOT}: the capture runner crashed ({type(exc).__name__})", ""
+    log(f"checks: {headline} — failing the check")
+    message = f"{HEADLINE_PREFIX}{headline}" + (f"\n{tail}" if tail else "")
+    raise CheckFailure(message, tail, command=SCREENSHOTS_SLOT, tail=tail or headline, headline=headline)
 
 
 def run_checks(
@@ -1415,6 +1447,7 @@ def run_checks(
     branch_gate: bool = True,
     test_env_file: str | None = None,
     summary_notes: list | None = None,
+    capture_screenshots: bool = False,
 ) -> str:
     """Returns a short human-readable note; raises CheckFailure on failure.
 
@@ -1496,11 +1529,22 @@ def run_checks(
     no file the screenshots slot is skipped: its saved lines do not run. Its
     outcome goes into the metrics record under "screenshots", and its line
     into summary_notes (the caller's list; None records nothing), once.
+
+    HZ-506: the screenshots slot's saved lines never run, config or not.
+    capture_screenshots=True (the implement step only) runs the farm's own
+    runner (farm/screenshot_runner.py) for a valid config, after every main
+    command passed, in this slot and under this run's budget. Its counts
+    replace the record's "screenshots" entry and its summary line the
+    preflight one. A shot that timed out or failed is marked in the manifest
+    and does not fail the check; a missing worker or browser, an outputDir
+    git does not ignore, or a `serve` that never became ready does.
     """
-    screenshots, screenshots_note = _screenshots_preflight(ws, log)
-    if summary_notes is not None and screenshots_note not in summary_notes:
-        summary_notes.append(screenshots_note)
-    if "skipped" in screenshots and isinstance(configured, dict):
+    screenshots, screenshots_note, screenshots_cfg = _screenshots_preflight(ws, log)
+    _set_screenshots_note(summary_notes, screenshots_note)
+    if isinstance(configured, dict):
+        saved = configured.get(SCREENSHOTS_SLOT)
+        if isinstance(saved, str) and saved.strip():
+            log(f"checks: {SCREENSHOTS_SLOT} slot — saved command lines are ignored; the farm's runner captures")
         configured = {slot: value for slot, value in configured.items() if slot != SCREENSHOTS_SLOT}
     commands, install_at, labels = _resolve_labelled(ws, configured, log)
     if not commands:
@@ -1727,6 +1771,25 @@ def run_checks(
                         headline=headline,
                     )
                 ran += 1
+            if capture_screenshots and screenshots_cfg is not None:
+                capture_deadline = time.monotonic() + timeout_s
+                if deadline is not None:
+                    capture_deadline = min(capture_deadline, deadline)
+                try:
+                    manifest = _capture_screenshots(
+                        ws,
+                        screenshots_cfg,
+                        env=env,
+                        login_values=login_values if SCREENSHOTS_SLOT in LOGIN_ENV_SLOTS else {},
+                        secrets=secrets,
+                        deadline=capture_deadline,
+                        log=log,
+                    )
+                except CheckFailure:
+                    record["outcome"] = "other"
+                    raise
+                record[SCREENSHOTS_SLOT] = screenshot_runner.counts(manifest)
+                _set_screenshots_note(summary_notes, screenshot_runner.note(manifest))
             record["outcome"] = "pass"
         except PauseRequested:
             # HZ-194: an operator paused the item mid-check. Not a failure:

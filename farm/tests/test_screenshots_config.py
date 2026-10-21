@@ -215,11 +215,43 @@ def test_a_valid_config_runs_only_the_configured_commands_never_serve_or_ready(t
     assert summary_notes == ["screenshots: 5 shot(s) in .horizon/screenshots.json"]
 
 
-def test_a_valid_config_runs_the_saved_screenshots_command_last(tmp_path, recorded):
-    ws = workspace(tmp_path, VALID)
-    run_checks(ws, log=lambda *_: None, configured={**FULL, "screenshots": "node shots.mjs"})
-    assert recorded[-1] == ["sh", "-c", "node shots.mjs"]
-    assert len(recorded) == 5
+@pytest.mark.parametrize("config", [VALID, None], ids=["with-config", "no-config"])
+def test_saved_screenshots_lines_never_run(tmp_path, recorded, config):
+    # HZ-506: the farm's own runner captures; a repo can not swap in its own.
+    ws = workspace(tmp_path, config)
+    lines = []
+    note = run_checks(ws, log=lines.append, configured={**FULL, "screenshots": "node shots.mjs\nnode more.mjs"})
+    assert note == "4 repo check(s) passed"
+    assert recorded == [["sh", "-c", FULL[slot]] for slot in ("install", "test", "lint", "e2e")]
+    assert "shots.mjs" not in json.dumps(recorded) and "more.mjs" not in json.dumps(recorded)
+    assert "checks: screenshots slot — saved command lines are ignored; the farm's runner captures" in lines
+
+
+@pytest.mark.parametrize(
+    "ready, ok",
+    [
+        ("curl -sf localhost:4173", False),
+        ("http://example.com/", False),
+        ("https://127.0.0.1:4173/", False),
+        ("http://127.0.0.1:notaport/", False),
+        ("http://127.0.0.1:4173/", True),
+        ("http://localhost:5173/health", True),
+    ],
+)
+def test_ready_must_be_a_local_http_url(ready, ok):
+    doc = json.loads(edited(lambda d: d.update(ready=ready)))
+    if ok:
+        assert len(parse(doc)) == 5
+        return
+    with pytest.raises(ConfigError) as err:
+        parse(doc)
+    assert (err.value.path, err.value.problem) == ("ready", "must be an http:// URL on 127.0.0.1 or localhost")
+
+
+def test_load_config_carries_serve_ready_and_output_dir(tmp_path):
+    cfg = screenshots_config.load_config(workspace(tmp_path, VALID))
+    assert (cfg.serve, cfg.ready, cfg.output_dir) == ("npm run preview -- --port 4173", "http://127.0.0.1:4173/", "screenshots")
+    assert cfg.shots == parse(json.loads(VALID))
 
 
 def test_parse_spawns_no_process(monkeypatch):
