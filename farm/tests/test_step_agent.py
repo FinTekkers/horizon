@@ -495,6 +495,7 @@ def test_publish_uses_configured_output_dir(tmp_path):
     assert artifact_files(origin) == [
         "e2e/__screenshots__/home--desktop--light.png",
         "e2e/__screenshots__/manifest.json",
+        "e2e/__screenshots__/results.json",
     ]
 
 
@@ -505,7 +506,7 @@ def test_publish_without_config_keeps_e2e_screenshots(tmp_path):
     (ws / "shots").mkdir()
     (ws / "shots" / "other.png").write_bytes(b"\x89PNG\r\n\x1a\nother")
     publish_screenshots(ws, {"id": "T-1", "repo": "acme/demo"})
-    assert artifact_files(origin) == ["e2e/__screenshots__/board.png"]
+    assert artifact_files(origin) == ["e2e/__screenshots__/board.png", "e2e/__screenshots__/results.json"]
 
 
 def test_publish_with_an_invalid_config_skips_and_never_raises(tmp_path):
@@ -550,6 +551,10 @@ def test_implement_step_publishes_screenshots_without_polluting_the_code_branch(
         check=True,
     ).stdout
     assert "e2e/__screenshots__" not in code_files
+    # HZ-508: the diff results live on the artifacts ref only, never the code branch.
+    assert "e2e/__screenshots__/results.json" in artifact_files(origin)
+    assert "results.json" not in code_files
+    assert "diff/" not in code_files
 
 
 # ---- persona injection (HZ-4, agent-scoped since HZ-125) ----

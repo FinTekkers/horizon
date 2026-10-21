@@ -383,6 +383,7 @@ def test_run_checks_captures_and_publish_pushes_manifest(tmp_path, monkeypatch):
     assert pushed == [
         "e2e/__screenshots__/manifest.json",
         "e2e/__screenshots__/one--desktop--light.png",
+        "e2e/__screenshots__/results.json",
         "e2e/__screenshots__/three--desktop--light.png",
     ]
 

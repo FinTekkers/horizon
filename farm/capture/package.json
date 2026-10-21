@@ -1,9 +1,11 @@
 {
   "name": "horizon-farm-capture",
   "private": true,
-  "description": "HZ-506: the farm's screenshot capture worker. Keep playwright pinned to the version e2e/package-lock.json resolves, so both share one Chromium build.",
+  "description": "HZ-506: the farm's screenshot capture worker. Keep playwright pinned to the version e2e/package-lock.json resolves, so both share one Chromium build. HZ-508: diff.mjs diffs each publish against e2e-baseline with pixelmatch and pngjs, pinned like server/package.json.",
   "type": "module",
   "dependencies": {
-    "playwright": "1.62.1"
+    "pixelmatch": "^7.2.0",
+    "playwright": "1.62.1",
+    "pngjs": "^7.0.0"
   }
 }

@@ -261,3 +261,31 @@ def test_parse_spawns_no_process(monkeypatch):
     monkeypatch.setattr(checks.subprocess, "Popen", boom)
     monkeypatch.setattr(checks.subprocess, "run", boom)
     assert len(parse(json.loads(VALID))) == 5
+
+
+# ---- HZ-508: the optional diff overrides ----
+
+
+def test_load_config_defaults_and_overrides_the_diff_settings(tmp_path):
+    cfg = screenshots_config.load_config(workspace(tmp_path, VALID))
+    assert (cfg.diff_threshold, cfg.diff_ratio_tolerance) == (0.1, 0.01)
+    (tmp_path / "o").mkdir()
+    cfg = screenshots_config.load_config(workspace(tmp_path / "o", edited(lambda d: d.update(diff={"threshold": 0.2, "ratioTolerance": 0}))))
+    assert (cfg.diff_threshold, cfg.diff_ratio_tolerance) == (0.2, 0.0)
+
+
+@pytest.mark.parametrize(
+    ("diff", "path"),
+    [
+        ({"threshold": 1.5}, "diff.threshold"),
+        ({"ratioTolerance": -0.1}, "diff.ratioTolerance"),
+        ({"ratioTolerance": True}, "diff.ratioTolerance"),
+        ({"blur": 1}, "diff.blur"),
+        ([], "diff"),
+    ],
+    ids=["threshold-over-1", "negative-tolerance", "bool-tolerance", "unknown-key", "not-an-object"],
+)
+def test_a_bad_diff_override_is_named_by_its_path(diff, path):
+    with pytest.raises(ConfigError) as err:
+        parse(json.loads(edited(lambda d: d.update(diff=diff))))
+    assert err.value.path == path

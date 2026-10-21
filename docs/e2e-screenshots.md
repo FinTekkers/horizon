@@ -42,7 +42,7 @@ flowchart LR
     V -- "3 · commit: git add -A<br/>(PNGs gitignored)" --> CODE
     CODE -- "opens PR" --> PR
     ART -- "images by URL" --> PR
-    BASE -- "pixel diff" --> PR
+    BASE -- "fetched at publish:<br/>pixel diff → results.json" --> ART
     ART -- "5 · on merge:<br/>baseline := this sha,<br/>then ref deleted" --> BASE
 ```
 
@@ -65,12 +65,29 @@ touching the working tree or the real index:
 1. Point `GIT_INDEX_FILE` at a temporary index.
 2. `git hash-object -w` each PNG, then `git update-index --cacheinfo` it into
    the temp index at `e2e/__screenshots__/<name>.png`.
-3. `git write-tree` → `git commit-tree` (no parent, so an orphan commit).
-4. Force-push that commit to `refs/heads/e2e-artifacts/<id>`.
+3. HZ-508: fetch `e2e-baseline` (read only — publish never pushes it) and
+   compare each shot by name with its top-level PNGs. A shot missing from the
+   baseline is `new`, a baseline shot not captured is `removed`, an identical
+   blob is `same`. Every other pair goes to `farm/capture/diff.mjs`, which runs
+   `pixelmatch` with a per-pixel `threshold` of 0.1: more than 1% of pixels
+   differing (`ratioTolerance` 0.01) is `changed`, anything at or under it is
+   `same`. Two sizes are always `changed`, diffed on the larger canvas. The
+   repo's `.horizon/screenshots.json` can override both numbers under `diff`.
+4. Add `e2e/__screenshots__/results.json` (one row per shot: `name`,
+   `status`, `diffRatio`, `diff`, `error`) and a `diff/<name>.png` per
+   `changed` shot to the same temp index. A shot whose PNG can't be read is
+   `changed` with `error` set and no diff PNG.
+5. `git write-tree` → `git commit-tree` (no parent, so an orphan commit).
+6. Force-push that commit to `refs/heads/e2e-artifacts/<id>`. The previous
+   publish's shots, results and diffs are all replaced.
 
 This is best-effort. A failure is logged and skipped, and the implement step
 carries on. The log says `publish_screenshots: pushed N screenshot(s) to …`,
 or `no screenshots to publish — skipped` for items whose runs produce none.
+If the diff step fails (`farm/capture` not installed — `npm ci` there on the
+farm host — a crash, a hang past `DIFF_TIMEOUT_S`, or bad output), the log
+says `publish_screenshots: diffs skipped — …` and the shots are pushed without
+`results.json`.
 
 ### 3 · Commit: `finalize_branch()`
 
@@ -82,20 +99,25 @@ or `no screenshots to publish — skipped` for items whose runs produce none.
 ### 4 · Review: the PR description
 
 `createPrFromBranch()` reads the artifacts ref, never the code branch, and
-adds two sections to the PR body:
+adds two sections to the PR body, between `<!-- horizon:screenshots:start -->`
+and `<!-- horizon:screenshots:end -->`:
 
 - **`## Screenshots`**: one image per PNG, linked by the GitHub contents API's
   `download_url` for `e2e-artifacts/<id>`. The URL names the ref, not a sha,
   so a later implement run's force-push updates the images in place without
   editing the PR.
-- **`## Screenshot comparison vs. baseline`**: a table comparing each PNG
-  with the same name on `e2e-baseline`, using `pixelmatch` with a per-pixel
-  `threshold` of 0.1. A screenshot counts as **changed** only if more than 1%
-  of its pixels differ (`DIFF_RATIO_TOLERANCE = 0.01`), which absorbs
-  anti-aliasing noise. With no baseline yet (the repo's first merge), the table
-  is omitted. The table is computed once, when the PR is opened.
+- **`## Screenshot comparison vs. baseline`**: one row per shot, rendered by
+  `screenshotResultsMarkdown()` from the `results.json` the latest publish
+  stored (step 2). The server never reads `e2e-baseline` here. With no
+  `results.json` the table is omitted.
 
-Both are "never throw": a 404 or GitHub hiccup just drops the section.
+`createPrFromBranch()` runs after every implement run. When the PR is already
+open (a rework), `refreshPrScreenshots()` replaces only the marked section, so
+the table always matches the latest publish and text outside the markers is
+left alone. A body without markers gets the section appended once.
+
+All of it is "never throw": a 404, bad `results.json` or GitHub hiccup just
+drops the section, and a failed refresh leaves the old one.
 
 ### 5 · Merge: `promoteBaseline()`
 
@@ -209,4 +231,5 @@ prints anything, untrack those files the same way.
 | Ignore rule | `.gitignore` (`e2e/__screenshots__/`) |
 | Publish + commit order | `farm/step_agent.py` (`publish_screenshots`, `finalize_branch`) |
 | Config-driven capture (HZ-506) | `farm/screenshot_runner.py`, `farm/capture/worker.mjs`, `farm/checks.py` (`_capture_screenshots`) |
-| PR body, diff, promotion, cleanup | `server/src/github.js` (`screenshotsMarkdown`, `compareScreenshotsMarkdown`, `createPrFromBranch`, `promoteBaseline`, `mergePr`) |
+| Diff at publish (HZ-508) | `farm/step_agent.py` (`_compute_results`), `farm/capture/diff.mjs`; sample `results.json`: `domain/fixtures/screenshot-results.json` |
+| PR body, promotion, cleanup | `server/src/github.js` (`screenshotsMarkdown`, `screenshotResultsMarkdown`, `refreshPrScreenshots`, `createPrFromBranch`, `promoteBaseline`, `mergePr`) |

@@ -6,8 +6,6 @@
 // can be enabled at runtime without a restart.
 
 import crypto from 'node:crypto'
-import { PNG } from 'pngjs'
-import pixelmatch from 'pixelmatch'
 import { db } from './db.js'
 import * as store from './store.js'
 import { getToken, getSetting, setSetting } from './settings.js'
@@ -379,95 +377,110 @@ export async function fetchScreenshotsMarkdown(repo, ref) {
   }
 }
 
-// null = the ref/dir doesn't exist (missing baseline, or an item that hasn't
-// published yet) — distinct from [] (the dir exists but is empty), and never
-// throws: a 404 or network error both read as "nothing to compare against".
-async function fetchScreenshotListing(repo, ref) {
+// HZ-508: the per-journey comparison against the last approved baseline is
+// computed on the farm at every publish (farm/step_agent.py's
+// publish_screenshots, via farm/capture/diff.mjs) and stored on the item's
+// artifact ref as e2e/__screenshots__/results.json, in the same orphan commit
+// as the shots — domain/fixtures/screenshot-results.json is a sample. Nothing
+// here reads e2e-baseline any more; the table only renders what was stored.
+const RESULT_STATUSES = new Set(['changed', 'new', 'removed', 'same'])
+
+function isScreenshotResults(doc) {
+  return (
+    doc !== null &&
+    typeof doc === 'object' &&
+    Array.isArray(doc.shots) &&
+    doc.shots.every(
+      (s) =>
+        s !== null &&
+        typeof s === 'object' &&
+        typeof s.name === 'string' &&
+        RESULT_STATUSES.has(s.status) &&
+        (s.diffRatio == null || typeof s.diffRatio === 'number') &&
+        (s.diff == null || typeof s.diff === 'string') &&
+        (s.error == null || typeof s.error === 'string'),
+    )
+  )
+}
+
+// The stored results for this item's latest publish, or null when there are
+// none: no publish yet, a publish whose diff step was skipped, bad JSON or a
+// wrong shape. Never throws.
+export async function fetchScreenshotResults(repo, item) {
   try {
-    const res = await gh(`/repos/${repo}/contents/e2e/__screenshots__?ref=${encodeURIComponent(ref)}`)
+    const res = await gh(`/repos/${repo}/contents/e2e/__screenshots__/results.json?ref=${encodeURIComponent(artifactsRef(item))}`)
     if (!res.ok) return null
-    const list = await res.json()
-    return Array.isArray(list) ? list.filter((f) => f?.type === 'file' && f.name?.endsWith('.png')) : []
+    const data = await res.json()
+    if (typeof data?.content !== 'string') return null
+    const doc = JSON.parse(Buffer.from(data.content, 'base64').toString('utf8'))
+    return isScreenshotResults(doc) ? doc : null
   } catch {
     return null
   }
 }
 
-async function fetchFileBase64(repo, path, ref) {
-  const res = await gh(`/repos/${repo}/contents/${path}?ref=${encodeURIComponent(ref)}`)
-  if (!res.ok) return null
-  const data = await res.json().catch(() => null)
-  return typeof data?.content === 'string' ? Buffer.from(data.content, 'base64') : null
+function resultCell(shot) {
+  if (shot.status === 'new') return '🆕 new — please review'
+  if (shot.status === 'removed') return '🗑️ removed — not captured'
+  if (shot.status === 'same') return '✅ unchanged'
+  if (shot.error != null || shot.diffRatio == null) return '⚠️ changed (could not compute a diff)'
+  const pct = `${(shot.diffRatio * 100).toFixed(1)}% of pixels differ`
+  return shot.diff ? `⚠️ changed (${pct}) — \`${shot.diff.replace(/^e2e\/__screenshots__\//, '')}\`` : `⚠️ changed (${pct})`
 }
 
-// Pixel-exact comparison across font rendering/antialiasing is noise a
-// reviewer learns to ignore, so two tolerances apply: pixelmatch's own
-// per-pixel `threshold` absorbs antialiasing at the pixel level, and
-// DIFF_RATIO_TOLERANCE absorbs the handful of stray pixels that still differ
-// across an otherwise-identical image. Pure/sync/no network — unit-testable
-// directly with small PNG buffers.
-const DIFF_RATIO_TOLERANCE = 0.01
-
-export function diffPngBuffers(bufferA, bufferB) {
-  const a = PNG.sync.read(bufferA)
-  const b = PNG.sync.read(bufferB)
-  if (a.width !== b.width || a.height !== b.height) return { changed: true, diffRatio: 1 }
-  const { width, height } = a
-  const diffPixels = pixelmatch(a.data, b.data, null, width, height, { threshold: 0.1 })
-  const diffRatio = diffPixels / (width * height)
-  return { changed: diffRatio > DIFF_RATIO_TOLERANCE, diffRatio }
+// Pure: the "vs. baseline" table for stored results, or '' (section omitted)
+// when there are none. A new journey reads as "please review", never a
+// failure — failing closed here would block every PR that adds a journey.
+export function screenshotResultsMarkdown(results) {
+  if (!isScreenshotResults(results) || results.shots.length === 0) return ''
+  const rows = [...results.shots]
+    .sort((a, b) => a.name.localeCompare(b.name))
+    .map((shot) => `| ${shot.name} | ${resultCell(shot)} |`)
+  return ['', '## Screenshot comparison vs. baseline', '', '| Journey | Result |', '| --- | --- |', ...rows].join('\n')
 }
 
-// Renders a per-journey table comparing this item's just-published
-// screenshots against the last approved baseline. A missing baseline (first
-// run, a newly added journey, or a renamed file) reads as "new, please
-// review" — never a failure, since failing closed here would block every PR
-// that adds a journey. The baseline itself only ever moves in mergePr(),
-// never here, so a PR can't invalidate the thing it's compared against.
-// Never throws: any failure (network, malformed PNG, etc.) just omits the
-// section, same contract as fetchScreenshotsMarkdown.
 export async function compareScreenshotsMarkdown(repo, item) {
+  return screenshotResultsMarkdown(await fetchScreenshotResults(repo, item))
+}
+
+// The gallery and the table sit between these markers in the PR body, so each
+// publish can replace exactly that section and leave the rest as written.
+export const SCREENSHOTS_START = '<!-- horizon:screenshots:start -->'
+export const SCREENSHOTS_END = '<!-- horizon:screenshots:end -->'
+
+export async function screenshotsSection(repo, item) {
+  const [screenshots, comparison] = await Promise.all([
+    fetchScreenshotsMarkdown(repo, artifactsRef(item)),
+    compareScreenshotsMarkdown(repo, item),
+  ])
+  return [SCREENSHOTS_START, ...(screenshots ? [screenshots] : []), ...(comparison ? [comparison] : []), SCREENSHOTS_END].join(
+    '\n',
+  )
+}
+
+// Pure: `body` with its marked section replaced by `section`, or with
+// `section` appended once when the body has no (complete) marker pair.
+export function spliceScreenshotsSection(body, section) {
+  const text = typeof body === 'string' ? body : ''
+  const start = text.indexOf(SCREENSHOTS_START)
+  const end = start === -1 ? -1 : text.indexOf(SCREENSHOTS_END, start)
+  if (end === -1) return `${text}${text ? '\n\n' : ''}${section}`
+  return text.slice(0, start) + section + text.slice(end + SCREENSHOTS_END.length)
+}
+
+// Best-effort: rewrites an open PR's screenshot section from the latest
+// publish. Never throws — a stale table must not fail the implement run.
+export async function refreshPrScreenshots(item, prNumber, section) {
   try {
-    const [current, baseline] = await Promise.all([
-      fetchScreenshotListing(repo, artifactsRef(item)),
-      fetchScreenshotListing(repo, BASELINE_REF),
-    ])
-    if (!current || current.length === 0) return ''
-    const baselineByName = new Map((baseline || []).map((f) => [f.name, f]))
-    const rows = []
-    for (const file of [...current].sort((a, b) => a.name.localeCompare(b.name))) {
-      const name = file.name.replace(/\.png$/, '')
-      const base = baselineByName.get(file.name)
-      if (!base) {
-        rows.push(`| ${name} | 🆕 new — please review |`)
-        continue
-      }
-      if (base.sha === file.sha) {
-        rows.push(`| ${name} | ✅ unchanged |`)
-        continue
-      }
-      let diff
-      try {
-        const [curBuf, baseBuf] = await Promise.all([
-          fetchFileBase64(repo, file.path, artifactsRef(item)),
-          fetchFileBase64(repo, base.path, BASELINE_REF),
-        ])
-        diff = curBuf && baseBuf ? diffPngBuffers(curBuf, baseBuf) : null
-      } catch {
-        diff = null
-      }
-      rows.push(
-        !diff
-          ? `| ${name} | ⚠️ changed (could not compute a diff) |`
-          : diff.changed
-            ? `| ${name} | ⚠️ changed (${(diff.diffRatio * 100).toFixed(1)}% of pixels differ) |`
-            : `| ${name} | ✅ unchanged (within tolerance) |`,
-      )
-    }
-    if (rows.length === 0) return ''
-    return ['', '## Screenshot comparison vs. baseline', '', '| Journey | Result |', '| --- | --- |', ...rows].join('\n')
+    const repo = item.repo
+    const prRes = await gh(`/repos/${repo}/pulls/${prNumber}`)
+    if (!prRes.ok) return
+    const body = (await prRes.json())?.body
+    const next = spliceScreenshotsSection(body, section ?? (await screenshotsSection(repo, item)))
+    if (next === body) return
+    await gh(`/repos/${repo}/pulls/${prNumber}`, { method: 'PATCH', body: JSON.stringify({ body: next }) })
   } catch {
-    return ''
+    // best-effort, as above
   }
 }
 
@@ -561,16 +574,15 @@ export async function pruneArtifactRefs(log, now = Date.now()) {
 // owns the code; this side owns the PR mechanics). Screenshots and the
 // baseline comparison are read from the item's artifact ref, never the code
 // branch — that's what lets two PRs touch the same journey without conflict.
+// HZ-508: runs after every implement run, so a rework whose PR is already
+// open (the 422 path) refreshes that PR's screenshot section in place.
 export async function createPrFromBranch(item, branch, { manualChecks = null } = {}) {
   const repo = item.repo
   const repoRes = await gh(`/repos/${repo}`)
   if (!repoRes.ok) throw new Error(`could not read the repository (${repoRes.status})`)
   const base = (await repoRes.json()).default_branch
 
-  const [screenshots, comparison] = await Promise.all([
-    fetchScreenshotsMarkdown(repo, artifactsRef(item)),
-    compareScreenshotsMarkdown(repo, item),
-  ])
+  const section = await screenshotsSection(repo, item)
 
   const prRes = await gh(`/repos/${repo}/pulls`, {
     method: 'POST',
@@ -588,8 +600,7 @@ export async function createPrFromBranch(item, branch, { manualChecks = null } =
         item.guardrails || '_(defaults apply)_',
         // HZ-345: the Eng agent's statement for each Manual metric line.
         ...(manualChecks ? ['', '## Manual checks', manualChecks] : []),
-        ...(screenshots ? [screenshots] : []),
-        ...(comparison ? [comparison] : []),
+        section,
         '',
         `_Implemented by the Horizon Eng agent; opened for the “Accept the code” gate · ${itemLink(item)}._`,
       ].join('\n'),
@@ -600,7 +611,10 @@ export async function createPrFromBranch(item, branch, { manualChecks = null } =
     const open = await gh(`/repos/${repo}/pulls?state=open&head=${encodeURIComponent(`${repo.split('/')[0]}:${branch}`)}`)
     if (open.ok) {
       const prs = await open.json()
-      if (prs.length > 0) return prs[0]
+      if (prs.length > 0) {
+        await refreshPrScreenshots(item, prs[0].number, section)
+        return prs[0]
+      }
     }
   }
   throw new Error(`could not open the pull request (${prRes.status})`)
