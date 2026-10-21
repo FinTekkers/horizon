@@ -661,12 +661,15 @@ def _baseline_pngs(ws: Path, repo: str) -> tuple[str, dict[str, str]] | None:
 
 def _run_diff(pairs: list[dict], out_dir: Path, cfg) -> dict[str, dict]:
     """farm/capture/diff.mjs's result per pair name, checked before use: any
-    missing, extra or malformed entry raises."""
+    missing, extra or malformed entry raises. The helper writes its result to
+    a file, never stdout, so a stray log line can't corrupt it."""
     if not screenshot_runner.worker_installed(DIFF_PACKAGES):
         raise RuntimeError(f"farm/capture is not installed ({screenshot_runner.INSTALL_HINT})")
+    result_file = out_dir.parent / "diff-result.json"
     request = {
         "pairs": pairs,
         "outDir": str(out_dir),
+        "resultFile": str(result_file),
         "threshold": cfg["threshold"],
         "ratioTolerance": cfg["ratioTolerance"],
     }
@@ -675,7 +678,9 @@ def _run_diff(pairs: list[dict], out_dir: Path, cfg) -> dict[str, dict]:
     )
     if proc.returncode != 0:
         raise RuntimeError(f"diff helper exited {proc.returncode}: {proc.stderr.strip()[-200:]}")
-    shots = json.loads(proc.stdout).get("shots")
+    if not result_file.is_file():
+        raise RuntimeError("diff helper wrote no result")
+    shots = json.loads(result_file.read_text(encoding="utf-8")).get("shots")
     if not isinstance(shots, list):
         raise RuntimeError("diff helper returned no shots")
     wanted = {pair["name"] for pair in pairs}

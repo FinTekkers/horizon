@@ -3,9 +3,9 @@
 // its timeout, and checks every result before anything reaches the ref.
 //
 // Protocol, one JSON object each way:
-//   stdin:  {"pairs": [{"name", "current", "baseline"}], "outDir", "threshold", "ratioTolerance"}
+//   stdin:  {"pairs": [{"name", "current", "baseline"}], "outDir", "resultFile", "threshold", "ratioTolerance"}
 //           (current/baseline are PNG paths on disk)
-//   stdout: {"shots": [{"name", "status", "diffRatio", "error"}]}
+//   resultFile, written once at the end: {"shots": [{"name", "status", "diffRatio", "error"}]}
 //
 // Per pair: pixelmatch with `threshold` absorbs antialiasing per pixel, and
 // `ratioTolerance` absorbs the stray pixels left over. A ratio above the
@@ -44,7 +44,9 @@ function diffPair(pair, { outDir, threshold, ratioTolerance }) {
 }
 
 const input = JSON.parse(readFileSync(0, 'utf8'))
-if (!Array.isArray(input?.pairs) || typeof input.outDir !== 'string') throw new Error('expected {pairs, outDir}')
+if (!Array.isArray(input?.pairs) || typeof input.outDir !== 'string' || typeof input.resultFile !== 'string') {
+  throw new Error('expected {pairs, outDir, resultFile}')
+}
 if (typeof input.threshold !== 'number' || typeof input.ratioTolerance !== 'number') {
   throw new Error('expected numeric threshold and ratioTolerance')
 }
@@ -55,4 +57,4 @@ const shots = input.pairs.map((pair) => {
     return { name: pair.name, status: 'changed', diffRatio: null, error: String(err?.message || err).slice(0, 300) }
   }
 })
-process.stdout.write(`${JSON.stringify({ shots })}\n`)
+writeFileSync(input.resultFile, `${JSON.stringify({ shots })}\n`)

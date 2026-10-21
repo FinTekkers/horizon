@@ -278,11 +278,18 @@ def _hangs(monkeypatch, tmp_path):
     monkeypatch.setattr(step_agent, "DIFF_CMD", [sys.executable, "-c", "import time; time.sleep(30)"])
 
 
-def _prints(text):
+def _writes(text):
+    """A helper that exits 0 but writes `text` as its result file."""
+    script = f"import json, pathlib, sys; pathlib.Path(json.load(sys.stdin)['resultFile']).write_text({text!r})"
+
     def apply(monkeypatch, tmp_path):
-        monkeypatch.setattr(step_agent, "DIFF_CMD", [sys.executable, "-c", f"print({text!r})"])
+        monkeypatch.setattr(step_agent, "DIFF_CMD", [sys.executable, "-c", script])
 
     return apply
+
+
+def _writes_nothing(monkeypatch, tmp_path):
+    monkeypatch.setattr(step_agent, "DIFF_CMD", [sys.executable, "-c", "print('{}')"])
 
 
 def _deps_missing(monkeypatch, tmp_path):
@@ -296,12 +303,13 @@ def _deps_missing(monkeypatch, tmp_path):
     [
         _exits_1,
         _hangs,
-        _prints("not json"),
-        _prints(json.dumps({"shots": [{"name": "zzz", "status": "same", "diffRatio": 0, "error": None}]})),
-        _prints(json.dumps({"shots": [{"name": "a", "status": "bogus", "diffRatio": 0, "error": None}]})),
+        _writes("not json"),
+        _writes(json.dumps({"shots": [{"name": "zzz", "status": "same", "diffRatio": 0, "error": None}]})),
+        _writes(json.dumps({"shots": [{"name": "a", "status": "bogus", "diffRatio": 0, "error": None}]})),
+        _writes_nothing,
         _deps_missing,
     ],
-    ids=["exits-1", "hangs", "bad-json", "unknown-name", "unknown-status", "deps-missing"],
+    ids=["exits-1", "hangs", "bad-json", "unknown-name", "unknown-status", "no-result-file", "deps-missing"],
 )
 def test_a_failed_diff_step_still_pushes_the_shots(tmp_path, monkeypatch, breaks):
     # Guardrail 2: best-effort — the shots publish, results.json does not, nothing raises.
