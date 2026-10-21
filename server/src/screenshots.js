@@ -13,7 +13,7 @@
 
 import { db } from './db.js'
 import * as store from './store.js'
-import { SCREENSHOT_DIR } from './github.js'
+import { SCREENSHOT_DIR, fetchScreenshotSnapshot } from './github.js'
 
 // The path-parameter shape of a screen name; anything else cannot be listed.
 export const SCREEN_RE = /^[A-Za-z0-9._-]{1,100}$/
@@ -98,4 +98,18 @@ export function recordApprovals(itemId, shots, actor) {
     initials: 'YOU',
   })
   store.notifyChange()
+}
+
+// HZ-510: the screens approved for what they show now — the Set
+// github.mergePr promotes into e2e-baseline at merge. Read from the item's
+// latest publish, so a stale approval (the shot changed since) is not in it.
+// Never throws: null when the approvals could not be read, which fails the
+// promotion closed (logged, artifacts ref kept) and never the merge.
+export async function mergeApprovals(item) {
+  try {
+    const snapshot = item.repo ? await fetchScreenshotSnapshot(item.repo, item) : null
+    return new Set(approvalState(item.id, listedShots(snapshot)).filter((shot) => shot.approved).map((shot) => shot.screen))
+  } catch {
+    return null
+  }
 }

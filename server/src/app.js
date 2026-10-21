@@ -1466,7 +1466,9 @@ export function buildApp({ logger = true, onRoute = null } = {}) {
         // detail through to merged — don't overwrite it here.
         if (!gate.skipped) store.setGateActionDetail(id, 'premerge', claim.token, `checks passed, merging PR #${item.pr}`)
         try {
-          await github.mergePr(item, { sha: gate.headSha })
+          // HZ-510: only the screens approved at this gate reach e2e-baseline.
+          const approvals = await screenshots.mergeApprovals(item)
+          await github.mergePr(item, { sha: gate.headSha, approvals, log: fastify.log })
           outcome = { state: 'merged' }
           store.addEvent(id, {
             who: 'Horizon',

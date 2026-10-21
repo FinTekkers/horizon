@@ -12,6 +12,7 @@ process.env.HORIZON_DB = join(mkdtempSync(join(tmpdir(), 'horizon-github-')), 't
 const { db } = await import('../src/db.js')
 const github = await import('../src/github.js')
 const { setSetting } = await import('../src/settings.js')
+const { fakeGit } = await import('./helpers/fakeGit.mjs')
 const { ACCEPT_GATE_INDEX, IMPLEMENT_STEP_INDEX, endIndex } = await import('../../domain/js/lifecycle.js')
 
 const REPO = 'FinTekkers/horizon'
@@ -307,29 +308,210 @@ test('a failed PATCH of the screenshot section never fails createPrFromBranch', 
   assert.equal(pr.number, 9)
 })
 
-test('mergePr promotes the merged item screenshots to the baseline and frees the artifact ref', async (t) => {
-  const calls = []
-  t.mock.method(globalThis, 'fetch', async (url, options) => {
-    const u = new URL(url)
-    calls.push({ path: u.pathname, method: options?.method || 'GET' })
-    if (u.pathname.endsWith('/merge')) return { ok: true, status: 200, json: async () => ({ merged: true }) }
-    if (u.pathname.endsWith('/git/refs/heads%2Fhorizon%2Fhz-63-b')) return { ok: true, status: 204 }
-    if (u.pathname.endsWith('/git/ref/heads%2Fe2e-artifacts%2Fhz-63-b')) {
-      return { ok: true, status: 200, json: async () => ({ object: { sha: 'artifact-sha' } }) }
-    }
-    if (u.pathname.endsWith('/git/refs/heads%2Fe2e-baseline') && options?.method === 'PATCH') {
-      return { ok: true, status: 200, json: async () => ({}) }
-    }
-    if (u.pathname.endsWith('/git/refs/heads%2Fe2e-artifacts%2Fhz-63-b') && options?.method === 'DELETE') {
-      return { ok: true, status: 204 }
-    }
-    return { ok: false, status: 404 }
+// ---- HZ-510: approved screens are promoted into e2e-baseline one by one ----
+// The baseline before each test holds board, broken, home, old and keep; the
+// item's publish (the fixture's results) changes board and broken, adds gates,
+// keeps home and removes old — but has no broken.png (its capture errored).
+
+const SHOT = (name) => `e2e/__screenshots__/${name}.png`
+const SHOT_ENTRY_RE = /^e2e\/__screenshots__\/[A-Za-z0-9._-]+\.png$/
+
+function promotionRig(t, id, { baseline = true } = {}) {
+  const git = fakeGit(REPO)
+  t.mock.method(globalThis, 'fetch', git.fetch)
+  const base = Object.fromEntries(['board', 'broken', 'home', 'old', 'keep'].map((n) => [SHOT(n), git.blob(`${n}-base`)]))
+  const head = baseline ? git.commit(base) : null
+  if (head) git.refs.set('heads/e2e-baseline', head)
+  const art = {
+    [SHOT('board')]: git.blob('board-v1'),
+    [SHOT('gates')]: git.blob('gates-v1'),
+    [SHOT('home')]: base[SHOT('home')],
+    'e2e/__screenshots__/diff/board.png': git.blob('diff-board'),
+    'e2e/__screenshots__/results.json': git.blob(JSON.stringify({ ...RESULTS_FIXTURE, baseline: head })),
+  }
+  const artRef = `heads/e2e-artifacts/${id.toLowerCase()}`
+  git.refs.set(artRef, git.commit(art))
+  const warns = []
+  const log = { warn: (m) => warns.push(m), info: () => {} }
+  return { git, item: { id, repo: REPO, pr: 77 }, base, art, artRef, head, log, warns }
+}
+
+const treeEntries = (git) => git.writes.filter((w) => w.path === '/git/trees').flatMap((w) => w.body.tree)
+const lastCommit = (git) => git.commits.get(git.refs.get('heads/e2e-baseline'))
+
+// Every ref write names e2e-baseline or this item's own refs (its artifacts
+// ref, or mergePr's work-branch delete); none forces; every tree entry is a
+// top-level shot PNG.
+function assertScope(git, item) {
+  const own = item.id.toLowerCase()
+  const allowed = ['heads/e2e-baseline', `heads/e2e-artifacts/${own}`, `heads/horizon/${own}`]
+  for (const w of git.writes) {
+    if (w.path === '/git/trees' || w.path === '/git/commits' || w.path.endsWith('/merge')) continue
+    const ref = w.path === '/git/refs' ? w.body.ref.replace(/^refs\//, '') : w.path.replace(/^\/git\/refs\//, '')
+    assert.ok(allowed.includes(ref), `${w.method} ${ref} is out of scope`)
+    assert.notEqual(w.body?.force, true, `${w.method} ${ref} must not force`)
+    if (w.method === 'DELETE') assert.notEqual(ref, 'heads/e2e-baseline')
+  }
+  for (const entry of treeEntries(git)) assert.match(entry.path, SHOT_ENTRY_RE)
+}
+
+test('mergePr promotes only the approved shots: each gets the artifacts blob, every other baseline path keeps its blob (HZ-510)', async (t) => {
+  const { git, item, base, art, head, log, artRef } = promotionRig(t, 'HZ-510-A')
+  const res = await github.mergePr(item, { approvals: new Set(['board', 'gates', 'home']), log })
+  assert.deepEqual(res, { merged: true })
+  assert.deepEqual(git.filesAt('e2e-baseline'), {
+    [SHOT('board')]: art[SHOT('board')],
+    [SHOT('gates')]: art[SHOT('gates')],
+    [SHOT('broken')]: base[SHOT('broken')],
+    [SHOT('home')]: base[SHOT('home')],
+    [SHOT('old')]: base[SHOT('old')],
+    [SHOT('keep')]: base[SHOT('keep')],
   })
-  await github.mergePr({ id: 'HZ-63-B', repo: REPO, pr: 77 })
-  const baselineUpdate = calls.find((c) => c.path.endsWith('/git/refs/heads%2Fe2e-baseline'))
-  assert.equal(baselineUpdate?.method, 'PATCH')
-  const artifactDelete = calls.find((c) => c.path.endsWith('/git/refs/heads%2Fe2e-artifacts%2Fhz-63-b') && c.method === 'DELETE')
-  assert.ok(artifactDelete, 'the merged item artifact ref must be freed')
+  // An approved `same` shot needs no entry; results.json and diffs never enter.
+  assert.deepEqual(treeEntries(git).map((e) => e.path).sort(), [SHOT('board'), SHOT('gates')])
+  // Metric 4: one commit on the previous head, moved without force, then the
+  // artifacts ref is freed.
+  assert.deepEqual(lastCommit(git).parents, [head])
+  const patches = git.writes.filter((w) => w.method === 'PATCH')
+  assert.deepEqual(patches.map((w) => [w.path, w.body.force]), [['/git/refs/heads/e2e-baseline', false]])
+  assert.equal(git.refs.has(artRef), false)
+  assert.ok(git.writes.some((w) => w.method === 'DELETE' && w.path === `/git/refs/${artRef}`))
+  assertScope(git, item)
+})
+
+test('an unapproved changed shot keeps its prior blob and an unapproved new one stays absent — no entry names either (HZ-510)', async (t) => {
+  const { git, item, base, log } = promotionRig(t, 'HZ-510-B')
+  await github.mergePr(item, { approvals: new Set(['old']), log })
+  const files = git.filesAt('e2e-baseline')
+  assert.equal(files[SHOT('board')], base[SHOT('board')])
+  assert.equal(Object.hasOwn(files, SHOT('gates')), false)
+  const paths = treeEntries(git).map((e) => e.path)
+  assert.deepEqual(paths, [SHOT('old')])
+  assertScope(git, item)
+})
+
+test('an approved shot with no image on the artifacts ref keeps its baseline blob, is logged, and the rest still promote (HZ-510)', async (t) => {
+  const { git, item, base, art, log, warns } = promotionRig(t, 'HZ-510-C')
+  await github.mergePr(item, { approvals: new Set(['broken', 'board']), log })
+  const files = git.filesAt('e2e-baseline')
+  assert.equal(files[SHOT('broken')], base[SHOT('broken')])
+  assert.equal(files[SHOT('board')], art[SHOT('board')])
+  assert.ok(warns.some((w) => w.includes('HZ-510-C') && w.includes('broken')), warns.join('\n'))
+  assert.ok(!treeEntries(git).some((e) => e.path === SHOT('broken')))
+})
+
+test('an approved removed shot is deleted from the baseline; an unapproved one is still there (HZ-510)', async (t) => {
+  const approved = promotionRig(t, 'HZ-510-D')
+  await github.mergePr(approved.item, { approvals: new Set(['old']), log: approved.log })
+  assert.equal(Object.hasOwn(approved.git.filesAt('e2e-baseline'), SHOT('old')), false)
+
+  const unapproved = promotionRig(t, 'HZ-510-E')
+  await github.mergePr(unapproved.item, { approvals: new Set(['board']), log: unapproved.log })
+  assert.equal(unapproved.git.filesAt('e2e-baseline')[SHOT('old')], unapproved.base[SHOT('old')])
+})
+
+test('the fake GitHub refuses what GitHub refuses: a non-fast-forward PATCH and deleting a missing path (HZ-510)', async (t) => {
+  const { git, head, base } = promotionRig(t, 'HZ-510-F')
+  const api = (path, method, body) => git.fetch(`https://api.github.com/repos/${REPO}${path}`, { method, body: JSON.stringify(body) })
+  const baseTree = git.commits.get(head).tree
+  const deleteMissing = await api('/git/trees', 'POST', { base_tree: baseTree, tree: [{ path: SHOT('nope'), mode: '100644', type: 'blob', sha: null }] })
+  assert.equal(deleteMissing.status, 422)
+  const unrelated = git.commit({ [SHOT('x')]: base[SHOT('keep')] })
+  const notFf = await api('/git/refs/heads%2Fe2e-baseline', 'PATCH', { sha: unrelated, force: false })
+  assert.equal(notFf.status, 422)
+  assert.equal(git.refs.get('heads/e2e-baseline'), head)
+
+  // So an approved removal of a path the current baseline lacks sends no
+  // delete entry, and the promotion still lands.
+  git.refs.set('heads/e2e-baseline', git.commit({ [SHOT('keep')]: base[SHOT('keep')] }, [head]))
+  const warns = []
+  const log = { warn: (m) => warns.push(m), info: () => {} }
+  git.writes.length = 0
+  await github.mergePr({ id: 'HZ-510-F', repo: REPO, pr: 77 }, { approvals: new Set(['old', 'board']), log })
+  assert.deepEqual(warns, [])
+  assert.deepEqual(treeEntries(git).map((e) => e.path), [SHOT('board')])
+  assert.deepEqual(Object.keys(git.filesAt('e2e-baseline')).sort(), [SHOT('board'), SHOT('keep')])
+})
+
+test('with no e2e-baseline, merge seeds it with exactly the approved shots in a parentless commit (HZ-510)', async (t) => {
+  const { git, item, art, artRef, log } = promotionRig(t, 'HZ-510-G', { baseline: false })
+  await github.mergePr(item, { approvals: new Set(['board', 'gates', 'old']), log })
+  assert.deepEqual(git.filesAt('e2e-baseline'), { [SHOT('board')]: art[SHOT('board')], [SHOT('gates')]: art[SHOT('gates')] })
+  assert.deepEqual(lastCommit(git).parents, [])
+  assert.ok(git.writes.some((w) => w.method === 'POST' && w.path === '/git/refs' && w.body.ref === 'refs/heads/e2e-baseline'))
+  assert.equal(git.refs.has(artRef), false)
+  assertScope(git, item)
+})
+
+test('a seed that loses to a concurrent seed rebuilds on it, so both items keep their shots (HZ-510)', async (t) => {
+  const { git, item, art, log } = promotionRig(t, 'HZ-510-H', { baseline: false })
+  const other = git.blob('other')
+  let otherSeed
+  git.beforeMove = () => {
+    otherSeed = git.commit({ [SHOT('other')]: other })
+    git.refs.set('heads/e2e-baseline', otherSeed)
+  }
+  await github.mergePr(item, { approvals: new Set(['board', 'gates']), log })
+  assert.deepEqual(git.filesAt('e2e-baseline'), {
+    [SHOT('other')]: other,
+    [SHOT('board')]: art[SHOT('board')],
+    [SHOT('gates')]: art[SHOT('gates')],
+  })
+  assert.deepEqual(lastCommit(git).parents, [otherSeed])
+  assertScope(git, item)
+})
+
+test('a PATCH refused because the baseline moved rebuilds on the new head, so concurrent merges keep each other\'s shots (HZ-510)', async (t) => {
+  const { git, item, art, head, log, artRef } = promotionRig(t, 'HZ-510-I')
+  const other = git.blob('other')
+  let otherHead
+  git.beforeMove = () => {
+    otherHead = git.commit({ ...git.filesAt('e2e-baseline'), [SHOT('other')]: other }, [head])
+    git.refs.set('heads/e2e-baseline', otherHead)
+  }
+  await github.mergePr(item, { approvals: new Set(['board']), log })
+  const files = git.filesAt('e2e-baseline')
+  assert.equal(files[SHOT('other')], other)
+  assert.equal(files[SHOT('board')], art[SHOT('board')])
+  assert.deepEqual(lastCommit(git).parents, [otherHead])
+  assert.equal(git.writes.filter((w) => w.method === 'PATCH').length, 2)
+  assert.equal(git.refs.has(artRef), false)
+  assertScope(git, item)
+})
+
+test('a failed promotion never fails the merge: logged with the item id, artifacts ref kept, baseline untouched (HZ-510)', async (t) => {
+  const failing = promotionRig(t, 'HZ-510-J')
+  failing.git.fail['POST /git/trees'] = 500
+  assert.deepEqual(await github.mergePr(failing.item, { approvals: new Set(['board']), log: failing.log }), { merged: true })
+  assert.ok(failing.warns.some((w) => w.includes('HZ-510-J') && w.includes('500')), failing.warns.join('\n'))
+  assert.equal(failing.git.refs.has(failing.artRef), true)
+  assert.ok(!failing.git.writes.some((w) => w.method === 'DELETE' && w.path === `/git/refs/${failing.artRef}`))
+  assert.equal(failing.git.refs.get('heads/e2e-baseline'), failing.head)
+
+  const unread = promotionRig(t, 'HZ-510-K')
+  assert.deepEqual(await github.mergePr(unread.item, { approvals: null, log: unread.log }), { merged: true })
+  assert.ok(unread.warns.some((w) => w.includes('HZ-510-K') && w.includes('approvals unavailable')), unread.warns.join('\n'))
+  assert.equal(unread.git.refs.has(unread.artRef), true)
+  assert.ok(!unread.git.writes.some((w) => w.path.startsWith('/git/trees') || w.path.startsWith('/git/commits')))
+  assert.equal(unread.git.refs.get('heads/e2e-baseline'), unread.head)
+})
+
+test('three lost races give up with GitHub\'s last message; an item that never published logs nothing (HZ-510)', async (t) => {
+  const { git, item, log, warns, artRef } = promotionRig(t, 'HZ-510-L')
+  const race = () => {
+    const head = git.refs.get('heads/e2e-baseline')
+    git.refs.set('heads/e2e-baseline', git.commit(git.filesAt('e2e-baseline'), [head]))
+    git.beforeMove = race
+  }
+  git.beforeMove = race
+  assert.deepEqual(await github.mergePr(item, { approvals: new Set(['board']), log }), { merged: true })
+  assert.ok(warns.some((w) => w.includes('HZ-510-L') && w.includes('Update is not a fast forward')), warns.join('\n'))
+  assert.equal(git.refs.has(artRef), true)
+
+  git.beforeMove = null
+  const quiet = []
+  await github.mergePr({ id: 'HZ-510-M', repo: REPO, pr: 78 }, { approvals: null, log: { warn: (m) => quiet.push(m), info: () => {} } })
+  assert.deepEqual(quiet, [])
 })
 
 test('mergePr never promotes the baseline when the merge itself fails', async (t) => {

@@ -18,7 +18,7 @@ pixels travel on their own git refs instead.
 |---|---|---|---|
 | `horizon/<id>` | The item's code. Never screenshots. | `finalize_branch()` in `farm/step_agent.py`, after checks pass | Deleted when the PR merges |
 | `e2e-artifacts/<id>` | This item's PNGs, as a single commit with no history | `publish_screenshots()` in `farm/step_agent.py`, force-pushed on every implement run | Deleted when the PR merges or is closed unmerged |
-| `e2e-baseline` | The screenshots of the last merged item | `promoteBaseline()` in `server/src/github.js`, called from `mergePr()` | Permanent; moves on every merge |
+| `e2e-baseline` | The approved shots of every merged item, screen by screen | `promoteBaseline()` in `server/src/github.js`, called from `mergePr()` | Permanent; one commit per merge that promotes a shot |
 
 `<id>` is the lowercased item id, e.g. `e2e-artifacts/hz-143`.
 
@@ -43,7 +43,7 @@ flowchart LR
     CODE -- "opens PR" --> PR
     ART -- "images by URL" --> PR
     BASE -- "fetched at publish:<br/>pixel diff → results.json" --> ART
-    ART -- "5 · on merge:<br/>baseline := this sha,<br/>then ref deleted" --> BASE
+    ART -- "5 · on merge:<br/>approved shots committed<br/>onto baseline, then ref deleted" --> BASE
 ```
 
 ### 1 · Checks: capture and verify
@@ -124,15 +124,36 @@ drops the section, and a failed refresh leaves the old one.
 When the "Accept the code" gate merges the PR (squash), `mergePr()`:
 
 1. Deletes `horizon/<id>`.
-2. Moves `e2e-baseline` to the sha of `e2e-artifacts/<id>` (`PATCH` with
-   `force: true`; creates the ref on the repo's first merge). This is a plain
-   overwrite, not read-modify-write, so two merges landing close together are
-   safe: last writer wins, and either value is a real merged UI.
-3. Deletes `e2e-artifacts/<id>`.
+2. HZ-510: promotes the shots approved at the gate (HZ-509's per-screen
+   approvals, read by `screenshots.mergeApprovals()`; an approval counts only
+   while the shot is unchanged since). Using the `results.json` on
+   `e2e-artifacts/<id>`, it builds one tree on top of the current
+   `e2e-baseline` tree:
+   - an approved `changed` or `new` shot points at its artifacts blob (reused
+     by sha, nothing is uploaded);
+   - an approved `removed` shot is deleted, if the baseline still has it;
+   - every other baseline path keeps its blob, and an unapproved shot is never
+     named. `results.json` and `diff/*` are never promoted.
+   An approved shot with no PNG on the artifacts ref (its capture errored) is
+   skipped and logged; it keeps its baseline blob and the rest still promote.
+3. Commits that tree with the old head as its only parent and moves
+   `e2e-baseline` with `force: false`. If the head moved meanwhile (`422`), it
+   rebuilds on the new head and retries, up to 3 times, so two merges landing
+   together keep each other's shots. With no `e2e-baseline` yet, the first
+   promotion creates it with only the approved shots (a parentless commit); a
+   lost race with another seed retries on top of it.
+4. Deletes `e2e-artifacts/<id>`, only after a successful promotion. With no
+   approved shots there is no commit, and the ref is still deleted.
 
-All three steps are best-effort. If promotion fails, the baseline stays one
-merge behind until the next merge. The baseline only ever moves on merge,
-never from a PR branch.
+A failed promotion never fails or reverts the merge. It is logged as
+`baseline promotion failed for <id>: …` and `e2e-artifacts/<id>` is kept —
+but only until the next daily prune (`pruneArtifactRefs()`), which deletes the
+refs of merged items. Re-running a failed promotion needs that ref, so it is a
+manual job within about 24h; a durable promotion job that retries on its own
+is the follow-up if the logs show stale baselines. The baseline only ever
+moves on merge, never from a PR branch. Older baselines may still hold a
+`results.json` and `diff/` from before HZ-510; publish reads only top-level
+PNGs, so they are ignored.
 
 If the PR is **closed unmerged** on GitHub, the item is sent back and
 `e2e-artifacts/<id>` is deleted. The next implement attempt republishes it.
