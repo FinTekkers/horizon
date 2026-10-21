@@ -1,7 +1,8 @@
 """HZ-506 fixture: a capture worker speaking farm/capture/worker.mjs's
 protocol without a browser. It fetches each shot's URL over HTTP with the
 shot's headers (so the fixture app sees exactly what a browser would send),
-then writes a 1x1 PNG. Each shot appends {"pid", "url"} to $FAKE_WORKER_LOG.
+then writes a 1x1 PNG. Each shot appends {"pid", "url", "keys"} to
+$FAKE_WORKER_LOG, `keys` being the shot message's sorted field names.
 A /echo shot answers with an error quoting its header values, on stdout and
 stderr, as a careless worker might.
 """
@@ -27,7 +28,7 @@ print(json.dumps({"ready": True}), flush=True)
 for line in sys.stdin:
     shot = json.loads(line)
     with open(os.environ["FAKE_WORKER_LOG"], "a") as fh:
-        fh.write(json.dumps({"pid": os.getpid(), "url": shot["url"]}) + "\n")
+        fh.write(json.dumps({"pid": os.getpid(), "url": shot["url"], "keys": sorted(shot)}) + "\n")
     try:
         opener.open(urllib.request.Request(shot["url"], headers=shot["headers"]), timeout=300).read()
     except OSError as exc:

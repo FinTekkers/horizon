@@ -408,6 +408,8 @@ def capture(
                     "png": str(out_dir / name),
                     "headers": headers if shot.login else {},
                 }
+                if shot.wait_for:
+                    msg["waitFor"] = shot.wait_for
                 result = worker.run(msg, min(deadline, started + shot.timeout_ms / 1000))
             except (_WorkerGone, OSError) as exc:
                 entry.update(status=ERROR, durationMs=_ms(started), png=None, clipped=False)

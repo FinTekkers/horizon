@@ -175,8 +175,13 @@ the same check slot) runs it:
    `127.0.0.1` or `localhost`; its origin is the base for every screen's
    `path`.
 3. Captures each shot (screen × viewport × theme) under **that shot's own**
-   `timeoutMs`. An overrun kills the worker, marks the shot `timeout`, and
-   the next shot gets a fresh worker. A page taller than `maxHeightPx` is cut
+   `timeoutMs`. The worker loads the page, waits for network idle (500 ms
+   with no request in flight; `EventSource` and WebSocket requests are
+   ignored, as they never end), then, if the screen sets `waitFor` (a CSS
+   selector, also settable in `defaults`), for that element to be visible
+   (HZ-527). All of that waiting counts against `timeoutMs`; the worker has
+   no deadline of its own. An overrun kills the worker, marks the shot
+   `timeout`, and the next shot gets a fresh worker. A page taller than `maxHeightPx` is cut
    at that height and marked `clipped`. Shots that would start after the
    run's budget (`FARM_CHECK_TIMEOUT_S`) are `skipped`.
 4. Writes `<outputDir>/manifest.json`:
@@ -193,6 +198,10 @@ the same check slot) runs it:
    redacted `error` message.
 5. Stops `serve`'s whole process group (SIGTERM, then SIGKILL after 5 s) and
    the worker, however the run ended.
+
+**SSE-driven pages need `waitFor`.** Network idle can not see data that
+arrives on an open stream, such as Horizon's board on `/api/stream`: set
+`waitFor` to an element that only renders once that data is in.
 
 A slow or failing shot does **not** fail the check; the summary says e.g.
 `screenshots: 5 ok, 1 timeout`. The slot fails only when nothing can be

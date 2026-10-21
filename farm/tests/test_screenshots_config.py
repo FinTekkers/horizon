@@ -77,6 +77,18 @@ def test_with_no_defaults_the_built_in_values_apply():
     }
 
 
+def test_wait_for_in_defaults_and_screen_with_screen_winning():
+    def change(doc):
+        doc["defaults"]["waitFor"] = "#a"
+        doc["screens"][1]["waitFor"] = "#b"
+
+    shots = parse(json.loads(edited(change)))
+    assert {s.wait_for for s in shots if s.screen == "home"} == {"#a"}
+    assert {s.wait_for for s in shots if s.screen == "admin"} == {"#b"}
+    # Unset everywhere, a shot waits for nothing.
+    assert {s.wait_for for s in parse(json.loads(VALID))} == {None}
+
+
 # ---- metric 2: one headline line naming the bad field ----
 
 
@@ -128,8 +140,21 @@ def test_a_missing_or_non_integer_version_fails_at_version_with_no_fallback(chan
         (lambda d: d["viewports"][0].update(width=0), "viewports[0].width"),
         (lambda d: d["defaults"].update(login="yes"), "defaults.login"),
         (lambda d: d.update(extra=1), "extra"),
+        (lambda d: d["screens"][0].update(waitFor=5), "screens[0].waitFor"),
+        (lambda d: d["defaults"].update(waitFor=5), "defaults.waitFor"),
     ],
-    ids=["unknown-viewport", "parent-dir", "absolute-dir", "duplicate-screen", "no-screens", "zero-width", "login-type", "unknown-top"],
+    ids=[
+        "unknown-viewport",
+        "parent-dir",
+        "absolute-dir",
+        "duplicate-screen",
+        "no-screens",
+        "zero-width",
+        "login-type",
+        "unknown-top",
+        "wait-for-type",
+        "defaults-wait-for-type",
+    ],
 )
 def test_each_bad_field_is_named_by_its_path(change, path):
     with pytest.raises(ConfigError) as err:

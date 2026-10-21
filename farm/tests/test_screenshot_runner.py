@@ -4,8 +4,9 @@ Every test but the height cap drives the runner with a fake worker
 (fixtures/screenshots/fake_worker.py) against a real fixture app
 (fixtures/screenshots/serve_app.py) started from the config's `serve`, so
 timeouts, process cleanup, login headers and redaction run for real. The
-height cap needs a real browser: it runs farm/capture/worker.mjs on Chromium
-and fails — never skips — when either is missing."""
+height cap and HZ-527's idle and waitFor waits need a real browser: they run
+farm/capture/worker.mjs on Chromium and fail — never skip — when either is
+missing."""
 
 import json
 import os
@@ -173,6 +174,102 @@ def test_tall_page_is_clipped_to_max_height(tmp_path, monkeypatch):
     # The inverse: a page under the cap is its own height, not clipped.
     assert short["status"] == OK and short["clipped"] is False
     assert png_size(app.out / short["png"]) == (800, 600)
+
+
+# ---- HZ-527: wait for network idle and an optional waitFor (real Chromium) ----
+
+PIXEL_JS = """
+import { readFileSync } from 'node:fs'
+import { PNG } from 'pngjs'
+const [file, x, y] = process.argv.slice(1)
+const png = PNG.sync.read(readFileSync(file))
+const i = (png.width * Number(y) + Number(x)) * 4
+console.log(JSON.stringify([png.data[i], png.data[i + 1], png.data[i + 2]]))
+"""
+SHOT_KEYS = ["headers", "height", "maxHeightPx", "png", "theme", "url", "width"]
+
+
+def use_real_worker(monkeypatch):
+    if not screenshot_runner.worker_installed() or not checks._playwright_chromium_installed():
+        pytest.fail(f"the real capture worker or Chromium is missing on this host — run `{screenshot_runner.INSTALL_HINT}`")
+    monkeypatch.setattr(screenshot_runner, "WORKER_CMD", ["node", str(screenshot_runner.CAPTURE_DIR / "worker.mjs")])
+
+
+def pixel(png: Path, x: int, y: int) -> tuple[int, int, int]:
+    out = subprocess.run(
+        ["node", "--input-type=module", "-e", PIXEL_JS, str(png), str(x), str(y)],
+        cwd=screenshot_runner.CAPTURE_DIR,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    return tuple(json.loads(out.stdout))
+
+
+def test_late_fetch_is_drawn_and_two_captures_match(tmp_path, monkeypatch):
+    use_real_worker(monkeypatch)
+    app = App(tmp_path, [{"name": "late-a", "path": "/late"}, {"name": "late-b", "path": "/late"}])
+
+    a, b = app.capture(budget_s=120)["shots"]
+
+    assert [a["status"], b["status"]] == [OK, OK]
+    assert pixel(app.out / a["png"], 400, 300) == (0, 128, 255)
+    assert (app.out / a["png"]).read_bytes() == (app.out / b["png"]).read_bytes()
+    # Not vacuous: the late fetch was made after the page, and the page held
+    # an EventSource open on /sse while the shot waited for idle.
+    paths = [r["path"] for r in app.requests()]
+    assert "/sse" in paths
+    assert paths.index("/late") < paths.index("/late-data")
+
+
+def test_wait_for_that_never_appears_times_out_that_shot_only(tmp_path, monkeypatch):
+    use_real_worker(monkeypatch)
+    app = App(
+        tmp_path,
+        [
+            {"name": "missing", "path": "/one", "waitFor": "#never", "timeoutMs": 1500},
+            {"name": "control", "path": "/one", "timeoutMs": 1500},
+            {"name": "found", "path": "/late", "waitFor": "#block"},
+        ],
+    )
+
+    manifest = app.capture(budget_s=120)
+
+    missing, _control, found = manifest["shots"]
+    # The control proves idle settles on /one, so the overrun is #never's.
+    assert [s["status"] for s in manifest["shots"]] == [TIMEOUT, OK, OK]
+    # The runner's deadline, not one of the worker's own, ended the shot.
+    assert 1500 <= missing["durationMs"] < 3500
+    assert checks.screenshots_failure_lines(manifest, app.cfg.shots) == ["screenshots: missing desktop/light: timeout 1.5s"]
+    assert pixel(app.out / found["png"], 400, 300) == (0, 128, 255)
+
+
+@pytest.mark.parametrize("wait_for", ["#card", None], ids=["with-wait-for", "no-wait-for"])
+def test_a_stream_driven_page_captures_with_and_without_wait_for(tmp_path, monkeypatch, wait_for):
+    use_real_worker(monkeypatch)
+    screen = {"name": "board", "path": "/stream-board", "timeoutMs": 15000}
+    if wait_for:
+        screen["waitFor"] = wait_for
+    app = App(tmp_path, [screen])
+
+    (shot,) = app.capture(budget_s=120)["shots"]
+
+    # An open stream never stops idle from being reached.
+    assert shot["status"] == OK
+    assert "/board-sse" in [r["path"] for r in app.requests()]
+    if wait_for:
+        assert pixel(app.out / shot["png"], 400, 300) == (255, 64, 0)
+
+
+def test_the_shot_message_only_gains_wait_for_and_only_when_set(tmp_path):
+    app = App(tmp_path, [{"name": "plain", "path": "/plain"}, {"name": "waits", "path": "/waits", "waitFor": "#x"}])
+
+    app.capture()
+
+    plain, waits = app.worker_shots()
+    assert plain["keys"] == SHOT_KEYS
+    assert waits["keys"] == sorted([*SHOT_KEYS, "waitFor"])
+    assert app.cfg.shots[1].wait_for == "#x"
 
 
 # ---- metric 4: a login shot gets the key, nothing logs in ----
