@@ -348,6 +348,9 @@ export async function createMockPr(item) {
 
 const BASELINE_REF = 'e2e-baseline'
 const artifactsRef = (item) => `e2e-artifacts/${item.id.toLowerCase()}`
+// Where a publish puts the shots (<name>.png), their diffs (diff/<name>.png)
+// and results.json, on the artifacts ref.
+export const SCREENSHOT_DIR = 'e2e/__screenshots__'
 
 // Exported for direct unit testing; pure formatting, no network.
 export function screenshotsMarkdown(files) {
@@ -369,7 +372,7 @@ export function screenshotsMarkdown(files) {
 // both just omit the section rather than blocking PR creation.
 export async function fetchScreenshotsMarkdown(repo, ref) {
   try {
-    const res = await gh(`/repos/${repo}/contents/e2e/__screenshots__?ref=${encodeURIComponent(ref)}`)
+    const res = await gh(`/repos/${repo}/contents/${SCREENSHOT_DIR}?ref=${encodeURIComponent(ref)}`)
     if (!res.ok) return ''
     return screenshotsMarkdown(await res.json())
   } catch {
@@ -408,7 +411,7 @@ function isScreenshotResults(doc) {
 // wrong shape. Never throws.
 export async function fetchScreenshotResults(repo, item) {
   try {
-    const res = await gh(`/repos/${repo}/contents/e2e/__screenshots__/results.json?ref=${encodeURIComponent(artifactsRef(item))}`)
+    const res = await gh(`/repos/${repo}/contents/${SCREENSHOT_DIR}/results.json?ref=${encodeURIComponent(artifactsRef(item))}`)
     if (!res.ok) return null
     const data = await res.json()
     if (typeof data?.content !== 'string') return null
@@ -441,6 +444,99 @@ export function screenshotResultsMarkdown(results) {
 
 export async function compareScreenshotsMarkdown(repo, item) {
   return screenshotResultsMarkdown(await fetchScreenshotResults(repo, item))
+}
+
+// HZ-509: the Accept gate's screenshot panel reads the same ref, through the
+// git data API, so every image comes from one commit's tree and is streamed
+// straight from GitHub — nothing is copied anywhere. Trees are immutable, so
+// their path → blob listing (metadata only, never pixels) is cached per repo
+// and commit.
+const TREE_CACHE_MAX = 50
+const treeCache = new Map()
+
+// e2e and unit tests only, same pattern as setPrStateForTest: canned answers
+// keyed "<repo>#<item id>" (a snapshot, or null for "no publish") and by blob
+// sha (a Buffer). `files`/`baselineFiles` may be plain { path: {sha, size} }.
+let cannedSnapshotsForTest = null
+let cannedBlobsForTest = null
+
+const toFileMap = (files) => (files == null ? null : files instanceof Map ? files : new Map(Object.entries(files)))
+
+export function setScreenshotSnapshotForTest(map) {
+  const snapshotOf = (snap) => snap && { ...snap, files: toFileMap(snap.files) ?? new Map(), baselineFiles: toFileMap(snap.baselineFiles) }
+  cannedSnapshotsForTest = map == null ? null : new Map(Object.entries(map).map(([key, snap]) => [key, snapshotOf(snap)]))
+}
+
+export function setBlobsForTest(map) {
+  cannedBlobsForTest = map == null ? null : new Map(Object.entries(map))
+}
+
+// A commit's whole tree as path → { sha, size }, or null when the commit is
+// gone (404/422 — e.g. an old baseline commit GitHub has since collected).
+// Throws on any other failure, and on a truncated listing: a partial list
+// must never pass for the whole publish.
+async function fetchCommitFiles(repo, commitSha) {
+  const key = `${repo}@${commitSha}`
+  if (treeCache.has(key)) return treeCache.get(key)
+  const commitRes = await gh(`/repos/${repo}/git/commits/${commitSha}`)
+  if (commitRes.status === 404 || commitRes.status === 422) return null
+  if (!commitRes.ok) throw new Error(`could not read commit ${commitSha} (GitHub returned ${commitRes.status})`)
+  const treeSha = (await commitRes.json().catch(() => ({})))?.tree?.sha
+  if (!SHA_RE.test(treeSha || '')) throw new Error(`GitHub returned commit ${commitSha} without a tree`)
+  const treeRes = await gh(`/repos/${repo}/git/trees/${treeSha}?recursive=1`)
+  if (!treeRes.ok) throw new Error(`could not read tree ${treeSha} (GitHub returned ${treeRes.status})`)
+  const tree = await treeRes.json().catch(() => ({}))
+  if (tree.truncated) throw new Error(`GitHub truncated the tree of ${commitSha}`)
+  if (!Array.isArray(tree.tree)) throw new Error(`GitHub returned tree ${treeSha} without entries`)
+  const files = new Map()
+  for (const entry of tree.tree) {
+    if (entry?.type === 'blob' && typeof entry.path === 'string' && SHA_RE.test(entry.sha || '')) {
+      files.set(entry.path, { sha: entry.sha, size: typeof entry.size === 'number' ? entry.size : 0 })
+    }
+  }
+  treeCache.set(key, files)
+  if (treeCache.size > TREE_CACHE_MAX) treeCache.delete(treeCache.keys().next().value)
+  return files
+}
+
+// One consistent read of the item's latest publish: { commit, results, files,
+// baselineFiles }, or null when there is nothing to show (no publish, no
+// results.json, a bad one, or no GitHub token). baselineFiles is null when the
+// stored baseline commit can't be read. Throws when GitHub fails otherwise.
+export async function fetchScreenshotSnapshot(repo, item) {
+  const key = `${repo}#${item.id}`
+  if (cannedSnapshotsForTest) return cannedSnapshotsForTest.has(key) ? cannedSnapshotsForTest.get(key) : null
+  if (!getToken()) return null
+  const refRes = await gh(`/repos/${repo}/git/ref/${encodeURIComponent(`heads/${artifactsRef(item)}`)}`)
+  if (refRes.status === 404) return null
+  if (!refRes.ok) throw new Error(`could not read ${artifactsRef(item)} (GitHub returned ${refRes.status})`)
+  const commit = (await refRes.json().catch(() => ({})))?.object?.sha
+  if (!SHA_RE.test(commit || '')) throw new Error(`GitHub returned ${artifactsRef(item)} without a commit sha`)
+  const files = await fetchCommitFiles(repo, commit)
+  const resultsEntry = files?.get(`${SCREENSHOT_DIR}/results.json`)
+  if (!resultsEntry) return null
+  let results
+  try {
+    results = JSON.parse((await fetchBlob(repo, resultsEntry.sha)).toString('utf8'))
+  } catch (err) {
+    if (err instanceof SyntaxError) return null
+    throw err
+  }
+  if (!isScreenshotResults(results)) return null
+  const baselineFiles = SHA_RE.test(results.baseline || '') ? await fetchCommitFiles(repo, results.baseline) : null
+  return { commit, results, files, baselineFiles }
+}
+
+// One blob's raw bytes, by its sha — only ever a sha read from a tree above.
+export async function fetchBlob(repo, sha) {
+  if (cannedBlobsForTest) {
+    if (!cannedBlobsForTest.has(sha)) throw new Error(`no canned blob ${sha}`)
+    return cannedBlobsForTest.get(sha)
+  }
+  if (!SHA_RE.test(sha || '')) throw new Error('fetchBlob needs a full blob sha')
+  const res = await gh(`/repos/${repo}/git/blobs/${sha}`, { headers: { Accept: 'application/vnd.github.raw' } })
+  if (!res.ok) throw new Error(`could not read blob ${sha} (GitHub returned ${res.status})`)
+  return Buffer.from(await res.arrayBuffer())
 }
 
 // The gallery and the table sit between these markers in the PR body, so each

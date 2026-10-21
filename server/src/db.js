@@ -1286,6 +1286,22 @@ db.exec(`
   );
 `)
 
+// HZ-509: the owner's per-screen screenshot approvals at Accept the code
+// (server/src/screenshots.js). `fingerprint` is built from the git blob shas
+// the owner saw; an approval counts only while it still matches the latest
+// publish, so a publish that changes a shot resets it with no write here.
+// Holds no image data. The primary key is also the lookup index.
+db.exec(`
+  CREATE TABLE IF NOT EXISTS screenshot_approval (
+    item_id     TEXT NOT NULL REFERENCES work_item(id) ON DELETE CASCADE,
+    screen      TEXT NOT NULL,
+    fingerprint TEXT NOT NULL,
+    actor       TEXT NOT NULL,
+    approved_at TEXT NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY (item_id, screen)
+  );
+`)
+
 const SEED_ITEMS = [
   { id: 'BF-145', title: 'Risk-limit breach dashboard', priority: 'Low', cursor: 1, issue: 412, desc: 'Give risk managers a live view of limit utilization across every desk.', metric: 'Limit breaches acknowledged in < 2 min (from 14 min).', guardrails: 'Read-only — no position mutation. No PII in telemetry.' },
   { id: 'BF-128', title: 'Real-time P&L attribution service', priority: 'High', cursor: 3, issue: 398, desc: 'Attribute intraday P&L to factors, trades and fees in real time.', metric: 'Attribution available < 5s after fill; 99.9% coverage.', guardrails: 'No client identifiers in logs. Must reconcile to EOD books.' },

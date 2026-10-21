@@ -1230,6 +1230,33 @@ button { font-family: var(--font-sans); }
 .resolve-dialog__result--warn { border-color: var(--warning-ink); }
 .resolve-dialog__result--bad { border-color: var(--danger-ink); }
 
+/* HZ-509: the Accept gate's screenshot panel. Existing tokens only; the
+   three images stack to one column in the phone block below. */
+.shots { margin-top: 12px; padding: 12px 13px; background: var(--surface-alt); border: 1px solid var(--border); border-radius: 10px; }
+.shots__head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.shots__title { margin: 0; font: 700 13px var(--font-sans); color: var(--ink); }
+.shots__count { font: 500 12px var(--font-sans); color: var(--muted-strong); margin-right: auto; }
+.shots__btn { min-height: 32px; padding: 5px 12px; border-radius: 8px; cursor: pointer; font: 600 12px var(--font-sans);
+  border: 1px solid var(--border-strong); background: var(--surface); color: var(--ink); }
+.shots__btn--primary { background: var(--primary); border-color: var(--primary); color: var(--surface); }
+.shots__btn:disabled { opacity: 0.55; cursor: default; }
+.shots__notice { margin: 8px 0 0; font: 500 12px var(--font-sans); color: var(--warning-ink); }
+.shots__error { margin: 8px 0; font: 600 12.5px var(--font-sans); color: var(--danger-ink); }
+.shots__list { list-style: none; margin: 10px 0 0; padding: 0; display: flex; flex-direction: column; gap: 12px; }
+.shots__row { border-top: 1px solid var(--border); padding-top: 10px; min-width: 0; }
+.shots__row-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.shots__screen { margin: 0; font: 600 12.5px var(--font-mono); color: var(--ink); overflow-wrap: anywhere; }
+.shots__status { font: 600 11px var(--font-sans); padding: 2px 8px; border-radius: 999px; background: var(--chip); color: var(--muted-strong); margin-right: auto; }
+.shots__status--new { background: var(--primary-bg); color: var(--primary-ink); }
+.shots__status--removed { background: var(--danger-bg); color: var(--danger-ink); }
+.shots__approved { font: 600 12px var(--font-sans); color: var(--success-ink); }
+.shots__shot-error { margin: 6px 0 0; font: 500 12px var(--font-sans); color: var(--warning-ink); overflow-wrap: anywhere; }
+.shots__images { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; margin-top: 8px; }
+.shots__figure { margin: 0; min-width: 0; }
+.shots__caption { font: 600 11px var(--font-sans); color: var(--muted); margin-bottom: 4px; }
+.shots__img { display: block; width: 100%; height: auto; border: 1px solid var(--border); border-radius: 6px; background: var(--surface); }
+.shots__placeholder { aspect-ratio: 16 / 10; border-radius: 6px; background: var(--subtle); }
+
 /* ===== Phones (HZ-224) =====
    The one mobile breakpoint. Its JS twin is MOBILE_QUERY in
    ui/src/useMediaQuery.js, which only decides whether App mounts the bottom
@@ -1290,6 +1317,9 @@ button { font-family: var(--font-sans); }
   .tracker__activity--min { flex-basis: 100%; }
   .tracker__activity-expand { flex-direction: row; justify-content: flex-start; }
   .tracker__activity-expand-label { writing-mode: horizontal-tb; }
+
+  /* HZ-509: a screenshot row's baseline, new and diff stack. */
+  .shots__images { grid-template-columns: minmax(0, 1fr); }
 }
 
 /* HZ-462: the shared table style — a Plan's Inventory tables, Admin's flaky
