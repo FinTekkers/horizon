@@ -23,9 +23,11 @@ Schema v1:
   outputDir   relative path inside the repo (no `..`), required
   themes      non-empty list of unique non-empty strings, required
   viewports   non-empty list of {name, width, height}, unique names, required
-  defaults    optional {login, timeoutMs, maxHeightPx}
+  defaults    optional {login, timeoutMs, maxHeightPx, waitFor}
   screens     non-empty list of {name, path, login?, viewports?, themes?,
-              timeoutMs?, maxHeightPx?}, unique names, required
+              timeoutMs?, maxHeightPx?, waitFor?}, unique names, required
+              (HZ-527: waitFor is a CSS selector the worker waits to see
+              before the shot; unset by default)
   diff        optional {threshold, ratioTolerance}, each a number in [0, 1]
               (HZ-508: pixelmatch's per-pixel threshold and the share of
               pixels that may differ before a shot reads as changed)
@@ -51,7 +53,7 @@ TOP_KEYS = ("version", "serve", "ready", "outputDir", "themes", "viewports", "de
 TOP_REQUIRED = ("version", "serve", "ready", "outputDir", "themes", "viewports", "screens")
 READY_HOSTS = ("127.0.0.1", "localhost")
 VIEWPORT_KEYS = ("name", "width", "height")
-SETTING_KEYS = ("login", "timeoutMs", "maxHeightPx")
+SETTING_KEYS = ("login", "timeoutMs", "maxHeightPx", "waitFor")
 SCREEN_KEYS = ("name", "path", "viewports", "themes", *SETTING_KEYS)
 SCREEN_REQUIRED = ("name", "path")
 DIFF_KEYS = ("threshold", "ratioTolerance")
@@ -78,6 +80,7 @@ class Shot:
     login: bool
     timeout_ms: int
     max_height_px: int
+    wait_for: str | None = None
 
 
 @dataclass(frozen=True)
@@ -146,7 +149,12 @@ def parse(doc) -> list[Shot]:
     _output_dir(doc["outputDir"], "outputDir")
     themes = _names(doc["themes"], "themes", "theme")
     viewports = _viewports(doc["viewports"])
-    defaults = {"login": DEFAULT_LOGIN, "timeoutMs": DEFAULT_TIMEOUT_MS, "maxHeightPx": DEFAULT_MAX_HEIGHT_PX}
+    defaults = {
+        "login": DEFAULT_LOGIN,
+        "timeoutMs": DEFAULT_TIMEOUT_MS,
+        "maxHeightPx": DEFAULT_MAX_HEIGHT_PX,
+        "waitFor": None,
+    }
     if "defaults" in doc:
         defaults.update(_settings(_keys(doc["defaults"], "defaults", SETTING_KEYS, ()), "defaults"))
 
@@ -179,6 +187,7 @@ def parse(doc) -> list[Shot]:
                     login=settings["login"],
                     timeout_ms=settings["timeoutMs"],
                     max_height_px=settings["maxHeightPx"],
+                    wait_for=settings["waitFor"],
                 )
                 for theme in shown_themes
             )
@@ -270,7 +279,7 @@ def _viewports(value) -> dict[str, tuple[int, int]]:
 
 
 def _settings(obj: dict, path: str) -> dict:
-    """The login/timeoutMs/maxHeightPx keys `obj` sets, validated."""
+    """The login/timeoutMs/maxHeightPx/waitFor keys `obj` sets, validated."""
     out = {}
     if "login" in obj:
         if not isinstance(obj["login"], bool):
@@ -279,6 +288,8 @@ def _settings(obj: dict, path: str) -> dict:
     for key in ("timeoutMs", "maxHeightPx"):
         if key in obj:
             out[key] = _positive(obj[key], _at(path, key))
+    if "waitFor" in obj:
+        out["waitFor"] = _text(obj["waitFor"], _at(path, "waitFor"))
     return out
 
 
