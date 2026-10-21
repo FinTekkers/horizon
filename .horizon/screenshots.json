@@ -1,0 +1,18 @@
+{
+  "version": 1,
+  "serve": "bash e2e/screenshots/serve.sh",
+  "ready": "http://127.0.0.1:5480/",
+  "outputDir": "e2e/__screenshots__/config",
+  "themes": ["light", "dark"],
+  "viewports": [
+    {"name": "desktop", "width": 1024, "height": 640},
+    {"name": "phone", "width": 375, "height": 667}
+  ],
+  "defaults": {"login": true},
+  "screens": [
+    {"name": "layout-board", "path": "/", "waitFor": ".card"},
+    {"name": "layout-item-activity", "path": "/ls-log", "viewports": ["phone"], "themes": ["light"], "waitFor": ".activity-row"},
+    {"name": "layout-item-badge", "path": "/ls-gate", "viewports": ["phone"], "themes": ["light"], "waitFor": ".tracker__meta .proj-badge"},
+    {"name": "layout-admin-tokens", "path": "/admin", "viewports": ["phone"], "themes": ["light"], "waitFor": ".api-tokens"}
+  ]
+}

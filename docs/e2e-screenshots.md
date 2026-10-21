@@ -213,7 +213,10 @@ command lines in Admin never run — a repo can not swap in its own runner.
 configured `outputDir`, under the same `e2e/__screenshots__/` tree path on
 `e2e-artifacts/<id>`. `server/src/github.js` lists `.png` files only, so the
 manifest rides along without showing in the PR. Repos without a config keep
-publishing from `e2e/__screenshots__` until the HZ-511 cutover.
+publishing from `e2e/__screenshots__` until the HZ-511 cutover. HZ-512: a
+configured repo also publishes the top-level journey PNGs in
+`e2e/__screenshots__` beside its outputDir's (a name in both is the config's
+shot), so adopting a config never reads a journey shot as `removed`.
 
 **Login.** Captures never log in: only each screen's `path` is visited. The
 key mechanism is HZ-494 (PR #498): the repo's `test_env_file` values. A
@@ -244,6 +247,34 @@ treats a match as the `ADMIN_EMAIL` account on every `/api/*` route and on
   human gate, even with the PIN, and can not manage API tokens.
 - The key is never committed and never logged. A wrong header gets the usual
   `401 login_required`.
+
+### Horizon's own screens (HZ-512)
+
+Horizon's `.horizon/screenshots.json` holds the `layout-*` screens that
+replace the layout-only e2e tests (the follow-up removes those tests; the
+mapping is `REMOVED_LAYOUT_TESTS` in `farm/tests/test_horizon_screens.py`).
+Its outputDir is `e2e/__screenshots__/config`: gitignored, and apart from the
+journey shots, because the runner empties outputDir before each capture.
+
+`serve` is `e2e/screenshots/serve.sh`. It builds the UI, seeds a throwaway DB
+(`e2e/screenshots/seed.mjs`, rows in `e2e/fixtures/layout-screens-seed.js`),
+runs the server in demo mode with `HORIZON_TEST_HOOKS=1` and an empty `HOME`,
+and serves the UI with `vite preview` on fixed ports 5480 (UI, `ready`) and
+5481 (server), above both e2e port windows. A host-wide `flock` lets one
+capture hold the ports at a time; a second waits up to 90 s.
+
+Two captures on one commit are byte-identical because of three seed rules:
+
+- Every timestamp is in 2099. Elapsed lines clamp to `<1m` and activity rows
+  read `just now`, whenever the shot is taken.
+- Rows at an agent step go in after the server answers, so the boot resume
+  never kicks them. Rows seeded first keep the demo items out.
+- No shown item has an active step on its tracker page: the step icon pulses
+  (`auraPulse`). The activity screen's item is closed for that reason.
+
+**Dark shots.** With no stored theme, the UI follows `prefers-color-scheme`
+(`ui/src/theme.js`, and the pre-paint script in `ui/index.html`), so a
+`dark` shot's `colorScheme` renders dark. A stored choice still wins.
 
 ## Pitfall: a tracked screenshot defeats `.gitignore`
 

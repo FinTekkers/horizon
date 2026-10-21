@@ -619,6 +619,10 @@ def build_prompt(task: dict) -> str:
 # outputDir instead — the farm runner's PNGs plus its manifest.json — under the
 # same e2e/__screenshots__/ tree path, so server/src/github.js is unchanged.
 # A repo without one keeps the e2e/__screenshots__ source until HZ-511.
+# HZ-512: a configured repo ALSO publishes the e2e journey shots in
+# e2e/__screenshots__ (top level only) beside its outputDir's, so adopting a
+# config never reads a journey shot as `removed`. A name in both is the
+# config's shot.
 # HZ-508: every publish also diffs each shot against e2e-baseline (fetched,
 # never pushed) and adds results.json plus diff/<name>.png per changed shot to
 # the SAME orphan commit, so the force-push replaces every result of the
@@ -745,14 +749,22 @@ def _compute_results(ws: Path, item: dict, shots: dict[str, str], cfg, tmp: Path
     return doc, diffs
 
 
+def _pngs_in(directory: Path) -> list[Path]:
+    return sorted(directory.glob("*.png")) if directory.is_dir() else []
+
+
 def publish_screenshots(ws: Path, item: dict, log=log) -> None:
     try:
         cfg = screenshots_config.load_config(ws)
     except screenshots_config.ConfigError:
         log("publish_screenshots: skipped — invalid config")
         return
-    shots_dir = ws / cfg.output_dir if cfg is not None else ws / "e2e" / "__screenshots__"
-    pngs = sorted(shots_dir.glob("*.png")) if shots_dir.is_dir() else []
+    journey_dir = ws / SHOTS_TREE
+    shots_dir = ws / cfg.output_dir if cfg is not None else journey_dir
+    pngs = _pngs_in(shots_dir)
+    if cfg is not None and shots_dir.resolve() != journey_dir.resolve():
+        taken = {png.name for png in pngs}
+        pngs = sorted([*pngs, *(png for png in _pngs_in(journey_dir) if png.name not in taken)], key=lambda p: p.name)
     manifest = shots_dir / screenshot_runner.MANIFEST_NAME
     if not pngs:
         log("publish_screenshots: no screenshots to publish — skipped")
