@@ -219,6 +219,23 @@ value is redacted from the log, the manifest and the check output.
 `playwright` to the exact version `e2e/package-lock.json` resolves, so both
 share one Chromium build in `~/.cache/ms-playwright` — bump them together.
 
+### Horizon's own login key: `SCREENSHOT_LOGIN_KEY` (HZ-511)
+
+Horizon's repo row points `test_env_file` at a 0600 host file holding one
+value, `SCREENSHOT_LOGIN_KEY=<random>` (not `HORIZON_*`: `farm/login_env.py`
+reserves that prefix). A `login: true` shot therefore sends
+`X-Horizon-Test-Env-SCREENSHOT-LOGIN-KEY`, and `server/src/testEnvLogin.js`
+treats a match as the `ADMIN_EMAIL` account on every `/api/*` route and on
+`GET /api/auth/me`. No request goes to `/api/auth/login`.
+
+- It works only when the server runs with `HORIZON_TEST_HOOKS=1` and a
+  non-empty `SCREENSHOT_LOGIN_KEY`. Production sets neither, so it ignores
+  the header.
+- The request is labelled `via: 'test-env'`, not a session: it can not pass a
+  human gate, even with the PIN, and can not manage API tokens.
+- The key is never committed and never logged. A wrong header gets the usual
+  `401 login_required`.
+
 ## Pitfall: a tracked screenshot defeats `.gitignore`
 
 `.gitignore` only affects untracked files. If a PNG under

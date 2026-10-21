@@ -36,6 +36,7 @@ import { db } from './db.js'
 import { getActiveProjectId, getRepoUrl, setSetting, getToken } from './settings.js'
 import * as auth from './auth.js'
 import { mintHumanProof } from './humanProof.js'
+import { testEnvUser } from './testEnvLogin.js'
 import { diffSnapshot, makeBaseline } from './streamDelta.js'
 import { googleAuth } from './googleAuth.js'
 import { isAllowedEmail } from './loginAllowlist.js'
@@ -488,12 +489,22 @@ export function buildApp({ logger = true, onRoute = null } = {}) {
   // invalid_token, so a caller cannot probe which case applies. request.auth
   // records which credential was used; humanAuthorized() and requireSession()
   // read it.
+  //
+  // HZ-511: on a test server, screenshot capture's header (testEnvLogin.js) is
+  // tried between the two. It is labelled 'test-env', not 'session', so it
+  // passes neither humanAuthorized() nor requireSession().
   fastify.addHook('onRequest', async (request, reply) => {
     if (!request.url.startsWith('/api/') || sessionExempt(request.url)) return
     const user = auth.getSessionUser(request.cookies[SESSION_COOKIE_NAME])
     if (user) {
       request.user = user
       request.auth = { via: 'session' }
+      return
+    }
+    const shotUser = testEnvUser(request.headers)
+    if (shotUser) {
+      request.user = shotUser
+      request.auth = { via: 'test-env' }
       return
     }
     const raw = bearerToken(request)
@@ -2199,7 +2210,9 @@ export function buildApp({ logger = true, onRoute = null } = {}) {
     '/api/auth/me',
     { schema: { response: { 200: OK_OBJECT, 401: ERROR_OBJECT }, security: SESSION_SECURITY } },
     (request, reply) => {
-      const user = auth.getSessionUser(request.cookies[SESSION_COOKIE_NAME])
+      // HZ-511: a screenshot shot's test-env header counts here too, or the
+      // UI would render the login page instead of the screen.
+      const user = auth.getSessionUser(request.cookies[SESSION_COOKIE_NAME]) || testEnvUser(request.headers)
       if (!user) return reply.code(401).send({ error: 'login_required' })
       return { user }
     },
