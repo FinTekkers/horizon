@@ -80,6 +80,16 @@ SERVER_ARGV_CALLS = {
     FARM / "validate.py": 1,
 }
 
+# Capture-worker protocol exemption, by path and by count (HZ-506).
+# farm/screenshot_runner.py reads one JSON result line per shot from
+# farm/capture/worker.mjs, a farm-owned Playwright script — no model wrote
+# it. A line that does not parse marks that one shot `error` and the worker is
+# replaced, never retried or repaired: the opposite of parse_agent_reply()'s
+# contract. Budgeted at one.
+CAPTURE_WORKER_PROTOCOL_CALLS = {
+    FARM / "screenshot_runner.py": 1,
+}
+
 # Both spellings of the raw extractor. `_extract_json` is agent_runner's own
 # private variant — it returns which attempt produced the value, so it is even
 # more tempting to reach for and even less suitable outside the parser. Banning
@@ -131,6 +141,7 @@ def _offenders(paths: list[Path]) -> list[str]:
             + OFFLINE_LOG_FORENSICS_CALLS.get(path, 0)
             + FARM_METRICS_LOG_CALLS.get(path, 0)
             + SERVER_ARGV_CALLS.get(path, 0)
+            + CAPTURE_WORKER_PROTOCOL_CALLS.get(path, 0)
         )
         for node in ast.walk(tree):
             # Any reference to the raw extractor at all, however it is spelled:
