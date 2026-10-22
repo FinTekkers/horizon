@@ -480,7 +480,8 @@ def artifact_files(origin, ref="e2e-artifacts/t-1"):
 
 def test_publish_uses_configured_output_dir(tmp_path):
     # HZ-506: a configured repo publishes its outputDir — PNGs and the
-    # manifest — never the hard-coded e2e/__screenshots__.
+    # manifest. HZ-512: plus the e2e journey shots in e2e/__screenshots__,
+    # until the config screens cover them.
     ws, origin = make_git_workspace(tmp_path)
     write_screenshots_config(ws)
     shots = ws / "shots"
@@ -488,12 +489,13 @@ def test_publish_uses_configured_output_dir(tmp_path):
     (shots / "home--desktop--light.png").write_bytes(b"\x89PNG\r\n\x1a\nhome")
     (shots / "manifest.json").write_text('{"version": 1, "shots": []}')
     (shots / "notes.txt").write_text("not a screenshot")
-    write_fake_screenshot(ws, "stray")
+    write_fake_screenshot(ws, "journey")
 
     publish_screenshots(ws, {"id": "T-1", "repo": "acme/demo"})
 
     assert artifact_files(origin) == [
         "e2e/__screenshots__/home--desktop--light.png",
+        "e2e/__screenshots__/journey.png",
         "e2e/__screenshots__/manifest.json",
         "e2e/__screenshots__/results.json",
     ]

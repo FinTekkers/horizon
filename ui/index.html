@@ -9,12 +9,19 @@
       // Applied synchronously, before first paint, so a dark-mode choice
       // never flashes light on load. Kept a plain inline script (not a
       // ui/src/theme.js import) since module scripts run after parsing.
+      // HZ-512: no stored choice follows prefers-color-scheme, as getTheme() does.
       (function () {
+        var stored = null
         try {
-          if (localStorage.getItem('horizon_theme') === 'dark') {
-            document.documentElement.dataset.theme = 'dark'
-          }
+          stored = localStorage.getItem('horizon_theme')
         } catch (e) {}
+        var dark = stored === 'dark'
+        if (stored !== 'dark' && stored !== 'light') {
+          try {
+            dark = window.matchMedia('(prefers-color-scheme: dark)').matches
+          } catch (e) {}
+        }
+        if (dark) document.documentElement.dataset.theme = 'dark'
       })()
     </script>
     <link rel="preconnect" href="https://fonts.googleapis.com" />

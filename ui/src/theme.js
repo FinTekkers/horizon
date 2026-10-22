@@ -25,8 +25,21 @@ function writeStorage(value) {
   }
 }
 
+// HZ-512: with no stored choice, follow the browser's prefers-color-scheme
+// (also what makes a screenshot shot's colorScheme: 'dark' render dark). A
+// stored choice always wins. The pre-paint script in index.html mirrors this.
 export function getTheme() {
-  return readStorage() === 'dark' ? 'dark' : 'light'
+  const stored = readStorage()
+  if (stored === 'dark' || stored === 'light') return stored
+  return prefersDark() ? 'dark' : 'light'
+}
+
+function prefersDark() {
+  try {
+    return Boolean(window.matchMedia?.('(prefers-color-scheme: dark)').matches)
+  } catch {
+    return false
+  }
 }
 
 export function setTheme(theme) {
