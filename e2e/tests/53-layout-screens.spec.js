@@ -7,7 +7,13 @@
 // Plus the dark fallback the dark shots rely on: with no stored theme the UI
 // follows prefers-color-scheme, and a stored choice still wins.
 
-import { readFileSync } from 'node:fs'
+import { spawn } from 'node:child_process'
+import { randomBytes } from 'node:crypto'
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { createInterface } from 'node:readline'
+import { fileURLToPath } from 'node:url'
 import { test, expect } from '../fixtures/test-base.js'
 import { openDb } from '../fixtures/seed.js'
 import { seedLayoutScreens, PROJECT, LAST_EVENT, GATE_ID, LONG_ID, BLOCKED_ID, BLOCKER_ID } from '../fixtures/layout-screens-seed.js'
@@ -61,6 +67,92 @@ test('every layout screen shows its seeded layout as soon as its waitFor does', 
       expect(await anchor.isVisible(), `${label}: ${anchor}`).toBe(true)
     }
     expect(await page.locator('html').getAttribute('data-theme'), label).toBe(theme === 'dark' ? 'dark' : null)
+  }
+})
+
+// The capture journey itself: the config's `serve` command and the farm's own
+// capture worker, sent each shot the way farm/screenshot_runner.py sends it.
+// Two passes on one build must give 7 PNGs with identical bytes.
+const REPO = fileURLToPath(new URL('../../', import.meta.url))
+const WORKER = join(REPO, 'farm/capture/worker.mjs')
+const LOGIN_HEADER = 'X-Horizon-Test-Env-SCREENSHOT-LOGIN-KEY'
+
+function startServe(env) {
+  const proc = spawn('bash', ['-c', CONFIG.serve], { cwd: REPO, env, detached: true, stdio: ['ignore', 'ignore', 'pipe'] })
+  let stderr = ''
+  proc.stderr.on('data', (chunk) => (stderr += chunk))
+  const exited = new Promise((resolve) => proc.on('exit', (code) => resolve(code)))
+  return { proc, exited, stderr: () => stderr }
+}
+
+async function waitReady(serve) {
+  let gone = false
+  serve.exited.then(() => (gone = true))
+  for (;;) {
+    if (gone) throw new Error(`serve exited before ready: ${serve.stderr()}`)
+    const ok = await fetch(CONFIG.ready).then((r) => r.status < 500, () => false)
+    if (ok) return
+    await new Promise((resolve) => setTimeout(resolve, 200))
+  }
+}
+
+function startWorker() {
+  const proc = spawn('node', [WORKER], { cwd: REPO, stdio: ['pipe', 'pipe', 'inherit'] })
+  const lines = createInterface({ input: proc.stdout })[Symbol.asyncIterator]()
+  const next = async () => JSON.parse((await lines.next()).value)
+  return { proc, next, send: (msg) => proc.stdin.write(`${JSON.stringify(msg)}\n`) }
+}
+
+test('serve refuses to start without the login key, since every shot would be a login page', async () => {
+  const env = { ...process.env }
+  delete env.SCREENSHOT_LOGIN_KEY
+  const serve = startServe(env)
+  expect(await serve.exited).toBe(1)
+  expect(serve.stderr()).toContain('SCREENSHOT_LOGIN_KEY is not set')
+})
+
+test('the config serve path and the farm worker capture every screen twice, byte-identical', async () => {
+  test.setTimeout(180_000)
+  const key = randomBytes(16).toString('hex')
+  const out = mkdtempSync(join(tmpdir(), 'hz512-shots-'))
+  const serve = startServe({ ...process.env, SCREENSHOT_LOGIN_KEY: key })
+  let worker
+  try {
+    await waitReady(serve)
+    worker = startWorker()
+    expect(await worker.next()).toEqual({ ready: true })
+    const origin = new URL(CONFIG.ready).origin
+    const passes = []
+    for (const pass of [1, 2]) {
+      const pngs = {}
+      for (const { screen, viewport, theme } of shots) {
+        const name = `${screen.name}--${viewport}--${theme}`
+        const png = join(out, `${name}-${pass}.png`)
+        worker.send({
+          url: origin + screen.path,
+          ...VIEWPORTS[viewport],
+          theme,
+          maxHeightPx: 10_000,
+          png,
+          headers: { [LOGIN_HEADER]: key },
+          waitFor: screen.waitFor,
+        })
+        expect(await worker.next(), `pass ${pass}: ${name}`).toMatchObject({ ok: true, clipped: false })
+        pngs[name] = readFileSync(png)
+      }
+      passes.push(pngs)
+    }
+    expect(Object.keys(passes[0])).toHaveLength(7)
+    for (const name of Object.keys(passes[0])) {
+      expect(passes[1][name].equals(passes[0][name]), `${name} differs between passes`).toBe(true)
+    }
+  } finally {
+    worker?.proc.kill()
+    try {
+      process.kill(-serve.proc.pid, 'SIGTERM')
+    } catch {}
+    await serve.exited
+    rmSync(out, { recursive: true, force: true })
   }
 })
 
