@@ -1,5 +1,7 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react'
 import { approveScreenshots, getScreenshotImage, getScreenshots, hasGatePin } from '../api'
+import { getShotLayout, setShotLayout, subscribeShotLayout } from '../shotLayout'
+import ShotViewer, { VIEWER_LABEL } from './ShotViewer'
 
 // HZ-509: the Accept gate's screenshot panel — one row per changed, new or
 // removed shot of the item's latest publish, each approvable on its own or all
@@ -8,8 +10,11 @@ import { approveScreenshots, getScreenshotImage, getScreenshots, hasGatePin } fr
 // (a later publish that changes a shot resets it). Approving here never
 // approves the gate. No shots, no panel; a failed read says so instead of
 // hiding the panel, so a removed shot is never skipped by accident.
+//
+// HZ-548: a loaded image opens the full-size viewer, which reuses the blob URLs
+// held here; Stacked (remembered per browser) gives each image a full row.
 
-const IMAGE_LABEL = { baseline: 'Baseline', new: 'New', diff: 'Diff' }
+const IMAGE_LABEL = VIEWER_LABEL
 const STATUS_LABEL = { changed: 'Changed', new: 'New', removed: 'Removed — will be deleted' }
 const APPROVE_ERRORS = {
   pin_needed: 'Enter your gate PIN to approve screenshots.',
@@ -25,6 +30,9 @@ export default function ScreenshotPanel({ item }) {
   const [busy, setBusy] = useState(false)
   const [showImages, setShowImages] = useState(() => hasGatePin())
   const [images, setImages] = useState({})
+  const [viewing, setViewing] = useState(null)
+  const openerRef = useRef(null)
+  const stacked = useSyncExternalStore(subscribeShotLayout, getShotLayout) === 'stacked'
 
   const load = useCallback(() => {
     // Promise.resolve first, so a throw and a rejection land in the same place.
@@ -56,6 +64,8 @@ export default function ScreenshotPanel({ item }) {
       }, () => {})
     const [first, ...rest] = JSON.parse(wantedKey)
     setImages({})
+    // The viewer shows only this publish's images.
+    setViewing(null)
     if (first) fetchOne(first).then(() => live && Promise.all(rest.map(fetchOne)))
     return () => {
       live = false
@@ -90,6 +100,22 @@ export default function ScreenshotPanel({ item }) {
   if (!shots || shots.length === 0) return null
 
   const approvedCount = shots.filter((s) => s.approved).length
+  const viewedShot = viewing && shots.find((s) => s.screen === viewing.screen)
+  const viewedKinds = viewedShot ? viewedShot.images.filter((kind) => images[`${viewedShot.screen}/${kind}`]) : []
+  const viewer = viewedKinds.length > 0 && (
+    <ShotViewer
+      key={viewing.screen}
+      screen={viewing.screen}
+      kinds={viewedKinds}
+      urls={Object.fromEntries(viewedKinds.map((kind) => [kind, images[`${viewing.screen}/${kind}`]]))}
+      initialKind={viewing.kind}
+      onClose={() => {
+        setViewing(null)
+        // A backup to the browser's own focus restore when the dialog closes.
+        openerRef.current?.focus()
+      }}
+    />
+  )
   return (
     <section className="shots" aria-label="Screenshots">
       <div className="shots__head">
@@ -103,6 +129,11 @@ export default function ScreenshotPanel({ item }) {
         >
           Approve all
         </button>
+        {showImages && (
+          <button type="button" className="shots__btn" aria-pressed={stacked} onClick={() => setShotLayout(stacked ? 'side' : 'stacked')}>
+            Stacked
+          </button>
+        )}
       </div>
       {notice && <p className="shots__notice" role="status">{notice}</p>}
       {!showImages && (
@@ -124,12 +155,22 @@ export default function ScreenshotPanel({ item }) {
             </div>
             {shot.error && <p className="shots__shot-error">Could not compute a diff: {shot.error}</p>}
             {showImages && shot.images.length > 0 && (
-              <div className="shots__images">
+              <div className={`shots__images${stacked ? ' shots__images--stacked' : ''}`}>
                 {shot.images.map((kind) => (
                   <figure className="shots__figure" key={kind}>
                     <figcaption className="shots__caption">{IMAGE_LABEL[kind]}</figcaption>
                     {images[`${shot.screen}/${kind}`] ? (
-                      <img className="shots__img" src={images[`${shot.screen}/${kind}`]} alt={IMAGE_LABEL[kind]} />
+                      <button
+                        type="button"
+                        className="shots__open"
+                        title="Open full size"
+                        onClick={(event) => {
+                          openerRef.current = event.currentTarget
+                          setViewing({ screen: shot.screen, kind })
+                        }}
+                      >
+                        <img className="shots__img" src={images[`${shot.screen}/${kind}`]} alt={IMAGE_LABEL[kind]} />
+                      </button>
                     ) : (
                       <div className="shots__placeholder" aria-hidden="true" />
                     )}
@@ -140,6 +181,7 @@ export default function ScreenshotPanel({ item }) {
           </li>
         ))}
       </ul>
+      {viewer}
     </section>
   )
 }

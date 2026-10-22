@@ -9,13 +9,13 @@
 
 import { test, expect, captureScreenshot } from '../fixtures/test-base.js'
 import { openDb, insertItem, setGatePinDirect } from '../fixtures/seed.js'
+import { blobsOf, clearScreenshotSnapshot, publication, seedScreenshotSnapshot } from '../fixtures/screenshot-snapshot.js'
 import { ACCEPT_GATE_INDEX } from '../../domain/js/lifecycle.js'
 
 const DB_PATH = process.env.HORIZON_E2E_DB
 const ADMIN_EMAIL = 'admin@example.com'
 const GATE_PIN = '508914'
 const REPO = 'e2e-fixture/screens'
-const DIR = 'e2e/__screenshots__'
 
 // Four 16x10 solid PNGs, so every image has real pixels to render.
 const PNGS = [
@@ -24,30 +24,7 @@ const PNGS = [
   'iVBORw0KGgoAAAANSUhEUgAAABAAAAAKCAYAAAC9vt6cAAAAKElEQVR4AaXBMQEAIAzAsK6W+FGKVyaiybxzP4FEEkkkkUQSSSSRRAtI+QIgfLSHOwAAAABJRU5ErkJggg==',
   'iVBORw0KGgoAAAANSUhEUgAAABAAAAAKCAYAAAC9vt6cAAAAJ0lEQVR4AaXBAQEAMAiAME7/FBZ7FA3B9v6wBBJJJJFEEkkkkUQSHW8pApTAKrH5AAAAAElFTkSuQmCC',
 ]
-const sha = (n) => String(n).padStart(2, '0').repeat(20)
-// Blob sha → base64 bytes. 01–04 are the four PNGs; 05 is a re-captured board.
-const BLOBS = { [sha(1)]: PNGS[0], [sha(2)]: PNGS[1], [sha(3)]: PNGS[2], [sha(4)]: PNGS[3], [sha(5)]: PNGS[3] }
-
-const RESULTS = {
-  version: 1,
-  baseline: 'b'.repeat(40),
-  shots: [
-    { name: 'board', status: 'changed', diffRatio: 0.042, diff: `${DIR}/diff/board.png`, error: null },
-    { name: 'gates', status: 'new', diffRatio: null, diff: null, error: null },
-    { name: 'home', status: 'same', diffRatio: 0, diff: null, error: null },
-    { name: 'old', status: 'removed', diffRatio: null, diff: null, error: null },
-  ],
-}
-const entry = (n) => ({ sha: sha(n), size: 120 })
-const BASELINE_FILES = { [`${DIR}/board.png`]: entry(1), [`${DIR}/home.png`]: entry(3), [`${DIR}/old.png`]: entry(4) }
-
-// The item's latest publish; `board` is the blob its new board shot has.
-const publication = (commit, board = 2) => ({
-  commit,
-  results: RESULTS,
-  files: { [`${DIR}/board.png`]: entry(board), [`${DIR}/diff/board.png`]: entry(3), [`${DIR}/gates.png`]: entry(4), [`${DIR}/home.png`]: entry(3) },
-  baselineFiles: BASELINE_FILES,
-})
+const BLOBS = blobsOf(PNGS)
 
 const ITEMS = {
   journey: 'SSA-1',
@@ -56,17 +33,15 @@ const ITEMS = {
 }
 
 async function seedGithub(request, { journey = publication('c'.repeat(40)) } = {}) {
-  const res = await request.post('/api/test/screenshot-snapshot', {
-    data: {
-      snapshots: {
-        [`${REPO}#${ITEMS.journey}`]: journey,
-        [`${REPO}#${ITEMS.none}`]: null,
-        [`${REPO}#${ITEMS.phone}`]: publication('d'.repeat(40)),
-      },
-      blobs: BLOBS,
+  await seedScreenshotSnapshot(
+    request,
+    {
+      [`${REPO}#${ITEMS.journey}`]: journey,
+      [`${REPO}#${ITEMS.none}`]: null,
+      [`${REPO}#${ITEMS.phone}`]: publication('d'.repeat(40)),
     },
-  })
-  expect(res.ok()).toBeTruthy()
+    BLOBS,
+  )
 }
 
 test.beforeAll(() => {
@@ -90,7 +65,7 @@ test.beforeEach(async ({ page }) => {
 })
 
 test.afterAll(async ({ request }) => {
-  await request.post('/api/test/screenshot-snapshot', { data: { snapshots: null, blobs: null } })
+  await clearScreenshotSnapshot(request)
 })
 
 const panelOf = (page) => page.getByRole('region', { name: 'Screenshots' })
@@ -111,8 +86,8 @@ test('the owner reviews each shot, approves one and then all, and a republish re
   await page.goto(`/${ITEMS.journey.toLowerCase()}`)
   const panel = panelOf(page)
   await expect(panel.getByRole('listitem')).toHaveCount(3)
-  await expectImagesRendered(rowOf(page, 'board'), ['Baseline', 'New', 'Diff'])
-  await expectImagesRendered(rowOf(page, 'gates'), ['New'])
+  await expectImagesRendered(rowOf(page, 'board'), ['Baseline', 'Current', 'Diff'])
+  await expectImagesRendered(rowOf(page, 'gates'), ['Current'])
   await expectImagesRendered(rowOf(page, 'old'), ['Baseline'])
   await expect(rowOf(page, 'old')).toContainText('will be deleted')
   await expect(panel).toContainText('0 of 3 approved')
@@ -147,14 +122,14 @@ test('at 375px the panel fits the screen, its images stack, and Approve all work
   await page.setViewportSize({ width: 375, height: 667 })
   await page.goto(`/${ITEMS.phone.toLowerCase()}`)
   const board = rowOf(page, 'board')
-  await expectImagesRendered(board, ['Baseline', 'New', 'Diff'])
+  await expectImagesRendered(board, ['Baseline', 'Current', 'Diff'])
   const { scroll, client } = await page.evaluate(() => ({
     scroll: document.documentElement.scrollWidth,
     client: document.documentElement.clientWidth,
   }))
   expect(scroll).toBe(client)
   const ys = []
-  for (const name of ['Baseline', 'New', 'Diff']) ys.push((await board.getByRole('img', { name, exact: true }).boundingBox()).y)
+  for (const name of ['Baseline', 'Current', 'Diff']) ys.push((await board.getByRole('img', { name, exact: true }).boundingBox()).y)
   expect(ys[1]).toBeGreaterThan(ys[0])
   expect(ys[2]).toBeGreaterThan(ys[1])
 
