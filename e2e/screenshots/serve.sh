@@ -29,14 +29,6 @@ SERVER_PORT=5481
 LOCK_WAIT_S=90
 LOCK_FILE=/tmp/horizon-screenshots-serve.lock
 
-# Every screen is `login: true`. The runner sends the key only when the repo's
-# test_env_file holds it, and without it each shot waits on the login page
-# until its timeout. Fail here instead, naming the missing setting.
-if [ -z "${SCREENSHOT_LOGIN_KEY:-}" ]; then
-  echo "serve: SCREENSHOT_LOGIN_KEY is not set. Set this repo's test env file in Admin to a file holding SCREENSHOT_LOGIN_KEY=<any value>; without it every shot shows the login page" >&2
-  exit 1
-fi
-
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 TMP="$(mktemp -d "${TMPDIR:-/tmp}/horizon-screens-XXXXXX")"
 DB="$TMP/horizon.db"

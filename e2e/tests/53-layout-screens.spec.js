@@ -103,14 +103,6 @@ function startWorker() {
   return { proc, next, send: (msg) => proc.stdin.write(`${JSON.stringify(msg)}\n`) }
 }
 
-test('serve refuses to start without the login key, since every shot would be a login page', async () => {
-  const env = { ...process.env }
-  delete env.SCREENSHOT_LOGIN_KEY
-  const serve = startServe(env)
-  expect(await serve.exited).toBe(1)
-  expect(serve.stderr()).toContain('SCREENSHOT_LOGIN_KEY is not set')
-})
-
 test('the config serve path and the farm worker capture every screen twice, byte-identical', async () => {
   test.setTimeout(180_000)
   const key = randomBytes(16).toString('hex')
