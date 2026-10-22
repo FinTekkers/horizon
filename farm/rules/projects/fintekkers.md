@@ -61,7 +61,7 @@ there is fixed for all of them; a workaround in one service is copied, or
 drifts, in the rest. Prefer the ledger-models fix.
 
 Fix it in ledger-models (or split the item: models part first, then the
-service bumps its pinned version) when:
+service raises its minimum version if its code uses the new API) when:
 
 1. **The stack trace tops out in the models jar**: `common.models.*` or
    `protos.serializers.*`, e.g. `ProtoSerializationUtil` failing on an
@@ -86,12 +86,22 @@ and stores, indexes, calls to other services, deploy and config.
 **For guardrails and plans**: don't default to "no ledger-models changes".
 If a metric needs a models change, or contradicts the models contract,
 say so and recommend a split; never work around it in the service. Check
-the bug against the ledger-models version the service pins (its build
-file), not the issue text: many reported bugs are already fixed in models.
+the bug against the ledger-models version the service resolves (its lock
+file or build output), not the issue text: many reported bugs are already
+fixed in models.
 
 **For reviewers**: fail a plan or change that works around a ledger-models
 defect inside a service, or that redefines a model's meaning, unless it
 links the ledger-models issue that removes the workaround.
+
+**ledger-models versions: a minimum, never a pin or a range.** Consumers
+declare ledger-models as a minimum version only (Cargo `">=1.1.0"`, npm
+`">=1.1.0"`, pip `>=1.1.0`, Gradle `[1.1.0,)`): no exact version, no upper
+bound. Raise a consumer's minimum only when its code uses something first
+released in that version (a new field, enum value or method). When an item
+needs a ledger-models change shipped first, use a Horizon dependency on the
+ledger-models item, which releases when it closes, not a version
+requirement. Never write "pin" in plans, metrics or test names.
 
 ## Deploy topology
 

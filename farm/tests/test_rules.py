@@ -1,6 +1,8 @@
 """Project/repo rules layer (HZ-9): resolution order, fallback posture, the
 per-file byte cap, the credential lint, and the migration validation set."""
 
+import re
+
 import pytest
 
 from farm import rules
@@ -199,6 +201,33 @@ def test_every_shipped_rules_file_passes_the_credential_lint():
     for path in shipped:
         matches = lint_rules(path.read_text())
         assert matches == [], f"{path.name} trips the credential lint: {matches}"
+
+
+LEDGER_MODELS_VERSION_RULE = "**ledger-models versions: a minimum, never a pin or a range.**"
+
+
+def test_fintekkers_rules_say_minimum_version_never_pin():
+    """HZ-543: the Fintekkers rules teach a ledger-models minimum version, and
+    "pin" survives only inside the rule that forbids it."""
+    text = (RULES_DIR / "projects/fintekkers.md").read_text()
+    assert LEDGER_MODELS_VERSION_RULE in text
+    paragraphs = text.split("\n\n")
+    rest = "\n\n".join(p for p in paragraphs if not p.startswith(LEDGER_MODELS_VERSION_RULE))
+    assert len(rest) < len(text)
+    assert re.search(r"\bpin", rest, re.I) is None
+
+
+@pytest.mark.parametrize(
+    "project, repo, expected",
+    [
+        ("FinTekkers", "FinTekkers/ledger-service", True),
+        ("Horizon", "FinTekkers/horizon", False),
+        ("Shoreward", None, False),
+    ],
+)
+def test_ledger_models_version_rule_only_reaches_fintekkers_prompts(project, repo, expected):
+    prompt = effective_prompt("BASE", "eng", "fullstack", project, repo)
+    assert (LEDGER_MODELS_VERSION_RULE in prompt) is expected
 
 
 # ---- full composition (the string the server preview must reproduce) ----
