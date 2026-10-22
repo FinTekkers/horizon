@@ -1256,6 +1256,48 @@ button { font-family: var(--font-sans); }
 .shots__caption { font: 600 11px var(--font-sans); color: var(--muted); margin-bottom: 4px; }
 .shots__img { display: block; width: 100%; height: auto; border: 1px solid var(--border); border-radius: 6px; background: var(--surface); }
 .shots__placeholder { aspect-ratio: 16 / 10; border-radius: 6px; background: var(--subtle); }
+/* HZ-548: Stacked gives each image a full row; each loaded image opens the viewer. */
+.shots__images--stacked { grid-template-columns: minmax(0, 1fr); }
+.shots__open { display: block; width: 100%; padding: 0; border: 0; background: none; border-radius: 6px; cursor: zoom-in; }
+.shots__open:focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; }
+.shots__btn[aria-pressed='true'] { background: var(--primary-bg); border-color: var(--primary); color: var(--primary-ink); }
+
+/* HZ-548: the full-size viewer. A modal <dialog> filling the viewport; only
+   its body scrolls, on both axes, so the page never scrolls sideways. Only the
+   swipe divider sets touch-action, so pinch-zoom and scrolling work elsewhere. */
+.shot-viewer {
+  position: fixed; inset: 0; width: 100%; height: 100%; max-width: 100%; max-height: 100%;
+  margin: 0; padding: 0; border: 0; background: var(--canvas); color: var(--ink);
+  flex-direction: column;
+}
+.shot-viewer[open] { display: flex; }
+.shot-viewer::backdrop { background: rgba(var(--scrim-rgb), 0.6); }
+.shot-viewer__head {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap; padding: 10px 14px;
+  background: var(--surface); border-bottom: 1px solid var(--border);
+}
+.shot-viewer__title { margin: 0; font: 600 13px var(--font-mono); color: var(--ink); overflow-wrap: anywhere; min-width: 0; }
+.shot-viewer__tabs { display: flex; gap: 4px; margin-right: auto; }
+.shot-viewer__tab {
+  min-height: 32px; padding: 5px 12px; border-radius: 8px; cursor: pointer; font: 600 12px var(--font-sans);
+  border: 1px solid var(--border-strong); background: var(--surface); color: var(--muted-strong);
+}
+.shot-viewer__tab[aria-selected='true'] { background: var(--primary-bg); border-color: var(--primary); color: var(--primary-ink); }
+.shot-viewer__tab:focus-visible, .shot-viewer .shots__btn:focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; }
+.shot-viewer__body { flex: 1; min-height: 0; overflow: auto; overscroll-behavior: contain; padding: 12px; }
+.shot-viewer__body:focus-visible { outline: 2px solid var(--primary); outline-offset: -2px; }
+.shot-viewer__img { display: block; max-width: none; width: auto; height: auto; background: var(--surface); }
+.shot-viewer__swipe { position: relative; display: grid; width: max-content; }
+.shot-viewer__layer { grid-area: 1 / 1; }
+.shot-viewer__divider {
+  position: absolute; top: 0; bottom: 0; width: 24px; transform: translateX(-50%);
+  padding: 0; border: 0; background: none; cursor: ew-resize; touch-action: none;
+}
+.shot-viewer__divider::before {
+  content: ''; position: absolute; top: 0; bottom: 0; left: 50%; width: 2px; transform: translateX(-50%);
+  background: var(--primary);
+}
+.shot-viewer__divider:focus-visible { outline: 2px solid var(--primary); outline-offset: 0; }
 
 /* ===== Phones (HZ-224) =====
    The one mobile breakpoint. Its JS twin is MOBILE_QUERY in
