@@ -15,6 +15,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { execFileSync } from 'node:child_process'
 
+import { assertProjectPersonasShape } from '../../domain/js/personas.js'
 import { DEFAULT_PERSONAS, PERSONAS, isPersona, isPersonaAgent, legacyPersona } from './personas.js'
 
 // Server and farm live in one repo/checkout, so a UI edit is immediately what
@@ -177,6 +178,106 @@ function slugify(name) {
   return [...name.toLowerCase()].map((c) => (/[a-z0-9]/.test(c) ? c : '-')).join('').replace(/^-+|-+$/g, '')
 }
 
+// ---- HZ-535: project personas (farm/projects/<slug>/personas.json) ----
+// Mirror of farm/personas.py load_project_personas. Server and farm read the
+// same directory (one checkout); the parity test asserts it.
+export const PROJECTS_DIR = path.join(FARM_DIR, 'projects')
+
+// The project's overlay, or null when it declares no personas. Throws when the
+// file is not valid JSON, fails assertProjectPersonasShape (a bare id equal to
+// a global persona id is named in the message), a role file is missing, or the
+// credential lint hits the JSON or any role file — the file is named.
+//
+// Overlay: { slug, ids: {agent: [nsId]}, roleText: {nsId: markdown},
+// display: {nsId: {label, initials, color}}, models: {'<agent>.<nsId>': model},
+// providers: {'<agent>.<nsId>': provider}, files: [role file] }, where nsId is
+// `<slug>:<id>`.
+export function loadProjectPersonas(slug, root = PROJECTS_DIR) {
+  const source = `farm/projects/${slug}/personas.json`
+  let text
+  try {
+    text = fs.readFileSync(path.join(root, slug, 'personas.json'), 'utf8')
+  } catch (err) {
+    if (err.code === 'ENOENT' || err.code === 'ENOTDIR') return null
+    throw err
+  }
+  const lint = (name, body) => {
+    const hits = lintRules(body)
+    if (hits.length > 0) throw new Error(`${name}: credential lint refused it (${hits.join(', ')})`)
+  }
+  lint(source, text)
+  let data
+  try {
+    data = JSON.parse(text)
+  } catch (err) {
+    throw new Error(`${source} is not valid JSON (${err.message})`)
+  }
+  assertProjectPersonasShape(data, slug, source)
+  const overlay = { slug, ids: {}, roleText: {}, display: {}, models: {}, providers: {}, files: [] }
+  for (const entry of data.personas) {
+    const nsId = `${slug}:${entry.id}`
+    const roleName = `farm/projects/${slug}/personas/${entry.file}`
+    let roleText
+    try {
+      roleText = fs.readFileSync(path.join(root, slug, 'personas', entry.file), 'utf8')
+    } catch (err) {
+      throw new Error(`${roleName} could not be read (${err.code ?? err.message})`)
+    }
+    lint(roleName, roleText)
+    if (!Object.hasOwn(overlay.ids, entry.agent)) overlay.ids[entry.agent] = []
+    overlay.ids[entry.agent].push(nsId)
+    overlay.roleText[nsId] = roleText
+    overlay.display[nsId] = { label: entry.label, initials: entry.initials, color: entry.color }
+    overlay.models[`${entry.agent}.${nsId}`] = entry.model
+    overlay.providers[`${entry.agent}.${nsId}`] = entry.provider
+    overlay.files.push(entry.file)
+  }
+  return overlay
+}
+
+// slug -> { sig, overlay }. `sig` is the mtimes of personas.json and of every
+// role file the cached overlay read, so an edit to any of them is picked up on
+// the next read without a restart, and a board read costs a few statSyncs.
+const overlayCache = new Map()
+const loggedOverlayErrors = new Set()
+
+function mtimeOf(file) {
+  try {
+    return fs.statSync(file).mtimeMs
+  } catch {
+    return null
+  }
+}
+
+function overlaySignature(slug, files) {
+  return [mtimeOf(path.join(PROJECTS_DIR, slug, 'personas.json')), ...files.map((f) => mtimeOf(path.join(PROJECTS_DIR, slug, 'personas', f)))].join('|')
+}
+
+// The overlay an item in `project` ({ name, definitions_enabled }) composes,
+// or null: no project, the switch off, no personas.json, or a file that fails
+// to load. Never throws — a load error is logged once and the project runs on
+// the global personas, exactly as if it declared none.
+export function projectPersonaOverlay(project) {
+  if (!project || !project.definitions_enabled || typeof project.name !== 'string') return null
+  const slug = slugify(project.name)
+  if (!slug) return null
+  const cached = overlayCache.get(slug)
+  if (cached && cached.sig === overlaySignature(slug, cached.files)) return cached.overlay
+  let overlay = null
+  let files = []
+  try {
+    overlay = loadProjectPersonas(slug)
+    files = overlay ? overlay.files : []
+  } catch (err) {
+    if (!loggedOverlayErrors.has(err.message)) {
+      loggedOverlayErrors.add(err.message)
+      console.error(`project personas for ${project.name} not loaded — running on the global personas: ${err.message}`)
+    }
+  }
+  overlayCache.set(slug, { sig: overlaySignature(slug, files), files, overlay })
+  return overlay
+}
+
 // Mirror of farm/personas.py resolve + compose_role. Agent-scoped since
 // HZ-125: the registry (imported from personas.js — one literal, not a second
 // copy) is keyed agent-then-persona, and the file name comes off the entry
@@ -187,10 +288,17 @@ function slugify(name) {
 // would blow up on `.file` here and 500 the effective-prompt preview. The farm
 // side (`candidate in bucket`) has never had that hole, and this function
 // exists to match it byte-for-byte.
-function composeRole(roleText, agent, personaId) {
+//
+// HZ-535: `overlay` is the item's project overlay (projectPersonaOverlay), or
+// null. A project id in the agent's overlay bucket composes the project's own
+// markdown; everything else takes exactly the global path below.
+export function composeRole(roleText, agent, personaId, overlay = null) {
   if (!isPersonaAgent(agent)) return roleText
   const bucket = PERSONAS[agent]
   const candidate = typeof personaId === 'string' ? personaId.trim().toLowerCase() : ''
+  if (isPersona(agent, candidate, overlay) && Object.hasOwn(overlay?.roleText ?? {}, candidate)) {
+    return `${roleText}\n\n## Your specialization\n${overlay.roleText[candidate]}`
+  }
   const legacy = legacyPersona(candidate)
   const resolved = isPersona(agent, candidate)
     ? candidate

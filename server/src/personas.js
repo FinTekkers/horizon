@@ -106,15 +106,30 @@ export function legacyPersona(id) {
 
 // An id is only a persona *within an agent* — one agent's stack id means
 // nothing under another — so both halves are always passed together.
-export function isPersona(agent, id) {
-  return isPersonaAgent(agent) && typeof id === 'string' && Object.prototype.hasOwnProperty.call(PERSONAS[agent], id)
+//
+// HZ-535: `overlay` is the item's own project overlay
+// (definitions.js projectPersonaOverlay), or null. It adds that project's
+// `<slug>:<id>` personas to the agent's bucket and nothing else: another
+// project's id is never in it, and with null this is the global check exactly.
+export function isPersona(agent, id, overlay = null) {
+  if (!isPersonaAgent(agent) || typeof id !== 'string') return false
+  if (Object.prototype.hasOwnProperty.call(PERSONAS[agent], id)) return true
+  return Boolean(overlay && Object.hasOwn(overlay.ids, agent) && overlay.ids[agent].includes(id))
+}
+
+// HZ-535: { label, initials, color } for a persona — a project persona's badge
+// from its project file, a global one's from PERSONA_DISPLAY — or null for an
+// id that is neither.
+export function personaDisplay(agent, id, overlay = null) {
+  if (!isPersona(agent, id, overlay)) return null
+  if (Object.prototype.hasOwnProperty.call(PERSONAS[agent], id)) return PERSONA_DISPLAY[agent][id]
+  return overlay.display[id]
 }
 
 // Human-readable label for events and GitHub comments — never show raw ids.
-export function personaLabel(agent, id) {
+export function personaLabel(agent, id, overlay = null) {
   if (!isPersonaAgent(agent)) return id == null ? '' : String(id)
-  const bucket = PERSONAS[agent]
-  return (isPersona(agent, id) ? bucket[id] : bucket[DEFAULT_PERSONAS[agent]]).label
+  return (personaDisplay(agent, id, overlay) ?? PERSONAS[agent][DEFAULT_PERSONAS[agent]]).label
 }
 
 // The item's { agent: persona id } map, read from a work_item row.
@@ -124,13 +139,15 @@ export function personaLabel(agent, id) {
 // id is registry-validated on the way out: a value for an unknown agent, or one
 // no longer in that agent's bucket, is dropped rather than dispatched to the
 // farm. An unparseable blob degrades to the legacy column too, never throws.
-export function personasFromRow(row) {
+// HZ-535: `overlay` is the row's own project overlay, so a `<slug>:<id>` from
+// that project is kept and one from any other project is dropped.
+export function personasFromRow(row, overlay = null) {
   const personas = {}
   if (typeof row?.personas_json === 'string' && row.personas_json.trim()) {
     try {
       const parsed = JSON.parse(row.personas_json)
       if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
-        for (const [agent, id] of Object.entries(parsed)) if (isPersona(agent, id)) personas[agent] = id
+        for (const [agent, id] of Object.entries(parsed)) if (isPersona(agent, id, overlay)) personas[agent] = id
       }
     } catch {
       // fall through to the legacy column

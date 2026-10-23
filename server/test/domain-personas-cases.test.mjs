@@ -23,7 +23,7 @@ const cases = JSON.parse(readFileSync(path.join(REPO_ROOT, 'domain/fixtures/pers
 const { shared, js } = cases
 
 // Ids this run actually executed, checked against shared.manifest at the end.
-const executed = { validation: [], membership: [], roleFile: [], resolveModel: [] }
+const executed = { validation: [], membership: [], roleFile: [], resolveModel: [], projectValidation: [] }
 
 // ---- coverage guard ----
 
@@ -111,6 +111,27 @@ for (const c of shared.resolveModel) {
       )
     } else {
       assert.equal(binding.resolveModel(c.agent, c.step, c.persona, c.models), c.expect.model)
+    }
+  })
+}
+
+// ---- shared: projectValidation (assertProjectPersonasShape vs Python's validate_project_personas) — HZ-535 ----
+
+for (const c of shared.projectValidation) {
+  test(`shared/projectValidation: ${c.case}`, () => {
+    executed.projectValidation.push(c.case)
+    const run = () =>
+      binding.assertProjectPersonasShape(c.input, c.slug, `farm/projects/${c.slug}/personas.json`, shared.projectProviderModels, shared.projectPersonaIds)
+    if (c.expect.throws) {
+      assert.throws(run, (err) => {
+        assert.ok(
+          err.message.includes(c.expect.messageContains),
+          `expected a message containing "${c.expect.messageContains}", got: ${err.message}`,
+        )
+        return true
+      })
+    } else {
+      assert.equal(run(), c.input)
     }
   })
 }
@@ -229,6 +250,7 @@ test('js/assertPersonasShape, isPersona, personaRoleFile and resolveModel: cover
   assert.equal(js.isPersona[0].drivenBy, 'shared.membership')
   assert.equal(js.personaRoleFile[0].drivenBy, 'shared.roleFile')
   assert.equal(js.resolveModel[0].drivenBy, 'shared.resolveModel')
+  assert.equal(js.assertProjectPersonasShape[0].drivenBy, 'shared.projectValidation')
 })
 
 // ---- the manifest: this suite really ran every shared case ----

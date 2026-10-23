@@ -852,6 +852,13 @@ if (!db.prepare('PRAGMA table_info(project)').all().some((column) => column.name
   db.exec('ALTER TABLE project ADD COLUMN provider_defaults_json TEXT')
 }
 
+// HZ-535: the PIN-gated switch for a project's own definitions
+// (farm/projects/<slug>/personas.json). Additive and defaulted on: a project
+// with no such file runs exactly as before, and 0 turns every one of them off.
+if (!db.prepare('PRAGMA table_info(project)').all().some((column) => column.name === 'definitions_enabled')) {
+  db.exec('ALTER TABLE project ADD COLUMN definitions_enabled INTEGER NOT NULL DEFAULT 1 CHECK (definitions_enabled IN (0, 1))')
+}
+
 // HZ-270: project_event is the project-level audit trail (event.item_id is
 // NOT NULL, so an Autopilot change cannot live there). caretaker_eval holds one
 // row per gate arrival the caretaker judged; its UNIQUE key is the persisted
