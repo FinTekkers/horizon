@@ -1130,6 +1130,24 @@ function withRunState(activeRun) {
   return { ...activeRun, state: cached?.state || 'running', reason: cached?.reason || null }
 }
 
+// ---- Farm health (HZ-563), read-only ----
+const selectActiveRunsForHealth = db.prepare(
+  "SELECT id, item_id, step_index, started_at FROM step_run WHERE status = 'active' ORDER BY started_at, id",
+)
+const selectLiveDeploysSince = db.prepare(
+  'SELECT target, tag, live_at FROM deploy_batch WHERE live_at IS NOT NULL AND live_at >= ? ORDER BY live_at DESC LIMIT 20',
+)
+
+// Every active run with the farm's cached queued/running state folded on.
+export function listActiveRunsWithState() {
+  return selectActiveRunsForHealth.all().map(withRunState)
+}
+
+// Deploys that went live at or after `sinceSql` (SQLite datetime form), newest first.
+export function listLiveDeploysSince(sinceSql) {
+  return selectLiveDeploysSince.all(sinceSql)
+}
+
 // ---- dependencies (HZ-78) ----
 // item_id is held by the depends_on_id rows it names (see domain/js/lifecycle.js
 // holdingBlockers). HZ-467: a change item plans freely and waits only from

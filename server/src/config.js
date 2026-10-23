@@ -12,6 +12,7 @@
 //   GOOGLE_CLIENT_SECRET   OAuth client secret
 //   GOOGLE_REDIRECT_URI    OAuth callback URL (default derived from HORIZON_UI_URL)
 //   ADMIN_EMAIL/PASSWORD   hardcoded login credential (dev fallback: admin@example.com/admin)
+//   ADMIN_EMAILS           comma-separated extra admins (HZ-563): with ADMIN_EMAIL, who may open Farm health
 //   ALLOWED_LOGIN_EMAILS   comma-separated Google-login allowlist (deny-by-default: empty/
 //                          unset means NO Google logins succeed; the password path is unaffected)
 //   WA_APPROVAL_SECRET     credential for POST .../approve-via-whatsapp — held ONLY by the
@@ -228,6 +229,16 @@ export const GOOGLE_REDIRECT_URI =
 // Dev-mode fallback credential — always overridden in production via env vars.
 export const ADMIN_EMAIL = process.env.ADMIN_EMAIL || 'admin@example.com'
 export const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || 'admin'
+// HZ-563: admins besides ADMIN_EMAIL, e.g. the owner's Google login. Only
+// the Farm health route checks this; lowercase, like the allowlist below.
+export const ADMIN_EMAILS = new Set(
+  (process.env.ADMIN_EMAILS || '')
+    .split(',')
+    .map((s) => s.trim().toLowerCase())
+    .filter(Boolean),
+)
+// HZ-563: how often the Farm health collector reads the box, services and farmd.
+export const FARM_HEALTH_POLL_MS = Math.max(Number(process.env.FARM_HEALTH_POLL_MS) || 5000, 1000)
 export const SESSION_COOKIE_NAME = 'horizon_session'
 export const SESSION_TTL_DAYS = 30
 

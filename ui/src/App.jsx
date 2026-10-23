@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
 import * as api from './api'
 import { STEPS, IMPLEMENT_STEP_INDEX, awaitingGate, reworkTargets, defaultReworkTarget } from '../../domain/js/lifecycle.js'
 import TopBar from './components/TopBar'
@@ -12,6 +12,7 @@ import ConfirmGateDialog from './components/ConfirmGateDialog'
 import ResolveConflictsDialog from './components/ResolveConflictsDialog'
 import AdminPage from './components/AdminPage'
 import AgentDefinitionsPage from './components/AgentDefinitionsPage'
+import FarmHealthPage from './components/FarmHealthPage'
 import NewItemModal from './components/NewItemModal'
 import AddDependencyDialog from './components/AddDependencyDialog'
 import LoginPage from './components/LoginPage'
@@ -58,6 +59,9 @@ function resolveDialogView(dialog, item, pending) {
   return { ...dialog, phase: 'done', result: resultFromConflictRun(item?.conflictRun) }
 }
 
+// HZ-563: one Farm health reading feeds both the page and the menu's dot.
+const FARM_HEALTH_POLL_MS = 10_000
+
 const CLOSED_COMPOSER = { open: false, mode: null, itemId: null, phase: null, target: '', stepOptions: [], defaultTargetLabel: null }
 
 // HZ-389: why a send-back did not go through, in words. HZ-470: Kill (abandon)
@@ -83,6 +87,7 @@ function sendBackError(err) {
 }
 
 // Deep links: /  → board, /admin → admin, /definitions → agent definitions,
+// /farm-health → Farm health (HZ-563, admins),
 // /privacy and /terms → the public legal pages (no login required),
 // /<item-id> → that item's tracker (case-insensitive, e.g. localhost:5173/hz-102).
 // All relative to the vite base — '' at the dev root, '/horizon' when the
@@ -96,6 +101,7 @@ function parsePath(pathname) {
   if (!seg) return { view: 'board', id: null }
   if (seg.toLowerCase() === 'admin') return { view: 'admin', id: null }
   if (seg.toLowerCase() === 'definitions') return { view: 'definitions', id: null }
+  if (seg.toLowerCase() === 'farm-health') return { view: 'farm-health', id: null }
   if (Object.hasOwn(LEGAL_DOCS, seg.toLowerCase())) return { view: 'legal', id: seg.toLowerCase() }
   return { view: 'tracker', id: seg.toUpperCase() }
 }
@@ -170,6 +176,32 @@ function AuthenticatedApp({ user, onLogout }) {
   // covers the gap before the server's push says a gate action is running.
   const approveInFlight = useRef(new Set())
   const [approvePending, setApprovePending] = useState(() => new Set())
+  // HZ-563: admins only. Polled every 10 s wherever the user is, so the
+  // account menu's dot is always the page's state; Refresh reads it now.
+  // The ref keeps a click and a poll tick from sending two requests at once.
+  const isAdmin = user?.isAdmin === true
+  const [farmHealth, setFarmHealth] = useState({ data: null, error: null, loading: false })
+  const farmHealthInFlight = useRef(false)
+  const loadFarmHealth = useCallback(() => {
+    if (farmHealthInFlight.current) return
+    farmHealthInFlight.current = true
+    setFarmHealth((h) => ({ ...h, loading: true }))
+    api
+      .getFarmHealth()
+      .then(
+        (data) => setFarmHealth({ data, error: null, loading: false }),
+        (err) => setFarmHealth((h) => ({ ...h, error: err?.message || 'failed', loading: false })),
+      )
+      .finally(() => {
+        farmHealthInFlight.current = false
+      })
+  }, [])
+  useEffect(() => {
+    if (!isAdmin) return undefined
+    loadFarmHealth()
+    const timer = setInterval(loadFarmHealth, FARM_HEALTH_POLL_MS)
+    return () => clearInterval(timer)
+  }, [isAdmin, loadFarmHealth])
 
   const sync = api.getSync()
   const projects = api.getProjects()
@@ -385,6 +417,12 @@ function AuthenticatedApp({ user, onLogout }) {
           setView('definitions')
           setApprovalsOpen(false)
         }}
+        onOpenFarmHealth={() => {
+          navigate('/farm-health')
+          setView('farm-health')
+          setApprovalsOpen(false)
+        }}
+        farmHealthState={farmHealth.data?.state ?? null}
       />
 
       {isMobile && (
@@ -425,6 +463,13 @@ function AuthenticatedApp({ user, onLogout }) {
       )}
 
       {view === 'definitions' && <AgentDefinitionsPage onBack={toBoard} />}
+
+      {view === 'farm-health' &&
+        (isAdmin ? (
+          <FarmHealthPage health={farmHealth} onRefresh={loadFarmHealth} onOpenItem={openItem} />
+        ) : (
+          <div className="admin">Farm health is open to admins only.</div>
+        ))}
 
       {view === 'tracker' && selected && (
         <Tracker

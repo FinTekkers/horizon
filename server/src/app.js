@@ -17,6 +17,7 @@ import * as webhooks from './webhooks.js'
 import * as deployDrain from './deployDrain.js'
 import * as heldAccept from './heldAccept.js'
 import * as deployDryRun from './deployDryRun.js'
+import * as farmHealth from './farmHealth.js'
 import * as projectValidate from './projectValidate.js'
 import { createTarget, deleteTarget, findTargetByKey, listTargets, targetFromBody, updateTarget } from './deployTargets.js'
 import {
@@ -276,6 +277,14 @@ function humanAuthorized(request, reply) {
 function requireSession(request, reply) {
   if (request.auth?.via === 'session') return true
   reply.code(403).send({ error: 'session_required' })
+  return false
+}
+
+// HZ-563: an admin (auth.isAdmin) on any credential the login gate accepted.
+// 403, not 401: the caller is signed in, just not as an admin.
+function requireAdmin(request, reply) {
+  if (auth.isAdmin(request.user)) return true
+  reply.code(403).send({ error: 'admin_required' })
   return false
 }
 
@@ -2330,7 +2339,8 @@ export function buildApp({ logger = true, onRoute = null } = {}) {
       // UI would render the login page instead of the screen.
       const user = auth.getSessionUser(request.cookies[SESSION_COOKIE_NAME]) || testEnvUser(request.headers)
       if (!user) return reply.code(401).send({ error: 'login_required' })
-      return { user }
+      // HZ-563: the UI shows the Farm health entry only when this is true.
+      return { user: { ...user, isAdmin: auth.isAdmin(user) } }
     },
   )
 
@@ -2643,6 +2653,20 @@ export function buildApp({ logger = true, onRoute = null } = {}) {
   fastify.get('/api/admin/deploy-targets', { schema: { response: { 200: OK_OBJECT } } }, () => ({
     targets: deploy.listTargetStatuses(),
   }))
+
+  // ---- Farm health (HZ-563, read-only) ----
+  // Admins only. Serves the snapshot farmHealth.js's background loop cached —
+  // never collects per request — through its allowlist serializer.
+  fastify.get(
+    '/api/admin/farm-health',
+    { schema: { response: { 200: OK_OBJECT, 403: ERROR_OBJECT, 503: ERROR_OBJECT } } },
+    (request, reply) => {
+      if (!requireAdmin(request, reply)) return
+      const snapshot = farmHealth.getFarmHealth()
+      if (!snapshot) return reply.code(503).send({ error: 'farm_health_warming' })
+      return farmHealth.toPublic(snapshot)
+    },
+  )
 
   // ---- Flaky tests and test history (HZ-327) ----
   // Read-only. Flakes per repo, newest first: { repos: [{ repo, tests: [...] }] }.

@@ -872,6 +872,13 @@ export function getCheckFlakes() {
   return getJson('/admin/check-flakes')
 }
 
+// HZ-563: Farm health — admins only, read-only. Rejects with the server's
+// error code: admin_required (403), farm_health_warming (503) before the
+// server's first reading, or HTTP <status>.
+export function getFarmHealth() {
+  return getJson('/admin/farm-health')
+}
+
 // HZ-258: a target's Dry run — five read-only checks. Gate-PIN protected like
 // fixRepoWebhook: the PIN goes only in the x-human-key header, never cached.
 // The body is always empty: the server probes only the stored target.
