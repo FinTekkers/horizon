@@ -56,6 +56,8 @@ class Bundle(NamedTuple):
     branches: dict[str, str]  # in-scope repo -> the default branch exported
     out_of_scope: tuple[str, ...]
     manifest: dict[str, tuple[int, int, int]]
+    # HZ-546: in-scope repo -> the commit exported (its _refs "exported:" sha).
+    shas: dict[str, str]
 
 
 class _HubState(NamedTuple):
@@ -108,15 +110,18 @@ def build(item_id: str, plan_scope) -> Bundle:
     _remove_tree(root)
     (root / REFS_DIR).mkdir(parents=True)
     try:
-        branches = {entry["repo"]: _export(entry, root) for entry in entries}
+        exported = {entry["repo"]: _export(entry, root) for entry in entries}
         _make_read_only(root)
     except BaseException:
         _remove_tree(root)
         raise
-    return Bundle(root, branches, tuple(outside), _manifest(root))
+    branches = {repo: branch for repo, (branch, _sha) in exported.items()}
+    shas = {repo: sha for repo, (_branch, sha) in exported.items()}
+    return Bundle(root, branches, tuple(outside), _manifest(root), shas)
 
 
-def _export(entry: dict, root: Path) -> str:
+def _export(entry: dict, root: Path) -> tuple[str, str]:
+    """(the branch exported, the commit sha it was exported at)."""
     repo = entry["repo"]
     hub = workspaces.hub_path(repo)
     if not (hub / ".git").exists():
@@ -139,7 +144,7 @@ def _export(entry: dict, root: Path) -> str:
     stale = "" if fetch.returncode == 0 else " (the fetch failed: as of the hub's last fetch)"
     lines = [f"repo: {repo}", f"exported: origin/{branch} at {sha}{stale}", _check_line(entry.get("last_check")), "", "refs (sha name):", refs.rstrip()]
     (root / REFS_DIR / _dirname(repo)).write_text("\n".join(lines) + "\n")
-    return branch
+    return branch, sha
 
 
 def _check_line(last_check) -> str:

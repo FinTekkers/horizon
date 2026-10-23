@@ -30,8 +30,9 @@ import { gateActionOf } from '../domain/gateAction'
 import { deployQueueLabel } from '../domain/deployQueue'
 import { resolveEventColor } from '../domain/eventColors'
 import { issueUrl, issueLabel, artifactUrl, outputUrl, runLogViewUrl, subscribeStepOutputs, stopJob, resumeJob, setAutopilotOff } from '../api'
+import { buildLinkContext } from '../../../domain/js/codeRefs.js'
 import StatusPill, { AutopilotOffChip, autopilotOffShown, AUTOPILOT_OFF_GATE_NOTE } from './StatusPill'
-import DependencyBadge from './DependencyBadge'
+import DependencyBadge, { itemHref } from './DependencyBadge'
 import Markdown from './Markdown'
 import GateActionStatus from './GateActionStatus'
 import JobPanel from './JobPanel'
@@ -141,16 +142,34 @@ function ForwardToAcceptButton({ item, onForwardToAccept, disabled }) {
   )
 }
 
+// HZ-546: Markdown's link context for this item at one step run's recorded
+// shas. With none (`sourceShas` null) item ids still link and code references
+// stay plain. A Plan gets no default repo unless one is named (an Inventory
+// row's own repo). knownItemIds is what the board holds, which can differ from
+// the server pages' set (every stored id).
+function itemLinkContext(item, projects, knownItemIds, sourceShas = null, defaultRepo = null) {
+  const project = (projects || []).find((p) => p.id === item.project_id)
+  return buildLinkContext({
+    projectRepos: project?.repos ?? [],
+    itemRepo: item.repo,
+    isPlan: itemKindOf(item) === 'plan',
+    defaultRepo,
+    sourceShas,
+    knownIds: knownItemIds,
+    itemHref,
+  })
+}
+
 // HZ-185: on the Accept gate, the failing review a forward carried (the review
 // cap's or a human's) — that run's findings, not whatever review is newest.
-function ForwardedReview({ forwarded }) {
+function ForwardedReview({ forwarded, linkContext }) {
   return (
     <div className="step-card__forwarded">
       <div className="step-card__forwarded-title">
         Forwarded by {forwarded.by || 'Horizon'} with the failing review (run #{forwarded.runId}) attached
       </div>
       {forwarded.artifact ? (
-        <Markdown className="step-card__forwarded-body" text={forwarded.artifact} />
+        <Markdown className="step-card__forwarded-body" text={forwarded.artifact} linkContext={linkContext} />
       ) : (
         <div>The review recorded no findings text.</div>
       )}
@@ -262,7 +281,7 @@ function restartSentLabel(item, index, restartSent) {
   return `Sent: attempt ${restartSent.attempt} starting`
 }
 
-function Step({ item, stepOutputs, outputsSettled, index, deployBlock, viewerName, restartSent, onApprove, onApproveWithComments, onReject, onResolveConflicts, resolving, gateBusy, onForwardToAccept, onSetPersona, onSetStepProvider }) {
+function Step({ item, stepOutputs, outputsSettled, index, deployBlock, viewerName, restartSent, linkContextFor, onApprove, onApproveWithComments, onReject, onResolveConflicts, resolving, gateBusy, onForwardToAccept, onSetPersona, onSetStepProvider }) {
   const st = STEPS[index]
   const status = stepStatus(item, index)
   const isGate = st.kind === 'gate'
@@ -371,7 +390,9 @@ function Step({ item, stepOutputs, outputsSettled, index, deployBlock, viewerNam
             </div>
           )}
           {/* HZ-462: a Plan's Inventory as tables; the artifact link stays below. */}
-          {status === 'done' && index === PLAN_INVENTORY_STEP_INDEX && output?.artifact && <PlanInventoryTables artifact={output.artifact} />}
+          {status === 'done' && index === PLAN_INVENTORY_STEP_INDEX && output?.artifact && (
+            <PlanInventoryTables artifact={output.artifact} linkContextFor={(defaultRepo) => linkContextFor(output.sourceShas ?? null, defaultRepo)} />
+          )}
           {status === 'done' && !isGate && output?.output && (
             <a
               className="step-card__output-link"
@@ -433,10 +454,14 @@ function Step({ item, stepOutputs, outputsSettled, index, deployBlock, viewerNam
           {index === APPROVE_FILE_GATE_INDEX && item.cursor > PLAN_DRAFT_STEP_INDEX && <PlanItemsTable item={item} />}
           {/* HZ-449: the Close card links every item File items filed. */}
           {index === REVIEW_CLOSE_GATE_INDEX && status !== 'pending' && (
-            <Markdown className="md-body--tile" text={stepOutputs?.[FILE_ITEMS_STEP_INDEX]?.output} />
+            <Markdown
+              className="md-body--tile"
+              text={stepOutputs?.[FILE_ITEMS_STEP_INDEX]?.output}
+              linkContext={linkContextFor(stepOutputs?.[FILE_ITEMS_STEP_INDEX]?.sourceShas ?? null)}
+            />
           )}
           {status === 'awaiting' && index === ACCEPT_GATE_INDEX && item.forwardedReview && (
-            <ForwardedReview forwarded={item.forwardedReview} />
+            <ForwardedReview forwarded={item.forwardedReview} linkContext={linkContextFor(null)} />
           )}
           {index === IMPLEMENT_STEP_INDEX && item.reviewRejected && onForwardToAccept && !isAbandoned(item) && (
             <ForwardToAcceptButton item={item} onForwardToAccept={onForwardToAccept} disabled={gateBusy} />
@@ -819,7 +844,7 @@ function AutopilotOffNote({ item }) {
   )
 }
 
-export default function Tracker({ item, projects, deployBlock = null, viewerName = null, restartSent = null, onBack, onApprove, onApproveWithComments, onReject, onResolveConflicts, resolving, gateBusy, onForwardToAccept, onTogglePause, onRestartPhase, onSetPersona, onSetStepProvider, onAbandon, onRemoveDependency, onAddDependency, onAmendRule }) {
+export default function Tracker({ item, projects, knownItemIds = null, deployBlock = null, viewerName = null, restartSent = null, onBack, onApprove, onApproveWithComments, onReject, onResolveConflicts, resolving, gateBusy, onForwardToAccept, onTogglePause, onRestartPhase, onSetPersona, onSetStepProvider, onAbandon, onRemoveDependency, onAddDependency, onAmendRule }) {
   const status = itemStatus(item, true, { deployBlock })
   const activity = buildActivity(item)
   const [activityMin, setActivityMin] = useState(readActivityMin)
@@ -831,6 +856,7 @@ export default function Tracker({ item, projects, deployBlock = null, viewerName
   const closed = isClosed(item)
   const abandoned = isAbandoned(item)
   const { stepOutputs, settled: outputsSettled } = useStepOutputs(item)
+  const linkContextFor = (sourceShas, defaultRepo = null) => itemLinkContext(item, projects, knownItemIds, sourceShas, defaultRepo)
   // HZ-385: the button sends the state it shows, once at a time. Busy and the
   // error are kept with the item id, so opening another item drops them.
   const pauseInFlight = useRef(false)
@@ -908,7 +934,7 @@ export default function Tracker({ item, projects, deployBlock = null, viewerName
             {/* HZ-153: issue bodies are markdown — Markdown renders them as
                 React elements, never as HTML. Same for the two tiles below. */}
             {!abandoned && !closed && <AutopilotOffNote item={item} />}
-            <Markdown className="tracker__desc" text={item.desc} />
+            <Markdown className="tracker__desc" text={item.desc} linkContext={linkContextFor(null)} />
           </div>
           <StatusPill status={status} className="tracker__status" />
         </div>
@@ -957,11 +983,11 @@ export default function Tracker({ item, projects, deployBlock = null, viewerName
         <div className="tracker__tiles">
           <div className="tile">
             <div className="tile__label">Success metric</div>
-            <Markdown className="tile__value md-body--tile" text={item.metric} />
+            <Markdown className="tile__value md-body--tile" text={item.metric} linkContext={linkContextFor(null)} />
           </div>
           <div className="tile">
             <div className="tile__label">Guardrails</div>
-            <Markdown className="tile__value md-body--tile" text={item.guardrails} />
+            <Markdown className="tile__value md-body--tile" text={item.guardrails} linkContext={linkContextFor(null)} />
           </div>
         </div>
         <DependencyBadge key={item.id} item={item} onRemove={onRemoveDependency} />
@@ -1010,6 +1036,7 @@ export default function Tracker({ item, projects, deployBlock = null, viewerName
                     deployBlock={deployBlock}
                     viewerName={viewerName}
                     restartSent={restartSent}
+                    linkContextFor={linkContextFor}
                     onApprove={onApprove}
                     onApproveWithComments={onApproveWithComments}
                     onReject={onReject}

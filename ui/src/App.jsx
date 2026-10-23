@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, useSyncExternalStore } from 'react'
+import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
 import * as api from './api'
 import { STEPS, IMPLEMENT_STEP_INDEX, awaitingGate, reworkTargets, defaultReworkTarget } from '../../domain/js/lifecycle.js'
 import TopBar from './components/TopBar'
@@ -141,6 +141,8 @@ function GatedApp() {
 // layer (SSE subscribe, etc.) never fires against an unauthenticated session.
 function AuthenticatedApp({ user, onLogout }) {
   const items = useSyncExternalStore(api.subscribe, api.getItems)
+  // HZ-546: item ids an artifact may link to — the items this board holds.
+  const knownItemIds = useMemo(() => new Set(items.map((it) => it.id)), [items])
 
   const initial = parsePath(window.location.pathname)
   const [view, setView] = useState(initial.view)
@@ -428,6 +430,7 @@ function AuthenticatedApp({ user, onLogout }) {
         <Tracker
           item={selected}
           projects={projects}
+          knownItemIds={knownItemIds}
           deployBlock={deployBlock}
           viewerName={user?.name ?? null}
           restartSent={api.getRestartSent(selected.id)}

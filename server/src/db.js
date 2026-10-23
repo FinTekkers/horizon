@@ -692,6 +692,14 @@ for (const sql of [
     // column already exists
   }
 }
+try {
+  // HZ-546: {"owner/name": "<40-hex sha>"} — the commit of each repo this run
+  // read, so its artifact's code references link to GitHub at that commit.
+  // NULL = not recorded (every earlier row): those references stay plain.
+  db.exec('ALTER TABLE step_run ADD COLUMN source_shas TEXT')
+} catch {
+  // column already exists
+}
 // HZ-422: one row per model last seen limited, and when it lifts (ISO-8601
 // UTC, compared in JS so a test's fake clock drives it). A row whose reset
 // has passed is simply ignored, then overwritten by the next limit.
