@@ -37,6 +37,12 @@
 // HZ-360: an Accept skipped for a self-deploy is listed as waiting
 // (heldAccept.setAutopilotWaiting) so the board says "Queued to merge", and an
 // item with a human Approve held through the deploy is left to that hold.
+//
+// HZ-544: an item with Autopilot off (its `autopilot-off` label) is never a
+// candidate, and an arrival caretaker.js judged while it was off stays the
+// owner's even once the label is removed — only the next arrival is Autopilot's
+// again. claim() re-reads the label beside the mode, for a label that lands
+// between the candidate read and the claim.
 
 import { db } from './db.js'
 import * as store from './store.js'
@@ -45,6 +51,7 @@ import { redact } from './caretakerRules.js'
 import { isDeployBlocked } from './deployDrain.js'
 import * as heldAccept from './heldAccept.js'
 import { MERGEABLE_PROBE_DELAYS_MS, MERGEABLE_PROBE_ATTEMPTS, reviewPassed as passedReview } from './caretakerMergeable.js'
+import { itemAutopilotOff } from './caretakerItemOff.js'
 
 const HOUR_MS = 60 * 60 * 1000
 const GATE_LABEL = STEPS[ACCEPT_GATE_INDEX].label
@@ -68,7 +75,7 @@ const selectCandidates = db.prepare(`
                AND s.step_index = w.cursor - 1 AND s.status = 'done'), 0) AS arrival_run_id
     FROM work_item w JOIN project p ON p.id = w.project_id
    WHERE p.autopilot = 'on' AND p.enabled = 1 AND w.cursor = ${ACCEPT_GATE_INDEX}
-     AND w.abandoned_at IS NULL AND w.pr IS NOT NULL AND w.repo IS NOT NULL
+     AND w.abandoned_at IS NULL AND w.pr IS NOT NULL AND w.repo IS NOT NULL AND w.autopilot_off = 0
    ORDER BY arrival_run_id, w.id`)
 // An escalated resolve sends the item back to implement, so it is no longer a
 // candidate above; it is still pinged, whoever started the run.
@@ -78,7 +85,7 @@ const selectEscalated = db.prepare(`
                AND s.step_index = ${ACCEPT_GATE_INDEX - 1} AND s.status = 'done'), 0) AS arrival_run_id
     FROM gate_action g JOIN work_item w ON w.id = g.item_id JOIN project p ON p.id = w.project_id
    WHERE g.kind = 'resolve' AND g.state = 'escalated' AND p.autopilot = 'on' AND p.enabled = 1
-     AND w.abandoned_at IS NULL AND w.cursor <> ${ACCEPT_GATE_INDEX}`)
+     AND w.abandoned_at IS NULL AND w.cursor <> ${ACCEPT_GATE_INDEX} AND w.autopilot_off = 0`)
 const selectGateActions = db.prepare('SELECT kind, state, epoch FROM gate_action WHERE item_id = ?')
 const selectClaims = db.prepare('SELECT action, outcome FROM caretaker_accept_action WHERE item_id = ? AND arrival_run_id = ?')
 const selectMode = db.prepare('SELECT autopilot FROM project WHERE id = ?')
@@ -103,6 +110,11 @@ const selectRowState = db.prepare('SELECT state, epoch FROM gate_action WHERE it
 const selectGatePing = db.prepare(`
   SELECT 1 FROM caretaker_eval WHERE item_id = ? AND gate_index = ${ACCEPT_GATE_INDEX} AND arrival_run_id = ?
      AND decision = 'ping_human' AND mode = 'on' LIMIT 1`)
+// HZ-544: caretaker.js judged this arrival while Autopilot was off for the
+// item, so it stays the owner's after the label is removed.
+const selectItemOffEval = db.prepare(`
+  SELECT 1 FROM caretaker_eval WHERE item_id = ? AND gate_index = ${ACCEPT_GATE_INDEX} AND arrival_run_id = ?
+     AND item_off = 1 LIMIT 1`)
 const insertProbe = db.prepare(
   'INSERT OR IGNORE INTO caretaker_mergeable_probe (item_id, arrival_run_id, first_seen_ms) VALUES (?, ?, ?)',
 )
@@ -232,6 +244,7 @@ function recordLimitHit(row, nowMs, owner, limit) {
 function claim(row, action, eventText, nowMs) {
   return db.transaction(() => {
     if (selectMode.get(row.project_id)?.autopilot !== 'on') return null
+    if (itemAutopilotOff(row.item_id)) return null
     if (action === 'accept' && selectAcceptInFlight.get(row.project_id, row.project_id)) return null
     const id = insertClaim.run(row.project_id, row.item_id, row.arrival_run_id, action, nowMs).lastInsertRowid
     insertEvent.run(row.item_id, eventText)
@@ -297,6 +310,7 @@ export function actOnAcceptGate({ gateActions, actor, log, now = Date.now, owner
   try {
     for (const row of selectCandidates.all()) {
       try {
+        if (selectItemOffEval.get(row.item_id, row.arrival_run_id)) continue
         const nowMs = now()
         let decision = decideAcceptGate(gatherAcceptFacts(row))
         if ((decision.kind === 'accept' || decision.kind === 'resolve') && selectGatePing.get(row.item_id, row.arrival_run_id)) {

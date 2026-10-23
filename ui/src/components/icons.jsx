@@ -129,6 +129,16 @@ export function ChatIcon({ size = 15 }) {
 // HZ-429: a failed Verify & report. Unlike the decorative icons above it is
 // the only signal of the failure, so with a `label` it is named for screen
 // readers instead of hidden.
+// HZ-544: the "Autopilot off" chip — a slashed circle.
+export function AutopilotOffIcon({ size = 11 }) {
+  return (
+    <svg {...iconProps(size, 2.8)}>
+      <circle cx="12" cy="12" r="9" />
+      <path d="m6 18 12-12" />
+    </svg>
+  )
+}
+
 export function CircleXIcon({ size = 14, label = null }) {
   const a11y = label ? { 'aria-hidden': undefined, role: 'img', 'aria-label': label } : {}
   return (
