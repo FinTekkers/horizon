@@ -10,6 +10,7 @@ import * as caretakerActor from './caretakerActor.js'
 import * as caretakerRuling from './caretakerRuling.js'
 import * as autoResolve from './autoResolve.js'
 import * as heldAccept from './heldAccept.js'
+import * as farmHealth from './farmHealth.js'
 import { PORT } from './config.js'
 
 const fastify = buildApp()
@@ -22,6 +23,9 @@ try {
 }
 
 orchestrator.init(fastify.log)
+// HZ-563: reads the box, services and farmd's /farm/status in the background;
+// the Farm health route only serves this cache.
+farmHealth.startFarmHealth({ log: fastify.log })
 // HZ-360: after the orchestrator, so its drain-end release runs first; before
 // the caretaker, so an Approve held through the deploy claims its pre-merge
 // before Autopilot looks. Also releases, once, what a deploy's restart held.

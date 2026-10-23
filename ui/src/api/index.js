@@ -75,6 +75,7 @@ export const {
   restoreRule,
   getDeployTargets,
   getCheckFlakes,
+  getFarmHealth,
   dryRunDeployTarget,
   getDeployTargetConfig,
   createDeployTarget,

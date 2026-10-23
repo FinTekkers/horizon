@@ -10,7 +10,7 @@
 
 import crypto from 'node:crypto'
 import { db } from './db.js'
-import { ADMIN_EMAIL, ADMIN_PASSWORD, SESSION_TTL_DAYS } from './config.js'
+import { ADMIN_EMAIL, ADMIN_EMAILS, ADMIN_PASSWORD, SESSION_TTL_DAYS } from './config.js'
 import { isAllowedEmail } from './loginAllowlist.js'
 
 function hashSecret(plain) {
@@ -147,6 +147,14 @@ export function verifyPassword(email, password) {
 // The ADMIN_EMAIL account, created on first use. Shared by the password path
 // above and the screenshot test-env login (testEnvLogin.js, HZ-511), which
 // does not count as a login and so leaves last_login_at alone.
+// HZ-563: ADMIN_EMAIL or one of ADMIN_EMAILS, case-insensitively. Gates only
+// Farm health; the Admin page and its routes stay open to every signed-in user.
+export function isAdmin(user) {
+  const email = typeof user?.email === 'string' ? user.email.trim().toLowerCase() : ''
+  if (!email) return false
+  return email === ADMIN_EMAIL.trim().toLowerCase() || ADMIN_EMAILS.has(email)
+}
+
 export function adminUser() {
   return findUserByEmail(ADMIN_EMAIL) || createUser({ email: ADMIN_EMAIL, name: 'Admin', authMethod: 'password' }).user
 }

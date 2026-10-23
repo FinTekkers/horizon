@@ -1,5 +1,6 @@
 import { useId, useState, useSyncExternalStore } from 'react'
-import { GridIcon, LockIcon, SlidersIcon } from './icons'
+import { GridIcon, LockIcon, PulseIcon, SlidersIcon } from './icons'
+import { HEALTH_LABELS } from './FarmHealthPage'
 import * as theme from '../theme'
 import { LegalLinks } from './LegalPage'
 import { ALL_PROJECTS, enabledProjects, projectFilterLabel, repoChipLabel } from '../projectFilter'
@@ -130,7 +131,9 @@ function ProjectFilter({ projects, value, onChange, repos, onReposChange }) {
   )
 }
 
-function UserMenu({ user, onLogout, onOpenAdmin, onOpenDefinitions }) {
+// HZ-563: Farm health sits under Admin, for admins only (user.isAdmin from
+// /api/auth/me). Its dot is the page's overall state, from the same reading.
+function UserMenu({ user, onLogout, onOpenAdmin, onOpenDefinitions, onOpenFarmHealth, farmHealthState, farmHealthOpen }) {
   const [open, setOpen] = useState(false)
   const close = () => setOpen(false)
   return (
@@ -165,6 +168,27 @@ function UserMenu({ user, onLogout, onOpenAdmin, onOpenDefinitions }) {
               <SlidersIcon />
               Admin
             </button>
+            {user.isAdmin && onOpenFarmHealth && (
+              <button
+                className={`usermenu__item${farmHealthOpen ? ' usermenu__item--current' : ''}`}
+                aria-current={farmHealthOpen ? 'page' : undefined}
+                onClick={() => {
+                  close()
+                  onOpenFarmHealth()
+                }}
+              >
+                <PulseIcon />
+                Farm health
+                {Object.hasOwn(HEALTH_LABELS, farmHealthState ?? '') && (
+                  <span
+                    className={`usermenu__dot farm-health__dot farm-health__dot--${farmHealthState}`}
+                    role="img"
+                    aria-label={HEALTH_LABELS[farmHealthState]}
+                    data-state={farmHealthState}
+                  />
+                )}
+              </button>
+            )}
             <ThemeToggle />
             <LegalLinks className="legal-links usermenu__legal" />
             <button
@@ -198,6 +222,8 @@ export default function TopBar({
   onOpenApprovals,
   onOpenAdmin,
   onOpenDefinitions,
+  onOpenFarmHealth = null,
+  farmHealthState = null,
 }) {
   const hot = pendingCount > 0
   return (
@@ -236,7 +262,15 @@ export default function TopBar({
         Pending approvals
         <span className={`pending-btn__badge${hot ? ' pending-btn__badge--hot' : ''}`}>{pendingCount}</span>
       </button>
-      <UserMenu user={user} onLogout={onLogout} onOpenAdmin={onOpenAdmin} onOpenDefinitions={onOpenDefinitions} />
+      <UserMenu
+        user={user}
+        onLogout={onLogout}
+        onOpenAdmin={onOpenAdmin}
+        onOpenDefinitions={onOpenDefinitions}
+        onOpenFarmHealth={onOpenFarmHealth}
+        farmHealthState={farmHealthState}
+        farmHealthOpen={view === 'farm-health'}
+      />
     </div>
   )
 }
