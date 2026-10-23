@@ -1,0 +1,17 @@
+<!doctype html>
+<html>
+<head><meta charset="utf-8"><title>Stub walkthrough</title></head>
+<!-- HZ-530: every element the tests measure is absolutely positioned, so its
+     box doesn't move while the walkthrough types into #note. -->
+<body style="margin:0;width:1280px;height:720px;background:#f4f5f7;font-family:sans-serif;overflow:hidden">
+  <div id="banner" style="position:absolute;left:0;top:0;width:1280px;height:60px;background:#2a7de1"></div>
+  <input type="password" aria-label="Gate PIN" value="123456" style="position:absolute;left:100px;top:200px;width:200px;height:30px;box-sizing:border-box">
+  <p id="contact" style="position:absolute;left:100px;top:300px;margin:0;font-size:20px;line-height:24px">Contact ops@example.com today</p>
+  <p id="late" style="position:absolute;left:100px;top:400px;margin:0;font-size:20px;line-height:24px"></p>
+  <input id="note" type="text" style="position:absolute;left:100px;top:500px;width:500px;height:30px;box-sizing:border-box;font-size:18px">
+  <script>
+    // Content that arrives after the first paint, like a board that loads its items.
+    setTimeout(() => { document.getElementById('late').textContent = 'Ping late-ops@example.com later' }, 500)
+  </script>
+</body>
+</html>

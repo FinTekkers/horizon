@@ -29,7 +29,8 @@ from . import checks, config
 # implement step can tell a host-file problem from a red test.
 COMMAND_LABEL = "test credentials env file"
 
-_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+# Public: HZ-557's loginCookies (farm/screenshots_config.py) checks names with it.
+VAR_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 # A file must not reshape how the farm runs checks: these names stay the
 # farm's own. CHECK_SUBPROCESS_SCRUB is added below.
 _RESERVED_NAMES = frozenset({"PATH", "HOME", "SHELL", "NODE_OPTIONS", "PYTHONPATH", "PYTHONHOME", "CI"})
@@ -74,7 +75,7 @@ def _parse(path: str, text: str) -> dict[str, str]:
             line = line[len("export ") :].lstrip()
         name, sep, value = line.partition("=")
         name = name.strip()
-        if not sep or not _NAME.fullmatch(name):
+        if not sep or not VAR_NAME.fullmatch(name):
             # The line number only: the line itself may hold a value.
             raise LoginEnvError(path, f"line {number} is not NAME=value")
         if _reserved(name):

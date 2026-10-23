@@ -8,9 +8,11 @@
 
 ## ledger-models dependency
 
-- The `ledger-models` crate is pinned in `Cargo.toml`. Read that
-  version's source (tag `vX.Y.Z` in FinTekkers/ledger-models), not main,
-  when tracing a bug into the models.
+- The `ledger-models` crate is declared in `Cargo.toml` as a minimum
+  version, raised only when the code uses something first released in a
+  newer version. Read the source of the version `Cargo.lock` resolves
+  (tag `vX.Y.Z` in FinTekkers/ledger-models), not main, when tracing a
+  bug into the models.
 - Apply the project rules' "Models first" section before working around a
   model or proto problem here. Picking up a ledger-models release is a
   version bump in `Cargo.toml` plus whatever the release changed.

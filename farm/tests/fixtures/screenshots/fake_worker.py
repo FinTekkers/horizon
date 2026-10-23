@@ -4,7 +4,9 @@ shot's headers (so the fixture app sees exactly what a browser would send),
 then writes a 1x1 PNG. Each shot appends {"pid", "url", "keys"} to
 $FAKE_WORKER_LOG, `keys` being the shot message's sorted field names.
 A /echo shot answers with an error quoting its header values, on stdout and
-stderr, as a careless worker might.
+stderr, as a careless worker might. HZ-557: a shot's `cookies` go in a Cookie
+header (an /echo shot quotes their values too), and a /still-visible shot
+writes its PNG, then fails as a mask the page drew over would.
 """
 
 import json
@@ -29,16 +31,21 @@ for line in sys.stdin:
     shot = json.loads(line)
     with open(os.environ["FAKE_WORKER_LOG"], "a") as fh:
         fh.write(json.dumps({"pid": os.getpid(), "url": shot["url"], "keys": sorted(shot)}) + "\n")
+    cookies = shot.get("cookies") or []
+    headers = {**shot["headers"], **({"Cookie": "; ".join(f"{c['name']}={c['value']}" for c in cookies)} if cookies else {})}
     try:
-        opener.open(urllib.request.Request(shot["url"], headers=shot["headers"]), timeout=300).read()
+        opener.open(urllib.request.Request(shot["url"], headers=headers), timeout=300).read()
     except OSError as exc:
         print(json.dumps({"ok": False, "error": str(exc)}), flush=True)
         continue
     if shot["url"].endswith("/echo"):
-        values = " ".join(shot["headers"].values())
+        values = " ".join([*shot["headers"].values(), *(c["value"] for c in cookies)])
         print(f"worker saw {values}", file=sys.stderr, flush=True)
         print(json.dumps({"ok": False, "error": f"page failed with {values}"}), flush=True)
         continue
     with open(shot["png"], "wb") as fh:
         fh.write(png())
+    if shot["url"].endswith("/still-visible"):
+        print(json.dumps({"ok": False, "error": f"mask {json.dumps(shot['mask'][0])} still visible"}), flush=True)
+        continue
     print(json.dumps({"ok": True, "clipped": False, "heightPx": 1}), flush=True)

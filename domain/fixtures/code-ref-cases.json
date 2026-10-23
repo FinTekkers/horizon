@@ -1,0 +1,463 @@
+{
+  "$comment": "HZ-546: pinned cases for domain/js/codeRefs.js. `url: null` means the reference renders as the plain code span it renders today. server/test/domain-code-refs.test.mjs runs every case; the UI tests build their contexts from `contexts` too.",
+  "contexts": {
+    "plan": {
+      "projectRepos": [
+        "FinTekkers/ui-service",
+        "FinTekkers/horizon",
+        "FinTekkers/ledger-models"
+      ],
+      "itemRepo": "FinTekkers/horizon",
+      "isPlan": true,
+      "sourceShas": {
+        "FinTekkers/ui-service": "3f9c2b1a0d4e5f60718293a4b5c6d7e8f9012345",
+        "FinTekkers/horizon": "96677020123456789abcdef0123456789abcdef0"
+      }
+    },
+    "change": {
+      "projectRepos": [
+        "FinTekkers/horizon",
+        "FinTekkers/ui-service"
+      ],
+      "itemRepo": "FinTekkers/horizon",
+      "isPlan": false,
+      "sourceShas": {
+        "FinTekkers/horizon": "96677020123456789abcdef0123456789abcdef0"
+      }
+    },
+    "inventoryRow": {
+      "projectRepos": [
+        "FinTekkers/ui-service",
+        "FinTekkers/horizon"
+      ],
+      "itemRepo": "FinTekkers/horizon",
+      "isPlan": true,
+      "defaultRepo": "FinTekkers/ui-service",
+      "sourceShas": {
+        "FinTekkers/ui-service": "3f9c2b1a0d4e5f60718293a4b5c6d7e8f9012345",
+        "FinTekkers/horizon": "96677020123456789abcdef0123456789abcdef0"
+      }
+    },
+    "inventoryRowOutsideProject": {
+      "projectRepos": [
+        "FinTekkers/horizon"
+      ],
+      "itemRepo": "FinTekkers/horizon",
+      "isPlan": true,
+      "defaultRepo": "Elsewhere/ui-service",
+      "sourceShas": {
+        "FinTekkers/horizon": "96677020123456789abcdef0123456789abcdef0",
+        "Elsewhere/ui-service": "3f9c2b1a0d4e5f60718293a4b5c6d7e8f9012345"
+      }
+    },
+    "duplicateShortName": {
+      "projectRepos": [
+        "FinTekkers/api",
+        "Other/api",
+        "FinTekkers/web"
+      ],
+      "isPlan": true,
+      "sourceShas": {
+        "FinTekkers/api": "dddddddddddddddddddddddddddddddddddddddd",
+        "Other/api": "dddddddddddddddddddddddddddddddddddddddd",
+        "FinTekkers/web": "dddddddddddddddddddddddddddddddddddddddd"
+      }
+    },
+    "noShas": {
+      "projectRepos": [
+        "FinTekkers/ui-service",
+        "FinTekkers/horizon"
+      ],
+      "itemRepo": "FinTekkers/horizon",
+      "isPlan": false,
+      "sourceShas": null
+    },
+    "badShas": {
+      "projectRepos": [
+        "FinTekkers/ui-service",
+        "FinTekkers/horizon",
+        "FinTekkers/web"
+      ],
+      "itemRepo": "FinTekkers/horizon",
+      "isPlan": false,
+      "sourceShas": {
+        "FinTekkers/ui-service": "3F9C2B1A0D4E5F60718293A4B5C6D7E8F9012345",
+        "FinTekkers/horizon": "96677020123456789abcdef0123456789abcdef",
+        "FinTekkers/web": 12
+      }
+    },
+    "shaForRepoOutsideProject": {
+      "projectRepos": [
+        "FinTekkers/horizon"
+      ],
+      "itemRepo": "FinTekkers/horizon",
+      "isPlan": false,
+      "sourceShas": {
+        "FinTekkers/horizon": "96677020123456789abcdef0123456789abcdef0",
+        "FinTekkers/ui-service": "3f9c2b1a0d4e5f60718293a4b5c6d7e8f9012345"
+      }
+    }
+  },
+  "codeRefs": [
+    {
+      "name": "metric 1: a multi-repo Plan reference links at the step's sha",
+      "ctx": "plan",
+      "text": "ui-service:src/routes/treasuries/+page.server.ts:339-342",
+      "url": "https://github.com/FinTekkers/ui-service/blob/3f9c2b1a0d4e5f60718293a4b5c6d7e8f9012345/src/routes/treasuries/+page.server.ts#L339-L342"
+    },
+    {
+      "name": "one line",
+      "ctx": "plan",
+      "text": "horizon:server/src/app.js:138",
+      "url": "https://github.com/FinTekkers/horizon/blob/96677020123456789abcdef0123456789abcdef0/server/src/app.js#L138"
+    },
+    {
+      "name": "a root file with a repo",
+      "ctx": "plan",
+      "text": "horizon:README.md:3",
+      "url": "https://github.com/FinTekkers/horizon/blob/96677020123456789abcdef0123456789abcdef0/README.md#L3"
+    },
+    {
+      "name": "surrounding whitespace is trimmed",
+      "ctx": "plan",
+      "text": "  horizon:server/src/app.js:138 ",
+      "url": "https://github.com/FinTekkers/horizon/blob/96677020123456789abcdef0123456789abcdef0/server/src/app.js#L138"
+    },
+    {
+      "name": "the short name is matched case-insensitively",
+      "ctx": "plan",
+      "text": "UI-Service:src/x.ts:1",
+      "url": "https://github.com/FinTekkers/ui-service/blob/3f9c2b1a0d4e5f60718293a4b5c6d7e8f9012345/src/x.ts#L1"
+    },
+    {
+      "name": "a bare :N never parses",
+      "ctx": "plan",
+      "text": ":342-363",
+      "url": null
+    },
+    {
+      "name": "a bare file name never parses",
+      "ctx": "plan",
+      "text": "passthrough.rs:184-197",
+      "url": null
+    },
+    {
+      "name": "a non-reference code span",
+      "ctx": "plan",
+      "text": "npm test",
+      "url": null
+    },
+    {
+      "name": "a path with no repo on a Plan has no default",
+      "ctx": "plan",
+      "text": "src/x.ts:12",
+      "url": null
+    },
+    {
+      "name": "a project repo with no recorded sha",
+      "ctx": "plan",
+      "text": "ledger-models:src/a.py:1",
+      "url": null
+    },
+    {
+      "name": "an unknown repo",
+      "ctx": "plan",
+      "text": "elsewhere:src/x.ts:1",
+      "url": null
+    },
+    {
+      "name": "metric 2: a single-repo Change links a bare path to the item's repo",
+      "ctx": "change",
+      "text": "src/x.ts:12",
+      "url": "https://github.com/FinTekkers/horizon/blob/96677020123456789abcdef0123456789abcdef0/src/x.ts#L12"
+    },
+    {
+      "name": "a single-repo Change still rejects a bare file name",
+      "ctx": "change",
+      "text": "x.ts:12",
+      "url": null
+    },
+    {
+      "name": "an explicit default repo (Inventory row) links a bare path on a Plan",
+      "ctx": "inventoryRow",
+      "text": "src/routes/a.ts:4-9",
+      "url": "https://github.com/FinTekkers/ui-service/blob/3f9c2b1a0d4e5f60718293a4b5c6d7e8f9012345/src/routes/a.ts#L4-L9"
+    },
+    {
+      "name": "an explicit default repo outside the project is ignored",
+      "ctx": "inventoryRowOutsideProject",
+      "text": "src/routes/a.ts:4",
+      "url": null
+    },
+    {
+      "name": "a duplicate short name links neither repo",
+      "ctx": "duplicateShortName",
+      "text": "api:src/x.ts:1",
+      "url": null
+    },
+    {
+      "name": "the other repo in a project with a duplicate still links",
+      "ctx": "duplicateShortName",
+      "text": "web:src/x.ts:1",
+      "url": "https://github.com/FinTekkers/web/blob/dddddddddddddddddddddddddddddddddddddddd/src/x.ts#L1"
+    },
+    {
+      "name": "no source shas recorded (a pre-HZ-546 run)",
+      "ctx": "noShas",
+      "text": "ui-service:src/x.ts:1",
+      "url": null
+    },
+    {
+      "name": "no source shas recorded, bare path",
+      "ctx": "noShas",
+      "text": "src/x.ts:1",
+      "url": null
+    },
+    {
+      "name": "an uppercase sha is not a commit sha",
+      "ctx": "badShas",
+      "text": "ui-service:src/x.ts:1",
+      "url": null
+    },
+    {
+      "name": "a 39-character sha is not a commit sha",
+      "ctx": "badShas",
+      "text": "src/x.ts:1",
+      "url": null
+    },
+    {
+      "name": "a non-string sha",
+      "ctx": "badShas",
+      "text": "web:src/x.ts:1",
+      "url": null
+    },
+    {
+      "name": "a sha for a repo outside the project is never used",
+      "ctx": "shaForRepoOutsideProject",
+      "text": "ui-service:src/x.ts:1",
+      "url": null
+    },
+    {
+      "name": "..",
+      "ctx": "plan",
+      "text": "ui-service:a/../b.ts:1",
+      "url": null
+    },
+    {
+      "name": ".",
+      "ctx": "plan",
+      "text": "ui-service:a/./b.ts:1",
+      "url": null
+    },
+    {
+      "name": "an empty segment",
+      "ctx": "plan",
+      "text": "ui-service:a//b.ts:1",
+      "url": null
+    },
+    {
+      "name": "an absolute path",
+      "ctx": "plan",
+      "text": "ui-service:/abs.ts:1",
+      "url": null
+    },
+    {
+      "name": "an https URL",
+      "ctx": "plan",
+      "text": "https://evil/x.ts:1",
+      "url": null
+    },
+    {
+      "name": "a javascript: scheme",
+      "ctx": "plan",
+      "text": "javascript:x:1",
+      "url": null
+    },
+    {
+      "name": "a second line part",
+      "ctx": "plan",
+      "text": "ui-service:a/b.ts:1:2",
+      "url": null
+    },
+    {
+      "name": "line 0",
+      "ctx": "plan",
+      "text": "ui-service:a/b.ts:0",
+      "url": null
+    },
+    {
+      "name": "a reversed range",
+      "ctx": "plan",
+      "text": "ui-service:a/b.ts:5-3",
+      "url": null
+    },
+    {
+      "name": "8 digits",
+      "ctx": "plan",
+      "text": "ui-service:a/b.ts:12345678",
+      "url": null
+    },
+    {
+      "name": "full-width digits",
+      "ctx": "plan",
+      "text": "ui-service:a/b.ts:１２",
+      "url": null
+    },
+    {
+      "name": "an exponent",
+      "ctx": "plan",
+      "text": "ui-service:a/b.ts:1e3",
+      "url": null
+    },
+    {
+      "name": "an already-encoded ..",
+      "ctx": "plan",
+      "text": "ui-service:a/%2e%2e/b.ts:1",
+      "url": null
+    },
+    {
+      "name": "a space",
+      "ctx": "plan",
+      "text": "ui-service:a/b c.ts:1",
+      "url": null
+    },
+    {
+      "name": "a #",
+      "ctx": "plan",
+      "text": "ui-service:a/b#x.ts:1",
+      "url": null
+    },
+    {
+      "name": "a ?",
+      "ctx": "plan",
+      "text": "ui-service:a/b?x.ts:1",
+      "url": null
+    },
+    {
+      "name": "a backslash",
+      "ctx": "plan",
+      "text": "ui-service:a\\b.ts:1",
+      "url": null
+    },
+    {
+      "name": "HTML in the path with a space is rejected",
+      "ctx": "plan",
+      "text": "ui-service:a/<img src=x onerror=1>.ts:1",
+      "url": null
+    },
+    {
+      "name": "HTML in the path with no space is encoded",
+      "ctx": "plan",
+      "text": "ui-service:a/<b>.ts:1",
+      "url": "https://github.com/FinTekkers/ui-service/blob/3f9c2b1a0d4e5f60718293a4b5c6d7e8f9012345/a/%3Cb%3E.ts#L1"
+    },
+    {
+      "name": "unicode is percent-encoded",
+      "ctx": "plan",
+      "text": "ui-service:a/ünï.ts:1",
+      "url": "https://github.com/FinTekkers/ui-service/blob/3f9c2b1a0d4e5f60718293a4b5c6d7e8f9012345/a/%C3%BCn%C3%AF.ts#L1"
+    },
+    {
+      "name": "a quote is encoded",
+      "ctx": "plan",
+      "text": "ui-service:a/b\".ts:1",
+      "url": "https://github.com/FinTekkers/ui-service/blob/3f9c2b1a0d4e5f60718293a4b5c6d7e8f9012345/a/b%22.ts#L1"
+    }
+  ],
+  "itemIds": [
+    {
+      "name": "a known id links",
+      "knownIds": [
+        "US-243"
+      ],
+      "text": "see US-243 first",
+      "pieces": [
+        {
+          "text": "see "
+        },
+        {
+          "id": "US-243"
+        },
+        {
+          "text": " first"
+        }
+      ]
+    },
+    {
+      "name": "an unknown id stays text",
+      "knownIds": [
+        "US-243"
+      ],
+      "text": "ZZ-9 and VS-110",
+      "pieces": [
+        {
+          "text": "ZZ-9 and VS-110"
+        }
+      ]
+    },
+    {
+      "name": "only the known one of two links",
+      "knownIds": [
+        "VS-110"
+      ],
+      "text": "US-243, VS-110.",
+      "pieces": [
+        {
+          "text": "US-243, "
+        },
+        {
+          "id": "VS-110"
+        },
+        {
+          "text": "."
+        }
+      ]
+    },
+    {
+      "name": "a lowercase id stays text",
+      "knownIds": [
+        "US-243"
+      ],
+      "text": "us-243",
+      "pieces": [
+        {
+          "text": "us-243"
+        }
+      ]
+    },
+    {
+      "name": "an id inside a longer word stays text",
+      "knownIds": [
+        "US-243"
+      ],
+      "text": "XUS-243 US-2430",
+      "pieces": [
+        {
+          "text": "XUS-243 US-2430"
+        }
+      ]
+    },
+    {
+      "name": "text that is only an id",
+      "knownIds": [
+        "HZ-546"
+      ],
+      "text": "HZ-546",
+      "pieces": [
+        {
+          "id": "HZ-546"
+        }
+      ]
+    },
+    {
+      "name": "no known ids",
+      "knownIds": [],
+      "text": "US-243",
+      "pieces": [
+        {
+          "text": "US-243"
+        }
+      ]
+    }
+  ]
+}

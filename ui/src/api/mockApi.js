@@ -115,7 +115,7 @@ export function getSync() {
 // user is "already logged in", same as before this ticket's TopBar showed a
 // literal "AP".
 
-const MOCK_USER = { id: 'mock-user', email: 'demo@example.com', name: 'Alex Porter', initials: 'AP', authMethod: 'password' }
+const MOCK_USER = { id: 'mock-user', email: 'demo@example.com', name: 'Alex Porter', initials: 'AP', authMethod: 'password', isAdmin: true }
 
 export async function getCurrentUser() {
   return MOCK_USER
@@ -530,6 +530,43 @@ export async function getCheckFlakes() {
 
 export async function getProductivity({ range = '14d', project = 'all' } = {}) {
   return { ...structuredClone(PRODUCTIVITY_FIXTURE), range, project }
+}
+
+// HZ-563: a fixed amber Farm health reading, the shape GET /api/admin/farm-health returns.
+export async function getFarmHealth() {
+  const now = Date.now()
+  const ago = (s) => new Date(now - s * 1000).toISOString()
+  const slot = (busy, limit, waiting = 0) => ({ busy, limit, waiting })
+  const service = (name, detail = null) => ({ name, unit: name, detail, state: 'active', up: true })
+  return {
+    state: 'amber',
+    reason: '1 step is waiting for a slot',
+    collectedAt: ago(0),
+    farm: { status: 'running', since: ago(3600) },
+    capacity: { agents: slot(3, 4, 1), express: slot(0, 1), pm: slot(0, 1), checks: slot(1, 2) },
+    waitingCount: 1,
+    running: [
+      { itemId: 'HZ-101', step: 'Specialist agent implements', slot: 'agent', startedAt: ago(372) },
+      { itemId: 'HZ-102', step: 'QA reviews the test plan', slot: 'agent', startedAt: ago(329) },
+    ],
+    waiting: [{ itemId: 'HZ-103', step: 'Specialist agent implements', slot: 'agent', startedAt: ago(130) }],
+    box: {
+      load: [2.1, 1.8, 1.5],
+      vcpus: 4,
+      machine: null,
+      memTotalBytes: 16e9,
+      memAvailableBytes: 8e9,
+      memAvailablePct: 50,
+      diskTotalBytes: 145e9,
+      diskAvailBytes: 57e9,
+      diskUsedPct: 61,
+      swapTotalBytes: 1e9,
+      swapUsedPct: 3,
+      uptimeS: 15 * 86400,
+    },
+    services: ['horizon-server', 'horizon-farm', 'nginx'].map((n) => service(n)),
+    recent: [{ kind: 'deploy', target: 'horizon', tag: 'b220', at: ago(3600) }],
+  }
 }
 
 // ---- deploy targets (HZ-41, read-only) ----

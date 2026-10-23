@@ -1,0 +1,10 @@
+<!doctype html>
+<html>
+<head><meta charset="utf-8"><title>Stub egress</title></head>
+<!-- HZ-530: a page that tries to reach another host two ways. The walkthrough
+     browser must abort both and log only the host. -->
+<body style="margin:0;background:#f4f5f7">
+  <img src="http://example.org/pixel.png?tok=hz530-img-canary" alt="">
+  <script>fetch('http://example.org/x?q=hz530-fetch-canary').catch(() => {})</script>
+</body>
+</html>

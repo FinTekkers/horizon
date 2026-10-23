@@ -6,7 +6,7 @@ Every test but the height cap drives the runner with a fake worker
 timeouts, process cleanup, login headers and redaction run for real. The
 height cap and HZ-527's idle and waitFor waits need a real browser: they run
 farm/capture/worker.mjs on Chromium and fail — never skip — when either is
-missing."""
+missing. HZ-557's mask and cookie-login captures run on real Chromium too."""
 
 import json
 import os
@@ -50,7 +50,7 @@ class App:
     """A git workspace with a .horizon/screenshots.json whose `serve` is the
     fixture app."""
 
-    def __init__(self, tmp_path: Path, screens: list[dict], *, flags: str = "", ignore: bool = True):
+    def __init__(self, tmp_path: Path, screens: list[dict], *, flags: str = "", ignore: bool = True, extra=None):
         self.ws = tmp_path / "ws"
         self.ws.mkdir(parents=True)
         subprocess.run(["git", "init", "-q", "-b", "main", str(self.ws)], check=True)
@@ -67,6 +67,7 @@ class App:
             "themes": ["light"],
             "viewports": [{"name": "desktop", "width": 800, "height": 600}],
             "screens": screens,
+            **(extra or {}),
         }
         (self.ws / ".horizon").mkdir()
         (self.ws / screenshots_config.CONFIG_PATH).write_text(json.dumps(doc))
@@ -449,3 +450,257 @@ def test_png_names_stay_inside_output_dir_and_never_collide():
     taken: set[str] = set()
     assert screenshot_runner.png_name(shot, taken) == "x_y--desktop--light.png"
     assert screenshot_runner.png_name(clash, taken) == "x_y--desktop--light-2.png"
+
+
+# ---- HZ-557: per-screen mask and cookie-session login ----
+
+PIXELS_JS = """
+import { readFileSync } from 'node:fs'
+import { PNG } from 'pngjs'
+const [file, points] = process.argv.slice(1)
+const png = PNG.sync.read(readFileSync(file))
+console.log(JSON.stringify(JSON.parse(points).map(([x, y]) => {
+  const i = (png.width * y + x) * 4
+  return [png.data[i], png.data[i + 1], png.data[i + 2]]
+})))
+"""
+MAGENTA, WHITE, BLUE = (255, 0, 255), (255, 255, 255), (0, 0, 255)
+LOGGED_IN, LOGGED_OUT = (0, 170, 0), (136, 136, 136)
+API_KEY_VAR, EMAIL_VAR = "FT_E2E_API_KEY", "FT_E2E_EMAIL"
+COOKIE_VALUES = {API_KEY_VAR: "api-key-for-the-cookie-tests", EMAIL_VAR: "e2e-user@example.test"}
+LOGIN_COOKIES = {"ft_api_key": API_KEY_VAR, "ft_user_email": EMAIL_VAR}
+
+
+def pixels(png: Path, points: list[tuple[int, int]]) -> list[tuple[int, int, int]]:
+    out = subprocess.run(
+        ["node", "--input-type=module", "-e", PIXELS_JS, str(png), json.dumps(points)],
+        cwd=screenshot_runner.CAPTURE_DIR,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    return [tuple(p) for p in json.loads(out.stdout)]
+
+
+def pngs(out: Path) -> list[str]:
+    return sorted(p.name for p in out.glob("*.png"))
+
+
+def test_mask_fills_the_element_box_and_nothing_else(tmp_path, monkeypatch):
+    use_real_worker(monkeypatch)
+    app = App(tmp_path, [{"name": "masked", "path": "/mask", "mask": ["#secret"]}])
+
+    (shot,) = app.capture(budget_s=120)["shots"]
+
+    assert shot["status"] == OK
+    png = app.out / shot["png"]
+    # #secret is 50,50 200x100: its corners and centre are mask colour.
+    assert pixels(png, [(50, 50), (249, 50), (50, 149), (249, 149), (150, 100)]) == [MAGENTA] * 5
+    # 2 px outside each edge is the white page; #other keeps its blue.
+    assert pixels(png, [(47, 100), (252, 100), (150, 47), (150, 152)]) == [WHITE] * 4
+    assert pixels(png, [(450, 100)]) == [BLUE]
+
+
+def test_mask_matching_nothing_fails_that_screen_with_one_line(tmp_path, monkeypatch):
+    use_real_worker(monkeypatch)
+    app = App(
+        tmp_path,
+        [{"name": "masked", "path": "/mask", "mask": ["#secret", "#nope"]}, {"name": "plain", "path": "/mask"}],
+    )
+
+    manifest = app.capture(budget_s=120)
+
+    masked, plain = manifest["shots"]
+    assert (masked["status"], masked["png"]) == (screenshot_runner.ERROR, None)
+    # The second selector, not the first, is the one named.
+    assert checks.screenshots_failure_lines(manifest, app.cfg.shots) == [
+        'screenshots: masked desktop/light: mask "#nope" matched nothing'
+    ]
+    assert plain["status"] == OK
+    assert pngs(app.out) == [plain["png"]]
+
+
+def test_a_mask_left_visible_fails_the_screen_and_its_png_is_deleted(tmp_path):
+    # The fake worker writes its PNG, then reports the leak: the runner, not
+    # the worker, must make sure no PNG is left for that screen.
+    app = App(tmp_path, [{"name": "leaky", "path": "/still-visible", "mask": ["#x"]}, {"name": "fine", "path": "/a"}])
+
+    manifest = app.capture()
+
+    assert [s["status"] for s in manifest["shots"]] == [screenshot_runner.ERROR, OK]
+    assert checks.screenshots_failure_lines(manifest, app.cfg.shots) == [
+        'screenshots: leaky desktop/light: mask "#x" still visible'
+    ]
+    assert pngs(app.out) == ["fine--desktop--light.png"]
+    assert app.worker_shots()[0]["keys"] == sorted([*SHOT_KEYS, "mask"])
+
+
+LEAKED_BOX_JS = """
+import { PNG } from 'pngjs'
+import { leakedBox, MASK_RGB } from './mask.mjs'
+const png = new PNG({ width: 20, height: 20 })
+for (let i = 0; i < png.data.length; i += 4) png.data.set([...MASK_RGB, 255], i)
+const paint = (x, y) => png.data.set([255, 0, 0, 255], (20 * y + x) * 4)
+const a = { x: 0, y: 0, width: 5, height: 5 }
+const b = { x: 10, y: 10, width: 5, height: 5 }
+const results = { clean: leakedBox(png, [a, b]) }
+paint(12, 12)
+results.leakInSecond = leakedBox(png, [a, b])
+results.fractionalEdge = leakedBox(png, [{ x: 12.5, y: 0, width: 5, height: 5 }])
+results.belowTheCut = leakedBox(png, [{ x: 0, y: 40, width: 5, height: 5 }])
+console.log(JSON.stringify(results))
+"""
+
+
+def test_leaked_box_finds_a_masked_box_left_visible():
+    # The spike found Playwright's mask covers even a top-layer <dialog>, so
+    # no fixture page leaks for real: the leak check itself is tested here.
+    out = subprocess.run(
+        ["node", "--input-type=module", "-e", LEAKED_BOX_JS],
+        cwd=screenshot_runner.CAPTURE_DIR,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    # The pixel at (12, 12) is red: box 1 leaks. A box whose fractional edge
+    # (12.5) holds it, or one wholly below the PNG, does not.
+    assert json.loads(out.stdout) == {"clean": -1, "leakInSecond": 1, "fractionalEdge": -1, "belowTheCut": -1}
+
+
+def cookie_requests(app: App, path: str) -> list[dict]:
+    return [r for r in app.requests() if r["path"] == path]
+
+
+def test_login_cookies_log_in_and_login_false_stays_logged_out(tmp_path, monkeypatch):
+    use_real_worker(monkeypatch)
+    app = App(
+        tmp_path,
+        [{"name": "in", "path": "/cookie", "login": True}, {"name": "out", "path": "/cookie"}],
+        extra={"loginCookies": LOGIN_COOKIES},
+    )
+
+    logged_in, logged_out = app.capture(login_values=COOKIE_VALUES, budget_s=120)["shots"]
+
+    assert [logged_in["status"], logged_out["status"]] == [OK, OK]
+    assert pixels(app.out / logged_in["png"], [(400, 300)]) == [LOGGED_IN]
+    assert pixels(app.out / logged_out["png"], [(400, 300)]) == [LOGGED_OUT]
+    first, second = cookie_requests(app, "/cookie")
+    assert first["cookies"] == ["ft_api_key", "ft_user_email"] and second["cookies"] == []
+    # Cookies replace the X-Horizon-Test-Env-* headers; nothing logged in.
+    assert first["headers"] == {} and second["headers"] == {}
+    assert logged_in_paths(app.requests()) == []
+
+
+def test_one_of_the_two_cookies_is_still_logged_out(tmp_path, monkeypatch):
+    use_real_worker(monkeypatch)
+    app = App(
+        tmp_path,
+        [{"name": "in", "path": "/cookie", "login": True}],
+        extra={"loginCookies": {"ft_api_key": API_KEY_VAR}},
+    )
+
+    (shot,) = app.capture(login_values=COOKIE_VALUES, budget_s=120)["shots"]
+
+    assert shot["status"] == OK
+    assert cookie_requests(app, "/cookie")[0]["cookies"] == ["ft_api_key"]
+    assert pixels(app.out / shot["png"], [(400, 300)]) == [LOGGED_OUT]
+
+
+def test_login_cookies_never_reach_a_second_origin(tmp_path, monkeypatch):
+    use_real_worker(monkeypatch)
+    also = free_port()
+    app = App(
+        tmp_path,
+        [{"name": "in", "path": "/cookie", "login": True}],
+        flags=f"--also-port {also}",
+        extra={"loginCookies": LOGIN_COOKIES},
+    )
+
+    (shot,) = app.capture(login_values=COOKIE_VALUES, budget_s=120)["shots"]
+
+    assert shot["status"] == OK
+    assert pixels(app.out / shot["png"], [(400, 300)]) == [LOGGED_IN]
+    second = [r for r in app.requests() if r["port"] == also]
+    # Not vacuous: the <img>, the GET and the POST all reached it.
+    assert sorted((r["method"], r["path"]) for r in second) == [
+        ("GET", "/also-fetch"),
+        ("GET", "/also-img"),
+        ("POST", "/also-post"),
+    ]
+    assert [r["body"] for r in second if r["method"] == "POST"] == ["hello-post"]
+    assert all(r["cookies"] == [] for r in second)
+
+
+def test_cookie_values_are_redacted_from_a_real_worker_run(tmp_path, monkeypatch):
+    use_real_worker(monkeypatch)
+    # A careless worker: the real one, with every message it is sent copied
+    # to its stderr — so the cookie values reach the runner's log for real.
+    worker = screenshot_runner.CAPTURE_DIR / "worker.mjs"
+    monkeypatch.setattr(screenshot_runner, "WORKER_CMD", ["bash", "-c", f"tee /dev/stderr | exec node {worker}"])
+    monkeypatch.setattr(screenshot_runner, "preflight", lambda *_: None)
+    secrets = {f"login_env:{k}": v for k, v in COOKIE_VALUES.items()}
+    app = App(
+        tmp_path,
+        [{"name": "in", "path": "/cookie", "login": True, "mask": ["#nope"]}],
+        extra={"loginCookies": LOGIN_COOKIES},
+    )
+    lines: list[str] = []
+
+    manifest = checks._capture_screenshots(
+        app.ws, app.cfg, env=app.env, login_values=COOKIE_VALUES, secrets=secrets, deadline=time.monotonic() + 120, log=lines.append
+    )
+
+    step_output = checks.screenshots_failure_lines(manifest, app.cfg.shots)
+    assert step_output == ['screenshots: in desktop/light: mask "#nope" matched nothing']
+    logged = "\n".join(lines)
+    assert '"value": "[redacted]"' in logged
+    for shown in ((app.out / "manifest.json").read_text(), logged, *step_output):
+        for value in COOKIE_VALUES.values():
+            assert value not in shown
+
+    # serve prints a cookie value, then exits before ready: the check failure.
+    app2 = App(
+        tmp_path / "second",
+        [{"name": "in", "path": "/cookie", "login": True}],
+        flags=f"--print-env {API_KEY_VAR}",
+        extra={"loginCookies": LOGIN_COOKIES},
+    )
+    with pytest.raises(CheckFailure) as err:
+        checks._capture_screenshots(
+            app2.ws, app2.cfg, env=app2.env, login_values=COOKIE_VALUES, secrets=secrets, deadline=time.monotonic() + 30, log=lines.append
+        )
+    exc = err.value
+    assert "starting with [redacted]" in exc.tail
+    for shown in (str(exc), exc.headline, exc.tail, exc.reason, *lines):
+        for value in COOKIE_VALUES.values():
+            assert value not in shown
+
+
+def test_an_unset_cookie_variable_fails_the_run_naming_it(tmp_path, monkeypatch):
+    monkeypatch.setattr(screenshot_runner, "preflight", lambda *_: None)
+    app = App(tmp_path, [{"name": "in", "path": "/cookie", "login": True}], extra={"loginCookies": LOGIN_COOKIES})
+    values = {API_KEY_VAR: COOKIE_VALUES[API_KEY_VAR]}
+    with pytest.raises(CheckFailure) as err:
+        checks._capture_screenshots(
+            app.ws, app.cfg, env=app.env, login_values=values, secrets={}, deadline=time.monotonic() + 30, log=lambda *_: None
+        )
+    assert err.value.headline == f"screenshots: loginCookies.ft_user_email: test-login variable {EMAIL_VAR} is not set"
+    assert COOKIE_VALUES[API_KEY_VAR] not in str(err.value)
+    assert not app.state.exists()  # serve never started
+
+
+def test_a_v1_config_without_new_keys_is_unchanged(tmp_path, monkeypatch):
+    valid =screenshots_config.parse(json.loads((FIXTURES / "valid.json").read_text()))
+    assert {shot.mask for shot in valid} == {()}
+    use_real_worker(monkeypatch)
+    app = App(tmp_path, [{"name": "home", "path": "/"}, {"name": "account", "path": "/account", "login": True}])
+    assert app.cfg.login_cookies == {}
+
+    manifest = app.capture(login_values={KEY_NAME: KEY}, budget_s=120)
+
+    assert [s["status"] for s in manifest["shots"]] == [OK, OK]
+    by_path = {r["path"]: r for r in app.requests()}
+    assert by_path["/account"]["headers"] == {KEY_HEADER: KEY} and by_path["/account"]["cookies"] == []
+    assert by_path["/"]["headers"] == {} and by_path["/"]["cookies"] == []
+    # The file list a pre-HZ-557 run writes for these screens.
+    assert pngs(app.out) == ["account--desktop--light.png", "home--desktop--light.png"]

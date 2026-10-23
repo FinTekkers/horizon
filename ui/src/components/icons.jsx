@@ -83,6 +83,15 @@ export function RestartIcon({ size = 13 }) {
   )
 }
 
+// HZ-563: the Farm health menu entry — the design's pulse line, on a 16-unit grid.
+export function PulseIcon({ size = 15 }) {
+  return (
+    <svg {...iconProps(size, 1.6)} viewBox="0 0 16 16">
+      <path d="M1.5 8.5h3l1.8-4 3 7.5 1.9-3.5h3.3" />
+    </svg>
+  )
+}
+
 export function SlidersIcon({ size = 15 }) {
   return (
     <svg {...iconProps(size, 2.2)}>

@@ -40,6 +40,7 @@ import {
 import { AUTO_RETRY_REASONS, REASON } from '../../domain/js/reasons.js'
 import { patchLimits, addedCriteriaLines } from '../../domain/js/fields.js'
 import { renderPlanDraftMd } from '../../domain/js/planDraft.js'
+import { isCommitSha } from '../../domain/js/codeRefs.js'
 import { ingestDraft } from './planDraft.js'
 import { isPlanReviewStep, planReviewInput, reviewStep } from './planReview.js'
 import { fileDrafts } from './planFiling.js'
@@ -64,6 +65,7 @@ import {
   getRepoTestEnvFile,
   getRepoConfig,
   getPlanScope,
+  listRepos,
   implementStartedBefore,
   CHECKS_WAIVER,
   recordCheckPass,
@@ -1959,6 +1961,10 @@ function dispatchJob(id, stepIndex, runId, attempt) {
   // already checked it still matches the repo's image setting.
   const runner = approved?.approved_runner
   if (!planArtifact || !approvedHash || !runner) return failFarmRun(runId, 'the run plan was never approved — approve it at Approve the run first')
+  // HZ-553: the item's own repo's test-login file path, whenever set — never
+  // its values, and never a path the run plan names. farmd reads the file at
+  // launch and refuses the job (login_env_refused: ...) when it can't.
+  const testEnvFile = getRepoTestEnvFile(item.repo)
   farmFetch('/steps/run', {
     run_id: runId,
     attempt,
@@ -1969,6 +1975,7 @@ function dispatchJob(id, stepIndex, runId, attempt) {
     approved_hash: approvedHash,
     runner,
     ...jobEnvFields(item.repo),
+    ...(testEnvFile ? { test_env_file: testEnvFile } : {}),
   }).catch((err) => {
     const code = err.code ?? ''
     if ((err.status === 400 || err.status === 409) && Object.hasOwn(FARM_REFUSALS, code)) {
@@ -2471,6 +2478,21 @@ function settleFixPass(id, run, artifacts) {
   addEvent(id, { who: 'Horizon', text: `next review is a full review: ${reason}`, color: '#DFA200', initials: 'HZ' })
 }
 
+// HZ-546: the farm's artifacts.source_shas ({ 'owner/name': sha }), kept only
+// for repos in the item's project with a full 40-hex sha, as the JSON stored
+// in step_run.source_shas — or null. A bad entry is dropped, never a failed run.
+const SOURCE_SHAS_MAX = 20
+function cleanSourceShas(raw, item) {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null
+  const projectRepos = new Set(listRepos().filter((r) => r.project_id === item.project_id).map((r) => r.repo))
+  const kept = {}
+  for (const [repo, sha] of Object.entries(raw)) {
+    if (Object.keys(kept).length >= SOURCE_SHAS_MAX) break
+    if (projectRepos.has(repo) && isCommitSha(sha)) kept[repo] = sha
+  }
+  return Object.keys(kept).length > 0 ? JSON.stringify(kept) : null
+}
+
 // A markdown rendering so the mock path (no real agent artifact_md) still
 // gives the human gate and the GitHub issue something to read.
 function mockReviewArtifactMd(verdict) {
@@ -2492,6 +2514,7 @@ function mockReviewArtifactMd(verdict) {
 // construction. HZ-369: plus { provider, commandId }, the run's provenance (HZ-398: and model). `delta` (validated by the caller) is set only for a review the
 // farm actually ran as a delta review; it swaps the pass rule for
 // resolveDeltaFindings. Fix-pass cycles count toward the same cap.
+// HZ-546: plus sourceShas, the cleaned step_run.source_shas JSON (or null).
 function finalizeReviewStep(id, runId, text, artifactMd, verdict, patch, isMock, review) {
   // This run has fully completed by the time we're called (no more awaits
   // pending on it) — safe to release the busy mutex before any of the three
@@ -2505,8 +2528,8 @@ function finalizeReviewStep(id, runId, text, artifactMd, verdict, patch, isMock,
     : null
   if (delta && delta.notes.length > 0) artifactMd = [artifactMd, notesSection(delta.notes)].filter(Boolean).join('\n\n')
   db.prepare(
-    "UPDATE step_run SET status = 'done', output = ?, artifact = ?, provider = ?, model = ?, command_id = ?, ended_at = datetime('now') WHERE id = ?",
-  ).run(text, artifactMd, review?.provider || null, review?.model || null, review?.commandId || null, runId)
+    "UPDATE step_run SET status = 'done', output = ?, artifact = ?, provider = ?, model = ?, command_id = ?, source_shas = ?, ended_at = datetime('now') WHERE id = ?",
+  ).run(text, artifactMd, review?.provider || null, review?.model || null, review?.commandId || null, review?.sourceShas ?? null, runId)
   // Written on every completed review, pass or fail: the next delta starts here.
   db.prepare('UPDATE work_item SET last_reviewed_sha = ? WHERE id = ?').run(review?.reviewedSha || null, id)
 
@@ -2834,6 +2857,8 @@ export async function completeFarmRun(runId, { summary, patch, artifacts, job_vi
     typeof artifacts?.command_id === 'string' && artifacts.command_id.trim() ? artifacts.command_id.trim() : null
   // HZ-398: the model that ran, beside the provider. NULL from an older farm.
   const model = typeof artifacts?.model === 'string' && artifacts.model.trim() ? artifacts.model.trim() : null
+  // HZ-546: the commit of each repo the run read. NULL from an older farm.
+  const sourceShas = cleanSourceShas(artifacts?.source_shas, item)
 
   if (run.step_index === REVIEW_STEP_INDEX) {
     if (!validateVerdict(artifacts?.verdict)) return failFarmRun(runId, 'malformed review verdict JSON')
@@ -2855,6 +2880,7 @@ export async function completeFarmRun(runId, { summary, patch, artifacts, job_vi
       provider,
       model,
       commandId,
+      sourceShas,
     })
     emitStepEnded(id)
     return { ok: true }
@@ -2955,13 +2981,14 @@ export async function completeFarmRun(runId, { summary, patch, artifacts, job_vi
   // HZ-407: a job's final view lands in the same write that closes the run.
   const finalView = STEPS[run.step_index]?.runsIn === 'job' ? cleanJobView(jobView) : null
   db.prepare(
-    "UPDATE step_run SET status = 'done', output = ?, artifact = ?, provider = ?, model = ?, command_id = ?, job_view = COALESCE(?, job_view), verdict = ?, verdict_summary = ?, ended_at = datetime('now') WHERE id = ?",
+    "UPDATE step_run SET status = 'done', output = ?, artifact = ?, provider = ?, model = ?, command_id = ?, source_shas = ?, job_view = COALESCE(?, job_view), verdict = ?, verdict_summary = ?, ended_at = datetime('now') WHERE id = ?",
   ).run(
     text,
     artifactMd,
     provider,
     model,
     commandId,
+    sourceShas,
     finalView && JSON.stringify(finalView),
     verify?.verdict ?? null,
     verify?.summary ?? null,

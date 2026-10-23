@@ -30,8 +30,9 @@ import { gateActionOf } from '../domain/gateAction'
 import { deployQueueLabel } from '../domain/deployQueue'
 import { resolveEventColor } from '../domain/eventColors'
 import { issueUrl, issueLabel, artifactUrl, outputUrl, runLogViewUrl, subscribeStepOutputs, stopJob, resumeJob, setAutopilotOff } from '../api'
+import { buildLinkContext } from '../../../domain/js/codeRefs.js'
 import StatusPill, { AutopilotOffChip, autopilotOffShown, AUTOPILOT_OFF_GATE_NOTE } from './StatusPill'
-import DependencyBadge from './DependencyBadge'
+import DependencyBadge, { itemHref } from './DependencyBadge'
 import Markdown from './Markdown'
 import GateActionStatus from './GateActionStatus'
 import JobPanel from './JobPanel'
@@ -55,6 +56,18 @@ function verifyVerdictOf(index, status, output, settled) {
   return output?.verdict === 'pass' || output?.verdict === 'fail' ? output.verdict : 'unknown'
 }
 const VERIFY_FAILED_LABEL = 'Verify & report failed'
+
+// HZ-561: a step ahead of the cursor that already ran (the item moved back
+// past it) shows its newest finished attempt instead of "Queued". `failed`
+// when that attempt sent the item back: review by the item's reviewRejected
+// (item-level, so only for the review step), any other step by its stored
+// verdict. null when the step never ran, is running again, or its newest
+// attempt recorded no artifact — then it reads "Queued" as before, on purpose.
+function ranAheadOf(item, index, status, output) {
+  if (status !== 'pending' || !output?.artifact || item.activeRun?.step_index === index) return null
+  const failed = (index === REVIEW_STEP_INDEX && item.reviewRejected === true) || output.verdict === 'fail'
+  return { attempt: output.attempt, failed }
+}
 
 function elapsedMinutes(startedAt) {
   if (!startedAt) return null
@@ -141,16 +154,34 @@ function ForwardToAcceptButton({ item, onForwardToAccept, disabled }) {
   )
 }
 
+// HZ-546: Markdown's link context for this item at one step run's recorded
+// shas. With none (`sourceShas` null) item ids still link and code references
+// stay plain. A Plan gets no default repo unless one is named (an Inventory
+// row's own repo). knownItemIds is what the board holds, which can differ from
+// the server pages' set (every stored id).
+function itemLinkContext(item, projects, knownItemIds, sourceShas = null, defaultRepo = null) {
+  const project = (projects || []).find((p) => p.id === item.project_id)
+  return buildLinkContext({
+    projectRepos: project?.repos ?? [],
+    itemRepo: item.repo,
+    isPlan: itemKindOf(item) === 'plan',
+    defaultRepo,
+    sourceShas,
+    knownIds: knownItemIds,
+    itemHref,
+  })
+}
+
 // HZ-185: on the Accept gate, the failing review a forward carried (the review
 // cap's or a human's) — that run's findings, not whatever review is newest.
-function ForwardedReview({ forwarded }) {
+function ForwardedReview({ forwarded, linkContext }) {
   return (
     <div className="step-card__forwarded">
       <div className="step-card__forwarded-title">
         Forwarded by {forwarded.by || 'Horizon'} with the failing review (run #{forwarded.runId}) attached
       </div>
       {forwarded.artifact ? (
-        <Markdown className="step-card__forwarded-body" text={forwarded.artifact} />
+        <Markdown className="step-card__forwarded-body" text={forwarded.artifact} linkContext={linkContext} />
       ) : (
         <div>The review recorded no findings text.</div>
       )}
@@ -262,7 +293,7 @@ function restartSentLabel(item, index, restartSent) {
   return `Sent: attempt ${restartSent.attempt} starting`
 }
 
-function Step({ item, stepOutputs, outputsSettled, index, deployBlock, viewerName, restartSent, onApprove, onApproveWithComments, onReject, onResolveConflicts, resolving, gateBusy, onForwardToAccept, onSetPersona, onSetStepProvider }) {
+function Step({ item, stepOutputs, outputsSettled, index, deployBlock, viewerName, restartSent, linkContextFor, onApprove, onApproveWithComments, onReject, onResolveConflicts, resolving, gateBusy, onForwardToAccept, onSetPersona, onSetStepProvider }) {
   const st = STEPS[index]
   const status = stepStatus(item, index)
   const isGate = st.kind === 'gate'
@@ -285,12 +316,13 @@ function Step({ item, stepOutputs, outputsSettled, index, deployBlock, viewerNam
   const sentLabel = restartSentLabel(item, index, restartSent)
   const verdict = verifyVerdictOf(index, status, output, outputsSettled)
   const verdictIcon = { fail: 'verdict-fail', unknown: 'verdict-unknown', loading: 'verdict-loading' }[verdict]
+  const ranAhead = ranAheadOf(item, index, status, output)
 
   return (
     <div className="step">
       <div className="step__rail">
         <div
-          className={`step__icon step__icon--${status}${queued ? ' step__icon--queued' : ''}${verdictIcon ? ` step__icon--${verdictIcon}` : ''}`}
+          className={`step__icon step__icon--${status}${queued ? ' step__icon--queued' : ''}${verdictIcon ? ` step__icon--${verdictIcon}` : ''}${ranAhead ? ` step__icon--ran-ahead${ranAhead.failed ? ' step__icon--verdict-fail' : ''}` : ''}`}
           data-testid={verdict === 'fail' ? 'verify-verdict-fail' : undefined}
           title={verdict === 'unknown' ? 'No verdict recorded for this run' : undefined}
         >
@@ -300,6 +332,8 @@ function Step({ item, stepOutputs, outputsSettled, index, deployBlock, viewerNam
             '?'
           ) : verdict === 'loading' ? (
             ''
+          ) : ranAhead ? (
+            '↺'
           ) : (
             STEP_GLYPHS[status]
           )}
@@ -308,7 +342,7 @@ function Step({ item, stepOutputs, outputsSettled, index, deployBlock, viewerNam
       </div>
       <div className="step__body">
         <div
-          className={`step-card${['awaiting', 'active', 'blocked'].includes(status) ? ` step-card--${status}` : ''}${queued ? ' step-card--queued' : ''}`}
+          className={`step-card${['awaiting', 'active', 'blocked'].includes(status) ? ` step-card--${status}` : ''}${queued ? ' step-card--queued' : ''}${ranAhead ? ` step-card--ran-ahead${ranAhead.failed ? ' step-card--ran-ahead-failed' : ''}` : ''}`}
           style={status === 'skipped' ? { opacity: 0.6 } : undefined}
           data-testid={status === 'skipped' ? 'step-skipped' : undefined}
         >
@@ -322,8 +356,17 @@ function Step({ item, stepOutputs, outputsSettled, index, deployBlock, viewerNam
           {/* HZ-54's queued state kept, but using main's theme token rather
               than the hardcoded hex it originally shipped — dark mode (HZ-25)
               moved every colour in this file behind a CSS variable. */}
-          <div className="step-card__meta" style={{ color: queued ? 'var(--muted)' : STEP_META_COLOR[status] || 'var(--muted)' }}>
-            {queued ? 'Queued' : mergeQueued ? 'Queued to merge' : STEP_META[status](isGate, st.gate, laneOf(item))}
+          <div
+            className="step-card__meta"
+            style={{ color: queued ? 'var(--muted)' : ranAhead?.failed ? 'var(--danger-ink)' : STEP_META_COLOR[status] || 'var(--muted)' }}
+          >
+            {queued
+              ? 'Queued'
+              : mergeQueued
+                ? 'Queued to merge'
+                : ranAhead
+                  ? `${ranAhead.failed ? 'Failed, sent back' : 'Completed earlier'} · attempt ${ranAhead.attempt}`
+                  : STEP_META[status](isGate, st.gate, laneOf(item))}
             {status === 'awaiting' && isGate && autopilotOffShown(item) && ` · ${AUTOPILOT_OFF_GATE_NOTE}`}
             {status === 'active' && item.activeRun?.step_index === index && (
               <span>
@@ -371,7 +414,9 @@ function Step({ item, stepOutputs, outputsSettled, index, deployBlock, viewerNam
             </div>
           )}
           {/* HZ-462: a Plan's Inventory as tables; the artifact link stays below. */}
-          {status === 'done' && index === PLAN_INVENTORY_STEP_INDEX && output?.artifact && <PlanInventoryTables artifact={output.artifact} />}
+          {status === 'done' && index === PLAN_INVENTORY_STEP_INDEX && output?.artifact && (
+            <PlanInventoryTables artifact={output.artifact} linkContextFor={(defaultRepo) => linkContextFor(output.sourceShas ?? null, defaultRepo)} />
+          )}
           {status === 'done' && !isGate && output?.output && (
             <a
               className="step-card__output-link"
@@ -392,6 +437,17 @@ function Step({ item, stepOutputs, outputsSettled, index, deployBlock, viewerNam
               {output.attemptCount > 1
                 ? `attempt ${output.attempt} of ${output.attemptCount} ↗`
                 : 'View full artifact ↗'}
+            </a>
+          )}
+          {ranAhead && (
+            <a
+              className="step-card__artifact-link"
+              data-testid="ran-ahead-artifact"
+              href={artifactUrl(item.id, index, ranAhead.attempt)}
+              target="_blank"
+              rel="noopener noreferrer"
+            >
+              {`View attempt ${ranAhead.attempt} ↗`}
             </a>
           )}
           {/* HZ-407: a Task's Execute job, live from the item's own stream. */}
@@ -433,10 +489,14 @@ function Step({ item, stepOutputs, outputsSettled, index, deployBlock, viewerNam
           {index === APPROVE_FILE_GATE_INDEX && item.cursor > PLAN_DRAFT_STEP_INDEX && <PlanItemsTable item={item} />}
           {/* HZ-449: the Close card links every item File items filed. */}
           {index === REVIEW_CLOSE_GATE_INDEX && status !== 'pending' && (
-            <Markdown className="md-body--tile" text={stepOutputs?.[FILE_ITEMS_STEP_INDEX]?.output} />
+            <Markdown
+              className="md-body--tile"
+              text={stepOutputs?.[FILE_ITEMS_STEP_INDEX]?.output}
+              linkContext={linkContextFor(stepOutputs?.[FILE_ITEMS_STEP_INDEX]?.sourceShas ?? null)}
+            />
           )}
           {status === 'awaiting' && index === ACCEPT_GATE_INDEX && item.forwardedReview && (
-            <ForwardedReview forwarded={item.forwardedReview} />
+            <ForwardedReview forwarded={item.forwardedReview} linkContext={linkContextFor(null)} />
           )}
           {index === IMPLEMENT_STEP_INDEX && item.reviewRejected && onForwardToAccept && !isAbandoned(item) && (
             <ForwardToAcceptButton item={item} onForwardToAccept={onForwardToAccept} disabled={gateBusy} />
@@ -819,7 +879,7 @@ function AutopilotOffNote({ item }) {
   )
 }
 
-export default function Tracker({ item, projects, deployBlock = null, viewerName = null, restartSent = null, onBack, onApprove, onApproveWithComments, onReject, onResolveConflicts, resolving, gateBusy, onForwardToAccept, onTogglePause, onRestartPhase, onSetPersona, onSetStepProvider, onAbandon, onRemoveDependency, onAddDependency, onAmendRule }) {
+export default function Tracker({ item, projects, knownItemIds = null, deployBlock = null, viewerName = null, restartSent = null, onBack, onApprove, onApproveWithComments, onReject, onResolveConflicts, resolving, gateBusy, onForwardToAccept, onTogglePause, onRestartPhase, onSetPersona, onSetStepProvider, onAbandon, onRemoveDependency, onAddDependency, onAmendRule }) {
   const status = itemStatus(item, true, { deployBlock })
   const activity = buildActivity(item)
   const [activityMin, setActivityMin] = useState(readActivityMin)
@@ -831,6 +891,7 @@ export default function Tracker({ item, projects, deployBlock = null, viewerName
   const closed = isClosed(item)
   const abandoned = isAbandoned(item)
   const { stepOutputs, settled: outputsSettled } = useStepOutputs(item)
+  const linkContextFor = (sourceShas, defaultRepo = null) => itemLinkContext(item, projects, knownItemIds, sourceShas, defaultRepo)
   // HZ-385: the button sends the state it shows, once at a time. Busy and the
   // error are kept with the item id, so opening another item drops them.
   const pauseInFlight = useRef(false)
@@ -908,7 +969,7 @@ export default function Tracker({ item, projects, deployBlock = null, viewerName
             {/* HZ-153: issue bodies are markdown — Markdown renders them as
                 React elements, never as HTML. Same for the two tiles below. */}
             {!abandoned && !closed && <AutopilotOffNote item={item} />}
-            <Markdown className="tracker__desc" text={item.desc} />
+            <Markdown className="tracker__desc" text={item.desc} linkContext={linkContextFor(null)} />
           </div>
           <StatusPill status={status} className="tracker__status" />
         </div>
@@ -957,11 +1018,11 @@ export default function Tracker({ item, projects, deployBlock = null, viewerName
         <div className="tracker__tiles">
           <div className="tile">
             <div className="tile__label">Success metric</div>
-            <Markdown className="tile__value md-body--tile" text={item.metric} />
+            <Markdown className="tile__value md-body--tile" text={item.metric} linkContext={linkContextFor(null)} />
           </div>
           <div className="tile">
             <div className="tile__label">Guardrails</div>
-            <Markdown className="tile__value md-body--tile" text={item.guardrails} />
+            <Markdown className="tile__value md-body--tile" text={item.guardrails} linkContext={linkContextFor(null)} />
           </div>
         </div>
         <DependencyBadge key={item.id} item={item} onRemove={onRemoveDependency} />
@@ -1010,6 +1071,7 @@ export default function Tracker({ item, projects, deployBlock = null, viewerName
                     deployBlock={deployBlock}
                     viewerName={viewerName}
                     restartSent={restartSent}
+                    linkContextFor={linkContextFor}
                     onApprove={onApprove}
                     onApproveWithComments={onApproveWithComments}
                     onReject={onReject}

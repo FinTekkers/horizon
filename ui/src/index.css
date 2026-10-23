@@ -65,6 +65,7 @@
   --muted-solid: #8C8C8E;
   --admin-warning-bg: #FFF6DD;
   --admin-warning-text: #7A5A00;
+  --health-ok: #1F9D6B;      /* HZ-563: Farm health's green dot and meter */
   --shadow-rgb: 56, 41, 79;
   --scrim-rgb: 40, 40, 46;
   --font-sans: 'DM Sans', sans-serif;
@@ -123,6 +124,7 @@
   --muted-solid: #5E5A6E;
   --admin-warning-bg: #3A331A;
   --admin-warning-text: #E8C468;
+  --health-ok: #3DBB88;
   --shadow-rgb: 0, 0, 0;
   --scrim-rgb: 40, 40, 46;
 }
@@ -282,6 +284,111 @@ button { font-family: var(--font-sans); }
   background: transparent; color: var(--muted);
 }
 .seg-tab--on { background: var(--surface); color: var(--deep); box-shadow: 0 2px 6px rgba(var(--shadow-rgb), 0.12); }
+
+.usermenu__item--current { background: var(--primary-bg); color: var(--primary-ink); font-weight: 700; }
+.usermenu__item--current:hover { background: var(--primary-bg-hover); }
+.usermenu__dot { margin-left: auto; }
+
+/* HZ-563: Farm health — laid out from ~/designs/horizon-farm-health-2026-10-23/. */
+.farm-health { padding: 20px 28px 56px; display: flex; flex-direction: column; gap: 18px; color: var(--deep); }
+.farm-health__head { display: flex; flex-wrap: wrap; align-items: flex-end; justify-content: space-between; gap: 14px; }
+.farm-health__titles { display: flex; flex-direction: column; gap: 4px; }
+.farm-health__h1 { margin: 0; font: 800 26px var(--font-sans); }
+.farm-health__sub { margin: 0; font-size: 14px; color: var(--text-secondary); }
+.farm-health__refresh { display: flex; align-items: center; gap: 10px; font-size: 13px; color: var(--muted-strong); }
+.farm-health__refresh-btn {
+  min-height: 38px; padding: 0 14px; border: 1px solid var(--border-strong); border-radius: 10px;
+  background: var(--surface); font: 700 14px var(--font-sans); color: var(--deep); cursor: pointer;
+}
+.farm-health__refresh-btn:disabled { cursor: default; color: var(--muted); }
+.farm-health__dot { display: inline-block; flex: none; width: 9px; height: 9px; border-radius: 999px; }
+.farm-health__dot--lg { width: 12px; height: 12px; }
+.farm-health__dot--green { background: var(--health-ok); }
+.farm-health__dot--amber { background: var(--warning); }
+.farm-health__dot--red { background: var(--danger); }
+.farm-health__spacer { flex: 1; }
+.farm-health__overall {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 14px; padding: 16px 20px;
+  border: 1px solid; border-radius: 16px;
+}
+.farm-health__overall--green { background: var(--success-bg); border-color: var(--success-bg); color: var(--success-ink); }
+.farm-health__overall--amber { background: var(--warning-bg); border-color: var(--warning-border-soft); color: var(--admin-warning-text); }
+.farm-health__overall--red { background: var(--danger-bg); border-color: var(--danger-border); color: var(--danger-ink); }
+.farm-health__overall-state { display: inline-flex; align-items: center; gap: 8px; font: 800 16px var(--font-sans); }
+.farm-health__overall-reason { font-size: 14px; }
+.farm-health__overall-meta { font-size: 13px; }
+.farm-health__capacity { display: flex; flex-direction: column; gap: 12px; }
+.farm-health__h2 { margin: 0; font: 800 17px var(--font-sans); }
+.farm-health__h3 { margin: 8px 0 0; font: 800 15px var(--font-sans); }
+.farm-health__tiles { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; }
+.farm-health__tile {
+  display: flex; flex-direction: column; gap: 8px; padding: 16px 18px;
+  background: var(--surface); border: 1px solid var(--border); border-radius: 16px;
+}
+.farm-health__tile-name { font-size: 13px; font-weight: 600; color: var(--muted-strong); }
+.farm-health__tile-count { font-size: 28px; font-weight: 800; }
+.farm-health__tile-of { font-size: 16px; font-weight: 600; color: var(--muted-strong); }
+.farm-health__cells { display: flex; gap: 4px; }
+.farm-health__cell { flex: 1; height: 10px; border-radius: 4px; background: var(--accent-bg); }
+.farm-health__cell--agent { background: var(--primary); }
+.farm-health__cell--lane { background: var(--agent-human); }
+.farm-health__cell--check { background: var(--success); }
+.farm-health__note { font-size: 13px; color: var(--text-secondary); }
+.farm-health__row { display: grid; grid-template-columns: minmax(0, 3fr) minmax(0, 2fr); gap: 18px; align-items: start; }
+.farm-health__card {
+  display: flex; flex-direction: column; gap: 12px; padding: 20px;
+  background: var(--surface); border: 1px solid var(--border); border-radius: 18px;
+}
+.farm-health__card--box { gap: 14px; }
+.farm-health__card-head { display: flex; align-items: baseline; justify-content: space-between; }
+.farm-health__count { font-size: 13px; color: var(--muted-strong); }
+.farm-health__table { width: 100%; border-collapse: collapse; font-size: 14px; }
+.farm-health__table th {
+  padding: 6px 8px; text-align: left; font-size: 12px; font-weight: 700; color: var(--muted-strong);
+  text-transform: uppercase; letter-spacing: 0.04em;
+}
+.farm-health__table td { padding: 10px 8px; border-top: 1px solid var(--subtle); }
+.farm-health__table .farm-health__num { text-align: right; font-variant-numeric: tabular-nums; }
+.farm-health__item { font-family: var(--font-mono); font-weight: 500; color: var(--primary-ink); }
+.farm-health__item:hover { color: var(--primary-hover); }
+.farm-health__slot { display: inline-block; padding: 2px 8px; border-radius: 6px; font-size: 12px; font-weight: 700; }
+.farm-health__slot--agent { background: var(--primary-bg); color: var(--primary-ink); }
+.farm-health__slot--check { background: var(--success-bg); color: var(--success-ink); }
+.farm-health__slot--pm, .farm-health__slot--server { background: var(--agent-human-bg); color: var(--agent-human-ink); }
+.farm-health__muted { color: var(--muted-strong); }
+.farm-health__empty { margin: 0; font-size: 14px; color: var(--muted-strong); }
+.farm-health__error { margin: 0; font-size: 14px; color: var(--danger-ink); }
+.farm-health__foot { margin: 0; font-size: 13px; color: var(--muted-strong); }
+.farm-health__meter { display: flex; flex-direction: column; gap: 6px; }
+.farm-health__meter-head { display: flex; justify-content: space-between; gap: 12px; font-size: 14px; }
+.farm-health__meter-name { font-weight: 700; }
+.farm-health__meter-value { color: var(--text-secondary); text-align: right; }
+.farm-health__bar { height: 10px; border-radius: 999px; background: var(--accent-bg); overflow: hidden; }
+.farm-health__bar-fill { display: block; height: 100%; border-radius: 999px; }
+.farm-health__bar-fill--green { background: var(--health-ok); }
+.farm-health__bar-fill--amber { background: var(--warning); }
+.farm-health__bar-fill--red { background: var(--danger); }
+.farm-health__meter-note { font-size: 12px; color: var(--muted-strong); }
+.farm-health__box-foot {
+  display: flex; flex-wrap: wrap; gap: 8px 16px; padding-top: 10px; border-top: 1px solid var(--subtle);
+  font-size: 13px; color: var(--text-secondary);
+}
+.farm-health__svc-count { font-size: 13px; font-weight: 700; color: var(--success-ink); }
+.farm-health__svc-count--down { color: var(--danger-ink); }
+.farm-health__services { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; margin: 0; padding: 0; list-style: none; }
+.farm-health__service {
+  display: flex; align-items: center; gap: 8px; padding: 10px 12px; min-width: 0;
+  border: 1px solid var(--subtle); border-radius: 10px; font-size: 14px;
+}
+.farm-health__service-name { font-weight: 600; overflow-wrap: anywhere; }
+.farm-health__service-detail { font-size: 12px; color: var(--muted-strong); white-space: nowrap; }
+.farm-health__event { display: flex; gap: 12px; padding: 6px 0; border-top: 1px solid var(--subtle); font-size: 14px; }
+.farm-health__event-at { width: 44px; flex: none; font-variant-numeric: tabular-nums; color: var(--muted-strong); }
+.farm-health__rules {
+  padding: 14px 18px; border: 1px dashed var(--hover-border); border-radius: 14px;
+  font-size: 13px; line-height: 1.5; color: var(--text-secondary);
+}
+.farm-health__rules strong { color: var(--deep); }
 
 .admin { padding: 22px 28px 48px; max-width: 720px; }
 .admin__title { font: 800 24px var(--font-sans); letter-spacing: -0.5px; margin-bottom: 18px; }
@@ -849,6 +956,10 @@ button { font-family: var(--font-sans); }
 .step__icon--verdict-fail { background: var(--danger); color: #fff; }
 .step__icon--verdict-unknown,
 .step__icon--verdict-loading { background: var(--surface); border: 2px solid var(--muted); color: var(--muted); }
+/* HZ-561: a step ahead of the cursor that already ran — its last result, not
+   the queued look. The failed variant also takes --verdict-fail above. */
+.step__icon--ran-ahead { background: var(--surface); border: 2px solid var(--muted); color: var(--muted); }
+.step__icon--ran-ahead.step__icon--verdict-fail { background: var(--danger); border-color: var(--danger); color: #fff; }
 .step__line { width: 2px; flex: 1; min-height: 14px; background: var(--border-strong); margin: 2px 0; }
 .step__line--done { background: var(--primary); }
 .step__body { flex: 1; padding-bottom: 14px; }
@@ -857,6 +968,8 @@ button { font-family: var(--font-sans); }
 .step-card--awaiting { background: var(--warning-bg-soft); border: 1.5px solid var(--warning-border-soft); }
 .step-card--active { background: var(--active-bg); border: 1px solid var(--active-border); }
 .step-card--blocked { background: var(--danger-bg-soft); border: 1px solid var(--danger-border-soft); }
+.step-card--ran-ahead { border: 1px dashed var(--border-strong); }
+.step-card--ran-ahead-failed { background: var(--danger-bg-soft); border-color: var(--danger-border-soft); }
 
 /* Queued (HZ-54): dispatched but not yet claimed by an agent — muted, no
    pulse. Uses theme tokens, not the hardcoded hex it originally shipped. */
@@ -1311,6 +1424,14 @@ button { font-family: var(--font-sans); }
 
   /* Room for the fixed bottom nav, so the last card or row is never under it. */
   .app { padding-bottom: calc(var(--bottomnav-h) + env(safe-area-inset-bottom, 0px)); }
+
+  /* HZ-563: the phone artboard — two tiles a row, one card a row, no slot column. */
+  .farm-health { padding: 16px 16px 40px; }
+  .farm-health__tiles { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .farm-health__tile-count { font-size: 24px; }
+  .farm-health__row { grid-template-columns: minmax(0, 1fr); }
+  .farm-health__services { grid-template-columns: minmax(0, 1fr); }
+  .farm-health__slot-col { display: none; }
 
   /* One slim row: logo, compact project switcher, avatar. Board, Tracker and
      Approvals live in the bottom nav instead. */

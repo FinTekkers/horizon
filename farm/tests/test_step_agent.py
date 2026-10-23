@@ -130,6 +130,45 @@ def test_implement_step_pushes_a_branch(tmp_path, monkeypatch):
     assert "checks waived for acme/demo: marked 'no checks' in Admin" in result["summary"]
 
 
+def _head(ws):
+    return subprocess.run(["git", "-C", str(ws), "rev-parse", "HEAD"], check=True, capture_output=True, text=True).stdout.strip()
+
+
+def test_a_worktree_step_reports_its_pushed_head_as_source_shas(tmp_path, monkeypatch):
+    """HZ-546 metric 3: a Change step's result carries the workspace HEAD."""
+    ws, origin = make_git_workspace(tmp_path)
+    monkeypatch.setattr(step_agent, "ensure_item_worktree", lambda repo, item_id: ws)
+    result = execute(make_task(4, "Plan options & trade-offs (pros / cons)", repo="acme/demo"))
+    assert result["artifacts"]["source_shas"] == {"acme/demo": _head(ws)}
+    assert re.fullmatch(r"[0-9a-f]{40}", _head(ws))
+
+
+def test_a_worktree_head_origin_does_not_have_records_no_source_shas(tmp_path, monkeypatch):
+    """HZ-546 guardrail 2: a link to a commit GitHub never received would 404,
+    so an unpushed HEAD records nothing and the references stay plain."""
+    ws, origin = make_git_workspace(tmp_path)
+    (ws / "local.txt").write_text("never pushed\n")
+    git(ws, "add", "local.txt")
+    git(ws, "commit", "-m", "local only")
+    monkeypatch.setattr(step_agent, "ensure_item_worktree", lambda repo, item_id: ws)
+    result = execute(make_task(4, "Plan options & trade-offs (pros / cons)", repo="acme/demo"))
+    assert "source_shas" not in result["artifacts"]
+    assert step_agent.pushed_head(ws, "acme/demo") == {}
+
+
+def test_the_implement_step_reports_the_head_it_pushed(tmp_path, monkeypatch):
+    ws, origin = make_git_workspace(tmp_path)
+    monkeypatch.setattr(step_agent, "ensure_item_worktree", lambda repo, item_id: ws)
+    result = execute(make_task(11, "Specialist agent implements", repo="acme/demo", checks_waiver=NO_CHECKS))
+    pushed = subprocess.run(["git", "--git-dir", str(origin), "rev-parse", "horizon/t-1"], check=True, capture_output=True, text=True).stdout.strip()
+    assert result["artifacts"]["source_shas"] == {"acme/demo": pushed}
+
+
+def test_a_step_with_no_workspace_reports_no_source_shas():
+    result = execute(make_task(4, "Plan options & trade-offs (pros / cons)"))
+    assert "source_shas" not in result.get("artifacts", {})
+
+
 def test_implement_step_with_no_check_commands_and_no_waiver_fails_by_name(tmp_path, monkeypatch):
     """HZ-304: a repo with nothing configured is no longer a silent pass —
     even with a package.json test script the old auto-detection would run."""

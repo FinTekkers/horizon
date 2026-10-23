@@ -17,6 +17,7 @@ import * as webhooks from './webhooks.js'
 import * as deployDrain from './deployDrain.js'
 import * as heldAccept from './heldAccept.js'
 import * as deployDryRun from './deployDryRun.js'
+import * as farmHealth from './farmHealth.js'
 import * as projectValidate from './projectValidate.js'
 import { createTarget, deleteTarget, findTargetByKey, listTargets, targetFromBody, updateTarget } from './deployTargets.js'
 import {
@@ -31,7 +32,7 @@ import {
   PREMERGE_SKIP_ENABLED,
   PREMERGE_SKIP_MAX_AGE_MS,
 } from './config.js'
-import { marked } from 'marked'
+import { Marked, Renderer } from 'marked'
 import { db } from './db.js'
 import { getActiveProjectId, getRepoUrl, setSetting, getToken } from './settings.js'
 import * as auth from './auth.js'
@@ -56,6 +57,7 @@ import * as planDraft from './planDraft.js'
 import * as screenshots from './screenshots.js'
 import { filedMap } from './planFiling.js'
 import { PLAN_DRAFT_SCHEMA } from '../../domain/js/planDraft.js'
+import { buildLinkContext, codeRefUrl, parseCodeRef, splitItemIds } from '../../domain/js/codeRefs.js'
 import * as checkFlakes from './checkFlakes.js'
 import * as testResults from './testResults.js'
 import { PRODUCTIVITY_QUERY_SCHEMA, PRODUCTIVITY_RESPONSE_SCHEMA, productivityReport } from './productivity.js'
@@ -78,10 +80,80 @@ import { readFileSync } from 'node:fs'
 // from GitHub issues, and `output`/`artifact` are raw agent/tmux text. They
 // sit behind the same session-cookie gate as every other /api/* route (HZ-21)
 // but every interpolated value below still goes through esc() (or is already
-// trusted HTML, like marked.parse() output) — otherwise a crafted issue title
+// trusted HTML, like renderLinkedMarkdown() output) — otherwise a crafted issue title
 // or agent output could run as script in a logged-in visitor's browser.
 function esc(s) {
   return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+}
+
+// For an attribute value: esc() plus the double quote that delimits it.
+function escAttr(s) {
+  return esc(s).replace(/"/g, '&quot;')
+}
+
+// HZ-546: an item's Horizon page — the same shape as each page's back link.
+// The UI builds its own (itemHref in ui/src/components/DependencyBadge.jsx).
+function itemPageUrl(id) {
+  return `${UI_URL}/${id.toLowerCase()}`
+}
+
+// HZ-546: the link context (domain/js/codeRefs.js) for one step run of an item.
+function pageLinkContext(id, run) {
+  return buildLinkContext({ ...store.linkInputs(id), sourceShas: store.parseSourceShas(run.source_shas), itemHref: itemPageUrl })
+}
+
+// The href of a code span that is exactly one known item id, or null.
+function soleItemIdHref(text, ctx) {
+  const pieces = splitItemIds(text.trim(), ctx)
+  return pieces.length === 1 && pieces[0].id ? pieces[0].href : null
+}
+
+// HZ-546: an artifact's markdown as HTML, with each well-formed code reference
+// linked to GitHub at the run's recorded commit and each known item id linked
+// to its page. A per-call Marked instance, so no other marked caller changes.
+// Anything that does not resolve falls back to marked's own renderer (return
+// false, or Renderer.prototype), so its escaping is marked's exactly. Inside a
+// link's label nothing is linked again.
+function renderLinkedMarkdown(md, ctx) {
+  let inLink = 0
+  // Raw inline HTML still passes through as before; marked's lexer marks the
+  // tokens that follow a raw <a …> until its </a>.
+  let inRawLink = false
+  const renderer = {
+    link(token) {
+      inLink += 1
+      try {
+        return Renderer.prototype.link.call(this, token)
+      } finally {
+        inLink -= 1
+      }
+    },
+    html(token) {
+      if (!token.block) inRawLink = !!token.inLink
+      return false
+    },
+    codespan(token) {
+      if (inLink || inRawLink) return false
+      const href = codeRefUrl(parseCodeRef(token.text), ctx) ?? soleItemIdHref(token.text, ctx)
+      if (!href) return false
+      return `<a href="${escAttr(href)}" target="_blank" rel="noopener noreferrer">${Renderer.prototype.codespan.call(this, token)}</a>`
+    },
+    text(token) {
+      // A list item's text token carries child tokens; marked renders those
+      // through this renderer again, so only flat text is split here.
+      if (inLink || inRawLink || token.tokens || token.escaped) return false
+      const pieces = splitItemIds(token.text, ctx)
+      if (!pieces.some((piece) => piece.id)) return false
+      return pieces
+        .map((piece) =>
+          piece.id
+            ? `<a href="${escAttr(piece.href)}">${esc(piece.id)}</a>`
+            : Renderer.prototype.text.call(this, { type: 'text', raw: piece.text, text: piece.text }),
+        )
+        .join('')
+    },
+  }
+  return new Marked({ renderer }).parse(md)
 }
 
 // Shared look for the small standalone pages below (artifact viewer, step
@@ -136,7 +208,7 @@ function renderArtifactPage(id, stepIndex, run, routePath) {
 <link rel="stylesheet" href="${cssHrefFor(routePath)}"></head><body><div class="page">
 <div class="meta"><a href="${UI_URL}/${esc(id.toLowerCase())}">← ${esc(id)} in Horizon</a> · ${title} · ${esc(run.ended_at)} UTC</div>
 ${nav}
-<article>${marked.parse(run.artifact)}</article>
+<article>${renderLinkedMarkdown(run.artifact, pageLinkContext(id, run))}</article>
 </div></body></html>`
 }
 
@@ -215,6 +287,14 @@ function requireSession(request, reply) {
 function requireHumanSession(request, reply) {
   if (request.auth?.via === 'session' || request.auth?.via === 'test-env') return true
   reply.code(403).send({ error: 'session_required' })
+  return false
+}
+
+// HZ-563: an admin (auth.isAdmin) on any credential the login gate accepted.
+// 403, not 401: the caller is signed in, just not as an admin.
+function requireAdmin(request, reply) {
+  if (auth.isAdmin(request.user)) return true
+  reply.code(403).send({ error: 'admin_required' })
   return false
 }
 
@@ -730,7 +810,7 @@ export function buildApp({ logger = true, onRoute = null } = {}) {
       const { id, stepIndex } = request.params
       const run = db
         .prepare(
-          "SELECT artifact, attempt, ended_at FROM step_run WHERE item_id = ? AND step_index = ? AND status = 'done' AND artifact IS NOT NULL ORDER BY id DESC LIMIT 1",
+          "SELECT artifact, attempt, ended_at, source_shas FROM step_run WHERE item_id = ? AND step_index = ? AND status = 'done' AND artifact IS NOT NULL ORDER BY id DESC LIMIT 1",
         )
         .get(id, stepIndex)
       if (!run) return reply.code(404).send({ error: 'no artifact for that step' })
@@ -770,7 +850,7 @@ export function buildApp({ logger = true, onRoute = null } = {}) {
       const { id, stepIndex, attempt } = request.params
       const run = db
         .prepare(
-          "SELECT artifact, attempt, ended_at FROM step_run WHERE item_id = ? AND step_index = ? AND attempt = ? AND status = 'done' AND artifact IS NOT NULL",
+          "SELECT artifact, attempt, ended_at, source_shas FROM step_run WHERE item_id = ? AND step_index = ? AND attempt = ? AND status = 'done' AND artifact IS NOT NULL",
         )
         .get(id, stepIndex, attempt)
       if (!run) return reply.code(404).send({ error: 'no artifact for that attempt' })
@@ -839,7 +919,9 @@ export function buildApp({ logger = true, onRoute = null } = {}) {
 <title>${title}</title>
 <link rel="stylesheet" href="${cssHrefFor(OUTPUT_ROUTE)}"></head><body><div class="page">
 <div class="meta"><a href="${UI_URL}/${esc(id.toLowerCase())}">← ${esc(id)} in Horizon</a> · ${title} · attempt ${run.attempt} · ${esc(run.ended_at)} UTC</div>
-<pre>${esc(run.output)}</pre>
+<pre>${splitItemIds(run.output, pageLinkContext(id, run))
+        .map((piece) => (piece.id ? `<a href="${escAttr(piece.href)}">${esc(piece.id)}</a>` : esc(piece.text)))
+        .join('')}</pre>
 </div></body></html>`
       return reply.type('text/html').send(html)
     },
@@ -2267,7 +2349,8 @@ export function buildApp({ logger = true, onRoute = null } = {}) {
       // UI would render the login page instead of the screen.
       const user = auth.getSessionUser(request.cookies[SESSION_COOKIE_NAME]) || testEnvUser(request.headers)
       if (!user) return reply.code(401).send({ error: 'login_required' })
-      return { user }
+      // HZ-563: the UI shows the Farm health entry only when this is true.
+      return { user: { ...user, isAdmin: auth.isAdmin(user) } }
     },
   )
 
@@ -2580,6 +2663,20 @@ export function buildApp({ logger = true, onRoute = null } = {}) {
   fastify.get('/api/admin/deploy-targets', { schema: { response: { 200: OK_OBJECT } } }, () => ({
     targets: deploy.listTargetStatuses(),
   }))
+
+  // ---- Farm health (HZ-563, read-only) ----
+  // Admins only. Serves the snapshot farmHealth.js's background loop cached —
+  // never collects per request — through its allowlist serializer.
+  fastify.get(
+    '/api/admin/farm-health',
+    { schema: { response: { 200: OK_OBJECT, 403: ERROR_OBJECT, 503: ERROR_OBJECT } } },
+    (request, reply) => {
+      if (!requireAdmin(request, reply)) return
+      const snapshot = farmHealth.getFarmHealth()
+      if (!snapshot) return reply.code(503).send({ error: 'farm_health_warming' })
+      return farmHealth.toPublic(snapshot)
+    },
+  )
 
   // ---- Flaky tests and test history (HZ-327) ----
   // Read-only. Flakes per repo, newest first: { repos: [{ repo, tests: [...] }] }.

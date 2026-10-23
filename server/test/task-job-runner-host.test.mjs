@@ -8,7 +8,7 @@
 import { test, after } from 'node:test'
 import assert from 'node:assert/strict'
 import crypto from 'node:crypto'
-import { mkdtempSync } from 'node:fs'
+import { mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { loginFixtureUser } from './helpers/session.mjs'
@@ -119,4 +119,46 @@ test('item.runPlan.runner is host for the host plan and follows the image otherw
   }
   assert.equal((await load('T-HOST-416')).runPlan.runner, 'host')
   assert.equal((await load('T-CONT-416')).runPlan.runner, 'host')
+})
+
+// HZ-553 guardrails 2 and 4 (server leg): Execute carries its own repo's
+// test-login file path, set the way Admin sets it, and never a value; the
+// Run plan dispatch for the same repo carries no value either.
+test("HZ-553: Execute carries only its own repo's test-login file path, never a value", async () => {
+  const OTHER = 'FinTekkers/other-553'
+  const dir = mkdtempSync(join(tmpdir(), 'horizon-hz553-login-'))
+  const ownPath = join(dir, 'ui-e2e.env')
+  const otherPath = join(dir, 'other.env')
+  writeFileSync(ownPath, 'FT_E2E_API_KEY=own-login-value-553\n')
+  writeFileSync(otherPath, 'FT_E2E_API_KEY=other-login-value-553\n')
+  db.prepare('INSERT INTO project_repo (project_id, repo, prefix) VALUES (?, ?, ?)').run(projectId, MDI, 'MDI')
+  db.prepare('INSERT INTO project_repo (project_id, repo, prefix) VALUES (?, ?, ?)').run(projectId, OTHER, 'OTH')
+  assert.equal(store.setRepoTestEnvFile(projectId, MDI, ownPath).ok, true)
+  assert.equal(store.setRepoTestEnvFile(projectId, OTHER, otherPath).ok, true)
+  try {
+    db.prepare(
+      "INSERT INTO work_item (id, title, priority, cursor, kind, project_id, repo) VALUES ('T-553-PLAN', 'Plan', 'High', ?, 'task', ?, ?)",
+    ).run(RUN_PLAN_STEP_INDEX, projectId, MDI)
+    orchestrator.kick('T-553-PLAN')
+    seedStoppedTask('T-553-EXEC', HOST_PLAN)
+    const execute = await resume('T-553-EXEC')
+    assert.equal(execute.step.index, EXECUTE_STEP_INDEX)
+    assert.equal(execute.test_env_file, ownPath)
+    const sent = JSON.stringify(execute)
+    assert.equal(sent.includes(otherPath), false)
+    assert.equal(sent.includes('own-login-value-553'), false)
+    assert.equal(sent.includes('other-login-value-553'), false)
+    assert.equal(Object.hasOwn(execute, 'env'), false)
+
+    const plan = dispatches.find((d) => d.url.includes('/steps/run') && d.body?.item?.id === 'T-553-PLAN')
+    assert.ok(plan, 'Run plan was dispatched')
+    assert.equal(plan.body.step.index, RUN_PLAN_STEP_INDEX)
+    assert.equal(JSON.stringify(plan.body).includes('own-login-value-553'), false)
+  } finally {
+    orchestrator.cancel('T-553-PLAN')
+    store.setRepoTestEnvFile(projectId, MDI, '')
+    store.setRepoTestEnvFile(projectId, OTHER, '')
+  }
+  const unset = (seedStoppedTask('T-553-UNSET', HOST_PLAN), await resume('T-553-UNSET'))
+  assert.equal(Object.hasOwn(unset, 'test_env_file'), false, 'no path set: the dispatch is exactly as before')
 })

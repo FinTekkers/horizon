@@ -71,5 +71,7 @@ Services are told to fix shared behaviour here rather than work around it
 Merging is not releasing. Horizon's Deploy step tags the merged commit with
 the next patch version (`vX.Y.Z`), which runs the publish workflows
 (crates.io, PyPI, npmjs, GitHub Packages, Maven Central). Consumers pick it
-up by bumping their pinned version. Don't edit version numbers by hand.
+up at their next dependency update. They declare a minimum version and
+raise it only when their code uses something first released in a newer
+version. Don't edit version numbers by hand.
 

@@ -863,7 +863,7 @@ const selectEvents = db.prepare(
   'SELECT who, text, detail, verdict, color, initials, created_at FROM event WHERE item_id = ? ORDER BY id DESC LIMIT 20',
 )
 const selectOutputs = db.prepare(
-  "SELECT step_index, attempt, output, artifact, provider, model, verdict, verdict_summary, fallback_from, fallback_reset_at FROM step_run WHERE item_id = ? AND status = 'done' ORDER BY id",
+  "SELECT step_index, attempt, output, artifact, provider, model, verdict, verdict_summary, fallback_from, fallback_reset_at, source_shas FROM step_run WHERE item_id = ? AND status = 'done' ORDER BY id",
 )
 // Counts done+artifact rows only (a strict subset of the done rows above —
 // some steps mark done without ever setting an artifact), so the board can
@@ -904,6 +904,10 @@ function stepOutputs(itemId) {
       // ran on a fallback model, else null.
       fallbackNote: row.fallback_from ? fallbackNoteText(row.fallback_from, row.fallback_reset_at) : null,
     }
+    // HZ-546: { 'owner/name': sha } the attempt read, so its code references
+    // link at that commit. Absent when none was recorded (every earlier run).
+    const sourceShas = parseSourceShas(row.source_shas)
+    if (sourceShas) map[row.step_index].sourceShas = sourceShas
   }
   // HZ-407: the Execute card's job view, from the newest Execute run in any
   // status — live while it runs, the final view once it stopped or finished.
@@ -919,6 +923,30 @@ function stepOutputs(itemId) {
     }
   }
   return map
+}
+
+// HZ-546: step_run.source_shas as an object, or null when missing or unreadable.
+export function parseSourceShas(json) {
+  if (!json) return null
+  try {
+    const value = JSON.parse(json)
+    return value && typeof value === 'object' && !Array.isArray(value) ? value : null
+  } catch {
+    return null
+  }
+}
+
+// HZ-546: what the server's artifact and output pages need to build a link
+// context (domain/js/codeRefs.js) for one item. knownIds is every stored item
+// id; the UI builds its own set from the items it holds, so the two can differ.
+export function linkInputs(itemId) {
+  const item = db.prepare('SELECT repo, project_id, kind FROM work_item WHERE id = ?').get(itemId)
+  return {
+    projectRepos: item ? listRepos().filter((r) => r.project_id === item.project_id).map((r) => r.repo) : [],
+    itemRepo: item?.repo ?? null,
+    isPlan: !!item && itemKindOf(item) === 'plan',
+    knownIds: new Set(db.prepare('SELECT id FROM work_item').all().map((r) => r.id)),
+  }
 }
 
 // The newest done attempt's artifact for one step, or null. Exported (HZ-141)
@@ -1100,6 +1128,24 @@ function withRunState(activeRun) {
   if (!activeRun) return null
   const cached = runStateProvider()[String(activeRun.id)]
   return { ...activeRun, state: cached?.state || 'running', reason: cached?.reason || null }
+}
+
+// ---- Farm health (HZ-563), read-only ----
+const selectActiveRunsForHealth = db.prepare(
+  "SELECT id, item_id, step_index, started_at FROM step_run WHERE status = 'active' ORDER BY started_at, id",
+)
+const selectLiveDeploysSince = db.prepare(
+  'SELECT target, tag, live_at FROM deploy_batch WHERE live_at IS NOT NULL AND live_at >= ? ORDER BY live_at DESC LIMIT 20',
+)
+
+// Every active run with the farm's cached queued/running state folded on.
+export function listActiveRunsWithState() {
+  return selectActiveRunsForHealth.all().map(withRunState)
+}
+
+// Deploys that went live at or after `sinceSql` (SQLite datetime form), newest first.
+export function listLiveDeploysSince(sinceSql) {
+  return selectLiveDeploysSince.all(sinceSql)
 }
 
 // ---- dependencies (HZ-78) ----

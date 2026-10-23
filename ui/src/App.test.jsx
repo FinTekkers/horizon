@@ -102,6 +102,16 @@ test('approving the closing gate via the confirm dialog returns to the board', a
   await waitFor(() => expect(window.location.pathname).toBe('/'))
 })
 
+// HZ-546: the item page links an item id the board holds; an unknown id stays text.
+test('an item id in the description links to that item when the board holds it', async () => {
+  setItems([{ ...itemAtClosingGate('FG-10'), desc: 'Needs FG-11 first; ZZ-9 is unrelated.' }, itemAtClosingGate('FG-11')])
+  window.history.pushState({}, '', '/fg-10')
+  const { findByRole, queryByRole } = render(<App />)
+  const link = await findByRole('link', { name: 'FG-11' })
+  expect(link.getAttribute('href')).toBe('/fg-11')
+  expect(queryByRole('link', { name: 'ZZ-9' })).toBeNull()
+})
+
 test('approving an earlier gate leaves the user on the item page', async () => {
   const id = 'FG-2'
   setItems([{ ...itemAtClosingGate(id), cursor: 3 }]) // "Approve & prioritize this work"

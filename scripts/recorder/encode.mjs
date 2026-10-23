@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process'
-import { writeFile, rm } from 'node:fs/promises'
+import { rename, writeFile, rm } from 'node:fs/promises'
 import path from 'node:path'
 import { RecorderError } from './errors.mjs'
 
@@ -24,6 +24,26 @@ export async function encode(entries, outDir, outFile) {
     ])
   } finally {
     await rm(list, { force: true })
+  }
+}
+
+// A walkthrough's recordVideo .webm, cut to [startSec, startSec + durationSec]
+// and encoded like encode() does. ffmpeg writes <outFile>.part, which is only
+// renamed once it is whole, so a failed encode never leaves a playable file.
+export async function encodeVideo(webmFile, outFile, { startSec, durationSec }) {
+  const part = `${outFile}.part`
+  try {
+    await run('ffmpeg', [
+      '-hide_banner', '-loglevel', 'error', '-y',
+      '-i', webmFile,
+      '-ss', startSec.toFixed(3), '-t', durationSec.toFixed(3),
+      '-vf', 'scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2:color=0x0b1020,fps=30,format=yuv420p',
+      '-c:v', 'libx264', '-movflags', '+faststart', '-f', 'mp4',
+      part,
+    ])
+    await rename(part, outFile)
+  } finally {
+    await rm(part, { force: true })
   }
 }
 

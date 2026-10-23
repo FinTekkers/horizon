@@ -628,8 +628,10 @@ export async function fixRepoWebhook(projectId, repo, pin) {
   return data
 }
 
-export function artifactUrl(itemId, stepIndex) {
-  return `${API_BASE}/items/${itemId}/artifacts/${stepIndex}`
+// HZ-561: with an attempt, that attempt's artifact (HZ-46's per-attempt route).
+export function artifactUrl(itemId, stepIndex, attempt) {
+  const base = `${API_BASE}/items/${itemId}/artifacts/${stepIndex}`
+  return attempt ? `${base}/${attempt}` : base
 }
 
 // Full-page views opened via "See agent output" (HZ-14) — plain links, same
@@ -876,6 +878,13 @@ export function getCheckFlakes() {
 export function getProductivity({ range = '14d', project = 'all' } = {}) {
   const qs = new URLSearchParams({ range, project })
   return getJson(`/admin/productivity?${qs}`)
+}
+
+// HZ-563: Farm health — admins only, read-only. Rejects with the server's
+// error code: admin_required (403), farm_health_warming (503) before the
+// server's first reading, or HTTP <status>.
+export function getFarmHealth() {
+  return getJson('/admin/farm-health')
 }
 
 // HZ-258: a target's Dry run — five read-only checks. Gate-PIN protected like

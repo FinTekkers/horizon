@@ -76,6 +76,7 @@ export const {
   getDeployTargets,
   getCheckFlakes,
   getProductivity,
+  getFarmHealth,
   dryRunDeployTarget,
   getDeployTargetConfig,
   createDeployTarget,

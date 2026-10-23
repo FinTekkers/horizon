@@ -13,6 +13,7 @@ Every agent run is stubbed: run_agent is monkeypatched at step_agent's import.
 
 import json
 import os
+import re
 import subprocess
 from pathlib import Path
 
@@ -294,6 +295,24 @@ def test_refs_carry_last_check(hubs, monkeypatch):
         "key_facts": [],
     }
     assert plan_inventory.validate(block, ["acme/api"]) is block
+
+
+def test_a_bundle_step_reports_the_sha_each_repo_was_exported_at(hubs, monkeypatch):
+    """HZ-546 metric 3: result source_shas is, per in-scope repo, the sha its
+    _refs file records as `exported: origin/<branch> at <sha>`."""
+    exported = {}
+
+    def read_refs(kwargs):
+        for repo in IN_SCOPE:
+            text = (plan_bundle.Path(kwargs["cwd"]) / "_refs" / repo.replace("/", "__")).read_text()
+            exported[repo] = re.search(r"^exported: origin/main at ([0-9a-f]{40})$", text, re.M).group(1)
+
+    stub(monkeypatch, inventory_body, action=read_refs)
+    result = step_agent.execute(plan_task(INVENTORY))
+    assert sorted(exported) == sorted(IN_SCOPE)
+    assert result["artifacts"]["source_shas"] == exported
+    assert exported["acme/api"] == _git(workspaces.hub_path("acme/api"), "rev-parse", "origin/main").strip()
+    assert OUTSIDE not in result["artifacts"]["source_shas"]
 
 
 def design_body(changes):
