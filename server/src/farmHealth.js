@@ -1,7 +1,8 @@
 // HZ-563: Farm health — the farm's and the box's health for an admin.
 //
 // Read-only by construction. A background loop (startFarmHealth) collects one
-// snapshot every FARM_HEALTH_POLL_MS and caches it; GET /api/admin/farm-health
+// snapshot every FARM_HEALTH_POLL_MS while an admin is looking, and caches
+// it; GET /api/admin/farm-health
 // only reads that cache (getFarmHealth), so a page left open in any number of
 // tabs never adds a systemctl call or a farmd request. The only things a
 // collection does are file reads under /proc and /sys, a statfs of '/', one
@@ -338,8 +339,14 @@ export function toPublic(snapshot) {
 // ---- the cache and its loop ----
 
 let cached = null
+// Set by startFarmHealth; null in tests that only build the app.
+let loop = null
 
+// The cached snapshot. Also the demand signal: an admin reading it keeps the
+// background loop running (and wakes it when idle), but the read itself never
+// collects — the next collection still happens on the loop's own timer.
 export function getFarmHealth() {
+  if (loop) loop.want()
   return cached
 }
 
@@ -349,12 +356,22 @@ export async function refreshFarmHealth(deps = defaultDeps) {
   return cached
 }
 
-// Collects at boot, then every FARM_HEALTH_POLL_MS. The next run is only
-// scheduled once this one settles, so two collections never overlap.
-export function startFarmHealth({ log, deps = defaultDeps, intervalMs = FARM_HEALTH_POLL_MS } = {}) {
+// Arms the loop. It collects only while someone is looking: from the first
+// read of the cache, every FARM_HEALTH_POLL_MS, until no read has come for
+// idleMs. So a server nobody opens Farm health on never runs systemctl or
+// asks farmd for anything (farm/tests/test_step_survives_restart.py holds a
+// booted server to that). The next run is only scheduled once this one
+// settles, so two collections never overlap.
+export function startFarmHealth({ log, deps = defaultDeps, intervalMs = FARM_HEALTH_POLL_MS, idleMs = 60_000 } = {}) {
   let timer = null
+  let running = false
   let stopped = false
+  let wantedUntil = 0
   const tick = async () => {
+    if (stopped || deps.now() > wantedUntil) {
+      running = false
+      return
+    }
     try {
       await refreshFarmHealth(deps)
     } catch (err) {
@@ -364,9 +381,20 @@ export function startFarmHealth({ log, deps = defaultDeps, intervalMs = FARM_HEA
     timer = setTimeout(tick, intervalMs)
     timer.unref?.()
   }
-  tick()
+  const self = {
+    want() {
+      wantedUntil = deps.now() + idleMs
+      if (running || stopped) return
+      running = true
+      // Deferred, so the read that woke the loop returns before any collection starts.
+      timer = setTimeout(tick, 0)
+      timer.unref?.()
+    },
+  }
+  loop = self
   return () => {
     stopped = true
     clearTimeout(timer)
+    if (loop === self) loop = null
   }
 }

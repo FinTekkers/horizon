@@ -218,3 +218,31 @@ test('a farmd that cannot be reached reads as not running, and the page goes red
   assert.equal(snapshot.reason, 'Farm is not running')
   assert.ok(!JSON.stringify(farmHealth.toPublic(snapshot)).includes(SECRET))
 })
+
+test('an armed loop collects nothing until the cache is read, then collects off the request path', async () => {
+  const counted = { exec: 0 }
+  const loopDeps = {
+    ...deps,
+    now: () => Date.now(),
+    execProbe: async (...args) => {
+      counted.exec++
+      return deps.execProbe(...args)
+    },
+  }
+  const stop = farmHealth.startFarmHealth({ deps: loopDeps, intervalMs: 20, idleMs: 200 })
+  try {
+    await new Promise((resolve) => setTimeout(resolve, 100))
+    assert.equal(counted.exec, 0, 'a booted server nobody looks at must never run systemctl')
+    farmHealth.getFarmHealth()
+    assert.equal(counted.exec, 0, 'the read itself does not collect')
+    await new Promise((resolve) => setTimeout(resolve, 100))
+    assert.ok(counted.exec > 0, 'the read woke the loop')
+    // With no further reads the loop goes idle and stops collecting.
+    await new Promise((resolve) => setTimeout(resolve, 400))
+    const idle = counted.exec
+    await new Promise((resolve) => setTimeout(resolve, 150))
+    assert.equal(counted.exec, idle)
+  } finally {
+    stop()
+  }
+})

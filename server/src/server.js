@@ -23,8 +23,9 @@ try {
 }
 
 orchestrator.init(fastify.log)
-// HZ-563: reads the box, services and farmd's /farm/status in the background;
-// the Farm health route only serves this cache.
+// HZ-563: arms the Farm health loop. It reads the box, services and farmd's
+// /farm/status in the background, only while an admin has the page or menu
+// open; the route only serves its cache.
 farmHealth.startFarmHealth({ log: fastify.log })
 // HZ-360: after the orchestrator, so its drain-end release runs first; before
 // the caretaker, so an Approve held through the deploy claims its pre-merge
