@@ -902,10 +902,11 @@ function stepOutputs(itemId) {
       // HZ-422: "fell back from X: usage limit until <time>" when this attempt
       // ran on a fallback model, else null.
       fallbackNote: row.fallback_from ? fallbackNoteText(row.fallback_from, row.fallback_reset_at) : null,
-      // HZ-546: { 'owner/name': sha } the attempt read, so its code references
-      // link at that commit. NULL for runs before it was recorded.
-      sourceShas: parseSourceShas(row.source_shas),
     }
+    // HZ-546: { 'owner/name': sha } the attempt read, so its code references
+    // link at that commit. Absent when none was recorded (every earlier run).
+    const sourceShas = parseSourceShas(row.source_shas)
+    if (sourceShas) map[row.step_index].sourceShas = sourceShas
   }
   // HZ-407: the Execute card's job view, from the newest Execute run in any
   // status — live while it runs, the final view once it stopped or finished.

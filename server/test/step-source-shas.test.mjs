@@ -129,7 +129,7 @@ for (const [label, stepIndex] of [
     orchestrator.cancel(id)
     assert.deepEqual(result, { ok: true })
     assert.deepEqual(storedShas(runId), { status: 'done', source_shas: null })
-    assert.equal((await outputsOf(id))[stepIndex].sourceShas, null)
+    assert.ok(!Object.hasOwn((await outputsOf(id))[stepIndex], 'sourceShas'))
   })
 }
 
@@ -155,12 +155,12 @@ test('a malformed source_shas (an array, a string) is ignored, never a failed ru
   }
 })
 
-test('a run from before HZ-546 returns sourceShas: null and its artifact page has no GitHub link', async () => {
+test('a run from before HZ-546 returns no sourceShas and its artifact page has no GitHub link', async () => {
   insertItem('SS-OLD', ARCH + 1)
   db.prepare(
     "INSERT INTO step_run (item_id, step_index, attempt, agent, status, artifact, ended_at) VALUES ('SS-OLD', ?, 1, ?, 'done', ?, '2026-01-01 12:00:00')",
   ).run(ARCH, STEPS[ARCH].agent, 'See `horizon:server/src/app.js:138` and `src/x.ts:12`.')
-  assert.equal((await outputsOf('SS-OLD'))[ARCH].sourceShas, null)
+  assert.ok(!Object.hasOwn((await outputsOf('SS-OLD'))[ARCH], 'sourceShas'))
   const page = await app.inject({ method: 'GET', url: `/api/items/SS-OLD/artifacts/${ARCH}`, headers: { cookie: user.cookie } })
   assert.equal(page.statusCode, 200)
   assert.ok(!page.body.includes('https://github.com/'), page.body)
