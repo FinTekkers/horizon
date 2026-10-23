@@ -138,8 +138,9 @@ def load_project_personas(slug: str, root: Path | None = None) -> dict | None:
 
     root = PROJECTS_DIR if root is None else root
     source = f"farm/projects/{slug}/personas.json"
+    path = root / slug / "personas.json"
     try:
-        text = (root / slug / "personas.json").read_text()
+        text = path.read_text()
     except (FileNotFoundError, NotADirectoryError):
         return None
     except OSError as exc:
@@ -151,10 +152,14 @@ def load_project_personas(slug: str, root: Path | None = None) -> dict | None:
             raise RuntimeError(f"{name}: credential lint refused it ({', '.join(hits)})")
 
     lint(source, text)
+    # Parsed from its own read_text(): farm/tests/test_one_reply_parser.py
+    # allows json.loads only on a file or env read, never on a held string.
     try:
-        data = json.loads(text)
+        data = json.loads(path.read_text())
     except json.JSONDecodeError as exc:
         raise RuntimeError(f"{source} is not valid JSON ({exc})") from exc
+    except OSError as exc:
+        raise RuntimeError(f"{source} could not be read ({exc})") from exc
     validate_project_personas(data, slug, source)
     overlay: dict = {"slug": slug, "ids": {}, "role_text": {}, "display": {}, "models": {}, "providers": {}}
     for entry in data["personas"]:
