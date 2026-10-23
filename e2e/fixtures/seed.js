@@ -88,16 +88,43 @@ export function insertEvent(db, { itemId, who = 'Horizon', text, color = '#9C333
 // above, so it never goes through store.js and never gets kicked.
 export function insertStepRun(
   db,
-  { itemId, stepIndex, attempt, agent, status = 'done', output = null, artifact = null, startedAt, endedAt = null, verdict = null, verdictSummary = null },
+  {
+    itemId,
+    stepIndex,
+    attempt,
+    agent,
+    status = 'done',
+    output = null,
+    artifact = null,
+    startedAt,
+    endedAt = null,
+    verdict = null,
+    verdictSummary = null,
+    // HZ-546: { 'owner/name': sha } the run read; null (not recorded) by default.
+    sourceShas = null,
+  },
 ) {
   // Returns lastInsertRowid: HZ-54's queued-work spec needs the run id to
   // attach farm state to a specific run. main's own callers ignore it.
   return db
     .prepare(
-      `INSERT INTO step_run (item_id, step_index, attempt, agent, status, output, artifact, started_at, ended_at, verdict, verdict_summary)
-       VALUES (@itemId, @stepIndex, @attempt, @agent, @status, @output, @artifact, @startedAt, @endedAt, @verdict, @verdictSummary)`,
+      `INSERT INTO step_run (item_id, step_index, attempt, agent, status, output, artifact, started_at, ended_at, verdict, verdict_summary, source_shas)
+       VALUES (@itemId, @stepIndex, @attempt, @agent, @status, @output, @artifact, @startedAt, @endedAt, @verdict, @verdictSummary, @sourceShas)`,
     )
-    .run({ itemId, stepIndex, attempt, agent, status, output, artifact, startedAt, endedAt, verdict, verdictSummary }).lastInsertRowid
+    .run({
+      itemId,
+      stepIndex,
+      attempt,
+      agent,
+      status,
+      output,
+      artifact,
+      startedAt,
+      endedAt,
+      verdict,
+      verdictSummary,
+      sourceShas: sourceShas && JSON.stringify(sourceShas),
+    }).lastInsertRowid
 }
 
 // A feedback row with an explicit created_at, so it can be placed inside the

@@ -9,11 +9,17 @@
 // text (which React escapes). That is why `<script>alert(1)</script>` in a
 // description shows up as visible, inert text instead of vanishing.
 //
-// server/src/app.js renders artifact pages with marked.parse() on the same
-// major version, so the tracker speaks the same markdown dialect as those.
+// server/src/app.js renders artifact pages with marked on the same major
+// version, so the tracker speaks the same markdown dialect as those.
+//
+// HZ-546: given a `linkContext` (domain/js/codeRefs.js's buildLinkContext), a
+// code span that is a well-formed code reference links to GitHub at the
+// step's recorded sha, and a known item id links to its Horizon page. Without
+// one, the output is exactly what it was before.
 
 import { Fragment } from 'react'
 import { marked } from 'marked'
+import { codeRefUrl, parseCodeRef, splitItemIds } from '../../../domain/js/codeRefs.js'
 
 // Allowlist, not a blocklist. javascript:, data:, and protocol-relative
 // //host URLs are all rejected and render as plain text — only a scheme we
@@ -23,10 +29,38 @@ function safeHref(href) {
   return /^(?:https?:|mailto:)/i.test(value) ? value : null
 }
 
+// Plain text with each known item id as a link; the text itself when there
+// is no context or no known id in it.
+function linkIds(text, ctx, key) {
+  if (!ctx) return text
+  const pieces = splitItemIds(text, ctx)
+  if (!pieces.some((piece) => piece.id)) return text
+  return pieces.map((piece, i) =>
+    piece.id ? (
+      <a key={`${key}.id${i}`} href={piece.href}>
+        {piece.id}
+      </a>
+    ) : (
+      piece.text
+    ),
+  )
+}
+
+// A code span's link: a code reference's GitHub URL, or the page of the one
+// known item id the span holds. Null without a context.
+function codespanHref(text, ctx) {
+  if (!ctx) return null
+  const url = codeRefUrl(parseCodeRef(text), ctx)
+  if (url) return url
+  const pieces = splitItemIds(text.trim(), ctx)
+  return pieces.length === 1 && pieces[0].id ? pieces[0].href : null
+}
+
 // Inline tokens -> React nodes. `html` lands in the default branch on
 // purpose: an <img src=x onerror=...> written mid-sentence is an *inline*
 // html token, and it has to become text exactly like a block-level one.
-function renderInline(tokens, keyPrefix) {
+// `ctx` is the HZ-546 link context, or null for no links.
+function renderInline(tokens, keyPrefix, ctx = null) {
   return (tokens || []).map((token, i) => {
     const key = `${keyPrefix}.${i}`
     switch (token.type) {
@@ -34,21 +68,30 @@ function renderInline(tokens, keyPrefix) {
       case 'escape':
         // A text token inside a list item carries its own nested tokens;
         // one inside a paragraph is already flat.
-        return token.tokens ? <Fragment key={key}>{renderInline(token.tokens, key)}</Fragment> : token.text
+        if (token.tokens) return <Fragment key={key}>{renderInline(token.tokens, key, ctx)}</Fragment>
+        return ctx ? <Fragment key={key}>{linkIds(token.text, ctx, key)}</Fragment> : token.text
       case 'strong':
-        return <strong key={key}>{renderInline(token.tokens, key)}</strong>
+        return <strong key={key}>{renderInline(token.tokens, key, ctx)}</strong>
       case 'em':
-        return <em key={key}>{renderInline(token.tokens, key)}</em>
+        return <em key={key}>{renderInline(token.tokens, key, ctx)}</em>
       case 'del':
-        return <del key={key}>{renderInline(token.tokens, key)}</del>
-      case 'codespan':
-        return <code key={key}>{token.text}</code>
+        return <del key={key}>{renderInline(token.tokens, key, ctx)}</del>
+      case 'codespan': {
+        const href = codespanHref(token.text, ctx)
+        if (!href) return <code key={key}>{token.text}</code>
+        return (
+          <a key={key} href={href} target="_blank" rel="noopener noreferrer">
+            <code>{token.text}</code>
+          </a>
+        )
+      }
       case 'br':
         return <br key={key} />
       case 'checkbox':
         return <input key={key} type="checkbox" checked={!!token.checked} disabled readOnly />
       case 'link': {
         const href = safeHref(token.href)
+        // No context inside a link's label, so nothing in it links twice.
         const label = renderInline(token.tokens, key)
         // A rejected link keeps its visible label — dropping it would hide
         // content, which is a worse outcome than an unclickable phrase.
@@ -69,20 +112,20 @@ function renderInline(tokens, keyPrefix) {
   })
 }
 
-function renderListItem(item, key) {
+function renderListItem(item, key, ctx) {
   return (item.tokens || []).map((token, j) => {
     const childKey = `${key}.${j}`
     // Inline-ish content of a list item stays unwrapped, so a tight list
     // doesn't pick up paragraph margins between its own bullets.
     if (token.type === 'text' || token.type === 'checkbox') {
-      return <Fragment key={childKey}>{renderInline([token], childKey)}</Fragment>
+      return <Fragment key={childKey}>{renderInline([token], childKey, ctx)}</Fragment>
     }
-    return <Fragment key={childKey}>{renderBlocks([token], childKey)}</Fragment>
+    return <Fragment key={childKey}>{renderBlocks([token], childKey, ctx)}</Fragment>
   })
 }
 
 // Block tokens -> React elements.
-function renderBlocks(tokens, keyPrefix) {
+function renderBlocks(tokens, keyPrefix, ctx = null) {
   const out = []
   ;(tokens || []).forEach((token, i) => {
     const key = `${keyPrefix}.${i}`
@@ -94,15 +137,15 @@ function renderBlocks(tokens, keyPrefix) {
         // never outrank the item title in the page's heading outline; the
         // matching sizes live under .md-body in index.css.
         const Tag = `h${Math.min(token.depth + 2, 6)}`
-        out.push(<Tag key={key}>{renderInline(token.tokens, key)}</Tag>)
+        out.push(<Tag key={key}>{renderInline(token.tokens, key, ctx)}</Tag>)
         return
       }
       case 'paragraph':
-        out.push(<p key={key}>{renderInline(token.tokens, key)}</p>)
+        out.push(<p key={key}>{renderInline(token.tokens, key, ctx)}</p>)
         return
       case 'text':
         out.push(
-          <p key={key}>{token.tokens ? renderInline(token.tokens, key) : token.text}</p>,
+          <p key={key}>{token.tokens ? renderInline(token.tokens, key, ctx) : linkIds(token.text, ctx, key)}</p>,
         )
         return
       case 'list': {
@@ -111,7 +154,7 @@ function renderBlocks(tokens, keyPrefix) {
         out.push(
           <Tag key={key} {...start}>
             {(token.items || []).map((item, j) => (
-              <li key={`${key}.${j}`}>{renderListItem(item, `${key}.${j}`)}</li>
+              <li key={`${key}.${j}`}>{renderListItem(item, `${key}.${j}`, ctx)}</li>
             ))}
           </Tag>,
         )
@@ -125,7 +168,7 @@ function renderBlocks(tokens, keyPrefix) {
         )
         return
       case 'blockquote':
-        out.push(<blockquote key={key}>{renderBlocks(token.tokens, key)}</blockquote>)
+        out.push(<blockquote key={key}>{renderBlocks(token.tokens, key, ctx)}</blockquote>)
         return
       case 'hr':
         out.push(<hr key={key} />)
@@ -136,18 +179,19 @@ function renderBlocks(tokens, keyPrefix) {
       default:
         // Raw HTML, GFM tables, link-reference definitions — anything we
         // haven't mapped shows its own source text. Never blank, never live.
-        out.push(<p key={key}>{token.raw ?? ''}</p>)
+        // A known item id in it (a GFM table cell) still links.
+        out.push(<p key={key}>{linkIds(token.raw ?? '', ctx, key)}</p>)
     }
   })
   return out
 }
 
-export default function Markdown({ text, className }) {
+export default function Markdown({ text, className, linkContext = null }) {
   if (typeof text !== 'string' || text.trim() === '') return null
 
   let blocks
   try {
-    blocks = renderBlocks(marked.lexer(text), 'md')
+    blocks = renderBlocks(marked.lexer(text), 'md', linkContext)
   } catch {
     // The lexer choking on a pathological description must not blank the
     // whole item page — fall back to the pre-HZ-153 behaviour.

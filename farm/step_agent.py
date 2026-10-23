@@ -440,6 +440,17 @@ def git(ws: Path, *args: str, check: bool = True, env: dict | None = None) -> su
     return result
 
 
+def pushed_head(ws: Path, repo: str) -> dict[str, str]:
+    """HZ-546: {repo: HEAD} for a step's source_shas, when origin has the
+    workspace's HEAD commit; else {}. The UI links code references at this
+    sha, and a commit GitHub never received would only 404."""
+    head = git(ws, "rev-parse", "HEAD", check=False).stdout.strip()
+    if not re.fullmatch(r"[0-9a-f]{40}", head):
+        return {}
+    remote = git(ws, "branch", "-r", "--contains", head, check=False)
+    return {repo: head} if remote.returncode == 0 and remote.stdout.strip() else {}
+
+
 def git_bytes(ws: Path, *args: str, check: bool = True, input: bytes | None = None) -> bytes:
     """git's raw stdout (HZ-420). For output that goes back into git or onto
     disk — a path decoded with errors="replace" names a different file — and
@@ -3115,6 +3126,9 @@ def _execute(task: dict, guard: HandoffGuard) -> dict:
             artifacts.update(fix_diff_report(ws, scope.get("base_sha")))
         if manual_checks:
             artifacts["manual_checks"] = manual_checks
+        # HZ-546: the pushed HEAD this run's references cite.
+        if shas := pushed_head(ws, item["repo"]):
+            artifacts["source_shas"] = shas
         # HZ-369: what ran, like the generic path below, so step_run.provider
         # is set for implement too.
         if override_eligible and reply.get("provider"):
@@ -3298,6 +3312,8 @@ def _execute(task: dict, guard: HandoffGuard) -> dict:
             "verdict": verdict,
             **review_extra,
         }
+        if shas := pushed_head(ws, item["repo"]):
+            review_artifacts["source_shas"] = shas
         # HZ-369: what ran, from the code pass (the QA pass matched it above).
         if override_eligible and code_ran_on:
             review_artifacts["provider"] = code_ran_on
@@ -3520,6 +3536,12 @@ def _execute(task: dict, guard: HandoffGuard) -> dict:
     # re-checks every claim and decides the findings.
     if label == PLAN_COVERAGE_REVIEW_LABEL:
         result.setdefault("artifacts", {})["plan_review"] = parsed["plan_review"]
+    # HZ-546: the commit of each repo the step read — a bundle step's export
+    # shas, else the workspace's HEAD once origin has it — so the UI links the
+    # artifact's code references there. Nothing when there is neither.
+    shas = dict(bundle.shas) if bundle else pushed_head(ws, item["repo"]) if ws is not None else {}
+    if shas:
+        result.setdefault("artifacts", {})["source_shas"] = shas
     return result
 
 
