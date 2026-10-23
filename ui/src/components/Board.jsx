@@ -23,7 +23,7 @@ import { useClockTick } from '../useClockTick'
 import { issueUrl, issueLabel } from '../api'
 import * as boardFilters from '../boardFilters'
 import * as boardNarrowing from '../boardNarrowing'
-import StatusPill from './StatusPill'
+import StatusPill, { AutopilotOffChip, autopilotOffShown, AUTOPILOT_OFF_GATE_NOTE } from './StatusPill'
 import DependencyBadge, { itemHref } from './DependencyBadge'
 import GateActionStatus from './GateActionStatus'
 import ProjectBadge from './ProjectBadge'
@@ -181,6 +181,7 @@ function BoardCard({ item, projects, durationEstimates, deployBlock, viewerName,
           </a>
         </div>
       )}
+      <AutopilotOffChip item={item} />
       <DependencyBadge item={item} compact />
 
       {awaiting && (
@@ -188,6 +189,7 @@ function BoardCard({ item, projects, durationEstimates, deployBlock, viewerName,
           <div className="card__gate-label">
             <LockIcon size={13} strokeWidth={2.4} />
             {cur.label}
+            {autopilotOffShown(item) && ` · ${AUTOPILOT_OFF_GATE_NOTE}`}
           </div>
           {queued && (
             <div className="card__queued">

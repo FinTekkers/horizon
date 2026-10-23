@@ -29,8 +29,8 @@ import { pauseReason } from '../domain/pauseReason'
 import { gateActionOf } from '../domain/gateAction'
 import { deployQueueLabel } from '../domain/deployQueue'
 import { resolveEventColor } from '../domain/eventColors'
-import { issueUrl, issueLabel, artifactUrl, outputUrl, runLogViewUrl, subscribeStepOutputs, stopJob, resumeJob } from '../api'
-import StatusPill from './StatusPill'
+import { issueUrl, issueLabel, artifactUrl, outputUrl, runLogViewUrl, subscribeStepOutputs, stopJob, resumeJob, setAutopilotOff } from '../api'
+import StatusPill, { AutopilotOffChip, autopilotOffShown, AUTOPILOT_OFF_GATE_NOTE } from './StatusPill'
 import DependencyBadge from './DependencyBadge'
 import Markdown from './Markdown'
 import GateActionStatus from './GateActionStatus'
@@ -324,6 +324,7 @@ function Step({ item, stepOutputs, outputsSettled, index, deployBlock, viewerNam
               moved every colour in this file behind a CSS variable. */}
           <div className="step-card__meta" style={{ color: queued ? 'var(--muted)' : STEP_META_COLOR[status] || 'var(--muted)' }}>
             {queued ? 'Queued' : mergeQueued ? 'Queued to merge' : STEP_META[status](isGate, st.gate, laneOf(item))}
+            {status === 'awaiting' && isGate && autopilotOffShown(item) && ` · ${AUTOPILOT_OFF_GATE_NOTE}`}
             {status === 'active' && item.activeRun?.step_index === index && (
               <span>
                 {' · '}
@@ -740,6 +741,84 @@ function writeActivityMin(v) {
   }
 }
 
+// HZ-544: "Turn off Autopilot for <id>" — adds or removes the issue's
+// `autopilot-off` label, which is the only stored state: the box shows the
+// server's item, never an optimistic flip. Ticking needs no PIN; unticking
+// (handing the gates back to Autopilot) goes through the gate PIN.
+const AUTOPILOT_OFF_ERRORS = {
+  pin_needed: 'Handing the gates back to Autopilot needs your gate PIN.',
+  human_gate_key_required: 'Gate PIN incorrect — nothing changed.',
+}
+
+// Shown in an Autopilot-on project, or wherever the label is already on (so it
+// can be taken off); never for a local item, which has no issue to label.
+const autopilotOffToggleShown = (item) => item.issue != null && (item.projectAutopilot === 'on' || !!item.autopilotOff)
+
+function AutopilotOffToggle({ item }) {
+  const [pending, setPending] = useState(null)
+  const [error, setError] = useState(null)
+  const inFlight = useRef(false)
+  if (!autopilotOffToggleShown(item)) return null
+  const send = (off) => {
+    if (inFlight.current) return
+    inFlight.current = true
+    const id = item.id
+    setPending(id)
+    setError(null)
+    new Promise((resolve) => resolve(setAutopilotOff(id, off)))
+      .then(
+        () => null,
+        (err) => AUTOPILOT_OFF_ERRORS[err?.message] || 'That did not go through — try again.',
+      )
+      .then((message) => {
+        inFlight.current = false
+        setPending(null)
+        if (message) setError({ id, message })
+      })
+  }
+  return (
+    <>
+      <span style={{ flex: 1 }} />
+      <label className="autopilot-off-toggle">
+        <input
+          type="checkbox"
+          checked={!!item.autopilotOff}
+          disabled={pending === item.id}
+          aria-busy={pending === item.id || undefined}
+          onChange={(e) => send(e.target.checked)}
+        />
+        Turn off Autopilot for {item.id}
+      </label>
+      {error?.id === item.id && (
+        <span className="autopilot-off-toggle__error" role="alert">
+          {error.message}
+        </span>
+      )}
+    </>
+  )
+}
+
+function AutopilotOffNote({ item }) {
+  if (!autopilotOffToggleShown(item)) return null
+  return (
+    <>
+      {autopilotOffShown(item) && (
+        <p className="autopilot-off-note">
+          <strong>Autopilot is off for this item.</strong> Every gate on {item.id} waits for you, including Accept, so you
+          see the code before it merges. Autopilot still notes what it would have done. This adds the{' '}
+          <span className="autopilot-off-note__label">autopilot-off</span> label on the GitHub issue; unticking it removes
+          the label and needs your gate PIN.
+        </p>
+      )}
+      {!item.autopilotOff && item.projectAutopilot === 'on' && (
+        <p className="autopilot-off-note autopilot-off-note--on">
+          Autopilot handles this item's gates 5, 10, 13 and 15, like the rest of the project. Gate 3 is always yours.
+        </p>
+      )}
+    </>
+  )
+}
+
 export default function Tracker({ item, projects, deployBlock = null, viewerName = null, restartSent = null, onBack, onApprove, onApproveWithComments, onReject, onResolveConflicts, resolving, gateBusy, onForwardToAccept, onTogglePause, onRestartPhase, onSetPersona, onSetStepProvider, onAbandon, onRemoveDependency, onAddDependency, onAmendRule }) {
   const status = itemStatus(item, true, { deployBlock })
   const activity = buildActivity(item)
@@ -790,6 +869,7 @@ export default function Tracker({ item, projects, deployBlock = null, viewerName
               <span className="tracker__id">{item.id}</span>
               <ProjectBadge projectId={item.project_id} projects={projects} />
               <TaskBadge kind={item.kind} lane={laneOf(item)} />
+              <AutopilotOffChip item={item} />
               <span className="tracker__priority" style={{ color: priorityColor(item.priority) }}>
                 <span className="tracker__priority-dot" style={{ background: priorityColor(item.priority) }} />
                 {item.priority} priority
@@ -822,10 +902,12 @@ export default function Tracker({ item, projects, deployBlock = null, viewerName
                   {item.release_tag}
                 </a>
               )}
+              {!abandoned && !closed && <AutopilotOffToggle key={`autopilot-off-${item.id}`} item={item} />}
             </div>
             <div className="tracker__title">{item.title}</div>
             {/* HZ-153: issue bodies are markdown — Markdown renders them as
                 React elements, never as HTML. Same for the two tiles below. */}
+            {!abandoned && !closed && <AutopilotOffNote item={item} />}
             <Markdown className="tracker__desc" text={item.desc} />
           </div>
           <StatusPill status={status} className="tracker__status" />

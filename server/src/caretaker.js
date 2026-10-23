@@ -26,6 +26,14 @@
 // (mergeableHold), so an item about to be accepted never records "would ping
 // the human". If GitHub still has not said once the re-reads are done, the
 // 'ping_human' is recorded with that reason.
+//
+// HZ-544: an item whose issue carries the `autopilot-off` label, in an 'on'
+// project, is judged as usual but recorded as mode 'shadow' with item_off = 1.
+// So 'shadow' means the project is in shadow mode OR Autopilot is off for the
+// item; every acting query requires mode 'on', so gates 5, 10 and 15 skip it,
+// and the "caretaker would …" event still records what Autopilot would have
+// done. In a 'shadow' or 'off' project the label changes nothing here. The UI
+// shows the item as off under the same rule (StatusPill.jsx autopilotOffShown).
 
 import { db } from './db.js'
 import * as store from './store.js'
@@ -64,8 +72,8 @@ const selectSourceRun = db.prepare(
   "SELECT id, output, artifact, started_at, ended_at FROM step_run WHERE item_id = ? AND step_index = ? AND status = 'done' ORDER BY id DESC LIMIT 1",
 )
 const insertEval = db.prepare(`
-  INSERT OR IGNORE INTO caretaker_eval (item_id, gate_index, arrival_run_id, mode, decision, rule_id, reason, comment)
-  VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+  INSERT OR IGNORE INTO caretaker_eval (item_id, gate_index, arrival_run_id, mode, item_off, decision, rule_id, reason, comment)
+  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
 `)
 const insertEvent = db.prepare(
   "INSERT INTO event (item_id, who, text, color, initials) VALUES (?, 'Caretaker', ?, '#4A6B5D', 'CT')",
@@ -216,12 +224,17 @@ export function sweepCaretaker({ log, policy = loadPolicy, now = Date.now } = {}
         if (hold === 'unknown' && result.decision === 'ping_human' && result.ruleId === null) {
           result = { ...result, reason: MERGEABLE_UNKNOWN_REASON }
         }
+        // HZ-544: off for the item only in an 'on' project — a shadow or off
+        // project records exactly what it did before.
+        const itemOff = item.autopilot === 'on' && item.autopilot_off === 1
         // Several arrivals with no source run share key 0, so at most one of
         // them is judged — fewer events, never a duplicate.
         db.transaction(() => {
-          const row = insertEval.run(item.id, item.cursor, sourceRun?.id ?? 0, item.autopilot, result.decision, result.ruleId, result.reason, result.comment)
+          const mode = itemOff ? 'shadow' : item.autopilot
+          const row = insertEval.run(item.id, item.cursor, sourceRun?.id ?? 0, mode, itemOff ? 1 : 0, result.decision, result.ruleId, result.reason, result.comment)
           if (row.changes !== 1) return
-          const text = `caretaker would ${DECISIONS[result.decision]} — ${result.reason}`
+          const suffix = itemOff ? ' (Autopilot is off for this item)' : ''
+          const text = `caretaker would ${DECISIONS[result.decision]} — ${result.reason}${suffix}`
           linkEvent.run(insertEvent.run(item.id, text).lastInsertRowid, row.lastInsertRowid)
           recorded++
         })()

@@ -44,6 +44,7 @@ import { isHumanProof } from './humanProof.js'
 import { isPersona, personaLabel, personasFromRow } from './personas.js'
 import { priorityFromLabels } from './priorityLabels.js'
 import { kindFromLabels, laneFromLabels } from './kindLabels.js'
+import { AUTOPILOT_OFF_LABEL, autopilotOffFromLabels } from './autopilotOffLabel.js'
 import { getActiveProjectId, setSetting } from './settings.js'
 import { parseRuleBlock } from './ruleBlock.js'
 import { fallbackNoteText, usageWaitText } from './usageLimits.js'
@@ -1624,6 +1625,19 @@ function waitingSince(row, ruleBlock) {
 }
 
 const selectProjectProviderDefaults = db.prepare('SELECT provider_defaults_json FROM project WHERE id = ?')
+const selectProjectAutopilot = db.prepare('SELECT autopilot FROM project WHERE id = ?')
+// HZ-544: the newest evaluation Autopilot recorded at this gate while it was
+// off for the item — what it would have done. Gate-scoped, so a decision from
+// an earlier gate never shows at this one.
+const selectItemOffEval = db.prepare(
+  'SELECT decision, reason FROM caretaker_eval WHERE item_id = ? AND gate_index = ? AND item_off = 1 ORDER BY id DESC LIMIT 1',
+)
+
+function autopilotWouldHave(row) {
+  if (!row.autopilot_off) return null
+  const evaluation = selectItemOffEval.get(row.id, row.cursor)
+  return evaluation ? { decision: evaluation.decision, reason: evaluation.reason } : null
+}
 
 // HZ-422: null once the wait has passed, even before kick() clears the column.
 function usageWaitView(row) {
@@ -1660,6 +1674,12 @@ function itemView(row, { stepOutputs: withStepOutputs = true } = {}) {
     // HZ-370: for the item page's "Default" label only; the farm is sent the
     // merged map (resolveStepProviders) at dispatch instead.
     projectProviderDefaults: providerDefaultsFromRow(row.project_id == null ? null : selectProjectProviderDefaults.get(row.project_id)),
+    // HZ-544: the `autopilot-off` label as last synced, and the project's
+    // Autopilot mode, so a page can tell "off for this item" applies (only
+    // in an 'on' project — see caretaker.js's itemOff).
+    autopilotOff: !!row.autopilot_off,
+    projectAutopilot: (row.project_id == null ? null : selectProjectAutopilot.get(row.project_id)?.autopilot) ?? 'off',
+    autopilotWouldHave: autopilotWouldHave(row),
     cursor: row.cursor,
     currentStep: currentStepOf(row),
     paused: !!row.paused,
@@ -2451,6 +2471,8 @@ export function upsertFromGithub(ghIssue, repoFullName) {
   const title = ghIssue.title || `Issue #${number}`
   const { desc, metric, guardrails } = parseIssueBody(ghIssue.body)
   const priority = priorityFromLabels(ghIssue.labels)
+  // HZ-544: read on every sync, like the priority; the label is the switch.
+  const autopilotOff = autopilotOffFromLabels(ghIssue.labels) ? 1 : 0
   const closedOnGithub = ghIssue.state === 'closed'
   const row = db.prepare('SELECT * FROM work_item WHERE repo = ? AND issue = ?').get(repoFullName, number)
   let changed = false
@@ -2462,7 +2484,7 @@ export function upsertFromGithub(ghIssue, repoFullName) {
     const kind = kindFromLabels(ghIssue.labels)
     const id = `${repoRow.prefix}-${number}`
     db.prepare(
-      'INSERT INTO work_item (id, title, priority, desc, metric, guardrails, issue, repo, project_id, cursor, kind, lane) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+      'INSERT INTO work_item (id, title, priority, desc, metric, guardrails, issue, repo, project_id, cursor, kind, lane, autopilot_off) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
     ).run(
       id,
       title,
@@ -2476,6 +2498,7 @@ export function upsertFromGithub(ghIssue, repoFullName) {
       closedOnGithub ? endIndex(kind) : firstStepIndex(kind),
       kind,
       laneFromLabels(ghIssue.labels, kind),
+      autopilotOff,
     )
     addEvent(id, { who: 'GitHub', text: `opened issue #${number}`, color: '#2A2A2E', initials: 'GH' })
     changed = true
@@ -2489,6 +2512,14 @@ export function upsertFromGithub(ghIssue, repoFullName) {
       db.prepare(
         `UPDATE work_item SET title = ?, desc = ?, priority = ?, metric = ?, guardrails = ?, ${touch} WHERE id = ?`,
       ).run(title, desc, priority, newMetric, newGuardrails, row.id)
+      changed = true
+    }
+    if (autopilotOff !== (row.autopilot_off ? 1 : 0)) {
+      db.prepare(`UPDATE work_item SET autopilot_off = ?, ${touch} WHERE id = ?`).run(autopilotOff, row.id)
+      const text = autopilotOff
+        ? `Autopilot turned off for this item (label ${AUTOPILOT_OFF_LABEL})`
+        : `Autopilot handed this item back (label ${AUTOPILOT_OFF_LABEL} removed)`
+      addEvent(row.id, { who: 'GitHub', text, color: '#2A2A2E', initials: 'GH' })
       changed = true
     }
     // HZ-435: unlike the kind, the lane follows the label until the item

@@ -26,6 +26,10 @@
 // HZ-296: a 'ping_human' decision at gate 13 is a help ping too, so every
 // genuine one in an 'on' project reaches the owner. Gate 13 is still never
 // acted on here (ACT_GATES); caretakerAccept.js leaves a pinged arrival alone.
+// HZ-544: an item with Autopilot off (its `autopilot-off` label) has its
+// evaluations recorded as 'shadow' (caretaker.js), so the c.mode = 'on' filter
+// below skips it; a label that lands after an 'on' evaluation is caught at the
+// claim (itemAutopilotOff), which drops the decision for that arrival.
 
 import { db } from './db.js'
 import * as store from './store.js'
@@ -34,6 +38,7 @@ import { ACTOR, redact } from './caretakerRules.js'
 import { CHECK_HEADLINE_PREFIX, capWords } from './checkHeadline.js'
 import { loadPolicy, REPEAT_SEND_BACK_RULE } from './caretaker.js'
 import { actOnAcceptGate, failInterruptedAcceptActions } from './caretakerAccept.js'
+import { itemAutopilotOff } from './caretakerItemOff.js'
 import { sendWhatsApp } from './waSend.js'
 import { ownerJid } from './waApprovers.js'
 import { CARETAKER_HOURLY_LIMIT, REVIEW_CYCLE_CAP, WA_NOTIFY_ENABLED, WA_NOTIFY_MAX_ATTEMPTS } from './config.js'
@@ -59,8 +64,9 @@ const RESWEEP_MS = 60 * 1000
 const FAILED_RUNS_STOP = 2
 
 // Decisions for the CURRENT arrival of items still parked at the gate, in an
-// enabled 'on' project, judged while 'on' (shadow-era rows are never acted
-// on), not yet claimed. The last clause is the off-then-on ruling: a switch
+// enabled 'on' project, judged while 'on' (shadow-era rows — a project in
+// shadow, or HZ-544 Autopilot off for the item — are never acted on), not yet
+// claimed. The last clause is the off-then-on ruling: a switch
 // away from 'on' at or after the evaluation retires that decision for good.
 // project_event.created_at has one-second resolution, so a switch in the same
 // second as the evaluation also retires it — the safe side of the tie.
@@ -147,6 +153,7 @@ const selectHelpCandidates = db.prepare(`
     JOIN project p ON p.id = w.project_id
    WHERE p.autopilot = 'on' AND p.enabled = 1 AND c.mode = 'on' AND c.decision = 'ping_human'
      AND c.gate_index IN (${HELP_GATES.join(',')}) AND w.cursor = c.gate_index AND w.abandoned_at IS NULL
+     AND w.autopilot_off = 0
      AND c.arrival_run_id = COALESCE((SELECT MAX(s.id) FROM step_run s WHERE s.item_id = w.id
            AND s.step_index = w.cursor - 1 AND s.status = 'done'), 0)
    ORDER BY c.id`)
@@ -345,9 +352,10 @@ export async function actOnDecisions({
     for (const c of selectCandidates.all()) {
       try {
         const nowMs = now()
-        // Once Autopilot is off, not even a ping: straight to the claim below,
-        // which records the decision as dropped.
-        const stillOn = selectMode.get(c.project_id)?.autopilot === 'on'
+        // Once Autopilot is off, for the project or (HZ-544) the item, not
+        // even a ping: straight to the claim below, which records the decision
+        // as dropped.
+        const stillOn = selectMode.get(c.project_id)?.autopilot === 'on' && !itemAutopilotOff(c.item_id)
         const stall = stillOn ? stallReason(c) : null
         if (stall) {
           if (recordStall(c, stall, nowMs, owner())) {
@@ -372,6 +380,13 @@ export async function actOnDecisions({
         db.transaction(() => {
           if (selectMode.get(c.project_id)?.autopilot !== 'on') {
             insertAction.run(c.eval_id, c.project_id, c.item_id, c.gate_index, c.decision, 'dropped', 'Autopilot is no longer on', nowMs)
+            claim = 'dropped'
+            return
+          }
+          // HZ-544: the label landed after this 'on' evaluation. The dropped
+          // row retires the decision; the next arrival is judged afresh.
+          if (itemAutopilotOff(c.item_id)) {
+            insertAction.run(c.eval_id, c.project_id, c.item_id, c.gate_index, c.decision, 'dropped', 'Autopilot is off for this item', nowMs)
             claim = 'dropped'
             return
           }

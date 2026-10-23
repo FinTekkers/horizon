@@ -13,6 +13,9 @@
     {"name": "layout-board", "path": "/", "waitFor": ".card"},
     {"name": "layout-item-activity", "path": "/ls-log", "viewports": ["phone"], "themes": ["light"], "waitFor": ".activity-row"},
     {"name": "layout-item-badge", "path": "/ls-gate", "viewports": ["phone"], "themes": ["light"], "waitFor": ".tracker__meta .proj-badge"},
-    {"name": "layout-admin-tokens", "path": "/admin", "viewports": ["phone"], "themes": ["light"], "waitFor": ".api-tokens"}
+    {"name": "layout-admin-tokens", "path": "/admin", "viewports": ["phone"], "themes": ["light"], "waitFor": ".api-tokens"},
+    {"name": "autopilot-off-card", "path": "/", "viewports": ["desktop"], "waitFor": ".card .autopilot-off-chip"},
+    {"name": "autopilot-off-item", "path": "/ap-364", "viewports": ["desktop"], "waitFor": ".autopilot-off-toggle input:checked"},
+    {"name": "autopilot-off-approvals", "path": "/?approvals", "viewports": ["desktop"], "waitFor": ".approval .autopilot-off-note"}
   ]
 }

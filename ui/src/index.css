@@ -1376,3 +1376,30 @@ button { font-family: var(--font-sans); }
 /* A step body is a flex item, so it would grow to the table's width and widen
    the page; letting it shrink is what makes the wrapper scroll instead. */
 .step__body:has(.data-table-wrap) { min-width: 0; }
+
+/* HZ-544: Autopilot off for one item. The chip is dark (the ink colour on the
+   surface, so it inverts in dark mode) to stand apart from the status pills:
+   a standing setting, not a state. Existing tokens only. */
+.autopilot-off-chip {
+  display: inline-flex; align-items: center; gap: 5px; align-self: flex-start; flex: none;
+  padding: 3px 9px; border-radius: 999px; background: var(--deep); color: var(--surface);
+  font: 700 12px var(--font-sans); white-space: nowrap;
+}
+.card > .autopilot-off-chip { margin-top: 10px; }
+.approval__meta .autopilot-off-chip { padding: 2px 8px; font-size: 11px; }
+.tracker__meta:has(.autopilot-off-toggle) { flex-wrap: wrap; }
+.autopilot-off-toggle {
+  display: inline-flex; align-items: center; gap: 10px; min-height: 44px; padding: 0 14px;
+  border: 1px solid var(--border-strong); border-radius: 12px; background: var(--surface-alt);
+  font: 700 13px var(--font-sans); color: var(--deep); cursor: pointer;
+}
+.autopilot-off-toggle input { width: 18px; height: 18px; margin: 0; accent-color: var(--deep); }
+.autopilot-off-toggle__error { font: 600 12px var(--font-sans); color: var(--danger-ink); }
+.autopilot-off-note {
+  margin: 10px 0 0; padding: 12px 14px; border-radius: 12px; background: var(--canvas);
+  font: 400 14px/1.5 var(--font-sans); color: var(--deep);
+}
+.autopilot-off-note--on { background: var(--accent-bg); color: var(--text-secondary); }
+.autopilot-off-note--approval { margin: 0 0 14px; padding: 0; background: none; font-size: 13px; color: var(--text-secondary); }
+.autopilot-off-note__label { font: 500 13px var(--font-mono); }
+.autopilot-off-note__link { display: block; margin-top: 8px; font-weight: 700; color: var(--primary-ink); }
