@@ -628,8 +628,10 @@ export async function fixRepoWebhook(projectId, repo, pin) {
   return data
 }
 
-export function artifactUrl(itemId, stepIndex) {
-  return `${API_BASE}/items/${itemId}/artifacts/${stepIndex}`
+// HZ-561: with an attempt, that attempt's artifact (HZ-46's per-attempt route).
+export function artifactUrl(itemId, stepIndex, attempt) {
+  const base = `${API_BASE}/items/${itemId}/artifacts/${stepIndex}`
+  return attempt ? `${base}/${attempt}` : base
 }
 
 // Full-page views opened via "See agent output" (HZ-14) — plain links, same
