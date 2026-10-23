@@ -23,20 +23,28 @@ Schema v1:
   outputDir   relative path inside the repo (no `..`), required
   themes      non-empty list of unique non-empty strings, required
   viewports   non-empty list of {name, width, height}, unique names, required
-  defaults    optional {login, timeoutMs, maxHeightPx, waitFor}
+  defaults    optional {login, timeoutMs, maxHeightPx, waitFor, mask}
   screens     non-empty list of {name, path, login?, viewports?, themes?,
-              timeoutMs?, maxHeightPx?, waitFor?}, unique names, required
-              (HZ-527: waitFor is a CSS selector the worker waits to see
-              before the shot; unset by default)
+              timeoutMs?, maxHeightPx?, waitFor?, mask?}, unique names,
+              required (HZ-527: waitFor is a CSS selector the worker waits
+              to see before the shot; unset by default. HZ-557: mask is a
+              non-empty list of unique CSS selectors whose elements the
+              worker covers in the shot; a screen's mask replaces the one in
+              defaults, it is not merged)
   diff        optional {threshold, ratioTolerance}, each a number in [0, 1]
               (HZ-508: pixelmatch's per-pixel threshold and the share of
               pixels that may differ before a shot reads as changed)
+  loginCookies optional non-empty {cookie name: test-login variable name}
+              (HZ-557: a login: true shot sets these cookies for the app's
+              origin instead of sending headers. Names only — the values are
+              read from the repo's test-login file at run time)
 A screen's viewports and themes are names from the top-level lists. Unknown
 keys fail at their own path.
 """
 
 import json
-from dataclasses import dataclass
+import re
+from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 from urllib.parse import urlsplit
 
@@ -49,14 +57,16 @@ DEFAULT_DIFF_THRESHOLD = 0.1
 DEFAULT_DIFF_RATIO_TOLERANCE = 0.01
 
 ROOT_PATH = "$"
-TOP_KEYS = ("version", "serve", "ready", "outputDir", "themes", "viewports", "defaults", "screens", "diff")
+TOP_KEYS = ("version", "serve", "ready", "outputDir", "themes", "viewports", "defaults", "screens", "diff", "loginCookies")
 TOP_REQUIRED = ("version", "serve", "ready", "outputDir", "themes", "viewports", "screens")
 READY_HOSTS = ("127.0.0.1", "localhost")
 VIEWPORT_KEYS = ("name", "width", "height")
-SETTING_KEYS = ("login", "timeoutMs", "maxHeightPx", "waitFor")
+SETTING_KEYS = ("login", "timeoutMs", "maxHeightPx", "waitFor", "mask")
 SCREEN_KEYS = ("name", "path", "viewports", "themes", *SETTING_KEYS)
 SCREEN_REQUIRED = ("name", "path")
 DIFF_KEYS = ("threshold", "ratioTolerance")
+# RFC 6265's cookie-name token.
+_COOKIE_NAME = re.compile(r"[A-Za-z0-9!#$%&'*+.^_`|~-]+")
 
 
 class ConfigError(ValueError):
@@ -81,11 +91,13 @@ class Shot:
     timeout_ms: int
     max_height_px: int
     wait_for: str | None = None
+    mask: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
 class Config:
-    """HZ-506: what the capture runner needs besides the shots."""
+    """HZ-506: what the capture runner needs besides the shots.
+    login_cookies (HZ-557) maps cookie names to test-login variable names."""
 
     serve: str
     ready: str
@@ -93,6 +105,7 @@ class Config:
     shots: list[Shot]
     diff_threshold: float = DEFAULT_DIFF_THRESHOLD
     diff_ratio_tolerance: float = DEFAULT_DIFF_RATIO_TOLERANCE
+    login_cookies: dict[str, str] = field(default_factory=dict)
 
 
 def headline(err: ConfigError) -> str:
@@ -130,6 +143,7 @@ def load_config(ws: Path) -> Config | None:
         shots=shots,
         diff_threshold=diff.get("threshold", DEFAULT_DIFF_THRESHOLD),
         diff_ratio_tolerance=diff.get("ratioTolerance", DEFAULT_DIFF_RATIO_TOLERANCE),
+        login_cookies=_login_cookies(doc["loginCookies"]) if "loginCookies" in doc else {},
     )
 
 
@@ -154,6 +168,7 @@ def parse(doc) -> list[Shot]:
         "timeoutMs": DEFAULT_TIMEOUT_MS,
         "maxHeightPx": DEFAULT_MAX_HEIGHT_PX,
         "waitFor": None,
+        "mask": (),
     }
     if "defaults" in doc:
         defaults.update(_settings(_keys(doc["defaults"], "defaults", SETTING_KEYS, ()), "defaults"))
@@ -188,11 +203,14 @@ def parse(doc) -> list[Shot]:
                     timeout_ms=settings["timeoutMs"],
                     max_height_px=settings["maxHeightPx"],
                     wait_for=settings["waitFor"],
+                    mask=settings["mask"],
                 )
                 for theme in shown_themes
             )
     if "diff" in doc:
         _diff(doc["diff"])
+    if "loginCookies" in doc:
+        _login_cookies(doc["loginCookies"])
     return shots
 
 
@@ -279,7 +297,7 @@ def _viewports(value) -> dict[str, tuple[int, int]]:
 
 
 def _settings(obj: dict, path: str) -> dict:
-    """The login/timeoutMs/maxHeightPx/waitFor keys `obj` sets, validated."""
+    """The login/timeoutMs/maxHeightPx/waitFor/mask keys `obj` sets, validated."""
     out = {}
     if "login" in obj:
         if not isinstance(obj["login"], bool):
@@ -290,7 +308,39 @@ def _settings(obj: dict, path: str) -> dict:
             out[key] = _positive(obj[key], _at(path, key))
     if "waitFor" in obj:
         out["waitFor"] = _text(obj["waitFor"], _at(path, "waitFor"))
+    if "mask" in obj:
+        out["mask"] = _mask(obj["mask"], _at(path, "mask"))
     return out
+
+
+def _mask(value, path: str) -> tuple[str, ...]:
+    """HZ-557: the CSS selectors a shot covers, in file order."""
+    out: list[str] = []
+    for i, item in enumerate(_list(value, path)):
+        if not isinstance(item, str) or not item.strip():
+            raise ConfigError(f"{path}[{i}]", "must be a non-empty CSS selector string")
+        if item in out:
+            raise ConfigError(f"{path}[{i}]", "duplicates an earlier selector")
+        out.append(item)
+    return tuple(out)
+
+
+def _login_cookies(value) -> dict[str, str]:
+    """HZ-557: {cookie name: test-login variable name}. Only names are
+    accepted, so a value can never be committed here."""
+    # Here, not at the top: farm/login_env.py imports farm/checks.py, which
+    # imports this module.
+    from .login_env import VAR_NAME
+
+    if not isinstance(value, dict) or not value:
+        raise ConfigError("loginCookies", "must be a non-empty object")
+    for cookie, var in value.items():
+        if not _COOKIE_NAME.fullmatch(cookie):
+            # The bad key is not echoed: it could hold anything.
+            raise ConfigError("loginCookies", "every key must be a cookie name (token characters only)")
+        if not isinstance(var, str) or not VAR_NAME.fullmatch(var):
+            raise ConfigError(f"loginCookies.{cookie}", "must be a test-login variable name")
+    return dict(value)
 
 
 def _diff(value) -> dict:

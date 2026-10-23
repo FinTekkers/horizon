@@ -142,6 +142,15 @@ def test_a_missing_or_non_integer_version_fails_at_version_with_no_fallback(chan
         (lambda d: d.update(extra=1), "extra"),
         (lambda d: d["screens"][0].update(waitFor=5), "screens[0].waitFor"),
         (lambda d: d["defaults"].update(waitFor=5), "defaults.waitFor"),
+        (lambda d: d["screens"][0].update(mask=[]), "screens[0].mask"),
+        (lambda d: d["defaults"].update(mask=["#a", 5]), "defaults.mask[1]"),
+        (lambda d: d["screens"][1].update(mask=["#a", "#a"]), "screens[1].mask[1]"),
+        (lambda d: d.update(loginCookies={"ft_api_key": "not a name"}), "loginCookies.ft_api_key"),
+        # A value pasted where a variable name goes is refused: names only.
+        (lambda d: d.update(loginCookies={"ft_user_email": "e2e@example.test"}), "loginCookies.ft_user_email"),
+        (lambda d: d.update(loginCookies={"bad name;": "FT_E2E_API_KEY"}), "loginCookies"),
+        (lambda d: d.update(loginCookies=["FT_E2E_API_KEY"]), "loginCookies"),
+        (lambda d: d.update(loginCookies={}), "loginCookies"),
     ],
     ids=[
         "unknown-viewport",
@@ -154,6 +163,14 @@ def test_a_missing_or_non_integer_version_fails_at_version_with_no_fallback(chan
         "unknown-top",
         "wait-for-type",
         "defaults-wait-for-type",
+        "empty-mask",
+        "mask-selector-type",
+        "duplicate-mask-selector",
+        "cookie-variable-name",
+        "cookie-value-shaped",
+        "cookie-name",
+        "cookies-not-an-object",
+        "cookies-empty",
     ],
 )
 def test_each_bad_field_is_named_by_its_path(change, path):
@@ -314,3 +331,29 @@ def test_a_bad_diff_override_is_named_by_its_path(diff, path):
     with pytest.raises(ConfigError) as err:
         parse(json.loads(edited(lambda d: d.update(diff=diff))))
     assert err.value.path == path
+
+
+# ---- HZ-557: mask and loginCookies ----
+
+
+def test_mask_in_defaults_is_inherited_and_a_screen_mask_replaces_it():
+    def change(doc):
+        doc["defaults"]["mask"] = ["#a", "#b"]
+        doc["screens"][1]["mask"] = ["#c"]
+
+    shots = parse(json.loads(edited(change)))
+    assert {s.mask for s in shots if s.screen == "home"} == {("#a", "#b")}
+    assert {s.mask for s in shots if s.screen == "admin"} == {("#c",)}
+
+
+def test_a_v1_config_without_new_keys_parses_unchanged(tmp_path):
+    cfg = screenshots_config.load_config(workspace(tmp_path, VALID))
+    assert {s.mask for s in cfg.shots} == {()}
+    assert cfg.login_cookies == {}
+
+
+def test_load_config_carries_login_cookie_names_only(tmp_path):
+    names = {"ft_api_key": "FT_E2E_API_KEY", "ft_user_email": "FT_E2E_EMAIL"}
+    cfg = screenshots_config.load_config(workspace(tmp_path, edited(lambda d: d.update(loginCookies=names))))
+    assert cfg.login_cookies == names
+    assert len(cfg.shots) == 5
