@@ -849,6 +849,10 @@ button { font-family: var(--font-sans); }
 .step__icon--verdict-fail { background: var(--danger); color: #fff; }
 .step__icon--verdict-unknown,
 .step__icon--verdict-loading { background: var(--surface); border: 2px solid var(--muted); color: var(--muted); }
+/* HZ-561: a step ahead of the cursor that already ran — its last result, not
+   the queued look. The failed variant also takes --verdict-fail above. */
+.step__icon--ran-ahead { background: var(--surface); border: 2px solid var(--muted); color: var(--muted); }
+.step__icon--ran-ahead.step__icon--verdict-fail { background: var(--danger); border-color: var(--danger); color: #fff; }
 .step__line { width: 2px; flex: 1; min-height: 14px; background: var(--border-strong); margin: 2px 0; }
 .step__line--done { background: var(--primary); }
 .step__body { flex: 1; padding-bottom: 14px; }
@@ -857,6 +861,8 @@ button { font-family: var(--font-sans); }
 .step-card--awaiting { background: var(--warning-bg-soft); border: 1.5px solid var(--warning-border-soft); }
 .step-card--active { background: var(--active-bg); border: 1px solid var(--active-border); }
 .step-card--blocked { background: var(--danger-bg-soft); border: 1px solid var(--danger-border-soft); }
+.step-card--ran-ahead { border: 1px dashed var(--border-strong); }
+.step-card--ran-ahead-failed { background: var(--danger-bg-soft); border-color: var(--danger-border-soft); }
 
 /* Queued (HZ-54): dispatched but not yet claimed by an agent — muted, no
    pulse. Uses theme tokens, not the hardcoded hex it originally shipped. */

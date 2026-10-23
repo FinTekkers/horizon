@@ -57,6 +57,18 @@ function verifyVerdictOf(index, status, output, settled) {
 }
 const VERIFY_FAILED_LABEL = 'Verify & report failed'
 
+// HZ-561: a step ahead of the cursor that already ran (the item moved back
+// past it) shows its newest finished attempt instead of "Queued". `failed`
+// when that attempt sent the item back: review by the item's reviewRejected
+// (item-level, so only for the review step), any other step by its stored
+// verdict. null when the step never ran, is running again, or its newest
+// attempt recorded no artifact — then it reads "Queued" as before, on purpose.
+function ranAheadOf(item, index, status, output) {
+  if (status !== 'pending' || !output?.artifact || item.activeRun?.step_index === index) return null
+  const failed = (index === REVIEW_STEP_INDEX && item.reviewRejected === true) || output.verdict === 'fail'
+  return { attempt: output.attempt, failed }
+}
+
 function elapsedMinutes(startedAt) {
   if (!startedAt) return null
   const t = Date.parse(startedAt.includes('T') ? startedAt : startedAt.replace(' ', 'T') + 'Z')
@@ -304,12 +316,13 @@ function Step({ item, stepOutputs, outputsSettled, index, deployBlock, viewerNam
   const sentLabel = restartSentLabel(item, index, restartSent)
   const verdict = verifyVerdictOf(index, status, output, outputsSettled)
   const verdictIcon = { fail: 'verdict-fail', unknown: 'verdict-unknown', loading: 'verdict-loading' }[verdict]
+  const ranAhead = ranAheadOf(item, index, status, output)
 
   return (
     <div className="step">
       <div className="step__rail">
         <div
-          className={`step__icon step__icon--${status}${queued ? ' step__icon--queued' : ''}${verdictIcon ? ` step__icon--${verdictIcon}` : ''}`}
+          className={`step__icon step__icon--${status}${queued ? ' step__icon--queued' : ''}${verdictIcon ? ` step__icon--${verdictIcon}` : ''}${ranAhead ? ` step__icon--ran-ahead${ranAhead.failed ? ' step__icon--verdict-fail' : ''}` : ''}`}
           data-testid={verdict === 'fail' ? 'verify-verdict-fail' : undefined}
           title={verdict === 'unknown' ? 'No verdict recorded for this run' : undefined}
         >
@@ -319,6 +332,8 @@ function Step({ item, stepOutputs, outputsSettled, index, deployBlock, viewerNam
             '?'
           ) : verdict === 'loading' ? (
             ''
+          ) : ranAhead ? (
+            '↺'
           ) : (
             STEP_GLYPHS[status]
           )}
@@ -327,7 +342,7 @@ function Step({ item, stepOutputs, outputsSettled, index, deployBlock, viewerNam
       </div>
       <div className="step__body">
         <div
-          className={`step-card${['awaiting', 'active', 'blocked'].includes(status) ? ` step-card--${status}` : ''}${queued ? ' step-card--queued' : ''}`}
+          className={`step-card${['awaiting', 'active', 'blocked'].includes(status) ? ` step-card--${status}` : ''}${queued ? ' step-card--queued' : ''}${ranAhead ? ` step-card--ran-ahead${ranAhead.failed ? ' step-card--ran-ahead-failed' : ''}` : ''}`}
           style={status === 'skipped' ? { opacity: 0.6 } : undefined}
           data-testid={status === 'skipped' ? 'step-skipped' : undefined}
         >
@@ -341,8 +356,17 @@ function Step({ item, stepOutputs, outputsSettled, index, deployBlock, viewerNam
           {/* HZ-54's queued state kept, but using main's theme token rather
               than the hardcoded hex it originally shipped — dark mode (HZ-25)
               moved every colour in this file behind a CSS variable. */}
-          <div className="step-card__meta" style={{ color: queued ? 'var(--muted)' : STEP_META_COLOR[status] || 'var(--muted)' }}>
-            {queued ? 'Queued' : mergeQueued ? 'Queued to merge' : STEP_META[status](isGate, st.gate, laneOf(item))}
+          <div
+            className="step-card__meta"
+            style={{ color: queued ? 'var(--muted)' : ranAhead?.failed ? 'var(--danger-ink)' : STEP_META_COLOR[status] || 'var(--muted)' }}
+          >
+            {queued
+              ? 'Queued'
+              : mergeQueued
+                ? 'Queued to merge'
+                : ranAhead
+                  ? `${ranAhead.failed ? 'Failed, sent back' : 'Completed earlier'} · attempt ${ranAhead.attempt}`
+                  : STEP_META[status](isGate, st.gate, laneOf(item))}
             {status === 'awaiting' && isGate && autopilotOffShown(item) && ` · ${AUTOPILOT_OFF_GATE_NOTE}`}
             {status === 'active' && item.activeRun?.step_index === index && (
               <span>
@@ -413,6 +437,17 @@ function Step({ item, stepOutputs, outputsSettled, index, deployBlock, viewerNam
               {output.attemptCount > 1
                 ? `attempt ${output.attempt} of ${output.attemptCount} ↗`
                 : 'View full artifact ↗'}
+            </a>
+          )}
+          {ranAhead && (
+            <a
+              className="step-card__artifact-link"
+              data-testid="ran-ahead-artifact"
+              href={artifactUrl(item.id, index, ranAhead.attempt)}
+              target="_blank"
+              rel="noopener noreferrer"
+            >
+              {`View attempt ${ranAhead.attempt} ↗`}
             </a>
           )}
           {/* HZ-407: a Task's Execute job, live from the item's own stream. */}
