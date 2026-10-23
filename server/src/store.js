@@ -42,7 +42,6 @@ import { REASON } from '../../domain/js/reasons.js'
 import { effectiveRunner, extractRunPlan } from '../../domain/js/runPlan.js'
 import { isHumanProof } from './humanProof.js'
 import { isPersona, personaDisplay, personaLabel, personasFromRow } from './personas.js'
-import { projectPersonaOverlay } from './definitions.js'
 import { priorityFromLabels } from './priorityLabels.js'
 import { kindFromLabels, laneFromLabels } from './kindLabels.js'
 import { AUTOPILOT_OFF_LABEL, autopilotOffFromLabels } from './autopilotOffLabel.js'
@@ -95,6 +94,17 @@ let deployDrainProvider = { block: () => null, survives: () => false }
 
 export function registerDeployDrainProvider(provider) {
   deployDrainProvider = { ...deployDrainProvider, ...provider }
+}
+
+// HZ-535: the orchestrator registers definitions.js's projectPersonaOverlay
+// here when it loads. store.js never imports definitions.js itself, so the
+// WhatsApp vote path (waPollVotes.js -> store.js) still cannot reach it
+// (wa-poll-no-model.test.mjs). Until then every item reads the global
+// personas, exactly as a project with no definitions does.
+let projectOverlayLoader = () => null
+
+export function registerProjectOverlayLoader(loader) {
+  projectOverlayLoader = loader
 }
 
 // ---- HZ-216: long gate actions (pre-merge checks + merge, conflict resolution) ----
@@ -821,7 +831,7 @@ export function setProjectDefinitionsEnabled(projectId, enabled, who) {
 const selectProjectDefinitions = db.prepare('SELECT name, definitions_enabled FROM project WHERE id = ?')
 export function projectOverlayFor(projectId) {
   if (projectId == null) return null
-  return projectPersonaOverlay(selectProjectDefinitions.get(projectId))
+  return projectOverlayLoader(selectProjectDefinitions.get(projectId))
 }
 
 // HZ-535: { agent: {label, initials, color} } for each slot holding a project

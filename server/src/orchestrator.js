@@ -51,6 +51,7 @@ import {
   registerAgentRunner,
   registerRunStateProvider,
   registerDeployDrainProvider,
+  registerProjectOverlayLoader,
   claimGateAction,
   finishGateAction,
   getConflictRun as conflictRunOf,
@@ -89,6 +90,7 @@ import {
   listUsageWaits,
   projectOverlayFor,
 } from './store.js'
+import { projectPersonaOverlay } from './definitions.js'
 import { createMockPr, createDeployRelease, postIssueComment, syncIssueBodyFields, createPrFromBranch, getPrHeadSha, getIssueBody } from './github.js'
 import { PHASES } from '../../domain/js/lifecycle.js'
 import { getActiveProjectId, getFarmProjectId, getSetting, setSetting, getToken } from './settings.js'
@@ -1806,9 +1808,13 @@ async function dispatchToFarm(id, stepIndex, runId, attempt, scope, checkoutSha 
       ...releaseFields,
     },
     step: { index: stepIndex, label: step.label, agent: step.agent },
-    // HZ-535: definitionsEnabled tells the farm whether to read the project's
-    // own personas; a farm that sees it missing or false stays global.
-    ...(project ? { project: { id: project.id, name: project.name, definitionsEnabled: !!project.definitions_enabled } } : {}),
+    // HZ-535: definitionsEnabled tells the farm to read the project's own
+    // personas. Sent only when the switch is on AND the project's file loads,
+    // so a project with no definitions gets exactly today's payload; a farm
+    // that sees it missing stays global.
+    ...(project
+      ? { project: { id: project.id, name: project.name, ...(projectPersonaOverlay(project) ? { definitionsEnabled: true } : {}) } }
+      : {}),
     feedback,
     ...(mergeMain ? { merge_main: true } : {}),
     ...(deployWait ? { deploy_wait: deployWait } : {}),
@@ -3727,6 +3733,10 @@ export async function reconcileActiveRuns() {
     reconcileInFlight = false
   }
 }
+
+// HZ-535: at load, not in init(), so every store read of an item in a
+// project with definitions sees its overlay as soon as the app is built.
+registerProjectOverlayLoader(projectPersonaOverlay)
 
 export async function init(log) {
   registerAgentRunner({ kick, cancel, pause })
