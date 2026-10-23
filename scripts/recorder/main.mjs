@@ -6,6 +6,7 @@ import { encode } from './encode.mjs'
 import { RecorderError } from './errors.mjs'
 import { buildTimeline } from './timeline.mjs'
 import { readToken } from './token.mjs'
+import { runWalkthrough } from './walkthrough.mjs'
 import { pollItem } from './watch.mjs'
 
 export const USAGE = `Usage: node scripts/record-item.mjs <ITEM-ID> [--site <url>] [--out <dir>] [--board <url>]
@@ -25,6 +26,20 @@ Exit codes:
   2  token rejected (401)
   3  item <ITEM-ID> not on board (3 polls in a row)
   4  board unreachable for 5 minutes
+
+Walkthrough mode (HZ-530):
+  node scripts/record-item.mjs --walkthrough <name> --board <url> [--out <dir>]
+
+Plays scripts/recorder/walkthroughs/<name>.json (goto, click, type, waitFor,
+pause and caption actions) in real time and films it to <out>/<name>.mp4.
+  --board  the UI URL of a local throwaway Horizon: http://127.0.0.1:<port> or
+           http://localhost:<port>, never port 3001. The process on that port
+           needs VITE_PROXY_TARGET set to a loopback API, and that API needs
+           HORIZON_TEST_HOOKS=1. Both are checked through /proc before a
+           browser starts; no request is sent to a refused board.
+  --out    output directory (default ./recordings/walkthrough-<name>)
+PIN and email fields and addresses are masked in every frame. The browser
+reaches the board's origin only. Exit 0 when the MP4 is written, else 1.
 `
 
 const DEFAULT_BOARD = 'https://shoreward.ai/horizon'
@@ -36,7 +51,7 @@ export async function run(argv, env = process.env, log = (line) => process.stdou
     parsed = parseArgs({
       args: argv,
       allowPositionals: true,
-      options: { site: { type: 'string' }, out: { type: 'string' }, board: { type: 'string' }, help: { type: 'boolean', short: 'h' } },
+      options: { site: { type: 'string' }, out: { type: 'string' }, board: { type: 'string' }, walkthrough: { type: 'string' }, help: { type: 'boolean', short: 'h' } },
     })
   } catch (err) {
     throw new RecorderError(`${err.message}\n\n${USAGE}`)
@@ -44,6 +59,13 @@ export async function run(argv, env = process.env, log = (line) => process.stdou
   const { values, positionals } = parsed
   if (values.help) {
     log(USAGE)
+    return
+  }
+  if (values.walkthrough !== undefined) {
+    if (positionals.length || values.site !== undefined) throw new RecorderError(`--walkthrough takes no item id and no --site\n\n${USAGE}`)
+    const name = values.walkthrough
+    const outDir = path.resolve(values.out || path.join('recordings', `walkthrough-${name}`))
+    await runWalkthrough({ name, outDir, board: values.board, env, log })
     return
   }
   const itemId = positionals[0]
