@@ -75,6 +75,7 @@ export const {
   restoreRule,
   getDeployTargets,
   getCheckFlakes,
+  getProductivity,
   dryRunDeployTarget,
   getDeployTargetConfig,
   createDeployTarget,

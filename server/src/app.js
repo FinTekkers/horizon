@@ -58,6 +58,7 @@ import { filedMap } from './planFiling.js'
 import { PLAN_DRAFT_SCHEMA } from '../../domain/js/planDraft.js'
 import * as checkFlakes from './checkFlakes.js'
 import * as testResults from './testResults.js'
+import { PRODUCTIVITY_QUERY_SCHEMA, PRODUCTIVITY_RESPONSE_SCHEMA, productivityReport } from './productivity.js'
 import { RULE_MAX_CHARS, NEEDS_MAX_CHARS } from './ruleBlock.js'
 import {
   API_SECURITY,
@@ -204,6 +205,15 @@ function humanAuthorized(request, reply) {
 // is authenticated, just with the wrong kind of credential.
 function requireSession(request, reply) {
   if (request.auth?.via === 'session') return true
+  reply.code(403).send({ error: 'session_required' })
+  return false
+}
+
+// HZ-549: like requireSession, but the screenshot capture's test-env login
+// (HZ-511, test servers only) passes too, so a read-only Admin page can be
+// captured. A token still gets 403. Never use this on a route that writes.
+function requireHumanSession(request, reply) {
+  if (request.auth?.via === 'session' || request.auth?.via === 'test-env') return true
   reply.code(403).send({ error: 'session_required' })
   return false
 }
@@ -2574,6 +2584,25 @@ export function buildApp({ logger = true, onRoute = null } = {}) {
   // ---- Flaky tests and test history (HZ-327) ----
   // Read-only. Flakes per repo, newest first: { repos: [{ repo, tests: [...] }] }.
   fastify.get('/api/admin/check-flakes', { schema: { response: { 200: OK_OBJECT } } }, () => checkFlakes.listFlakes())
+
+  // ---- Productivity (HZ-549, read-only) ----
+  // Serves the checked-in fixture until HZ-550 aggregates real data. The
+  // response schema is domain/productivity.schema.json, so the spec and the
+  // serializer both enforce the contract.
+  fastify.get(
+    '/api/admin/productivity',
+    {
+      schema: {
+        querystring: PRODUCTIVITY_QUERY_SCHEMA,
+        response: { 200: PRODUCTIVITY_RESPONSE_SCHEMA, 400: ERROR_OBJECT, 401: ERROR_OBJECT, 403: ERROR_OBJECT },
+        security: SESSION_SECURITY,
+      },
+    },
+    (request, reply) => {
+      if (!requireHumanSession(request, reply)) return
+      return productivityReport(request.query)
+    },
+  )
 
   // One repo's per-test history: runs, failures, flakes, last seen, median and
   // p95 duration. HZ-328 picks its blocking test set from this.

@@ -52,6 +52,7 @@ const LABEL_MENTIONS_ALLOWED = {
   // means leaving them here would fail as a stale entry.
   'domain/steps.json': 'the authored source — the only declaration',
   'domain/fixtures/lifecycle-cases.json': "HZ-413: the Task farm view's expected labels, a shared JS/Python fixture",
+  'domain/fixtures/productivity.json': "HZ-549: the design's model x step matrix, one row per step label — report data, not a declaration",
   'server/src/orchestrator.js': "MOCK_STEP_BEHAVIOR key — guarded by mock-step-behavior-drift.test.mjs",
   'server/test/domain-step-pins.test.mjs': 'the permanent hand-written label pin (guardrail 9)',
   'server/test/lifecycle-renamed-label.test.mjs': 'fabricated 2-step fixture',

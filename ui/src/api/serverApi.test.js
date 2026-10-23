@@ -854,3 +854,15 @@ test('getScreenshotImage re-prompts once on a 401 and retries with the new PIN',
   expect(fetchSpy.mock.calls[1][1].headers).toEqual({ 'x-human-key': '271828' })
   expect(fetchSpy.mock.calls[1][1]).not.toHaveProperty('body')
 })
+
+// HZ-549: the Productivity page's one client function — a plain GET with the
+// range and project in the query string, URL-encoded.
+test('getProductivity GETs /admin/productivity with range and project in the query string', async () => {
+  const serverApi = await import('./serverApi')
+  const fetchSpy = vi.fn(async () => ({ ok: true, status: 200, json: async () => ({ source: 'fixture' }) }))
+  vi.stubGlobal('fetch', fetchSpy)
+
+  await expect(serverApi.getProductivity({ range: '7d', project: 'a&b' })).resolves.toEqual({ source: 'fixture' })
+  expect(fetchSpy).toHaveBeenCalledTimes(1)
+  expect(fetchSpy.mock.calls[0][0]).toBe(`${serverApi.API_BASE}/admin/productivity?range=7d&project=a%26b`)
+})

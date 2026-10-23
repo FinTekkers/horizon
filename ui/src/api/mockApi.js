@@ -16,6 +16,7 @@
 import { STEPS, PHASES, isClosed, firstStepIndex, ACCEPT_GATE_INDEX, IMPLEMENT_STEP_INDEX } from '../../../domain/js/lifecycle.js'
 import { DEFAULT_PRIORITY } from '../../../domain/js/priorities.js'
 import { PERSONAS, isPersona } from '../domain/personas'
+import PRODUCTIVITY_FIXTURE from '../../../domain/fixtures/productivity.json'
 
 const SEED_ITEMS = [
   { id: 'BF-145', title: 'Risk-limit breach dashboard', priority: 'Low', cursor: 1, issue: 412, desc: 'Give risk managers a live view of limit utilization across every desk.', metric: 'Limit breaches acknowledged in < 2 min (from 14 min).', guardrails: 'Read-only — no position mutation. No PII in telemetry.' },
@@ -522,6 +523,13 @@ export async function listDefinitions() {
 
 export async function getCheckFlakes() {
   return { repos: [] }
+}
+
+// ---- productivity (HZ-549, read-only) ----
+// The same checked-in fixture the server serves until HZ-550.
+
+export async function getProductivity({ range = '14d', project = 'all' } = {}) {
+  return { ...structuredClone(PRODUCTIVITY_FIXTURE), range, project }
 }
 
 // ---- deploy targets (HZ-41, read-only) ----

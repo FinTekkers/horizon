@@ -1,0 +1,450 @@
+{
+  "source": "fixture",
+  "range": "14d",
+  "project": "all",
+  "from": "2026-10-08",
+  "to": "2026-10-22",
+  "projects": [{ "id": "fintekkers", "name": "Fintekkers" }, { "id": "horizon", "name": "Horizon" }, { "id": "shoreward", "name": "Shoreward" }],
+  "summary": { "closed": 319, "steps": 3434, "modelCoverage": 0.65, "cost": null, "costPerItem": null },
+  "closedPerDay": [
+    {
+      "date": "2026-10-08",
+      "byProject": [{ "project": "fintekkers", "count": 22 }, { "project": "horizon", "count": 10 }, { "project": "shoreward", "count": 0 }]
+    },
+    {
+      "date": "2026-10-09",
+      "byProject": [{ "project": "fintekkers", "count": 13 }, { "project": "horizon", "count": 6 }, { "project": "shoreward", "count": 0 }]
+    },
+    {
+      "date": "2026-10-10",
+      "byProject": [{ "project": "fintekkers", "count": 0 }, { "project": "horizon", "count": 15 }, { "project": "shoreward", "count": 0 }]
+    },
+    {
+      "date": "2026-10-11",
+      "byProject": [{ "project": "fintekkers", "count": 2 }, { "project": "horizon", "count": 3 }, { "project": "shoreward", "count": 1 }]
+    },
+    {
+      "date": "2026-10-12",
+      "byProject": [{ "project": "fintekkers", "count": 27 }, { "project": "horizon", "count": 6 }, { "project": "shoreward", "count": 4 }]
+    },
+    {
+      "date": "2026-10-13",
+      "byProject": [{ "project": "fintekkers", "count": 33 }, { "project": "horizon", "count": 7 }, { "project": "shoreward", "count": 3 }]
+    },
+    {
+      "date": "2026-10-14",
+      "byProject": [{ "project": "fintekkers", "count": 24 }, { "project": "horizon", "count": 14 }, { "project": "shoreward", "count": 0 }]
+    },
+    {
+      "date": "2026-10-15",
+      "byProject": [{ "project": "fintekkers", "count": 27 }, { "project": "horizon", "count": 13 }, { "project": "shoreward", "count": 0 }]
+    },
+    {
+      "date": "2026-10-16",
+      "byProject": [{ "project": "fintekkers", "count": 30 }, { "project": "horizon", "count": 5 }, { "project": "shoreward", "count": 0 }]
+    },
+    {
+      "date": "2026-10-17",
+      "byProject": [{ "project": "fintekkers", "count": 0 }, { "project": "horizon", "count": 0 }, { "project": "shoreward", "count": 0 }]
+    },
+    {
+      "date": "2026-10-18",
+      "byProject": [{ "project": "fintekkers", "count": 0 }, { "project": "horizon", "count": 0 }, { "project": "shoreward", "count": 0 }]
+    },
+    {
+      "date": "2026-10-19",
+      "byProject": [{ "project": "fintekkers", "count": 0 }, { "project": "horizon", "count": 0 }, { "project": "shoreward", "count": 0 }]
+    },
+    {
+      "date": "2026-10-20",
+      "byProject": [{ "project": "fintekkers", "count": 5 }, { "project": "horizon", "count": 4 }, { "project": "shoreward", "count": 0 }]
+    },
+    {
+      "date": "2026-10-21",
+      "byProject": [{ "project": "fintekkers", "count": 8 }, { "project": "horizon", "count": 10 }, { "project": "shoreward", "count": 1 }]
+    },
+    {
+      "date": "2026-10-22",
+      "byProject": [{ "project": "fintekkers", "count": 23 }, { "project": "horizon", "count": 3 }, { "project": "shoreward", "count": 0 }]
+    }
+  ],
+  "costPerDay": [
+    {
+      "date": "2026-10-08",
+      "byProject": [
+        { "project": "fintekkers", "cost": null, "inputTokens": null, "outputTokens": null },
+        { "project": "horizon", "cost": null, "inputTokens": null, "outputTokens": null },
+        { "project": "shoreward", "cost": null, "inputTokens": null, "outputTokens": null }
+      ]
+    },
+    {
+      "date": "2026-10-09",
+      "byProject": [
+        { "project": "fintekkers", "cost": null, "inputTokens": null, "outputTokens": null },
+        { "project": "horizon", "cost": null, "inputTokens": null, "outputTokens": null },
+        { "project": "shoreward", "cost": null, "inputTokens": null, "outputTokens": null }
+      ]
+    },
+    {
+      "date": "2026-10-10",
+      "byProject": [
+        { "project": "fintekkers", "cost": null, "inputTokens": null, "outputTokens": null },
+        { "project": "horizon", "cost": null, "inputTokens": null, "outputTokens": null },
+        { "project": "shoreward", "cost": null, "inputTokens": null, "outputTokens": null }
+      ]
+    },
+    {
+      "date": "2026-10-11",
+      "byProject": [
+        { "project": "fintekkers", "cost": null, "inputTokens": null, "outputTokens": null },
+        { "project": "horizon", "cost": null, "inputTokens": null, "outputTokens": null },
+        { "project": "shoreward", "cost": null, "inputTokens": null, "outputTokens": null }
+      ]
+    },
+    {
+      "date": "2026-10-12",
+      "byProject": [
+        { "project": "fintekkers", "cost": null, "inputTokens": null, "outputTokens": null },
+        { "project": "horizon", "cost": null, "inputTokens": null, "outputTokens": null },
+        { "project": "shoreward", "cost": null, "inputTokens": null, "outputTokens": null }
+      ]
+    },
+    {
+      "date": "2026-10-13",
+      "byProject": [
+        { "project": "fintekkers", "cost": null, "inputTokens": null, "outputTokens": null },
+        { "project": "horizon", "cost": null, "inputTokens": null, "outputTokens": null },
+        { "project": "shoreward", "cost": null, "inputTokens": null, "outputTokens": null }
+      ]
+    },
+    {
+      "date": "2026-10-14",
+      "byProject": [
+        { "project": "fintekkers", "cost": null, "inputTokens": null, "outputTokens": null },
+        { "project": "horizon", "cost": null, "inputTokens": null, "outputTokens": null },
+        { "project": "shoreward", "cost": null, "inputTokens": null, "outputTokens": null }
+      ]
+    },
+    {
+      "date": "2026-10-15",
+      "byProject": [
+        { "project": "fintekkers", "cost": null, "inputTokens": null, "outputTokens": null },
+        { "project": "horizon", "cost": null, "inputTokens": null, "outputTokens": null },
+        { "project": "shoreward", "cost": null, "inputTokens": null, "outputTokens": null }
+      ]
+    },
+    {
+      "date": "2026-10-16",
+      "byProject": [
+        { "project": "fintekkers", "cost": null, "inputTokens": null, "outputTokens": null },
+        { "project": "horizon", "cost": null, "inputTokens": null, "outputTokens": null },
+        { "project": "shoreward", "cost": null, "inputTokens": null, "outputTokens": null }
+      ]
+    },
+    {
+      "date": "2026-10-17",
+      "byProject": [
+        { "project": "fintekkers", "cost": null, "inputTokens": null, "outputTokens": null },
+        { "project": "horizon", "cost": null, "inputTokens": null, "outputTokens": null },
+        { "project": "shoreward", "cost": null, "inputTokens": null, "outputTokens": null }
+      ]
+    },
+    {
+      "date": "2026-10-18",
+      "byProject": [
+        { "project": "fintekkers", "cost": null, "inputTokens": null, "outputTokens": null },
+        { "project": "horizon", "cost": null, "inputTokens": null, "outputTokens": null },
+        { "project": "shoreward", "cost": null, "inputTokens": null, "outputTokens": null }
+      ]
+    },
+    {
+      "date": "2026-10-19",
+      "byProject": [
+        { "project": "fintekkers", "cost": null, "inputTokens": null, "outputTokens": null },
+        { "project": "horizon", "cost": null, "inputTokens": null, "outputTokens": null },
+        { "project": "shoreward", "cost": null, "inputTokens": null, "outputTokens": null }
+      ]
+    },
+    {
+      "date": "2026-10-20",
+      "byProject": [
+        { "project": "fintekkers", "cost": null, "inputTokens": null, "outputTokens": null },
+        { "project": "horizon", "cost": null, "inputTokens": null, "outputTokens": null },
+        { "project": "shoreward", "cost": null, "inputTokens": null, "outputTokens": null }
+      ]
+    },
+    {
+      "date": "2026-10-21",
+      "byProject": [
+        { "project": "fintekkers", "cost": null, "inputTokens": null, "outputTokens": null },
+        { "project": "horizon", "cost": null, "inputTokens": null, "outputTokens": null },
+        { "project": "shoreward", "cost": null, "inputTokens": null, "outputTokens": null }
+      ]
+    },
+    {
+      "date": "2026-10-22",
+      "byProject": [
+        { "project": "fintekkers", "cost": null, "inputTokens": null, "outputTokens": null },
+        { "project": "horizon", "cost": null, "inputTokens": null, "outputTokens": null },
+        { "project": "shoreward", "cost": null, "inputTokens": null, "outputTokens": null }
+      ]
+    }
+  ],
+  "topItems": [
+    { "id": "FT-212", "kind": "change", "project": "fintekkers", "steps": 31, "tokens": null, "cost": null },
+    { "id": "HZ-501", "kind": "plan", "project": "horizon", "steps": 24, "tokens": null, "cost": null },
+    { "id": "HZ-488", "kind": "task", "project": "horizon", "steps": 19, "tokens": null, "cost": null },
+    { "id": "FT-198", "kind": "change", "project": "fintekkers", "steps": 17, "tokens": null, "cost": null },
+    { "id": "SW-14", "kind": "change", "project": "shoreward", "steps": 15, "tokens": null, "cost": null }
+  ],
+  "models": {
+    "columns": ["claude-opus-5-5", "muse-spark-1.3"],
+    "rows": [
+      {
+        "step": "Define the outcome",
+        "runs": [{ "model": "claude-opus-5-5", "count": 220 }, { "model": "muse-spark-1.3", "count": 1 }],
+        "notRecorded": 58
+      },
+      {
+        "step": "Define how we measure success",
+        "runs": [{ "model": "claude-opus-5-5", "count": 199 }, { "model": "muse-spark-1.3", "count": 0 }],
+        "notRecorded": 52
+      },
+      {
+        "step": "Set guardrails",
+        "runs": [{ "model": "claude-opus-5-5", "count": 211 }, { "model": "muse-spark-1.3", "count": 0 }],
+        "notRecorded": 53
+      },
+      {
+        "step": "Plan options & trade-offs",
+        "runs": [{ "model": "claude-opus-5-5", "count": 200 }, { "model": "muse-spark-1.3", "count": 3 }],
+        "notRecorded": 75
+      },
+      {
+        "step": "Draft implementation plan",
+        "runs": [{ "model": "claude-opus-5-5", "count": 212 }, { "model": "muse-spark-1.3", "count": 7 }],
+        "notRecorded": 60
+      },
+      {
+        "step": "Architecture review",
+        "runs": [{ "model": "claude-opus-5-5", "count": 168 }, { "model": "muse-spark-1.3", "count": 1 }],
+        "notRecorded": 59
+      },
+      {
+        "step": "QA reviews the test plan",
+        "runs": [{ "model": "claude-opus-5-5", "count": 212 }, { "model": "muse-spark-1.3", "count": 5 }],
+        "notRecorded": 59
+      },
+      {
+        "step": "Summarize reviews & recommend",
+        "runs": [{ "model": "claude-opus-5-5", "count": 191 }, { "model": "muse-spark-1.3", "count": 4 }],
+        "notRecorded": 66
+      },
+      {
+        "step": "Specialist agent implements",
+        "runs": [{ "model": "claude-opus-5-5", "count": 252 }, { "model": "muse-spark-1.3", "count": 10 }],
+        "notRecorded": 190
+      },
+      {
+        "step": "Automated review (code + QA)",
+        "runs": [{ "model": "claude-opus-5-5", "count": 255 }, { "model": "muse-spark-1.3", "count": 7 }],
+        "notRecorded": 76
+      },
+      {
+        "step": "Deploy the changes",
+        "runs": [{ "model": "claude-opus-5-5", "count": 0 }, { "model": "muse-spark-1.3", "count": 0 }],
+        "notRecorded": 255
+      },
+      {
+        "step": "Task steps (Assess → Verify)",
+        "runs": [{ "model": "claude-opus-5-5", "count": 44 }, { "model": "muse-spark-1.3", "count": 0 }],
+        "notRecorded": 133
+      },
+      {
+        "step": "Plan steps (Question → File)",
+        "runs": [{ "model": "claude-opus-5-5", "count": 13 }, { "model": "muse-spark-1.3", "count": 0 }],
+        "notRecorded": 81
+      }
+    ]
+  },
+  "cycleTime": {
+    "byKind": [
+      { "kind": "change", "medianMinutes": { "agentsWorking": 228, "waitingOnYou": 204, "queued": 108, "checksAndDeploy": 60 } },
+      { "kind": "task", "medianMinutes": { "agentsWorking": 76, "waitingOnYou": 68, "queued": 36, "checksAndDeploy": 20 } },
+      { "kind": "plan", "medianMinutes": { "agentsWorking": 152, "waitingOnYou": 136, "queued": 72, "checksAndDeploy": 40 } }
+    ]
+  },
+  "rework": {
+    "firstPassYield": 0.62,
+    "sendBacksPerItem": 0.4,
+    "reviewFailCyclesPerItem": 0.3,
+    "byRepo": [
+      { "repo": "FinTekkers/horizon", "sendBacksPerItem": 0.5, "reviewFailCyclesPerItem": 0.4 },
+      { "repo": "FinTekkers/ui-service", "sendBacksPerItem": 0.3, "reviewFailCyclesPerItem": 0.2 },
+      { "repo": "FinTekkers/ledger-models", "sendBacksPerItem": 0.2, "reviewFailCyclesPerItem": 0.3 }
+    ]
+  },
+  "failures": [
+    { "week": "2026-10-05", "checksFailed": 12, "ruleBlocks": 3, "scopeViolations": 1, "usageLimits": 2, "providerFallbacks": 4 },
+    { "week": "2026-10-12", "checksFailed": 18, "ruleBlocks": 5, "scopeViolations": 2, "usageLimits": 6, "providerFallbacks": 9 },
+    { "week": "2026-10-19", "checksFailed": 9, "ruleBlocks": 2, "scopeViolations": 0, "usageLimits": 1, "providerFallbacks": 3 }
+  ],
+  "approvals": {
+    "gates": [
+      {
+        "gate": "3",
+        "approvedPerDay": [
+          { "date": "2026-10-08", "count": 32 },
+          { "date": "2026-10-09", "count": 19 },
+          { "date": "2026-10-10", "count": 15 },
+          { "date": "2026-10-11", "count": 6 },
+          { "date": "2026-10-12", "count": 37 },
+          { "date": "2026-10-13", "count": 43 },
+          { "date": "2026-10-14", "count": 38 },
+          { "date": "2026-10-15", "count": 40 },
+          { "date": "2026-10-16", "count": 35 },
+          { "date": "2026-10-17", "count": 0 },
+          { "date": "2026-10-18", "count": 0 },
+          { "date": "2026-10-19", "count": 0 },
+          { "date": "2026-10-20", "count": 9 },
+          { "date": "2026-10-21", "count": 19 },
+          { "date": "2026-10-22", "count": 26 }
+        ],
+        "medianWaitMinutes": 35,
+        "queue": 2
+      },
+      {
+        "gate": "5",
+        "approvedPerDay": [
+          { "date": "2026-10-08", "count": 29 },
+          { "date": "2026-10-09", "count": 17 },
+          { "date": "2026-10-10", "count": 14 },
+          { "date": "2026-10-11", "count": 5 },
+          { "date": "2026-10-12", "count": 33 },
+          { "date": "2026-10-13", "count": 39 },
+          { "date": "2026-10-14", "count": 34 },
+          { "date": "2026-10-15", "count": 36 },
+          { "date": "2026-10-16", "count": 32 },
+          { "date": "2026-10-17", "count": 0 },
+          { "date": "2026-10-18", "count": 0 },
+          { "date": "2026-10-19", "count": 0 },
+          { "date": "2026-10-20", "count": 8 },
+          { "date": "2026-10-21", "count": 17 },
+          { "date": "2026-10-22", "count": 23 }
+        ],
+        "medianWaitMinutes": 52,
+        "queue": 4
+      },
+      {
+        "gate": "10",
+        "approvedPerDay": [
+          { "date": "2026-10-08", "count": 27 },
+          { "date": "2026-10-09", "count": 16 },
+          { "date": "2026-10-10", "count": 13 },
+          { "date": "2026-10-11", "count": 5 },
+          { "date": "2026-10-12", "count": 31 },
+          { "date": "2026-10-13", "count": 37 },
+          { "date": "2026-10-14", "count": 32 },
+          { "date": "2026-10-15", "count": 34 },
+          { "date": "2026-10-16", "count": 30 },
+          { "date": "2026-10-17", "count": 0 },
+          { "date": "2026-10-18", "count": 0 },
+          { "date": "2026-10-19", "count": 0 },
+          { "date": "2026-10-20", "count": 8 },
+          { "date": "2026-10-21", "count": 16 },
+          { "date": "2026-10-22", "count": 22 }
+        ],
+        "medianWaitMinutes": 41,
+        "queue": 3
+      },
+      {
+        "gate": "13",
+        "approvedPerDay": [
+          { "date": "2026-10-08", "count": 26 },
+          { "date": "2026-10-09", "count": 15 },
+          { "date": "2026-10-10", "count": 12 },
+          { "date": "2026-10-11", "count": 5 },
+          { "date": "2026-10-12", "count": 30 },
+          { "date": "2026-10-13", "count": 34 },
+          { "date": "2026-10-14", "count": 30 },
+          { "date": "2026-10-15", "count": 32 },
+          { "date": "2026-10-16", "count": 28 },
+          { "date": "2026-10-17", "count": 0 },
+          { "date": "2026-10-18", "count": 0 },
+          { "date": "2026-10-19", "count": 0 },
+          { "date": "2026-10-20", "count": 7 },
+          { "date": "2026-10-21", "count": 15 },
+          { "date": "2026-10-22", "count": 21 }
+        ],
+        "medianWaitMinutes": 118,
+        "queue": 9
+      },
+      {
+        "gate": "15",
+        "approvedPerDay": [
+          { "date": "2026-10-08", "count": 24 },
+          { "date": "2026-10-09", "count": 14 },
+          { "date": "2026-10-10", "count": 11 },
+          { "date": "2026-10-11", "count": 5 },
+          { "date": "2026-10-12", "count": 28 },
+          { "date": "2026-10-13", "count": 32 },
+          { "date": "2026-10-14", "count": 29 },
+          { "date": "2026-10-15", "count": 30 },
+          { "date": "2026-10-16", "count": 26 },
+          { "date": "2026-10-17", "count": 0 },
+          { "date": "2026-10-18", "count": 0 },
+          { "date": "2026-10-19", "count": 0 },
+          { "date": "2026-10-20", "count": 7 },
+          { "date": "2026-10-21", "count": 14 },
+          { "date": "2026-10-22", "count": 20 }
+        ],
+        "medianWaitMinutes": 26,
+        "queue": 1
+      },
+      {
+        "gate": "Task run",
+        "approvedPerDay": [
+          { "date": "2026-10-08", "count": 10 },
+          { "date": "2026-10-09", "count": 6 },
+          { "date": "2026-10-10", "count": 5 },
+          { "date": "2026-10-11", "count": 2 },
+          { "date": "2026-10-12", "count": 11 },
+          { "date": "2026-10-13", "count": 13 },
+          { "date": "2026-10-14", "count": 11 },
+          { "date": "2026-10-15", "count": 12 },
+          { "date": "2026-10-16", "count": 11 },
+          { "date": "2026-10-17", "count": 0 },
+          { "date": "2026-10-18", "count": 0 },
+          { "date": "2026-10-19", "count": 0 },
+          { "date": "2026-10-20", "count": 3 },
+          { "date": "2026-10-21", "count": 6 },
+          { "date": "2026-10-22", "count": 8 }
+        ],
+        "medianWaitMinutes": 14,
+        "queue": 0
+      },
+      {
+        "gate": "Plan file",
+        "approvedPerDay": [
+          { "date": "2026-10-08", "count": 3 },
+          { "date": "2026-10-09", "count": 2 },
+          { "date": "2026-10-10", "count": 2 },
+          { "date": "2026-10-11", "count": 1 },
+          { "date": "2026-10-12", "count": 4 },
+          { "date": "2026-10-13", "count": 4 },
+          { "date": "2026-10-14", "count": 4 },
+          { "date": "2026-10-15", "count": 4 },
+          { "date": "2026-10-16", "count": 4 },
+          { "date": "2026-10-17", "count": 0 },
+          { "date": "2026-10-18", "count": 0 },
+          { "date": "2026-10-19", "count": 0 },
+          { "date": "2026-10-20", "count": 1 },
+          { "date": "2026-10-21", "count": 2 },
+          { "date": "2026-10-22", "count": 3 }
+        ],
+        "medianWaitMinutes": 63,
+        "queue": 1
+      }
+    ]
+  }
+}

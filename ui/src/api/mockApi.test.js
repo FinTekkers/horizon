@@ -193,3 +193,14 @@ test('removeDependency drops the edge on both items, logs it, and clears the blo
   await expect(fresh.removeDependency('BF-131', 'BF-128')).rejects.toThrow('not_found')
   vi.useRealTimers()
 })
+
+// HZ-549: the mock serves the same checked-in fixture as the server, with
+// range and project echoed and costs left null (not captured).
+test('getProductivity returns the productivity fixture with range and project echoed', async () => {
+  const report = await mockApi.getProductivity({ range: '7d', project: 'horizon' })
+  expect(report.range).toBe('7d')
+  expect(report.project).toBe('horizon')
+  expect(report.summary.closed).toBe(319)
+  expect(report.summary.cost).toBeNull()
+  expect(report.models.rows).toHaveLength(13)
+})

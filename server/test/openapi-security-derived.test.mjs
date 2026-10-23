@@ -178,8 +178,10 @@ test('every scheme a route names is actually defined in components', () => {
 // cookie on ordinary routes, and absent from the two kinds of route that refuse
 // it: gates (humanAuthorized) and token management (requireSession). The latter
 // is derived from requireSession() call sites the same way the PIN leg above is.
+// HZ-549's requireHumanSession() refuses a token just the same, so its call
+// sites count too.
 
-const SESSION_ONLY_CALL_SITES = APP_SOURCE.match(/if \(!requireSession\(request, reply\)\) return/g) || []
+const SESSION_ONLY_CALL_SITES = APP_SOURCE.match(/if \(!require(Human)?Session\(request, reply\)\) return/g) || []
 
 test('the bearer scheme is defined as an http bearer scheme', () => {
   const scheme = spec.components.securitySchemes.bearerToken
