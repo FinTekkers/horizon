@@ -24,7 +24,7 @@ from fastapi.responses import JSONResponse
 # HZ-132 put the failure-reason vocabulary there under the same rule, so the
 # tags this daemon relays are the ones the server classifies, by construction.
 from domain.py import reasons, run_plan, steps
-from . import caretaker_ruling, check_slots, conflict_cancel, conflict_resolver, container_runner, job_reports, pause, rules, task_job, tmux_mgr, workspaces
+from . import caretaker_ruling, check_slots, conflict_cancel, conflict_resolver, container_runner, job_reports, login_env, pause, rules, task_job, tmux_mgr, workspaces
 from . import config as farm_config
 from .checks import CHECK_SLOTS, default_check_slots, redact
 from .task_files import read_launchable_task
@@ -270,18 +270,21 @@ def _read_dotenv(path: Path) -> dict:
     return values
 
 
-def _resolve_job_env(cwd: str, env_refs: dict) -> dict:
+def _resolve_job_env(cwd: str, env_refs: dict, login: dict | None = None) -> dict:
     """Farm-side secret resolution: every $NAME the plan's env block names is
-    read from <cwd>/.env first, then from this process's own environment. The
-    server sends no values — only the repo and the plan artifact — so dispatch
-    bodies and task files never hold a secret."""
+    read from <cwd>/.env first, then from the repo's test-login file (HZ-553,
+    `login`), then from this process's own environment. The server sends no
+    values — only the repo, the plan artifact and the file's path — so
+    dispatch bodies and task files never hold a secret. An empty value still
+    counts as set and hides the later sources, as an empty .env entry does."""
     dotenv = _read_dotenv(Path(cwd) / ".env") if cwd else {}
+    login = login or {}
     resolved: dict[str, str] = {}
     for _local, ref in (env_refs or {}).items():
         name = ref[1:] if isinstance(ref, str) and ref.startswith("$") else None
         if not name:
             continue
-        value = dotenv.get(name, os.environ.get(name))
+        value = dotenv.get(name, login.get(name, os.environ.get(name)))
         if isinstance(value, str) and value:
             resolved[name] = value
     return resolved
@@ -293,13 +296,15 @@ def _host_redact_values() -> dict:
     return {name: os.environ[name] for name in ("GITHUB_TOKEN", "GITHUB_WEBHOOK_SECRET") if os.environ.get(name)}
 
 
-def _job_redact_values(cwd: str | None) -> dict:
+def _job_redact_values(cwd: str | None, login: dict | None = None) -> dict:
     """Everything a job log is scrubbed of beyond the plan's named env values:
     the host credentials plus every <cwd>/.env value, named by the plan or not
     — a command run in cwd can load or print .env itself. The .env keys are
-    namespaced so a same-named host credential never displaces one."""
+    namespaced so a same-named host credential never displaces one. HZ-553:
+    likewise every test-login file value, under checks' login_env: prefix."""
     dotenv = _read_dotenv(Path(cwd) / ".env") if cwd else {}
     values = {f"dotenv:{k}": v for k, v in dotenv.items() if v}
+    values.update({f"login_env:{k}": v for k, v in (login or {}).items() if v})
     values.update(_host_redact_values())
     return values
 
@@ -874,6 +879,18 @@ def _claim_and_launch(task_path, runs_dir: Path, repo_root: Path) -> str | None:
     return name
 
 
+def _job_login_env(task: dict) -> dict[str, str]:
+    """HZ-553: the Task repo's test-login file, read now. The path is the one
+    the server sent from the item's own repo row in Admin — never anything
+    the run plan names. {} when none is set. Raises login_env.LoginEnvError
+    (path and cause, never a value) when the file cannot be used. Only called
+    once the cwd resolved, so repo_dir is set."""
+    path = task.get("test_env_file")
+    if not path:
+        return {}
+    return login_env.load_login_env(path, workspace=Path(task["repo_dir"]))
+
+
 def launch_job(task: dict) -> str:
     """Launches one job's detached runner in farm-job-<item>. The task holds
     the plan artifact and the approved hash — never secret values. Resolves
@@ -889,7 +906,12 @@ def launch_job(task: dict) -> str:
 
     HZ-440: with `task_clone`, repo_dir is the target's separate task clone;
     the runner fast-forwards it after this check, so a cwd or .env that
-    exists only on the new origin/main is not seen here."""
+    exists only on the new origin/main is not seen here.
+
+    HZ-553: the repo's test-login file is read after the cwd resolves and
+    before anything is written; a LoginEnvError propagates with no file
+    written and no session started. Its values go only into the 0600 env
+    file — never os.environ."""
     from farm.config import LOGS_DIR as _LOGS, STATE_DIR as _STATE
 
     run_id = task["run_id"]
@@ -902,14 +924,15 @@ def launch_job(task: dict) -> str:
     # HZ-491: the server's effective runner, never the block's own field.
     if task["runner"] == "host":
         run_plan.resolve_venv(task.get("repo_dir"), task.get("venv_dir"), forbid=str(task_job.HORIZON_ROOT))
-    env_values = _resolve_job_env(cwd, block.get("env", {}))
+    login = _job_login_env(task)
+    env_values = _resolve_job_env(cwd, block.get("env", {}), login)
     active = QUEUE_DIR / "jobs" / "active"
     active.mkdir(parents=True, exist_ok=True)
     env_path = active / f"{run_id}.env.json"
     fd, tmp_name = tempfile.mkstemp(dir=str(active), prefix=f"{run_id}.env.", suffix=".json.tmp")
     try:
         with os.fdopen(fd, "w") as f:
-            f.write(json.dumps({"env": env_values, "redact": _job_redact_values(cwd)}))
+            f.write(json.dumps({"env": env_values, "redact": _job_redact_values(cwd, login)}))
         os.chmod(tmp_name, 0o600)
         os.replace(tmp_name, env_path)
     except BaseException:
@@ -1542,6 +1565,9 @@ async def steps_run(request: Request):
             name = launch_job(body)
         except run_plan.CwdRefused as exc:
             return JSONResponse({"error": f"cwd refused: {exc}"}, status_code=400)
+        except login_env.LoginEnvError as exc:
+            # HZ-553: str(exc) is the path and the cause, never a value.
+            return JSONResponse({"error": f"login_env_refused: {exc}"}, status_code=400)
         except ValueError as exc:
             return JSONResponse({"error": f"invalid run plan: {exc}"}, status_code=400)
         return {"ok": True, "queued": queue, "session": name}
@@ -1732,7 +1758,14 @@ def _job_secrets(task: dict) -> dict:
         cwd = run_plan.resolve_cwd(task.get("repo_dir"), block["cwd"], forbid=str(task_job.HORIZON_ROOT))
     except run_plan.CwdRefused:
         return _job_redact_values(None)
-    return {**_job_redact_values(cwd), **_resolve_job_env(cwd, block.get("env", {}))}
+    # HZ-553: the test-login file is read again for each view. If it broke
+    # since launch, the view falls back to today's set ({}): the runner's own
+    # log was already scrubbed with the launch-time values.
+    try:
+        login = _job_login_env(task)
+    except login_env.LoginEnvError:
+        login = {}
+    return {**_job_redact_values(cwd, login), **_resolve_job_env(cwd, block.get("env", {}), login)}
 
 
 def _job_log_path(run_id, item_id: str) -> Path:

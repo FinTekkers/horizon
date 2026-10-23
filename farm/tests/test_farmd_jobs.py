@@ -2,6 +2,7 @@
 restart, forwarding its finish with the Execute artifact, the kill switch,
 and teardown."""
 
+import hashlib
 import json
 import os
 import subprocess
@@ -707,3 +708,264 @@ def test_a_state_from_before_the_offset_forwards_todays_artifact(monkeypatch, fa
     finally:
         _cleanup_job(9131, "HZ-13")
     assert artifact == "## Commands\n1 command(s) run, 1 passed, 0 failed\n\n## Log\n$ echo hi\nhi\nexit 0\n\n"
+
+
+# ---- HZ-553: Execute resolves the plan's env from the repo's test-login file ----
+
+LOGIN_KEY = "ft-e2e-api-key-553-sentinel"
+LOGIN_EMAIL = "e2e-553@example.test"
+LOGIN_UNLISTED = "unlisted-553-sentinel"
+
+
+def _login_file(tmp_path, text=None):
+    """The admin's file, outside FARM_HOME, the workspaces and the checkout."""
+    etc = tmp_path / "etc"
+    etc.mkdir(exist_ok=True)
+    path = etc / "ui-e2e.env"
+    if text is None:
+        text = f"FT_E2E_API_KEY={LOGIN_KEY}\nFT_E2E_EMAIL={LOGIN_EMAIL}\nUNLISTED={LOGIN_UNLISTED}\n"
+    path.write_text(text)
+    return path
+
+
+def _login_payload(run_id, item_id, repo, login_path, commands, env=None):
+    block = {"cwd": ".", "commands": list(commands), "budget_minutes": 1}
+    block["env"] = env if env is not None else {"FT_E2E_API_KEY": "$FT_E2E_API_KEY", "FT_E2E_EMAIL": "$FT_E2E_EMAIL"}
+    artifact = "## Commands\nplan\n\n## Run plan block\n" + run_plan.render(block) + "\n"
+    payload = job_payload(run_id, repo_dir=str(repo), runner="host")
+    payload["item"]["id"] = item_id
+    payload["plan_artifact"] = artifact
+    payload["approved_hash"] = task_job.plan_hash_of(artifact)
+    if login_path is not None:
+        payload["test_env_file"] = str(login_path)
+    return payload
+
+
+def test_the_test_login_file_reaches_listed_commands_and_is_redacted_everywhere(
+    running_farm, monkeypatch, fake_tmux, tmp_path
+):
+    """Metric 1 (R1), through the /steps/run route: a plan naming
+    $FT_E2E_API_KEY gets the file's value in its commands' env; the log, the
+    state, a plan-named report and the forwarded artifact show [redacted].
+    Metric 3: an unlisted name stays out of the env but is still masked.
+    Guardrail 1: the claimed task holds the path only, os.environ nothing."""
+    run_id, item_id = 9553, "HZ-553"
+    monkeypatch.delenv("FT_E2E_API_KEY", raising=False)
+    monkeypatch.delenv("UNLISTED", raising=False)
+    monkeypatch.setattr(farmd, "_notify_started", lambda rid: True)
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    login_path = _login_file(tmp_path)
+    report = tmp_path / "login-report.json"
+    (repo / "write.sh").write_text('printf \'{"key": "%s"}\' "$FT_E2E_API_KEY" > "$2"\necho wrote "$2"\n')
+    commands = (
+        'printf %s "$FT_E2E_API_KEY" | sha256sum > key.sha',
+        "env > env.dump",
+        'echo key=$FT_E2E_API_KEY email=$FT_E2E_EMAIL',
+        f"cat {login_path}",
+        f"sh write.sh --report {report}",
+    )
+    payload = _login_payload(run_id, item_id, repo, login_path, commands)
+    active = QUEUE_DIR / "jobs" / "active"
+    try:
+        res = running_farm.post("/steps/run", json=payload)
+        assert res.status_code == 200, res.text
+        claimed = active / f"{run_id}.json"
+        claimed_text = claimed.read_text()
+        assert json.loads(claimed_text)["test_env_file"] == str(login_path)
+        for value in (LOGIN_KEY, LOGIN_EMAIL, LOGIN_UNLISTED):
+            assert value not in claimed_text
+            assert value not in json.dumps(dict(os.environ))
+        env_json = json.loads((active / f"{run_id}.env.json").read_text())
+        assert env_json["env"] == {"FT_E2E_API_KEY": LOGIN_KEY, "FT_E2E_EMAIL": LOGIN_EMAIL}
+        assert env_json["redact"]["login_env:UNLISTED"] == LOGIN_UNLISTED
+
+        monkeypatch.setattr(task_job, "_notify_progress", lambda rid: None)
+        assert task_job.main(["--task", str(claimed)]) == 0
+
+        assert (repo / "key.sha").read_text().split()[0] == hashlib.sha256(LOGIN_KEY.encode()).hexdigest()
+        dump = (repo / "env.dump").read_text()
+        assert f"FT_E2E_API_KEY={LOGIN_KEY}" in dump
+        assert "UNLISTED=" not in dump
+        log = (LOGS_DIR / f"farm-job-{item_id.lower()}.log").read_text()
+        state_text = (STATE_DIR / "jobs" / f"{item_id}.json").read_text()
+        assert "key=[redacted] email=[redacted]" in log
+        assert "UNLISTED=[redacted]" in log
+        artifact = _forwarded_artifact(monkeypatch, None)
+        assert f"### Report: {report}" in artifact
+        assert '{"key": "[redacted]"}' in artifact
+        for text in (log, state_text, artifact):
+            for value in (LOGIN_KEY, LOGIN_EMAIL, LOGIN_UNLISTED):
+                assert value not in text
+    finally:
+        _cleanup_job(run_id, item_id)
+    assert "FT_E2E_API_KEY" not in os.environ
+
+
+def test_job_views_and_stop_redact_test_login_values(fake_tmux, tmp_path):
+    """Metric 1 (R2): farmd's own views scrub command text through
+    _job_secrets, which reads the file too — the progress view and Stop's."""
+    run_id, item_id = 9554, "HZ-554"
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    login_path = _login_file(tmp_path)
+    task = _login_payload(run_id, item_id, repo, login_path, ("echo hi",))
+    farmd.JOB_SESSIONS.clear()
+    farmd.launch_job(task)
+    secrets = farmd._job_secrets(task)
+    assert secrets["FT_E2E_API_KEY"] == LOGIN_KEY
+    assert secrets["login_env:UNLISTED"] == LOGIN_UNLISTED
+    (STATE_DIR / "jobs").mkdir(parents=True, exist_ok=True)
+    (STATE_DIR / "jobs" / f"{item_id}.json").write_text(
+        json.dumps(
+            {
+                "run_id": run_id,
+                "item_id": item_id,
+                "status": "running",
+                "budget_s": 60,
+                "commands": [
+                    {"command": f"login --key {LOGIN_KEY}", "status": "done", "exit_code": 0},
+                    {"command": f"echo {LOGIN_UNLISTED}", "status": "running", "exit_code": None},
+                ],
+            }
+        )
+    )
+    try:
+        view = farmd._job_view(run_id, task)
+        assert [c["command"] for c in view["commands"]] == ["login --key [redacted]", "echo [redacted]"]
+        res = loopback.post("/jobs/stop", json={"run_id": run_id})
+        assert res.status_code == 200
+        assert [c["command"] for c in res.json()["view"]["commands"]] == ["login --key [redacted]", "echo [redacted]"]
+        assert LOGIN_KEY not in res.text and LOGIN_UNLISTED not in res.text
+    finally:
+        _cleanup_job(run_id, item_id)
+
+
+def test_a_test_login_file_broken_after_launch_leaves_views_on_todays_redact_set(monkeypatch, tmp_path):
+    """_job_secrets falls back to {} for the file: a view never crashes."""
+    monkeypatch.setenv("GITHUB_TOKEN", "ghtoken-sentinel-553")
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    task = _login_payload(9555, "HZ-555", repo, tmp_path / "gone.env", ("echo hi",))
+    assert farmd._job_secrets(task) == {"GITHUB_TOKEN": "ghtoken-sentinel-553"}
+
+
+def test_test_login_precedence_sits_between_dotenv_and_the_farm_environment(monkeypatch, tmp_path):
+    """Metric 2: .env beats the file; the file beats the farm environment."""
+    (tmp_path / ".env").write_text("BOTH_DOTENV=from-dotenv\n")
+    monkeypatch.setenv("BOTH_FARM", "from-farm-env")
+    monkeypatch.setenv("FARM_ONLY", "farm-only-value")
+    login = {"BOTH_DOTENV": "from-login-file", "BOTH_FARM": "from-login-file", "FILE_ONLY": "file-only-value"}
+    refs = {name: f"${name}" for name in ("BOTH_DOTENV", "BOTH_FARM", "FILE_ONLY", "FARM_ONLY")}
+    assert farmd._resolve_job_env(str(tmp_path), refs, login) == {
+        "BOTH_DOTENV": "from-dotenv",
+        "BOTH_FARM": "from-login-file",
+        "FILE_ONLY": "file-only-value",
+        "FARM_ONLY": "farm-only-value",
+    }
+    # Only names the plan lists are resolved.
+    assert farmd._resolve_job_env(str(tmp_path), {"X": "$FILE_ONLY"}, login) == {"FILE_ONLY": "file-only-value"}
+
+
+def test_an_empty_value_hides_the_later_sources_as_dotenv_does(monkeypatch, tmp_path):
+    """R3: `NAME=` in .env hides the file's value, and an empty file entry
+    hides the farm environment — the name resolves to nothing either way."""
+    (tmp_path / ".env").write_text("EMPTY_IN_DOTENV=\n")
+    monkeypatch.setenv("EMPTY_IN_FILE", "from-farm-env")
+    login = {"EMPTY_IN_DOTENV": "from-login-file", "EMPTY_IN_FILE": ""}
+    refs = {"A": "$EMPTY_IN_DOTENV", "B": "$EMPTY_IN_FILE"}
+    assert farmd._resolve_job_env(str(tmp_path), refs, login) == {}
+
+
+@pytest.mark.parametrize("case", ["missing", "unreadable", "malformed", "too short", "forbidden"])
+def test_an_unusable_test_login_file_refuses_the_job_before_any_command(
+    running_farm, monkeypatch, fake_tmux, tmp_path, case
+):
+    """Metric 4 (R4/R5): the job is refused with login_env's path-and-cause
+    message and no value; nothing is written and no session starts."""
+    run_id, item_id = 9556, "HZ-556"
+    seeded = "seeded-login-value-556"
+    monkeypatch.setattr(farmd, "_notify_started", lambda rid: True)
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    if case == "missing":
+        login_path = tmp_path / "etc" / "absent.env"
+        cause = "the file does not exist"
+    elif case == "unreadable":
+        if os.geteuid() == 0:
+            pytest.skip("root reads a mode-000 file")
+        login_path = _login_file(tmp_path, f"FT_E2E_API_KEY={seeded}\n")
+        login_path.chmod(0)
+        cause = "the file is not readable by the farm user (permission denied)"
+    elif case == "malformed":
+        login_path = _login_file(tmp_path, f"FT_E2E_API_KEY={seeded}\nnot a pair {seeded}\n")
+        cause = "line 2 is not NAME=value"
+    elif case == "too short":
+        login_path = _login_file(tmp_path, f"FT_E2E_API_KEY={seeded}\nFT_E2E_EMAIL=ab\n")
+        cause = "FT_E2E_EMAIL is shorter than 4 characters, so it could not be masked in logs"
+    else:
+        login_path = repo / "creds.env"
+        login_path.write_text(f"FT_E2E_API_KEY={seeded}\n")
+        cause = f"the file must live outside the farm's state and workspaces ({os.path.realpath(repo)})"
+    payload = _login_payload(run_id, item_id, repo, login_path, ("echo hi",))
+    active = QUEUE_DIR / "jobs" / "active"
+    try:
+        res = running_farm.post("/steps/run", json=payload)
+        assert res.status_code == 400
+        assert res.json() == {"error": f"login_env_refused: test credentials env file {login_path}: {cause}"}
+        assert seeded not in res.text
+        assert "=ab" not in res.text
+        assert "farm-job-hz-556" not in fake_tmux.sessions
+        assert not (active / f"{run_id}.json").exists()
+        assert list(active.glob(f"{run_id}.env*")) == []
+        assert not (STATE_DIR / "jobs" / f"{item_id}.json").exists()
+        assert not (LOGS_DIR / f"farm-job-{item_id.lower()}.log").exists()
+    finally:
+        if login_path.exists():
+            login_path.chmod(0o600)
+        _cleanup_job(run_id, item_id)
+
+
+@pytest.mark.parametrize("where", ["in the plan prose", "in the plan block"])
+def test_a_run_plan_cannot_choose_the_test_login_file(running_farm, monkeypatch, fake_tmux, tmp_path, where):
+    """Guardrail 4 (R7 farm part): a run plan naming another file is never
+    read — only the path the server sent in the body. In the block itself
+    the key is an unknown field, so the plan is refused outright."""
+    run_id, item_id = 9557, "HZ-557"
+    monkeypatch.setattr(farmd, "_notify_started", lambda rid: True)
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    login_path = _login_file(tmp_path)
+    other = tmp_path / "other"
+    other.mkdir()
+    other_file = other / "other.env"
+    other_file.write_text("FT_E2E_API_KEY=other-repo-value-557\nOTHER_ONLY=other-only-value-557\n")
+    block = {
+        "cwd": ".",
+        "commands": ["echo hi"],
+        "budget_minutes": 1,
+        "env": {"FT_E2E_API_KEY": "$FT_E2E_API_KEY", "OTHER_ONLY": "$OTHER_ONLY"},
+    }
+    if where == "in the plan prose":
+        artifact = f"## Commands\ntest_env_file: {other_file}\n\n## Run plan block\n" + run_plan.render(block) + "\n"
+    else:
+        block["test_env_file"] = str(other_file)
+        artifact = "## Run plan block\n```json run-plan\n" + json.dumps(block) + "\n```\n"
+    payload = _login_payload(run_id, item_id, repo, login_path, ("echo hi",))
+    payload["plan_artifact"] = artifact
+    payload["approved_hash"] = task_job.plan_hash_of(artifact)
+    env_path = QUEUE_DIR / "jobs" / "active" / f"{run_id}.env.json"
+    try:
+        res = running_farm.post("/steps/run", json=payload)
+        if where == "in the plan block":
+            assert res.status_code == 400
+            assert res.json() == {"error": "invalid run plan: run_plan has unknown field(s): ['test_env_file']"}
+            assert not env_path.exists()
+            return
+        assert res.status_code == 200, res.text
+        env_json = json.loads(env_path.read_text())
+        assert env_json["env"] == {"FT_E2E_API_KEY": LOGIN_KEY}
+        assert "other-repo-value-557" not in json.dumps(env_json)
+        assert "other-only-value-557" not in json.dumps(env_json)
+    finally:
+        _cleanup_job(run_id, item_id)
