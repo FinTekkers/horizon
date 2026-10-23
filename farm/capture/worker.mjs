@@ -38,6 +38,10 @@ const COLOR_SCHEMES = new Set(['light', 'dark'])
 const QUIET_MS = 500
 const POLL_MS = 50
 const LONG_LIVED = new Set(['eventsource', 'websocket'])
+// HZ-549: the same page shot twice must give the same bytes. Tall full-page
+// shots are rasterised in tiles, and with GPU/partial raster on, text
+// anti-aliasing could come out a shade different between two captures.
+const STABLE_RASTER_ARGS = ['--disable-gpu', '--disable-partial-raster', '--disable-lcd-text', '--font-render-hinting=none', '--force-color-profile=srgb']
 // What a re-fetch must not copy: the cookies it exists to drop, and what
 // fetch sets itself (or decodes, for content-encoding).
 const REFETCH_DROP = new Set(['cookie', 'host', 'connection', 'keep-alive', 'transfer-encoding', 'upgrade', 'content-length', 'expect'])
@@ -177,7 +181,7 @@ async function capture(browser, shot) {
 async function main() {
   let browser
   try {
-    browser = await chromium.launch()
+    browser = await chromium.launch({ args: STABLE_RASTER_ARGS })
   } catch (err) {
     reply({ ready: false, error: String(err && err.message ? err.message : err).split('\n')[0] })
     process.exit(1)
