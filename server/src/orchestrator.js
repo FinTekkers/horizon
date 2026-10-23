@@ -1959,6 +1959,10 @@ function dispatchJob(id, stepIndex, runId, attempt) {
   // already checked it still matches the repo's image setting.
   const runner = approved?.approved_runner
   if (!planArtifact || !approvedHash || !runner) return failFarmRun(runId, 'the run plan was never approved — approve it at Approve the run first')
+  // HZ-553: the item's own repo's test-login file path, whenever set — never
+  // its values, and never a path the run plan names. farmd reads the file at
+  // launch and refuses the job (login_env_refused: ...) when it can't.
+  const testEnvFile = getRepoTestEnvFile(item.repo)
   farmFetch('/steps/run', {
     run_id: runId,
     attempt,
@@ -1969,6 +1973,7 @@ function dispatchJob(id, stepIndex, runId, attempt) {
     approved_hash: approvedHash,
     runner,
     ...jobEnvFields(item.repo),
+    ...(testEnvFile ? { test_env_file: testEnvFile } : {}),
   }).catch((err) => {
     const code = err.code ?? ''
     if ((err.status === 400 || err.status === 409) && Object.hasOwn(FARM_REFUSALS, code)) {

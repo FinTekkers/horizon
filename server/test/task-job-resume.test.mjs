@@ -142,6 +142,25 @@ test("HZ-415: farmd's cwd refusal is stored on the run, and the item does not st
   assert.equal(item.paused, true)
 })
 
+// HZ-553 metric 4 (server leg): farmd's test-login file refusal is stored on
+// the run with its path and cause, and the item waits for Resume.
+test("HZ-553: farmd's login_env refusal is stored on the run, and the item does not stay running", async () => {
+  const line = 'login_env_refused: test credentials env file /etc/x.env: the file does not exist'
+  farmRefusals['T-553-LOGIN'] = { error: line }
+  seedStoppedTask('T-553-LOGIN', 'FinTekkers/market-data-inputs')
+  const res = await app.inject({ method: 'POST', url: '/api/items/T-553-LOGIN/job/resume', headers: cookie, payload: {} })
+  assert.equal(res.statusCode, 200)
+  const runId = res.json().runId
+  await new Promise((r) => setTimeout(r, 50))
+  assert.equal(jobDispatchesFor('T-553-LOGIN').length, 1)
+  const run = db.prepare('SELECT status, output FROM step_run WHERE id = ?').get(runId)
+  assert.equal(run.status, 'cancelled')
+  assert.equal(run.output, `FAILED: the farm refused the job: ${line}`)
+  const item = store.getItem('T-553-LOGIN')
+  assert.equal(item.activeRun ?? null, null)
+  assert.equal(item.paused, true)
+})
+
 // HZ-491: the farm applies no runner default — a job it refuses for want of
 // one is named on the run, not left running.
 test("HZ-491: farmd's job_runner_missing refusal is named on the run", async () => {
