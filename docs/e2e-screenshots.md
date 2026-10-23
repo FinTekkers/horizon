@@ -226,6 +226,32 @@ a `login: false` shot sends none. `serve` gets the values in its env when any
 shot is `login: true`, so the app can check the header it receives. Every
 value is redacted from the log, the manifest and the check output.
 
+**Cookie login (HZ-557).** An app that logs in by cookie sets a top-level
+`loginCookies` map from cookie name to test-login variable **name**:
+
+```json
+"loginCookies": {"ft_api_key": "FT_E2E_API_KEY", "ft_user_email": "FT_E2E_EMAIL"}
+```
+
+It holds names only; the values are read from the repo's `test_env_file` at
+run time and never reach the config, the DB, GitHub or a prompt. With
+`loginCookies` set, a `login: true` shot sets those cookies for the app's own
+origin before the page loads **instead of** sending the
+`X-Horizon-Test-Env-*` headers: one login mechanism per repo. A variable that
+is unset fails the slot with one line naming it. Browser cookies ignore the
+port, so a request to another port on the app's host is re-fetched by the
+worker without its `Cookie` header. That re-fetch buffers the response, so an
+event stream on a second local port never ends (the app's own streams are
+untouched). WebSockets are not re-fetched: keep them on the app's origin.
+
+**Mask (HZ-557).** `mask`, on a screen or in `defaults`, is a list of CSS
+selectors whose elements are covered in solid `#FF00FF` in the shot. A
+screen's `mask` replaces the one in `defaults`. A selector that matches no
+element with a box fails that shot as `mask "<selector>" matched nothing`;
+a masked box that is not solid mask colour in the shot fails it as
+`mask "<selector>" still visible`. Either way the shot writes no PNG. The
+check output cuts each reason at 60 characters, so long selectors end in `…`.
+
 **Host setup.** `farm/run.sh` runs `npm ci` in `farm/capture` when its
 `node_modules` is missing or older than its lockfile. `farm/capture` pins
 `playwright` to the exact version `e2e/package-lock.json` resolves, so both

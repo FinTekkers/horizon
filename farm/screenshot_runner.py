@@ -25,6 +25,16 @@ a `login: false` shot sends none. `serve` gets the values in its env when any
 shot is `login: true`, so the app can check the key it is sent — the header,
 not the env, is what turns a shot logged in.
 
+HZ-557: a config with `loginCookies` logs in by cookie **instead of** those
+headers — one login mechanism per repo. A `login: true` shot sets each named
+cookie (login_cookies()) for the app's own origin before the page loads.
+Browser cookies ignore the port, so the worker re-fetches any request to
+another port on the app's host without the Cookie header; that buffers the
+response, so an event stream on a second local port never ends.
+
+A shot that is not `ok` never leaves its PNG behind (HZ-557's mask failures
+included).
+
 Every value in `secrets` (login values included) is redacted from the log,
 the manifest and every failure message.
 """
@@ -113,6 +123,22 @@ def login_headers(login_values: dict[str, str]) -> dict[str, str]:
     """The headers a `login: true` shot sends: one per test_env_file value,
     named X-Horizon-Test-Env-<NAME> with `_` as `-`."""
     return {f"{LOGIN_HEADER_PREFIX}{name.replace('_', '-')}": value for name, value in login_values.items()}
+
+
+def login_cookies(names: dict[str, str], login_values: dict[str, str]) -> list[dict]:
+    """HZ-557: the cookies a `login: true` shot sets, [{name, value}], from
+    loginCookies' {cookie: variable} and the test-login values. Raises
+    CaptureFailed naming the cookie and variable — never a value — when a
+    variable is unset or too short to redact."""
+    cookies = []
+    for cookie, var in names.items():
+        value = login_values.get(var)
+        if not value:
+            raise CaptureFailed(f"loginCookies.{cookie}: test-login variable {var} is not set")
+        if len(value) < checks.REDACT_MIN_LEN:
+            raise CaptureFailed(f"loginCookies.{cookie}: test-login variable {var} is too short to redact")
+        cookies.append({"name": cookie, "value": value})
+    return cookies
 
 
 def png_name(shot, taken: set[str]) -> str:
@@ -353,8 +379,10 @@ def capture(
     out_dir = ws / cfg.output_dir
     _prepare_output(out_dir)
     origin = "{0.scheme}://{0.netloc}".format(urlsplit(cfg.ready))
-    headers = login_headers(login_values)
     needs_login = any(shot.login for shot in cfg.shots)
+    # HZ-557: cookies replace the headers; only a run that logs in needs them.
+    cookies = login_cookies(cfg.login_cookies, login_values) if cfg.login_cookies and needs_login else []
+    headers = {} if cfg.login_cookies else login_headers(login_values)
     serve_env = {**env, **login_values} if needs_login else env
     fd, serve_out = tempfile.mkstemp(prefix="horizon-capture-serve-")
     os.close(fd)
@@ -410,11 +438,16 @@ def capture(
                 }
                 if shot.wait_for:
                     msg["waitFor"] = shot.wait_for
+                if shot.mask:
+                    msg["mask"] = list(shot.mask)
+                if shot.login and cookies:
+                    msg["cookies"] = cookies
                 result = worker.run(msg, min(deadline, started + shot.timeout_ms / 1000))
             except (_WorkerGone, OSError) as exc:
                 entry.update(status=ERROR, durationMs=_ms(started), png=None, clipped=False)
                 entry["error"] = str(exc)[:ERROR_MAX_CHARS]
                 drop_worker("failed")
+                _discard(out_dir / name)
                 continue
             if result is None:
                 entry.update(status=TIMEOUT, durationMs=_ms(started), png=None, clipped=False)
@@ -425,6 +458,8 @@ def capture(
                 entry.update(status=ERROR, durationMs=_ms(started), png=None, clipped=False)
                 entry["error"] = str(result.get("error") or "no PNG was written")[:ERROR_MAX_CHARS]
                 worker_output("shot failed")
+            if entry["status"] != OK:
+                _discard(out_dir / name)
             line = f"{shot.screen} / {shot.viewport} / {shot.theme}: {entry['status']} in {entry['durationMs']} ms"
             say(line + (f" — {entry['error']}" if "error" in entry else ""))
         manifest = _write_manifest(out_dir, entries, secrets)
@@ -436,6 +471,12 @@ def capture(
             _stop(serve)
         with contextlib.suppress(OSError):
             os.unlink(serve_out)
+
+
+def _discard(png: Path) -> None:
+    """A shot that is not ok publishes no PNG, whatever the worker wrote."""
+    with contextlib.suppress(FileNotFoundError):
+        png.unlink()
 
 
 def _ms(started: float) -> int:
