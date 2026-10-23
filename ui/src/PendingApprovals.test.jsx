@@ -30,6 +30,7 @@ vi.mock('./api', () => ({
   getFarm: () => null,
   getDurationEstimates: () => null,
   getDeployBlock: () => null,
+  getPlanProgress: () => [],
   approveGate: vi.fn(),
   requestChanges: vi.fn(),
   getRestartSent: () => null,

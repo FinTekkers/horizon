@@ -56,6 +56,7 @@ import * as split from './split.js'
 import * as planDraft from './planDraft.js'
 import * as screenshots from './screenshots.js'
 import { filedMap } from './planFiling.js'
+import { planProgress } from './planProgress.js'
 import { PLAN_DRAFT_SCHEMA } from '../../domain/js/planDraft.js'
 import { buildLinkContext, codeRefUrl, parseCodeRef, splitItemIds } from '../../domain/js/codeRefs.js'
 import * as checkFlakes from './checkFlakes.js'
@@ -238,8 +239,13 @@ export function streamClientCount() {
 // latestEnd}, or null), and each item's `acceptWaiting` is the Accept that is
 // waiting on it ({source: 'human', actor, heldAt} | {source: 'autopilot'} |
 // null) — heldAccept.js, read once per snapshot.
-export function snapshot({ scope = 'active', estimates = true, checks = true, stepOutputs = true } = {}) {
+//
+// HZ-547: `plans` adds the top-level planProgress (planProgress.js) — each
+// Plan's or Task's filed items, summed over this snapshot's items. The
+// concierge leaves it off.
+export function snapshot({ scope = 'active', estimates = true, checks = true, stepOutputs = true, plans = true } = {}) {
   const acceptWaiting = heldAccept.acceptWaitingLookup()
+  const items = store.listItems({ scope, stepOutputs }).map((item) => ({ ...item, acceptWaiting: acceptWaiting(item) }))
   return {
     repoUrl: getRepoUrl(),
     projects: store.listProjects({ checks }),
@@ -247,8 +253,9 @@ export function snapshot({ scope = 'active', estimates = true, checks = true, st
     farm: orchestrator.getFarmState(),
     sync: github.getSyncState(),
     deployBlock: deployDrain.deployBlock(),
-    items: store.listItems({ scope, stepOutputs }).map((item) => ({ ...item, acceptWaiting: acceptWaiting(item) })),
+    items,
     ...(estimates ? { durationEstimates: store.durationEstimates() } : {}),
+    ...(plans ? { planProgress: planProgress(items, store.spawnParents()) } : {}),
   }
 }
 
@@ -3585,7 +3592,7 @@ export function buildApp({ logger = true, onRoute = null } = {}) {
     },
     (request, reply) => {
       if (!farmAuthorized(request, reply)) return
-      return snapshot({ scope: request.query.scope, estimates: false, checks: false })
+      return snapshot({ scope: request.query.scope, estimates: false, checks: false, plans: false })
     },
   )
 
