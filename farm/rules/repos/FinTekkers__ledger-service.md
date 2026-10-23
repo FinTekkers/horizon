@@ -15,8 +15,10 @@ Java 17, Gradle (`./gradlew`), gRPC. The server is the `subledger` module
 
 ## ledger-models dependency
 
-- The models come from `io.github.fintekkers:ledger-models`, pinned in
-  `subledger/build.gradle`. Read that version's source (tag `vX.Y.Z` in
+- The models come from `io.github.fintekkers:ledger-models`, declared in
+  `subledger/build.gradle` as a minimum version, raised only when the
+  code uses something first released in a newer version. Read the source
+  of the version Gradle resolves (tag `vX.Y.Z` in
   FinTekkers/ledger-models), not main, when tracing a bug into
   `common.models.*` or `protos.serializers.*`.
 - Most NPEs and UNKNOWN status codes that surface here start in the models

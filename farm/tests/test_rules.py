@@ -206,15 +206,41 @@ def test_every_shipped_rules_file_passes_the_credential_lint():
 LEDGER_MODELS_VERSION_RULE = "**ledger-models versions: a minimum, never a pin or a range.**"
 
 
+# Other ways to write a fixed version: a lock, an exact version, `=1.2.3`,
+# or Gradle coordinates `ledger-models:1.2.3`. Lookbehind spares `>=1.1.0`.
+FIXED_VERSION_SYNONYMS = re.compile(
+    r"\blocked\b|\bexact(ly)?\s+version|(?<![<>~^])=\s*\d+\.\d+\.\d+|ledger-models:\d+\.\d+\.\d+",
+    re.I,
+)
+
+
 def test_fintekkers_rules_say_minimum_version_never_pin():
-    """HZ-543: the Fintekkers rules teach a ledger-models minimum version, and
-    "pin" survives only inside the rule that forbids it."""
-    text = (RULES_DIR / "projects/fintekkers.md").read_text()
-    assert LEDGER_MODELS_VERSION_RULE in text
-    paragraphs = text.split("\n\n")
-    rest = "\n\n".join(p for p in paragraphs if not p.startswith(LEDGER_MODELS_VERSION_RULE))
-    assert len(rest) < len(text)
-    assert re.search(r"\bpin", rest, re.I) is None
+    """HZ-543, HZ-556: every Fintekkers rules file teaches a ledger-models
+    minimum version; the word survives only inside the rule that forbids it."""
+    project = RULES_DIR / "projects/fintekkers.md"
+    repo_files = sorted(RULES_DIR.glob("repos/FinTekkers__*.md"))
+    paths = [project, *repo_files]
+    assert len(paths) >= 5
+    assert {
+        "FinTekkers__valuation-service.md",
+        "FinTekkers__broker-service.md",
+        "FinTekkers__ledger-service.md",
+        "FinTekkers__ledger-models.md",
+    } <= {p.name for p in repo_files}
+    offenders = []
+    for path in paths:
+        text = path.read_text()
+        paragraphs = text.split("\n\n")
+        rest = "\n\n".join(p for p in paragraphs if not p.startswith(LEDGER_MODELS_VERSION_RULE))
+        if path == project:
+            assert LEDGER_MODELS_VERSION_RULE in text
+            assert len(rest) < len(text)
+        elif FIXED_VERSION_SYNONYMS.search(text):
+            offenders.append(path.relative_to(RULES_DIR).as_posix())
+            continue
+        if re.search(r"\bpin", rest, re.I):
+            offenders.append(path.relative_to(RULES_DIR).as_posix())
+    assert offenders == [], f"rules files teach a ledger-models version other than a minimum: {offenders}"
 
 
 @pytest.mark.parametrize(
