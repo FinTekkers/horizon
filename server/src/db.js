@@ -459,6 +459,10 @@ db.exec(`
 // approved_runner (HZ-491): the effective runner ('container'|'host') approved
 // with that plan. NULL beside a hash = approved before it was stored, so
 // Execute asks for re-approval.
+// autopilot_off (HZ-544): 1 while the issue carries the `autopilot-off` label,
+// written only by the GitHub sync (store.upsertFromGithub) — a cache of the
+// label, like `priority`. 0 for every existing row: no item is off until a
+// sync reads the label.
 // lane (HZ-435): the lane overlay its issue label selects (domain/steps.json's
 // `lanes`), e.g. 'trivial'. NULL = the kind's full pipeline, so existing rows
 // need no backfill. No CHECK: laneOf() reads an undeclared value as no lane.
@@ -474,7 +478,7 @@ for (const kind of ITEM_KINDS) {
   if (!/^[a-z]+$/.test(kind)) throw new Error(`db: item kind ${JSON.stringify(kind)} is not lowercase letters only`)
 }
 const KIND_CHECK = `CHECK (kind IN (${ITEM_KINDS.map((kind) => `'${kind}'`).join(',')}))`
-for (const column of ['pr INTEGER', 'pr_url TEXT', 'pr_mergeable INTEGER', 'release_tag TEXT', 'release_url TEXT', 'repo TEXT', 'project_id INTEGER', 'persona TEXT', 'personas_json TEXT', 'review_cycle_count INTEGER NOT NULL DEFAULT 0', 'abandoned_at TEXT', 'abandoned_reason TEXT', 'abandoned_by TEXT', 'notified_step INTEGER', 'last_reviewed_sha TEXT', 'fix_pass INTEGER NOT NULL DEFAULT 0', 'fix_findings_json TEXT', 'forwarded_review_run_id INTEGER', 'forwarded_by TEXT', 'forwarded_sha TEXT', 'rule_block_json TEXT', 'provider_choices_json TEXT', `kind TEXT NOT NULL DEFAULT 'change' ${KIND_CHECK}`, 'approved_plan_hash TEXT', 'lane TEXT', 'paused_at TEXT', 'scope_repos_json TEXT', 'approved_runner TEXT']) {
+for (const column of ['pr INTEGER', 'pr_url TEXT', 'pr_mergeable INTEGER', 'release_tag TEXT', 'release_url TEXT', 'repo TEXT', 'project_id INTEGER', 'persona TEXT', 'personas_json TEXT', 'review_cycle_count INTEGER NOT NULL DEFAULT 0', 'abandoned_at TEXT', 'abandoned_reason TEXT', 'abandoned_by TEXT', 'notified_step INTEGER', 'last_reviewed_sha TEXT', 'fix_pass INTEGER NOT NULL DEFAULT 0', 'fix_findings_json TEXT', 'forwarded_review_run_id INTEGER', 'forwarded_by TEXT', 'forwarded_sha TEXT', 'rule_block_json TEXT', 'provider_choices_json TEXT', `kind TEXT NOT NULL DEFAULT 'change' ${KIND_CHECK}`, 'approved_plan_hash TEXT', 'lane TEXT', 'paused_at TEXT', 'scope_repos_json TEXT', 'approved_runner TEXT', 'autopilot_off INTEGER NOT NULL DEFAULT 0']) {
   try {
     db.exec(`ALTER TABLE work_item ADD COLUMN ${column}`)
   } catch {
@@ -882,6 +886,13 @@ db.exec(`
     UNIQUE (item_id, gate_index, arrival_run_id)
   );
 `)
+// HZ-544: item_off = 1 marks an evaluation recorded as 'shadow' because
+// Autopilot was off for the ITEM (its `autopilot-off` label) in an 'on'
+// project, so it is never read as a project in shadow mode. A historical
+// marker per evaluation, not a switch: the label is the switch.
+if (!db.prepare('PRAGMA table_info(caretaker_eval)').all().some((column) => column.name === 'item_off')) {
+  db.exec('ALTER TABLE caretaker_eval ADD COLUMN item_off INTEGER NOT NULL DEFAULT 0')
+}
 
 // HZ-248: one row per finished 'Validate project' run (projectValidate.js).
 // checks_json is [{check, pass, detail, durationMs}], details already scrubbed

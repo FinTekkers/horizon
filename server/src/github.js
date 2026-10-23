@@ -14,6 +14,7 @@ import { ACCEPT_GATE_INDEX, endIndex, itemKindOf } from '../../domain/js/lifecyc
 import { PRIORITY } from '../../domain/js/priorities.js'
 import { PRIORITY_LABEL_RE, priorityLabelName } from './priorityLabels.js'
 import { kindLabelName } from './kindLabels.js'
+import { AUTOPILOT_OFF_LABEL } from './autopilotOffLabel.js'
 import { spliceIssueBody } from './caretakerRulingRules.js'
 import { msOf } from './sqlTime.js'
 
@@ -194,6 +195,31 @@ export async function setPriorityLabel(item, priority) {
     body: JSON.stringify({ labels: [name] }),
   })
   if (!add.ok) throw new Error(`GitHub returned ${add.status} adding the priority label`)
+}
+
+// HZ-544: adds (`off` true) or removes the `autopilot-off` label on the item's
+// issue, then returns the issue as GitHub now has it, for the caller to sync
+// through store.upsertFromGithub. Unlike the priority mirror this is not
+// best-effort: the label is the only stored state, so any refusal throws and
+// the caller changes nothing. A 422 creating the label means it already
+// exists; a 404 removing it means it was already gone.
+export async function setAutopilotOffLabel(item, off) {
+  const issuePath = `/repos/${item.repo}/issues/${item.issue}`
+  if (off) {
+    const create = await gh(`/repos/${item.repo}/labels`, {
+      method: 'POST',
+      body: JSON.stringify({ name: AUTOPILOT_OFF_LABEL, color: '2B2340' }),
+    })
+    if (!create.ok && create.status !== 422) throw new Error(`GitHub returned ${create.status} creating the ${AUTOPILOT_OFF_LABEL} label`)
+    const add = await gh(`${issuePath}/labels`, { method: 'POST', body: JSON.stringify({ labels: [AUTOPILOT_OFF_LABEL] }) })
+    if (!add.ok) throw new Error(`GitHub returned ${add.status} adding the ${AUTOPILOT_OFF_LABEL} label`)
+  } else {
+    const remove = await gh(`${issuePath}/labels/${encodeURIComponent(AUTOPILOT_OFF_LABEL)}`, { method: 'DELETE' })
+    if (!remove.ok && remove.status !== 404) throw new Error(`GitHub returned ${remove.status} removing the ${AUTOPILOT_OFF_LABEL} label`)
+  }
+  const issue = await gh(issuePath)
+  if (!issue.ok) throw new Error(`GitHub returned ${issue.status} reading the issue back`)
+  return issue.json()
 }
 
 // `bodySuffix` (HZ-313) is appended after the composed sections — the split's

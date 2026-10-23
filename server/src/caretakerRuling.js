@@ -32,6 +32,7 @@ import { operatorDecideLines, redact } from './caretakerRules.js'
 import { loadPolicy } from './caretaker.js'
 import { ACTOR, ACTIONABLE_EVAL_SQL, STALL_TEXT, actionsInWindow, stallReason } from './caretakerActor.js'
 import { RULING_FIELDS, validateRuling } from './caretakerRulingRules.js'
+import { itemAutopilotOff } from './caretakerItemOff.js'
 import { CARETAKER_HOURLY_LIMIT, FARM_URL } from './config.js'
 
 export const RULING_RULE_ID = 'any.operator_decide'
@@ -112,6 +113,11 @@ async function ruleOn(c, { gateActions, log, now, propose }) {
       if (insertRuling.run(c.eval_id, c.project_id, c.item_id, c.gate_index, 'dropped', 'autopilot_off', nowMs).changes) claim = 'dropped'
       return
     }
+    // HZ-544: Autopilot was turned off for the item after this evaluation.
+    if (itemAutopilotOff(c.item_id)) {
+      if (insertRuling.run(c.eval_id, c.project_id, c.item_id, c.gate_index, 'dropped', 'autopilot_off_item', nowMs).changes) claim = 'dropped'
+      return
+    }
     const row = insertRuling.run(c.eval_id, c.project_id, c.item_id, c.gate_index, 'pending', null, nowMs)
     if (row.changes === 1) claim = row.lastInsertRowid
   })()
@@ -141,9 +147,10 @@ async function ruleOn(c, { gateActions, log, now, propose }) {
   const verdict = validateRuling(proposal, current)
   if (!verdict.ok) return leave('rejected', verdict.code, notRuled(`${verdict.code}: ${verdict.detail}`))
 
-  // The model call took a while: Autopilot may have gone off, or the item
-  // moved or was acted on. Either way nothing is written.
-  if (selectMode.get(c.project_id)?.autopilot !== 'on' || !selectStillActionable.get(c.eval_id)) {
+  // The model call took a while: Autopilot may have gone off (for the project
+  // or, HZ-544, the item), or the item moved or was acted on. Either way
+  // nothing is written.
+  if (selectMode.get(c.project_id)?.autopilot !== 'on' || itemAutopilotOff(c.item_id) || !selectStillActionable.get(c.eval_id)) {
     finishRuling.run('dropped', 'no_longer_actionable', claim)
     return 'dropped'
   }
@@ -171,7 +178,7 @@ async function ruleOn(c, { gateActions, log, now, propose }) {
   const note = rulingNote({ kind: verdict.kind, reason: verdict.reason, edits })
   // Re-checked in the same tick the send-back starts, as caretakerActor does:
   // a human may have acted while the issue was being edited.
-  const sent = selectMode.get(c.project_id)?.autopilot === 'on' && !!selectStillActionable.get(c.eval_id)
+  const sent = selectMode.get(c.project_id)?.autopilot === 'on' && !itemAutopilotOff(c.item_id) && !!selectStillActionable.get(c.eval_id)
   let result = { error: 'the item moved or Autopilot went off before the send-back' }
   if (sent) {
     try {

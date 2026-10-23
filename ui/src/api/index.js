@@ -56,6 +56,7 @@ export const {
   resolveConflicts,
   forwardToAccept,
   setPaused,
+  setAutopilotOff,
   stopJob,
   resumeJob,
   restartPhase,

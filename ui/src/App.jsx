@@ -147,7 +147,9 @@ function AuthenticatedApp({ user, onLogout }) {
   const initial = parsePath(window.location.pathname)
   const [view, setView] = useState(initial.view)
   const [selectedId, setSelectedId] = useState(initial.id)
-  const [approvalsOpen, setApprovalsOpen] = useState(false)
+  // HZ-544: `?approvals` opens the drawer at load, so a screenshot screen
+  // (which cannot click) can show it.
+  const [approvalsOpen, setApprovalsOpen] = useState(() => new URLSearchParams(window.location.search).has('approvals'))
   const [composer, setComposer] = useState(CLOSED_COMPOSER)
   const [newItemOpen, setNewItemOpen] = useState(false)
   // HZ-365: the rule-block banner's Add dependency — the item it is for, and

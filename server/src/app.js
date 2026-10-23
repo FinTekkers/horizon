@@ -2071,6 +2071,49 @@ export function buildApp({ logger = true, onRoute = null } = {}) {
     },
   )
 
+  // HZ-544: turn Autopilot off (or back on) for one item in an Autopilot
+  // project, by adding or removing the `autopilot-off` label on its issue —
+  // the label is the only stored state, so the edit is awaited and synced back
+  // before answering, and a GitHub refusal changes nothing (502). Turning it
+  // off (every gate waits for a human) needs a browser session only; handing
+  // the gates back to Autopilot (`off: false`) needs the gate PIN.
+  fastify.post(
+    '/api/items/:id/autopilot-off',
+    {
+      schema: {
+        params: idParam,
+        body: {
+          type: 'object',
+          required: ['off'],
+          properties: { off: { type: 'boolean' } },
+        },
+        response: { 200: OK_OBJECT, 401: ERROR_OBJECT, 403: ERROR_OBJECT, 404: ERROR_OBJECT, 409: ERROR_OBJECT, 502: ERROR_OBJECT },
+        security: HUMAN_GATE_SECURITY,
+      },
+    },
+    async (request, reply) => {
+      const { off } = request.body
+      // Documented as a gate route (the PIN branch); the no-PIN branch still
+      // refuses an API token, as every gate route does.
+      if (off && !requireSession(request, reply)) return
+      if (!off) {
+        if (!humanAuthorized(request, reply)) return
+      }
+      const item = store.getItem(request.params.id)
+      if (!item) return reply.code(404).send({ error: 'not_found' })
+      if (!item.repo || item.issue == null) return reply.code(409).send({ error: 'no_github_issue' })
+      let issue
+      try {
+        issue = await github.setAutopilotOffLabel(item, off)
+      } catch (err) {
+        return reply.code(502).send({ error: err?.message || 'GitHub refused the label change' })
+      }
+      store.upsertFromGithub(issue, item.repo)
+      const view = store.itemViewById(item.id)
+      return { ok: true, autopilotOff: !!view?.autopilotOff, item: view }
+    },
+  )
+
   fastify.post(
     '/api/items/:id/phases/:phase/restart',
     {

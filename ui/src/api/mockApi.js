@@ -387,6 +387,14 @@ export async function forwardToAccept(id) {
 
 // Mirrors serverApi.setPaused: the explicit state, {ok, paused, item} back, and a
 // rejection the button can show.
+// HZ-544: the mock has no GitHub issue to label; it flips the item's copy.
+export async function setAutopilotOff(id, off) {
+  const it = items.find((x) => x.id === id)
+  if (!it) throw new Error('not_found')
+  update(id, (x) => ({ ...x, autopilotOff: off }))
+  return { ok: true, autopilotOff: off, item: items.find((x) => x.id === id) }
+}
+
 export async function setPaused(id, paused) {
   const it = items.find((x) => x.id === id)
   if (!it) throw new Error('not_found')

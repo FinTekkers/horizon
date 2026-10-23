@@ -1,5 +1,24 @@
-import { phasesFor, itemKindOf, curStep, phaseIdx, awaitingGate } from '../../../domain/js/lifecycle.js'
+import { phasesFor, itemKindOf, curStep, phaseIdx, awaitingGate, ACCEPT_GATE_INDEX } from '../../../domain/js/lifecycle.js'
 import { LockIcon } from './icons'
+import { AutopilotOffChip, autopilotOffShown, AUTOPILOT_OFF_GATE_NOTE } from './StatusPill'
+
+// HZ-544: what Autopilot would have done at this gate, from the server's
+// item.autopilotWouldHave (an evaluation at the item's current gate only).
+const WOULD_HAVE = {
+  approve: (item) => (item.cursor === ACCEPT_GATE_INDEX ? 'accepted' : 'approved'),
+  send_back: () => 'sent it back',
+  resolve_conflicts: () => 'resolved the conflicts',
+  wait: () => 'waited',
+  ping_human: () => 'asked for you',
+}
+
+function autopilotOffNote(item) {
+  const would = item.autopilotWouldHave
+  const verb = would && WOULD_HAVE[would.decision]?.(item)
+  const reason = String(would?.reason ?? '').trim().replace(/\.$/, '')
+  const tail = verb ? ` Autopilot would have ${verb}${reason ? `: ${reason}` : ''}.` : ''
+  return `Waiting for you because Autopilot is off for this item.${tail}`
+}
 
 export default function ApprovalsDrawer({ items, onClose, onOpenItem, onApprove, onReject }) {
   const pending = items.filter(awaitingGate)
@@ -27,10 +46,12 @@ export default function ApprovalsDrawer({ items, onClose, onOpenItem, onApprove,
             const optional = cur.gate === 'optional'
             const gateColor = optional ? 'var(--agent-human-ink)' : 'var(--warning-ink)'
             const gateBg = optional ? 'var(--agent-human-bg)' : 'var(--warning-bg)'
+            const off = autopilotOffShown(item)
             return (
               <div key={item.id} className="approval" style={{ borderLeft: `4px solid ${gateColor}` }}>
                 <div className="approval__meta">
                   <span className="approval__id">{item.id}</span>
+                  <AutopilotOffChip item={item} />
                   <span className="approval__gate-type" style={{ color: gateColor, background: gateBg }}>
                     {optional ? 'optional' : 'required'}
                   </span>
@@ -43,7 +64,18 @@ export default function ApprovalsDrawer({ items, onClose, onOpenItem, onApprove,
                 <div className="approval__gate-label">
                   <LockIcon size={14} strokeWidth={2.4} />
                   {cur.label}
+                  {off && ` · ${AUTOPILOT_OFF_GATE_NOTE}`}
                 </div>
+                {off && (
+                  <div className="autopilot-off-note autopilot-off-note--approval">
+                    {autopilotOffNote(item)}
+                    {item.cursor === ACCEPT_GATE_INDEX && item.pr_url && (
+                      <a className="autopilot-off-note__link" href={item.pr_url} target="_blank" rel="noopener noreferrer">
+                        Open the PR diff
+                      </a>
+                    )}
+                  </div>
+                )}
                 <div className="approval__actions">
                   <button className="btn-approve" onClick={() => onApprove(item.id, cur.label)}>
                     Approve

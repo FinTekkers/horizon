@@ -764,6 +764,18 @@ export async function setPaused(id, paused) {
   return data
 }
 
+// HZ-544: adds (`off` true) or removes the issue's `autopilot-off` label.
+// Turning Autopilot off for the item needs only the login; handing the gates
+// back needs the gate PIN, prompted for like any gate action — a cancelled
+// prompt rejects with Error('pin_needed') and sends nothing. Rejects with the
+// server's error code otherwise; on success the answer's item is applied.
+export async function setAutopilotOff(id, off) {
+  const path = `/items/${encodeURIComponent(id)}/autopilot-off`
+  const data = off ? await postJson(path, { off: true }) : await gateAction(path, { off: false })
+  if (data.item) applyActionItem(data.item)
+  return data
+}
+
 // HZ-407: the Execute card's Stop run and Resume, behind the same login as
 // Pause. postJson so a 409 rejects and the card can say why. Stop's answer
 // carries the paused item, applied at once; the job's own view (command 2
