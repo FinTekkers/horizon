@@ -47,8 +47,8 @@ await app.ready()
 const FARM = { 'x-farm-secret': 'knowledge-farm-secret' }
 const SHA_1 = 'a'.repeat(40)
 const SHA_2 = 'b'.repeat(40)
-const OWN_SLUG = 'app__docs-specs-bond-spec'
-const DOCS_SLUG = 'handbooks__pricing'
+const OWN_SLUG = 'acme-app__docs-specs-bond-spec-6ac1b4642d'
+const DOCS_SLUG = 'acme-handbooks__pricing-cb3a78a1fa'
 const body = (overrides = {}) => ({
   repo: 'Acme/app',
   path: 'docs/specs/Bond-Spec.pdf',
@@ -77,6 +77,21 @@ test('the sources are the switched-on project persona references, with the slug 
     ],
   })
   assert.equal(knowledgeDocs.knowledgeSlug('Acme/handbooks', 'pricing.pdf'), DOCS_SLUG)
+})
+
+test('sources that differ in owner or path never share a slug', () => {
+  const { knowledgeSlug, SLUG_SHAPE } = knowledgeDocs
+  const pairs = [
+    [['FinTekkers/docs', 'bond.pdf'], ['Acme/docs', 'bond.pdf']],
+    [['Acme/docs', 'a-b/x.pdf'], ['Acme/docs', 'a/b-x.pdf']],
+    [['Acme/docs', 'Bond.pdf'], ['Acme/docs', 'bond.pdf']],
+  ]
+  for (const [a, b] of pairs) {
+    assert.notEqual(knowledgeSlug(...a), knowledgeSlug(...b), `${a} vs ${b}`)
+  }
+  assert.equal(knowledgeSlug('Acme/docs', 'bond.pdf'), knowledgeSlug('Acme/docs', 'bond.pdf'))
+  const long = knowledgeSlug('Acme/docs', `${'deep/'.repeat(60)}spec.pdf`)
+  assert.ok(long.length <= 200 && SLUG_SHAPE.test(long), long)
 })
 
 test('two PUTs keep one row: a new sha updates it in place', async () => {
@@ -122,7 +137,7 @@ test('an unknown source is 404 and writes nothing', async () => {
   for (const [projectId, slug, payload] of [
     [ON, 'nope__missing', body()],
     [ON, OWN_SLUG, body({ path: 'docs/other.pdf' })],
-    [OFF, OWN_SLUG.replace('app__', 'other__'), body({ repo: 'Acme/other' })],
+    [OFF, knowledgeDocs.knowledgeSlug('Acme/other', 'docs/specs/Bond-Spec.pdf'), body({ repo: 'Acme/other' })],
     [999, OWN_SLUG, body()],
   ]) {
     const res = await put(projectId, slug, payload)

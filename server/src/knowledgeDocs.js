@@ -13,8 +13,11 @@
 // takes it off listSources() and only checks its shape before using it as the
 // cache directory name. It is also the `<doc>` of a `<doc>#<section>` citation.
 // Two projects naming the same repo and path share one slug, and so one cache
-// directory, but each keeps its own row.
+// directory, but each keeps its own row. Any other repo or path gets another
+// slug: the readable part can collide ('a-b/x.pdf' vs 'a/b-x.pdf'), so a hash
+// of the exact repo and path ends it.
 
+import { createHash } from 'node:crypto'
 import { db } from './db.js'
 import { projectPersonaOverlay } from './definitions.js'
 
@@ -22,9 +25,12 @@ export const SLUG_SHAPE = /^[a-z0-9_-]+$/
 
 const slugPart = (text) => text.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '')
 
-// 'FinTekkers/docs' + 'specs/bond-spec.pdf' -> 'docs__specs-bond-spec'.
+// 'FinTekkers/docs' + 'specs/bond-spec.pdf' -> 'fintekkers-docs__specs-bond-spec-<10 hex>'.
+// The readable part is capped so the slug stays within the route's 200 chars.
 export function knowledgeSlug(repo, path) {
-  return `${slugPart(repo.split('/').pop())}__${slugPart(path.replace(/\.pdf$/i, ''))}`
+  const readable = `${slugPart(repo)}__${slugPart(path.replace(/\.pdf$/i, ''))}`.slice(0, 160)
+  const hash = createHash('sha256').update(`${repo}\n${path}`).digest('hex').slice(0, 10)
+  return `${readable}-${hash}`
 }
 
 const selectSwitchedOnProjects = db.prepare('SELECT id, name, definitions_enabled FROM project WHERE definitions_enabled = 1 ORDER BY id')

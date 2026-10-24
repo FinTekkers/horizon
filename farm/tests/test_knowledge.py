@@ -20,7 +20,7 @@ from farm import knowledge, persona_tools, workspaces
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 REPO = "acme/docs"
 PATH = "specs/bond-spec.pdf"
-SLUG = "docs__specs-bond-spec"
+SLUG = "acme-docs__specs-bond-spec-ce80a6ea70"  # server knowledgeSlug(REPO, PATH)
 
 
 def make_pdf(pages: list[list[str]]) -> bytes:
