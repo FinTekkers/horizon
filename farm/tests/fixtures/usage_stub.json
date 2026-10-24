@@ -1,0 +1,21 @@
+{
+  "description": "HZ-550: one stubbed provider result, shared by farm/tests/test_usage_capture.py (the farm posts `usage`) and server/test/step-run-usage.test.mjs (the server stores it). `provider_usage` and `total_cost_usd` are what the Claude provider reads off its result; `usage` is what the farm reports for a run of that one call. Distinct, non-round figures, so a swapped column fails.",
+  "provider": "claude",
+  "model": "claude-sonnet-5-5",
+  "provider_usage": {
+    "input_tokens": 48213,
+    "output_tokens": 9157,
+    "cache_read_input_tokens": 712349,
+    "cache_creation_input_tokens": 30617
+  },
+  "total_cost_usd": 1.734219,
+  "usage": {
+    "agent_run": true,
+    "input_tokens": 48213,
+    "output_tokens": 9157,
+    "cache_read_tokens": 712349,
+    "cache_write_tokens": 30617,
+    "cost_usd": 1.734219
+  },
+  "prompt_marker": "HZ550-PROMPT-MARKER-q7Zt"
+}

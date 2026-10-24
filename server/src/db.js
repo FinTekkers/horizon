@@ -700,6 +700,33 @@ try {
 } catch {
   // column already exists
 }
+// HZ-550: what a run used, as the provider reported it (server/src/stepUsage.js
+// writes them). agent_run is 1 for an agent run, 0 for a run with no agent (a
+// job, a server step, a deploy that only read its log) whose figures are then
+// 0, and NULL when not recorded. Nullable with no default: every earlier row
+// stays NULL — not captured, never 0 — and nothing is backfilled. Read only by
+// GET /api/admin/productivity (server/src/productivity.js).
+for (const sql of [
+  'ALTER TABLE step_run ADD COLUMN input_tokens INTEGER',
+  'ALTER TABLE step_run ADD COLUMN output_tokens INTEGER',
+  'ALTER TABLE step_run ADD COLUMN cache_read_tokens INTEGER',
+  'ALTER TABLE step_run ADD COLUMN cache_write_tokens INTEGER',
+  'ALTER TABLE step_run ADD COLUMN cost_usd REAL',
+  'ALTER TABLE step_run ADD COLUMN agent_run INTEGER CHECK (agent_run IN (0, 1))',
+]) {
+  try {
+    db.exec(sql)
+  } catch {
+    // column already exists
+  }
+}
+// HZ-550: the Productivity report's windows — runs by start, gate decisions
+// and events by time.
+db.exec(`
+  CREATE INDEX IF NOT EXISTS idx_step_run_started ON step_run(started_at);
+  CREATE INDEX IF NOT EXISTS idx_gate_decision_created ON gate_decision(created_at);
+  CREATE INDEX IF NOT EXISTS idx_event_created ON event(created_at);
+`)
 // HZ-422: one row per model last seen limited, and when it lifts (ISO-8601
 // UTC, compared in JS so a test's fake clock drives it). A row whose reset
 // has passed is simply ignored, then overwritten by the next limit.

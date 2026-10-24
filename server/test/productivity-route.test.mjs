@@ -1,7 +1,7 @@
 // HZ-549 guardrails on GET /api/admin/productivity, hooks off (production):
-// read-only and session-gated, API tokens rejected, and until HZ-550 the body
-// is the checked-in fixture with only range/project echoed — null costs kept,
-// never serialized as 0. productivity-test-env.test.mjs covers the screenshot
+// read-only and session-gated, API tokens rejected, and (HZ-550) the body is
+// the live report with range/project echoed — null costs kept, never
+// serialized as 0. productivity-test-env.test.mjs covers the screenshot
 // login on a hooks-on server; its own file because config.js reads the flag at
 // import.
 
@@ -23,15 +23,17 @@ process.env.SCREENSHOT_LOGIN_KEY = KEY
 delete process.env.GITHUB_WEBHOOK_SECRET
 delete process.env.FARM_URL
 
+const { db } = await import('../src/db.js')
 const store = await import('../src/store.js')
 const { buildApp } = await import('../src/app.js')
 const config = await import('../src/config.js')
 const auth = await import('../src/auth.js')
 const { TEST_ENV_LOGIN_HEADER } = await import('../src/testEnvLogin.js')
 
+const { endIndex } = await import('../../domain/js/lifecycle.js')
+
 const readJson = (rel) => JSON.parse(readFileSync(path.join(REPO_ROOT, rel), 'utf8'))
 const schema = readJson('domain/productivity.schema.json')
-const fixture = readJson('domain/fixtures/productivity.json')
 
 const URL_PATH = '/api/admin/productivity'
 
@@ -44,24 +46,30 @@ after(() => app.close())
 const admin = loginFixtureUser(auth, config, { email: config.ADMIN_EMAIL, name: 'Admin' })
 const get = (url, headers = {}) => app.inject({ method: 'GET', url, headers })
 
-test('a session gets 200: the fixture, range/project echoed, valid against the schema', async () => {
+test('a session gets 200: the live report, range/project echoed, valid against the schema', async () => {
   const res = await get(`${URL_PATH}?range=7d&project=horizon`, { cookie: admin.cookie })
   assert.equal(res.statusCode, 200, res.body)
   const body = res.json()
   assert.deepEqual(validate(schema, body), [])
   assert.equal(body.range, '7d')
   assert.equal(body.project, 'horizon')
-  // Fixture only: nothing but the two echoed fields differs from the file.
-  assert.deepEqual({ ...body, range: fixture.range, project: fixture.project }, fixture)
+  // HZ-550: aggregated from the DB, no longer the checked-in fixture.
+  assert.equal(body.source, 'live')
 })
 
 test('null costs survive serialization rather than becoming 0', async () => {
-  const res = await get(URL_PATH, { cookie: admin.cookie })
+  // HZ-550: an item closed today whose one run is from before cost capture.
+  const projectId = db.prepare("INSERT INTO project (name) VALUES ('Uncaptured')").run().lastInsertRowid
+  db.prepare("INSERT INTO work_item (id, title, priority, cursor, project_id) VALUES ('NC-1', 'Uncaptured', 'Medium', ?, ?)").run(endIndex(), projectId)
+  db.prepare("INSERT INTO step_run (item_id, step_index, agent, status, ended_at) VALUES ('NC-1', 4, 'Ensemble', 'done', datetime('now'))").run()
+  db.prepare("INSERT INTO gate_decision (item_id, step_index, decision) VALUES ('NC-1', ?, 'approved')").run(endIndex() - 1)
+
+  const res = await get(`${URL_PATH}?project=${projectId}`, { cookie: admin.cookie })
   assert.equal(res.statusCode, 200, res.body)
   const body = res.json()
   assert.equal(body.summary.cost, null)
   assert.equal(body.summary.costPerItem, null)
-  assert.deepEqual(body.costPerDay[0].byProject[0], { project: 'fintekkers', cost: null, inputTokens: null, outputTokens: null })
+  assert.deepEqual(body.costPerDay.at(-1).byProject[0], { project: String(projectId), cost: null, inputTokens: null, outputTokens: null })
   assert.equal(body.topItems[0].tokens, null)
   assert.equal(body.topItems[0].cost, null)
   assert.doesNotMatch(res.body, /"(cost|costPerItem|tokens|inputTokens|outputTokens)":0/)
