@@ -71,7 +71,7 @@ RUNNING_CHECKOUT = Path(__file__).resolve().parents[1]
 RESERVE_S = 60
 
 # HZ-227: a stderr line starting with this carries one JSON event for the
-# server — today only check_slots' queued/granted. Must match EVENT_PREFIX in
+# server — today only check_slots' queued/granted/memory. Must match EVENT_PREFIX in
 # server/src/premerge.js (parseSlotEvent). stdout stays one JSON line.
 EVENT_PREFIX = "HORIZON_EVENT "
 

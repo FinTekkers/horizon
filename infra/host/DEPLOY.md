@@ -276,6 +276,7 @@ unset on this host, so the code default of 4 is in force.
 | `/etc/horizon/farm.env` | `FARM_MAX_CONCURRENT_CHECKS` | `2` | how many check suites run at once. **Set this before raising the line above** |
 | `/etc/horizon/farm.env` | `FARM_CHECK_SLOT_WAIT_MAX_S` | (unset ⇒ 1200) | how long a run waits for a check slot before proceeding **without** one. Sized above the worst legitimate queue (2 waves × the measured p95 suite) and below the step watchdog — do not lower it to "fail faster", that disables the cap under load |
 | `/etc/horizon/farm.env` | `FARM_CHECK_METRICS_PHASE` | measurement only | tags records during a measurement window; remove it afterwards |
+| `/etc/horizon/farm.env` | `FARM_MIN_MEM_AVAILABLE_PCT` | (unset ⇒ 15) | HZ-571: a check, pre-merge or capture run does not **start** while `MemAvailable` is below this percentage of `MemTotal`; it waits and starts once memory recovers. Running work is never touched. `0` turns the gate off (the rollback switch). See the note below |
 
 The exact lines:
 
@@ -287,6 +288,21 @@ FARM_MAX_EPHEMERAL=6
 Then `sudo systemctl restart horizon-farm`. Existing tmux sessions keep the
 environment they were launched with, so the restart's teardown is what
 applies the new values.
+
+**The memory gate (HZ-571).** While it holds a run, the item reads "waiting
+for memory (9% free, 1.4 GB)" and `/farm/status` has a `memory` block
+(`available_pct`, `threshold_pct`, `waiting`). It shares the
+`FARM_CHECK_SLOT_WAIT_MAX_S` ceiling with the slot wait, but unlike the slot
+wait it fails **closed**: still short of memory past the ceiling, the check
+fails `timed_out` without running ("checks did not start: waited ...s for
+memory"). That costs the step an attempt, so a squeeze that lasts longer than
+the ceiling can use up items' retries and pause them — free memory, then
+resume them. If memory cannot be read the gate logs a warning and lets the
+run start. Pre-merge runs are started by `horizon-server`, whose check child
+gets an allowlisted environment without `farm.env`, so they use the default
+15% (as they already use the default `FARM_MAX_CONCURRENT_CHECKS`).
+`FARM_MEMINFO_PATH` is a **test-only** seam (a fake meminfo file) — never set
+it on the host.
 
 **Order matters.** Six agents all reaching their checks at once on 2 vCPUs is
 the failure this pairing exists to prevent — it was observed live on 30 Sept

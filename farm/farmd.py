@@ -1424,6 +1424,8 @@ def farm_status():
         "express": {"limit": FARM_EXPRESS_SLOTS, "busy": max(0, busy["runs"] - MAX_EPHEMERAL)},
         "pm_agents": {"limit": PM_LANE_CAP, "busy": busy["pm"]},
         "checks": check_slots.status(),
+        # HZ-571: free memory and how many runs wait on it to start.
+        "memory": check_slots.memory_status(),
     }
 
 
@@ -1460,13 +1462,23 @@ def farm_stop():
     return {"ok": True}
 
 
-def _run_state(run_id: str, pm_queue: list, runs_queue: list, busy: int, general_full: bool = False) -> dict:
+def _run_state(
+    run_id: str,
+    pm_queue: list,
+    runs_queue: list,
+    busy: int,
+    general_full: bool = False,
+    memory_waits: frozenset = frozenset(),
+    memory_note: str | None = None,
+) -> dict:
     """A run's semantic state, never its tmux session name (HZ-54): queued
     while its task file sits in the PM or ephemeral-runs queue, running once
     the dispatcher has claimed it (moved it into runs/active — matched by
     neither glob here, so it falls through to "running"). HZ-477: with every
     general slot held by a long step, a queued long step names that wait, not
-    a free express slot it can never use."""
+    a free express slot it can never use. HZ-571: a claimed run whose checks
+    are held by the memory gate (memory_waits, from check_slots' waiting
+    markers) is queued again, named with the current figure (memory_note)."""
     if any(p.stem == run_id for p in pm_queue):
         return {"state": "queued", "reason": "waiting for the PM agent"}
     for p in runs_queue:
@@ -1478,6 +1490,8 @@ def _run_state(run_id: str, pm_queue: list, runs_queue: list, busy: int, general
                 "reason": f"waiting for a free general agent slot ({MAX_EPHEMERAL}/{MAX_EPHEMERAL} running long steps; the express slot takes short steps only)",
             }
         return {"state": "queued", "reason": f"waiting for a free agent slot ({busy}/{MAX_EPHEMERAL + FARM_EXPRESS_SLOTS} in use)"}
+    if run_id in memory_waits:
+        return {"state": "queued", "reason": f"waiting for memory ({memory_note})" if memory_note else "waiting for memory"}
     return {"state": "running"}
 
 
@@ -1504,7 +1518,16 @@ async def runs_status(request: Request):
     sessions = _ephemeral_sessions()
     busy = _lane_busy(sessions)["runs"]
     general_full = _runs_lane_slots(sessions)[1] <= 0
-    return {"states": {rid: _run_state(rid, pm_queue, runs_queue, busy, general_full) for rid in run_ids}}
+    memory_waits = frozenset(
+        str(w["run_id"]) for w in check_slots.waiting_runs() if w.get("waiting_on") == "memory" and w.get("run_id")
+    )
+    reading = check_slots.memory_reading() if memory_waits else None
+    memory_note = reading.describe() if reading else None
+    return {
+        "states": {
+            rid: _run_state(rid, pm_queue, runs_queue, busy, general_full, memory_waits, memory_note) for rid in run_ids
+        }
+    }
 
 
 def _run_alive(run_id: str) -> bool:

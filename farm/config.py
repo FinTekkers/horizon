@@ -99,6 +99,11 @@ CHECK_SUBPROCESS_SCRUB = frozenset(
         "FARM_DEP_CACHE_MAX_ENTRIES",
         "FARM_DEP_CACHE_MAX_GB",
         "FARM_DEP_CACHE_MIN_FREE_GB",
+        # HZ-571: the memory gate's threshold, and its test-only meminfo seam.
+        # Horizon's own suite asserts the default, and a host rollback to 0
+        # must not reach it.
+        "FARM_MIN_MEM_AVAILABLE_PCT",
+        "FARM_MEMINFO_PATH",
     }
 )
 

@@ -78,15 +78,11 @@ def metrics_path() -> Path:
 
 
 def mem_available_kb() -> int | None:
-    """Host-wide MemAvailable from /proc/meminfo, or None off Linux."""
-    try:
-        with open("/proc/meminfo") as fh:
-            for line in fh:
-                if line.startswith("MemAvailable:"):
-                    return int(line.split()[1])
-    except (OSError, ValueError, IndexError):
-        return None
-    return None
+    """Host-wide MemAvailable from /proc/meminfo, or None off Linux. Reads
+    through check_slots.memory_reading() (HZ-571), so the metrics record and
+    the memory gate see the same figure."""
+    reading = check_slots.memory_reading()
+    return reading.available_kb if reading else None
 
 
 def load_average() -> float | None:
