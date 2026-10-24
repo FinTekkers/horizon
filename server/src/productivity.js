@@ -57,11 +57,32 @@ const FIRST_KIND = ITEM_KINDS[0]
 
 const dateOf = (ms) => new Date(ms).toISOString().slice(0, 10)
 // sqlTime.js's msOf, without its string rebuild for the datetime('now') form
-// every row here has — the report parses tens of thousands per request.
-const SQL_TIME = /^(\d{4})-(\d{2})-(\d{2}) (\d{2}):(\d{2}):(\d{2})$/
+// every row here has — the report parses tens of thousands per request. The
+// date part is parsed once per day; the clock is read digit by digit.
+const SQL_DAY = /^\d{4}-\d{2}-\d{2}$/
+const dayMsCache = new Map()
+function dayMsOf(date) {
+  let ms = dayMsCache.get(date)
+  if (ms === undefined) {
+    ms = SQL_DAY.test(date) ? Date.parse(`${date}T00:00:00Z`) : NaN
+    dayMsCache.set(date, ms)
+  }
+  return ms
+}
+function digitAt(sql, i) {
+  const d = sql.charCodeAt(i) - 48
+  return d >= 0 && d <= 9 ? d : NaN
+}
 function msOf(sql) {
-  const m = SQL_TIME.exec(sql)
-  return m ? Date.UTC(+m[1], m[2] - 1, +m[3], +m[4], +m[5], +m[6]) : parseSqlTime(sql)
+  if (sql.length === 19 && sql[10] === ' ' && sql[13] === ':' && sql[16] === ':') {
+    const day = dayMsOf(sql.slice(0, 10))
+    const h = digitAt(sql, 11) * 10 + digitAt(sql, 12)
+    const m = digitAt(sql, 14) * 10 + digitAt(sql, 15)
+    const s = digitAt(sql, 17) * 10 + digitAt(sql, 18)
+    const ms = day + ((h * 60 + m) * 60 + s) * 1000
+    if (!Number.isNaN(ms) && h < 24 && m < 60 && s < 60) return ms
+  }
+  return parseSqlTime(sql)
 }
 const dayOf = (sql) => sql.slice(0, 10)
 const round = (value, places) => Math.round(value * 10 ** places) / 10 ** places
@@ -118,11 +139,19 @@ function projectsFor(project) {
 const IN_PROJECTS = 'w.project_id IN (SELECT value FROM json_each(@ids))'
 const IN_ITEMS = 'item_id IN (SELECT value FROM json_each(@items))'
 
+// The window's runs, grouped in SQL so a month of them is a few hundred rows,
+// not tens of thousands. `agent` is 0 only for a run with no agent
+// (agent_run = 0); a NULL agent_run is an agent run not captured. SUM of
+// only NULLs is NULL, so an uncaptured group's figures stay null.
 const selectWindowRuns = db.prepare(`
-  SELECT r.item_id, r.step_index, r.started_at, r.model, r.agent_run, r.input_tokens, r.output_tokens, r.cost_usd,
-         r.rule_blocked, r.usage_limit_hit, r.fallback_from, w.project_id
+  SELECT substr(r.started_at, 1, 10) AS day, w.project_id, r.step_index, r.model, (r.agent_run IS NOT 0) AS agent,
+         COUNT(*) AS n, SUM(r.cost_usd) AS cost_usd, SUM(r.input_tokens) AS input_tokens, SUM(r.output_tokens) AS output_tokens,
+         SUM(CASE WHEN r.rule_blocked THEN 1 ELSE 0 END) AS rule_blocks,
+         SUM(CASE WHEN r.usage_limit_hit THEN 1 ELSE 0 END) AS usage_limits,
+         SUM(r.fallback_from IS NOT NULL) AS fallbacks
     FROM step_run r JOIN work_item w ON w.id = r.item_id
-   WHERE r.started_at >= @lo AND r.started_at < @hi AND ${IN_PROJECTS}`)
+   WHERE r.started_at >= @lo AND r.started_at < @hi AND ${IN_PROJECTS}
+   GROUP BY day, w.project_id, r.step_index, r.model, agent`)
 
 // An item's close: an approve at its kind's last gate, or GitHub closing its
 // issue (store.upsertFromGithub writes that event as `closed issue #<n>`). The
@@ -239,7 +268,9 @@ export function productivityReport({ range, project }, { now = Date.now() } = {}
     closedItem(row, runsByItem.get(row.item_id) ?? [], decisionsByItem.get(row.item_id) ?? [], reviewFails, gateWait),
   )
 
-  const agentRuns = runs.filter((run) => run.agent_run !== 0)
+  const agentRuns = runs.filter((run) => run.agent)
+  const count = (groups) => groups.reduce((sum, run) => sum + run.n, 0)
+  const agentCount = count(agentRuns)
   let cost = null
   for (const run of runs) cost = addNullable(cost, run.cost_usd)
 
@@ -252,9 +283,9 @@ export function productivityReport({ range, project }, { now = Date.now() } = {}
     projects,
     summary: {
       closed: closed.length,
-      steps: runs.length,
+      steps: count(runs),
       // Of the runs that could name a model: a run with no agent has none.
-      modelCoverage: agentRuns.length ? round(agentRuns.filter((run) => run.model != null).length / agentRuns.length, 4) : 0,
+      modelCoverage: agentCount ? round(count(agentRuns.filter((run) => run.model != null)) / agentCount, 4) : 0,
       cost: money(cost),
       costPerItem: money(median(closed.map((item) => item.cost).filter((value) => value != null))),
     },
@@ -357,7 +388,7 @@ function closedPerDay(win, projects, closed) {
 function costPerDay(win, projects, runs) {
   const cells = new Map()
   for (const run of runs) {
-    const key = `${dayOf(run.started_at)}|${run.project_id}`
+    const key = `${run.day}|${run.project_id}`
     const cell = cells.get(key) ?? { cost: null, inputTokens: null, outputTokens: null }
     cell.cost = addNullable(cell.cost, run.cost_usd)
     cell.inputTokens = addNullable(cell.inputTokens, run.input_tokens)
@@ -389,11 +420,11 @@ function modelMatrix(agentRuns) {
     const row = MATRIX_ROWS.rowOf.get(run.step_index)
     if (row == null) continue
     if (run.model == null) {
-      cells[row].notRecorded++
+      cells[row].notRecorded += run.n
       continue
     }
-    totals.set(run.model, (totals.get(run.model) ?? 0) + 1)
-    cells[row].counts.set(run.model, (cells[row].counts.get(run.model) ?? 0) + 1)
+    totals.set(run.model, (totals.get(run.model) ?? 0) + run.n)
+    cells[row].counts.set(run.model, (cells[row].counts.get(run.model) ?? 0) + run.n)
   }
   const columns = [...totals.keys()].sort((a, b) => totals.get(b) - totals.get(a) || a.localeCompare(b))
   return {
@@ -446,15 +477,14 @@ function failures(win, runs, bounds) {
   for (let week = mondayOf(win.from); week <= win.to; week = dateOf(Date.parse(`${week}T00:00:00Z`) + 7 * DAY_MS)) {
     weeks.set(week, { week, checksFailed: 0, ruleBlocks: 0, scopeViolations: 0, usageLimits: 0, providerFallbacks: 0 })
   }
-  const bump = (date, key) => {
+  const bump = (date, key, by = 1) => {
     const week = weeks.get(mondayOf(date))
-    if (week) week[key]++
+    if (week) week[key] += by
   }
   for (const run of runs) {
-    const day = dayOf(run.started_at)
-    if (run.rule_blocked) bump(day, 'ruleBlocks')
-    if (run.usage_limit_hit) bump(day, 'usageLimits')
-    if (run.fallback_from != null) bump(day, 'providerFallbacks')
+    bump(run.day, 'ruleBlocks', run.rule_blocks)
+    bump(run.day, 'usageLimits', run.usage_limits)
+    bump(run.day, 'providerFallbacks', run.fallbacks)
   }
   for (const event of selectStepFailures.all(bounds)) {
     if (SCOPE_REASONS.some((prefix) => event.text.startsWith(prefix))) bump(dayOf(event.created_at), 'scopeViolations')
