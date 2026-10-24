@@ -2697,6 +2697,7 @@ export function buildApp({ logger = true, onRoute = null } = {}) {
     },
     (request, reply) => {
       if (!requireHumanSession(request, reply)) return
+      if (!requireAdmin(request, reply)) return
       return productivityReport(request.query)
     },
   )

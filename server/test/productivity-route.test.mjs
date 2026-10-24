@@ -93,6 +93,13 @@ test('a valid, unexpired API token of the admin user gets 403 session_required',
   assert.deepEqual(res.json(), { error: 'session_required' })
 })
 
+test('a non-admin session gets 403 admin_required', async () => {
+  const member = loginFixtureUser(auth, config, { email: 'hz549-member@example.com', name: 'Member' })
+  const res = await get(URL_PATH, { cookie: member.cookie })
+  assert.equal(res.statusCode, 403, res.body)
+  assert.deepEqual(res.json(), { error: 'admin_required' })
+})
+
 test('no login gets 401 login_required', async () => {
   const res = await get(URL_PATH)
   assert.equal(res.statusCode, 401, res.body)
