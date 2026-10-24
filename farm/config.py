@@ -33,6 +33,8 @@ def farm_home() -> Path:
 FARM_HOME = farm_home()
 QUEUE_DIR = FARM_HOME / "queue"
 STATE_DIR = FARM_HOME / "state"
+# HZ-569: one lease file per check or pre-merge run (farm/run_reaper.py).
+RUNS_DIR = STATE_DIR / "runs"
 LOGS_DIR = FARM_HOME / "logs"
 WORKSPACES_DIR = FARM_HOME / "workspaces"
 
@@ -136,6 +138,9 @@ def dep_cache_min_free_bytes() -> int:
 # missing session is treated as proof of death rather than "still launching".
 RECONCILE_INTERVAL_S = int(os.environ.get("FARM_RECONCILE_INTERVAL_S", "60"))
 RECONCILE_GRACE_S = int(os.environ.get("FARM_RECONCILE_GRACE_S", "90"))
+# HZ-569: how often farmd sweeps capture workers, browsers and e2e servers
+# whose run's owner is gone (farm/run_reaper.py sweep()).
+RUN_SWEEP_INTERVAL_S = float(os.environ.get("FARM_RUN_SWEEP_INTERVAL_S", "5"))
 
 # HZ-194: how long a pause waits for the step agent to checkpoint its work
 # before farmd kills the session anyway. The server sends its own value
@@ -217,7 +222,7 @@ FARM_WA_CHOICE_TTL_S = int(os.environ.get("FARM_WA_CHOICE_TTL_S", "600"))
 
 
 def ensure_dirs() -> None:
-    for d in (QUEUE_DIR / "pm", STATE_DIR, LOGS_DIR, WORKSPACES_DIR):
+    for d in (QUEUE_DIR / "pm", STATE_DIR, RUNS_DIR, LOGS_DIR, WORKSPACES_DIR):
         d.mkdir(parents=True, exist_ok=True)
 
 

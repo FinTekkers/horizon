@@ -96,6 +96,11 @@ os.environ.pop("ANTHROPIC_API_KEY", None)
 # HZ-192: the operator's emergency model override would change every model the
 # suite asserts. Tests that exercise it set it themselves.
 os.environ.pop("FARM_MODEL_OVERRIDE", None)
+# HZ-569: this suite runs inside a check, which tags it with the check's run
+# id (farm/run_reaper.py). A test run_checks() that inherited that tag would
+# be a nested run of the outer check, and a timeout in it would reap the
+# outer check's processes. Tests that need a tag set their own.
+os.environ.pop("HORIZON_RUN_ID", None)
 
 sys.path.insert(0, str(REPO_ROOT))
 
