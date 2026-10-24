@@ -16,8 +16,12 @@
 // HZ-379: the full form also lists every item this one filed for itself
 // (item.spawned, open or closed) and links back to the item that filed this
 // one (item.spawnedBy). Read-only: the dependency edges above are what block.
+//
+// HZ-547: the compact form leads with "From Plan VS-110" when a Plan (or Task)
+// filed the item. It opens the board filtered to that Plan.
 
 import { Fragment, useEffect, useState } from 'react'
+import { isItemKind, itemKindInfo } from '../../../domain/js/lifecycle.js'
 
 function abandonedSuffix(entry) {
   return entry.abandoned ? ' (abandoned)' : ''
@@ -33,6 +37,28 @@ const PREFIX = import.meta.env.BASE_URL.replace(/\/$/, '')
 
 export function itemHref(id) {
   return `${PREFIX}/${id.toLowerCase()}`
+}
+
+// HZ-547: the board filtered to one Plan — App.jsx reads `?plan=` at load.
+export function planHref(id) {
+  return `${PREFIX}/?plan=${encodeURIComponent(id)}`
+}
+
+// "From Plan" or "From Task", from the parent's kind (planProgress); a parent
+// the snapshot has no entry for reads as a Plan.
+export function fromPlanLabel(kind) {
+  return `From ${itemKindInfo(isItemKind(kind) ? kind : 'plan').label}`
+}
+
+// A plain click opens the filtered board in place, without also opening the
+// card underneath; a modifier-click keeps the browser's new-tab behaviour.
+export function openPlanClick(id, onOpenPlan) {
+  return (e) => {
+    e.stopPropagation()
+    if (!onOpenPlan || e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return
+    e.preventDefault()
+    onOpenPlan(id)
+  }
 }
 
 // Tooltip text: id first so the hover list is scannable by id too.
@@ -121,7 +147,9 @@ function useRemoveState(entries, request) {
 // compact=true is the board-card form: one short pill per direction.
 // compact=false is the tracker-detail form: a labelled list per direction,
 // naming every blocker/dependent, not just the first.
-export default function DependencyBadge({ item, compact = false, onRemove }) {
+// planKind: the kind of the Plan or Task that filed the item, for the compact
+// chip's label. onOpenPlan(id) opens the board filtered to it.
+export default function DependencyBadge({ item, compact = false, onRemove, planKind = null, onOpenPlan }) {
   const blockedBy = item.blockedBy || []
   const dependents = item.dependents || []
   const spawned = item.spawned || []
@@ -130,12 +158,22 @@ export default function DependencyBadge({ item, compact = false, onRemove }) {
   const blockers = useRemoveState(blockedBy, (depId) => onRemove(item.id, depId))
   const waiting = useRemoveState(dependents, (dependentId) => onRemove(dependentId, item.id))
 
-  const hasSpawnLinks = !compact && (spawned.length > 0 || spawnedBy)
+  const hasSpawnLinks = compact ? !!spawnedBy : spawned.length > 0 || spawnedBy
   if (blockedBy.length === 0 && dependents.length === 0 && !hasSpawnLinks) return null
 
   if (compact) {
     return (
       <span className="dep-badges">
+        {spawnedBy && (
+          <a
+            className="dep-pill dep-pill--from-plan"
+            href={planHref(spawnedBy.id)}
+            title={`${spawnedBy.id} — ${spawnedBy.title}`}
+            onClick={openPlanClick(spawnedBy.id, onOpenPlan)}
+          >
+            {fromPlanLabel(planKind)} {spawnedBy.id}
+          </a>
+        )}
         {blockedBy.length > 0 && (
           <span className="dep-pill dep-pill--blocked" title={tooltip(blockedBy)}>
             {/* HZ-335: names every blocker as a link. stopPropagation keeps

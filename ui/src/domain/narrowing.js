@@ -7,6 +7,10 @@
 // "Waiting on me" is the server's call, not a second copy of its rule: an item
 // is waiting when its payload carries a waiting_since (store.js waitingSince —
 // at a human gate, rule-blocked or paused).
+//
+// HZ-547: `plan` narrows to the items one Plan (or Task) filed — the server's
+// spawnedBy link (store.js spawnFields), open or closed. planPool applies it
+// before the hide filters, so they and every other control combine with it.
 
 import { PRIORITIES } from '../../../domain/js/priorities.js'
 import { ITEM_KIND_INFO, LANES, laneOf, itemKindOf, isItemKind } from '../../../domain/js/lifecycle.js'
@@ -14,7 +18,15 @@ import { ITEM_KIND_INFO, LANES, laneOf, itemKindOf, isItemKind } from '../../../
 export const SORT_DIRS = ['oldest', 'newest']
 export const SORT_LABELS = { oldest: 'Longest wait', newest: 'Most recent' }
 
-export const DEFAULT_VIEW = Object.freeze({ waiting: false, sortDir: SORT_DIRS[0], priorities: [], kinds: [] })
+export const DEFAULT_VIEW = Object.freeze({ waiting: false, sortDir: SORT_DIRS[0], priorities: [], kinds: [], plan: null })
+
+// An item id, e.g. VS-110: upper-case letters and digits in hyphenated
+// parts. Anything else is no Plan.
+const PLAN_ID = /^[A-Z0-9]+(?:-[A-Z0-9]+)*$/
+
+export function validPlanId(value) {
+  return typeof value === 'string' && PLAN_ID.test(value) ? value : null
+}
 
 // Every item kind, then every lane — a lane names a narrower slice of its kind
 // (Trivial is a change with the `trivial` label), so a laned item matches only
@@ -67,11 +79,17 @@ export function validView(raw) {
     sortDir: SORT_DIRS.includes(sortDir) ? sortDir : DEFAULT_VIEW.sortDir,
     priorities: validList(pick(raw, 'priorities'), PRIORITIES),
     kinds: validList(pick(raw, 'kinds'), KIND_KEYS),
+    plan: validPlanId(pick(raw, 'plan')),
   }
 }
 
 export function isNarrowing(view) {
-  return view.waiting || view.priorities.length > 0 || view.kinds.length > 0
+  return view.waiting || view.priorities.length > 0 || view.kinds.length > 0 || view.plan != null
+}
+
+// The items `planId` filed, or every item when no Plan is chosen.
+export function planPool(items, planId) {
+  return planId == null ? items : items.filter((item) => item.spawnedBy?.id === planId)
 }
 
 export function narrowItems(items, view) {

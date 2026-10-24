@@ -19,6 +19,9 @@ let farm = { status: 'running' }
 let durationEstimates = null
 // HZ-360: the self-deploy's block, {blocked, startedAt, latestEnd} or null.
 let deployBlock = null
+// HZ-547: each Plan's or Task's filed items, summed by the server
+// (server/src/planProgress.js). Sent on connect and when it changes.
+let planProgress = []
 let sync = { tokenConfigured: false, repos: [] }
 let started = false
 const listeners = new Set()
@@ -84,6 +87,7 @@ function applyTop(data) {
   durationEstimates = data.durationEstimates ?? durationEstimates
   // HZ-360: null is news here (the block ended), so it is copied as given.
   if ('deployBlock' in data) deployBlock = data.deployBlock
+  planProgress = data.planProgress ?? planProgress
 }
 
 function refetch() {
@@ -466,6 +470,10 @@ export function getDurationEstimates() {
 
 export function getDeployBlock() {
   return deployBlock
+}
+
+export function getPlanProgress() {
+  return planProgress
 }
 
 // HZ-208: flip a project's enabled flag. The PIN is asked for on every flip
