@@ -831,6 +831,27 @@ def _reconcile_loop() -> None:
             print(f"farmd: reconcile error: {exc}", flush=True)
 
 
+def _knowledge_sources() -> list[dict]:
+    """HZ-537: GET /api/farm/knowledge/sources for farm/knowledge.py."""
+    res = httpx.get(
+        f"{HORIZON_URL}/api/farm/knowledge/sources", headers={"x-farm-secret": SHARED_SECRET}, timeout=10
+    )
+    res.raise_for_status()
+    sources = res.json().get("sources")
+    return sources if isinstance(sources, list) else []
+
+
+def _report_knowledge_doc(project_id: int, slug: str, body: dict) -> None:
+    """HZ-537: PUT one knowledge_doc row for farm/knowledge.py."""
+    res = httpx.put(
+        f"{HORIZON_URL}/api/farm/knowledge/docs/{project_id}/{slug}",
+        json=body,
+        headers={"x-farm-secret": SHARED_SECRET},
+        timeout=10,
+    )
+    res.raise_for_status()
+
+
 def _knowledge_loop() -> None:
     """HZ-537: re-extracts project knowledge PDFs whose git sha changed
     (farm/knowledge.py). Inert while no project with its definitions switch on
@@ -838,7 +859,7 @@ def _knowledge_loop() -> None:
     while True:
         time.sleep(farm_config.KNOWLEDGE_INTERVAL_S)
         try:
-            knowledge.sync_once(provision=_provision_hub)
+            knowledge.sync_once(_knowledge_sources, _report_knowledge_doc, provision=_provision_hub)
         except Exception as exc:
             print(f"farmd: knowledge sync error: {exc}", flush=True)
 

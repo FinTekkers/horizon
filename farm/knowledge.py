@@ -41,11 +41,8 @@ import subprocess
 import tempfile
 from pathlib import Path
 
-import httpx
-
 from . import config as farm_config
 from . import persona_tools, workspaces
-from .config import HORIZON_URL, SHARED_SECRET
 
 EXTRACTOR_TOOL = "pdfminer"
 EXTRACTOR_COMMAND = "pdf2txt.py"
@@ -253,33 +250,16 @@ def extract(source: dict, sha: str) -> dict:
 # ---- the sync ----
 
 
-def fetch_sources() -> list[dict]:
-    res = httpx.get(
-        f"{HORIZON_URL}/api/farm/knowledge/sources", headers={"x-farm-secret": SHARED_SECRET}, timeout=10
-    )
-    res.raise_for_status()
-    sources = res.json().get("sources")
-    return sources if isinstance(sources, list) else []
-
-
-def report_doc(project_id: int, slug: str, body: dict) -> None:
-    res = httpx.put(
-        f"{HORIZON_URL}/api/farm/knowledge/docs/{project_id}/{slug}",
-        json=body,
-        headers={"x-farm-secret": SHARED_SECRET},
-        timeout=10,
-    )
-    res.raise_for_status()
-
-
 def _needs_extract(source: dict, sha: str) -> bool:
     if source.get("lastSha") != sha:
         return True
     return source.get("status") == "extracted" and not (cache_dir(source["slug"]) / "index.json").is_file()
 
 
-def sync_once(fetch=fetch_sources, report=report_doc, provision=None) -> list[dict]:
-    """One tick: every PUT body sent, in source order. Each hub is fetched once
+def sync_once(fetch, report, provision=None) -> list[dict]:
+    """One tick: every PUT body sent, in source order. `fetch()` returns the
+    server's sources and `report(project_id, slug, body)` PUTs one row — both
+    live in farmd, the only farm module that holds the farm secret. Each hub is fetched once
     per tick, and each (slug, sha) extracted once however many projects name
     it. One source's error is logged and never stops the rest."""
     reported: list[dict] = []
