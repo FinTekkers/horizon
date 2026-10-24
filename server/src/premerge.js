@@ -63,10 +63,12 @@ function tailLines(text) {
 // HZ-227: a stderr line the CLI writes for the server, not for a human. Must
 // match EVENT_PREFIX in farm/premerge.py (stderr_event).
 const EVENT_PREFIX = 'HORIZON_EVENT '
-const SLOT_EVENTS = ['queued', 'granted']
+// HZ-571: 'memory' is the memory gate holding the run before it may start.
+const SLOT_EVENTS = ['queued', 'granted', 'memory']
 
-// 'queued' | 'granted' for a check_slots event line, else null.
-export function parseSlotEvent(line) {
+// { name, event } for a check_slots event line, else null: name is one of
+// SLOT_EVENTS and event the whole parsed object (the memory figure rides on it).
+export function slotEventOf(line) {
   if (typeof line !== 'string' || !line.startsWith(EVENT_PREFIX)) return null
   let event
   try {
@@ -75,7 +77,29 @@ export function parseSlotEvent(line) {
     return null
   }
   const name = event && typeof event === 'object' && Object.hasOwn(event, 'check_slot') ? event.check_slot : null
-  return SLOT_EVENTS.includes(name) ? name : null
+  return SLOT_EVENTS.includes(name) ? { name, event } : null
+}
+
+// The event's name alone, or null.
+export function parseSlotEvent(line) {
+  return slotEventOf(line)?.name ?? null
+}
+
+const KB_PER_GB = 1024 * 1024
+
+// The pre-merge gate's detail for a slot event (HZ-227, HZ-571). The memory
+// figure matches farm/check_slots.py MemReading.describe(): a floored percent,
+// so a run held below 15% never reads "15% free".
+export function slotDetail(name, event = {}) {
+  if (name === 'memory') {
+    const pct = event?.available_pct
+    const kb = event?.available_kb
+    if (Number.isFinite(pct) && Number.isFinite(kb)) {
+      return `Waiting for memory (${Math.floor(pct)}% free, ${(kb / KB_PER_GB).toFixed(1)} GB)`
+    }
+    return 'Waiting for memory'
+  }
+  return name === 'queued' ? 'Waiting for a check slot' : 'Running checks'
 }
 
 // HZ-250: the process group of each running check, by item id, so a
@@ -176,6 +200,8 @@ export const runner = {
 //
 // onSlot (HZ-227) hears 'queued' when the run waits for a check slot and
 // 'granted' when it gets one; a run that never waits calls it not at all.
+// HZ-571: it also hears 'memory' while the memory gate holds the run, and its
+// second argument is the whole event (slotDetail turns it into text).
 // Fire-and-forget: it is never awaited and anything it throws is ignored.
 //
 // checkCommands (HZ-245) is the repo's Admin-configured
@@ -208,10 +234,10 @@ export async function runPreMergeChecks(
   const spawnOpts = { cwd: path.dirname(FARM_DIR), timeoutMs, env: childEnv(timeoutMs), itemId: item.id }
   if (onSlot) {
     spawnOpts.onStderrLine = (line) => {
-      const name = parseSlotEvent(line)
-      if (!name) return
+      const slot = slotEventOf(line)
+      if (!slot) return
       try {
-        onSlot(name)
+        onSlot(slot.name, slot.event)
       } catch {
         // fire-and-forget
       }

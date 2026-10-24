@@ -1473,6 +1473,21 @@ def _capture_screenshots(ws: Path, cfg, *, env, login_values, secrets, deadline,
     raise CheckFailure(message, tail, command=SCREENSHOTS_SLOT, tail=tail or headline, headline=headline)
 
 
+@contextlib.contextmanager
+def _check_slot_or_fail(*, log, **kwargs):
+    """check_slots.check_slot(), with HZ-571's fail-closed memory wait turned
+    into a "timed_out" CheckFailure: nothing ran, and the caller handles it
+    like any other check timeout (pre-merge reports timed_out, the step
+    checkpoints and retries)."""
+    try:
+        with check_slots.check_slot(log=log, **kwargs) as slot:
+            yield slot
+    except check_slots.MemoryWaitExpired as exc:
+        message = f"checks did not start: {exc}"
+        log(f"checks: {message}")
+        raise CheckFailure(message, reason="timed_out", headline=message) from None
+
+
 def run_checks(
     ws: Path,
     log=print,
@@ -1623,7 +1638,7 @@ def run_checks(
     # queueing for a slot must not eat it (HZ-144 guardrail 2). That holds by
     # construction here, not by arithmetic — every clock this function starts
     # begins after the `with`.
-    with check_slots.check_slot(
+    with _check_slot_or_fail(
         log=log, run_id=run_id, item_id=item_id, caller=caller, on_event=on_slot_event, cancel=cancel
     ) as slot:
         timeout_s = int(os.environ.get("FARM_CHECK_TIMEOUT_S", "600"))

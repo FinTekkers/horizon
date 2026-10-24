@@ -43,11 +43,22 @@ That escape hatch is only safe while it stays rare: a ceiling that ordinary
 queueing can reach would disable the limiter exactly when the host is most
 loaded. It is therefore sized against the measured cost of a real check suite
 rather than picked round — see the derivation above DEFAULT_WAIT_CEILING_S.
+
+HZ-571 adds a memory gate in front of the slot. On 24 Oct 2026 the host had
+about 1.5 GB of 15.6 GB left before the kernel's OOM killer started on the
+Fintekkers services, so a run does not *start* while MemAvailable is below
+FARM_MIN_MEM_AVAILABLE_PCT of MemTotal. It only delays starts: once a run has
+its slot, nothing here looks at memory again, so running work is never
+signalled or paused. Unlike the slot wait, the memory wait fails CLOSED at
+the ceiling (MemoryWaitExpired) — starting work during a leak is exactly the
+harm the gate exists to prevent. A meminfo that cannot be read never holds
+anything: it logs a warning and the run starts.
 """
 
 import contextlib
 import fcntl
 import json
+import math
 import os
 import random
 import time
@@ -103,10 +114,49 @@ POLL_JITTER = 0.5
 # pid check.
 MARKER_MAX_AGE_S = 3600.0
 
+# HZ-571: the one memory setting, in /etc/horizon/farm.env. <= 0 turns the
+# gate off (the rollback switch, like FARM_MAX_CONCURRENT_CHECKS=0).
+MEM_THRESHOLD_ENV = "FARM_MIN_MEM_AVAILABLE_PCT"
+DEFAULT_MEM_THRESHOLD_PCT = 15
+# TEST-ONLY: points the reader at a fake meminfo file. Never set it in
+# farm.env — on the host the gate must read the kernel's own figures.
+MEMINFO_PATH_ENV = "FARM_MEMINFO_PATH"
+DEFAULT_MEMINFO_PATH = "/proc/meminfo"
+_KB_PER_GB = 1024 * 1024
+
 
 class WaitCancelled(Exception):
     """HZ-256: check_slot()'s `cancel` event was set while it waited for a
     slot. Raised instead of yielding, so nothing runs."""
+
+
+@dataclass(frozen=True)
+class MemReading:
+    """Host-wide MemAvailable and MemTotal, in kB, from one meminfo read."""
+
+    available_kb: int
+    total_kb: int
+
+    @property
+    def pct(self) -> float:
+        return 100.0 * self.available_kb / self.total_kb
+
+    def describe(self) -> str:
+        """e.g. "9% free, 1.4 GB". The percentage is floored, so a run held
+        below a 15% threshold never reads "15% free"."""
+        return f"{math.floor(self.pct)}% free, {self.available_kb / _KB_PER_GB:.1f} GB"
+
+
+class MemoryWaitExpired(Exception):
+    """HZ-571: memory stayed below the threshold past the wait ceiling.
+    Raised instead of yielding, so nothing runs — the memory wait fails
+    closed (see the module docstring)."""
+
+    def __init__(self, reading: MemReading, waited_s: float, threshold_pct: int):
+        super().__init__(f"waited {waited_s:.0f}s for memory ({reading.describe()}, needs {threshold_pct}%)")
+        self.reading = reading
+        self.waited_s = waited_s
+        self.threshold_pct = threshold_pct
 
 
 @dataclass
@@ -166,6 +216,38 @@ def wait_ceiling_s(log=lambda *_: None) -> float:
     return float(_int_env("FARM_CHECK_SLOT_WAIT_MAX_S", DEFAULT_WAIT_CEILING_S, log))
 
 
+def mem_threshold_pct(log=lambda *_: None) -> int:
+    """HZ-571: the minimum MemAvailable, as a percentage of MemTotal, a run
+    needs to start. <= 0 turns the gate off; a value that is not an integer,
+    or is over 100 (which would hold every run), logs and uses the default."""
+    value = int(_int_env(MEM_THRESHOLD_ENV, DEFAULT_MEM_THRESHOLD_PCT, log))
+    if value > 100:
+        log(f"check_slots: {MEM_THRESHOLD_ENV}={value} is over 100 — using the default of {DEFAULT_MEM_THRESHOLD_PCT}")
+        return DEFAULT_MEM_THRESHOLD_PCT
+    return value
+
+
+def memory_reading() -> MemReading | None:
+    """MemAvailable and MemTotal from /proc/meminfo (or FARM_MEMINFO_PATH in
+    tests), or None when either is missing or unreadable, or MemTotal is 0.
+    The farm's one meminfo reader: check_metrics.mem_available_kb() delegates
+    here, so the gate and the metrics record never disagree."""
+    path = os.environ.get(MEMINFO_PATH_ENV) or DEFAULT_MEMINFO_PATH
+    fields: dict[str, int] = {}
+    try:
+        with open(path) as fh:
+            for line in fh:
+                name, _, rest = line.partition(":")
+                if name in ("MemAvailable", "MemTotal"):
+                    fields[name] = int(rest.split()[0])
+    except (OSError, ValueError, IndexError):
+        return None
+    available, total = fields.get("MemAvailable"), fields.get("MemTotal")
+    if available is None or not total or total <= 0:
+        return None
+    return MemReading(available_kb=available, total_kb=total)
+
+
 def _waiting_dir() -> Path:
     return slot_dir() / "waiting"
 
@@ -175,9 +257,12 @@ def _marker_path(pid: int, run_id) -> Path:
     return _waiting_dir() / f"{pid}-{token}.json"
 
 
-def _write_marker(run_id, item_id, caller: str) -> Path | None:
-    """Observability only — nothing reads this to make a decision. A failure
-    to write it must never stop a check from running."""
+def _write_marker(run_id, item_id, caller: str, waiting_on: str = "slot") -> Path | None:
+    """Display only — nothing reads this to decide whether a run may start.
+    /farm/status lists it, and farmd's /runs/status reads `waiting_on` to name
+    the wait ("slot" or "memory", HZ-571) as a run's queued reason. A failure
+    to write it must never stop a check from running. Rewritten in place when
+    the wait moves between memory and a slot."""
     path = _marker_path(os.getpid(), run_id)
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -188,6 +273,7 @@ def _write_marker(run_id, item_id, caller: str) -> Path | None:
                     "run_id": run_id,
                     "item_id": item_id,
                     "caller": caller,
+                    "waiting_on": waiting_on,
                     "since": time.time(),
                 }
             )
@@ -243,7 +329,8 @@ def waiting_runs() -> list[dict]:
         if stale:
             _clear_marker(path)
             continue
-        out.append({**data, "waited_s": round(max(0.0, now - since), 1)})
+        # A marker written before HZ-571 has no waiting_on: it waited on a slot.
+        out.append({"waiting_on": "slot", **data, "waited_s": round(max(0.0, now - since), 1)})
     return out
 
 
@@ -282,6 +369,21 @@ def status() -> dict:
     return {"limit": slot_limit(), "busy": busy_slots(), "waiting": waiting_runs()}
 
 
+def memory_status() -> dict:
+    """The additive `memory` block on /farm/status (HZ-571). Never raises:
+    an unreadable meminfo reports readable=False with null figures, and a
+    gate that is off reports threshold_pct 0."""
+    reading = memory_reading()
+    return {
+        "available_kb": reading.available_kb if reading else None,
+        "total_kb": reading.total_kb if reading else None,
+        "available_pct": round(reading.pct, 1) if reading else None,
+        "threshold_pct": max(0, mem_threshold_pct()),
+        "readable": reading is not None,
+        "waiting": sum(1 for w in waiting_runs() if w.get("waiting_on") == "memory"),
+    }
+
+
 def _try_slots(directory: Path, limit: int):
     """First free slot as (open file handle, index), or (None, None).
 
@@ -314,60 +416,147 @@ def _emit(on_event, name: str, **fields) -> None:
         pass
 
 
+class _MemoryGate:
+    """One check_slot() call's view of the memory gate (HZ-571): whether the
+    host is short of memory right now, warning about an unreadable meminfo
+    once per call rather than once per poll."""
+
+    def __init__(self, log, on_event):
+        self.threshold = mem_threshold_pct(log)
+        self._log = log
+        self._on_event = on_event
+        self._warned = False
+        self._shown_pct: int | None = None
+
+    def short(self) -> MemReading | None:
+        """The reading when it is below the threshold, else None. An
+        unreadable meminfo is None too: a read failure never holds work."""
+        if self.threshold <= 0:
+            return None
+        reading = memory_reading()
+        if reading is None:
+            if not self._warned:
+                self._warned = True
+                path = os.environ.get(MEMINFO_PATH_ENV) or DEFAULT_MEMINFO_PATH
+                self._log(
+                    f"check_slots: WARNING cannot read available memory ({path}) — "
+                    "starting without the memory check"
+                )
+            return None
+        if reading.pct >= self.threshold:
+            self._shown_pct = None
+            return None
+        return reading
+
+    def announce(self, reading: MemReading) -> None:
+        """Log and emit the figure on entering the wait, and again whenever
+        the whole-percent figure changes — not on every poll."""
+        shown = math.floor(reading.pct)
+        if shown == self._shown_pct:
+            return
+        self._shown_pct = shown
+        self._log(f"check_slots: waiting for memory ({reading.describe()}, needs {self.threshold}%)")
+        _emit(
+            self._on_event,
+            "memory",
+            available_pct=round(reading.pct, 1),
+            available_kb=reading.available_kb,
+            threshold_pct=self.threshold,
+        )
+
+
 @contextlib.contextmanager
 def check_slot(
     *, log=lambda *_: None, run_id=None, item_id=None, caller="step_agent", poll_s=POLL_S, on_event=None, cancel=None
 ):
     """Hold one of FARM_MAX_CONCURRENT_CHECKS check slots for the duration.
 
-    Yields a SlotHold. Always yields — the limiter throttles work, it never
-    refuses it: every early-return path below hands back a SlotHold whose
-    `mode` records why no slot is held.
+    Yields a SlotHold. The limiter throttles work, it never refuses it: every
+    early-return path below hands back a SlotHold whose `mode` records why no
+    slot is held. The one exception is the memory gate (HZ-571), which raises
+    MemoryWaitExpired rather than start work into a memory squeeze.
 
-    on_event (HZ-227) observes the queue: {"check_slot": "queued"} once when
-    every slot is busy, then {"check_slot": "granted", "mode": ...} once when
-    the wait ends. A run that never waits emits nothing.
+    Order: a nested run yields at once (the outer run already passed both
+    gates). Every other run first waits while MemAvailable is below
+    FARM_MIN_MEM_AVAILABLE_PCT — with the limiter switched off too — and only
+    then tries for a slot. Memory is re-read before every slot try, so a run
+    that waited for a slot cannot start into low memory; if memory drops while
+    it waits for a slot, it goes back to waiting on memory. After the grant,
+    memory is never looked at again: running work gets no signal.
+
+    One clock: the memory wait and the slot wait share `started` and the one
+    FARM_CHECK_SLOT_WAIT_MAX_S ceiling, so a run that waited 1100s for a slot
+    has 100s of memory wait left. That is deliberate — the ceiling bounds the
+    whole wait to start, which is what the step watchdog cares about. Memory
+    is re-read before the ceiling branch, so the slot path's fail-open can
+    never fire while memory is low.
+
+    on_event (HZ-227) observes the queue: {"check_slot": "queued"} when every
+    slot is busy, {"check_slot": "memory", "available_pct", "available_kb",
+    "threshold_pct"} while memory is short (HZ-571), then {"check_slot":
+    "granted", "mode": ...} once when the wait ends. A run that never waits
+    emits nothing.
 
     cancel (HZ-256) is a threading.Event. Once it is set, a run still waiting
-    for a slot raises WaitCancelled at once instead of waiting on. Only the
-    conflict resolver passes one, so a deploy can stop it; None waits exactly
-    as before.
+    raises WaitCancelled at once instead of waiting on. Only the conflict
+    resolver passes one, so a deploy can stop it; None waits exactly as
+    before.
     """
     limit = slot_limit(log)
-    if limit <= 0:
-        yield SlotHold(mode="disabled", limit=limit)
-        return
     if os.environ.get(IN_CHECKS_ENV):
         # Already inside an outer run's slot — see the nesting note up top.
+        # Checked before the kill switch since HZ-571: the memory gate below
+        # applies with the limiter off, and a nested run must skip it too.
         yield SlotHold(mode="nested", limit=limit)
         return
 
+    memory = _MemoryGate(log, on_event)
     directory = slot_dir()
-    try:
-        directory.mkdir(parents=True, exist_ok=True)
-    except OSError as exc:
-        # No lock directory means no limiter. Failing the check instead would
-        # discard a whole attempt's work over a filesystem problem that has
-        # nothing to do with the code under test.
-        log(f"check_slots: cannot create {directory} ({exc}) — running checks unthrottled")
-        yield SlotHold(mode="fail-open", limit=limit)
-        return
+    # What a run with enough memory gets when it cannot use the limiter.
+    unthrottled = "disabled" if limit <= 0 else None
+    if unthrottled is None:
+        try:
+            directory.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            # No lock directory means no limiter. Failing the check instead
+            # would discard a whole attempt's work over a filesystem problem
+            # that has nothing to do with the code under test.
+            log(f"check_slots: cannot create {directory} ({exc}) — running checks unthrottled")
+            unthrottled = "fail-open"
 
     ceiling = wait_ceiling_s(log)
     started = time.monotonic()
     marker: Path | None = None
-    # Separate from `marker` because _write_marker() can legitimately return
-    # None (a status file is not worth failing over). Keyed on `marker` alone,
-    # a read-only lock directory would re-log the same line on every poll.
+    # What this run is waiting on now: None, "memory" or "slot". Separate from
+    # `marker` because _write_marker() can legitimately return None (a status
+    # file is not worth failing over).
+    waiting_on: str | None = None
     announced = False
     handle = index = None
     try:
         while True:
-            handle, index = _try_slots(directory, limit)
-            if handle is not None:
-                break
+            short = memory.short()
+            if short is None:
+                if unthrottled is not None:
+                    waited = time.monotonic() - started
+                    _clear_marker(marker)
+                    marker = None
+                    if announced:
+                        _emit(on_event, "granted", mode=unthrottled)
+                    yield SlotHold(mode=unthrottled, waited_s=waited if announced else 0.0, limit=limit)
+                    return
+                handle, index = _try_slots(directory, limit)
+                if handle is not None:
+                    break
             waited = time.monotonic() - started
             if 0 < ceiling <= waited:
+                if short is not None:
+                    log(
+                        f"check_slots: WARNING still short of memory after {waited:.0f}s "
+                        f"({short.describe()}, needs {memory.threshold}%; "
+                        f"FARM_CHECK_SLOT_WAIT_MAX_S={ceiling:.0f}) — not starting checks"
+                    )
+                    raise MemoryWaitExpired(short, waited, memory.threshold)
                 log(
                     f"check_slots: WARNING no check slot after {waited:.0f}s "
                     f"(FARM_CHECK_SLOT_WAIT_MAX_S={ceiling:.0f}, limit={limit}) — "
@@ -380,11 +569,16 @@ def check_slot(
                     _emit(on_event, "granted", mode="fail-open")
                 yield SlotHold(mode="fail-open", waited_s=waited, limit=limit, timed_out=True)
                 return
-            if not announced:
+            now_on = "memory" if short is not None else "slot"
+            if now_on != waiting_on:
+                waiting_on = now_on
                 announced = True
-                marker = _write_marker(run_id, item_id, caller)
-                log(f"check_slots: all {limit} check slots busy — waiting for one")
-                _emit(on_event, "queued")
+                marker = _write_marker(run_id, item_id, caller, waiting_on=now_on) or marker
+                if now_on == "slot":
+                    log(f"check_slots: all {limit} check slots busy — waiting for one")
+                    _emit(on_event, "queued")
+            if short is not None:
+                memory.announce(short)
             pause = poll_s * (1 + random.random() * POLL_JITTER)
             if cancel is None:
                 time.sleep(pause)

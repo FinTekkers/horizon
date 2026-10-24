@@ -1416,9 +1416,9 @@ export function buildApp({ logger = true, onRoute = null } = {}) {
         // HZ-227: a run queued behind the check-slot limiter (farm/check_slots.py)
         // says so, rather than looking stuck. The token guard in
         // setGateActionDetail drops an event that lands after the row finished.
-        onSlot: (name) => {
-          const detail = name === 'queued' ? 'Waiting for a check slot' : 'Running checks'
-          store.setGateActionDetail(id, 'premerge', token, detail)
+        // HZ-571: and a run the memory gate holds names the free memory.
+        onSlot: (name, event) => {
+          store.setGateActionDetail(id, 'premerge', token, premerge.slotDetail(name, event))
         },
       })
     } catch (err) {

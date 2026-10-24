@@ -36,6 +36,8 @@ def isolated_slot_dir(tmp_path, monkeypatch):
     monkeypatch.delenv(check_slots.IN_CHECKS_ENV, raising=False)
     monkeypatch.delenv("FARM_MAX_CONCURRENT_CHECKS", raising=False)
     monkeypatch.delenv("FARM_CHECK_SLOT_WAIT_MAX_S", raising=False)
+    # HZ-571: these tests are about slots, not the real host's free memory.
+    monkeypatch.setenv(check_slots.MEM_THRESHOLD_ENV, "0")
     return tmp_path
 
 
