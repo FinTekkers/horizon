@@ -1,0 +1,123 @@
+{
+  "version": 1,
+  "runner": "farm/screenshot_runner.py@schema-1",
+  "shots": [
+    {
+      "screen": "layout-board",
+      "viewport": "desktop",
+      "theme": "light",
+      "status": "timeout",
+      "durationMs": 30031,
+      "png": null,
+      "clipped": false
+    },
+    {
+      "screen": "layout-board",
+      "viewport": "desktop",
+      "theme": "dark",
+      "status": "timeout",
+      "durationMs": 30029,
+      "png": null,
+      "clipped": false
+    },
+    {
+      "screen": "layout-board",
+      "viewport": "phone",
+      "theme": "light",
+      "status": "timeout",
+      "durationMs": 30030,
+      "png": null,
+      "clipped": false
+    },
+    {
+      "screen": "layout-board",
+      "viewport": "phone",
+      "theme": "dark",
+      "status": "timeout",
+      "durationMs": 30030,
+      "png": null,
+      "clipped": false
+    },
+    {
+      "screen": "layout-item-activity",
+      "viewport": "phone",
+      "theme": "light",
+      "status": "timeout",
+      "durationMs": 30030,
+      "png": null,
+      "clipped": false
+    },
+    {
+      "screen": "layout-item-badge",
+      "viewport": "phone",
+      "theme": "light",
+      "status": "timeout",
+      "durationMs": 30030,
+      "png": null,
+      "clipped": false
+    },
+    {
+      "screen": "layout-admin-tokens",
+      "viewport": "phone",
+      "theme": "light",
+      "status": "timeout",
+      "durationMs": 30001,
+      "png": null,
+      "clipped": false
+    },
+    {
+      "screen": "autopilot-off-card",
+      "viewport": "desktop",
+      "theme": "light",
+      "status": "timeout",
+      "durationMs": 30030,
+      "png": null,
+      "clipped": false
+    },
+    {
+      "screen": "autopilot-off-card",
+      "viewport": "desktop",
+      "theme": "dark",
+      "status": "timeout",
+      "durationMs": 30018,
+      "png": null,
+      "clipped": false
+    },
+    {
+      "screen": "autopilot-off-item",
+      "viewport": "desktop",
+      "theme": "light",
+      "status": "timeout",
+      "durationMs": 30031,
+      "png": null,
+      "clipped": false
+    },
+    {
+      "screen": "autopilot-off-item",
+      "viewport": "desktop",
+      "theme": "dark",
+      "status": "timeout",
+      "durationMs": 30029,
+      "png": null,
+      "clipped": false
+    },
+    {
+      "screen": "autopilot-off-approvals",
+      "viewport": "desktop",
+      "theme": "light",
+      "status": "timeout",
+      "durationMs": 30019,
+      "png": null,
+      "clipped": false
+    },
+    {
+      "screen": "autopilot-off-approvals",
+      "viewport": "desktop",
+      "theme": "dark",
+      "status": "timeout",
+      "durationMs": 30013,
+      "png": null,
+      "clipped": false
+    }
+  ]
+}
