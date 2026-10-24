@@ -17,6 +17,7 @@ import NewItemModal from './components/NewItemModal'
 import AddDependencyDialog from './components/AddDependencyDialog'
 import LoginPage from './components/LoginPage'
 import LegalPage, { LEGAL_DOCS } from './components/LegalPage'
+import { ADMIN_HOME, parseAdminPath } from './components/admin/adminRoutes'
 import { gateActionBusy } from './domain/gateAction'
 import { queuedToMerge } from './domain/status'
 import { validPlanId } from './domain/narrowing'
@@ -89,6 +90,8 @@ function sendBackError(err) {
 }
 
 // Deep links: /  → board, /admin → admin, /definitions → agent definitions,
+// /admin/<section> → that Admin section (HZ-564: any /admin/... path stays in
+// Admin; an unknown one shows Projects and is rewritten to /admin),
 // /farm-health → Farm health (HZ-563, admins),
 // /privacy and /terms → the public legal pages (no login required),
 // /<item-id> → that item's tracker (case-insensitive, e.g. localhost:5173/hz-102).
@@ -101,7 +104,9 @@ function parsePath(pathname) {
   if (PREFIX && path.toLowerCase().startsWith(PREFIX.toLowerCase())) path = path.slice(PREFIX.length)
   const seg = decodeURIComponent(path.replace(/^\/+|\/+$/g, ''))
   if (!seg) return { view: 'board', id: null }
-  if (seg.toLowerCase() === 'admin') return { view: 'admin', id: null }
+  if (seg.toLowerCase() === 'admin' || seg.toLowerCase().startsWith('admin/')) {
+    return { view: 'admin', id: null, admin: parseAdminPath(seg.slice('admin/'.length)) }
+  }
   if (seg.toLowerCase() === 'definitions') return { view: 'definitions', id: null }
   if (seg.toLowerCase() === 'farm-health') return { view: 'farm-health', id: null }
   if (Object.hasOwn(LEGAL_DOCS, seg.toLowerCase())) return { view: 'legal', id: seg.toLowerCase() }
@@ -181,6 +186,9 @@ function AuthenticatedApp({ user, onLogout }) {
   const boardPlan = useSyncExternalStore(boardNarrowing.subscribe, () => boardNarrowing.getBoardView().plan)
   const [view, setView] = useState(initial.view)
   const [selectedId, setSelectedId] = useState(initial.id)
+  // HZ-564: which Admin section the URL names; kept while on other views so
+  // App has one copy of it, re-read from the URL on every Admin navigation.
+  const [adminRoute, setAdminRoute] = useState(initial.admin ?? ADMIN_HOME)
   // HZ-544: `?approvals` opens the drawer at load, so a screenshot screen
   // (which cannot click) can show it.
   const [approvalsOpen, setApprovalsOpen] = useState(() => new URLSearchParams(window.location.search).has('approvals'))
@@ -348,6 +356,13 @@ function AuthenticatedApp({ user, onLogout }) {
     boardNarrowing.setBoardView({ plan: id })
     toBoard()
   }
+  // HZ-564: every Admin navigation — the account menu and Admin's own list.
+  const openAdmin = (path) => {
+    navigate(path)
+    setAdminRoute(parsePath(PREFIX + path).admin ?? ADMIN_HOME)
+    setView('admin')
+    setApprovalsOpen(false)
+  }
   const openItem = (id) => {
     navigate(`/${id.toLowerCase()}`)
     setSelectedId(id)
@@ -362,11 +377,20 @@ function AuthenticatedApp({ user, onLogout }) {
       if (parsed.view === 'board') choosePlanFromUrl()
       setView(parsed.view)
       if (parsed.id) setSelectedId(parsed.id)
+      if (parsed.admin) setAdminRoute(parsed.admin)
       setApprovalsOpen(false)
     }
     window.addEventListener('popstate', onPop)
     return () => window.removeEventListener('popstate', onPop)
   }, [])
+
+  // HZ-564: an unknown /admin/... path shows Admin's first section; its URL
+  // becomes /admin, on first load and on back/forward alike.
+  useEffect(() => {
+    if (view !== 'admin' || !adminRoute.unknown) return
+    window.history.replaceState(window.history.state, '', `${PREFIX}/admin`)
+    setAdminRoute(ADMIN_HOME)
+  }, [view, adminRoute])
 
   // While the board is shown its URL names the chosen Plan, so a reload or a
   // shared link keeps it, and clearing the chip drops it.
@@ -449,11 +473,7 @@ function AuthenticatedApp({ user, onLogout }) {
         onBoard={toBoard}
         onTracker={toTracker}
         onOpenApprovals={() => setApprovalsOpen(true)}
-        onOpenAdmin={() => {
-          navigate('/admin')
-          setView('admin')
-          setApprovalsOpen(false)
-        }}
+        onOpenAdmin={() => openAdmin('/admin')}
         onOpenDefinitions={() => {
           navigate('/definitions')
           setView('definitions')
@@ -503,7 +523,7 @@ function AuthenticatedApp({ user, onLogout }) {
       )}
 
       {view === 'admin' && (
-        <AdminPage sync={sync} projects={projects} onBack={toBoard} />
+        <AdminPage sync={sync} projects={projects} onBack={toBoard} route={adminRoute} onNavigate={openAdmin} />
       )}
 
       {view === 'definitions' && <AgentDefinitionsPage onBack={toBoard} />}
