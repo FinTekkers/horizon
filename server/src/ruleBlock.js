@@ -14,6 +14,7 @@
 import { db } from './db.js'
 import { UI_URL } from './config.js'
 import { ownerJid } from './waApprovers.js'
+import { ruleBlockActionsText } from '../../domain/js/ruleBlockActions.js'
 
 // The same caps farm/step_agent.py applies before sending a report.
 // HZ-365: `needs` holds the agent's full explanation (a one-line summary
@@ -39,6 +40,8 @@ export function plainText(value, max) {
   return text.length > max ? `${text.slice(0, max - 1)}…` : text
 }
 
+const capitalise = (text) => text.charAt(0).toUpperCase() + text.slice(1)
+
 export function renderRuleBlockPing(item, block) {
   const link = `${UI_URL}/${String(item.id).toLowerCase()}`
   return [
@@ -46,7 +49,7 @@ export function renderRuleBlockPing(item, block) {
     'Blocked by a rule: the agent stopped without changing any code.',
     `Rule: "${plainText(block.rule, RULE_MAX_CHARS)}"`,
     `Needs: ${plainText(block.needs, PING_NEEDS_MAX_CHARS)}`,
-    'Add a dependency on the item that delivers it, resume to retry, or abandon.',
+    `${capitalise(ruleBlockActionsText())}.`,
     link,
   ].join('\n')
 }

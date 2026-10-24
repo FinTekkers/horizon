@@ -31,6 +31,7 @@ const ruleBlock = await import('../src/ruleBlock.js')
 const { buildApp } = await import('../src/app.js')
 const config = await import('../src/config.js')
 const auth = await import('../src/auth.js')
+const { ruleBlockActionsText } = await import('../../domain/js/ruleBlockActions.js')
 
 store.purgeDemoItems()
 store.registerAgentRunner({ kick: orchestrator.kick, cancel: orchestrator.cancel, pause: orchestrator.pause })
@@ -101,6 +102,9 @@ test('a blocked report is recorded as blocked: not failed, not paused, no attemp
   assert.equal(runCount('RB-1'), 1)
   assert.ok(!events('RB-1').some((t) => /auto-retrying|agent step failed/.test(t)))
   assert.ok(events('RB-1').some((t) => t.startsWith(`stopped by a rule: “${BLOCK.rule}” — needs: ${BLOCK.needs}`)))
+  // HZ-580: the event offers only the shared actions, each of which has a
+  // banner button (ui/src/components/Tracker.ruleBlock.test.jsx).
+  assert.ok(events('RB-1').some((t) => t.endsWith(` — ${ruleBlockActionsText()}`)))
 
   // The API reads it as blocked, and a kick holds it.
   const view = viewOf('RB-1')
@@ -127,6 +131,56 @@ test('resume clears the block and redispatches implement with the same attempt a
   assert.equal(next.attempt, 3)
   assert.equal(next.auto_retry_count, 2)
   orchestrator.cancel('RB-2')
+})
+
+// HZ-580 guardrail 3: Resume clears only the rule block — the dependency
+// stays, the step stays and no gate is decided.
+test('resume with an open dependency clears only the block: the dependency, the cursor and the gates are untouched', async () => {
+  insertItem.run('RB-RESUME-DEP', 'Upstream, still open', FINAL_GATE)
+  blockedItem('RB-RESUME')
+  assert.equal((await inject({ method: 'POST', url: '/api/items/RB-RESUME/dependencies', payload: { dependsOnId: 'RB-RESUME-DEP' } })).statusCode, 200)
+  assert.deepEqual(viewOf('RB-RESUME').ruleBlock.waitingOn, [{ id: 'RB-RESUME-DEP', title: 'Upstream, still open' }])
+  const decisions = () => db.prepare('SELECT COUNT(*) AS n FROM gate_decision WHERE item_id = ?').get('RB-RESUME').n
+  const before = decisions()
+
+  assert.deepEqual(store.setPaused('RB-RESUME', false), { ok: true, paused: false })
+
+  assert.equal(rawBlock('RB-RESUME'), null)
+  const view = viewOf('RB-RESUME')
+  assert.equal(view.ruleBlock, null)
+  assert.equal(view.cursor, IMPLEMENT_STEP_INDEX)
+  assert.equal(view.blocked, true, 'the item now waits on its dependency')
+  assert.deepEqual(view.blockedBy.map((b) => b.id), ['RB-RESUME-DEP'])
+  assert.equal(
+    db.prepare('SELECT COUNT(*) AS n FROM work_item_dependency WHERE item_id = ? AND depends_on_id = ?').get('RB-RESUME', 'RB-RESUME-DEP').n,
+    1,
+  )
+  assert.equal(decisions(), before, 'no gate was decided')
+  assert.equal(activeRun('RB-RESUME'), undefined, 'the open dependency still holds implement')
+})
+
+// HZ-580: waitingOn uses the same "added at or after blockedAt" test as
+// releaseRuleBlockIfSatisfied, and leaves out a merged blocker.
+test('waitingOn lists only open, unmerged dependencies added after the block', async () => {
+  insertItem.run('RB-W-OLD', 'From before the block', FINAL_GATE)
+  insertItem.run('RB-W-NEW', 'Added after the block', FINAL_GATE)
+  insertItem.run('RB-W-MERGED', 'Added after, already merged', FINAL_GATE)
+  blockedItem('RB-W', 'Waiting')
+  // Dated before the block (inserted after it, so it does not hold the run).
+  db.prepare(
+    "INSERT INTO work_item_dependency (item_id, depends_on_id, created_at) VALUES ('RB-W', 'RB-W-OLD', '2020-01-01 00:00:00')",
+  ).run()
+  assert.ok(viewOf('RB-W').blockedBy.some((b) => b.id === 'RB-W-OLD'))
+  assert.deepEqual(viewOf('RB-W').ruleBlock.waitingOn, [], 'a dependency from before the block is not listed')
+
+  assert.equal((await inject({ method: 'POST', url: '/api/items/RB-W/dependencies', payload: { dependsOnId: 'RB-W-NEW' } })).statusCode, 200)
+  assert.deepEqual(viewOf('RB-W').ruleBlock.waitingOn, [{ id: 'RB-W-NEW', title: 'Added after the block' }])
+
+  db.prepare("UPDATE work_item SET merged_at = datetime('now') WHERE id = 'RB-W-MERGED'").run()
+  db.prepare("INSERT INTO work_item_dependency (item_id, depends_on_id) VALUES ('RB-W', 'RB-W-MERGED')").run()
+  const view = viewOf('RB-W')
+  assert.ok(view.blockedBy.some((b) => b.id === 'RB-W-MERGED' && b.merged), 'the merged blocker is still listed in blockedBy')
+  assert.deepEqual(view.ruleBlock.waitingOn.map((d) => d.id), ['RB-W-NEW'], 'a merged one is not waited on')
 })
 
 test('two dependencies: closing one keeps the item held, closing the second restarts implement with the same attempt', async () => {
@@ -218,6 +272,8 @@ test('each block pings the owner once; a re-poll, a second drain and a repeat re
   assert.ok(body.includes(`Rule: "${BLOCK.rule}"`))
   assert.ok(body.includes(`Needs: ${BLOCK.needs}`))
   assert.ok(body.endsWith('\nhttps://shoreward.ai/horizon/rb-ping'))
+  assert.ok(body.includes('\nAdd a dependency on the item that delivers it, resume to retry, or abandon.\n'))
+  assert.ok(body.toLowerCase().includes(`${ruleBlockActionsText()}.`))
 
   // Re-poll, re-report, re-drain, re-sweep: nothing new.
   for (let i = 0; i < 3; i++) assert.equal((await inject({ method: 'GET', url: '/api/items' })).statusCode, 200)
