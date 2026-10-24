@@ -700,6 +700,27 @@ try {
 } catch {
   // column already exists
 }
+// HZ-570: an implement run's test-results upload ledger. /complete stamps
+// test_runs_expected (the rows farmd will post); the test-runs route sets
+// test_runs_stored and test_runs_stored_at in the same transaction as the
+// rows. test_runs_abandoned is farmd's word that it stopped retrying:
+// 'rejected' (a 4xx) or 'gave_up' (its retry window ran out). Additive: NULL
+// on every earlier row, which is never pending.
+for (const sql of [
+  'ALTER TABLE step_run ADD COLUMN test_runs_expected INTEGER',
+  'ALTER TABLE step_run ADD COLUMN test_runs_stored INTEGER',
+  'ALTER TABLE step_run ADD COLUMN test_runs_stored_at TEXT',
+  'ALTER TABLE step_run ADD COLUMN test_runs_abandoned TEXT',
+]) {
+  try {
+    db.exec(sql)
+  } catch {
+    // column already exists
+  }
+}
+db.exec(
+  'CREATE INDEX IF NOT EXISTS idx_step_run_upload_pending ON step_run(ended_at) WHERE test_runs_expected > 0 AND test_runs_stored_at IS NULL',
+)
 // HZ-422: one row per model last seen limited, and when it lifts (ISO-8601
 // UTC, compared in JS so a test's fake clock drives it). A row whose reset
 // has passed is simply ignored, then overwritten by the next limit.

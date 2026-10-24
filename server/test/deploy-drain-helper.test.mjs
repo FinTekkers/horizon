@@ -155,3 +155,70 @@ test('O8: a server older than HZ-321 (no `steps` field) logs only the HZ-250 lin
   old.close()
   assert.deepEqual(lines, ['DRAIN nothing running'])
 })
+
+// ---- HZ-570: test-results uploads ----
+
+// A done implement run whose /complete promised `expected` rows, none stored.
+function pendingUpload(expected = 500) {
+  const id = `HLP-${++seq}`
+  db.prepare('INSERT INTO work_item (id, title, priority, cursor, repo) VALUES (?, ?, ?, ?, ?)').run(id, id, 'Medium', IMPLEMENT_STEP_INDEX, 'acme/demo')
+  const runId = Number(
+    db
+      .prepare("INSERT INTO step_run (item_id, step_index, attempt, agent, status, ended_at, test_runs_expected) VALUES (?, ?, 1, ?, 'done', datetime('now'), ?)")
+      .run(id, IMPLEMENT_STEP_INDEX, STEPS[IMPLEMENT_STEP_INDEX].agent, expected).lastInsertRowid,
+  )
+  return { id, runId }
+}
+
+const fiveHundred = Array.from({ length: 500 }, (_, i) => ({ suite: 'S', test: `t${i}`, status: 'pass', command: 'npm test', attempt: 1 }))
+
+test('HZ-570: the upload wait defaults to 300 s (5 min or less); HORIZON_DEPLOY_DRAIN_UPLOAD_TIMEOUT_S overrides it', () => {
+  assert.equal(helper.DEFAULT_UPLOAD_TIMEOUT_S, 300)
+  assert.ok(helper.drainConfig({}).uploadTimeoutS <= 300)
+  assert.equal(helper.drainConfig({ HORIZON_DEPLOY_DRAIN_UPLOAD_TIMEOUT_S: '7' }).uploadTimeoutS, 7)
+  assert.equal(helper.drainConfig({ HORIZON_DEPLOY_DRAIN_UPLOAD_TIMEOUT_S: '0' }).uploadTimeoutS, 0)
+  assert.equal(helper.drainConfig({ HORIZON_DEPLOY_DRAIN_UPLOAD_TIMEOUT_S: 'junk' }).uploadTimeoutS, 300)
+  assert.ok(helper.blockTtlS(cfg({ HORIZON_DEPLOY_DRAIN_UPLOAD_TIMEOUT_S: '300' })) >= 1500 + 300 + 2 * 60, 'the block outlasts the upload wait too')
+})
+
+test('HZ-570 metric 2: the drain does not return until an upload in progress is stored, and logs it first', async () => {
+  const upload = pendingUpload()
+  const lines = []
+  const done = helper
+    .drain(cfg({ HORIZON_DEPLOY_DRAIN_UPLOAD_TIMEOUT_S: '30', HORIZON_DEPLOY_DRAIN_POLL_S: '0.2' }), (l) => lines.push(l))
+    .then(() => Date.now())
+  const raced = await Promise.race([done, new Promise((r) => setTimeout(() => r('waiting'), 1000))])
+  assert.equal(raced, 'waiting', 'still waiting while the upload is not stored')
+
+  const res = await fetch(`${url.replace('/deploy-drain', '')}/steps/${upload.runId}/test-runs`, {
+    method: 'POST',
+    headers: { 'x-farm-secret': 'farm-secret-helper', 'content-type': 'application/json' },
+    body: JSON.stringify({ test_runs: [{ check_run: 'cr-hlp', tests: fiveHundred }] }),
+  })
+  assert.deepEqual(await res.json(), { ok: true, stored: 500 })
+  const storedAt = Date.now()
+  const returnedAt = await done
+
+  assert.ok(returnedAt >= storedAt, 'returned only after storage was confirmed')
+  assert.deepEqual(lines, [
+    `DRAIN waiting up to 30s for 1 test-results upload(s): ${upload.id} run ${upload.runId}`,
+    `DRAIN upload stored: ${upload.id} run ${upload.runId}`,
+    'DRAIN done: nothing running',
+  ])
+  deployDrain.endDrain()
+})
+
+test('HZ-570 metric 3: an upload held past the limit stops the wait; the drain succeeds and logs the limit', async () => {
+  const upload = pendingUpload()
+  const lines = []
+  const started = Date.now()
+  await helper.drain(cfg({ HORIZON_DEPLOY_DRAIN_UPLOAD_TIMEOUT_S: '1', HORIZON_DEPLOY_DRAIN_POLL_S: '0.2' }), (l) => lines.push(l))
+  const elapsed = Date.now() - started
+  assert.ok(elapsed >= 1000 && elapsed <= 1000 + 200 + 500, `returned after ${elapsed}ms`)
+  assert.deepEqual(lines, [
+    `DRAIN waiting up to 1s for 1 test-results upload(s): ${upload.id} run ${upload.runId}`,
+    'DRAIN upload limit hit after 1s: 1 upload(s) not stored — restarting anyway',
+  ])
+  deployDrain.endDrain()
+  db.prepare("UPDATE step_run SET test_runs_abandoned = 'gave_up' WHERE id = ?").run(upload.runId)
+})

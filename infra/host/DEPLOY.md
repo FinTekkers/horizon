@@ -580,6 +580,38 @@ left jobs out. Once a `farm` or `pm` result survives the server being down,
 the restart test fails, and flipping that kind's row in the table stops the
 drain waiting for it.
 
+### Test-results uploads (HZ-570)
+
+An implement step's per-test results reach the server a few seconds after
+its result, in their own `/test-runs` post. A restart in that gap used to
+lose them, and review then failed the item for missing evidence. Now:
+
+1. `/complete` says how many rows are coming (`test_runs_expected`), and the
+   server marks the run's upload pending. The drain routes list those runs
+   in `uploads` and the requests being served in `uploadsInFlight`.
+2. The drain waits for them, up to `HORIZON_DEPLOY_DRAIN_UPLOAD_TIMEOUT_S`
+   (default **300** = 5 min; `0` = don't wait). The wait starts when the
+   first upload is seen, so a step that finishes during the drain is covered.
+   `self-deploy.log` gets `DRAIN waiting up to <n>s for <k> test-results
+   upload(s): <item> run <id>, …`, then `DRAIN upload stored: <item> run
+   <id>`. An upload is never interrupted. When the limit is hit the log says
+   `DRAIN upload limit hit after <n>s: <k> upload(s) not stored — restarting
+   anyway` and the deploy goes ahead.
+3. farmd spools each upload under `~/.horizon-farm/state/test-runs-outbox/`
+   and keeps it until the server confirms the rows are stored. It retries
+   after 2, 4, 8 and 16 s, then every 30 s, for up to
+   `FARM_TEST_RUNS_RETRY_MAX_S` (default 900), across a server or farmd
+   restart. A retry replaces the run's rows, so they are stored exactly once.
+4. Review waits while farmd can still deliver. If a restart did lose the
+   results, review's input says "results lost to a server restart", the
+   item goes back to implement to re-run the checks, and its review cycle
+   count is unchanged (at most 3 times per item; after that review runs with
+   that input). A run that stored no results for any other reason is
+   reviewed as before.
+
+This adds the upload wait to the drain's bound: with the defaults
+1640 + 300 = **1940 s**.
+
 ## Deploy queue: one release per batch (HZ-333)
 
 Step 14 no longer publishes a release per item. An item joins its deploy
