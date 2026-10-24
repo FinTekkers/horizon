@@ -6,6 +6,8 @@
 // never read here: a later run may have overwritten them (LS-98).
 
 import { db } from './db.js'
+import { BOOTED_AT } from './store.js'
+import { msOf } from './sqlTime.js'
 import { IMPLEMENT_STEP_INDEX } from '../../domain/js/lifecycle.js'
 
 export const STORED_RESULTS_INPUT_LABEL = 'Stored test results (step record)'
@@ -57,6 +59,44 @@ export function storedResultsPending(itemId, nowMs = Date.now()) {
   } catch (err) {
     console.warn(`[stored results] could not tell whether ${itemId}'s results are pending: ${err.message}`)
     return null
+  }
+}
+
+// HZ-570: the upload ledger testResults.js keeps on the run. While farmd may
+// still retry (STORED_RESULTS_RETRY_WINDOW_S, its FARM_TEST_RUNS_RETRY_MAX_S)
+// review is held, not dispatched; only once farmd can no longer deliver is a
+// run whose server restarted after it ended said to have lost its results.
+export const RESULTS_LOST_TEXT = 'results lost to a server restart'
+export const STORED_RESULTS_RETRY_WINDOW_S = Number(process.env.STORED_RESULTS_RETRY_WINDOW_S ?? 900)
+
+const latestUpload = db.prepare(
+  `SELECT id, ended_at, test_runs_expected AS expected, test_runs_stored_at AS storedAt, test_runs_abandoned AS abandoned
+     FROM step_run WHERE item_id = ? AND step_index = ? AND status = 'done' ORDER BY id DESC LIMIT 1`,
+)
+
+// { state, runId } for the item's latest done implement run:
+//   'waiting'  its rows are promised and farmd may still deliver them
+//   'lost'     they never came, and the server restarted after the run ended
+//   'none'     anything else — stored, never promised, rejected by this
+//              server, or not delivered with no restart — which review reads
+//              as it always has
+// Times are parsed, never compared as text: ended_at is SQLite's
+// "YYYY-MM-DD HH:MM:SS", BOOTED_AT an ISO string. Never throws.
+// The orchestrator holds review while 'waiting' and re-queues the checks on
+// 'lost' (up to its cap); buildStoredResultsInput says 'lost' in the input.
+export function storedResultsUpload(itemId, { nowMs = Date.now(), bootedAt = BOOTED_AT } = {}) {
+  try {
+    const run = latestUpload.get(itemId, IMPLEMENT_STEP_INDEX)
+    if (!run) return { state: 'none', runId: null }
+    if (!(run.expected > 0) || run.storedAt || run.abandoned === 'rejected' || !run.ended_at) return { state: 'none', runId: run.id }
+    const endedMs = msOf(run.ended_at)
+    if (run.abandoned == null && nowMs - endedMs < STORED_RESULTS_RETRY_WINDOW_S * 1000) return { state: 'waiting', runId: run.id }
+    // ended_at has whole seconds: a run that ended in the boot's own second
+    // is not known to be before it.
+    return { state: endedMs + 1000 <= Date.parse(bootedAt) ? 'lost' : 'none', runId: run.id }
+  } catch (err) {
+    console.warn(`[stored results] could not read ${itemId}'s upload: ${err.message}`)
+    return { state: 'none', runId: null }
   }
 }
 
@@ -118,7 +158,13 @@ function renderSection(label, rows, budget) {
   return lines.join('\n')
 }
 
-export function renderStoredResults({ main, branch }, runId) {
+export function renderStoredResults({ main, branch }, runId, { lost = false } = {}) {
+  if (lost) {
+    return [
+      `## ${STORED_RESULTS_INPUT_LABEL}`,
+      `The farm's test results for the implement step's run #${runId} were ${RESULTS_LOST_TEXT}: the farm could not deliver them before the server restarted, and none were stored. This is not evidence of a pass or a fail.`,
+    ].join('\n\n')
+  }
   const intro = [
     `## ${STORED_RESULTS_INPUT_LABEL}`,
     runId == null
@@ -144,7 +190,8 @@ export function renderStoredResults({ main, branch }, runId) {
 export function buildStoredResultsInput(itemId) {
   try {
     const runId = latestImplementRunId(itemId)
-    return { label: STORED_RESULTS_INPUT_LABEL, content: renderStoredResults(storedResultsFor(itemId, runId), runId) }
+    const lost = runId != null && storedResultsUpload(itemId).state === 'lost'
+    return { label: STORED_RESULTS_INPUT_LABEL, content: renderStoredResults(storedResultsFor(itemId, runId), runId, { lost }) }
   } catch (err) {
     return {
       label: STORED_RESULTS_INPUT_LABEL,
