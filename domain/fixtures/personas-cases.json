@@ -144,7 +144,11 @@
         "an undeclared provider is rejected",
         "a model another provider declares is rejected",
         "a role file escaping its directory is rejected",
-        "a role file declared twice is rejected"
+        "a role file declared twice is rejected",
+        "a persona naming tool ids is accepted",
+        "tools that are not an array are rejected",
+        "a tool id with a wildcard is rejected",
+        "a tool named twice is rejected"
       ]
     },
 
@@ -1228,6 +1232,30 @@
         "slug": "acme",
         "input": { "personas": [{ "id": "quant", "agent": "alpha", "label": "Quant", "initials": "QT", "color": "#2E6CB2", "model": "prov-model-1", "provider": "prov", "file": "quant.md" }, { "id": "risk", "agent": "alpha", "label": "Quant", "initials": "QT", "color": "#2E6CB2", "model": "prov-model-1", "provider": "prov", "file": "quant.md" }] },
         "expect": { "throws": true, "messageContains": "role file \"quant.md\" is declared more than once" }
+      },
+      {
+        "case": "a persona naming tool ids is accepted",
+        "slug": "acme",
+        "input": { "personas": [{ "id": "quant", "agent": "alpha", "label": "Quant", "initials": "QT", "color": "#2E6CB2", "model": "prov-model-1", "provider": "prov", "file": "quant.md", "tools": ["ruff", "my_tool-2"] }] },
+        "expect": { "throws": false }
+      },
+      {
+        "case": "tools that are not an array are rejected",
+        "slug": "acme",
+        "input": { "personas": [{ "id": "quant", "agent": "alpha", "label": "Quant", "initials": "QT", "color": "#2E6CB2", "model": "prov-model-1", "provider": "prov", "file": "quant.md", "tools": "ruff" }] },
+        "expect": { "throws": true, "messageContains": "personas[0].tools must be an array of tool ids" }
+      },
+      {
+        "case": "a tool id with a wildcard is rejected",
+        "slug": "acme",
+        "input": { "personas": [{ "id": "quant", "agent": "alpha", "label": "Quant", "initials": "QT", "color": "#2E6CB2", "model": "prov-model-1", "provider": "prov", "file": "quant.md", "tools": ["*"] }] },
+        "expect": { "throws": true, "messageContains": "personas[0].tools names \"*\" — expected a tool id matching /^[a-z0-9][a-z0-9_-]{0,31}$/" }
+      },
+      {
+        "case": "a tool named twice is rejected",
+        "slug": "acme",
+        "input": { "personas": [{ "id": "quant", "agent": "alpha", "label": "Quant", "initials": "QT", "color": "#2E6CB2", "model": "prov-model-1", "provider": "prov", "file": "quant.md", "tools": ["ruff", "ruff"] }] },
+        "expect": { "throws": true, "messageContains": "personas[0].tools names a tool more than once" }
       }
     ]
   },
