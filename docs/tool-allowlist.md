@@ -102,3 +102,20 @@ closed, never with the venv writable.
 
 If the venv's command is missing on the host, a step whose persona names the
 tool fails before the agent starts, and the error names the missing path.
+
+## The knowledge extractor (`pdfminer`)
+
+HZ-537. farmd's knowledge job (`farm/knowledge.py`) extracts the PDFs a
+project persona names in its `knowledge` array. Its extractor is the
+`pdfminer` entry, `pdf2txt.py` from `/opt/horizon-tools/pdfminer`, built as in
+step 1:
+
+```sh
+sudo python3 -m venv /opt/horizon-tools/pdfminer
+sudo /opt/horizon-tools/pdfminer/bin/pip install 'pdfminer.six==20260107'
+sudo chown -R root:root /opt/horizon-tools/pdfminer
+sudo chmod -R go-w /opt/horizon-tools/pdfminer
+```
+
+With the entry removed, or the venv missing, every doc records `failed` and
+nothing runs. `pytest farm/tests/test_knowledge.py` fails until it is built.

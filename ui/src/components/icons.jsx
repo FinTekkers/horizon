@@ -127,6 +127,17 @@ export function PrIcon({ size = 12 }) {
   )
 }
 
+// HZ-547: the item page's "From Plan" pill — two overlapping squares, the
+// front one filled with the pill's own background.
+export function PlanIcon({ size = 14 }) {
+  return (
+    <svg {...iconProps(size, 1.4)} viewBox="0 0 14 14">
+      <rect x="1.5" y="1.5" width="7" height="7" rx="1.5" />
+      <rect x="5.5" y="5.5" width="7" height="7" rx="1.5" style={{ fill: 'var(--primary-bg)' }} />
+    </svg>
+  )
+}
+
 export function ChatIcon({ size = 15 }) {
   return (
     <svg {...iconProps(size, 2.2)}>

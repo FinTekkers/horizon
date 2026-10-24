@@ -113,18 +113,20 @@ const panel = (page, title) =>
 const projectBlock = (page) =>
   page.locator('.project-block').filter({ has: page.locator('.project-block__name', { hasText: new RegExp(`^${PROJECT}$`) }) })
 
-async function openAdmin(page) {
-  await page.goto('/admin')
+// HZ-564: Admin shows one section at a time, each at its own URL.
+async function openAdmin(page, path = '/admin') {
+  await page.goto(path)
   await expect(page.locator('.admin__title')).toHaveText('Admin', { timeout: 10_000 })
 }
 
 test('before you start — GitHub access and the gate PIN', async ({ page }) => {
-  await openAdmin(page)
+  await openAdmin(page, '/admin/github')
   const github = panel(page, 'GitHub access')
   await expect(github.getByText('No token yet')).toBeVisible()
   // The token panel never shows a token value: the field is empty.
   await expect(github.locator('input[type=password]')).toHaveValue('')
   await shot(page, '00-github-access', github)
+  await openAdmin(page, '/admin/account')
   await shot(page, '00-gate-pin', panel(page, 'Security · your gate PIN'))
 })
 
@@ -262,7 +264,7 @@ test('step 8 — enable the project; Autopilot stays off', async ({ page }) => {
 })
 
 test('step 5 — add the deploy target and Dry run it (after step 8)', async ({ page }) => {
-  await openAdmin(page)
+  await openAdmin(page, '/admin/deploys')
   const row = panel(page, 'Deploy target overrides').getByRole('group', { name: `Deploy target for ${REPO}` })
   await expect(row.getByText('none', { exact: true })).toBeVisible({ timeout: 10_000 })
   await row.getByRole('button', { name: 'Add target' }).click()

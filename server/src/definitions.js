@@ -190,8 +190,9 @@ export const PROJECTS_DIR = path.join(FARM_DIR, 'projects')
 //
 // Overlay: { slug, ids: {agent: [nsId]}, roleText: {nsId: markdown},
 // display: {nsId: {label, initials, color}}, models: {'<agent>.<nsId>': model},
-// providers: {'<agent>.<nsId>': provider}, files: [role file] }, where nsId is
-// `<slug>:<id>`.
+// providers: {'<agent>.<nsId>': provider}, files: [role file],
+// knowledge: {nsId: [{repo?, path}]} }, where nsId is `<slug>:<id>`. HZ-537:
+// `knowledge` holds only personas that name sources; it changes no prompt.
 export function loadProjectPersonas(slug, root = PROJECTS_DIR) {
   const source = `farm/projects/${slug}/personas.json`
   let text
@@ -213,7 +214,7 @@ export function loadProjectPersonas(slug, root = PROJECTS_DIR) {
     throw new Error(`${source} is not valid JSON (${err.message})`)
   }
   assertProjectPersonasShape(data, slug, source)
-  const overlay = { slug, ids: {}, roleText: {}, display: {}, models: {}, providers: {}, files: [] }
+  const overlay = { slug, ids: {}, roleText: {}, display: {}, models: {}, providers: {}, files: [], knowledge: {} }
   for (const entry of data.personas) {
     const nsId = `${slug}:${entry.id}`
     const roleName = `farm/projects/${slug}/personas/${entry.file}`
@@ -231,6 +232,7 @@ export function loadProjectPersonas(slug, root = PROJECTS_DIR) {
     overlay.models[`${entry.agent}.${nsId}`] = entry.model
     overlay.providers[`${entry.agent}.${nsId}`] = entry.provider
     overlay.files.push(entry.file)
+    if (Array.isArray(entry.knowledge) && entry.knowledge.length > 0) overlay.knowledge[nsId] = entry.knowledge.map((ref) => ({ ...ref }))
   }
   return overlay
 }

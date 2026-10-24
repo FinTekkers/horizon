@@ -24,6 +24,7 @@ export const {
   getFarm,
   getDurationEstimates,
   getDeployBlock,
+  getPlanProgress,
   setProjectEnabled,
   setProjectAutopilot,
   setProjectDefinitionsEnabled,

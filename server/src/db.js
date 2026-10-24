@@ -880,6 +880,31 @@ if (!db.prepare('PRAGMA table_info(project)').all().some((column) => column.name
   db.exec('ALTER TABLE project ADD COLUMN definitions_enabled INTEGER NOT NULL DEFAULT 1 CHECK (definitions_enabled IN (0, 1))')
 }
 
+// HZ-537: one row per project and knowledge doc — a PDF a project persona
+// names as a source, extracted by the farm (farm/knowledge.py) into
+// ~/.horizon/knowledge/<slug>/, outside every repo. source_sha is the git blob
+// sha the row was extracted from; a new sha re-extracts and updates the row in
+// place. sections_json is the section index only, never document text:
+// [{"id": "2-1-scope", "title": "2.1 Scope", "page": 4}]. Written only by
+// server/src/knowledgeDocs.js upsertDoc.
+db.exec(`
+  CREATE TABLE IF NOT EXISTS knowledge_doc (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id    INTEGER NOT NULL REFERENCES project(id) ON DELETE CASCADE,
+    slug          TEXT NOT NULL,
+    repo          TEXT NOT NULL,
+    path          TEXT NOT NULL,
+    source_sha    TEXT NOT NULL,
+    status        TEXT NOT NULL CHECK (status IN ('extracted', 'failed')),
+    page_count    INTEGER NOT NULL DEFAULT 0,
+    section_count INTEGER NOT NULL DEFAULT 0,
+    sections_json TEXT NOT NULL DEFAULT '[]',
+    error         TEXT,
+    extracted_at  TEXT NOT NULL,
+    UNIQUE (project_id, slug)
+  );
+`)
+
 // HZ-270: project_event is the project-level audit trail (event.item_id is
 // NOT NULL, so an Autopilot change cannot live there). caretaker_eval holds one
 // row per gate arrival the caretaker judged; its UNIQUE key is the persisted

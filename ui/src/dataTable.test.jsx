@@ -93,7 +93,7 @@ test('Admin’s flaky-tests table carries .data-table with the same headers and 
       },
     ],
   })
-  render(<AdminPage sync={{}} projects={[]} onBack={noop} />)
+  render(<AdminPage sync={{}} projects={[]} onBack={noop} route={{ section: 'flaky' }} />)
   const table = await screen.findByRole('table', { name: 'Flaky tests in acme/web' })
   expectShared(table)
   expect(headers(table)).toEqual(['Test', 'Flakes (7 d / total)', 'Last seen', 'Last item', 'Pinged'])

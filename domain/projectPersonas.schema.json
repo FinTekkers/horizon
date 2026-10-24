@@ -47,6 +47,19 @@
             "$comment": "HZ-536, optional: tool ids from farm/tools/allowlist.json (docs/tool-allowlist.md), unique, each matching ^[a-z0-9][a-z0-9_-]{0,31}$. The farm refuses the whole overlay when an id is not in the allow-list, naming the id and the persona. Granted only on a step whose fixed tool string has bare Bash.",
             "type": "array",
             "items": { "type": "string", "minLength": 1 }
+          },
+          "knowledge": {
+            "$comment": "HZ-537, optional: the persona's knowledge sources. Each is {path} — a PDF in the project's own repo (its first connected repo) — or {repo, path}, a PDF in a docs repo. repo matches ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$; path matches ^[A-Za-z0-9_-][A-Za-z0-9._-]*(?:/[A-Za-z0-9_-][A-Za-z0-9._-]*)*\\.pdf$ (no segment starts with a dot); no source twice. A farm job (farm/knowledge.py) extracts each into ~/.horizon/knowledge/<doc slug>/, outside every repo, and records one knowledge_doc row per project and doc.",
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["path"],
+              "additionalProperties": false,
+              "properties": {
+                "repo": { "type": "string", "minLength": 3 },
+                "path": { "type": "string", "minLength": 5 }
+              }
+            }
           }
         }
       }
