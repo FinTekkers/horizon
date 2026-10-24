@@ -434,6 +434,10 @@ def resolve_model(agent: str, step: str | None = None, persona: str | None = Non
 # projectValidation section of domain/fixtures/personas-cases.json drives both.
 _PROJECT_SLUG_SHAPE = re.compile(r"^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$")
 _PROJECT_PERSONA_KEYS = ("id", "agent", "label", "initials", "color", "model", "provider", "file")
+# HZ-536: optional — tool ids from farm/tools/allowlist.json. Only their shape
+# is checked here; farm/personas.py checks each id against the allow-list.
+_PROJECT_PERSONA_OPTIONAL_KEYS = ("tools",)
+_TOOL_ID_SHAPE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,31}$")
 _INITIALS_SHAPE = re.compile(r"^[A-Z0-9]{1,3}$")
 _COLOR_SHAPE = re.compile(r"^#[0-9A-Fa-f]{6}$")
 # provider -> every model id domain/providers.json declares for it. Kept in
@@ -480,9 +484,10 @@ def validate_project_personas(
         if not isinstance(entry, dict):
             raise RuntimeError(f"{at} must be a JSON object")
         for key in entry:
-            if key not in _PROJECT_PERSONA_KEYS:
+            if key not in _PROJECT_PERSONA_KEYS and key not in _PROJECT_PERSONA_OPTIONAL_KEYS:
                 raise RuntimeError(
-                    f"{at} has unknown key {_json(key)} — expected only {_json(list(_PROJECT_PERSONA_KEYS))}"
+                    f"{at} has unknown key {_json(key)} — expected only "
+                    f"{_json(list(_PROJECT_PERSONA_KEYS + _PROJECT_PERSONA_OPTIONAL_KEYS))}"
                 )
         for key in _PROJECT_PERSONA_KEYS:
             if key not in entry:
@@ -535,4 +540,15 @@ def validate_project_personas(
         if role_file in seen_files:
             raise RuntimeError(f"{where}: role file {_json(role_file)} is declared more than once")
         seen_files.add(role_file)
+        if "tools" in entry:
+            tools = entry["tools"]
+            if not isinstance(tools, list):
+                raise RuntimeError(f"{at}.tools must be an array of tool ids")
+            for tool in tools:
+                if not isinstance(tool, str) or _TOOL_ID_SHAPE.fullmatch(tool) is None:
+                    raise RuntimeError(
+                        f"{at}.tools names {_json(tool)} — expected a tool id matching /{_TOOL_ID_SHAPE.pattern}/"
+                    )
+            if len(set(tools)) != len(tools):
+                raise RuntimeError(f"{at}.tools names a tool more than once")
     return data

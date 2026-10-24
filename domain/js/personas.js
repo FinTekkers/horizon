@@ -375,6 +375,10 @@ export function resolveModel(agent, step = null, persona = null, models = MODELS
 // compared. Each table is a defaulted parameter, as for assertPersonasShape.
 const PROJECT_SLUG_SHAPE = /^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/
 const PROJECT_PERSONA_KEYS = ['id', 'agent', 'label', 'initials', 'color', 'model', 'provider', 'file']
+// HZ-536: optional — tool ids from farm/tools/allowlist.json. Only their shape
+// is checked here; farm/personas.py checks each id against the allow-list.
+const PROJECT_PERSONA_OPTIONAL_KEYS = ['tools']
+const TOOL_ID_SHAPE = /^[a-z0-9][a-z0-9_-]{0,31}$/
 const INITIALS_SHAPE = /^[A-Z0-9]{1,3}$/
 const COLOR_SHAPE = /^#[0-9A-Fa-f]{6}$/
 // provider -> every model id domain/providers.json declares for it. Kept in
@@ -405,8 +409,10 @@ export function assertProjectPersonasShape(
     const at = `${source}: personas[${i}]`
     if (!isObject(entry)) throw new Error(`${at} must be a JSON object`)
     for (const key of Object.keys(entry)) {
-      if (!PROJECT_PERSONA_KEYS.includes(key)) {
-        throw new Error(`${at} has unknown key ${JSON.stringify(key)} — expected only ${JSON.stringify(PROJECT_PERSONA_KEYS)}`)
+      if (!PROJECT_PERSONA_KEYS.includes(key) && !PROJECT_PERSONA_OPTIONAL_KEYS.includes(key)) {
+        throw new Error(
+          `${at} has unknown key ${JSON.stringify(key)} — expected only ${JSON.stringify([...PROJECT_PERSONA_KEYS, ...PROJECT_PERSONA_OPTIONAL_KEYS])}`,
+        )
       }
     }
     for (const key of PROJECT_PERSONA_KEYS) {
@@ -450,6 +456,16 @@ export function assertProjectPersonasShape(
     }
     if (seenFiles.has(file)) throw new Error(`${source}: role file ${JSON.stringify(file)} is declared more than once`)
     seenFiles.add(file)
+    if (own(entry, 'tools')) {
+      const { tools } = entry
+      if (!Array.isArray(tools)) throw new Error(`${at}.tools must be an array of tool ids`)
+      for (const tool of tools) {
+        if (typeof tool !== 'string' || !TOOL_ID_SHAPE.test(tool)) {
+          throw new Error(`${at}.tools names ${JSON.stringify(tool ?? null)} — expected a tool id matching ${TOOL_ID_SHAPE}`)
+        }
+      }
+      if (new Set(tools).size !== tools.length) throw new Error(`${at}.tools names a tool more than once`)
+    }
   }
   return data
 }
