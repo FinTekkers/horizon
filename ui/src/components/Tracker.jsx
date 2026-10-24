@@ -32,7 +32,7 @@ import { resolveEventColor } from '../domain/eventColors'
 import { issueUrl, issueLabel, artifactUrl, outputUrl, runLogViewUrl, subscribeStepOutputs, stopJob, resumeJob, setAutopilotOff } from '../api'
 import { buildLinkContext } from '../../../domain/js/codeRefs.js'
 import StatusPill, { AutopilotOffChip, autopilotOffShown, AUTOPILOT_OFF_GATE_NOTE } from './StatusPill'
-import DependencyBadge, { itemHref } from './DependencyBadge'
+import DependencyBadge, { fromPlanLabel, itemHref, openPlanClick, planHref } from './DependencyBadge'
 import Markdown from './Markdown'
 import GateActionStatus from './GateActionStatus'
 import JobPanel from './JobPanel'
@@ -41,7 +41,7 @@ import ProjectBadge from './ProjectBadge'
 import TaskBadge from './TaskBadge'
 import PlanItemsTable from './PlanItemsTable'
 import ScreenshotPanel from './ScreenshotPanel'
-import { BackIcon, LinkIcon, RestartIcon, PrIcon, CircleXIcon } from './icons'
+import { BackIcon, LinkIcon, RestartIcon, PrIcon, CircleXIcon, PlanIcon } from './icons'
 
 const STEP_GLYPHS = { done: '✓', active: '•', awaiting: '!', pending: '', blocked: '✕', skipped: '–' }
 
@@ -879,7 +879,21 @@ function AutopilotOffNote({ item }) {
   )
 }
 
-export default function Tracker({ item, projects, knownItemIds = null, deployBlock = null, viewerName = null, restartSent = null, onBack, onApprove, onApproveWithComments, onReject, onResolveConflicts, resolving, gateBusy, onForwardToAccept, onTogglePause, onRestartPhase, onSetPersona, onSetStepProvider, onAbandon, onRemoveDependency, onAddDependency, onAmendRule }) {
+// HZ-547: "From Plan VS-110 · 6 of 13 done" — the Plan (or Task) that filed
+// this item and its progress, as the server summed it (planProgress). Opens
+// the board filtered to that Plan.
+function FromPlanPill({ planId, planProgress, onOpenPlan }) {
+  const progress = planProgress.find((p) => p.id === planId)
+  return (
+    <a className="tracker__from-plan" href={planHref(planId)} onClick={openPlanClick(planId, onOpenPlan)}>
+      <PlanIcon />
+      {fromPlanLabel(progress?.kind)} {planId}
+      {progress && ` · ${progress.done} of ${progress.total} done`}
+    </a>
+  )
+}
+
+export default function Tracker({ item, projects, knownItemIds = null, deployBlock = null, viewerName = null, restartSent = null, planProgress = [], onOpenPlan, onBack, onApprove, onApproveWithComments, onReject, onResolveConflicts, resolving, gateBusy, onForwardToAccept, onTogglePause, onRestartPhase, onSetPersona, onSetStepProvider, onAbandon, onRemoveDependency, onAddDependency, onAmendRule }) {
   const status = itemStatus(item, true, { deployBlock })
   const activity = buildActivity(item)
   const [activityMin, setActivityMin] = useState(readActivityMin)
@@ -945,6 +959,7 @@ export default function Tracker({ item, projects, knownItemIds = null, deployBlo
                 />
                 {personaFor(item, PRIMARY_PERSONA_AGENT).label}
               </span>
+              {item.spawnedBy && <FromPlanPill planId={item.spawnedBy.id} planProgress={planProgress} onOpenPlan={onOpenPlan} />}
               {item.issue != null && (
                 <a className="tracker__issue" href={issueUrl(item)} target="_blank" rel="noopener noreferrer">
                   <LinkIcon size={13} />

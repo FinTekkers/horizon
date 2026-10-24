@@ -51,11 +51,13 @@ import { choiceValues } from '../../domain/js/providers.js'
 import { PERSONAS } from './personas.js'
 import * as definitions from './definitions.js'
 import * as rulesStore from './rulesStore.js'
+import * as knowledgeDocs from './knowledgeDocs.js'
 import * as runLogView from './runLogView.js'
 import * as split from './split.js'
 import * as planDraft from './planDraft.js'
 import * as screenshots from './screenshots.js'
 import { filedMap } from './planFiling.js'
+import { planProgress } from './planProgress.js'
 import { PLAN_DRAFT_SCHEMA } from '../../domain/js/planDraft.js'
 import { buildLinkContext, codeRefUrl, parseCodeRef, splitItemIds } from '../../domain/js/codeRefs.js'
 import * as checkFlakes from './checkFlakes.js'
@@ -238,8 +240,13 @@ export function streamClientCount() {
 // latestEnd}, or null), and each item's `acceptWaiting` is the Accept that is
 // waiting on it ({source: 'human', actor, heldAt} | {source: 'autopilot'} |
 // null) — heldAccept.js, read once per snapshot.
-export function snapshot({ scope = 'active', estimates = true, checks = true, stepOutputs = true } = {}) {
+//
+// HZ-547: `plans` adds the top-level planProgress (planProgress.js) — each
+// Plan's or Task's filed items, summed over this snapshot's items. The
+// concierge leaves it off.
+export function snapshot({ scope = 'active', estimates = true, checks = true, stepOutputs = true, plans = true } = {}) {
   const acceptWaiting = heldAccept.acceptWaitingLookup()
+  const items = store.listItems({ scope, stepOutputs }).map((item) => ({ ...item, acceptWaiting: acceptWaiting(item) }))
   return {
     repoUrl: getRepoUrl(),
     projects: store.listProjects({ checks }),
@@ -247,8 +254,9 @@ export function snapshot({ scope = 'active', estimates = true, checks = true, st
     farm: orchestrator.getFarmState(),
     sync: github.getSyncState(),
     deployBlock: deployDrain.deployBlock(),
-    items: store.listItems({ scope, stepOutputs }).map((item) => ({ ...item, acceptWaiting: acceptWaiting(item) })),
+    items,
     ...(estimates ? { durationEstimates: store.durationEstimates() } : {}),
+    ...(plans ? { planProgress: planProgress(items, store.spawnParents()) } : {}),
   }
 }
 
@@ -3172,6 +3180,37 @@ export function buildApp({ logger = true, onRoute = null } = {}) {
     },
   )
 
+  // HZ-535: the switch for a project's own definitions
+  // (farm/projects/<slug>/personas.json). Gate-PIN protected exactly like
+  // /autopilot, checked before the lookup so a bad PIN never touches state.
+  fastify.post(
+    '/api/projects/:id/definitions-enabled',
+    {
+      schema: {
+        security: HUMAN_GATE_SECURITY,
+        params: {
+          type: 'object',
+          required: ['id'],
+          properties: { id: { type: 'integer', minimum: 1 } },
+        },
+        body: {
+          type: 'object',
+          required: ['enabled'],
+          additionalProperties: false,
+          properties: { enabled: { type: 'boolean' } },
+        },
+        response: { 200: OK_OBJECT, 401: ERROR_OBJECT, 404: ERROR_OBJECT },
+      },
+    },
+    (request, reply) => {
+      if (!humanAuthorized(request, reply)) return
+      const result = store.setProjectDefinitionsEnabled(request.params.id, request.body.enabled, actorOf(request))
+      if (result.error) return reply.code(404).send({ error: 'Project not found' })
+      broadcast()
+      return { ok: true, projectId: request.params.id, old: result.old, new: result.new, ...(result.unchanged ? { unchanged: true } : {}) }
+    },
+  )
+
   // HZ-370: the project's default "Runs on" for one step (Admin), used when an
   // item has no choice of its own — including steps 0-2, which run before
   // anyone opens the item. PIN-gated like /autopilot, checked before the
@@ -3554,7 +3593,7 @@ export function buildApp({ logger = true, onRoute = null } = {}) {
     },
     (request, reply) => {
       if (!farmAuthorized(request, reply)) return
-      return snapshot({ scope: request.query.scope, estimates: false, checks: false })
+      return snapshot({ scope: request.query.scope, estimates: false, checks: false, plans: false })
     },
   )
 
@@ -3575,6 +3614,64 @@ export function buildApp({ logger = true, onRoute = null } = {}) {
       if (!farmAuthorized(request, reply)) return
       const served = rulesStore.servedRulesFor(request.query.project, request.query.repo)
       return { project: served.project ?? null, repo: served.repo ?? null }
+    },
+  )
+
+  // HZ-537: farmd's knowledge job (farm/knowledge.py) lists the sources to
+  // extract — only projects whose definitions switch is on have any — and
+  // reports one knowledge_doc row per doc back.
+  fastify.get('/api/farm/knowledge/sources', (request, reply) => {
+    if (!farmAuthorized(request, reply)) return
+    return { sources: knowledgeDocs.listSources() }
+  })
+
+  fastify.put(
+    '/api/farm/knowledge/docs/:projectId/:slug',
+    {
+      schema: {
+        params: {
+          type: 'object',
+          required: ['projectId', 'slug'],
+          properties: {
+            projectId: { type: 'integer', minimum: 1 },
+            slug: { type: 'string', pattern: knowledgeDocs.SLUG_SHAPE.source, maxLength: 200 },
+          },
+        },
+        body: {
+          type: 'object',
+          required: ['repo', 'path', 'sourceSha', 'status', 'pageCount', 'sectionCount', 'sections'],
+          additionalProperties: false,
+          properties: {
+            repo: { type: 'string', minLength: 1, maxLength: 300 },
+            path: { type: 'string', minLength: 1, maxLength: 500 },
+            sourceSha: { type: 'string', pattern: '^[0-9a-f]{40,64}$' },
+            status: { type: 'string', enum: ['extracted', 'failed'] },
+            pageCount: { type: 'integer', minimum: 0 },
+            sectionCount: { type: 'integer', minimum: 0 },
+            sections: {
+              type: 'array',
+              maxItems: 500,
+              items: {
+                type: 'object',
+                required: ['id', 'title', 'page'],
+                additionalProperties: false,
+                properties: {
+                  id: { type: 'string', pattern: '^[a-z0-9-]+$', maxLength: 120 },
+                  title: { type: 'string', maxLength: 200 },
+                  page: { type: 'integer', minimum: 1 },
+                },
+              },
+            },
+            error: { type: ['string', 'null'], maxLength: 500 },
+          },
+        },
+      },
+    },
+    (request, reply) => {
+      if (!farmAuthorized(request, reply)) return
+      const result = knowledgeDocs.upsertDoc(request.params.projectId, request.params.slug, request.body)
+      if (result.error) return reply.code(404).send({ error: result.error })
+      return { ok: true, changed: result.changed }
     },
   )
 

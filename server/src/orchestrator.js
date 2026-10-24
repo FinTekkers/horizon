@@ -51,6 +51,7 @@ import {
   registerAgentRunner,
   registerRunStateProvider,
   registerDeployDrainProvider,
+  registerProjectOverlayLoader,
   claimGateAction,
   finishGateAction,
   getConflictRun as conflictRunOf,
@@ -87,7 +88,9 @@ import {
   activeModelLimits,
   setUsageWait,
   listUsageWaits,
+  projectOverlayFor,
 } from './store.js'
+import { projectPersonaOverlay } from './definitions.js'
 import { createMockPr, createDeployRelease, postIssueComment, syncIssueBodyFields, createPrFromBranch, getPrHeadSha, getIssueBody } from './github.js'
 import { PHASES } from '../../domain/js/lifecycle.js'
 import { getActiveProjectId, getFarmProjectId, getSetting, setSetting, getToken } from './settings.js'
@@ -1754,7 +1757,7 @@ async function dispatchToFarm(id, stepIndex, runId, attempt, scope, checkoutSha 
   const project =
     item.project_id == null
       ? null
-      : db.prepare('SELECT id, name, provider_defaults_json FROM project WHERE id = ?').get(item.project_id)
+      : db.prepare('SELECT id, name, provider_defaults_json, definitions_enabled FROM project WHERE id = ?').get(item.project_id)
   // HZ-188: an implement run on a PR GitHub reports as conflicted (a
   // resolve-conflicts escalation, or any other send-back while main has moved
   // underneath it) must start on a branch that already has origin/main merged
@@ -1805,7 +1808,13 @@ async function dispatchToFarm(id, stepIndex, runId, attempt, scope, checkoutSha 
       ...releaseFields,
     },
     step: { index: stepIndex, label: step.label, agent: step.agent },
-    ...(project ? { project: { id: project.id, name: project.name } } : {}),
+    // HZ-535: definitionsEnabled tells the farm to read the project's own
+    // personas. Sent only when the switch is on AND the project's file loads,
+    // so a project with no definitions gets exactly today's payload; a farm
+    // that sees it missing stays global.
+    ...(project
+      ? { project: { id: project.id, name: project.name, ...(projectPersonaOverlay(project) ? { definitionsEnabled: true } : {}) } }
+      : {}),
     feedback,
     ...(mergeMain ? { merge_main: true } : {}),
     ...(deployWait ? { deploy_wait: deployWait } : {}),
@@ -2210,7 +2219,7 @@ export function stepCommentBody(item, stepIndex, attempt, summary, patch, isMock
       const shown =
         key === 'personas'
           ? Object.entries(patch.personas)
-              .map(([agent, persona]) => `${agent} — ${personaLabel(agent, persona)}`)
+              .map(([agent, persona]) => `${agent} — ${personaLabel(agent, persona, projectOverlayFor(item?.project_id))}`)
               .join(', ')
           : patch[key]
       lines.push(`- **${PATCH_FIELD_LABELS[key]}:** ${shown}`)
@@ -2797,9 +2806,10 @@ export async function completeFarmRun(runId, { summary, patch, artifacts, job_vi
   // Per-agent since HZ-125: a proposal for the qa slot still lands on an item
   // whose eng slot a human already set.
   if (patch?.personas && typeof patch.personas === 'object' && !Array.isArray(patch.personas)) {
+    const overlay = projectOverlayFor(item.project_id)
     const survivors = {}
     for (const [agent, persona] of Object.entries(patch.personas)) {
-      if (isPersona(agent, persona) && !item.personas?.[agent]) survivors[agent] = persona
+      if (isPersona(agent, persona, overlay) && !item.personas?.[agent]) survivors[agent] = persona
     }
     if (Object.keys(survivors).length > 0) cleanPatch.personas = survivors
   }
@@ -3723,6 +3733,10 @@ export async function reconcileActiveRuns() {
     reconcileInFlight = false
   }
 }
+
+// HZ-535: at load, not in init(), so every store read of an item in a
+// project with definitions sees its overlay as soon as the app is built.
+registerProjectOverlayLoader(projectPersonaOverlay)
 
 export async function init(log) {
   registerAgentRunner({ kick, cancel, pause })

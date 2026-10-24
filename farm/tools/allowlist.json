@@ -1,0 +1,6 @@
+{
+  "version": 1,
+  "tools": [
+    { "id": "pdfminer", "venv": "/opt/horizon-tools/pdfminer", "commands": ["pdf2txt.py"] }
+  ]
+}

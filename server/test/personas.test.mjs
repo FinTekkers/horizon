@@ -368,3 +368,29 @@ test('mock step 0 still proposes an eng persona for an item that only carries a 
   })
   assert.deepEqual(result.patch?.personas, { eng: 'python' })
 })
+
+// ---- HZ-535: a project overlay adds that project's personas, and only those ----
+
+const FINTEKKERS_OVERLAY = {
+  slug: 'fintekkers',
+  ids: { eng: ['fintekkers:quant'] },
+  roleText: { 'fintekkers:quant': 'Think like a quant.\n' },
+  display: { 'fintekkers:quant': { label: 'Quant', initials: 'QT', color: '#2E6CB2' } },
+  models: {},
+  providers: {},
+  files: ['quant.md'],
+}
+
+test('personasFromRow keeps an id from the row’s own project, drops another project’s and unknown ids', () => {
+  const row = (eng) => ({ personas_json: JSON.stringify({ eng, qa: DEFAULT_PERSONAS.qa }) })
+  assert.deepEqual(personasFromRow(row('fintekkers:quant'), FINTEKKERS_OVERLAY), { eng: 'fintekkers:quant', qa: DEFAULT_PERSONAS.qa })
+  assert.deepEqual(personasFromRow(row('acme:quant'), FINTEKKERS_OVERLAY), { qa: DEFAULT_PERSONAS.qa })
+  assert.deepEqual(personasFromRow(row('nonsense'), FINTEKKERS_OVERLAY), { qa: DEFAULT_PERSONAS.qa })
+  // No overlay (no project file, or the switch off): the global check exactly.
+  assert.deepEqual(personasFromRow(row('fintekkers:quant')), { qa: DEFAULT_PERSONAS.qa })
+  assert.deepEqual(personasFromRow(row('fintekkers:quant'), null), { qa: DEFAULT_PERSONAS.qa })
+  // An overlay id is a persona of its own agent only.
+  assert.equal(isPersona('qa', 'fintekkers:quant', FINTEKKERS_OVERLAY), false)
+  assert.equal(isPersona('eng', 'constructor', FINTEKKERS_OVERLAY), false)
+  assert.equal(personaLabel('eng', 'fintekkers:quant', FINTEKKERS_OVERLAY), 'Quant')
+})

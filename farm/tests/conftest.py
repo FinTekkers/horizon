@@ -66,6 +66,8 @@ for _name in list(os.environ):
 os.environ["FARM_HOME"] = TEST_FARM_HOME
 os.environ["FARM_WA_ENABLED"] = "0"
 os.environ["FARM_SHARED_SECRET"] = STUB_SHARED_SECRET
+# HZ-537: the knowledge cache defaults to ~/.horizon/knowledge, the real one.
+os.environ["FARM_KNOWLEDGE_DIR"] = os.path.join(TEST_FARM_HOME, "knowledge")
 if "HORIZON_URL" not in _E2E_KEEP:
     os.environ["HORIZON_URL"] = STUB_HORIZON_URL
 # config.py's own default (localhost:8080) is where the real whatsapp-mcp
@@ -101,6 +103,11 @@ os.environ.pop("ANTHROPIC_API_KEY", None)
 # HZ-192: the operator's emergency model override would change every model the
 # suite asserts. Tests that exercise it set it themselves.
 os.environ.pop("FARM_MODEL_OVERRIDE", None)
+# HZ-569: this suite runs inside a check, which tags it with the check's run
+# id (farm/run_reaper.py). A test run_checks() that inherited that tag would
+# be a nested run of the outer check, and a timeout in it would reap the
+# outer check's processes. Tests that need a tag set their own.
+os.environ.pop("HORIZON_RUN_ID", None)
 
 sys.path.insert(0, str(REPO_ROOT))
 

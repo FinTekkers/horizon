@@ -1,7 +1,8 @@
 // HZ-453 metric 3: every gate-PIN route an e2e spec drives through Admin or
 // the item page refuses a missing or a wrong PIN, in one table. The e2e specs
 // (10-abandon, 23-project-enabled, 26-project-autopilot, 27-rules-versions,
-// 28-deploy-target-overrides, 30-repo-marks, 36-project-step-provider) now
+// 28-deploy-target-overrides, 30-repo-marks, 36-project-step-provider,
+// 56-project-definitions) now
 // walk only the right-PIN path; 10-gate-key.spec.js keeps the full
 // wrong / cancelled / right prompt flow in the browser.
 //
@@ -17,6 +18,7 @@
 //   dry-run       deploy-dry-run.test.mjs
 //   marks         repo-marks-api.test.mjs
 //   step provider project-step-provider.test.mjs
+//   definitions   project-personas.test.mjs
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
@@ -85,6 +87,7 @@ const ROUTES = [
   { spec: '28-deploy-target-overrides', method: 'POST', url: '/api/admin/deploy-targets/pin-site/dry-run', payload: {} },
   { spec: '30-repo-marks', method: 'PUT', url: `/api/projects/${project}/repos/marks`, payload: { repo: 'pin-co/site', noChecks: true, noDeploy: true } },
   { spec: '36-project-step-provider', method: 'PUT', url: `/api/projects/${project}/step-providers/0`, payload: { provider: 'muse' } },
+  { spec: '56-project-definitions', method: 'POST', url: `/api/projects/${project}/definitions-enabled`, payload: { enabled: false } },
 ]
 
 const SPECS = [
@@ -95,6 +98,7 @@ const SPECS = [
   '28-deploy-target-overrides',
   '30-repo-marks',
   '36-project-step-provider',
+  '56-project-definitions',
 ]
 
 // Every row of every table, so "nothing stored" covers audit and event rows
@@ -108,7 +112,7 @@ function snapshot() {
 }
 
 test('the table names every route of every trimmed e2e spec', () => {
-  assert.equal(ROUTES.length, 11)
+  assert.equal(ROUTES.length, 12)
   assert.deepEqual([...new Set(ROUTES.map((r) => r.spec))], SPECS)
 })
 

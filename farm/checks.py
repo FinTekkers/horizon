@@ -48,7 +48,17 @@ import uuid
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
-from . import check_metrics, check_record, check_slots, config, dep_cache, login_env, screenshot_runner, screenshots_config
+from . import (
+    check_metrics,
+    check_record,
+    check_slots,
+    config,
+    dep_cache,
+    login_env,
+    run_reaper,
+    screenshot_runner,
+    screenshots_config,
+)
 from .pause import PauseRequested
 from .workspaces import default_branch
 
@@ -119,7 +129,15 @@ def _run_bounded(cmd: list[str], ws: Path, timeout_s: float, env: dict[str, str]
     the agent's tmux pty, and a test runner that sees a TTY assumes a human is
     watching. FinTekkers/ui-service's `npm test` is plain `vitest`, which then
     starts watch mode and never exits, so US-191's check hung until the 600 s
-    timeout (2026-10-02)."""
+    timeout (2026-10-02).
+
+    HZ-569: a timeout also reaps the run's tagged processes — the serve,
+    worker, browsers and Playwright webServers that left the group with a
+    session of their own. That reaps the whole run, not just this command:
+    a run's commands execute one at a time, so nothing else of it is
+    running. Only a run this process leased is reaped here; a nested run's
+    inherited tag belongs to the outer run. The reap never changes what is
+    raised."""
     proc = subprocess.Popen(
         cmd,
         cwd=str(ws),
@@ -135,6 +153,12 @@ def _run_bounded(cmd: list[str], ws: Path, timeout_s: float, env: dict[str, str]
     except subprocess.TimeoutExpired:
         with contextlib.suppress(ProcessLookupError):
             os.killpg(proc.pid, signal.SIGKILL)
+        run_id = (env or {}).get(run_reaper.RUN_ENV)
+        if run_reaper.owns(run_id):
+            try:
+                run_reaper.reap_run(run_id)
+            except Exception as exc:  # noqa: BLE001 — cleanup never changes the outcome
+                print(f"checks: could not reap run {run_id} after the timeout ({type(exc).__name__})", file=sys.stderr)
         # wait(), not communicate(): a descendant that escaped the group could
         # still hold the pipes open, and draining them would hang again.
         proc.wait()
@@ -1638,13 +1662,20 @@ def run_checks(
     # queueing for a slot must not eat it (HZ-144 guardrail 2). That holds by
     # construction here, not by arithmetic — every clock this function starts
     # begins after the `with`.
-    with _check_slot_or_fail(
-        log=log, run_id=run_id, item_id=item_id, caller=caller, on_event=on_slot_event, cancel=cancel
-    ) as slot:
+    with contextlib.ExitStack() as scope:
+        slot = scope.enter_context(
+            _check_slot_or_fail(
+                log=log, run_id=run_id, item_id=item_id, caller=caller, on_event=on_slot_event, cancel=cancel
+            )
+        )
         timeout_s = int(os.environ.get("FARM_CHECK_TIMEOUT_S", "600"))
         record = check_metrics.new_record(run_id=run_id, item_id=item_id, caller=caller, slot=slot, repo=repo)
         record[SCREENSHOTS_SLOT] = screenshots
         env = {**_check_env(), **(child_env or {})}
+        # HZ-569: every process the commands start carries this run's tag and
+        # is reaped when the run leaves the slot — pass, fail, timeout or
+        # crash. Runs after the outcome is final and never changes it.
+        scope.enter_context(run_reaper.run_scope(env, item_id=item_id, caller=caller, worktree=ws, prefix="chk", log=log))
         # Host-wide free memory at each command boundary; the minimum is what
         # the record keeps. See farm/check_metrics.py on why this and not
         # ru_maxrss, and on the resolution this sampling rate gives up.

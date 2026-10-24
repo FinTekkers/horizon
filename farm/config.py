@@ -33,6 +33,8 @@ def farm_home() -> Path:
 FARM_HOME = farm_home()
 QUEUE_DIR = FARM_HOME / "queue"
 STATE_DIR = FARM_HOME / "state"
+# HZ-569: one lease file per check or pre-merge run (farm/run_reaper.py).
+RUNS_DIR = STATE_DIR / "runs"
 LOGS_DIR = FARM_HOME / "logs"
 WORKSPACES_DIR = FARM_HOME / "workspaces"
 
@@ -141,6 +143,21 @@ def dep_cache_min_free_bytes() -> int:
 # missing session is treated as proof of death rather than "still launching".
 RECONCILE_INTERVAL_S = int(os.environ.get("FARM_RECONCILE_INTERVAL_S", "60"))
 RECONCILE_GRACE_S = int(os.environ.get("FARM_RECONCILE_GRACE_S", "90"))
+# HZ-569: how often farmd sweeps capture workers, browsers and e2e servers
+# whose run's owner is gone (farm/run_reaper.py sweep()).
+RUN_SWEEP_INTERVAL_S = float(os.environ.get("FARM_RUN_SWEEP_INTERVAL_S", "5"))
+
+# HZ-537: the knowledge library's cache — extracted PDF text and section
+# indexes, one directory per doc slug. Outside every repo, so no document text
+# can be committed, and rebuildable from the sources at any time. Read at call
+# time like farm_home(), so tests can point it at a temp dir.
+def knowledge_dir() -> Path:
+    return Path(os.environ.get("FARM_KNOWLEDGE_DIR", str(Path.home() / ".horizon" / "knowledge")))
+
+
+# How often farmd's knowledge job (farm/knowledge.py sync_once) asks the server
+# for sources and re-extracts any whose git sha changed.
+KNOWLEDGE_INTERVAL_S = int(os.environ.get("FARM_KNOWLEDGE_INTERVAL_S", "300"))
 
 # HZ-194: how long a pause waits for the step agent to checkpoint its work
 # before farmd kills the session anyway. The server sends its own value
@@ -222,7 +239,7 @@ FARM_WA_CHOICE_TTL_S = int(os.environ.get("FARM_WA_CHOICE_TTL_S", "600"))
 
 
 def ensure_dirs() -> None:
-    for d in (QUEUE_DIR / "pm", STATE_DIR, LOGS_DIR, WORKSPACES_DIR):
+    for d in (QUEUE_DIR / "pm", STATE_DIR, RUNS_DIR, LOGS_DIR, WORKSPACES_DIR):
         d.mkdir(parents=True, exist_ok=True)
 
 

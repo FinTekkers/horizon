@@ -1,0 +1,68 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$comment": "HZ-535: the contract for a project's own personas, farm/projects/<slug>/personas.json, where <slug> is the project's name slugified (as for farm/rules/projects/<slug>.md). Each persona is addressed as the namespaced id <slug>:<id> (e.g. fintekkers:quant) and is usable only by items in that project, and only while the project's PIN-gated definitions switch (project.definitions_enabled) is on. Validated by domain/validate.mjs's Draft-07 subset, so there is no `pattern`. Rules the subset cannot express — the id shape ^[a-z][a-z0-9_]*$, a bare id never equal to any global persona id in domain/personas.json (the error names that id), ids and files unique within the file, `agent` naming a persona agent domain/personas.json declares, initials matching ^[A-Z0-9]{1,3}$, colour matching ^#[0-9A-Fa-f]{6}$, `provider` naming a domain/providers.json provider and `model` one that provider declares, and `file` matching ^[a-z][a-z0-9_]*\\.md$ — are asserted at LOAD time by assertProjectPersonasShape() in domain/js/personas.js and validate_project_personas() in domain/py/personas.py, which domain/fixtures/personas-cases.json drives from both sides. Every referenced role file, and this file itself, must pass the credential lint (server/src/definitions.js lintRules, farm/rules.py lint_rules) or the whole project overlay is refused.",
+  "title": "Horizon project personas: a project's own specialists, with badge, model and provider",
+  "type": "object",
+  "required": ["personas"],
+  "additionalProperties": false,
+  "properties": {
+    "personas": {
+      "$comment": "ARRAY ORDER IS THE ORDER they are listed in, after the agent's global personas.",
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["id", "agent", "label", "initials", "color", "model", "provider", "file"],
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "$comment": "The bare id. The persona is stored and dispatched as <slug>:<id>.",
+            "type": "string",
+            "minLength": 1
+          },
+          "agent": {
+            "$comment": "The persona's role: which persona agent's slot it fills (a domain/personas.json agent key such as eng or qa). A project persona specializes an existing agent on its existing steps — it adds no step.",
+            "type": "string",
+            "minLength": 1
+          },
+          "label": { "$comment": "The badge's label.", "type": "string", "minLength": 1 },
+          "initials": { "$comment": "The badge's initials.", "type": "string", "minLength": 1 },
+          "color": { "$comment": "The badge's colour, #RRGGBB.", "type": "string", "minLength": 7 },
+          "model": {
+            "$comment": "The model this persona's calls run on — its models.personas entry, keyed <agent>.<slug>:<id>.",
+            "type": "string",
+            "minLength": 1
+          },
+          "provider": {
+            "$comment": "The provider this persona's calls run on, where the step allows a provider override.",
+            "type": "string",
+            "minLength": 1
+          },
+          "file": {
+            "$comment": "The role markdown, in farm/projects/<slug>/personas/.",
+            "type": "string",
+            "minLength": 1
+          },
+          "tools": {
+            "$comment": "HZ-536, optional: tool ids from farm/tools/allowlist.json (docs/tool-allowlist.md), unique, each matching ^[a-z0-9][a-z0-9_-]{0,31}$. The farm refuses the whole overlay when an id is not in the allow-list, naming the id and the persona. Granted only on a step whose fixed tool string has bare Bash.",
+            "type": "array",
+            "items": { "type": "string", "minLength": 1 }
+          },
+          "knowledge": {
+            "$comment": "HZ-537, optional: the persona's knowledge sources. Each is {path} — a PDF in the project's own repo (its first connected repo) — or {repo, path}, a PDF in a docs repo. repo matches ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$; path matches ^[A-Za-z0-9_-][A-Za-z0-9._-]*(?:/[A-Za-z0-9_-][A-Za-z0-9._-]*)*\\.pdf$ (no segment starts with a dot); no source twice. A farm job (farm/knowledge.py) extracts each into ~/.horizon/knowledge/<doc slug>/, outside every repo, and records one knowledge_doc row per project and doc.",
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["path"],
+              "additionalProperties": false,
+              "properties": {
+                "repo": { "type": "string", "minLength": 3 },
+                "path": { "type": "string", "minLength": 5 }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

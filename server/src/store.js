@@ -41,7 +41,7 @@ import { choiceLabel, choiceValues, parseChoice, providerNames } from '../../dom
 import { REASON } from '../../domain/js/reasons.js'
 import { effectiveRunner, extractRunPlan } from '../../domain/js/runPlan.js'
 import { isHumanProof } from './humanProof.js'
-import { isPersona, personaLabel, personasFromRow } from './personas.js'
+import { isPersona, personaDisplay, personaLabel, personasFromRow } from './personas.js'
 import { priorityFromLabels } from './priorityLabels.js'
 import { kindFromLabels, laneFromLabels } from './kindLabels.js'
 import { AUTOPILOT_OFF_LABEL, autopilotOffFromLabels } from './autopilotOffLabel.js'
@@ -94,6 +94,17 @@ let deployDrainProvider = { block: () => null, survives: () => false }
 
 export function registerDeployDrainProvider(provider) {
   deployDrainProvider = { ...deployDrainProvider, ...provider }
+}
+
+// HZ-535: the orchestrator registers definitions.js's projectPersonaOverlay
+// here when it loads. store.js never imports definitions.js itself, so the
+// WhatsApp vote path (waPollVotes.js -> store.js) still cannot reach it
+// (wa-poll-no-model.test.mjs). Until then every item reads the global
+// personas, exactly as a project with no definitions does.
+let projectOverlayLoader = () => null
+
+export function registerProjectOverlayLoader(loader) {
+  projectOverlayLoader = loader
 }
 
 // ---- HZ-216: long gate actions (pre-merge checks + merge, conflict resolution) ----
@@ -456,6 +467,8 @@ export function listProjects({ checks = true } = {}) {
     enabled: !!p.enabled,
     autopilot: p.autopilot,
     autopilotEvents: selectAutopilotEvents.all(p.id),
+    // HZ-535: the PIN-gated switch for the project's own definitions.
+    definitionsEnabled: !!p.definitions_enabled,
     providerDefaults: providerDefaultsFromRow(p),
     repos: repos
       .filter((r) => r.project_id === p.id)
@@ -790,6 +803,46 @@ export function setProjectAutopilot(projectId, mode, who) {
   })()
   if (result.ok && !result.unchanged) notify()
   return result
+}
+
+// HZ-535: the ONLY writer of project.definitions_enabled; its one caller is
+// the PIN-gated Admin route. Same shape as setProjectAutopilot: the flag and
+// its project_event row land in one transaction, and a same-value write
+// records nothing.
+export function setProjectDefinitionsEnabled(projectId, enabled, who) {
+  const value = enabled ? 1 : 0
+  const result = db.transaction(() => {
+    const row = db.prepare('SELECT definitions_enabled FROM project WHERE id = ?').get(projectId)
+    if (!row) return { error: 'not_found' }
+    if (row.definitions_enabled === value) return { ok: true, old: !!value, new: !!value, unchanged: true }
+    db.prepare('UPDATE project SET definitions_enabled = ? WHERE id = ?').run(value, projectId)
+    db.prepare(
+      "INSERT INTO project_event (project_id, kind, old_value, new_value, who) VALUES (?, 'definitions_enabled', ?, ?, ?)",
+    ).run(projectId, String(row.definitions_enabled), String(value), who)
+    return { ok: true, old: !!row.definitions_enabled, new: !!value }
+  })()
+  if (result.ok && !result.unchanged) notify()
+  return result
+}
+
+// HZ-535: the project overlay an item in `projectId` reads its personas
+// through — null for no project, the switch off, or no personas.json, which
+// leaves every persona lookup on the global registry exactly.
+const selectProjectDefinitions = db.prepare('SELECT name, definitions_enabled FROM project WHERE id = ?')
+export function projectOverlayFor(projectId) {
+  if (projectId == null) return null
+  return projectOverlayLoader(selectProjectDefinitions.get(projectId))
+}
+
+// HZ-535: { agent: {label, initials, color} } for each slot holding a project
+// persona — its badge comes from the project file. {} for an item with none.
+function personaBadges(personas, overlay) {
+  if (!overlay) return {}
+  const badges = {}
+  for (const [agent, id] of Object.entries(personas)) {
+    if (Object.hasOwn(overlay.display, id)) badges[agent] = personaDisplay(agent, id, overlay)
+  }
+  return badges
 }
 
 // ---- HZ-248: 'Validate project' results ----
@@ -1250,6 +1303,20 @@ export function spawnFields(id) {
   }
 }
 
+// HZ-547: every item that filed at least one item (a Plan or a Task), open or
+// closed, keyed by id — for planProgress.js. Read-only, like spawnFields.
+const selectSpawnParents = db.prepare(`
+  SELECT DISTINCT w.* FROM item_spawn s JOIN work_item w ON w.id = s.parent_id
+   WHERE s.status = 'filed'`)
+
+export function spawnParents() {
+  return new Map(
+    selectSpawnParents
+      .all()
+      .map((row) => [row.id, { id: row.id, kind: itemKindOf(row), title: row.title, closed: isClosed(row) }]),
+  )
+}
+
 // Wakes every item that names `id` as a blocker — called once `id` has
 // merged (markMerged) or actually closed, from every place isClosed can flip
 // false -> true (approveGate, approveGateFromGithub, and upsertFromGithub's
@@ -1694,6 +1761,8 @@ function usageWaitView(row) {
 
 function itemView(row, { stepOutputs: withStepOutputs = true } = {}) {
   const activeRun = withRunState(selectActiveRun.get(row.id) || null)
+  const overlay = projectOverlayFor(row.project_id)
+  const personas = personasFromRow(row, overlay)
   const gateFields = itemGateFields(row)
   const ruleBlock = parseRuleBlock(row.rule_block_json)
   return {
@@ -1715,7 +1784,8 @@ function itemView(row, { stepOutputs: withStepOutputs = true } = {}) {
     release_tag: row.release_tag,
     release_url: row.release_url,
     deploy_queue: deployQueueStateFor(row.id),
-    personas: personasFromRow(row),
+    personas,
+    personaBadges: personaBadges(personas, overlay),
     providerChoices: providerChoicesFromRow(row),
     // HZ-370: for the item page's "Default" label only; the farm is sent the
     // merged map (resolveStepProviders) at dispatch instead.
@@ -1799,7 +1869,7 @@ export function getItem(id) {
     lane: laneOf(row),
     paused: !!row.paused,
     rejected: !!row.rejected,
-    personas: personasFromRow(row),
+    personas: personasFromRow(row, projectOverlayFor(row.project_id)),
     providerChoices: providerChoicesFromRow(row),
   }
 }
@@ -2158,13 +2228,14 @@ export function setPersona(id, agent, persona) {
   if (disabledProject(it)) return { error: 'project_not_active' }
   if (isClosed(it)) return { error: 'closed' }
   if (isAbandoned(it)) return { error: 'abandoned' }
-  if (!isPersona(agent, persona)) return { error: 'bad_persona' }
+  const overlay = projectOverlayFor(it.project_id)
+  if (!isPersona(agent, persona, overlay)) return { error: 'bad_persona' }
 
   const merged = { ...it.personas, [agent]: persona }
   db.prepare(`UPDATE work_item SET personas_json = ?, ${touch} WHERE id = ?`).run(JSON.stringify(merged), id)
   addEvent(id, {
     who: 'You',
-    text: `set the ${agent} specialist persona to ${personaLabel(agent, persona)}`,
+    text: `set the ${agent} specialist persona to ${personaLabel(agent, persona, overlay)}`,
     color: '#5E4380',
     initials: 'YOU',
   })

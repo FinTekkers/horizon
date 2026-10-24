@@ -32,7 +32,7 @@ PY = {name: cases for name, cases in CASES["py"].items() if not name.startswith(
 # helpers with no rule of their own.
 REQUIRED_PRIVATE = {"_validate_source"}
 
-SECTIONS = ("validation", "membership", "roleFile", "resolveModel")
+SECTIONS = ("validation", "membership", "roleFile", "resolveModel", "projectValidation")
 
 
 def _defined_here(value) -> bool:
@@ -123,6 +123,33 @@ def test_shared_resolve_model(case):
         assert expect["throws"] in str(exc.value)
     else:
         assert personas.resolve_model(case["agent"], case["step"], case["persona"], case["models"]) == expect["model"]
+
+
+# ---- shared: projectValidation (validate_project_personas vs JS's assertProjectPersonasShape) — HZ-535 ----
+
+
+@pytest.mark.parametrize("case", SHARED["projectValidation"], ids=lambda c: c["case"])
+def test_shared_project_validation(case):
+    _EXECUTED["projectValidation"].append(case["case"])
+    expect = case["expect"]
+
+    def run():
+        return personas.validate_project_personas(
+            case["input"],
+            case["slug"],
+            f"farm/projects/{case['slug']}/personas.json",
+            SHARED["projectProviderModels"],
+            SHARED["projectPersonaIds"],
+        )
+
+    if expect["throws"]:
+        with pytest.raises(RuntimeError) as exc:
+            run()
+        assert expect["messageContains"] in str(exc.value), (
+            f'expected a message containing {expect["messageContains"]!r}, got: {exc.value}'
+        )
+    else:
+        assert run() is case["input"]
 
 
 # ---- py-only names, checked against the live document ----
@@ -220,7 +247,7 @@ def test_py_model_agent_for_step_lower_cases_the_display_name(case):
 
 
 def test_py_helpers_are_driven_by_the_shared_sections():
-    for name in ("is_persona", "persona_role_file", "resolve_model", *REQUIRED_PRIVATE):
+    for name in ("is_persona", "persona_role_file", "resolve_model", "validate_project_personas", *REQUIRED_PRIVATE):
         assert PY[name][0]["drivenBy"].startswith("shared."), f"py.{name} claims no shared driver"
 
 

@@ -19,6 +19,7 @@
 // The spawn is isolated behind `runner` (like deploy.js) so tests replace it.
 
 import { spawn } from 'node:child_process'
+import { randomBytes } from 'node:crypto'
 import { existsSync } from 'node:fs'
 import path from 'node:path'
 import { StringDecoder } from 'node:string_decoder'
@@ -45,13 +46,74 @@ function pythonBin() {
 // added to server.env later is excluded by default.
 const CHILD_ENV_ALLOWED = ['PATH', 'HOME', 'USER', 'LOGNAME', 'SHELL', 'LANG', 'LC_ALL', 'TERM', 'TMPDIR', 'FARM_HOME', 'PLAYWRIGHT_BROWSERS_PATH']
 
-export function childEnv(timeoutMs) {
+// HZ-569: the run's tag (farm/run_reaper.py RUN_ENV). Every process the
+// check run starts inherits it, including the ones that leave its process
+// group, so the reaper can find them once the group is killed.
+export const RUN_ENV = 'HORIZON_RUN_ID'
+
+export function childEnv(timeoutMs, runId = null) {
   const env = {}
   for (const name of CHILD_ENV_ALLOWED) {
     if (Object.hasOwn(process.env, name)) env[name] = process.env[name]
   }
   env.FARM_CHECK_TIMEOUT_S = String(Math.floor(timeoutMs / 1000))
+  if (runId) env[RUN_ENV] = runId
   return env
+}
+
+// premerge-<item>-<unix seconds>-<6 hex>: a file name in farm/run_reaper.py.
+export function newRunId(itemId) {
+  const item = String(itemId || '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '')
+  return ['premerge', item, String(Math.floor(Date.now() / 1000)), randomBytes(3).toString('hex')].filter(Boolean).join('-')
+}
+
+const REAP_TIMEOUT_MS = 10_000
+
+// HZ-569: after the cap or an interrupt killed the run's process group, stop
+// what left the group: `python -m farm.run_reaper --run <id>` kills every
+// process tagged with the run (the Python owner is dead by then, so its lease
+// no longer protects them). Isolated like `runner`, so tests replace it.
+// Resolves { code, error } — never rejects.
+export const reaper = {
+  run(runId, { env, timeoutMs = REAP_TIMEOUT_MS } = {}) {
+    return new Promise((resolve) => {
+      let settled = false
+      const done = (out) => {
+        if (settled) return
+        settled = true
+        clearTimeout(timer)
+        resolve(out)
+      }
+      const reapEnv = { ...env }
+      delete reapEnv[RUN_ENV]
+      const child = spawn(pythonBin(), ['-m', 'farm.run_reaper', '--run', runId], {
+        cwd: path.dirname(FARM_DIR),
+        env: reapEnv,
+        stdio: ['ignore', 'ignore', 'pipe'],
+      })
+      child.stderr.on('data', () => {})
+      const timer = setTimeout(() => {
+        child.kill('SIGKILL')
+        done({ code: null, error: new Error(`run_reaper did not finish within ${timeoutMs} ms`) })
+      }, timeoutMs)
+      child.on('error', (error) => done({ code: null, error }))
+      child.on('close', (code) => done({ code }))
+    })
+  },
+}
+
+// Never throws and never changes the run's result: a failed reap is logged,
+// and farmd's sweep is the backstop.
+export async function reapRun(runId, opts = {}) {
+  if (!runId) return
+  try {
+    const out = await reaper.run(runId, opts)
+    if (out && (out.error || out.code !== 0)) {
+      console.error(`premerge: could not reap run ${runId}: ${out.error ? out.error.message : `exit ${out.code}`}`)
+    }
+  } catch (err) {
+    console.error(`premerge: could not reap run ${runId}: ${err && err.message ? err.message : err}`)
+  }
 }
 
 function tailLines(text) {
@@ -118,7 +180,10 @@ export const runner = {
   //
   // itemId (HZ-250), when given, registers the run for interruptRun(); a run
   // it stopped resolves with `interrupted: true`.
-  spawn(args, { cwd, timeoutMs, env, onStderrLine, itemId }) {
+  //
+  // runId (HZ-569), when given, is reaped (reapRun) after the timeout's group
+  // kill, before this resolves.
+  spawn(args, { cwd, timeoutMs, env, onStderrLine, itemId, runId }) {
     return new Promise((resolve) => {
       let stdout = ''
       let stderr = ''
@@ -164,7 +229,7 @@ export const runner = {
       }
       const child = spawn(pythonBin(), args, { cwd, env, detached: true, stdio: ['ignore', 'pipe', 'pipe'] })
       if (itemId != null && Number.isInteger(child.pid)) {
-        tracked = { pgid: child.pid, interrupted: false }
+        tracked = { pgid: child.pid, interrupted: false, runId, env }
         tracked.settled = new Promise((resolveSettled) => (tracked.settle = resolveSettled))
         runningChecks.set(itemId, tracked)
       }
@@ -179,17 +244,23 @@ export const runner = {
         // group could hold the pipes open, and the gate must not wait on it.
         child.stdout.destroy()
         child.stderr.destroy()
-        done({ code: null })
+        if (!runId) return done({ code: null })
+        // Stops that descendant too. The result is already decided: timedOut.
+        reapRun(runId, { env }).then(() => done({ code: null }))
       }, timeoutMs)
       child.stdout.on('data', (d) => (stdout += d))
       child.stderr.on('data', (d) => {
         stderr += d
         splitLines(d)
       })
-      child.on('error', (error) => done({ code: null, error }))
+      // Once the cap fired, the timer's reap settles the run: the child's
+      // own exit must not report it before the reap is done.
+      child.on('error', (error) => {
+        if (!(timedOut && runId)) done({ code: null, error })
+      })
       child.on('close', (code) => {
         flushLines()
-        done({ code })
+        if (!(timedOut && runId)) done({ code })
       })
     })
   },
@@ -231,7 +302,8 @@ export async function runPreMergeChecks(
   if (checkCommands) args.push('--check-commands', JSON.stringify(checkCommands))
   if (checksWaiver) args.push('--checks-waiver', checksWaiver)
   if (testEnvFile) args.push('--test-env-file', testEnvFile)
-  const spawnOpts = { cwd: path.dirname(FARM_DIR), timeoutMs, env: childEnv(timeoutMs), itemId: item.id }
+  const runId = newRunId(item.id)
+  const spawnOpts = { cwd: path.dirname(FARM_DIR), timeoutMs, env: childEnv(timeoutMs, runId), itemId: item.id, runId }
   if (onSlot) {
     spawnOpts.onStderrLine = (line) => {
       const slot = slotEventOf(line)
@@ -320,6 +392,8 @@ export async function interruptRun(itemId, { graceMs = 5000 } = {}) {
       alive = groupAlive(run.pgid)
     }
   }
+  // HZ-569: what left the group — serve, workers, browsers, e2e servers.
+  if (run.runId) await reapRun(run.runId, { env: run.env })
   // Let the gate record the outcome (it runs a few ticks after the child closes).
   let settleTimer
   await Promise.race([run.settled, new Promise((resolve) => (settleTimer = setTimeout(resolve, 2000)))])

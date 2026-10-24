@@ -4,7 +4,9 @@
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync, writeFileSync, chmodSync } from 'node:fs'
+import { execFileSync } from 'node:child_process'
+import { mkdtempSync, writeFileSync, chmodSync, mkdirSync, readFileSync, readdirSync, existsSync, rmSync } from 'node:fs'
+import net from 'node:net'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 
@@ -187,4 +189,173 @@ test('the real runner resolves (never rejects) when the interpreter does not exi
     assert.equal(result.ok, false)
     assert.equal(result.reason, 'crash')
   })
+})
+
+// ---- HZ-569: a run past the cap leaves nothing running ----
+
+async function withReaper(run, fn) {
+  const real = premerge.reaper.run
+  premerge.reaper.run = run
+  try {
+    return await fn()
+  } finally {
+    premerge.reaper.run = real
+  }
+}
+
+test('each run gets its own tag, in the env only', async () => {
+  await withRunner(green(), async (calls) => {
+    await premerge.runPreMergeChecks(ITEM, { headSha: HEAD, baseSha: BASE, timeoutMs: 60_000 })
+    await premerge.runPreMergeChecks(ITEM, { headSha: HEAD, baseSha: BASE, timeoutMs: 60_000 })
+    const [a, b] = calls.map((c) => c.opts.env[premerge.RUN_ENV])
+    assert.match(a, /^premerge-hz-183-\d+-[0-9a-f]{6}$/)
+    assert.notEqual(a, b)
+    assert.equal(calls[0].opts.runId, a)
+    assert.ok(!calls[0].args.includes(a), 'never on argv')
+  })
+})
+
+test('the cap reaps the run by its id before the result is reported', async () => {
+  const bin = fakePython('sleep 30')
+  const reaped = []
+  await withPython(bin, () =>
+    withReaper(async (runId, opts) => {
+      reaped.push({ runId, farmHome: opts.env.FARM_HOME })
+      return { code: 0 }
+    }, async () => {
+      const out = await premerge.runner.spawn([], { cwd: REPO_ROOT, timeoutMs: 300, env: { ...process.env, FARM_HOME: '/farm-home' }, runId: 'premerge-hz-183-1-abcdef' })
+      assert.equal(out.timedOut, true)
+      assert.deepEqual(reaped, [{ runId: 'premerge-hz-183-1-abcdef', farmHome: '/farm-home' }])
+    }),
+  )
+})
+
+for (const [name, run] of [
+  ['rejects', async () => { throw new Error('python exploded') }],
+  ['throws at once', () => { throw new Error('spawn failed') }],
+  ['exits non-zero', async () => ({ code: 2 })],
+  ['never answers in time', async () => ({ code: null, error: new Error('run_reaper did not finish') })],
+]) {
+  test(`a reap that ${name} leaves the capped result and exit code unchanged`, async () => {
+    const bin = fakePython('sleep 30')
+    await withPython(bin, async () => {
+      const capped = (reaper) =>
+        withReaper(reaper, () => premerge.runner.spawn([], { cwd: REPO_ROOT, timeoutMs: 300, env: process.env, runId: 'premerge-x-1-abcdef' }))
+      const working = await capped(async () => ({ code: 0 }))
+      const failing = await capped(run)
+      assert.equal(failing.timedOut, true)
+      assert.equal(failing.code, working.code)
+      assert.equal(failing.code, null)
+      const gate = await withReaper(run, () => withRunner(failing, () => premerge.runPreMergeChecks(ITEM, { headSha: HEAD, baseSha: BASE, timeoutMs: 300 })))
+      assert.equal(gate.ok, false)
+      assert.equal(gate.reason, 'timed_out')
+    })
+  })
+}
+
+// /proc: every live process whose starting environment carries the tag.
+function taggedPids(runId) {
+  const needle = Buffer.from(`${premerge.RUN_ENV}=${runId}\0`)
+  const pids = []
+  for (const entry of readdirSync('/proc')) {
+    if (!/^\d+$/.test(entry)) continue
+    let environ
+    let state
+    try {
+      environ = readFileSync(`/proc/${entry}/environ`)
+      state = readFileSync(`/proc/${entry}/stat`, 'utf8').split(') ').pop().split(' ')[0]
+    } catch {
+      continue
+    }
+    if (state !== 'Z' && environ.includes(needle)) pids.push(Number(entry))
+  }
+  return pids
+}
+
+function portBinds(port) {
+  return new Promise((resolve) => {
+    const server = net.createServer()
+    server.once('error', () => resolve(false))
+    server.listen(port, '127.0.0.1', () => server.close(() => resolve(true)))
+  })
+}
+
+async function freePort() {
+  const server = net.createServer()
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve))
+  const { port } = server.address()
+  await new Promise((resolve) => server.close(resolve))
+  return port
+}
+
+async function waitFor(what, check, withinMs) {
+  const deadline = Date.now() + withinMs
+  for (;;) {
+    if (await check()) return
+    if (Date.now() >= deadline) assert.fail(`gave up after ${withinMs} ms waiting for ${what}`)
+    await new Promise((resolve) => setTimeout(resolve, 50))
+  }
+}
+
+const FAKE_SERVER_JS = `const http = require('node:http')
+http.createServer((req, res) => res.end('ok')).listen(Number(process.argv[2]), '127.0.0.1')
+`
+
+// A repo hub as the farm keeps it (a clone of an origin), whose one commit
+// holds an e2e server and a capture worker for the check to start.
+function makeHub(home) {
+  const git = (cwd, ...args) => execFileSync('git', args, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim()
+  const origin = path.join(home, 'origin.git')
+  git(home, 'init', '-q', '--bare', '-b', 'main', origin)
+  const hub = path.join(home, 'workspaces', 'acme__demo')
+  mkdirSync(path.dirname(hub), { recursive: true })
+  git(home, 'clone', '-q', origin, hub)
+  writeFileSync(path.join(hub, 'package.json'), '{"type": "commonjs"}\n')
+  mkdirSync(path.join(hub, 'src'))
+  writeFileSync(path.join(hub, 'src', 'server.js'), FAKE_SERVER_JS)
+  mkdirSync(path.join(hub, 'farm', 'capture'), { recursive: true })
+  writeFileSync(path.join(hub, 'farm', 'capture', 'worker.mjs'), 'setInterval(() => {}, 1 << 30)\n')
+  git(hub, 'add', '.')
+  git(hub, '-c', 'user.name=t', '-c', 'user.email=t@localhost', 'commit', '-q', '-m', 'fixture')
+  git(hub, 'push', '-q', 'origin', 'HEAD:main')
+  return git(hub, 'rev-parse', 'HEAD')
+}
+
+test('a real pre-merge run past its cap leaves no process of the run within 10 s', { timeout: 120_000 }, async () => {
+  const home = mkdtempSync(path.join(tmpdir(), 'horizon-premerge-reap-'))
+  const sha = makeHub(home)
+  const port = await freePort()
+  const tagFile = path.join(home, 'run-id')
+  // The real `python -m farm.premerge`, with its own deadlines lifted so the
+  // server's cap is what ends it — the case the cap exists for. Everything
+  // else (the reaper too) runs as-is.
+  const bin = fakePython(
+    'case "$2" in farm.premerge) exec env FARM_CHECK_TIMEOUT_S=600 python3 "$@" --timeout-s 600 ;; *) exec python3 "$@" ;; esac',
+  )
+  const check = `echo "$${premerge.RUN_ENV}" > ${tagFile}; setsid node src/server.js ${port} & setsid node farm/capture/worker.mjs & sleep 600`
+  const prevHome = process.env.FARM_HOME
+  process.env.FARM_HOME = home
+  let runId = null
+  try {
+    await withPython(bin, async () => {
+      const result = await premerge.runPreMergeChecks(
+        { id: 'HZ-569', repo: 'acme/demo' },
+        { headSha: sha, baseSha: sha, timeoutMs: 6000, checkCommands: { test: check } },
+      )
+      assert.equal(result.ok, false)
+      assert.equal(result.reason, 'timed_out')
+    })
+    assert.ok(existsSync(tagFile), 'the check never started inside the cap')
+    runId = readFileSync(tagFile, 'utf8').trim()
+    assert.match(runId, /^premerge-hz-569-/)
+    await waitFor('every process of the run to be gone', () => taggedPids(runId).length === 0, 10_000)
+    await waitFor(`port ${port} to bind again`, () => portBinds(port), 10_000)
+    const lease = path.join(home, 'state', 'runs', `${runId}.json`)
+    assert.ok(!existsSync(lease), `the reaped run leaves no lease`)
+  } finally {
+    if (runId) for (const pid of taggedPids(runId)) try { process.kill(pid, 'SIGKILL') } catch {}
+    if (prevHome === undefined) delete process.env.FARM_HOME
+    else process.env.FARM_HOME = prevHome
+    rmSync(home, { recursive: true, force: true })
+  }
 })
