@@ -660,11 +660,18 @@ function PauseBanner({ item }) {
 // React text only — never Markdown, never HTML — with their line breaks kept.
 // The board card's "See what to do" link lands here as #rule-block; the
 // banner mounts only once the item has loaded, so it scrolls itself in then.
-function RuleBlockBanner({ item, onAddDependency, onAmendRule, onAbandon }) {
+//
+// HZ-580: once a dependency is added after the block (the server's
+// `waitingOn`), that leads and the agent's needs move behind the toggle. Each
+// action named in RULE_BLOCK_ACTIONS has its button here, marked
+// data-rule-block-action, so the block's text never offers one that is missing.
+function RuleBlockBanner({ item, onAddDependency, onAmendRule, onAbandon, onResume, resumeBusy }) {
   const ref = useRef(null)
   const [expanded, setExpanded] = useState(false)
   const { rule, needs } = item.ruleBlock
+  const waitingOn = item.ruleBlock.waitingOn ?? []
   const { summary, hasMore } = ruleBlockSummary(needs)
+  const needsHidden = waitingOn.length > 0
 
   useEffect(() => {
     if (window.location.hash === '#rule-block') ref.current?.scrollIntoView?.({ block: 'start' })
@@ -673,30 +680,47 @@ function RuleBlockBanner({ item, onAddDependency, onAmendRule, onAbandon }) {
   return (
     <div className="pause-banner" id="rule-block" ref={ref}>
       <div className="pause-banner__title">Blocked by a rule · {STEPS[item.cursor]?.label}</div>
+      {needsHidden && (
+        <div className="pause-banner__detail pause-banner__text" data-testid="rule-block-waiting-on">
+          Waiting on {waitingOn.map((d) => d.id).join(', ')} (added after this block)
+        </div>
+      )}
       <div className="dep-detail__label dep-detail__label--blocked pause-banner__label">Rule</div>
       <blockquote className="pause-banner__detail pause-banner__text pause-banner__quote">{rule}</blockquote>
-      <div className="dep-detail__label dep-detail__label--blocked pause-banner__label">What's needed</div>
+      {(!needsHidden || expanded) && (
+        <div className="dep-detail__label dep-detail__label--blocked pause-banner__label">What's needed</div>
+      )}
       {expanded ? (
         <div className="pause-banner__detail pause-banner__text" data-testid="rule-block-needs">
           {needs}
         </div>
       ) : (
-        <div className="pause-banner__detail pause-banner__text">{summary}</div>
+        !needsHidden && <div className="pause-banner__detail pause-banner__text">{summary}</div>
       )}
-      {hasMore && (
+      {(hasMore || needsHidden) && (
         <button type="button" className="pause-banner__toggle" aria-expanded={expanded} onClick={() => setExpanded(!expanded)}>
           {expanded ? "Hide the agent's full explanation" : "Show the agent's full explanation"}
         </button>
       )}
       <div className="pause-banner__meta">Not a failed attempt · nothing runs until this is cleared</div>
       <div className="pause-banner__actions">
-        <button type="button" className="btn-resume" onClick={() => onAddDependency(item.id)}>
+        <button type="button" className="btn-resume" data-rule-block-action="addDependency" onClick={() => onAddDependency(item.id)}>
           Add dependency
+        </button>
+        <button
+          type="button"
+          className="btn-outline"
+          data-rule-block-action="resume"
+          disabled={resumeBusy}
+          aria-busy={resumeBusy || undefined}
+          onClick={onResume}
+        >
+          Resume
         </button>
         <button type="button" className="btn-outline" onClick={() => onAmendRule(item.id)}>
           Amend the rule
         </button>
-        <button type="button" className="btn-reject" onClick={() => onAbandon(item.id)}>
+        <button type="button" className="btn-reject" data-rule-block-action="abandon" onClick={() => onAbandon(item.id)}>
           Abandon
         </button>
       </div>
@@ -1021,7 +1045,15 @@ export default function Tracker({ item, projects, knownItemIds = null, deployBlo
             The key differs from DependencyBadge's below: duplicate sibling
             keys make React leave a stale second banner behind. */}
         {!abandoned && isRuleBlocked(item) && (
-          <RuleBlockBanner key={`rule-block-${item.id}`} item={item} onAddDependency={onAddDependency} onAmendRule={onAmendRule} onAbandon={onAbandon} />
+          <RuleBlockBanner
+            key={`rule-block-${item.id}`}
+            item={item}
+            onAddDependency={onAddDependency}
+            onAmendRule={onAmendRule}
+            onAbandon={onAbandon}
+            onResume={() => sendPause(false)}
+            resumeBusy={pauseBusy}
+          />
         )}
         {abandoned && item.abandoned_reason && (
           <div className="tracker__actions">

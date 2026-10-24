@@ -408,7 +408,8 @@ export async function setAutopilotOff(id, off) {
 export async function setPaused(id, paused) {
   const it = items.find((x) => x.id === id)
   if (!it) throw new Error('not_found')
-  update(id, (x) => ({ ...x, paused }))
+  // HZ-346/HZ-580: Resume also clears a rule block, as the server does.
+  update(id, (x) => ({ ...x, paused, ...(paused ? {} : { ruleBlock: null }) }))
   pushEvent(id, {
     who: 'You',
     text: paused ? 'paused agent work on this item' : 'resumed work',

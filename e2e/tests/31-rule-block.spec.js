@@ -11,7 +11,7 @@
 
 import { test, expect } from '../fixtures/test-base.js'
 import { openDb, insertItem, insertEvent, insertStepRun, insertDependency, setGatePinDirect } from '../fixtures/seed.js'
-import { IMPLEMENT_STEP_INDEX, STEPS } from '../../domain/js/lifecycle.js'
+import { IMPLEMENT_STEP_INDEX, STEPS, endIndex } from '../../domain/js/lifecycle.js'
 
 const DB_PATH = process.env.HORIZON_E2E_DB
 const RULE = 'guardrail 6: models first: no local workaround'
@@ -76,6 +76,13 @@ test.beforeAll(() => {
     if (!seeded(db, 'RULE-UP')) seedRuleOne(db)
     for (const id of ['RULE-LONG', 'RULE-AMEND']) {
       if (!seeded(db, id)) seedRuleBlocked(db, id, LONG_NEEDS)
+    }
+    // HZ-580: blocked, then given a dependency (created_at is now, after the
+    // block). RULE-DEP sits at the final gate, so nothing moves it on.
+    if (!seeded(db, 'RULE-WAIT')) {
+      insertItem(db, { id: 'RULE-DEP', title: 'E2E fixture — delivers the fix', cursor: endIndex('change') - 1 })
+      seedRuleBlocked(db, 'RULE-WAIT', LONG_NEEDS)
+      insertDependency(db, { itemId: 'RULE-WAIT', dependsOnId: 'RULE-DEP' })
     }
   } finally {
     db.close()
@@ -189,4 +196,37 @@ test('HZ-365: Amend the rule asks for the gate PIN, then clears the block and re
   await expect(page.locator('#rule-block')).toHaveCount(0)
   await expect(page.locator('.tracker__status')).not.toHaveText('Blocked by a rule')
   await expect.poll(() => ruleBlockJson('RULE-AMEND'), { timeout: 10_000 }).toBeNull()
+})
+
+function dependencyCount(itemId, dependsOnId) {
+  const db = openDb(DB_PATH)
+  try {
+    return db.prepare('SELECT COUNT(*) AS n FROM work_item_dependency WHERE item_id = ? AND depends_on_id = ?').get(itemId, dependsOnId).n
+  } finally {
+    db.close()
+  }
+}
+
+test('HZ-580: a dependency added after the block leads the banner; Resume clears only the block and the item waits on it', async ({ page }) => {
+  await page.goto('/rule-wait')
+  await expect(page.locator('.tracker__id')).toHaveText('RULE-WAIT')
+  const banner = page.locator('#rule-block')
+  await expect(banner.getByText('Waiting on RULE-DEP (added after this block)')).toBeVisible()
+  await expect(banner).not.toContainText(LONG_SUMMARY)
+
+  await banner.getByRole('button', { name: "Show the agent's full explanation" }).click()
+  expect(await banner.getByTestId('rule-block-needs').evaluate((el) => el.textContent)).toBe(LONG_NEEDS)
+
+  await banner.getByRole('button', { name: 'Resume' }).click()
+  await expect(page.locator('#rule-block')).toHaveCount(0)
+  await expect(page.locator('.tracker__status')).toHaveText('Blocked')
+  await expect(page.locator('.dep-detail__section--blocked')).toContainText('RULE-DEP')
+  await expect.poll(() => ruleBlockJson('RULE-WAIT'), { timeout: 10_000 }).toBeNull()
+  expect(dependencyCount('RULE-WAIT', 'RULE-DEP')).toBe(1)
+
+  await page.reload()
+  await expect(page.locator('.tracker__id')).toHaveText('RULE-WAIT')
+  await expect(page.locator('#rule-block')).toHaveCount(0)
+  await expect(page.locator('.tracker__status')).toHaveText('Blocked')
+  await expect(page.locator('.dep-detail__section--blocked')).toContainText('RULE-DEP')
 })

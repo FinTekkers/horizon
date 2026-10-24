@@ -127,6 +127,7 @@ import { recordFlakes } from './checkFlakes.js'
 import { splitCheckError } from './checkHeadline.js'
 import { recordTestRuns } from './testResults.js'
 import { enqueueRuleBlockPing } from './ruleBlock.js'
+import { ruleBlockActionsText } from '../../domain/js/ruleBlockActions.js'
 import { buildStoredResultsInput, storedResultsPending, waitForStoredResults } from './storedTestResults.js'
 import { declares } from '../../domain/js/providers.js'
 import { chainHead, effectiveChain, entryKey, entryLabel, formatResetTime, pickModel, resetMs } from './usageLimits.js'
@@ -3371,7 +3372,7 @@ export function blockFarmRun(runId, { rule, needs }) {
   })()
   addEvent(id, {
     who: 'Horizon',
-    text: `stopped by a rule: “${block.rule.slice(0, 300)}” — needs: ${block.needs.slice(0, 600)} — add a dependency on the item that delivers it, resume to retry, or abandon`,
+    text: `stopped by a rule: “${block.rule.slice(0, 300)}” — needs: ${block.needs.slice(0, 600)} — ${ruleBlockActionsText()}`,
     color: '#9C333E',
     initials: 'HZ',
   })

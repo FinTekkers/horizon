@@ -1330,6 +1330,29 @@ function wakeDependents(id) {
   }
 }
 
+// HZ-580: the ids of the dependencies this item gained at or after `since` (a
+// rule block's blockedAt). Both columns are SQLite text in the same
+// `YYYY-MM-DD HH:MM:SS` form, so the comparison stays here, in one place:
+// releaseRuleBlockIfSatisfied and the banner's waitingOn cannot disagree.
+const selectDependencyIdsSince = db.prepare(
+  'SELECT depends_on_id FROM work_item_dependency WHERE item_id = ? AND created_at >= ?',
+)
+
+function dependencyIdsAddedSince(id, since) {
+  return new Set(selectDependencyIdsSince.all(id, since).map((r) => r.depends_on_id))
+}
+
+// HZ-580: the block plus `waitingOn` — its open, unmerged blockers that were
+// added after the block, which the banner leads with. [] when the block has no
+// blockedAt (rows from before HZ-346 recorded it).
+function ruleBlockView(id, block, blockedBy) {
+  const since = block.blockedAt ? dependencyIdsAddedSince(id, block.blockedAt) : new Set()
+  return {
+    ...block,
+    waitingOn: blockedBy.filter((b) => since.has(b.id) && !b.merged).map((b) => ({ id: b.id, title: b.title })),
+  }
+}
+
 // HZ-346: a rule-blocked item restarts once a dependency it gained after the
 // block, and every other blocker, has merged or closed (HZ-467: a rule block
 // only ever stops implement, so it lifts at merge too). A dependency that predates the
@@ -1341,10 +1364,7 @@ export function releaseRuleBlockIfSatisfied(id) {
   if (!block?.blockedAt) return false
   const blockers = blockersOf(id)
   if (blockers.length === 0 || isImplementBlocked(blockers)) return false
-  const added = db
-    .prepare('SELECT 1 FROM work_item_dependency WHERE item_id = ? AND created_at >= ? LIMIT 1')
-    .get(id, block.blockedAt)
-  if (!added) return false
+  if (dependencyIdsAddedSince(id, block.blockedAt).size === 0) return false
   db.prepare(`UPDATE work_item SET rule_block_json = NULL, ${touch} WHERE id = ?`).run(id)
   addEvent(id, {
     who: 'Horizon',
@@ -1765,6 +1785,7 @@ function itemView(row, { stepOutputs: withStepOutputs = true } = {}) {
   const personas = personasFromRow(row, overlay)
   const gateFields = itemGateFields(row)
   const ruleBlock = parseRuleBlock(row.rule_block_json)
+  const dependencies = dependencyFields(row.id, row)
   return {
     id: row.id,
     title: row.title,
@@ -1813,9 +1834,9 @@ function itemView(row, { stepOutputs: withStepOutputs = true } = {}) {
     state_since: stateSince(row, activeRun, gateFields.gateAction),
     reviewRejected: reviewRejected(row),
     forwardedReview: forwardedReview(row),
-    ...dependencyFields(row.id, row),
+    ...dependencies,
     ...spawnFields(row.id),
-    ruleBlock,
+    ruleBlock: ruleBlock && ruleBlockView(row.id, ruleBlock, dependencies.blockedBy),
     // HZ-422: every model this step may run on is usage-limited until `until`.
     usageWait: usageWaitView(row),
     // HZ-443: the board's "Waiting on me" filter and sort.

@@ -143,6 +143,7 @@ enforced rather than remembered.
 | `js/planDraft.js` | The server binding: `validatePlanDraft` runs the same rules in the same order, plus the two only the server can answer (`unknown_key`, `unknown_repo`); `realKeysIn`, `renderPlanDraftMd`, `PLAN_DRAFT_SCHEMA`. Both are run over `fixtures/plan-draft-cases.json` |
 | `planReview.schema.json` | An **output contract**: the `plan_review` a Plan's coverage review replies with (HZ-463) — each Inventory gap mapped to a draft or marked out of scope, plus overlap claims |
 | `py/plan_review.py` / `js/planReview.js` | The farm binding checks the reply; the server binding re-checks it and decides every finding (`reviewPlanDraft`: uncovered gap, overlap, size, unknown key). Run over `fixtures/plan-review-cases.json` |
+| `js/ruleBlockActions.js` | HZ-580: the actions a rule block offers (`RULE_BLOCK_ACTIONS`, `ruleBlockActionsText`), read by the block's event text, the owner's ping and the banner's buttons. **JS-only on purpose** — no JSON source and no Python twin: it is copy only JS renders, and the farm never names these actions |
 
 Every file here is authored. Nothing is output.
 
