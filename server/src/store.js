@@ -1303,6 +1303,20 @@ export function spawnFields(id) {
   }
 }
 
+// HZ-547: every item that filed at least one item (a Plan or a Task), open or
+// closed, keyed by id — for planProgress.js. Read-only, like spawnFields.
+const selectSpawnParents = db.prepare(`
+  SELECT DISTINCT w.* FROM item_spawn s JOIN work_item w ON w.id = s.parent_id
+   WHERE s.status = 'filed'`)
+
+export function spawnParents() {
+  return new Map(
+    selectSpawnParents
+      .all()
+      .map((row) => [row.id, { id: row.id, kind: itemKindOf(row), title: row.title, closed: isClosed(row) }]),
+  )
+}
+
 // Wakes every item that names `id` as a blocker — called once `id` has
 // merged (markMerged) or actually closed, from every place isClosed can flip
 // false -> true (approveGate, approveGateFromGithub, and upsertFromGithub's

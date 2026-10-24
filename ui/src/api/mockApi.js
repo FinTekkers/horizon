@@ -184,6 +184,11 @@ export function getDeployBlock() {
   return null
 }
 
+// No filed items in mock mode (HZ-547).
+export function getPlanProgress() {
+  return []
+}
+
 export async function setProjectEnabled() {
   throw new Error('Projects are not available in mock mode')
 }

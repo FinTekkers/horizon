@@ -434,6 +434,16 @@ def resolve_model(agent: str, step: str | None = None, persona: str | None = Non
 # projectValidation section of domain/fixtures/personas-cases.json drives both.
 _PROJECT_SLUG_SHAPE = re.compile(r"^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$")
 _PROJECT_PERSONA_KEYS = ("id", "agent", "label", "initials", "color", "model", "provider", "file")
+# HZ-536: optional — tool ids from farm/tools/allowlist.json. Only their shape
+# is checked here; farm/personas.py checks each id against the allow-list.
+# HZ-537: optional — knowledge sources, each {path} (a PDF in the project's
+# own repo) or {repo, path} (a PDF in a docs repo). A path segment never
+# starts with a dot, so `..` and hidden files cannot be named.
+_PROJECT_PERSONA_OPTIONAL_KEYS = ("tools", "knowledge")
+_TOOL_ID_SHAPE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,31}$")
+_KNOWLEDGE_REF_KEYS = ("repo", "path")
+_KNOWLEDGE_REPO_SHAPE = re.compile(r"^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$")
+_KNOWLEDGE_PATH_SHAPE = re.compile(r"^[A-Za-z0-9_-][A-Za-z0-9._-]*(?:\/[A-Za-z0-9_-][A-Za-z0-9._-]*)*\.pdf$")
 _INITIALS_SHAPE = re.compile(r"^[A-Z0-9]{1,3}$")
 _COLOR_SHAPE = re.compile(r"^#[0-9A-Fa-f]{6}$")
 # provider -> every model id domain/providers.json declares for it. Kept in
@@ -480,9 +490,10 @@ def validate_project_personas(
         if not isinstance(entry, dict):
             raise RuntimeError(f"{at} must be a JSON object")
         for key in entry:
-            if key not in _PROJECT_PERSONA_KEYS:
+            if key not in _PROJECT_PERSONA_KEYS and key not in _PROJECT_PERSONA_OPTIONAL_KEYS:
                 raise RuntimeError(
-                    f"{at} has unknown key {_json(key)} — expected only {_json(list(_PROJECT_PERSONA_KEYS))}"
+                    f"{at} has unknown key {_json(key)} — expected only "
+                    f"{_json(list(_PROJECT_PERSONA_KEYS + _PROJECT_PERSONA_OPTIONAL_KEYS))}"
                 )
         for key in _PROJECT_PERSONA_KEYS:
             if key not in entry:
@@ -535,4 +546,44 @@ def validate_project_personas(
         if role_file in seen_files:
             raise RuntimeError(f"{where}: role file {_json(role_file)} is declared more than once")
         seen_files.add(role_file)
+        if "tools" in entry:
+            tools = entry["tools"]
+            if not isinstance(tools, list):
+                raise RuntimeError(f"{at}.tools must be an array of tool ids")
+            for tool in tools:
+                if not isinstance(tool, str) or _TOOL_ID_SHAPE.fullmatch(tool) is None:
+                    raise RuntimeError(
+                        f"{at}.tools names {_json(tool)} — expected a tool id matching /{_TOOL_ID_SHAPE.pattern}/"
+                    )
+            if len(set(tools)) != len(tools):
+                raise RuntimeError(f"{at}.tools names a tool more than once")
+        if "knowledge" in entry:
+            knowledge = entry["knowledge"]
+            if not isinstance(knowledge, list):
+                raise RuntimeError(f"{at}.knowledge must be an array of source references")
+            seen_refs: set = set()
+            for j, ref in enumerate(knowledge):
+                ref_at = f"{at}.knowledge[{j}]"
+                if not isinstance(ref, dict):
+                    raise RuntimeError(f"{ref_at} must be a JSON object")
+                for key in ref:
+                    if key not in _KNOWLEDGE_REF_KEYS:
+                        raise RuntimeError(
+                            f"{ref_at} has unknown key {_json(key)} — expected only {_json(list(_KNOWLEDGE_REF_KEYS))}"
+                        )
+                if "repo" in ref and (
+                    not isinstance(ref["repo"], str) or _KNOWLEDGE_REPO_SHAPE.fullmatch(ref["repo"]) is None
+                ):
+                    raise RuntimeError(
+                        f"{ref_at}.repo {_json(ref['repo'])} — expected a repo matching /{_KNOWLEDGE_REPO_SHAPE.pattern}/"
+                    )
+                path = ref.get("path")
+                if not isinstance(path, str) or _KNOWLEDGE_PATH_SHAPE.fullmatch(path) is None:
+                    raise RuntimeError(
+                        f"{ref_at}.path {_json(path)} — expected a PDF path matching /{_KNOWLEDGE_PATH_SHAPE.pattern}/"
+                    )
+                ref_key = f"{ref.get('repo', '')}:{path}"
+                if ref_key in seen_refs:
+                    raise RuntimeError(f"{ref_at} names a source more than once")
+                seen_refs.add(ref_key)
     return data

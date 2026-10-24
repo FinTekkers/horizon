@@ -142,6 +142,18 @@ RECONCILE_GRACE_S = int(os.environ.get("FARM_RECONCILE_GRACE_S", "90"))
 # whose run's owner is gone (farm/run_reaper.py sweep()).
 RUN_SWEEP_INTERVAL_S = float(os.environ.get("FARM_RUN_SWEEP_INTERVAL_S", "5"))
 
+# HZ-537: the knowledge library's cache — extracted PDF text and section
+# indexes, one directory per doc slug. Outside every repo, so no document text
+# can be committed, and rebuildable from the sources at any time. Read at call
+# time like farm_home(), so tests can point it at a temp dir.
+def knowledge_dir() -> Path:
+    return Path(os.environ.get("FARM_KNOWLEDGE_DIR", str(Path.home() / ".horizon" / "knowledge")))
+
+
+# How often farmd's knowledge job (farm/knowledge.py sync_once) asks the server
+# for sources and re-extracts any whose git sha changed.
+KNOWLEDGE_INTERVAL_S = int(os.environ.get("FARM_KNOWLEDGE_INTERVAL_S", "300"))
+
 # HZ-194: how long a pause waits for the step agent to checkpoint its work
 # before farmd kills the session anyway. The server sends its own value
 # (HZ_PAUSE_CHECKPOINT_TIMEOUT_S in server/src/config.js) with each pause;

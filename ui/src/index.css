@@ -581,6 +581,19 @@ button { font-family: var(--font-sans); }
 .board__narrow-group { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; }
 .board__narrow-label { font: 600 12px var(--font-sans); color: var(--muted); }
 .board__sort-toggle { border-style: dashed; }
+/* HZ-547: the Plan group — a picker until a Plan is chosen, then one chip with
+   a clear button. A long Plan title is cut off, never widening the strip. */
+.board__plan-select { max-width: min(280px, 100%); text-overflow: ellipsis; }
+.board__plan-chip {
+  display: inline-flex; align-items: center; gap: 6px; max-width: 100%; min-width: 0;
+  border: 1.5px solid var(--primary-ink); border-radius: 20px; padding: 3px 4px 3px 12px;
+  font: 700 12px var(--font-sans); background: var(--primary-bg); color: var(--primary-ink);
+}
+.board__plan-chip-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.board__plan-clear {
+  flex: none; width: 22px; height: 22px; padding: 0; border: none; border-radius: 50%; cursor: pointer;
+  font: 800 13px var(--font-sans); background: var(--primary-bg-hover); color: var(--primary-ink);
+}
 .board__empty {
   margin-top: 8px; padding: 40px 20px; text-align: center;
   font: 500 14px var(--font-sans); color: var(--muted);
@@ -691,6 +704,12 @@ button { font-family: var(--font-sans); }
 }
 .dep-pill__id { color: inherit; text-decoration: underline; }
 .dep-pill--dependents { color: var(--agent-human-ink); background: var(--agent-human-bg); }
+/* HZ-547: the Plan that filed this item — opens the board filtered to it. */
+.dep-pill--from-plan {
+  color: var(--primary-ink); background: var(--primary-bg); border: 1px solid var(--primary-bg-hover);
+  text-decoration: none;
+}
+.dep-pill--from-plan:hover { background: var(--primary-bg-hover); }
 
 .dep-detail { display: flex; gap: 14px; flex-wrap: wrap; margin-top: 14px; }
 .dep-detail__section {
@@ -787,6 +806,14 @@ button { font-family: var(--font-sans); }
   background: var(--primary-bg); border-radius: 7px; padding: 4px 10px;
 }
 .tracker__issue:hover { background: var(--primary-bg-hover); }
+/* HZ-547: "From Plan VS-110 · 6 of 13 done" — the Plan that filed this item. */
+.tracker__from-plan {
+  display: inline-flex; align-items: center; gap: 6px; min-height: 30px; padding: 0 12px;
+  border-radius: 999px; background: var(--primary-bg); color: var(--primary-ink);
+  font: 700 13px var(--font-sans); text-decoration: none; white-space: nowrap;
+}
+.tracker__from-plan:hover { background: var(--primary-bg-hover); }
+.tracker__meta:has(.tracker__from-plan) { flex-wrap: wrap; }
 .tracker__title { font: 800 27px var(--font-sans); letter-spacing: -0.6px; line-height: 1.15; margin-bottom: 10px; }
 .tracker__desc { font: 400 14px var(--font-sans); color: var(--text-secondary); line-height: 1.55; max-width: 620px; }
 .tracker__status {
