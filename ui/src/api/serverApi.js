@@ -872,6 +872,14 @@ export function getCheckFlakes() {
   return getJson('/admin/check-flakes')
 }
 
+// HZ-549: Admin's Productivity report, read-only. The response follows
+// domain/productivity.schema.json; cost and token fields are null when not
+// captured, never 0.
+export function getProductivity({ range = '14d', project = 'all' } = {}) {
+  const qs = new URLSearchParams({ range, project })
+  return getJson(`/admin/productivity?${qs}`)
+}
+
 // HZ-563: Farm health — admins only, read-only. Rejects with the server's
 // error code: admin_required (403), farm_health_warming (503) before the
 // server's first reading, or HTTP <status>.
