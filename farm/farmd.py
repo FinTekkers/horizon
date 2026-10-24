@@ -24,7 +24,7 @@ from fastapi.responses import JSONResponse
 # HZ-132 put the failure-reason vocabulary there under the same rule, so the
 # tags this daemon relays are the ones the server classifies, by construction.
 from domain.py import reasons, run_plan, steps
-from . import caretaker_ruling, check_slots, conflict_cancel, conflict_resolver, container_runner, job_reports, login_env, pause, rules, task_job, tmux_mgr, workspaces
+from . import caretaker_ruling, check_slots, conflict_cancel, conflict_resolver, container_runner, job_reports, knowledge, login_env, pause, rules, task_job, tmux_mgr, workspaces
 from . import config as farm_config
 from .checks import CHECK_SLOTS, default_check_slots, redact
 from .task_files import read_launchable_task
@@ -829,6 +829,18 @@ def _reconcile_loop() -> None:
             _reconcile_claimed_runs()
         except Exception as exc:
             print(f"farmd: reconcile error: {exc}", flush=True)
+
+
+def _knowledge_loop() -> None:
+    """HZ-537: re-extracts project knowledge PDFs whose git sha changed
+    (farm/knowledge.py). Inert while no project with its definitions switch on
+    names a source: the server then lists none."""
+    while True:
+        time.sleep(farm_config.KNOWLEDGE_INTERVAL_S)
+        try:
+            knowledge.sync_once(provision=_provision_hub)
+        except Exception as exc:
+            print(f"farmd: knowledge sync error: {exc}", flush=True)
 
 
 def _claim_and_launch(task_path, runs_dir: Path, repo_root: Path) -> str | None:
@@ -2271,6 +2283,7 @@ _reconcile_claimed_runs()
 threading.Thread(target=_watchdog, daemon=True).start()
 threading.Thread(target=_ephemeral_dispatcher, daemon=True).start()
 threading.Thread(target=_reconcile_loop, daemon=True).start()
+threading.Thread(target=_knowledge_loop, daemon=True).start()
 
 if __name__ == "__main__":
     import uvicorn
