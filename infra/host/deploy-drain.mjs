@@ -20,6 +20,7 @@
 //   FARM_SHARED_SECRET                       sent as x-farm-secret, never printed
 //   HORIZON_DEPLOY_DRAIN_TIMEOUT_S           how long to wait for runs (default 1500 = 25 min; 0 = interrupt at once)
 //   HORIZON_DEPLOY_DRAIN_STEP_TIMEOUT_S      HZ-321: how long to wait for running agent steps (default 1500; 0 = checkpoint at once)
+//   HORIZON_DEPLOY_DRAIN_UPLOAD_TIMEOUT_S    HZ-570: how long to wait for test-results uploads (default 300; 0 = do not wait)
 //   HORIZON_DEPLOY_DRAIN_POLL_S              poll interval (default 5)
 //   HORIZON_DEPLOY_DRAIN_REQUEST_TIMEOUT_S   bound on each begin/status/release request (default 10)
 //   HORIZON_DEPLOY_DRAIN_INTERRUPT_TIMEOUT_S bound on the interrupt request, which waits for checkers to stop (default 60)
@@ -39,13 +40,24 @@
 // A server without `steps` (one older than this helper) has none to wait for.
 // HZ-469: a step listed with `survives: true` is not waited for or stopped:
 //   DRAIN not waiting for <k> step(s) that survive a restart: <item> <step>, ...
-// The whole drain ends within max(both waits) + the request bounds + two
-// interrupt bounds (one for runs, one for steps).
+// HZ-570: test-results uploads (the server's `uploads` and `uploadsInFlight`
+// fields) are waited on too: an implement run that has finished can still be
+// posting its rows, and a restart then lost them. Uploads are never
+// interrupted; the wait starts when the first one is seen (a step that
+// finishes during the drain uploads after it) and has its own bound:
+//   DRAIN waiting up to <n>s for <k> test-results upload(s): <item> run <id>, ...
+//   DRAIN waiting for <k> more test-results upload(s): <item> run <id>, ...
+//   DRAIN upload stored: <item> run <id>
+//   DRAIN upload limit hit after <n>s: <k> upload(s) not stored — restarting anyway
+// A server without these fields has none to wait for.
+// The whole drain ends within max(both waits) + the upload wait + the request
+// bounds + two interrupt bounds (one for runs, one for steps).
 
 import { pathToFileURL } from 'node:url'
 
 export const DEFAULT_TIMEOUT_S = 1500
 export const DEFAULT_STEP_TIMEOUT_S = 1500
+export const DEFAULT_UPLOAD_TIMEOUT_S = 300
 // Extra block time past the wait, for the restart and the health check. The
 // restarted server starts unblocked anyway; this only bounds a dead script.
 const BLOCK_SLACK_S = 600
@@ -62,6 +74,7 @@ export function drainConfig(env = process.env) {
     secret: env.FARM_SHARED_SECRET || 'dev-secret',
     timeoutS: seconds(env.HORIZON_DEPLOY_DRAIN_TIMEOUT_S, DEFAULT_TIMEOUT_S),
     stepTimeoutS: seconds(env.HORIZON_DEPLOY_DRAIN_STEP_TIMEOUT_S, DEFAULT_STEP_TIMEOUT_S),
+    uploadTimeoutS: seconds(env.HORIZON_DEPLOY_DRAIN_UPLOAD_TIMEOUT_S, DEFAULT_UPLOAD_TIMEOUT_S),
     pollS: Math.max(seconds(env.HORIZON_DEPLOY_DRAIN_POLL_S, 5), 0.05),
     requestTimeoutS: Math.max(seconds(env.HORIZON_DEPLOY_DRAIN_REQUEST_TIMEOUT_S, 10), 0.1),
     interruptTimeoutS: Math.max(seconds(env.HORIZON_DEPLOY_DRAIN_INTERRUPT_TIMEOUT_S, 60), 0.1),
@@ -73,6 +86,7 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 const safe = (value) => String(value ?? '').replace(/[^A-Za-z0-9._-]/g, '?').slice(0, 64)
 const label = (run) => `${safe(run.itemId)} ${safe(run.kind)}`
 const stepLabel = (step) => `${safe(step.itemId)} ${safe(step.step)}`
+const uploadLabel = (upload) => `${safe(upload.itemId)} run ${safe(upload.runId)}`
 
 class DrainError extends Error {}
 
@@ -104,11 +118,63 @@ const stepsOf = (reply) => (Array.isArray(reply?.steps) ? reply.steps.filter((st
 // drain neither waits for it nor stops it. Anything else, including a step with
 // no `survives` field (a server older than this helper), is waited for.
 const survives = (step) => step.survives === true
+// HZ-570: implement runs whose test results are promised but not stored, and
+// the test-runs requests the server is serving.
+const uploadsOf = (reply) => (Array.isArray(reply?.uploads) ? reply.uploads.filter((upload) => Number.isInteger(upload?.runId)) : [])
+const inFlightOf = (reply) => (Number.isInteger(reply?.uploadsInFlight) && reply.uploadsInFlight > 0 ? reply.uploadsInFlight : 0)
 
-// The block must outlast both waits and both interrupt calls, or new runs
+// The block must outlast every wait and both interrupt calls, or new runs
 // could start while the drain is still waiting.
 export function blockTtlS(cfg) {
-  return Math.ceil(Math.max(cfg.timeoutS, cfg.stepTimeoutS ?? 0)) + 2 * Math.ceil(cfg.interruptTimeoutS) + BLOCK_SLACK_S
+  return (
+    Math.ceil(Math.max(cfg.timeoutS, cfg.stepTimeoutS ?? 0)) +
+    Math.ceil(cfg.uploadTimeoutS ?? 0) +
+    2 * Math.ceil(cfg.interruptTimeoutS) +
+    BLOCK_SLACK_S
+  )
+}
+
+// HZ-570: the uploads a drain waits for. track() reads each server reply;
+// waiting() is false once nothing is pending or the limit was hit.
+function uploadWatch(cfg, print) {
+  const uploads = new Map()
+  let inFlight = 0
+  let deadline = null
+  let gaveUp = false
+  const describe = (list) => (list.length > 0 ? list.map(uploadLabel).join(', ') : `${inFlight} in-flight request(s)`)
+  const watch = {
+    waiting: () => !gaveUp && (uploads.size > 0 || inFlight > 0),
+    deadline: () => deadline,
+    gaveUp: () => gaveUp,
+    track(reply) {
+      if (gaveUp) return
+      const listed = uploadsOf(reply)
+      const still = new Set(listed.map((upload) => upload.runId))
+      for (const [runId, upload] of uploads) {
+        if (still.has(runId)) continue
+        print(`DRAIN upload stored: ${uploadLabel(upload)}`)
+        uploads.delete(runId)
+      }
+      const fresh = listed.filter((upload) => !uploads.has(upload.runId))
+      for (const upload of fresh) uploads.set(upload.runId, upload)
+      inFlight = inFlightOf(reply)
+      if (deadline === null && watch.waiting()) {
+        deadline = Date.now() + cfg.uploadTimeoutS * 1000
+        const count = Math.max(uploads.size, inFlight)
+        print(`DRAIN waiting up to ${cfg.uploadTimeoutS}s for ${count} test-results upload(s): ${describe([...uploads.values()])}`)
+      } else if (deadline !== null && fresh.length > 0) {
+        print(`DRAIN waiting for ${fresh.length} more test-results upload(s): ${describe(fresh)}`)
+      }
+    },
+    // Called once the deadline has passed: the deploy goes ahead.
+    giveUp() {
+      const count = Math.max(uploads.size, inFlight)
+      print(`DRAIN upload limit hit after ${cfg.uploadTimeoutS}s: ${count} upload(s) not stored — restarting anyway`)
+      gaveUp = true
+      uploads.clear()
+    },
+  }
+  return watch
 }
 
 const STEP_STOPPED = {
@@ -135,7 +201,8 @@ export async function drain(cfg, print = console.log) {
   if (skipped.length > 0) {
     print(`DRAIN not waiting for ${skipped.length} step(s) that survive a restart: ${skipped.map(stepLabel).join(', ')}`)
   }
-  if (pending.size === 0 && steps.size === 0) {
+  const uploads = uploadWatch(cfg, print)
+  if (pending.size === 0 && steps.size === 0 && uploadsOf(begin).length === 0 && inFlightOf(begin) === 0) {
     print('DRAIN nothing running')
     return
   }
@@ -145,6 +212,7 @@ export async function drain(cfg, print = console.log) {
   if (steps.size > 0) {
     print(`DRAIN waiting up to ${cfg.stepTimeoutS}s for ${steps.size} agent step(s): ${[...steps.values()].map(stepLabel).join(', ')}`)
   }
+  uploads.track(begin)
 
   const started = Date.now()
   const deadline = started + cfg.timeoutS * 1000
@@ -161,8 +229,13 @@ export async function drain(cfg, print = console.log) {
       await interruptSteps(cfg, steps, print)
       steps.clear()
     }
-    if (pending.size === 0 && steps.size === 0) break
-    const next = Math.min(pending.size > 0 ? deadline : Infinity, steps.size > 0 ? stepDeadline : Infinity)
+    if (uploads.waiting() && Date.now() >= uploads.deadline()) uploads.giveUp()
+    if (pending.size === 0 && steps.size === 0 && !uploads.waiting()) break
+    const next = Math.min(
+      pending.size > 0 ? deadline : Infinity,
+      steps.size > 0 ? stepDeadline : Infinity,
+      uploads.waiting() ? uploads.deadline() : Infinity,
+    )
     await sleep(Math.min(cfg.pollS * 1000, Math.max(next - Date.now(), 0)))
     let status
     try {
@@ -183,8 +256,9 @@ export async function drain(cfg, print = console.log) {
       print(`DRAIN finished: ${stepLabel(step)}`)
       steps.delete(runId)
     }
+    uploads.track(status)
   }
-  if (!interrupted) print('DRAIN done: nothing running')
+  if (!interrupted && !uploads.gaveUp()) print('DRAIN done: nothing running')
 }
 
 // The HZ-250 interrupt of pre-merge/resolve runs, its request and lines

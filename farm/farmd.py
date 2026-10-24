@@ -594,6 +594,12 @@ def _forward_result(body: dict) -> int | None:
         payload = {"rule": body["blocked"].get("rule", ""), "needs": body["blocked"].get("needs", "")}
     elif body.get("ok"):
         payload = {"summary": body.get("summary", ""), "patch": body.get("patch") or {}, "artifacts": body.get("artifacts") or {}}
+        # HZ-570: the rows the test-runs post will carry, so the server holds
+        # the deploy drain and review for them until they are stored.
+        if isinstance(body.get("test_runs"), list):
+            payload["test_runs_expected"] = sum(
+                len(run["tests"]) for run in body["test_runs"] if isinstance(run, dict) and isinstance(run.get("tests"), list)
+            )
     else:
         payload = {"error": body.get("error", "unknown agent failure")}
         # HZ-76: only a small, explicit set of reasons (e.g. "turn_cap") is
@@ -638,11 +644,41 @@ def _in_background(fn, *args) -> None:
     threading.Thread(target=fn, args=args, daemon=True).start()
 
 
+# HZ-570: test-runs posts not yet confirmed stored, one file per run, kept
+# across a server restart (and a farmd one) until the server confirms them.
+TEST_RUNS_OUTBOX = STATE_DIR / "test-runs-outbox"
+# How long a spooled upload is retried before it is abandoned; the server's
+# STORED_RESULTS_RETRY_WINDOW_S holds review for the same span.
+TEST_RUNS_RETRY_MAX_S = float(os.environ.get("FARM_TEST_RUNS_RETRY_MAX_S", "900"))
+# Seconds between tries of one file: 2, 4, 8, 16, then every 30.
+TEST_RUNS_BACKOFF_S = (2, 4, 8, 16, 30)
+_outbox_lock = threading.Lock()
+_outbox_busy: set[str] = set()
+
+
 def _forward_test_runs(run_id, test_runs: list) -> None:
     """HZ-327: the per-test results, after the result itself so the server
     already holds this run's rerun flakes. Separate from /complete because a
-    whole suite's rows can outgrow that route's body limit. One try: a lost
-    history row never changes a check's result."""
+    whole suite's rows can outgrow that route's body limit.
+
+    HZ-570: no longer one try. The rows are spooled to TEST_RUNS_OUTBOX first
+    and the file is kept until the server answers 2xx (stored: a retry
+    replaces the run's rows, so it never adds a copy) or 4xx (rejected: a
+    retry cannot help). On a 5xx or no answer — a deploy restarting the
+    server — _test_runs_outbox_loop tries again."""
+    path = TEST_RUNS_OUTBOX / f"{run_id}.json"
+    try:
+        TEST_RUNS_OUTBOX.mkdir(parents=True, exist_ok=True)
+        _write_task_atomic(path, {"run_id": run_id, "test_runs": test_runs, "spooled_at": time.time()})
+    except OSError as exc:
+        print(f"farmd: could not spool test results for run {run_id} ({exc}); one try only", flush=True)
+        _post_test_runs(run_id, test_runs)
+        return
+    _drain_outbox_file(path)
+
+
+def _post_test_runs(run_id, test_runs) -> str | None:
+    """One post. "stored" on a 2xx, "rejected" on a 4xx, None to retry."""
     try:
         res = httpx.post(
             f"{HORIZON_URL}/api/farm/steps/{run_id}/test-runs",
@@ -650,9 +686,100 @@ def _forward_test_runs(run_id, test_runs: list) -> None:
             headers={"x-farm-secret": SHARED_SECRET},
             timeout=15,
         )
-        print(f"farmd: forwarded run {run_id} test-runs -> {res.status_code}", flush=True)
     except Exception as exc:
-        print(f"farmd: test results for run {run_id} not recorded: {exc}", flush=True)
+        print(f"farmd: test results for run {run_id} not stored yet: {exc}", flush=True)
+        return None
+    print(f"farmd: forwarded run {run_id} test-runs -> {res.status_code}", flush=True)
+    if 200 <= res.status_code < 300:
+        return "stored"
+    if 400 <= res.status_code < 500:
+        return "rejected"
+    return None
+
+
+def _abandon_test_runs(run_id, why: str) -> None:
+    """Tells the server farmd stopped retrying, so review stops waiting. One
+    try: a lost call leaves review waiting out its own window."""
+    try:
+        httpx.post(
+            f"{HORIZON_URL}/api/farm/steps/{run_id}/test-runs/abandon",
+            json={"why": why},
+            headers={"x-farm-secret": SHARED_SECRET},
+            timeout=15,
+        )
+    except Exception as exc:
+        print(f"farmd: could not tell the server run {run_id}'s test results were abandoned: {exc}", flush=True)
+
+
+def _drain_outbox_file(path: Path) -> bool:
+    """Posts one spooled upload. True when the file is gone (stored, rejected,
+    abandoned or unreadable), False when it stays for a retry. A file another
+    thread is already posting is left to it."""
+    with _outbox_lock:
+        if path.name in _outbox_busy:
+            return False
+        _outbox_busy.add(path.name)
+    try:
+        try:
+            body = json.loads(path.read_text())
+        except FileNotFoundError:
+            return True
+        except (OSError, json.JSONDecodeError) as exc:
+            print(f"farmd: unreadable test-results spool {path.name} dropped: {exc}", flush=True)
+            path.unlink(missing_ok=True)
+            return True
+        run_id = body.get("run_id")
+        outcome = _post_test_runs(run_id, body.get("test_runs"))
+        if outcome is not None:
+            path.unlink(missing_ok=True)
+            if outcome == "rejected":
+                _abandon_test_runs(run_id, "rejected")
+            return True
+        spooled_at = body.get("spooled_at")
+        age = time.time() - (spooled_at if isinstance(spooled_at, (int, float)) else path.stat().st_mtime)
+        if age >= TEST_RUNS_RETRY_MAX_S:
+            print(f"farmd: test results for run {run_id} abandoned after {int(age)}s", flush=True)
+            path.unlink(missing_ok=True)
+            _abandon_test_runs(run_id, "gave_up")
+            return True
+        return False
+    finally:
+        with _outbox_lock:
+            _outbox_busy.discard(path.name)
+
+
+def _test_runs_outbox_loop(poll_s: float = 1.0) -> None:
+    """HZ-570: retries spooled test-runs posts with TEST_RUNS_BACKOFF_S, and
+    picks up the files a killed farmd left behind (tried at once)."""
+    tries: dict[str, int] = {}
+    next_at: dict[str, float] = {}
+    while True:
+        time.sleep(poll_s)
+        try:
+            now = time.time()
+            present = {p.name: p for p in TEST_RUNS_OUTBOX.glob("*.json")}
+            for name in list(tries):
+                if name not in present:
+                    tries.pop(name, None)
+                    next_at.pop(name, None)
+            for name, path in sorted(present.items()):
+                if name not in next_at:
+                    # A file spooled moments ago is still on its first post.
+                    try:
+                        next_at[name] = path.stat().st_mtime + TEST_RUNS_BACKOFF_S[0]
+                    except OSError:
+                        continue
+                if now < next_at[name]:
+                    continue
+                if _drain_outbox_file(path):
+                    tries.pop(name, None)
+                    next_at.pop(name, None)
+                    continue
+                n = tries.get(name, 0) + 1
+                tries[name] = n
+                next_at[name] = time.time() + TEST_RUNS_BACKOFF_S[min(n, len(TEST_RUNS_BACKOFF_S) - 1)]
+        except Exception as exc:
+            print(f"farmd: test-results outbox error: {exc}", flush=True)
 
 
 def _report_unusable_task(path: Path, why: str) -> bool:
@@ -2271,6 +2398,7 @@ _reconcile_claimed_runs()
 threading.Thread(target=_watchdog, daemon=True).start()
 threading.Thread(target=_ephemeral_dispatcher, daemon=True).start()
 threading.Thread(target=_reconcile_loop, daemon=True).start()
+threading.Thread(target=_test_runs_outbox_loop, daemon=True).start()
 
 if __name__ == "__main__":
     import uvicorn

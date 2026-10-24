@@ -3662,6 +3662,8 @@ export function buildApp({ logger = true, onRoute = null } = {}) {
             artifacts: { type: 'object' },
             flakes: FLAKES_BODY,
             job_view: FINAL_JOB_VIEW_BODY,
+            // HZ-570: the test-result rows farmd will post next for this run.
+            test_runs_expected: { type: 'integer', minimum: 0 },
           },
         },
       },
@@ -3669,6 +3671,9 @@ export function buildApp({ logger = true, onRoute = null } = {}) {
     async (request, reply) => {
       if (!farmAuthorized(request, reply)) return
       checkFlakes.recordRunFlakes(request.params.runId, request.body.flakes, { log: request.log })
+      // Stamped before the run closes, so no drain or review sees it done
+      // without its upload pending.
+      testResults.markUploadPending(request.params.runId, request.body.test_runs_expected)
       return orchestrator.completeFarmRun(request.params.runId, request.body)
     },
   )
@@ -3748,7 +3753,12 @@ export function buildApp({ logger = true, onRoute = null } = {}) {
 
   // HZ-327: the implement step's per-test results, posted by farmd after the
   // result itself. Its own route because a whole suite's rows can outgrow the
-  // default body limit /complete keeps. Best-effort on both sides.
+  // default body limit /complete keeps.
+  // HZ-570: the reply now confirms storage, and farmd keeps the rows until it
+  // gets one: {ok, stored} once committed (a retry replaces the run's rows),
+  // {ok, stored: 0, unknown_run} for a run this server never had, 503
+  // {error: 'not_stored'} when the insert failed. Counted for the deploy drain
+  // while it is served.
   fastify.post(
     '/api/farm/steps/:runId/test-runs',
     {
@@ -3760,8 +3770,39 @@ export function buildApp({ logger = true, onRoute = null } = {}) {
     },
     async (request, reply) => {
       if (!farmAuthorized(request, reply)) return
-      testResults.recordRunTestRuns(request.params.runId, request.body.test_runs, { log: request.log })
-      return { ok: true }
+      const runId = request.params.runId
+      deployDrain.uploadStarted()
+      try {
+        await testResults.testRunsHold('before', runId)
+        let result
+        try {
+          result = testResults.recordRunTestRuns(runId, request.body.test_runs, { log: request.log })
+        } catch {
+          return reply.code(503).send({ error: 'not_stored' })
+        }
+        await testResults.testRunsHold('after', runId)
+        return result.unknownRun ? { ok: true, stored: 0, unknown_run: true } : { ok: true, stored: result.stored }
+      } finally {
+        deployDrain.uploadEnded()
+      }
+    },
+  )
+
+  // HZ-570: farmd stopped retrying a run's upload — 'rejected' (a 4xx) or
+  // 'gave_up' (its retry window ran out) — so review stops waiting for it.
+  fastify.post(
+    '/api/farm/steps/:runId/test-runs/abandon',
+    {
+      schema: {
+        params: { type: 'object', required: ['runId'], properties: { runId: { type: 'integer' } } },
+        body: { type: 'object', required: ['why'], properties: { why: { type: 'string', enum: testResults.UPLOAD_ABANDON_WHYS } } },
+      },
+    },
+    (request, reply) => {
+      if (!farmAuthorized(request, reply)) return
+      const changed = testResults.markUploadAbandoned(request.params.runId, request.body.why)
+      if (changed) request.log.warn(`test results for run ${request.params.runId} abandoned by the farm (${request.body.why})`)
+      return { ok: true, changed }
     },
   )
 
