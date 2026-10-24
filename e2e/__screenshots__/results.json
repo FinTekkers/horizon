@@ -1,0 +1,442 @@
+{
+  "version": 1,
+  "baseline": "1b6c1a7d82a7f606b49f400165187c11c224c918",
+  "threshold": 0.1,
+  "ratioTolerance": 0.01,
+  "shots": [
+    {
+      "name": "abandon",
+      "status": "same",
+      "diffRatio": 0,
+      "diff": null,
+      "error": null
+    },
+    {
+      "name": "activity-minimized",
+      "status": "same",
+      "diffRatio": 0,
+      "diff": null,
+      "error": null
+    },
+    {
+      "name": "api-tokens",
+      "status": "same",
+      "diffRatio": 0.003741455078125,
+      "diff": null,
+      "error": null
+    },
+    {
+      "name": "approvals-drawer",
+      "status": "changed",
+      "diffRatio": 0.03219757080078125,
+      "diff": "e2e/__screenshots__/diff/approvals-drawer.png",
+      "error": null
+    },
+    {
+      "name": "artifact-history",
+      "status": "same",
+      "diffRatio": 0,
+      "diff": null,
+      "error": null
+    },
+    {
+      "name": "board",
+      "status": "same",
+      "diffRatio": 0,
+      "diff": null,
+      "error": null
+    },
+    {
+      "name": "board-blocked-dark",
+      "status": "same",
+      "diffRatio": 0,
+      "diff": null,
+      "error": null
+    },
+    {
+      "name": "board-blocked-light",
+      "status": "same",
+      "diffRatio": 0,
+      "diff": null,
+      "error": null
+    },
+    {
+      "name": "board-blocked-phone",
+      "status": "same",
+      "diffRatio": 0,
+      "diff": null,
+      "error": null
+    },
+    {
+      "name": "board-elapsed-dark",
+      "status": "same",
+      "diffRatio": 0,
+      "diff": null,
+      "error": null
+    },
+    {
+      "name": "board-gate-status-running",
+      "status": "same",
+      "diffRatio": 0,
+      "diff": null,
+      "error": null
+    },
+    {
+      "name": "create-item",
+      "status": "same",
+      "diffRatio": 0,
+      "diff": null,
+      "error": null
+    },
+    {
+      "name": "create-plan",
+      "status": "same",
+      "diffRatio": 0.00081939697265625,
+      "diff": null,
+      "error": null
+    },
+    {
+      "name": "create-task",
+      "status": "same",
+      "diffRatio": 0.0013885498046875,
+      "diff": null,
+      "error": null
+    },
+    {
+      "name": "dark-mode-board",
+      "status": "same",
+      "diffRatio": 0.0047607421875,
+      "diff": null,
+      "error": null
+    },
+    {
+      "name": "deep-links",
+      "status": "same",
+      "diffRatio": 0,
+      "diff": null,
+      "error": null
+    },
+    {
+      "name": "definitions-preview",
+      "status": "same",
+      "diffRatio": 0,
+      "diff": null,
+      "error": null
+    },
+    {
+      "name": "dependencies-board",
+      "status": "same",
+      "diffRatio": 0,
+      "diff": null,
+      "error": null
+    },
+    {
+      "name": "dependencies-tracker",
+      "status": "same",
+      "diffRatio": 0,
+      "diff": null,
+      "error": null
+    },
+    {
+      "name": "farm-health",
+      "status": "new",
+      "diffRatio": null,
+      "diff": null,
+      "error": null
+    },
+    {
+      "name": "farm-health-phone",
+      "status": "new",
+      "diffRatio": null,
+      "diff": null,
+      "error": null
+    },
+    {
+      "name": "full-lifecycle",
+      "status": "same",
+      "diffRatio": 0,
+      "diff": null,
+      "error": null
+    },
+    {
+      "name": "gate-approve-confirm",
+      "status": "same",
+      "diffRatio": 0,
+      "diff": null,
+      "error": null
+    },
+    {
+      "name": "gate-in-flight-blocked",
+      "status": "same",
+      "diffRatio": 0.00387725830078125,
+      "diff": null,
+      "error": null
+    },
+    {
+      "name": "gate-key",
+      "status": "same",
+      "diffRatio": 0,
+      "diff": null,
+      "error": null
+    },
+    {
+      "name": "gates",
+      "status": "same",
+      "diffRatio": 0,
+      "diff": null,
+      "error": null
+    },
+    {
+      "name": "kill-error",
+      "status": "same",
+      "diffRatio": 0,
+      "diff": null,
+      "error": null
+    },
+    {
+      "name": "live-feed-step-output",
+      "status": "same",
+      "diffRatio": 0,
+      "diff": null,
+      "error": null
+    },
+    {
+      "name": "login-error",
+      "status": "same",
+      "diffRatio": 1.52587890625e-06,
+      "diff": null,
+      "error": null
+    },
+    {
+      "name": "markdown",
+      "status": "same",
+      "diffRatio": 0,
+      "diff": null,
+      "error": null
+    },
+    {
+      "name": "merge-conflict",
+      "status": "same",
+      "diffRatio": 0,
+      "diff": null,
+      "error": null
+    },
+    {
+      "name": "merge-conflict-resolved",
+      "status": "same",
+      "diffRatio": 0,
+      "diff": null,
+      "error": null
+    },
+    {
+      "name": "mobile-layout",
+      "status": "same",
+      "diffRatio": 0,
+      "diff": null,
+      "error": null
+    },
+    {
+      "name": "mock-agents",
+      "status": "same",
+      "diffRatio": 0,
+      "diff": null,
+      "error": null
+    },
+    {
+      "name": "pause-reason",
+      "status": "same",
+      "diffRatio": 1.678466796875e-05,
+      "diff": null,
+      "error": null
+    },
+    {
+      "name": "persona-picker",
+      "status": "same",
+      "diffRatio": 0,
+      "diff": null,
+      "error": null
+    },
+    {
+      "name": "plan-filter-board-desktop",
+      "status": "removed",
+      "diffRatio": null,
+      "diff": null,
+      "error": null
+    },
+    {
+      "name": "plan-filter-board-phone",
+      "status": "removed",
+      "diffRatio": null,
+      "diff": null,
+      "error": null
+    },
+    {
+      "name": "plan-filter-item-pill-desktop",
+      "status": "removed",
+      "diffRatio": null,
+      "diff": null,
+      "error": null
+    },
+    {
+      "name": "plan-filter-item-pill-phone",
+      "status": "removed",
+      "diffRatio": null,
+      "diff": null,
+      "error": null
+    },
+    {
+      "name": "plan-inventory-phone",
+      "status": "same",
+      "diffRatio": 0,
+      "diff": null,
+      "error": null
+    },
+    {
+      "name": "plan-items-filed",
+      "status": "same",
+      "diffRatio": 0,
+      "diff": null,
+      "error": null
+    },
+    {
+      "name": "plan-items-table",
+      "status": "same",
+      "diffRatio": 0.00081024169921875,
+      "diff": null,
+      "error": null
+    },
+    {
+      "name": "premerge-checks-red",
+      "status": "same",
+      "diffRatio": 0.00124969482421875,
+      "diff": null,
+      "error": null
+    },
+    {
+      "name": "project-autopilot",
+      "status": "changed",
+      "diffRatio": 0.02845306396484375,
+      "diff": "e2e/__screenshots__/diff/project-autopilot.png",
+      "error": null
+    },
+    {
+      "name": "project-enabled",
+      "status": "changed",
+      "diffRatio": 0.02303619384765625,
+      "diff": "e2e/__screenshots__/diff/project-enabled.png",
+      "error": null
+    },
+    {
+      "name": "project-filter",
+      "status": "same",
+      "diffRatio": 0.0012481689453125,
+      "diff": null,
+      "error": null
+    },
+    {
+      "name": "project-step-provider",
+      "status": "same",
+      "diffRatio": 0.00771636962890625,
+      "diff": null,
+      "error": null
+    },
+    {
+      "name": "queued-work",
+      "status": "same",
+      "diffRatio": 0,
+      "diff": null,
+      "error": null
+    },
+    {
+      "name": "ran-ahead-desktop",
+      "status": "new",
+      "diffRatio": null,
+      "diff": null,
+      "error": null
+    },
+    {
+      "name": "ran-ahead-phone",
+      "status": "new",
+      "diffRatio": null,
+      "diff": null,
+      "error": null
+    },
+    {
+      "name": "rules-versions",
+      "status": "same",
+      "diffRatio": 0.00549774169921875,
+      "diff": null,
+      "error": null
+    },
+    {
+      "name": "screenshot-approvals",
+      "status": "same",
+      "diffRatio": 0.00451507568359375,
+      "diff": null,
+      "error": null
+    },
+    {
+      "name": "stale-filter-hidden",
+      "status": "same",
+      "diffRatio": 0,
+      "diff": null,
+      "error": null
+    },
+    {
+      "name": "stale-filter-revealed",
+      "status": "same",
+      "diffRatio": 0,
+      "diff": null,
+      "error": null
+    },
+    {
+      "name": "step-provider-picker",
+      "status": "same",
+      "diffRatio": 0,
+      "diff": null,
+      "error": null
+    },
+    {
+      "name": "task-first-steps",
+      "status": "same",
+      "diffRatio": 0,
+      "diff": null,
+      "error": null
+    },
+    {
+      "name": "task-planning-steps",
+      "status": "same",
+      "diffRatio": 0,
+      "diff": null,
+      "error": null
+    },
+    {
+      "name": "task-spawned-links",
+      "status": "same",
+      "diffRatio": 0,
+      "diff": null,
+      "error": null
+    },
+    {
+      "name": "task-verify-verdict-fail",
+      "status": "same",
+      "diffRatio": 0,
+      "diff": null,
+      "error": null
+    },
+    {
+      "name": "trivial-lane-skipped-rows",
+      "status": "same",
+      "diffRatio": 0.0001251220703125,
+      "diff": null,
+      "error": null
+    },
+    {
+      "name": "usage-limit-wait",
+      "status": "same",
+      "diffRatio": 0,
+      "diff": null,
+      "error": null
+    }
+  ]
+}
