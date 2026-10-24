@@ -1,0 +1,414 @@
+{
+  "version": 1,
+  "baseline": "95a7d24cf5902ac844daabb3aafd3ac59a55a97c",
+  "threshold": 0.1,
+  "ratioTolerance": 0.01,
+  "shots": [
+    {
+      "name": "abandon",
+      "status": "same",
+      "diffRatio": 0,
+      "diff": null,
+      "error": null
+    },
+    {
+      "name": "activity-minimized",
+      "status": "same",
+      "diffRatio": 0,
+      "diff": null,
+      "error": null
+    },
+    {
+      "name": "api-tokens",
+      "status": "same",
+      "diffRatio": 0.00384063720703125,
+      "diff": null,
+      "error": null
+    },
+    {
+      "name": "approvals-drawer",
+      "status": "changed",
+      "diffRatio": 0.03280792236328125,
+      "diff": "e2e/__screenshots__/diff/approvals-drawer.png",
+      "error": null
+    },
+    {
+      "name": "artifact-history",
+      "status": "same",
+      "diffRatio": 0,
+      "diff": null,
+      "error": null
+    },
+    {
+      "name": "board",
+      "status": "same",
+      "diffRatio": 0,
+      "diff": null,
+      "error": null
+    },
+    {
+      "name": "board-blocked-dark",
+      "status": "same",
+      "diffRatio": 0.00011749267578125,
+      "diff": null,
+      "error": null
+    },
+    {
+      "name": "board-blocked-light",
+      "status": "same",
+      "diffRatio": 0.00011444091796875,
+      "diff": null,
+      "error": null
+    },
+    {
+      "name": "board-blocked-phone",
+      "status": "same",
+      "diffRatio": 0,
+      "diff": null,
+      "error": null
+    },
+    {
+      "name": "board-elapsed-dark",
+      "status": "same",
+      "diffRatio": 0.0002349853515625,
+      "diff": null,
+      "error": null
+    },
+    {
+      "name": "board-gate-status-running",
+      "status": "same",
+      "diffRatio": 0,
+      "diff": null,
+      "error": null
+    },
+    {
+      "name": "create-item",
+      "status": "same",
+      "diffRatio": 0,
+      "diff": null,
+      "error": null
+    },
+    {
+      "name": "create-plan",
+      "status": "same",
+      "diffRatio": 0.00094757080078125,
+      "diff": null,
+      "error": null
+    },
+    {
+      "name": "create-task",
+      "status": "same",
+      "diffRatio": 5.4931640625e-05,
+      "diff": null,
+      "error": null
+    },
+    {
+      "name": "dark-mode-board",
+      "status": "same",
+      "diffRatio": 0.00806884765625,
+      "diff": null,
+      "error": null
+    },
+    {
+      "name": "deep-links",
+      "status": "same",
+      "diffRatio": 0,
+      "diff": null,
+      "error": null
+    },
+    {
+      "name": "definitions-preview",
+      "status": "same",
+      "diffRatio": 0,
+      "diff": null,
+      "error": null
+    },
+    {
+      "name": "dependencies-board",
+      "status": "same",
+      "diffRatio": 0.000238037109375,
+      "diff": null,
+      "error": null
+    },
+    {
+      "name": "dependencies-tracker",
+      "status": "same",
+      "diffRatio": 0,
+      "diff": null,
+      "error": null
+    },
+    {
+      "name": "farm-health",
+      "status": "new",
+      "diffRatio": null,
+      "diff": null,
+      "error": null
+    },
+    {
+      "name": "farm-health-phone",
+      "status": "new",
+      "diffRatio": null,
+      "diff": null,
+      "error": null
+    },
+    {
+      "name": "full-lifecycle",
+      "status": "same",
+      "diffRatio": 0,
+      "diff": null,
+      "error": null
+    },
+    {
+      "name": "gate-approve-confirm",
+      "status": "same",
+      "diffRatio": 0.006890869140625,
+      "diff": null,
+      "error": null
+    },
+    {
+      "name": "gate-in-flight-blocked",
+      "status": "same",
+      "diffRatio": 0.00388031005859375,
+      "diff": null,
+      "error": null
+    },
+    {
+      "name": "gate-key",
+      "status": "same",
+      "diffRatio": 0,
+      "diff": null,
+      "error": null
+    },
+    {
+      "name": "gates",
+      "status": "same",
+      "diffRatio": 0,
+      "diff": null,
+      "error": null
+    },
+    {
+      "name": "kill-error",
+      "status": "same",
+      "diffRatio": 0,
+      "diff": null,
+      "error": null
+    },
+    {
+      "name": "live-feed-step-output",
+      "status": "same",
+      "diffRatio": 0,
+      "diff": null,
+      "error": null
+    },
+    {
+      "name": "login-error",
+      "status": "same",
+      "diffRatio": 1.52587890625e-06,
+      "diff": null,
+      "error": null
+    },
+    {
+      "name": "markdown",
+      "status": "same",
+      "diffRatio": 0,
+      "diff": null,
+      "error": null
+    },
+    {
+      "name": "merge-conflict",
+      "status": "same",
+      "diffRatio": 0,
+      "diff": null,
+      "error": null
+    },
+    {
+      "name": "merge-conflict-resolved",
+      "status": "same",
+      "diffRatio": 0,
+      "diff": null,
+      "error": null
+    },
+    {
+      "name": "mobile-layout",
+      "status": "same",
+      "diffRatio": 0,
+      "diff": null,
+      "error": null
+    },
+    {
+      "name": "mock-agents",
+      "status": "same",
+      "diffRatio": 0,
+      "diff": null,
+      "error": null
+    },
+    {
+      "name": "pause-reason",
+      "status": "same",
+      "diffRatio": 8.392333984375e-05,
+      "diff": null,
+      "error": null
+    },
+    {
+      "name": "persona-picker",
+      "status": "same",
+      "diffRatio": 0,
+      "diff": null,
+      "error": null
+    },
+    {
+      "name": "plan-inventory-phone",
+      "status": "same",
+      "diffRatio": 0,
+      "diff": null,
+      "error": null
+    },
+    {
+      "name": "plan-items-filed",
+      "status": "same",
+      "diffRatio": 0,
+      "diff": null,
+      "error": null
+    },
+    {
+      "name": "plan-items-table",
+      "status": "same",
+      "diffRatio": 0.00081024169921875,
+      "diff": null,
+      "error": null
+    },
+    {
+      "name": "premerge-checks-red",
+      "status": "same",
+      "diffRatio": 4.57763671875e-06,
+      "diff": null,
+      "error": null
+    },
+    {
+      "name": "project-autopilot",
+      "status": "same",
+      "diffRatio": 0.00033416748046875,
+      "diff": null,
+      "error": null
+    },
+    {
+      "name": "project-enabled",
+      "status": "same",
+      "diffRatio": 0,
+      "diff": null,
+      "error": null
+    },
+    {
+      "name": "project-filter",
+      "status": "same",
+      "diffRatio": 0,
+      "diff": null,
+      "error": null
+    },
+    {
+      "name": "project-step-provider",
+      "status": "same",
+      "diffRatio": 0,
+      "diff": null,
+      "error": null
+    },
+    {
+      "name": "queued-work",
+      "status": "same",
+      "diffRatio": 0,
+      "diff": null,
+      "error": null
+    },
+    {
+      "name": "ran-ahead-desktop",
+      "status": "new",
+      "diffRatio": null,
+      "diff": null,
+      "error": null
+    },
+    {
+      "name": "ran-ahead-phone",
+      "status": "new",
+      "diffRatio": null,
+      "diff": null,
+      "error": null
+    },
+    {
+      "name": "rules-versions",
+      "status": "same",
+      "diffRatio": 0.0054229736328125,
+      "diff": null,
+      "error": null
+    },
+    {
+      "name": "screenshot-approvals",
+      "status": "same",
+      "diffRatio": 0.00451507568359375,
+      "diff": null,
+      "error": null
+    },
+    {
+      "name": "stale-filter-hidden",
+      "status": "same",
+      "diffRatio": 0,
+      "diff": null,
+      "error": null
+    },
+    {
+      "name": "stale-filter-revealed",
+      "status": "same",
+      "diffRatio": 0,
+      "diff": null,
+      "error": null
+    },
+    {
+      "name": "step-provider-picker",
+      "status": "same",
+      "diffRatio": 0,
+      "diff": null,
+      "error": null
+    },
+    {
+      "name": "task-first-steps",
+      "status": "same",
+      "diffRatio": 0,
+      "diff": null,
+      "error": null
+    },
+    {
+      "name": "task-planning-steps",
+      "status": "same",
+      "diffRatio": 0,
+      "diff": null,
+      "error": null
+    },
+    {
+      "name": "task-spawned-links",
+      "status": "same",
+      "diffRatio": 0,
+      "diff": null,
+      "error": null
+    },
+    {
+      "name": "task-verify-verdict-fail",
+      "status": "same",
+      "diffRatio": 0,
+      "diff": null,
+      "error": null
+    },
+    {
+      "name": "trivial-lane-skipped-rows",
+      "status": "same",
+      "diffRatio": 0,
+      "diff": null,
+      "error": null
+    },
+    {
+      "name": "usage-limit-wait",
+      "status": "same",
+      "diffRatio": 0,
+      "diff": null,
+      "error": null
+    }
+  ]
+}
