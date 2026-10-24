@@ -81,7 +81,7 @@ function findDeployTargetsPanel(container) {
 }
 
 test('renders one row per deploy target with repo, service, tag, and result', async () => {
-  const { findByText, container } = render(<AdminPage sync={{}} projects={[]} onBack={() => {}} />)
+  const { findByText, container } = render(<AdminPage sync={{}} projects={[]} onBack={() => {}} route={{ section: 'deploys' }} />)
   await findByText('FinTekkers/horizon')
 
   const panel = findDeployTargetsPanel(container)
@@ -98,7 +98,7 @@ test('renders one row per deploy target with repo, service, tag, and result', as
 })
 
 test('the deploy-targets panel has no form or target field — only Dry run, its PIN and Run (read-only guardrail)', async () => {
-  const { findByText, container } = render(<AdminPage sync={{}} projects={[]} onBack={() => {}} />)
+  const { findByText, container } = render(<AdminPage sync={{}} projects={[]} onBack={() => {}} route={{ section: 'deploys' }} />)
   await findByText('FinTekkers/horizon')
 
   const panel = findDeployTargetsPanel(container)
@@ -129,7 +129,7 @@ test('Dry run with the PIN shows all five checks, each with pass/fail and its re
     { check: 'health', pass: false, reason: 'health timed out after 5000ms' },
   ]
   api.dryRunDeployTarget.mockResolvedValueOnce({ key: 'horizon', ranAt: '2026-10-03T12:00:00.000Z', results })
-  const { findByText, container } = render(<AdminPage sync={{}} projects={[]} onBack={() => {}} />)
+  const { findByText, container } = render(<AdminPage sync={{}} projects={[]} onBack={() => {}} route={{ section: 'deploys' }} />)
   await findByText('FinTekkers/horizon')
   const panel = within(findDeployTargetsPanel(container))
 
@@ -152,7 +152,7 @@ test('Dry run with the PIN shows all five checks, each with pass/fail and its re
 
 test('a wrong PIN on Dry run says so and shows no results', async () => {
   api.dryRunDeployTarget.mockRejectedValueOnce(Object.assign(new Error('human_gate_key_required'), { status: 401 }))
-  const { findByText, container } = render(<AdminPage sync={{}} projects={[]} onBack={() => {}} />)
+  const { findByText, container } = render(<AdminPage sync={{}} projects={[]} onBack={() => {}} route={{ section: 'deploys' }} />)
   await findByText('FinTekkers/horizon')
   const panel = within(findDeployTargetsPanel(container))
 
@@ -182,7 +182,7 @@ function findTokensPanel(container) {
 }
 
 test('the expiry input defaults to 90 days with a 365-day maximum', async () => {
-  const { container } = render(<AdminPage sync={{}} projects={[]} onBack={() => {}} />)
+  const { container } = render(<AdminPage sync={{}} projects={[]} onBack={() => {}} route={{ section: 'account' }} />)
   const days = within(findTokensPanel(container)).getByLabelText('Expires in days')
   expect(days.value).toBe('90')
   expect(days.getAttribute('max')).toBe('365')
@@ -192,7 +192,7 @@ test('the expiry input defaults to 90 days with a 365-day maximum', async () => 
 test('creating a token shows the raw value once; after Done only last4 remains, and nothing is stored', async () => {
   api.createApiToken.mockResolvedValueOnce({ ...LISTED, token: RAW_TOKEN })
   api.listApiTokens.mockResolvedValueOnce({ tokens: [] }).mockResolvedValue({ tokens: [LISTED] })
-  const { container } = render(<AdminPage sync={{}} projects={[]} onBack={() => {}} />)
+  const { container } = render(<AdminPage sync={{}} projects={[]} onBack={() => {}} route={{ section: 'account' }} />)
   const panel = within(findTokensPanel(container))
 
   fireEvent.change(panel.getByPlaceholderText(/Token name/), { target: { value: 'ci-bot' } })
@@ -213,7 +213,7 @@ test('creating a token shows the raw value once; after Done only last4 remains, 
 })
 
 test('an out-of-range expiry is refused before any request is made', async () => {
-  const { container } = render(<AdminPage sync={{}} projects={[]} onBack={() => {}} />)
+  const { container } = render(<AdminPage sync={{}} projects={[]} onBack={() => {}} route={{ section: 'account' }} />)
   const panel = within(findTokensPanel(container))
   fireEvent.change(panel.getByPlaceholderText(/Token name/), { target: { value: 'ci-bot' } })
   fireEvent.change(panel.getByLabelText('Expires in days'), { target: { value: '366' } })
@@ -224,14 +224,14 @@ test('an out-of-range expiry is refused before any request is made', async () =>
 
 // HZ-319: the expiry reads "Expires in [90 days]", with a "1 to 365 days" hint below.
 test('the expiry shows a visible "days" unit, not only a title or aria-label', () => {
-  const { container } = render(<AdminPage sync={{}} projects={[]} onBack={() => {}} />)
+  const { container } = render(<AdminPage sync={{}} projects={[]} onBack={() => {}} route={{ section: 'account' }} />)
   const unit = within(findTokensPanel(container)).getByText('days', { exact: true })
   expect(unit.tagName).not.toBe('INPUT')
   expect(unit.textContent).toBe('days')
 })
 
 test('exactly one control on the page is labelled with days: the number input', () => {
-  const { container } = render(<AdminPage sync={{}} projects={[]} onBack={() => {}} />)
+  const { container } = render(<AdminPage sync={{}} projects={[]} onBack={() => {}} route={{ section: 'account' }} />)
   const matches = within(container).getAllByLabelText(/days/i)
   expect(matches).toHaveLength(1)
   expect(matches[0].id).toBe('api-token-days')
@@ -239,7 +239,7 @@ test('exactly one control on the page is labelled with days: the number input', 
 })
 
 test('a visible "Expires in" label precedes the input, and "days" sits in the same bordered field', () => {
-  const { container } = render(<AdminPage sync={{}} projects={[]} onBack={() => {}} />)
+  const { container } = render(<AdminPage sync={{}} projects={[]} onBack={() => {}} route={{ section: 'account' }} />)
   const panel = within(findTokensPanel(container))
   const label = panel.getByText('Expires in')
   const input = container.querySelector('#api-token-days')
@@ -252,7 +252,7 @@ test('a visible "Expires in" label precedes the input, and "days" sits in the sa
 })
 
 test('the hint "1 to 365 days" is shown below the row and describes the input', () => {
-  const { container } = render(<AdminPage sync={{}} projects={[]} onBack={() => {}} />)
+  const { container } = render(<AdminPage sync={{}} projects={[]} onBack={() => {}} route={{ section: 'account' }} />)
   const panel = within(findTokensPanel(container))
   const hint = panel.getByText('1 to 365 days')
   expect(hint.tagName).not.toBe('LABEL')
@@ -265,7 +265,7 @@ test('the hint "1 to 365 days" is shown below the row and describes the input', 
 
 test('creating a token with the expiry untouched sends the default 90 as a number', async () => {
   api.createApiToken.mockResolvedValueOnce({ ...LISTED, token: RAW_TOKEN })
-  const { container } = render(<AdminPage sync={{}} projects={[]} onBack={() => {}} />)
+  const { container } = render(<AdminPage sync={{}} projects={[]} onBack={() => {}} route={{ section: 'account' }} />)
   const panel = within(findTokensPanel(container))
   fireEvent.change(panel.getByPlaceholderText(/Token name/), { target: { value: 'ci-bot' } })
   fireEvent.click(panel.getByText('Create token'))
@@ -277,7 +277,7 @@ test('creating a token with the expiry untouched sends the default 90 as a numbe
 test('Revoke asks for confirmation, then revokes and drops the row', async () => {
   api.listApiTokens.mockResolvedValueOnce({ tokens: [LISTED] }).mockResolvedValue({ tokens: [] })
   vi.spyOn(window, 'confirm').mockReturnValue(true)
-  const { container } = render(<AdminPage sync={{}} projects={[]} onBack={() => {}} />)
+  const { container } = render(<AdminPage sync={{}} projects={[]} onBack={() => {}} route={{ section: 'account' }} />)
   const panel = within(findTokensPanel(container))
   fireEvent.click(await panel.findByText('Revoke'))
   await waitFor(() => expect(api.revokeApiToken).toHaveBeenCalledWith('tok_1'))
@@ -287,7 +287,7 @@ test('Revoke asks for confirmation, then revokes and drops the row', async () =>
 test('cancelling the Revoke confirmation revokes nothing', async () => {
   api.listApiTokens.mockResolvedValue({ tokens: [LISTED] })
   vi.spyOn(window, 'confirm').mockReturnValue(false)
-  const { container } = render(<AdminPage sync={{}} projects={[]} onBack={() => {}} />)
+  const { container } = render(<AdminPage sync={{}} projects={[]} onBack={() => {}} route={{ section: 'account' }} />)
   const panel = within(findTokensPanel(container))
   fireEvent.click(await panel.findByText('Revoke'))
   expect(api.revokeApiToken).not.toHaveBeenCalled()
@@ -590,4 +590,51 @@ test('each repo row shows its default branch, or that it has not been read yet',
   const rowOf = (repo) => within(rows.find((r) => r.textContent.includes(repo)))
   expect(rowOf('FinTekkers/price-service-rust').getByText('default branch: master')).toBeTruthy()
   expect(rowOf('FinTekkers/fresh').getByText('default branch: not read yet')).toBeTruthy()
+})
+
+// ---- HZ-564: "Find a setting" narrows the section list ----
+
+const SECTION_LABELS = ['Projects and repositories', 'Deploy targets', 'Flaky tests', 'GitHub access', 'Your PIN and API tokens']
+
+function sectionButtons(container) {
+  const nav = within(container.querySelector('aside[aria-label="Admin sections"]'))
+  return nav.queryAllByRole('button').map((b) => b.querySelector('.admin-nav__label').textContent)
+}
+
+test('Find a setting shows only the matching sections, and clearing it shows all of them again', () => {
+  const { container, getByLabelText } = render(<AdminPage sync={{}} projects={PROJECTS} onBack={() => {}} />)
+  const search = getByLabelText('Find a setting')
+  expect(sectionButtons(container)).toEqual(SECTION_LABELS)
+
+  fireEvent.change(search, { target: { value: 'webhook' } })
+  expect(sectionButtons(container)).toEqual(['Projects and repositories'])
+  fireEvent.change(search, { target: { value: 'PIN' } })
+  expect(sectionButtons(container)).toEqual(['Your PIN and API tokens'])
+
+  fireEvent.change(search, { target: { value: '' } })
+  expect(sectionButtons(container)).toEqual(SECTION_LABELS)
+})
+
+test('a search that matches nothing says "No setting matches" and lists no section', () => {
+  const { container, getByLabelText, getByText } = render(<AdminPage sync={{}} projects={PROJECTS} onBack={() => {}} />)
+  fireEvent.change(getByLabelText('Find a setting'), { target: { value: 'zzz' } })
+  expect(getByText('No setting matches')).toBeTruthy()
+  expect(sectionButtons(container)).toEqual([])
+
+  fireEvent.change(getByLabelText('Find a setting'), { target: { value: '' } })
+  expect(sectionButtons(container)).toEqual(SECTION_LABELS)
+})
+
+test('a project or repository name finds Projects, and clicking a section asks to navigate to its URL', () => {
+  const onNavigate = vi.fn()
+  const projects = [{ id: 1, name: 'Fintekkers', enabled: true, repos: [{ repo: 'FinTekkers/ui-service', prefix: 'US' }] }]
+  const { container, getByLabelText, getByRole } = render(
+    <AdminPage sync={{}} projects={projects} onBack={() => {}} onNavigate={onNavigate} />,
+  )
+  fireEvent.change(getByLabelText('Find a setting'), { target: { value: 'ui-service' } })
+  expect(sectionButtons(container)).toEqual(['Projects and repositories'])
+
+  fireEvent.change(getByLabelText('Find a setting'), { target: { value: '' } })
+  fireEvent.click(getByRole('button', { name: /^Deploy targets/ }))
+  expect(onNavigate).toHaveBeenCalledWith('/admin/deploys')
 })

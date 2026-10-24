@@ -17,8 +17,11 @@ import NewItemModal from './components/NewItemModal'
 import AddDependencyDialog from './components/AddDependencyDialog'
 import LoginPage from './components/LoginPage'
 import LegalPage, { LEGAL_DOCS } from './components/LegalPage'
+import { ADMIN_HOME, parseAdminPath } from './components/admin/adminRoutes'
 import { gateActionBusy } from './domain/gateAction'
 import { queuedToMerge } from './domain/status'
+import { validPlanId } from './domain/narrowing'
+import * as boardNarrowing from './boardNarrowing'
 import {
   enabledProjects,
   filterByProject,
@@ -87,6 +90,8 @@ function sendBackError(err) {
 }
 
 // Deep links: /  → board, /admin → admin, /definitions → agent definitions,
+// /admin/<section> → that Admin section (HZ-564: any /admin/... path stays in
+// Admin; an unknown one shows Projects and is rewritten to /admin),
 // /farm-health → Farm health (HZ-563, admins),
 // /privacy and /terms → the public legal pages (no login required),
 // /<item-id> → that item's tracker (case-insensitive, e.g. localhost:5173/hz-102).
@@ -99,7 +104,9 @@ function parsePath(pathname) {
   if (PREFIX && path.toLowerCase().startsWith(PREFIX.toLowerCase())) path = path.slice(PREFIX.length)
   const seg = decodeURIComponent(path.replace(/^\/+|\/+$/g, ''))
   if (!seg) return { view: 'board', id: null }
-  if (seg.toLowerCase() === 'admin') return { view: 'admin', id: null }
+  if (seg.toLowerCase() === 'admin' || seg.toLowerCase().startsWith('admin/')) {
+    return { view: 'admin', id: null, admin: parseAdminPath(seg.slice('admin/'.length)) }
+  }
   if (seg.toLowerCase() === 'definitions') return { view: 'definitions', id: null }
   if (seg.toLowerCase() === 'farm-health') return { view: 'farm-health', id: null }
   if (Object.hasOwn(LEGAL_DOCS, seg.toLowerCase())) return { view: 'legal', id: seg.toLowerCase() }
@@ -109,6 +116,28 @@ function parsePath(pathname) {
 function navigate(path) {
   const full = PREFIX + path
   if (window.location.pathname !== full) window.history.pushState({}, '', full)
+}
+
+// HZ-547: `/?plan=VS-110` is the board filtered to that Plan. The URL names a
+// Plan only to choose it; the board keeps the choice (boardNarrowing), and
+// the URL follows it while the board is shown — see AuthenticatedApp.
+function planFromUrl() {
+  return validPlanId(new URLSearchParams(window.location.search).get('plan'))
+}
+
+function choosePlanFromUrl() {
+  const plan = planFromUrl()
+  if (plan) boardNarrowing.setBoardView({ plan })
+  return plan
+}
+
+function syncPlanToUrl(plan) {
+  const params = new URLSearchParams(window.location.search)
+  if ((params.get('plan') ?? null) === plan) return
+  if (plan) params.set('plan', plan)
+  else params.delete('plan')
+  const search = params.toString()
+  window.history.replaceState(window.history.state, '', `${window.location.pathname}${search ? `?${search}` : ''}${window.location.hash}`)
 }
 
 // Every page requires a login (HZ-21) — this is the app-level gate that
@@ -151,8 +180,15 @@ function AuthenticatedApp({ user, onLogout }) {
   const knownItemIds = useMemo(() => new Set(items.map((it) => it.id)), [items])
 
   const initial = parsePath(window.location.pathname)
+  // HZ-547: a deep link's Plan is chosen before the first render, so the
+  // board never shows unfiltered first.
+  useState(() => initial.view === 'board' && choosePlanFromUrl())
+  const boardPlan = useSyncExternalStore(boardNarrowing.subscribe, () => boardNarrowing.getBoardView().plan)
   const [view, setView] = useState(initial.view)
   const [selectedId, setSelectedId] = useState(initial.id)
+  // HZ-564: which Admin section the URL names; kept while on other views so
+  // App has one copy of it, re-read from the URL on every Admin navigation.
+  const [adminRoute, setAdminRoute] = useState(initial.admin ?? ADMIN_HOME)
   // HZ-544: `?approvals` opens the drawer at load, so a screenshot screen
   // (which cannot click) can show it.
   const [approvalsOpen, setApprovalsOpen] = useState(() => new URLSearchParams(window.location.search).has('approvals'))
@@ -210,6 +246,8 @@ function AuthenticatedApp({ user, onLogout }) {
   const durationEstimates = api.getDurationEstimates()
   // HZ-360: a Horizon self-deploy's block — gate 13 shows Queued to merge.
   const deployBlock = api.getDeployBlock()
+  // HZ-547: each Plan's filed items, summed by the server.
+  const planProgress = api.getPlanProgress()
   const activeProject = projects.find((p) => p.id === activeProjectId) || null
   // HZ-208: the project filter is view state only. It is re-validated on every
   // render, so a project disabled live (over SSE) while selected falls back to
@@ -313,6 +351,18 @@ function AuthenticatedApp({ user, onLogout }) {
     setView('tracker')
     setApprovalsOpen(false)
   }
+  // HZ-547: the "From Plan" chip and pill — the board, filtered to that Plan.
+  const openPlanOnBoard = (id) => {
+    boardNarrowing.setBoardView({ plan: id })
+    toBoard()
+  }
+  // HZ-564: every Admin navigation — the account menu and Admin's own list.
+  const openAdmin = (path) => {
+    navigate(path)
+    setAdminRoute(parsePath(PREFIX + path).admin ?? ADMIN_HOME)
+    setView('admin')
+    setApprovalsOpen(false)
+  }
   const openItem = (id) => {
     navigate(`/${id.toLowerCase()}`)
     setSelectedId(id)
@@ -324,13 +374,29 @@ function AuthenticatedApp({ user, onLogout }) {
   useEffect(() => {
     const onPop = () => {
       const parsed = parsePath(window.location.pathname)
+      if (parsed.view === 'board') choosePlanFromUrl()
       setView(parsed.view)
       if (parsed.id) setSelectedId(parsed.id)
+      if (parsed.admin) setAdminRoute(parsed.admin)
       setApprovalsOpen(false)
     }
     window.addEventListener('popstate', onPop)
     return () => window.removeEventListener('popstate', onPop)
   }, [])
+
+  // HZ-564: an unknown /admin/... path shows Admin's first section; its URL
+  // becomes /admin, on first load and on back/forward alike.
+  useEffect(() => {
+    if (view !== 'admin' || !adminRoute.unknown) return
+    window.history.replaceState(window.history.state, '', `${PREFIX}/admin`)
+    setAdminRoute(ADMIN_HOME)
+  }, [view, adminRoute])
+
+  // While the board is shown its URL names the chosen Plan, so a reload or a
+  // shared link keeps it, and clearing the chip drops it.
+  useEffect(() => {
+    if (view === 'board') syncPlanToUrl(boardPlan)
+  }, [view, boardPlan])
 
   useEffect(() => {
     document.title =
@@ -407,11 +473,7 @@ function AuthenticatedApp({ user, onLogout }) {
         onBoard={toBoard}
         onTracker={toTracker}
         onOpenApprovals={() => setApprovalsOpen(true)}
-        onOpenAdmin={() => {
-          navigate('/admin')
-          setView('admin')
-          setApprovalsOpen(false)
-        }}
+        onOpenAdmin={() => openAdmin('/admin')}
         onOpenDefinitions={() => {
           navigate('/definitions')
           setView('definitions')
@@ -455,11 +517,13 @@ function AuthenticatedApp({ user, onLogout }) {
           onTogglePause={api.setPaused}
           onNewItem={() => setNewItemOpen(true)}
           isGateBusy={isGateBusy}
+          planProgress={planProgress}
+          onOpenPlan={openPlanOnBoard}
         />
       )}
 
       {view === 'admin' && (
-        <AdminPage sync={sync} projects={projects} onBack={toBoard} />
+        <AdminPage sync={sync} projects={projects} onBack={toBoard} route={adminRoute} onNavigate={openAdmin} />
       )}
 
       {view === 'definitions' && <AgentDefinitionsPage onBack={toBoard} />}
@@ -479,6 +543,8 @@ function AuthenticatedApp({ user, onLogout }) {
           deployBlock={deployBlock}
           viewerName={user?.name ?? null}
           restartSent={api.getRestartSent(selected.id)}
+          planProgress={planProgress}
+          onOpenPlan={openPlanOnBoard}
           onBack={toBoard}
           onApprove={requestApprove}
           onApproveWithComments={(id, target) => openComposer('approve', id, { target })}

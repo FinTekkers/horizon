@@ -39,6 +39,7 @@ from domain.py.personas import (
     validate_project_personas,
 )
 
+from . import persona_tools
 from .config import slugify
 
 PERSONA_DIR = Path(__file__).parent / "roles" / "personas"
@@ -132,8 +133,14 @@ def load_project_personas(slug: str, root: Path | None = None) -> dict | None:
 
     The overlay: {"slug", "ids": {agent: [ns_id]}, "role_text": {ns_id: md},
     "display": {ns_id: {label, initials, color}}, "models":
-    {"<agent>.<ns_id>": model}, "providers": {"<agent>.<ns_id>": provider}},
-    where ns_id is "<slug>:<id>"."""
+    {"<agent>.<ns_id>": model}, "providers": {"<agent>.<ns_id>": provider},
+    "tools": {ns_id: [tool id]}, "knowledge": {ns_id: [{repo?, path}]}}, where
+    ns_id is "<slug>:<id>". HZ-537: "knowledge" holds only personas that name
+    sources; it changes no prompt.
+
+    HZ-536: a persona's `tools` must all be ids in the tool allow-list
+    (farm/persona_tools.py); an unknown id raises, naming the id and the
+    persona, and so does an allow-list that fails its lint."""
     from .rules import lint_rules  # lazy: farm/rules.py imports this module
 
     root = PROJECTS_DIR if root is None else root
@@ -161,7 +168,12 @@ def load_project_personas(slug: str, root: Path | None = None) -> dict | None:
     except OSError as exc:
         raise RuntimeError(f"{source} could not be read ({exc})") from exc
     validate_project_personas(data, slug, source)
-    overlay: dict = {"slug": slug, "ids": {}, "role_text": {}, "display": {}, "models": {}, "providers": {}}
+    overlay: dict = {
+        "slug": slug, "ids": {}, "role_text": {}, "display": {}, "models": {}, "providers": {}, "tools": {}, "knowledge": {}
+    }
+    # HZ-536: the allow-list is read only when a persona names tools, so a
+    # project without any never depends on it.
+    allowlist = persona_tools.load_allowlist() if any(entry.get("tools") for entry in data["personas"]) else {}
     for entry in data["personas"]:
         ns_id = f"{slug}:{entry['id']}"
         role_name = f"farm/projects/{slug}/personas/{entry['file']}"
@@ -175,6 +187,14 @@ def load_project_personas(slug: str, root: Path | None = None) -> dict | None:
         overlay["display"][ns_id] = {"label": entry["label"], "initials": entry["initials"], "color": entry["color"]}
         overlay["models"][f"{entry['agent']}.{ns_id}"] = entry["model"]
         overlay["providers"][f"{entry['agent']}.{ns_id}"] = entry["provider"]
+        if entry.get("tools"):
+            try:
+                persona_tools.validate_ids(ns_id, entry["tools"], allowlist)
+            except persona_tools.UnknownToolError as exc:
+                raise RuntimeError(f"{source}: {exc}") from exc
+            overlay["tools"][ns_id] = list(entry["tools"])
+        if entry.get("knowledge"):
+            overlay["knowledge"][ns_id] = [dict(ref) for ref in entry["knowledge"]]
     return overlay
 
 

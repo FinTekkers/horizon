@@ -727,6 +727,27 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_gate_decision_created ON gate_decision(created_at);
   CREATE INDEX IF NOT EXISTS idx_event_created ON event(created_at);
 `)
+// HZ-570: an implement run's test-results upload ledger. /complete stamps
+// test_runs_expected (the rows farmd will post); the test-runs route sets
+// test_runs_stored and test_runs_stored_at in the same transaction as the
+// rows. test_runs_abandoned is farmd's word that it stopped retrying:
+// 'rejected' (a 4xx) or 'gave_up' (its retry window ran out). Additive: NULL
+// on every earlier row, which is never pending.
+for (const sql of [
+  'ALTER TABLE step_run ADD COLUMN test_runs_expected INTEGER',
+  'ALTER TABLE step_run ADD COLUMN test_runs_stored INTEGER',
+  'ALTER TABLE step_run ADD COLUMN test_runs_stored_at TEXT',
+  'ALTER TABLE step_run ADD COLUMN test_runs_abandoned TEXT',
+]) {
+  try {
+    db.exec(sql)
+  } catch {
+    // column already exists
+  }
+}
+db.exec(
+  'CREATE INDEX IF NOT EXISTS idx_step_run_upload_pending ON step_run(ended_at) WHERE test_runs_expected > 0 AND test_runs_stored_at IS NULL',
+)
 // HZ-422: one row per model last seen limited, and when it lifts (ISO-8601
 // UTC, compared in JS so a test's fake clock drives it). A row whose reset
 // has passed is simply ignored, then overwritten by the next limit.
@@ -885,6 +906,31 @@ if (!db.prepare('PRAGMA table_info(project)').all().some((column) => column.name
 if (!db.prepare('PRAGMA table_info(project)').all().some((column) => column.name === 'definitions_enabled')) {
   db.exec('ALTER TABLE project ADD COLUMN definitions_enabled INTEGER NOT NULL DEFAULT 1 CHECK (definitions_enabled IN (0, 1))')
 }
+
+// HZ-537: one row per project and knowledge doc — a PDF a project persona
+// names as a source, extracted by the farm (farm/knowledge.py) into
+// ~/.horizon/knowledge/<slug>/, outside every repo. source_sha is the git blob
+// sha the row was extracted from; a new sha re-extracts and updates the row in
+// place. sections_json is the section index only, never document text:
+// [{"id": "2-1-scope", "title": "2.1 Scope", "page": 4}]. Written only by
+// server/src/knowledgeDocs.js upsertDoc.
+db.exec(`
+  CREATE TABLE IF NOT EXISTS knowledge_doc (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id    INTEGER NOT NULL REFERENCES project(id) ON DELETE CASCADE,
+    slug          TEXT NOT NULL,
+    repo          TEXT NOT NULL,
+    path          TEXT NOT NULL,
+    source_sha    TEXT NOT NULL,
+    status        TEXT NOT NULL CHECK (status IN ('extracted', 'failed')),
+    page_count    INTEGER NOT NULL DEFAULT 0,
+    section_count INTEGER NOT NULL DEFAULT 0,
+    sections_json TEXT NOT NULL DEFAULT '[]',
+    error         TEXT,
+    extracted_at  TEXT NOT NULL,
+    UNIQUE (project_id, slug)
+  );
+`)
 
 // HZ-270: project_event is the project-level audit trail (event.item_id is
 // NOT NULL, so an Autopilot change cannot live there). caretaker_eval holds one

@@ -32,12 +32,18 @@ The PR's own suites run with FARM_HOME pointed at a throwaway directory made
 for the run, never the farm's: the farm's real FARM_HOME is how this module
 finds the hub, but a test in the PR that defaulted or inherited it would be
 reading and writing the live farm's queue and workspaces.
+
+HZ-569: the run id server/src/premerge.js puts in HORIZON_RUN_ID is leased
+to this process (farm/run_reaper.py), so every process the checks start is
+reaped when it ends — and, when the server's cap SIGKILLs it first, by the
+server's `python -m farm.run_reaper --run <id>` or farmd's sweep.
 """
 
 import argparse
 import contextlib
 import fcntl
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -46,7 +52,7 @@ import tempfile
 import time
 from pathlib import Path
 
-from . import workspaces
+from . import run_reaper, workspaces
 from .checks import CHECKS_WAIVERS, CheckFailure, output_tail, run_checks
 from .config import WORKSPACES_DIR
 
@@ -322,21 +328,37 @@ def main(argv=None) -> int:
     def log(msg):
         print(msg, file=sys.stderr, flush=True)
 
+    worktree = None
+    with contextlib.suppress(Exception):
+        worktree = str(premerge_path(args.repo, args.item_id))
+    # os.environ itself: run_checks() builds the check env from it, so the
+    # commands inherit the id this process leased. Put back afterwards, for
+    # an in-process caller.
+    given = os.environ.get(run_reaper.RUN_ENV)
     try:
-        result = premerge_check(
-            args.repo,
-            args.item_id,
-            args.head_sha,
-            args.base_sha,
-            timeout_s=args.timeout_s,
-            log=log,
-            on_slot_event=stderr_event,
-            configured=configured,
-            checks_waiver=args.checks_waiver,
-            test_env_file=args.test_env_file,
-        )
-    except Exception as exc:  # noqa: BLE001 — stdout must stay one JSON line
-        result = {"ok": False, "reason": "crash", "detail": f"{type(exc).__name__}: {exc}"}
+        with run_reaper.run_scope(
+            os.environ, item_id=args.item_id, caller="premerge", worktree=worktree, adopt=True, prefix="premerge", log=log
+        ):
+            try:
+                result = premerge_check(
+                    args.repo,
+                    args.item_id,
+                    args.head_sha,
+                    args.base_sha,
+                    timeout_s=args.timeout_s,
+                    log=log,
+                    on_slot_event=stderr_event,
+                    configured=configured,
+                    checks_waiver=args.checks_waiver,
+                    test_env_file=args.test_env_file,
+                )
+            except Exception as exc:  # noqa: BLE001 — stdout must stay one JSON line
+                result = {"ok": False, "reason": "crash", "detail": f"{type(exc).__name__}: {exc}"}
+    finally:
+        if given is None:
+            os.environ.pop(run_reaper.RUN_ENV, None)
+        else:
+            os.environ[run_reaper.RUN_ENV] = given
     print(json.dumps(result), flush=True)
     return 0 if result.get("ok") is True else 1
 

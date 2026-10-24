@@ -9,10 +9,12 @@ import {
   awaitingGate,
   phasesFor,
   itemKindOf,
+  itemKindInfo,
+  isItemKind,
 } from '../../../domain/js/lifecycle.js'
 import { PHASE_ACCENT, PHASE_ACCENT_BG, priorityColor } from '../domain/lifecycle'
 import { FILTERS, visibleItems, hiddenCounts, matchCounts } from '../domain/filters'
-import { KIND_OPTIONS, SORT_LABELS, narrowItems, sortByWait, waitText } from '../domain/narrowing'
+import { KIND_OPTIONS, SORT_LABELS, narrowItems, planPool, sortByWait, waitText } from '../domain/narrowing'
 import { PRIORITIES } from '../../../domain/js/priorities.js'
 import { PRIMARY_PERSONA_AGENT, personaFor } from '../domain/personas'
 import { itemStatus, stateLabel, isDependencyBlocked, isRuleBlocked, ruleBlockSummary, queuedToMerge } from '../domain/status'
@@ -46,7 +48,7 @@ function progressSegs(item) {
   })
 }
 
-function BoardCard({ item, projects, durationEstimates, deployBlock, viewerName, now, showWait, onOpen, onApprove, onReject, onTogglePause, isGateBusy }) {
+function BoardCard({ item, projects, durationEstimates, deployBlock, viewerName, now, showWait, planKind, onOpen, onOpenPlan, onApprove, onReject, onTogglePause, isGateBusy }) {
   const closed = isClosed(item)
   const abandoned = isAbandoned(item)
   const rejected = item.rejected && !closed && !abandoned
@@ -182,7 +184,7 @@ function BoardCard({ item, projects, durationEstimates, deployBlock, viewerName,
         </div>
       )}
       <AutopilotOffChip item={item} />
-      <DependencyBadge item={item} compact />
+      <DependencyBadge item={item} compact planKind={planKind} onOpenPlan={onOpenPlan} />
 
       {awaiting && (
         <div className="card__gate">
@@ -270,6 +272,8 @@ export default function Board({
   onTogglePause,
   onNewItem,
   isGateBusy = gateActionBusy,
+  planProgress = [],
+  onOpenPlan,
 }) {
   const activeFilterKeys = useSyncExternalStore(boardFilters.subscribe, boardFilters.getActiveFilters)
   const view = useSyncExternalStore(boardNarrowing.subscribe, boardNarrowing.getBoardView)
@@ -277,14 +281,20 @@ export default function Board({
   // shows an elapsed label — cards start no timers of their own.
   useClockTick(60_000, items.some((it) => it.state_since || (view.waiting && it.waiting_since)))
   const now = new Date()
+  // HZ-547: a chosen Plan narrows the board to what it filed, open or closed,
+  // before anything else — so the hide filters and chips below count and
+  // combine within that Plan's items.
+  const plans = new Map(planProgress.map((p) => [p.id, p]))
+  const plan = view.plan == null ? null : (plans.get(view.plan) ?? { id: view.plan, kind: null, title: null })
+  const pool = planPool(items, view.plan)
   // Filtering is a view concern only — it narrows what's rendered here, and
   // never touches an item or what the farm dispatches (HZ-80).
-  const shown = visibleItems(items, activeFilterKeys, now)
+  const shown = visibleItems(pool, activeFilterKeys, now)
   // HZ-443: then the narrowing controls, over what the hide filters left.
   const narrowed = narrowItems(shown, view)
   const filtered = shown.length - narrowed.length
-  const hidden = hiddenCounts(items, activeFilterKeys, now)
-  const matches = matchCounts(items, now)
+  const hidden = hiddenCounts(pool, activeFilterKeys, now)
+  const matches = matchCounts(pool, now)
   const totalHidden = Object.values(hidden).reduce((sum, n) => sum + n, 0) + filtered
   const hiddenSummary = [
     ...FILTERS.filter((f) => hidden[f.key] > 0).map((f) => `${hidden[f.key]} ${f.noun}`),
@@ -293,10 +303,13 @@ export default function Board({
   // Abandoned items that are still shown (their filter toggled off) don't
   // count as active work: they've stopped being dispatched.
   const activeCount = narrowed.filter((it) => !isAbandoned(it)).length
+  // HZ-547: with a Plan chosen, Show all shows every item it filed, closed
+  // ones too, and keeps the Plan and the chips.
   const showAll = () => {
     boardFilters.setActiveFilters([])
-    boardNarrowing.clearBoardView()
+    if (plan == null) boardNarrowing.clearBoardView()
   }
+  const planKindLabel = (kind) => itemKindInfo(isItemKind(kind) ? kind : 'plan').label
   const chip = (on, label, onClick) => (
     <button
       key={label}
@@ -313,7 +326,9 @@ export default function Board({
     <div className="board">
       <div className="board__head">
         <div className="board__title">Work in flight</div>
-        <div className="board__meta">{activeCount} items across the lifecycle</div>
+        <div className="board__meta">
+          {plan == null ? `${activeCount} items across the lifecycle` : `${activeCount} items from ${planKindLabel(plan.kind)} ${plan.id}`}
+        </div>
         {totalHidden > 0 && narrowed.length > 0 && (
           <div className="board__hidden-note">
             Hiding {hiddenSummary}
@@ -369,13 +384,56 @@ export default function Board({
           </span>
           {KIND_OPTIONS.map((k) => chip(view.kinds.includes(k.key), k.label, () => boardNarrowing.toggleIn('kinds', k.key)))}
         </div>
+        {(plan != null || planProgress.length > 0) && (
+          <div className="board__narrow-group" role="group" aria-label="Plan">
+            <span className="board__narrow-label" aria-hidden="true">
+              Plan
+            </span>
+            {plan == null ? (
+              <select
+                className="board__narrow-chip board__plan-select"
+                aria-label="Plan"
+                value=""
+                onChange={(e) => e.target.value && boardNarrowing.setBoardView({ plan: e.target.value })}
+              >
+                <option value="">Any</option>
+                {planProgress.map((p) => (
+                  <option key={p.id} value={p.id}>
+                    {p.id} · {p.title}
+                  </option>
+                ))}
+              </select>
+            ) : (
+              <span className="board__plan-chip" title={plan.title ? `${plan.id} · ${plan.title}` : plan.id}>
+                <span className="board__plan-chip-label">{plan.title ? `${plan.id} · ${plan.title}` : plan.id}</span>{' '}
+                <button
+                  type="button"
+                  className="board__plan-clear"
+                  aria-label="Clear the Plan filter"
+                  onClick={() => boardNarrowing.setBoardView({ plan: null })}
+                >
+                  ×
+                </button>
+              </span>
+            )}
+          </div>
+        )}
       </div>
 
       {items.length === 0 && <div className="board__empty">No work items yet.</div>}
 
-      {items.length > 0 && shown.length === 0 && (
+      {items.length > 0 && pool.length === 0 && (
         <div className="board__empty">
-          All {items.length} items are hidden by the active filters.{' '}
+          No items from {planKindLabel(plan.kind)} {plan.id}.{' '}
+          <button className="board__show-all" onClick={() => boardNarrowing.setBoardView({ plan: null })}>
+            Clear
+          </button>
+        </div>
+      )}
+
+      {pool.length > 0 && shown.length === 0 && (
+        <div className="board__empty">
+          All {pool.length} items are hidden by the active filters.{' '}
           <button className="board__show-all" onClick={showAll}>
             Show all
           </button>
@@ -420,7 +478,9 @@ export default function Board({
                       viewerName={viewerName}
                       now={now.getTime()}
                       showWait={view.waiting}
+                      planKind={item.spawnedBy ? (plans.get(item.spawnedBy.id)?.kind ?? null) : null}
                       onOpen={onOpen}
+                      onOpenPlan={onOpenPlan}
                       onApprove={onApprove}
                       onReject={onReject}
                       onTogglePause={onTogglePause}

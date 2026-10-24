@@ -24,6 +24,7 @@ vi.mock('./api', () => ({
   getDurationEstimates: () => null,
   getDeployBlock: () => null,
   getRestartSent: () => null,
+  getPlanProgress: () => NO_ITEMS,
   getFarmHealth: vi.fn(async () => reading),
   logout: vi.fn(),
   setPaused: vi.fn(),

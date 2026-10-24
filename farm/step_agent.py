@@ -68,6 +68,7 @@ from . import (
 from .checks import CheckFailure, redact, run_checks, scrub, secret_values
 from .config import FARM_PORT, ITEM_LOCK_WAIT_S
 from .handoff import HandoffContext, HandoffGuard
+from .persona_tools import apply as apply_persona_tools
 from .personas import compose_role, project_overlay, provider_for, resolve
 from .read_only_guard import ReadOnlyViolation
 from .rules import render_rules_section
@@ -2967,6 +2968,13 @@ def _execute(task: dict, guard: HandoffGuard) -> dict:
     # step table, like the budget above, not from the task payload.
     model_agent = model_agent_for_step(steps.by_kind_label(kind, label)["agent"])
     persona = model_persona(persona_agent, personas, overlay)
+    # HZ-536: the composed project persona's allow-listed tools join the
+    # step's fixed string, and its venvs are denied every write. With no
+    # overlay (switch off, no project personas), no persona, no tools, or a
+    # step without bare Bash, `tools` is unchanged and persona_deny is None.
+    tools, persona_deny = apply_persona_tools(
+        tools, resolve(persona_agent, personas.get(persona_agent), overlay) if persona_agent else None, overlay
+    )
 
     # HZ-447: a bundle step reads no worktree, so none is set up for it.
     bundle_step = _reads_bundle(kind, label)
@@ -3038,6 +3046,7 @@ def _execute(task: dict, guard: HandoffGuard) -> dict:
                 provider=provider_override,
                 model_choice=model_choice,
                 provider_locked=provider_locked,
+                disallowed_tools=persona_deny,
                 overlay=overlay,
             )
 
@@ -3388,6 +3397,7 @@ def _execute(task: dict, guard: HandoffGuard) -> dict:
             item_id=item["id"],
             guard=guard,
             provider_locked=provider_locked,
+            disallowed_tools=persona_deny,
         )
         summary = str(parsed.get("summary", "")).strip()[:SUMMARY_MAX_CHARS] or "deploy verification finished"
         artifact_md = str(parsed.get("artifact_md", "")).strip()
@@ -3422,7 +3432,7 @@ def _execute(task: dict, guard: HandoffGuard) -> dict:
     # tools even with no workspace, where a change step runs with no
     # allowlist at all.
     allowed_tools = tools if ws or kind in TOOLS_WITHOUT_WORKSPACE_KINDS else None
-    disallowed_tools, cwd, prompt_extra = None, str(ws) if ws else None, ""
+    disallowed_tools, cwd, prompt_extra = persona_deny, str(ws) if ws else None, ""
     # HZ-447: a bundle step reads every in-scope repo from a read-only copy,
     # held to the copy's tool rules, guarded over the copy and every hub, with
     # its run log scrubbed. Its errors are scrubbed too, and the copy is

@@ -21,40 +21,15 @@ import signal
 import time
 from pathlib import Path
 
-PROC = Path("/proc")
+from . import procfs
 
-
-def _stat(pid: int) -> tuple[str, str, int] | None:
-    """(comm, state, ppid) of a live process, or None once it is gone."""
-    try:
-        raw = (PROC / str(pid) / "stat").read_text()
-    except OSError:
-        return None
-    # "1234 (comm with spaces) S 1 ..." — comm can hold spaces and ')'.
-    close = raw.rfind(")")
-    fields = raw[close + 2 :].split()
-    return raw[raw.find("(") + 1 : close], fields[0], int(fields[1])
-
-
-def _alive(pid: int) -> bool:
-    st = _stat(pid)
-    return st is not None and st[1] not in ("Z", "X")
+PROC = procfs.PROC
+_alive = procfs.alive
 
 
 def _inside(path: Path, ws: Path) -> bool:
     # On a path boundary: hz-25's sweep must never match hz-256's worktree.
     return path == ws or ws in path.parents
-
-
-def _ancestors(pid: int) -> set[int]:
-    seen = set()
-    while pid > 1 and pid not in seen:
-        seen.add(pid)
-        st = _stat(pid)
-        if st is None:
-            break
-        pid = st[2]
-    return seen
 
 
 def _pids_in(ws: Path) -> set[int]:
@@ -66,28 +41,18 @@ def _pids_in(ws: Path) -> set[int]:
     fence's cleanup), which must finish so the worktree is left clean."""
     ws = Path(os.path.realpath(ws))
     me = os.getpid()
-    uid = os.getuid()
-    spared = _ancestors(me)
+    spared = procfs.ancestors(me)
     children: dict[int, list[int]] = {}
     matched: set[int] = set()
-    for entry in os.listdir(PROC):
-        if not entry.isdigit():
+    for pid in procfs.own_pids():
+        st = procfs.stat(pid)
+        if st is None or st.state in procfs.DEAD_STATES or pid in spared:
             continue
-        pid = int(entry)
-        try:
-            if os.stat(PROC / entry).st_uid != uid:
-                continue
-        except OSError:
-            continue
-        st = _stat(pid)
-        if st is None or st[1] in ("Z", "X") or pid in spared:
-            continue
-        comm, _state, ppid = st
-        children.setdefault(ppid, []).append(pid)
-        if ppid == me and comm == "git":
+        children.setdefault(st.ppid, []).append(pid)
+        if st.ppid == me and st.comm == "git":
             continue
         try:
-            cwd = Path(os.readlink(PROC / entry / "cwd"))
+            cwd = Path(os.readlink(PROC / str(pid) / "cwd"))
         except OSError:
             continue
         if _inside(cwd, ws):

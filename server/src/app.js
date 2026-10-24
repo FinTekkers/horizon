@@ -51,11 +51,13 @@ import { choiceValues } from '../../domain/js/providers.js'
 import { PERSONAS } from './personas.js'
 import * as definitions from './definitions.js'
 import * as rulesStore from './rulesStore.js'
+import * as knowledgeDocs from './knowledgeDocs.js'
 import * as runLogView from './runLogView.js'
 import * as split from './split.js'
 import * as planDraft from './planDraft.js'
 import * as screenshots from './screenshots.js'
 import { filedMap } from './planFiling.js'
+import { planProgress } from './planProgress.js'
 import { PLAN_DRAFT_SCHEMA } from '../../domain/js/planDraft.js'
 import { buildLinkContext, codeRefUrl, parseCodeRef, splitItemIds } from '../../domain/js/codeRefs.js'
 import * as checkFlakes from './checkFlakes.js'
@@ -238,8 +240,13 @@ export function streamClientCount() {
 // latestEnd}, or null), and each item's `acceptWaiting` is the Accept that is
 // waiting on it ({source: 'human', actor, heldAt} | {source: 'autopilot'} |
 // null) — heldAccept.js, read once per snapshot.
-export function snapshot({ scope = 'active', estimates = true, checks = true, stepOutputs = true } = {}) {
+//
+// HZ-547: `plans` adds the top-level planProgress (planProgress.js) — each
+// Plan's or Task's filed items, summed over this snapshot's items. The
+// concierge leaves it off.
+export function snapshot({ scope = 'active', estimates = true, checks = true, stepOutputs = true, plans = true } = {}) {
   const acceptWaiting = heldAccept.acceptWaitingLookup()
+  const items = store.listItems({ scope, stepOutputs }).map((item) => ({ ...item, acceptWaiting: acceptWaiting(item) }))
   return {
     repoUrl: getRepoUrl(),
     projects: store.listProjects({ checks }),
@@ -247,8 +254,9 @@ export function snapshot({ scope = 'active', estimates = true, checks = true, st
     farm: orchestrator.getFarmState(),
     sync: github.getSyncState(),
     deployBlock: deployDrain.deployBlock(),
-    items: store.listItems({ scope, stepOutputs }).map((item) => ({ ...item, acceptWaiting: acceptWaiting(item) })),
+    items,
     ...(estimates ? { durationEstimates: store.durationEstimates() } : {}),
+    ...(plans ? { planProgress: planProgress(items, store.spawnParents()) } : {}),
   }
 }
 
@@ -3586,7 +3594,7 @@ export function buildApp({ logger = true, onRoute = null } = {}) {
     },
     (request, reply) => {
       if (!farmAuthorized(request, reply)) return
-      return snapshot({ scope: request.query.scope, estimates: false, checks: false })
+      return snapshot({ scope: request.query.scope, estimates: false, checks: false, plans: false })
     },
   )
 
@@ -3607,6 +3615,64 @@ export function buildApp({ logger = true, onRoute = null } = {}) {
       if (!farmAuthorized(request, reply)) return
       const served = rulesStore.servedRulesFor(request.query.project, request.query.repo)
       return { project: served.project ?? null, repo: served.repo ?? null }
+    },
+  )
+
+  // HZ-537: farmd's knowledge job (farm/knowledge.py) lists the sources to
+  // extract — only projects whose definitions switch is on have any — and
+  // reports one knowledge_doc row per doc back.
+  fastify.get('/api/farm/knowledge/sources', (request, reply) => {
+    if (!farmAuthorized(request, reply)) return
+    return { sources: knowledgeDocs.listSources() }
+  })
+
+  fastify.put(
+    '/api/farm/knowledge/docs/:projectId/:slug',
+    {
+      schema: {
+        params: {
+          type: 'object',
+          required: ['projectId', 'slug'],
+          properties: {
+            projectId: { type: 'integer', minimum: 1 },
+            slug: { type: 'string', pattern: knowledgeDocs.SLUG_SHAPE.source, maxLength: 200 },
+          },
+        },
+        body: {
+          type: 'object',
+          required: ['repo', 'path', 'sourceSha', 'status', 'pageCount', 'sectionCount', 'sections'],
+          additionalProperties: false,
+          properties: {
+            repo: { type: 'string', minLength: 1, maxLength: 300 },
+            path: { type: 'string', minLength: 1, maxLength: 500 },
+            sourceSha: { type: 'string', pattern: '^[0-9a-f]{40,64}$' },
+            status: { type: 'string', enum: ['extracted', 'failed'] },
+            pageCount: { type: 'integer', minimum: 0 },
+            sectionCount: { type: 'integer', minimum: 0 },
+            sections: {
+              type: 'array',
+              maxItems: 500,
+              items: {
+                type: 'object',
+                required: ['id', 'title', 'page'],
+                additionalProperties: false,
+                properties: {
+                  id: { type: 'string', pattern: '^[a-z0-9-]+$', maxLength: 120 },
+                  title: { type: 'string', maxLength: 200 },
+                  page: { type: 'integer', minimum: 1 },
+                },
+              },
+            },
+            error: { type: ['string', 'null'], maxLength: 500 },
+          },
+        },
+      },
+    },
+    (request, reply) => {
+      if (!farmAuthorized(request, reply)) return
+      const result = knowledgeDocs.upsertDoc(request.params.projectId, request.params.slug, request.body)
+      if (result.error) return reply.code(404).send({ error: result.error })
+      return { ok: true, changed: result.changed }
     },
   )
 
@@ -3663,6 +3729,8 @@ export function buildApp({ logger = true, onRoute = null } = {}) {
             artifacts: { type: 'object' },
             flakes: FLAKES_BODY,
             job_view: FINAL_JOB_VIEW_BODY,
+            // HZ-570: the test-result rows farmd will post next for this run.
+            test_runs_expected: { type: 'integer', minimum: 0 },
           },
         },
       },
@@ -3670,6 +3738,9 @@ export function buildApp({ logger = true, onRoute = null } = {}) {
     async (request, reply) => {
       if (!farmAuthorized(request, reply)) return
       checkFlakes.recordRunFlakes(request.params.runId, request.body.flakes, { log: request.log })
+      // Stamped before the run closes, so no drain or review sees it done
+      // without its upload pending.
+      testResults.markUploadPending(request.params.runId, request.body.test_runs_expected)
       return orchestrator.completeFarmRun(request.params.runId, request.body)
     },
   )
@@ -3749,7 +3820,12 @@ export function buildApp({ logger = true, onRoute = null } = {}) {
 
   // HZ-327: the implement step's per-test results, posted by farmd after the
   // result itself. Its own route because a whole suite's rows can outgrow the
-  // default body limit /complete keeps. Best-effort on both sides.
+  // default body limit /complete keeps.
+  // HZ-570: the reply now confirms storage, and farmd keeps the rows until it
+  // gets one: {ok, stored} once committed (a retry replaces the run's rows),
+  // {ok, stored: 0, unknown_run} for a run this server never had, 503
+  // {error: 'not_stored'} when the insert failed. Counted for the deploy drain
+  // while it is served.
   fastify.post(
     '/api/farm/steps/:runId/test-runs',
     {
@@ -3761,8 +3837,39 @@ export function buildApp({ logger = true, onRoute = null } = {}) {
     },
     async (request, reply) => {
       if (!farmAuthorized(request, reply)) return
-      testResults.recordRunTestRuns(request.params.runId, request.body.test_runs, { log: request.log })
-      return { ok: true }
+      const runId = request.params.runId
+      deployDrain.uploadStarted()
+      try {
+        await testResults.testRunsHold('before', runId)
+        let result
+        try {
+          result = testResults.recordRunTestRuns(runId, request.body.test_runs, { log: request.log })
+        } catch {
+          return reply.code(503).send({ error: 'not_stored' })
+        }
+        await testResults.testRunsHold('after', runId)
+        return result.unknownRun ? { ok: true, stored: 0, unknown_run: true } : { ok: true, stored: result.stored }
+      } finally {
+        deployDrain.uploadEnded()
+      }
+    },
+  )
+
+  // HZ-570: farmd stopped retrying a run's upload — 'rejected' (a 4xx) or
+  // 'gave_up' (its retry window ran out) — so review stops waiting for it.
+  fastify.post(
+    '/api/farm/steps/:runId/test-runs/abandon',
+    {
+      schema: {
+        params: { type: 'object', required: ['runId'], properties: { runId: { type: 'integer' } } },
+        body: { type: 'object', required: ['why'], properties: { why: { type: 'string', enum: testResults.UPLOAD_ABANDON_WHYS } } },
+      },
+    },
+    (request, reply) => {
+      if (!farmAuthorized(request, reply)) return
+      const changed = testResults.markUploadAbandoned(request.params.runId, request.body.why)
+      if (changed) request.log.warn(`test results for run ${request.params.runId} abandoned by the farm (${request.body.why})`)
+      return { ok: true, changed }
     },
   )
 

@@ -128,7 +128,13 @@ import { NON_AGENT, cleanUsage, recordRunUsage } from './stepUsage.js'
 import { splitCheckError } from './checkHeadline.js'
 import { recordTestRuns } from './testResults.js'
 import { enqueueRuleBlockPing } from './ruleBlock.js'
-import { buildStoredResultsInput, storedResultsPending, waitForStoredResults } from './storedTestResults.js'
+import {
+  RESULTS_LOST_TEXT,
+  buildStoredResultsInput,
+  storedResultsPending,
+  storedResultsUpload,
+  waitForStoredResults,
+} from './storedTestResults.js'
 import { declares } from '../../domain/js/providers.js'
 import { chainHead, effectiveChain, entryKey, entryLabel, formatResetTime, pickModel, resetMs } from './usageLimits.js'
 
@@ -1318,6 +1324,9 @@ export function kick(id, opts = {}) {
   const attempt = next.attempt
   const autoRetryCount = next.keepsAttempt ? next.autoRetryCount : opts.autoRetryCount || 0
   const toFarm = FARM_URL && FARM_STEP_INDEXES.has(stepIndex)
+  // HZ-570: review waits for the implement run's test results while farmd may
+  // still deliver them, and re-runs the checks if a restart lost them.
+  if (toFarm && stepIndex === REVIEW_STEP_INDEX && holdForTestResults(id, attempt, opts)) return
   // HZ-182: decided once, here, and stored on the run — completion reads the
   // scope the run was dispatched with, never a recomputation from the item.
   // Mock runs stay full: demo mode has no commits to scope a review to.
@@ -1538,6 +1547,64 @@ function overlapStepIndex(item) {
   let index = SUMMARIZE_STEP_INDEX
   while (skips.has(index) || STEPS[index].kind !== 'agent') index--
   return index
+}
+
+// HZ-570: the test-results hold in kick() above. True when kick() must stop
+// (dispatching is already released): 'waiting' re-kicks in
+// STORED_RESULTS_RECHECK_MS — a restart drops the timer and the boot's resume
+// kicks again — and 'lost' re-queues the checks, up to
+// LOST_RESULTS_REQUEUE_CAP times per item. Past the cap review runs, and its
+// input still says the results were lost: never evidence of a pass.
+export const STORED_RESULTS_RECHECK_MS = Number(process.env.STORED_RESULTS_RECHECK_MS ?? 5000)
+export const LOST_RESULTS_REQUEUE_CAP = 3
+const resultsRechecks = new Map() // item id -> its one re-check timer
+
+function holdForTestResults(id, attempt, opts) {
+  const upload = storedResultsUpload(id)
+  if (upload.state === 'waiting') {
+    dispatching.delete(id)
+    clearTimeout(resultsRechecks.get(id))
+    resultsRechecks.set(id, setTimeout(() => kick(id, opts), STORED_RESULTS_RECHECK_MS).unref())
+    return true
+  }
+  if (upload.state !== 'lost') return false
+  const requeued = db
+    .prepare("SELECT COUNT(*) AS n FROM step_run WHERE item_id = ? AND step_index = ? AND status = 'superseded' AND instr(output, ?) > 0")
+    .get(id, REVIEW_STEP_INDEX, RESULTS_LOST_TEXT).n
+  if (requeued >= LOST_RESULTS_REQUEUE_CAP) return false
+  requeueLostResults(id, attempt)
+  return true
+}
+
+// The review run is recorded, closed `superseded`, with the input it would
+// have read; implement runs again to re-run the checks. No verdict was given,
+// so review_cycle_count is untouched and the fix-pass state stays as it was.
+function requeueLostResults(id, attempt) {
+  const step = STEPS[REVIEW_STEP_INDEX]
+  db.prepare(
+    "INSERT INTO step_run (item_id, step_index, attempt, agent, status, output, ended_at) VALUES (?, ?, ?, ?, 'superseded', ?, datetime('now'))",
+  ).run(id, REVIEW_STEP_INDEX, attempt, step.agent, buildStoredResultsInput(id).content)
+  sendBackToImplement(id, {
+    feedback: `The test results of the last implement run were ${RESULTS_LOST_TEXT}. Re-run the checks; the code needs no change for this.`,
+    event: { who: 'Horizon', text: `test ${RESULTS_LOST_TEXT} — checks re-queued`, color: '#DFA200', initials: 'HZ' },
+  })
+  dispatching.delete(id)
+  notifyChange()
+  kick(id)
+}
+
+// Back to implement with one feedback row for it: a failed review under its
+// cap (with its fix-pass state) and HZ-570's lost-results re-queue (without).
+function sendBackToImplement(id, { feedback, fix = null, event }) {
+  db.prepare('INSERT INTO feedback (item_id, target, message) VALUES (?, ?, ?)').run(id, STEPS[IMPLEMENT_STEP_INDEX].agent, feedback)
+  if (fix) {
+    db.prepare(
+      "UPDATE work_item SET cursor = ?, fix_pass = ?, fix_findings_json = ?, updated_at = datetime('now') WHERE id = ?",
+    ).run(IMPLEMENT_STEP_INDEX, fix.pass, fix.findingsJson, id)
+  } else {
+    db.prepare("UPDATE work_item SET cursor = ?, updated_at = datetime('now') WHERE id = ?").run(IMPLEMENT_STEP_INDEX, id)
+  }
+  addEvent(id, event)
 }
 
 // HZ-379: the hold in kick() above. One check per item at a time; a check
@@ -2574,20 +2641,16 @@ function finalizeReviewStep(id, runId, text, artifactMd, verdict, patch, isMock,
   // The feedback row is the human-readable copy the fix pass reads;
   // fix_findings_json is the machine record the next delta review is judged
   // against. The findings reach the implement prompt once, through feedback.
-  db.prepare('INSERT INTO feedback (item_id, target, message) VALUES (?, ?, ?)').run(
-    id,
-    STEPS[IMPLEMENT_STEP_INDEX].agent,
-    delta ? formatFixFeedback(delta.blocks, cycle) : formatReviewFeedback(verdict, cycle),
-  )
   const fixFindings = delta ? delta.blocks.map(({ file, line, detail }) => ({ file, line, detail })) : blockingFindings(verdict)
-  db.prepare(
-    "UPDATE work_item SET cursor = ?, fix_pass = ?, fix_findings_json = ?, updated_at = datetime('now') WHERE id = ?",
-  ).run(IMPLEMENT_STEP_INDEX, FIX_PASS_ENABLED && review?.reviewedSha ? 1 : 0, JSON.stringify(fixFindings), id)
-  addEvent(id, {
-    who: agent.label,
-    text: `automated review failed (cycle ${cycle}/${REVIEW_CYCLE_CAP}) — sent back to “${STEPS[IMPLEMENT_STEP_INDEX].label}”`,
-    color: '#9C333E',
-    initials: agent.initials,
+  sendBackToImplement(id, {
+    feedback: delta ? formatFixFeedback(delta.blocks, cycle) : formatReviewFeedback(verdict, cycle),
+    fix: { pass: FIX_PASS_ENABLED && review?.reviewedSha ? 1 : 0, findingsJson: JSON.stringify(fixFindings) },
+    event: {
+      who: agent.label,
+      text: `automated review failed (cycle ${cycle}/${REVIEW_CYCLE_CAP}) — sent back to “${STEPS[IMPLEMENT_STEP_INDEX].label}”`,
+      color: '#9C333E',
+      initials: agent.initials,
+    },
   })
   postStepComment(getItem(id), REVIEW_STEP_INDEX, attempt, text, patch, isMock, artifactMd)
   notifyChange()
