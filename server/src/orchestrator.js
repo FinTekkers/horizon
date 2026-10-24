@@ -52,6 +52,7 @@ import {
   registerRunStateProvider,
   registerDeployDrainProvider,
   registerProjectOverlayLoader,
+  registerSubstepsSnapshotter,
   claimGateAction,
   finishGateAction,
   getConflictRun as conflictRunOf,
@@ -91,6 +92,7 @@ import {
   projectOverlayFor,
 } from './store.js'
 import { projectPersonaOverlay } from './definitions.js'
+import { snapshotSubsteps } from './substeps.js'
 import { createMockPr, createDeployRelease, postIssueComment, syncIssueBodyFields, createPrFromBranch, getPrHeadSha, getIssueBody } from './github.js'
 import { PHASES } from '../../domain/js/lifecycle.js'
 import { getActiveProjectId, getFarmProjectId, getSetting, setSetting, getToken } from './settings.js'
@@ -3737,6 +3739,8 @@ export async function reconcileActiveRuns() {
 // HZ-535: at load, not in init(), so every store read of an item in a
 // project with definitions sees its overlay as soon as the app is built.
 registerProjectOverlayLoader(projectPersonaOverlay)
+// HZ-538: likewise, so a sync that inserts an item snapshots its sub-steps.
+registerSubstepsSnapshotter(snapshotSubsteps)
 
 export async function init(log) {
   registerAgentRunner({ kick, cancel, pause })
