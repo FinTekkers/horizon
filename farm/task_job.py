@@ -40,7 +40,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from domain.py import run_plan
-from farm import container_runner, job_reports
+from farm import container_runner, job_reports, run_reaper
 from farm import task_clone as task_clone_mod
 from farm.checks import redact
 
@@ -169,17 +169,25 @@ def run_job(**kwargs) -> dict:
     container run's container is killed and removed, and its scratch and
     /tmp dirs wiped, however _run_job ends — the reports were read first."""
     started: list = []
-    try:
-        return _run_job(started=started, **kwargs)
-    finally:
-        if started:
-            container_runner.stop_and_remove(started[0])
-            wipe_throwaway(kwargs["state_path"], kwargs["log_path"])
+    # HZ-569: a host command's processes carry this run's tag, so the ones
+    # that leave its process group (a test's servers, its browsers) are
+    # reaped when the job ends, and swept by farmd when Stop kills the runner.
+    run_tag: dict[str, str] = {}
+    with run_reaper.run_scope(
+        run_tag, item_id=kwargs.get("item_id"), caller="job", worktree=kwargs.get("repo_dir"), prefix="job"
+    ):
+        try:
+            return _run_job(started=started, run_tag=run_tag, **kwargs)
+        finally:
+            if started:
+                container_runner.stop_and_remove(started[0])
+                wipe_throwaway(kwargs["state_path"], kwargs["log_path"])
 
 
 def _run_job(
     *,
     started: list,
+    run_tag: dict | None = None,
     run_id,
     item_id: str,
     plan_artifact: str,
@@ -455,7 +463,7 @@ def _run_job(
     save_state(state_path, state)
     nudge()
 
-    child = _child_env(env_values or {}, venv)
+    child = {**_child_env(env_values or {}, venv), **(run_tag or {})}
     if started:
         # HZ-416: `podman exec` needs only the client's own env — the
         # container got the plan's values when it started.

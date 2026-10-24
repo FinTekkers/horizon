@@ -24,7 +24,7 @@ from fastapi.responses import JSONResponse
 # HZ-132 put the failure-reason vocabulary there under the same rule, so the
 # tags this daemon relays are the ones the server classifies, by construction.
 from domain.py import reasons, run_plan, steps
-from . import caretaker_ruling, check_slots, conflict_cancel, conflict_resolver, container_runner, job_reports, knowledge, login_env, pause, rules, task_job, tmux_mgr, workspaces
+from . import caretaker_ruling, check_slots, conflict_cancel, conflict_resolver, container_runner, job_reports, knowledge, login_env, pause, rules, run_reaper, task_job, tmux_mgr, workspaces
 from . import config as farm_config
 from .checks import CHECK_SLOTS, default_check_slots, redact
 from .task_files import read_launchable_task
@@ -829,6 +829,25 @@ def _reconcile_loop() -> None:
             _reconcile_claimed_runs()
         except Exception as exc:
             print(f"farmd: reconcile error: {exc}", flush=True)
+
+
+def _sweep_runs() -> None:
+    """HZ-569: kill the capture workers, browsers and e2e servers whose run's
+    owner is gone — a step killed by Stop or a crash, a pre-merge run past its
+    cap, a check this farmd ran before it restarted. A run whose owner is
+    still alive, in tmux or anywhere else, is never touched (run_reaper.sweep).
+    Each kill is logged with its run, item and worktree."""
+    try:
+        run_reaper.sweep(log=lambda line: print(f"farmd: {line}", flush=True))
+    except Exception as exc:
+        print(f"farmd: run sweep error: {type(exc).__name__}: {exc}", flush=True)
+
+
+def _run_sweep_loop(stop: threading.Event | None = None) -> None:
+    """Sweeps every RUN_SWEEP_INTERVAL_S (read each tick) until `stop` is set."""
+    stop = stop or threading.Event()
+    while not stop.wait(farm_config.RUN_SWEEP_INTERVAL_S):
+        _sweep_runs()
 
 
 def _knowledge_sources() -> list[dict]:
@@ -2301,9 +2320,13 @@ assert_provider_auth()
 _adopt_existing()
 _adopt_jobs()
 _reconcile_claimed_runs()
+# HZ-569: a check this farmd ran before a restart left its processes with no
+# owner; they go now, not on the first tick.
+_sweep_runs()
 threading.Thread(target=_watchdog, daemon=True).start()
 threading.Thread(target=_ephemeral_dispatcher, daemon=True).start()
 threading.Thread(target=_reconcile_loop, daemon=True).start()
+threading.Thread(target=_run_sweep_loop, daemon=True).start()
 threading.Thread(target=_knowledge_loop, daemon=True).start()
 
 if __name__ == "__main__":

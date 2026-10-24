@@ -37,6 +37,12 @@ included).
 
 Every value in `secrets` (login values included) is redacted from the log,
 the manifest and every failure message.
+
+HZ-569: `serve` and the worker run in sessions of their own, so a kill of
+the check's process group never reaches them. They carry the run's
+HORIZON_RUN_ID instead (farm/run_reaper.py), and so does every browser the
+worker launches: the run reaps them whichever way it ends. Inside a check
+the tag is already set; a direct caller gets a run of its own.
 """
 
 import contextlib
@@ -54,7 +60,7 @@ import urllib.request
 from pathlib import Path
 from urllib.parse import urlsplit
 
-from . import checks, screenshots_config
+from . import checks, run_reaper, screenshots_config
 
 CAPTURE_DIR = Path(__file__).resolve().parent / "capture"
 # Tests swap this for a fake worker that speaks the same protocol.
@@ -375,6 +381,12 @@ def capture(
     """Captures every shot in `cfg` and returns the manifest it wrote.
     `deadline` is a time.monotonic() bound on the whole run. Raises
     CaptureFailed (ServeFailed) when nothing could be captured."""
+    env = dict(env)
+    with run_reaper.run_scope(env, caller="screenshots", worktree=ws, prefix="capture", log=log):
+        return _capture(ws, cfg, env=env, login_values=login_values, secrets=secrets, deadline=deadline, log=log)
+
+
+def _capture(ws, cfg, *, env, login_values, secrets, deadline, log) -> dict:
     ws = Path(ws)
     out_dir = ws / cfg.output_dir
     _prepare_output(out_dir)
