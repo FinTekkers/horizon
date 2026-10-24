@@ -13,6 +13,7 @@ import {
   revokeApiToken,
   setProjectEnabled,
   setProjectAutopilot,
+  setProjectDefinitionsEnabled,
   setProjectStepProvider,
   saveRepoChecks,
   saveRepoMarks,
@@ -1036,6 +1037,76 @@ function ProjectEnabledToggle({ project }) {
   )
 }
 
+// HZ-535: the switch for the project's own definitions
+// (farm/projects/<slug>/personas.json), next to Autopilot. The box shows the
+// server's value: a click asks for the gate PIN, and only a saved change moves
+// it. The PIN is held for this one request, never stored.
+function ProjectDefinitions({ project }) {
+  const [asking, setAsking] = useState(false)
+  const [pin, setPin] = useState('')
+  const [error, setError] = useState(null)
+  const [busy, setBusy] = useState(false)
+  const enabled = project.definitionsEnabled !== false
+  const next = enabled ? 'off' : 'on'
+
+  const cancel = () => {
+    setAsking(false)
+    setPin('')
+    setError(null)
+  }
+
+  const submit = async (e) => {
+    e.preventDefault()
+    if (!pin || busy) return
+    setBusy(true)
+    setError(null)
+    try {
+      await setProjectDefinitionsEnabled(project.id, !enabled, pin)
+      setAsking(false)
+    } catch (err) {
+      setError(err.status === 401 ? 'Gate PIN incorrect' : err.message)
+    } finally {
+      setPin('')
+      setBusy(false)
+    }
+  }
+
+  return (
+    <div className="project-definitions" style={{ marginBottom: 8 }}>
+      <label className="project-autopilot__row">
+        <input
+          type="checkbox"
+          aria-label={`${project.name} project definitions`}
+          checked={enabled}
+          onChange={() => (asking ? cancel() : setAsking(true))}
+        />
+        <span>Project definitions</span>
+      </label>
+      {asking && (
+        <form className="project-block__add" onSubmit={submit}>
+          <input
+            className="field__input"
+            type="password"
+            autoComplete="off"
+            aria-label={`Gate PIN to turn ${project.name} project definitions ${next}`}
+            placeholder={`Gate PIN to turn project definitions ${next}`}
+            value={pin}
+            onChange={(e) => setPin(e.target.value)}
+            autoFocus
+          />
+          <button type="submit" className="composer__submit" style={{ background: 'var(--primary)' }} disabled={!pin || busy}>
+            {busy ? 'Saving…' : 'Save'}
+          </button>
+          <button type="button" className="composer__cancel" onClick={cancel}>
+            Cancel
+          </button>
+        </form>
+      )}
+      {error && <div className="gh-error">{error}</div>}
+    </div>
+  )
+}
+
 // HZ-270: a project's Autopilot mode. Picking a mode asks for the gate PIN,
 // exactly like ProjectEnabledToggle; the select always shows the server's
 // value, so a refused PIN leaves it as it was. The last few changes show
@@ -1271,6 +1342,7 @@ function ProjectPanel({ project, syncRepos, deployTargets }) {
         <ProjectEnabledToggle project={project} />
       </div>
       <ProjectAutopilot project={project} />
+      <ProjectDefinitions project={project} />
       <ProjectStepProviders project={project} />
       {project.repos.map((r) => {
         const webhook = Object.hasOwn(webhooks, r.repo) ? webhooks[r.repo] : null

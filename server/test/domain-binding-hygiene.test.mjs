@@ -719,6 +719,7 @@ test('the JS persona binding exports the registry and nothing presentational', (
       'PERSONA_ROLE_FILES',
       'PRIMARY_PERSONA_AGENT',
       'assertPersonasShape',
+      'assertProjectPersonasShape',
       'isPersona',
       'isPersonaAgent',
       'legacyPersona',
@@ -764,6 +765,7 @@ test('the Python persona binding owns the registry and nothing else — no label
       'model_agent_for_step',
       'persona_role_file',
       'resolve_model',
+      'validate_project_personas',
     ],
     'domain/py/personas.py gained or lost a public name — presentation stays in the layer registries',
   )

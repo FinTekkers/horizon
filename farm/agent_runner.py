@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Any, Callable, Iterator, NamedTuple
 
 from domain.py import providers as domain_providers
-from domain.py.personas import resolve_model
+from domain.py.personas import MODELS, resolve_model
 
 from .config import FARM_PROVIDER, MAX_TURNS, STATE_DIR, STEP_TIMEOUT_S
 from .providers import claude, muse
@@ -81,7 +81,9 @@ def _log(msg: str) -> None:
     print(f"[agent_runner] {msg}", flush=True)
 
 
-def _model_for(name: str, agent: str, step: str | None, persona: str | None, chosen: str | None = None) -> str | None:
+def _model_for(
+    name: str, agent: str, step: str | None, persona: str | None, chosen: str | None = None, overlay: dict | None = None
+) -> str | None:
     """HZ-192: the model a run_agent() call hands its provider — the ONLY place
     a farm call's model is chosen (farm/tests/test_model_call_sites.py).
 
@@ -96,8 +98,15 @@ def _model_for(name: str, agent: str, step: str | None, persona: str | None, cho
     declares raises.
 
     The agent is resolved on every provider, so a misspelt agent fails on Muse
-    too."""
-    model = resolve_model(agent, step, persona)
+    too.
+
+    HZ-535: `overlay` (farm/personas.py's project_overlay) adds the project's
+    persona models to models.personas for this one call; None reads the
+    declared block alone, as before."""
+    if overlay:
+        model = resolve_model(agent, step, persona, {**MODELS, "personas": {**MODELS["personas"], **overlay["models"]}})
+    else:
+        model = resolve_model(agent, step, persona)
     override = os.environ.get(MODEL_OVERRIDE_ENV, "")
     if override:
         if not any(domain_providers.declares(p, override) for p in domain_providers.provider_names()):
@@ -158,6 +167,7 @@ def run_agent(
     provider_locked: bool = False,
     retry_fresh: bool = True,
     disallowed_tools: str | None = None,
+    overlay: dict | None = None,
 ) -> dict:
     """Returns {"result": <final text>, "session_id": <id>, "provider": <name>,
     "model": <id or None>, "command_id": <id or None>}, plus "num_turns" (HZ-458)
@@ -201,11 +211,14 @@ def run_agent(
     ENFORCES_DENY_RULES (Claude) can enforce, so any other provider is refused
     before it is called. They reach the provider only when set, so no other
     provider's signature changes.
+
+    overlay (HZ-535) is the task's project overlay, so a project persona's
+    model is resolved from its project file. None keeps the declared models.
     """
     name, provider_module = _selected_provider(provider, provider_locked=provider_locked)
     if disallowed_tools and not getattr(provider_module, "ENFORCES_DENY_RULES", False):
         raise AgentError(f"provider '{name}' cannot enforce deny rules (disallowed_tools) — refusing this call")
-    model = _model_for(name, agent, step, persona, model_choice)
+    model = _model_for(name, agent, step, persona, model_choice, overlay)
     provider_module.assert_subscription_auth()
     if session_id and not provider_module.SUPPORTS_RESUME:
         # Refuse rather than silently starting fresh — a resume-incapable

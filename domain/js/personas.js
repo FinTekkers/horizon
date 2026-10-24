@@ -361,3 +361,95 @@ export function resolveModel(agent, step = null, persona = null, models = MODELS
   if (typeof step === 'string' && own(models.steps, step)) return models.steps[step]
   return models.agents[agent]
 }
+
+// HZ-535: a project's own personas, declared in farm/projects/<slug>/personas.json
+// (domain/projectPersonas.schema.json). This binding only VALIDATES a parsed
+// document — it reads no file, so the UI bundle stays I/O-free; the server
+// (definitions.js) and the farm (farm/personas.py) read the file and build
+// their overlays from a document that passed here. Kept word-for-word in step
+// with domain/py/personas.py's validate_project_personas — the shared
+// projectValidation section of domain/fixtures/personas-cases.json drives both.
+//
+// A bare id equal to ANY global persona id, under any agent, is refused: the
+// namespaced `<slug>:<id>` form can never collide, so the bare part is what is
+// compared. Each table is a defaulted parameter, as for assertPersonasShape.
+const PROJECT_SLUG_SHAPE = /^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/
+const PROJECT_PERSONA_KEYS = ['id', 'agent', 'label', 'initials', 'color', 'model', 'provider', 'file']
+const INITIALS_SHAPE = /^[A-Z0-9]{1,3}$/
+const COLOR_SHAPE = /^#[0-9A-Fa-f]{6}$/
+// provider -> every model id domain/providers.json declares for it. Kept in
+// step with domain/py/personas.py's _PROVIDER_MODELS.
+const PROVIDER_MODELS = Object.freeze(
+  Object.fromEntries(PROVIDERS.map((p) => [p.name, Object.freeze(p.models.map((m) => m.id))])),
+)
+
+export function assertProjectPersonasShape(
+  data,
+  slug,
+  source = `farm/projects/${slug}/personas.json`,
+  providerModels = PROVIDER_MODELS,
+  personaIds = PERSONA_IDS,
+) {
+  if (typeof slug !== 'string' || !PROJECT_SLUG_SHAPE.test(slug)) {
+    throw new Error(`project slug ${JSON.stringify(slug ?? null)} — expected a slug matching ${PROJECT_SLUG_SHAPE}`)
+  }
+  if (!isObject(data) || !Array.isArray(data.personas) || data.personas.length === 0) {
+    throw new Error(`${source} must be a JSON object with a non-empty personas array`)
+  }
+  for (const key of Object.keys(data)) {
+    if (key !== 'personas') throw new Error(`${source} has unknown key ${JSON.stringify(key)} — expected only ["personas"]`)
+  }
+  const seenIds = new Set()
+  const seenFiles = new Set()
+  for (const [i, entry] of data.personas.entries()) {
+    const at = `${source}: personas[${i}]`
+    if (!isObject(entry)) throw new Error(`${at} must be a JSON object`)
+    for (const key of Object.keys(entry)) {
+      if (!PROJECT_PERSONA_KEYS.includes(key)) {
+        throw new Error(`${at} has unknown key ${JSON.stringify(key)} — expected only ${JSON.stringify(PROJECT_PERSONA_KEYS)}`)
+      }
+    }
+    for (const key of PROJECT_PERSONA_KEYS) {
+      if (!own(entry, key)) throw new Error(`${at} is missing ${JSON.stringify(key)}`)
+    }
+    const { id, agent, label, initials, color, model, provider, file } = entry
+    if (!isId(id)) {
+      throw new Error(`${at}.id declares ${JSON.stringify(id ?? null)} — expected a lower-case id matching ${ID_SHAPE}`)
+    }
+    for (const [owner, ids] of Object.entries(personaIds)) {
+      if (ids.includes(id)) {
+        throw new Error(`${at}: project persona id ${JSON.stringify(id)} collides with global persona ${owner}.${id}`)
+      }
+    }
+    if (seenIds.has(id)) throw new Error(`${source}: project persona id ${JSON.stringify(id)} is declared more than once`)
+    seenIds.add(id)
+    if (!isPersonaAgent(agent, personaIds)) {
+      throw new Error(
+        `${at}.agent ${JSON.stringify(agent ?? null)} is not a declared persona agent ${JSON.stringify(Object.keys(personaIds))}`,
+      )
+    }
+    if (typeof label !== 'string' || !label.trim()) throw new Error(`${at}.label must be a non-empty string`)
+    if (typeof initials !== 'string' || !INITIALS_SHAPE.test(initials)) {
+      throw new Error(`${at}.initials ${JSON.stringify(initials ?? null)} — expected initials matching ${INITIALS_SHAPE}`)
+    }
+    if (typeof color !== 'string' || !COLOR_SHAPE.test(color)) {
+      throw new Error(`${at}.color ${JSON.stringify(color ?? null)} — expected a hex colour matching ${COLOR_SHAPE}`)
+    }
+    if (typeof provider !== 'string' || !own(providerModels, provider)) {
+      throw new Error(
+        `${at}.provider ${JSON.stringify(provider ?? null)} is not a provider domain/providers.json declares ${JSON.stringify(Object.keys(providerModels))}`,
+      )
+    }
+    if (typeof model !== 'string' || !providerModels[provider].includes(model)) {
+      throw new Error(
+        `${at}.model ${JSON.stringify(model ?? null)} is not a model domain/providers.json declares for provider ${JSON.stringify(provider)}`,
+      )
+    }
+    if (!isRoleFile(file)) {
+      throw new Error(`${at}.file ${JSON.stringify(file ?? null)} is not a role file matching ${ROLE_FILE_SHAPE}`)
+    }
+    if (seenFiles.has(file)) throw new Error(`${source}: role file ${JSON.stringify(file)} is declared more than once`)
+    seenFiles.add(file)
+  }
+  return data
+}

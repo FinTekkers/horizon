@@ -27,6 +27,7 @@ listKind) deliberately forbids a slash in a definition name, and widening that
 security-relevant code to walk subdirectories would buy nothing here.
 """
 
+import json
 from pathlib import Path
 
 from domain.py.personas import (
@@ -35,9 +36,18 @@ from domain.py.personas import (
     PERSONA_AGENTS,
     PERSONA_IDS,
     persona_role_file,
+    validate_project_personas,
 )
 
+from .config import slugify
+
 PERSONA_DIR = Path(__file__).parent / "roles" / "personas"
+
+# HZ-535: a project's own personas live in farm/projects/<slug>/personas.json
+# (domain/projectPersonas.schema.json), their markdown in
+# farm/projects/<slug>/personas/. server/src/definitions.js reads the same
+# directory (PROJECTS_DIR there); the parity test asserts both resolve alike.
+PROJECTS_DIR = Path(__file__).parent / "projects"
 
 # agent -> {persona id -> markdown file in farm/roles/personas/}
 #
@@ -111,7 +121,88 @@ LEGACY_PERSONA_IDS = dict(_DOMAIN_LEGACY_PERSONA_IDS)
 PERSONA_PROVIDERS = {}
 
 
-def resolve(agent: str, persona_id) -> str:
+def load_project_personas(slug: str, root: Path | None = None) -> dict | None:
+    """HZ-535: the project's overlay, or None when it declares no personas.
+    Mirror of server/src/definitions.js loadProjectPersonas.
+
+    Raises RuntimeError when the file is not valid JSON, fails
+    validate_project_personas (a bare id equal to a global persona id is named
+    in the message), a role file is missing, or the credential lint hits the
+    JSON or any role file — the file is named.
+
+    The overlay: {"slug", "ids": {agent: [ns_id]}, "role_text": {ns_id: md},
+    "display": {ns_id: {label, initials, color}}, "models":
+    {"<agent>.<ns_id>": model}, "providers": {"<agent>.<ns_id>": provider}},
+    where ns_id is "<slug>:<id>"."""
+    from .rules import lint_rules  # lazy: farm/rules.py imports this module
+
+    root = PROJECTS_DIR if root is None else root
+    source = f"farm/projects/{slug}/personas.json"
+    path = root / slug / "personas.json"
+    try:
+        text = path.read_text()
+    except (FileNotFoundError, NotADirectoryError):
+        return None
+    except OSError as exc:
+        raise RuntimeError(f"{source} could not be read ({exc})") from exc
+
+    def lint(name: str, body: str) -> None:
+        hits = lint_rules(body)
+        if hits:
+            raise RuntimeError(f"{name}: credential lint refused it ({', '.join(hits)})")
+
+    lint(source, text)
+    # Parsed from its own read_text(): farm/tests/test_one_reply_parser.py
+    # allows json.loads only on a file or env read, never on a held string.
+    try:
+        data = json.loads(path.read_text())
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(f"{source} is not valid JSON ({exc})") from exc
+    except OSError as exc:
+        raise RuntimeError(f"{source} could not be read ({exc})") from exc
+    validate_project_personas(data, slug, source)
+    overlay: dict = {"slug": slug, "ids": {}, "role_text": {}, "display": {}, "models": {}, "providers": {}}
+    for entry in data["personas"]:
+        ns_id = f"{slug}:{entry['id']}"
+        role_name = f"farm/projects/{slug}/personas/{entry['file']}"
+        try:
+            role_text = (root / slug / "personas" / entry["file"]).read_text()
+        except OSError as exc:
+            raise RuntimeError(f"{role_name} could not be read ({exc})") from exc
+        lint(role_name, role_text)
+        overlay["ids"].setdefault(entry["agent"], []).append(ns_id)
+        overlay["role_text"][ns_id] = role_text
+        overlay["display"][ns_id] = {"label": entry["label"], "initials": entry["initials"], "color": entry["color"]}
+        overlay["models"][f"{entry['agent']}.{ns_id}"] = entry["model"]
+        overlay["providers"][f"{entry['agent']}.{ns_id}"] = entry["provider"]
+    return overlay
+
+
+def project_overlay(project, root: Path | None = None) -> dict | None:
+    """HZ-535: the overlay a task's project ({"name", "definitionsEnabled"}
+    off the dispatch payload) composes, or None — no project, the switch off,
+    the flag missing (a server from before HZ-535), no personas.json, or a
+    file that fails to load. Never raises: a load error is logged and the run
+    goes ahead on the global personas, exactly as if the project declared
+    none."""
+    if not isinstance(project, dict) or project.get("definitionsEnabled") is not True:
+        return None
+    name = project.get("name")
+    slug = slugify(name) if isinstance(name, str) else ""
+    if not slug:
+        return None
+    try:
+        return load_project_personas(slug, root)
+    except Exception as exc:  # noqa: BLE001 — persona routing must never block a run
+        print(f"personas: project personas for {name} not loaded — running on the global personas: {exc}", flush=True)
+        return None
+
+
+def _overlay_has(overlay, agent: str, candidate: str) -> bool:
+    return isinstance(overlay, dict) and candidate in overlay["ids"].get(agent, ())
+
+
+def resolve(agent: str, persona_id, overlay=None) -> str:
     """Map an item's persona value for `agent` to a persona id in that agent's
     bucket, best-effort.
 
@@ -126,6 +217,10 @@ def resolve(agent: str, persona_id) -> str:
     data: every caller passes a literal from STEP_CONFIG, so an unknown agent
     means the code is wrong and should say so rather than quietly compose the
     generalist. compose_role() below is the never-raises wrapper callers use.
+
+    HZ-535: `overlay` is the task's project overlay (project_overlay()), or
+    None. A "<slug>:<id>" in its bucket for `agent` resolves to itself; with
+    None this is the global resolution exactly.
     """
     bucket = PERSONAS.get(agent)
     if bucket is None:
@@ -133,13 +228,15 @@ def resolve(agent: str, persona_id) -> str:
     candidate = persona_id.strip().lower() if isinstance(persona_id, str) else ""
     if candidate in bucket:
         return candidate
+    if _overlay_has(overlay, agent, candidate):
+        return candidate
     legacy = LEGACY_PERSONA_IDS.get(candidate)
     if legacy and legacy[0] == agent and legacy[1] in bucket:
         return legacy[1]
     return DEFAULT_PERSONAS[agent]
 
 
-def provider_for(personas) -> str | None:
+def provider_for(personas, overlay=None) -> str | None:
     """The provider an item's personas force (farm/agent_runner.py's
     run_agent(provider=...)), or None to keep the caller's normal
     FARM_PROVIDER-selected default.
@@ -159,19 +256,24 @@ def provider_for(personas) -> str | None:
 
     Junk (None, wrong type, unknown agent, unregistered id) contributes
     nothing — an unrecognized persona must never accidentally force a provider.
+
+    HZ-535: a project persona's provider comes from its project file, through
+    `overlay`; with None only PERSONA_PROVIDERS is read, as before.
     """
     if not isinstance(personas, dict):
         return None
+    providers = overlay["providers"] if isinstance(overlay, dict) else {}
     for agent in PERSONAS:
         if agent not in personas:
             continue
-        provider = PERSONA_PROVIDERS.get(f"{agent}.{resolve(agent, personas[agent])}")
+        key = f"{agent}.{resolve(agent, personas[agent], overlay)}"
+        provider = PERSONA_PROVIDERS.get(key) or providers.get(key)
         if provider:
             return provider
     return None
 
 
-def compose_role(role_text: str, agent: str, persona_id) -> str:
+def compose_role(role_text: str, agent: str, persona_id, overlay=None) -> str:
     """Append the `agent` bucket's persona markdown to a role prompt.
 
     Appends under a "## Your specialization" heading — it never replaces the
@@ -184,11 +286,16 @@ def compose_role(role_text: str, agent: str, persona_id) -> str:
     falls back to the default persona's file, and if that is also missing the
     role text is returned untouched — a broken persona install degrades to
     pre-persona behavior, not a dead run.
+
+    HZ-535: a project persona (in `overlay`) composes its project markdown,
+    read and linted when the overlay was loaded.
     """
     bucket = PERSONAS.get(agent)
     if bucket is None:
         return role_text
-    resolved = resolve(agent, persona_id)
+    resolved = resolve(agent, persona_id, overlay)
+    if _overlay_has(overlay, agent, resolved):
+        return f"{role_text}\n\n## Your specialization\n{overlay['role_text'][resolved]}"
     for candidate in (resolved, DEFAULT_PERSONAS[agent]):
         try:
             persona_md = (PERSONA_DIR / bucket[candidate]).read_text()

@@ -426,3 +426,113 @@ def resolve_model(agent: str, step: str | None = None, persona: str | None = Non
     if isinstance(step, str) and step in models["steps"]:
         return models["steps"][step]
     return agents[agent]
+
+
+# HZ-535: a project's own personas, declared in farm/projects/<slug>/personas.json
+# (domain/projectPersonas.schema.json). Kept word-for-word in step with
+# domain/js/personas.js's assertProjectPersonasShape — the shared
+# projectValidation section of domain/fixtures/personas-cases.json drives both.
+_PROJECT_SLUG_SHAPE = re.compile(r"^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$")
+_PROJECT_PERSONA_KEYS = ("id", "agent", "label", "initials", "color", "model", "provider", "file")
+_INITIALS_SHAPE = re.compile(r"^[A-Z0-9]{1,3}$")
+_COLOR_SHAPE = re.compile(r"^#[0-9A-Fa-f]{6}$")
+# provider -> every model id domain/providers.json declares for it. Kept in
+# step with domain/js/personas.js's PROVIDER_MODELS.
+_PROVIDER_MODELS = types.MappingProxyType(
+    {name: tuple(m["id"] for m in entry["models"]) for name, entry in _providers.PROVIDERS.items()}
+)
+
+
+def validate_project_personas(
+    data: object,
+    slug: object,
+    source: str | None = None,
+    provider_models=_PROVIDER_MODELS,
+    persona_ids=PERSONA_IDS,
+) -> dict:
+    """Every load-time rule for one project's persona document. Raises
+    RuntimeError rather than returning a partly-usable overlay. Reads no file:
+    farm/personas.py's project_overlay() reads it and builds the overlay from a
+    document that passed here.
+
+    A bare id equal to ANY global persona id, under any agent, is refused —
+    the namespaced "<slug>:<id>" form can never collide, so the bare part is
+    what is compared, and the message names that id.
+
+    `provider_models` and `persona_ids` are parameters with defaults so a
+    fixture can drive the rules with fabricated tables."""
+    prefix = "domain/py/personas.py: "
+    if not isinstance(slug, str) or _PROJECT_SLUG_SHAPE.fullmatch(slug) is None:
+        raise RuntimeError(
+            f"{prefix}project slug {_json(slug)} — expected a slug matching /{_PROJECT_SLUG_SHAPE.pattern}/"
+        )
+    where = prefix + (source if source is not None else f"farm/projects/{slug}/personas.json")
+    entries = data.get("personas") if isinstance(data, dict) else None
+    if not isinstance(entries, list) or not entries:
+        raise RuntimeError(f"{where} must be a JSON object with a non-empty personas array")
+    for key in data:
+        if key != "personas":
+            raise RuntimeError(f'{where} has unknown key {_json(key)} — expected only ["personas"]')
+    seen_ids: set = set()
+    seen_files: set = set()
+    for i, entry in enumerate(entries):
+        at = f"{where}: personas[{i}]"
+        if not isinstance(entry, dict):
+            raise RuntimeError(f"{at} must be a JSON object")
+        for key in entry:
+            if key not in _PROJECT_PERSONA_KEYS:
+                raise RuntimeError(
+                    f"{at} has unknown key {_json(key)} — expected only {_json(list(_PROJECT_PERSONA_KEYS))}"
+                )
+        for key in _PROJECT_PERSONA_KEYS:
+            if key not in entry:
+                raise RuntimeError(f"{at} is missing {_json(key)}")
+        persona_id = entry["id"]
+        if not _is_id(persona_id):
+            raise RuntimeError(
+                f"{at}.id declares {_json(persona_id)} — expected a lower-case id matching /{_ID_SHAPE.pattern}/"
+            )
+        for owner, ids in persona_ids.items():
+            if persona_id in ids:
+                raise RuntimeError(
+                    f"{at}: project persona id {_json(persona_id)} collides with global persona {owner}.{persona_id}"
+                )
+        if persona_id in seen_ids:
+            raise RuntimeError(f"{where}: project persona id {_json(persona_id)} is declared more than once")
+        seen_ids.add(persona_id)
+        agent = entry["agent"]
+        if not isinstance(agent, str) or agent not in persona_ids:
+            raise RuntimeError(
+                f"{at}.agent {_json(agent)} is not a declared persona agent {_json(list(persona_ids))}"
+            )
+        label = entry["label"]
+        if not isinstance(label, str) or not label.strip():
+            raise RuntimeError(f"{at}.label must be a non-empty string")
+        initials = entry["initials"]
+        if not isinstance(initials, str) or _INITIALS_SHAPE.fullmatch(initials) is None:
+            raise RuntimeError(
+                f"{at}.initials {_json(initials)} — expected initials matching /{_INITIALS_SHAPE.pattern}/"
+            )
+        color = entry["color"]
+        if not isinstance(color, str) or _COLOR_SHAPE.fullmatch(color) is None:
+            raise RuntimeError(f"{at}.color {_json(color)} — expected a hex colour matching /{_COLOR_SHAPE.pattern}/")
+        provider = entry["provider"]
+        if not isinstance(provider, str) or provider not in provider_models:
+            raise RuntimeError(
+                f"{at}.provider {_json(provider)} is not a provider domain/providers.json declares "
+                f"{_json(list(provider_models))}"
+            )
+        model = entry["model"]
+        if not isinstance(model, str) or model not in provider_models[provider]:
+            raise RuntimeError(
+                f"{at}.model {_json(model)} is not a model domain/providers.json declares for provider {_json(provider)}"
+            )
+        role_file = entry["file"]
+        if not _is_role_file(role_file):
+            raise RuntimeError(
+                f"{at}.file {_json(role_file)} is not a role file matching /{_ROLE_FILE_SHAPE.pattern}/"
+            )
+        if role_file in seen_files:
+            raise RuntimeError(f"{where}: role file {_json(role_file)} is declared more than once")
+        seen_files.add(role_file)
+    return data

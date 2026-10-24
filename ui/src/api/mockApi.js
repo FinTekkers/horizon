@@ -192,6 +192,10 @@ export async function setProjectAutopilot() {
   throw new Error('Projects are not available in mock mode')
 }
 
+export async function setProjectDefinitionsEnabled() {
+  throw new Error('Projects are not available in mock mode')
+}
+
 // Mirrors store.setProjectStepProvider's eligibility rule, read from
 // domain/steps.json; projects themselves need the server.
 export async function setProjectStepProvider(projectId, stepIndex) {

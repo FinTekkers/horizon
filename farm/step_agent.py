@@ -67,7 +67,7 @@ from . import (
 from .checks import CheckFailure, redact, run_checks, scrub, secret_values
 from .config import FARM_PORT, ITEM_LOCK_WAIT_S
 from .handoff import HandoffContext, HandoffGuard
-from .personas import compose_role, provider_for, resolve
+from .personas import compose_role, project_overlay, provider_for, resolve
 from .read_only_guard import ReadOnlyViolation
 from .rules import render_rules_section
 from .workspaces import ItemBusy, checkout_detached, default_branch, ensure_item_worktree, hub_lock, item_lock
@@ -1894,13 +1894,14 @@ def _review_summary(verdict: dict) -> str:
     return summary[:SUMMARY_MAX_CHARS]
 
 
-def model_persona(persona_agent: str | None, personas: dict) -> str | None:
+def model_persona(persona_agent: str | None, personas: dict, overlay: dict | None = None) -> str | None:
     """HZ-192: the namespaced "<agent>.<persona>" a run_agent() call composes —
     the key domain/personas.json's models.personas overrides by — or None for
-    a call that composes no persona."""
+    a call that composes no persona. HZ-535: a project persona in `overlay`
+    keys as "<agent>.<slug>:<id>", its project file's models entry."""
     if not persona_agent:
         return None
-    return f"{persona_agent}.{resolve(persona_agent, personas.get(persona_agent))}"
+    return f"{persona_agent}.{resolve(persona_agent, personas.get(persona_agent), overlay)}"
 
 
 def _provenance(reply: dict) -> dict:
@@ -2122,6 +2123,7 @@ def _run_and_parse(
     validate=None,
     disallowed_tools: str | None = None,
     recheck=None,
+    overlay: dict | None = None,
 ) -> tuple[dict, dict, list[str]]:
     """run_agent + the shared reply parser, with one retry-with-feedback on a
     parse failure (HZ-44) — the PM steps' recovery (_execute_pm) too. Asking the
@@ -2183,6 +2185,7 @@ def _run_and_parse(
             model_choice=model_choice,
             provider_locked=provider_locked,
             disallowed_tools=disallowed_tools,
+            overlay=overlay,
         )
     except AgentExhaustedError as exc:
         parsed, notes = _on_exhaustion(exc, required_keys=required_keys, ctx=ctx, guard=guard, salvage=True)
@@ -2207,6 +2210,7 @@ def _run_and_parse(
             model_choice=model_choice,
             provider_locked=provider_locked,
             disallowed_tools=disallowed_tools,
+            overlay=overlay,
         )
         return produced["result"]
 
@@ -2588,7 +2592,9 @@ def _execute_pm(task: dict) -> dict:
     # HZ-192: run_agent() resolves the model from who is calling — the step's
     # own domain/steps.json agent (PM, or Architect for "Set guardrails").
     model_agent = model_agent_for_step(steps.by_kind_label(kind, label)["agent"])
-    persona = model_persona(_step_config(kind, label)[3], item_personas(item))
+    # HZ-535: the project's own personas, or None (switch off, no file).
+    overlay = project_overlay(task.get("project"))
+    persona = model_persona(_step_config(kind, label)[3], item_personas(item), overlay)
     # HZ-370: a PM step is in CHOICE_ONLY_PROVIDER_STEPS — the owner's choice
     # (the server has already merged in the project default) or None, i.e.
     # today's routing. A persona's provider never moves it. No cwd for either
@@ -2613,6 +2619,7 @@ def _execute_pm(task: dict) -> dict:
             append_system=pm_steps.role_prompt_for(kind),
             provider=provider,
             model_choice=model_choice,
+            overlay=overlay,
         )
         return produced
 
@@ -2932,8 +2939,11 @@ def _execute(task: dict, guard: HandoffGuard) -> dict:
     provider_locked = steps.provider_locked_for(table, label)
     role = (ROLES / role_file).read_text()
     personas = item_personas(item)
+    # HZ-535: the project's own personas, or None (switch off, no file), which
+    # leaves every call below on the global registry exactly.
+    overlay = project_overlay(task.get("project"))
     if persona_agent:
-        role = compose_role(role, persona_agent, personas.get(persona_agent))
+        role = compose_role(role, persona_agent, personas.get(persona_agent), overlay)
     # HZ-357: the owner's per-step choice wins over the persona map, which wins
     # over FARM_PROVIDER (run_agent's default). Neither applies to a step that
     # isn't provider_override_eligible, so deploy stays locked. HZ-369: a
@@ -2950,12 +2960,12 @@ def _execute(task: dict, guard: HandoffGuard) -> dict:
         if label == IMPLEMENT_LABEL and choice is None:
             provider_locked = True
     else:
-        provider_override = (chosen_provider or provider_for(personas)) if override_eligible else None
+        provider_override = (chosen_provider or provider_for(personas, overlay)) if override_eligible else None
     # HZ-192: who this step's run_agent() calls are; run_agent() resolves the
     # model from these, so it is never chosen here. The agent comes from the
     # step table, like the budget above, not from the task payload.
     model_agent = model_agent_for_step(steps.by_kind_label(kind, label)["agent"])
-    persona = model_persona(persona_agent, personas)
+    persona = model_persona(persona_agent, personas, overlay)
 
     # HZ-447: a bundle step reads no worktree, so none is set up for it.
     bundle_step = _reads_bundle(kind, label)
@@ -3027,6 +3037,7 @@ def _execute(task: dict, guard: HandoffGuard) -> dict:
                 provider=provider_override,
                 model_choice=model_choice,
                 provider_locked=provider_locked,
+                overlay=overlay,
             )
 
         try:
@@ -3235,6 +3246,7 @@ def _execute(task: dict, guard: HandoffGuard) -> dict:
                 provider=provider_override,
                 model_choice=model_choice,
                 provider_locked=provider_locked,
+                overlay=overlay,
             )
             watch.provider = code_provenance.get("provider") or watch.provider
 
@@ -3242,13 +3254,13 @@ def _execute(task: dict, guard: HandoffGuard) -> dict:
         # (HZ-125): a reviewer wearing the implementer's specialization reviews
         # the work as the engineer who wrote it.
         qa_role = (ROLES / "qa_review.md").read_text()
-        qa_role = compose_role(qa_role, REVIEW_QA_PERSONA_AGENT, personas.get(REVIEW_QA_PERSONA_AGENT))
+        qa_role = compose_role(qa_role, REVIEW_QA_PERSONA_AGENT, personas.get(REVIEW_QA_PERSONA_AGENT), overlay)
         with read_only_guard.guard(ws, effective_provider(provider_override)) as watch:
             qa_parsed, qa_provenance, qa_notes = _run_and_parse(
                 prompt,
                 agent=model_agent,
                 step=label,
-                persona=model_persona(REVIEW_QA_PERSONA_AGENT, personas),
+                persona=model_persona(REVIEW_QA_PERSONA_AGENT, personas, overlay),
                 append_system=qa_role,
                 cwd=str(ws),
                 max_turns=max_turns,
@@ -3260,6 +3272,7 @@ def _execute(task: dict, guard: HandoffGuard) -> dict:
                 provider=provider_override,
                 model_choice=model_choice,
                 provider_locked=provider_locked,
+                overlay=overlay,
             )
             watch.provider = qa_provenance.get("provider") or watch.provider
 
@@ -3447,6 +3460,7 @@ def _execute(task: dict, guard: HandoffGuard) -> dict:
                 validate=validate,
                 disallowed_tools=disallowed_tools,
                 recheck=_requires_recheck(kind, label, task),
+                overlay=overlay,
             )
             watch.provider = reply_provenance.get("provider") or watch.provider
         leaks = plan_bundle.leaked_paths(json.dumps(parsed, ensure_ascii=False), bundle) if bundle else []

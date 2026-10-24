@@ -503,6 +503,23 @@ export async function setProjectAutopilot(projectId, mode, pin) {
   return data
 }
 
+// HZ-535: a project's definitions switch. Same PIN handling as
+// setProjectAutopilot, so a 401 carries its status for the Admin message.
+export async function setProjectDefinitionsEnabled(projectId, enabled, pin) {
+  const res = await fetch(`${API_BASE}/projects/${encodeURIComponent(projectId)}/definitions-enabled`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'x-human-key': pin },
+    body: JSON.stringify({ enabled }),
+  })
+  const data = await res.json().catch(() => ({}))
+  if (!res.ok) {
+    const err = new Error(data.error || `HTTP ${res.status}`)
+    err.status = res.status
+    throw err
+  }
+  return data
+}
+
 // HZ-245: a repo's check commands (install, test, lint, e2e, screenshots). Same PIN
 // handling as setProjectEnabled: asked for on every save, sent only in the
 // x-human-key header, never cached.

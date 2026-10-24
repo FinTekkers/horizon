@@ -120,6 +120,31 @@
         "a constructor-named step falls through to the agent default",
         "a prototype-named persona falls through to the step override",
         "a toString-named persona falls through to the agent default"
+      ],
+      "projectValidation": [
+        "a valid project document is accepted",
+        "a hyphenated slug is accepted",
+        "a bare id equal to a global persona id of the same agent is rejected, naming the id",
+        "a bare id equal to another agent's global persona id is rejected, naming the id",
+        "a slug with a slash is rejected",
+        "an empty slug is rejected",
+        "a root that is an array is rejected",
+        "an empty personas array is rejected",
+        "an unknown root key is rejected",
+        "an entry that is not an object is rejected",
+        "an unknown entry key is rejected",
+        "a missing entry key is rejected",
+        "an id with a colon is rejected — the namespace is added, never authored",
+        "an id declared twice is rejected",
+        "an undeclared agent is rejected",
+        "a prototype-named agent is rejected",
+        "a blank label is rejected",
+        "lower-case initials are rejected",
+        "a colour name is rejected",
+        "an undeclared provider is rejected",
+        "a model another provider declares is rejected",
+        "a role file escaping its directory is rejected",
+        "a role file declared twice is rejected"
       ]
     },
 
@@ -1060,6 +1085,150 @@
         "persona": "toString",
         "expect": { "model": "claude-a" }
       }
+    ],
+
+    "$projectValidation": "HZ-535: assertProjectPersonasShape (JS) and validate_project_personas (Py), driven with a fabricated global registry (projectPersonaIds) and provider catalogue (projectProviderModels) in place of domain/personas.json and domain/providers.json.",
+    "projectPersonaIds": { "alpha": ["one", "two"], "beta": ["three"] },
+    "projectProviderModels": { "prov": ["prov-model-1"], "other": ["other-model-1"] },
+    "projectValidation": [
+      {
+        "case": "a valid project document is accepted",
+        "slug": "acme",
+        "input": { "personas": [{ "id": "quant", "agent": "alpha", "label": "Quant", "initials": "QT", "color": "#2E6CB2", "model": "prov-model-1", "provider": "prov", "file": "quant.md" }, { "id": "risk", "agent": "beta", "label": "Risk", "initials": "QT", "color": "#2E6CB2", "model": "prov-model-1", "provider": "prov", "file": "risk.md" }] },
+        "expect": { "throws": false }
+      },
+      {
+        "case": "a hyphenated slug is accepted",
+        "slug": "acme-capital",
+        "input": { "personas": [{ "id": "quant", "agent": "alpha", "label": "Quant", "initials": "QT", "color": "#2E6CB2", "model": "prov-model-1", "provider": "prov", "file": "quant.md" }] },
+        "expect": { "throws": false }
+      },
+      {
+        "case": "a bare id equal to a global persona id of the same agent is rejected, naming the id",
+        "slug": "acme",
+        "input": { "personas": [{ "id": "two", "agent": "alpha", "label": "Quant", "initials": "QT", "color": "#2E6CB2", "model": "prov-model-1", "provider": "prov", "file": "quant.md" }] },
+        "expect": { "throws": true, "messageContains": "project persona id \"two\" collides with global persona alpha.two" }
+      },
+      {
+        "case": "a bare id equal to another agent's global persona id is rejected, naming the id",
+        "slug": "acme",
+        "input": { "personas": [{ "id": "three", "agent": "alpha", "label": "Quant", "initials": "QT", "color": "#2E6CB2", "model": "prov-model-1", "provider": "prov", "file": "quant.md" }] },
+        "expect": { "throws": true, "messageContains": "project persona id \"three\" collides with global persona beta.three" }
+      },
+      {
+        "case": "a slug with a slash is rejected",
+        "slug": "acme/../x",
+        "input": { "personas": [{ "id": "quant", "agent": "alpha", "label": "Quant", "initials": "QT", "color": "#2E6CB2", "model": "prov-model-1", "provider": "prov", "file": "quant.md" }] },
+        "expect": { "throws": true, "messageContains": "project slug \"acme/../x\" — expected a slug matching /^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/" }
+      },
+      {
+        "case": "an empty slug is rejected",
+        "slug": "",
+        "input": { "personas": [{ "id": "quant", "agent": "alpha", "label": "Quant", "initials": "QT", "color": "#2E6CB2", "model": "prov-model-1", "provider": "prov", "file": "quant.md" }] },
+        "expect": { "throws": true, "messageContains": "project slug \"\" — expected a slug matching" }
+      },
+      {
+        "case": "a root that is an array is rejected",
+        "slug": "acme",
+        "input": [{ "id": "quant", "agent": "alpha", "label": "Quant", "initials": "QT", "color": "#2E6CB2", "model": "prov-model-1", "provider": "prov", "file": "quant.md" }],
+        "expect": { "throws": true, "messageContains": "must be a JSON object with a non-empty personas array" }
+      },
+      {
+        "case": "an empty personas array is rejected",
+        "slug": "acme",
+        "input": { "personas": [] },
+        "expect": { "throws": true, "messageContains": "must be a JSON object with a non-empty personas array" }
+      },
+      {
+        "case": "an unknown root key is rejected",
+        "slug": "acme",
+        "input": { "personas": [{ "id": "quant", "agent": "alpha", "label": "Quant", "initials": "QT", "color": "#2E6CB2", "model": "prov-model-1", "provider": "prov", "file": "quant.md" }], "models": {} },
+        "expect": { "throws": true, "messageContains": "has unknown key \"models\" — expected only [\"personas\"]" }
+      },
+      {
+        "case": "an entry that is not an object is rejected",
+        "slug": "acme",
+        "input": { "personas": ["quant"] },
+        "expect": { "throws": true, "messageContains": "personas[0] must be a JSON object" }
+      },
+      {
+        "case": "an unknown entry key is rejected",
+        "slug": "acme",
+        "input": { "personas": [{ "id": "quant", "agent": "alpha", "label": "Quant", "initials": "QT", "color": "#2E6CB2", "model": "prov-model-1", "provider": "prov", "file": "quant.md", "roleFile": "x.md" }] },
+        "expect": { "throws": true, "messageContains": "personas[0] has unknown key \"roleFile\"" }
+      },
+      {
+        "case": "a missing entry key is rejected",
+        "slug": "acme",
+        "input": { "personas": [{ "id": "quant", "agent": "alpha", "label": "Quant", "initials": "QT", "color": "#2E6CB2", "model": "prov-model-1", "file": "quant.md" }] },
+        "expect": { "throws": true, "messageContains": "personas[0] is missing \"provider\"" }
+      },
+      {
+        "case": "an id with a colon is rejected — the namespace is added, never authored",
+        "slug": "acme",
+        "input": { "personas": [{ "id": "acme:quant", "agent": "alpha", "label": "Quant", "initials": "QT", "color": "#2E6CB2", "model": "prov-model-1", "provider": "prov", "file": "quant.md" }] },
+        "expect": { "throws": true, "messageContains": "personas[0].id declares \"acme:quant\" — expected a lower-case id matching /^[a-z][a-z0-9_]*$/" }
+      },
+      {
+        "case": "an id declared twice is rejected",
+        "slug": "acme",
+        "input": { "personas": [{ "id": "quant", "agent": "alpha", "label": "Quant", "initials": "QT", "color": "#2E6CB2", "model": "prov-model-1", "provider": "prov", "file": "quant.md" }, { "id": "quant", "agent": "alpha", "label": "Quant", "initials": "QT", "color": "#2E6CB2", "model": "prov-model-1", "provider": "prov", "file": "other.md" }] },
+        "expect": { "throws": true, "messageContains": "project persona id \"quant\" is declared more than once" }
+      },
+      {
+        "case": "an undeclared agent is rejected",
+        "slug": "acme",
+        "input": { "personas": [{ "id": "quant", "agent": "gamma", "label": "Quant", "initials": "QT", "color": "#2E6CB2", "model": "prov-model-1", "provider": "prov", "file": "quant.md" }] },
+        "expect": { "throws": true, "messageContains": "personas[0].agent \"gamma\" is not a declared persona agent [\"alpha\",\"beta\"]" }
+      },
+      {
+        "case": "a prototype-named agent is rejected",
+        "slug": "acme",
+        "input": { "personas": [{ "id": "quant", "agent": "constructor", "label": "Quant", "initials": "QT", "color": "#2E6CB2", "model": "prov-model-1", "provider": "prov", "file": "quant.md" }] },
+        "expect": { "throws": true, "messageContains": "personas[0].agent \"constructor\" is not a declared persona agent" }
+      },
+      {
+        "case": "a blank label is rejected",
+        "slug": "acme",
+        "input": { "personas": [{ "id": "quant", "agent": "alpha", "label": "  ", "initials": "QT", "color": "#2E6CB2", "model": "prov-model-1", "provider": "prov", "file": "quant.md" }] },
+        "expect": { "throws": true, "messageContains": "personas[0].label must be a non-empty string" }
+      },
+      {
+        "case": "lower-case initials are rejected",
+        "slug": "acme",
+        "input": { "personas": [{ "id": "quant", "agent": "alpha", "label": "Quant", "initials": "qt", "color": "#2E6CB2", "model": "prov-model-1", "provider": "prov", "file": "quant.md" }] },
+        "expect": { "throws": true, "messageContains": "personas[0].initials \"qt\" — expected initials matching /^[A-Z0-9]{1,3}$/" }
+      },
+      {
+        "case": "a colour name is rejected",
+        "slug": "acme",
+        "input": { "personas": [{ "id": "quant", "agent": "alpha", "label": "Quant", "initials": "QT", "color": "blue", "model": "prov-model-1", "provider": "prov", "file": "quant.md" }] },
+        "expect": { "throws": true, "messageContains": "personas[0].color \"blue\" — expected a hex colour matching /^#[0-9A-Fa-f]{6}$/" }
+      },
+      {
+        "case": "an undeclared provider is rejected",
+        "slug": "acme",
+        "input": { "personas": [{ "id": "quant", "agent": "alpha", "label": "Quant", "initials": "QT", "color": "#2E6CB2", "model": "prov-model-1", "provider": "nope", "file": "quant.md" }] },
+        "expect": { "throws": true, "messageContains": "personas[0].provider \"nope\" is not a provider domain/providers.json declares [\"prov\",\"other\"]" }
+      },
+      {
+        "case": "a model another provider declares is rejected",
+        "slug": "acme",
+        "input": { "personas": [{ "id": "quant", "agent": "alpha", "label": "Quant", "initials": "QT", "color": "#2E6CB2", "model": "other-model-1", "provider": "prov", "file": "quant.md" }] },
+        "expect": { "throws": true, "messageContains": "personas[0].model \"other-model-1\" is not a model domain/providers.json declares for provider \"prov\"" }
+      },
+      {
+        "case": "a role file escaping its directory is rejected",
+        "slug": "acme",
+        "input": { "personas": [{ "id": "quant", "agent": "alpha", "label": "Quant", "initials": "QT", "color": "#2E6CB2", "model": "prov-model-1", "provider": "prov", "file": "../quant.md" }] },
+        "expect": { "throws": true, "messageContains": "personas[0].file \"../quant.md\" is not a role file matching /^[a-z][a-z0-9_]*\\.md$/" }
+      },
+      {
+        "case": "a role file declared twice is rejected",
+        "slug": "acme",
+        "input": { "personas": [{ "id": "quant", "agent": "alpha", "label": "Quant", "initials": "QT", "color": "#2E6CB2", "model": "prov-model-1", "provider": "prov", "file": "quant.md" }, { "id": "risk", "agent": "alpha", "label": "Quant", "initials": "QT", "color": "#2E6CB2", "model": "prov-model-1", "provider": "prov", "file": "quant.md" }] },
+        "expect": { "throws": true, "messageContains": "role file \"quant.md\" is declared more than once" }
+      }
     ]
   },
 
@@ -1100,7 +1269,8 @@
       { "case": "a display name lower-cases", "stepAgent": "DevOps", "expect": "devops" },
       { "case": "a lower-case name is unchanged", "stepAgent": "eng", "expect": "eng" }
     ],
-    "resolveModel": [{ "case": "driven by shared.resolveModel", "drivenBy": "shared.resolveModel" }]
+    "resolveModel": [{ "case": "driven by shared.resolveModel", "drivenBy": "shared.resolveModel" }],
+    "assertProjectPersonasShape": [{ "case": "driven by shared.projectValidation", "drivenBy": "shared.projectValidation" }]
   },
 
   "py": {
@@ -1124,6 +1294,7 @@
       { "case": "a display name lower-cases", "stepAgent": "DevOps", "expect": "devops" },
       { "case": "a lower-case name is unchanged", "stepAgent": "eng", "expect": "eng" }
     ],
-    "resolve_model": [{ "case": "driven by shared.resolveModel", "drivenBy": "shared.resolveModel" }]
+    "resolve_model": [{ "case": "driven by shared.resolveModel", "drivenBy": "shared.resolveModel" }],
+    "validate_project_personas": [{ "case": "driven by shared.projectValidation", "drivenBy": "shared.projectValidation" }]
   }
 }

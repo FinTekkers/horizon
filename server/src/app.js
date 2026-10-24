@@ -3172,6 +3172,37 @@ export function buildApp({ logger = true, onRoute = null } = {}) {
     },
   )
 
+  // HZ-535: the switch for a project's own definitions
+  // (farm/projects/<slug>/personas.json). Gate-PIN protected exactly like
+  // /autopilot, checked before the lookup so a bad PIN never touches state.
+  fastify.post(
+    '/api/projects/:id/definitions-enabled',
+    {
+      schema: {
+        security: HUMAN_GATE_SECURITY,
+        params: {
+          type: 'object',
+          required: ['id'],
+          properties: { id: { type: 'integer', minimum: 1 } },
+        },
+        body: {
+          type: 'object',
+          required: ['enabled'],
+          additionalProperties: false,
+          properties: { enabled: { type: 'boolean' } },
+        },
+        response: { 200: OK_OBJECT, 401: ERROR_OBJECT, 404: ERROR_OBJECT },
+      },
+    },
+    (request, reply) => {
+      if (!humanAuthorized(request, reply)) return
+      const result = store.setProjectDefinitionsEnabled(request.params.id, request.body.enabled, actorOf(request))
+      if (result.error) return reply.code(404).send({ error: 'Project not found' })
+      broadcast()
+      return { ok: true, projectId: request.params.id, old: result.old, new: result.new, ...(result.unchanged ? { unchanged: true } : {}) }
+    },
+  )
+
   // HZ-370: the project's default "Runs on" for one step (Admin), used when an
   // item has no choice of its own — including steps 0-2, which run before
   // anyone opens the item. PIN-gated like /autopilot, checked before the
