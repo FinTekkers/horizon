@@ -7,6 +7,8 @@ Everything above this file — step_agent, concierge_agent — talks
 only to run_agent(); none of them know or care which provider actually ran.
 """
 
+import contextlib
+import contextvars
 import json
 import os
 from pathlib import Path
@@ -41,6 +43,7 @@ __all__ = [
     "salvage_truncated_reply",
     "stamp_notes",
     "stamp_notes_artifact",
+    "usage_meter",
 ]
 
 _PROVIDERS = {"claude": claude, "muse": muse}
@@ -150,6 +153,67 @@ def assert_provider_auth() -> None:
     provider.assert_subscription_auth()
 
 
+# ---- usage meter (HZ-550) ----
+# Every run_agent() call made inside usage_meter() is added to its meter: the
+# first try, a parse retry, a re-prompt, a fix-loop turn, a handoff note.
+# step_agent.main() opens one per run, beside its _RECORDED, so its totals are
+# the run's and nothing leaks into another. Outside one (the concierge, the
+# conflict resolver) nothing is recorded and run_agent() is unchanged.
+
+USAGE_FIGURES = ("input_tokens", "output_tokens", "cache_read_tokens", "cache_write_tokens", "cost_usd")
+
+
+class UsageMeter:
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, str | None, dict | None]] = []
+
+    def record(self, provider: str, model: str | None, usage) -> None:
+        known = isinstance(usage, dict) and all(
+            isinstance(usage.get(key), (int, float)) and not isinstance(usage.get(key), bool) for key in USAGE_FIGURES
+        )
+        self.calls.append((provider, model, dict(usage) if known else None))
+
+    def last_ran(self) -> tuple[str, str | None] | None:
+        """(provider, model) of the last call — after a fallback, the one that
+        actually ran."""
+        return self.calls[-1][:2] if self.calls else None
+
+    def report(self) -> dict:
+        """artifacts.usage for the run (server/src/stepUsage.js). No call: a
+        non-agent run, 0 tokens. Any call with unknown usage: every figure
+        None, since a partial sum would under-count."""
+        if not self.calls:
+            return {"agent_run": False, **{key: 0 for key in USAGE_FIGURES}}
+        if any(usage is None for _, _, usage in self.calls):
+            return {"agent_run": True, **{key: None for key in USAGE_FIGURES}}
+        totals = {key: sum(usage[key] for _, _, usage in self.calls) for key in USAGE_FIGURES}
+        totals["cost_usd"] = round(totals["cost_usd"], 9)
+        return {"agent_run": True, **totals}
+
+
+_METER: contextvars.ContextVar[UsageMeter | None] = contextvars.ContextVar("usage_meter", default=None)
+
+
+@contextlib.contextmanager
+def usage_meter() -> Iterator[UsageMeter]:
+    meter = UsageMeter()
+    token = _METER.set(meter)
+    try:
+        yield meter
+    finally:
+        _METER.reset(token)
+
+
+def _meter_call(provider: str, model: str | None, usage) -> None:
+    """Adds one call to the open meter, if any. Never raises."""
+    try:
+        meter = _METER.get()
+        if meter is not None:
+            meter.record(provider, model, usage)
+    except Exception:
+        pass
+
+
 def run_agent(
     prompt: str,
     *,
@@ -247,12 +311,19 @@ def run_agent(
         # which provider really ran (HZ-158).
         exc.provider = name
         exc.model = model
+        _meter_call(name, model, None)
         raise
     except AgentUsageLimitedError as exc:
         # HZ-422: the server marks this model limited and falls back from it.
         exc.provider = name
         exc.model = model
+        _meter_call(name, model, None)
         raise
+    except BaseException:
+        # HZ-550: a call that raised used tokens nobody reported.
+        _meter_call(name, model, None)
+        raise
+    _meter_call(name, model, result.get("usage") if isinstance(result, dict) else None)
     # Provenance (HZ-102): which provider actually ran, plus its run-level
     # id where one exists (Muse's command_id; Claude has no equivalent).
     result["provider"] = name

@@ -124,6 +124,7 @@ import { servedRulesFor } from './rulesStore.js'
 import { OPTIONS_STEP_INDEX, proposeSplit } from './split.js'
 import { awaitsSpawnedCode, hasSpawned, linkSpawned, requestKeyFor, spawnItems, spawnRuleOf, spawnedCodeLive, validateSpawnSpec } from './spawn.js'
 import { recordFlakes } from './checkFlakes.js'
+import { NON_AGENT, cleanUsage, recordRunUsage } from './stepUsage.js'
 import { splitCheckError } from './checkHeadline.js'
 import { recordTestRuns } from './testResults.js'
 import { enqueueRuleBlockPing } from './ruleBlock.js'
@@ -1521,6 +1522,8 @@ async function runServerStep(id, stepIndex) {
   }
   const { summary } = result
   db.prepare("UPDATE step_run SET status = 'done', output = ?, ended_at = datetime('now') WHERE id = ?").run(result.output ?? summary, runId)
+  // HZ-550: Horizon's own code, no agent — 0 tokens, labelled non-agent.
+  recordRunUsage(runId, NON_AGENT)
   db.prepare("UPDATE work_item SET cursor = ?, updated_at = datetime('now') WHERE id = ?").run(nextCursor(getItem(id)), id)
   addEvent(id, { who: 'Horizon', text: `completed “${step.label}” — ${summary}`, color: '#5E4380', initials: 'HZ' })
   notifyChange()
@@ -2728,16 +2731,17 @@ export function normalizeVerifyVerdict(raw, fallbackText) {
 // does (redeploying isn't re-implementing) — it just pauses the item for a
 // human to decide (rollback, redeploy, investigate), same as failFarmRun,
 // but keeps the step_run's artifact/summary evidence instead of discarding it.
-function finalizeDeployStep(id, runId, text, artifactMd, verdict, patch) {
+//
+// HZ-550: `ran` is the run's { provider, model, commandId }, as the plain
+// completion writes them — before this the Deploy step recorded no model.
+function finalizeDeployStep(id, runId, text, artifactMd, verdict, patch, ran) {
   dispatching.delete(id) // this run is fully complete — no more awaits pending on it
   const step = STEPS[DEPLOY_STEP_INDEX]
   const agent = AGENTS[step.agent]
   const attempt = db.prepare('SELECT attempt FROM step_run WHERE id = ?').get(runId)?.attempt || 1
-  db.prepare("UPDATE step_run SET status = 'done', output = ?, artifact = ?, ended_at = datetime('now') WHERE id = ?").run(
-    text,
-    artifactMd,
-    runId,
-  )
+  db.prepare(
+    "UPDATE step_run SET status = 'done', output = ?, artifact = ?, provider = ?, model = ?, command_id = ?, ended_at = datetime('now') WHERE id = ?",
+  ).run(text, artifactMd, ran.provider, ran.model, ran.commandId, runId)
 
   deployQueue.endDeployEntry(id, verdict.verdict === 'pass' ? 'passed' : 'failed')
   if (verdict.verdict !== 'pass') {
@@ -2795,6 +2799,10 @@ export async function completeFarmRun(runId, { summary, patch, artifacts, job_vi
     closeActiveRuns(id, 'superseded')
     return { ok: true, stale: true }
   }
+
+  // HZ-550: what the run used, written first so a run the checks below fail
+  // still records the tokens it spent. Never fails the run.
+  recordRunUsage(runId, cleanUsage(artifacts?.usage, STEPS[run.step_index]))
 
   let cleanPatch = {}
   for (const field of FARM_PATCH_FIELDS) {
@@ -2859,7 +2867,9 @@ export async function completeFarmRun(runId, { summary, patch, artifacts, job_vi
   // HZ-102 provenance: since HZ-357 farm/step_agent.py sets these two fields
   // on every run of a providerOverrideEligible step whose reply named the
   // provider that ran (Default runs included), so the item page can show
-  // "Ran on …". Every other step keeps writing NULL here.
+  // "Ran on …". HZ-550: every other step that called an agent sends them too
+  // (step_agent.main, from the run's last call); a run with no agent call
+  // writes NULL here.
   // HZ-369: review is eligible too, so this is read before its branch.
   const provider =
     typeof artifacts?.provider === 'string' && artifacts.provider.trim() ? artifacts.provider.trim() : null
@@ -2898,7 +2908,7 @@ export async function completeFarmRun(runId, { summary, patch, artifacts, job_vi
 
   if (run.step_index === DEPLOY_STEP_INDEX) {
     if (!validateDeployVerdict(artifacts?.verdict)) return failFarmRun(runId, 'malformed deploy verdict JSON')
-    finalizeDeployStep(id, runId, text, artifactMd, artifacts.verdict, cleanPatch)
+    finalizeDeployStep(id, runId, text, artifactMd, artifacts.verdict, cleanPatch, { provider, model, commandId })
     emitStepEnded(id)
     return { ok: true }
   }

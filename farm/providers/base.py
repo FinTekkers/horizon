@@ -141,6 +141,47 @@ def brief(tool_input) -> str:
     return text if len(text) <= 160 else text[:157] + "…"
 
 
+# HZ-550: a provider's own usage keys -> the farm's. Claude's result (SDK
+# ResultMessage.usage and the CLI's JSON "usage") names cache reads and writes
+# the Anthropic API's way.
+_USAGE_KEYS = {
+    "input_tokens": "input_tokens",
+    "output_tokens": "output_tokens",
+    "cache_read_tokens": "cache_read_input_tokens",
+    "cache_write_tokens": "cache_creation_input_tokens",
+}
+
+
+def _count(value) -> int | None:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    if value != value or value < 0 or int(value) != value:  # NaN, negative, fractional
+        return None
+    return int(value)
+
+
+def normalize_usage(raw, cost) -> dict | None:
+    """HZ-550: one call's usage as the farm reports it — {input_tokens,
+    output_tokens, cache_read_tokens, cache_write_tokens, cost_usd} — or None
+    when the provider gave anything less than all five as non-negative
+    numbers. Never raises: capture must never change how a call ends."""
+    try:
+        if not isinstance(raw, dict):
+            return None
+        usage = {}
+        for key, source in _USAGE_KEYS.items():
+            count = _count(raw.get(source))
+            if count is None:
+                return None
+            usage[key] = count
+        if isinstance(cost, bool) or not isinstance(cost, (int, float)) or cost != cost or cost < 0:
+            return None
+        usage["cost_usd"] = float(cost)
+        return usage
+    except Exception:
+        return None
+
+
 class AgentProvider(Protocol):
     """Typing-only shape check — no abc, matches this package's plain-module
     style. A provider is a module, not a class instance."""
@@ -176,14 +217,15 @@ class AgentProvider(Protocol):
 
 class _SpendTracker:
     """In-process, conservative spend counter for a metered-billing opt-in
-    run. None of the providers expose a real per-call USD cost (Claude's SDK
-    result and Muse's JSONL events carry no cost field), so this charges a
-    flat, deliberately pessimistic estimate per call rather than ever
-    under-counting spend. Resets with the process — same lifetime as one
-    agent_runner invocation. step_agent runs items concurrently in threads,
-    so charge() takes a lock around the check-then-add — otherwise two
-    concurrent metered calls could both read spent_usd before either
-    updates it, letting total spend exceed the cap."""
+    run. It is checked before a call, when no cost is known yet, so it
+    charges a flat, deliberately pessimistic estimate per call rather than
+    ever under-counting spend. (Claude's result does report total_cost_usd
+    afterwards — HZ-550 records it per run via normalize_usage — but that
+    never feeds this tracker; Muse reports no cost at all.) Resets with the
+    process — same lifetime as one agent_runner invocation. step_agent runs
+    items concurrently in threads, so charge() takes a lock around the
+    check-then-add — otherwise two concurrent metered calls could both read
+    spent_usd before either updates it, letting total spend exceed the cap."""
 
     def __init__(self) -> None:
         self.spent_usd = 0.0

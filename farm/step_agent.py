@@ -50,6 +50,7 @@ from .agent_runner import (
     salvage_truncated_reply,
     stamp_notes,
     stamp_notes_artifact,
+    usage_meter,
 )
 from . import (
     check_record,
@@ -3616,6 +3617,28 @@ def _bad_byte(exc: UnicodeDecodeError) -> str:
     return f"position {exc.start}"
 
 
+def _attach_usage(result: dict, meter) -> None:
+    """HZ-550: artifacts.usage for the server's step_run columns, and the
+    provider and model of a step that did not name them (Deploy, the Task and
+    Plan steps) — from the run's last call, so after a fallback it is the
+    provider that actually ran. Never raises and logs nothing: capture must
+    not change the result it rides on."""
+    try:
+        usage = meter.report()
+        ran = meter.last_ran()
+        artifacts = result.get("artifacts")
+        if not isinstance(artifacts, dict):
+            artifacts = {}
+        artifacts = {**artifacts, "usage": usage}
+        if ran and not artifacts.get("provider"):
+            artifacts["provider"] = ran[0]
+            if ran[1]:
+                artifacts["model"] = ran[1]
+        result["artifacts"] = artifacts
+    except Exception:
+        pass
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--task", required=True)
@@ -3635,8 +3658,11 @@ def main() -> int:
     token = _RECORDED.set(recorded)
     try:
         log(f"run {run_id}: {task['step']['label']} for {task['item']['id']}")
-        outcome = execute(task)
+        # HZ-550: the run's usage, summed over every agent call execute() makes.
+        with usage_meter() as meter:
+            outcome = execute(task)
         result = {"run_id": run_id, "ok": True, **outcome}
+        _attach_usage(result, meter)
         # HZ-158: a handoff note is for the attempt after an exhausted one;
         # once the step succeeds it must not reach a later re-run.
         handoff.clear_note(str(task["item"].get("id", "")), str(task["step"].get("label", "")))
