@@ -470,6 +470,11 @@ db.exec(`
 // sort. Read only while paused = 1, so a resume leaves it alone.
 // scope_repos_json (HZ-447): a Plan's repo scope, a JSON array of owner/name.
 // NULL = every repo in the item's project, so existing rows need no backfill.
+// substeps_json (HZ-538): the project's sub-step definitions that applied at
+// intake (substeps.js snapshotSubsteps), a JSON array, written once by the
+// GitHub sync's insert. substep_cursor: reserved for HZ-539's dispatch. Both
+// nullable with no default: existing rows read NULL, and nothing reads either
+// yet, so cursor and every step_index stay exactly as they are.
 //
 // HZ-446: the kind constraint, built from ITEM_KINDS like PRIORITY_CHECK is
 // from PRIORITIES. Interpolating is safe because every kind is checked against
@@ -478,7 +483,7 @@ for (const kind of ITEM_KINDS) {
   if (!/^[a-z]+$/.test(kind)) throw new Error(`db: item kind ${JSON.stringify(kind)} is not lowercase letters only`)
 }
 const KIND_CHECK = `CHECK (kind IN (${ITEM_KINDS.map((kind) => `'${kind}'`).join(',')}))`
-for (const column of ['pr INTEGER', 'pr_url TEXT', 'pr_mergeable INTEGER', 'release_tag TEXT', 'release_url TEXT', 'repo TEXT', 'project_id INTEGER', 'persona TEXT', 'personas_json TEXT', 'review_cycle_count INTEGER NOT NULL DEFAULT 0', 'abandoned_at TEXT', 'abandoned_reason TEXT', 'abandoned_by TEXT', 'notified_step INTEGER', 'last_reviewed_sha TEXT', 'fix_pass INTEGER NOT NULL DEFAULT 0', 'fix_findings_json TEXT', 'forwarded_review_run_id INTEGER', 'forwarded_by TEXT', 'forwarded_sha TEXT', 'rule_block_json TEXT', 'provider_choices_json TEXT', `kind TEXT NOT NULL DEFAULT 'change' ${KIND_CHECK}`, 'approved_plan_hash TEXT', 'lane TEXT', 'paused_at TEXT', 'scope_repos_json TEXT', 'approved_runner TEXT', 'autopilot_off INTEGER NOT NULL DEFAULT 0']) {
+for (const column of ['pr INTEGER', 'pr_url TEXT', 'pr_mergeable INTEGER', 'release_tag TEXT', 'release_url TEXT', 'repo TEXT', 'project_id INTEGER', 'persona TEXT', 'personas_json TEXT', 'review_cycle_count INTEGER NOT NULL DEFAULT 0', 'abandoned_at TEXT', 'abandoned_reason TEXT', 'abandoned_by TEXT', 'notified_step INTEGER', 'last_reviewed_sha TEXT', 'fix_pass INTEGER NOT NULL DEFAULT 0', 'fix_findings_json TEXT', 'forwarded_review_run_id INTEGER', 'forwarded_by TEXT', 'forwarded_sha TEXT', 'rule_block_json TEXT', 'provider_choices_json TEXT', `kind TEXT NOT NULL DEFAULT 'change' ${KIND_CHECK}`, 'approved_plan_hash TEXT', 'lane TEXT', 'paused_at TEXT', 'scope_repos_json TEXT', 'approved_runner TEXT', 'autopilot_off INTEGER NOT NULL DEFAULT 0', 'substeps_json TEXT', 'substep_cursor INTEGER']) {
   try {
     db.exec(`ALTER TABLE work_item ADD COLUMN ${column}`)
   } catch {
@@ -640,6 +645,13 @@ try {
   // HZ-407: the latest JSON job view of a runsIn:'job' step (the Execute
   // card's commands, elapsed time and log tail). NULL for every other run.
   db.exec('ALTER TABLE step_run ADD COLUMN job_view TEXT')
+} catch {
+  // column already exists
+}
+try {
+  // HZ-538: the sub-step a run is for, beside its unchanged step_index —
+  // reserved for HZ-539's dispatch. NULL on every run today.
+  db.exec('ALTER TABLE step_run ADD COLUMN substep_id TEXT')
 } catch {
   // column already exists
 }

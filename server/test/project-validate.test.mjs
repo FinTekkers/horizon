@@ -74,6 +74,7 @@ function stubAllPassing() {
     checkCommands: () => null,
     repoConfig: () => null,
     resolveRules: () => ['# Horizon rules'],
+    loadSubsteps: () => ({ substeps: [], errors: [] }),
     findTargetByRepo: () => TARGET,
     listTargets: () => [TARGET, { key: 'ui-service', repoDir: '/srv/checkouts/ui' }],
     targetState: () => ({ lastTag: 'v1.4.2', lastCommit: MAIN }),
@@ -164,6 +165,18 @@ for (const check of Object.keys(FORCED_FAILURES)) {
     assert.match(byName(result, check).detail, EXPECTED_DETAIL[check])
   })
 }
+
+// HZ-538: a steps.json that fails to load fails `rules`, naming the sub-step.
+test('a bad steps.json fails only rules, with the sub-step id in its detail', async () => {
+  pv.deps.loadSubsteps = () => ({ substeps: [], errors: ['substep "impl-audit": audit output must be findings, got artifact'] })
+  const result = await pv.validateProject(PROJECT, { who: 'Fixture' })
+  assertShape(result)
+  assert.deepEqual(
+    result.checks.filter((c) => !c.pass).map((c) => c.check),
+    ['rules'],
+  )
+  assert.match(byName(result, 'rules').detail, /steps\.json: substep "impl-audit": audit output must be findings, got artifact/)
+})
 
 test('a check that throws and one that hangs never stop the other four', async () => {
   pv.deps.getRepoPermissions = async () => {
