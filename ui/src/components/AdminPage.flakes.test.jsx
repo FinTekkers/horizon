@@ -82,7 +82,7 @@ const SEEDED = {
 }
 
 function renderPage() {
-  return render(<AdminPage sync={{}} projects={[]} onBack={() => {}} />)
+  return render(<AdminPage sync={{}} projects={[]} onBack={() => {}} route={{ section: 'flaky' }} />)
 }
 
 const cells = (row) => within(row).getAllByRole('cell').map((cell) => cell.textContent)

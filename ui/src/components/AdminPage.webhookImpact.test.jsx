@@ -83,7 +83,11 @@ function renderWith({ repos, webhooks, targets = TARGETS }) {
   else api.getDeployTargets.mockResolvedValue({ targets })
   api.getRepoWebhooks.mockResolvedValue({ webhooks })
   const projects = [{ id: 7, name: 'Hooks', enabled: true, repos: repos.map((repo, i) => ({ repo, prefix: `P${i}` })) }]
-  return render(<AdminPage sync={{}} projects={projects} onBack={() => {}} />)
+  const page = (section) => <AdminPage sync={{}} projects={projects} onBack={() => {}} route={{ section }} />
+  const utils = render(page('projects'))
+  // HZ-564: Admin shows one section at a time; the shell keeps its deploy
+  // targets read across a switch.
+  return { ...utils, show: (section) => utils.rerender(page(section)) }
 }
 
 for (const status of ['missing', 'mismatched']) {
@@ -143,12 +147,15 @@ test('Fix webhook says what it does, before and after the PIN form opens', async
 })
 
 test('an ok webhook row shows none of the impact text', async () => {
-  const { container } = renderWith({ repos: ['FinTekkers/ui-service'], webhooks: [hook('FinTekkers/ui-service', 'ok')] })
-  const block = within(projectBlock(container, 'Hooks'))
-  await block.findByText('Webhook: ok')
+  const { container, show } = renderWith({ repos: ['FinTekkers/ui-service'], webhooks: [hook('FinTekkers/ui-service', 'ok')] })
+  await within(projectBlock(container, 'Hooks')).findByText('Webhook: ok')
   await waitFor(() => expect(api.getDeployTargets).toHaveBeenCalled())
   // Let the targets settle so the check does not pass only because they are loading.
+  show('deploys')
   await within(container).findByText('FinTekkers/ui-service', { selector: '.deploy-target-row__repo' })
+  show('projects')
+  const block = within(projectBlock(container, 'Hooks'))
+  await block.findByText('Webhook: ok')
   for (const text of ALL) expect(block.queryByText(text)).toBeNull()
 })
 
@@ -166,12 +173,14 @@ test('fixing the webhook with the PIN clears all the impact text once it reads o
 })
 
 test('when deploy targets fail to load, a missing row shows only the sync line and the panel shows its error', async () => {
-  const { container } = renderWith({
+  const { container, show } = renderWith({
     repos: ['FinTekkers/ui-service'],
     webhooks: [hook('FinTekkers/ui-service', 'missing')],
     targets: new Error('deploy targets unavailable'),
   })
+  show('deploys')
   expect(await within(container).findByText('deploy targets unavailable')).toBeTruthy()
+  show('projects')
   const block = within(projectBlock(container, 'Hooks'))
   expect(await block.findByText(SYNC_CONTINUES)).toBeTruthy()
   expect(block.queryByText(RELEASES_BLOCKED)).toBeNull()

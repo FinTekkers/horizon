@@ -45,9 +45,19 @@
 // two disagree. beginDrain() and drainStatus() tag each listed step with its
 // `kind` and `survives`, and deploy-drain.mjs waits only for steps whose
 // `survives` is not true. A kind missing from the table counts as lost.
+//
+// HZ-570: a step that has completed can still be uploading its test results
+// (farmd posts them just after the result), and a restart then cost the run
+// its rows. beginDrain() and drainStatus() also list `uploads` — implement
+// runs whose /complete promised rows not yet stored (testResults.js's ledger)
+// — and `uploadsInFlight`, the test-runs requests this process is serving.
+// deploy-drain.mjs waits on both, bounded by its own
+// HORIZON_DEPLOY_DRAIN_UPLOAD_TIMEOUT_S. A helper that knows neither field
+// behaves exactly as before.
 
 import * as store from './store.js'
 import * as premerge from './premerge.js'
+import { pendingUploads } from './testResults.js'
 import { DEPLOY_BLOCK_MAX_TTL_S, FARM_URL } from './config.js'
 import { REASON } from '../../domain/js/reasons.js'
 import { STEPS } from '../../domain/js/lifecycle.js'
@@ -81,6 +91,16 @@ function drainSteps() {
 export const CANCEL_RESOLVE_TIMEOUT_MS = 35_000
 
 export const DEPLOY_BLOCK_MESSAGE = 'deploy in progress, try again in a few minutes'
+
+// HZ-570: test-runs requests being served now, counted by the route and
+// read only through beginDrain() and drainStatus().
+let uploadsInFlight = 0
+export function uploadStarted() {
+  uploadsInFlight += 1
+}
+export function uploadEnded() {
+  uploadsInFlight = Math.max(uploadsInFlight - 1, 0)
+}
 
 let blockedUntil = 0
 let blockedSince = 0
@@ -136,11 +156,19 @@ export function beginDrain({ ttlS }, now = Date.now()) {
     blockedUntil: new Date(blockedUntil).toISOString(),
     running: store.listRunningGateActions(),
     steps: drainSteps(),
+    uploads: pendingUploads(),
+    uploadsInFlight,
   }
 }
 
 export function drainStatus() {
-  return { blocked: isDeployBlocked(), running: store.listRunningGateActions(), steps: drainSteps() }
+  return {
+    blocked: isDeployBlocked(),
+    running: store.listRunningGateActions(),
+    steps: drainSteps(),
+    uploads: pendingUploads(),
+    uploadsInFlight,
+  }
 }
 
 // Asks farmd to stop one item's resolver. Returns farmd's reply

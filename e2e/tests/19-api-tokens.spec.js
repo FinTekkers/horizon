@@ -6,7 +6,7 @@
 import { test, expect, captureScreenshot } from '../fixtures/test-base.js'
 
 test('create a token in Admin, call the API with it, revoke it, and it stops working', async ({ page, playwright, baseURL }) => {
-  await page.goto('/admin')
+  await page.goto('/admin/account')
   const panel = page.locator('.api-tokens')
   await expect(panel).toBeVisible({ timeout: 10_000 })
 
@@ -46,7 +46,7 @@ test('create a token in Admin, call the API with it, revoke it, and it stops wor
 // and the token form fits a phone with no horizontal scroll.
 test('the days unit sits inside the expiry field, and the form fits at 375px', async ({ page }) => {
   await page.setViewportSize({ width: 375, height: 667 })
-  await page.goto('/admin')
+  await page.goto('/admin/account')
   const panel = page.locator('.api-tokens')
   await expect(panel).toBeVisible({ timeout: 10_000 })
 

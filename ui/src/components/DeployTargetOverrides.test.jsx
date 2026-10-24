@@ -254,7 +254,7 @@ test('after a create the Deploy targets panel lists the new key with its Dry run
   const statuses = [{ key: 'horizon', repo: 'FinTekkers/horizon', service: 'horizon-server', lastTag: null, lastCommit: null, lastResult: 'never', lastAt: null }]
   api.getDeployTargets.mockResolvedValue({ targets: statuses })
   api.getDeployTargetConfig.mockResolvedValue({ targets: [HORIZON] })
-  const { container, findByText } = render(<AdminPage sync={{}} projects={PROJECTS} onBack={() => {}} />)
+  const { container, findByText } = render(<AdminPage sync={{}} projects={PROJECTS} onBack={() => {}} route={{ section: 'deploys' }} />)
   await findByText('FinTekkers/docs')
   const targetsPanel = () =>
     within(Array.from(container.querySelectorAll('.panel__title')).find((el) => el.textContent === 'Deploy targets').closest('.admin__panel'))

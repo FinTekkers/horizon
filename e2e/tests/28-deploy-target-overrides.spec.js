@@ -48,7 +48,7 @@ async function confirmSave(page, pin) {
 }
 
 test('the owner creates, edits and deletes a deploy target in Admin, each behind the gate PIN', async ({ page }) => {
-  await page.goto('/admin')
+  await page.goto('/admin/deploys')
   await expect(row(page, OTHER_REPO).getByText('none', { exact: true })).toBeVisible({ timeout: 10_000 })
   await expect(row(page, REPO).getByText('none', { exact: true })).toBeVisible()
   await expect(overrides(page).getByText(DISABLED_REPO)).toHaveCount(0)
