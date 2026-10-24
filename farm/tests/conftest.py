@@ -66,6 +66,8 @@ for _name in list(os.environ):
 os.environ["FARM_HOME"] = TEST_FARM_HOME
 os.environ["FARM_WA_ENABLED"] = "0"
 os.environ["FARM_SHARED_SECRET"] = STUB_SHARED_SECRET
+# HZ-537: the knowledge cache defaults to ~/.horizon/knowledge, the real one.
+os.environ["FARM_KNOWLEDGE_DIR"] = os.path.join(TEST_FARM_HOME, "knowledge")
 if "HORIZON_URL" not in _E2E_KEEP:
     os.environ["HORIZON_URL"] = STUB_HORIZON_URL
 # config.py's own default (localhost:8080) is where the real whatsapp-mcp

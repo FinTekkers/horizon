@@ -51,6 +51,7 @@ import { choiceValues } from '../../domain/js/providers.js'
 import { PERSONAS } from './personas.js'
 import * as definitions from './definitions.js'
 import * as rulesStore from './rulesStore.js'
+import * as knowledgeDocs from './knowledgeDocs.js'
 import * as runLogView from './runLogView.js'
 import * as split from './split.js'
 import * as planDraft from './planDraft.js'
@@ -3613,6 +3614,64 @@ export function buildApp({ logger = true, onRoute = null } = {}) {
       if (!farmAuthorized(request, reply)) return
       const served = rulesStore.servedRulesFor(request.query.project, request.query.repo)
       return { project: served.project ?? null, repo: served.repo ?? null }
+    },
+  )
+
+  // HZ-537: farmd's knowledge job (farm/knowledge.py) lists the sources to
+  // extract — only projects whose definitions switch is on have any — and
+  // reports one knowledge_doc row per doc back.
+  fastify.get('/api/farm/knowledge/sources', (request, reply) => {
+    if (!farmAuthorized(request, reply)) return
+    return { sources: knowledgeDocs.listSources() }
+  })
+
+  fastify.put(
+    '/api/farm/knowledge/docs/:projectId/:slug',
+    {
+      schema: {
+        params: {
+          type: 'object',
+          required: ['projectId', 'slug'],
+          properties: {
+            projectId: { type: 'integer', minimum: 1 },
+            slug: { type: 'string', pattern: knowledgeDocs.SLUG_SHAPE.source, maxLength: 200 },
+          },
+        },
+        body: {
+          type: 'object',
+          required: ['repo', 'path', 'sourceSha', 'status', 'pageCount', 'sectionCount', 'sections'],
+          additionalProperties: false,
+          properties: {
+            repo: { type: 'string', minLength: 1, maxLength: 300 },
+            path: { type: 'string', minLength: 1, maxLength: 500 },
+            sourceSha: { type: 'string', pattern: '^[0-9a-f]{40,64}$' },
+            status: { type: 'string', enum: ['extracted', 'failed'] },
+            pageCount: { type: 'integer', minimum: 0 },
+            sectionCount: { type: 'integer', minimum: 0 },
+            sections: {
+              type: 'array',
+              maxItems: 500,
+              items: {
+                type: 'object',
+                required: ['id', 'title', 'page'],
+                additionalProperties: false,
+                properties: {
+                  id: { type: 'string', pattern: '^[a-z0-9-]+$', maxLength: 120 },
+                  title: { type: 'string', maxLength: 200 },
+                  page: { type: 'integer', minimum: 1 },
+                },
+              },
+            },
+            error: { type: ['string', 'null'], maxLength: 500 },
+          },
+        },
+      },
+    },
+    (request, reply) => {
+      if (!farmAuthorized(request, reply)) return
+      const result = knowledgeDocs.upsertDoc(request.params.projectId, request.params.slug, request.body)
+      if (result.error) return reply.code(404).send({ error: result.error })
+      return { ok: true, changed: result.changed }
     },
   )
 

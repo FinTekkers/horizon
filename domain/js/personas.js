@@ -377,8 +377,14 @@ const PROJECT_SLUG_SHAPE = /^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/
 const PROJECT_PERSONA_KEYS = ['id', 'agent', 'label', 'initials', 'color', 'model', 'provider', 'file']
 // HZ-536: optional — tool ids from farm/tools/allowlist.json. Only their shape
 // is checked here; farm/personas.py checks each id against the allow-list.
-const PROJECT_PERSONA_OPTIONAL_KEYS = ['tools']
+// HZ-537: optional — knowledge sources, each { path } (a PDF in the project's
+// own repo) or { repo, path } (a PDF in a docs repo). A path segment never
+// starts with a dot, so `..` and hidden files cannot be named.
+const PROJECT_PERSONA_OPTIONAL_KEYS = ['tools', 'knowledge']
 const TOOL_ID_SHAPE = /^[a-z0-9][a-z0-9_-]{0,31}$/
+const KNOWLEDGE_REF_KEYS = ['repo', 'path']
+const KNOWLEDGE_REPO_SHAPE = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/
+const KNOWLEDGE_PATH_SHAPE = /^[A-Za-z0-9_-][A-Za-z0-9._-]*(?:\/[A-Za-z0-9_-][A-Za-z0-9._-]*)*\.pdf$/
 const INITIALS_SHAPE = /^[A-Z0-9]{1,3}$/
 const COLOR_SHAPE = /^#[0-9A-Fa-f]{6}$/
 // provider -> every model id domain/providers.json declares for it. Kept in
@@ -465,6 +471,29 @@ export function assertProjectPersonasShape(
         }
       }
       if (new Set(tools).size !== tools.length) throw new Error(`${at}.tools names a tool more than once`)
+    }
+    if (own(entry, 'knowledge')) {
+      const { knowledge } = entry
+      if (!Array.isArray(knowledge)) throw new Error(`${at}.knowledge must be an array of source references`)
+      const seenRefs = new Set()
+      for (const [j, ref] of knowledge.entries()) {
+        const refAt = `${at}.knowledge[${j}]`
+        if (!isObject(ref)) throw new Error(`${refAt} must be a JSON object`)
+        for (const key of Object.keys(ref)) {
+          if (!KNOWLEDGE_REF_KEYS.includes(key)) {
+            throw new Error(`${refAt} has unknown key ${JSON.stringify(key)} — expected only ${JSON.stringify(KNOWLEDGE_REF_KEYS)}`)
+          }
+        }
+        if (own(ref, 'repo') && (typeof ref.repo !== 'string' || !KNOWLEDGE_REPO_SHAPE.test(ref.repo))) {
+          throw new Error(`${refAt}.repo ${JSON.stringify(ref.repo ?? null)} — expected a repo matching ${KNOWLEDGE_REPO_SHAPE}`)
+        }
+        if (typeof ref.path !== 'string' || !KNOWLEDGE_PATH_SHAPE.test(ref.path)) {
+          throw new Error(`${refAt}.path ${JSON.stringify(ref.path ?? null)} — expected a PDF path matching ${KNOWLEDGE_PATH_SHAPE}`)
+        }
+        const key = `${ref.repo ?? ''}:${ref.path}`
+        if (seenRefs.has(key)) throw new Error(`${refAt} names a source more than once`)
+        seenRefs.add(key)
+      }
     }
   }
   return data

@@ -148,7 +148,12 @@
         "a persona naming tool ids is accepted",
         "tools that are not an array are rejected",
         "a tool id with a wildcard is rejected",
-        "a tool named twice is rejected"
+        "a tool named twice is rejected",
+        "a persona naming knowledge sources is accepted",
+        "knowledge that is not an array is rejected",
+        "a knowledge path escaping the repo is rejected",
+        "a knowledge source with an unknown key is rejected",
+        "a knowledge source named twice is rejected"
       ]
     },
 
@@ -1256,6 +1261,36 @@
         "slug": "acme",
         "input": { "personas": [{ "id": "quant", "agent": "alpha", "label": "Quant", "initials": "QT", "color": "#2E6CB2", "model": "prov-model-1", "provider": "prov", "file": "quant.md", "tools": ["ruff", "ruff"] }] },
         "expect": { "throws": true, "messageContains": "personas[0].tools names a tool more than once" }
+      },
+      {
+        "case": "a persona naming knowledge sources is accepted",
+        "slug": "acme",
+        "input": { "personas": [{ "id": "quant", "agent": "alpha", "label": "Quant", "initials": "QT", "color": "#2E6CB2", "model": "prov-model-1", "provider": "prov", "file": "quant.md", "knowledge": [{ "path": "docs/specs/bond-spec.pdf" }, { "repo": "FinTekkers/docs", "path": "bond_v2.pdf" }] }] },
+        "expect": { "throws": false }
+      },
+      {
+        "case": "knowledge that is not an array is rejected",
+        "slug": "acme",
+        "input": { "personas": [{ "id": "quant", "agent": "alpha", "label": "Quant", "initials": "QT", "color": "#2E6CB2", "model": "prov-model-1", "provider": "prov", "file": "quant.md", "knowledge": "docs/spec.pdf" }] },
+        "expect": { "throws": true, "messageContains": "personas[0].knowledge must be an array of source references" }
+      },
+      {
+        "case": "a knowledge path escaping the repo is rejected",
+        "slug": "acme",
+        "input": { "personas": [{ "id": "quant", "agent": "alpha", "label": "Quant", "initials": "QT", "color": "#2E6CB2", "model": "prov-model-1", "provider": "prov", "file": "quant.md", "knowledge": [{ "path": "../secret.pdf" }] }] },
+        "expect": { "throws": true, "messageContains": "personas[0].knowledge[0].path \"../secret.pdf\" — expected a PDF path matching" }
+      },
+      {
+        "case": "a knowledge source with an unknown key is rejected",
+        "slug": "acme",
+        "input": { "personas": [{ "id": "quant", "agent": "alpha", "label": "Quant", "initials": "QT", "color": "#2E6CB2", "model": "prov-model-1", "provider": "prov", "file": "quant.md", "knowledge": [{ "path": "spec.pdf", "sha": "abc" }] }] },
+        "expect": { "throws": true, "messageContains": "personas[0].knowledge[0] has unknown key \"sha\" — expected only [\"repo\",\"path\"]" }
+      },
+      {
+        "case": "a knowledge source named twice is rejected",
+        "slug": "acme",
+        "input": { "personas": [{ "id": "quant", "agent": "alpha", "label": "Quant", "initials": "QT", "color": "#2E6CB2", "model": "prov-model-1", "provider": "prov", "file": "quant.md", "knowledge": [{ "path": "spec.pdf" }, { "path": "spec.pdf" }] }] },
+        "expect": { "throws": true, "messageContains": "personas[0].knowledge[1] names a source more than once" }
       }
     ]
   },
