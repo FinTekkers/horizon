@@ -8,7 +8,7 @@ import { mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { useDeployTargetRows } from './helpers/deployTargetRows.mjs'
-import { deployQueueStub, shaOf } from './helpers/deployQueueStub.mjs'
+import { addComingItem, deployQueueStub, shaOf } from './helpers/deployQueueStub.mjs'
 
 process.env.HORIZON_DB = join(mkdtempSync(join(tmpdir(), 'horizon-deploy-queue-express-')), 'test.db')
 process.env.HOME = mkdtempSync(join(tmpdir(), 'horizon-deploy-queue-express-home-'))
@@ -81,6 +81,7 @@ test('an open item depending on a queued member closes the window: the batch sta
 test('with no dependent the window stays the full DEPLOY_BATCH_S', async () => {
   const { batchId, closes } = openBatchWithMember()
   addItem('EX-3', 4)
+  addComingItem(db, REPO) // HZ-591: another merge is coming
 
   await deployQueue.tick(T0 + 60_000)
   assert.equal(batch(batchId).status, 'open')
@@ -100,6 +101,7 @@ for (const [label, setup] of [
   test(`a dependent that is ${label} keeps the window`, async () => {
     const { batchId, closes } = openBatchWithMember()
     addItem('EX-4', 4)
+    addComingItem(db, REPO) // HZ-591: another merge is coming
     db.prepare("INSERT INTO work_item_dependency (item_id, depends_on_id) VALUES ('EX-4', 'EX-1')").run()
     setup('EX-4')
 
@@ -113,6 +115,7 @@ for (const [label, setup] of [
 test('a dependency added mid-window releases the batch on the very next tick', async () => {
   const { batchId } = openBatchWithMember()
   addItem('EX-5', 4)
+  addComingItem(db, REPO) // HZ-591: another merge is coming
   const now = T0 + 120_000
 
   await deployQueue.tick(now)

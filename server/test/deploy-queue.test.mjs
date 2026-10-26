@@ -11,7 +11,7 @@ import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFile
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { useDeployTargetRows } from './helpers/deployTargetRows.mjs'
-import { deployQueueStub, shaOf } from './helpers/deployQueueStub.mjs'
+import { addComingItem, deployQueueStub, shaOf } from './helpers/deployQueueStub.mjs'
 
 const TOKEN = 'ghp_SENTINELdeployqueue0123456789abcdefXYZ'
 const WEBHOOK_SECRET = 'whsec-SENTINEL-deploy-queue-0123'
@@ -186,6 +186,8 @@ test('metric 1: two kicks at once for one item give one queued entry and no cons
 
 test('metric 2 / guardrails 2, 3, 8: three items in one window give one release of main and one deploy; targets deploy in parallel', async () => {
   const t0 = Math.floor((Date.now() - 1_000_000) / 1000) * 1000
+  // HZ-591: another horizon item at Accept the code keeps the window open.
+  addComingItem(db, 'FinTekkers/horizon', 'DQ-COMING-M2')
   const [a, b, c] = [newItem(), newItem(), newItem()]
   const batchId = await joinAt(a, t0)
   await joinAt(b, t0 + 60_000)
@@ -238,6 +240,7 @@ test('metric 2 / guardrails 2, 3, 8: three items in one window give one release 
   assert.equal(releasePosts().length, 2)
   assert.equal(batch(next).status, 'open')
   await app.close()
+  db.prepare("DELETE FROM work_item WHERE id = 'DQ-COMING-M2'").run()
 })
 
 test('metric 3: a live batch releases its items to a smoke check against its own release, the wait counted from its start', async () => {

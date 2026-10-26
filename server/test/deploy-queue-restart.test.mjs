@@ -34,9 +34,9 @@ const MAIN = shaOf(0xa0)
 const NOW = Math.floor(Date.now() / 1000) * 1000
 const prs = []
 
-function boot({ releases = [] } = {}) {
+function boot({ releases = [], coming } = {}) {
   const out = execFileSync(process.execPath, [join(import.meta.dirname, 'helpers/deployQueueRestartChild.mjs')], {
-    env: { ...process.env, NOW: String(NOW), STUB: JSON.stringify({ mainSha: MAIN, releases, prs }) },
+    env: { ...process.env, NOW: String(NOW), STUB: JSON.stringify({ mainSha: MAIN, releases, prs }), ...(coming ? { COMING: coming } : {}) },
     encoding: 'utf8',
   })
   return JSON.parse(out.trim().split('\n').at(-1))
@@ -81,7 +81,8 @@ const entriesIn = (out, batchId) => out.entries.filter((e) => e.batch_id === bat
 
 test('mid-window: the window keeps its close time and nothing publishes', () => {
   const { batchId } = crashedBatch('s1', 'open', { closesAt: NOW + 300_000 })
-  const out = boot()
+  // HZ-591: another acme/s1 item at Accept the code keeps the window open.
+  const out = boot({ coming: 'acme/s1' })
   assert.equal(batchIn(out, batchId).status, 'open')
   assert.equal(batchIn(out, batchId).window_closes_at, sqlTime(NOW + 300_000))
   assert.deepEqual(entriesIn(out, batchId).map((e) => e.status), ['queued', 'queued'])

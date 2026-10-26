@@ -2,6 +2,8 @@
 // commits, main's head, release lookups/creates and commit comparisons from
 // in-memory state; any other host (the farm) is recorded as a dispatch.
 
+import { ACCEPT_GATE_INDEX } from '../../../domain/js/lifecycle.js'
+
 export const shaOf = (n) => Number(n).toString(16).padStart(40, 'c')
 
 const json = (status, body) => ({ ok: status >= 200 && status < 300, status, json: async () => body })
@@ -49,4 +51,10 @@ export function deployQueueStub({ mainSha = shaOf(0xa0), releases = [] } = {}) {
     return json(200, {})
   }
   return stub
+}
+
+// HZ-591: an open item in `repo` at Accept the code, so a lone merge's deploy
+// window stays open (deployQueue.js closeWindowIfAlone) as these tests expect.
+export function addComingItem(db, repo, id = 'DQ-COMING') {
+  db.prepare('INSERT INTO work_item (id, title, priority, cursor, repo) VALUES (?, ?, ?, ?, ?)').run(id, id, 'Medium', ACCEPT_GATE_INDEX, repo)
 }

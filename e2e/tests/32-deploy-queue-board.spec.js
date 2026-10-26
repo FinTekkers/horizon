@@ -4,13 +4,16 @@
 // so the label survives a reload. Rows are seeded directly, so the
 // orchestrator never kicks the item; nothing here needs a gate PIN.
 // HZ-481: the open window names its batch and how long until it closes.
+// HZ-591: a lone merge's window closes on the server's next tick, so another
+// horizon item waits at Accept the code (seeded first) to keep it open.
 
 import { test, expect } from '../fixtures/test-base.js'
 import { openDb, insertItem } from '../fixtures/seed.js'
-import { DEPLOY_STEP_INDEX } from '../../domain/js/lifecycle.js'
+import { ACCEPT_GATE_INDEX, DEPLOY_STEP_INDEX } from '../../domain/js/lifecycle.js'
 
 const DB_PATH = process.env.HORIZON_E2E_DB
 const ID = 'DQ-E2E-1'
+const HOLD_ID = 'DQ-E2E-HOLD'
 const TITLE = 'E2E fixture — waiting in the deploy queue'
 // Twenty minutes ahead, on a whole minute, in SQLite's UTC form.
 const closes = new Date(Math.ceil((Date.now() + 20 * 60_000) / 60_000) * 60_000)
@@ -26,6 +29,8 @@ test.beforeAll(() => {
   try {
     // beforeAll re-runs in a fresh worker after a failed test; seed once.
     if (db.prepare('SELECT 1 FROM work_item WHERE id = ?').get(ID)) return
+    // Paused, with no PR, so nothing acts on it; a paused item still holds the window.
+    insertItem(db, { id: HOLD_ID, title: 'E2E fixture — holds the deploy window open', cursor: ACCEPT_GATE_INDEX, repo: 'FinTekkers/horizon', paused: 1 })
     insertItem(db, { id: ID, title: TITLE, cursor: DEPLOY_STEP_INDEX, repo: 'FinTekkers/horizon', pr: 990 })
     const batchId = db
       .prepare("INSERT INTO deploy_batch (target, repo, status, window_closes_at) VALUES ('horizon', 'FinTekkers/horizon', 'open', ?)")
