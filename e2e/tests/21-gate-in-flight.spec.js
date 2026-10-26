@@ -21,7 +21,7 @@ import { mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { test, expect, captureScreenshot } from '../fixtures/test-base.js'
-import { openDb, insertItem, insertProject, setGatePinDirect } from '../fixtures/seed.js'
+import { openDb, insertItem, insertProject, insertGateAction, setGatePinDirect } from '../fixtures/seed.js'
 import { ACCEPT_GATE_INDEX } from '../../domain/js/lifecycle.js'
 
 const DB_PATH = process.env.HORIZON_E2E_DB
@@ -185,4 +185,35 @@ test('Accept on a Board card shows the run on the card and the gate, and takes t
   await expect(gateStatus).not.toContainText('not ok 1')
   await expect(gateApprove).toBeEnabled()
   await captureScreenshot(itemPage, 'gate-in-flight-blocked')
+})
+
+// HZ-585: an Accept whose pre-merge run is queued for a check slot says so on
+// the gate, with how many runs started waiting first, and a reload shows the
+// same — it is the server's gate_action row. Seeded as a running row: the
+// live queue itself is proven in server/test/premerge-slot-queue-live.test.mjs.
+test('a pre-merge run queued for a check slot shows "queued for a check slot (1 ahead)" on the gate, across a reload', async ({ page }) => {
+  const id = 'AIF-2'
+  const queuedTitle = 'E2E fixture — Accept queued for a check slot'
+  const db = openDb(DB_PATH)
+  try {
+    insertItem(db, {
+      id,
+      title: queuedTitle,
+      priority: 'High',
+      cursor: ACCEPT_GATE_INDEX,
+      repo: REPO,
+      pr: PR + 1,
+      pr_url: `https://github.com/${REPO}/pull/${PR + 1}`,
+    })
+    insertGateAction(db, { itemId: id, state: 'running', detail: 'queued for a check slot (1 ahead)' })
+  } finally {
+    db.close()
+  }
+  const QUEUED = 'Merging: queued for a check slot (1 ahead)'
+  await page.goto(`/${id.toLowerCase()}`)
+  const gate = page.locator('.step-card--awaiting', { hasText: 'Accept the code' })
+  await expect(gate.getByText(QUEUED)).toBeVisible({ timeout: 10_000 })
+  await expect(gate.locator('.btn-gate-approve')).toBeDisabled()
+  await page.reload()
+  await expect(gate.getByText(QUEUED)).toBeVisible({ timeout: 10_000 })
 })

@@ -41,7 +41,7 @@ test('argv carries the repo, item and two shas — no filesystem path — and ru
     const result = await premerge.runPreMergeChecks(ITEM, { headSha: HEAD, baseSha: BASE, timeoutMs: 20 * 60 * 1000 })
     assert.equal(result.ok, true)
     const [{ args, opts }] = calls
-    assert.deepEqual(args, ['-m', 'farm.premerge', 'FinTekkers/horizon', 'HZ-183', HEAD, '--base', BASE, '--timeout-s', '1200', '--json'])
+    assert.deepEqual(args, ['-m', 'farm.premerge', 'FinTekkers/horizon', 'HZ-183', HEAD, '--base', BASE, '--timeout-s', '1200', '--queue-timeout-s', '1200', '--json'])
     assert.ok(!args.some((a) => a.includes('/') && a !== 'FinTekkers/horizon'), 'Node must not pick the workspace')
     assert.equal(opts.cwd, REPO_ROOT)
     assert.equal(opts.timeoutMs, 20 * 60 * 1000)

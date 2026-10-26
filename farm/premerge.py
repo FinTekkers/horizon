@@ -6,6 +6,7 @@ against the main it was about to land on. This module closes that window.
 The server's Accept handler (server/src/premerge.js) runs
 
     python -m farm.premerge <owner/repo> <item-id> <head-sha> --base <base-sha> --timeout-s N --json
+        [--queue-timeout-s Q]
         [--check-commands <JSON object: the repo's install/test/lint/e2e commands>]
         [--checks-waiver {no_checks,predates_enforcement}]
         [--test-env-file <host path of the repo's test-login env file>]
@@ -37,6 +38,12 @@ HZ-569: the run id server/src/premerge.js puts in HORIZON_RUN_ID is leased
 to this process (farm/run_reaper.py), so every process the checks start is
 reaped when it ends — and, when the server's cap SIGKILLs it first, by the
 server's `python -m farm.run_reaper --run <id>` or farmd's sweep.
+
+HZ-585: two clocks. --queue-timeout-s bounds the git work and the wait for a
+check slot (and the memory gate in front of it); --timeout-s is the checks'
+own budget, and starts only once the slot is held. The wait never fails
+open: past its ceiling the run ends "slot_wait_expired" and nothing ran. The
+server re-arms its own kill timer on the "held" event this run sends.
 """
 
 import argparse
@@ -52,7 +59,7 @@ import tempfile
 import time
 from pathlib import Path
 
-from . import run_reaper, workspaces
+from . import check_slots, run_reaper, workspaces
 from .checks import CHECKS_WAIVERS, CheckFailure, output_tail, run_checks
 from .config import WORKSPACES_DIR
 
@@ -70,9 +77,16 @@ RUNNING_CHECKOUT = Path(__file__).resolve().parents[1]
 # the server's wall-clock kill does.
 RESERVE_S = 60
 
+# HZ-585: the CLI's default --queue-timeout-s, matching the server's
+# PREMERGE_QUEUE_TIMEOUT_MS default. Keep it at or under
+# check_slots.MARKER_MAX_AGE_S (see the note there).
+DEFAULT_QUEUE_TIMEOUT_S = 3600.0
+
 # HZ-227: a stderr line starting with this carries one JSON event for the
-# server — today only check_slots' queued/granted/memory. Must match EVENT_PREFIX in
-# server/src/premerge.js (parseSlotEvent). stdout stays one JSON line.
+# server — check_slots' queued/granted/memory, and HZ-585's held (the slot is
+# held and the checks' clock starts; sent on every run that gets that far).
+# Must match EVENT_PREFIX in server/src/premerge.js (parseSlotEvent). stdout
+# stays one JSON line.
 EVENT_PREFIX = "HORIZON_EVENT "
 
 _REPO_RE = re.compile(r"^[\w.-]+/[\w.-]+$")
@@ -179,6 +193,25 @@ def stderr_event(event: dict) -> None:
         pass
 
 
+def slot_policy(timeout_s: float, wait_ceiling_s: float, on_slot_event=None) -> check_slots.SlotPolicy:
+    """HZ-585: how a pre-merge run waits for its check slot. It never fails
+    open, its queued events carry `ahead`, its checks get timeout_s less
+    RESERVE_S from the moment the slot is held, and that moment is sent to
+    the server as {"check_slot": "held"}."""
+
+    def held(hold):
+        if on_slot_event is not None:
+            on_slot_event({"check_slot": "held", "mode": hold.mode})
+
+    return check_slots.SlotPolicy(
+        wait_ceiling_s=max(wait_ceiling_s, 1),
+        fail_open=False,
+        report_ahead=True,
+        budget_s=max(timeout_s - RESERVE_S, 1),
+        on_held=held,
+    )
+
+
 def premerge_check(
     repo_full: str,
     item_id: str,
@@ -186,15 +219,22 @@ def premerge_check(
     base_sha: str,
     *,
     timeout_s: float,
+    queue_timeout_s: float = DEFAULT_QUEUE_TIMEOUT_S,
     log=print,
     on_slot_event=None,
     configured=None,
     checks_waiver=None,
     test_env_file=None,
 ) -> dict:
-    """Never raises for an expected outcome: returns the CLI's result dict."""
+    """Never raises for an expected outcome: returns the CLI's result dict.
+
+    HZ-585: queue_timeout_s bounds everything before the checks start (the
+    git work and the slot wait); timeout_s is the checks' own budget, counted
+    from the slot grant. No lock is held while waiting: hub_lock is released
+    before run_checks(), and the per-item lock guards nothing a slot holder
+    needs."""
     started = time.monotonic()
-    deadline = started + max(timeout_s - RESERVE_S, 1)
+    queue_deadline = started + max(queue_timeout_s - RESERVE_S, 1)
     out = {"ok": False, "base_sha": base_sha, "head_sha": head_sha}
 
     if not _REPO_RE.match(repo_full or "") or not _ITEM_RE.match(item_id or ""):
@@ -240,7 +280,7 @@ def premerge_check(
                 "-c", "user.email=horizon-premerge@localhost",
                 "merge", "--no-ff", "--no-edit", head_sha,
                 check=False,
-                timeout=deadline - time.monotonic(),
+                timeout=queue_deadline - time.monotonic(),
             )
             if merge.returncode != 0:
                 return {**out, "reason": "merge_conflict", "detail": output_tail(merge.stdout + "\n" + merge.stderr)}
@@ -255,7 +295,6 @@ def premerge_check(
                     note = run_checks(
                         ws,
                         log=log,
-                        deadline=deadline,
                         item_id=item_id,
                         caller="premerge",
                         child_env={"FARM_HOME": str(checks_home)},
@@ -267,10 +306,15 @@ def premerge_check(
                         flakes=recorded["flakes"],
                         test_runs=recorded["test_runs"],
                         branch_notes=recorded["branch_notes"],
+                        slot_policy=slot_policy(timeout_s, queue_deadline - time.monotonic(), on_slot_event),
                     )
                 finally:
                     out.update({key: value for key, value in recorded.items() if value})
+            except check_slots.SlotWaitExpired as exc:
+                return {**out, "reason": "slot_wait_expired", "waited_s": round(exc.waited_s), "detail": str(exc)}
             except CheckFailure as exc:
+                if isinstance(exc.__cause__, check_slots.MemoryWaitExpired):
+                    return {**out, "reason": "memory_wait_expired", "waited_s": round(exc.__cause__.waited_s), "detail": str(exc)}
                 if exc.reason == "timed_out":
                     return {**out, "reason": "timed_out", "failing_check": exc.command, "detail": str(exc)}
                 if exc.reason == "none_ran":
@@ -294,7 +338,13 @@ def main(argv=None) -> int:
     parser.add_argument("item_id")
     parser.add_argument("head_sha")
     parser.add_argument("--base", required=True, dest="base_sha")
-    parser.add_argument("--timeout-s", type=float, default=1200)
+    parser.add_argument("--timeout-s", type=float, default=1200, help="the checks' budget, from the slot grant")
+    parser.add_argument(
+        "--queue-timeout-s",
+        type=float,
+        default=DEFAULT_QUEUE_TIMEOUT_S,
+        help="HZ-585: bounds the git work and the wait for a check slot",
+    )
     parser.add_argument("--json", action="store_true", help="accepted for clarity; output is always JSON")
     parser.add_argument(
         "--check-commands",
@@ -346,6 +396,7 @@ def main(argv=None) -> int:
                     args.head_sha,
                     args.base_sha,
                     timeout_s=args.timeout_s,
+                    queue_timeout_s=args.queue_timeout_s,
                     log=log,
                     on_slot_event=stderr_event,
                     configured=configured,

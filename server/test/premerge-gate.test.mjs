@@ -393,6 +393,27 @@ test('HZ-216: a check run that times out finishes the row as timed_out with its 
   assert.notEqual(action.reason, store.GATE_ACTION_EXPIRED_REASON)
 })
 
+// HZ-585 guardrail 1: a run that never got a slot, or never had the memory to
+// start, gave no answer — it times out and nothing merges.
+for (const [reason, detail] of [
+  ['slot_wait_expired', 'no check slot after 3540s (limit 2)'],
+  ['memory_wait_expired', 'checks did not start: waited 3540s for memory (9% free, 1.4 GB, needs 15%)'],
+]) {
+  test(`HZ-585: ${reason} ends the row timed_out, says the checks did not start, and merges nothing`, async () => {
+    stubRunner((args) => cliResult(args, { ok: false, reason, waited_s: 3540, detail }, 1))
+    const id = acceptItem()
+    const res = await approve(id)
+    assert.equal(res.statusCode, 502)
+    assert.equal(mergeCalls().length, 0)
+    const action = await gateActionOf(id)
+    assert.equal(action.state, 'timed_out')
+    assert.equal(action.reason, `pre-merge checks did not start: ${detail}`)
+    const items = (await app.inject({ method: 'GET', url: '/api/items', headers: { cookie } })).json()
+    const events = (Array.isArray(items) ? items : items.items).find((it) => it.id === id).events
+    assert.ok(events.some((e) => /pre-merge checks did not start/.test(e.text)), JSON.stringify(events.map((e) => e.text)))
+  })
+}
+
 test('HZ-216: the runner rejecting is a 502, the row ends failed with a reason, and a retry is not a 409', async () => {
   premerge.runner.spawn = async () => {
     throw new Error('spawn exploded')

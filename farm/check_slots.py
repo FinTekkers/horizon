@@ -64,6 +64,12 @@ the check's slot label, never its command line, which may hold login values
 whose pid is dead is pruned on every read, and the next taker of the same
 slot deletes whatever an earlier holder of that slot left behind. A record
 that cannot be written or deleted is logged and never fails the run.
+
+HZ-585 lets one caller wait differently: the pre-merge run at Accept passes a
+SlotPolicy. Its slot wait never fails open (SlotWaitExpired at its own
+ceiling instead), its queued events say how many runs started waiting before
+it (`ahead`), and run_checks() starts its check budget once the slot is held.
+With no policy, every path here is exactly as before.
 """
 
 import contextlib
@@ -73,6 +79,7 @@ import math
 import os
 import random
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -122,7 +129,11 @@ POLL_S = 1.0
 POLL_JITTER = 0.5
 # A waiting marker whose writer died between the liveness check and the unlink
 # would otherwise be reported forever. Belt as well as braces alongside the
-# pid check.
+# pid check. HZ-585: a pre-merge run may queue for up to the server's
+# PREMERGE_QUEUE_TIMEOUT_MS (60 min by default), and its marker is written
+# after its git work, so its slot wait stays under this age. Raising that
+# setting past 60 min means raising this too, or a long waiter drops out of
+# Farm health and out of the other waiters' `ahead` counts.
 MARKER_MAX_AGE_S = 3600.0
 # HZ-574: a holder record not rewritten for this long is hidden (not deleted:
 # its pid is alive and may still hold the lock). The age is measured from the
@@ -177,6 +188,38 @@ class MemoryWaitExpired(Exception):
         self.reading = reading
         self.waited_s = waited_s
         self.threshold_pct = threshold_pct
+
+
+class SlotWaitExpired(Exception):
+    """HZ-585: no slot within a SlotPolicy's ceiling, for a policy that does
+    not fail open. Raised instead of yielding, so nothing runs."""
+
+    def __init__(self, waited_s: float, limit: int):
+        super().__init__(f"no check slot after {waited_s:.0f}s (limit {limit})")
+        self.waited_s = waited_s
+        self.limit = limit
+
+
+@dataclass(frozen=True)
+class SlotPolicy:
+    """HZ-585: how one caller waits for its slot, and when its checks' clock
+    starts. Only farm/premerge.py passes one; the defaults are what every
+    other caller gets.
+
+    wait_ceiling_s replaces FARM_CHECK_SLOT_WAIT_MAX_S for this wait (memory
+    and slot alike). fail_open=False raises SlotWaitExpired at the ceiling
+    rather than run unthrottled. report_ahead adds `ahead` to the queued
+    event (see _ahead_of) and re-sends it when the count changes.
+
+    budget_s and on_held are run_checks()'s: the check deadline becomes
+    "budget_s from when the slot is held", and on_held(hold) is called once,
+    on every path, as soon as check_slot() yields."""
+
+    wait_ceiling_s: float | None = None
+    fail_open: bool = True
+    report_ahead: bool = False
+    budget_s: float | None = None
+    on_held: Callable | None = None
 
 
 @dataclass
@@ -362,12 +405,22 @@ def waiting_runs() -> list[dict]:
     from the recorded pid on every read, and a stale marker is pruned rather
     than reported — otherwise status would show a phantom waiter forever.
     """
-    out: list[dict] = []
+    now = time.time()
+    return [
+        {**data, "waited_s": round(max(0.0, now - float(data.get("since") or 0)), 1)}
+        for _path, data in _live_markers(now)
+    ]
+
+
+def _live_markers(now: float) -> list[tuple[Path, dict]]:
+    """(path, data) for every live waiting marker, pruning stale ones (see
+    waiting_runs()). A marker written before HZ-571 has no waiting_on: it
+    waited on a slot, and `data` says so."""
+    out: list[tuple[Path, dict]] = []
     try:
         entries = sorted(_waiting_dir().glob("*.json"))
     except OSError:
         return out
-    now = time.time()
     for path in entries:
         try:
             data = json.loads(path.read_text())
@@ -379,9 +432,34 @@ def waiting_runs() -> list[dict]:
         if stale:
             _clear_marker(path)
             continue
-        # A marker written before HZ-571 has no waiting_on: it waited on a slot.
-        out.append({"waiting_on": "slot", **data, "waited_s": round(max(0.0, now - since), 1)})
+        out.append((path, {"waiting_on": "slot", **data}))
     return out
+
+
+def _ahead_of(marker: Path | None) -> int | None:
+    """HZ-585: how many live runs started waiting for a slot before the run
+    whose marker this is — its "n ahead". None when it has no marker (one
+    that could not be written), since there is then nothing to compare.
+
+    Order is the marker's `since`, then its file name for a tie. A run that
+    waited on memory first gets a fresh `since` when it moves to the slot
+    wait (_write_marker rewrites it), so it queues behind runs already
+    waiting for a slot. Polling flock is not FIFO, so this counts runs that
+    started waiting earlier; it does not promise who is granted next."""
+    if marker is None:
+        return None
+    live = _live_markers(time.time())
+    mine = next((data for path, data in live if path == marker), None)
+    if mine is None:
+        return None
+    key = (float(mine.get("since") or 0), marker.name)
+    return sum(
+        1
+        for path, data in live
+        if path != marker
+        and data.get("waiting_on") == "slot"
+        and (float(data.get("since") or 0), path.name) < key
+    )
 
 
 def _holders_dir() -> Path:
@@ -625,7 +703,15 @@ class _MemoryGate:
 
 @contextlib.contextmanager
 def check_slot(
-    *, log=lambda *_: None, run_id=None, item_id=None, caller="step_agent", poll_s=POLL_S, on_event=None, cancel=None
+    *,
+    log=lambda *_: None,
+    run_id=None,
+    item_id=None,
+    caller="step_agent",
+    poll_s=POLL_S,
+    on_event=None,
+    cancel=None,
+    policy: SlotPolicy | None = None,
 ):
     """Hold one of FARM_MAX_CONCURRENT_CHECKS check slots for the duration.
 
@@ -659,7 +745,14 @@ def check_slot(
     raises WaitCancelled at once instead of waiting on. Only the conflict
     resolver passes one, so a deploy can stop it; None waits exactly as
     before.
+
+    policy (HZ-585) is a SlotPolicy; None is today's behaviour. Its
+    wait_ceiling_s replaces FARM_CHECK_SLOT_WAIT_MAX_S; fail_open=False
+    raises SlotWaitExpired where the slot path would fail open; report_ahead
+    sends {"check_slot": "queued", "ahead": n} on entering the slot wait and
+    again each time n changes — never on every poll.
     """
+    policy = policy or SlotPolicy()
     limit = slot_limit(log)
     if os.environ.get(IN_CHECKS_ENV):
         # Already inside an outer run's slot — see the nesting note up top.
@@ -682,8 +775,9 @@ def check_slot(
             log(f"check_slots: cannot create {directory} ({exc}) — running checks unthrottled")
             unthrottled = "fail-open"
 
-    ceiling = wait_ceiling_s(log)
+    ceiling = wait_ceiling_s(log) if policy.wait_ceiling_s is None else float(policy.wait_ceiling_s)
     started = time.monotonic()
+    shown_ahead: int | None = None
     marker: Path | None = None
     # What this run is waiting on now: None, "memory" or "slot". Separate from
     # `marker` because _write_marker() can legitimately return None (a status
@@ -716,6 +810,9 @@ def check_slot(
                         f"FARM_CHECK_SLOT_WAIT_MAX_S={ceiling:.0f}) — not starting checks"
                     )
                     raise MemoryWaitExpired(short, waited, memory.threshold)
+                if not policy.fail_open:
+                    log(f"check_slots: WARNING no check slot after {waited:.0f}s (limit={limit}) — not starting checks")
+                    raise SlotWaitExpired(waited, limit)
                 log(
                     f"check_slots: WARNING no check slot after {waited:.0f}s "
                     f"(FARM_CHECK_SLOT_WAIT_MAX_S={ceiling:.0f}, limit={limit}) — "
@@ -735,7 +832,16 @@ def check_slot(
                 marker = _write_marker(run_id, item_id, caller, waiting_on=now_on) or marker
                 if now_on == "slot":
                     log(f"check_slots: all {limit} check slots busy — waiting for one")
-                    _emit(on_event, "queued")
+                    if policy.report_ahead:
+                        shown_ahead = _ahead_of(marker)
+                        _emit(on_event, "queued", **({} if shown_ahead is None else {"ahead": shown_ahead}))
+                    else:
+                        _emit(on_event, "queued")
+            elif now_on == "slot" and policy.report_ahead:
+                ahead = _ahead_of(marker)
+                if ahead is not None and ahead != shown_ahead:
+                    shown_ahead = ahead
+                    _emit(on_event, "queued", ahead=ahead)
             if short is not None:
                 memory.announce(short)
             pause = poll_s * (1 + random.random() * POLL_JITTER)

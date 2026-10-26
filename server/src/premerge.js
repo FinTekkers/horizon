@@ -126,7 +126,9 @@ function tailLines(text) {
 // match EVENT_PREFIX in farm/premerge.py (stderr_event).
 const EVENT_PREFIX = 'HORIZON_EVENT '
 // HZ-571: 'memory' is the memory gate holding the run before it may start.
-const SLOT_EVENTS = ['queued', 'granted', 'memory']
+// HZ-585: 'held' is the slot held and the checks' clock started — sent on
+// every run that gets that far, queued or not.
+const SLOT_EVENTS = ['queued', 'granted', 'memory', 'held']
 
 // { name, event } for a check_slots event line, else null: name is one of
 // SLOT_EVENTS and event the whole parsed object (the memory figure rides on it).
@@ -151,7 +153,8 @@ const KB_PER_GB = 1024 * 1024
 
 // The pre-merge gate's detail for a slot event (HZ-227, HZ-571). The memory
 // figure matches farm/check_slots.py MemReading.describe(): a floored percent,
-// so a run held below 15% never reads "15% free".
+// so a run held below 15% never reads "15% free". HZ-585: a queued event's
+// `ahead` is how many runs started waiting for a slot before this one.
 export function slotDetail(name, event = {}) {
   if (name === 'memory') {
     const pct = event?.available_pct
@@ -161,7 +164,11 @@ export function slotDetail(name, event = {}) {
     }
     return 'Waiting for memory'
   }
-  return name === 'queued' ? 'Waiting for a check slot' : 'Running checks'
+  if (name === 'queued') {
+    const ahead = event?.ahead
+    return Number.isInteger(ahead) && ahead >= 0 ? `queued for a check slot (${ahead} ahead)` : 'queued for a check slot'
+  }
+  return 'Running checks'
 }
 
 // HZ-250: the process group of each running check, by item id, so a
@@ -183,7 +190,12 @@ export const runner = {
   //
   // runId (HZ-569), when given, is reaped (reapRun) after the timeout's group
   // kill, before this resolves.
-  spawn(args, { cwd, timeoutMs, env, onStderrLine, itemId, runId }) {
+  //
+  // rearmOn (HZ-585), when given, sees each complete stderr line; the first
+  // time it returns a number, the kill timer restarts with that many ms. A
+  // run that times out resolves `timedOutPhase`: 'before' the re-arm, or
+  // 'after' it.
+  spawn(args, { cwd, timeoutMs, env, onStderrLine, itemId, runId, rearmOn }) {
     return new Promise((resolve) => {
       let stdout = ''
       let stderr = ''
@@ -192,24 +204,42 @@ export const runner = {
       // reaches the listener whole, and `stderr` is built as it always was.
       const decoder = new StringDecoder('utf8')
       let timedOut = false
+      let timedOutPhase = null
+      let rearmed = false
       let settled = false
       let tracked = null
-      const emitLine = (line) => {
+      const emitLine = (raw) => {
+        const line = raw.endsWith('\r') ? raw.slice(0, -1) : raw
+        if (rearmOn && !rearmed && !timedOut) {
+          let ms = null
+          try {
+            ms = rearmOn(line)
+          } catch {
+            ms = null
+          }
+          if (Number.isFinite(ms) && ms > 0) {
+            rearmed = true
+            clearTimeout(timer)
+            timer = setTimeout(onTimeout, ms)
+          }
+        }
+        if (!onStderrLine) return
         try {
-          onStderrLine(line.endsWith('\r') ? line.slice(0, -1) : line)
+          onStderrLine(line)
         } catch {
           // fire-and-forget
         }
       }
+      const listening = Boolean(onStderrLine || rearmOn)
       const splitLines = (chunk) => {
-        if (!onStderrLine) return
+        if (!listening) return
         partial += decoder.write(chunk)
         const lines = partial.split('\n')
         partial = lines.pop()
         for (const line of lines) emitLine(line)
       }
       const flushLines = () => {
-        if (!onStderrLine) return
+        if (!listening) return
         partial += decoder.end()
         if (partial === '') return
         const line = partial
@@ -225,7 +255,7 @@ export const runner = {
           tracked.settle()
           if (tracked.interrupted) out = { ...out, interrupted: true }
         }
-        resolve({ stdout, stderr, timedOut, ...out })
+        resolve({ stdout, stderr, timedOut, ...(timedOut ? { timedOutPhase } : {}), ...out })
       }
       const child = spawn(pythonBin(), args, { cwd, env, detached: true, stdio: ['ignore', 'pipe', 'pipe'] })
       if (itemId != null && Number.isInteger(child.pid)) {
@@ -233,8 +263,9 @@ export const runner = {
         tracked.settled = new Promise((resolveSettled) => (tracked.settle = resolveSettled))
         runningChecks.set(itemId, tracked)
       }
-      const timer = setTimeout(() => {
+      const onTimeout = () => {
         timedOut = true
+        timedOutPhase = rearmed ? 'after' : 'before'
         try {
           process.kill(-child.pid, 'SIGKILL')
         } catch {
@@ -247,7 +278,8 @@ export const runner = {
         if (!runId) return done({ code: null })
         // Stops that descendant too. The result is already decided: timedOut.
         reapRun(runId, { env }).then(() => done({ code: null }))
-      }, timeoutMs)
+      }
+      let timer = setTimeout(onTimeout, timeoutMs)
       child.stdout.on('data', (d) => (stdout += d))
       child.stderr.on('data', (d) => {
         stderr += d
@@ -285,9 +317,14 @@ export const runner = {
 //
 // testEnvFile (HZ-494) is the host path of the repo's test-login env file, or
 // null. Only the path goes on argv; farm/login_env.py reads the file.
+//
+// HZ-585: two clocks. queueTimeoutMs bounds the run until its 'held' event
+// (the git work and the wait for a check slot); timeoutMs then starts fresh,
+// so time spent queued never eats the checks' budget. A run whose 'held'
+// line never arrives keeps the queue cap, and still ends.
 export async function runPreMergeChecks(
   item,
-  { headSha, baseSha, timeoutMs, onSlot, checkCommands = null, checksWaiver = null, testEnvFile = null },
+  { headSha, baseSha, timeoutMs, queueTimeoutMs = timeoutMs, onSlot, checkCommands = null, checksWaiver = null, testEnvFile = null },
 ) {
   const shas = { head_sha: headSha, base_sha: baseSha }
   if (!SHA_RE.test(headSha || '') || !SHA_RE.test(baseSha || '')) {
@@ -297,13 +334,21 @@ export async function runPreMergeChecks(
     '-m', 'farm.premerge', item.repo, item.id, headSha,
     '--base', baseSha,
     '--timeout-s', String(Math.floor(timeoutMs / 1000)),
+    '--queue-timeout-s', String(Math.floor(queueTimeoutMs / 1000)),
     '--json',
   ]
   if (checkCommands) args.push('--check-commands', JSON.stringify(checkCommands))
   if (checksWaiver) args.push('--checks-waiver', checksWaiver)
   if (testEnvFile) args.push('--test-env-file', testEnvFile)
   const runId = newRunId(item.id)
-  const spawnOpts = { cwd: path.dirname(FARM_DIR), timeoutMs, env: childEnv(timeoutMs, runId), itemId: item.id, runId }
+  const spawnOpts = {
+    cwd: path.dirname(FARM_DIR),
+    timeoutMs: queueTimeoutMs,
+    rearmOn: (line) => (parseSlotEvent(line) === 'held' ? timeoutMs : null),
+    env: childEnv(timeoutMs, runId),
+    itemId: item.id,
+    runId,
+  }
   if (onSlot) {
     spawnOpts.onStderrLine = (line) => {
       const slot = slotEventOf(line)
@@ -320,7 +365,11 @@ export async function runPreMergeChecks(
     return { ok: false, reason: 'interrupted', detail: DEPLOY_INTERRUPTED_DETAIL, ...shas }
   }
   if (out.timedOut) {
-    return { ok: false, reason: 'timed_out', detail: `no result within ${Math.round(timeoutMs / 60000)} min`, ...shas }
+    const detail =
+      out.timedOutPhase === 'before'
+        ? `no check slot within ${Math.round(queueTimeoutMs / 60000)} min`
+        : `no result within ${Math.round(timeoutMs / 60000)} min`
+    return { ok: false, reason: 'timed_out', detail, ...shas }
   }
   if (out.error) {
     return { ok: false, reason: 'crash', detail: `could not start the check run: ${out.error.message}`, ...shas }
@@ -419,6 +468,10 @@ export function describeFailure(result) {
       return `${result.detail || 'no check commands configured'} — nothing proves the merge of ${on} is safe. Set the repo's check commands in Admin, or mark it 'no checks'`
     case 'no_hub':
       return 'the farm has no checkout of this repo to test-merge in — start the farm so the repo hub exists, then click Accept again'
+    case 'slot_wait_expired':
+      return `pre-merge checks did not start on ${on}: no check slot within ${Math.round((result.waited_s || 0) / 60)} min — the farm is busy; click Accept again later`
+    case 'memory_wait_expired':
+      return `pre-merge checks did not start on ${on}: ${result.detail || 'the host stayed short of memory'} — click Accept again once memory recovers`
     case 'busy':
       return 'pre-merge checks are already running for this item'
     case 'interrupted':

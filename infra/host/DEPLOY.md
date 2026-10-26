@@ -304,6 +304,22 @@ gets an allowlisted environment without `farm.env`, so they use the default
 `FARM_MEMINFO_PATH` is a **test-only** seam (a fake meminfo file) — never set
 it on the host.
 
+**Pre-merge runs queue for a slot (HZ-585).** Accept's pre-merge run takes a
+check slot like every other check run, and its 20-minute
+`PREMERGE_CHECK_TIMEOUT_MS` (in `server.env`) now counts from when it holds
+the slot, not from the click. The wait before that is bounded by
+`PREMERGE_QUEUE_TIMEOUT_MS` (`server.env`, unset ⇒ 3600000 = 60 min). While
+it waits the item reads "queued for a check slot (n ahead)" and Farm health
+lists it as waiting. Unlike other runs it never proceeds without a slot: past
+the queue cap it ends `timed_out` ("no check slot within 60 min") and nothing
+merges. **Keep `PREMERGE_QUEUE_TIMEOUT_MS` at or under 60 min**: a waiting
+marker older than `MARKER_MAX_AGE_S` (60 min, `farm/check_slots.py`) is
+pruned, and the run drops out of Farm health and of other runs' "n ahead". A
+deploy drain treats a queued pre-merge run like a running one: it waits for
+it, then interrupts it. Rollback without a revert: set
+`PREMERGE_QUEUE_TIMEOUT_MS=1200000` and restart `horizon-server` — that
+restores a 20-minute bound on the wait.
+
 **Order matters.** Six agents all reaching their checks at once on 2 vCPUs is
 the failure this pairing exists to prevent — it was observed live on 30 Sept
 2026 (load ~8, the Playwright suite failing its own 85s budget). Add

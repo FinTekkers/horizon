@@ -157,7 +157,14 @@ export const PAUSE_CHECKPOINT_TIMEOUT_S = pauseCheckpointTimeoutS > 0 ? pauseChe
 // HZ-183: bounds the pre-merge check at Accept the code — a test-merge of the
 // PR into the current base and the repo's own checks (server/src/premerge.js).
 // A run that has not finished by then blocks the merge, fail-closed.
+// HZ-585: counted from when the run holds a check slot, not from the click.
 export const PREMERGE_CHECK_TIMEOUT_MS = Number(process.env.PREMERGE_CHECK_TIMEOUT_MS || 20 * 60 * 1000)
+// HZ-585: bounds the pre-merge run before its checks start — the git work and
+// the wait for a check slot (farm/check_slots.py). 60 min: with 2 slots and
+// ~15 min suites, four Accepts plus two step checks is about three waves.
+// Keep it at or under farm/check_slots.py MARKER_MAX_AGE_S (60 min), or a
+// long waiter drops out of Farm health and of other runs' "n ahead".
+export const PREMERGE_QUEUE_TIMEOUT_MS = Number(process.env.PREMERGE_QUEUE_TIMEOUT_MS || 60 * 60 * 1000)
 // HZ-257: Accept skips the pre-merge run when the farm's own checks already
 // passed on exactly the PR head and that head already contains the base tip
 // (app.js tryPreMergeSkip). A passing record older than this many hours is

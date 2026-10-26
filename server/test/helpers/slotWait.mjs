@@ -10,34 +10,52 @@ import { join, resolve } from 'node:path'
 
 export const REPO_ROOT = resolve(import.meta.dirname, '../../..')
 
-// argv mirrors farm.premerge's: -m farm.premerge <repo> <item> <head> --base <base> --timeout-s N --json.
+// argv mirrors farm.premerge's: -m farm.premerge <repo> <item> <head> --base <base> --timeout-s N
+// --queue-timeout-s Q --json. HZ-585: it waits with farm/premerge.py's own
+// slot_policy() (no fail-open, `ahead` on queued, `held` once the slot is held).
 // While $FARM_HOME/hold-checks exists the "checks" keep running, so a test can
-// read the API in the granted state before the run finishes.
+// read the API in the granted state before the run finishes ($FARM_HOME/hold-<item>
+// does the same for one item). On getting its slot it writes
+// $FARM_HOME/ran-<item>; $FARM_HOME/check-seconds-<item>, when present, is
+// how long its "checks" then take.
 const SHIM_PY = `
 import json, os, sys, time
 sys.path.insert(0, os.getcwd())
 from farm import check_slots, config
-from farm.premerge import stderr_event
+from farm.premerge import slot_policy, stderr_event
 args = sys.argv[1:]
 item_id, head, base = args[3], args[4], args[6]
-with check_slots.check_slot(item_id=item_id, caller="premerge", poll_s=0.1, on_event=stderr_event) as slot:
-    print(f"shim: slot {slot.mode}", file=sys.stderr, flush=True)
-    hold = config.farm_home() / "hold-checks"
-    deadline = time.monotonic() + 20
-    while hold.exists() and time.monotonic() < deadline:
-        time.sleep(0.05)
+timeout_s = float(args[args.index("--timeout-s") + 1])
+queue_s = float(args[args.index("--queue-timeout-s") + 1]) if "--queue-timeout-s" in args else 3600
+policy = slot_policy(timeout_s, queue_s, stderr_event)
+try:
+    with check_slots.check_slot(item_id=item_id, caller="premerge", poll_s=0.1, on_event=stderr_event, policy=policy) as slot:
+        policy.on_held(slot)
+        print(f"shim: slot {slot.mode}", file=sys.stderr, flush=True)
+        home = config.farm_home()
+        (home / f"ran-{item_id}").write_text("")
+        seconds = home / f"check-seconds-{item_id}"
+        if seconds.exists():
+            time.sleep(float(seconds.read_text()))
+        holds = (home / "hold-checks", home / f"hold-{item_id}")
+        deadline = time.monotonic() + 20
+        while any(h.exists() for h in holds) and time.monotonic() < deadline:
+            time.sleep(0.05)
+except check_slots.SlotWaitExpired as exc:
+    print(json.dumps({"ok": False, "reason": "slot_wait_expired", "waited_s": round(exc.waited_s), "detail": str(exc), "head_sha": head, "base_sha": base}), flush=True)
+    sys.exit(1)
 print(json.dumps({"ok": True, "head_sha": head, "base_sha": base, "note": "shim checks passed"}), flush=True)
 `
 
-export function writeShim(dir) {
+export function writeShim(dir, { slots = 1, name = 'premerge-shim' } = {}) {
   const py = join(dir, 'premerge_shim.py')
-  const bin = join(dir, 'premerge-shim.sh')
+  const bin = join(dir, `${name}.sh`)
   writeFileSync(py, SHIM_PY)
-  // One slot, and no wait ceiling: a fail-open must never race the deadline.
+  // One slot (or `slots`). The wait ceiling is slot_policy()'s, from argv.
   // (Set here because premerge.js passes the child an allowlisted env only.)
   writeFileSync(
     bin,
-    `#!/bin/sh\nexport FARM_MAX_CONCURRENT_CHECKS=1 FARM_CHECK_SLOT_WAIT_MAX_S=0\nexec python3 ${JSON.stringify(py)} "$@"\n`,
+    `#!/bin/sh\nexport FARM_MAX_CONCURRENT_CHECKS=${slots} FARM_CHECK_SLOT_WAIT_MAX_S=0\nunset FARM_IN_CHECKS\ncd ${JSON.stringify(REPO_ROOT)}\nexec python3 ${JSON.stringify(py)} "$@"\n`,
   )
   chmodSync(bin, 0o755)
   return bin
@@ -48,31 +66,33 @@ import fcntl, sys
 from pathlib import Path
 d = Path(sys.argv[1]) / "locks" / "checks"
 d.mkdir(parents=True, exist_ok=True)
-f = open(d / "slot-0", "a")
+f = open(d / f"slot-{sys.argv[2] if len(sys.argv) > 2 else 0}", "a")
 fcntl.flock(f.fileno(), fcntl.LOCK_EX)
 print("held", flush=True)
 sys.stdin.read()
 `
 
-// Holds slot 0 (every slot, at FARM_MAX_CONCURRENT_CHECKS=1) until release().
-export async function holdSlot(farmHome) {
-  const child = spawn('python3', ['-c', HOLDER_PY, farmHome], { stdio: ['pipe', 'pipe', 'inherit'] })
+// Holds slot `index` (default 0: every slot, at FARM_MAX_CONCURRENT_CHECKS=1)
+// until release().
+export async function holdSlot(farmHome, index = 0) {
+  const child = spawn('python3', ['-c', HOLDER_PY, farmHome, String(index)], { stdio: ['pipe', 'pipe', 'inherit'] })
   await new Promise((ok, fail) => {
     child.stdout.once('data', ok)
     child.once('exit', () => fail(new Error('slot holder exited early')))
   })
+  const exited = new Promise((ok) => child.once('exit', ok))
+  // Safe to call more than once.
   return {
-    release: () =>
-      new Promise((ok) => {
-        child.once('exit', ok)
-        child.stdin.end()
-      }),
+    release: () => {
+      child.stdin.end()
+      return exited
+    },
   }
 }
 
 // Runs a snippet against the real limiter in farmHome; returns its JSON stdout.
-export function slotPython(farmHome, code) {
-  const env = { ...process.env, FARM_HOME: farmHome, FARM_MAX_CONCURRENT_CHECKS: '1' }
+export function slotPython(farmHome, code, { slots = 1 } = {}) {
+  const env = { ...process.env, FARM_HOME: farmHome, FARM_MAX_CONCURRENT_CHECKS: String(slots) }
   delete env.FARM_IN_CHECKS
   const out = spawnSync('python3', ['-c', `import json\nfrom farm import check_slots\n${code}`], {
     cwd: REPO_ROOT,

@@ -1624,7 +1624,8 @@ def _check_slot_or_fail(*, log, **kwargs):
     except check_slots.MemoryWaitExpired as exc:
         message = f"checks did not start: {exc}"
         log(f"checks: {message}")
-        raise CheckFailure(message, reason="timed_out", headline=message) from None
+        # `from exc` (HZ-585): pre-merge tells this wait apart by the cause.
+        raise CheckFailure(message, reason="timed_out", headline=message) from exc
 
 
 def run_checks(
@@ -1648,6 +1649,7 @@ def run_checks(
     test_env_file: str | None = None,
     summary_notes: list | None = None,
     capture_screenshots: bool = False,
+    slot_policy: check_slots.SlotPolicy | None = None,
 ) -> str:
     """Returns a short human-readable note; raises CheckFailure on failure.
 
@@ -1685,6 +1687,13 @@ def run_checks(
 
     cancel (HZ-256) is passed to check_slots.check_slot(): setting it ends a
     slot wait with check_slots.WaitCancelled. None keeps today's behaviour.
+
+    slot_policy (HZ-585) is a check_slots.SlotPolicy, passed to check_slot()
+    for how the wait behaves. Its on_held(hold) is called once the slot is
+    held (any mode), and its budget_s, when set, caps `deadline` at budget_s
+    from that moment, so queueing never eats the run's budget. A policy that
+    does not fail open lets check_slots.SlotWaitExpired out of here. Only the
+    pre-merge run passes one; None keeps today's behaviour.
 
     repo (HZ-249) is the owner/name whose dependency cache the install
     command may restore from and save to (farm/dep_cache.py). None — or
@@ -1780,9 +1789,21 @@ def run_checks(
     with contextlib.ExitStack() as scope:
         hold = scope.enter_context(
             _check_slot_or_fail(
-                log=log, run_id=run_id, item_id=item_id, caller=caller, on_event=on_slot_event, cancel=cancel
+                log=log,
+                run_id=run_id,
+                item_id=item_id,
+                caller=caller,
+                on_event=on_slot_event,
+                cancel=cancel,
+                policy=slot_policy,
             )
         )
+        if slot_policy is not None:
+            if slot_policy.budget_s is not None:
+                granted_deadline = time.monotonic() + slot_policy.budget_s
+                deadline = granted_deadline if deadline is None else min(deadline, granted_deadline)
+            if slot_policy.on_held is not None:
+                slot_policy.on_held(hold)
         timeout_s = int(os.environ.get("FARM_CHECK_TIMEOUT_S", "600"))
         record = check_metrics.new_record(run_id=run_id, item_id=item_id, caller=caller, slot=hold, repo=repo)
         record[SCREENSHOTS_SLOT] = screenshots

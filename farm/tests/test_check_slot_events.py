@@ -164,3 +164,79 @@ def test_stderr_event_writes_one_prefixed_line_to_stderr_only():
         premerge.stderr_event({"check_slot": "queued"})
     assert out.getvalue() == ""
     assert err.getvalue() == premerge.EVENT_PREFIX + '{"check_slot": "queued"}\n'
+
+
+# ---- HZ-585: `ahead` on a SlotPolicy's queued events ----
+
+
+def _ahead_waiter(run_id, events, done, policy):
+    def go():
+        try:
+            with check_slots.check_slot(run_id=run_id, poll_s=0.05, on_event=events.append, policy=policy):
+                pass
+        except check_slots.SlotWaitExpired as exc:
+            events.append({"expired": exc.waited_s})
+        done.set()
+
+    threading.Thread(target=go, daemon=True).start()
+
+
+def test_report_ahead_counts_the_runs_that_started_waiting_first_and_is_not_resent_each_poll():
+    policy = check_slots.SlotPolicy(report_ahead=True)
+    holder = _hold_slot_0()
+    first, second = [], []
+    first_done, second_done = threading.Event(), threading.Event()
+    try:
+        _ahead_waiter("first", first, first_done, policy)
+        assert _wait_for(lambda: first)
+        _ahead_waiter("second", second, second_done, policy)
+        assert _wait_for(lambda: second)
+        time.sleep(0.5)  # ~10 polls each
+        assert first == [{"check_slot": "queued", "ahead": 0}]
+        assert second == [{"check_slot": "queued", "ahead": 1}]
+    finally:
+        _release(holder)
+    assert first_done.wait(10) and second_done.wait(10)
+    # Whichever was granted first, the second never counted more than one ahead
+    # and the first never counted anyone.
+    assert [e.get("ahead") for e in first if e["check_slot"] == "queued"] == [0]
+    assert all(e.get("ahead") in (0, 1) for e in second if e["check_slot"] == "queued")
+
+
+def test_a_run_that_waited_on_memory_first_queues_behind_runs_already_waiting_for_a_slot(tmp_path, monkeypatch):
+    meminfo = tmp_path / "meminfo"
+    meminfo.write_text("MemTotal: 1000 kB\nMemAvailable: 50 kB\n")
+    monkeypatch.setenv(check_slots.MEMINFO_PATH_ENV, str(meminfo))
+    monkeypatch.setenv(check_slots.MEM_THRESHOLD_ENV, "15")
+    policy = check_slots.SlotPolicy(report_ahead=True)
+    holder = _hold_slot_0()
+    late, slot_waiter = [], []
+    late_done, slot_done = threading.Event(), threading.Event()
+    try:
+        _ahead_waiter("late", late, late_done, policy)
+        assert _wait_for(lambda: any(e["check_slot"] == "memory" for e in late))
+        # Memory recovers only after another run is already waiting for the slot.
+        monkeypatch.setenv(check_slots.MEM_THRESHOLD_ENV, "0")
+        _ahead_waiter("slot-waiter", slot_waiter, slot_done, policy)
+        assert _wait_for(lambda: slot_waiter)
+        meminfo.write_text("MemTotal: 1000 kB\nMemAvailable: 900 kB\n")
+        assert _wait_for(lambda: any(e["check_slot"] == "queued" for e in late))
+        assert [e for e in late if e["check_slot"] == "queued"][0] == {"check_slot": "queued", "ahead": 1}
+    finally:
+        _release(holder)
+    assert late_done.wait(10) and slot_done.wait(10)
+
+
+def test_a_policy_that_does_not_fail_open_raises_at_its_ceiling_and_holds_nothing():
+    policy = check_slots.SlotPolicy(wait_ceiling_s=1, fail_open=False)
+    holder = _hold_slot_0()
+    events, done = [], threading.Event()
+    try:
+        _ahead_waiter("expiring", events, done, policy)
+        assert done.wait(10)
+    finally:
+        _release(holder)
+    assert events[-1]["expired"] >= 1
+    assert not any(e.get("check_slot") == "granted" for e in events)
+    assert check_slots.waiting_runs() == []
+    assert check_slots.busy_slots() == 0
