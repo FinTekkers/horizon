@@ -446,6 +446,19 @@ def test_the_malformed_grace_stays_well_under_the_servers_queue_timeout():
 # one — through step_agent.main() since HZ-371.
 
 
+# HZ-550: every reported success carries the run's usage. This lane's
+# run_agent stub stands in for agent_runner.run_agent, so the run's meter
+# counted no agent call (farm/tests/test_usage_capture.py covers real calls).
+STUB_RUN_USAGE = {
+    "agent_run": False,
+    "input_tokens": 0,
+    "output_tokens": 0,
+    "cache_read_tokens": 0,
+    "cache_write_tokens": 0,
+    "cost_usd": 0,
+}
+
+
 @pytest.fixture
 def pm_process(run_pm_step):
     """Runs a real PM step through step_agent.main() with run_agent and the
@@ -474,7 +487,7 @@ def test_a_clean_reply_is_reported_ok(pm_process):
     posted = pm_process.run(json.dumps({"summary": "done", "artifact_md": "# A"}))
     assert posted["ok"] is True
     assert posted["summary"] == "done"
-    assert posted["artifacts"] == {"artifact_md": "# A"}
+    assert posted["artifacts"] == {"artifact_md": "# A", "usage": STUB_RUN_USAGE}
     assert len(pm_process.prompts) == 1  # no retry on a good reply
 
 
@@ -511,7 +524,7 @@ def test_with_no_notes_the_posted_payload_is_byte_identical(pm_process):
         "ok": True,
         "summary": "done",
         "patch": {"desc": "d"},
-        "artifacts": {"artifact_md": "# A"},
+        "artifacts": {"artifact_md": "# A", "usage": STUB_RUN_USAGE},
     }
 
 

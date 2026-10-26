@@ -36,7 +36,9 @@ test('hooks on: the screenshot login header gets 200 on the productivity report'
   const res = await app.inject({ method: 'GET', url: '/api/admin/productivity?range=30d', headers: testEnv })
   assert.equal(res.statusCode, 200, res.body)
   assert.equal(res.json().range, '30d')
-  assert.equal(res.json().summary.closed, 319)
+  // HZ-550: the live report, on a DB with nothing closed.
+  assert.equal(res.json().source, 'live')
+  assert.equal(res.json().summary.closed, 0)
 })
 
 test('hooks on: the same header still gets 403 session_required on /api/tokens', async () => {

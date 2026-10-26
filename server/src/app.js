@@ -2691,9 +2691,10 @@ export function buildApp({ logger = true, onRoute = null } = {}) {
   fastify.get('/api/admin/check-flakes', { schema: { response: { 200: OK_OBJECT } } }, () => checkFlakes.listFlakes())
 
   // ---- Productivity (HZ-549, read-only) ----
-  // Serves the checked-in fixture until HZ-550 aggregates real data. The
+  // HZ-550: aggregated from Horizon's own DB (server/src/productivity.js). The
   // response schema is domain/productivity.schema.json, so the spec and the
-  // serializer both enforce the contract.
+  // serializer both enforce the contract. The only route that returns a run's
+  // tokens or cost.
   fastify.get(
     '/api/admin/productivity',
     {

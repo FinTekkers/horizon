@@ -39,6 +39,7 @@ from .base import (
     decode_partial,
     iso_utc,
     metered_billing_opted_in,
+    normalize_usage,
     reset_from_text,
 )
 
@@ -297,7 +298,7 @@ async def _stream_query(
         max_buffer_size=max_buffer_size if max_buffer_size is not None else sdk_max_buffer_bytes(),
     )
 
-    result_text, new_session_id, num_turns = "", None, None
+    result_text, new_session_id, num_turns, usage = "", None, None, None
     stream = sdk.query(prompt=prompt, options=options)
     try:
         async for message in stream:
@@ -315,6 +316,8 @@ async def _stream_query(
                 result_text = message.result or ""
                 new_session_id = message.session_id
                 num_turns = getattr(message, "num_turns", None)
+                # HZ-550: what the run used and cost, as the SDK reports it.
+                usage = normalize_usage(getattr(message, "usage", None), getattr(message, "total_cost_usd", None))
                 if message.is_error:
                     # subtype names the cause (e.g. error_max_turns) — the
                     # result text is often empty on these, so without it the
@@ -339,7 +342,7 @@ async def _stream_query(
         # `claude` process rather than orphaning it in the tmux session.
         await stream.aclose()
     # HZ-458: the turns this run used, so a follow-up turn stays inside the step's cap.
-    return {"result": result_text, "session_id": new_session_id, "num_turns": num_turns}
+    return {"result": result_text, "session_id": new_session_id, "num_turns": num_turns, "usage": usage}
 
 
 def _print_event(message) -> None:
@@ -439,4 +442,10 @@ def _run_subprocess(
     except json.JSONDecodeError as exc:
         raise AgentError(f"claude produced non-JSON output: {proc.stdout[:200]}") from exc
 
-    return {"result": data.get("result", ""), "session_id": data.get("session_id"), "num_turns": data.get("num_turns")}
+    return {
+        "result": data.get("result", ""),
+        "session_id": data.get("session_id"),
+        "num_turns": data.get("num_turns"),
+        # HZ-550: the CLI's JSON carries the same usage and cost as the SDK's result.
+        "usage": normalize_usage(data.get("usage"), data.get("total_cost_usd")),
+    }

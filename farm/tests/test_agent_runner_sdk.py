@@ -86,6 +86,8 @@ def test_sdk_path_streams_events_and_returns_result(sdk_runner, monkeypatch, cap
         "command_id": None,
         # HZ-458: the turns the run used, from the ResultMessage.
         "num_turns": 2,
+        # HZ-550: this ResultMessage reports no usage or cost.
+        "usage": None,
     }
     # The comma-joined public param must reach the SDK as a list.
     assert seen_options["options"].allowed_tools == ["Read", "Glob", "Grep"]
