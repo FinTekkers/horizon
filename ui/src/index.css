@@ -1483,7 +1483,7 @@ button { font-family: var(--font-sans); }
    nav; everything below is layout, and nothing outside this block changes,
    so 700px and up is exactly the desktop layout. Overflow fixes here target
    the elements that were wider than a 375px screen — never overflow-x on the
-   page itself; the board's column strip keeps its own sideways scroll. */
+   page itself. The board shows one column at a time (HZ-586). */
 @media (max-width: 699px) {
   :root { --bottomnav-h: 64px; }
 
@@ -1541,6 +1541,27 @@ button { font-family: var(--font-sans); }
   /* The elements that overflowed a 375px screen. */
   .board, .tracker { padding-left: 12px; padding-right: 12px; }
   .board__head { flex-wrap: wrap; }
+  /* HZ-586: one lifecycle column at a time, full width, picked from these
+     tabs; card headers wrap rather than run past the card edge, with the
+     project and repo shown whole instead of cut off. */
+  .board__tabs { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 6px; margin-bottom: 14px; }
+  .board__tab {
+    min-width: 0; min-height: 44px; padding: 6px 4px; cursor: pointer;
+    display: flex; align-items: center; justify-content: center; gap: 6px;
+    border: 1.5px solid var(--border-strong); border-radius: 12px; background: var(--surface);
+  }
+  .board__tab[aria-selected='true'] { background: var(--primary-bg); border-color: var(--primary-ink); }
+  .board__tab:focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; }
+  .board__tab-count { font: 700 12px var(--font-sans); color: var(--muted); }
+  .board__tab[aria-selected='true'] .board__tab-count { color: var(--primary-ink); }
+  .board__cols--phone { overflow-x: visible; }
+  .board__cols--phone .col { flex: 1 1 100%; min-width: 0; }
+  .card__meta { flex-wrap: wrap; row-gap: 4px; }
+  .card__meta > * { min-width: 0; }
+  .card .proj-badge, .card .card__repo {
+    max-width: none; white-space: normal; overflow: visible; text-overflow: clip; overflow-wrap: anywhere;
+  }
+  .card .card__issue { overflow-wrap: anywhere; }
   .tracker__header { padding: 20px 16px; }
   .tracker__header-main, .tracker__stepper, .tracker__activity { min-width: 0; flex-basis: 100%; }
   .tracker__stepper, .tracker__activity { padding: 20px 16px; }
