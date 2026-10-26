@@ -169,6 +169,41 @@ def test_a_step_with_no_workspace_reports_no_source_shas():
     assert "source_shas" not in result.get("artifacts", {})
 
 
+def test_a_step_that_runs_no_checks_is_never_held_by_the_memory_gate(tmp_path, monkeypatch):
+    """HZ-571 guardrail 2: at 5% free with the default threshold, an agent
+    step with no checks finishes, and never even asks for a check slot."""
+    from farm import check_slots
+
+    meminfo = tmp_path / "meminfo"
+    meminfo.write_text("MemTotal: 16000000 kB\nMemAvailable: 800000 kB\n")
+    monkeypatch.setenv(check_slots.MEMINFO_PATH_ENV, str(meminfo))
+    monkeypatch.delenv(check_slots.MEM_THRESHOLD_ENV, raising=False)
+    monkeypatch.setenv("FARM_HOME", str(tmp_path / "farm-home"))
+    monkeypatch.delenv(check_slots.IN_CHECKS_ENV, raising=False)
+    asked: list = []
+    real_check_slot = check_slots.check_slot
+    monkeypatch.setattr(check_slots, "check_slot", lambda **kw: asked.append(kw) or real_check_slot(**kw))
+    seen: list = []
+    stop = threading.Event()
+
+    def watch():
+        while not stop.is_set():
+            seen.extend(check_slots.waiting_runs())
+            time.sleep(0.02)
+
+    watcher = threading.Thread(target=watch, daemon=True)
+    watcher.start()
+    try:
+        result = execute(make_task(4, "Plan options & trade-offs (pros / cons)"))
+    finally:
+        stop.set()
+        watcher.join(5)
+
+    assert result["summary"].startswith("[fake-claude] completed")
+    assert asked == []
+    assert seen == []
+
+
 def test_implement_step_with_no_check_commands_and_no_waiver_fails_by_name(tmp_path, monkeypatch):
     """HZ-304: a repo with nothing configured is no longer a silent pass —
     even with a package.json test script the old auto-detection would run."""

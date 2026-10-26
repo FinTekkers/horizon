@@ -1597,6 +1597,21 @@ def _capture_screenshots(ws: Path, cfg, *, env, login_values, secrets, deadline,
     raise CheckFailure(message, tail, command=SCREENSHOTS_SLOT, tail=tail or headline, headline=headline)
 
 
+@contextlib.contextmanager
+def _check_slot_or_fail(*, log, **kwargs):
+    """check_slots.check_slot(), with HZ-571's fail-closed memory wait turned
+    into a "timed_out" CheckFailure: nothing ran, and the caller handles it
+    like any other check timeout (pre-merge reports timed_out, the step
+    checkpoints and retries)."""
+    try:
+        with check_slots.check_slot(log=log, **kwargs) as slot:
+            yield slot
+    except check_slots.MemoryWaitExpired as exc:
+        message = f"checks did not start: {exc}"
+        log(f"checks: {message}")
+        raise CheckFailure(message, reason="timed_out", headline=message) from None
+
+
 def run_checks(
     ws: Path,
     log=print,
@@ -1749,7 +1764,7 @@ def run_checks(
     # begins after the `with`.
     with contextlib.ExitStack() as scope:
         slot = scope.enter_context(
-            check_slots.check_slot(
+            _check_slot_or_fail(
                 log=log, run_id=run_id, item_id=item_id, caller=caller, on_event=on_slot_event, cancel=cancel
             )
         )

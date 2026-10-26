@@ -108,3 +108,34 @@ test('the real runner streams whole lines, keeps stderr byte-identical, and surv
     rmSync(dir, { recursive: true, force: true })
   }
 })
+
+// HZ-571: the memory gate's event, and the gate detail each event maps to.
+test('a memory event reaches onSlot with its figure, and maps to Waiting for memory with it', async () => {
+  const heard = []
+  await withSpawn(
+    async (args, opts) => {
+      opts.onStderrLine(
+        'HORIZON_EVENT {"check_slot": "memory", "available_pct": 9.1, "available_kb": 1468006, "threshold_pct": 15}',
+      )
+      opts.onStderrLine('HORIZON_EVENT {"check_slot": "granted", "mode": "held"}')
+      return green(args)
+    },
+    () =>
+      premerge.runPreMergeChecks(ITEM, {
+        headSha: HEAD,
+        baseSha: BASE,
+        timeoutMs: 60000,
+        onSlot: (name, event) => heard.push([name, event]),
+      }),
+  )
+  assert.deepEqual(
+    heard.map(([name]) => name),
+    ['memory', 'granted'],
+  )
+  assert.equal(heard[0][1].available_kb, 1468006)
+  assert.equal(premerge.slotDetail(...heard[0]), 'Waiting for memory (9% free, 1.4 GB)')
+  assert.equal(premerge.slotDetail('queued', { check_slot: 'queued' }), 'Waiting for a check slot')
+  assert.equal(premerge.slotDetail('granted', { check_slot: 'granted', mode: 'held' }), 'Running checks')
+  assert.equal(premerge.slotDetail('memory', { check_slot: 'memory' }), 'Waiting for memory')
+  assert.equal(premerge.parseSlotEvent('HORIZON_EVENT {"check_slot": "memory"}'), 'memory')
+})

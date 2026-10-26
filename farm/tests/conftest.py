@@ -85,6 +85,11 @@ os.environ.setdefault("FARM_CLAUDE_BIN", str(TESTS_DIR / "fake_claude"))
 # the subprocess path. SDK-path tests opt in with FARM_RUNNER=sdk and mock
 # claude_agent_sdk.query directly.
 os.environ.setdefault("FARM_RUNNER", "subprocess")
+# HZ-571: the memory gate is off for the suite, hard-assigned like FARM_HOME:
+# on a loaded host every run_checks() test would otherwise wait on the real
+# /proc/meminfo until the ceiling. test_memory_gate.py sets its own.
+os.environ["FARM_MIN_MEM_AVAILABLE_PCT"] = "0"
+os.environ.pop("FARM_MEMINFO_PATH", None)
 # HZ-416: a Task job runs in a container by default, so the job suites go
 # through fake_podman (the confinement tests find a real podman themselves).
 # FARM_* names reach a job's tmux session (tmux_mgr.agent_env); TMPDIR does
