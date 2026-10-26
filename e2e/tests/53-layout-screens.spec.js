@@ -24,15 +24,24 @@ const VIEWPORTS = Object.fromEntries(CONFIG.viewports.map((v) => [v.name, { widt
 
 const card = (page, id) => page.locator('.card', { has: page.locator('.card__id', { hasText: new RegExp(`^${id}$`) }) })
 
-// One anchor list per screen: every locator must be visible the moment the
-// screen's waitFor is.
+// One anchor list per screen and viewport: every locator must be visible the
+// moment the screen's waitFor is.
 const ANCHORS = {
-  'layout-board': (page) => [
-    card(page, GATE_ID).locator('.proj-badge'),
-    card(page, LONG_ID).locator('.card__elapsed', { hasText: 'Summarizing reviews · <1m' }),
-    card(page, BLOCKED_ID).locator('.status-pill', { hasText: 'Blocked' }),
-    card(page, BLOCKED_ID).locator('.dep-pill--blocked').getByRole('link', { name: BLOCKER_ID }),
-  ],
+  // HZ-586: a phone shows only the Plan column, so LS-LONG (Technical Plan)
+  // and LS-BLOCKED (Execute) are anchored on desktop.
+  'layout-board': (page, viewport) =>
+    viewport === 'phone'
+      ? [
+          card(page, GATE_ID).locator('.proj-badge'),
+          page.getByRole('tab', { name: /^Plan, /, selected: true }),
+          page.locator('.board .col .col__name', { hasText: /^Plan$/ }),
+        ]
+      : [
+          card(page, GATE_ID).locator('.proj-badge'),
+          card(page, LONG_ID).locator('.card__elapsed', { hasText: 'Summarizing reviews · <1m' }),
+          card(page, BLOCKED_ID).locator('.status-pill', { hasText: 'Blocked' }),
+          card(page, BLOCKED_ID).locator('.dep-pill--blocked').getByRole('link', { name: BLOCKER_ID }),
+        ],
   'layout-item-activity': (page) => [page.locator('.activity-row__text', { hasText: LAST_EVENT })],
   'layout-item-badge': (page) => [page.locator('.tracker__meta .proj-badge', { hasText: PROJECT })],
   'layout-admin-tokens': (page) => [page.locator('.api-tokens__days-field').getByText('days', { exact: true })],
@@ -63,7 +72,7 @@ test('every layout screen shows its seeded layout as soon as its waitFor does', 
     await page.emulateMedia({ colorScheme: theme })
     await page.goto(screen.path, { waitUntil: 'load' })
     await page.locator(screen.waitFor || CONFIG.defaults?.waitFor).first().waitFor({ state: 'visible' })
-    for (const anchor of ANCHORS[screen.name](page)) {
+    for (const anchor of ANCHORS[screen.name](page, viewport)) {
       expect(await anchor.isVisible(), `${label}: ${anchor}`).toBe(true)
     }
     expect(await page.locator('html').getAttribute('data-theme'), label).toBe(theme === 'dark' ? 'dark' : null)

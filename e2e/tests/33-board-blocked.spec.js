@@ -60,6 +60,8 @@ test('a blocked card reads Blocked and keeps its blocker link inside the card in
   await captureScreenshot(page, 'board-blocked-dark')
 
   await page.setViewportSize(PHONE)
+  // HZ-586: a phone shows one column at a time; DEP-2's is Execute.
+  await page.getByRole('tab', { name: /^Execute, / }).click()
   await expectLayout('phone')
   await captureScreenshot(page, 'board-blocked-phone')
 

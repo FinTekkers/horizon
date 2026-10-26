@@ -112,6 +112,8 @@ test('the elapsed line stays on one line at card width in light, dark and phone 
   await captureScreenshot(page, 'board-elapsed-dark')
 
   await page.setViewportSize(PHONE)
+  // HZ-586: a phone shows one column at a time; EL-LONG's is Technical Plan.
+  await page.getByRole('tab', { name: /^Technical Plan, / }).click()
   await long.scrollIntoViewIfNeeded()
   await expectOneLine('phone')
 

@@ -22,6 +22,7 @@ import { gateActionOf, gateActionBusy, elapsedText } from '../domain/gateAction'
 import { usualDurationHint } from '../domain/durationHint'
 import { deployQueueLabel } from '../domain/deployQueue'
 import { useClockTick } from '../useClockTick'
+import { MOBILE_QUERY, useMediaQuery } from '../useMediaQuery'
 import { issueUrl, issueLabel } from '../api'
 import * as boardFilters from '../boardFilters'
 import * as boardNarrowing from '../boardNarrowing'
@@ -260,6 +261,50 @@ function BoardCard({ item, projects, durationEstimates, deployBlock, viewerName,
   )
 }
 
+// HZ-586: the phone column switcher — one tab per lifecycle column, with its
+// number and card count; the shown column's own head names it. Arrow keys,
+// Home and End move between tabs (roving tabIndex).
+function PhaseTabs({ counts, active, onSelect }) {
+  const tabs = useRef([])
+  const select = (p) => {
+    onSelect(p)
+    tabs.current[p]?.focus()
+  }
+  const onKeyDown = (e) => {
+    const last = PHASES.length - 1
+    const next = { ArrowRight: active === last ? 0 : active + 1, ArrowLeft: active === 0 ? last : active - 1, Home: 0, End: last }[e.key]
+    if (next === undefined) return
+    e.preventDefault()
+    select(next)
+  }
+  return (
+    <div className="board__tabs" role="tablist" aria-label="Board columns" onKeyDown={onKeyDown}>
+      {PHASES.map((name, p) => (
+        <button
+          key={name}
+          ref={(el) => {
+            tabs.current[p] = el
+          }}
+          type="button"
+          role="tab"
+          id={`board-tab-${p}`}
+          className="board__tab"
+          aria-selected={p === active}
+          aria-controls={p === active ? `board-col-${p}` : undefined}
+          aria-label={`${name}, ${counts[p]} ${counts[p] === 1 ? 'item' : 'items'}`}
+          tabIndex={p === active ? 0 : -1}
+          onClick={() => onSelect(p)}
+        >
+          <span className="col__num" style={{ background: PHASE_ACCENT_BG[p], color: PHASE_ACCENT[p] }}>
+            {p + 1}
+          </span>
+          <span className="board__tab-count">{counts[p]}</span>
+        </button>
+      ))}
+    </div>
+  )
+}
+
 export default function Board({
   items,
   projects,
@@ -303,6 +348,16 @@ export default function Board({
   // Abandoned items that are still shown (their filter toggled off) don't
   // count as active work: they've stopped being dispatched.
   const activeCount = narrowed.filter((it) => !isAbandoned(it)).length
+  // Each lifecycle column's cards, built once for the columns and the phone tabs.
+  const cols = PHASES.map((name, p) => {
+    const inCol = narrowed.filter((it) => phaseIdx(it) === p)
+    const colItems = view.waiting ? sortByWait(inCol, view.sortDir) : inCol
+    return { name, p, colItems, activeCount: colItems.filter((it) => !isAbandoned(it)).length }
+  })
+  // HZ-586: a phone shows one column at a time, full width, picked from the
+  // tabs above it. Back to Plan when the board remounts.
+  const phone = useMediaQuery(MOBILE_QUERY)
+  const [phonePhase, setPhonePhase] = useState(0)
   // HZ-547: with a Plan chosen, Show all shows every item it filed, closed
   // ones too, and keeps the Plan and the chips.
   const showAll = () => {
@@ -449,14 +504,19 @@ export default function Board({
         </div>
       )}
 
+      {narrowed.length > 0 && phone && (
+        <PhaseTabs counts={cols.map((c) => c.activeCount)} active={phonePhase} onSelect={setPhonePhase} />
+      )}
+
       {narrowed.length > 0 && (
-        <div className="board__cols">
-          {PHASES.map((name, p) => {
-            const inCol = narrowed.filter((it) => phaseIdx(it) === p)
-            const colItems = view.waiting ? sortByWait(inCol, view.sortDir) : inCol
-            const colActiveCount = colItems.filter((it) => !isAbandoned(it)).length
+        <div className={phone ? 'board__cols board__cols--phone' : 'board__cols'}>
+          {(phone ? [cols[phonePhase]] : cols).map(({ name, p, colItems, activeCount: colActiveCount }) => {
             return (
-              <div key={name} className="col">
+              <div
+                key={name}
+                className="col"
+                {...(phone && { id: `board-col-${p}`, role: 'tabpanel', 'aria-labelledby': `board-tab-${p}` })}
+              >
                 <div className="col__head">
                   <span
                     className="col__num"
