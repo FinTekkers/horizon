@@ -41,14 +41,8 @@ const RUN_SUFFIX = RUN_HASH.toString('hex').slice(0, 8)
 const PORT_OFFSET = RUN_HASH.readUInt16BE(0) % 1000
 
 const DB_PATH = join(tmpdir(), `horizon-e2e-${RUN_SUFFIX}.db`)
-// The fetch spec's "bad ports" inside those windows: Node's fetch refuses them
-// outright, so global-setup.js would never see the server answer (a worktree
-// hashing to 3659 timed out every run). Step past them; both windows stay
-// disjoint, since no step leaves the server window past 4057.
-const FETCH_BAD_PORTS = new Set([3659, 4045, 4190, 5060, 5061])
-const usablePort = (port) => (FETCH_BAD_PORTS.has(port) ? usablePort(port + 1) : port)
-const SERVER_PORT = Number(process.env.HORIZON_E2E_SERVER_PORT) || usablePort(3057 + PORT_OFFSET)
-const UI_PORT = Number(process.env.HORIZON_E2E_UI_PORT) || usablePort(4351 + PORT_OFFSET)
+const SERVER_PORT = Number(process.env.HORIZON_E2E_SERVER_PORT) || 3057 + PORT_OFFSET
+const UI_PORT = Number(process.env.HORIZON_E2E_UI_PORT) || 4351 + PORT_OFFSET
 const BASE_URL = `http://localhost:${UI_PORT}`
 // Every /api/* route requires a login session (HZ-21). global-setup.js logs
 // in once via the hardcoded dev-mode credential (ADMIN_EMAIL/PASSWORD are

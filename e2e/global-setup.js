@@ -1,4 +1,5 @@
 import { existsSync, writeFileSync } from 'node:fs'
+import { get } from 'node:http'
 import { request } from '@playwright/test'
 import { openDb, insertItem, insertStepRun, insertFeedback, insertDependency } from './fixtures/seed.js'
 // Derived, not hardcoded: a future pipeline step insertion (like HZ-30's own
@@ -99,12 +100,18 @@ export default async function globalSetup() {
   // itself 401s until logged in, so readiness must be checked pre-login.
   await waitFor(
     async () => {
-      try {
-        const res = await fetch(`http://localhost:${PORT}/api/auth/me`)
-        return res.status === 401 || res.ok
-      } catch {
-        return false
-      }
+      // node:http, not fetch: fetch refuses the spec's "bad ports" outright,
+      // and the worktree-hashed PORT can land on one (3659), which made this
+      // wait time out every run though the server was listening.
+      const status = await new Promise((resolve) => {
+        const req = get(`http://localhost:${PORT}/api/auth/me`, (res) => {
+          res.resume()
+          resolve(res.statusCode)
+        })
+        req.on('error', () => resolve(0))
+        req.setTimeout(5_000, () => req.destroy())
+      })
+      return status === 401 || (status >= 200 && status < 300)
     },
     { description: 'the e2e server to accept requests' },
   )
