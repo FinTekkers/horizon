@@ -60,8 +60,13 @@ test('on a phone the page keeps every section, one card a row', async ({ page })
   await page.setViewportSize({ width: 390, height: 1700 })
   await page.goto('/farm-health')
   await expectRedPage(page)
-  for (const name of ['Capacity', 'Running now', 'Box', 'Services', 'Recent']) {
+  for (const name of ['Capacity', 'Running now', 'Box', 'Check slots', 'Services', 'Recent']) {
     await expect(page.getByRole('heading', { level: 2, name })).toBeVisible()
   }
+  // HZ-574: with no farm to ask, the Check slots card says so rather than
+  // showing an empty table.
+  const checkSlots = page.getByRole('region', { name: 'Check slots' })
+  await expect(checkSlots.getByText('Farm not reachable — no check slot readings')).toBeVisible()
+  await expect(checkSlots.getByText('Nothing waiting')).toBeVisible()
   await captureScreenshot(page, 'farm-health-phone')
 })

@@ -1450,6 +1450,7 @@ def _run_branch_pass(
     flakes: list | None = None,
     branch: str = "main",
     login_env_for=None,
+    hold=None,
 ) -> tuple[dict | None, CheckFailure | None]:
     """Runs branch_commands() and returns (their run as a test_runs entry
     labelled "branch" with its own check_run id, or None when no command
@@ -1458,7 +1459,10 @@ def _run_branch_pass(
     HZ-406: each command passes or fails like one of main's — a non-zero exit
     is rerun once, and a rerun that passes is a flake in `flakes`. A timeout,
     a crash or a spent deadline is a failure. Every command still runs after
-    the first failure, for evidence; only the first is returned."""
+    the first failure, for evidence; only the first is returned.
+
+    hold (HZ-574) is run_checks()'s check_slots.SlotHold: each command names
+    its slot in the holder record. None names nothing."""
     commands, unchanged = branch_commands(configured, changed, log, branch)
     if not commands:
         return None, None
@@ -1473,6 +1477,8 @@ def _run_branch_pass(
     notes: list[str] = []
     first_failure = None
     for slot, _line_no, _n_lines, argv, scripts in commands:
+        if hold is not None:
+            hold.set_label(f"{RUN_LABEL_BRANCH} {slot} slot")
         outcome, failure = _run_branch_command(
             ws,
             slot,
@@ -1595,6 +1601,15 @@ def _capture_screenshots(ws: Path, cfg, *, env, login_values, secrets, deadline,
     log(f"checks: {headline} — failing the check")
     message = f"{HEADLINE_PREFIX}{headline}" + (f"\n{tail}" if tail else "")
     raise CheckFailure(message, tail, command=SCREENSHOTS_SLOT, tail=tail or headline, headline=headline)
+
+
+def _holder_label(label) -> str:
+    """HZ-574: what the holder record says a command is, from its slot label
+    alone: "test slot, line 2" when the slot has several lines, "test slot"
+    when it has one, and "FARM_CHECK_CMD" for the env-var command."""
+    if not label:
+        return "FARM_CHECK_CMD"
+    return f"{label[0]} slot, line {label[1]}" if label[2] > 1 else f"{label[0]} slot"
 
 
 @contextlib.contextmanager
@@ -1763,13 +1778,13 @@ def run_checks(
     # construction here, not by arithmetic — every clock this function starts
     # begins after the `with`.
     with contextlib.ExitStack() as scope:
-        slot = scope.enter_context(
+        hold = scope.enter_context(
             _check_slot_or_fail(
                 log=log, run_id=run_id, item_id=item_id, caller=caller, on_event=on_slot_event, cancel=cancel
             )
         )
         timeout_s = int(os.environ.get("FARM_CHECK_TIMEOUT_S", "600"))
-        record = check_metrics.new_record(run_id=run_id, item_id=item_id, caller=caller, slot=slot, repo=repo)
+        record = check_metrics.new_record(run_id=run_id, item_id=item_id, caller=caller, slot=hold, repo=repo)
         record[SCREENSHOTS_SLOT] = screenshots
         env = {**_check_env(), **(child_env or {})}
         # HZ-569: every process the commands start carries this run's tag and
@@ -1815,6 +1830,9 @@ def run_checks(
                 # lines, so a single-line slot's messages are as before.
                 line_label = f"{label[0]} slot, line {label[1]}: " if label and label[2] > 1 else ""
                 entry = {"slot": label[0], "line": label[1]} if label else {}
+                # HZ-574: Farm health shows the slot label, never the command
+                # line, which may carry a login value.
+                hold.set_label(_holder_label(label))
                 cache = None
                 if index == install_at:
                     if repo and config.dep_cache_enabled() and not os.environ.get(check_slots.IN_CHECKS_ENV):
@@ -1973,6 +1991,7 @@ def run_checks(
                     )
                 ran += 1
             if capture_screenshots and screenshots_cfg is not None:
+                hold.set_label(f"{SCREENSHOTS_SLOT} slot")
                 capture_deadline = time.monotonic() + timeout_s
                 if deadline is not None:
                     capture_deadline = min(capture_deadline, deadline)
@@ -2037,6 +2056,7 @@ def run_checks(
                         flakes=flakes,
                         log=log,
                         branch=default,
+                        hold=hold,
                     )
                 if branch_run is not None:
                     runs.append(branch_run)

@@ -14,6 +14,11 @@ const GIB = 1024 ** 3
 
 const SLOT_NAMES = { agent: 'Agent', pm: 'PM lane', check: 'Check', server: 'Server' }
 const SLOT_NEEDS = { agent: 'an agent slot', pm: 'the PM lane', check: 'a check slot', server: 'the server' }
+// HZ-574: a run whose agent session waits for a check slot keeps its agent
+// slot, so it counts toward Agent slots busy while it waits.
+const HOLDING_WAIT = 'holding an agent slot · waiting for a check slot'
+
+const waitText = (w) => (w.holdsAgentSlot ? HOLDING_WAIT : `needs ${SLOT_NEEDS[w.slot] || w.slot}`)
 
 function elapsed(iso, now) {
   const ms = now - Date.parse(iso)
@@ -102,6 +107,85 @@ function recentText(e) {
   if (e.kind === 'farm_restart') return 'Farm restarted'
   if (e.kind === 'server_restart') return 'Horizon server restarted'
   return e.kind
+}
+
+// HZ-574: who holds each check slot and what it is checking, then the runs
+// waiting for one. farmd records the slot's label only, never the command.
+function CheckSlots({ data, now, onOpenItem }) {
+  const { checks } = data.capacity
+  const holders = data.checkHolders || []
+  // A slot busy with no record: a run on farm code from before HZ-574.
+  const unrecorded = Math.max(0, (checks.busy || 0) - holders.length)
+  const waiters = data.waiting.filter((w) => w.slot === 'check')
+  const reachable = data.farm.status !== 'not_running'
+  return (
+    <section aria-labelledby="farm-health-chk" className="farm-health__card">
+      <div className="farm-health__card-head">
+        <h2 id="farm-health-chk" className="farm-health__h2">
+          Check slots
+        </h2>
+        <span className="farm-health__count">
+          {checks.busy} of {Math.max(0, checks.limit || 0)} busy
+        </span>
+      </div>
+      {!reachable ? (
+        <p className="farm-health__empty">Farm not reachable — no check slot readings</p>
+      ) : holders.length + unrecorded === 0 ? (
+        <p className="farm-health__empty">No check slot in use</p>
+      ) : (
+        <table className="farm-health__table">
+          <thead>
+            <tr>
+              <th>Slot</th>
+              <th>Item</th>
+              <th>Check</th>
+              <th className="farm-health__num">For</th>
+            </tr>
+          </thead>
+          <tbody>
+            {holders.map((h) => (
+              <tr key={`slot-${h.slot}`}>
+                <td>Slot {h.slot}</td>
+                <td>{h.itemId ? <ItemLink id={h.itemId} onOpenItem={onOpenItem} /> : '—'}</td>
+                <td>
+                  {h.label || '—'}
+                  {h.caller && <span className="farm-health__muted"> · {h.caller}</span>}
+                </td>
+                <td className="farm-health__num">{elapsed(h.startedAt, now)}</td>
+              </tr>
+            ))}
+            {Array.from({ length: unrecorded }, (_, i) => (
+              <tr key={`unrecorded-${i}`}>
+                <td className="farm-health__muted">—</td>
+                <td className="farm-health__muted" colSpan={3}>
+                  In use · no record
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+      <h3 className="farm-health__h3">Waiting for a check slot</h3>
+      {waiters.length === 0 ? (
+        <p className="farm-health__empty">Nothing waiting</p>
+      ) : (
+        <table className="farm-health__table">
+          <tbody>
+            {waiters.map((w, i) => (
+              <tr key={`${w.itemId}-${i}`}>
+                <td>
+                  <ItemLink id={w.itemId} onOpenItem={onOpenItem} />
+                </td>
+                <td>{w.step}</td>
+                <td className="farm-health__muted">{waitText(w)}</td>
+                <td className="farm-health__num">{elapsed(w.startedAt, now)}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+    </section>
+  )
 }
 
 function Sections({ data, now, onOpenItem }) {
@@ -212,7 +296,7 @@ function Sections({ data, now, onOpenItem }) {
                       <ItemLink id={w.itemId} onOpenItem={onOpenItem} />
                     </td>
                     <td>{w.step}</td>
-                    <td className="farm-health__slot-col farm-health__muted">needs {SLOT_NEEDS[w.slot] || w.slot}</td>
+                    <td className="farm-health__slot-col farm-health__muted">{waitText(w)}</td>
                     <td className="farm-health__num">{elapsed(w.startedAt, now)}</td>
                   </tr>
                 ))}
@@ -259,6 +343,10 @@ function Sections({ data, now, onOpenItem }) {
             {boxUp && <span>Up {boxUp}</span>}
           </div>
         </section>
+      </div>
+
+      <div className="farm-health__row">
+        <CheckSlots data={data} now={now} onOpenItem={onOpenItem} />
       </div>
 
       <div className="farm-health__row">

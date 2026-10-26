@@ -584,7 +584,56 @@ def test_farm_status_reports_the_check_limiter_as_disabled_when_switched_off(tmp
     monkeypatch.setenv("FARM_MAX_CONCURRENT_CHECKS", "0")
     monkeypatch.setenv("FARM_HOME", str(tmp_path / "farm-home"))
     checks_block = client.get("/farm/status").json()["checks"]
-    assert checks_block == {"limit": 0, "busy": 0, "waiting": []}
+    assert checks_block == {"limit": 0, "busy": 0, "waiting": [], "holders": []}
+
+
+def test_farm_status_lists_the_run_holding_a_check_slot(tmp_path, monkeypatch):
+    """HZ-574 metric 1, through the route: while another process holds a
+    check slot, /farm/status's checks.holders names it — slot, item, run,
+    caller, check label and start — and never its pid."""
+    monkeypatch.setenv("FARM_MAX_CONCURRENT_CHECKS", "2")
+    monkeypatch.setenv("FARM_HOME", str(tmp_path / "farm-home"))
+    monkeypatch.setenv("FARM_MIN_MEM_AVAILABLE_PCT", "0")
+    monkeypatch.delenv("FARM_IN_CHECKS", raising=False)
+    acquired = tmp_path / "acquired"
+    release = tmp_path / "release"
+    script = (
+        "import os, sys, time\n"
+        "from farm import check_slots\n"
+        "with check_slots.check_slot(run_id='901', item_id='HZ-101', caller='step_agent') as slot:\n"
+        "    slot.set_label('test slot, line 2')\n"
+        "    open(sys.argv[1], 'w').write(str(slot.slot_index))\n"
+        "    deadline = time.monotonic() + 60\n"
+        "    while not os.path.exists(sys.argv[2]) and time.monotonic() < deadline:\n"
+        "        time.sleep(0.02)\n"
+    )
+    started = time.time()
+    holder = subprocess.Popen(
+        [sys.executable, "-c", script, str(acquired), str(release)],
+        cwd=REPO_ROOT,
+        env={**os.environ, "PYTHONPATH": str(REPO_ROOT)},
+    )
+    try:
+        deadline = time.monotonic() + 15
+        while not acquired.exists() and time.monotonic() < deadline:
+            time.sleep(0.05)
+        assert acquired.exists(), "the holder never took a slot"
+        checks_block = client.get("/farm/status").json()["checks"]
+    finally:
+        release.write_text("")
+        holder.wait(timeout=30)
+
+    assert checks_block["busy"] == 1
+    [held] = checks_block["holders"]
+    assert set(held) == {"slot", "run_id", "item_id", "caller", "label", "since", "held_s"}
+    assert held["slot"] == int(acquired.read_text())
+    assert (held["run_id"], held["item_id"], held["caller"], held["label"]) == (
+        "901",
+        "HZ-101",
+        "step_agent",
+        "test slot, line 2",
+    )
+    assert started <= held["since"] <= time.time()
 
 
 def test_runs_status_reports_queued_for_a_pm_queued_task(queue_dirs):
