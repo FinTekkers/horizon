@@ -1,7 +1,7 @@
-// HZ-227 metric 3 + guardrail 3, live: the time an Accept spends queued for a
-// check slot counts toward the existing PREMERGE_CHECK_TIMEOUT_MS deadline —
-// no new timeout. A run whose deadline expires while it is still queued ends
-// timed_out, leaves the queue, and never holds or later receives a slot.
+// HZ-598, live (reverses HZ-227 guardrail 3): the time an Accept spends
+// queued for a check slot no longer counts toward PREMERGE_CHECK_TIMEOUT_MS.
+// The cap is re-armed when the slot is granted, so a run queued for longer
+// than the whole cap still runs its checks and the PR merges.
 //
 // Its own file because PREMERGE_CHECK_TIMEOUT_MS is read once, at config.js
 // import. Same live setup as premerge-slot-wait-live.test.mjs.
@@ -56,7 +56,7 @@ globalThis.fetch = async (url, options = {}) => {
   return json(404, {})
 }
 
-test('the deadline expires while queued: timed_out, no new timeout, the queue place is left and no slot leaks', async () => {
+test('a queue longer than the cap still runs the checks and merges: the cap counts from the grant', async () => {
   db.prepare('INSERT INTO work_item (id, title, priority, cursor, repo, issue, pr) VALUES (?, ?, ?, ?, ?, ?, ?)').run(
     'T-SWT-1',
     'At Accept the code',
@@ -73,46 +73,42 @@ test('the deadline expires while queued: timed_out, no new timeout, the queue pl
     return realSpawn(args, opts)
   }
   const holder = await holdSlot(farmHome)
+  let released = false
   try {
-    const res = await app.inject({
+    const approve = app.inject({
       method: 'POST',
       url: `/api/items/T-SWT-1/gates/${ACCEPT_GATE_INDEX}/approve`,
       payload: {},
       headers: { cookie, 'x-human-key': pin },
     })
-    assert.equal(res.statusCode, 502)
-    assert.equal(merges, 0)
+    await waitFor(() => detailWrites('T-SWT-1').some((w) => w.detail === 'Waiting for a check slot'), {
+      what: 'the run to queue',
+    })
+    // Queued past the whole 3 s cap: before HZ-598 this run was killed here.
+    await new Promise((r) => setTimeout(r, config.PREMERGE_CHECK_TIMEOUT_MS + 1000))
+    assert.notEqual(store.getGateAction('T-SWT-1', 'premerge')?.state, 'timed_out')
+    assert.equal(detailWrites('T-SWT-1').at(-1).detail, 'Waiting for a check slot')
+    await holder.release()
+    released = true
 
-    // The one deadline is today's: the same timeoutMs and --timeout-s.
+    const res = await approve
+    assert.equal(res.statusCode, 200, res.body)
+    assert.equal(merges, 1)
+
+    // The cap itself is unchanged: the same timeoutMs and --timeout-s.
     assert.equal(spawns.length, 1)
     assert.equal(spawns[0].opts.timeoutMs, config.PREMERGE_CHECK_TIMEOUT_MS)
     assert.equal(spawns[0].args[spawns[0].args.indexOf('--timeout-s') + 1], '3')
-
-    const action = store.getGateAction('T-SWT-1', 'premerge')
-    assert.equal(action.state, 'timed_out')
-    const writes = detailWrites('T-SWT-1')
-    assert.equal(writes.at(-1).detail, 'Waiting for a check slot', `still queued at the kill: ${JSON.stringify(writes)}`)
-    assert.ok(!writes.some((w) => w.detail === 'Running checks'))
-
-    // The killed waiter left the queue and holds nothing; only the holder's slot is busy.
-    await waitFor(() => slotPython(farmHome, 'print(json.dumps(len(check_slots.waiting_runs())))') === 0, {
-      what: 'the waiting marker to be pruned',
-    })
-    assert.equal(slotPython(farmHome, 'print(json.dumps(check_slots.busy_slots()))'), 1)
+    assert.ok(detailWrites('T-SWT-1').some((w) => w.detail === 'Running checks'))
+    assert.notEqual(store.getGateAction('T-SWT-1', 'premerge').state, 'timed_out')
   } finally {
     premerge.runner.spawn = realSpawn
-    await holder.release()
+    if (!released) await holder.release()
   }
 
-  // A late stderr flush after the finish writes nothing (token guard).
-  await new Promise((r) => setTimeout(r, 300))
-  assert.equal(detailWrites('T-SWT-1').at(-1).detail, 'Waiting for a check slot')
-  assert.equal(store.getGateAction('T-SWT-1', 'premerge').state, 'timed_out')
-
-  // The next caller gets the freed slot, exactly once.
-  const next = slotPython(
-    farmHome,
-    'events = []\nwith check_slots.check_slot(on_event=events.append) as s:\n    out = [s.mode, check_slots.busy_slots()]\nprint(json.dumps([out, events, check_slots.busy_slots()]))',
-  )
-  assert.deepEqual(next, [['held', 1], [], 0])
+  // The run left the slot and the queue.
+  await waitFor(() => slotPython(farmHome, 'print(json.dumps(len(check_slots.waiting_runs())))') === 0, {
+    what: 'the waiting marker to be cleared',
+  })
+  assert.equal(slotPython(farmHome, 'print(json.dumps(check_slots.busy_slots()))'), 0)
 })
