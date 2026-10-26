@@ -17,6 +17,10 @@
 // does: the scripts, sudoers and webhook are untouched. Library targets
 // (registry-publish) keep the per-item path. Code-only targets (deploy-log,
 // HZ-353) restart nothing but still deploy a checkout, so they queue.
+//
+// A window closes early when an open item waits on a member (HZ-469), or when
+// no other item in the repo is at Accept the code or in its premerge check
+// (HZ-591): no other merge is coming to share the batch.
 
 import { db } from './db.js'
 import { DEPLOY_BATCH_S, DEPLOY_WAIT_MS, FARM_STEP_TIMEOUT_MS } from './config.js'
@@ -24,7 +28,7 @@ import { resolveTarget, deployOutcomeFor, startDeploy } from './deploy.js'
 import { jobBlocksDeploy, heldMsFor, oldestHolds, lastReleasedHold, releaseHold } from './deployHold.js'
 import { getBranchSha, isAncestor, getPrMergeSha, findReleaseByTag, createBatchRelease, defaultBranchStale } from './github.js'
 import { sqlTime, msOf } from './sqlTime.js'
-import { addEvent, getDefaultBranch, notifyChange, openDependentsOfAny, runningJobsIn } from './store.js'
+import { addEvent, getDefaultBranch, itemsComingToDeploy, notifyChange, openDependentsOfAny, runningJobsIn } from './store.js'
 import { DEPLOY_STEP_INDEX } from '../../domain/js/lifecycle.js'
 
 export const TICK_MS = 5000
@@ -39,6 +43,12 @@ const short = (sha) => String(sha || '').slice(0, 7)
 let hooks = { kick: () => {}, fail: () => {} }
 export function setDeployQueueHooks({ kick, fail }) {
   hooks = { kick, fail }
+}
+
+// HZ-591: tests swap the "is another merge coming?" check; null restores it.
+let comingToDeploy = itemsComingToDeploy
+export function setComingToDeployCheck(fn) {
+  comingToDeploy = fn ?? itemsComingToDeploy
 }
 
 export function batchTag(target, id, startedMs) {
@@ -171,6 +181,7 @@ async function tickTarget(target, now) {
   if (selectRunning.get(target)) return
   let open = selectOpen.get(target)
   if (open && now < msOf(open.window_closes_at)) open = closeWindowIfWaitedOn(open, now)
+  if (open && now < msOf(open.window_closes_at)) open = closeWindowIfAlone(open, now)
   // HZ-408: a due batch stays open while a job runs in its repo — its
   // release would only be held, with DEPLOY_WAIT_MS counting from start().
   if (open && now >= msOf(open.window_closes_at) && !jobBlocksDeploy(open.repo)) await start(open, now)
@@ -193,6 +204,35 @@ function closeWindowIfWaitedOn(open, now) {
     color: '#DFA200',
     initials: 'HZ',
   })
+  notifyChange()
+  return selectBatch.get(open.id)
+}
+
+// HZ-591: with no other item in the repo at Accept the code or in its premerge
+// check, no merge is coming to share the batch, so the window closes now. Only
+// the close time moves: start() still waits on jobBlocksDeploy. If the check
+// throws, the window is kept.
+function closeWindowIfAlone(open, now) {
+  const queued = selectQueuedIn.all(open.id)
+  if (queued.length === 0) return open
+  let coming
+  try {
+    coming = comingToDeploy(open.repo, queued.map((e) => e.item_id))
+  } catch (err) {
+    console.warn(`deploy queue: ${open.target}: coming-to-deploy check failed: ${err.message}`)
+    return open
+  }
+  if (coming.length > 0) return open
+  const changed = db.prepare("UPDATE deploy_batch SET window_closes_at = ? WHERE id = ? AND status = 'open'").run(sqlTime(now), open.id).changes
+  if (changed !== 1) return open
+  for (const e of queued) {
+    addEvent(e.item_id, {
+      who: 'Horizon',
+      text: `deploy window closed early — no other ${open.repo} merge is coming (it was due to close ${open.window_closes_at} UTC)`,
+      color: '#DFA200',
+      initials: 'HZ',
+    })
+  }
   notifyChange()
   return selectBatch.get(open.id)
 }

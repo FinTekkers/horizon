@@ -1257,6 +1257,28 @@ export function openDependentsOfAny(itemIds) {
   return found
 }
 
+// HZ-591: open items in `repo` that may merge soon — at Accept the code, or
+// with a running premerge gate action — other than `excludeIds` (a deploy
+// batch's own members). The deploy queue keeps a batch's window open only
+// while one exists. `cursor` is a global STEPS index, so only change items can
+// sit at ACCEPT_GATE_INDEX. A premerge normally runs while the item is still
+// at Accept, so that clause is belt-and-braces. Paused items still count;
+// closed and abandoned ones don't. An item that merged but hasn't joined yet
+// is past Accept and doesn't count; join() runs right after the merge.
+const selectComingToDeploy = db.prepare(`
+  SELECT w.id, w.cursor, w.kind, w.abandoned_at FROM work_item w
+   WHERE w.repo = ? AND (w.cursor = ? OR EXISTS (
+     SELECT 1 FROM gate_action g WHERE g.item_id = w.id AND g.kind = 'premerge' AND g.state = 'running'))
+   ORDER BY w.id`)
+
+export function itemsComingToDeploy(repo, excludeIds = []) {
+  const excluded = new Set(excludeIds)
+  return selectComingToDeploy
+    .all(repo, ACCEPT_GATE_INDEX)
+    .filter((row) => !excluded.has(row.id) && !isClosed(row) && !isAbandoned(row))
+    .map((row) => ({ id: row.id }))
+}
+
 // HZ-313: the same check addDependency runs, for split.js to refuse a plan
 // whose already-filed upstream item now depends on this one.
 export function wouldCycleBetween(id, dependsOnId) {

@@ -3,9 +3,11 @@
 // the boot-time resume at NOW and prints what GitHub saw and the queue rows
 // as one JSON line.
 //
-// Env: HORIZON_DB, HOME, FARM_URL, NOW (ms), STUB ({ mainSha, releases, prs }).
+// Env: HORIZON_DB, HOME, FARM_URL, NOW (ms), STUB ({ mainSha, releases, prs }),
+// COMING (optional, "<repo>": an item there at Accept the code, so a lone
+// window is kept — HZ-591).
 
-import { deployQueueStub } from './deployQueueStub.mjs'
+import { addComingItem, deployQueueStub } from './deployQueueStub.mjs'
 
 const seed = JSON.parse(process.env.STUB)
 const stub = deployQueueStub({ mainSha: seed.mainSha, releases: seed.releases })
@@ -13,6 +15,7 @@ for (const [key, sha] of seed.prs) stub.prs.set(key, sha)
 globalThis.fetch = stub.fetch
 
 const { db } = await import('../../src/db.js')
+if (process.env.COMING) addComingItem(db, process.env.COMING, 'RESTART-COMING')
 await import('../../src/orchestrator.js') // wires the queue's kick/fail hooks
 const deployQueue = await import('../../src/deployQueue.js')
 
