@@ -22,6 +22,11 @@ run ends, whatever the outcome; a run the server had to kill is reaped by a
 second `--reap-only` call, and a later run sweeps any leftover whose run
 lock nobody holds.
 
+HZ-590: the same root also holds the implement step's base-branch runs
+(farm/base_check.py, run ids `base-<item>-<hex>`), made through
+scratch_worktree() like this module's own. The leftover sweep reaps both
+kinds, and only ever a run whose lock nobody holds.
+
 stdout is ONE JSON line: {ok, reason, detail, tail, workspace, seconds}.
 """
 
@@ -53,6 +58,15 @@ _SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 
 class ValidateRefused(RuntimeError):
     pass
+
+
+class ScratchUnavailable(RuntimeError):
+    """scratch_worktree() could not make the worktree. `reason` is the CLI's
+    result reason: no_hub, busy or crash."""
+
+    def __init__(self, reason: str, detail: str):
+        super().__init__(detail)
+        self.reason = reason
 
 
 def _validate_root(repo_full: str) -> Path:
@@ -127,11 +141,47 @@ def reap_leftovers(repo_full: str, hub: Path, forbidden, log=print) -> list[str]
         with _run_lock(repo_full, entry.name) as held:
             if not held:
                 continue
-            log(f"validate: reaping leftover run {entry.name}")
+            log(f"scratch worktree: reaping leftover run {entry.name}")
             _remove(repo_full, hub, entry, forbidden)
             _reap_checks_homes(entry.name)
             reaped.append(entry.name)
     return reaped
+
+
+@contextlib.contextmanager
+def scratch_worktree(repo_full: str, run_id: str, sha: str, forbidden=(), *, log=print):
+    """A detached worktree of the repo's hub at exactly `sha`, at
+    validate_path(repo_full, run_id), for the life of the `with`; removed
+    afterwards, whatever the outcome. The run lock is held throughout, so the
+    leftover sweep (run first, here) never takes a live run's directory.
+    Every create and removal checks assert_validate_path(), with `forbidden`
+    on top of the built-in protected roots.
+
+    Raises ValidateRefused for a refused path and ScratchUnavailable when
+    there is no hub, the run id is taken, or `sha` is missing after a fetch."""
+    ws = validate_path(repo_full, run_id)
+    assert_validate_path(ws, forbidden)
+    hub = workspaces.hub_path(repo_full)
+    if not (hub / ".git").exists():
+        raise ScratchUnavailable("no_hub", f"no hub checkout for {repo_full} — start the farm so the repo hub exists")
+    with _run_lock(repo_full, run_id) as held:
+        if not held:
+            raise ScratchUnavailable("busy", f"scratch run {run_id} is already in progress")
+        try:
+            reap_leftovers(repo_full, hub, forbidden, log=log)
+            with workspaces.hub_lock(repo_full):
+                if not _has_commit(hub, sha):
+                    _git(hub, "fetch", "origin", "--prune")
+                    if not _has_commit(hub, sha):
+                        _git(hub, "fetch", "origin", sha, check=False)
+                if not _has_commit(hub, sha):
+                    raise ScratchUnavailable("crash", f"main commit not found after fetch: {sha}")
+                ws.parent.mkdir(parents=True, exist_ok=True)
+                assert_validate_path(ws, forbidden)
+                _git(hub, "worktree", "add", "--detach", str(ws), sha)
+            yield ws
+        finally:
+            _remove(repo_full, hub, ws, forbidden)
 
 
 def reap_only(repo_full: str, run_id: str, forbidden) -> dict:
@@ -187,27 +237,9 @@ def validate_checks(
     except ValidateRefused as exc:
         return {**out, "reason": "bad_workspace", "detail": str(exc)}
 
-    hub = workspaces.hub_path(repo_full)
-    if not (hub / ".git").exists():
-        return {**out, "reason": "no_hub", "detail": f"no hub checkout for {repo_full} — start the farm so the repo hub exists"}
-
-    with _run_lock(repo_full, run_id) as held:
-        if not held:
-            return {**out, "reason": "busy", "detail": "this validation run is already in progress"}
-        checks_home = Path(tempfile.mkdtemp(prefix=f"{CHECKS_HOME_PREFIX}{run_id}-"))
-        try:
-            reap_leftovers(repo_full, hub, forbidden, log=log)
-            with workspaces.hub_lock(repo_full):
-                if not _has_commit(hub, main_sha):
-                    _git(hub, "fetch", "origin", "--prune")
-                    if not _has_commit(hub, main_sha):
-                        _git(hub, "fetch", "origin", main_sha, check=False)
-                if not _has_commit(hub, main_sha):
-                    return {**out, "reason": "crash", "detail": f"main commit not found after fetch: {main_sha}"}
-                ws.parent.mkdir(parents=True, exist_ok=True)
-                assert_validate_path(ws, forbidden)
-                _git(hub, "worktree", "add", "--detach", str(ws), main_sha)
-
+    checks_home = Path(tempfile.mkdtemp(prefix=f"{CHECKS_HOME_PREFIX}{run_id}-"))
+    try:
+        with scratch_worktree(repo_full, run_id, main_sha, forbidden, log=log) as ws:
             log(f"validate: running checks on main {main_sha[:12]} in {ws}")
             try:
                 note = run_checks(
@@ -231,15 +263,16 @@ def validate_checks(
                     return {**out, "reason": "no_checks_detected", "detail": str(exc)}
                 return {**out, "reason": "checks_failed", "failing_check": exc.command, "detail": f"{exc.command} failed", "tail": exc.tail}
             return {**out, "ok": True, "detail": note, "seconds": round(time.monotonic() - started)}
-        except subprocess.TimeoutExpired as exc:
-            return {**out, "reason": "timed_out", "detail": f"git timed out: {exc.cmd}"}
-        except Exception as exc:  # noqa: BLE001 — every surprise is a fail-closed "crash"
-            return {**out, "reason": "crash", "detail": f"{type(exc).__name__}: {exc}"}
-        finally:
-            try:
-                _remove(repo_full, hub, ws, forbidden)
-            finally:
-                shutil.rmtree(checks_home, ignore_errors=True)
+    except ScratchUnavailable as exc:
+        if exc.reason == "busy":
+            return {**out, "reason": "busy", "detail": "this validation run is already in progress"}
+        return {**out, "reason": exc.reason, "detail": str(exc)}
+    except subprocess.TimeoutExpired as exc:
+        return {**out, "reason": "timed_out", "detail": f"git timed out: {exc.cmd}"}
+    except Exception as exc:  # noqa: BLE001 — every surprise is a fail-closed "crash"
+        return {**out, "reason": "crash", "detail": f"{type(exc).__name__}: {exc}"}
+    finally:
+        shutil.rmtree(checks_home, ignore_errors=True)
 
 
 def main(argv=None) -> int:

@@ -59,6 +59,10 @@ const CATEGORY_COPY = {
     label: 'Usage limit',
     detail: 'The model this step ran on hit a usage limit, and Horizon could not fall back to another one. Resume to retry once the limit resets.',
   },
+  [REASON.FAILS_ON_MAIN]: {
+    label: 'Fails on main as well',
+    detail: 'The failing tests fail on main too, so no fix turn was spent. Fix main, then resume.',
+  },
   [REASON.INVALID_PLAN_DRAFT]: {
     label: 'Plan draft rejected',
     detail: 'The Draft items reply broke the draft contract, such as a guessed key, an unknown repo or a missing draft. Nothing was saved or filed. Resume to draft again.',
