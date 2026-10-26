@@ -53,6 +53,17 @@ signalled or paused. Unlike the slot wait, the memory wait fails CLOSED at
 the ceiling (MemoryWaitExpired) — starting work during a leak is exactly the
 harm the gate exists to prevent. A meminfo that cannot be read never holds
 anything: it logs a warning and the run starts.
+
+HZ-574 records who holds each slot, for Farm health. The lock itself still
+says nothing about its holder, so a run that wins slot N writes a holder
+record (locks/checks/holders/slot-N-<pid>-<run>.json) after the flock is
+taken and deletes it before the flock is released. The record is display
+only — nothing reads it to decide whether a run may start — and it carries
+the check's slot label, never its command line, which may hold login values
+(HZ-494). Like the waiting markers it gets no kernel self-heal, so a record
+whose pid is dead is pruned on every read, and the next taker of the same
+slot deletes whatever an earlier holder of that slot left behind. A record
+that cannot be written or deleted is logged and never fails the run.
 """
 
 import contextlib
@@ -62,7 +73,7 @@ import math
 import os
 import random
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from . import config
@@ -113,6 +124,15 @@ POLL_JITTER = 0.5
 # would otherwise be reported forever. Belt as well as braces alongside the
 # pid check.
 MARKER_MAX_AGE_S = 3600.0
+# HZ-574: a holder record not rewritten for this long is hidden (not deleted:
+# its pid is alive and may still hold the lock). The age is measured from the
+# last write, and run_checks() rewrites the record at every command boundary
+# (SlotHold.set_label), so the longest gap is one command plus its rerun —
+# 2 x FARM_CHECK_TIMEOUT_S, 1200s at the default — or one screenshot capture
+# (600s). 4 h is far above both; past it a live holder only loses its detail
+# on Farm health and reads "in use, no record".
+HOLDER_MAX_AGE_S = 4 * 3600.0
+HOLDER_LABEL_MAX = 60
 
 # HZ-571: the one memory setting, in /etc/horizon/farm.env. <= 0 turns the
 # gate off (the rollback switch, like FARM_MAX_CONCURRENT_CHECKS=0).
@@ -174,10 +194,40 @@ class SlotHold:
     waited_s: float = 0.0
     limit: int = 0
     timed_out: bool = False
+    # HZ-574: this hold's holder record, set on the `held` path only.
+    _holder: Path | None = field(default=None, repr=False)
+    _record: dict | None = field(default=None, repr=False)
+    _log: object = field(default=None, repr=False)
+    _written: bool = field(default=False, repr=False)
+    _warned: bool = field(default=False, repr=False)
 
     @property
     def limited(self) -> bool:
         return self.mode == "held"
+
+    def set_label(self, label: str) -> None:
+        """Name what this hold is running now, e.g. "test slot, line 2", in
+        its holder record. Pass the slot label only, never a command line.
+        A no-op without a record; never raises."""
+        if self.mode != "held" or self._record is None or self._holder is None:
+            return
+        if not isinstance(label, str):
+            return
+        self._record["label"] = label[:HOLDER_LABEL_MAX]
+        self._write()
+
+    def _write(self) -> None:
+        if _write_holder(self._holder, self._record, self._log if not self._warned else None):
+            self._written = True
+        else:
+            # Logged once per hold: an unwritable holders/ would otherwise
+            # log at every command boundary.
+            self._warned = True
+
+    def _release(self) -> None:
+        """Delete the record. Called before the flock is released."""
+        if self._holder is not None and self._written:
+            _clear_holder(self._holder, self._log)
 
 
 def slot_dir() -> Path:
@@ -334,6 +384,114 @@ def waiting_runs() -> list[dict]:
     return out
 
 
+def _holders_dir() -> Path:
+    return slot_dir() / "holders"
+
+
+def _holder_path(index: int, pid: int, run_id) -> Path:
+    token = str(run_id or "unlabelled").replace("/", "-")[:60]
+    return _holders_dir() / f"slot-{index}-{pid}-{token}.json"
+
+
+def _write_holder(path: Path, record: dict, log) -> bool:
+    """Write the record whole: to a temp file, then renamed into place, so a
+    reader never sees half of it. False (logged when `log` is given) on any
+    failure — a status file is never worth failing a check run over."""
+    tmp = path.with_name(path.name + ".tmp")
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp.write_text(json.dumps(record, default=str))
+        os.replace(tmp, path)
+    except (OSError, TypeError, ValueError) as exc:
+        with contextlib.suppress(OSError):
+            tmp.unlink(missing_ok=True)
+        if log is not None:
+            log(f"check_slots: could not write holder record ({exc}) — carrying on")
+        return False
+    return True
+
+
+def _clear_holder(path: Path | None, log) -> None:
+    if path is None:
+        return
+    try:
+        path.unlink(missing_ok=True)
+    except OSError as exc:
+        if log is not None:
+            log(f"check_slots: could not delete holder record ({exc}) — carrying on")
+
+
+def _prune_holders(index: int, log) -> None:
+    """Called only while this process holds slot `index`'s lock: every record
+    for that slot is then an earlier holder's leftover, so none of them can
+    belong to a live holder. Records of other slots go only when their pid is
+    dead, as in holders()."""
+    try:
+        entries = list(_holders_dir().glob("slot-*.json"))
+    except OSError:
+        return
+    mine = f"slot-{index}-"
+    for path in entries:
+        if path.name.startswith(mine):
+            _clear_holder(path, log)
+            continue
+        try:
+            pid = json.loads(path.read_text()).get("pid")
+        except (OSError, ValueError, AttributeError):
+            continue
+        if isinstance(pid, int) and not _pid_alive(pid):
+            _clear_holder(path, log)
+
+
+def holders() -> list[dict]:
+    """Who holds each slot, for /farm/status: one row per slot, newest record
+    first, sorted by slot.
+
+    Never opens or locks a slot file, so a status read cannot delay a real
+    take. Liveness comes from the recorded pid instead, as in waiting_runs():
+    a record whose pid is dead is pruned. One not rewritten in
+    HOLDER_MAX_AGE_S is hidden but kept, since its pid is alive. `busy` stays
+    the kernel's answer (busy_slots()); this is display only.
+    """
+    try:
+        entries = sorted(_holders_dir().glob("slot-*.json"))
+    except OSError:
+        return []
+    now = time.time()
+    newest: dict[int, dict] = {}
+    for path in entries:
+        try:
+            data = json.loads(path.read_text())
+            touched = path.stat().st_mtime
+        except (OSError, ValueError):
+            continue
+        if not isinstance(data, dict):
+            continue
+        pid = data.get("pid")
+        if not isinstance(pid, int) or not _pid_alive(pid):
+            _clear_marker(path)
+            continue
+        index = data.get("slot")
+        try:
+            since = float(data.get("since") or 0)
+        except (TypeError, ValueError):
+            continue
+        if not isinstance(index, int) or (now - max(since, touched)) > HOLDER_MAX_AGE_S:
+            continue
+        if index in newest and newest[index]["since"] >= since:
+            continue
+        newest[index] = {
+            "slot": index,
+            "run_id": data.get("run_id"),
+            "item_id": data.get("item_id"),
+            "caller": data.get("caller"),
+            "label": data.get("label"),
+            "since": since,
+            "held_s": round(max(0.0, now - since), 1),
+        }
+    return [newest[index] for index in sorted(newest)]
+
+
 def busy_slots() -> int:
     """How many slots are held right now, probed by trying each one
     non-blockingly and releasing immediately.
@@ -366,7 +524,7 @@ def busy_slots() -> int:
 
 def status() -> dict:
     """The additive `checks` block on /farm/status."""
-    return {"limit": slot_limit(), "busy": busy_slots(), "waiting": waiting_runs()}
+    return {"limit": slot_limit(), "busy": busy_slots(), "waiting": waiting_runs(), "holders": holders()}
 
 
 def memory_status() -> dict:
@@ -533,6 +691,7 @@ def check_slot(
     waiting_on: str | None = None
     announced = False
     handle = index = None
+    hold: SlotHold | None = None
     try:
         while True:
             short = memory.short()
@@ -593,11 +752,31 @@ def check_slot(
             log(f"check_slots: got check slot {index} after waiting {waited:.0f}s")
         if announced:
             _emit(on_event, "granted", mode="held")
-        yield SlotHold(mode="held", slot_index=index, waited_s=waited, limit=limit)
+        # HZ-574: the holder record, written only now that the lock is ours.
+        _prune_holders(index, log)
+        hold = SlotHold(mode="held", slot_index=index, waited_s=waited, limit=limit)
+        hold._holder = _holder_path(index, os.getpid(), run_id)
+        hold._record = {
+            "slot": index,
+            "pid": os.getpid(),
+            "run_id": run_id,
+            "item_id": item_id,
+            "caller": caller,
+            "label": "starting",
+            "since": time.time(),
+        }
+        hold._log = log
+        hold._write()
+        yield hold
     finally:
         _clear_marker(marker)
-        if handle is not None:
-            try:
-                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
-            finally:
-                handle.close()
+        try:
+            if hold is not None:
+                # Before LOCK_UN, so a record never outlives its lock.
+                hold._release()
+        finally:
+            if handle is not None:
+                try:
+                    fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+                finally:
+                    handle.close()

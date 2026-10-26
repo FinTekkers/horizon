@@ -329,7 +329,10 @@ is enforced by two tests. The reporter has an `Unthrottled` column so a run
 that took that path shows up as a number rather than a line in a session log.
 
 `GET /farm/status` reports both limits (`agents`, `checks`) including who is
-currently queued for a slot.
+currently queued for a slot, and (HZ-574, `checks.holders`) who holds each
+slot: item, run, caller, the slot label it is running (never the command
+line) and when it took the slot. Holder records live in
+`$FARM_HOME/locks/checks/holders/`; one whose pid is dead is pruned on read.
 
 ### Measuring it
 

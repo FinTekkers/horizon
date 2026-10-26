@@ -63,7 +63,16 @@ const deps = {
       agents: { busy: 1, limit: 4, secret: SECRET },
       express: { busy: 0, limit: 1 },
       pm_agents: { busy: 0, limit: 1 },
-      checks: { busy: 1, limit: 2, waiting: [{ pid: 4242, run_id: '7', item_id: 'HZ-2', caller: SECRET, waited_s: 30 }] },
+      checks: {
+        busy: 2,
+        limit: 2,
+        waiting: [{ pid: 4242, run_id: '7', item_id: 'HZ-2', caller: SECRET, waited_s: 30 }],
+        // HZ-574: farmd's pid and any extra key must never reach the body.
+        holders: [
+          { slot: 1, pid: 4343, run_id: 9, item_id: 'HZ-9', caller: 'validate', label: 'e2e slot', since: NOW / 1000 - 60, held_s: 60, command: SECRET },
+          { slot: 0, pid: 4344, run_id: '5', item_id: 'HZ-1', caller: 'step_agent', label: 'test slot, line 2', since: NOW / 1000 - 120, env: SECRET },
+        ],
+      },
     }
   },
   farmConfigured: () => true,
@@ -101,7 +110,8 @@ test('/api/auth/me says who is an admin', async () => {
 })
 
 const SLOT = ['busy', 'limit', 'waiting']
-const ROW = ['itemId', 'slot', 'startedAt', 'step']
+const ROW = ['holdsAgentSlot', 'itemId', 'slot', 'startedAt', 'step']
+const HOLDER = ['caller', 'itemId', 'label', 'runId', 'slot', 'startedAt']
 const SHAPE = {
   state: null,
   reason: null,
@@ -111,6 +121,7 @@ const SHAPE = {
   waitingCount: null,
   running: [ROW],
   waiting: [ROW],
+  checkHolders: [HOLDER],
   box: [
     'diskAvailBytes',
     'diskTotalBytes',
@@ -176,11 +187,59 @@ test("an admin's response holds only allowlisted keys, at every depth, and no pl
       ['HZ-2', 'check'],
     ],
   )
+  // HZ-574: holders by slot; an unknown caller reads null, not farmd's word.
+  assert.deepEqual(body.checkHolders, [
+    { slot: 0, itemId: 'HZ-1', runId: '5', caller: 'implement', label: 'test slot, line 2', startedAt: new Date(NOW - 120000).toISOString() },
+    { slot: 1, itemId: 'HZ-9', runId: '9', caller: null, label: 'e2e slot', startedAt: new Date(NOW - 60000).toISOString() },
+  ])
   assert.deepEqual(
     body.recent.map((e) => e.kind),
     ['deploy', 'server_restart', 'farm_restart'],
   )
   assert.equal(body.state, 'amber')
+})
+
+test('Running now plus agent-lane check-slot waiters equals the agents-busy count (HZ-574)', async () => {
+  // The 24 Oct mismatch: farmd counted 3 agents busy, but a run waiting for a
+  // check slot was listed only as waiting. Fed from real activeRuns and
+  // farmd's checks.waiting, not a hand-built snapshot.
+  const IMPLEMENT = 11
+  const ACCEPT = 13
+  const snapshot = await farmHealth.collectOnce({
+    ...deps,
+    farmFetch: async () => ({
+      status: 'running',
+      agents: { busy: 3, limit: 4 },
+      express: { busy: 0, limit: 1 },
+      pm_agents: { busy: 0, limit: 1 },
+      checks: {
+        busy: 2,
+        limit: 2,
+        waiting: [
+          { pid: 1, run_id: '23', item_id: 'HZ-103', caller: 'step_agent', waited_s: 130 },
+          { pid: 2, run_id: '24', item_id: 'HZ-104', caller: 'premerge', waited_s: 20 },
+        ],
+        holders: [],
+      },
+    }),
+    activeRuns: () => [
+      { id: 21, item_id: 'HZ-101', step_index: IMPLEMENT, started_at: sqlTime(NOW - 372000), state: 'running' },
+      { id: 22, item_id: 'HZ-102', step_index: 8, started_at: sqlTime(NOW - 329000), state: 'running' },
+      { id: 23, item_id: 'HZ-103', step_index: IMPLEMENT, started_at: sqlTime(NOW - 900000), state: 'running' },
+      { id: 24, item_id: 'HZ-104', step_index: ACCEPT, started_at: sqlTime(NOW - 30000), state: 'running' },
+    ],
+  })
+  const body = farmHealth.toPublic(snapshot)
+  const byItem = Object.fromEntries(body.waiting.map((w) => [w.itemId, w]))
+  assert.equal(byItem['HZ-103'].slot, 'check')
+  assert.equal(byItem['HZ-103'].holdsAgentSlot, true)
+  assert.equal(snapshot.waiting.find((w) => w.itemId === 'HZ-103').lane, 'agent')
+  // A pre-merge check runs outside any agent session: no agent slot held.
+  assert.equal(byItem['HZ-104'].slot, 'check')
+  assert.equal(byItem['HZ-104'].holdsAgentSlot, false)
+  assert.deepEqual(body.running.map((r) => r.itemId), ['HZ-101', 'HZ-102'])
+  const holding = body.waiting.filter((w) => w.slot === 'check' && w.holdsAgentSlot).length
+  assert.equal(body.running.length + holding, body.capacity.agents.busy)
 })
 
 test('the collector only runs systemctl is-active and only GETs /farm/status', async () => {

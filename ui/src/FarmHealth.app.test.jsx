@@ -33,6 +33,7 @@ vi.mock('./api', () => ({
 }))
 
 import * as api from './api'
+import { getFarmHealth as mockFarmHealth } from './api/mockApi'
 import App from './App'
 
 const ADMIN = { name: 'Ada Admin', initials: 'AA', email: 'admin@example.com', isAdmin: true }
@@ -69,6 +70,7 @@ function snapshot(state, reason) {
 }
 
 afterEach(() => {
+  vi.useRealTimers()
   cleanup()
   vi.clearAllMocks()
   window.history.pushState({}, '', '/')
@@ -132,4 +134,71 @@ test('the deep link /farm-health opens the page, and its item rows link to the i
   expect(link.getAttribute('href')).toMatch(/\/hz-1$/)
   fireEvent.click(screen.getByRole('button', { name: 'Refresh' }))
   await waitFor(() => expect(api.getFarmHealth.mock.calls.length).toBeGreaterThanOrEqual(2))
+})
+
+// ---- HZ-574: the Check slots card, from the mock API's reading ----
+
+const HOLDING = 'holding an agent slot · waiting for a check slot'
+
+async function openWithMockReading() {
+  // Only Date is faked: elapsed times read exactly, and polling stays real.
+  vi.useFakeTimers({ toFake: ['Date'] })
+  vi.setSystemTime(Date.parse('2026-10-24T10:00:00Z'))
+  user = ADMIN
+  reading = await mockFarmHealth()
+  window.history.pushState({}, '', '/farm-health')
+  render(<App />)
+  return screen.findByRole('region', { name: 'Check slots' })
+}
+
+const cellsOf = (row) => within(row).getAllByRole('cell').map((c) => c.textContent)
+
+test('the Check slots card lists each holder by slot, item, check and time held, then the waiter', async () => {
+  const card = await openWithMockReading()
+  const [holderTable, waiterTable] = within(card).getAllByRole('table')
+  const holderRows = within(holderTable).getAllByRole('row').slice(1)
+  expect(holderRows.map(cellsOf)).toEqual([
+    ['Slot 0', 'HZ-101', 'test slot, line 2 · implement', '4m 10s'],
+    ['Slot 1', 'HZ-102', 'e2e slot · pre-merge', '1m 35s'],
+  ])
+  expect(within(holderRows[0]).getByRole('link', { name: 'HZ-101' }).getAttribute('href')).toMatch(/\/hz-101$/)
+
+  const heading = within(card).getByRole('heading', { level: 3, name: 'Waiting for a check slot' })
+  expect(holderTable.compareDocumentPosition(heading) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+  expect(heading.compareDocumentPosition(waiterTable) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+  expect(within(waiterTable).getAllByRole('row').map(cellsOf)).toEqual([
+    ['HZ-103', 'Specialist agent implements', HOLDING, '2m 10s'],
+  ])
+})
+
+test('a run waiting for a check slot reads as holding an agent slot, and the agent counts agree', async () => {
+  await openWithMockReading()
+  const running = screen.getByRole('region', { name: 'Running now' })
+  const [runningTable, waitingTable] = within(running).getAllByRole('table')
+  const waiter = within(waitingTable).getByText('HZ-103').closest('tr')
+  expect(within(waiter).getByText(HOLDING)).toBeTruthy()
+
+  const runningNow = within(runningTable).getAllByRole('row').length - 1
+  const holding = within(waitingTable).queryAllByText(HOLDING).length
+  const capacity = screen.getByRole('region', { name: 'Capacity' })
+  const agentTile = within(capacity).getByText('Agent slots').closest('.farm-health__tile')
+  const busy = Number(agentTile.querySelector('.farm-health__tile-count').textContent.match(/^(\d+) of/)[1])
+  expect([runningNow, holding, busy]).toEqual([2, 1, 3])
+  expect(runningNow + holding).toBe(busy)
+})
+
+test('the Check slots card says when no slot is in use, and when the farm cannot be reached', async () => {
+  user = ADMIN
+  reading = snapshot('green', 'All services up, slots free and box figures normal')
+  window.history.pushState({}, '', '/farm-health')
+  render(<App />)
+  const card = await screen.findByRole('region', { name: 'Check slots' })
+  expect(within(card).getByText('No check slot in use')).toBeTruthy()
+  expect(within(card).getByText('Nothing waiting')).toBeTruthy()
+  cleanup()
+
+  reading = snapshot('red', 'Farm is not running')
+  render(<App />)
+  const red = await screen.findByRole('region', { name: 'Check slots' })
+  expect(within(red).getByText('Farm not reachable — no check slot readings')).toBeTruthy()
 })

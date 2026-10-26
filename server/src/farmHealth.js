@@ -152,6 +152,30 @@ function slotOfStep(stepIndex) {
   return 'agent'
 }
 
+// HZ-574: farmd's caller names, as Farm health shows them. Any other value is null.
+const CALLERS = Object.freeze({ step_agent: 'implement', conflict_resolver: 'conflict resolver', premerge: 'pre-merge' })
+
+// farmd's checks.holders, one row per held slot, by slot. Only the named
+// fields are read: farmd's pid and anything else never reach the snapshot.
+function checkHoldersOf(raw) {
+  const out = []
+  for (const h of Array.isArray(raw) ? raw : []) {
+    if (!h || !Number.isInteger(h.slot)) continue
+    const since = finite(h.since)
+    const started = since != null ? new Date(since * 1000) : null
+    out.push({
+      slot: h.slot,
+      itemId: typeof h.item_id === 'string' ? h.item_id : null,
+      runId: h.run_id != null ? String(h.run_id) : null,
+      caller: typeof h.caller === 'string' && Object.hasOwn(CALLERS, h.caller) ? CALLERS[h.caller] : null,
+      label: typeof h.label === 'string' ? h.label : null,
+      // An out-of-range time reads null rather than throwing in the collector.
+      startedAt: started && Number.isFinite(started.getTime()) ? started.toISOString() : null,
+    })
+  }
+  return out.sort((a, b) => a.slot - b.slot)
+}
+
 const isoOfSql = (sql) => {
   const ms = typeof sql === 'string' ? msOf(sql) : NaN
   return Number.isFinite(ms) ? new Date(ms).toISOString() : null
@@ -224,7 +248,7 @@ export async function collectOnce(deps = defaultDeps) {
   const checkWaiters = Array.isArray(checksRaw.waiting) ? checksRaw.waiting : []
   const checkWaitByRun = new Map()
   for (const w of checkWaiters) {
-    if (w && w.run_id != null) checkWaitByRun.set(String(w.run_id), finite(w.waited_s))
+    if (w && w.run_id != null) checkWaitByRun.set(String(w.run_id), { waited: finite(w.waited_s), caller: w.caller })
   }
   const running = []
   const waiting = []
@@ -237,8 +261,18 @@ export async function collectOnce(deps = defaultDeps) {
     }
     const runId = String(run.id)
     if (checkWaitByRun.has(runId)) {
-      const waited = checkWaitByRun.get(runId)
-      waiting.push({ ...row, slot: 'check', startedAt: waited != null ? new Date(now - waited * 1000).toISOString() : row.startedAt })
+      const { waited, caller } = checkWaitByRun.get(runId)
+      // HZ-574: an agent step's own checks run inside its agent session, so
+      // while it waits for a check slot it still holds its agent slot. A
+      // pre-merge or conflict-resolver check runs elsewhere and holds none.
+      const holdsAgentSlot = row.slot === 'agent' && (caller == null || caller === 'step_agent')
+      waiting.push({
+        ...row,
+        slot: 'check',
+        lane: row.slot,
+        holdsAgentSlot,
+        startedAt: waited != null ? new Date(now - waited * 1000).toISOString() : row.startedAt,
+      })
     } else if (run.state === 'queued') {
       waiting.push(row)
     } else {
@@ -252,6 +286,7 @@ export async function collectOnce(deps = defaultDeps) {
   capacity.agents.waiting = agentsWaiting
   capacity.pm.waiting = pmWaiting
   capacity.checks.waiting = checksWaiting
+  const checkHolders = checkHoldersOf(checksRaw.holders)
 
   // Recent: deploys that went live, farm (re)starts and this server's own boot, last 24 h.
   const sinceMs = now - RECENT_WINDOW_MS
@@ -280,6 +315,7 @@ export async function collectOnce(deps = defaultDeps) {
     waitingCount,
     running,
     waiting,
+    checkHolders,
     box,
     services,
     recent,
@@ -291,7 +327,21 @@ export async function collectOnce(deps = defaultDeps) {
 const str = (v, max = 200) => (typeof v === 'string' ? v.slice(0, max) : null)
 const num = (v) => finite(v)
 const pubSlot = (s) => ({ busy: num(s?.busy) ?? 0, limit: num(s?.limit) ?? 0, waiting: num(s?.waiting) ?? 0 })
-const pubRow = (r) => ({ itemId: str(r?.itemId, 40), step: str(r?.step), slot: str(r?.slot, 20), startedAt: str(r?.startedAt, 40) })
+const pubRow = (r) => ({
+  itemId: str(r?.itemId, 40),
+  step: str(r?.step),
+  slot: str(r?.slot, 20),
+  startedAt: str(r?.startedAt, 40),
+  holdsAgentSlot: r?.holdsAgentSlot === true,
+})
+const pubHolder = (h) => ({
+  slot: Number.isInteger(h?.slot) ? h.slot : null,
+  itemId: str(h?.itemId, 40),
+  runId: str(h?.runId, 40),
+  caller: str(h?.caller, 40),
+  label: str(h?.label, 60),
+  startedAt: str(h?.startedAt, 40),
+})
 
 export function toPublic(snapshot) {
   const s = snapshot || {}
@@ -311,6 +361,7 @@ export function toPublic(snapshot) {
     waitingCount: num(s.waitingCount) ?? 0,
     running: (s.running || []).map(pubRow),
     waiting: (s.waiting || []).map(pubRow),
+    checkHolders: (s.checkHolders || []).map(pubHolder),
     box: {
       load: Array.isArray(box.load) ? box.load.slice(0, 3).map(num) : null,
       vcpus: num(box.vcpus),

@@ -472,3 +472,262 @@ def test_status_reports_the_limit_busy_count_and_waiters(tmp_path, monkeypatch):
     assert status["limit"] == 2
     assert status["busy"] == 1
     assert status["waiting"] == []
+
+
+# ---- HZ-574: holder records — who holds each slot, for Farm health ----
+
+# Takes a slot as a labelled run, names a check in the record, writes
+# "<run_id> <mode> <slot> <time>" to `out`, then holds until `release` exists.
+# A release file rather than a timer, so "after one run releases" is a fact the
+# test causes, not a sleep that a loaded host can outrun.
+SIGNALLED_HOLDER = textwrap.dedent(
+    """
+    import os, sys, time
+    from farm import check_slots
+    out, release, run_id, item_id, caller, label = sys.argv[1:7]
+    with check_slots.check_slot(run_id=run_id, item_id=item_id, caller=caller, poll_s=0.05) as slot:
+        if label:
+            slot.set_label(label)
+        with open(out, "a") as fh:
+            fh.write(f"{run_id} {slot.mode} {slot.slot_index} {time.time()}\\n")
+        deadline = time.monotonic() + 60
+        while not os.path.exists(release) and time.monotonic() < deadline:
+            time.sleep(0.02)
+    """
+)
+
+
+def _signalled_holder(out, release, run_id, item_id, caller, label=""):
+    env = {**os.environ, "PYTHONPATH": REPO_ROOT}
+    return subprocess.Popen(
+        [sys.executable, "-c", SIGNALLED_HOLDER, str(out), str(release), run_id, item_id, caller, label],
+        cwd=REPO_ROOT,
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+
+
+def _poll(predicate, timeout_s=15):
+    deadline = time.monotonic() + timeout_s
+    while time.monotonic() < deadline:
+        if predicate():
+            return True
+        time.sleep(0.05)
+    return False
+
+
+def _holder_files(slot=None):
+    directory = check_slots.slot_dir() / "holders"
+    pattern = f"slot-{slot}-*.json" if slot is not None else "slot-*.json"
+    return sorted(directory.glob(pattern)) if directory.exists() else []
+
+
+def _plant_holder(slot, pid, run_id, since=None, **extra):
+    directory = check_slots.slot_dir() / "holders"
+    directory.mkdir(parents=True, exist_ok=True)
+    path = directory / f"slot-{slot}-{pid}-{run_id}.json"
+    record = {
+        "slot": slot,
+        "pid": pid,
+        "run_id": run_id,
+        "item_id": extra.get("item_id", "HZ-9"),
+        "caller": "step_agent",
+        "label": "test slot",
+        "since": time.time() if since is None else since,
+    }
+    path.write_text(json.dumps(record))
+    return path
+
+
+def _dead_pid():
+    """The pid of a process this test SIGKILLed and reaped — truly dead."""
+    child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+    child.send_signal(signal.SIGKILL)
+    child.wait(timeout=30)
+    return child.pid
+
+
+def test_two_holders_are_listed_with_their_slot_item_run_caller_label_and_start_and_a_third_waits(
+    tmp_path, monkeypatch
+):
+    """HZ-574 metric 1, across three processes: two take both slots and a
+    third waits. holders lists both with the right fields; once one releases,
+    its record file is gone and it is no longer listed."""
+    monkeypatch.setenv("FARM_MAX_CONCURRENT_CHECKS", "2")
+    out = tmp_path / "acquired.txt"
+    release = {run: tmp_path / f"release-{run}" for run in ("901", "902", "903")}
+    started = time.time()
+    procs = [
+        _signalled_holder(out, release["901"], "901", "HZ-101", "step_agent", "test slot, line 2"),
+        _signalled_holder(out, release["902"], "902", "HZ-102", "premerge", "e2e slot"),
+    ]
+    try:
+        assert _wait_for_lines(out, 2), "two slots should be taken straight away"
+        procs.append(_signalled_holder(out, release["903"], "903", "HZ-103", "step_agent"))
+        assert _poll(lambda: [w["run_id"] for w in check_slots.waiting_runs()] == ["903"]), "the third run should wait"
+
+        status = check_slots.status()
+        by_run = {h["run_id"]: h for h in status["holders"]}
+        assert sorted(by_run) == ["901", "902"]
+        acquired = {line.split()[0]: line.split() for line in _lines(out)}
+        for run, item, caller, label in (
+            ("901", "HZ-101", "step_agent", "test slot, line 2"),
+            ("902", "HZ-102", "premerge", "e2e slot"),
+        ):
+            holder = by_run[run]
+            assert holder["slot"] == int(acquired[run][2])
+            assert holder["item_id"] == item
+            assert holder["caller"] == caller
+            assert holder["label"] == label
+            assert started <= holder["since"] <= float(acquired[run][3])
+            assert "pid" not in holder
+        assert {h["slot"] for h in status["holders"]} == {0, 1}
+        assert [w["run_id"] for w in status["waiting"]] == ["903"]
+
+        released_slot = by_run["901"]["slot"]
+        release["901"].write_text("")
+        assert _poll(lambda: not any("-901." in p.name for p in _holder_files())), "901's record outlived its hold"
+        assert "901" not in {h["run_id"] for h in check_slots.holders()}
+        # The waiter took the freed slot and is listed in its place.
+        assert _poll(lambda: {h["run_id"] for h in check_slots.holders()} == {"902", "903"})
+        assert all("-903." in p.name for p in _holder_files(released_slot))
+    finally:
+        for path in release.values():
+            path.write_text("")
+        for p in procs:
+            p.wait(timeout=30)
+    assert _holder_files() == [], "every record goes with its release"
+
+
+def test_a_holder_record_left_by_a_killed_process_is_not_listed_and_is_deleted_by_the_next_status_read(tmp_path):
+    """HZ-574 metric 2: a holder killed mid-hold leaves its file, but the
+    kernel freed its lock. A status read must neither report it nor keep it."""
+    stale = _plant_holder(0, _dead_pid(), "r-killed")
+    assert check_slots.status()["holders"] == []
+    assert not stale.exists(), "the stale record should be deleted on read, not just hidden"
+
+
+def test_a_holder_record_left_by_a_killed_process_is_deleted_by_the_next_slot_take(tmp_path, monkeypatch):
+    """HZ-574 metric 2, the take path: the next run to win slot 0 deletes what
+    a killed holder of slot 0 left, and only its own record is listed."""
+    monkeypatch.setenv("FARM_MAX_CONCURRENT_CHECKS", "1")
+    stale = _plant_holder(0, _dead_pid(), "r-killed")
+    with check_slots.check_slot(run_id="r-new", item_id="HZ-7") as slot:
+        assert slot.mode == "held" and slot.slot_index == 0
+        assert not stale.exists()
+        assert [h["run_id"] for h in check_slots.holders()] == ["r-new"]
+
+
+def test_a_holder_record_holds_only_the_allowed_keys_and_never_the_command_line(tmp_path, monkeypatch):
+    """HZ-574 guardrail 1: the record names the slot, never the command, which
+    may carry a login value. The command copies the live record out, so this
+    reads exactly what Farm health would have read mid-run."""
+    from farm import checks
+
+    monkeypatch.delenv("FARM_CHECK_CMD", raising=False)
+    seen = tmp_path / "seen.json"
+    holders_dir = check_slots.slot_dir() / "holders"
+    command = f"echo TOKEN=abc123; cat {holders_dir}/*.json > {seen}"
+    note = checks.run_checks(
+        tmp_path, log=lambda *_: None, run_id="r-g1", item_id="HZ-574", configured={"test": command}, branch_gate=False
+    )
+    assert "passed" in note
+    text = seen.read_text()
+    record = json.loads(text)
+    assert set(record) == {"slot", "pid", "run_id", "item_id", "caller", "label", "since"}
+    assert record["label"] == "test slot"
+    assert "abc123" not in text and "TOKEN" not in text
+    assert _holder_files() == []
+
+
+def test_an_unwritable_holder_record_never_stops_the_run_and_is_logged_once(tmp_path, monkeypatch):
+    """HZ-574 guardrail 2, the write side: holders/ is a plain file, so every
+    record write fails. The slot is still taken and every command runs; the
+    failure is logged once, not at each of the three command boundaries."""
+    from farm import checks
+
+    monkeypatch.delenv("FARM_CHECK_CMD", raising=False)
+    check_slots.slot_dir().mkdir(parents=True)
+    (check_slots.slot_dir() / "holders").write_text("not a directory")
+    ran = tmp_path / "ran.txt"
+    logged = []
+    note = checks.run_checks(
+        tmp_path,
+        log=logged.append,
+        configured={"test": "\n".join(f"echo {n} >> {ran}" for n in range(3))},
+        branch_gate=False,
+    )
+    assert "passed" in note
+    assert ran.read_text().split() == ["0", "1", "2"]
+    assert len([line for line in logged if "could not write holder record" in line]) == 1, logged
+
+    logged.clear()
+    with check_slots.check_slot(log=logged.append) as slot:
+        assert slot.mode == "held"
+        for label in ("test slot", "lint slot", "e2e slot"):
+            slot.set_label(label)
+    assert len([line for line in logged if "could not write holder record" in line]) == 1, logged
+
+
+def test_a_failed_holder_delete_still_releases_the_slot_and_is_logged(tmp_path, monkeypatch):
+    """HZ-574 guardrail 2, the delete side: the record cannot be deleted on
+    release. The `with` still exits cleanly, the lock is released (another
+    process takes the slot at once) and one line is logged."""
+    from pathlib import Path
+
+    monkeypatch.setenv("FARM_MAX_CONCURRENT_CHECKS", "1")
+    logged = []
+
+    real_unlink = Path.unlink
+
+    def refuse(self, missing_ok=False):
+        raise PermissionError(f"refused: {self}")
+
+    with check_slots.check_slot(log=logged.append, run_id="r-stuck") as slot:
+        assert slot.mode == "held"
+        monkeypatch.setattr(Path, "unlink", refuse)
+    monkeypatch.setattr(Path, "unlink", real_unlink)
+    assert len([line for line in logged if "could not delete holder record" in line]) == 1, logged
+
+    out = tmp_path / "acquired.txt"
+    release = tmp_path / "release"
+    release.write_text("")
+    taker = _signalled_holder(out, release, "r-next", "HZ-8", "step_agent")
+    try:
+        assert _wait_for_lines(out, 1, timeout_s=10), "the slot was not released"
+    finally:
+        taker.wait(timeout=30)
+    assert _lines(out)[0].split()[1:3] == ["held", "0"]
+
+
+def test_status_keeps_a_live_holders_record_and_hides_an_old_one_without_deleting_it(tmp_path, monkeypatch):
+    """HZ-574 guardrail 3: cleanup never deletes the record of a slot whose
+    lock is held. A live holder's record survives a status read; a live-pid
+    record not rewritten in HOLDER_MAX_AGE_S is hidden but its file stays."""
+    monkeypatch.setenv("FARM_MAX_CONCURRENT_CHECKS", "2")
+    ancient_since = time.time() - check_slots.HOLDER_MAX_AGE_S - 60
+    ancient = _plant_holder(1, os.getpid(), "r-ancient", since=ancient_since)
+    os.utime(ancient, (ancient_since, ancient_since))
+    with check_slots.check_slot(run_id="r-live", item_id="HZ-5") as slot:
+        assert slot.slot_index == 0
+        listed = check_slots.status()["holders"]
+        assert [h["run_id"] for h in listed] == ["r-live"]
+        assert len(_holder_files(0)) == 1, "a status read deleted a held slot's record"
+        assert ancient.exists(), "an old record with a live pid is hidden, not deleted"
+
+
+def test_reading_holders_never_takes_a_lock(tmp_path, monkeypatch):
+    """HZ-574 guardrail 3: a status read can never delay or deny a real take,
+    because holders() never calls flock at all."""
+    import fcntl
+
+    _plant_holder(0, os.getpid(), "r-a")
+    _plant_holder(1, _dead_pid(), "r-b")
+    calls = []
+    real = fcntl.flock
+    monkeypatch.setattr(fcntl, "flock", lambda *a: calls.append(a) or real(*a))
+    listed = check_slots.holders()
+    assert [h["run_id"] for h in listed] == ["r-a"]
+    assert calls == []

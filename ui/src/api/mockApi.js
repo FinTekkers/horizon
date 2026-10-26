@@ -553,13 +553,21 @@ export async function getFarmHealth() {
     reason: '1 step is waiting for a slot',
     collectedAt: ago(0),
     farm: { status: 'running', since: ago(3600) },
-    capacity: { agents: slot(3, 4, 1), express: slot(0, 1), pm: slot(0, 1), checks: slot(1, 2) },
+    // HZ-574: HZ-103 waits for a check slot while holding its agent slot, so
+    // Running now (2) plus that waiter (1) is the 3 agents busy.
+    capacity: { agents: slot(3, 4, 0), express: slot(0, 1), pm: slot(0, 1), checks: slot(2, 2, 1) },
     waitingCount: 1,
     running: [
-      { itemId: 'HZ-101', step: 'Specialist agent implements', slot: 'agent', startedAt: ago(372) },
-      { itemId: 'HZ-102', step: 'QA reviews the test plan', slot: 'agent', startedAt: ago(329) },
+      { itemId: 'HZ-101', step: 'Specialist agent implements', slot: 'agent', startedAt: ago(372), holdsAgentSlot: false },
+      { itemId: 'HZ-102', step: 'QA reviews the test plan', slot: 'agent', startedAt: ago(329), holdsAgentSlot: false },
     ],
-    waiting: [{ itemId: 'HZ-103', step: 'Specialist agent implements', slot: 'agent', startedAt: ago(130) }],
+    waiting: [
+      { itemId: 'HZ-103', step: 'Specialist agent implements', slot: 'check', startedAt: ago(130), holdsAgentSlot: true },
+    ],
+    checkHolders: [
+      { slot: 0, itemId: 'HZ-101', runId: '901', caller: 'implement', label: 'test slot, line 2', startedAt: ago(250) },
+      { slot: 1, itemId: 'HZ-102', runId: '902', caller: 'pre-merge', label: 'e2e slot', startedAt: ago(95) },
+    ],
     box: {
       load: [2.1, 1.8, 1.5],
       vcpus: 4,
