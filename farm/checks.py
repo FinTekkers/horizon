@@ -31,6 +31,9 @@ pass on rerun is a flake, recorded and not a failure. Every command gets
 HORIZON_TEST_REPORT_DIR, and the JUnit XML written there becomes one row per
 test (a command with no report is one row). Recording never changes a
 check's result.
+
+HZ-589 narrows the rerun: when every failing test in the JUnit failed on an
+assertion, the failure would repeat, so it is not rerun (see _rerun_verdict()).
 """
 
 import contextlib
@@ -679,6 +682,94 @@ def flaky_test_name(output: str) -> str | None:
     return None
 
 
+# HZ-589: why one failing <testcase> failed, read from its <failure>/<error>
+# text. Only an all-assertion failure skips the rerun; every other kind,
+# including one no table matches, still reruns.
+FAILURE_ASSERTION = "assertion"
+FAILURE_SLOW = "exceeded_time"
+FAILURE_CRASH = "crash"
+FAILURE_NETWORK = "network"
+FAILURE_UNKNOWN = "unknown"
+FAILURE_TEXT_MAX_CHARS = 4000
+_CRASH_PATTERNS = re.compile(
+    r"Target page, context or browser has been closed|Target closed|browser has disconnected"
+    r"|Page crashed|Protocol error",
+    re.IGNORECASE,
+)
+_NETWORK_PATTERNS = re.compile(
+    r"ECONNREFUSED|ECONNRESET|ETIMEDOUT|EAI_AGAIN|ENOTFOUND|socket hang up|net::ERR_|fetch failed"
+    r"|ConnectionError|ConnectionRefusedError|ConnectionResetError",
+    re.IGNORECASE,
+)
+# Playwright's test and action limits, mocha's, pytest-timeout's, node's.
+_SLOW_PATTERNS = re.compile(
+    r"Test timeout of \d+ms exceeded|Timeout of \d+ms exceeded|Timeout \d+ms exceeded|TimeoutError"
+    r"|Timeout >[\d.]+s|timed out after|test timed out",
+    re.IGNORECASE,
+)
+# Playwright's "Timed out 5000ms waiting for expect(locator)…" is an
+# assertion: it carries Expected/Received, and is not a test-timeout.
+_ASSERTION_PATTERNS = re.compile(
+    r"AssertionError|ERR_ASSERTION|AssertionFailedError|expect\(.*\)\.|expected:<.*> but was:<.*>",
+    re.IGNORECASE,
+)
+_EXPECTED = re.compile(r"Expected[: ]", re.IGNORECASE)
+_RECEIVED = re.compile(r"Received[: ]", re.IGNORECASE)
+# The order flaky kinds are checked and named in: any of them in a failure
+# wins over an assertion in the same failure.
+_FLAKY_KINDS = (
+    (FAILURE_CRASH, _CRASH_PATTERNS, "a browser or page crash"),
+    (FAILURE_NETWORK, _NETWORK_PATTERNS, "a connection or network error"),
+    (FAILURE_SLOW, _SLOW_PATTERNS, "a timeout"),
+)
+
+
+def _failure_kind(case: ET.Element) -> str | None:
+    """The FAILURE_* kind of a failing <testcase>, or None when it did not
+    fail. A failure no table matches, or one with no text, is unknown."""
+    failure = next((child for child in case if child.tag in ("failure", "error")), None)
+    if failure is None:
+        return None
+    text = "\n".join(
+        part for part in (failure.get("type"), failure.get("message"), (failure.text or "")[:FAILURE_TEXT_MAX_CHARS]) if part
+    )
+    for kind, pattern, _reason in _FLAKY_KINDS:
+        if pattern.search(text):
+            return kind
+    if _ASSERTION_PATTERNS.search(text) or (_EXPECTED.search(text) and _RECEIVED.search(text)):
+        return FAILURE_ASSERTION
+    return FAILURE_UNKNOWN
+
+
+def _tests_word(count: int) -> str:
+    return f"{count} test" if count == 1 else f"{count} tests"
+
+
+def _rerun_verdict(junit: list[dict], name: str) -> tuple[bool, str]:
+    """(rerun?, the one log line saying why) for a failed command, from its
+    raw JUnit rows — never _test_rows()' synthetic command row, which is no
+    per-test evidence. Only when there are failing rows and every one failed
+    on an assertion is the rerun skipped."""
+    kinds = [row.get("failure_kind") or FAILURE_UNKNOWN for row in junit if row.get("status") == "fail"]
+    if not kinds:
+        return True, f"checks: {name} failed with no per-test results; re-running it once on the same tree"
+    total = len(kinds)
+    if all(kind == FAILURE_ASSERTION for kind in kinds):
+        return False, f"checks: {name} failed on assertions in {_tests_word(total)}; not re-running"
+    for kind, _pattern, reason in _FLAKY_KINDS:
+        count = kinds.count(kind)
+        if count:
+            return True, (
+                f"checks: {name} failed with {reason} in {count} of {_tests_word(total)}; "
+                "re-running it once on the same tree"
+            )
+    count = kinds.count(FAILURE_UNKNOWN)
+    return True, (
+        f"checks: {name} failed with an unclassified failure in {count} of {_tests_word(total)}; "
+        "re-running it once on the same tree"
+    )
+
+
 def _cap_tail(text: str, limit: int) -> str:
     """The last `limit` characters, marked when cut (HZ-114)."""
     if len(text) <= limit:
@@ -753,6 +844,9 @@ def parse_junit(path: Path, ws: Path) -> list[dict]:
                         "test": (child.get("name") or "(unnamed test)")[:TEST_NAME_MAX_CHARS],
                         "status": _case_status(child),
                         "duration_ms": _duration_ms(child.get("time")),
+                        # HZ-589: for _rerun_verdict() only. _test_rows()
+                        # strips it, so it is never stored or uploaded.
+                        "failure_kind": _failure_kind(child),
                     }
                 )
 
@@ -861,7 +955,10 @@ def _test_rows(junit: list[dict], shown: str, returncode: int, duration_s: float
     stores nothing — host pressure, not a test result."""
     command = shown[:FLAKE_COMMAND_MAX_CHARS]
     if junit:
-        return [{**row, "command": command, "attempt": attempt} for row in junit]
+        return [
+            {**{k: v for k, v in row.items() if k != "failure_kind"}, "command": command, "attempt": attempt}
+            for row in junit
+        ]
     if returncode < 0:
         return []
     status = "pass" if returncode == 0 else "fail"
@@ -1295,8 +1392,11 @@ def _run_branch_command(
     # HZ-327's one rerun, as for main's commands. _should_rerun() takes
     # (index, install_at): passing 0 and 0 means "this is the install command",
     # which is never rerun; None means it is not.
-    if _should_rerun(proc.returncode, 0, 0 if slot == "install" else None, deadline):
-        log(f"checks: {shown} failed — rerunning it once on the same tree")
+    rerun_now = _should_rerun(proc.returncode, 0, 0 if slot == "install" else None, deadline)
+    if rerun_now:
+        rerun_now, why = _rerun_verdict(junit, label)
+        log(why)
+    if rerun_now:
         rerun_budget = _budget_left(timeout_s, deadline)
         rerun_started = time.monotonic()
         try:
@@ -1771,12 +1871,18 @@ def run_checks(
                     # Set only when a rerun ran and failed too: its results
                     # then name what failed. Else the first run's do.
                     rerun_rows = None
-                    if _should_rerun(proc.returncode, index, install_at, deadline):
+                    rerun_now = _should_rerun(proc.returncode, index, install_at, deadline)
+                    if rerun_now:
+                        # HZ-589: an all-assertion failure would repeat.
+                        rerun_now, why = _rerun_verdict(junit, label[0] if label else _command_label(safe_shown))
+                        log(why)
+                        if not rerun_now:
+                            record["commands"][-1]["rerun"] = {"skipped": "failed on assertions"}
+                    if rerun_now:
                         # HZ-327: straight away, same command (narrowed where
                         # the runner allows), same workspace, same tree —
                         # nothing runs in between.
                         again = rerun_command(cmd)
-                        log(f"checks: {safe_shown} failed — rerunning it once on the same tree")
                         rerun_budget = float(timeout_s)
                         if deadline is not None:
                             rerun_budget = min(rerun_budget, deadline - time.monotonic())
