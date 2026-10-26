@@ -7,9 +7,9 @@
 // Plus the dark fallback the dark shots rely on: with no stored theme the UI
 // follows prefers-color-scheme, and a stored choice still wins.
 
-import { spawn } from 'node:child_process'
+import { spawn, spawnSync } from 'node:child_process'
 import { randomBytes } from 'node:crypto'
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createInterface } from 'node:readline'
@@ -72,9 +72,22 @@ test('every layout screen shows its seeded layout as soon as its waitFor does', 
 
 // The capture journey itself: the config's `serve` command and the farm's own
 // capture worker, sent each shot the way farm/screenshot_runner.py sends it.
-// Two passes on one build must give 7 PNGs with identical bytes.
+// Two passes on one build must give 7 PNGs that the runner's own diff
+// (farm/capture/diff.mjs, at the runner's thresholds) reads as `same`.
 const REPO = fileURLToPath(new URL('../../', import.meta.url))
 const WORKER = join(REPO, 'farm/capture/worker.mjs')
+const DIFF = join(REPO, 'farm/capture/diff.mjs')
+// The runner's thresholds: the config's `diff`, else DEFAULT_DIFF_THRESHOLD and
+// DEFAULT_DIFF_RATIO_TOLERANCE in farm/screenshots_config.py.
+const THRESHOLD = CONFIG.diff?.threshold ?? 0.1
+const RATIO_TOLERANCE = CONFIG.diff?.ratioTolerance ?? 0.01
+// The runner's waits: a shot's timeoutMs (DEFAULT_TIMEOUT_MS in
+// farm/screenshots_config.py), and WORKER_LAUNCH_S for browser start-up.
+const SHOT_TIMEOUT_MS = CONFIG.defaults?.timeoutMs ?? 30_000
+const WORKER_LAUNCH_MS = 30_000
+// farm/screenshot_runner.py's SERVE_STOP_GRACE_S and WORKER_CLOSE_S.
+const SERVE_STOP_GRACE_MS = 5_000
+const WORKER_CLOSE_MS = 10_000
 const LOGIN_HEADER = 'X-Horizon-Test-Env-SCREENSHOT-LOGIN-KEY'
 
 function startServe(env) {
@@ -85,34 +98,92 @@ function startServe(env) {
   return { proc, exited, stderr: () => stderr }
 }
 
-async function waitReady(serve) {
+// Ready once `ready` answers and our own key logs in through it: while serve.sh
+// waits on its host-wide lock, another capture's server can hold the port.
+async function waitReady(serve, key) {
   let gone = false
   serve.exited.then(() => (gone = true))
+  const me = new URL('/api/auth/me', CONFIG.ready)
   for (;;) {
     if (gone) throw new Error(`serve exited before ready: ${serve.stderr()}`)
-    const ok = await fetch(CONFIG.ready).then((r) => r.status < 500, () => false)
+    const ok =
+      (await fetch(CONFIG.ready).then((r) => r.status < 500, () => false)) &&
+      (await fetch(me, { headers: { [LOGIN_HEADER]: key } }).then((r) => r.status === 200, () => false))
     if (ok) return
     await new Promise((resolve) => setTimeout(resolve, 200))
   }
 }
 
+// Its own process group, as the runner starts it, so the group can be killed.
 function startWorker() {
-  const proc = spawn('node', [WORKER], { cwd: REPO, stdio: ['pipe', 'pipe', 'inherit'] })
+  const proc = spawn('node', [WORKER], { cwd: REPO, detached: true, stdio: ['pipe', 'pipe', 'inherit'] })
+  // A worker that already died answers writes with EPIPE; next() reports it.
+  proc.stdin.on('error', () => {})
   const lines = createInterface({ input: proc.stdout })[Symbol.asyncIterator]()
-  const next = async () => JSON.parse((await lines.next()).value)
+  // A worker reply, or a failure naming the shot once `ms` passes without one.
+  const next = async (label, ms = SHOT_TIMEOUT_MS) => {
+    let timer
+    const timeout = new Promise((_, reject) => {
+      timer = setTimeout(() => reject(new Error(`${label}: no worker reply in ${ms}ms`)), ms)
+    })
+    try {
+      return JSON.parse((await Promise.race([lines.next(), timeout])).value)
+    } finally {
+      clearTimeout(timer)
+    }
+  }
   return { proc, next, send: (msg) => proc.stdin.write(`${JSON.stringify(msg)}\n`) }
 }
 
-test('the config serve path and the farm worker capture every screen twice, byte-identical', async () => {
+function killGroup(proc, signal) {
+  try {
+    process.kill(-proc.pid, signal)
+  } catch {}
+}
+
+function groupAlive(proc) {
+  try {
+    process.kill(-proc.pid, 0)
+    return true
+  } catch (err) {
+    return err.code === 'EPERM'
+  }
+}
+
+async function waitGroupGone(proc, ms) {
+  const end = Date.now() + ms
+  while (groupAlive(proc) && Date.now() < end) await new Promise((resolve) => setTimeout(resolve, 50))
+}
+
+// Like the runner's _stop: SIGTERM the group (serve.sh's traps clean up its
+// temp dir), then SIGKILL whatever outlives the grace.
+async function stopServe(serve) {
+  killGroup(serve.proc, 'SIGTERM')
+  await waitGroupGone(serve.proc, SERVE_STOP_GRACE_MS)
+  if (groupAlive(serve.proc)) {
+    killGroup(serve.proc, 'SIGKILL')
+    await waitGroupGone(serve.proc, 5_000)
+  }
+}
+
+// Like the runner's worker kill(): close stdin so the worker closes its
+// browser, wait out the grace, then SIGKILL the group either way.
+async function stopWorker(worker) {
+  worker.proc.stdin.end()
+  await waitGroupGone(worker.proc, WORKER_CLOSE_MS)
+  killGroup(worker.proc, 'SIGKILL')
+}
+
+test("the config serve path and the farm worker capture every screen twice, matching under the runner's diff", async () => {
   test.setTimeout(180_000)
   const key = randomBytes(16).toString('hex')
   const out = mkdtempSync(join(tmpdir(), 'hz512-shots-'))
   const serve = startServe({ ...process.env, SCREENSHOT_LOGIN_KEY: key })
   let worker
   try {
-    await waitReady(serve)
+    await waitReady(serve, key)
     worker = startWorker()
-    expect(await worker.next()).toEqual({ ready: true })
+    expect(await worker.next('worker start', WORKER_LAUNCH_MS)).toEqual({ ready: true })
     const origin = new URL(CONFIG.ready).origin
     const passes = []
     for (const pass of [1, 2]) {
@@ -129,21 +200,31 @@ test('the config serve path and the farm worker capture every screen twice, byte
           headers: { [LOGIN_HEADER]: key },
           waitFor: screen.waitFor,
         })
-        expect(await worker.next(), `pass ${pass}: ${name}`).toMatchObject({ ok: true, clipped: false })
-        pngs[name] = readFileSync(png)
+        expect(await worker.next(`pass ${pass}: ${name}`, screen.timeoutMs), `pass ${pass}: ${name}`).toMatchObject({ ok: true, clipped: false })
+        pngs[name] = png
       }
       passes.push(pngs)
     }
     expect(Object.keys(passes[0])).toHaveLength(7)
-    for (const name of Object.keys(passes[0])) {
-      expect(passes[1][name].equals(passes[0][name]), `${name} differs between passes`).toBe(true)
+    const outDir = join(out, 'diff')
+    const resultFile = join(out, 'diff-result.json')
+    mkdirSync(outDir)
+    const pairs = Object.keys(passes[0]).map((name) => ({ name, current: passes[1][name], baseline: passes[0][name] }))
+    const run = spawnSync('node', [DIFF], {
+      cwd: REPO,
+      input: JSON.stringify({ pairs, outDir, resultFile, threshold: THRESHOLD, ratioTolerance: RATIO_TOLERANCE }),
+      encoding: 'utf8',
+    })
+    expect(run.status, `diff.mjs failed: ${run.error ?? run.stderr}`).toBe(0)
+    const { shots: diffed } = JSON.parse(readFileSync(resultFile, 'utf8'))
+    expect(diffed).toHaveLength(7)
+    for (const shot of diffed) {
+      const why = `${shot.name} differs between passes: diffRatio ${shot.diffRatio}${shot.error ? ` (${shot.error})` : ''}`
+      expect(shot.status, why).toBe('same')
     }
   } finally {
-    worker?.proc.kill()
-    try {
-      process.kill(-serve.proc.pid, 'SIGTERM')
-    } catch {}
-    await serve.exited
+    if (worker) await stopWorker(worker)
+    await stopServe(serve)
     rmSync(out, { recursive: true, force: true })
   }
 })
