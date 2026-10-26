@@ -139,6 +139,10 @@ function expectPending(view, ids) {
 }
 
 const cardOf = (id) => [...document.querySelectorAll('.card')].find((c) => c.querySelector('.card__id')?.textContent === id)
+// HZ-586: matchMedia below reads as a phone, so the board shows one column at
+// a time; the Accept-gate cards are in Execute.
+const showExecuteColumn = () =>
+  fireEvent.click([...document.querySelectorAll('[role="tab"]')].find((t) => /^Execute, /.test(t.getAttribute('aria-label'))))
 const buttonIn = (root, name) => [...root.querySelectorAll('button')].find((b) => b.textContent.trim() === name) || null
 
 beforeEach(() => {
@@ -261,6 +265,7 @@ for (const kind of ['premerge', 'resolve']) {
     expect(expected).toBe(kind === 'premerge' ? 'Merging: running checks on main + PR #7' : 'Resolving conflicts on PR #7')
 
     await renderAt('/', baseline(running))
+    showExecuteColumn()
     const card = cardOf('PA-A')
     expect(card.querySelector('.gate-action-status').textContent).toContain(expected)
     expect(buttonIn(card, 'Approve')).toBeNull()
@@ -278,6 +283,7 @@ test('during this tab\'s in-flight Accept the card shows no Approve button', asy
   const answer = deferred()
   api.approveGate.mockReturnValue(answer.promise)
   await renderAt('/', baseline())
+  showExecuteColumn()
   const card = cardOf('PA-A')
   fireEvent.click(buttonIn(card, 'Approve'))
   fireEvent.click(document.querySelector('.composer__submit'))
