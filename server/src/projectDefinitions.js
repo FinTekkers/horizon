@@ -45,13 +45,24 @@ export function resolveProjectSlug(slug) {
   return project ? { id: project.id, name: project.name, slug, definitionsEnabled: !!project.definitionsEnabled } : null
 }
 
-// The tool ids farm/tools/allowlist.json declares. Read only — nothing here
-// writes the allow-list (docs/tool-allowlist.md). An unreadable file allows
-// no tools.
+// The tool ids the farm's tool allow-list declares (HZ-536,
+// docs/tool-allowlist.md). farm/persona_tools.py is the one reader of that
+// file, so the ids come from it, never from a second parser here; nothing
+// here writes the allow-list. A list that fails to load allows no tools.
+const REPO_ROOT = path.resolve(import.meta.dirname, '../..')
+
 function toolAllowlist() {
+  const venv = path.join(REPO_ROOT, 'farm', '.venv', 'bin', 'python')
   try {
-    const data = JSON.parse(fs.readFileSync(path.join(FARM_DIR, 'tools', 'allowlist.json'), 'utf8'))
-    return Array.isArray(data?.tools) ? data.tools.map((t) => t?.id).filter((id) => typeof id === 'string') : []
+    const out = execFileSync(fs.existsSync(venv) ? venv : 'python3', ['-m', 'farm.persona_tools', 'ids', FARM_DIR], {
+      cwd: REPO_ROOT,
+      encoding: 'utf8',
+      env: { PATH: process.env.PATH ?? '' },
+      stdio: ['ignore', 'pipe', 'ignore'],
+      timeout: 10_000,
+    })
+    const ids = JSON.parse(out)
+    return Array.isArray(ids) ? ids.filter((id) => typeof id === 'string') : []
   } catch {
     return []
   }
@@ -128,7 +139,7 @@ function checkPersonas(slug, value) {
       if (!allowed.has(tool)) {
         throw new DefinitionError('tool_not_allowed', {
           tool,
-          message: `Tool "${tool}" (persona ${persona.id}) is not in farm/tools/allowlist.json`,
+          message: `Tool "${tool}" (persona ${persona.id}) is not in the farm's tool allow-list`,
         })
       }
     }
